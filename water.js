@@ -28,11 +28,13 @@
 //   water.update(performance.now() / 1000);
 
 import * as THREE from 'three';
-import { MeshBasicNodeMaterial } from 'three/webgpu';
+import { MeshBasicNodeMaterial, TextureNode, NodeUpdateType } from 'three/webgpu';
 import {
   uniform, attribute, positionWorld, cameraPosition,
-  Fn, vec2, vec3, float,
-  sin, normalize, dot, pow, max, clamp, mix, smoothstep,
+  Fn, vec2, vec3, vec4, float,
+  sin, normalize, dot, pow, max, min, clamp, mix, smoothstep, step,
+  length, dFdx, dFdy, varying, refract,
+  positionGeometry, modelWorldMatrix,
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
@@ -271,7 +273,7 @@ export function createWaterSystem(options = {}) {
 
   // Gate the caustic render pass — reflection+refraction restored in 6.2 via TSL nodes;
   // caustics render pass remains gated here until checkpoint 6.3.
-  const CAUSTICS_ENABLED = false;
+  const CAUSTICS_ENABLED = true;
 
   // ---- TSL uniform handles for the surface node material ----
   const tsl_uTime       = uniform(0.0,                  'float');
@@ -397,19 +399,49 @@ export function createWaterSystem(options = {}) {
   // The -PI/2 X rotation (set above) makes local +Z → world +Y (horizontal mirror plane).
   surface.add(tsl_reflector.target);
 
-  // caustics mesh lives in its own scene; it is rendered straight to clip space
-  const causticMat = new THREE.ShaderMaterial({
-    vertexShader: CAUSTIC_VERT, fragmentShader: CAUSTIC_FRAG,
-    side: THREE.DoubleSide, depthTest: false, depthWrite: false,
-    uniforms: {
-      uTime: { value: 0 }, uWave: { value: o.waveStrength },
-      uLightDir: { value: lightDir }, uEta: { value: ETA },
-      uBedRef: { value: o.waterLevel - o.causticBedDepth },
-      uWorldSize: { value: o.size },
-      uWorldCenter: { value: new THREE.Vector2(0, 0) },
-    },
-  });
-  causticMat.extensions = { derivatives: true };
+  // ---- Caustic node material (TSL port of CAUSTIC_VERT / CAUSTIC_FRAG) ----
+  // Per-vertex: compute vNew (refracted bed intersection) and vOld (flat baseline).
+  // positionNode overrides local-space vertex position so the caustic camera
+  // projects vNew.xz → clip XY (top-down caustic map). colorNode uses screen-space
+  // derivatives of the varyings to compute the caustic intensity ratio.
+  const tsl_cBedRef  = uniform(o.waterLevel - o.causticBedDepth, 'float');
+  const tsl_cEta     = float(ETA);
+  // flat-surface refracted ray (updated by setLightDir)
+  const refractedFlat = refractVec(lightDir.clone().negate(), new THREE.Vector3(0, 1, 0), ETA, new THREE.Vector3());
+  const tsl_baseRayU  = uniform(refractedFlat.clone());
+
+  // P = original world position of the geometry vertex (before positionNode override).
+  // causticGroup sits at y=waterLevel, so modelWorldMatrix is a pure Y-translate.
+  const causticP     = modelWorldMatrix.mul(vec4(positionGeometry, float(1.0))).xyz;
+  const causticN     = rippleNormal(causticP.xz);              // wave-perturbed normal
+  const causticI     = tsl_uLightDir.negate();                 // incident direction (toward surface)
+  const causticRay   = refract(causticI, causticN, tsl_cEta);  // TSL refract: same GLSL semantics
+  // Guard against near-zero ray.y (shouldn't occur for typical light angles)
+  const causticRayY  = min(causticRay.y,  float(-1e-4));
+  const causticBaseY = min(tsl_baseRayU.y, float(-1e-4));
+  // t = (bedRef - P.y) / ray.y  →  intersection depth along ray to the bed plane
+  const causticTNew  = tsl_cBedRef.sub(causticP.y).div(causticRayY);
+  const causticTOld  = tsl_cBedRef.sub(causticP.y).div(causticBaseY);
+  const causticVNew  = causticP.add(causticRay.mul(causticTNew));    // perturbed bed position
+  const causticVOld  = causticP.add(tsl_baseRayU.mul(causticTOld)); // flat-surface baseline
+
+  // Interpolate vertex-stage values to fragment stage for derivative computation
+  const causticVNewVar = varying(causticVNew);
+  const causticVOldVar = varying(causticVOld);
+
+  // positionNode: local-space position mapping to world position vNew.
+  // causticGroup.position.y = waterLevel, so local.y = vNew.y - waterLevel
+  //   = bedRef - waterLevel = -causticBedDepth
+  const causticPosNode = vec3(causticVNew.x, float(-o.causticBedDepth), causticVNew.z);
+
+  // Fragment: caustic intensity = ratio of unperturbed to perturbed bed areas
+  const causticOldArea   = length(dFdx(causticVOldVar)).mul(length(dFdy(causticVOldVar)));
+  const causticNewArea   = length(dFdx(causticVNewVar)).mul(length(dFdy(causticVNewVar)));
+  const causticIntensity = causticOldArea.div(max(causticNewArea, float(1e-5))).mul(float(0.2));
+
+  const causticMat = new MeshBasicNodeMaterial({ side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+  causticMat.positionNode = causticPosNode;
+  causticMat.colorNode    = vec4(causticIntensity, float(1.0), float(0.0), float(1.0));
   const causticGroup = new THREE.Group();
   causticGroup.name = 'WaterCausticChunks';
   causticGroup.position.y = o.waterLevel;
@@ -428,73 +460,90 @@ export function createWaterSystem(options = {}) {
   const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
   const causticsTarget = new THREE.WebGLRenderTarget(o.causticRes, o.causticRes, rtOpts);
 
-  // ---------- patch the terrain material to receive caustics ----------
-  // flat refracted light, reused by the ground reverse-projection
-  const refractedFlat = refractVec(lightDir.clone().negate(), new THREE.Vector3(0, 1, 0), ETA, new THREE.Vector3());
-  const groundUniforms = {
-    uCausticTex: { value: causticsTarget.texture },
-    uRefractedLightG: { value: refractedFlat },
-    uBedRefG: { value: o.waterLevel - o.causticBedDepth },
-    uWorldSizeG: { value: o.size },
-    uWorldCenterG: { value: new THREE.Vector2(0, 0) },
-    uWaterLevelG: { value: o.waterLevel },
-    uCausticStrength: { value: o.caustic },
-  };
-  // Caustic ground patch requires active render passes — gated until checkpoint 6.3.
-  // If the ground material is a WebGPU node material, onBeforeCompile would crash anyway.
-  if (CAUSTICS_ENABLED && ground && ground.material) {
-    const mat = ground.material;
-    // Compose with any existing patch (e.g. the instanced terrain's heightmap
-    // displacement) instead of replacing it, so displacement survives.
-    const prevOnBeforeCompile = mat.onBeforeCompile;
-    const prevCacheKey = mat.customProgramCacheKey;
-    mat.onBeforeCompile = (shader) => {
-      if (prevOnBeforeCompile) prevOnBeforeCompile.call(mat, shader);
-      Object.assign(shader.uniforms, groundUniforms);
-      // Inject after <project_vertex> (NOT <begin_vertex>, which displacement
-      // materials consume) and honour instancing, so caustics project from the
-      // final displaced world position on instanced terrain too.
-      shader.vertexShader = 'varying vec3 vCausticWorldPos;\n' + shader.vertexShader.replace(
-        '#include <project_vertex>',
-        `#include <project_vertex>
-      #ifdef USE_INSTANCING
-        vCausticWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
-      #else
-        vCausticWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      #endif`
-      );
-      shader.fragmentShader = `
-        varying vec3 vCausticWorldPos;
-        uniform sampler2D uCausticTex;
-        uniform vec3 uRefractedLightG;
-        uniform float uBedRefG;
-        uniform float uWorldSizeG;
-        uniform vec2 uWorldCenterG;
-        uniform float uWaterLevelG;
-        uniform float uCausticStrength;
-      ` + shader.fragmentShader.replace(
-        '#include <dithering_fragment>',
-        `
-        if (vCausticWorldPos.y < uWaterLevelG) {
-          float tt = (uBedRefG - vCausticWorldPos.y) / uRefractedLightG.y;
-          vec2 q = vCausticWorldPos.xz + uRefractedLightG.xz * tt;
-          vec2 cuv = (q - uWorldCenterG) / uWorldSizeG + 0.5;
-          if (cuv.x > 0.0 && cuv.x < 1.0 && cuv.y > 0.0 && cuv.y < 1.0) {
-            float c = texture2D(uCausticTex, cuv).r;
-            float fade = clamp((uWaterLevelG - vCausticWorldPos.y) * 0.6, 0.0, 1.0);
-            gl_FragColor.rgb += uCausticStrength * c * fade * vec3(0.6, 0.85, 1.0);
-          }
-        }
-        #include <dithering_fragment>`
-      );
-    };
-    // If the material already had a program cache key (the instanced terrain
-    // material does), compose ours so the program recompiles WITH the caustic
-    // injection even if it was already compiled before water loaded.
-    if (prevCacheKey) {
-      mat.customProgramCacheKey = function () { return prevCacheKey.call(this) + '|caustic'; };
+  // Custom orthographic camera for the caustic pass.
+  // Projection: maps world XZ to clip XY, matching the original GLSL formula:
+  //   gl_Position = vec4((vNew.xz - worldCenter) / (0.5 * worldSize), 0.0, 1.0)
+  // View matrix row 1 swaps world-Z into view-Y so the ortho scale maps it to clip-Y.
+  // Projection scales view XY to clip XY ([-sz/2, sz/2] → [-1, 1]).
+  const causticCamera = new THREE.Camera();
+  causticCamera.matrixAutoUpdate      = false;
+  causticCamera.matrixWorldAutoUpdate = false;
+
+  function updateCausticCamera(cx, cz, sz) {
+    const s = 2 / sz;
+    causticCamera.matrixWorldInverse.set(
+      1,  0, 0, -cx,
+      0,  0, 1, -cz,
+      0, -1, 0,   0,
+      0,  0, 0,   1,
+    );
+    causticCamera.matrixWorld.copy(causticCamera.matrixWorldInverse).invert();
+    causticCamera.projectionMatrix.set(
+      s, 0, 0, 0,
+      0, s, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    );
+    causticCamera.projectionMatrixInverse.copy(causticCamera.projectionMatrix).invert();
+  }
+  updateCausticCamera(0, 0, o.size);
+
+  // ---------- terrain caustic contribution (TSL, replaces onBeforeCompile) ----------
+  // TSL uniforms for the ground reverse-projection (all updated by public API / syncWaterChunks).
+  const tsl_c_bedRefG       = uniform(o.waterLevel - o.causticBedDepth, 'float');
+  const tsl_c_waterLevelG   = uniform(o.waterLevel, 'float');
+  const tsl_c_worldSizeG    = uniform(o.size, 'float');
+  const tsl_c_worldCenterG  = uniform(new THREE.Vector2(0, 0));
+  const tsl_c_causticStr    = uniform(o.caustic, 'float');
+  const tsl_c_refractedFlat = uniform(refractedFlat.clone());
+
+  // CausticTextureNode extends TextureNode so updateBefore() safely binds the RT
+  // texture during the live render loop — mirrors ReflectorNode's updateBefore
+  // pattern (issues/001 safe: texture is set AFTER the material has first rendered).
+  class CausticTextureNode extends TextureNode {
+    constructor(uvNode) {
+      super(causticsTarget.texture, uvNode);
+      this.updateBeforeType = NodeUpdateType.RENDER;
     }
-    mat.needsUpdate = true;
+    updateBefore(frame) {
+      const r = frame.renderer;
+      const prev = r.getRenderTarget();
+      r.setRenderTarget(causticsTarget);
+      r.render(causticScene, causticCamera);
+      r.setRenderTarget(prev);
+      this.value = causticsTarget.texture; // re-set during live loop → issues/001 safe
+    }
+  }
+
+  // Reverse-project each terrain fragment's world position along the refracted flat ray
+  // to the bed reference plane, then map XZ to caustic texture UV [0,1].
+  const cTT = tsl_c_bedRefG.sub(positionWorld.y).div(tsl_c_refractedFlat.y);
+  const cQX = positionWorld.x.add(tsl_c_refractedFlat.x.mul(cTT));
+  const cQZ = positionWorld.z.add(tsl_c_refractedFlat.z.mul(cTT));
+  const cU  = cQX.sub(tsl_c_worldCenterG.x).div(tsl_c_worldSizeG).add(float(0.5));
+  const cV  = cQZ.sub(tsl_c_worldCenterG.y).div(tsl_c_worldSizeG).add(float(0.5));
+
+  // In-bounds mask: only apply caustic where projection falls inside [0,1]²
+  const cInBounds = step(float(0.0), cU).mul(step(cU, float(1.0)))
+                   .mul(step(float(0.0), cV)).mul(step(cV, float(1.0)));
+
+  // CausticTextureNode instance: renders caustic scene in updateBefore(), then samples it.
+  const causticTexNode = new CausticTextureNode(vec2(cU, cV));
+
+  // Fade: 0 at/above waterLevel, 1 deeper down (same formula as original GLSL).
+  const cFade = clamp(tsl_c_waterLevelG.sub(positionWorld.y).mul(float(0.6)), float(0.0), float(1.0));
+  // Caustic emissive: blue-tinted additive light from focused rays.
+  const cEmit = causticTexNode.r.mul(cFade).mul(tsl_c_causticStr).mul(cInBounds)
+                               .mul(vec3(0.6, 0.85, 1.0));
+
+  // Attach caustic emissive node to the terrain material.
+  // Safety: terrain STAYS VISIBLE regardless because:
+  //   (a) emissiveNode is purely additive — base colour is unaffected,
+  //   (b) CausticTextureNode.updateBefore() sets this.value during the live loop,
+  //       so the texture is always bound before the terrain draw call (issues/001 safe).
+  if (ground && ground.material && ground.material.isNodeMaterial) {
+    ground.material.emissiveNode = cEmit;
+    ground.material.needsUpdate  = true;
   }
 
   // Note: the manual planar-reflection camera (THREE.Reflector algorithm) and its
@@ -560,10 +609,9 @@ export function createWaterSystem(options = {}) {
       return false;
     });
     const projection = getWorldProjection(bounds);
-    causticMat.uniforms.uWorldSize.value = projection.size;
-    causticMat.uniforms.uWorldCenter.value.set(projection.centerX, projection.centerZ);
-    groundUniforms.uWorldSizeG.value = projection.size;
-    groundUniforms.uWorldCenterG.value.set(projection.centerX, projection.centerZ);
+    updateCausticCamera(projection.centerX, projection.centerZ, projection.size);
+    tsl_c_worldSizeG.value = projection.size;
+    tsl_c_worldCenterG.value.set(projection.centerX, projection.centerZ);
     stats.chunks = waterChunks.size;
     stats.pending = Math.max(0, waterBuildQueue.length - waterBuildQueueIndex);
     stats.dry = Math.max(0, stats.candidates - stats.chunks - stats.pending);
@@ -603,23 +651,14 @@ export function createWaterSystem(options = {}) {
   //               renderer.render(scene, camera) is called by the host loop.
   // Refraction  : viewportSharedTexture copies the framebuffer inside updateBefore()
   //               via renderer.copyFramebufferToTexture() — no extra pass needed.
-  // Caustics    : explicit pass, gated behind CAUSTICS_ENABLED (checkpoint 6.3).
+  // Caustics    : CausticTextureNode.updateBefore() renders causticScene to causticsTarget
+  //               during the live render loop (issues/001 safe — same pattern as reflector).
   let reflectEvery = 1;  // retained for API; no rate effect with ReflectorNode (renders per-frame)
   function update(time) {
     processWaterBuildQueue();
     tsl_uTime.value = time;
-    tsl_uWave.value = causticMat.uniforms.uWave.value;
-    causticMat.uniforms.uTime.value = time;
     camera.updateMatrixWorld();
-
-    if (CAUSTICS_ENABLED) {
-      // Caustic map: render the lake grid from the light direction into causticsTarget.
-      // The caustic scene has no water surface — only the causticGroup.
-      const prevTarget = renderer.getRenderTarget();
-      renderer.setRenderTarget(causticsTarget);
-      renderer.render(causticScene, camera);
-      renderer.setRenderTarget(prevTarget);
-    }
+    // Caustic render: handled by CausticTextureNode.updateBefore() inside renderer.render().
   }
   function setReflectRate(everyNFrames) {
     // API preserved. With ReflectorNode the reflector renders every frame automatically;
@@ -658,22 +697,22 @@ export function createWaterSystem(options = {}) {
     syncWaterChunks();
     surface.position.y = o.waterLevel;
     causticGroup.position.y = o.waterLevel;
-    causticMat.uniforms.uBedRef.value = o.waterLevel - o.causticBedDepth;
-    groundUniforms.uBedRefG.value = o.waterLevel - o.causticBedDepth;
-    groundUniforms.uWaterLevelG.value = o.waterLevel;
+    tsl_cBedRef.value = o.waterLevel - o.causticBedDepth;
+    tsl_c_bedRefG.value = o.waterLevel - o.causticBedDepth;
+    tsl_c_waterLevelG.value = o.waterLevel;
   }
 
   function setWaves(strength) {
-    causticMat.uniforms.uWave.value = strength;
-    tsl_uWave.value = strength;   // keep surface TSL uniform in sync
+    tsl_uWave.value = strength;   // causticMat reuses tsl_uWave via rippleNormal
   }
-  function setCaustic(strength) { groundUniforms.uCausticStrength.value = strength; }
+  function setCaustic(strength) { tsl_c_causticStr.value = strength; }
 
   function setLightDir(v) {
     lightDir.copy(v).normalize();
-    tsl_uLightDir.value.copy(lightDir);   // push updated direction to the TSL uniform
-    // the ground refracted-ray uniform needs recomputing from the new direction
+    tsl_uLightDir.value.copy(lightDir);
     refractVec(lightDir.clone().negate(), new THREE.Vector3(0, 1, 0), ETA, refractedFlat);
+    tsl_baseRayU.value.copy(refractedFlat);        // caustic vertex shader
+    tsl_c_refractedFlat.value.copy(refractedFlat); // caustic ground projection
   }
 
   function dispose() {

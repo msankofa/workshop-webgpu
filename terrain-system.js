@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { terrainHeightAt, terrainNormalAt, buildChunkArrays, buildHeightTile } from './terrain-field.js';
 
 // Re-export field math so existing importers keep working.
@@ -120,7 +121,7 @@ class TerrainSystem {
     this.group.name = 'TerrainChunks';
     this.collisionGroup = new THREE.Group();
     this.collisionGroup.name = 'TerrainCollisionChunks';
-    this.material = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 1 });
+    this.material = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1 });
     this.instancedMaterial = createInstancedTerrainMaterial();
     this.collisionMaterial = new THREE.MeshBasicMaterial({ visible: false });
     this.renderMode = this.params.experimentalInstancedTerrain && this.params.renderMode === 'instanced' ? 'instanced' : 'chunks';
