@@ -13,10 +13,13 @@
 <body>
 <div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &middot; F&nbsp;walk &mdash; environment sandbox: terrain, lakes, forest, grass, water &amp; clouds</div>
 
+<!-- three@0.184.0: three.webgpu.js and three.tsl.js both verified at jsDelivr (2026-06-19) -->
 <script type="importmap">
 { "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
 } }
 </script>
 
@@ -26,6 +29,8 @@ import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
+
+const RENDERER_BACKEND = new URLSearchParams(location.search).get('renderer') || 'webgpu';
 
 // Declared here so buildOctree() can reference it.
 let worldOctree = new Octree();
