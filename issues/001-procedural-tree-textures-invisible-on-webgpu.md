@@ -67,3 +67,7 @@ Use **authored** texture mode (renders correctly, looks better). Or switch modes
 ## Cross-cutting note for SP1
 
 The same "material set up / texture bound before first render" risk applies to **water caustics (SP1 checkpoint 6.3)**, where the terrain material gets a caustic node/texture. Set those up so binding happens during the live loop, or expect the same invisibility.
+
+## Update (clue from water 6.2)
+
+With the TSL `reflector()` water reflection working, in **procedural** mode the trees are **visible in the water's reflection** but still **invisible in the main view**. The reflector renders the scene to its own RenderTarget via a separate `renderer.render(scene, virtualCamera)` each frame — and in *that* pass the procedural tree textures bind, while the main pass leaves them unbound. Strong signal that the binding succeeds in a render-to-target context but not the main framebuffer pass on first/main render — narrows the root cause to how the main pass establishes the node-material texture bind group for these meshes.
