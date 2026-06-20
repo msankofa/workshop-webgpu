@@ -25,12 +25,14 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
 import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
 
 const RENDERER_BACKEND = new URLSearchParams(location.search).get('renderer') || 'webgpu';
+const PORTED = { grass: false, clouds: false, water: false }; // flipped true as each module is ported to TSL (later tasks)
 
 // Declared here so buildOctree() can reference it.
 let worldOctree = new Octree();
@@ -44,12 +46,13 @@ addEventListener('error', e => showError(e.message || 'script error'));
 addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
 
 // ===================== renderer / scene / camera =====================
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new WebGPURenderer({ antialias: true, forceWebGL: RENDERER_BACKEND === 'webgl' });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
+await renderer.init();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d23);
@@ -87,8 +90,8 @@ function updateTerrainDebug(now) {
   // too, so it can exceed the visible geometry.
   const ri = renderer.info;
   terrainDebugEl.textContent =
-    `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri.render.calls}  tris ${ri.render.triangles.toLocaleString()}\n` +
-    `geom ${ri.memory.geometries}  tex ${ri.memory.textures}\n` +
+    `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri?.render?.calls ?? 0}  tris ${(ri?.render?.triangles ?? 0).toLocaleString()}\n` +
+    `geom ${ri?.memory?.geometries ?? 0}  tex ${ri?.memory?.textures ?? 0}\n` +
     `terrain ${terrainSystem.renderMode}\n` +
     `chunks ${terrainSystem.activeChunks.length}/${terrainSystem.targetChunkCount}\n` +
     `pending ${terrainSystem.pendingBuildCount}\n` +
@@ -118,10 +121,10 @@ const perfLog = {
     return {
       t: +((now - this.startTime) / 1000).toFixed(2),   // seconds since recording started
       fps: +terrainDebug.fps.toFixed(1),
-      calls: r.render.calls,
-      triangles: r.render.triangles,
-      geometries: r.memory.geometries,
-      textures: r.memory.textures,
+      calls: r?.render?.calls ?? 0,
+      triangles: r?.render?.triangles ?? 0,
+      geometries: r?.memory?.geometries ?? 0,
+      textures: r?.memory?.textures ?? 0,
       terrainMode: terrainSystem.renderMode,
       drawChunks: terrainSystem.activeChunks.length,
       targetChunks: terrainSystem.targetChunkCount,
@@ -834,7 +837,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
 
   // ---- grass (separate module; optional, degrades to no grass if missing) ----
-  import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
+  if (PORTED.grass) import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
     function makeChunkGrassManager() {
       const chunks = new Map();
@@ -971,10 +974,10 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('grassCount', 'Blade count', 0, 1200000, 1000, v => (v / 1000) + 'k', grassRebuild);
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
-  }).catch(() => { /* grass is optional */ });
+  }).catch(() => { /* grass is optional */ }); // end PORTED.grass
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
+  if (PORTED.water) import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
     Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
     waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight, chunks: terrainSystem.activeChunks });
     scene.add(waterRef.surface);
@@ -984,11 +987,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
     slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
     slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
-  }).catch(err => { showError('water.js could not load (' + err.message + ')'); });
+  }).catch(err => { showError('water.js could not load (' + err.message + ')'); }); // end PORTED.water
 
   // ---- clouds (separate module; optional, independent of terrain). Lays a big
   // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
-  import('./clouds.js').then(({ Clouds }) => {
+  if (PORTED.clouds) import('./clouds.js').then(({ Clouds }) => {
     Object.assign(params, { cloudHeight: 120, cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
       cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01 });
     cloudsRef = new Clouds();
@@ -1009,7 +1012,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
     slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
-  }).catch(() => { /* clouds are optional */ });
+  }).catch(() => { /* clouds are optional */ }); // end PORTED.clouds
 }).catch(err => {
   showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
@@ -1301,7 +1304,6 @@ function updateFPSPlayer(deltaTime) {
 // ===================== render loop =====================
 const clock = new THREE.Clock();
 function animate() {
-  requestAnimationFrame(animate);
   const rawDt = Math.min(clock.getDelta(), 0.1);
   const now = performance.now();
   if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
@@ -1327,7 +1329,7 @@ function animate() {
   perfLog.maybeSample(now);
   renderer.render(scene, camera);
 }
-animate();
+renderer.setAnimationLoop(animate);
 </script>
 </body>
 </html>
