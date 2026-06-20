@@ -1,5 +1,8 @@
 {
   "name": "procedural-creature-workshop",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "three": "^0.184.0"
+  }
 }

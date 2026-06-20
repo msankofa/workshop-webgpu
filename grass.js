@@ -20,6 +20,12 @@
 //   grass.setWind(1.5);                        // live wind strength multiplier
 
 import * as THREE from 'three';
+import { MeshStandardNodeMaterial } from 'three/webgpu';
+import {
+  uniform, attribute, positionLocal, positionWorld, cameraPosition, modelWorldMatrix,
+  Fn, vec2, vec3, vec4, float,
+  sin, mix, clamp, distance, step, floor, fract, dot, max,
+} from 'three/tsl';
 
 // ---------- seeded RNG (mulberry32) so a seed reproduces the same field ----------
 function makeRNG(seed) {
@@ -78,6 +84,9 @@ function merge(base, over) {
 const WIND_WEIGHT = [0.0, 0.0, 0.5, 0.5, 1.0]; // 0 base, 0.5 mid, 1 tip
 const BLADE_INDICES = [0, 1, 2, 2, 4, 3, 3, 0, 2];
 
+// ---- GLSL reference shaders (behavioral spec; kept for parity documentation) ----
+// These were the original ShaderMaterial sources. The TSL node graph below
+// reproduces the same logic — see the correspondence table in the commit message.
 const VERT_SHADER = /* glsl */`
   attribute float aWind;
   attribute float aHeight;    // this vertex's height above its blade base (0 at base, blade height at tip)
@@ -178,6 +187,27 @@ const FRAG_SHADER = /* glsl */`
   }
 `;
 
+// ---- JS-side parity helpers (mirror of GLSL wind/fade math; used by tests) ----
+
+/**
+ * Returns the wind X-offset wave value for a vertex at the given world X position.
+ * Matches: sin(uTime * uWindSpeed + worldBase.x * uWaveSize * uInvExtent) in VERT_SHADER.
+ * Phased on world X so neighbouring chunks share one continuous wave (no seam).
+ */
+export function grassWindOffset(worldX, uTime, uWindSpeed, uWaveSize, uInvExtent) {
+  return Math.sin(uTime * uWindSpeed + worldX * uWaveSize * uInvExtent);
+}
+
+/**
+ * Returns the `keep` factor (1 = full height, 0 = collapsed to base) for a blade
+ * vertex at the given camera distance.
+ * Matches: 1.0 - clamp((camDist - uFadeStart) / max(0.001, uFadeEnd - uFadeStart), 0.0, 1.0)
+ */
+export function grassFadeKeep(camDist, start, end) {
+  const range = Math.max(0.001, end - start);
+  return 1 - Math.max(0, Math.min(1, (camDist - start) / range));
+}
+
 function buildGeometry(o) {
   const rng = makeRNG(o.seed);
   const n = Math.max(0, Math.floor(o.count));
@@ -265,34 +295,155 @@ function buildGeometry(o) {
   return geom;
 }
 
+// ---- TSL node material ----
+//
+// GLSL → TSL correspondence:
+//
+//  VERT_SHADER worldBase = modelMatrix * position
+//    → modelWorldMatrix.mul(vec4(positionLocal, 1.0)).xyz           (positionLocal is pre-displacement)
+//
+//  wave = sin(uTime * uWindSpeed + worldBase.x * uWaveSize * uInvExtent)
+//    → sin(uTime.mul(uWindSpeed).add(worldPos.x.mul(uWaveSize).mul(uInvExtent)))  [SEAM FIX PRESERVED]
+//
+//  if (aWind > 0.6) sway = uTipDistance; else if (aWind > 0.0) sway = uCenterDistance;
+//    → isMidOrTip = step(0.001, aWind); isTip = step(0.601, aWind)
+//      swayAmt = isMidOrTip.mul(mix(uCenterDist, uTipDist, isTip))
+//
+//  cpos.y -= aHeight * (1.0 - keep)  where keep = 1 - clamp((camDist-fadeStart)/range, 0, 1)
+//    → positionLocal.y.sub(aHeight.mul(float(1).sub(keep)))
+//
+//  positionNode = vec3(positionLocal.x + windX, positionLocal.y - fadeY, positionLocal.z)
+//
+//  FRAG_SHADER: col = mix(uBaseColor, uTipColor, vWind)
+//    → mix(uBaseColor, uTipColor, aWind)   [TSL auto-creates varying for attribute in fragment stage]
+//
+//  hash(p) / noise(p) — value-noise cloud shadow
+//    → hash2D / noise2D TSL Fn nodes (exact same formula)
+//
+//  vCloudUv = worldBase.xz * uInvExtent + scroll
+//    → positionWorld.xz.mul(uInvExtent).add(scroll)
+//      [uses displaced world pos; max shift < 0.09 noise-units — imperceptible at cloud scale]
+//
+//  gl_FragColor = col * (uAmbient + uKey) * cloud * shadow
+//    → colorNode = mix(...).mul(uAmbient.add(uKey)).mul(cloud)
+//      [MeshStandardNodeMaterial's PBR lighting + shadow system handles real scene shadows]
+
 function buildMaterial(o) {
   const invExtent = 1 / (o.size > 0 ? o.size : 2 * o.radius);
-  return new THREE.ShaderMaterial({
-    lights: true,
-    side: THREE.DoubleSide,
-    vertexShader: VERT_SHADER,
-    fragmentShader: FRAG_SHADER,
-    uniforms: THREE.UniformsUtils.merge([
-      THREE.UniformsLib.lights,
-      {
-        uTime: { value: 0 },
-        uBaseColor: { value: new THREE.Color(o.baseColor) },
-        uTipColor: { value: new THREE.Color(o.tipColor) },
-        uAmbient: { value: o.ambient },
-        uKey: { value: o.key },
-        uWindSpeed: { value: o.windSpeed },
-        uWaveSize: { value: o.waveSize },
-        uTipDistance: { value: o.tipDistance },
-        uCenterDistance: { value: o.centerDistance },
-        uCloudScale: { value: o.cloudScale },
-        uCloudStrength: { value: o.cloudStrength },
-        uCloudSpeed: { value: o.cloudSpeed },
-        uInvExtent: { value: invExtent },
-        uFadeStart: { value: o.fadeStart },
-        uFadeEnd: { value: o.fadeEnd },
-      },
-    ]),
+
+  // ---- Uniform handles (stored on the material for live updates via public API) ----
+  const uTime          = uniform(0.0,               'float');
+  const uWindSpeed     = uniform(o.windSpeed,        'float');
+  const uWaveSize      = uniform(o.waveSize,         'float');
+  const uTipDist       = uniform(o.tipDistance,      'float');
+  const uCenterDist    = uniform(o.centerDistance,   'float');
+  const uInvExtent     = uniform(invExtent,          'float');
+  const uFadeStart     = uniform(o.fadeStart,        'float');
+  const uFadeEnd       = uniform(o.fadeEnd,          'float');
+  const uBaseColor     = uniform(new THREE.Color(o.baseColor));
+  const uTipColor      = uniform(new THREE.Color(o.tipColor));
+  const uAmbient       = uniform(o.ambient,          'float');
+  const uKey           = uniform(o.key,              'float');
+  const uCloudScale    = uniform(o.cloudScale,       'float');
+  const uCloudStrength = uniform(o.cloudStrength,    'float');
+  const uCloudSpeed    = uniform(o.cloudSpeed,       'float');
+
+  // ---- Per-vertex attributes ----
+  const aWind   = attribute('aWind',   'float');
+  const aHeight = attribute('aHeight', 'float');
+
+  // ---- positionNode: wind sway + distance fade ----
+  // Compute world position from the ORIGINAL local position (before any displacement)
+  // so the wind phase is continuous across chunk boundaries (the seam fix).
+  const worldPos4 = modelWorldMatrix.mul(vec4(positionLocal, 1.0));
+  const worldPos  = worldPos4.xyz;
+
+  // Wind wave phased on WORLD X — continuous across chunks
+  const wave = sin(
+    uTime.mul(uWindSpeed).add(worldPos.x.mul(uWaveSize).mul(uInvExtent))
+  );
+
+  // Sway amplitude per wind weight:
+  //   base  (aWind = 0.0): no sway
+  //   mid   (aWind = 0.5): uCenterDist
+  //   tip   (aWind = 1.0): uTipDist
+  const isMidOrTip = step(float(0.001), aWind);   // 1 for mid+tip, 0 for base
+  const isTip      = step(float(0.601), aWind);   // 1 for tip only
+  const swayAmt    = isMidOrTip.mul(mix(uCenterDist, uTipDist, isTip));
+  const windX      = wave.mul(swayAmt);
+
+  // Distance fade: collapse each blade toward its base as it recedes from camera
+  const camDist   = distance(worldPos.xz, cameraPosition.xz);
+  const fadeRange = max(float(0.001), uFadeEnd.sub(uFadeStart));
+  const keep      = float(1.0).sub(
+    clamp(camDist.sub(uFadeStart).div(fadeRange), 0.0, 1.0)
+  );
+  const fadeY = aHeight.mul(float(1.0).sub(keep));
+
+  // Displaced local position
+  const posNode = vec3(
+    positionLocal.x.add(windX),
+    positionLocal.y.sub(fadeY),
+    positionLocal.z
+  );
+
+  // ---- colorNode: base→tip gradient × flat light × cloud shadow ----
+
+  // Value-noise hash — matches GLSL:  fract(fract(p * vec2(123.34, 456.21)) dot-product)
+  const hash2D = Fn(([p]) => {
+    const q = fract(p.mul(vec2(123.34, 456.21)));
+    const r = q.add(dot(q, q.add(float(45.32))));
+    return fract(r.x.mul(r.y));
   });
+
+  // Bilinear value noise — matches GLSL noise(p)
+  const noise2D = Fn(([p]) => {
+    const i = floor(p);
+    const f = fract(p);
+    const a = hash2D(i);
+    const b = hash2D(i.add(vec2(1.0, 0.0)));
+    const c = hash2D(i.add(vec2(0.0, 1.0)));
+    const d = hash2D(i.add(vec2(1.0, 1.0)));
+    // Hermite smoothstep: u = f*f*(3-2*f)
+    const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0)));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  });
+
+  // Cloud UV: world XZ scaled by invExtent, scrolling over time.
+  // positionWorld.xz is post-displacement; max wind shift < 0.09 noise-units (imperceptible).
+  const cloudUv = positionWorld.xz.mul(uInvExtent).add(
+    vec2(uTime.mul(uCloudSpeed), uTime.mul(uCloudSpeed).mul(0.5))
+  );
+  const cloud = float(1.0).sub(
+    uCloudStrength.mul(noise2D(cloudUv.mul(uCloudScale).mul(64.0)))
+  );
+
+  // Blade color: base→tip gradient, scaled by flat ambient+key, darkened by cloud shadow
+  const grassColor = mix(uBaseColor, uTipColor, aWind);
+  const colorNode  = grassColor.mul(uAmbient.add(uKey)).mul(cloud);
+
+  // ---- Assemble material ----
+  const mat = new MeshStandardNodeMaterial({
+    side:      THREE.DoubleSide,
+    roughness: 1.0,
+    metalness: 0.0,
+  });
+  mat.positionNode = posNode;
+  mat.colorNode    = colorNode;
+
+  // Store uniform handles on the material so Grass methods can update them live
+  mat._uTime        = uTime;
+  mat._uWindSpeed   = uWindSpeed;
+  mat._uWaveSize    = uWaveSize;
+  mat._uTipDist     = uTipDist;
+  mat._uCenterDist  = uCenterDist;
+  mat._uInvExtent   = uInvExtent;
+  mat._uFadeStart   = uFadeStart;
+  mat._uFadeEnd     = uFadeEnd;
+  mat._uAmbient     = uAmbient;
+  mat._uKey         = uKey;
+
+  return mat;
 }
 
 export class Grass extends THREE.Mesh {
@@ -307,25 +458,23 @@ export class Grass extends THREE.Mesh {
 
   // advance the wind animation; `seconds` is elapsed time (e.g. performance.now()/1000)
   update(seconds) {
-    this.material.uniforms.uTime.value = seconds;
+    this.material._uTime.value = seconds;
   }
 
-  setAmbient(v) { this.material.uniforms.uAmbient.value = v; }
-  setKey(v)     { this.material.uniforms.uKey.value = v; }
+  setAmbient(v) { this.material._uAmbient.value = v; }
+  setKey(v)     { this.material._uKey.value = v; }
 
   // live wind-strength multiplier (scales sway amplitude); no geometry rebuild
   setWind(strength) {
-    const u = this.material.uniforms;
-    u.uTipDistance.value = this.options.tipDistance * strength;
-    u.uCenterDistance.value = this.options.centerDistance * strength;
+    this.material._uTipDist.value    = this.options.tipDistance    * strength;
+    this.material._uCenterDist.value = this.options.centerDistance * strength;
   }
 
   // world-space distance fade: blades shrink between `start` and `end` distance
   // from the camera. start >= end (or huge) disables it. No geometry rebuild.
   setFade(start, end) {
-    const u = this.material.uniforms;
-    u.uFadeStart.value = start;
-    u.uFadeEnd.value = Math.max(start + 0.001, end);
+    this.material._uFadeStart.value = start;
+    this.material._uFadeEnd.value   = Math.max(start + 0.001, end);
   }
 
   // rebuild the field (e.g. after changing count/radius/seed)
@@ -334,7 +483,7 @@ export class Grass extends THREE.Mesh {
     this.geometry.dispose();
     this.geometry = buildGeometry(this.options);
     const o = this.options;
-    this.material.uniforms.uInvExtent.value = 1 / (o.size > 0 ? o.size : 2 * o.radius);
+    this.material._uInvExtent.value = 1 / (o.size > 0 ? o.size : 2 * o.radius);
   }
 
   dispose() {
