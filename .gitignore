@@ -1,0 +1,20 @@
+# Dependencies (reference copy; restorable)
+node_modules/
+
+# Stray browser-automation cache that leaked into the source dir
+.tmp-chrome-cdp/
+
+# Large binary reference / assets not needed in history
+textures/
+repos/
+versions/
+*.zip
+research/**/*.pdf
+
+# Local scratch / generated traces are kept, but ignore OS cruft
+.DS_Store
+Thumbs.db
+.__*.mjs
+
+# Stray browser-automation logs
+.tmp-*cdp*

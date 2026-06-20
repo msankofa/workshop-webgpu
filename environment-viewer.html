@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Environment Sandbox</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &middot; F&nbsp;walk &mdash; environment sandbox: terrain, lakes, forest, grass, water &amp; clouds</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { Octree } from 'three/addons/math/Octree.js';
+import { Capsule } from 'three/addons/math/Capsule.js';
+import { createLightingRig } from './lights.js';
+import { createTerrainSystem } from './terrain-system.js';
+
+// Declared here so buildOctree() can reference it.
+let worldOctree = new Octree();
+let terrainOctreeDirty = false;
+let lastTerrainOctreeBuild = 0;
+
+// Surface any runtime/load error on the page, so a blank viewport tells us why.
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '\u26A0 ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(22, 16, 26);
+
+// ===================== lights =====================
+const rig = createLightingRig({ scene, ui: false });
+rig.dirLight.castShadow = true;
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 0.5; rig.dirLight.shadow.camera.far = 90;
+rig.dirLight.shadow.camera.left = -18; rig.dirLight.shadow.camera.right = 18;
+rig.dirLight.shadow.camera.top = 18;   rig.dirLight.shadow.camera.bottom = -18;
+
+// ===================== chunked terrain (parameterised; supports lakes) =====================
+// `size` is the view/far distance in world units (camera far plane + fog), NOT a
+// terrain extent — the terrain is chunked/infinite and sized by draw distance.
+const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
+
+const terrainSystem = createTerrainSystem({ params: terrain });
+const terrainGroup = terrainSystem.group;
+const terrainCollisionGroup = terrainSystem.collisionGroup;
+let ground = terrainSystem.materialPatchTarget;
+function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
+const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0 };
+const terrainDebugEl = document.createElement('div');
+terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
+document.body.appendChild(terrainDebugEl);
+function updateTerrainDebug(now) {
+  if (now - terrainDebug.lastUpdate < 250) return;
+  terrainDebug.lastUpdate = now;
+  // renderer.info reflects the previous frame (HUD updates before render()); one
+  // frame stale is fine for a perf readout. Triangles counts the depth/shadow pass
+  // too, so it can exceed the visible geometry.
+  const ri = renderer.info;
+  terrainDebugEl.textContent =
+    `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri.render.calls}  tris ${ri.render.triangles.toLocaleString()}\n` +
+    `geom ${ri.memory.geometries}  tex ${ri.memory.textures}\n` +
+    `terrain ${terrainSystem.renderMode}\n` +
+    `chunks ${terrainSystem.activeChunks.length}/${terrainSystem.targetChunkCount}\n` +
+    `pending ${terrainSystem.pendingBuildCount}\n` +
+    `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
+    `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
+    `trees ${terrainDebug.treePlacements}\n` +
+    `octree ${terrainDebug.lastOctreeMs.toFixed(1)}ms`;
+}
+
+// ===================== perf time-series log =====================
+// Samples the HUD metrics on a fixed interval into a bounded ring buffer, so a
+// run can be recorded and exported. Exposed as window.perfStats for console use:
+//   perfStats.toCSV()        -> CSV string
+//   perfStats.download()     -> save perf-<timestamp>.csv
+//   perfStats.clear()        -> reset the buffer
+//   perfStats.intervalMs = N -> change sample cadence (ms)
+let perfLogUI = null;
+const perfLog = {
+  intervalMs: 1000,
+  maxSamples: 1800,           // ~30 min at 1 s; oldest samples are ring-trimmed
+  samples: [],
+  recording: true,
+  startTime: 0,
+  lastSample: -Infinity,
+  snapshot(now) {
+    const r = renderer.info;
+    return {
+      t: +((now - this.startTime) / 1000).toFixed(2),   // seconds since recording started
+      fps: +terrainDebug.fps.toFixed(1),
+      calls: r.render.calls,
+      triangles: r.render.triangles,
+      geometries: r.memory.geometries,
+      textures: r.memory.textures,
+      terrainMode: terrainSystem.renderMode,
+      drawChunks: terrainSystem.activeChunks.length,
+      targetChunks: terrainSystem.targetChunkCount,
+      pending: terrainSystem.pendingBuildCount,
+      grassChunks: terrainDebug.grassChunks,
+      treePlacements: terrainDebug.treePlacements,
+      octreeMs: +terrainDebug.lastOctreeMs.toFixed(2),
+    };
+  },
+  maybeSample(now) {
+    if (!this.recording) return;
+    if (this.samples.length === 0) this.startTime = now;
+    if (now - this.lastSample < this.intervalMs) return;
+    this.lastSample = now;
+    this.samples.push(this.snapshot(now));
+    if (this.samples.length > this.maxSamples) this.samples.shift();
+    if (perfLogUI) perfLogUI.refresh();
+  },
+  toCSV() {
+    if (this.samples.length === 0) return '';
+    const cols = Object.keys(this.samples[0]);
+    const rows = this.samples.map(s => cols.map(c => s[c]).join(','));
+    return [cols.join(','), ...rows].join('\n');
+  },
+  download() {
+    const csv = this.toCSV();
+    if (!csv) return;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `perf-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+  clear() {
+    this.samples.length = 0;
+    this.lastSample = -Infinity;
+    this.startTime = performance.now();
+    if (perfLogUI) perfLogUI.refresh();
+  },
+};
+window.perfStats = perfLog;
+
+// Compact recorder controls (bottom-left). The HUD itself stays pointer-events:none;
+// this small panel is the interactive part.
+{
+  const panel = document.createElement('div');
+  panel.style.cssText = 'position:fixed;left:10px;bottom:10px;background:rgba(20,24,30,.82);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;padding:6px 8px;z-index:11;display:flex;gap:6px;align-items:center';
+  const btnCss = 'background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:2px 6px;cursor:pointer;font:inherit';
+  const label = document.createElement('span'); label.textContent = 'perf log'; label.style.color = '#7f8a99';
+  const recBtn = document.createElement('button'); recBtn.style.cssText = btnCss;
+  const count = document.createElement('span');
+  const csvBtn = document.createElement('button'); csvBtn.textContent = 'CSV'; csvBtn.style.cssText = btnCss;
+  const clrBtn = document.createElement('button'); clrBtn.textContent = 'Clear'; clrBtn.style.cssText = btnCss;
+  function refresh() {
+    recBtn.textContent = perfLog.recording ? '● rec' : '▶ rec';
+    recBtn.style.color = perfLog.recording ? '#ff7b7b' : '#c4ccd6';
+    count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms`;
+  }
+  recBtn.addEventListener('click', () => { perfLog.recording = !perfLog.recording; refresh(); });
+  csvBtn.addEventListener('click', () => perfLog.download());
+  clrBtn.addEventListener('click', () => perfLog.clear());
+  panel.append(label, recBtn, count, csvBtn, clrBtn);
+  document.body.appendChild(panel);
+  perfLogUI = { refresh };
+  refresh();
+}
+scene.add(terrainGroup);
+buildOctree();
+
+// The camera far plane (and fog) is the larger of the user's View distance and
+// the span needed to fit the rendered chunk ring — so chunks are never clipped,
+// but the user can also push the clip/fog further out. Floored at 200 so the
+// overhead clouds stay inside the frustum. Fog (off by default) shares the same
+// far so geometry fades into the background right before the clip plane.
+const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
+function updateDrawDistance() {
+  // Farthest rendered chunk corner ≈ (radius + 1) chunks out; ×2 covers the
+  // diagonal across the whole loaded ring from the opposite side.
+  const chunkSpan = (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize * 2;
+  const far = Math.max(200, terrain.size, chunkSpan);
+  camera.far = far; camera.updateProjectionMatrix();
+  worldFog.far = far; worldFog.near = far * 0.4;
+}
+function setFog(on) { scene.fog = on ? worldFog : null; }
+updateDrawDistance();
+
+// Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
+let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null;
+let terrainDecorationsDirty = false;
+let terrainDecorationsRebuildAll = false;
+let lastWaterChunkSignature = '';
+const terrainFocus = new THREE.Vector3();
+
+// Rebuild everything that depends on terrain (size / lakes / water level).
+function rebuildWorld() {
+  terrainSystem.rebuild(terrain);
+  ground = terrainSystem.materialPatchTarget;
+  updateDrawDistance();
+  terrainDecorationsDirty = true;
+  terrainDecorationsRebuildAll = true;
+  if (waterRef) syncWaterChunks(true, { size: terrain.size });
+  buildOctree(true);
+}
+
+function updateTerrainWindow(center) {
+  terrainFocus.copy(center);
+  if (terrainSystem.update(center.x, center.z)) {
+    ground = terrainSystem.materialPatchTarget;
+    terrainOctreeDirty = true;
+    terrainDecorationsDirty = true;
+    syncWaterChunks(true);
+  }
+  syncWaterChunks();
+  maybeBuildTerrainOctree();
+  maybeSyncTerrainDecorations();
+}
+
+function maybeSyncTerrainDecorations() {
+  if (!terrainDecorationsDirty || terrainSystem.pendingBuildCount > 0) return;
+  if (grassRef) grassRef.sync();
+  syncWaterChunks(true);
+  if (regenTrees) regenTrees(terrainDecorationsRebuildAll);
+  terrainDecorationsRebuildAll = false;
+  terrainDecorationsDirty = false;
+}
+
+function waterChunkSignature(chunks) {
+  return chunks.map(c => c.key).sort().join('|');
+}
+
+function syncWaterChunks(force = false, extra = {}) {
+  if (!waterRef) return;
+  const chunks = terrainSystem.activeChunks;
+  if (chunks.length === 0 && !force) return;
+  const signature = `${terrain.waterLevel}:${waterChunkSignature(chunks)}`;
+  if (!force && signature === lastWaterChunkSignature && terrainDebug.waterCandidates > 0) return;
+  waterRef.regenerate({ ...extra, chunks, waterLevel: terrain.waterLevel, heightFn: terrainHeight });
+  lastWaterChunkSignature = signature;
+  syncWaterDebug();
+}
+
+function syncWaterDebug() {
+  if (!waterRef?.getStats) {
+    terrainDebug.waterLoaded = !!waterRef;
+    terrainDebug.waterVersion = waterRef ? 'legacy' : '';
+    terrainDebug.waterChunks = waterRef?.getChunkCount ? waterRef.getChunkCount() : 0;
+    terrainDebug.waterCandidates = 0;
+    terrainDebug.waterPending = 0;
+    terrainDebug.waterMinBed = Infinity;
+    return;
+  }
+  const s = waterRef.getStats();
+  terrainDebug.waterLoaded = true;
+  terrainDebug.waterVersion = s.version || waterRef.version || '?';
+  terrainDebug.waterChunks = s.chunks;
+  terrainDebug.waterCandidates = s.candidates;
+  terrainDebug.waterPending = s.pending || 0;
+  terrainDebug.waterMinBed = s.minBed;
+}
+
+// Trees live in a separate module. Load it dynamically so a load failure
+// (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
+Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ createTree }, { createTextureSource }]) => {
+  const MASTER_SEED = 20260616;
+  const params = {
+    count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
+    varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
+    leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
+  };
+
+  // ---- texture-source layer (Phase 3) -------------------------------------
+  // One active texture set drives the merged materials. Authored loading is
+  // async, so `texSet` may report ready=false; regenerate() tolerates that and
+  // we re-bind + rebuild from the onReady callback when the maps finish.
+  let texSet = null;
+  function loadTextures(mode) {
+    if (texSet) texSet.dispose();
+    texSet = createTextureSource(mode, {
+      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); } },
+    });
+    applyTextureSet(texSet);   // procedural is ready immediately; authored binds once decoded
+  }
+  // bind the set's maps onto the merged branch/leaf materials (tint still
+  // multiplies the map via vertexColors). Skips maps until the set is ready.
+  function applyTextureSet(s) {
+    if (!branchMat || !leafMat) return;        // materials not built yet (first regenerate)
+    const on = s && s.ready;
+    const bMat = branchMat, lMat = leafMat;
+    bMat.map = on ? s.barkMap : null;
+    bMat.normalMap = on ? s.barkNormalMap : null;
+    bMat.needsUpdate = true;
+    lMat.map = on ? s.leafMap : null;
+    lMat.transparent = !!(on && s.leafMap);
+    lMat.alphaTest = on && s.leafMap ? s.leafAlphaTest : 0;
+    lMat.needsUpdate = true;
+  }
+  // The forest is baked per terrain chunk. Each chunk has merged branch/leaf
+  // meshes so Three.js can frustum-cull tree chunks independently.
+  let branchMat = null, leafMat = null, gen = null;
+  const treeChunks = new Map();
+  let treeBuildQueue = [];
+  let treeBuildActive = false;
+  let treeBuildToken = 0;
+
+  // ---- deterministic RNG + value-noise field ----
+  function rngFrom(seed) {
+    let s = (seed >>> 0) || 1;
+    const next = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    return { next, range: (a, b) => a + (b - a) * next() };
+  }
+  function hash2(ix, iz, seed) {
+    let h = (Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263) ^ Math.imul(seed, 2246822519)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  function valueNoise(x, z, seed) {
+    const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+    const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+    const a = hash2(ix, iz, seed), b = hash2(ix + 1, iz, seed), c = hash2(ix, iz + 1, seed), d = hash2(ix + 1, iz + 1, seed);
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+  }
+
+  // ---- species derived through a genus -> species taxonomy ----
+  const hsl = (h, s, l) => new THREE.Color().setHSL(((h % 1) + 1) % 1, s, Math.min(0.7, Math.max(0.12, l))).getHex();
+  function toOptions(t) {
+    const a = t.angle;
+    return {
+      levels: t.levels,
+      angle: [0, a, a - 6, a - 10],
+      gnarliness: [0.10 * t.gnarl, 0.18 * t.gnarl, 0.28 * t.gnarl, 0.30 * t.gnarl],
+      length: [15 * t.slender, 11 * t.slender, 7 * t.slender, 3 * t.slender],
+      bark: { color: hsl(t.barkHue, 0.45, t.barkLight) },
+      leaves: { tint: hsl(t.leafHue, 0.55, t.leafLight), size: t.leafSize, count: 10 },
+      force: { direction: [0, 1, 0], strength: 0.03 + t.droop },
+    };
+  }
+  function buildSpecies(p, rng) {
+    const D = p.diversity, R = () => rng.range(-1, 1);
+    const nGenera = Math.max(1, Math.round(p.species - (p.species - 1) * p.generalization));
+    const genera = [];
+    for (let g = 0; g < nGenera; g++) genera.push({
+      barkHue: 0.08 + R() * 0.14 * D, barkLight: 0.32 + R() * 0.10 * D,
+      leafHue: 0.28 + R() * 0.16 * D, leafLight: 0.42 + R() * 0.12 * D,
+      angle: 55 + R() * 28 * D, gnarl: Math.max(0.2, 1 + R() * 0.8 * D),
+      levels: Math.abs(R()) * D > 0.45 ? 4 : 3,
+      slender: 1 + R() * 0.5 * D, leafSize: Math.max(0.5, 1.3 * (1 + R() * 0.5 * D)),
+      droop: R() * 0.05 * D,
+    });
+    const out = [], w = D * 0.25;
+    for (let s = 0; s < p.species; s++) {
+      const G = genera[s % nGenera];
+      out.push(toOptions({
+        barkHue: G.barkHue + R() * 0.14 * w, barkLight: G.barkLight + R() * 0.10 * w,
+        leafHue: G.leafHue + R() * 0.16 * w, leafLight: G.leafLight + R() * 0.12 * w,
+        angle: G.angle + R() * 28 * w, gnarl: Math.max(0.2, G.gnarl + R() * 0.8 * w),
+        levels: G.levels, slender: Math.max(0.4, G.slender + R() * 0.5 * w),
+        leafSize: Math.max(0.5, G.leafSize + R() * 0.5 * w), droop: G.droop + R() * 0.05 * w,
+      }));
+    }
+    return out;
+  }
+
+  // ---- placement patterns (positions in the XZ plane) ----
+  function placements(p, rng) {
+    const out = [], n = Math.max(0, Math.floor(p.count));
+    const chunks = terrainSystem.activeChunks.slice().sort((a, b) => a.key.localeCompare(b.key));
+    if (chunks.length === 0 || n === 0) return out;
+    const minBaseY = terrain.waterLevel + p.shoreMargin;
+    const isDry = ({ x, z }) => terrainHeight(x, z) >= minBaseY;
+    const keepDry = (pt, chunk, slot) => {
+      if (pt.x < chunk.xMin || pt.x > chunk.xMin + chunk.size || pt.z < chunk.zMin || pt.z > chunk.zMin + chunk.size || !isDry(pt)) return false;
+      pt.id = `${chunk.key}:${slot}`;
+      pt.chunkKey = chunk.key;
+      pt.slot = slot;
+      out.push(pt);
+      return true;
+    };
+
+    const base = Math.floor(n / chunks.length);
+    let extra = n % chunks.length;
+    for (const chunk of chunks) {
+      const [ix, iz] = chunk.key.split(',').map(Number);
+      const crng = rngFrom(Math.floor(hash2(ix, iz, MASTER_SEED) * 0xffffffff));
+      const count = base + (extra-- > 0 ? 1 : 0);
+      const maxAttempts = Math.max(20, count * 24);
+      if (p.placement === 'ring') {
+        const rr = chunk.size * 0.32, jitter = chunk.size * 0.08;
+        let placed = 0;
+        for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+          const i = attempt % Math.max(1, count);
+          const a = (i / Math.max(1, count)) * Math.PI * 2 + crng.range(-0.18, 0.18);
+          const r = rr + crng.range(-jitter, jitter);
+          if (keepDry({ x: chunk.centerX + Math.cos(a) * r, z: chunk.centerZ + Math.sin(a) * r }, chunk, placed)) placed++;
+        }
+      } else if (p.placement === 'clustered') {
+        const nc = Math.max(1, Math.round(count / 5)), centers = [];
+        const spread = chunk.size * 0.14, margin = spread * 2;
+        for (let c = 0; c < nc; c++) centers.push({
+          x: crng.range(chunk.xMin + margin, chunk.xMin + chunk.size - margin),
+          z: crng.range(chunk.zMin + margin, chunk.zMin + chunk.size - margin),
+        });
+        let placed = 0;
+        for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+          const c = centers[Math.floor(crng.next() * nc)];
+          if (keepDry({ x: c.x + crng.range(-spread, spread) + crng.range(-spread, spread), z: c.z + crng.range(-spread, spread) + crng.range(-spread, spread) }, chunk, placed)) placed++;
+        }
+      } else if (p.placement === 'scattered') {
+        const cell = Math.max(2, chunk.size / Math.ceil(Math.sqrt(Math.max(1, count) * 1.6))), pts = [];
+        let slot = 0;
+        for (let gx = chunk.xMin; gx < chunk.xMin + chunk.size; gx += cell) for (let gz = chunk.zMin; gz < chunk.zMin + chunk.size; gz += cell) {
+          const x = gx + crng.range(0, cell), z = gz + crng.range(0, cell);
+          if (x <= chunk.xMin + chunk.size && z <= chunk.zMin + chunk.size && isDry({ x, z })) pts.push({ x, z, id: `${chunk.key}:${slot}`, chunkKey: chunk.key, slot });
+          slot++;
+        }
+        for (let k = pts.length - 1; k > 0; k--) { const j = Math.floor(crng.next() * (k + 1)); [pts[k], pts[j]] = [pts[j], pts[k]]; }
+        for (const pt of pts.slice(0, count)) out.push(pt);
+      } else {
+        for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+          const pt = { x: crng.range(chunk.xMin, chunk.xMin + chunk.size), z: crng.range(chunk.zMin, chunk.zMin + chunk.size) };
+          if (keepDry(pt, chunk, placed)) placed++;
+        }
+      }
+    }
+    return out.slice(0, n);
+  }
+
+  // ---- size pipeline: value -> skew -> variation amount -> scale ----
+  function sizeFor(p, x, z, rng) {
+    let v;
+    if (p.varPattern === 'noise') v = valueNoise(x * 0.14, z * 0.14, 777);
+    else if (p.varPattern === 'gradient') v = THREE.MathUtils.clamp((x + 18) / 36, 0, 1);
+    else v = rng.next();
+    const sv = Math.pow(v, Math.exp(p.skew * 1.5));      // skew>0 biases toward small
+    const frac = 1 - p.sizeVar * (1 - sv);               // sizeVar=0 -> all maxSize
+    return p.maxSize * Math.max(0.12, frac);
+  }
+
+  // ---- merged-forest baking (reuses meshes & one generator across rebuilds) ----
+  const _ty = new THREE.Vector3(0, 1, 0);
+  const _tpos = new THREE.Vector3(), _tscl = new THREE.Vector3(), _tquat = new THREE.Quaternion();
+  const _tmat = new THREE.Matrix4(), _tnorm = new THREE.Matrix3(), _tv = new THREE.Vector3();
+
+  // transform one source geometry by `mat` and append it (with a flat colour) to
+  // dst, carrying UVs through so the merged mesh can sample bark/leaf maps
+  function appendGeom(dst, geom, mat, nmat, col) {
+    const posA = geom.attributes.position, nrmA = geom.attributes.normal,
+          uvA = geom.attributes.uv, idx = geom.index;
+    if (!posA || posA.count === 0) return;
+    const base = dst.verts.length / 3;
+    for (let i = 0; i < posA.count; i++) {
+      _tv.fromBufferAttribute(posA, i).applyMatrix4(mat);
+      dst.verts.push(_tv.x, _tv.y, _tv.z);
+      _tv.fromBufferAttribute(nrmA, i).applyNormalMatrix(nmat);
+      dst.normals.push(_tv.x, _tv.y, _tv.z);
+      dst.colors.push(col.r, col.g, col.b);
+      if (uvA) dst.uvs.push(uvA.getX(i), uvA.getY(i)); else dst.uvs.push(0, 0);
+    }
+    const ia = idx.array;
+    for (let i = 0; i < ia.length; i++) dst.indices.push(base + ia[i]);
+  }
+  function commitMerged(geom, dst) {
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(dst.verts, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(dst.normals, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(dst.colors, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(dst.uvs, 2));
+    geom.setIndex(dst.indices);
+    geom.computeBoundingSphere();
+  }
+
+  function ensureTreeResources() {
+    if (!gen) gen = createTree({ seed: 1 });          // generator only; never added to scene
+    if (!branchMat) {
+      branchMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+      leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, side: THREE.DoubleSide });
+      applyTextureSet(texSet);
+    }
+  }
+
+  function treeCountForChunk(chunk) {
+    const [ix, iz] = chunk.key.split(',').map(Number);
+    const density = Math.max(0, params.count) / Math.max(1, terrainSystem.targetChunkCount || 1);
+    const base = Math.floor(density);
+    const extra = hash2(ix, iz, MASTER_SEED + 31) < density - base ? 1 : 0;
+    return base + extra;
+  }
+
+  function placementsForChunk(chunk, count) {
+    const out = [];
+    if (count <= 0) return out;
+    const [ix, iz] = chunk.key.split(',').map(Number);
+    const crng = rngFrom(Math.floor(hash2(ix, iz, MASTER_SEED) * 0xffffffff));
+    const minBaseY = terrain.waterLevel + params.shoreMargin;
+    const isDry = ({ x, z }) => terrainHeight(x, z) >= minBaseY;
+    const keepDry = (pt, slot) => {
+      if (pt.x < chunk.xMin || pt.x > chunk.xMin + chunk.size || pt.z < chunk.zMin || pt.z > chunk.zMin + chunk.size || !isDry(pt)) return false;
+      pt.id = `${chunk.key}:${slot}`;
+      pt.chunkKey = chunk.key;
+      pt.slot = slot;
+      out.push(pt);
+      return true;
+    };
+    const maxAttempts = Math.max(20, count * 24);
+    if (params.placement === 'ring') {
+      const rr = chunk.size * 0.32, jitter = chunk.size * 0.08;
+      for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+        const i = attempt % Math.max(1, count);
+        const a = (i / Math.max(1, count)) * Math.PI * 2 + crng.range(-0.18, 0.18);
+        const r = rr + crng.range(-jitter, jitter);
+        if (keepDry({ x: chunk.centerX + Math.cos(a) * r, z: chunk.centerZ + Math.sin(a) * r }, placed)) placed++;
+      }
+    } else if (params.placement === 'clustered') {
+      const nc = Math.max(1, Math.round(count / 5)), centers = [];
+      const spread = chunk.size * 0.14, margin = spread * 2;
+      for (let c = 0; c < nc; c++) centers.push({
+        x: crng.range(chunk.xMin + margin, chunk.xMin + chunk.size - margin),
+        z: crng.range(chunk.zMin + margin, chunk.zMin + chunk.size - margin),
+      });
+      for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+        const c = centers[Math.floor(crng.next() * nc)];
+        if (keepDry({ x: c.x + crng.range(-spread, spread) + crng.range(-spread, spread), z: c.z + crng.range(-spread, spread) + crng.range(-spread, spread) }, placed)) placed++;
+      }
+    } else if (params.placement === 'scattered') {
+      const cell = Math.max(2, chunk.size / Math.ceil(Math.sqrt(Math.max(1, count) * 1.6))), pts = [];
+      let slot = 0;
+      for (let gx = chunk.xMin; gx < chunk.xMin + chunk.size; gx += cell) for (let gz = chunk.zMin; gz < chunk.zMin + chunk.size; gz += cell) {
+        const x = gx + crng.range(0, cell), z = gz + crng.range(0, cell);
+        if (x <= chunk.xMin + chunk.size && z <= chunk.zMin + chunk.size && isDry({ x, z })) pts.push({ x, z, id: `${chunk.key}:${slot}`, chunkKey: chunk.key, slot });
+        slot++;
+      }
+      for (let k = pts.length - 1; k > 0; k--) { const j = Math.floor(crng.next() * (k + 1)); [pts[k], pts[j]] = [pts[j], pts[k]]; }
+      out.push(...pts.slice(0, count));
+    } else {
+      for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+        if (keepDry({ x: crng.range(chunk.xMin, chunk.xMin + chunk.size), z: crng.range(chunk.zMin, chunk.zMin + chunk.size) }, placed)) placed++;
+      }
+    }
+    return out;
+  }
+
+  function createTreeChunk(key) {
+    const branches = new THREE.Mesh(new THREE.BufferGeometry(), branchMat);
+    const leaves = new THREE.Mesh(new THREE.BufferGeometry(), leafMat);
+    const leafShadows = new THREE.Mesh(new THREE.BufferGeometry(), leafMat);
+    branches.name = `TreeBranches:${key}`;
+    leaves.name = `TreeLeaves:${key}`;
+    leafShadows.name = `TreeLeafShadows:${key}`;
+    branches.frustumCulled = leaves.frustumCulled = leafShadows.frustumCulled = true;
+    branches.castShadow = branches.receiveShadow = true;
+    leaves.castShadow = false;
+    leafShadows.castShadow = true;
+    scene.add(branches, leaves, leafShadows);
+    return { key, branches, leaves, leafShadows, ready: false, version: 0 };
+  }
+
+  function disposeTreeChunk(chunk) {
+    chunk.branches.geometry.dispose();
+    chunk.leaves.geometry.dispose();
+    chunk.leafShadows.geometry.dispose();
+    scene.remove(chunk.branches, chunk.leaves, chunk.leafShadows);
+  }
+
+  function commitTreeChunk(chunk, B, L, LS) {
+    chunk.branches.geometry.dispose();
+    chunk.leaves.geometry.dispose();
+    chunk.leafShadows.geometry.dispose();
+    chunk.branches.geometry = new THREE.BufferGeometry();
+    chunk.leaves.geometry = new THREE.BufferGeometry();
+    chunk.leafShadows.geometry = new THREE.BufferGeometry();
+    commitMerged(chunk.branches.geometry, B);
+    commitMerged(chunk.leaves.geometry, L);
+    commitMerged(chunk.leafShadows.geometry, LS);
+    chunk.ready = true;
+    chunk.version++;
+  }
+
+  // Returns a build job, or null when the chunk has no trees to place — so empty
+  // (or fully flooded) chunks allocate no meshes at all. Placements are computed
+  // first; the 3 chunk meshes are created only once at least one tree lands. An
+  // existing chunk that no longer places any trees is disposed.
+  function createTreeBuildJob(chunkData, count) {
+    ensureTreeResources();
+    const pos = placementsForChunk(chunkData, count);
+    if (pos.length === 0) {
+      const stale = treeChunks.get(chunkData.key);
+      if (stale) { disposeTreeChunk(stale); treeChunks.delete(chunkData.key); }
+      return null;
+    }
+    let chunk = treeChunks.get(chunkData.key);
+    if (!chunk) {
+      chunk = createTreeChunk(chunkData.key);
+      treeChunks.set(chunkData.key, chunk);
+    }
+
+    const rng = rngFrom(MASTER_SEED);
+    const species = buildSpecies(params, rng);
+    return {
+      chunk,
+      species,
+      pos,
+      index: 0,
+      B: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
+      L: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
+      LS: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
+      barkCol: new THREE.Color(),
+      leafCol: new THREE.Color(),
+      tex: texSet && texSet.ready ? texSet : null,
+    };
+  }
+
+  function buildNextTreeInJob(job) {
+    if (job.index >= job.pos.length) return false;
+    const atlasCells = job.tex ? job.tex.leafAtlas.cols * job.tex.leafAtlas.rows : 0;
+    const { x, z, chunkKey, slot } = job.pos[job.index++];
+      const [tx, tz] = chunkKey.split(',').map(Number);
+      const treeRng = rngFrom((Math.floor(hash2(tx, tz, MASTER_SEED + slot * 1013) * 0xffffffff) ^ Math.imul(slot + 1, 2654435761)) >>> 0);
+      const spIdx = Math.floor(treeRng.next() * job.species.length);
+      const sp = job.species[spIdx];
+      const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
+      const barkOpts = { ...sp.bark };
+      if (job.tex) {
+        leafOpts.atlas = { cols: job.tex.leafAtlas.cols, rows: job.tex.leafAtlas.rows, cell: spIdx % atlasCells };
+        barkOpts.vScale = job.tex.barkVScale;
+      }
+      gen.regenerate({ ...sp, seed: Math.floor(treeRng.next() * 0xffffffff) >>> 0, leaves: leafOpts, bark: barkOpts });
+      const s = sizeFor(params, x, z, treeRng);
+      _tquat.setFromAxisAngle(_ty, treeRng.next() * Math.PI * 2);
+      _tmat.compose(_tpos.set(x, terrainHeight(x, z), z), _tquat, _tscl.set(s, s, s));
+      _tnorm.getNormalMatrix(_tmat);
+      job.barkCol.set(sp.bark.color);
+      job.leafCol.set(sp.leaves.tint);
+      appendGeom(job.B, gen.branchesMesh.geometry, _tmat, _tnorm, job.barkCol);
+      appendGeom(job.L, gen.leavesMesh.geometry, _tmat, _tnorm, job.leafCol);
+      appendGeom(job.LS, gen.leavesShadowMesh.geometry, _tmat, _tnorm, job.leafCol);
+      return true;
+  }
+
+  function finishTreeJob(job) {
+    commitTreeChunk(job.chunk, job.B, job.L, job.LS);
+  }
+
+  function processTreeQueue(token) {
+    if (token !== treeBuildToken) {
+      treeBuildActive = false;
+      return;
+    }
+    const deadline = performance.now() + 3;
+    while (treeBuildQueue.length > 0 && performance.now() < deadline) {
+      const job = treeBuildQueue[0];
+      if (!buildNextTreeInJob(job)) {
+        finishTreeJob(job);
+        treeBuildQueue.shift();
+      }
+    }
+    if (treeBuildQueue.length > 0) requestAnimationFrame(() => processTreeQueue(token));
+    else treeBuildActive = false;
+  }
+
+  function regenerate(rebuildExisting = true) {
+    ensureTreeResources();
+    const token = ++treeBuildToken;
+    const active = terrainSystem.activeChunks.slice().sort((a, b) => a.key.localeCompare(b.key));
+    const activeKeys = new Set(active.map(chunk => chunk.key));
+    for (const [key, chunk] of treeChunks) {
+      if (!activeKeys.has(key)) {
+        disposeTreeChunk(chunk);
+        treeChunks.delete(key);
+      }
+    }
+    // Build jobs only for chunks that actually contain trees. Empty chunks no
+    // longer allocate 3 meshes each (the object-count win at high draw distance /
+    // low tree density); a chunk that drops to zero trees is disposed here.
+    const jobs = [];
+    let placements = 0;
+    for (const chunk of active) {
+      const count = treeCountForChunk(chunk);
+      placements += count;
+      if (count <= 0) {
+        const stale = treeChunks.get(chunk.key);
+        if (stale) { disposeTreeChunk(stale); treeChunks.delete(chunk.key); }
+        continue;
+      }
+      if (!rebuildExisting && treeChunks.has(chunk.key) && treeChunks.get(chunk.key).ready) continue;
+      const job = createTreeBuildJob(chunk, count);
+      if (job) jobs.push(job);
+    }
+    treeBuildQueue = jobs;
+    treeBuildActive = true;
+    terrainDebug.treePlacements = placements;
+    requestAnimationFrame(() => processTreeQueue(token));
+  }
+
+  // ---- control panel ----
+  const style = document.createElement('style');
+  style.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:226px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none}#ctrl-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#ctrl-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#ctrl-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#ctrl-min:hover{color:#c4ccd6}#ctrl-body{padding:2px 12px 10px;max-height:calc(100vh - 64px);overflow-y:auto}#ctrl.min #ctrl-body{display:none}#ctrl.min #ctrl-bar{border-bottom:none}#ctrl .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:10px 0 4px;color:#8a93a3}#ctrl .sec-head .caret{font-size:10px;transition:transform .15s}#ctrl .sec.collapsed .caret{transform:rotate(-90deg)}#ctrl .sec.collapsed .sec-body{display:none}#ctrl h4{margin:0 0 6px;font-size:12px;color:#8a93a3}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between}#ctrl .row span{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl select{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}';
+  document.head.appendChild(style);
+  const box = document.createElement('div'); box.id = 'ctrl'; document.body.appendChild(box);
+
+  // Title bar: minimise button + drag handle. Body scrolls if it grows too tall.
+  const bar = document.createElement('div'); bar.id = 'ctrl-bar';
+  bar.innerHTML = '<span class="ttl">Scene controls</span>';
+  const minBtn = document.createElement('button'); minBtn.id = 'ctrl-min'; minBtn.textContent = '–';
+  bar.appendChild(minBtn);
+  const body = document.createElement('div'); body.id = 'ctrl-body';
+  box.appendChild(bar); box.appendChild(body);
+  let current = body;   // header() switches this to the active section's body
+
+  minBtn.addEventListener('click', () => { minBtn.textContent = box.classList.toggle('min') ? '+' : '–'; });
+
+  // Drag the bar to reposition; first move switches right- to left/top-anchoring,
+  // and the panel is clamped on-screen.
+  let drag = null;
+  bar.addEventListener('pointerdown', e => {
+    if (e.target === minBtn) return;
+    const r = box.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!drag) return;
+    box.style.right = 'auto';
+    const x = Math.max(0, Math.min(window.innerWidth - box.offsetWidth, e.clientX - drag.dx));
+    const y = Math.max(0, Math.min(window.innerHeight - box.offsetHeight, e.clientY - drag.dy));
+    box.style.left = x + 'px'; box.style.top = y + 'px';
+  });
+  bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
+
+  let timer; const apply = () => { clearTimeout(timer); timer = setTimeout(regenerate, 130); };
+  function slider(key, label, min, max, step, fmt, onChange, obj) {
+    const P = obj || params;
+    const row = document.createElement('div'); row.className = 'row';
+    const val = document.createElement('span'); val.textContent = fmt(P[key]);
+    row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+    const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = P[key];
+    inp.addEventListener('input', () => { P[key] = parseFloat(inp.value); val.textContent = fmt(P[key]); (onChange || apply)(); });
+    current.appendChild(row); current.appendChild(inp);
+  }
+  // Each header() opens a collapsible section; subsequent controls land in it.
+  function header(text) {
+    const sec = document.createElement('div'); sec.className = 'sec collapsed';
+    const head = document.createElement('div'); head.className = 'sec-head';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
+    const secBody = document.createElement('div'); secBody.className = 'sec-body';
+    head.addEventListener('click', () => sec.classList.toggle('collapsed'));
+    sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
+    current = secBody;
+  }
+  function select(key, label, opts, onChange) {
+    const row = document.createElement('div'); row.className = 'row'; row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; current.appendChild(row);
+    const sel = document.createElement('select');
+    for (const o of opts) { const op = document.createElement('option'); op.value = o; op.textContent = o; if (o === params[key]) op.selected = true; sel.appendChild(op); }
+    sel.addEventListener('change', () => { params[key] = sel.value; (onChange || apply)(); });
+    current.appendChild(sel);
+  }
+  function toggle(key, label, onChange) {
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>';
+    const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!params[key]; inp.style.width = 'auto';
+    inp.addEventListener('change', () => { params[key] = inp.checked; onChange(); });
+    row.appendChild(inp); current.appendChild(row);
+  }
+  header('Forest');
+  const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
+  slider('count', 'Tree count', 0, 300, 1, fi);
+  select('placement', 'Placement pattern', ['random', 'clustered', 'scattered', 'ring']);
+  slider('maxSize', 'Max size', 0.2, 1.2, 0.01, f2);
+  slider('sizeVar', 'Size variation', 0, 1, 0.01, f2);
+  slider('skew', 'Size skew (small\u2194large)', -1, 1, 0.01, f2);
+  select('varPattern', 'Variation pattern', ['random', 'noise', 'gradient']);
+  slider('species', 'Species diversity (types)', 1, 8, 1, fi);
+  slider('diversity', 'Diversity scale', 0, 1, 0.01, f2);
+  slider('generalization', 'Generalization', 0, 1, 0.01, f2);
+  slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct);
+  // Texture mode: 'procedural' synthesizes maps at runtime; 'authored' loads the
+  // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
+  select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
+
+  loadTextures(params.texMode);   // establish a texture set before the first bake
+  regenerate();
+  regenTrees = (rebuildExisting = false) => regenerate(rebuildExisting); // movement only builds missing tree chunks
+
+  // ---- lighting controls ----
+  const rigP = { elevation: rig.elevation, azimuth: rig.azimuth, sunIntensity: 1.8, ambientIntensity: 0.6 };
+  header('Lighting');
+  slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP);
+  slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
+  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => rig.setSunIntensity(rigP.sunIntensity),         rigP);
+  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => rig.setAmbientIntensity(rigP.ambientIntensity), rigP);
+
+  // ---- terrain controls (rebuild world: ground + trees + grass + water) ----
+  let wt; const worldRebuild = () => { clearTimeout(wt); wt = setTimeout(rebuildWorld, 220); };
+  header('Scene');
+  // View distance only moves the camera far plane + fog; it no longer rebuilds the
+  // world (it never actually changed the chunked terrain). Cheap, live update.
+  slider('size', 'View distance', 200, 1000, 10, fi, () => updateDrawDistance(), terrain);
+  // Draw distance = chunk render radius. Streams chunks in/out live (no full
+  // rebuild); label shows the resulting N×N grid. terrainSystem.params is a copy
+  // of `terrain`, so push the value across and extend the camera far plane —
+  // updateTerrainWindow() in the render loop restreams on the next frame.
+  const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' · ' + n + '×' + n; };
+  const drawDistanceChange = () => {
+    terrainSystem.params.renderRadius = Math.round(terrain.renderRadius);
+    updateDrawDistance();
+  };
+  slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain);
+  slider('lake', 'Lake coverage', 0, 1, 0.01, f2, worldRebuild, terrain);
+  slider('lakeDepth', 'Lake depth', 0, 6, 0.1, f2, worldRebuild, terrain);
+  slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain);
+  params.fog = false;
+  toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
+
+  // ---- grass (separate module; optional, degrades to no grass if missing) ----
+  import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
+    Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
+    function makeChunkGrassManager() {
+      const chunks = new Map();
+      let buildQueue = [];
+      let buildQueueIndex = 0;
+      let buildKeys = new Set();
+      let queueToken = 0;
+
+      // Uniform blade count per chunk. Density deliberately does NOT vary per chunk
+      // — that produced the visible square/line seams. Distance culling is now done
+      // per-blade in the grass shader (see currentFade/applyFade), keyed off true
+      // camera distance so grass thins as a smooth ring with no chunk-aligned steps.
+      function countForChunk(chunk, activeCount) {
+        return Math.max(0, Math.floor(params.grassCount / Math.max(1, terrainSystem.targetChunkCount || activeCount)));
+      }
+
+      // Map the "Distance cull" slider to world-space fade distances. 0 = off (no
+      // fade); higher = grass starts shrinking closer to the camera. The outer edge
+      // tracks the current draw distance so grass is fully gone by the render edge.
+      function currentFade() {
+        if (params.grassDistanceCull <= 0) return { start: 1e6, end: 1e6 + 1 };
+        // Reach = the actual view distance (camera.far already covers the rendered
+        // chunk ring). Measured from the camera, so it works in orbit where the
+        // camera sits well back from the ground.
+        const reach = camera.far;
+        const start = reach * (1 - params.grassDistanceCull);
+        return { start, end: Math.max(start + 1, reach) };
+      }
+      function applyFade() {
+        const f = currentFade();
+        for (const grass of chunks.values()) grass.setFade(f.start, f.end);
+      }
+
+      function removeGrass(key, grass) {
+        scene.remove(grass);
+        grass.dispose();
+        chunks.delete(key);
+      }
+
+      function enqueue(chunk, count, replace = null) {
+        if (buildKeys.has(chunk.key)) return;
+        buildQueue.push({ token: queueToken, chunk, count, replace });
+        buildKeys.add(chunk.key);
+      }
+
+      function sync(rebuildExisting = false) {
+        queueToken++;
+        buildQueue = [];
+        buildQueueIndex = 0;
+        buildKeys.clear();
+        const active = terrainSystem.activeChunks;
+        const activeKeys = new Set(active.map(c => c.key));
+        for (const [key, grass] of chunks) {
+          if (!activeKeys.has(key)) {
+            removeGrass(key, grass);
+          }
+        }
+        const sorted = active.slice().sort((a, b) => {
+          const da = (a.centerX - terrainFocus.x) ** 2 + (a.centerZ - terrainFocus.z) ** 2;
+          const db = (b.centerX - terrainFocus.x) ** 2 + (b.centerZ - terrainFocus.z) ** 2;
+          return da - db;
+        });
+        for (const chunk of sorted) {
+          const count = countForChunk(chunk, active.length);
+          const existing = chunks.get(chunk.key);
+          if (existing && existing.userData.count === count && existing.userData.waterLevel === terrain.waterLevel) continue;
+          if (count <= 0) {
+            if (existing) removeGrass(chunk.key, existing);
+            continue;
+          }
+          enqueue(chunk, count, existing || null);
+        }
+        applyFade();   // refresh fade on existing chunks (e.g. after draw distance changed)
+        terrainDebug.grassPending = Math.max(0, buildQueue.length - buildQueueIndex);
+      }
+
+      function buildGrassJob(job) {
+        if (!job || job.token !== queueToken) return;
+        const { chunk, count } = job;
+        const [ix, iz] = chunk.key.split(',').map(Number);
+        const grass = createGrass({
+          seed: Math.floor(hash2(ix, iz, 9949) * 0xffffffff),
+          heightFn: (x, z) => terrainHeight(x + chunk.centerX, z + chunk.centerZ),
+          size: chunk.size,
+          waterLevel: terrain.waterLevel,
+          count,
+        });
+        grass.position.set(chunk.centerX, 0, chunk.centerZ);
+        grass.frustumCulled = true;
+        grass.geometry.computeBoundingSphere();
+        grass.setWind(params.wind);
+        const f = currentFade();
+        grass.setFade(f.start, f.end);
+        grass.userData.count = count;
+        grass.userData.waterLevel = terrain.waterLevel;
+        if (job.replace) {
+          scene.remove(job.replace);
+          job.replace.dispose();
+        }
+        chunks.set(chunk.key, grass);
+        scene.add(grass);
+        terrainDebug.grassChunks = chunks.size;
+      }
+
+      function processQueue() {
+        if (buildQueueIndex >= buildQueue.length) {
+          buildQueue = [];
+          buildQueueIndex = 0;
+          terrainDebug.grassPending = 0;
+          return;
+        }
+        const job = buildQueue[buildQueueIndex++];
+        buildKeys.delete(job.chunk.key);
+        buildGrassJob(job);
+        if (buildQueueIndex >= buildQueue.length) {
+          buildQueue = [];
+          buildQueueIndex = 0;
+        }
+        terrainDebug.grassPending = Math.max(0, buildQueue.length - buildQueueIndex);
+      }
+
+      return {
+        sync,
+        update: seconds => { processQueue(); for (const grass of chunks.values()) grass.update(seconds); },
+        regenerate: () => sync(true),
+        setWind: strength => { for (const grass of chunks.values()) grass.setWind(strength); },
+        applyFade,
+      };
+    }
+    grassRef = makeChunkGrassManager();
+    grassRef.sync();
+    let gt; const grassRebuild = () => { clearTimeout(gt); gt = setTimeout(() => grassRef.regenerate(), 200); };
+    header('Grass');
+    slider('grassCount', 'Blade count', 0, 1200000, 1000, v => (v / 1000) + 'k', grassRebuild);
+    slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
+    slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
+  }).catch(() => { /* grass is optional */ });
+
+  // ---- water (separate module; optional). Needs a refraction render target. ----
+  import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
+    Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
+    waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight, chunks: terrainSystem.activeChunks });
+    scene.add(waterRef.surface);
+    syncWaterChunks(true);
+    rig.connect(waterRef, null);
+    header('Water');
+    slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
+    slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
+    slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
+  }).catch(err => { showError('water.js could not load (' + err.message + ')'); });
+
+  // ---- clouds (separate module; optional, independent of terrain). Lays a big
+  // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
+  import('./clouds.js').then(({ Clouds }) => {
+    Object.assign(params, { cloudHeight: 120, cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
+      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01 });
+    cloudsRef = new Clouds();
+    cloudsRef.rotation.x = -Math.PI / 2;   // lay the quad flat, high above the world
+    cloudsRef.position.y = params.cloudHeight;
+    cloudsRef.setCoverage(params.cloudCover);
+    cloudsRef.setOpacity(params.cloudOpacity);
+    cloudsRef.setSpeed(params.cloudSpeed);
+    cloudsRef.setPuff(params.cloudPuff);
+    cloudsRef.setSoftness(params.cloudSoftness);
+    cloudsRef.setFade(params.cloudFade);
+    scene.add(cloudsRef);
+    header('Clouds');
+    slider('cloudHeight', 'Height', 20, 200, 1, fi, () => cloudsRef.position.y = params.cloudHeight);
+    slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
+    slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
+    slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
+    slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
+    slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
+    slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
+  }).catch(() => { /* clouds are optional */ });
+}).catch(err => {
+  showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
+});
+
+// ===================== camera orbit =====================
+const target = new THREE.Vector3(0, 0.9, 0);
+const off = camera.position.clone().sub(target);
+let radius = off.length(), theta = Math.atan2(off.x, off.z), phi = Math.acos(off.y / radius);
+let dragging = false, px = 0, py = 0;
+function applyCamera() {
+  camera.position.set(target.x + radius * Math.sin(phi) * Math.sin(theta),
+                      target.y + radius * Math.cos(phi),
+                      target.z + radius * Math.sin(phi) * Math.cos(theta));
+  camera.lookAt(target);
+}
+renderer.domElement.addEventListener('pointerdown', e => { if (fpsMode) return; dragging = true; px = e.clientX; py = e.clientY; });
+window.addEventListener('pointerup', () => { dragging = false; });
+window.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  theta -= (e.clientX - px) * 0.005; phi -= (e.clientY - py) * 0.005;
+  phi = Math.max(0.15, Math.min(Math.PI - 0.15, phi)); px = e.clientX; py = e.clientY;
+});
+renderer.domElement.addEventListener('wheel', e => {
+  if (fpsMode) return;
+  e.preventDefault(); radius *= 1 + Math.sign(e.deltaY) * 0.08;
+  radius = Math.max(4, Math.min(70, radius));
+}, { passive: false });
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+  if (waterRef) waterRef.resize();
+});
+
+// ===================== FPS walk mode (Octree/Capsule — mirrors ThreeJS_FPS_2.0) =====================
+const STEPS_PER_FRAME = 5;
+
+const playerCollider = new Capsule(
+  new THREE.Vector3(0, 0.35, 0),
+  new THREE.Vector3(0, 1.0,  0),
+  0.35
+);
+const playerVelocity = new THREE.Vector3();
+let playerOnFloor = false;
+let fpsMode = false;
+const fpsKeys = {};
+
+// Tunable movement params — exposed via the debug panel below
+const fp = {
+  speedStand:  25,   speedCrouch: 10,  speedProne:  4,
+  heightStand: 1.25, heightCrouch: 0.55, heightProne: 0.08,
+  jumpForce:   15,   gravity:      30,
+  sensitivity: 500,
+  airStrafe:   8,    airDamp:      4,
+  friction:    15,   // ground decel exponent — higher = stops faster
+};
+
+let stance = 'stand';
+let capsuleH = fp.heightStand;
+
+function buildOctree(force = false) {
+  const t0 = performance.now();
+  worldOctree = new Octree();
+  terrainCollisionGroup.updateMatrixWorld(true);
+  worldOctree.fromGraphNode(terrainCollisionGroup);
+  terrainOctreeDirty = false;
+  lastTerrainOctreeBuild = performance.now();
+  terrainDebug.lastOctreeMs = lastTerrainOctreeBuild - t0;
+}
+
+function maybeBuildTerrainOctree() {
+  if (!terrainOctreeDirty) return;
+  if (!fpsMode) return;
+  const now = performance.now();
+  if (terrainSystem.pendingCollisionBuildCount > 0) return;
+  if (now - lastTerrainOctreeBuild < 250) return;
+  buildOctree();
+}
+
+// ---- FPS debug panel ----
+{
+  const style = document.createElement('style');
+  style.textContent = '#fps{position:fixed;top:10px;left:10px;width:210px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none}#fps-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#fps-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#fps-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#fps-min:hover{color:#c4ccd6}#fps-body{padding:2px 12px 10px;max-height:calc(100vh - 64px);overflow-y:auto}#fps.min #fps-body{display:none}#fps.min #fps-bar{border-bottom:none}#fps .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:8px 0 2px;color:#8a93a3;font-size:11px;text-transform:uppercase;letter-spacing:.05em}#fps .sec-head .caret{font-size:10px;transition:transform .15s;text-transform:none}#fps .sec.collapsed .caret{transform:rotate(-90deg)}#fps .sec.collapsed .sec-body{display:none}';
+  document.head.appendChild(style);
+
+  const panel = document.createElement('div'); panel.id = 'fps'; document.body.appendChild(panel);
+
+  // Title bar: minimise button + drag handle (mirrors the Scene controls panel).
+  const bar = document.createElement('div'); bar.id = 'fps-bar';
+  bar.innerHTML = '<span class="ttl">Walk controls</span>';
+  const minBtn = document.createElement('button'); minBtn.id = 'fps-min'; minBtn.textContent = '–';
+  bar.appendChild(minBtn);
+  const body = document.createElement('div'); body.id = 'fps-body';
+  panel.appendChild(bar); panel.appendChild(body);
+  let current = body;   // fpHeader() switches this to the active section's body
+
+  minBtn.addEventListener('click', () => { minBtn.textContent = panel.classList.toggle('min') ? '+' : '–'; });
+
+  let drag = null;
+  bar.addEventListener('pointerdown', e => {
+    if (e.target === minBtn) return;
+    const r = panel.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!drag) return;
+    panel.style.right = 'auto';
+    const x = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, e.clientX - drag.dx));
+    const y = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - drag.dy));
+    panel.style.left = x + 'px'; panel.style.top = y + 'px';
+  });
+  bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
+
+  // Collapsible section; starts collapsed.
+  function fpHeader(text) {
+    const sec = document.createElement('div'); sec.className = 'sec collapsed';
+    const head = document.createElement('div'); head.className = 'sec-head';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
+    const secBody = document.createElement('div'); secBody.className = 'sec-body';
+    head.addEventListener('click', () => sec.classList.toggle('collapsed'));
+    sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
+    current = secBody;
+  }
+  function fpSlider(label, key, min, max, step, fmt) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;margin-top:5px';
+    const valEl = document.createElement('span');
+    valEl.style.color = '#7f8a99';
+    valEl.textContent = fmt(fp[key]);
+    row.innerHTML = '<span>' + label + '</span>';
+    row.appendChild(valEl);
+    current.appendChild(row);
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = fp[key];
+    inp.style.width = '100%';
+    inp.addEventListener('input', () => { fp[key] = parseFloat(inp.value); valEl.textContent = fmt(fp[key]); });
+    current.appendChild(inp);
+  }
+
+  const f1 = v => v.toFixed(1);
+  const fi = v => String(Math.round(v));
+
+  fpHeader('Movement');
+  fpSlider('Walk speed',   'speedStand',  1,  60, 1,    fi);
+  fpSlider('Crouch speed', 'speedCrouch', 1,  30, 1,    fi);
+  fpSlider('Prone speed',  'speedProne',  1,  15, 0.5,  f1);
+  fpSlider('Jump force',   'jumpForce',   5,  40, 0.5,  f1);
+  fpSlider('Air strafe',   'airStrafe',   1,  30, 0.5,  f1);
+
+  fpHeader('Physics');
+  fpSlider('Gravity',      'gravity',     5,  80, 0.5,  f1);
+  fpSlider('Friction',     'friction',    1, 100, 1,    fi);
+  fpSlider('Air damping',  'airDamp',     1,  20, 0.5,  f1);
+
+  fpHeader('Stance heights');
+  fpSlider('Stand',  'heightStand',  0.5, 2.5, 0.05, f1);
+  fpSlider('Crouch', 'heightCrouch', 0.2, 1.5, 0.05, f1);
+  fpSlider('Prone',  'heightProne',  0.0, 0.5, 0.02, f1);
+
+  fpHeader('Look');
+  fpSlider('Sensitivity', 'sensitivity', 100, 2000, 10, fi);
+}
+
+const crosshair = document.createElement('div');
+crosshair.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;pointer-events:none;display:none';
+crosshair.innerHTML = '<svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/><line x1="3" y1="10" x2="17" y2="10" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/></svg>';
+document.body.appendChild(crosshair);
+
+const enterHint = document.createElement('div');
+enterHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center';
+enterHint.textContent = 'F → walk mode  \xb7  drag to orbit  \xb7  scroll to zoom';
+document.body.appendChild(enterHint);
+
+const exitHint = document.createElement('div');
+exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
+exitHint.textContent = 'WASD  \xb7  Space jump  \xb7  C crouch  \xb7  Z prone  \xb7  F/Esc → orbit';
+document.body.appendChild(exitHint);
+
+function enterFPS() {
+  const sx = 8, sz = 0;
+  const spawnY = terrainHeight(sx, sz);
+  playerCollider.start.set(sx, spawnY + 0.35, sz);
+  playerCollider.end.set(sx,   spawnY + 0.35 + fp.heightStand, sz);
+  playerCollider.radius = 0.35;
+  playerVelocity.set(0, 0, 0);
+  playerOnFloor = false;
+  stance = 'stand';
+  capsuleH = fp.heightStand;
+  camera.rotation.order = 'YXZ';
+  camera.rotation.set(0, Math.PI, 0);
+  fpsMode = true;
+  camera.fov = 70; camera.updateProjectionMatrix();
+  if (terrainOctreeDirty && terrainSystem.pendingCollisionBuildCount === 0) buildOctree(true);
+  crosshair.style.display = 'block';
+  exitHint.style.display = 'block';
+  enterHint.style.display = 'none';
+}
+
+function exitFPS() {
+  fpsMode = false;
+  camera.fov = 50; camera.updateProjectionMatrix();
+  crosshair.style.display = 'none';
+  exitHint.style.display = 'none';
+  enterHint.style.display = 'block';
+}
+
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) { enterFPS(); }
+  else if (fpsMode) { exitFPS(); }
+});
+
+
+document.addEventListener('mousemove', e => {
+  if (!fpsMode) return;
+  camera.rotation.y -= e.movementX / fp.sensitivity;
+  camera.rotation.x -= e.movementY / fp.sensitivity;
+});
+
+window.addEventListener('keydown', e => {
+  fpsKeys[e.code] = true;
+  if (e.code === 'KeyF') {
+    if (!fpsMode) renderer.domElement.requestPointerLock();
+    else document.exitPointerLock();
+  }
+  if (fpsMode) {
+    if (e.code === 'KeyC') stance = stance === 'crouch' ? 'stand' : 'crouch';
+    if (e.code === 'KeyZ') stance = stance === 'prone'  ? 'stand' : 'prone';
+  }
+});
+window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
+
+function applyFPSControls(deltaTime) {
+  camera.updateMatrixWorld();
+  const forward = new THREE.Vector3();
+  const side    = new THREE.Vector3();
+  forward.setFromMatrixColumn(camera.matrixWorld, 0);
+  forward.crossVectors(camera.up, forward).normalize();
+  side.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+
+  if (playerOnFloor) {
+    // Direct velocity set — responsive, no momentum build-up fighting damping
+    const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)];
+    let mx = 0, mz = 0;
+    if (fpsKeys['KeyW']) { mx += forward.x; mz += forward.z; }
+    if (fpsKeys['KeyS']) { mx -= forward.x; mz -= forward.z; }
+    if (fpsKeys['KeyA']) { mx -= side.x;    mz -= side.z;    }
+    if (fpsKeys['KeyD']) { mx += side.x;    mz += side.z;    }
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      playerVelocity.x = (mx / len) * speed;
+      playerVelocity.z = (mz / len) * speed;
+    } else {
+      const f = Math.exp(-fp.friction * deltaTime) - 1;
+      playerVelocity.x += playerVelocity.x * f;
+      playerVelocity.z += playerVelocity.z * f;
+    }
+    if (stance === 'stand' && fpsKeys['Space']) playerVelocity.y = fp.jumpForce;
+  } else {
+    // In air: additive so jumps have momentum
+    const speedDelta = deltaTime * fp.airStrafe;
+    if (fpsKeys['KeyW']) playerVelocity.add(forward.clone().multiplyScalar( speedDelta));
+    if (fpsKeys['KeyS']) playerVelocity.add(forward.clone().multiplyScalar(-speedDelta));
+    if (fpsKeys['KeyA']) playerVelocity.add(side.clone().multiplyScalar(  -speedDelta));
+    if (fpsKeys['KeyD']) playerVelocity.add(side.clone().multiplyScalar(   speedDelta));
+  }
+}
+
+function updateFPSPlayer(deltaTime) {
+  if (!playerOnFloor) {
+    playerVelocity.y -= fp.gravity * deltaTime;
+    const airDamp = (Math.exp(-fp.airDamp * deltaTime) - 1) * 0.1;
+    playerVelocity.addScaledVector(playerVelocity, airDamp);
+  }
+  playerCollider.translate(playerVelocity.clone().multiplyScalar(deltaTime));
+  const result = worldOctree.capsuleIntersect(playerCollider);
+  playerOnFloor = result ? result.normal.y > 0 : false;
+  if (result) {
+    playerVelocity.addScaledVector(result.normal, -result.normal.dot(playerVelocity));
+    playerCollider.translate(result.normal.multiplyScalar(result.depth));
+  }
+  // Lerp capsule height toward current stance, then pin end above start.
+  const targetH = fp['height' + stance[0].toUpperCase() + stance.slice(1)];
+  capsuleH += (targetH - capsuleH) * Math.min(1, deltaTime * 12);
+  playerCollider.end.copy(playerCollider.start);
+  playerCollider.end.y += capsuleH;
+  camera.position.copy(playerCollider.end);
+}
+
+// ===================== render loop =====================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const rawDt = Math.min(clock.getDelta(), 0.1);
+  const now = performance.now();
+  if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
+  if (grassRef) grassRef.update(now / 1000);
+  if (cloudsRef) cloudsRef.update(now / 1000);
+  if (fpsMode) {
+    const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
+    for (let i = 0; i < STEPS_PER_FRAME; i++) {
+      applyFPSControls(fpsDt);
+      updateFPSPlayer(fpsDt);
+    }
+    updateTerrainWindow(playerCollider.end);
+  } else {
+    applyCamera();
+    updateTerrainWindow(camera.position);
+  }
+  // water runs its own reflection / refraction / caustics passes, then we draw
+  if (waterRef) {
+    waterRef.update(now / 1000);
+    syncWaterDebug();
+  }
+  updateTerrainDebug(now);
+  perfLog.maybeSample(now);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

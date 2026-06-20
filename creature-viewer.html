@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Balancing Walking Creatures</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &mdash; creatures balance and wander an uneven, tree-scattered terrain</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { Octree } from 'three/addons/math/Octree.js';
+import { Capsule } from 'three/addons/math/Capsule.js';
+import { createLightingRig } from './lights.js';
+
+// Declared here so buildOctree() (called after rebuildGround()) can reference it.
+let worldOctree = new Octree();
+
+// Surface any runtime/load error on the page, so a blank viewport tells us why.
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '\u26A0 ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(22, 16, 26);
+
+// ===================== lights =====================
+const rig = createLightingRig({ scene, ui: false });
+rig.dirLight.castShadow = true;
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 0.5; rig.dirLight.shadow.camera.far = 90;
+rig.dirLight.shadow.camera.left = -18; rig.dirLight.shadow.camera.right = 18;
+rig.dirLight.shadow.camera.top = 18;   rig.dirLight.shadow.camera.bottom = -18;
+
+// ===================== uneven terrain (parameterised; supports lakes) =====================
+const terrain = { size: 60, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9 };
+
+// low-frequency value noise decides where lakes form (absolute scale, so basins
+// stay the same physical size as the world grows)
+function lakeHash(ix, iz) { let h = (Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263)) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+function lakeNoise(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  const a = lakeHash(ix, iz), b = lakeHash(ix + 1, iz), c = lakeHash(ix, iz + 1), d = lakeHash(ix + 1, iz + 1);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+const smoothstep = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+
+function terrainHeight(x, z) {
+  let h = (Math.sin(x * 0.10) * 1.1 + Math.cos(z * 0.085) * 1.0 + Math.sin((x + z) * 0.16) * 0.5
+         + Math.cos((x - z) * 0.22 + 0.8) * 0.35 + Math.sin(x * 0.38 + z * 0.27) * 0.18
+         + Math.cos(z * 0.44 - x * 0.19) * 0.14) * terrain.baseAmp;
+  // carve lake basins where the low-frequency field is high
+  const t = 1 - terrain.lake;
+  const basin = smoothstep(t, t + 0.15, lakeNoise(x * 0.045 + 10.5, z * 0.045 - 7.2));
+  return h - basin * terrain.lakeDepth;
+}
+
+let ground = null;
+function rebuildGround() {
+  const segs = Math.max(80, Math.round(terrain.size * 2));
+  const geo = new THREE.PlaneGeometry(terrain.size, terrain.size, segs, segs);
+  geo.rotateX(-Math.PI / 2);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, terrainHeight(p.getX(i), p.getZ(i)));
+  p.needsUpdate = true; geo.computeVertexNormals();
+  if (!ground) {
+    ground = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 1 }));
+    ground.receiveShadow = true; scene.add(ground);
+  } else { ground.geometry.dispose(); ground.geometry = geo; }
+}
+rebuildGround();
+buildOctree();
+
+// Draw distance scales with the world so a large terrain isn't clipped, with a
+// floor of 200 so the overhead clouds stay inside the frustum on small worlds.
+// Fog (off by default) shares the same far so geometry fades into the background
+// right before the clip plane instead of popping out.
+const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
+function updateDrawDistance() {
+  const far = Math.max(200, terrain.size * 1.2);
+  camera.far = far; camera.updateProjectionMatrix();
+  worldFog.far = far; worldFog.near = far * 0.4;
+}
+function setFog(on) { scene.fog = on ? worldFog : null; }
+updateDrawDistance();
+
+// Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
+let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null;
+
+// Rebuild everything that depends on terrain (size / lakes / water level).
+function rebuildWorld() {
+  rebuildGround();
+  updateDrawDistance();
+  ARENA_R = terrain.size * 0.2; SOFT_EDGE = ARENA_R + 1.0;
+  if (regenTrees) regenTrees();
+  if (grassRef) grassRef.regenerate({ size: terrain.size, waterLevel: terrain.waterLevel });
+  if (waterRef) waterRef.regenerate({ size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight });
+  buildOctree();
+}
+
+// Trees live in a separate module. Load it dynamically so a load failure
+// (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
+Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ createTree }, { createTextureSource }]) => {
+  const MASTER_SEED = 20260616;
+  const params = {
+    count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
+    varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
+    leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
+  };
+
+  // ---- texture-source layer (Phase 3) -------------------------------------
+  // One active texture set drives the merged materials. Authored loading is
+  // async, so `texSet` may report ready=false; regenerate() tolerates that and
+  // we re-bind + rebuild from the onReady callback when the maps finish.
+  let texSet = null;
+  function loadTextures(mode) {
+    if (texSet) texSet.dispose();
+    texSet = createTextureSource(mode, {
+      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); } },
+    });
+    applyTextureSet(texSet);   // procedural is ready immediately; authored binds once decoded
+  }
+  // bind the set's maps onto the merged branch/leaf materials (tint still
+  // multiplies the map via vertexColors). Skips maps until the set is ready.
+  function applyTextureSet(s) {
+    if (!branchesMesh) return;                 // materials not built yet (first regenerate)
+    const on = s && s.ready;
+    const bMat = branchesMesh.material, lMat = leavesMesh.material;
+    bMat.map = on ? s.barkMap : null;
+    bMat.normalMap = on ? s.barkNormalMap : null;
+    bMat.needsUpdate = true;
+    lMat.map = on ? s.leafMap : null;
+    lMat.transparent = !!(on && s.leafMap);
+    lMat.alphaTest = on && s.leafMap ? s.leafAlphaTest : 0;
+    lMat.needsUpdate = true;
+  }
+  // The forest is baked into two merged meshes (all branches, all leaves) so it
+  // costs two draw calls regardless of tree count. A single reused Tree acts as
+  // a geometry generator; per-tree bark/leaf colour is baked into vertex colours
+  // so merging doesn't flatten species diversity.
+  let branchesMesh = null, leavesMesh = null, leavesShadowMesh = null, gen = null;
+
+  // ---- deterministic RNG + value-noise field ----
+  function rngFrom(seed) {
+    let s = (seed >>> 0) || 1;
+    const next = () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    return { next, range: (a, b) => a + (b - a) * next() };
+  }
+  function hash2(ix, iz, seed) {
+    let h = (Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263) ^ Math.imul(seed, 2246822519)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  function valueNoise(x, z, seed) {
+    const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+    const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+    const a = hash2(ix, iz, seed), b = hash2(ix + 1, iz, seed), c = hash2(ix, iz + 1, seed), d = hash2(ix + 1, iz + 1, seed);
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+  }
+
+  // ---- species derived through a genus -> species taxonomy ----
+  const hsl = (h, s, l) => new THREE.Color().setHSL(((h % 1) + 1) % 1, s, Math.min(0.7, Math.max(0.12, l))).getHex();
+  function toOptions(t) {
+    const a = t.angle;
+    return {
+      levels: t.levels,
+      angle: [0, a, a - 6, a - 10],
+      gnarliness: [0.10 * t.gnarl, 0.18 * t.gnarl, 0.28 * t.gnarl, 0.30 * t.gnarl],
+      length: [15 * t.slender, 11 * t.slender, 7 * t.slender, 3 * t.slender],
+      bark: { color: hsl(t.barkHue, 0.45, t.barkLight) },
+      leaves: { tint: hsl(t.leafHue, 0.55, t.leafLight), size: t.leafSize, count: 10 },
+      force: { direction: [0, 1, 0], strength: 0.03 + t.droop },
+    };
+  }
+  function buildSpecies(p, rng) {
+    const D = p.diversity, R = () => rng.range(-1, 1);
+    const nGenera = Math.max(1, Math.round(p.species - (p.species - 1) * p.generalization));
+    const genera = [];
+    for (let g = 0; g < nGenera; g++) genera.push({
+      barkHue: 0.08 + R() * 0.14 * D, barkLight: 0.32 + R() * 0.10 * D,
+      leafHue: 0.28 + R() * 0.16 * D, leafLight: 0.42 + R() * 0.12 * D,
+      angle: 55 + R() * 28 * D, gnarl: Math.max(0.2, 1 + R() * 0.8 * D),
+      levels: Math.abs(R()) * D > 0.45 ? 4 : 3,
+      slender: 1 + R() * 0.5 * D, leafSize: Math.max(0.5, 1.3 * (1 + R() * 0.5 * D)),
+      droop: R() * 0.05 * D,
+    });
+    const out = [], w = D * 0.25;
+    for (let s = 0; s < p.species; s++) {
+      const G = genera[s % nGenera];
+      out.push(toOptions({
+        barkHue: G.barkHue + R() * 0.14 * w, barkLight: G.barkLight + R() * 0.10 * w,
+        leafHue: G.leafHue + R() * 0.16 * w, leafLight: G.leafLight + R() * 0.12 * w,
+        angle: G.angle + R() * 28 * w, gnarl: Math.max(0.2, G.gnarl + R() * 0.8 * w),
+        levels: G.levels, slender: Math.max(0.4, G.slender + R() * 0.5 * w),
+        leafSize: Math.max(0.5, G.leafSize + R() * 0.5 * w), droop: G.droop + R() * 0.05 * w,
+      }));
+    }
+    return out;
+  }
+
+  // ---- placement patterns (positions in the XZ plane) ----
+  function placements(p, rng) {
+    const out = [], n = Math.max(0, Math.floor(p.count));
+    const half = terrain.size * 0.5;                 // square map bound: XZ span [-half, +half]
+    const rand = () => rng.range(-half, half);       // uniform over the full square
+    const minBaseY = terrain.waterLevel + p.shoreMargin;
+    const isDry = ({ x, z }) => terrainHeight(x, z) >= minBaseY;
+    const inBounds = ({ x, z }) => x >= -half && x <= half && z >= -half && z <= half;
+    const keepDry = pt => {
+      if (!inBounds(pt) || !isDry(pt)) return false; // stay on the map and out of the water
+      out.push(pt);
+      return true;
+    };
+    const maxAttempts = n * 20;
+    if (p.placement === 'ring') {
+      const rr = half * 0.55, jitter = half * 0.1;   // ring radius scales with the map
+      for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+        const i = attempt % Math.max(1, n);
+        const a = (i / Math.max(1, n)) * Math.PI * 2 + rng.range(-0.12, 0.12), r = rr + rng.range(-jitter, jitter);
+        keepDry({ x: Math.cos(a) * r, z: Math.sin(a) * r });
+      }
+    } else if (p.placement === 'clustered') {
+      const nc = Math.max(1, Math.round(n / 6)), centers = [];
+      const spread = half * 0.13, m = spread * 2;    // keep clusters (centre + jitter) on the map
+      for (let c = 0; c < nc; c++) centers.push({ x: rng.range(-half + m, half - m), z: rng.range(-half + m, half - m) });
+      for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+        const c = centers[Math.floor(rng.next() * nc)];
+        keepDry({ x: c.x + rng.range(-spread, spread) + rng.range(-spread, spread), z: c.z + rng.range(-spread, spread) + rng.range(-spread, spread) });
+      }
+    } else if (p.placement === 'scattered') {
+      // jittered grid across the whole square for even spacing
+      const cell = Math.max(2, 2 * half / Math.ceil(Math.sqrt(Math.max(1, n) * 1.6))), pts = [];
+      for (let gx = -half; gx < half; gx += cell) for (let gz = -half; gz < half; gz += cell) {
+        const x = gx + rng.range(0, cell), z = gz + rng.range(0, cell);
+        if (x <= half && z <= half && isDry({ x, z })) pts.push({ x, z });
+      }
+      for (let k = pts.length - 1; k > 0; k--) { const j = Math.floor(rng.next() * (k + 1)); [pts[k], pts[j]] = [pts[j], pts[k]]; }
+      out.push(...pts.slice(0, n));
+      for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+        keepDry({ x: rand(), z: rand() });
+      }
+    } else {
+      for (let attempt = 0; out.length < n && attempt < maxAttempts; attempt++) {
+        keepDry({ x: rand(), z: rand() });
+      }
+    }
+    return out;
+  }
+
+  // ---- size pipeline: value -> skew -> variation amount -> scale ----
+  function sizeFor(p, x, z, rng) {
+    let v;
+    if (p.varPattern === 'noise') v = valueNoise(x * 0.14, z * 0.14, 777);
+    else if (p.varPattern === 'gradient') v = THREE.MathUtils.clamp((x + 18) / 36, 0, 1);
+    else v = rng.next();
+    const sv = Math.pow(v, Math.exp(p.skew * 1.5));      // skew>0 biases toward small
+    const frac = 1 - p.sizeVar * (1 - sv);               // sizeVar=0 -> all maxSize
+    return p.maxSize * Math.max(0.12, frac);
+  }
+
+  // ---- merged-forest baking (reuses meshes & one generator across rebuilds) ----
+  const _ty = new THREE.Vector3(0, 1, 0);
+  const _tpos = new THREE.Vector3(), _tscl = new THREE.Vector3(), _tquat = new THREE.Quaternion();
+  const _tmat = new THREE.Matrix4(), _tnorm = new THREE.Matrix3(), _tv = new THREE.Vector3();
+
+  // transform one source geometry by `mat` and append it (with a flat colour) to
+  // dst, carrying UVs through so the merged mesh can sample bark/leaf maps
+  function appendGeom(dst, geom, mat, nmat, col) {
+    const posA = geom.attributes.position, nrmA = geom.attributes.normal,
+          uvA = geom.attributes.uv, idx = geom.index;
+    if (!posA || posA.count === 0) return;
+    const base = dst.verts.length / 3;
+    for (let i = 0; i < posA.count; i++) {
+      _tv.fromBufferAttribute(posA, i).applyMatrix4(mat);
+      dst.verts.push(_tv.x, _tv.y, _tv.z);
+      _tv.fromBufferAttribute(nrmA, i).applyNormalMatrix(nmat);
+      dst.normals.push(_tv.x, _tv.y, _tv.z);
+      dst.colors.push(col.r, col.g, col.b);
+      if (uvA) dst.uvs.push(uvA.getX(i), uvA.getY(i)); else dst.uvs.push(0, 0);
+    }
+    const ia = idx.array;
+    for (let i = 0; i < ia.length; i++) dst.indices.push(base + ia[i]);
+  }
+  function commitMerged(geom, dst) {
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(dst.verts, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(dst.normals, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(dst.colors, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(dst.uvs, 2));
+    geom.setIndex(dst.indices);
+    geom.computeBoundingSphere();
+  }
+
+  function regenerate() {
+    if (!gen) gen = createTree({ seed: 1 });          // generator only; never added to scene
+    if (!branchesMesh) {
+      branchesMesh = new THREE.Mesh(new THREE.BufferGeometry(),
+        new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+      branchesMesh.castShadow = branchesMesh.receiveShadow = true;
+      // Two leaf meshes share one material: one skips the shadow pass, one casts.
+      // params.leafShadowPct sets how many leaves land in the casting mesh.
+      const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, side: THREE.DoubleSide });
+      leavesMesh = new THREE.Mesh(new THREE.BufferGeometry(), leafMat);
+      leavesMesh.castShadow = false;
+      leavesShadowMesh = new THREE.Mesh(new THREE.BufferGeometry(), leafMat);
+      leavesShadowMesh.castShadow = true;
+      scene.add(branchesMesh, leavesMesh, leavesShadowMesh);
+      applyTextureSet(texSet);   // bind any already-ready maps now that materials exist
+    }
+
+    const rng = rngFrom(MASTER_SEED);
+    const species = buildSpecies(params, rng);
+    const pos = placements(params, rng);
+
+    const B = { verts: [], normals: [], colors: [], uvs: [], indices: [] };
+    const L = { verts: [], normals: [], colors: [], uvs: [], indices: [] };
+    const LS = { verts: [], normals: [], colors: [], uvs: [], indices: [] };
+    const barkCol = new THREE.Color(), leafCol = new THREE.Color();
+
+    // Texture wiring (Phase 4): when a set is ready, every tree's leaves index a
+    // 2x2 atlas with the cell PINNED per species (so a species reads as one leaf
+    // shape), and branch UVs use the bark set's vScale. The bark map itself is
+    // bound once on the shared merged material (one draw call -> one bark set);
+    // per-species bark variation stays as the multiplied vertex tint.
+    const tex = texSet && texSet.ready ? texSet : null;
+    const atlasCells = tex ? tex.leafAtlas.cols * tex.leafAtlas.rows : 0;
+
+    for (let i = 0; i < pos.length; i++) {
+      const { x, z } = pos[i];
+      const spIdx = Math.floor(rng.next() * species.length);
+      const sp = species[spIdx];
+      const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
+      const barkOpts = { ...sp.bark };
+      if (tex) {
+        leafOpts.atlas = { cols: tex.leafAtlas.cols, rows: tex.leafAtlas.rows, cell: spIdx % atlasCells };
+        barkOpts.vScale = tex.barkVScale;
+      }
+      gen.regenerate({ ...sp, seed: (Math.imul(i + 1, 2654435761)) >>> 0,
+        leaves: leafOpts, bark: barkOpts });
+      const s = sizeFor(params, x, z, rng);
+      _tquat.setFromAxisAngle(_ty, rng.next() * Math.PI * 2);
+      _tmat.compose(_tpos.set(x, terrainHeight(x, z), z), _tquat, _tscl.set(s, s, s));
+      _tnorm.getNormalMatrix(_tmat);
+      barkCol.set(sp.bark.color);
+      leafCol.set(sp.leaves.tint);
+      appendGeom(B, gen.branchesMesh.geometry, _tmat, _tnorm, barkCol);
+      appendGeom(L, gen.leavesMesh.geometry, _tmat, _tnorm, leafCol);
+      appendGeom(LS, gen.leavesShadowMesh.geometry, _tmat, _tnorm, leafCol);
+    }
+    commitMerged(branchesMesh.geometry, B);
+    commitMerged(leavesMesh.geometry, L);
+    commitMerged(leavesShadowMesh.geometry, LS);
+  }
+
+  // ---- control panel ----
+  const style = document.createElement('style');
+  style.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:226px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;padding:10px 12px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none}#ctrl h4{margin:0 0 6px;font-size:12px;color:#8a93a3}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between}#ctrl .row span{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl select{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}';
+  document.head.appendChild(style);
+  const box = document.createElement('div'); box.id = 'ctrl'; box.innerHTML = '<h4>Forest controls</h4>'; document.body.appendChild(box);
+  let timer; const apply = () => { clearTimeout(timer); timer = setTimeout(regenerate, 130); };
+  function slider(key, label, min, max, step, fmt, onChange, obj) {
+    const P = obj || params;
+    const row = document.createElement('div'); row.className = 'row';
+    const val = document.createElement('span'); val.textContent = fmt(P[key]);
+    row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+    const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = P[key];
+    inp.addEventListener('input', () => { P[key] = parseFloat(inp.value); val.textContent = fmt(P[key]); (onChange || apply)(); });
+    box.appendChild(row); box.appendChild(inp);
+  }
+  function header(text) { const h = document.createElement('h4'); h.textContent = text; h.style.marginTop = '10px'; box.appendChild(h); }
+  function select(key, label, opts, onChange) {
+    const row = document.createElement('div'); row.className = 'row'; row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; box.appendChild(row);
+    const sel = document.createElement('select');
+    for (const o of opts) { const op = document.createElement('option'); op.value = o; op.textContent = o; if (o === params[key]) op.selected = true; sel.appendChild(op); }
+    sel.addEventListener('change', () => { params[key] = sel.value; (onChange || apply)(); });
+    box.appendChild(sel);
+  }
+  function toggle(key, label, onChange) {
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>';
+    const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!params[key]; inp.style.width = 'auto';
+    inp.addEventListener('change', () => { params[key] = inp.checked; onChange(); });
+    row.appendChild(inp); box.appendChild(row);
+  }
+  const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
+  slider('count', 'Tree count', 0, 300, 1, fi);
+  select('placement', 'Placement pattern', ['random', 'clustered', 'scattered', 'ring']);
+  slider('maxSize', 'Max size', 0.2, 1.2, 0.01, f2);
+  slider('sizeVar', 'Size variation', 0, 1, 0.01, f2);
+  slider('skew', 'Size skew (small\u2194large)', -1, 1, 0.01, f2);
+  select('varPattern', 'Variation pattern', ['random', 'noise', 'gradient']);
+  slider('species', 'Species diversity (types)', 1, 8, 1, fi);
+  slider('diversity', 'Diversity scale', 0, 1, 0.01, f2);
+  slider('generalization', 'Generalization', 0, 1, 0.01, f2);
+  slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct);
+  // Texture mode: 'procedural' synthesizes maps at runtime; 'authored' loads the
+  // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
+  select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
+
+  loadTextures(params.texMode);   // establish a texture set before the first bake
+  regenerate();
+  regenTrees = regenerate; // let rebuildWorld() refresh the forest after terrain changes
+
+  // ---- lighting controls ----
+  const rigP = { elevation: rig.elevation, azimuth: rig.azimuth, sunIntensity: 1.8, ambientIntensity: 0.6 };
+  header('Lighting');
+  slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP);
+  slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
+  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => rig.setSunIntensity(rigP.sunIntensity),         rigP);
+  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => rig.setAmbientIntensity(rigP.ambientIntensity), rigP);
+
+  // ---- terrain controls (rebuild world: ground + trees + grass + water) ----
+  let wt; const worldRebuild = () => { clearTimeout(wt); wt = setTimeout(rebuildWorld, 220); };
+  header('Terrain');
+  slider('size', 'World size', 30, 600, 1, fi, worldRebuild, terrain);
+  slider('lake', 'Lake coverage', 0, 1, 0.01, f2, worldRebuild, terrain);
+  slider('lakeDepth', 'Lake depth', 0, 6, 0.1, f2, worldRebuild, terrain);
+  slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain);
+  params.fog = false;
+  toggle('fog', 'Fog', () => setFog(params.fog));   // draw distance is auto-linked to World size
+
+  // ---- grass (separate module; optional, degrades to no grass if missing) ----
+  import('./grass.js').then(({ createGrass }) => {
+    Object.assign(params, { grassCount: 40000, wind: 1.0 });
+    grassRef = createGrass({ heightFn: terrainHeight, size: terrain.size, waterLevel: terrain.waterLevel, count: params.grassCount });
+    scene.add(grassRef);
+    rig.connect(null, grassRef);
+    let gt; const grassRebuild = () => { clearTimeout(gt); gt = setTimeout(() => grassRef.regenerate({ count: params.grassCount }), 200); };
+    header('Grass');
+    slider('grassCount', 'Blade count', 0, 1200000, 1000, v => (v / 1000) + 'k', grassRebuild);
+    slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
+  }).catch(() => { /* grass is optional */ });
+
+  // ---- water (separate module; optional). Needs a refraction render target. ----
+  import('./water.js').then(({ createWaterSystem }) => {
+    Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
+    waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight });
+    scene.add(waterRef.surface);
+    rig.connect(waterRef, null);
+    header('Water');
+    slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
+    slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
+    slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
+  }).catch(() => { /* water is optional */ });
+
+  // ---- clouds (separate module; optional, independent of terrain). Lays a big
+  // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
+  import('./clouds.js').then(({ Clouds }) => {
+    Object.assign(params, { cloudHeight: 120, cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
+      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01 });
+    cloudsRef = new Clouds();
+    cloudsRef.rotation.x = -Math.PI / 2;   // lay the quad flat, high above the world
+    cloudsRef.position.y = params.cloudHeight;
+    cloudsRef.setCoverage(params.cloudCover);
+    cloudsRef.setOpacity(params.cloudOpacity);
+    cloudsRef.setSpeed(params.cloudSpeed);
+    cloudsRef.setPuff(params.cloudPuff);
+    cloudsRef.setSoftness(params.cloudSoftness);
+    cloudsRef.setFade(params.cloudFade);
+    scene.add(cloudsRef);
+    header('Clouds');
+    slider('cloudHeight', 'Height', 20, 200, 1, fi, () => cloudsRef.position.y = params.cloudHeight);
+    slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
+    slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
+    slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
+    slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
+    slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
+    slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
+  }).catch(() => { /* clouds are optional */ });
+}).catch(err => {
+  showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
+});
+
+function terrainNormal(x, z, out) {
+  const e = 0.12;
+  return out.set(terrainHeight(x - e, z) - terrainHeight(x + e, z), 2 * e,
+                 terrainHeight(x, z - e) - terrainHeight(x, z + e)).normalize();
+}
+
+// ===================== body / leg geometry (origin = body centre) =====================
+const BODY_HEIGHT = 1.0;    // preferred height of body centre above the feet
+const HIP_LOCAL_Y = -0.22;  // hips hang below the centre  (centre 1.0 up -> hips 0.78 up)
+const UPPER_LEN = 0.50, LOWER_LEN = 0.50;
+const SIDE = 0.42, FB = 0.36;
+const FOOT_GROUND = 0.06;
+
+const hipDefs = [
+  { hip: new THREE.Vector3(-SIDE, HIP_LOCAL_Y,  FB), rest: new THREE.Vector3(-SIDE * 1.15, 0,  FB), pole:  1 }, // FL
+  { hip: new THREE.Vector3( SIDE, HIP_LOCAL_Y,  FB), rest: new THREE.Vector3( SIDE * 1.15, 0,  FB), pole:  1 }, // FR
+  { hip: new THREE.Vector3(-SIDE, HIP_LOCAL_Y, -FB), rest: new THREE.Vector3(-SIDE * 1.15, 0, -FB), pole: -1 }, // BL
+  { hip: new THREE.Vector3( SIDE, HIP_LOCAL_Y, -FB), rest: new THREE.Vector3( SIDE * 1.15, 0, -FB), pole: -1 }, // BR
+];
+
+// ===================== IK + orientation helpers =====================
+const _to = new THREE.Vector3(), _dir = new THREE.Vector3(), _perp = new THREE.Vector3(), _knee = new THREE.Vector3();
+function solveKnee(hip, target, L1, L2, pole) {
+  _to.subVectors(target, hip);
+  let d = _to.length();
+  d = Math.min(Math.max(d, Math.abs(L1 - L2) + 1e-4), L1 + L2 - 1e-4);
+  _dir.copy(_to).normalize();
+  let c = (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d); c = Math.min(1, Math.max(-1, c));
+  const s = Math.sqrt(1 - c * c);
+  _perp.copy(pole).addScaledVector(_dir, -pole.dot(_dir));
+  if (_perp.lengthSq() < 1e-6) _perp.set(0, 1, 0).addScaledVector(_dir, -_dir.y);
+  _perp.normalize();
+  return _knee.copy(hip).addScaledVector(_dir, L1 * c).addScaledVector(_perp, L1 * s);
+}
+const _upAxis = new THREE.Vector3(0, 1, 0), _mid = new THREE.Vector3(), _seg = new THREE.Vector3();
+function placeSegment(mesh, a, b) {
+  _mid.addVectors(a, b).multiplyScalar(0.5);
+  _seg.subVectors(b, a); const len = _seg.length();
+  mesh.position.copy(_mid); mesh.scale.set(1, len / mesh.userData.base, 1);
+  mesh.quaternion.setFromUnitVectors(_upAxis, _seg.normalize());
+}
+const _bx = new THREE.Vector3(), _by = new THREE.Vector3(), _bz = new THREE.Vector3(), _basis = new THREE.Matrix4();
+function orientFromUpForward(up, fwd, out) {
+  _by.copy(up); _bx.crossVectors(_by, fwd);
+  if (_bx.lengthSq() < 1e-6) _bx.set(1, 0, 0);
+  _bx.normalize(); _bz.crossVectors(_bx, _by).normalize();
+  _basis.makeBasis(_bx, _by, _bz);
+  return out.setFromRotationMatrix(_basis);
+}
+function easeInOut(t) { return t * t * (3 - 2 * t); }
+
+// ===================== support-polygon geometry (XZ) =====================
+function convexHull(pts) {
+  if (pts.length < 3) return pts.slice();
+  const p = pts.slice().sort((a, b) => a.x - b.x || a.z - b.z);
+  const cr = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lo = []; for (const q of p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  const up = []; for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  lo.pop(); up.pop(); return lo.concat(up);
+}
+function pointInPoly(px, pz, poly) {
+  if (poly.length < 3) return false;
+  let sign = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const c = (b.x - a.x) * (pz - a.z) - (b.z - a.z) * (px - a.x);
+    if (Math.abs(c) < 1e-9) continue;
+    const s = Math.sign(c);
+    if (sign === 0) sign = s; else if (s !== sign) return false;
+  }
+  return true;
+}
+function nearestOnPoly(px, pz, poly, out) {
+  let bd = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1e-9;
+    let t = ((px - a.x) * dx + (pz - a.z) * dz) / L2; t = Math.max(0, Math.min(1, t));
+    const qx = a.x + t * dx, qz = a.z + t * dz, d = (qx - px) ** 2 + (qz - pz) ** 2;
+    if (d < bd) { bd = d; out.x = qx; out.z = qz; }
+  }
+  return out;
+}
+
+// ===================== steering / physics constants =====================
+let ARENA_R = terrain.size * 0.2, SOFT_EDGE = ARENA_R + 1.0;
+const SEP_RADIUS = 2.0, MIN_GAP = 1.4;
+const BASE_SPEED = 1.2, TURN_SPEED = 2.0, ARRIVE_R = 0.8;
+const WANDER_W = 1.0, SEP_W = 2.0, BOUNDARY_GAIN = 4.0;
+
+const GRAV = 10.0;                 // gravity (units/s^2)
+const KP = 60, KD = 16;            // body-height PD gains
+const HEIGHT_CAP = GRAV * 4;       // max upward support accel (x fraction grounded)
+const WALK_GAIN = 6.0;             // how hard the body drives toward walk velocity
+const H_DRAG = 1.2;                // horizontal drag
+const BOUNCE = 0.25, BODY_MIN_CLEAR = 0.30;
+
+const TRIGGER_H = 0.36, TRIGGER_V = 0.30;   // foot leaves this -> must step
+const COMFORT_H = 0.62, COMFORT_V = 0.55;   // foot stretched past this -> body slows
+const STEP_DURATION = 0.16, STEP_LIFT = 0.18, LOOKAHEAD = 0.16;
+const MAX_CONCURRENT = 1;          // one foot at a time -> always 3 feet supporting
+const ORIENT_LERP = 0.08;
+
+function randomTarget() {
+  const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * ARENA_R;
+  return new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r);
+}
+
+// ===================== Creature =====================
+const diagonalPartner = [3, 2, 1, 0];
+const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
+const _hipWorld = new THREE.Vector3(), _footPos = new THREE.Vector3(), _fwd = new THREE.Vector3(),
+      _n = new THREE.Vector3(), _q = new THREE.Quaternion();
+const _wander = new THREE.Vector3(), _sep = new THREE.Vector3(), _away = new THREE.Vector3(), _steer = new THREE.Vector3();
+const _com = { x: 0, z: 0 }, _near = { x: 0, z: 0 };
+
+class Creature {
+  constructor(spawn, yaw, hue) {
+    const skinC = new THREE.Color().setHSL(hue, 0.50, 0.55);
+    const skin   = new THREE.MeshStandardMaterial({ color: skinC, roughness: 0.5, metalness: 0.05 });
+    this.limbMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.45, 0.34), roughness: 0.6 });
+    this.jointMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.45, 0.40), roughness: 0.55 });
+    this.footMat  = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.40, 0.20), roughness: 0.7 });
+
+    this.group = new THREE.Group();
+    this.group.rotation.order = 'YXZ';
+    scene.add(this.group);
+
+    const torso = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 2), skin);
+    torso.castShadow = true; this.group.add(torso);
+    const collar = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12), this.limbMat);
+    collar.position.y = -0.20; collar.scale.set(1, 0.45, 1); this.group.add(collar);
+
+    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 2), skin);
+    head.castShadow = true; head.position.set(0, 0.18, 0.55); this.group.add(head);
+    for (const sx of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0x0c0f12, roughness: 0.15, metalness: 0.1 }));
+      eye.position.set(sx * 0.13, 0.23, 0.80); this.group.add(eye);
+      const hl = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 8), whiteMat);
+      hl.position.set(sx * 0.13 + 0.02, 0.255, 0.85); this.group.add(hl);
+    }
+
+    this.legs = hipDefs.map(d => {
+      const hipBall = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), this.jointMat);
+      hipBall.castShadow = true; hipBall.position.copy(d.hip); this.group.add(hipBall);
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), this.footMat);
+      foot.castShadow = true; foot.scale.set(0.11, FOOT_GROUND, 0.16); scene.add(foot);
+      return {
+        hipLocal: d.hip, rx: d.rest.x, rz: d.rest.z, poleSign: d.pole,
+        upper: this._cap(UPPER_LEN, 0.085), lower: this._cap(LOWER_LEN, 0.07),
+        knee: this._joint(0.095), foot,
+        end: new THREE.Vector3(),          // current foot position (world)
+        stepStart: new THREE.Vector3(), stepEnd: new THREE.Vector3(),
+        stepping: false, t: 0, uncomfortable: false, wants: false,
+      };
+    });
+
+    this.pos = spawn.clone();
+    this.vel = new THREE.Vector3();
+    this.yaw = yaw; this.pitch = 0; this.roll = 0;
+    this.roamTarget = randomTarget();
+    this.desiredDir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+
+    // plant feet at their rest positions
+    for (const leg of this.legs) {
+      const wx = this.pos.x + (leg.rx * Math.cos(yaw) + leg.rz * Math.sin(yaw));
+      const wz = this.pos.z + (-leg.rx * Math.sin(yaw) + leg.rz * Math.cos(yaw));
+      leg.end.set(wx, terrainHeight(wx, wz) + FOOT_GROUND, wz);
+    }
+  }
+  _cap(nom, r) {
+    const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, nom - 2 * r, 4, 10), this.limbMat);
+    m.castShadow = true; m.userData.base = nom; scene.add(m); return m;
+  }
+  _joint(r) { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 10), this.jointMat); m.castShadow = true; scene.add(m); return m; }
+
+  isGrounded(leg) { return !leg.stepping; }
+
+  computeSteering(all) {
+    _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+    if (_wander.length() < ARRIVE_R) { this.roamTarget = randomTarget(); _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z); }
+    if (_wander.lengthSq() > 1e-6) _wander.normalize();
+    _sep.set(0, 0, 0);
+    for (const o of all) {
+      if (o === this) continue;
+      _away.set(this.pos.x - o.pos.x, 0, this.pos.z - o.pos.z);
+      const d = _away.length();
+      if (d > 0 && d < SEP_RADIUS) {
+        _away.multiplyScalar(1 / d);
+        _sep.addScaledVector(_away, (SEP_RADIUS - d) / SEP_RADIUS);
+        if (d < MIN_GAP) _sep.addScaledVector(_away, (MIN_GAP - d) * 2.0);
+      }
+    }
+    _steer.copy(_wander).multiplyScalar(WANDER_W).addScaledVector(_sep, SEP_W);
+    const dc = Math.hypot(this.pos.x, this.pos.z);
+    if (dc > SOFT_EDGE) _steer.addScaledVector(_away.set(-this.pos.x / dc, 0, -this.pos.z / dc), (dc - SOFT_EDGE) * BOUNDARY_GAIN);
+    if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
+    else this.desiredDir.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+  }
+
+  physicsStep(h) {
+    // --- heading (kinematic, rate-limited) ---
+    const desiredYaw = Math.atan2(this.desiredDir.x, this.desiredDir.z);
+    let diff = Math.atan2(Math.sin(desiredYaw - this.yaw), Math.cos(desiredYaw - this.yaw));
+    this.yaw += Math.max(-TURN_SPEED * h, Math.min(TURN_SPEED * h, diff));
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+
+    // --- legs: rest targets, comfort, trigger, advance ongoing steps ---
+    let anyUncomfortable = false;
+    for (const leg of this.legs) {
+      const wx = this.pos.x + (leg.rx * cy + leg.rz * sy);
+      const wz = this.pos.z + (-leg.rx * sy + leg.rz * cy);
+      const ry = terrainHeight(wx, wz) + FOOT_GROUND;
+      leg.restX = wx; leg.restY = ry; leg.restZ = wz;
+      const dh = Math.hypot(leg.end.x - wx, leg.end.z - wz), dv = Math.abs(leg.end.y - ry);
+      leg.uncomfortable = dh > COMFORT_H || dv > COMFORT_V;
+      if (leg.uncomfortable) anyUncomfortable = true;
+      if (leg.stepping) {
+        leg.t += h / STEP_DURATION;
+        const tc = Math.min(leg.t, 1), e = easeInOut(tc);
+        leg.end.lerpVectors(leg.stepStart, leg.stepEnd, e);
+        leg.end.y += Math.sin(Math.PI * tc) * STEP_LIFT;
+        if (leg.t >= 1) { leg.stepping = false; leg.end.copy(leg.stepEnd); }
+        leg.wants = false;
+      } else {
+        leg.wants = dh > TRIGGER_H || dv > TRIGGER_V;
+      }
+    }
+    // --- start at most one new step (most-displaced, partner grounded) ---
+    if (this.legs.filter(l => l.stepping).length < MAX_CONCURRENT) {
+      let pick = null, best = 0;
+      for (let i = 0; i < this.legs.length; i++) {
+        const leg = this.legs[i];
+        if (!leg.wants || leg.stepping) continue;
+        if (this.legs[diagonalPartner[i]].stepping) continue;
+        const dh = Math.hypot(leg.end.x - leg.restX, leg.end.z - leg.restZ);
+        if (dh > best) { best = dh; pick = leg; }
+      }
+      if (pick) {
+        pick.stepping = true; pick.t = 0;
+        pick.stepStart.copy(pick.end);
+        const ex = pick.restX + this.vel.x * LOOKAHEAD, ez = pick.restZ + this.vel.z * LOOKAHEAD;
+        pick.stepEnd.set(ex, terrainHeight(ex, ez) + FOOT_GROUND, ez);
+      }
+    }
+
+    // --- centre of mass + support polygon (grounded feet) ---
+    let cx = 0, cy2 = 0, cz = 0;
+    for (const leg of this.legs) { cx += leg.end.x; cy2 += leg.end.y; cz += leg.end.z; }
+    cx /= 4; cy2 /= 4; cz /= 4;
+    _com.x = (cx + this.pos.x) * 0.5; _com.z = (cz + this.pos.z) * 0.5;
+    const comY = (cy2 + this.pos.y) * 0.5 + 0.01;
+
+    const grounded = this.legs.filter(l => this.isGrounded(l));
+    const fG = grounded.length / 4;
+    let nx = 0, ny = 1, nz = 0, haveNormal = grounded.length > 0;
+    if (grounded.length === 1) {
+      const g = grounded[0].end;
+      nx = _com.x - g.x; ny = comY - g.y; nz = _com.z - g.z;
+    } else if (grounded.length >= 2) {
+      const poly = convexHull(grounded.map(l => ({ x: l.end.x, z: l.end.z })));
+      const polyY = grounded.reduce((s, l) => s + l.end.y, 0) / grounded.length;
+      if (pointInPoly(_com.x, _com.z, poly)) { nx = 0; ny = 1; nz = 0; }
+      else { nearestOnPoly(_com.x, _com.z, poly, _near); nx = _com.x - _near.x; ny = comY - polyY; nz = _com.z - _near.z; }
+    }
+    if (haveNormal) { const L = Math.hypot(nx, ny, nz) || 1; nx /= L; ny /= L; nz /= L; }
+
+    // --- dynamics ---
+    this.vel.y -= GRAV * h;
+    if (haveNormal) {
+      const preferredY = cy2 + BODY_HEIGHT;
+      let mag = GRAV + KP * (preferredY - this.pos.y) - KD * this.vel.y;
+      mag = Math.max(0, Math.min(HEIGHT_CAP * fG, mag));
+      let ax = nx * mag, ay = ny * mag, az = nz * mag;
+      if (Math.hypot(ax, az) > ay) { ax = 0; ay = 0; az = 0; }   // can't recover -> let it topple
+      this.vel.x += ax * h; this.vel.y += ay * h; this.vel.z += az * h;
+    }
+    // walk drive (authority scales with how many feet are down)
+    const speed = BASE_SPEED * (0.35 + 0.65 * Math.max(0, Math.cos(diff))) * (anyUncomfortable ? 0.2 : 1);
+    this.vel.x += (sy * speed - this.vel.x) * WALK_GAIN * fG * h;
+    this.vel.z += (cy * speed - this.vel.z) * WALK_GAIN * fG * h;
+    this.vel.x *= (1 - H_DRAG * h); this.vel.z *= (1 - H_DRAG * h);
+
+    this.pos.addScaledVector(this.vel, h);
+
+    // body floor (don't sink through terrain)
+    const floorY = terrainHeight(this.pos.x, this.pos.z) + BODY_MIN_CLEAR;
+    if (this.pos.y < floorY) { this.pos.y = floorY; if (this.vel.y < 0) this.vel.y *= -BOUNCE; }
+
+    // --- orientation from feet (pitch/roll), smoothed ---
+    const f = this.legs, fr = f[0].end, frr = f[1].end, bl = f[2].end, br = f[3].end;
+    const fvY = (fr.y + frr.y) - (bl.y + br.y);
+    const fvH = Math.hypot((fr.x + frr.x) - (bl.x + br.x), (fr.z + frr.z) - (bl.z + br.z)) || 1e-3;
+    const svY = (frr.y + br.y) - (fr.y + bl.y);
+    const svH = Math.hypot((frr.x + br.x) - (fr.x + bl.x), (frr.z + br.z) - (fr.z + bl.z)) || 1e-3;
+    const pitchT = -Math.atan2(fvY, fvH), rollT = Math.atan2(svY, svH);
+    this.pitch += (pitchT - this.pitch) * ORIENT_LERP;
+    this.roll  += (rollT  - this.roll)  * ORIENT_LERP;
+  }
+
+  render() {
+    this.group.position.copy(this.pos);
+    this.group.rotation.set(this.pitch, this.yaw, this.roll);
+    this.group.updateMatrixWorld(true);
+    _fwd.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    for (const leg of this.legs) {
+      _hipWorld.copy(this.group.localToWorld(leg.hipLocal.clone()));
+      _footPos.copy(leg.end);
+      const knee = solveKnee(_hipWorld, _footPos, UPPER_LEN, LOWER_LEN, _fwd.clone().multiplyScalar(leg.poleSign));
+      placeSegment(leg.upper, _hipWorld, knee);
+      placeSegment(leg.lower, knee, _footPos);
+      leg.knee.position.copy(knee);
+      leg.foot.position.copy(_footPos);
+      terrainNormal(_footPos.x, _footPos.z, _n);
+      orientFromUpForward(_n, _fwd, _q);
+      leg.foot.quaternion.copy(_q);
+    }
+  }
+}
+
+// ===================== spawn =====================
+const COUNT = 7, creatures = [];
+for (let i = 0; i < COUNT; i++) {
+  const a = (i / COUNT) * Math.PI * 2, sx = Math.cos(a) * 9, sz = Math.sin(a) * 9;
+  const pos = new THREE.Vector3(sx, terrainHeight(sx, sz) + BODY_HEIGHT, sz);
+  creatures.push(new Creature(pos, Math.random() * Math.PI * 2, 0.33 + (i / (COUNT - 1)) * 0.17));
+}
+
+// ===================== camera orbit =====================
+const target = new THREE.Vector3(0, 0.9, 0);
+const off = camera.position.clone().sub(target);
+let radius = off.length(), theta = Math.atan2(off.x, off.z), phi = Math.acos(off.y / radius);
+let dragging = false, px = 0, py = 0;
+function applyCamera() {
+  camera.position.set(target.x + radius * Math.sin(phi) * Math.sin(theta),
+                      target.y + radius * Math.cos(phi),
+                      target.z + radius * Math.sin(phi) * Math.cos(theta));
+  camera.lookAt(target);
+}
+renderer.domElement.addEventListener('pointerdown', e => { if (fpsMode) return; dragging = true; px = e.clientX; py = e.clientY; });
+window.addEventListener('pointerup', () => { dragging = false; });
+window.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  theta -= (e.clientX - px) * 0.005; phi -= (e.clientY - py) * 0.005;
+  phi = Math.max(0.15, Math.min(Math.PI - 0.15, phi)); px = e.clientX; py = e.clientY;
+});
+renderer.domElement.addEventListener('wheel', e => {
+  if (fpsMode) return;
+  e.preventDefault(); radius *= 1 + Math.sign(e.deltaY) * 0.08;
+  radius = Math.max(4, Math.min(70, radius));
+}, { passive: false });
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+  if (waterRef) waterRef.resize();
+});
+
+// ===================== FPS walk mode (Octree/Capsule — mirrors ThreeJS_FPS_2.0) =====================
+const STEPS_PER_FRAME = 5;
+
+const playerCollider = new Capsule(
+  new THREE.Vector3(0, 0.35, 0),
+  new THREE.Vector3(0, 1.0,  0),
+  0.35
+);
+const playerVelocity = new THREE.Vector3();
+let playerOnFloor = false;
+let fpsMode = false;
+const fpsKeys = {};
+
+// Tunable movement params — exposed via the debug panel below
+const fp = {
+  speedStand:  25,   speedCrouch: 10,  speedProne:  4,
+  heightStand: 1.25, heightCrouch: 0.55, heightProne: 0.08,
+  jumpForce:   15,   gravity:      30,
+  sensitivity: 500,
+  airStrafe:   8,    airDamp:      4,
+  friction:    15,   // ground decel exponent — higher = stops faster
+};
+
+let stance = 'stand';
+let capsuleH = fp.heightStand;
+
+function buildOctree() {
+  worldOctree = new Octree();
+  ground.updateMatrixWorld(true);
+  worldOctree.fromGraphNode(ground);
+}
+
+// ---- FPS debug panel ----
+{
+  const panel = document.createElement('div');
+  panel.style.cssText = 'position:fixed;top:10px;left:10px;width:210px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;padding:10px 12px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none';
+  document.body.appendChild(panel);
+
+  function fpHeader(text) {
+    const h = document.createElement('div');
+    h.textContent = text;
+    h.style.cssText = 'color:#8a93a3;margin:8px 0 2px;font-size:11px;text-transform:uppercase;letter-spacing:.05em';
+    panel.appendChild(h);
+  }
+  function fpSlider(label, key, min, max, step, fmt) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;margin-top:5px';
+    const valEl = document.createElement('span');
+    valEl.style.color = '#7f8a99';
+    valEl.textContent = fmt(fp[key]);
+    row.innerHTML = '<span>' + label + '</span>';
+    row.appendChild(valEl);
+    panel.appendChild(row);
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = fp[key];
+    inp.style.width = '100%';
+    inp.addEventListener('input', () => { fp[key] = parseFloat(inp.value); valEl.textContent = fmt(fp[key]); });
+    panel.appendChild(inp);
+  }
+
+  const f1 = v => v.toFixed(1);
+  const fi = v => String(Math.round(v));
+
+  fpHeader('Movement');
+  fpSlider('Walk speed',   'speedStand',  1,  60, 1,    fi);
+  fpSlider('Crouch speed', 'speedCrouch', 1,  30, 1,    fi);
+  fpSlider('Prone speed',  'speedProne',  1,  15, 0.5,  f1);
+  fpSlider('Jump force',   'jumpForce',   5,  40, 0.5,  f1);
+  fpSlider('Air strafe',   'airStrafe',   1,  30, 0.5,  f1);
+
+  fpHeader('Physics');
+  fpSlider('Gravity',      'gravity',     5,  80, 0.5,  f1);
+  fpSlider('Friction',     'friction',    1, 100, 1,    fi);
+  fpSlider('Air damping',  'airDamp',     1,  20, 0.5,  f1);
+
+  fpHeader('Stance heights');
+  fpSlider('Stand',  'heightStand',  0.5, 2.5, 0.05, f1);
+  fpSlider('Crouch', 'heightCrouch', 0.2, 1.5, 0.05, f1);
+  fpSlider('Prone',  'heightProne',  0.0, 0.5, 0.02, f1);
+
+  fpHeader('Look');
+  fpSlider('Sensitivity', 'sensitivity', 100, 2000, 10, fi);
+}
+
+const crosshair = document.createElement('div');
+crosshair.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;pointer-events:none;display:none';
+crosshair.innerHTML = '<svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/><line x1="3" y1="10" x2="17" y2="10" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/></svg>';
+document.body.appendChild(crosshair);
+
+const enterHint = document.createElement('div');
+enterHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center';
+enterHint.textContent = 'F → walk mode  \xb7  drag to orbit  \xb7  scroll to zoom';
+document.body.appendChild(enterHint);
+
+const exitHint = document.createElement('div');
+exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
+exitHint.textContent = 'WASD  \xb7  Space jump  \xb7  C crouch  \xb7  Z prone  \xb7  F/Esc → orbit';
+document.body.appendChild(exitHint);
+
+function enterFPS() {
+  const sx = 8, sz = 0;
+  const spawnY = terrainHeight(sx, sz);
+  playerCollider.start.set(sx, spawnY + 0.35, sz);
+  playerCollider.end.set(sx,   spawnY + 0.35 + fp.heightStand, sz);
+  playerCollider.radius = 0.35;
+  playerVelocity.set(0, 0, 0);
+  playerOnFloor = false;
+  stance = 'stand';
+  capsuleH = fp.heightStand;
+  camera.rotation.order = 'YXZ';
+  camera.rotation.set(0, Math.PI, 0);
+  fpsMode = true;
+  camera.fov = 70; camera.updateProjectionMatrix();
+  crosshair.style.display = 'block';
+  exitHint.style.display = 'block';
+  enterHint.style.display = 'none';
+}
+
+function exitFPS() {
+  fpsMode = false;
+  camera.fov = 50; camera.updateProjectionMatrix();
+  crosshair.style.display = 'none';
+  exitHint.style.display = 'none';
+  enterHint.style.display = 'block';
+}
+
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) { enterFPS(); }
+  else if (fpsMode) { exitFPS(); }
+});
+
+
+document.addEventListener('mousemove', e => {
+  if (!fpsMode) return;
+  camera.rotation.y -= e.movementX / fp.sensitivity;
+  camera.rotation.x -= e.movementY / fp.sensitivity;
+});
+
+window.addEventListener('keydown', e => {
+  fpsKeys[e.code] = true;
+  if (e.code === 'KeyF') {
+    if (!fpsMode) renderer.domElement.requestPointerLock();
+    else document.exitPointerLock();
+  }
+  if (fpsMode) {
+    if (e.code === 'KeyC') stance = stance === 'crouch' ? 'stand' : 'crouch';
+    if (e.code === 'KeyZ') stance = stance === 'prone'  ? 'stand' : 'prone';
+  }
+});
+window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
+
+function applyFPSControls(deltaTime) {
+  camera.updateMatrixWorld();
+  const forward = new THREE.Vector3();
+  const side    = new THREE.Vector3();
+  forward.setFromMatrixColumn(camera.matrixWorld, 0);
+  forward.crossVectors(camera.up, forward).normalize();
+  side.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+
+  if (playerOnFloor) {
+    // Direct velocity set — responsive, no momentum build-up fighting damping
+    const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)];
+    let mx = 0, mz = 0;
+    if (fpsKeys['KeyW']) { mx += forward.x; mz += forward.z; }
+    if (fpsKeys['KeyS']) { mx -= forward.x; mz -= forward.z; }
+    if (fpsKeys['KeyA']) { mx -= side.x;    mz -= side.z;    }
+    if (fpsKeys['KeyD']) { mx += side.x;    mz += side.z;    }
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      playerVelocity.x = (mx / len) * speed;
+      playerVelocity.z = (mz / len) * speed;
+    } else {
+      const f = Math.exp(-fp.friction * deltaTime) - 1;
+      playerVelocity.x += playerVelocity.x * f;
+      playerVelocity.z += playerVelocity.z * f;
+    }
+    if (stance === 'stand' && fpsKeys['Space']) playerVelocity.y = fp.jumpForce;
+  } else {
+    // In air: additive so jumps have momentum
+    const speedDelta = deltaTime * fp.airStrafe;
+    if (fpsKeys['KeyW']) playerVelocity.add(forward.clone().multiplyScalar( speedDelta));
+    if (fpsKeys['KeyS']) playerVelocity.add(forward.clone().multiplyScalar(-speedDelta));
+    if (fpsKeys['KeyA']) playerVelocity.add(side.clone().multiplyScalar(  -speedDelta));
+    if (fpsKeys['KeyD']) playerVelocity.add(side.clone().multiplyScalar(   speedDelta));
+  }
+}
+
+function updateFPSPlayer(deltaTime) {
+  if (!playerOnFloor) {
+    playerVelocity.y -= fp.gravity * deltaTime;
+    const airDamp = (Math.exp(-fp.airDamp * deltaTime) - 1) * 0.1;
+    playerVelocity.addScaledVector(playerVelocity, airDamp);
+  }
+  playerCollider.translate(playerVelocity.clone().multiplyScalar(deltaTime));
+  const result = worldOctree.capsuleIntersect(playerCollider);
+  playerOnFloor = result ? result.normal.y > 0 : false;
+  if (result) {
+    playerVelocity.addScaledVector(result.normal, -result.normal.dot(playerVelocity));
+    playerCollider.translate(result.normal.multiplyScalar(result.depth));
+  }
+  // Lerp capsule height toward current stance, then pin end above start.
+  const targetH = fp['height' + stance[0].toUpperCase() + stance.slice(1)];
+  capsuleH += (targetH - capsuleH) * Math.min(1, deltaTime * 12);
+  playerCollider.end.copy(playerCollider.start);
+  playerCollider.end.y += capsuleH;
+  camera.position.copy(playerCollider.end);
+}
+
+// ===================== fixed-timestep loop =====================
+const clock = new THREE.Clock();
+const FIXED = 1 / 60; let acc = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  const rawDt = Math.min(clock.getDelta(), 0.1);
+  acc += rawDt;
+  for (const c of creatures) c.computeSteering(creatures);
+  let steps = 0;
+  while (acc >= FIXED && steps < 5) { for (const c of creatures) c.physicsStep(FIXED); acc -= FIXED; steps++; }
+  if (steps === 5) acc = 0;
+  for (const c of creatures) c.render();
+  if (grassRef) grassRef.update(performance.now() / 1000);
+  if (cloudsRef) cloudsRef.update(performance.now() / 1000);
+  if (fpsMode) {
+    const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
+    for (let i = 0; i < STEPS_PER_FRAME; i++) {
+      applyFPSControls(fpsDt);
+      updateFPSPlayer(fpsDt);
+    }
+  } else {
+    applyCamera();
+  }
+  // water runs its own reflection / refraction / caustics passes, then we draw
+  if (waterRef) waterRef.update(performance.now() / 1000);
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
