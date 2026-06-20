@@ -468,6 +468,10 @@ export function createWaterSystem(options = {}) {
   const causticCamera = new THREE.Camera();
   causticCamera.matrixAutoUpdate      = false;
   causticCamera.matrixWorldAutoUpdate = false;
+  // WebGPURenderer._renderScene() calls camera.updateProjectionMatrix(); the base
+  // THREE.Camera has no such method (only Perspective/Orthographic do) — it crashes.
+  // This camera builds its projection manually, so make it a no-op to preserve it.
+  causticCamera.updateProjectionMatrix = () => {};
 
   function updateCausticCamera(cx, cz, sz) {
     const s = 2 / sz;
