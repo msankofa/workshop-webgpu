@@ -33,6 +33,7 @@ import {
   uniform, attribute, positionWorld, cameraPosition,
   Fn, vec2, vec3, float,
   sin, normalize, dot, pow, max, clamp, mix, smoothstep,
+  reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
 export const WATER_VERSION = 'cw4';
@@ -268,8 +269,9 @@ export function createWaterSystem(options = {}) {
   const { renderer, scene, camera, ground } = o;
   const lightDir = (o.lightDir ? o.lightDir.clone() : new THREE.Vector3(16, 26, 14)).normalize();
 
-  // Gate all render-pass work (reflection/refraction/caustics) — real passes come in 6.2/6.3.
-  const WATER_PASSES = false;
+  // Gate the caustic render pass — reflection+refraction restored in 6.2 via TSL nodes;
+  // caustics render pass remains gated here until checkpoint 6.3.
+  const CAUSTICS_ENABLED = false;
 
   // ---- TSL uniform handles for the surface node material ----
   const tsl_uTime       = uniform(0.0,                  'float');
@@ -277,7 +279,9 @@ export function createWaterSystem(options = {}) {
   const tsl_uShallow    = uniform(new THREE.Color(o.shallow));
   const tsl_uDeep       = uniform(new THREE.Color(o.deep));
   const tsl_uLightDir   = uniform(lightDir.clone());          // vec3
-  const tsl_uDepthScale = uniform(o.depthScale,          'float');
+  const tsl_uDepthScale      = uniform(o.depthScale,       'float');
+  const tsl_uRefractStrength = uniform(o.refractStrength,  'float');
+  const tsl_uReflectStrength = uniform(o.reflectStrength,  'float');
 
   // Per-vertex attribute: water depth at this vertex (= waterLevel - terrainHeight, ≥ 0)
   const aDepth = attribute('aDepth', 'float');
@@ -323,17 +327,40 @@ export function createWaterSystem(options = {}) {
   // Depth factor: 0 = surface/shallow, 1 = fully deep.
   const dt = clamp(aDepth.div(tsl_uDepthScale), float(0.0), float(1.0));
 
-  // Refraction placeholder: deep-water color instead of sampling uRefract texture.
-  // GLSL: vec3 bed = texture2D(uRefract, uv + N.xz*uRefractStrength*dt).rgb  ← disabled
-  //       vec3 waterCol = mix(uShallow, uDeep, dt);
-  //       vec3 refr = mix(bed, waterCol, mix(0.2, 0.85, dt));
-  const bed      = tsl_uDeep;
+  // ── Refraction (checkpoint 6.2) ────────────────────────────────────────────
+  // viewportSharedTexture copies the live framebuffer via copyFramebufferToTexture()
+  // during NodeUpdateType.RENDER updateBefore(), so it captures the terrain/sky that
+  // has already been drawn (water renderOrder=1 → draws last among opaques).
+  // No separate render pass needed; no manual RenderTarget management.
+  // issues/001 safe: the copy happens during the live loop, not at construction.
+  //
+  // GLSL equivalent:
+  //   vec2 uv = gl_FragCoord.xy / uResolution;
+  //   vec3 bed = texture2D(uRefract, uv + N.xz * uRefractStrength * dt).rgb;
+  const refractOffset = N.xz.mul(tsl_uRefractStrength).mul(dt);
+  const bed      = viewportSharedTexture(screenUV.add(refractOffset)).rgb;
   const waterCol = mix(tsl_uShallow, tsl_uDeep, dt);
   const refr     = mix(bed, waterCol, mix(float(0.2), float(0.85), dt));
 
-  // Reflection placeholder: sky-ish light blue/gray instead of projective uReflect sample.
-  // GLSL: vec3 refl = texture2DProj(uReflect, rc).rgb  ← disabled
-  const refl = vec3(0.55, 0.65, 0.78);
+  // ── Reflection (checkpoint 6.2) ────────────────────────────────────────────
+  // ReflectorNode manages its own mirror camera + RenderTarget + oblique-clip near
+  // plane (the same Lengyel technique as the old updateReflection()). It renders via
+  // renderer.render(scene, virtualCamera) inside its updateBefore() hook, then sets
+  //   this.textureNode.value = renderTarget.texture
+  // during the live loop — safely avoiding the issues/001 pre-first-render bind trap.
+  // material.visible is toggled false/true around the reflection render so the water
+  // surface is absent from its own reflection.
+  //
+  // The reflector uses the target Object3D's local +Z as the plane normal; rotating
+  // by -PI/2 around X maps local +Z → world +Y (horizontal water plane).
+  //
+  // GLSL equivalent:
+  //   vec4 rc = vReflect; rc.xy += N.xz * uReflectStrength * rc.w;
+  //   vec3 refl = texture2DProj(uReflect, rc).rgb;
+  const tsl_reflector = reflector();
+  tsl_reflector.target.rotation.x = -Math.PI / 2;
+  tsl_reflector.uvNode = tsl_reflector.uvNode.add(N.xz.mul(tsl_uReflectStrength));
+  const refl = tsl_reflector.rgb;
 
   // Fresnel blend: grazing angles → more reflection; head-on → more refraction.
   const blended = mix(refr, refl, fres);
@@ -354,9 +381,9 @@ export function createWaterSystem(options = {}) {
   const opacityNode = clamp(float(0.5).add(aDepth), float(0.6), float(0.98))
                       .mul(smoothstep(float(0.0), float(0.1), aDepth));
 
-  // ---- Assemble TSL surface material (checkpoint 6.1: flat placeholders) ----
+  // ---- Assemble TSL surface material (checkpoint 6.2: real reflection + refraction) ----
   // Ported from THREE.ShaderMaterial (SURFACE_VERT / SURFACE_FRAG) to MeshBasicNodeMaterial.
-  // Real uReflect / uRefract render-target sampling restored in checkpoint 6.2.
+  // Reflection: tsl_reflector (ReflectorNode). Refraction: viewportSharedTexture.
   const surfaceMat = new MeshBasicNodeMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
   });
@@ -366,6 +393,9 @@ export function createWaterSystem(options = {}) {
   surface.name = 'WaterChunks';
   surface.position.y = o.waterLevel;
   surface.renderOrder = 1;
+  // Add the reflector's reference object so it inherits the water-level world position.
+  // The -PI/2 X rotation (set above) makes local +Z → world +Y (horizontal mirror plane).
+  surface.add(tsl_reflector.target);
 
   // caustics mesh lives in its own scene; it is rendered straight to clip space
   const causticMat = new THREE.ShaderMaterial({
@@ -392,11 +422,10 @@ export function createWaterSystem(options = {}) {
   let waterBuildKeys = new Set();
 
   // ---------- render targets ----------
-  const _res = new THREE.Vector2();
-  renderer.getDrawingBufferSize(_res);
+  // reflectionTarget  → replaced by tsl_reflector (ReflectorNode manages its own RT).
+  // refractionTarget  → replaced by viewportSharedTexture (framebuffer copy, no RT needed).
+  // causticsTarget    → retained; used by the caustics pass in checkpoint 6.3.
   const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter };
-  const reflectionTarget = new THREE.WebGLRenderTarget(_res.x, _res.y, rtOpts);
-  const refractionTarget = new THREE.WebGLRenderTarget(_res.x, _res.y, rtOpts);
   const causticsTarget = new THREE.WebGLRenderTarget(o.causticRes, o.causticRes, rtOpts);
 
   // ---------- patch the terrain material to receive caustics ----------
@@ -413,7 +442,7 @@ export function createWaterSystem(options = {}) {
   };
   // Caustic ground patch requires active render passes — gated until checkpoint 6.3.
   // If the ground material is a WebGPU node material, onBeforeCompile would crash anyway.
-  if (WATER_PASSES && ground && ground.material) {
+  if (CAUSTICS_ENABLED && ground && ground.material) {
     const mat = ground.material;
     // Compose with any existing patch (e.g. the instanced terrain's heightmap
     // displacement) instead of replacing it, so displacement survives.
@@ -468,20 +497,9 @@ export function createWaterSystem(options = {}) {
     mat.needsUpdate = true;
   }
 
-  // ---------- planar-reflection camera (THREE.Reflector algorithm) ----------
-  const reflectionCamera = new THREE.PerspectiveCamera();
-  const textureMatrix = new THREE.Matrix4();
-  const _reflectorPos = new THREE.Vector3();
-  const _camPos = new THREE.Vector3();
-  const _normal = new THREE.Vector3(0, 1, 0);
-  const _view = new THREE.Vector3();
-  const _target = new THREE.Vector3();
-  const _look = new THREE.Vector3();
-  const _rot = new THREE.Matrix4();
-  const _clipPlane = new THREE.Plane();
-  const _clipVec = new THREE.Vector4();
-  const _q = new THREE.Vector4();
-  const CLIP_BIAS = 0.003;
+  // Note: the manual planar-reflection camera (THREE.Reflector algorithm) and its
+  // helper vectors/matrices are superseded by tsl_reflector (ReflectorNode) which
+  // handles mirror-camera, oblique-clip, and RT management internally.
 
   function disposeWaterChunk(chunk) {
     surface.remove(chunk.mesh);
@@ -577,92 +595,43 @@ export function createWaterSystem(options = {}) {
     stats.dry = Math.max(0, stats.candidates - stats.chunks - stats.pending);
   }
 
-  function updateReflection() {
-    _reflectorPos.set(0, surface.position.y, 0);
-    _camPos.setFromMatrixPosition(camera.matrixWorld);
-
-    _view.subVectors(_reflectorPos, _camPos);
-    if (_view.dot(_normal) > 0) return false; // camera is below the water
-    _view.reflect(_normal).negate().add(_reflectorPos);
-
-    _rot.extractRotation(camera.matrixWorld);
-    _look.set(0, 0, -1).applyMatrix4(_rot).add(_camPos);
-    _target.subVectors(_reflectorPos, _look);
-    _target.reflect(_normal).negate().add(_reflectorPos);
-
-    reflectionCamera.position.copy(_view);
-    reflectionCamera.up.set(0, 1, 0).applyMatrix4(_rot).reflect(_normal);
-    reflectionCamera.lookAt(_target);
-    reflectionCamera.far = camera.far;
-    reflectionCamera.updateMatrixWorld();
-    reflectionCamera.projectionMatrix.copy(camera.projectionMatrix);
-
-    // texture matrix maps world position -> reflection texture uv (bias * P * V)
-    textureMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
-    textureMatrix.multiply(reflectionCamera.projectionMatrix);
-    reflectionCamera.matrixWorldInverse.copy(reflectionCamera.matrixWorld).invert();
-    textureMatrix.multiply(reflectionCamera.matrixWorldInverse);
-
-    // oblique near plane so under-water geometry is clipped out of the reflection
-    _clipPlane.setFromNormalAndCoplanarPoint(_normal, _reflectorPos);
-    _clipPlane.applyMatrix4(reflectionCamera.matrixWorldInverse);
-    _clipVec.set(_clipPlane.normal.x, _clipPlane.normal.y, _clipPlane.normal.z, _clipPlane.constant);
-    const P = reflectionCamera.projectionMatrix.elements;
-    _q.x = (Math.sign(_clipVec.x) + P[8]) / P[0];
-    _q.y = (Math.sign(_clipVec.y) + P[9]) / P[5];
-    _q.z = -1.0;
-    _q.w = (1.0 + P[10]) / P[14];
-    _clipVec.multiplyScalar(2.0 / _clipVec.dot(_q));
-    P[2] = _clipVec.x; P[6] = _clipVec.y; P[10] = _clipVec.z + 1.0 - CLIP_BIAS; P[14] = _clipVec.w;
-    return true;
-  }
-
   syncWaterChunks();
 
-  // ---------- per-frame multi-pass update ----------
-  let reflectEvery = 1, frame = 0;
+  // ---------- per-frame update ----------
+  // Reflection  : tsl_reflector (ReflectorNode) fires its own renderer.render() inside
+  //               updateBefore() — triggered automatically by the node system when
+  //               renderer.render(scene, camera) is called by the host loop.
+  // Refraction  : viewportSharedTexture copies the framebuffer inside updateBefore()
+  //               via renderer.copyFramebufferToTexture() — no extra pass needed.
+  // Caustics    : explicit pass, gated behind CAUSTICS_ENABLED (checkpoint 6.3).
+  let reflectEvery = 1;  // retained for API; no rate effect with ReflectorNode (renders per-frame)
   function update(time) {
     processWaterBuildQueue();
     tsl_uTime.value = time;
-    tsl_uWave.value = causticMat.uniforms.uWave.value;   // sync wave amplitude from caustic mat
+    tsl_uWave.value = causticMat.uniforms.uWave.value;
     causticMat.uniforms.uTime.value = time;
-    camera.updateMatrixWorld(); // ensure reflection reads the current camera pose
+    camera.updateMatrixWorld();
 
-    // throttle the (expensive) reflection pass; reuse the last reflection on skip
-    const doReflect = (frame % reflectEvery) === 0;
-    frame++;
-
-    // Render passes gated until checkpoint 6.2 (reflection/refraction) / 6.3 (caustics).
-    if (WATER_PASSES) {
+    if (CAUSTICS_ENABLED) {
+      // Caustic map: render the lake grid from the light direction into causticsTarget.
+      // The caustic scene has no water surface — only the causticGroup.
       const prevTarget = renderer.getRenderTarget();
-      surface.visible = false;
-
-      // 1) caustics map (cheap; just the lake grid, straight to clip space)
       renderer.setRenderTarget(causticsTarget);
       renderer.render(causticScene, camera);
-
-      // 2) planar reflection (scene without the surface, mirrored camera)
-      if (doReflect && updateReflection()) {
-        renderer.setRenderTarget(reflectionTarget);
-        renderer.render(scene, reflectionCamera);
-      }
-
-      // 3) refraction (scene without the surface, main camera)
-      renderer.setRenderTarget(refractionTarget);
-      renderer.render(scene, camera);
-
       renderer.setRenderTarget(prevTarget);
-      surface.visible = true;
-
-      // texture/matrix/resolution uniform bindings restored in checkpoint 6.2
     }
   }
-  function setReflectRate(everyNFrames) { reflectEvery = Math.max(1, Math.round(everyNFrames)); }
+  function setReflectRate(everyNFrames) {
+    // API preserved. With ReflectorNode the reflector renders every frame automatically;
+    // per-N-frame throttling requires ReflectorNode.updateBeforeType manipulation
+    // which is deferred to a later pass.
+    reflectEvery = Math.max(1, Math.round(everyNFrames));
+  }
 
   function resize() {
-    renderer.getDrawingBufferSize(_res);
-    reflectionTarget.setSize(_res.x, _res.y);
-    refractionTarget.setSize(_res.x, _res.y);
+    // tsl_reflector auto-resizes its RT (ReflectorBaseNode._updateResolution on each render).
+    // viewportSharedTexture reads the live framebuffer — always canvas-sized.
+    // causticsTarget is fixed-resolution; no resize needed.
   }
 
   function regenerate(opts) {
@@ -710,8 +679,8 @@ export function createWaterSystem(options = {}) {
   function dispose() {
     for (const chunk of waterChunks.values()) disposeWaterChunk(chunk);
     waterChunks.clear();
-    surfaceMat.dispose(); causticMat.dispose();
-    reflectionTarget.dispose(); refractionTarget.dispose(); causticsTarget.dispose();
+    // surfaceMat.dispose() also cleans up tsl_reflector's internal RT (via node disposal).
+    surfaceMat.dispose(); causticMat.dispose(); causticsTarget.dispose();
   }
 
   function getChunkCount() { return waterChunks.size; }
