@@ -57,6 +57,7 @@ const DEFAULTS = {
     angle: 55,            // tilt (deg) of leaf off the branch
     doubleBillboard: true,// two perpendicular quads per leaf
     roundedNormals: true, // bend leaf normals outward so the canopy lights as a volume
+    shape: 'quad',        // 'quad' = atlas card, 'simple' = textureless leaf polygon
     atlas: null,          // {cols,rows} to pick a random cell per leaf from a sprite sheet;
                           // add {cell:n} to pin every leaf to one cell (e.g. one species)
     shadowFraction: 0,    // 0..1 of leaves that cast shadows (billboards are muddy, so default off)
@@ -110,6 +111,16 @@ const _lp = new THREE.Vector3();
 const _loff = new THREE.Vector3();
 const _lface = new THREE.Vector3();
 const LEAF_CORNERS = [[-1, 0], [1, 0], [1, 1], [-1, 1]];
+const LEAF_SHAPE = [
+  [0, 0],
+  [-0.48, 0.22],
+  [-0.34, 0.58],
+  [-0.12, 0.86],
+  [0, 1],
+  [0.12, 0.86],
+  [0.34, 0.58],
+  [0.48, 0.22],
+];
 
 export class Tree extends THREE.Group {
   constructor(options = {}) {
@@ -338,12 +349,17 @@ export class Tree extends THREE.Group {
       }
       // Both billboards of one leaf share a bucket so the leaf casts (or not) as a whole.
       const target = this.leafShadowRng.next() < lo.shadowFraction ? this.leafShadow : this.leaf;
-      this._leafQuad(origin, _lq, size, uv, target);
+      this._leaf(origin, _lq, size, uv, target);
       if (lo.doubleBillboard) {
         _lq2.copy(_lq).multiply(_lqa.setFromAxisAngle(UP, Math.PI / 2));
-        this._leafQuad(origin, _lq2, size, uv, target);
+        this._leaf(origin, _lq2, size, uv, target);
       }
     }
+  }
+
+  _leaf(origin, q, size, uv, target = this.leaf) {
+    if (this.options.leaves.shape === 'simple') this._leafShape(origin, q, size, target);
+    else this._leafQuad(origin, q, size, uv, target);
   }
 
   // a single leaf card: width-by-height quad growing outward from `origin`.
@@ -365,6 +381,27 @@ export class Tree extends THREE.Group {
     const [u0, v0, u1, v1] = uv;                 // corners: BL, BR, TR, TL
     target.uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
     target.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+
+  // a textureless leaf silhouette. The polygon itself carries the leaf shape so
+  // procedural mode does not need an alpha atlas.
+  _leafShape(origin, q, size, target = this.leaf) {
+    const w = size * 0.54, h = size;
+    const rounded = this.options.leaves.roundedNormals;
+    _lface.set(0, 0, 1).applyQuaternion(q);
+    const base = target.verts.length / 3;
+    for (const [mx, my] of LEAF_SHAPE) {
+      _loff.set(mx * w, my * h, 0).applyQuaternion(q);
+      _lp.copy(_loff).add(origin);
+      target.verts.push(_lp.x, _lp.y, _lp.z);
+      if (rounded) _lnormal.copy(_lface).addScaledVector(_loff, 0.45).normalize();
+      else _lnormal.copy(_lface);
+      target.normals.push(_lnormal.x, _lnormal.y, _lnormal.z);
+      target.uvs.push(mx * 0.5 + 0.5, my);
+    }
+    for (let i = 1; i < LEAF_SHAPE.length - 1; i++) {
+      target.indices.push(base, base + i, base + i + 1);
+    }
   }
 
   _commit(geometry, data) {

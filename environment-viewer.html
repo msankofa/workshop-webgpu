@@ -25,7 +25,8 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
+import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix } from 'three/tsl';
 import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
@@ -63,10 +64,11 @@ camera.position.set(22, 16, 26);
 // ===================== lights =====================
 const rig = createLightingRig({ scene, ui: false });
 rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
 rig.dirLight.shadow.mapSize.set(2048, 2048);
-rig.dirLight.shadow.camera.near = 0.5; rig.dirLight.shadow.camera.far = 90;
-rig.dirLight.shadow.camera.left = -18; rig.dirLight.shadow.camera.right = 18;
-rig.dirLight.shadow.camera.top = 18;   rig.dirLight.shadow.camera.bottom = -18;
+rig.dirLight.shadow.camera.near = 1; rig.dirLight.shadow.camera.far = 260;
+rig.dirLight.shadow.camera.left = -90; rig.dirLight.shadow.camera.right = 90;
+rig.dirLight.shadow.camera.top = 90;   rig.dirLight.shadow.camera.bottom = -90;
 
 // ===================== chunked terrain (parameterised; supports lakes) =====================
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
@@ -218,6 +220,24 @@ let terrainDecorationsDirty = false;
 let terrainDecorationsRebuildAll = false;
 let lastWaterChunkSignature = '';
 const terrainFocus = new THREE.Vector3();
+const shadowFocus = new THREE.Vector3();
+
+function updateSunShadowFocus(center) {
+  const half = Math.max(45, (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize);
+  const cam = rig.dirLight.shadow.camera;
+  if (cam.left !== -half || cam.right !== half || cam.top !== half || cam.bottom !== -half) {
+    cam.left = -half; cam.right = half; cam.top = half; cam.bottom = -half;
+    cam.updateProjectionMatrix();
+  }
+  const a = rig.azimuth * Math.PI / 180;
+  const e = rig.elevation * Math.PI / 180;
+  const dir = new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+  shadowFocus.set(center.x, terrainHeight(center.x, center.z), center.z);
+  rig.dirLight.target.position.copy(shadowFocus);
+  rig.dirLight.position.copy(shadowFocus).addScaledVector(dir, 120);
+  rig.dirLight.target.updateMatrixWorld();
+  rig.dirLight.updateMatrixWorld();
+}
 
 // Rebuild everything that depends on terrain (size / lakes / water level).
 function rebuildWorld() {
@@ -232,6 +252,7 @@ function rebuildWorld() {
 
 function updateTerrainWindow(center) {
   terrainFocus.copy(center);
+  updateSunShadowFocus(center);
   if (terrainSystem.update(center.x, center.z)) {
     ground = terrainSystem.materialPatchTarget;
     terrainOctreeDirty = true;
@@ -301,15 +322,19 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   // async, so `texSet` may report ready=false; regenerate() tolerates that and
   // we re-bind + rebuild from the onReady callback when the maps finish.
   let texSet = null;
+  function disposeTextureSetSoon(s) {
+    if (!s) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => s.dispose())));
+  }
   function loadTextures(mode) {
     const prev = texSet;
     texSet = createTextureSource(mode, {
-      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); if (prev) prev.dispose(); } },
+      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); disposeTextureSetSoon(prev); } },
     });
     // Apply immediately only if already decoded (procedural). For authored, wait for
     // onReady and keep the previous set live until then — never toggle .map through
     // null, which the WebGPU NodeMaterialObserver throws on (null.isTexture).
-    if (texSet.ready) { applyTextureSet(texSet); if (prev) prev.dispose(); }
+    if (texSet.ready) { applyTextureSet(texSet); disposeTextureSetSoon(prev); }
   }
   // bind the set's maps onto the merged branch/leaf materials (tint still
   // multiplies the map via vertexColors). Only ever called with a READY set, so it
@@ -318,13 +343,52 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     if (!branchMat || !leafMat) return;        // materials not built yet (first regenerate)
     if (!s || !s.ready) return;                // never bind a not-ready set (null map)
     const bMat = branchMat, lMat = leafMat;
-    bMat.map = s.barkMap;
-    bMat.normalMap = s.barkNormalMap;
+    if (s.mode === 'procedural') {
+      bMat.map = null;
+      bMat.normalMap = null;
+      bMat.colorNode = proceduralBarkColorNode();
+      lMat.map = null;
+      lMat.transparent = false;
+      lMat.alphaTest = 0;
+    } else {
+      bMat.colorNode = null;
+      bMat.map = s.barkMap;
+      bMat.normalMap = s.barkNormalMap;
+      lMat.map = s.leafMap;
+      lMat.transparent = !!s.leafMap;
+      lMat.alphaTest = s.leafMap ? s.leafAlphaTest : 0;
+    }
     bMat.needsUpdate = true;
-    lMat.map = s.leafMap;
-    lMat.transparent = !!s.leafMap;
-    lMat.alphaTest = s.leafMap ? s.leafAlphaTest : 0;
     lMat.needsUpdate = true;
+  }
+  function proceduralBarkColorNode() {
+    const uv = attribute('uv', 'vec2');
+    const vertexColor = attribute('color', 'vec3');
+
+    const hash2D = Fn(([p]) => {
+      const q = fract(p.mul(vec2(123.34, 456.21)));
+      const r = q.add(dot(q, q.add(float(45.32))));
+      return fract(r.x.mul(r.y));
+    });
+    const noise2D = Fn(([p]) => {
+      const i = floor(p);
+      const f = fract(p);
+      const a = hash2D(i);
+      const b = hash2D(i.add(vec2(1.0, 0.0)));
+      const c = hash2D(i.add(vec2(0.0, 1.0)));
+      const d = hash2D(i.add(vec2(1.0, 1.0)));
+      const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0)));
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    });
+
+    const longGrain = noise2D(vec2(uv.x.mul(7.0), uv.y.mul(1.35)));
+    const crossBreak = noise2D(vec2(uv.x.mul(16.0).add(longGrain.mul(2.0)), uv.y.mul(5.5)));
+    const ridges = sin(uv.x.mul(42.0).add(longGrain.mul(7.0)).add(crossBreak.mul(2.5))).mul(0.5).add(0.5);
+    const pores = noise2D(vec2(uv.x.mul(54.0), uv.y.mul(18.0)));
+    const barkValue = ridges.mul(0.5).add(longGrain.mul(0.28)).add(pores.mul(0.22));
+    const shade = mix(float(0.48), float(1.34), barkValue);
+
+    return vertexColor.mul(shade);
   }
   // The forest is baked per terrain chunk. Each chunk has merged branch/leaf
   // meshes so Three.js can frustum-cull tree chunks independently.
@@ -502,7 +566,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   function ensureTreeResources() {
     if (!gen) gen = createTree({ seed: 1 });          // generator only; never added to scene
     if (!branchMat) {
-      branchMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+      branchMat = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0 });
       leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1.0, side: THREE.DoubleSide });
       applyTextureSet(texSet);
     }
@@ -580,7 +644,6 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     branches.castShadow = branches.receiveShadow = true;
     leaves.castShadow = false;
     leafShadows.castShadow = true;
-    scene.add(branches, leaves, leafShadows);
     return { key, branches, leaves, leafShadows, ready: false, version: 0 };
   }
 
@@ -601,6 +664,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     commitMerged(chunk.branches.geometry, B);
     commitMerged(chunk.leaves.geometry, L);
     commitMerged(chunk.leafShadows.geometry, LS);
+    if (!chunk.branches.parent) scene.add(chunk.branches, chunk.leaves, chunk.leafShadows);
     chunk.ready = true;
     chunk.version++;
   }
@@ -641,7 +705,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
 
   function buildNextTreeInJob(job) {
     if (job.index >= job.pos.length) return false;
-    const atlasCells = job.tex ? job.tex.leafAtlas.cols * job.tex.leafAtlas.rows : 0;
+    const useLeafAtlas = job.tex && job.tex.mode !== 'procedural';
+    const atlasCells = useLeafAtlas ? job.tex.leafAtlas.cols * job.tex.leafAtlas.rows : 0;
     const { x, z, chunkKey, slot } = job.pos[job.index++];
       const [tx, tz] = chunkKey.split(',').map(Number);
       const treeRng = rngFrom((Math.floor(hash2(tx, tz, MASTER_SEED + slot * 1013) * 0xffffffff) ^ Math.imul(slot + 1, 2654435761)) >>> 0);
@@ -649,8 +714,14 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       const sp = job.species[spIdx];
       const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
       const barkOpts = { ...sp.bark };
-      if (job.tex) {
+      if (useLeafAtlas) {
+        leafOpts.shape = 'quad';
         leafOpts.atlas = { cols: job.tex.leafAtlas.cols, rows: job.tex.leafAtlas.rows, cell: spIdx % atlasCells };
+        barkOpts.vScale = job.tex.barkVScale;
+      } else {
+        leafOpts.shape = 'simple';
+      }
+      if (job.tex) {
         barkOpts.vScale = job.tex.barkVScale;
       }
       gen.regenerate({ ...sp, seed: Math.floor(treeRng.next() * 0xffffffff) >>> 0, leaves: leafOpts, bark: barkOpts });
@@ -811,7 +882,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   regenTrees = (rebuildExisting = false) => regenerate(rebuildExisting); // movement only builds missing tree chunks
 
   // ---- lighting controls ----
-  const rigP = { elevation: rig.elevation, azimuth: rig.azimuth, sunIntensity: 1.8, ambientIntensity: 0.6 };
+  const rigP = { elevation: 80, azimuth: 198, sunIntensity: 4.0, ambientIntensity: 0.8 };
+  rig.setElevation(rigP.elevation);
+  rig.setAzimuth(rigP.azimuth);
+  rig.setSunIntensity(rigP.sunIntensity);
+  rig.setAmbientIntensity(rigP.ambientIntensity);
   header('Lighting');
   slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP);
   slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
@@ -1065,12 +1140,12 @@ const fpsKeys = {};
 
 // Tunable movement params — exposed via the debug panel below
 const fp = {
-  speedStand:  25,   speedCrouch: 10,  speedProne:  4,
-  heightStand: 1.25, heightCrouch: 0.55, heightProne: 0.08,
-  jumpForce:   15,   gravity:      30,
-  sensitivity: 500,
-  airStrafe:   8,    airDamp:      4,
-  friction:    15,   // ground decel exponent — higher = stops faster
+  speedStand:  10,   speedCrouch: 5,   speedProne:  2,
+  heightStand: 1.6,  heightCrouch: 0.6, heightProne: 0.1,
+  jumpForce:   10,   gravity:      36,
+  sensitivity: 1060,
+  airStrafe:   5.5,  airDamp:      4,
+  friction:    68,   // ground decel exponent — higher = stops faster
 };
 
 let stance = 'stand';
@@ -1217,6 +1292,7 @@ function enterFPS() {
 
 function exitFPS() {
   fpsMode = false;
+  target.set(playerCollider.end.x, playerCollider.end.y - capsuleH * 0.5, playerCollider.end.z);
   camera.fov = 50; camera.updateProjectionMatrix();
   crosshair.style.display = 'none';
   exitHint.style.display = 'none';
@@ -1322,7 +1398,7 @@ function animate() {
     updateTerrainWindow(playerCollider.end);
   } else {
     applyCamera();
-    updateTerrainWindow(camera.position);
+    updateTerrainWindow(target);
   }
   // water runs its own reflection / refraction / caustics passes, then we draw
   if (waterRef) {
