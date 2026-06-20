@@ -430,6 +430,11 @@ function buildMaterial(o) {
   });
   mat.positionNode = posNode;
   mat.colorNode    = colorNode;
+  // Grass has no per-vertex normals and is a double-sided quad; without this,
+  // MeshStandard derives a per-face normal and each blade/side lights differently
+  // (alternating dark/light). A constant up normal matches the original GLSL's
+  // flat "constant up-ish normal" so every blade is lit uniformly (shadows still apply).
+  mat.normalNode   = vec3(0, 1, 0);
 
   // Store uniform handles on the material so Grass methods can update them live
   mat._uTime        = uTime;
