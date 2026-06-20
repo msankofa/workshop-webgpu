@@ -32,7 +32,7 @@ import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
 
 const RENDERER_BACKEND = new URLSearchParams(location.search).get('renderer') || 'webgpu';
-const PORTED = { grass: true, clouds: true, water: false }; // flipped true as each module is ported to TSL (later tasks)
+const PORTED = { grass: true, clouds: true, water: true }; // flipped true as each module is ported to TSL (checkpoint 6.1: surface ported, flat reflection/refraction placeholders)
 
 // Declared here so buildOctree() can reference it.
 let worldOctree = new Octree();

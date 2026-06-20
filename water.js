@@ -28,6 +28,12 @@
 //   water.update(performance.now() / 1000);
 
 import * as THREE from 'three';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
+import {
+  uniform, attribute, positionWorld, cameraPosition,
+  Fn, vec2, vec3, float,
+  sin, normalize, dot, pow, max, clamp, mix, smoothstep,
+} from 'three/tsl';
 
 export const WATER_VERSION = 'cw4';
 
@@ -262,23 +268,100 @@ export function createWaterSystem(options = {}) {
   const { renderer, scene, camera, ground } = o;
   const lightDir = (o.lightDir ? o.lightDir.clone() : new THREE.Vector3(16, 26, 14)).normalize();
 
-  const surfaceMat = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    vertexShader: SURFACE_VERT, fragmentShader: SURFACE_FRAG,
-    uniforms: {
-      uTime: { value: 0 }, uWave: { value: o.waveStrength },
-      uRefract: { value: null }, uReflect: { value: null },
-      uTextureMatrix: { value: new THREE.Matrix4() },
-      uResolution: { value: new THREE.Vector2(1, 1) },
-      uShallow: { value: new THREE.Color(o.shallow) },
-      uDeep: { value: new THREE.Color(o.deep) },
-      uCamPos: { value: new THREE.Vector3() },
-      uLightDir: { value: lightDir },
-      uRefractStrength: { value: o.refractStrength },
-      uReflectStrength: { value: o.reflectStrength },
-      uDepthScale: { value: o.depthScale },
-    },
+  // Gate all render-pass work (reflection/refraction/caustics) — real passes come in 6.2/6.3.
+  const WATER_PASSES = false;
+
+  // ---- TSL uniform handles for the surface node material ----
+  const tsl_uTime       = uniform(0.0,                  'float');
+  const tsl_uWave       = uniform(o.waveStrength,        'float');
+  const tsl_uShallow    = uniform(new THREE.Color(o.shallow));
+  const tsl_uDeep       = uniform(new THREE.Color(o.deep));
+  const tsl_uLightDir   = uniform(lightDir.clone());          // vec3
+  const tsl_uDepthScale = uniform(o.depthScale,          'float');
+
+  // Per-vertex attribute: water depth at this vertex (= waterLevel - terrainHeight, ≥ 0)
+  const aDepth = attribute('aDepth', 'float');
+
+  // ---- Wave / ripple normal (TSL port of WAVE_GLSL) ----
+  // waveH(p: vec2) → float — sum of 3 sine waves driven by uTime.
+  // GLSL: sin(p.x*0.8 + uTime*1.3)*0.05 + sin(p.y*0.7 - uTime*1.1)*0.05 + ...
+  const waveH = Fn(([p]) =>
+    sin(p.x.mul(0.8).add(tsl_uTime.mul(1.3))).mul(0.05)
+      .add(sin(p.y.mul(0.7).sub(tsl_uTime.mul(1.1))).mul(0.05))
+      .add(sin(p.x.add(p.y).mul(1.3).add(tsl_uTime.mul(1.7))).mul(0.03))
+  );
+
+  // rippleNormal(p: vec2) → vec3 — finite-difference gradient → surface normal.
+  // GLSL: hx = waveH(p+e.x)-waveH(p-e.x); normalize(vec3(-hx*uWave, 2*e, -hz*uWave))
+  const ripE = 0.15;
+  const rippleNormal = Fn(([p]) => {
+    const hx = waveH(p.add(vec2(ripE, 0.0))).sub(waveH(p.sub(vec2(ripE, 0.0))));
+    const hz = waveH(p.add(vec2(0.0, ripE))).sub(waveH(p.sub(vec2(0.0, ripE))));
+    return normalize(vec3(
+      hx.mul(-1.0).mul(tsl_uWave),
+      float(2.0 * ripE),
+      hz.mul(-1.0).mul(tsl_uWave),
+    ));
   });
+
+  // ---- Surface fragment color (TSL port of SURFACE_FRAG) ----
+  // positionWorld = vWorld (interpolated world pos); aDepth = vDepth (auto-varying).
+  // cameraPosition = uCamPos (built-in TSL uniform).
+
+  // Ripple surface normal at this fragment's world XZ position.
+  const N = rippleNormal(positionWorld.xz);
+
+  // View direction from fragment toward camera.
+  // GLSL: vec3 viewDir = normalize(uCamPos - vWorld)
+  const viewDir = normalize(cameraPosition.sub(positionWorld));
+
+  // Fresnel factor: 0.02 + 0.98*(1 - dot(N,viewDir))^3
+  // More reflective at grazing angles, more refractive when looking straight down.
+  const NdotV = clamp(dot(N, viewDir), float(0.0), float(1.0));
+  const fres  = float(0.02).add(float(0.98).mul(pow(float(1.0).sub(NdotV), float(3.0))));
+
+  // Depth factor: 0 = surface/shallow, 1 = fully deep.
+  const dt = clamp(aDepth.div(tsl_uDepthScale), float(0.0), float(1.0));
+
+  // Refraction placeholder: deep-water color instead of sampling uRefract texture.
+  // GLSL: vec3 bed = texture2D(uRefract, uv + N.xz*uRefractStrength*dt).rgb  ← disabled
+  //       vec3 waterCol = mix(uShallow, uDeep, dt);
+  //       vec3 refr = mix(bed, waterCol, mix(0.2, 0.85, dt));
+  const bed      = tsl_uDeep;
+  const waterCol = mix(tsl_uShallow, tsl_uDeep, dt);
+  const refr     = mix(bed, waterCol, mix(float(0.2), float(0.85), dt));
+
+  // Reflection placeholder: sky-ish light blue/gray instead of projective uReflect sample.
+  // GLSL: vec3 refl = texture2DProj(uReflect, rc).rgb  ← disabled
+  const refl = vec3(0.55, 0.65, 0.78);
+
+  // Fresnel blend: grazing angles → more reflection; head-on → more refraction.
+  const blended = mix(refr, refl, fres);
+
+  // Specular highlight: reflect(-uLightDir, N) · viewDir.
+  // reflect(I,N) = I - 2*dot(N,I)*N with I = -lightDir:
+  //   = -lightDir - 2*dot(N,-lightDir)*N = -lightDir + 2*dot(N,lightDir)*N
+  // GLSL: spec = pow(max(dot(reflect(-uLightDir, N), viewDir), 0.0), 80.0)
+  const NdotL    = dot(N, tsl_uLightDir);
+  const specRefl = tsl_uLightDir.mul(-1.0).add(N.mul(NdotL.mul(2.0)));
+  const spec     = pow(max(dot(specRefl, viewDir), float(0.0)), float(80.0));
+
+  // spec is a float scalar; adding to vec3 broadcasts to all channels (white highlight).
+  const colorNode = blended.add(spec);
+
+  // Alpha: deeper = more opaque; smoothstep edge fade at very shallow margins.
+  // GLSL: alpha = clamp(0.5 + vDepth, 0.6, 0.98) * smoothstep(0.0, 0.1, vDepth)
+  const opacityNode = clamp(float(0.5).add(aDepth), float(0.6), float(0.98))
+                      .mul(smoothstep(float(0.0), float(0.1), aDepth));
+
+  // ---- Assemble TSL surface material (checkpoint 6.1: flat placeholders) ----
+  // Ported from THREE.ShaderMaterial (SURFACE_VERT / SURFACE_FRAG) to MeshBasicNodeMaterial.
+  // Real uReflect / uRefract render-target sampling restored in checkpoint 6.2.
+  const surfaceMat = new MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  });
+  surfaceMat.colorNode   = colorNode;
+  surfaceMat.opacityNode = opacityNode;
   const surface = new THREE.Group();
   surface.name = 'WaterChunks';
   surface.position.y = o.waterLevel;
@@ -328,7 +411,9 @@ export function createWaterSystem(options = {}) {
     uWaterLevelG: { value: o.waterLevel },
     uCausticStrength: { value: o.caustic },
   };
-  if (ground && ground.material) {
+  // Caustic ground patch requires active render passes — gated until checkpoint 6.3.
+  // If the ground material is a WebGPU node material, onBeforeCompile would crash anyway.
+  if (WATER_PASSES && ground && ground.material) {
     const mat = ground.material;
     // Compose with any existing patch (e.g. the instanced terrain's heightmap
     // displacement) instead of replacing it, so displacement survives.
@@ -538,8 +623,8 @@ export function createWaterSystem(options = {}) {
   let reflectEvery = 1, frame = 0;
   function update(time) {
     processWaterBuildQueue();
-    surfaceMat.uniforms.uTime.value = time;
-    surfaceMat.uniforms.uWave.value = causticMat.uniforms.uWave.value;
+    tsl_uTime.value = time;
+    tsl_uWave.value = causticMat.uniforms.uWave.value;   // sync wave amplitude from caustic mat
     causticMat.uniforms.uTime.value = time;
     camera.updateMatrixWorld(); // ensure reflection reads the current camera pose
 
@@ -547,33 +632,30 @@ export function createWaterSystem(options = {}) {
     const doReflect = (frame % reflectEvery) === 0;
     frame++;
 
-    const prevTarget = renderer.getRenderTarget();
-    surface.visible = false;
+    // Render passes gated until checkpoint 6.2 (reflection/refraction) / 6.3 (caustics).
+    if (WATER_PASSES) {
+      const prevTarget = renderer.getRenderTarget();
+      surface.visible = false;
 
-    // 1) caustics map (cheap; just the lake grid, straight to clip space)
-    renderer.setRenderTarget(causticsTarget);
-    renderer.render(causticScene, camera);
+      // 1) caustics map (cheap; just the lake grid, straight to clip space)
+      renderer.setRenderTarget(causticsTarget);
+      renderer.render(causticScene, camera);
 
-    // 2) planar reflection (scene without the surface, mirrored camera)
-    if (doReflect && updateReflection()) {
-      renderer.setRenderTarget(reflectionTarget);
-      renderer.render(scene, reflectionCamera);
+      // 2) planar reflection (scene without the surface, mirrored camera)
+      if (doReflect && updateReflection()) {
+        renderer.setRenderTarget(reflectionTarget);
+        renderer.render(scene, reflectionCamera);
+      }
+
+      // 3) refraction (scene without the surface, main camera)
+      renderer.setRenderTarget(refractionTarget);
+      renderer.render(scene, camera);
+
+      renderer.setRenderTarget(prevTarget);
+      surface.visible = true;
+
+      // texture/matrix/resolution uniform bindings restored in checkpoint 6.2
     }
-
-    // 3) refraction (scene without the surface, main camera)
-    renderer.setRenderTarget(refractionTarget);
-    renderer.render(scene, camera);
-
-    renderer.setRenderTarget(prevTarget);
-    surface.visible = true;
-
-    const u = surfaceMat.uniforms;
-    u.uRefract.value = refractionTarget.texture;
-    u.uReflect.value = reflectionTarget.texture;
-    if (doReflect) u.uTextureMatrix.value.copy(textureMatrix); // keep texture & matrix in sync
-    u.uCamPos.value.copy(camera.position);
-    renderer.getDrawingBufferSize(_res);
-    u.uResolution.value.copy(_res);
   }
   function setReflectRate(everyNFrames) { reflectEvery = Math.max(1, Math.round(everyNFrames)); }
 
@@ -612,12 +694,15 @@ export function createWaterSystem(options = {}) {
     groundUniforms.uWaterLevelG.value = o.waterLevel;
   }
 
-  function setWaves(strength) { causticMat.uniforms.uWave.value = strength; }
+  function setWaves(strength) {
+    causticMat.uniforms.uWave.value = strength;
+    tsl_uWave.value = strength;   // keep surface TSL uniform in sync
+  }
   function setCaustic(strength) { groundUniforms.uCausticStrength.value = strength; }
 
   function setLightDir(v) {
     lightDir.copy(v).normalize();
-    // both uLightDir uniforms share the same lightDir reference, so mutation suffices;
+    tsl_uLightDir.value.copy(lightDir);   // push updated direction to the TSL uniform
     // the ground refracted-ray uniform needs recomputing from the new direction
     refractVec(lightDir.clone().negate(), new THREE.Vector3(0, 1, 0), ETA, refractedFlat);
   }
