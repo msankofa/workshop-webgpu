@@ -1,0 +1,39 @@
+<!doctype html><meta charset="utf-8"><title>WebGPU spike</title><body style="margin:0;background:#11151c">
+<pre id="log" style="position:fixed;top:8px;left:8px;color:#5f5;font:13px/1.5 ui-monospace,Consolas,monospace;z-index:10"></pre>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+const log = (m) => { document.getElementById('log').textContent += m + '\n'; console.log(m); };
+try {
+  if (!navigator.gpu) { log('⚠ NO navigator.gpu — WebGPU unavailable in this browser'); throw new Error('no webgpu'); }
+  const t0 = performance.now();
+  const renderer = new WebGPURenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  await renderer.init();
+  log('renderer.init() took ' + (performance.now() - t0).toFixed(0) + ' ms');
+  log('backend: ' + (renderer.backend && renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2 fallback'));
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x11151c);
+  const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100); cam.position.set(0, 0, 4);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const dir = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(2, 3, 4); scene.add(dir);
+  const box = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({ color: 0x4488ff, roughness: 0.4 }));
+  scene.add(box);
+  let frames = 0, last = performance.now();
+  renderer.setAnimationLoop(() => {
+    box.rotation.x += 0.008; box.rotation.y += 0.012;
+    renderer.render(scene, cam);
+    if (++frames % 120 === 0) { const now = performance.now(); log('fps ~' + (120000 / (now - last)).toFixed(0)); last = now; }
+  });
+  addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+} catch (e) { log('✗ ERROR: ' + (e && e.message || e)); }
+</script>
