@@ -302,24 +302,28 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   // we re-bind + rebuild from the onReady callback when the maps finish.
   let texSet = null;
   function loadTextures(mode) {
-    if (texSet) texSet.dispose();
+    const prev = texSet;
     texSet = createTextureSource(mode, {
-      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); } },
+      onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); if (prev) prev.dispose(); } },
     });
-    applyTextureSet(texSet);   // procedural is ready immediately; authored binds once decoded
+    // Apply immediately only if already decoded (procedural). For authored, wait for
+    // onReady and keep the previous set live until then — never toggle .map through
+    // null, which the WebGPU NodeMaterialObserver throws on (null.isTexture).
+    if (texSet.ready) { applyTextureSet(texSet); if (prev) prev.dispose(); }
   }
   // bind the set's maps onto the merged branch/leaf materials (tint still
-  // multiplies the map via vertexColors). Skips maps until the set is ready.
+  // multiplies the map via vertexColors). Only ever called with a READY set, so it
+  // never assigns a null texture (which crashes the WebGPU node-material observer).
   function applyTextureSet(s) {
     if (!branchMat || !leafMat) return;        // materials not built yet (first regenerate)
-    const on = s && s.ready;
+    if (!s || !s.ready) return;                // never bind a not-ready set (null map)
     const bMat = branchMat, lMat = leafMat;
-    bMat.map = on ? s.barkMap : null;
-    bMat.normalMap = on ? s.barkNormalMap : null;
+    bMat.map = s.barkMap;
+    bMat.normalMap = s.barkNormalMap;
     bMat.needsUpdate = true;
-    lMat.map = on ? s.leafMap : null;
-    lMat.transparent = !!(on && s.leafMap);
-    lMat.alphaTest = on && s.leafMap ? s.leafAlphaTest : 0;
+    lMat.map = s.leafMap;
+    lMat.transparent = !!s.leafMap;
+    lMat.alphaTest = s.leafMap ? s.leafAlphaTest : 0;
     lMat.needsUpdate = true;
   }
   // The forest is baked per terrain chunk. Each chunk has merged branch/leaf
