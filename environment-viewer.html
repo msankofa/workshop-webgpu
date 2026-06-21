@@ -32,6 +32,10 @@ import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
 
+// Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
+// kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
+const GRASS_MODE = new URLSearchParams(location.search).get('grass') || 'gpu';
+
 // Declared here so buildOctree() can reference it.
 let worldOctree = new Octree();
 let terrainOctreeDirty = false;
@@ -44,7 +48,18 @@ addEventListener('error', e => showError(e.message || 'script error'));
 addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
 
 // ===================== renderer / scene / camera =====================
-const renderer = new WebGPURenderer({ antialias: true });
+// The compute-grass survivor buffer can exceed the default 128 MB storage-buffer
+// binding limit at large Radius. Pre-query the adapter and request its own maximums
+// (always satisfiable) so the big buffer binds on any capable GPU.
+let gpuRequiredLimits = {};
+if (navigator.gpu) {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter) gpuRequiredLimits = {
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxBufferSize: adapter.limits.maxBufferSize,
+  };
+}
+const renderer = new WebGPURenderer({ antialias: true, requiredLimits: gpuRequiredLimits });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -247,6 +262,9 @@ function rebuildWorld() {
   terrainDecorationsDirty = true;
   terrainDecorationsRebuildAll = true;
   if (waterRef) syncWaterChunks(true, { size: terrain.size });
+  // GPU grass plants on a closed-form height + water mask; push terrain/water edits.
+  if (grassRef?.setTerrain) grassRef.setTerrain({ baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth });
+  if (grassRef?.setWaterLevel) grassRef.setWaterLevel(terrain.waterLevel);
   buildOctree(true);
 }
 
@@ -314,6 +332,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   const params = {
     count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
+    treeBaseOffset: -0.1, leafCount: 10, leafStart: 0.25, leafSpread: 0,
     leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
   };
 
@@ -713,6 +732,9 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       const spIdx = Math.floor(treeRng.next() * job.species.length);
       const sp = job.species[spIdx];
       const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
+      leafOpts.count = Math.max(0, Math.floor(params.leafCount));
+      leafOpts.start = params.leafStart;
+      leafOpts.spread = params.leafSpread;
       const barkOpts = { ...sp.bark };
       if (useLeafAtlas) {
         leafOpts.shape = 'quad';
@@ -727,7 +749,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       gen.regenerate({ ...sp, seed: Math.floor(treeRng.next() * 0xffffffff) >>> 0, leaves: leafOpts, bark: barkOpts });
       const s = sizeFor(params, x, z, treeRng);
       _tquat.setFromAxisAngle(_ty, treeRng.next() * Math.PI * 2);
-      _tmat.compose(_tpos.set(x, terrainHeight(x, z), z), _tquat, _tscl.set(s, s, s));
+      _tmat.compose(_tpos.set(x, terrainHeight(x, z) + params.treeBaseOffset, z), _tquat, _tscl.set(s, s, s));
       _tnorm.getNormalMatrix(_tmat);
       job.barkCol.set(sp.bark.color);
       job.leafCol.set(sp.leaves.tint);
@@ -872,8 +894,12 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   slider('species', 'Species diversity (types)', 1, 8, 1, fi);
   slider('diversity', 'Diversity scale', 0, 1, 0.01, f2);
   slider('generalization', 'Generalization', 0, 1, 0.01, f2);
+  slider('treeBaseOffset', 'Base offset', -1, 1, 0.02, f2);
+  slider('leafCount', 'Leaves / branch', 0, 40, 1, fi);
+  slider('leafStart', 'Leaf start', 0, 0.9, 0.01, f2);
+  slider('leafSpread', 'Leaf spread', 0, 1, 0.01, f2);
   slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct);
-  // Texture mode: 'procedural' synthesizes maps at runtime; 'authored' loads the
+  // Texture mode: 'procedural' uses textureless TSL/shaped leaves; 'authored' loads the
   // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
   select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
 
@@ -915,8 +941,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   params.fog = false;
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
 
-  // ---- grass (separate module; optional, degrades to no grass if missing) ----
-  import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
+  // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
+  if (GRASS_MODE === 'cpu') import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
     function makeChunkGrassManager() {
       const chunks = new Map();
@@ -1054,6 +1080,27 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
   }).catch(() => { /* grass is optional */ });
+  else import('./grass-compute.js').then(({ createComputeGrass }) => {
+    Object.assign(params, { grassDensity: 8.0, grassRadius: 350, wind: 1.0 });
+    const cg = createComputeGrass({
+      renderer, camera,
+      terrainParams: { baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth },
+      waterLevel: terrain.waterLevel, density: params.grassDensity, radius: params.grassRadius,
+      maxRadius: 600,
+    });
+    scene.add(cg.mesh);
+    grassRef = {
+      update: (s) => cg.update(s),
+      sync: () => {}, regenerate: () => {}, applyFade: () => {},
+      setWind: (st) => cg.setWind(st),
+      setTerrain: (p) => cg.setTerrain(p),
+      setWaterLevel: (wl) => cg.setWaterLevel(wl),
+    };
+    header('Grass');
+    slider('grassDensity', 'Density (blades/m²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
+    slider('grassRadius', 'Radius', 8, 600, 1, fi, () => cg.setRadius(params.grassRadius));
+    slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => cg.setWind(params.wind));
+  }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
   import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
@@ -1383,11 +1430,10 @@ function updateFPSPlayer(deltaTime) {
 
 // ===================== render loop =====================
 const clock = new THREE.Clock();
-function animate() {
+async function animate() {
   const rawDt = Math.min(clock.getDelta(), 0.1);
   const now = performance.now();
   if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
-  if (grassRef) grassRef.update(now / 1000);
   if (cloudsRef) cloudsRef.update(now / 1000);
   if (fpsMode) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
@@ -1407,6 +1453,9 @@ function animate() {
   }
   updateTerrainDebug(now);
   perfLog.maybeSample(now);
+  // Grass last, after the camera is positioned: its compute pass (camera-centered
+  // generate+cull) is awaited so survivors are written before this frame's draw.
+  if (grassRef) await grassRef.update(now / 1000);
   renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.

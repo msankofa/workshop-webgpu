@@ -13,7 +13,7 @@ import {
   IndirectStorageBufferAttribute,
 } from 'three/webgpu';
 import {
-  Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast,
+  Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal,
   atomicAdd, atomicStore, atomicLoad,
 } from 'three/tsl';
@@ -62,10 +62,13 @@ const slotRandFn = Fn(([gx, gz, slot, salt]) => {
 export function createComputeGrass(opts) {
   const { renderer, camera } = opts;
   const cellSize = opts.cellSize ?? 2;
-  const Kmax     = opts.Kmax ?? 8;
+  const Kmax     = opts.Kmax ?? 64;      // max blades/cell → max density = Kmax/cellSize² (=16 /unit²)
+  // Buffer capacity is sized for maxRadius so the live Radius slider can grow up to it
+  // without reallocating; the live radius starts at opts.radius.
+  const maxRadius = opts.maxRadius ?? opts.radius ?? 600;
   const o = {
-    density: opts.density ?? 1.0,        // blades / unit area
-    radius:  opts.radius ?? 48,
+    density: opts.density ?? 8.0,        // blades / unit area
+    radius:  Math.min(opts.radius ?? 350, maxRadius),
     waterLevel: opts.waterLevel ?? -0.9,
     shoreMargin: opts.shoreMargin ?? 0.1,
     baseAmp: opts.terrainParams?.baseAmp ?? 1.0,
@@ -73,7 +76,7 @@ export function createComputeGrass(opts) {
     lakeDepth: opts.terrainParams?.lakeDepth ?? 3.2,
   };
   const half0 = Math.ceil(o.radius / cellSize) | 0;
-  const CAP = maxInstances(o.radius, cellSize, Kmax); // sized once at the configured radius
+  const CAP = maxInstances(maxRadius, cellSize, Kmax); // sized for the max radius (slider ceiling)
 
   // ---- buffers (GPU-resident; never re-uploaded per frame) ----
   // per instance: 2x vec4 → [2i]=(x,y,z,h), [2i+1]=(yaw,_,_,_)
@@ -120,13 +123,14 @@ export function createComputeGrass(opts) {
   const reset = Fn(() => { atomicStore(counter.element(0), uint(0)); })().compute(1);
 
   const cull = Fn(() => {
-    const idx = instanceIndex;                       // 0 .. CAP-1
-    const slot = int(idx.mod(uint(Kmax)));
+    const idx = int(instanceIndex);                  // 0 .. CAP-1 (CAP is small; int is safe)
+    const K = int(Kmax);
+    const slot = modInt(idx, K);
     If(slot.lessThan(int(uPerCell)), () => {         // only first uPerCell slots per cell are live
-      const cellI = int(idx.div(uint(Kmax)));
+      const cellI = idx.sub(slot).div(K);            // integer cell index in the window (int domain)
       const side = int(uSide);
-      const lx = cellI.mod(side);
-      const lz = cellI.div(side);
+      const lx = modInt(cellI, side);
+      const lz = cellI.sub(lx).div(side);
       const camGx = int(floor(uCam.x.div(uCellSize)));
       const camGz = int(floor(uCam.y.div(uCellSize)));
       const gx = camGx.add(lx).sub(int(uHalf));
@@ -144,11 +148,12 @@ export function createComputeGrass(opts) {
         .and(dist.lessThan(uRadius))
         .and(keepRand.greaterThan(edge));
       If(live, () => {
-        const s = atomicAdd(counter.element(0), 1);
+        const s = atomicAdd(counter.element(0), uint(1));   // u32 atomic; literal must be uint
+        const base2 = s.mul(uint(2));
         const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
         const bh = float(0.8).add(slotRandFn(gx, gz, slot, int(5)).mul(0.6));
-        inst.element(uint(s).mul(uint(2))).assign(vec4(wx, wy, wz, bh));
-        inst.element(uint(s).mul(uint(2)).add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+        inst.element(base2).assign(vec4(wx, wy, wz, bh));
+        inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
       });
     });
   })().compute(CAP);
@@ -200,18 +205,23 @@ export function createComputeGrass(opts) {
 
   return {
     mesh,
-    update(seconds) {
+    // Awaited so the reset→cull→finalize chain is submitted before the frame's draw
+    // reads the indirect instanceCount (unawaited fire-and-forget races the draw and
+    // makes the grass blink). Mirrors the validated spike's computeAsync ordering.
+    async update(seconds) {
       uTime.value = seconds;
       uCam.value.set(camera.position.x, camera.position.z);
-      renderer.compute(reset);
-      renderer.compute(cull);
-      renderer.compute(finalize);
+      await renderer.computeAsync(reset);
+      await renderer.computeAsync(cull);
+      await renderer.computeAsync(finalize);
     },
     setDensity(d) { uPerCell.value = perCellCount(d, cellSize, Kmax); },
     setRadius(r) {
+      r = Math.min(r, maxRadius);                       // never exceed the buffer capacity
       const half = Math.ceil(r / cellSize) | 0;
       uRadius.value = r; uHalf.value = half; uSide.value = 2 * half + 1;
     },
+    maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
     setTerrain(p) { uBaseAmp.value = p.baseAmp; uLake.value = p.lake; uLakeDepth.value = p.lakeDepth; },
     setWaterLevel(wl) { uWaterMin.value = wl + o.shoreMargin; },
