@@ -20,6 +20,7 @@ const DEFAULTS = {
   maxUnloadsPerUpdate: 2,
   useWorker: true,            // build chunk geometry off-thread when a Web Worker is available
   renderMode: 'chunks',       // 'chunks' = one mesh/chunk; 'instanced' = one shader-displaced InstancedMesh
+  visualMode: 'mesh',         // 'mesh' = build visible chunk geometry; 'external' = records+colliders only (GPU CDLOD renders the ground)
   experimentalInstancedTerrain: false, // disabled until shader height parity with terrainHeightAt is proven
 };
 
@@ -282,7 +283,7 @@ class TerrainSystem {
         i--;
         continue;
       }
-      if (this.worker) {
+      if (this.worker && this.params.visualMode !== 'external') {
         this.dispatchChunk(item, chunkSize);   // builds off-thread; lands in onWorkerChunk
       } else {
         const chunk = this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize);
@@ -309,7 +310,7 @@ class TerrainSystem {
     }
 
     const first = this.chunks.values().next().value || null;
-    this.primaryMesh = first ? first.mesh : null;
+    this.primaryMesh = first && first.mesh ? first.mesh : null;
 
     // Fold in chunks that the worker finished between frames, so the host (which
     // keys decoration/octree rebuilds off update()'s return) reacts to them.
@@ -322,9 +323,9 @@ class TerrainSystem {
   // Add a fully-built chunk to the scene + bookkeeping (shared by sync + worker paths).
   addChunk(chunk) {
     this.chunks.set(chunk.key, chunk);
-    if (this.renderMode !== 'instanced') this.group.add(chunk.mesh);
+    if (chunk.mesh && this.renderMode !== 'instanced') this.group.add(chunk.mesh);
     if (this.collisionKeys.has(chunk.key)) this.collisionGroup.add(this.ensureCollider(chunk));
-    if (!this.primaryMesh) this.primaryMesh = chunk.mesh;
+    if (!this.primaryMesh && chunk.mesh) this.primaryMesh = chunk.mesh;
   }
 
   dispatchChunk(item, chunkSize) {
@@ -390,7 +391,9 @@ class TerrainSystem {
   // collider is built lazily by ensureCollider.
   createChunk(key, xMin, zMin, size) {
     const segments = Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
-    const geo = this.createChunkGeometry(xMin, zMin, size, segments, true);
+    const geo = this.params.visualMode === 'external'
+      ? null   // external: no visible geometry to build (GPU CDLOD renders the ground)
+      : this.createChunkGeometry(xMin, zMin, size, segments, true);
     return this.makeChunk(key, xMin, zMin, size, segments, geo);
   }
 
@@ -401,11 +404,18 @@ class TerrainSystem {
   }
 
   makeChunk(key, xMin, zMin, size, segments, geo) {
+    const meta = { key, xMin, zMin, size, segments, lod: 0 };
+    if (this.params.visualMode === 'external') {
+      // No visible geometry — just a record carrying terrainChunk metadata so activeChunks,
+      // decorations and colliders keep working while the GPU CDLOD mesh renders the ground.
+      if (geo) geo.dispose();
+      return { key, mesh: null, meta, collider: null, xMin, zMin, size };
+    }
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.name = `TerrainChunk:${key}`;
     mesh.receiveShadow = true;
-    mesh.userData.terrainChunk = { key, xMin, zMin, size, segments, lod: 0 };
-    return { key, mesh, collider: null, xMin, zMin, size };
+    mesh.userData.terrainChunk = meta;
+    return { key, mesh, meta, collider: null, xMin, zMin, size };
   }
 
   ensureCollider(chunk) {
@@ -433,8 +443,10 @@ class TerrainSystem {
   }
 
   disposeChunk(chunk) {
-    chunk.mesh.geometry.dispose();
-    if (chunk.mesh.parent === this.group) this.group.remove(chunk.mesh);
+    if (chunk.mesh) {
+      chunk.mesh.geometry.dispose();
+      if (chunk.mesh.parent === this.group) this.group.remove(chunk.mesh);
+    }
     this.releaseCollider(chunk);
   }
 
@@ -585,7 +597,7 @@ class TerrainSystem {
 
   refreshActiveChunkCache() {
     this.activeChunkCache = [...this.chunks.values()].filter((chunk) => this.targetKeys.has(chunk.key)).map((chunk) => {
-      const data = chunk.mesh.userData.terrainChunk;
+      const data = chunk.meta;
       return {
         key: data.key,
         xMin: data.xMin,
