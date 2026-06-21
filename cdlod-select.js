@@ -105,3 +105,12 @@ export function selectNodes(cfg, camX, camZ) {
 export function nodeCountForViewDistance(cfg, camX, camZ) {
   return selectNodes(cfg, camX, camZ).length;
 }
+
+// CDLOD vertex morph in normalized grid coords g in [0,1] with N quads. As morphK->1 the
+// coord snaps from the fine (N) lattice toward the even/parent (N/2) lattice, so a node's
+// boundary vertices coincide with the coarser parent level's vertices (crack-free seams).
+export function morphGridCoord(g, N, morphK) {
+  const gi = g * N;                       // vertex index in [0,N]
+  const frac = (gi * 0.5) - Math.floor(gi * 0.5);  // 0 on even verts, 0.5 on odd verts
+  return g - (frac * 2 / N) * morphK;     // pull odd verts back to the previous even vert
+}
