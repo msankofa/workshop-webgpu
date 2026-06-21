@@ -32,9 +32,6 @@ import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
 
-const RENDERER_BACKEND = new URLSearchParams(location.search).get('renderer') || 'webgpu';
-const PORTED = { grass: true, clouds: true, water: true }; // flipped true as each module is ported to TSL (checkpoint 6.1: surface ported, flat reflection/refraction placeholders)
-
 // Declared here so buildOctree() can reference it.
 let worldOctree = new Octree();
 let terrainOctreeDirty = false;
@@ -47,7 +44,7 @@ addEventListener('error', e => showError(e.message || 'script error'));
 addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
 
 // ===================== renderer / scene / camera =====================
-const renderer = new WebGPURenderer({ antialias: true, forceWebGL: RENDERER_BACKEND === 'webgl' });
+const renderer = new WebGPURenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -919,7 +916,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
 
   // ---- grass (separate module; optional, degrades to no grass if missing) ----
-  if (PORTED.grass) import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
+  import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
     function makeChunkGrassManager() {
       const chunks = new Map();
@@ -1056,10 +1053,10 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('grassCount', 'Blade count', 0, 1200000, 1000, v => (v / 1000) + 'k', grassRebuild);
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
-  }).catch(() => { /* grass is optional */ }); // end PORTED.grass
+  }).catch(() => { /* grass is optional */ });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  if (PORTED.water) import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
+  import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
     Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
     waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight, chunks: terrainSystem.activeChunks });
     scene.add(waterRef.surface);
@@ -1069,11 +1066,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
     slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
     slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
-  }).catch(err => { showError('water.js could not load (' + err.message + ')'); }); // end PORTED.water
+  }).catch(err => { showError('water.js could not load (' + err.message + ')'); });
 
   // ---- clouds (separate module; optional, independent of terrain). Lays a big
   // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
-  if (PORTED.clouds) import('./clouds.js').then(({ Clouds }) => {
+  import('./clouds.js').then(({ Clouds }) => {
     Object.assign(params, { cloudHeight: 120, cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
       cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01 });
     cloudsRef = new Clouds();
@@ -1094,7 +1091,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
     slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
-  }).catch(() => { /* clouds are optional */ }); // end PORTED.clouds
+  }).catch(() => { /* clouds are optional */ });
 }).catch(err => {
   showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
