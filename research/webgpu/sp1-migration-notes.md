@@ -113,3 +113,73 @@ material must follow the same pattern or expect issue-001-style invisibility.
 Also: `NodeMaterialObserver` throws `null.isTexture` if `.map` is toggled through
 `null` while loading — never null a live `.map`; keep the previous set live until
 the new one is ready (fixed for authored trees in `a86fa8d`).
+
+---
+
+# SP2 — GPU compute grass
+
+Replaces the legacy per-chunk CPU grass meshes (hundreds of draws + main-thread
+geometry rebuilds) with one `drawIndexedIndirect` instanced draw fed by a per-frame
+compute pass. Spec/plan: `docs/superpowers/specs/2026-06-21-sp2-gpu-compute-grass-design.md`,
+`docs/superpowers/plans/2026-06-21-sp2-gpu-compute-grass.md`. Modules: `grass-compute.js`
+(+ `grass-cells.js`, `grass-height-ref.js`; shared `buildBladeGeometry`/`buildGrassNoiseFns`
+exported from `grass.js`).
+
+## Pipeline (per frame, three compute dispatches → one indirect draw)
+
+1. **reset** (1 thread): `atomicStore(counter.element(0), uint(0))`.
+2. **generate+cull** (one thread per candidate slot = `windowCells × Kmax`): derive
+   `(gx,gz,slot)` from a world-anchored cell grid around the camera, plant on the TSL
+   terrain height, reject water/out-of-radius, density-dither the outer edge, then
+   `atomicAdd(counter, uint(1))` to append the survivor's 2× `vec4` record.
+3. **finalize** (1 thread): `indirect.element(1).assign(atomicLoad(counter.element(0)))`
+   — copy the survivor count into the (non-atomic) indirect `instanceCount`.
+4. `geometry.indirect = indirectAttr; geometry.instanceCount = CAP;` → one
+   instanced `drawIndexedIndirect` of the 5-vertex blade.
+
+## r0.184 API confirmed by `grass-compute-spike.html` (deleted after)
+
+- Atomic counter: `storage(new StorageBufferAttribute(Uint32Array(1),1),'uint',1).toAtomic()`.
+- **Atomics can't be plain-assigned and atomicAdd can't target the indirect buffer.**
+  Reset with `atomicStore`, finalize copies `atomicLoad(counter)` into a plain
+  `IndirectStorageBufferAttribute([indexCount,instanceCount,firstIndex,baseVertex,firstInstance])`.
+- Indirect wiring is the property `geometry.indirect = attr` (not a method).
+- `renderer.computeAsync(node)` **awaited** before the draw — fire-and-forget compute
+  races the draw and makes the grass blink (the draw reads a half-reset `instanceCount`).
+  `animate()` is `async`; grass is updated last, after the camera is positioned.
+
+## Integer-typing gotchas (the "expected a uint" wall)
+
+- TSL `.mod()` / `.div()` lower to **float** ops, breaking uint typing. Decompose the
+  cell/slot index in the **int** domain: `modInt(idx, K)` for slot, integer `.div()`
+  for the cell — and convert `instanceIndex` to `int` first.
+- The lake hash must **bit-match** `terrain-field.js` so grass water-rejection lines
+  up with the visible lakes (incl. negative coords): reinterpret `int → uint` with
+  `bitcast(node,'uint')` (NOT `uint(node)`, which value-converts and clamps), then
+  `bitXor`/`shiftRight` in u32. `grass-height-ref.js` is the Node-tested twin
+  (`test-grass-height-tsl.mjs`, maxErr 0 vs `terrainHeightAt`).
+
+## Device limit
+
+The survivor buffer exceeds the default 128 MB `maxStorageBufferBindingSize` at large
+Radius. The renderer pre-queries the adapter and requests its **own maximums**
+(`maxStorageBufferBindingSize`, `maxBufferSize`) — always satisfiable, ~2 GB on the
+dev GPU. Capacity is sized at `maxRadius` (decoupled from the live Radius slider) so
+the slider grows without reallocating. Defaults: `cellSize 2`, `Kmax 64`, Radius 350 /
+Density 8, sliders to 600 / 16 (CAP 23.1M instances / 705 MB at the ceiling).
+
+## Perf gate — dd9 A/B (`?grass=gpu` vs `?grass=cpu`)
+
+`research/stats/perf-2026-06-21T13-5*-grass{gpu,cpu}.csv`. GPU vs CPU grass:
+CPU frame time mean **11.63 vs 17.95 ms (−35%)**, p95 14.87 vs 23.85 (−38%); fps
+74.3 vs 57.4 (+29%); draw calls **~12.6k vs ~22.9k** (the per-chunk grass draws
+collapse to one indirect draw). The GPU path renders millions of blades vs ~40k on
+the CPU path and is still faster on every metric. **Gate met.**
+
+## Open / deferred
+
+- The per-frame full-window cull dispatches up to ~23M threads at Radius 600
+  (awaited). Future optimization: re-cull only when the camera crosses a cell, or
+  drop the per-frame await. Not needed at the default Radius (~7.9M threads, smooth).
+- `?grass=cpu` (the legacy per-chunk manager) and `grass-compute-spike.html`'s lessons
+  are retained as a fallback pending final SP2 cleanup (remove once trees/look settle).
