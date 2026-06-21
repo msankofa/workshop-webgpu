@@ -357,7 +357,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   const params = {
     count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
-    treeBaseOffset: -0.1, leafCount: 10, leafStart: 0.25, leafSpread: 0,
+    treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
     leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
   };
 
@@ -758,6 +758,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       const sp = job.species[spIdx];
       const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
       leafOpts.count = Math.max(0, Math.floor(params.leafCount));
+      leafOpts.size = sp.leaves.size * params.leafSize;
       leafOpts.start = params.leafStart;
       leafOpts.spread = params.leafSpread;
       const barkOpts = { ...sp.bark };
@@ -921,6 +922,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   slider('generalization', 'Generalization', 0, 1, 0.01, f2);
   slider('treeBaseOffset', 'Base offset', -1, 1, 0.02, f2);
   slider('leafCount', 'Leaves / branch', 0, 40, 1, fi);
+  slider('leafSize', 'Leaf size', 0.2, 3, 0.01, f2);
   slider('leafStart', 'Leaf start', 0, 0.9, 0.01, f2);
   slider('leafSpread', 'Leaf spread', 0, 1, 0.01, f2);
   slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct);

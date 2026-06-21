@@ -50,10 +50,11 @@ const DEFAULTS = {
   bark:   { color: 0x6b4f2e, roughness: 0.9, flatShading: false, map: null, normalMap: null, vScale: 0.4 },
   leaves: {
     enabled: true,
-    count: 10,            // leaves per terminal branch
+    count: 10,            // leaves per leaf-bearing branch
     size: 1.3,
     sizeVariance: 0.5,    // 0..1 random size spread
     start: 0.25,          // where on the branch leaves begin (0..1)
+    spread: 0,            // 0 = terminal only; 1 = all outer branch levels
     angle: 55,            // tilt (deg) of leaf off the branch
     doubleBillboard: true,// two perpendicular quads per leaf
     roundedNormals: true, // bend leaf normals outward so the canopy lights as a volume
@@ -268,9 +269,12 @@ export class Tree extends THREE.Group {
     // A branch is terminal (grows leaves) at the depth limit or when it has
     // no children of its own; otherwise it spawns children.
     const terminal = branch.level >= o.levels || at(o.children, branch.level) <= 0;
+    const leafMinLevel = Math.max(1, Math.floor(o.levels * (1 - (o.leaves.spread || 0))));
+    const leafBearing = o.leaves.enabled && (terminal || branch.level >= leafMinLevel);
     if (!terminal) {
       this._spawnChildren(branch, sections);
-    } else if (o.leaves.enabled) {
+      if (leafBearing) this._spawnLeaves(branch, sections);
+    } else if (leafBearing) {
       this._spawnLeaves(branch, sections);
     }
   }
