@@ -130,5 +130,22 @@ console.log('\n[5] sync fallback (no worker)');
   workerShouldThrow = false;
 }
 
+// ---------------- 6. external visual mode: records + colliders, no visual meshes ----------------
+console.log('\n[6] external visual mode (SP3: GPU CDLOD renders the ground)');
+{
+  const sys = createTerrainSystem({ params: { ...baseParams, visualMode: 'external', collisionRadius: 1 } });
+  await settle(sys, 0, 0);
+  ok(sys.chunks.size === expected(1), `external built ${sys.chunks.size}/${expected(1)} records`);
+  ok(sys.activeChunks.length === expected(1), `activeChunks populated ${sys.activeChunks.length}/${expected(1)}`);
+  ok([...sys.chunks.values()].every((c) => c.mesh === null), 'no visual chunk meshes created');
+  ok(sys.group.children.length === 0, `terrain group has no visible children (${sys.group.children.length})`);
+  ok(sys.materialPatchTarget === null, 'materialPatchTarget null (host points ground at CDLOD mesh)');
+  ok(Number.isFinite(sys.getHeight(3, 7)), 'analytic getHeight still works');
+  ok(sys.collisionGroup.children.length === expected(1), `colliders built within collisionRadius (${sys.collisionGroup.children.length}/${expected(1)})`);
+  ok(sys.activeChunks.every((c) => 'centerX' in c && 'size' in c), 'activeChunks carry decoration metadata');
+  ok(sys.pendingBuildCount === 0, `pendingBuildCount ${sys.pendingBuildCount}`);
+  sys.dispose();
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

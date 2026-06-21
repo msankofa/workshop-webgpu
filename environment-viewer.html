@@ -87,11 +87,30 @@ rig.dirLight.shadow.camera.top = 90;   rig.dirLight.shadow.camera.bottom = -90;
 // terrain extent — the terrain is chunked/infinite and sized by draw distance.
 const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
 
-const terrainSystem = createTerrainSystem({ params: terrain });
+// SP3: ?terrain=gpu (default) renders the ground with the GPU-driven CDLOD system and puts
+// the chunk manager in 'external' mode (records + colliders only, no visual chunk meshes);
+// ?terrain=chunks keeps the legacy per-chunk renderer (dd9 A/B baseline + fallback).
+const TERRAIN_MODE = new URLSearchParams(location.search).get('terrain') || 'gpu';
+const terrainSystem = createTerrainSystem({ params: { ...terrain, visualMode: TERRAIN_MODE === 'gpu' ? 'external' : 'mesh' } });
 const terrainGroup = terrainSystem.group;
 const terrainCollisionGroup = terrainSystem.collisionGroup;
+let cdlodRef = null;
 let ground = terrainSystem.materialPatchTarget;
 function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
+
+// SP3: load the GPU CDLOD ground at top level (top-level await is already used above for
+// renderer.init), so `ground` points at the CDLOD mesh BEFORE water loads and binds its
+// caustic projection to the ground material.
+if (TERRAIN_MODE === 'gpu') {
+  const { createCdlodTerrain } = await import('./cdlod-terrain.js');
+  cdlodRef = createCdlodTerrain({
+    renderer, camera,
+    terrainParams: { baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth },
+    waterLevel: terrain.waterLevel,
+  });
+  scene.add(cdlodRef.mesh);
+  ground = cdlodRef.mesh;
+}
 const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
 const terrainDebugEl = document.createElement('div');
 terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
@@ -106,8 +125,10 @@ function updateTerrainDebug(now) {
   terrainDebugEl.textContent =
     `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri?.render?.calls ?? 0}  tris ${(ri?.render?.triangles ?? 0).toLocaleString()}\n` +
     `geom ${ri?.memory?.geometries ?? 0}  tex ${ri?.memory?.textures ?? 0}\n` +
-    `terrain ${terrainSystem.renderMode}\n` +
-    `chunks ${terrainSystem.activeChunks.length}/${terrainSystem.targetChunkCount}\n` +
+    `terrain ${terrainSystem.renderMode}${cdlodRef ? ' · cdlod' : ''}\n` +
+    (cdlodRef
+      ? `terrain draws ${cdlodRef.drawCount} · tris ${cdlodRef.triangleCount.toLocaleString()}\n`
+      : `chunks ${terrainSystem.activeChunks.length}/${terrainSystem.targetChunkCount}\n`) +
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
@@ -142,10 +163,12 @@ const perfLog = {
       triangles: r?.render?.triangles ?? 0,
       geometries: r?.memory?.geometries ?? 0,
       textures: r?.memory?.textures ?? 0,
-      terrainMode: terrainSystem.renderMode,
+      terrainMode: cdlodRef ? 'cdlod' : terrainSystem.renderMode,
       drawChunks: terrainSystem.activeChunks.length,
       targetChunks: terrainSystem.targetChunkCount,
       pending: terrainSystem.pendingBuildCount,
+      terrainDraws: cdlodRef ? cdlodRef.drawCount : terrainSystem.activeChunks.length,
+      terrainTris: cdlodRef ? cdlodRef.triangleCount : null,
       grassChunks: terrainDebug.grassChunks,
       treePlacements: terrainDebug.treePlacements,
       octreeMs: +terrainDebug.lastOctreeMs.toFixed(2),
@@ -257,7 +280,7 @@ function updateSunShadowFocus(center) {
 // Rebuild everything that depends on terrain (size / lakes / water level).
 function rebuildWorld() {
   terrainSystem.rebuild(terrain);
-  ground = terrainSystem.materialPatchTarget;
+  ground = cdlodRef ? cdlodRef.mesh : terrainSystem.materialPatchTarget;   // external mode: keep the CDLOD ground
   updateDrawDistance();
   terrainDecorationsDirty = true;
   terrainDecorationsRebuildAll = true;
@@ -265,6 +288,8 @@ function rebuildWorld() {
   // GPU grass plants on a closed-form height + water mask; push terrain/water edits.
   if (grassRef?.setTerrain) grassRef.setTerrain({ baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth });
   if (grassRef?.setWaterLevel) grassRef.setWaterLevel(terrain.waterLevel);
+  // SP3: the CDLOD ground samples the same closed-form field; push terrain edits to it too.
+  if (cdlodRef) { cdlodRef.setTerrain({ baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth }); cdlodRef.setWaterLevel(terrain.waterLevel); }
   buildOctree(true);
 }
 
@@ -272,7 +297,7 @@ function updateTerrainWindow(center) {
   terrainFocus.copy(center);
   updateSunShadowFocus(center);
   if (terrainSystem.update(center.x, center.z)) {
-    ground = terrainSystem.materialPatchTarget;
+    ground = cdlodRef ? cdlodRef.mesh : terrainSystem.materialPatchTarget;
     terrainOctreeDirty = true;
     terrainDecorationsDirty = true;
     syncWaterChunks(true);
@@ -932,6 +957,9 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' · ' + n + '×' + n; };
   const drawDistanceChange = () => {
     terrainSystem.params.renderRadius = Math.round(terrain.renderRadius);
+    // SP3: map the chunk draw-distance slider (1..12) onto CDLOD level count so the slider
+    // also grows the GPU terrain's reach (each level = one bounded ring, ~flat cost).
+    if (cdlodRef) cdlodRef.setViewDistance(2 + Math.round(terrain.renderRadius));
     updateDrawDistance();
   };
   slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain);
@@ -1456,6 +1484,9 @@ async function animate() {
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
   if (grassRef) await grassRef.update(now / 1000);
+  // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
+  // written before this frame's draw (unawaited compute races the draw → terrain flicker).
+  if (cdlodRef) await cdlodRef.update();
   renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
