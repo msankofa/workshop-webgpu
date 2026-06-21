@@ -1,0 +1,73 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0;background:#111">
+<pre id="log" style="position:fixed;top:8px;left:8px;color:#0f0;font:12px monospace;z-index:9"></pre>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, StorageInstancedBufferAttribute, StorageBufferAttribute, IndirectStorageBufferAttribute, MeshBasicNodeMaterial } from 'three/webgpu';
+import { Fn, instanceIndex, storage, uniform, uint, float, vec4, If, atomicAdd, atomicStore, atomicLoad, floor, positionLocal } from 'three/tsl';
+const log = (m) => { document.getElementById('log').textContent += m + '\n'; console.log(m); };
+if (!navigator.gpu) { log('NO navigator.gpu'); throw new Error('no webgpu'); }
+
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+log('backend: ' + (renderer.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGL2 fallback'));
+
+const CAP = 1024;                 // candidate/survivor capacity
+// survivor instance data: vec4 per instance (xyz offset + unused .w)
+const survivor = storage(new StorageInstancedBufferAttribute(new Float32Array(CAP * 4), 4), 'vec4', CAP);
+// atomic counter (1 u32) used as the append index
+const counter = storage(new StorageBufferAttribute(new Uint32Array(1), 1), 'uint', 1).toAtomic();
+// indirect args: [indexCount, instanceCount, firstIndex, baseVertex, firstInstance]
+const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([6, 0, 0, 0, 0]), 5);
+const indirect = storage(indirectAttr, 'uint', 5);
+
+const uKeepEvery = uniform(2);    // keep 1 of every N candidates → visibly tracks compute
+window.uKeepEvery = uKeepEvery;   // tweak from the console: uKeepEvery.value = 4
+
+// reset the atomic append counter (atomic types can't be plain-assigned in WGSL)
+const reset = Fn(() => { atomicStore(counter.element(0), uint(0)); })().compute(1);
+// generate+cull: atomicAdd only into the atomic counter; survivor list packed compactly
+const cull = Fn(() => {
+  const i = instanceIndex;
+  If(i.mod(uKeepEvery).equal(0), () => {
+    const slot = atomicAdd(counter.element(0), 1);
+    // pack survivors into a 32-wide grid by their compact slot index, so the filled
+    // grid visibly shrinks as fewer candidates survive (uKeepEvery up = fewer)
+    const fs = slot.toFloat();
+    const gx = fs.mod(32);
+    const gy = floor(fs.div(32));
+    survivor.element(slot).assign(vec4(gx.mul(0.28).sub(4.4), gy.mul(0.28).sub(4.4), 0, 1));
+  });
+})().compute(CAP);
+// copy the survivor count into the (non-atomic) indirect instanceCount field
+const finalize = Fn(() => { indirect.element(1).assign(atomicLoad(counter.element(0))); })().compute(1);
+
+// instanced quad whose draw count comes from the indirect buffer
+const geo = new THREE.PlaneGeometry(0.05, 0.05);
+geo.instanceCount = CAP;
+geo.indirect = indirectAttr;       // confirm exact wiring here (geometry.indirect)
+const mat = new MeshBasicNodeMaterial({ color: 0x66ff66 });
+mat.positionNode = positionLocal.add(survivor.element(instanceIndex).xyz);
+const mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false;
+const scene = new THREE.Scene(); scene.add(mesh);
+const cam = new THREE.OrthographicCamera(-5, 5, 5, -5, 0, 10); cam.position.z = 5;
+
+let logged = 0;
+renderer.setAnimationLoop(async () => {
+  await renderer.computeAsync(reset);
+  await renderer.computeAsync(cull);
+  await renderer.computeAsync(finalize);
+  renderer.render(scene, cam);
+  if (logged++ === 30) log('rendering via indirect — change uKeepEvery.value in console to retest');
+});
+</script>
+</body>
+</html>
