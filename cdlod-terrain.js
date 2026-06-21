@@ -198,6 +198,8 @@ export function createCdlodTerrain(opts) {
   const mat = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1, metalness: 0 });
   mat.positionNode = posNode;
   mat.normalNode = nrm.normalize();
+  // SP4a: optional additive clustered point-light term (injected over the sun/ambient).
+  if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(posNode, nrm.normalize());
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
