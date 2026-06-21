@@ -232,10 +232,23 @@
   </div>
 
   <div class="sp">
-    <h3>SP3 — GPU-driven CDLOD terrain <span class="tag">structural LOD</span></h3>
+    <h3>SP3 — GPU-driven CDLOD terrain <span class="tag">structural LOD · complete ✓</span></h3>
     <p><strong>Goal.</strong> Adopt the parallel terrain pipeline of §4.4 <sup><a href="#r4">[4]</a></sup>, adapted to WebGPU's lack of tessellation. A linearized (Morton-keyed) quadtree is held in a storage buffer; a producer/consumer compute pass selects visible nodes and LOD levels on the GPU and emits indirect draws. Hardware tessellation is replaced by <strong>vertex displacement of a reusable grid sampled from the height field</strong> — directly reusing the existing parity-tested heightmap groundwork (bilinear-correct sampling, symmetric tile aprons for seamless edges and normals). Continuous LOD morphing in the vertex stage prevents popping.</p>
     <p><strong>Informed by.</strong> §4.4's GPU-resident node selection + culling; the project's own heightmap parity work supplies the displacement source of truth, guaranteeing visual/collision agreement by construction.</p>
     <p class="gate"><strong>Gate:</strong> terrain triangle <em>and</em> draw-call cost bounded and roughly constant versus draw distance (not just collapsed, as in the WebGL instanced experiment); no cracks or popping across LOD seams; collision still served by the analytic height field; a trace showing terrain cost flat from draw distance 4 through 12.</p>
+    <div class="callout result"><span class="lab">SP3 result · measured</span>
+    <strong>Status: complete.</strong> A per-frame three-dispatch compute pipeline (reset → select → finalize) evaluates a camera-snapped, Morton-keyed quadtree window: each candidate node decides its own LOD by a distance-band test and <code>atomicAdd</code>s survivors into a GPU-resident buffer drawn as one <code>drawIndexedIndirect</code> of a reusable grid. Two substitutions, both faithful to the paper's own logic: (1) the producer/consumer FIFO queue is replaced by <strong>flattened per-node selection</strong> — since the tree is camera-snapped and LOD is purely distance-based, the emitted nodes provably form a <em>partition</em> of the covered region (no gaps/overlaps; Node-tested), delivering the paper's GPU-resident, zero-CPU-traversal selection without queue machinery; (2) hardware tessellation is replaced by <strong>vertex displacement</strong> of the analytic field in TSL (the substitution the paper itself prescribes), with continuous CDLOD morphing for crack-free seams. The chunk manager stays in an <em>external</em> mode (records + colliders only) so decorations and analytic collision are unaffected.</p>
+    <table>
+      <thead><tr><th>Terrain cost (361-chunk-equiv window)</th><th>Chunks</th><th>CDLOD</th><th>Δ</th></tr></thead>
+      <tbody>
+        <tr><td>Terrain draw calls</td><td class="num">361</td><td class="num">1</td><td class="num">−360</td></tr>
+        <tr><td>Terrain triangles</td><td class="num">≈382k</td><td class="num">≈147k</td><td class="num">−61%</td></tr>
+        <tr><td>CPU frame time (terrain-dominated)</td><td class="num">15.7–18.6 ms</td><td class="num">9.5–10.7 ms</td><td class="num">~−40%</td></tr>
+        <tr><td>Frame rate (same)</td><td class="num">41–61 fps</td><td class="num">62–75 fps</td><td class="num">+~30%</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0">The gate is the <em>flatness</em>, not just the collapse: across the whole sweep the CDLOD terrain holds at <strong>1 draw call and ≈147k triangles</strong> (±5% from camera motion) while the chunked path's terrain draws climb 25→361 with the radius and its triangles grow with area — terrain cost is decoupled from draw distance, the §4.4 endpoint realized via compute. The draw-call collapse is the FusionRender principle <sup><a href="#r1">[1]</a></sup> again (361→1); the new result is that the <em>triangle</em> budget is bounded too, by the camera-centered LOD window rather than the rendered area. CPU frame time is ~40% lower where terrain still dominates the frame; beyond that, ≈300 tree placements and the collision-octree rebuild become the bottleneck in <em>both</em> runs (~25–40 ms) — i.e. terrain has stopped being the cost. No cracks or popping across seams (continuous morphing) and collision is still the analytic height field. <strong>Gate met.</strong></p>
+    </div>
   </div>
 
   <div class="sp">

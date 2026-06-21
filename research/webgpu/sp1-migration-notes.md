@@ -183,3 +183,102 @@ the CPU path and is still faster on every metric. **Gate met.**
   drop the per-frame await. Not needed at the default Radius (~7.9M threads, smooth).
 - `?grass=cpu` (the legacy per-chunk manager) and `grass-compute-spike.html`'s lessons
   are retained as a fallback pending final SP2 cleanup (remove once trees/look settle).
+
+# SP3 — GPU-driven CDLOD terrain
+
+Replaces the per-chunk, CPU-built **visual** terrain ground with a fully GPU-driven CDLOD
+renderer: a camera-snapped, Morton-keyed quadtree whose visible nodes + LOD are selected by
+a compute pass, emitted via `atomicAdd`, and drawn with ONE `drawIndexedIndirect` of a
+reusable grid; height + normals from the analytic field in TSL; crack-free via continuous
+vertex morphing. This is the §4.4 endpoint (Yuan, Wang & Ai), adapted to WebGPU's lack of
+tessellation. Spec/plan: `docs/superpowers/specs/2026-06-21-sp3-gpu-cdlod-terrain-design.md`,
+`docs/superpowers/plans/2026-06-21-sp3-gpu-cdlod-terrain.md`. Modules: `cdlod-terrain.js`
+(GPU/TSL) + `cdlod-select.js` (pure-JS selection math, Node-tested); reuses
+`grass-height-ref.js` as the height parity twin. Behind `?terrain=gpu` (default) /
+`?terrain=chunks` (legacy baseline + fallback).
+
+## Pipeline (per frame, three compute dispatches → one indirect draw)
+
+1. **reset** (1 thread): `atomicStore(counter.element(0), uint(0))`.
+2. **select** (one thread per candidate node = `levels × windowCells²`, default 7×64=448):
+   decompose `instanceIndex` → `(level, lx, lz)` in the int domain, snap the per-level window
+   to the camera, compute the node's min-distance to the camera, run the **flattened
+   distance-band test** (`notRefined ∧ refinedByParent`), and on pass `atomicAdd(counter,1)`
+   + write the node's `vec4(originX, originZ, size, level+morphK)` record.
+3. **finalize** (1 thread): `indirect.element(1).assign(atomicLoad(counter.element(0)))`.
+4. `geometry.indirect = indirectAttr; geometry.instanceCount = CANDIDATES;` → one
+   `drawIndexedIndirect` of the reusable `patchQuads × patchQuads` grid. The vertex stage
+   morphs the grid coord toward the parent lattice (`morphK`), maps to world XZ, and
+   displaces by the analytic height; normal is the analytic central difference (e=0.5).
+
+## Two substitutions vs the paper (both faithful to its own logic)
+
+- **Flattened selection for the producer/consumer FIFO queue.** The paper's contribution is
+  GPU-resident node selection with no CPU traversal and no per-frame survivor transfer — all
+  delivered by the flattened per-node band test, which reuses the proven SP2
+  `atomicAdd`→indirect chain. Because the tree is camera-snapped and LOD is purely
+  distance-based, every candidate decides independently whether it is the selected LOD, so
+  the emitted nodes form a **partition** of the covered region (proven in
+  `test-cdlod-select.mjs`). The double-buffered queue is an optimization for deep/large
+  trees; unneeded at our ~7-level camera-centered depth.
+- **Vertex displacement for hardware tessellation** — the substitution the paper itself
+  prescribes (WebGPU has no tessellation stage). Height/normal come from the analytic field
+  transcribed to TSL, bit-matching `grass-height-ref.js` / `terrain-field.js`.
+
+## CDLOD specifics
+
+- Node size at level L = `leafSize·2^L`; `range[L] = leafSize·2^L·lodScale` (node-size based,
+  so a grid cell's angular size at its selection distance is `1/(patchQuads·lodScale)` —
+  constant across levels → uniform screen-space density). Defaults: `leafSize 16, levels 7,
+  patchQuads 16, lodScale 2.5, morphStart 0.6, windowCells 8`.
+- Per-level window snapped to that level's cell size → coarse nodes don't shimmer as the
+  camera moves (same world-anchored discipline as SP2 grass; tested).
+- Morph: as a node nears its outer band, odd grid vertices snap to the even/parent lattice
+  so the shared edge coincides with the coarser neighbor → no cracks. Continuity proven
+  against `grass-height-ref.js` in `test-cdlod-morph.mjs` (gap = 0).
+
+## Integration — `external` visual mode (the load-bearing decision)
+
+`activeChunks` is consumed by trees, grass, water, and the collision octree. So SP3 does NOT
+remove the chunk manager — `TerrainSystem` gains `visualMode: 'external'`: it keeps producing
+`activeChunks` records (no geometry) + colliders within `collisionRadius` + analytic
+`getHeight`, but skips the expensive visual chunk geometry. `materialPatchTarget` returns
+`null`; the host points `ground` at the CDLOD mesh (loaded at top-level `await` so it binds
+before water's caustic projection). Decorations/collision are unchanged.
+(`test-terrain-system.mjs` §6 covers it: records + colliders, zero visual meshes.)
+
+## Reused gotcha (same wall as SP2)
+
+Int-index decomposition uses `modInt` + exact-multiple integer `.div` (never float
+`.mod`/`.div`); `instanceIndex` cast to `int` first; the lake hash `bitcast(int,'uint')` to
+bit-match the field. The select→finalize compute is **awaited** before the draw (unawaited
+races → terrain flicker). The GPU-written indirect `instanceCount` is not synced back to the
+CPU array, so the HUD's triangle count mirrors the identical (448-iter, cheap) CPU
+`selectNodes` count rather than reading back the buffer.
+
+## Perf gate — dd9 A/B (`?terrain=gpu` vs `?terrain=chunks`)
+
+`research/stats/perf-2026-06-21T20-1*-{cdlod,chunks}.csv`. Terrain draw-call and triangle
+cost is the gate, and it is **flat versus draw distance**:
+
+| terrain metric (361-chunk-equiv window) | chunks | cdlod |
+|---|---|---|
+| terrain **draw calls** | **361** (grows with distance²) | **1** (constant) |
+| terrain **triangles** | ≈382k (361 × 1,058; grows with distance) | ≈147k (flat, ±5% from camera) |
+| CPU frame time, terrain-dominated¹ | 15.7–18.6 ms | **9.5–10.7 ms** (~40% lower) |
+| fps, same | 41–61 | **62–75** |
+
+¹ measured at a ~360-chunk window *before* the 300 tree placements + octree rebuild ramp in.
+Across the full sweep, CDLOD `terrainDraws` stays **1** and `terrainTris` stays ~147k while
+the chunk count climbs 3→361 — terrain cost is decoupled from draw distance (the §4.4 FusionRender
+collapse). Once trees + the collision octree dominate (~25–40 ms in both runs), terrain is no
+longer the bottleneck, which is the point. No cracks / no popping confirmed in the browser
+checkpoint; collision still served by the analytic height field. **Gate met.**
+
+## Open / deferred
+
+- The collision octree still rebuilds from `collisionRadius` colliders (octreeMs ~35–70 ms
+  spikes in both runs) — unrelated to terrain rendering, a candidate for a later SP.
+- `?terrain=chunks` retained as the dd9 baseline + fallback (like `?grass=cpu`).
+- Frustum culling is not in the selection (distance bands suffice for the gate, as in SP2);
+  could trim outer-ring nodes later if needed.
