@@ -80,7 +80,7 @@ const terrainGroup = terrainSystem.group;
 const terrainCollisionGroup = terrainSystem.collisionGroup;
 let ground = terrainSystem.materialPatchTarget;
 function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
-const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0 };
+const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
 const terrainDebugEl = document.createElement('div');
 terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
 document.body.appendChild(terrainDebugEl);
@@ -100,7 +100,8 @@ function updateTerrainDebug(now) {
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}\n` +
-    `octree ${terrainDebug.lastOctreeMs.toFixed(1)}ms`;
+    `octree ${terrainDebug.lastOctreeMs.toFixed(1)}ms\n` +
+    `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
 
 // ===================== perf time-series log =====================
@@ -123,6 +124,8 @@ const perfLog = {
     return {
       t: +((now - this.startTime) / 1000).toFixed(2),   // seconds since recording started
       fps: +terrainDebug.fps.toFixed(1),
+      cpuMs: +terrainDebug.cpuMs.toFixed(3),            // CPU time encoding+submitting the frame (the SP1 perf-gate metric)
+      backend: renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
       calls: r?.render?.calls ?? 0,
       triangles: r?.render?.triangles ?? 0,
       geometries: r?.memory?.geometries ?? 0,
@@ -1408,6 +1411,9 @@ function animate() {
   updateTerrainDebug(now);
   perfLog.maybeSample(now);
   renderer.render(scene, camera);
+  // CPU frame time = sim + scene update + command encoding/submit (render() returns
+  // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
+  if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
 }
 renderer.setAnimationLoop(animate);
 </script>
