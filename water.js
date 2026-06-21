@@ -546,7 +546,10 @@ export function createWaterSystem(options = {}) {
   //   (b) CausticTextureNode.updateBefore() sets this.value during the live loop,
   //       so the texture is always bound before the terrain draw call (issues/001 safe).
   if (ground && ground.material && ground.material.isNodeMaterial) {
-    ground.material.emissiveNode = cEmit;
+    // Additive: preserve any existing emissive term (e.g. SP4a clustered point lighting on
+    // the terrain) instead of clobbering it — both are additive over the base shading.
+    const prior = ground.material.emissiveNode;
+    ground.material.emissiveNode = prior ? prior.add(cEmit) : cEmit;
     ground.material.needsUpdate  = true;
   }
 
