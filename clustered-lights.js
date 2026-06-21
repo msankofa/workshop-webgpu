@@ -153,7 +153,7 @@ export function createClusteredLights(opts) {
         const VdotH = max(dot(V, Hh), 0.0);
         // GGX D
         const dDen = NdotH.mul(NdotH).mul(a.mul(a).sub(1.0)).add(1.0);
-        const D = a.mul(a).div(PI.mul(dDen).mul(dDen).max(1e-6));
+        const D = a.mul(a).div(dDen.mul(dDen).mul(PI).max(1e-6));
         // Smith G (Schlick-GGX, height-correlated approx)
         const k = a.mul(0.5);
         const gv = NdotV.div(NdotV.mul(float(1).sub(k)).add(k));
