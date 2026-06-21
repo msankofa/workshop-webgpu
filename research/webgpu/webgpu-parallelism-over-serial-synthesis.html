@@ -52,6 +52,7 @@
     .callout.finding { border-left: 4px solid var(--accent); background: var(--soft); }
     .callout.caveat { border-left: 4px solid var(--accent-2); background: var(--warn); }
     .callout.apply { border-left: 4px solid #2f8a5b; background: var(--good); }
+    .callout.result { border-left: 4px solid #0f7b8a; background: #eaf6f8; }
     .callout .lab { font: 700 0.72rem/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 7px; }
     .figure { border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 20px 0; background: var(--code); font: 0.82rem/1.5 ui-monospace, Consolas, monospace; white-space: pre; overflow-x: auto; }
     .figcap { font: italic 0.86rem ui-sans-serif, system-ui, sans-serif; color: var(--muted); margin: 6px 2px 0; white-space: normal; }
@@ -190,10 +191,23 @@
   <p>We decompose the migration into four sub-projects, each with its own spec, plan, and acceptance gate. The ordering banks a foundational validation first, then attacks the measured bottleneck, then the structural LOD gap, then the roadmap features that motivated the platform choice. Every stage carries the §4.5 caveats as explicit design constraints.</p>
 
   <div class="sp">
-    <h3>SP1 — Renderer migration foundation <span class="tag">first</span></h3>
+    <h3>SP1 — Renderer migration foundation <span class="tag">first · complete ✓</span></h3>
     <p><strong>Goal.</strong> Replace <code>WebGLRenderer</code> with <code>WebGPURenderer</code> and port all existing materials (terrain, grass wind/fade, water caustics, clouds) to TSL/node materials so the scene renders <em>identically</em> on WebGPU — no new features. This is the "reality check" <sup><a href="#r3">[3]</a><a href="#r5">[5]</a></sup>: confirm parity and measure the CPU-frame-time win on target hardware before building on it.</p>
     <p><strong>Key risk.</strong> The codebase's shader strategy is GLSL <code>onBeforeCompile</code> injection (terrain displacement, water caustics). <em>This does not exist in TSL</em> — the node model replaces it. Each injected effect must be re-expressed as TSL nodes. This supersedes the in-flight WebGL heightmap-terrain shader work, which becomes a <em>reference</em>, not the path.</p>
     <p class="gate"><strong>Gate:</strong> visual parity with the WebGL build (terrain, lakes, caustics, grass, clouds); a <code>perfStats</code> trace at draw distance 9 showing CPU frame time at or below the WebGL baseline; documented adapter/device setup time (expected ≈0.2&nbsp;s, one-time).</p>
+    <div class="callout result"><span class="lab">SP1 result · measured</span>
+    <strong>Status: complete.</strong> Migrated to Three.js <code>r0.184.0</code> (<code>three/webgpu</code> + <code>three/tsl</code>) behind a <code>?renderer=</code> flag for side-by-side comparison. Grass, clouds, and water were ported to TSL node materials: water surface (wave normal, Fresnel, depth), planar reflection via the TSL <code>reflector()</code> node, refraction via <code>viewportSharedTexture</code>, and animated caustics. The key risk landed exactly as predicted — the GLSL <code>onBeforeCompile</code> caustic projection has no TSL equivalent, so it was re-expressed as a render-to-target caustic-texture node contributing additively to a <code>MeshStandardNodeMaterial</code> terrain. Adapter+device <code>renderer.init()</code> measured <strong>217&nbsp;ms</strong> on target hardware, matching the ≈0.2&nbsp;s one-time setup the literature flags <sup><a href="#r3">[3]</a></sup> and confirming caveat (1) is a non-issue for a persistent app.</p>
+    <table>
+      <thead><tr><th>Draw distance 9 · 361 chunks</th><th>WebGL2</th><th>WebGPU</th><th>Δ</th></tr></thead>
+      <tbody>
+        <tr><td>CPU frame time — mean</td><td class="num">36.9 ms</td><td class="num">24.8 ms</td><td class="num">−33%</td></tr>
+        <tr><td>CPU frame time — median</td><td class="num">29.3 ms</td><td class="num">21.3 ms</td><td class="num">−27%</td></tr>
+        <tr><td>CPU frame time — p95</td><td class="num">77.7 ms</td><td class="num">41.9 ms</td><td class="num">−46%</td></tr>
+        <tr><td>Frame rate — mean</td><td class="num">33.4 fps</td><td class="num">45.3 fps</td><td class="num">+36%</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0">The dd9 gate is met with margin: WebGPU CPU frame time runs 27–46% below the WebGL baseline, and frame-time variance collapses — the p95/median ratio falls from 2.65× on WebGL to 1.97× on WebGPU, the reduced stalling §4.1 attributes to bundled state and fewer API calls <sup><a href="#r5">[5]</a></sup>. Decisively, CPU time <em>fell</em> rather than rose, so the GEM'24 per-frame buffer-upload stall (caveat 2) did not surface in the ported scene. One follow-up stays open: procedural (canvas-generated) tree textures fail to bind on the main pass under the node-material texture lifecycle (tracked as issue&nbsp;001); authored textures — the production default — are unaffected, so SP1 ships on them.</p>
+    </div>
   </div>
 
   <div class="sp">
