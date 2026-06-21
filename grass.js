@@ -295,6 +295,55 @@ function buildGeometry(o) {
   return geom;
 }
 
+// One blade in local space, for instanced rendering (the compute path positions each
+// instance from a storage buffer). Layout matches buildGeometry's per-blade verts:
+// [BL, BR, TR, TL, TC]; aWind = WIND_WEIGHT; aHeight = local y of each vert. Width
+// axis along local X; tip leans along local +X by tipOffset (per-instance yaw is
+// applied in the vertex shader from the instance's stored yaw).
+export function buildBladeGeometry(opts = {}) {
+  const bladeWidth = opts.bladeWidth ?? DEFAULTS.bladeWidth;
+  const bladeHeight = opts.bladeHeight ?? DEFAULTS.bladeHeight;
+  const tipOffset = opts.tipOffset ?? DEFAULTS.tipOffset;
+  const halfW = bladeWidth * 0.5, midW = bladeWidth * 0.25, h = bladeHeight;
+  const ox = [-halfW, halfW, midW, -midW, tipOffset];
+  const oy = [0, 0, h * 0.5, h * 0.5, h];
+  const pos = new Float32Array(5 * 3);
+  const wnd = new Float32Array(5);
+  const hgt = new Float32Array(5);
+  for (let k = 0; k < 5; k++) {
+    pos[k * 3] = ox[k]; pos[k * 3 + 1] = oy[k]; pos[k * 3 + 2] = 0;
+    wnd[k] = WIND_WEIGHT[k];
+    hgt[k] = oy[k];
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('aWind', new THREE.BufferAttribute(wnd, 1));
+  geom.setAttribute('aHeight', new THREE.BufferAttribute(hgt, 1));
+  geom.setIndex(new THREE.BufferAttribute(new Uint16Array(BLADE_INDICES), 1));
+  return geom;
+}
+
+// Value-noise TSL Fns (hash2D + bilinear noise2D), exported so grass-compute.js builds
+// the same cloud-shadow term. Matches the GLSL noise(p) referenced in FRAG_SHADER.
+export function buildGrassNoiseFns() {
+  const hash2D = Fn(([p]) => {
+    const q = fract(p.mul(vec2(123.34, 456.21)));
+    const r = q.add(dot(q, q.add(float(45.32))));
+    return fract(r.x.mul(r.y));
+  });
+  const noise2D = Fn(([p]) => {
+    const i = floor(p);
+    const f = fract(p);
+    const a = hash2D(i);
+    const b = hash2D(i.add(vec2(1.0, 0.0)));
+    const c = hash2D(i.add(vec2(0.0, 1.0)));
+    const d = hash2D(i.add(vec2(1.0, 1.0)));
+    const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0)));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  });
+  return { hash2D, noise2D };
+}
+
 // ---- TSL node material ----
 //
 // GLSL → TSL correspondence:
@@ -389,25 +438,8 @@ function buildMaterial(o) {
 
   // ---- colorNode: base→tip gradient × flat light × cloud shadow ----
 
-  // Value-noise hash — matches GLSL:  fract(fract(p * vec2(123.34, 456.21)) dot-product)
-  const hash2D = Fn(([p]) => {
-    const q = fract(p.mul(vec2(123.34, 456.21)));
-    const r = q.add(dot(q, q.add(float(45.32))));
-    return fract(r.x.mul(r.y));
-  });
-
-  // Bilinear value noise — matches GLSL noise(p)
-  const noise2D = Fn(([p]) => {
-    const i = floor(p);
-    const f = fract(p);
-    const a = hash2D(i);
-    const b = hash2D(i.add(vec2(1.0, 0.0)));
-    const c = hash2D(i.add(vec2(0.0, 1.0)));
-    const d = hash2D(i.add(vec2(1.0, 1.0)));
-    // Hermite smoothstep: u = f*f*(3-2*f)
-    const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0)));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  });
+  // Value-noise hash + bilinear noise (shared with grass-compute.js).
+  const { noise2D } = buildGrassNoiseFns();
 
   // Cloud UV: world XZ scaled by invExtent, scrolling over time.
   // positionWorld.xz is post-displacement; max wind shift < 0.09 noise-units (imperceptible).
