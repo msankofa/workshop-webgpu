@@ -178,7 +178,7 @@ export function createClusteredLights(opts) {
       x: (Math.random() * 2 - 1) * 220, z: (Math.random() * 2 - 1) * 220,
       y: 3 + Math.random() * 5, phase: Math.random() * Math.PI * 2, drift: 8 + Math.random() * 20,
       r: 0.4 + Math.random() * 0.6, g: 0.4 + Math.random() * 0.6, b: 0.4 + Math.random() * 0.6,
-      radius: 18 + Math.random() * 22, intensity: 6 + Math.random() * 10,
+      radius: 24 + Math.random() * 28, intensity: 28 + Math.random() * 36,
     });
   }
   const arr = lightAttr.array;
