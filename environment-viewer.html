@@ -30,7 +30,8 @@ import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix } from 'three/t
 import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
-import { createTerrainSystem } from './terrain-system.js';
+import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
+import { groundContact, slideVelocity } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
@@ -98,6 +99,8 @@ const terrainCollisionGroup = terrainSystem.collisionGroup;
 let cdlodRef = null;
 let ground = terrainSystem.materialPatchTarget;
 function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
+const _terrainN = [0, 1, 0];
+function terrainNormal(x, z) { return terrainNormalAt(terrainSystem.params, x, z, _terrainN); }
 
 // SP4a: GPU froxel clustered point lighting, constructed BEFORE the CDLOD ground so the
 // terrain can inject the additive clustered-light term into its emissiveNode. ?lights=off
@@ -1534,6 +1537,8 @@ function applyFPSControls(deltaTime) {
   }
 }
 
+const PLAYER_SLOPE_LIMIT_Y = 0.5;   // min ground normal.y to stand on; steeper faces slide
+const _collisionLift = new THREE.Vector3();
 function updateFPSPlayer(deltaTime) {
   if (!playerOnFloor) {
     playerVelocity.y -= fp.gravity * deltaTime;
@@ -1541,11 +1546,19 @@ function updateFPSPlayer(deltaTime) {
     playerVelocity.addScaledVector(playerVelocity, airDamp);
   }
   playerCollider.translate(playerVelocity.clone().multiplyScalar(deltaTime));
-  const result = worldOctree.capsuleIntersect(playerCollider);
-  playerOnFloor = result ? result.normal.y > 0 : false;
-  if (result) {
-    playerVelocity.addScaledVector(result.normal, -result.normal.dot(playerVelocity));
-    playerCollider.translate(result.normal.multiplyScalar(result.depth));
+  const contact = groundContact({
+    x: playerCollider.start.x,
+    z: playerCollider.start.z,
+    bottomY: playerCollider.start.y - playerCollider.radius,
+    slopeLimitY: PLAYER_SLOPE_LIMIT_Y,
+    heightAt: terrainHeight,
+    normalAt: terrainNormal,
+  });
+  playerOnFloor = contact.grounded;
+  if (contact.penetration > 0) {
+    playerCollider.translate(_collisionLift.set(0, contact.penetration, 0));
+    const slid = slideVelocity(playerVelocity, contact.normal);
+    playerVelocity.set(slid.x, slid.y, slid.z);
   }
   // Lerp capsule height toward current stance, then pin end above start.
   const targetH = fp['height' + stance[0].toUpperCase() + stance.slice(1)];
