@@ -13,9 +13,7 @@ const DEFAULTS = {
   waterLevel: -0.9,
   chunkSize: 30,
   minSegmentsPerChunk: 14,
-  collisionSegmentsPerChunk: 8,
   renderRadius: 2,
-  collisionRadius: 1,
   maxChunksPerUpdate: 1,
   maxUnloadsPerUpdate: 2,
   useWorker: true,            // build chunk geometry off-thread when a Web Worker is available
@@ -120,12 +118,9 @@ class TerrainSystem {
     this.params = merge(DEFAULTS, options.params);
     this.group = new THREE.Group();
     this.group.name = 'TerrainChunks';
-    this.collisionGroup = new THREE.Group();
-    this.collisionGroup.name = 'TerrainCollisionChunks';
     this.material = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1 });
     this.instancedMaterial = createInstancedTerrainMaterial();
-    this.collisionMaterial = new THREE.MeshBasicMaterial({ visible: false });
-    this.renderMode = this.params.experimentalInstancedTerrain && this.params.renderMode === 'instanced' ? 'instanced' : 'chunks';
+    this.renderMode =this.params.experimentalInstancedTerrain && this.params.renderMode === 'instanced' ? 'instanced' : 'chunks';
     this.instancedTerrain = null;
     this.instancedCapacity = 0;
     this.instanceMatrixScratch = new THREE.Matrix4();
@@ -146,7 +141,6 @@ class TerrainSystem {
     this.centerChunkX = null;
     this.centerChunkZ = null;
     this.targetKeys = new Set();
-    this.collisionKeys = new Set();
     this.activeChunkCache = [];
     this.buildQueue = [];
     this.buildQueueIndex = 0;
@@ -196,14 +190,6 @@ class TerrainSystem {
     return Math.max(0, this.buildQueue.length - this.buildQueueIndex) + this.inFlight.size;
   }
 
-  get pendingCollisionBuildCount() {
-    let pending = 0;
-    for (const key of this.collisionKeys) {
-      if (!this.chunks.has(key)) pending++;
-    }
-    return pending;
-  }
-
   get activeChunks() {
     return this.activeChunkCache;
   }
@@ -227,7 +213,6 @@ class TerrainSystem {
     this.centerChunkX = null;
     this.centerChunkZ = null;
     this.targetKeys.clear();
-    this.collisionKeys.clear();
     this.activeChunkCache = [];
     this.buildQueue = [];
     this.buildQueueIndex = 0;
@@ -246,9 +231,9 @@ class TerrainSystem {
     let changed = false;
 
     // Recompute when the center chunk moves, when nothing is loaded yet, or when a
-    // chunking-relevant param changed at runtime (renderRadius/collisionRadius/chunkSize)
+    // chunking-relevant param changed at runtime (renderRadius/chunkSize)
     // without the center moving — otherwise such changes would be silently ignored.
-    const chunkingSig = `${chunkSize}|${this.params.renderRadius}|${this.params.collisionRadius}`;
+    const chunkingSig = `${chunkSize}|${this.params.renderRadius}`;
     const sigChanged = chunkingSig !== this.chunkingSig;
 
     if (centerChunkX !== this.centerChunkX || centerChunkZ !== this.centerChunkZ || this.targetKeys.size === 0 || sigChanged) {
@@ -256,12 +241,10 @@ class TerrainSystem {
       this.centerChunkZ = centerChunkZ;
       this.chunkingSig = chunkingSig;
       this.targetKeys = this.getTargetKeys(centerChunkX, centerChunkZ, radius);
-      this.collisionKeys = this.getTargetKeys(centerChunkX, centerChunkZ, Math.max(0, Math.floor(this.params.collisionRadius)));
       if (this.renderMode === 'instanced') this.updateInstancedTerrain();
       this.buildQueue = this.getMissingKeysSorted(centerX, centerZ);
       this.buildQueueIndex = 0;
       changed = true;
-      if (this.syncCollisionGroup()) changed = true;
     }
 
     // Cold start: build the nearest chunk synchronously so primaryMesh / activeChunks
@@ -324,7 +307,6 @@ class TerrainSystem {
   addChunk(chunk) {
     this.chunks.set(chunk.key, chunk);
     if (chunk.mesh && this.renderMode !== 'instanced') this.group.add(chunk.mesh);
-    if (this.collisionKeys.has(chunk.key)) this.collisionGroup.add(this.ensureCollider(chunk));
     if (!this.primaryMesh && chunk.mesh) this.primaryMesh = chunk.mesh;
   }
 
@@ -387,8 +369,7 @@ class TerrainSystem {
     return missing;
   }
 
-  // Synchronous chunk build (fallback when no worker). Mesh geometry only;
-  // collider is built lazily by ensureCollider.
+  // Synchronous chunk build (fallback when no worker). Mesh geometry only.
   createChunk(key, xMin, zMin, size) {
     const segments = Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
     const geo = this.params.visualMode === 'external'
@@ -409,31 +390,13 @@ class TerrainSystem {
       // No visible geometry — just a record carrying terrainChunk metadata so activeChunks,
       // decorations and colliders keep working while the GPU CDLOD mesh renders the ground.
       if (geo) geo.dispose();
-      return { key, mesh: null, meta, collider: null, xMin, zMin, size };
+      return { key, mesh: null, meta, xMin, zMin, size };
     }
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.name = `TerrainChunk:${key}`;
     mesh.receiveShadow = true;
     mesh.userData.terrainChunk = meta;
-    return { key, mesh, meta, collider: null, xMin, zMin, size };
-  }
-
-  ensureCollider(chunk) {
-    if (chunk.collider) return chunk.collider;
-    const collisionSegments = Math.max(4, Math.floor(this.params.collisionSegmentsPerChunk));
-    const geo = this.createChunkGeometry(chunk.xMin, chunk.zMin, chunk.size, collisionSegments, false);
-    const collider = new THREE.Mesh(geo, this.collisionMaterial);
-    collider.name = `TerrainCollider:${chunk.key}`;
-    collider.userData.terrainChunk = { key: chunk.key, xMin: chunk.xMin, zMin: chunk.zMin, size: chunk.size, segments: collisionSegments, lod: 0 };
-    chunk.collider = collider;
-    return collider;
-  }
-
-  releaseCollider(chunk) {
-    if (!chunk.collider) return;
-    this.collisionGroup.remove(chunk.collider);
-    chunk.collider.geometry.dispose();
-    chunk.collider = null;
+    return { key, mesh, meta, xMin, zMin, size };
   }
 
   // Synchronous geometry build (fallback path + colliders, which are small enough
@@ -447,7 +410,6 @@ class TerrainSystem {
       chunk.mesh.geometry.dispose();
       if (chunk.mesh.parent === this.group) this.group.remove(chunk.mesh);
     }
-    this.releaseCollider(chunk);
   }
 
   updateInstancedUniforms() {
@@ -609,22 +571,6 @@ class TerrainSystem {
     });
   }
 
-  syncCollisionGroup() {
-    let changed = false;
-    for (const chunk of this.chunks.values()) {
-      const shouldAttach = this.collisionKeys.has(chunk.key);
-      const attached = chunk.collider && chunk.collider.parent === this.collisionGroup;
-      if (shouldAttach && !attached) {
-        this.collisionGroup.add(this.ensureCollider(chunk));
-        changed = true;
-      } else if (!shouldAttach && chunk.collider) {
-        this.releaseCollider(chunk);
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
   dispose() {
     if (this.worker) { this.worker.terminate(); this.worker = null; }
     this.inFlight.clear();
@@ -642,7 +588,6 @@ class TerrainSystem {
     }
     this.material.dispose();
     this.instancedMaterial.dispose();
-    this.collisionMaterial.dispose();
   }
 }
 
