@@ -389,3 +389,48 @@ browser restart. The particle buffers themselves are ~0.8 MB, not the stressor.)
 - Weather (rain/snow) deferred to a future **sky/weather SP** (the SP4 "C" option).
 - GPU depth-sort, ribbon/trail/mesh particles, soft-particle depth fade, terrain collision — polish.
 - Creature/combat-emitted particles (Codex coupling) — not in this self-contained field.
+
+# SP4c — Node post-processing (bloom + tonemap + grade)
+
+A configurable post stack composed from three's `PostProcessing` node pipeline, replacing the
+final `renderer.render`. Spec: `docs/superpowers/specs/2026-06-22-sp4c-post-processing-design.md`.
+Modules: `post-fx.js` (GPU/TSL) + `post-grade.js` (Node-tested grade math).
+
+## Graph
+
+`scenePass = pass(scene, camera)` → `bloom(scenePassColor, strength, radius, threshold)` (addon
+`three/addons/tsl/display/BloomNode.js`) added to the scene color → `renderOutput(...)` (applies
+the renderer's tone-mapping operator + sRGB output color space) → `gradeNode(...)` → `outputNode`.
+`postProcessing.renderAsync()` replaces the draw when enabled (`?post=off` → plain render).
+
+## Configurable (Post panel, ~16 live controls)
+
+Tone operator (none/neutral/aces/agx/reinhard) + exposure; bloom strength/radius/threshold/smooth;
+grade gain/brightness/contrast/gamma/saturation/temperature/tint/vignette/vignette-softness. **All
+default to a visual no-op** (tone `none`, bloom strength 0, identity grade) so startup matches the
+no-post baseline; you build the look from neutral. Live params are uniforms; switching the tone
+operator rebuilds `outputNode` (the operator is baked at build).
+
+## Gotchas hit (browser-only; WebGPU can't be validated headless here)
+
+1. **`renderOutput` returns a vec4** — the grade must run on `color.rgb`, else the luma `dot`/
+   white-balance (`vec4 + vec3`) silently misbehave while per-component stages (gain/brightness/
+   contrast/gamma) still "work." This is why saturation/temperature appeared dead at first.
+2. **Contrast pivot** at `0.5` acts like inverse-brightness on a dark scene (most pixels < 0.5 →
+   contrast just darkens). Pivot at **middle-grey 0.18** so contrast expands around the midtone,
+   decoupling it from the brightness slider.
+3. `PI`/scalars can't be TSL node receivers; AgX tone mapping darkens midtones (don't default to it
+   on a dim scene — default `none`).
+
+## Perf note
+
+Post runs as **GPU node passes** after the awaited grass/cdlod/lights/particle computes, so it
+doesn't reintroduce a CPU-bound pass — the SP4 gate. cpuMs in the SP4a/4b dd9 runs (~14–18 ms) is
+CPU submit time and is unaffected by adding GPU-side post passes; a formal `?post=on/off` dd9 trace
+is deferred together with GTAO.
+
+## Open / deferred (4c)
+- **GTAO** (addon `ao(depth, normal, camera)`) is **v2** — needs an MRT(output, normal) scene pass;
+  deferred (user: "work on it more later").
+- Default look is baseline-neutral on purpose; tuned defaults to be baked once dialed in.
+- TAA/SMAA/FXAA, SSR, DOF, motion blur — beyond-scope polish; sky/weather is its own future SP.

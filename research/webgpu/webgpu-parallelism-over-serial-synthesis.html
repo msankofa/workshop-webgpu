@@ -252,7 +252,7 @@
   </div>
 
   <div class="sp">
-    <h3>SP4 — Lights, effects, and post-processing <span class="tag">4a+4b complete ✓ · 4c next</span></h3>
+    <h3>SP4 — Lights, effects, and post-processing <span class="tag">complete ✓ (4a+4b+4c)</span></h3>
     <p><strong>Goal.</strong> Deliver the visual roadmap that justified the platform choice: many dynamic point lights via <strong>clustered/tiled forward lighting</strong> (feasible only with compute + storage buffers), GPU-driven particle/effect systems, and a node-based post-processing stack (bloom, AO, color grade) — all native to the WebGPU backend and infeasible or expensive under serial WebGL.</p>
     <p><strong>Informed by.</strong> The whole corpus: each feature is a many-object or compute-heavy workload, the regime where §4.1/§4.5 place WebGPU's advantage; clustered lighting is the canonical "decide on the GPU" pattern.</p>
     <p class="gate"><strong>Gate:</strong> target dynamic-light count rendered within frame budget; post stack composited without reintroducing CPU-bound passes; measured against the SP1 baseline.</p>
@@ -277,7 +277,10 @@
         <tr><td>Frame rate</td><td class="num">~54 fps</td><td class="num">~61 fps</td></tr>
       </tbody>
     </table>
-    <p style="margin:10px 0 0">12,000 GPU-simulated particles add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — sim is GPU compute, draw is two indirect calls, the serial CPU path untouched. <strong>4b gate met.</strong> Remaining: <strong>4c</strong> (a TSL node post-processing stack — bloom/AO/grade); weather/sky is split off to its own future SP.</p>
+    <p style="margin:10px 0 0">12,000 GPU-simulated particles add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — sim is GPU compute, draw is two indirect calls, the serial CPU path untouched. <strong>4b gate met.</strong></p>
+    </div>
+    <div class="callout result"><span class="lab">SP4c result · shipped</span>
+    <strong>4c (post-processing): complete.</strong> A configurable node post stack composed from three's own <code>PostProcessing</code> pipeline — scene <code>pass</code> → <strong>bloom</strong> (addon BloomNode) → <code>renderOutput</code> (runtime-switchable tone operator: none/neutral/ACES/AgX/Reinhard + sRGB) → a <strong>color grade</strong> (gain, brightness, contrast at a middle-grey pivot, gamma, saturation, white-balance, vignette) — replacing the final draw with <code>renderAsync()</code>. ~16 live controls, all defaulting to a visual no-op so the look is built from a neutral baseline. The grade math is Node-tested; the integration bugs that only surface at runtime (grade must run on <code>color.rgb</code> not the <code>renderOutput</code> vec4; contrast pivot at 0.18 not 0.5 on dark scenes) were caught via browser checkpoints. Post runs as GPU node passes after the awaited compute passes, so it adds no CPU-bound pass (the SP4 gate). <strong>4c shipped.</strong> Deferred: GTAO/SSAO (needs an MRT-normal pass) and a sky/weather SP.</p>
     </div>
   </div>
 
