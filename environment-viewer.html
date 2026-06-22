@@ -1033,20 +1033,23 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
 
   // ---- SP4c: post-processing controls (bloom + tonemap + grade) ----
   if (postFX) {
+    // Baseline-neutral defaults: tone 'none' (linear), no bloom, identity grade — looks
+    // identical to ?post=off until you push a slider. Build the look from here.
     Object.assign(params, {
-      postFX: true, postTone: 'agx', postExposure: 1.0,
-      postBloomStrength: 0.5, postBloomRadius: 0.6, postBloomThreshold: 0.85,
-      postContrast: 1.0, postSaturation: 1.1, postVignette: 0.2,
+      postFX: true, postTone: 'none', postExposure: 1.0,
+      postBloomStrength: 0.0, postBloomRadius: 0.6, postBloomThreshold: 0.0, postBloomSmooth: 0.01,
+      postContrast: 1.0, postSaturation: 1.0, postVignette: 0.0,
     });
-    const applyBloom = () => postFX.setBloom(params.postBloomStrength, params.postBloomRadius, params.postBloomThreshold);
+    const applyBloom = () => postFX.setBloom(params.postBloomStrength, params.postBloomRadius, params.postBloomThreshold, params.postBloomSmooth);
     const applyGrade = () => postFX.setGrade(params.postContrast, params.postSaturation, params.postVignette);
     header('Post');
     toggle('postFX', 'Post FX', () => postFX.setEnabled(params.postFX));
-    select('postTone', 'Tone mapping', ['agx', 'aces', 'reinhard', 'neutral', 'none'], () => postFX.setToneMapping(params.postTone));
-    slider('postExposure', 'Exposure', 0.1, 3, 0.05, f2, () => postFX.setExposure(params.postExposure));
-    slider('postBloomStrength', 'Bloom strength', 0, 2, 0.01, f2, applyBloom);
+    select('postTone', 'Tone mapping', ['none', 'neutral', 'aces', 'agx', 'reinhard'], () => postFX.setToneMapping(params.postTone));
+    slider('postExposure', 'Exposure', 0.1, 4, 0.05, f2, () => postFX.setExposure(params.postExposure));
+    slider('postBloomStrength', 'Bloom strength', 0, 3, 0.01, f2, applyBloom);
     slider('postBloomRadius', 'Bloom radius', 0, 1, 0.01, f2, applyBloom);
-    slider('postBloomThreshold', 'Bloom threshold', 0, 1.5, 0.01, f2, applyBloom);
+    slider('postBloomThreshold', 'Bloom threshold', 0, 2, 0.01, f2, applyBloom);
+    slider('postBloomSmooth', 'Bloom smooth', 0.001, 0.2, 0.001, v => v.toFixed(3), applyBloom);
     slider('postContrast', 'Contrast', 0.5, 1.5, 0.01, f2, applyGrade);
     slider('postSaturation', 'Saturation', 0, 2, 0.01, f2, applyGrade);
     slider('postVignette', 'Vignette', 0, 1, 0.01, f2, applyGrade);

@@ -24,13 +24,14 @@ export function createPostFX(opts) {
   const pp = new PostProcessing(renderer);
   const scenePass = pass(scene, camera);
   const scenePassColor = scenePass.getTextureNode();
-  // threshold ~0.85 so only bright emitters (lights/embers/glints) bloom, not the dark terrain.
-  const bloomPass = bloom(scenePassColor, p.bloomStrength ?? 0.5, p.bloomRadius ?? 0.6, p.bloomThreshold ?? 0.85);
+  // Defaults are a visual NO-OP (matches the no-post baseline): strength 0 → no bloom.
+  const bloomPass = bloom(scenePassColor, p.bloomStrength ?? 0.0, p.bloomRadius ?? 0.6, p.bloomThreshold ?? 0.0);
+  if (p.bloomSmooth !== undefined) bloomPass.smoothWidth.value = p.bloomSmooth;
 
-  // grade uniforms (live)
+  // grade uniforms (live) — identity at contrast 1 / saturation 1 / vignette 0
   const uContrast = uniform(p.contrast ?? 1.0);
-  const uSaturation = uniform(p.saturation ?? 1.1);
-  const uVignette = uniform(p.vignette ?? 0.2);
+  const uSaturation = uniform(p.saturation ?? 1.0);
+  const uVignette = uniform(p.vignette ?? 0.0);
 
   // grade node (transcribes post-grade.js): contrast(pivot 0.5) → saturation(luma) → vignette
   const gradeNode = (color) => {
@@ -52,7 +53,7 @@ export function createPostFX(opts) {
     pp.outputNode = gradeNode(renderOutput(hdr));
     pp.needsUpdate = true;
   }
-  build(p.tone ?? 'agx');
+  build(p.tone ?? 'none');   // 'none' (linear) = baseline; renderOutput still applies sRGB output
 
   let enabled = p.enabled ?? true;
   return {
@@ -61,10 +62,11 @@ export function createPostFX(opts) {
     async renderAsync() { await pp.renderAsync(); },
     setToneMapping(name) { build(name); },
     setExposure(e) { renderer.toneMappingExposure = e; },
-    setBloom(strength, radius, threshold) {
+    setBloom(strength, radius, threshold, smoothWidth) {
       bloomPass.strength.value = strength;
       bloomPass.radius.value = radius;
       bloomPass.threshold.value = threshold;
+      if (smoothWidth !== undefined) bloomPass.smoothWidth.value = smoothWidth;
     },
     setGrade(contrast, saturation, vignette) {
       uContrast.value = contrast; uSaturation.value = saturation; uVignette.value = vignette;
