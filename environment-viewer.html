@@ -1038,10 +1038,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     Object.assign(params, {
       postFX: true, postTone: 'none', postExposure: 1.0,
       postBloomStrength: 0.0, postBloomRadius: 0.6, postBloomThreshold: 0.0, postBloomSmooth: 0.01,
-      postContrast: 1.0, postSaturation: 1.0, postVignette: 0.0,
+      postBrightness: 0.0, postContrast: 1.0, postGamma: 1.0, postGain: 1.0, postSaturation: 1.0,
+      postTemperature: 0.0, postTint: 0.0, postVignette: 0.0, postVignetteSoft: 1.0,
     });
     const applyBloom = () => postFX.setBloom(params.postBloomStrength, params.postBloomRadius, params.postBloomThreshold, params.postBloomSmooth);
-    const applyGrade = () => postFX.setGrade(params.postContrast, params.postSaturation, params.postVignette);
+    const applyGrade = () => postFX.setGrade({
+      brightness: params.postBrightness, contrast: params.postContrast, gamma: params.postGamma,
+      gain: params.postGain, saturation: params.postSaturation, temperature: params.postTemperature,
+      tint: params.postTint, vignette: params.postVignette, vignetteSoft: params.postVignetteSoft,
+    });
     header('Post');
     toggle('postFX', 'Post FX', () => postFX.setEnabled(params.postFX));
     select('postTone', 'Tone mapping', ['none', 'neutral', 'aces', 'agx', 'reinhard'], () => postFX.setToneMapping(params.postTone));
@@ -1050,9 +1055,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('postBloomRadius', 'Bloom radius', 0, 1, 0.01, f2, applyBloom);
     slider('postBloomThreshold', 'Bloom threshold', 0, 2, 0.01, f2, applyBloom);
     slider('postBloomSmooth', 'Bloom smooth', 0.001, 0.2, 0.001, v => v.toFixed(3), applyBloom);
+    slider('postBrightness', 'Brightness', -0.5, 0.5, 0.01, f2, applyGrade);
+    slider('postGain', 'Gain', 0, 2, 0.01, f2, applyGrade);
     slider('postContrast', 'Contrast', 0.5, 1.5, 0.01, f2, applyGrade);
+    slider('postGamma', 'Gamma', 0.2, 3, 0.01, f2, applyGrade);
     slider('postSaturation', 'Saturation', 0, 2, 0.01, f2, applyGrade);
+    slider('postTemperature', 'Temperature', -1, 1, 0.01, f2, applyGrade);
+    slider('postTint', 'Tint', -1, 1, 0.01, f2, applyGrade);
     slider('postVignette', 'Vignette', 0, 1, 0.01, f2, applyGrade);
+    slider('postVignetteSoft', 'Vignette softness', 0.2, 3, 0.01, f2, applyGrade);
   }
 
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
