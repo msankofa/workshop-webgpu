@@ -197,8 +197,10 @@ export function createComputeGrass(opts) {
   mat.positionNode = posNode;
   mat.colorNode = colorNode;
   mat.normalNode = vec3(0, 1, 0);
-  // SP4a: optional additive clustered point-light term (blade world pos, up normal).
-  if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(posNode, vec3(0, 1, 0));
+  // SP4a: optional additive clustered point-light term. Sample at the blade's ground-planted
+  // BASE (not the swaying elevated tip) so grass lighting stays locked to the terrain pool
+  // directly beneath it — avoids height-parallax desync as lights move.
+  if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(base, vec3(0, 1, 0));
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.frustumCulled = false;
