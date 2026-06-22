@@ -36,12 +36,6 @@ _Last updated 2026-06-22. Working tree clean; everything below is committed on b
   CSVs:** `research/stats/`. **Specs/plans:** `docs/superpowers/specs/`, `docs/superpowers/plans/`.
 
 ## 3. Hard constraints (read before editing)
-- **Codex works in this same fork concurrently. Do NOT touch or revert its work.** Codex owns
-  `creature.js`, `port-creature-system.js`, `port-creature-bridge.js`, and edits `trees.js` and parts
-  of `environment-viewer.html`.
-- **`environment-viewer.html` is shared.** Never `git add` it wholesale. Stage only your own hunks
-  (`git add -p`, or build a filtered patch and `git apply --cached`). Verify the staged diff contains
-  none of Codex's lines before committing.
 - **No headless WebGPU here.** It crashes in headless Chrome. So: prove all you can in **Node**
   (pure-JS math twins, run `node test-*.mjs`), then hand GPU/TSL code to a **browser checkpoint** (a
   human reloads and reports). Expect 1-3 iterations per GPU module.
@@ -87,12 +81,14 @@ _Last updated 2026-06-22. Working tree clean; everything below is committed on b
    - **C:** rock/obstacle BVH via `three-mesh-bvh` (addon; pin to r0.184) for walk-on + walls.
    Cull math is Node-testable first (the `light-cluster.js` pattern). Start with Phase A; it stands alone.
 2. **Tree/forest GPU optimization** (the other half of the residual per-chunk scaling). Likely
-   instanced/GPU-driven like grass, but it lives in Codex's `trees.js` -> coordinate, do not rewrite.
+   instanced/GPU-driven like grass; the current forest is baked per chunk in `trees.js`.
 3. **GTAO (post v2):** addon `ao(depth, normal, camera)`; needs an MRT(output, normal) scene `pass`. Deferred.
 4. **Sky / weather SP:** rain/snow + a real sky (the "C" particle option set aside).
 5. **Bake post-FX defaults** once a look is dialed in (currently a neutral no-op baseline).
-6. **Creature clustered-lighting** (hand-off to Codex): their materials must become node materials to take
-   `clusteredLightsRef.pointLightTerm(positionWorld, normalWorld)` in `emissiveNode`.
+6. **Creature clustered-lighting:** the creature materials (in `creature.js`) are plain
+   `MeshStandardMaterial`; to receive the SP4a clustered point lights they must become
+   `MeshStandardNodeMaterial` with `clusteredLightsRef.pointLightTerm(positionWorld, normalWorld)`
+   added to `emissiveNode`.
 
 ## 6. Accuracy note for the paper
 The paper claims **subsystem-scoped** flatness only (terrain = 1 draw, flat tris). Overall fps still
