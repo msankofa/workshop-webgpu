@@ -24,12 +24,13 @@ export function createPostFX(opts) {
   const pp = new PostProcessing(renderer);
   const scenePass = pass(scene, camera);
   const scenePassColor = scenePass.getTextureNode();
-  const bloomPass = bloom(scenePassColor, p.bloomStrength ?? 0.7, p.bloomRadius ?? 0.5, p.bloomThreshold ?? 0.0);
+  // threshold ~0.85 so only bright emitters (lights/embers/glints) bloom, not the dark terrain.
+  const bloomPass = bloom(scenePassColor, p.bloomStrength ?? 0.5, p.bloomRadius ?? 0.6, p.bloomThreshold ?? 0.85);
 
   // grade uniforms (live)
-  const uContrast = uniform(p.contrast ?? 1.05);
+  const uContrast = uniform(p.contrast ?? 1.0);
   const uSaturation = uniform(p.saturation ?? 1.1);
-  const uVignette = uniform(p.vignette ?? 0.35);
+  const uVignette = uniform(p.vignette ?? 0.2);
 
   // grade node (transcribes post-grade.js): contrast(pivot 0.5) → saturation(luma) → vignette
   const gradeNode = (color) => {

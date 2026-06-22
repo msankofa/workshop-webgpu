@@ -1035,8 +1035,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   if (postFX) {
     Object.assign(params, {
       postFX: true, postTone: 'agx', postExposure: 1.0,
-      postBloomStrength: 0.7, postBloomRadius: 0.5, postBloomThreshold: 0.0,
-      postContrast: 1.05, postSaturation: 1.1, postVignette: 0.35,
+      postBloomStrength: 0.5, postBloomRadius: 0.6, postBloomThreshold: 0.85,
+      postContrast: 1.0, postSaturation: 1.1, postVignette: 0.2,
     });
     const applyBloom = () => postFX.setBloom(params.postBloomStrength, params.postBloomRadius, params.postBloomThreshold);
     const applyGrade = () => postFX.setGrade(params.postContrast, params.postSaturation, params.postVignette);
