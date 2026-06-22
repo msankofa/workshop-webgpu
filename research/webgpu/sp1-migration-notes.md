@@ -434,3 +434,65 @@ is deferred together with GTAO.
   deferred (user: "work on it more later").
 - Default look is baseline-neutral on purpose; tuned defaults to be baked once dialed in.
 - TAA/SMAA/FXAA, SSR, DOF, motion blur — beyond-scope polish; sky/weather is its own future SP.
+
+---
+
+# SP5 Phase A — analytic terrain collision (retire the octree)
+
+**Status: complete (Node-tested + browser checkpoint passed).** The FPS-walk player collided
+against a triangle **octree** (`three/addons/math/Octree.js`) rebuilt over a ring of low-res
+terrain-collider meshes as chunks streamed — a holdover from three's FPS example. But the ground is
+a closed-form analytic height field (`terrainHeightAt`), so contact is an O(1) query needing no
+structure. Phase A replaces the octree with `collision.js`, a pure (three-free, Node-tested) module:
+
+- `groundContact({x, z, bottomY, slopeLimitY, heightAt, normalAt})` → `{groundY, penetration,
+  grounded, normal, restBottomY}`. Capsule bottom (`start.y - radius`) vs `terrainHeightAt`; if it
+  penetrates, lift vertically so the bottom rests on `groundY`; `grounded = normal.y >= 0.5`
+  (steeper faces slide instead of sticking). Normal from `terrainNormalAt` (analytic central
+  difference) so collision agrees with the visible CDLOD surface by construction.
+- `slideVelocity(v, n)` removes **only** the into-surface velocity component (`v·n < 0`), so a jump
+  (upward `v`) survives the contact frame and resting gravity is cancelled. Mirrors the octree slide
+  without killing jumps.
+
+`updateFPSPlayer` composes the two in place of `worldOctree.capsuleIntersect`. The octree plumbing
+(import, `worldOctree`, `buildOctree`/`maybeBuildTerrainOctree`, `terrainOctreeDirty`, the HUD
+`octree …ms` line, the perf `octreeMs` column) is deleted, and `terrain-system.js`'s collider
+machinery (`collisionGroup`, `ensureCollider`/`releaseCollider`/`syncCollisionGroup`,
+`pendingCollisionBuildCount`, `collisionRadius`/`collisionSegmentsPerChunk`) is removed — it only
+ever fed the octree. `getHeight` stays. External mode is now records-only (the last per-chunk
+geometry build on the SP3 external path is gone). Creatures were untouched: they already sample the
+analytic field via the injected `terrainHeight`/`terrainSystem.getHeight`.
+
+## Result — measured (dd9, cdlod, `?grass` off in the new trace)
+
+The win is in the **tail and variance**, not the mean: the octree rebuild was intermittent (only on
+chunk streaming), so it barely moved mean cpuMs but produced large spikes.
+
+| dd9 metric | octree (cdlod, n=90) | analytic (Phase A, n=30) |
+|---|---|---|
+| cpuMs mean | 25.4 ms | 24.7 ms |
+| cpuMs p95 | 38.8 ms | **31.1 ms** |
+| cpuMs **max** | **108.3 ms** | **31.9 ms** |
+| `octreeMs` max | **72.2 ms** (mean 31.4) | column removed |
+
+The 35–70 ms `octreeMs` rebuild spike is gone, and the cpuMs long tail collapses (max 108 → 32 ms;
+p95 38.8 → 31.1). Frame-time is now tight (new max/median ≈ 1.21× vs the old run's 108 ms outlier).
+Mean fps is comparable to slightly better (38.3 → 41.8, within run-to-run noise). Traces:
+`research/stats/perf-2026-06-21T20-12-25-023Z-cdlod.csv` (before) and
+`perf-2026-06-22T23-33-03-053Z-collision-phase-a.csv` (after).
+
+> Accuracy: this removes one of the **two** residual per-chunk CPU costs the paper names; the
+> **forest** (per-chunk baked trees) still scales, so overall fps still declines with draw distance,
+> just without the octree spike. Do not let this become a "flat fps" claim.
+
+## Tests
+`node test-collision.mjs` (13 asserts: above-ground, penetrating-flat, too-steep-slides, slide
+preserves jumps / flattens gravity) against `terrain-field.js` as the height/normal reference.
+`node test-terrain-system.mjs` updated (test #6 external mode now asserts records + analytic
+`getHeight`, no collider group).
+
+## Deferred to SP5 B/C (by design, YAGNI)
+- **Phase B** — tree-trunk capsule collision from forest placement data (`resolveTrunks`,
+  `setTrunks` per chunk). Trunks currently have no collision.
+- **Phase C** — rock/obstacle BVH (`three-mesh-bvh`, pinned to r0.184) for stand-on + walls, folded
+  into a `supportAt`/`WorldCollision` abstraction. `collision.js` is structured to grow into this.
