@@ -123,6 +123,16 @@ if (TERRAIN_MODE === 'gpu') {
   scene.add(cdlodRef.mesh);
   ground = cdlodRef.mesh;
 }
+
+// SP4b: GPU particle fields — embers (additive glow) + dust (subtle alpha). ?particles=off disables.
+const PARTICLES_MODE = new URLSearchParams(location.search).get('particles') || 'on';
+let emberRef = null, dustRef = null;
+if (PARTICLES_MODE !== 'off') {
+  const { createParticleField } = await import('./particles.js');
+  emberRef = createParticleField({ renderer, camera, kind: 'ember', count: 4000, radius: 90 });
+  dustRef = createParticleField({ renderer, camera, kind: 'dust', count: 8000, radius: 90 });
+  scene.add(emberRef.mesh, dustRef.mesh);
+}
 const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
 const portCreatures = createEnvironmentPortCreatures({
   scene,
@@ -160,6 +170,7 @@ function updateTerrainDebug(now) {
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}\n` +
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
+    (emberRef ? `particles ${emberRef.count + dustRef.count}\n` : '') +
     `octree ${terrainDebug.lastOctreeMs.toFixed(1)}ms\n` +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
@@ -1535,6 +1546,9 @@ async function animate() {
   if (cdlodRef) await cdlodRef.update();
   // SP4a: froxel light-cull compute, awaited before draw (like grass/cdlod).
   if (clusteredLightsRef) await clusteredLightsRef.update(now / 1000);
+  // SP4b: GPU particle sim, awaited before draw.
+  if (emberRef) await emberRef.update(rawDt, camera);
+  if (dustRef) await dustRef.update(rawDt, camera);
   renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
