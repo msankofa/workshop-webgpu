@@ -31,6 +31,7 @@ import { Octree } from 'three/addons/math/Octree.js';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem } from './terrain-system.js';
+import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -98,6 +99,16 @@ let cdlodRef = null;
 let ground = terrainSystem.materialPatchTarget;
 function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
 
+// SP4a: GPU froxel clustered point lighting, constructed BEFORE the CDLOD ground so the
+// terrain can inject the additive clustered-light term into its emissiveNode. ?lights=off
+// disables it for an A/B perf trace.
+const LIGHTS_MODE = new URLSearchParams(location.search).get('lights') || 'on';
+let clusteredLightsRef = null;
+if (TERRAIN_MODE === 'gpu' && LIGHTS_MODE !== 'off') {
+  const { createClusteredLights } = await import('./clustered-lights.js');
+  clusteredLightsRef = createClusteredLights({ renderer, camera, count: 256, far: 600 });
+}
+
 // SP3: load the GPU CDLOD ground at top level (top-level await is already used above for
 // renderer.init), so `ground` points at the CDLOD mesh BEFORE water loads and binds its
 // caustic projection to the ground material.
@@ -107,11 +118,23 @@ if (TERRAIN_MODE === 'gpu') {
     renderer, camera,
     terrainParams: { baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth },
     waterLevel: terrain.waterLevel,
+    addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
   });
   scene.add(cdlodRef.mesh);
   ground = cdlodRef.mesh;
 }
 const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
+const portCreatures = createEnvironmentPortCreatures({
+  scene,
+  renderer,
+  camera,
+  ground: () => ground,
+  terrain,
+  terrainSystem,
+  terrainHeight,
+  rebuildWorld,
+  isInteractionEnabled: () => !fpsMode,
+});
 const terrainDebugEl = document.createElement('div');
 terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
 document.body.appendChild(terrainDebugEl);
@@ -122,9 +145,12 @@ function updateTerrainDebug(now) {
   // frame stale is fine for a perf readout. Triangles counts the depth/shadow pass
   // too, so it can exceed the visible geometry.
   const ri = renderer.info;
+  const cs = portCreatures.stats;
   terrainDebugEl.textContent =
     `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri?.render?.calls ?? 0}  tris ${(ri?.render?.triangles ?? 0).toLocaleString()}\n` +
     `geom ${ri?.memory?.geometries ?? 0}  tex ${ri?.memory?.textures ?? 0}\n` +
+    `creatures ${cs.count} vis ${cs.visible} sim ${cs.sim} rend ${cs.rendered} body ${cs.bodyOnly} ms ${cs.updateMs.toFixed(2)}\n` +
+    `cre lod ${cs.tiers.join('/')} ik ${cs.ikFull}/${cs.ikCheap} shadows ${cs.shadowCasters}\n` +
     `terrain ${terrainSystem.renderMode}${cdlodRef ? ' · cdlod' : ''}\n` +
     (cdlodRef
       ? `terrain draws ${cdlodRef.drawCount} · tris ${cdlodRef.triangleCount.toLocaleString()}\n`
@@ -133,6 +159,7 @@ function updateTerrainDebug(now) {
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}\n` +
+    (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
     `octree ${terrainDebug.lastOctreeMs.toFixed(1)}ms\n` +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
@@ -154,6 +181,7 @@ const perfLog = {
   lastSample: -Infinity,
   snapshot(now) {
     const r = renderer.info;
+    const cs = portCreatures.stats;
     return {
       t: +((now - this.startTime) / 1000).toFixed(2),   // seconds since recording started
       fps: +terrainDebug.fps.toFixed(1),
@@ -163,6 +191,19 @@ const perfLog = {
       triangles: r?.render?.triangles ?? 0,
       geometries: r?.memory?.geometries ?? 0,
       textures: r?.memory?.textures ?? 0,
+      creatures: cs.count,
+      creatureVisible: cs.visible,
+      creatureSim: cs.sim,
+      creatureRendered: cs.rendered,
+      creatureBodyOnly: cs.bodyOnly,
+      creatureMs: +cs.updateMs.toFixed(3),
+      creatureLod0: cs.tiers[0],
+      creatureLod1: cs.tiers[1],
+      creatureLod2: cs.tiers[2],
+      creatureLod3: cs.tiers[3],
+      creatureIkFull: cs.ikFull,
+      creatureIkCheap: cs.ikCheap,
+      creatureShadows: cs.shadowCasters,
       terrainMode: cdlodRef ? 'cdlod' : terrainSystem.renderMode,
       drawChunks: terrainSystem.activeChunks.length,
       targetChunks: terrainSystem.targetChunkCount,
@@ -1117,6 +1158,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       terrainParams: { baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth },
       waterLevel: terrain.waterLevel, density: params.grassDensity, radius: params.grassRadius,
       maxRadius: 600,
+      addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
     });
     scene.add(cg.mesh);
     grassRef = {
@@ -1133,7 +1175,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  import('./water.js?v=chunk-water-4').then(({ createWaterSystem }) => {
+  import('./water.js?v=sp4a-emissive').then(({ createWaterSystem }) => {
     Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
     waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight, chunks: terrainSystem.activeChunks });
     scene.add(waterRef.surface);
@@ -1200,6 +1242,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
   if (waterRef) waterRef.resize();
+  if (clusteredLightsRef) clusteredLightsRef.resize(renderer.domElement.width, renderer.domElement.height);
 });
 
 // ===================== FPS walk mode (Octree/Capsule — mirrors ThreeJS_FPS_2.0) =====================
@@ -1476,6 +1519,7 @@ async function animate() {
     applyCamera();
     updateTerrainWindow(target);
   }
+  portCreatures.update(rawDt);
   // water runs its own reflection / refraction / caustics passes, then we draw
   if (waterRef) {
     waterRef.update(now / 1000);
@@ -1489,6 +1533,8 @@ async function animate() {
   // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
   // written before this frame's draw (unawaited compute races the draw → terrain flicker).
   if (cdlodRef) await cdlodRef.update();
+  // SP4a: froxel light-cull compute, awaited before draw (like grass/cdlod).
+  if (clusteredLightsRef) await clusteredLightsRef.update(now / 1000);
   renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
