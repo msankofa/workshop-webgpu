@@ -133,6 +133,14 @@ if (PARTICLES_MODE !== 'off') {
   dustRef = createParticleField({ renderer, camera, kind: 'dust', count: 8000, radius: 90 });
   scene.add(emberRef.mesh, dustRef.mesh);
 }
+
+// SP4c: node post-processing (bloom + tonemap + grade). ?post=off → plain renderer.render.
+const POST_MODE = new URLSearchParams(location.search).get('post') || 'on';
+let postFX = null;
+if (POST_MODE !== 'off') {
+  const { createPostFX } = await import('./post-fx.js');
+  postFX = createPostFX({ renderer, scene, camera, params: {} });
+}
 const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastOctreeMs: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
 const portCreatures = createEnvironmentPortCreatures({
   scene,
@@ -1023,6 +1031,27 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   params.fog = false;
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
 
+  // ---- SP4c: post-processing controls (bloom + tonemap + grade) ----
+  if (postFX) {
+    Object.assign(params, {
+      postFX: true, postTone: 'agx', postExposure: 1.0,
+      postBloomStrength: 0.7, postBloomRadius: 0.5, postBloomThreshold: 0.0,
+      postContrast: 1.05, postSaturation: 1.1, postVignette: 0.35,
+    });
+    const applyBloom = () => postFX.setBloom(params.postBloomStrength, params.postBloomRadius, params.postBloomThreshold);
+    const applyGrade = () => postFX.setGrade(params.postContrast, params.postSaturation, params.postVignette);
+    header('Post');
+    toggle('postFX', 'Post FX', () => postFX.setEnabled(params.postFX));
+    select('postTone', 'Tone mapping', ['agx', 'aces', 'reinhard', 'neutral', 'none'], () => postFX.setToneMapping(params.postTone));
+    slider('postExposure', 'Exposure', 0.1, 3, 0.05, f2, () => postFX.setExposure(params.postExposure));
+    slider('postBloomStrength', 'Bloom strength', 0, 2, 0.01, f2, applyBloom);
+    slider('postBloomRadius', 'Bloom radius', 0, 1, 0.01, f2, applyBloom);
+    slider('postBloomThreshold', 'Bloom threshold', 0, 1.5, 0.01, f2, applyBloom);
+    slider('postContrast', 'Contrast', 0.5, 1.5, 0.01, f2, applyGrade);
+    slider('postSaturation', 'Saturation', 0, 2, 0.01, f2, applyGrade);
+    slider('postVignette', 'Vignette', 0, 1, 0.01, f2, applyGrade);
+  }
+
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
   if (GRASS_MODE === 'cpu') import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
@@ -1549,7 +1578,9 @@ async function animate() {
   // SP4b: GPU particle sim, awaited before draw.
   if (emberRef) await emberRef.update(rawDt, camera);
   if (dustRef) await dustRef.update(rawDt, camera);
-  renderer.render(scene, camera);
+  // SP4c: composite through the post stack when enabled, else plain render.
+  if (postFX && postFX.enabled) await postFX.renderAsync();
+  else renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
   if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
