@@ -41,7 +41,8 @@ export function createPostFX(opts) {
 
   // grade node (transcribes post-grade.js): gain→brightness→contrast→gamma→white-balance→saturation→vignette
   const gradeNode = (color) => {
-    const g = color.mul(uGain).add(uBrightness);
+    const src = color.rgb;   // renderOutput yields vec4 — grade in vec3 so luma/dot are correct
+    const g = src.mul(uGain).add(uBrightness);
     const c = g.sub(0.18).mul(uContrast).add(0.18);   // contrast pivot at middle grey (not 0.5)
     const gam = max(c, 0.0).pow(float(1.0).div(max(uGamma, 1e-4)));
     const wb = gam.add(vec3(uTemperature.mul(0.1), uTint.mul(0.1), uTemperature.mul(-0.1)));
