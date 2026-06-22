@@ -16,7 +16,7 @@ ok(close(grade([0.3, 0.3, 0.3], { brightness: 0.1 })[0], 0.4), 'brightness offse
 // contrast pushes away from 0.5
 {
   const hi = grade([0.8, 0.8, 0.8], { contrast: 1.5 })[0];
-  ok(hi > 0.8 && close(grade([0.5, 0.5, 0.5], { contrast: 1.5 })[0], 0.5), 'contrast pivots at 0.5');
+  ok(hi > 0.8 && close(grade([0.18, 0.18, 0.18], { contrast: 1.5 })[0], 0.18), 'contrast pivots at middle grey 0.18');
 }
 // gamma > 1 brightens mids: pow(0.25, 1/2) = 0.5
 ok(close(grade([0.25, 0.25, 0.25], { gamma: 2 })[0], 0.5), 'gamma>1 brightens mids');

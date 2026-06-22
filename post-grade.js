@@ -13,8 +13,10 @@ export function grade(rgb, p = {}, uv = [0.5, 0.5]) {
   let r = rgb[0] * gain + brightness;
   let g = rgb[1] * gain + brightness;
   let b = rgb[2] * gain + brightness;
-  // contrast about a 0.5 pivot
-  r = (r - 0.5) * contrast + 0.5; g = (g - 0.5) * contrast + 0.5; b = (b - 0.5) * contrast + 0.5;
+  // contrast about a middle-grey (0.18) pivot — expands around the midtone instead of acting
+  // like inverse-brightness on dark scenes (where a 0.5 pivot just uniformly darkens).
+  const PV = 0.18;
+  r = (r - PV) * contrast + PV; g = (g - PV) * contrast + PV; b = (b - PV) * contrast + PV;
   // gamma (>1 brightens mids); clamp to non-negative before pow
   const ig = 1 / Math.max(1e-4, gamma);
   r = Math.pow(Math.max(0, r), ig); g = Math.pow(Math.max(0, g), ig); b = Math.pow(Math.max(0, b), ig);
