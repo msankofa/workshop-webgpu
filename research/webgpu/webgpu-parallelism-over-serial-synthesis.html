@@ -1,329 +1,329 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WebGPU: Comparing Parallelism Over Serial Execution in Web Graphics</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --ink: #1c2330;
-      --muted: #5a6675;
-      --line: #d8dee8;
-      --paper: #fbfcfe;
-      --panel: #ffffff;
-      --accent: #2a4d9b;
-      --accent-2: #8a5a1c;
-      --soft: #eef2fb;
-      --warn: #fff6e6;
-      --good: #ecf7f0;
-      --code: #f3f5f9;
-    }
-    * { box-sizing: border-box; }
-    html {
-      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
-      line-height: 1.6;
-      background: var(--paper);
-      color: var(--ink);
-    }
-    body { margin: 0; }
-    main { max-width: 980px; margin: 0 auto; padding: 48px 30px 90px; }
-    header { border-bottom: 2px solid var(--ink); padding-bottom: 28px; margin-bottom: 34px; }
-    .kicker { color: var(--accent); font: 700 0.78rem/1.2 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 0 12px; }
-    h1 { font-size: clamp(1.9rem, 3.6vw, 2.9rem); line-height: 1.08; margin: 0 0 14px; letter-spacing: -0.01em; }
-    .subtitle { color: var(--muted); font-size: 1.08rem; max-width: 760px; margin: 0; font-style: italic; }
-    .byline { margin: 18px 0 0; font: 0.95rem ui-sans-serif, system-ui, sans-serif; color: var(--muted); }
-    .meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; font: 0.82rem ui-sans-serif, system-ui, sans-serif; }
-    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; background: var(--panel); color: var(--muted); }
-    h2 { font-size: 1.5rem; margin: 44px 0 12px; padding-top: 8px; letter-spacing: -0.01em; }
-    h3 { font-size: 1.16rem; margin: 28px 0 8px; color: #29405f; }
-    p { margin: 0 0 14px; }
-    a { color: var(--accent); }
-    .abstract { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 20px 24px; margin: 0 0 30px; }
-    .abstract h2 { margin: 0 0 8px; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); }
-    .abstract p { font-size: 0.98rem; margin-bottom: 10px; }
-    blockquote { margin: 18px 0; padding: 4px 18px; border-left: 3px solid var(--accent-2); color: #41506a; font-style: italic; }
-    code { font-family: "SFMono-Regular", ui-monospace, Consolas, monospace; font-size: 0.86em; background: var(--code); padding: 1px 5px; border-radius: 4px; }
-    table { width: 100%; border-collapse: collapse; margin: 18px 0; font: 0.9rem ui-sans-serif, system-ui, sans-serif; }
-    th, td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; vertical-align: top; }
-    th { background: var(--soft); font-weight: 700; }
-    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .callout { border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin: 18px 0; background: var(--panel); }
-    .callout.finding { border-left: 4px solid var(--accent); background: var(--soft); }
-    .callout.caveat { border-left: 4px solid var(--accent-2); background: var(--warn); }
-    .callout.apply { border-left: 4px solid #2f8a5b; background: var(--good); }
-    .callout.result { border-left: 4px solid #0f7b8a; background: #eaf6f8; }
-    .callout .lab { font: 700 0.72rem/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 7px; }
-    .figure { border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 20px 0; background: var(--code); font: 0.82rem/1.5 ui-monospace, Consolas, monospace; white-space: pre; overflow-x: auto; }
-    .figcap { font: italic 0.86rem ui-sans-serif, system-ui, sans-serif; color: var(--muted); margin: 6px 2px 0; white-space: normal; }
-    ol.refs { font: 0.9rem ui-sans-serif, system-ui, sans-serif; color: #3a4658; padding-left: 24px; }
-    ol.refs li { margin-bottom: 12px; }
-    .sp { border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; margin: 16px 0; background: var(--panel); }
-    .sp h3 { margin-top: 0; }
-    .gate { font: 0.88rem ui-sans-serif, system-ui, sans-serif; }
-    .tag { display: inline-block; font: 700 0.7rem ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 8px; border-radius: 5px; background: var(--soft); color: var(--accent); margin-left: 6px; }
-    hr { border: none; border-top: 1px solid var(--line); margin: 40px 0; }
-    sup a { text-decoration: none; font-weight: 700; }
-    .toc { font: 0.92rem ui-sans-serif, system-ui, sans-serif; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 22px; columns: 2; column-gap: 36px; }
-    .toc a { text-decoration: none; }
-    @media (max-width: 640px) { .toc { columns: 1; } .figure { font-size: 0.72rem; } }
-  </style>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>WebGPU: Comparing Parallelism Over Serial Execution in Web Graphics</title>
+ <style>
+ :root {
+ color-scheme: light;
+ --ink: #1c2330;
+ --muted: #5a6675;
+ --line: #d8dee8;
+ --paper: #fbfcfe;
+ --panel: #ffffff;
+ --accent: #2a4d9b;
+ --accent-2: #8a5a1c;
+ --soft: #eef2fb;
+ --warn: #fff6e6;
+ --good: #ecf7f0;
+ --code: #f3f5f9;
+ }
+ * { box-sizing: border-box; }
+ html {
+ font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
+ line-height: 1.6;
+ background: var(--paper);
+ color: var(--ink);
+ }
+ body { margin: 0; }
+ main { max-width: 980px; margin: 0 auto; padding: 48px 30px 90px; }
+ header { border-bottom: 2px solid var(--ink); padding-bottom: 28px; margin-bottom: 34px; }
+ .kicker { color: var(--accent); font: 700 0.78rem/1.2 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 0 12px; }
+ h1 { font-size: clamp(1.9rem, 3.6vw, 2.9rem); line-height: 1.08; margin: 0 0 14px; letter-spacing: -0.01em; }
+ .subtitle { color: var(--muted); font-size: 1.08rem; max-width: 760px; margin: 0; font-style: italic; }
+ .byline { margin: 18px 0 0; font: 0.95rem ui-sans-serif, system-ui, sans-serif; color: var(--muted); }
+ .meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; font: 0.82rem ui-sans-serif, system-ui, sans-serif; }
+ .pill { border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; background: var(--panel); color: var(--muted); }
+ h2 { font-size: 1.5rem; margin: 44px 0 12px; padding-top: 8px; letter-spacing: -0.01em; }
+ h3 { font-size: 1.16rem; margin: 28px 0 8px; color: #29405f; }
+ p { margin: 0 0 14px; }
+ a { color: var(--accent); }
+ .abstract { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 20px 24px; margin: 0 0 30px; }
+ .abstract h2 { margin: 0 0 8px; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); }
+ .abstract p { font-size: 0.98rem; margin-bottom: 10px; }
+ blockquote { margin: 18px 0; padding: 4px 18px; border-left: 3px solid var(--accent-2); color: #41506a; font-style: italic; }
+ code { font-family: "SFMono-Regular", ui-monospace, Consolas, monospace; font-size: 0.86em; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+ table { width: 100%; border-collapse: collapse; margin: 18px 0; font: 0.9rem ui-sans-serif, system-ui, sans-serif; }
+ th, td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; vertical-align: top; }
+ th { background: var(--soft); font-weight: 700; }
+ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+ .callout { border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin: 18px 0; background: var(--panel); }
+ .callout.finding { border-left: 4px solid var(--accent); background: var(--soft); }
+ .callout.caveat { border-left: 4px solid var(--accent-2); background: var(--warn); }
+ .callout.apply { border-left: 4px solid #2f8a5b; background: var(--good); }
+ .callout.result { border-left: 4px solid #0f7b8a; background: #eaf6f8; }
+ .callout .lab { font: 700 0.72rem/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 7px; }
+ .figure { border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 20px 0; background: var(--code); font: 0.82rem/1.5 ui-monospace, Consolas, monospace; white-space: pre; overflow-x: auto; }
+ .figcap { font: italic 0.86rem ui-sans-serif, system-ui, sans-serif; color: var(--muted); margin: 6px 2px 0; white-space: normal; }
+ ol.refs { font: 0.9rem ui-sans-serif, system-ui, sans-serif; color: #3a4658; padding-left: 24px; }
+ ol.refs li { margin-bottom: 12px; }
+ .sp { border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; margin: 16px 0; background: var(--panel); }
+ .sp h3 { margin-top: 0; }
+ .gate { font: 0.88rem ui-sans-serif, system-ui, sans-serif; }
+ .tag { display: inline-block; font: 700 0.7rem ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 8px; border-radius: 5px; background: var(--soft); color: var(--accent); margin-left: 6px; }
+ hr { border: none; border-top: 1px solid var(--line); margin: 40px 0; }
+ sup a { text-decoration: none; font-weight: 700; }
+ .toc { font: 0.92rem ui-sans-serif, system-ui, sans-serif; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 22px; columns: 2; column-gap: 36px; }
+ .toc a { text-decoration: none; }
+ @media (max-width: 640px) { .toc { columns: 1; } .figure { font-size: 0.72rem; } }
+ </style>
 </head>
 <body>
 <main>
-  <header>
-    <p class="kicker">Web Graphics Architecture · Synthesis Chapter</p>
-    <h1>WebGPU: Comparing Parallelism Over Serial Execution in Web Graphics</h1>
-    <p class="subtitle">A synthesis of five recent studies on the WebGPU/WebGL transition, reframed around a single thesis: the value of WebGPU is the replacement of WebGL's serial, stateful, per-object submission model with an explicit, parallel, GPU-driven one — and a concrete plan to migrate a procedural creature world onto it.</p>
-    <p class="byline">Procedural Creature Workshop — Engine Research Track. June 2026.</p>
-    <div class="meta">
-      <span class="pill">Extended background + implementation plan</span>
-      <span class="pill">5 primary sources (2024–2025)</span>
-      <span class="pill">Three.js · WebGPURenderer · TSL</span>
-    </div>
-  </header>
+ <header>
+ <p class="kicker">Web Graphics Architecture · Synthesis Chapter</p>
+ <h1>WebGPU: Comparing Parallelism Over Serial Execution in Web Graphics</h1>
+ <p class="subtitle">A synthesis of five recent studies on the WebGPU/WebGL transition, reframed around a single thesis: the value of WebGPU is the replacement of WebGL's serial, stateful, per-object submission model with an explicit, parallel, GPU-driven one, and a concrete plan to migrate a procedural creature world onto it.</p>
+ <p class="byline">Procedural Creature Workshop, Engine Research Track. June 2026.</p>
+ <div class="meta">
+ <span class="pill">Extended background + implementation plan</span>
+ <span class="pill">5 primary sources (2024–2025)</span>
+ <span class="pill">Three.js · WebGPURenderer · TSL</span>
+ </div>
+ </header>
 
-  <section class="abstract">
-    <h2>Abstract</h2>
-    <p>WebGL has been the dominant browser graphics API for over a decade, but its programming model is fundamentally <em>serial</em>: a stateful machine that binds and draws one object at a time, with no general-purpose compute and a high per-draw CPU cost. WebGPU, designed against modern explicit native APIs (Vulkan, Metal, Direct3D&nbsp;12), exposes a fundamentally <em>parallel</em> model — stateless pipelines, command encoders, compute shaders, read/write storage buffers, and indirect draw — that allows both rendering work and the <em>decisions about what to render</em> to move onto the GPU.</p>
-    <p>We synthesize five recent studies spanning empirical benchmarks <sup><a href="#r3">[3]</a><a href="#r5">[5]</a></sup>, draw-call consolidation <sup><a href="#r1">[1]</a></sup>, automated migration <sup><a href="#r2">[2]</a></sup>, and GPU-driven terrain level-of-detail <sup><a href="#r4">[4]</a></sup>. A consistent picture emerges: WebGPU's gains are smallest for trivial workloads (where its higher setup cost dominates) and largest precisely where serial WebGL stalls — many objects, large data, and iterative GPU work. The recurring engineering lever is the elimination of redundant CPU↔GPU communication by <em>batching serial draws into parallel ones</em> and by keeping culling and level-of-detail selection resident on the GPU. We close by translating these findings into a four-stage plan to migrate a draw-call-bound procedural world (chunked terrain, hundreds of grass and tree meshes) onto Three.js's WebGPU backend, with the literature's caveats — setup overhead, buffer-upload synchronization stalls, and the absence of tessellation and geometry shaders — built into the design.</p>
-  </section>
+ <section class="abstract">
+ <h2>Abstract</h2>
+ <p>WebGL has been the dominant browser graphics API for over a decade, but its programming model is fundamentally <em>serial</em>: a stateful machine that binds and draws one object at a time, with no general-purpose compute and a high per-draw CPU cost. WebGPU, designed against modern explicit native APIs (Vulkan, Metal, Direct3D&nbsp;12), exposes a fundamentally <em>parallel</em> model (stateless pipelines, command encoders, compute shaders, read/write storage buffers, and indirect draw) that allows both rendering work and the <em>decisions about what to render</em> to move onto the GPU.</p>
+ <p>We synthesize five recent studies spanning empirical benchmarks <sup><a href="#r3">[3]</a><a href="#r5">[5]</a></sup>, draw-call consolidation <sup><a href="#r1">[1]</a></sup>, automated migration <sup><a href="#r2">[2]</a></sup>, and GPU-driven terrain level-of-detail <sup><a href="#r4">[4]</a></sup>. A consistent picture emerges: WebGPU's gains are smallest for trivial workloads (where its higher setup cost dominates) and largest where serial WebGL stalls: many objects, large data, and iterative GPU work. The recurring engineering lever is the elimination of redundant CPU↔GPU communication by <em>batching serial draws into parallel ones</em> and by keeping culling and level-of-detail selection resident on the GPU. We close by translating these findings into a four-stage plan to migrate a draw-call-bound procedural world (chunked terrain, hundreds of grass and tree meshes) onto Three.js's WebGPU backend, with the literature's caveats (setup overhead, buffer-upload synchronization stalls, and the absence of tessellation and geometry shaders) built into the design.</p>
+ </section>
 
-  <nav class="toc" aria-label="Contents">
-    <a href="#intro">1. Introduction</a><br>
-    <a href="#serial">2. The Serial Model of WebGL</a><br>
-    <a href="#parallel">3. The Parallel Model of WebGPU</a><br>
-    <a href="#review">4. Synthesis of the Literature</a><br>
-    <a href="#r41">4.1 Empirical: parallel vs serial</a><br>
-    <a href="#r42">4.2 Consolidating serial communication</a><br>
-    <a href="#r43">4.3 Bridging serial to parallel</a><br>
-    <a href="#r44">4.4 GPU-driven terrain LOD</a><br>
-    <a href="#r45">4.5 Cross-cutting synthesis</a><br>
-    <a href="#discussion">5. Implications for a Procedural World</a><br>
-    <a href="#plan">6. Implementation Plan</a><br>
-    <a href="#realized">7. Discussion: the realized world</a><br>
-    <a href="#conclusion">8. Conclusion: the live build</a><br>
-    <a href="#refs">References</a>
-  </nav>
+ <nav class="toc" aria-label="Contents">
+ <a href="#intro">1. Introduction</a><br>
+ <a href="#serial">2. The Serial Model of WebGL</a><br>
+ <a href="#parallel">3. The Parallel Model of WebGPU</a><br>
+ <a href="#review">4. Synthesis of the Literature</a><br>
+ <a href="#r41">4.1 Empirical: parallel vs serial</a><br>
+ <a href="#r42">4.2 Consolidating serial communication</a><br>
+ <a href="#r43">4.3 Bridging serial to parallel</a><br>
+ <a href="#r44">4.4 GPU-driven terrain LOD</a><br>
+ <a href="#r45">4.5 Cross-cutting synthesis</a><br>
+ <a href="#discussion">5. Implications for a Procedural World</a><br>
+ <a href="#plan">6. Implementation Plan</a><br>
+ <a href="#realized">7. Discussion: the realized world</a><br>
+ <a href="#conclusion">8. Conclusion: the live build</a><br>
+ <a href="#refs">References</a>
+ </nav>
 
-  <h2 id="intro">1. Introduction</h2>
-  <p>The performance ceiling of a real-time web renderer is rarely reached at the level of individual triangles. In practice it is reached at the boundary between the CPU and the GPU: how many independent commands the CPU must record and submit each frame, and how much data crosses the bus to do so. WebGL, the incumbent API, structures this boundary <em>serially</em>. It is a stateful machine modeled on OpenGL ES&nbsp;3.0 (2010): the application binds a program, binds buffers and uniforms, issues a draw, and repeats — once per object — with the driver validating state on each call. There is no mechanism for the GPU itself to decide what to draw, and no general-purpose compute stage; data-parallel work must be smuggled through the rasterization pipeline via transform feedback or render-to-texture.</p>
-  <p>WebGPU is the first browser API designed against the explicit, parallel native APIs that displaced OpenGL on the desktop. Its pipelines are immutable, pre-validated objects; commands are recorded into encoders and submitted in bulk; and it adds first-class <em>compute shaders</em>, read/write <em>storage buffers</em>, and <em>indirect</em> draw and dispatch. These primitives let an application express not only "draw this," but "compute, in parallel on the GPU, which things to draw, then draw exactly those" — with the CPU stepping back from the per-object loop entirely.</p>
-  <p>This chapter argues that the most useful frame for evaluating WebGPU is not a feature checklist but this <strong>serial-to-parallel</strong> axis. We first characterize the two execution models (§2–§3), then synthesize the recent literature against that frame (§4), and finally apply the result to a concrete, draw-call-bound application: a procedural creature world whose terrain and vegetation currently scale their cost linearly with the number of visible chunks (§5–§6).</p>
+ <h2 id="intro">1. Introduction</h2>
+ <p>The performance ceiling of a real-time web renderer is rarely reached at the level of individual triangles. In practice it is reached at the boundary between the CPU and the GPU: how many independent commands the CPU must record and submit each frame, and how much data crosses the bus to do so. WebGL, the incumbent API, structures this boundary <em>serially</em>. It is a stateful machine modeled on OpenGL ES&nbsp;3.0 (2010): the application binds a program, binds buffers and uniforms, issues a draw, and repeats, once per object, with the driver validating state on each call. There is no mechanism for the GPU itself to decide what to draw, and no general-purpose compute stage; data-parallel work must be smuggled through the rasterization pipeline via transform feedback or render-to-texture.</p>
+ <p>WebGPU is the first browser API designed against the explicit, parallel native APIs that displaced OpenGL on the desktop. Its pipelines are immutable, pre-validated objects; commands are recorded into encoders and submitted in bulk; and it adds first-class <em>compute shaders</em>, read/write <em>storage buffers</em>, and <em>indirect</em> draw and dispatch. These primitives let an application express not only "draw this," but "compute, in parallel on the GPU, which things to draw, then draw exactly those", with the CPU stepping back from the per-object loop entirely.</p>
+ <p>This chapter argues that the most useful frame for evaluating WebGPU is not a feature checklist but this <strong>serial-to-parallel</strong> axis. We first characterize the two execution models (§2–§3), then synthesize the recent literature against that frame (§4), and finally apply the result to a concrete, draw-call-bound application: a procedural creature world whose terrain and vegetation currently scale their cost linearly with the number of visible chunks (§5–§6).</p>
 
-  <h2 id="serial">2. The Serial Execution Model of WebGL</h2>
-  <p>WebGL inherits OpenGL's <em>stateful</em> contract. The context is a global machine whose behavior at any draw call depends on the cumulative effect of prior <code>bind*</code>, <code>uniform*</code>, and <code>enable</code> calls. Three consequences define its serial character:</p>
-  <p><strong>Per-object submission.</strong> Rendering <em>n</em> distinct objects requires <em>O(n)</em> CPU-side command sequences — re-binding state and issuing a separate draw for each. The driver re-validates much of this state per call. As object count grows, the CPU becomes the bottleneck long before the GPU's arithmetic units are saturated; the GPU spends frames waiting on a CPU that is serially narrating the scene.</p>
-  <p><strong>No compute stage.</strong> WebGL (through 2.0) has no compute shaders and no random-access read/write buffers (SSBOs); its uniform buffers are read-only from the shader's perspective. Any data-parallel algorithm — particle simulation, instance generation, culling — must be expressed indirectly through transform feedback or by encoding state into textures and bouncing it through fragment passes. This is awkward, limited, and, as the measurement literature shows, frequently re-transfers data across the bus on every iteration <sup><a href="#r3">[3]</a></sup>.</p>
-  <p><strong>The GPU cannot decide.</strong> Because there is no indirect draw, the set of draws each frame is fixed on the CPU. Visibility culling and level-of-detail selection are therefore CPU responsibilities, and their results must be marshaled back into draw calls the CPU issues one by one.</p>
-  <blockquote>The serial model is not "slow" in an absolute sense — it is slow in proportion to scene complexity. Its costs are dominated by the count of independent CPU→GPU transactions, not by the size of any single one.</blockquote>
+ <h2 id="serial">2. The Serial Execution Model of WebGL</h2>
+ <p>WebGL inherits OpenGL's <em>stateful</em> contract. The context is a global machine whose behavior at any draw call depends on the cumulative effect of prior <code>bind*</code>, <code>uniform*</code>, and <code>enable</code> calls. Three consequences define its serial character:</p>
+ <p><strong>Per-object submission.</strong> Rendering <em>n</em> distinct objects requires <em>O(n)</em> CPU-side command sequences, re-binding state and issuing a separate draw for each. The driver re-validates much of this state per call. As object count grows, the CPU becomes the bottleneck long before the GPU's arithmetic units are saturated; the GPU spends frames waiting on a CPU that is serially narrating the scene.</p>
+ <p><strong>No compute stage.</strong> WebGL (through 2.0) has no compute shaders and no random-access read/write buffers (SSBOs); its uniform buffers are read-only from the shader's perspective. Any data-parallel algorithm (particle simulation, instance generation, culling) must be expressed indirectly through transform feedback or by encoding state into textures and bouncing it through fragment passes. This is awkward, limited, and, as the measurement literature shows, frequently re-transfers data across the bus on every iteration <sup><a href="#r3">[3]</a></sup>.</p>
+ <p><strong>The GPU cannot decide.</strong> Because there is no indirect draw, the set of draws each frame is fixed on the CPU. Visibility culling and level-of-detail selection are therefore CPU responsibilities, and their results must be marshaled back into draw calls the CPU issues one by one.</p>
+ <blockquote>The serial model is not "slow" in an absolute sense; it is slow in proportion to scene complexity. Its costs are dominated by the count of independent CPU→GPU transactions, not by the size of any single one.</blockquote>
 
-  <h2 id="parallel">3. The Parallel Execution Model of WebGPU</h2>
-  <p>WebGPU is modeled on Vulkan/Metal/D3D12 and is <em>stateless</em> at the point of drawing. The application builds immutable, pre-validated <code>GPURenderPipeline</code> and <code>GPUComputePipeline</code> objects ahead of time; per frame it records commands into a <code>GPUCommandEncoder</code> and submits them in bulk. The same redesign that reduces driver overhead also opens four parallel capabilities absent from WebGL:</p>
-  <table>
-    <thead><tr><th>Capability</th><th>WebGPU</th><th>WebGL2</th><th>Why it matters here</th></tr></thead>
-    <tbody>
-      <tr><td>Compute shaders</td><td>First-class workgroup dispatch</td><td>None (faked via transform feedback)</td><td>Generate/cull grass &amp; particles on-GPU</td></tr>
-      <tr><td>Storage buffers (read/write)</td><td>Yes (SSBO-equivalent)</td><td>Read-only UBOs + textures</td><td>Build instance lists, LOD queues on-GPU</td></tr>
-      <tr><td>Indirect draw / dispatch</td><td><code>drawIndirect</code>, <code>dispatchIndirect</code></td><td>None</td><td>GPU decides the draw count; CPU exits the loop</td></tr>
-      <tr><td>Render bundles &amp; bulk submission</td><td>Pre-recorded command reuse</td><td>Per-call state binding</td><td>Cuts CPU frame time (the bound axis)</td></tr>
-    </tbody>
-  </table>
-  <p>The conceptual shift is that the <em>decision</em> work — which nodes are visible, at what detail, which blades survive a distance cull — can be expressed as parallel passes over storage buffers, with the surviving work fed straight into an indirect draw. The CPU's role contracts from "narrate every object" to "record a handful of passes and submit."</p>
-  <p>Two structural limits must be stated up front, because they shape every design that follows. <strong>WebGPU has no tessellation shaders and no geometry shaders.</strong> Techniques that rely on hardware tessellation to refine a coarse mesh on the fly (a common terrain-LOD strategy) must be re-expressed as compute-driven mesh selection plus vertex displacement. And the <strong>setup cost</strong> of acquiring an adapter and device is higher than WebGL's context creation — a one-time penalty that is irrelevant to a persistent application but dominates micro-benchmarks.</p>
+ <h2 id="parallel">3. The Parallel Execution Model of WebGPU</h2>
+ <p>WebGPU is modeled on Vulkan/Metal/D3D12 and is <em>stateless</em> at the point of drawing. The application builds immutable, pre-validated <code>GPURenderPipeline</code> and <code>GPUComputePipeline</code> objects ahead of time; per frame it records commands into a <code>GPUCommandEncoder</code> and submits them in bulk. The same redesign that reduces driver overhead also opens four parallel capabilities absent from WebGL:</p>
+ <table>
+ <thead><tr><th>Capability</th><th>WebGPU</th><th>WebGL2</th><th>Why it matters here</th></tr></thead>
+ <tbody>
+ <tr><td>Compute shaders</td><td>First-class workgroup dispatch</td><td>None (faked via transform feedback)</td><td>Generate/cull grass &amp; particles on-GPU</td></tr>
+ <tr><td>Storage buffers (read/write)</td><td>Yes (SSBO-equivalent)</td><td>Read-only UBOs + textures</td><td>Build instance lists, LOD queues on-GPU</td></tr>
+ <tr><td>Indirect draw / dispatch</td><td><code>drawIndirect</code>, <code>dispatchIndirect</code></td><td>None</td><td>GPU decides the draw count; CPU exits the loop</td></tr>
+ <tr><td>Render bundles &amp; bulk submission</td><td>Pre-recorded command reuse</td><td>Per-call state binding</td><td>Cuts CPU frame time (the bound axis)</td></tr>
+ </tbody>
+ </table>
+ <p>The conceptual shift is that the <em>decision</em> work (which nodes are visible, at what detail, which blades survive a distance cull) can be expressed as parallel passes over storage buffers, with the surviving work fed straight into an indirect draw. The CPU's role contracts from "narrate every object" to "record a handful of passes and submit."</p>
+ <p>Two structural limits must be stated up front, because they shape every design that follows. <strong>WebGPU has no tessellation shaders and no geometry shaders.</strong> Techniques that rely on hardware tessellation to refine a coarse mesh on the fly (a common terrain-LOD strategy) must be re-expressed as compute-driven mesh selection plus vertex displacement. And the <strong>setup cost</strong> of acquiring an adapter and device is higher than WebGL's context creation, a one-time penalty that is irrelevant to a persistent application but dominates micro-benchmarks.</p>
 
-  <h2 id="review">4. Synthesis of the Literature</h2>
-  <p>We organize five sources around the serial-to-parallel thesis rather than chronologically. Two establish <em>that</em> the parallel model outperforms the serial one and under what conditions (§4.1); one isolates the dominant engineering lever — collapsing serial draws into parallel batches (§4.2); one studies the migration path between the models (§4.3); and one demonstrates the endpoint, a fully GPU-driven parallel pipeline for terrain (§4.4). Section 4.5 draws the threads together.</p>
+ <h2 id="review">4. Synthesis of the Literature</h2>
+ <p>We organize five sources around the serial-to-parallel thesis rather than chronologically. Two establish <em>that</em> the parallel model outperforms the serial one and under what conditions (§4.1); one isolates the dominant engineering lever, collapsing serial draws into parallel batches (§4.2); one studies the migration path between the models (§4.3); and one demonstrates the endpoint, a fully GPU-driven parallel pipeline for terrain (§4.4). Section 4.5 draws the threads together.</p>
 
-  <h3 id="r41">4.1 Empirical comparison: parallel vs serial execution</h3>
-  <p><strong>Sengupta et&nbsp;al., "From WebGL to WebGPU: A Reality Check"</strong> <sup><a href="#r3">[3]</a></sup> (IMC&nbsp;'25) is the most careful general-purpose measurement to date, benchmarking 18 PolyBench/CHStone kernels across WebGPU, WebGL, WebAssembly, and JavaScript. Three findings are directly load-bearing for our thesis:</p>
-  <ul>
-    <li><strong>Setup overhead penalizes small work.</strong> WebGPU carries a roughly fixed ~0.2&nbsp;s adapter+device initialization (≈0.1&nbsp;s each), about twice WebGL's context setup; for small inputs WebGL is typically &gt;25% faster, and both lose to plain CPU code. The parallel model only earns its keep once there is enough work to amortize startup.</li>
-    <li><strong>Parallelism wins at scale.</strong> For large inputs, performance is dominated by GPU execution, and WebGPU's explicit control over workgroup thread counts lets it exploit parallelism WebGL cannot. WebGPU shows a <em>slower growth rate</em> of execution time with input size — i.e., it scales better even when an absolute crossover has not yet been reached.</li>
-    <li><strong>Serial re-transfer is WebGL's structural tax.</strong> For loop-centric kernels (Jacobi, FDTD, Heat-3D, etc.), WebGPU runs <strong>&gt;37% faster</strong>, because WebGL must re-transfer the working set across the bus on every loop iteration — the serial model made explicit. Notably, several WebGL kernels suffer <em>context loss</em> (GPU memory exhaustion) at large inputs on commodity hardware.</li>
-  </ul>
-  <p><strong>Fransson, Hermansson &amp; Hu, Godot WebGPU vs WebGL</strong> <sup><a href="#r5">[5]</a></sup> (IEEE GEM&nbsp;'24) moves from kernels to a real game engine, comparing WebGPU and WebGL rendering backends across real games and synthetic rasterization stress tests. The results are unambiguous and, for our case, the most relevant of the set:</p>
-  <table>
-    <thead><tr><th>Test</th><th>WebGPU vs WebGL</th><th>Note</th></tr></thead>
-    <tbody>
-      <tr><td>All game tests (CPU &amp; GPU frame time)</td><td class="num">WebGPU faster, p&lt;0.05</td><td>Significant on paired T-tests</td></tr>
-      <tr><td>Multiple quads (10–50k)</td><td class="num">4.6×–9.0× GPU</td><td>Largest gap at low counts</td></tr>
-      <tr><td>Multiple polygons, 50k</td><td class="num">150.9 ms → 15.75 ms</td><td>WebGL sub-real-time; WebGPU &gt;60 fps</td></tr>
-      <tr><td>Large polygons (2–16M verts)</td><td class="num">≈2–3×</td><td>WebGL stalls/fluctuates</td></tr>
-    </tbody>
-  </table>
-  <p>Two qualitative observations matter most. First, the wins are pronounced in <strong>CPU frame time</strong>, which the authors attribute to WebGPU's modern drivers, bundled state, and stateless syntax that "leads to fewer API calls" — i.e., the elimination of serial per-object submission overhead. Second, WebGL exhibits far more <strong>stalling and frame-time variance</strong>; under load the CPU sits waiting for serial GPU instructions to retire. The one cautionary note: at the extreme (50k full-screen quads), a large per-frame upload to the instance buffer can force a CPU↔GPU synchronization even on WebGPU — a reminder that parallelism is undone by careless buffer traffic.</p>
-  <div class="callout finding"><span class="lab">Finding</span>WebGPU's advantage is not uniform — it is a function of workload. It is smallest (or negative) for trivial scenes, and largest exactly where serial WebGL is weakest: high object counts, large buffers, and iterative GPU work. The dominant gains land in <strong>CPU frame time</strong>, the very axis on which a draw-call-bound application is limited.</div>
+ <h3 id="r41">4.1 Empirical comparison: parallel vs serial execution</h3>
+ <p><strong>Sengupta et&nbsp;al., "From WebGL to WebGPU: A Reality Check"</strong> <sup><a href="#r3">[3]</a></sup> (IMC&nbsp;'25) is the most careful general-purpose measurement to date, benchmarking 18 PolyBench/CHStone kernels across WebGPU, WebGL, WebAssembly, and JavaScript. Three findings are directly load-bearing for our thesis:</p>
+ <ul>
+ <li><strong>Setup overhead penalizes small work.</strong> WebGPU carries a roughly fixed ~0.2&nbsp;s adapter+device initialization (≈0.1&nbsp;s each), about twice WebGL's context setup; for small inputs WebGL is typically &gt;25% faster, and both lose to plain CPU code. The parallel model only earns its keep once there is enough work to amortize startup.</li>
+ <li><strong>Parallelism wins at scale.</strong> For large inputs, performance is dominated by GPU execution, and WebGPU's explicit control over workgroup thread counts lets it exploit parallelism WebGL cannot. WebGPU shows a <em>slower growth rate</em> of execution time with input size, i.e., it scales better even when an absolute crossover has not yet been reached.</li>
+ <li><strong>Serial re-transfer is WebGL's structural tax.</strong> For loop-centric kernels (Jacobi, FDTD, Heat-3D, etc.), WebGPU runs <strong>&gt;37% faster</strong>, because WebGL must re-transfer the working set across the bus on every loop iteration, the serial model made explicit. Notably, several WebGL kernels suffer <em>context loss</em> (GPU memory exhaustion) at large inputs on commodity hardware.</li>
+ </ul>
+ <p><strong>Fransson, Hermansson &amp; Hu, Godot WebGPU vs WebGL</strong> <sup><a href="#r5">[5]</a></sup> (IEEE GEM&nbsp;'24) moves from kernels to a real game engine, comparing WebGPU and WebGL rendering backends across real games and synthetic rasterization stress tests. The results are unambiguous and, for our case, the most relevant of the set:</p>
+ <table>
+ <thead><tr><th>Test</th><th>WebGPU vs WebGL</th><th>Note</th></tr></thead>
+ <tbody>
+ <tr><td>All game tests (CPU &amp; GPU frame time)</td><td class="num">WebGPU faster, p&lt;0.05</td><td>Significant on paired T-tests</td></tr>
+ <tr><td>Multiple quads (10–50k)</td><td class="num">4.6×–9.0× GPU</td><td>Largest gap at low counts</td></tr>
+ <tr><td>Multiple polygons, 50k</td><td class="num">150.9 ms → 15.75 ms</td><td>WebGL sub-real-time; WebGPU &gt;60 fps</td></tr>
+ <tr><td>Large polygons (2–16M verts)</td><td class="num">≈2–3×</td><td>WebGL stalls/fluctuates</td></tr>
+ </tbody>
+ </table>
+ <p>Two qualitative observations matter most. First, the wins are pronounced in <strong>CPU frame time</strong>, which the authors attribute to WebGPU's modern drivers, bundled state, and stateless syntax that "leads to fewer API calls", i.e., the elimination of serial per-object submission overhead. Second, WebGL exhibits far more <strong>stalling and frame-time variance</strong>; under load the CPU sits waiting for serial GPU instructions to retire. The one cautionary note: at the extreme (50k full-screen quads), a large per-frame upload to the instance buffer can force a CPU↔GPU synchronization even on WebGPU, a reminder that parallelism is undone by careless buffer traffic.</p>
+ <div class="callout finding"><span class="lab">Finding</span>WebGPU's advantage is not uniform; it is a function of workload. It is smallest (or negative) for trivial scenes, and largest where serial WebGL is weakest: high object counts, large buffers, and iterative GPU work. The dominant gains land in <strong>CPU frame time</strong>, the very axis on which a draw-call-bound application is limited.</div>
 
-  <h3 id="r42">4.2 Consolidating serial communication: draw-call batching</h3>
-  <p>If §4.1 establishes the "why," <strong>Bi et&nbsp;al., FusionRender</strong> <sup><a href="#r1">[1]</a></sup> (WWW&nbsp;'24) supplies the dominant "how." Its premise is that naïve WebGPU ports underperform because they preserve WebGL's habit of rendering each object individually — "the individual rendering of each graphic leads to redundant communication between the CPU and GPU." FusionRender attacks this directly:</p>
-  <ol>
-    <li><strong>Signature.</strong> Each object is reduced to a <em>signature</em> capturing everything that determines its render pipeline: vertex attribute layout, shaders, fragment target, primitive topology, depth-stencil, and multisample state.</li>
-    <li><strong>Grouping.</strong> Objects with identical signatures are hashed into groups; a group can share a single pipeline.</li>
-    <li><strong>Merged rendering.</strong> A group's static (per-vertex) and dynamic (per-object) data are concatenated into shared buffers and drawn together, with each object's dynamic data located at draw time by its index. A <strong>pipeline cache</strong> prevents redundant pipeline/buffer creation across frames.</li>
-  </ol>
-  <p>The payoff is a <strong>29.3%–122.1%</strong> improvement in simulated multi-object rendering and <strong>9.4%–39.7%</strong> in complex real scenes. Critically for our application, this is precisely the structure of a chunked world: hundreds of grass or tree meshes that differ only in position share one pipeline signature, and are therefore exactly the candidates FusionRender merges from many serial draws into one parallel batch. The paper also flags an "<em>optimal splitting</em>" trade-off: a single enormous merged group can starve the GPU (a "bubble") while the CPU prepares it, so a small number of medium groups can outperform one giant one — a tuning knob, not a contradiction.</p>
-  <div class="callout apply"><span class="lab">Applies to us</span>Three.js's WebGPU backend already provides much of this machinery through <code>InstancedMesh</code>, <code>BatchedMesh</code>, and automatic pipeline caching, so we adopt the <em>principle</em> (merge identical-signature draws; cache pipelines; tune group size) rather than re-implementing FusionRender. Where Three.js stops — generating and culling the merged instances on the GPU — is where we add compute.</div>
+ <h3 id="r42">4.2 Consolidating serial communication: draw-call batching</h3>
+ <p>If §4.1 establishes the "why," <strong>Bi et&nbsp;al., FusionRender</strong> <sup><a href="#r1">[1]</a></sup> (WWW&nbsp;'24) supplies the dominant "how." Its premise is that naïve WebGPU ports underperform because they preserve WebGL's habit of rendering each object individually, "the individual rendering of each graphic leads to redundant communication between the CPU and GPU." FusionRender attacks this directly:</p>
+ <ol>
+ <li><strong>Signature.</strong> Each object is reduced to a <em>signature</em> capturing everything that determines its render pipeline: vertex attribute layout, shaders, fragment target, primitive topology, depth-stencil, and multisample state.</li>
+ <li><strong>Grouping.</strong> Objects with identical signatures are hashed into groups; a group can share a single pipeline.</li>
+ <li><strong>Merged rendering.</strong> A group's static (per-vertex) and dynamic (per-object) data are concatenated into shared buffers and drawn together, with each object's dynamic data located at draw time by its index. A <strong>pipeline cache</strong> prevents redundant pipeline/buffer creation across frames.</li>
+ </ol>
+ <p>The payoff is a <strong>29.3%–122.1%</strong> improvement in simulated multi-object rendering and <strong>9.4%–39.7%</strong> in complex real scenes. Critically for our application, this is precisely the structure of a chunked world: hundreds of grass or tree meshes that differ only in position share one pipeline signature, and are therefore exactly the candidates FusionRender merges from many serial draws into one parallel batch. The paper also flags an "<em>optimal splitting</em>" trade-off: a single enormous merged group can starve the GPU (a "bubble") while the CPU prepares it, so a small number of medium groups can outperform one giant one, a tuning knob, not a contradiction.</p>
+ <div class="callout apply"><span class="lab">Applies to us</span>Three.js's WebGPU backend already provides much of this machinery through <code>InstancedMesh</code>, <code>BatchedMesh</code>, and automatic pipeline caching, so we adopt the <em>principle</em> (merge identical-signature draws; cache pipelines; tune group size) rather than re-implementing FusionRender. Where Three.js stops, generating and culling the merged instances on the GPU, is where we add compute.</div>
 
-  <h3 id="r43">4.3 Bridging the models: automated migration</h3>
-  <p><strong>Han et&nbsp;al., GL2GPU</strong> <sup><a href="#r2">[2]</a></sup> (WWW&nbsp;'25) addresses a practical obstacle: the labor of porting an existing WebGL codebase. It is a runtime layer that <em>dynamically translates</em> WebGL calls to WebGPU, emulating WebGL's stateful contract on top of WebGPU's stateless one while opportunistically applying WebGPU optimizations. Across three benchmarks it achieves an average <strong>45.05%</strong> frame-time reduction while preserving visual output.</p>
-  <p>We do not adopt GL2GPU — our path is a native rebuild on Three.js's TSL/node materials, not a translation shim. But the result carries two lessons. First, it quantifies a floor: if even mechanical, semantics-preserving translation of serial WebGL recovers ~45%, a native parallel rewrite that restructures the work (compute culling, merged draws) should comfortably exceed it. Second, it confirms that the <em>serial habits</em> encoded in a WebGL application are the thing being optimized away — the translator's wins come from mapping redundant serial state changes onto WebGPU's cheaper bulk model.</p>
+ <h3 id="r43">4.3 Bridging the models: automated migration</h3>
+ <p><strong>Han et&nbsp;al., GL2GPU</strong> <sup><a href="#r2">[2]</a></sup> (WWW&nbsp;'25) addresses a practical obstacle: the labor of porting an existing WebGL codebase. It is a runtime layer that <em>dynamically translates</em> WebGL calls to WebGPU, emulating WebGL's stateful contract on top of WebGPU's stateless one while opportunistically applying WebGPU optimizations. Across three benchmarks it achieves an average <strong>45.05%</strong> frame-time reduction while preserving visual output.</p>
+ <p>We do not adopt GL2GPU; our path is a native rebuild on Three.js's TSL/node materials, not a translation shim. But the result carries two lessons. First, it quantifies a floor: if even mechanical, semantics-preserving translation of serial WebGL recovers ~45%, a native parallel rewrite that restructures the work (compute culling, merged draws) should comfortably exceed it. Second, it confirms that the <em>serial habits</em> encoded in a WebGL application are the thing being optimized away; the translator's wins come from mapping redundant serial state changes onto WebGPU's cheaper bulk model.</p>
 
-  <h3 id="r44">4.4 The parallel endpoint: GPU-driven terrain LOD</h3>
-  <p><strong>Yuan, Wang &amp; Ai</strong> <sup><a href="#r4">[4]</a></sup> (SPIE RSMIP&nbsp;'25) demonstrates the fully parallel destination for one subsystem. Traditional terrain renderers run level-of-detail and frustum culling <em>on the CPU</em> via recursive quadtree traversal, then ship the survivors to the GPU — the serial pattern again, with the added cost of per-frame CPU↔GPU transfer. Their method moves the entire decision pipeline onto the GPU:</p>
-  <ul>
-    <li><strong>Linearized quadtree.</strong> Nodes are encoded as 64-bit <em>Morton</em> (Z-order) keys (stored as two 32-bit halves, since GPUs lack 64-bit integers), with a leading marker bit encoding the level. This pointer-free, linear structure is amenable to parallel, constant-time bitwise access — recursion, the enemy of GPU parallelism, is eliminated.</li>
-    <li><strong>Producer–consumer compute.</strong> A producer pass performs a breadth-first expansion of nodes into a FIFO queue in GPU memory; consumer threads perform visibility tests and LOD updates, compacting visible nodes in place via read/write indices and discarding the rest. Double-buffering the queue avoids heavyweight synchronization.</li>
-    <li><strong>Roughness-aware refinement.</strong> Subdivision is driven by both view distance and a terrain-roughness texture, concentrating detail on ridges and valleys.</li>
-  </ul>
-  <p>The reported gain is <strong>31%</strong> in rendering efficiency with reduced CPU↔GPU bandwidth and sharper terrain features. The one element that does <em>not</em> transfer to WebGPU is the final stage: the paper uses hardware <em>tessellation</em> (<code>glTessLevelInner/Outer</code>) to refine patches. WebGPU has no tessellation stage, so we keep the parallel, GPU-resident <em>node selection</em> and replace hardware tessellation with vertex displacement of a fixed grid sampled from a height field — the substitution discussed in §6.</p>
+ <h3 id="r44">4.4 The parallel endpoint: GPU-driven terrain LOD</h3>
+ <p><strong>Yuan, Wang &amp; Ai</strong> <sup><a href="#r4">[4]</a></sup> (SPIE RSMIP&nbsp;'25) demonstrates the fully parallel destination for one subsystem. Traditional terrain renderers run level-of-detail and frustum culling <em>on the CPU</em> via recursive quadtree traversal, then ship the survivors to the GPU (the serial pattern again), with the added cost of per-frame CPU↔GPU transfer. Their method moves the entire decision pipeline onto the GPU:</p>
+ <ul>
+ <li><strong>Linearized quadtree.</strong> Nodes are encoded as 64-bit <em>Morton</em> (Z-order) keys (stored as two 32-bit halves, since GPUs lack 64-bit integers), with a leading marker bit encoding the level. This pointer-free, linear structure is amenable to parallel, constant-time bitwise access; recursion, the enemy of GPU parallelism, is eliminated.</li>
+ <li><strong>Producer–consumer compute.</strong> A producer pass performs a breadth-first expansion of nodes into a FIFO queue in GPU memory; consumer threads perform visibility tests and LOD updates, compacting visible nodes in place via read/write indices and discarding the rest. Double-buffering the queue avoids heavyweight synchronization.</li>
+ <li><strong>Roughness-aware refinement.</strong> Subdivision is driven by both view distance and a terrain-roughness texture, concentrating detail on ridges and valleys.</li>
+ </ul>
+ <p>The reported gain is <strong>31%</strong> in rendering efficiency with reduced CPU↔GPU bandwidth and sharper terrain features. The one element that does <em>not</em> transfer to WebGPU is the final stage: the paper uses hardware <em>tessellation</em> (<code>glTessLevelInner/Outer</code>) to refine patches. WebGPU has no tessellation stage, so we keep the parallel, GPU-resident <em>node selection</em> and replace hardware tessellation with vertex displacement of a fixed grid sampled from a height field, the substitution discussed in §6.</p>
 
-  <h3 id="r45">4.5 Cross-cutting synthesis</h3>
-  <p>Read together, the five sources tell a single story. The advantage of WebGPU is not a faster triangle; it is the dissolution of a serial bottleneck. WebGL's costs scale with the number of independent CPU-issued transactions — per-object draws (§4.2), per-iteration data transfers (§4.1), CPU-side culling decisions (§4.4). Every result in the corpus is a variation on <em>moving work, or the decisions about work, off the serial CPU path and onto the parallel GPU.</em></p>
-  <p>The corpus is equally consistent about the boundaries of that advantage:</p>
-  <div class="callout caveat"><span class="lab">Recurring caveats</span>
-  <strong>(1) Setup overhead</strong> <sup><a href="#r3">[3]</a></sup> — WebGPU pays ~0.2&nbsp;s to initialize; irrelevant to a persistent app, fatal to a micro-benchmark. <strong>(2) Buffer-upload stalls</strong> <sup><a href="#r5">[5]</a></sup> — a large per-frame instance-buffer upload can force CPU↔GPU synchronization even on WebGPU, re-introducing a serial stall; persistent/streamed buffers and avoiding full re-uploads are mandatory. <strong>(3) No tessellation or geometry shaders</strong> <sup><a href="#r4">[4]</a></sup> — parallel LOD must be compute-driven selection + vertex displacement, not hardware tessellation. <strong>(4) Small-workload regression</strong> — for genuinely light scenes WebGPU can lose; the win is conditional on having enough parallel work to do.</div>
-  <p>The net guidance for an engine author: commit to WebGPU when the application is, or will become, <em>heavy and many-object</em> — and then structure the work to feed the parallel model (merged draws, compute culling, GPU-resident LOD, streamed buffers) rather than porting serial habits across unchanged.</p>
+ <h3 id="r45">4.5 Cross-cutting synthesis</h3>
+ <p>Read together, the five sources tell a single story. The advantage of WebGPU is not a faster triangle; it is the dissolution of a serial bottleneck. WebGL's costs scale with the number of independent CPU-issued transactions: per-object draws (§4.2), per-iteration data transfers (§4.1), CPU-side culling decisions (§4.4). Every result in the corpus is a variation on <em>moving work, or the decisions about work, off the serial CPU path and onto the parallel GPU.</em></p>
+ <p>The corpus is equally consistent about the boundaries of that advantage:</p>
+ <div class="callout caveat"><span class="lab">Recurring caveats</span>
+ <strong>(1) Setup overhead</strong> <sup><a href="#r3">[3]</a></sup>: WebGPU pays ~0.2&nbsp;s to initialize; irrelevant to a persistent app, fatal to a micro-benchmark. <strong>(2) Buffer-upload stalls</strong> <sup><a href="#r5">[5]</a></sup>: a large per-frame instance-buffer upload can force CPU↔GPU synchronization even on WebGPU, re-introducing a serial stall; persistent/streamed buffers and avoiding full re-uploads are mandatory. <strong>(3) No tessellation or geometry shaders</strong> <sup><a href="#r4">[4]</a></sup>: parallel LOD must be compute-driven selection + vertex displacement, not hardware tessellation. <strong>(4) Small-workload regression</strong>: for genuinely light scenes WebGPU can lose; the win is conditional on having enough parallel work to do.</div>
+ <p>The net guidance for an engine author: commit to WebGPU when the application is, or will become, <em>heavy and many-object</em>, and then structure the work to feed the parallel model (merged draws, compute culling, GPU-resident LOD, streamed buffers) rather than porting serial habits across unchanged.</p>
 
-  <h2 id="discussion">5. Implications for a Procedural Creature World</h2>
-  <p>The application under study is a browser-based procedural world: a deterministic, chunked, "infinite" terrain with streamed vegetation (grass and trees) and stylized water. Profiling under load aligns with the literature's diagnosis. At a draw distance of nine chunk-rings (361 visible chunks) the WebGL build sustains only ~18–25&nbsp;fps while submitting <strong>~600–730 draw calls</strong> over ~1,900 live geometries, with triangle count <em>uncorrelated</em> with the frame-rate drop. The system is not fill-bound; it is <strong>draw-call- and object-bound</strong> — the serial-WebGL failure mode of §4.1–§4.2.</p>
-  <p>A within-WebGL experiment isolates the cause. Collapsing the 361 terrain chunks into a single instanced, shader-displaced grid removed terrain almost entirely from the draw budget (to ~1 call when frustum-isolated), yet overall frame rate improved only ~15–20%, because <em>grass</em> (hundreds of per-chunk draws plus main-thread geometry rebuilds) and <em>trees</em> remained the bottleneck. This matches FusionRender <sup><a href="#r1">[1]</a></sup>: optimizing a subsystem that is not the bottleneck yields little; the cost is the population of identical-signature draws, and the fix is to merge and GPU-drive them — which WebGL cannot do well. The decision to migrate follows from the data and the corpus.</p>
+ <h2 id="discussion">5. Implications for a Procedural Creature World</h2>
+ <p>The application under study is a browser-based procedural world: a deterministic, chunked, "infinite" terrain with streamed vegetation (grass and trees) and stylized water. Profiling under load aligns with the literature's diagnosis. At a draw distance of nine chunk-rings (361 visible chunks) the WebGL build sustains only ~18–25&nbsp;fps while submitting <strong>~600–730 draw calls</strong> over ~1,900 live geometries, with triangle count <em>uncorrelated</em> with the frame-rate drop. The system is not fill-bound; it is <strong>draw-call- and object-bound</strong>, the serial-WebGL failure mode of §4.1–§4.2.</p>
+ <p>A within-WebGL experiment isolates the cause. Collapsing the 361 terrain chunks into a single instanced, shader-displaced grid removed terrain almost entirely from the draw budget (to ~1 call when frustum-isolated), yet overall frame rate improved only ~15–20%, because <em>grass</em> (hundreds of per-chunk draws plus main-thread geometry rebuilds) and <em>trees</em> remained the bottleneck. This matches FusionRender <sup><a href="#r1">[1]</a></sup>: optimizing a subsystem that is not the bottleneck yields little; the cost is the population of identical-signature draws, and the fix is to merge and GPU-drive them, which WebGL cannot do well. The decision to migrate follows from the data and the corpus.</p>
 
-  <h2 id="plan">6. Implementation Plan</h2>
-  <p>We decompose the migration into four sub-projects, each with its own spec, plan, and acceptance gate. The ordering places a foundational validation first, then the measured bottleneck, then the structural LOD gap, then the roadmap features that motivated the platform choice. Every stage carries the §4.5 caveats as explicit design constraints.</p>
+ <h2 id="plan">6. Implementation Plan</h2>
+ <p>We decompose the migration into four sub-projects, each with its own spec, plan, and acceptance gate. The ordering places a foundational validation first, then the measured bottleneck, then the structural LOD gap, then the roadmap features that motivated the platform choice. Every stage carries the §4.5 caveats as explicit design constraints.</p>
 
-  <div class="sp">
-    <h3>SP1 — Renderer migration foundation <span class="tag">first · complete ✓</span></h3>
-    <p><strong>Goal.</strong> Replace <code>WebGLRenderer</code> with <code>WebGPURenderer</code> and port all existing materials (terrain, grass wind/fade, water caustics, clouds) to TSL/node materials so the scene renders <em>identically</em> on WebGPU — no new features. This is the "reality check" <sup><a href="#r3">[3]</a><a href="#r5">[5]</a></sup>: confirm parity and measure the CPU-frame-time win on target hardware before building on it.</p>
-    <p><strong>Key risk.</strong> The codebase's shader strategy is GLSL <code>onBeforeCompile</code> injection (terrain displacement, water caustics). <em>This does not exist in TSL</em> — the node model replaces it. Each injected effect must be re-expressed as TSL nodes. This supersedes the in-flight WebGL heightmap-terrain shader work, which becomes a <em>reference</em>, not the path.</p>
-    <p class="gate"><strong>Gate:</strong> visual parity with the WebGL build (terrain, lakes, caustics, grass, clouds); a <code>perfStats</code> trace at draw distance 9 showing CPU frame time at or below the WebGL baseline; documented adapter/device setup time (expected ≈0.2&nbsp;s, one-time).</p>
-    <div class="callout result"><span class="lab">SP1 result · measured</span>
-    <strong>Status: complete.</strong> Migrated to Three.js <code>r0.184.0</code> (<code>three/webgpu</code> + <code>three/tsl</code>) behind a <code>?renderer=</code> flag for side-by-side comparison. Grass, clouds, and water were ported to TSL node materials: water surface (wave normal, Fresnel, depth), planar reflection via the TSL <code>reflector()</code> node, refraction via <code>viewportSharedTexture</code>, and animated caustics. The key risk materialized: the GLSL <code>onBeforeCompile</code> caustic projection has no TSL equivalent, so it was re-expressed as a render-to-target caustic-texture node contributing additively to a <code>MeshStandardNodeMaterial</code> terrain. Adapter+device <code>renderer.init()</code> measured <strong>217&nbsp;ms</strong> on target hardware, matching the ≈0.2&nbsp;s one-time setup the literature flags <sup><a href="#r3">[3]</a></sup> and confirming caveat (1) is a non-issue for a persistent app.</p>
-    <table>
-      <thead><tr><th>Draw distance 9 · 361 chunks</th><th>WebGL2</th><th>WebGPU</th><th>Δ</th></tr></thead>
-      <tbody>
-        <tr><td>CPU frame time — mean</td><td class="num">36.9 ms</td><td class="num">24.8 ms</td><td class="num">−33%</td></tr>
-        <tr><td>CPU frame time — median</td><td class="num">29.3 ms</td><td class="num">21.3 ms</td><td class="num">−27%</td></tr>
-        <tr><td>CPU frame time — p95</td><td class="num">77.7 ms</td><td class="num">41.9 ms</td><td class="num">−46%</td></tr>
-        <tr><td>Frame rate — mean</td><td class="num">33.4 fps</td><td class="num">45.3 fps</td><td class="num">+36%</td></tr>
-      </tbody>
-    </table>
-    <p style="margin:10px 0 0">The dd9 gate is met: WebGPU CPU frame time runs 27–46% below the WebGL baseline, and frame-time variance falls — the p95/median ratio drops from 2.65× on WebGL to 1.97× on WebGPU, the reduced stalling §4.1 attributes to bundled state and fewer API calls <sup><a href="#r5">[5]</a></sup>. CPU time <em>fell</em> rather than rose, so the GEM'24 per-frame buffer-upload stall (caveat 2) did not surface in the ported scene. One follow-up stays open: procedural (canvas-generated) tree textures fail to bind on the main pass under the node-material texture lifecycle (tracked as issue&nbsp;001); authored textures — the production default — are unaffected, so SP1 ships on them.</p>
-    </div>
-  </div>
+ <div class="sp">
+ <h3>SP1: Renderer migration foundation <span class="tag">first · complete ✓</span></h3>
+ <p><strong>Goal.</strong> Replace <code>WebGLRenderer</code> with <code>WebGPURenderer</code> and port all existing materials (terrain, grass wind/fade, water caustics, clouds) to TSL/node materials so the scene renders <em>identically</em> on WebGPU, no new features. This is the "reality check" <sup><a href="#r3">[3]</a><a href="#r5">[5]</a></sup>: confirm parity and measure the CPU-frame-time win on target hardware before building on it.</p>
+ <p><strong>Key risk.</strong> The codebase's shader strategy is GLSL <code>onBeforeCompile</code> injection (terrain displacement, water caustics). <em>This does not exist in TSL</em>; the node model replaces it. Each injected effect must be re-expressed as TSL nodes. This supersedes the in-flight WebGL heightmap-terrain shader work, which becomes a <em>reference</em>, not the path.</p>
+ <p class="gate"><strong>Gate:</strong> visual parity with the WebGL build (terrain, lakes, caustics, grass, clouds); a <code>perfStats</code> trace at draw distance 9 showing CPU frame time at or below the WebGL baseline; documented adapter/device setup time (expected ≈0.2&nbsp;s, one-time).</p>
+ <div class="callout result"><span class="lab">SP1 result · measured</span>
+ <strong>Status: complete.</strong> Migrated to Three.js <code>r0.184.0</code> (<code>three/webgpu</code> + <code>three/tsl</code>) behind a <code>?renderer=</code> flag for side-by-side comparison. Grass, clouds, and water were ported to TSL node materials: water surface (wave normal, Fresnel, depth), planar reflection via the TSL <code>reflector()</code> node, refraction via <code>viewportSharedTexture</code>, and animated caustics. The key risk materialized: the GLSL <code>onBeforeCompile</code> caustic projection has no TSL equivalent, so it was re-expressed as a render-to-target caustic-texture node contributing additively to a <code>MeshStandardNodeMaterial</code> terrain. Adapter+device <code>renderer.init()</code> measured <strong>217&nbsp;ms</strong> on target hardware, matching the ≈0.2&nbsp;s one-time setup the literature flags <sup><a href="#r3">[3]</a></sup> and confirming caveat (1) is a non-issue for a persistent app.</p>
+ <table>
+ <thead><tr><th>Draw distance 9 · 361 chunks</th><th>WebGL2</th><th>WebGPU</th><th>Δ</th></tr></thead>
+ <tbody>
+ <tr><td>CPU frame time, mean</td><td class="num">36.9 ms</td><td class="num">24.8 ms</td><td class="num">−33%</td></tr>
+ <tr><td>CPU frame time, median</td><td class="num">29.3 ms</td><td class="num">21.3 ms</td><td class="num">−27%</td></tr>
+ <tr><td>CPU frame time, p95</td><td class="num">77.7 ms</td><td class="num">41.9 ms</td><td class="num">−46%</td></tr>
+ <tr><td>Frame rate, mean</td><td class="num">33.4 fps</td><td class="num">45.3 fps</td><td class="num">+36%</td></tr>
+ </tbody>
+ </table>
+ <p style="margin:10px 0 0">The dd9 gate is met: WebGPU CPU frame time runs 27–46% below the WebGL baseline, and frame-time variance falls: the p95/median ratio drops from 2.65× on WebGL to 1.97× on WebGPU, which §4.1 attributes to bundled state and fewer API calls <sup><a href="#r5">[5]</a></sup>. CPU time <em>fell</em> rather than rose, so the GEM'24 per-frame buffer-upload stall (caveat 2) did not surface in the ported scene. One follow-up stays open: procedural (canvas-generated) tree textures fail to bind on the main pass under the node-material texture lifecycle (tracked as issue&nbsp;001); authored textures, the production default, are unaffected, so SP1 ships on them.</p>
+ </div>
+ </div>
 
-  <div class="sp">
-    <h3>SP2 — GPU compute grass <span class="tag">the bottleneck · complete ✓</span></h3>
-    <p><strong>Goal.</strong> Replace per-chunk CPU-built grass meshes with a compute-driven, indirectly-drawn instanced system: a compute pass generates per-blade instance transforms in a camera-centered region (deterministic per-cell seeding to preserve placement), performs <strong>frustum + distance culling</strong> into a storage buffer, and writes <code>drawIndirect</code> arguments; a single instanced draw renders the survivors. Distance density falls out continuously from the cull, replacing the per-blade shader-fade hack.</p>
-    <p><strong>Informed by.</strong> FusionRender's merge-identical-signatures principle <sup><a href="#r1">[1]</a></sup> (hundreds of grass draws → one) and the §4.1 result that compute + storage buffers are where WebGPU's parallel advantage is largest <sup><a href="#r3">[3]</a></sup>.</p>
-    <p><strong>Caveat wiring.</strong> Per §4.5, avoid full per-frame instance-buffer re-uploads (the GEM'24 stall <sup><a href="#r5">[5]</a></sup>): the instance/argument buffers are GPU-resident and updated by compute, never re-uploaded from the CPU.</p>
-    <p class="gate"><strong>Gate:</strong> grass draw calls become O(1) regardless of chunk count; triangle count tracks <em>visible</em> blades, not the global budget; no main-thread geometry rebuild while streaming; a draw-distance-9 trace showing the grass-dominated frame-time wall removed.</p>
-    <div class="callout result"><span class="lab">SP2 result · measured</span>
-    <strong>Status: complete.</strong> A per-frame, three-dispatch compute pipeline (reset → generate-and-cull → finalize) over a <em>world-anchored</em> cell grid around the camera plants blades on a closed-form TSL terrain height, rejects water/out-of-radius candidates, dithers the outer edge, and <code>atomicAdd</code>s survivors into a GPU-resident storage buffer whose count is copied into an <code>IndirectStorageBufferAttribute</code> — drawn as a single <code>drawIndexedIndirect</code>. Placement is deterministic and stable (no swimming) though <em>equivalent</em> rather than byte-identical to the old field, which is the accepted bar. Two refinements vs the initial sketch: <strong>per-blade frustum culling proved unnecessary</strong> — distance + density-dither alone met the gate — and the buffers being GPU-resident (never re-uploaded) is borne out by the measured CPU <em>drop</em>, confirming caveat&nbsp;(2)'s upload stall did not appear.</p>
-    <table>
-      <thead><tr><th>Draw distance 9</th><th>CPU grass</th><th>Compute grass</th><th>Δ</th></tr></thead>
-      <tbody>
-        <tr><td>CPU frame time — mean</td><td class="num">17.95 ms</td><td class="num">11.63 ms</td><td class="num">−35%</td></tr>
-        <tr><td>CPU frame time — p95</td><td class="num">23.85 ms</td><td class="num">14.87 ms</td><td class="num">−38%</td></tr>
-        <tr><td>Frame rate — mean</td><td class="num">57.4 fps</td><td class="num">74.3 fps</td><td class="num">+29%</td></tr>
-        <tr><td>Draw calls (whole scene)</td><td class="num">~22,900</td><td class="num">~12,600</td><td class="num">−45%</td></tr>
-      </tbody>
-    </table>
-    <p style="margin:10px 0 0">The entire ~10,300-call delta is grass: hundreds-to-thousands of per-chunk grass draws collapse into <strong>one</strong> indirect draw — the FusionRender merge principle <sup><a href="#r1">[1]</a></sup> realized via compute, as §4.2 predicts. The compute path renders <em>millions</em> of blades (Radius 350, Density 8) versus ~40k on the CPU path and is faster on every metric in the table, because its cost is bounded by the camera-centered window rather than scaling with the rendered chunk count. The one device wrinkle the literature does not flag: the survivor buffer exceeds the default 128&nbsp;MB storage-buffer binding limit at large radius, so the renderer requests the adapter's own maximum at device creation. <strong>Gate met.</strong></p>
-    </div>
-  </div>
+ <div class="sp">
+ <h3>SP2: GPU compute grass <span class="tag">the bottleneck · complete ✓</span></h3>
+ <p><strong>Goal.</strong> Replace per-chunk CPU-built grass meshes with a compute-driven, indirectly-drawn instanced system: a compute pass generates per-blade instance transforms in a camera-centered region (deterministic per-cell seeding to preserve placement), performs <strong>frustum + distance culling</strong> into a storage buffer, and writes <code>drawIndirect</code> arguments; a single instanced draw renders the survivors. Distance density falls out continuously from the cull, replacing the per-blade shader-fade hack.</p>
+ <p><strong>Informed by.</strong> FusionRender's merge-identical-signatures principle <sup><a href="#r1">[1]</a></sup> (hundreds of grass draws → one) and the §4.1 result that compute + storage buffers are where WebGPU's parallel advantage is largest <sup><a href="#r3">[3]</a></sup>.</p>
+ <p><strong>Caveat wiring.</strong> Per §4.5, avoid full per-frame instance-buffer re-uploads (the GEM'24 stall <sup><a href="#r5">[5]</a></sup>): the instance/argument buffers are GPU-resident and updated by compute, never re-uploaded from the CPU.</p>
+ <p class="gate"><strong>Gate:</strong> grass draw calls become O(1) regardless of chunk count; triangle count tracks <em>visible</em> blades, not the global budget; no main-thread geometry rebuild while streaming; a draw-distance-9 trace showing the grass-dominated frame-time wall removed.</p>
+ <div class="callout result"><span class="lab">SP2 result · measured</span>
+ <strong>Status: complete.</strong> A per-frame, three-dispatch compute pipeline (reset → generate-and-cull → finalize) over a <em>world-anchored</em> cell grid around the camera plants blades on a closed-form TSL terrain height, rejects water/out-of-radius candidates, dithers the outer edge, and <code>atomicAdd</code>s survivors into a GPU-resident storage buffer whose count is copied into an <code>IndirectStorageBufferAttribute</code>, drawn as a single <code>drawIndexedIndirect</code>. Placement is deterministic and stable (no swimming) though <em>equivalent</em> rather than byte-identical to the old field, which is the accepted bar. Two refinements vs the initial sketch: <strong>per-blade frustum culling proved unnecessary</strong> (distance + density-dither alone met the gate), and the buffers being GPU-resident (never re-uploaded) is borne out by the measured CPU <em>drop</em>, confirming caveat&nbsp;(2)'s upload stall did not appear.</p>
+ <table>
+ <thead><tr><th>Draw distance 9</th><th>CPU grass</th><th>Compute grass</th><th>Δ</th></tr></thead>
+ <tbody>
+ <tr><td>CPU frame time, mean</td><td class="num">17.95 ms</td><td class="num">11.63 ms</td><td class="num">−35%</td></tr>
+ <tr><td>CPU frame time, p95</td><td class="num">23.85 ms</td><td class="num">14.87 ms</td><td class="num">−38%</td></tr>
+ <tr><td>Frame rate, mean</td><td class="num">57.4 fps</td><td class="num">74.3 fps</td><td class="num">+29%</td></tr>
+ <tr><td>Draw calls (whole scene)</td><td class="num">~22,900</td><td class="num">~12,600</td><td class="num">−45%</td></tr>
+ </tbody>
+ </table>
+ <p style="margin:10px 0 0">The entire ~10,300-call delta is grass: hundreds-to-thousands of per-chunk grass draws collapse into <strong>one</strong> indirect draw, the FusionRender merge principle <sup><a href="#r1">[1]</a></sup> realized via compute, as §4.2 predicts. The compute path renders <em>millions</em> of blades (Radius 350, Density 8) versus ~40k on the CPU path and is faster on every metric in the table, because its cost is bounded by the camera-centered window rather than scaling with the rendered chunk count. The one device wrinkle the literature does not flag: the survivor buffer exceeds the default 128&nbsp;MB storage-buffer binding limit at large radius, so the renderer requests the adapter's own maximum at device creation. <strong>Gate met.</strong></p>
+ </div>
+ </div>
 
-  <div class="sp">
-    <h3>SP3 — GPU-driven CDLOD terrain <span class="tag">structural LOD · complete ✓</span></h3>
-    <p><strong>Goal.</strong> Adopt the parallel terrain pipeline of §4.4 <sup><a href="#r4">[4]</a></sup>, adapted to WebGPU's lack of tessellation. A linearized (Morton-keyed) quadtree is held in a storage buffer; a producer/consumer compute pass selects visible nodes and LOD levels on the GPU and emits indirect draws. Hardware tessellation is replaced by <strong>vertex displacement of a reusable grid sampled from the height field</strong> — directly reusing the existing parity-tested heightmap groundwork (bilinear-correct sampling, symmetric tile aprons for seamless edges and normals). Continuous LOD morphing in the vertex stage prevents popping.</p>
-    <p><strong>Informed by.</strong> §4.4's GPU-resident node selection + culling; the project's own heightmap parity work supplies the displacement source of truth, guaranteeing visual/collision agreement by construction.</p>
-    <p class="gate"><strong>Gate:</strong> terrain triangle <em>and</em> draw-call cost bounded and roughly constant versus draw distance (not just collapsed, as in the WebGL instanced experiment); no cracks or popping across LOD seams; collision still served by the analytic height field; a trace showing terrain cost flat from draw distance 4 through 12.</p>
-    <div class="callout result"><span class="lab">SP3 result · measured</span>
-    <strong>Status: complete.</strong> A per-frame three-dispatch compute pipeline (reset → select → finalize) evaluates a camera-snapped, Morton-keyed quadtree window: each candidate node decides its own LOD by a distance-band test and <code>atomicAdd</code>s survivors into a GPU-resident buffer drawn as one <code>drawIndexedIndirect</code> of a reusable grid. Two substitutions, both faithful to the paper's own logic: (1) the producer/consumer FIFO queue is replaced by <strong>flattened per-node selection</strong> — since the tree is camera-snapped and LOD is purely distance-based, the emitted nodes provably form a <em>partition</em> of the covered region (no gaps/overlaps; Node-tested), delivering the paper's GPU-resident, zero-CPU-traversal selection without queue machinery; (2) hardware tessellation is replaced by <strong>vertex displacement</strong> of the analytic field in TSL (the substitution the paper itself prescribes), with continuous CDLOD morphing for crack-free seams. The chunk manager stays in an <em>external</em> mode (records + colliders only) so decorations and analytic collision are unaffected.</p>
-    <table>
-      <thead><tr><th>Terrain cost (361-chunk-equiv window)</th><th>Chunks</th><th>CDLOD</th><th>Δ</th></tr></thead>
-      <tbody>
-        <tr><td>Terrain draw calls</td><td class="num">361</td><td class="num">1</td><td class="num">−360</td></tr>
-        <tr><td>Terrain triangles</td><td class="num">≈382k</td><td class="num">≈147k</td><td class="num">−61%</td></tr>
-        <tr><td>CPU frame time (terrain-dominated)</td><td class="num">15.7–18.6 ms</td><td class="num">9.5–10.7 ms</td><td class="num">~−40%</td></tr>
-        <tr><td>Frame rate (same)</td><td class="num">41–61 fps</td><td class="num">62–75 fps</td><td class="num">+~30%</td></tr>
-      </tbody>
-    </table>
-    <p style="margin:10px 0 0">The gate is the <em>flatness</em>, not just the collapse: across the whole sweep the CDLOD terrain holds at <strong>1 draw call and ≈147k triangles</strong> (±5% from camera motion) while the chunked path's terrain draws climb 25→361 with the radius and its triangles grow with area — terrain cost is decoupled from draw distance, the §4.4 endpoint realized via compute. The draw-call collapse is the FusionRender principle <sup><a href="#r1">[1]</a></sup> again (361→1); the new result is that the <em>triangle</em> budget is bounded too, by the camera-centered LOD window rather than the rendered area. CPU frame time is ~40% lower where terrain still dominates the frame; beyond that, ≈300 tree placements and the collision-octree rebuild become the bottleneck in <em>both</em> runs (~25–40 ms) — i.e. terrain has stopped being the cost. No cracks or popping across seams (continuous morphing) and collision is still the analytic height field. <strong>Gate met.</strong></p>
-    </div>
-  </div>
+ <div class="sp">
+ <h3>SP3: GPU-driven CDLOD terrain <span class="tag">structural LOD · complete ✓</span></h3>
+ <p><strong>Goal.</strong> Adopt the parallel terrain pipeline of §4.4 <sup><a href="#r4">[4]</a></sup>, adapted to WebGPU's lack of tessellation. A linearized (Morton-keyed) quadtree is held in a storage buffer; a producer/consumer compute pass selects visible nodes and LOD levels on the GPU and emits indirect draws. Hardware tessellation is replaced by <strong>vertex displacement of a reusable grid sampled from the height field</strong>, directly reusing the existing parity-tested heightmap groundwork (bilinear-correct sampling, symmetric tile aprons for seamless edges and normals). Continuous LOD morphing in the vertex stage prevents popping.</p>
+ <p><strong>Informed by.</strong> §4.4's GPU-resident node selection + culling; the project's own heightmap parity work supplies the displacement source of truth, guaranteeing visual/collision agreement by construction.</p>
+ <p class="gate"><strong>Gate:</strong> terrain triangle <em>and</em> draw-call cost bounded and roughly constant versus draw distance (not just collapsed, as in the WebGL instanced experiment); no cracks or popping across LOD seams; collision still served by the analytic height field; a trace showing terrain cost flat from draw distance 4 through 12.</p>
+ <div class="callout result"><span class="lab">SP3 result · measured</span>
+ <strong>Status: complete.</strong> A per-frame three-dispatch compute pipeline (reset → select → finalize) evaluates a camera-snapped, Morton-keyed quadtree window: each candidate node decides its own LOD by a distance-band test and <code>atomicAdd</code>s survivors into a GPU-resident buffer drawn as one <code>drawIndexedIndirect</code> of a reusable grid. Two substitutions, both faithful to the paper's own logic: (1) the producer/consumer FIFO queue is replaced by <strong>flattened per-node selection</strong>, since the tree is camera-snapped and LOD is purely distance-based, the emitted nodes provably form a <em>partition</em> of the covered region (no gaps/overlaps; Node-tested), delivering the paper's GPU-resident, zero-CPU-traversal selection without queue machinery; (2) hardware tessellation is replaced by <strong>vertex displacement</strong> of the analytic field in TSL (the substitution the paper itself prescribes), with continuous CDLOD morphing for crack-free seams. The chunk manager stays in an <em>external</em> mode (records + colliders only) so decorations and analytic collision are unaffected.</p>
+ <table>
+ <thead><tr><th>Terrain cost (361-chunk-equiv window)</th><th>Chunks</th><th>CDLOD</th><th>Δ</th></tr></thead>
+ <tbody>
+ <tr><td>Terrain draw calls</td><td class="num">361</td><td class="num">1</td><td class="num">−360</td></tr>
+ <tr><td>Terrain triangles</td><td class="num">≈382k</td><td class="num">≈147k</td><td class="num">−61%</td></tr>
+ <tr><td>CPU frame time (terrain-dominated)</td><td class="num">15.7–18.6 ms</td><td class="num">9.5–10.7 ms</td><td class="num">~−40%</td></tr>
+ <tr><td>Frame rate (same)</td><td class="num">41–61 fps</td><td class="num">62–75 fps</td><td class="num">+~30%</td></tr>
+ </tbody>
+ </table>
+ <p style="margin:10px 0 0">The gate is the <em>flatness</em>, not just the collapse: across the whole sweep the CDLOD terrain holds at <strong>1 draw call and ≈147k triangles</strong> (±5% from camera motion) while the chunked path's terrain draws climb 25→361 with the radius and its triangles grow with area. Terrain cost is decoupled from draw distance, the §4.4 endpoint realized via compute. The draw-call collapse is the FusionRender principle <sup><a href="#r1">[1]</a></sup> again (361→1); the new result is that the <em>triangle</em> budget is bounded too, by the camera-centered LOD window rather than the rendered area. CPU frame time is ~40% lower where terrain still dominates the frame; beyond that, ≈300 tree placements and the collision-octree rebuild become the bottleneck in <em>both</em> runs (~25–40 ms), i.e. terrain has stopped being the cost. No cracks or popping across seams (continuous morphing) and collision is still the analytic height field. <strong>Gate met.</strong></p>
+ </div>
+ </div>
 
-  <div class="sp">
-    <h3>SP4 — Lights, effects, and post-processing <span class="tag">complete ✓ (4a+4b+4c)</span></h3>
-    <p><strong>Goal.</strong> Deliver the visual roadmap that justified the platform choice: many dynamic point lights via <strong>clustered/tiled forward lighting</strong> (feasible only with compute + storage buffers), GPU-driven particle/effect systems, and a node-based post-processing stack (bloom, AO, color grade) — all native to the WebGPU backend and infeasible or expensive under serial WebGL.</p>
-    <p><strong>Informed by.</strong> The whole corpus: each feature is a many-object or compute-heavy workload, the regime where §4.1/§4.5 place WebGPU's advantage; clustered lighting is a "decide on the GPU" pattern.</p>
-    <p class="gate"><strong>Gate:</strong> target dynamic-light count rendered within frame budget; post stack composited without reintroducing CPU-bound passes; measured against the SP1 baseline.</p>
-    <div class="callout result"><span class="lab">SP4a result · measured</span>
-    <strong>4a (clustered lighting): complete.</strong> SP4 decomposes into three independent sub-projects — <strong>4a</strong> clustered point lighting, 4b GPU particles, 4c node post-processing — built in order. 4a ships the WebGPU-reachable lighting SOTA: since browser WebGPU exposes no ray-tracing pipeline, ReSTIR/RTXDI/neural-radiance-caching are out of reach, so the ceiling is <strong>froxel (3D) clustered forward+</strong> (Olsson&nbsp;2012 → Drobot&nbsp;2017) with a Cook-Torrance GGX BRDF. A per-frame compute pass culls point lights into a 3D view-frustum cluster grid (exponential depth slices × screen tiles); lit surfaces read only their froxel's lights and add GGX over three's untouched sun/ambient (injected as an additive <code>emissiveNode</code>, composed with the water caustics rather than clobbering them). Cull correctness — including the Drobot Z-bin/bitmask scheme being a conservative superset of the exact froxel set — is Node-tested before any GPU code, the SP2/SP3 discipline.</p>
-    <table>
-      <thead><tr><th>256 dynamic point lights</th><th>Lights off</th><th>Lights on</th></tr></thead>
-      <tbody>
-        <tr><td>CPU frame time (steady state)</td><td class="num">~15.0 ms</td><td class="num">~14.2 ms</td></tr>
-        <tr><td>Frame rate</td><td class="num">~65 fps</td><td class="num">~68 fps</td></tr>
-        <tr><td>Terrain draws / triangles</td><td class="num">1 / ~141k</td><td class="num">1 / ~141k</td></tr>
-      </tbody>
-    </table>
-    <p style="margin:10px 0 0">256 animated point lights add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — the cull is GPU compute and the shading is GPU, so the serial CPU submit path is untouched — the §4.1/§4.5 regime for WebGPU's advantage. Per-fragment cost tracks lights-<em>per-froxel</em>, not total light count. The v1 cull uses per-froxel index lists (no atomics) — the Drobot bitmask (math already tested) is the documented refinement for far higher light counts. <strong>4a gate met.</strong></p>
-    </div>
-    <div class="callout result"><span class="lab">SP4b result · measured</span>
-    <strong>4b (GPU particles): complete.</strong> Two species (glowing additive embers + subtle alpha dust) from one parameterized field: a persistent GPU state buffer is simulated each frame by a compute pass (curl-noise drift + buoyancy/wind + lifecycle/respawn), and the alive+visible particles are <code>atomicAdd</code>'d into one <code>drawIndexedIndirect</code> of camera-facing billboards per field — the same compute→indirect spine as SP2/SP3/4a. Sim math (curl ~divergence-free, spawn-in-volume, lifecycle) is Node-tested first; the GPU uses equivalent randomness since particles need no cross-system parity. A fixed always-full pool with respawn avoids a free-list, and additive/low-alpha blends are order-independent (no GPU depth sort).</p>
-    <table>
-      <thead><tr><th>12k particles (4k ember + 8k dust)</th><th>Off</th><th>On</th></tr></thead>
-      <tbody>
-        <tr><td>CPU frame time (steady state)</td><td class="num">~18 ms</td><td class="num">~16 ms</td></tr>
-        <tr><td>Frame rate</td><td class="num">~54 fps</td><td class="num">~61 fps</td></tr>
-      </tbody>
-    </table>
-    <p style="margin:10px 0 0">12,000 GPU-simulated particles add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — sim is GPU compute, draw is two indirect calls, the serial CPU path untouched. <strong>4b gate met.</strong></p>
-    </div>
-    <div class="callout result"><span class="lab">SP4c result · shipped</span>
-    <strong>4c (post-processing): complete.</strong> A configurable node post stack composed from three's own <code>PostProcessing</code> pipeline — scene <code>pass</code> → <strong>bloom</strong> (addon BloomNode) → <code>renderOutput</code> (runtime-switchable tone operator: none/neutral/ACES/AgX/Reinhard + sRGB) → a <strong>color grade</strong> (gain, brightness, contrast at a middle-grey pivot, gamma, saturation, white-balance, vignette) — replacing the final draw with <code>renderAsync()</code>. ~16 live controls, all defaulting to a visual no-op so the look is built from a neutral baseline. The grade math is Node-tested; the integration bugs that only surface at runtime (grade must run on <code>color.rgb</code> not the <code>renderOutput</code> vec4; contrast pivot at 0.18 not 0.5 on dark scenes) were caught via browser checkpoints. Post runs as GPU node passes after the awaited compute passes, so it adds no CPU-bound pass (the SP4 gate). <strong>4c shipped.</strong> Deferred: GTAO/SSAO (needs an MRT-normal pass) and a sky/weather SP.</p>
-    </div>
-  </div>
+ <div class="sp">
+ <h3>SP4: Lights, effects, and post-processing <span class="tag">complete ✓ (4a+4b+4c)</span></h3>
+ <p><strong>Goal.</strong> Deliver the visual roadmap that justified the platform choice: many dynamic point lights via <strong>clustered/tiled forward lighting</strong> (feasible only with compute + storage buffers), GPU-driven particle/effect systems, and a node-based post-processing stack (bloom, AO, color grade), all native to the WebGPU backend and infeasible or expensive under serial WebGL.</p>
+ <p><strong>Informed by.</strong> The whole corpus: each feature is a many-object or compute-heavy workload, the regime where §4.1/§4.5 place WebGPU's advantage; clustered lighting is a "decide on the GPU" pattern.</p>
+ <p class="gate"><strong>Gate:</strong> target dynamic-light count rendered within frame budget; post stack composited without reintroducing CPU-bound passes; measured against the SP1 baseline.</p>
+ <div class="callout result"><span class="lab">SP4a result · measured</span>
+ <strong>4a (clustered lighting): complete.</strong> SP4 decomposes into three independent sub-projects (<strong>4a</strong> clustered point lighting, 4b GPU particles, 4c node post-processing), built in order. 4a ships the WebGPU-reachable lighting SOTA: since browser WebGPU exposes no ray-tracing pipeline, ReSTIR/RTXDI/neural-radiance-caching are out of reach, so the ceiling is <strong>froxel (3D) clustered forward+</strong> (Olsson&nbsp;2012 → Drobot&nbsp;2017) with a Cook-Torrance GGX BRDF. A per-frame compute pass culls point lights into a 3D view-frustum cluster grid (exponential depth slices × screen tiles); lit surfaces read only their froxel's lights and add GGX over three's untouched sun/ambient (injected as an additive <code>emissiveNode</code>, composed with the water caustics rather than clobbering them). Cull correctness, including the Drobot Z-bin/bitmask scheme being a conservative superset of the exact froxel set, is Node-tested before any GPU code, the SP2/SP3 discipline.</p>
+ <table>
+ <thead><tr><th>256 dynamic point lights</th><th>Lights off</th><th>Lights on</th></tr></thead>
+ <tbody>
+ <tr><td>CPU frame time (steady state)</td><td class="num">~15.0 ms</td><td class="num">~14.2 ms</td></tr>
+ <tr><td>Frame rate</td><td class="num">~65 fps</td><td class="num">~68 fps</td></tr>
+ <tr><td>Terrain draws / triangles</td><td class="num">1 / ~141k</td><td class="num">1 / ~141k</td></tr>
+ </tbody>
+ </table>
+ <p style="margin:10px 0 0">256 animated point lights add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise): the cull is GPU compute and the shading is GPU, so the serial CPU submit path is untouched, the §4.1/§4.5 regime for WebGPU's advantage. Per-fragment cost tracks lights-<em>per-froxel</em>, not total light count. The v1 cull uses per-froxel index lists (no atomics); the Drobot bitmask (math already tested) is the documented refinement for far higher light counts. <strong>4a gate met.</strong></p>
+ </div>
+ <div class="callout result"><span class="lab">SP4b result · measured</span>
+ <strong>4b (GPU particles): complete.</strong> Two species (glowing additive embers + subtle alpha dust) from one parameterized field: a persistent GPU state buffer is simulated each frame by a compute pass (curl-noise drift + buoyancy/wind + lifecycle/respawn), and the alive+visible particles are <code>atomicAdd</code>'d into one <code>drawIndexedIndirect</code> of camera-facing billboards per field, the same compute→indirect spine as SP2/SP3/4a. Sim math (curl ~divergence-free, spawn-in-volume, lifecycle) is Node-tested first; the GPU uses equivalent randomness since particles need no cross-system parity. A fixed always-full pool with respawn avoids a free-list, and additive/low-alpha blends are order-independent (no GPU depth sort).</p>
+ <table>
+ <thead><tr><th>12k particles (4k ember + 8k dust)</th><th>Off</th><th>On</th></tr></thead>
+ <tbody>
+ <tr><td>CPU frame time (steady state)</td><td class="num">~18 ms</td><td class="num">~16 ms</td></tr>
+ <tr><td>Frame rate</td><td class="num">~54 fps</td><td class="num">~61 fps</td></tr>
+ </tbody>
+ </table>
+ <p style="margin:10px 0 0">12,000 GPU-simulated particles add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise): sim is GPU compute, draw is two indirect calls, the serial CPU path untouched. <strong>4b gate met.</strong></p>
+ </div>
+ <div class="callout result"><span class="lab">SP4c result · shipped</span>
+ <strong>4c (post-processing): complete.</strong> A configurable node post stack composed from three's own <code>PostProcessing</code> pipeline: scene <code>pass</code> → <strong>bloom</strong> (addon BloomNode) → <code>renderOutput</code> (runtime-switchable tone operator: none/neutral/ACES/AgX/Reinhard + sRGB) → a <strong>color grade</strong> (gain, brightness, contrast at a middle-grey pivot, gamma, saturation, white-balance, vignette), replacing the final draw with <code>renderAsync()</code>. ~16 live controls, all defaulting to a visual no-op so the look is built from a neutral baseline. The grade math is Node-tested; the integration bugs that only surface at runtime (grade must run on <code>color.rgb</code> not the <code>renderOutput</code> vec4; contrast pivot at 0.18 not 0.5 on dark scenes) were caught via browser checkpoints. Post runs as GPU node passes after the awaited compute passes, so it adds no CPU-bound pass (the SP4 gate). <strong>4c shipped.</strong> Deferred: GTAO/SSAO (needs an MRT-normal pass) and a sky/weather SP.</p>
+ </div>
+ </div>
 
-  <div class="callout finding"><span class="lab">Sequencing rationale</span>SP1 is foundational and validating (cheap to abandon if WebGPU disappoints on target hardware). SP2 attacks the <em>measured</em> bottleneck and proves the compute pipeline. SP3 closes the one structural gap WebGL never had (true LOD). SP4 delivers the roadmap features. Each stage is independently shippable and gated on a <code>perfStats</code> trace, preserving the measure-then-commit discipline that selected WebGPU.</div>
+ <div class="callout finding"><span class="lab">Sequencing rationale</span>SP1 is foundational and validating (cheap to abandon if WebGPU disappoints on target hardware). SP2 attacks the <em>measured</em> bottleneck and proves the compute pipeline. SP3 closes the one structural gap WebGL never had (true LOD). SP4 delivers the roadmap features. Each stage is independently shippable and gated on a <code>perfStats</code> trace, preserving the measure-then-commit discipline that selected WebGPU.</div>
 
-  <hr>
-  <h2 id="realized">7. Discussion: the realized world</h2>
-  <p>Applied across SP1–SP4, the synthesized "parallelism over serial" principles produced an interactive procedural world running entirely on Three.js's WebGPU backend (SP1). Its rendering-bound subsystems are GPU-driven as the corpus prescribes: the <strong>terrain</strong> is a GPU-selected CDLOD froxel-quadtree drawn in <em>one</em> indirect call at cost flat versus draw distance (SP3, §4.4); the <strong>grass</strong> is a per-frame compute generate-and-cull collapsed to one indirect draw of millions of blades (SP2, §4.2); <strong>dynamic lighting</strong> is hundreds of point lights culled on the GPU into a 3D froxel grid (SP4a); <strong>particles</strong> (embers, dust) are compute-simulated and indirectly drawn (SP4b); and a node <strong>post stack</strong> (bloom, tone mapping, grade) composites on the GPU (SP4c). Around these sit the water, clouds, and a per-chunk procedural forest, with procedurally-animated creatures (FABRIK-IK walkers) wandering the surface.</p>
-  <p>It is playable: orbit and zoom, press <strong>F</strong> to walk the terrain in first person among the creatures, double-click to send them to a point, and tune every subsystem live from the control panel. The division of labor: the <em>rendering</em> decisions — which terrain nodes, which blades, which lights, which particles — run on the GPU, and the measured gains are in CPU frame time and draw-call count (terrain 361→1 draws at flat triangle cost; grass's ~10k per-chunk draws collapsed to one; 256 lights and 12k particles added at no measurable CPU cost). What remains CPU-side is bookkeeping the GPU does not need to own: chunk records for decoration placement, the analytic collision field, and the creature simulation.</p>
+ <hr>
+ <h2 id="realized">7. Discussion: the realized world</h2>
+ <p>Applied across SP1–SP4, the synthesized "parallelism over serial" principles produced an interactive procedural world running entirely on Three.js's WebGPU backend (SP1). Its rendering-bound subsystems are GPU-driven as the corpus prescribes: the <strong>terrain</strong> is a GPU-selected CDLOD froxel-quadtree drawn in <em>one</em> indirect call at cost flat versus draw distance (SP3, §4.4); the <strong>grass</strong> is a per-frame compute generate-and-cull collapsed to one indirect draw of millions of blades (SP2, §4.2); <strong>dynamic lighting</strong> is hundreds of point lights culled on the GPU into a 3D froxel grid (SP4a); <strong>particles</strong> (embers, dust) are compute-simulated and indirectly drawn (SP4b); and a node <strong>post stack</strong> (bloom, tone mapping, grade) composites on the GPU (SP4c). Around these sit the water, clouds, and a per-chunk procedural forest, with procedurally-animated creatures (FABRIK-IK walkers) wandering the surface.</p>
+ <p>It is playable: orbit and zoom, press <strong>F</strong> to walk the terrain in first person among the creatures, double-click to send them to a point, and tune every subsystem live from the control panel. The division of labor: the <em>rendering</em> decisions (which terrain nodes, which blades, which lights, which particles) run on the GPU, and the measured gains are in CPU frame time and draw-call count (terrain 361→1 draws at flat triangle cost; grass's ~10k per-chunk draws collapsed to one; 256 lights and 12k particles added at no measurable CPU cost). What remains CPU-side is bookkeeping the GPU does not need to own: chunk records for decoration placement, the analytic collision field, and the creature simulation.</p>
 
-  <h2 id="conclusion">8. Conclusion: the live build</h2>
-  <p>The build described in §7 runs inline below: the same WebGPU world — terrain, grass, water, clustered lights, particles, post stack, and wandering creatures — live and tunable in this page. It requires a WebGPU-capable browser and to be served over <code>http</code> (the importmap and ES modules will not load from <code>file://</code>). Launch is on click, so opening this paper does not start a GPU simulation on its own.</p>
-  <div id="live-build" style="margin:18px 0"></div>
-  <script>
-    (function () {
-      const host = document.getElementById('live-build');
-      const btn = document.createElement('button');
-      btn.textContent = '▶  Launch the live world (WebGPU)';
-      btn.style.cssText = 'font:600 0.95rem ui-sans-serif,system-ui,sans-serif;padding:14px 20px;cursor:pointer;border:1px solid var(--muted,#888);border-radius:8px;background:#1b2230;color:#dfe6f0';
-      btn.onclick = function () {
-        const f = document.createElement('iframe');
-        f.src = '../../environment-viewer.html';
-        f.title = 'Live WebGPU procedural world';
-        f.style.cssText = 'width:100%;height:72vh;border:1px solid var(--muted,#888);border-radius:8px;background:#1a1d23';
-        f.allow = 'fullscreen';
-        host.replaceChildren(f);
-      };
-      host.appendChild(btn);
-    })();
-  </script>
+ <h2 id="conclusion">8. Conclusion: the live build</h2>
+ <p>The build described in §7 runs inline below: the same WebGPU world (terrain, grass, water, clustered lights, particles, post stack, and wandering creatures), live and tunable in this page. It requires a WebGPU-capable browser and to be served over <code>http</code> (the importmap and ES modules will not load from <code>file://</code>). Launch is on click, so opening this paper does not start a GPU simulation on its own.</p>
+ <div id="live-build" style="margin:18px 0"></div>
+ <script>
+ (function () {
+ const host = document.getElementById('live-build');
+ const btn = document.createElement('button');
+ btn.textContent = '▶ Launch the live world (WebGPU)';
+ btn.style.cssText = 'font:600 0.95rem ui-sans-serif,system-ui,sans-serif;padding:14px 20px;cursor:pointer;border:1px solid var(--muted,#888);border-radius:8px;background:#1b2230;color:#dfe6f0';
+ btn.onclick = function () {
+ const f = document.createElement('iframe');
+ f.src = '../../environment-viewer.html';
+ f.title = 'Live WebGPU procedural world';
+ f.style.cssText = 'width:100%;height:72vh;border:1px solid var(--muted,#888);border-radius:8px;background:#1a1d23';
+ f.allow = 'fullscreen';
+ host.replaceChildren(f);
+ };
+ host.appendChild(btn);
+ })();
+ </script>
 
-  <hr>
-  <h2 id="refs">References</h2>
-  <ol class="refs">
-    <li id="r1">W. Bi, Y. Ma, Y. Han, Y. Chen, D. Tian, and J. Du. <strong>FusionRender: Harnessing WebGPU's Power for Enhanced Graphics Performance on Web Browsers.</strong> In <em>Proc. ACM Web Conference (WWW&nbsp;'24)</em>, Singapore, 2024. DOI&nbsp;<a href="https://doi.org/10.1145/3589334.3645395">10.1145/3589334.3645395</a>.</li>
-    <li id="r2">Y. Han, W. Bi, R. An, D. Tian, Q. Yang, and Y. Ma. <strong>GL2GPU: Accelerating WebGL Applications via Dynamic API Translation to WebGPU.</strong> In <em>Proc. ACM Web Conference (WWW&nbsp;'25)</em>, Sydney, 2025. DOI&nbsp;<a href="https://doi.org/10.1145/3696410.3714785">10.1145/3696410.3714785</a>.</li>
-    <li id="r3">S. Sengupta, N. Wu, M. Varvello, K. Jana, S. Chen, and B. Han. <strong>From WebGL to WebGPU: A Reality Check of Browser-Based GPU Acceleration.</strong> In <em>Proc. ACM Internet Measurement Conference (IMC&nbsp;'25)</em>, Madison, WI, 2025. DOI&nbsp;<a href="https://doi.org/10.1145/3730567.3764504">10.1145/3730567.3764504</a>.</li>
-    <li id="r4">M. Yuan, L. Wang, and B. Ai. <strong>Parallel terrain node processing and rendering: a GPU-accelerated approach.</strong> In <em>Proc. SPIE Vol. 13650, Int. Conf. on Remote Sensing, Mapping, and Image Processing (RSMIP&nbsp;2025)</em>, 136500L. DOI&nbsp;<a href="https://doi.org/10.1117/12.3067641">10.1117/12.3067641</a>.</li>
-    <li id="r5">E. Fransson, J. Hermansson, and Y. Hu. <strong>A Comparison of Performance on WebGPU and WebGL in the Godot Game Engine.</strong> In <em>2024 IEEE Gaming, Entertainment, and Media Conference (GEM)</em>, 2024. DOI&nbsp;<a href="https://doi.org/10.1109/GEM61861.2024.10585437">10.1109/GEM61861.2024.10585437</a>.</li>
-  </ol>
-  <p style="color:var(--muted);font:0.85rem ui-sans-serif,system-ui,sans-serif;margin-top:26px">Note: a sixth file in the source folder (<code>978-3-031-98138-8.pdf</code>, ICCAML <em>Advancements in Machine Learning</em> proceedings) was excluded as out of scope for web-graphics architecture.</p>
+ <hr>
+ <h2 id="refs">References</h2>
+ <ol class="refs">
+ <li id="r1">W. Bi, Y. Ma, Y. Han, Y. Chen, D. Tian, and J. Du. <strong>FusionRender: Harnessing WebGPU's Power for Enhanced Graphics Performance on Web Browsers.</strong> In <em>Proc. ACM Web Conference (WWW&nbsp;'24)</em>, Singapore, 2024. DOI&nbsp;<a href="https://doi.org/10.1145/3589334.3645395">10.1145/3589334.3645395</a>.</li>
+ <li id="r2">Y. Han, W. Bi, R. An, D. Tian, Q. Yang, and Y. Ma. <strong>GL2GPU: Accelerating WebGL Applications via Dynamic API Translation to WebGPU.</strong> In <em>Proc. ACM Web Conference (WWW&nbsp;'25)</em>, Sydney, 2025. DOI&nbsp;<a href="https://doi.org/10.1145/3696410.3714785">10.1145/3696410.3714785</a>.</li>
+ <li id="r3">S. Sengupta, N. Wu, M. Varvello, K. Jana, S. Chen, and B. Han. <strong>From WebGL to WebGPU: A Reality Check of Browser-Based GPU Acceleration.</strong> In <em>Proc. ACM Internet Measurement Conference (IMC&nbsp;'25)</em>, Madison, WI, 2025. DOI&nbsp;<a href="https://doi.org/10.1145/3730567.3764504">10.1145/3730567.3764504</a>.</li>
+ <li id="r4">M. Yuan, L. Wang, and B. Ai. <strong>Parallel terrain node processing and rendering: a GPU-accelerated approach.</strong> In <em>Proc. SPIE Vol. 13650, Int. Conf. on Remote Sensing, Mapping, and Image Processing (RSMIP&nbsp;2025)</em>, 136500L. DOI&nbsp;<a href="https://doi.org/10.1117/12.3067641">10.1117/12.3067641</a>.</li>
+ <li id="r5">E. Fransson, J. Hermansson, and Y. Hu. <strong>A Comparison of Performance on WebGPU and WebGL in the Godot Game Engine.</strong> In <em>2024 IEEE Gaming, Entertainment, and Media Conference (GEM)</em>, 2024. DOI&nbsp;<a href="https://doi.org/10.1109/GEM61861.2024.10585437">10.1109/GEM61861.2024.10585437</a>.</li>
+ </ol>
+ <p style="color:var(--muted);font:0.85rem ui-sans-serif,system-ui,sans-serif;margin-top:26px">Note: a sixth file in the source folder (<code>978-3-031-98138-8.pdf</code>, ICCAML <em>Advancements in Machine Learning</em> proceedings) was excluded as out of scope for web-graphics architecture.</p>
 </main>
 </body>
 </html>
