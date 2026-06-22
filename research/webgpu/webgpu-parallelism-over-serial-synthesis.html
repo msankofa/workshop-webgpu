@@ -252,7 +252,7 @@
   </div>
 
   <div class="sp">
-    <h3>SP4 — Lights, effects, and post-processing <span class="tag">4a lighting complete ✓ · 4b/4c next</span></h3>
+    <h3>SP4 — Lights, effects, and post-processing <span class="tag">4a+4b complete ✓ · 4c next</span></h3>
     <p><strong>Goal.</strong> Deliver the visual roadmap that justified the platform choice: many dynamic point lights via <strong>clustered/tiled forward lighting</strong> (feasible only with compute + storage buffers), GPU-driven particle/effect systems, and a node-based post-processing stack (bloom, AO, color grade) — all native to the WebGPU backend and infeasible or expensive under serial WebGL.</p>
     <p><strong>Informed by.</strong> The whole corpus: each feature is a many-object or compute-heavy workload, the regime where §4.1/§4.5 place WebGPU's advantage; clustered lighting is the canonical "decide on the GPU" pattern.</p>
     <p class="gate"><strong>Gate:</strong> target dynamic-light count rendered within frame budget; post stack composited without reintroducing CPU-bound passes; measured against the SP1 baseline.</p>
@@ -266,7 +266,18 @@
         <tr><td>Terrain draws / triangles</td><td class="num">1 / ~141k</td><td class="num">1 / ~141k</td></tr>
       </tbody>
     </table>
-    <p style="margin:10px 0 0">256 animated point lights add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — the cull is GPU compute and the shading is GPU, so the serial CPU submit path is untouched, exactly the §4.1/§4.5 regime where WebGPU's parallel advantage lives. This is the "decide on the GPU" pattern: per-fragment cost tracks lights-<em>per-froxel</em>, not total light count. The v1 cull uses per-froxel index lists (no atomics) — the Drobot bitmask (math already tested) is the documented refinement for far higher light counts. <strong>4a gate met.</strong> 4b (compute particles → indirect draw) and 4c (TSL post stack) remain.</p>
+    <p style="margin:10px 0 0">256 animated point lights add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — the cull is GPU compute and the shading is GPU, so the serial CPU submit path is untouched, exactly the §4.1/§4.5 regime where WebGPU's parallel advantage lives. This is the "decide on the GPU" pattern: per-fragment cost tracks lights-<em>per-froxel</em>, not total light count. The v1 cull uses per-froxel index lists (no atomics) — the Drobot bitmask (math already tested) is the documented refinement for far higher light counts. <strong>4a gate met.</strong></p>
+    </div>
+    <div class="callout result"><span class="lab">SP4b result · measured</span>
+    <strong>4b (GPU particles): complete.</strong> Two species (glowing additive embers + subtle alpha dust) from one parameterized field: a persistent GPU state buffer is simulated each frame by a compute pass (curl-noise drift + buoyancy/wind + lifecycle/respawn), and the alive+visible particles are <code>atomicAdd</code>'d into one <code>drawIndexedIndirect</code> of camera-facing billboards per field — the same compute→indirect spine as SP2/SP3/4a. Sim math (curl ~divergence-free, spawn-in-volume, lifecycle) is Node-tested first; the GPU uses equivalent randomness since particles need no cross-system parity. A fixed always-full pool with respawn avoids a free-list, and additive/low-alpha blends are order-independent (no GPU depth sort).</p>
+    <table>
+      <thead><tr><th>12k particles (4k ember + 8k dust)</th><th>Off</th><th>On</th></tr></thead>
+      <tbody>
+        <tr><td>CPU frame time (steady state)</td><td class="num">~18 ms</td><td class="num">~16 ms</td></tr>
+        <tr><td>Frame rate</td><td class="num">~54 fps</td><td class="num">~61 fps</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0">12,000 GPU-simulated particles add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — sim is GPU compute, draw is two indirect calls, the serial CPU path untouched. <strong>4b gate met.</strong> Remaining: <strong>4c</strong> (a TSL node post-processing stack — bloom/AO/grade); weather/sky is split off to its own future SP.</p>
     </div>
   </div>
 

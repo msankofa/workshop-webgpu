@@ -340,3 +340,52 @@ evidence.
 - 3D froxels handle depth, but no point-light shadows (only the sun) — beyond the WebGPU ceiling.
 - **Creatures** are sun/ambient-lit only; clustered lighting on them needs their materials to be
   node materials (Codex's `creature.js`) — a hand-off, not done here.
+
+# SP4b — GPU particle fields (embers + dust)
+
+A persistent GPU state buffer simulated each frame by a compute pass (curl-noise drift +
+buoyancy/wind + lifecycle/respawn); alive+visible particles `atomicAdd` into one
+`drawIndexedIndirect` of camera-facing billboards. Two species from one parameterized module.
+Spec: `docs/superpowers/specs/2026-06-22-sp4b-gpu-particles-design.md`. Modules: `particles.js`
+(GPU/TSL) + `particle-field.js` (Node-tested sim math).
+
+## Pipeline (per frame, reset → simulate → finalize → indirect billboard draw)
+
+1. **reset** atomic counter.
+2. **simulate** (one thread per particle): integrate curl + buoyancy/wind, advance age, respawn
+   on death/out-of-volume (camera-relative, reseeded), write state back; compute fade+flicker;
+   **frustum-cull** via `uViewProj`; if visible `atomicAdd` + write the survivor `draw` record.
+3. **finalize** copies the count into the indirect `instanceCount`.
+4. One `drawIndexedIndirect` per field of a billboard quad (`uCamRight`/`uCamUp` from
+   `camera.matrixWorld.extractBasis`); ember = AdditiveBlending, dust = NormalBlending,
+   `depthWrite=false`. All `computeAsync` **awaited** before the draw.
+
+## Notes
+
+- Unlike grass/terrain, the GPU sim uses **equivalent (not bit-exact) randomness** — particles
+  are purely visual, no cross-system parity. The Node tests validate the *algorithms* (spawn in
+  volume, curl ~divergence-free to 2.8e-12, lifecycle fade/wrap, distinct kind params).
+- **State persists on the GPU** (read+write the same storage buffer per particle, by index — no
+  cross-particle hazard); initialized once on the CPU, never re-uploaded.
+- Fixed always-full pool with respawn → **no free-list** needed. Additive/low-alpha blends are
+  order-independent → **no GPU depth sort** needed.
+
+## Perf gate — dd9 A/B (`?particles=on` vs `off`)
+
+`research/stats/perf-2026-06-22T11-3*-particles{on,off}.csv`, 4k embers + 8k dust:
+
+| metric (12k particles, steady state) | particles off | particles on |
+|---|---|---|
+| CPU frame time | ~18 ms | ~16 ms (within noise) |
+| frame rate | ~54 fps | ~61 fps |
+
+12,000 GPU-simulated particles add **no measurable CPU frame-time cost** (the on/off delta is
+within run-to-run noise and even favors *on*) — the sim is GPU compute and the draw is two
+indirect calls, so the serial CPU path is untouched. **Gate met.** (Caveat: a hard stress test —
+maxed grass + lights + particles together — can trigger a WebGPU **device loss**; recovery is a
+browser restart. The particle buffers themselves are ~0.8 MB, not the stressor.)
+
+## Open / deferred (4b)
+- Weather (rain/snow) deferred to a future **sky/weather SP** (the SP4 "C" option).
+- GPU depth-sort, ribbon/trail/mesh particles, soft-particle depth fade, terrain collision — polish.
+- Creature/combat-emitted particles (Codex coupling) — not in this self-contained field.
