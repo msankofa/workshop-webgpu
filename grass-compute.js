@@ -197,6 +197,8 @@ export function createComputeGrass(opts) {
   mat.positionNode = posNode;
   mat.colorNode = colorNode;
   mat.normalNode = vec3(0, 1, 0);
+  // SP4a: optional additive clustered point-light term (blade world pos, up normal).
+  if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(posNode, vec3(0, 1, 0));
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.frustumCulled = false;
