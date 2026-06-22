@@ -252,10 +252,22 @@
   </div>
 
   <div class="sp">
-    <h3>SP4 — Lights, effects, and post-processing <span class="tag">roadmap drivers</span></h3>
+    <h3>SP4 — Lights, effects, and post-processing <span class="tag">4a lighting complete ✓ · 4b/4c next</span></h3>
     <p><strong>Goal.</strong> Deliver the visual roadmap that justified the platform choice: many dynamic point lights via <strong>clustered/tiled forward lighting</strong> (feasible only with compute + storage buffers), GPU-driven particle/effect systems, and a node-based post-processing stack (bloom, AO, color grade) — all native to the WebGPU backend and infeasible or expensive under serial WebGL.</p>
     <p><strong>Informed by.</strong> The whole corpus: each feature is a many-object or compute-heavy workload, the regime where §4.1/§4.5 place WebGPU's advantage; clustered lighting is the canonical "decide on the GPU" pattern.</p>
     <p class="gate"><strong>Gate:</strong> target dynamic-light count rendered within frame budget; post stack composited without reintroducing CPU-bound passes; measured against the SP1 baseline.</p>
+    <div class="callout result"><span class="lab">SP4a result · measured</span>
+    <strong>4a (clustered lighting): complete.</strong> SP4 decomposes into three independent sub-projects — <strong>4a</strong> clustered point lighting, 4b GPU particles, 4c node post-processing — built in order. 4a ships the WebGPU-reachable lighting SOTA: since browser WebGPU exposes no ray-tracing pipeline, ReSTIR/RTXDI/neural-radiance-caching are out of reach, so the ceiling is <strong>froxel (3D) clustered forward+</strong> (Olsson&nbsp;2012 → Drobot&nbsp;2017) with a Cook-Torrance GGX BRDF. A per-frame compute pass culls point lights into a 3D view-frustum cluster grid (exponential depth slices × screen tiles); lit surfaces read only their froxel's lights and add GGX over three's untouched sun/ambient (injected as an additive <code>emissiveNode</code>, composed with the water caustics rather than clobbering them). Cull correctness — including the Drobot Z-bin/bitmask scheme being a conservative superset of the exact froxel set — is Node-tested before any GPU code, the SP2/SP3 discipline.</p>
+    <table>
+      <thead><tr><th>256 dynamic point lights</th><th>Lights off</th><th>Lights on</th></tr></thead>
+      <tbody>
+        <tr><td>CPU frame time (steady state)</td><td class="num">~15.0 ms</td><td class="num">~14.2 ms</td></tr>
+        <tr><td>Frame rate</td><td class="num">~65 fps</td><td class="num">~68 fps</td></tr>
+        <tr><td>Terrain draws / triangles</td><td class="num">1 / ~141k</td><td class="num">1 / ~141k</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0">256 animated point lights add <strong>no measurable CPU frame-time cost</strong> (the on/off delta is within run-to-run noise) — the cull is GPU compute and the shading is GPU, so the serial CPU submit path is untouched, exactly the §4.1/§4.5 regime where WebGPU's parallel advantage lives. This is the "decide on the GPU" pattern: per-fragment cost tracks lights-<em>per-froxel</em>, not total light count. The v1 cull uses per-froxel index lists (no atomics) — the Drobot bitmask (math already tested) is the documented refinement for far higher light counts. <strong>4a gate met.</strong> 4b (compute particles → indirect draw) and 4c (TSL post stack) remain.</p>
+    </div>
   </div>
 
   <div class="callout finding"><span class="lab">Sequencing rationale</span>SP1 is foundational and validating (cheap to abandon if WebGPU disappoints on target hardware). SP2 attacks the <em>measured</em> bottleneck and proves the compute pipeline. SP3 closes the one structural gap WebGL never had (true LOD). SP4 cashes in the roadmap. Each stage is independently shippable and gated on a <code>perfStats</code> trace, preserving the measure-then-commit discipline that selected WebGPU in the first place.</div>

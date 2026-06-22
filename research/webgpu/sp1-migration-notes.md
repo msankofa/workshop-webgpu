@@ -282,3 +282,61 @@ checkpoint; collision still served by the analytic height field. **Gate met.**
 - `?terrain=chunks` retained as the dd9 baseline + fallback (like `?grass=cpu`).
 - Frustum culling is not in the selection (distance bands suffice for the gate, as in SP2);
   could trim outer-ring nodes later if needed.
+
+# SP4a — Froxel clustered forward+ point lighting
+
+Many dynamic point lights culled into a 3D froxel grid on the GPU; lit surfaces read only
+their froxel's lights and add Cook-Torrance GGX over three's untouched sun/ambient. The
+WebGPU-reachable lighting SOTA (ReSTIR/RTXDI/NRC need HW ray tracing, absent in browser
+WebGPU). Spec: `docs/superpowers/specs/2026-06-21-sp4a-clustered-tiled-lighting-design.md`.
+Modules: `clustered-lights.js` (GPU/TSL) + `light-cluster.js` (Node-tested cull math).
+
+## Cull math (Node-tested, `light-cluster.js`)
+
+Exponential depth slices (Olsson), view-space froxel AABBs, sphere-vs-AABB, and the Drobot
+(SIGGRAPH 2017) **Z-bin + per-tile bitmask** assignment — `test-light-cluster.mjs` proves the
+bitmask cull is a conservative superset of the exact froxel-AABB set (no dark froxels) and
+that behind-camera lights bin nowhere.
+
+## v1 GPU cull = per-froxel index lists (no atomics)
+
+The shipped kernel dispatches **one thread per froxel**, loops the lights, and writes its own
+index list with the exact sphere-vs-AABB test (mirrors `assignLightsExact`). Chosen over the
+Drobot bitmask for the first cut because it needs no `atomicOr` (unconfirmed in TSL) — each
+froxel owns its slot, so there are no atomics at all. The Z-bin/bitmask cull (math already
+tested) is the documented perf refinement for higher light counts.
+
+## Shading injection — additive `emissiveNode`, the ownership gotcha
+
+Clustered GGX is injected as an **additive `emissiveNode`** term (via an `addEmissive(posWorld,
+normal)` hook on `cdlod-terrain.js` and `grass-compute.js`), summed over the base sun/ambient
+— the same hook the water caustics use. **That collision was the main bug:** the water system
+did `ground.material.emissiveNode = cEmit`, *clobbering* the clustered term once water finished
+loading (lights showed on the first frames, then vanished). Fix: water now **composes**
+(`prior ? prior.add(cEmit) : cEmit`). Two more gotchas: a TSL `PI.mul(...)` (a plain JS number
+can't be a node receiver — pass it as the arg), and grass had to be lit at its **ground base**,
+not its swaying tip, or its pools desynced from the terrain by light-height parallax.
+
+## Perf gate — dd9 A/B (`?lights=on` vs `?lights=off`)
+
+`research/stats/perf-2026-06-22T02-0*-lights{on,off}.csv`, 256 animated point lights:
+
+| metric (256 lights, steady state) | lights off | lights on |
+|---|---|---|
+| CPU frame time | ~15.0 ms | ~14.2 ms (unchanged, within noise) |
+| frame rate | ~65 fps | ~68 fps |
+| terrain draws / tris | 1 / ~141k | 1 / ~141k |
+
+256 dynamic froxel-clustered GGX point lights add **no measurable CPU frame-time cost** — the
+cull is GPU compute (awaited) and the shading is GPU, so the CPU submit cost is unchanged, and
+fps holds ~65–70. The frame is dominated by grass/trees/creatures/octree, not the lights.
+**Gate met** (target light count within budget). Note: WebGPU `renderer.info.triangles` reads
+0, so GPU-time isn't directly measured; the maintained fps with 256 lights is the budget
+evidence.
+
+## Open / deferred (4a)
+- Drobot Z-bin/bitmask cull (math tested) as a perf upgrade for >~1k lights; current per-froxel
+  index-list cull is fine at 256.
+- 3D froxels handle depth, but no point-light shadows (only the sun) — beyond the WebGPU ceiling.
+- **Creatures** are sun/ambient-lit only; clustered lighting on them needs their materials to be
+  node materials (Codex's `creature.js`) — a hand-off, not done here.
