@@ -101,6 +101,8 @@
     <a href="#r45">4.5 Cross-cutting synthesis</a><br>
     <a href="#discussion">5. Implications for a Procedural World</a><br>
     <a href="#plan">6. Implementation Plan</a><br>
+    <a href="#realized">7. Discussion: the realized world</a><br>
+    <a href="#conclusion">8. Conclusion: the live build</a><br>
     <a href="#refs">References</a>
   </nav>
 
@@ -285,6 +287,32 @@
   </div>
 
   <div class="callout finding"><span class="lab">Sequencing rationale</span>SP1 is foundational and validating (cheap to abandon if WebGPU disappoints on target hardware). SP2 attacks the <em>measured</em> bottleneck and proves the compute pipeline. SP3 closes the one structural gap WebGL never had (true LOD). SP4 cashes in the roadmap. Each stage is independently shippable and gated on a <code>perfStats</code> trace, preserving the measure-then-commit discipline that selected WebGPU in the first place.</div>
+
+  <hr>
+  <h2 id="realized">7. Discussion: the realized world</h2>
+  <p>Applied across SP1–SP4, the synthesized "parallelism over serial" principles produced an interactive procedural world running entirely on Three.js's WebGPU backend (SP1). Its rendering-bound subsystems are GPU-driven exactly as the corpus prescribes: the <strong>terrain</strong> is a GPU-selected CDLOD froxel-quadtree drawn in <em>one</em> indirect call at cost flat versus draw distance (SP3, §4.4); the <strong>grass</strong> is a per-frame compute generate-and-cull collapsed to one indirect draw of millions of blades (SP2, §4.2); <strong>dynamic lighting</strong> is hundreds of point lights culled on the GPU into a 3D froxel grid (SP4a); <strong>particles</strong> (embers, dust) are compute-simulated and indirectly drawn (SP4b); and a node <strong>post stack</strong> (bloom, tone mapping, grade) composites on the GPU (SP4c). Around these sit the water, clouds, and a per-chunk procedural forest, with procedurally-animated creatures (FABRIK-IK walkers) wandering the surface.</p>
+  <p>It is playable: orbit and zoom, press <strong>F</strong> to walk the terrain in first person among the creatures, double-click to send them to a point, and tune every subsystem live from the control panel. The honest division of labor: the <em>rendering</em> decisions — which terrain nodes, which blades, which lights, which particles — now live on the GPU, and the measured wins land precisely where the literature predicts (CPU frame time and draw-call count: terrain 361→1 draws at flat triangle cost; grass's ~10k per-chunk draws collapsed to one; 256 lights and 12k particles added at no measurable CPU cost). What remains CPU-side is bookkeeping the GPU does not need to own — chunk records for decoration placement, the analytic collision field, the creature simulation — which is the point: the serial bottleneck was dissolved where it mattered, not everywhere for its own sake.</p>
+
+  <h2 id="conclusion">8. Conclusion: the live build</h2>
+  <p>The sharpest test of a parallelism-over-serial thesis is to run the artifact in the same tab as the argument. The interactive WebGPU build embeds below — the terrain, grass, water, clustered lights, particles, post stack, and wandering creatures described above, live and tunable. It requires a WebGPU-capable browser and to be served over <code>http</code> (the importmap and ES modules will not load from <code>file://</code>). Launch is on click so opening this paper does not spin up a GPU simulation unbidden.</p>
+  <div id="live-build" style="margin:18px 0"></div>
+  <script>
+    (function () {
+      const host = document.getElementById('live-build');
+      const btn = document.createElement('button');
+      btn.textContent = '▶  Launch the live world (WebGPU)';
+      btn.style.cssText = 'font:600 0.95rem ui-sans-serif,system-ui,sans-serif;padding:14px 20px;cursor:pointer;border:1px solid var(--muted,#888);border-radius:8px;background:#1b2230;color:#dfe6f0';
+      btn.onclick = function () {
+        const f = document.createElement('iframe');
+        f.src = '../../environment-viewer.html';
+        f.title = 'Live WebGPU procedural world';
+        f.style.cssText = 'width:100%;height:72vh;border:1px solid var(--muted,#888);border-radius:8px;background:#1a1d23';
+        f.allow = 'fullscreen';
+        host.replaceChildren(f);
+      };
+      host.appendChild(btn);
+    })();
+  </script>
 
   <hr>
   <h2 id="refs">References</h2>
