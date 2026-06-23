@@ -79,15 +79,22 @@ rig.dirLight.shadow.camera.near = 1; rig.dirLight.shadow.camera.far = 260;
 rig.dirLight.shadow.camera.left = -90; rig.dirLight.shadow.camera.right = 90;
 rig.dirLight.shadow.camera.top = 90;   rig.dirLight.shadow.camera.bottom = -90;
 
+// Bisection kill-switch: ?sky=off skips the whole procedural sky + moon light so we can
+// tell whether the "Buffer used in submit while destroyed" error lives in the sky code.
+const SKY_MODE = new URLSearchParams(location.search).get('sky') || 'on';
+
 // Dedicated cool moonlight, swapped in when the primary sky body is the Moon. Lives in the
 // scene (NOT the camera-following sky group), tracks the rig direction, starts disabled.
-const moonLight = new THREE.DirectionalLight(0xaec6ff, 0.0);
-moonLight.castShadow = true;
-moonLight.shadow.mapSize.set(2048, 2048);
-moonLight.shadow.camera.near = 1; moonLight.shadow.camera.far = 260;
-moonLight.shadow.camera.left = -90; moonLight.shadow.camera.right = 90;
-moonLight.shadow.camera.top = 90; moonLight.shadow.camera.bottom = -90;
-scene.add(moonLight, moonLight.target);
+let moonLight = null;
+if (SKY_MODE !== 'off') {
+  moonLight = new THREE.DirectionalLight(0xaec6ff, 0.0);
+  moonLight.castShadow = true;
+  moonLight.shadow.mapSize.set(2048, 2048);
+  moonLight.shadow.camera.near = 1; moonLight.shadow.camera.far = 260;
+  moonLight.shadow.camera.left = -90; moonLight.shadow.camera.right = 90;
+  moonLight.shadow.camera.top = 90; moonLight.shadow.camera.bottom = -90;
+  scene.add(moonLight, moonLight.target);
+}
 
 // Unit vector toward the key light — the SAME direction the rig feeds to the water
 // specular and the shadow camera. The sky disc, moonlight, and reflection all share it.
@@ -1436,7 +1443,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
 
   // ---- procedural night sky (dome + stars + Milky Way + moon/sun + planets) ----
   // The primary disc is locked to the rig light direction; the Sun/Moon dropdown swaps
-  // the active key light (warm rig sun <-> dedicated cool moonLight).
+  // the active key light (warm rig sun <-> dedicated cool moonLight). ?sky=off skips it all.
+  if (SKY_MODE !== 'off') {
   const SKY_PARAMS = { starCount: 1400, starSize: 2.2, sunSize: 0.06, milkyWayIntensity: 0.7 };
   params.primaryBody = 'sun';   // 'select' reads/writes the global params object
   const skyPaletteOverrides = () => ({ celestialType: params.primaryBody, starCount: SKY_PARAMS.starCount,
@@ -1463,6 +1471,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, skyApply, SKY_PARAMS);
     slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, skyApply, SKY_PARAMS);
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
+  }
 }).catch(err => {
   showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
