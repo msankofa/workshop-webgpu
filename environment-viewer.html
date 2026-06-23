@@ -1063,7 +1063,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   }
   header('Forest');
   const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
-  slider('count', 'Tree count', 0, 300, 1, fi);
+  slider('count', 'Tree count', 0, 1500, 1, fi);
   select('placement', 'Placement pattern', ['random', 'clustered', 'scattered', 'ring']);
   slider('maxSize', 'Max size', 0.2, 1.2, 0.01, f2);
   slider('sizeVar', 'Size variation', 0, 1, 0.01, f2);

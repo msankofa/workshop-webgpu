@@ -154,16 +154,17 @@ export function createForestGPU(opts) {
     return (Math.imul(slot + 1, 2654435761) >>> 0) % variantsPerSpecies;
   }
 
+  let overflowWarned = false;
   function rebuild() {
     countsArray.fill(0);
     srcArray.fill(0);
-    let total = 0;
+    let total = 0, dropped = 0;
     for (const records of chunkRecords.values()) {
       for (const r of records) {
         const g = r.speciesIdx * variantsPerSpecies + variantSel(r.slot);
         if (g < 0 || g >= V) continue;
         const slot = countsArray[g];
-        if (slot >= CAP) continue;                        // variant window full; drop extras
+        if (slot >= CAP) { dropped++; continue; }         // variant window full; drop extras
         countsArray[g] = slot + 1;
         const base = (g * CAP + slot) * 8;
         const y = heightAt(r.x, r.z) + treeBaseOffset;
@@ -173,6 +174,10 @@ export function createForestGPU(opts) {
       }
     }
     cpuInstances = total;
+    if (dropped > 0 && !overflowWarned) {
+      overflowWarned = true;
+      console.warn(`[forest-gpu] dropped ${dropped} instances this rebuild: a variant exceeded capPerVariant=${CAP}. Raise capPerVariant.`);
+    }
     srcAttr.needsUpdate = true;
     countsAttr.needsUpdate = true;
   }
