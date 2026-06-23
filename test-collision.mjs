@@ -2,7 +2,7 @@
 // Reference height/normal come from the canonical analytic field in terrain-field.js,
 // so groundContact is provably consistent with the terrain the player sees.
 import { terrainHeightAt, terrainNormalAt } from './terrain-field.js';
-import { groundContact, slideVelocity } from './collision.js';
+import { groundContact, slideVelocity, resolveTrunks, createTrunkIndex } from './collision.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('FAIL:', m); } };
@@ -59,6 +59,60 @@ const RADIUS = 0.35, SLOPE = 0.5;
   const r3 = slideVelocity({ x: 0, y: -10, z: 0 }, n);
   const dot = r3.x * n[0] + r3.y * n[1] + r3.z * n[2];
   ok(Math.abs(dot) < 1e-9, '4: into-slope velocity removed (tangential remains)');
+}
+
+// 5. resolveTrunks: single overlap pushes to exactly radius+r from centre.
+{
+  const trunks = [{ x: 0, z: 0, r: 1.0 }];
+  const out = resolveTrunks(0.5, 0, 0.35, trunks);
+  const d = Math.hypot(out.x, out.z);
+  ok(out.pushed === true, '5: overlap reports pushed');
+  ok(near(d, 1.35, 1e-9), '5: pushed to radius+r (1.35)');
+  ok(near(out.z, 0), '5: push is radial (z stays 0)');
+}
+
+// 6. resolveTrunks: outside range untouched.
+{
+  const out = resolveTrunks(5, 5, 0.35, [{ x: 0, z: 0, r: 1.0 }]);
+  ok(out.pushed === false, '6: no push when clear');
+  ok(out.x === 5 && out.z === 5, '6: position unchanged when clear');
+}
+
+// 7. resolveTrunks: point at exact centre pushes deterministically along +x.
+{
+  const out = resolveTrunks(0, 0, 0.35, [{ x: 0, z: 0, r: 1.0 }]);
+  ok(near(out.x, 1.35) && near(out.z, 0), '7: centre degenerate pushes +x');
+}
+
+// 8a. Two adjacent trunks with room between them: pushing out of one does not push
+//     into the other; final point is clear of both.
+{
+  const trunks = [{ x: 0, z: 0, r: 1.0 }, { x: 3.4, z: 0, r: 1.0 }];
+  const out = resolveTrunks(1.2, 0, 0.35, trunks);
+  const inAny = trunks.some(t => Math.hypot(out.x - t.x, out.z - t.z) < 0.35 + t.r - 1e-6);
+  ok(inAny === false, '8a: resolved clear of both when a gap exists');
+}
+
+// 8b. Squeeze: two trunks whose exclusion zones overlap on the axis (no valid gap). The
+//     guarantee is no tunneling — the point stays between the trunk centres, never teleports
+//     to the far side. (It may remain in contact; the player is stopped, not passed through.)
+{
+  const trunks = [{ x: 0, z: 0, r: 1.0 }, { x: 2.4, z: 0, r: 1.0 }];
+  const out = resolveTrunks(1.2, 0, 0.35, trunks);
+  ok(out.pushed === true, '8b: squeeze reports pushed');
+  ok(out.x >= 0 && out.x <= 2.4, '8b: no tunneling (stays between the trunks)');
+}
+
+// 9. createTrunkIndex: bucketed set/resolve/clear.
+{
+  const idx = createTrunkIndex(30);                 // chunkSize 30
+  idx.setTrunks('0,0', [{ x: 5, z: 5, r: 1.0 }]);   // trunk in chunk (0,0)
+  const hit = idx.resolve(5.5, 5, 0.35);
+  ok(hit.pushed === true, '9: index resolves a nearby trunk');
+  const far = idx.resolve(500, 500, 0.35);
+  ok(far.pushed === false, '9: far point unaffected');
+  idx.clearTrunks('0,0');
+  ok(idx.resolve(5.5, 5, 0.35).pushed === false, '9: clearTrunks removes the bucket');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
