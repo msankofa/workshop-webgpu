@@ -86,7 +86,7 @@ const SKY_MODE = new URLSearchParams(location.search).get('sky') || 'on';
 // Dedicated cool moonlight, swapped in when the primary sky body is the Moon. Lives in the
 // scene (NOT the camera-following sky group), tracks the rig direction, starts disabled.
 let moonLight = null;
-if (SKY_MODE !== 'off') {
+if (SKY_MODE !== 'off' && SKY_MODE !== 'nomoonlight') {
   moonLight = new THREE.DirectionalLight(0xaec6ff, 0.0);
   moonLight.castShadow = true;
   moonLight.shadow.mapSize.set(2048, 2048);
@@ -1452,10 +1452,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
     const moon = params.primaryBody === 'moon';
     rig.setSunIntensity(moon ? 0.15 : rigP.sunIntensity);
-    moonLight.intensity = moon ? 0.35 : 0.0;
+    if (moonLight) moonLight.intensity = moon ? 0.35 : 0.0;
   }
+  const skyParts = {
+    stars:    !['nostars', 'domeonly'].includes(SKY_MODE),
+    milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
+    bodies:   !['nobodies', 'domeonly'].includes(SKY_MODE),
+  };
   import('./sky.js').then(({ createSky }) => {
-    skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides() });
+    skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts: skyParts });
     scene.add(skyRef.group);
     applyCelestialLight();
     header('Sky');
@@ -1779,9 +1784,11 @@ async function animate() {
     if (skyRef.group.userData.followCamera) skyRef.group.position.copy(camera.position);
     const d = skyLightDir();
     skyRef.setSunDir(d);
-    moonLight.position.copy(camera.position).addScaledVector(d, 120);
-    moonLight.target.position.copy(camera.position);
-    moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+    if (moonLight) {
+      moonLight.position.copy(camera.position).addScaledVector(d, 120);
+      moonLight.target.position.copy(camera.position);
+      moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+    }
     skyRef.update(now / 1000);
   }
   if (cloudsRef) cloudsRef.update(now / 1000);

@@ -72,7 +72,7 @@ function makeSkySunTexture(color, { moon }) {
   return tex;
 }
 
-export function createSky({ scene, camera, size, palette: overrides, sunDir }) {
+export function createSky({ scene, camera, size, palette: overrides, sunDir, parts = {} }) {
   let palette = makePalette(overrides);
   const group = new THREE.Group();
   group.userData.followCamera = true;
@@ -93,17 +93,19 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir }) {
     sun = new THREE.Sprite(sm); sun.renderOrder = -996;
     group.add(sun);
     placeSun();
-    // stars
-    const rng = makeRng((palette.starCount | 0) ^ 0x5a17);
-    const stars = createSkyStars(generateStars(radius, palette, rng), palette);
-    group.add(stars);
+    // stars (parts.* let the viewer bisect which object triggers a GPU error)
+    if (parts.stars !== false) {
+      const rng = makeRng((palette.starCount | 0) ^ 0x5a17);
+      group.add(createSkyStars(generateStars(radius, palette, rng), palette));
+    }
     // milky way
-    const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng(0xb1a5)), palette);
-    if (milky) group.add(milky);
+    if (parts.milkyWay !== false) {
+      const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng(0xb1a5)), palette);
+      if (milky) group.add(milky);
+    }
     // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker)
-    if (palette.milkyWay) {
-      const bodies = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng(0xc0de)));
-      group.add(bodies);
+    if (parts.bodies !== false && palette.milkyWay) {
+      group.add(createCelestialBodies(generateCelestialBodies(radius, palette, makeRng(0xc0de))));
     }
     if (scene) scene.background = _c(palette.bottom);
   }
