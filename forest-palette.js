@@ -20,28 +20,38 @@ function bakeFlatColor(geom, hex) {
 }
 
 // Build the per-species leaf/bark options the same way the baker does
-// (environment-viewer.html:862-878), minus the texture-atlas branch (palette v1 is
-// procedural; vertex colors carry the look).
-function leafOptsFor(sp, params) {
+// (environment-viewer.html:862-878). In authored mode the leaves switch to the larger
+// 'quad' atlas billboards (cell = speciesIdx % atlasCells); procedural uses 'simple'.
+function leafOptsFor(sp, params, texSet, spIdx) {
   const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
   leafOpts.count = Math.max(0, Math.floor(params.leafCount ?? sp.leaves.count ?? 10));
   leafOpts.size = sp.leaves.size * (params.leafSize ?? 1);
   if (params.leafStart !== undefined) leafOpts.start = params.leafStart;
   if (params.leafSpread !== undefined) leafOpts.spread = params.leafSpread;
-  leafOpts.shape = 'simple';
+  const useAtlas = texSet && texSet.mode && texSet.mode !== 'procedural' && texSet.leafAtlas;
+  if (useAtlas) {
+    const cells = texSet.leafAtlas.cols * texSet.leafAtlas.rows;
+    leafOpts.shape = 'quad';
+    leafOpts.atlas = { cols: texSet.leafAtlas.cols, rows: texSet.leafAtlas.rows, cell: spIdx % cells };
+  } else {
+    leafOpts.shape = 'simple';
+  }
   return leafOpts;
 }
 
 // createTree: the generator factory from trees.js. params/masterSeed: the same forest
-// params + master seed the placement uses (so species match placementRecords).
-export function createForestPalette({ createTree, params, masterSeed, variantsPerSpecies = 4 }) {
+// params + master seed the placement uses (so species match placementRecords). texSet:
+// the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
+// so the palette must be rebaked when texMode changes.
+export function createForestPalette({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
   const gen = createTree({ seed: 1 });
   const species = buildSpecies(params, rngFrom(masterSeed));   // identical to the baker's species
   const variants = [];
   for (let s = 0; s < species.length; s++) {
     const sp = species[s];
-    const leafOpts = leafOptsFor(sp, params);
+    const leafOpts = leafOptsFor(sp, params, texSet, s);
     const barkOpts = { ...sp.bark };
+    if (texSet && texSet.barkVScale !== undefined) barkOpts.vScale = texSet.barkVScale;
     for (let v = 0; v < variantsPerSpecies; v++) {
       const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
       gen.regenerate({ ...sp, seed, leaves: leafOpts, bark: barkOpts });

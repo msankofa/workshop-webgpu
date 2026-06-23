@@ -471,28 +471,39 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   // Bake a variant palette once, then drive it from CPU placement records: the
   // baked main-thread path (?forest=baked) below is skipped when this is active.
   const { placementRecords } = await import('./forest-placement.js');
-  let forestGPU = null;
+  let forestGPU = null, forestPaletteMode = null;
+  let createForestPalette = null, createForestGPU = null;
   const gpuTreeChunks = new Set();
   const paramsForRecords = () => ({
     ...params, masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
     targetChunkCount: terrainSystem.targetChunkCount,
   });
   if (FOREST_MODE === 'gpu') {
-    const { createForestPalette } = await import('./forest-palette.js');
-    const { createForestGPU } = await import('./forest-gpu.js');
-    const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED });
+    ({ createForestPalette } = await import('./forest-palette.js'));
+    ({ createForestGPU } = await import('./forest-gpu.js'));
+  }
+  // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
+  // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
+  // and palette geometry is baked once, so a texMode change must rebake. No clustered
+  // point-light emissive on trees (the baked path has none; adding it looked wrong).
+  function rebuildForestGPU(texSet) {
+    if (FOREST_MODE !== 'gpu' || !createForestGPU) return;
+    if (forestGPU) { scene.remove(...forestGPU.meshes); forestGPU.dispose(); }
+    const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED, texSet });
     forestGPU = createForestGPU({
-      renderer, camera, palette, heightAt: terrainHeight, treeBaseOffset: params.treeBaseOffset,
-      maxDist: terrain.size ?? 350,
-      // No clustered point-light emissive on trees: the baked path doesn't apply it, so
-      // adding it here made the gpu trees light differently (the "weird lighting").
+      renderer, camera, palette, heightAt: terrainHeight,
+      treeBaseOffset: params.treeBaseOffset, maxDist: terrain.size ?? 350,
     });
     forestGPURef = forestGPU;
     scene.add(...forestGPU.meshes);
+    forestPaletteMode = texSet ? texSet.mode : 'procedural';
+    gpuTreeChunks.clear();
+    regenerateGPU(true);
   }
   // Sync the GPU forest to the active terrain window: stream chunks in/out, push
   // placement records to the instance buffers, and register SP5b trunk colliders.
   function regenerateGPU(rebuildExisting) {
+    if (!forestGPU) return;
     const active = terrainSystem.activeChunks.slice();
     const activeKeys = new Set(active.map(c => c.key));
     for (const key of [...gpuTreeChunks]) {
@@ -556,6 +567,9 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   }
   function applyTextureSet(s) {
     if (!s || !s.ready) return;                // never bind a not-ready set (null map)
+    // gpu path: the leaf geometry differs by texMode, so (re)bake the palette when the
+    // mode changes (or on first ready set). rebuildForestGPU re-syncs the chunks itself.
+    if (FOREST_MODE === 'gpu' && (!forestGPU || forestPaletteMode !== s.mode)) rebuildForestGPU(s);
     if (forestGPU) forestGPU.applyTextureSet((b, l) => bindTreeMaterials(b, l, s));
     if (branchMat && leafMat) bindTreeMaterials(branchMat, leafMat, s);   // baked path
   }
