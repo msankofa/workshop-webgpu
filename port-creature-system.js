@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
+export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
 const LOD_NEAR_SQ = (lod.near ?? 120) ** 2;
 const LOD_MID_SQ = (lod.mid ?? 210) ** 2;
 const LOD_FAR_SQ = (lod.far ?? 360) ** 2;
@@ -22,6 +22,7 @@ function terrainNormal(x, z, out = _normal) {
 const FOOT_GROUND = 0.06;
 let ARENA_R = 13.0, SOFT_EDGE = 14.0;
 const SEP_RADIUS = 2.3, MIN_GAP = 1.55;
+const TRUNK_AVOID_MARGIN = 1.2;   // how far out creatures start steering around a trunk
 const WANDER_W = 1.0, SEP_W = 2.2, BOUNDARY_GAIN = 4.0;
 const GRAV = 10.0, KP = 60, KD = 16, H_DRAG = 1.15, BOUNCE = 0.25, BODY_MIN_CLEAR = 0.30;
 const BODY_VOLUME_CLEAR = 0.10, BODY_COLLISION_PAD = 0.28;
@@ -2068,6 +2069,24 @@ class Creature {
         _sep.addScaledVector(_away, (sepRadius - d) / sepRadius);
         const minGap = melee ? this.meleeRadius() + o.meleeRadius() : Math.max(MIN_GAP, this.collisionRadius() + o.collisionRadius());
         if (d < minGap) _sep.addScaledVector(_away, (minGap - d) * 2.0);
+      }
+    }
+
+    // Steer around tree trunks the same way creatures steer around each other (same
+    // falloff + close-range boost), folded into the separation term. The hard push-out
+    // in physicsStep stays as a backstop so they never actually clip a trunk.
+    if (nearbyTrunks) {
+      const trunks = nearbyTrunks(this.pos.x, this.pos.z);
+      for (const t of trunks) {
+        _away.set(this.pos.x - t.x, 0, this.pos.z - t.z);
+        const d = _away.length();
+        const avoidR = this.collisionRadius() + t.r + TRUNK_AVOID_MARGIN;
+        if (d > 0 && d < avoidR) {
+          _away.multiplyScalar(1 / d);
+          _sep.addScaledVector(_away, (avoidR - d) / avoidR);
+          const minGap = this.collisionRadius() + t.r;
+          if (d < minGap) _sep.addScaledVector(_away, (minGap - d) * 2.0);
+        }
       }
     }
 

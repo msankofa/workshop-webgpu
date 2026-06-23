@@ -381,6 +381,7 @@ export function createEnvironmentPortCreatures({
   terrainSystem,
   terrainHeight,
   resolveTrunks = null,
+  nearbyTrunks = null,
   rebuildWorld,
   isInteractionEnabled = () => true,
 }) {
@@ -403,6 +404,7 @@ export function createEnvironmentPortCreatures({
     camera,
     terrainHeight,
     resolveTrunks,
+    nearbyTrunks,
     terrainSettings: creatureTerrain,
     rebuildTerrain: (respawn = true) => {
       terrain.baseAmp = creatureTerrain.amplitude;

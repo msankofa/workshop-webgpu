@@ -115,5 +115,13 @@ const RADIUS = 0.35, SLOPE = 0.5;
   ok(idx.resolve(5.5, 5, 0.35).pushed === false, '9: clearTrunks removes the bucket');
 }
 
+// 10. createTrunkIndex.nearby: returns trunks in the 3x3 chunk region, empty when far.
+{
+  const idx = createTrunkIndex(30);
+  idx.setTrunks('0,0', [{ x: 5, z: 5, r: 1.0 }, { x: 12, z: 8, r: 0.8 }]);
+  ok(idx.nearby(6, 6).length === 2, '10: nearby returns trunks in-region');
+  ok(idx.nearby(500, 500).length === 0, '10: nearby empty when far away');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

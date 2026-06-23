@@ -76,18 +76,24 @@ export function resolveTrunks(px, pz, radius, trunks, iterations = 4) {
 // the point's chunk plus its 8 neighbours, so cost is bounded regardless of forest size.
 export function createTrunkIndex(chunkSize) {
   const buckets = new Map();
+  function gather(px, pz, out) {
+    const cx = Math.floor(px / chunkSize), cz = Math.floor(pz / chunkSize);
+    for (let iz = cz - 1; iz <= cz + 1; iz++) {
+      for (let ix = cx - 1; ix <= cx + 1; ix++) {
+        const b = buckets.get(`${ix},${iz}`);
+        if (b) for (const t of b) out.push(t);
+      }
+    }
+    return out;
+  }
   return {
     setTrunks(key, trunks) { if (trunks && trunks.length) buckets.set(key, trunks); else buckets.delete(key); },
     clearTrunks(key) { buckets.delete(key); },
+    // Trunks in the point's chunk + 8 neighbours, for proactive steering avoidance.
+    nearby(px, pz) { return gather(px, pz, []); },
+    // Hard lateral push-out backstop (player + creatures) so nothing clips a trunk.
     resolve(px, pz, radius) {
-      const cx = Math.floor(px / chunkSize), cz = Math.floor(pz / chunkSize);
-      const near = [];
-      for (let iz = cz - 1; iz <= cz + 1; iz++) {
-        for (let ix = cx - 1; ix <= cx + 1; ix++) {
-          const b = buckets.get(`${ix},${iz}`);
-          if (b) for (const t of b) near.push(t);
-        }
-      }
+      const near = gather(px, pz, []);
       if (near.length === 0) return { x: px, z: pz, pushed: false };
       return resolveTrunks(px, pz, radius, near);
     },
