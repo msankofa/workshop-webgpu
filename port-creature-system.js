@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export function createPortCreatureSystem({ scene, terrainHeight, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
+export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
 const LOD_NEAR_SQ = (lod.near ?? 120) ** 2;
 const LOD_MID_SQ = (lod.mid ?? 210) ** 2;
 const LOD_FAR_SQ = (lod.far ?? 360) ** 2;
@@ -2384,6 +2384,12 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     this.vel.z *= (1 - H_DRAG * h);
 
     this.pos.addScaledVector(this.vel, h);
+
+    // Lateral push-out of tree trunks (XZ only); trunks are solid for creatures too.
+    if (resolveTrunks) {
+      const tr = resolveTrunks(this.pos.x, this.pos.z, this.collisionRadius());
+      if (tr && tr.pushed) { this.pos.x = tr.x; this.pos.z = tr.z; }
+    }
 
     const floorY = terrainHeight(this.pos.x, this.pos.z) + BODY_MIN_CLEAR;
     if (this.pos.y < floorY) {

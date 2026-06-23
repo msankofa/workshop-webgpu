@@ -148,6 +148,7 @@ const portCreatures = createEnvironmentPortCreatures({
   terrain,
   terrainSystem,
   terrainHeight,
+  resolveTrunks: (px, pz, r) => trunkIndex.resolve(px, pz, r),
   rebuildWorld,
   isInteractionEnabled: () => !fpsMode,
 });
