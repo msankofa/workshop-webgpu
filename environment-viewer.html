@@ -1306,10 +1306,12 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       skyRef.setCelestialType(params.primaryBody);
       applyCelestialLight();
     });
-    slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
-    slider('starSize', 'Star size', 0.5, 5, 0.1, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
-    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
-    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
+    // Debounce sky rebuilds: a full sky regen per slider tick would thrash the GPU while dragging.
+    let skyTimer; const skyApply = () => { clearTimeout(skyTimer); skyTimer = setTimeout(() => skyRef && skyRef.setPalette(skyPaletteOverrides()), 160); };
+    slider('starCount', 'Star count', 200, 3000, 50, fi, skyApply, SKY_PARAMS);
+    slider('starSize', 'Star size', 0.5, 5, 0.1, f2, skyApply, SKY_PARAMS);
+    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, skyApply, SKY_PARAMS);
+    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, skyApply, SKY_PARAMS);
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
 }).catch(err => {
   showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');

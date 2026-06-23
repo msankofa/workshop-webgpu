@@ -20,12 +20,14 @@ function makeSkyDomeMaterial(palette) {
   mat.fog = false;
   const top = _c(palette.top), hor = _c(palette.horizon), bot = _c(palette.bottom), glow = _c(palette.glow);
   mat.colorNode = Fn(() => {
-    const y = normalize(positionLocal).y;                       // -1 .. 1
-    const upper = smoothstep(0.0, 0.5, y);                      // horizon → zenith
-    const lower = smoothstep(-0.25, 0.0, y);                    // nadir → horizon
-    const base = mix(v3(bot), mix(v3(hor), v3(top), upper), lower);
-    const glowBand = pow(max(float(1).sub(abs(y).mul(6.0)), float(0)), float(2.0)); // tight band at y≈0
-    return mix(base, v3(glow), glowBand.mul(0.6));
+    const y = normalize(positionLocal).y;                       // -1 (down) .. 1 (up)
+    const up = smoothstep(0.0, 0.55, y);                        // horizon → zenith
+    const down = smoothstep(0.0, -0.5, y);                      // horizon → nadir
+    const aboveCol = mix(v3(hor), v3(top), up);
+    const belowCol = mix(v3(hor), v3(bot), down);
+    const base = mix(aboveCol, belowCol, smoothstep(0.05, -0.05, y));  // soft horizon crossover
+    const glowBand = pow(max(float(1).sub(abs(y).mul(9.0)), float(0)), float(2.0)); // tight horizon glow
+    return mix(base, v3(glow), glowBand.mul(0.4));
   })();
   return mat;
 }
@@ -38,7 +40,9 @@ function makeSkySunTexture(color, { moon }) {
   const cx = S / 2, cy = S / 2;
   if (moon) {
     const R = S * 0.3;
-    const glow = g.createRadialGradient(cx, cy, R, cx, cy, R * 1.7);
+    // Outer glow radius must stay inside the canvas, else the radial gradient is clipped
+    // to the square and shows a hard rectangular halo. Cap at ~half the texture.
+    const glow = g.createRadialGradient(cx, cy, R, cx, cy, Math.min(R * 1.7, S * 0.49));
     glow.addColorStop(0, hexA(color, 0.4)); glow.addColorStop(1, hexA(color, 0));
     g.fillStyle = glow; g.fillRect(0, 0, S, S);
     const sh = g.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.1, cx, cy, R);
@@ -56,7 +60,7 @@ function makeSkySunTexture(color, { moon }) {
     g.fillStyle = ld; g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
   } else {
     const R = S * 0.22;
-    const cor = g.createRadialGradient(cx, cy, R * 0.5, cx, cy, R * 2.2);
+    const cor = g.createRadialGradient(cx, cy, R * 0.5, cx, cy, Math.min(R * 2.2, S * 0.49));
     cor.addColorStop(0, hexA(color, 0.9)); cor.addColorStop(0.4, hexA(color, 0.25)); cor.addColorStop(1, hexA(color, 0));
     g.fillStyle = cor; g.fillRect(0, 0, S, S);
     const disc = g.createRadialGradient(cx - R * 0.2, cy - R * 0.2, R * 0.1, cx, cy, R);
@@ -110,22 +114,40 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir }) {
     sun.scale.set(p.scale, p.scale, 1);
   }
 
-  function disposeChildren() {
-    group.traverse(o => {
-      if (o.geometry) o.geometry.dispose();
-      const mat = o.material;
-      if (mat) {
-        if (mat.map && mat.map.userData?.proceduralSkyTexture) mat.map.dispose();
-        mat.dispose();
-      }
-    });
-    group.clear();
-    if (sunTex) sunTex.dispose();
+  // Defer GPU buffer disposal by 3 frames so any in-flight WebGPU submit that still
+  // references these resources completes first. Disposing synchronously here causes
+  // "Buffer used in submit while destroyed" → device loss → freeze. Mirrors the viewer's
+  // disposeTextureSetSoon(). `root` is detached from the scene before this is called.
+  const raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (fn => setTimeout(fn, 16));
+  function disposeNodeTreeSoon(root) {
+    raf(() => raf(() => raf(() => {
+      root.traverse(o => {
+        if (o.geometry) o.geometry.dispose();
+        const mat = o.material;
+        if (mat) {
+          if (mat.map && mat.map.userData?.proceduralSkyTexture) mat.map.dispose();
+          mat.dispose();
+        }
+      });
+    })));
   }
 
   build();
 
-  function rebuild(r) { radius = r ?? skyRadius(camera.far, size); disposeChildren(); build(); }
+  function detachAll() {
+    // Reparent the live children into a throwaway group (does NOT touch the GPU).
+    const old = new THREE.Group();
+    for (let i = group.children.length - 1; i >= 0; i--) old.add(group.children[i]);
+    return old;
+  }
+
+  function rebuild(r) {
+    const nr = r ?? skyRadius(camera.far, size);
+    const old = detachAll();   // swap first: build the new sky, dispose the old later
+    radius = nr;
+    build();
+    disposeNodeTreeSoon(old);
+  }
 
   return {
     group,
@@ -134,7 +156,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir }) {
     setCelestialType(type) { palette.celestialType = type; rebuild(radius); },
     rebuild,
     update(/* seconds */) { /* twinkle/gas animate on the GPU via the `time` node */ },
-    dispose() { disposeChildren(); group.removeFromParent(); },
+    dispose() { disposeNodeTreeSoon(detachAll()); group.removeFromParent(); },
     get radius() { return radius; },
     get isMoon() { return isMoonBody(palette); },
   };

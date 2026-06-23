@@ -4,7 +4,7 @@
 // Twinkle runs entirely on the GPU via the built-in `time` node — no per-frame JS.
 import * as THREE from 'three';
 import { PointsNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
-import { Fn, attribute, uniform, float, vec3, vec4, sin, cos, floor, fract, abs,
+import { Fn, attribute, uniform, float, vec3, vec4, sin, cos, floor, fract, abs, pow,
   length, smoothstep, mix, positionLocal, normalize, uv, max, dot, time } from 'three/tsl';
 
 // Shared builder: a Points cloud with per-star twinkle attributes → GPU-animated size +
@@ -81,12 +81,13 @@ export function createMilkyWay(milkyData, palette) {
     const dir = normalize(positionLocal);
     // distance from the tilted galactic plane (band about X axis tilted by uTilt)
     const plane = dir.y.mul(cos(uTilt)).sub(dir.z.mul(sin(uTilt)));
-    const band = smoothstep(0.35, 0.0, abs(plane));
-    const p = dir.mul(2.5);
-    const n = noise3(p).mul(0.6).add(noise3(p.mul(2.1)).mul(0.3)).add(noise3(p.mul(4.3)).mul(0.1));
-    const dust = smoothstep(0.0, 0.08, abs(plane.add(n.mul(0.05).sub(0.025)))); // dark central lane
-    const col = mix(vec3(cool.r, cool.g, cool.b), vec3(warm.r, warm.g, warm.b), n);
-    return col.mul(band).mul(n).mul(dust).mul(uIntensity);
+    const band = smoothstep(0.22, 0.0, abs(plane));
+    const p = dir.mul(2.8);
+    const n = noise3(p).mul(0.6).add(noise3(p.mul(2.3)).mul(0.28)).add(noise3(p.mul(4.7)).mul(0.12));
+    const cloud = pow(n, float(2.0));                // contrast → patchy clouds, not a solid lobe
+    const dust = smoothstep(0.0, 0.05, abs(plane.add(n.mul(0.06).sub(0.03)))); // dark central lane
+    const col = mix(vec3(cool.r, cool.g, cool.b), vec3(warm.r, warm.g, warm.b), cloud);
+    return col.mul(band).mul(cloud).mul(dust).mul(uIntensity).mul(0.6);
   })();
   gas.opacityNode = float(1);
   const gasMesh = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.995, 40, 18), gas);

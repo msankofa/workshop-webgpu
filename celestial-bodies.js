@@ -17,10 +17,12 @@ function paintBody(body) {
   const S = 256;
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const g = cv.getContext('2d');
-  const cx = S / 2, cy = S / 2, R = S * 0.32;
+  // Keep the disc small enough that the glow + rings fade out before the canvas edge —
+  // otherwise the radial gradients clip to the square and show a hard rectangular halo.
+  const cx = S / 2, cy = S / 2, R = S * 0.26;
   // atmospheric glow
   if (body.glow) {
-    const gl = g.createRadialGradient(cx, cy, R * 0.8, cx, cy, R * 1.9);
+    const gl = g.createRadialGradient(cx, cy, R * 0.8, cx, cy, Math.min(R * 1.8, S * 0.49));
     gl.addColorStop(0, hexA(body.color, 0.5)); gl.addColorStop(1, hexA(body.color, 0));
     g.fillStyle = gl; g.fillRect(0, 0, S, S);
   }
@@ -56,10 +58,10 @@ function paintBody(body) {
   // rings
   if (body.rings) {
     g.save(); g.translate(cx, cy); g.rotate(-0.5); g.scale(1, 0.32);
-    g.strokeStyle = hexA(lighten(body.color, 0.3), 0.7); g.lineWidth = S * 0.03;
-    g.beginPath(); g.arc(0, 0, R * 1.5, 0, Math.PI * 2); g.stroke();
-    g.strokeStyle = hexA(body.color, 0.5); g.lineWidth = S * 0.015;
-    g.beginPath(); g.arc(0, 0, R * 1.75, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = hexA(lighten(body.color, 0.3), 0.7); g.lineWidth = S * 0.026;
+    g.beginPath(); g.arc(0, 0, R * 1.4, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = hexA(body.color, 0.5); g.lineWidth = S * 0.013;
+    g.beginPath(); g.arc(0, 0, R * 1.62, 0, Math.PI * 2); g.stroke();
     g.restore();
   }
   return markTex(new THREE.CanvasTexture(cv));
@@ -73,7 +75,7 @@ export function createCelestialBodies(bodyData) {
     mat.fog = false;
     const spr = new THREE.Sprite(mat);
     spr.position.set(body.position.x, body.position.y, body.position.z);
-    const s = body.size * (body.rings ? 4 : body.glow ? 3 : 2.4);
+    const s = body.size * (body.rings ? 5 : body.glow ? 3.6 : 2.9);
     spr.scale.set(s, s, 1);
     spr.renderOrder = -996;
     group.add(spr);
