@@ -491,8 +491,39 @@ preserves jumps / flattens gravity) against `terrain-field.js` as the height/nor
 `node test-terrain-system.mjs` updated (test #6 external mode now asserts records + analytic
 `getHeight`, no collider group).
 
-## Deferred to SP5 B/C (by design, YAGNI)
-- **Phase B** — tree-trunk capsule collision from forest placement data (`resolveTrunks`,
-  `setTrunks` per chunk). Trunks currently have no collision.
+## Deferred to SP5 C (by design, YAGNI)
 - **Phase C** — rock/obstacle BVH (`three-mesh-bvh`, pinned to r0.184) for stand-on + walls, folded
   into a `supportAt`/`WorldCollision` abstraction. `collision.js` is structured to grow into this.
+
+---
+
+# SP5 Phase B — tree-trunk collision (player)
+
+**Status: complete (Node-tested + browser checkpoint passed).** Trunks were non-colliding (player
+walked through them). Phase B makes them solid for the FPS player via cheap lateral push-out, fed by
+trunk data the forest already has at bake time. No mesh, no BVH, no rebuild.
+
+`collision.js` gains two pure functions (Node-tested in `test-collision.mjs`, 25 asserts total):
+- `resolveTrunks(px, pz, radius, trunks)` — 2D circle-vs-circle MTV in XZ; a tall narrow trunk
+  capsule reduces to a circle since push-out is lateral. Iterates from the deepest overlap so
+  resolving one trunk does not leave the point inside another. **No-tunneling guarantee** even in the
+  squeeze case (two trunks whose exclusion zones overlap on the connecting axis): the point is
+  stopped between them, never teleported across. v1 limit: that squeeze leaves the point in contact
+  rather than ejecting it perpendicular; harmless because per-frame motion is rarely perfectly axial.
+- `createTrunkIndex(chunkSize)` — chunk-bucketed store (`setTrunks(key,...)`/`clearTrunks(key)`);
+  `resolve(px,pz,r)` tests only the point's chunk + 8 neighbours, so cost is bounded regardless of
+  forest size.
+
+Viewer wiring: each baked tree records `{x, z, r = 1.2·scale}` during `buildNextTreeInJob` (trunk
+base `radius[0]=1.2` in `trees.js`, scaled per tree); `finishTreeJob` registers the chunk's trunks,
+`disposeTreeChunk` clears them (covers terrain-chunk unload + drop-to-zero). `updateFPSPlayer`
+applies `trunkIndex.resolve` after the ground lift, lateral only. Registration is O(trees-in-chunk)
+with no geometry rebuild, so it streams with chunks spike-free. Trunk radius `1.2·scale` is a tunable
+constant (`TRUNK_RADIUS_PER_SCALE`).
+
+## Deferred (Phase B follow-up)
+- **Creature** trunk collision. The spec permits steering-based avoidance for creatures, so player
+  solidity shipped first. Wiring creatures needs `trunkIndex.resolve` threaded through
+  `port-creature-bridge.js` into each creature's `physicsStep` (`port-creature-system.js:2386`, right
+  after `this.pos.addScaledVector(this.vel, h)`), a lateral XZ push there. Deferred to keep the
+  sensitive creature sim untouched until wanted.
