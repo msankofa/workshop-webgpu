@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { PointsNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
 import { Fn, attribute, uniform, float, vec3, vec4, sin, cos, floor, fract, abs, pow,
-  length, smoothstep, mix, positionLocal, normalize, pointUV, max, dot, time } from 'three/tsl';
+  length, smoothstep, mix, positionLocal, normalize, pointUV, max, dot, time, varying } from 'three/tsl';
 
 // Shared builder: a Points cloud with per-star twinkle attributes → GPU-animated size +
 // brightness, soft round sprites. `data` is a generateStars()/generateMilkyWay() result.
@@ -27,15 +27,17 @@ function buildPoints(data, { color, opacity, twinkle, renderOrder }) {
   const uColor = uniform(new THREE.Color(color));
   const uOpacity = uniform(opacity);
 
-  // twinkle factor in ~[1-strength, 1+strength]
+  // twinkle factor in ~[1-strength, 1+strength] — computed in the VERTEX stage (sizeNode).
   const tw = float(1).add(attribute('aStrength').mul(sin(time.mul(attribute('aSpeed')).add(attribute('aPhase')))));
   mat.sizeNode = attribute('aSize').mul(max(tw, float(0.2)));
-  // Soft round point: radial falloff across the point-sprite coordinate (pointUV is the
-  // gl_PointCoord equivalent — Points geometry has no "uv" attribute, so uv() would fail
-  // to compile). Modulated by brightness + twinkle.
+  // Per-vertex brightness*twinkle must be passed to the fragment stage as an interpolated
+  // varying. Referencing raw attribute()/vertex values directly in colorNode produces
+  // invalid WGSL (the point pipeline fails to compile). pointUV is the gl_PointCoord
+  // equivalent for the round-point falloff (Points geometry has no "uv" attribute).
+  const vFactor = varying(attribute('aBright').mul(tw));
   const d = length(pointUV.sub(0.5));
   const soft = smoothstep(0.5, 0.1, d);
-  mat.colorNode = vec4(uColor.mul(attribute('aBright')), soft.mul(attribute('aBright')).mul(tw).mul(uOpacity));
+  mat.colorNode = vec4(uColor.mul(vFactor), soft.mul(vFactor).mul(uOpacity));
 
   const pts = new THREE.Points(geom, mat);
   pts.frustumCulled = false;
