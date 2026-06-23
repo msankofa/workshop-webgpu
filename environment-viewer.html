@@ -32,6 +32,7 @@ import { createLightingRig } from './lights.js';
 import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
 import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
+import { kindParams } from './particle-field.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -141,13 +142,32 @@ if (TERRAIN_MODE === 'gpu') {
 }
 
 // SP4b: GPU particle fields — embers (additive glow) + dust (subtle alpha). ?particles=off disables.
+// A registry of live fields the editor (control panel) can add to / remove from at runtime; the
+// animate loop updates the enabled ones and the HUD sums their counts. The two species seed the list.
 const PARTICLES_MODE = new URLSearchParams(location.search).get('particles') || 'on';
-let emberRef = null, dustRef = null;
+const particleFields = [];      // { id, name, params, field }
+let createParticleField = null;
+let particleSeq = 0;
+function addParticleField({ kind = 'ember', name, params, count, radius, enabled = true }) {
+  if (!createParticleField) return null;
+  const field = createParticleField({ renderer, camera, kind, params, count, radius });
+  field.setEnabled(enabled);
+  scene.add(field.mesh);
+  const entry = { id: ++particleSeq, name: name || `${kind} ${particleSeq}`, params: params || field.defaults, field };
+  particleFields.push(entry);
+  return entry;
+}
+function removeParticleField(entry) {
+  const i = particleFields.indexOf(entry);
+  if (i < 0) return;
+  particleFields.splice(i, 1);
+  scene.remove(entry.field.mesh);
+  entry.field.dispose();
+}
 if (PARTICLES_MODE !== 'off') {
-  const { createParticleField } = await import('./particles.js');
-  emberRef = createParticleField({ renderer, camera, kind: 'ember', count: 4000, radius: 90 });
-  dustRef = createParticleField({ renderer, camera, kind: 'dust', count: 8000, radius: 90 });
-  scene.add(emberRef.mesh, dustRef.mesh);
+  ({ createParticleField } = await import('./particles.js'));
+  addParticleField({ kind: 'ember', name: 'embers', count: 4000, radius: 90 });
+  addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90 });
 }
 
 // SP4c: node post-processing (bloom + tonemap + grade). ?post=off → plain renderer.render.
@@ -196,7 +216,7 @@ function updateTerrainDebug(now) {
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}\n` +
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
-    (emberRef ? `particles ${emberRef.count + dustRef.count}\n` : '') +
+    (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
 
@@ -1084,6 +1104,136 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('postVignetteSoft', 'Vignette softness', 0.2, 3, 0.01, f2, applyGrade);
   }
 
+  // ---- SP4b: particle editor — design a field, Add to spawn it, manage the live list ----
+  if (createParticleField) {
+    const clone = p => ({ ...p, wind: [...p.wind], color: [...p.color] });
+    const kindDefaults = k => ({ ...kindParams(k), kind: k, count: k === 'dust' ? 8000 : 4000, radius: 90 });
+    let editor = kindDefaults('ember');   // current design values (reassigned when a field is selected)
+    let selected = null;                  // list entry being live-edited, or null = designing a new field
+    let rebuildTimer = null;
+    const refreshers = [];                // closures that pull each control's DOM back from `editor`
+
+    header('Particles');
+    const psec = current;                 // section body for the editor controls + list
+
+    // When editing a selected field, push tunable changes to its uniforms live and keep its
+    // stored params in sync; count/radius/kind can't change live, so they trigger a rebuild.
+    const applyLive = () => {
+      if (!selected) return;
+      selected.field.setParams(editor);
+      Object.assign(selected.params, clone(editor));
+    };
+    function rebuildEntry(entry) {
+      const wasEnabled = entry.field.enabled;
+      scene.remove(entry.field.mesh);
+      entry.field.dispose();
+      entry.field = createParticleField({
+        renderer, camera, kind: entry.params.kind, params: entry.params,
+        count: entry.params.count, radius: entry.params.radius,
+      });
+      entry.field.setEnabled(wasEnabled);
+      scene.add(entry.field.mesh);
+      refreshList();
+    }
+    const scheduleRebuild = () => {
+      if (!selected) return;
+      Object.assign(selected.params, clone(editor));
+      clearTimeout(rebuildTimer);
+      rebuildTimer = setTimeout(() => rebuildEntry(selected), 220);
+    };
+
+    // Editor slider bound to get/set on `editor`. live=true applies to a selected field with no
+    // rebuild; live=false (count/radius) schedules a rebuild since capacity is fixed at allocation.
+    function pslider(label, min, max, step, fmt, get, set, live = true) {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = fmt(get());
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+      inp.addEventListener('input', () => {
+        set(parseFloat(inp.value)); val.textContent = fmt(get());
+        if (live) applyLive(); else scheduleRebuild();
+      });
+      psec.appendChild(row); psec.appendChild(inp);
+      refreshers.push(() => { inp.value = get(); val.textContent = fmt(get()); });
+    }
+    const refreshControls = () => refreshers.forEach(r => r());
+
+    // base species — resets the design to that species' look (then tweak from there)
+    const kindRow = document.createElement('div'); kindRow.className = 'row';
+    kindRow.innerHTML = '<span style="color:#c4ccd6">Base species</span>'; psec.appendChild(kindRow);
+    const kindSel = document.createElement('select');
+    for (const k of ['ember', 'dust']) { const o = document.createElement('option'); o.value = o.textContent = k; kindSel.appendChild(o); }
+    kindSel.value = editor.kind;
+    kindSel.addEventListener('change', () => {
+      const keep = { count: editor.count, radius: editor.radius };
+      editor = Object.assign(kindDefaults(kindSel.value), keep);
+      refreshControls();
+      if (selected) { selected.params = clone(editor); rebuildEntry(selected); }
+    });
+    psec.appendChild(kindSel);
+
+    const pf2 = v => v.toFixed(2), pfi = v => String(Math.round(v));
+    pslider('Size', 0.01, 0.6, 0.005, pf2, () => editor.size, v => editor.size = v);
+    pslider('Opacity', 0, 1, 0.01, pf2, () => editor.alpha, v => editor.alpha = v);
+    pslider('Color R', 0, 1, 0.01, pf2, () => editor.color[0], v => editor.color[0] = v);
+    pslider('Color G', 0, 1, 0.01, pf2, () => editor.color[1], v => editor.color[1] = v);
+    pslider('Color B', 0, 1, 0.01, pf2, () => editor.color[2], v => editor.color[2] = v);
+    pslider('Flicker', 0, 1, 0.01, pf2, () => editor.flicker, v => editor.flicker = v);
+    pslider('Buoyancy', -1, 2, 0.01, pf2, () => editor.buoyancy, v => editor.buoyancy = v);
+    pslider('Drag', 0, 1, 0.01, pf2, () => editor.drag, v => editor.drag = v);
+    pslider('Curl strength', 0, 3, 0.01, pf2, () => editor.curlStrength, v => editor.curlStrength = v);
+    pslider('Wind X', -1, 1, 0.01, pf2, () => editor.wind[0], v => editor.wind[0] = v);
+    pslider('Wind Y', -1, 1, 0.01, pf2, () => editor.wind[1], v => editor.wind[1] = v);
+    pslider('Speed', 0, 3, 0.01, pf2, () => editor.speed, v => editor.speed = v);
+    pslider('Lifetime', 1, 20, 0.5, pf2, () => editor.maxLife, v => editor.maxLife = v);
+    pslider('Count', 500, 16000, 500, pfi, () => editor.count, v => editor.count = v, false);
+    pslider('Radius', 20, 200, 5, pfi, () => editor.radius, v => editor.radius = v, false);
+
+    // Add — spawn a new field from the current design and select it for further edits.
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ Add particle field';
+    addBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    addBtn.addEventListener('click', () => selectEntry(addParticleField({ kind: editor.kind, params: clone(editor), count: editor.count, radius: editor.radius })));
+    psec.appendChild(addBtn);
+
+    // Active-fields list: left-click on/off · right-click edit · double-click delete.
+    const hint = document.createElement('div');
+    hint.textContent = 'click: on/off · right-click: edit · dbl-click: delete';
+    hint.style.cssText = 'color:#5f6a78;font-size:10px;margin:2px 0 3px';
+    psec.appendChild(hint);
+    const listBox = document.createElement('div');
+    listBox.style.cssText = 'border:1px solid #333a45;border-radius:4px;max-height:140px;overflow-y:auto;background:rgba(0,0,0,.18);padding:2px';
+    psec.appendChild(listBox);
+
+    function selectEntry(entry) {
+      selected = entry;
+      editor = clone(entry.params);
+      kindSel.value = editor.kind;
+      refreshControls();
+      refreshList();
+    }
+    function refreshList() {
+      listBox.innerHTML = '';
+      if (!particleFields.length) { listBox.innerHTML = '<div style="color:#5f6a78;padding:5px">no active fields</div>'; return; }
+      for (const entry of particleFields) {
+        const on = entry.field.enabled;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:3px 6px;margin:1px 0;border-radius:3px;cursor:pointer;'
+          + (entry === selected ? 'background:#2c3947;' : '')
+          + (on ? '' : 'opacity:.42;text-decoration:line-through;');
+        const nm = document.createElement('span'); nm.textContent = entry.name; nm.style.color = '#c4ccd6';
+        const tag = document.createElement('span'); tag.textContent = entry.params.kind; tag.style.cssText = 'color:#6f7a89;font-size:10px';
+        row.append(nm, tag);
+        row.addEventListener('click', () => { entry.field.setEnabled(!entry.field.enabled); refreshList(); });
+        row.addEventListener('contextmenu', e => { e.preventDefault(); selectEntry(entry); });
+        row.addEventListener('dblclick', () => { removeParticleField(entry); if (selected === entry) selected = null; refreshList(); });
+        listBox.appendChild(row);
+      }
+    }
+    refreshList();
+  }
+
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
   if (GRASS_MODE === 'cpu') import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
@@ -1601,7 +1751,16 @@ function updateFPSPlayer(deltaTime) {
 
 // ===================== render loop =====================
 const clock = new THREE.Clock();
+let _frameBusy = false;
 async function animate() {
+  // setAnimationLoop does NOT await this async callback. If a frame's compute/render work
+  // outlasts the vsync interval, the loop re-enters animate() concurrently and the two
+  // overlapping submits recycle each other's command/internal buffers → WebGPU
+  // "Buffer used in submit while destroyed" (worst at night/look-up, the heaviest sky
+  // frames). Serialize: drop any vsync that arrives while a frame is still in flight.
+  if (_frameBusy) return;
+  _frameBusy = true;
+  try {
   const rawDt = Math.min(clock.getDelta(), 0.1);
   const now = performance.now();
   if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
@@ -1644,15 +1803,15 @@ async function animate() {
   if (cdlodRef) await cdlodRef.update();
   // SP4a: froxel light-cull compute, awaited before draw (like grass/cdlod).
   if (clusteredLightsRef) await clusteredLightsRef.update(now / 1000);
-  // SP4b: GPU particle sim, awaited before draw.
-  if (emberRef) await emberRef.update(rawDt, camera);
-  if (dustRef) await dustRef.update(rawDt, camera);
+  // SP4b: GPU particle sim, awaited before draw. Disabled fields early-return inside update().
+  for (const e of particleFields) await e.field.update(rawDt, camera);
   // SP4c: composite through the post stack when enabled, else plain render.
   if (postFX && postFX.enabled) await postFX.renderAsync();
   else renderer.render(scene, camera);
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
   if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
+  } finally { _frameBusy = false; }
 }
 renderer.setAnimationLoop(animate);
 </script>
