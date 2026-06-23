@@ -78,6 +78,24 @@ rig.dirLight.shadow.camera.near = 1; rig.dirLight.shadow.camera.far = 260;
 rig.dirLight.shadow.camera.left = -90; rig.dirLight.shadow.camera.right = 90;
 rig.dirLight.shadow.camera.top = 90;   rig.dirLight.shadow.camera.bottom = -90;
 
+// Dedicated cool moonlight, swapped in when the primary sky body is the Moon. Lives in the
+// scene (NOT the camera-following sky group), tracks the rig direction, starts disabled.
+const moonLight = new THREE.DirectionalLight(0xaec6ff, 0.0);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.near = 1; moonLight.shadow.camera.far = 260;
+moonLight.shadow.camera.left = -90; moonLight.shadow.camera.right = 90;
+moonLight.shadow.camera.top = 90; moonLight.shadow.camera.bottom = -90;
+scene.add(moonLight, moonLight.target);
+
+// Unit vector toward the key light — the SAME direction the rig feeds to the water
+// specular and the shadow camera. The sky disc, moonlight, and reflection all share it.
+const _skyDir = new THREE.Vector3();
+function skyLightDir() {
+  const a = rig.azimuth * Math.PI / 180, e = rig.elevation * Math.PI / 180;
+  return _skyDir.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+}
+
 // ===================== chunked terrain (parameterised; supports lakes) =====================
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
 // terrain extent — the terrain is chunked/infinite and sized by draw distance.
@@ -298,6 +316,7 @@ scene.add(terrainGroup);
 // overhead clouds stay inside the frustum. Fog (off by default) shares the same
 // far so geometry fades into the background right before the clip plane.
 const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
+let skyRef = null;   // procedural night sky (assigned once ./sky.js loads, below)
 function updateDrawDistance() {
   // Farthest rendered chunk corner ≈ (radius + 1) chunks out; ×2 covers the
   // diagonal across the whole loaded ring from the opposite side.
@@ -305,6 +324,7 @@ function updateDrawDistance() {
   const far = Math.max(200, terrain.size, chunkSpan);
   camera.far = far; camera.updateProjectionMatrix();
   worldFog.far = far; worldFog.near = far * 0.4;
+  if (skyRef) skyRef.rebuild();   // re-size the sky dome to the new far plane
 }
 function setFog(on) { scene.fog = on ? worldFog : null; }
 updateDrawDistance();
@@ -1263,6 +1283,34 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
   }).catch(() => { /* clouds are optional */ });
+
+  // ---- procedural night sky (dome + stars + Milky Way + moon/sun + planets) ----
+  // The primary disc is locked to the rig light direction; the Sun/Moon dropdown swaps
+  // the active key light (warm rig sun <-> dedicated cool moonLight).
+  const SKY_PARAMS = { starCount: 1400, starSize: 2.2, sunSize: 0.06, milkyWayIntensity: 0.7 };
+  params.primaryBody = 'sun';   // 'select' reads/writes the global params object
+  const skyPaletteOverrides = () => ({ celestialType: params.primaryBody, starCount: SKY_PARAMS.starCount,
+    starSize: SKY_PARAMS.starSize, sunSize: SKY_PARAMS.sunSize, milkyWayIntensity: SKY_PARAMS.milkyWayIntensity });
+  function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
+    const moon = params.primaryBody === 'moon';
+    rig.setSunIntensity(moon ? 0.15 : rigP.sunIntensity);
+    moonLight.intensity = moon ? 0.35 : 0.0;
+  }
+  import('./sky.js').then(({ createSky }) => {
+    skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides() });
+    scene.add(skyRef.group);
+    applyCelestialLight();
+    header('Sky');
+    select('primaryBody', 'Primary body', ['sun', 'moon'], () => {
+      if (!skyRef) return;
+      skyRef.setCelestialType(params.primaryBody);
+      applyCelestialLight();
+    });
+    slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
+    slider('starSize', 'Star size', 0.5, 5, 0.1, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
+    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
+    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setPalette(skyPaletteOverrides()), SKY_PARAMS);
+  }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
 }).catch(err => {
   showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
@@ -1555,6 +1603,17 @@ async function animate() {
   const rawDt = Math.min(clock.getDelta(), 0.1);
   const now = performance.now();
   if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
+  if (skyRef) {
+    // Sky follows the camera (infinitely distant, no parallax) and the celestial disc +
+    // moonlight track the rig light direction so they stay locked to the water reflection.
+    if (skyRef.group.userData.followCamera) skyRef.group.position.copy(camera.position);
+    const d = skyLightDir();
+    skyRef.setSunDir(d);
+    moonLight.position.copy(camera.position).addScaledVector(d, 120);
+    moonLight.target.position.copy(camera.position);
+    moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+    skyRef.update(now / 1000);
+  }
   if (cloudsRef) cloudsRef.update(now / 1000);
   if (fpsMode) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
