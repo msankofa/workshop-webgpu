@@ -22,7 +22,9 @@ const asU = (i) => bitcast(i, 'uint');
 export function createParticleField(opts) {
   const { renderer, camera } = opts;
   const kind = opts.kind ?? 'ember';
-  const P = kindParams(kind);
+  // Resolved params: per-species defaults, overridden by any caller-supplied values so a
+  // field can be spawned fully custom (the editor passes its slider values here).
+  const P = { ...kindParams(kind), ...(opts.params || {}) };
   const CAP = opts.count ?? (kind === 'dust' ? 8000 : 4000);
   const R = opts.radius ?? 90;
 
@@ -175,9 +177,12 @@ export function createParticleField(opts) {
 
   const _r = new THREE.Vector3(), _u = new THREE.Vector3(), _f = new THREE.Vector3();
   let frame = 0;
+  let enabled = true;
   return {
     mesh,
+    kind,
     async update(dt, cam) {
+      if (!enabled) return;       // disabled fields skip the GPU sim entirely
       frame++;
       cam.updateMatrixWorld();
       cam.matrixWorld.extractBasis(_r, _u, _f);
@@ -188,6 +193,22 @@ export function createParticleField(opts) {
       await renderer.computeAsync(simulate);
       await renderer.computeAsync(finalize);
     },
+    // Live uniform tuning — every key is optional; only supplied ones are written.
+    setParams(p) {
+      if (p.size      !== undefined) uSize.value    = p.size;
+      if (p.alpha     !== undefined) uAlpha.value   = p.alpha;
+      if (p.flicker   !== undefined) uFlicker.value = p.flicker;
+      if (p.buoyancy  !== undefined) uBuoy.value    = p.buoyancy;
+      if (p.drag      !== undefined) uDrag.value    = p.drag;
+      if (p.curlStrength !== undefined) uCurl.value = p.curlStrength;
+      if (p.speed     !== undefined) uSpeed.value   = p.speed;
+      if (p.maxLife   !== undefined) uMaxLife.value = p.maxLife;
+      if (p.wind)  uWind.value.set(p.wind[0], p.wind[1]);
+      if (p.color) uColor.value.setRGB(p.color[0], p.color[1], p.color[2]);
+    },
+    setEnabled(on) { enabled = on; mesh.visible = on; },
+    get enabled() { return enabled; },
+    get defaults() { return { ...P, kind, count: CAP, radius: R }; },
     get count() { return CAP; },
     dispose() { geo.dispose(); mat.dispose(); },
   };
