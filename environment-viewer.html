@@ -30,7 +30,7 @@ import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix } from 'three/t
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
-import { groundContact, slideVelocity } from './collision.js';
+import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
@@ -94,6 +94,8 @@ let ground = terrainSystem.materialPatchTarget;
 function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
 const _terrainN = [0, 1, 0];
 function terrainNormal(x, z) { return terrainNormalAt(terrainSystem.params, x, z, _terrainN); }
+const TRUNK_RADIUS_PER_SCALE = 1.2;   // trees.js trunk base radius[0] = 1.2, scaled per tree
+const trunkIndex = createTrunkIndex(terrainSystem.params.chunkSize);
 
 // SP4a: GPU froxel clustered point lighting, constructed BEFORE the CDLOD ground so the
 // terrain can inject the additive clustered-light term into its emissiveNode. ?lights=off
@@ -742,6 +744,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   }
 
   function disposeTreeChunk(chunk) {
+    trunkIndex.clearTrunks(chunk.key);
     chunk.branches.geometry.dispose();
     chunk.leaves.geometry.dispose();
     chunk.leafShadows.geometry.dispose();
@@ -788,6 +791,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       species,
       pos,
       index: 0,
+      trunks: [],
       B: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
       L: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
       LS: { verts: [], normals: [], colors: [], uvs: [], indices: [] },
@@ -824,6 +828,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       }
       gen.regenerate({ ...sp, seed: Math.floor(treeRng.next() * 0xffffffff) >>> 0, leaves: leafOpts, bark: barkOpts });
       const s = sizeFor(params, x, z, treeRng);
+      job.trunks.push({ x, z, r: TRUNK_RADIUS_PER_SCALE * s });
       _tquat.setFromAxisAngle(_ty, treeRng.next() * Math.PI * 2);
       _tmat.compose(_tpos.set(x, terrainHeight(x, z) + params.treeBaseOffset, z), _tquat, _tscl.set(s, s, s));
       _tnorm.getNormalMatrix(_tmat);
@@ -837,6 +842,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
 
   function finishTreeJob(job) {
     commitTreeChunk(job.chunk, job.B, job.L, job.LS);
+    trunkIndex.setTrunks(job.chunk.key, job.trunks);
   }
 
   function processTreeQueue(token) {
@@ -1506,6 +1512,7 @@ function applyFPSControls(deltaTime) {
 
 const PLAYER_SLOPE_LIMIT_Y = 0.5;   // min ground normal.y to stand on; steeper faces slide
 const _collisionLift = new THREE.Vector3();
+const _trunkPush = new THREE.Vector3();
 function updateFPSPlayer(deltaTime) {
   if (!playerOnFloor) {
     playerVelocity.y -= fp.gravity * deltaTime;
@@ -1526,6 +1533,11 @@ function updateFPSPlayer(deltaTime) {
     playerCollider.translate(_collisionLift.set(0, contact.penetration, 0));
     const slid = slideVelocity(playerVelocity, contact.normal);
     playerVelocity.set(slid.x, slid.y, slid.z);
+  }
+  // Lateral push-out of any tree trunk the capsule overlaps (XZ only).
+  const tr = trunkIndex.resolve(playerCollider.start.x, playerCollider.start.z, playerCollider.radius);
+  if (tr.pushed) {
+    playerCollider.translate(_trunkPush.set(tr.x - playerCollider.start.x, 0, tr.z - playerCollider.start.z));
   }
   // Lerp capsule height toward current stance, then pin end above start.
   const targetH = fp['height' + stance[0].toUpperCase() + stance.slice(1)];
