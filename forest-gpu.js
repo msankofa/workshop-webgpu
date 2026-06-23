@@ -83,14 +83,19 @@ export function createForestGPU(opts) {
     });
   })().compute(TOTAL);
 
-  const finalize = Fn(() => {
-    for (let g = 0; g < V; g++) {
+  // One finalize dispatch PER VARIANT: writing all 3V indirect buffers from a single
+  // kernel binds 37 storage buffers, but WebGPU caps a compute stage at 8. Per-variant,
+  // each kernel binds only survCounters + that variant's 3 indirect buffers (4 total).
+  const finalizers = [];
+  for (let g = 0; g < V; g++) {
+    const nodes = indirectNodes[g];
+    finalizers.push(Fn(() => {
       const c = atomicLoad(survCounters.element(g));
-      indirectNodes[g].branches.element(1).assign(c);
-      indirectNodes[g].leaves.element(1).assign(c);
-      indirectNodes[g].shadow.element(1).assign(c);
-    }
-  })().compute(1);
+      nodes.branches.element(1).assign(c);
+      nodes.leaves.element(1).assign(c);
+      nodes.shadow.element(1).assign(c);
+    })().compute(1));
+  }
 
   // ---- per-variant instanced draw meshes ----
   // positionNode/normalNode read the DRAW buffer at the variant's region and apply
@@ -183,7 +188,7 @@ export function createForestGPU(opts) {
       uCam.value.set(camera.position.x, camera.position.z);
       await renderer.computeAsync(reset);
       await renderer.computeAsync(cull);
-      await renderer.computeAsync(finalize);
+      for (const f of finalizers) await renderer.computeAsync(f);
     },
     get stats() { return { draws: V * 3, instances: cpuInstances, variants: V }; },
     dispose() { meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); }); },
