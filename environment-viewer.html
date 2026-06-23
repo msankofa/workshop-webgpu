@@ -356,7 +356,7 @@ function updateDrawDistance() {
   const far = Math.max(200, terrain.size, chunkSpan);
   camera.far = far; camera.updateProjectionMatrix();
   worldFog.far = far; worldFog.near = far * 0.4;
-  if (skyRef) skyRef.rebuild();   // re-size the sky dome to the new far plane
+  if (skyRef) skyRef.setRadius();   // re-size the sky by scaling the group (no rebuild/disposal)
 }
 function setFog(on) { scene.fog = on ? worldFog : null; }
 updateDrawDistance();
@@ -1506,7 +1506,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
     bodies:   !['nobodies', 'domeonly'].includes(SKY_MODE),
   };
-  import('./sky.js?v=sp6c').then(({ createSky }) => {
+  import('./sky.js?v=sp6d').then(({ createSky }) => {
     skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts: skyParts });
     scene.add(skyRef.group);
     applyCelestialLight();

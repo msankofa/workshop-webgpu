@@ -7,9 +7,9 @@ import * as THREE from 'three';
 import { MeshBasicNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
 import { Fn, float, vec3, mix, smoothstep, positionLocal, normalize, pow, max, abs } from 'three/tsl';
 import { makePalette, skyRadius, isMoonBody, sunSpritePlacement, makeRng,
-  generateStars, generateMilkyWay, generateCelestialBodies } from './sky-field.js?v=sp6c';
-import { createSkyStars, createMilkyWay } from './stars.js?v=sp6c';
-import { createCelestialBodies } from './celestial-bodies.js?v=sp6c';
+  generateStars, generateMilkyWay, generateCelestialBodies } from './sky-field.js?v=sp6d';
+import { createSkyStars, createMilkyWay } from './stars.js?v=sp6d';
+import { createCelestialBodies } from './celestial-bodies.js?v=sp6d';
 
 const _c = hex => new THREE.Color(hex);
 const v3 = c => vec3(c.r, c.g, c.b);
@@ -142,6 +142,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   function placeSun() { if (sunSprite) placeDisc(sunSprite); if (moonSprite) placeDisc(moonSprite); }
 
   build();
+  const builtRadius = radius;   // geometry is fixed at this radius; setRadius() only scales
 
   function detachAll() {
     // Reparent the live children into a throwaway group (does NOT touch the GPU).
@@ -186,6 +187,10 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     setStarCount(n) { if (starsPoints) starsPoints.geometry.setDrawRange(0, Math.max(0, Math.min(n | 0, starsMax))); },
     setSunSize(v) { palette.sunSize = v; placeSun(); },
     setMilkyWayIntensity(v) { if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = v; },
+    // View-distance / chunk-size changes resize the sky by SCALING the group (the whole
+    // sky is radius-relative) — no geometry rebuild, no disposal, so it can't race a submit.
+    // skyRadius is clamped to camera.far*0.88, so the scaled dome never crosses the far plane.
+    setRadius() { group.scale.setScalar(skyRadius(camera.far, size) / builtRadius); },
     rebuild,
     update(/* seconds */) { /* twinkle/gas animate on the GPU via the `time` node */ },
     // Free trees that have aged out (≥2 frames since detach → no submit references them).
