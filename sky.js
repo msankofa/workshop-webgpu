@@ -79,7 +79,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   let radius = skyRadius(camera.far, size);
   let dir = (sunDir || new THREE.Vector3(0.6, 0.55, 0.58)).clone().normalize();
 
-  let dome, sunSprite, moonSprite;
+  let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyGas;
 
   function build() {
     // dome
@@ -94,15 +94,22 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     group.add(sunSprite, moonSprite);
     updateDiscVisibility();
     placeSun();
-    // stars (parts.* let the viewer bisect which object triggers a GPU error)
+    // stars (parts.* let the viewer bisect which object triggers a GPU error).
+    // Build the buffer ONCE at max capacity; the "Star count" control changes the draw
+    // range (setStarCount) rather than rebuilding — runtime rebuild/dispose races the
+    // async WebGPU submit and crashes. Generated count is clamped to STAR_MAX so the
+    // slider (≤3000) never needs more vertices than exist.
     if (parts.stars !== false) {
+      starsMax = Math.max(3000, palette.starCount | 0);
       const rng = makeRng((palette.starCount | 0) ^ 0x5a17);
-      group.add(createSkyStars(generateStars(radius, palette, rng), palette));
+      starsPoints = createSkyStars(generateStars(radius, makePalette({ ...palette, starCount: starsMax }), rng), palette);
+      starsPoints.geometry.setDrawRange(0, Math.min(palette.starCount | 0, starsMax));
+      group.add(starsPoints);
     }
-    // milky way
+    // milky way (intensity is a live uniform — see setMilkyWayIntensity)
     if (parts.milkyWay !== false) {
       const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng(0xb1a5)), palette);
-      if (milky) group.add(milky);
+      if (milky) { group.add(milky); milkyGas = milky.userData.gas || null; }
     }
     // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker)
     if (parts.bodies !== false && palette.milkyWay) {
@@ -143,10 +150,13 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     return old;
   }
 
-  // Disposal is queued, never run inline or from a bare rAF (both can race an in-flight
-  // WebGPU submit → "Buffer used in submit while destroyed"). The viewer drains the queue
-  // via flushDisposals() at a safe point in its loop (after the frame's render), when the
-  // detached objects are guaranteed not to be referenced by any pending submit.
+  // Disposal is queued and AGE-GATED, never run inline or from a bare rAF. With the sync
+  // render() path, render() returns before the GPU finishes, so the just-detached objects
+  // can still be referenced by a frame in flight; disposing immediately → "Buffer used in
+  // submit while destroyed". flushDisposals() (called once per frame by the viewer) only
+  // frees a tree after it has survived a couple of frames, by which point no submit refers
+  // to it. Runtime controls below avoid rebuild entirely, so this only fires on the rare
+  // view-distance rebuild.
   const _pending = [];
   function disposeTree(root) {
     root.traverse(o => {
@@ -161,7 +171,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 
   function rebuild(r) {
     const nr = r ?? skyRadius(camera.far, size);
-    _pending.push(detachAll());   // swap first: build the new sky, dispose the old later
+    _pending.push({ root: detachAll(), age: 0 });   // swap first; free the old tree later
     radius = nr;
     build();
   }
@@ -172,10 +182,19 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     setPalette(o) { palette = makePalette(o); rebuild(radius); },
     // Sun/Moon switch is a pure visibility toggle — no rebuild, no disposal.
     setCelestialType(type) { palette.celestialType = type; updateDiscVisibility(); },
+    // In-place runtime controls — NO rebuild/disposal (the slider-rebuild crash fix):
+    setStarCount(n) { if (starsPoints) starsPoints.geometry.setDrawRange(0, Math.max(0, Math.min(n | 0, starsMax))); },
+    setSunSize(v) { palette.sunSize = v; placeSun(); },
+    setMilkyWayIntensity(v) { if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = v; },
     rebuild,
     update(/* seconds */) { /* twinkle/gas animate on the GPU via the `time` node */ },
-    flushDisposals() { while (_pending.length) disposeTree(_pending.pop()); },
-    dispose() { _pending.push(detachAll()); this.flushDisposals(); group.removeFromParent(); },
+    // Free trees that have aged out (≥2 frames since detach → no submit references them).
+    flushDisposals() {
+      for (let i = _pending.length - 1; i >= 0; i--) {
+        if (++_pending[i].age >= 2) { disposeTree(_pending[i].root); _pending.splice(i, 1); }
+      }
+    },
+    dispose() { disposeTree(detachAll()); group.removeFromParent(); },
     get radius() { return radius; },
     get isMoon() { return isMoonBody(palette); },
   };

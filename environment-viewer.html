@@ -1469,12 +1469,12 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
       skyRef.setCelestialType(params.primaryBody);
       applyCelestialLight();
     });
-    // Debounce sky rebuilds: a full sky regen per slider tick would thrash the GPU while dragging.
-    let skyTimer; const skyApply = () => { clearTimeout(skyTimer); skyTimer = setTimeout(() => skyRef && skyRef.setPalette(skyPaletteOverrides()), 160); };
-    slider('starCount', 'Star count', 200, 3000, 50, fi, skyApply, SKY_PARAMS);
-    slider('starSize', 'Star size', 0.5, 5, 0.1, f2, skyApply, SKY_PARAMS);
-    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, skyApply, SKY_PARAMS);
-    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, skyApply, SKY_PARAMS);
+    // All sky controls update IN PLACE — no rebuild/disposal (runtime rebuild races the
+    // async WebGPU submit and crashes). Star size is omitted: WebGPU Points are 1px, so a
+    // size slider would do nothing (sized stars need the Sprite+instancing path).
+    slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS);
+    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setSunSize(SKY_PARAMS.sunSize), SKY_PARAMS);
+    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setMilkyWayIntensity(SKY_PARAMS.milkyWayIntensity), SKY_PARAMS);
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
   }
 }).catch(err => {
