@@ -97,15 +97,14 @@ export function createForestGPU(opts) {
     })().compute(1));
   }
 
-  // ---- per-variant instanced draw meshes ----
+  // ---- per-variant materials + instanced draw meshes ----
   // positionNode/normalNode read the DRAW buffer at the variant's region and apply
-  // per-instance yaw rotation + uniform scale + world translation.
-  function buildMesh(g, geom, indirectAttr, materialColorRGB, leaf) {
-    const offset = g * CAP;
-    const mat = new MeshStandardNodeMaterial({
-      vertexColors: true, roughness: leaf ? 1.0 : 0.9, metalness: 0.0,
-      side: leaf ? THREE.DoubleSide : THREE.FrontSide,
-    });
+  // per-instance yaw rotation + uniform scale + world translation. Each variant gets
+  // its OWN materials (the region offset is baked into positionNode); the leaf material
+  // is shared between the variant's leaves and shadow meshes (same instances/transform).
+  // Texture/colorNode binding is deferred to applyTextureSet() so the viewer drives the
+  // same procedural-bark / authored-map logic it uses for the baked path.
+  function instanceNodes(offset) {
     const recBase = uint(offset).add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);                  // (x,y,z,scale)
     const rec1 = draw.element(recBase.add(uint(1)));     // (yaw,...)
@@ -121,26 +120,31 @@ export function createForestGPU(opts) {
     );
     const nx = normalLocal.x, ny = normalLocal.y, nz = normalLocal.z;
     const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
-    mat.positionNode = world;
-    mat.normalNode = nWorld;
-    if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(world, nWorld);
-
+    return { world, nWorld };
+  }
+  function drawMesh(geom, mat, indirectAttr, castShadow) {
     const g2 = geom.clone();
     g2.instanceCount = CAP;
     g2.indirect = indirectAttr;
     const mesh = new THREE.Mesh(g2, mat);
     mesh.frustumCulled = false;
-    mesh.castShadow = !leaf || geom === palette.variants[g].shadow;  // branches + shadow cast
+    mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
     return mesh;
   }
 
-  const meshes = [];
+  const branchMats = [], leafMats = [], meshes = [];
   for (let g = 0; g < V; g++) {
     const variant = palette.variants[g];
-    meshes.push(buildMesh(g, variant.branches, indirectAttrs[g].branches, null, false));
-    meshes.push(buildMesh(g, variant.leaves, indirectAttrs[g].leaves, null, true));
-    meshes.push(buildMesh(g, variant.shadow, indirectAttrs[g].shadow, null, true));
+    const { world, nWorld } = instanceNodes(g * CAP);
+    const branchMat = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0 });
+    const leafMat = new MeshStandardNodeMaterial({ vertexColors: true, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
+    for (const m of [branchMat, leafMat]) { m.positionNode = world; m.normalNode = nWorld; }
+    if (opts.addEmissive) { branchMat.emissiveNode = opts.addEmissive(world, nWorld); leafMat.emissiveNode = opts.addEmissive(world, nWorld); }
+    branchMats.push(branchMat); leafMats.push(leafMat);
+    meshes.push(drawMesh(variant.branches, branchMat, indirectAttrs[g].branches, true));
+    meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leaves, false));   // leaves don't cast
+    meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadow, true));    // shadow subset casts
   }
 
   // ---- CPU side: per-chunk records -> global source buffer ----
@@ -184,6 +188,9 @@ export function createForestGPU(opts) {
 
   return {
     meshes,
+    // Drive the same material binding the baked path uses: fn(branchMat, leafMat) is
+    // called for every variant (procedural bark colorNode, or authored bark/leaf maps).
+    applyTextureSet(fn) { for (let g = 0; g < V; g++) fn(branchMats[g], leafMats[g]); },
     setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
     clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
     setMaxDist(d) { uMaxDist.value = d; },

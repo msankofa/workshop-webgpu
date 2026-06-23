@@ -484,7 +484,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     forestGPU = createForestGPU({
       renderer, camera, palette, heightAt: terrainHeight, treeBaseOffset: params.treeBaseOffset,
       maxDist: terrain.size ?? 350,
-      addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
+      // No clustered point-light emissive on trees: the baked path doesn't apply it, so
+      // adding it here made the gpu trees light differently (the "weird lighting").
     });
     forestGPURef = forestGPU;
     scene.add(...forestGPU.meshes);
@@ -530,10 +531,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   // bind the set's maps onto the merged branch/leaf materials (tint still
   // multiplies the map via vertexColors). Only ever called with a READY set, so it
   // never assigns a null texture (which crashes the WebGPU node-material observer).
-  function applyTextureSet(s) {
-    if (!branchMat || !leafMat) return;        // materials not built yet (first regenerate)
-    if (!s || !s.ready) return;                // never bind a not-ready set (null map)
-    const bMat = branchMat, lMat = leafMat;
+  // Bind one branch/leaf material pair to a ready texture set (procedural bark colorNode
+  // or authored maps). Shared by the baked path (single material pair) and the gpu path
+  // (one pair per variant). NB: the gpu materials override normalNode for instance yaw,
+  // so an authored bark normalMap is not applied there (acceptable for v1).
+  function bindTreeMaterials(bMat, lMat, s) {
     if (s.mode === 'procedural') {
       bMat.map = null;
       bMat.normalMap = null;
@@ -551,6 +553,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     }
     bMat.needsUpdate = true;
     lMat.needsUpdate = true;
+  }
+  function applyTextureSet(s) {
+    if (!s || !s.ready) return;                // never bind a not-ready set (null map)
+    if (forestGPU) forestGPU.applyTextureSet((b, l) => bindTreeMaterials(b, l, s));
+    if (branchMat && leafMat) bindTreeMaterials(branchMat, leafMat, s);   // baked path
   }
   function proceduralBarkColorNode() {
     const uv = attribute('uv', 'vec2');
