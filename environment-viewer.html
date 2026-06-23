@@ -1824,6 +1824,9 @@ async function animate() {
   // SP4c: composite through the post stack when enabled, else plain render.
   if (postFX && postFX.enabled) await postFX.renderAsync();
   else renderer.render(scene, camera);
+  // Drain queued sky disposals here — after this frame's submit and inside the frame guard,
+  // so the detached objects are never freed while a submit still references them.
+  if (skyRef) skyRef.flushDisposals();
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
   if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed

@@ -79,19 +79,20 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   let radius = skyRadius(camera.far, size);
   let dir = (sunDir || new THREE.Vector3(0.6, 0.55, 0.58)).clone().normalize();
 
-  let dome, sun, sunTex;
+  let dome, sunSprite, moonSprite;
 
   function build() {
     // dome
     dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 40, 18), makeSkyDomeMaterial(palette));
     dome.renderOrder = -1000; dome.frustumCulled = false;
     group.add(dome);
-    // primary sun/moon
-    const moon = isMoonBody(palette);
-    sunTex = makeSkySunTexture(moon ? palette.moonColor : palette.sun, { moon });
-    const sm = new SpriteNodeMaterial({ map: sunTex, transparent: true, depthWrite: false }); sm.fog = false;
-    sun = new THREE.Sprite(sm); sun.renderOrder = -996;
-    group.add(sun);
+    // Build BOTH the sun disc and the moon disc up front. Switching between them is a
+    // visibility toggle (see setCelestialType) — NOT a rebuild — so the Sun/Moon control
+    // never disposes/recreates GPU resources mid-render (the cause of the night freeze).
+    sunSprite  = makeDisc(palette.sun,       false);
+    moonSprite = makeDisc(palette.moonColor, true);
+    group.add(sunSprite, moonSprite);
+    updateDiscVisibility();
     placeSun();
     // stars (parts.* let the viewer bisect which object triggers a GPU error)
     if (parts.stars !== false) {
@@ -110,29 +111,28 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     if (scene) scene.background = _c(palette.bottom);
   }
 
-  function placeSun() {
-    const p = sunSpritePlacement([dir.x, dir.y, dir.z], radius, palette);
-    sun.position.set(p.position.x, p.position.y, p.position.z);
-    sun.scale.set(p.scale, p.scale, 1);
+  function makeDisc(color, moon) {
+    const tex = makeSkySunTexture(color, { moon });
+    const m = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
+    m.fog = false;
+    const spr = new THREE.Sprite(m);
+    spr.renderOrder = -996;
+    spr.userData.moon = moon;
+    return spr;
   }
 
-  // Defer GPU buffer disposal by 3 frames so any in-flight WebGPU submit that still
-  // references these resources completes first. Disposing synchronously here causes
-  // "Buffer used in submit while destroyed" → device loss → freeze. Mirrors the viewer's
-  // disposeTextureSetSoon(). `root` is detached from the scene before this is called.
-  const raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (fn => setTimeout(fn, 16));
-  function disposeNodeTreeSoon(root) {
-    raf(() => raf(() => raf(() => {
-      root.traverse(o => {
-        if (o.geometry) o.geometry.dispose();
-        const mat = o.material;
-        if (mat) {
-          if (mat.map && mat.map.userData?.proceduralSkyTexture) mat.map.dispose();
-          mat.dispose();
-        }
-      });
-    })));
+  function updateDiscVisibility() {
+    const moon = isMoonBody(palette);
+    if (sunSprite)  sunSprite.visible  = !moon;
+    if (moonSprite) moonSprite.visible = moon;
   }
+
+  function placeDisc(spr) {
+    const p = sunSpritePlacement([dir.x, dir.y, dir.z], radius, { ...palette, celestialType: spr.userData.moon ? 'moon' : 'sun' });
+    spr.position.set(p.position.x, p.position.y, p.position.z);
+    spr.scale.set(p.scale, p.scale, 1);
+  }
+  function placeSun() { if (sunSprite) placeDisc(sunSprite); if (moonSprite) placeDisc(moonSprite); }
 
   build();
 
@@ -143,22 +143,39 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     return old;
   }
 
+  // Disposal is queued, never run inline or from a bare rAF (both can race an in-flight
+  // WebGPU submit → "Buffer used in submit while destroyed"). The viewer drains the queue
+  // via flushDisposals() at a safe point in its loop (after the frame's render), when the
+  // detached objects are guaranteed not to be referenced by any pending submit.
+  const _pending = [];
+  function disposeTree(root) {
+    root.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      const mat = o.material;
+      if (mat) {
+        if (mat.map && mat.map.userData?.proceduralSkyTexture) mat.map.dispose();
+        mat.dispose();
+      }
+    });
+  }
+
   function rebuild(r) {
     const nr = r ?? skyRadius(camera.far, size);
-    const old = detachAll();   // swap first: build the new sky, dispose the old later
+    _pending.push(detachAll());   // swap first: build the new sky, dispose the old later
     radius = nr;
     build();
-    disposeNodeTreeSoon(old);
   }
 
   return {
     group,
-    setSunDir(v) { dir.copy(v).normalize(); if (sun) placeSun(); },
+    setSunDir(v) { dir.copy(v).normalize(); placeSun(); },
     setPalette(o) { palette = makePalette(o); rebuild(radius); },
-    setCelestialType(type) { palette.celestialType = type; rebuild(radius); },
+    // Sun/Moon switch is a pure visibility toggle — no rebuild, no disposal.
+    setCelestialType(type) { palette.celestialType = type; updateDiscVisibility(); },
     rebuild,
     update(/* seconds */) { /* twinkle/gas animate on the GPU via the `time` node */ },
-    dispose() { disposeNodeTreeSoon(detachAll()); group.removeFromParent(); },
+    flushDisposals() { while (_pending.length) disposeTree(_pending.pop()); },
+    dispose() { _pending.push(detachAll()); this.flushDisposals(); group.removeFromParent(); },
     get radius() { return radius; },
     get isMoon() { return isMoonBody(palette); },
   };
