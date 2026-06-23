@@ -1459,7 +1459,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
     bodies:   !['nobodies', 'domeonly'].includes(SKY_MODE),
   };
-  import('./sky.js').then(({ createSky }) => {
+  import('./sky.js?v=sp6c').then(({ createSky }) => {
     skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts: skyParts });
     scene.add(skyRef.group);
     applyCelestialLight();
