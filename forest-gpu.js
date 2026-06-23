@@ -183,12 +183,12 @@ export function createForestGPU(opts) {
     clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
     setMaxDist(d) { uMaxDist.value = d; },
     // Awaited so the reset->cull->finalize chain is submitted before the draw reads the
-    // indirect instanceCount (unawaited races the draw; see grass-compute.js).
+    // indirect instanceCount (unawaited races the draw; see grass-compute.js). The whole
+    // chain goes in ONE computeAsync([...]) submit (three dispatches the array in order on
+    // a single encoder): 14 separate awaited submits/frame were the gpu path's CPU cost.
     async update() {
       uCam.value.set(camera.position.x, camera.position.z);
-      await renderer.computeAsync(reset);
-      await renderer.computeAsync(cull);
-      for (const f of finalizers) await renderer.computeAsync(f);
+      await renderer.computeAsync([reset, cull, ...finalizers]);
     },
     get stats() { return { draws: V * 3, instances: cpuInstances, variants: V }; },
     dispose() { meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); }); },
