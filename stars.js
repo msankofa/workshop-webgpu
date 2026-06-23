@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { PointsNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
 import { Fn, attribute, uniform, float, vec3, vec4, sin, cos, floor, fract, abs, pow,
-  length, smoothstep, mix, positionLocal, normalize, uv, max, dot, time } from 'three/tsl';
+  length, smoothstep, mix, positionLocal, normalize, pointUV, max, dot, time } from 'three/tsl';
 
 // Shared builder: a Points cloud with per-star twinkle attributes → GPU-animated size +
 // brightness, soft round sprites. `data` is a generateStars()/generateMilkyWay() result.
@@ -30,8 +30,10 @@ function buildPoints(data, { color, opacity, twinkle, renderOrder }) {
   // twinkle factor in ~[1-strength, 1+strength]
   const tw = float(1).add(attribute('aStrength').mul(sin(time.mul(attribute('aSpeed')).add(attribute('aPhase')))));
   mat.sizeNode = attribute('aSize').mul(max(tw, float(0.2)));
-  // Soft round point: radial falloff across the point sprite UV; modulated by brightness+twinkle.
-  const d = length(uv().sub(0.5));
+  // Soft round point: radial falloff across the point-sprite coordinate (pointUV is the
+  // gl_PointCoord equivalent — Points geometry has no "uv" attribute, so uv() would fail
+  // to compile). Modulated by brightness + twinkle.
+  const d = length(pointUV.sub(0.5));
   const soft = smoothstep(0.5, 0.1, d);
   mat.colorNode = vec4(uColor.mul(attribute('aBright')), soft.mul(attribute('aBright')).mul(tw).mul(uOpacity));
 
