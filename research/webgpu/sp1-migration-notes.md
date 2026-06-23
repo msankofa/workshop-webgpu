@@ -521,9 +521,15 @@ applies `trunkIndex.resolve` after the ground lift, lateral only. Registration i
 with no geometry rebuild, so it streams with chunks spike-free. Trunk radius `1.2·scale` is a tunable
 constant (`TRUNK_RADIUS_PER_SCALE`).
 
-## Deferred (Phase B follow-up)
-- **Creature** trunk collision. The spec permits steering-based avoidance for creatures, so player
-  solidity shipped first. Wiring creatures needs `trunkIndex.resolve` threaded through
-  `port-creature-bridge.js` into each creature's `physicsStep` (`port-creature-system.js:2386`, right
-  after `this.pos.addScaledVector(this.vel, h)`), a lateral XZ push there. Deferred to keep the
-  sensitive creature sim untouched until wanted.
+## Creatures (also complete)
+Creatures get both layers, mirroring how they handle each other: **steering** avoidance and a
+**hard backstop**. A `resolveTrunks` resolver and a `nearbyTrunks` query are threaded from the viewer
+through `port-creature-bridge.js` into `port-creature-system.js`. In `computeSteering`, trunk
+avoidance is folded into the `_sep` separation term with the same falloff + close-range boost used
+for creature-creature separation (so it feels identical); `TRUNK_AVOID_MARGIN = 1.2` sets how early
+they start curving. In `physicsStep` (`:2386`, after position integration) `resolveTrunks` does a
+lateral push-out as a backstop so they can never clip a trunk. The index gained `nearby(px,pz)`
+(Node-tested) for the steering query. Both resolver params default to `null`, so the system stays
+backward-compatible.
+
+Phase B is complete (player + creatures). Phase C (rocks) waits until rock meshes exist.

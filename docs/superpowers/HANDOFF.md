@@ -78,14 +78,16 @@ _Last updated 2026-06-22. Working tree clean; everything below is committed on b
      the octree + the `terrain-system.js` collider machinery are retired (`getHeight` stays). dd9 result:
      octree-rebuild spike gone (cpuMs max 108->32 ms, p95 39->31 ms, `octreeMs` column removed). Trace
      `research/stats/perf-2026-06-22T23-33-03-053Z-collision-phase-a.csv`; folded into notes + paper.
-   - **B: DONE (player; complete, browser-checkpointed).** `resolveTrunks` + `createTrunkIndex` in
-     `collision.js` (Node-tested, 25 asserts). Forest baking registers `{x,z,r=1.2*scale}` per chunk
-     (`finishTreeJob`/`disposeTreeChunk`); `updateFPSPlayer` does lateral trunk push-out. Trunks are
-     now solid for the player. **Follow-up:** creature trunk push-out (thread `trunkIndex.resolve`
-     into `port-creature-system.js:2386`); deferred to keep the creature sim untouched.
-   - **C (next):** rock/obstacle BVH via `three-mesh-bvh` (addon; pin to r0.184) for walk-on + walls,
-     folded into a `supportAt`/`WorldCollision` abstraction. `collision.js` is structured to grow into this.
-   Cull math is Node-testable first (the `light-cluster.js` pattern). A and B (player) done; C is next.
+   - **B: DONE (player + creatures, browser-checkpointed).** `resolveTrunks` + `createTrunkIndex`
+     (`nearby`/`resolve`) in `collision.js` (Node-tested, 27 asserts). Forest baking registers
+     `{x,z,r=1.2*scale}` per chunk (`finishTreeJob`/`disposeTreeChunk`); `updateFPSPlayer` does lateral
+     push-out. Creatures get the same: steering avoidance folded into `_sep` in `computeSteering`
+     (`TRUNK_AVOID_MARGIN`) + a `resolveTrunks` push-out backstop in `physicsStep` (`:2386`), threaded
+     via `port-creature-bridge.js`. Trunks are solid for everyone.
+   - **C: WAITING on rock meshes.** rock/obstacle BVH via `three-mesh-bvh` (addon; pin to r0.184) for
+     walk-on + walls, folded into a `supportAt`/`WorldCollision` abstraction. `collision.js` is
+     structured to grow into this. No rocks in the world yet, so deferred.
+   Cull math is Node-testable first (the `light-cluster.js` pattern). A and B done; C waits for rocks.
 2. **Tree/forest GPU optimization** (the other half of the residual per-chunk scaling). Likely
    instanced/GPU-driven like grass; the current forest is baked per chunk in `trees.js`.
 3. **GTAO (post v2):** addon `ao(depth, normal, camera)`; needs an MRT(output, normal) scene `pass`. Deferred.
