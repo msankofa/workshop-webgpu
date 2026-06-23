@@ -37,6 +37,9 @@ import { kindParams } from './particle-field.js';
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
 const GRASS_MODE = new URLSearchParams(location.search).get('grass') || 'gpu';
+// Forest backend: 'gpu' (default, SP6 instanced palette + compute cull + indirect draws)
+// or 'baked' (legacy main-thread per-chunk merged meshes, kept as the SP6 A/B baseline).
+const FOREST_MODE = new URLSearchParams(location.search).get('forest') || 'gpu';
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
 const infoEl = document.getElementById('info');
@@ -221,7 +224,7 @@ function updateTerrainDebug(now) {
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
-    `trees ${terrainDebug.treePlacements}\n` +
+    `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` · gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
     (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
@@ -275,6 +278,8 @@ const perfLog = {
       terrainTris: cdlodRef ? cdlodRef.triangleCount : null,
       grassChunks: terrainDebug.grassChunks,
       treePlacements: terrainDebug.treePlacements,
+      forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
+      forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
     };
   },
   maybeSample(now) {
@@ -357,7 +362,7 @@ function setFog(on) { scene.fog = on ? worldFog : null; }
 updateDrawDistance();
 
 // Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
-let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null;
+let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, forestGPURef = null;
 let terrainDecorationsDirty = false;
 let terrainDecorationsRebuildAll = false;
 let lastWaterChunkSignature = '';
@@ -453,7 +458,7 @@ function syncWaterDebug() {
 
 // Trees live in a separate module. Load it dynamically so a load failure
 // (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
-Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ createTree }, { createTextureSource }]) => {
+Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
   const params = {
     count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
@@ -461,6 +466,47 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
     treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
     leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
   };
+
+  // ---- SP6 GPU-instanced forest (?forest=gpu, default) ----------------------
+  // Bake a variant palette once, then drive it from CPU placement records: the
+  // baked main-thread path (?forest=baked) below is skipped when this is active.
+  const { placementRecords } = await import('./forest-placement.js');
+  let forestGPU = null;
+  const gpuTreeChunks = new Set();
+  const paramsForRecords = () => ({
+    ...params, masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
+    targetChunkCount: terrainSystem.targetChunkCount,
+  });
+  if (FOREST_MODE === 'gpu') {
+    const { createForestPalette } = await import('./forest-palette.js');
+    const { createForestGPU } = await import('./forest-gpu.js');
+    const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED });
+    forestGPU = createForestGPU({
+      renderer, camera, palette, heightAt: terrainHeight, treeBaseOffset: params.treeBaseOffset,
+      maxDist: terrain.size ?? 350,
+      addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
+    });
+    forestGPURef = forestGPU;
+    scene.add(...forestGPU.meshes);
+  }
+  // Sync the GPU forest to the active terrain window: stream chunks in/out, push
+  // placement records to the instance buffers, and register SP5b trunk colliders.
+  function regenerateGPU(rebuildExisting) {
+    const active = terrainSystem.activeChunks.slice();
+    const activeKeys = new Set(active.map(c => c.key));
+    for (const key of [...gpuTreeChunks]) {
+      if (!activeKeys.has(key)) { forestGPU.clearChunk(key); trunkIndex.clearTrunks(key); gpuTreeChunks.delete(key); }
+    }
+    const pr = paramsForRecords();
+    for (const chunk of active) {
+      if (!rebuildExisting && gpuTreeChunks.has(chunk.key)) continue;
+      const recs = placementRecords([chunk], pr, terrainHeight);
+      forestGPU.setChunk(chunk.key, recs);
+      trunkIndex.setTrunks(chunk.key, recs.map(r => ({ x: r.x, z: r.z, r: TRUNK_RADIUS_PER_SCALE * r.scale })));
+      gpuTreeChunks.add(chunk.key);
+    }
+    terrainDebug.treePlacements = forestGPU.stats.instances;
+  }
 
   // ---- texture-source layer (Phase 3) -------------------------------------
   // One active texture set drives the merged materials. Authored loading is
@@ -912,6 +958,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(([{ creat
   }
 
   function regenerate(rebuildExisting = true) {
+    if (FOREST_MODE === 'gpu') return regenerateGPU(rebuildExisting);
     ensureTreeResources();
     const token = ++treeBuildToken;
     const active = terrainSystem.activeChunks.slice().sort((a, b) => a.key.localeCompare(b.key));
@@ -1814,6 +1861,8 @@ async function animate() {
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
   if (grassRef) await grassRef.update(now / 1000);
+  // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
+  if (forestGPURef) await forestGPURef.update();
   // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
   // written before this frame's draw (unawaited compute races the draw → terrain flicker).
   if (cdlodRef) await cdlodRef.update();
