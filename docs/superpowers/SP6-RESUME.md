@@ -14,7 +14,13 @@ no narrating, no re-reading files already cited in the plan.
 ## Current state
 - Branch `sp1-webgpu-renderer-migration`, working tree clean. Node v20. Tests run with `node test-*.mjs`.
 - **SP5 done** (A: analytic terrain collision, octree retired; B: trunk collision player+creatures, push-out + steering). Committed.
-- **SP6 spec + plan committed.** NOTHING in SP6 implemented yet. Next action = **Plan Task 1, Step 1**.
+- **SP6 Tasks 1-5 committed** (code complete). Next action = **browser checkpoint of `?forest=gpu`**, then Task 6 (dd9 A/B + docs).
+  - T1 `forest-placement.js` + test (7 pass) — ports the LIVE baker placement (placementsForChunk + treeCountForChunk + per-tree RNG order incl. the seed draw) so gpu matches baked.
+  - T2 `forest-cull.js` + test (4 pass) — distance cull twin.
+  - T3 `forest-palette.js` — bakes V variant geoms once; flat per-species color baked in (generator geom has no color attr).
+  - T4 `forest-gpu.js` — global V*CAP src buffer (CPU-filled on chunk change), one compute cull+compact, per-variant indirect draws. **Unverified TSL.**
+  - T5 `environment-viewer.html` — `FOREST_MODE` flag, `regenerateGPU` (records+trunks per chunk), awaited per-frame update, HUD/perf fields. Baked path kept as `?forest=baked`.
+- **Likely TSL iteration points** (HANDOFF gotchas): integer index casts on `srcCounts.element(g)`/`survCounters.element(g)` (g is int), `uint()` vs `bitcast`, awaited compute order. maxDist is static (View distance at build; not re-wired to the slider).
 
 ## Scope reminder
 This plan = **GPU path only** (`?forest=gpu`, default). Keep the existing main-thread baked forest as
