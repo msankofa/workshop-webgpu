@@ -482,6 +482,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     ({ createForestPalette } = await import('./forest-palette.js'));
     ({ createForestGPU } = await import('./forest-gpu.js'));
   }
+  // Distance-cull radius must reach the farthest loaded tree (render-window diagonal),
+  // or in-window trees get culled while their trunk colliders persist -> invisible
+  // "ghost trunk" collisions. Recomputed when draw distance changes.
+  const forestCullDist = () => {
+    const r = Math.floor(terrainSystem.params.renderRadius || 1);
+    const cs = terrainSystem.params.chunkSize || 30;
+    return Math.max(terrain.size ?? 350, (r + 1) * cs * 1.6);
+  };
+  const updateForestCull = () => { if (forestGPU) forestGPU.setMaxDist(forestCullDist()); };
   // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
   // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
   // and palette geometry is baked once, so a texMode change must rebake. No clustered
@@ -492,7 +501,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED, texSet });
     forestGPU = createForestGPU({
       renderer, camera, palette, heightAt: terrainHeight,
-      treeBaseOffset: params.treeBaseOffset, maxDist: terrain.size ?? 350,
+      treeBaseOffset: params.treeBaseOffset, maxDist: forestCullDist(),
     });
     forestGPURef = forestGPU;
     scene.add(...forestGPU.meshes);
@@ -1049,6 +1058,13 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
 
   let timer; const apply = () => { clearTimeout(timer); timer = setTimeout(regenerate, 130); };
+  // Controls that change baked tree GEOMETRY (species taxonomy, leaves, base offset)
+  // need the gpu palette rebaked — placement-only re-sync (apply) can't pick them up
+  // because the palette is baked once. In baked mode this is just a normal regenerate.
+  let rbTimer; const rebakeForest = () => {
+    clearTimeout(rbTimer);
+    rbTimer = setTimeout(() => { if (FOREST_MODE === 'gpu') rebuildForestGPU(texSet); else regenerate(); }, 200);
+  };
   function slider(key, label, min, max, step, fmt, onChange, obj) {
     const P = obj || params;
     const row = document.createElement('div'); row.className = 'row';
@@ -1090,15 +1106,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   slider('sizeVar', 'Size variation', 0, 1, 0.01, f2);
   slider('skew', 'Size skew (small\u2194large)', -1, 1, 0.01, f2);
   select('varPattern', 'Variation pattern', ['random', 'noise', 'gradient']);
-  slider('species', 'Species diversity (types)', 1, 8, 1, fi);
-  slider('diversity', 'Diversity scale', 0, 1, 0.01, f2);
-  slider('generalization', 'Generalization', 0, 1, 0.01, f2);
-  slider('treeBaseOffset', 'Base offset', -1, 1, 0.02, f2);
-  slider('leafCount', 'Leaves / branch', 0, 40, 1, fi);
-  slider('leafSize', 'Leaf size', 0.2, 3, 0.01, f2);
-  slider('leafStart', 'Leaf start', 0, 0.9, 0.01, f2);
-  slider('leafSpread', 'Leaf spread', 0, 1, 0.01, f2);
-  slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct);
+  slider('species', 'Species diversity (types)', 1, 8, 1, fi, rebakeForest);
+  slider('diversity', 'Diversity scale', 0, 1, 0.01, f2, rebakeForest);
+  slider('generalization', 'Generalization', 0, 1, 0.01, f2, rebakeForest);
+  slider('treeBaseOffset', 'Base offset', -1, 1, 0.02, f2, rebakeForest);
+  slider('leafCount', 'Leaves / branch', 0, 40, 1, fi, rebakeForest);
+  slider('leafSize', 'Leaf size', 0.2, 3, 0.01, f2, rebakeForest);
+  slider('leafStart', 'Leaf start', 0, 0.9, 0.01, f2, rebakeForest);
+  slider('leafSpread', 'Leaf spread', 0, 1, 0.01, f2, rebakeForest);
+  slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct, rebakeForest);
   // Texture mode: 'procedural' uses textureless TSL/shaped leaves; 'authored' loads the
   // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
   select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
@@ -1135,6 +1151,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     // SP3: map the chunk draw-distance slider (1..12) onto CDLOD level count so the slider
     // also grows the GPU terrain's reach (each level = one bounded ring, ~flat cost).
     if (cdlodRef) cdlodRef.setViewDistance(2 + Math.round(terrain.renderRadius));
+    updateForestCull();   // grow the forest cull radius with the render window (no ghost trunks)
     updateDrawDistance();
   };
   slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain);
