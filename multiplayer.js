@@ -1,6 +1,6 @@
 // RELAY_URL: override with ?relay=wss://... for production
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
-export const RELAY_URL = params.get('relay') || 'ws://localhost:8080';
+export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.com';
 
 // ---------------------------------------------------------------------------
 // InterpolationBuffer — ring of 3 snapshots, sample at arbitrary time
