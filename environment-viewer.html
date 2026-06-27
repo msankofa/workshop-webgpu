@@ -7,7 +7,16 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
   #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
-    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none; }
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
+    max-width: calc(100vw - 280px); z-index: 5; }
+  body.gui-hidden #info,
+  body.gui-hidden #terrain-debug,
+  body.gui-hidden #perf-log,
+  body.gui-hidden #ctrl,
+  body.gui-hidden #fps,
+  body.gui-hidden #workshop-ui,
+  body.gui-hidden #port-creature-ui,
+  body.gui-hidden .walk-ui { display: none !important; }
 </style>
 </head>
 <body>
@@ -19,7 +28,8 @@
     "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
     "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
     "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
 } }
 </script>
 
@@ -33,17 +43,45 @@ import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
 import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 import { kindParams } from './particle-field.js';
+import { createFrameProfiler } from './frame-profiler.js';
+import { createEnvironmentUi } from './environment-ui.js';
+import { loadTerrainMap } from './terrain-loader.js';
+import { showStartScreen } from './start-screen.js';
+import { createMapCollider } from './map-collision.js';
+import { createHostSession, createGuestSession, GhostRenderer } from './multiplayer.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
 const GRASS_MODE = new URLSearchParams(location.search).get('grass') || 'gpu';
+const GRASS_RECULL_MODE = new URLSearchParams(location.search).get('grassRecull') || 'cell';
 // Forest backend: 'gpu' (default, SP6 instanced palette + compute cull + indirect draws)
 // or 'baked' (legacy main-thread per-chunk merged meshes, kept as the SP6 A/B baseline).
 const FOREST_MODE = new URLSearchParams(location.search).get('forest') || 'gpu';
+const CREATURE_MODE = new URLSearchParams(location.search).get('creatures') || 'on';
+// Timestamp queries require a GPU->CPU readback when resolved. Keep them opt-in so
+// the normal frame profiler measures the app instead of the diagnostic readback.
+const TIMESTAMP_MODE = new URLSearchParams(location.search).get('timestamps') || 'off';
+let MAP_KEY = new URLSearchParams(location.search).get('map') || null;
+
+let mpSession = null;       // { destroy() } — current host or guest session
+let mpGhostRenderer = null; // GhostRenderer instance (guest mode only)
+let mpRole = null;          // 'host' | 'guest' | null
+
+if (!MAP_KEY) {
+  const choice = await showStartScreen();
+  if (choice.mode === 'map') {
+    const url = new URL(location.href);
+    url.searchParams.set('map', choice.mapKey);
+    location.replace(url.toString());
+    await new Promise(() => {});
+  }
+}
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '\u26A0 ' + msg; infoEl.style.color = '#ffb3b3'; } }
+function showStatus(msg) { if (infoEl) { infoEl.textContent = msg; infoEl.style.color = '#8a93a3'; } }
+const nextPaint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 addEventListener('error', e => showError(e.message || 'script error'));
 addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
 
@@ -59,7 +97,7 @@ if (navigator.gpu) {
     maxBufferSize: adapter.limits.maxBufferSize,
   };
 }
-const renderer = new WebGPURenderer({ antialias: true, requiredLimits: gpuRequiredLimits });
+const renderer = new WebGPURenderer({ antialias: true, requiredLimits: gpuRequiredLimits, trackTimestamp: TIMESTAMP_MODE === 'on' });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -67,8 +105,105 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 await renderer.init();
 
+// ===================== multiplayer UI =====================
+function _mpSetStatus(msg) {
+  const el = document.getElementById('mp-status');
+  if (el) el.textContent = msg;
+}
+
+function _mpGenerateCode() {
+  return Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+
+function _mpGhostDestroy() {
+  if (mpGhostRenderer) { mpGhostRenderer.destroy(); mpGhostRenderer = null; }
+}
+
+document.getElementById('mp-host-btn').addEventListener('click', () => {
+  if (mpSession) { mpSession.destroy(); mpSession = null; mpRole = null; _mpSetStatus(''); return; }
+  const code = document.getElementById('mp-room').value.trim().toUpperCase() || _mpGenerateCode();
+  document.getElementById('mp-room').value = code;
+  mpRole = 'host';
+
+  function getState() {
+    const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
+      id,
+      p: [c.pos.x, c.pos.y, c.pos.z],
+      q: [c.group.quaternion.x, c.group.quaternion.y, c.group.quaternion.z, c.group.quaternion.w],
+      hp: c.health / 100,
+      feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
+      hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
+    }));
+    return { creatures, players: [] };
+  }
+
+  mpSession = createHostSession(code, getState);
+  _mpSetStatus(`hosting ${code}`);
+});
+
+document.getElementById('mp-join-btn').addEventListener('click', () => {
+  if (mpSession) { mpSession.destroy(); mpSession = null; mpRole = null; _mpGhostDestroy(); _mpSetStatus(''); return; }
+  const code = document.getElementById('mp-room').value.trim().toUpperCase();
+  if (!code) { _mpSetStatus('enter room code'); return; }
+  mpRole = 'guest';
+  mpGhostRenderer = new GhostRenderer(scene, THREE);
+
+  mpSession = createGuestSession(code, state => {
+    mpGhostRenderer.update(state);
+  });
+  _mpSetStatus(`joined ${code}`);
+});
+
+window.addEventListener('mp:connected', e => {
+  _mpSetStatus(`hosting ${e.detail.room} ●`);
+});
+
+window.addEventListener('mp:joined', e => {
+  _mpSetStatus(`joined ${document.getElementById('mp-room').value} (${e.detail.guestCount} guest${e.detail.guestCount !== 1 ? 's' : ''})`);
+});
+
+window.addEventListener('mp:host_left', () => {
+  _mpSetStatus('host disconnected');
+});
+
+window.addEventListener('mp:guest_joined', e => {
+  const room = document.getElementById('mp-room').value;
+  _mpSetStatus(`hosting ${room} (${e.detail.guestCount ?? '?'} guest)`);
+});
+
+window.addEventListener('mp:guest_left', () => {
+  _mpSetStatus(`hosting ${document.getElementById('mp-room').value}`);
+});
+
+window.addEventListener('mp:guest_input', e => {
+  const msg = e.detail;
+  if (msg.type === 'set_target') {
+    portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
+  } else if (msg.type === 'set_behavior') {
+    portCreatures?.system?.setBehavior(msg.behavior);
+  }
+});
+// ===================== end multiplayer UI =====================
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d23);
+
+let loadedMap = null;
+let mapCollider = null;
+if (MAP_KEY) {
+  showStatus(`loading authored map ${MAP_KEY}...`);
+  await nextPaint();
+  loadedMap = await loadTerrainMap(MAP_KEY, { scene });
+  showStatus(`building authored map collision...`);
+  await nextPaint();
+  try {
+    mapCollider = createMapCollider(loadedMap.root);
+    showStatus(`authored map loaded (${mapCollider.triangleCount.toLocaleString()} collision triangles)`);
+  } catch (err) {
+    mapCollider = null;
+    showError(`map loaded, collision disabled: ${err.message || err}`);
+  }
+}
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
 camera.position.set(22, 16, 26);
@@ -111,6 +246,10 @@ function skyLightDir() {
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
 // terrain extent — the terrain is chunked/infinite and sized by draw distance.
 const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
+if (loadedMap) {
+  terrain.waterLevel = loadedMap.seaLevel;
+  terrain.size = Math.max(300, loadedMap.worldX, loadedMap.worldZ);
+}
 
 // SP3: ?terrain=gpu (default) renders the ground with the GPU-driven CDLOD system and puts
 // the chunk manager in 'external' mode (records + colliders only, no visual chunk meshes);
@@ -119,10 +258,58 @@ const TERRAIN_MODE = new URLSearchParams(location.search).get('terrain') || 'gpu
 const terrainSystem = createTerrainSystem({ params: { ...terrain, visualMode: TERRAIN_MODE === 'gpu' ? 'external' : 'mesh' } });
 const terrainGroup = terrainSystem.group;
 let cdlodRef = null;
-let ground = terrainSystem.materialPatchTarget;
-function terrainHeight(x, z) { return terrainSystem.getHeight(x, z); }
+let ground = loadedMap ? loadedMap.root : terrainSystem.materialPatchTarget;
+const _mapHeightRayOrigin = new THREE.Vector3();
+function terrainHeight(x, z) {
+  if (!loadedMap) return terrainSystem.getHeight(x, z);
+  if (mapCollider) {
+    const box = mapCollider.geometry.boundingBox;
+    const top = (box?.max.y ?? loadedMap.worldYMax ?? loadedMap.heightMax ?? 64) + 4;
+    const bottom = (box?.min.y ?? loadedMap.worldYMin ?? loadedMap.heightMin ?? -64) - 4;
+    const hit = mapCollider.raycastDown(_mapHeightRayOrigin.set(x, top, z), top - bottom);
+    if (hit) return hit.point.y;
+  }
+  return loadedMap.heightAt(x, z);
+}
+function bakeHeightTexture(heightFn, bounds, resolution = 512) {
+  const { minX, minZ, worldX, worldZ } = bounds;
+  const data = new Float32Array(resolution * resolution);
+  for (let iz = 0; iz < resolution; iz++) {
+    for (let ix = 0; ix < resolution; ix++) {
+      const wx = minX + (ix / (resolution - 1)) * worldX;
+      const wz = minZ + (iz / (resolution - 1)) * worldZ;
+      data[iz * resolution + ix] = heightFn(wx, wz);
+    }
+  }
+  const tex = new THREE.DataTexture(data, resolution, resolution, THREE.RedFormat, THREE.FloatType);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+if (loadedMap) {
+  showStatus('baking height texture for grass...');
+  await nextPaint();
+  const hBounds = {
+    minX: -loadedMap.worldX * 0.5,
+    minZ: -loadedMap.worldZ * 0.5,
+    worldX: loadedMap.worldX,
+    worldZ: loadedMap.worldZ,
+  };
+  loadedMap.heightTex = bakeHeightTexture(terrainHeight, hBounds);
+  loadedMap.heightTexBounds = hBounds;
+}
 const _terrainN = [0, 1, 0];
-function terrainNormal(x, z) { return terrainNormalAt(terrainSystem.params, x, z, _terrainN); }
+function terrainNormal(x, z) {
+  if (!loadedMap) return terrainNormalAt(terrainSystem.params, x, z, _terrainN);
+  const e = 0.75;
+  const hL = terrainHeight(x - e, z), hR = terrainHeight(x + e, z);
+  const hD = terrainHeight(x, z - e), hU = terrainHeight(x, z + e);
+  _terrainN[0] = hL - hR; _terrainN[1] = 2 * e; _terrainN[2] = hD - hU;
+  const inv = 1 / Math.hypot(_terrainN[0], _terrainN[1], _terrainN[2]);
+  _terrainN[0] *= inv; _terrainN[1] *= inv; _terrainN[2] *= inv;
+  return _terrainN;
+}
 const TRUNK_RADIUS_PER_SCALE = 1.2;   // trees.js trunk base radius[0] = 1.2, scaled per tree
 const trunkIndex = createTrunkIndex(terrainSystem.params.chunkSize);
 
@@ -130,16 +317,19 @@ const trunkIndex = createTrunkIndex(terrainSystem.params.chunkSize);
 // terrain can inject the additive clustered-light term into its emissiveNode. ?lights=off
 // disables it for an A/B perf trace.
 const LIGHTS_MODE = new URLSearchParams(location.search).get('lights') || 'on';
+const LIGHTS_ANIMATE = new URLSearchParams(location.search).get('lightsAnimate') === 'on';
 let clusteredLightsRef = null;
 if (TERRAIN_MODE === 'gpu' && LIGHTS_MODE !== 'off') {
   const { createClusteredLights } = await import('./clustered-lights.js');
-  clusteredLightsRef = createClusteredLights({ renderer, camera, count: 256, far: 600 });
+  clusteredLightsRef = createClusteredLights({ renderer, camera, count: 256, far: 600, animate: LIGHTS_ANIMATE });
+  window._dbg = window._dbg || {};
+  window._dbg.clusteredLightsRef = clusteredLightsRef;
 }
 
 // SP3: load the GPU CDLOD ground at top level (top-level await is already used above for
 // renderer.init), so `ground` points at the CDLOD mesh BEFORE water loads and binds its
 // caustic projection to the ground material.
-if (TERRAIN_MODE === 'gpu') {
+if (!loadedMap && TERRAIN_MODE === 'gpu') {
   const { createCdlodTerrain } = await import('./cdlod-terrain.js');
   cdlodRef = createCdlodTerrain({
     renderer, camera,
@@ -180,14 +370,39 @@ if (PARTICLES_MODE !== 'off') {
   addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90 });
 }
 
-// SP4c: node post-processing (bloom + tonemap + grade). ?post=off → plain renderer.render.
+// SP4c: node post-processing. ?post=off → plain renderer.render; diagnostic graph modes:
+// scene, output, grade, full/on.
 const POST_MODE = new URLSearchParams(location.search).get('post') || 'on';
 let postFX = null;
 if (POST_MODE !== 'off') {
   const { createPostFX } = await import('./post-fx.js');
-  postFX = createPostFX({ renderer, scene, camera, params: {} });
+  postFX = createPostFX({ renderer, scene, camera, params: { mode: POST_MODE } });
 }
-const terrainDebug = { grassChunks: 0, grassPending: 0, waterChunks: 0, waterCandidates: 0, waterPending: 0, waterMinBed: Infinity, waterLoaded: false, waterVersion: '', treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0 };
+const terrainDebug = {
+  grassChunks: 0, grassPending: 0,
+  waterChunks: 0, waterCandidates: 0, waterPending: 0, waterDry: 0,
+  waterMeshes: 0, causticMeshes: 0, waterDraws: 0, causticDraws: 0,
+  waterTriangles: 0, causticTriangles: 0, waterVertices: 0,
+  waterMinBed: Infinity, waterLoaded: false, waterVersion: '',
+  treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
+};
+const frameProfiler = createFrameProfiler({ smoothing: 0.2 });
+let environmentUi = null;
+function setFixedPanelPosition(panel, x, y, margin = 10) {
+  panel.style.right = 'auto';
+  const maxX = Math.max(margin, window.innerWidth - panel.offsetWidth - margin);
+  const maxY = Math.max(margin, window.innerHeight - panel.offsetHeight - margin);
+  panel.style.left = Math.max(margin, Math.min(maxX, x)) + 'px';
+  panel.style.top = Math.max(margin, Math.min(maxY, y)) + 'px';
+}
+function markPanelMoved(panel) { panel.dataset.userMoved = '1'; }
+function clampMovedPanels() {
+  for (const panel of document.querySelectorAll('[data-user-moved="1"]')) {
+    const r = panel.getBoundingClientRect();
+    setFixedPanelPosition(panel, r.left, r.top);
+  }
+}
+window.addEventListener('resize', clampMovedPanels);
 const portCreatures = createEnvironmentPortCreatures({
   scene,
   renderer,
@@ -200,34 +415,39 @@ const portCreatures = createEnvironmentPortCreatures({
   nearbyTrunks: (px, pz) => trunkIndex.nearby(px, pz),
   rebuildWorld,
   isInteractionEnabled: () => !fpsMode,
+  mode: CREATURE_MODE,
 });
 const terrainDebugEl = document.createElement('div');
+terrainDebugEl.id = 'terrain-debug';
 terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
 document.body.appendChild(terrainDebugEl);
 function updateTerrainDebug(now) {
   if (now - terrainDebug.lastUpdate < 250) return;
   terrainDebug.lastUpdate = now;
+  syncWaterDebug();
   // renderer.info reflects the previous frame (HUD updates before render()); one
   // frame stale is fine for a perf readout. Triangles counts the depth/shadow pass
   // too, so it can exceed the visible geometry.
   const ri = renderer.info;
   const cs = portCreatures.stats;
   terrainDebugEl.textContent =
-    `fps ${terrainDebug.fps.toFixed(0)}  calls ${ri?.render?.calls ?? 0}  tris ${(ri?.render?.triangles ?? 0).toLocaleString()}\n` +
+    `fps ${terrainDebug.fps.toFixed(0)}  calls/frame ${ri?.render?.frameCalls ?? 0}  calls total ${ri?.render?.calls ?? 0}  tris ${(ri?.render?.triangles ?? 0).toLocaleString()}\n` +
     `geom ${ri?.memory?.geometries ?? 0}  tex ${ri?.memory?.textures ?? 0}\n` +
     `creatures ${cs.count} vis ${cs.visible} sim ${cs.sim} rend ${cs.rendered} body ${cs.bodyOnly} ms ${cs.updateMs.toFixed(2)}\n` +
+    `cre stages lod ${cs.lodMs.toFixed(2)} obj ${cs.objectsMs.toFixed(2)} beh ${cs.behaviorMs.toFixed(2)} steer ${cs.steeringMs.toFixed(2)} phys ${cs.physicsMs.toFixed(2)} rend ${cs.renderMs.toFixed(2)}\n` +
     `cre lod ${cs.tiers.join('/')} ik ${cs.ikFull}/${cs.ikCheap} shadows ${cs.shadowCasters}\n` +
     `terrain ${terrainSystem.renderMode}${cdlodRef ? ' · cdlod' : ''}\n` +
     (cdlodRef
       ? `terrain draws ${cdlodRef.drawCount} · tris ${cdlodRef.triangleCount.toLocaleString()}\n`
-      : `chunks ${terrainSystem.activeChunks.length}/${terrainSystem.targetChunkCount}\n`) +
+      : `chunks ${activeTerrainChunks().length}/${targetTerrainChunkCount()}\n`) +
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
-    `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
+    `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} dry ${terrainDebug.waterDry} pending ${terrainDebug.waterPending} tris ${terrainDebug.waterTriangles.toLocaleString()} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` · gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
     (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
+  if (environmentUi) environmentUi.updatePerf(perfLog.snapshot(now));
 }
 
 // ===================== perf time-series log =====================
@@ -240,9 +460,9 @@ function updateTerrainDebug(now) {
 let perfLogUI = null;
 const perfLog = {
   intervalMs: 1000,
-  maxSamples: 1800,           // ~30 min at 1 s; oldest samples are ring-trimmed
+  maxSamples: 600,            // ~10 min at 1 s; oldest samples are ring-trimmed
   samples: [],
-  recording: true,
+  recording: new URLSearchParams(location.search).get('perf') === 'on',
   startTime: 0,
   lastSample: -Infinity,
   snapshot(now) {
@@ -253,7 +473,15 @@ const perfLog = {
       fps: +terrainDebug.fps.toFixed(1),
       cpuMs: +terrainDebug.cpuMs.toFixed(3),            // CPU time encoding+submitting the frame (the SP1 perf-gate metric)
       backend: renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
-      calls: r?.render?.calls ?? 0,
+      postMode: POST_MODE,
+      creatureMode: CREATURE_MODE,
+      creatureInstancingMode: cs.instancingMode,
+      calls: r?.render?.calls ?? 0,                     // cumulative renderer calls; retained for old traces
+      renderCallsTotal: r?.render?.calls ?? 0,
+      renderFrameCalls: r?.render?.frameCalls ?? 0,
+      renderDrawCalls: r?.render?.drawCalls ?? 0,
+      computeCallsTotal: r?.compute?.calls ?? 0,
+      computeFrameCalls: r?.compute?.frameCalls ?? 0,
       triangles: r?.render?.triangles ?? 0,
       geometries: r?.memory?.geometries ?? 0,
       textures: r?.memory?.textures ?? 0,
@@ -263,6 +491,21 @@ const perfLog = {
       creatureRendered: cs.rendered,
       creatureBodyOnly: cs.bodyOnly,
       creatureMs: +cs.updateMs.toFixed(3),
+      creatureLodMs: +cs.lodMs.toFixed(3),
+      creatureObjectsMs: +cs.objectsMs.toFixed(3),
+      creatureBehaviorMs: +cs.behaviorMs.toFixed(3),
+      creatureSteeringMs: +cs.steeringMs.toFixed(3),
+      creaturePhysicsMs: +cs.physicsMs.toFixed(3),
+      creatureRenderMs: +cs.renderMs.toFixed(3),
+      creatureSelectionMs: +cs.selectionMs.toFixed(3),
+      creaturePerfDetailDistance: cs.perfDetailDistance,
+      creaturePerfBodyOnlyDistance: cs.perfBodyOnlyDistance,
+      creaturePerfHideDistance: cs.perfHideDistance,
+      creaturePerfFullUpdateStride: cs.perfFullUpdateStride,
+      creaturePerfBodyUpdateStride: cs.perfBodyUpdateStride,
+      creaturePerfFarUpdateStride: cs.perfFarUpdateStride,
+      creaturePerfIkDistance: cs.perfIkDistance,
+      creaturePerfShadowDistance: cs.perfShadowDistance,
       creatureLod0: cs.tiers[0],
       creatureLod1: cs.tiers[1],
       creatureLod2: cs.tiers[2],
@@ -270,16 +513,38 @@ const perfLog = {
       creatureIkFull: cs.ikFull,
       creatureIkCheap: cs.ikCheap,
       creatureShadows: cs.shadowCasters,
+      creatureInstancedBoxes: cs.instancedBoxes,
+      creatureInstancedLimbs: cs.instancedLimbs,
+      creatureInstancedJoints: cs.instancedJoints,
+      creatureInstancedHandsFeet: cs.instancedHandsFeet,
+      creatureInstancedShadows: cs.instancedShadows,
       terrainMode: cdlodRef ? 'cdlod' : terrainSystem.renderMode,
-      drawChunks: terrainSystem.activeChunks.length,
-      targetChunks: terrainSystem.targetChunkCount,
+      drawChunks: activeTerrainChunks().length,
+      targetChunks: targetTerrainChunkCount(),
       pending: terrainSystem.pendingBuildCount,
-      terrainDraws: cdlodRef ? cdlodRef.drawCount : terrainSystem.activeChunks.length,
+      terrainDraws: cdlodRef ? cdlodRef.drawCount : activeTerrainChunks().length,
       terrainTris: cdlodRef ? cdlodRef.triangleCount : null,
       grassChunks: terrainDebug.grassChunks,
+      grassRecullMode: grassRef?.stats?.recullMode ?? null,
+      grassReculls: grassRef?.stats?.reculls ?? null,
+      grassRecullSkips: grassRef?.stats?.skippedReculls ?? null,
+      grassLastCell: grassRef?.stats?.lastCell ?? null,
+      waterChunks: terrainDebug.waterChunks,
+      waterCandidates: terrainDebug.waterCandidates,
+      waterDry: terrainDebug.waterDry,
+      waterPending: terrainDebug.waterPending,
+      waterMeshes: terrainDebug.waterMeshes,
+      causticMeshes: terrainDebug.causticMeshes,
+      waterDraws: terrainDebug.waterDraws,
+      causticDraws: terrainDebug.causticDraws,
+      waterTriangles: terrainDebug.waterTriangles,
+      causticTriangles: terrainDebug.causticTriangles,
+      waterVertices: terrainDebug.waterVertices,
+      waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
       forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
+      ...frameProfiler.snapshot(),
     };
   },
   maybeSample(now) {
@@ -311,6 +576,7 @@ const perfLog = {
     this.samples.length = 0;
     this.lastSample = -Infinity;
     this.startTime = performance.now();
+    frameProfiler.reset();
     if (perfLogUI) perfLogUI.refresh();
   },
 };
@@ -320,6 +586,7 @@ window.perfStats = perfLog;
 // this small panel is the interactive part.
 {
   const panel = document.createElement('div');
+  panel.id = 'perf-log';
   panel.style.cssText = 'position:fixed;left:10px;bottom:10px;background:rgba(20,24,30,.82);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;padding:6px 8px;z-index:11;display:flex;gap:6px;align-items:center';
   const btnCss = 'background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:2px 6px;cursor:pointer;font:inherit';
   const label = document.createElement('span'); label.textContent = 'perf log'; label.style.color = '#7f8a99';
@@ -340,7 +607,7 @@ window.perfStats = perfLog;
   perfLogUI = { refresh };
   refresh();
 }
-scene.add(terrainGroup);
+if (!loadedMap) scene.add(terrainGroup);
 
 // The camera far plane (and fog) is the larger of the user's View distance and
 // the span needed to fit the rendered chunk ring — so chunks are never clipped,
@@ -362,12 +629,26 @@ function setFog(on) { scene.fog = on ? worldFog : null; }
 updateDrawDistance();
 
 // Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
-let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, forestGPURef = null;
+let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null;
 let terrainDecorationsDirty = false;
 let terrainDecorationsRebuildAll = false;
 let lastWaterChunkSignature = '';
+let lastMapChunkSignature = '';
 const terrainFocus = new THREE.Vector3();
 const shadowFocus = new THREE.Vector3();
+
+function activeTerrainChunks() {
+  if (!loadedMap) return terrainSystem.activeChunks;
+  return loadedMap.makeChunks(
+    terrainFocus,
+    Math.floor(terrainSystem.params.renderRadius || terrain.renderRadius || 2),
+    terrainSystem.params.chunkSize || 30,
+  );
+}
+
+function targetTerrainChunkCount() {
+  return loadedMap ? activeTerrainChunks().length : terrainSystem.targetChunkCount;
+}
 
 function updateSunShadowFocus(center) {
   const half = Math.max(45, (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize);
@@ -404,12 +685,26 @@ function rebuildWorld() {
 function updateTerrainWindow(center) {
   terrainFocus.copy(center);
   updateSunShadowFocus(center);
-  if (terrainSystem.update(center.x, center.z)) {
+  if (loadedMap) {
+    const signature = waterChunkSignature(activeTerrainChunks());
+    if (signature !== lastMapChunkSignature) {
+      lastMapChunkSignature = signature;
+      terrainDecorationsDirty = true;
+      syncWaterChunks(true);
+    } else if (waterRef && !lastWaterChunkSignature) {
+      syncWaterChunks();
+    }
+    maybeSyncTerrainDecorations();
+    return;
+  }
+  const terrainChanged = terrainSystem.update(center.x, center.z);
+  if (terrainChanged) {
     ground = cdlodRef ? cdlodRef.mesh : terrainSystem.materialPatchTarget;
     terrainDecorationsDirty = true;
     syncWaterChunks(true);
+  } else if (waterRef && !lastWaterChunkSignature) {
+    syncWaterChunks();
   }
-  syncWaterChunks();
   maybeSyncTerrainDecorations();
 }
 
@@ -428,7 +723,7 @@ function waterChunkSignature(chunks) {
 
 function syncWaterChunks(force = false, extra = {}) {
   if (!waterRef) return;
-  const chunks = terrainSystem.activeChunks;
+  const chunks = activeTerrainChunks();
   if (chunks.length === 0 && !force) return;
   const signature = `${terrain.waterLevel}:${waterChunkSignature(chunks)}`;
   if (!force && signature === lastWaterChunkSignature && terrainDebug.waterCandidates > 0) return;
@@ -444,6 +739,14 @@ function syncWaterDebug() {
     terrainDebug.waterChunks = waterRef?.getChunkCount ? waterRef.getChunkCount() : 0;
     terrainDebug.waterCandidates = 0;
     terrainDebug.waterPending = 0;
+    terrainDebug.waterDry = 0;
+    terrainDebug.waterMeshes = terrainDebug.waterChunks;
+    terrainDebug.causticMeshes = 0;
+    terrainDebug.waterDraws = terrainDebug.waterChunks;
+    terrainDebug.causticDraws = 0;
+    terrainDebug.waterTriangles = 0;
+    terrainDebug.causticTriangles = 0;
+    terrainDebug.waterVertices = 0;
     terrainDebug.waterMinBed = Infinity;
     return;
   }
@@ -453,6 +756,14 @@ function syncWaterDebug() {
   terrainDebug.waterChunks = s.chunks;
   terrainDebug.waterCandidates = s.candidates;
   terrainDebug.waterPending = s.pending || 0;
+  terrainDebug.waterDry = s.dry || 0;
+  terrainDebug.waterMeshes = s.waterMeshes || s.chunks || 0;
+  terrainDebug.causticMeshes = s.causticMeshes || 0;
+  terrainDebug.waterDraws = s.waterDraws || s.chunks || 0;
+  terrainDebug.causticDraws = s.causticDraws || 0;
+  terrainDebug.waterTriangles = s.waterTriangles || 0;
+  terrainDebug.causticTriangles = s.causticTriangles || 0;
+  terrainDebug.waterVertices = s.waterVertices || 0;
   terrainDebug.waterMinBed = s.minBed;
 }
 
@@ -461,10 +772,13 @@ function syncWaterDebug() {
 Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
   const params = {
-    count: 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
+    count: loadedMap ? 500 : 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
     treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
-    leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural',
+    leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural', mapGrassRadiusChunks: 2,
+    treeLodR0: 60, treeLodR1: 120, treeLodR2: 220,
+    coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5,
+    billboardMode: 'cross',
   };
 
   // ---- SP6 GPU-instanced forest (?forest=gpu, default) ----------------------
@@ -474,23 +788,18 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   let forestGPU = null, forestPaletteMode = null;
   let createForestPalette = null, createForestGPU = null;
   const gpuTreeChunks = new Set();
+  const mapChunkSize = () => terrainSystem.params.chunkSize || 30;
+  const forestChunksForPlacement = () => loadedMap ? loadedMap.makeAllChunks(mapChunkSize()) : activeTerrainChunks();
+  const forestTargetChunkCount = () => loadedMap ? forestChunksForPlacement().length : targetTerrainChunkCount();
   const paramsForRecords = () => ({
     ...params, masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
-    targetChunkCount: terrainSystem.targetChunkCount,
+    targetChunkCount: forestTargetChunkCount(),
+    treeDensityAt: loadedMap ? (x, z) => loadedMap.treeDensityAt(x, z) : null,
   });
   if (FOREST_MODE === 'gpu') {
     ({ createForestPalette } = await import('./forest-palette.js'));
     ({ createForestGPU } = await import('./forest-gpu.js'));
   }
-  // Distance-cull radius must reach the farthest loaded tree (render-window diagonal),
-  // or in-window trees get culled while their trunk colliders persist -> invisible
-  // "ghost trunk" collisions. Recomputed when draw distance changes.
-  const forestCullDist = () => {
-    const r = Math.floor(terrainSystem.params.renderRadius || 1);
-    const cs = terrainSystem.params.chunkSize || 30;
-    return Math.max(terrain.size ?? 350, (r + 1) * cs * 1.6);
-  };
-  const updateForestCull = () => { if (forestGPU) forestGPU.setMaxDist(forestCullDist()); };
   // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
   // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
   // and palette geometry is baked once, so a texMode change must rebake. No clustered
@@ -501,19 +810,21 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED, texSet });
     forestGPU = createForestGPU({
       renderer, camera, palette, heightAt: terrainHeight,
-      treeBaseOffset: params.treeBaseOffset, maxDist: forestCullDist(),
+      treeBaseOffset: params.treeBaseOffset,
+      lodR0: params.treeLodR0, lodR1: params.treeLodR1, lodR2: params.treeLodR2,
     });
     forestGPURef = forestGPU;
     scene.add(...forestGPU.meshes);
     forestPaletteMode = texSet ? texSet.mode : 'procedural';
     gpuTreeChunks.clear();
     regenerateGPU(true);
+    syncBillboards(params.billboardMode);
   }
   // Sync the GPU forest to the active terrain window: stream chunks in/out, push
   // placement records to the instance buffers, and register SP5b trunk colliders.
   function regenerateGPU(rebuildExisting) {
     if (!forestGPU) return;
-    const active = terrainSystem.activeChunks.slice();
+    const active = forestChunksForPlacement().slice();
     const activeKeys = new Set(active.map(c => c.key));
     for (const key of [...gpuTreeChunks]) {
       if (!activeKeys.has(key)) { forestGPU.clearChunk(key); trunkIndex.clearTrunks(key); gpuTreeChunks.delete(key); }
@@ -527,6 +838,181 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
       gpuTreeChunks.add(chunk.key);
     }
     terrainDebug.treePlacements = forestGPU.stats.instances;
+  }
+
+  // ---- billboard atlas bake + IndexedDB cache -----------------------------
+  const BILLBOARD_DB = 'forest-billboards';
+  const BILLBOARD_DB_VERSION = 2;
+  const BILLBOARD_BAKE_VERSION = 'transparent-upright-v3';
+
+  function billboardCacheKey(mode) {
+    const p = params;
+    return `${BILLBOARD_BAKE_VERSION}|${MASTER_SEED}|${p.leafCount}|${p.leafSize}|${p.species}|${p.diversity}|${p.generalization}|${p.variantsPerSpecies ?? 4}|${p.coarseLeafRatio}|${p.coarseLeafSizeMult}|${mode}`;
+  }
+
+  function openBillboardDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(BILLBOARD_DB, BILLBOARD_DB_VERSION);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('atlases')) db.createObjectStore('atlases');
+      };
+      req.onsuccess = e => resolve(e.target.result);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function saveBillboardCache(key, blobs) {
+    const db = await openBillboardDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('atlases', 'readwrite');
+      tx.objectStore('atlases').put(blobs, key);
+      tx.oncomplete = resolve;
+      tx.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function loadBillboardCache(key) {
+    const db = await openBillboardDB();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction('atlases', 'readonly').objectStore('atlases').get(key);
+      req.onsuccess = e => resolve(e.target.result ?? null);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function bakeVariantBillboard(variant, captureCount) {
+    const SIZE = 256;
+    const target = new THREE.RenderTarget(SIZE, SIZE, {
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+    });
+    const bakeScene = new THREE.Scene();
+    bakeScene.background = null;
+
+    const tmpBranchMat = new THREE.MeshStandardMaterial({ vertexColors: true });
+    const tmpLeafMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    const branchMesh = new THREE.Mesh(variant.branches, tmpBranchMat);
+    const leafMesh = new THREE.Mesh(variant.leaves, tmpLeafMat);
+    bakeScene.add(branchMesh, leafMesh);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(2, 4, 3);
+    bakeScene.add(sun, new THREE.AmbientLight(0xffffff, 0.4));
+
+    const bbox = new THREE.Box3().setFromObject(branchMesh).expandByObject(leafMesh);
+    const size = new THREE.Vector3(); bbox.getSize(size);
+    const center = new THREE.Vector3(); bbox.getCenter(center);
+    const halfH = size.y * 0.55;
+    const halfW = Math.max(size.x, size.z) * 0.55;
+    const bakeCamera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 500);
+
+    const blobs = [];
+    const oldClear = new THREE.Color();
+    renderer.getClearColor(oldClear);
+    const oldClearAlpha = renderer.getClearAlpha();
+    renderer.setClearColor(0x000000, 0);
+    for (let i = 0; i < captureCount; i++) {
+      const yaw = (i / captureCount) * Math.PI * 2;
+      const dist = Math.max(size.x, size.z) * 2;
+      bakeCamera.position.set(
+        center.x + Math.sin(yaw) * dist,
+        center.y + size.y * 0.1,
+        center.z + Math.cos(yaw) * dist,
+      );
+      bakeCamera.lookAt(center);
+      renderer.setRenderTarget(target);
+      renderer.clear(true, true, true);
+      await renderer.renderAsync(bakeScene, bakeCamera);
+      renderer.setRenderTarget(null);
+
+      const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, SIZE, SIZE);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE; canvas.height = SIZE;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(SIZE, SIZE);
+      for (let row = 0; row < SIZE; row++) {
+        const srcRow = row * SIZE * 4;
+        imgData.data.set(pixels.subarray(srcRow, srcRow + SIZE * 4), row * SIZE * 4);
+      }
+      ctx.putImageData(imgData, 0, 0);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      blobs.push(blob);
+    }
+    renderer.setClearColor(oldClear, oldClearAlpha);
+
+    target.dispose();
+    tmpBranchMat.dispose();
+    tmpLeafMat.dispose();
+    return blobs;
+  }
+
+  function blobsToTextures(blobs) {
+    return blobs.map(blob => {
+      const url = URL.createObjectURL(blob);
+      const tex = new THREE.TextureLoader().load(url, () => URL.revokeObjectURL(url));
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = true;
+      return tex;
+    });
+  }
+
+  function buildAtlasTexture(blobs) {
+    const SIZE = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = SIZE * 4; canvas.height = SIZE * 2;
+    const ctx = canvas.getContext('2d');
+    const draws = blobs.map(blob => {
+      const url = URL.createObjectURL(blob);
+      return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.src = url;
+      });
+    });
+    return Promise.all(draws).then(imgs => {
+      imgs.forEach((img, i) => ctx.drawImage(img, (i % 4) * SIZE, Math.floor(i / 4) * SIZE, SIZE, SIZE));
+      return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    }).then(atlasBlob => {
+      const url = URL.createObjectURL(atlasBlob);
+      const tex = new THREE.TextureLoader().load(url, () => URL.revokeObjectURL(url));
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = true;
+      return tex;
+    });
+  }
+
+  async function applyBillboardTextures(variantTextures, mode) {
+    if (!forestGPU) return;
+    const mats = forestGPU.billboardMaterials;
+    for (let g = 0; g < mats.length; g++) {
+      const mat = mats[g];
+      mat.map = mode === '8way' ? await buildAtlasTexture(variantTextures[g]) : blobsToTextures([variantTextures[g][0]])[0];
+      mat.needsUpdate = true;
+    }
+  }
+
+  async function syncBillboards(mode) {
+    if (!forestGPU || !loadedMap) return;
+    const key = billboardCacheKey(mode);
+    let cached = null;
+    try { cached = await loadBillboardCache(key); } catch (_) { /* cache is optional */ }
+    if (cached) {
+      await applyBillboardTextures(cached, mode);
+      return;
+    }
+    showStatus('baking billboard atlases...');
+    const palette = forestGPU._palette;
+    if (!palette) { showStatus(''); return; }
+    const captureCount = mode === '8way' ? 8 : 1;
+    const variantBlobs = [];
+    for (const variant of palette.variants) {
+      variantBlobs.push(await bakeVariantBillboard(variant, captureCount));
+    }
+    try { await saveBillboardCache(key, variantBlobs); } catch (e) { console.warn('billboard cache write failed', e); }
+    await applyBillboardTextures(variantBlobs, mode);
+    showStatus('');
   }
 
   // ---- texture-source layer (Phase 3) -------------------------------------
@@ -680,7 +1166,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   // ---- placement patterns (positions in the XZ plane) ----
   function placements(p, rng) {
     const out = [], n = Math.max(0, Math.floor(p.count));
-    const chunks = terrainSystem.activeChunks.slice().sort((a, b) => a.key.localeCompare(b.key));
+    const chunks = forestChunksForPlacement().slice().sort((a, b) => a.key.localeCompare(b.key));
     if (chunks.length === 0 || n === 0) return out;
     const minBaseY = terrain.waterLevel + p.shoreMargin;
     const isDry = ({ x, z }) => terrainHeight(x, z) >= minBaseY;
@@ -795,7 +1281,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
 
   function treeCountForChunk(chunk) {
     const [ix, iz] = chunk.key.split(',').map(Number);
-    const density = Math.max(0, params.count) / Math.max(1, terrainSystem.targetChunkCount || 1);
+    const density = Math.max(0, params.count) / Math.max(1, forestTargetChunkCount() || 1);
     const base = Math.floor(density);
     const extra = hash2(ix, iz, MASTER_SEED + 31) < density - base ? 1 : 0;
     return base + extra;
@@ -991,7 +1477,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     if (FOREST_MODE === 'gpu') return regenerateGPU(rebuildExisting);
     ensureTreeResources();
     const token = ++treeBuildToken;
-    const active = terrainSystem.activeChunks.slice().sort((a, b) => a.key.localeCompare(b.key));
+    const active = forestChunksForPlacement().slice().sort((a, b) => a.key.localeCompare(b.key));
     const activeKeys = new Set(active.map(chunk => chunk.key));
     for (const [key, chunk] of treeChunks) {
       if (!activeKeys.has(key)) {
@@ -1024,7 +1510,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
 
   // ---- control panel ----
   const style = document.createElement('style');
-  style.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:226px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none}#ctrl-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#ctrl-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#ctrl-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#ctrl-min:hover{color:#c4ccd6}#ctrl-body{padding:2px 12px 10px;max-height:calc(100vh - 64px);overflow-y:auto}#ctrl.min #ctrl-body{display:none}#ctrl.min #ctrl-bar{border-bottom:none}#ctrl .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:10px 0 4px;color:#8a93a3}#ctrl .sec-head .caret{font-size:10px;transition:transform .15s}#ctrl .sec.collapsed .caret{transform:rotate(-90deg)}#ctrl .sec.collapsed .sec-body{display:none}#ctrl h4{margin:0 0 6px;font-size:12px;color:#8a93a3}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between}#ctrl .row span{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl select{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}';
+  style.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:226px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none;z-index:20}#ctrl-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#ctrl-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#ctrl-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#ctrl-min:hover{color:#c4ccd6}#ctrl-body{padding:2px 12px 10px;max-height:clamp(220px, calc(100vh - 280px), 560px);overflow-y:auto}#ctrl.min #ctrl-body{display:none}#ctrl.min #ctrl-bar{border-bottom:none}#ctrl .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:10px 0 4px;color:#8a93a3}#ctrl .sec-head .caret{font-size:10px;transition:transform .15s}#ctrl .sec.collapsed .caret{transform:rotate(-90deg)}#ctrl .sec.collapsed .sec-body{display:none}#ctrl h4{margin:0 0 6px;font-size:12px;color:#8a93a3}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between}#ctrl .row span{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl select{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}';
   document.head.appendChild(style);
   const box = document.createElement('div'); box.id = 'ctrl'; document.body.appendChild(box);
 
@@ -1050,10 +1536,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   });
   bar.addEventListener('pointermove', e => {
     if (!drag) return;
-    box.style.right = 'auto';
-    const x = Math.max(0, Math.min(window.innerWidth - box.offsetWidth, e.clientX - drag.dx));
-    const y = Math.max(0, Math.min(window.innerHeight - box.offsetHeight, e.clientY - drag.dy));
-    box.style.left = x + 'px'; box.style.top = y + 'px';
+    markPanelMoved(box);
+    setFixedPanelPosition(box, e.clientX - drag.dx, e.clientY - drag.dy);
   });
   bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
 
@@ -1115,6 +1599,24 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   slider('leafStart', 'Leaf start', 0, 0.9, 0.01, f2, rebakeForest);
   slider('leafSpread', 'Leaf spread', 0, 1, 0.01, f2, rebakeForest);
   slider('leafShadowPct', 'Leaf shadows', 0, 1, 0.01, pct, rebakeForest);
+  if (FOREST_MODE === 'gpu') {
+    header('Tree LOD');
+    const updateLod = () => { if (forestGPU) forestGPU.setLodDistances(params.treeLodR0, params.treeLodR1, params.treeLodR2); };
+    slider('treeLodR0', 'LOD 0 to 1', 10, 300, 1, fi, updateLod);
+    slider('treeLodR1', 'LOD 1 to 2', 20, 400, 1, fi, updateLod);
+    slider('treeLodR2', 'LOD 2 to billboard', 40, 600, 1, fi, updateLod);
+    slider('coarseLeafRatio', 'Coarse leaf ratio', 0.05, 0.6, 0.01, f2, rebakeForest);
+    slider('coarseLeafSizeMult', 'Coarse leaf size x', 1.0, 5.0, 0.1, f2, rebakeForest);
+    const billToggleBtn = document.createElement('button');
+    billToggleBtn.textContent = 'Billboard: cross-quad';
+    billToggleBtn.style.cssText = 'margin:4px 0;padding:4px 8px;cursor:pointer;width:100%';
+    billToggleBtn.onclick = () => {
+      params.billboardMode = params.billboardMode === 'cross' ? '8way' : 'cross';
+      billToggleBtn.textContent = `Billboard: ${params.billboardMode === 'cross' ? 'cross-quad' : '8-angle atlas'}`;
+      syncBillboards(params.billboardMode);
+    };
+    current.appendChild(billToggleBtn);
+  }
   // Texture mode: 'procedural' uses textureless TSL/shaped leaves; 'authored' loads the
   // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
   select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
@@ -1151,7 +1653,6 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     // SP3: map the chunk draw-distance slider (1..12) onto CDLOD level count so the slider
     // also grows the GPU terrain's reach (each level = one bounded ring, ~flat cost).
     if (cdlodRef) cdlodRef.setViewDistance(2 + Math.round(terrain.renderRadius));
-    updateForestCull();   // grow the forest cull radius with the render window (no ghost trunks)
     updateDrawDistance();
   };
   slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain);
@@ -1341,7 +1842,17 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
       // per-blade in the grass shader (see currentFade/applyFade), keyed off true
       // camera distance so grass thins as a smooth ring with no chunk-aligned steps.
       function countForChunk(chunk, activeCount) {
-        return Math.max(0, Math.floor(params.grassCount / Math.max(1, terrainSystem.targetChunkCount || activeCount)));
+        const targetCount = loadedMap ? activeCount : (targetTerrainChunkCount() || activeCount);
+        return Math.max(0, Math.floor(params.grassCount / Math.max(1, targetCount)));
+      }
+
+      function grassChunksForPlacement() {
+        if (!loadedMap) return activeTerrainChunks();
+        return loadedMap.makeChunks(
+          terrainFocus,
+          Math.floor(params.mapGrassRadiusChunks ?? terrainSystem.params.renderRadius ?? 2),
+          mapChunkSize(),
+        );
       }
 
       // Map the "Distance cull" slider to world-space fade distances. 0 = off (no
@@ -1378,7 +1889,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
         buildQueue = [];
         buildQueueIndex = 0;
         buildKeys.clear();
-        const active = terrainSystem.activeChunks;
+        const active = grassChunksForPlacement();
         const activeKeys = new Set(active.map(c => c.key));
         for (const [key, grass] of chunks) {
           if (!activeKeys.has(key)) {
@@ -1462,36 +1973,67 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     let gt; const grassRebuild = () => { clearTimeout(gt); gt = setTimeout(() => grassRef.regenerate(), 200); };
     header('Grass');
     slider('grassCount', 'Blade count', 0, 1200000, 1000, v => (v / 1000) + 'k', grassRebuild);
+    if (loadedMap) slider('mapGrassRadiusChunks', 'Extent (chunks)', 0, 12, 1, drawFmt, grassRebuild);
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
   }).catch(() => { /* grass is optional */ });
   else import('./grass-compute.js').then(({ createComputeGrass }) => {
-    Object.assign(params, { grassDensity: 8.0, grassRadius: 350, wind: 1.0 });
+    Object.assign(params, {
+      grassDensity: 8.0,
+      grassRadius: loadedMap ? 200 : 350,
+      grassCullStart: loadedMap ? 150 : 280,
+      grassMaxBlades: 300000,
+      grassBladeHeight: 1.0,
+      grassBladeWidth: 1.0,
+      grassVerticalOffset: 0.0,
+      wind: 1.0,
+    });
     const cg = createComputeGrass({
       renderer, camera,
       terrainParams: { baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth },
-      waterLevel: terrain.waterLevel, density: params.grassDensity, radius: params.grassRadius,
+      waterLevel: terrain.waterLevel,
+      density: params.grassDensity,
+      radius: params.grassRadius,
+      cullStart: params.grassCullStart,
+      maxBlades: params.grassMaxBlades,
+      bladeHeight: params.grassBladeHeight,
+      bladeWidth: params.grassBladeWidth,
+      verticalOffset: params.grassVerticalOffset,
+      grassRecull: GRASS_RECULL_MODE,
       maxRadius: 600,
+      heightTex: loadedMap?.heightTex ?? null,
+      heightTexBounds: loadedMap?.heightTexBounds ?? null,
       addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
     });
     scene.add(cg.mesh);
     grassRef = {
       update: (s) => cg.update(s),
+      stats: cg.stats,
       sync: () => {}, regenerate: () => {}, applyFade: () => {},
+      forceRecull: () => cg.forceRecull(),
       setWind: (st) => cg.setWind(st),
       setTerrain: (p) => cg.setTerrain(p),
       setWaterLevel: (wl) => cg.setWaterLevel(wl),
     };
     header('Grass');
-    slider('grassDensity', 'Density (blades/m²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
     slider('grassRadius', 'Radius', 8, 600, 1, fi, () => cg.setRadius(params.grassRadius));
+    slider('grassCullStart', 'Cull start', 0, 600, 1, fi, () => cg.setCullStart(params.grassCullStart));
+    slider('grassDensity', 'Density (blades/m²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
+    slider('grassMaxBlades', 'Max blades', 0, 2000000, 5000, v => (v / 1000).toFixed(0) + 'k', () => cg.setMaxBlades(params.grassMaxBlades));
+    slider('grassBladeHeight', 'Blade height', 0.1, 4.0, 0.01, f2, () => cg.setBladeHeight(params.grassBladeHeight));
+    slider('grassBladeWidth', 'Blade width', 0.1, 4.0, 0.01, f2, () => cg.setBladeWidth(params.grassBladeWidth));
+    slider('grassVerticalOffset', 'Vertical offset', -2.0, 2.0, 0.01, f2, () => cg.setVerticalOffset(params.grassVerticalOffset));
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => cg.setWind(params.wind));
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
   import('./water.js?v=sp4a-emissive').then(({ createWaterSystem }) => {
     Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
-    waterRef = createWaterSystem({ renderer, scene, camera, ground, size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight, chunks: terrainSystem.activeChunks });
+    waterRef = createWaterSystem({
+      renderer, scene, camera, ground,
+      size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight,
+      chunks: activeTerrainChunks(),
+    });
     scene.add(waterRef.surface);
     syncWaterChunks(true);
     rig.connect(waterRef, null);
@@ -1504,11 +2046,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   // ---- clouds (separate module; optional, independent of terrain). Lays a big
   // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
   import('./clouds.js').then(({ Clouds }) => {
-    Object.assign(params, { cloudHeight: 120, cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
-      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01 });
+    Object.assign(params, {
+      cloudHeight: 120, cloudExtent: 2000,
+      cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
+      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01,
+    });
     cloudsRef = new Clouds();
     cloudsRef.rotation.x = -Math.PI / 2;   // lay the quad flat, high above the world
     cloudsRef.position.y = params.cloudHeight;
+    cloudsRef.setExtent(params.cloudExtent);
     cloudsRef.setCoverage(params.cloudCover);
     cloudsRef.setOpacity(params.cloudOpacity);
     cloudsRef.setSpeed(params.cloudSpeed);
@@ -1516,14 +2062,41 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     cloudsRef.setSoftness(params.cloudSoftness);
     cloudsRef.setFade(params.cloudFade);
     scene.add(cloudsRef);
-    header('Clouds');
-    slider('cloudHeight', 'Height', 20, 200, 1, fi, () => cloudsRef.position.y = params.cloudHeight);
+    header('Clouds (layer 1)');
+    slider('cloudHeight', 'Height', 20, 400, 1, fi, () => cloudsRef.position.y = params.cloudHeight);
+    slider('cloudExtent', 'Extent', 500, 8000, 10, fi, () => cloudsRef.setExtent(params.cloudExtent));
     slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
     slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
     slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
     slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
     slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
+
+    Object.assign(params, {
+      cloud2Height: 280, cloud2Extent: 4000,
+      cloud2Cover: 0.3, cloud2Opacity: 0.5, cloud2Speed: 0.6,
+      cloud2Puff: 3.0, cloud2Softness: 0.3, cloud2Fade: 0.01,
+    });
+    clouds2Ref = new Clouds();
+    clouds2Ref.rotation.x = -Math.PI / 2;
+    clouds2Ref.position.y = params.cloud2Height;
+    clouds2Ref.setExtent(params.cloud2Extent);
+    clouds2Ref.setCoverage(params.cloud2Cover);
+    clouds2Ref.setOpacity(params.cloud2Opacity);
+    clouds2Ref.setSpeed(params.cloud2Speed);
+    clouds2Ref.setPuff(params.cloud2Puff);
+    clouds2Ref.setSoftness(params.cloud2Softness);
+    clouds2Ref.setFade(params.cloud2Fade);
+    scene.add(clouds2Ref);
+
+    header('Clouds (layer 2)');
+    slider('cloud2Height', 'Height', 20, 600, 1, fi, () => clouds2Ref.position.y = params.cloud2Height);
+    slider('cloud2Extent', 'Extent', 500, 8000, 10, fi, () => clouds2Ref.setExtent(params.cloud2Extent));
+    slider('cloud2Cover', 'Coverage', 0, 0.9, 0.01, f2, () => clouds2Ref.setCoverage(params.cloud2Cover));
+    slider('cloud2Puff', 'Puff size', 0.3, 6, 0.01, f2, () => clouds2Ref.setPuff(params.cloud2Puff));
+    slider('cloud2Softness', 'Softness', 0.05, 0.5, 0.01, f2, () => clouds2Ref.setSoftness(params.cloud2Softness));
+    slider('cloud2Opacity', 'Opacity', 0, 1, 0.01, f2, () => clouds2Ref.setOpacity(params.cloud2Opacity));
+    slider('cloud2Speed', 'Drift speed', 0, 4, 0.01, f2, () => clouds2Ref.setSpeed(params.cloud2Speed));
   }).catch(() => { /* clouds are optional */ });
 
   // ---- procedural night sky (dome + stars + Milky Way + moon/sun + planets) ----
@@ -1570,12 +2143,23 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
 const target = new THREE.Vector3(0, 0.9, 0);
 const off = camera.position.clone().sub(target);
 let radius = off.length(), theta = Math.atan2(off.x, off.z), phi = Math.acos(off.y / radius);
+const initialTarget = target.clone();
+const initialRadius = radius;
+const initialTheta = theta;
+const initialPhi = phi;
 let dragging = false, px = 0, py = 0;
 function applyCamera() {
   camera.position.set(target.x + radius * Math.sin(phi) * Math.sin(theta),
                       target.y + radius * Math.cos(phi),
                       target.z + radius * Math.sin(phi) * Math.cos(theta));
   camera.lookAt(target);
+}
+function resetOrbitCamera() {
+  target.copy(initialTarget);
+  radius = initialRadius;
+  theta = initialTheta;
+  phi = initialPhi;
+  applyCamera();
 }
 renderer.domElement.addEventListener('pointerdown', e => { if (fpsMode) return; dragging = true; px = e.clientX; py = e.clientY; });
 window.addEventListener('pointerup', () => { dragging = false; });
@@ -1608,12 +2192,16 @@ const playerVelocity = new THREE.Vector3();
 let playerOnFloor = false;
 let fpsMode = false;
 const fpsKeys = {};
+const _fpsForward = new THREE.Vector3();
+const _fpsSide = new THREE.Vector3();
+const _fpsDelta = new THREE.Vector3();
 
 // Tunable movement params — exposed via the debug panel below
 const fp = {
   speedStand:  10,   speedCrouch: 5,   speedProne:  2,
   heightStand: 1.6,  heightCrouch: 0.6, heightProne: 0.1,
   jumpForce:   10,   gravity:      36,
+  runMultiplier: 1.8,
   sensitivity: 1060,
   airStrafe:   5.5,  airDamp:      4,
   friction:    68,   // ground decel exponent — higher = stops faster
@@ -1621,11 +2209,12 @@ const fp = {
 
 let stance = 'stand';
 let capsuleH = fp.heightStand;
+let playerInitialized = false;
 
 // ---- FPS debug panel ----
 {
   const style = document.createElement('style');
-  style.textContent = '#fps{position:fixed;top:10px;left:10px;width:210px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none}#fps-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#fps-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#fps-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#fps-min:hover{color:#c4ccd6}#fps-body{padding:2px 12px 10px;max-height:calc(100vh - 64px);overflow-y:auto}#fps.min #fps-body{display:none}#fps.min #fps-bar{border-bottom:none}#fps .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:8px 0 2px;color:#8a93a3;font-size:11px;text-transform:uppercase;letter-spacing:.05em}#fps .sec-head .caret{font-size:10px;transition:transform .15s;text-transform:none}#fps .sec.collapsed .caret{transform:rotate(-90deg)}#fps .sec.collapsed .sec-body{display:none}';
+  style.textContent = '#fps{position:fixed;top:38px;left:10px;width:210px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none;z-index:20}#fps-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#fps-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#fps-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#fps-min:hover{color:#c4ccd6}#fps-body{padding:2px 12px 10px;max-height:calc(100vh - 92px);overflow-y:auto}#fps.min #fps-body{display:none}#fps.min #fps-bar{border-bottom:none}#fps .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:8px 0 2px;color:#8a93a3;font-size:11px;text-transform:uppercase;letter-spacing:.05em}#fps .sec-head .caret{font-size:10px;transition:transform .15s;text-transform:none}#fps .sec.collapsed .caret{transform:rotate(-90deg)}#fps .sec.collapsed .sec-body{display:none}';
   document.head.appendChild(style);
 
   const panel = document.createElement('div'); panel.id = 'fps'; document.body.appendChild(panel);
@@ -1650,10 +2239,8 @@ let capsuleH = fp.heightStand;
   });
   bar.addEventListener('pointermove', e => {
     if (!drag) return;
-    panel.style.right = 'auto';
-    const x = Math.max(0, Math.min(window.innerWidth - panel.offsetWidth, e.clientX - drag.dx));
-    const y = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - drag.dy));
-    panel.style.left = x + 'px'; panel.style.top = y + 'px';
+    markPanelMoved(panel);
+    setFixedPanelPosition(panel, e.clientX - drag.dx, e.clientY - drag.dy);
   });
   bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
 
@@ -1688,6 +2275,7 @@ let capsuleH = fp.heightStand;
 
   fpHeader('Movement');
   fpSlider('Walk speed',   'speedStand',  1,  60, 1,    fi);
+  fpSlider('Run multiplier', 'runMultiplier', 1, 4, 0.1, f1);
   fpSlider('Crouch speed', 'speedCrouch', 1,  30, 1,    fi);
   fpSlider('Prone speed',  'speedProne',  1,  15, 0.5,  f1);
   fpSlider('Jump force',   'jumpForce',   5,  40, 0.5,  f1);
@@ -1708,21 +2296,26 @@ let capsuleH = fp.heightStand;
 }
 
 const crosshair = document.createElement('div');
+crosshair.className = 'walk-ui';
 crosshair.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;pointer-events:none;display:none';
 crosshair.innerHTML = '<svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/><line x1="3" y1="10" x2="17" y2="10" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/></svg>';
 document.body.appendChild(crosshair);
 
 const enterHint = document.createElement('div');
+enterHint.className = 'walk-ui';
 enterHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center';
-enterHint.textContent = 'F → walk mode  \xb7  drag to orbit  \xb7  scroll to zoom';
+enterHint.textContent = 'F → walk mode  \xb7  R reset  \xb7  H hide GUI';
 document.body.appendChild(enterHint);
 
 const exitHint = document.createElement('div');
+exitHint.className = 'walk-ui';
 exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
-exitHint.textContent = 'WASD  \xb7  Space jump  \xb7  C crouch  \xb7  Z prone  \xb7  F/Esc → orbit';
+exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  R reset  \xb7  F/Esc orbit';
 document.body.appendChild(exitHint);
 
-function enterFPS() {
+environmentUi = createEnvironmentUi({ perfLog });
+
+function resetPlayerPosition(resetLook = true) {
   const sx = 8, sz = 0;
   const spawnY = terrainHeight(sx, sz);
   playerCollider.start.set(sx, spawnY + 0.35, sz);
@@ -1732,8 +2325,23 @@ function enterFPS() {
   playerOnFloor = false;
   stance = 'stand';
   capsuleH = fp.heightStand;
+  playerInitialized = true;
+  if (resetLook) {
+    camera.rotation.order = 'YXZ';
+    camera.rotation.set(0, Math.PI, 0);
+  }
+  if (fpsMode) camera.position.copy(playerCollider.end);
+}
+
+function resetPosition() {
+  resetPlayerPosition(true);
+  if (!fpsMode) resetOrbitCamera();
+}
+
+function enterFPS() {
+  if (!playerInitialized) resetPlayerPosition(true);
   camera.rotation.order = 'YXZ';
-  camera.rotation.set(0, Math.PI, 0);
+  camera.position.copy(playerCollider.end);
   fpsMode = true;
   camera.fov = 70; camera.updateProjectionMatrix();
   crosshair.style.display = 'block';
@@ -1764,9 +2372,19 @@ document.addEventListener('mousemove', e => {
 
 window.addEventListener('keydown', e => {
   fpsKeys[e.code] = true;
+  if (e.repeat && ['KeyF', 'KeyH', 'KeyR', 'KeyC', 'KeyZ'].includes(e.code)) return;
+  if (e.code === 'KeyH') {
+    document.body.classList.toggle('gui-hidden');
+    e.preventDefault();
+  }
+  if (e.code === 'KeyR') {
+    resetPosition();
+    e.preventDefault();
+  }
   if (e.code === 'KeyF') {
     if (!fpsMode) renderer.domElement.requestPointerLock();
     else document.exitPointerLock();
+    e.preventDefault();
   }
   if (fpsMode) {
     if (e.code === 'KeyC') stance = stance === 'crouch' ? 'stand' : 'crouch';
@@ -1777,20 +2395,19 @@ window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
 
 function applyFPSControls(deltaTime) {
   camera.updateMatrixWorld();
-  const forward = new THREE.Vector3();
-  const side    = new THREE.Vector3();
-  forward.setFromMatrixColumn(camera.matrixWorld, 0);
-  forward.crossVectors(camera.up, forward).normalize();
-  side.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  _fpsForward.setFromMatrixColumn(camera.matrixWorld, 0);
+  _fpsForward.crossVectors(camera.up, _fpsForward).normalize();
+  _fpsSide.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
 
   if (playerOnFloor) {
     // Direct velocity set — responsive, no momentum build-up fighting damping
-    const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)];
+    const running = stance === 'stand' && (fpsKeys['ShiftLeft'] || fpsKeys['ShiftRight']);
+    const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)] * (running ? fp.runMultiplier : 1);
     let mx = 0, mz = 0;
-    if (fpsKeys['KeyW']) { mx += forward.x; mz += forward.z; }
-    if (fpsKeys['KeyS']) { mx -= forward.x; mz -= forward.z; }
-    if (fpsKeys['KeyA']) { mx -= side.x;    mz -= side.z;    }
-    if (fpsKeys['KeyD']) { mx += side.x;    mz += side.z;    }
+    if (fpsKeys['KeyW']) { mx += _fpsForward.x; mz += _fpsForward.z; }
+    if (fpsKeys['KeyS']) { mx -= _fpsForward.x; mz -= _fpsForward.z; }
+    if (fpsKeys['KeyA']) { mx -= _fpsSide.x;    mz -= _fpsSide.z;    }
+    if (fpsKeys['KeyD']) { mx += _fpsSide.x;    mz += _fpsSide.z;    }
     const len = Math.hypot(mx, mz);
     if (len > 0) {
       playerVelocity.x = (mx / len) * speed;
@@ -1804,10 +2421,10 @@ function applyFPSControls(deltaTime) {
   } else {
     // In air: additive so jumps have momentum
     const speedDelta = deltaTime * fp.airStrafe;
-    if (fpsKeys['KeyW']) playerVelocity.add(forward.clone().multiplyScalar( speedDelta));
-    if (fpsKeys['KeyS']) playerVelocity.add(forward.clone().multiplyScalar(-speedDelta));
-    if (fpsKeys['KeyA']) playerVelocity.add(side.clone().multiplyScalar(  -speedDelta));
-    if (fpsKeys['KeyD']) playerVelocity.add(side.clone().multiplyScalar(   speedDelta));
+    if (fpsKeys['KeyW']) playerVelocity.addScaledVector(_fpsForward,  speedDelta);
+    if (fpsKeys['KeyS']) playerVelocity.addScaledVector(_fpsForward, -speedDelta);
+    if (fpsKeys['KeyA']) playerVelocity.addScaledVector(_fpsSide,    -speedDelta);
+    if (fpsKeys['KeyD']) playerVelocity.addScaledVector(_fpsSide,     speedDelta);
   }
 }
 
@@ -1820,20 +2437,27 @@ function updateFPSPlayer(deltaTime) {
     const airDamp = (Math.exp(-fp.airDamp * deltaTime) - 1) * 0.1;
     playerVelocity.addScaledVector(playerVelocity, airDamp);
   }
-  playerCollider.translate(playerVelocity.clone().multiplyScalar(deltaTime));
-  const contact = groundContact({
-    x: playerCollider.start.x,
-    z: playerCollider.start.z,
-    bottomY: playerCollider.start.y - playerCollider.radius,
-    slopeLimitY: PLAYER_SLOPE_LIMIT_Y,
-    heightAt: terrainHeight,
-    normalAt: terrainNormal,
-  });
-  playerOnFloor = contact.grounded;
-  if (contact.penetration > 0) {
-    playerCollider.translate(_collisionLift.set(0, contact.penetration, 0));
-    const slid = slideVelocity(playerVelocity, contact.normal);
-    playerVelocity.set(slid.x, slid.y, slid.z);
+  playerCollider.translate(_fpsDelta.copy(playerVelocity).multiplyScalar(deltaTime));
+  if (mapCollider) {
+    const contact = mapCollider.resolveCapsule(playerCollider, playerVelocity, {
+      slopeLimitY: PLAYER_SLOPE_LIMIT_Y,
+    });
+    playerOnFloor = contact.grounded;
+  } else {
+    const contact = groundContact({
+      x: playerCollider.start.x,
+      z: playerCollider.start.z,
+      bottomY: playerCollider.start.y - playerCollider.radius,
+      slopeLimitY: PLAYER_SLOPE_LIMIT_Y,
+      heightAt: terrainHeight,
+      normalAt: terrainNormal,
+    });
+    playerOnFloor = contact.grounded;
+    if (contact.penetration > 0) {
+      playerCollider.translate(_collisionLift.set(0, contact.penetration, 0));
+      const slid = slideVelocity(playerVelocity, contact.normal);
+      playerVelocity.set(slid.x, slid.y, slid.z);
+    }
   }
   // Lateral push-out of any tree trunk the capsule overlaps (XZ only).
   const tr = trunkIndex.resolve(playerCollider.start.x, playerCollider.start.z, playerCollider.radius);
@@ -1851,19 +2475,39 @@ function updateFPSPlayer(deltaTime) {
 // ===================== render loop =====================
 const clock = new THREE.Clock();
 let _frameBusy = false;
+async function resolveFrameTimestamps() {
+  if (TIMESTAMP_MODE !== 'on') return;
+  if (typeof renderer.resolveTimestampsAsync !== 'function') return;
+  try {
+    const computeMs = await renderer.resolveTimestampsAsync(THREE.TimestampQuery?.COMPUTE || 'compute');
+    if (Number.isFinite(computeMs)) frameProfiler.recordGpu('computeTotal', computeMs);
+  } catch (_) {
+    // Timestamp queries are diagnostic only; unsupported devices keep GPU columns at 0.
+  }
+  try {
+    const renderMs = await renderer.resolveTimestampsAsync(THREE.TimestampQuery?.RENDER || 'render');
+    if (Number.isFinite(renderMs)) {
+      frameProfiler.recordGpu('renderTotal', renderMs);
+      frameProfiler.recordGpu('postRender', renderMs);
+    }
+  } catch (_) {
+    // Timestamp queries are diagnostic only; unsupported devices keep GPU columns at 0.
+  }
+}
 async function animate() {
   // setAnimationLoop does NOT await this async callback. If a frame's compute/render work
   // outlasts the vsync interval, the loop re-enters animate() concurrently and the two
   // overlapping submits recycle each other's command/internal buffers → WebGPU
   // "Buffer used in submit while destroyed" (worst at night/look-up, the heaviest sky
   // frames). Serialize: drop any vsync that arrives while a frame is still in flight.
-  if (_frameBusy) return;
+  if (_frameBusy) { frameProfiler.markDropped(); return; }
   _frameBusy = true;
   try {
+  frameProfiler.beginFrame();
   const rawDt = Math.min(clock.getDelta(), 0.1);
   const now = performance.now();
   if (rawDt > 0) terrainDebug.fps += (1 / rawDt - terrainDebug.fps) * 0.1;   // smoothed
-  if (skyRef) {
+  frameProfiler.time('sky', () => { if (skyRef) {
     // Sky follows the camera (infinitely distant, no parallax) and the celestial disc +
     // moonlight track the rig light direction so they stay locked to the water reflection.
     if (skyRef.group.userData.followCamera) skyRef.group.position.copy(camera.position);
@@ -1875,8 +2519,18 @@ async function animate() {
       moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
     }
     skyRef.update(now / 1000);
+  } });
+  frameProfiler.time('terrainWindow', () => {
+  if (cloudsRef) {
+    cloudsRef.position.x = camera.position.x;
+    cloudsRef.position.z = camera.position.z;
+    cloudsRef.update(now / 1000);
   }
-  if (cloudsRef) cloudsRef.update(now / 1000);
+  if (clouds2Ref) {
+    clouds2Ref.position.x = camera.position.x;
+    clouds2Ref.position.z = camera.position.z;
+    clouds2Ref.update(now / 1000);
+  }
   if (fpsMode) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
     for (let i = 0; i < STEPS_PER_FRAME; i++) {
@@ -1888,38 +2542,63 @@ async function animate() {
     applyCamera();
     updateTerrainWindow(target);
   }
-  portCreatures.update(rawDt);
+  });
+  frameProfiler.time('creatures', () => portCreatures.update(rawDt));
   // water runs its own reflection / refraction / caustics passes, then we draw
-  if (waterRef) {
+  frameProfiler.time('water', () => { if (waterRef) {
     waterRef.update(now / 1000);
-    syncWaterDebug();
-  }
-  updateTerrainDebug(now);
-  perfLog.maybeSample(now);
+  } });
+  frameProfiler.time('hud', () => updateTerrainDebug(now));
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
-  if (grassRef) await grassRef.update(now / 1000);
+  if (grassRef) await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
   // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
-  if (forestGPURef) await forestGPURef.update();
+  if (forestGPURef) await frameProfiler.timeAsync('forestGpu', () => forestGPURef.update());
   // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
   // written before this frame's draw (unawaited compute races the draw → terrain flicker).
-  if (cdlodRef) await cdlodRef.update();
+  if (cdlodRef) await frameProfiler.timeAsync('cdlodGpu', () => cdlodRef.update());
   // SP4a: froxel light-cull compute, awaited before draw (like grass/cdlod).
-  if (clusteredLightsRef) await clusteredLightsRef.update(now / 1000);
+  if (clusteredLightsRef) await frameProfiler.timeAsync('lightsGpu', () => clusteredLightsRef.update(now / 1000));
   // SP4b: GPU particle sim, awaited before draw. Disabled fields early-return inside update().
-  for (const e of particleFields) await e.field.update(rawDt, camera);
+  await frameProfiler.timeAsync('particlesGpu', async () => {
+    for (const e of particleFields) await e.field.update(rawDt, camera);
+  });
   // SP4c: composite through the post stack when enabled, else plain render.
-  if (postFX && postFX.enabled) await postFX.renderAsync();
-  else renderer.render(scene, camera);
+  await frameProfiler.timeAsync('postRender', async () => {
+    if (postFX && postFX.enabled) await postFX.renderAsync();
+    else renderer.render(scene, camera);
+  });
+  await resolveFrameTimestamps();
   // Drain queued sky disposals here — after this frame's submit and inside the frame guard,
   // so the detached objects are never freed while a submit still references them.
   if (skyRef) skyRef.flushDisposals();
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
   if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
+  perfLog.maybeSample(performance.now());
   } finally { _frameBusy = false; }
 }
 renderer.setAnimationLoop(animate);
 </script>
+<div id="mp-panel" style="
+  position:fixed; bottom:12px; right:12px; z-index:10;
+  display:flex; align-items:center; gap:6px;
+  padding:6px 10px;
+  background:rgba(25,29,36,0.86); border:1px solid rgba(255,255,255,0.12);
+  border-radius:8px; font:12px system-ui,sans-serif; color:#d8dee9; user-select:none;">
+  <input id="mp-room" maxlength="6" placeholder="ROOM"
+    style="width:56px;height:24px;padding:0 6px;border:1px solid rgba(255,255,255,0.12);
+    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;
+    text-transform:uppercase;">
+  <button id="mp-host-btn" style="height:26px;padding:0 8px;border:1px solid rgba(255,255,255,0.12);
+    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;cursor:pointer;">
+    Host
+  </button>
+  <button id="mp-join-btn" style="height:26px;padding:0 8px;border:1px solid rgba(255,255,255,0.12);
+    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;cursor:pointer;">
+    Join
+  </button>
+  <span id="mp-status" style="color:#8d97a8;font-size:11px;min-width:80px;"></span>
+</div>
 </body>
 </html>
