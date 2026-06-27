@@ -1,0 +1,6 @@
+{
+  "name": "creature-relay",
+  "type": "module",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "^8" }
+}
