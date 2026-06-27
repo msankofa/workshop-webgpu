@@ -1,11 +1,17 @@
 import * as THREE from 'three';
 
 export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
-const LOD_NEAR_SQ = (lod.near ?? 120) ** 2;
-const LOD_MID_SQ = (lod.mid ?? 210) ** 2;
-const LOD_FAR_SQ = (lod.far ?? 360) ** 2;
-const LOD_MID_STRIDE = Math.max(1, Math.round(lod.midStride ?? 2));
-const LOD_FAR_STRIDE = Math.max(1, Math.round(lod.farStride ?? 4));
+const CREATURE_INSTANCING_MODE = new URLSearchParams(globalThis.location?.search || '').get('creatureInstancing') || 'parts';
+const creaturePerf = {
+  detailDistance: lod.detailDistance ?? lod.near ?? 120,
+  bodyOnlyDistance: lod.bodyOnlyDistance ?? lod.mid ?? 210,
+  hideDistance: lod.hideDistance ?? lod.far ?? 360,
+  fullUpdateStride: Math.max(1, Math.round(lod.fullUpdateStride ?? 1)),
+  bodyUpdateStride: Math.max(1, Math.round(lod.bodyUpdateStride ?? lod.midStride ?? 2)),
+  farUpdateStride: Math.max(1, Math.round(lod.farUpdateStride ?? lod.farStride ?? 4)),
+  ikDistance: lod.ikDistance ?? lod.near ?? 120,
+  shadowDistance: lod.shadowDistance ?? lod.near ?? 120,
+};
 const LOD_BODY_ONLY_TIER = 1;
 const _cameraPos = new THREE.Vector3();
 const _normal = new THREE.Vector3();
@@ -208,6 +214,17 @@ const OPTION_DEFS = [
   { label: 'Rotate', path: ['rotationLerp'], min: 0.04, max: 0.36, step: 0.01 }
 ];
 
+const PERF_DEFS = [
+  { label: 'Full detail dist', key: 'detailDistance', min: 10, max: 500, step: 5 },
+  { label: 'Body-only dist', key: 'bodyOnlyDistance', min: 10, max: 700, step: 5 },
+  { label: 'Hide dist', key: 'hideDistance', min: 20, max: 900, step: 5 },
+  { label: 'Full anim stride', key: 'fullUpdateStride', min: 1, max: 8, step: 1, integer: true },
+  { label: 'Body anim stride', key: 'bodyUpdateStride', min: 1, max: 16, step: 1, integer: true },
+  { label: 'Far anim stride', key: 'farUpdateStride', min: 1, max: 24, step: 1, integer: true },
+  { label: 'IK dist', key: 'ikDistance', min: 0, max: 500, step: 5 },
+  { label: 'Shadow dist', key: 'shadowDistance', min: 0, max: 500, step: 5 }
+];
+
 const MODEL_DEFS = [
   { label: 'Scale', key: 'scale', min: 0.65, max: 1.65, step: 0.05 },
   { label: 'Body W', key: 'bodyWidth', min: 0.45, max: 1.9, step: 0.05 },
@@ -228,6 +245,22 @@ const ARM_DEFS = [
   { label: 'Interest', key: 'armInterest', min: 0.0, max: 2.2, step: 0.05 },
   { label: 'Carry H', key: 'armCarryHeight', min: -0.2, max: 1.4, step: 0.05 },
   { label: 'Bend', key: 'armBend', min: 0.0, max: 0.7, step: 0.02 }
+];
+
+const SELECTED_BODY_DEFS = [
+  { label: 'Body W', key: 'bodyScaleX', min: 0.25, max: 3.5, step: 0.05 },
+  { label: 'Body H', key: 'bodyScaleY', min: 0.18, max: 2.5, step: 0.05 },
+  { label: 'Body D', key: 'bodyScaleZ', min: 0.25, max: 3.8, step: 0.05 },
+  { label: 'Ride H', key: 'bodyHeight', min: 0.25, max: 3.5, step: 0.05 }
+];
+
+const SELECTED_ARM_DEFS = [
+  { label: 'Arm Count', key: 'count', min: 0, max: 8, step: 1, integer: true },
+  { label: 'Arm Length', key: 'length', min: 0.35, max: 2.6, step: 0.05 },
+  { label: 'Grab R', key: 'grabRadius', min: 0.08, max: 0.8, step: 0.02 },
+  { label: 'Interest', key: 'interest', min: 0.0, max: 2.2, step: 0.05 },
+  { label: 'Carry H', key: 'carryHeight', min: -0.2, max: 1.4, step: 0.05 },
+  { label: 'Bend', key: 'bend', min: 0.0, max: 0.7, step: 0.02 }
 ];
 
 const ARM_PLANS = {
@@ -733,6 +766,149 @@ const _legRestGround = new THREE.Vector3(), _legMoveDir = new THREE.Vector3(), _
 const _armAxis = new THREE.Vector3(), _armPole = new THREE.Vector3(), _armPreferred = new THREE.Vector3();
 const _groundedBuf = Array.from({ length: 16 }, () => ({ x: 0, y: 0, z: 0 }));
 const _nearbyScratch = [];
+const _instMatrix = new THREE.Matrix4();
+const _instLocal = new THREE.Matrix4();
+const _instPos = new THREE.Vector3();
+const _instScale = new THREE.Vector3();
+const _instQuat = new THREE.Quaternion();
+const _instColor = new THREE.Color();
+const _forageClaims = new Set();
+const _forageTargets = new Map();
+const _forageObjects = new Map();
+const _activeCreatures = [];
+
+function materialColor(material) {
+  return material?.color || whiteMat.color;
+}
+
+function composeWorldMatrix(position, quaternion, scale, out = _instMatrix) {
+  return out.compose(position, quaternion, scale);
+}
+
+function composeGroupLocalMatrix(group, part, out = _instMatrix) {
+  part.updateMatrix();
+  return out.multiplyMatrices(group.matrixWorld, part.matrix);
+}
+
+function composeBodyShadowMatrix(creature, out = _instMatrix) {
+  _instPos.set(0, creature.plan.bodyScale.y * 0.04, 0);
+  _instQuat.identity();
+  _instScale.set(
+    creature.plan.bodyScale.x * 1.72,
+    Math.max(0.12, creature.plan.bodyScale.y * 0.88),
+    creature.plan.bodyScale.z * 1.62
+  );
+  _instLocal.compose(_instPos, _instQuat, _instScale);
+  return out.multiplyMatrices(creature.group.matrixWorld, _instLocal);
+}
+
+function createCreaturePartBatches({ scene, capacity = 4096 }) {
+  const geometries = {
+    box: new THREE.BoxGeometry(1, 1, 1),
+    sphere: new THREE.SphereGeometry(1, 12, 10),
+    capsule: new THREE.CapsuleGeometry(1, 1, 4, 10),
+  };
+  const buckets = {};
+  const pickables = [];
+  const defs = {
+    shellBox: { geometry: geometries.box, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.58, metalness: 0.08 }) },
+    plateBox: { geometry: geometries.box, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.64, metalness: 0.04 }) },
+    trimBox: { geometry: geometries.box, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.44, metalness: 0.12 }) },
+    lightBox: { geometry: geometries.box, material: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.45, roughness: 0.25 }) },
+    footBox: { geometry: geometries.box, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72 }) },
+    jointSphere: { geometry: geometries.sphere, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.58 }) },
+    limbSegment: { geometry: geometries.capsule, material: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.62 }) },
+    shadowBox: { geometry: geometries.box, material: new THREE.MeshBasicMaterial({ color: 0x000000 }) },
+  };
+  defs.shadowBox.material.colorWrite = false;
+
+  for (const [name, def] of Object.entries(defs)) {
+    const mesh = new THREE.InstancedMesh(def.geometry, def.material, capacity);
+    mesh.name = `CreatureBatch:${name}`;
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.userData.creatureBatch = true;
+    mesh.userData.batchName = name;
+    if (name === 'shadowBox') {
+      mesh.castShadow = true;
+      mesh.receiveShadow = false;
+    } else {
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      pickables.push(mesh);
+    }
+    scene.add(mesh);
+    buckets[name] = { mesh, owners: new Array(capacity), count: 0 };
+  }
+
+  function add(bucketName, matrix, color, owner = null) {
+    const bucket = buckets[bucketName];
+    if (!bucket || bucket.count >= capacity) return false;
+    const i = bucket.count++;
+    bucket.mesh.setMatrixAt(i, matrix);
+    if (color && bucket.mesh.setColorAt) bucket.mesh.setColorAt(i, color);
+    bucket.owners[i] = owner;
+    return true;
+  }
+
+  return {
+    stats: { boxes: 0, limbs: 0, joints: 0, handsFeet: 0, shadows: 0 },
+    pickables,
+    beginFrame() {
+      for (const bucket of Object.values(buckets)) {
+        bucket.count = 0;
+        bucket.owners.fill(null);
+      }
+      this.stats.boxes = 0;
+      this.stats.limbs = 0;
+      this.stats.joints = 0;
+      this.stats.handsFeet = 0;
+      this.stats.shadows = 0;
+    },
+    addBox(bucketName, matrix, color, owner) {
+      if (add(bucketName, matrix, color, owner)) this.stats.boxes++;
+    },
+    addLimb(matrix, color, owner) {
+      if (add('limbSegment', matrix, color, owner)) this.stats.limbs++;
+    },
+    addJoint(matrix, color, owner) {
+      if (add('jointSphere', matrix, color, owner)) this.stats.joints++;
+    },
+    addHandFoot(matrix, color, owner) {
+      if (add('footBox', matrix, color, owner)) this.stats.handsFeet++;
+    },
+    addShadow(matrix, owner) {
+      if (add('shadowBox', matrix, null, owner)) this.stats.shadows++;
+    },
+    ownerForHit(hit) {
+      const bucket = buckets[hit.object?.userData?.batchName];
+      return bucket ? bucket.owners[hit.instanceId] : null;
+    },
+    endFrame() {
+      for (const bucket of Object.values(buckets)) {
+        bucket.mesh.count = bucket.count;
+        bucket.mesh.instanceMatrix.needsUpdate = true;
+        if (bucket.mesh.instanceColor) bucket.mesh.instanceColor.needsUpdate = true;
+      }
+    },
+    dispose() {
+      const disposedGeometries = new Set();
+      for (const bucket of Object.values(buckets)) {
+        scene.remove(bucket.mesh);
+        if (!disposedGeometries.has(bucket.mesh.geometry)) {
+          bucket.mesh.geometry.dispose();
+          disposedGeometries.add(bucket.mesh.geometry);
+        }
+        bucket.mesh.material.dispose();
+      }
+    },
+  };
+}
+
+const creatureBatches = CREATURE_INSTANCING_MODE === 'off'
+  ? null
+  : createCreaturePartBatches({ scene, capacity: 8192 });
 
 class SpatialGrid {
   constructor(cellSize) {
@@ -807,6 +983,21 @@ const grabbables = [];
 const objectGrid = new SpatialGrid(5.0);
 const creatureStats = {
   updateMs: 0,
+  lodMs: 0,
+  objectsMs: 0,
+  behaviorMs: 0,
+  steeringMs: 0,
+  physicsMs: 0,
+  renderMs: 0,
+  selectionMs: 0,
+  perfDetailDistance: creaturePerf.detailDistance,
+  perfBodyOnlyDistance: creaturePerf.bodyOnlyDistance,
+  perfHideDistance: creaturePerf.hideDistance,
+  perfFullUpdateStride: creaturePerf.fullUpdateStride,
+  perfBodyUpdateStride: creaturePerf.bodyUpdateStride,
+  perfFarUpdateStride: creaturePerf.farUpdateStride,
+  perfIkDistance: creaturePerf.ikDistance,
+  perfShadowDistance: creaturePerf.shadowDistance,
   count: 0,
   visible: 0,
   sim: 0,
@@ -816,7 +1007,13 @@ const creatureStats = {
   armsActive: 0,
   shadowCasters: 0,
   ikFull: 0,
-  ikCheap: 0
+  ikCheap: 0,
+  instancingMode: CREATURE_INSTANCING_MODE,
+  instancedBoxes: 0,
+  instancedLimbs: 0,
+  instancedJoints: 0,
+  instancedHandsFeet: 0,
+  instancedShadows: 0
 };
 
 function rebuildObjectGrid() {
@@ -1205,6 +1402,7 @@ class Creature {
     this.healthMat = new THREE.MeshBasicMaterial({ color: 0x7bd88f });
     this.hitMat = new THREE.MeshBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.0 });
     this._rigidBodyParts = [];
+    this._instancedBoxes = [];
     this.shadowBodyMeshes = [];
 
     this.group = new THREE.Group();
@@ -1260,21 +1458,28 @@ class Creature {
     this._mergeRigidBodyParts();
 
     this.legs = plan.legs.map((d, index) => {
-      const hipBall = new THREE.Mesh(sphereGeometry(0.10, 12, 10), this.jointMat);
+      const instancedParts = creatureBatches && CREATURE_INSTANCING_MODE === 'parts';
+      const hipBall = instancedParts ? new THREE.Object3D() : new THREE.Mesh(sphereGeometry(0.10, 12, 10), this.jointMat);
       hipBall.castShadow = false;
       hipBall.position.copy(d.attachment);
-      this.group.add(hipBall);
+      hipBall.userData.radius = 0.10;
+      hipBall.userData.creature = this;
+      hipBall.userData.material = this.jointMat;
+      if (!instancedParts) this.group.add(hipBall);
 
-      const foot = new THREE.Mesh(boxGeometry(0.22, FOOT_GROUND * 2, 0.34), this.footMat);
+      const foot = instancedParts ? new THREE.Object3D() : new THREE.Mesh(boxGeometry(0.22, FOOT_GROUND * 2, 0.34), this.footMat);
       foot.castShadow = false;
       foot.userData.creature = this;
-      scene.add(foot);
+      foot.userData.size = new THREE.Vector3(0.22, FOOT_GROUND * 2, 0.34);
+      foot.userData.material = this.footMat;
+      if (!instancedParts) scene.add(foot);
 
       return {
         index,
         row: d.row,
         side: d.side,
         attachmentLocal: d.attachment.clone(),
+        hipBall,
         restLocal: d.rest.clone(),
         phase: (d.row + (d.side > 0 ? 1 : 0)) % 2,
         chain: new KinematicChain(d.segments),
@@ -1305,16 +1510,21 @@ class Creature {
     });
 
     this.arms = armSpecsForPlan(plan, this.armSettings).map(spec => {
-      const shoulder = new THREE.Mesh(sphereGeometry(0.075, 12, 10), this.jointMat);
+      const instancedParts = creatureBatches && CREATURE_INSTANCING_MODE === 'parts';
+      const shoulder = instancedParts ? new THREE.Object3D() : new THREE.Mesh(sphereGeometry(0.075, 12, 10), this.jointMat);
       shoulder.castShadow = false;
       shoulder.position.copy(spec.attachmentLocal);
+      shoulder.userData.radius = 0.075;
       shoulder.userData.creature = this;
-      this.group.add(shoulder);
+      shoulder.userData.material = this.jointMat;
+      if (!instancedParts) this.group.add(shoulder);
 
-      const hand = new THREE.Mesh(boxGeometry(0.18, 0.11, 0.18), this.footMat);
+      const hand = instancedParts ? new THREE.Object3D() : new THREE.Mesh(boxGeometry(0.18, 0.11, 0.18), this.footMat);
       hand.castShadow = false;
       hand.userData.creature = this;
-      scene.add(hand);
+      hand.userData.size = new THREE.Vector3(0.18, 0.11, 0.18);
+      hand.userData.material = this.footMat;
+      if (!instancedParts) scene.add(hand);
 
       return {
         index: spec.index,
@@ -1357,14 +1567,19 @@ class Creature {
     this.forageCloseTime = 0;
     this.forageIgnore = new Map();
     this.forageCrouch = 0;
+    this._forageTargetScratch = new THREE.Vector3();
+    this._raceTargetScratch = new THREE.Vector3();
+    this._raceStartScratch = new THREE.Vector3();
     this.debugData = null;
     this.lodTier = 0;
     this.lodStride = 1;
-    this.lodFrameOffset = Math.floor(Math.random() * LOD_FAR_STRIDE);
+    this.lodFrameOffset = Math.floor(Math.random() * creaturePerf.farUpdateStride);
     this.lodShouldSim = true;
     this.lodArmsActive = true;
     this.lodDebugActive = false;
+    this.lodFullIk = true;
     this.lodVisible = true;
+    this.lodCastsShadow = true;
     this.forceFootTargetRefresh = true;
     this.debugGroup = this._makeDebugGroup();
 
@@ -1388,6 +1603,25 @@ class Creature {
   }
 
   _box(position, scale, material) {
+    if (creatureBatches) {
+      const part = new THREE.Object3D();
+      part.position.copy(position);
+      part.scale.copy(scale);
+      part.material = material;
+      part.userData.creature = this;
+      part.userData.bucket = material === this.plateMat
+        ? 'plateBox'
+        : material === this.trimMat
+          ? 'trimBox'
+          : this.lightMats.includes(material)
+            ? 'lightBox'
+            : 'shellBox';
+      const castsBodyShadow = material === this.shellMat || material === this.plateMat;
+      part.castShadow = castsBodyShadow;
+      this._instancedBoxes.push(part);
+      if (castsBodyShadow) this.shadowBodyMeshes.push(part);
+      return part;
+    }
     const mesh = new THREE.Mesh(blockGeo, material);
     mesh.position.copy(position);
     mesh.scale.copy(scale);
@@ -1403,6 +1637,7 @@ class Creature {
   }
 
   _mergeRigidBodyParts() {
+    if (creatureBatches) return;
     if (!this._rigidBodyParts.length) return;
     const byMaterial = new Map();
     for (const mesh of this._rigidBodyParts) {
@@ -1448,6 +1683,15 @@ class Creature {
   }
 
   _cap(nom, r) {
+    if (creatureBatches && CREATURE_INSTANCING_MODE === 'parts') {
+      const m = new THREE.Object3D();
+      m.castShadow = false;
+      m.userData.base = nom;
+      m.userData.radius = r;
+      m.userData.creature = this;
+      m.userData.material = this.limbMat;
+      return m;
+    }
     const geometry = this.style.limb === 'capsule'
       ? capsuleGeometry(r, Math.max(0.01, nom - 2 * r), 4, 10)
       : boxGeometry(r * 1.7, nom, r * 1.7);
@@ -1460,6 +1704,14 @@ class Creature {
   }
 
   _joint(r) {
+    if (creatureBatches && CREATURE_INSTANCING_MODE === 'parts') {
+      const m = new THREE.Object3D();
+      m.castShadow = false;
+      m.userData.radius = r;
+      m.userData.creature = this;
+      m.userData.material = this.jointMat;
+      return m;
+    }
     const m = new THREE.Mesh(sphereGeometry(r, 12, 10), this.jointMat);
     m.castShadow = false;
     m.userData.creature = this;
@@ -1567,18 +1819,21 @@ class Creature {
       if (o.geometry) o.geometry.dispose();
       if (o.material && !Array.isArray(o.material)) o.material.dispose();
     });
+    const removeLoosePart = part => {
+      scene.remove(part);
+      if (part.geometry && !part.geometry.userData.shared) part.geometry.dispose();
+      if (part.material && !Array.isArray(part.material)) part.material.dispose();
+    };
     for (const leg of this.legs) {
-      scene.remove(leg.foot);
-      leg.foot.geometry.dispose();
-      for (const mesh of leg.segments) { scene.remove(mesh); mesh.geometry.dispose(); }
-      for (const mesh of leg.joints) { scene.remove(mesh); mesh.geometry.dispose(); }
+      removeLoosePart(leg.foot);
+      for (const mesh of leg.segments) removeLoosePart(mesh);
+      for (const mesh of leg.joints) removeLoosePart(mesh);
     }
     for (const arm of this.arms) {
       resetArmState(arm);
-      scene.remove(arm.hand);
-      arm.hand.geometry.dispose();
-      for (const mesh of arm.segments) { scene.remove(mesh); mesh.geometry.dispose(); }
-      for (const mesh of arm.joints) { scene.remove(mesh); mesh.geometry.dispose(); }
+      removeLoosePart(arm.hand);
+      for (const mesh of arm.segments) removeLoosePart(mesh);
+      for (const mesh of arm.joints) removeLoosePart(mesh);
     }
   }
 
@@ -2039,7 +2294,7 @@ class Creature {
         _wander.set(0, 0, 0);
       } else {
         _wander.set(fx, 0, fz);
-        if (lateral > 0.05) _wander.add(new THREE.Vector3(lateralX, 0, lateralZ).multiplyScalar(1.4));
+        if (lateral > 0.05) _wander.add(_steer.set(lateralX, 0, lateralZ).multiplyScalar(1.4));
         _wander.normalize();
       }
     } else if (behavior === 'direction') {
@@ -2292,7 +2547,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     let diff = Math.atan2(Math.sin(desiredYaw - this.yaw), Math.cos(desiredYaw - this.yaw));
     this.yaw += clamp(diff, -gait.turnSpeed * h, gait.turnSpeed * h);
 
-    const fullFootScan = this.lodTier === 0 || this.lodDebugActive || this.forceFootTargetRefresh;
+    const fullFootScan = this.lodFullIk || this.lodDebugActive || this.forceFootTargetRefresh;
     for (const leg of this.legs) {
       leg.timeSinceBeginMove += h;
       leg.timeSinceStopMove += h;
@@ -2744,7 +2999,68 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     }
   }
 
-  render(showDebug, dt = 1 / 60) {
+  submitBodyInstances() {
+    if (!creatureBatches) return;
+    for (const part of this._instancedBoxes) {
+      if (part.visible === false) continue;
+      creatureBatches.addBox(part.userData.bucket, composeGroupLocalMatrix(this.group, part), materialColor(part.material), this);
+    }
+  }
+
+  submitShadowProxy() {
+    if (!creatureBatches || !this.lodCastsShadow) return;
+    creatureBatches.addShadow(composeBodyShadowMatrix(this), this);
+  }
+
+  submitInstancedSegment(segment) {
+    const radius = segment.userData.radius || 0.06;
+    const length = Math.max(radius * 2.05, (segment.userData.base || 1) * Math.max(0.001, segment.scale.y || 1));
+    _instScale.set(radius, length / 3, radius);
+    creatureBatches.addLimb(composeWorldMatrix(segment.position, segment.quaternion, _instScale), materialColor(segment.userData.material), this);
+  }
+
+  submitInstancedJoint(joint) {
+    const radius = joint.userData.radius || 0.06;
+    _instScale.set(radius, radius, radius);
+    _instQuat.identity();
+    creatureBatches.addJoint(composeWorldMatrix(joint.position, _instQuat, _instScale), materialColor(joint.userData.material), this);
+  }
+
+  submitInstancedLocalJoint(joint) {
+    const radius = joint.userData.radius || 0.06;
+    joint.scale.set(radius, radius, radius);
+    creatureBatches.addJoint(composeGroupLocalMatrix(this.group, joint), materialColor(joint.userData.material), this);
+  }
+
+  submitInstancedHandFoot(part) {
+    const size = part.userData.size || _instScale.set(0.16, 0.10, 0.16);
+    _instScale.copy(size);
+    creatureBatches.addHandFoot(composeWorldMatrix(part.position, part.quaternion, _instScale), materialColor(part.userData.material), this);
+  }
+
+  submitLegInstances() {
+    if (!creatureBatches || CREATURE_INSTANCING_MODE !== 'parts' || this.lodTier >= LOD_BODY_ONLY_TIER) return;
+    for (const leg of this.legs) {
+      if (leg.foot.visible === false) continue;
+      this.submitInstancedLocalJoint(leg.hipBall);
+      for (const segment of leg.segments) this.submitInstancedSegment(segment);
+      for (const joint of leg.joints) if (joint) this.submitInstancedJoint(joint);
+      this.submitInstancedHandFoot(leg.foot);
+    }
+  }
+
+  submitArmInstances() {
+    if (!creatureBatches || CREATURE_INSTANCING_MODE !== 'parts' || !this.lodArmsActive) return;
+    for (const arm of this.arms) {
+      if (arm.hand.visible === false) continue;
+      this.submitInstancedLocalJoint(arm.shoulder);
+      for (const segment of arm.segments) this.submitInstancedSegment(segment);
+      for (const joint of arm.joints) if (joint) this.submitInstancedJoint(joint);
+      this.submitInstancedHandFoot(arm.hand);
+    }
+  }
+
+  render(showDebug, dt = 1 / 60, animateParts = true) {
     this.group.position.copy(this.pos);
     const deathT = this.attackState === 'dying' ? easeInOut(clamp(this.deathTimer / DEATH_FALL_TIME, 0, 1)) : 0;
     const fallSide = this.teamId % 2 === 0 ? 1 : -1;
@@ -2766,7 +3082,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     _fwd.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     const orientation = this.group.quaternion;
 
-    if (this.lodTier < LOD_BODY_ONLY_TIER) {
+    if (animateParts && this.lodTier < LOD_BODY_ONLY_TIER) {
       for (const leg of this.legs) {
         const hipWorld = this.group.localToWorld(leg.attachmentLocal.clone());
         const points = leg.chain.solve(hipWorld, leg.end, orientation);
@@ -2785,7 +3101,11 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       }
     }
 
-    if (this.lodArmsActive) this.renderArms(orientation, dt);
+    if (animateParts && this.lodArmsActive) this.renderArms(orientation, dt);
+    this.submitBodyInstances();
+    this.submitLegInstances();
+    this.submitArmInstances();
+    this.submitShadowProxy();
 
     this.renderDebug(showDebug);
   }
@@ -2885,6 +3205,7 @@ let currentBehavior = 'wander';
 let sceneMode = 'uniform';
 let loadedCreatureConfigs = null;
 let selectedCreature = null;
+let creatureEditScope = 'all';
 let directionYaw = 0;
 const simTarget = new THREE.Vector3(0, terrainHeight(0, 0) + 0.08, 0);
 
@@ -2944,9 +3265,121 @@ function numericControl(def, value, onValue) {
   return label;
 }
 
+function renderCreatureScope() {
+  const root = document.getElementById('creatureScope');
+  if (!root) return;
+  if (creatureEditScope === 'selected' && !selectedCreature) creatureEditScope = 'all';
+  root.innerHTML = '';
+  const buttons = document.createElement('div');
+  buttons.className = 'scope-buttons';
+
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  allBtn.textContent = 'All';
+  allBtn.classList.toggle('active', creatureEditScope === 'all');
+  allBtn.addEventListener('click', () => {
+    creatureEditScope = 'all';
+    renderOptions();
+    renderModelOptions();
+    renderCreatureScope();
+  });
+
+  const selectedBtn = document.createElement('button');
+  selectedBtn.type = 'button';
+  selectedBtn.textContent = 'Selected';
+  selectedBtn.disabled = !selectedCreature;
+  selectedBtn.classList.toggle('active', creatureEditScope === 'selected');
+  selectedBtn.addEventListener('click', () => {
+    if (!selectedCreature) return;
+    creatureEditScope = 'selected';
+    ensureSelectedEditMode();
+    renderOptions();
+    renderModelOptions();
+    renderCreatureScope();
+  });
+
+  const status = document.createElement('div');
+  status.className = 'scope-status';
+  const selectedIndex = selectedCreature ? creatures.indexOf(selectedCreature) + 1 : 0;
+  status.textContent = creatureEditScope === 'selected'
+    ? `Editing creature ${selectedIndex}`
+    : (selectedCreature ? `Selected creature ${selectedIndex}; broad edits apply to all` : 'Broad edits apply to all creatures');
+
+  buttons.append(allBtn, selectedBtn);
+  root.append(buttons, status);
+}
+
+function selectedHint(text = 'Select a creature to edit it directly.') {
+  const hint = document.createElement('div');
+  hint.style.cssText = 'grid-column:1/-1;color:var(--pc-muted);padding:7px 0';
+  hint.textContent = text;
+  return hint;
+}
+
+function ensureSelectedEditMode() {
+  if (!selectedCreature) return false;
+  if (sceneMode !== 'varied') {
+    // Uniform mode drives all creatures from currentGait() at update time, so
+    // their per-creature gait snapshots can be stale. Preserve the visible
+    // broad settings as the baseline before selected edits switch to varied.
+    for (const creature of creatures) {
+      creature.gait = cloneGait(currentGait());
+    }
+    sceneMode = 'varied';
+    const sceneModeSelect = document.getElementById('sceneMode');
+    if (sceneModeSelect) sceneModeSelect.value = sceneMode;
+    updateLoadedCreatureConfigsFromScene();
+  }
+  return true;
+}
+
+function refreshSelectedInspector() {
+  if (!selectedCreature) return;
+  const title = document.getElementById('inspectorTitle');
+  const summary = document.getElementById('inspectorSummary');
+  const text = document.getElementById('selectedConfig');
+  const index = creatures.indexOf(selectedCreature);
+  const legCount = selectedCreature.legs.length;
+  const segmentCount = selectedCreature.legs[0]?.segments.length ?? 0;
+  if (title) title.textContent = `Creature ${index + 1}`;
+  if (summary) {
+    summary.innerHTML = [
+      `legs: ${legCount}`,
+      `segments/leg: ${segmentCount}`,
+      `team: ${selectedCreature.teamId + 1}`,
+      `health: ${Math.round(selectedCreature.health)}/${MAX_HEALTH}`,
+      `speed: ${formatOption(selectedCreature.gait.maxSpeed)}`,
+      `mode: ${currentBehavior}`,
+      `style: ${selectedCreature.style.label || 'custom'}`
+    ].join('<br>');
+  }
+  if (text) text.value = selectedConfigJson();
+  selectionHelper.visible = true;
+  selectionHelper.setFromObject(selectedCreature.group);
+}
+
 function renderOptions() {
   const panel = document.getElementById('options');
   panel.innerHTML = '';
+  if (creatureEditScope === 'selected') {
+    if (!selectedCreature) {
+      panel.appendChild(selectedHint());
+      return;
+    }
+    let target = selectedCreature;
+    for (const def of OPTION_DEFS) {
+      panel.appendChild(numericControl(def, valueAtPath(target.gait, def.path), value => {
+        if (!ensureSelectedEditMode()) return;
+        setAtPath(target.gait, def.path, value);
+        if (def.path[0] === 'movingTrigger') target.gait.stationaryTrigger.h = Math.max(0.12, value * 0.42);
+        if (def.path[0] === 'comfort') target.gait.comfort.v = Math.max(0.45, value * 0.72);
+        target.config = creatureToConfig(target);
+        updateLoadedCreatureConfigsFromScene();
+        refreshSelectedInspector();
+      }));
+    }
+    return;
+  }
   const gait = currentGait();
   for (const def of OPTION_DEFS) {
     panel.appendChild(numericControl(def, valueAtPath(gait, def.path), value => {
@@ -2955,11 +3388,109 @@ function renderOptions() {
       if (def.path[0] === 'comfort') gait.comfort.v = Math.max(0.45, value * 0.72);
     }));
   }
+
+  const perfHead = document.createElement('div');
+  perfHead.style.cssText = 'grid-column:1/-1;margin-top:6px;color:var(--pc-muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em';
+  perfHead.textContent = 'Performance';
+  panel.appendChild(perfHead);
+  for (const def of PERF_DEFS) {
+    panel.appendChild(numericControl(def, creaturePerf[def.key], value => {
+      creaturePerf[def.key] = def.integer ? Math.max(1, Math.round(value)) : value;
+      if (def.key === 'bodyOnlyDistance') creaturePerf.bodyOnlyDistance = Math.max(creaturePerf.detailDistance, creaturePerf.bodyOnlyDistance);
+      if (def.key === 'hideDistance') creaturePerf.hideDistance = Math.max(creaturePerf.bodyOnlyDistance, creaturePerf.hideDistance);
+      if (def.key === 'detailDistance') creaturePerf.detailDistance = Math.min(creaturePerf.detailDistance, creaturePerf.bodyOnlyDistance);
+    }));
+  }
+}
+
+function replaceEditedCreature(creature, config) {
+  const index = creatures.indexOf(creature);
+  if (index < 0) return creature;
+  config.index = index;
+  config.spawn = creature.pos.toArray();
+  config.yaw = creature.yaw;
+  config.health = creature.health;
+  config.teamId = creature.teamId;
+  const replacement = createCreatureFromConfig(config);
+  replacement.vel.copy(creature.vel);
+  creatures[index] = replacement;
+  creature.dispose();
+  selectedCreature = replacement;
+  updateLoadedCreatureConfigsFromScene();
+  refreshSelectedInspector();
+  return replacement;
+}
+
+function selectedPlanValue(creature, key) {
+  if (key === 'bodyScaleX') return creature.plan.bodyScale.x;
+  if (key === 'bodyScaleY') return creature.plan.bodyScale.y;
+  if (key === 'bodyScaleZ') return creature.plan.bodyScale.z;
+  if (key === 'bodyHeight') return creature.plan.bodyHeight;
+  return 0;
+}
+
+function setSelectedPlanValue(config, key, value) {
+  const plan = deserializePlan(config.plan);
+  if (key === 'bodyScaleX') plan.bodyScale.x = value;
+  if (key === 'bodyScaleY') plan.bodyScale.y = value;
+  if (key === 'bodyScaleZ') plan.bodyScale.z = value;
+  if (key === 'bodyHeight') plan.bodyHeight = value;
+  config.plan = serializePlan(finalizePlan(plan));
 }
 
 function renderModelOptions() {
   const panel = document.getElementById('modelOptions');
   panel.innerHTML = '';
+  renderCreatureScope();
+
+  if (creatureEditScope === 'selected') {
+    if (!selectedCreature) {
+      panel.appendChild(selectedHint());
+      return;
+    }
+    ensureSelectedEditMode();
+    let target = selectedCreature;
+
+    const heading = document.createElement('div');
+    heading.style.cssText = 'grid-column:1/-1;color:var(--pc-muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em';
+    heading.textContent = 'Selected body';
+    panel.appendChild(heading);
+
+    for (const def of SELECTED_BODY_DEFS) {
+      panel.appendChild(numericControl(def, selectedPlanValue(target, def.key), value => {
+        let config = creatureToConfig(target);
+        setSelectedPlanValue(config, def.key, value);
+        target = replaceEditedCreature(target, config);
+      }));
+    }
+
+    const armPlanLabel = document.createElement('label');
+    armPlanLabel.textContent = 'Arm Plan';
+    const armPlanSelect = document.createElement('select');
+    for (const [key, plan] of Object.entries(ARM_PLANS)) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = plan.label;
+      opt.selected = key === target.armSettings.plan;
+      armPlanSelect.appendChild(opt);
+    }
+    armPlanSelect.addEventListener('change', () => {
+      const config = creatureToConfig(target);
+      config.arms.plan = armPlanSelect.value;
+      target = replaceEditedCreature(target, config);
+    });
+    armPlanLabel.appendChild(armPlanSelect);
+    panel.appendChild(armPlanLabel);
+
+    for (const def of SELECTED_ARM_DEFS) {
+      panel.appendChild(numericControl(def, target.armSettings[def.key], value => {
+        const config = creatureToConfig(target);
+        config.arms[def.key] = def.integer ? Math.max(0, Math.round(value)) : value;
+        target = replaceEditedCreature(target, config);
+      }));
+    }
+    return;
+  }
 
   const styleLabel = document.createElement('label');
   styleLabel.textContent = 'Style';
@@ -3365,8 +3896,33 @@ function mutateNumber(value, rng, amount = 0.10) {
   return value * randRange(rng, 1 - amount, 1 + amount);
 }
 
+function mutateSelectedCreature(rng) {
+  if (!selectedCreature || !ensureSelectedEditMode()) return false;
+  let config = creatureToConfig(selectedCreature);
+  const plan = deserializePlan(config.plan);
+  plan.bodyHeight = mutateNumber(plan.bodyHeight, rng, 0.10);
+  plan.bodyScale.x = mutateNumber(plan.bodyScale.x, rng, 0.10);
+  plan.bodyScale.y = mutateNumber(plan.bodyScale.y, rng, 0.10);
+  plan.bodyScale.z = mutateNumber(plan.bodyScale.z, rng, 0.10);
+  config.plan = serializePlan(finalizePlan(plan));
+  for (const key of ['length','grabRadius','interest','carryHeight','bend']) {
+    config.arms[key] = Math.max(0, mutateNumber(config.arms[key], rng, 0.10));
+  }
+  if (rng() > 0.78) config.arms.count = Math.max(0, Math.round(mutateNumber(config.arms.count, rng, 0.25)));
+  for (const def of OPTION_DEFS) {
+    const current = valueAtPath(config.gait, def.path);
+    setAtPath(config.gait, def.path, mutateNumber(current, rng, 0.10));
+  }
+  replaceEditedCreature(selectedCreature, config);
+  renderOptions();
+  renderModelOptions();
+  renderCreatureScope();
+  return true;
+}
+
 function mutateConfig() {
   const rng = seededRandom(advanceSeed(17) + 5000);
+  if (creatureEditScope === 'selected' && mutateSelectedCreature(rng)) return;
   for (const key of ['scale','bodyWidth','bodyThickness','bodyDepth','bodyHeight','restX','restZ','hipX','hipY','segmentScale']) {
     modelSettings[key] = mutateNumber(modelSettings[key], rng, 0.10);
   }
@@ -3416,6 +3972,10 @@ function refreshAfterRandom(id) {
 
 function runRandomGroup(group, spread) {
   const rng = seededRandom(advanceSeed(group.salt) + group.base);
+  if (creatureEditScope === 'selected' && selectedCreature && group.id !== 'terrain') {
+    mutateSelectedCreature(rng);
+    return;
+  }
   if (group.whole) group.whole(rng, spread);
   else runParams(group.params, rng, spread);
   refreshAfterRandom(group.id);
@@ -3423,6 +3983,10 @@ function runRandomGroup(group, spread) {
 
 function runRandomParam(group, param) {
   const rng = seededRandom(advanceSeed(group.salt) + group.base + 777);
+  if (creatureEditScope === 'selected' && selectedCreature && group.id !== 'terrain') {
+    mutateSelectedCreature(rng);
+    return;
+  }
   param.apply(rng, 1);
   refreshAfterRandom(group.id);
 }
@@ -3706,33 +4270,21 @@ function updateLoadedCreatureConfigsFromScene() {
 function selectCreature(creature) {
   selectedCreature = creature;
   const inspector = document.getElementById('inspector');
-  const title = document.getElementById('inspectorTitle');
-  const summary = document.getElementById('inspectorSummary');
-  const text = document.getElementById('selectedConfig');
 
   if (!creature) {
     inspector.style.display = 'none';
     selectionHelper.visible = false;
+    renderCreatureScope();
+    renderOptions();
+    renderModelOptions();
     return;
   }
 
-  const index = creatures.indexOf(creature);
-  const legCount = creature.legs.length;
-  const segmentCount = creature.legs[0]?.segments.length ?? 0;
-  title.textContent = `Creature ${index + 1}`;
-  summary.innerHTML = [
-    `legs: ${legCount}`,
-    `segments/leg: ${segmentCount}`,
-    `team: ${creature.teamId + 1}`,
-    `health: ${Math.round(creature.health)}/${MAX_HEALTH}`,
-    `speed: ${formatOption(creature.gait.maxSpeed)}`,
-    `mode: ${currentBehavior}`,
-    `style: ${creature.style.label || 'custom'}`
-  ].join('<br>');
-  text.value = selectedConfigJson();
   inspector.style.display = 'block';
-  selectionHelper.visible = true;
-  selectionHelper.setFromObject(creature.group);
+  refreshSelectedInspector();
+  renderCreatureScope();
+  renderOptions();
+  renderModelOptions();
 }
 
 function cloneSelectedCreature() {
@@ -3953,6 +4505,9 @@ renderOptions();
 renderModelOptions();
 buildRandomButtons();
 for (const id of ['optionsPanel', 'modelPanel', 'inspector', 'configPanel']) setupPanel(id);
+document.getElementById('optionsToggle').checked = true;
+document.getElementById('optionsPanel').style.display = 'block';
+document.getElementById('modelPanel').style.display = 'block';
 resetCreatures();
 spawnRandomObjects();
 
@@ -4010,6 +4565,11 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
 
   function updateCreatureLod() {
     if (camera) camera.getWorldPosition(_cameraPos);
+    const detailSq = creaturePerf.detailDistance * creaturePerf.detailDistance;
+    const bodyOnlySq = Math.max(creaturePerf.detailDistance, creaturePerf.bodyOnlyDistance) ** 2;
+    const hideSq = Math.max(creaturePerf.bodyOnlyDistance, creaturePerf.hideDistance) ** 2;
+    const ikSq = creaturePerf.ikDistance * creaturePerf.ikDistance;
+    const shadowSq = creaturePerf.shadowDistance * creaturePerf.shadowDistance;
     creatureStats.count = creatures.length;
     creatureStats.visible = 0;
     creatureStats.sim = 0;
@@ -4020,30 +4580,45 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     creatureStats.shadowCasters = 0;
     creatureStats.ikFull = 0;
     creatureStats.ikCheap = 0;
+    creatureStats.instancingMode = CREATURE_INSTANCING_MODE;
+    creatureStats.instancedBoxes = 0;
+    creatureStats.instancedLimbs = 0;
+    creatureStats.instancedJoints = 0;
+    creatureStats.instancedHandsFeet = 0;
+    creatureStats.instancedShadows = 0;
+    creatureStats.perfDetailDistance = creaturePerf.detailDistance;
+    creatureStats.perfBodyOnlyDistance = creaturePerf.bodyOnlyDistance;
+    creatureStats.perfHideDistance = creaturePerf.hideDistance;
+    creatureStats.perfFullUpdateStride = creaturePerf.fullUpdateStride;
+    creatureStats.perfBodyUpdateStride = creaturePerf.bodyUpdateStride;
+    creatureStats.perfFarUpdateStride = creaturePerf.farUpdateStride;
+    creatureStats.perfIkDistance = creaturePerf.ikDistance;
+    creatureStats.perfShadowDistance = creaturePerf.shadowDistance;
     for (const c of creatures) {
       const d2 = camera ? c.pos.distanceToSquared(_cameraPos) : 0;
       const oldTier = c.lodTier;
-      if (d2 > LOD_FAR_SQ) {
+      if (d2 > hideSq) {
         c.lodTier = 3;
-        c.lodStride = LOD_FAR_STRIDE;
+        c.lodStride = creaturePerf.farUpdateStride;
         c.lodArmsActive = false;
         c.lodVisible = false;
-      } else if (d2 > LOD_MID_SQ) {
+      } else if (d2 > bodyOnlySq) {
         c.lodTier = 2;
-        c.lodStride = LOD_FAR_STRIDE;
+        c.lodStride = creaturePerf.farUpdateStride;
         c.lodArmsActive = false;
         c.lodVisible = true;
-      } else if (d2 > LOD_NEAR_SQ) {
+      } else if (d2 > detailSq) {
         c.lodTier = 1;
-        c.lodStride = LOD_MID_STRIDE;
+        c.lodStride = creaturePerf.bodyUpdateStride;
         c.lodArmsActive = false;
         c.lodVisible = true;
       } else {
         c.lodTier = 0;
-        c.lodStride = 1;
-        c.lodArmsActive = true;
+        c.lodStride = creaturePerf.fullUpdateStride;
+        c.lodArmsActive = d2 <= ikSq;
         c.lodVisible = true;
       }
+      c.lodFullIk = c.lodVisible && c.lodTier === 0 && d2 <= ikSq;
       if (oldTier !== 0 && c.lodTier === 0) c.forceFootTargetRefresh = true;
       c.lodShouldSim = c.lodVisible && ((frameIndex + c.lodFrameOffset) % c.lodStride === 0);
       creatureStats.tiers[c.lodTier]++;
@@ -4052,22 +4627,23 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
       if (c.lodVisible && c.lodTier >= LOD_BODY_ONLY_TIER) creatureStats.bodyOnly++;
       if (c.lodArmsActive) creatureStats.armsActive++;
       c.group.visible = c.lodVisible;
-      const castsNearShadow = c.lodVisible && c.lodTier === 0;
-      if (castsNearShadow) creatureStats.shadowCasters += c.shadowBodyMeshes.length;
-      for (const mesh of c.shadowBodyMeshes) mesh.castShadow = castsNearShadow;
+      const castsShadow = c.lodVisible && d2 <= shadowSq;
+      c.lodCastsShadow = castsShadow;
+      if (castsShadow) creatureStats.shadowCasters += creatureBatches ? 1 : c.shadowBodyMeshes.length;
+      for (const mesh of c.shadowBodyMeshes) mesh.castShadow = creatureBatches ? false : castsShadow;
       const showLegs = c.lodVisible && c.lodTier < LOD_BODY_ONLY_TIER;
       for (const leg of c.legs) {
         leg.foot.visible = showLegs;
         leg.foot.castShadow = false;
         for (const mesh of leg.segments) {
           mesh.visible = showLegs;
-          mesh.castShadow = castsNearShadow;
+          mesh.castShadow = !creatureBatches && castsShadow && showLegs;
         }
         for (const mesh of leg.joints) {
           mesh.visible = showLegs;
           mesh.castShadow = false;
         }
-        if (castsNearShadow) creatureStats.shadowCasters += leg.segments.length;
+        if (!creatureBatches && castsShadow && showLegs) creatureStats.shadowCasters += leg.segments.length;
       }
       for (const arm of c.arms) {
         const showArm = c.lodVisible && c.lodArmsActive;
@@ -4089,12 +4665,17 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
   function update(dt) {
     const updateStart = performance.now();
     frameIndex++;
+    let stageStart = updateStart;
     updateCreatureLod();
+    creatureStats.lodMs = performance.now() - stageStart;
+    stageStart = performance.now();
     acc += dt;
     updateContactPulses(dt);
     updateGrabbables(dt);
     rebuildObjectGrid();
+    creatureStats.objectsMs = performance.now() - stageStart;
 
+    stageStart = performance.now();
     const debug = document.getElementById('debug').checked;
     for (const c of creatures) c.lodDebugActive = debug && c === selectedCreature;
     targetMarker.visible = currentBehavior === 'target';
@@ -4104,62 +4685,80 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
       targetMarker.rotation.x = Math.PI / 2;
     }
 
-    const forageClaims = new Set();
-    const forageTargets = new Map();
-    const forageObjects = new Map();
+    _forageClaims.clear();
+    _forageTargets.clear();
+    _forageObjects.clear();
     for (const c of creatures) c.healingTarget = null;
     if (currentBehavior === 'forage' || currentBehavior === 'combat') {
       for (const c of creatures) {
         if (!c.lodShouldSim || !c.lodArmsActive) continue;
         if (currentBehavior === 'combat' && !c.wantsHealingForage()) continue;
-        const object = forageObjectForCreature(c, forageClaims);
+        const object = forageObjectForCreature(c, _forageClaims);
         if (object) {
           c.healingTarget = currentBehavior === 'combat' ? object : null;
-          forageObjects.set(c, object);
-          forageTargets.set(c, object.position.clone());
-          forageClaims.add(object);
+          _forageObjects.set(c, object);
+          _forageTargets.set(c, c._forageTargetScratch.copy(object.position));
+          _forageClaims.add(object);
         }
       }
     }
 
     for (const c of creatures) if (c.lodShouldSim) c.updateCombat(creatures, dt, currentBehavior === 'combat');
     for (const c of creatures) if (c.lodShouldSim) c.updateEating(dt);
+    creatureStats.behaviorMs = performance.now() - stageStart;
 
+    stageStart = performance.now();
     for (const c of creatures) {
       if (!c.lodShouldSim) continue;
-      c.updateForageState((currentBehavior === 'forage' || c.healingTarget) ? forageObjects.get(c) || null : null, dt);
+      c.updateForageState((currentBehavior === 'forage' || c.healingTarget) ? _forageObjects.get(c) || null : null, dt);
       const gait = sceneMode === 'varied' ? c.gait : currentGait();
       const dir = sceneMode === 'varied' ? (c.config?.direction ?? directionYaw) : directionYaw;
       const steerTarget = currentBehavior === 'race' && c.config?.raceTarget
-        ? new THREE.Vector3().fromArray(c.config.raceTarget)
+        ? c._raceTargetScratch.fromArray(c.config.raceTarget)
         : (currentBehavior === 'forage' || (currentBehavior === 'combat' && c.healingTarget))
-          ? forageTargets.get(c) || null
+          ? _forageTargets.get(c) || null
         : simTarget;
       const raceStart = currentBehavior === 'race' && c.config?.spawn
-        ? new THREE.Vector3().fromArray(c.config.spawn)
+        ? c._raceStartScratch.fromArray(c.config.spawn)
         : null;
       const steerBehavior = currentBehavior === 'combat' && c.healingTarget ? 'forage' : currentBehavior;
       c.computeSteering(creatures, gait, steerBehavior, steerTarget, dir, raceStart);
     }
     creatureGrid.clear();
     for (let i = 0; i < creatures.length; i++) { creatures[i]._gridIdx = i; creatureGrid.add(creatures[i]); }
+    creatureStats.steeringMs = performance.now() - stageStart;
 
-    const activeCreatures = creatures.filter(c => c.lodVisible && c.lodShouldSim);
+    stageStart = performance.now();
+    _activeCreatures.length = 0;
+    for (const c of creatures) if (c.lodVisible && c.lodShouldSim) _activeCreatures.push(c);
     let steps = 0;
     while (acc >= FIXED && steps < 5) {
       for (const c of creatures) if (c.lodShouldSim) c.physicsStep(FIXED, sceneMode === 'varied' ? c.gait : currentGait(), debug && c.lodDebugActive);
-      resolveCreatureCollisions(activeCreatures);
+      resolveCreatureCollisions(_activeCreatures);
       for (const c of creatures) if (c.lodShouldSim) c.applyBodyTerrainClearance();
       acc -= FIXED;
       steps++;
     }
     if (steps === 5) acc = 0;
+    creatureStats.physicsMs = performance.now() - stageStart;
 
+    stageStart = performance.now();
+    if (creatureBatches) creatureBatches.beginFrame();
     for (const c of creatures) {
-      if (!c.lodVisible || !c.lodShouldSim) continue;
-      c.render(debug && c.lodDebugActive, dt);
+      if (!c.lodVisible) continue;
+      c.render(debug && c.lodDebugActive, dt, c.lodShouldSim);
       creatureStats.rendered++;
     }
+    if (creatureBatches) {
+      creatureBatches.endFrame();
+      creatureStats.instancedBoxes = creatureBatches.stats.boxes;
+      creatureStats.instancedLimbs = creatureBatches.stats.limbs;
+      creatureStats.instancedJoints = creatureBatches.stats.joints;
+      creatureStats.instancedHandsFeet = creatureBatches.stats.handsFeet;
+      creatureStats.instancedShadows = creatureBatches.stats.shadows;
+    }
+    creatureStats.renderMs = performance.now() - stageStart;
+    stageStart = performance.now();
     removeDeadCreatures();
     if (selectedCreature && creatures.includes(selectedCreature)) {
       selectionHelper.visible = true;
@@ -4167,11 +4766,24 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     } else {
       selectionHelper.visible = false;
     }
+    creatureStats.selectionMs = performance.now() - stageStart;
     creatureStats.updateMs = performance.now() - updateStart;
+  }
+
+  function clearRenderBatches() {
+    if (!creatureBatches) return;
+    creatureBatches.beginFrame();
+    creatureBatches.endFrame();
+    creatureStats.instancedBoxes = 0;
+    creatureStats.instancedLimbs = 0;
+    creatureStats.instancedJoints = 0;
+    creatureStats.instancedHandsFeet = 0;
+    creatureStats.instancedShadows = 0;
   }
 
   function selectFromRaycaster(raycaster) {
     const pickables = [];
+    if (creatureBatches) pickables.push(...creatureBatches.pickables);
     for (const creature of creatures) {
       creature.group.traverse(o => { if (o.isMesh) pickables.push(o); });
       for (const leg of creature.legs) {
@@ -4181,8 +4793,13 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
         pickables.push(arm.hand, arm.shoulder, ...arm.segments, ...arm.joints);
       }
     }
-    const hit = raycaster.intersectObjects(pickables, false).find(h => h.object.userData.creature);
-    selectCreature(hit?.object.userData.creature || null);
+    const hit = raycaster.intersectObjects(pickables, false).find(h =>
+      h.object.userData.creature || h.object.userData.creatureBatch
+    );
+    const owner = hit?.object.userData.creatureBatch
+      ? creatureBatches.ownerForHit(hit)
+      : hit?.object.userData.creature;
+    selectCreature(owner || null);
   }
 
   function setTargetPoint(point) {
@@ -4192,12 +4809,20 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     document.getElementById('behavior').value = 'target';
   }
 
+  function setBehavior(b) {
+    currentBehavior = b;
+    const el = document.getElementById('behavior');
+    if (el) el.value = b;
+  }
+
   return {
     update,
     resetCreatures,
+    clearRenderBatches,
     spawnRandomObjects,
     selectFromRaycaster,
     setTargetPoint,
+    setBehavior,
     get stats() { return creatureStats; },
     get creatures() { return creatures; },
     get currentBehavior() { return currentBehavior; },
