@@ -176,3 +176,64 @@ function _lerpState(a, b, alpha) {
     }),
   };
 }
+
+// ---------------------------------------------------------------------------
+// GhostRenderer — lightweight ghost meshes for creatures and remote players
+//   Accepts THREE as a constructor param to avoid a static import
+//   (keeps this module usable in Node.js tests that don't have three).
+//   Creature ghosts: a semi-transparent box at body position
+//   Player ghosts:   a capsule at player position
+// ---------------------------------------------------------------------------
+
+export class GhostRenderer {
+  constructor(scene, THREE) {
+    this._scene    = scene;
+    this._THREE    = THREE;
+    this._creatures = new Map(); // id(number) → Mesh
+    this._players   = new Map(); // clientId(string) → Mesh
+    this._cGeo = new THREE.BoxGeometry(0.7, 0.5, 1.0);
+    this._pGeo = new THREE.CapsuleGeometry(0.3, 1.2, 4, 8);
+    this._cMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5 });
+    this._pMat = new THREE.MeshStandardMaterial({ color: 0xffcc44, transparent: true, opacity: 0.7 });
+  }
+
+  update(state) {
+    this._updateSet(state.creatures ?? [], this._creatures, this._cGeo, this._cMat,
+      c => c.id, c => c.p, c => c.q);
+    this._updateSet(state.players ?? [], this._players, this._pGeo, this._pMat,
+      p => p.id, p => p.p, p => p.q);
+  }
+
+  _updateSet(items, map, geo, mat, getId, getP, getQ) {
+    const THREE = this._THREE;
+    const seen = new Set();
+    for (const item of items) {
+      const id = getId(item);
+      seen.add(id);
+      let mesh = map.get(id);
+      if (!mesh) {
+        mesh = new THREE.Mesh(geo, mat);
+        this._scene.add(mesh);
+        map.set(id, mesh);
+      }
+      const [px, py, pz] = getP(item);
+      mesh.position.set(px, py, pz);
+      const [qx, qy, qz, qw] = getQ(item);
+      mesh.quaternion.set(qx, qy, qz, qw);
+    }
+    for (const [id, mesh] of map) {
+      if (!seen.has(id)) { this._scene.remove(mesh); map.delete(id); }
+    }
+  }
+
+  destroy() {
+    for (const m of this._creatures.values()) this._scene.remove(m);
+    for (const m of this._players.values())   this._scene.remove(m);
+    this._creatures.clear();
+    this._players.clear();
+    this._cGeo.dispose();
+    this._pGeo.dispose();
+    this._cMat.dispose();
+    this._pMat.dispose();
+  }
+}
