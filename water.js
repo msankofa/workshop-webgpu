@@ -730,7 +730,31 @@ export function createWaterSystem(options = {}) {
   }
 
   function getChunkCount() { return waterChunks.size; }
-  function getStats() { return { ...stats, chunks: waterChunks.size, pending: Math.max(0, waterBuildQueue.length - waterBuildQueueIndex), version: WATER_VERSION }; }
+  function getStats() {
+    let waterTriangles = 0;
+    let waterVertices = 0;
+    for (const chunk of waterChunks.values()) {
+      const g = chunk.geometry;
+      const position = g.getAttribute?.('position');
+      const index = g.getIndex?.();
+      waterVertices += position?.count || 0;
+      waterTriangles += index ? Math.floor(index.count / 3) : 0;
+    }
+    return {
+      ...stats,
+      chunks: waterChunks.size,
+      pending: Math.max(0, waterBuildQueue.length - waterBuildQueueIndex),
+      dry: Math.max(0, stats.candidates - waterChunks.size - Math.max(0, waterBuildQueue.length - waterBuildQueueIndex)),
+      waterMeshes: waterChunks.size,
+      causticMeshes: waterChunks.size,
+      waterDraws: waterChunks.size,
+      causticDraws: waterChunks.size,
+      waterTriangles,
+      causticTriangles: waterTriangles,
+      waterVertices,
+      version: WATER_VERSION,
+    };
+  }
 
   return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectRate, setLightDir, getChunkCount, getStats, dispose };
 }

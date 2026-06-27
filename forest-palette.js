@@ -55,12 +55,28 @@ export function createForestPalette({ createTree, params, masterSeed, variantsPe
     for (let v = 0; v < variantsPerSpecies; v++) {
       const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
       gen.regenerate({ ...sp, seed, leaves: leafOpts, bark: barkOpts });
+      const branchesGeo = bakeFlatColor(gen.branchesMesh.geometry, sp.bark.color);
+      const leavesGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+      const shadowGeo = bakeFlatColor(gen.leavesShadowMesh.geometry, sp.leaves.tint);
+
+      const ratio = Math.max(0.05, Math.min(1.0, params.coarseLeafRatio ?? 0.25));
+      const sizeMult = Math.max(1.0, params.coarseLeafSizeMult ?? 2.5);
+      const coarseLeafOpts = {
+        ...leafOpts,
+        count: Math.max(1, Math.round(leafOpts.count * ratio)),
+        size: leafOpts.size * sizeMult,
+        shadowFraction: 0,
+      };
+      gen.regenerate({ ...sp, seed, leaves: coarseLeafOpts, bark: barkOpts });
+      const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+
       variants.push({
         speciesIdx: s,
         variant: v,
-        branches: bakeFlatColor(gen.branchesMesh.geometry, sp.bark.color),
-        leaves:   bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint),
-        shadow:   bakeFlatColor(gen.leavesShadowMesh.geometry, sp.leaves.tint),
+        branches: branchesGeo,
+        leaves: leavesGeo,
+        shadow: shadowGeo,
+        leavesCoarse: leavesCoarseGeo,
       });
     }
   }

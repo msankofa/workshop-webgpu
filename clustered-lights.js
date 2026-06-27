@@ -27,6 +27,7 @@ export function createClusteredLights(opts) {
     maxPerFroxel: opts.maxPerFroxel ?? 64,
     capLights: opts.capLights ?? 512,
     count: Math.min(opts.count ?? 256, opts.capLights ?? 512),
+    animate: opts.animate === true,
   };
   // Allocate froxel buffers for a generous max grid (covers ~2560×1440 at tile=32); the
   // active grid clamps to this. froxelIndex = (slice*tilesY + ty)*tilesX + tx.
@@ -194,24 +195,59 @@ export function createClusteredLights(opts) {
     lightAttr.needsUpdate = true;
   }
   writeLights(0);
+  let dirty = true;
+  let reculls = 0;
+  let skippedReculls = 0;
+  let hasLastView = false;
+  const lastView = new THREE.Matrix4();
+  const EPS = 1e-6;
+  function markDirty() { dirty = true; }
+  function viewChanged() {
+    if (!hasLastView) return true;
+    const a = camera.matrixWorldInverse.elements;
+    const b = lastView.elements;
+    for (let i = 0; i < 16; i++) {
+      if (Math.abs(a[i] - b[i]) > EPS) return true;
+    }
+    return false;
+  }
 
   return {
     pointLightTerm,
     async update(t) {
       camera.updateMatrixWorld();
+      const lightsChanged = cfg.animate;
+      const cameraChanged = viewChanged();
+      if (!dirty && !lightsChanged && !cameraChanged) {
+        skippedReculls++;
+        return;
+      }
       uView.value.copy(camera.matrixWorldInverse);
       uCamPos.value.copy(camera.position);
-      writeLights(t);
+      if (lightsChanged) writeLights(t);
       await renderer.computeAsync(cull);
+      lastView.copy(camera.matrixWorldInverse);
+      hasLastView = true;
+      dirty = false;
+      reculls++;
     },
-    setCount(n) { cfg.count = Math.max(0, Math.min(n | 0, cfg.capLights)); uCount.value = cfg.count; },
+    setCount(n) {
+      const next = Math.max(0, Math.min(n | 0, cfg.capLights));
+      if (next === cfg.count) return;
+      cfg.count = next;
+      uCount.value = cfg.count;
+      writeLights(0);
+      markDirty();
+    },
     resize(w, h) {
       const { tx, ty } = computeTiles(w, h);
       uScreen.value.set(w, h); uAspect.value = w / h;
       uTilesX.value = tx; uTilesY.value = ty; uFroxelCount.value = tx * ty * cfg.zSlices;
+      markDirty();
     },
     get lightCount() { return cfg.count; },
     get froxelCount() { return uFroxelCount.value; },
+    get stats() { return { reculls, skippedReculls, dirty, animate: cfg.animate }; },
     dispose() { /* buffers GC with the nodes */ },
   };
 }

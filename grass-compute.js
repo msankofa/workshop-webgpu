@@ -15,7 +15,7 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal,
-  atomicAdd, atomicStore, atomicLoad,
+  atomicAdd, atomicStore, atomicLoad, texture,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns } from './grass.js';
 import { maxInstances, perCellCount } from './grass-cells.js';
@@ -61,6 +61,7 @@ const slotRandFn = Fn(([gx, gz, slot, salt]) => {
 
 export function createComputeGrass(opts) {
   const { renderer, camera } = opts;
+  const recullMode = opts.grassRecull === 'frame' ? 'frame' : 'cell';
   const cellSize = opts.cellSize ?? 2;
   const Kmax     = opts.Kmax ?? 64;      // max blades/cell → max density = Kmax/cellSize² (=16 /unit²)
   // Buffer capacity is sized for maxRadius so the live Radius slider can grow up to it
@@ -74,7 +75,18 @@ export function createComputeGrass(opts) {
     baseAmp: opts.terrainParams?.baseAmp ?? 1.0,
     lake:    opts.terrainParams?.lake ?? 0.45,
     lakeDepth: opts.terrainParams?.lakeDepth ?? 3.2,
+    cullStart: opts.cullStart ?? null,
+    maxBlades: opts.maxBlades ?? 0,
+    bladeHeight: opts.bladeHeight ?? 1.0,
+    bladeWidth: opts.bladeWidth ?? 1.0,
+    verticalOffset: opts.verticalOffset ?? 0.0,
   };
+  const hasHeightTex = !!(opts.heightTex && opts.heightTexBounds);
+  const heightTex = hasHeightTex ? opts.heightTex : null;
+  const uBoundsMinX = hasHeightTex ? uniform(opts.heightTexBounds.minX) : null;
+  const uBoundsMinZ = hasHeightTex ? uniform(opts.heightTexBounds.minZ) : null;
+  const uBoundsW = hasHeightTex ? uniform(opts.heightTexBounds.worldX) : null;
+  const uBoundsH = hasHeightTex ? uniform(opts.heightTexBounds.worldZ) : null;
   const half0 = Math.ceil(o.radius / cellSize) | 0;
   const CAP = maxInstances(maxRadius, cellSize, Kmax); // sized for the max radius (slider ceiling)
 
@@ -89,6 +101,8 @@ export function createComputeGrass(opts) {
   // ---- uniforms (live) ----
   const uCam      = uniform(new THREE.Vector2());
   const uRadius   = uniform(o.radius);
+  const uCullStart = uniform(o.cullStart !== null ? o.cullStart : o.radius * 0.8);
+  const uMaxBlades = uniform(o.maxBlades, 'uint');
   const uHalf     = uniform(half0);
   const uSide     = uniform(2 * half0 + 1);
   const uPerCell  = uniform(perCellCount(o.density, cellSize, Kmax));
@@ -102,22 +116,45 @@ export function createComputeGrass(opts) {
   const uWindFreq = uniform(0.3);    // wind wave spatial freq per world unit (seam-free)
   const uTipDist  = uniform(0.3);
   const uCenterDist = uniform(0.1);
+  const uBladeHeight = uniform(o.bladeHeight);
+  const uBladeWidth = uniform(o.bladeWidth);
+  const uVerticalOffset = uniform(o.verticalOffset);
+  let dirty = true;
+  let lastCellX = null;
+  let lastCellZ = null;
+  const stats = {
+    recullMode,
+    reculls: 0,
+    skippedReculls: 0,
+    lastCell: '',
+    dirty: true,
+  };
+  const markDirty = () => {
+    dirty = true;
+    stats.dirty = true;
+  };
 
-  // TSL terrain height (transcription of grass-height-ref.js)
-  const heightFn = Fn(([x, z]) => {
-    const h = sin(x.mul(0.10)).mul(1.1)
-      .add(cos(z.mul(0.085)).mul(1.0))
-      .add(sin(x.add(z).mul(0.16)).mul(0.5))
-      .add(cos(x.sub(z).mul(0.22).add(0.8)).mul(0.35))
-      .add(sin(x.mul(0.38).add(z.mul(0.27))).mul(0.18))
-      .add(cos(z.mul(0.44).sub(x.mul(0.19))).mul(0.14))
-      .mul(uBaseAmp);
-    const t = float(1).sub(uLake);
-    const nz = lakeNoiseFn(x.mul(0.045).add(10.5), z.mul(0.045).sub(7.2));
-    const basin = clamp(nz.sub(t).div(0.15), 0, 1);
-    const basinSS = basin.mul(basin).mul(float(3).sub(basin.mul(2)));
-    return h.sub(basinSS.mul(uLakeDepth));
-  });
+  // TSL terrain height: texture path for authored maps, closed-form for procedural.
+  const heightFn = hasHeightTex
+    ? Fn(([x, z]) => {
+        const u = clamp(x.sub(uBoundsMinX).div(uBoundsW), 0, 1);
+        const v = clamp(z.sub(uBoundsMinZ).div(uBoundsH), 0, 1);
+        return texture(heightTex, vec2(u, v)).r;
+      })
+    : Fn(([x, z]) => {
+        const h = sin(x.mul(0.10)).mul(1.1)
+          .add(cos(z.mul(0.085)).mul(1.0))
+          .add(sin(x.add(z).mul(0.16)).mul(0.5))
+          .add(cos(x.sub(z).mul(0.22).add(0.8)).mul(0.35))
+          .add(sin(x.mul(0.38).add(z.mul(0.27))).mul(0.18))
+          .add(cos(z.mul(0.44).sub(x.mul(0.19))).mul(0.14))
+          .mul(uBaseAmp);
+        const t = float(1).sub(uLake);
+        const nz = lakeNoiseFn(x.mul(0.045).add(10.5), z.mul(0.045).sub(7.2));
+        const basin = clamp(nz.sub(t).div(0.15), 0, 1);
+        const basinSS = basin.mul(basin).mul(float(3).sub(basin.mul(2)));
+        return h.sub(basinSS.mul(uLakeDepth));
+      });
 
   // ---- compute kernels (reset → generate+cull → finalize), per the spike ----
   const reset = Fn(() => { atomicStore(counter.element(0), uint(0)); })().compute(1);
@@ -141,25 +178,32 @@ export function createComputeGrass(opts) {
       const wz = gz.toFloat().mul(uCellSize).add(jz.mul(uCellSize));
       const wy = heightFn(wx, wz);
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
-      // density falloff: dither out the outer 20% of R so the ring has no hard edge
-      const edge = clamp(dist.div(uRadius).sub(0.8).div(0.2), 0, 1);
+      const gradRange = uRadius.sub(uCullStart).max(float(0.001));
+      const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
       const keepRand = slotRandFn(gx, gz, slot, int(7));
       const live = wy.greaterThan(uWaterMin)
         .and(dist.lessThan(uRadius))
         .and(keepRand.greaterThan(edge));
       If(live, () => {
-        const s = atomicAdd(counter.element(0), uint(1));   // u32 atomic; literal must be uint
-        const base2 = s.mul(uint(2));
-        const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
-        const bh = float(0.8).add(slotRandFn(gx, gz, slot, int(5)).mul(0.6));
-        inst.element(base2).assign(vec4(wx, wy, wz, bh));
-        inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+        const s = atomicAdd(counter.element(0), uint(1));
+        const withinCap = uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades));
+        If(withinCap, () => {
+          const base2 = s.mul(uint(2));
+          const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
+          const bh = float(0.8).add(slotRandFn(gx, gz, slot, int(5)).mul(0.6));
+          inst.element(base2).assign(vec4(wx, wy, wz, bh));
+          inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+        });
       });
     });
   })().compute(CAP);
 
   const finalize = Fn(() => {
-    indirect.element(1).assign(atomicLoad(counter.element(0)));
+    const c = atomicLoad(counter.element(0));
+    indirect.element(1).assign(c);
+    If(uMaxBlades.greaterThan(uint(0)).and(c.greaterThan(uMaxBlades)), () => {
+      indirect.element(1).assign(uMaxBlades);
+    });
   })().compute(1);
 
   // ---- instanced base blade + node material ----
@@ -174,16 +218,17 @@ export function createComputeGrass(opts) {
 
   // rotate local blade (width axis = local X, blade in XY plane, z=0) by yaw, scale height
   const cy = cos(yaw), sy = sin(yaw);
-  const rx = positionLocal.x.mul(cy);
-  const rz = positionLocal.x.mul(sy);
-  const ly = positionLocal.y.mul(bladeH.div(0.8));
+  const bladeX = positionLocal.x.mul(uBladeWidth);
+  const rx = bladeX.mul(cy);
+  const rz = bladeX.mul(sy);
+  const ly = positionLocal.y.mul(bladeH.div(0.8)).mul(uBladeHeight);
 
   const worldX = base.x.add(rx);
   const wave = sin(uTime.mul(uWindSpeed).add(worldX.mul(uWindFreq)));
   const isMidTip = clamp(aWind.mul(2), 0, 1);
   const isTip = clamp(aWind.sub(0.6).mul(10), 0, 1);
   const sway = wave.mul(isMidTip.mul(mix(uCenterDist, uTipDist, isTip)));
-  const posNode = vec3(worldX.add(sway), base.y.add(ly), base.z.add(rz));
+  const posNode = vec3(worldX.add(sway), base.y.add(uVerticalOffset).add(ly), base.z.add(rz));
 
   const { noise2D } = buildGrassNoiseFns();
   const uBaseColor = uniform(new THREE.Color(0x16240e));
@@ -214,21 +259,81 @@ export function createComputeGrass(opts) {
     // makes the grass blink). Mirrors the validated spike's computeAsync ordering.
     async update(seconds) {
       uTime.value = seconds;
+      const cellX = Math.floor(camera.position.x / cellSize);
+      const cellZ = Math.floor(camera.position.z / cellSize);
+      const cellChanged = cellX !== lastCellX || cellZ !== lastCellZ;
+      stats.lastCell = `${cellX}:${cellZ}`;
+      if (recullMode !== 'frame' && !dirty && !cellChanged) {
+        stats.skippedReculls++;
+        return;
+      }
       uCam.value.set(camera.position.x, camera.position.z);
-      await renderer.computeAsync(reset);
-      await renderer.computeAsync(cull);
-      await renderer.computeAsync(finalize);
+      await renderer.computeAsync([reset, cull, finalize]);
+      lastCellX = cellX;
+      lastCellZ = cellZ;
+      dirty = false;
+      stats.dirty = false;
+      stats.reculls++;
     },
-    setDensity(d) { uPerCell.value = perCellCount(d, cellSize, Kmax); },
+    forceRecull: markDirty,
+    stats,
+    setDensity(d) {
+      const perCell = perCellCount(d, cellSize, Kmax);
+      if (uPerCell.value === perCell) return;
+      uPerCell.value = perCell;
+      markDirty();
+    },
     setRadius(r) {
       r = Math.min(r, maxRadius);                       // never exceed the buffer capacity
       const half = Math.ceil(r / cellSize) | 0;
+      if (uRadius.value === r && uHalf.value === half && uSide.value === 2 * half + 1) return;
       uRadius.value = r; uHalf.value = half; uSide.value = 2 * half + 1;
+      if (o.cullStart === null) uCullStart.value = r * 0.8;
+      markDirty();
+    },
+    setCullStart(wu) {
+      const v = Math.max(0, Math.min(wu, uRadius.value));
+      if (uCullStart.value === v) return;
+      o.cullStart = v;
+      uCullStart.value = v;
+      markDirty();
+    },
+    setMaxBlades(n) {
+      const v = Math.max(0, n) >>> 0;
+      if (uMaxBlades.value === v) return;
+      uMaxBlades.value = v;
+      markDirty();
+    },
+    setBladeHeight(v) {
+      v = Math.max(0.05, Number(v) || 0.05);
+      if (uBladeHeight.value === v) return;
+      uBladeHeight.value = v;
+    },
+    setBladeWidth(v) {
+      v = Math.max(0.05, Number(v) || 0.05);
+      if (uBladeWidth.value === v) return;
+      uBladeWidth.value = v;
+    },
+    setVerticalOffset(v) {
+      v = Number(v) || 0;
+      if (uVerticalOffset.value === v) return;
+      uVerticalOffset.value = v;
     },
     maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
-    setTerrain(p) { uBaseAmp.value = p.baseAmp; uLake.value = p.lake; uLakeDepth.value = p.lakeDepth; },
-    setWaterLevel(wl) { uWaterMin.value = wl + o.shoreMargin; },
+    setTerrain(p) {
+      let changed = false;
+      if (p.baseAmp !== undefined && uBaseAmp.value !== p.baseAmp) { uBaseAmp.value = p.baseAmp; changed = true; }
+      if (p.lake !== undefined && uLake.value !== p.lake) { uLake.value = p.lake; changed = true; }
+      if (p.lakeDepth !== undefined && uLakeDepth.value !== p.lakeDepth) { uLakeDepth.value = p.lakeDepth; changed = true; }
+      if (changed) markDirty();
+    },
+    setWaterLevel(wl) {
+      const waterMin = wl + o.shoreMargin;
+      if (uWaterMin.value === waterMin) return;
+      uWaterMin.value = waterMin;
+      markDirty();
+    },
     dispose() { geom.dispose(); mat.dispose(); },
   };
 }

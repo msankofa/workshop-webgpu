@@ -56,6 +56,15 @@ export function createCdlodTerrain(opts) {
   };
   // live CPU mirror of cfg.levels so the HUD survivor count tracks setViewDistance
   let activeLevels = cfg.levels;
+  let dirty = true;
+  let lastCamX = NaN;
+  let lastCamZ = NaN;
+  let reculls = 0;
+  let skippedReculls = 0;
+  const EPS = 0.001;
+  function markDirty() {
+    dirty = true;
+  }
 
   // ---- buffers: per node 1x vec4 = (originX, originZ, size, packed[level + morphK]) ----
   const instAttr = new StorageInstancedBufferAttribute(new Float32Array(CANDIDATES * 4), 4);
@@ -216,20 +225,38 @@ export function createCdlodTerrain(opts) {
   return {
     mesh,
     async update() {
-      uCam.value.set(camera.position.x, camera.position.z);
-      await renderer.computeAsync(reset);
-      await renderer.computeAsync(select);
-      await renderer.computeAsync(finalize);
+      const camX = camera.position.x;
+      const camZ = camera.position.z;
+      if (!dirty && Math.abs(camX - lastCamX) <= EPS && Math.abs(camZ - lastCamZ) <= EPS) {
+        skippedReculls++;
+        return;
+      }
+      uCam.value.set(camX, camZ);
+      await renderer.computeAsync([reset, select, finalize]);
+      lastCamX = camX;
+      lastCamZ = camZ;
+      dirty = false;
+      reculls++;
     },
     setViewDistance(levels) {
-      activeLevels = Math.max(2, Math.min(cfg.levels, Math.round(levels)));
+      const next = Math.max(2, Math.min(cfg.levels, Math.round(levels)));
+      if (next === activeLevels) return;
+      activeLevels = next;
       uLevels.value = activeLevels;
+      markDirty();
     },
     maxLevels: cfg.levels,
-    setTerrain(p) { uBaseAmp.value = p.baseAmp; uLake.value = p.lake; uLakeDepth.value = p.lakeDepth; },
+    setTerrain(p) {
+      let changed = false;
+      if (p.baseAmp !== undefined && uBaseAmp.value !== p.baseAmp) { uBaseAmp.value = p.baseAmp; changed = true; }
+      if (p.lake !== undefined && uLake.value !== p.lake) { uLake.value = p.lake; changed = true; }
+      if (p.lakeDepth !== undefined && uLakeDepth.value !== p.lakeDepth) { uLakeDepth.value = p.lakeDepth; changed = true; }
+      if (changed) markDirty();
+    },
     setWaterLevel() { /* terrain ground ignores water level; kept for API symmetry with grass */ },
     get triangleCount() { return (indexCount / 3) * survivorCount(); },
     get drawCount() { return 1; },
+    get stats() { return { reculls, skippedReculls, dirty }; },
     dispose() { geo.dispose(); mat.dispose(); },
   };
 }

@@ -189,9 +189,7 @@ export function createParticleField(opts) {
       uCamRight.value.copy(_r); uCamUp.value.copy(_u); uCamPos.value.copy(cam.position);
       uViewProj.value.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
       uTime.value += dt; uDt.value = Math.min(dt, 0.05); uFrame.value = frame;
-      await renderer.computeAsync(reset);
-      await renderer.computeAsync(simulate);
-      await renderer.computeAsync(finalize);
+      await renderer.computeAsync([reset, simulate, finalize]);
     },
     // Live uniform tuning — every key is optional; only supplied ones are written.
     setParams(p) {

@@ -243,6 +243,10 @@ export class Clouds extends THREE.Mesh {
   setPuff(puff)         { this.material._uPuff.value = puff; }
   setSoftness(softness) { this.material._uSoftness.value = softness; }
   setFade(fade)         { this.material._uFade.value = fade; }
+  setExtent(worldUnits) {
+    const s = worldUnits / 2000;
+    this.scale.set(s, 1, s);
+  }
 }
 
 export default Clouds;

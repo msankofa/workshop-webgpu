@@ -1,0 +1,12 @@
+{
+  "maps": {
+    "workshop/test_export.glb": {
+      "displayName": "Test Export",
+      "gameName": "Test Export",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    }
+  }
+}

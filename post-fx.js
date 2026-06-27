@@ -20,6 +20,7 @@ const TONE = {
 export function createPostFX(opts) {
   const { renderer, scene, camera } = opts;
   const p = opts.params || {};
+  const mode = p.mode === 'on' ? 'full' : (p.mode || 'full');
 
   const pp = new PostProcessing(renderer);
   const scenePass = pass(scene, camera);
@@ -60,14 +61,23 @@ export function createPostFX(opts) {
   // renderer's tone mapping + output color space; grade runs on the resulting display color.
   function build(name) {
     renderer.toneMapping = TONE[name] ?? THREE.AgXToneMapping;
-    const hdr = scenePassColor.add(bloomPass);
-    pp.outputNode = gradeNode(renderOutput(hdr));
+    if (mode === 'scene') {
+      pp.outputNode = scenePassColor;
+    } else if (mode === 'output') {
+      pp.outputNode = renderOutput(scenePassColor);
+    } else if (mode === 'grade') {
+      pp.outputNode = gradeNode(renderOutput(scenePassColor));
+    } else {
+      const hdr = scenePassColor.add(bloomPass);
+      pp.outputNode = gradeNode(renderOutput(hdr));
+    }
     pp.needsUpdate = true;
   }
   build(p.tone ?? 'none');   // 'none' (linear) = baseline; renderOutput still applies sRGB output
 
   let enabled = p.enabled ?? true;
   return {
+    mode,
     get enabled() { return enabled; },
     setEnabled(v) { enabled = !!v; },
     async renderAsync() { await pp.renderAsync(); },

@@ -103,9 +103,17 @@ function placementsForChunk(chunk, count, params, heightAt) {
   const [ix, iz] = chunk.key.split(',').map(Number);
   const crng = rngFrom(Math.floor(hash2(ix, iz, params.masterSeed) * 0xffffffff));
   const minBaseY = params.waterLevel + params.shoreMargin;
+  const densityAt = params.treeDensityAt || params.densityAt || null;
   const isDry = ({ x, z }) => heightAt(x, z) >= minBaseY;
   const keepDry = (pt, slot) => {
     if (pt.x < chunk.xMin || pt.x > chunk.xMin + chunk.size || pt.z < chunk.zMin || pt.z > chunk.zMin + chunk.size || !isDry(pt)) return false;
+    if (densityAt) {
+      const density = clamp(Number(densityAt(pt.x, pt.z)) || 0, 0, 1);
+      if (density <= 0) return false;
+      const hx = Math.floor(pt.x * 8);
+      const hz = Math.floor(pt.z * 8);
+      if (hash2(hx, hz, params.masterSeed + slot * 4099) > density) return false;
+    }
     pt.id = `${chunk.key}:${slot}`;
     pt.chunkKey = chunk.key;
     pt.slot = slot;

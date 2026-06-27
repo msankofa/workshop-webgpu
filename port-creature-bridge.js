@@ -277,6 +277,39 @@ const CREATURE_UI_STYLE = `
     letter-spacing: 0.04em;
   }
   .rand-fields { display: flex; gap: 4px; }
+  #creatureScope {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    padding: 8px;
+    border: 1px solid var(--pc-line);
+    border-radius: 8px;
+    background: var(--pc-panel);
+    color: var(--pc-muted);
+    font: 12px system-ui, sans-serif;
+  }
+  #creatureScope .scope-buttons {
+    display: flex;
+    border: 1px solid var(--pc-line);
+    border-radius: 6px;
+    overflow: hidden;
+    flex: none;
+  }
+  #creatureScope button {
+    height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-right: 1px solid var(--pc-line);
+    border-radius: 0;
+    background: #20252d;
+    color: var(--pc-text);
+    cursor: pointer;
+  }
+  #creatureScope button:last-child { border-right: 0; }
+  #creatureScope button.active { background: rgba(119, 200, 161, 0.18); color: var(--pc-text); }
+  #creatureScope button:disabled { opacity: 0.45; cursor: default; }
+  #creatureScope .scope-status { min-width: 0; }
 `;
 
 const CREATURE_UI_HTML = `
@@ -326,6 +359,7 @@ const CREATURE_UI_HTML = `
     <button id="exportConfig" title="Export JSON" aria-label="Export JSON">E</button>
     <button id="importConfig" title="Import JSON" aria-label="Import JSON">I</button>
   </div>
+  <div id="creatureScope"></div>
   <div id="optionsPanel" class="creature-panel" style="display:none">
     <div class="panel-head"><span>Gait Controls</span><button class="panel-min" title="Minimize">-</button></div>
     <div id="options" class="panel-body"></div>
@@ -384,6 +418,7 @@ export function createEnvironmentPortCreatures({
   nearbyTrunks = null,
   rebuildWorld,
   isInteractionEnabled = () => true,
+  mode = 'on',
 }) {
   ensurePortCreatureUi();
 
@@ -448,6 +483,34 @@ export function createEnvironmentPortCreatures({
   return {
     update(dt) {
       creatureTerrain.size = creatureArenaSize(terrainSystem, terrain);
+      if (mode === 'off') {
+        for (const creature of system.creatures) creature.group.visible = false;
+        system.clearRenderBatches?.();
+        system.stats.updateMs = 0;
+        system.stats.lodMs = 0;
+        system.stats.objectsMs = 0;
+        system.stats.behaviorMs = 0;
+        system.stats.steeringMs = 0;
+        system.stats.physicsMs = 0;
+        system.stats.renderMs = 0;
+        system.stats.selectionMs = 0;
+        system.stats.count = system.creatures.length;
+        system.stats.visible = 0;
+        system.stats.sim = 0;
+        system.stats.rendered = 0;
+        system.stats.bodyOnly = 0;
+        system.stats.armsActive = 0;
+        system.stats.shadowCasters = 0;
+        system.stats.ikFull = 0;
+        system.stats.ikCheap = 0;
+        system.stats.instancedBoxes = 0;
+        system.stats.instancedLimbs = 0;
+        system.stats.instancedJoints = 0;
+        system.stats.instancedHandsFeet = 0;
+        system.stats.instancedShadows = 0;
+        system.stats.tiers.fill(0);
+        return;
+      }
       system.update(dt);
     },
     reset() {
