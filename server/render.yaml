@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: creature-relay
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        fromGroup: render
