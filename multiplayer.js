@@ -49,6 +49,112 @@ function _slerpQ(a, b, t) {
   return [a[0]*wa+b[0]*wb, a[1]*wa+b[1]*wb, a[2]*wa+b[2]*wb, a[3]*wa+b[3]*wb];
 }
 
+// ---------------------------------------------------------------------------
+// createHostSession — connects as host, broadcasts state at 20 Hz,
+//                     dispatches 'mp:guest_input' events for guest inputs
+// ---------------------------------------------------------------------------
+
+const BROADCAST_MS = 50; // 20 Hz
+
+/**
+ * @param {string} roomCode
+ * @param {() => object} getState  — callback returning { creatures, players }
+ * @returns {{ destroy(): void }}
+ */
+export function createHostSession(roomCode, getState) {
+  let ws = null;
+  let intervalId = null;
+  let reconnectDelay = 1000;
+  let seq = 0;
+
+  function connect() {
+    ws = new WebSocket(RELAY_URL);
+    ws.onopen = () => {
+      reconnectDelay = 1000;
+      ws.send(JSON.stringify({ type: 'host', room: roomCode }));
+      intervalId = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const state = getState();
+        ws.send(JSON.stringify({ type: 'sim_state', seq: seq++, ...state }));
+      }, BROADCAST_MS);
+      window.dispatchEvent(new CustomEvent('mp:connected', { detail: { role: 'host', room: roomCode } }));
+    };
+    ws.onmessage = ev => {
+      const msg = JSON.parse(ev.data);
+      window.dispatchEvent(new CustomEvent('mp:guest_input', { detail: msg }));
+    };
+    ws.onclose = () => {
+      clearInterval(intervalId);
+      intervalId = null;
+      setTimeout(connect, Math.min(reconnectDelay, 30000));
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    };
+  }
+
+  connect();
+  return { destroy() { clearInterval(intervalId); ws?.close(); } };
+}
+
+// ---------------------------------------------------------------------------
+// createGuestSession — connects as guest, feeds InterpolationBuffer,
+//                      drives onState(interpolatedState) via rAF
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} roomCode
+ * @param {(state: object) => void} onState — called each rAF with interpolated state
+ * @returns {{ sendInput(msg: object): void, destroy(): void }}
+ */
+export function createGuestSession(roomCode, onState) {
+  let ws = null;
+  let reconnectDelay = 1000;
+  let rafId = null;
+  const buffer = new InterpolationBuffer();
+
+  function connect() {
+    ws = new WebSocket(RELAY_URL);
+    ws.onopen = () => {
+      reconnectDelay = 1000;
+      ws.send(JSON.stringify({ type: 'join', room: roomCode }));
+    };
+    ws.onmessage = ev => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'sim_state') {
+        buffer.push(msg, performance.now());
+      } else {
+        window.dispatchEvent(new CustomEvent('mp:' + msg.type, { detail: msg }));
+      }
+    };
+    ws.onclose = () => {
+      setTimeout(connect, Math.min(reconnectDelay, 30000));
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    };
+  }
+
+  function tick() {
+    const state = buffer.sample(performance.now() - 100);
+    if (state) onState(state);
+    rafId = requestAnimationFrame(tick);
+  }
+
+  connect();
+  rafId = requestAnimationFrame(tick);
+
+  return {
+    sendInput(msg) {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    },
+    destroy() {
+      cancelAnimationFrame(rafId);
+      ws?.close();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// helpers (used by InterpolationBuffer._lerpState)
+// ---------------------------------------------------------------------------
+
 function _lerpState(a, b, alpha) {
   return {
     creatures: a.creatures.map((ca, i) => {
