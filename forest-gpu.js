@@ -19,8 +19,8 @@ import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
   vec2, vec3, vec4, cos, sin, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad,
+  normalize, cross, cameraPosition,
 } from 'three/tsl';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 export function createForestGPU(opts) {
   const { renderer, camera, palette } = opts;
@@ -51,7 +51,7 @@ export function createForestGPU(opts) {
   for (let g = 0; g < V; g++) {
     const v = palette.variants[g];
     const mk = (geo) => new IndirectStorageBufferAttribute(new Uint32Array([geo.index.count, 0, 0, 0, 0]), 5);
-    const mkBill = () => new IndirectStorageBufferAttribute(new Uint32Array([12, 0, 0, 0, 0]), 5);
+    const mkBill = () => new IndirectStorageBufferAttribute(new Uint32Array([6, 0, 0, 0, 0]), 5);
     const a = {
       branchesL0: mk(v.branches),
       leavesL0: mk(v.leaves),
@@ -179,6 +179,22 @@ export function createForestGPU(opts) {
     const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
     return { world, nWorld };
   }
+  // Camera-facing billboard node: ignores instance yaw, aligns plane to always face camera.
+  // Uses cylindrical alignment (right = cross(worldUp, camDir), up = worldY) so trees stay upright.
+  function instanceNodesBillboard(offset) {
+    const recBase = uint(offset).add(instanceIndex).mul(uint(2));
+    const rec0 = draw.element(recBase);
+    const scale = rec0.w;
+    const ipos = vec3(rec0.x, rec0.y, rec0.z);
+    const worldUp = vec3(0, 1, 0);
+    const camDir = normalize(ipos.sub(cameraPosition));
+    const right = normalize(cross(worldUp, camDir));
+    const world = ipos
+      .add(right.mul(positionLocal.x.mul(scale)))
+      .add(worldUp.mul(positionLocal.y.mul(scale)));
+    return { world };
+  }
+
   function lodSlotOffset(g, l) {
     return g * LODS * CAP + l * CAP;
   }
@@ -193,13 +209,10 @@ export function createForestGPU(opts) {
     return mesh;
   }
 
-  function buildCrossQuadGeo(width, height, centerY) {
-    const g1 = new THREE.PlaneGeometry(width, height);
-    const g2 = new THREE.PlaneGeometry(width, height);
-    g2.rotateY(Math.PI / 2);
-    g1.translate(0, centerY, 0);
-    g2.translate(0, centerY, 0);
-    return mergeGeometries([g1, g2]);
+  function buildBillboardGeo(width, height, centerY) {
+    const g = new THREE.PlaneGeometry(width, height);
+    g.translate(0, centerY, 0);
+    return g;
   }
   function variantBillboardGeo(variant) {
     if (!variant.branches.boundingBox) variant.branches.computeBoundingBox();
@@ -209,7 +222,7 @@ export function createForestGPU(opts) {
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
-    return buildCrossQuadGeo(Math.max(size.x, size.z) * 1.15, size.y * 1.05, center.y);
+    return buildBillboardGeo(Math.max(size.x, size.z) * 1.15, size.y * 1.05, center.y);
   }
 
   const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], meshes = [];
@@ -218,7 +231,7 @@ export function createForestGPU(opts) {
     const n0 = instanceNodes(lodSlotOffset(g, 0));
     const n1 = instanceNodes(lodSlotOffset(g, 1));
     const n2 = instanceNodes(lodSlotOffset(g, 2));
-    const n3 = instanceNodes(lodSlotOffset(g, 3));
+    const n3 = instanceNodesBillboard(lodSlotOffset(g, 3));
 
     function makeMat(roughness, doubleSide) {
       return new MeshStandardNodeMaterial({
