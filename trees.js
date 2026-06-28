@@ -172,15 +172,7 @@ export class Tree extends THREE.Group {
     this.leafShadowRng = makeRNG((o.seed ^ 0x9e3779b9) >>> 0);
     this.leaf = { verts: [], normals: [], uvs: [], indices: [] };
     this.leafShadow = { verts: [], normals: [], uvs: [], indices: [] };
-    this.queue = [{
-      origin: new THREE.Vector3(0, 0, 0),
-      orientation: new THREE.Euler(0, 0, 0),
-      length: at(o.length, 0),
-      radius: at(o.radius, 0),
-      level: 0,
-      sectionCount: at(o.sections, 0),
-      segmentCount: at(o.segments, 0),
-    }];
+    this.queue = [this._trunkEntry()];
     while (this.queue.length) this._generateBranch(this.queue.shift(), true);
     this._commit(this.leavesMesh.geometry, this.leaf);
     this._commit(this.leavesShadowMesh.geometry, this.leafShadow);
@@ -197,15 +189,7 @@ export class Tree extends THREE.Group {
     this.leafShadowRng = makeRNG((o.seed ^ 0x9e3779b9) >>> 0);
 
     // breadth-first queue, seeded with the trunk
-    this.queue = [{
-      origin: new THREE.Vector3(0, 0, 0),
-      orientation: new THREE.Euler(0, 0, 0),
-      length: at(o.length, 0),
-      radius: at(o.radius, 0),
-      level: 0,
-      sectionCount: at(o.sections, 0),
-      segmentCount: at(o.segments, 0),
-    }];
+    this.queue = [this._trunkEntry()];
     while (this.queue.length) this._generateBranch(this.queue.shift());
 
     this._commit(this.branchesMesh.geometry, this.branch);
@@ -213,12 +197,25 @@ export class Tree extends THREE.Group {
     this._commit(this.leavesShadowMesh.geometry, this.leafShadow);
   }
 
+  _trunkEntry() {
+    const o = this.options;
+    return {
+      origin: new THREE.Vector3(0, 0, 0),
+      orientation: new THREE.Euler(0, 0, 0),
+      length: at(o.length, 0),
+      radius: at(o.radius, 0),
+      level: 0,
+      sectionCount: at(o.sections, 0),
+      segmentCount: at(o.segments, 0),
+    };
+  }
+
   // ---- build one branch's tube, then spawn its children or leaves ----
   _generateBranch(branch, leavesOnly = false) {
     const o = this.options;
     const segs = branch.segmentCount;
     const vertsPerRing = segs + 1; // +1 duplicated seam vertex for clean UV wrap
-    const indexOffset = this.branch.verts.length / 3;
+    const indexOffset = leavesOnly ? 0 : this.branch.verts.length / 3;
 
     const orientation = branch.orientation.clone();
     const origin = branch.origin.clone();
