@@ -61,7 +61,7 @@ const BROADCAST_MS = 50; // 20 Hz
  * @param {() => object} getState  — callback returning { creatures, players }
  * @returns {{ destroy(): void }}
  */
-export function createHostSession(roomCode, getState) {
+export function createHostSession(roomCode, mapKey, getState) {
   let ws = null;
   let intervalId = null;
   let reconnectDelay = 1000;
@@ -71,7 +71,7 @@ export function createHostSession(roomCode, getState) {
     ws = new WebSocket(RELAY_URL);
     ws.onopen = () => {
       reconnectDelay = 1000;
-      ws.send(JSON.stringify({ type: 'host', room: roomCode }));
+      ws.send(JSON.stringify({ type: 'host', room: roomCode, mapKey: mapKey ?? null }));
       intervalId = setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
         const state = getState();
