@@ -119,6 +119,13 @@ export function createComputeGrass(opts) {
   const uBladeHeight = uniform(o.bladeHeight);
   const uBladeWidth = uniform(o.bladeWidth);
   const uVerticalOffset = uniform(o.verticalOffset);
+  // Terrain extent: grass is rejected outside these XZ bounds. Defaults to ±1e9 (effectively
+  // infinite) for procedural terrain; set to the map's world bounds for authored maps so blades
+  // don't scatter beyond the mesh edge.
+  const uTerrainMinX = uniform(hasHeightTex ? opts.heightTexBounds.minX : -1e9);
+  const uTerrainMaxX = uniform(hasHeightTex ? opts.heightTexBounds.minX + opts.heightTexBounds.worldX : 1e9);
+  const uTerrainMinZ = uniform(hasHeightTex ? opts.heightTexBounds.minZ : -1e9);
+  const uTerrainMaxZ = uniform(hasHeightTex ? opts.heightTexBounds.minZ + opts.heightTexBounds.worldZ : 1e9);
   let dirty = true;
   let lastCellX = null;
   let lastCellZ = null;
@@ -182,6 +189,8 @@ export function createComputeGrass(opts) {
       const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
       const keepRand = slotRandFn(gx, gz, slot, int(7));
       const live = wy.greaterThan(uWaterMin)
+        .and(wx.greaterThanEqual(uTerrainMinX)).and(wx.lessThanEqual(uTerrainMaxX))
+        .and(wz.greaterThanEqual(uTerrainMinZ)).and(wz.lessThanEqual(uTerrainMaxZ))
         .and(dist.lessThan(uRadius))
         .and(keepRand.greaterThan(edge));
       If(live, () => {
