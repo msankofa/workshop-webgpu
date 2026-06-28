@@ -351,6 +351,7 @@ export function createForestGPU(opts) {
     get billboardMaterials() { return billboardMats; },
     _palette: palette,
     setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
+    setChunks(map) { for (const [k, v] of map) chunkRecords.set(k, v); rebuild(); },
     clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
     setLodDistances(r0, r1, r2) {
       let changed = false;
