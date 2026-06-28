@@ -1987,8 +1987,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   else import('./grass-compute.js').then(({ createComputeGrass }) => {
     Object.assign(params, {
       grassDensity: 8.0,
-      grassRadius: loadedMap ? 600 : 1050,
-      grassCullStart: loadedMap ? 450 : 840,
+      grassRadius: 600,
+      grassCullStart: loadedMap ? 450 : 480,
       grassMaxBlades: 900000,
       grassBladeHeight: 1.0,
       grassBladeWidth: 1.0,
@@ -2007,7 +2007,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
       bladeWidth: params.grassBladeWidth,
       verticalOffset: params.grassVerticalOffset,
       grassRecull: GRASS_RECULL_MODE,
-      maxRadius: 1800,
+      maxRadius: 600,
       heightTex: loadedMap?.heightTex ?? null,
       heightTexBounds: loadedMap?.heightTexBounds ?? null,
       addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
