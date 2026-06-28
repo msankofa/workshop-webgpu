@@ -2218,6 +2218,29 @@ let stance = 'stand';
 let capsuleH = fp.heightStand;
 let playerInitialized = false;
 
+// ---- light gun state ----
+const LG_MAX_PLACED     = 32;
+const LG_PROJECTILE_SLOT = 223;
+const LG_FIRST_SLOT     = 224;
+const LG_MAX_CHARGE_MS  = 1500;
+const LG_MIN_SPEED      = 8;
+const LG_MAX_SPEED      = 60;
+const LG_FALL_GRAVITY   = 14;
+const LG_FADE_WINDOW    = 2;
+const LG_RAY_STEPS      = 256;
+const LG_RAY_MAX_DIST   = 200;
+
+const lgParams = {
+  mode: 'shoot', trajectory: 'arc',
+  float: true, drift: false,
+  lifespan: 15, r: 255, g: 180, b: 80,
+  brightness: 60, radius: 30,
+};
+const placedLights = [];
+const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
+let lgInFlight = null;
+let lgChargeStart = null;
+
 // ---- FPS debug panel ----
 {
   const style = document.createElement('style');
@@ -2364,29 +2387,6 @@ let playerInitialized = false;
   lgSlider('Brightness', 'brightness', 1, 200, 1, fi);
   lgSlider('Radius', 'radius', 10, 80, 1, fi);
 }
-
-// ---- light gun state ----
-const LG_MAX_PLACED     = 32;
-const LG_PROJECTILE_SLOT = 223;
-const LG_FIRST_SLOT     = 224;
-const LG_MAX_CHARGE_MS  = 1500;
-const LG_MIN_SPEED      = 8;
-const LG_MAX_SPEED      = 60;
-const LG_FALL_GRAVITY   = 14;
-const LG_FADE_WINDOW    = 2;
-const LG_RAY_STEPS      = 256;
-const LG_RAY_MAX_DIST   = 200;
-
-const lgParams = {
-  mode: 'shoot', trajectory: 'arc',
-  float: true, drift: false,
-  lifespan: 15, r: 255, g: 180, b: 80,
-  brightness: 60, radius: 30,
-};
-const placedLights = [];
-const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
-let lgInFlight = null;
-let lgChargeStart = null;
 
 const crosshair = document.createElement('div');
 crosshair.className = 'walk-ui';
