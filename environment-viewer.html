@@ -832,13 +832,15 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
       if (!activeKeys.has(key)) { forestGPU.clearChunk(key); trunkIndex.clearTrunks(key); gpuTreeChunks.delete(key); }
     }
     const pr = paramsForRecords();
+    const batch = new Map();
     for (const chunk of active) {
       if (!rebuildExisting && gpuTreeChunks.has(chunk.key)) continue;
       const recs = placementRecords([chunk], pr, terrainHeight);
-      forestGPU.setChunk(chunk.key, recs);
+      batch.set(chunk.key, recs);
       trunkIndex.setTrunks(chunk.key, recs.map(r => ({ x: r.x, z: r.z, r: TRUNK_RADIUS_PER_SCALE * r.scale })));
       gpuTreeChunks.add(chunk.key);
     }
+    if (batch.size > 0) forestGPU.setChunks(batch);
     terrainDebug.treePlacements = forestGPU.stats.instances;
   }
 
