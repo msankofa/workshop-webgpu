@@ -2,11 +2,11 @@ import { WebSocketServer } from 'ws';
 
 const wss = new WebSocketServer({ port: process.env.PORT || 8080 });
 
-// rooms: Map<code, { host: WebSocket|null, guests: Map<clientId, WebSocket> }>
+// rooms: Map<code, { host: WebSocket|null, mapKey: string|null, guests: Map<clientId, WebSocket> }>
 const rooms = new Map();
 
 function getOrCreate(code) {
-  if (!rooms.has(code)) rooms.set(code, { host: null, guests: new Map() });
+  if (!rooms.has(code)) rooms.set(code, { host: null, mapKey: null, guests: new Map() });
   return rooms.get(code);
 }
 
@@ -34,14 +34,18 @@ wss.on('connection', ws => {
         roomCode = msg.room;
         const r = getOrCreate(roomCode);
         r.host = ws;
+        r.mapKey = msg.mapKey ?? null;
         for (const g of r.guests.values()) send(g, { type: 'host_joined' });
       } else if (msg.type === 'join') {
         role = 'guest';
         roomCode = msg.room;
         const r = getOrCreate(roomCode);
         r.guests.set(clientId, ws);
-        send(ws, { type: 'joined', clientId, guestCount: r.guests.size });
+        send(ws, { type: 'joined', clientId, guestCount: r.guests.size, mapKey: r.mapKey });
         if (r.host) send(r.host, { type: 'guest_joined', clientId });
+      } else if (msg.type === 'query') {
+        const r = rooms.get(msg.room);
+        send(ws, { type: 'room_info', hasHost: !!(r && r.host), mapKey: r?.mapKey ?? null });
       }
       return;
     }
