@@ -296,7 +296,8 @@ if (loadedMap) {
     worldX: loadedMap.worldX,
     worldZ: loadedMap.worldZ,
   };
-  loadedMap.heightTex = bakeHeightTexture(terrainHeight, hBounds);
+  const bakeRes = Math.min(2048, Math.max(512, Math.ceil(Math.max(loadedMap.worldX, loadedMap.worldZ))));
+  loadedMap.heightTex = bakeHeightTexture(terrainHeight, hBounds, bakeRes);
   loadedMap.heightTexBounds = hBounds;
 }
 const _terrainN = [0, 1, 0];
