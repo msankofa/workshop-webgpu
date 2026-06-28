@@ -116,5 +116,45 @@ try {
   fail('merge fix did not hold: ' + e.message);
 }
 
+// 6. regenerateLeaves: branch geometry unchanged, leaf geometry reflects new opts
+console.log('\n[regenerateLeaves]');
+{
+  const t = createTree({ seed: 42, levels: 3, leaves: { count: 10, size: 1.0 } });
+  const branchPos = t.branchesMesh.geometry.getAttribute('position').array.slice();
+  const branchNrm = t.branchesMesh.geometry.getAttribute('normal').array.slice();
+  const leafCountBefore = t.leavesMesh.geometry.getAttribute('position').count;
+
+  t.regenerateLeaves({ count: 3, size: 2.5 });
+
+  const branchPosAfter = t.branchesMesh.geometry.getAttribute('position').array;
+  const leafCountAfter  = t.leavesMesh.geometry.getAttribute('position').count;
+
+  let branchChanged = false;
+  for (let i = 0; i < branchPos.length; i++) {
+    if (branchPos[i] !== branchPosAfter[i]) { branchChanged = true; break; }
+  }
+  if (branchChanged) fail('regenerateLeaves: branch positions changed');
+  else console.log('  ok: branch positions unchanged');
+
+  const branchNrmAfter = t.branchesMesh.geometry.getAttribute('normal').array;
+  let nrmChanged = false;
+  for (let i = 0; i < branchNrm.length; i++) {
+    if (branchNrm[i] !== branchNrmAfter[i]) { nrmChanged = true; break; }
+  }
+  if (nrmChanged) fail('regenerateLeaves: branch normals changed');
+  else console.log('  ok: branch normals unchanged');
+
+  // count=3 leaves (doubleBillboard default=true → 2 quads each → 8 verts/leaf per terminal branch)
+  // → fewer verts than count=10
+  if (leafCountAfter >= leafCountBefore) {
+    fail(`regenerateLeaves: leaf count ${leafCountAfter} did not decrease from ${leafCountBefore}`);
+  } else {
+    console.log(`  ok: leaf verts ${leafCountBefore} → ${leafCountAfter} (count 10→3)`);
+  }
+
+  auditMesh('regenerateLeaves leaves', t.leavesMesh);
+  auditMesh('regenerateLeaves shadow', t.leavesShadowMesh);
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`);
 process.exit(failures === 0 ? 0 : 1);
