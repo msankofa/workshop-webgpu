@@ -61,21 +61,10 @@ const CREATURE_MODE = new URLSearchParams(location.search).get('creatures') || '
 // Timestamp queries require a GPU->CPU readback when resolved. Keep them opt-in so
 // the normal frame profiler measures the app instead of the diagnostic readback.
 const TIMESTAMP_MODE = new URLSearchParams(location.search).get('timestamps') || 'off';
-let MAP_KEY = new URLSearchParams(location.search).get('map') || null;
+let mpSession = null;
+let mpGhostRenderer = null;
 
-let mpSession = null;       // { destroy() } — current host or guest session
-let mpGhostRenderer = null; // GhostRenderer instance (guest mode only)
-let mpRole = null;          // 'host' | 'guest' | null
-
-if (!MAP_KEY) {
-  const choice = await showStartScreen();
-  if (choice.mode === 'map') {
-    const url = new URL(location.href);
-    url.searchParams.set('map', choice.mapKey);
-    location.replace(url.toString());
-    await new Promise(() => {});
-  }
-}
+const { mapKey, mpRole, roomCode, setStatus, dismiss } = await showStartScreen();
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
 const infoEl = document.getElementById('info');
@@ -105,75 +94,28 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 await renderer.init();
 
-// ===================== multiplayer UI =====================
-function _mpSetStatus(msg) {
-  const el = document.getElementById('mp-status');
-  if (el) el.textContent = msg;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+
+// ===================== multiplayer session =====================
+function getState() {
+  const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
+    id,
+    p: [c.pos.x, c.pos.y, c.pos.z],
+    q: [c.group.quaternion.x, c.group.quaternion.y, c.group.quaternion.z, c.group.quaternion.w],
+    hp: c.health / 100,
+    feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
+    hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
+  }));
+  return { creatures, players: [] };
 }
 
-function _mpGenerateCode() {
-  return Math.random().toString(36).slice(2, 6).toUpperCase();
-}
-
-function _mpGhostDestroy() {
-  if (mpGhostRenderer) { mpGhostRenderer.destroy(); mpGhostRenderer = null; }
-}
-
-document.getElementById('mp-host-btn').addEventListener('click', () => {
-  if (mpSession) { mpSession.destroy(); mpSession = null; mpRole = null; _mpSetStatus(''); return; }
-  const code = document.getElementById('mp-room').value.trim().toUpperCase() || _mpGenerateCode();
-  document.getElementById('mp-room').value = code;
-  mpRole = 'host';
-
-  function getState() {
-    const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
-      id,
-      p: [c.pos.x, c.pos.y, c.pos.z],
-      q: [c.group.quaternion.x, c.group.quaternion.y, c.group.quaternion.z, c.group.quaternion.w],
-      hp: c.health / 100,
-      feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
-      hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
-    }));
-    return { creatures, players: [] };
-  }
-
-  mpSession = createHostSession(code, getState);
-  _mpSetStatus(`hosting ${code}`);
-});
-
-document.getElementById('mp-join-btn').addEventListener('click', () => {
-  if (mpSession) { mpSession.destroy(); mpSession = null; mpRole = null; _mpGhostDestroy(); _mpSetStatus(''); return; }
-  const code = document.getElementById('mp-room').value.trim().toUpperCase();
-  if (!code) { _mpSetStatus('enter room code'); return; }
-  mpRole = 'guest';
+if (mpRole === 'host') {
+  mpSession = createHostSession(roomCode, mapKey, getState);
+} else if (mpRole === 'guest') {
   mpGhostRenderer = new GhostRenderer(scene, THREE);
-
-  mpSession = createGuestSession(code, state => {
-    mpGhostRenderer.update(state);
-  });
-  _mpSetStatus(`joined ${code}`);
-});
-
-window.addEventListener('mp:connected', e => {
-  _mpSetStatus(`hosting ${e.detail.room} ●`);
-});
-
-window.addEventListener('mp:joined', e => {
-  _mpSetStatus(`joined ${document.getElementById('mp-room').value} (${e.detail.guestCount} guest${e.detail.guestCount !== 1 ? 's' : ''})`);
-});
-
-window.addEventListener('mp:host_left', () => {
-  _mpSetStatus('host disconnected');
-});
-
-window.addEventListener('mp:guest_joined', e => {
-  const room = document.getElementById('mp-room').value;
-  _mpSetStatus(`hosting ${room} (${e.detail.guestCount ?? '?'} guest)`);
-});
-
-window.addEventListener('mp:guest_left', () => {
-  _mpSetStatus(`hosting ${document.getElementById('mp-room').value}`);
-});
+  mpSession = createGuestSession(roomCode, state => mpGhostRenderer.update(state));
+}
 
 window.addEventListener('mp:guest_input', e => {
   const msg = e.detail;
@@ -183,22 +125,19 @@ window.addEventListener('mp:guest_input', e => {
     portCreatures?.system?.setBehavior(msg.behavior);
   }
 });
-// ===================== end multiplayer UI =====================
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1d23);
+// ===================== end multiplayer session =====================
 
 let loadedMap = null;
 let mapCollider = null;
-if (MAP_KEY) {
-  showStatus(`loading authored map ${MAP_KEY}...`);
+if (mapKey) {
+  setStatus(`loading authored map ${mapKey}...`);
   await nextPaint();
-  loadedMap = await loadTerrainMap(MAP_KEY, { scene });
-  showStatus(`building authored map collision...`);
+  loadedMap = await loadTerrainMap(mapKey, { scene });
+  setStatus('building authored map collision...');
   await nextPaint();
   try {
     mapCollider = createMapCollider(loadedMap.root);
-    showStatus(`authored map loaded (${mapCollider.triangleCount.toLocaleString()} collision triangles)`);
+    setStatus(`authored map loaded (${mapCollider.triangleCount.toLocaleString()} collision triangles)`);
   } catch (err) {
     mapCollider = null;
     showError(`map loaded, collision disabled: ${err.message || err}`);
@@ -2795,27 +2734,9 @@ async function animate() {
   perfLog.maybeSample(performance.now());
   } finally { _frameBusy = false; }
 }
+dismiss();
 renderer.setAnimationLoop(animate);
 </script>
-<div id="mp-panel" style="
-  position:fixed; bottom:12px; right:12px; z-index:10;
-  display:flex; align-items:center; gap:6px;
-  padding:6px 10px;
-  background:rgba(25,29,36,0.86); border:1px solid rgba(255,255,255,0.12);
-  border-radius:8px; font:12px system-ui,sans-serif; color:#d8dee9; user-select:none;">
-  <input id="mp-room" maxlength="6" placeholder="ROOM"
-    style="width:56px;height:24px;padding:0 6px;border:1px solid rgba(255,255,255,0.12);
-    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;
-    text-transform:uppercase;">
-  <button id="mp-host-btn" style="height:26px;padding:0 8px;border:1px solid rgba(255,255,255,0.12);
-    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;cursor:pointer;">
-    Host
-  </button>
-  <button id="mp-join-btn" style="height:26px;padding:0 8px;border:1px solid rgba(255,255,255,0.12);
-    border-radius:5px;background:#20252d;color:#d8dee9;font:12px system-ui,sans-serif;cursor:pointer;">
-    Join
-  </button>
-  <span id="mp-status" style="color:#8d97a8;font-size:11px;min-width:80px;"></span>
-</div>
+
 </body>
 </html>
