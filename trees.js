@@ -165,6 +165,27 @@ export class Tree extends THREE.Group {
     this.generate();
   }
 
+  regenerateLeaves(leafOpts) {
+    if (leafOpts) this.options = merge(this.options, { leaves: leafOpts });
+    const o = this.options;
+    this.rng = makeRNG(o.seed);
+    this.leafShadowRng = makeRNG((o.seed ^ 0x9e3779b9) >>> 0);
+    this.leaf = { verts: [], normals: [], uvs: [], indices: [] };
+    this.leafShadow = { verts: [], normals: [], uvs: [], indices: [] };
+    this.queue = [{
+      origin: new THREE.Vector3(0, 0, 0),
+      orientation: new THREE.Euler(0, 0, 0),
+      length: at(o.length, 0),
+      radius: at(o.radius, 0),
+      level: 0,
+      sectionCount: at(o.sections, 0),
+      segmentCount: at(o.segments, 0),
+    }];
+    while (this.queue.length) this._generateBranch(this.queue.shift(), true);
+    this._commit(this.leavesMesh.geometry, this.leaf);
+    this._commit(this.leavesShadowMesh.geometry, this.leafShadow);
+  }
+
   generate() {
     const o = this.options;
     this.rng = makeRNG(o.seed);
@@ -193,7 +214,7 @@ export class Tree extends THREE.Group {
   }
 
   // ---- build one branch's tube, then spawn its children or leaves ----
-  _generateBranch(branch) {
+  _generateBranch(branch, leavesOnly = false) {
     const o = this.options;
     const segs = branch.segmentCount;
     const vertsPerRing = segs + 1; // +1 duplicated seam vertex for clean UV wrap
@@ -215,20 +236,22 @@ export class Tree extends THREE.Group {
 
       _q.setFromEuler(orientation);
       const vCoord = i * sectionLength * (o.bark.vScale || 0.4);
-      for (let j = 0; j < segs; j++) {
-        const a = (2 * Math.PI * j) / segs;
-        _dir.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(_q);
+      if (!leavesOnly) {
+        for (let j = 0; j < segs; j++) {
+          const a = (2 * Math.PI * j) / segs;
+          _dir.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(_q);
+          _v.copy(_dir).multiplyScalar(radius).add(origin);
+          this.branch.verts.push(_v.x, _v.y, _v.z);
+          this.branch.normals.push(_dir.x, _dir.y, _dir.z);
+          this.branch.uvs.push((j / segs) * wrapsX, vCoord);
+        }
+        // seam vertex (duplicate of j=0) at u = wrapsX
+        _dir.set(1, 0, 0).applyQuaternion(_q);
         _v.copy(_dir).multiplyScalar(radius).add(origin);
         this.branch.verts.push(_v.x, _v.y, _v.z);
         this.branch.normals.push(_dir.x, _dir.y, _dir.z);
-        this.branch.uvs.push((j / segs) * wrapsX, vCoord);
+        this.branch.uvs.push(wrapsX, vCoord);
       }
-      // seam vertex (duplicate of j=0) at u = wrapsX
-      _dir.set(1, 0, 0).applyQuaternion(_q);
-      _v.copy(_dir).multiplyScalar(radius).add(origin);
-      this.branch.verts.push(_v.x, _v.y, _v.z);
-      this.branch.normals.push(_dir.x, _dir.y, _dir.z);
-      this.branch.uvs.push(wrapsX, vCoord);
 
       sections.push({ origin: origin.clone(), orientation: orientation.clone(), radius });
 
@@ -256,13 +279,15 @@ export class Tree extends THREE.Group {
     }
 
     // skin the tube: two triangles per quad between consecutive rings
-    for (let i = 0; i < branch.sectionCount; i++) {
-      for (let j = 0; j < segs; j++) {
-        const a = indexOffset + i * vertsPerRing + j;
-        const b = a + 1;
-        const c = a + vertsPerRing;
-        const d = c + 1;
-        this.branch.indices.push(a, c, b, b, c, d);
+    if (!leavesOnly) {
+      for (let i = 0; i < branch.sectionCount; i++) {
+        for (let j = 0; j < segs; j++) {
+          const a = indexOffset + i * vertsPerRing + j;
+          const b = a + 1;
+          const c = a + vertsPerRing;
+          const d = c + 1;
+          this.branch.indices.push(a, c, b, b, c, d);
+        }
       }
     }
 
