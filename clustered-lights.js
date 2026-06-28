@@ -28,7 +28,9 @@ export function createClusteredLights(opts) {
     capLights: opts.capLights ?? 512,
     count: Math.min(opts.count ?? 256, opts.capLights ?? 512),
     animate: opts.animate === true,
+    reserve: opts.reserve ?? 0,
   };
+  cfg.randomCount = cfg.count - cfg.reserve;
   // Allocate froxel buffers for a generous max grid (covers ~2560×1440 at tile=32); the
   // active grid clamps to this. froxelIndex = (slice*tilesY + ty)*tilesX + tx.
   const MAXTX = Math.ceil(2560 / cfg.tile), MAXTY = Math.ceil(1440 / cfg.tile);
@@ -184,7 +186,7 @@ export function createClusteredLights(opts) {
   }
   const arr = lightAttr.array;
   function writeLights(t) {
-    for (let i = 0; i < cfg.count; i++) {
+    for (let i = 0; i < cfg.randomCount; i++) {
       const L = base[i];
       const x = L.x + Math.sin(t * 0.3 + L.phase) * L.drift;
       const z = L.z + Math.cos(t * 0.27 + L.phase) * L.drift;
@@ -232,10 +234,15 @@ export function createClusteredLights(opts) {
       reculls++;
     },
     setCount(n) {
-      const next = Math.max(0, Math.min(n | 0, cfg.capLights));
-      if (next === cfg.count) return;
-      cfg.count = next;
-      uCount.value = cfg.count;
+      const next = Math.max(0, Math.min(n | 0, cfg.count - cfg.reserve));
+      if (next === cfg.randomCount) return;
+      for (let i = next; i < cfg.randomCount; i++) {
+        const o = i * 8;
+        arr[o] = arr[o+1] = arr[o+2] = arr[o+3] = 0;
+        arr[o+4] = arr[o+5] = arr[o+6] = arr[o+7] = 0;
+      }
+      if (next < cfg.randomCount) lightAttr.needsUpdate = true;
+      cfg.randomCount = next;
       writeLights(0);
       markDirty();
     },
@@ -245,7 +252,21 @@ export function createClusteredLights(opts) {
       uTilesX.value = tx; uTilesY.value = ty; uFroxelCount.value = tx * ty * cfg.zSlices;
       markDirty();
     },
-    get lightCount() { return cfg.count; },
+    setLightDirect(i, { x, y, z, radius, r, g, b, intensity }) {
+      const o = i * 8;
+      arr[o] = x; arr[o+1] = y; arr[o+2] = z; arr[o+3] = radius;
+      arr[o+4] = r; arr[o+5] = g; arr[o+6] = b; arr[o+7] = intensity;
+      lightAttr.needsUpdate = true;
+      dirty = true;
+    },
+    clearLight(i) {
+      const o = i * 8;
+      arr[o] = arr[o+1] = arr[o+2] = arr[o+3] = 0;
+      arr[o+4] = arr[o+5] = arr[o+6] = arr[o+7] = 0;
+      lightAttr.needsUpdate = true;
+      dirty = true;
+    },
+    get lightCount() { return cfg.randomCount; },
     get froxelCount() { return uFroxelCount.value; },
     get stats() { return { reculls, skippedReculls, dirty, animate: cfg.animate }; },
     dispose() { /* buffers GC with the nodes */ },
