@@ -322,7 +322,8 @@ const LIGHTS_ANIMATE = new URLSearchParams(location.search).get('lightsAnimate')
 let clusteredLightsRef = null;
 if (TERRAIN_MODE === 'gpu' && LIGHTS_MODE !== 'off') {
   const { createClusteredLights } = await import('./clustered-lights.js');
-  clusteredLightsRef = createClusteredLights({ renderer, camera, count: 256, far: 600, animate: LIGHTS_ANIMATE });
+  clusteredLightsRef = createClusteredLights({ renderer, camera, count: 256, far: 600, animate: LIGHTS_ANIMATE, reserve: 33 });
+  clusteredLightsRef.setCount(0); // default off; UI toggle enables
   window._dbg = window._dbg || {};
   window._dbg.clusteredLightsRef = clusteredLightsRef;
 }
@@ -1582,6 +1583,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!params[key]; inp.style.width = 'auto';
     inp.addEventListener('change', () => { params[key] = inp.checked; onChange(); });
     row.appendChild(inp); current.appendChild(row);
+    return inp;
   }
   header('Forest');
   const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
@@ -1637,6 +1639,10 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
   slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => rig.setSunIntensity(rigP.sunIntensity),         rigP);
   slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => rig.setAmbientIntensity(rigP.ambientIntensity), rigP);
+  params.pointLights = false;
+  const pointLightsInput = toggle('pointLights', 'Point lights', () => {
+    if (clusteredLightsRef) clusteredLightsRef.setCount(params.pointLights ? 256 : 0);
+  });
 
   // ---- terrain controls (rebuild world: ground + trees + grass + water) ----
   let wt; const worldRebuild = () => { clearTimeout(wt); wt = setTimeout(rebuildWorld, 220); };
