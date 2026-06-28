@@ -382,10 +382,10 @@ if (POST_MODE !== 'off') {
 }
 const terrainDebug = {
   grassChunks: 0, grassPending: 0,
-  waterChunks: 0, waterCandidates: 0, waterPending: 0, waterDry: 0,
-  waterMeshes: 0, causticMeshes: 0, waterDraws: 0, causticDraws: 0,
-  waterTriangles: 0, causticTriangles: 0, waterVertices: 0,
+  waterChunks: 0, waterPending: 0,
+  waterTriangles: 0, waterVertices: 0,
   waterMinBed: Infinity, waterLoaded: false, waterVersion: '',
+  ring0Tris: 0, ring1Tris: 0, ring2Tris: 0,
   treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
 };
 const frameProfiler = createFrameProfiler({ smoothing: 0.2 });
@@ -444,7 +444,7 @@ function updateTerrainDebug(now) {
       : `chunks ${activeTerrainChunks().length}/${targetTerrainChunkCount()}\n`) +
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
-    `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} ${terrainDebug.waterChunks}/${terrainDebug.waterCandidates} dry ${terrainDebug.waterDry} pending ${terrainDebug.waterPending} tris ${terrainDebug.waterTriangles.toLocaleString()} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
+    `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} r0:${terrainDebug.ring0Tris} r1:${terrainDebug.ring1Tris} r2:${terrainDebug.ring2Tris} tris ${terrainDebug.waterTriangles.toLocaleString()} pending ${terrainDebug.waterPending} min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
     `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` · gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
     (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
@@ -531,18 +531,13 @@ const perfLog = {
       grassReculls: grassRef?.stats?.reculls ?? null,
       grassRecullSkips: grassRef?.stats?.skippedReculls ?? null,
       grassLastCell: grassRef?.stats?.lastCell ?? null,
-      waterChunks: terrainDebug.waterChunks,
-      waterCandidates: terrainDebug.waterCandidates,
-      waterDry: terrainDebug.waterDry,
       waterPending: terrainDebug.waterPending,
-      waterMeshes: terrainDebug.waterMeshes,
-      causticMeshes: terrainDebug.causticMeshes,
-      waterDraws: terrainDebug.waterDraws,
-      causticDraws: terrainDebug.causticDraws,
       waterTriangles: terrainDebug.waterTriangles,
-      causticTriangles: terrainDebug.causticTriangles,
       waterVertices: terrainDebug.waterVertices,
       waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
+      waterRing0Tris: terrainDebug.ring0Tris,
+      waterRing1Tris: terrainDebug.ring1Tris,
+      waterRing2Tris: terrainDebug.ring2Tris,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
       forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
@@ -634,7 +629,6 @@ updateDrawDistance();
 let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null;
 let terrainDecorationsDirty = false;
 let terrainDecorationsRebuildAll = false;
-let lastWaterChunkSignature = '';
 let lastMapChunkSignature = '';
 const terrainFocus = new THREE.Vector3();
 const shadowFocus = new THREE.Vector3();
@@ -676,7 +670,10 @@ function rebuildWorld() {
   updateDrawDistance();
   terrainDecorationsDirty = true;
   terrainDecorationsRebuildAll = true;
-  if (waterRef) syncWaterChunks(true, { size: terrain.size });
+  if (waterRef) waterRef.regenerate({
+    waterLevel: terrain.waterLevel, heightFn: terrainHeight,
+    ...(loadedMap ? { extentX: loadedMap.worldX, extentZ: loadedMap.worldZ } : {}),
+  });
   // GPU grass plants on a closed-form height + water mask; push terrain/water edits.
   if (grassRef?.setTerrain) grassRef.setTerrain({ baseAmp: terrain.baseAmp, lake: terrain.lake, lakeDepth: terrain.lakeDepth });
   if (grassRef?.setWaterLevel) grassRef.setWaterLevel(terrain.waterLevel);
@@ -688,13 +685,10 @@ function updateTerrainWindow(center) {
   terrainFocus.copy(center);
   updateSunShadowFocus(center);
   if (loadedMap) {
-    const signature = waterChunkSignature(activeTerrainChunks());
+    const signature = chunkSignature(activeTerrainChunks());
     if (signature !== lastMapChunkSignature) {
       lastMapChunkSignature = signature;
       terrainDecorationsDirty = true;
-      syncWaterChunks(true);
-    } else if (waterRef && !lastWaterChunkSignature) {
-      syncWaterChunks();
     }
     maybeSyncTerrainDecorations();
     return;
@@ -703,9 +697,6 @@ function updateTerrainWindow(center) {
   if (terrainChanged) {
     ground = cdlodRef ? cdlodRef.mesh : terrainSystem.materialPatchTarget;
     terrainDecorationsDirty = true;
-    syncWaterChunks(true);
-  } else if (waterRef && !lastWaterChunkSignature) {
-    syncWaterChunks();
   }
   maybeSyncTerrainDecorations();
 }
@@ -713,25 +704,13 @@ function updateTerrainWindow(center) {
 function maybeSyncTerrainDecorations() {
   if (!terrainDecorationsDirty || terrainSystem.pendingBuildCount > 0) return;
   if (grassRef) grassRef.sync();
-  syncWaterChunks(true);
   if (regenTrees) regenTrees(terrainDecorationsRebuildAll);
   terrainDecorationsRebuildAll = false;
   terrainDecorationsDirty = false;
 }
 
-function waterChunkSignature(chunks) {
+function chunkSignature(chunks) {
   return chunks.map(c => c.key).sort().join('|');
-}
-
-function syncWaterChunks(force = false, extra = {}) {
-  if (!waterRef) return;
-  const chunks = activeTerrainChunks();
-  if (chunks.length === 0 && !force) return;
-  const signature = `${terrain.waterLevel}:${waterChunkSignature(chunks)}`;
-  if (!force && signature === lastWaterChunkSignature && terrainDebug.waterCandidates > 0) return;
-  waterRef.regenerate({ ...extra, chunks, waterLevel: terrain.waterLevel, heightFn: terrainHeight });
-  lastWaterChunkSignature = signature;
-  syncWaterDebug();
 }
 
 function syncWaterDebug() {
@@ -753,20 +732,16 @@ function syncWaterDebug() {
     return;
   }
   const s = waterRef.getStats();
-  terrainDebug.waterLoaded = true;
-  terrainDebug.waterVersion = s.version || waterRef.version || '?';
-  terrainDebug.waterChunks = s.chunks;
-  terrainDebug.waterCandidates = s.candidates;
-  terrainDebug.waterPending = s.pending || 0;
-  terrainDebug.waterDry = s.dry || 0;
-  terrainDebug.waterMeshes = s.waterMeshes || s.chunks || 0;
-  terrainDebug.causticMeshes = s.causticMeshes || 0;
-  terrainDebug.waterDraws = s.waterDraws || s.chunks || 0;
-  terrainDebug.causticDraws = s.causticDraws || 0;
+  terrainDebug.waterLoaded    = true;
+  terrainDebug.waterVersion   = s.version || '?';
+  terrainDebug.waterChunks    = s.chunks;
   terrainDebug.waterTriangles = s.waterTriangles || 0;
-  terrainDebug.causticTriangles = s.causticTriangles || 0;
-  terrainDebug.waterVertices = s.waterVertices || 0;
-  terrainDebug.waterMinBed = s.minBed;
+  terrainDebug.waterVertices  = s.waterVertices  || 0;
+  terrainDebug.waterMinBed    = s.minBed;
+  terrainDebug.ring0Tris      = s.ring0Tris  || 0;
+  terrainDebug.ring1Tris      = s.ring1Tris  || 0;
+  terrainDebug.ring2Tris      = s.ring2Tris  || 0;
+  terrainDebug.waterPending   = s.pending    || 0;
 }
 
 // Trees live in a separate module. Load it dynamically so a load failure
@@ -2038,19 +2013,23 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
   import('./water.js?v=sp4a-emissive').then(({ createWaterSystem }) => {
-    Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
+    Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1, waterLodR0: 50, waterLodR1: 150 });
     waterRef = createWaterSystem({
       renderer, scene, camera, ground,
       size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight,
-      chunks: activeTerrainChunks(),
+      ...(loadedMap ? { extentX: loadedMap.worldX, extentZ: loadedMap.worldZ } : {}),
+      lodR0: params.waterLodR0, lodR1: params.waterLodR1,
     });
     scene.add(waterRef.surface);
-    syncWaterChunks(true);
     rig.connect(waterRef, null);
     header('Water');
     slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
     slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
     slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
+    header('Water LOD');
+    const updateWaterLod = () => { if (waterRef) waterRef.setLodDistances(params.waterLodR0, params.waterLodR1); };
+    slider('waterLodR0', 'Near radius', 10, 200, 5, fi, updateWaterLod);
+    slider('waterLodR1', 'Mid radius', 30, 400, 5, fi, updateWaterLod);
   }).catch(err => { showError('water.js could not load (' + err.message + ')'); });
 
   // ---- clouds (separate module; optional, independent of terrain). Lays a big
