@@ -2300,13 +2300,113 @@ let playerInitialized = false;
 
   fpHeader('Look');
   fpSlider('Sensitivity', 'sensitivity', 100, 2000, 10, fi);
+
+  // ---- light gun controls (inside FPS panel) ----
+  function lgSlider(label, key, min, max, step, fmt) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;margin-top:5px';
+    const valEl = document.createElement('span'); valEl.style.color = '#7f8a99';
+    valEl.textContent = fmt(lgParams[key]);
+    row.innerHTML = '<span>' + label + '</span>';
+    row.appendChild(valEl); current.appendChild(row);
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = lgParams[key];
+    inp.style.width = '100%';
+    inp.addEventListener('input', () => { lgParams[key] = parseFloat(inp.value); valEl.textContent = fmt(lgParams[key]); });
+    current.appendChild(inp);
+  }
+  function lgRowEl(label) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-top:5px';
+    row.innerHTML = '<span>' + label + '</span>';
+    current.appendChild(row);
+    return row;
+  }
+  function lgSelect(label, options, key, onChange) {
+    const row = lgRowEl(label);
+    const sel = document.createElement('select');
+    sel.style.cssText = 'background:#1a2030;color:#c4ccd6;border:1px solid #333a45;border-radius:4px;padding:1px 4px;font:12px system-ui,sans-serif';
+    options.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v[0].toUpperCase() + v.slice(1); sel.appendChild(o); });
+    sel.value = lgParams[key];
+    sel.addEventListener('change', () => { lgParams[key] = sel.value; if (onChange) onChange(); });
+    row.appendChild(sel);
+    return row;
+  }
+  function lgCheck(label, key, onChange) {
+    const row = lgRowEl(label);
+    const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = lgParams[key]; inp.style.width = 'auto';
+    inp.addEventListener('change', () => { lgParams[key] = inp.checked; if (onChange) onChange(inp); });
+    row.appendChild(inp);
+    return { row, inp };
+  }
+
+  fpHeader('Light gun');
+  let lgTrajectoryRow;
+  lgSelect('Mode', ['place', 'shoot'], 'mode', () => {
+    lgTrajectoryRow.style.display = lgParams.mode === 'shoot' ? '' : 'none';
+  });
+  lgTrajectoryRow = lgSelect('Trajectory', ['arc', 'straight'], 'trajectory');
+  lgTrajectoryRow.style.display = lgParams.mode === 'shoot' ? '' : 'none';
+
+  let lgDriftRow, lgDriftInp;
+  const { inp: lgFloatInp } = lgCheck('Float', 'float', () => {
+    lgDriftRow.style.display = lgParams.float ? '' : 'none';
+    lgDriftInp.disabled = !lgParams.float;
+  });
+  ({ row: lgDriftRow, inp: lgDriftInp } = lgCheck('Drift', 'drift'));
+  lgDriftRow.style.display = lgParams.float ? '' : 'none';
+  lgDriftInp.disabled = !lgParams.float;
+
+  lgSlider('Lifespan (s)', 'lifespan', 1, 60, 1, fi);
+  lgSlider('R', 'r', 0, 255, 1, fi);
+  lgSlider('G', 'g', 0, 255, 1, fi);
+  lgSlider('B', 'b', 0, 255, 1, fi);
+  lgSlider('Brightness', 'brightness', 1, 200, 1, fi);
+  lgSlider('Radius', 'radius', 10, 80, 1, fi);
 }
+
+// ---- light gun state ----
+const LG_MAX_PLACED     = 32;
+const LG_PROJECTILE_SLOT = 223;
+const LG_FIRST_SLOT     = 224;
+const LG_MAX_CHARGE_MS  = 1500;
+const LG_MIN_SPEED      = 8;
+const LG_MAX_SPEED      = 60;
+const LG_FALL_GRAVITY   = 14;
+const LG_FADE_WINDOW    = 2;
+const LG_RAY_STEPS      = 256;
+const LG_RAY_MAX_DIST   = 200;
+
+const lgParams = {
+  mode: 'shoot', trajectory: 'arc',
+  float: true, drift: false,
+  lifespan: 15, r: 255, g: 180, b: 80,
+  brightness: 60, radius: 30,
+};
+const placedLights = [];
+const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
+let lgInFlight = null;
+let lgChargeStart = null;
 
 const crosshair = document.createElement('div');
 crosshair.className = 'walk-ui';
 crosshair.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;pointer-events:none;display:none';
 crosshair.innerHTML = '<svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/><line x1="3" y1="10" x2="17" y2="10" stroke="white" stroke-width="1.5" stroke-opacity="0.75"/></svg>';
 document.body.appendChild(crosshair);
+
+const lgChargeRing = document.createElement('div');
+lgChargeRing.className = 'walk-ui';
+lgChargeRing.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);border-radius:50%;border:1.5px solid rgba(255,255,255,0.7);pointer-events:none;box-sizing:border-box;display:none';
+document.body.appendChild(lgChargeRing);
+function lgUpdateChargeRing(ratio) {
+  if (ratio <= 0 || !fpsMode || lgParams.mode !== 'shoot') { lgChargeRing.style.display = 'none'; return; }
+  const size = Math.round(16 + ratio * 36);
+  const g = Math.round(255 * (1 - ratio) + 140 * ratio);
+  lgChargeRing.style.display = 'block';
+  lgChargeRing.style.width = size + 'px';
+  lgChargeRing.style.height = size + 'px';
+  lgChargeRing.style.borderColor = `rgba(255,${g},0,0.85)`;
+}
 
 const enterHint = document.createElement('div');
 enterHint.className = 'walk-ui';
@@ -2317,7 +2417,7 @@ document.body.appendChild(enterHint);
 const exitHint = document.createElement('div');
 exitHint.className = 'walk-ui';
 exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
-exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  R reset  \xb7  F/Esc orbit';
+exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  LMB shoot/place light  \xb7  R reset  \xb7  F/Esc orbit';
 document.body.appendChild(exitHint);
 
 environmentUi = createEnvironmentUi({ perfLog });
@@ -2400,6 +2500,78 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
 
+window.addEventListener('mousedown', e => {
+  if (!fpsMode || e.button !== 0 || !clusteredLightsRef) return;
+  if (lgParams.mode === 'place') lgPlaceAtCrosshair();
+  else lgChargeStart = performance.now();
+});
+window.addEventListener('mouseup', e => {
+  if (!fpsMode || e.button !== 0 || lgParams.mode !== 'shoot' || lgChargeStart === null) return;
+  const ratio = Math.min((performance.now() - lgChargeStart) / LG_MAX_CHARGE_MS, 1);
+  lgChargeStart = null;
+  lgUpdateChargeRing(0);
+  lgFireLight(ratio);
+});
+
+
+// ---- light gun helpers ----
+function lgRaycastTerrain() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const ox = camera.position.x, oy = camera.position.y, oz = camera.position.z;
+  for (let i = 1; i <= LG_RAY_STEPS; i++) {
+    const t = (i / LG_RAY_STEPS) * LG_RAY_MAX_DIST;
+    const x = ox + dir.x * t, y = oy + dir.y * t, z = oz + dir.z * t;
+    if (y <= terrainHeight(x, z)) return { x, y: terrainHeight(x, z), z, hit: true };
+  }
+  return { hit: false };
+}
+function lgFindFreeSlot() {
+  const idx = lgSlotFree.indexOf(true);
+  return idx === -1 ? -1 : LG_FIRST_SLOT + idx;
+}
+function lgAutoEnablePointLights() {
+  if (params.pointLights || !clusteredLightsRef) return;
+  params.pointLights = true;
+  if (pointLightsInput) pointLightsInput.checked = true;
+  clusteredLightsRef.setCount(256);
+}
+function lgMakeLightObj(slot, x, y, z, floating) {
+  lgSlotFree[slot - LG_FIRST_SLOT] = false;
+  return {
+    slot, freeIdx: slot - LG_FIRST_SLOT, x, y, z, vy: 0, grounded: floating,
+    lifespan: lgParams.lifespan, totalLife: lgParams.lifespan,
+    r: lgParams.r / 255, g: lgParams.g / 255, b: lgParams.b / 255,
+    brightness: lgParams.brightness, radius: lgParams.radius,
+    float: lgParams.float, drift: lgParams.drift,
+    driftPhase: Math.random() * Math.PI * 2,
+  };
+}
+function lgPlaceAtCrosshair() {
+  const hit = lgRaycastTerrain();
+  if (!hit.hit) return;
+  const slot = lgFindFreeSlot();
+  if (slot === -1) return;
+  lgAutoEnablePointLights();
+  placedLights.push(lgMakeLightObj(slot, hit.x, hit.y + (lgParams.float ? 1.5 : 0.2), hit.z, lgParams.float));
+}
+function lgFireLight(chargeRatio) {
+  lgAutoEnablePointLights();
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const speed = LG_MIN_SPEED + chargeRatio * (LG_MAX_SPEED - LG_MIN_SPEED);
+  lgInFlight = {
+    x: camera.position.x, y: camera.position.y, z: camera.position.z,
+    vx: dir.x * speed, vy: dir.y * speed, vz: dir.z * speed,
+    arc: lgParams.trajectory === 'arc',
+    r: lgParams.r / 255, g: lgParams.g / 255, b: lgParams.b / 255,
+    brightness: lgParams.brightness, radius: lgParams.radius,
+    float: lgParams.float, drift: lgParams.drift,
+    driftPhase: Math.random() * Math.PI * 2,
+    lifespan: lgParams.lifespan, totalLife: lgParams.lifespan,
+  };
+}
+
 function applyFPSControls(deltaTime) {
   camera.updateMatrixWorld();
   _fpsForward.setFromMatrixColumn(camera.matrixWorld, 0);
@@ -2477,6 +2649,67 @@ function updateFPSPlayer(deltaTime) {
   playerCollider.end.copy(playerCollider.start);
   playerCollider.end.y += capsuleH;
   camera.position.copy(playerCollider.end);
+}
+
+function lgUpdateLights(dt, t) {
+  if (!clusteredLightsRef) return;
+  if (lgInFlight) {
+    if (lgInFlight.arc) lgInFlight.vy -= LG_FALL_GRAVITY * dt;
+    lgInFlight.x += lgInFlight.vx * dt;
+    lgInFlight.y += lgInFlight.vy * dt;
+    lgInFlight.z += lgInFlight.vz * dt;
+    const outOfBounds = Math.abs(lgInFlight.x) > 260 || Math.abs(lgInFlight.z) > 260;
+    const th = terrainHeight(lgInFlight.x, lgInFlight.z);
+    if (lgInFlight.y <= th || outOfBounds) {
+      clusteredLightsRef.clearLight(LG_PROJECTILE_SLOT);
+      if (!outOfBounds) {
+        const slot = lgFindFreeSlot();
+        if (slot !== -1) {
+          const L = lgInFlight;
+          placedLights.push({
+            slot, freeIdx: slot - LG_FIRST_SLOT,
+            x: L.x, y: th + (L.float ? 1.5 : 0.2), z: L.z, vy: 0, grounded: L.float,
+            lifespan: L.lifespan, totalLife: L.totalLife,
+            r: L.r, g: L.g, b: L.b, brightness: L.brightness, radius: L.radius,
+            float: L.float, drift: L.drift, driftPhase: L.driftPhase,
+          });
+          lgSlotFree[slot - LG_FIRST_SLOT] = false;
+        }
+      }
+      lgInFlight = null;
+    } else {
+      clusteredLightsRef.setLightDirect(LG_PROJECTILE_SLOT, {
+        x: lgInFlight.x, y: lgInFlight.y, z: lgInFlight.z, radius: lgInFlight.radius,
+        r: lgInFlight.r, g: lgInFlight.g, b: lgInFlight.b, intensity: lgInFlight.brightness,
+      });
+    }
+  }
+  for (let i = placedLights.length - 1; i >= 0; i--) {
+    const L = placedLights[i];
+    if (!L.float && !L.grounded) {
+      L.vy -= LG_FALL_GRAVITY * dt;
+      L.y += L.vy * dt;
+      const th = terrainHeight(L.x, L.z);
+      if (L.y <= th) { L.y = th; L.vy = 0; L.grounded = true; }
+    }
+    let xOff = 0, zOff = 0;
+    if (L.float && L.drift) {
+      xOff = Math.sin(t * 0.3 + L.driftPhase) * 3;
+      zOff = Math.cos(t * 0.27 + L.driftPhase) * 3;
+    }
+    L.lifespan -= dt;
+    const fadeScale = L.lifespan < LG_FADE_WINDOW ? Math.max(0, L.lifespan / LG_FADE_WINDOW) : 1;
+    if (L.lifespan <= 0) {
+      clusteredLightsRef.clearLight(L.slot);
+      lgSlotFree[L.freeIdx] = true;
+      placedLights.splice(i, 1);
+      continue;
+    }
+    clusteredLightsRef.setLightDirect(L.slot, {
+      x: L.x + xOff, y: L.y, z: L.z + zOff, radius: L.radius,
+      r: L.r, g: L.g, b: L.b, intensity: L.brightness * fadeScale,
+    });
+  }
 }
 
 // ===================== render loop =====================
@@ -2564,6 +2797,10 @@ async function animate() {
   // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
   // written before this frame's draw (unawaited compute races the draw → terrain flicker).
   if (cdlodRef) await frameProfiler.timeAsync('cdlodGpu', () => cdlodRef.update());
+  // Light gun: update physics/fade/expiry, flush to GPU buffer before cull pass
+  lgUpdateLights(rawDt, now / 1000);
+  if (lgChargeStart !== null) lgUpdateChargeRing(Math.min((performance.now() - lgChargeStart) / LG_MAX_CHARGE_MS, 1));
+  else lgUpdateChargeRing(0);
   // SP4a: froxel light-cull compute, awaited before draw (like grass/cdlod).
   if (clusteredLightsRef) await frameProfiler.timeAsync('lightsGpu', () => clusteredLightsRef.update(now / 1000));
   // SP4b: GPU particle sim, awaited before draw. Disabled fields early-return inside update().
