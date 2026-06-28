@@ -67,7 +67,7 @@ export function createForestPalette({ createTree, params, masterSeed, variantsPe
         size: leafOpts.size * sizeMult,
         shadowFraction: 0,
       };
-      gen.regenerate({ ...sp, seed, leaves: coarseLeafOpts, bark: barkOpts });
+      gen.regenerateLeaves(coarseLeafOpts);
       const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
 
       variants.push({
