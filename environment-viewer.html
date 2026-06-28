@@ -1642,7 +1642,8 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => rig.setSunIntensity(rigP.sunIntensity),         rigP);
   slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => rig.setAmbientIntensity(rigP.ambientIntensity), rigP);
   params.pointLights = false;
-  const pointLightsInput = toggle('pointLights', 'Point lights', () => {
+  lgPointLightsCheckbox = toggle('pointLights', 'Point lights', () => {
+    lgPointLightsOn = params.pointLights;
     if (clusteredLightsRef) clusteredLightsRef.setCount(params.pointLights ? 256 : 0);
   });
 
@@ -2242,6 +2243,8 @@ const placedLights = [];
 const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
 let lgInFlight = null;
 let lgChargeStart = null;
+let lgPointLightsOn = false;       // module-level mirror — params is scoped to the UI callback
+let lgPointLightsCheckbox = null;
 
 // ---- FPS debug panel ----
 {
@@ -2533,9 +2536,9 @@ function lgFindFreeSlot() {
   return idx === -1 ? -1 : LG_FIRST_SLOT + idx;
 }
 function lgAutoEnablePointLights() {
-  if (params.pointLights || !clusteredLightsRef) return;
-  params.pointLights = true;
-  if (pointLightsInput) pointLightsInput.checked = true;
+  if (lgPointLightsOn || !clusteredLightsRef) return;
+  lgPointLightsOn = true;
+  if (lgPointLightsCheckbox) lgPointLightsCheckbox.checked = true;
   clusteredLightsRef.setCount(256);
 }
 function lgMakeLightObj(slot, x, y, z, floating) {
