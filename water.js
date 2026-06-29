@@ -38,7 +38,7 @@ import {
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
-export const WATER_VERSION = 'cw5';
+export const WATER_VERSION = 'cw6';
 
 const IOR_AIR = 1.0, IOR_WATER = 1.333, ETA = IOR_AIR / IOR_WATER;
 
@@ -290,7 +290,7 @@ function sampleCachedHeight(o, cache, cellSize, x, z) {
 }
 
 function createRingGeometryJob(o, desc, heightCache) {
-  const { snapX, snapZ, innerHalf, outerHalf, cellSize, extentX, extentZ } = desc;
+  const { snapX, snapZ, innerSnapX, innerSnapZ, innerHalf, outerHalf, cellSize, extentX, extentZ } = desc;
   const xMin = snapX - outerHalf;
   const zMin = snapZ - outerHalf;
   const nX = Math.max(1, Math.round((outerHalf * 2) / cellSize));
@@ -334,7 +334,7 @@ function createRingGeometryJob(o, desc, heightCache) {
         for (let i = 0; i < nX; i++) {
           const cx = xMin + (i + 0.5) * cellSize;
           const cz = zMin + (indexRow + 0.5) * cellSize;
-          if (innerHalf > 0 && Math.abs(cx - snapX) <= innerHalf && Math.abs(cz - snapZ) <= innerHalf) continue;
+          if (innerHalf > 0 && Math.abs(cx - innerSnapX) <= innerHalf && Math.abs(cz - innerSnapZ) <= innerHalf) continue;
           if (extentX !== undefined && (cx < -extentX * 0.5 || cx > extentX * 0.5)) continue;
           if (extentZ !== undefined && (cz < -extentZ * 0.5 || cz > extentZ * 0.5)) continue;
           const a = indexRow * nx + i, b = a + 1, c = a + nx, d = c + 1;
@@ -692,13 +692,36 @@ export function createWaterSystem(options = {}) {
     }
   }
 
+  function getFallbackSnap(n) {
+    const step = lodConfig.snaps[n];
+    return {
+      snapX: Math.round(lastCamX / step) * step,
+      snapZ: Math.round(lastCamZ / step) * step,
+    };
+  }
+
+  function getRingSnap(n) {
+    return pendingSnaps[n]
+      ?? (waterRings[n] ? { snapX: waterRings[n].snapX, snapZ: waterRings[n].snapZ } : null)
+      ?? getFallbackSnap(n);
+  }
+
   function getRingDescriptor(n, snapX, snapZ) {
     const innerHalf = n === 0 ? 0 : (n === 1 ? lodConfig.r0 : lodConfig.r1);
+    const innerSnap = n === 0 ? { snapX, snapZ } : getRingSnap(n - 1);
     const outerExt = o.extentX !== undefined
       ? Math.max(o.extentX, o.extentZ ?? o.extentX) * 0.5 + lodConfig.cells[2]
       : o.size * 0.5;
     const outerHalf = n === 0 ? lodConfig.r0 : (n === 1 ? lodConfig.r1 : outerExt);
-    return { snapX, snapZ, innerHalf, outerHalf, cellSize: lodConfig.cells[n], extentX: o.extentX, extentZ: o.extentZ };
+    return {
+      snapX, snapZ,
+      innerSnapX: innerSnap.snapX,
+      innerSnapZ: innerSnap.snapZ,
+      innerHalf, outerHalf,
+      cellSize: lodConfig.cells[n],
+      extentX: o.extentX,
+      extentZ: o.extentZ,
+    };
   }
 
   function queueGeometryDispose(geometry) {
@@ -751,12 +774,17 @@ export function createWaterSystem(options = {}) {
       causticGroup.add(causticMesh);
       nextRing = { mesh, causticMesh, geometry, snapX: job.desc.snapX, snapZ: job.desc.snapZ };
     }
+    const snapChanged = !oldRing || oldRing.snapX !== job.desc.snapX || oldRing.snapZ !== job.desc.snapZ;
     waterRings[n] = nextRing;
     removeRingMeshes(oldRing, true);
     ringJobs[n] = null;
     ringDirty[n] = false;
     pendingSnaps[n] = null;
     stats.lastBuildMs = job.elapsedMs;
+    if (n < 2 && snapChanged) {
+      const outerSnap = getRingSnap(n + 1);
+      markRingDirty(n + 1, outerSnap.snapX, outerSnap.snapZ);
+    }
     updateCausticProjection();
   }
 
@@ -794,6 +822,7 @@ export function createWaterSystem(options = {}) {
     for (let pass = 0; pass < 3 && nowMs() < deadline; pass++) {
       for (let n = 0; n < 3 && nowMs() < deadline; n++) {
         if (!ringDirty[n] || !pendingSnaps[n]) continue;
+        if (n > 0 && (ringDirty[n - 1] || ringJobs[n - 1] || !waterRings[n - 1])) continue;
         if (!ringJobs[n]) startRingJob(n, pendingSnaps[n].snapX, pendingSnaps[n].snapZ);
         const job = ringJobs[n];
         if (!job.step(deadline)) continue;
