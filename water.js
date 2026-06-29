@@ -38,7 +38,7 @@ import {
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
-export const WATER_VERSION = 'cw4';
+export const WATER_VERSION = 'cw5';
 
 const IOR_AIR = 1.0, IOR_WATER = 1.333, ETA = IOR_AIR / IOR_WATER;
 
@@ -60,6 +60,14 @@ const DEFAULTS = {
   causticRes: 1024,
   buildBudgetMs: 1.5,
   maxBuildsPerFrame: 1,
+  lodR0: 50,
+  lodR1: 150,
+  cellS0: 1,
+  cellS1: 4,
+  cellS2: 16,
+  extentX: undefined,
+  extentZ: undefined,
+  deferredDisposeFrames: 4,
 };
 
 function merge(base, over) {
@@ -258,6 +266,108 @@ function getWorldProjection(bounds) {
   };
 }
 
+function nowMs() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function makeHeightCache() {
+  return { map: new Map(), hits: 0, misses: 0 };
+}
+
+function sampleCachedHeight(o, cache, cellSize, x, z) {
+  const qx = Math.round(x / cellSize);
+  const qz = Math.round(z / cellSize);
+  const key = `${qx},${qz}`;
+  const cached = cache.map.get(key);
+  if (cached !== undefined) {
+    cache.hits++;
+    return cached;
+  }
+  const h = (o.heightFn || (() => 0))(x, z);
+  cache.map.set(key, h);
+  cache.misses++;
+  return h;
+}
+
+function createRingGeometryJob(o, desc, heightCache) {
+  const { snapX, snapZ, innerHalf, outerHalf, cellSize, extentX, extentZ } = desc;
+  const xMin = snapX - outerHalf;
+  const zMin = snapZ - outerHalf;
+  const nX = Math.max(1, Math.round((outerHalf * 2) / cellSize));
+  const nZ = Math.max(1, Math.round((outerHalf * 2) / cellSize));
+  const nx = nX + 1, nz = nZ + 1;
+  const level = o.waterLevel;
+  const positions = new Float32Array(nx * nz * 3);
+  const depths = new Float32Array(nx * nz);
+  const bed = new Float32Array(nx * nz);
+  const indices = [];
+  let minBed = Infinity;
+  let vertexRow = 0;
+  let indexRow = 0;
+  let phase = 'vertices';
+  const startedAt = nowMs();
+
+  function step(deadlineMs) {
+    const hasBudget = () => nowMs() < deadlineMs;
+    if (phase === 'vertices') {
+      do {
+        for (let i = 0; i < nx; i++) {
+          const idx = vertexRow * nx + i;
+          const x = xMin + i * cellSize;
+          const z = zMin + vertexRow * cellSize;
+          const b = sampleCachedHeight(o, heightCache, cellSize, x, z);
+          minBed = Math.min(minBed, b);
+          bed[idx] = b;
+          positions[idx * 3] = x;
+          positions[idx * 3 + 1] = 0;
+          positions[idx * 3 + 2] = z;
+          depths[idx] = Math.max(0, level - b);
+        }
+        vertexRow++;
+      } while (vertexRow < nz && hasBudget());
+      if (vertexRow < nz) return false;
+      phase = 'indices';
+    }
+
+    if (phase === 'indices') {
+      do {
+        for (let i = 0; i < nX; i++) {
+          const cx = xMin + (i + 0.5) * cellSize;
+          const cz = zMin + (indexRow + 0.5) * cellSize;
+          if (innerHalf > 0 && Math.abs(cx - snapX) <= innerHalf && Math.abs(cz - snapZ) <= innerHalf) continue;
+          if (extentX !== undefined && (cx < -extentX * 0.5 || cx > extentX * 0.5)) continue;
+          if (extentZ !== undefined && (cz < -extentZ * 0.5 || cz > extentZ * 0.5)) continue;
+          const a = indexRow * nx + i, b = a + 1, c = a + nx, d = c + 1;
+          if (bed[a] >= level && bed[b] >= level && bed[c] >= level && bed[d] >= level) continue;
+          indices.push(a, c, b, b, c, d);
+        }
+        indexRow++;
+      } while (indexRow < nZ && hasBudget());
+      if (indexRow < nZ) return false;
+      phase = 'done';
+    }
+    return true;
+  }
+
+  function toGeometry() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
+    g.setIndex(indices);
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(snapX, 0, snapZ), Math.SQRT2 * outerHalf);
+    g.userData.minBed = minBed;
+    return g;
+  }
+
+  return {
+    desc,
+    get done() { return phase === 'done'; },
+    get elapsedMs() { return nowMs() - startedAt; },
+    step,
+    toGeometry,
+  };
+}
+
 // I.refract(N) per GLSL semantics, for the CPU-side flat refracted light
 function refractVec(I, N, eta, out) {
   const dotNI = N.dot(I);
@@ -447,11 +557,28 @@ export function createWaterSystem(options = {}) {
   causticGroup.position.y = o.waterLevel;
   const causticScene = new THREE.Scene();
   causticScene.add(causticGroup);
-  const waterChunks = new Map();
-  const stats = { chunks: 0, candidates: 0, pending: 0, dry: 0, minBed: Infinity, waterLevel: o.waterLevel };
-  let waterBuildQueue = [];
-  let waterBuildQueueIndex = 0;
-  let waterBuildKeys = new Set();
+  const lodConfig = {
+    r0: o.lodR0 ?? 50,
+    r1: o.lodR1 ?? 150,
+    cells: [o.cellS0 ?? 1, o.cellS1 ?? 4, o.cellS2 ?? 16],
+  };
+  lodConfig.snaps = lodConfig.cells.map(c => c * 4);
+
+  const waterRings = [null, null, null];
+  const ringDirty = [true, true, true];
+  const pendingSnaps = [null, null, null];
+  const ringJobs = [null, null, null];
+  const heightCaches = lodConfig.cells.map(() => makeHeightCache());
+  const deferredDisposals = [];
+  const stats = {
+    chunks: 0, candidates: 3, pending: 3, dry: 0, minBed: Infinity, waterLevel: o.waterLevel,
+    ring0Tris: 0, ring1Tris: 0, ring2Tris: 0,
+    ring0Verts: 0, ring1Verts: 0, ring2Verts: 0,
+    cacheHits: 0, cacheMisses: 0, lastBuildMs: 0, disposalsPending: 0,
+  };
+  let lastCamX = camera?.position?.x ?? 0;
+  let lastCamZ = camera?.position?.z ?? 0;
+  let terrainCacheSignature = `${o.size}:${o.extentX ?? ''}:${o.extentZ ?? ''}`;
 
   // ---------- render targets ----------
   // reflectionTarget  → replaced by tsl_reflector (ReflectorNode manages its own RT).
@@ -557,115 +684,157 @@ export function createWaterSystem(options = {}) {
   // helper vectors/matrices are superseded by tsl_reflector (ReflectorNode) which
   // handles mirror-camera, oblique-clip, and RT management internally.
 
-  function disposeWaterChunk(chunk) {
-    surface.remove(chunk.mesh);
-    causticGroup.remove(chunk.causticMesh);
-    chunk.geometry.dispose();
+  function clearHeightCaches() {
+    for (const cache of heightCaches) {
+      cache.map.clear();
+      cache.hits = 0;
+      cache.misses = 0;
+    }
   }
 
-  function addWaterChunk(bounds) {
-    const geometry = buildGeometry(o, bounds);
-    stats.minBed = Math.min(stats.minBed, geometry.userData.minBed ?? Infinity);
+  function getRingDescriptor(n, snapX, snapZ) {
+    const innerHalf = n === 0 ? 0 : (n === 1 ? lodConfig.r0 : lodConfig.r1);
+    const outerExt = o.extentX !== undefined
+      ? Math.max(o.extentX, o.extentZ ?? o.extentX) * 0.5 + lodConfig.cells[2]
+      : o.size * 0.5;
+    const outerHalf = n === 0 ? lodConfig.r0 : (n === 1 ? lodConfig.r1 : outerExt);
+    return { snapX, snapZ, innerHalf, outerHalf, cellSize: lodConfig.cells[n], extentX: o.extentX, extentZ: o.extentZ };
+  }
+
+  function queueGeometryDispose(geometry) {
+    if (!geometry) return;
+    deferredDisposals.push({ geometry, frames: Math.max(1, Math.floor(o.deferredDisposeFrames ?? 4)) });
+  }
+
+  function drainDeferredDisposals(force = false) {
+    for (let i = deferredDisposals.length - 1; i >= 0; i--) {
+      const item = deferredDisposals[i];
+      item.frames--;
+      if (force || item.frames <= 0) {
+        item.geometry.dispose();
+        deferredDisposals.splice(i, 1);
+      }
+    }
+    stats.disposalsPending = deferredDisposals.length;
+  }
+
+  function removeRingMeshes(ring, defer = true) {
+    if (!ring) return;
+    if (ring.mesh) surface.remove(ring.mesh);
+    if (ring.causticMesh) causticGroup.remove(ring.causticMesh);
+    if (ring.geometry) {
+      if (defer) queueGeometryDispose(ring.geometry);
+      else ring.geometry.dispose();
+    }
+  }
+
+  function startRingJob(n, snapX, snapZ) {
+    const desc = getRingDescriptor(n, snapX, snapZ);
+    ringJobs[n] = createRingGeometryJob(o, desc, heightCaches[n]);
+  }
+
+  function commitRingJob(n, job) {
+    const oldRing = waterRings[n];
+    const geometry = job.toGeometry();
+    let nextRing;
     if (!geometry.index || geometry.index.count === 0) {
       geometry.dispose();
-      return false;
+      nextRing = { mesh: null, causticMesh: null, geometry: null, snapX: job.desc.snapX, snapZ: job.desc.snapZ };
+    } else {
+      const mesh = new THREE.Mesh(geometry, surfaceMat);
+      mesh.name = `WaterRing${n}`;
+      mesh.renderOrder = 1;
+      const causticMesh = new THREE.Mesh(geometry, causticMat);
+      causticMesh.name = `WaterCausticRing${n}`;
+      causticMesh.frustumCulled = false;
+      surface.add(mesh);
+      causticGroup.add(causticMesh);
+      nextRing = { mesh, causticMesh, geometry, snapX: job.desc.snapX, snapZ: job.desc.snapZ };
     }
-    const mesh = new THREE.Mesh(geometry, surfaceMat);
-    mesh.name = `WaterChunk:${bounds.key}`;
-    mesh.renderOrder = 1;
-    const causticMesh = new THREE.Mesh(geometry, causticMat);
-    causticMesh.name = `WaterCaustic:${bounds.key}`;
-    causticMesh.frustumCulled = false;
-    waterChunks.set(bounds.key, { mesh, causticMesh, geometry });
-    surface.add(mesh);
-    causticGroup.add(causticMesh);
-    return true;
+    waterRings[n] = nextRing;
+    removeRingMeshes(oldRing, true);
+    ringJobs[n] = null;
+    ringDirty[n] = false;
+    pendingSnaps[n] = null;
+    stats.lastBuildMs = job.elapsedMs;
+    updateCausticProjection();
   }
 
-  function syncWaterChunks() {
-    if (waterBuildQueueIndex > 0) {
-      waterBuildQueue = waterBuildQueue.slice(waterBuildQueueIndex);
-      waterBuildQueueIndex = 0;
-    }
-    const bounds = getChunkBounds(o);
-    const activeKeys = new Set();
-    stats.candidates = bounds.length;
-    stats.dry = 0;
-    stats.minBed = Infinity;
-    stats.waterLevel = o.waterLevel;
-    for (const b of bounds) {
-      activeKeys.add(b.key);
-      if (waterChunks.has(b.key)) {
-        stats.minBed = Math.min(stats.minBed, waterChunks.get(b.key).geometry.userData.minBed ?? Infinity);
-        continue;
-      }
-      if (!waterBuildKeys.has(b.key)) {
-        waterBuildQueue.push(b);
-        waterBuildKeys.add(b.key);
-      }
-    }
-    for (const [key, chunk] of waterChunks) {
-      if (!activeKeys.has(key)) {
-        disposeWaterChunk(chunk);
-        waterChunks.delete(key);
-      }
-    }
-    waterBuildQueue = waterBuildQueue.filter((b) => {
-      if (activeKeys.has(b.key) && !waterChunks.has(b.key)) return true;
-      waterBuildKeys.delete(b.key);
-      return false;
-    });
-    const projection = getWorldProjection(bounds);
-    updateCausticCamera(projection.centerX, projection.centerZ, projection.size);
-    tsl_c_worldSizeG.value = projection.size;
-    tsl_c_worldCenterG.value.set(projection.centerX, projection.centerZ);
-    stats.chunks = waterChunks.size;
-    stats.pending = Math.max(0, waterBuildQueue.length - waterBuildQueueIndex);
-    stats.dry = Math.max(0, stats.candidates - stats.chunks - stats.pending);
+  function markRingDirty(n, snapX, snapZ) {
+    pendingSnaps[n] = { snapX, snapZ };
+    ringDirty[n] = true;
+    const job = ringJobs[n];
+    if (job && (job.desc.snapX !== snapX || job.desc.snapZ !== snapZ)) ringJobs[n] = null;
   }
 
-  function processWaterBuildQueue() {
-    if (waterBuildQueueIndex >= waterBuildQueue.length) {
-      waterBuildQueue = [];
-      waterBuildQueueIndex = 0;
-      return;
+  function markAllRingsDirty() {
+    for (let n = 0; n < 3; n++) {
+      const step = lodConfig.snaps[n];
+      markRingDirty(n, Math.round(lastCamX / step) * step, Math.round(lastCamZ / step) * step);
     }
-    const start = performance.now();
-    const maxBuilds = Math.max(1, Math.floor(o.maxBuildsPerFrame));
-    let built = 0;
-    while (waterBuildQueueIndex < waterBuildQueue.length && built < maxBuilds) {
-      if (built > 0 && performance.now() - start >= o.buildBudgetMs) break;
-      const bounds = waterBuildQueue[waterBuildQueueIndex++];
-      waterBuildKeys.delete(bounds.key);
-      if (!bounds || waterChunks.has(bounds.key)) continue;
-      addWaterChunk(bounds);
-      built++;
-    }
-    if (waterBuildQueueIndex >= waterBuildQueue.length) {
-      waterBuildQueue = [];
-      waterBuildQueueIndex = 0;
-    }
-    stats.chunks = waterChunks.size;
-    stats.pending = Math.max(0, waterBuildQueue.length - waterBuildQueueIndex);
-    stats.dry = Math.max(0, stats.candidates - stats.chunks - stats.pending);
   }
 
-  syncWaterChunks();
+  function checkSnaps(camX, camZ) {
+    lastCamX = camX;
+    lastCamZ = camZ;
+    for (let n = 0; n < 3; n++) {
+      const step = lodConfig.snaps[n];
+      const sx = Math.round(camX / step) * step;
+      const sz = Math.round(camZ / step) * step;
+      const r = waterRings[n];
+      if (!r || r.snapX !== sx || r.snapZ !== sz) markRingDirty(n, sx, sz);
+    }
+  }
+
+  function processRingQueue() {
+    const budget = Math.max(0.25, Number(o.buildBudgetMs) || 1.5);
+    const deadline = nowMs() + budget;
+    const maxCommits = Math.max(1, Math.floor(o.maxBuildsPerFrame));
+    let commits = 0;
+    for (let pass = 0; pass < 3 && nowMs() < deadline; pass++) {
+      for (let n = 0; n < 3 && nowMs() < deadline; n++) {
+        if (!ringDirty[n] || !pendingSnaps[n]) continue;
+        if (!ringJobs[n]) startRingJob(n, pendingSnaps[n].snapX, pendingSnaps[n].snapZ);
+        const job = ringJobs[n];
+        if (!job.step(deadline)) continue;
+        if (commits >= maxCommits) return;
+        commitRingJob(n, job);
+        commits++;
+      }
+    }
+  }
+
+  function updateCausticProjection() {
+    if (o.extentX !== undefined) {
+      const sz = Math.max(o.extentX, o.extentZ ?? o.extentX);
+      updateCausticCamera(0, 0, sz);
+      tsl_c_worldSizeG.value = sz;
+      tsl_c_worldCenterG.value.set(0, 0);
+    } else {
+      updateCausticCamera(lastCamX, lastCamZ, o.size);
+      tsl_c_worldSizeG.value = o.size;
+      tsl_c_worldCenterG.value.set(lastCamX, lastCamZ);
+    }
+  }
+
+  markAllRingsDirty();
+  updateCausticProjection();
 
   // ---------- per-frame update ----------
   // Reflection  : tsl_reflector (ReflectorNode) fires its own renderer.render() inside
-  //               updateBefore() — triggered automatically by the node system when
+  //               updateBefore() ? triggered automatically by the node system when
   //               renderer.render(scene, camera) is called by the host loop.
   // Refraction  : viewportSharedTexture copies the framebuffer inside updateBefore()
-  //               via renderer.copyFramebufferToTexture() — no extra pass needed.
+  //               via renderer.copyFramebufferToTexture() ? no extra pass needed.
   // Caustics    : CausticTextureNode.updateBefore() renders causticScene to causticsTarget
-  //               during the live render loop (issues/001 safe — same pattern as reflector).
+  //               during the live render loop (issues/001 safe ? same pattern as reflector).
   let reflectEvery = 1;  // retained for API; no rate effect with ReflectorNode (renders per-frame)
   function update(time) {
-    processWaterBuildQueue();
     tsl_uTime.value = time;
     camera.updateMatrixWorld();
-    // Caustic render: handled by CausticTextureNode.updateBefore() inside renderer.render().
+    checkSnaps(camera.position.x, camera.position.z);
+    processRingQueue();
+    drainDeferredDisposals(false);
   }
   function setReflectRate(everyNFrames) {
     // API preserved. With ReflectorNode the reflector renders every frame automatically;
@@ -681,32 +850,33 @@ export function createWaterSystem(options = {}) {
   }
 
   function regenerate(opts) {
-    let rebuildExisting = false;
+    let terrainChanged = false;
+    let ringsChanged = false;
     if (opts) {
-      if (opts.size !== undefined) o.size = opts.size;
-      if (opts.waterLevel !== undefined && opts.waterLevel !== o.waterLevel) {
-        o.waterLevel = opts.waterLevel;
-        rebuildExisting = true;
-      }
-      if (opts.heightFn !== undefined && opts.heightFn !== o.heightFn) {
-        o.heightFn = opts.heightFn;
-        rebuildExisting = true;
-      }
-      if (opts.chunks !== undefined) o.chunks = opts.chunks;
+      if (opts.size !== undefined && opts.size !== o.size) { o.size = opts.size; ringsChanged = true; }
+      if (opts.waterLevel !== undefined && opts.waterLevel !== o.waterLevel) { o.waterLevel = opts.waterLevel; ringsChanged = true; }
+      if (opts.heightFn !== undefined && opts.heightFn !== o.heightFn) { o.heightFn = opts.heightFn; terrainChanged = true; ringsChanged = true; }
+      if (opts.extentX !== undefined && opts.extentX !== o.extentX) { o.extentX = opts.extentX; terrainChanged = true; ringsChanged = true; }
+      if (opts.extentZ !== undefined && opts.extentZ !== o.extentZ) { o.extentZ = opts.extentZ; terrainChanged = true; ringsChanged = true; }
+      if (opts.lodR0 !== undefined && opts.lodR0 !== lodConfig.r0) { lodConfig.r0 = opts.lodR0; ringsChanged = true; }
+      if (opts.lodR1 !== undefined && opts.lodR1 !== lodConfig.r1) { lodConfig.r1 = opts.lodR1; ringsChanged = true; }
     }
-    if (rebuildExisting) {
-      for (const chunk of waterChunks.values()) disposeWaterChunk(chunk);
-      waterChunks.clear();
-      waterBuildQueue = [];
-      waterBuildQueueIndex = 0;
-      waterBuildKeys.clear();
+    const nextTerrainSignature = `${o.size}:${o.extentX ?? ''}:${o.extentZ ?? ''}`;
+    if (nextTerrainSignature !== terrainCacheSignature) {
+      terrainCacheSignature = nextTerrainSignature;
+      terrainChanged = true;
     }
-    syncWaterChunks();
+    if (terrainChanged) clearHeightCaches();
+    if (ringsChanged || terrainChanged) {
+      ringJobs.fill(null);
+      markAllRingsDirty();
+    }
     surface.position.y = o.waterLevel;
     causticGroup.position.y = o.waterLevel;
     tsl_cBedRef.value = o.waterLevel - o.causticBedDepth;
     tsl_c_bedRefG.value = o.waterLevel - o.causticBedDepth;
     tsl_c_waterLevelG.value = o.waterLevel;
+    updateCausticProjection();
   }
 
   function setWaves(strength) {
@@ -722,41 +892,67 @@ export function createWaterSystem(options = {}) {
     tsl_c_refractedFlat.value.copy(refractedFlat); // caustic ground projection
   }
 
+  function setLodDistances(r0, r1) {
+    const nextR0 = Math.max(1, Number(r0) || lodConfig.r0);
+    const nextR1 = Math.max(nextR0 + lodConfig.cells[1], Number(r1) || lodConfig.r1);
+    if (nextR0 === lodConfig.r0 && nextR1 === lodConfig.r1) return;
+    lodConfig.r0 = nextR0;
+    lodConfig.r1 = nextR1;
+    ringJobs.fill(null);
+    markAllRingsDirty();
+  }
+
   function dispose() {
-    for (const chunk of waterChunks.values()) disposeWaterChunk(chunk);
-    waterChunks.clear();
-    // surfaceMat.dispose() also cleans up tsl_reflector's internal RT (via node disposal).
+    for (const ring of waterRings) removeRingMeshes(ring, false);
+    waterRings.fill(null);
+    ringJobs.fill(null);
+    deferredDisposals.length = 0;
     surfaceMat.dispose(); causticMat.dispose(); causticsTarget.dispose();
   }
 
-  function getChunkCount() { return waterChunks.size; }
+  function getChunkCount() { return waterRings.filter(r => r?.mesh).length; }
   function getStats() {
-    let waterTriangles = 0;
-    let waterVertices = 0;
-    for (const chunk of waterChunks.values()) {
-      const g = chunk.geometry;
+    const ringTris = [0, 0, 0];
+    const ringVerts = [0, 0, 0];
+    let minBed = Infinity;
+    for (let n = 0; n < 3; n++) {
+      const g = waterRings[n]?.geometry;
+      if (!g) continue;
       const position = g.getAttribute?.('position');
       const index = g.getIndex?.();
-      waterVertices += position?.count || 0;
-      waterTriangles += index ? Math.floor(index.count / 3) : 0;
+      ringVerts[n] = position?.count || 0;
+      ringTris[n] = index ? Math.floor(index.count / 3) : 0;
+      minBed = Math.min(minBed, g.userData.minBed ?? Infinity);
     }
+    const pending = ringDirty.reduce((sum, dirty, n) => sum + ((dirty || ringJobs[n]) ? 1 : 0), 0);
+    const meshCount = waterRings.filter(r => r?.mesh).length;
+    const cacheHits = heightCaches.reduce((sum, cache) => sum + cache.hits, 0);
+    const cacheMisses = heightCaches.reduce((sum, cache) => sum + cache.misses, 0);
     return {
       ...stats,
-      chunks: waterChunks.size,
-      pending: Math.max(0, waterBuildQueue.length - waterBuildQueueIndex),
-      dry: Math.max(0, stats.candidates - waterChunks.size - Math.max(0, waterBuildQueue.length - waterBuildQueueIndex)),
-      waterMeshes: waterChunks.size,
-      causticMeshes: waterChunks.size,
-      waterDraws: waterChunks.size,
-      causticDraws: waterChunks.size,
-      waterTriangles,
-      causticTriangles: waterTriangles,
-      waterVertices,
+      chunks: meshCount,
+      candidates: 3,
+      pending,
+      dry: 0,
+      waterMeshes: meshCount,
+      causticMeshes: meshCount,
+      waterDraws: meshCount,
+      causticDraws: meshCount,
+      ring0Tris: ringTris[0], ring1Tris: ringTris[1], ring2Tris: ringTris[2],
+      ring0Verts: ringVerts[0], ring1Verts: ringVerts[1], ring2Verts: ringVerts[2],
+      waterTriangles: ringTris[0] + ringTris[1] + ringTris[2],
+      causticTriangles: ringTris[0] + ringTris[1] + ringTris[2],
+      waterVertices: ringVerts[0] + ringVerts[1] + ringVerts[2],
+      minBed,
+      waterLevel: o.waterLevel,
+      cacheHits,
+      cacheMisses,
+      disposalsPending: deferredDisposals.length,
       version: WATER_VERSION,
     };
   }
 
-  return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectRate, setLightDir, getChunkCount, getStats, dispose };
+  return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectRate, setLightDir, setLodDistances, getChunkCount, getStats, dispose };
 }
 
 export default createWaterSystem;
