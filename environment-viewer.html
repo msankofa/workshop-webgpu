@@ -717,7 +717,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
     treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
     leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural', mapGrassRadiusChunks: 2,
-    treeLodR0: 60, treeLodR1: 120, treeLodR2: 220,
+    treeLodR0: 258, treeLodR1: 400, treeLodR2: 583,
     coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5,
     billboardMode: 'cross',
   };
@@ -1928,11 +1928,11 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   else import('./grass-compute.js').then(({ createComputeGrass }) => {
     Object.assign(params, {
       grassDensity: 8.0,
-      grassRadius: 600,
-      grassCullStart: loadedMap ? 450 : 480,
-      grassMaxBlades: 900000,
+      grassRadius: 344,
+      grassCullStart: 228,
+      grassMaxBlades: 2000000,
       grassBladeHeight: 1.0,
-      grassBladeWidth: 1.0,
+      grassBladeWidth: 4.0,
       grassVerticalOffset: 0.0,
       wind: 1.0,
     });
