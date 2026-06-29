@@ -571,6 +571,8 @@ updateDrawDistance();
 
 // Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
 let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null;
+// Promises resolved when each async module finishes its initial setup. Awaited before dismiss().
+let _grassPromise = Promise.resolve(), _waterPromise = Promise.resolve(), _cloudsPromise = Promise.resolve(), _skyPromise = Promise.resolve();
 let terrainDecorationsDirty = false;
 let terrainDecorationsRebuildAll = false;
 let lastWaterChunkSignature = '';
@@ -710,7 +712,7 @@ function syncWaterDebug() {
 
 // Trees live in a separate module. Load it dynamically so a load failure
 // (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
-Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
+const _forestPromise = Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
   const params = {
     count: loadedMap ? 500 : 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
@@ -1776,7 +1778,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   }
 
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
-  if (GRASS_MODE === 'cpu') import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
+  if (GRASS_MODE === 'cpu') _grassPromise = import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
     function makeChunkGrassManager() {
       const chunks = new Map();
@@ -1925,7 +1927,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
   }).catch(() => { /* grass is optional */ });
-  else import('./grass-compute.js').then(({ createComputeGrass }) => {
+  else _grassPromise = import('./grass-compute.js').then(({ createComputeGrass }) => {
     Object.assign(params, {
       grassDensity: 8.0,
       grassRadius: 344,
@@ -1975,7 +1977,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  import('./water.js?v=sp4a-emissive').then(({ createWaterSystem }) => {
+  _waterPromise = import('./water.js?v=sp4a-emissive').then(({ createWaterSystem }) => {
     Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1 });
     waterRef = createWaterSystem({
       renderer, scene, camera, ground,
@@ -1993,7 +1995,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
 
   // ---- clouds (separate module; optional, independent of terrain). Lays a big
   // noise-driven quad flat overhead; degrades to no clouds if the module is missing.
-  import('./clouds.js').then(({ Clouds }) => {
+  _cloudsPromise = import('./clouds.js').then(({ Clouds }) => {
     Object.assign(params, {
       cloudHeight: 120, cloudExtent: 2000,
       cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
@@ -2065,7 +2067,7 @@ Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{
     milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
     bodies:   !['nobodies', 'domeonly'].includes(SKY_MODE),
   };
-  import('./sky.js?v=sp6d').then(({ createSky }) => {
+  _skyPromise = import('./sky.js?v=sp6d').then(({ createSky }) => {
     skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts: skyParts });
     scene.add(skyRef.group);
     applyCelestialLight();
@@ -2755,6 +2757,10 @@ async function animate() {
   perfLog.maybeSample(performance.now());
   } finally { _frameBusy = false; }
 }
+setStatus('Loading world systems…');
+await nextPaint();
+await _forestPromise;
+await Promise.all([_grassPromise, _waterPromise, _cloudsPromise, _skyPromise]);
 dismiss();
 renderer.setAnimationLoop(animate);
 </script>
