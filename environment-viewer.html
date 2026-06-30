@@ -2624,23 +2624,20 @@ function lgUpdateLights(dt, t) {
     lgInFlight.x += lgInFlight.vx * dt;
     lgInFlight.y += lgInFlight.vy * dt;
     lgInFlight.z += lgInFlight.vz * dt;
-    const outOfBounds = Math.abs(lgInFlight.x) > 260 || Math.abs(lgInFlight.z) > 260;
     const th = terrainHeight(lgInFlight.x, lgInFlight.z);
-    if (lgInFlight.y <= th || outOfBounds) {
+    if (lgInFlight.y <= th) {
       clusteredLightsRef.clearLight(LG_PROJECTILE_SLOT);
-      if (!outOfBounds) {
-        const slot = lgFindFreeSlot();
-        if (slot !== -1) {
-          const L = lgInFlight;
-          placedLights.push({
-            slot, freeIdx: slot - LG_FIRST_SLOT,
-            x: L.x, y: th + (L.float ? 1.5 : 0.2), z: L.z, vy: 0, grounded: L.float,
-            lifespan: L.lifespan, totalLife: L.totalLife,
-            r: L.r, g: L.g, b: L.b, brightness: L.brightness, radius: L.radius,
-            float: L.float, drift: L.drift, driftPhase: L.driftPhase,
-          });
-          lgSlotFree[slot - LG_FIRST_SLOT] = false;
-        }
+      const slot = lgFindFreeSlot();
+      if (slot !== -1) {
+        const L = lgInFlight;
+        placedLights.push({
+          slot, freeIdx: slot - LG_FIRST_SLOT,
+          x: L.x, y: th + (L.float ? 1.5 : 0.2), z: L.z, vy: 0, grounded: L.float,
+          lifespan: L.lifespan, totalLife: L.totalLife,
+          r: L.r, g: L.g, b: L.b, brightness: L.brightness, radius: L.radius,
+          float: L.float, drift: L.drift, driftPhase: L.driftPhase,
+        });
+        lgSlotFree[slot - LG_FIRST_SLOT] = false;
       }
       lgInFlight = null;
     } else {
