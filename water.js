@@ -38,7 +38,7 @@ import {
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
-export const WATER_VERSION = 'cw6';
+export const WATER_VERSION = 'cw7';
 
 const IOR_AIR = 1.0, IOR_WATER = 1.333, ETA = IOR_AIR / IOR_WATER;
 
@@ -275,9 +275,9 @@ function makeHeightCache() {
 }
 
 function sampleCachedHeight(o, cache, cellSize, x, z) {
-  const qx = Math.round(x / cellSize);
-  const qz = Math.round(z / cellSize);
-  const key = `${qx},${qz}`;
+  const qx = Math.round(x * 1000);
+  const qz = Math.round(z * 1000);
+  const key = `${cellSize}:${qx},${qz}`;
   const cached = cache.map.get(key);
   if (cached !== undefined) {
     cache.hits++;
@@ -301,11 +301,43 @@ function createRingGeometryJob(o, desc, heightCache) {
   const depths = new Float32Array(nx * nz);
   const bed = new Float32Array(nx * nz);
   const indices = [];
+  const extraPositions = [];
+  const extraDepths = [];
+  const eps = 1e-5;
   let minBed = Infinity;
   let vertexRow = 0;
   let indexRow = 0;
   let phase = 'vertices';
   const startedAt = nowMs();
+
+
+  function addExtraVertex(x, z) {
+    const h = sampleCachedHeight(o, heightCache, cellSize, x, z);
+    minBed = Math.min(minBed, h);
+    const index = nx * nz + extraDepths.length;
+    extraPositions.push(x, 0, z);
+    extraDepths.push(Math.max(0, level - h));
+    return index;
+  }
+
+  function rectIsDry(x0, z0, x1, z1) {
+    const h00 = sampleCachedHeight(o, heightCache, cellSize, x0, z0);
+    const h10 = sampleCachedHeight(o, heightCache, cellSize, x1, z0);
+    const h01 = sampleCachedHeight(o, heightCache, cellSize, x0, z1);
+    const h11 = sampleCachedHeight(o, heightCache, cellSize, x1, z1);
+    minBed = Math.min(minBed, h00, h10, h01, h11);
+    return h00 >= level && h10 >= level && h01 >= level && h11 >= level;
+  }
+
+  function emitRect(x0, z0, x1, z1) {
+    if (x1 - x0 <= eps || z1 - z0 <= eps) return;
+    if (rectIsDry(x0, z0, x1, z1)) return;
+    const a = addExtraVertex(x0, z0);
+    const b = addExtraVertex(x1, z0);
+    const c = addExtraVertex(x0, z1);
+    const d = addExtraVertex(x1, z1);
+    indices.push(a, c, b, b, c, d);
+  }
 
   function step(deadlineMs) {
     const hasBudget = () => nowMs() < deadlineMs;
@@ -332,14 +364,49 @@ function createRingGeometryJob(o, desc, heightCache) {
     if (phase === 'indices') {
       do {
         for (let i = 0; i < nX; i++) {
-          const cx = xMin + (i + 0.5) * cellSize;
-          const cz = zMin + (indexRow + 0.5) * cellSize;
-          if (innerHalf > 0 && Math.abs(cx - innerSnapX) <= innerHalf && Math.abs(cz - innerSnapZ) <= innerHalf) continue;
-          if (extentX !== undefined && (cx < -extentX * 0.5 || cx > extentX * 0.5)) continue;
-          if (extentZ !== undefined && (cz < -extentZ * 0.5 || cz > extentZ * 0.5)) continue;
+          const cellX0 = xMin + i * cellSize;
+          const cellZ0 = zMin + indexRow * cellSize;
+          const cellX1 = cellX0 + cellSize;
+          const cellZ1 = cellZ0 + cellSize;
+          let rx0 = cellX0, rx1 = cellX1, rz0 = cellZ0, rz1 = cellZ1;
+          if (extentX !== undefined) {
+            rx0 = Math.max(rx0, -extentX * 0.5);
+            rx1 = Math.min(rx1,  extentX * 0.5);
+          }
+          if (extentZ !== undefined) {
+            rz0 = Math.max(rz0, -extentZ * 0.5);
+            rz1 = Math.min(rz1,  extentZ * 0.5);
+          }
+          if (rx1 - rx0 <= eps || rz1 - rz0 <= eps) continue;
+
           const a = indexRow * nx + i, b = a + 1, c = a + nx, d = c + 1;
-          if (bed[a] >= level && bed[b] >= level && bed[c] >= level && bed[d] >= level) continue;
-          indices.push(a, c, b, b, c, d);
+          const extentClipped = Math.abs(rx0 - cellX0) > eps || Math.abs(rx1 - cellX1) > eps
+            || Math.abs(rz0 - cellZ0) > eps || Math.abs(rz1 - cellZ1) > eps;
+
+          if (innerHalf <= 0) {
+            if (extentClipped) emitRect(rx0, rz0, rx1, rz1);
+            else if (!(bed[a] >= level && bed[b] >= level && bed[c] >= level && bed[d] >= level)) indices.push(a, c, b, b, c, d);
+            continue;
+          }
+
+          const ix0 = innerSnapX - innerHalf;
+          const ix1 = innerSnapX + innerHalf;
+          const iz0 = innerSnapZ - innerHalf;
+          const iz1 = innerSnapZ + innerHalf;
+          const outsideInner = rx1 <= ix0 || rx0 >= ix1 || rz1 <= iz0 || rz0 >= iz1;
+          if (outsideInner) {
+            if (extentClipped) emitRect(rx0, rz0, rx1, rz1);
+            else if (!(bed[a] >= level && bed[b] >= level && bed[c] >= level && bed[d] >= level)) indices.push(a, c, b, b, c, d);
+            continue;
+          }
+          if (rx0 >= ix0 && rx1 <= ix1 && rz0 >= iz0 && rz1 <= iz1) continue;
+
+          emitRect(rx0, rz0, Math.min(rx1, ix0), rz1);
+          emitRect(Math.max(rx0, ix1), rz0, rx1, rz1);
+          const mx0 = Math.max(rx0, ix0);
+          const mx1 = Math.min(rx1, ix1);
+          emitRect(mx0, rz0, mx1, Math.min(rz1, iz0));
+          emitRect(mx0, Math.max(rz0, iz1), mx1, rz1);
         }
         indexRow++;
       } while (indexRow < nZ && hasBudget());
@@ -351,8 +418,18 @@ function createRingGeometryJob(o, desc, heightCache) {
 
   function toGeometry() {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
+    let finalPositions = positions;
+    let finalDepths = depths;
+    if (extraDepths.length > 0) {
+      finalPositions = new Float32Array(positions.length + extraPositions.length);
+      finalPositions.set(positions);
+      finalPositions.set(extraPositions, positions.length);
+      finalDepths = new Float32Array(depths.length + extraDepths.length);
+      finalDepths.set(depths);
+      finalDepths.set(extraDepths, depths.length);
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(finalPositions, 3));
+    g.setAttribute('aDepth', new THREE.BufferAttribute(finalDepths, 1));
     g.setIndex(indices);
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(snapX, 0, snapZ), Math.SQRT2 * outerHalf);
     g.userData.minBed = minBed;
