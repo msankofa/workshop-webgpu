@@ -794,6 +794,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       renderer, camera, palette, heightAt: terrainHeight,
       treeBaseOffset: params.treeBaseOffset,
       lodR0: params.treeLodR0, lodR1: params.treeLodR1, lodR2: params.treeLodR2,
+      capPerVariant: 2048,
     });
     forestGPURef = forestGPU;
     scene.add(...forestGPU.meshes);
