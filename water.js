@@ -38,7 +38,7 @@ import {
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
 
-export const WATER_VERSION = 'cw7';
+export const WATER_VERSION = 'cw8';
 
 const IOR_AIR = 1.0, IOR_WATER = 1.333, ETA = IOR_AIR / IOR_WATER;
 
@@ -53,6 +53,8 @@ const DEFAULTS = {
   deep: 0x10333f,
   refractStrength: 0.12,
   reflectStrength: 0.08,
+  reflectMix: 1.0,
+  reflectBrightness: 1.0,
   depthScale: 3.0,
   waveStrength: 1.0,
   caustic: 1.0,
@@ -468,9 +470,11 @@ export function createWaterSystem(options = {}) {
   const tsl_uShallow    = uniform(new THREE.Color(o.shallow));
   const tsl_uDeep       = uniform(new THREE.Color(o.deep));
   const tsl_uLightDir   = uniform(lightDir.clone());          // vec3
-  const tsl_uDepthScale      = uniform(o.depthScale,       'float');
-  const tsl_uRefractStrength = uniform(o.refractStrength,  'float');
-  const tsl_uReflectStrength = uniform(o.reflectStrength,  'float');
+  const tsl_uDepthScale        = uniform(o.depthScale,         'float');
+  const tsl_uRefractStrength   = uniform(o.refractStrength,    'float');
+  const tsl_uReflectStrength   = uniform(o.reflectStrength,    'float');
+  const tsl_uReflectMix        = uniform(o.reflectMix,         'float');
+  const tsl_uReflectBrightness = uniform(o.reflectBrightness,  'float');
 
   // Per-vertex attribute: water depth at this vertex (= waterLevel - terrainHeight, ≥ 0)
   const aDepth = attribute('aDepth', 'float');
@@ -549,10 +553,11 @@ export function createWaterSystem(options = {}) {
   const tsl_reflector = reflector();
   tsl_reflector.target.rotation.x = -Math.PI / 2;
   tsl_reflector.uvNode = tsl_reflector.uvNode.add(N.xz.mul(tsl_uReflectStrength));
-  const refl = tsl_reflector.rgb;
+  const refl = tsl_reflector.rgb.mul(tsl_uReflectBrightness);
 
   // Fresnel blend: grazing angles → more reflection; head-on → more refraction.
-  const blended = mix(refr, refl, fres);
+  const reflectAmount = clamp(fres.mul(tsl_uReflectMix), float(0.0), float(1.0));
+  const blended = mix(refr, refl, reflectAmount);
 
   // Specular highlight: reflect(-uLightDir, N) · viewDir.
   // reflect(I,N) = I - 2*dot(N,I)*N with I = -lightDir:
@@ -990,6 +995,14 @@ export function createWaterSystem(options = {}) {
   }
   function setCaustic(strength) { tsl_c_causticStr.value = strength; }
 
+  function setReflectionTuning(opts = {}) {
+    if (opts.reflectStrength !== undefined) tsl_uReflectStrength.value = opts.reflectStrength;
+    if (opts.refractStrength !== undefined) tsl_uRefractStrength.value = opts.refractStrength;
+    if (opts.reflectMix !== undefined) tsl_uReflectMix.value = opts.reflectMix;
+    if (opts.reflectBrightness !== undefined) tsl_uReflectBrightness.value = opts.reflectBrightness;
+    if (opts.depthScale !== undefined) tsl_uDepthScale.value = opts.depthScale;
+  }
+
   function setLightDir(v) {
     lightDir.copy(v).normalize();
     tsl_uLightDir.value.copy(lightDir);
@@ -1058,7 +1071,7 @@ export function createWaterSystem(options = {}) {
     };
   }
 
-  return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectRate, setLightDir, setLodDistances, getChunkCount, getStats, dispose };
+  return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectionTuning, setReflectRate, setLightDir, setLodDistances, getChunkCount, getStats, dispose };
 }
 
 export default createWaterSystem;

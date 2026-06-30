@@ -858,6 +858,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     });
   }
 
+  // Bake intensity constants — must match billBrightness() denominator so the uniform
+  // compensates for whatever the live scene intensity is relative to the bake.
+  const BAKE_SUN = 1.2, BAKE_AMB = 0.4;
+
   async function bakeVariantBillboard(variant, captureCount) {
     const SIZE = 256;
     const target = new THREE.RenderTarget(SIZE, SIZE, {
@@ -873,9 +877,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const leafMesh = new THREE.Mesh(variant.leaves, tmpLeafMat);
     bakeScene.add(branchMesh, leafMesh);
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    const sun = new THREE.DirectionalLight(0xffffff, BAKE_SUN);
     sun.position.set(2, 4, 3);
-    bakeScene.add(sun, new THREE.AmbientLight(0xffffff, 0.4));
+    bakeScene.add(sun, new THREE.AmbientLight(0xffffff, BAKE_AMB));
 
     const bbox = new THREE.Box3().setFromObject(branchMesh).expandByObject(leafMesh);
     const size = new THREE.Vector3(); bbox.getSize(size);
@@ -962,11 +966,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   async function applyBillboardTextures(variantTextures, mode) {
     if (!forestGPU) return;
-    const mats = forestGPU.billboardMaterials;
-    for (let g = 0; g < mats.length; g++) {
-      const mat = mats[g];
-      mat.map = mode === '8way' ? await buildAtlasTexture(variantTextures[g]) : blobsToTextures([variantTextures[g][0]])[0];
-      mat.needsUpdate = true;
+    for (let g = 0; g < variantTextures.length; g++) {
+      const tex = mode === '8way' ? await buildAtlasTexture(variantTextures[g]) : blobsToTextures([variantTextures[g][0]])[0];
+      forestGPU.applyBillboardMap(g, tex);
     }
   }
 
@@ -977,6 +979,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     try { cached = await loadBillboardCache(key); } catch (_) { /* cache is optional */ }
     if (cached) {
       await applyBillboardTextures(cached, mode);
+      forestGPU?.setBillboardBrightness(billBrightness());
       return;
     }
     showStatus('baking billboard atlases...');
@@ -989,6 +992,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     }
     try { await saveBillboardCache(key, variantBlobs); } catch (e) { console.warn('billboard cache write failed', e); }
     await applyBillboardTextures(variantBlobs, mode);
+    forestGPU?.setBillboardBrightness(billBrightness());
     showStatus('');
   }
 
@@ -2013,13 +2017,22 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  _waterPromise = import('./water.js?v=clipmap-stutter-1').then(({ createWaterSystem }) => {
-    Object.assign(params, { waterWaves: 0.0, caustics: 1.0, reflectRate: 1, waterLodR0: 50, waterLodR1: 150 });
+  _waterPromise = import('./water.js?v=reflection-controls-1').then(({ createWaterSystem }) => {
+    Object.assign(params, {
+      waterWaves: 0.0, caustics: 1.0, waterLodR0: 50, waterLodR1: 150,
+      waterReflectMix: 1.0, waterReflectBrightness: 1.0, waterReflectRipple: 0.08,
+      waterRefractRipple: 0.12, waterDepthScale: 3.0,
+    });
     waterRef = createWaterSystem({
       renderer, scene, camera, ground,
       size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight,
       ...(loadedMap ? { extentX: loadedMap.worldX, extentZ: loadedMap.worldZ } : {}),
       lodR0: params.waterLodR0, lodR1: params.waterLodR1,
+      reflectMix: params.waterReflectMix,
+      reflectBrightness: params.waterReflectBrightness,
+      reflectStrength: params.waterReflectRipple,
+      refractStrength: params.waterRefractRipple,
+      depthScale: params.waterDepthScale,
     });
     scene.add(waterRef.surface);
     syncWaterChunks(true);
@@ -2027,7 +2040,19 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     header('Water');
     slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
     slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
-    slider('reflectRate', 'Reflect every N frames', 1, 6, 1, fi, () => waterRef.setReflectRate(params.reflectRate));
+    header('Water Reflection');
+    const updateWaterReflection = () => waterRef.setReflectionTuning({
+      reflectMix: params.waterReflectMix,
+      reflectBrightness: params.waterReflectBrightness,
+      reflectStrength: params.waterReflectRipple,
+      refractStrength: params.waterRefractRipple,
+      depthScale: params.waterDepthScale,
+    });
+    slider('waterReflectMix', 'Reflect amount', 0, 2, 0.01, f2, updateWaterReflection);
+    slider('waterReflectBrightness', 'Reflect brightness', 0.2, 2, 0.01, f2, updateWaterReflection);
+    slider('waterReflectRipple', 'Reflect ripple', 0, 0.3, 0.005, f2, updateWaterReflection);
+    slider('waterRefractRipple', 'Refract ripple', 0, 0.3, 0.005, f2, updateWaterReflection);
+    slider('waterDepthScale', 'Depth tint scale', 0.5, 8, 0.1, f2, updateWaterReflection);
     header('Water LOD');
     const updateWaterLod = () => waterRef.setLodDistances(params.waterLodR0, params.waterLodR1);
     slider('waterLodR0', 'Near radius', 10, 200, 5, fi, updateWaterLod);
