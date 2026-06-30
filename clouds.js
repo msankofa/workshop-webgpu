@@ -49,7 +49,7 @@
 import * as THREE from 'three';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import {
-  uniform, attribute, positionWorld,
+  uniform, positionWorld,
   Fn, vec2, vec3, float,
   floor, fract, dot, abs, max, mod, smoothstep, select, length, greaterThan,
 } from 'three/tsl';
@@ -182,8 +182,10 @@ export class Clouds extends THREE.Mesh {
     const uFade     = uniform(0.01, 'float');   // horizon-fade rate
     const uOpacity  = uniform(0.9,  'float');   // base alpha multiplier
 
-    // Standard UV attribute on PlaneGeometry
-    const uvCoord = attribute('uv', 'vec2');
+    // World-space XZ position normalised to ~1 unit per 1000 world units.
+    // Using positionWorld instead of UV keeps the noise frequency fixed in world
+    // space, so clouds don't stretch when the plane is scaled via setExtent().
+    const uvCoord = positionWorld.xz.div(1000.0);
 
     // ---- Two-octave simplex noise with time drift ----
     // GLSL: float n = snoise(vUv*(5/uPuff) + uTime/40) + snoise(vUv*(10/uPuff) + uTime/30)
