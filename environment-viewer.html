@@ -327,6 +327,7 @@ const terrainDebug = {
   waterRing0Tris: 0, waterRing1Tris: 0, waterRing2Tris: 0,
   waterRing0Verts: 0, waterRing1Verts: 0, waterRing2Verts: 0,
   waterCacheHits: 0, waterCacheMisses: 0, waterBuildMs: 0, waterDisposals: 0,
+  waterCausticEnabled: false, waterCausticPasses: 0, waterCausticLastMs: 0,
   waterMinBed: Infinity, waterLoaded: false, waterVersion: '',
   treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
 };
@@ -493,6 +494,9 @@ const perfLog = {
       waterCacheMisses: terrainDebug.waterCacheMisses,
       waterBuildMs: +terrainDebug.waterBuildMs.toFixed(3),
       waterDisposals: terrainDebug.waterDisposals,
+      waterCausticEnabled: terrainDebug.waterCausticEnabled,
+      waterCausticPasses: terrainDebug.waterCausticPasses,
+      waterCausticLastMs: +terrainDebug.waterCausticLastMs.toFixed(3),
       waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
@@ -739,6 +743,9 @@ function syncWaterDebug() {
   terrainDebug.waterCacheMisses = s.cacheMisses || 0;
   terrainDebug.waterBuildMs = s.lastBuildMs || 0;
   terrainDebug.waterDisposals = s.disposalsPending || 0;
+  terrainDebug.waterCausticEnabled = !!s.causticEnabled;
+  terrainDebug.waterCausticPasses = s.causticPasses || 0;
+  terrainDebug.waterCausticLastMs = s.causticLastMs || 0;
   terrainDebug.waterMinBed = s.minBed;
 }
 
@@ -773,7 +780,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   });
   if (FOREST_MODE === 'gpu') {
     ({ createForestPalette } = await import('./forest-palette.js'));
-    ({ createForestGPU } = await import('./forest-gpu.js'));
+    ({ createForestGPU } = await import('./forest-gpu.js?v=bill-brightness'));
   }
   // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
   // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
