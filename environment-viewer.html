@@ -391,7 +391,6 @@ function updateTerrainDebug(now) {
     (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
     (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
-  if (environmentUi) environmentUi.updatePerf(perfLog.snapshot(now));
 }
 
 // ===================== perf time-series log =====================
@@ -535,6 +534,13 @@ const perfLog = {
   },
 };
 window.perfStats = perfLog;
+let perfUiLastUpdate = -Infinity;
+function updatePerfPanel(now) {
+  if (!environmentUi) return;
+  if (now - perfUiLastUpdate < 250) return;
+  perfUiLastUpdate = now;
+  environmentUi.updatePerf(perfLog.snapshot(now));
+}
 
 // Compact recorder controls (bottom-left). The HUD itself stays pointer-events:none;
 // this small panel is the interactive part.
@@ -1556,9 +1562,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }
   header('Forest');
   const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
-  slider('count', 'Tree count', 0, 1500, 1, fi);
+  slider('count', 'Tree count', 0, 4500, 1, fi);
   select('placement', 'Placement pattern', ['random', 'clustered', 'scattered', 'ring']);
-  slider('maxSize', 'Max size', 0.2, 1.2, 0.01, f2);
+  slider('maxSize', 'Max size', 0.2, 3.6, 0.01, f2);
   slider('sizeVar', 'Size variation', 0, 1, 0.01, f2);
   slider('skew', 'Size skew (small\u2194large)', -1, 1, 0.01, f2);
   select('varPattern', 'Variation pattern', ['random', 'noise', 'gradient']);
@@ -2785,8 +2791,10 @@ async function animate() {
   if (skyRef) skyRef.flushDisposals();
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
   // before the GPU finishes). This is the CPU-bound cost the SP1 dd9 gate compares.
-  if (rawDt > 0) terrainDebug.cpuMs += ((performance.now() - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
-  perfLog.maybeSample(performance.now());
+  const frameEnd = performance.now();
+  if (rawDt > 0) terrainDebug.cpuMs += ((frameEnd - now) - terrainDebug.cpuMs) * 0.1;  // smoothed
+  perfLog.maybeSample(frameEnd);
+  updatePerfPanel(frameEnd);
   } finally { _frameBusy = false; }
 }
 setStatus('Loading world systems…');
