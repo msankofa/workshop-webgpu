@@ -307,8 +307,8 @@ function removeParticleField(entry) {
 }
 if (PARTICLES_MODE !== 'off') {
   ({ createParticleField } = await import('./particles.js'));
-  addParticleField({ kind: 'ember', name: 'embers', count: 4000, radius: 90 });
-  addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90 });
+  addParticleField({ kind: 'ember', name: 'embers', count: 4000, radius: 90, enabled: false });
+  addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90, enabled: false });
 }
 
 // SP4c: node post-processing. ?post=off → plain renderer.render; diagnostic graph modes:
@@ -1682,7 +1682,11 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     let rebuildTimer = null;
     const refreshers = [];                // closures that pull each control's DOM back from `editor`
 
+    params.particlesEnabled = false;
     header('Particles');
+    toggle('particlesEnabled', 'Enabled', () => {
+      particleFields.forEach(e => e.field.setEnabled(params.particlesEnabled));
+    });
     const psec = current;                 // section body for the editor controls + list
 
     // When editing a selected field, push tunable changes to its uniforms live and keep its
