@@ -2008,7 +2008,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
   _waterPromise = import('./water.js?v=clipmap-stutter-1').then(({ createWaterSystem }) => {
-    Object.assign(params, { waterWaves: 1.0, caustics: 1.0, reflectRate: 1, waterLodR0: 50, waterLodR1: 150 });
+    Object.assign(params, { waterWaves: 0.0, caustics: 1.0, reflectRate: 1, waterLodR0: 50, waterLodR1: 150 });
     waterRef = createWaterSystem({
       renderer, scene, camera, ground,
       size: terrain.size, waterLevel: terrain.waterLevel, heightFn: terrainHeight,
@@ -2088,8 +2088,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // The primary disc is locked to the rig light direction; the Sun/Moon dropdown swaps
   // the active key light (warm rig sun <-> dedicated cool moonLight). ?sky=off skips it all.
   if (SKY_MODE !== 'off') {
-  const SKY_PARAMS = { starCount: 1400, starSize: 2.2, sunSize: 0.06, milkyWayIntensity: 0.7 };
-  params.primaryBody = 'sun';   // 'select' reads/writes the global params object
+  const SKY_PARAMS = { starCount: 3000, starSize: 2.2, sunSize: 0.06, milkyWayIntensity: 0.7 };
+  params.primaryBody = 'moon';   // 'select' reads/writes the global params object
   const skyPaletteOverrides = () => ({ celestialType: params.primaryBody, starCount: SKY_PARAMS.starCount,
     starSize: SKY_PARAMS.starSize, sunSize: SKY_PARAMS.sunSize, milkyWayIntensity: SKY_PARAMS.milkyWayIntensity });
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
