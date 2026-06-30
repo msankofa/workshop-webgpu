@@ -586,7 +586,11 @@ function buildPerfPanel(host, perfLog) {
     if (!snapshot) return;
     const fps = Number(snapshot.fps);
     const frameMs = fps > 0 ? 1000 / fps : 0;
-    const gpuMs = Number(snapshot.gpuRenderMs || 0) + Number(snapshot.gpuComputeMs || 0);
+    const timestampGpuMs = Number(snapshot.gpuRenderMs || 0) + Number(snapshot.gpuComputeMs || 0);
+    const gpuMs = timestampGpuMs > 0 ? timestampGpuMs : Number(snapshot.passGpuAwaitMs || 0);
+    metricEls.gpuMs.title = timestampGpuMs > 0
+      ? 'GPU timestamp total. Render/compute timestamps require ?timestamps=on.'
+      : 'Awaited GPU stage time. Add ?timestamps=on for hardware GPU timestamps.';
     frameSamples.push(frameMs);
     if (frameSamples.length > 120) frameSamples.shift();
 

@@ -1613,11 +1613,14 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   rig.setAzimuth(rigP.azimuth);
   rig.setSunIntensity(rigP.sunIntensity);
   rig.setAmbientIntensity(rigP.ambientIntensity);
+  // Multiplier to bring baked-at-(BAKE_SUN+BAKE_AMB) billboard textures up to scene brightness.
+  const billBrightness = (effectiveSun = rigP.sunIntensity) =>
+    (effectiveSun + rigP.ambientIntensity * 0.5) / (BAKE_SUN + BAKE_AMB * 0.5);
   header('Lighting');
   slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP);
   slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
-  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => rig.setSunIntensity(rigP.sunIntensity),         rigP);
-  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => rig.setAmbientIntensity(rigP.ambientIntensity), rigP);
+  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => { rig.setSunIntensity(rigP.sunIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); },         rigP);
+  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => { rig.setAmbientIntensity(rigP.ambientIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); }, rigP);
   params.pointLights = false;
   toggle('pointLights', 'Point lights', () => {
     if (clusteredLightsRef) clusteredLightsRef.setCount(params.pointLights ? 256 : 0);
@@ -2125,8 +2128,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     starSize: SKY_PARAMS.starSize, sunSize: SKY_PARAMS.sunSize, milkyWayIntensity: SKY_PARAMS.milkyWayIntensity });
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
     const moon = params.primaryBody === 'moon';
-    rig.setSunIntensity(moon ? 0.15 : rigP.sunIntensity);
+    const effectiveSun = moon ? 0.15 : rigP.sunIntensity;
+    rig.setSunIntensity(effectiveSun);
     if (moonLight) moonLight.intensity = moon ? 0.35 : 0.0;
+    forestGPURef?.setBillboardBrightness(billBrightness(effectiveSun));
   }
   const skyParts = {
     stars:    !['nostars', 'domeonly'].includes(SKY_MODE),

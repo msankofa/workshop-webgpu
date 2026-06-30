@@ -19,7 +19,7 @@ import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
   vec2, vec3, vec4, cos, sin, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad,
-  normalize, cross, cameraPosition,
+  normalize, cross, cameraPosition, texture,
 } from 'three/tsl';
 
 export function createForestGPU(opts) {
@@ -225,6 +225,7 @@ export function createForestGPU(opts) {
     return buildBillboardGeo(Math.max(size.x, size.z) * 1.15, size.y * 1.05, center.y);
   }
 
+  const uBillBrightness = uniform(1.0);
   const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], meshes = [];
   for (let g = 0; g < V; g++) {
     const variant = palette.variants[g];
@@ -349,6 +350,12 @@ export function createForestGPU(opts) {
       }
     },
     get billboardMaterials() { return billboardMats; },
+    applyBillboardMap(g, tex) {
+      const t = texture(tex);
+      billboardMats[g].colorNode = vec4(t.rgb.mul(uBillBrightness), t.a);
+      billboardMats[g].needsUpdate = true;
+    },
+    setBillboardBrightness(val) { uBillBrightness.value = val; },
     _palette: palette,
     setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
     setChunks(map) { for (const [k, v] of map) chunkRecords.set(k, v); rebuild(); },
