@@ -59,7 +59,7 @@ controls.dampingFactor = 0.08;
 controls.update();
 
 // ===================== lighting =====================
-const rig = createLightingRig({ scene, ui: false, elevation: 55, azimuth: 45 });
+const rig = createLightingRig({ scene, ui: false, elevation: 66, azimuth: 9 });
 rig.dirLight.castShadow = true;
 scene.add(rig.dirLight.target);
 rig.dirLight.shadow.mapSize.set(2048, 2048);
@@ -516,11 +516,11 @@ selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTe
 
 // ===================== Lighting section =====================
 // `rig` (createLightingRig) only exposes getters for azimuth/elevation — sun/ambient color and
-// intensity have no getter, so those four are tracked here as local state, seeded from
-// lights.js's own DEFAULTS (sunColor '#fff4e0', sunIntensity 1.8, ambientColor '#8ab4e8',
-// ambientIntensity 0.6), and pushed to the rig via its rig.set*() calls on change.
+// intensity have no getter, so those four are tracked here as local state instead — seeded to
+// this tool's own tuned defaults (not lights.js's own DEFAULTS), and pushed to the rig via its
+// rig.set*() calls on change.
 panelSection('lighting', 'Lighting', null);
-let sunColor = '#fff4e0', sunIntensity = 1.8, ambientColor = '#8ab4e8', ambientIntensity = 0.6;
+let sunColor = '#fff4e0', sunIntensity = 4, ambientColor = '#8ab4e8', ambientIntensity = 1.05;
 rangeControl('Elevation', 2, 88, 1, () => rig.elevation, v => rig.setElevation(v), fi, () => {});
 rangeControl('Azimuth', 0, 360, 1, () => rig.azimuth, v => rig.setAzimuth(v), fi, () => {});
 rangeControl('Sun intensity', 0, 4, 0.05, () => sunIntensity, v => { sunIntensity = v; rig.setSunIntensity(v); }, f2, () => {});
