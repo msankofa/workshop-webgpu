@@ -46,9 +46,11 @@ import { kindParams } from './particle-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createEnvironmentUi } from './environment-ui.js';
 import { loadTerrainMap } from './terrain-loader.js';
+import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
 import { createHostSession, createGuestSession, GhostRenderer } from './multiplayer.js';
+import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState } from './slider-state.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -165,7 +167,7 @@ const SKY_MODE = new URLSearchParams(location.search).get('sky') || 'on';
 let moonLight = null;
 if (SKY_MODE !== 'off' && SKY_MODE !== 'nomoonlight') {
   moonLight = new THREE.DirectionalLight(0xaec6ff, 0.0);
-  moonLight.castShadow = true;
+  moonLight.castShadow = false;
   moonLight.shadow.mapSize.set(2048, 2048);
   moonLight.shadow.camera.near = 1; moonLight.shadow.camera.far = 260;
   moonLight.shadow.camera.left = -90; moonLight.shadow.camera.right = 90;
@@ -185,6 +187,7 @@ function skyLightDir() {
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
 // terrain extent — the terrain is chunked/infinite and sized by draw distance.
 const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
+
 if (loadedMap) {
   terrain.waterLevel = loadedMap.seaLevel;
   terrain.size = Math.max(300, loadedMap.worldX, loadedMap.worldZ);
@@ -226,6 +229,13 @@ function bakeHeightTexture(heightFn, bounds, resolution = 512) {
   tex.needsUpdate = true;
   return tex;
 }
+function makeFloatDataTexture(data, resolution) {
+  const tex = new THREE.DataTexture(data, resolution, resolution, THREE.RedFormat, THREE.FloatType);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
 if (loadedMap) {
   showStatus('baking height texture for grass...');
   await nextPaint();
@@ -238,6 +248,10 @@ if (loadedMap) {
   const bakeRes = Math.min(2048, Math.max(512, Math.ceil(Math.max(loadedMap.worldX, loadedMap.worldZ))));
   loadedMap.heightTex = bakeHeightTexture(terrainHeight, hBounds, bakeRes);
   loadedMap.heightTexBounds = hBounds;
+  if (loadedMap.grassDensityGrid?.length === loadedMap.resolution * loadedMap.resolution) {
+    loadedMap.grassDensityTex = makeFloatDataTexture(loadedMap.grassDensityGrid, loadedMap.resolution);
+    loadedMap.grassDensityTexBounds = hBounds;
+  }
 }
 const _terrainN = [0, 1, 0];
 function terrainNormal(x, z) {
@@ -327,7 +341,7 @@ const terrainDebug = {
   waterRing0Tris: 0, waterRing1Tris: 0, waterRing2Tris: 0,
   waterRing0Verts: 0, waterRing1Verts: 0, waterRing2Verts: 0,
   waterCacheHits: 0, waterCacheMisses: 0, waterBuildMs: 0, waterDisposals: 0,
-  waterCausticEnabled: false, waterCausticPasses: 0, waterCausticLastMs: 0,
+  waterCausticEnabled: false, waterCausticPasses: 0, waterCausticLastMs: 0, waterReflectionEnabled: false, waterReflectionPasses: 0, waterReflectionLastMs: 0,
   waterMinBed: Infinity, waterLoaded: false, waterVersion: '',
   treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
 };
@@ -497,6 +511,9 @@ const perfLog = {
       waterCausticEnabled: terrainDebug.waterCausticEnabled,
       waterCausticPasses: terrainDebug.waterCausticPasses,
       waterCausticLastMs: +terrainDebug.waterCausticLastMs.toFixed(3),
+      waterReflectionEnabled: terrainDebug.waterReflectionEnabled,
+      waterReflectionPasses: terrainDebug.waterReflectionPasses,
+      waterReflectionLastMs: +terrainDebug.waterReflectionLastMs.toFixed(3),
       waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
@@ -573,20 +590,26 @@ function updatePerfPanel(now) {
 }
 if (!loadedMap) scene.add(terrainGroup);
 
-// The camera far plane (and fog) is the larger of the user's View distance and
-// the span needed to fit the rendered chunk ring — so chunks are never clipped,
-// but the user can also push the clip/fog further out. Floored at 200 so the
-// overhead clouds stay inside the frustum. Fog (off by default) shares the same
-// far so geometry fades into the background right before the clip plane.
+// The camera far plane is the larger of terrain draw distance and the diagonal
+// distance to the edge of any cloud layer — cloud fragments at the plane edge
+// are at sqrt((extent/2)²+height²) from the camera and must not be clipped.
+// Fog uses only the terrain-based distance so it doesn't fade in too late on
+// small scenes just because cloud layers are large.
 const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
 let skyRef = null;   // procedural night sky (assigned once ./sky.js loads, below)
+let cloudFar1 = 0, cloudFar2 = 0;
+function setCloudFar(layer, extent, height) {
+  const far = (extent != null && height != null) ? Math.hypot(extent / 2, height) : 0;
+  if (layer === 2) cloudFar2 = far; else cloudFar1 = far;
+}
 function updateDrawDistance() {
-  // Farthest rendered chunk corner ≈ (radius + 1) chunks out; ×2 covers the
+  // Farthest rendered chunk corner � (radius + 1) chunks out; �2 covers the
   // diagonal across the whole loaded ring from the opposite side.
   const chunkSpan = (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize * 2;
-  const far = Math.max(200, terrain.size, chunkSpan);
+  const terrainFar = Math.max(200, terrain.size, chunkSpan);
+  const far = Math.max(terrainFar, cloudFar1, cloudFar2);
   camera.far = far; camera.updateProjectionMatrix();
-  worldFog.far = far; worldFog.near = far * 0.4;
+  worldFog.far = terrainFar; worldFog.near = terrainFar * 0.4;
   if (skyRef) skyRef.setRadius();   // re-size the sky by scaling the group (no rebuild/disposal)
 }
 function setFog(on) { scene.fog = on ? worldFog : null; }
@@ -716,6 +739,7 @@ function syncWaterDebug() {
     terrainDebug.waterRing0Verts = terrainDebug.waterRing1Verts = terrainDebug.waterRing2Verts = 0;
     terrainDebug.waterCacheHits = terrainDebug.waterCacheMisses = 0;
     terrainDebug.waterBuildMs = terrainDebug.waterDisposals = 0;
+    terrainDebug.waterCausticEnabled = false; terrainDebug.waterCausticPasses = 0; terrainDebug.waterCausticLastMs = 0; terrainDebug.waterReflectionEnabled = false; terrainDebug.waterReflectionPasses = 0; terrainDebug.waterReflectionLastMs = 0;
     terrainDebug.waterMinBed = Infinity;
     return;
   }
@@ -746,11 +770,37 @@ function syncWaterDebug() {
   terrainDebug.waterCausticEnabled = !!s.causticEnabled;
   terrainDebug.waterCausticPasses = s.causticPasses || 0;
   terrainDebug.waterCausticLastMs = s.causticLastMs || 0;
+  terrainDebug.waterReflectionEnabled = !!s.reflectionEnabled;
+  terrainDebug.waterReflectionPasses = s.reflectionPasses || 0;
+  terrainDebug.waterReflectionLastMs = s.reflectionLastMs || 0;
   terrainDebug.waterMinBed = s.minBed;
 }
 
 // Trees live in a separate module. Load it dynamically so a load failure
 // (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
+// ---- slider-state presets: every slider()/select()/toggle() control below self-registers
+// here so a saved preset can be captured/replayed without hand-listing every param. ----
+const controlRegistry = [];
+function captureSliderState() {
+  const values = {};
+  for (const c of controlRegistry) values[c.name] = c.obj[c.key];
+  return values;
+}
+function applySliderState(values) {
+  if (!values) return;
+  for (const c of controlRegistry) {
+    if (!(c.name in values)) continue;
+    c.obj[c.key] = values[c.name];
+    c.sync();
+  }
+  const fired = new Set();
+  for (const c of controlRegistry) {
+    if (!(c.name in values) || fired.has(c.onChange)) continue;
+    fired.add(c.onChange);
+    c.onChange();
+  }
+}
+
 const _forestPromise = Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
   const params = {
@@ -1538,14 +1588,19 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     clearTimeout(rbTimer);
     rbTimer = setTimeout(() => { if (FOREST_MODE === 'gpu') rebuildForestGPU(texSet); else regenerate(); }, 200);
   };
-  function slider(key, label, min, max, step, fmt, onChange, obj) {
+  function slider(key, label, min, max, step, fmt, onChange, obj, objName) {
     const P = obj || params;
     const row = document.createElement('div'); row.className = 'row';
     const val = document.createElement('span'); val.textContent = fmt(P[key]);
     row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
     const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = P[key];
-    inp.addEventListener('input', () => { P[key] = parseFloat(inp.value); val.textContent = fmt(P[key]); (onChange || apply)(); });
+    const handler = onChange || apply;
+    inp.addEventListener('input', () => { P[key] = parseFloat(inp.value); val.textContent = fmt(P[key]); handler(); });
     current.appendChild(row); current.appendChild(inp);
+    controlRegistry.push({
+      name: (objName || 'params') + '.' + key, obj: P, key, onChange: handler,
+      sync: () => { inp.value = P[key]; val.textContent = fmt(P[key]); },
+    });
   }
   // Each header() opens a collapsible section; subsequent controls land in it.
   function header(text) {
@@ -1561,8 +1616,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const row = document.createElement('div'); row.className = 'row'; row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; current.appendChild(row);
     const sel = document.createElement('select');
     for (const o of opts) { const op = document.createElement('option'); op.value = o; op.textContent = o; if (o === params[key]) op.selected = true; sel.appendChild(op); }
-    sel.addEventListener('change', () => { params[key] = sel.value; (onChange || apply)(); });
+    const handler = onChange || apply;
+    sel.addEventListener('change', () => { params[key] = sel.value; handler(); });
     current.appendChild(sel);
+    controlRegistry.push({
+      name: 'params.' + key, obj: params, key, onChange: handler,
+      sync: () => { sel.value = params[key]; },
+    });
   }
   function toggle(key, label, onChange) {
     const row = document.createElement('div'); row.className = 'row';
@@ -1570,6 +1630,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!params[key]; inp.style.width = 'auto';
     inp.addEventListener('change', () => { params[key] = inp.checked; onChange(); });
     row.appendChild(inp); current.appendChild(row);
+    controlRegistry.push({
+      name: 'params.' + key, obj: params, key, onChange,
+      sync: () => { inp.checked = !!params[key]; },
+    });
     return inp;
   }
   header('Forest');
@@ -1625,10 +1689,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   const billBrightness = (effectiveSun = rigP.sunIntensity) =>
     (effectiveSun + rigP.ambientIntensity * 0.5) / (BAKE_SUN + BAKE_AMB * 0.5);
   header('Lighting');
-  slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP);
-  slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP);
-  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => { rig.setSunIntensity(rigP.sunIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); },         rigP);
-  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => { rig.setAmbientIntensity(rigP.ambientIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); }, rigP);
+  slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP, 'rigP');
+  slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP, 'rigP');
+  slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => { rig.setSunIntensity(rigP.sunIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); },         rigP, 'rigP');
+  slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => { rig.setAmbientIntensity(rigP.ambientIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); }, rigP, 'rigP');
   params.pointLights = false;
   toggle('pointLights', 'Point lights', () => {
     if (clusteredLightsRef) clusteredLightsRef.setCount(params.pointLights ? 256 : 0);
@@ -1639,7 +1703,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   header('Scene');
   // View distance only moves the camera far plane + fog; it no longer rebuilds the
   // world (it never actually changed the chunked terrain). Cheap, live update.
-  slider('size', 'View distance', 200, 1000, 10, fi, () => updateDrawDistance(), terrain);
+  slider('size', 'View distance', 200, 1000, 10, fi, () => updateDrawDistance(), terrain, 'terrain');
   // Draw distance = chunk render radius. Streams chunks in/out live (no full
   // rebuild); label shows the resulting N×N grid. terrainSystem.params is a copy
   // of `terrain`, so push the value across and extend the camera far plane —
@@ -1652,12 +1716,86 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     if (cdlodRef) cdlodRef.setViewDistance(2 + Math.round(terrain.renderRadius));
     updateDrawDistance();
   };
-  slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain);
-  slider('lake', 'Lake coverage', 0, 1, 0.01, f2, worldRebuild, terrain);
-  slider('lakeDepth', 'Lake depth', 0, 6, 0.1, f2, worldRebuild, terrain);
-  slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain);
+  slider('renderRadius', 'Draw distance (chunks)', 1, 12, 1, drawFmt, drawDistanceChange, terrain, 'terrain');
+  slider('lake', 'Lake coverage', 0, 1, 0.01, f2, worldRebuild, terrain, 'terrain');
+  slider('lakeDepth', 'Lake depth', 0, 6, 0.1, f2, worldRebuild, terrain, 'terrain');
+  slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain, 'terrain');
   params.fog = false;
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
+
+  header('Biomes');
+  if (loadedMap?.root?.userData?.terrainTextureMaterials) {
+    const biomeLayers = getTerrainTextureLayerNames();
+    let textureSources = [...biomeLayers];
+    try {
+      const catalog = await fetch('textures/ground/catalog.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+      const libraryIds = Object.keys(catalog?.library || {});
+      textureSources = [...new Set([...textureSources, ...libraryIds.map(id => `library/${id}`)])];
+    } catch (_) { /* catalog is optional */ }
+    const biomeState = { layer: biomeLayers[0], sourceLayer: biomeLayers[0], tileMeters: 4, roughness: 0.95, normalScale: 1 };
+    const biomeRefreshers = [];
+    const biomeRoot = loadedMap.root;
+    const syncBiomeState = () => {
+      const s = getTerrainTextureLayerSettings(biomeRoot, biomeState.layer) || {};
+      biomeState.sourceLayer = s.sourceLayer || biomeState.layer;
+      biomeState.tileMeters = Number(s.tileMeters ?? 4);
+      biomeState.roughness = Number(s.roughness ?? 0.95);
+      biomeState.normalScale = Number(s.normalScale ?? 1);
+      biomeRefreshers.forEach(fn => fn());
+    };
+    const applyBiomeState = async (changes = {}) => {
+      await updateTerrainTextureLayer(biomeRoot, biomeState.layer, {
+        sourceLayer: biomeState.sourceLayer,
+        tileMeters: biomeState.tileMeters,
+        roughness: biomeState.roughness,
+        normalScale: biomeState.normalScale,
+        ...changes,
+      });
+      syncBiomeState();
+    };
+    const makeBiomeSelect = (label, key, values, onChange) => {
+      const row = document.createElement('div'); row.className = 'row'; row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; current.appendChild(row);
+      const sel = document.createElement('select');
+      for (const value of values) {
+        const op = document.createElement('option'); op.value = value; op.textContent = value; sel.appendChild(op);
+      }
+      sel.addEventListener('change', () => { biomeState[key] = sel.value; Promise.resolve(onChange()).catch(err => showError(err.message)); });
+      current.appendChild(sel);
+      biomeRefreshers.push(() => { sel.value = biomeState[key]; });
+    };
+    const makeBiomeSlider = (label, key, min, max, step, fmt) => {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span');
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val); current.appendChild(row);
+      const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
+      inp.addEventListener('input', () => { biomeState[key] = +inp.value; val.textContent = fmt(biomeState[key]); Promise.resolve(applyBiomeState()).catch(err => showError(err.message)); });
+      current.appendChild(inp);
+      biomeRefreshers.push(() => { inp.value = biomeState[key]; val.textContent = fmt(biomeState[key]); });
+    };
+    makeBiomeSelect('Layer', 'layer', biomeLayers, syncBiomeState);
+    makeBiomeSelect('Texture source', 'sourceLayer', textureSources, () => applyBiomeState({ sourceLayer: biomeState.sourceLayer }));
+    makeBiomeSlider('Tile meters', 'tileMeters', 0.5, 12, 0.1, f2);
+    makeBiomeSlider('Roughness', 'roughness', 0, 1, 0.01, f2);
+    makeBiomeSlider('Normal strength', 'normalScale', 0, 3, 0.05, f2);
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = 'Reset layer';
+    resetBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    resetBtn.addEventListener('click', () => {
+      const s = getTerrainTextureLayerSettings(biomeRoot, biomeState.layer) || biomeState;
+      biomeState.sourceLayer = biomeState.layer;
+      biomeState.tileMeters = Number(s.defaultTileMeters ?? s.tileMeters ?? 4);
+      biomeState.roughness = Number(s.defaultRoughness ?? 0.95);
+      biomeState.normalScale = 1;
+      Promise.resolve(applyBiomeState({ sourceLayer: biomeState.layer, tileMeters: biomeState.tileMeters, roughness: biomeState.roughness, normalScale: 1 })).catch(err => showError(err.message));
+    });
+    current.appendChild(resetBtn);
+    syncBiomeState();
+  } else {
+    const row = document.createElement('div');
+    row.style.cssText = 'margin:6px 0;color:#7f8a99';
+    row.textContent = 'Biome texture controls are available for authored maps.';
+    current.appendChild(row);
+  }
 
   // ---- SP4c: post-processing controls (bloom + tonemap + grade) ----
   if (postFX) {
@@ -2004,6 +2142,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       maxRadius: 600,
       heightTex: loadedMap?.heightTex ?? null,
       heightTexBounds: loadedMap?.heightTexBounds ?? null,
+      densityTex: loadedMap?.grassDensityTex ?? null,
+      densityTexBounds: loadedMap?.grassDensityTexBounds ?? null,
       addEmissive: clusteredLightsRef ? (p, n) => clusteredLightsRef.pointLightTerm(p, n) : null,
     });
     scene.add(cg.mesh);
@@ -2089,9 +2229,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     cloudsRef.setSoftness(params.cloudSoftness);
     cloudsRef.setFade(params.cloudFade);
     scene.add(cloudsRef);
+    setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance();
     header('Clouds (layer 1)');
-    slider('cloudHeight', 'Height', 20, 400, 1, fi, () => cloudsRef.position.y = params.cloudHeight);
-    slider('cloudExtent', 'Extent', 500, 8000, 10, fi, () => cloudsRef.setExtent(params.cloudExtent));
+    slider('cloudHeight', 'Height', 20, 400, 1, fi, () => { cloudsRef.position.y = params.cloudHeight; setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
+    slider('cloudExtent', 'Extent', 500, 8000, 10, fi, () => { cloudsRef.setExtent(params.cloudExtent); setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
     slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
     slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
     slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
@@ -2115,10 +2256,11 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     clouds2Ref.setSoftness(params.cloud2Softness);
     clouds2Ref.setFade(params.cloud2Fade);
     scene.add(clouds2Ref);
+    setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance();
 
     header('Clouds (layer 2)');
-    slider('cloud2Height', 'Height', 20, 600, 1, fi, () => clouds2Ref.position.y = params.cloud2Height);
-    slider('cloud2Extent', 'Extent', 500, 8000, 10, fi, () => clouds2Ref.setExtent(params.cloud2Extent));
+    slider('cloud2Height', 'Height', 20, 600, 1, fi, () => { clouds2Ref.position.y = params.cloud2Height; setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance(); });
+    slider('cloud2Extent', 'Extent', 500, 8000, 10, fi, () => { clouds2Ref.setExtent(params.cloud2Extent); setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance(); });
     slider('cloud2Cover', 'Coverage', 0, 0.9, 0.01, f2, () => clouds2Ref.setCoverage(params.cloud2Cover));
     slider('cloud2Puff', 'Puff size', 0.3, 6, 0.01, f2, () => clouds2Ref.setPuff(params.cloud2Puff));
     slider('cloud2Softness', 'Softness', 0.05, 0.5, 0.01, f2, () => clouds2Ref.setSoftness(params.cloud2Softness));
@@ -2137,8 +2279,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
     const moon = params.primaryBody === 'moon';
     const effectiveSun = moon ? 0.15 : rigP.sunIntensity;
+    const useMoonShadow = moon && !!moonLight;
     rig.setSunIntensity(effectiveSun);
-    if (moonLight) moonLight.intensity = moon ? 0.35 : 0.0;
+    rig.dirLight.castShadow = !useMoonShadow;
+    if (moonLight) {
+      moonLight.intensity = moon ? 0.35 : 0.0;
+      moonLight.castShadow = moon;
+    }
     forestGPURef?.setBillboardBrightness(billBrightness(effectiveSun));
   }
   const skyParts = {
@@ -2159,9 +2306,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     // All sky controls update IN PLACE — no rebuild/disposal (runtime rebuild races the
     // async WebGPU submit and crashes). Star size is omitted: WebGPU Points are 1px, so a
     // size slider would do nothing (sized stars need the Sprite+instancing path).
-    slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS);
-    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setSunSize(SKY_PARAMS.sunSize), SKY_PARAMS);
-    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setMilkyWayIntensity(SKY_PARAMS.milkyWayIntensity), SKY_PARAMS);
+    slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS, 'SKY_PARAMS');
+    slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setSunSize(SKY_PARAMS.sunSize), SKY_PARAMS, 'SKY_PARAMS');
+    slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setMilkyWayIntensity(SKY_PARAMS.milkyWayIntensity), SKY_PARAMS, 'SKY_PARAMS');
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
   }
 }).catch(err => {
@@ -2775,12 +2922,12 @@ async function animate() {
   if (cloudsRef) {
     cloudsRef.position.x = camera.position.x;
     cloudsRef.position.z = camera.position.z;
-    cloudsRef.update(now / 1000);
+    cloudsRef.update(now / 1000, camera.position);
   }
   if (clouds2Ref) {
     clouds2Ref.position.x = camera.position.x;
     clouds2Ref.position.z = camera.position.z;
-    clouds2Ref.update(now / 1000);
+    clouds2Ref.update(now / 1000, camera.position);
   }
   if (fpsMode) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
