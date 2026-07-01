@@ -439,6 +439,23 @@ optsColor('leaves.tint', 'Tint');
 optsSlider('leaves.roughness', 'Roughness', 0, 1, 0.01, f2);
 optsSlider('leaves.alphaTest', 'Alpha test', 0, 1, 0.01, f2);
 
+// ===================== Export section =====================
+header('Export');
+const exportArea = document.createElement('textarea');
+exportArea.readOnly = true;
+current.appendChild(exportArea);
+// `map`/`normalMap` hold live THREE.Texture objects in authored texture mode — not
+// meaningfully JSON-serializable (and not useful as a reusable createTree() preset anyway),
+// so the replacer omits them from the export rather than letting JSON.stringify choke on them.
+refreshExport = () => {
+  exportArea.value = JSON.stringify(opts, (key, val) => (key === 'map' || key === 'normalMap' ? undefined : val), 2);
+};
+buttonControl('Copy tree JSON', () => {
+  refreshExport();
+  navigator.clipboard?.writeText(exportArea.value).catch(() => {});
+});
+refreshExport();
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
