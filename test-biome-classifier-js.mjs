@@ -1,4 +1,4 @@
-import { BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell } from './biome-classifier-js.js';
+import { BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell, createFieldSampler } from './biome-classifier-js.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -46,6 +46,26 @@ classifyOk({ humid: 0, weird: 0.5 }, 'meadow', 13, 'meadow (not hot, not cold, h
 classifyOk({ humid: 0, weird: 0.5, slope: 0.5 }, 'windswept_hills', 14, 'windswept_hills overrides meadow (steep)');
 classifyOk({ humid: 0, weird: 0.5, slope: 0.5, height: 80 }, 'stony_peaks', 15, 'stony_peaks overrides windswept_hills (also high)');
 classifyOk({ humid: 0, weird: 0.5, slope: 0.5, height: 150 }, 'snowy_peaks', 16, 'snowy_peaks overrides stony_peaks (height > snow_height_full, slope < 0.80)');
+
+const sampler = createFieldSampler(1337);
+const v1 = sampler.sample('temperature', 100, 200, 1550, 3);
+const v2 = sampler.sample('temperature', 100, 200, 1550, 3);
+ok(v1 === v2, '3: sample() is deterministic for identical inputs');
+ok(v1 >= -1 && v1 <= 1, '3: sample() stays within [-1, 1]');
+
+const differentCoord = sampler.sample('temperature', 900, 400, 1550, 3);
+ok(differentCoord !== v1, '3: sample() varies across coordinates');
+
+const differentChannel = sampler.sample('humidity', 100, 200, 1300, 3);
+ok(differentChannel !== v1, '3: different channels are independent (not the same noise field)');
+
+const samplerB = createFieldSampler(9999);
+const v1b = samplerB.sample('temperature', 100, 200, 1550, 3);
+ok(v1b !== v1, '3: different seeds produce different fields');
+
+const samplerA2 = createFieldSampler(1337);
+const v1a2 = samplerA2.sample('temperature', 100, 200, 1550, 3);
+ok(v1a2 === v1, '3: same seed reproduces the same field across sampler instances');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -102,3 +102,87 @@ export function classifyBiomeCell({ height, slope, temp, humid, weird, beachMask
 
   return { biome, ruleIndex };
 }
+
+// ---- seeded value-noise fBm (port of noise_fields.py's _value_noise/_fbm) ----
+// Same algorithm as the Python (fade-interpolated bilinear lattice noise, summed over
+// octaves at halving amplitude), but the lattice itself is filled from a JS-native
+// mulberry32 PRNG rather than numpy's PCG64 (np.random.default_rng) -- see the design
+// spec's Non-goals: same character, not bit-identical to a real terrain-v3 export.
+
+const CHANNEL_OFFSETS = { continentalness: 101, erosion: 211, weirdness: 307, temperature: 401, humidity: 503 };
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSeed(...parts) {
+  let h = 2166136261 >>> 0;
+  for (const p of parts) h = Math.imul(h ^ (p | 0), 16777619) >>> 0;
+  return h >>> 0;
+}
+
+function fade(t) { return t * t * (3.0 - 2.0 * t); }
+
+function buildLattice(seed, period) {
+  const cellsPerAxis = Math.max(2, Math.ceil(WORLD_EXTENT / Math.max(period, 1e-6)) + 4);
+  const rand = mulberry32(seed);
+  const values = new Float64Array(cellsPerAxis * cellsPerAxis);
+  for (let i = 0; i < values.length; i++) values[i] = rand() * 2 - 1;
+  return { size: cellsPerAxis, values };
+}
+
+function clampIndex(i, size) { return i < 0 ? 0 : i >= size ? size - 1 : i; }
+
+function sampleLattice(lattice, xCoord, zCoord) {
+  const { size, values } = lattice;
+  const half = size >> 1;
+  const x0f = Math.floor(xCoord);
+  const z0f = Math.floor(zCoord);
+  const tx = fade(xCoord - x0f);
+  const tz = fade(zCoord - z0f);
+  const x0 = clampIndex(x0f + half, size);
+  const x1 = clampIndex(x0f + half + 1, size);
+  const z0 = clampIndex(z0f + half, size);
+  const z1 = clampIndex(z0f + half + 1, size);
+  const v00 = values[z0 * size + x0];
+  const v10 = values[z0 * size + x1];
+  const v01 = values[z1 * size + x0];
+  const v11 = values[z1 * size + x1];
+  const vx0 = v00 * (1 - tx) + v10 * tx;
+  const vx1 = v01 * (1 - tx) + v11 * tx;
+  return vx0 * (1 - tz) + vx1 * tz;
+}
+
+export function createFieldSampler(seed) {
+  const latticeCache = new Map();
+  function getLattice(channel, basePeriod, octave, octavePeriod) {
+    const key = channel + ':' + basePeriod + ':' + octave;
+    let lat = latticeCache.get(key);
+    if (!lat) {
+      const octaveSeed = hashSeed(seed, CHANNEL_OFFSETS[channel], octave * 1299721);
+      lat = buildLattice(octaveSeed, octavePeriod);
+      latticeCache.set(key, lat);
+    }
+    return lat;
+  }
+  function sample(channel, x, z, period, octaves) {
+    const oct = Math.max(1, Math.floor(octaves));
+    let total = 0, ampSum = 0, amp = 1;
+    for (let o = 0; o < oct; o++) {
+      const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
+      const lat = getLattice(channel, period, o, octavePeriod);
+      total += sampleLattice(lat, x / octavePeriod, z / octavePeriod) * amp;
+      ampSum += amp;
+      amp *= 0.5;
+    }
+    const v = (total / Math.max(ampSum, 1e-8)) * 1.35;
+    return Math.min(1, Math.max(-1, v));
+  }
+  return { sample };
+}
