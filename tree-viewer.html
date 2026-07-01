@@ -394,6 +394,20 @@ buttonControl('Reroll seed', () => {
 header('Texture');
 selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTextureMode, () => {});
 
+// ===================== Lighting section =====================
+// `rig` (createLightingRig) only exposes getters for azimuth/elevation — sun/ambient color and
+// intensity have no getter, so those four are tracked here as local state, seeded from
+// lights.js's own DEFAULTS (sunColor '#fff4e0', sunIntensity 1.8, ambientColor '#8ab4e8',
+// ambientIntensity 0.6), and pushed to the rig via its rig.set*() calls on change.
+header('Lighting');
+let sunColor = '#fff4e0', sunIntensity = 1.8, ambientColor = '#8ab4e8', ambientIntensity = 0.6;
+rangeControl('Elevation', 2, 88, 1, () => rig.elevation, v => rig.setElevation(v), fi, () => {});
+rangeControl('Azimuth', 0, 360, 1, () => rig.azimuth, v => rig.setAzimuth(v), fi, () => {});
+rangeControl('Sun intensity', 0, 4, 0.05, () => sunIntensity, v => { sunIntensity = v; rig.setSunIntensity(v); }, f2, () => {});
+rangeControl('Ambient intensity', 0, 2, 0.05, () => ambientIntensity, v => { ambientIntensity = v; rig.setAmbientIntensity(v); }, f2, () => {});
+colorControl('Sun color', () => parseInt(sunColor.slice(1), 16), v => { sunColor = '#' + v.toString(16).padStart(6, '0'); rig.setSunColor(sunColor); }, () => {});
+colorControl('Ambient color', () => parseInt(ambientColor.slice(1), 16), v => { ambientColor = '#' + v.toString(16).padStart(6, '0'); rig.setAmbientColor(ambientColor); }, () => {});
+
 // ===================== Structure section =====================
 header('Structure');
 rangeControl('Levels', 0, 3, 1, () => opts.levels, v => { opts.levels = Math.round(v); }, fi, () => {
