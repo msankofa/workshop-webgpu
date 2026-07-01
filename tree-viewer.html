@@ -89,6 +89,9 @@ window.addEventListener('resize', () => {
 const _genTree = createTree({});
 const opts = _genTree.options;
 _genTree.dispose();
+// Captured once, immediately, before any user interaction — the Restart button resets to this
+// regardless of how far the live `opts` has drifted since.
+const DEFAULT_OPTS = structuredClone(opts);
 
 let mode = 'solo';        // 'solo' | 'grid'
 let gridSize = 3;
