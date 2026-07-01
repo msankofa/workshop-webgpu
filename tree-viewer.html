@@ -273,6 +273,124 @@ function header(text) {
 // and rebuilt independently of the rest of its section.
 function withHost(hostEl, fn) { const prev = current; current = hostEl; fn(); current = prev; }
 
+// ===================== floating panel manager =====================
+// Every Tuning-tab section (and, nested, every Structure trait) opens as an independent
+// floating panel instead of expanding inline — inline accordion sections take up a lot of
+// vertical space once there are this many sliders. Multiple panels can be open at once; a
+// newly-opened panel (one with no remembered position yet) is placed to avoid overlapping
+// already-open panels near the same horizontal position ("repelled" downward); once a panel
+// has a position — whether auto-placed or user-dragged — reopening it reuses that position.
+const FP_WIDTH = 230, FP_GAP = 10;
+const floatingPanels = new Map();   // id -> { id, el, body, x, y, opened, parentId }
+const bodyToPanelId = new Map();    // panel body element -> its id, so panelSection() can find its parent
+
+function createFloatingPanel(id, title, parentId) {
+  const el = document.createElement('div'); el.className = 'float-panel'; el.style.display = 'none';
+  const bar = document.createElement('div'); bar.className = 'fp-bar';
+  bar.innerHTML = '<span>' + title + '</span>';
+  const closeBtn = document.createElement('button'); closeBtn.className = 'fp-close'; closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => closeFloatingPanel(id));
+  bar.appendChild(closeBtn);
+  const body = document.createElement('div'); body.className = 'fp-body';
+  el.appendChild(bar); el.appendChild(body);
+  document.body.appendChild(el);
+
+  let drag = null;
+  bar.addEventListener('pointerdown', e => {
+    if (e.target === closeBtn) return;
+    const r = el.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const fp = floatingPanels.get(id);
+    fp.x = e.clientX - drag.dx; fp.y = e.clientY - drag.dy;
+    el.style.left = fp.x + 'px'; el.style.top = fp.y + 'px';
+  });
+  bar.addEventListener('pointerup', e => { drag = null; bar.releasePointerCapture(e.pointerId); });
+
+  const fp = { id, el, body, x: null, y: null, opened: false, parentId };
+  floatingPanels.set(id, fp);
+  return fp;
+}
+
+// Places a panel that has never been positioned before: prefers one panel-width to the left of
+// whatever contained the row that opened it, near that row's vertical position; pushed down past
+// any already-open panel it would otherwise overlap in roughly the same horizontal position;
+// clamped to stay fully on-screen rather than wrapping into a new column.
+function positionNewPanel(fp, anchorEl) {
+  const anchorRect = anchorEl.getBoundingClientRect();
+  let x = anchorRect.left - FP_WIDTH - FP_GAP;
+  let y = anchorRect.top;
+
+  fp.el.style.visibility = 'hidden';
+  fp.el.style.left = x + 'px'; fp.el.style.top = y + 'px';
+  const height = fp.el.offsetHeight || 150;
+
+  const colliders = [...floatingPanels.values()]
+    .filter(o => o !== fp && o.opened && o.x != null && Math.abs(o.x - x) < FP_WIDTH)
+    .sort((a, b) => a.y - b.y);
+  for (const o of colliders) {
+    const oBottom = o.y + (o.el.offsetHeight || 150);
+    if (y < oBottom && y + height > o.y) y = oBottom + FP_GAP;
+  }
+
+  const maxY = window.innerHeight - height - FP_GAP;
+  y = Math.max(FP_GAP, Math.min(maxY, y));
+  x = Math.max(FP_GAP, x);
+  fp.x = x; fp.y = y;
+  fp.el.style.visibility = 'visible';
+}
+
+function openFloatingPanel(id, anchorEl) {
+  const fp = floatingPanels.get(id);
+  if (fp.opened) return;
+  fp.opened = true;
+  fp.el.style.display = 'block';
+  if (fp.x == null) positionNewPanel(fp, anchorEl);
+  fp.el.style.left = fp.x + 'px'; fp.el.style.top = fp.y + 'px';
+}
+function closeFloatingPanel(id) {
+  const fp = floatingPanels.get(id);
+  if (!fp || !fp.opened) return;
+  fp.opened = false;
+  fp.el.style.display = 'none';
+  for (const child of floatingPanels.values()) if (child.parentId === id) closeFloatingPanel(child.id);
+}
+function toggleFloatingPanel(id, anchorEl) {
+  const fp = floatingPanels.get(id);
+  if (fp.opened) closeFloatingPanel(id); else openFloatingPanel(id, anchorEl);
+}
+
+// Drop-in replacement for header() for Tuning-tab sections: creates a row (label + optional
+// Mutate button) in whatever `current` is right now, creates the matching floating panel
+// (parented to whichever panel/page `current` belongs to), and redirects `current` into the new
+// panel's body so the caller's subsequent slider-building calls populate it — same calling
+// convention header() used, so existing per-section code below each call didn't need to change.
+function panelSection(id, label, mutateFn) {
+  const parentId = bodyToPanelId.get(current) || null;
+  const anchorEl = parentId ? floatingPanels.get(parentId).el : ctrlBox;
+  const parentContainer = current;
+
+  const fp = createFloatingPanel(id, label, parentId);
+  bodyToPanelId.set(fp.body, id);
+
+  const rowEl = document.createElement('div'); rowEl.className = 'sec-row';
+  const labelSpan = document.createElement('span'); labelSpan.className = 'sec-label'; labelSpan.textContent = label;
+  labelSpan.addEventListener('click', () => toggleFloatingPanel(id, anchorEl));
+  rowEl.appendChild(labelSpan);
+  if (mutateFn) {
+    const mutateBtn = document.createElement('button'); mutateBtn.className = 'mini-btn'; mutateBtn.textContent = 'Mutate';
+    mutateBtn.addEventListener('click', () => mutateFn());
+    rowEl.appendChild(mutateBtn);
+  }
+  parentContainer.appendChild(rowEl);
+
+  current = fp.body;
+  return fp.body;
+}
+
 // Controls only read their displayed value once, at creation. When `opts` (or other bound
 // state) changes from somewhere other than that control's own input event — a loaded saved
 // tree, a mutation — the displayed slider position/toggle/color goes stale. Every control
