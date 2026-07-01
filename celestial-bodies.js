@@ -12,8 +12,203 @@ function markTex(tex) {
   return tex;
 }
 
+// ---- fractal/cellular noise for the HD painter (canvas-only; no TSL/GPU dependency) ----
+function hash3(x, y, z, seed) {
+  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + seed * 91.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+function noise3(x, y, z, seed) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+  const n000 = hash3(xi, yi, zi, seed), n100 = hash3(xi + 1, yi, zi, seed);
+  const n010 = hash3(xi, yi + 1, zi, seed), n110 = hash3(xi + 1, yi + 1, zi, seed);
+  const n001 = hash3(xi, yi, zi + 1, seed), n101 = hash3(xi + 1, yi, zi + 1, seed);
+  const n011 = hash3(xi, yi + 1, zi + 1, seed), n111 = hash3(xi + 1, yi + 1, zi + 1, seed);
+  const x00 = lerp(n000, n100, u), x10 = lerp(n010, n110, u);
+  const x01 = lerp(n001, n101, u), x11 = lerp(n011, n111, u);
+  const y0 = lerp(x00, x10, v), y1 = lerp(x01, x11, v);
+  return lerp(y0, y1, w);
+}
+function fbm3(x, y, z, seed, octaves) {
+  let amp = 0.5, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += noise3(x * freq, y * freq, z * freq, seed) * amp;
+    norm += amp;
+    amp *= 0.5; freq *= 2.15;
+  }
+  return sum / norm;
+}
+function smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+function mixRGB(c0, c1, t) { return [lerp(c0[0], c1[0], t), lerp(c0[1], c1[1], t), lerp(c0[2], c1[2], t)]; }
+// Worley F1 (distance to nearest jittered point) — isolated round blobs, used for craters.
+function worleyF1(x, y, z, seed) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let best = 1e9;
+  for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const cx = xi + dx, cy = yi + dy, cz = zi + dz;
+    const jx = hash3(cx, cy, cz, seed), jy = hash3(cx, cy, cz, seed + 17.3), jz = hash3(cx, cy, cz, seed + 41.9);
+    const px = cx + jx, py = cy + jy, pz = cz + jz;
+    const ddx = px - x, ddy = py - y, ddz = pz - z;
+    const d = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+    if (d < best) best = d;
+  }
+  return best;
+}
+// Worley F1/F2 (distance to nearest AND second-nearest point) — F2-F1 is ~0 on cell
+// boundaries, giving a connected crack/vein network, used for ice cracks and lava veins.
+function worleyF1F2(x, y, z, seed) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let best1 = 1e9, best2 = 1e9;
+  for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const cx = xi + dx, cy = yi + dy, cz = zi + dz;
+    const jx = hash3(cx, cy, cz, seed), jy = hash3(cx, cy, cz, seed + 17.3), jz = hash3(cx, cy, cz, seed + 41.9);
+    const px = cx + jx, py = cy + jy, pz = cz + jz;
+    const ddx = px - x, ddy = py - y, ddz = pz - z;
+    const d = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+    if (d < best1) { best2 = best1; best1 = d; } else if (d < best2) { best2 = d; }
+  }
+  return [best1, best2];
+}
+const LX = -0.55, LY = 0.6, LZ = 0.6;
+const LLEN = Math.hypot(LX, LY, LZ);
+const lightDir = [LX / LLEN, LY / LLEN, LZ / LLEN];
+
+// Tunable visual constants, read at paint time (not captured as literals) so
+// stellar-viewer.html's sliders mutate this object and the next repaint reflects it.
+// Production code (createCelestialBodies) never writes to this object.
+export const PAINTER_TUNING = {
+  terrestrial: { cloudThreshold: [0.56, 0.78], iceCapLatitude: [0.74, 0.9], continentThreshold: [0.46, 0.52], specularPower: 50 },
+  gas:         { warpAmount: 1.4, warpFreq: 2.5, bandFreq: 6.5, bandThreshold: [0.3, 0.7] },
+  ice:         { crackFreq: 4.5, crackWidth: 0.06 },
+  volcanic:    { veinFreq: 4, veinWidth: 0.05, hotWidth: 0.025, ambient: 0.12 },
+  rocky:       { craterFreq: 5, rimBand: [0.32, 0.22], floorBand: [0.14, 0.05], continentThreshold: [0.42, 0.58] },
+};
+
+// Per-pixel atmosphere tint for the Fresnel rim glow — only kinds with a real
+// atmosphere get one (gas giants already get the existing halo via body.glow).
+const ATMO_COLOR = {
+  terrestrial: [159, 208, 255],
+  ice: [210, 230, 255],
+};
+
+function paintBodyHD(body) {
+  const S = 256;
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  const cx = S / 2, cy = S / 2, R = S * 0.26;
+  const seed = (body.seed || 0) * 53.7;
+  const kind = body.kind;
+  const tuning = PAINTER_TUNING[kind] || PAINTER_TUNING.rocky;
+  const atmo = ATMO_COLOR[kind];
+
+  const base = parse(body.color);
+  // NOTE: lighten()/darken() return CSS "rgb(...)" strings for canvas fillStyle use —
+  // NOT hex, so they can't be round-tripped through parse(). Compute the same math
+  // (mix toward white/black) directly as numeric [r,g,b] via mixRGB instead.
+  const hi = mixRGB(base, [255, 255, 255], 0.45);
+  const lo = mixRGB(base, [0, 0, 0], 0.55);
+
+  if (body.glow) {
+    const gl = g.createRadialGradient(cx, cy, R * 0.8, cx, cy, Math.min(R * 1.8, S * 0.49));
+    gl.addColorStop(0, hexA(body.color, 0.5)); gl.addColorStop(1, hexA(body.color, 0));
+    g.fillStyle = gl; g.fillRect(0, 0, S, S);
+  }
+
+  const bx0 = Math.max(0, Math.floor(cx - R) - 1), by0 = Math.max(0, Math.floor(cy - R) - 1);
+  const bw = Math.min(S, Math.ceil(R * 2) + 2), bh = Math.min(S, Math.ceil(R * 2) + 2);
+  const img = g.getImageData(bx0, by0, bw, bh);
+  const data = img.data;
+
+  for (let py = 0; py < bh; py++) {
+    for (let px = 0; px < bw; px++) {
+      const x = bx0 + px, y = by0 + py;
+      const nx = (x + 0.5 - cx) / R, ny = (y + 0.5 - cy) / R;
+      const d2 = nx * nx + ny * ny;
+      if (d2 > 1) continue;
+      const nz = Math.sqrt(Math.max(0, 1 - d2));
+
+      let r, gC, b, emissive = [0, 0, 0];
+
+      if (kind === 'terrestrial') {
+        const ct = tuning.continentThreshold;
+        const land = fbm3(nx * 2.3 + seed, ny * 2.3 + seed, nz * 2.3 + seed, seed, 5);
+        const continent = smoothstep(ct[0], ct[1], land);
+        const biome = fbm3(nx * 3.7 + seed * 7, ny * 3.7 + seed * 7, nz * 3.7 + seed * 7, seed + 9, 3);
+        const landColor = mixRGB(lo, hi, smoothstep(0.3, 0.7, biome));
+        [r, gC, b] = mixRGB(base, landColor, continent);
+        const lat = Math.abs(ny);
+        const capT = tuning.iceCapLatitude;
+        const iceCap = smoothstep(capT[0], capT[1], lat);
+        [r, gC, b] = mixRGB([r, gC, b], [238, 243, 250], iceCap);
+        const cloudT = tuning.cloudThreshold;
+        const cloudN = fbm3(nx * 3.1 + seed * 13, ny * 3.1 + seed * 13, nz * 3.1 + seed * 13, seed + 13, 4);
+        const cloud = smoothstep(cloudT[0], cloudT[1], cloudN);
+        [r, gC, b] = mixRGB([r, gC, b], [255, 255, 255], cloud * 0.8);
+        const hx = lightDir[0], hy = lightDir[1], hz = lightDir[2] + 1;
+        const hlen = Math.hypot(hx, hy, hz) || 1;
+        const ndoth = Math.max(0, (nx * hx + ny * hy + nz * hz) / hlen);
+        const spec = Math.pow(ndoth, tuning.specularPower) * (1 - continent) * (1 - cloud);
+        emissive = [spec * 255, spec * 255, spec * 255];
+      } else if (kind === 'gas') {
+        const warp = (noise3(nx * tuning.warpFreq + seed, ny * tuning.warpFreq + seed, nz * tuning.warpFreq + seed, seed + 11) - 0.5) * tuning.warpAmount;
+        const n = fbm3((nx + warp) * 1.2, (ny + warp * 0.6) * tuning.bandFreq, (nz - warp) * 1.2, seed, 4);
+        const bt = tuning.bandThreshold;
+        const t = smoothstep(bt[0], bt[1], n);
+        [r, gC, b] = mixRGB(lo, hi, t);
+        [r, gC, b] = mixRGB([r, gC, b], base, 0.25);
+        const sx = nx - 0.25, sy = ny + 0.1;
+        const spot = smoothstep(0.16, 0.08, Math.hypot(sx, sy * 1.8));
+        [r, gC, b] = mixRGB([r, gC, b], lo, spot * 0.6);
+      } else {
+        // Temporary fallback for ice/volcanic (added in Task 4) and the real rocky kind.
+        const ct = tuning.continentThreshold || PAINTER_TUNING.rocky.continentThreshold;
+        const land = fbm3(nx * 2.1 + seed, ny * 2.1 + seed, nz * 2.1 + seed, seed, 4);
+        const continent = smoothstep(ct[0], ct[1], land);
+        [r, gC, b] = mixRGB(lo, base, continent);
+        const craterFreq = tuning.craterFreq || PAINTER_TUNING.rocky.craterFreq;
+        const wd = worleyF1(nx * craterFreq + seed, ny * craterFreq + seed, nz * craterFreq + seed, seed + 5);
+        const rb = tuning.rimBand || PAINTER_TUNING.rocky.rimBand, fb = tuning.floorBand || PAINTER_TUNING.rocky.floorBand;
+        const rim = smoothstep(rb[0], rb[1], wd), floor = smoothstep(fb[0], fb[1], wd);
+        [r, gC, b] = mixRGB([r, gC, b], hi, rim * 0.4);
+        [r, gC, b] = mixRGB([r, gC, b], lo, floor * 0.7);
+      }
+
+      const diffuse = Math.max(0, nx * lightDir[0] + ny * lightDir[1] + nz * lightDir[2]);
+      const ambient = kind === 'volcanic' ? (tuning.ambient ?? 0.22) : 0.22;
+      const shade = ambient + (1 - ambient) * diffuse;
+      const limb = 0.55 + 0.45 * Math.pow(nz, 0.6);
+      const k = shade * limb;
+
+      let rimGlow = [0, 0, 0];
+      if (atmo) {
+        const fres = Math.pow(1 - nz, 4) * Math.max(0.15, diffuse);
+        rimGlow = [atmo[0] * fres * 0.7, atmo[1] * fres * 0.7, atmo[2] * fres * 0.7];
+      }
+
+      const idx = (py * bw + px) * 4;
+      data[idx] = clamp8(r * k + emissive[0] + rimGlow[0]);
+      data[idx + 1] = clamp8(gC * k + emissive[1] + rimGlow[1]);
+      data[idx + 2] = clamp8(b * k + emissive[2] + rimGlow[2]);
+      data[idx + 3] = 255;
+    }
+  }
+  g.putImageData(img, bx0, by0);
+
+  if (body.rings) {
+    g.save(); g.translate(cx, cy); g.rotate(-0.5); g.scale(1, 0.32);
+    g.strokeStyle = hexA(lighten(body.color, 0.3), 0.7); g.lineWidth = S * 0.026;
+    g.beginPath(); g.arc(0, 0, R * 1.4, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = hexA(body.color, 0.5); g.lineWidth = S * 0.013;
+    g.beginPath(); g.arc(0, 0, R * 1.62, 0, Math.PI * 2); g.stroke();
+    g.restore();
+  }
+  return markTex(new THREE.CanvasTexture(cv));
+}
+
 // A soft shaded sphere (moon/rocky planet) with optional bands/rings/glow.
-function paintBody(body) {
+function paintBodySimple(body) {
   const S = 256;
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const g = cv.getContext('2d');
@@ -70,7 +265,7 @@ function paintBody(body) {
 export function createCelestialBodies(bodyData) {
   const group = new THREE.Group();
   for (const body of bodyData) {
-    const tex = paintBody(body);
+    const tex = body.detail === 'high' ? paintBodyHD(body) : paintBodySimple(body);
     const mat = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
     mat.fog = false;
     const spr = new THREE.Sprite(mat);
