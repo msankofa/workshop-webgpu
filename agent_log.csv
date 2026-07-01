@@ -1,0 +1,2 @@
+date,subsystem,files,summary
+2026-06-30T00:00,vegetation,"tree-viewer.html;docs/subsystems/vegetation.md",Added standalone tree-viewer.html exposing trees.js's full parameter surface for live tuning outside the full environment viewer.
