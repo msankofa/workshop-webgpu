@@ -475,6 +475,10 @@ function leavesMutateList() {
   ];
 }
 
+buttonControl('Mutate all', () => mutateSection([
+  ...structureMutateList(), ...forceMutateList(), ...barkMutateList(), ...leavesMutateList(),
+]));
+
 // ===================== Structure section =====================
 header('Structure');
 buttonControl('Mutate', () => mutateSection(structureMutateList()));
