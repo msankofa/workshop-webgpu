@@ -1,6 +1,7 @@
 # Vegetation subsystem (trees + grass)
 
 > 🗺️ [View this subsystem in the interactive code map](../../code-map.html#vegetation)
+> On authored maps, tree/grass density is gated per-biome — see [biomes.md](biomes.md).
 
 ## Purpose
 
@@ -222,17 +223,33 @@ a procedural/authored texture toggle, a Lighting section driving `lights.js`'s r
 in any way, and `environment-viewer.html`'s own Forest panel sliders are unaffected by it. Run via
 `python serve.py` like the main viewer (see the directory's `CLAUDE.md`).
 
-The controls panel has two tabs: **Tuning** (View/Texture/Lighting/Mutation/Structure/Force/
-Bark/Leaves/Export) and **Species** — a save/load library of tuned trees persisted to
-`localStorage` (`tree-viewer:saved-trees`; name + "Save current tree" snapshots the current
-options with texture maps stripped, click a saved entry to load it). Structure/Force/Bark/Leaves
-each have a "Mutate" button at the top that randomly perturbs that section's numeric sliders
-(independently per slider, clamped to each slider's own range) by up to the global "Mutation
-degree" fraction of that slider's range — a targeted reroll, not a full regenerate. Structure
-additionally has one small "Mutate" button per trait (Length, Radius, Taper, ...), mutating just
-that trait across its active levels; the Mutation section also has a "Mutate all" button that
-mutates every trait across all four sections at once. A 15-slot Undo/Redo history (Mutation
-section) covers "big jump" actions only — any Mutate, Reroll seed, and loading a saved tree —
-not individual slider drags; a new action after an undo clears the redo stack. "Restart" resets
-to the tool's built-in default tree (captured once at startup), not a saved tree; Lighting and
-texture mode are outside undo/restart's scope since Mutate never touches them.
+The controls panel has two tabs: **Tuning** and **Species**. Species is a save/load library of
+tuned trees persisted to `localStorage` (`tree-viewer:saved-trees`; name + "Save current tree"
+snapshots the current options with texture maps stripped, click a saved entry to load it) — its
+"Save"/"Saved trees" sub-sections are still plain inline collapsibles (`header()`), unaffected by
+the floating-panel redesign below.
+
+Every Tuning-tab section (View, Texture, Lighting, Structure, Force, Bark, Leaves, Export) is a
+row (label + optional "Mutate" button) that opens its own independent floating panel on click,
+rather than expanding inline — inline accordion sections took up too much vertical space once
+there were this many sliders. Structure is two levels deep: its own floating panel lists all 10
+traits (Length, Radius, Taper, Children, Branch start, Angle, Gnarliness, Twist, Sections,
+Segments) as rows, each of which opens a further-nested floating panel with just that trait's
+per-level sliders. Multiple floating panels can be open at once; a panel with no remembered
+position yet opens one panel-width to the left of whatever contained the row that opened it,
+pushed down to avoid overlapping any already-open panel in roughly the same column, clamped to
+stay fully on-screen. Once a panel has a position — auto-placed or user-dragged — reopening it
+reuses that position. Closing a panel also closes any panel that was opened from inside it (e.g.
+closing Structure also closes any open trait panels).
+
+Mutation is **not** part of this floating-panel system — it's a second, separate, always-visible
+panel docked directly below the main "Tree controls" panel (own drag handling, same visual style).
+It holds the global "Mutation degree" slider, a "Mutate all" button, Undo/Redo, and Restart.
+Structure/Force/Bark/Leaves's row-level "Mutate" buttons (and Structure's per-trait ones) randomly
+perturb that section's/trait's numeric sliders (independently per slider, clamped to each
+slider's own range) by up to the "Mutation degree" fraction of that slider's range — a targeted
+reroll, not a full regenerate; it works whether or not the corresponding floating panel is open.
+A 15-slot Undo/Redo history covers "big jump" actions only — any Mutate, Reroll seed, and loading
+a saved tree — not individual slider drags; a new action after an undo clears the redo stack.
+"Restart" resets to the tool's built-in default tree (captured once at startup), not a saved tree;
+Lighting and texture mode are outside undo/restart's scope since Mutate never touches them.
