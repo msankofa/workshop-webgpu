@@ -247,6 +247,18 @@ function header(text) {
 // and rebuilt independently of the rest of its section.
 function withHost(hostEl, fn) { const prev = current; current = hostEl; fn(); current = prev; }
 
+// Controls only read their displayed value once, at creation. When `opts` (or other bound
+// state) changes from somewhere other than that control's own input event — a loaded saved
+// tree, a mutation — the displayed slider position/toggle/color goes stale. Every control
+// primitive below registers a `refresh()` closure here; refreshAllControls() re-syncs every
+// control's displayed value from live state in one pass. Entries whose DOM node was removed by
+// a section rebuild (e.g. Structure's per-level rows) are pruned automatically.
+let allControls = [];
+function refreshAllControls() {
+  allControls = allControls.filter(c => c.el.isConnected);
+  for (const c of allControls) c.refresh();
+}
+
 function row(labelHtml) {
   const r = document.createElement('div'); r.className = 'row'; r.innerHTML = labelHtml;
   current.appendChild(r);
@@ -259,6 +271,7 @@ function rangeControl(label, min, max, step, get, set, fmt, onChange) {
   inp.min = min; inp.max = max; inp.step = step; inp.value = get();
   inp.addEventListener('input', () => { set(parseFloat(inp.value)); val.textContent = fmt(get()); onChange(); });
   current.appendChild(inp);
+  allControls.push({ el: inp, refresh: () => { inp.value = get(); val.textContent = fmt(get()); } });
   return inp;
 }
 function selectControl(label, choices, get, set, onChange) {
@@ -271,6 +284,7 @@ function selectControl(label, choices, get, set, onChange) {
   }
   sel.addEventListener('change', () => { set(sel.value); onChange(); });
   current.appendChild(sel);
+  allControls.push({ el: sel, refresh: () => { sel.value = get(); } });
   return sel;
 }
 function toggleControl(label, get, set, onChange) {
@@ -278,6 +292,7 @@ function toggleControl(label, get, set, onChange) {
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!get(); inp.style.width = 'auto';
   inp.addEventListener('change', () => { set(inp.checked); onChange(); });
   r.appendChild(inp);
+  allControls.push({ el: inp, refresh: () => { inp.checked = !!get(); } });
   return inp;
 }
 function colorControl(label, get, set, onChange) {
@@ -286,6 +301,7 @@ function colorControl(label, get, set, onChange) {
   inp.value = '#' + get().toString(16).padStart(6, '0');
   inp.addEventListener('input', () => { set(parseInt(inp.value.slice(1), 16)); onChange(); });
   current.appendChild(inp);
+  allControls.push({ el: inp, refresh: () => { inp.value = '#' + get().toString(16).padStart(6, '0'); } });
   return inp;
 }
 function buttonControl(label, onClick) {
