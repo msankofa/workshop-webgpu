@@ -506,6 +506,7 @@ function rebuildStructureRows() {
   structureHost.innerHTML = '';
   withHost(structureHost, () => {
     for (const p of LEVEL_PARAMS) {
+      miniButtonControl(`Mutate ${p.label}`, () => mutateSection(traitMutateList(p)));
       for (let level = 0; level <= opts.levels; level++) {
         optsSlider(`${p.key}.${level}`, `${p.label} L${level}`, p.min, p.max, p.step, p.fmt);
       }
