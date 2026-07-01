@@ -355,6 +355,44 @@ buttonControl('Reroll seed', () => {
 header('Texture');
 selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTextureMode, () => {});
 
+// ===================== Structure section =====================
+header('Structure');
+rangeControl('Levels', 0, 3, 1, () => opts.levels, v => { opts.levels = Math.round(v); }, fi, () => {
+  rebuildStructureRows();
+  scheduleRegenerate(true);
+});
+
+const LEVEL_PARAMS = [
+  { key: 'length', label: 'Length', min: 1, max: 30, step: 0.5, fmt: f2 },
+  { key: 'radius', label: 'Radius', min: 0.05, max: 2, step: 0.01, fmt: f2 },
+  { key: 'taper', label: 'Taper', min: 0, max: 1, step: 0.01, fmt: f2 },
+  { key: 'children', label: 'Children', min: 0, max: 10, step: 1, fmt: fi },
+  { key: 'branchStart', label: 'Branch start', min: 0, max: 1, step: 0.01, fmt: f2 },
+  { key: 'angle', label: 'Angle', min: 0, max: 90, step: 1, fmt: fi },
+  { key: 'gnarliness', label: 'Gnarliness', min: 0, max: 1, step: 0.01, fmt: f2 },
+  { key: 'twist', label: 'Twist', min: -1, max: 1, step: 0.01, fmt: f2 },
+  { key: 'sections', label: 'Sections', min: 3, max: 16, step: 1, fmt: fi },
+  { key: 'segments', label: 'Segments', min: 3, max: 16, step: 1, fmt: fi },
+];
+
+const structureHost = document.createElement('div');
+current.appendChild(structureHost);
+
+// trees.js's per-level arrays already have one entry per level 0-3 (DEFAULTS), matching the
+// Levels slider's 0-3 range, so no array-growing logic is needed here — only re-rendering
+// which rows (0..opts.levels) are shown.
+function rebuildStructureRows() {
+  structureHost.innerHTML = '';
+  withHost(structureHost, () => {
+    for (const p of LEVEL_PARAMS) {
+      for (let level = 0; level <= opts.levels; level++) {
+        optsSlider(`${p.key}.${level}`, `${p.label} L${level}`, p.min, p.max, p.step, p.fmt);
+      }
+    }
+  });
+}
+rebuildStructureRows();
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
