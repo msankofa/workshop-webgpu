@@ -98,6 +98,28 @@ import { generateMilkyWay, generateCelestialBodies } from './sky-field.js';
   ok(comp.length >= 1 && comp.length <= 3, '1-3 companion moons on the near planet');
   ok(bodies.every(b => Math.abs(Math.hypot(b.position.x, b.position.y, b.position.z) - b.radius) < 1e-3), 'each body sits on its own radius');
   ok(generateCelestialBodies(1000, makePalette(), makeRng(3)).length === bodies.length, 'deterministic per seed');
+
+  ok(bodies.every(b => typeof b.kind === 'string'), 'every body has a kind string');
+  ok(moons.every(b => ['ice', 'rocky'].includes(b.kind)), 'extra moons only roll ice/rocky kinds');
+  ok(comp.every(b => ['ice', 'rocky'].includes(b.kind)), 'companion moons only roll ice/rocky kinds');
+  ok(distant.every(b => ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'].includes(b.kind)), 'distant planets roll from the full kind set');
+  ok(near.every(b => ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'].includes(b.kind)), 'near planet rolls from the full kind set');
+  ok(distant.every(b => b.detail === 'low'), 'distant planets are low detail');
+  ok(moons.every(b => b.detail === 'low'), 'extra moons are low detail');
+  ok(near.every(b => b.detail === 'high'), 'near planet is high detail');
+  ok(comp.every(b => b.detail === 'high'), 'companion moons are high detail');
+  ok(bodies.every(b => b.gas === (b.kind === 'gas')), 'gas boolean stays derived from kind (paintBodySimple compat)');
+  ok(bodies.every(b => typeof b.seed === 'number' && b.seed >= 0 && b.seed < 1), 'every body carries a [0,1) seed');
+}
+
+// ---- Celestial body kind variety: all 5 planet kinds appear over many seeds ----
+{
+  const seen = new Set();
+  for (let s = 0; s < 200; s++) {
+    const bodies = generateCelestialBodies(1000, makePalette(), makeRng(1000 + s));
+    for (const b of bodies) if (b.type === 'planet') seen.add(b.kind);
+  }
+  ok(['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'].every(k => seen.has(k)), 'all 5 planet kinds appear across 200 seeds');
 }
 
 console.log(fail ? `\n${fail} FAILED` : '\nall passed');

@@ -167,7 +167,28 @@ export function generateMilkyWay(radius, palette, rng) {
   return { bandCount, position, brightness, phase, speed, size, tilt };
 }
 
-const PLANET_COLORS = ['#b07a55', '#7d8aa0', '#c9a06a', '#6a8f7d', '#9a6b8c', '#5f7bbf'];
+const PLANET_KINDS = ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'];
+const KIND_WEIGHTS = [0.28, 0.22, 0.18, 0.12, 0.20];
+const MOON_KINDS = ['ice', 'rocky'];
+const MOON_WEIGHTS = [0.55, 0.45];
+
+const KIND_PALETTES = {
+  terrestrial: ['#2f5d8a', '#3a6e4f', '#4a7a5a', '#355f7d', '#3f6b4a'],
+  gas:         ['#b07a55', '#7d8aa0', '#c9a06a', '#6a8f7d', '#9a6b8c', '#5f7bbf'],
+  ice:         ['#dce8f2', '#c9d8e8', '#e7eef5', '#b9cfe0', '#d3e2ee'],
+  volcanic:    ['#33201a', '#4a2a20', '#5a2f22', '#3a1c14', '#4f2818'],
+  rocky:       ['#9a958c', '#8a7f6e', '#a89f8f', '#7d7468', '#938a7c'],
+};
+
+function weightedPick(rng, items, weights) {
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = rng() * total;
+  for (let i = 0; i < items.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
 
 // Extra moons + distant/near planets + the near planet's companion moons. Each body is a
 // plain descriptor (type, world position on its own radius, size, color, flags) the TSL
@@ -186,35 +207,44 @@ export function generateCelestialBodies(radius, palette, rng) {
   };
   const pick = arr => arr[(rng() * arr.length) | 0];
 
-  // 1-2 extra moons.
+  // 1-2 extra moons (ice/rocky only — "gas moon" or "terrestrial moon" don't read as sensible).
   const moonN = 1 + ((rng() * 2) | 0);
   for (let i = 0; i < moonN; i++) {
     const r = radius * (0.7 + rng() * 0.08);
-    out.push({ type: 'moon', companion: false, position: place(dir(), r), radius: r,
-      size: radius * (0.018 + rng() * 0.02), color: '#d7dcea', phase: rng() });
+    const kind = weightedPick(rng, MOON_KINDS, MOON_WEIGHTS);
+    out.push({ type: 'moon', companion: false, kind, detail: 'low', gas: kind === 'gas',
+      position: place(dir(), r), radius: r,
+      size: radius * (0.018 + rng() * 0.02), color: pick(KIND_PALETTES[kind]),
+      phase: rng(), seed: rng() });
   }
   // 2-4 small distant planets.
   const distN = 2 + ((rng() * 3) | 0);
   for (let i = 0; i < distN; i++) {
     const r = radius * (0.72 + rng() * 0.06);
-    out.push({ type: 'planet', scaleClass: 'distant', position: place(dir(), r), radius: r,
-      size: radius * (0.01 + rng() * 0.015), color: pick(PLANET_COLORS),
-      gas: rng() < 0.5, rings: false, glow: rng() < 0.3 });
+    const kind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
+    out.push({ type: 'planet', scaleClass: 'distant', kind, detail: 'low', gas: kind === 'gas',
+      position: place(dir(), r), radius: r,
+      size: radius * (0.01 + rng() * 0.015), color: pick(KIND_PALETTES[kind]),
+      rings: false, glow: rng() < 0.3, seed: rng() });
   }
   // Exactly one large near planet.
   const nearDir = dir();
   const nearR = radius * 0.6;
   const nearSize = radius * (0.06 + rng() * 0.04);
-  const near = { type: 'planet', scaleClass: 'near', position: place(nearDir, nearR), radius: nearR,
-    size: nearSize, color: pick(PLANET_COLORS), gas: rng() < 0.6, rings: rng() < 0.4, glow: true };
+  const nearKind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
+  const near = { type: 'planet', scaleClass: 'near', kind: nearKind, detail: 'high', gas: nearKind === 'gas',
+    position: place(nearDir, nearR), radius: nearR,
+    size: nearSize, color: pick(KIND_PALETTES[nearKind]), rings: rng() < 0.4, glow: true, seed: rng() };
   out.push(near);
   // 1-3 companion moons orbiting the near planet (offset around its screen position).
   const compN = 1 + ((rng() * 3) | 0);
   for (let i = 0; i < compN; i++) {
     const d = { x: nearDir.x + (rng() * 2 - 1) * 0.06, y: nearDir.y + (rng() * 2 - 1) * 0.06,
       z: nearDir.z + (rng() * 2 - 1) * 0.06 };
-    out.push({ type: 'moon', companion: true, position: place(d, nearR), radius: nearR,
-      size: nearSize * (0.12 + rng() * 0.1), color: '#cdd3e0', phase: rng() });
+    const kind = weightedPick(rng, MOON_KINDS, MOON_WEIGHTS);
+    out.push({ type: 'moon', companion: true, kind, detail: 'high', gas: kind === 'gas',
+      position: place(d, nearR), radius: nearR,
+      size: nearSize * (0.12 + rng() * 0.1), color: pick(KIND_PALETTES[kind]), phase: rng(), seed: rng() });
   }
   return out;
 }
