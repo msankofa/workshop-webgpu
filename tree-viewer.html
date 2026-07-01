@@ -282,7 +282,6 @@ function withHost(hostEl, fn) { const prev = current; current = hostEl; fn(); cu
 // has a position — whether auto-placed or user-dragged — reopening it reuses that position.
 const FP_WIDTH = 230, FP_GAP = 10;
 const floatingPanels = new Map();   // id -> { id, el, body, x, y, opened, parentId }
-const bodyToPanelId = new Map();    // panel body element -> its id, so panelSection() can find its parent
 
 function createFloatingPanel(id, title, parentId) {
   const el = document.createElement('div'); el.className = 'float-panel'; el.style.display = 'none';
@@ -364,17 +363,16 @@ function toggleFloatingPanel(id, anchorEl) {
 }
 
 // Drop-in replacement for header() for Tuning-tab sections: creates a row (label + optional
-// Mutate button) in whatever `current` is right now, creates the matching floating panel
-// (parented to whichever panel/page `current` belongs to), and redirects `current` into the new
-// panel's body so the caller's subsequent slider-building calls populate it — same calling
-// convention header() used, so existing per-section code below each call didn't need to change.
-function panelSection(id, label, mutateFn) {
-  const parentId = bodyToPanelId.get(current) || null;
+// Mutate button) in `parentContainer` (top-level sections all default to `tuningPage`), creates
+// the matching floating panel, and redirects `current` into the new panel's body so the caller's
+// subsequent slider-building calls populate it — same calling convention header() used, so
+// existing per-section code below each call didn't need to change. `parentContainer`/`parentId`
+// are passed explicitly (not inferred from `current`) because `current` is left pointing at
+// whatever the *previous* section's body was — inferring parentage from it would silently nest
+// every section under whichever one happened to run right before it.
+function panelSection(id, label, mutateFn, parentContainer = tuningPage, parentId = null) {
   const anchorEl = parentId ? floatingPanels.get(parentId).el : ctrlBox;
-  const parentContainer = current;
-
   const fp = createFloatingPanel(id, label, parentId);
-  bodyToPanelId.set(fp.body, id);
 
   const rowEl = document.createElement('div'); rowEl.className = 'sec-row';
   const labelSpan = document.createElement('span'); labelSpan.className = 'sec-label'; labelSpan.textContent = label;
@@ -710,9 +708,7 @@ function buildStructureUI() {
   });
 
   for (const p of LEVEL_PARAMS) {
-    current = structureBody; // panelSection redirects `current` into the panel it creates, so
-                              // each iteration must re-point it at Structure's own body first
-    const traitBody = panelSection(`trait-${p.key}`, p.label, () => mutateSection(traitMutateList(p)));
+    const traitBody = panelSection(`trait-${p.key}`, p.label, () => mutateSection(traitMutateList(p)), structureBody, 'structure');
     traitPanelBodies[p.key] = traitBody;
   }
 }
