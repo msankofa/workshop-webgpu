@@ -161,7 +161,9 @@
 
   <section class="panel" id="section-rules">
     <h2>3. The priority stack</h2>
-    <p class="lede">Loading…</p>
+    <p class="lede">17 ordered rules run top to bottom over every cell; whichever one matches <em>last</em> wins &mdash; hover the map above (or the real map below) to see which rule fired for a given cell.</p>
+    <div class="rule-list" id="rule-list"></div>
+    <div class="callout">Rule 7 (<span class="swatch" style="background:rgb(89,115,71)"></span>swamp) looks like it should apply to warm, very-wet, non-cold land &mdash; but rule 9 (dark_forest) matches every one of those cells too and runs right after it. Try hovering a very-wet, not-hot, not-cold cell above: you'll land on dark_forest, not swamp, every time. <code>swamp</code> is a real (if surprising) casualty of rule order in the source classifier.</div>
   </section>
 
   <section class="panel" id="section-consumption">
@@ -274,13 +276,65 @@
     genTooltip.textContent =
       `${biomeName}\nheight ${lastGenGrid.height[idx].toFixed(1)}  slope ${lastGenGrid.slope[idx].toFixed(2)}\n` +
       `temp ${lastGenGrid.temp[idx].toFixed(2)}  humid ${lastGenGrid.humid[idx].toFixed(2)}  weird ${lastGenGrid.weird[idx].toFixed(2)}`;
+    highlightRule(lastGenGrid.ruleIndex[idx]);
   });
   genCanvas.addEventListener('mouseleave', () => {
     genTooltip.classList.add('hidden');
+    clearRuleHighlight();
   });
 
   buildGenControls();
   renderGenGrid();
+
+  // ---- Section 3: priority-stack panel ----
+  const RULES = [
+    { index: -1, biome: 'plains', text: 'Default &mdash; no rule below matched.' },
+    { index: 0, biome: 'deep_ocean', text: 'height &lt; sea level &minus; 14' },
+    { index: 1, biome: 'ocean', text: 'sea level &minus; 14 &le; height &le; sea level' },
+    { index: 2, biome: 'beach', text: 'beach mask &gt; 0.35 (overrides ocean/deep_ocean too)' },
+    { index: 3, biome: 'desert', text: 'land &amp; hot &amp; dry' },
+    { index: 4, biome: 'badlands', text: 'land &amp; hot &amp; dry &amp; weirdness &gt; 0.38 (overrides desert)' },
+    { index: 5, biome: 'savanna', text: 'land &amp; hot &amp; not dry &amp; not very wet' },
+    { index: 6, biome: 'jungle', text: 'land &amp; very wet &amp; hot' },
+    { index: 7, biome: 'swamp', text: 'land &amp; very wet &amp; not hot (see callout below)' },
+    { index: 8, biome: 'forest', text: 'land &amp; wet &amp; not cold &amp; not very wet' },
+    { index: 9, biome: 'dark_forest', text: 'land &amp; wet &amp; humidity &gt; 0.25 &amp; not hot &amp; not cold (overrides forest, and in practice swamp)' },
+    { index: 10, biome: 'taiga', text: 'land &amp; cold &amp; wet' },
+    { index: 11, biome: 'snowy_taiga', text: 'land &amp; cold &amp; wet &amp; high (overrides taiga)' },
+    { index: 12, biome: 'snowy_plains', text: 'land &amp; cold &amp; not wet' },
+    { index: 13, biome: 'meadow', text: 'land &amp; not hot &amp; not cold &amp; humidity &gt; &minus;0.05 &amp; weirdness &gt; 0.28' },
+    { index: 14, biome: 'windswept_hills', text: 'land &amp; steep (overrides almost everything land-based)' },
+    { index: 15, biome: 'stony_peaks', text: 'land &amp; high &amp; steep (overrides windswept_hills)' },
+    { index: 16, biome: 'snowy_peaks', text: 'height &gt; snow height full &amp; slope &lt; 0.80 (overrides stony_peaks)' },
+  ];
+
+  function buildRuleList() {
+    const wrap = document.getElementById('rule-list');
+    wrap.innerHTML = '';
+    for (const rule of RULES) {
+      const row = document.createElement('div');
+      row.className = 'rule-row';
+      row.dataset.ruleIndex = String(rule.index);
+      const [r, g, b] = BIOME_COLORS[rule.biome];
+      row.innerHTML =
+        `<span class="rule-idx">${rule.index}</span>` +
+        `<span class="swatch" style="background:rgb(${r},${g},${b})"></span>` +
+        `<span class="rule-text"><strong>${rule.biome}</strong> &mdash; ${rule.text}</span>`;
+      wrap.appendChild(row);
+    }
+  }
+
+  function highlightRule(ruleIndex) {
+    document.querySelectorAll('#rule-list .rule-row').forEach((row) => {
+      row.classList.toggle('active', Number(row.dataset.ruleIndex) === ruleIndex);
+    });
+  }
+
+  function clearRuleHighlight() {
+    document.querySelectorAll('#rule-list .rule-row.active').forEach((row) => row.classList.remove('active'));
+  }
+
+  buildRuleList();
 </script>
 </body>
 </html>
