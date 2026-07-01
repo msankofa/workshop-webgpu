@@ -321,6 +321,40 @@ function optsColor(path, label) {
   return colorControl(label, () => getPath(opts, path), v => setPath(opts, path, v), () => scheduleRegenerate());
 }
 
+// ===================== View / Texture sections =====================
+header('View');
+let seedLabel;
+{
+  const r = row('<span style="color:#c4ccd6">Seed</span>');
+  seedLabel = document.createElement('span');
+  r.appendChild(seedLabel);
+}
+function refreshSeedLabel() { seedLabel.textContent = String(mode === 'solo' ? opts.seed : baseSeed); }
+refreshSeedLabel();
+
+selectControl('Mode', ['solo', 'grid'], () => mode, v => { mode = v; }, () => {
+  gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
+  refreshSeedLabel();
+  rebuildView();
+});
+
+const gridSizeWrap = document.createElement('div');
+current.appendChild(gridSizeWrap);
+withHost(gridSizeWrap, () => {
+  rangeControl('Grid size', 2, 5, 1, () => gridSize, v => { gridSize = Math.round(v); }, fi, () => { if (mode === 'grid') rebuildView(); });
+});
+gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
+
+buttonControl('Reroll seed', () => {
+  if (mode === 'solo') opts.seed = (Math.random() * 1e9) | 0;
+  else baseSeed = (Math.random() * 1e9) | 0;
+  refreshSeedLabel();
+  rebuildView();
+});
+
+header('Texture');
+selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTextureMode, () => {});
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
