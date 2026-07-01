@@ -582,6 +582,7 @@ function loadOpts(savedOpts) {
   Object.assign(opts, structuredClone(savedOpts));
   baseSeed = opts.seed;
   mode = 'solo';
+  gridSizeWrap.style.display = 'none';
   applyTexSetToOpts();
   rebuildStructureRows();
   refreshAllControls();
