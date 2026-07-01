@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Biome explainer — workshop-webgpu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --paper: #faf6ef;
+    --ink: #2b2620;
+    --accent: #b5502f;
+    --accent-soft: #e7c9ba;
+    --card: #ffffff;
+    --border: #e4dccb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  h1, h2, h3 {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+  header.hero {
+    padding: 48px 24px 24px;
+    text-align: center;
+  }
+  header.hero h1 { font-size: 2.2em; color: var(--accent); }
+  header.hero p { max-width: 640px; margin: 8px auto 0; opacity: 0.8; }
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 24px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 32px;
+    box-shadow: 0 2px 10px rgba(43, 38, 32, 0.05);
+  }
+  .panel h2 { font-size: 1.5em; }
+  .lede { opacity: 0.75; margin: 4px 0 20px; }
+  .swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,0.15);
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .pipe-box {
+    background: var(--accent-soft);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-weight: 600;
+    text-align: center;
+    flex: 1 1 160px;
+    font-size: 0.92em;
+  }
+  .pipe-box.small { font-size: 0.82em; background: #f1e9dc; }
+  .pipe-box span { display: block; font-weight: 400; opacity: 0.75; font-size: 0.85em; margin-top: 4px; }
+  .pipe-arrow { align-self: center; font-size: 1.4em; color: var(--accent); }
+  .pipe-arrow.down { width: 100%; text-align: center; }
+  .pipeline-fanout { display: flex; justify-content: center; }
+  .gen-layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  .canvas-frame { position: relative; flex: 0 0 auto; }
+  canvas { border-radius: 8px; border: 1px solid var(--border); image-rendering: pixelated; cursor: crosshair; }
+  .controls { flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px; }
+  .control-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
+  .control-row label { display: flex; justify-content: space-between; opacity: 0.85; }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.82em;
+    line-height: 1.4;
+    white-space: pre;
+    z-index: 10;
+    transform: translate(12px, 12px);
+  }
+  .tooltip.hidden { display: none; }
+  button.action {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.9em;
+  }
+  table.ref-table { border-collapse: collapse; width: 100%; font-size: 0.9em; }
+  table.ref-table th, table.ref-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  table.ref-table tr.active { background: var(--accent-soft); }
+  .rule-list { display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; }
+  .rule-row { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 6px; }
+  .rule-row.active { background: var(--accent-soft); }
+  .rule-row .rule-idx { opacity: 0.5; width: 2.2em; flex: none; }
+  .rule-row .rule-text { opacity: 0.85; }
+  .callout { background: #f1e9dc; border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 6px; font-size: 0.88em; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>How a biome is born</h1>
+  <p>A visual tour of workshop-webgpu's biome system: an external tool assigns a biome to every grid cell of an authored map, and the game reads that assignment to pick ground textures and gate tree/grass density. Companion to <code>docs/subsystems/biomes.md</code>.</p>
+</header>
+<main>
+  <section class="panel" id="section-overview">
+    <h2>1. How a biome is born</h2>
+    <div class="pipeline">
+      <div class="pipe-box">Noise fields<br><span>continentalness · erosion · weirdness · temperature · humidity</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">Height, slope &amp; beach mask<br><span>derived from the fields above</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">classify_biomes priority stack<br><span>17 ordered rules, last match wins</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">biomeIds + biomeNames<br><span>baked into &lt;map&gt;-data.json</span></div>
+    </div>
+    <div class="pipeline-fanout"><div class="pipe-arrow down">&darr;</div></div>
+    <div class="pipeline">
+      <div class="pipe-box small">terrain-loader.js<br><span>biomeAt / treeDensityAt</span></div>
+      <div class="pipe-box small">terrain-textures.js<br><span>ground texture fallback</span></div>
+      <div class="pipe-box small">grass-compute.js<br><span>grass density gate</span></div>
+      <div class="pipe-box small">forest-placement.js<br><span>tree density gate</span></div>
+    </div>
+    <p class="lede" style="margin-top:20px;">Sections 2&ndash;3 below demonstrate the top half (generation, run offline by a separate tool, terrain-v3). Sections 4&ndash;5 demonstrate the bottom half (what this game actually reads at runtime).</p>
+  </section>
+
+  <section class="panel" id="section-generation">
+    <h2>2. Grow a map</h2>
+    <p class="lede">Loading…</p>
+  </section>
+
+  <section class="panel" id="section-rules">
+    <h2>3. The priority stack</h2>
+    <p class="lede">Loading…</p>
+  </section>
+
+  <section class="panel" id="section-consumption">
+    <h2>4. A real exported map</h2>
+    <p class="lede">Loading…</p>
+  </section>
+
+  <section class="panel" id="section-tables">
+    <h2>5. Reference tables</h2>
+    <p class="lede">Loading…</p>
+  </section>
+</main>
+<script type="module">
+  import * as BiomeClassifier from './biome-classifier-js.js';
+  window.__biomeClassifier = BiomeClassifier; // temporary, removed once sections 2-5 wire in directly (Tasks 6-9)
+  console.log('biome-classifier-js.js loaded:', Object.keys(BiomeClassifier));
+</script>
+</body>
+</html>
