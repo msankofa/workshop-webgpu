@@ -168,7 +168,14 @@
 
   <section class="panel" id="section-consumption">
     <h2>4. A real exported map</h2>
-    <p class="lede">Loading…</p>
+    <p class="lede" id="consumption-caption">Loading maps/workshop/test_export-data.json&hellip;</p>
+    <div class="gen-layout" id="consumption-layout" style="display:none;">
+      <div class="canvas-frame">
+        <canvas id="map-canvas"></canvas>
+        <div id="map-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="map-legend"></div>
+    </div>
   </section>
 
   <section class="panel" id="section-tables">
@@ -335,6 +342,118 @@
   }
 
   buildRuleList();
+
+  // ---- Section 4: real exported map ----
+  const TREE_DENSITY = {
+    deep_ocean: 0.0, ocean: 0.0, beach: 0.03, desert: 0.0, badlands: 0.04, savanna: 0.20,
+    plains: 0.10, forest: 0.85, dark_forest: 0.95, jungle: 0.90, swamp: 0.45, taiga: 0.70,
+    snowy_taiga: 0.55, snowy_plains: 0.05, stony_peaks: 0.03, snowy_peaks: 0.0,
+    windswept_hills: 0.18, meadow: 0.16,
+  };
+  const BIOME_MATERIAL = {
+    deep_ocean: 'sand', ocean: 'sand', beach: 'beach', desert: 'desert', badlands: 'dirt', savanna: 'savanna',
+    plains: 'grass', forest: 'forest', dark_forest: 'forest', jungle: 'forest', swamp: 'swamp', taiga: 'taiga',
+    snowy_taiga: 'snow', snowy_plains: 'snow', stony_peaks: 'rock', snowy_peaks: 'snow',
+    windswept_hills: 'gravel', meadow: 'meadow',
+  };
+  const FALLBACK_COLORS = {
+    grass: 0x6f8f45, forest: 0x4f6d38, meadow: 0x82a84f, taiga: 0x536b48, dirt: 0x7b5a3a,
+    savanna: 0x9b8a4a, swamp: 0x4b5435, sand: 0xd8be7c, beach: 0xd7c18a, desert: 0xcfae68,
+    gravel: 0x808080, rock: 0x6f6c64, snow: 0xdde2df,
+  };
+
+  function bilinearGrid(grid, resolution, gx, gz) {
+    const ix = Math.max(0, Math.min(resolution - 2, Math.floor(gx)));
+    const iz = Math.max(0, Math.min(resolution - 2, Math.floor(gz)));
+    const tx = Math.max(0, Math.min(1, gx - ix));
+    const tz = Math.max(0, Math.min(1, gz - iz));
+    const a = grid[iz * resolution + ix] ?? 0;
+    const b = grid[iz * resolution + ix + 1] ?? a;
+    const c = grid[(iz + 1) * resolution + ix] ?? a;
+    const d = grid[(iz + 1) * resolution + ix + 1] ?? c;
+    return a * (1 - tx) * (1 - tz) + b * tx * (1 - tz) + c * (1 - tx) * tz + d * tx * tz;
+  }
+
+  let realMap = null;
+
+  async function loadRealMap() {
+    const caption = document.getElementById('consumption-caption');
+    const layout = document.getElementById('consumption-layout');
+    try {
+      const res = await fetch('maps/workshop/test_export-data.json');
+      if (!res.ok) throw new Error(`fetch failed (${res.status})`);
+      const mapData = await res.json();
+      realMap = mapData;
+      caption.textContent = `maps/workshop/test_export.glb (${mapData.resolution}×${mapData.resolution} biome grid, ${mapData.worldX}×${mapData.worldZ} world units).`;
+      layout.style.display = '';
+      renderRealMap(mapData);
+      renderMapLegend(mapData);
+    } catch (err) {
+      caption.textContent = `Couldn't load maps/workshop/test_export-data.json (${err.message}). Run "python serve.py" and open this page via http://, not file://. Sections 1-3 above still work without it.`;
+    }
+  }
+
+  function renderRealMap(mapData) {
+    const canvas = document.getElementById('map-canvas');
+    const res = mapData.resolution;
+    canvas.width = res;
+    canvas.height = res;
+    const aspect = mapData.worldZ / mapData.worldX;
+    canvas.style.width = '480px';
+    canvas.style.height = Math.round(480 * aspect) + 'px';
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    for (let i = 0; i < mapData.biomeIds.length; i++) {
+      const name = mapData.biomeNames[mapData.biomeIds[i]] || 'plains';
+      const [r, g, b] = BIOME_COLORS[name] || BIOME_COLORS.plains;
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+
+    const tooltip = document.getElementById('map-tooltip');
+    canvas.addEventListener('mousemove', (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const gx = ((ev.clientX - rect.left) / rect.width) * (res - 1);
+      const gz = ((ev.clientY - rect.top) / rect.height) * (res - 1);
+      const ix = Math.max(0, Math.min(res - 1, Math.round(gx)));
+      const iz = Math.max(0, Math.min(res - 1, Math.round(gz)));
+      const idx = iz * res + ix;
+      const biomeName = mapData.biomeNames[mapData.biomeIds[idx]] || 'plains';
+      const grass = mapData.grassDensity ? bilinearGrid(mapData.grassDensity, res, gx, gz) : null;
+      const tree = TREE_DENSITY[biomeName] ?? 0;
+      const texture = BIOME_MATERIAL[biomeName] ?? 'grass';
+      tooltip.classList.remove('hidden');
+      tooltip.style.left = ev.offsetX + 'px';
+      tooltip.style.top = ev.offsetY + 'px';
+      tooltip.textContent =
+        `${biomeName}\ntexture (fallback): ${texture}\ntree density: ${tree.toFixed(2)}` +
+        (grass !== null ? `\ngrass density: ${grass.toFixed(2)}` : '');
+      highlightBiomeRows(biomeName);
+    });
+    canvas.addEventListener('mouseleave', () => {
+      tooltip.classList.add('hidden');
+      clearBiomeHighlight();
+    });
+  }
+
+  function renderMapLegend(mapData) {
+    const wrap = document.getElementById('map-legend');
+    const present = new Set();
+    for (const id of mapData.biomeIds) present.add(mapData.biomeNames[id]);
+    const unused = BIOMES.filter((name) => !present.has(name));
+    wrap.innerHTML =
+      `<p><strong>Present in this map (${present.size}/18):</strong><br>` +
+      Array.from(present).map((name) => swatchLabel(name)).join(' ') + `</p>` +
+      `<p><strong>Defined but unused here (${unused.length}/18):</strong><br>` +
+      unused.map((name) => swatchLabel(name)).join(' ') + `</p>`;
+  }
+
+  function swatchLabel(name) {
+    const [r, g, b] = BIOME_COLORS[name];
+    return `<span class="swatch" style="background:rgb(${r},${g},${b})"></span>${name}`;
+  }
+
+  loadRealMap();
 </script>
 </body>
 </html>
