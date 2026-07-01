@@ -61,3 +61,44 @@ export const WORLD_EXTENT = 1200;
 // terrain-v3's own preview_resolution (384) -- kept small so every slider drag
 // recomputes well within one frame.
 export const GRID_RESOLUTION = 128;
+
+// Literal transcription of biome_classifier.py's classify_biomes(), applied to one
+// cell at a time. Each `if` below is one `ids[mask] = X` line in the Python source, in
+// the exact same order -- later ifs unconditionally overwrite the biome chosen by
+// earlier ones when both match, which is the entire point of this page (see the
+// priority-stack panel, Task 7).
+export function classifyBiomeCell({ height, slope, temp, humid, weird, beachMask, seaLevel, cfg }) {
+  let biome = 'plains';
+  let ruleIndex = -1;
+  const set = (name, idx) => { biome = name; ruleIndex = idx; };
+
+  if (height < seaLevel - 14.0) set('deep_ocean', 0);
+  if (height >= seaLevel - 14.0 && height <= seaLevel) set('ocean', 1);
+  if (beachMask > 0.35) set('beach', 2);
+
+  const land = height > seaLevel + 0.5;
+  const hot = temp > 0.30;
+  const cold = temp < -0.35;
+  const wet = humid > cfg.forest_humidity_bias;
+  const veryWet = humid > 0.45;
+  const dry = humid < -0.20;
+  const high = height > cfg.snow_height_start;
+  const steep = slope > 0.42;
+
+  if (land && hot && dry) set('desert', 3);
+  if (land && hot && dry && weird > 0.38) set('badlands', 4);
+  if (land && hot && !dry && !veryWet) set('savanna', 5);
+  if (land && veryWet && hot) set('jungle', 6);
+  if (land && veryWet && !hot) set('swamp', 7);
+  if (land && wet && !cold && !veryWet) set('forest', 8);
+  if (land && wet && humid > 0.25 && !hot && !cold) set('dark_forest', 9);
+  if (land && cold && wet) set('taiga', 10);
+  if (land && cold && wet && high) set('snowy_taiga', 11);
+  if (land && cold && !wet) set('snowy_plains', 12);
+  if (land && !hot && !cold && humid > -0.05 && weird > 0.28) set('meadow', 13);
+  if (land && steep) set('windswept_hills', 14);
+  if (land && high && steep) set('stony_peaks', 15);
+  if (land && height > cfg.snow_height_full && slope < 0.80) set('snowy_peaks', 16);
+
+  return { biome, ruleIndex };
+}
