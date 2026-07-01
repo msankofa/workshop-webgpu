@@ -454,13 +454,6 @@ function buttonControl(label, onClick) {
   current.appendChild(btn);
   return btn;
 }
-// Compact variant for the per-trait Structure mutate buttons — 10 full-width buttons would
-// dominate the section, so these render small and inline instead.
-function miniButtonControl(label, onClick) {
-  const btn = buttonControl(label, onClick);
-  btn.classList.add('mini-btn');
-  return btn;
-}
 
 function getPath(obj, path) { return path.split('.').reduce((o, k) => o[k], obj); }
 function setPath(obj, path, val) {
@@ -537,12 +530,39 @@ rangeControl('Ambient intensity', 0, 2, 0.05, () => ambientIntensity, v => { amb
 colorControl('Sun color', () => parseInt(sunColor.slice(1), 16), v => { sunColor = '#' + v.toString(16).padStart(6, '0'); rig.setSunColor(sunColor); }, () => {});
 colorControl('Ambient color', () => parseInt(ambientColor.slice(1), 16), v => { ambientColor = '#' + v.toString(16).padStart(6, '0'); rig.setAmbientColor(ambientColor); }, () => {});
 
-// ===================== Mutation section =====================
+// ===================== Mutation panel (docked, separate from the tabbed panel) =====================
+// A second small always-visible panel — not part of the Tuning/Species tabs, and not a floating
+// panel either (the user explicitly wants this one NOT click-to-open, since it's used
+// constantly). Positioned directly below the main panel by default; draggable via the same
+// title-bar pattern as the main panel.
+const mutBox = document.createElement('div'); mutBox.id = 'mut'; document.body.appendChild(mutBox);
+const mutBar = document.createElement('div'); mutBar.id = 'mut-bar';
+mutBar.innerHTML = '<span class="ttl">Mutation</span>';
+const mutBody = document.createElement('div'); mutBody.id = 'mut-body';
+mutBox.appendChild(mutBar); mutBox.appendChild(mutBody);
+{
+  const r = ctrlBox.getBoundingClientRect();
+  mutBox.style.left = r.left + 'px';
+  mutBox.style.top = (r.bottom + 10) + 'px';
+}
+let mutDrag = null;
+mutBar.addEventListener('pointerdown', e => {
+  const r = mutBox.getBoundingClientRect();
+  mutDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+  mutBar.setPointerCapture(e.pointerId);
+});
+mutBar.addEventListener('pointermove', e => {
+  if (!mutDrag) return;
+  mutBox.style.left = Math.max(10, e.clientX - mutDrag.dx) + 'px';
+  mutBox.style.top = Math.max(10, e.clientY - mutDrag.dy) + 'px';
+});
+mutBar.addEventListener('pointerup', e => { mutDrag = null; mutBar.releasePointerCapture(e.pointerId); });
+
 // Mutate is a targeted reroll: degree is a fraction of each slider's own min-max range, applied
 // as an independent random perturbation per numeric slider, clamped to that slider's range.
 // Only numeric range sliders mutate — colors/toggles/selects are left untouched. Behaves like
 // Reroll seed: immediate (bypasses the debounce) and refits the camera.
-header('Mutation');
+current = mutBody;
 let mutationDegree = 0.2;
 rangeControl('Mutation degree', 0, 1, 0.01, () => mutationDegree, v => { mutationDegree = v; }, pct, () => {});
 
@@ -616,11 +636,11 @@ function pushUndo() {
   updateUndoRedoButtons();
 }
 // Shared by loadOpts() and restoreState(): re-apply the current texture mode's maps (snapshots
-// never include live Texture objects), rebuild Structure's rows, refresh every control's
+// never include live Texture objects), rebuild each trait's sliders, refresh every control's
 // displayed value, refresh the seed label, and rebuild the 3D view + Export text.
 function applyOptsAndRefresh() {
   applyTexSetToOpts();
-  rebuildStructureRows();
+  rebuildTraitSliders();
   refreshAllControls();
   refreshSeedLabel();
   rebuildView();
@@ -661,14 +681,9 @@ updateUndoRedoButtons();
 // an undo snapshot, so Restart is itself undoable.
 buttonControl('Restart', () => loadOpts(DEFAULT_OPTS));
 
-// ===================== Structure section =====================
-header('Structure');
-buttonControl('Mutate', () => mutateSection(structureMutateList()));
-rangeControl('Levels', 0, 3, 1, () => opts.levels, v => { opts.levels = Math.round(v); }, fi, () => {
-  rebuildStructureRows();
-  scheduleRegenerate(true);
-});
+current = tuningPage; // restore before the remaining Tuning-tab sections continue building below
 
+// ===================== Structure section =====================
 const LEVEL_PARAMS = [
   { key: 'length', label: 'Length', min: 1, max: 30, step: 0.5, fmt: f2 },
   { key: 'radius', label: 'Radius', min: 0.05, max: 2, step: 0.01, fmt: f2 },
@@ -682,28 +697,41 @@ const LEVEL_PARAMS = [
   { key: 'segments', label: 'Segments', min: 3, max: 16, step: 1, fmt: fi },
 ];
 
-const structureHost = document.createElement('div');
-current.appendChild(structureHost);
+// Structure is two levels deep (section -> trait -> per-level sliders). Each trait is its own
+// persistent floating panel, created once here; only the sliders INSIDE each trait's panel get
+// torn down and rebuilt when opts.levels changes (rebuildTraitSliders) — recreating the trait
+// panels themselves on every change would orphan/duplicate floating panels.
+const traitPanelBodies = {};
+function buildStructureUI() {
+  const structureBody = panelSection('structure', 'Structure', () => mutateSection(structureMutateList()));
+  rangeControl('Levels', 0, 3, 1, () => opts.levels, v => { opts.levels = Math.round(v); }, fi, () => {
+    rebuildTraitSliders();
+    scheduleRegenerate(true);
+  });
 
-// trees.js's per-level arrays already have one entry per level 0-3 (DEFAULTS), matching the
-// Levels slider's 0-3 range, so no array-growing logic is needed here — only re-rendering
-// which rows (0..opts.levels) are shown.
-function rebuildStructureRows() {
-  structureHost.innerHTML = '';
-  withHost(structureHost, () => {
-    for (const p of LEVEL_PARAMS) {
-      miniButtonControl(`Mutate ${p.label}`, () => mutateSection(traitMutateList(p)));
+  for (const p of LEVEL_PARAMS) {
+    current = structureBody; // panelSection redirects `current` into the panel it creates, so
+                              // each iteration must re-point it at Structure's own body first
+    const traitBody = panelSection(`trait-${p.key}`, p.label, () => mutateSection(traitMutateList(p)));
+    traitPanelBodies[p.key] = traitBody;
+  }
+}
+function rebuildTraitSliders() {
+  for (const p of LEVEL_PARAMS) {
+    const body = traitPanelBodies[p.key];
+    body.innerHTML = '';
+    withHost(body, () => {
       for (let level = 0; level <= opts.levels; level++) {
         optsSlider(`${p.key}.${level}`, `${p.label} L${level}`, p.min, p.max, p.step, p.fmt);
       }
-    }
-  });
+    });
+  }
 }
-rebuildStructureRows();
+buildStructureUI();
+rebuildTraitSliders();
 
 // ===================== Force section =====================
-header('Force');
-buttonControl('Mutate', () => mutateSection(forceMutateList()));
+panelSection('force', 'Force', () => mutateSection(forceMutateList()));
 let forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
 let forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
 function applyForceDirection() {
@@ -715,16 +743,14 @@ rangeControl('Direction elevation', -90, 90, 1, () => forceEl, v => { forceEl = 
 optsSlider('force.strength', 'Strength', 0, 0.2, 0.001, v => v.toFixed(3));
 
 // ===================== Bark section =====================
-header('Bark');
-buttonControl('Mutate', () => mutateSection(barkMutateList()));
+panelSection('bark', 'Bark', () => mutateSection(barkMutateList()));
 optsColor('bark.color', 'Color');
 optsSlider('bark.roughness', 'Roughness', 0, 1, 0.01, f2);
 optsToggle('bark.flatShading', 'Flat shading');
 optsSlider('bark.vScale', 'Texture V scale', 0.05, 2, 0.01, f2);
 
 // ===================== Leaves section =====================
-header('Leaves');
-buttonControl('Mutate', () => mutateSection(leavesMutateList()));
+panelSection('leaves', 'Leaves', () => mutateSection(leavesMutateList()));
 optsToggle('leaves.enabled', 'Enabled');
 optsSlider('leaves.count', 'Count', 0, 40, 1, fi);
 optsSlider('leaves.size', 'Size', 0.2, 3, 0.01, f2);
@@ -751,7 +777,7 @@ optsSlider('leaves.roughness', 'Roughness', 0, 1, 0.01, f2);
 optsSlider('leaves.alphaTest', 'Alpha test', 0, 1, 0.01, f2);
 
 // ===================== Export section =====================
-header('Export');
+panelSection('export', 'Export', null);
 const exportArea = document.createElement('textarea');
 exportArea.readOnly = true;
 current.appendChild(exportArea);
