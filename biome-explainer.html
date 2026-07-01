@@ -149,7 +149,14 @@
 
   <section class="panel" id="section-generation">
     <h2>2. Grow a map</h2>
-    <p class="lede">Loading…</p>
+    <p class="lede">Move the sliders &mdash; each one is a real terrain-v3 <code>Terrain2DConfig</code> field, at its real authoring range. Everything else stays fixed at terrain-v3's own defaults.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="gen-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="gen-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="gen-controls"></div>
+    </div>
   </section>
 
   <section class="panel" id="section-rules">
@@ -168,9 +175,112 @@
   </section>
 </main>
 <script type="module">
-  import * as BiomeClassifier from './biome-classifier-js.js';
-  window.__biomeClassifier = BiomeClassifier; // temporary, removed once sections 2-5 wire in directly (Tasks 6-9)
-  console.log('biome-classifier-js.js loaded:', Object.keys(BiomeClassifier));
+  import {
+    BIOMES, BIOME_COLORS, DEFAULT_CONFIG, GRID_RESOLUTION, generateGrid,
+  } from './biome-classifier-js.js';
+
+  // ---- Section 2: generated mini-map ----
+  const GEN_FIELDS = [
+    { key: 'seed', label: 'Seed', min: 0, max: 99999, step: 1 },
+    { key: 'sea_level', label: 'Sea level', min: -120, max: 120, step: 1 },
+    { key: 'continentalness_period', label: 'Continent period', min: 80, max: 4000, step: 4 },
+    { key: 'erosion_period', label: 'Erosion period', min: 80, max: 4000, step: 4 },
+    { key: 'temperature_period', label: 'Temperature period', min: 80, max: 4000, step: 4 },
+    { key: 'humidity_period', label: 'Humidity period', min: 80, max: 4000, step: 4 },
+    { key: 'forest_humidity_bias', label: 'Forest humidity bias', min: -1, max: 1, step: 0.01 },
+    { key: 'snow_height_start', label: 'Snow height start', min: -40, max: 240, step: 1 },
+  ];
+
+  const genConfig = { ...DEFAULT_CONFIG };
+  const genCanvas = document.getElementById('gen-canvas');
+  const genCtx = genCanvas.getContext('2d');
+  const genTooltip = document.getElementById('gen-tooltip');
+  let lastGenGrid = null;
+  let genDebounceTimer = null;
+
+  function renderGenGrid() {
+    const grid = generateGrid(genConfig, GRID_RESOLUTION);
+    lastGenGrid = grid;
+    const img = genCtx.createImageData(GRID_RESOLUTION, GRID_RESOLUTION);
+    for (let i = 0; i < grid.biomeId.length; i++) {
+      const [r, g, b] = BIOME_COLORS[BIOMES[grid.biomeId[i]]];
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    genCtx.putImageData(img, 0, 0);
+  }
+
+  function scheduleGenRender() {
+    clearTimeout(genDebounceTimer);
+    genDebounceTimer = setTimeout(renderGenGrid, 150);
+  }
+
+  function buildGenControls() {
+    const wrap = document.getElementById('gen-controls');
+    wrap.innerHTML = '';
+    for (const field of GEN_FIELDS) {
+      const row = document.createElement('div');
+      row.className = 'control-row';
+      const label = document.createElement('label');
+      const valueSpan = document.createElement('span');
+      valueSpan.textContent = genConfig[field.key];
+      label.textContent = field.label + ' ';
+      label.appendChild(valueSpan);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = field.min;
+      input.max = field.max;
+      input.step = field.step;
+      input.value = genConfig[field.key];
+      input.addEventListener('input', () => {
+        genConfig[field.key] = Number(input.value);
+        valueSpan.textContent = input.value;
+        scheduleGenRender();
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      wrap.appendChild(row);
+      field._input = input;
+      field._valueSpan = valueSpan;
+    }
+    const randomizeBtn = document.createElement('button');
+    randomizeBtn.className = 'action';
+    randomizeBtn.textContent = 'Randomize seed';
+    randomizeBtn.addEventListener('click', () => {
+      genConfig.seed = Math.floor(Math.random() * 100000);
+      const seedField = GEN_FIELDS.find((f) => f.key === 'seed');
+      seedField._input.value = genConfig.seed;
+      seedField._valueSpan.textContent = genConfig.seed;
+      renderGenGrid();
+    });
+    wrap.appendChild(randomizeBtn);
+  }
+
+  function genCellFromEvent(ev) {
+    const rect = genCanvas.getBoundingClientRect();
+    const fx = (ev.clientX - rect.left) / rect.width;
+    const fz = (ev.clientY - rect.top) / rect.height;
+    const ix = Math.max(0, Math.min(GRID_RESOLUTION - 1, Math.floor(fx * GRID_RESOLUTION)));
+    const iz = Math.max(0, Math.min(GRID_RESOLUTION - 1, Math.floor(fz * GRID_RESOLUTION)));
+    return { ix, iz, idx: iz * GRID_RESOLUTION + ix };
+  }
+
+  genCanvas.addEventListener('mousemove', (ev) => {
+    if (!lastGenGrid) return;
+    const { idx } = genCellFromEvent(ev);
+    const biomeName = BIOMES[lastGenGrid.biomeId[idx]];
+    genTooltip.classList.remove('hidden');
+    genTooltip.style.left = ev.offsetX + 'px';
+    genTooltip.style.top = ev.offsetY + 'px';
+    genTooltip.textContent =
+      `${biomeName}\nheight ${lastGenGrid.height[idx].toFixed(1)}  slope ${lastGenGrid.slope[idx].toFixed(2)}\n` +
+      `temp ${lastGenGrid.temp[idx].toFixed(2)}  humid ${lastGenGrid.humid[idx].toFixed(2)}  weird ${lastGenGrid.weird[idx].toFixed(2)}`;
+  });
+  genCanvas.addEventListener('mouseleave', () => {
+    genTooltip.classList.add('hidden');
+  });
+
+  buildGenControls();
+  renderGenGrid();
 </script>
 </body>
 </html>
