@@ -180,7 +180,17 @@
 
   <section class="panel" id="section-tables">
     <h2>5. Reference tables</h2>
-    <p class="lede">Loading…</p>
+    <p class="lede">The two lookup tables workshop-webgpu actually uses at runtime. Hover the generated map (section 2) or the real map (section 4) to highlight a row here.</p>
+    <div class="gen-layout">
+      <div style="flex:1 1 320px;">
+        <h3>Ground texture fallback</h3>
+        <table class="ref-table" id="table-material"></table>
+      </div>
+      <div style="flex:1 1 260px;">
+        <h3>Tree density</h3>
+        <table class="ref-table" id="table-density"></table>
+      </div>
+    </div>
   </section>
 </main>
 <script type="module">
@@ -284,10 +294,12 @@
       `${biomeName}\nheight ${lastGenGrid.height[idx].toFixed(1)}  slope ${lastGenGrid.slope[idx].toFixed(2)}\n` +
       `temp ${lastGenGrid.temp[idx].toFixed(2)}  humid ${lastGenGrid.humid[idx].toFixed(2)}  weird ${lastGenGrid.weird[idx].toFixed(2)}`;
     highlightRule(lastGenGrid.ruleIndex[idx]);
+    highlightBiomeRows(biomeName);
   });
   genCanvas.addEventListener('mouseleave', () => {
     genTooltip.classList.add('hidden');
     clearRuleHighlight();
+    clearBiomeHighlight();
   });
 
   buildGenControls();
@@ -452,6 +464,38 @@
     const [r, g, b] = BIOME_COLORS[name];
     return `<span class="swatch" style="background:rgb(${r},${g},${b})"></span>${name}`;
   }
+
+  // ---- Section 5: reference tables + cross-highlight ----
+  function buildReferenceTables() {
+    const materialTable = document.getElementById('table-material');
+    materialTable.innerHTML =
+      '<tr><th>Biome</th><th>Texture layer</th></tr>' +
+      BIOMES.map((name) => {
+        const layer = BIOME_MATERIAL[name] ?? 'grass';
+        const hex = (FALLBACK_COLORS[layer] ?? 0x808080).toString(16).padStart(6, '0');
+        return `<tr data-biome="${name}"><td>${swatchLabel(name)}</td><td><span class="swatch" style="background:#${hex}"></span>${layer}</td></tr>`;
+      }).join('');
+
+    const densityTable = document.getElementById('table-density');
+    densityTable.innerHTML =
+      '<tr><th>Biome</th><th>Tree density</th></tr>' +
+      BIOMES.map((name) => {
+        const density = TREE_DENSITY[name] ?? 0;
+        return `<tr data-biome="${name}"><td>${swatchLabel(name)}</td><td>${density.toFixed(2)}</td></tr>`;
+      }).join('');
+  }
+
+  function highlightBiomeRows(biomeName) {
+    document.querySelectorAll('#table-material tr[data-biome], #table-density tr[data-biome]').forEach((row) => {
+      row.classList.toggle('active', row.dataset.biome === biomeName);
+    });
+  }
+
+  function clearBiomeHighlight() {
+    document.querySelectorAll('#table-material tr.active, #table-density tr.active').forEach((row) => row.classList.remove('active'));
+  }
+
+  buildReferenceTables();
 
   loadRealMap();
 </script>
