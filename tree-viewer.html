@@ -644,10 +644,13 @@ function pushUndo() {
   updateUndoRedoButtons();
 }
 // Shared by loadOpts() and restoreState(): re-apply the current texture mode's maps (snapshots
-// never include live Texture objects), rebuild each trait's sliders, refresh every control's
-// displayed value, refresh the seed label, and rebuild the 3D view + Export text.
+// never include live Texture objects), resync forceAz/forceEl (derived from the new
+// opts.force.direction — see resyncForceAngles() in the Force section below), rebuild each
+// trait's sliders, refresh every control's displayed value, refresh the seed label, and rebuild
+// the 3D view + Export text.
 function applyOptsAndRefresh() {
   applyTexSetToOpts();
+  resyncForceAngles();
   rebuildTraitSliders();
   refreshAllControls();
   refreshSeedLabel();
@@ -738,8 +741,16 @@ rebuildTraitSliders();
 
 // ===================== Force section =====================
 panelSection('force', 'Force', () => mutateSection(forceMutateList()));
-let forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
-let forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
+// forceAz/forceEl are derived state (opts.force.direction is a unit vector, not an angle) —
+// they must be resynced from opts.force.direction whenever `opts` is replaced wholesale
+// (Load/Undo/Redo/Restart; see resyncForceAngles(), called from applyOptsAndRefresh()) or the
+// Force sliders would silently keep showing the *previous* tree's angle.
+let forceAz, forceEl;
+function resyncForceAngles() {
+  forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
+  forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
+}
+resyncForceAngles();
 function applyForceDirection() {
   const a = forceAz * Math.PI / 180, e = forceEl * Math.PI / 180;
   opts.force.direction = [Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)];
