@@ -810,73 +810,255 @@ buttonControl('Copy tree JSON', () => {
 });
 refreshExport();
 
-// ===================== Species tab: save / load / delete =====================
-const SAVED_TREES_KEY = 'tree-viewer:saved-trees';
-let savedTrees = [];
-try { savedTrees = JSON.parse(localStorage.getItem(SAVED_TREES_KEY) || '[]'); } catch { savedTrees = []; }
-function persistSavedTrees() { localStorage.setItem(SAVED_TREES_KEY, JSON.stringify(savedTrees)); }
-// Same map/normalMap-stripping replacer Export uses — saved snapshots never hold live Texture
-// objects, both because they aren't meaningfully serializable and because a saved preset should
-// be a reusable createTree() options object, not tied to whatever texture mode was active when
-// it was saved.
+// ===================== Species tab: families, species, biome/density/size/age =====================
+// A Family is a named group of Species (each a full tree opts + metadata), grown by "auto"
+// (batch-mutate-and-save N at once) and "manual" (mutate normally, then keep one) modes — moving
+// outward from a known place rather than pure randomness. Stored as one nested blob so exporting
+// a whole family later (for the game to consume) is just JSON.stringify(family).
+const BIOME_NAMES = [
+  'deep_ocean', 'ocean', 'beach', 'desert', 'badlands', 'savanna', 'plains', 'forest',
+  'dark_forest', 'jungle', 'swamp', 'taiga', 'snowy_taiga', 'snowy_plains', 'stony_peaks',
+  'snowy_peaks', 'windswept_hills', 'meadow',
+];
+const FAMILIES_KEY = 'tree-viewer:families';
+const LEGACY_SAVED_TREES_KEY = 'tree-viewer:saved-trees';
+function newId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+
+// Same map/normalMap-stripping replacer Export uses — species snapshots never hold live Texture
+// objects, both because they aren't meaningfully serializable and because a species should be a
+// reusable createTree() options object, not tied to whatever texture mode was active when saved.
 function snapshotOpts() {
   return JSON.parse(JSON.stringify(opts, (key, val) => (key === 'map' || key === 'normalMap' ? undefined : val)));
 }
+
+let families = null;
+try { families = JSON.parse(localStorage.getItem(FAMILIES_KEY)); } catch { families = null; }
+if (!Array.isArray(families)) {
+  // One-time migration: fold any pre-family flat saved-tree list into a single "Imported"
+  // family so nothing from before this feature existed gets lost.
+  let legacy = [];
+  try { legacy = JSON.parse(localStorage.getItem(LEGACY_SAVED_TREES_KEY) || '[]'); } catch { legacy = []; }
+  families = legacy.length ? [{
+    id: newId(), name: 'Imported',
+    species: legacy.map(entry => ({
+      id: newId(), name: entry.name, opts: entry.opts, parentSpeciesId: null,
+      biomes: [], density: 1, sizeRange: [0.8, 1.2], ageRange: [1, 1],
+    })),
+  }] : [];
+}
+function persistFamilies() { localStorage.setItem(FAMILIES_KEY, JSON.stringify(families)); }
+function familyById(id) { return families.find(f => f.id === id); }
+
+let currentFamilyId = families[0]?.id ?? null;
+let currentSpeciesId = null;
+
 // Fully replaces `opts`'s contents in place (never reassigns the `opts` binding itself) so every
 // closure holding a reference to `opts` keeps working. Deep-clones the saved snapshot so editing
-// the loaded tree can never mutate the stored save. Re-applies the current texture mode's maps
-// afterward, since saved snapshots never include them (see snapshotOpts above).
+// the loaded tree can never mutate the stored species. Re-applies the current texture mode's
+// maps afterward, since species snapshots never include them (see snapshotOpts above). Resets
+// the age preview to fully mature, so switching species never carries over a scrubbed age from
+// whatever was previously loaded.
 function loadOpts(savedOpts) {
   pushUndo();
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(savedOpts));
   baseSeed = opts.seed;
   mode = 'solo';
+  previewAge = 1;
   gridSizeWrap.style.display = 'none';
   applyOptsAndRefresh();
   activateTab('tuning');
 }
+// Like loadOpts's core, but no undo/tab-switch/render — an internal step used to reset `opts`
+// to a baseline between batch-generated mutations (see "Auto-add mutations" below), not a
+// user-facing load.
+function resetOptsQuiet(source) {
+  for (const k of Object.keys(opts)) delete opts[k];
+  Object.assign(opts, structuredClone(source));
+  resyncForceAngles();
+}
 
 sectionHost = speciesPage;
 
-header('Save');
-let saveNameValue = '';
+header('Family');
+let familySelectEl, newFamilyNameValue = '';
 {
-  const r = row('<span style="color:#c4ccd6">Name</span>');
-  const nameInp = document.createElement('input'); nameInp.type = 'text'; nameInp.style.width = '100%';
-  nameInp.addEventListener('input', () => { saveNameValue = nameInp.value; });
-  current.appendChild(nameInp);
+  row('<span style="color:#c4ccd6">Family</span>');
+  familySelectEl = document.createElement('select');
+  familySelectEl.addEventListener('change', () => {
+    currentFamilyId = familySelectEl.value || null;
+    currentSpeciesId = null;
+    renderFamilyPanel();
+  });
+  current.appendChild(familySelectEl);
 }
-buttonControl('Save current tree', () => {
-  const name = saveNameValue.trim() || `Tree ${savedTrees.length + 1}`;
-  savedTrees.push({ name, savedAt: Date.now(), opts: snapshotOpts() });
-  persistSavedTrees();
-  renderSavedList();
-});
+{
+  row('<span style="color:#c4ccd6">New family name</span>');
+  const nameInp = document.createElement('input'); nameInp.type = 'text'; nameInp.style.width = '100%';
+  nameInp.addEventListener('input', () => { newFamilyNameValue = nameInp.value; });
+  current.appendChild(nameInp);
+  buttonControl('+ New family', () => {
+    const name = newFamilyNameValue.trim() || `Family ${families.length + 1}`;
+    const fam = { id: newId(), name, species: [] };
+    families.push(fam);
+    persistFamilies();
+    currentFamilyId = fam.id;
+    currentSpeciesId = null;
+    nameInp.value = ''; newFamilyNameValue = '';
+    renderFamilyPanel();
+  });
+}
 
-header('Saved trees');
-const savedListHost = document.createElement('div');
-current.appendChild(savedListHost);
-function renderSavedList() {
-  savedListHost.innerHTML = '';
-  withHost(savedListHost, () => {
-    if (savedTrees.length === 0) { row('<span style="color:#7f8a99">No saved trees yet.</span>'); return; }
-    savedTrees.forEach((entry, i) => {
-      const r = row('<span style="color:#c4ccd6;cursor:pointer">' + entry.name + '</span>');
+header('Grow family');
+const growHost = document.createElement('div');
+current.appendChild(growHost);
+
+header('Species');
+const speciesListHost = document.createElement('div');
+current.appendChild(speciesListHost);
+
+header('Edit species');
+const speciesEditHost = document.createElement('div');
+current.appendChild(speciesEditHost);
+
+// Rebuilds the family <select>'s options plus the three dynamic hosts above from current state
+// (families/currentFamilyId/currentSpeciesId). Called after any add/remove/select action.
+function renderFamilyPanel() {
+  familySelectEl.innerHTML = '';
+  for (const f of families) {
+    const op = document.createElement('option'); op.value = f.id; op.textContent = f.name;
+    familySelectEl.appendChild(op);
+  }
+  if (currentFamilyId && !familyById(currentFamilyId)) currentFamilyId = null;
+  if (!currentFamilyId && families.length) currentFamilyId = families[0].id;
+  if (currentFamilyId) familySelectEl.value = currentFamilyId;
+
+  renderGrowHost();
+  renderSpeciesList();
+  renderSpeciesEdit();
+}
+
+function renderGrowHost() {
+  growHost.innerHTML = '';
+  withHost(growHost, () => {
+    const fam = currentFamilyId ? familyById(currentFamilyId) : null;
+    if (!fam) { row('<span style="color:#7f8a99">Create a family to start growing species.</span>'); return; }
+
+    // Auto: batch-mutate the currently-loaded tree N times from the SAME baseline (not
+    // cumulative drift) and save every result as a new species, without rendering each
+    // intermediate mutation — only the final restore-to-baseline is rendered.
+    let mutationCount = 5;
+    rangeControl('Auto-add count', 1, 20, 1, () => mutationCount, v => { mutationCount = Math.round(v); }, fi, () => {});
+    buttonControl('Auto-add mutations', () => {
+      const baseline = snapshotOpts();
+      const added = [];
+      for (let i = 0; i < mutationCount; i++) {
+        resetOptsQuiet(baseline);
+        mutateParams([...structureMutateList(), ...forceMutateList(), ...barkMutateList(), ...leavesMutateList()]);
+        added.push({
+          id: newId(), name: `${fam.name} ${fam.species.length + added.length + 1}`,
+          opts: snapshotOpts(), parentSpeciesId: currentSpeciesId,
+          biomes: [], density: 1, sizeRange: [0.8, 1.2], ageRange: [1, 1],
+        });
+      }
+      fam.species.push(...added);
+      persistFamilies();
+      resetOptsQuiet(baseline);
+      refreshAllControls();
+      rebuildView();
+      renderSpeciesList();
+    });
+
+    // Manual: no new mutate mechanism — use the tool exactly as it already works (any Mutate
+    // button, sliders, whatever), then keep the result. Never hitting this is how a bad
+    // mutation gets discarded.
+    let keepNameValue = '';
+    {
+      row('<span style="color:#c4ccd6">New species name</span>');
+      const inp = document.createElement('input'); inp.type = 'text'; inp.style.width = '100%';
+      inp.addEventListener('input', () => { keepNameValue = inp.value; });
+      current.appendChild(inp);
+    }
+    buttonControl('Keep current tree as new species', () => {
+      const name = keepNameValue.trim() || `${fam.name} ${fam.species.length + 1}`;
+      fam.species.push({
+        id: newId(), name, opts: snapshotOpts(), parentSpeciesId: currentSpeciesId,
+        biomes: [], density: 1, sizeRange: [0.8, 1.2], ageRange: [1, 1],
+      });
+      persistFamilies();
+      keepNameValue = '';
+      renderSpeciesList();
+    });
+  });
+}
+
+function renderSpeciesList() {
+  speciesListHost.innerHTML = '';
+  withHost(speciesListHost, () => {
+    const fam = currentFamilyId ? familyById(currentFamilyId) : null;
+    if (!fam || fam.species.length === 0) { row('<span style="color:#7f8a99">No species yet.</span>'); return; }
+    fam.species.forEach(sp => {
+      const label = sp.name + (sp.biomes.length ? ' · ' + sp.biomes.join(',') : '');
+      const r = row('<span style="color:#c4ccd6;cursor:pointer">' + label + '</span>');
       const delBtn = document.createElement('span');
       delBtn.textContent = '×'; delBtn.style.cssText = 'cursor:pointer;color:#c47;padding:0 4px';
       delBtn.addEventListener('click', e => {
         e.stopPropagation();
-        savedTrees.splice(i, 1);
-        persistSavedTrees();
-        renderSavedList();
+        fam.species = fam.species.filter(s => s.id !== sp.id);
+        if (currentSpeciesId === sp.id) currentSpeciesId = null;
+        persistFamilies();
+        renderSpeciesList();
+        renderSpeciesEdit();
       });
       r.appendChild(delBtn);
-      r.addEventListener('click', () => loadOpts(entry.opts));
+      // Clicking a row both loads it into the live Solo tree AND selects it for editing —
+      // unified into one click so the age-preview slider below always previews whichever
+      // species you're actually looking at.
+      r.addEventListener('click', () => {
+        currentSpeciesId = sp.id;
+        loadOpts(sp.opts);
+        renderSpeciesEdit();
+      });
     });
   });
 }
-renderSavedList();
+
+function renderSpeciesEdit() {
+  speciesEditHost.innerHTML = '';
+  withHost(speciesEditHost, () => {
+    const fam = currentFamilyId ? familyById(currentFamilyId) : null;
+    const sp = fam && currentSpeciesId ? fam.species.find(s => s.id === currentSpeciesId) : null;
+    if (!sp) { row('<span style="color:#7f8a99">Select a species from the list to edit it.</span>'); return; }
+
+    {
+      row('<span style="color:#c4ccd6">Name</span>');
+      const inp = document.createElement('input'); inp.type = 'text'; inp.value = sp.name; inp.style.width = '100%';
+      inp.addEventListener('input', () => { sp.name = inp.value; persistFamilies(); });
+      current.appendChild(inp);
+    }
+
+    row('<span style="color:#8a93a3">Biomes</span>');
+    for (const b of BIOME_NAMES) {
+      const r = row('<span style="color:#c4ccd6">' + b + '</span>');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sp.biomes.includes(b); cb.style.width = 'auto';
+      cb.addEventListener('change', () => {
+        if (cb.checked) { if (!sp.biomes.includes(b)) sp.biomes.push(b); }
+        else sp.biomes = sp.biomes.filter(x => x !== b);
+        persistFamilies();
+      });
+      r.appendChild(cb);
+    }
+
+    rangeControl('Density', 0, 5, 0.1, () => sp.density, v => { sp.density = v; persistFamilies(); }, f2, () => {});
+    rangeControl('Size min', 0.1, 3, 0.05, () => sp.sizeRange[0], v => { sp.sizeRange[0] = Math.min(v, sp.sizeRange[1]); persistFamilies(); }, f2, () => {});
+    rangeControl('Size max', 0.1, 3, 0.05, () => sp.sizeRange[1], v => { sp.sizeRange[1] = Math.max(v, sp.sizeRange[0]); persistFamilies(); }, f2, () => {});
+    rangeControl('Age min', 0, 1, 0.01, () => sp.ageRange[0], v => { sp.ageRange[0] = Math.min(v, sp.ageRange[1]); persistFamilies(); }, pct, () => {});
+    rangeControl('Age max', 0, 1, 0.01, () => sp.ageRange[1], v => { sp.ageRange[1] = Math.max(v, sp.ageRange[0]); persistFamilies(); }, pct, () => {});
+    rangeControl('Age preview', 0, 1, 0.01, () => previewAge, v => { previewAge = v; regenerateSolo(false); }, pct, () => {});
+  });
+}
+
+renderFamilyPanel();
 
 positionMutBoxInitial();
 
