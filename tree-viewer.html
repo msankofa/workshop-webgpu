@@ -561,6 +561,76 @@ buttonControl('Copy tree JSON', () => {
 });
 refreshExport();
 
+// ===================== Species tab: save / load / delete =====================
+const SAVED_TREES_KEY = 'tree-viewer:saved-trees';
+let savedTrees = [];
+try { savedTrees = JSON.parse(localStorage.getItem(SAVED_TREES_KEY) || '[]'); } catch { savedTrees = []; }
+function persistSavedTrees() { localStorage.setItem(SAVED_TREES_KEY, JSON.stringify(savedTrees)); }
+// Same map/normalMap-stripping replacer Export uses — saved snapshots never hold live Texture
+// objects, both because they aren't meaningfully serializable and because a saved preset should
+// be a reusable createTree() options object, not tied to whatever texture mode was active when
+// it was saved.
+function snapshotOpts() {
+  return JSON.parse(JSON.stringify(opts, (key, val) => (key === 'map' || key === 'normalMap' ? undefined : val)));
+}
+// Fully replaces `opts`'s contents in place (never reassigns the `opts` binding itself) so every
+// closure holding a reference to `opts` keeps working. Deep-clones the saved snapshot so editing
+// the loaded tree can never mutate the stored save. Re-applies the current texture mode's maps
+// afterward, since saved snapshots never include them (see snapshotOpts above).
+function loadOpts(savedOpts) {
+  for (const k of Object.keys(opts)) delete opts[k];
+  Object.assign(opts, structuredClone(savedOpts));
+  baseSeed = opts.seed;
+  mode = 'solo';
+  applyTexSetToOpts();
+  rebuildStructureRows();
+  refreshAllControls();
+  refreshSeedLabel();
+  activateTab('tuning');
+  rebuildView();
+}
+
+sectionHost = speciesPage;
+
+header('Save');
+let saveNameValue = '';
+{
+  const r = row('<span style="color:#c4ccd6">Name</span>');
+  const nameInp = document.createElement('input'); nameInp.type = 'text'; nameInp.style.width = '100%';
+  nameInp.addEventListener('input', () => { saveNameValue = nameInp.value; });
+  current.appendChild(nameInp);
+}
+buttonControl('Save current tree', () => {
+  const name = saveNameValue.trim() || `Tree ${savedTrees.length + 1}`;
+  savedTrees.push({ name, savedAt: Date.now(), opts: snapshotOpts() });
+  persistSavedTrees();
+  renderSavedList();
+});
+
+header('Saved trees');
+const savedListHost = document.createElement('div');
+current.appendChild(savedListHost);
+function renderSavedList() {
+  savedListHost.innerHTML = '';
+  withHost(savedListHost, () => {
+    if (savedTrees.length === 0) { row('<span style="color:#7f8a99">No saved trees yet.</span>'); return; }
+    savedTrees.forEach((entry, i) => {
+      const r = row('<span style="color:#c4ccd6;cursor:pointer">' + entry.name + '</span>');
+      const delBtn = document.createElement('span');
+      delBtn.textContent = '×'; delBtn.style.cssText = 'cursor:pointer;color:#c47;padding:0 4px';
+      delBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        savedTrees.splice(i, 1);
+        persistSavedTrees();
+        renderSavedList();
+      });
+      r.appendChild(delBtn);
+      r.addEventListener('click', () => loadOpts(entry.opts));
+    });
+  });
+}
+renderSavedList();
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
