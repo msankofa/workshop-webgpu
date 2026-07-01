@@ -228,4 +228,11 @@ Bark/Leaves/Export) and **Species** — a save/load library of tuned trees persi
 options with texture maps stripped, click a saved entry to load it). Structure/Force/Bark/Leaves
 each have a "Mutate" button at the top that randomly perturbs that section's numeric sliders
 (independently per slider, clamped to each slider's own range) by up to the global "Mutation
-degree" fraction of that slider's range — a targeted reroll, not a full regenerate.
+degree" fraction of that slider's range — a targeted reroll, not a full regenerate. Structure
+additionally has one small "Mutate" button per trait (Length, Radius, Taper, ...), mutating just
+that trait across its active levels; the Mutation section also has a "Mutate all" button that
+mutates every trait across all four sections at once. A 15-slot Undo/Redo history (Mutation
+section) covers "big jump" actions only — any Mutate, Reroll seed, and loading a saved tree —
+not individual slider drags; a new action after an undo clears the redo stack. "Restart" resets
+to the tool's built-in default tree (captured once at startup), not a saved tree; Lighting and
+texture mode are outside undo/restart's scope since Mutate never touches them.
