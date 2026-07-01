@@ -538,7 +538,11 @@ const mutBar = document.createElement('div'); mutBar.id = 'mut-bar';
 mutBar.innerHTML = '<span class="ttl">Mutation</span>';
 const mutBody = document.createElement('div'); mutBody.id = 'mut-body';
 mutBox.appendChild(mutBar); mutBox.appendChild(mutBody);
-{
+// Positioned once, at the very end of the script (see the bottom of this file) rather than here
+// — `ctrlBox`'s remaining Structure/Force/Bark/Leaves/Export rows haven't been added yet at this
+// point, so its rendered height (and therefore where "directly below it" actually is) isn't
+// final until the whole panel is built.
+function positionMutBoxInitial() {
   const r = ctrlBox.getBoundingClientRect();
   mutBox.style.left = r.left + 'px';
   mutBox.style.top = (r.bottom + 10) + 'px';
@@ -856,6 +860,8 @@ function renderSavedList() {
   });
 }
 renderSavedList();
+
+positionMutBoxInitial();
 
 renderer.setAnimationLoop(() => {
   controls.update();
