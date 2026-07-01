@@ -408,8 +408,40 @@ rangeControl('Ambient intensity', 0, 2, 0.05, () => ambientIntensity, v => { amb
 colorControl('Sun color', () => parseInt(sunColor.slice(1), 16), v => { sunColor = '#' + v.toString(16).padStart(6, '0'); rig.setSunColor(sunColor); }, () => {});
 colorControl('Ambient color', () => parseInt(ambientColor.slice(1), 16), v => { ambientColor = '#' + v.toString(16).padStart(6, '0'); rig.setAmbientColor(ambientColor); }, () => {});
 
+// ===================== Mutation section =====================
+// Mutate is a targeted reroll: degree is a fraction of each slider's own min-max range, applied
+// as an independent random perturbation per numeric slider, clamped to that slider's range.
+// Only numeric range sliders mutate — colors/toggles/selects are left untouched. Behaves like
+// Reroll seed: immediate (bypasses the debounce) and refits the camera.
+header('Mutation');
+let mutationDegree = 0.2;
+rangeControl('Mutation degree', 0, 1, 0.01, () => mutationDegree, v => { mutationDegree = v; }, pct, () => {});
+
+function optsMutateEntry(path, min, max) {
+  return { min, max, get: () => getPath(opts, path), set: v => setPath(opts, path, v) };
+}
+function mutateParams(list) {
+  for (const p of list) {
+    const range = p.max - p.min;
+    const delta = (Math.random() * 2 - 1) * mutationDegree * range;
+    p.set(Math.max(p.min, Math.min(p.max, p.get() + delta)));
+  }
+}
+function mutateSection(list) {
+  mutateParams(list);
+  refreshAllControls();
+  rebuildView();
+}
+
 // ===================== Structure section =====================
 header('Structure');
+buttonControl('Mutate', () => {
+  const list = [];
+  for (const p of LEVEL_PARAMS) {
+    for (let level = 0; level <= opts.levels; level++) list.push(optsMutateEntry(`${p.key}.${level}`, p.min, p.max));
+  }
+  mutateSection(list);
+});
 rangeControl('Levels', 0, 3, 1, () => opts.levels, v => { opts.levels = Math.round(v); }, fi, () => {
   rebuildStructureRows();
   scheduleRegenerate(true);
@@ -448,6 +480,11 @@ rebuildStructureRows();
 
 // ===================== Force section =====================
 header('Force');
+buttonControl('Mutate', () => mutateSection([
+  { min: 0, max: 360, get: () => forceAz, set: v => { forceAz = v; applyForceDirection(); } },
+  { min: -90, max: 90, get: () => forceEl, set: v => { forceEl = v; applyForceDirection(); } },
+  optsMutateEntry('force.strength', 0, 0.2),
+]));
 let forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
 let forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
 function applyForceDirection() {
@@ -460,6 +497,10 @@ optsSlider('force.strength', 'Strength', 0, 0.2, 0.001, v => v.toFixed(3));
 
 // ===================== Bark section =====================
 header('Bark');
+buttonControl('Mutate', () => mutateSection([
+  optsMutateEntry('bark.roughness', 0, 1),
+  optsMutateEntry('bark.vScale', 0.05, 2),
+]));
 optsColor('bark.color', 'Color');
 optsSlider('bark.roughness', 'Roughness', 0, 1, 0.01, f2);
 optsToggle('bark.flatShading', 'Flat shading');
@@ -467,6 +508,17 @@ optsSlider('bark.vScale', 'Texture V scale', 0.05, 2, 0.01, f2);
 
 // ===================== Leaves section =====================
 header('Leaves');
+buttonControl('Mutate', () => mutateSection([
+  optsMutateEntry('leaves.count', 0, 40),
+  optsMutateEntry('leaves.size', 0.2, 3),
+  optsMutateEntry('leaves.sizeVariance', 0, 1),
+  optsMutateEntry('leaves.start', 0, 0.9),
+  optsMutateEntry('leaves.spread', 0, 1),
+  optsMutateEntry('leaves.angle', 0, 90),
+  optsMutateEntry('leaves.shadowFraction', 0, 1),
+  optsMutateEntry('leaves.roughness', 0, 1),
+  optsMutateEntry('leaves.alphaTest', 0, 1),
+]));
 optsToggle('leaves.enabled', 'Enabled');
 optsSlider('leaves.count', 'Count', 0, 40, 1, fi);
 optsSlider('leaves.size', 'Size', 0.2, 3, 0.01, f2);
