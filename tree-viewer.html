@@ -82,6 +82,122 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ===================== tree data model =====================
+// trees.js's Tree constructor deep-merges user options over its internal DEFAULTS and stores
+// the merged result as `.options` — using that (rather than re-declaring DEFAULTS here) keeps
+// `opts`'s shape guaranteed identical to what createTree()/regenerate() expect.
+const _genTree = createTree({});
+const opts = _genTree.options;
+_genTree.dispose();
+
+let mode = 'solo';        // 'solo' | 'grid'
+let gridSize = 3;
+let baseSeed = opts.seed;
+let texMode = 'procedural';
+let texSet = createTextureSource('procedural');
+
+let soloTree = null;
+let gridTrees = [];
+let refreshExport = () => {};   // reassigned once the Export section builds its textarea (Task 7)
+
+function disposeTree(t) { scene.remove(t); t.dispose(); }
+
+function makeTree(treeOpts) {
+  const t = createTree(treeOpts);
+  t.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  return t;
+}
+
+function fitCameraToBox(box, radiusMult, minDist) {
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const dist = Math.max(sphere.radius * radiusMult, minDist);
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(dir.x) || dir.lengthSq() === 0) dir.set(0.6, 0.5, 0.6).normalize();
+  controls.target.copy(sphere.center);
+  camera.position.copy(sphere.center).addScaledVector(dir, dist);
+  controls.update();
+}
+function fitCameraTo(object3d) { fitCameraToBox(new THREE.Box3().setFromObject(object3d), 2.4, 6); }
+function fitCameraToGrid() {
+  const box = new THREE.Box3();
+  for (const t of gridTrees) box.expandByObject(t);
+  fitCameraToBox(box, 1.8, 10);
+}
+
+// Materials are built once in the Tree constructor (trees.js never updates them in
+// regenerate()), so any change — including bark/leaf color, roughness, or texture maps —
+// requires a full dispose+recreate, not just regenerate(). Solo and Grid both always fully
+// rebuild on every change; the 130ms debounce (below) keeps that cheap enough for live tuning.
+function buildSolo() {
+  soloTree = makeTree(opts);
+  scene.add(soloTree);
+  fitCameraTo(soloTree);
+}
+function regenerateSolo(refit) {
+  if (soloTree) disposeTree(soloTree);
+  soloTree = makeTree(opts);
+  scene.add(soloTree);
+  if (refit) fitCameraTo(soloTree);
+}
+function buildGrid() {
+  for (const t of gridTrees) disposeTree(t);
+  gridTrees = [];
+  const spacing = Math.max(6, opts.length[0] * 2.5);
+  const half = (gridSize - 1) / 2;
+  for (let i = 0; i < gridSize * gridSize; i++) {
+    const t = makeTree({ ...opts, seed: baseSeed + i });
+    t.position.set(((i % gridSize) - half) * spacing, 0, (Math.floor(i / gridSize) - half) * spacing);
+    scene.add(t);
+    gridTrees.push(t);
+  }
+  fitCameraToGrid();
+}
+function disposeCurrent() {
+  if (soloTree) { disposeTree(soloTree); soloTree = null; }
+  for (const t of gridTrees) disposeTree(t);
+  gridTrees = [];
+}
+// Used for mode switches, grid-size changes, and seed rerolls — anything that should rebuild
+// and refit the camera immediately, bypassing the debounce used for slider drags.
+function rebuildView() {
+  clearTimeout(regenTimer);
+  needsRefit = false;
+  disposeCurrent();
+  if (mode === 'solo') buildSolo(); else buildGrid();
+  refreshExport();
+}
+
+let regenTimer = null;
+let needsRefit = false;
+function scheduleRegenerate(refit = false) {
+  if (refit) needsRefit = true;
+  clearTimeout(regenTimer);
+  regenTimer = setTimeout(regenerateAll, 130);
+}
+function regenerateAll() {
+  if (mode === 'solo') regenerateSolo(needsRefit);
+  else buildGrid();
+  needsRefit = false;
+  refreshExport();
+}
+
+function applyTexSetToOpts() {
+  opts.bark.map = texSet.barkMap || null;
+  opts.bark.normalMap = texSet.barkNormalMap || null;
+  opts.bark.vScale = texSet.barkVScale ?? opts.bark.vScale;
+  opts.leaves.map = texSet.leafMap || null;
+  opts.leaves.alphaTest = texSet.leafAlphaTest ?? 0;
+}
+function applyTextureMode(nextMode) {
+  texSet.dispose?.();
+  texMode = nextMode;
+  texSet = createTextureSource(texMode, { onReady: () => scheduleRegenerate() });
+  applyTexSetToOpts();
+  scheduleRegenerate();
+}
+
+rebuildView();
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
