@@ -1,2 +1,3 @@
 date,subsystem,files,summary
 2026-06-30T00:00,vegetation,"tree-viewer.html;docs/subsystems/vegetation.md",Added standalone tree-viewer.html exposing trees.js's full parameter surface for live tuning outside the full environment viewer.
+2026-06-30T01:00,vegetation,"tree-viewer.html;docs/subsystems/vegetation.md",Added Lighting section, a Species tab for saving/loading tuned trees via localStorage, and per-section Mutate buttons (targeted reroll with a global mutation-degree slider) to tree-viewer.html.

@@ -215,9 +215,17 @@ Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600),
 
 `tree-viewer.html` is a standalone single-file tuning tool for `trees.js`'s full procedural-tree
 parameter surface (per-level branch structure, force, bark, leaves), with Solo/Grid view modes,
-a procedural/authored texture toggle, and a "copy tree JSON" export. It imports `trees.js`
-(`createTree`), `tree-textures.js` (`createTextureSource`), and `lights.js` (`createLightingRig`)
-directly, with its own minimal `WebGPURenderer`/`OrbitControls` scene shell — it is **not**
-wired into `environment-viewer.html` in any way, and `environment-viewer.html`'s own Forest panel
-sliders are unaffected by it. Run via `python serve.py` like the main viewer (see the directory's
-`CLAUDE.md`).
+a procedural/authored texture toggle, a Lighting section driving `lights.js`'s rig live, and a
+"copy tree JSON" export. It imports `trees.js` (`createTree`), `tree-textures.js`
+(`createTextureSource`), and `lights.js` (`createLightingRig`) directly, with its own minimal
+`WebGPURenderer`/`OrbitControls` scene shell — it is **not** wired into `environment-viewer.html`
+in any way, and `environment-viewer.html`'s own Forest panel sliders are unaffected by it. Run via
+`python serve.py` like the main viewer (see the directory's `CLAUDE.md`).
+
+The controls panel has two tabs: **Tuning** (View/Texture/Lighting/Mutation/Structure/Force/
+Bark/Leaves/Export) and **Species** — a save/load library of tuned trees persisted to
+`localStorage` (`tree-viewer:saved-trees`; name + "Save current tree" snapshots the current
+options with texture maps stripped, click a saved entry to load it). Structure/Force/Bark/Leaves
+each have a "Mutate" button at the top that randomly perturbs that section's numeric sliders
+(independently per slider, clamped to each slider's own range) by up to the global "Mutation
+degree" fraction of that slider's range — a targeted reroll, not a full regenerate.
