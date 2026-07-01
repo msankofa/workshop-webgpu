@@ -167,18 +167,53 @@ export function generateMilkyWay(radius, palette, rng) {
   return { bandCount, position, brightness, phase, speed, size, tilt };
 }
 
-const PLANET_KINDS = ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'];
+// Exported (not just internal to generateCelestialBodies) so dev tools like
+// stellar-viewer.html can build kind/color pickers without duplicating this list.
+export const PLANET_KINDS = ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'];
 const KIND_WEIGHTS = [0.28, 0.22, 0.18, 0.12, 0.20];
-const MOON_KINDS = ['ice', 'rocky'];
+export const MOON_KINDS = ['ice', 'rocky'];
 const MOON_WEIGHTS = [0.55, 0.45];
 
-const KIND_PALETTES = {
-  terrestrial: ['#2f5d8a', '#3a6e4f', '#4a7a5a', '#355f7d', '#3f6b4a'],
-  gas:         ['#b07a55', '#7d8aa0', '#c9a06a', '#6a8f7d', '#9a6b8c', '#5f7bbf'],
-  ice:         ['#dce8f2', '#c9d8e8', '#e7eef5', '#b9cfe0', '#d3e2ee'],
-  volcanic:    ['#33201a', '#4a2a20', '#5a2f22', '#3a1c14', '#4f2818'],
-  rocky:       ['#9a958c', '#8a7f6e', '#a89f8f', '#7d7468', '#938a7c'],
+// Continuous per-kind color generation (HSL), NOT a fixed swatch list — a small hardcoded
+// array (even a 5-6 entry one) caps how many distinct colors can ever appear, no matter how
+// spread out its entries are. Hue is fully random (0-360) for every kind, so there's no upper
+// bound on distinct colors; only saturation/lightness are loosely bounded per kind so each kind
+// still reads as its category (pale for ice, dark/charred for volcanic, etc.) rather than the
+// hue itself being restricted.
+const KIND_COLOR_RANGE = {
+  terrestrial: { s: [35, 65], l: [30, 55] },
+  gas:         { s: [35, 70], l: [40, 65] },
+  ice:         { s: [5, 30], l: [70, 90] },
+  volcanic:    { s: [40, 70], l: [10, 25] },
+  rocky:       { s: [10, 40], l: [25, 55] },
 };
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = x => Math.round(clamp01(x) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+// Sampling hue uniformly over [0, 360) is uniform in DEGREES but not in perceived color:
+// "green" spans roughly 100 of those degrees and "purple/magenta" roughly 75, versus ~30 each
+// for red/orange/yellow — so a flat draw picks green or purple nearly half the time (measured
+// ~28%/~21%). Evenly-spacing anchors by degree doesn't fix this either — it just discretizes
+// the same bias (more anchors still land inside the wide green/purple bands). Instead, each
+// anchor below is hand-placed at the center of one named color (red/orange/yellow/green/
+// cyan/blue/purple/pink), one anchor per name — so every name gets an equal 1-in-8 shot
+// regardless of how many raw degrees its band happens to span, and jitter still gives
+// continuous, non-repeating variation within each name.
+const HUE_FAMILIES = [0, 30, 58, 110, 185, 225, 290, 337];
+export function randomKindColor(rng, kind) {
+  const range = KIND_COLOR_RANGE[kind];
+  const anchor = HUE_FAMILIES[(rng() * HUE_FAMILIES.length) | 0];
+  const h = (anchor + (rng() * 2 - 1) * 14 + 360) % 360;
+  const s = range.s[0] + rng() * (range.s[1] - range.s[0]);
+  const l = range.l[0] + rng() * (range.l[1] - range.l[0]);
+  return hslToHex(h, s, l);
+}
 
 function weightedPick(rng, items, weights) {
   const total = weights.reduce((a, b) => a + b, 0);
@@ -205,8 +240,6 @@ export function generateCelestialBodies(radius, palette, rng) {
     const rr = Math.sqrt(Math.max(0, 1 - y * y));
     return { x: Math.cos(theta) * rr, y, z: Math.sin(theta) * rr };
   };
-  const pick = arr => arr[(rng() * arr.length) | 0];
-
   // 1-2 extra moons (ice/rocky only — "gas moon" or "terrestrial moon" don't read as sensible).
   const moonN = 1 + ((rng() * 2) | 0);
   for (let i = 0; i < moonN; i++) {
@@ -214,7 +247,7 @@ export function generateCelestialBodies(radius, palette, rng) {
     const kind = weightedPick(rng, MOON_KINDS, MOON_WEIGHTS);
     out.push({ type: 'moon', companion: false, kind, detail: 'low', gas: kind === 'gas',
       position: place(dir(), r), radius: r,
-      size: radius * (0.018 + rng() * 0.02), color: pick(KIND_PALETTES[kind]),
+      size: radius * (0.018 + rng() * 0.02), color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
       phase: rng(), seed: rng() });
   }
   // 2-4 small distant planets.
@@ -224,8 +257,9 @@ export function generateCelestialBodies(radius, palette, rng) {
     const kind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
     out.push({ type: 'planet', scaleClass: 'distant', kind, detail: 'low', gas: kind === 'gas',
       position: place(dir(), r), radius: r,
-      size: radius * (0.01 + rng() * 0.015), color: pick(KIND_PALETTES[kind]),
-      rings: false, glow: rng() < 0.3, seed: rng() });
+      size: radius * (0.01 + rng() * 0.015), color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
+      rings: false, glow: rng() < 0.3, glowRadius: 1.15 + rng() * 0.35, glowIntensity: 0.35 + rng() * 0.3,
+      seed: rng() });
   }
   // Exactly one large near planet.
   const nearDir = dir();
@@ -234,7 +268,15 @@ export function generateCelestialBodies(radius, palette, rng) {
   const nearKind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
   const near = { type: 'planet', scaleClass: 'near', kind: nearKind, detail: 'high', gas: nearKind === 'gas',
     position: place(nearDir, nearR), radius: nearR,
-    size: nearSize, color: pick(KIND_PALETTES[nearKind]), rings: rng() < 0.4, glow: true, seed: rng() };
+    size: nearSize, color: randomKindColor(rng, nearKind), color2: randomKindColor(rng, nearKind),
+    rings: rng() < 0.4,
+    // Full rotation range, not a narrow band — an earlier version only ever rolled -0.8 to
+    // -0.3 rad (~46-17 degrees), so every generated ring looked like a shallow variant of the
+    // same tilt.
+    ringTilt: rng() * Math.PI * 2 - Math.PI, ringInner: 1.25 + rng() * 0.15, ringOuter: 1.6 + rng() * 0.3,
+    ringBandCount: 3 + ((rng() * 4) | 0), ringDensity: 0.7 + rng() * 0.6,
+    glow: true, glowRadius: 1.2 + rng() * 0.35, glowIntensity: 0.4 + rng() * 0.3,
+    seed: rng() };
   out.push(near);
   // 1-3 companion moons orbiting the near planet (offset around its screen position).
   const compN = 1 + ((rng() * 3) | 0);
@@ -244,7 +286,8 @@ export function generateCelestialBodies(radius, palette, rng) {
     const kind = weightedPick(rng, MOON_KINDS, MOON_WEIGHTS);
     out.push({ type: 'moon', companion: true, kind, detail: 'high', gas: kind === 'gas',
       position: place(d, nearR), radius: nearR,
-      size: nearSize * (0.12 + rng() * 0.1), color: pick(KIND_PALETTES[kind]), phase: rng(), seed: rng() });
+      size: nearSize * (0.12 + rng() * 0.1), color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
+      phase: rng(), seed: rng() });
   }
   return out;
 }

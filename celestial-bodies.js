@@ -12,6 +12,57 @@ function markTex(tex) {
   return tex;
 }
 
+// Multi-band procedural ring system: several concentric bands of varying width/brightness with
+// gaps between them (Cassini-division-style), instead of two fixed-width solid strokes. All
+// parameters are optional on `body` (ringColor/ringTilt/ringInner/ringOuter/ringBandCount/
+// ringDensity) — a missing field falls back to a sensible default, so older/synthetic body
+// descriptors (e.g. the smoke test's) still render. Callers draw the [0, PI) half before the
+// planet disc is painted and the [PI, 2*PI) half after, so the disc's opaque pixels occlude
+// whichever half of the ring geometrically passes behind it (otherwise both "sides" of the
+// ring show fully, since nothing else in this canvas-2D pipeline does depth occlusion).
+function paintRings(g, cx, cy, R, S, body, a0, a1) {
+  const color = body.ringColor || body.color;
+  const tilt = body.ringTilt ?? -0.5;
+  const inner = R * (body.ringInner ?? 1.3);
+  const outer = R * (body.ringOuter ?? 1.75);
+  const bandCount = Math.max(1, body.ringBandCount ?? 5);
+  const density = body.ringDensity ?? 1;
+  const seed = (body.seed || 0) * 97.3 + 41;
+  g.save(); g.translate(cx, cy); g.rotate(tilt); g.scale(1, 0.32);
+  for (let i = 0; i < bandCount; i++) {
+    const t0 = i / bandCount, t1 = (i + 0.8) / bandCount; // ~20% gap between bands
+    const rIn = inner + (outer - inner) * t0;
+    const rOut = inner + (outer - inner) * t1;
+    const bandNoise = hash3(i, 0, 0, seed);
+    const alpha = Math.min(1, (0.2 + bandNoise * 0.5) * density);
+    const bandColor = bandNoise > 0.5 ? lighten(color, 0.3 * bandNoise) : darken(color, 0.35 * (1 - bandNoise));
+    g.strokeStyle = hexA(bandColor, alpha);
+    g.lineWidth = Math.max(1, rOut - rIn);
+    g.beginPath(); g.arc(0, 0, (rIn + rOut) / 2, a0, a1); g.stroke();
+  }
+  g.restore();
+}
+
+// Soft multi-stop atmospheric glow (a flat 2-stop gradient reads as a hard-edged disc of
+// light rather than a haze). Configurable via glowColor/glowRadius/glowIntensity (optional,
+// defaults preserve the pre-existing look for bodies that don't set them).
+function paintGlow(g, cx, cy, R, S, body) {
+  const color = body.glowColor || body.color;
+  const intensity = body.glowIntensity ?? 0.5;
+  const radius = Math.min(R * (body.glowRadius ?? 1.35), S * 0.49);
+  // Gradient starts exactly at the disc edge (R), not inside it (an earlier version started
+  // at R*0.78 — since the disc overwrites everything within R anyway, that wasted the first
+  // ~22% of the gradient's falloff on an invisible region, so the visible part began already
+  // ~73% of the way to peak brightness right at the edge, reading as a hard bright rim rather
+  // than a gradual fade). Starting at R lets the whole stop range fade across the whole
+  // visible span.
+  const gl = g.createRadialGradient(cx, cy, R, cx, cy, radius);
+  gl.addColorStop(0, hexA(color, intensity));
+  gl.addColorStop(0.4, hexA(color, intensity * 0.45));
+  gl.addColorStop(1, hexA(color, 0));
+  g.fillStyle = gl; g.fillRect(0, 0, S, S);
+}
+
 // ---- fractal/cellular noise for the HD painter (canvas-only; no TSL/GPU dependency) ----
 function hash3(x, y, z, seed) {
   const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + seed * 91.7) * 43758.5453;
@@ -94,7 +145,11 @@ const ATMO_COLOR = {
 };
 
 function paintBodyHD(body) {
-  const S = 256;
+  // Higher resolution than paintBodySimple: this painter is only used for detail: 'high'
+  // bodies (the near planet + its moons, or anything shown in stellar-viewer.html), which get
+  // viewed up close/scaled up — 256px was visibly blurry once magnified. This is a one-time
+  // bake cost per body (not per-frame), so the extra canvas-fill work is cheap to afford.
+  const S = 512;
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const g = cv.getContext('2d');
   const cx = S / 2, cy = S / 2, R = S * 0.26;
@@ -109,12 +164,16 @@ function paintBodyHD(body) {
   // (mix toward white/black) directly as numeric [r,g,b] via mixRGB instead.
   const hi = mixRGB(base, [255, 255, 255], 0.45);
   const lo = mixRGB(base, [0, 0, 0], 0.55);
+  // Secondary hue (falls back to the primary if a body predates color2) — blended in per-patch
+  // below so a body shows genuine multi-hue mineral/terrain variety (like Io's sulfur patches
+  // or Callisto's mottled terrain) instead of only ever varying the lightness of one hue.
+  const base2 = parse(body.color2 || body.color);
+  const hi2 = mixRGB(base2, [255, 255, 255], 0.45);
+  const lo2 = mixRGB(base2, [0, 0, 0], 0.55);
 
-  if (body.glow) {
-    const gl = g.createRadialGradient(cx, cy, R * 0.8, cx, cy, Math.min(R * 1.8, S * 0.49));
-    gl.addColorStop(0, hexA(body.color, 0.5)); gl.addColorStop(1, hexA(body.color, 0));
-    g.fillStyle = gl; g.fillRect(0, 0, S, S);
-  }
+  if (body.glow) paintGlow(g, cx, cy, R, S, body);
+  // Back half of the ring, drawn before the disc so the sphere-shading pass below occludes it.
+  if (body.rings) paintRings(g, cx, cy, R, S, body, 0, Math.PI);
 
   const bx0 = Math.max(0, Math.floor(cx - R) - 1), by0 = Math.max(0, Math.floor(cy - R) - 1);
   const bw = Math.min(S, Math.ceil(R * 2) + 2), bh = Math.min(S, Math.ceil(R * 2) + 2);
@@ -129,6 +188,15 @@ function paintBodyHD(body) {
       if (d2 > 1) continue;
       const nz = Math.sqrt(Math.max(0, 1 - d2));
 
+      // Per-pixel secondary-hue patch mask — every kind below mixes its normal base/hi/lo
+      // endpoints with this patch's local pbase/phi/plo so terrain shapes stay the same but
+      // their color can land on either hue depending on which mineral patch they fall in.
+      const patchN = fbm3(nx * 1.7 + seed * 3.3, ny * 1.7 + seed * 3.3, nz * 1.7 + seed * 3.3, seed + 27, 3);
+      const patch = smoothstep(0.4, 0.6, patchN);
+      const pbase = mixRGB(base, base2, patch);
+      const phi = mixRGB(hi, hi2, patch);
+      const plo = mixRGB(lo, lo2, patch);
+
       let r, gC, b, emissive = [0, 0, 0];
 
       if (kind === 'terrestrial') {
@@ -136,8 +204,8 @@ function paintBodyHD(body) {
         const land = fbm3(nx * 2.3 + seed, ny * 2.3 + seed, nz * 2.3 + seed, seed, 5);
         const continent = smoothstep(ct[0], ct[1], land);
         const biome = fbm3(nx * 3.7 + seed * 7, ny * 3.7 + seed * 7, nz * 3.7 + seed * 7, seed + 9, 3);
-        const landColor = mixRGB(lo, hi, smoothstep(0.3, 0.7, biome));
-        [r, gC, b] = mixRGB(base, landColor, continent);
+        const landColor = mixRGB(plo, phi, smoothstep(0.3, 0.7, biome));
+        [r, gC, b] = mixRGB(pbase, landColor, continent);
         const lat = Math.abs(ny);
         const capT = tuning.iceCapLatitude;
         const iceCap = smoothstep(capT[0], capT[1], lat);
@@ -156,18 +224,18 @@ function paintBodyHD(body) {
         const n = fbm3((nx + warp) * 1.2, (ny + warp * 0.6) * tuning.bandFreq, (nz - warp) * 1.2, seed, 4);
         const bt = tuning.bandThreshold;
         const t = smoothstep(bt[0], bt[1], n);
-        [r, gC, b] = mixRGB(lo, hi, t);
-        [r, gC, b] = mixRGB([r, gC, b], base, 0.25);
+        [r, gC, b] = mixRGB(plo, phi, t);
+        [r, gC, b] = mixRGB([r, gC, b], pbase, 0.25);
         const sx = nx - 0.25, sy = ny + 0.1;
         const spot = smoothstep(0.16, 0.08, Math.hypot(sx, sy * 1.8));
-        [r, gC, b] = mixRGB([r, gC, b], lo, spot * 0.6);
+        [r, gC, b] = mixRGB([r, gC, b], plo, spot * 0.6);
       } else if (kind === 'ice') {
         const [f1, f2] = worleyF1F2(nx * tuning.crackFreq + seed, ny * tuning.crackFreq + seed, nz * tuning.crackFreq + seed, seed + 3);
         const crack = smoothstep(tuning.crackWidth, 0.0, f2 - f1);
-        [r, gC, b] = mixRGB(base, hi, crack);
+        [r, gC, b] = mixRGB(pbase, phi, crack);
       } else if (kind === 'volcanic') {
         const crust = fbm3(nx * 2.6 + seed, ny * 2.6 + seed, nz * 2.6 + seed, seed, 4);
-        [r, gC, b] = mixRGB(lo, base, smoothstep(0.3, 0.7, crust));
+        [r, gC, b] = mixRGB(plo, pbase, smoothstep(0.3, 0.7, crust));
         const [f1, f2] = worleyF1F2(nx * tuning.veinFreq + seed, ny * tuning.veinFreq + seed, nz * tuning.veinFreq + seed, seed + 3);
         const vein = smoothstep(tuning.veinWidth, 0.0, f2 - f1);
         const hot = smoothstep(tuning.hotWidth, 0.0, f2 - f1);
@@ -177,13 +245,13 @@ function paintBodyHD(body) {
         const ct = tuning.continentThreshold || PAINTER_TUNING.rocky.continentThreshold;
         const land = fbm3(nx * 2.1 + seed, ny * 2.1 + seed, nz * 2.1 + seed, seed, 4);
         const continent = smoothstep(ct[0], ct[1], land);
-        [r, gC, b] = mixRGB(lo, base, continent);
+        [r, gC, b] = mixRGB(plo, pbase, continent);
         const craterFreq = tuning.craterFreq || PAINTER_TUNING.rocky.craterFreq;
         const wd = worleyF1(nx * craterFreq + seed, ny * craterFreq + seed, nz * craterFreq + seed, seed + 5);
         const rb = tuning.rimBand || PAINTER_TUNING.rocky.rimBand, fb = tuning.floorBand || PAINTER_TUNING.rocky.floorBand;
         const rim = smoothstep(rb[0], rb[1], wd), floor = smoothstep(fb[0], fb[1], wd);
-        [r, gC, b] = mixRGB([r, gC, b], hi, rim * 0.4);
-        [r, gC, b] = mixRGB([r, gC, b], lo, floor * 0.7);
+        [r, gC, b] = mixRGB([r, gC, b], phi, rim * 0.4);
+        [r, gC, b] = mixRGB([r, gC, b], plo, floor * 0.7);
       }
 
       const diffuse = Math.max(0, nx * lightDir[0] + ny * lightDir[1] + nz * lightDir[2]);
@@ -207,14 +275,8 @@ function paintBodyHD(body) {
   }
   g.putImageData(img, bx0, by0);
 
-  if (body.rings) {
-    g.save(); g.translate(cx, cy); g.rotate(-0.5); g.scale(1, 0.32);
-    g.strokeStyle = hexA(lighten(body.color, 0.3), 0.7); g.lineWidth = S * 0.026;
-    g.beginPath(); g.arc(0, 0, R * 1.4, 0, Math.PI * 2); g.stroke();
-    g.strokeStyle = hexA(body.color, 0.5); g.lineWidth = S * 0.013;
-    g.beginPath(); g.arc(0, 0, R * 1.62, 0, Math.PI * 2); g.stroke();
-    g.restore();
-  }
+  // Front half of the ring, drawn on top of the now-finished disc.
+  if (body.rings) paintRings(g, cx, cy, R, S, body, Math.PI, Math.PI * 2);
   return markTex(new THREE.CanvasTexture(cv));
 }
 
@@ -227,11 +289,9 @@ function paintBodySimple(body) {
   // otherwise the radial gradients clip to the square and show a hard rectangular halo.
   const cx = S / 2, cy = S / 2, R = S * 0.26;
   // atmospheric glow
-  if (body.glow) {
-    const gl = g.createRadialGradient(cx, cy, R * 0.8, cx, cy, Math.min(R * 1.8, S * 0.49));
-    gl.addColorStop(0, hexA(body.color, 0.5)); gl.addColorStop(1, hexA(body.color, 0));
-    g.fillStyle = gl; g.fillRect(0, 0, S, S);
-  }
+  if (body.glow) paintGlow(g, cx, cy, R, S, body);
+  // Back half of the ring, drawn before the disc so its opaque fill occludes it.
+  if (body.rings) paintRings(g, cx, cy, R, S, body, 0, Math.PI);
   // body disc with lit upper-left
   const sh = g.createRadialGradient(cx - R * 0.4, cy - R * 0.4, R * 0.1, cx, cy, R);
   sh.addColorStop(0, lighten(body.color, 0.35));
@@ -261,15 +321,8 @@ function paintBodySimple(body) {
   const ld = g.createRadialGradient(cx, cy, R * 0.6, cx, cy, R);
   ld.addColorStop(0, 'rgba(0,0,0,0)'); ld.addColorStop(1, 'rgba(0,0,0,0.45)');
   g.fillStyle = ld; g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
-  // rings
-  if (body.rings) {
-    g.save(); g.translate(cx, cy); g.rotate(-0.5); g.scale(1, 0.32);
-    g.strokeStyle = hexA(lighten(body.color, 0.3), 0.7); g.lineWidth = S * 0.026;
-    g.beginPath(); g.arc(0, 0, R * 1.4, 0, Math.PI * 2); g.stroke();
-    g.strokeStyle = hexA(body.color, 0.5); g.lineWidth = S * 0.013;
-    g.beginPath(); g.arc(0, 0, R * 1.62, 0, Math.PI * 2); g.stroke();
-    g.restore();
-  }
+  // Front half of the ring, drawn on top of the now-finished disc.
+  if (body.rings) paintRings(g, cx, cy, R, S, body, Math.PI, Math.PI * 2);
   return markTex(new THREE.CanvasTexture(cv));
 }
 

@@ -627,14 +627,21 @@ function buildGallery(seed) {
   if (galleryGroup) { scene.remove(galleryGroup); galleryGroup = null; }
   clearLabels();
   const rng = makeRng(seed);
-  const bodies = generateCelestialBodies(RADIUS, PALETTE, rng).filter(b => kindFilter.has(b.kind));
+  // Force every displayed body through paintBodyHD — this gallery exists to showcase
+  // the detailed painter across kinds, unlike the game where only the near planet +
+  // its moons are worth the extra per-pixel cost.
+  const bodies = generateCelestialBodies(RADIUS, PALETTE, rng)
+    .filter(b => kindFilter.has(b.kind))
+    .map(b => ({ ...b, detail: 'high' }));
   const cols = Math.ceil(Math.sqrt(bodies.length)) || 1;
   const spacing = 220;
   galleryGroup = createCelestialBodies(bodies);
   galleryGroup.children.forEach((spr, i) => {
     const col = i % cols, row = Math.floor(i / cols);
     spr.position.set((col - (cols - 1) / 2) * spacing, ((cols - 1) / 2 - row) * spacing, 0);
-    const s = Math.min(160, Math.max(60, bodies[i].size * 0.5));
+    // The gallery is for close inspection of the painted texture, not for preserving
+    // the game's distance-based scale differences — fill most of each grid cell instead.
+    const s = spacing * 0.8;
     spr.scale.set(s, s, 1);
   });
   scene.add(galleryGroup);
@@ -643,7 +650,7 @@ function buildGallery(seed) {
     const col = i % cols, row = Math.floor(i / cols);
     const pos = new THREE.Vector3((col - (cols - 1) / 2) * spacing, ((cols - 1) / 2 - row) * spacing, 0);
     const div = document.createElement('div');
-    div.textContent = `${b.kind}${b.detail === 'high' ? ' ★' : ''}`;
+    div.textContent = b.kind;
     div._worldPos = pos;
     labelsEl.appendChild(div);
   });
@@ -745,14 +752,14 @@ let soloBody = null;
 Find, inside `buildGallery`:
 ```js
     const div = document.createElement('div');
-    div.textContent = `${b.kind}${b.detail === 'high' ? ' ★' : ''}`;
+    div.textContent = b.kind;
     div._worldPos = pos;
     labelsEl.appendChild(div);
 ```
 Replace with:
 ```js
     const div = document.createElement('div');
-    div.textContent = `${b.kind}${b.detail === 'high' ? ' ★' : ''}`;
+    div.textContent = b.kind;
     div._worldPos = pos;
     div.addEventListener('click', () => enterSolo(b));
     labelsEl.appendChild(div);
@@ -851,7 +858,10 @@ function renderUi() {
   reroll.addEventListener('click', () => {
     const rng = makeRng((Math.random() * 0xffffffff) >>> 0);
     const bodies = generateCelestialBodies(RADIUS, PALETTE, rng).filter(b => b.kind === soloBody.kind);
-    soloBody = bodies[0] || soloBody;
+    // Force high detail — a freshly generated body of this kind may naturally roll as
+    // a distant/extra body (detail: 'low'), which would silently fall back to the cheap
+    // painter here even though this is Solo mode's whole point.
+    soloBody = bodies[0] ? { ...bodies[0], detail: 'high' } : soloBody;
     repaintSolo();
   });
   uiEl.appendChild(document.createElement('br'));

@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stellar Object Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060a; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none; z-index: 5; }
+</style>
+</head>
+<body>
+<div id="info">Night sky: click a body to edit it in Solo mode.</div>
+<div id="labels"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+// Cache-busting query strings (same convention environment-viewer.html uses) so browser
+// module caching doesn't serve a stale version while these files are still being tuned.
+import { makeRng, makePalette, generateCelestialBodies, PLANET_KINDS, randomKindColor } from './sky-field.js?v=hd8';
+import { createCelestialBodies, PAINTER_TUNING } from './celestial-bodies.js?v=hd8';
+
+const infoEl = document.getElementById('info');
+function showError(msg) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+
+const VIEW = 1400; // world units visible across the vertical axis in Night-sky mode
+let aspect = window.innerWidth / window.innerHeight;
+const camera = new THREE.OrthographicCamera(-VIEW * aspect / 2, VIEW * aspect / 2, VIEW / 2, -VIEW / 2, 0.1, 5000);
+camera.position.set(0, 0, 1000);
+camera.lookAt(0, 0, 0);
+
+window.addEventListener('resize', () => {
+  aspect = window.innerWidth / window.innerHeight;
+  camera.left = -VIEW * aspect / 2; camera.right = VIEW * aspect / 2;
+  camera.top = VIEW / 2; camera.bottom = -VIEW / 2;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const RADIUS = 1000;
+const PALETTE = makePalette();
+
+// ===================== body collection (user-composed, edited only in Solo) =====================
+// Every body here always renders through paintBodyHD (detail: 'high') — this tool exists to
+// showcase/tune that painter, unlike the game where only the near planet + its moons earn the
+// extra per-pixel cost.
+let collection = [];
+let mode = 'night';       // 'night' | 'solo'
+let soloIndex = -1;
+let kindFilter = new Set(PLANET_KINDS);
+
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+
+function makeDefaultBody(kind) {
+  return {
+    type: 'planet', companion: false, kind, detail: 'high', gas: kind === 'gas',
+    position: { x: RADIUS * 0.6, y: 0, z: 0 }, radius: RADIUS * 0.6,
+    size: 80, color: randomKindColor(Math.random, kind), color2: randomKindColor(Math.random, kind),
+    rings: false, ringTilt: -0.5, ringInner: 1.3, ringOuter: 1.75, ringBandCount: 5, ringDensity: 1,
+    glow: true, glowRadius: 1.35, glowIntensity: 0.5,
+    phase: Math.random(), seed: Math.random(),
+  };
+}
+
+function generateFromSeed(seedVal) {
+  const rng = makeRng(seedVal);
+  collection = generateCelestialBodies(RADIUS, PALETTE, rng).map(b => ({ ...b, detail: 'high' }));
+}
+generateFromSeed(1);
+
+// ===================== Night-sky rendering =====================
+const labelsEl = document.getElementById('labels');
+let nightGroup = null;
+let soloGroup = null;
+
+function clearLabels() { labelsEl.innerHTML = ''; }
+function worldToScreen(pos) {
+  const v = pos.clone().project(camera);
+  return { x: (v.x * 0.5 + 0.5) * window.innerWidth, y: (1 - (v.y * 0.5 + 0.5)) * window.innerHeight };
+}
+function positionLabels() {
+  for (const div of labelsEl.children) {
+    const s = worldToScreen(div._worldPos);
+    div.style.left = s.x + 'px';
+    div.style.top = s.y + 'px';
+  }
+}
+
+function clearNightGroup() { if (nightGroup) { scene.remove(nightGroup); nightGroup = null; } clearLabels(); }
+
+function buildNightSky() {
+  clearNightGroup();
+  const bodies = collection.filter(b => kindFilter.has(b.kind));
+  const cols = Math.ceil(Math.sqrt(bodies.length)) || 1;
+  const spacing = 220;
+  nightGroup = createCelestialBodies(bodies);
+  nightGroup.children.forEach((spr, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    spr.position.set((col - (cols - 1) / 2) * spacing, ((cols - 1) / 2 - row) * spacing, 0);
+    // Fill most of each grid cell — this view is for close inspection of the painted
+    // texture, not for preserving the game's distance-based scale differences.
+    const s = spacing * 0.8;
+    spr.scale.set(s, s, 1);
+  });
+  scene.add(nightGroup);
+
+  bodies.forEach((b, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const pos = new THREE.Vector3((col - (cols - 1) / 2) * spacing, ((cols - 1) / 2 - row) * spacing, 0);
+    const div = document.createElement('div');
+    div.textContent = b.kind;
+    div._worldPos = pos;
+    div.addEventListener('click', () => enterSolo(collection.indexOf(b)));
+    labelsEl.appendChild(div);
+  });
+  positionLabels();
+}
+
+// ===================== Solo rendering =====================
+function clearSoloGroup() { if (soloGroup) { scene.remove(soloGroup); soloGroup = null; } }
+function rebuildSoloSprite() {
+  clearSoloGroup();
+  const body = collection[soloIndex];
+  soloGroup = createCelestialBodies([body]);
+  soloGroup.children[0].position.set(0, 0, 0);
+  soloGroup.children[0].scale.set(500, 500, 1);
+  scene.add(soloGroup);
+}
+
+function enterSolo(index) {
+  mode = 'solo'; soloIndex = index;
+  infoEl.textContent = 'Solo mode — editing one body.';
+  clearNightGroup();
+  rebuildSoloSprite();
+  rebuildPanel();
+}
+function exitSolo() {
+  mode = 'night'; soloIndex = -1;
+  infoEl.textContent = 'Night sky: click a body to edit it in Solo mode.';
+  clearSoloGroup();
+  buildNightSky();
+  rebuildPanel();
+}
+function addBody() {
+  collection.push(makeDefaultBody(pick(PLANET_KINDS)));
+  enterSolo(collection.length - 1); // bodies are only ever edited in Solo mode
+}
+function removeSoloBody() {
+  collection.splice(soloIndex, 1);
+  exitSolo();
+}
+
+function animate() {
+  if (mode === 'night') positionLabels();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+// ===================== docked control panel (ported from tree-viewer.html) =====================
+const panelStyle = document.createElement('style');
+panelStyle.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:270px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none;z-index:20}#ctrl-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#ctrl-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#ctrl-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#ctrl-min:hover{color:#c4ccd6}#ctrl-body{padding:2px 12px 10px;max-height:min(82vh,760px);overflow-y:auto}#ctrl.min #ctrl-body{display:none}#ctrl.min #ctrl-bar{border-bottom:none}#ctrl .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:10px 0 4px;color:#8a93a3}#ctrl .sec-head .caret{font-size:10px;transition:transform .15s}#ctrl .sec.collapsed .caret{transform:rotate(-90deg)}#ctrl .sec.collapsed .sec-body{display:none}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between;align-items:center}#ctrl .row span{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl input[type=color]{width:60px;height:20px;border:none;background:none;padding:0;cursor:pointer}#ctrl input[type=checkbox]{width:auto}#ctrl input[type=text]{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}#ctrl select{width:100%;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px}#ctrl button{width:100%;background:#2a313c;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:5px;cursor:pointer;margin:4px 0}#ctrl button:hover{background:#333c49}#labels{position:fixed;inset:0;pointer-events:none;z-index:4}#labels div{position:absolute;transform:translate(-50%,4px);font-size:11px;color:#8a93a3;text-align:center;white-space:nowrap;pointer-events:auto;cursor:pointer}#labels div:hover{color:#fff}';
+document.head.appendChild(panelStyle);
+
+const ctrlBox = document.createElement('div'); ctrlBox.id = 'ctrl'; document.body.appendChild(ctrlBox);
+const ctrlBar = document.createElement('div'); ctrlBar.id = 'ctrl-bar';
+ctrlBar.innerHTML = '<span class="ttl">Stellar Object Viewer</span>';
+const ctrlMin = document.createElement('button'); ctrlMin.id = 'ctrl-min'; ctrlMin.textContent = '–';
+ctrlBar.appendChild(ctrlMin);
+const ctrlBody = document.createElement('div'); ctrlBody.id = 'ctrl-body';
+ctrlBox.appendChild(ctrlBar); ctrlBox.appendChild(ctrlBody);
+
+ctrlMin.addEventListener('click', () => { ctrlMin.textContent = ctrlBox.classList.toggle('min') ? '+' : '–'; });
+
+let ctrlDrag = null;
+ctrlBar.addEventListener('pointerdown', e => {
+  if (e.target === ctrlMin) return;
+  const r = ctrlBox.getBoundingClientRect();
+  ctrlDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+  ctrlBar.setPointerCapture(e.pointerId);
+});
+ctrlBar.addEventListener('pointermove', e => {
+  if (!ctrlDrag) return;
+  ctrlBox.style.right = 'auto';
+  const maxX = Math.max(10, window.innerWidth - ctrlBox.offsetWidth - 10);
+  const maxY = Math.max(10, window.innerHeight - ctrlBox.offsetHeight - 10);
+  ctrlBox.style.left = Math.max(10, Math.min(maxX, e.clientX - ctrlDrag.dx)) + 'px';
+  ctrlBox.style.top = Math.max(10, Math.min(maxY, e.clientY - ctrlDrag.dy)) + 'px';
+});
+ctrlBar.addEventListener('pointerup', e => { ctrlDrag = null; ctrlBar.releasePointerCapture(e.pointerId); });
+
+// Each header() opens a collapsible section; subsequent controls land in it via `current`.
+let current = ctrlBody;
+function header(text) {
+  const sec = document.createElement('div'); sec.className = 'sec';
+  const head = document.createElement('div'); head.className = 'sec-head';
+  head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
+  const secBody = document.createElement('div'); secBody.className = 'sec-body';
+  head.addEventListener('click', () => sec.classList.toggle('collapsed'));
+  sec.appendChild(head); sec.appendChild(secBody); ctrlBody.appendChild(sec);
+  current = secBody;
+  return secBody;
+}
+function row(labelHtml) {
+  const r = document.createElement('div'); r.className = 'row'; r.innerHTML = labelHtml;
+  current.appendChild(r);
+  return r;
+}
+function rangeControl(label, min, max, step, get, set, fmt, onChange) {
+  const r = row('<span>' + label + '</span>');
+  const val = document.createElement('span'); val.textContent = fmt(get()); r.appendChild(val);
+  const inp = document.createElement('input'); inp.type = 'range';
+  inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  inp.addEventListener('input', () => { set(parseFloat(inp.value)); val.textContent = fmt(get()); onChange(); });
+  current.appendChild(inp);
+  return inp;
+}
+function selectControl(label, choices, get, set, onChange) {
+  row('<span>' + label + '</span>');
+  const sel = document.createElement('select');
+  for (const c of choices) {
+    const op = document.createElement('option'); op.value = c; op.textContent = c;
+    if (c === get()) op.selected = true;
+    sel.appendChild(op);
+  }
+  sel.addEventListener('change', () => { set(sel.value); onChange(); });
+  current.appendChild(sel);
+  return sel;
+}
+function toggleControl(label, get, set, onChange) {
+  const r = row('<span>' + label + '</span>');
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!get();
+  inp.addEventListener('change', () => { set(inp.checked); onChange(); });
+  r.appendChild(inp);
+  return inp;
+}
+// Unlike tree-viewer's colorControl (which packs colors as 0xRRGGBB integers), sky-field.js
+// and celestial-bodies.js both use '#rrggbb' hex strings directly — <input type=color> already
+// speaks that format, so no conversion is needed here.
+function colorControl(label, get, set, onChange) {
+  const r = row('<span>' + label + '</span>');
+  const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
+  inp.addEventListener('input', () => { set(inp.value); onChange(); });
+  r.appendChild(inp);
+  return inp;
+}
+function buttonControl(label, onClick) {
+  const btn = document.createElement('button'); btn.textContent = label;
+  btn.addEventListener('click', onClick);
+  current.appendChild(btn);
+  return btn;
+}
+
+function rebuildPanel() {
+  ctrlBody.innerHTML = '';
+  if (mode === 'night') buildNightPanel(); else buildSoloPanel();
+}
+
+function buildNightPanel() {
+  header('Kinds shown');
+  for (const k of PLANET_KINDS) {
+    toggleControl(k, () => kindFilter.has(k), v => { v ? kindFilter.add(k) : kindFilter.delete(k); }, buildNightSky);
+  }
+
+  header('Collection');
+  row('<span>' + collection.length + ' body' + (collection.length === 1 ? '' : 'ies') + '</span>');
+  buttonControl('Add body', addBody);
+
+  header('Generate');
+  let seedText = '1';
+  row('<span>Seed</span>');
+  const seedInput = document.createElement('input'); seedInput.type = 'text'; seedInput.value = seedText;
+  current.appendChild(seedInput);
+  buttonControl('Generate from seed (replaces collection)', () => {
+    generateFromSeed((Number(seedInput.value) >>> 0) || 1);
+    buildNightSky();
+    rebuildPanel();
+  });
+  buttonControl('Generate from random seed (replaces collection)', () => {
+    const s = (Math.random() * 0xffffffff) >>> 0;
+    seedInput.value = String(s);
+    generateFromSeed(s);
+    buildNightSky();
+    rebuildPanel();
+  });
+}
+
+function buildSoloPanel() {
+  const body = collection[soloIndex];
+
+  buttonControl('← Back to night sky', exitSolo);
+
+  header('Body');
+  selectControl('Kind', PLANET_KINDS, () => body.kind, v => { body.kind = v; body.gas = (v === 'gas'); }, () => { rebuildSoloSprite(); rebuildPanel(); });
+  selectControl('Type', ['planet', 'moon'], () => body.type, v => { body.type = v; }, () => {});
+  colorControl('Color', () => body.color, v => { body.color = v; }, rebuildSoloSprite);
+  colorControl('Secondary color (mineral patches)', () => body.color2 || body.color, v => { body.color2 = v; }, rebuildSoloSprite);
+  rangeControl('Size', 10, 150, 1, () => body.size, v => { body.size = v; }, v => v.toFixed(0), rebuildSoloSprite);
+  // Toggling also rebuilds the whole panel (not just the sprite) so the Rings/Glow
+  // sub-sections below appear/disappear immediately along with the checkbox.
+  toggleControl('Rings', () => body.rings, v => { body.rings = v; }, () => { rebuildSoloSprite(); rebuildPanel(); });
+  toggleControl('Glow', () => body.glow, v => { body.glow = v; }, () => { rebuildSoloSprite(); rebuildPanel(); });
+  buttonControl('Reroll body', () => {
+    // Previously only touched body.seed — ring geometry and glow are stored as separate
+    // fields (ringTilt/ringInner/.../glowRadius/glowIntensity) that a seed-only reroll never
+    // reached, so rings/glow looked frozen no matter how many times you rerolled. Reroll
+    // everything procedural about the body instead.
+    body.seed = Math.random();
+    if (body.rings) {
+      body.ringTilt = Math.random() * Math.PI * 2 - Math.PI;
+      body.ringInner = 1.25 + Math.random() * 0.15;
+      body.ringOuter = 1.6 + Math.random() * 0.3;
+      body.ringBandCount = 3 + Math.floor(Math.random() * 4);
+      body.ringDensity = 0.7 + Math.random() * 0.6;
+    }
+    if (body.glow) {
+      body.glowRadius = 1.15 + Math.random() * 0.35;
+      body.glowIntensity = 0.35 + Math.random() * 0.3;
+    }
+    rebuildSoloSprite();
+    rebuildPanel(); // sliders above need to reflect the freshly-rolled values
+  });
+  buttonControl('Remove from night sky', removeSoloBody);
+
+  if (body.rings) {
+    header('Rings');
+    colorControl('Ring color', () => body.ringColor || body.color, v => { body.ringColor = v; }, rebuildSoloSprite);
+    rangeControl('Tilt', -Math.PI, Math.PI, 0.01, () => body.ringTilt ?? -0.5, v => { body.ringTilt = v; }, v => v.toFixed(2), rebuildSoloSprite);
+    rangeControl('Inner radius', 1.05, 1.6, 0.01, () => body.ringInner ?? 1.3, v => { body.ringInner = v; }, v => v.toFixed(2), rebuildSoloSprite);
+    rangeControl('Outer radius', 1.3, 2.2, 0.01, () => body.ringOuter ?? 1.75, v => { body.ringOuter = v; }, v => v.toFixed(2), rebuildSoloSprite);
+    rangeControl('Band count', 1, 10, 1, () => body.ringBandCount ?? 5, v => { body.ringBandCount = v; }, v => v.toFixed(0), rebuildSoloSprite);
+    rangeControl('Density', 0.1, 1.6, 0.01, () => body.ringDensity ?? 1, v => { body.ringDensity = v; }, v => v.toFixed(2), rebuildSoloSprite);
+  }
+  if (body.glow) {
+    header('Glow');
+    colorControl('Glow color', () => body.glowColor || body.color, v => { body.glowColor = v; }, rebuildSoloSprite);
+    rangeControl('Radius', 1.02, 1.8, 0.01, () => body.glowRadius ?? 1.35, v => { body.glowRadius = v; }, v => v.toFixed(2), rebuildSoloSprite);
+    rangeControl('Intensity', 0.1, 1, 0.01, () => body.glowIntensity ?? 0.5, v => { body.glowIntensity = v; }, v => v.toFixed(2), rebuildSoloSprite);
+  }
+
+  const tuning = PAINTER_TUNING[body.kind];
+  if (tuning) {
+    // NOTE: PAINTER_TUNING is one shared object per kind (same one the real game reads) —
+    // tuning it here changes every body of this kind, in this collection and in the game.
+    header(`Surface tuning — shared by all "${body.kind}" bodies`);
+    for (const key of Object.keys(tuning)) {
+      const val = tuning[key];
+      if (Array.isArray(val)) {
+        val.forEach((v, i) => {
+          rangeControl(`${key}[${i}]`, 0, 1, 0.01, () => tuning[key][i], nv => { tuning[key][i] = nv; }, x => x.toFixed(3), rebuildSoloSprite);
+        });
+      } else {
+        rangeControl(key, 0, Math.max(1, val * 3), 0.01, () => tuning[key], nv => { tuning[key] = nv; }, x => x.toFixed(3), rebuildSoloSprite);
+      }
+    }
+  }
+}
+
+buildNightSky();
+rebuildPanel();
+</script>
+</body>
+</html>

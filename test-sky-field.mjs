@@ -110,6 +110,7 @@ import { generateMilkyWay, generateCelestialBodies } from './sky-field.js';
   ok(comp.every(b => b.detail === 'high'), 'companion moons are high detail');
   ok(bodies.every(b => b.gas === (b.kind === 'gas')), 'gas boolean stays derived from kind (paintBodySimple compat)');
   ok(bodies.every(b => typeof b.seed === 'number' && b.seed >= 0 && b.seed < 1), 'every body carries a [0,1) seed');
+  ok(bodies.every(b => typeof b.color2 === 'string' && b.color2.startsWith('#')), 'every body carries a color2 for multi-hue surface patches');
 }
 
 // ---- Celestial body kind variety: all 5 planet kinds appear over many seeds ----
