@@ -161,8 +161,19 @@ function paintBodyHD(body) {
         const sx = nx - 0.25, sy = ny + 0.1;
         const spot = smoothstep(0.16, 0.08, Math.hypot(sx, sy * 1.8));
         [r, gC, b] = mixRGB([r, gC, b], lo, spot * 0.6);
+      } else if (kind === 'ice') {
+        const [f1, f2] = worleyF1F2(nx * tuning.crackFreq + seed, ny * tuning.crackFreq + seed, nz * tuning.crackFreq + seed, seed + 3);
+        const crack = smoothstep(tuning.crackWidth, 0.0, f2 - f1);
+        [r, gC, b] = mixRGB(base, hi, crack);
+      } else if (kind === 'volcanic') {
+        const crust = fbm3(nx * 2.6 + seed, ny * 2.6 + seed, nz * 2.6 + seed, seed, 4);
+        [r, gC, b] = mixRGB(lo, base, smoothstep(0.3, 0.7, crust));
+        const [f1, f2] = worleyF1F2(nx * tuning.veinFreq + seed, ny * tuning.veinFreq + seed, nz * tuning.veinFreq + seed, seed + 3);
+        const vein = smoothstep(tuning.veinWidth, 0.0, f2 - f1);
+        const hot = smoothstep(tuning.hotWidth, 0.0, f2 - f1);
+        emissive = mixRGB(mixRGB([0, 0, 0], [255, 130, 20], vein), [255, 220, 90], hot);
       } else {
-        // Temporary fallback for ice/volcanic (added in Task 4) and the real rocky kind.
+        // rocky (also the only kind reaching this branch now — ice/volcanic have their own above).
         const ct = tuning.continentThreshold || PAINTER_TUNING.rocky.continentThreshold;
         const land = fbm3(nx * 2.1 + seed, ny * 2.1 + seed, nz * 2.1 + seed, seed, 4);
         const continent = smoothstep(ct[0], ct[1], land);
@@ -176,7 +187,7 @@ function paintBodyHD(body) {
       }
 
       const diffuse = Math.max(0, nx * lightDir[0] + ny * lightDir[1] + nz * lightDir[2]);
-      const ambient = kind === 'volcanic' ? (tuning.ambient ?? 0.22) : 0.22;
+      const ambient = kind === 'volcanic' ? tuning.ambient : 0.22;
       const shade = ambient + (1 - ambient) * diffuse;
       const limb = 0.55 + 0.45 * Math.pow(nz, 0.6);
       const k = shade * limb;
