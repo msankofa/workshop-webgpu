@@ -393,6 +393,52 @@ function rebuildStructureRows() {
 }
 rebuildStructureRows();
 
+// ===================== Force section =====================
+header('Force');
+let forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
+let forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
+function applyForceDirection() {
+  const a = forceAz * Math.PI / 180, e = forceEl * Math.PI / 180;
+  opts.force.direction = [Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e)];
+}
+rangeControl('Direction azimuth', 0, 360, 1, () => forceAz, v => { forceAz = v; applyForceDirection(); }, fi, () => scheduleRegenerate());
+rangeControl('Direction elevation', -90, 90, 1, () => forceEl, v => { forceEl = v; applyForceDirection(); }, fi, () => scheduleRegenerate());
+optsSlider('force.strength', 'Strength', 0, 0.2, 0.001, v => v.toFixed(3));
+
+// ===================== Bark section =====================
+header('Bark');
+optsColor('bark.color', 'Color');
+optsSlider('bark.roughness', 'Roughness', 0, 1, 0.01, f2);
+optsToggle('bark.flatShading', 'Flat shading');
+optsSlider('bark.vScale', 'Texture V scale', 0.05, 2, 0.01, f2);
+
+// ===================== Leaves section =====================
+header('Leaves');
+optsToggle('leaves.enabled', 'Enabled');
+optsSlider('leaves.count', 'Count', 0, 40, 1, fi);
+optsSlider('leaves.size', 'Size', 0.2, 3, 0.01, f2);
+optsSlider('leaves.sizeVariance', 'Size variance', 0, 1, 0.01, f2);
+optsSlider('leaves.start', 'Start', 0, 0.9, 0.01, f2);
+optsSlider('leaves.spread', 'Spread', 0, 1, 0.01, f2);
+optsSlider('leaves.angle', 'Angle', 0, 90, 1, fi);
+optsToggle('leaves.doubleBillboard', 'Double billboard');
+optsToggle('leaves.roundedNormals', 'Rounded normals');
+optsSelect('leaves.shape', 'Shape', ['quad', 'simple']);
+
+// The leaf atlas cell pin only has a visible effect once 'authored' texture mode has loaded a
+// leaf atlas (procedural mode has no leafMap to sample a cell from), but the controls are
+// always shown — toggling them is harmless either way.
+let atlasPinned = false;
+let atlasCell = 0;
+function applyAtlas() { opts.leaves.atlas = atlasPinned ? { cols: 2, rows: 2, cell: atlasCell } : null; }
+toggleControl('Pin leaf atlas cell (authored mode only)', () => atlasPinned, v => { atlasPinned = v; applyAtlas(); }, () => scheduleRegenerate());
+rangeControl('Atlas cell', 0, 3, 1, () => atlasCell, v => { atlasCell = Math.round(v); applyAtlas(); }, fi, () => scheduleRegenerate());
+
+optsSlider('leaves.shadowFraction', 'Shadow fraction', 0, 1, 0.01, pct);
+optsColor('leaves.tint', 'Tint');
+optsSlider('leaves.roughness', 'Roughness', 0, 1, 0.01, f2);
+optsSlider('leaves.alphaTest', 'Alpha test', 0, 1, 0.01, f2);
+
 renderer.setAnimationLoop(() => {
   controls.update();
   renderer.render(scene, camera);
