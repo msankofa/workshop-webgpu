@@ -395,6 +395,7 @@ withHost(gridSizeWrap, () => {
 gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
 
 buttonControl('Reroll seed', () => {
+  pushUndo();
   if (mode === 'solo') opts.seed = (Math.random() * 1e9) | 0;
   else baseSeed = (Math.random() * 1e9) | 0;
   refreshSeedLabel();
@@ -478,6 +479,69 @@ function leavesMutateList() {
 buttonControl('Mutate all', () => mutateSection([
   ...structureMutateList(), ...forceMutateList(), ...barkMutateList(), ...leavesMutateList(),
 ]));
+
+// ---- undo / redo / restart ----
+// Snapshots cover the tree (opts) plus the View-section state that describes it (mode,
+// gridSize, baseSeed) — deliberately NOT Lighting or texture mode, since those aren't touched
+// by Mutate/Reroll/Load and aren't part of "the tree getting too crazy". Only "big jump"
+// actions push a snapshot (via mutateSection/loadOpts, or explicitly in Reroll's handler below)
+// — individual slider drags don't, since they fire many events per drag and would fill the
+// 15-slot history almost instantly.
+const UNDO_LIMIT = 15;
+let undoStack = [];
+let redoStack = [];
+function snapshotState() { return { opts: snapshotOpts(), mode, gridSize, baseSeed }; }
+function pushUndo() {
+  undoStack.push(snapshotState());
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+// Shared by loadOpts() and restoreState(): re-apply the current texture mode's maps (snapshots
+// never include live Texture objects), rebuild Structure's rows, refresh every control's
+// displayed value, refresh the seed label, and rebuild the 3D view + Export text.
+function applyOptsAndRefresh() {
+  applyTexSetToOpts();
+  rebuildStructureRows();
+  refreshAllControls();
+  refreshSeedLabel();
+  rebuildView();
+}
+function restoreState(state) {
+  for (const k of Object.keys(opts)) delete opts[k];
+  Object.assign(opts, structuredClone(state.opts));
+  mode = state.mode; gridSize = state.gridSize; baseSeed = state.baseSeed;
+  gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
+  applyOptsAndRefresh();
+}
+function undo() {
+  if (undoStack.length === 0) return;
+  redoStack.push(snapshotState());
+  if (redoStack.length > UNDO_LIMIT) redoStack.shift();
+  restoreState(undoStack.pop());
+  updateUndoRedoButtons();
+}
+function redo() {
+  if (redoStack.length === 0) return;
+  undoStack.push(snapshotState());
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  restoreState(redoStack.pop());
+  updateUndoRedoButtons();
+}
+let undoBtn, redoBtn;
+const undoRedoRow = document.createElement('div'); undoRedoRow.style.cssText = 'display:flex;gap:6px';
+current.appendChild(undoRedoRow);
+withHost(undoRedoRow, () => { undoBtn = buttonControl('Undo', undo); redoBtn = buttonControl('Redo', redo); });
+undoBtn.style.width = redoBtn.style.width = 'auto'; undoBtn.style.flex = redoBtn.style.flex = '1';
+function updateUndoRedoButtons() {
+  undoBtn.disabled = undoStack.length === 0;
+  redoBtn.disabled = redoStack.length === 0;
+}
+updateUndoRedoButtons();
+
+// Restart reuses loadOpts() (defined in the Species tab section below), which already pushes
+// an undo snapshot, so Restart is itself undoable.
+buttonControl('Restart', () => loadOpts(DEFAULT_OPTS));
 
 // ===================== Structure section =====================
 header('Structure');
@@ -602,17 +666,14 @@ function snapshotOpts() {
 // the loaded tree can never mutate the stored save. Re-applies the current texture mode's maps
 // afterward, since saved snapshots never include them (see snapshotOpts above).
 function loadOpts(savedOpts) {
+  pushUndo();
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(savedOpts));
   baseSeed = opts.seed;
   mode = 'solo';
   gridSizeWrap.style.display = 'none';
-  applyTexSetToOpts();
-  rebuildStructureRows();
-  refreshAllControls();
-  refreshSeedLabel();
+  applyOptsAndRefresh();
   activateTab('tuning');
-  rebuildView();
 }
 
 sectionHost = speciesPage;
