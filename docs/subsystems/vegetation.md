@@ -27,6 +27,7 @@ buffers so the CPU never reads back GPU state.
 | `grass-compute.js` (348 lines) | `createComputeGrass()`: fully GPU-driven grass. A TSL compute pass regenerates candidate blades each frame over a world-cell window around the camera, plants them on a TSL terrain-height function, culls (water/radius/density), and atomically compacts survivors into one indirect-drawn instance buffer. |
 | `grass-cells.js` (58 lines) | Pure cell-grid math: `cellHash`, `candidateBlade` (deterministic per-(cell,slot) blade, the JS twin of `grass-compute.js`'s TSL placement), `windowCellCount`, `maxInstances`, `perCellCount`. Used both as the Node-testable spec and by `grass-compute.js` for buffer sizing. |
 | `grass-height-ref.js` (33 lines) | `grassHeightRef(params, x, z)`: independent JS re-derivation of `terrain-field.js`'s `terrainHeightAt`, written with the same ops the TSL height function in `grass-compute.js` uses, so terrain conformance is provably bit-matched in tests. |
+| `tree-age.js` | `applyAge(opts, ageT)`: pure sapling→mature transform (scale, branch-recursion "development", leaf count/size) for a `trees.js` options object. No DOM/THREE dependency — used by `tree-viewer.html`'s age-preview slider today, intended for the game's forest placement to reuse later (per-instance age roll) without duplicating the math. |
 
 ## Public API
 
@@ -86,6 +87,9 @@ export function perCellCount(density, cellSize, Kmax): number
 
 // grass-height-ref.js
 export function grassHeightRef(params: {baseAmp, lake, lakeDepth}, x, z): number
+
+// tree-age.js
+export function applyAge(opts, ageT: number): opts   // ageT clamped to [0,1]; ageT=1 is value-equivalent to opts unchanged
 ```
 
 ## Wiring
@@ -211,6 +215,7 @@ Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600),
 | `test-grass-height-tsl.mjs` | `grass-height-ref.js` (`grassHeightRef`) vs `terrain-field.js` (`terrainHeightAt`) | Samples a grid (x,z in [-64,64] step 3.5, including fractional/negative coords) and asserts `grassHeightRef` matches `terrainHeightAt` to within `1e-6` — i.e. the JS reference used by grass placement is provably bit-equivalent to the canonical terrain height function the TSL kernel is transcribed from. Also checks determinism and that `lakeDepth` actually perturbs height somewhere in the sampled grid. |
 | `test-grass-wind.mjs` | `grass.js` (`grassWindOffset`, `grassFadeKeep`) | Wind offset is deterministic and continuous across a chunk boundary (no seam, `x=29.99` vs `30.01` differ by < 0.05); `grassFadeKeep` returns 1 near the camera, 0 far away, and a partial value in between. |
 | `test-cdlod-morph.mjs` (relevant parts only) | Imports `grassHeightRef` from `grass-height-ref.js` to verify a CDLOD terrain-morph crack-free property: a fully-morphed fine-LOD edge vertex's height (via `grassHeightRef`) matches the coarser neighboring LOD's height at the same world position, within `1e-6`. The rest of the file (`morphGridCoord`, `nodeSize` from `cdlod-select.js`) is terrain LOD logic outside this subsystem; `grass-height-ref.js`'s only role here is as the shared height oracle used to prove no vertical crack. |
+| `test-tree-age.mjs` | `tree-age.js` (`applyAge`) | age=1 is value-equivalent to the input opts unchanged; age=0 shrinks length/radius/leaf count/leaf size and reduces `levels`, but never raises `levels` above the species' own count; age values outside `[0,1]` clamp; age=0.5 lands strictly between the age-0 and age-1 results; the input opts object itself is never mutated. |
 
 ## Standalone tooling
 
@@ -223,11 +228,25 @@ a procedural/authored texture toggle, a Lighting section driving `lights.js`'s r
 in any way, and `environment-viewer.html`'s own Forest panel sliders are unaffected by it. Run via
 `python serve.py` like the main viewer (see the directory's `CLAUDE.md`).
 
-The controls panel has two tabs: **Tuning** and **Species**. Species is a save/load library of
-tuned trees persisted to `localStorage` (`tree-viewer:saved-trees`; name + "Save current tree"
-snapshots the current options with texture maps stripped, click a saved entry to load it) — its
-"Save"/"Saved trees" sub-sections are still plain inline collapsibles (`header()`), unaffected by
-the floating-panel redesign below.
+The controls panel has two tabs: **Tuning** and **Species**. Species is a **Family/Species**
+authoring system persisted to `localStorage` (`tree-viewer:families`) — a Family is a named group
+of Species (each a full tree `opts` + metadata: name, biome tags from the canonical 18-name list
+in [biomes.md](biomes.md), a density weight, a size range, and an age range), grown by "Auto-add
+mutations" (batch-mutates the currently-loaded tree N times from the same baseline, reusing the
+existing `structureMutateList`/`forceMutateList`/`barkMutateList`/`leavesMutateList`, and saves
+every result as a new species without rendering each intermediate mutation) or manually ("Keep
+current tree as new species" after tuning/mutating normally — never hitting it is how a bad
+result gets discarded). Clicking a species in the list both loads it and selects it for editing;
+its metadata panel includes an **age-preview slider** that renders the live Solo tree through
+`tree-age.js`'s `applyAge()` without altering the saved (mature) opts. A one-time migration folds
+any pre-existing flat `tree-viewer:saved-trees` entries into a family named "Imported" so nothing
+from before this feature existed is lost. Its "Family"/"Grow family"/"Species"/"Edit species"
+sub-sections are still plain inline collapsibles (`header()`), unaffected by the floating-panel
+redesign below (which applies to the Tuning tab only). While building this, a pre-existing bug
+was found and fixed: `applyOptsAndRefresh()` (the shared hub Load/Undo/Redo/Restart all use after
+replacing `opts`) never resynced the page-local `forceAz`/`forceEl` state the Force section's
+sliders are bound to, so the Force sliders would silently show the previous tree's angle after
+any of those actions — fixed via `resyncForceAngles()`.
 
 Every Tuning-tab section (View, Texture, Lighting, Structure, Force, Bark, Leaves, Export) is a
 row (label + optional "Mutate" button) that opens its own independent floating panel on click,
