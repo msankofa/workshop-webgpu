@@ -31,6 +31,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createLightingRig } from './lights.js';
 import { createTree } from './trees.js';
 import { createTextureSource } from './tree-textures.js';
+import { applyAge } from './tree-age.js';
 
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
@@ -98,6 +99,7 @@ let gridSize = 3;
 let baseSeed = opts.seed;
 let texMode = 'procedural';
 let texSet = createTextureSource('procedural');
+let previewAge = 1;       // 0=sapling..1=mature; only Solo mode renders through applyAge(opts, previewAge)
 
 let soloTree = null;
 let gridTrees = [];
@@ -131,14 +133,18 @@ function fitCameraToGrid() {
 // regenerate()), so any change — including bark/leaf color, roughness, or texture maps —
 // requires a full dispose+recreate, not just regenerate(). Solo and Grid both always fully
 // rebuild on every change; the 130ms debounce (below) keeps that cheap enough for live tuning.
+// Rendered through applyAge (Species tab's age-preview slider) rather than raw `opts` — a
+// no-op when `previewAge` is left at its default of 1, so this doesn't change anything until
+// the Species tab's age-preview control is actually used. Grid mode intentionally ignores
+// age preview (only Solo is a "look at one species closely" view).
 function buildSolo() {
-  soloTree = makeTree(opts);
+  soloTree = makeTree(applyAge(opts, previewAge));
   scene.add(soloTree);
   fitCameraTo(soloTree);
 }
 function regenerateSolo(refit) {
   if (soloTree) disposeTree(soloTree);
-  soloTree = makeTree(opts);
+  soloTree = makeTree(applyAge(opts, previewAge));
   scene.add(soloTree);
   if (refit) fitCameraTo(soloTree);
 }
