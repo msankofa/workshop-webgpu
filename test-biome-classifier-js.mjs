@@ -1,4 +1,4 @@
-import { BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell, createFieldSampler } from './biome-classifier-js.js';
+import { BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell, createFieldSampler, generateGrid } from './biome-classifier-js.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -66,6 +66,32 @@ ok(v1b !== v1, '3: different seeds produce different fields');
 const samplerA2 = createFieldSampler(1337);
 const v1a2 = samplerA2.sample('temperature', 100, 200, 1550, 3);
 ok(v1a2 === v1, '3: same seed reproduces the same field across sampler instances');
+
+const RES = 16; // small grid for fast test iteration; production uses GRID_RESOLUTION (128)
+const gridA = generateGrid(DEFAULT_CONFIG, RES);
+ok(gridA.height.length === RES * RES, '4: height array is resolution^2');
+ok(gridA.slope.length === RES * RES, '4: slope array is resolution^2');
+ok(gridA.biomeId.length === RES * RES, '4: biomeId array is resolution^2');
+ok(gridA.ruleIndex.length === RES * RES, '4: ruleIndex array is resolution^2');
+
+let allBiomeIdsValid = true, allRuleIndicesValid = true;
+for (let i = 0; i < gridA.biomeId.length; i++) {
+  if (gridA.biomeId[i] < 0 || gridA.biomeId[i] > 17) allBiomeIdsValid = false;
+  if (gridA.ruleIndex[i] < -1 || gridA.ruleIndex[i] > 16) allRuleIndicesValid = false;
+}
+ok(allBiomeIdsValid, '4: every biomeId is a valid BIOMES index (0-17)');
+ok(allRuleIndicesValid, '4: every ruleIndex is in [-1, 16]');
+
+const gridA2 = generateGrid(DEFAULT_CONFIG, RES);
+ok(gridA2.height.every((v, i) => v === gridA.height[i]), '4: generateGrid is deterministic for identical cfg/resolution');
+ok(gridA2.biomeId.every((v, i) => v === gridA.biomeId[i]), '4: biomeId output is deterministic');
+
+const gridB = generateGrid({ ...DEFAULT_CONFIG, seed: 42 }, RES);
+ok(!gridB.height.every((v, i) => v === gridA.height[i]), '4: changing seed changes the generated height field');
+
+const gridSeaHigh = generateGrid({ ...DEFAULT_CONFIG, sea_level: 200 }, RES);
+const allOceanOrDeepOcean = Array.from(gridSeaHigh.biomeId).every((id) => id === BIOME_INDEX.deep_ocean || id === BIOME_INDEX.ocean || id === BIOME_INDEX.beach);
+ok(allOceanOrDeepOcean, '4: an absurdly high sea_level floods every cell to deep_ocean/ocean/beach');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

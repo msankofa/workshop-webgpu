@@ -186,3 +186,108 @@ export function createFieldSampler(seed) {
   }
   return { sample };
 }
+
+// ---- height composition (port of height_composer.py's compose_height) ----
+const CONTINENT_X = [-1.0, -0.6, -0.2, 0.0, 0.3, 0.6, 1.0];
+const CONTINENT_Y = [-40.0, -22.0, -4.0, 4.0, 14.0, 32.0, 55.0];
+const EROSION_X = [-1.0, -0.5, 0.0, 0.5, 1.0];
+const EROSION_Y = [90.0, 55.0, 22.0, 7.0, 2.0];
+
+// NOTE: this rescales the fixed CONTINENT_Y/EROSION_Y knot arrays themselves (7 and 5
+// numbers) to the configured min/max -- it does NOT depend on the generated grid, so
+// it only needs to run once per generateGrid() call, not once per cell.
+function rescaleArray(values, newMin, newMax) {
+  const oldMin = Math.min(...values);
+  const oldMax = Math.max(...values);
+  const span = Math.max(oldMax - oldMin, 1e-8);
+  return values.map((v) => newMin + ((v - oldMin) / span) * (newMax - newMin));
+}
+
+function interp1d(x, xs, ys) {
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[xs.length - 1]) return ys[ys.length - 1];
+  for (let i = 0; i < xs.length - 1; i++) {
+    if (x >= xs[i] && x <= xs[i + 1]) {
+      const t = (x - xs[i]) / (xs[i + 1] - xs[i]);
+      return ys[i] + t * (ys[i + 1] - ys[i]);
+    }
+  }
+  return ys[ys.length - 1];
+}
+
+function peaksAndValleys(weird) { return 1.0 - Math.abs(3.0 * Math.abs(weird) - 2.0); }
+
+// ---- derived maps (port of derived_maps.py's slope + beach_mask) ----
+function smoothstep(edge0, edge1, x) {
+  const t = Math.min(1, Math.max(0, (x - edge0) / Math.max(edge1 - edge0, 1e-8)));
+  return t * t * (3 - 2 * t);
+}
+function clamp01(v) { return Math.min(1, Math.max(0, v)); }
+
+// ---- full per-cell pipeline: noise fields -> height -> slope/beach -> biome ----
+export function generateGrid(cfg, resolution) {
+  const n = resolution * resolution;
+  const cont = new Float32Array(n);
+  const eros = new Float32Array(n);
+  const weird = new Float32Array(n);
+  const temp = new Float32Array(n);
+  const humid = new Float32Array(n);
+  const height = new Float32Array(n);
+  const slope = new Float32Array(n);
+  const biomeId = new Uint8Array(n);
+  const ruleIndex = new Int8Array(n);
+
+  const sampler = createFieldSampler(cfg.seed);
+  for (let iz = 0; iz < resolution; iz++) {
+    const z = (iz / (resolution - 1) - 0.5) * WORLD_EXTENT;
+    for (let ix = 0; ix < resolution; ix++) {
+      const x = (ix / (resolution - 1) - 0.5) * WORLD_EXTENT;
+      const idx = iz * resolution + ix;
+      cont[idx] = sampler.sample('continentalness', x, z, cfg.continentalness_period, cfg.continentalness_octaves);
+      eros[idx] = sampler.sample('erosion', x, z, cfg.erosion_period, cfg.erosion_octaves);
+      weird[idx] = sampler.sample('weirdness', x, z, cfg.weirdness_period, cfg.weirdness_octaves);
+      temp[idx] = sampler.sample('temperature', x, z, cfg.temperature_period, cfg.temperature_octaves);
+      humid[idx] = sampler.sample('humidity', x, z, cfg.humidity_period, cfg.humidity_octaves);
+    }
+  }
+
+  const baseKnots = rescaleArray(CONTINENT_Y, cfg.deep_ocean_depth, cfg.far_inland_height);
+  const ampKnots = rescaleArray(EROSION_Y, cfg.min_plains_amplitude, cfg.max_mountain_amplitude);
+  for (let i = 0; i < n; i++) {
+    const bse = interp1d(cont[i], CONTINENT_X, baseKnots);
+    const amplitude = interp1d(eros[i], EROSION_X, ampKnots);
+    height[i] = bse + peaksAndValleys(weird[i]) * amplitude;
+  }
+
+  const dx = WORLD_EXTENT / Math.max(1, resolution - 1);
+  for (let iz = 0; iz < resolution; iz++) {
+    for (let ix = 0; ix < resolution; ix++) {
+      const idx = iz * resolution + ix;
+      const xL = ix > 0 ? height[idx - 1] : height[idx];
+      const xR = ix < resolution - 1 ? height[idx + 1] : height[idx];
+      const stepX = (ix > 0 && ix < resolution - 1) ? 2 * dx : dx;
+      const gradX = (xR - xL) / Math.max(stepX, 1e-6);
+
+      const zL = iz > 0 ? height[idx - resolution] : height[idx];
+      const zR = iz < resolution - 1 ? height[idx + resolution] : height[idx];
+      const stepZ = (iz > 0 && iz < resolution - 1) ? 2 * dx : dx;
+      const gradZ = (zR - zL) / Math.max(stepZ, 1e-6);
+
+      slope[idx] = Math.sqrt(gradX * gradX + gradZ * gradZ);
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const beach1 = 1.0 - smoothstep(cfg.sea_level + 1.0, cfg.sea_level + cfg.beach_width, height[i]);
+    const beach2 = 1.0 - smoothstep(0.22, 0.52, slope[i]);
+    const beachMask = clamp01(beach1 * beach2);
+    const { biome, ruleIndex: r } = classifyBiomeCell({
+      height: height[i], slope: slope[i], temp: temp[i], humid: humid[i], weird: weird[i],
+      beachMask, seaLevel: cfg.sea_level, cfg,
+    });
+    biomeId[i] = BIOME_INDEX[biome];
+    ruleIndex[i] = r;
+  }
+
+  return { height, slope, temp, humid, weird, biomeId, ruleIndex, resolution };
+}
