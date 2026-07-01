@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>workshop-webgpu — code map</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161c;
+    --panel: #1b1e26;
+    --panel-border: #2a2e3a;
+    --text: #d8dce6;
+    --muted: #8890a4;
+    --accent: #6fb7ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; overflow: hidden; }
+  #app { display: flex; height: 100vh; width: 100vw; }
+  #canvas-wrap { flex: 1; position: relative; min-width: 0; }
+  svg#graph { width: 100%; height: 100%; display: block; cursor: grab; background:
+    radial-gradient(ellipse at 50% 40%, #1a1d26 0%, #101218 100%); }
+  svg#graph.panning { cursor: grabbing; }
+
+  #sidebar { width: 340px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--panel-border);
+    display: flex; flex-direction: column; overflow: hidden; }
+  #sidebar h1 { font-size: 14px; margin: 14px 14px 2px; line-height: 1.3; }
+  #sidebar .subtitle { font-size: 11px; color: var(--muted); margin: 0 14px 10px; line-height: 1.5; }
+  .sb-section { padding: 10px 14px; border-top: 1px solid var(--panel-border); }
+  .sb-section h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+
+  #search { width: 100%; padding: 7px 9px; background: #11131a; border: 1px solid var(--panel-border);
+    border-radius: 6px; color: var(--text); font-size: 12px; }
+  #search:focus { outline: none; border-color: var(--accent); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 6px; border-radius: 20px;
+    background: #11131a; border: 1px solid var(--panel-border); font-size: 11px; cursor: pointer; user-select: none; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .chip.off { opacity: .35; }
+  .chip:hover { border-color: #444a5c; }
+
+  .edge-legend { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+  .edge-legend label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .edge-legend svg { flex-shrink: 0; }
+
+  .doc-link { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text);
+    text-decoration: none; padding: 3px 0; }
+  .doc-link:hover { color: var(--accent); }
+  .doc-link .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  #details { flex: 1; overflow-y: auto; padding: 14px; }
+  #details .empty { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  #details .file { font-family: "SF Mono", Consolas, monospace; font-size: 13.5px; font-weight: 600; word-break: break-all; }
+  #details .meta { font-size: 11px; color: var(--muted); margin: 5px 0 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+  #details .meta span { background: #11131a; border: 1px solid var(--panel-border); border-radius: 4px; padding: 2px 6px; }
+  #details .desc { font-size: 12.5px; line-height: 1.55; color: #c4c9d6; margin-bottom: 14px; }
+  #details h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 14px 0 6px; }
+  #details ul { margin: 0; padding-left: 0; list-style: none; font-size: 12px; }
+  #details li { padding: 3px 0; }
+  #details li .tag { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px; margin-right: 6px;
+    background: #2a2e3a; color: var(--muted); vertical-align: 1px; }
+  #details a.link { color: var(--accent); text-decoration: none; cursor: pointer; font-family: "SF Mono", Consolas, monospace; }
+  #details a.link:hover { text-decoration: underline; }
+
+  #footer { padding: 9px 14px; border-top: 1px solid var(--panel-border); font-size: 10.5px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+  #footer button { background: #11131a; border: 1px solid var(--panel-border); color: var(--text); font-size: 10.5px;
+    padding: 4px 9px; border-radius: 5px; cursor: pointer; }
+  #footer button:hover { border-color: var(--accent); color: var(--accent); }
+
+  .node-label { font-family: "SF Mono", Consolas, monospace; font-size: 9.5px; fill: #c4c9d6; pointer-events: none; user-select: none; }
+  .node-circle { stroke-width: 1.4; cursor: pointer; }
+  .node-circle.entry { stroke-width: 2.2; }
+  .node-glow { filter: drop-shadow(0 0 5px rgba(111,183,255,.85)); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="canvas-wrap">
+    <svg id="graph" viewBox="-640 -460 1280 920">
+      <g id="viewport">
+        <g id="edges"></g>
+        <g id="nodes"></g>
+      </g>
+    </svg>
+  </div>
+
+  <div id="sidebar">
+    <h1>workshop-webgpu — code map</h1>
+    <p class="subtitle">Module dependency graph, reconstructed from the actual <code>import</code> statements in the repo (branch <code>sp1-webgpu-renderer-migration</code>). Drag nodes to rearrange, scroll to zoom, click a node for details.</p>
+
+    <div class="sb-section">
+      <h2>Search</h2>
+      <input id="search" type="text" placeholder="filter by filename…">
+    </div>
+
+    <div class="sb-section">
+      <h2>Subsystems (click to toggle)</h2>
+      <div class="chips" id="group-chips"></div>
+    </div>
+
+    <div class="sb-section">
+      <h2>Edge types</h2>
+      <div class="edge-legend" id="edge-legend"></div>
+    </div>
+
+    <div class="sb-section">
+      <h2>Subsystem docs</h2>
+      <div id="doc-links" style="display:flex; flex-direction:column; gap:5px;"></div>
+    </div>
+
+    <div class="sb-section" style="flex:1; min-height:0; display:flex; flex-direction:column; border-bottom:none;">
+      <h2>Details</h2>
+      <div id="details"><p class="empty">Click any node to see what it does, how big it is, who imports it, and which test files cover it.</p></div>
+    </div>
+
+    <div id="footer">
+      <span id="counts"></span>
+      <button id="reset-layout">Reset layout</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------
+// DATA — derived from grepping every `import` / `await import()` in the
+// repo, plus line counts (wc -l) and which test-*.mjs file imports what.
+// ---------------------------------------------------------------------
+
+const GROUPS = {
+  entry:       { label: 'Entry point',       color: '#f25f5c' },
+  terrain:     { label: 'Terrain',           color: '#a1887f' },
+  vegetation:  { label: 'Vegetation',        color: '#5cb85c' },
+  water:       { label: 'Water',             color: '#2f9bf0' },
+  sky:         { label: 'Sky / atmosphere',  color: '#9575cd' },
+  lighting:    { label: 'Lighting',          color: '#ffca28' },
+  fx:          { label: 'Particles / FX',    color: '#ff8a65' },
+  creature:    { label: 'Creature sim',      color: '#26c6da' },
+  multiplayer: { label: 'Multiplayer',       color: '#ec407a' },
+  infra:       { label: 'Infra / UI',        color: '#9e9e9e' },
+  server:      { label: 'Server (backend)',  color: '#5c6bc0' },
+  legacy:      { label: 'Legacy app',        color: '#cfd3dc' },
+};
+
+const NODES = [
+  // --- entry points ---
+  { id: 'environment-viewer.html', group: 'entry', kind: 'entry', lines: 2854,
+    desc: 'The active WebGPU game entry point. A single &lt;script type="module"&gt; that owns the render loop, camera and scene composition. Imports ~11 modules statically (always needed) and lazily await-imports another ~14 (forest, grass, water, sky, clouds, post-fx…) to spread startup cost — several with cache-busting `?v=` query strings from recent live-tuning fixes.',
+    tests: [] },
+  { id: 'creature-viewer.html', group: 'legacy', kind: 'entry', lines: 782,
+    desc: 'Older WebGL/Three.js viewer that predates the WebGPU migration. Self-contained orbit + pointer-locked FPS camera demo (see controller.md) for the original creature rig. Not part of the environment-viewer.html render loop.',
+    tests: [] },
+
+  // --- terrain ---
+  { id: 'terrain-system.js', group: 'terrain', lines: 598,
+    desc: 'Builds the chunked heightfield terrain mesh (MeshStandardNodeMaterial) on top of terrain-field.js\'s pure height functions. Statically imported — terrain is always present.',
+    tests: [] },
+  { id: 'terrain-field.js', group: 'terrain', lines: 150,
+    desc: 'Pure math: terrainHeightAt / terrainNormalAt (closed-form height function) plus buildChunkArrays / buildHeightTile. No THREE or DOM dependency, which is why it\'s the most heavily unit-tested file in the repo.',
+    tests: ['test-collision.mjs', 'test-grass-height-tsl.mjs', 'test-terrain-field.mjs', 'test-terrain-heightmap-parity.mjs', 'test-terrain-instanced.mjs', 'test-terrain-system.mjs', 'test-terrain-tile-seam.mjs'] },
+  { id: 'terrain-worker.js', group: 'terrain', lines: 30,
+    desc: 'Web Worker wrapper around terrain-field.js\'s buildChunkArrays/buildHeightTile, offloading heavy mesh-data generation off the main thread.',
+    tests: ['test-terrain-worker-heighttile.mjs'] },
+  { id: 'terrain-loader.js', group: 'terrain', lines: 249,
+    desc: 'Loads GLTF terrain maps (GLTFLoader) from maps/ and applies textures via terrain-textures.js. Statically imported.',
+    tests: [] },
+  { id: 'terrain-textures.js', group: 'terrain', lines: 258,
+    desc: 'Texture application logic for loaded terrain meshes (splat/material setup), used by terrain-loader.js.',
+    tests: ['test-height-texture.mjs (mirrors bakeHeightTexture)'] },
+  { id: 'cdlod-terrain.js', group: 'terrain', lines: 262,
+    desc: 'GPU CDLOD (chunked level-of-detail) terrain variant, lazy-loaded. Delegates node selection to cdlod-select.js.',
+    tests: [] },
+  { id: 'cdlod-select.js', group: 'terrain', lines: 116,
+    desc: 'Pure CDLOD node-selection math — Morton encoding, distance-based LOD selection. No THREE dependency, fully unit tested.',
+    tests: ['test-cdlod-morph.mjs', 'test-cdlod-morton.mjs', 'test-cdlod-select.mjs'] },
+  { id: 'collision.js', group: 'terrain', lines: 101,
+    desc: 'groundContact / slideVelocity / createTrunkIndex — player and object collision against terrain height + tree trunks. Statically imported.',
+    tests: ['test-collision.mjs'] },
+  { id: 'map-collision.js', group: 'terrain', lines: 135,
+    desc: 'BVH-accelerated mesh collision (three-mesh-bvh) for static map geometry — separate from the procedural terrain collider.',
+    tests: [] },
+
+  // --- vegetation ---
+  { id: 'trees.js', group: 'vegetation', lines: 454,
+    desc: 'Procedural tree mesh/geometry generator (createTree). Lazy-loaded together with tree-textures.js to build the forest\'s per-variant geometry.',
+    tests: ['_audit_trees.mjs'] },
+  { id: 'tree-textures.js', group: 'vegetation', lines: 97,
+    desc: 'Generates procedural bark/leaf texture sources consumed by trees.js.', tests: [] },
+  { id: 'forest-placement.js', group: 'vegetation', lines: 183,
+    desc: 'Deterministic, seeded placement records (position / species / scale) for forest instances — pure data generation.',
+    tests: ['test-forest-placement.mjs'] },
+  { id: 'forest-palette.js', group: 'vegetation', lines: 84,
+    desc: 'Bakes the set of tree-variant geometries/species once, built from forest-placement.js\'s species data.', tests: [] },
+  { id: 'forest-gpu.js', group: 'vegetation', lines: 399,
+    desc: 'GPU-instanced forest renderer: per-frame compute cull + compact survivors into per-variant indirect draw buffers. The active forest rendering path; recently bumped capPerVariant to 2048 to stop tree drop at high counts.',
+    tests: ['test-forest-gpu-rebuild.mjs (mirrors rebuild() logic)'] },
+  { id: 'forest-cull.js', group: 'vegetation', lines: 8,
+    desc: 'Tiny CPU-side twin of forest-gpu.js\'s TSL cull math (cullInstance) — exists purely so the cull logic can be unit-tested in Node without a GPU. Not imported by forest-gpu.js itself.',
+    tests: ['test-forest-cull.mjs'] },
+  { id: 'grass.js', group: 'vegetation', lines: 536,
+    desc: 'CPU-placed grass blade system: blade geometry + wind/noise functions. Lazy-loaded directly when GRASS_MODE==="cpu"; its helpers are also reused by grass-compute.js and particles.js.',
+    tests: ['test-grass-wind.mjs'] },
+  { id: 'grass-compute.js', group: 'vegetation', lines: 348,
+    desc: 'GPU-compute variant of grass (GRASS_MODE==="gpu"): reuses grass.js\'s blade geometry/noise and grass-cells.js\'s cell math, places blades on the GPU.', tests: [] },
+  { id: 'grass-cells.js', group: 'vegetation', lines: 58,
+    desc: 'Pure cell-hash / windowing math for grass density (cellHash, candidateBlade, maxInstances) — shared by grass-compute.js, directly unit tested.',
+    tests: ['test-grass-cells.mjs'] },
+  { id: 'grass-height-ref.js', group: 'vegetation', lines: 33,
+    desc: 'Tiny shared height-lookup reference used by grass-cells.js and tests to keep CPU/GPU height sampling in sync.',
+    tests: ['test-cdlod-morph.mjs', 'test-grass-cells.mjs', 'test-grass-height-tsl.mjs'] },
+
+  // --- water ---
+  { id: 'water.js', group: 'water', lines: 1117,
+    desc: 'Reflective/refractive water plane system (TextureNode-based reflections). Largest single subsystem after the creature sim; recently got reflection-tuning controls. Lazy-loaded.', tests: [] },
+
+  // --- sky ---
+  { id: 'sky.js', group: 'sky', lines: 212,
+    desc: 'Composes the sky dome: gradient/atmosphere shader plus stars and celestial bodies. Lazy-loaded.', tests: [] },
+  { id: 'sky-field.js', group: 'sky', lines: 220,
+    desc: 'Pure palette/placement math for the sky (makePalette, sunSpritePlacement, star + celestial generation) — no THREE dependency, heavily unit tested.',
+    tests: ['test-sky-field.mjs'] },
+  { id: 'stars.js', group: 'sky', lines: 105,
+    desc: 'Point-cloud star field + Milky Way mesh, built from sky-field.js\'s generated star data.', tests: [] },
+  { id: 'celestial-bodies.js', group: 'sky', lines: 94,
+    desc: 'Sun/moon sprite bodies, placed via sky-field.js\'s sunSpritePlacement.', tests: [] },
+  { id: 'clouds.js', group: 'sky', lines: 265,
+    desc: 'Volumetric-looking cloud system; recently fixed to sample noise in world space to stop stretching. Lazy-loaded independently of sky.js.', tests: [] },
+
+  // --- lighting ---
+  { id: 'lights.js', group: 'lighting', lines: 205,
+    desc: 'Core lighting rig (sun/ambient). Statically imported — always active.', tests: [] },
+  { id: 'clustered-lights.js', group: 'lighting', lines: 274,
+    desc: 'GPU clustered point-light system (StorageBufferAttribute-based) for dynamic local lights. Lazy-loaded.', tests: [] },
+  { id: 'light-cluster.js', group: 'lighting', lines: 142,
+    desc: 'CPU-testable twin of clustered-lights.js\'s cluster-assignment math. Not imported in production — exists purely for Node unit tests.',
+    tests: ['test-light-cluster.mjs'] },
+
+  // --- fx ---
+  { id: 'particle-field.js', group: 'fx', lines: 58,
+    desc: 'Pure particle math (spawnInVolume, curlNoise2, stepLife, kindParams). Statically imported, shared by particles.js.',
+    tests: ['test-particle-field.mjs'] },
+  { id: 'particles.js', group: 'fx', lines: 213,
+    desc: 'GPU particle system built on particle-field.js\'s math plus grass.js\'s noise functions. Lazy-loaded.', tests: [] },
+  { id: 'post-fx.js', group: 'fx', lines: 106,
+    desc: 'Post-processing graph: bloom + tonemap + color grade (TSL). Lazy-loaded; its inline grade math mirrors post-grade.js.', tests: [] },
+  { id: 'post-grade.js', group: 'fx', lines: 34,
+    desc: 'CPU-testable twin of post-fx.js\'s inline color-grade math (gain → contrast → gamma → white-balance → saturation → vignette). Not imported in production.',
+    tests: ['test-post-grade.mjs'] },
+
+  // --- creature ---
+  { id: 'port-creature-bridge.js', group: 'creature', lines: 524,
+    desc: 'Adapter layer wiring the ported creature simulation into the WebGPU environment scene. Statically imported.', tests: [] },
+  { id: 'port-creature-system.js', group: 'creature', lines: 4830,
+    desc: 'The full creature simulation (steering, IK, combat, foraging…) ported from the original creature-viewer app. By far the largest module in the project.', tests: [] },
+  { id: 'creature.js', group: 'legacy', lines: 347,
+    desc: 'Creature class used only by the legacy creature-viewer.html — an earlier, simpler rig, unrelated to port-creature-system.js.', tests: [] },
+
+  // --- multiplayer ---
+  { id: 'multiplayer.js', group: 'multiplayer', lines: 239,
+    desc: 'Host/guest session setup, InterpolationBuffer and GhostRenderer for multiplayer sync. Statically imported; talks to the relay server over the network.',
+    tests: ['multiplayer-test.mjs'] },
+  { id: 'start-screen.js', group: 'multiplayer', lines: 253,
+    desc: 'Pre-game menu/UI that kicks off host/guest session creation using multiplayer.js\'s RELAY_URL.', tests: [] },
+
+  // --- infra ---
+  { id: 'frame-profiler.js', group: 'infra', lines: 126,
+    desc: 'Per-pass GPU/CPU timing profiler — feeds the perf rows shown in environment-ui.js\'s debug panel.',
+    tests: ['test-frame-profiler.mjs'] },
+  { id: 'environment-ui.js', group: 'infra', lines: 648,
+    desc: 'Debug/tuning UI panel: sliders and live readouts for every subsystem (terrain, grass, forest, lights, water…).', tests: [] },
+
+  // --- server ---
+  { id: 'server/server.js', group: 'server', kind: 'server', lines: 82,
+    desc: 'Node relay server for multiplayer signaling, deployed separately (see server/render.yaml). Reached over the network via multiplayer.js\'s RELAY_URL, not imported.', tests: [] },
+];
+
+// Each subsystem has a written reference doc in docs/subsystems/. server's
+// doc lives inside multiplayer.md (it's covered there as the relay backend).
+const GROUP_DOCS = {
+  entry: 'entry-point.md', terrain: 'terrain.md', vegetation: 'vegetation.md',
+  water: 'water.md', sky: 'sky.md', lighting: 'lighting.md', fx: 'fx.md',
+  creature: 'creature.md', multiplayer: 'multiplayer.md', infra: 'infra.md',
+  server: 'multiplayer.md', legacy: 'legacy.md',
+};
+// representative node selected when a doc deep-links back here via #group
+const GROUP_REPRESENTATIVE = {
+  entry: 'environment-viewer.html', terrain: 'terrain-system.js', vegetation: 'forest-gpu.js',
+  water: 'water.js', sky: 'sky.js', lighting: 'lights.js', fx: 'particles.js',
+  creature: 'port-creature-bridge.js', multiplayer: 'multiplayer.js', infra: 'environment-ui.js',
+  server: 'server/server.js', legacy: 'creature-viewer.html',
+};
+const DOC_LIST = [
+  ['entry-point.md', 'Entry point orchestration', 'entry'],
+  ['terrain.md', 'Terrain', 'terrain'],
+  ['biomes.md', 'Biomes', 'terrain'],
+  ['vegetation.md', 'Vegetation', 'vegetation'],
+  ['water.md', 'Water', 'water'],
+  ['sky.md', 'Sky / atmosphere', 'sky'],
+  ['lighting.md', 'Lighting', 'lighting'],
+  ['fx.md', 'Particles / FX', 'fx'],
+  ['creature.md', 'Creature sim', 'creature'],
+  ['multiplayer.md', 'Multiplayer (+ server)', 'multiplayer'],
+  ['infra.md', 'Infra / UI', 'infra'],
+  ['legacy.md', 'Legacy app', 'legacy'],
+];
+
+// edge types: static (always-on import), dynamic (lazy await-import),
+// worker (postMessage / worker thread, not a JS import), twin (a CPU
+// re-implementation kept in sync with GPU/TSL code for Node testing —
+// not an actual import relationship), network (talks over the wire).
+const EDGES = [
+  // environment-viewer.html — static
+  ['environment-viewer.html', 'lights.js', 'static'],
+  ['environment-viewer.html', 'terrain-system.js', 'static'],
+  ['environment-viewer.html', 'collision.js', 'static'],
+  ['environment-viewer.html', 'port-creature-bridge.js', 'static'],
+  ['environment-viewer.html', 'particle-field.js', 'static'],
+  ['environment-viewer.html', 'frame-profiler.js', 'static'],
+  ['environment-viewer.html', 'environment-ui.js', 'static'],
+  ['environment-viewer.html', 'terrain-loader.js', 'static'],
+  ['environment-viewer.html', 'start-screen.js', 'static'],
+  ['environment-viewer.html', 'map-collision.js', 'static'],
+  ['environment-viewer.html', 'multiplayer.js', 'static'],
+  // environment-viewer.html — dynamic (lazy await-import)
+  ['environment-viewer.html', 'clustered-lights.js', 'dynamic'],
+  ['environment-viewer.html', 'cdlod-terrain.js', 'dynamic'],
+  ['environment-viewer.html', 'particles.js', 'dynamic'],
+  ['environment-viewer.html', 'post-fx.js', 'dynamic'],
+  ['environment-viewer.html', 'trees.js', 'dynamic'],
+  ['environment-viewer.html', 'tree-textures.js', 'dynamic'],
+  ['environment-viewer.html', 'forest-placement.js', 'dynamic'],
+  ['environment-viewer.html', 'forest-palette.js', 'dynamic'],
+  ['environment-viewer.html', 'forest-gpu.js', 'dynamic'],
+  ['environment-viewer.html', 'grass.js', 'dynamic'],
+  ['environment-viewer.html', 'grass-compute.js', 'dynamic'],
+  ['environment-viewer.html', 'water.js', 'dynamic'],
+  ['environment-viewer.html', 'clouds.js', 'dynamic'],
+  ['environment-viewer.html', 'sky.js', 'dynamic'],
+  // module-to-module static
+  ['cdlod-terrain.js', 'cdlod-select.js', 'static'],
+  ['forest-palette.js', 'forest-placement.js', 'static'],
+  ['grass-cells.js', 'grass-height-ref.js', 'static'],
+  ['grass-compute.js', 'grass.js', 'static'],
+  ['grass-compute.js', 'grass-cells.js', 'static'],
+  ['particles.js', 'grass.js', 'static'],
+  ['particles.js', 'particle-field.js', 'static'],
+  ['port-creature-bridge.js', 'port-creature-system.js', 'static'],
+  ['sky.js', 'sky-field.js', 'static'],
+  ['sky.js', 'stars.js', 'static'],
+  ['sky.js', 'celestial-bodies.js', 'static'],
+  ['start-screen.js', 'multiplayer.js', 'static'],
+  ['terrain-loader.js', 'terrain-textures.js', 'static'],
+  ['terrain-system.js', 'terrain-field.js', 'static'],
+  // worker
+  ['terrain-worker.js', 'terrain-field.js', 'worker'],
+  // legacy app
+  ['creature-viewer.html', 'creature.js', 'static'],
+  // CPU/GPU math twins (not real imports)
+  ['forest-cull.js', 'forest-gpu.js', 'twin'],
+  ['light-cluster.js', 'clustered-lights.js', 'twin'],
+  ['post-grade.js', 'post-fx.js', 'twin'],
+  // network
+  ['multiplayer.js', 'server/server.js', 'network'],
+];
+
+const EDGE_STYLES = {
+  static:  { dash: null,        width: 1.6, label: 'static import (always loaded)' },
+  dynamic: { dash: '7,5',       width: 1.6, label: 'dynamic import (lazy-loaded)' },
+  worker:  { dash: '1,4',       width: 1.8, label: 'worker thread (postMessage)' },
+  twin:    { dash: '1,3',       width: 1.1, label: 'CPU/GPU math twin (no import)' },
+  network: { dash: '4,3',       width: 1.6, label: 'network (relay)' },
+};
+
+// ---------------------------------------------------------------------
+// graph setup
+// ---------------------------------------------------------------------
+
+const byId = new Map(NODES.map(n => [n.id, n]));
+const edges = EDGES.map(([s, t, type]) => ({ source: byId.get(s), target: byId.get(t), type }));
+const groupOrder = Object.keys(GROUPS).filter(g => g !== 'entry');
+
+// seed initial positions in clusters around a circle so the sim starts coherent
+NODES.forEach(n => {
+  if (n.group === 'entry') {
+    n.x = (Math.random() - 0.5) * 60;
+    n.y = (Math.random() - 0.5) * 60;
+  } else {
+    const idx = groupOrder.indexOf(n.group);
+    const angle = (idx / groupOrder.length) * Math.PI * 2;
+    const r = 320;
+    n.x = Math.cos(angle) * r + (Math.random() - 0.5) * 70;
+    n.y = Math.sin(angle) * r + (Math.random() - 0.5) * 70;
+  }
+  n.vx = 0; n.vy = 0; n.fixed = false;
+  n.r = Math.max(7, Math.min(34, 6 + Math.sqrt(n.lines) * 1.05));
+});
+
+const inDeg = new Map(), outDeg = new Map();
+edges.forEach(e => {
+  outDeg.set(e.source.id, (outDeg.get(e.source.id) || 0) + 1);
+  inDeg.set(e.target.id, (inDeg.get(e.target.id) || 0) + 1);
+});
+
+// ---------------------------------------------------------------------
+// force simulation (tiny self-contained verlet-ish integrator)
+// ---------------------------------------------------------------------
+
+const REPULSION = 2600;
+const SPRING_K = 0.045;
+const CENTER_K = 0.0009;
+const CLUSTER_K = 0.012;
+const DAMPING = 0.86;
+const REST_LEN = { static: 95, dynamic: 95, worker: 80, twin: 60, network: 130 };
+
+function tick() {
+  const n = NODES.length;
+  // repulsion
+  for (let i = 0; i < n; i++) {
+    const a = NODES[i];
+    if (a.fixed) continue;
+    let fx = 0, fy = 0;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const b = NODES[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) d2 = 1;
+      const d = Math.sqrt(d2);
+      const f = REPULSION / d2;
+      fx += (dx / d) * f;
+      fy += (dy / d) * f;
+    }
+    // center gravity
+    fx -= a.x * CENTER_K;
+    fy -= a.y * CENTER_K;
+    a.vx = (a.vx + fx) * DAMPING;
+    a.vy = (a.vy + fy) * DAMPING;
+  }
+
+  // springs
+  edges.forEach(e => {
+    const a = e.source, b = e.target;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    const rest = REST_LEN[e.type] || 90;
+    const f = (d - rest) * SPRING_K;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    if (!a.fixed) { a.vx += fx; a.vy += fy; }
+    if (!b.fixed) { b.vx -= fx; b.vy -= fy; }
+  });
+
+  // cluster cohesion: pull each node weakly toward its group centroid
+  const centroids = {};
+  groupOrder.forEach(g => { centroids[g] = { x: 0, y: 0, n: 0 }; });
+  NODES.forEach(node => {
+    if (node.group === 'entry') return;
+    const c = centroids[node.group];
+    c.x += node.x; c.y += node.y; c.n++;
+  });
+  Object.values(centroids).forEach(c => { if (c.n) { c.x /= c.n; c.y /= c.n; } });
+  NODES.forEach(node => {
+    if (node.fixed || node.group === 'entry') return;
+    const c = centroids[node.group];
+    node.vx += (c.x - node.x) * CLUSTER_K;
+    node.vy += (c.y - node.y) * CLUSTER_K;
+  });
+
+  NODES.forEach(node => {
+    if (node.fixed) return;
+    node.x += node.vx;
+    node.y += node.vy;
+  });
+}
+
+// ---------------------------------------------------------------------
+// rendering
+// ---------------------------------------------------------------------
+
+const svg = document.getElementById('graph');
+const viewport = document.getElementById('viewport');
+const edgesLayer = document.getElementById('edges');
+const nodesLayer = document.getElementById('nodes');
+const NS = 'http://www.w3.org/2000/svg';
+
+function el(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+const edgeEls = edges.map(e => {
+  const style = EDGE_STYLES[e.type];
+  const line = el('line', {
+    stroke: GROUPS[e.source.group].color, 'stroke-opacity': 0.45, 'stroke-width': style.width,
+  });
+  if (style.dash) line.setAttribute('stroke-dasharray', style.dash);
+  edgesLayer.appendChild(line);
+  return line;
+});
+
+const nodeEls = NODES.map(n => {
+  const g = el('g', { class: 'node-g' });
+  const shape = n.kind === 'entry'
+    ? el('rect', { class: 'node-circle entry', width: n.r * 1.7, height: n.r * 1.7,
+        x: -n.r * 0.85, y: -n.r * 0.85, rx: 5, fill: GROUPS[n.group].color, stroke: '#fff', 'stroke-opacity': 0.5 })
+    : el('circle', { class: 'node-circle', r: n.r, fill: GROUPS[n.group].color,
+        stroke: n.group === 'server' ? '#cfd3ff' : '#0008', 'stroke-opacity': n.group === 'legacy' || n.kind === 'server' ? 0.9 : 0.5 });
+  if (n.group === 'legacy' || n.kind === 'server') shape.setAttribute('stroke-dasharray', '3,2');
+  g.appendChild(shape);
+  const label = el('text', { class: 'node-label', x: 0, y: n.r + 11, 'text-anchor': 'middle' });
+  label.textContent = n.id.replace('server/', '');
+  g.appendChild(label);
+  nodesLayer.appendChild(g);
+  g.dataset.id = n.id;
+  return { node: n, g, shape, label };
+});
+
+function render() {
+  edgeEls.forEach((line, i) => {
+    const e = edges[i];
+    line.setAttribute('x1', e.source.x); line.setAttribute('y1', e.source.y);
+    line.setAttribute('x2', e.target.x); line.setAttribute('y2', e.target.y);
+  });
+  nodeEls.forEach(({ node, g }) => {
+    g.setAttribute('transform', `translate(${node.x},${node.y})`);
+  });
+}
+
+function loop() {
+  tick();
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------------------------------
+// pan / zoom
+// ---------------------------------------------------------------------
+
+let viewT = { x: 0, y: 0, k: 1 };
+function applyViewTransform() {
+  viewport.setAttribute('transform', `translate(${viewT.x},${viewT.y}) scale(${viewT.k})`);
+}
+let panning = false, panStart = null;
+svg.addEventListener('pointerdown', (ev) => {
+  if (ev.target.closest('.node-g')) return;
+  panning = true; svg.classList.add('panning');
+  panStart = { x: ev.clientX - viewT.x, y: ev.clientY - viewT.y };
+});
+window.addEventListener('pointermove', (ev) => {
+  if (panning) { viewT.x = ev.clientX - panStart.x; viewT.y = ev.clientY - panStart.y; applyViewTransform(); }
+});
+window.addEventListener('pointerup', () => { panning = false; svg.classList.remove('panning'); });
+svg.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const rect = svg.getBoundingClientRect();
+  const mx = ev.clientX - rect.left - rect.width / 2;
+  const my = ev.clientY - rect.top - rect.height / 2;
+  const factor = ev.deltaY < 0 ? 1.08 : 0.93;
+  const newK = Math.max(0.3, Math.min(3, viewT.k * factor));
+  // keep cursor position stable while zooming
+  viewT.x = mx - (mx - viewT.x) * (newK / viewT.k);
+  viewT.y = my - (my - viewT.y) * (newK / viewT.k);
+  viewT.k = newK;
+  applyViewTransform();
+}, { passive: false });
+
+// ---------------------------------------------------------------------
+// node dragging
+// ---------------------------------------------------------------------
+
+let dragging = null;
+nodeEls.forEach(({ node, g, shape }) => {
+  shape.addEventListener('pointerdown', (ev) => {
+    ev.stopPropagation();
+    dragging = node;
+    node.fixed = true;
+    selectNode(node.id);
+  });
+});
+window.addEventListener('pointermove', (ev) => {
+  if (!dragging) return;
+  const rect = svg.getBoundingClientRect();
+  const vb = svg.viewBox.baseVal;
+  const sx = vb.width / rect.width, sy = vb.height / rect.height;
+  const localX = (ev.clientX - rect.left) * sx + vb.x;
+  const localY = (ev.clientY - rect.top) * sy + vb.y;
+  dragging.x = (localX - viewT.x) / viewT.k;
+  dragging.y = (localY - viewT.y) / viewT.k;
+  dragging.vx = 0; dragging.vy = 0;
+});
+window.addEventListener('pointerup', () => { dragging = null; });
+
+document.getElementById('reset-layout').addEventListener('click', () => {
+  NODES.forEach(n => { n.fixed = false; });
+});
+
+// ---------------------------------------------------------------------
+// selection / details panel
+// ---------------------------------------------------------------------
+
+let selectedId = null;
+function selectNode(id) {
+  selectedId = id;
+  const n = byId.get(id);
+  nodeEls.forEach(({ node, shape }) => {
+    shape.classList.toggle('node-glow', node.id === id);
+  });
+  const details = document.getElementById('details');
+  const incoming = edges.filter(e => e.target.id === id);
+  const outgoing = edges.filter(e => e.source.id === id);
+  const testList = n.tests.length
+    ? `<ul>${n.tests.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`
+    : `<p class="empty">No dedicated test file.</p>`;
+  const outList = outgoing.length
+    ? `<ul>${outgoing.map(e => `<li><span class="tag">${e.type}</span><a class="link" data-id="${e.target.id}">${escapeHtml(e.target.id)}</a></li>`).join('')}</ul>`
+    : `<p class="empty">None.</p>`;
+  const inList = incoming.length
+    ? `<ul>${incoming.map(e => `<li><span class="tag">${e.type}</span><a class="link" data-id="${e.source.id}">${escapeHtml(e.source.id)}</a></li>`).join('')}</ul>`
+    : `<p class="empty">Nothing imports this.</p>`;
+  const docFile = GROUP_DOCS[n.group];
+  const docLink = docFile
+    ? `<a class="doc-link" style="padding:0;" href="docs/subsystems/${docFile}" target="_blank" rel="noopener">📄 docs/subsystems/${docFile}</a>`
+    : '';
+  details.innerHTML = `
+    <div class="file">${escapeHtml(n.id)}</div>
+    <div class="meta">
+      <span>${GROUPS[n.group].label}</span>
+      <span>${n.lines.toLocaleString()} lines</span>
+      <span>${outgoing.length} out / ${incoming.length} in</span>
+    </div>
+    <div class="desc">${n.desc}</div>
+    ${docLink}
+    <h3>Depends on</h3>${outList}
+    <h3>Depended on by</h3>${inList}
+    <h3>Tested by</h3>${testList}
+  `;
+  details.querySelectorAll('a.link').forEach(a => {
+    a.addEventListener('click', () => selectNode(a.dataset.id));
+  });
+  if (location.hash.slice(1) !== n.group) history.replaceState(null, '', `#${n.group}`);
+}
+function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+nodeEls.forEach(({ node, shape }) => {
+  shape.addEventListener('click', (ev) => { ev.stopPropagation(); selectNode(node.id); });
+});
+
+// ---------------------------------------------------------------------
+// group filter chips (legend doubles as visibility toggle)
+// ---------------------------------------------------------------------
+
+const hiddenGroups = new Set();
+const chipsWrap = document.getElementById('group-chips');
+function buildChips() {
+  chipsWrap.innerHTML = '';
+  Object.entries(GROUPS).forEach(([key, g]) => {
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.innerHTML = `<span class="dot" style="background:${g.color}"></span>${g.label}`;
+    chip.addEventListener('click', () => {
+      if (hiddenGroups.has(key)) hiddenGroups.delete(key); else hiddenGroups.add(key);
+      chip.classList.toggle('off', hiddenGroups.has(key));
+      applyFilters();
+    });
+    chipsWrap.appendChild(chip);
+  });
+}
+buildChips();
+
+// ---------------------------------------------------------------------
+// subsystem doc links (sidebar list + cross-link from details panel)
+// ---------------------------------------------------------------------
+
+const docLinksWrap = document.getElementById('doc-links');
+DOC_LIST.forEach(([file, label, group]) => {
+  const a = document.createElement('a');
+  a.className = 'doc-link';
+  a.href = `docs/subsystems/${file}`;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.innerHTML = `<span class="dot" style="background:${GROUPS[group].color}"></span>${label}`;
+  docLinksWrap.appendChild(a);
+});
+
+// Repo-root interactive tools (not subsystem docs, so not part of DOC_LIST's
+// docs/subsystems/-relative href template above).
+const TOOL_LINKS = [
+  ['biome-explainer.html', 'Biome explainer (interactive)'],
+];
+TOOL_LINKS.forEach(([file, label]) => {
+  const a = document.createElement('a');
+  a.className = 'doc-link';
+  a.href = file;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.textContent = label;
+  docLinksWrap.appendChild(a);
+});
+
+// ---------------------------------------------------------------------
+// edge-type checkboxes
+// ---------------------------------------------------------------------
+
+const hiddenEdgeTypes = new Set();
+const edgeLegendWrap = document.getElementById('edge-legend');
+Object.entries(EDGE_STYLES).forEach(([type, style]) => {
+  const row = document.createElement('label');
+  const swatch = `<svg width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#8890a4" stroke-width="${style.width}" ${style.dash ? `stroke-dasharray="${style.dash}"` : ''}/></svg>`;
+  row.innerHTML = `<input type="checkbox" checked data-type="${type}"> ${swatch} ${style.label}`;
+  row.querySelector('input').addEventListener('change', (ev) => {
+    if (ev.target.checked) hiddenEdgeTypes.delete(type); else hiddenEdgeTypes.add(type);
+    applyFilters();
+  });
+  edgeLegendWrap.appendChild(row);
+});
+
+// ---------------------------------------------------------------------
+// search
+// ---------------------------------------------------------------------
+
+let searchTerm = '';
+document.getElementById('search').addEventListener('input', (ev) => {
+  searchTerm = ev.target.value.trim().toLowerCase();
+  applyFilters();
+});
+
+function applyFilters() {
+  nodeEls.forEach(({ node, g }) => {
+    const groupHidden = hiddenGroups.has(node.group);
+    const matchesSearch = !searchTerm || node.id.toLowerCase().includes(searchTerm);
+    const visible = !groupHidden;
+    g.style.display = visible ? '' : 'none';
+    g.style.opacity = matchesSearch ? '1' : '0.18';
+  });
+  edgeEls.forEach((line, i) => {
+    const e = edges[i];
+    const typeHidden = hiddenEdgeTypes.has(e.type);
+    const endpointsHidden = hiddenGroups.has(e.source.group) || hiddenGroups.has(e.target.group);
+    const dimmed = searchTerm && !(e.source.id.toLowerCase().includes(searchTerm) || e.target.id.toLowerCase().includes(searchTerm));
+    line.style.display = (typeHidden || endpointsHidden) ? 'none' : '';
+    line.style.opacity = dimmed ? '0.06' : '';
+  });
+}
+
+// ---------------------------------------------------------------------
+// footer counts + boot
+// ---------------------------------------------------------------------
+
+document.getElementById('counts').textContent = `${NODES.length} files · ${edges.length} edges`;
+
+applyViewTransform();
+for (let i = 0; i < 220; i++) tick(); // pre-settle before first paint
+render();
+loop();
+
+// deep link: opening code-map.html#vegetation (as linked from each doc's
+// back-link banner) selects that subsystem's representative node.
+const initialGroup = location.hash.slice(1);
+if (GROUP_REPRESENTATIVE[initialGroup]) selectNode(GROUP_REPRESENTATIVE[initialGroup]);
+</script>
+</body>
+</html>
