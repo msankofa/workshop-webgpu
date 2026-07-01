@@ -8,6 +8,13 @@
 > For an interactive, visual walkthrough of both halves of this system (the offline
 > classifier and the runtime consumers), open `../../biome-explainer.html` (via `python
 > serve.py`, same as the rest of this directory).
+>
+> Planned generation-side improvements (erosion simulation, fixing `swamp`'s dead-code
+> priority-stack bug, lake detection, noise-quality upgrades, volcano feature stamping)
+> are tracked in terrain-v3's own repo:
+> `G:\My Drive\Scripts\html game\html-game-v2\tools\terrain-v3\terrain-v3-update-backlog.md`.
+> The rendering-side follow-on (actual lava material/VFX, once terrain-v3 exports
+> volcano geometry) is tracked here instead: [lava-rendering.md](lava-rendering.md).
 
 ## What a "biome" is here
 
