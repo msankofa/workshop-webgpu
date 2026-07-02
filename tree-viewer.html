@@ -909,21 +909,35 @@ let familySelectEl, newFamilyNameValue = '';
   });
 }
 {
-  // Downloads the selected family as a standalone JSON file for the game to consume
-  // (drop it in workshop-webgpu/families/ and list it in families/manifest.json).
-  // Species opts are already texture-free (snapshotOpts strips map/normalMap at save
-  // time), so no replacer is needed here.
+  // Saves the selected family straight into workshop-webgpu/families/ and appends it to
+  // families/manifest.json via serve.py's POST /api/save-family (same slug rule server- and
+  // client-side). Species opts are already texture-free (snapshotOpts strips map/normalMap
+  // at save time), so no replacer is needed here. Falls back to a manual file download if
+  // the server doesn't support the endpoint (e.g. a different static server, or file://).
+  const statusEl = document.createElement('span');
+  statusEl.style.cssText = 'margin-left:8px;color:#8fa;font-size:12px;';
   buttonControl('Export family JSON', () => {
     const fam = currentFamilyId ? familyById(currentFamilyId) : null;
     if (!fam) return;
     const slug = fam.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'family';
-    const blob = new Blob([JSON.stringify(fam, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${slug}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const json = JSON.stringify(fam, null, 2);
+    statusEl.textContent = 'Saving...';
+    fetch('/api/save-family', { method: 'POST', body: json })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((res) => {
+        statusEl.textContent = `Saved families/${res.filename} + updated manifest.json`;
+      })
+      .catch(() => {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `${slug}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        statusEl.textContent = `Server save unavailable — downloaded ${slug}.json, move it into families/ and add to manifest.json manually`;
+      });
   });
+  current.appendChild(statusEl);
 }
 
 header('Grow family');
