@@ -470,6 +470,65 @@
       `${vertexCount} vertices, ${triangleCount} triangles -- height ${heightMin.toFixed(1)} to ${heightMax.toFixed(1)} -- cell ${cellX.toFixed(1)}x${cellZ.toFixed(1)}`;
   }
 
+  const hfModeSelect = document.getElementById('heightfield-mode-select');
+  hfModeSelect.addEventListener('change', () => { if (hfLastGrid) { applyHeightfieldColors(hfLastGrid); } });
+
+  const HF_MASK_COLORS = {
+    seaMask: [60, 130, 220], beachMask: [224, 205, 130], mountainMask: [214, 160, 82],
+    rockMask: [164, 164, 170], snowMask: [240, 246, 255],
+  };
+
+  function applyHeightfieldColors(grid) {
+    const mode = hfModeSelect.value;
+    const n = grid.resolution * grid.resolution;
+    const colors = new Float32Array(n * 3);
+
+    if (mode === 'material') {
+      for (let i = 0; i < n; i++) {
+        colors[i * 3] = grid.materialRgba[i * 4] / 255;
+        colors[i * 3 + 1] = grid.materialRgba[i * 4 + 1] / 255;
+        colors[i * 3 + 2] = grid.materialRgba[i * 4 + 2] / 255;
+      }
+    } else if (mode === 'biome') {
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = BIOME_COLORS[BIOMES[grid.biomeId[i]]];
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    } else if (mode === 'height') {
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = heightColor(grid.height[i], genConfig.sea_level);
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    } else if (mode === 'slope') {
+      let maxSlope = 1.2;
+      for (const s of grid.slope) if (s > maxSlope) maxSlope = s;
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = slopeColor(grid.slope[i], maxSlope);
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    } else if (mode in HF_MASK_COLORS) {
+      const field = grid[mode];
+      const targetColor = HF_MASK_COLORS[mode];
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = maskColor(field[i], targetColor);
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    } else if (mode === 'continentalness' || mode === 'temperature' || mode === 'humidity') {
+      const field = grid[mode];
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = divergingColor(field[i]);
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    } else if (mode === 'flowNorm') {
+      for (let i = 0; i < n; i++) {
+        const [r, g, b] = flowColor(grid.flowNorm[i]);
+        colors[i * 3] = r / 255; colors[i * 3 + 1] = g / 255; colors[i * 3 + 2] = b / 255;
+      }
+    }
+
+    hfGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+
   // ---- shared slider-builder (reused by sections 2-5) ----
   function buildGroupControls(container, groupNames) {
     container.innerHTML = '';
@@ -887,6 +946,8 @@
   loadRealMap();
 
   regenerate();
+  updateHeightfieldResolutionWarning();
+  rebuildHeightfieldMesh();
 </script>
 </body>
 </html>
