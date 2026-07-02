@@ -1,4 +1,8 @@
-import { BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell, createFieldSampler, generateGrid } from './biome-classifier-js.js';
+import {
+  BIOMES, BIOME_INDEX, BIOME_COLORS, DEFAULT_CONFIG, classifyBiomeCell, createFieldSampler, generateGrid,
+  interp1d, rescaleArray, peaksAndValleys, smoothstep, clamp01,
+  CONTINENT_X, CONTINENT_Y, EROSION_X, EROSION_Y,
+} from './biome-classifier-js.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -92,6 +96,22 @@ ok(!gridB.height.every((v, i) => v === gridA.height[i]), '4: changing seed chang
 const gridSeaHigh = generateGrid({ ...DEFAULT_CONFIG, sea_level: 200 }, RES);
 const allOceanOrDeepOcean = Array.from(gridSeaHigh.biomeId).every((id) => id === BIOME_INDEX.deep_ocean || id === BIOME_INDEX.ocean || id === BIOME_INDEX.beach);
 ok(allOceanOrDeepOcean, '4: an absurdly high sea_level floods every cell to deep_ocean/ocean/beach');
+
+// --- widened export surface (additive, for terrain-generator-js.js reuse) ---
+ok(typeof interp1d === 'function', '5: interp1d is exported');
+ok(typeof rescaleArray === 'function', '5: rescaleArray is exported');
+ok(typeof peaksAndValleys === 'function', '5: peaksAndValleys is exported');
+ok(typeof smoothstep === 'function', '5: smoothstep is exported');
+ok(typeof clamp01 === 'function', '5: clamp01 is exported');
+ok(Array.isArray(CONTINENT_X) && CONTINENT_X.length === 7, '5: CONTINENT_X is exported (7 knots)');
+ok(Array.isArray(CONTINENT_Y) && CONTINENT_Y.length === 7, '5: CONTINENT_Y is exported (7 knots)');
+ok(Array.isArray(EROSION_X) && EROSION_X.length === 5, '5: EROSION_X is exported (5 knots)');
+ok(Array.isArray(EROSION_Y) && EROSION_Y.length === 5, '5: EROSION_Y is exported (5 knots)');
+ok(Math.abs(interp1d(0.0, CONTINENT_X, CONTINENT_Y) - 4.0) < 1e-9, '5: interp1d(0, CONTINENT_X, CONTINENT_Y) lands exactly on the x=0 knot (4.0)');
+ok(Math.abs(peaksAndValleys(0.0) - (-1.0)) < 1e-9, '5: peaksAndValleys(0) is -1');
+ok(Math.abs(peaksAndValleys(2 / 3) - 1.0) < 1e-9, '5: peaksAndValleys(2/3) is 1 (the ridge)');
+ok(Math.abs(smoothstep(0, 1, 0.5) - 0.5) < 1e-9, '5: smoothstep midpoint is 0.5');
+ok(clamp01(1.5) === 1 && clamp01(-0.5) === 0, '5: clamp01 clamps to [0,1]');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -188,22 +188,22 @@ export function createFieldSampler(seed) {
 }
 
 // ---- height composition (port of height_composer.py's compose_height) ----
-const CONTINENT_X = [-1.0, -0.6, -0.2, 0.0, 0.3, 0.6, 1.0];
-const CONTINENT_Y = [-40.0, -22.0, -4.0, 4.0, 14.0, 32.0, 55.0];
-const EROSION_X = [-1.0, -0.5, 0.0, 0.5, 1.0];
-const EROSION_Y = [90.0, 55.0, 22.0, 7.0, 2.0];
+export const CONTINENT_X = [-1.0, -0.6, -0.2, 0.0, 0.3, 0.6, 1.0];
+export const CONTINENT_Y = [-40.0, -22.0, -4.0, 4.0, 14.0, 32.0, 55.0];
+export const EROSION_X = [-1.0, -0.5, 0.0, 0.5, 1.0];
+export const EROSION_Y = [90.0, 55.0, 22.0, 7.0, 2.0];
 
 // NOTE: this rescales the fixed CONTINENT_Y/EROSION_Y knot arrays themselves (7 and 5
 // numbers) to the configured min/max -- it does NOT depend on the generated grid, so
 // it only needs to run once per generateGrid() call, not once per cell.
-function rescaleArray(values, newMin, newMax) {
+export function rescaleArray(values, newMin, newMax) {
   const oldMin = Math.min(...values);
   const oldMax = Math.max(...values);
   const span = Math.max(oldMax - oldMin, 1e-8);
   return values.map((v) => newMin + ((v - oldMin) / span) * (newMax - newMin));
 }
 
-function interp1d(x, xs, ys) {
+export function interp1d(x, xs, ys) {
   if (x <= xs[0]) return ys[0];
   if (x >= xs[xs.length - 1]) return ys[ys.length - 1];
   for (let i = 0; i < xs.length - 1; i++) {
@@ -215,14 +215,14 @@ function interp1d(x, xs, ys) {
   return ys[ys.length - 1];
 }
 
-function peaksAndValleys(weird) { return 1.0 - Math.abs(3.0 * Math.abs(weird) - 2.0); }
+export function peaksAndValleys(weird) { return 1.0 - Math.abs(3.0 * Math.abs(weird) - 2.0); }
 
 // ---- derived maps (port of derived_maps.py's slope + beach_mask) ----
-function smoothstep(edge0, edge1, x) {
+export function smoothstep(edge0, edge1, x) {
   const t = Math.min(1, Math.max(0, (x - edge0) / Math.max(edge1 - edge0, 1e-8)));
   return t * t * (3 - 2 * t);
 }
-function clamp01(v) { return Math.min(1, Math.max(0, v)); }
+export function clamp01(v) { return Math.min(1, Math.max(0, v)); }
 
 // ---- full per-cell pipeline: noise fields -> height -> slope/beach -> biome ----
 export function generateGrid(cfg, resolution) {
