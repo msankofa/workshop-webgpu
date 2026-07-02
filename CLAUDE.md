@@ -73,3 +73,8 @@ These are required steps when finishing any code change in this directory, not o
 - **Mode flags pick lazy-import variants**, not both at once â€” e.g. `GRASS_MODE` selects `grass.js` (CPU) vs. `grass-compute.js` (GPU); check `environment-viewer.html` before assuming a given module's code path is live.
 - **Multiplayer is host-authoritative**: the host runs the real simulation and broadcasts state; guests render interpolated ghosts via `GhostRenderer` and don't currently send input back (see `docs/subsystems/multiplayer.md` for the gap).
 
+## Interaction style
+
+- Do not use the AskUserQuestion tool. Ask directly in plain chat text instead.
+- When more than one clarifying question is needed, batch them into a single message rather than asking one at a time.
+
