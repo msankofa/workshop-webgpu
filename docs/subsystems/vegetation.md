@@ -19,12 +19,13 @@ buffers so the CPU never reads back GPU state.
 |---|---|
 | `trees.js` (454 lines) | `Tree`/`createTree`: CPU procedural generator. Recursive tapered-tube branch skeleton + billboard/silhouette leaves, merged into 3 `THREE.Mesh`es (branches, leaves, shadow-casting leaves). No GPU/TSL code. |
 | `tree-textures.js` (97 lines) | `createTextureSource('authored'\|'procedural')`: loads ez-tree bark/leaf texture packs into a 2x2 leaf atlas canvas (authored), or returns a textureless stub set (procedural, WebGPU-friendly). |
-| `forest-placement.js` (183 lines) | Pure, three.js-free placement math lifted verbatim from `environment-viewer.html`: seeded RNG, species taxonomy (`buildSpecies`), per-chunk tree count/placement patterns, and `placementRecords()` — the single entry point the GPU and (formerly) baked paths both consume. |
-| `forest-palette.js` (84 lines) | `createForestPalette()`: bakes a fixed set of variant geometries (species x variantsPerSpecies) ONCE at startup using `trees.js` + `forest-placement.js`'s `buildSpecies`, flat-coloring each variant's vertices (bark/leaf tint) since materials use `vertexColors: true`. |
+| `forest-placement.js` (183 lines) | Pure, three.js-free placement math lifted verbatim from `environment-viewer.html`: seeded RNG, species taxonomy (`buildSpecies`), per-chunk tree count/placement patterns, and `placementRecords()` — the single entry point the GPU and (formerly) baked paths both consume. Also `buildSpeciesFromFamilies()`, which flattens `tree-viewer.html`-authored families into the same species-table shape, letting `placementRecords()` do biome-filtered, density-weighted species selection instead of picking uniformly at random — see "Game integration" below. |
+| `forest-palette.js` (84 lines) | `createForestPalette()`: bakes a fixed set of variant geometries (species x variantsPerSpecies) ONCE at startup using `trees.js` + (`params.speciesTable` if an authored family table was loaded, else `forest-placement.js`'s `buildSpecies`), flat-coloring each variant's vertices (bark/leaf tint) since materials use `vertexColors: true`. |
 | `forest-gpu.js` (399 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. |
 | `forest-cull.js` (8 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the cull math in `forest-gpu.js`'s TSL `cull` kernel, kept only so the predicate is unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel reimplements the same `dx*dx+dz*dz <= maxDist*maxDist` logic inline). |
 | `grass.js` (536 lines) | `Grass`/`createGrass`: CPU-built single merged-mesh grass field (5 verts/blade) with a TSL `MeshStandardNodeMaterial` (wind sway, distance fade, base→tip color, cloud-shadow noise). Also exports `buildBladeGeometry`, `buildGrassNoiseFns`, and JS parity helpers `grassWindOffset`/`grassFadeKeep` used both at runtime and by tests. |
-| `grass-compute.js` (348 lines) | `createComputeGrass()`: fully GPU-driven grass. A TSL compute pass regenerates candidate blades each frame over a world-cell window around the camera, plants them on a TSL terrain-height function, culls (water/radius/density), and atomically compacts survivors into one indirect-drawn instance buffer. |
+| `grass-compute.js` (541 lines) | `createComputeGrass()`: fully GPU-driven grass with two placement paths. Procedural mode (no map): a TSL compute pass regenerates candidate blades over a world-cell window around the camera, plants them on a TSL terrain-height function. Anchor mode (authored maps, when `surfaceGeometry` is passed): CPU-sampled mesh anchors from `grass-anchors.js` are streamed into a chunk-slot storage buffer and a TSL kernel culls them instead. Both paths cull (water/radius/density) and atomically compact survivors into one indirect-drawn instance buffer. |
+| `grass-anchors.js` (206 lines) | Pure CPU mesh-anchor sampling for anchor mode, no three.js import. `buildChunkIndex()` bins the map collider's world-space triangle soup into XZ chunks of upward-facing triangles (unit normal `y >= minNormalY`), clipping triangles that span chunks exactly to each chunk rectangle (Sutherland–Hodgman; low-poly maps have triangles bigger than a chunk, so centroid binning would leave grassless holes). `sampleChunk()` draws deterministic area-weighted anchor points `(x,y,z,rand01)` on that surface — so blades land on cave floors, overhangs, and floating islands the top-down heightfield can't represent. |
 | `grass-cells.js` (58 lines) | Pure cell-grid math: `cellHash`, `candidateBlade` (deterministic per-(cell,slot) blade, the JS twin of `grass-compute.js`'s TSL placement), `windowCellCount`, `maxInstances`, `perCellCount`. Used both as the Node-testable spec and by `grass-compute.js` for buffer sizing. |
 | `grass-height-ref.js` (33 lines) | `grassHeightRef(params, x, z)`: independent JS re-derivation of `terrain-field.js`'s `terrainHeightAt`, written with the same ops the TSL height function in `grass-compute.js` uses, so terrain conformance is provably bit-matched in tests. |
 | `tree-age.js` | `applyAge(opts, ageT)`: pure sapling→mature transform (scale, branch-recursion "development", leaf count/size) for a `trees.js` options object. No DOM/THREE dependency — used by `tree-viewer.html`'s age-preview slider today, intended for the game's forest placement to reuse later (per-instance age roll) without duplicating the math. |
@@ -44,7 +45,8 @@ export function createTextureSource(mode: 'authored'|'procedural', { onReady } =
 export function rngFrom(seed): { next(), range(a,b) }
 export function hash2(ix, iz, seed): number
 export function buildSpecies(p, rng): SpeciesOptions[]
-export function placementRecords(chunks, params, heightAt): { x, z, scale, yaw, speciesIdx, chunkKey, slot }[]
+export function buildSpeciesFromFamilies(families): (SpeciesOptions & { _tag: { biomes, density, sizeRange } })[]
+export function placementRecords(chunks, params, heightAt, biomeAt?): { x, z, scale, yaw, speciesIdx, chunkKey, slot }[]
 
 // forest-palette.js
 export function createForestPalette({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }):
@@ -73,10 +75,24 @@ export function createGrass(options): Grass
 // grass-compute.js
 export function createComputeGrass(opts: { renderer, camera, cellSize?, Kmax?, maxRadius?, density?, radius?,
   waterLevel?, shoreMargin?, terrainParams?, cullStart?, maxBlades?, bladeHeight?, bladeWidth?, verticalOffset?,
-  heightTex?, heightTexBounds?, grassRecull?, addEmissive? }):
+  heightTex?, heightTexBounds?, grassRecull?, addEmissive?,
+  surfaceGeometry?, anchorChunkSize?, anchorMinNormalY?, anchorBudgetMs? }):   // anchor mode (see below)
   { mesh, update(seconds): Promise<void>, forceRecull(), stats, setDensity(d), setRadius(r), setCullStart(wu),
     setMaxBlades(n), setBladeHeight(v), setBladeWidth(v), setVerticalOffset(v), maxRadius, setWind(strength),
     setTerrain(p), setWaterLevel(wl), dispose() }
+  // stats gains { anchorMode: boolean, residentChunks: number } in anchor mode
+
+// grass-anchors.js
+export function hashKey(str, seed?): number                     // FNV-1a 32-bit
+export function mulberry32(seed): () => number                  // deterministic PRNG in [0,1)
+export function chunkKey(cx, cz): string
+export function parseChunkKey(key): [cx, cz]
+export function pointToChunkDist(x, z, cx, cz, chunkSize): number
+export function slotCapacityForRadius(radius, chunkSize): number // worst-case chunk count → GPU slot pool size
+export function buildChunkIndex(positions: Float32Array, { chunkSize = 32, minNormalY = 0.5 } = {}):
+  { chunkSize, minNormalY, chunks: Map<key, { tris, cdf, totalArea }>, triCount, extraTris }
+export function sampleChunk(index, positions, key, { density, maxCount?, seed? }):
+  Float32Array | null                                            // n*4 floats: (x, y, z, rand01) per anchor
 
 // grass-cells.js
 export function cellHash(gx, gz): number
@@ -101,16 +117,20 @@ In `environment-viewer.html`:
   per-chunk `makeChunkGrassManager()` (one `Grass` mesh per terrain chunk, rebuilt on count/water
   change). Otherwise (default `'gpu'`) lazily `import('./grass-compute.js')` and wraps
   `createComputeGrass()` in a thin `grassRef` adapter. Only one of the two modes is ever loaded.
+  When an authored map is loaded, the viewer passes `surfaceGeometry: mapCollider.geometry` (the
+  MeshBVH world-space triangle soup from `map-collision.js`) into `createComputeGrass()`, which
+  switches it into anchor mode; `heightTex` is still passed alongside as the water-envelope lookup
+  and as the height source when no map is loaded.
 - `FOREST_MODE` (line 59) = `...get('forest') || 'gpu'`. Trees are always loaded via
   `Promise.all([import('./trees.js'), import('./tree-textures.js')])` (line 761), then
   `forest-placement.js` is always imported for `placementRecords`. `forest-palette.js` and
   `forest-gpu.js?v=bill-brightness` are only imported when `FOREST_MODE === 'gpu'` (line 788-791);
   there is no other forest mode left wired up in this branch (comments reference a retired
   "baked" path).
-- Cache-busted import URLs in use: `forest-gpu.js?v=bill-brightness`, `grass.js?v=density-fix-4`.
-  `grass-compute.js` and `forest-placement.js`/`forest-palette.js` are imported with no query
-  string. These `?v=` suffixes are a manual cache-bust convention (no bundler) — bump the suffix
-  string when a module's behavior changes and a stale cached copy could otherwise be served.
+- Cache-busted import URLs in use: `forest-gpu.js?v=bill-brightness`, `grass.js?v=density-fix-4`,
+  `grass-compute.js?v=mesh-anchors-1`. `forest-placement.js`/`forest-palette.js` are imported with
+  no query string. These `?v=` suffixes are a manual cache-bust convention (no bundler) — bump the
+  suffix string when a module's behavior changes and a stale cached copy could otherwise be served.
 - Both forest and grass loads are wrapped in `.catch()` so a missing/failed module degrades to "no
   trees" / a `showError(...)` toast rather than blocking the rest of the scene.
 
@@ -125,8 +145,10 @@ Inter-module dependencies:
   `forest-cull.js` predicate independently (see Files note above).
 - `grass-compute.js` imports `{ buildBladeGeometry, buildGrassNoiseFns }` from `grass.js` (reuses the
   single-blade local-space geometry and the value-noise cloud-shadow TSL `Fn`s so the two grass
-  modes look visually consistent) and `{ maxInstances, perCellCount }` from `grass-cells.js` for
-  buffer sizing / density-to-per-cell-count conversion.
+  modes look visually consistent), `{ maxInstances, perCellCount }` from `grass-cells.js` for
+  buffer sizing / density-to-per-cell-count conversion, and `{ buildChunkIndex, sampleChunk,
+  slotCapacityForRadius, chunkKey, parseChunkKey, pointToChunkDist }` from `grass-anchors.js` for
+  anchor mode.
 - `grass-cells.js` imports `{ grassHeightRef }` from `grass-height-ref.js` so `candidateBlade()`
   plants its JS reference blade on the same height the TSL kernel in `grass-compute.js` computes.
 - `grass-height-ref.js` has no internal dependencies; it is an independent hand-port of
@@ -170,6 +192,33 @@ never depends on accumulated state — this is what "blades never swim" means in
 comment. Buffer capacity (`CAP = maxInstances(maxRadius, cellSize, Kmax)`) is sized for the
 slider's *maximum* radius so the live Radius slider can grow without a reallocation.
 
+**Anchor mode (`grass-compute.js` + `grass-anchors.js`).** The procedural path plants blades on a
+single-valued height function (TSL terrain math, or the baked 2048² `heightTex` on authored maps) —
+structurally incapable of caves, overhangs, or floating islands, and its bilinear filtering smears
+height discontinuities into floating grass sheets. When `surfaceGeometry` (the map collider's
+non-indexed world-space triangle soup) is passed, `createComputeGrass()` instead:
+- builds a chunk index once at load (`buildChunkIndex`, ~740 ms for the 331k-triangle cave-world
+  map): upward-facing triangles binned into `anchorChunkSize` (default 32 m) XZ chunks, spanning
+  triangles clipped exactly per chunk;
+- maintains chunk residency each `update()` (`maintainResidency`): a fixed pool of
+  `slotCapacityForRadius(maxRadius, chunkSize)` GPU slots, each `perSlot = round(density × chunkSize²)`
+  anchors wide; chunks beyond radius + 1-chunk hysteresis are evicted, missing in-radius chunks are
+  CPU-sampled nearest-first within an `anchorBudgetMs` (default 3 ms) per-frame budget and uploaded
+  via partial `addUpdateRange` writes. Sampling is deterministic per (chunk key, seed), so a
+  re-entered chunk gets identical blades;
+- swaps the cull kernel: `anchorCull` reads anchors from the slot buffer (live when its index is
+  below the slot's anchor count) instead of generating candidate positions, then applies the same
+  radius/density/edge-fade culling and atomic compaction as the procedural kernel.
+Blade `y` comes from the actual mesh triangle, so stacked surfaces (cave floor below terrain above)
+each get grass. The water test becomes an envelope test: a blade is rejected only if its own `y` is
+at-or-below water level *and* the baked `heightTex` envelope there is too — the water plane only
+renders where the envelope is below water level, so cave floors that sit below sea level but under
+dry ground keep their grass. Known limits: the density slider saturates at the sampled base density
+(anchors are pre-sampled at `opts.density`; `setDensity` above that clamps to 1.0 via
+`uDensityScale`); stacked layers share one slot's `perSlot` cap, so density halves where two layers
+overlap; winding must be consistently outward for the up-facing test (GLB exports are). Trees still
+use the top-down `terrainHeight()` — anchor placement for the forest is not yet implemented.
+
 **Deterministic seeded placement.** Both forest and grass placement are pure functions of
 integer cell/chunk coordinates plus a `masterSeed`/seed salt, using the same `mulberry32`-style hash
 (`rngFrom`/`hash2` in `forest-placement.js`; `cellHash`/`slotRand` in `grass-cells.js`, mirrored as
@@ -210,9 +259,10 @@ Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600),
 | `_audit_trees.mjs` | `trees.js` (`createTree`) | Headless geometry audit: finite vertex positions, unit-length normals, indices in range and a multiple of 3, UV finiteness/range, across default/rounded-normals-off/atlas/pinned-atlas-cell/shadow-split configs; a "merge fix" regression case (passing texture-like objects where `DEFAULTS` has `null` must not throw and must preserve the reference); and `regenerateLeaves()` leaving branch geometry untouched while changing leaf vertex count. Not a pass/fail harness with assertions library — accumulates a `failures` counter and exits 1 if any check fails. |
 | `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`) | 4 cases: in-range kept, beyond-maxDist culled, diagonal-beyond-radius culled, diagonal-within-radius kept — i.e. the squared-distance circular cull predicate. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
-| `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection). |
+| `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
 | `test-grass-cells.mjs` | `grass-cells.js` (`cellHash`, `candidateBlade`, `windowCellCount`, `maxInstances`, `perCellCount`) and indirectly `grass-height-ref.js` | `candidateBlade` is deterministic and camera-independent; blade XZ falls inside its own cell footprint; blade `y` equals `grassHeightRef` at that XZ (planted on terrain); different slots in a cell give different positions; `cellHash` varies across cells; `maxInstances` = `windowCellCount * Kmax` and the window covers the disk of radius R; `perCellCount` clamps to `[0, Kmax]` and converts density correctly. |
 | `test-grass-height-tsl.mjs` | `grass-height-ref.js` (`grassHeightRef`) vs `terrain-field.js` (`terrainHeightAt`) | Samples a grid (x,z in [-64,64] step 3.5, including fractional/negative coords) and asserts `grassHeightRef` matches `terrainHeightAt` to within `1e-6` — i.e. the JS reference used by grass placement is provably bit-equivalent to the canonical terrain height function the TSL kernel is transcribed from. Also checks determinism and that `lakeDepth` actually perturbs height somewhere in the sampled grid. |
+| `test-grass-anchors.mjs` | `grass-anchors.js` (all exports) | Cave scene with stacked layers (floor at y=-50, down-facing ceiling, roof top at y=40, vertical wall): only up-facing tris kept, both stacked layers counted in projected area; sample count = density × area; anchor y lands exactly on a surface layer; area-weighted split across layers; deterministic per (key, seed), different seed differs; `maxCount` caps; a 64×64 quad spanning 4 chunks is clipped so each chunk gets ~1024 m² and anchors stay inside their own chunk; helper round-trips (`chunkKey`/`parseChunkKey` with negatives, `pointToChunkDist`, `slotCapacityForRadius` bounds, `hashKey`, `mulberry32`). ~18.5k assertions. |
 | `test-grass-wind.mjs` | `grass.js` (`grassWindOffset`, `grassFadeKeep`) | Wind offset is deterministic and continuous across a chunk boundary (no seam, `x=29.99` vs `30.01` differ by < 0.05); `grassFadeKeep` returns 1 near the camera, 0 far away, and a partial value in between. |
 | `test-cdlod-morph.mjs` (relevant parts only) | Imports `grassHeightRef` from `grass-height-ref.js` to verify a CDLOD terrain-morph crack-free property: a fully-morphed fine-LOD edge vertex's height (via `grassHeightRef`) matches the coarser neighboring LOD's height at the same world position, within `1e-6`. The rest of the file (`morphGridCoord`, `nodeSize` from `cdlod-select.js`) is terrain LOD logic outside this subsystem; `grass-height-ref.js`'s only role here is as the shared height oracle used to prove no vertical crack. |
 | `test-tree-age.mjs` | `tree-age.js` (`applyAge`) | age=1 is value-equivalent to the input opts unchanged; age=0 shrinks length/radius/leaf count/leaf size and reduces `levels`, but never raises `levels` above the species' own count; age values outside `[0,1]` clamp; age=0.5 lands strictly between the age-0 and age-1 results; the input opts object itself is never mutated. |
@@ -272,3 +322,39 @@ A 15-slot Undo/Redo history covers "big jump" actions only — any Mutate, Rerol
 a saved tree — not individual slider drags; a new action after an undo clears the redo stack.
 "Restart" resets to the tool's built-in default tree (captured once at startup), not a saved tree;
 Lighting and texture mode are outside undo/restart's scope since Mutate never touches them.
+
+### Game integration: authored families replace procedural species
+
+The Species tab's "Export family JSON" button (next to "+ New family") sends the selected family
+straight to `serve.py`'s `POST /api/save-family` — the handler slugifies `family.name` (lowercase,
+non-alnum runs → `-`, trimmed) into a filename, writes `families/<slug>.json`, and appends that
+filename to `families/manifest.json` (creating either if missing; re-exporting the same name
+overwrites the file and is a no-op on the manifest, which never gets a duplicate entry). If the
+POST fails — a different static server, or the page opened over `file://` — the button falls back
+to a browser download of the same JSON and tells you to move it into `families/` and add it to
+`manifest.json` by hand, which remains a plain hand-edited `string[]` (mirroring the explicit-path
+convention `maps/<key>-data.json` already uses; there's no server-side directory listing).
+
+At forest-module startup, `environment-viewer.html` fetches `families/manifest.json`, `fetch`es
+every listed file, and passes them through `buildSpeciesFromFamilies()` to build `params.speciesTable`.
+An empty/missing manifest, or any fetch failure, is swallowed (`try/catch`) and leaves
+`speciesTable` unset, so the forest falls back to `buildSpecies()`'s procedural generator exactly
+as before this feature existed — nothing here can regress the no-families case.
+
+When `params.speciesTable` is set, `placementRecords()`'s per-tree species pick changes from
+"uniform random index" to biome-filtered, density-weighted: for each tree it calls `biomeAt(x, z)`
+(the authored map's biome lookup, see [biomes.md](biomes.md); `null` when no map is loaded, e.g. the
+procedural infinite terrain, which has no biome concept), narrows the species table to entries whose
+`biomes` list includes that biome (or has no biome tags at all, meaning "any biome"), falls back to
+the full table if nothing matches, then draws one RNG value scaled to the candidates' summed
+`density` to pick a winner — still exactly one RNG draw, preserving the species→seed→size→yaw draw
+order the "Deterministic seeded placement" note above depends on. The winning species' `sizeRange`
+is then passed into `sizeFor()` as its scale bounds instead of `[0, params.maxSize]`.
+`forest-palette.js` mirrors the same `params.speciesTable || buildSpecies(...)` fallback so the baked
+variant geometries match whichever species set placement actually used.
+
+Scope: this only wires into the GPU forest path (`FOREST_MODE === 'gpu'`, the default) via
+`forest-placement.js`/`forest-palette.js`; the retired inline "baked" path in
+`environment-viewer.html` has its own duplicated `buildSpecies` and is untouched. Per-instance age
+rolling (via `tree-age.js`'s `applyAge`) is not wired into game placement yet — only the tree-viewer
+age-preview slider uses it today.

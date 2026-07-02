@@ -2183,7 +2183,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
   }).catch(() => { /* grass is optional */ });
-  else _grassPromise = import('./grass-compute.js').then(({ createComputeGrass }) => {
+  else _grassPromise = import('./grass-compute.js?v=mesh-anchors-1').then(({ createComputeGrass }) => {
     Object.assign(params, {
       grassDensity: 8.0,
       grassRadius: 344,
