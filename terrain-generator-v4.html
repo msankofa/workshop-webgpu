@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Terrain generator v4 — workshop-webgpu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --paper: #faf6ef;
+    --ink: #2b2620;
+    --accent: #b5502f;
+    --accent-soft: #e7c9ba;
+    --card: #ffffff;
+    --border: #e4dccb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  h1, h2, h3 {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+  header.hero {
+    padding: 48px 24px 24px;
+    text-align: center;
+  }
+  header.hero h1 { font-size: 2.2em; color: var(--accent); }
+  header.hero p { max-width: 640px; margin: 8px auto 0; opacity: 0.8; }
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 24px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 32px;
+    box-shadow: 0 2px 10px rgba(43, 38, 32, 0.05);
+  }
+  .panel h2 { font-size: 1.5em; }
+  .lede { opacity: 0.75; margin: 4px 0 20px; }
+  .swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,0.15);
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .pipe-box {
+    background: var(--accent-soft);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-weight: 600;
+    text-align: center;
+    flex: 1 1 160px;
+    font-size: 0.92em;
+  }
+  .pipe-box.small { font-size: 0.82em; background: #f1e9dc; }
+  .pipe-box span { display: block; font-weight: 400; opacity: 0.75; font-size: 0.85em; margin-top: 4px; }
+  .pipe-arrow { align-self: center; font-size: 1.4em; color: var(--accent); }
+  .pipe-arrow.down { width: 100%; text-align: center; }
+  .pipeline-fanout { display: flex; justify-content: center; }
+  .gen-layout { display: flex; gap: 24px; flex-wrap: wrap; }
+  .canvas-frame { position: relative; flex: 0 0 auto; }
+  canvas { border-radius: 8px; border: 1px solid var(--border); image-rendering: pixelated; cursor: crosshair; }
+  .controls { flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px; }
+  .control-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
+  .control-row label { display: flex; justify-content: space-between; opacity: 0.85; }
+  .control-row select {
+    font: inherit;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.82em;
+    line-height: 1.4;
+    white-space: pre;
+    z-index: 10;
+    transform: translate(12px, 12px);
+  }
+  .tooltip.hidden { display: none; }
+  button.action {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.9em;
+  }
+  table.ref-table { border-collapse: collapse; width: 100%; font-size: 0.9em; }
+  table.ref-table th, table.ref-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  table.ref-table tr.active { background: var(--accent-soft); }
+  .rule-list { display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; }
+  .rule-row { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 6px; }
+  .rule-row.active { background: var(--accent-soft); }
+  .rule-row .rule-idx { opacity: 0.5; width: 2.2em; flex: none; }
+  .rule-row .rule-text { opacity: 0.85; }
+  .callout { background: #f1e9dc; border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 6px; font-size: 0.88em; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>Terrain generator v4</h1>
+  <p>An in-browser port of terrain-v3's terrain pipeline (<code>G:\My Drive\Scripts\html game\html-game-v2\tools\terrain-v3\</code>). Each section below runs one pipeline stage and exposes its real config fields as sliders. Not bit-exact with a Python run: same algorithm, different seeded PRNG.</p>
+</header>
+<main>
+  <section class="panel" id="section-overview">
+    <h2>1. Pipeline overview</h2>
+    <div class="pipeline">
+      <div class="pipe-box">Noise fields<br><span>continentalness, erosion, weirdness, temperature, humidity</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">Height composer<br><span>continent/erosion knot interpolation + weirdness peaks/valleys</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">Erosion simulation<br><span>hydraulic incision/deposition, thermal relaxation, D8 flow</span></div>
+    </div>
+    <div class="pipeline-fanout"><div class="pipe-arrow down">&darr;</div></div>
+    <div class="pipeline">
+      <div class="pipe-box">Derived masks<br><span>sea, lake, beach, mountain, rock, snow</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">Biome classification<br><span>17 ordered rules, last match wins</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box">Material masks<br><span>grass, forest, dirt, sand, rock, snow, water</span></div>
+    </div>
+    <div class="pipeline-fanout"><div class="pipe-arrow down">&darr;</div></div>
+    <div class="pipeline">
+      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Paint authoring<br><span>not yet built (Phase B)</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Heightfield preview<br><span>not yet built (Phase C)</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Density field preview<br><span>not yet built (Phase D)</span></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Marching cubes, water, forest, GLB export<br><span>not yet built (Phase E)</span></div>
+    </div>
+    <p class="lede" style="margin-top:20px;">Sections 2-7 below cover Phase A (noise fields through material masks). Section 8 shows a real exported map; section 9 lists the reference tables workshop-webgpu reads at runtime.</p>
+  </section>
+
+  <section class="panel" id="section-world-noise">
+    <h2>2. World &amp; noise fields</h2>
+    <p class="callout hidden" id="resolution-warning">Preview resolution is above 256 — dragging sliders may feel slow.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="world-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="world-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="world-panel-select">Panel</label>
+          <select id="world-panel-select">
+            <option value="continentalness">continentalness</option>
+            <option value="erosion">erosion</option>
+            <option value="weirdness">weirdness</option>
+            <option value="temperature">temperature</option>
+            <option value="humidity">humidity</option>
+          </select>
+        </div>
+        <div id="world-controls"></div>
+        <button class="action" id="world-randomize">Randomize seed</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-height">
+    <h2>3. Height composer</h2>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="height-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="height-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="height-controls"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-erosion">
+    <h2>4. Erosion &amp; hydrology</h2>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="erosion-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="erosion-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="erosion-panel-select">Panel</label>
+          <select id="erosion-panel-select">
+            <option value="erosionDelta">erosion delta</option>
+            <option value="flowNorm">flow accumulation</option>
+            <option value="lakeMask">lake mask</option>
+            <option value="height">eroded height</option>
+          </select>
+        </div>
+        <div id="erosion-controls"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-derived">
+    <h2>5. Derived masks</h2>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="derived-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="derived-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="derived-panel-select">Panel</label>
+          <select id="derived-panel-select">
+            <option value="slope">slope</option>
+            <option value="seaMask">sea mask</option>
+            <option value="beachMask">beach mask</option>
+            <option value="mountainMask">mountain mask</option>
+          </select>
+        </div>
+        <div id="derived-controls"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-biome">
+    <h2>6. Biome classification</h2>
+    <p class="lede">17 ordered rules run top to bottom over every cell; whichever one matches last wins.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="biome-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="biome-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="rule-list"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-material">
+    <h2>7. Material masks</h2>
+    <p class="lede">Blended surface material from biome id, slope, and height. No dedicated controls: this stage only reads fields already exposed above.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="material-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
+        <div id="material-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="material-legend"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-consumption">
+    <h2>8. A real exported map</h2>
+    <div class="control-row" style="max-width:320px;">
+      <label for="map-select">Map</label>
+      <select id="map-select"></select>
+    </div>
+    <p class="lede" id="consumption-caption">Loading&hellip;</p>
+    <div class="gen-layout" id="consumption-layout" style="display:none;">
+      <div class="canvas-frame">
+        <canvas id="map-canvas"></canvas>
+        <div id="map-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="map-legend"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-tables">
+    <h2>9. Reference tables</h2>
+    <p class="lede">The two lookup tables workshop-webgpu actually uses at runtime.</p>
+    <div class="gen-layout">
+      <div style="flex:1 1 320px;">
+        <h3>Ground texture fallback</h3>
+        <table class="ref-table" id="table-material"></table>
+      </div>
+      <div style="flex:1 1 260px;">
+        <h3>Tree density</h3>
+        <table class="ref-table" id="table-density"></table>
+      </div>
+    </div>
+  </section>
+</main>
+<script type="module">
+  import {
+    BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel,
+    generateFullGrid, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
+  } from './terrain-generator-js.js';
+
+  const genConfig = { ...DEFAULT_CONFIG, preview_resolution: 128 };
+  const WARN_RESOLUTION = 256; // above this, show a "may feel slow" note
+  let lastGrid = null;
+  let regenTimer = null;
+
+  function regenerate() {
+    lastGrid = generateFullGrid(genConfig, genConfig.preview_resolution);
+    for (const redraw of REDRAW_CALLBACKS) redraw(lastGrid);
+  }
+
+  function scheduleRegenerate() {
+    clearTimeout(regenTimer);
+    regenTimer = setTimeout(regenerate, 150);
+  }
+
+  const REDRAW_CALLBACKS = [];
+
+  // ---- shared slider-builder (reused by sections 2-5) ----
+  function buildGroupControls(container, groupNames) {
+    container.innerHTML = '';
+    for (const group of FIELD_GROUPS) {
+      if (!groupNames.includes(group.name)) continue;
+      const heading = document.createElement('h3');
+      heading.textContent = group.name;
+      heading.style.fontSize = '0.95em';
+      container.appendChild(heading);
+      for (const name of group.fields) {
+        const [min, max, step] = FIELD_RANGES[name];
+        const row = document.createElement('div');
+        row.className = 'control-row';
+        const label = document.createElement('label');
+        const valueSpan = document.createElement('span');
+        valueSpan.textContent = genConfig[name];
+        label.textContent = fieldLabel(name) + ' ';
+        label.appendChild(valueSpan);
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = min; input.max = max; input.step = step;
+        input.value = genConfig[name];
+        input.addEventListener('input', () => {
+          genConfig[name] = Number(input.value);
+          valueSpan.textContent = input.value;
+          scheduleRegenerate();
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+        container.appendChild(row);
+      }
+    }
+  }
+
+  function drawScalarPanel(canvas, tooltipEl, grid, field, colorFn, extraLabel) {
+    const res = grid.resolution;
+    canvas.width = res; canvas.height = res;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    const values = grid[field];
+    for (let i = 0; i < values.length; i++) {
+      const [r, g, b] = colorFn(values[i]);
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+
+    canvas.onmousemove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const fx = (ev.clientX - rect.left) / rect.width;
+      const fz = (ev.clientY - rect.top) / rect.height;
+      const ix = Math.max(0, Math.min(res - 1, Math.floor(fx * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor(fz * res)));
+      const idx = iz * res + ix;
+      tooltipEl.classList.remove('hidden');
+      tooltipEl.style.left = ev.offsetX + 'px';
+      tooltipEl.style.top = ev.offsetY + 'px';
+      tooltipEl.textContent = (extraLabel ?? field) + ': ' + values[idx].toFixed(3);
+    };
+    canvas.onmouseleave = () => tooltipEl.classList.add('hidden');
+  }
+
+  function updateResolutionWarning() {
+    document.getElementById('resolution-warning').classList.toggle('hidden', genConfig.preview_resolution <= WARN_RESOLUTION);
+  }
+  REDRAW_CALLBACKS.push(updateResolutionWarning);
+
+  // ---- section 2: World & noise fields ----
+  const worldCanvas = document.getElementById('world-canvas');
+  const worldTooltip = document.getElementById('world-tooltip');
+  const worldPanelSelect = document.getElementById('world-panel-select');
+  buildGroupControls(document.getElementById('world-controls'), ['World', 'Noise Fields']);
+  document.getElementById('world-randomize').addEventListener('click', () => {
+    genConfig.seed = Math.floor(Math.random() * 100000);
+    buildGroupControls(document.getElementById('world-controls'), ['World', 'Noise Fields']);
+    regenerate();
+  });
+  worldPanelSelect.addEventListener('change', () => { if (lastGrid) drawWorldPanel(lastGrid); });
+  function drawWorldPanel(grid) {
+    drawScalarPanel(worldCanvas, worldTooltip, grid, worldPanelSelect.value, divergingColor);
+  }
+  REDRAW_CALLBACKS.push(drawWorldPanel);
+
+  // ---- section 3: Height composer ----
+  const heightCanvas = document.getElementById('height-canvas');
+  const heightTooltip = document.getElementById('height-tooltip');
+  buildGroupControls(document.getElementById('height-controls'), ['Height Composer']);
+  function drawHeightPanel(grid) {
+    drawScalarPanel(heightCanvas, heightTooltip, grid, 'targetHeight',
+      (v) => heightColor(v, genConfig.sea_level), 'pre-erosion height');
+  }
+  REDRAW_CALLBACKS.push(drawHeightPanel);
+
+  // ---- section 4: Erosion & hydrology ----
+  const erosionCanvas = document.getElementById('erosion-canvas');
+  const erosionTooltip = document.getElementById('erosion-tooltip');
+  const erosionPanelSelect = document.getElementById('erosion-panel-select');
+  buildGroupControls(document.getElementById('erosion-controls'), ['Erosion Simulation', 'Hydrology']);
+  erosionPanelSelect.addEventListener('change', () => { if (lastGrid) drawErosionPanel(lastGrid); });
+  function drawErosionPanel(grid) {
+    const field = erosionPanelSelect.value;
+    let colorFn;
+    if (field === 'flowNorm') colorFn = flowColor;
+    else if (field === 'lakeMask') colorFn = (v) => maskColor(v, [58, 150, 190]);
+    else if (field === 'height') colorFn = (v) => heightColor(v, genConfig.sea_level);
+    else {
+      let maxAbs = 1;
+      for (const d of grid.erosionDelta) if (Math.abs(d) > maxAbs) maxAbs = Math.abs(d);
+      colorFn = (v) => signedColor(v, maxAbs);
+    }
+    drawScalarPanel(erosionCanvas, erosionTooltip, grid, field, colorFn);
+  }
+  REDRAW_CALLBACKS.push(drawErosionPanel);
+
+  // ---- section 5: Derived masks ----
+  const derivedCanvas = document.getElementById('derived-canvas');
+  const derivedTooltip = document.getElementById('derived-tooltip');
+  const derivedPanelSelect = document.getElementById('derived-panel-select');
+  buildGroupControls(document.getElementById('derived-controls'), ['Derived Masks']);
+  derivedPanelSelect.addEventListener('change', () => { if (lastGrid) drawDerivedPanel(lastGrid); });
+  const DERIVED_MASK_COLORS = {
+    seaMask: [60, 130, 220], beachMask: [224, 205, 130], mountainMask: [214, 160, 82],
+  };
+  function drawDerivedPanel(grid) {
+    const field = derivedPanelSelect.value;
+    const colorFn = field === 'slope'
+      ? (v) => {
+        let maxSlope = 1.2;
+        for (const s of grid.slope) if (s > maxSlope) maxSlope = s;
+        return slopeColor(v, maxSlope);
+      }
+      : (v) => maskColor(v, DERIVED_MASK_COLORS[field]);
+    drawScalarPanel(derivedCanvas, derivedTooltip, grid, field, colorFn);
+  }
+  REDRAW_CALLBACKS.push(drawDerivedPanel);
+
+  // ---- section 6: Biome classification ----
+  const RULES = [
+    { index: -1, biome: 'plains', text: 'Default. No rule below matched.' },
+    { index: 0, biome: 'deep_ocean', text: 'height &lt; sea level &minus; 14' },
+    { index: 1, biome: 'ocean', text: 'sea level &minus; 14 &le; height &le; sea level' },
+    { index: 2, biome: 'beach', text: 'beach mask &gt; 0.35 (overrides ocean/deep_ocean too)' },
+    { index: 3, biome: 'desert', text: 'land &amp; hot &amp; dry' },
+    { index: 4, biome: 'badlands', text: 'land &amp; hot &amp; dry &amp; weirdness &gt; 0.38 (overrides desert)' },
+    { index: 5, biome: 'savanna', text: 'land &amp; hot &amp; not dry &amp; not very wet' },
+    { index: 6, biome: 'jungle', text: 'land &amp; very wet &amp; hot' },
+    { index: 7, biome: 'swamp', text: 'land &amp; very wet &amp; not hot' },
+    { index: 8, biome: 'forest', text: 'land &amp; wet &amp; not cold &amp; not very wet' },
+    { index: 9, biome: 'dark_forest', text: 'land &amp; wet &amp; humidity &gt; 0.25 &amp; not hot &amp; not cold (overrides forest, and swamp)' },
+    { index: 10, biome: 'taiga', text: 'land &amp; cold &amp; wet' },
+    { index: 11, biome: 'snowy_taiga', text: 'land &amp; cold &amp; wet &amp; high (overrides taiga)' },
+    { index: 12, biome: 'snowy_plains', text: 'land &amp; cold &amp; not wet' },
+    { index: 13, biome: 'meadow', text: 'land &amp; not hot &amp; not cold &amp; humidity &gt; &minus;0.05 &amp; weirdness &gt; 0.28' },
+    { index: 14, biome: 'windswept_hills', text: 'land &amp; steep (overrides almost everything land-based)' },
+    { index: 15, biome: 'stony_peaks', text: 'land &amp; high &amp; steep (overrides windswept_hills)' },
+    { index: 16, biome: 'snowy_peaks', text: 'height &gt; snow height full &amp; slope &lt; 0.80 (overrides stony_peaks)' },
+  ];
+
+  function swatchLabel(name) {
+    const [r, g, b] = BIOME_COLORS[name];
+    return `<span class="swatch" style="background:rgb(${r},${g},${b})"></span>${name}`;
+  }
+
+  function buildRuleList() {
+    const wrap = document.getElementById('rule-list');
+    wrap.innerHTML = '';
+    for (const rule of RULES) {
+      const row = document.createElement('div');
+      row.className = 'rule-row';
+      row.dataset.ruleIndex = String(rule.index);
+      row.innerHTML = `<span class="rule-idx">${rule.index}</span>${swatchLabel(rule.biome)} <span class="rule-text">${rule.text}</span>`;
+      wrap.appendChild(row);
+    }
+  }
+  buildRuleList();
+
+  function highlightRule(ruleIndex) {
+    document.querySelectorAll('#rule-list .rule-row').forEach((row) => {
+      row.classList.toggle('active', Number(row.dataset.ruleIndex) === ruleIndex);
+    });
+  }
+
+  const biomeCanvas = document.getElementById('biome-canvas');
+  const biomeTooltip = document.getElementById('biome-tooltip');
+  function drawBiomePanel(grid) {
+    const res = grid.resolution;
+    biomeCanvas.width = res; biomeCanvas.height = res;
+    const ctx = biomeCanvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    for (let i = 0; i < grid.biomeId.length; i++) {
+      const [r, g, b] = BIOME_COLORS[BIOMES[grid.biomeId[i]]];
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    biomeCanvas.onmousemove = (ev) => {
+      const rect = biomeCanvas.getBoundingClientRect();
+      const fx = (ev.clientX - rect.left) / rect.width;
+      const fz = (ev.clientY - rect.top) / rect.height;
+      const ix = Math.max(0, Math.min(res - 1, Math.floor(fx * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor(fz * res)));
+      const idx = iz * res + ix;
+      const biomeName = BIOMES[grid.biomeId[idx]];
+      biomeTooltip.classList.remove('hidden');
+      biomeTooltip.style.left = ev.offsetX + 'px';
+      biomeTooltip.style.top = ev.offsetY + 'px';
+      biomeTooltip.textContent = biomeName + '\nrule ' + grid.ruleIndex[idx];
+      highlightRule(grid.ruleIndex[idx]);
+    };
+    biomeCanvas.onmouseleave = () => { biomeTooltip.classList.add('hidden'); highlightRule(-99); };
+  }
+  REDRAW_CALLBACKS.push(drawBiomePanel);
+
+  // ---- section 7: Material masks ----
+  const materialCanvas = document.getElementById('material-canvas');
+  const materialTooltip = document.getElementById('material-tooltip');
+  const MATERIAL_LEGEND_COLORS = {
+    grass: [92, 156, 72], forest: [50, 104, 54], dirt: [128, 94, 62],
+    sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246], water: [28, 66, 130],
+  };
+  function drawMaterialPanel(grid) {
+    const res = grid.resolution;
+    materialCanvas.width = res; materialCanvas.height = res;
+    const ctx = materialCanvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    img.data.set(grid.materialRgba);
+    ctx.putImageData(img, 0, 0);
+    materialCanvas.onmousemove = (ev) => {
+      const rect = materialCanvas.getBoundingClientRect();
+      const fx = (ev.clientX - rect.left) / rect.width;
+      const fz = (ev.clientY - rect.top) / rect.height;
+      const ix = Math.max(0, Math.min(res - 1, Math.floor(fx * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor(fz * res)));
+      const idx = iz * res + ix;
+      const parts = Object.entries(grid.materialMasks).map(([k, arr]) => `${k}: ${arr[idx].toFixed(2)}`);
+      materialTooltip.classList.remove('hidden');
+      materialTooltip.style.left = ev.offsetX + 'px';
+      materialTooltip.style.top = ev.offsetY + 'px';
+      materialTooltip.textContent = parts.join('\n');
+    };
+    materialCanvas.onmouseleave = () => materialTooltip.classList.add('hidden');
+  }
+  REDRAW_CALLBACKS.push(drawMaterialPanel);
+
+  const materialLegend = document.getElementById('material-legend');
+  materialLegend.innerHTML = Object.entries(MATERIAL_LEGEND_COLORS).map(([name, [r, g, b]]) =>
+    `<p><span class="swatch" style="background:rgb(${r},${g},${b})"></span>${name}</p>`).join('');
+
+  // ---- sections 8-9: real exported map + reference tables ----
+  const TREE_DENSITY = {
+    deep_ocean: 0.0, ocean: 0.0, beach: 0.03, desert: 0.0, badlands: 0.04, savanna: 0.20,
+    plains: 0.10, forest: 0.85, dark_forest: 0.95, jungle: 0.90, swamp: 0.45, taiga: 0.70,
+    snowy_taiga: 0.55, snowy_plains: 0.05, stony_peaks: 0.03, snowy_peaks: 0.0,
+    windswept_hills: 0.18, meadow: 0.16,
+  };
+  const BIOME_MATERIAL = {
+    deep_ocean: 'sand', ocean: 'sand', beach: 'beach', desert: 'desert', badlands: 'dirt', savanna: 'savanna',
+    plains: 'grass', forest: 'forest', dark_forest: 'forest', jungle: 'forest', swamp: 'swamp', taiga: 'taiga',
+    snowy_taiga: 'snow', snowy_plains: 'snow', stony_peaks: 'rock', snowy_peaks: 'snow',
+    windswept_hills: 'gravel', meadow: 'meadow',
+  };
+  const FALLBACK_COLORS = {
+    grass: 0x6f8f45, forest: 0x4f6d38, meadow: 0x82a84f, taiga: 0x536b48, dirt: 0x7b5a3a,
+    savanna: 0x9b8a4a, swamp: 0x4b5435, sand: 0xd8be7c, beach: 0xd7c18a, desert: 0xcfae68,
+    gravel: 0x808080, rock: 0x6f6c64, snow: 0xdde2df,
+  };
+
+  function bilinearGrid(grid, resolution, gx, gz) {
+    const ix = Math.max(0, Math.min(resolution - 2, Math.floor(gx)));
+    const iz = Math.max(0, Math.min(resolution - 2, Math.floor(gz)));
+    const tx = Math.max(0, Math.min(1, gx - ix));
+    const tz = Math.max(0, Math.min(1, gz - iz));
+    const a = grid[iz * resolution + ix] ?? 0;
+    const b = grid[iz * resolution + ix + 1] ?? a;
+    const c = grid[(iz + 1) * resolution + ix] ?? a;
+    const d = grid[(iz + 1) * resolution + ix + 1] ?? c;
+    return a * (1 - tx) * (1 - tz) + b * tx * (1 - tz) + c * (1 - tx) * tz + d * tx * tz;
+  }
+
+  // Hardcoded, same pattern as code-map.html's TOOL_LINKS — maps/workshop/ has no
+  // directory-listing API (serve.py is a plain SimpleHTTPRequestHandler), so listing
+  // the folder's *-data.json files by hand is simpler than scraping a directory index.
+  const MAP_FILES = [
+    { file: 'test_export-data.json', label: 'test export' },
+    { file: 'cave 3-data.json', label: 'cave 3' },
+    { file: 'cave-4-data.json', label: 'cave 4' },
+    { file: 'cave-world-1-data.json', label: 'cave world 1' },
+    { file: 'cave-world-2-data.json', label: 'cave world 2' },
+  ];
+
+  let realMap = null;
+
+  function initMapSelect() {
+    const select = document.getElementById('map-select');
+    select.innerHTML = MAP_FILES.map(({ file, label }) =>
+      `<option value="${file}">${label}</option>`).join('');
+    select.addEventListener('change', () => loadRealMap(select.value));
+  }
+
+  async function loadRealMap(file = MAP_FILES[0].file) {
+    const caption = document.getElementById('consumption-caption');
+    const layout = document.getElementById('consumption-layout');
+    caption.textContent = `Loading maps/workshop/${file}…`;
+    layout.style.display = 'none';
+    try {
+      const res = await fetch(`maps/workshop/${encodeURIComponent(file)}`);
+      if (!res.ok) throw new Error(`fetch failed (${res.status})`);
+      const mapData = await res.json();
+      realMap = mapData;
+      caption.textContent = `maps/workshop/${file} (${mapData.resolution}×${mapData.resolution} biome grid, ${mapData.worldX}×${mapData.worldZ} world units).`;
+      layout.style.display = '';
+      renderRealMap(mapData);
+      renderMapLegend(mapData);
+    } catch (err) {
+      caption.textContent = `Couldn't load maps/workshop/${file} (${err.message}). Run "python serve.py" and open this page via http://, not file://. Sections 1-3 above still work without it.`;
+    }
+  }
+
+  function renderRealMap(mapData) {
+    // Swapping maps re-invokes this function on the same <canvas> — clone it to
+    // drop previously-attached mousemove/mouseleave listeners instead of stacking them.
+    const oldCanvas = document.getElementById('map-canvas');
+    const canvas = oldCanvas.cloneNode(false);
+    oldCanvas.replaceWith(canvas);
+    const res = mapData.resolution;
+    canvas.width = res;
+    canvas.height = res;
+    const aspect = mapData.worldZ / mapData.worldX;
+    canvas.style.width = '480px';
+    canvas.style.height = Math.round(480 * aspect) + 'px';
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    for (let i = 0; i < mapData.biomeIds.length; i++) {
+      const name = mapData.biomeNames[mapData.biomeIds[i]] || 'plains';
+      const [r, g, b] = BIOME_COLORS[name] || BIOME_COLORS.plains;
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+
+    const tooltip = document.getElementById('map-tooltip');
+    canvas.addEventListener('mousemove', (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const gx = ((ev.clientX - rect.left) / rect.width) * (res - 1);
+      const gz = ((ev.clientY - rect.top) / rect.height) * (res - 1);
+      const ix = Math.max(0, Math.min(res - 1, Math.round(gx)));
+      const iz = Math.max(0, Math.min(res - 1, Math.round(gz)));
+      const idx = iz * res + ix;
+      const biomeName = mapData.biomeNames[mapData.biomeIds[idx]] || 'plains';
+      const grass = mapData.grassDensity ? bilinearGrid(mapData.grassDensity, res, gx, gz) : null;
+      const tree = TREE_DENSITY[biomeName] ?? 0;
+      const texture = BIOME_MATERIAL[biomeName] ?? 'grass';
+      tooltip.classList.remove('hidden');
+      tooltip.style.left = ev.offsetX + 'px';
+      tooltip.style.top = ev.offsetY + 'px';
+      tooltip.textContent =
+        `${biomeName}\ntexture (fallback): ${texture}\ntree density: ${tree.toFixed(2)}` +
+        (grass !== null ? `\ngrass density: ${grass.toFixed(2)}` : '');
+      highlightBiomeRows(biomeName);
+    });
+    canvas.addEventListener('mouseleave', () => {
+      tooltip.classList.add('hidden');
+      clearBiomeHighlight();
+    });
+  }
+
+  function renderMapLegend(mapData) {
+    const wrap = document.getElementById('map-legend');
+    const present = new Set();
+    for (const id of mapData.biomeIds) present.add(mapData.biomeNames[id]);
+    const unused = BIOMES.filter((name) => !present.has(name));
+    wrap.innerHTML =
+      `<p><strong>Present in this map (${present.size}/18):</strong><br>` +
+      Array.from(present).map((name) => swatchLabel(name)).join(' ') + `</p>` +
+      `<p><strong>Defined but unused here (${unused.length}/18):</strong><br>` +
+      unused.map((name) => swatchLabel(name)).join(' ') + `</p>`;
+  }
+
+  // swatchLabel is already defined above (section 6 wiring) and reused here.
+
+  // ---- section 9: reference tables + cross-highlight ----
+  function buildReferenceTables() {
+    const materialTable = document.getElementById('table-material');
+    materialTable.innerHTML =
+      '<tr><th>Biome</th><th>Texture layer</th></tr>' +
+      BIOMES.map((name) => {
+        const layer = BIOME_MATERIAL[name] ?? 'grass';
+        const hex = (FALLBACK_COLORS[layer] ?? 0x808080).toString(16).padStart(6, '0');
+        return `<tr data-biome="${name}"><td>${swatchLabel(name)}</td><td><span class="swatch" style="background:#${hex}"></span>${layer}</td></tr>`;
+      }).join('');
+
+    const densityTable = document.getElementById('table-density');
+    densityTable.innerHTML =
+      '<tr><th>Biome</th><th>Tree density</th></tr>' +
+      BIOMES.map((name) => {
+        const density = TREE_DENSITY[name] ?? 0;
+        return `<tr data-biome="${name}"><td>${swatchLabel(name)}</td><td>${density.toFixed(2)}</td></tr>`;
+      }).join('');
+  }
+
+  function highlightBiomeRows(biomeName) {
+    document.querySelectorAll('#table-material tr[data-biome], #table-density tr[data-biome]').forEach((row) => {
+      row.classList.toggle('active', row.dataset.biome === biomeName);
+    });
+  }
+
+  function clearBiomeHighlight() {
+    document.querySelectorAll('#table-material tr.active, #table-density tr.active').forEach((row) => row.classList.remove('active'));
+  }
+
+  buildReferenceTables();
+
+  initMapSelect();
+  loadRealMap();
+
+  regenerate();
+</script>
+</body>
+</html>
