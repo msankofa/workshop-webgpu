@@ -86,6 +86,7 @@
   .controls { flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px; }
   .control-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
   .control-row label { display: flex; justify-content: space-between; opacity: 0.85; }
+  .control-row .control-desc { font-size: 0.82em; opacity: 0.6; margin: 0 0 2px; }
   .control-row select {
     font: inherit;
     padding: 6px 8px;
@@ -301,7 +302,7 @@
 </main>
 <script type="module">
   import {
-    BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel,
+    BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription,
     generateFullGrid, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
   } from './terrain-generator-js.js';
 
@@ -335,6 +336,9 @@
         const [min, max, step] = FIELD_RANGES[name];
         const row = document.createElement('div');
         row.className = 'control-row';
+        const desc = document.createElement('p');
+        desc.className = 'control-desc';
+        desc.textContent = fieldDescription(name);
         const label = document.createElement('label');
         const valueSpan = document.createElement('span');
         valueSpan.textContent = genConfig[name];
@@ -349,6 +353,7 @@
           valueSpan.textContent = input.value;
           scheduleRegenerate();
         });
+        row.appendChild(desc);
         row.appendChild(label);
         row.appendChild(input);
         container.appendChild(row);

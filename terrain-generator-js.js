@@ -165,6 +165,54 @@ export function fieldLabel(name) {
   return FIELD_LABELS[name] ?? name.replace(/_/g, ' ');
 }
 
+// One-line, factual description of what each field controls, shown under its slider in
+// terrain-generator-v4.html. No FIELD_LABELS-style fallback -- every field listed in
+// FIELD_GROUPS must have an entry here (checked by test-terrain-generator-js.mjs).
+const FIELD_DESCRIPTIONS = {
+  seed: 'PRNG seed for every noise field (continentalness, erosion, weirdness, temperature, humidity).',
+  world_x: "World width in world units. Sets the x-axis sample extent for every field and the erosion grid's cell spacing.",
+  world_z: "World depth in world units. Sets the z-axis sample extent and cell spacing.",
+  preview_resolution: 'Grid resolution (cells per axis) for this live preview. Higher values show finer detail but redraw slower.',
+  sea_level: 'Height threshold below which cells classify as ocean/lake and above which as land.',
+
+  continentalness_period: 'Wavelength of the continentalness field in world units. Larger values produce fewer, larger continents; smaller values produce more, smaller landmasses.',
+  erosion_period: 'Wavelength of the erosion field, which sets local mountain amplitude (see Height Composer).',
+  weirdness_period: 'Wavelength of the weirdness field, which drives the peaks-and-valleys ridge/valley pattern layered onto height.',
+  temperature_period: 'Wavelength of the temperature field used by biome classification.',
+  humidity_period: 'Wavelength of the humidity field used by biome classification.',
+  continentalness_octaves: 'Number of fBm octaves summed into the continentalness field. More octaves add finer detail on top of the base wavelength.',
+  erosion_octaves: 'Number of fBm octaves summed into the erosion field.',
+  weirdness_octaves: 'Number of fBm octaves summed into the weirdness field.',
+  temperature_octaves: 'Number of fBm octaves summed into the temperature field.',
+  humidity_octaves: 'Number of fBm octaves summed into the humidity field.',
+
+  deep_ocean_depth: 'Height assigned to the most negative continentalness values (deepest ocean floor).',
+  far_inland_height: 'Height assigned to the most positive continentalness values (base height of land far from any coast).',
+  min_plains_amplitude: 'Peaks-and-valleys amplitude at the calmest erosion values -- how flat plains-like terrain gets.',
+  max_mountain_amplitude: 'Peaks-and-valleys amplitude at the roughest erosion values -- how tall mountain terrain gets.',
+
+  hydraulic_erosion_strength: 'Strength of flow-driven incision (carving) and deposition applied to the height field. 0 disables hydraulic erosion.',
+  thermal_erosion_iterations: 'Number of thermal-relaxation passes that smooth slopes steeper than the talus angle. 0 disables thermal erosion.',
+  thermal_erosion_strength: "Fraction of each pass's excess slope that gets relaxed per iteration.",
+  thermal_talus_angle: 'Slope angle in degrees above which thermal relaxation moves material downhill.',
+
+  lake_flow_threshold: 'Minimum normalized flow accumulation required for a low-slope sink cell to seed a lake.',
+  lake_max_slope: 'Maximum slope a cell can have and still be eligible to hold or receive lake water.',
+  lake_expand_iterations: 'Number of flood-fill passes used to grow seeded lakes outward to neighboring cells.',
+  lake_bank_height: "Height above a lake's seed cell that the waterline is allowed to reach.",
+
+  beach_width: 'Height range above sea level over which the beach mask fades out.',
+  rock_slope_start: 'Slope at which the rock mask begins to appear.',
+  rock_slope_full: 'Slope at which the rock mask reaches full strength.',
+  snow_height_start: 'Height at which the snow mask begins to appear.',
+  snow_height_full: 'Height at which the snow mask reaches full strength.',
+  forest_humidity_bias: "Humidity threshold above which land counts as 'wet' for biome classification (forest/taiga/etc).",
+};
+
+export function fieldDescription(name) {
+  return FIELD_DESCRIPTIONS[name] ?? '';
+}
+
 // ---- shared slope helper (port of derived_maps.py / erosion_sim.py's np.gradient use) ----
 // Per-axis central difference (forward/backward at edges), unlike biome-classifier-js.js's
 // generateGrid which uses one shared dx for both axes tied to a fixed WORLD_EXTENT --

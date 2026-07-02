@@ -1,5 +1,5 @@
 import {
-  DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
+  DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, BIOME_INDEX,
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
 } from './terrain-generator-js.js';
@@ -42,6 +42,13 @@ ok(lo === 96 && hi === 1024 && step === 32, '2: preview_resolution range matches
 
 ok(fieldLabel('snow_height_start') === 'snow start', '2: fieldLabel looks up FIELD_LABELS');
 ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no FIELD_LABELS entry exists');
+
+let everyFieldHasDescription = true;
+for (const name of allFieldNames) {
+  const desc = fieldDescription(name);
+  if (typeof desc !== 'string' || desc.length < 10) everyFieldHasDescription = false;
+}
+ok(everyFieldHasDescription, '2: every FIELD_GROUPS field has a non-trivial fieldDescription');
 
 // --- Task 3: gradientMagnitude + flowAccumulation ---
 {
