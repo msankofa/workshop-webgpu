@@ -640,3 +640,59 @@ export function maskColor(mask, color) {
   const base = [18, 22, 26];
   return [lerp(base[0], color[0], m), lerp(base[1], color[1], m), lerp(base[2], color[2], m)];
 }
+
+// ---- heightfield mesh (Phase C: direct grid-to-mesh, no voxels) ----
+// Normal formula and triangle winding match this codebase's terrain-field.js
+// (terrainNormalAt's central-difference sign convention; buildChunkArrays' a/b/c/d
+// winding) for consistency, though this function is independent of that file.
+export function buildHeightfieldMesh(height, resolution, worldX, worldZ) {
+  const n = resolution * resolution;
+  const positions = new Float32Array(n * 3);
+  const normals = new Float32Array(n * 3);
+  const dx = worldX / Math.max(1, resolution - 1);
+  const dz = worldZ / Math.max(1, resolution - 1);
+
+  for (let iz = 0; iz < resolution; iz++) {
+    for (let ix = 0; ix < resolution; ix++) {
+      const idx = iz * resolution + ix;
+      const x = (ix / Math.max(1, resolution - 1) - 0.5) * worldX;
+      const z = (iz / Math.max(1, resolution - 1) - 0.5) * worldZ;
+      positions[idx * 3] = x;
+      positions[idx * 3 + 1] = height[idx];
+      positions[idx * 3 + 2] = z;
+
+      const xL = ix > 0 ? height[idx - 1] : height[idx];
+      const xR = ix < resolution - 1 ? height[idx + 1] : height[idx];
+      const stepX = (ix > 0 && ix < resolution - 1) ? 2 * dx : dx;
+      const gradX = (xR - xL) / Math.max(stepX, 1e-6);
+
+      const zT = iz > 0 ? height[idx - resolution] : height[idx];
+      const zB = iz < resolution - 1 ? height[idx + resolution] : height[idx];
+      const stepZ = (iz > 0 && iz < resolution - 1) ? 2 * dz : dz;
+      const gradZ = (zB - zT) / Math.max(stepZ, 1e-6);
+
+      const nx = -gradX, ny = 1, nz = -gradZ;
+      const invLen = 1 / (Math.hypot(nx, ny, nz) || 1);
+      normals[idx * 3] = nx * invLen;
+      normals[idx * 3 + 1] = ny * invLen;
+      normals[idx * 3 + 2] = nz * invLen;
+    }
+  }
+
+  const quadsPerAxis = Math.max(0, resolution - 1);
+  const indices = new Uint32Array(quadsPerAxis * quadsPerAxis * 6);
+  let o = 0;
+  for (let iz = 0; iz < quadsPerAxis; iz++) {
+    for (let ix = 0; ix < quadsPerAxis; ix++) {
+      const idx = iz * resolution + ix;
+      const a = idx;
+      const b = idx + resolution;
+      const c = idx + resolution + 1;
+      const d = idx + 1;
+      indices[o++] = a; indices[o++] = b; indices[o++] = d;
+      indices[o++] = b; indices[o++] = c; indices[o++] = d;
+    }
+  }
+
+  return { positions, normals, indices };
+}

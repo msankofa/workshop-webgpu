@@ -2,6 +2,7 @@ import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, BIOME_INDEX,
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
+  buildHeightfieldMesh,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -219,6 +220,47 @@ ok(everyFieldHasDescription, '2: every FIELD_GROUPS field has a non-trivial fiel
   ok(JSON.stringify(off) === JSON.stringify([18, 22, 26]), '8: maskColor(0) is the base color');
   ok(JSON.stringify(on) === JSON.stringify([96, 190, 255]), '8: maskColor(1) is the target color');
 }
+
+// --- Task 1 (Phase C): buildHeightfieldMesh ---
+{
+  const res = 3;
+  const height = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0]); // flat
+  const { positions, normals, indices } = buildHeightfieldMesh(height, res, 200, 200);
+
+  ok(positions.length === res * res * 3, '1 (Phase C): positions has 3 floats per vertex');
+  ok(normals.length === res * res * 3, '1 (Phase C): normals has 3 floats per vertex');
+  const quadsPerAxis = res - 1;
+  ok(indices.length === quadsPerAxis * quadsPerAxis * 6, '1 (Phase C): indices has 6 per quad');
+
+  ok(Math.abs(positions[0] - (-100)) < 1e-6 && Math.abs(positions[1] - 0) < 1e-6 && Math.abs(positions[2] - (-100)) < 1e-6,
+    '1 (Phase C): vertex 0 lands at the expected world corner');
+  const centerIdx = 4;
+  ok(Math.abs(positions[centerIdx * 3] - 0) < 1e-6 && Math.abs(positions[centerIdx * 3 + 2] - 0) < 1e-6,
+    '1 (Phase C): center vertex lands at world origin on x/z');
+
+  let allUp = true;
+  for (let i = 0; i < res * res; i++) {
+    if (Math.abs(normals[i * 3] - 0) > 1e-5 || Math.abs(normals[i * 3 + 1] - 1) > 1e-5 || Math.abs(normals[i * 3 + 2] - 0) > 1e-5) allUp = false;
+  }
+  ok(allUp, '1 (Phase C): flat terrain has every normal pointing straight up (0,1,0)');
+
+  let allUnit = true;
+  for (let i = 0; i < res * res; i++) {
+    const len = Math.hypot(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+    if (Math.abs(len - 1) > 1e-5) allUnit = false;
+  }
+  ok(allUnit, '1 (Phase C): every normal is unit length');
+}
+{
+  const res = 5;
+  const height = new Float32Array(res * res);
+  for (let iz = 0; iz < res; iz++) for (let ix = 0; ix < res; ix++) height[iz * res + ix] = ix * 10;
+  const { normals } = buildHeightfieldMesh(height, res, 400, 400);
+  const centerIdx = 2 * res + 2;
+  ok(normals[centerIdx * 3] < -0.01, '1 (Phase C): a rising-with-x ramp tilts the normal toward -x');
+  ok(normals[centerIdx * 3 + 2] > -1e-5 && normals[centerIdx * 3 + 2] < 1e-5, '1 (Phase C): a ramp with no z variation has zero normal.z');
+}
+console.log('Task 1 (Phase C: buildHeightfieldMesh) OK');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
