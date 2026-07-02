@@ -529,6 +529,38 @@
     hfGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   }
 
+  const hfRaycaster = new THREE.Raycaster();
+  const hfPointerNdc = new THREE.Vector2();
+  const hfTooltip = document.getElementById('heightfield-tooltip');
+
+  hfRenderer.domElement.addEventListener('pointermove', (ev) => {
+    if (!hfLastGrid) return;
+    const rect = hfRenderer.domElement.getBoundingClientRect();
+    hfPointerNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    hfPointerNdc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    hfRaycaster.setFromCamera(hfPointerNdc, hfCamera);
+    const hits = hfRaycaster.intersectObject(hfMesh);
+    if (hits.length === 0) { hfTooltip.classList.add('hidden'); return; }
+
+    const point = hits[0].point;
+    const res = hfLastGrid.resolution;
+    const fx = (point.x / genConfig.world_x + 0.5) * (res - 1);
+    const fz = (point.z / genConfig.world_z + 0.5) * (res - 1);
+    const ix = Math.max(0, Math.min(res - 1, Math.round(fx)));
+    const iz = Math.max(0, Math.min(res - 1, Math.round(fz)));
+    const idx = iz * res + ix;
+    const mode = hfModeSelect.value;
+    const modeValue = mode in hfLastGrid ? hfLastGrid[mode][idx] : undefined;
+
+    hfTooltip.classList.remove('hidden');
+    hfTooltip.style.left = (ev.clientX - rect.left) + 'px';
+    hfTooltip.style.top = (ev.clientY - rect.top) + 'px';
+    hfTooltip.textContent =
+      `x ${point.x.toFixed(1)}  z ${point.z.toFixed(1)}\nheight ${hfLastGrid.height[idx].toFixed(2)}` +
+      (modeValue !== undefined ? `\n${mode}: ${modeValue.toFixed(3)}` : '');
+  });
+  hfRenderer.domElement.addEventListener('pointerleave', () => hfTooltip.classList.add('hidden'));
+
   // ---- shared slider-builder (reused by sections 2-5) ----
   function buildGroupControls(container, groupNames) {
     container.innerHTML = '';
