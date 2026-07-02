@@ -414,6 +414,62 @@
     hfRenderer.render(hfScene, hfCamera);
   });
 
+  let heightfieldResolution = 64;
+  const HF_WARN_RESOLUTION = 128;
+  let hfRegenTimer = null;
+  let hfLastGrid = null;
+
+  const hfGeometry = new THREE.BufferGeometry();
+  const hfMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const hfMesh = new THREE.Mesh(hfGeometry, hfMaterial);
+  hfScene.add(hfMesh);
+
+  function updateHeightfieldResolutionWarning() {
+    document.getElementById('heightfield-resolution-warning').classList.toggle('hidden', heightfieldResolution <= HF_WARN_RESOLUTION);
+  }
+
+  function rebuildHeightfieldMesh() {
+    hfLastGrid = generateFullGrid(genConfig, heightfieldResolution);
+    const { positions, normals, indices } = buildHeightfieldMesh(hfLastGrid.height, heightfieldResolution, genConfig.world_x, genConfig.world_z);
+    hfGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    hfGeometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    hfGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    applyHeightfieldColors(hfLastGrid);
+    hfGeometry.computeBoundingSphere();
+    updateHeightfieldStats(hfLastGrid);
+  }
+
+  function scheduleHeightfieldRegenerate() {
+    clearTimeout(hfRegenTimer);
+    hfRegenTimer = setTimeout(rebuildHeightfieldMesh, 300);
+  }
+  REDRAW_CALLBACKS.push(() => { updateHeightfieldResolutionWarning(); scheduleHeightfieldRegenerate(); });
+
+  const hfResolutionInput = document.getElementById('heightfield-resolution');
+  const hfResolutionValue = document.getElementById('heightfield-resolution-value');
+  hfResolutionInput.addEventListener('input', () => {
+    heightfieldResolution = Number(hfResolutionInput.value);
+    hfResolutionValue.textContent = heightfieldResolution;
+    updateHeightfieldResolutionWarning();
+    scheduleHeightfieldRegenerate();
+  });
+
+  document.getElementById('heightfield-wireframe').addEventListener('change', (ev) => {
+    hfMaterial.wireframe = ev.target.checked;
+  });
+
+  function updateHeightfieldStats(grid) {
+    const res = grid.resolution;
+    const vertexCount = res * res;
+    const triangleCount = Math.max(0, (res - 1) * (res - 1) * 2);
+    let heightMin = Infinity, heightMax = -Infinity;
+    for (const h of grid.height) { if (h < heightMin) heightMin = h; if (h > heightMax) heightMax = h; }
+    const cellX = genConfig.world_x / Math.max(1, res - 1);
+    const cellZ = genConfig.world_z / Math.max(1, res - 1);
+    document.getElementById('heightfield-stats').textContent =
+      `${vertexCount} vertices, ${triangleCount} triangles -- height ${heightMin.toFixed(1)} to ${heightMax.toFixed(1)} -- cell ${cellX.toFixed(1)}x${cellZ.toFixed(1)}`;
+  }
+
   // ---- shared slider-builder (reused by sections 2-5) ----
   function buildGroupControls(container, groupNames) {
     container.innerHTML = '';
