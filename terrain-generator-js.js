@@ -466,3 +466,67 @@ export function buildMaterialMasks(height, derived, biomeIds, cfg, resolution) {
 
   return { masks, rgba };
 }
+
+// ---- full pipeline orchestration ----
+// Runs the entire Phase A pipeline once: noise fields -> height composition -> erosion ->
+// derived masks -> biome classification -> material masks. World extent is
+// cfg.world_x/cfg.world_z (unlike biome-classifier-js.js's generateGrid, which is fixed
+// to WORLD_EXTENT) -- coordinates are sampled over [-world/2, world/2] on each axis to
+// match generateGrid's own centering convention.
+export function generateFullGrid(cfg, resolution) {
+  const n = resolution * resolution;
+  const cont = new Float32Array(n);
+  const eros = new Float32Array(n);
+  const weird = new Float32Array(n);
+  const temp = new Float32Array(n);
+  const humid = new Float32Array(n);
+
+  const sampler = createFieldSampler(cfg.seed);
+  for (let iz = 0; iz < resolution; iz++) {
+    const z = (iz / Math.max(1, resolution - 1) - 0.5) * cfg.world_z;
+    for (let ix = 0; ix < resolution; ix++) {
+      const x = (ix / Math.max(1, resolution - 1) - 0.5) * cfg.world_x;
+      const idx = iz * resolution + ix;
+      cont[idx] = sampler.sample('continentalness', x, z, cfg.continentalness_period, cfg.continentalness_octaves);
+      eros[idx] = sampler.sample('erosion', x, z, cfg.erosion_period, cfg.erosion_octaves);
+      weird[idx] = sampler.sample('weirdness', x, z, cfg.weirdness_period, cfg.weirdness_octaves);
+      temp[idx] = sampler.sample('temperature', x, z, cfg.temperature_period, cfg.temperature_octaves);
+      humid[idx] = sampler.sample('humidity', x, z, cfg.humidity_period, cfg.humidity_octaves);
+    }
+  }
+
+  const baseKnots = rescaleArray(CONTINENT_Y, cfg.deep_ocean_depth, cfg.far_inland_height);
+  const ampKnots = rescaleArray(EROSION_Y, cfg.min_plains_amplitude, cfg.max_mountain_amplitude);
+  const targetHeight = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const base = interp1d(cont[i], CONTINENT_X, baseKnots);
+    const amplitude = interp1d(eros[i], EROSION_X, ampKnots);
+    targetHeight[i] = base + peaksAndValleys(weird[i]) * amplitude;
+  }
+
+  const { height, erosionDelta, flowRaw, flowNorm } = simulateErosion(targetHeight, resolution, cfg);
+  const derived = buildDerivedMaps(height, resolution, cfg, flowNorm);
+
+  const biomeId = new Uint8Array(n);
+  const ruleIndex = new Int8Array(n);
+  for (let i = 0; i < n; i++) {
+    const { biome, ruleIndex: r } = classifyBiomeCell({
+      height: height[i], slope: derived.slope[i], temp: temp[i], humid: humid[i], weird: weird[i],
+      beachMask: derived.beachMask[i], seaLevel: cfg.sea_level, cfg,
+    });
+    biomeId[i] = BIOME_INDEX[biome];
+    ruleIndex[i] = r;
+  }
+
+  const { masks: materialMasks, rgba: materialRgba } = buildMaterialMasks(height, derived, biomeId, cfg, resolution);
+
+  return {
+    continentalness: cont, erosion: eros, weirdness: weird, temperature: temp, humidity: humid,
+    targetHeight, height, erosionDelta, flowRaw, flowNorm,
+    slope: derived.slope, seaMask: derived.seaMask, lakeMask: derived.lakeMask,
+    beachMask: derived.beachMask, mountainMask: derived.mountainMask,
+    rockMask: derived.rockMask, snowMask: derived.snowMask,
+    biomeId, ruleIndex, materialMasks, materialRgba,
+    resolution,
+  };
+}

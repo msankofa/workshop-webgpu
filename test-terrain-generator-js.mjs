@@ -1,7 +1,9 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
+  generateFullGrid,
 } from './terrain-generator-js.js';
+import { generateGrid } from './biome-classifier-js.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -152,6 +154,38 @@ ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no 
   let allOpaque = true;
   for (let i = 0; i < n; i++) if (rgba[i * 4 + 3] !== 255) allOpaque = false;
   ok(allOpaque, '6: alpha is always opaque');
+}
+
+// --- Task 7: generateFullGrid ---
+{
+  const res = 32;
+  const cfg = { ...DEFAULT_CONFIG, world_x: 1200, world_z: 1200, preview_resolution: res };
+  const grid = generateFullGrid(cfg, res);
+
+  let allFieldsPresent = true;
+  for (const key of ['continentalness', 'erosion', 'weirdness', 'temperature', 'humidity',
+    'targetHeight', 'height', 'erosionDelta', 'flowNorm', 'slope', 'seaMask', 'lakeMask',
+    'beachMask', 'mountainMask', 'rockMask', 'snowMask', 'biomeId', 'ruleIndex']) {
+    if (!(key in grid) || grid[key].length !== res * res) allFieldsPresent = false;
+  }
+  ok(allFieldsPresent, '7: generateFullGrid result includes every stage output, one value per cell');
+
+  const again = generateFullGrid(cfg, res);
+  let deterministic = true;
+  for (let i = 0; i < res * res; i++) if (grid.height[i] !== again.height[i]) deterministic = false;
+  ok(deterministic, '7: generateFullGrid is deterministic');
+
+  // Regression guard: with erosion fully disabled, Phase A's height output should match
+  // biome-classifier-js.js's own generateGrid (WORLD_EXTENT=1200, same seed/knobs),
+  // proving the Task 1 export-widening refactor changed nothing.
+  const noErosionCfg = { ...cfg, hydraulic_erosion_strength: 0, thermal_erosion_iterations: 0 };
+  const fullGrid = generateFullGrid(noErosionCfg, res);
+  const legacyGrid = generateGrid({ ...DEFAULT_CONFIG, seed: cfg.seed }, res);
+  let matchesLegacy = true;
+  for (let i = 0; i < res * res; i++) {
+    if (Math.abs(fullGrid.targetHeight[i] - legacyGrid.height[i]) >= 1e-4) matchesLegacy = false;
+  }
+  ok(matchesLegacy, '7: pre-erosion height matches legacy generateGrid (regression guard for Task 1)');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
