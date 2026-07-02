@@ -313,3 +313,99 @@ export function simulateErosion(originalHeight, resolution, cfg) {
 
   return { height: Float32Array.from(height), erosionDelta, flowRaw, flowNorm, receiver };
 }
+
+// ---- derived masks (port of derived_maps.py) ----
+const LAKE_DIRS_8 = FLOW_DIRS_8;
+
+function detectLakeMask(height, slope, seaMask, cfg, flowNorm, receiver, resolution) {
+  const n = resolution * resolution;
+  const land = new Uint8Array(n);
+  const lowSlope = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    land[i] = seaMask[i] < 0.5 ? 1 : 0;
+    lowSlope[i] = slope[i] <= cfg.lake_max_slope ? 1 : 0;
+  }
+  const flowThreshold = cfg.lake_flow_threshold;
+  const bankHeight = Math.max(0, cfg.lake_bank_height);
+
+  const pooled = new Uint8Array(n);
+  const waterline = new Float64Array(n).fill(Infinity);
+  let anySeed = false;
+  for (let i = 0; i < n; i++) {
+    const isSink = receiver[i] === -1;
+    if (land[i] && lowSlope[i] && flowNorm[i] >= flowThreshold && isSink) {
+      pooled[i] = 1;
+      waterline[i] = height[i] + bankHeight;
+      anySeed = true;
+    }
+  }
+  if (!anySeed) return new Float32Array(n);
+
+  const iterations = Math.max(0, cfg.lake_expand_iterations | 0);
+  const secondaryFlow = Math.max(0.18, flowThreshold * 0.45);
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const nextPooled = pooled.slice();
+    const nextWaterline = waterline.slice();
+    let changed = false;
+    for (let iz = 0; iz < resolution; iz++) {
+      for (let ix = 0; ix < resolution; ix++) {
+        const idx = iz * resolution + ix;
+        if (!land[idx] || !lowSlope[idx]) continue;
+        for (const [dz, dx] of LAKE_DIRS_8) {
+          const sz = iz - dz;
+          const sx = ix - dx;
+          if (sz < 0 || sz >= resolution || sx < 0 || sx >= resolution) continue;
+          const sIdx = sz * resolution + sx;
+          if (!pooled[sIdx]) continue;
+          if (height[idx] > waterline[sIdx]) continue;
+          if (flowNorm[idx] < secondaryFlow) continue;
+          if (!nextPooled[idx]) { nextPooled[idx] = 1; changed = true; }
+          if (waterline[sIdx] < nextWaterline[idx]) nextWaterline[idx] = waterline[sIdx];
+        }
+      }
+    }
+    if (!changed) break;
+    for (let i = 0; i < n; i++) {
+      pooled[i] = nextPooled[i];
+      if (nextWaterline[i] < waterline[i]) waterline[i] = nextWaterline[i];
+    }
+  }
+
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = pooled[i];
+  return out;
+}
+
+// Returns { slope, seaMask, lakeMask, beachMask, mountainMask, rockMask, snowMask }
+// (all Float32Array, length resolution*resolution).
+export function buildDerivedMaps(height, resolution, cfg, flowNorm) {
+  const n = resolution * resolution;
+  const slope = gradientMagnitude(height, resolution, cfg.world_x, cfg.world_z);
+  const seaMask = new Float32Array(n);
+  for (let i = 0; i < n; i++) seaMask[i] = height[i] <= cfg.sea_level ? 1 : 0;
+
+  // Reuse flowAccumulation's receiver (sink = no strictly-lower neighbor) instead of
+  // recomputing a separate sink scan, unlike derived_maps.py's standalone _sink_mask --
+  // same semantics (a cell with no strictly-lower 8-neighbor), one fewer full grid pass.
+  const { receiver } = flowAccumulation(height, resolution);
+  const lakeMask = detectLakeMask(height, slope, seaMask, cfg, flowNorm, receiver, resolution);
+
+  const beachMask = new Float32Array(n);
+  const mountainMask = new Float32Array(n);
+  const rockMask = new Float32Array(n);
+  const snowMask = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const sea = cfg.sea_level;
+    let beach = (1.0 - smoothstep(sea + 1.0, sea + cfg.beach_width, height[i]));
+    beach *= (1.0 - smoothstep(0.22, 0.52, slope[i]));
+    beach *= (1.0 - lakeMask[i]);
+    beachMask[i] = clamp01(beach);
+
+    mountainMask[i] = clamp01(smoothstep(sea + 38.0, sea + 112.0, height[i]) * smoothstep(0.16, 0.72, slope[i]));
+    rockMask[i] = clamp01(smoothstep(cfg.rock_slope_start, cfg.rock_slope_full, slope[i]));
+    snowMask[i] = clamp01(smoothstep(cfg.snow_height_start, cfg.snow_height_full, height[i]));
+  }
+
+  return { slope, seaMask, lakeMask, beachMask, mountainMask, rockMask, snowMask };
+}

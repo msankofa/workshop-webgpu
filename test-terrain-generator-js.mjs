@@ -1,6 +1,6 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
-  gradientMagnitude, flowAccumulation, simulateErosion,
+  gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps,
 } from './terrain-generator-js.js';
 
 let pass = 0, fail = 0;
@@ -89,6 +89,38 @@ ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no 
   let deterministic = true;
   for (let i = 0; i < n; i++) if (eroded.height[i] !== again.height[i]) deterministic = false;
   ok(deterministic, '4: erosion is deterministic');
+}
+
+// --- Task 5: buildDerivedMaps ---
+{
+  const res = 5;
+  const n = res * res;
+  // A bowl: low in the middle (below sea level), rising toward the edges.
+  const height = new Float32Array(n);
+  for (let iz = 0; iz < res; iz++) {
+    for (let ix = 0; ix < res; ix++) {
+      const dz = iz - 2, dx = ix - 2;
+      height[iz * res + ix] = -10 + (dx * dx + dz * dz) * 5;
+    }
+  }
+  const cfg = { ...DEFAULT_CONFIG, sea_level: 0 };
+  const { flowNorm } = simulateErosion(height, res, { ...cfg, hydraulic_erosion_strength: 0, thermal_erosion_iterations: 0 });
+  const derived = buildDerivedMaps(height, res, cfg, flowNorm);
+
+  ok(derived.seaMask[12] === 1, '5: center cell (below sea level) is sea');
+  ok(derived.seaMask[0] === 0, '5: corner cell (well above sea level) is not sea');
+  let lakeBinary = true, beachInRange = true, mountainInRange = true, rockInRange = true, snowInRange = true;
+  for (const m of derived.lakeMask) if (m !== 0 && m !== 1) lakeBinary = false;
+  for (const m of derived.beachMask) if (m < 0 || m > 1) beachInRange = false;
+  for (const m of derived.mountainMask) if (m < 0 || m > 1) mountainInRange = false;
+  for (const m of derived.rockMask) if (m < 0 || m > 1) rockInRange = false;
+  for (const m of derived.snowMask) if (m < 0 || m > 1) snowInRange = false;
+  ok(lakeBinary, '5: lake mask is 0 or 1');
+  ok(beachInRange, '5: beach mask is in [0,1]');
+  ok(mountainInRange, '5: mountain mask is in [0,1]');
+  ok(rockInRange, '5: rock mask is in [0,1]');
+  ok(snowInRange, '5: snow mask is in [0,1]');
+  ok(derived.slope.length === n, '5: slope has one value per cell');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
