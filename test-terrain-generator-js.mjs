@@ -1,7 +1,7 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
-  generateFullGrid,
+  generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -186,6 +186,31 @@ ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no 
     if (Math.abs(fullGrid.targetHeight[i] - legacyGrid.height[i]) >= 1e-4) matchesLegacy = false;
   }
   ok(matchesLegacy, '7: pre-erosion height matches legacy generateGrid (regression guard for Task 1)');
+}
+
+// --- Task 8: colormap helpers ---
+{
+  const stops = [[0, [0, 0, 0]], [1, [255, 255, 255]]];
+  const black = gradientColor(0, stops, 0, 1);
+  const white = gradientColor(1, stops, 0, 1);
+  ok(JSON.stringify(black) === JSON.stringify([0, 0, 0]), '8: gradientColor at lo returns first stop');
+  ok(JSON.stringify(white) === JSON.stringify([255, 255, 255]), '8: gradientColor at hi returns last stop');
+  const mid = gradientColor(0.5, stops, 0, 1);
+  ok(Math.abs(mid[0] - 127.5) < 1, '8: gradientColor midpoint interpolates');
+
+  const lowDiv = divergingColor(-1);
+  const highDiv = divergingColor(1);
+  ok(JSON.stringify(lowDiv) === JSON.stringify([35, 72, 135]), '8: divergingColor(-1) matches color_maps.py stop');
+  ok(JSON.stringify(highDiv) === JSON.stringify([142, 65, 45]), '8: divergingColor(1) matches color_maps.py stop');
+
+  const seaColor = heightColor(-50, 0);
+  const peakColor = heightColor(200, 0);
+  ok(JSON.stringify(seaColor) !== JSON.stringify(peakColor), '8: heightColor differs well below vs above sea level');
+
+  const off = maskColor(0, [96, 190, 255]);
+  const on = maskColor(1, [96, 190, 255]);
+  ok(JSON.stringify(off) === JSON.stringify([18, 22, 26]), '8: maskColor(0) is the base color');
+  ok(JSON.stringify(on) === JSON.stringify([96, 190, 255]), '8: maskColor(1) is the target color');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

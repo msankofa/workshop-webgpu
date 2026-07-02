@@ -530,3 +530,65 @@ export function generateFullGrid(cfg, resolution) {
     resolution,
   };
 }
+
+// ---- colormaps (port of preview/color_maps.py) ----
+// Each function takes one scalar (+ range where relevant) and returns [r, g, b]
+// (0-255 numbers). No document/canvas dependency -- the HTML page loops per-cell.
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+export function gradientColor(value, stops, lo, hi) {
+  const span = Math.max(hi - lo, 1e-8);
+  const t = clamp01((value - lo) / span);
+  if (t <= stops[0][0]) return stops[0][1].slice();
+  if (t >= stops[stops.length - 1][0]) return stops[stops.length - 1][1].slice();
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [pos, color] = stops[i];
+    const [nextPos, nextColor] = stops[i + 1];
+    if (t >= pos && t <= nextPos) {
+      const local = clamp01((t - pos) / Math.max(nextPos - pos, 1e-8));
+      return [
+        lerp(color[0], nextColor[0], local),
+        lerp(color[1], nextColor[1], local),
+        lerp(color[2], nextColor[2], local),
+      ];
+    }
+  }
+  return stops[stops.length - 1][1].slice();
+}
+
+export function divergingColor(value) {
+  return gradientColor(value, [[0.0, [35, 72, 135]], [0.5, [218, 222, 205]], [1.0, [142, 65, 45]]], -1.0, 1.0);
+}
+
+export function signedColor(value, limit) {
+  const l = Math.max(1.0, Math.abs(limit));
+  return gradientColor(value, [[0.0, [48, 112, 184]], [0.5, [24, 28, 26]], [1.0, [224, 132, 72]]], -l, l);
+}
+
+export function heightColor(height, seaLevel) {
+  const lo = Math.min(height, seaLevel - 20.0);
+  const hi = Math.max(height, seaLevel + 80.0);
+  return gradientColor(height, [
+    [0.00, [18, 40, 94]], [0.32, [40, 92, 150]], [0.38, [216, 199, 132]],
+    [0.52, [82, 150, 72]], [0.72, [126, 118, 95]], [1.00, [238, 242, 246]],
+  ], lo, hi);
+}
+
+export function flowColor(flow) {
+  return gradientColor(flow, [
+    [0.0, [16, 20, 24]], [0.35, [42, 88, 128]], [0.72, [74, 176, 178]], [1.0, [235, 226, 150]],
+  ], 0.0, 1.0);
+}
+
+export function slopeColor(slope, maxSlope) {
+  const hi = Math.max(1.2, maxSlope);
+  return gradientColor(slope, [
+    [0.0, [32, 56, 62]], [0.35, [100, 158, 90]], [0.65, [204, 154, 76]], [1.0, [240, 236, 220]],
+  ], 0.0, hi);
+}
+
+export function maskColor(mask, color) {
+  const m = clamp01(mask);
+  const base = [18, 22, 26];
+  return [lerp(base[0], color[0], m), lerp(base[1], color[1], m), lerp(base[2], color[2], m)];
+}
