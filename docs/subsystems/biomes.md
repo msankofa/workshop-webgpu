@@ -9,6 +9,10 @@
 > classifier and the runtime consumers), open `../../biome-explainer.html` (via `python
 > serve.py`, same as the rest of this directory).
 >
+> `../../terrain-generator-v4.html` covers the same generation pipeline in more depth
+> (erosion simulation, sea/lake/mountain/rock/snow masks, material masks) with the full
+> `config.py` field surface exposed as sliders.
+>
 > Planned generation-side improvements (erosion simulation, fixing `swamp`'s dead-code
 > priority-stack bug, lake detection, noise-quality upgrades, volcano feature stamping)
 > are tracked in terrain-v3's own repo:
