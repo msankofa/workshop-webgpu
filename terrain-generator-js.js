@@ -244,3 +244,72 @@ export function flowAccumulation(height, resolution) {
 
   return { raw: accum, norm, receiver };
 }
+
+// ---- erosion simulation (port of erosion_sim.py) ----
+function hydraulicErode(height, resolution, cfg, flowNorm) {
+  const strength = Math.max(0, cfg.hydraulic_erosion_strength);
+  if (strength <= 0) return height.slice();
+  const slope = gradientMagnitude(height, resolution, cfg.world_x, cfg.world_z);
+  const out = new Float64Array(height.length);
+  for (let i = 0; i < height.length; i++) {
+    const slopeGate = smoothstep(0.015, 0.18, slope[i]);
+    const channel = Math.pow(flowNorm[i], 1.35);
+    const incision = strength * channel * (0.35 + 0.65 * slopeGate);
+    const deposit = strength * 0.18 * channel * (1.0 - slopeGate) * smoothstep(0.35, 0.75, flowNorm[i]);
+    out[i] = height[i] - incision + deposit;
+  }
+  return out;
+}
+
+function thermalRelax(height, resolution, cfg) {
+  const iterations = Math.max(0, cfg.thermal_erosion_iterations | 0);
+  const strength = clamp01(cfg.thermal_erosion_strength);
+  if (iterations <= 0 || strength <= 0) return height.slice();
+
+  const cellX = cfg.world_x / Math.max(1, resolution - 1);
+  const cellZ = cfg.world_z / Math.max(1, resolution - 1);
+  const angleRad = (cfg.thermal_talus_angle * Math.PI) / 180;
+  const talusX = Math.max(0.25, Math.tan(angleRad) * cellX);
+  const talusZ = Math.max(0.25, Math.tan(angleRad) * cellZ);
+
+  let h = Float64Array.from(height);
+  for (let iter = 0; iter < iterations; iter++) {
+    const delta = new Float64Array(h.length);
+    for (let iz = 0; iz < resolution; iz++) {
+      for (let ix = 0; ix < resolution - 1; ix++) {
+        const li = iz * resolution + ix;
+        const ri = li + 1;
+        const diff = h[li] - h[ri];
+        const excess = Math.max(Math.abs(diff) - talusX, 0) * 0.5 * strength;
+        const move = diff > 0 ? excess : -excess;
+        delta[li] -= move;
+        delta[ri] += move;
+      }
+    }
+    for (let iz = 0; iz < resolution - 1; iz++) {
+      for (let ix = 0; ix < resolution; ix++) {
+        const ti = iz * resolution + ix;
+        const bi = ti + resolution;
+        const diff = h[ti] - h[bi];
+        const excess = Math.max(Math.abs(diff) - talusZ, 0) * 0.5 * strength;
+        const move = diff > 0 ? excess : -excess;
+        delta[ti] -= move;
+        delta[bi] += move;
+      }
+    }
+    for (let i = 0; i < h.length; i++) h[i] += delta[i];
+  }
+  return h;
+}
+
+// Returns { height, erosionDelta, flowRaw, flowNorm, receiver } (Float32/Float64Arrays).
+export function simulateErosion(originalHeight, resolution, cfg) {
+  const { raw: flowRaw, norm: flowNorm, receiver } = flowAccumulation(originalHeight, resolution);
+  let height = hydraulicErode(originalHeight, resolution, cfg, flowNorm);
+  height = thermalRelax(height, resolution, cfg);
+
+  const erosionDelta = new Float32Array(height.length);
+  for (let i = 0; i < height.length; i++) erosionDelta[i] = height[i] - originalHeight[i];
+
+  return { height: Float32Array.from(height), erosionDelta, flowRaw, flowNorm, receiver };
+}

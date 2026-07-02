@@ -1,6 +1,6 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
-  gradientMagnitude, flowAccumulation,
+  gradientMagnitude, flowAccumulation, simulateErosion,
 } from './terrain-generator-js.js';
 
 let pass = 0, fail = 0;
@@ -61,6 +61,34 @@ ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no 
   ok(everyoneAtLeastOne, '3: every cell accumulates at least itself');
   ok(normInRange, '3: normalized flow is in [0,1]');
   ok(norm[8] > norm[0], '3: the sink has higher normalized flow than a high corner');
+}
+
+// --- Task 4: simulateErosion ---
+{
+  const res = 5;
+  const n = res * res;
+  const height = new Float32Array(n);
+  for (let i = 0; i < n; i++) height[i] = 10 - i * 0.3; // simple downhill ramp
+
+  const noErosionCfg = { ...DEFAULT_CONFIG, hydraulic_erosion_strength: 0, thermal_erosion_iterations: 0 };
+  const noOpResult = simulateErosion(height, res, noErosionCfg);
+  let noOp = true;
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(noOpResult.height[i] - height[i]) >= 1e-9) noOp = false;
+    if (Math.abs(noOpResult.erosionDelta[i]) >= 1e-9) noOp = false;
+  }
+  ok(noOp, '4: strength=0/iterations=0 is a no-op');
+
+  const eroded = simulateErosion(height, res, { ...DEFAULT_CONFIG });
+  let anyChanged = false;
+  for (let i = 0; i < n; i++) if (Math.abs(eroded.height[i] - height[i]) > 1e-6) anyChanged = true;
+  ok(anyChanged, '4: default erosion strength actually changes the height field');
+  ok(eroded.flowNorm.length === n, '4: flowNorm has one value per cell');
+
+  const again = simulateErosion(height, res, { ...DEFAULT_CONFIG });
+  let deterministic = true;
+  for (let i = 0; i < n; i++) if (eroded.height[i] !== again.height[i]) deterministic = false;
+  ok(deterministic, '4: erosion is deterministic');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
