@@ -1,6 +1,6 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
-  gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps,
+  gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
 } from './terrain-generator-js.js';
 
 let pass = 0, fail = 0;
@@ -121,6 +121,37 @@ ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no 
   ok(rockInRange, '5: rock mask is in [0,1]');
   ok(snowInRange, '5: snow mask is in [0,1]');
   ok(derived.slope.length === n, '5: slope has one value per cell');
+}
+
+// --- Task 6: buildMaterialMasks ---
+{
+  const res = 3;
+  const n = res * res;
+  const height = new Float32Array(n).fill(20); // all dry land
+  const cfg = { ...DEFAULT_CONFIG, sea_level: 0 };
+  const derived = {
+    slope: new Float32Array(n).fill(0.05),
+    seaMask: new Float32Array(n).fill(0),
+    lakeMask: new Float32Array(n).fill(0),
+    beachMask: new Float32Array(n).fill(0),
+    mountainMask: new Float32Array(n).fill(0),
+    rockMask: new Float32Array(n).fill(0),
+    snowMask: new Float32Array(n).fill(0),
+  };
+  const biomeIds = new Uint8Array(n).fill(BIOME_INDEX.forest);
+  const { masks, rgba } = buildMaterialMasks(height, derived, biomeIds, cfg, res);
+
+  let mostlyForest = true, dryWater = true;
+  for (let i = 0; i < n; i++) {
+    if (masks.forest[i] <= 0.9) mostlyForest = false;
+    if (masks.water[i] !== 0) dryWater = false;
+  }
+  ok(mostlyForest, '6: flat low-slope forest-biome land is mostly forest material');
+  ok(dryWater, '6: dry land has zero water mask');
+  ok(rgba.length === n * 4, '6: rgba has one RGBA quad per cell');
+  let allOpaque = true;
+  for (let i = 0; i < n; i++) if (rgba[i * 4 + 3] !== 255) allOpaque = false;
+  ok(allOpaque, '6: alpha is always opaque');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

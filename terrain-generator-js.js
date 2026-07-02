@@ -409,3 +409,60 @@ export function buildDerivedMaps(height, resolution, cfg, flowNorm) {
 
   return { slope, seaMask, lakeMask, beachMask, mountainMask, rockMask, snowMask };
 }
+
+// ---- material masks (port of material_masks.py) ----
+const MATERIAL_COLORS = {
+  grass: [92, 156, 72], forest: [50, 104, 54], dirt: [128, 94, 62],
+  sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246],
+};
+const FOREST_BIOME_IDS = new Set(
+  ['forest', 'dark_forest', 'jungle', 'taiga', 'swamp'].map((name) => BIOME_INDEX[name]),
+);
+
+// Returns { masks: {grass, forest, dirt, sand, rock, snow, water}, rgba: Uint8ClampedArray }.
+export function buildMaterialMasks(height, derived, biomeIds, cfg, resolution) {
+  const n = resolution * resolution;
+  const grass = new Float32Array(n);
+  const forest = new Float32Array(n);
+  const dirt = new Float32Array(n);
+  const sand = new Float32Array(n);
+  const rock = new Float32Array(n);
+  const snow = new Float32Array(n);
+  const water = new Float32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const seaWater = height[i] <= cfg.sea_level ? 1 : 0;
+    const w = Math.max(seaWater, clamp01(derived.lakeMask[i]));
+    water[i] = w;
+    const dry = 1.0 - w;
+
+    const sandV = clamp01(derived.beachMask[i]) * dry;
+    const rockV = clamp01(derived.rockMask[i]) * dry;
+    const snowV = clamp01(derived.snowMask[i]) * (1.0 - sandV) * dry;
+    const dirtV = clamp01((derived.slope[i] - 0.10) / 0.36) * (1.0 - rockV) * (1.0 - sandV);
+    const isForestBiome = FOREST_BIOME_IDS.has(biomeIds[i]);
+    const forestV = (isForestBiome ? 1 : 0) * (1.0 - rockV) * (1.0 - snowV) * (1.0 - sandV) * dry;
+    const grassV = clamp01(1.0 - sandV - rockV - snowV - dirtV * 0.65) * dry;
+
+    sand[i] = sandV; rock[i] = rockV; snow[i] = snowV; dirt[i] = dirtV; forest[i] = forestV; grass[i] = grassV;
+  }
+
+  const masks = { grass, forest, dirt, sand, rock, snow, water };
+  const rgba = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i++) {
+    let r = 0, g = 0, b = 0, total = 0;
+    for (const key of ['grass', 'forest', 'dirt', 'sand', 'rock', 'snow']) {
+      const wgt = masks[key][i];
+      const [cr, cg, cb] = MATERIAL_COLORS[key];
+      r += cr * wgt; g += cg * wgt; b += cb * wgt; total += wgt;
+    }
+    if (total > 1e-4) { r /= total; g /= total; b /= total; }
+    const wv = water[i];
+    r = r * (1 - wv) + 28 * wv;
+    g = g * (1 - wv) + 66 * wv;
+    b = b * (1 - wv) + 130 * wv;
+    rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = 255;
+  }
+
+  return { masks, rgba };
+}
