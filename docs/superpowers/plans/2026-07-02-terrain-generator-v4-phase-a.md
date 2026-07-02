@@ -158,7 +158,7 @@ const worldGroup = FIELD_GROUPS.find((g) => g.name === 'World');
 assert.deepStrictEqual(worldGroup.fields, ['seed', 'world_x', 'world_z', 'preview_resolution', 'sea_level']);
 
 const allFieldNames = FIELD_GROUPS.flatMap((g) => g.fields);
-assert.strictEqual(allFieldNames.length, 34, 'six groups should list 34 fields total');
+assert.strictEqual(allFieldNames.length, 33, 'six groups should list 33 fields total');
 for (const name of allFieldNames) {
   assert.ok(name in DEFAULT_CONFIG, `${name} from FIELD_GROUPS should exist in DEFAULT_CONFIG`);
   assert.ok(name in FIELD_RANGES, `${name} should have a FIELD_RANGES entry`);
