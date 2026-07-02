@@ -217,13 +217,13 @@ const NODES = [
   // --- sky ---
   { id: 'sky.js', group: 'sky', lines: 212,
     desc: 'Composes the sky dome: gradient/atmosphere shader plus stars and celestial bodies. Lazy-loaded.', tests: [] },
-  { id: 'sky-field.js', group: 'sky', lines: 220,
-    desc: 'Pure palette/placement math for the sky (makePalette, sunSpritePlacement, star + celestial generation) — no THREE dependency, heavily unit tested.',
+  { id: 'sky-field.js', group: 'sky', lines: 290,
+    desc: 'Pure palette/placement math for the sky (makePalette, sunSpritePlacement, star + celestial generation, per-kind HSL color generation) — no THREE dependency, heavily unit tested.',
     tests: ['test-sky-field.mjs'] },
   { id: 'stars.js', group: 'sky', lines: 105,
     desc: 'Point-cloud star field + Milky Way mesh, built from sky-field.js\'s generated star data.', tests: [] },
-  { id: 'celestial-bodies.js', group: 'sky', lines: 94,
-    desc: 'Sun/moon sprite bodies, placed via sky-field.js\'s sunSpritePlacement.', tests: [] },
+  { id: 'celestial-bodies.js', group: 'sky', lines: 440,
+    desc: 'HD (paintBodyHD) and cheap (paintBodySimple) planet/moon sprite painters, dispatched by body.detail; configurable rings/glow.', tests: ['test-celestial-bodies-smoke.mjs'] },
   { id: 'clouds.js', group: 'sky', lines: 265,
     desc: 'Volumetric-looking cloud system; recently fixed to sample noise in world space to stop stretching. Lazy-loaded independently of sky.js.', tests: [] },
 

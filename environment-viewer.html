@@ -2364,7 +2364,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
     bodies:   !['nobodies', 'domeonly'].includes(SKY_MODE),
   };
-  _skyPromise = import('./sky.js?v=sp6d').then(({ createSky }) => {
+  _skyPromise = import('./sky.js?v=sp7-hdplanets').then(({ createSky }) => {
     skyRef = createSky({ scene, camera, size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts: skyParts });
     scene.add(skyRef.group);
     applyCelestialLight();

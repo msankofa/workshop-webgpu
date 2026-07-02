@@ -90,7 +90,7 @@ without affecting the other.
   cloud layers at different heights/extents/puff sizes (layer 1: height 120, extent
   2000; layer 2: height 280, extent 4000) — both added directly to `scene`. Each gets
   its own `header('Clouds (layer N)')` + `slider(...)` UI block.
-- **Sky** (`environment-viewer.html` ~line 2156): `await import('./sky.js?v=sp6d')`,
+- **Sky** (`environment-viewer.html` ~line 2156): `await import('./sky.js?v=sp7-hdplanets')`,
   gated by `SKY_MODE` (`?sky=` URL param: `off`, `nostars`, `nomilkyway`, `nobodies`,
   `domeonly`, `nomoonlight`, or default `on`). Calls `createSky({ scene, camera,
   size: terrain.size, sunDir: skyLightDir(), palette: skyPaletteOverrides(), parts:
@@ -106,7 +106,7 @@ without affecting the other.
     Way data into `THREE.Points` node-material objects,
   - `celestial-bodies.js` (`createCelestialBodies`) to turn body descriptors into
     sprites.
-  - All three sub-modules are versioned with the same `?v=sp6d` query string as
+  - All three sub-modules are versioned with the same `?v=sp7-hdplanets` query string as
     `sky.js` itself (cache-busting tied together).
 - `environment-ui.js` does **not** define sky/cloud parameters. It only hosts a
   tabbed shell (`createEnvironmentUi`) that re-parents whichever `.sec` DOM blocks

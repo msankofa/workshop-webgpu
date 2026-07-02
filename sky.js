@@ -7,9 +7,9 @@ import * as THREE from 'three';
 import { MeshBasicNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
 import { Fn, float, vec3, mix, smoothstep, positionLocal, normalize, pow, max, abs } from 'three/tsl';
 import { makePalette, skyRadius, isMoonBody, sunSpritePlacement, makeRng,
-  generateStars, generateMilkyWay, generateCelestialBodies } from './sky-field.js?v=sp6d';
-import { createSkyStars, createMilkyWay } from './stars.js?v=sp6d';
-import { createCelestialBodies } from './celestial-bodies.js?v=sp6d';
+  generateStars, generateMilkyWay, generateCelestialBodies } from './sky-field.js?v=sp7-hdplanets';
+import { createSkyStars, createMilkyWay } from './stars.js?v=sp7-hdplanets';
+import { createCelestialBodies } from './celestial-bodies.js?v=sp7-hdplanets';
 
 const _c = hex => new THREE.Color(hex);
 const v3 = c => vec3(c.r, c.g, c.b);
