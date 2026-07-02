@@ -378,6 +378,10 @@
   const REDRAW_CALLBACKS = [];
 
   // ---- section 8: Heightfield preview -- Three.js setup ----
+  // Runs as its own async function, invoked without awaiting at the top level (not
+  // `await`ed inline) so a slow/failed WebGPU init can never block sections 2-10's
+  // setup below, which have no Three.js dependency at all.
+  async function initHeightfieldViewport() {
   const hfViewport = document.getElementById('heightfield-viewport');
   const hfRenderer = new WebGPURenderer({ antialias: true });
   hfRenderer.setSize(420, 420);
@@ -560,6 +564,16 @@
       (modeValue !== undefined ? `\n${mode}: ${modeValue.toFixed(3)}` : '');
   });
   hfRenderer.domElement.addEventListener('pointerleave', () => hfTooltip.classList.add('hidden'));
+
+  updateHeightfieldResolutionWarning();
+  rebuildHeightfieldMesh();
+  }
+
+  initHeightfieldViewport().catch((err) => {
+    console.error('Heightfield viewport failed to initialize:', err);
+    document.getElementById('heightfield-viewport').textContent =
+      'Heightfield viewport unavailable (WebGPU init failed: ' + err.message + ').';
+  });
 
   // ---- shared slider-builder (reused by sections 2-5) ----
   function buildGroupControls(container, groupNames) {
@@ -978,8 +992,6 @@
   loadRealMap();
 
   regenerate();
-  updateHeightfieldResolutionWarning();
-  rebuildHeightfieldMesh();
 </script>
 </body>
 </html>
