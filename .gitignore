@@ -5,11 +5,13 @@ node_modules/
 .tmp-chrome-cdp/
 
 # Large binary reference / assets not needed in history
-textures/
+.tmp-texture-downloads/
 repos/
 versions/
 *.zip
 research/**/*.pdf
+research/stats/
+__pycache__/
 
 # Local scratch / generated traces are kept, but ignore OS cruft
 .DS_Store

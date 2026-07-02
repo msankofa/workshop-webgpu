@@ -1,0 +1,880 @@
+{
+    "source":  "ambientCG",
+    "license":  "CC0",
+    "downloadedAt":  "2026-07-01T16:38:53",
+    "layers":  {
+                   "grass":  {
+                                 "assetId":  "Grass001",
+                                 "title":  "Grass 001",
+                                 "role":  "plains grass terrain",
+                                 "url":  "https://ambientcg.com/a/Grass001",
+                                 "download":  "https://ambientcg.com/get?file=Grass001_1K-JPG.zip",
+                                 "files":  [
+                                               "grass/color.jpg",
+                                               "grass/normal.jpg",
+                                               "grass/roughness.jpg",
+                                               "grass/ao.jpg",
+                                               "grass/displacement.jpg"
+                                           ]
+                             },
+                   "forest":  {
+                                  "assetId":  "Ground037",
+                                  "title":  "Ground 037",
+                                  "role":  "forest floor",
+                                  "url":  "https://ambientcg.com/a/Ground037",
+                                  "download":  "https://ambientcg.com/get?file=Ground037_1K-JPG.zip",
+                                  "files":  [
+                                                "forest/color.jpg",
+                                                "forest/normal.jpg",
+                                                "forest/roughness.jpg",
+                                                "forest/ao.jpg",
+                                                "forest/displacement.jpg"
+                                            ]
+                              },
+                   "meadow":  {
+                                  "assetId":  "Grass005",
+                                  "title":  "Grass 005",
+                                  "role":  "short meadow/lawn",
+                                  "url":  "https://ambientcg.com/a/Grass005",
+                                  "download":  "https://ambientcg.com/get?file=Grass005_1K-JPG.zip",
+                                  "files":  [
+                                                "meadow/color.jpg",
+                                                "meadow/normal.jpg",
+                                                "meadow/roughness.jpg",
+                                                "meadow/ao.jpg",
+                                                "meadow/displacement.jpg"
+                                            ]
+                              },
+                   "taiga":  {
+                                 "assetId":  "Ground085",
+                                 "title":  "Ground 085",
+                                 "role":  "cool forest floor",
+                                 "url":  "https://ambientcg.com/a/Ground085",
+                                 "download":  "https://ambientcg.com/get?file=Ground085_1K-JPG.zip",
+                                 "files":  [
+                                               "taiga/color.jpg",
+                                               "taiga/normal.jpg",
+                                               "taiga/roughness.jpg",
+                                               "taiga/ao.jpg",
+                                               "taiga/displacement.jpg"
+                                           ]
+                             },
+                   "dirt":  {
+                                "assetId":  "Ground103",
+                                "title":  "Ground 103",
+                                "role":  "soil/dirt",
+                                "url":  "https://ambientcg.com/a/Ground103",
+                                "download":  "https://ambientcg.com/get?file=Ground103_1K-JPG.zip",
+                                "files":  [
+                                              "dirt/color.jpg",
+                                              "dirt/normal.jpg",
+                                              "dirt/roughness.jpg",
+                                              "dirt/ao.jpg",
+                                              "dirt/displacement.jpg"
+                                          ]
+                            },
+                   "savanna":  {
+                                   "assetId":  "Ground048",
+                                   "title":  "Ground 048",
+                                   "role":  "dry soil/savanna",
+                                   "url":  "https://ambientcg.com/a/Ground048",
+                                   "download":  "https://ambientcg.com/get?file=Ground048_1K-JPG.zip",
+                                   "files":  [
+                                                 "savanna/color.jpg",
+                                                 "savanna/normal.jpg",
+                                                 "savanna/roughness.jpg",
+                                                 "savanna/ao.jpg",
+                                                 "savanna/displacement.jpg"
+                                             ]
+                               },
+                   "swamp":  {
+                                 "assetId":  "Ground087",
+                                 "title":  "Ground 087",
+                                 "role":  "mud/swamp ground",
+                                 "url":  "https://ambientcg.com/a/Ground087",
+                                 "download":  "https://ambientcg.com/get?file=Ground087_1K-JPG.zip",
+                                 "files":  [
+                                               "swamp/color.jpg",
+                                               "swamp/normal.jpg",
+                                               "swamp/roughness.jpg",
+                                               "swamp/ao.jpg",
+                                               "swamp/displacement.jpg"
+                                           ]
+                             },
+                   "sand":  {
+                                "assetId":  "Ground054",
+                                "title":  "Ground 054",
+                                "role":  "sand/wet ground",
+                                "url":  "https://ambientcg.com/a/Ground054",
+                                "download":  "https://ambientcg.com/get?file=Ground054_1K-JPG.zip",
+                                "files":  [
+                                              "sand/color.jpg",
+                                              "sand/normal.jpg",
+                                              "sand/roughness.jpg",
+                                              "sand/ao.jpg",
+                                              "sand/displacement.jpg"
+                                          ]
+                            },
+                   "beach":  {
+                                 "assetId":  "Ground080",
+                                 "title":  "Ground 080",
+                                 "role":  "beach sand",
+                                 "url":  "https://ambientcg.com/a/Ground080",
+                                 "download":  "https://ambientcg.com/get?file=Ground080_1K-JPG.zip",
+                                 "files":  [
+                                               "beach/color.jpg",
+                                               "beach/normal.jpg",
+                                               "beach/roughness.jpg",
+                                               "beach/ao.jpg",
+                                               "beach/displacement.jpg"
+                                           ]
+                             },
+                   "desert":  {
+                                  "assetId":  "Ground093C",
+                                  "title":  "Ground 093 C",
+                                  "role":  "desert sand",
+                                  "url":  "https://ambientcg.com/a/Ground093C",
+                                  "download":  "https://ambientcg.com/get?file=Ground093C_1K-JPG.zip",
+                                  "files":  [
+                                                "desert/color.jpg",
+                                                "desert/normal.jpg",
+                                                "desert/roughness.jpg",
+                                                "desert/ao.jpg",
+                                                "desert/displacement.jpg"
+                                            ]
+                              },
+                   "gravel":  {
+                                  "assetId":  "Gravel043",
+                                  "title":  "Gravel 043",
+                                  "role":  "gravel/scree",
+                                  "url":  "https://ambientcg.com/a/Gravel043",
+                                  "download":  "https://ambientcg.com/get?file=Gravel043_1K-JPG.zip",
+                                  "files":  [
+                                                "gravel/color.jpg",
+                                                "gravel/normal.jpg",
+                                                "gravel/roughness.jpg",
+                                                "gravel/ao.jpg",
+                                                "gravel/displacement.jpg"
+                                            ]
+                              },
+                   "rock":  {
+                                "assetId":  "Rock064",
+                                "title":  "Rock 064",
+                                "role":  "rock/cliff",
+                                "url":  "https://ambientcg.com/a/Rock064",
+                                "download":  "https://ambientcg.com/get?file=Rock064_1K-JPG.zip",
+                                "files":  [
+                                              "rock/color.jpg",
+                                              "rock/normal.jpg",
+                                              "rock/roughness.jpg",
+                                              "rock/ao.jpg",
+                                              "rock/displacement.jpg"
+                                          ]
+                            },
+                   "snow":  {
+                                "assetId":  "Snow015",
+                                "title":  "Snow 015",
+                                "role":  "snow",
+                                "url":  "https://ambientcg.com/a/Snow015",
+                                "download":  "https://ambientcg.com/get?file=Snow015_1K-JPG.zip",
+                                "files":  [
+                                              "snow/color.jpg",
+                                              "snow/normal.jpg",
+                                              "snow/roughness.jpg",
+                                              "snow/ao.jpg",
+                                              "snow/displacement.jpg"
+                                          ]
+                            }
+               },
+    "library":  {
+                    "Grass004":  {
+                                     "assetId":  "Grass004",
+                                     "title":  "Grass 004",
+                                     "role":  "grass variation",
+                                     "url":  "https://ambientcg.com/a/Grass004",
+                                     "download":  "https://ambientcg.com/get?file=Grass004_1K-JPG.zip",
+                                     "sourcePath":  "library/Grass004",
+                                     "files":  [
+                                                   "library/Grass004/ao.jpg",
+                                                   "library/Grass004/color.jpg",
+                                                   "library/Grass004/displacement.jpg",
+                                                   "library/Grass004/normal.jpg",
+                                                   "library/Grass004/roughness.jpg"
+                                               ]
+                                 },
+                    "Grass006":  {
+                                     "assetId":  "Grass006",
+                                     "title":  "Grass 006",
+                                     "role":  "grass variation",
+                                     "url":  "https://ambientcg.com/a/Grass006",
+                                     "download":  "https://ambientcg.com/get?file=Grass006_1K-JPG.zip",
+                                     "sourcePath":  "library/Grass006",
+                                     "files":  [
+                                                   "library/Grass006/ao.jpg",
+                                                   "library/Grass006/color.jpg",
+                                                   "library/Grass006/displacement.jpg",
+                                                   "library/Grass006/normal.jpg",
+                                                   "library/Grass006/roughness.jpg"
+                                               ]
+                                 },
+                    "Grass007":  {
+                                     "assetId":  "Grass007",
+                                     "title":  "Grass 007",
+                                     "role":  "grass variation",
+                                     "url":  "https://ambientcg.com/a/Grass007",
+                                     "download":  "https://ambientcg.com/get?file=Grass007_1K-JPG.zip",
+                                     "sourcePath":  "library/Grass007",
+                                     "files":  [
+                                                   "library/Grass007/ao.jpg",
+                                                   "library/Grass007/color.jpg",
+                                                   "library/Grass007/displacement.jpg",
+                                                   "library/Grass007/normal.jpg",
+                                                   "library/Grass007/roughness.jpg"
+                                               ]
+                                 },
+                    "Grass008":  {
+                                     "assetId":  "Grass008",
+                                     "title":  "Grass 008",
+                                     "role":  "grass variation",
+                                     "url":  "https://ambientcg.com/a/Grass008",
+                                     "download":  "https://ambientcg.com/get?file=Grass008_1K-JPG.zip",
+                                     "sourcePath":  "library/Grass008",
+                                     "files":  [
+                                                   "library/Grass008/ao.jpg",
+                                                   "library/Grass008/color.jpg",
+                                                   "library/Grass008/displacement.jpg",
+                                                   "library/Grass008/normal.jpg",
+                                                   "library/Grass008/roughness.jpg"
+                                               ]
+                                 },
+                    "Gravel023":  {
+                                      "assetId":  "Gravel023",
+                                      "title":  "Gravel 023",
+                                      "role":  "gravel",
+                                      "url":  "https://ambientcg.com/a/Gravel023",
+                                      "download":  "https://ambientcg.com/get?file=Gravel023_1K-JPG.zip",
+                                      "sourcePath":  "library/Gravel023",
+                                      "files":  [
+                                                    "library/Gravel023/ao.jpg",
+                                                    "library/Gravel023/color.jpg",
+                                                    "library/Gravel023/displacement.jpg",
+                                                    "library/Gravel023/normal.jpg",
+                                                    "library/Gravel023/roughness.jpg"
+                                                ]
+                                  },
+                    "Gravel040":  {
+                                      "assetId":  "Gravel040",
+                                      "title":  "Gravel 040",
+                                      "role":  "gravel",
+                                      "url":  "https://ambientcg.com/a/Gravel040",
+                                      "download":  "https://ambientcg.com/get?file=Gravel040_1K-JPG.zip",
+                                      "sourcePath":  "library/Gravel040",
+                                      "files":  [
+                                                    "library/Gravel040/ao.jpg",
+                                                    "library/Gravel040/color.jpg",
+                                                    "library/Gravel040/displacement.jpg",
+                                                    "library/Gravel040/normal.jpg",
+                                                    "library/Gravel040/roughness.jpg"
+                                                ]
+                                  },
+                    "Gravel041":  {
+                                      "assetId":  "Gravel041",
+                                      "title":  "Gravel 041",
+                                      "role":  "gravel",
+                                      "url":  "https://ambientcg.com/a/Gravel041",
+                                      "download":  "https://ambientcg.com/get?file=Gravel041_1K-JPG.zip",
+                                      "sourcePath":  "library/Gravel041",
+                                      "files":  [
+                                                    "library/Gravel041/ao.jpg",
+                                                    "library/Gravel041/color.jpg",
+                                                    "library/Gravel041/displacement.jpg",
+                                                    "library/Gravel041/normal.jpg",
+                                                    "library/Gravel041/roughness.jpg"
+                                                ]
+                                  },
+                    "Gravel043":  {
+                                      "assetId":  "Gravel043",
+                                      "title":  "Gravel 043",
+                                      "role":  "gravel",
+                                      "url":  "https://ambientcg.com/a/Gravel043",
+                                      "download":  "https://ambientcg.com/get?file=Gravel043_1K-JPG.zip",
+                                      "sourcePath":  "library/Gravel043",
+                                      "files":  [
+                                                    "library/Gravel043/ao.jpg",
+                                                    "library/Gravel043/color.jpg",
+                                                    "library/Gravel043/displacement.jpg",
+                                                    "library/Gravel043/normal.jpg",
+                                                    "library/Gravel043/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground003":  {
+                                      "assetId":  "Ground003",
+                                      "title":  "Ground 003",
+                                      "role":  "grass and soil blend",
+                                      "url":  "https://ambientcg.com/a/Ground003",
+                                      "download":  "https://ambientcg.com/get?file=Ground003_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground003",
+                                      "files":  [
+                                                    "library/Ground003/color.jpg",
+                                                    "library/Ground003/displacement.jpg",
+                                                    "library/Ground003/normal.jpg",
+                                                    "library/Ground003/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground023":  {
+                                      "assetId":  "Ground023",
+                                      "title":  "Ground 023",
+                                      "role":  "mud",
+                                      "url":  "https://ambientcg.com/a/Ground023",
+                                      "download":  "https://ambientcg.com/get?file=Ground023_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground023",
+                                      "files":  [
+                                                    "library/Ground023/ao.jpg",
+                                                    "library/Ground023/color.jpg",
+                                                    "library/Ground023/displacement.jpg",
+                                                    "library/Ground023/normal.jpg",
+                                                    "library/Ground023/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground036":  {
+                                      "assetId":  "Ground036",
+                                      "title":  "Ground 036",
+                                      "role":  "mud",
+                                      "url":  "https://ambientcg.com/a/Ground036",
+                                      "download":  "https://ambientcg.com/get?file=Ground036_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground036",
+                                      "files":  [
+                                                    "library/Ground036/ao.jpg",
+                                                    "library/Ground036/color.jpg",
+                                                    "library/Ground036/displacement.jpg",
+                                                    "library/Ground036/normal.jpg",
+                                                    "library/Ground036/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground037":  {
+                                      "assetId":  "Ground037",
+                                      "title":  "Ground 037",
+                                      "role":  "forest mossy ground",
+                                      "url":  "https://ambientcg.com/a/Ground037",
+                                      "download":  "https://ambientcg.com/get?file=Ground037_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground037",
+                                      "files":  [
+                                                    "library/Ground037/ao.jpg",
+                                                    "library/Ground037/color.jpg",
+                                                    "library/Ground037/displacement.jpg",
+                                                    "library/Ground037/normal.jpg",
+                                                    "library/Ground037/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground048":  {
+                                      "assetId":  "Ground048",
+                                      "title":  "Ground 048",
+                                      "role":  "soil",
+                                      "url":  "https://ambientcg.com/a/Ground048",
+                                      "download":  "https://ambientcg.com/get?file=Ground048_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground048",
+                                      "files":  [
+                                                    "library/Ground048/ao.jpg",
+                                                    "library/Ground048/color.jpg",
+                                                    "library/Ground048/displacement.jpg",
+                                                    "library/Ground048/normal.jpg",
+                                                    "library/Ground048/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground054":  {
+                                      "assetId":  "Ground054",
+                                      "title":  "Ground 054",
+                                      "role":  "sand or wet sand",
+                                      "url":  "https://ambientcg.com/a/Ground054",
+                                      "download":  "https://ambientcg.com/get?file=Ground054_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground054",
+                                      "files":  [
+                                                    "library/Ground054/ao.jpg",
+                                                    "library/Ground054/color.jpg",
+                                                    "library/Ground054/displacement.jpg",
+                                                    "library/Ground054/normal.jpg",
+                                                    "library/Ground054/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground067":  {
+                                      "assetId":  "Ground067",
+                                      "title":  "Ground 067",
+                                      "role":  "forest floor",
+                                      "url":  "https://ambientcg.com/a/Ground067",
+                                      "download":  "https://ambientcg.com/get?file=Ground067_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground067",
+                                      "files":  [
+                                                    "library/Ground067/ao.jpg",
+                                                    "library/Ground067/color.jpg",
+                                                    "library/Ground067/displacement.jpg",
+                                                    "library/Ground067/normal.jpg",
+                                                    "library/Ground067/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground071":  {
+                                      "assetId":  "Ground071",
+                                      "title":  "Ground 071",
+                                      "role":  "mud",
+                                      "url":  "https://ambientcg.com/a/Ground071",
+                                      "download":  "https://ambientcg.com/get?file=Ground071_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground071",
+                                      "files":  [
+                                                    "library/Ground071/ao.jpg",
+                                                    "library/Ground071/color.jpg",
+                                                    "library/Ground071/displacement.jpg",
+                                                    "library/Ground071/normal.jpg",
+                                                    "library/Ground071/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground078":  {
+                                      "assetId":  "Ground078",
+                                      "title":  "Ground 078",
+                                      "role":  "sand",
+                                      "url":  "https://ambientcg.com/a/Ground078",
+                                      "download":  "https://ambientcg.com/get?file=Ground078_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground078",
+                                      "files":  [
+                                                    "library/Ground078/ao.jpg",
+                                                    "library/Ground078/color.jpg",
+                                                    "library/Ground078/displacement.jpg",
+                                                    "library/Ground078/normal.jpg",
+                                                    "library/Ground078/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground079L":  {
+                                       "assetId":  "Ground079L",
+                                       "title":  "Ground 079L",
+                                       "role":  "sand and gravel large scale",
+                                       "url":  "https://ambientcg.com/a/Ground079L",
+                                       "download":  "https://ambientcg.com/get?file=Ground079L_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground079L",
+                                       "files":  [
+                                                     "library/Ground079L/ao.jpg",
+                                                     "library/Ground079L/color.jpg",
+                                                     "library/Ground079L/displacement.jpg",
+                                                     "library/Ground079L/normal.jpg",
+                                                     "library/Ground079L/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground079S":  {
+                                       "assetId":  "Ground079S",
+                                       "title":  "Ground 079S",
+                                       "role":  "sand and gravel small scale",
+                                       "url":  "https://ambientcg.com/a/Ground079S",
+                                       "download":  "https://ambientcg.com/get?file=Ground079S_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground079S",
+                                       "files":  [
+                                                     "library/Ground079S/ao.jpg",
+                                                     "library/Ground079S/color.jpg",
+                                                     "library/Ground079S/displacement.jpg",
+                                                     "library/Ground079S/normal.jpg",
+                                                     "library/Ground079S/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground080":  {
+                                      "assetId":  "Ground080",
+                                      "title":  "Ground 080",
+                                      "role":  "beach sand",
+                                      "url":  "https://ambientcg.com/a/Ground080",
+                                      "download":  "https://ambientcg.com/get?file=Ground080_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground080",
+                                      "files":  [
+                                                    "library/Ground080/ao.jpg",
+                                                    "library/Ground080/color.jpg",
+                                                    "library/Ground080/displacement.jpg",
+                                                    "library/Ground080/normal.jpg",
+                                                    "library/Ground080/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground081":  {
+                                      "assetId":  "Ground081",
+                                      "title":  "Ground 081",
+                                      "role":  "gravel ground",
+                                      "url":  "https://ambientcg.com/a/Ground081",
+                                      "download":  "https://ambientcg.com/get?file=Ground081_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground081",
+                                      "files":  [
+                                                    "library/Ground081/ao.jpg",
+                                                    "library/Ground081/color.jpg",
+                                                    "library/Ground081/displacement.jpg",
+                                                    "library/Ground081/normal.jpg",
+                                                    "library/Ground081/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground082L":  {
+                                       "assetId":  "Ground082L",
+                                       "title":  "Ground 082L",
+                                       "role":  "soil large scale",
+                                       "url":  "https://ambientcg.com/a/Ground082L",
+                                       "download":  "https://ambientcg.com/get?file=Ground082L_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground082L",
+                                       "files":  [
+                                                     "library/Ground082L/ao.jpg",
+                                                     "library/Ground082L/color.jpg",
+                                                     "library/Ground082L/displacement.jpg",
+                                                     "library/Ground082L/normal.jpg",
+                                                     "library/Ground082L/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground082S":  {
+                                       "assetId":  "Ground082S",
+                                       "title":  "Ground 082S",
+                                       "role":  "soil small scale",
+                                       "url":  "https://ambientcg.com/a/Ground082S",
+                                       "download":  "https://ambientcg.com/get?file=Ground082S_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground082S",
+                                       "files":  [
+                                                     "library/Ground082S/ao.jpg",
+                                                     "library/Ground082S/color.jpg",
+                                                     "library/Ground082S/displacement.jpg",
+                                                     "library/Ground082S/normal.jpg",
+                                                     "library/Ground082S/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground085":  {
+                                      "assetId":  "Ground085",
+                                      "title":  "Ground 085",
+                                      "role":  "forest floor",
+                                      "url":  "https://ambientcg.com/a/Ground085",
+                                      "download":  "https://ambientcg.com/get?file=Ground085_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground085",
+                                      "files":  [
+                                                    "library/Ground085/ao.jpg",
+                                                    "library/Ground085/color.jpg",
+                                                    "library/Ground085/displacement.jpg",
+                                                    "library/Ground085/normal.jpg",
+                                                    "library/Ground085/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground086":  {
+                                      "assetId":  "Ground086",
+                                      "title":  "Ground 086",
+                                      "role":  "forest floor",
+                                      "url":  "https://ambientcg.com/a/Ground086",
+                                      "download":  "https://ambientcg.com/get?file=Ground086_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground086",
+                                      "files":  [
+                                                    "library/Ground086/ao.jpg",
+                                                    "library/Ground086/color.jpg",
+                                                    "library/Ground086/displacement.jpg",
+                                                    "library/Ground086/normal.jpg",
+                                                    "library/Ground086/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground087":  {
+                                      "assetId":  "Ground087",
+                                      "title":  "Ground 087",
+                                      "role":  "mud",
+                                      "url":  "https://ambientcg.com/a/Ground087",
+                                      "download":  "https://ambientcg.com/get?file=Ground087_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground087",
+                                      "files":  [
+                                                    "library/Ground087/ao.jpg",
+                                                    "library/Ground087/color.jpg",
+                                                    "library/Ground087/displacement.jpg",
+                                                    "library/Ground087/normal.jpg",
+                                                    "library/Ground087/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground091":  {
+                                      "assetId":  "Ground091",
+                                      "title":  "Ground 091",
+                                      "role":  "gravel ground",
+                                      "url":  "https://ambientcg.com/a/Ground091",
+                                      "download":  "https://ambientcg.com/get?file=Ground091_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground091",
+                                      "files":  [
+                                                    "library/Ground091/ao.jpg",
+                                                    "library/Ground091/color.jpg",
+                                                    "library/Ground091/displacement.jpg",
+                                                    "library/Ground091/normal.jpg",
+                                                    "library/Ground091/roughness.jpg"
+                                                ]
+                                  },
+                    "Ground092C":  {
+                                       "assetId":  "Ground092C",
+                                       "title":  "Ground 092C",
+                                       "role":  "soil",
+                                       "url":  "https://ambientcg.com/a/Ground092C",
+                                       "download":  "https://ambientcg.com/get?file=Ground092C_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground092C",
+                                       "files":  [
+                                                     "library/Ground092C/ao.jpg",
+                                                     "library/Ground092C/color.jpg",
+                                                     "library/Ground092C/displacement.jpg",
+                                                     "library/Ground092C/normal.jpg",
+                                                     "library/Ground092C/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground093C":  {
+                                       "assetId":  "Ground093C",
+                                       "title":  "Ground 093C",
+                                       "role":  "desert sand",
+                                       "url":  "https://ambientcg.com/a/Ground093C",
+                                       "download":  "https://ambientcg.com/get?file=Ground093C_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground093C",
+                                       "files":  [
+                                                     "library/Ground093C/ao.jpg",
+                                                     "library/Ground093C/color.jpg",
+                                                     "library/Ground093C/displacement.jpg",
+                                                     "library/Ground093C/normal.jpg",
+                                                     "library/Ground093C/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground094A":  {
+                                       "assetId":  "Ground094A",
+                                       "title":  "Ground 094A",
+                                       "role":  "soil",
+                                       "url":  "https://ambientcg.com/a/Ground094A",
+                                       "download":  "https://ambientcg.com/get?file=Ground094A_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground094A",
+                                       "files":  [
+                                                     "library/Ground094A/ao.jpg",
+                                                     "library/Ground094A/color.jpg",
+                                                     "library/Ground094A/displacement.jpg",
+                                                     "library/Ground094A/normal.jpg",
+                                                     "library/Ground094A/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground094B":  {
+                                       "assetId":  "Ground094B",
+                                       "title":  "Ground 094B",
+                                       "role":  "soil",
+                                       "url":  "https://ambientcg.com/a/Ground094B",
+                                       "download":  "https://ambientcg.com/get?file=Ground094B_1K-JPG.zip",
+                                       "sourcePath":  "library/Ground094B",
+                                       "files":  [
+                                                     "library/Ground094B/ao.jpg",
+                                                     "library/Ground094B/color.jpg",
+                                                     "library/Ground094B/displacement.jpg",
+                                                     "library/Ground094B/normal.jpg",
+                                                     "library/Ground094B/roughness.jpg"
+                                                 ]
+                                   },
+                    "Ground104":  {
+                                      "assetId":  "Ground104",
+                                      "title":  "Ground 104",
+                                      "role":  "soil",
+                                      "url":  "https://ambientcg.com/a/Ground104",
+                                      "download":  "https://ambientcg.com/get?file=Ground104_1K-JPG.zip",
+                                      "sourcePath":  "library/Ground104",
+                                      "files":  [
+                                                    "library/Ground104/ao.jpg",
+                                                    "library/Ground104/color.jpg",
+                                                    "library/Ground104/displacement.jpg",
+                                                    "library/Ground104/normal.jpg",
+                                                    "library/Ground104/roughness.jpg"
+                                                ]
+                                  },
+                    "Rock035":  {
+                                    "assetId":  "Rock035",
+                                    "title":  "Rock 035",
+                                    "role":  "rock",
+                                    "url":  "https://ambientcg.com/a/Rock035",
+                                    "download":  "https://ambientcg.com/get?file=Rock035_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock035",
+                                    "files":  [
+                                                  "library/Rock035/ao.jpg",
+                                                  "library/Rock035/color.jpg",
+                                                  "library/Rock035/displacement.jpg",
+                                                  "library/Rock035/normal.jpg",
+                                                  "library/Rock035/roughness.jpg"
+                                              ]
+                                },
+                    "Rock058":  {
+                                    "assetId":  "Rock058",
+                                    "title":  "Rock 058",
+                                    "role":  "rock",
+                                    "url":  "https://ambientcg.com/a/Rock058",
+                                    "download":  "https://ambientcg.com/get?file=Rock058_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock058",
+                                    "files":  [
+                                                  "library/Rock058/ao.jpg",
+                                                  "library/Rock058/color.jpg",
+                                                  "library/Rock058/displacement.jpg",
+                                                  "library/Rock058/normal.jpg",
+                                                  "library/Rock058/roughness.jpg"
+                                              ]
+                                },
+                    "Rock060":  {
+                                    "assetId":  "Rock060",
+                                    "title":  "Rock 060",
+                                    "role":  "rock",
+                                    "url":  "https://ambientcg.com/a/Rock060",
+                                    "download":  "https://ambientcg.com/get?file=Rock060_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock060",
+                                    "files":  [
+                                                  "library/Rock060/ao.jpg",
+                                                  "library/Rock060/color.jpg",
+                                                  "library/Rock060/displacement.jpg",
+                                                  "library/Rock060/normal.jpg",
+                                                  "library/Rock060/roughness.jpg"
+                                              ]
+                                },
+                    "Rock061":  {
+                                    "assetId":  "Rock061",
+                                    "title":  "Rock 061",
+                                    "role":  "rocky sand",
+                                    "url":  "https://ambientcg.com/a/Rock061",
+                                    "download":  "https://ambientcg.com/get?file=Rock061_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock061",
+                                    "files":  [
+                                                  "library/Rock061/ao.jpg",
+                                                  "library/Rock061/color.jpg",
+                                                  "library/Rock061/displacement.jpg",
+                                                  "library/Rock061/normal.jpg",
+                                                  "library/Rock061/roughness.jpg"
+                                              ]
+                                },
+                    "Rock062":  {
+                                    "assetId":  "Rock062",
+                                    "title":  "Rock 062",
+                                    "role":  "rocky sand",
+                                    "url":  "https://ambientcg.com/a/Rock062",
+                                    "download":  "https://ambientcg.com/get?file=Rock062_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock062",
+                                    "files":  [
+                                                  "library/Rock062/ao.jpg",
+                                                  "library/Rock062/color.jpg",
+                                                  "library/Rock062/displacement.jpg",
+                                                  "library/Rock062/normal.jpg",
+                                                  "library/Rock062/roughness.jpg"
+                                              ]
+                                },
+                    "Rock063":  {
+                                    "assetId":  "Rock063",
+                                    "title":  "Rock 063",
+                                    "role":  "rock",
+                                    "url":  "https://ambientcg.com/a/Rock063",
+                                    "download":  "https://ambientcg.com/get?file=Rock063_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock063",
+                                    "files":  [
+                                                  "library/Rock063/ao.jpg",
+                                                  "library/Rock063/color.jpg",
+                                                  "library/Rock063/displacement.jpg",
+                                                  "library/Rock063/normal.jpg",
+                                                  "library/Rock063/roughness.jpg"
+                                              ]
+                                },
+                    "Rock064":  {
+                                    "assetId":  "Rock064",
+                                    "title":  "Rock 064",
+                                    "role":  "mossy rock",
+                                    "url":  "https://ambientcg.com/a/Rock064",
+                                    "download":  "https://ambientcg.com/get?file=Rock064_1K-JPG.zip",
+                                    "sourcePath":  "library/Rock064",
+                                    "files":  [
+                                                  "library/Rock064/ao.jpg",
+                                                  "library/Rock064/color.jpg",
+                                                  "library/Rock064/displacement.jpg",
+                                                  "library/Rock064/normal.jpg",
+                                                  "library/Rock064/roughness.jpg"
+                                              ]
+                                },
+                    "Snow006":  {
+                                    "assetId":  "Snow006",
+                                    "title":  "Snow 006",
+                                    "role":  "snow",
+                                    "url":  "https://ambientcg.com/a/Snow006",
+                                    "download":  "https://ambientcg.com/get?file=Snow006_1K-JPG.zip",
+                                    "sourcePath":  "library/Snow006",
+                                    "files":  [
+                                                  "library/Snow006/ao.jpg",
+                                                  "library/Snow006/color.jpg",
+                                                  "library/Snow006/displacement.jpg",
+                                                  "library/Snow006/normal.jpg",
+                                                  "library/Snow006/roughness.jpg"
+                                              ]
+                                },
+                    "Snow008A":  {
+                                     "assetId":  "Snow008A",
+                                     "title":  "Snow 008A",
+                                     "role":  "snow",
+                                     "url":  "https://ambientcg.com/a/Snow008A",
+                                     "download":  "https://ambientcg.com/get?file=Snow008A_1K-JPG.zip",
+                                     "sourcePath":  "library/Snow008A",
+                                     "files":  [
+                                                   "library/Snow008A/ao.jpg",
+                                                   "library/Snow008A/color.jpg",
+                                                   "library/Snow008A/displacement.jpg",
+                                                   "library/Snow008A/normal.jpg",
+                                                   "library/Snow008A/roughness.jpg"
+                                               ]
+                                 },
+                    "Snow010A":  {
+                                     "assetId":  "Snow010A",
+                                     "title":  "Snow 010A",
+                                     "role":  "snow",
+                                     "url":  "https://ambientcg.com/a/Snow010A",
+                                     "download":  "https://ambientcg.com/get?file=Snow010A_1K-JPG.zip",
+                                     "sourcePath":  "library/Snow010A",
+                                     "files":  [
+                                                   "library/Snow010A/ao.jpg",
+                                                   "library/Snow010A/color.jpg",
+                                                   "library/Snow010A/displacement.jpg",
+                                                   "library/Snow010A/normal.jpg",
+                                                   "library/Snow010A/roughness.jpg"
+                                               ]
+                                 },
+                    "Snow011":  {
+                                    "assetId":  "Snow011",
+                                    "title":  "Snow 011",
+                                    "role":  "snow",
+                                    "url":  "https://ambientcg.com/a/Snow011",
+                                    "download":  "https://ambientcg.com/get?file=Snow011_1K-JPG.zip",
+                                    "sourcePath":  "library/Snow011",
+                                    "files":  [
+                                                  "library/Snow011/ao.jpg",
+                                                  "library/Snow011/color.jpg",
+                                                  "library/Snow011/displacement.jpg",
+                                                  "library/Snow011/normal.jpg",
+                                                  "library/Snow011/roughness.jpg"
+                                              ]
+                                },
+                    "Snow012":  {
+                                    "assetId":  "Snow012",
+                                    "title":  "Snow 012",
+                                    "role":  "snow",
+                                    "url":  "https://ambientcg.com/a/Snow012",
+                                    "download":  "https://ambientcg.com/get?file=Snow012_1K-JPG.zip",
+                                    "sourcePath":  "library/Snow012",
+                                    "files":  [
+                                                  "library/Snow012/ao.jpg",
+                                                  "library/Snow012/color.jpg",
+                                                  "library/Snow012/displacement.jpg",
+                                                  "library/Snow012/normal.jpg",
+                                                  "library/Snow012/roughness.jpg"
+                                              ]
+                                },
+                    "Snow013":  {
+                                    "assetId":  "Snow013",
+                                    "title":  "Snow 013",
+                                    "role":  "snow",
+                                    "url":  "https://ambientcg.com/a/Snow013",
+                                    "download":  "https://ambientcg.com/get?file=Snow013_1K-JPG.zip",
+                                    "sourcePath":  "library/Snow013",
+                                    "files":  [
+                                                  "library/Snow013/ao.jpg",
+                                                  "library/Snow013/color.jpg",
+                                                  "library/Snow013/displacement.jpg",
+                                                  "library/Snow013/normal.jpg",
+                                                  "library/Snow013/roughness.jpg"
+                                              ]
+                                },
+                    "Snow014":  {
+                                    "assetId":  "Snow014",
+                                    "title":  "Snow 014",
+                                    "role":  "snow",
+                                    "url":  "https://ambientcg.com/a/Snow014",
+                                    "download":  "https://ambientcg.com/get?file=Snow014_1K-JPG.zip",
+                                    "sourcePath":  "library/Snow014",
+                                    "files":  [
+                                                  "library/Snow014/ao.jpg",
+                                                  "library/Snow014/color.jpg",
+                                                  "library/Snow014/displacement.jpg",
+                                                  "library/Snow014/normal.jpg",
+                                                  "library/Snow014/roughness.jpg"
+                                              ]
+                                }
+                }
+}
