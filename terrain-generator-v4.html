@@ -128,6 +128,15 @@
   .rule-row .rule-text { opacity: 0.85; }
   .callout { background: #f1e9dc; border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 6px; font-size: 0.88em; margin-top: 10px; }
 </style>
+<!-- three@0.184.0: same CDN pins as tree-viewer.html / environment-viewer.html -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
 </head>
 <body>
 <header class="hero">
@@ -345,8 +354,11 @@
 <script type="module">
   import {
     BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription,
-    generateFullGrid, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
+    generateFullGrid, buildHeightfieldMesh, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
   } from './terrain-generator-js.js';
+  import * as THREE from 'three';
+  import { WebGPURenderer } from 'three/webgpu';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
   const genConfig = { ...DEFAULT_CONFIG, preview_resolution: 128 };
   const WARN_RESOLUTION = 256; // above this, show a "may feel slow" note
@@ -364,6 +376,43 @@
   }
 
   const REDRAW_CALLBACKS = [];
+
+  // ---- section 8: Heightfield preview -- Three.js setup ----
+  const hfViewport = document.getElementById('heightfield-viewport');
+  const hfRenderer = new WebGPURenderer({ antialias: true });
+  hfRenderer.setSize(420, 420);
+  hfViewport.appendChild(hfRenderer.domElement);
+  await hfRenderer.init();
+
+  const hfScene = new THREE.Scene();
+  hfScene.background = new THREE.Color(0xfaf6ef);
+
+  const hfCamera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+  const HF_INITIAL_CAMERA_POS = new THREE.Vector3(700, 500, 700);
+  const HF_INITIAL_TARGET = new THREE.Vector3(0, 0, 0);
+  hfCamera.position.copy(HF_INITIAL_CAMERA_POS);
+
+  const hfControls = new OrbitControls(hfCamera, hfRenderer.domElement);
+  hfControls.target.copy(HF_INITIAL_TARGET);
+  hfControls.enableDamping = true;
+  hfControls.dampingFactor = 0.08;
+  hfControls.update();
+
+  const hfAmbient = new THREE.AmbientLight(0xffffff, 0.6);
+  const hfDirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  hfDirLight.position.set(400, 600, 200);
+  hfScene.add(hfAmbient, hfDirLight);
+
+  document.getElementById('heightfield-reset-view').addEventListener('click', () => {
+    hfCamera.position.copy(HF_INITIAL_CAMERA_POS);
+    hfControls.target.copy(HF_INITIAL_TARGET);
+    hfControls.update();
+  });
+
+  hfRenderer.setAnimationLoop(() => {
+    hfControls.update();
+    hfRenderer.render(hfScene, hfCamera);
+  });
 
   // ---- shared slider-builder (reused by sections 2-5) ----
   function buildGroupControls(container, groupNames) {
