@@ -175,12 +175,13 @@ export class Clouds extends THREE.Mesh {
     this._lastTime = undefined;
 
     // ---- TSL uniform handles ----
-    const uTime     = uniform(0.0,  'float');   // scaled elapsed time (seconds)
-    const uCoverage = uniform(0.4,  'float');   // noise bias → cloud cover
-    const uPuff     = uniform(1.0,  'float');   // noise frequency divisor → puff size
-    const uSoftness = uniform(0.3,  'float');   // smoothstep half-width
-    const uFade     = uniform(0.01, 'float');   // horizon-fade rate
-    const uOpacity  = uniform(0.9,  'float');   // base alpha multiplier
+    const uTime      = uniform(0.0,  'float');   // scaled elapsed time (seconds)
+    const uCoverage  = uniform(0.4,  'float');   // noise bias → cloud cover
+    const uPuff      = uniform(1.0,  'float');   // noise frequency divisor → puff size
+    const uSoftness  = uniform(0.3,  'float');   // smoothstep half-width
+    const uFade      = uniform(0.01, 'float');   // horizon-fade rate
+    const uOpacity   = uniform(0.9,  'float');   // base alpha multiplier
+    const uCameraXZ  = uniform(new THREE.Vector2(), 'vec2'); // camera XZ for horizon fade
 
     // World-space XZ position normalised to ~1 unit per 1000 world units.
     // Using positionWorld instead of UV keeps the noise frequency fixed in world
@@ -201,10 +202,12 @@ export class Clouds extends THREE.Mesh {
       float(0.5).mul(n).add(uCoverage)
     );
 
-    // ---- Horizon fade via world-space distance from origin ----
-    // GLSL: diffuseColor.a = cloud * opacity / (uFade * length(vWorldPosition))
-    // positionWorld is the per-fragment interpolated world position (= vWorldPosition).
-    const alpha = cloudVal.mul(uOpacity).div(uFade.mul(length(positionWorld)));
+    // ---- Horizon fade by XZ distance from the camera ----
+    // Measures how far each fragment is from the camera horizontally, so the fade
+    // is always camera-centred regardless of where in the world the camera sits.
+    // +1 avoids division-by-zero directly overhead.
+    const horizDist = length(positionWorld.xz.sub(uCameraXZ)).add(1.0);
+    const alpha = cloudVal.mul(uOpacity).div(uFade.mul(horizDist));
 
     // ---- Assemble unlit material ----
     const mat = new MeshBasicNodeMaterial({
@@ -222,20 +225,22 @@ export class Clouds extends THREE.Mesh {
     mat._uSoftness = uSoftness;
     mat._uFade     = uFade;
     mat._uOpacity  = uOpacity;
+    mat._uCameraXZ = uCameraXZ;
 
     this.material = mat;
 
     // Large flat quad overhead — same geometry as the GLSL version
     this.geometry = new THREE.PlaneGeometry(2000, 2000);
-    this.frustumCulled = false; // always draw; cameras move under a fixed sky quad
+    this.frustumCulled = false;
   }
 
   // Advance the scrolling-time uniform.  Call once per frame with elapsed seconds.
-  // speed-scaled accumulation keeps phase continuous across speed changes (same as GLSL version).
-  update(elapsedTime) {
+  // cameraPosition (THREE.Vector3) keeps the horizon fade centred on the camera.
+  update(elapsedTime, cameraPosition) {
     if (this._lastTime !== undefined) this._scaledTime += (elapsedTime - this._lastTime) * this.speed;
     this._lastTime = elapsedTime;
     this.material._uTime.value = this._scaledTime;
+    if (cameraPosition) this.material._uCameraXZ.value.set(cameraPosition.x, cameraPosition.z);
   }
 
   // Public API — same signatures as the GLSL version; now write to TSL uniform handles.

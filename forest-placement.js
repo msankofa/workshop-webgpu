@@ -77,14 +77,38 @@ export function buildSpecies(p, rng) {
 }
 
 // ---- size pipeline (verbatim; THREE.MathUtils.clamp -> inline clamp) ----
-function sizeFor(p, x, z, rng) {
+// `range` (optional [lo, hi]) lets an authored species override the [0, maxSize] span;
+// omitted, this reduces to the original p.maxSize * frac formula exactly.
+function sizeFor(p, x, z, rng, range) {
   let v;
   if (p.varPattern === 'noise') v = valueNoise(x * 0.14, z * 0.14, 777);
   else if (p.varPattern === 'gradient') v = clamp((x + 18) / 36, 0, 1);
   else v = rng.next();
   const sv = Math.pow(v, Math.exp(p.skew * 1.5));      // skew>0 biases toward small
   const frac = 1 - p.sizeVar * (1 - sv);               // sizeVar=0 -> all maxSize
-  return p.maxSize * Math.max(0.12, frac);
+  const [lo, hi] = range || [0, p.maxSize];
+  return lo + (hi - lo) * Math.max(0.12, frac);
+}
+
+// ---- authored Family/Species -> flat species table (tree-viewer.html export) ----
+// Each entry is a full trees.js opts object (bark/leaves/force/levels/...) exactly like
+// buildSpecies() produces, plus a `_tag` side-channel carrying the placement metadata
+// authored per-species in tree-viewer.html's Family/Species tab.
+export function buildSpeciesFromFamilies(families) {
+  const out = [];
+  for (const fam of families) {
+    for (const sp of fam.species) {
+      out.push({
+        ...sp.opts,
+        _tag: {
+          biomes: sp.biomes || [],
+          density: sp.density ?? 1,
+          sizeRange: sp.sizeRange || [1, 1],
+        },
+      });
+    }
+  }
+  return out;
 }
 
 // ---- per-chunk tree count (verbatim from treeCountForChunk :720) ----
@@ -161,10 +185,14 @@ function placementsForChunk(chunk, count, params, heightAt) {
 // ---- public: placement records across all active chunks ----
 // `targetChunkCount` defaults to chunks.length (matches the single-window case and the
 // live viewer passes terrainSystem.targetChunkCount through params for streaming).
-export function placementRecords(chunks, params, heightAt) {
+// `biomeAt(x, z)` (optional) is only consulted when `params.speciesTable` (from
+// buildSpeciesFromFamilies) is set; without a species table, selection is the original
+// uniform-random draw over `params.species`, unaffected by biomeAt.
+export function placementRecords(chunks, params, heightAt, biomeAt) {
   const out = [];
   const targetChunkCount = params.targetChunkCount || chunks.length;
-  const speciesCount = Math.max(1, Math.floor(params.species));
+  const speciesTable = params.speciesTable || null;
+  const speciesCount = speciesTable ? speciesTable.length : Math.max(1, Math.floor(params.species));
   for (const chunk of chunks) {
     const count = treeCountForChunk(chunk, params, targetChunkCount);
     const pts = placementsForChunk(chunk, count, params, heightAt);
@@ -172,9 +200,32 @@ export function placementRecords(chunks, params, heightAt) {
       const { x, z, chunkKey, slot } = pt;
       const [tx, tz] = chunkKey.split(',').map(Number);
       const treeRng = rngFrom((Math.floor(hash2(tx, tz, params.masterSeed + slot * 1013) * 0xffffffff) ^ Math.imul(slot + 1, 2654435761)) >>> 0);
-      const speciesIdx = Math.floor(treeRng.next() * speciesCount);   // 1st draw
+      let speciesIdx, sizeRange;
+      if (speciesTable) {
+        // biome-filtered, density-weighted pick (one RNG draw, same slot as the uniform pick below).
+        const biome = biomeAt ? biomeAt(x, z) : null;
+        let candidates = [];
+        for (let i = 0; i < speciesTable.length; i++) {
+          const tags = speciesTable[i]._tag;
+          if (biome === null || !tags.biomes.length || tags.biomes.includes(biome)) candidates.push(i);
+        }
+        if (candidates.length === 0) candidates = speciesTable.map((_, i) => i);   // no match for this biome -> any species
+        let total = 0;
+        for (const i of candidates) total += Math.max(0, speciesTable[i]._tag.density);
+        if (total <= 0) {
+          speciesIdx = candidates[Math.floor(treeRng.next() * candidates.length)];
+        } else {
+          const r = treeRng.next() * total;
+          let acc = 0, chosen = candidates[candidates.length - 1];
+          for (const i of candidates) { acc += Math.max(0, speciesTable[i]._tag.density); if (r <= acc) { chosen = i; break; } }
+          speciesIdx = chosen;
+        }
+        sizeRange = speciesTable[speciesIdx]._tag.sizeRange;
+      } else {
+        speciesIdx = Math.floor(treeRng.next() * speciesCount);   // 1st draw
+      }
       treeRng.next();                                                 // 2nd draw: tree seed (kept to align the stream with the baker)
-      const scale = sizeFor(params, x, z, treeRng);                   // 3rd draw (random varPattern)
+      const scale = sizeFor(params, x, z, treeRng, sizeRange);         // 3rd draw (random varPattern)
       const yaw = treeRng.next() * Math.PI * 2;                       // 4th draw
       out.push({ x, z, scale, yaw, speciesIdx, chunkKey, slot });
     }

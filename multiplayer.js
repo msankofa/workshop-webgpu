@@ -169,10 +169,16 @@ function _lerpState(a, b, alpha) {
         hands: ca.hands.map((h, j) => cb.hands[j] ? _lerpV3(h, cb.hands[j], alpha) : h),
       };
     }),
-    players: a.players.map((pa, i) => {
-      const pb = b.players[i];
+    players: (a.players ?? []).map(pa => {
+      const pb = (b.players ?? []).find(p => p.id === pa.id);
       if (!pb) return pa;
-      return { id: pa.id, p: _lerpV3(pa.p, pb.p, alpha), q: _slerpQ(pa.q, pb.q, alpha) };
+      return {
+        ...pa,
+        p: _lerpV3(pa.p, pb.p, alpha),
+        q: _slerpQ(pa.q, pb.q, alpha),
+        h: pa.h != null && pb.h != null ? pa.h + (pb.h - pa.h) * alpha : pa.h,
+        r: pa.r != null && pb.r != null ? pa.r + (pb.r - pa.r) * alpha : pa.r,
+      };
     }),
   };
 }
@@ -220,6 +226,13 @@ export class GhostRenderer {
       mesh.position.set(px, py, pz);
       const [qx, qy, qz, qw] = getQ(item);
       mesh.quaternion.set(qx, qy, qz, qw);
+      if (item.h != null || item.r != null) {
+        const r = item.r ?? 0.3;
+        const h = item.h ?? 1.2;
+        mesh.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
+      } else {
+        mesh.scale.set(1, 1, 1);
+      }
     }
     for (const [id, mesh] of map) {
       if (!seen.has(id)) { this._scene.remove(mesh); map.delete(id); }

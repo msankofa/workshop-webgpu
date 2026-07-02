@@ -1,0 +1,332 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workshop Server Tool</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #111419;
+    --panel: #191e26;
+    --panel-2: #202733;
+    --line: #303846;
+    --text: #e5ebf2;
+    --muted: #9aa7b8;
+    --ok: #66d19e;
+    --warn: #f3c969;
+    --bad: #ff7a7a;
+    --accent: #74a7ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+  body { padding: 24px; }
+  header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 0 0 18px; }
+  h1 { font-size: 20px; line-height: 1.2; margin: 0; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .layout { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 14px; }
+  .card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; overflow: hidden; min-width: 0; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
+  .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px rgba(154, 167, 184, .12); flex: none; }
+  .dot.running { background: var(--ok); box-shadow: 0 0 0 3px rgba(102, 209, 158, .16); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(243, 201, 105, .16); }
+  h2 { font-size: 15px; margin: 0; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .body { padding: 14px; display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  label { font-size: 12px; color: var(--muted); }
+  input { width: 86px; padding: 6px 8px; border: 1px solid var(--line); background: #12161d; color: var(--text); border-radius: 5px; font: inherit; font-size: 13px; }
+  button, a.button {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  button:hover, a.button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: #1d3150; border-color: #34578a; }
+  button.danger { background: #3a2025; border-color: #6a3740; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .hint code { color: var(--text); background: #11161d; padding: 1px 4px; border-radius: 4px; }
+  .log-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+  .log-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  pre {
+    margin: 0;
+    min-height: 260px;
+    max-height: 52vh;
+    overflow: auto;
+    padding: 10px;
+    background: #080b10;
+    border: 1px solid #262d38;
+    border-radius: 6px;
+    color: #d6deea;
+    font: 12px/1.45 Consolas, "SF Mono", ui-monospace, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .source-tool { color: #8fb9ff; }
+  .source-process { color: #a8b4c3; }
+  .footer { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  @media (max-width: 820px) {
+    body { padding: 14px; }
+    header { align-items: start; flex-direction: column; }
+    .layout { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Workshop Server Tool</h1>
+    <div class="sub">Start, monitor, and stop local servers for this workspace.</div>
+  </div>
+  <div class="status" id="tool-status">Connecting...</div>
+</header>
+
+<main class="layout" id="cards"></main>
+
+<div class="footer">
+  This page is backed by <code>server-tool.py</code>. Closing this tab does not stop servers;
+  use Stop here or press Ctrl+C in the tool terminal. <button id="shutdown-tool" class="danger" type="button">Stop controller</button>
+</div>
+
+<script>
+"use strict";
+
+const state = {
+  config: null,
+  status: {},
+  cursors: {},
+  logs: {},
+};
+
+const cardsEl = document.getElementById("cards");
+const toolStatusEl = document.getElementById("tool-status");
+const shutdownToolEl = document.getElementById("shutdown-tool");
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function fmtUptime(seconds) {
+  if (!seconds) return "0s";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  const h = Math.floor(m / 60);
+  if (h) return `${h}h ${m % 60}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function serverUrl(id, port) {
+  if (id === "static") return `http://127.0.0.1:${port}/environment-viewer.html`;
+  if (id === "relay") return `ws://localhost:${port}`;
+  return "";
+}
+
+function localMultiplayerUrl() {
+  const staticStatus = state.status.static;
+  const relayStatus = state.status.relay;
+  if (!staticStatus?.running || !relayStatus?.running) return "";
+  return `http://127.0.0.1:${staticStatus.port}/environment-viewer.html?relay=ws://localhost:${relayStatus.port}`;
+}
+
+function renderCards() {
+  const servers = state.config.servers;
+  cardsEl.innerHTML = "";
+  for (const [id, cfg] of Object.entries(servers)) {
+    const st = state.status[id] || {};
+    const running = !!st.running;
+    const portOpen = !!st.portOpen;
+    const card = document.createElement("section");
+    card.className = "card";
+    card.dataset.id = id;
+    card.innerHTML = `
+      <div class="card-head">
+        <div class="title">
+          <span class="dot ${running ? "running" : portOpen ? "warn" : ""}"></span>
+          <h2>${cfg.label}</h2>
+        </div>
+        <div class="status">${running ? `Running pid ${st.pid}` : portOpen ? "Port in use" : "Stopped"}</div>
+      </div>
+      <div class="body">
+        <div class="hint">${cfg.description}</div>
+        <div class="row">
+          <label for="${id}-port">Port</label>
+          <input id="${id}-port" type="number" min="1" max="65535" value="${st.port || cfg.defaultPort}">
+          <button class="primary" data-action="start" ${running ? "disabled" : ""}>Start</button>
+          <button data-action="restart">Restart</button>
+          <button class="danger" data-action="stop" ${running ? "" : "disabled"}>Stop</button>
+          <button data-action="clear">Clear logs</button>
+        </div>
+        <div class="row links"></div>
+        <div class="hint detail">${detailText(id, st)}</div>
+        <div class="log-head">
+          <span class="log-title">Log</span>
+          <span class="status">${state.logs[id]?.length || 0} lines</span>
+        </div>
+        <pre id="${id}-log"></pre>
+      </div>
+    `;
+    cardsEl.appendChild(card);
+    wireCard(card, id);
+    renderLinks(card, id, st);
+    renderLog(id);
+  }
+}
+
+function detailText(id, st) {
+  if (st.running) return `Listening check: ${st.portOpen ? "open" : "not open yet"}; uptime ${fmtUptime(st.uptime)}.`;
+  if (st.lastExit !== null && st.lastExit !== undefined) return `Last exit code: ${st.lastExit}.`;
+  if (st.portOpen) return "The port answers, but it was not started by this tool.";
+  return id === "relay"
+    ? "Requires Node and server/node_modules/ws. If it exits immediately, run npm install in server/."
+    : "Serves browser entry points such as environment-viewer.html, tree-viewer.html, and biome-explainer.html.";
+}
+
+function renderLinks(card, id, st) {
+  const links = card.querySelector(".links");
+  links.innerHTML = "";
+  if (id === "static" && st.running) {
+    const a = document.createElement("a");
+    a.className = "button";
+    a.href = serverUrl(id, st.port);
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.textContent = "Open environment";
+    links.appendChild(a);
+  }
+  if (id === "relay" && st.running) {
+    const span = document.createElement("span");
+    span.className = "hint";
+    span.innerHTML = `Relay URL: <code>${serverUrl(id, st.port)}</code>`;
+    links.appendChild(span);
+  }
+  const mp = localMultiplayerUrl();
+  if (id === "static" && mp) {
+    const a = document.createElement("a");
+    a.className = "button";
+    a.href = mp;
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    a.textContent = "Open with local relay";
+    links.appendChild(a);
+  }
+}
+
+function wireCard(card, id) {
+  card.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-action]");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const port = Number(card.querySelector(`#${id}-port`).value);
+    btn.disabled = true;
+    try {
+      if (action === "clear") {
+        state.logs[id] = [];
+        state.cursors[id] = 0;
+        await api("/api/clear-logs", { method: "POST", body: JSON.stringify({ id }) });
+        renderLog(id);
+      } else {
+        await api(`/api/${action}`, { method: "POST", body: JSON.stringify({ id, port }) });
+      }
+      await refresh();
+    } catch (err) {
+      appendLocalLog(id, `error: ${err.message}`);
+      renderLog(id);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function appendLocalLog(id, line) {
+  state.logs[id] ||= [];
+  state.logs[id].push({ time: "local", source: "tool", line });
+}
+
+function renderLog(id) {
+  const el = document.getElementById(`${id}-log`);
+  if (!el) return;
+  const lines = (state.logs[id] || []).map(entry => {
+    const cls = entry.source === "tool" ? "tool" : "process";
+    return `[${entry.time}] ${entry.source}: ${entry.line}`;
+  });
+  const wasNearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.textContent = lines.join("\n");
+  if (wasNearBottom) el.scrollTop = el.scrollHeight;
+}
+
+async function refreshStatus() {
+  const data = await api("/api/status");
+  state.status = data.servers;
+  toolStatusEl.textContent = "Connected";
+}
+
+async function refreshLogs() {
+  await Promise.all(Object.keys(state.config.servers).map(async (id) => {
+    const cursor = state.cursors[id] || 0;
+    const data = await api(`/api/logs?id=${encodeURIComponent(id)}&cursor=${cursor}`);
+    if (data.logs.length) {
+      state.logs[id] ||= [];
+      state.logs[id].push(...data.logs);
+      if (state.logs[id].length > 2000) state.logs[id] = state.logs[id].slice(-2000);
+      state.cursors[id] = Math.max(...data.logs.map(l => l.seq));
+    }
+  }));
+}
+
+async function refresh() {
+  try {
+    await refreshStatus();
+    await refreshLogs();
+    renderCards();
+  } catch (err) {
+    toolStatusEl.textContent = `Disconnected: ${err.message}`;
+  }
+}
+
+async function init() {
+  state.config = await api("/api/config");
+  for (const id of Object.keys(state.config.servers)) {
+    state.cursors[id] = 0;
+    state.logs[id] = [];
+  }
+  await refresh();
+  setInterval(refresh, 1000);
+}
+
+shutdownToolEl.addEventListener("click", async () => {
+  if (!confirm("Stop managed servers and shut down server-tool.py?")) return;
+  try {
+    await fetch("/api/shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toolStatusEl.textContent = "Controller stopped";
+  } catch (err) {
+    toolStatusEl.textContent = `Shutdown requested: ${err.message}`;
+  }
+});
+
+init().catch(err => {
+  toolStatusEl.textContent = `Failed to initialize: ${err.message}`;
+});
+</script>
+</body>
+</html>
+

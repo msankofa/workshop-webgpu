@@ -1,0 +1,131 @@
+# Terrain Subsystem
+
+> 🗺️ [View this subsystem in the interactive code map](../../code-map.html#terrain)
+> Authored-map ground texture and density queries are biome-driven — see [biomes.md](biomes.md).
+
+## Purpose
+
+Generates and renders the ground for the environment sandbox: a closed-form analytic
+height field shared by every consumer (visible mesh/GPU surface, grass, trees, water,
+collision), two interchangeable rendering paths (CPU-built chunk meshes streamed via a
+Web Worker, or a GPU-driven CDLOD compute+indirect-draw system), texture splatting for
+authored GLTF maps, and capsule collision against both the analytic field and authored
+collision meshes (BVH-accelerated).
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| `terrain-field.js` (150 lines) | Pure math, no Three.js: `terrainHeightAt`, `terrainNormalAt`, chunk geometry array builder, height-tile builder for the heightmap path. Shared by main thread and worker. |
+| `terrain-system.js` (598 lines) | `TerrainSystem` class: chunk streaming/windowing around a moving center, worker dispatch + sync fallback, `chunks`/`instanced` render modes, height-atlas management for the experimental instanced path. |
+| `terrain-worker.js` (30 lines) | Module Web Worker. Runs `buildChunkArrays`/`buildHeightTile` off the render thread, replies with transferable typed arrays. |
+| `terrain-loader.js` (249 lines) | Loads an authored GLTF map + its `-data.json` sidecar, derives/queries height, biome, grass/tree density via bilinear sampling, builds chunk-window helpers for decorations. |
+| `terrain-textures.js` (258 lines) | Loads ground PBR texture layers (grass/dirt/sand/gravel), classifies authored map mesh vertices into a dominant layer per triangle (mask-driven or biome/slope/sea-level fallback), splits geometry into material groups. |
+| `cdlod-terrain.js` (262 lines) | GPU-driven CDLOD terrain (SP3): TSL compute pipeline that selects quadtree nodes per frame and indirect-draws a reusable patch grid, displaced/shaded by an analytic TSL height field transcribed from `terrain-field.js`. |
+| `cdlod-select.js` (116 lines) | Pure-JS CDLOD node-selection math: Morton encoding, distance-band level selection, morph factor — the CPU source of truth the TSL compute mirrors, and what `cdlod-terrain.js` calls for its CPU-side survivor-count HUD stat. |
+| `collision.js` (101 lines) | Pure capsule-vs-analytic-field collision math (no Three.js): ground contact, velocity sliding, tree-trunk circle push-out, chunk-bucketed trunk index. |
+| `map-collision.js` (135 lines) | `createMapCollider`: builds a `MeshBVH` (three-mesh-bvh) over an authored map's world-space triangles for capsule resolution and downward raycasts. |
+
+## Public API
+
+`terrain-field.js`
+- `export function terrainHeightAt(params, x, z)` — closed-form height at world (x,z); `params` = `{ baseAmp, lake, lakeDepth }`.
+- `export function terrainNormalAt(params, x, z, out)` — central-difference unit normal into `out` (3-array), returns `out`.
+- `export function buildHeightTile(xMin, zMin, size, texelWorld, params, apron = 1)` — returns `{ heights, texels, intervals, step, apron, xMin, zMin, size, originX, originZ }`.
+- `export function sampleHeightTileBilinear(tile, x, z)` — CPU mirror of the GPU's LINEAR+CLAMP texture fetch over a tile.
+- `export function buildChunkArrays(xMin, zMin, size, segments, params, computeNormals)` — returns `{ positions, normals, uvs, index }` matching `THREE.PlaneGeometry` vertex/index ordering.
+
+`terrain-system.js`
+- `export function createTerrainSystem(options)` / `export default createTerrainSystem` — factory for the `TerrainSystem` class (not itself exported).
+- `export { terrainHeightAt, terrainNormalAt } from './terrain-field.js'` — re-exported so existing importers don't need to know about `terrain-field.js`.
+- Instance surface (no separate class export): `.group`, `.params`, `.rebuild(options)`, `.update(centerX, centerZ)` → bool changed, `.getHeight(x, z)`, `.materialPatchTarget`, `.pendingBuildCount`, `.activeChunks`, `.targetChunkCount`, `.renderMode`, `.dispose()`.
+
+`terrain-worker.js` — no exports; a `self.onmessage` module Worker entry point. Accepts `{ jobType: 'heightTile', ... }` or default chunk-array jobs.
+
+`terrain-loader.js`
+- `export async function loadTerrainMap(mapKey, { scene } = {})` — returns `{ key, root, mesh, terrainKind, worldX, worldZ, worldYMin, worldYMax, seaLevel, resolution, biomeNames, terrainTextureMeshes, grassDensityGrid, heightAt(x,z), biomeAt(x,z), grassDensityAt(x,z), treeDensityAt(x,z), makeChunks(center, renderRadius, chunkSize), makeAllChunks(chunkSize) }`.
+
+`terrain-textures.js`
+- `export const TERRAIN_TEXTURE_LAYERS = ['grass', 'dirt', 'sand', 'gravel']`.
+- `export async function applyTerrainTextures(root, mapData, meta = {}, options = {})` — returns `{ materials, texturedMeshes, report }` or `null` (no `document`, or missing resolution/world size).
+
+`cdlod-terrain.js`
+- `export function createCdlodTerrain(opts)` — `opts: { renderer, camera, cfg?, terrainParams?, waterLevel?, addEmissive? }`. Returns `{ mesh, async update(), setViewDistance(levels), maxLevels, setTerrain(p), setWaterLevel(), triangleCount, drawCount, stats, dispose() }`.
+
+`cdlod-select.js`
+- `export function part1by1(n)`, `export function compact1by1(n)` — 16-bit Morton bit spread/compact.
+- `export function mortonKey(level, ix, iz)` → `{ level, code }`; `export function decodeMorton(key)` → `{ level, ix, iz }`.
+- `export function nodeSize(cfg, level)`, `export function levelRanges(cfg)` → `Float32Array`.
+- `export function minDistToCell(ox, oz, s, px, pz)`.
+- `export function morphFactor(cfg, ranges, level, d)`.
+- `export function selectNodes(cfg, camX, camZ)` → array of `{ level, ix, iz, originX, originZ, size, d, morphK }`.
+- `export function nodeCountForViewDistance(cfg, camX, camZ)`.
+- `export function morphGridCoord(g, N, morphK)`.
+
+`collision.js`
+- `export function groundContact({ x, z, bottomY, slopeLimitY = 0.5, heightAt, normalAt })` → `{ groundY, penetration, grounded, normal, restBottomY }`.
+- `export function slideVelocity(v, n)` → new `{x,y,z}`.
+- `export function resolveTrunks(px, pz, radius, trunks, iterations = 4)` → `{ x, z, pushed }`.
+- `export function createTrunkIndex(chunkSize)` → `{ setTrunks(key, trunks), clearTrunks(key), nearby(px, pz), resolve(px, pz, radius) }`.
+
+`map-collision.js`
+- `export function createMapCollider(root, { maxTriangles = 250000 } = {})` → `{ geometry, triangleCount, resolveCapsule(capsule, velocity, { slopeLimitY, iterations }), raycastDown(origin, maxDistance), dispose() }`. Throws if the authored map exceeds `maxTriangles` or has zero collision triangles.
+
+## Wiring
+
+Static imports in `environment-viewer.html`:
+- `import { createTerrainSystem, terrainNormalAt } from './terrain-system.js'` (line 42)
+- `import { groundContact, slideVelocity, createTrunkIndex } from './collision.js'` (line 43)
+- `import { loadTerrainMap } from './terrain-loader.js'` (line 48)
+- `import { createMapCollider } from './map-collision.js'` (line 50)
+
+Lazy `await import()`:
+- `cdlod-terrain.js` — line 274, inside `if (!loadedMap && TERRAIN_MODE === 'gpu') { const { createCdlodTerrain } = await import('./cdlod-terrain.js'); ... }`. Only loaded when no authored map is active and `?terrain=` (default `gpu`) isn't `chunks`.
+
+Inter-file dependencies:
+- `terrain-system.js` imports `terrainHeightAt`, `terrainNormalAt`, `buildChunkArrays`, `buildHeightTile` from `terrain-field.js`, and spins up `terrain-worker.js` as a module `Worker` (`new Worker(new URL('./terrain-worker.js', import.meta.url), { type: 'module' })`), falling back to synchronous building (calling the same `terrain-field.js` functions directly) if `Worker` construction throws (e.g. `file://`).
+- `terrain-worker.js` imports `buildChunkArrays`, `buildHeightTile` from `terrain-field.js` and runs them inside `self.onmessage`.
+- `cdlod-terrain.js` imports `selectNodes` from `cdlod-select.js` — used only for the CPU-side HUD survivor-count mirror (`survivorCount()`); the actual per-frame node selection is a TSL transcription of the same math run on the GPU via `renderer.computeAsync([reset, select, finalize])`.
+- `terrain-loader.js` imports `applyTerrainTextures` from `terrain-textures.js` to splat ground materials onto an authored map's meshes after the GLTF + JSON sidecar load.
+- `map-collision.js` is independent of `terrain-field.js`/`terrain-system.js` — it builds its BVH straight from whatever mesh root is passed in (the loaded map's `root`), used only when an authored map (not the procedural chunked/CDLOD ground) is active.
+- `collision.js` is independent of Three.js and of `terrain-system.js`; the host wires it to the procedural ground by passing `terrainSystem.getHeight`/`terrainNormalAt` (or, for authored maps, `terrainHeight`/`terrainNormal` functions backed by `mapCollider.raycastDown`) as its `heightAt`/`normalAt` callbacks.
+- `cdlod-terrain.js`'s analytic TSL height function (`heightFn`) is a hand-transcribed copy of `terrainHeightAt` in `terrain-field.js`, not a shared import (TSL nodes can't directly call the JS function) — parity is verified by `test-grass-height-tsl.mjs` via the separate `grass-height-ref.js` port and `test-cdlod-morph.mjs`.
+
+## Architecture notes
+
+- **Closed-form height field.** `terrainHeightAt` is a fixed sum of sines/cosines plus a smoothstep-gated lake basin (Perlin-ish value noise `lakeNoise`/`lakeHash`), parameterized only by `{ baseAmp, lake, lakeDepth }`. Because it's a pure function of world (x,z), every consumer (chunk mesh, GPU CDLOD shader, grass, trees, collision, water) can query identical ground height with no shared mutable state or spatial structure — `terrainNormalAt` is a fixed-epsilon (`e=0.5`) central difference of the same function, which is why adjacent chunks/tiles/CDLOD nodes never show lighting seams (`test-terrain-field.mjs`, `test-terrain-tile-seam.mjs`).
+- **Chunking strategy (`terrain-system.js`).** The world is partitioned into `chunkSize`-sided square chunks keyed by `"ix,iz"`. `update(centerX, centerZ)` recomputes a target window (`renderRadius` ring around the center chunk) whenever the center chunk moves or chunking params (`chunkSize`/`renderRadius`) change; missing chunks are queued sorted by distance, built at most `maxChunksPerUpdate` per call (worker-dispatched when available, else synchronous), and stale chunks are unloaded at most `maxUnloadsPerUpdate` per call once the build queue and in-flight worker jobs are both empty (prevents mid-stream churn). A synchronous "cold start" builds the nearest chunk immediately so `primaryMesh`/`activeChunks` exist before the first frame (water/decorations bind to them).
+- **Worker offloading.** `terrain-system.js` posts chunk-build jobs (`{ key, epoch, xMin, zMin, size, segments, computeNormals, params }`) to `terrain-worker.js`, which returns positions/normals/uvs/index as zero-copy transferables. An `epoch` counter is bumped on every `rebuild()`; results whose `epoch` doesn't match the live one are dropped (stale-result guard for rapid param changes). If `new Worker(...)` throws (e.g. `file://` with no module-worker support), `disableWorker()` clears in-flight state and the system falls back to building every chunk synchronously on the main thread.
+- **Render modes.** `renderMode: 'chunks'` (default/legacy) builds one `THREE.Mesh` per chunk added to `this.group`. `renderMode: 'instanced'` (gated by `experimentalInstancedTerrain`, disabled by default — "until shader height parity with terrainHeightAt is proven") collapses rendering to a single `InstancedMesh` over a reusable patch grid, sampling a `DataTexture` height atlas (one tile per active chunk, built via `buildHeightTile`/the worker's `heightTile` job, RedFormat Float32, with a 1-texel apron for seam-safe bilinear+normal reconstruction) instead of baking height into vertex positions. `visualMode: 'external'` builds chunk *records* only (key/xMin/zMin/size metadata, no geometry/mesh) — used when the GPU CDLOD system (`cdlod-terrain.js`) renders the actual visible ground but decorations/collision still need the chunk window/height query API.
+- **CDLOD node selection (`cdlod-select.js` / `cdlod-terrain.js`).** A camera-snapped, Morton-keyed (Z-order, 16-bit-per-axis, signed-bias-by-0x8000) quadtree, but selection is *flattened* rather than tree-traversed: for each of `cfg.levels` levels and each cell in a `windowCells × windowCells` window centered on the camera's level-snapped cell, a node is emitted iff `notRefined` (camera far enough that this level isn't subdivided further: `L===0` or `dist > range[L-1]`) AND `refinedByParent` (camera close enough that the parent level chose to refine into this node: `L===levels-1` or `parentDist <= range[L]`). This guarantees every point lands in exactly one selected node (verified as a literal coverage partition by `test-cdlod-select.mjs`), bounds node count to `levels * windowCells²` regardless of view distance (each added level is one bounded ring, not area growth), and is GPU-friendly: `cdlod-terrain.js`'s `select` TSL compute kernel runs one thread per `(level, window-cell)` candidate, atomically appending survivors into a `StorageInstancedBufferAttribute`, then a `finalize` pass writes the survivor count into an `IndirectStorageBufferAttribute` for a single `drawIndexedIndirect` of the reusable patch grid (`reset`→`select`→`finalize` chained via `renderer.computeAsync`). Vertex-level CDLOD morphing (`morphGridCoord`/`morphAxis`) pulls odd-indexed grid vertices toward the even (parent-level) lattice as `morphK→1`, so a fully-morphed fine node's boundary matches its coarser neighbor exactly (crack-free; `test-cdlod-morph.mjs`).
+- **BVH vs analytic collision.** `collision.js` is the Phase-A analytic-only path (SP5): O(1) capsule-bottom-vs-`heightAt` contact test plus a chunk-bucketed trunk index for tree-trunk push-out — no spatial structure needed because the ground is a closed form. `map-collision.js` is the authored-map path: it walks the entire loaded GLTF mesh tree, flattens every triangle into world space (capped at `maxTriangles`, default 250,000 — throws if exceeded), and builds a `MeshBVH` (three-mesh-bvh) for `shapecast`-based iterative capsule resolution (`resolveCapsule`, default 3 iterations, pushes the capsule out of the closest triangle each pass, zeroes the into-surface velocity component, flags grounded when the surface normal clears `slopeLimitY`) and downward raycasts (`raycastDown`, used by `terrainHeight`/`terrainNormal` in the host when an authored map + collider are active). The two are mutually exclusive per scene: authored maps use `map-collision.js`; the procedural chunked/CDLOD ground uses `collision.js` directly against `terrainSystem.getHeight`/`terrainNormalAt`.
+
+## Tunable parameters
+
+`environment-ui.js` is the perf-HUD/debug-panel module (`createEnvironmentUi`) — it only *displays* terrain stats (e.g. `Terrain` row: render mode, draw count, chunk counts) and does not define any sliders itself. The actual terrain/CDLOD tunables are GUI sliders/toggles built directly in `environment-viewer.html`'s control-panel section (~line 1644 onward), all bound to the shared `terrain` params object:
+
+| Control | Range / step | Effect |
+|---|---|---|
+| `size` ("View distance") | 200–1000, step 10 | Camera far plane + fog distance only (`updateDrawDistance()`); does not rebuild the chunked terrain. |
+| `renderRadius` ("Draw distance (chunks)") | 1–12, step 1 | Streams `terrainSystem.params.renderRadius` live (no full rebuild); also maps to CDLOD `setViewDistance(2 + renderRadius)` when the GPU ground is active. |
+| `lake` ("Lake coverage") | 0–1, step 0.01 | Debounced `worldRebuild()` (220ms); pushed into `cdlodRef.setTerrain(...)` and `grassRef.setTerrain(...)` too. |
+| `lakeDepth` ("Lake depth") | 0–6, step 0.1 | Same debounced rebuild path as `lake`. |
+| `waterLevel` ("Water level") | -3–1, step 0.05 | Same debounced rebuild path; also drives water/shoreline regeneration. |
+
+`?terrain=gpu|chunks` URL param selects the CDLOD vs. legacy chunk-mesh renderer (default `gpu`); `terrainSystem`'s `visualMode` is set to `'external'` when `gpu` is active so the chunk system only tracks metadata/collision while `cdlod-terrain.js` renders the ground.
+
+## Tests
+
+| Test file | Covers | What it checks |
+|---|---|---|
+| `test-terrain-field.mjs` | `buildChunkArrays`, `terrainHeightAt`, `terrainNormalAt` | Worker geometry builder is behaviour-equivalent to the old `THREE.PlaneGeometry` + per-vertex height/normal path (position/normal/uv/index parity, incl. >65535-vertex Uint32 index path); front-face winding is always up; adjacent chunks share identical edge vertices/normals (seamless). |
+| `test-terrain-heightmap-parity.mjs` | `terrainHeightAt` (heightmap-sampled path) | Predicts GPU bilinear-texture-sampled height error vs. the analytic field at several texel densities (sweeps flat vs. steep/lake-shore regions); asserts the recommended 0.5 u/texel density keeps worst-case/p99.9 error within tolerance and beats the current-mesh-equivalent density. |
+| `test-terrain-tile-seam.mjs` | `buildHeightTile`, `sampleHeightTileBilinear` | Adjacent height tiles (and a 2×2 diagonal block) agree exactly on shared-edge heights and heightmap-derived normals — no seams for the instanced/atlas path. |
+| `test-terrain-worker-heighttile.mjs` | `terrain-worker.js` (`heightTile` job) | Mocks `self`/`postMessage` (Node has no browser worker scope) and verifies the worker's `heightTile` reply round-trips key/epoch, returns a `Float32Array` of the expected length/step/origin. |
+| `test-terrain-instanced.mjs` | `TerrainSystem` instanced render mode | With a fake synchronous-via-`setTimeout` Worker: instanced mode collapses to exactly one render child (`InstancedMesh`) regardless of streaming; `experimentalInstancedTerrain` gates the request (falls back to `'chunks'` otherwise); instance count tracks `renderRadius`; height atlas gets populated from worker `heightTile` jobs; chunk meshes are never attached to the render group; `dispose()` empties the group. |
+| `test-terrain-system.mjs` | `TerrainSystem` (chunk render mode, worker + sync) | Worker streaming fills the expected ring size; movement loads new chunks and unloads old ones with no stale overlap; `rebuild()` bumps `epoch` and drops stale in-flight results; live `renderRadius` changes restream without a full rebuild; synchronous fallback works when `Worker` construction throws; `visualMode: 'external'` produces metadata-only records (no meshes, no group children) while `getHeight` keeps working. |
+| `test-collision.mjs` | `groundContact`, `slideVelocity`, `resolveTrunks`, `createTrunkIndex` (against the real `terrain-field.js` field) | Above/below/steep ground contact classification and `restBottomY`/`normal` correctness; velocity sliding removes only the into-surface component and preserves jumps; trunk push-out reaches exact `radius+r` distance, leaves clear points untouched, handles the degenerate same-center case deterministically, and guarantees no tunneling when two trunks' exclusion zones overlap; `createTrunkIndex` bucket set/resolve/clear and 3×3-neighborhood `nearby()` lookup. |
+| `test-grass-height-tsl.mjs` (terrain-field.js-relevant parts) | `terrainHeightAt` vs. `grassHeightRef` (a separate TSL-port reference module, not part of this subsystem) | The JS height port used elsewhere for GPU parity testing matches `terrainHeightAt` to <1e-6 over a swept grid, is deterministic, and that `lakeDepth` actually perturbs height where a basin exists. |
+| `test-cdlod-morton.mjs` | `part1by1`, `compact1by1`, `mortonKey`, `decodeMorton` | Bit spread/compact are exact inverses on 16-bit inputs; `mortonKey`/`decodeMorton` round-trip signed level/ix/iz (including negatives); distinct cells produce distinct codes. |
+| `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
+| `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |

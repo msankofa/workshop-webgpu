@@ -7,6 +7,30 @@
       "playable": true,
       "mapScale": 1,
       "snapStep": 0.5
+    },
+    "workshop/cave-world-1.glb": {
+      "displayName": "Cave World 1",
+      "gameName": "Cave World 1",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    },
+    "Generated Terrrain/endpoint-test.glb": {
+      "displayName": "Endpoint Test",
+      "gameName": "Endpoint Test",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    },
+    "workshop/cave-world-2.glb": {
+      "displayName": "Cave World 2",
+      "gameName": "Cave World 2",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
     }
   }
 }

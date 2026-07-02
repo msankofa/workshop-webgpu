@@ -463,6 +463,8 @@ export function createWaterSystem(options = {}) {
   // Gate the caustic render pass — reflection+refraction restored in 6.2 via TSL nodes;
   // caustics render pass remains gated here until checkpoint 6.3.
   const CAUSTICS_ENABLED = true;
+  let causticStrength = Number(o.caustic) || 0;
+  const causticRenderStats = { enabled: CAUSTICS_ENABLED && causticStrength > 0, passes: 0, lastMs: 0 };
 
   // ---- TSL uniform handles for the surface node material ----
   const tsl_uTime       = uniform(0.0,                  'float');
@@ -551,6 +553,21 @@ export function createWaterSystem(options = {}) {
   //   vec4 rc = vReflect; rc.xy += N.xz * uReflectStrength * rc.w;
   //   vec3 refl = texture2DProj(uReflect, rc).rgb;
   const tsl_reflector = reflector();
+  const reflectorBase = tsl_reflector.reflector;
+  let reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
+  const reflectionRenderStats = { enabled: reflectionEnabled, passes: 0, lastMs: 0 };
+  const renderReflection = reflectorBase.updateBefore.bind(reflectorBase);
+  reflectorBase.updateBefore = (frame) => {
+    reflectionRenderStats.enabled = reflectionEnabled;
+    if (!reflectionEnabled) {
+      reflectionRenderStats.lastMs = 0;
+      return;
+    }
+    const t0 = nowMs();
+    renderReflection(frame);
+    reflectionRenderStats.passes++;
+    reflectionRenderStats.lastMs = nowMs() - t0;
+  };
   tsl_reflector.target.rotation.x = -Math.PI / 2;
   tsl_reflector.uvNode = tsl_reflector.uvNode.add(N.xz.mul(tsl_uReflectStrength));
   const refl = tsl_reflector.rgb.mul(tsl_uReflectBrightness);
@@ -719,12 +736,21 @@ export function createWaterSystem(options = {}) {
       this.updateBeforeType = NodeUpdateType.RENDER;
     }
     updateBefore(frame) {
+      causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+      if (!causticRenderStats.enabled) {
+        causticRenderStats.lastMs = 0;
+        this.value = causticsTarget.texture;
+        return;
+      }
+      const t0 = nowMs();
       const r = frame.renderer;
       const prev = r.getRenderTarget();
       r.setRenderTarget(causticsTarget);
       r.render(causticScene, causticCamera);
       r.setRenderTarget(prev);
-      this.value = causticsTarget.texture; // re-set during live loop → issues/001 safe
+      causticRenderStats.passes++;
+      causticRenderStats.lastMs = nowMs() - t0;
+      this.value = causticsTarget.texture;
     }
   }
 
@@ -993,13 +1019,21 @@ export function createWaterSystem(options = {}) {
   function setWaves(strength) {
     tsl_uWave.value = strength;   // causticMat reuses tsl_uWave via rippleNormal
   }
-  function setCaustic(strength) { tsl_c_causticStr.value = strength; }
+  function setCaustic(strength) {
+    causticStrength = Math.max(0, Number(strength) || 0);
+    causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+    tsl_c_causticStr.value = causticStrength;
+  }
 
   function setReflectionTuning(opts = {}) {
     if (opts.reflectStrength !== undefined) tsl_uReflectStrength.value = opts.reflectStrength;
     if (opts.refractStrength !== undefined) tsl_uRefractStrength.value = opts.refractStrength;
-    if (opts.reflectMix !== undefined) tsl_uReflectMix.value = opts.reflectMix;
-    if (opts.reflectBrightness !== undefined) tsl_uReflectBrightness.value = opts.reflectBrightness;
+    if (opts.reflectMix !== undefined) o.reflectMix = Number(opts.reflectMix) || 0;
+    if (opts.reflectBrightness !== undefined) o.reflectBrightness = Number(opts.reflectBrightness) || 0;
+    if (opts.reflectMix !== undefined) tsl_uReflectMix.value = o.reflectMix;
+    if (opts.reflectBrightness !== undefined) tsl_uReflectBrightness.value = o.reflectBrightness;
+    reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
+    reflectionRenderStats.enabled = reflectionEnabled;
     if (opts.depthScale !== undefined) tsl_uDepthScale.value = opts.depthScale;
   }
 
@@ -1054,9 +1088,15 @@ export function createWaterSystem(options = {}) {
       pending,
       dry: 0,
       waterMeshes: meshCount,
-      causticMeshes: meshCount,
+      causticMeshes: causticRenderStats.enabled ? meshCount : 0,
       waterDraws: meshCount,
-      causticDraws: meshCount,
+      causticDraws: causticRenderStats.enabled ? meshCount : 0,
+      causticEnabled: causticRenderStats.enabled,
+      causticPasses: causticRenderStats.passes,
+      causticLastMs: causticRenderStats.lastMs,
+      reflectionEnabled: reflectionRenderStats.enabled,
+      reflectionPasses: reflectionRenderStats.passes,
+      reflectionLastMs: reflectionRenderStats.lastMs,
       ring0Tris: ringTris[0], ring1Tris: ringTris[1], ring2Tris: ringTris[2],
       ring0Verts: ringVerts[0], ring1Verts: ringVerts[1], ring2Verts: ringVerts[2],
       waterTriangles: ringTris[0] + ringTris[1] + ringTris[2],

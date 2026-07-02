@@ -45,7 +45,9 @@ function leafOptsFor(sp, params, texSet, spIdx) {
 // so the palette must be rebaked when texMode changes.
 export function createForestPalette({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
   const gen = createTree({ seed: 1 });
-  const species = buildSpecies(params, rngFrom(masterSeed));   // identical to the baker's species
+  // An authored species table (from buildSpeciesFromFamilies) takes over when present;
+  // its entries are full trees.js opts objects too, so nothing else below needs to change.
+  const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
   const variants = [];
   for (let s = 0; s < species.length; s++) {
     const sp = species[s];

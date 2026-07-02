@@ -908,6 +908,23 @@ let familySelectEl, newFamilyNameValue = '';
     renderFamilyPanel();
   });
 }
+{
+  // Downloads the selected family as a standalone JSON file for the game to consume
+  // (drop it in workshop-webgpu/families/ and list it in families/manifest.json).
+  // Species opts are already texture-free (snapshotOpts strips map/normalMap at save
+  // time), so no replacer is needed here.
+  buttonControl('Export family JSON', () => {
+    const fam = currentFamilyId ? familyById(currentFamilyId) : null;
+    if (!fam) return;
+    const slug = fam.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'family';
+    const blob = new Blob([JSON.stringify(fam, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${slug}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+}
 
 header('Grow family');
 const growHost = document.createElement('div');

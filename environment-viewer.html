@@ -65,6 +65,16 @@ const CREATURE_MODE = new URLSearchParams(location.search).get('creatures') || '
 const TIMESTAMP_MODE = new URLSearchParams(location.search).get('timestamps') || 'off';
 let mpSession = null;
 let mpGhostRenderer = null;
+let mpClientId = null;
+let mpLastPlayerSend = -Infinity;
+const MP_PLAYER_SEND_MS = 50;
+const mpGuestPlayers = new Map();
+let portCreatures = null;
+let playerCollider = null;
+let playerInitialized = false;
+let fpsMode = false;
+let stance = 'stand';
+let capsuleH = 1.6;
 
 const { mapKey, mpRole, roomCode, setStatus, dismiss } = await showStartScreen();
 
@@ -100,6 +110,23 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d23);
 
 // ===================== multiplayer session =====================
+function getLocalPlayerState(id) {
+  if (!playerCollider || !playerInitialized) return null;
+  const yaw = camera.rotation.y;
+  const halfYaw = yaw * 0.5;
+  return {
+    id,
+    p: [
+      (playerCollider.start.x + playerCollider.end.x) * 0.5,
+      (playerCollider.start.y + playerCollider.end.y) * 0.5,
+      (playerCollider.start.z + playerCollider.end.z) * 0.5,
+    ],
+    q: [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)],
+    h: Math.max(0.1, playerCollider.end.y - playerCollider.start.y),
+    r: playerCollider.radius,
+  };
+}
+
 function getState() {
   const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
     id,
@@ -109,19 +136,55 @@ function getState() {
     feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
     hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
   }));
-  return { creatures, players: [] };
+  const players = [];
+  const hostPlayer = getLocalPlayerState('host');
+  if (hostPlayer) players.push(hostPlayer);
+  for (const player of mpGuestPlayers.values()) players.push(player);
+  return { creatures, players };
 }
 
+function updateHostPlayerGhosts() {
+  if (mpRole === 'host' && mpGhostRenderer) {
+    mpGhostRenderer.update({ creatures: [], players: [...mpGuestPlayers.values()] });
+  }
+}
+
+function syncMultiplayerPlayer(now) {
+  if (mpRole === 'host') {
+    updateHostPlayerGhosts();
+    return;
+  }
+  if (mpRole !== 'guest' || !mpSession || !mpClientId || now - mpLastPlayerSend < MP_PLAYER_SEND_MS) return;
+  const player = getLocalPlayerState(mpClientId);
+  if (!player) return;
+  mpSession.sendInput({ type: 'player_state', player });
+  mpLastPlayerSend = now;
+}
+
+window.addEventListener('mp:joined', e => {
+  mpClientId = e.detail.clientId;
+});
+
 if (mpRole === 'host') {
+  mpGhostRenderer = new GhostRenderer(scene, THREE);
   mpSession = createHostSession(roomCode, mapKey, getState);
 } else if (mpRole === 'guest') {
   mpGhostRenderer = new GhostRenderer(scene, THREE);
-  mpSession = createGuestSession(roomCode, state => mpGhostRenderer.update(state));
+  mpSession = createGuestSession(roomCode, state => {
+    const players = (state.players ?? []).filter(p => p.id !== mpClientId);
+    mpGhostRenderer.update({ ...state, players });
+  });
 }
 
 window.addEventListener('mp:guest_input', e => {
   const msg = e.detail;
-  if (msg.type === 'set_target') {
+  if (msg.type === 'player_state' && msg.clientId && msg.player) {
+    mpGuestPlayers.set(msg.clientId, { ...msg.player, id: msg.clientId });
+    updateHostPlayerGhosts();
+  } else if (msg.type === 'guest_left' && msg.clientId) {
+    mpGuestPlayers.delete(msg.clientId);
+    updateHostPlayerGhosts();
+  } else if (msg.type === 'set_target') {
     portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
   } else if (msg.type === 'set_behavior') {
     portCreatures?.system?.setBehavior(msg.behavior);
@@ -362,7 +425,7 @@ function clampMovedPanels() {
   }
 }
 window.addEventListener('resize', clampMovedPanels);
-const portCreatures = createEnvironmentPortCreatures({
+portCreatures = createEnvironmentPortCreatures({
   scene,
   renderer,
   camera,
@@ -1732,7 +1795,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       const libraryIds = Object.keys(catalog?.library || {});
       textureSources = [...new Set([...textureSources, ...libraryIds.map(id => `library/${id}`)])];
     } catch (_) { /* catalog is optional */ }
-    const biomeState = { layer: biomeLayers[0], sourceLayer: biomeLayers[0], tileMeters: 4, roughness: 0.95, normalScale: 1 };
+    const biomeState = { layer: biomeLayers[0], sourceLayer: biomeLayers[0], tileMeters: 4, roughness: 0.95, normalScale: 1, displacementScale: 0 };
     const biomeRefreshers = [];
     const biomeRoot = loadedMap.root;
     const syncBiomeState = () => {
@@ -1741,6 +1804,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       biomeState.tileMeters = Number(s.tileMeters ?? 4);
       biomeState.roughness = Number(s.roughness ?? 0.95);
       biomeState.normalScale = Number(s.normalScale ?? 1);
+      biomeState.displacementScale = Number(s.displacementScale ?? 0);
       biomeRefreshers.forEach(fn => fn());
     };
     const applyBiomeState = async (changes = {}) => {
@@ -1749,6 +1813,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         tileMeters: biomeState.tileMeters,
         roughness: biomeState.roughness,
         normalScale: biomeState.normalScale,
+        displacementScale: biomeState.displacementScale,
         ...changes,
       });
       syncBiomeState();
@@ -1777,6 +1842,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     makeBiomeSlider('Tile meters', 'tileMeters', 0.5, 12, 0.1, f2);
     makeBiomeSlider('Roughness', 'roughness', 0, 1, 0.01, f2);
     makeBiomeSlider('Normal strength', 'normalScale', 0, 3, 0.05, f2);
+    makeBiomeSlider('Displacement', 'displacementScale', 0, 2, 0.01, f2);
     const resetBtn = document.createElement('button');
     resetBtn.textContent = 'Reset layer';
     resetBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
@@ -1786,7 +1852,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       biomeState.tileMeters = Number(s.defaultTileMeters ?? s.tileMeters ?? 4);
       biomeState.roughness = Number(s.defaultRoughness ?? 0.95);
       biomeState.normalScale = 1;
-      Promise.resolve(applyBiomeState({ sourceLayer: biomeState.layer, tileMeters: biomeState.tileMeters, roughness: biomeState.roughness, normalScale: 1 })).catch(err => showError(err.message));
+      biomeState.displacementScale = 0;
+      Promise.resolve(applyBiomeState({ sourceLayer: biomeState.layer, tileMeters: biomeState.tileMeters, roughness: biomeState.roughness, normalScale: 1, displacementScale: 0 })).catch(err => showError(err.message));
     });
     current.appendChild(resetBtn);
     syncBiomeState();
@@ -2140,6 +2207,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       verticalOffset: params.grassVerticalOffset,
       grassRecull: GRASS_RECULL_MODE,
       maxRadius: 600,
+      // authored maps: plant blades on the real mesh surface (anchor mode) so caves,
+      // overhangs, and floating islands get correct grass; heightTex stays passed as
+      // the water-envelope lookup and as the fallback when no collider exists.
+      surfaceGeometry: (loadedMap && mapCollider) ? mapCollider.geometry : null,
       heightTex: loadedMap?.heightTex ?? null,
       heightTexBounds: loadedMap?.heightTexBounds ?? null,
       densityTex: loadedMap?.grassDensityTex ?? null,
@@ -2359,14 +2430,13 @@ window.addEventListener('resize', () => {
 // ===================== FPS walk mode (analytic heightfield capsule collision — SP5a) =====================
 const STEPS_PER_FRAME = 5;
 
-const playerCollider = new Capsule(
+playerCollider = new Capsule(
   new THREE.Vector3(0, 0.35, 0),
   new THREE.Vector3(0, 1.0,  0),
   0.35
 );
 const playerVelocity = new THREE.Vector3();
 let playerOnFloor = false;
-let fpsMode = false;
 const fpsKeys = {};
 const _fpsForward = new THREE.Vector3();
 const _fpsSide = new THREE.Vector3();
@@ -2383,9 +2453,7 @@ const fp = {
   friction:    68,   // ground decel exponent — higher = stops faster
 };
 
-let stance = 'stand';
-let capsuleH = fp.heightStand;
-let playerInitialized = false;
+capsuleH = fp.heightStand;
 
 // ---- light gun state ----
 const LG_MAX_PLACED     = 32;
@@ -2608,6 +2676,8 @@ function resetPlayerPosition(resetLook = true) {
   }
   if (fpsMode) camera.position.copy(playerCollider.end);
 }
+
+resetPlayerPosition(false);
 
 function resetPosition() {
   resetPlayerPosition(true);
@@ -2940,6 +3010,7 @@ async function animate() {
     applyCamera();
     updateTerrainWindow(target);
   }
+  syncMultiplayerPlayer(now);
   });
   frameProfiler.time('creatures', () => portCreatures.update(rawDt));
   // water runs its own reflection / refraction / caustics passes, then we draw

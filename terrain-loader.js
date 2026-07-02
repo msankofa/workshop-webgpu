@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { applyTerrainTextures } from './terrain-textures.js';
 
 const TREE_DENSITY = {
   deep_ocean: 0.0,
@@ -103,17 +104,6 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
   ]);
 
   const terrainRoot = gltf.scene;
-  terrainRoot.traverse((obj) => {
-    if (!obj.isMesh) return;
-    obj.receiveShadow = true;
-    obj.castShadow = false;
-    obj.material = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.92,
-      metalness: 0.0,
-    });
-  });
-  if (scene) scene.add(terrainRoot);
 
   const resolution = Number(mapData.resolution);
   const worldX = Number(mapData.worldX);
@@ -133,6 +123,26 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
   const densityGrid = new Float32Array(mapData.grassDensity || []);
   const treeDensityGrid = Array.isArray(mapData.treeDensity) ? new Float32Array(mapData.treeDensity) : null;
   const biomeNames = mapData.biomeNames || [];
+  const textureInfo = await applyTerrainTextures(terrainRoot, mapData, {
+    resolution,
+    worldX,
+    worldZ,
+    seaLevel: Number(mapData.seaLevel ?? 0),
+    biomeNames,
+  });
+  if (!textureInfo) {
+    terrainRoot.traverse((obj) => {
+      if (!obj.isMesh) return;
+      obj.receiveShadow = true;
+      obj.castShadow = false;
+      obj.material = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.92,
+        metalness: 0.0,
+      });
+    });
+  }
+  if (scene) scene.add(terrainRoot);
 
   function bilinear(grid, x, z) {
     const fx = (x / worldX + 0.5) * (resolution - 1);
@@ -223,6 +233,7 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
     seaLevel: Number(mapData.seaLevel ?? 0),
     resolution,
     biomeNames,
+    terrainTextureMeshes: textureInfo?.texturedMeshes ?? 0,
     grassDensityGrid: densityGrid,
     heightAt(x, z) { return inBounds(x, z) ? bilinear(heights, x, z) : this.seaLevel; },
     biomeAt,

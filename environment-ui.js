@@ -7,7 +7,7 @@ const PERF_ROWS = [
   ['cdlodGpu', 'CDLOD GPU', 'passCdlodMs'],
   ['lightsGpu', 'Lights GPU', 'passLightsMs'],
   ['particlesGpu', 'Particles GPU', 'passParticlesMs'],
-  ['postRender', 'Post/render', 'passPostMs'],
+  ['postRender', 'Render submit', 'passPostMs'],
 ];
 
 function fmtNumber(value, digits = 0) {
@@ -538,6 +538,7 @@ function buildPerfPanel(host, perfLog) {
   for (const [id, label] of PERF_ROWS) {
     const row = makeEl('div', 'wui-row');
     row.innerHTML = `<span>${label}</span><strong>-- ms</strong><div class="wui-bar"><span></span></div>`;
+    if (id === 'postRender') row.title = 'Final render/submit timing. With Post FX off, this is still the scene render.';
     stagesBody.appendChild(row);
     stageRows.set(id, row);
   }
@@ -618,6 +619,7 @@ function buildPerfPanel(host, perfLog) {
       ['Terrain', `${snapshot.terrainMode || '--'}; draws ${snapshot.terrainDraws ?? '--'}; chunks ${snapshot.drawChunks ?? '--'}/${snapshot.targetChunks ?? '--'}`],
       ['Grass', `${snapshot.grassChunks ?? 0} chunks; reculls ${snapshot.grassReculls ?? '--'}; skips ${snapshot.grassRecullSkips ?? '--'}`],
       ['Water', `${snapshot.waterChunks ?? 0}/${snapshot.waterCandidates ?? 0} chunks; ${fmtCompact(snapshot.waterTriangles ?? 0)} tris`],
+      ['Water FX', `refl ${snapshot.waterReflectionEnabled ? 'on' : 'off'} ${fmtMs(snapshot.waterReflectionLastMs ?? 0)} ms; caustic ${snapshot.waterCausticEnabled ? 'on' : 'off'} ${fmtMs(snapshot.waterCausticLastMs ?? 0)} ms`],
       ['Forest', `${snapshot.forestInstances ?? snapshot.treePlacements ?? 0} instances; draws ${snapshot.forestDraws ?? '--'}`],
       ['Memory', `${snapshot.geometries ?? 0} geom; ${snapshot.textures ?? 0} tex; dropped ${snapshot.droppedFrames ?? 0}`],
     ];
@@ -629,6 +631,9 @@ function buildPerfPanel(host, perfLog) {
 
     for (const [id, , key] of PERF_ROWS) {
       const row = stageRows.get(id);
+      if (id === 'postRender') {
+        row.querySelector('span').textContent = snapshot.postMode === 'off' ? 'Render submit' : 'Render + post';
+      }
       const ms = Number(snapshot[key] || 0);
       const pct = Math.min(100, (ms / 33.3) * 100);
       row.querySelector('strong').textContent = fmtMs(ms) + ' ms';

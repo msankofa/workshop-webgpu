@@ -7,6 +7,14 @@
 // terrain-field.js (Node-tested twin: grass-height-ref.js) so blades sit on the
 // visible ground and water rejection matches the lakes. API forms confirmed by
 // grass-compute-spike.html.
+//
+// Anchor mode (opts.surfaceGeometry, used for authored maps): instead of generating
+// blade positions procedurally on a heightfield, blades are planted on anchor points
+// sampled from the map's actual triangle mesh (grass-anchors.js) so they follow cave
+// floors, overhangs, and floating islands exactly. Chunks of anchors near the camera
+// are sampled on the CPU (budgeted per frame) and streamed into a GPU storage buffer;
+// the cull kernel then reads anchors instead of synthesizing positions. The instance
+// buffer, blade material, and indirect draw are shared between both modes.
 import * as THREE from 'three';
 import {
   MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
@@ -19,6 +27,10 @@ import {
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns } from './grass.js';
 import { maxInstances, perCellCount } from './grass-cells.js';
+import {
+  buildChunkIndex, sampleChunk, slotCapacityForRadius,
+  chunkKey, parseChunkKey, pointToChunkDist,
+} from './grass-anchors.js';
 
 // ---- integer hash helpers (u32 domain; bit-exact with terrain-field/grass-cells) ----
 // reinterpret an i32 node's bits as u32 (NOT a value conversion — preserves two's
@@ -45,6 +57,18 @@ const lakeNoiseFn = Fn(([x, z]) => {
   const c = lakeHashFn(ix, iz.add(int(1)));
   const d = lakeHashFn(ix.add(int(1)), iz.add(int(1)));
   return mix(mix(a, b, su), mix(c, d, su), sv);
+});
+
+// per-(anchorIndex,salt) pseudo-random in [0,1) for anchor-mode blades (yaw, height
+// variation, edge-fade keep). A pure function of the buffer slot index, so blades
+// stay stable for as long as their chunk is resident.
+const anchorRandFn = Fn(([i, salt]) => {
+  let h = asU(i).mul(uint(747796405)).add(uint(2891336453));
+  h = h.bitXor(h.shiftRight(uint(15))).mul(uint(2246822519));
+  h = h.bitXor(asU(salt).mul(uint(2654435761)));
+  h = h.bitXor(h.shiftRight(uint(13))).mul(uint(3266489917));
+  h = h.bitXor(h.shiftRight(uint(16)));
+  return h.toFloat().div(4294967296.0);
 });
 
 // generic per-(cell,slot,salt) pseudo-random in [0,1) for placement (determinism is
@@ -83,20 +107,58 @@ export function createComputeGrass(opts) {
   };
   const hasHeightTex = !!(opts.heightTex && opts.heightTexBounds);
   const heightTex = hasHeightTex ? opts.heightTex : null;
+  const hasDensityTex = !!(opts.densityTex && opts.densityTexBounds);
+  const densityTex = hasDensityTex ? opts.densityTex : null;
   const uBoundsMinX = hasHeightTex ? uniform(opts.heightTexBounds.minX) : null;
   const uBoundsMinZ = hasHeightTex ? uniform(opts.heightTexBounds.minZ) : null;
   const uBoundsW = hasHeightTex ? uniform(opts.heightTexBounds.worldX) : null;
   const uBoundsH = hasHeightTex ? uniform(opts.heightTexBounds.worldZ) : null;
+  const uDensityMinX = hasDensityTex ? uniform(opts.densityTexBounds.minX) : null;
+  const uDensityMinZ = hasDensityTex ? uniform(opts.densityTexBounds.minZ) : null;
+  const uDensityW = hasDensityTex ? uniform(opts.densityTexBounds.worldX) : null;
+  const uDensityH = hasDensityTex ? uniform(opts.densityTexBounds.worldZ) : null;
   const half0 = Math.ceil(o.radius / cellSize) | 0;
-  const CAP = maxInstances(maxRadius, cellSize, Kmax); // sized for the max radius (slider ceiling)
 
-  // ---- buffers (GPU-resident; never re-uploaded per frame) ----
+  // ---- anchor mode setup (authored maps; see header) ----
+  const surfacePositions = opts.surfaceGeometry?.attributes?.position?.array ?? null;
+  const anchorMode = !!surfacePositions;
+  const chunkSize = opts.anchorChunkSize ?? 32;
+  // Anchors are sampled at the creation-time density; the density slider then thins
+  // them via uDensityScale (values above the sampled base have no effect).
+  const baseDensity = o.density;
+  const perSlot = anchorMode ? Math.max(1, Math.round(baseDensity * chunkSize * chunkSize)) : 0;
+  const numSlots = anchorMode ? slotCapacityForRadius(maxRadius, chunkSize) : 0;
+  const anchorCap = numSlots * perSlot;
+  const chunkIndex = anchorMode
+    ? buildChunkIndex(surfacePositions, { chunkSize, minNormalY: opts.anchorMinNormalY ?? 0.5 })
+    : null;
+
+  // Worst-case survivor capacity. Procedural mode can fill every window slot; anchor
+  // mode is additionally capped by maxBlades (the indirect draw is clamped to it
+  // anyway), which keeps the instance buffer far smaller than the anchor pool.
+  const CAP = anchorMode
+    ? (o.maxBlades > 0 ? Math.min(anchorCap, o.maxBlades) : anchorCap)
+    : maxInstances(maxRadius, cellSize, Kmax); // sized for the max radius (slider ceiling)
+  if (anchorMode) {
+    console.info(`[grass] anchor mode: ${chunkIndex.chunks.size} surface chunks, `
+      + `${numSlots} slots × ${perSlot} anchors `
+      + `(${(anchorCap * 16 / 1e6).toFixed(0)} MB anchors + ${(CAP * 32 / 1e6).toFixed(0)} MB instances)`);
+  }
+
+  // ---- buffers (GPU-resident; only anchor-slot ranges are re-uploaded, on streaming) ----
   // per instance: 2x vec4 → [2i]=(x,y,z,h), [2i+1]=(yaw,_,_,_)
   const instAttr = new StorageInstancedBufferAttribute(new Float32Array(CAP * 8), 8);
   const inst = storage(instAttr, 'vec4', CAP * 2);
   const counter = storage(new StorageBufferAttribute(new Uint32Array(1), 1), 'uint', 1).toAtomic();
   const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([9, 0, 0, 0, 0]), 5);
   const indirect = storage(indirectAttr, 'uint', 5);
+  // anchor mode: (x,y,z,rand01) per anchor, chunk-slot-strided + live count per slot
+  const anchorArray = anchorMode ? new Float32Array(anchorCap * 4) : null;
+  const anchorAttr = anchorMode ? new StorageBufferAttribute(anchorArray, 4) : null;
+  const anchorsBuf = anchorMode ? storage(anchorAttr, 'vec4', anchorCap) : null;
+  const slotCountArray = anchorMode ? new Uint32Array(numSlots) : null;
+  const slotCountAttr = anchorMode ? new StorageBufferAttribute(slotCountArray, 1) : null;
+  const slotCounts = anchorMode ? storage(slotCountAttr, 'uint', numSlots) : null;
 
   // ---- uniforms (live) ----
   const uCam      = uniform(new THREE.Vector2());
@@ -108,6 +170,8 @@ export function createComputeGrass(opts) {
   const uPerCell  = uniform(perCellCount(o.density, cellSize, Kmax));
   const uCellSize = uniform(cellSize);
   const uWaterMin = uniform(o.waterLevel + o.shoreMargin);
+  const uDensityScale = uniform(1);            // anchor mode: live density / sampled base
+  const uHardCap = uniform(CAP, 'uint');       // instance-buffer capacity (write + draw clamp)
   const uBaseAmp  = uniform(o.baseAmp);
   const uLake     = uniform(o.lake);
   const uLakeDepth= uniform(o.lakeDepth);
@@ -131,6 +195,8 @@ export function createComputeGrass(opts) {
   let lastCellZ = null;
   const stats = {
     recullMode,
+    anchorMode,
+    residentChunks: 0,
     reculls: 0,
     skippedReculls: 0,
     lastCell: '',
@@ -163,10 +229,57 @@ export function createComputeGrass(opts) {
         return h.sub(basinSS.mul(uLakeDepth));
       });
 
+  const densityFn = hasDensityTex
+    ? Fn(([x, z]) => {
+        const u = clamp(x.sub(uDensityMinX).div(uDensityW), 0, 1);
+        const v = clamp(z.sub(uDensityMinZ).div(uDensityH), 0, 1);
+        return texture(densityTex, vec2(u, v)).r;
+      })
+    : Fn(() => float(1));
   // ---- compute kernels (reset → generate+cull → finalize), per the spike ----
   const reset = Fn(() => { atomicStore(counter.element(0), uint(0)); })().compute(1);
 
-  const cull = Fn(() => {
+  // Anchor-mode cull: each thread owns one anchor-buffer slot entry; live entries
+  // (k < slotCounts[chunkSlot]) are distance/edge/water/density tested and appended.
+  // Water: a blade below sea level is only rejected when the baked envelope height
+  // is ALSO below sea level — i.e. where the water plane actually renders. Cave
+  // floors under a high roof keep their grass (no water is drawn there either,
+  // since the water mesh is built from the same envelope heightfield).
+  const anchorCull = anchorMode ? Fn(() => {
+    const idx = int(instanceIndex);
+    const slot = idx.div(int(perSlot));
+    const k = modInt(idx, int(perSlot));
+    If(uint(k).lessThan(slotCounts.element(slot)), () => {
+      const a = anchorsBuf.element(idx).toVar();
+      const wx = a.x, wy = a.y, wz = a.z;
+      const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
+      const gradRange = uRadius.sub(uCullStart).max(float(0.001));
+      const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
+      const keepRand = anchorRandFn(idx, int(7));
+      const biomeDensity = densityFn(wx, wz).mul(uDensityScale);
+      const dry = hasHeightTex
+        ? wy.greaterThan(uWaterMin).or(heightFn(wx, wz).greaterThan(uWaterMin))
+        : wy.greaterThan(uWaterMin);
+      const live = dry
+        .and(dist.lessThan(uRadius))
+        .and(keepRand.greaterThan(edge))
+        .and(a.w.lessThan(biomeDensity));
+      If(live, () => {
+        const s = atomicAdd(counter.element(0), uint(1));
+        const withinCap = s.lessThan(uHardCap)
+          .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
+        If(withinCap, () => {
+          const base2 = s.mul(uint(2));
+          const yaw = anchorRandFn(idx, int(3)).mul(6.2831853);
+          const bh = float(0.8).add(anchorRandFn(idx, int(5)).mul(0.6));
+          inst.element(base2).assign(vec4(wx, wy, wz, bh));
+          inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+        });
+      });
+    });
+  })().compute(anchorCap) : null;
+
+  const proceduralCull = anchorMode ? null : Fn(() => {
     const idx = int(instanceIndex);                  // 0 .. CAP-1 (CAP is small; int is safe)
     const K = int(Kmax);
     const slot = modInt(idx, K);
@@ -188,11 +301,14 @@ export function createComputeGrass(opts) {
       const gradRange = uRadius.sub(uCullStart).max(float(0.001));
       const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
       const keepRand = slotRandFn(gx, gz, slot, int(7));
+      const densityRand = slotRandFn(gx, gz, slot, int(8));
+      const biomeDensity = densityFn(wx, wz);
       const live = wy.greaterThan(uWaterMin)
         .and(wx.greaterThanEqual(uTerrainMinX)).and(wx.lessThanEqual(uTerrainMaxX))
         .and(wz.greaterThanEqual(uTerrainMinZ)).and(wz.lessThanEqual(uTerrainMaxZ))
         .and(dist.lessThan(uRadius))
-        .and(keepRand.greaterThan(edge));
+        .and(keepRand.greaterThan(edge))
+        .and(densityRand.lessThan(biomeDensity));
       If(live, () => {
         const s = atomicAdd(counter.element(0), uint(1));
         const withinCap = uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades));
@@ -207,9 +323,14 @@ export function createComputeGrass(opts) {
     });
   })().compute(CAP);
 
+  const cull = anchorMode ? anchorCull : proceduralCull;
+
   const finalize = Fn(() => {
     const c = atomicLoad(counter.element(0));
     indirect.element(1).assign(c);
+    If(c.greaterThan(uHardCap), () => {
+      indirect.element(1).assign(uHardCap);
+    });
     If(uMaxBlades.greaterThan(uint(0)).and(c.greaterThan(uMaxBlades)), () => {
       indirect.element(1).assign(uMaxBlades);
     });
@@ -261,6 +382,69 @@ export function createComputeGrass(opts) {
   mesh.castShadow = false;
   mesh.receiveShadow = true;
 
+  // ---- anchor streaming: keep chunks near the camera resident in slot pool ----
+  // Admits nearest-first within a per-frame CPU budget; evicts with one chunk of
+  // hysteresis so the boundary doesn't thrash. Sampling is deterministic per chunk
+  // key, so a chunk that leaves and re-enters gets identical blades.
+  const resident = anchorMode ? new Map() : null;   // chunkKey -> slot index
+  const freeSlots = anchorMode ? Array.from({ length: numSlots }, (_, i) => numSlots - 1 - i) : null;
+  const anchorBudgetMs = opts.anchorBudgetMs ?? 3;
+  const ANCHOR_SEED = 0x51ab77;
+  function maintainResidency() {
+    const camX = camera.position.x, camZ = camera.position.z;
+    const r = uRadius.value;
+    let changed = false;
+    let countsChanged = false;
+    for (const [key, slot] of resident) {
+      const [cx, cz] = parseChunkKey(key);
+      if (pointToChunkDist(camX, camZ, cx, cz, chunkSize) > r + chunkSize) {
+        resident.delete(key);
+        freeSlots.push(slot);
+        slotCountArray[slot] = 0;
+        countsChanged = true;
+        changed = true;
+      }
+    }
+    const minCx = Math.floor((camX - r) / chunkSize), maxCx = Math.floor((camX + r) / chunkSize);
+    const minCz = Math.floor((camZ - r) / chunkSize), maxCz = Math.floor((camZ + r) / chunkSize);
+    const missing = [];
+    for (let cz = minCz; cz <= maxCz; cz++) {
+      for (let cx = minCx; cx <= maxCx; cx++) {
+        const key = chunkKey(cx, cz);
+        if (resident.has(key) || !chunkIndex.chunks.has(key)) continue;
+        const d = pointToChunkDist(camX, camZ, cx, cz, chunkSize);
+        if (d <= r) missing.push([d, key]);
+      }
+    }
+    if (missing.length) {
+      missing.sort((a, b) => a[0] - b[0]);
+      const t0 = performance.now();
+      let uploaded = false;
+      for (const [, key] of missing) {
+        if (performance.now() - t0 > anchorBudgetMs) break;
+        const slot = freeSlots.pop();
+        if (slot === undefined) break;                // pool exhausted; retry as chunks evict
+        const data = sampleChunk(chunkIndex, surfacePositions, key, {
+          density: baseDensity, maxCount: perSlot, seed: ANCHOR_SEED,
+        }) ?? new Float32Array(0);
+        const n = data.length / 4;
+        if (n > 0) {
+          anchorArray.set(data, slot * perSlot * 4);
+          anchorAttr.addUpdateRange(slot * perSlot * 4, n * 4);
+          uploaded = true;
+        }
+        slotCountArray[slot] = n;
+        countsChanged = true;
+        resident.set(key, slot);
+        changed = true;
+      }
+      if (uploaded) anchorAttr.needsUpdate = true;
+    }
+    if (countsChanged) slotCountAttr.needsUpdate = true;
+    if (changed) markDirty();
+    stats.residentChunks = resident.size;
+  }
+
   return {
     mesh,
     // Awaited so the reset→cull→finalize chain is submitted before the frame's draw
@@ -268,6 +452,7 @@ export function createComputeGrass(opts) {
     // makes the grass blink). Mirrors the validated spike's computeAsync ordering.
     async update(seconds) {
       uTime.value = seconds;
+      if (anchorMode) maintainResidency();
       const cellX = Math.floor(camera.position.x / cellSize);
       const cellZ = Math.floor(camera.position.z / cellSize);
       const cellChanged = cellX !== lastCellX || cellZ !== lastCellZ;
@@ -287,6 +472,14 @@ export function createComputeGrass(opts) {
     forceRecull: markDirty,
     stats,
     setDensity(d) {
+      if (anchorMode) {
+        // thin the sampled anchor pool; values above the sampled base saturate at 1
+        const s = Math.max(0, Math.min(1, baseDensity > 0 ? d / baseDensity : 0));
+        if (uDensityScale.value === s) return;
+        uDensityScale.value = s;
+        markDirty();
+        return;
+      }
       const perCell = perCellCount(d, cellSize, Kmax);
       if (uPerCell.value === perCell) return;
       uPerCell.value = perCell;
