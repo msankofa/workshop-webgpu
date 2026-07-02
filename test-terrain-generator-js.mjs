@@ -1,5 +1,6 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, BIOME_INDEX,
+  gradientMagnitude, flowAccumulation,
 } from './terrain-generator-js.js';
 
 let pass = 0, fail = 0;
@@ -39,6 +40,28 @@ ok(lo === 96 && hi === 1024 && step === 32, '2: preview_resolution range matches
 
 ok(fieldLabel('snow_height_start') === 'snow start', '2: fieldLabel looks up FIELD_LABELS');
 ok(fieldLabel('seed') === 'seed', '2: fieldLabel falls back to raw name when no FIELD_LABELS entry exists');
+
+// --- Task 3: gradientMagnitude + flowAccumulation ---
+{
+  const flat = new Float32Array(9).fill(5.0);
+  const slope = gradientMagnitude(flat, 3, 300, 300);
+  let allZero = true;
+  for (const s of slope) if (Math.abs(s) >= 1e-9) allZero = false;
+  ok(allZero, '3: flat height has zero slope everywhere');
+}
+{
+  const res = 3;
+  const height = new Float32Array([8, 7, 6, 7, 6, 5, 6, 5, 0]); // (2,2) is the lowest by far
+  const { raw, norm } = flowAccumulation(height, res);
+  ok(raw.length === 9, '3: flowAccumulation returns one value per cell');
+  ok(raw[8] >= 8, `3: sink cell accumulates close to all upstream flow, got ${raw[8]}`);
+  let everyoneAtLeastOne = true, normInRange = true;
+  for (const r of raw) if (r < 1) everyoneAtLeastOne = false;
+  for (const n of norm) if (n < 0 || n > 1) normInRange = false;
+  ok(everyoneAtLeastOne, '3: every cell accumulates at least itself');
+  ok(normInRange, '3: normalized flow is in [0,1]');
+  ok(norm[8] > norm[0], '3: the sink has higher normalized flow than a high corner');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

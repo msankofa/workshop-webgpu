@@ -164,3 +164,83 @@ const FIELD_LABELS = {
 export function fieldLabel(name) {
   return FIELD_LABELS[name] ?? name.replace(/_/g, ' ');
 }
+
+// ---- shared slope helper (port of derived_maps.py / erosion_sim.py's np.gradient use) ----
+// Per-axis central difference (forward/backward at edges), unlike biome-classifier-js.js's
+// generateGrid which uses one shared dx for both axes tied to a fixed WORLD_EXTENT --
+// here world_x/world_z are independently configurable, so each axis gets its own spacing.
+export function gradientMagnitude(height, resolution, worldX, worldZ) {
+  const dx = worldX / Math.max(1, resolution - 1);
+  const dz = worldZ / Math.max(1, resolution - 1);
+  const slope = new Float32Array(resolution * resolution);
+  for (let iz = 0; iz < resolution; iz++) {
+    for (let ix = 0; ix < resolution; ix++) {
+      const idx = iz * resolution + ix;
+      const xL = ix > 0 ? height[idx - 1] : height[idx];
+      const xR = ix < resolution - 1 ? height[idx + 1] : height[idx];
+      const stepX = (ix > 0 && ix < resolution - 1) ? 2 * dx : dx;
+      const gradX = (xR - xL) / Math.max(stepX, 1e-6);
+
+      const zT = iz > 0 ? height[idx - resolution] : height[idx];
+      const zB = iz < resolution - 1 ? height[idx + resolution] : height[idx];
+      const stepZ = (iz > 0 && iz < resolution - 1) ? 2 * dz : dz;
+      const gradZ = (zB - zT) / Math.max(stepZ, 1e-6);
+
+      slope[idx] = Math.sqrt(gradX * gradX + gradZ * gradZ);
+    }
+  }
+  return slope;
+}
+
+// ---- flow accumulation (port of erosion_sim.py's flow_accumulation/_steepest_lower_receivers) ----
+const FLOW_DIRS_8 = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+
+// Returns { raw, norm, receiver }. receiver[idx] is the index of idx's single steepest
+// strictly-lower neighbor, or -1 if idx is a local sink (no strictly lower neighbor) --
+// exposed so buildDerivedMaps' lake detection can reuse it as the sink mask instead of
+// recomputing the same 8-neighbor scan a second time.
+export function flowAccumulation(height, resolution) {
+  const n = resolution * resolution;
+  const receiver = new Int32Array(n).fill(-1);
+  for (let iz = 0; iz < resolution; iz++) {
+    for (let ix = 0; ix < resolution; ix++) {
+      const idx = iz * resolution + ix;
+      let minVal = Infinity;
+      let minIdx = -1;
+      for (const [dz, dx] of FLOW_DIRS_8) {
+        const nz = iz + dz;
+        const nx = ix + dx;
+        if (nz < 0 || nz >= resolution || nx < 0 || nx >= resolution) continue;
+        const nIdx = nz * resolution + nx;
+        if (height[nIdx] < minVal) { minVal = height[nIdx]; minIdx = nIdx; }
+      }
+      receiver[idx] = (minIdx >= 0 && minVal < height[idx] - 1e-5) ? minIdx : -1;
+    }
+  }
+
+  const order = new Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => height[b] - height[a]); // descending height, matches np.argsort(-flat_height)
+
+  const accum = new Float64Array(n).fill(1);
+  for (const idx of order) {
+    const dst = receiver[idx];
+    if (dst >= 0) accum[dst] += accum[idx];
+  }
+
+  const scaled = new Float64Array(n);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    scaled[i] = Math.log1p(accum[i]);
+    if (scaled[i] < lo) lo = scaled[i];
+    if (scaled[i] > hi) hi = scaled[i];
+  }
+  const norm = new Float32Array(n);
+  const span = hi - lo;
+  for (let i = 0; i < n; i++) {
+    norm[i] = span <= 1e-8 ? 0 : Math.min(1, Math.max(0, (scaled[i] - lo) / span));
+  }
+
+  return { raw: accum, norm, receiver };
+}
