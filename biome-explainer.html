@@ -86,6 +86,14 @@
   .controls { flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px; }
   .control-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
   .control-row label { display: flex; justify-content: space-between; opacity: 0.85; }
+  .control-row select {
+    font: inherit;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--paper);
+    color: var(--ink);
+  }
   .tooltip {
     position: absolute;
     pointer-events: none;
@@ -168,7 +176,11 @@
 
   <section class="panel" id="section-consumption">
     <h2>4. A real exported map</h2>
-    <p class="lede" id="consumption-caption">Loading maps/workshop/test_export-data.json&hellip;</p>
+    <div class="control-row" style="max-width:320px;">
+      <label for="map-select">Map</label>
+      <select id="map-select"></select>
+    </div>
+    <p class="lede" id="consumption-caption">Loading&hellip;</p>
     <div class="gen-layout" id="consumption-layout" style="display:none;">
       <div class="canvas-frame">
         <canvas id="map-canvas"></canvas>
@@ -386,27 +398,51 @@
     return a * (1 - tx) * (1 - tz) + b * tx * (1 - tz) + c * (1 - tx) * tz + d * tx * tz;
   }
 
+  // Hardcoded, same pattern as code-map.html's TOOL_LINKS — maps/workshop/ has no
+  // directory-listing API (serve.py is a plain SimpleHTTPRequestHandler), so listing
+  // the folder's *-data.json files by hand is simpler than scraping a directory index.
+  const MAP_FILES = [
+    { file: 'test_export-data.json', label: 'test export' },
+    { file: 'cave 3-data.json', label: 'cave 3' },
+    { file: 'cave-4-data.json', label: 'cave 4' },
+    { file: 'cave-world-1-data.json', label: 'cave world 1' },
+    { file: 'cave-world-2-data.json', label: 'cave world 2' },
+  ];
+
   let realMap = null;
 
-  async function loadRealMap() {
+  function initMapSelect() {
+    const select = document.getElementById('map-select');
+    select.innerHTML = MAP_FILES.map(({ file, label }) =>
+      `<option value="${file}">${label}</option>`).join('');
+    select.addEventListener('change', () => loadRealMap(select.value));
+  }
+
+  async function loadRealMap(file = MAP_FILES[0].file) {
     const caption = document.getElementById('consumption-caption');
     const layout = document.getElementById('consumption-layout');
+    caption.textContent = `Loading maps/workshop/${file}…`;
+    layout.style.display = 'none';
     try {
-      const res = await fetch('maps/workshop/test_export-data.json');
+      const res = await fetch(`maps/workshop/${encodeURIComponent(file)}`);
       if (!res.ok) throw new Error(`fetch failed (${res.status})`);
       const mapData = await res.json();
       realMap = mapData;
-      caption.textContent = `maps/workshop/test_export.glb (${mapData.resolution}×${mapData.resolution} biome grid, ${mapData.worldX}×${mapData.worldZ} world units).`;
+      caption.textContent = `maps/workshop/${file} (${mapData.resolution}×${mapData.resolution} biome grid, ${mapData.worldX}×${mapData.worldZ} world units).`;
       layout.style.display = '';
       renderRealMap(mapData);
       renderMapLegend(mapData);
     } catch (err) {
-      caption.textContent = `Couldn't load maps/workshop/test_export-data.json (${err.message}). Run "python serve.py" and open this page via http://, not file://. Sections 1-3 above still work without it.`;
+      caption.textContent = `Couldn't load maps/workshop/${file} (${err.message}). Run "python serve.py" and open this page via http://, not file://. Sections 1-3 above still work without it.`;
     }
   }
 
   function renderRealMap(mapData) {
-    const canvas = document.getElementById('map-canvas');
+    // Swapping maps re-invokes this function on the same <canvas> — clone it to
+    // drop previously-attached mousemove/mouseleave listeners instead of stacking them.
+    const oldCanvas = document.getElementById('map-canvas');
+    const canvas = oldCanvas.cloneNode(false);
+    oldCanvas.replaceWith(canvas);
     const res = mapData.resolution;
     canvas.width = res;
     canvas.height = res;
@@ -497,6 +533,7 @@
 
   buildReferenceTables();
 
+  initMapSelect();
   loadRealMap();
 </script>
 </body>
