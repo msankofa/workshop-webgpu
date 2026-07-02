@@ -156,13 +156,13 @@
     <div class="pipeline">
       <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Paint authoring<br><span>not yet built (Phase B)</span></div>
       <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Heightfield preview<br><span>not yet built (Phase C)</span></div>
+      <div class="pipe-box small">Heightfield preview<br><span>direct grid-to-mesh, no voxels</span></div>
       <div class="pipe-arrow">&rarr;</div>
       <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Density field preview<br><span>not yet built (Phase D)</span></div>
       <div class="pipe-arrow">&rarr;</div>
       <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Marching cubes, water, forest, GLB export<br><span>not yet built (Phase E)</span></div>
     </div>
-    <p class="lede" style="margin-top:20px;">Sections 2-7 below cover Phase A (noise fields through material masks). Section 8 shows a real exported map; section 9 lists the reference tables workshop-webgpu reads at runtime.</p>
+    <p class="lede" style="margin-top:20px;">Sections 2-7 below cover Phase A (noise fields through material masks). Section 8 is Phase C's heightfield preview. Section 9 shows a real exported map; section 10 lists the reference tables workshop-webgpu reads at runtime.</p>
   </section>
 
   <section class="panel" id="section-world-noise">
@@ -269,8 +269,50 @@
     </div>
   </section>
 
+  <section class="panel" id="section-heightfield">
+    <h2>8. Heightfield preview</h2>
+    <p class="lede">Direct height-grid to mesh conversion (no voxels, no marching cubes) -- a fast 3D check of Phase A's output at its own resolution.</p>
+    <p class="callout hidden" id="heightfield-resolution-warning">Heightfield resolution is above 128 -- rebuilding the mesh may be slow.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <div id="heightfield-viewport" style="width:420px;height:420px;border-radius:8px;border:1px solid var(--border);overflow:hidden;"></div>
+        <div id="heightfield-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="heightfield-mode-select">Display mode</label>
+          <select id="heightfield-mode-select">
+            <option value="material">material</option>
+            <option value="biome">biome</option>
+            <option value="height">height</option>
+            <option value="slope">slope</option>
+            <option value="seaMask">sea mask</option>
+            <option value="beachMask">beach mask</option>
+            <option value="mountainMask">mountain mask</option>
+            <option value="rockMask">rock mask</option>
+            <option value="snowMask">snow mask</option>
+            <option value="continentalness">continentalness</option>
+            <option value="temperature">temperature</option>
+            <option value="humidity">humidity</option>
+            <option value="flowNorm">flow accumulation</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <p class="control-desc">Grid resolution for the 3D mesh, independent of the 2D panels above.</p>
+          <label for="heightfield-resolution">resolution <span id="heightfield-resolution-value">64</span></label>
+          <input type="range" id="heightfield-resolution" min="16" max="256" step="8" value="64">
+        </div>
+        <div class="control-row">
+          <label><input type="checkbox" id="heightfield-wireframe"> wireframe</label>
+        </div>
+        <button class="action" id="heightfield-reset-view">Reset view</button>
+        <p class="lede" id="heightfield-stats"></p>
+      </div>
+    </div>
+  </section>
+
   <section class="panel" id="section-consumption">
-    <h2>8. A real exported map</h2>
+    <h2>9. A real exported map</h2>
     <div class="control-row" style="max-width:320px;">
       <label for="map-select">Map</label>
       <select id="map-select"></select>
@@ -286,7 +328,7 @@
   </section>
 
   <section class="panel" id="section-tables">
-    <h2>9. Reference tables</h2>
+    <h2>10. Reference tables</h2>
     <p class="lede">The two lookup tables workshop-webgpu actually uses at runtime.</p>
     <div class="gen-layout">
       <div style="flex:1 1 320px;">
