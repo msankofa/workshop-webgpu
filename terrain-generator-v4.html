@@ -333,10 +333,30 @@
     </div>
   </section>
 
-  <div class="panel placeholder" id="node-density">
+  <section class="panel" id="section-density">
     <h2>Density field preview</h2>
-    <p class="lede">Not yet built (Phase D) — the real cave/warp-aware 3D density field, not the 2D-only preview stand-in.</p>
-  </div>
+    <p class="lede">The real cave/warp-aware 3D density field, marching-cubes-extracted into a smooth mesh -- the same math the real map export uses.</p>
+    <p class="callout hidden" id="density-resolution-warning">Density resolution is above 96 -- rebuilding may take a few seconds.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <div id="density-viewport" style="width:420px;height:420px;border-radius:8px;border:1px solid var(--border);overflow:hidden;"></div>
+      </div>
+      <div class="controls" id="density-controls"></div>
+    </div>
+    <button class="action" id="density-reset-view">Reset view</button>
+    <p class="lede" id="density-stats"></p>
+    <h3>Export</h3>
+    <div class="control-row">
+      <label for="density-export-folder">Folder</label>
+      <input type="text" id="density-export-folder" value="workshop">
+    </div>
+    <div class="control-row">
+      <label for="density-export-name">Name</label>
+      <input type="text" id="density-export-name" value="terrain-generator-export">
+    </div>
+    <button class="action" id="density-export-btn">Export to maps/</button>
+    <p class="lede" id="density-export-status"></p>
+  </section>
 
   <div class="panel placeholder" id="node-marching">
     <h2>Marching cubes, water, forest, GLB export</h2>
@@ -416,7 +436,7 @@
     'section-material': { x: 1800, y: 1300 },
     'node-paint': { x: -900, y: 2600 },
     'section-heightfield': { x: 0, y: 2600 },
-    'node-density': { x: 900, y: 2600 },
+    'section-density': { x: 900, y: 2600 },
     'node-marching': { x: 1800, y: 2600 },
     'section-consumption': { x: 3000, y: 0 },
     'section-tables': { x: 3000, y: 1300 },
@@ -430,8 +450,8 @@
     ['section-biome', 'section-material'],
     ['section-material', 'node-paint'],
     ['node-paint', 'section-heightfield'],
-    ['section-heightfield', 'node-density'],
-    ['node-density', 'node-marching'],
+    ['section-heightfield', 'section-density'],
+    ['section-density', 'node-marching'],
   ];
 
   const canvasViewport = document.getElementById('canvas-viewport');
