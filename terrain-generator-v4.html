@@ -175,40 +175,15 @@
 <header class="hero">
   <h1>Terrain generator v4</h1>
   <p>An in-browser port of terrain-v3's terrain pipeline (<code>G:\My Drive\Scripts\html game\html-game-v2\tools\terrain-v3\</code>). Each section below runs one pipeline stage and exposes its real config fields as sliders. Not bit-exact with a Python run: same algorithm, different seeded PRNG.</p>
+  <button class="action" id="reset-layout-btn" style="margin-top:16px;">Reset layout</button>
 </header>
 <main>
-  <section class="panel" id="section-overview">
-    <h2>1. Pipeline overview</h2>
-    <div class="pipeline">
-      <div class="pipe-box">Noise fields<br><span>continentalness, erosion, weirdness, temperature, humidity</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box">Height composer<br><span>continent/erosion knot interpolation + weirdness peaks/valleys</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box">Erosion simulation<br><span>hydraulic incision/deposition, thermal relaxation, D8 flow</span></div>
-    </div>
-    <div class="pipeline-fanout"><div class="pipe-arrow down">&darr;</div></div>
-    <div class="pipeline">
-      <div class="pipe-box">Derived masks<br><span>sea, lake, beach, mountain, rock, snow</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box">Biome classification<br><span>17 ordered rules, last match wins</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box">Material masks<br><span>grass, forest, dirt, sand, rock, snow, water</span></div>
-    </div>
-    <div class="pipeline-fanout"><div class="pipe-arrow down">&darr;</div></div>
-    <div class="pipeline">
-      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Paint authoring<br><span>not yet built (Phase B)</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box small">Heightfield preview<br><span>direct grid-to-mesh, no voxels</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Density field preview<br><span>not yet built (Phase D)</span></div>
-      <div class="pipe-arrow">&rarr;</div>
-      <div class="pipe-box small" style="opacity:0.5; border:1px dashed var(--accent);">Marching cubes, water, forest, GLB export<br><span>not yet built (Phase E)</span></div>
-    </div>
-    <p class="lede" style="margin-top:20px;">Sections 2-7 below cover Phase A (noise fields through material masks). Section 8 is Phase C's heightfield preview. Section 9 shows a real exported map; section 10 lists the reference tables workshop-webgpu reads at runtime.</p>
-  </section>
+  <div id="canvas-viewport">
+    <div id="canvas-world">
+      <svg id="connector-svg"></svg>
 
   <section class="panel" id="section-world-noise">
-    <h2>2. World &amp; noise fields</h2>
+    <h2>World &amp; noise fields</h2>
     <p class="callout hidden" id="resolution-warning">Preview resolution is above 256 — dragging sliders may feel slow.</p>
     <div class="gen-layout">
       <div class="canvas-frame">
@@ -233,7 +208,7 @@
   </section>
 
   <section class="panel" id="section-height">
-    <h2>3. Height composer</h2>
+    <h2>Height composer</h2>
     <div class="gen-layout">
       <div class="canvas-frame">
         <canvas id="height-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
@@ -244,7 +219,7 @@
   </section>
 
   <section class="panel" id="section-erosion">
-    <h2>4. Erosion &amp; hydrology</h2>
+    <h2>Erosion &amp; hydrology</h2>
     <div class="gen-layout">
       <div class="canvas-frame">
         <canvas id="erosion-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
@@ -266,7 +241,7 @@
   </section>
 
   <section class="panel" id="section-derived">
-    <h2>5. Derived masks</h2>
+    <h2>Derived masks</h2>
     <div class="gen-layout">
       <div class="canvas-frame">
         <canvas id="derived-canvas" width="128" height="128" style="width:420px;height:420px;"></canvas>
@@ -288,7 +263,7 @@
   </section>
 
   <section class="panel" id="section-biome">
-    <h2>6. Biome classification</h2>
+    <h2>Biome classification</h2>
     <p class="lede">17 ordered rules run top to bottom over every cell; whichever one matches last wins.</p>
     <div class="gen-layout">
       <div class="canvas-frame">
@@ -300,7 +275,7 @@
   </section>
 
   <section class="panel" id="section-material">
-    <h2>7. Material masks</h2>
+    <h2>Material masks</h2>
     <p class="lede">Blended surface material from biome id, slope, and height. No dedicated controls: this stage only reads fields already exposed above.</p>
     <div class="gen-layout">
       <div class="canvas-frame">
@@ -311,8 +286,13 @@
     </div>
   </section>
 
+  <div class="panel placeholder" id="node-paint">
+    <h2>Paint authoring</h2>
+    <p class="lede">Not yet built (Phase B) — manual overrides layered onto the classifier output at five injection points.</p>
+  </div>
+
   <section class="panel" id="section-heightfield">
-    <h2>8. Heightfield preview</h2>
+    <h2>Heightfield preview</h2>
     <p class="lede">Direct height-grid to mesh conversion (no voxels, no marching cubes) -- a fast 3D check of Phase A's output at its own resolution.</p>
     <p class="callout hidden" id="heightfield-resolution-warning">Heightfield resolution is above 128 -- rebuilding the mesh may be slow.</p>
     <div class="gen-layout">
@@ -353,8 +333,18 @@
     </div>
   </section>
 
+  <div class="panel placeholder" id="node-density">
+    <h2>Density field preview</h2>
+    <p class="lede">Not yet built (Phase D) — the real cave/warp-aware 3D density field, not the 2D-only preview stand-in.</p>
+  </div>
+
+  <div class="panel placeholder" id="node-marching">
+    <h2>Marching cubes, water, forest, GLB export</h2>
+    <p class="lede">Not yet built (Phase E) — surface extraction and the rest of the export pipeline.</p>
+  </div>
+
   <section class="panel" id="section-consumption">
-    <h2>9. A real exported map</h2>
+    <h2>A real exported map</h2>
     <div class="control-row" style="max-width:320px;">
       <label for="map-select">Map</label>
       <select id="map-select"></select>
@@ -370,7 +360,7 @@
   </section>
 
   <section class="panel" id="section-tables">
-    <h2>10. Reference tables</h2>
+    <h2>Reference tables</h2>
     <p class="lede">The two lookup tables workshop-webgpu actually uses at runtime.</p>
     <div class="gen-layout">
       <div style="flex:1 1 320px;">
@@ -383,6 +373,9 @@
       </div>
     </div>
   </section>
+
+    </div>
+  </div>
 </main>
 <script type="module">
   import {
