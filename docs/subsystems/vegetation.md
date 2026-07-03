@@ -19,8 +19,12 @@ buffers so the CPU never reads back GPU state.
 |---|---|
 | `trees.js` (454 lines) | `Tree`/`createTree`: CPU procedural generator. Recursive tapered-tube branch skeleton + billboard/silhouette leaves, merged into 3 `THREE.Mesh`es (branches, leaves, shadow-casting leaves). No GPU/TSL code. |
 | `tree-textures.js` (97 lines) | `createTextureSource('authored'\|'procedural')`: loads ez-tree bark/leaf texture packs into a 2x2 leaf atlas canvas (authored), or returns a textureless stub set (procedural, WebGPU-friendly). |
-| `forest-placement.js` (183 lines) | Pure, three.js-free placement math lifted verbatim from `environment-viewer.html`: seeded RNG, species taxonomy (`buildSpecies`), per-chunk tree count/placement patterns, and `placementRecords()` — the single entry point the GPU and (formerly) baked paths both consume. Also `buildSpeciesFromFamilies()`, which flattens `tree-viewer.html`-authored families into the same species-table shape, letting `placementRecords()` do biome-filtered, density-weighted species selection instead of picking uniformly at random — see "Game integration" below. |
-| `forest-palette.js` (84 lines) | `createForestPalette()`: bakes a fixed set of variant geometries (species x variantsPerSpecies) ONCE at startup using `trees.js` + (`params.speciesTable` if an authored family table was loaded, else `forest-placement.js`'s `buildSpecies`), flat-coloring each variant's vertices (bark/leaf tint) since materials use `vertexColors: true`. |
+| `forest-placement.js` (234 lines) | Pure, three.js-free placement math lifted verbatim from `environment-viewer.html`: seeded RNG, species taxonomy (`buildSpecies`), per-chunk tree count/placement patterns, and `placementRecords()` — the single entry point the GPU and (formerly) baked paths both consume. Also `buildSpeciesFromFamilies()`, which flattens `tree-viewer.html`-authored families into the same species-table shape, letting `placementRecords()` do biome-filtered, density-weighted species selection instead of picking uniformly at random — see "Game integration" below. `rngFrom`/`hash2` are also reused directly by `plants-placement.js`. |
+| `forest-palette.js` (86 lines) | `createForestPalette()`: bakes a fixed set of variant geometries (species x variantsPerSpecies) ONCE at startup using `trees.js` + (`params.speciesTable` if an authored family table was loaded, else `forest-placement.js`'s `buildSpecies`), flat-coloring each variant's vertices (bark/leaf tint) since materials use `vertexColors: true`. |
+| `grass-textures.js` | 5 procedurally-synthesized blade fiber styles (`streaks`/`dryTip`/`mottle`/`vein`/`highContrast`), baked to one atlas texture; see "Grass blade fiber textures" below. |
+| `plants.js` | Parameterized procedural plant generator (`PLANT_DEFAULTS`/`PLANT_PRESETS`/`buildPlantGeometry`/`createPlantPalette`); 4 species: chickweed, cleavers, mint, jewelweed. See "Plants" below. |
+| `plants-placement.js` | Biome-gated, density-weighted plant placement (mirrors `forest-placement.js`, reuses its `rngFrom`/`hash2`). |
+| `plants-gpu.js` | Single-LOD GPU-instanced plant rendering (mirrors `forest-gpu.js`'s reset→cull→finalize→indirect-draw spine, one distance-cull band instead of 4 LOD bands). |
 | `forest-gpu.js` (399 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. |
 | `forest-cull.js` (8 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the cull math in `forest-gpu.js`'s TSL `cull` kernel, kept only so the predicate is unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel reimplements the same `dx*dx+dz*dz <= maxDist*maxDist` logic inline). |
 | `grass.js` (536 lines) | `Grass`/`createGrass`: CPU-built single merged-mesh grass field (5 verts/blade) with a TSL `MeshStandardNodeMaterial` (wind sway, distance fade, base→tip color, cloud-shadow noise). Also exports `buildBladeGeometry`, `buildGrassNoiseFns`, and JS parity helpers `grassWindOffset`/`grassFadeKeep` used both at runtime and by tests. |
@@ -106,6 +110,28 @@ export function grassHeightRef(params: {baseAmp, lake, lakeDepth}, x, z): number
 
 // tree-age.js
 export function applyAge(opts, ageT: number): opts   // ageT clamped to [0,1]; ageT=1 is value-equivalent to opts unchanged
+
+// grass-textures.js
+export const FIBER_STYLES: { streaks, dryTip, mottle, vein, highContrast }   // each: { fiber(u,v,seed), tint?(u,v,seed) }
+export const STYLE_KEYS: string[]                                // the 5 keys above, in order
+export const FIBER_REMAP_MIN, FIBER_REMAP_MAX: number             // fiber() multiplier range encoded into the atlas' R channel
+export function clamp01(v): number
+export function createGrassStyleAtlas(): THREE.CanvasTexture      // bakes all 5 styles into one atlas (5 tiles in a row)
+
+// plants.js
+export const PLANT_DEFAULTS, PLANT_PRESETS: { chickweed, cleavers, mint, jewelweed }, PLANT_BIOME_TAGS
+export function mergePlantOpts(base, over): opts                  // deep-merge, same convention as trees.js/grass.js
+export function buildPlantGeometry(opts = {}): THREE.BufferGeometry   // indexed geometry with position/normal/color
+export function createPlantPalette({ variantsPerSpecies = 4, masterSeed = 1 } = {}):
+  { variants: THREE.BufferGeometry[], variantsPerSpecies, speciesCount, speciesTags: { key, tag: { biomes, density } }[] }
+
+// plants-placement.js
+export function plantPlacementRecords(chunks, params, heightAt, biomeAt?):
+  { x, z, scale, yaw, speciesIdx, chunkKey, slot }[]
+
+// plants-gpu.js
+export function createPlantsGPU(opts: { renderer, camera, palette, heightAt?, capPerVariant?, cullRadius? }):
+  { meshes, setChunk(key, records), clearChunk(key), setCullRadius(r), update(): Promise<void>, stats, dispose() }
 ```
 
 ## Wiring
@@ -133,6 +159,11 @@ In `environment-viewer.html`:
   suffix string when a module's behavior changes and a stale cached copy could otherwise be served.
 - Both forest and grass loads are wrapped in `.catch()` so a missing/failed module degrades to "no
   trees" / a `showError(...)` toast rather than blocking the rest of the scene.
+- `PLANTS_MODE` = `...get('plants') || 'gpu'`. When `'gpu'` (the default), `plants.js`,
+  `plants-placement.js`, and `plants-gpu.js` are lazily imported right after the grass block; a
+  `createPlantPalette()` bake, a `createPlantsGPU()` instance, and per-chunk placement (mirroring
+  `regenerateGPU`'s forest chunk-lifecycle pattern, hooked into `maybeSyncTerrainDecorations()` via
+  `regenPlants`) are wired the same way forest/grass are. There is no `?plants=` alternative mode.
 
 Inter-module dependencies:
 
@@ -227,6 +258,46 @@ comment stresses that `placementRecords()` consumes its RNG stream "in the SAME 
 (species draw → seed draw → size draw → yaw draw) — reordering the draws would desync forest
 placement from whatever else (historically the CPU "baked" path) shared the same seed.
 
+**Grass blade fiber textures (`grass-textures.js`).** `FIBER_STYLES`/`STYLE_KEYS` are pure
+`fiber(u,v,seed)`/`tint(u,v,seed)` functions, Node-testable without a DOM (`test-grass-textures.mjs`).
+`createGrassStyleAtlas()` bakes all 5 into one canvas atlas (5 tiles in a row, R = fiber multiplier
+remapped to `[FIBER_REMAP_MIN, FIBER_REMAP_MAX]`, G = tint/dryness amount 0..1) rather than 5 separate
+textures — TSL's `texture()` node binds to one texture at shader-graph-build time and can't switch
+which texture it samples based on a runtime uniform, so the live style switch instead shifts which
+atlas tile a blade's `aBladeUV.x` reads from (`uBladeStyle` uniform, one `.value` write, no shader
+recompile). `grass.js` owns a lazy module-scope singleton (`getGrassStyleAtlas()`, exported) so the
+atlas is baked exactly once regardless of how many `Grass` instances exist (CPU mode creates one per
+chunk). Both `Grass` (`grass.js`) and the object returned by `createComputeGrass` (`grass-compute.js`)
+expose `setBladeStyle(key)`. The per-blade local UV (`aBladeUV`, base(0,0)/tip(0.5,1) taper-matched)
+lives on the shared `buildBladeGeometry()` template, so both grass modes get it automatically.
+
+**Plants (`plants.js` / `plants-placement.js` / `plants-gpu.js`).** Procedural understory plants,
+parameterized like `trees.js` rather than hardcoded per species: `PLANT_DEFAULTS` is a schema (stem
+node count/spacing/sprawl; leaf shape/style/leaflet count+parity/arrangement/serration/
+variegation/color; flower shape/petals/frequency/color) and `PLANT_PRESETS.{chickweed,cleavers,
+mint,jewelweed}` are named overrides. `buildPlantGeometry(opts)` returns one indexed
+`THREE.BufferGeometry` per plant with baked vertex colors (stem + leaves + flowers all in one mesh,
+one material — no separate branches/leaves/shadow split like forest). Leaf blades are
+fan-triangulated from a base/petiole point around a parametric taper-envelope boundary (`leafEnvelope`:
+oval/lance/star), with serration cut in as a per-tooth sawtooth multiplier on the boundary radius;
+compound leaves (`style: 'complex'`) fan smaller leaflet cards along a shared rachis, honoring
+`leafletParity` (odd = terminal leaflet, even = paired only). Flowers reuse the same leaf builder at
+petal scale — all 4 shapes (`star`/`whorlBall`/`pouch`/`burPair`) are one shared petal-cluster
+generator parameterized by petal length/width/curl/count, not 4 bespoke algorithms.
+`createPlantPalette({variantsPerSpecies, masterSeed})` bakes a fixed set of variant geometries once
+at startup, mirroring `forest-palette.js`'s role but with no separate color-bake step (the generator
+already writes final colors). `plantPlacementRecords(chunks, params, heightAt, biomeAt)` mirrors
+`forest-placement.js`'s shape (reuses its `rngFrom`/`hash2`); each preset carries a `PLANT_BIOME_TAGS`
+allowlist (`cleavers` has an empty allowlist, i.e. it's a biome generalist that places everywhere;
+unlike forest's placement, a chunk position with no matching species is simply skipped rather than
+falling back to "any species"). `createPlantsGPU(opts)` mirrors `forest-gpu.js`'s
+reset→cull→finalize→indirect-draw compute spine but with a single distance-cull band (no LOD levels)
+and one mesh per variant (`stats.draws = V`, not `V * 8`). Wired in `environment-viewer.html` behind
+`?plants=gpu` (default on); density/cull-radius sliders live in the "Plants" panel.
+
+**Standalone tuning tool.** `plants.js`'s data model is fully parameterized specifically so a
+standalone tool could expose it — see `plant-viewer.html` under "Standalone tooling" below.
+
 ## Tunable parameters
 
 These live as inline `slider()`/`select()` calls in `environment-viewer.html` (around lines
@@ -252,6 +323,12 @@ Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600),
 `grassDensity` (blades/m^2, 0-16), `grassMaxBlades` (0-2,000,000), `grassBladeHeight`,
 `grassBladeWidth`, `grassVerticalOffset`, `wind`.
 
+Both grass modes also get `grassBladeStyle` (select: `streaks`/`dryTip`/`mottle`/`vein`/
+`highContrast`, default `streaks`) — live-swappable, no geometry rebuild.
+
+Plants (`header('Plants')`, `PLANTS_MODE === 'gpu'`, default): `plantDensity` (plants/m², 0-0.2,
+rebakes placement) and `plantCullRadius` (10-150, live-applied via `setCullRadius`).
+
 ## Tests
 
 | Test file | Covers | What it actually checks |
@@ -266,6 +343,11 @@ Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600),
 | `test-grass-wind.mjs` | `grass.js` (`grassWindOffset`, `grassFadeKeep`) | Wind offset is deterministic and continuous across a chunk boundary (no seam, `x=29.99` vs `30.01` differ by < 0.05); `grassFadeKeep` returns 1 near the camera, 0 far away, and a partial value in between. |
 | `test-cdlod-morph.mjs` (relevant parts only) | Imports `grassHeightRef` from `grass-height-ref.js` to verify a CDLOD terrain-morph crack-free property: a fully-morphed fine-LOD edge vertex's height (via `grassHeightRef`) matches the coarser neighboring LOD's height at the same world position, within `1e-6`. The rest of the file (`morphGridCoord`, `nodeSize` from `cdlod-select.js`) is terrain LOD logic outside this subsystem; `grass-height-ref.js`'s only role here is as the shared height oracle used to prove no vertical crack. |
 | `test-tree-age.mjs` | `tree-age.js` (`applyAge`) | age=1 is value-equivalent to the input opts unchanged; age=0 shrinks length/radius/leaf count/leaf size and reduces `levels`, but never raises `levels` above the species' own count; age values outside `[0,1]` clamp; age=0.5 lands strictly between the age-0 and age-1 results; the input opts object itself is never mutated. |
+| `test-grass-blade-uv.mjs` | `grass.js` (`buildBladeGeometry`) | The shared blade template's new `aBladeUV` attribute exists, is a vec2, has exactly 5 entries, and matches the fixed BL/BR/TR/TL/TC taper mapping used for atlas sampling. |
+| `test-grass-textures.mjs` | `grass-textures.js` (`FIBER_STYLES`, `STYLE_KEYS`, `clamp01`) | Exactly 5 styles in the approved order; every style's `fiber()` stays finite and within `[0.35, 1.45]` across the UV domain; `dryTip.tint()` is exactly 0 at the blade base and nonzero near the tip (its one monotonic-in-v style); `highContrast.tint()` (speckle-based, not monotonic) stays within `[0,1]`; styles without a `tint()` omit it rather than defining a zero function. |
+| `test-plants-defaults.mjs` | `plants.js` (`PLANT_DEFAULTS`, `PLANT_PRESETS`, `PLANT_BIOME_TAGS`, `createPlantPalette`) | Default schema values (simple/opposite/smooth/no-variegation); all 4 presets exist with their species-defining traits (cleavers compound+whorled, mint serrated, jewelweed alternate, chickweed/jewelweed flower shapes); `cleavers`' empty biome allowlist; `createPlantPalette` bakes `speciesCount * variantsPerSpecies` geometries, each species tagged, variants of the same species differing by seed. |
+| `test-plants-geometry.mjs` | `plants.js` (`buildPlantGeometry`) | Non-empty, all-triangle, sequentially-indexed geometry (position/normal/color attributes) for all 4 presets with and without flowers, for 3 schema-only edge cases the presets don't exercise (even-pinnate compound leaf, variegated leaf, star-shaped leaf), and that the same seed reproduces identical geometry; enabling flowers strictly adds geometry. |
+| `test-plants-placement.mjs` | `plants-placement.js` (`plantPlacementRecords`) | Places plants within chunk bounds with valid `speciesIdx`/`scale`/`yaw`; deterministic for a fixed seed; rejects submerged ground; in an all-desert biome only the biome-generalist species (empty allowlist) is ever picked; in an all-plains biome the swamp-only species never places while the plains-tagged one does. |
 
 ## Standalone tooling
 
@@ -358,3 +440,44 @@ Scope: this only wires into the GPU forest path (`FOREST_MODE === 'gpu'`, the de
 `environment-viewer.html` has its own duplicated `buildSpecies` and is untouched. Per-instance age
 rolling (via `tree-age.js`'s `applyAge`) is not wired into game placement yet — only the tree-viewer
 age-preview slider uses it today.
+
+### plant-viewer.html
+
+`plant-viewer.html` is `tree-viewer.html`'s direct counterpart for `plants.js`: a standalone
+single-file tuning tool with its own minimal `WebGPURenderer`/`OrbitControls`/`lights.js` scene
+shell (not wired into `environment-viewer.html`), Solo/Grid view modes, the same duplicated-inline
+floating-panel controls kit, Mutate/Undo/Redo/Restart, and a Family/Species tab persisted to
+`localStorage` under `plant-viewer:families`. Run via `python serve.py` like the main viewer.
+
+Two things tree-viewer.html has that this tool deliberately omits: a texture-mode toggle (`plants.js`
+geometry has no texture maps — colors are baked directly into vertex colors) and an age-preview
+slider / per-species age range (`plants.js` has no growth model analogous to `tree-age.js`'s
+`applyAge` yet).
+
+Tuning-tab sections: View, Lighting (identical to tree-viewer.html), Stem (`stem.nodes`/
+`nodeSpacing` min-max, `branchProb`, `sprawl`), Leaf (`shape`/`style`/`leafletCount`/
+`leafletParity`/`arrangement`/`whorlCount`/serration/variegation/`size`/`color`, plus a toggle-gated
+vein color since `leaf.veinColor` is nullable), Flower (`enabled`/`shape`/`petals`/`frequency`/
+`color`, plus a toggle-gated throat color for the same nullable-field reason), and Export ("Copy
+plant JSON", no texture replacer needed since plant opts never hold live `Texture` objects).
+
+Species tab: unlike tree-viewer.html's one-time migration of a legacy flat saved-tree list,
+plant-viewer.html has no prior save format — instead, on a genuinely fresh `localStorage` (the
+`plant-viewer:families` key was never set, not merely emptied), it seeds one starter family,
+**"Wildflowers"**, containing the 4 `PLANT_PRESETS` species (chickweed, cleavers, mint, jewelweed)
+with their `PLANT_BIOME_TAGS` biome/density values pre-filled and a `sizeRange` of `[0.85, 1.15]`
+(matching `plants-placement.js`'s existing hardcoded scale jitter — now editable per-species rather
+than a single global constant). "Grow family" (Auto-add mutations / Keep current plant as new
+species) and the Species list/edit panel work identically to tree-viewer.html, using
+`stemMutateList`/`leafMutateList`/`flowerMutateList` in place of tree-viewer's structure/force/
+bark/leaves lists. Species metadata is `name`/`biomes[]`/`density`/`sizeRange` — no `ageRange`
+field (dropped; see above).
+
+"Export family JSON" POSTs to a new `serve.py` route, `/api/save-plant-family`, which writes into
+its own `plant-families/` directory + `plant-families/manifest.json` — kept fully separate from
+tree-viewer.html's `families/` so the two tools' saved data can never collide on disk. `serve.py`
+factors the shared slugify-filename/write-file/update-manifest logic both routes need into one
+`save_family_to(payload, dir_path)` helper. Nothing in `environment-viewer.html`'s forest-placement
+pipeline reads `plant-families/` yet — the "fetch manifest → buildSpeciesFromFamilies → wire into
+placementRecords" game-integration step `families/` already has for trees has no plant equivalent
+yet; that would be a separate follow-on, not part of this tool.

@@ -1020,7 +1020,7 @@ function setFog(on) { scene.fog = on ? worldFog : null; }
 updateDrawDistance();
 
 // Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
-let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null;
+let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null, plantsGPURef = null, regenPlants = null;
 // Promises resolved when each async module finishes its initial setup. Awaited before dismiss().
 let _grassPromise = Promise.resolve(), _waterPromise = Promise.resolve(), _cloudsPromise = Promise.resolve(), _skyPromise = Promise.resolve();
 let terrainDecorationsDirty = false;
@@ -1106,6 +1106,7 @@ function maybeSyncTerrainDecorations() {
   if (grassRef) grassRef.sync();
   syncWaterChunks(true);
   if (regenTrees) regenTrees(terrainDecorationsRebuildAll);
+  if (regenPlants) regenPlants(terrainDecorationsRebuildAll);
   terrainDecorationsRebuildAll = false;
   terrainDecorationsDirty = false;
 }
@@ -2603,6 +2604,45 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     select('grassBladeStyle', 'Blade texture', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'], () => cg.setBladeStyle(params.grassBladeStyle));
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
+  // ---- plants: single-LOD GPU-instanced understory (chickweed/cleavers/mint/jewelweed) ----
+  const PLANTS_MODE = new URLSearchParams(location.search).get('plants') || 'gpu';
+  if (PLANTS_MODE === 'gpu') {
+    const { createPlantPalette } = await import('./plants.js');
+    const { plantPlacementRecords } = await import('./plants-placement.js');
+    const { createPlantsGPU } = await import('./plants-gpu.js');
+    Object.assign(params, { plantDensity: 0.02, plantCullRadius: 45 });
+    const plantPalette = createPlantPalette({ variantsPerSpecies: 4, masterSeed: MASTER_SEED });
+    const plantsGPU = createPlantsGPU({
+      renderer, camera, palette: plantPalette, heightAt: terrainHeight,
+      cullRadius: params.plantCullRadius, capPerVariant: 256,
+    });
+    plantsGPURef = plantsGPU;
+    scene.add(...plantsGPU.meshes);
+    const plantChunks = new Set();
+    function regeneratePlantsGPU(rebuildExisting) {
+      const active = forestChunksForPlacement().slice();
+      const activeKeys = new Set(active.map(c => c.key));
+      for (const key of [...plantChunks]) {
+        if (!activeKeys.has(key)) { plantsGPU.clearChunk(key); plantChunks.delete(key); }
+      }
+      const pr = {
+        masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
+        plantDensity: params.plantDensity, plantSpeciesTable: plantPalette.speciesTags,
+      };
+      for (const chunk of active) {
+        if (!rebuildExisting && plantChunks.has(chunk.key)) continue;
+        const recs = plantPlacementRecords([chunk], pr, terrainHeight, loadedMap?.biomeAt);
+        plantsGPU.setChunk(chunk.key, recs);
+        plantChunks.add(chunk.key);
+      }
+    }
+    regeneratePlantsGPU(true);
+    regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
+    header('Plants');
+    slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
+    slider('plantCullRadius', 'Cull radius', 10, 150, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
+  }
+
   // ---- water (separate module; optional). Needs a refraction render target. ----
   _waterPromise = import('./water.js?v=reflection-controls-1').then(({ createWaterSystem }) => {
     Object.assign(params, {
@@ -3593,6 +3633,7 @@ async function animate() {
   if (grassRef) await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
   // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
   if (forestGPURef) await frameProfiler.timeAsync('forestGpu', () => forestGPURef.update());
+  if (plantsGPURef) await frameProfiler.timeAsync('plantsGpu', () => plantsGPURef.update());
   // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
   // written before this frame's draw (unawaited compute races the draw → terrain flicker).
   if (cdlodRef) await frameProfiler.timeAsync('cdlodGpu', () => cdlodRef.update());
