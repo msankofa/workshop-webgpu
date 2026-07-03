@@ -704,35 +704,42 @@
       'Heightfield viewport unavailable (WebGPU init failed: ' + err.message + ').';
   });
 
-  // ---- shared slider-builder (reused by sections 2-5) ----
-  function buildGroupControls(container, groupNames) {
+  // ---- shared slider-builder (reused by sections 2-5 and the density panel) ----
+  // Defaults reproduce the original hardcoded behavior exactly, so none of the 5 existing
+  // call sites below need to change -- only the density panel (Task 9) passes explicit
+  // overrides for its own independent config/tables.
+  function buildGroupControls(
+    container, groupNames,
+    cfg = genConfig, fieldGroups = FIELD_GROUPS, fieldRanges = FIELD_RANGES,
+    labelFn = fieldLabel, descFn = fieldDescription, onChange = scheduleRegenerate,
+  ) {
     container.innerHTML = '';
-    for (const group of FIELD_GROUPS) {
+    for (const group of fieldGroups) {
       if (!groupNames.includes(group.name)) continue;
       const heading = document.createElement('h3');
       heading.textContent = group.name;
       heading.style.fontSize = '0.95em';
       container.appendChild(heading);
       for (const name of group.fields) {
-        const [min, max, step] = FIELD_RANGES[name];
+        const [min, max, step] = fieldRanges[name];
         const row = document.createElement('div');
         row.className = 'control-row';
         const desc = document.createElement('p');
         desc.className = 'control-desc';
-        desc.textContent = fieldDescription(name);
+        desc.textContent = descFn(name);
         const label = document.createElement('label');
         const valueSpan = document.createElement('span');
-        valueSpan.textContent = genConfig[name];
-        label.textContent = fieldLabel(name) + ' ';
+        valueSpan.textContent = cfg[name];
+        label.textContent = labelFn(name) + ' ';
         label.appendChild(valueSpan);
         const input = document.createElement('input');
         input.type = 'range';
         input.min = min; input.max = max; input.step = step;
-        input.value = genConfig[name];
+        input.value = cfg[name];
         input.addEventListener('input', () => {
-          genConfig[name] = Number(input.value);
+          cfg[name] = Number(input.value);
           valueSpan.textContent = input.value;
-          scheduleRegenerate();
+          onChange();
         });
         row.appendChild(desc);
         row.appendChild(label);
