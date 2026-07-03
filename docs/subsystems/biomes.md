@@ -11,9 +11,13 @@
 >
 > `../../terrain-generator-v4.html` covers the same generation pipeline in more depth
 > (erosion simulation, sea/lake/mountain/rock/snow masks, material masks) with the full
-> `config.py` field surface exposed as sliders, plus an interactive Three.js heightfield
+> `config.py` field surface exposed as sliders, an interactive Three.js heightfield
 > viewport (direct grid-to-mesh, independent resolution, orbit/pan/zoom, display-mode
-> vertex coloring).
+> vertex coloring), and a density-field panel that marching-cubes-extracts the real
+> cave/warp-aware volumetric pipeline (`volumetric_mesh.py`'s `build_density_field`) into
+> a smooth mesh, with an "Export to maps/" button that writes a real playable map (GLB +
+> `-data.json` + a `map-config.json` entry) via a local `serve.py` endpoint -- the same
+> `maps/` directory `terrain-loader.js` reads at runtime.
 >
 > Planned generation-side improvements (erosion simulation, fixing `swamp`'s dead-code
 > priority-stack bug, lake detection, noise-quality upgrades, volcano feature stamping)
@@ -125,7 +129,9 @@ per-cell density always wins over this table.
   independently-maintained tables (`terrain-loader.js`, `terrain-textures.js` ×2) keyed
   by the same biome-name strings — there's no shared enum/import. Adding a new biome
   name means updating all of them, or a map exporting that name silently falls back to
-  `'grass'`/density `0`.
+  `'grass'`/density `0`. `terrain-generator-js.js`'s `GRASS_DENSITY` (used only by
+  `terrain-generator-v4.html`'s map-export path) is a fourth, separate table for a
+  different purpose (export-time grass density vs. `TREE_DENSITY`'s runtime tree density).
 - `biomeAt`/`treeDensityAt`/`grassDensityAt` are all nearest-cell or bilinear reads over
   a static grid baked at export time — there's no runtime biome editing or blending
   beyond what bilinear sampling gives you for free at cell boundaries.
