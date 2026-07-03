@@ -133,44 +133,102 @@ change beyond the one new float2 attribute already present in every blade.
 
 ## Section 2 — Procedural understory plants
 
-### Species and geometry
+### Data model: parameterized, not bespoke-per-species (`tree-viewer.html` trajectory)
 
-Four species, matching the approved iteration-6 mockups (`plant-species-mockup.html`,
-`plant-iterations-gallery.html`). Each is a flat/near-flat procedural mesh (leaf and petal shapes as
-tapered/toothed 2D-profile cards extruded to near-zero thickness or built as camera-independent
-tri-fans, matching how `grass.js` blades and `trees.js` leaves are already built — not billboards),
-built once per species as a fixed geometry (not per-instance-varied geometry):
+`trees.js` is not 4 hardcoded species functions — it's one `createTree(opts)` generator driven by a
+`DEFAULTS`-shaped `opts` object, with species-like variety coming from different `opts` values. That
+shape is what let `tree-viewer.html` (`docs/superpowers/specs/2026-06-30-tree-viewer-design.md`)
+exist later as a thin standalone tool with zero changes to `trees.js` itself — it just exposes every
+`opts` field as a slider/select. `plants.js` is deliberately built the same way from the start, so the
+same kind of standalone tuning tool (leaf shape, leaflet count/parity, arrangement, serration,
+variegation, color) is a later add-on, not a rewrite.
 
-- **Chickweed** (*Stellaria media*) — 6-8 sprawling low strands from a shared root, opposite oval
-  leaf pairs, small 10-point white star flowers near strand tips only (sparse, not dominant).
-- **Cleavers** (*Galium aparine*) — an upright stem with 5 widely-spaced whorl nodes (7-8 narrow
-  leaflets radiating per node), leaflet length kept shorter than internode spacing so whorls stay
-  visually distinct (not merged into a continuous fishbone — this was the key iteration finding),
-  terminal cluster of paired round green burs.
-- **Mint** (*Mentha*) — an upright stem with 7 nodes of decussate (alternating-orientation) opposite
-  serrated leaf pairs, 6-tooth serration with real depth (`jagDepth` ~0.58 — enough to survive
-  rendering at leaf scale, not so much it reads as holly), purple flower whorl balls at the upper
-  nodes increasing in bloom fullness toward the top.
-- **Jewelweed** (*Impatiens*) — a taller branching stem (8 nodes), alternate coarse-toothed leaves (5
-  teeth, `jagDepth` ~0.4), drooping pouch-shaped orange/yellow flowers on thin pedicels — pouch lip
-  drawn as an elongated shape (not a round ball), hood capped on top, pale throat/mouth patch so it
-  reads as an open flower.
+`plants.js` exports one schema, `PLANT_DEFAULTS`, and one generator, `buildPlantGeometry(opts)` (merges
+`opts` over `PLANT_DEFAULTS`, same `merge()` deep-merge convention `trees.js` uses), instead of 4
+separate draw functions:
 
-Per-species geometry lives in `plants.js`, one generator function per species
-(`buildChickweed(rng)`, `buildCleavers(rng)`, `buildMint(rng)`, `buildJewelweed(rng)`), each returning
-a `THREE.BufferGeometry` with vertex colors baked in (side-lit gradient per leaf, matching the
-mockups' `leafGradient()` shading — flat single-color fills were an explicitly rejected earlier
-iteration). `rng` seeds per-plant structural variation (node count jitter, leaf angle jitter, flower
-count) at geometry-build time, mirroring `trees.js`'s seeded generation.
+```
+PLANT_DEFAULTS = {
+  seed: 1,
+  stem: {
+    nodes: 6,                 // node count along the main stem
+    nodeSpacing: [8, 14],     // px-equivalent min/max gap between nodes
+    height: [30, 60],
+    branchProb: 0,            // 0 = single stem (chickweed/mint/jewelweed base), >0 = side branches
+    sprawl: 0,                // 0 = upright, 1 = sprawling/prostrate (chickweed)
+  },
+  leaf: {
+    shape: 'oval',            // 'oval' | 'lance' | 'star' — base card silhouette before serration/teeth are cut in
+    style: 'simple',          // 'simple' = one leaf blade per node | 'complex' = compound, built from `leafletCount` leaflets
+    leafletCount: 1,          // only meaningful when style === 'complex'
+    leafletParity: 'odd',     // 'odd' = terminal leaflet (pinnate-odd) | 'even' = paired only, no terminal leaflet
+    arrangement: 'opposite',  // 'alternate' | 'opposite' | 'whorl' — phyllotaxy along the stem
+    whorlCount: 1,            // only meaningful when arrangement === 'whorl' (leaflets radiating from one node)
+    serration: { teeth: 0, depth: 0 },   // teeth=0 → smooth margin; depth 0..1 → `jagDepth` from the mockups
+    variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 }, // 'edge' | 'vein' | 'blotch'
+    size: [10, 20],
+    color: 0x3f6b2a,
+    veinColor: null,          // null = no visible vein line; set to enable (mint/jewelweed midrib)
+  },
+  flower: {
+    enabled: false,
+    shape: 'star',            // 'star' | 'whorlBall' | 'pouch' | 'burPair'
+    petals: 5,
+    frequency: 1,             // fraction of eligible nodes that get a flower
+    color: 0xf4f1e6,
+    throatColor: null,        // pale "opening" patch, used by pouch shapes
+  },
+}
+```
+
+`buildPlantGeometry(opts)` returns a `THREE.BufferGeometry` with vertex colors baked in (side-lit
+gradient per leaf/leaflet, matching the mockups' `leafGradient()` shading — flat single-color fills
+were an explicitly rejected earlier iteration). `opts.seed` drives an internal `rng` for structural
+jitter (node spacing, leaf angle, flower placement), mirroring `trees.js`'s seeded generation.
+
+### The 4 species as presets
+
+Each approved species (from `plant-species-mockup.html` / `plant-iterations-gallery.html` iteration 6)
+is a named partial-`opts` override, `PLANT_PRESETS.<name>`, merged over `PLANT_DEFAULTS` — not a
+distinct code path. This table doubles as the proof that the schema above actually covers all 4
+approved designs:
+
+| Preset | stem | leaf | flower |
+|---|---|---|---|
+| `chickweed` (*Stellaria media*) | `nodes: 6-8, sprawl: 1` (low sprawling strands from a shared root) | `shape: 'oval', style: 'simple', arrangement: 'opposite', serration.teeth: 0` | `shape: 'star', petals: 10, frequency: 0.25` (sparse, near tips only), `color: white` |
+| `cleavers` (*Galium aparine*) | `nodes: 5` (widely spaced — leaflet length must stay under node spacing so whorls read as distinct, the key iteration-3 finding) | `style: 'complex', leafletCount: 7-8, arrangement: 'whorl', shape: 'lance', serration.teeth: 0` | `shape: 'burPair'`, terminal only, `color: green` |
+| `mint` (*Mentha*) | `nodes: 7` | `shape: 'oval', style: 'simple', arrangement: 'opposite'` (decussate — alternating pair orientation is a stem-level rotation, not a new `arrangement` value), `serration: { teeth: 6, depth: 0.58 }`, `veinColor: set` | `shape: 'whorlBall'`, upper nodes only, bloom fullness increasing upward, `color: purple` |
+| `jewelweed` (*Impatiens*) | `nodes: 8, branchProb: 0.3` | `shape: 'oval', style: 'simple', arrangement: 'alternate', serration: { teeth: 5, depth: 0.4 }` | `shape: 'pouch'`, drooping on thin pedicels, `color: orange/yellow`, `throatColor: pale` (elongated lip, not a round ball — the iteration-6 fix; hood capped on top with a visible mouth) |
+
+`leafletParity` (even/odd) isn't exercised by any of the 4 launch presets — none of them are
+even-pinnate compound leaves — but it's part of the schema from day one specifically so a future
+preset (or a `plant-viewer.html` user) can select it; it's not dead scope, it's the same kind of
+schema-completeness `trees.js`'s `DEFAULTS` already has fields not every built-in species varies.
+Same reasoning for `variegation`: none of the 4 species use it, but the axis is real (some real-world
+mint/jewelweed cultivars do have variegated leaves) and costs nothing to include in the schema now.
+
+### Future trajectory: `plant-viewer.html` (not part of this implementation)
+
+Not built as part of this spec — called out here only so `plants.js`'s data model doesn't accidentally
+foreclose it. Once `PLANT_DEFAULTS`/`buildPlantGeometry(opts)` exist, a standalone `plant-viewer.html`
+can follow the exact `tree-viewer.html` shape with no changes to `plants.js`: its own minimal scene
+shell (renderer/camera/`OrbitControls`/lighting/flat ground, no placement/instancing/GPU-cull, Solo +
+Grid view modes), a controls panel with one row per `PLANT_DEFAULTS` field (`select` for `shape`/
+`style`/`arrangement`/`leafletParity`/flower `shape`, `slider` for counts/sizes/serration depth,
+`colorInput` for the 4 color fields, `toggle` for `variegation.enabled`/`flower.enabled`), a preset
+dropdown seeded from `PLANT_PRESETS`, and a "Copy plant JSON" export — all mechanical repeats of
+patterns `tree-viewer.html` already established. This is future work, tracked as a follow-up, not
+scheduled here.
 
 ### Instancing: baked-variant + storage-buffer pattern (mirrors `forest-gpu.js`, simplified)
 
-- **Palette baked once at startup**: for each of the 4 species, generate `VARIANTS_PER_SPECIES`
+- **Palette baked once at startup**: for each of the 4 `PLANT_PRESETS`, generate `VARIANTS_PER_SPECIES`
   (default 4 — plants are simpler than trees, less repetition risk per instance since they're
-  ground-hugging and partly occluded by grass) fixed geometries via the species builders above, each
-  with vertex colors baked (reusing `bakeFlatColor`-style per-vertex tinting from `forest-palette.js`
-  if the color model fits, or inline gradient bake if not — decided during implementation, not a
-  design fork).
+  ground-hugging and partly occluded by grass) fixed geometries by calling
+  `buildPlantGeometry({ ...preset, seed: baseSeed + variantIdx })`, each with vertex colors baked in
+  by the generator itself (side-lit gradient per leaf, per the data-model section above — no separate
+  palette-side color-bake step is needed the way `forest-palette.js`'s `bakeFlatColor` is, since
+  `plants.js` bakes its own gradient at build time).
 - **Single global storage buffer per species-variant** for instance transforms (`x, y, z, scale,
   yaw`), uploaded on chunk load/unload only, never per-frame — same discipline as `forest-gpu.js`.
 - **Single-LOD cull**: unlike forest's 4 LOD bands, plants use one compute cull pass (frustum +
@@ -223,7 +281,7 @@ cull+draw cost. No CPU per-frame cost beyond chunk-load-triggered buffer uploads
 | `grass-textures.js` | **new** — bakes 5 fiber-style canvas textures at init |
 | `grass.js` | add `aBladeUV` attribute to `buildBladeGeometry()`; wire `uBladeStyle` uniform + texture sample into `colorNode`; add `setBladeStyle(key)` |
 | `grass-compute.js` | same shader/uniform/setter changes as `grass.js` (shares `buildBladeGeometry()`, so only needs its own material/uniform wiring, not new geometry code) |
-| `plants.js` | **new** — 4 species geometry builders |
+| `plants.js` | **new** — `PLANT_DEFAULTS` schema, `PLANT_PRESETS` (4 species), `buildPlantGeometry(opts)` generator |
 | `plants-placement.js` | **new** — placement records, biome-gated, mirrors `forest-placement.js` |
 | `plants-gpu.js` | **new** — storage-buffer instancing + single-LOD cull + indirect draw, mirrors `forest-gpu.js` |
 | `environment-viewer.html` | new `select('grassBladeStyle', ...)` control in both grass UI blocks; new `PLANTS_MODE` lazy import + plants UI slider block |
@@ -241,10 +299,11 @@ Following the existing `node test-<name>.mjs` convention (flat, no framework):
   with an empty allowlist at a given biome tag never places) and produces deterministic output for a
   fixed seed (same pattern as existing `test-forest-*` placement tests, to be confirmed by checking
   their exact names during implementation).
-- Geometry generation (`plants.js` species builders) is visual/procedural, not meaningfully unit
-  testable beyond "produces a non-empty BufferGeometry with expected attribute names" — a light
-  smoke test, not exhaustive shape verification (the mockups already did the shape verification
-  visually).
+- `test-plants-geometry.mjs` — calls `buildPlantGeometry(opts)` across all 4 `PLANT_PRESETS` plus a
+  handful of schema edge cases (`leaf.style: 'complex'` with `leafletParity: 'even'`, `arrangement:
+  'whorl'`, `variegation.enabled: true`) and asserts a non-empty `BufferGeometry` with the expected
+  attributes (`position`, `normal`, `color`) — a schema-coverage smoke test, not exhaustive shape
+  verification (the mockups already did the shape verification visually for the 4 launch presets).
 
 No changes to `creature`, `multiplayer`, `terrain`, `water`, `sky`, or `lighting` subsystems.
 
@@ -258,3 +317,9 @@ No changes to `creature`, `multiplayer`, `terrain`, `water`, `sky`, or `lighting
 - **Texture reuse**: confirmed not reusing ambientCG ground-grass photos for blade fiber — those are
   top-down ground-material scans, wrong content for per-blade fiber detail. Confirmed via
   `terrain-textures.js` review earlier in this design process.
+- **Customization trajectory**: `plants.js` is built around one parameterized `PLANT_DEFAULTS`/
+  `buildPlantGeometry(opts)` generator with the 4 species as `PLANT_PRESETS` overrides, not 4 bespoke
+  functions — specifically so a later `tree-viewer.html`-style standalone tool
+  (`plant-viewer.html`, not part of this implementation) can expose leaf shape, complex/simple style,
+  leaflet count/parity, alternate/opposite/whorl arrangement, serration, variegation, and colors as
+  sliders/selects with zero rework of `plants.js` itself.
