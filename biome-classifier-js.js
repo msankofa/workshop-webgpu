@@ -111,7 +111,7 @@ export function classifyBiomeCell({ height, slope, temp, humid, weird, beachMask
 
 const CHANNEL_OFFSETS = { continentalness: 101, erosion: 211, weirdness: 307, temperature: 401, humidity: 503 };
 
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
     a = (a + 0x6d2b79f5) | 0;
@@ -121,13 +121,13 @@ function mulberry32(seed) {
   };
 }
 
-function hashSeed(...parts) {
+export function hashSeed(...parts) {
   let h = 2166136261 >>> 0;
   for (const p of parts) h = Math.imul(h ^ (p | 0), 16777619) >>> 0;
   return h >>> 0;
 }
 
-function fade(t) { return t * t * (3.0 - 2.0 * t); }
+export function fade(t) { return t * t * (3.0 - 2.0 * t); }
 
 function buildLattice(seed, period) {
   const cellsPerAxis = Math.max(2, Math.ceil(WORLD_EXTENT / Math.max(period, 1e-6)) + 4);
