@@ -1,0 +1,345 @@
+Short Version
+  ClaudeCraft’s lighting is less technically ambitious, but much more production-shaped. Your game has the more advanced renderer path: custom WebGPU clustered/froxel point lighting. ClaudeCraft uses ordinary
+  Three.js PointLights with a strict budget. But ClaudeCraft wins hard on ownership, integration, and multiplayer correctness.
+  Lights are handled as a custom subsystem layered into environment-viewer.html:
+
+  - WebGPU clustered forward+ lighting via clustered-lights.js.
+  - CPU writes light records into a GPU storage buffer.
+  - Materials sample clusteredLightsRef.pointLightTerm(...).
+  - Light gun uses reserved slots around 223-255.
+  - Solo mode owns lights locally.
+  - Multiplayer mode now routes guest light commands to host, host owns light lifetime/physics/slots, then broadcasts snapshots through light_state.
+
+  That is powerful, but the code is fragile because light gameplay, networking, UI, and rendering are all tangled in one big file. There is no general replicated dynamic-object registry. Lights are a special-
+  case patch.
+
+  ClaudeCraft
+  ClaudeCraft’s renderer uses conventional Three.js lights:
+
+  - Static campfires/torches create THREE.PointLights from prop generation.
+  - Quest/object glows are PointLights attached to rendered entity/object views.
+  - Renderer tracks fireLights and viewLights.
+  - It budgets the nearest lights using GFX.maxPointLights.
+  - It keeps a constant visible light count so Three.js does not recompile shaders every time light count changes.
+  - Fire flicker is local render animation.
+  - Multiplayer correctness comes from server-owned world/entity snapshots, not from networking light objects directly.
+
+  The important distinction: ClaudeCraft usually does not replicate “a light” as a network object. It replicates the world/entity/object that implies a light. The client renders the light deterministically
+  from shared world state. Its README describes an authoritative multiplayer server, Postgres-backed accounts, persistent characters, and server-owned combat/world state, while your current relay/browser-host
+  model is still much thinner. Source: GitHub README and repo files: https://github.com/levy-street/world-of-claudecraft
+
+  Quality Comparison
+  Rendering tech: your game can scale better if finished. Clustered WebGPU lighting is more modern than ClaudeCraft’s fixed Three.js point-light budget.
+
+  System design: ClaudeCraft is much better. Its lights sit inside renderer/props/entity boundaries. Your lights are bolted into the monolithic environment page.
+
+  Multiplayer: ClaudeCraft is much better architecturally. Lights emerge from authoritative server state. Your current light sharing is host-authoritative only and special-cased.
+
+  UX/UI: ClaudeCraft treats lights as world atmosphere. Your light gun UI is a debug/dev tool exposed as gameplay, with sliders and modes. Useful for testing, not polished UX.
+
+  Persistence/conflicts: ClaudeCraft has the infrastructure to persist shared world state. Your placed lights currently expire and are not durable world mutations.
+
+  Bottom Line
+  Your lighting renderer is more ambitious. ClaudeCraft’s lighting system is more mature. The direction I’d take is: keep the clustered WebGPU light renderer, but stop treating lights as a one-off multiplayer
+  patch. Promote them into a replicated dynamic entity/object lifecycle so lights, creatures, future props, and other entities all use the same host/server-owned registry.
+
+─ Worked for 2m 31s ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› spec out promoting them into a replicated dynamic entity/object lifecycle so lights, creatures, future props, and other entities all use the same host/server-owned registry
+
+
+• Spec: Replicated Dynamic Entity Lifecycle
+
+  Goal
+  Replace special-case multiplayer systems for lights, creatures, props, and future objects with one replicated entity registry. The host/server owns entity creation, mutation, simulation, and destruction.
+  Clients submit intents. Clients render snapshots.
+
+  Core Model
+  Add a shared dynamic entity record:
+
+  {
+    id: "ent-123",
+    type: "light" | "creature" | "prop" | "projectile" | "item" | "effect",
+    ownerId: "host" | "client-abc" | null,
+    createdAt: 12345,
+    updatedAt: 12400,
+    version: 17,
+
+    transform: {
+      p: [x, y, z],
+      q: [x, y, z, w],
+      s: [x, y, z]
+    },
+
+    state: {},
+    render: {},
+    sim: {},
+    lifecycle: {
+      ttl: 15,
+      expiresAt: 13000,
+      destroyed: false,
+      destroyReason: null
+    }
+  }
+
+  state is gameplay state.
+  render is client-render hints.
+  sim is host-owned private simulation config.
+
+  Subsystems To Add
+
+  1. Entity Registry
+     Owns all dynamic entities.
+
+  Responsibilities:
+
+  - Allocate stable IDs.
+  - Store entities by ID.
+  - Track versions.
+  - Emit create/update/destroy events.
+  - Provide snapshot export.
+  - Provide command handlers by type.
+  - Prevent clients from directly mutating registry state.
+
+  API shape:
+
+  registry.create(type, init, context)
+  registry.update(id, patch, context)
+  registry.destroy(id, reason, context)
+  registry.get(id)
+  registry.list(filter)
+  registry.snapshot({ sinceVersion, interestCenter })
+  registry.applySnapshot(snapshot) // guest/client only
+
+  2. Entity Type Adapters
+     Each entity type plugs into the registry.
+
+  const LightEntity = {
+    type: "light",
+    create(input, ctx) {},
+    update(entity, dt, ctx) {},
+    serialize(entity) {},
+    applyRender(entity, rendererCtx) {},
+    destroy(entity, ctx) {}
+  };
+
+  Initial adapters:
+
+  - light
+  - light_projectile
+  - creature
+  - prop
+
+  Later:
+
+  - pickups/items
+  - placed world models
+  - doors/switches
+  - particles/effects
+  - destructible objects
+
+  3. Command/Intent Layer
+     Clients send intents, not state.
+
+  Examples:
+
+  { type: "entity_intent", action: "light.place", pos, params }
+  { type: "entity_intent", action: "light.fire", origin, dir, chargeRatio, params }
+  { type: "entity_intent", action: "prop.place", modelId, transform }
+  { type: "entity_intent", action: "creature.target", entityId, target }
+
+  Host validates:
+
+  - permission
+  - distance/range
+  - max counts
+  - malformed values
+  - cooldowns
+  - world bounds
+  - ownership rules
+
+  Then host mutates registry.
+
+  4. Snapshot Stream
+     Replace lights, creatures, and later props with one entities payload.
+
+  {
+    type: "sim_state",
+    seq: 120,
+    players: [],
+    entities: {
+      full: false,
+      since: 91,
+      version: 107,
+      upserts: [entitySnapshot],
+      removes: [{ id, version, reason }]
+    }
+  }
+
+  Clients apply snapshots into a local mirror registry.
+
+  5. Interest Management
+     Do not send every entity forever.
+
+  Basic first version:
+
+  - Always send nearby entities within radius.
+  - Always send player-owned entities.
+  - Always send tracked/friend-relevant entities.
+  - Send removes when an entity leaves interest or is destroyed.
+
+  Later:
+
+  - distance-tiered update rates
+  - chunk-scoped entity buckets
+  - reliable create/destroy channel
+  - delta compression
+
+  6. Renderer Binding Layer
+     Stop letting gameplay code write directly into render resources.
+
+  Current bad pattern:
+
+  clusteredLightsRef.setLightDirect(slot, ...)
+
+  Replace with:
+
+  entityRenderer.sync(registryView)
+
+  Light renderer owns:
+
+  - slot allocation
+  - slot reuse
+  - clearing stale slots
+  - render interpolation
+  - clustered light writes
+
+  Creature renderer owns:
+
+  - ghost/creature mesh creation
+  - animation state
+  - cleanup
+
+  Prop renderer owns:
+
+  - model instancing
+  - GLB placement
+  - cleanup
+
+  The registry says “there is a light entity at X.” The renderer decides how to display it.
+
+  Light Entity Design
+  A placed light becomes:
+
+  {
+    id,
+    type: "light",
+    ownerId,
+    transform: { p: [x, y, z], q: [0,0,0,1], s: [1,1,1] },
+    state: {
+      kind: "placed",
+      color: [1, 0.7, 0.31],
+      radius: 30,
+      intensity: 60,
+      float: true,
+      drift: false,
+      lifespan: 15,
+      totalLife: 15
+    }
+  }
+
+  A fired light is either:
+
+  - type: "projectile" with state.payloadType = "light", then converts to light
+  - or type: "light" with state.kind = "projectile"
+
+  Cleaner option: use a generic projectile entity that spawns a light on impact.
+
+  Creature Design
+  Creatures should move from special creatures: [] snapshots into registry entities:
+
+  {
+    id: "creature-12",
+    type: "creature",
+    transform: { p, q, s },
+    state: {
+      hp,
+      behavior,
+      targetId,
+      ypr,
+      feet,
+      hands,
+      species,
+      seed
+    }
+  }
+
+  For now, creature simulation can still live in the existing creature system, but export/import should go through the registry boundary. Long term, creature sim should be host-owned registry simulation.
+
+  Network Flow
+  Host:
+
+  guest input -> validate intent -> registry mutation -> registry tick -> snapshot export -> relay broadcast
+
+  Guest:
+
+  local input -> send intent -> receive snapshot -> mirror registry update -> renderer sync
+
+  Solo:
+
+  local input -> registry mutation -> registry tick -> renderer sync
+
+  Same registry, no multiplayer special case.
+
+  Persistence
+  Add a persistence policy per entity type:
+
+  persistence: "none" | "session" | "world"
+
+  Examples:
+
+  - light projectile: none
+  - creature spawn config: world
+  - creature runtime position: session or world, depending design
+
+  Persistent mutations should serialize as a world mutation log:
+
+  { op: "create", entity }
+  { op: "update", id, patch, version }
+  { op: "destroy", id, version }
+
+  Conflict Model
+  Initial simple rules:
+
+  - Host/server is final authority.
+  - Clients cannot directly create entities.
+  - Client commands are requests.
+  - Last host version wins on clients.
+  - Destroy always wins over update at same or newer version.
+  - Stale client actions targeting missing/old entities are rejected.
+  - Ownership only gives permission to request actions, not authority to mutate.
+
+  Migration Plan
+
+  1. Add entity-registry.js.
+  2. Add entity-types/light.js.
+  3. Move shared light lifecycle into registry.
+  4. Replace light_state with entities.upserts/removes.
+  5. Add guest mirror registry.
+  6. Move light renderer slot management out of multiplayer code.
+  7. Move creatures into entity snapshots.
+  8. Move placed GLB/world models into entity snapshots.
+  9. Add optional persistence/mutation log.
+
+  Minimum First Milestone
+  Do this first:
+
+  - Registry supports create/update/destroy/tick/snapshot/applySnapshot.
+  - Light gun uses registry in solo and multiplayer.
+  - Host owns all light entities.
+  - Guest sees own and host lights through entity snapshots.
+  - Remove direct mpSharedLights and mpPendingLightState.
+  - Keep clustered renderer, but drive it from mirrored light entities.
+
+  That gives you the foundation for shared creatures and future props without rewriting the renderer.

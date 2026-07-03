@@ -11,9 +11,14 @@ const stateA = {
     { id: 'host', p: [0,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
     { id: 'guest-a', p: [10,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
   ],
-  lights: [
-    { id: 'light-a', kind: 'placed', slot: 223, p: [0,2,0], r: 1, g: 0.7, b: 0.3, radius: 30, intensity: 60 },
-  ],
+  entities: {
+    full: true, since: 0, version: 1,
+    upserts: [
+      { id: 'light-a', type: 'light', p: [0,2,0], color: [1,0.7,0.3], radius: 30, intensity: 60, lifespan: 10, totalLife: 15, ownerId: 'host' },
+      { id: 'projectile-1', type: 'projectile', p: [0,5,0], color: [1,0.7,0.3], radius: 10, intensity: 60, ownerId: 'host', renders: true },
+    ],
+    removes: [],
+  },
 };
 const stateB = {
   creatures: [{ id: 0, p: [10,0,0], q: [0,0,0,1], hp: 0.5, feet: [], hands: [] }],
@@ -22,9 +27,14 @@ const stateB = {
     { id: 'host', p: [0,1,10], q: [0,0,0,1], h: 1.6, r: 0.35 },
     { id: 'guest-b', p: [-5,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
   ],
-  lights: [
-    { id: 'light-a', kind: 'placed', slot: 223, p: [10,2,0], r: 1, g: 0.7, b: 0.3, radius: 20, intensity: 20 },
-  ],
+  entities: {
+    full: true, since: 0, version: 2,
+    upserts: [
+      { id: 'light-a', type: 'light', p: [10,2,0], color: [1,0.7,0.3], radius: 20, intensity: 20, lifespan: 8, totalLife: 15, ownerId: 'host' },
+      { id: 'light-b', type: 'light', p: [5,2,0], color: [1,0.7,0.3], radius: 10, intensity: 10, lifespan: 5, totalLife: 5, ownerId: 'host', spawnedFrom: 'projectile-1' },
+    ],
+    removes: [],
+  },
 };
 buf.push(stateA, 1000);
 buf.push(stateB, 1100);
@@ -41,9 +51,23 @@ console.assert(approx(midHost.p[2], 5), `FAIL: player lerp should match by id - 
 console.assert(approx(midGuest.p[0], 15), `FAIL: guest player lerp should match by id - got guest x ${midGuest.p[0]}`);
 console.assert(approx(midGuest.h, 1.1), `FAIL: guest player height lerp - got ${midGuest.h}`);
 console.assert(midNewGuest && approx(midNewGuest.p[0], -5), 'FAIL: player present only in newer snapshot should be retained');
-console.assert(approx(mid.lights[0].p[0], 5), `FAIL: light position lerp - got ${mid.lights[0].p[0]}`);
-console.assert(approx(mid.lights[0].radius, 25), `FAIL: light radius lerp - got ${mid.lights[0].radius}`);
-console.assert(approx(mid.lights[0].intensity, 40), `FAIL: light intensity lerp - got ${mid.lights[0].intensity}`);
+const midLightA = mid.entities.upserts.find(e => e.id === 'light-a');
+const midLightB = mid.entities.upserts.find(e => e.id === 'light-b');
+console.assert(approx(midLightA.p[0], 5), `FAIL: entity position lerp — got ${midLightA.p[0]}`);
+console.assert(approx(midLightA.radius, 25), `FAIL: entity radius lerp — got ${midLightA.radius}`);
+console.assert(approx(midLightA.intensity, 40), `FAIL: entity intensity lerp — got ${midLightA.intensity}`);
+console.assert(midLightB && approx(midLightB.p[0], 2.5) && approx(midLightB.p[1], 3.5),
+  `FAIL: spawnedFrom entity should lerp from its projectile predecessor — got ${JSON.stringify(midLightB?.p)}`);
+
+// Guard: _lerpState must tolerate a snapshot with no `entities` field (old shape / partial state).
+const legacyA = { creatures: stateA.creatures, players: stateA.players };
+const legacyB = { creatures: stateB.creatures, players: stateB.players };
+const legacyBuf = new InterpolationBuffer();
+legacyBuf.push(legacyA, 2000);
+legacyBuf.push(legacyB, 2100);
+const legacyMid = legacyBuf.sample(2050);
+console.assert(legacyMid.entities && Array.isArray(legacyMid.entities.upserts) && legacyMid.entities.upserts.length === 0,
+  'FAIL: missing entities field should degrade to an empty upserts array, not throw');
 
 // sample before first snapshot — should return stateA
 const before = buf.sample(900);

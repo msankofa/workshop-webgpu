@@ -97,6 +97,14 @@ export function froxelLightSet(tx, ty, s, zBins, bitmask, order, tilesX)
   wrapped as TSL `storage(...)` nodes for both the compute kernel and the shading function.
   Light data is written/mutated directly on `lightAttr.array` from JS (`writeLights`,
   `setLightDirect`, `clearLight`) and flushed via `lightAttr.needsUpdate = true`.
+  - **Slot ownership (since 2026-07-03):** the reserved dynamic range (slots 223–255, the
+    `reserve: 33`) is now owned exclusively by `light-entity-renderer.js`
+    (`createLightEntityRenderer`), the renderer-binding layer for the replicated entity registry.
+    It is the ONLY caller of `setLightDirect`/`clearLight` for dynamic light-gun lights (solo,
+    host, and guest all go through it) — gameplay code no longer writes slots directly. Diffs
+    entities by id, assigns/reuses/frees slots, reject-newest when the 33-slot pool is full. See
+    `docs/subsystems/multiplayer.md` §9 and
+    `docs/superpowers/plans/2026-07-03-entity-registry-light-migration.md`.
   - **v1 cull algorithm** (the `cull` TSL `Fn`, run as `.compute(FROXEL_CAP)`, one GPU thread
     per froxel): for each froxel, compute its view-space AABB from the NDC tile corners at the
     slice's near/far depth, then loop all `count` lights doing an exact sphere-vs-AABB test

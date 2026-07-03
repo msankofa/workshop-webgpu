@@ -52,6 +52,10 @@ import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
 import { createHostSession, createGuestSession, GhostRenderer } from './multiplayer.js';
 import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState } from './slider-state.js';
+import { createEntityRegistry } from './entity-registry.js';
+import { LightEntity, normalizeParamsPacket as entityNormalizeParamsPacket } from './entity-types/light.js';
+import { ProjectileEntity } from './entity-types/projectile.js';
+import { createLightEntityRenderer } from './light-entity-renderer.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -72,16 +76,32 @@ let mpLatestState = null;
 let mpSharedWorldSettings = false;
 let mpPendingWorldSettings = null;
 let mpPendingCreatureState = [];
-let mpPendingLightState = [];
-let mpLightSnapshotsReady = false;
 let mpPendingCreatureConfig = null;
-const MP_LIGHT_FIRST_SLOT = 223;
-const MP_LIGHT_MAX = 33;
-const MP_LIGHT_MAX_FLIGHT = 10;
-const mpSharedLights = new Map();
-const mpSharedLightSlots = new Array(MP_LIGHT_MAX).fill(null);
-const mpRenderedLightSlots = new Set();
-let mpSharedLightSeq = 0;
+// Host/solo entity registry (lights + projectiles). Guest never ticks it —
+// it renders directly from interpolated wire upserts (see mp:onState handling
+// below), so no guest-side mirror registry is needed.
+const entityRegistry = createEntityRegistry();
+entityRegistry.registerType(LightEntity);
+entityRegistry.registerType(ProjectileEntity);
+// Entities whose serialized wire shape should occupy a clustered-light slot:
+// placed lights plus in-flight projectiles (which render as a moving light).
+const isRenderableLightEntity = w => w && (w.type === 'light' || w.renders === true);
+// registry.renderList(filter) applies `filter` to RAW pre-serialize entities
+// (which don't carry the wire-only `renders` flag yet), so the type check has
+// to happen there; isRenderableLightEntity is then re-applied to the
+// serialized output — the single predicate "used everywhere the binder is fed".
+const isRegisteredLightEntityType = e => e.type === 'light' || e.type === 'projectile';
+function hostLightEntitiesForRender() {
+  return entityRegistry.renderList(isRegisteredLightEntityType).filter(isRenderableLightEntity);
+}
+let lightBinder = null;
+let mpPendingLightEntities = []; // guest only: interpolated wire upserts, renderable-filtered
+// Declared up here (not at its slider-preset comment block ~L1230) because the
+// guest's onState → receiveSharedWorldSettings() reads it directly, and onState
+// can fire during a top-level `await` (e.g. the clustered-lights import) BEFORE
+// module eval reaches the old declaration site → TDZ crash. Controls still
+// self-register into it far below; it just needs to exist before sessions start.
+const controlRegistry = [];
 let mpLastCreatureConfigSig = '';
 let mpLastCreatureConfigSend = -Infinity;
 let mpCreatureConfigVersion = 0;
@@ -229,7 +249,7 @@ function getState() {
   const hostPlayer = getLocalPlayerState('host');
   if (hostPlayer) players.push(hostPlayer);
   for (const player of mpGuestPlayers.values()) players.push(player);
-  return { creatures, players, lights: lgSharedLightSnapshot(), worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
+  return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
 }
 
 function updateHostPlayerGhosts() {
@@ -266,8 +286,11 @@ if (mpRole === 'host') {
     receiveSharedWorldSettings(state.worldSettings);
     receiveSharedNpcConfig(state.creatureConfig);
     mpPendingCreatureState = state.creatures ?? [];
-    mpPendingLightState = state.lights ?? [];
-    if (mpLightSnapshotsReady) lgApplySharedLightSnapshot(mpPendingLightState);
+    // Guest trap (see plan): feed the binder the already-interpolated wire
+    // upserts directly — do NOT build a mirror registry + renderList, the
+    // wire shape isn't the adapters' internal entity shape.
+    mpPendingLightEntities = (state.entities?.upserts ?? []).filter(isRenderableLightEntity);
+    lightBinder?.sync(mpPendingLightEntities);
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
     mpGhostRenderer.update({ ...state, creatures: [], players });
   });
@@ -285,10 +308,8 @@ window.addEventListener('mp:guest_input', e => {
     portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
   } else if (msg.type === 'set_behavior') {
     portCreatures?.system?.setBehavior(msg.behavior);
-  } else if (msg.type === 'light_place') {
-    lgHandleSharedLightPlace(msg, msg.clientId || 'guest');
-  } else if (msg.type === 'light_fire') {
-    lgHandleSharedLightFire(msg, msg.clientId || 'guest');
+  } else if (msg.type === 'entity_intent') {
+    applyLightIntent(msg, msg.clientId || 'guest');
   }
 });
 function createMultiplayerFinder() {
@@ -691,9 +712,13 @@ if (TERRAIN_MODE === 'gpu' && LIGHTS_MODE !== 'off') {
   clusteredLightsRef.setCount(0); // default off; UI toggle enables
   window._dbg = window._dbg || {};
   window._dbg.clusteredLightsRef = clusteredLightsRef;
+  lightBinder = createLightEntityRenderer({ clusteredLights: clusteredLightsRef });
+  // One catch-up sync so lights buffered before the binder existed (lazy
+  // import can land after the first guest state / host tick) show up
+  // immediately instead of waiting for the next frame's data.
+  if (mpRole === 'guest') lightBinder.sync(mpPendingLightEntities);
+  else lightBinder.sync(hostLightEntitiesForRender());
 }
-mpLightSnapshotsReady = true;
-if (mpRole === 'guest' && mpPendingLightState.length) lgApplySharedLightSnapshot(mpPendingLightState);
 
 // SP3: load the GPU CDLOD ground at top level (top-level await is already used above for
 // renderer.init), so `ground` points at the CDLOD mesh BEFORE water loads and binds its
@@ -1196,7 +1221,8 @@ function syncWaterDebug() {
 // (e.g. opening via file://) degrades to "no trees" instead of a blank scene.
 // ---- slider-state presets: every slider()/select()/toggle() control below self-registers
 // here so a saved preset can be captured/replayed without hand-listing every param. ----
-const controlRegistry = [];
+// NOTE: `const controlRegistry = []` is declared much earlier (near the mp state
+// block) to avoid a TDZ crash when a guest snapshot is processed mid-module-init.
 function captureSliderState() {
   const values = {};
   for (const c of controlRegistry) values[c.name] = c.obj[c.key];
@@ -2872,14 +2898,9 @@ const fp = {
 capsuleH = fp.heightStand;
 
 // ---- light gun state ----
-const LG_MAX_PLACED     = 32;
-const LG_PROJECTILE_SLOT = 223;
-const LG_FIRST_SLOT     = 224;
+// Physics/slot constants now live in entity-types/light.js, entity-types/projectile.js,
+// and light-entity-renderer.js (the registry + binder own placement/flight/fade/slots).
 const LG_MAX_CHARGE_MS  = 1500;
-const LG_MIN_SPEED      = 8;
-const LG_MAX_SPEED      = 60;
-const LG_FALL_GRAVITY   = 14;
-const LG_FADE_WINDOW    = 2;
 const LG_RAY_STEPS      = 256;
 const LG_RAY_MAX_DIST   = 200;
 
@@ -2889,9 +2910,6 @@ const lgParams = {
   lifespan: 15, r: 255, g: 180, b: 80,
   brightness: 60, radius: 30,
 };
-const placedLights = [];
-const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
-let lgInFlight = null;
 let lgChargeStart = null;
 
 
@@ -3193,24 +3211,6 @@ function lgRaycastTerrain() {
   }
   return { hit: false };
 }
-function lgFindFreeSlot() {
-  const idx = lgSlotFree.indexOf(true);
-  return idx === -1 ? -1 : LG_FIRST_SLOT + idx;
-}
-function lgMakeLightObj(slot, x, y, z, floating) {
-  lgSlotFree[slot - LG_FIRST_SLOT] = false;
-  return {
-    slot, freeIdx: slot - LG_FIRST_SLOT, x, y, z, vy: 0, grounded: floating,
-    lifespan: lgParams.lifespan, totalLife: lgParams.lifespan,
-    r: lgParams.r / 255, g: lgParams.g / 255, b: lgParams.b / 255,
-    brightness: lgParams.brightness, radius: lgParams.radius,
-    float: lgParams.float, drift: lgParams.drift,
-    driftPhase: Math.random() * Math.PI * 2,
-  };
-}
-function lgSharedMode() {
-  return mpRole !== 'solo';
-}
 function lgClampNumber(value, fallback, min = -Infinity, max = Infinity) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
@@ -3228,205 +3228,57 @@ function lgParamsPacket() {
     radius: lgClampNumber(lgParams.radius, 30, 0.1, 200),
   };
 }
-function lgNormalizeParamsPacket(packet = {}) {
-  const base = lgParamsPacket();
-  return {
-    trajectory: packet.trajectory === 'straight' ? 'straight' : 'arc',
-    float: packet.float === undefined ? base.float : !!packet.float,
-    drift: packet.drift === undefined ? base.drift : !!packet.drift,
-    lifespan: lgClampNumber(packet.lifespan, base.lifespan, 0.5, 120),
-    r: lgClampNumber(packet.r, base.r, 0, 255),
-    g: lgClampNumber(packet.g, base.g, 0, 255),
-    b: lgClampNumber(packet.b, base.b, 0, 255),
-    brightness: lgClampNumber(packet.brightness, base.brightness, 0, 500),
-    radius: lgClampNumber(packet.radius, base.radius, 0.1, 200),
-  };
-}
-function lgSharedLightColor(params) {
-  return { r: params.r / 255, g: params.g / 255, b: params.b / 255 };
-}
-function lgAllocSharedLightSlot(id) {
-  const idx = mpSharedLightSlots.indexOf(null);
-  if (idx === -1) return -1;
-  mpSharedLightSlots[idx] = id;
-  return MP_LIGHT_FIRST_SLOT + idx;
-}
-function lgReleaseSharedLightSlot(slot) {
-  const idx = slot - MP_LIGHT_FIRST_SLOT;
-  if (idx < 0 || idx >= MP_LIGHT_MAX) return;
-  mpSharedLightSlots[idx] = null;
-  mpRenderedLightSlots.delete(slot);
-  clusteredLightsRef?.clearLight(slot);
-}
-function lgCreateSharedPlacedLight({ x, y, z, params, ownerId }) {
-  if (mpRole !== 'host' || !clusteredLightsRef) return;
-  const id = `light-${++mpSharedLightSeq}`;
-  const slot = lgAllocSharedLightSlot(id);
-  if (slot === -1) return;
-  const p = lgNormalizeParamsPacket(params);
-  const c = lgSharedLightColor(p);
-  const floating = !!p.float;
-  mpSharedLights.set(id, {
-    id, slot, ownerId, kind: 'placed',
-    x, y, z, vy: 0, grounded: floating,
-    lifespan: p.lifespan, totalLife: p.lifespan,
-    r: c.r, g: c.g, b: c.b, brightness: p.brightness, radius: p.radius,
-    float: floating, drift: !!p.drift, driftPhase: Math.random() * Math.PI * 2,
-    renderX: x, renderY: y, renderZ: z, intensity: p.brightness,
-  });
-}
-function lgCreateSharedProjectile({ origin, dir, chargeRatio, params, ownerId }) {
-  if (mpRole !== 'host' || !clusteredLightsRef) return;
-  if (!Array.isArray(origin) || !Array.isArray(dir)) return;
-  const len = Math.hypot(Number(dir[0]) || 0, Number(dir[1]) || 0, Number(dir[2]) || 0) || 1;
-  const nx = (Number(dir[0]) || 0) / len, ny = (Number(dir[1]) || 0) / len, nz = (Number(dir[2]) || 0) / len;
-  const id = `light-${++mpSharedLightSeq}`;
-  const slot = lgAllocSharedLightSlot(id);
-  if (slot === -1) return;
-  const p = lgNormalizeParamsPacket(params);
-  const c = lgSharedLightColor(p);
-  const speed = LG_MIN_SPEED + lgClampNumber(chargeRatio, 0, 0, 1) * (LG_MAX_SPEED - LG_MIN_SPEED);
-  const x = Number(origin[0]) || 0, y = Number(origin[1]) || 0, z = Number(origin[2]) || 0;
-  mpSharedLights.set(id, {
-    id, slot, ownerId, kind: 'projectile',
-    x, y, z, vx: nx * speed, vy: ny * speed, vz: nz * speed,
-    arc: p.trajectory === 'arc', age: 0,
-    lifespan: p.lifespan, totalLife: p.lifespan,
-    r: c.r, g: c.g, b: c.b, brightness: p.brightness, radius: p.radius,
-    float: !!p.float, drift: !!p.drift, driftPhase: Math.random() * Math.PI * 2,
-    renderX: x, renderY: y, renderZ: z, intensity: p.brightness,
-  });
-}
-function lgSubmitSharedLightCommand(msg) {
-  if (mpRole === 'host') {
-    if (msg.type === 'light_place') lgHandleSharedLightPlace(msg, 'host');
-    else if (msg.type === 'light_fire') lgHandleSharedLightFire(msg, 'host');
-  } else if (mpRole === 'guest') {
-    mpSession?.sendInput(msg);
+// Host/solo-local validated intent handler. Guests never call this directly —
+// they emit the same intent shape over the wire (mpSession.sendInput) and the
+// host applies it here via the mp:guest_input 'entity_intent' branch. Params
+// are re-normalized (not trusted from the wire) via entity-types/light.js's
+// normalizeParamsPacket, which entityRegistry.create('light'|'projectile', …)
+// also applies internally — double-normalizing is idempotent and cheap.
+function applyLightIntent(intent, ownerId) {
+  if (!intent || typeof intent !== 'object') return null;
+  const now = performance.now() / 1000;
+  if (intent.action === 'light.place') {
+    if (!Array.isArray(intent.pos)) return null;
+    const x = Number(intent.pos[0]);
+    const z = Number(intent.pos[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    const p = entityNormalizeParamsPacket(intent.params);
+    const yRaw = Number(intent.pos[1]);
+    const y = Number.isFinite(yRaw) ? yRaw : terrainHeight(x, z);
+    return entityRegistry.create('light', {
+      x, y: y + (p.float ? 1.5 : 0.2), z, params: p, ownerId,
+    }, { now });
   }
-}
-function lgHandleSharedLightPlace(msg, ownerId) {
-  if (mpRole !== 'host' || !Array.isArray(msg.pos)) return;
-  const x = Number(msg.pos[0]) || 0;
-  const z = Number(msg.pos[2]) || 0;
-  const p = lgNormalizeParamsPacket(msg.params);
-  const y = Number.isFinite(Number(msg.pos[1])) ? Number(msg.pos[1]) : terrainHeight(x, z);
-  lgCreateSharedPlacedLight({ x, y: y + (p.float ? 1.5 : 0.2), z, params: p, ownerId });
-}
-function lgHandleSharedLightFire(msg, ownerId) {
-  if (mpRole !== 'host') return;
-  lgCreateSharedProjectile({ origin: msg.origin, dir: msg.dir, chargeRatio: msg.chargeRatio, params: msg.params, ownerId });
-}
-function lgSharedLightSnapshot() {
-  if (mpRole !== 'host') return [];
-  return [...mpSharedLights.values()].map(L => ({
-    id: L.id, kind: L.kind, slot: L.slot, p: [L.renderX ?? L.x, L.renderY ?? L.y, L.renderZ ?? L.z],
-    r: L.r, g: L.g, b: L.b, radius: L.radius, intensity: L.intensity ?? L.brightness,
-    lifespan: L.lifespan, totalLife: L.totalLife, ownerId: L.ownerId,
-  }));
-}
-function lgApplySharedLightSnapshot(items) {
-  if (!clusteredLightsRef) return;
-  const seen = new Set();
-  for (const L of Array.isArray(items) ? items : []) {
-    const slot = Number(L.slot);
-    if (!Number.isInteger(slot) || slot < MP_LIGHT_FIRST_SLOT || slot >= MP_LIGHT_FIRST_SLOT + MP_LIGHT_MAX) continue;
-    const p = Array.isArray(L.p) ? L.p : [L.x, L.y, L.z];
-    seen.add(slot);
-    mpRenderedLightSlots.add(slot);
-    clusteredLightsRef.setLightDirect(slot, {
-      x: Number(p[0]) || 0, y: Number(p[1]) || 0, z: Number(p[2]) || 0,
-      radius: lgClampNumber(L.radius, 1, 0, 300),
-      r: lgClampNumber(L.r, 1, 0, 1), g: lgClampNumber(L.g, 1, 0, 1), b: lgClampNumber(L.b, 1, 0, 1),
-      intensity: lgClampNumber(L.intensity, 0, 0, 1000),
-    });
+  if (intent.action === 'light.fire') {
+    if (!Array.isArray(intent.origin) || !Array.isArray(intent.dir)) return null;
+    const p = entityNormalizeParamsPacket(intent.params);
+    return entityRegistry.create('projectile', {
+      origin: intent.origin, dir: intent.dir, chargeRatio: intent.chargeRatio,
+      payload: { type: 'light', params: p }, ownerId,
+    }, { now });
   }
-  for (const slot of [...mpRenderedLightSlots]) {
-    if (!seen.has(slot)) {
-      clusteredLightsRef.clearLight(slot);
-      mpRenderedLightSlots.delete(slot);
-    }
-  }
-}
-function lgUpdateSharedLightsHost(dt, t) {
-  if (mpRole !== 'host' || !clusteredLightsRef) return;
-  for (const [id, L] of [...mpSharedLights]) {
-    if (L.kind === 'projectile') {
-      L.age += dt;
-      if (L.arc) L.vy -= LG_FALL_GRAVITY * dt;
-      L.x += L.vx * dt; L.y += L.vy * dt; L.z += L.vz * dt;
-      const th = terrainHeight(L.x, L.z);
-      if (L.y <= th || L.age > MP_LIGHT_MAX_FLIGHT) {
-        L.kind = 'placed';
-        L.y = th + (L.float ? 1.5 : 0.2);
-        L.vy = 0;
-        L.grounded = !!L.float;
-      }
-    }
-    if (L.kind === 'placed') {
-      if (!L.float && !L.grounded) {
-        L.vy -= LG_FALL_GRAVITY * dt;
-        L.y += L.vy * dt;
-        const th = terrainHeight(L.x, L.z);
-        if (L.y <= th) { L.y = th; L.vy = 0; L.grounded = true; }
-      }
-      L.lifespan -= dt;
-      if (L.lifespan <= 0) {
-        mpSharedLights.delete(id);
-        lgReleaseSharedLightSlot(L.slot);
-        continue;
-      }
-    }
-    let xOff = 0, zOff = 0;
-    if (L.kind === 'placed' && L.float && L.drift) {
-      xOff = Math.sin(t * 0.3 + L.driftPhase) * 3;
-      zOff = Math.cos(t * 0.27 + L.driftPhase) * 3;
-    }
-    const fadeScale = L.kind === 'placed' && L.lifespan < LG_FADE_WINDOW ? Math.max(0, L.lifespan / LG_FADE_WINDOW) : 1;
-    L.renderX = L.x + xOff; L.renderY = L.y; L.renderZ = L.z + zOff;
-    L.intensity = L.brightness * fadeScale;
-    mpRenderedLightSlots.add(L.slot);
-    clusteredLightsRef.setLightDirect(L.slot, {
-      x: L.renderX, y: L.renderY, z: L.renderZ, radius: L.radius,
-      r: L.r, g: L.g, b: L.b, intensity: L.intensity,
-    });
-  }
+  return null;
 }
 function lgPlaceAtCrosshair() {
   const hit = lgRaycastTerrain();
   if (!hit.hit) return;
-  if (lgSharedMode()) {
-    lgSubmitSharedLightCommand({ type: 'light_place', pos: [hit.x, hit.y, hit.z], params: lgParamsPacket() });
-    return;
-  }
-  const slot = lgFindFreeSlot();
-  if (slot === -1) return;
-  placedLights.push(lgMakeLightObj(slot, hit.x, hit.y + (lgParams.float ? 1.5 : 0.2), hit.z, lgParams.float));
+  const intent = { type: 'entity_intent', action: 'light.place', pos: [hit.x, hit.y, hit.z], params: lgParamsPacket() };
+  if (mpRole === 'guest') mpSession?.sendInput(intent);
+  else applyLightIntent(intent, 'host');
 }
 function lgFireLight(chargeRatio) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  if (lgSharedMode()) {
-    lgSubmitSharedLightCommand({
-      type: 'light_fire',
-      origin: [camera.position.x, camera.position.y, camera.position.z],
-      dir: [dir.x, dir.y, dir.z],
-      chargeRatio,
-      params: lgParamsPacket(),
-    });
-    return;
-  }
-  const speed = LG_MIN_SPEED + chargeRatio * (LG_MAX_SPEED - LG_MIN_SPEED);
-  lgInFlight = {
-    x: camera.position.x, y: camera.position.y, z: camera.position.z,
-    vx: dir.x * speed, vy: dir.y * speed, vz: dir.z * speed,
-    arc: lgParams.trajectory === 'arc',
-    r: lgParams.r / 255, g: lgParams.g / 255, b: lgParams.b / 255,
-    brightness: lgParams.brightness, radius: lgParams.radius,
-    float: lgParams.float, drift: lgParams.drift,
-    driftPhase: Math.random() * Math.PI * 2,
-    lifespan: lgParams.lifespan, totalLife: lgParams.lifespan,
+  const intent = {
+    type: 'entity_intent',
+    action: 'light.fire',
+    origin: [camera.position.x, camera.position.y, camera.position.z],
+    dir: [dir.x, dir.y, dir.z],
+    chargeRatio,
+    params: lgParamsPacket(),
   };
+  if (mpRole === 'guest') mpSession?.sendInput(intent);
+  else applyLightIntent(intent, 'host');
 }
 
 function applyFPSControls(deltaTime) {
@@ -3509,66 +3361,12 @@ function updateFPSPlayer(deltaTime) {
 }
 
 function lgUpdateLights(dt, t) {
-  if (!clusteredLightsRef) return;
-  if (lgSharedMode()) {
-    if (mpRole === 'host') lgUpdateSharedLightsHost(dt, t);
-    else if (mpRole === 'guest') lgApplySharedLightSnapshot(mpPendingLightState);
-    return;
-  }
-  if (lgInFlight) {
-    if (lgInFlight.arc) lgInFlight.vy -= LG_FALL_GRAVITY * dt;
-    lgInFlight.x += lgInFlight.vx * dt;
-    lgInFlight.y += lgInFlight.vy * dt;
-    lgInFlight.z += lgInFlight.vz * dt;
-    const th = terrainHeight(lgInFlight.x, lgInFlight.z);
-    if (lgInFlight.y <= th) {
-      clusteredLightsRef.clearLight(LG_PROJECTILE_SLOT);
-      const slot = lgFindFreeSlot();
-      if (slot !== -1) {
-        const L = lgInFlight;
-        placedLights.push({
-          slot, freeIdx: slot - LG_FIRST_SLOT,
-          x: L.x, y: th + (L.float ? 1.5 : 0.2), z: L.z, vy: 0, grounded: L.float,
-          lifespan: L.lifespan, totalLife: L.totalLife,
-          r: L.r, g: L.g, b: L.b, brightness: L.brightness, radius: L.radius,
-          float: L.float, drift: L.drift, driftPhase: L.driftPhase,
-        });
-        lgSlotFree[slot - LG_FIRST_SLOT] = false;
-      }
-      lgInFlight = null;
-    } else {
-      clusteredLightsRef.setLightDirect(LG_PROJECTILE_SLOT, {
-        x: lgInFlight.x, y: lgInFlight.y, z: lgInFlight.z, radius: lgInFlight.radius,
-        r: lgInFlight.r, g: lgInFlight.g, b: lgInFlight.b, intensity: lgInFlight.brightness,
-      });
-    }
-  }
-  for (let i = placedLights.length - 1; i >= 0; i--) {
-    const L = placedLights[i];
-    if (!L.float && !L.grounded) {
-      L.vy -= LG_FALL_GRAVITY * dt;
-      L.y += L.vy * dt;
-      const th = terrainHeight(L.x, L.z);
-      if (L.y <= th) { L.y = th; L.vy = 0; L.grounded = true; }
-    }
-    let xOff = 0, zOff = 0;
-    if (L.float && L.drift) {
-      xOff = Math.sin(t * 0.3 + L.driftPhase) * 3;
-      zOff = Math.cos(t * 0.27 + L.driftPhase) * 3;
-    }
-    L.lifespan -= dt;
-    const fadeScale = L.lifespan < LG_FADE_WINDOW ? Math.max(0, L.lifespan / LG_FADE_WINDOW) : 1;
-    if (L.lifespan <= 0) {
-      clusteredLightsRef.clearLight(L.slot);
-      lgSlotFree[L.freeIdx] = true;
-      placedLights.splice(i, 1);
-      continue;
-    }
-    clusteredLightsRef.setLightDirect(L.slot, {
-      x: L.x + xOff, y: L.y, z: L.z + zOff, radius: L.radius,
-      r: L.r, g: L.g, b: L.b, intensity: L.brightness * fadeScale,
-    });
-  }
+  // Guest never ticks the registry (host-authoritative) — it renders straight
+  // off the interpolated wire upserts synced to the binder in the guest
+  // session's onState callback (see mpSession = createGuestSession(...)).
+  if (mpRole === 'guest') return;
+  entityRegistry.tick(dt, { terrainHeight, now: t });
+  lightBinder?.sync(hostLightEntitiesForRender());
 }
 
 // ===================== render loop =====================

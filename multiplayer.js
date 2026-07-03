@@ -92,7 +92,12 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
   }
 
   connect();
-  return { destroy() { clearInterval(intervalId); ws?.close(); } };
+  return {
+    broadcast(msg) {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    },
+    destroy() { clearInterval(intervalId); ws?.close(); },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,19 +160,29 @@ export function createGuestSession(roomCode, onState) {
 // helpers (used by InterpolationBuffer._lerpState)
 // ---------------------------------------------------------------------------
 
-function _lerpLights(a = [], b = [], alpha) {
-  const prev = new Map((a ?? []).map((L, index) => [L.id ?? index, L]));
-  return (b ?? []).map((lb, index) => {
-    const la = prev.get(lb.id ?? index);
-    if (!la) return lb;
+// Entity interpolation (replaces the old light-only _lerpLights). Matches
+// upserts by id; a b-upsert with no a-predecessor by its own id but carrying
+// `spawnedFrom` (a projectile that just impacted and became a light) borrows
+// the projectile's last-known record as its lerp predecessor so the landing
+// doesn't pop — see entity-types/projectile.js / light.js header notes.
+// `removes` pass through from b as-is (no interpolation of tombstones).
+function _lerpEntities(a, b, alpha) {
+  const aUpserts = a?.upserts ?? [];
+  const bUpserts = b?.upserts ?? [];
+  const prev = new Map(aUpserts.map(e => [e.id, e]));
+  const upserts = bUpserts.map(eb => {
+    let ea = prev.get(eb.id);
+    if (!ea && eb.spawnedFrom) ea = prev.get(eb.spawnedFrom);
+    if (!ea) return eb;
     return {
-      ...lb,
-      p: Array.isArray(la.p) && Array.isArray(lb.p) ? _lerpV3(la.p, lb.p, alpha) : lb.p,
-      radius: la.radius != null && lb.radius != null ? la.radius + (lb.radius - la.radius) * alpha : lb.radius,
-      intensity: la.intensity != null && lb.intensity != null ? la.intensity + (lb.intensity - la.intensity) * alpha : lb.intensity,
-      lifespan: la.lifespan != null && lb.lifespan != null ? la.lifespan + (lb.lifespan - la.lifespan) * alpha : lb.lifespan,
+      ...eb,
+      p: Array.isArray(ea.p) && Array.isArray(eb.p) ? _lerpV3(ea.p, eb.p, alpha) : eb.p,
+      radius: ea.radius != null && eb.radius != null ? ea.radius + (eb.radius - ea.radius) * alpha : eb.radius,
+      intensity: ea.intensity != null && eb.intensity != null ? ea.intensity + (eb.intensity - ea.intensity) * alpha : eb.intensity,
+      lifespan: ea.lifespan != null && eb.lifespan != null ? ea.lifespan + (eb.lifespan - ea.lifespan) * alpha : eb.lifespan,
     };
   });
+  return { full: b?.full ?? true, since: b?.since ?? 0, version: b?.version ?? 0, upserts, removes: b?.removes ?? [] };
 }
 
 function _lerpPlayers(aPlayers = [], bPlayers = [], alpha) {
@@ -201,7 +216,7 @@ function _lerpState(a, b, alpha) {
         hands: ca.hands.map((h, j) => cb.hands[j] ? _lerpV3(h, cb.hands[j], alpha) : h),
       };
     }),
-    lights: _lerpLights(a.lights, b.lights, alpha),
+    entities: _lerpEntities(a.entities, b.entities, alpha),
     worldMode: b.worldMode ?? a.worldMode,
     worldSettings: b.worldSettings ?? a.worldSettings,
     creatureConfig: b.creatureConfig ?? a.creatureConfig,

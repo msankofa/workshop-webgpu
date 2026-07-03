@@ -20,7 +20,8 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 
 | File | Responsibility | Lines |
 |---|---|---|
-| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer`, `createHostSession`, `createGuestSession`, `GhostRenderer` | 252 |
+| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`), `createGuestSession`, `GhostRenderer` | ~290 |
+| `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker, map picker, loading screen; resolves `{ mapKey, mpRole, roomCode }` before the sim boots | 253 |
 | `server/server.js` | Relay backend (Node, `ws` library): room registry, host↔guest message forwarding, room presence queries | 82 |
 
@@ -323,27 +324,79 @@ Limitations:
 - If deterministic inputs drift, clients diverge.
 - There is no server truth for terrain edits, vegetation edits, water changes, or environment mutations.
 
-#### 9. Shared Light Entity Bridge
+#### 9. Replicated Entity Registry (lights) — implemented 2026-07-03
 
-Status: partially implemented.
+Status: implemented for lights + projectiles (milestone A of the entity-registry migration).
 
-Files: `environment-viewer.html`, `multiplayer.js`
+Files: `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`,
+`light-entity-renderer.js`, `environment-viewer.html`, `multiplayer.js`
 
-Responsibilities today:
+This replaces the earlier ad-hoc "shared light bridge" (the old `mpSharedLights`/`lights`/
+`light_state` path) with a general **host-authoritative replicated entity registry**. Design +
+rationale: `docs/superpowers/plans/2026-07-03-entity-registry-light-migration.md`.
 
-- Multiplayer light-gun place/fire actions are sent as guest commands or handled directly by the host.
-- The browser host owns lightweight `light_projectile` and `placed_light` records.
-- Shared light records are included in the existing 20 Hz host snapshot as `lights`.
-- Guests apply replicated light records into their local clustered-light slots.
-- Light position, radius, intensity, and lifespan are interpolated by `InterpolationBuffer`.
+- **`entity-registry.js`** (pure, THREE-free, Node-tested) — `createEntityRegistry()` →
+  `{ registerType, create, update, destroy, get, list, tick, snapshot, renderList, applySnapshot }`.
+  Entities are `{ id:`${type}-${seq}`, type, ownerId, createdAt, updatedAt, version,
+  transform:{p,q,s}, state, sim }`. `create` enforces a registry-level cap
+  (`MAX_LIGHT_ENTITIES = 33`, shared by `light`+`projectile`, **reject-newest**). `tick(dt, ctx)`
+  runs each entity's adapter `update`, wiring `ctx.spawn` → its own `create` (so a projectile can
+  spawn a light on impact). `snapshot()` returns `{ full:true, since:0, version, upserts, removes }`
+  and **drains** tombstones — it is the 20 Hz network authority path. `renderList(filter)`
+  serializes without draining — the per-frame render path. `applySnapshot` (guest mirror; unused
+  today, see below) throws if the instance was ever `tick`ed.
+- **Type adapters** `entity-types/light.js` (`LightEntity`) and `entity-types/projectile.js`
+  (`ProjectileEntity`, generic payload-carrying — `payload:{type:'light',params}`, converts to a
+  light via destroy+create on terrain hit or `age > MP_LIGHT_MAX_FLIGHT`, tagging the new light
+  `state.spawnedFrom = <projectileId>`). `serialize` is **allowlist-based** so host-private `sim`
+  (velocity/driftPhase/grounded) never leaks. Wire shape:
+  `{ id, type, p:[x,y,z], color:[r,g,b], radius, intensity, lifespan?, totalLife?, ownerId,
+  renders?, spawnedFrom? }`.
+- **`light-entity-renderer.js`** — `createLightEntityRenderer({ clusteredLights, firstSlot:223,
+  maxSlots:33 })` → `{ sync(entities), dispose() }`. Owns the clustered-light **slot pool**
+  (223–255) and is the ONLY code that calls `clusteredLights.setLightDirect`/`clearLight`. `sync`
+  diffs by entity id: assign a free slot to new ids (skip when the pool is full — reject-newest,
+  no eviction), update existing in place, clear+free vanished ids.
+- **Wiring** (`environment-viewer.html`): one `entityRegistry` created for host/solo (registers
+  both adapters). The light gun (`lgPlaceAtCrosshair`/`lgFireLight`) always emits an
+  `entity_intent` (`action:'light.place'|'light.fire'`); a guest sends it via `mpSession.sendInput`,
+  host/solo apply it locally through `applyLightIntent(intent, ownerId)` (validates action + finite
+  numbers + clamps params, then `registry.create`). Host validates guest intents identically in the
+  `mp:guest_input` `entity_intent` branch. `getState()` embeds `entities: entityRegistry.snapshot()`.
+  Per frame, host/solo `entityRegistry.tick(...)` then `lightBinder.sync(renderList…)`; the guest
+  never ticks — it feeds the binder the **interpolated wire upserts directly** from `onState`
+  (`state.entities.upserts`), because the mirrored wire shape isn't the adapter's internal shape.
+  The binder is created lazily alongside `clustered-lights.js` and null-guarded everywhere (lights
+  can be off / non-GPU terrain).
+- **Interpolation** (`multiplayer.js`): `_lerpEntities` replaces `_lerpLights`, matching `upserts`
+  by id (a light carrying `spawnedFrom` borrows the projectile's last record as its lerp
+  predecessor so landings don't pop); `removes` pass through. `_lerpState` emits `entities` instead
+  of `lights`. **Solo now runs the same registry path** (host-without-network) — the old separate
+  `placedLights`/`lgInFlight` solo path and the `lgSharedMode()` fork are gone.
 
-Limitations:
+**⚠️ Init-order hazard (guest `onState` during top-level `await`).** The guest session is
+created early in module eval, but `environment-viewer.html` then hits several top-level `await`s
+(e.g. the lazy `clustered-lights.js` import) that **suspend module evaluation**. A snapshot can
+arrive during that suspension and fire the guest's `onState` callback *before later top-level
+`const`/`let` declarations have initialized* — accessing one then throws
+`ReferenceError: Cannot access 'X' before initialization` (a temporal dead zone crash), and it's
+timing-dependent so it looks intermittent. This bit `controlRegistry` (read directly by
+`receiveSharedWorldSettings`), fixed by hoisting its declaration above the session-creation code.
+**Rule:** anything the guest `onState` path reads (directly or transitively via
+`receiveSharedWorldSettings` / `receiveSharedNpcConfig` / the light binder) must be declared/
+initialized *before* `createGuestSession` is called, or guarded behind a `let` default +
+null-check (the pattern `captureSharedWorldSettings` uses to stay safe). The host path is less
+exposed because it reads world settings only through that indirection.
 
-- This is still a bridge on top of the host snapshot path, not the final replicated entity registry.
-- Light lifecycle is host-browser authoritative, not server authoritative.
-- Shared light state is not persisted and is not replayed as a mutation stream.
-- Slot capacity is limited by the reserved clustered-light range.
-- There is no client prediction, rejection message, or conflict model yet.
+Remaining limitations (deferred to later milestones per the plan):
+
+- Host-browser authoritative, not server authoritative; relay (`server/server.js`) still blind-
+  forwards `entity_intent` (guest→host) and `sim_state.entities` (host→guests) untouched.
+- **Full snapshots every tick** (no deltas): the relay is broadcast-only, so per-guest
+  `sinceVersion` baselines and late-joiner deltas aren't possible yet — milestone B.
+- No persistence / mutation stream; no client prediction; no reject/correction message (rejects,
+  e.g. pool-full, are silent); no interest management (the `snapshot` interest params are accepted
+  but ignored). Creatures/props not yet on the registry.
 
 #### 10. Local Dynamic Effects
 
