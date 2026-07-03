@@ -45,6 +45,7 @@ import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 import { kindParams } from './particle-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createEnvironmentUi } from './environment-ui.js';
+import { createWorldModelPanel } from './world-models.js';
 import { loadTerrainMap } from './terrain-loader.js';
 import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
@@ -751,6 +752,7 @@ const terrainDebug = {
 };
 const frameProfiler = createFrameProfiler({ smoothing: 0.2 });
 let environmentUi = null;
+let worldModels = null;
 function setFixedPanelPosition(panel, x, y, margin = 10) {
   panel.style.right = 'auto';
   const maxX = Math.max(margin, window.innerWidth - panel.offsetWidth - margin);
@@ -3064,6 +3066,12 @@ exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  LMB shoot
 document.body.appendChild(exitHint);
 
 environmentUi = createEnvironmentUi({ perfLog });
+worldModels = createWorldModelPanel({
+  scene,
+  camera,
+  terrainHeight,
+  isWalkMode: () => fpsMode,
+});
 
 function resetPlayerPosition(resetLook = true) {
   const sx = 8, sz = 0;
@@ -3146,7 +3154,12 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
 
 window.addEventListener('mousedown', e => {
-  if (!fpsMode || e.button !== 0 || !clusteredLightsRef) return;
+  if (!fpsMode || e.button !== 0) return;
+  if (worldModels?.handlePrimaryDown?.()) {
+    e.preventDefault();
+    return;
+  }
+  if (!clusteredLightsRef) return;
   if (lgParams.mode === 'place') lgPlaceAtCrosshair();
   else lgChargeStart = performance.now();
 });
@@ -3619,6 +3632,7 @@ async function animate() {
     applyCamera();
     updateTerrainWindow(target);
   }
+  worldModels?.update?.();
   syncMultiplayerPlayer(now);
   updateMultiplayerFinder();
   });

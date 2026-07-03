@@ -127,7 +127,7 @@ function installStyle() {
     }
     .wui-tabs {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       border-bottom: 1px solid var(--wui-line);
       background: rgba(255,255,255,0.035);
     }
@@ -259,6 +259,79 @@ function installStyle() {
     }
     .wui-capture .rec.active { color: var(--wui-bad); }
     .wui-capture .count { color: var(--wui-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .wui-btn {
+      border: 1px solid var(--wui-line);
+      border-radius: 5px;
+      background: #20252d;
+      color: var(--wui-text);
+      min-height: 28px;
+      padding: 4px 7px;
+      cursor: pointer;
+    }
+    .wui-btn:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .wui-btn.primary {
+      background: rgba(119, 200, 161, 0.14);
+      border-color: rgba(119, 200, 161, 0.42);
+    }
+    .wui-btn.warn { color: var(--wui-warn); }
+    .wui-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .wui-list { display: grid; gap: 4px; }
+    .wui-list-item {
+      min-width: 0;
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 5px;
+      background: rgba(0,0,0,0.16);
+      color: var(--wui-text);
+      padding: 6px 7px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .wui-list-item.active {
+      border-color: rgba(119, 200, 161, 0.46);
+      background: rgba(119, 200, 161, 0.12);
+    }
+    .wui-list-item small {
+      display: block;
+      color: var(--wui-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .wui-field {
+      display: grid;
+      grid-template-columns: 1fr 64px;
+      align-items: center;
+      gap: 8px;
+      margin: 7px 0;
+      color: var(--wui-muted);
+    }
+    .wui-field output {
+      color: var(--wui-text);
+      text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .wui-field input[type=range] { grid-column: 1 / -1; }
+    .wui-check {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 7px 0;
+      color: var(--wui-muted);
+    }
+    .wui-status {
+      color: var(--wui-muted);
+      min-height: 18px;
+      margin-top: 6px;
+    }
 
     #workshop-ui #ctrl, #workshop-ui #fps {
       position: static !important;
@@ -400,7 +473,7 @@ function installStyle() {
         left: 10px;
         width: auto;
       }
-      .wui-tabs { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+      .wui-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .wui-tab { font-size: 11px; }
     }
   `;
@@ -418,6 +491,7 @@ export function createEnvironmentUi({ perfLog } = {}) {
   const tabDefs = [
     ['scene', 'Scene'],
     ['creatures', 'Creatures'],
+    ['models', 'Models'],
     ['effects', 'Effects'],
     ['walk', 'Walk'],
     ['perf', 'Perf'],
@@ -443,9 +517,11 @@ export function createEnvironmentUi({ perfLog } = {}) {
   const effectsHost = panelEls.get('effects');
   const walkHost = panelEls.get('walk');
   const creaturesHost = panelEls.get('creatures');
+  const modelsHost = panelEls.get('models');
   const perfHost = panelEls.get('perf');
   sceneHost.id = 'scene-section-host';
   effectsHost.id = 'effects-section-host';
+  modelsHost.id = 'models-section-host';
 
   function activate(tab) {
     for (const [id, btn] of tabButtons) btn.classList.toggle('active', id === tab);
