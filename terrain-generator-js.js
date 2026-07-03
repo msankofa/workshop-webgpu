@@ -15,6 +15,7 @@ import {
   BIOMES, BIOME_INDEX, BIOME_COLORS, createFieldSampler, classifyBiomeCell,
   interp1d, rescaleArray, peaksAndValleys, smoothstep, clamp01,
   CONTINENT_X, CONTINENT_Y, EROSION_X, EROSION_Y,
+  mulberry32, hashSeed, fade,
 } from './biome-classifier-js.js';
 
 export {
@@ -695,4 +696,73 @@ export function buildHeightfieldMesh(height, resolution, worldX, worldZ) {
   }
 
   return { positions, normals, indices };
+}
+
+// ---- 3D value noise (port of volumetric_mesh.py's _value_noise3 / _fbm3) ----
+// Same fade-interpolated lattice-noise algorithm as biome-classifier-js.js's 2D
+// buildLattice/sampleLattice, extended to trilinear 3D. Unlike buildLattice's
+// WORLD_EXTENT-sized 2D lattice, there's no fixed extent this can assume -- world_x,
+// world_z, and y_min/y_max are all independently configurable per generation -- so the
+// lattice is sized to the actual extent it needs to cover, passed in explicitly.
+function buildLattice3D(seed, period, extentX, extentY, extentZ) {
+  const cellsX = Math.max(2, Math.ceil(extentX / Math.max(period, 1e-6)) + 4);
+  const cellsY = Math.max(2, Math.ceil(extentY / Math.max(period, 1e-6)) + 4);
+  const cellsZ = Math.max(2, Math.ceil(extentZ / Math.max(period, 1e-6)) + 4);
+  const rand = mulberry32(seed);
+  const values = new Float64Array(cellsX * cellsY * cellsZ);
+  for (let i = 0; i < values.length; i++) values[i] = rand() * 2 - 1;
+  return { sizeX: cellsX, sizeY: cellsY, sizeZ: cellsZ, values };
+}
+
+function clampIndex3(i, size) { return i < 0 ? 0 : i >= size ? size - 1 : i; }
+
+function sampleLattice3D(lattice, x, y, z) {
+  const { sizeX, sizeY, sizeZ, values } = lattice;
+  const halfX = sizeX >> 1, halfY = sizeY >> 1, halfZ = sizeZ >> 1;
+  const x0f = Math.floor(x), y0f = Math.floor(y), z0f = Math.floor(z);
+  const tx = fade(x - x0f), ty = fade(y - y0f), tz = fade(z - z0f);
+  const x0 = clampIndex3(x0f + halfX, sizeX), x1 = clampIndex3(x0f + halfX + 1, sizeX);
+  const y0 = clampIndex3(y0f + halfY, sizeY), y1 = clampIndex3(y0f + halfY + 1, sizeY);
+  const z0 = clampIndex3(z0f + halfZ, sizeZ), z1 = clampIndex3(z0f + halfZ + 1, sizeZ);
+
+  const idx = (xi, yi, zi) => (zi * sizeY + yi) * sizeX + xi;
+  const c000 = values[idx(x0, y0, z0)], c100 = values[idx(x1, y0, z0)];
+  const c010 = values[idx(x0, y1, z0)], c110 = values[idx(x1, y1, z0)];
+  const c001 = values[idx(x0, y0, z1)], c101 = values[idx(x1, y0, z1)];
+  const c011 = values[idx(x0, y1, z1)], c111 = values[idx(x1, y1, z1)];
+
+  const c00 = c000 * (1 - tx) + c100 * tx;
+  const c10 = c010 * (1 - tx) + c110 * tx;
+  const c01 = c001 * (1 - tx) + c101 * tx;
+  const c11 = c011 * (1 - tx) + c111 * tx;
+  const c0 = c00 * (1 - ty) + c10 * ty;
+  const c1 = c01 * (1 - ty) + c11 * ty;
+  return c0 * (1 - tz) + c1 * tz;
+}
+
+// Factory (not a singleton) so every buildDensityField3D() call gets a fresh lattice
+// cache scoped to that generation's extents -- mirrors createFieldSampler's per-call Map
+// cache in biome-classifier-js.js, avoiding stale lattices if world_x/world_z/y range
+// change between generations.
+export function createDensityNoiseSampler() {
+  const latticeCache = new Map();
+  function fbm3(seed, period, extentX, extentY, extentZ, x, y, z, octaves = 3) {
+    const oct = Math.max(1, Math.floor(octaves));
+    let total = 0, ampSum = 0, amp = 1;
+    for (let o = 0; o < oct; o++) {
+      const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
+      const cacheKey = seed + ':' + period + ':' + o;
+      let lat = latticeCache.get(cacheKey);
+      if (!lat) {
+        const octaveSeed = hashSeed(seed, o * 1299721);
+        lat = buildLattice3D(octaveSeed, octavePeriod, extentX, extentY, extentZ);
+        latticeCache.set(cacheKey, lat);
+      }
+      total += sampleLattice3D(lat, x / octavePeriod, y / octavePeriod, z / octavePeriod) * amp;
+      ampSum += amp;
+      amp *= 0.5;
+    }
+    return Math.min(1, Math.max(-1, (total / Math.max(ampSum, 1e-8)) * 1.35));
+  }
+  return { fbm3 };
 }

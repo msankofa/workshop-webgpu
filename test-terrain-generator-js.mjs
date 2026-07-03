@@ -3,6 +3,7 @@ import {
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
   buildHeightfieldMesh,
+  createDensityNoiseSampler,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -261,6 +262,23 @@ ok(everyFieldHasDescription, '2: every FIELD_GROUPS field has a non-trivial fiel
   ok(normals[centerIdx * 3 + 2] > -1e-5 && normals[centerIdx * 3 + 2] < 1e-5, '1 (Phase C): a ramp with no z variation has zero normal.z');
 }
 console.log('Task 1 (Phase C: buildHeightfieldMesh) OK');
+
+// --- Task 1 (Phase D): 3D value noise ---
+{
+  const sampler = createDensityNoiseSampler();
+  const v1 = sampler.fbm3(42, 100, 400, 300, 400, 10, 20, 30);
+  ok(typeof v1 === 'number' && v1 >= -1 && v1 <= 1, '1 (Phase D): fbm3 returns a number in [-1, 1]');
+
+  const sampler2 = createDensityNoiseSampler();
+  const v2 = sampler2.fbm3(42, 100, 400, 300, 400, 10, 20, 30);
+  ok(v1 === v2, '1 (Phase D): fbm3 is deterministic for the same seed/period/point');
+
+  const v3 = sampler2.fbm3(43, 100, 400, 300, 400, 10, 20, 30);
+  ok(v1 !== v3, '1 (Phase D): fbm3 differs for a different seed');
+
+  const vSame = sampler2.fbm3(42, 100, 400, 300, 400, 10, 20, 30);
+  ok(v1 === vSame, '1 (Phase D): repeated calls on the same sampler instance are cached/deterministic');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
