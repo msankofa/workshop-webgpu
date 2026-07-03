@@ -401,6 +401,8 @@
   import {
     BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription,
     generateFullGrid, buildHeightfieldMesh, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
+    DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
+    buildDensityField3D, marchingCubes, grassDensityForIds,
   } from './terrain-generator-js.js';
   import * as THREE from 'three';
   import { WebGPURenderer } from 'three/webgpu';
@@ -722,6 +724,133 @@
     console.error('Heightfield viewport failed to initialize:', err);
     document.getElementById('heightfield-viewport').textContent =
       'Heightfield viewport unavailable (WebGPU init failed: ' + err.message + ').';
+  });
+
+  // ---- section 9: Density field preview -- Phase D ----
+  const densityConfig = { ...DENSITY_DEFAULT_CONFIG };
+  const DENSITY_WARN_RESOLUTION = 96;
+  let densityLastGrid = null;
+  let densityLastDensity = null;
+  let densityMesh = null;
+  let densityGeometry = null;
+
+  async function initDensityViewport() {
+  const densityViewport = document.getElementById('density-viewport');
+  const densityRenderer = new WebGPURenderer({ antialias: true });
+  densityRenderer.setSize(420, 420);
+  densityViewport.appendChild(densityRenderer.domElement);
+  await densityRenderer.init();
+
+  const densityScene = new THREE.Scene();
+  densityScene.background = new THREE.Color(0xfaf6ef);
+
+  const densityCamera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+  const DENSITY_INITIAL_CAMERA_POS = new THREE.Vector3(700, 500, 700);
+  const DENSITY_INITIAL_TARGET = new THREE.Vector3(0, 0, 0);
+  densityCamera.position.copy(DENSITY_INITIAL_CAMERA_POS);
+
+  const densityControls3d = new OrbitControls(densityCamera, densityRenderer.domElement);
+  densityControls3d.target.copy(DENSITY_INITIAL_TARGET);
+  densityControls3d.enableDamping = true;
+  densityControls3d.dampingFactor = 0.08;
+  densityControls3d.update();
+
+  const densityAmbient = new THREE.AmbientLight(0xffffff, 0.6);
+  const densityDirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  densityDirLight.position.set(400, 600, 200);
+  densityScene.add(densityAmbient, densityDirLight);
+
+  document.getElementById('density-reset-view').addEventListener('click', () => {
+    densityCamera.position.copy(DENSITY_INITIAL_CAMERA_POS);
+    densityControls3d.target.copy(DENSITY_INITIAL_TARGET);
+    densityControls3d.update();
+  });
+
+  densityRenderer.setAnimationLoop(() => {
+    densityControls3d.update();
+    densityRenderer.render(densityScene, densityCamera);
+  });
+
+  densityGeometry = new THREE.BufferGeometry();
+  const densityMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  densityMesh = new THREE.Mesh(densityGeometry, densityMaterial);
+  densityScene.add(densityMesh);
+
+  let densityRegenTimer = null;
+
+  function updateDensityResolutionWarning() {
+    document.getElementById('density-resolution-warning').classList.toggle('hidden', densityConfig.density_resolution <= DENSITY_WARN_RESOLUTION);
+  }
+
+  function applyDensityColors(grid, positions) {
+    const res = grid.resolution;
+    const vertexCount = positions.length / 3;
+    const colors = new Float32Array(vertexCount * 3);
+    for (let i = 0; i < vertexCount; i++) {
+      const vx = positions[i * 3], vz = positions[i * 3 + 2];
+      const fx = (vx / genConfig.world_x + 0.5) * (res - 1);
+      const fz = (vz / genConfig.world_z + 0.5) * (res - 1);
+      const ix = Math.max(0, Math.min(res - 1, Math.round(fx)));
+      const iz = Math.max(0, Math.min(res - 1, Math.round(fz)));
+      const idx = iz * res + ix;
+      colors[i * 3] = grid.materialRgba[idx * 4] / 255;
+      colors[i * 3 + 1] = grid.materialRgba[idx * 4 + 1] / 255;
+      colors[i * 3 + 2] = grid.materialRgba[idx * 4 + 2] / 255;
+    }
+    densityGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+
+  function updateDensityStats(positions, indices, density) {
+    let densityMin = Infinity, densityMax = -Infinity;
+    for (const d of density) { if (d < densityMin) densityMin = d; if (d > densityMax) densityMax = d; }
+    document.getElementById('density-stats').textContent =
+      `${positions.length / 3} vertices, ${indices.length / 3} triangles -- density ${densityMin.toFixed(2)} to ${densityMax.toFixed(2)}`;
+  }
+
+  function rebuildDensityMesh() {
+    densityLastGrid = generateFullGrid(genConfig, densityConfig.density_resolution);
+    densityLastDensity = buildDensityField3D(densityLastGrid, densityConfig, genConfig.world_x, genConfig.world_z, genConfig.seed);
+    const res = densityConfig.density_resolution;
+    const spacingX = genConfig.world_x / Math.max(1, res - 1);
+    const spacingY = (densityConfig.y_max - densityConfig.y_min) / Math.max(1, res - 1);
+    const spacingZ = genConfig.world_z / Math.max(1, res - 1);
+    const originX = -genConfig.world_x / 2;
+    const originY = densityConfig.y_min;
+    const originZ = -genConfig.world_z / 2;
+    const { positions, indices } = marchingCubes(densityLastDensity, res, spacingX, spacingY, spacingZ, originX, originY, originZ, 0.0);
+
+    densityGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    densityGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    applyDensityColors(densityLastGrid, positions);
+    densityGeometry.computeVertexNormals();
+    densityGeometry.computeBoundingSphere();
+    updateDensityStats(positions, indices, densityLastDensity);
+  }
+
+  function scheduleDensityRegenerate() {
+    clearTimeout(densityRegenTimer);
+    densityRegenTimer = setTimeout(rebuildDensityMesh, 500);
+  }
+
+  function onDensityConfigChange() {
+    updateDensityResolutionWarning();
+    scheduleDensityRegenerate();
+  }
+
+  buildGroupControls(
+    document.getElementById('density-controls'), ['Grid', 'Warp', 'Caves', 'Floor'],
+    densityConfig, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES,
+    densityFieldLabel, densityFieldDescription, onDensityConfigChange,
+  );
+
+  updateDensityResolutionWarning();
+  rebuildDensityMesh();
+  }
+
+  initDensityViewport().catch((err) => {
+    console.error('Density viewport failed to initialize:', err);
+    document.getElementById('density-viewport').textContent =
+      'Density viewport unavailable (WebGPU init failed: ' + err.message + ').';
   });
 
   // ---- shared slider-builder (reused by sections 2-5 and the density panel) ----
