@@ -67,6 +67,20 @@ let mpSession = null;
 let mpGhostRenderer = null;
 let mpClientId = null;
 let mpLastPlayerSend = -Infinity;
+let mpLatestState = null;
+let mpSharedWorldSettings = false;
+let mpPendingWorldSettings = null;
+let mpPendingCreatureState = [];
+let mpPendingCreatureConfig = null;
+let mpLastCreatureConfigSig = '';
+let mpLastCreatureConfigSend = -Infinity;
+let mpCreatureConfigVersion = 0;
+let mpLastWorldSettingsSig = '';
+let mpLastWorldSettingsSend = -Infinity;
+let mpLastWorldSettingsControlCount = 0;
+let mpWorldSettingsVersion = 0;
+let captureSharedWorldSettings = () => null;
+let applySharedWorldSettings = values => { mpPendingWorldSettings = values; return false; };
 const MP_PLAYER_SEND_MS = 50;
 const mpGuestPlayers = new Map();
 let portCreatures = null;
@@ -76,7 +90,8 @@ let fpsMode = false;
 let stance = 'stand';
 let capsuleH = 1.6;
 
-const { mapKey, mpRole, roomCode, setStatus, dismiss } = await showStartScreen();
+const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', setStatus, dismiss } = await showStartScreen();
+mpSharedWorldSettings = mpRole !== 'solo' && mpWorldMode === 'shared';
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
 const infoEl = document.getElementById('info');
@@ -127,11 +142,70 @@ function getLocalPlayerState(id) {
   };
 }
 
+function makeSharedNpcConfigPacket(now = performance.now()) {
+  if (mpRole !== 'host' || !portCreatures?.system?.exportSharedNpcConfig) return null;
+  const config = portCreatures.system.exportSharedNpcConfig();
+  if (!config) return null;
+  const sig = JSON.stringify(config);
+  const changed = sig !== mpLastCreatureConfigSig;
+  if (!changed && now - mpLastCreatureConfigSend < 2000) return null;
+  if (changed) {
+    mpLastCreatureConfigSig = sig;
+    mpCreatureConfigVersion += 1;
+  }
+  mpLastCreatureConfigSend = now;
+  return { version: mpCreatureConfigVersion, config };
+}
+
+function receiveSharedNpcConfig(packet) {
+  if (mpRole !== 'guest' || !packet?.config) return;
+  const sig = JSON.stringify(packet.config);
+  if (sig === mpLastCreatureConfigSig) return;
+  mpLastCreatureConfigSig = sig;
+  if (portCreatures?.system?.applySharedNpcConfig) portCreatures.system.applySharedNpcConfig(packet.config);
+  else mpPendingCreatureConfig = packet.config;
+}
+
+function applyPendingSharedNpcs() {
+  if (mpRole !== 'guest' || !portCreatures?.system) return;
+  if (mpPendingCreatureConfig && portCreatures.system.applySharedNpcConfig?.(mpPendingCreatureConfig)) {
+    mpPendingCreatureConfig = null;
+  }
+  portCreatures.system.applyNetworkCreatureSnapshot?.(mpPendingCreatureState);
+}
+
+function makeSharedWorldSettingsPacket(now = performance.now()) {
+  if (mpRole !== 'host' || !mpSharedWorldSettings) return null;
+  const values = captureSharedWorldSettings?.();
+  if (!values) return null;
+  const sig = JSON.stringify(values);
+  const changed = sig !== mpLastWorldSettingsSig;
+  if (!changed && now - mpLastWorldSettingsSend < 1000) return null;
+  if (changed) {
+    mpLastWorldSettingsSig = sig;
+    mpWorldSettingsVersion += 1;
+  }
+  mpLastWorldSettingsSend = now;
+  return { version: mpWorldSettingsVersion, values };
+}
+
+function receiveSharedWorldSettings(packet) {
+  if (mpRole !== 'guest' || !mpSharedWorldSettings || !packet?.values) return;
+  const sig = JSON.stringify(packet.values);
+  const controlCount = controlRegistry?.length ?? 0;
+  if (sig === mpLastWorldSettingsSig && controlCount === mpLastWorldSettingsControlCount) return;
+  if (applySharedWorldSettings(packet.values) !== false) {
+    mpLastWorldSettingsSig = sig;
+    mpLastWorldSettingsControlCount = controlCount;
+  }
+}
+
 function getState() {
   const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
     id,
     p: [c.pos.x, c.pos.y, c.pos.z],
     q: [c.group.quaternion.x, c.group.quaternion.y, c.group.quaternion.z, c.group.quaternion.w],
+    ypr: [c.yaw, c.pitch, c.roll],
     hp: c.health / 100,
     feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
     hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
@@ -140,7 +214,7 @@ function getState() {
   const hostPlayer = getLocalPlayerState('host');
   if (hostPlayer) players.push(hostPlayer);
   for (const player of mpGuestPlayers.values()) players.push(player);
-  return { creatures, players };
+  return { creatures, players, worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
 }
 
 function updateHostPlayerGhosts() {
@@ -163,16 +237,22 @@ function syncMultiplayerPlayer(now) {
 
 window.addEventListener('mp:joined', e => {
   mpClientId = e.detail.clientId;
+  if (e.detail.worldMode) mpSharedWorldSettings = e.detail.worldMode === 'shared';
 });
 
 if (mpRole === 'host') {
   mpGhostRenderer = new GhostRenderer(scene, THREE);
-  mpSession = createHostSession(roomCode, mapKey, getState);
+  mpSession = createHostSession(roomCode, mapKey, getState, { worldMode: mpWorldMode });
 } else if (mpRole === 'guest') {
   mpGhostRenderer = new GhostRenderer(scene, THREE);
   mpSession = createGuestSession(roomCode, state => {
+    mpLatestState = state;
+    if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
+    receiveSharedWorldSettings(state.worldSettings);
+    receiveSharedNpcConfig(state.creatureConfig);
+    mpPendingCreatureState = state.creatures ?? [];
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
-    mpGhostRenderer.update({ ...state, players });
+    mpGhostRenderer.update({ ...state, creatures: [], players });
   });
 }
 
@@ -190,6 +270,149 @@ window.addEventListener('mp:guest_input', e => {
     portCreatures?.system?.setBehavior(msg.behavior);
   }
 });
+function createMultiplayerFinder() {
+  if (mpRole === 'solo') return { update() {} };
+  const style = document.createElement('style');
+  style.textContent = `
+    #mp-finder {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      width: 164px;
+      z-index: 55;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 8px;
+      background: rgba(18,22,28,0.84);
+      color: #d8dee9;
+      font: 11px/1.35 system-ui, sans-serif;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+      overflow: hidden;
+      backdrop-filter: blur(8px);
+    }
+    body.gui-hidden #mp-finder { display: none !important; }
+    #mp-finder canvas { display: block; width: 164px; height: 124px; background: rgba(0,0,0,0.16); }
+    #mp-finder .mp-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; padding: 7px 8px; border-top: 1px solid rgba(255,255,255,0.08); }
+    #mp-finder .mp-target { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #9aa6b8; }
+    #mp-finder button { height: 24px; border: 1px solid rgba(255,255,255,0.16); border-radius: 5px; background: #20252d; color: #d8dee9; cursor: pointer; }
+  `;
+  document.head.appendChild(style);
+  const root = document.createElement('div');
+  root.id = 'mp-finder';
+  const canvas = document.createElement('canvas');
+  canvas.width = 164;
+  canvas.height = 124;
+  const row = document.createElement('div');
+  row.className = 'mp-row';
+  const label = document.createElement('div');
+  label.className = 'mp-target';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Track';
+  row.append(label, btn);
+  root.append(canvas, row);
+  document.body.appendChild(root);
+
+  let trackedId = null;
+  btn.addEventListener('click', () => {
+    const remotes = multiplayerRemotePlayers();
+    if (!remotes.length) { trackedId = null; return; }
+    const ids = remotes.map(p => p.id);
+    const idx = ids.indexOf(trackedId);
+    trackedId = ids[(idx + 1) % ids.length];
+  });
+
+  function update({ local, remotes }) {
+    root.style.display = mpRole === 'solo' ? 'none' : '';
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(9,12,16,0.9)';
+    ctx.fillRect(0, 0, w, h);
+    const cx = w * 0.5, cy = h * 0.5;
+    const view = 120;
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (let r = 20; r <= 60; r += 20) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.moveTo(cx, 8); ctx.lineTo(cx, h - 8); ctx.moveTo(8, cy); ctx.lineTo(w - 8, cy); ctx.stroke();
+    ctx.fillStyle = '#8ed0ff';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillText('N', cx - 3, 13);
+    ctx.fillStyle = '#77c8a1';
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+
+    const remoteList = remotes.filter(p => p?.p);
+    if (trackedId && !remoteList.some(p => p.id === trackedId)) trackedId = null;
+    if (!trackedId && remoteList.length) trackedId = remoteList[0].id;
+    let tracked = remoteList.find(p => p.id === trackedId) || null;
+
+    for (const p of remoteList) {
+      const dx = p.p[0] - local.p[0];
+      const dz = p.p[2] - local.p[2];
+      const dist = Math.hypot(dx, dz);
+      const clamped = Math.min(1, dist / view);
+      const angle = Math.atan2(dx, dz);
+      const x = cx + Math.sin(angle) * clamped * 54;
+      const y = cy - Math.cos(angle) * clamped * 54;
+      ctx.fillStyle = p.id === trackedId ? '#ffd166' : '#ffcc44';
+      ctx.beginPath(); ctx.arc(x, y, p.id === trackedId ? 5 : 3.5, 0, Math.PI * 2); ctx.fill();
+      if (dist > view) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    if (!tracked) {
+      label.textContent = 'No friend in range';
+      return;
+    }
+    const dx = tracked.p[0] - local.p[0];
+    const dz = tracked.p[2] - local.p[2];
+    const dist = Math.hypot(dx, dz);
+    const bearing = Math.atan2(dx, dz);
+    const dir = compassDirection(bearing);
+    label.textContent = `${tracked.id} ${Math.round(dist)}m ${dir}`;
+    ctx.save();
+    ctx.translate(w - 18, 18);
+    ctx.rotate(bearing);
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.moveTo(0, -8); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  return { update };
+}
+
+function compassDirection(angle) {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const idx = Math.round((((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2)) * 8) % 8;
+  return dirs[idx];
+}
+
+function multiplayerLocalPlayer() {
+  const id = mpRole === 'guest' ? mpClientId || 'guest' : 'host';
+  const state = getLocalPlayerState(id);
+  if (state) return state;
+  return { id, p: [target.x, target.y, target.z], q: [0, 0, 0, 1] };
+}
+
+function multiplayerRemotePlayers() {
+  if (mpRole === 'host') return [...mpGuestPlayers.values()];
+  if (mpRole === 'guest') return (mpLatestState?.players ?? []).filter(p => p.id !== mpClientId);
+  return [];
+}
+
+const mpFinder = createMultiplayerFinder();
+function updateMultiplayerFinder() {
+  if (mpRole === 'solo') return;
+  const local = multiplayerLocalPlayer();
+  mpFinder.update({ local, remotes: multiplayerRemotePlayers() });
+}
+
 // ===================== end multiplayer session =====================
 
 let loadedMap = null;
@@ -437,7 +660,7 @@ portCreatures = createEnvironmentPortCreatures({
   nearbyTrunks: (px, pz) => trunkIndex.nearby(px, pz),
   rebuildWorld,
   isInteractionEnabled: () => !fpsMode,
-  mode: CREATURE_MODE,
+  mode: mpRole === 'guest' ? 'network' : CREATURE_MODE,
 });
 const terrainDebugEl = document.createElement('div');
 terrainDebugEl.id = 'terrain-debug';
@@ -863,6 +1086,24 @@ function applySliderState(values) {
     c.onChange();
   }
 }
+const SHARED_WORLD_CONTROL_PREFIXES = ['terrain.', 'params.'];
+captureSharedWorldSettings = () => {
+  if (!controlRegistry.length) return null;
+  const values = {};
+  for (const c of controlRegistry) {
+    if (SHARED_WORLD_CONTROL_PREFIXES.some(prefix => c.name.startsWith(prefix))) values[c.name] = c.obj[c.key];
+  }
+  return values;
+};
+applySharedWorldSettings = values => {
+  if (!controlRegistry.length) {
+    mpPendingWorldSettings = values;
+    return false;
+  }
+  applySliderState(values);
+  mpPendingWorldSettings = null;
+  return true;
+};
 
 const _forestPromise = Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
@@ -2136,6 +2377,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         grass.frustumCulled = true;
         grass.geometry.computeBoundingSphere();
         grass.setWind(params.wind);
+        grass.setBladeStyle(params.grassBladeStyle ?? 'streaks');
         const f = currentFade();
         grass.setFade(f.start, f.end);
         grass.userData.count = count;
@@ -2171,6 +2413,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         update: seconds => { processQueue(); for (const grass of chunks.values()) grass.update(seconds); },
         regenerate: () => sync(true),
         setWind: strength => { for (const grass of chunks.values()) grass.setWind(strength); },
+        setBladeStyle: key => { params.grassBladeStyle = key; for (const grass of chunks.values()) grass.setBladeStyle(key); },
         applyFade,
       };
     }
@@ -2182,6 +2425,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     if (loadedMap) slider('mapGrassRadiusChunks', 'Extent (chunks)', 0, 12, 1, drawFmt, grassRebuild);
     slider('grassDistanceCull', 'Distance cull (far fade)', 0, 1, 0.01, f2, () => grassRef.applyFade());
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
+    params.grassBladeStyle = 'streaks';
+    select('grassBladeStyle', 'Blade texture', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'], () => grassRef.setBladeStyle(params.grassBladeStyle));
   }).catch(() => { /* grass is optional */ });
   else _grassPromise = import('./grass-compute.js?v=mesh-anchors-1').then(({ createComputeGrass }) => {
     Object.assign(params, {
@@ -2236,6 +2481,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('grassBladeWidth', 'Blade width', 0.1, 4.0, 0.01, f2, () => cg.setBladeWidth(params.grassBladeWidth));
     slider('grassVerticalOffset', 'Vertical offset', -2.0, 2.0, 0.01, f2, () => cg.setVerticalOffset(params.grassVerticalOffset));
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => cg.setWind(params.wind));
+    params.grassBladeStyle = 'streaks';
+    select('grassBladeStyle', 'Blade texture', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'], () => cg.setBladeStyle(params.grassBladeStyle));
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
@@ -3011,8 +3258,9 @@ async function animate() {
     updateTerrainWindow(target);
   }
   syncMultiplayerPlayer(now);
+  updateMultiplayerFinder();
   });
-  frameProfiler.time('creatures', () => portCreatures.update(rawDt));
+  frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
   // water runs its own reflection / refraction / caustics passes, then we draw
   frameProfiler.time('water', () => { if (waterRef) {
     waterRef.update(now / 1000);
