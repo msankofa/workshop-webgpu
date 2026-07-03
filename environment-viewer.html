@@ -369,12 +369,11 @@ function createMultiplayerFinder() {
       const dz = p.p[2] - local.p[2];
       const dist = Math.hypot(dx, dz);
       const bearing = Math.atan2(dx, dz);
-      const rel = normalizeAngle(bearing - heading);
+      const rel = screenRelativeBearing(bearing, heading);
       const clamped = Math.min(1, dist / view);
       const x = cx + Math.sin(rel) * clamped * 70;
       const y = cy - Math.cos(rel) * clamped * 70;
-      const friendYaw = yawFromPlayer(p);
-      const friendRelYaw = normalizeAngle(friendYaw - heading);
+      const friendRelYaw = screenRelativeBearing(playerForwardBearing(p), heading);
       drawArrow(ctx, x, y, friendRelYaw, p.id === trackedId ? 12 : 9, p.id === trackedId ? '#ffd166' : '#ffcc44');
       if (dist > view) {
         ctx.strokeStyle = p.id === trackedId ? '#ffd166' : '#ffcc44';
@@ -393,7 +392,7 @@ function createMultiplayerFinder() {
     const dx = tracked.p[0] - local.p[0];
     const dz = tracked.p[2] - local.p[2];
     const dist = Math.hypot(dx, dz);
-    const relDeg = signedDegrees(normalizeAngle(Math.atan2(dx, dz) - heading));
+    const relDeg = signedDegrees(screenRelativeBearing(Math.atan2(dx, dz), heading));
     label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
   }
 
@@ -414,7 +413,7 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
   ctx.textBaseline = 'top';
   for (let deg = 0; deg < 360; deg += 15) {
     const bearing = THREE.MathUtils.degToRad(deg);
-    const rel = normalizeAngle(bearing - heading);
+    const rel = screenRelativeBearing(bearing, heading);
     if (Math.abs(rel) > Math.PI * 0.62) continue;
     const x = center + rel * pxPerRad;
     const major = deg % 45 === 0;
@@ -427,7 +426,7 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
   }
 
   if (friendBearing != null) {
-    const rel = normalizeAngle(friendBearing - heading);
+    const rel = screenRelativeBearing(friendBearing, heading);
     const clampedRel = Math.max(-Math.PI * 0.5, Math.min(Math.PI * 0.5, rel));
     const x = center + clampedRel * pxPerRad;
     drawArrow(ctx, x, 13, Math.abs(rel) > Math.PI * 0.5 ? (rel > 0 ? Math.PI / 2 : -Math.PI / 2) : 0, 8, '#ffd166');
@@ -466,6 +465,14 @@ function yawFromPlayer(player) {
   if (!Array.isArray(q)) return 0;
   const [x, y, z, w] = q;
   return Math.atan2(2 * (w * y + x * z), 1 - 2 * (y * y + z * z));
+}
+
+function playerForwardBearing(player) {
+  return normalizeAngle(yawFromPlayer(player) + Math.PI);
+}
+
+function screenRelativeBearing(bearing, heading) {
+  return normalizeAngle(heading - bearing);
 }
 
 function normalizeAngle(angle) {
