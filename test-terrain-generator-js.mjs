@@ -4,6 +4,7 @@ import {
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
   buildHeightfieldMesh,
   createDensityNoiseSampler,
+  DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -279,6 +280,44 @@ console.log('Task 1 (Phase C: buildHeightfieldMesh) OK');
   const vSame = sampler2.fbm3(42, 100, 400, 300, 400, 10, 20, 30);
   ok(v1 === vSame, '1 (Phase D): repeated calls on the same sampler instance are cached/deterministic');
 }
+
+// --- Task 2 (Phase D): density config schema ---
+ok(DENSITY_DEFAULT_CONFIG.density_resolution === 96, '2 (Phase D): DENSITY_DEFAULT_CONFIG.density_resolution matches density_config.py');
+ok(DENSITY_DEFAULT_CONFIG.y_min === -96.0, '2 (Phase D): DENSITY_DEFAULT_CONFIG.y_min matches density_config.py');
+ok(DENSITY_DEFAULT_CONFIG.y_max === 192.0, '2 (Phase D): DENSITY_DEFAULT_CONFIG.y_max matches density_config.py');
+ok(DENSITY_DEFAULT_CONFIG.warp_period === 187.0, '2 (Phase D): DENSITY_DEFAULT_CONFIG.warp_period matches density_config.py');
+ok(DENSITY_DEFAULT_CONFIG.cave_threshold === 0.55, '2 (Phase D): DENSITY_DEFAULT_CONFIG.cave_threshold matches density_config.py');
+ok(DENSITY_DEFAULT_CONFIG.floor_thickness === 4.0, '2 (Phase D): DENSITY_DEFAULT_CONFIG.floor_thickness matches density_config.py');
+
+const densityGroupNames = DENSITY_FIELD_GROUPS.map((g) => g.name);
+ok(JSON.stringify(densityGroupNames) === JSON.stringify(['Grid', 'Warp', 'Caves', 'Floor']),
+  '2 (Phase D): DENSITY_FIELD_GROUPS names/order match the design spec');
+
+const densityFieldNames = DENSITY_FIELD_GROUPS.flatMap((g) => g.fields);
+ok(densityFieldNames.length === 12, '2 (Phase D): four groups list 12 fields total');
+let densityFieldsValid = true;
+for (const name of densityFieldNames) {
+  if (!(name in DENSITY_DEFAULT_CONFIG)) densityFieldsValid = false;
+  if (!(name in DENSITY_FIELD_RANGES)) densityFieldsValid = false;
+}
+ok(densityFieldsValid, '2 (Phase D): every DENSITY_FIELD_GROUPS field has a DENSITY_DEFAULT_CONFIG value and a DENSITY_FIELD_RANGES entry');
+
+const [dLo, dHi, dStep] = DENSITY_FIELD_RANGES.density_resolution;
+ok(dLo === 32 && dHi === 160 && dStep === 8, '2 (Phase D): density_resolution range matches density_config.py (32-160 step 8)');
+const [wpLo, wpHi, wpStep] = DENSITY_FIELD_RANGES.warp_period;
+ok(wpLo === 20 && wpHi === 600 && wpStep === 1, '2 (Phase D): warp_period range matches density_config.py (20-600 step 1)');
+const [cpLo, cpHi, cpStep] = DENSITY_FIELD_RANGES.cave_period;
+ok(cpLo === 20 && cpHi === 400 && cpStep === 5, '2 (Phase D): cave_period range matches density_config.py (20-400 step 5)');
+
+ok(densityFieldLabel('density_resolution') === 'voxel res', '2 (Phase D): densityFieldLabel looks up DENSITY_FIELD_LABELS');
+ok(densityFieldLabel('cave_threshold') === 'cave threshold', '2 (Phase D): densityFieldLabel looks up DENSITY_FIELD_LABELS (2)');
+
+let everyDensityFieldHasDescription = true;
+for (const name of densityFieldNames) {
+  const desc = densityFieldDescription(name);
+  if (typeof desc !== 'string' || desc.length < 10) everyDensityFieldHasDescription = false;
+}
+ok(everyDensityFieldHasDescription, '2 (Phase D): every DENSITY_FIELD_GROUPS field has a non-trivial densityFieldDescription');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

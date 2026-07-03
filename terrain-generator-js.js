@@ -766,3 +766,71 @@ export function createDensityNoiseSampler() {
   }
   return { fbm3 };
 }
+
+// ---- Phase D: density field config (port of density_config.py's DensityPreviewConfig) ----
+// A second, independent config -- its own resolution, not tied to preview_resolution or
+// the heightfield viewport's resolution. slice_y/cross_x/cross_z/surface_thickness are
+// dropped: build_density_field never reads them, they only positioned the 2D-slice
+// preview images this port replaces with a real marching-cubes mesh.
+export const DENSITY_DEFAULT_CONFIG = {
+  density_resolution: 96,
+  y_min: -96.0,
+  y_max: 192.0,
+  iso_level: 0.0,
+  warp_period: 187.0,
+  warp_strength_surface: 8.0,
+  warp_strength_global: 2.0,
+  warp_surface_band_sigma: 40.0,
+  cave_period: 140.0,
+  cave_threshold: 0.55,
+  cave_strength: 12.0,
+  floor_thickness: 4.0,
+};
+
+export const DENSITY_FIELD_GROUPS = [
+  { name: 'Grid', fields: ['density_resolution', 'y_min', 'y_max', 'iso_level'] },
+  { name: 'Warp', fields: ['warp_period', 'warp_strength_surface', 'warp_strength_global', 'warp_surface_band_sigma'] },
+  { name: 'Caves', fields: ['cave_period', 'cave_threshold', 'cave_strength'] },
+  { name: 'Floor', fields: ['floor_thickness'] },
+];
+
+// [min, max, step] -- transcribed verbatim from density_config.py's DENSITY_FIELD_RANGES.
+export const DENSITY_FIELD_RANGES = {
+  density_resolution: [32, 160, 8],
+  y_min: [-256.0, 64.0, 4.0],
+  y_max: [-64.0, 384.0, 4.0],
+  iso_level: [-64.0, 64.0, 1.0],
+  warp_period: [20.0, 600.0, 1.0],
+  warp_strength_surface: [0.0, 30.0, 0.5],
+  warp_strength_global: [0.0, 20.0, 0.5],
+  warp_surface_band_sigma: [5.0, 120.0, 1.0],
+  cave_period: [20.0, 400.0, 5.0],
+  cave_threshold: [0.0, 1.0, 0.01],
+  cave_strength: [0.0, 30.0, 0.5],
+  floor_thickness: [0.0, 30.0, 0.5],
+};
+
+// density_config.py's DENSITY_FIELD_LABELS, transcribed verbatim (minus the dropped fields).
+const DENSITY_FIELD_LABELS = {
+  density_resolution: 'voxel res', y_min: 'y min', y_max: 'y max', iso_level: 'iso level',
+  warp_period: 'warp period', warp_strength_surface: 'surface warp', warp_strength_global: 'global warp',
+  warp_surface_band_sigma: 'warp band', cave_period: 'cave period', cave_threshold: 'cave threshold',
+  cave_strength: 'cave strength', floor_thickness: 'floor seal',
+};
+export function densityFieldLabel(name) { return DENSITY_FIELD_LABELS[name] ?? name.replace(/_/g, ' '); }
+
+const DENSITY_FIELD_DESCRIPTIONS = {
+  density_resolution: 'Grid resolution (cells per axis) for the 3D density field and its marching-cubes mesh. Higher values resolve finer cave/warp detail but rebuild slower.',
+  y_min: "Lowest y (height) sampled by the density grid -- also the floor the exported mesh is sealed at.",
+  y_max: 'Highest y (height) sampled by the density grid.',
+  iso_level: 'Offset added to the height-vs-y term before marching cubes extracts the surface at value 0 -- raises or lowers the macro surface.',
+  warp_period: 'Wavelength of the 3D warp noise that displaces the macro surface into overhangs.',
+  warp_strength_surface: 'Warp strength applied only near the macro surface (inside the warp_surface_band_sigma band).',
+  warp_strength_global: 'Warp strength applied uniformly throughout the whole volume.',
+  warp_surface_band_sigma: 'Width of the band around the macro surface where warp_strength_surface applies.',
+  cave_period: 'Wavelength of the ridged 3D noise used to carve caves.',
+  cave_threshold: 'Ridged-noise value above which material is carved into a cave -- higher values carve fewer, sparser caves.',
+  cave_strength: 'How much density is subtracted where the cave-carve term is active -- higher values carve deeper/wider caves.',
+  floor_thickness: 'Thickness of the hard-solid seal forced in at y_min so the bottom of the exported mesh is never open.',
+};
+export function densityFieldDescription(name) { return DENSITY_FIELD_DESCRIPTIONS[name] ?? ''; }
