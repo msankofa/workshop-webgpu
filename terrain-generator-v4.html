@@ -837,6 +837,96 @@
     scheduleDensityRegenerate();
   }
 
+  function validateMapSegment(value) {
+    return /^[A-Za-z0-9 _-]+$/.test(value.trim()) && value.trim().length > 0;
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function downloadBlob(filename, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function buildDensityMapData() {
+    const grid = densityLastGrid;
+    const res = densityConfig.density_resolution;
+    let heightMin = Infinity, heightMax = -Infinity;
+    for (const h of grid.height) { if (h < heightMin) heightMin = h; if (h > heightMax) heightMax = h; }
+    const water = grid.materialMasks.water;
+    return {
+      terrainKind: 'volumetric',
+      worldX: genConfig.world_x, worldZ: genConfig.world_z,
+      worldYMin: densityConfig.y_min, worldYMax: densityConfig.y_max,
+      seaLevel: genConfig.sea_level,
+      resolution: res,
+      heightMin, heightMax,
+      biomeNames: BIOMES,
+      biomeIds: Array.from(grid.biomeId),
+      grassDensity: Array.from(grassDensityForIds(grid.biomeId, water)),
+      lakeMask: Array.from(grid.lakeMask),
+      materialMasks: {
+        grass: Array.from(grid.materialMasks.grass),
+        forest: Array.from(grid.materialMasks.forest),
+        dirt: Array.from(grid.materialMasks.dirt),
+        sand: Array.from(grid.materialMasks.sand),
+        rock: Array.from(grid.materialMasks.rock),
+        snow: Array.from(grid.materialMasks.snow),
+        water: Array.from(water),
+      },
+      density: {
+        resolution: res, isoLevel: densityConfig.iso_level,
+        caveStrength: densityConfig.cave_strength, caveThreshold: densityConfig.cave_threshold,
+      },
+    };
+  }
+
+  document.getElementById('density-export-btn').addEventListener('click', async () => {
+    const statusEl = document.getElementById('density-export-status');
+    const folder = document.getElementById('density-export-folder').value;
+    const name = document.getElementById('density-export-name').value;
+    if (!validateMapSegment(folder) || !validateMapSegment(name)) {
+      statusEl.textContent = 'Folder and name must be non-empty and use only letters, digits, spaces, underscores, or hyphens.';
+      return;
+    }
+    if (!densityLastGrid) { statusEl.textContent = 'Nothing to export yet.'; return; }
+    statusEl.textContent = 'Exporting...';
+
+    const { GLTFExporter } = await import('three/addons/exporters/GLTFExporter.js');
+    const glbBuffer = await new Promise((resolve, reject) => {
+      new GLTFExporter().parse(densityMesh, resolve, reject, { binary: true });
+    });
+    const mapData = buildDensityMapData();
+
+    try {
+      const response = await fetch('/api/save-map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: folder.trim(), name: name.trim(), glbBase64: arrayBufferToBase64(glbBuffer), mapData }),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      statusEl.textContent = `Exported to maps/${body.mapKey} (${body.bytes} bytes)`;
+    } catch (err) {
+      downloadBlob(`${name.trim()}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
+      downloadBlob(`${name.trim()}-data.json`, new Blob([JSON.stringify(mapData, null, 2)], { type: 'application/json' }));
+      statusEl.textContent = `Server export unavailable (${err.message}) -- downloaded ${name.trim()}.glb and ${name.trim()}-data.json instead.`;
+    }
+  });
+
   buildGroupControls(
     document.getElementById('density-controls'), ['Grid', 'Warp', 'Caves', 'Floor'],
     densityConfig, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES,
