@@ -3205,6 +3205,7 @@ let currentBehavior = 'wander';
 let sceneMode = 'uniform';
 let loadedCreatureConfigs = null;
 let selectedCreature = null;
+let networkCreatureSnapshot = [];
 let creatureEditScope = 'all';
 let directionYaw = 0;
 const simTarget = new THREE.Vector3(0, terrainHeight(0, 0) + 0.08, 0);
@@ -3604,9 +3605,9 @@ function resetCreatures() {
   rebuildRaceVisuals();
 }
 
-function exportConfig() {
+function exportSceneConfig({ forceCreatures = false } = {}) {
   if (currentBehavior === 'race') updateLoadedCreatureConfigsFromScene();
-  const data = {
+  return {
     preset: currentPlanKey,
     gait: currentGaitKey,
     behavior: currentBehavior,
@@ -3621,23 +3622,32 @@ function exportConfig() {
     objects: objectsToConfig(),
     gaits: gaitSettings,
     generatedPlan: currentPlanKey === 'generated' ? serializePlan(BODY_PLANS.generated) : null,
-    creatures: sceneMode === 'varied' ? creatures.map(creatureToConfig) : null
+    creatures: forceCreatures || sceneMode === 'varied' ? creatures.map(forceCreatures ? creatureToSharedConfig : creatureToConfig) : null
   };
+}
+
+function exportSharedNpcConfig() {
+  const data = exportSceneConfig({ forceCreatures: true });
+  data.sceneMode = 'varied';
+  data.count = creatures.length;
+  data.creatures = creatures.map(creatureToSharedConfig);
+  return data;
+}
+
+function exportConfig() {
   const text = document.getElementById('configText');
-  text.value = JSON.stringify(data, null, 2);
+  text.value = JSON.stringify(exportSceneConfig(), null, 2);
   document.getElementById('configPanel').style.display = 'block';
 }
 
-function importConfig() {
-  const text = document.getElementById('configText');
-  document.getElementById('configPanel').style.display = 'block';
-  if (!text.value.trim()) return;
-  const data = JSON.parse(text.value);
+function applySceneConfig(data, { applyTerrain = true, applyObjects = true, rebuild = true, forceVaried = false } = {}) {
+  if (!data) return false;
   if (data.generatedPlan) installGeneratedPlan(deserializePlan(data.generatedPlan));
   if (data.preset && BODY_PLANS[data.preset]) currentPlanKey = data.preset;
   if (data.gait && gaitSettings[data.gait]) currentGaitKey = data.gait;
   if (data.behavior) currentBehavior = data.behavior;
   if (data.sceneMode) sceneMode = data.sceneMode;
+  if (forceVaried) sceneMode = 'varied';
   if (data.directionDeg != null) directionYaw = THREE.MathUtils.degToRad(Number(data.directionDeg));
   if (data.target) simTarget.set(Number(data.target.x) || 0, simTarget.y, Number(data.target.z) || 0);
   if (data.model) Object.assign(modelSettings, data.model);
@@ -3646,7 +3656,7 @@ function importConfig() {
     modelSettings.restZ = modelSettings.spread;
     delete modelSettings.spread;
   }
-  if (data.terrain) Object.assign(terrainSettings, data.terrain);
+  if (applyTerrain && data.terrain) Object.assign(terrainSettings, data.terrain);
   simTarget.y = terrainHeight(simTarget.x, simTarget.z) + 0.08;
   if (data.gaits) {
     for (const [key, value] of Object.entries(data.gaits)) {
@@ -3663,10 +3673,28 @@ function importConfig() {
   document.getElementById('sceneMode').value = sceneMode;
   renderOptions();
   renderModelOptions();
-  rebuildTerrain(false);
+  if (rebuild) rebuildTerrain(false);
   resetCreatures();
-  if (Array.isArray(data.objects)) spawnObjectsFromConfig(data.objects);
-  else reheightFreeObjects();
+  if (applyObjects) {
+    if (Array.isArray(data.objects)) spawnObjectsFromConfig(data.objects);
+    else reheightFreeObjects();
+  }
+  return true;
+}
+
+function applySharedNpcConfig(data) {
+  if (!data || !Array.isArray(data.creatures)) return false;
+  return applySceneConfig(
+    { ...data, sceneMode: 'varied', count: data.creatures.length },
+    { applyTerrain: false, applyObjects: false, rebuild: false, forceVaried: true }
+  );
+}
+
+function importConfig() {
+  const text = document.getElementById('configText');
+  document.getElementById('configPanel').style.display = 'block';
+  if (!text.value.trim()) return;
+  applySceneConfig(JSON.parse(text.value));
 }
 
 // Spread-aware uniform sampler. spread === 1 reproduces randRange(min, max)
@@ -4259,6 +4287,23 @@ function creatureToConfig(creature) {
   };
 }
 
+function creatureToSharedConfig(creature) {
+  const base = creature.config || {};
+  return {
+    index: creatures.indexOf(creature),
+    spawn: Array.isArray(base.spawn) ? base.spawn.slice() : creature.pos.toArray(),
+    yaw: Number.isFinite(Number(base.yaw)) ? Number(base.yaw) : creature.yaw,
+    hue: base.hue ?? 0.38,
+    teamId: creature.teamId,
+    health: Number.isFinite(Number(base.health)) ? Number(base.health) : MAX_HEALTH,
+    plan: serializePlan(creature.plan),
+    style: cloneStyle(creature.style),
+    gait: cloneGait(creature.gait),
+    arms: cloneArmSettings(creature.armSettings),
+    direction: base.direction ?? directionYaw
+  };
+}
+
 function selectedConfigJson() {
   return selectedCreature ? JSON.stringify(creatureToConfig(selectedCreature), null, 2) : '';
 }
@@ -4802,6 +4847,80 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     selectCreature(owner || null);
   }
 
+  function applyNetworkCreatureSnapshot(items) {
+    networkCreatureSnapshot = Array.isArray(items) ? items : [];
+  }
+
+  function applyNetworkCreaturePose(creature, state) {
+    if (!creature || !state) return;
+    if (Array.isArray(state.p)) creature.pos.set(state.p[0] || 0, state.p[1] || 0, state.p[2] || 0);
+    if (Array.isArray(state.ypr)) {
+      creature.yaw = Number(state.ypr[0]) || 0;
+      creature.pitch = Number(state.ypr[1]) || 0;
+      creature.roll = Number(state.ypr[2]) || 0;
+    } else if (Array.isArray(state.q)) {
+      _clearQ.set(state.q[0] || 0, state.q[1] || 0, state.q[2] || 0, state.q[3] ?? 1);
+      _clearEuler.setFromQuaternion(_clearQ, 'YXZ');
+      creature.pitch = _clearEuler.x;
+      creature.yaw = _clearEuler.y;
+      creature.roll = _clearEuler.z;
+    }
+    if (Number.isFinite(Number(state.hp))) creature.health = clamp(Number(state.hp) * MAX_HEALTH, 0, MAX_HEALTH);
+    creature.vel.set(0, 0, 0);
+    const feet = Array.isArray(state.feet) ? state.feet : [];
+    for (let i = 0; i < creature.legs.length; i++) {
+      const p = feet[i];
+      if (!Array.isArray(p)) continue;
+      const leg = creature.legs[i];
+      leg.end.set(p[0] || 0, p[1] || 0, p[2] || 0);
+      leg.target.copy(leg.end);
+      leg.groundPosition.copy(leg.end);
+    }
+    const hands = Array.isArray(state.hands) ? state.hands : [];
+    for (let i = 0; i < creature.arms.length; i++) {
+      const p = hands[i];
+      if (!Array.isArray(p)) continue;
+      const arm = creature.arms[i];
+      arm.aim.set(p[0] || 0, p[1] || 0, p[2] || 0);
+      arm.target.copy(arm.aim);
+      arm.hand.position.copy(arm.aim);
+      arm.prevHand.copy(arm.hand.position);
+    }
+  }
+
+  function updateNetworkCreatures(dt) {
+    const updateStart = performance.now();
+    frameIndex++;
+    const byId = new Map(networkCreatureSnapshot.map((state, index) => [state.id ?? index, state]));
+    for (let i = 0; i < creatures.length; i++) applyNetworkCreaturePose(creatures[i], byId.get(i) || networkCreatureSnapshot[i]);
+    const lodStart = performance.now();
+    updateCreatureLod();
+    creatureStats.lodMs = performance.now() - lodStart;
+    creatureStats.objectsMs = 0;
+    creatureStats.behaviorMs = 0;
+    creatureStats.steeringMs = 0;
+    creatureStats.physicsMs = 0;
+    const renderStart = performance.now();
+    if (creatureBatches) creatureBatches.beginFrame();
+    for (const c of creatures) {
+      if (!c.lodVisible) continue;
+      c.render(false, dt, true);
+      creatureStats.rendered++;
+    }
+    if (creatureBatches) {
+      creatureBatches.endFrame();
+      creatureStats.instancedBoxes = creatureBatches.stats.boxes;
+      creatureStats.instancedLimbs = creatureBatches.stats.limbs;
+      creatureStats.instancedJoints = creatureBatches.stats.joints;
+      creatureStats.instancedHandsFeet = creatureBatches.stats.handsFeet;
+      creatureStats.instancedShadows = creatureBatches.stats.shadows;
+    }
+    creatureStats.renderMs = performance.now() - renderStart;
+    creatureStats.selectionMs = 0;
+    creatureStats.sim = 0;
+    creatureStats.updateMs = performance.now() - updateStart;
+  }
+
   function setTargetPoint(point) {
     simTarget.copy(point);
     simTarget.y = terrainHeight(simTarget.x, simTarget.z) + 0.08;
@@ -4817,12 +4936,16 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
 
   return {
     update,
+    updateNetworkCreatures,
     resetCreatures,
     clearRenderBatches,
     spawnRandomObjects,
     selectFromRaycaster,
     setTargetPoint,
     setBehavior,
+    exportSharedNpcConfig,
+    applySharedNpcConfig,
+    applyNetworkCreatureSnapshot,
     get stats() { return creatureStats; },
     get creatures() { return creatures; },
     get currentBehavior() { return currentBehavior; },

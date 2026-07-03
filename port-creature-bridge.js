@@ -483,6 +483,10 @@ export function createEnvironmentPortCreatures({
   return {
     update(dt) {
       creatureTerrain.size = creatureArenaSize(terrainSystem, terrain);
+      if (mode === 'network') {
+        system.updateNetworkCreatures(dt);
+        return;
+      }
       if (mode === 'off') {
         for (const creature of system.creatures) creature.group.visible = false;
         system.clearRenderBatches?.();

@@ -61,7 +61,7 @@ const BROADCAST_MS = 50; // 20 Hz
  * @param {() => object} getState  — callback returning { creatures, players }
  * @returns {{ destroy(): void }}
  */
-export function createHostSession(roomCode, mapKey, getState) {
+export function createHostSession(roomCode, mapKey, getState, options = {}) {
   let ws = null;
   let intervalId = null;
   let reconnectDelay = 1000;
@@ -71,7 +71,7 @@ export function createHostSession(roomCode, mapKey, getState) {
     ws = new WebSocket(RELAY_URL);
     ws.onopen = () => {
       reconnectDelay = 1000;
-      ws.send(JSON.stringify({ type: 'host', room: roomCode, mapKey: mapKey ?? null }));
+      ws.send(JSON.stringify({ type: 'host', room: roomCode, mapKey: mapKey ?? null, worldMode: options.worldMode || 'shared' }));
       intervalId = setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
         const state = getState();
@@ -165,10 +165,14 @@ function _lerpState(a, b, alpha) {
         p: _lerpV3(ca.p, cb.p, alpha),
         q: _slerpQ(ca.q, cb.q, alpha),
         hp: ca.hp + (cb.hp - ca.hp) * alpha,
+        ypr: ca.ypr && cb.ypr ? ca.ypr.map((v, j) => v + (cb.ypr[j] - v) * alpha) : ca.ypr,
         feet:  ca.feet.map((f, j) => cb.feet[j]  ? _lerpV3(f, cb.feet[j],  alpha) : f),
         hands: ca.hands.map((h, j) => cb.hands[j] ? _lerpV3(h, cb.hands[j], alpha) : h),
       };
     }),
+    worldMode: b.worldMode ?? a.worldMode,
+    worldSettings: b.worldSettings ?? a.worldSettings,
+    creatureConfig: b.creatureConfig ?? a.creatureConfig,
     players: (a.players ?? []).map(pa => {
       const pb = (b.players ?? []).find(p => p.id === pa.id);
       if (!pb) return pa;

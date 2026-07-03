@@ -15,7 +15,7 @@ export async function showStartScreen() {
   });
   document.body.appendChild(overlay);
 
-  const { mpRole, roomCode, guestMapKey } = await _roleStep(overlay);
+  const { mpRole, roomCode, guestMapKey, mpWorldMode } = await _roleStep(overlay);
 
   let mapKey;
   if (mpRole === 'guest') {
@@ -24,12 +24,13 @@ export async function showStartScreen() {
     mapKey = await _mapStep(overlay, config, mpRole, roomCode);
   }
 
-  const { setStatus } = _loadingStep(overlay, { mapKey, mpRole, roomCode });
+  const { setStatus } = _loadingStep(overlay, { mapKey, mpRole, roomCode, mpWorldMode });
 
   return {
     mapKey,
     mpRole,
     roomCode,
+    mpWorldMode,
     setStatus,
     dismiss: () => overlay.remove(),
   };
@@ -139,18 +140,35 @@ async function _roleStep(overlay) {
 
     // Solo
     grid.appendChild(_mapCard('Solo', 'Play alone, choose your own map', () => {
-      resolve({ mpRole: 'solo', roomCode: null, guestMapKey: null });
+      resolve({ mpRole: 'solo', roomCode: null, guestMapKey: null, mpWorldMode: 'independent' });
     }));
 
     // Host
     const { wrap: hw, inp: hi, err: he, btn: hb } = _rolePanel(
       'Host', 'Create a room, then choose your map', 'Room code (e.g. WOLF)', 'Host →'
     );
+    const modeLabel = document.createElement('label');
+    Object.assign(modeLabel.style, { display: 'grid', gap: '4px', fontSize: '11px', color: '#98a5b5' });
+    modeLabel.textContent = 'World settings';
+    const modeSelect = document.createElement('select');
+    Object.assign(modeSelect.style, {
+      padding: '6px 8px', border: '1px solid #354050', borderRadius: '5px',
+      background: '#20252d', color: '#d8dee9', fontSize: '12px',
+    });
+    for (const [value, label] of [['shared', 'Shared with guests'], ['independent', 'Independent per player']]) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      modeSelect.appendChild(opt);
+    }
+    modeLabel.appendChild(modeSelect);
+    hw.insertBefore(modeLabel, hb);
+
     hb.addEventListener('click', () => {
       const code = hi.value.trim().toUpperCase();
       if (!code) { he.textContent = 'Enter a room code'; he.style.display = ''; return; }
       he.style.display = 'none';
-      resolve({ mpRole: 'host', roomCode: code, guestMapKey: null });
+      resolve({ mpRole: 'host', roomCode: code, guestMapKey: null, mpWorldMode: modeSelect.value });
     });
     grid.appendChild(hw);
 
@@ -165,7 +183,7 @@ async function _roleStep(overlay) {
       jb.disabled = true;
       jb.textContent = 'Checking…';
       try {
-        const { hasHost, mapKey } = await _queryRoom(code);
+        const { hasHost, mapKey, worldMode } = await _queryRoom(code);
         if (!hasHost) {
           je.textContent = 'No active room with that code';
           je.style.display = '';
@@ -173,7 +191,7 @@ async function _roleStep(overlay) {
           jb.textContent = 'Join →';
           return;
         }
-        resolve({ mpRole: 'guest', roomCode: code, guestMapKey: mapKey });
+        resolve({ mpRole: 'guest', roomCode: code, guestMapKey: mapKey, mpWorldMode: worldMode || 'shared' });
       } catch {
         je.textContent = 'Could not connect to relay server';
         je.style.display = '';
@@ -197,7 +215,7 @@ async function _queryRoom(code) {
       clearTimeout(t);
       ws.close();
       const msg = JSON.parse(ev.data);
-      resolve({ hasHost: msg.hasHost, mapKey: msg.mapKey });
+      resolve({ hasHost: msg.hasHost, mapKey: msg.mapKey, worldMode: msg.worldMode });
     };
     ws.onerror = () => { clearTimeout(t); ws.close(); reject(new Error('connection failed')); };
   });
@@ -234,13 +252,15 @@ async function _mapStep(overlay, config, mpRole, roomCode) {
   });
 }
 
-function _loadingStep(overlay, { mapKey, mpRole, roomCode }) {
+function _loadingStep(overlay, { mapKey, mpRole, roomCode, mpWorldMode }) {
   _clear(overlay);
   const s = _shell();
 
   const parts = [mapKey || 'Infinite World'];
   if (mpRole === 'host') parts.push(`Host · ${roomCode}`);
   if (mpRole === 'guest') parts.push(`Guest · ${roomCode}`);
+  if (mpRole === 'host' && mpWorldMode === 'shared') parts.push('Shared settings');
+  if (mpRole === 'host' && mpWorldMode === 'independent') parts.push('Independent settings');
   s.appendChild(_title(parts.join(' · ')));
 
   const statusEl = document.createElement('div');
