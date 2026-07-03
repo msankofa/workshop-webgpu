@@ -470,7 +470,7 @@ function drawArrow(ctx, x, y, angle, size, color) {
 function playerViewHeading() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  return normalizeAngle(Math.atan2(dir.x, dir.z));
+  return normalizeAngle(-Math.atan2(dir.x, dir.z));
 }
 
 function yawFromPlayer(player) {
