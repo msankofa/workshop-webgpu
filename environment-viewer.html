@@ -468,11 +468,11 @@ function yawFromPlayer(player) {
 }
 
 function playerForwardBearing(player) {
-  return normalizeAngle(yawFromPlayer(player) + Math.PI);
+  return normalizeAngle(Math.PI - yawFromPlayer(player));
 }
 
 function screenRelativeBearing(bearing, heading) {
-  return normalizeAngle(heading - bearing);
+  return normalizeAngle(bearing - heading);
 }
 
 function normalizeAngle(angle) {
