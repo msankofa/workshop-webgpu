@@ -834,3 +834,47 @@ const DENSITY_FIELD_DESCRIPTIONS = {
   floor_thickness: 'Thickness of the hard-solid seal forced in at y_min so the bottom of the exported mesh is never open.',
 };
 export function densityFieldDescription(name) { return DENSITY_FIELD_DESCRIPTIONS[name] ?? ''; }
+
+// ---- Phase D: density field (port of volumetric_mesh.py's build_density_field) ----
+// heightGrid2D must be a generateFullGrid() result computed AT densityCfg.density_resolution
+// (a fresh, independent regeneration -- same reason heightfield_pipeline.py reruns the 2D
+// pipeline at the density resolution: erosion/flow are whole-grid algorithms, so there is
+// no per-point height-sampling shortcut). Returns a Float32Array of length res^3, indexed
+// density[ix + iy*res + iz*res*res] (x-fastest -- an internal convention, not required to
+// match numpy's (z,y,x) C-order axis layout in the Python source). The 6.0/8.0/50.0
+// constants below are hardcoded in the Python source too (not config fields).
+export function buildDensityField3D(heightGrid2D, densityCfg, worldX, worldZ, seed) {
+  const res = densityCfg.density_resolution;
+  const density = new Float32Array(res * res * res);
+  const noiseSampler = createDensityNoiseSampler();
+  const extentY = densityCfg.y_max - densityCfg.y_min;
+
+  for (let iz = 0; iz < res; iz++) {
+    const z = (iz / Math.max(1, res - 1) - 0.5) * worldZ;
+    for (let iy = 0; iy < res; iy++) {
+      const y = densityCfg.y_min + (iy / Math.max(1, res - 1)) * extentY;
+      for (let ix = 0; ix < res; ix++) {
+        const x = (ix / Math.max(1, res - 1) - 0.5) * worldX;
+        const h = heightGrid2D.height[iz * res + ix];
+        let d = h - y - densityCfg.iso_level;
+
+        const warp = noiseSampler.fbm3(seed + 201, densityCfg.warp_period, worldX, extentY, worldZ, x, y, z);
+        const surfaceBand = Math.exp(-((y - h) ** 2) / (densityCfg.warp_surface_band_sigma ** 2));
+        d += warp * densityCfg.warp_strength_surface * surfaceBand + warp * densityCfg.warp_strength_global;
+
+        const caveN = noiseSampler.fbm3(seed + 202, densityCfg.cave_period, worldX, extentY, worldZ, x, y, z);
+        const caveRidged = 1.0 - Math.abs(caveN) * 2.0;
+        const depthBelowSurface = h - y;
+        const caveMaskStrength = clamp01(depthBelowSurface / 6.0) * clamp01((y - (densityCfg.y_min + 6.0)) / 8.0);
+        const caveCarve = clamp01(caveRidged - densityCfg.cave_threshold) * caveMaskStrength;
+        d -= caveCarve * densityCfg.cave_strength;
+
+        const floorBias = Math.max(0.0, (densityCfg.y_min + densityCfg.floor_thickness) - y) * 50.0;
+        d += floorBias;
+
+        density[ix + iy * res + iz * res * res] = d;
+      }
+    }
+  }
+  return density;
+}

@@ -5,6 +5,7 @@ import {
   buildHeightfieldMesh,
   createDensityNoiseSampler,
   DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
+  buildDensityField3D,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -318,6 +319,41 @@ for (const name of densityFieldNames) {
   if (typeof desc !== 'string' || desc.length < 10) everyDensityFieldHasDescription = false;
 }
 ok(everyDensityFieldHasDescription, '2 (Phase D): every DENSITY_FIELD_GROUPS field has a non-trivial densityFieldDescription');
+
+// --- Task 3 (Phase D): buildDensityField3D ---
+{
+  // Flat height field, warp/cave disabled, no floor bias -- density should reduce to the
+  // macro height - y - iso_level term: positive (solid) below the flat height, negative
+  // (air) above it.
+  const res = 8;
+  const flatHeight = { height: new Float32Array(res * res).fill(50.0), resolution: res };
+  const cfg = {
+    ...DENSITY_DEFAULT_CONFIG,
+    density_resolution: res, y_min: 0, y_max: 100, iso_level: 0,
+    warp_strength_surface: 0, warp_strength_global: 0, cave_strength: 0, floor_thickness: 0,
+  };
+  const density = buildDensityField3D(flatHeight, cfg, 400, 400, 1337);
+  ok(density.length === res * res * res, '3 (Phase D): buildDensityField3D returns a res^3-length array');
+
+  // iy=0 -> y=0 (below the flat height of 50) should be solid (positive)
+  ok(density[0 + 0 * res + 0 * res * res] > 0, '3 (Phase D): a voxel well below the flat height is solid (positive density)');
+  // iy=res-1 -> y=100 (above the flat height of 50) should be air (negative)
+  const topIy = res - 1;
+  ok(density[0 + topIy * res + 0 * res * res] < 0, '3 (Phase D): a voxel well above the flat height is air (negative density)');
+}
+{
+  // floor_thickness sanity check: with a large floor_thickness, the bottom-most layer
+  // (iy=0, at y_min) must be strongly positive (solid) regardless of height/warp/cave.
+  const res = 8;
+  const flatHeight = { height: new Float32Array(res * res).fill(-10.0), resolution: res }; // height below y_min, so the macro term alone would be air
+  const cfg = {
+    ...DENSITY_DEFAULT_CONFIG,
+    density_resolution: res, y_min: 0, y_max: 100, iso_level: 0,
+    warp_strength_surface: 0, warp_strength_global: 0, cave_strength: 0, floor_thickness: 20,
+  };
+  const density = buildDensityField3D(flatHeight, cfg, 400, 400, 1337);
+  ok(density[0 + 0 * res + 0 * res * res] > 0, '3 (Phase D): floor_thickness forces the bottom layer solid even when the macro term alone would be air');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
