@@ -6,6 +6,7 @@ import {
   createDensityNoiseSampler,
   DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
   buildDensityField3D,
+  marchingCubes,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -353,6 +354,54 @@ ok(everyDensityFieldHasDescription, '2 (Phase D): every DENSITY_FIELD_GROUPS fie
   };
   const density = buildDensityField3D(flatHeight, cfg, 400, 400, 1337);
   ok(density[0 + 0 * res + 0 * res * res] > 0, '3 (Phase D): floor_thickness forces the bottom layer solid even when the macro term alone would be air');
+}
+
+// --- Task 4 (Phase D): marchingCubes ---
+{
+  // All-positive density (fully solid) -- no surface crossing, expect zero output.
+  const res = 4;
+  const density = new Float32Array(res * res * res).fill(5.0);
+  const { positions, indices } = marchingCubes(density, res, 10, 10, 10, 0, 0, 0, 0.0);
+  ok(positions.length === 0 && indices.length === 0, '4 (Phase D): an all-solid density field produces no geometry');
+}
+{
+  // All-negative density (fully air) -- no surface crossing, expect zero output.
+  const res = 4;
+  const density = new Float32Array(res * res * res).fill(-5.0);
+  const { positions, indices } = marchingCubes(density, res, 10, 10, 10, 0, 0, 0, 0.0);
+  ok(positions.length === 0 && indices.length === 0, '4 (Phase D): an all-air density field produces no geometry');
+}
+{
+  // Perfect sphere: density = R - distance_from_center. The extracted surface should be
+  // very close to radius R from the center at every vertex (the standard marching-cubes
+  // sanity check), and the vertex count should be roughly 2x the triangle count / ... in
+  // general triangleCount should be positive and vertex-welding should keep vertexCount
+  // well below 3*triangleCount (proof the shared-vertex cache is actually deduplicating).
+  const res = 24;
+  const R = 8;
+  const center = (res - 1) / 2;
+  const density = new Float32Array(res * res * res);
+  for (let iz = 0; iz < res; iz++) {
+    for (let iy = 0; iy < res; iy++) {
+      for (let ix = 0; ix < res; ix++) {
+        const dist = Math.hypot(ix - center, iy - center, iz - center);
+        density[ix + iy * res + iz * res * res] = R - dist;
+      }
+    }
+  }
+  const originX = -center, originY = -center, originZ = -center;
+  const { positions, indices } = marchingCubes(density, res, 1, 1, 1, originX, originY, originZ, 0.0);
+  const vertexCount = positions.length / 3;
+  const triangleCount = indices.length / 3;
+  ok(triangleCount > 0, '4 (Phase D): a sphere density field produces triangles');
+  ok(vertexCount < triangleCount * 1.5, '4 (Phase D): shared-vertex welding keeps vertex count well below 3x triangle count');
+
+  let maxError = 0;
+  for (let i = 0; i < vertexCount; i++) {
+    const dist = Math.hypot(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    maxError = Math.max(maxError, Math.abs(dist - R));
+  }
+  ok(maxError < 1.0, `4 (Phase D): every extracted vertex is within 1.0 of the true sphere radius (max error ${maxError.toFixed(3)})`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
