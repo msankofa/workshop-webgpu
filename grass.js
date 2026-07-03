@@ -307,9 +307,12 @@ export function buildBladeGeometry(opts = {}) {
   const halfW = bladeWidth * 0.5, midW = bladeWidth * 0.25, h = bladeHeight;
   const ox = [-halfW, halfW, midW, -midW, tipOffset];
   const oy = [0, 0, h * 0.5, h * 0.5, h];
+  // [BL, BR, TR, TL, TC] local UV for the fiber-texture atlas: u across width, v base->tip.
+  const bladeUvTable = [0, 0, 1, 0, 0.75, 0.85, 0.25, 0.85, 0.5, 1];
   const pos = new Float32Array(5 * 3);
   const wnd = new Float32Array(5);
   const hgt = new Float32Array(5);
+  const buv = new Float32Array(bladeUvTable);
   for (let k = 0; k < 5; k++) {
     pos[k * 3] = ox[k]; pos[k * 3 + 1] = oy[k]; pos[k * 3 + 2] = 0;
     wnd[k] = WIND_WEIGHT[k];
@@ -319,6 +322,7 @@ export function buildBladeGeometry(opts = {}) {
   geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geom.setAttribute('aWind', new THREE.BufferAttribute(wnd, 1));
   geom.setAttribute('aHeight', new THREE.BufferAttribute(hgt, 1));
+  geom.setAttribute('aBladeUV', new THREE.BufferAttribute(buv, 2));
   geom.setIndex(new THREE.BufferAttribute(new Uint16Array(BLADE_INDICES), 1));
   return geom;
 }
