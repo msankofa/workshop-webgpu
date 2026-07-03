@@ -26,6 +26,16 @@ import {
   Fn, vec2, vec3, vec4, float,
   sin, mix, clamp, distance, step, floor, fract, dot, max,
 } from 'three/tsl';
+import { createGrassStyleAtlas, FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
+import { texture } from 'three/tsl';
+
+// Lazy singleton: baked once, on first use (not at import time, so importing this module in
+// a Node test — which has no DOM — doesn't crash on document.createElement).
+let _grassStyleAtlas = null;
+export function getGrassStyleAtlas() {
+  if (!_grassStyleAtlas) _grassStyleAtlas = createGrassStyleAtlas();
+  return _grassStyleAtlas;
+}
 
 // ---------- seeded RNG (mulberry32) so a seed reproduces the same field ----------
 function makeRNG(seed) {
@@ -49,6 +59,7 @@ const DEFAULTS = {
   tipOffset: 0.1,          // how far the tip leans from the base centre
   baseColor: 0x16240e,     // dark green at the blade base (also reads as ambient occlusion)
   tipColor: 0x5a8a32,      // brighter green at the tip
+  bladeStyle: 'streaks',   // one of grass-textures.js's STYLE_KEYS; live-swappable via setBladeStyle()
   ambient: 0.55,           // flat ambient term
   key: 0.55,               // flat key-light term (grass uses a constant up-ish normal)
   waterLevel: null,        // if set, skip blades whose terrain base is below water (keeps grass off lakebeds)
@@ -404,6 +415,8 @@ function buildMaterial(o) {
   // ---- Per-vertex attributes ----
   const aWind   = attribute('aWind',   'float');
   const aHeight = attribute('aHeight', 'float');
+  const aBladeUV = attribute('aBladeUV', 'vec2');
+  const uBladeStyle = uniform(Math.max(0, STYLE_KEYS.indexOf(o.bladeStyle)), 'float');
 
   // ---- positionNode: wind sway + distance fade ----
   // Compute world position from the ORIGINAL local position (before any displacement)
@@ -454,8 +467,18 @@ function buildMaterial(o) {
     uCloudStrength.mul(noise2D(cloudUv.mul(uCloudScale).mul(64.0)))
   );
 
-  // Blade color: base→tip gradient, scaled by flat ambient+key, darkened by cloud shadow
-  const grassColor = mix(uBaseColor, uTipColor, aWind);
+  // ---- fiber-texture sample: atlas is STYLE_KEYS.length tiles in a row; uBladeStyle
+  // shifts which tile's U range aBladeUV.x reads from, so switching styles is one
+  // uniform write, no shader recompile / texture rebind.
+  const numStyles = float(STYLE_KEYS.length);
+  const atlasUv = vec2(uBladeStyle.add(aBladeUV.x).div(numStyles), aBladeUV.y);
+  const styleSample = texture(getGrassStyleAtlas(), atlasUv);
+  const fiberMul = float(FIBER_REMAP_MIN).add(styleSample.r.mul(FIBER_REMAP_MAX - FIBER_REMAP_MIN));
+  const dryColor = vec3(120 / 255, 96 / 255, 40 / 255);
+
+  // Blade color: base→tip gradient x fiber texture, scaled by flat ambient+key, darkened by cloud shadow
+  const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
+  const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
   const colorNode  = grassColor.mul(uAmbient.add(uKey)).mul(cloud);
 
   // ---- Assemble material ----
@@ -483,6 +506,7 @@ function buildMaterial(o) {
   mat._uFadeEnd     = uFadeEnd;
   mat._uAmbient     = uAmbient;
   mat._uKey         = uKey;
+  mat._uBladeStyle  = uBladeStyle;
 
   return mat;
 }
@@ -504,6 +528,13 @@ export class Grass extends THREE.Mesh {
 
   setAmbient(v) { this.material._uAmbient.value = v; }
   setKey(v)     { this.material._uKey.value = v; }
+
+  setBladeStyle(key) {
+    const idx = STYLE_KEYS.indexOf(key);
+    if (idx < 0) return;
+    this.options.bladeStyle = key;
+    this.material._uBladeStyle.value = idx;
+  }
 
   // live wind-strength multiplier (scales sway amplitude); no geometry rebuild
   setWind(strength) {
