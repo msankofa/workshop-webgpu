@@ -25,7 +25,8 @@ import {
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal,
   atomicAdd, atomicStore, atomicLoad, texture,
 } from 'three/tsl';
-import { buildBladeGeometry, buildGrassNoiseFns } from './grass.js';
+import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
+import { FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
 import { maxInstances, perCellCount } from './grass-cells.js';
 import {
   buildChunkIndex, sampleChunk, slotCapacityForRadius,
@@ -366,7 +367,17 @@ export function createComputeGrass(opts) {
   const uAmbient = uniform(0.55), uKey = uniform(0.55);
   const uCloudStr = uniform(0.35), uCloudScale = uniform(0.02);
   const cloud = float(1).sub(uCloudStr.mul(noise2D(vec2(base.x, base.z).mul(uCloudScale))));
-  const colorNode = mix(uBaseColor, uTipColor, aWind).mul(uAmbient.add(uKey)).mul(cloud);
+
+  const aBladeUV = attribute('aBladeUV', 'vec2');
+  const uBladeStyle = uniform(Math.max(0, STYLE_KEYS.indexOf(opts.bladeStyle || 'streaks')), 'float');
+  const numStyles = float(STYLE_KEYS.length);
+  const atlasUv = vec2(uBladeStyle.add(aBladeUV.x).div(numStyles), aBladeUV.y);
+  const styleSample = texture(getGrassStyleAtlas(), atlasUv);
+  const fiberMul = float(FIBER_REMAP_MIN).add(styleSample.r.mul(FIBER_REMAP_MAX - FIBER_REMAP_MIN));
+  const dryColor = vec3(120 / 255, 96 / 255, 40 / 255);
+  const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
+  const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
+  const colorNode = grassColor.mul(uAmbient.add(uKey)).mul(cloud);
 
   const mat = new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
   mat.positionNode = posNode;
@@ -523,6 +534,11 @@ export function createComputeGrass(opts) {
     },
     maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
+    setBladeStyle(key) {
+      const idx = STYLE_KEYS.indexOf(key);
+      if (idx < 0) return;
+      uBladeStyle.value = idx;
+    },
     setTerrain(p) {
       let changed = false;
       if (p.baseAmp !== undefined && uBaseAmp.value !== p.baseAmp) { uBaseAmp.value = p.baseAmp; changed = true; }
