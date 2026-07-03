@@ -278,11 +278,11 @@ function createMultiplayerFinder() {
       position: fixed;
       left: 12px;
       bottom: 12px;
-      width: 164px;
+      width: 220px;
       z-index: 55;
       border: 1px solid rgba(255,255,255,0.14);
       border-radius: 8px;
-      background: rgba(18,22,28,0.84);
+      background: rgba(18,22,28,0.86);
       color: #d8dee9;
       font: 11px/1.35 system-ui, sans-serif;
       box-shadow: 0 8px 24px rgba(0,0,0,0.32);
@@ -290,17 +290,17 @@ function createMultiplayerFinder() {
       backdrop-filter: blur(8px);
     }
     body.gui-hidden #mp-finder { display: none !important; }
-    #mp-finder canvas { display: block; width: 164px; height: 124px; background: rgba(0,0,0,0.16); }
+    #mp-finder canvas { display: block; width: 220px; height: 178px; background: rgba(0,0,0,0.16); }
     #mp-finder .mp-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; padding: 7px 8px; border-top: 1px solid rgba(255,255,255,0.08); }
-    #mp-finder .mp-target { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #9aa6b8; }
+    #mp-finder .mp-target { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #b3bdca; }
     #mp-finder button { height: 24px; border: 1px solid rgba(255,255,255,0.16); border-radius: 5px; background: #20252d; color: #d8dee9; cursor: pointer; }
   `;
   document.head.appendChild(style);
   const root = document.createElement('div');
   root.id = 'mp-finder';
   const canvas = document.createElement('canvas');
-  canvas.width = 164;
-  canvas.height = 124;
+  canvas.width = 220;
+  canvas.height = 178;
   const row = document.createElement('div');
   row.className = 'mp-row';
   const label = document.createElement('div');
@@ -325,74 +325,172 @@ function createMultiplayerFinder() {
     root.style.display = mpRole === 'solo' ? 'none' : '';
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
+    const heading = playerViewHeading();
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = 'rgba(9,12,16,0.9)';
+    ctx.fillStyle = 'rgba(9,12,16,0.92)';
     ctx.fillRect(0, 0, w, h);
-    const cx = w * 0.5, cy = h * 0.5;
-    const view = 120;
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = 1;
-    for (let r = 20; r <= 60; r += 20) {
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-    }
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.beginPath(); ctx.moveTo(cx, 8); ctx.lineTo(cx, h - 8); ctx.moveTo(8, cy); ctx.lineTo(w - 8, cy); ctx.stroke();
-    ctx.fillStyle = '#8ed0ff';
-    ctx.font = '10px system-ui, sans-serif';
-    ctx.fillText('N', cx - 3, 13);
-    ctx.fillStyle = '#77c8a1';
-    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
 
     const remoteList = remotes.filter(p => p?.p);
     if (trackedId && !remoteList.some(p => p.id === trackedId)) trackedId = null;
     if (!trackedId && remoteList.length) trackedId = remoteList[0].id;
-    let tracked = remoteList.find(p => p.id === trackedId) || null;
+    const tracked = remoteList.find(p => p.id === trackedId) || null;
+    const trackedBearing = tracked ? Math.atan2(tracked.p[0] - local.p[0], tracked.p[2] - local.p[2]) : null;
+
+    drawCompassStrip(ctx, w, heading, trackedBearing);
+
+    const mapTop = 42;
+    const cx = w * 0.5;
+    const cy = mapTop + 66;
+    const view = 140;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(10, mapTop, w - 20, 128);
+    ctx.clip();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (let r = 24; r <= 72; r += 24) {
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.beginPath();
+    ctx.moveTo(cx, mapTop + 6); ctx.lineTo(cx, mapTop + 126);
+    ctx.moveTo(18, cy); ctx.lineTo(w - 18, cy);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(119,200,161,0.18)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 13); ctx.lineTo(cx + 9, cy + 10); ctx.lineTo(cx, cy + 5); ctx.lineTo(cx - 9, cy + 10); ctx.closePath();
+    ctx.fill();
+    drawArrow(ctx, cx, cy, 0, 13, '#77c8a1');
 
     for (const p of remoteList) {
       const dx = p.p[0] - local.p[0];
       const dz = p.p[2] - local.p[2];
       const dist = Math.hypot(dx, dz);
+      const bearing = Math.atan2(dx, dz);
+      const rel = normalizeAngle(bearing - heading);
       const clamped = Math.min(1, dist / view);
-      const angle = Math.atan2(dx, dz);
-      const x = cx + Math.sin(angle) * clamped * 54;
-      const y = cy - Math.cos(angle) * clamped * 54;
-      ctx.fillStyle = p.id === trackedId ? '#ffd166' : '#ffcc44';
-      ctx.beginPath(); ctx.arc(x, y, p.id === trackedId ? 5 : 3.5, 0, Math.PI * 2); ctx.fill();
+      const x = cx + Math.sin(rel) * clamped * 70;
+      const y = cy - Math.cos(rel) * clamped * 70;
+      const friendYaw = yawFromPlayer(p);
+      const friendRelYaw = normalizeAngle(friendYaw - heading);
+      drawArrow(ctx, x, y, friendRelYaw, p.id === trackedId ? 12 : 9, p.id === trackedId ? '#ffd166' : '#ffcc44');
       if (dist > view) {
-        ctx.strokeStyle = ctx.fillStyle;
-        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = p.id === trackedId ? '#ffd166' : '#ffcc44';
+        ctx.beginPath(); ctx.arc(x, y, p.id === trackedId ? 15 : 12, 0, Math.PI * 2); ctx.stroke();
       }
     }
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeRect(10.5, mapTop + 0.5, w - 21, 127);
 
     if (!tracked) {
-      label.textContent = 'No friend in range';
+      label.textContent = 'No friend tracked';
       return;
     }
     const dx = tracked.p[0] - local.p[0];
     const dz = tracked.p[2] - local.p[2];
     const dist = Math.hypot(dx, dz);
-    const bearing = Math.atan2(dx, dz);
-    const dir = compassDirection(bearing);
-    label.textContent = `${tracked.id} ${Math.round(dist)}m ${dir}`;
-    ctx.save();
-    ctx.translate(w - 18, 18);
-    ctx.rotate(bearing);
-    ctx.fillStyle = '#ffd166';
-    ctx.beginPath();
-    ctx.moveTo(0, -8); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6); ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+    const relDeg = signedDegrees(normalizeAngle(Math.atan2(dx, dz) - heading));
+    label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
   }
 
   return { update };
 }
 
-function compassDirection(angle) {
-  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  const idx = Math.round((((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2)) * 8) % 8;
-  return dirs[idx];
+function drawCompassStrip(ctx, width, heading, friendBearing) {
+  const h = 34;
+  ctx.fillStyle = 'rgba(255,255,255,0.035)';
+  ctx.fillRect(0, 0, width, h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.beginPath(); ctx.moveTo(0, h + 0.5); ctx.lineTo(width, h + 0.5); ctx.stroke();
+
+  const center = width * 0.5;
+  const pxPerRad = width / Math.PI;
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let deg = 0; deg < 360; deg += 15) {
+    const bearing = THREE.MathUtils.degToRad(deg);
+    const rel = normalizeAngle(bearing - heading);
+    if (Math.abs(rel) > Math.PI * 0.62) continue;
+    const x = center + rel * pxPerRad;
+    const major = deg % 45 === 0;
+    ctx.strokeStyle = major ? 'rgba(255,255,255,0.46)' : 'rgba(255,255,255,0.22)';
+    ctx.beginPath(); ctx.moveTo(x, major ? 5 : 9); ctx.lineTo(x, h - 11); ctx.stroke();
+    if (major) {
+      ctx.fillStyle = '#b3bdca';
+      ctx.fillText(compassLabel(deg), x, h - 12);
+    }
+  }
+
+  if (friendBearing != null) {
+    const rel = normalizeAngle(friendBearing - heading);
+    const clampedRel = Math.max(-Math.PI * 0.5, Math.min(Math.PI * 0.5, rel));
+    const x = center + clampedRel * pxPerRad;
+    drawArrow(ctx, x, 13, Math.abs(rel) > Math.PI * 0.5 ? (rel > 0 ? Math.PI / 2 : -Math.PI / 2) : 0, 8, '#ffd166');
+  }
+
+  ctx.fillStyle = '#d8dee9';
+  ctx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
+  ctx.fillText(`${headingDegrees(heading).toString().padStart(3, '0')}°`, center, 2);
+  ctx.fillStyle = '#77c8a1';
+  ctx.beginPath(); ctx.moveTo(center, h - 3); ctx.lineTo(center - 5, h - 11); ctx.lineTo(center + 5, h - 11); ctx.closePath(); ctx.fill();
 }
 
+function drawArrow(ctx, x, y, angle, size, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, -size);
+  ctx.lineTo(size * 0.62, size * 0.72);
+  ctx.lineTo(0, size * 0.34);
+  ctx.lineTo(-size * 0.62, size * 0.72);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function playerViewHeading() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  return Math.atan2(dir.x, dir.z);
+}
+
+function yawFromPlayer(player) {
+  const q = player?.q;
+  if (!Array.isArray(q)) return 0;
+  const [x, y, z, w] = q;
+  return Math.atan2(2 * (w * y + x * z), 1 - 2 * (y * y + z * z));
+}
+
+function normalizeAngle(angle) {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
+}
+
+function headingDegrees(angle) {
+  return (Math.round(THREE.MathUtils.radToDeg(angle)) % 360 + 360) % 360;
+}
+
+function signedDegrees(angle) {
+  return THREE.MathUtils.radToDeg(normalizeAngle(angle));
+}
+
+function compassLabel(deg) {
+  if (deg === 0) return 'N';
+  if (deg === 45) return 'NE';
+  if (deg === 90) return 'E';
+  if (deg === 135) return 'SE';
+  if (deg === 180) return 'S';
+  if (deg === 225) return 'SW';
+  if (deg === 270) return 'W';
+  if (deg === 315) return 'NW';
+  return String(deg);
+}
 function multiplayerLocalPlayer() {
   const id = mpRole === 'guest' ? mpClientId || 'guest' : 'host';
   const state = getLocalPlayerState(id);
