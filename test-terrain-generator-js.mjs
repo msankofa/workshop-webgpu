@@ -1,5 +1,5 @@
 import {
-  DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, BIOME_INDEX,
+  DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, BIOME_INDEX, BIOMES,
   gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
   buildHeightfieldMesh,
@@ -7,6 +7,7 @@ import {
   DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
   buildDensityField3D,
   marchingCubes,
+  GRASS_DENSITY, grassDensityForIds,
 } from './terrain-generator-js.js';
 import { generateGrid } from './biome-classifier-js.js';
 
@@ -402,6 +403,24 @@ ok(everyDensityFieldHasDescription, '2 (Phase D): every DENSITY_FIELD_GROUPS fie
     maxError = Math.max(maxError, Math.abs(dist - R));
   }
   ok(maxError < 1.0, `4 (Phase D): every extracted vertex is within 1.0 of the true sphere radius (max error ${maxError.toFixed(3)})`);
+}
+
+// --- Task 5 (Phase D): grassDensityForIds ---
+{
+  ok(GRASS_DENSITY.forest === 0.85, '5 (Phase D): GRASS_DENSITY.forest matches biome_density.py');
+  ok(GRASS_DENSITY.desert === 0.0, '5 (Phase D): GRASS_DENSITY.desert matches biome_density.py');
+  ok(GRASS_DENSITY.jungle === 0.95, '5 (Phase D): GRASS_DENSITY.jungle matches biome_density.py');
+
+  const biomeId = new Uint8Array([BIOME_INDEX.forest, BIOME_INDEX.desert]);
+  const waterMask = new Float32Array([0.0, 0.0]);
+  const density = grassDensityForIds(biomeId, waterMask);
+  ok(Math.abs(density[0] - 0.85) < 1e-6, '5 (Phase D): grassDensityForIds looks up GRASS_DENSITY by biome (dry forest cell)');
+  ok(Math.abs(density[1] - 0.0) < 1e-6, '5 (Phase D): grassDensityForIds looks up GRASS_DENSITY by biome (dry desert cell)');
+
+  const wetBiomeId = new Uint8Array([BIOME_INDEX.forest]);
+  const fullWater = new Float32Array([1.0]);
+  const wetDensity = grassDensityForIds(wetBiomeId, fullWater);
+  ok(Math.abs(wetDensity[0]) < 1e-6, '5 (Phase D): grassDensityForIds zeroes out fully-water cells regardless of biome');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

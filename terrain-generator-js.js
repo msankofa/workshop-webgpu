@@ -1260,3 +1260,24 @@ export function marchingCubes(density, res, spacingX, spacingY, spacingZ, origin
 
   return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
 }
+
+// ---- Phase D export: grass density (port of terrain_v3/export/biome_density.py) ----
+// A separate table from docs/subsystems/biomes.md's TREE_DENSITY (trees, used at runtime
+// by terrain-loader.js) -- both independently exist in the real pipeline for different
+// purposes. Only used by the map-export path (Task 10), not by any live preview panel.
+export const GRASS_DENSITY = {
+  deep_ocean: 0.0, ocean: 0.0, beach: 0.15, desert: 0.0, badlands: 0.05, savanna: 0.45,
+  plains: 0.75, forest: 0.85, dark_forest: 0.90, jungle: 0.95, swamp: 0.60, taiga: 0.40,
+  snowy_taiga: 0.20, snowy_plains: 0.10, stony_peaks: 0.05, snowy_peaks: 0.0,
+  windswept_hills: 0.20, meadow: 0.80,
+};
+
+export function grassDensityForIds(biomeId, waterMask) {
+  const n = biomeId.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const density = GRASS_DENSITY[BIOMES[biomeId[i]]] ?? 0.0;
+    out[i] = density * (1.0 - clamp01(waterMask[i]));
+  }
+  return out;
+}
