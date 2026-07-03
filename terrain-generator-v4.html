@@ -1121,6 +1121,95 @@
   loadRealMap();
 
   regenerate();
+
+  // ---- Node-graph canvas: pan, zoom, panel drag, reset, init ----
+  let isPanning = false;
+  let panStartX = 0, panStartY = 0, panOriginX = 0, panOriginY = 0;
+  let draggingPanelId = null;
+  let dragStartX = 0, dragStartY = 0, dragOriginX = 0, dragOriginY = 0;
+
+  canvasViewport.addEventListener('mousedown', (ev) => {
+    if (ev.target.closest('.panel')) return;
+    isPanning = true;
+    canvasViewport.classList.add('panning');
+    panStartX = ev.clientX;
+    panStartY = ev.clientY;
+    panOriginX = panX;
+    panOriginY = panY;
+    ev.preventDefault();
+  });
+
+  window.addEventListener('mousemove', (ev) => {
+    if (isPanning) {
+      panX = panOriginX + (ev.clientX - panStartX);
+      panY = panOriginY + (ev.clientY - panStartY);
+      applyWorldTransform();
+    } else if (draggingPanelId) {
+      const worldDeltaX = (ev.clientX - dragStartX) / zoom;
+      const worldDeltaY = (ev.clientY - dragStartY) / zoom;
+      panelPositions[draggingPanelId] = { x: dragOriginX + worldDeltaX, y: dragOriginY + worldDeltaY };
+      applyPanelPosition(draggingPanelId);
+      renderConnectors();
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (isPanning) {
+      isPanning = false;
+      canvasViewport.classList.remove('panning');
+      saveLayout();
+    }
+    if (draggingPanelId) {
+      draggingPanelId = null;
+      saveLayout();
+    }
+  });
+
+  canvasViewport.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const rect = canvasViewport.getBoundingClientRect();
+    const cursorScreenX = ev.clientX - rect.left;
+    const cursorScreenY = ev.clientY - rect.top;
+    const zoomOld = zoom;
+    const worldX = (cursorScreenX - panX) / zoomOld;
+    const worldY = (cursorScreenY - panY) / zoomOld;
+    const zoomFactor = Math.exp(-ev.deltaY * 0.001);
+    const zoomNew = Math.min(3, Math.max(0.2, zoomOld * zoomFactor));
+    panX = cursorScreenX - worldX * zoomNew;
+    panY = cursorScreenY - worldY * zoomNew;
+    zoom = zoomNew;
+    applyWorldTransform();
+  }, { passive: false });
+
+  for (const id of Object.keys(DEFAULT_LAYOUT)) {
+    const el = document.getElementById(id);
+    if (!el || el.classList.contains('placeholder')) continue;
+    const header = el.querySelector('h2');
+    if (!header) continue;
+    header.addEventListener('mousedown', (ev) => {
+      draggingPanelId = id;
+      dragStartX = ev.clientX;
+      dragStartY = ev.clientY;
+      dragOriginX = panelPositions[id].x;
+      dragOriginY = panelPositions[id].y;
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+  }
+
+  document.getElementById('reset-layout-btn').addEventListener('click', () => {
+    localStorage.removeItem(LAYOUT_STORAGE_KEY);
+    panX = 0; panY = 0; zoom = 1;
+    for (const id of Object.keys(DEFAULT_LAYOUT)) panelPositions[id] = { ...DEFAULT_LAYOUT[id] };
+    for (const id of Object.keys(DEFAULT_LAYOUT)) applyPanelPosition(id);
+    applyWorldTransform();
+    renderConnectors();
+  });
+
+  loadLayout();
+  for (const id of Object.keys(DEFAULT_LAYOUT)) applyPanelPosition(id);
+  applyWorldTransform();
+  renderConnectors();
 </script>
 </body>
 </html>
