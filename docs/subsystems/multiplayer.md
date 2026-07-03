@@ -154,3 +154,469 @@ and checks:
 
 It does **not** test `createHostSession`/`createGuestSession`/`GhostRenderer`, the WebSocket
 protocol, slerp correctness, or `server/server.js` — those are unverified by automated tests.
+
+## Multiplayer Reframe: From Relay Session to Shared World
+
+The current multiplayer implementation should be treated as a useful prototype layer, not as a complete multiplayer world model. It proves room joining, host snapshots, guest rendering, and basic player presence. It does not yet provide the core subsystems required for a durable shared world.
+
+The main design problem is that the browser host is the real authority. The Node server is only a relay: it stores room membership and forwards JSON messages, but it does not own world state, entities, lifecycle, mutations, simulation, permissions, or conflict resolution.
+
+### Present Subsystems
+
+#### 1. Room Directory and Relay
+
+Status: implemented.
+
+Files: `server/server.js`, `multiplayer.js`, `start-screen.js`
+
+Responsibilities today:
+
+- Maintains in-memory rooms keyed by room code.
+- Stores one host socket, zero or more guest sockets, `mapKey`, and `worldMode`.
+- Lets guests query whether a room exists before joining.
+- Forwards host messages to all guests.
+- Forwards guest messages to the host and tags them with `clientId`.
+- Notifies peers when the host or a guest disconnects.
+
+Limitations:
+
+- No persistence. Rooms disappear when sockets disconnect.
+- No authoritative world state on the server.
+- No validation of simulation messages.
+- No host election, host migration, or reconnect recovery.
+- A second host can replace the current host reference.
+
+#### 2. Start Flow and Session Metadata
+
+Status: implemented.
+
+Files: `start-screen.js`, `environment-viewer.html`
+
+Responsibilities today:
+
+- Lets a player choose Solo, Host, or Join.
+- Lets hosts choose a map.
+- Forces guests to load the host's selected `mapKey`.
+- Lets hosts choose `shared` or `independent` world settings mode.
+- Displays loading state while the world boots.
+
+Limitations:
+
+- This only synchronizes initial session metadata.
+- It does not guarantee later world consistency beyond the limited shared settings packet.
+- There is no saved room/world identity beyond the current relay process.
+
+#### 3. Host Snapshot Broadcast
+
+Status: implemented.
+
+Files: `environment-viewer.html`, `multiplayer.js`
+
+Responsibilities today:
+
+- Host calls `getState()` every 50 ms.
+- Host broadcasts `sim_state` snapshots at 20 Hz.
+- Snapshot currently includes creature pose state, player capsule state, world mode, optional shared world settings, and optional shared creature config.
+
+Limitations:
+
+- Snapshot schema is ad hoc and manually assembled.
+- It is not a general replicated entity model.
+- No delta compression, interest management, binary serialization, or versioned schema.
+- No server-side verification or rollback.
+- No persistent history.
+
+#### 4. Guest Snapshot Interpolation
+
+Status: implemented.
+
+Files: `multiplayer.js`
+
+Responsibilities today:
+
+- Guests buffer the last few snapshots.
+- Guests render at a fixed delay behind the host.
+- Creature and player poses are interpolated for smoother display.
+
+Limitations:
+
+- Interpolation only covers the fields explicitly handled in `_lerpState()`.
+- No client prediction except local player movement being shown locally.
+- No correction/reconciliation model.
+- No extrapolation or recovery strategy when snapshots stall.
+
+#### 5. Remote Player Presence
+
+Status: partially implemented.
+
+Files: `environment-viewer.html`, `multiplayer.js`
+
+Responsibilities today:
+
+- Guests send local `player_state` to the host at 20 Hz.
+- Host stores the latest guest player states.
+- Host includes all known player states in snapshots.
+- Guests render remote players as simple capsules.
+- Host renders guest capsules.
+
+Limitations:
+
+- Player movement is not server-authoritative.
+- The host accepts pose updates rather than simulating guest input.
+- There is no collision authority for guests relative to shared dynamic objects.
+- No inventory, interaction, health, combat, or action lifecycle is replicated.
+
+#### 6. Shared Creature/NPC Configuration
+
+Status: partially implemented.
+
+Files: `environment-viewer.html`, `port-creature-system.js`, `port-creature-bridge.js`
+
+Responsibilities today:
+
+- Host exports creature configuration.
+- Guests apply host creature configuration.
+- Guests run creature mode as `network`, meaning they render host-driven creature poses instead of running full local creature AI/physics.
+
+Limitations:
+
+- Creature runtime state is still a custom pose stream, not a general entity component stream.
+- Grabbable objects are deliberately not applied in shared NPC config.
+- Creature interactions with world objects are not authoritative across clients.
+- Guest commands for target/behavior exist in host handlers, but are not a complete interaction protocol.
+
+#### 7. Shared World Settings Packet
+
+Status: partially implemented.
+
+Files: `environment-viewer.html`
+
+Responsibilities today:
+
+- In `shared` mode, host periodically captures registered controls whose names start with `terrain.` or `params.`.
+- Guests apply those values through the slider/control registry.
+- This can keep many procedural terrain, vegetation, water, cloud, and similar settings aligned.
+
+Limitations:
+
+- This is control synchronization, not world-state replication.
+- It is not granular by subsystem.
+- Some systems are excluded by naming, such as `rigP.*` lighting controls.
+- Late async controls can create ordering issues.
+- Local UI changes can still matter in `independent` mode.
+
+#### 8. Procedural Local World Rebuild
+
+Status: implemented as a single-player system, reused by multiplayer.
+
+Files: `environment-viewer.html`, terrain/vegetation/water/sky modules
+
+Responsibilities today:
+
+- Each client builds terrain, trees, grass, plants, water, sky, and clouds locally.
+- When map/settings/seeds match, those systems can appear shared.
+
+Limitations:
+
+- These systems are not network entities.
+- Runtime changes are not represented as durable mutations.
+- If deterministic inputs drift, clients diverge.
+- There is no server truth for terrain edits, vegetation edits, water changes, or environment mutations.
+
+#### 9. Shared Light Entity Bridge
+
+Status: partially implemented.
+
+Files: `environment-viewer.html`, `multiplayer.js`
+
+Responsibilities today:
+
+- Multiplayer light-gun place/fire actions are sent as guest commands or handled directly by the host.
+- The browser host owns lightweight `light_projectile` and `placed_light` records.
+- Shared light records are included in the existing 20 Hz host snapshot as `lights`.
+- Guests apply replicated light records into their local clustered-light slots.
+- Light position, radius, intensity, and lifespan are interpolated by `InterpolationBuffer`.
+
+Limitations:
+
+- This is still a bridge on top of the host snapshot path, not the final replicated entity registry.
+- Light lifecycle is host-browser authoritative, not server authoritative.
+- Shared light state is not persisted and is not replayed as a mutation stream.
+- Slot capacity is limited by the reserved clustered-light range.
+- There is no client prediction, rejection message, or conflict model yet.
+
+#### 10. Local Dynamic Effects
+
+Status: local only except for the multiplayer light bridge above.
+
+Files: `environment-viewer.html`, lighting/FX modules
+
+Examples today:
+
+- Solo light-gun fallback path.
+- Particle field creation/editing.
+- Local lighting rig controls that are not captured by shared settings.
+- Local debug/UI state.
+
+Limitations:
+
+- Other players never see these actions unless they are converted into shared entities, shared events, or shared mutations.
+
+### Missing Subsystems
+
+#### 1. Authoritative World Database
+
+Status: not implemented.
+
+Purpose:
+
+The shared world needs an owner of truth that is independent of a browser tab. This can start as an in-memory server-side room state and later become persisted storage.
+
+Needed responsibilities:
+
+- Store world identity, map key, world mode, seed/settings, and schema version.
+- Store authoritative dynamic entities.
+- Store durable mutations.
+- Support reconnect by replaying or snapshotting current world state.
+- Separate ephemeral session data from persistent world data.
+- Provide migration/version handling when world schema changes.
+
+First practical version:
+
+- Server room state owns a `world` object.
+- Host may still simulate some systems, but server stores canonical entity IDs, lifecycle, and latest accepted state.
+- On guest join, server sends a world bootstrap snapshot before live updates.
+
+#### 2. Replicated Entity Registry
+
+Status: not implemented.
+
+Purpose:
+
+Every shared dynamic thing should have an entity ID and type. Lights, creatures, players, grabbables, projectiles, placed props, and later gameplay objects should flow through one registry instead of one-off arrays and custom packets.
+
+Needed responsibilities:
+
+- Allocate stable entity IDs.
+- Track entity type, owner, authority, components, version, and lifecycle state.
+- Replicate create/update/delete operations.
+- Support entity-specific serializers.
+- Support late joiners.
+- Support local prediction flags where needed.
+
+Candidate initial entity types:
+
+- `player`
+- `creature`
+- `grabbable`
+- `light_projectile`
+- `placed_light`
+- `particle_field`
+- `world_marker`
+
+#### 3. Shared Dynamic Object Lifecycle
+
+Status: not implemented.
+
+Purpose:
+
+Dynamic objects need explicit lifecycle events. Creating a light, picking up a grabbable, dropping food, killing a creature, or despawning a projectile should be part of the shared model.
+
+Needed responsibilities:
+
+- Spawn.
+- Activate/deactivate.
+- Attach/detach.
+- Transfer ownership.
+- Update state.
+- Expire/despawn.
+- Destroy permanently.
+- Define what happens on host/client disconnect.
+
+First target:
+
+- Convert light gun shots and placed lights from local arrays into replicated entities.
+- Convert grabbables from local creature-system objects into replicated entities.
+
+#### 4. Persistent World Mutation Stream
+
+Status: not implemented.
+
+Purpose:
+
+The game needs a durable record of world changes, separate from transient pose snapshots. This is the equivalent of block changes in a Minecraft-like architecture, but generalized for this world.
+
+Needed responsibilities:
+
+- Append ordered world mutations with sequence numbers.
+- Distinguish durable mutations from visual-only events.
+- Allow late joiners to reconstruct the world from baseline plus mutations.
+- Support compaction into snapshots.
+- Support persistence to disk/database later.
+
+Candidate mutation types:
+
+- `world_settings_changed`
+- `terrain_patch_changed`
+- `biome_layer_changed`
+- `entity_spawned`
+- `entity_destroyed`
+- `entity_attached`
+- `entity_detached`
+- `light_placed`
+- `light_expired`
+- `object_picked_up`
+- `object_dropped`
+
+#### 5. Server Simulation of Client Actions
+
+Status: not implemented.
+
+Purpose:
+
+Clients should send intents/actions, not final truth. The server or authority layer should decide what happened.
+
+Needed responsibilities:
+
+- Accept input commands such as move, fire, place, pickup, drop, interact, set target.
+- Validate commands against permissions, cooldowns, distance, line of sight, and world state.
+- Advance authoritative simulation ticks for shared systems.
+- Emit accepted state changes and rejected/corrected commands.
+- Keep client prediction optional and correctable.
+
+First practical version:
+
+- Keep browser host for heavy creature simulation temporarily.
+- Move lightweight shared actions to the server first: light gun fire/place, grabbable pickup/drop, and player interaction events.
+- Server validates and broadcasts entity lifecycle/mutation events.
+
+#### 6. Conflict Model
+
+Status: not implemented.
+
+Purpose:
+
+The system needs deterministic rules for what happens when multiple clients touch the same thing or submit incompatible changes.
+
+Needed responsibilities:
+
+- Define authority per entity/component.
+- Define ownership and transfer rules.
+- Define conflict resolution policy.
+- Define ordering by server sequence, not client timestamp.
+- Define rejection/correction messages.
+
+Example policies:
+
+- Server sequence order wins for object pickup.
+- Host-authoritative creature AI wins for creature pose until creature simulation moves server-side.
+- Entity owner can request actions, but server validates and commits them.
+- World settings can be host-only, admin-only, or vote/lock based.
+- Independent settings stay local and are never committed to the shared world.
+
+#### 7. Interest Management and Visibility Scoping
+
+Status: not implemented.
+
+Purpose:
+
+As the world grows, clients should not receive every entity and every mutation.
+
+Needed responsibilities:
+
+- Track each player's area of interest.
+- Send only nearby or relevant entities.
+- Send lower-rate updates for distant entities.
+- Keep global events separate from local-area events.
+- Support minimap/friend markers without requiring full entity replication.
+
+Not urgent for the current scale, but the entity registry should be designed so this can be added without rewriting the protocol.
+
+#### 8. Protocol Schema and Versioning
+
+Status: not implemented.
+
+Purpose:
+
+The current protocol is loose JSON. A shared world needs explicit message contracts.
+
+Needed responsibilities:
+
+- Define versioned message names and payloads.
+- Separate bootstrap, snapshot, delta, mutation, event, command, ack, reject, and correction messages.
+- Keep old clients from corrupting newer rooms.
+- Add test fixtures for message compatibility.
+
+First practical version:
+
+- Keep JSON, but formalize message shapes in code and docs.
+- Add runtime guards for incoming messages.
+- Add tests for bootstrap, entity lifecycle, mutation replay, and rejection paths.
+
+#### 9. Persistence Backend
+
+Status: not implemented.
+
+Purpose:
+
+The current relay process loses everything on restart. A real shared world needs save/load.
+
+Needed responsibilities:
+
+- Store world records.
+- Store compacted snapshots.
+- Store mutation logs.
+- Store room/session metadata.
+- Support cleanup and migration.
+
+First practical version:
+
+- JSON file or SQLite for local/dev.
+- Later hosted database for deployed multiplayer.
+
+#### 10. Testing and Observability
+
+Status: minimal.
+
+Purpose:
+
+The multiplayer rewrite needs tests that prove synchronization and conflict behavior.
+
+Needed responsibilities:
+
+- Unit tests for protocol validation.
+- Unit tests for entity registry lifecycle.
+- Unit tests for mutation replay.
+- Integration tests for host, guest, reconnect, late join, and disconnect.
+- Debug UI showing server sequence, entity count, mutation count, and authority source.
+- Logging that can explain why a command was accepted or rejected.
+
+### Recommended Build Order
+
+1. Define protocol messages and shared entity IDs while keeping the current relay/session flow.
+2. Add a server-owned in-memory world record per room.
+3. Add a replicated entity registry with `player`, `placed_light`, and `light_projectile`.
+4. Convert light gun actions from local-only to client command -> server validation -> shared entity lifecycle.
+5. Add world bootstrap for late joiners.
+6. Add mutation log for durable entity create/delete and world setting changes.
+7. Convert grabbables to replicated entities.
+8. Move more client actions from pose/state upload to intent command.
+9. Add conflict handling for pickup/place/edit races.
+10. Add persistence after the in-memory model is stable.
+
+### Target Architecture
+
+The long-term multiplayer system should be organized around these layers:
+
+```text
+Client input
+  -> command protocol
+  -> authoritative room/world service
+  -> entity registry
+  -> simulation or validation
+  -> mutation log + snapshots
+  -> replication stream
+  -> client interpolation/prediction/rendering
+```
+
+In that model, the browser host can still be used as a temporary simulation worker for expensive creature AI, but it should no longer be the only place where shared world truth exists.

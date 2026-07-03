@@ -155,6 +155,21 @@ export function createGuestSession(roomCode, onState) {
 // helpers (used by InterpolationBuffer._lerpState)
 // ---------------------------------------------------------------------------
 
+function _lerpLights(a = [], b = [], alpha) {
+  const prev = new Map((a ?? []).map((L, index) => [L.id ?? index, L]));
+  return (b ?? []).map((lb, index) => {
+    const la = prev.get(lb.id ?? index);
+    if (!la) return lb;
+    return {
+      ...lb,
+      p: Array.isArray(la.p) && Array.isArray(lb.p) ? _lerpV3(la.p, lb.p, alpha) : lb.p,
+      radius: la.radius != null && lb.radius != null ? la.radius + (lb.radius - la.radius) * alpha : lb.radius,
+      intensity: la.intensity != null && lb.intensity != null ? la.intensity + (lb.intensity - la.intensity) * alpha : lb.intensity,
+      lifespan: la.lifespan != null && lb.lifespan != null ? la.lifespan + (lb.lifespan - la.lifespan) * alpha : lb.lifespan,
+    };
+  });
+}
+
 function _lerpState(a, b, alpha) {
   return {
     creatures: a.creatures.map((ca, i) => {
@@ -170,6 +185,7 @@ function _lerpState(a, b, alpha) {
         hands: ca.hands.map((h, j) => cb.hands[j] ? _lerpV3(h, cb.hands[j], alpha) : h),
       };
     }),
+    lights: _lerpLights(a.lights, b.lights, alpha),
     worldMode: b.worldMode ?? a.worldMode,
     worldSettings: b.worldSettings ?? a.worldSettings,
     creatureConfig: b.creatureConfig ?? a.creatureConfig,

@@ -11,12 +11,18 @@ const stateA = {
     { id: 'host', p: [0,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
     { id: 'guest-a', p: [10,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
   ],
+  lights: [
+    { id: 'light-a', kind: 'placed', slot: 223, p: [0,2,0], r: 1, g: 0.7, b: 0.3, radius: 30, intensity: 60 },
+  ],
 };
 const stateB = {
   creatures: [{ id: 0, p: [10,0,0], q: [0,0,0,1], hp: 0.5, feet: [], hands: [] }],
   players: [
     { id: 'guest-a', p: [20,1,0], q: [0,0,0,1], h: 0.6, r: 0.35 },
     { id: 'host', p: [0,1,10], q: [0,0,0,1], h: 1.6, r: 0.35 },
+  ],
+  lights: [
+    { id: 'light-a', kind: 'placed', slot: 223, p: [10,2,0], r: 1, g: 0.7, b: 0.3, radius: 20, intensity: 20 },
   ],
 };
 buf.push(stateA, 1000);
@@ -32,6 +38,9 @@ const midGuest = mid.players.find(p => p.id === 'guest-a');
 console.assert(approx(midHost.p[2], 5), `FAIL: player lerp should match by id - got host z ${midHost.p[2]}`);
 console.assert(approx(midGuest.p[0], 15), `FAIL: guest player lerp should match by id - got guest x ${midGuest.p[0]}`);
 console.assert(approx(midGuest.h, 1.1), `FAIL: guest player height lerp - got ${midGuest.h}`);
+console.assert(approx(mid.lights[0].p[0], 5), `FAIL: light position lerp - got ${mid.lights[0].p[0]}`);
+console.assert(approx(mid.lights[0].radius, 25), `FAIL: light radius lerp - got ${mid.lights[0].radius}`);
+console.assert(approx(mid.lights[0].intensity, 40), `FAIL: light intensity lerp - got ${mid.lights[0].intensity}`);
 
 // sample before first snapshot — should return stateA
 const before = buf.sample(900);

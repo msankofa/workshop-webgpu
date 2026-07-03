@@ -71,7 +71,15 @@ let mpLatestState = null;
 let mpSharedWorldSettings = false;
 let mpPendingWorldSettings = null;
 let mpPendingCreatureState = [];
+let mpPendingLightState = [];
 let mpPendingCreatureConfig = null;
+const MP_LIGHT_FIRST_SLOT = 223;
+const MP_LIGHT_MAX = 33;
+const MP_LIGHT_MAX_FLIGHT = 10;
+const mpSharedLights = new Map();
+const mpSharedLightSlots = new Array(MP_LIGHT_MAX).fill(null);
+const mpRenderedLightSlots = new Set();
+let mpSharedLightSeq = 0;
 let mpLastCreatureConfigSig = '';
 let mpLastCreatureConfigSend = -Infinity;
 let mpCreatureConfigVersion = 0;
@@ -214,7 +222,7 @@ function getState() {
   const hostPlayer = getLocalPlayerState('host');
   if (hostPlayer) players.push(hostPlayer);
   for (const player of mpGuestPlayers.values()) players.push(player);
-  return { creatures, players, worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
+  return { creatures, players, lights: lgSharedLightSnapshot(), worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
 }
 
 function updateHostPlayerGhosts() {
@@ -251,6 +259,7 @@ if (mpRole === 'host') {
     receiveSharedWorldSettings(state.worldSettings);
     receiveSharedNpcConfig(state.creatureConfig);
     mpPendingCreatureState = state.creatures ?? [];
+    mpPendingLightState = state.lights ?? [];
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
     mpGhostRenderer.update({ ...state, creatures: [], players });
   });
@@ -268,6 +277,10 @@ window.addEventListener('mp:guest_input', e => {
     portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
   } else if (msg.type === 'set_behavior') {
     portCreatures?.system?.setBehavior(msg.behavior);
+  } else if (msg.type === 'light_place') {
+    lgHandleSharedLightPlace(msg, msg.clientId || 'guest');
+  } else if (msg.type === 'light_fire') {
+    lgHandleSharedLightFire(msg, msg.clientId || 'guest');
   }
 });
 function createMultiplayerFinder() {
@@ -457,7 +470,7 @@ function drawArrow(ctx, x, y, angle, size, color) {
 function playerViewHeading() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  return normalizeAngle(-Math.atan2(dir.x, dir.z));
+  return normalizeAngle(Math.atan2(dir.x, dir.z));
 }
 
 function yawFromPlayer(player) {
@@ -468,11 +481,11 @@ function yawFromPlayer(player) {
 }
 
 function playerForwardBearing(player) {
-  return normalizeAngle(yawFromPlayer(player) + Math.PI);
+  return normalizeAngle(Math.PI - yawFromPlayer(player));
 }
 
 function screenRelativeBearing(bearing, heading) {
-  return normalizeAngle(heading - bearing);
+  return normalizeAngle(bearing - heading);
 }
 
 function normalizeAngle(angle) {
@@ -2830,6 +2843,7 @@ const lgSlotFree = new Array(LG_MAX_PLACED).fill(true);
 let lgInFlight = null;
 let lgChargeStart = null;
 
+
 // ---- FPS debug panel ----
 {
   const style = document.createElement('style');
@@ -3132,9 +3146,197 @@ function lgMakeLightObj(slot, x, y, z, floating) {
     driftPhase: Math.random() * Math.PI * 2,
   };
 }
+function lgSharedMode() {
+  return mpRole !== 'solo';
+}
+function lgClampNumber(value, fallback, min = -Infinity, max = Infinity) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+function lgParamsPacket() {
+  return {
+    trajectory: lgParams.trajectory === 'arc' ? 'arc' : 'straight',
+    float: !!lgParams.float,
+    drift: !!lgParams.drift,
+    lifespan: lgClampNumber(lgParams.lifespan, 15, 0.5, 120),
+    r: lgClampNumber(lgParams.r, 255, 0, 255),
+    g: lgClampNumber(lgParams.g, 180, 0, 255),
+    b: lgClampNumber(lgParams.b, 80, 0, 255),
+    brightness: lgClampNumber(lgParams.brightness, 60, 0, 500),
+    radius: lgClampNumber(lgParams.radius, 30, 0.1, 200),
+  };
+}
+function lgNormalizeParamsPacket(packet = {}) {
+  const base = lgParamsPacket();
+  return {
+    trajectory: packet.trajectory === 'straight' ? 'straight' : 'arc',
+    float: packet.float === undefined ? base.float : !!packet.float,
+    drift: packet.drift === undefined ? base.drift : !!packet.drift,
+    lifespan: lgClampNumber(packet.lifespan, base.lifespan, 0.5, 120),
+    r: lgClampNumber(packet.r, base.r, 0, 255),
+    g: lgClampNumber(packet.g, base.g, 0, 255),
+    b: lgClampNumber(packet.b, base.b, 0, 255),
+    brightness: lgClampNumber(packet.brightness, base.brightness, 0, 500),
+    radius: lgClampNumber(packet.radius, base.radius, 0.1, 200),
+  };
+}
+function lgSharedLightColor(params) {
+  return { r: params.r / 255, g: params.g / 255, b: params.b / 255 };
+}
+function lgAllocSharedLightSlot(id) {
+  const idx = mpSharedLightSlots.indexOf(null);
+  if (idx === -1) return -1;
+  mpSharedLightSlots[idx] = id;
+  return MP_LIGHT_FIRST_SLOT + idx;
+}
+function lgReleaseSharedLightSlot(slot) {
+  const idx = slot - MP_LIGHT_FIRST_SLOT;
+  if (idx < 0 || idx >= MP_LIGHT_MAX) return;
+  mpSharedLightSlots[idx] = null;
+  mpRenderedLightSlots.delete(slot);
+  clusteredLightsRef?.clearLight(slot);
+}
+function lgCreateSharedPlacedLight({ x, y, z, params, ownerId }) {
+  if (mpRole !== 'host' || !clusteredLightsRef) return;
+  const id = `light-${++mpSharedLightSeq}`;
+  const slot = lgAllocSharedLightSlot(id);
+  if (slot === -1) return;
+  const p = lgNormalizeParamsPacket(params);
+  const c = lgSharedLightColor(p);
+  const floating = !!p.float;
+  mpSharedLights.set(id, {
+    id, slot, ownerId, kind: 'placed',
+    x, y, z, vy: 0, grounded: floating,
+    lifespan: p.lifespan, totalLife: p.lifespan,
+    r: c.r, g: c.g, b: c.b, brightness: p.brightness, radius: p.radius,
+    float: floating, drift: !!p.drift, driftPhase: Math.random() * Math.PI * 2,
+    renderX: x, renderY: y, renderZ: z, intensity: p.brightness,
+  });
+}
+function lgCreateSharedProjectile({ origin, dir, chargeRatio, params, ownerId }) {
+  if (mpRole !== 'host' || !clusteredLightsRef) return;
+  if (!Array.isArray(origin) || !Array.isArray(dir)) return;
+  const len = Math.hypot(Number(dir[0]) || 0, Number(dir[1]) || 0, Number(dir[2]) || 0) || 1;
+  const nx = (Number(dir[0]) || 0) / len, ny = (Number(dir[1]) || 0) / len, nz = (Number(dir[2]) || 0) / len;
+  const id = `light-${++mpSharedLightSeq}`;
+  const slot = lgAllocSharedLightSlot(id);
+  if (slot === -1) return;
+  const p = lgNormalizeParamsPacket(params);
+  const c = lgSharedLightColor(p);
+  const speed = LG_MIN_SPEED + lgClampNumber(chargeRatio, 0, 0, 1) * (LG_MAX_SPEED - LG_MIN_SPEED);
+  const x = Number(origin[0]) || 0, y = Number(origin[1]) || 0, z = Number(origin[2]) || 0;
+  mpSharedLights.set(id, {
+    id, slot, ownerId, kind: 'projectile',
+    x, y, z, vx: nx * speed, vy: ny * speed, vz: nz * speed,
+    arc: p.trajectory === 'arc', age: 0,
+    lifespan: p.lifespan, totalLife: p.lifespan,
+    r: c.r, g: c.g, b: c.b, brightness: p.brightness, radius: p.radius,
+    float: !!p.float, drift: !!p.drift, driftPhase: Math.random() * Math.PI * 2,
+    renderX: x, renderY: y, renderZ: z, intensity: p.brightness,
+  });
+}
+function lgSubmitSharedLightCommand(msg) {
+  if (mpRole === 'host') {
+    if (msg.type === 'light_place') lgHandleSharedLightPlace(msg, 'host');
+    else if (msg.type === 'light_fire') lgHandleSharedLightFire(msg, 'host');
+  } else if (mpRole === 'guest') {
+    mpSession?.sendInput(msg);
+  }
+}
+function lgHandleSharedLightPlace(msg, ownerId) {
+  if (mpRole !== 'host' || !Array.isArray(msg.pos)) return;
+  const x = Number(msg.pos[0]) || 0;
+  const z = Number(msg.pos[2]) || 0;
+  const p = lgNormalizeParamsPacket(msg.params);
+  const y = Number.isFinite(Number(msg.pos[1])) ? Number(msg.pos[1]) : terrainHeight(x, z);
+  lgCreateSharedPlacedLight({ x, y: y + (p.float ? 1.5 : 0.2), z, params: p, ownerId });
+}
+function lgHandleSharedLightFire(msg, ownerId) {
+  if (mpRole !== 'host') return;
+  lgCreateSharedProjectile({ origin: msg.origin, dir: msg.dir, chargeRatio: msg.chargeRatio, params: msg.params, ownerId });
+}
+function lgSharedLightSnapshot() {
+  if (mpRole !== 'host') return [];
+  return [...mpSharedLights.values()].map(L => ({
+    id: L.id, kind: L.kind, slot: L.slot, p: [L.renderX ?? L.x, L.renderY ?? L.y, L.renderZ ?? L.z],
+    r: L.r, g: L.g, b: L.b, radius: L.radius, intensity: L.intensity ?? L.brightness,
+    lifespan: L.lifespan, totalLife: L.totalLife, ownerId: L.ownerId,
+  }));
+}
+function lgApplySharedLightSnapshot(items) {
+  if (!clusteredLightsRef) return;
+  const seen = new Set();
+  for (const L of Array.isArray(items) ? items : []) {
+    const slot = Number(L.slot);
+    if (!Number.isInteger(slot) || slot < MP_LIGHT_FIRST_SLOT || slot >= MP_LIGHT_FIRST_SLOT + MP_LIGHT_MAX) continue;
+    const p = Array.isArray(L.p) ? L.p : [L.x, L.y, L.z];
+    seen.add(slot);
+    mpRenderedLightSlots.add(slot);
+    clusteredLightsRef.setLightDirect(slot, {
+      x: Number(p[0]) || 0, y: Number(p[1]) || 0, z: Number(p[2]) || 0,
+      radius: lgClampNumber(L.radius, 1, 0, 300),
+      r: lgClampNumber(L.r, 1, 0, 1), g: lgClampNumber(L.g, 1, 0, 1), b: lgClampNumber(L.b, 1, 0, 1),
+      intensity: lgClampNumber(L.intensity, 0, 0, 1000),
+    });
+  }
+  for (const slot of [...mpRenderedLightSlots]) {
+    if (!seen.has(slot)) {
+      clusteredLightsRef.clearLight(slot);
+      mpRenderedLightSlots.delete(slot);
+    }
+  }
+}
+function lgUpdateSharedLightsHost(dt, t) {
+  if (mpRole !== 'host' || !clusteredLightsRef) return;
+  for (const [id, L] of [...mpSharedLights]) {
+    if (L.kind === 'projectile') {
+      L.age += dt;
+      if (L.arc) L.vy -= LG_FALL_GRAVITY * dt;
+      L.x += L.vx * dt; L.y += L.vy * dt; L.z += L.vz * dt;
+      const th = terrainHeight(L.x, L.z);
+      if (L.y <= th || L.age > MP_LIGHT_MAX_FLIGHT) {
+        L.kind = 'placed';
+        L.y = th + (L.float ? 1.5 : 0.2);
+        L.vy = 0;
+        L.grounded = !!L.float;
+      }
+    }
+    if (L.kind === 'placed') {
+      if (!L.float && !L.grounded) {
+        L.vy -= LG_FALL_GRAVITY * dt;
+        L.y += L.vy * dt;
+        const th = terrainHeight(L.x, L.z);
+        if (L.y <= th) { L.y = th; L.vy = 0; L.grounded = true; }
+      }
+      L.lifespan -= dt;
+      if (L.lifespan <= 0) {
+        mpSharedLights.delete(id);
+        lgReleaseSharedLightSlot(L.slot);
+        continue;
+      }
+    }
+    let xOff = 0, zOff = 0;
+    if (L.kind === 'placed' && L.float && L.drift) {
+      xOff = Math.sin(t * 0.3 + L.driftPhase) * 3;
+      zOff = Math.cos(t * 0.27 + L.driftPhase) * 3;
+    }
+    const fadeScale = L.kind === 'placed' && L.lifespan < LG_FADE_WINDOW ? Math.max(0, L.lifespan / LG_FADE_WINDOW) : 1;
+    L.renderX = L.x + xOff; L.renderY = L.y; L.renderZ = L.z + zOff;
+    L.intensity = L.brightness * fadeScale;
+    mpRenderedLightSlots.add(L.slot);
+    clusteredLightsRef.setLightDirect(L.slot, {
+      x: L.renderX, y: L.renderY, z: L.renderZ, radius: L.radius,
+      r: L.r, g: L.g, b: L.b, intensity: L.intensity,
+    });
+  }
+}
 function lgPlaceAtCrosshair() {
   const hit = lgRaycastTerrain();
   if (!hit.hit) return;
+  if (lgSharedMode()) {
+    lgSubmitSharedLightCommand({ type: 'light_place', pos: [hit.x, hit.y, hit.z], params: lgParamsPacket() });
+    return;
+  }
   const slot = lgFindFreeSlot();
   if (slot === -1) return;
   placedLights.push(lgMakeLightObj(slot, hit.x, hit.y + (lgParams.float ? 1.5 : 0.2), hit.z, lgParams.float));
@@ -3142,6 +3344,16 @@ function lgPlaceAtCrosshair() {
 function lgFireLight(chargeRatio) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
+  if (lgSharedMode()) {
+    lgSubmitSharedLightCommand({
+      type: 'light_fire',
+      origin: [camera.position.x, camera.position.y, camera.position.z],
+      dir: [dir.x, dir.y, dir.z],
+      chargeRatio,
+      params: lgParamsPacket(),
+    });
+    return;
+  }
   const speed = LG_MIN_SPEED + chargeRatio * (LG_MAX_SPEED - LG_MIN_SPEED);
   lgInFlight = {
     x: camera.position.x, y: camera.position.y, z: camera.position.z,
@@ -3236,6 +3448,11 @@ function updateFPSPlayer(deltaTime) {
 
 function lgUpdateLights(dt, t) {
   if (!clusteredLightsRef) return;
+  if (lgSharedMode()) {
+    if (mpRole === 'host') lgUpdateSharedLightsHost(dt, t);
+    else if (mpRole === 'guest') lgApplySharedLightSnapshot(mpPendingLightState);
+    return;
+  }
   if (lgInFlight) {
     if (lgInFlight.arc) lgInFlight.vy -= LG_FALL_GRAVITY * dt;
     lgInFlight.x += lgInFlight.vx * dt;
