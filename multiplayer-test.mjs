@@ -20,6 +20,7 @@ const stateB = {
   players: [
     { id: 'guest-a', p: [20,1,0], q: [0,0,0,1], h: 0.6, r: 0.35 },
     { id: 'host', p: [0,1,10], q: [0,0,0,1], h: 1.6, r: 0.35 },
+    { id: 'guest-b', p: [-5,1,0], q: [0,0,0,1], h: 1.6, r: 0.35 },
   ],
   lights: [
     { id: 'light-a', kind: 'placed', slot: 223, p: [10,2,0], r: 1, g: 0.7, b: 0.3, radius: 20, intensity: 20 },
@@ -35,9 +36,11 @@ console.assert(approx(mid.creatures[0].p[0], 5), `FAIL: lerp x — got ${mid.cre
 console.assert(approx(mid.creatures[0].hp, 0.75), `FAIL: lerp hp - got ${mid.creatures[0].hp}`);
 const midHost = mid.players.find(p => p.id === 'host');
 const midGuest = mid.players.find(p => p.id === 'guest-a');
+const midNewGuest = mid.players.find(p => p.id === 'guest-b');
 console.assert(approx(midHost.p[2], 5), `FAIL: player lerp should match by id - got host z ${midHost.p[2]}`);
 console.assert(approx(midGuest.p[0], 15), `FAIL: guest player lerp should match by id - got guest x ${midGuest.p[0]}`);
 console.assert(approx(midGuest.h, 1.1), `FAIL: guest player height lerp - got ${midGuest.h}`);
+console.assert(midNewGuest && approx(midNewGuest.p[0], -5), 'FAIL: player present only in newer snapshot should be retained');
 console.assert(approx(mid.lights[0].p[0], 5), `FAIL: light position lerp - got ${mid.lights[0].p[0]}`);
 console.assert(approx(mid.lights[0].radius, 25), `FAIL: light radius lerp - got ${mid.lights[0].radius}`);
 console.assert(approx(mid.lights[0].intensity, 40), `FAIL: light intensity lerp - got ${mid.lights[0].intensity}`);

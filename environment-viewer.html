@@ -73,6 +73,7 @@ let mpSharedWorldSettings = false;
 let mpPendingWorldSettings = null;
 let mpPendingCreatureState = [];
 let mpPendingLightState = [];
+let mpLightSnapshotsReady = false;
 let mpPendingCreatureConfig = null;
 const MP_LIGHT_FIRST_SLOT = 223;
 const MP_LIGHT_MAX = 33;
@@ -138,16 +139,21 @@ function getLocalPlayerState(id) {
   if (!playerCollider || !playerInitialized) return null;
   const yaw = camera.rotation.y;
   const halfYaw = yaw * 0.5;
-  return {
-    id,
-    p: [
+  const height = Math.max(0.1, playerCollider.end.y - playerCollider.start.y);
+  const radius = playerCollider.radius;
+  const p = fpsMode
+    ? [
       (playerCollider.start.x + playerCollider.end.x) * 0.5,
       (playerCollider.start.y + playerCollider.end.y) * 0.5,
       (playerCollider.start.z + playerCollider.end.z) * 0.5,
-    ],
+    ]
+    : [target.x, terrainHeight(target.x, target.z) + height * 0.5, target.z];
+  return {
+    id,
+    p,
     q: [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)],
-    h: Math.max(0.1, playerCollider.end.y - playerCollider.start.y),
-    r: playerCollider.radius,
+    h: height,
+    r: radius,
   };
 }
 
@@ -261,6 +267,7 @@ if (mpRole === 'host') {
     receiveSharedNpcConfig(state.creatureConfig);
     mpPendingCreatureState = state.creatures ?? [];
     mpPendingLightState = state.lights ?? [];
+    if (mpLightSnapshotsReady) lgApplySharedLightSnapshot(mpPendingLightState);
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
     mpGhostRenderer.update({ ...state, creatures: [], players });
   });
@@ -685,6 +692,8 @@ if (TERRAIN_MODE === 'gpu' && LIGHTS_MODE !== 'off') {
   window._dbg = window._dbg || {};
   window._dbg.clusteredLightsRef = clusteredLightsRef;
 }
+mpLightSnapshotsReady = true;
+if (mpRole === 'guest' && mpPendingLightState.length) lgApplySharedLightSnapshot(mpPendingLightState);
 
 // SP3: load the GPU CDLOD ground at top level (top-level await is already used above for
 // renderer.init), so `ground` points at the CDLOD mesh BEFORE water loads and binds its

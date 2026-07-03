@@ -170,6 +170,22 @@ function _lerpLights(a = [], b = [], alpha) {
   });
 }
 
+function _lerpPlayers(aPlayers = [], bPlayers = [], alpha) {
+  const ids = new Set([...aPlayers, ...bPlayers].map(p => p.id));
+  return [...ids].map(id => {
+    const pa = aPlayers.find(p => p.id === id);
+    const pb = bPlayers.find(p => p.id === id);
+    if (!pa) return pb;
+    if (!pb) return pa;
+    return {
+      ...pb,
+      p: _lerpV3(pa.p, pb.p, alpha),
+      q: _slerpQ(pa.q, pb.q, alpha),
+      h: pa.h != null && pb.h != null ? pa.h + (pb.h - pa.h) * alpha : pb.h,
+      r: pa.r != null && pb.r != null ? pa.r + (pb.r - pa.r) * alpha : pb.r,
+    };
+  }).filter(Boolean);
+}
 function _lerpState(a, b, alpha) {
   return {
     creatures: a.creatures.map((ca, i) => {
@@ -189,17 +205,7 @@ function _lerpState(a, b, alpha) {
     worldMode: b.worldMode ?? a.worldMode,
     worldSettings: b.worldSettings ?? a.worldSettings,
     creatureConfig: b.creatureConfig ?? a.creatureConfig,
-    players: (a.players ?? []).map(pa => {
-      const pb = (b.players ?? []).find(p => p.id === pa.id);
-      if (!pb) return pa;
-      return {
-        ...pa,
-        p: _lerpV3(pa.p, pb.p, alpha),
-        q: _slerpQ(pa.q, pb.q, alpha),
-        h: pa.h != null && pb.h != null ? pa.h + (pb.h - pa.h) * alpha : pa.h,
-        r: pa.r != null && pb.r != null ? pa.r + (pb.r - pa.r) * alpha : pa.r,
-      };
-    }),
+    players: _lerpPlayers(a.players, b.players, alpha),
   };
 }
 
