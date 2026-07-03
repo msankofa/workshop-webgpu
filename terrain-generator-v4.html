@@ -403,6 +403,109 @@
 
   const REDRAW_CALLBACKS = [];
 
+  // ---- Node-graph canvas: layout state, persistence, pan/zoom/drag, connectors ----
+  const LAYOUT_STORAGE_KEY = 'terrain-generator-v4-layout';
+  const PANEL_WIDTH = 820;
+
+  const DEFAULT_LAYOUT = {
+    'section-world-noise': { x: 0, y: 0 },
+    'section-height': { x: 900, y: 0 },
+    'section-erosion': { x: 1800, y: 0 },
+    'section-derived': { x: 0, y: 1300 },
+    'section-biome': { x: 900, y: 1300 },
+    'section-material': { x: 1800, y: 1300 },
+    'node-paint': { x: -900, y: 2600 },
+    'section-heightfield': { x: 0, y: 2600 },
+    'node-density': { x: 900, y: 2600 },
+    'node-marching': { x: 1800, y: 2600 },
+    'section-consumption': { x: 3000, y: 0 },
+    'section-tables': { x: 3000, y: 1300 },
+  };
+
+  const CONNECTOR_EDGES = [
+    ['section-world-noise', 'section-height'],
+    ['section-height', 'section-erosion'],
+    ['section-erosion', 'section-derived'],
+    ['section-derived', 'section-biome'],
+    ['section-biome', 'section-material'],
+    ['section-material', 'node-paint'],
+    ['node-paint', 'section-heightfield'],
+    ['section-heightfield', 'node-density'],
+    ['node-density', 'node-marching'],
+  ];
+
+  const canvasViewport = document.getElementById('canvas-viewport');
+  const canvasWorld = document.getElementById('canvas-world');
+  const connectorSvg = document.getElementById('connector-svg');
+
+  let panX = 0, panY = 0, zoom = 1;
+  const panelPositions = {};
+
+  function loadLayout() {
+    try {
+      const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+      if (!raw) throw new Error('no saved layout');
+      const parsed = JSON.parse(raw);
+      panX = typeof parsed.panX === 'number' ? parsed.panX : 0;
+      panY = typeof parsed.panY === 'number' ? parsed.panY : 0;
+      zoom = typeof parsed.zoom === 'number' ? parsed.zoom : 1;
+      for (const id of Object.keys(DEFAULT_LAYOUT)) {
+        const saved = parsed.positions && parsed.positions[id];
+        panelPositions[id] = (saved && typeof saved.x === 'number' && typeof saved.y === 'number')
+          ? { x: saved.x, y: saved.y }
+          : { ...DEFAULT_LAYOUT[id] };
+      }
+    } catch {
+      panX = 0; panY = 0; zoom = 1;
+      for (const id of Object.keys(DEFAULT_LAYOUT)) panelPositions[id] = { ...DEFAULT_LAYOUT[id] };
+    }
+  }
+
+  function saveLayout() {
+    const positions = {};
+    for (const id of Object.keys(DEFAULT_LAYOUT)) positions[id] = panelPositions[id];
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ panX, panY, zoom, positions }));
+  }
+
+  function applyWorldTransform() {
+    canvasWorld.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  }
+
+  function applyPanelPosition(id) {
+    const el = document.getElementById(id);
+    const pos = panelPositions[id];
+    el.style.left = `${pos.x}px`;
+    el.style.top = `${pos.y}px`;
+  }
+
+  function panelRect(id) {
+    const pos = panelPositions[id];
+    const el = document.getElementById(id);
+    return { x: pos.x, y: pos.y, width: PANEL_WIDTH, height: el.offsetHeight };
+  }
+
+  function edgePath(fromId, toId) {
+    const a = panelRect(fromId);
+    const b = panelRect(toId);
+    if (a.y === b.y) {
+      const x1 = a.x + a.width, y1 = a.y + a.height / 2;
+      const x2 = b.x, y2 = b.y + b.height / 2;
+      return `M ${x1} ${y1} L ${x2} ${y2}`;
+    }
+    const x1 = a.x + a.width / 2, y1 = a.y + a.height;
+    const x2 = b.x + b.width / 2, y2 = b.y;
+    const midY = (y1 + y2) / 2;
+    return `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
+  }
+
+  function renderConnectors() {
+    const arrowheadDefs = '<defs><marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="var(--accent)"></path></marker></defs>';
+    const edges = CONNECTOR_EDGES.map(([from, to]) =>
+      `<path d="${edgePath(from, to)}" stroke="var(--accent)" stroke-width="2" fill="none" marker-end="url(#arrowhead)"></path>`
+    ).join('');
+    connectorSvg.innerHTML = arrowheadDefs + edges;
+  }
+
   // ---- section 8: Heightfield preview -- Three.js setup ----
   // Runs as its own async function, invoked without awaiting at the top level (not
   // `await`ed inline) so a slow/failed WebGPU init can never block sections 2-10's
