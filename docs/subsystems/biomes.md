@@ -19,6 +19,10 @@
 > `-data.json` + a `map-config.json` entry) via a local `serve.py` endpoint -- the same
 > `maps/` directory `terrain-loader.js` reads at runtime.
 >
+> A second "Publish to game" button sends the same export to the deployed multiplayer
+> relay, which commits it directly into the GitHub repo so it becomes available on the
+> hosted GitHub Pages build too, not just local `serve.py` sessions.
+>
 > Planned generation-side improvements (erosion simulation, fixing `swamp`'s dead-code
 > priority-stack bug, lake detection, noise-quality upgrades, volcano feature stamping)
 > are tracked in terrain-v3's own repo:

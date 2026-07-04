@@ -23,11 +23,30 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 | `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`), `createGuestSession`, `GhostRenderer` | ~290 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker, map picker, loading screen; resolves `{ mapKey, mpRole, roomCode }` before the sim boots | 253 |
-| `server/server.js` | Relay backend (Node, `ws` library): room registry, host↔guest message forwarding, room presence queries | 82 |
+| `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding, room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 97 |
+| `server/publish-map.js` | Pure validation/merge helpers (`validateSegment`, `validateSecret`, `mergeMapConfig`) plus `publishMap`'s GitHub Git Data API orchestration and `handlePublishRequest`'s HTTP glue | 190 |
 
 Deployment context: `server/package.json` declares `ws` as the only dependency and `npm start`
 runs `node server.js`. `server/render.yaml` deploys it as a Render web service named
 `creature-relay` (root dir `server`, `npm install` / `npm start`, `PORT` from a Render env group).
+
+### Hosted map publishing (`server/publish-map.js`)
+
+`terrain-generator-v4.html`'s density panel can export a map two ways: a local
+`serve.py` `/api/save-map` POST (unchanged, for local iteration), or a "Publish to game"
+button that POSTs the same payload to this relay's `/api/publish-map` endpoint. The
+relay commits the GLB, `-data.json`, and an updated `map-config.json` directly to the
+GitHub repo via the Git Data API (one atomic commit: read the branch ref/tree, create
+three blobs, create a tree, create a commit, fast-forward the ref — retried once on a
+non-fast-forward conflict), which lands on `sp1-webgpu-renderer-migration` and triggers
+the same automatic GitHub Pages rebuild that any other push does.
+
+Security is a single shared secret (`X-Export-Key` header, checked against the
+`EXPORT_SECRET` env var with a constant-time compare) — there's no per-user auth, no
+origin restriction (CORS is `Access-Control-Allow-Origin: *`, since the secret is the
+actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_TOKEN`
+(a repo-scoped PAT), `GITHUB_REPO`, `GITHUB_BRANCH`. See
+`docs/superpowers/specs/2026-07-03-relay-map-publish-design.md` for the full design.
 
 ## Public API
 

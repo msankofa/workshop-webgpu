@@ -274,8 +274,10 @@ const NODES = [
     desc: 'Debug/tuning UI panel: sliders and live readouts for every subsystem (terrain, grass, forest, lights, water…).', tests: [] },
 
   // --- server ---
-  { id: 'server/server.js', group: 'server', kind: 'server', lines: 82,
-    desc: 'Node relay server for multiplayer signaling, deployed separately (see server/render.yaml). Reached over the network via multiplayer.js\'s RELAY_URL, not imported.', tests: [] },
+  { id: 'server/server.js', group: 'server', kind: 'server', lines: 97,
+    desc: 'Node relay server for multiplayer signaling, deployed separately (see server/render.yaml). Reached over the network via multiplayer.js\'s RELAY_URL, not imported. Also serves POST /api/publish-map (see server/publish-map.js) alongside the WebSocket relay.', tests: [] },
+  { id: 'server/publish-map.js', group: 'server', kind: 'server', lines: 190,
+    desc: 'Validation/merge helpers plus GitHub Git Data API orchestration for committing hosted map exports from terrain-generator-v4.html straight into the repo.', tests: ['test-publish-map.mjs'] },
 ];
 
 // Each subsystem has a written reference doc in docs/subsystems/. server's
@@ -366,6 +368,8 @@ const EDGES = [
   ['post-grade.js', 'post-fx.js', 'twin'],
   // network
   ['multiplayer.js', 'server/server.js', 'network'],
+  // server internal
+  ['server/server.js', 'server/publish-map.js', 'static'],
 ];
 
 const EDGE_STYLES = {
@@ -691,7 +695,7 @@ DOC_LIST.forEach(([file, label, group]) => {
 // docs/subsystems/-relative href template above).
 const TOOL_LINKS = [
   ['biome-explainer.html', 'Biome explainer (interactive)'],
-  ['terrain-generator-v4.html', 'Terrain generator v4 (interactive)'],
+  ['terrain-generator-v4.html', 'Terrain generator v4 (interactive, incl. Publish to game)'],
 ];
 TOOL_LINKS.forEach(([file, label]) => {
   const a = document.createElement('a');
