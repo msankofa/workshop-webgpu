@@ -115,18 +115,31 @@ export function createPlantsGPU(opts) {
     countsArray.fill(0);
     srcArray.fill(0);
     let total = 0;
-    for (const records of chunkRecords.values()) {
-      for (const r of records) {
-        const g = r.speciesIdx * palette.variantsPerSpecies + variantSel(r.slot);
-        if (g < 0 || g >= V) continue;
-        const slot = countsArray[g];
-        if (slot >= CAP) continue;   // variant window full; drop extras (same policy as forest-gpu.js)
-        countsArray[g] = slot + 1;
-        const base = (g * CAP + slot) * 8;
-        srcArray[base] = r.x; srcArray[base + 1] = heightAt(r.x, r.z); srcArray[base + 2] = r.z; srcArray[base + 3] = r.scale;
-        srcArray[base + 4] = r.yaw;
-        total++;
-      }
+    // Sort all pooled instances by true distance to the camera before allocating each
+    // variant's CAP slots. chunkRecords is a Map, and Map iteration order is insertion
+    // order -- re-setChunk()ing an existing key does NOT move it, and newly-entered
+    // (nearest) chunks are appended LAST. Filling slots in Map order therefore gives
+    // stale/far chunks priority over whatever the player just walked next to, which is
+    // backwards. Sorting by actual instance position here removes any dependency on
+    // chunk registration order.
+    const camX = camera.position.x, camZ = camera.position.z;
+    const allRecords = [];
+    for (const records of chunkRecords.values()) for (const r of records) allRecords.push(r);
+    allRecords.sort((a, b) => {
+      const da = (a.x - camX) ** 2 + (a.z - camZ) ** 2;
+      const db = (b.x - camX) ** 2 + (b.z - camZ) ** 2;
+      return da - db;
+    });
+    for (const r of allRecords) {
+      const g = r.speciesIdx * palette.variantsPerSpecies + variantSel(r.slot);
+      if (g < 0 || g >= V) continue;
+      const slot = countsArray[g];
+      if (slot >= CAP) continue;   // variant window full; drop extras (same policy as forest-gpu.js)
+      countsArray[g] = slot + 1;
+      const base = (g * CAP + slot) * 8;
+      srcArray[base] = r.x; srcArray[base + 1] = heightAt(r.x, r.z); srcArray[base + 2] = r.z; srcArray[base + 3] = r.scale;
+      srcArray[base + 4] = r.yaw;
+      total++;
     }
     cpuInstances = total;
     srcAttr.needsUpdate = true;
