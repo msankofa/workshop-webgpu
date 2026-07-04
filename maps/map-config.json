@@ -31,6 +31,38 @@
       "playable": true,
       "mapScale": 1,
       "snapStep": 0.5
+    },
+    "workshop/terrain-generator-export-1.glb": {
+      "displayName": "Terrain Generator Export 1",
+      "gameName": "Terrain Generator Export 1",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    },
+    "workshop/terrain-generator-export-2.glb": {
+      "displayName": "Terrain Generator Export 2",
+      "gameName": "Terrain Generator Export 2",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    },
+    "workshop/terrain-generator-export-2-caves.glb": {
+      "displayName": "Terrain Generator Export 2 Caves",
+      "gameName": "Terrain Generator Export 2 Caves",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
+    },
+    "workshop/terrain-generator-export-2-caves-hd.glb": {
+      "displayName": "Terrain Generator Export 2 Caves Hd",
+      "gameName": "Terrain Generator Export 2 Caves Hd",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
     }
   }
 }
