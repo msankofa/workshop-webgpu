@@ -356,6 +356,8 @@
     </div>
     <button class="action" id="density-export-btn">Export to maps/</button>
     <p class="lede" id="density-export-status"></p>
+    <button class="action" id="density-publish-btn">Publish to game</button>
+    <p class="lede" id="density-publish-status"></p>
   </section>
 
   <div class="panel placeholder" id="node-marching">
@@ -929,6 +931,56 @@
       downloadBlob(`${name.trim()}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
       downloadBlob(`${name.trim()}-data.json`, new Blob([JSON.stringify(mapData, null, 2)], { type: 'application/json' }));
       statusEl.textContent = `Server export unavailable (${err.message}) -- downloaded ${name.trim()}.glb and ${name.trim()}-data.json instead.`;
+    }
+  });
+
+  const PUBLISH_URL = 'https://workshop-webgpu.onrender.com/api/publish-map';
+
+  function getPublishKey(forcePrompt = false) {
+    const STORAGE_KEY = 'terrainGenPublishKey';
+    if (!forcePrompt) {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) return stored;
+    }
+    const entered = prompt('Enter the publish key for the hosted relay:');
+    if (!entered) return null;
+    localStorage.setItem(STORAGE_KEY, entered);
+    return entered;
+  }
+
+  document.getElementById('density-publish-btn').addEventListener('click', async () => {
+    const statusEl = document.getElementById('density-publish-status');
+    const folder = document.getElementById('density-export-folder').value;
+    const name = document.getElementById('density-export-name').value;
+    if (!validateMapSegment(folder) || !validateMapSegment(name)) {
+      statusEl.textContent = 'Folder and name must be non-empty and use only letters, digits, spaces, underscores, or hyphens.';
+      return;
+    }
+    if (!densityLastGrid) { statusEl.textContent = 'Nothing to export yet.'; return; }
+
+    const key = getPublishKey();
+    if (!key) { statusEl.textContent = 'Publish cancelled -- no key entered.'; return; }
+
+    statusEl.textContent = 'Publishing...';
+    const { glbBuffer, mapData } = await buildExportPayload();
+
+    try {
+      const response = await fetch(PUBLISH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Export-Key': key },
+        body: JSON.stringify({ folder: folder.trim(), name: name.trim(), glbBase64: arrayBufferToBase64(glbBuffer), mapData }),
+      });
+      const body = await response.json();
+      if (response.status === 401) {
+        localStorage.removeItem('terrainGenPublishKey');
+        throw new Error('publish key rejected');
+      }
+      if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      statusEl.textContent = `Published maps/${body.mapKey} (commit ${body.commitSha.slice(0, 7)}) -- live on the hosted game in about a minute, once GitHub Pages rebuilds.`;
+    } catch (err) {
+      downloadBlob(`${name.trim()}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
+      downloadBlob(`${name.trim()}-data.json`, new Blob([JSON.stringify(mapData, null, 2)], { type: 'application/json' }));
+      statusEl.textContent = `Publish failed (${err.message}) -- downloaded ${name.trim()}.glb and ${name.trim()}-data.json instead.`;
     }
   });
 
