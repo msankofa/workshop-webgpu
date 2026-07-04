@@ -894,6 +894,15 @@
     };
   }
 
+  async function buildExportPayload() {
+    const { GLTFExporter } = await import('three/addons/exporters/GLTFExporter.js');
+    const glbBuffer = await new Promise((resolve, reject) => {
+      new GLTFExporter().parse(densityMesh, resolve, reject, { binary: true });
+    });
+    const mapData = buildDensityMapData();
+    return { glbBuffer, mapData };
+  }
+
   document.getElementById('density-export-btn').addEventListener('click', async () => {
     const statusEl = document.getElementById('density-export-status');
     const folder = document.getElementById('density-export-folder').value;
@@ -905,11 +914,7 @@
     if (!densityLastGrid) { statusEl.textContent = 'Nothing to export yet.'; return; }
     statusEl.textContent = 'Exporting...';
 
-    const { GLTFExporter } = await import('three/addons/exporters/GLTFExporter.js');
-    const glbBuffer = await new Promise((resolve, reject) => {
-      new GLTFExporter().parse(densityMesh, resolve, reject, { binary: true });
-    });
-    const mapData = buildDensityMapData();
+    const { glbBuffer, mapData } = await buildExportPayload();
 
     try {
       const response = await fetch('/api/save-map', {
