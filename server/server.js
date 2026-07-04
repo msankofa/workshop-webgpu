@@ -1,6 +1,20 @@
+import http from 'node:http';
 import { WebSocketServer } from 'ws';
+import { handlePublishRequest } from './publish-map.js';
 
-const wss = new WebSocketServer({ port: process.env.PORT || 8080 });
+const PORT = process.env.PORT || 8080;
+
+const httpServer = http.createServer((req, res) => {
+  handlePublishRequest(req, res).catch(err => {
+    console.error('publish-map request failed:', err);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'internal error' }));
+    }
+  });
+});
+
+const wss = new WebSocketServer({ server: httpServer });
 
 // rooms: Map<code, { host: WebSocket|null, mapKey: string|null, worldMode: string, guests: Map<clientId, WebSocket> }>
 const rooms = new Map();
@@ -80,4 +94,4 @@ wss.on('connection', ws => {
   });
 });
 
-console.log(`relay listening on :${process.env.PORT || 8080}`);
+httpServer.listen(PORT, () => console.log(`relay listening on :${PORT}`));
