@@ -120,3 +120,71 @@ export async function publishMap({ folder, name, glbBase64, mapData }, { token, 
     }
   }
 }
+
+// HTTP-layer glue: parses the request, checks the secret and content-length cap,
+// validates folder/name, calls publishMap, and writes the JSON response.
+export async function handlePublishRequest(req, res) {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Export-Key',
+    });
+    res.end();
+    return;
+  }
+  if (req.method !== 'POST' || req.url !== '/api/publish-map') {
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ ok: false, error: 'not found' }));
+    return;
+  }
+
+  const send = (status, payload) => {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(payload));
+  };
+
+  if (!validateSecret(req.headers['x-export-key'], process.env.EXPORT_SECRET)) {
+    send(401, { ok: false, error: 'bad or missing X-Export-Key' });
+    return;
+  }
+
+  const contentLength = Number(req.headers['content-length'] || 0);
+  if (contentLength <= 0 || contentLength > MAX_BODY_BYTES) {
+    send(400, { ok: false, error: 'bad content length' });
+    return;
+  }
+
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) { send(400, { ok: false, error: 'payload too large' }); return; }
+    chunks.push(chunk);
+  }
+
+  let body;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+  } catch {
+    send(400, { ok: false, error: 'invalid JSON body' });
+    return;
+  }
+
+  const folder = String(body.folder || '').trim();
+  const name = String(body.name || '').trim();
+  if (!validateSegment(folder) || !validateSegment(name)) {
+    send(400, { ok: false, error: 'folder/name must be non-empty and use only letters, digits, spaces, underscores, or hyphens' });
+    return;
+  }
+
+  try {
+    const result = await publishMap(
+      { folder, name, glbBase64: body.glbBase64 || '', mapData: body.mapData || {} },
+      { token: process.env.GITHUB_TOKEN, repo: process.env.GITHUB_REPO, branch: process.env.GITHUB_BRANCH || 'sp1-webgpu-renderer-migration' },
+    );
+    send(200, { ok: true, ...result });
+  } catch (err) {
+    send(502, { ok: false, error: err.message });
+  }
+}
