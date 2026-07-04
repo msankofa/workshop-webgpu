@@ -785,6 +785,13 @@ const terrainDebug = {
   treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
 };
 const frameProfiler = createFrameProfiler({ smoothing: 0.2 });
+// renderer.info's per-frame counters (frameCalls/drawCalls/triangles/compute.frameCalls) are
+// reset internally on the next rAF. When TIMESTAMP_MODE is 'on', the awaited
+// resolveTimestampsAsync() calls in animate() cross that rAF boundary before perfLog.snapshot()
+// reads them, so the live values sample as 0. Capture them right after the frame's draw/compute
+// work is submitted (before the timestamp-resolve await) and have snapshot() read this holder
+// instead of renderer.info for those fields.
+let lastFrameRenderInfo = null;
 let environmentUi = null;
 let worldModels = null;
 function setFixedPanelPosition(panel, x, y, margin = 10) {
@@ -876,11 +883,17 @@ const perfLog = {
       creatureInstancingMode: cs.instancingMode,
       calls: r?.render?.calls ?? 0,                     // cumulative renderer calls; retained for old traces
       renderCallsTotal: r?.render?.calls ?? 0,
-      renderFrameCalls: r?.render?.frameCalls ?? 0,
-      renderDrawCalls: r?.render?.drawCalls ?? 0,
+      // Per-frame counters come from the holder captured right after this frame's draw/compute
+      // submit (before any timestamp-resolve await), not a live renderer.info read — with
+      // TIMESTAMP_MODE='on' the awaited resolveTimestampsAsync() calls cross a vsync boundary
+      // and WebGPURenderer zeroes these before a live read here would see them. Cumulative
+      // counters (calls/renderCallsTotal/computeCallsTotal) aren't reset per-frame so they're
+      // read live as before.
+      renderFrameCalls: lastFrameRenderInfo?.frameCalls ?? r?.render?.frameCalls ?? 0,
+      renderDrawCalls: lastFrameRenderInfo?.drawCalls ?? r?.render?.drawCalls ?? 0,
       computeCallsTotal: r?.compute?.calls ?? 0,
-      computeFrameCalls: r?.compute?.frameCalls ?? 0,
-      triangles: r?.render?.triangles ?? 0,
+      computeFrameCalls: lastFrameRenderInfo?.computeFrameCalls ?? r?.compute?.frameCalls ?? 0,
+      triangles: lastFrameRenderInfo?.triangles ?? r?.render?.triangles ?? 0,
       geometries: r?.memory?.geometries ?? 0,
       textures: r?.memory?.textures ?? 0,
       creatures: cs.count,
@@ -3536,7 +3549,16 @@ async function animate() {
     if (postFX && postFX.enabled) await postFX.renderAsync();
     else renderer.render(scene, camera);
   });
-  await resolveFrameTimestamps();
+  // Snapshot renderer.info's per-frame counters now, before the timestamp-resolve await below
+  // can cross a vsync boundary and let WebGPURenderer zero them for the next frame (see
+  // lastFrameRenderInfo comment above).
+  lastFrameRenderInfo = {
+    frameCalls: renderer.info.render.frameCalls,
+    drawCalls: renderer.info.render.drawCalls,
+    triangles: renderer.info.render.triangles,
+    computeFrameCalls: renderer.info.compute.frameCalls,
+  };
+  await frameProfiler.timeAsync('timestampResolve', () => resolveFrameTimestamps());
   // Drain queued sky disposals here — after this frame's submit and inside the frame guard,
   // so the detached objects are never freed while a submit still references them.
   if (skyRef) skyRef.flushDisposals();

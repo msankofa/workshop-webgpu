@@ -39,7 +39,9 @@ Returns:
 - `snapshot(prefixMap = DEFAULT_PREFIXES, opts = {})` â€” flattens latest (or, with `{ smooth: true }`, EMA-smoothed) values into an object keyed by the prefix map's mapped names (e.g. `passCreaturesMs`, `gpuGrassMs`), plus a derived `passGpuAwaitMs` (sum of the awaited GPU-bound passes: grass/forest/cdlod/lights/particles/post) and `droppedFrames`.
 - `reset()` â€” clears all maps and the dropped-frame counter.
 
-Pass names tracked: `sky, terrainWindow, creatures, water, hud, grassGpu, forestGpu, cdlodGpu, lightsGpu, particlesGpu, postRender` (`DEFAULT_NAMES`). GPU-only counters add `computeTotal` and `renderTotal`.
+Pass names tracked: `sky, terrainWindow, creatures, water, hud, grassGpu, forestGpu, cdlodGpu, lightsGpu, particlesGpu, postRender, timestampResolve` (`DEFAULT_NAMES`). GPU-only counters add `computeTotal` and `renderTotal`.
+
+`timestampResolve` â†’ `passTimestampResolveMs` measures the wall-clock cost of `resolveFrameTimestamps()` (the awaited `renderer.resolveTimestampsAsync(...)` calls, only active when `TIMESTAMP_MODE==='on'`). It's zeroed by `beginFrame()` like every other pass, so it reads `0` when timestamps are off. Before this was tracked, that cost (observed ~20ms in timestamps-on captures) was folded silently into `cpuMs` with no corresponding pass column, making `cpuMs` look larger than the sum of all profiled passes.
 
 ### `environment-ui.js`
 
@@ -112,11 +114,14 @@ Per-frame, inside `animate()` (~line 2755 onward):
 10. `await frameProfiler.timeAsync('lightsGpu', () => clusteredLightsRef.update(...))`.
 11. `await frameProfiler.timeAsync('particlesGpu', â€¦)` â€” particle field updates.
 12. `await frameProfiler.timeAsync('postRender', â€¦)` â€” `postFX.renderAsync()` or plain `renderer.render(scene, camera)`.
-13. `await resolveFrameTimestamps()` â€” when `TIMESTAMP_MODE === 'on'`, calls `renderer.resolveTimestampsAsync(...)` for compute/render GPU timestamps and feeds them in via `frameProfiler.recordGpu('computeTotal', â€¦)` / `recordGpu('renderTotal', â€¦)` / `recordGpu('postRender', â€¦)`.
+13. Immediately after that block closes, the frame's `renderer.info` per-frame counters are snapshotted into a module-level `lastFrameRenderInfo` holder (`{ frameCalls, drawCalls, triangles, computeFrameCalls }`) â€” see the fix note below.
+14. `await frameProfiler.timeAsync('timestampResolve', () => resolveFrameTimestamps())` â€” when `TIMESTAMP_MODE === 'on'`, calls `renderer.resolveTimestampsAsync(...)` for compute/render GPU timestamps and feeds them in via `frameProfiler.recordGpu('computeTotal', â€¦)` / `recordGpu('renderTotal', â€¦)` / `recordGpu('postRender', â€¦)`. Wrapping this call in `timeAsync` (rather than leaving it bare, as before) attributes its wall-clock cost to `passTimestampResolveMs` instead of letting it silently inflate `cpuMs`.
 
 `frameProfiler.reset()` is called from `perfLog.clear()` (~line 539).
 
-Consumption: `perfLog.snapshot(now)` (the page's own perf-log object, ~line 480-508) spreads `...frameProfiler.snapshot()` alongside other scene/terrain/water/forest stats into one flat object written to CSV rows. `updatePerfPanel(now)` (~line 545, throttled to every 250ms) calls `environmentUi.updatePerf(perfLog.snapshot(now))`, which drives the Perf-tab rendering in `environment-ui.js` (`host._updatePerf`). The Frame-stages cards there read `snapshot[key]` for each `PERF_ROWS` entry (e.g. `snapshot.passCreaturesMs`) and color-code bars at >16.7ms (warn) / >33ms (bad).
+Consumption: `perfLog.snapshot(now)` (the page's own perf-log object, ~line 480-508) spreads `...frameProfiler.snapshot()` alongside other scene/terrain/water/forest stats into one flat object written to CSV rows. `updatePerfPanel(now)` (~line 545, throttled to every 250ms) calls `environmentUi.updatePerf(perfLog.snapshot(now))`, which drives the Perf-tab rendering in `environment-ui.js` (`host._updatePerf`). The Frame-stages cards there read `snapshot[key]` for each `PERF_ROWS` entry (e.g. `snapshot.passCreaturesMs`) and color-code bars at >16.7ms (warn) / >33ms (bad). `perfLog.toCSV()` derives its column list from `Object.keys(this.samples[0])`, so any new key merged into a snapshot (like `passTimestampResolveMs`) appears in the CSV automatically with no separate header change needed.
+
+**Render-counter zeroing fix (timestamps-on mode):** `perfLog.snapshot()`'s `renderFrameCalls`, `renderDrawCalls`, `triangles`, and `computeFrameCalls` fields used to read `renderer.info` live. With `TIMESTAMP_MODE === 'on'`, the awaited `resolveTimestampsAsync()` calls inside `resolveFrameTimestamps()` cross a vsync boundary, and WebGPURenderer resets its per-frame `info` counters before `perfLog.snapshot()` ran (the cumulative `calls`/`renderCallsTotal`/`computeCallsTotal` counters aren't reset per-frame, so those stayed correct). Those four fields now read from `lastFrameRenderInfo` (captured right after the frame's draw/compute submit, before the timestamp-resolve await) and fall back to a live `renderer.info` read (or `0`) for the very first frame before the holder is populated. This has no effect when `TIMESTAMP_MODE` is off, since the holder's values equal what a live read would give at that point in the frame.
 
 ## Architecture notes
 

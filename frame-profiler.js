@@ -6,10 +6,12 @@ const DEFAULT_NAMES = [
   'hud',
   'grassGpu',
   'forestGpu',
+  'plantsGpu',
   'cdlodGpu',
   'lightsGpu',
   'particlesGpu',
   'postRender',
+  'timestampResolve',
 ];
 
 const DEFAULT_PREFIXES = {
@@ -20,15 +22,18 @@ const DEFAULT_PREFIXES = {
   hud: 'passHudMs',
   grassGpu: 'passGrassMs',
   forestGpu: 'passForestMs',
+  plantsGpu: 'passPlantsMs',
   cdlodGpu: 'passCdlodMs',
   lightsGpu: 'passLightsMs',
   particlesGpu: 'passParticlesMs',
   postRender: 'passPostMs',
+  timestampResolve: 'passTimestampResolveMs',
 };
 
 const DEFAULT_GPU_PREFIXES = {
   grassGpu: 'gpuGrassMs',
   forestGpu: 'gpuForestMs',
+  plantsGpu: 'gpuPlantsMs',
   cdlodGpu: 'gpuCdlodMs',
   lightsGpu: 'gpuLightsMs',
   particlesGpu: 'gpuParticlesMs',
@@ -96,6 +101,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     out.passGpuAwaitMs = round3(
       (source.get('grassGpu') || 0) +
       (source.get('forestGpu') || 0) +
+      (source.get('plantsGpu') || 0) +
       (source.get('cdlodGpu') || 0) +
       (source.get('lightsGpu') || 0) +
       (source.get('particlesGpu') || 0) +
