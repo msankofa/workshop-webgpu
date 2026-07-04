@@ -42,5 +42,76 @@ ok(brokenJson.maps['workshop/a.glb'].playable === true, '5: unparsable input tre
 const nullMaps = mergeMapConfig(JSON.stringify({ maps: null }), 'workshop/b.glb', 'b');
 ok(nullMaps.maps['workshop/b.glb'].playable === true, '5: null maps field treated as {}');
 
+import { publishMap, buildCommitMessage } from './server/publish-map.js';
+
+// --- buildCommitMessage ---
+ok(buildCommitMessage('workshop', 'my_map') === 'Publish map: workshop/my_map (via terrain-generator-v4)', '6: commit message format');
+
+// --- publishMap: mocked GitHub API, happy path ---
+function makeFakeGithub(overrides = {}) {
+  const calls = [];
+  const responses = {
+    'GET /repos/o/r/git/ref/heads/main': { object: { sha: 'base-commit-sha' } },
+    'GET /repos/o/r/git/commits/base-commit-sha': { tree: { sha: 'base-tree-sha' } },
+    'GET /repos/o/r/contents/maps/map-config.json?ref=main': { content: Buffer.from('{}').toString('base64') },
+    'POST /repos/o/r/git/blobs': { sha: 'blob-sha' },
+    'POST /repos/o/r/git/trees': { sha: 'new-tree-sha' },
+    'POST /repos/o/r/git/commits': { sha: 'new-commit-sha' },
+    'PATCH /repos/o/r/git/refs/heads/main': { ok: true },
+    ...overrides,
+  };
+  const fetchImpl = async (url, opts) => {
+    const path = url.replace('https://api.github.com', '');
+    const method = opts?.method || 'GET';
+    calls.push({ method, path, body: opts?.body ? JSON.parse(opts.body) : null });
+    const key = `${method} ${path}`;
+    const entry = typeof responses[key] === 'function' ? responses[key](calls.length) : responses[key];
+    if (entry === undefined) throw new Error(`unmocked call: ${key}`);
+    if (entry instanceof Error) return { ok: false, status: 409, json: async () => ({ message: entry.message }) };
+    return { ok: true, status: 200, json: async () => entry };
+  };
+  return { fetchImpl, calls };
+}
+
+const { fetchImpl: happyFetch, calls: happyCalls } = makeFakeGithub();
+const result = await publishMap(
+  { folder: 'workshop', name: 'test-map', glbBase64: 'AAAA', mapData: { a: 1 } },
+  { token: 't', repo: 'o/r', branch: 'main', fetchImpl: happyFetch },
+);
+ok(result.mapKey === 'workshop/test-map.glb', '7: returns expected mapKey');
+ok(result.commitSha === 'new-commit-sha', '7: returns new commit sha');
+ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/workshop/test-map.glb')), '7: tree includes the glb path');
+ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/workshop/test-map-data.json')), '7: tree includes the data.json path');
+ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/map-config.json')), '7: tree includes map-config.json');
+ok(happyCalls.some(c => c.method === 'PATCH' && c.path === '/repos/o/r/git/refs/heads/main' && c.body.sha === 'new-commit-sha'), '7: ref updated to new commit sha');
+
+// --- publishMap: one ref-update conflict, retried and succeeds ---
+let refAttempts = 0;
+const { fetchImpl: retryFetch, calls: retryCalls } = makeFakeGithub({
+  'PATCH /repos/o/r/git/refs/heads/main': () => {
+    refAttempts++;
+    return refAttempts === 1 ? new Error('conflict') : { ok: true };
+  },
+});
+const retryResult = await publishMap(
+  { folder: 'workshop', name: 'retry-map', glbBase64: 'AAAA', mapData: {} },
+  { token: 't', repo: 'o/r', branch: 'main', fetchImpl: retryFetch },
+);
+ok(retryResult.commitSha === 'new-commit-sha', '8: succeeds after one retry');
+ok(retryCalls.filter(c => c.method === 'GET' && c.path === '/repos/o/r/git/ref/heads/main').length === 2, '8: re-reads ref on retry');
+
+// --- publishMap: two consecutive conflicts, propagates error ---
+const { fetchImpl: alwaysConflictFetch } = makeFakeGithub({
+  'PATCH /repos/o/r/git/refs/heads/main': () => new Error('conflict'),
+});
+let threw = false;
+try {
+  await publishMap(
+    { folder: 'workshop', name: 'fail-map', glbBase64: 'AAAA', mapData: {} },
+    { token: 't', repo: 'o/r', branch: 'main', fetchImpl: alwaysConflictFetch },
+  );
+} catch { threw = true; }
+ok(threw === true, '9: propagates error after exhausting retry');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
