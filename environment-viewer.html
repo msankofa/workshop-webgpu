@@ -635,8 +635,31 @@ const terrainGroup = terrainSystem.group;
 let cdlodRef = null;
 let ground = loadedMap ? loadedMap.root : terrainSystem.materialPatchTarget;
 const _mapHeightRayOrigin = new THREE.Vector3();
+// CPU heightfield baked from the authored-map collider (creature-perf-analysis/plan.md
+// 3.1). When set, terrainHeight() does a bilinear array read instead of a per-call BVH
+// raycast — the dominant cost of creature terrain sampling on authored maps. Installed
+// once after the grass height bake below; it is null during that bake, so the bake still
+// fills via raycast (no chicken-and-egg).
+let cpuHeightField = null;
+function sampleHeightField(hf, x, z) {
+  const res = hf.resolution;
+  const fx = (x - hf.minX) / hf.worldX * (res - 1);
+  const fz = (z - hf.minZ) / hf.worldZ * (res - 1);
+  if (fx < 0 || fz < 0 || fx > res - 1 || fz > res - 1) return null; // outside baked bounds
+  const ix0 = Math.floor(fx), iz0 = Math.floor(fz);
+  const ix1 = Math.min(ix0 + 1, res - 1), iz1 = Math.min(iz0 + 1, res - 1);
+  const tx = fx - ix0, tz = fz - iz0;
+  const d = hf.data;
+  const h0 = d[iz0 * res + ix0] + (d[iz0 * res + ix1] - d[iz0 * res + ix0]) * tx;
+  const h1 = d[iz1 * res + ix0] + (d[iz1 * res + ix1] - d[iz1 * res + ix0]) * tx;
+  return h0 + (h1 - h0) * tz;
+}
 function terrainHeight(x, z) {
   if (!loadedMap) return terrainSystem.getHeight(x, z);
+  if (cpuHeightField) {
+    const h = sampleHeightField(cpuHeightField, x, z);
+    if (h !== null) return h;
+  }
   if (mapCollider) {
     const box = mapCollider.geometry.boundingBox;
     const top = (box?.max.y ?? loadedMap.worldYMax ?? loadedMap.heightMax ?? 64) + 4;
@@ -681,6 +704,33 @@ if (loadedMap) {
   const bakeRes = Math.min(2048, Math.max(512, Math.ceil(Math.max(loadedMap.worldX, loadedMap.worldZ))));
   loadedMap.heightTex = bakeHeightTexture(terrainHeight, hBounds, bakeRes);
   loadedMap.heightTexBounds = hBounds;
+  // Reuse the just-baked height data (Float32Array behind the grass DataTexture) as a CPU
+  // heightfield so terrainHeight() reads an array instead of raycasting the collider on
+  // every creature sample. Validate the bilinear field against the ground-truth raycast at
+  // random points *before* activating it (cpuHeightField is still null here, so
+  // terrainHeight below raycasts), and warn if a map's geometry is too fine for the bake
+  // resolution. (creature-perf-analysis/plan.md 3.1)
+  const hf = {
+    data: loadedMap.heightTex.image.data, resolution: bakeRes,
+    minX: hBounds.minX, minZ: hBounds.minZ, worldX: hBounds.worldX, worldZ: hBounds.worldZ,
+  };
+  let maxErr = 0, sumErr = 0, samples = 0;
+  for (let i = 0; i < 200; i++) {
+    const rx = hBounds.minX + Math.random() * hBounds.worldX;
+    const rz = hBounds.minZ + Math.random() * hBounds.worldZ;
+    const baked = sampleHeightField(hf, rx, rz);
+    if (baked === null) continue;
+    const err = Math.abs(baked - terrainHeight(rx, rz));
+    maxErr = Math.max(maxErr, err); sumErr += err; samples++;
+  }
+  const cell = hBounds.worldX / (bakeRes - 1);
+  // Silent on validated maps; logs detail only on request (?heightfieldCheck) or when the
+  // bilinear-vs-raycast error is high enough to matter for foot placement.
+  if (new URLSearchParams(location.search).has('heightfieldCheck') || maxErr > 0.5) {
+    console.log(`[terrain] CPU heightfield ${bakeRes}² (cell ${cell.toFixed(2)}u): max err ${maxErr.toFixed(3)}u, mean ${(sumErr / Math.max(1, samples)).toFixed(3)}u over ${samples} pts`);
+  }
+  if (maxErr > 0.5) console.warn(`[terrain] heightfield max error ${maxErr.toFixed(2)}u exceeds 0.5u — foot placement may deviate on steep geometry; consider a higher bake resolution or keeping the raycast path.`);
+  cpuHeightField = hf;
   if (loadedMap.grassDensityGrid?.length === loadedMap.resolution * loadedMap.resolution) {
     loadedMap.grassDensityTex = makeFloatDataTexture(loadedMap.grassDensityGrid, loadedMap.resolution);
     loadedMap.grassDensityTexBounds = hBounds;
@@ -818,7 +868,7 @@ portCreatures = createEnvironmentPortCreatures({
   terrainSystem,
   terrainHeight,
   resolveTrunks: (px, pz, r) => trunkIndex.resolve(px, pz, r),
-  nearbyTrunks: (px, pz) => trunkIndex.nearby(px, pz),
+  nearbyTrunks: (px, pz, out) => trunkIndex.nearby(px, pz, out),
   rebuildWorld,
   isInteractionEnabled: () => !fpsMode,
   mode: mpRole === 'guest' ? 'network' : CREATURE_MODE,
@@ -971,6 +1021,11 @@ const perfLog = {
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
       forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
+      plantDraws: plantsGPURef ? plantsGPURef.stats.draws : 0,
+      plantInstances: plantsGPURef ? plantsGPURef.stats.instances : 0,
+      plantVariants: plantsGPURef ? plantsGPURef.stats.variants : 0,
+      particleFields: particleFields.length,
+      particleCount: particleFields.reduce((sum, e) => sum + (e.field.count || 0), 0),
       ...frameProfiler.snapshot(),
     };
   },
@@ -2663,8 +2718,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   const PLANTS_MODE = new URLSearchParams(location.search).get('plants') || 'gpu';
   if (PLANTS_MODE === 'gpu') {
     const { createPlantPalette } = await import('./plants.js?v=field-fade-1');
-    const { plantPlacementRecords } = await import('./plants-placement.js?v=field-fade-1');
-    const { createPlantsGPU } = await import('./plants-gpu.js?v=field-fade-1');
+    const { plantPlacementRecords } = await import('./plants-placement.js?v=surface-density-3');
+    const { buildChunkIndex } = await import('./grass-anchors.js');
+    const { createPlantsGPU } = await import('./plants-gpu.js?v=surface-density-3');
     Object.assign(params, {
       // Radius/start mirror grass's much larger draw distance (grassRadius:344,
       // grassCullStart:228) instead of the old 45-unit bubble -- plants now fade out
@@ -2676,6 +2732,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       plantClusterStrength: 0.6, plantClusterScale: 40,
     });
     const plantPalette = createPlantPalette({ variantsPerSpecies: 4, masterSeed: MASTER_SEED });
+    const plantSurfacePositions = (loadedMap && mapCollider) ? mapCollider.geometry.attributes.position.array : null;
+    const plantSurfaceIndex = plantSurfacePositions
+      ? buildChunkIndex(plantSurfacePositions, { chunkSize: mapChunkSize(), minNormalY: 0.5 })
+      : null;
     const plantsGPU = createPlantsGPU({
       renderer, camera, palette: plantPalette, heightAt: terrainHeight,
       cullRadius: params.plantCullRadius, cullStart: params.plantCullStart, capPerVariant: 512,
@@ -2711,42 +2771,115 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       }
       return chunks;
     }
-    function regeneratePlantsGPU(rebuildExisting) {
-      // Windowing (not chunk order here) is what keeps the candidate pool small enough for
-      // plants-gpu.js's per-variant CAP; plants-gpu.js's rebuild() does its own true
-      // distance-to-camera sort across all pooled instances before allocating slots, so
-      // chunk registration order doesn't need to matter here.
-      const active = plantChunksForPlacement().slice();
-      const activeKeys = new Set(active.map(c => c.key));
-      let cleared = 0, added = 0;
-      for (const key of [...plantChunks]) {
-        if (!activeKeys.has(key)) { plantsGPU.clearChunk(key); plantChunks.delete(key); cleared++; }
+    const PLANT_BUILD_BUDGET_MS = 2.5;
+    const PLANT_BUILD_MAX_CHUNKS = 3;
+    let lastPlantWindowKey = '';
+    let plantDesiredKeys = new Set();
+    let plantBuildQueue = [];
+    const plantQueuedKeys = new Set();
+    let plantPendingClearKeys = [];
+
+    function plantWindowKey() {
+      const chunkSize = mapChunkSize();
+      const radiusChunks = Math.floor(params.plantRadiusChunks ?? 6);
+      let cx = Math.floor(terrainFocus.x / chunkSize);
+      let cz = Math.floor(terrainFocus.z / chunkSize);
+      if (loadedMap) {
+        const minIx = Math.floor((-loadedMap.worldX * 0.5) / chunkSize);
+        const maxIx = Math.ceil((loadedMap.worldX * 0.5) / chunkSize) - 1;
+        const minIz = Math.floor((-loadedMap.worldZ * 0.5) / chunkSize);
+        const maxIz = Math.ceil((loadedMap.worldZ * 0.5) / chunkSize) - 1;
+        cx = Math.max(minIx, Math.min(maxIx, cx));
+        cz = Math.max(minIz, Math.min(maxIz, cz));
       }
-      const pr = {
+      return `${cx},${cz}:${radiusChunks}:${chunkSize}`;
+    }
+
+    function plantParamsForRecords() {
+      return {
         masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
         plantDensity: params.plantDensity, plantSpeciesTable: plantPalette.speciesTags,
         clusterStrength: params.plantClusterStrength, clusterScale: params.plantClusterScale,
+        densityAt: loadedMap ? (x, z) => loadedMap.grassDensityAt(x, z) : null,
+        waterEnvelopeAt: loadedMap ? (x, z) => loadedMap.heightAt(x, z) : null,
+        surfaceIndex: plantSurfaceIndex, surfacePositions: plantSurfacePositions,
+        surfaceSeed: MASTER_SEED + 0x51ab77,
       };
-      for (const chunk of active) {
-        if (!rebuildExisting && plantChunks.has(chunk.key)) continue;
-        const recs = plantPlacementRecords([chunk], pr, terrainHeight, loadedMap?.biomeAt);
-        plantsGPU.setChunk(chunk.key, recs);
-        plantChunks.add(chunk.key);
-        added++;
-      }
-      // TEMP DEBUG (remove once the "stuck at origin" report is resolved)
-      console.log('[plants-debug] regen: terrainFocus=(%s,%s) windowChunks=%d cleared=%d added=%d totalTracked=%d stats=%o',
-        terrainFocus.x.toFixed(1), terrainFocus.z.toFixed(1), active.length, cleared, added, plantChunks.size, plantsGPU.stats);
     }
+
+    function enqueuePlantChunk(chunk) {
+      if (plantChunks.has(chunk.key) || plantQueuedKeys.has(chunk.key)) return;
+      plantBuildQueue.push(chunk);
+      plantQueuedKeys.add(chunk.key);
+    }
+
+    function syncPlantsToFocus(rebuildExisting = false) {
+      const key = plantWindowKey();
+      if (!rebuildExisting && key === lastPlantWindowKey) return;
+      lastPlantWindowKey = key;
+
+      const active = plantChunksForPlacement().slice();
+      plantDesiredKeys = new Set(active.map(c => c.key));
+
+      if (rebuildExisting) {
+        plantPendingClearKeys.push(...plantChunks);
+        plantChunks.clear();
+        plantBuildQueue = [];
+        plantQueuedKeys.clear();
+      } else {
+        for (const key of [...plantChunks]) {
+          if (!plantDesiredKeys.has(key)) {
+            plantPendingClearKeys.push(key);
+            plantChunks.delete(key);
+          }
+        }
+        if (plantBuildQueue.length) {
+          plantBuildQueue = plantBuildQueue.filter(chunk => {
+            const keep = plantDesiredKeys.has(chunk.key);
+            if (!keep) plantQueuedKeys.delete(chunk.key);
+            return keep;
+          });
+        }
+      }
+
+      for (const chunk of active) enqueuePlantChunk(chunk);
+    }
+
+    function processPlantBuildQueue(drain = false) {
+      if (!plantPendingClearKeys.length && !plantBuildQueue.length) return;
+      const batch = new Map();
+      const t0 = performance.now();
+      let built = 0;
+      while (plantBuildQueue.length) {
+        if (!drain && built >= PLANT_BUILD_MAX_CHUNKS) break;
+        if (!drain && built > 0 && performance.now() - t0 >= PLANT_BUILD_BUDGET_MS) break;
+        const chunk = plantBuildQueue.shift();
+        plantQueuedKeys.delete(chunk.key);
+        if (!plantDesiredKeys.has(chunk.key) || plantChunks.has(chunk.key)) continue;
+        batch.set(chunk.key, plantPlacementRecords([chunk], plantParamsForRecords(), terrainHeight, loadedMap?.biomeAt));
+        plantChunks.add(chunk.key);
+        built++;
+      }
+      if (plantPendingClearKeys.length || batch.size) {
+        const clearKeys = plantPendingClearKeys;
+        plantPendingClearKeys = [];
+        plantsGPU.setChunks(batch, clearKeys);
+      }
+    }
+
+    function regeneratePlantsGPU(rebuildExisting) {
+      syncPlantsToFocus(rebuildExisting);
+      processPlantBuildQueue(!!rebuildExisting);
+    }
+
+    const rawPlantsUpdate = plantsGPU.update;
+    plantsGPU.update = async () => {
+      syncPlantsToFocus(false);
+      processPlantBuildQueue(false);
+      return rawPlantsUpdate();
+    };
     regeneratePlantsGPU(true);
     regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
-    // TEMP DEBUG: periodic snapshot so we can see camera vs. terrainFocus vs. what's actually
-    // culled/rendered even between regen events (remove once resolved).
-    setInterval(() => {
-      console.log('[plants-debug] tick: camera=(%s,%s) terrainFocus=(%s,%s) stats=%o',
-        camera.position.x.toFixed(1), camera.position.z.toFixed(1),
-        terrainFocus.x.toFixed(1), terrainFocus.z.toFixed(1), plantsGPU.stats);
-    }, 2000);
     header('Plants');
     slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
     slider('plantCullRadius', 'Cull radius', 10, 300, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));

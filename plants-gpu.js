@@ -165,7 +165,7 @@ export function createPlantsGPU(opts) {
       if (slot >= CAP) continue;   // variant window full; drop extras (same policy as forest-gpu.js)
       countsArray[g] = slot + 1;
       const base = (g * CAP + slot) * 8;
-      srcArray[base] = r.x; srcArray[base + 1] = heightAt(r.x, r.z); srcArray[base + 2] = r.z; srcArray[base + 3] = r.scale;
+      srcArray[base] = r.x; srcArray[base + 1] = r.y ?? heightAt(r.x, r.z); srcArray[base + 2] = r.z; srcArray[base + 3] = r.scale;
       srcArray[base + 4] = r.yaw;
       total++;
     }
@@ -179,6 +179,12 @@ export function createPlantsGPU(opts) {
     meshes,
     setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
     clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
+    setChunks(batch, clearKeys = []) {
+      let changed = false;
+      for (const key of clearKeys) changed = chunkRecords.delete(key) || changed;
+      for (const [key, records] of batch) { chunkRecords.set(key, records); changed = true; }
+      if (changed) rebuild();
+    },
     setCullRadius(r) { if (uCullRadius.value !== r) { uCullRadius.value = r; dirty = true; } },
     setCullStart(r) { if (uCullStart.value !== r) { uCullStart.value = r; dirty = true; } },
     async update() {

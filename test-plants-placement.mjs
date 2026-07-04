@@ -1,5 +1,6 @@
 // test-plants-placement.mjs
 import { plantPlacementRecords } from './plants-placement.js';
+import { buildChunkIndex } from './grass-anchors.js';
 let fail = 0, pass = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
 
@@ -52,6 +53,45 @@ ok(
   JSON.stringify(clustered) === JSON.stringify(plantPlacementRecords(bigChunks, { ...params, clusterStrength: 1, clusterScale: 40 }, heightAt)),
   '6: clustering is deterministic for the same seed/params',
 );
+
+// authored density mask: zero mask rejects every otherwise-valid candidate
+const maskedOut = plantPlacementRecords(chunks, { ...params, densityAt: () => 0 }, heightAt);
+ok(maskedOut.length === 0, '7: densityAt zero mask rejects all candidates');
+const maskedFull = plantPlacementRecords(chunks, { ...params, densityAt: () => 1 }, heightAt);
+ok(maskedFull.length === a.length, '7: densityAt full mask preserves candidate count');
+
+// authored surface mode: sample real upward mesh triangles and preserve their y coordinate
+const quadPositions = new Float32Array([
+  0, 1, 0,  0, 1, 30,  30, 1, 0,
+  30, 1, 0,  0, 1, 30,  30, 1, 30,
+]);
+const surfaceIndex = buildChunkIndex(quadPositions, { chunkSize: 30, minNormalY: 0.5 });
+const surfaceRecs = plantPlacementRecords(chunks, {
+  ...params,
+  surfaceIndex,
+  surfacePositions: quadPositions,
+  surfaceSeed: 99,
+}, () => -100);
+ok(surfaceRecs.length > 0, '8: surface mode samples authored mesh anchors');
+ok(surfaceRecs.every(r => r.y === 1), '8: surface mode preserves authored surface y');
+ok(surfaceRecs.every(r => r.x >= 0 && r.x <= 30 && r.z >= 0 && r.z <= 30), '8: surface anchors stay inside chunk bounds');
+const surfaceWet = plantPlacementRecords(chunks, {
+  ...params,
+  waterLevel: 2,
+  surfaceIndex,
+  surfacePositions: quadPositions,
+  surfaceSeed: 99,
+}, () => -100);
+ok(surfaceWet.length === 0, '8: surface mode still rejects submerged authored surfaces');
+const surfaceCaveDry = plantPlacementRecords(chunks, {
+  ...params,
+  waterLevel: 2,
+  waterEnvelopeAt: () => 3,
+  surfaceIndex,
+  surfacePositions: quadPositions,
+  surfaceSeed: 99,
+}, () => -100);
+ok(surfaceCaveDry.length === surfaceRecs.length, '8: water envelope can keep below-water anchored cave surfaces dry');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

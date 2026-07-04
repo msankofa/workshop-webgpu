@@ -591,24 +591,36 @@ function addCircleSegments(points, center, radius, segments = 28) {
 }
 
 // ===================== support-polygon geometry (XZ) =====================
-function convexHull(pts, count = pts.length) {
-  if (count < 3) { const r = []; for (let i = 0; i < count; i++) r.push(pts[i]); return r; }
-  const p = []; for (let i = 0; i < count; i++) p.push(pts[i]); p.sort((a, b) => a.x - b.x || a.z - b.z);
-  const cr = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
-  const lo = [];
+// Support-polygon convex hull, pooled (creature-perf-analysis/plan.md 2.2): writes
+// the hull into the caller's reused `out` array instead of allocating p/lo/up and a
+// concat every call. `out` holds references to the same point objects passed in
+// (from _groundedBuf), valid only until the next convexHull call. Comparator and
+// cross-product are hoisted to module scope so they aren't re-created per call.
+const _hullSort = (a, b) => a.x - b.x || a.z - b.z;
+const _hullCross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+const _hullP = [], _hullLo = [], _hullUp = [];
+function convexHull(pts, count, out) {
+  out.length = 0;
+  if (count < 3) { for (let i = 0; i < count; i++) out.push(pts[i]); return out; }
+  const p = _hullP; p.length = 0;
+  for (let i = 0; i < count; i++) p.push(pts[i]);
+  p.sort(_hullSort);
+  const lo = _hullLo; lo.length = 0;
   for (const q of p) {
-    while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop();
+    while (lo.length >= 2 && _hullCross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop();
     lo.push(q);
   }
-  const up = [];
+  const up = _hullUp; up.length = 0;
   for (let i = p.length - 1; i >= 0; i--) {
     const q = p[i];
-    while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop();
+    while (up.length >= 2 && _hullCross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop();
     up.push(q);
   }
   lo.pop();
   up.pop();
-  return lo.concat(up);
+  for (let i = 0; i < lo.length; i++) out.push(lo[i]);
+  for (let i = 0; i < up.length; i++) out.push(up[i]);
+  return out;
 }
 
 function pointInPoly(px, pz, poly) {
@@ -765,7 +777,9 @@ const _clearEuler = new THREE.Euler(), _clearQ = new THREE.Quaternion(), _clearV
 const _legRestGround = new THREE.Vector3(), _legMoveDir = new THREE.Vector3(), _legLookAhead = new THREE.Vector3();
 const _armAxis = new THREE.Vector3(), _armPole = new THREE.Vector3(), _armPreferred = new THREE.Vector3();
 const _groundedBuf = Array.from({ length: 16 }, () => ({ x: 0, y: 0, z: 0 }));
+const _hullOut = [];
 const _nearbyScratch = [];
+const _trunkScratch = [];
 const _instMatrix = new THREE.Matrix4();
 const _instLocal = new THREE.Matrix4();
 const _instPos = new THREE.Vector3();
@@ -1505,7 +1519,13 @@ class Creature {
         uncomfortable: false,
         restX: 0,
         restY: 0,
-        restZ: 0
+        restZ: 0,
+        // Phase 1 perf caches (creature-perf-analysis/plan.md 1.4, 1.6):
+        _hipWorld: new THREE.Vector3(),       // reused localToWorld target (1.6)
+        _footQuat: new THREE.Quaternion(),    // cached foot orientation (1.4)
+        _normSampleX: Infinity,               // where _footQuat was last computed
+        _normSampleZ: Infinity,
+        _normYaw: 999
       };
     });
 
@@ -1551,9 +1571,40 @@ class Creature {
         bendStrength: spec.bendStrength,
         grabRadius: spec.grabRadius,
         interest: spec.interest,
-        reach: spec.segments.reduce((sum, s) => sum + s.length, 0)
+        reach: spec.segments.reduce((sum, s) => sum + s.length, 0),
+        // Phase 2 perf (creature-perf-analysis/plan.md 2.1): pooled scratch vectors
+        // for the per-frame arm IK/constraint pipeline, reused in place of .clone().
+        // Each is fully consumed before the next reuse within a single arm's render.
+        _shoulderWorld: new THREE.Vector3(),  // localToWorld(attachmentLocal), live for the whole arm render
+        _restWorld: new THREE.Vector3(),      // armRestTarget / carry localToWorld target
+        _localScratch: new THREE.Vector3(),   // constrainArmTarget worldToLocal temp
+        _pointScratch: new THREE.Vector3(),   // constrainArmPoint worldToLocal temp (per IK point)
+        _carryWorld: new THREE.Vector3()      // renderArms carry-target localToWorld
       };
     });
+
+    // --- Phase 1 perf caches (creature-perf-analysis/plan.md) ---
+    // 1.1: collision/melee radii and max arm reach are pure functions of
+    // construction-immutable data (leg.restLocal, arm.reach, plan.bodyScale — none
+    // mutate at runtime), so compute once instead of on every pairwise separation /
+    // collision check. The methods below become thin accessors.
+    let _legReach = 0;
+    for (const leg of this.legs) _legReach = Math.max(_legReach, Math.hypot(leg.restLocal.x, leg.restLocal.z));
+    this._collisionRadius = Math.max(this.plan.bodyScale.x * 1.05, this.plan.bodyScale.z * 0.92, _legReach * 0.42) + BODY_COLLISION_PAD;
+    let _armReach = 0;
+    for (const arm of this.arms) _armReach = Math.max(_armReach, arm.reach);
+    this._maxArmReach = _armReach;
+    this._meleeRadius = Math.max(this.plan.bodyScale.x * 0.86, this.plan.bodyScale.z * 0.76) + BODY_VOLUME_CLEAR;
+    // 1.3: leg row/side topology is fixed at construction, so precompute partner
+    // lists here rather than re-deriving them (with fresh Sets/arrays) per leg per
+    // fixed step inside scheduleSteps.
+    for (const leg of this.legs) {
+      leg.adjacentPartnersCached = this.adjacentPartners(leg);
+      leg.diagonalPartnersCached = this.diagonalPartners(leg);
+      leg.rowMateCached = this.legBy(leg.row, -leg.side);
+      leg.crossRowsCached = this.legs.filter(l => Math.abs(l.row - leg.row) === 1);
+    }
+
     this.pos = spawn.clone();
     this.vel = new THREE.Vector3();
     this.yaw = yaw;
@@ -1841,25 +1892,21 @@ class Creature {
     return !leg.stepping && leg.targetGrounded;
   }
 
+  // Cached at construction (see constructor Phase 1 block): pure functions of
+  // immutable leg/arm/bodyScale data, hoisted out of the separation/collision loops.
   collisionRadius() {
-    let legReach = 0;
-    for (const leg of this.legs) {
-      legReach = Math.max(legReach, Math.hypot(leg.restLocal.x, leg.restLocal.z));
-    }
-    return Math.max(this.plan.bodyScale.x * 1.05, this.plan.bodyScale.z * 0.92, legReach * 0.42) + BODY_COLLISION_PAD;
+    return this._collisionRadius;
   }
 
   maxArmReach() {
-    let reach = 0;
-    for (const arm of this.arms) reach = Math.max(reach, arm.reach);
-    return reach;
+    return this._maxArmReach;
   }
 
   // Tight radius used only between active combat opponents so they can close to
   // body-contact distance (where arms can actually reach) instead of being held
   // apart by the full padded collisionRadius().
   meleeRadius() {
-    return Math.max(this.plan.bodyScale.x * 0.86, this.plan.bodyScale.z * 0.76) + BODY_VOLUME_CLEAR;
+    return this._meleeRadius;
   }
 
   isMeleeOpponent(other) {
@@ -2331,7 +2378,7 @@ class Creature {
     // falloff + close-range boost), folded into the separation term. The hard push-out
     // in physicsStep stays as a backstop so they never actually clip a trunk.
     if (nearbyTrunks) {
-      const trunks = nearbyTrunks(this.pos.x, this.pos.z);
+      const trunks = nearbyTrunks(this.pos.x, this.pos.z, _trunkScratch);
       for (const t of trunks) {
         _away.set(this.pos.x - t.x, 0, this.pos.z - t.z);
         const d = _away.length();
@@ -2400,11 +2447,11 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     if (!leg.wants || leg.stepping) return false;
     if (!leg.targetGrounded) return true;
 
-    const adjacent = this.adjacentPartners(leg);
+    const adjacent = leg.adjacentPartnersCached;
     if (adjacent.some(l => l.targetGrounded && !this.isGrounded(l))) return false;
     if (adjacent.some(l => l.targetGrounded && l.timeSinceStopMove < gait.crossPairCooldown)) return false;
 
-    const diagonals = this.diagonalPartners(leg);
+    const diagonals = leg.diagonalPartnersCached;
     if (diagonals.some(l => l.targetGrounded && l.timeSinceBeginMove < gait.samePairCooldown)) return false;
 
     const grounded = this.legs.some(l => this.isGrounded(l));
@@ -2417,13 +2464,13 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     if (!leg.targetGrounded) return true;
     if (!this.legs.some(l => this.isGrounded(l))) return false;
 
-    const rowMate = this.legBy(leg.row, -leg.side);
+    const rowMate = leg.rowMateCached;
     leg.primary = leg.phase === 0 || !rowMate || !rowMate.targetGrounded;
     if (!leg.primary) {
       return rowMate?.stepping && rowMate.timeSinceBeginMove >= gait.samePairCooldown;
     }
 
-    const crossRows = this.legs.filter(l => Math.abs(l.row - leg.row) === 1);
+    const crossRows = leg.crossRowsCached;
     if (crossRows.some(l => l.targetGrounded && l.timeSinceBeginMove < gait.crossPairCooldown)) return false;
     return true;
   }
@@ -2608,7 +2655,8 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     }
     const fG = groundedCount / this.legs.length;
     let nx = 0, ny = 1, nz = 0, haveNormal = groundedCount > 0;
-    let poly = [];
+    // Reuse the pooled hull buffer; empty unless groundedCount >= 2 fills it below.
+    let poly = _hullOut; poly.length = 0;
 
     if (groundedCount === 1) {
       const g = firstGroundedEnd;
@@ -2616,7 +2664,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       ny = comY - g.y;
       nz = _com.z - g.z;
     } else if (groundedCount >= 2) {
-      poly = convexHull(_groundedBuf, groundedCount);
+      poly = convexHull(_groundedBuf, groundedCount, _hullOut);
       polyY /= groundedCount;
       if (poly.length >= 3 && pointInPoly(_com.x, _com.z, poly)) {
         nx = 0;
@@ -2748,7 +2796,9 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
   }
 
   armRestTarget(arm) {
-    const target = this.group.localToWorld(arm.restLocal.clone());
+    // Returns the arm's pooled _restWorld buffer; every caller consumes it
+    // immediately (.copy / lerpVectors source) or overwrites it before reading.
+    const target = this.group.localToWorld(arm._restWorld.copy(arm.restLocal));
     target.y = Math.max(target.y, terrainHeight(target.x, target.z) + OBJECT_RADIUS * 0.55);
     return target;
   }
@@ -2784,7 +2834,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
 
   constrainArmTarget(arm, target) {
     target.y = Math.max(target.y, terrainHeight(target.x, target.z) + OBJECT_RADIUS * 0.48);
-    const local = this.group.worldToLocal(target.clone());
+    const local = this.group.worldToLocal(arm._localScratch.copy(target));
     const bodyX = this.plan.bodyScale.x * 0.88;
     const bodyZ = this.plan.bodyScale.z * 0.78;
     const bodyTop = this.plan.bodyScale.y * 0.48;
@@ -2799,7 +2849,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
 
   constrainArmPoint(arm, point) {
     point.y = Math.max(point.y, terrainHeight(point.x, point.z) + 0.08);
-    const local = this.group.worldToLocal(point.clone());
+    const local = this.group.worldToLocal(arm._pointScratch.copy(point));
     const bodyX = this.plan.bodyScale.x * 0.92;
     const bodyZ = this.plan.bodyScale.z * 0.82;
     const bodyTop = this.plan.bodyScale.y * 0.54;
@@ -2901,7 +2951,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
         this.setArmState(arm, 'idle');
         arm.desiredTarget.copy(this.armRestTarget(arm));
       } else {
-        arm.desiredTarget.copy(this.group.localToWorld(arm.carryLocal.clone()));
+        arm.desiredTarget.copy(this.group.localToWorld(arm._restWorld.copy(arm.carryLocal)));
       }
     } else {
       this.setArmState(arm, 'idle');
@@ -2934,7 +2984,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
   renderArms(orientation, dt = 1 / 60) {
     for (const arm of this.arms) {
       arm.prevHand.copy(arm.hand.position);
-      const shoulderWorld = this.group.localToWorld(arm.attachmentLocal.clone());
+      const shoulderWorld = this.group.localToWorld(arm._shoulderWorld.copy(arm.attachmentLocal));
       const desired = this.updateArmState(arm, shoulderWorld, dt);
       if (arm.aim.lengthSq() < 1e-8) arm.aim.copy(desired);
       const snapState = arm.state === 'reach' || arm.state === 'grab'
@@ -2974,7 +3024,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       }
 
       if (arm.holding) {
-        const carryTarget = this.group.localToWorld(arm.carryLocal.clone());
+        const carryTarget = this.group.localToWorld(arm._carryWorld.copy(arm.carryLocal));
         const carryDistance = handPoint.distanceTo(carryTarget);
         const closeEnough = carryDistance <= Math.max(0.34, arm.grabRadius * 2.2);
         const settledLongEnough = arm.state === 'carry' && arm.stateTime > 0.55;
@@ -3084,7 +3134,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
 
     if (animateParts && this.lodTier < LOD_BODY_ONLY_TIER) {
       for (const leg of this.legs) {
-        const hipWorld = this.group.localToWorld(leg.attachmentLocal.clone());
+        const hipWorld = this.group.localToWorld(leg._hipWorld.copy(leg.attachmentLocal));
         const points = leg.chain.solve(hipWorld, leg.end, orientation);
 
         for (let i = 0; i < leg.segments.length; i++) {
@@ -3095,9 +3145,19 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
         }
 
         leg.foot.position.copy(leg.end);
-        terrainNormal(leg.end.x, leg.end.z, _n);
-        orientFromUpForward(_n, _fwd, _q);
-        leg.foot.quaternion.copy(_q);
+        // A planted, stationary foot's ground normal cannot change, so only recompute
+        // the foot orientation (4 terrainHeight samples via terrainNormal) when the
+        // foot moved or the creature turned since the last sample. (1.4)
+        const dnx = leg.end.x - leg._normSampleX, dnz = leg.end.z - leg._normSampleZ;
+        if (dnx * dnx + dnz * dnz > 1e-4 || Math.abs(this.yaw - leg._normYaw) > 0.01) {
+          terrainNormal(leg.end.x, leg.end.z, _n);
+          orientFromUpForward(_n, _fwd, _q);
+          leg._footQuat.copy(_q);
+          leg._normSampleX = leg.end.x;
+          leg._normSampleZ = leg.end.z;
+          leg._normYaw = this.yaw;
+        }
+        leg.foot.quaternion.copy(leg._footQuat);
       }
     }
 
@@ -4245,6 +4305,10 @@ function resolveCreatureCollisions(list) {
       a.pos.z -= nz * push;
       b.pos.x += nx * push;
       b.pos.z += nz * push;
+      // Only creatures actually shoved by a collision need the second body-terrain
+      // clearance pass below; flag them so the rest skip it. (1.2)
+      a._collisionMoved = true;
+      b._collisionMoved = true;
 
       const rvx = b.vel.x - a.vel.x;
       const rvz = b.vel.z - a.vel.z;
@@ -4778,9 +4842,13 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     for (const c of creatures) if (c.lodVisible && c.lodShouldSim) _activeCreatures.push(c);
     let steps = 0;
     while (acc >= FIXED && steps < 5) {
-      for (const c of creatures) if (c.lodShouldSim) c.physicsStep(FIXED, sceneMode === 'varied' ? c.gait : currentGait(), debug && c.lodDebugActive);
+      // physicsStep already runs applyBodyTerrainClearance once per creature (incl.
+      // re-clearing after trunk push-out). The second pass below is only needed for
+      // creatures moved by resolveCreatureCollisions, so clear the dirty flag here,
+      // let collision resolution set it, and skip clearance for everyone else. (1.2)
+      for (const c of creatures) if (c.lodShouldSim) { c._collisionMoved = false; c.physicsStep(FIXED, sceneMode === 'varied' ? c.gait : currentGait(), debug && c.lodDebugActive); }
       resolveCreatureCollisions(_activeCreatures);
-      for (const c of creatures) if (c.lodShouldSim) c.applyBodyTerrainClearance();
+      for (const c of creatures) if (c.lodShouldSim && c._collisionMoved) c.applyBodyTerrainClearance();
       acc -= FIXED;
       steps++;
     }

@@ -66,7 +66,7 @@ collision meshes (BVH-accelerated).
 - `export function groundContact({ x, z, bottomY, slopeLimitY = 0.5, heightAt, normalAt })` → `{ groundY, penetration, grounded, normal, restBottomY }`.
 - `export function slideVelocity(v, n)` → new `{x,y,z}`.
 - `export function resolveTrunks(px, pz, radius, trunks, iterations = 4)` → `{ x, z, pushed }`.
-- `export function createTrunkIndex(chunkSize)` → `{ setTrunks(key, trunks), clearTrunks(key), nearby(px, pz), resolve(px, pz, radius) }`.
+- `export function createTrunkIndex(chunkSize)` → `{ setTrunks(key, trunks), clearTrunks(key), nearby(px, pz, out?), resolve(px, pz, radius) }`. `nearby` takes an optional reusable `out` array (cleared and filled in place) to avoid a per-call allocation; omitting it preserves the old fresh-array return. The creature steering path (`nearbyTrunks`) passes a shared scratch buffer.
 
 `map-collision.js`
 - `export function createMapCollider(root, { maxTriangles = 250000 } = {})` → `{ geometry, triangleCount, resolveCapsule(capsule, velocity, { slopeLimitY, iterations }), raycastDown(origin, maxDistance), dispose() }`. Throws if the authored map exceeds `maxTriangles` or has zero collision triangles.
@@ -88,7 +88,8 @@ Inter-file dependencies:
 - `cdlod-terrain.js` imports `selectNodes` from `cdlod-select.js` — used only for the CPU-side HUD survivor-count mirror (`survivorCount()`); the actual per-frame node selection is a TSL transcription of the same math run on the GPU via `renderer.computeAsync([reset, select, finalize])`.
 - `terrain-loader.js` imports `applyTerrainTextures` from `terrain-textures.js` to splat ground materials onto an authored map's meshes after the GLTF + JSON sidecar load.
 - `map-collision.js` is independent of `terrain-field.js`/`terrain-system.js` — it builds its BVH straight from whatever mesh root is passed in (the loaded map's `root`), used only when an authored map (not the procedural chunked/CDLOD ground) is active.
-- `collision.js` is independent of Three.js and of `terrain-system.js`; the host wires it to the procedural ground by passing `terrainSystem.getHeight`/`terrainNormalAt` (or, for authored maps, `terrainHeight`/`terrainNormal` functions backed by `mapCollider.raycastDown`) as its `heightAt`/`normalAt` callbacks.
+- `collision.js` is independent of Three.js and of `terrain-system.js`; the host wires it to the procedural ground by passing `terrainSystem.getHeight`/`terrainNormalAt` (or, for authored maps, `terrainHeight`/`terrainNormal` functions) as its `heightAt`/`normalAt` callbacks.
+- On authored maps, the `terrainHeight(x,z)` closure in `environment-viewer.html` first bilinear-samples a **CPU heightfield** (`cpuHeightField` / `sampleHeightField`) baked from the collider, falling back to `mapCollider.raycastDown` (then `loadedMap.heightAt`) outside the baked bounds. The heightfield aliases the same `Float32Array` the grass `bakeHeightTexture` already produces at load (no extra bake, no extra memory); it is installed only after that bake, so the bake itself still fills via raycast. This turns the dominant per-call BVH raycast in creature terrain sampling into an array read (creature-perf-analysis/plan.md 3.1). A one-time load-time check samples the bilinear-vs-raycast height error: it warns automatically if max error exceeds 0.5u, and logs full detail under `?heightfieldCheck` (silent otherwise). Measured ~0.07u max on a 1200² (1u/cell) map.
 - `cdlod-terrain.js`'s analytic TSL height function (`heightFn`) is a hand-transcribed copy of `terrainHeightAt` in `terrain-field.js`, not a shared import (TSL nodes can't directly call the JS function) — parity is verified by `test-grass-height-tsl.mjs` via the separate `grass-height-ref.js` port and `test-cdlod-morph.mjs`.
 
 ## Architecture notes

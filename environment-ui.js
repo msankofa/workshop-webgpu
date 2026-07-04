@@ -4,10 +4,74 @@ const PERF_ROWS = [
   ['water', 'Water', 'passWaterMs'],
   ['grassGpu', 'Grass GPU', 'passGrassMs'],
   ['forestGpu', 'Forest GPU', 'passForestMs'],
+  ['plantsGpu', 'Plants GPU', 'passPlantsMs'],
   ['cdlodGpu', 'CDLOD GPU', 'passCdlodMs'],
   ['lightsGpu', 'Lights GPU', 'passLightsMs'],
   ['particlesGpu', 'Particles GPU', 'passParticlesMs'],
   ['postRender', 'Render submit', 'passPostMs'],
+];
+
+const RENDER_DRIVER_ROWS = [
+  {
+    id: 'draws', label: 'Draw calls', max: 500,
+    value: s => fmtCompact(s.renderFrameCalls ?? s.renderDrawCalls ?? 0, 1),
+    load: s => Number(s.renderFrameCalls ?? s.renderDrawCalls ?? 0) || 0,
+    title: 'Renderer draw calls for the latest frame. This includes shadow and render passes reported by three.'
+  },
+  {
+    id: 'triangles', label: 'Triangles', max: 10_000_000,
+    value: s => fmtCompact(s.triangles ?? 0, 1),
+    load: s => Number(s.triangles ?? 0) || 0,
+    title: 'Triangles submitted in the latest renderer frame.'
+  },
+  {
+    id: 'compute', label: 'Compute dispatches', max: 80,
+    value: s => fmtCompact(s.computeFrameCalls ?? 0, 1),
+    load: s => Number(s.computeFrameCalls ?? 0) || 0,
+    title: 'GPU compute dispatches reported for the frame. These can still affect the render-submit wait path.'
+  },
+  {
+    id: 'terrain', label: 'Terrain', max: 80,
+    value: s => `${fmtCompact(s.terrainDraws ?? 0, 1)} draws · ${s.terrainTris == null ? '--' : fmtCompact(s.terrainTris, 1)} tris`,
+    load: s => Number(s.terrainDraws ?? 0) || 0,
+    title: 'Terrain draw contribution. CDLOD is expected to stay near one draw.'
+  },
+  {
+    id: 'water', label: 'Water surface', max: 12,
+    value: s => `${fmtCompact(s.waterDraws ?? 0, 1)} draws · ${fmtCompact(s.waterTriangles ?? 0, 1)} tris`,
+    load: s => Number(s.waterDraws ?? 0) || 0,
+    title: 'Main water surface contribution. Reflection and caustics are timed in the Water stage, not Render submit.'
+  },
+  {
+    id: 'forest', label: 'Forest', max: 160,
+    value: s => `${fmtCompact(s.forestDraws ?? 0, 1)} draws · ${fmtCompact(s.forestInstances ?? 0, 1)} inst`,
+    load: s => Number(s.forestDraws ?? 0) || 0,
+    title: 'Forest instanced draw meshes submitted by the main render.'
+  },
+  {
+    id: 'plants', label: 'Plants', max: 40,
+    value: s => `${fmtCompact(s.plantDraws ?? 0, 1)} draws · ${fmtCompact(s.plantInstances ?? 0, 1)} inst`,
+    load: s => Number(s.plantDraws ?? 0) || 0,
+    title: 'Understory plant instanced draw meshes submitted by the main render.'
+  },
+  {
+    id: 'particles', label: 'Particles', max: 12,
+    value: s => `${fmtCompact(s.particleFields ?? 0, 1)} fields · ${fmtCompact(s.particleCount ?? 0, 1)} cap`,
+    load: s => Number(s.particleFields ?? 0) || 0,
+    title: 'Particle field draw meshes in the scene; each field has its own GPU simulation and draw.'
+  },
+  {
+    id: 'creatureInstances', label: 'Creature instances', max: 20000,
+    value: s => fmtCompact((s.creatureInstancedBoxes ?? 0) + (s.creatureInstancedLimbs ?? 0) + (s.creatureInstancedJoints ?? 0) + (s.creatureInstancedHandsFeet ?? 0) + (s.creatureInstancedShadows ?? 0), 1),
+    load: s => (Number(s.creatureInstancedBoxes ?? 0) || 0) + (Number(s.creatureInstancedLimbs ?? 0) || 0) + (Number(s.creatureInstancedJoints ?? 0) || 0) + (Number(s.creatureInstancedHandsFeet ?? 0) || 0) + (Number(s.creatureInstancedShadows ?? 0) || 0),
+    title: 'Instanced creature parts submitted through the shared creature batches.'
+  },
+  {
+    id: 'shadows', label: 'Creature shadow casters', max: 200,
+    value: s => fmtCompact(s.creatureShadows ?? 0, 1),
+    load: s => Number(s.creatureShadows ?? 0) || 0,
+    title: 'Creatures still close enough to cast shadows. Shadow casters can increase renderer work before the main pass.'
+  },
 ];
 
 function fmtNumber(value, digits = 0) {
@@ -620,6 +684,20 @@ function buildPerfPanel(host, perfLog) {
   }
   stages.appendChild(stagesBody);
 
+  const drivers = makeEl('div', 'wui-card');
+  drivers.appendChild(makeEl('div', 'wui-card-title', 'Render drivers (not ms)'));
+  const driversBody = makeEl('div', 'wui-card-body');
+  const driverRows = new Map();
+  for (const def of RENDER_DRIVER_ROWS) {
+    const row = makeEl('div', 'wui-row');
+    row.innerHTML = '<span></span><strong>--</strong><div class="wui-bar"><span></span></div>';
+    row.querySelector('span').textContent = def.label;
+    if (def.title) row.title = def.title;
+    driversBody.appendChild(row);
+    driverRows.set(def.id, row);
+  }
+  drivers.appendChild(driversBody);
+
   const capture = makeEl('div', 'wui-card');
   capture.appendChild(makeEl('div', 'wui-card-title', 'Capture'));
   const captureBody = makeEl('div', 'wui-card-body wui-capture');
@@ -638,7 +716,7 @@ function buildPerfPanel(host, perfLog) {
   else rawBody.appendChild(makeEl('div', 'wui-empty', 'Debug stream unavailable.'));
   raw.appendChild(rawBody);
 
-  host.append(overview, resources, stages, capture, raw);
+  host.append(overview, resources, stages, drivers, capture, raw);
 
   const frameSamples = [];
   function refreshCapture() {
@@ -703,6 +781,19 @@ function buildPerfPanel(host, perfLog) {
       const row = makeEl('div', 'wui-row');
       row.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
       resourcesBody.appendChild(row);
+    }
+
+    for (const def of RENDER_DRIVER_ROWS) {
+      const row = driverRows.get(def.id);
+      const value = def.value(snapshot);
+      const load = Math.max(0, Number(def.load(snapshot)) || 0);
+      const pct = Math.min(100, (load / Math.max(1, def.max)) * 100);
+      row.querySelector('strong').textContent = value;
+      const bar = row.querySelector('.wui-bar');
+      bar.classList.remove('warn', 'bad');
+      if (load > def.max * 1.5) bar.classList.add('bad');
+      else if (load > def.max) bar.classList.add('warn');
+      row.querySelector('.wui-bar span').style.width = pct + '%';
     }
 
     for (const [id, , key] of PERF_ROWS) {

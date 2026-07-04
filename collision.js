@@ -90,7 +90,9 @@ export function createTrunkIndex(chunkSize) {
     setTrunks(key, trunks) { if (trunks && trunks.length) buckets.set(key, trunks); else buckets.delete(key); },
     clearTrunks(key) { buckets.delete(key); },
     // Trunks in the point's chunk + 8 neighbours, for proactive steering avoidance.
-    nearby(px, pz) { return gather(px, pz, []); },
+    // Pass a reusable `out` array to avoid a per-call allocation (default keeps the
+    // old allocating behaviour for callers that don't).
+    nearby(px, pz, out = []) { out.length = 0; return gather(px, pz, out); },
     // Hard lateral push-out backstop (player + creatures) so nothing clips a trunk.
     resolve(px, pz, radius) {
       const near = gather(px, pz, []);
