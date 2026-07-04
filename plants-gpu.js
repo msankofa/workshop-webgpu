@@ -8,13 +8,33 @@ import {
   IndirectStorageBufferAttribute,
 } from 'three/webgpu';
 import {
-  Fn, If, instanceIndex, storage, uniform, int, uint,
-  vec3, cos, sin, modInt, positionLocal, normalLocal,
+  Fn, If, instanceIndex, storage, uniform, int, uint, float, vec2,
+  vec3, cos, sin, modInt, positionLocal, normalLocal, clamp, length, floor, bitcast,
   atomicAdd, atomicStore, atomicLoad,
 } from 'three/tsl';
 
+// reinterpret an i32 node's bits as u32 (same trick grass-compute.js uses) so negative
+// quantized coordinates hash like Math.imul/>>> in JS instead of throwing/wrapping oddly.
+const asU = (iNode) => bitcast(iNode, 'uint');
+
+// per-(worldX,worldZ,salt) pseudo-random in [0,1), keyed by quantized *position* rather
+// than buffer slot index -- unlike grass's anchor/slot-index hashes, this stays stable
+// across rebuild() calls even though rebuild() re-sorts and reassigns buffer slots every
+// time (see rebuild()'s distance sort below), since a given plant's own world position
+// never changes when its slot does.
+const posRandFn = Fn(([x, z, salt]) => {
+  const ix = asU(int(floor(x.mul(8.0))));
+  const iz = asU(int(floor(z.mul(8.0))));
+  let h = ix.mul(uint(1597334677)).bitXor(iz.mul(uint(3812015801)));
+  h = h.bitXor(h.shiftRight(uint(15))).mul(uint(2246822519));
+  h = h.bitXor(asU(salt).mul(uint(2654435761)));
+  h = h.bitXor(h.shiftRight(uint(13))).mul(uint(3266489917));
+  h = h.bitXor(h.shiftRight(uint(16)));
+  return h.toFloat().div(4294967296.0);
+});
+
 // opts: { renderer, camera, palette (from plants.js's createPlantPalette), heightAt,
-//         capPerVariant, cullRadius }
+//         capPerVariant, cullRadius, cullStart }
 export function createPlantsGPU(opts) {
   const { renderer, camera, palette } = opts;
   const heightAt = opts.heightAt || (() => 0);
@@ -38,6 +58,12 @@ export function createPlantsGPU(opts) {
 
   const uCam = uniform(new THREE.Vector2());
   const uCullRadius = uniform(opts.cullRadius ?? 45);
+  // Edge fade band: from cullStart to cullRadius, survival is a stochastic (dithered)
+  // thin-out rather than a hard on/off cutoff -- same technique grass-compute.js uses
+  // (see its anchorCull/proceduralCull kernels' `keepRand.greaterThan(edge)` gate), so
+  // plants stop popping in/out at a fixed ring the way trees/plants used to and instead
+  // thin out gradually, matching how grass approaches its own draw distance.
+  const uCullStart = uniform(opts.cullStart ?? (opts.cullRadius ?? 45) * 0.7);
 
   const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V);
 
@@ -49,10 +75,12 @@ export function createPlantsGPU(opts) {
     If(localSlot.lessThan(int(srcCounts.element(g))), () => {
       const rec0 = src.element(idx.mul(uint(2)));
       const rec1 = src.element(idx.mul(uint(2)).add(uint(1)));
-      const dx = rec0.x.sub(uCam.x);
-      const dz = rec0.z.sub(uCam.y);
-      const dist2 = dx.mul(dx).add(dz.mul(dz));
-      If(dist2.lessThanEqual(uCullRadius.mul(uCullRadius)), () => {
+      const dist = length(vec2(rec0.x.sub(uCam.x), rec0.z.sub(uCam.y)));
+      const gradRange = uCullRadius.sub(uCullStart).max(float(0.001));
+      const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
+      const keepRand = posRandFn(rec0.x, rec0.z, int(7));
+      const live = dist.lessThan(uCullRadius).and(keepRand.greaterThan(edge));
+      If(live, () => {
         const s = atomicAdd(survAtomics.element(uint(g)), uint(1));
         const outBase = uint(g).mul(uint(CAP)).add(s).mul(uint(2));
         draw.element(outBase).assign(rec0);
@@ -152,6 +180,7 @@ export function createPlantsGPU(opts) {
     setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
     clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
     setCullRadius(r) { if (uCullRadius.value !== r) { uCullRadius.value = r; dirty = true; } },
+    setCullStart(r) { if (uCullStart.value !== r) { uCullStart.value = r; dirty = true; } },
     async update() {
       const camX = camera.position.x, camZ = camera.position.z;
       if (!dirty && camX === lastCamX && camZ === lastCamZ) return;

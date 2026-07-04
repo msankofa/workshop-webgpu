@@ -287,13 +287,40 @@ generator parameterized by petal length/width/curl/count, not 4 bespoke algorith
 `createPlantPalette({variantsPerSpecies, masterSeed})` bakes a fixed set of variant geometries once
 at startup, mirroring `forest-palette.js`'s role but with no separate color-bake step (the generator
 already writes final colors). `plantPlacementRecords(chunks, params, heightAt, biomeAt)` mirrors
-`forest-placement.js`'s shape (reuses its `rngFrom`/`hash2`); each preset carries a `PLANT_BIOME_TAGS`
-allowlist (`cleavers` has an empty allowlist, i.e. it's a biome generalist that places everywhere;
-unlike forest's placement, a chunk position with no matching species is simply skipped rather than
-falling back to "any species"). `createPlantsGPU(opts)` mirrors `forest-gpu.js`'s
+`forest-placement.js`'s shape (reuses its `rngFrom`/`hash2`/`valueNoise`); each preset carries a
+`PLANT_BIOME_TAGS` allowlist (`cleavers` has an empty allowlist, i.e. it's a biome generalist that
+places everywhere; unlike forest's placement, a chunk position with no matching species is simply
+skipped rather than falling back to "any species"). An optional `clusterStrength`/`clusterScale`
+param pair (default 0 = old flat-uniform behavior) biases each candidate's acceptance by a smooth
+`valueNoise` field so plants clump into patches instead of scattering evenly — the same acceptance
+check is the intended extension point for future non-biome terrain masks (water/mountain/snow density
+fields), not just clustering. `createPlantsGPU(opts)` mirrors `forest-gpu.js`'s
 reset→cull→finalize→indirect-draw compute spine but with a single distance-cull band (no LOD levels)
-and one mesh per variant (`stats.draws = V`, not `V * 8`). Wired in `environment-viewer.html` behind
-`?plants=gpu` (default on); density/cull-radius sliders live in the "Plants" panel.
+and one mesh per variant (`stats.draws = V`, not `V * 8`); survival between `cullStart` and
+`cullRadius` is a stochastic per-instance dither (`keepRand.greaterThan(edge)`, same technique as
+`grass-compute.js`'s anchor/procedural cull kernels) keyed by a position-based hash (`posRandFn`, not
+buffer-slot index) so the fade pattern stays stable even though `rebuild()` re-sorts and reassigns
+buffer slots every call — plants thin out gradually approaching `cullRadius` instead of popping at a
+fixed ring. Wired in `environment-viewer.html` behind `?plants=gpu` (default on); density/cull-radius/
+cull-start/clustering sliders live in the "Plants" panel.
+
+Plants use their own grass-style windowed chunk set around the player (`plantChunksForPlacement()`,
+sized by `plantRadiusChunks`, refreshed as they move) on **both** terrain modes — not
+`forestChunksForPlacement()`'s whole-map `makeAllChunks()` on authored maps (trees tolerate that eager
+approach via a much larger `capPerVariant`, 2048 vs. plants' 512, but for plants it used to mean the
+per-species CAP got consumed by far-away chunks in an arbitrary scan order before the player ever got
+near them), and, on infinite/procedural terrain, not `activeTerrainChunks()` either — that window is
+sized by the terrain system's own render-distance slider (`terrain.renderRadius`, defaults to 2, i.e.
+~60-75 world units), which is much smaller than a useful plant draw distance; reusing it would mean
+the edge-fade band never engages and plants would just pop at that smaller window's hard square edge
+instead. `plantChunksForPlacement()` builds an independent NxN chunk window on both modes (delegating
+to `loadedMap.makeChunks()` when a map is loaded, otherwise building the same shape of window directly
+around `terrainFocus`), decoupling plant draw distance from ground draw distance entirely.
+`plants-gpu.js`'s `rebuild()` also sorts every pooled instance by true distance to the camera before
+allocating each variant's CAP slots (not just relying on chunk window membership), since
+`chunkRecords` is a `Map` and `Map.set()` on an existing key doesn't reorder it — without the
+in-`rebuild()` sort, newly-entered (nearest) chunks would be appended last in iteration order and get
+the *worst* CAP priority, which defeated an earlier attempt at chunk-level distance sorting.
 
 **Standalone tuning tool.** `plants.js`'s data model is fully parameterized specifically so a
 standalone tool could expose it — see `plant-viewer.html` under "Standalone tooling" below.
@@ -347,7 +374,7 @@ rebakes placement) and `plantCullRadius` (10-150, live-applied via `setCullRadiu
 | `test-grass-textures.mjs` | `grass-textures.js` (`FIBER_STYLES`, `STYLE_KEYS`, `clamp01`) | Exactly 5 styles in the approved order; every style's `fiber()` stays finite and within `[0.35, 1.45]` across the UV domain; `dryTip.tint()` is exactly 0 at the blade base and nonzero near the tip (its one monotonic-in-v style); `highContrast.tint()` (speckle-based, not monotonic) stays within `[0,1]`; styles without a `tint()` omit it rather than defining a zero function. |
 | `test-plants-defaults.mjs` | `plants.js` (`PLANT_DEFAULTS`, `PLANT_PRESETS`, `PLANT_BIOME_TAGS`, `createPlantPalette`) | Default schema values (simple/opposite/smooth/no-variegation); all 4 presets exist with their species-defining traits (cleavers compound+whorled, mint serrated, jewelweed alternate, chickweed/jewelweed flower shapes); `cleavers`' empty biome allowlist; `createPlantPalette` bakes `speciesCount * variantsPerSpecies` geometries, each species tagged, variants of the same species differing by seed. |
 | `test-plants-geometry.mjs` | `plants.js` (`buildPlantGeometry`) | Non-empty, all-triangle, sequentially-indexed geometry (position/normal/color attributes) for all 4 presets with and without flowers, for 3 schema-only edge cases the presets don't exercise (even-pinnate compound leaf, variegated leaf, star-shaped leaf), and that the same seed reproduces identical geometry; enabling flowers strictly adds geometry. |
-| `test-plants-placement.mjs` | `plants-placement.js` (`plantPlacementRecords`) | Places plants within chunk bounds with valid `speciesIdx`/`scale`/`yaw`; deterministic for a fixed seed; rejects submerged ground; in an all-desert biome only the biome-generalist species (empty allowlist) is ever picked; in an all-plains biome the swamp-only species never places while the plains-tagged one does. |
+| `test-plants-placement.mjs` | `plants-placement.js` (`plantPlacementRecords`) | Places plants within chunk bounds with valid `speciesIdx`/`scale`/`yaw`; deterministic for a fixed seed; rejects submerged ground; in an all-desert biome only the biome-generalist species (empty allowlist) is ever picked; in an all-plains biome the swamp-only species never places while the plains-tagged one does; `clusterStrength: 0` matches the omitted-param baseline exactly (byte-identical output, no behavior change for existing callers); `clusterStrength: 1` rejects some baseline-kept candidates but still places plants, deterministically. |
 
 ## Standalone tooling
 

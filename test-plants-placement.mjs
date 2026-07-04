@@ -36,5 +36,22 @@ const plainsRecs = plantPlacementRecords(chunks, params, heightAt, alwaysPlains)
 ok(plainsRecs.every(r => speciesTable[r.speciesIdx].key !== 'jewelweed'), '4: swamp-only species never placed in an all-plains biome');
 ok(plainsRecs.some(r => speciesTable[r.speciesIdx].key === 'chickweed'), '4: plains-tagged species does place in a plains biome');
 
+// clustering: strength 0 (default/omitted) reproduces the unclustered baseline exactly
+const bigChunks = [];
+for (let ix = 0; ix < 6; ix++) for (let iz = 0; iz < 6; iz++) {
+  bigChunks.push({ key: `${ix},${iz}`, xMin: ix * 30, zMin: iz * 30, size: 30, centerX: ix * 30 + 15, centerZ: iz * 30 + 15 });
+}
+const baseline = plantPlacementRecords(bigChunks, params, heightAt);
+const explicitZero = plantPlacementRecords(bigChunks, { ...params, clusterStrength: 0 }, heightAt);
+ok(JSON.stringify(baseline) === JSON.stringify(explicitZero), '5: clusterStrength 0 matches omitted-param baseline exactly');
+
+const clustered = plantPlacementRecords(bigChunks, { ...params, clusterStrength: 1, clusterScale: 40 }, heightAt);
+ok(clustered.length < baseline.length, '6: full clustering (strength 1) rejects some candidates the baseline kept');
+ok(clustered.length > 0, '6: full clustering still places some plants');
+ok(
+  JSON.stringify(clustered) === JSON.stringify(plantPlacementRecords(bigChunks, { ...params, clusterStrength: 1, clusterScale: 40 }, heightAt)),
+  '6: clustering is deterministic for the same seed/params',
+);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

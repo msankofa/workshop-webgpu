@@ -1268,7 +1268,11 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
     treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
     leafShadowPct: 0.3, shoreMargin: 0.1, texMode: 'procedural', mapGrassRadiusChunks: 2,
-    mapPlantRadiusChunks: 2,
+    // Guaranteed half-extent of the (radiusChunks*2+1)-wide plant window is
+    // radiusChunks*chunkSize in the worst case (player standing at a chunk edge); 6*30=180
+    // covers the 150-unit plantCullRadius with margin. Applies on both terrain modes (see
+    // plantChunksForPlacement()), not just authored maps.
+    plantRadiusChunks: 6,
     treeLodR0: 258, treeLodR1: 400, treeLodR2: 583,
     coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5,
     billboardMode: 'cross',
@@ -2648,27 +2652,51 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const { createPlantPalette } = await import('./plants.js');
     const { plantPlacementRecords } = await import('./plants-placement.js');
     const { createPlantsGPU } = await import('./plants-gpu.js');
-    Object.assign(params, { plantDensity: 0.02, plantCullRadius: 45 });
+    Object.assign(params, {
+      // Radius/start mirror grass's much larger draw distance (grassRadius:344,
+      // grassCullStart:228) instead of the old 45-unit bubble -- plants now fade out
+      // stochastically between cullStart and cullRadius (see plants-gpu.js's cull kernel)
+      // the same way grass thins with distance, rather than popping at a fixed ring.
+      plantDensity: 0.02, plantCullRadius: 150, plantCullStart: 105,
+      // clusterStrength blends from uniform-random (0) to fully noise-gated clumps (1);
+      // clusterScale is the approximate world-unit size of one noise cell/clump.
+      plantClusterStrength: 0.6, plantClusterScale: 40,
+    });
     const plantPalette = createPlantPalette({ variantsPerSpecies: 4, masterSeed: MASTER_SEED });
     const plantsGPU = createPlantsGPU({
       renderer, camera, palette: plantPalette, heightAt: terrainHeight,
-      cullRadius: params.plantCullRadius, capPerVariant: 256,
+      cullRadius: params.plantCullRadius, cullStart: params.plantCullStart, capPerVariant: 512,
     });
     plantsGPURef = plantsGPU;
     scene.add(...plantsGPU.meshes);
     const plantChunks = new Set();
-    // Unlike forestChunksForPlacement() (which eagerly claims the whole authored map via
-    // makeAllChunks -- fine for trees' 2048-slot cap, but plants only get 256 slots per
-    // variant), plants use a grass-style windowed chunk set around the player, refreshed
-    // as they move, so the small per-variant cap is always spent on nearby chunks instead
-    // of being burned on an arbitrary, possibly-far-away scan order.
+    // Plants use their own grass-style windowed chunk set around the player, refreshed as
+    // they move, sized from plantRadiusChunks -- NOT forestChunksForPlacement() (which
+    // eagerly claims the whole authored map via makeAllChunks, fine for trees' 2048-slot
+    // cap but not plants' smaller one) and NOT activeTerrainChunks() on infinite terrain
+    // either, since that window is sized by the terrain system's own render-distance
+    // slider (terrain.renderRadius defaults to 2, i.e. ~60-75 world units), which is much
+    // smaller than plants' cull radius -- reusing it would mean the fade band never
+    // engages and plants would still pop at that window's hard square edge. Building an
+    // independent window here, on both terrain modes, keeps plant draw distance decoupled
+    // from ground draw distance entirely.
     function plantChunksForPlacement() {
-      if (!loadedMap) return activeTerrainChunks();
-      return loadedMap.makeChunks(
-        terrainFocus,
-        Math.floor(params.mapPlantRadiusChunks ?? terrainSystem.params.renderRadius ?? 2),
-        mapChunkSize(),
-      );
+      const chunkSize = mapChunkSize();
+      // half-extent of an (radiusChunks*2+1)-wide window is radiusChunks*chunkSize in the
+      // worst case (player standing right at a chunk edge) -- must exceed plantCullRadius
+      // or the window's square edge clips the circular cull area before it should.
+      const radiusChunks = Math.floor(params.plantRadiusChunks ?? 6);
+      if (loadedMap) return loadedMap.makeChunks(terrainFocus, radiusChunks, chunkSize);
+      const cx = Math.floor(terrainFocus.x / chunkSize);
+      const cz = Math.floor(terrainFocus.z / chunkSize);
+      const chunks = [];
+      for (let iz = cz - radiusChunks; iz <= cz + radiusChunks; iz++) {
+        for (let ix = cx - radiusChunks; ix <= cx + radiusChunks; ix++) {
+          const xMin = ix * chunkSize, zMin = iz * chunkSize;
+          chunks.push({ key: `${ix},${iz}`, xMin, zMin, size: chunkSize, centerX: xMin + chunkSize / 2, centerZ: zMin + chunkSize / 2 });
+        }
+      }
+      return chunks;
     }
     function regeneratePlantsGPU(rebuildExisting) {
       // Windowing (not chunk order here) is what keeps the candidate pool small enough for
@@ -2683,6 +2711,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       const pr = {
         masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
         plantDensity: params.plantDensity, plantSpeciesTable: plantPalette.speciesTags,
+        clusterStrength: params.plantClusterStrength, clusterScale: params.plantClusterScale,
       };
       for (const chunk of active) {
         if (!rebuildExisting && plantChunks.has(chunk.key)) continue;
@@ -2695,8 +2724,11 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
     header('Plants');
     slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
-    slider('plantCullRadius', 'Cull radius', 10, 150, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
-    if (loadedMap) slider('mapPlantRadiusChunks', 'Extent (chunks)', 0, 12, 1, fi, () => regeneratePlantsGPU(true));
+    slider('plantCullRadius', 'Cull radius', 10, 300, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
+    slider('plantCullStart', 'Cull start (fade begins)', 0, 300, 1, fi, () => plantsGPU.setCullStart(params.plantCullStart));
+    slider('plantClusterStrength', 'Clustering', 0, 1, 0.05, f2, () => regeneratePlantsGPU(true));
+    slider('plantClusterScale', 'Cluster scale', 10, 150, 5, fi, () => regeneratePlantsGPU(true));
+    slider('plantRadiusChunks', 'Placement window (chunks)', 1, 16, 1, fi, () => regeneratePlantsGPU(true));
   }
 
   // ---- water (separate module; optional). Needs a refraction render target. ----

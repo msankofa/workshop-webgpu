@@ -22,7 +22,7 @@ export function hash2(ix, iz, seed) {
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
-function valueNoise(x, z, seed) {
+export function valueNoise(x, z, seed) {
   const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
   const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
   const a = hash2(ix, iz, seed), b = hash2(ix + 1, iz, seed), c = hash2(ix, iz + 1, seed), d = hash2(ix + 1, iz + 1, seed);
