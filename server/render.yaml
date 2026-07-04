@@ -8,3 +8,11 @@ services:
     envVars:
       - key: PORT
         fromGroup: render
+      - key: EXPORT_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        value: msankofa/workshop-webgpu
+      - key: GITHUB_BRANCH
+        value: sp1-webgpu-renderer-migration
