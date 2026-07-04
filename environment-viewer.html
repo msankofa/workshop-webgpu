@@ -2705,8 +2705,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       // chunk registration order doesn't need to matter here.
       const active = plantChunksForPlacement().slice();
       const activeKeys = new Set(active.map(c => c.key));
+      let cleared = 0, added = 0;
       for (const key of [...plantChunks]) {
-        if (!activeKeys.has(key)) { plantsGPU.clearChunk(key); plantChunks.delete(key); }
+        if (!activeKeys.has(key)) { plantsGPU.clearChunk(key); plantChunks.delete(key); cleared++; }
       }
       const pr = {
         masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel,
@@ -2718,10 +2719,21 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         const recs = plantPlacementRecords([chunk], pr, terrainHeight, loadedMap?.biomeAt);
         plantsGPU.setChunk(chunk.key, recs);
         plantChunks.add(chunk.key);
+        added++;
       }
+      // TEMP DEBUG (remove once the "stuck at origin" report is resolved)
+      console.log('[plants-debug] regen: terrainFocus=(%s,%s) windowChunks=%d cleared=%d added=%d totalTracked=%d stats=%o',
+        terrainFocus.x.toFixed(1), terrainFocus.z.toFixed(1), active.length, cleared, added, plantChunks.size, plantsGPU.stats);
     }
     regeneratePlantsGPU(true);
     regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
+    // TEMP DEBUG: periodic snapshot so we can see camera vs. terrainFocus vs. what's actually
+    // culled/rendered even between regen events (remove once resolved).
+    setInterval(() => {
+      console.log('[plants-debug] tick: camera=(%s,%s) terrainFocus=(%s,%s) stats=%o',
+        camera.position.x.toFixed(1), camera.position.z.toFixed(1),
+        terrainFocus.x.toFixed(1), terrainFocus.z.toFixed(1), plantsGPU.stats);
+    }, 2000);
     header('Plants');
     slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
     slider('plantCullRadius', 'Cull radius', 10, 300, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
