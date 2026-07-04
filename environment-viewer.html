@@ -2649,9 +2649,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // ---- plants: single-LOD GPU-instanced understory (chickweed/cleavers/mint/jewelweed) ----
   const PLANTS_MODE = new URLSearchParams(location.search).get('plants') || 'gpu';
   if (PLANTS_MODE === 'gpu') {
-    const { createPlantPalette } = await import('./plants.js');
-    const { plantPlacementRecords } = await import('./plants-placement.js');
-    const { createPlantsGPU } = await import('./plants-gpu.js');
+    const { createPlantPalette } = await import('./plants.js?v=field-fade-1');
+    const { plantPlacementRecords } = await import('./plants-placement.js?v=field-fade-1');
+    const { createPlantsGPU } = await import('./plants-gpu.js?v=field-fade-1');
     Object.assign(params, {
       // Radius/start mirror grass's much larger draw distance (grassRadius:344,
       // grassCullStart:228) instead of the old 45-unit bubble -- plants now fade out
