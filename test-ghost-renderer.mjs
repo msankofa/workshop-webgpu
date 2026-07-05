@@ -50,6 +50,11 @@ const { left, right } = g.userData;
 assert(left && right, 'eye refs stored on userData');
 assert(left.position.z < 0 && right.position.z < 0, 'eyes on the -Z (forward) face');
 assert(left.position.x < 0 && right.position.x > 0, 'eyes spread left/right');
+assert(left.position.y > 0.3 && right.position.y > 0.3, 'eyes sit high on the body');
+const lg = left.children.find(c => c instanceof Mesh), rg = right.children.find(c => c instanceof Mesh);
+assert(lg && rg, 'each eye has a glint highlight mesh');
+assert(lg.material === gr._glintMat && lg.material !== gr._eyeMat, 'glint uses the white glint material');
+assert(lg.position.y > 0 && lg.position.z < 0, 'glint sits toward the top-front of the eye');
 
 // --- per-player body tint ---------------------------------------------------
 const bob = gr._players.get('bob');

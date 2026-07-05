@@ -327,6 +327,7 @@ export class GhostRenderer {
     this._cMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5 });
     this._pMat = new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: 0.7 });
     this._eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 }); // unlit flat black
+    this._glintMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // eye highlight
   }
 
   update(state) {
@@ -398,6 +399,14 @@ export class GhostRenderer {
     const left = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     const right = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     g.add(body); g.add(left); g.add(right);
+    // White highlight glint, parented to each eye (in eye-local space) so it sits
+    // just in front of the black, near the top, and closes with the eye on blink.
+    const lg = new THREE.Mesh(this._eyeGeo, this._glintMat);
+    const rg = new THREE.Mesh(this._eyeGeo, this._glintMat);
+    left.add(lg); right.add(rg);
+    lg.scale.set(0.4, 0.4, 0.4); rg.scale.set(0.4, 0.4, 0.4);
+    lg.position.set(0.25, 0.42, -1.05);   // toward top; -z is the front face
+    rg.position.set(-0.25, 0.42, -1.05);
     // nextBlinkAt is initialised lazily on the first tick (we don't know the
     // clock here); the id hash staggers players so they don't blink in unison.
     g.userData = { id, body, bodyMat, left, right, eyeH: 0.14, nextBlinkAt: null, blinkStart: -1 };
@@ -407,7 +416,7 @@ export class GhostRenderer {
   // Eyes sit on the front (-Z) face, upper-middle, sized/spread with the capsule.
   _placeEyes(g, r, h) {
     const s = r / 0.3;
-    const ex = 0.13 * s, ey = h * 0.25, ez = -(r + 0.02);
+    const ex = 0.13 * s, ey = h * 0.42, ez = -(r + 0.02);
     const ew = 0.09 * s, eh = 0.14 * s, ed = 0.06 * s;
     const { left, right } = g.userData;
     left.position.set(-ex, ey, ez);
@@ -455,6 +464,7 @@ export class GhostRenderer {
     this._cMat.dispose();
     this._pMat.dispose();
     this._eyeMat.dispose();
+    this._glintMat.dispose();
   }
 }
 

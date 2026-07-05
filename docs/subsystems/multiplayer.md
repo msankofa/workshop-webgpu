@@ -96,10 +96,12 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (a
     per-player `MeshStandardMaterial` cloned from the off-white template and tinted a light pastel
     keyed by an id hash, so players are easy to tell apart; disposed on removal) plus two
-    flat-black eye `Mesh`es on the container's
-    local **-Z** (forward) face — the player's `q` is pure yaw, so the eyes point where they look.
-    Body keeps the `h`/`r` scale; eyes are placed/sized from `h`/`r` in `_placeEyes` so they stay
-    round despite the body's non-uniform scale. Ids no longer present are removed.
+    flat-black eye `Mesh`es (each with a small white glint `Mesh` parented to it) on the
+    container's local **-Z** (forward) face — the player's `q` is pure yaw, so the eyes point where
+    they look. Eyes sit high on the body (`h * 0.42`). Body keeps the `h`/`r` scale; eyes are
+    placed/sized from `h`/`r` in `_placeEyes` so they stay round despite the body's non-uniform
+    scale; glints are in eye-local space so they close with the eye on blink. Ids no longer present
+    are removed.
   - `tick(nowMs)` — per-frame blink driver (must be called each frame; `update()` only runs on
     network events). Squashes each player's eye `scale.y` 1→~0.1→1 over `BLINK_MS` (120 ms) on an
     independent 3–6 s timer, staggered by an id hash. Called from `animate()` in
