@@ -20,10 +20,11 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 
 | File | Responsibility | Lines |
 |---|---|---|
-| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`), `createGuestSession`, `GhostRenderer` | ~290 |
+| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~330 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker, map picker, loading screen; resolves `{ mapKey, mpRole, roomCode }` before the sim boots | 253 |
-| `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding, room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 97 |
+| `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding (with per-guest send backpressure via `server/backpressure.js`), room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 106 |
+| `server/backpressure.js` | Pure `guestSendVerdict(bufferedAmount, isSimState)` → `'send'\|'skip'\|'kill'`: the relay's two-tier per-guest flow control (skip superseded `sim_state` at `RELAY_GUEST_SKIP_BYTES` = 1 MiB, terminate at `RELAY_GUEST_KILL_BYTES` = 8 MiB). Node-testable, socket-free. | 36 |
 | `server/publish-map.js` | Pure validation/merge helpers (`validateSegment`, `validateSecret`, `mergeMapConfig`) plus `publishMap`'s GitHub Git Data API orchestration and `handlePublishRequest`'s HTTP glue | 190 |
 
 Deployment context: `server/package.json` declares `ws` as the only dependency and `npm start`
@@ -64,6 +65,24 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   `{type:'sim_state', seq, ...getState()}` every 50 ms (`BROADCAST_MS`, 20 Hz). Incoming messages
   are re-dispatched as `window` `CustomEvent('mp:guest_input', {detail: msg})`. Auto-reconnects
   with exponential backoff (1 s → 30 s cap).
+  - **Host backpressure guard.** Each tick runs through `hostBroadcastTick(ws, getState, sendFrame,
+    onSkip)`: if `ws.bufferedAmount` exceeds `HOST_MAX_BUFFERED_BYTES` (128 KiB ≈ 1–2 worst-case
+    frames) the tick is **skipped before `getState()` is called** and `seq` does not advance. This
+    is the fix for the host→guest head-of-line jam under high creature counts: `ws.send()` never
+    blocks, so without this a saturated uplink grows an unbounded send buffer and — because every
+    host→guest world event (avatar, lights, roster) rides the one ordered socket inside `sim_state`
+    — freezes all of them together while guest→host input stays fine. Skipping coalesces to the next
+    fresh snapshot (never a stale queued one); it never terminates (this socket is the host's only
+    link, and reconnect already exists). The skip **must** precede `getState()` because `getState()`
+    has send-marking side effects — `entityRegistry.snapshot()` drains removal tombstones and the
+    shared settings/config packet makers stamp themselves sent — so a built-but-unsent frame would
+    silently lose data. A throttled (≤ once / 2 s) `window` `CustomEvent('mp:backpressure',
+    {detail:{skippedTicks, bufferedAmount}})` surfaces saturation instead of failing silently.
+    `shouldSendSnapshot(bufferedAmount, limit)` is the exported pure predicate. Full analysis:
+    `multiplayer-jam-analysis/plan.md`. Add `?netstats` to the URL to log the actual `sim_state`
+    byte size, creature count, and `bufferedAmount` once every 2 s from the host — use it to size
+    real frames before deciding whether the deferred payload-reduction work (rate split, interest
+    scoping, deltas) is warranted.
 - `export function createGuestSession(roomCode: string, onState: (state: object) => void): { sendInput(msg: object): void, destroy(): void }`
   — opens a WebSocket, sends `{type:'join', room}`. `sim_state` messages are pushed into an
   internal `InterpolationBuffer`; every other message type is re-dispatched as
@@ -128,18 +147,24 @@ and get back `{hasHost, mapKey}` before handing control to `environment-viewer.h
 creation.
 
 **Client ↔ relay protocol** (plain WebSocket, JSON-text frames, no binary/compression):
-- Host → relay: `{type:'host', room, mapKey}`, then repeated `{type:'sim_state', seq, creatures, players}`.
+- Host → relay: `{type:'host', room, mapKey}`, then repeated `{type:'sim_state', seq, creatures, players, entities, worldMode}` at 20 Hz, plus **change-driven** `{type:'creature_config', version, config}` and `{type:'world_settings', version, values}`. The last two are the large, O(creatures) static identity / settings payloads: they are sent as their **own messages, only when they actually change** (and force-resent when a guest joins), NOT bundled into `sim_state` and NOT on a timer — this keeps the 20 Hz frame small and keeps config off the frame-skippable path (see the backpressure notes). Change detection runs at ~1 Hz on the host, not per broadcast tick.
 - Guest → relay: `{type:'join', room}`, `{type:'query', room}`, `{type:'player_state', player}`, or arbitrary input messages (e.g. `{type:'set_target', pos}`, `{type:'set_behavior', behavior}`).
-- Relay → guest: `{type:'joined', clientId, guestCount, mapKey}`, `{type:'host_joined'}`, `{type:'host_left'}`, forwarded `sim_state` frames.
+- Relay → guest: `{type:'joined', clientId, guestCount, mapKey}`, `{type:'host_joined'}`, `{type:'host_left'}`, forwarded `sim_state` frames, and the forwarded `creature_config` / `world_settings` messages (re-dispatched guest-side as `mp:creature_config` / `mp:world_settings` events).
 - Relay → host: forwarded guest messages tagged with `{..., clientId}`, plus `{type:'guest_joined', clientId}` / `{type:'guest_left', clientId}`.
 - Relay → query sender: `{type:'room_info', hasHost, mapKey}`.
 
 ## Architecture notes
 
 - **Host-authoritative, server-dumb relay.** `server/server.js` holds no simulation state beyond
-  a `rooms: Map<code, {host, mapKey, guests}>` registry (server.js:6) and blindly forwards
-  whatever JSON the host/guests send — it never inspects `sim_state` contents. All physics/AI
-  runs only on the host's machine; guests are pure read-only spectators of interpolated ghosts.
+  a `rooms: Map<code, {host, mapKey, guests}>` registry (server.js:6) and forwards
+  whatever JSON the host/guests send — it never inspects `sim_state` contents. The one flow-control
+  exception: the host→guests loop applies `guestSendVerdict` (`server/backpressure.js`) per guest,
+  so a guest whose socket isn't draining gets its superseded `sim_state` frames skipped (past 1 MiB
+  buffered) or its socket terminated (past 8 MiB) rather than growing unbounded buffer in the relay
+  process; each guest send is wrapped in its own try/catch so one bad socket can't stall the loop.
+  This is the relay-side half of the backpressure fix (the host-side guard can't see the relay→guest
+  hop). All physics/AI runs only on the host's machine; guests are pure read-only spectators of
+  interpolated ghosts.
 - **Snapshot interpolation, not extrapolation/prediction.** `InterpolationBuffer` keeps just the
   last 3 snapshots and linearly interpolates position/quaternion (slerp) and HP between the two
   bracketing entries; it clamps to the nearest end outside the buffered range rather than
@@ -172,8 +197,17 @@ and checks:
 - Sampling after the last snapshot (t=1200) clamps to the last snapshot's state.
 - An empty buffer's `sample()` returns `null`.
 
-It does **not** test `createHostSession`/`createGuestSession`/`GhostRenderer`, the WebSocket
-protocol, slerp correctness, or `server/server.js` — those are unverified by automated tests.
+It does **not** test `createGuestSession`/`GhostRenderer`, the WebSocket protocol, or slerp
+correctness — those are unverified by automated tests.
+
+`test-host-backpressure.mjs` (repo root, plain `node`) covers the host guard: `shouldSendSnapshot`
+boundaries, and a fake-socket drive of `hostBroadcastTick` asserting sends stop while
+`bufferedAmount` is held above the limit, resume after it drops, and — load-bearing — that
+`getState` is **not** called on a skipped tick (pins the skip-before-`getState` ordering).
+
+`server/test-backpressure.mjs` (plain `node`) unit-tests `guestSendVerdict` boundaries at both caps
+and for `sim_state` vs. other frame types. `server/test-relay.mjs` (needs a running relay on
+`ws://localhost:8080`) is the end-to-end forwarding integration test.
 
 ## Multiplayer Reframe: From Relay Session to Shared World
 
@@ -234,9 +268,9 @@ Files: `environment-viewer.html`, `multiplayer.js`
 
 Responsibilities today:
 
-- Host calls `getState()` every 50 ms.
+- Host calls `getState()` every 50 ms (subject to the backpressure skip).
 - Host broadcasts `sim_state` snapshots at 20 Hz.
-- Snapshot currently includes creature pose state, player capsule state, world mode, optional shared world settings, and optional shared creature config.
+- The snapshot includes creature pose state, player capsule state, replicated entities, and world mode. Shared **creature config** and **world settings** are NO LONGER in the snapshot — they are separate change-driven `creature_config` / `world_settings` messages (`syncSharedNpcConfig` / `syncSharedWorldSettings` in `environment-viewer.html`), sent only on change or on guest-join. Previously they were bundled into every snapshot and re-sent on a 2 s / 1 s heartbeat, which made the shared creature config (large, O(creatures) static plan/style/gait data) the dominant multiplayer payload cost and — once the relay began skipping backed-up `sim_state` frames — a frame a lagging guest could miss. Add `?netstats` to log per-section `sim_state` sizes and each `creature_config` / `world_settings` send.
 
 Limitations:
 
@@ -294,14 +328,14 @@ Files: `environment-viewer.html`, `port-creature-system.js`, `port-creature-brid
 
 Responsibilities today:
 
-- Host exports creature configuration.
-- Guests apply host creature configuration.
+- Host exports creature configuration and broadcasts it as a `creature_config` message **only when it changes** (`syncSharedNpcConfig`), plus a forced resend when a guest joins — not on a heartbeat, and not inside `sim_state`.
+- Guests apply host creature configuration from the `mp:creature_config` event (`receiveSharedNpcConfig`, deduped by signature).
 - Guests run creature mode as `network`, meaning they render host-driven creature poses instead of running full local creature AI/physics.
 
 Limitations:
 
 - Creature runtime state is still a custom pose stream, not a general entity component stream.
-- Grabbable objects are deliberately not applied in shared NPC config.
+- Grabbable objects are deliberately not applied in shared NPC config, and are now also **excluded from the export** (`exportSharedNpcConfig` deletes `data.objects`): their live positions move every frame, which otherwise defeated the host's change-detection and made `creature_config` resend on every 1 Hz check.
 - Creature interactions with world objects are not authoritative across clients.
 - Guest commands for target/behavior exist in host handlers, but are not a complete interaction protocol.
 
@@ -313,8 +347,8 @@ Files: `environment-viewer.html`
 
 Responsibilities today:
 
-- In `shared` mode, host periodically captures registered controls whose names start with `terrain.` or `params.`.
-- Guests apply those values through the slider/control registry.
+- In `shared` mode, the host captures registered controls whose names start with `terrain.` or `params.` and broadcasts them as a `world_settings` message **only when they change** (`syncSharedWorldSettings`, checked at ~1 Hz), plus a forced resend on guest-join — no longer bundled into `sim_state` on a 1 s heartbeat.
+- Guests apply those values through the slider/control registry from the `mp:world_settings` event.
 - This can keep many procedural terrain, vegetation, water, cloud, and similar settings aligned.
 
 Limitations:

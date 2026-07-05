@@ -103,12 +103,12 @@ let mpPendingLightEntities = []; // guest only: interpolated wire upserts, rende
 // self-register into it far below; it just needs to exist before sessions start.
 const controlRegistry = [];
 let mpLastCreatureConfigSig = '';
-let mpLastCreatureConfigSend = -Infinity;
 let mpCreatureConfigVersion = 0;
 let mpLastWorldSettingsSig = '';
-let mpLastWorldSettingsSend = -Infinity;
 let mpLastWorldSettingsControlCount = 0;
 let mpWorldSettingsVersion = 0;
+let mpLastSharedSyncCheck = 0;
+const MP_NET_STATS = new URLSearchParams(location.search).has('netstats');
 let captureSharedWorldSettings = () => null;
 let applySharedWorldSettings = values => { mpPendingWorldSettings = values; return false; };
 const MP_PLAYER_SEND_MS = 50;
@@ -177,19 +177,26 @@ function getLocalPlayerState(id) {
   };
 }
 
-function makeSharedNpcConfigPacket(now = performance.now()) {
-  if (mpRole !== 'host' || !portCreatures?.system?.exportSharedNpcConfig) return null;
+// Broadcast the shared creature config to guests as its OWN reliable message — not
+// inside the frame-skippable sim_state — and only when it actually changed (or
+// force=true to catch up a newly joined guest). This config is large, O(creatures)
+// STATIC identity data (plan/style/gait/arms) that a guest needs once, not on a
+// timer: resending it every 2 s was the dominant multiplayer payload cost. Driven at
+// ~1 Hz (syncMultiplayerPlayer) and on guest_joined, so the diffing stringify is cheap.
+// The sig/version are committed only after a successful send, so a send dropped on a
+// not-yet-open / reconnecting socket is retried on the next check rather than lost.
+function syncSharedNpcConfig({ force = false } = {}) {
+  if (mpRole !== 'host' || !mpSession || !portCreatures?.system?.exportSharedNpcConfig) return;
   const config = portCreatures.system.exportSharedNpcConfig();
-  if (!config) return null;
+  if (!config) return;
   const sig = JSON.stringify(config);
   const changed = sig !== mpLastCreatureConfigSig;
-  if (!changed && now - mpLastCreatureConfigSend < 2000) return null;
-  if (changed) {
-    mpLastCreatureConfigSig = sig;
-    mpCreatureConfigVersion += 1;
-  }
-  mpLastCreatureConfigSend = now;
-  return { version: mpCreatureConfigVersion, config };
+  if (!changed && !force) return;
+  const version = changed ? mpCreatureConfigVersion + 1 : mpCreatureConfigVersion;
+  if (!mpSession.broadcast({ type: 'creature_config', version, config })) return;
+  mpCreatureConfigVersion = version;
+  if (changed) mpLastCreatureConfigSig = sig;
+  if (MP_NET_STATS) console.log(`[mp] creature_config sent v${version} ${Math.round(sig.length / 1024)} KB, ${config.creatures?.length ?? 0} creatures${force ? ' (force)' : ''}`);
 }
 
 function receiveSharedNpcConfig(packet) {
@@ -209,19 +216,20 @@ function applyPendingSharedNpcs() {
   portCreatures.system.applyNetworkCreatureSnapshot?.(mpPendingCreatureState);
 }
 
-function makeSharedWorldSettingsPacket(now = performance.now()) {
-  if (mpRole !== 'host' || !mpSharedWorldSettings) return null;
+// Same model as syncSharedNpcConfig: broadcast shared world settings as their own
+// reliable message, only on actual change (or force to catch up a new guest).
+function syncSharedWorldSettings({ force = false } = {}) {
+  if (mpRole !== 'host' || !mpSession || !mpSharedWorldSettings) return;
   const values = captureSharedWorldSettings?.();
-  if (!values) return null;
+  if (!values) return;
   const sig = JSON.stringify(values);
   const changed = sig !== mpLastWorldSettingsSig;
-  if (!changed && now - mpLastWorldSettingsSend < 1000) return null;
-  if (changed) {
-    mpLastWorldSettingsSig = sig;
-    mpWorldSettingsVersion += 1;
-  }
-  mpLastWorldSettingsSend = now;
-  return { version: mpWorldSettingsVersion, values };
+  if (!changed && !force) return;
+  const version = changed ? mpWorldSettingsVersion + 1 : mpWorldSettingsVersion;
+  if (!mpSession.broadcast({ type: 'world_settings', version, values })) return;
+  mpWorldSettingsVersion = version;
+  if (changed) mpLastWorldSettingsSig = sig;
+  if (MP_NET_STATS) console.log(`[mp] world_settings sent v${version} ${Math.round(sig.length / 1024)} KB${force ? ' (force)' : ''}`);
 }
 
 function receiveSharedWorldSettings(packet) {
@@ -236,20 +244,25 @@ function receiveSharedWorldSettings(packet) {
 }
 
 function getState() {
+  // Quantize wire numbers: unrounded doubles serialize at up to ~17 chars each and
+  // dominate the O(creatures) payload. mm precision (q3) for positions and 1e-4 for
+  // rotations is far below visual scale but ~2.5–3× fewer bytes. See plan §2a.
+  const q3 = v => Math.round(v * 1e3) / 1e3;
+  const q4 = v => Math.round(v * 1e4) / 1e4;
   const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
     id,
-    p: [c.pos.x, c.pos.y, c.pos.z],
-    q: [c.group.quaternion.x, c.group.quaternion.y, c.group.quaternion.z, c.group.quaternion.w],
-    ypr: [c.yaw, c.pitch, c.roll],
-    hp: c.health / 100,
-    feet:  c.legs.map(l => [l.end.x, l.end.y, l.end.z]),
-    hands: c.arms.map(a => [a.hand.position.x, a.hand.position.y, a.hand.position.z]),
+    p: [q3(c.pos.x), q3(c.pos.y), q3(c.pos.z)],
+    q: [q4(c.group.quaternion.x), q4(c.group.quaternion.y), q4(c.group.quaternion.z), q4(c.group.quaternion.w)],
+    ypr: [q4(c.yaw), q4(c.pitch), q4(c.roll)],
+    hp: q3(c.health / 100),
+    feet:  c.legs.map(l => [q3(l.end.x), q3(l.end.y), q3(l.end.z)]),
+    hands: c.arms.map(a => [q3(a.hand.position.x), q3(a.hand.position.y), q3(a.hand.position.z)]),
   }));
   const players = [];
   const hostPlayer = getLocalPlayerState('host');
   if (hostPlayer) players.push(hostPlayer);
   for (const player of mpGuestPlayers.values()) players.push(player);
-  return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode, worldSettings: makeSharedWorldSettingsPacket(), creatureConfig: makeSharedNpcConfigPacket() };
+  return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode };
 }
 
 function updateHostPlayerGhosts() {
@@ -261,6 +274,13 @@ function updateHostPlayerGhosts() {
 function syncMultiplayerPlayer(now) {
   if (mpRole === 'host') {
     updateHostPlayerGhosts();
+    // Shared config/settings are change-detected here at ~1 Hz (not per 20 Hz
+    // broadcast) and sent as their own reliable messages, only when they differ.
+    if (now - mpLastSharedSyncCheck >= 1000) {
+      mpLastSharedSyncCheck = now;
+      syncSharedWorldSettings();
+      syncSharedNpcConfig();
+    }
     return;
   }
   if (mpRole !== 'guest' || !mpSession || !mpClientId || now - mpLastPlayerSend < MP_PLAYER_SEND_MS) return;
@@ -283,8 +303,8 @@ if (mpRole === 'host') {
   mpSession = createGuestSession(roomCode, state => {
     mpLatestState = state;
     if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
-    receiveSharedWorldSettings(state.worldSettings);
-    receiveSharedNpcConfig(state.creatureConfig);
+    // worldSettings / creatureConfig no longer ride sim_state — they arrive as their
+    // own mp:world_settings / mp:creature_config messages (see listeners below).
     mpPendingCreatureState = state.creatures ?? [];
     // Guest trap (see plan): feed the binder the already-interpolated wire
     // upserts directly — do NOT build a mirror registry + renderList, the
@@ -296,11 +316,23 @@ if (mpRole === 'host') {
   });
 }
 
+// Guest: shared config/settings arrive as their own messages (out of sim_state), so a
+// backed-up/skipped sim_state frame can never drop a config change. Both receivers are
+// role-guarded internally and no-op on a repeat via their signature check.
+window.addEventListener('mp:creature_config', e => receiveSharedNpcConfig(e.detail));
+window.addEventListener('mp:world_settings', e => receiveSharedWorldSettings(e.detail));
+
 window.addEventListener('mp:guest_input', e => {
   const msg = e.detail;
   if (msg.type === 'player_state' && msg.clientId && msg.player) {
     mpGuestPlayers.set(msg.clientId, { ...msg.player, id: msg.clientId });
     updateHostPlayerGhosts();
+  } else if (msg.type === 'guest_joined' && msg.clientId) {
+    // A newly joined guest needs the full static config/settings now — they're no
+    // longer heartbeated into sim_state. force=true resends the current full state;
+    // already-synced guests no-op on it via their signature check.
+    syncSharedWorldSettings({ force: true });
+    syncSharedNpcConfig({ force: true });
   } else if (msg.type === 'guest_left' && msg.clientId) {
     mpGuestPlayers.delete(msg.clientId);
     updateHostPlayerGhosts();

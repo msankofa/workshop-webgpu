@@ -868,6 +868,7 @@ function createCreaturePartBatches({ scene, capacity = 4096 }) {
 
   return {
     stats: { boxes: 0, limbs: 0, joints: 0, handsFeet: 0, shadows: 0 },
+    meshes: Object.values(buckets).map(bucket => bucket.mesh),
     pickables,
     beginFrame() {
       for (const bucket of Object.values(buckets)) {
@@ -3691,6 +3692,11 @@ function exportSharedNpcConfig() {
   data.sceneMode = 'varied';
   data.count = creatures.length;
   data.creatures = creatures.map(creatureToSharedConfig);
+  // Drop live grabbable positions from the shared NPC config: they move every frame
+  // (which would defeat the host's change-detection and make config resend every
+  // tick), and the guest ignores them anyway — applySharedNpcConfig applies with
+  // applyObjects:false. Grabbables are not part of shared NPC identity.
+  delete data.objects;
   return data;
 }
 
@@ -5016,6 +5022,7 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     applyNetworkCreatureSnapshot,
     get stats() { return creatureStats; },
     get creatures() { return creatures; },
+    get reflectionMeshes() { return creatureBatches ? creatureBatches.meshes : []; },
     get currentBehavior() { return currentBehavior; },
   };
 }

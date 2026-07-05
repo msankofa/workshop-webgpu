@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { handlePublishRequest } from './publish-map.js';
+import { guestSendVerdict } from './backpressure.js';
 
 const PORT = process.env.PORT || 8080;
 
@@ -69,8 +70,19 @@ wss.on('connection', ws => {
       const r = rooms.get(roomCode);
       if (!r) return;
       const payload = JSON.stringify(msg);
+      const isSimState = msg.type === 'sim_state';
+      // Per-guest backpressure: a guest not draining its socket must not grow an
+      // unbounded buffer here or jam on the relay->guest hop. Skip superseded
+      // sim_state frames, terminate a provably-dead socket, and isolate each guest
+      // in its own try/catch so one bad socket can't stop the broadcast loop.
       for (const g of r.guests.values()) {
-        if (g.readyState === 1) g.send(payload);
+        try {
+          if (g.readyState !== 1) continue;
+          const verdict = guestSendVerdict(g.bufferedAmount, isSimState);
+          if (verdict === 'kill') { g.terminate(); continue; }
+          if (verdict === 'skip') continue;
+          g.send(payload);
+        } catch { /* one bad socket must not stop the loop */ }
       }
     } else {
       const r = rooms.get(roomCode);

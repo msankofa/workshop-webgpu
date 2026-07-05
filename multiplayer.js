@@ -56,6 +56,43 @@ function _slerpQ(a, b, t) {
 
 const BROADCAST_MS = 50; // 20 Hz
 
+// ---------------------------------------------------------------------------
+// Host broadcast backpressure guard
+//
+// `ws.send()` never blocks: bytes the relay hasn't drained pile up in the
+// socket's outbound buffer (`ws.bufferedAmount`). The host emits a full
+// O(creatures) snapshot every 50 ms, so on a saturated uplink the buffer grows
+// without bound and — because every host→guest world event (avatar, lights,
+// roster) rides this one ordered socket inside `sim_state` — head-of-line-blocks
+// all of them together, freezing guests while guest→host input stays fine.
+//
+// Fix: skip a tick when the buffer is already backed up. We SKIP (coalesce to
+// the next fresh `getState()`), never terminate — this socket is the host's only
+// relay link and reconnect/backoff already exists. The cap is a small multiple of
+// one worst-case frame, so a healthy link (buffer ≈ 0 each tick) never trips it;
+// a saturated link degrades to a lower snapshot rate with bounded latency instead
+// of an unbounded queue. See multiplayer-jam-analysis/plan.md.
+// ---------------------------------------------------------------------------
+export const HOST_MAX_BUFFERED_BYTES = 128 * 1024; // ≈ 1–2 worst-case frames
+
+/** True when the socket's unflushed buffer is small enough to enqueue another frame. */
+export function shouldSendSnapshot(bufferedAmount, limit = HOST_MAX_BUFFERED_BYTES) {
+  return bufferedAmount <= limit;
+}
+
+// One broadcast tick. Exported + side-effect-injected so the skip-BEFORE-getState
+// ordering is unit-testable without a browser socket. The skip must precede
+// getState() because getState() has send-marking side effects (it drains the
+// entity-registry removal tombstones and stamps the shared settings/config packets
+// as sent), so a built-but-unsent frame would silently lose data. Returns true if a
+// frame was sent, false if skipped. `1` is WebSocket.OPEN (avoids a global dep in Node).
+export function hostBroadcastTick(ws, getState, sendFrame, onSkip) {
+  if (!ws || ws.readyState !== 1) return false;
+  if (!shouldSendSnapshot(ws.bufferedAmount)) { onSkip?.(); return false; }
+  sendFrame(getState());
+  return true;
+}
+
 /**
  * @param {string} roomCode
  * @param {() => object} getState  — callback returning { creatures, players }
@@ -66,6 +103,40 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
   let intervalId = null;
   let reconnectDelay = 1000;
   let seq = 0;
+  let skippedTicks = 0;
+  let lastBackpressureReport = 0;
+  let lastSizeLog = 0;
+
+  // Opt-in wire-size probe (?netstats): throttled to once / 2 s so it can size real
+  // frames at real creature counts without spamming the console. Reuses the payload
+  // string already built for the send — no extra stringify.
+  const NET_STATS = params.has('netstats');
+  function logSnapshotSize(payload, state) {
+    if (!NET_STATS) return;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now - lastSizeLog < 2000) return;
+    lastSizeLog = now;
+    const kb = o => o == null ? 0 : Math.round(JSON.stringify(o).length / 1024);
+    console.log(
+      `[mp] sim_state ${Math.round(payload.length / 1024)} KB | ` +
+      `creatures(${state.creatures?.length ?? 0}) ${kb(state.creatures)} | ` +
+      `players ${kb(state.players)} | entities ${kb(state.entities)} | ` +
+      `buffered ${Math.round((ws?.bufferedAmount ?? 0) / 1024)} KB`,
+    );
+  }
+
+  // Throttled (≤ once / 2 s) signal that the uplink is saturated and frames are
+  // being dropped, so the perf HUD / console can show it instead of silent freezing.
+  function reportBackpressure() {
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now - lastBackpressureReport < 2000) return;
+    lastBackpressureReport = now;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('mp:backpressure', {
+        detail: { skippedTicks, bufferedAmount: ws?.bufferedAmount ?? 0 },
+      }));
+    }
+  }
 
   function connect() {
     ws = new WebSocket(RELAY_URL);
@@ -73,9 +144,16 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
       reconnectDelay = 1000;
       ws.send(JSON.stringify({ type: 'host', room: roomCode, mapKey: mapKey ?? null, worldMode: options.worldMode || 'shared' }));
       intervalId = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        const state = getState();
-        ws.send(JSON.stringify({ type: 'sim_state', seq: seq++, ...state }));
+        hostBroadcastTick(
+          ws,
+          getState,
+          state => {
+            const payload = JSON.stringify({ type: 'sim_state', seq: seq++, ...state });
+            logSnapshotSize(payload, state);
+            ws.send(payload);
+          },
+          () => { skippedTicks++; reportBackpressure(); },
+        );
       }, BROADCAST_MS);
       window.dispatchEvent(new CustomEvent('mp:connected', { detail: { role: 'host', room: roomCode } }));
     };
@@ -94,7 +172,8 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
   connect();
   return {
     broadcast(msg) {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      if (ws?.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(msg)); return true; }
+      return false;
     },
     destroy() { clearInterval(intervalId); ws?.close(); },
   };
@@ -218,8 +297,6 @@ function _lerpState(a, b, alpha) {
     }),
     entities: _lerpEntities(a.entities, b.entities, alpha),
     worldMode: b.worldMode ?? a.worldMode,
-    worldSettings: b.worldSettings ?? a.worldSettings,
-    creatureConfig: b.creatureConfig ?? a.creatureConfig,
     players: _lerpPlayers(a.players, b.players, alpha),
   };
 }
