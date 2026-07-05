@@ -408,7 +408,7 @@ function createMultiplayerFinder() {
     if (trackedId && !remoteList.some(p => p.id === trackedId)) trackedId = null;
     if (!trackedId && remoteList.length) trackedId = remoteList[0].id;
     const tracked = remoteList.find(p => p.id === trackedId) || null;
-    const trackedBearing = tracked ? Math.atan2(tracked.p[0] - local.p[0], tracked.p[2] - local.p[2]) : null;
+    const trackedBearing = tracked ? worldBearing(tracked.p[0] - local.p[0], tracked.p[2] - local.p[2]) : null;
 
     drawCompassStrip(ctx, w, heading, trackedBearing);
 
@@ -442,7 +442,7 @@ function createMultiplayerFinder() {
       const dx = p.p[0] - local.p[0];
       const dz = p.p[2] - local.p[2];
       const dist = Math.hypot(dx, dz);
-      const bearing = Math.atan2(dx, dz);
+      const bearing = worldBearing(dx, dz);
       const rel = screenRelativeBearing(bearing, heading);
       const clamped = Math.min(1, dist / view);
       const x = cx + Math.sin(rel) * clamped * 70;
@@ -466,7 +466,7 @@ function createMultiplayerFinder() {
     const dx = tracked.p[0] - local.p[0];
     const dz = tracked.p[2] - local.p[2];
     const dist = Math.hypot(dx, dz);
-    const relDeg = signedDegrees(screenRelativeBearing(Math.atan2(dx, dz), heading));
+    const relDeg = signedDegrees(screenRelativeBearing(worldBearing(dx, dz), heading));
     label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
   }
 
@@ -501,8 +501,7 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
 
   if (friendBearing != null) {
     const rel = screenRelativeBearing(friendBearing, heading);
-    const clampedRel = Math.max(-Math.PI * 0.5, Math.min(Math.PI * 0.5, rel));
-    const x = center + clampedRel * pxPerRad;
+    const x = Math.max(10, Math.min(width - 10, center + rel * pxPerRad));
     drawArrow(ctx, x, 13, Math.abs(rel) > Math.PI * 0.5 ? (rel > 0 ? Math.PI / 2 : -Math.PI / 2) : 0, 8, '#ffd166');
   }
 
@@ -532,6 +531,13 @@ function playerViewHeading() {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   return normalizeAngle(-Math.atan2(dir.x, dir.z));
+}
+
+// Bearing of a world-space XZ offset in the same clockwise compass convention as
+// playerViewHeading (N = +Z, E = -X in three.js Y-up coords). A bare atan2(dx, dz)
+// is the opposite handedness and mirrors markers east/west.
+function worldBearing(dx, dz) {
+  return normalizeAngle(-Math.atan2(dx, dz));
 }
 
 function yawFromPlayer(player) {
@@ -612,6 +618,10 @@ if (mapKey) {
 }
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+// YXZ from the start: getLocalPlayerState reads camera.rotation.y as the wire yaw,
+// and with the default XYZ order a lookAt-driven (orbit mode) yaw decodes folded
+// into ±90°, broadcasting a wrong facing until FPS mode first sets this.
+camera.rotation.order = 'YXZ';
 camera.position.set(22, 16, 26);
 
 // ===================== lights =====================

@@ -165,6 +165,38 @@ creation.
 - Relay → host: forwarded guest messages tagged with `{..., clientId}`, plus `{type:'guest_joined', clientId}` / `{type:'guest_left', clientId}`.
 - Relay → query sender: `{type:'room_info', hasHost, mapKey}`.
 
+## Friend finder HUD (compass strip + minimap)
+
+`createMultiplayerFinder()` in `environment-viewer.html` (near the session setup) builds a small
+fixed 220px canvas panel (bottom-left, hidden in solo) with three parts: a horizontal compass
+strip across the top, a heading-up minimap below it (concentric range rings, 140 m clamp radius),
+and a Track button that cycles which remote player is highlighted/labelled. It is redrawn every
+frame from `animate()` via `updateMultiplayerFinder()`, reading `multiplayerLocalPlayer()` and
+`multiplayerRemotePlayers()` (host: latest `player_state` from guests; guest: the snapshot's
+`players` minus itself).
+
+**Angle convention — the one thing to get right when touching this code.** Every angle in the
+finder is a clockwise compass bearing with **N = +Z and E = −X** (in three.js Y-up world coords a
+clockwise compass with N = +Z necessarily puts E at −X):
+
+- `playerViewHeading()` — the camera's view heading in this convention
+  (`-atan2(dir.x, dir.z)`). Spawn faces +Z and reads N.
+- `worldBearing(dx, dz)` — converts a world-space XZ offset to a bearing in this convention
+  (`-atan2(dx, dz)`). All position-derived bearings (tracked-friend arrow, minimap markers, the
+  distance/degrees label) must go through it. A bare `atan2(dx, dz)` is the opposite handedness:
+  it mirrors markers east/west, and because the error is `-2×heading` a marker for a friend you
+  are looking at slides the wrong way at twice your turn rate.
+- `playerForwardBearing(player)` — a remote player's facing (`π − yaw` from their wire
+  quaternion), already in this convention.
+- `screenRelativeBearing(bearing, heading)` — bearing − heading, normalized; 0 = strip center /
+  minimap up, positive = right of view.
+
+The wire `q` in `player_state` is built from `camera.rotation.y`, which is only a valid yaw with
+Euler order `YXZ` — set once at camera creation (a `lookAt`-driven camera on the default `XYZ`
+order decodes a yaw folded into ±90°, so orbit-mode players would broadcast a wrong facing for
+half the circle). The ghost eyes in `GhostRenderer` point along the same quaternion, so this
+order requirement protects both the finder arrows and the in-world ghost facing.
+
 ## Architecture notes
 
 - **Host-authoritative, server-dumb relay.** `server/server.js` holds no simulation state beyond
