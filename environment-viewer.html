@@ -50,7 +50,8 @@ import { loadTerrainMap } from './terrain-loader.js';
 import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
-import { createHostSession, createGuestSession, GhostRenderer } from './multiplayer.js';
+import { createHostSession, createGuestSession, GhostRenderer, playerTintHSL } from './multiplayer.js';
+import { createViewHands } from './player-hands.js';
 import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState } from './slider-state.js';
 import { createEntityRegistry } from './entity-registry.js';
 import { LightEntity, normalizeParamsPacket as entityNormalizeParamsPacket } from './entity-types/light.js';
@@ -3462,6 +3463,14 @@ worldModels = createWorldModelPanel({
   isWalkMode: () => fpsMode,
 });
 
+// First-person orb-hand viewmodel (your own two hands, visible only in FPS mode).
+// Tinted to match your own remote ghost via the shared playerTintHSL helper. The
+// camera must be in the scene graph for its viewmodel children to be rendered.
+scene.add(camera);
+const viewHands = createViewHands(camera, THREE);
+function localPlayerId() { return mpRole === 'guest' ? (mpClientId || 'guest') : 'host'; }
+viewHands.setTint(playerTintHSL(localPlayerId()));
+
 function resetPlayerPosition(resetLook = true) {
   const sx = 8, sz = 0;
   const spawnY = terrainHeight(sx, sz);
@@ -3493,6 +3502,8 @@ function enterFPS() {
   camera.position.copy(playerCollider.end);
   fpsMode = true;
   camera.fov = 70; camera.updateProjectionMatrix();
+  viewHands.setTint(playerTintHSL(localPlayerId()));
+  viewHands.setVisible(true);
   crosshair.style.display = 'block';
   exitHint.style.display = 'block';
   enterHint.style.display = 'none';
@@ -3500,6 +3511,7 @@ function enterFPS() {
 
 function exitFPS() {
   fpsMode = false;
+  viewHands.setVisible(false);
   target.set(playerCollider.end.x, playerCollider.end.y - capsuleH * 0.5, playerCollider.end.z);
   camera.fov = 50; camera.updateProjectionMatrix();
   crosshair.style.display = 'none';
@@ -3797,6 +3809,7 @@ async function animate() {
       updateFPSPlayer(fpsDt);
     }
     updateTerrainWindow(playerCollider.end);
+    viewHands.update(rawDt, { speed: Math.hypot(playerVelocity.x, playerVelocity.z) });
   } else {
     applyCamera();
     updateTerrainWindow(target);

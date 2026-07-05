@@ -1,6 +1,6 @@
 // Runs in Node.js. Exercises GhostRenderer's player-capsule eyes + blink with a
 // minimal THREE stub (GhostRenderer takes THREE as a param for exactly this).
-import { GhostRenderer } from './multiplayer.js';
+import { GhostRenderer, playerTintHSL } from './multiplayer.js';
 
 let failed = false;
 function assert(cond, msg) { if (!cond) { failed = true; console.error('FAIL:', msg); } }
@@ -44,7 +44,7 @@ assert(g instanceof Group, 'player ghost is a Group container');
 assert(scene.children.includes(g), 'container added to scene');
 assert(g.position.x === 1 && g.position.y === 2 && g.position.z === 3, 'container positioned by p');
 const meshes = g.children.filter(c => c instanceof Mesh);
-assert(meshes.length === 3, 'container has body + 2 eyes (got ' + meshes.length + ')');
+assert(meshes.length === 5, 'container has body + 2 eyes + 2 hands (got ' + meshes.length + ')');
 assert(g.userData.body.material.transparent !== true, 'body material is solid (not transparent)');
 const { left, right } = g.userData;
 assert(left && right, 'eye refs stored on userData');
@@ -56,11 +56,23 @@ assert(lg && rg, 'each eye has a glint highlight mesh');
 assert(lg.material === gr._glintMat && lg.material !== gr._eyeMat, 'glint uses the white glint material');
 assert(lg.position.y > 0 && lg.position.z < 0, 'glint sits toward the top-front of the eye');
 
+// --- orb hands --------------------------------------------------------------
+const { leftHand, rightHand } = g.userData;
+assert(leftHand && rightHand, 'hand refs stored on userData');
+assert(leftHand.material === g.userData.bodyMat, 'hands tinted with the per-player body material');
+assert(leftHand.position.x < 0 && rightHand.position.x > 0, 'hands spread left/right');
+assert(leftHand.position.z < 0 && rightHand.position.z < 0, 'hands float in front (-Z)');
+
 // --- per-player body tint ---------------------------------------------------
 const bob = gr._players.get('bob');
 assert(g.userData.bodyMat !== bob.userData.bodyMat, 'each player has its own body material');
 assert(g.userData.bodyMat.color.h !== bob.userData.bodyMat.color.h, 'players get distinct body hues');
 assert(g.userData.body.material === g.userData.bodyMat, 'body mesh uses the per-player material');
+
+// playerTintHSL is deterministic and id-dependent
+const ta = playerTintHSL('alice'), ta2 = playerTintHSL('alice'), tb = playerTintHSL('bob');
+assert(ta[0] === ta2[0] && ta[1] === ta2[1] && ta[2] === ta2[2], 'playerTintHSL is deterministic');
+assert(ta[0] !== tb[0], 'playerTintHSL differs across ids');
 
 // --- blink: eyes squash then recover ----------------------------------------
 gr.tick(0);                        // lazy-init nextBlinkAt
@@ -74,6 +86,12 @@ assert(right.scale.y === left.scale.y, 'both eyes blink together');
 gr.tick(100 + 200);                // past BLINK_MS -> recovered
 assert(Math.abs(left.scale.y - openY) < 1e-9, 'eyes reopen after blink');
 assert(g.userData.nextBlinkAt > 100 + 200, 'next blink rescheduled into the future');
+
+// --- hands bob over time ----------------------------------------------------
+gr.tick(1000);
+const handY1 = leftHand.position.y;
+gr.tick(1200);
+assert(leftHand.position.y !== handY1, 'hands bob over time');
 
 // --- removal cleans up the container ----------------------------------------
 const aliceMat = g.userData.bodyMat;

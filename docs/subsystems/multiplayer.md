@@ -22,6 +22,7 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 |---|---|---|
 | `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~330 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
+| `player-hands.js` | First-person orb-hand viewmodel: `createViewHands(camera, THREE)` — your own two floating hands, camera-attached, shown only in FPS mode | 55 |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker, map picker, loading screen; resolves `{ mapKey, mpRole, roomCode }` before the sim boots | 253 |
 | `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding (with per-guest send backpressure via `server/backpressure.js`), room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 106 |
 | `server/backpressure.js` | Pure `guestSendVerdict(bufferedAmount, isSimState)` → `'send'\|'skip'\|'kill'`: the relay's two-tier per-guest flow control (skip superseded `sim_state` at `RELAY_GUEST_SKIP_BYTES` = 1 MiB, terminate at `RELAY_GUEST_KILL_BYTES` = 8 MiB). Node-testable, socket-free. | 36 |
@@ -100,13 +101,30 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     container's local **-Z** (forward) face — the player's `q` is pure yaw, so the eyes point where
     they look. Eyes sit high on the body (`h * 0.42`). Body keeps the `h`/`r` scale; eyes are
     placed/sized from `h`/`r` in `_placeEyes` so they stay round despite the body's non-uniform
-    scale; glints are in eye-local space so they close with the eye on blink. Ids no longer present
-    are removed.
-  - `tick(nowMs)` — per-frame blink driver (must be called each frame; `update()` only runs on
-    network events). Squashes each player's eye `scale.y` 1→~0.1→1 over `BLINK_MS` (120 ms) on an
-    independent 3–6 s timer, staggered by an id hash. Called from `animate()` in
-    `environment-viewer.html` as `mpGhostRenderer?.tick(now)`.
-  - `destroy()` — removes and disposes all ghost meshes/geometries/materials (incl. eye geo/mat).
+    scale; glints are in eye-local space so they close with the eye on blink. Each player also gets
+    two floating **orb hands** (shared sphere geo, tinted with the same per-player body material)
+    placed to the sides in front by `_placeHands`. Ids no longer present are removed.
+  - `tick(nowMs)` — per-frame driver (must be called each frame; `update()` only runs on network
+    events). Squashes each player's eye `scale.y` 1→~0.1→1 over `BLINK_MS` (120 ms) on an
+    independent 3–6 s timer, staggered by an id hash; also animates the orb hands with an idle bob
+    plus a fore/aft walk-sway whose amplitude scales with horizontal speed (estimated from the
+    container's position delta between ticks). Called from `animate()` in `environment-viewer.html`
+    as `mpGhostRenderer?.tick(now)`.
+  - `destroy()` — removes and disposes all ghost meshes/geometries/materials (incl. eye geo/mat, orb
+    hands share the body geo/material).
+- `export function playerTintHSL(id): [h, s, l]` — deterministic light-pastel tint (in 0..1) for a
+  player id. Used by `GhostRenderer` for the body + orbs and by the local FPS viewmodel
+  (`player-hands.js`) so your own hands match your own ghost.
+
+### `player-hands.js`
+
+- `export function createViewHands(camera, THREE): { setTint(hsl), setVisible(v), update(dt, {speed}), destroy() }`
+  — the local player's first-person orb-hand viewmodel. In FPS mode your own capsule isn't drawn,
+  so this builds a `Group` of two orb `Mesh`es and `camera.add(group)`s it, so the orbs live in
+  camera-local space and follow head look. `update` applies an idle bob + a `speed`-scaled fore/aft
+  sway (matching the remote orbs). `setVisible` toggles it (shown only in FPS), `setTint` colors it
+  from `playerTintHSL(localId)`. **Requires the camera to be in the scene graph** — the entry point
+  calls `scene.add(camera)` for this. THREE is passed in (Node-testable, same as `GhostRenderer`).
 
 ### `start-screen.js`
 

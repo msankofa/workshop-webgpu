@@ -315,6 +315,17 @@ function _lerpState(a, b, alpha) {
 const BLINK_MS = 120;                      // duration of one blink (down then up)
 const BLINK_MIN_MS = 3000, BLINK_MAX_MS = 6000; // idle gap between blinks
 
+// Floating orb hands: idle bob + a fore/aft walk-sway scaled by horizontal speed.
+const ORB_R = 0.12;                        // orb radius at the default 0.3 capsule radius
+const HAND_BOB_HZ = 1.1, HAND_BOB_AMP = 0.02;
+const HAND_SWAY_HZ = 2.2, HAND_SWAY_MAX = 0.12, HAND_SWAY_PER_SPEED = 0.06;
+
+// Deterministic light-pastel tint for a player id, shared by the remote ghost body/
+// orbs and the local first-person viewmodel so your hands match your own ghost.
+export function playerTintHSL(id) {
+  return [(_hashId(id) % 360) / 360, 0.45, 0.72];
+}
+
 export class GhostRenderer {
   constructor(scene, THREE) {
     this._scene    = scene;
@@ -382,6 +393,7 @@ export class GhostRenderer {
       const h = item.h ?? 1.2;
       g.userData.body.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
       this._placeEyes(g, r, h);
+      this._placeHands(g, r, h);
     }
     for (const [id, g] of this._players) {
       if (!seen.has(id)) { this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id); }
@@ -394,11 +406,17 @@ export class GhostRenderer {
     // Per-player body tint: a light pastel keyed by the id hash so players are
     // easy to tell apart while staying bright enough for the black eyes to read.
     const bodyMat = this._pMat.clone();
-    bodyMat.color.setHSL((_hashId(id) % 360) / 360, 0.45, 0.72);
+    const [th, ts, tl] = playerTintHSL(id);
+    bodyMat.color.setHSL(th, ts, tl);
     const body = new THREE.Mesh(this._pGeo, bodyMat);
     const left = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     const right = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     g.add(body); g.add(left); g.add(right);
+    // Two floating orb hands, tinted to match the body (same per-player material),
+    // animated in tick(). Reuse the shared unit sphere geometry.
+    const leftHand = new THREE.Mesh(this._eyeGeo, bodyMat);
+    const rightHand = new THREE.Mesh(this._eyeGeo, bodyMat);
+    g.add(leftHand); g.add(rightHand);
     // White highlight glint, parented to each eye (in eye-local space) so it sits
     // just in front of the black, near the top, and closes with the eye on blink.
     const lg = new THREE.Mesh(this._eyeGeo, this._glintMat);
@@ -409,7 +427,13 @@ export class GhostRenderer {
     rg.position.set(-0.25, 0.42, -1.05);
     // nextBlinkAt is initialised lazily on the first tick (we don't know the
     // clock here); the id hash staggers players so they don't blink in unison.
-    g.userData = { id, body, bodyMat, left, right, eyeH: 0.14, nextBlinkAt: null, blinkStart: -1 };
+    g.userData = {
+      id, body, bodyMat, left, right, leftHand, rightHand,
+      eyeH: 0.14, nextBlinkAt: null, blinkStart: -1,
+      handPhase: (_hashId(id) % 628) / 100, // 0..~2π so hands don't bob in unison
+      handX: 0.33, handY: 0.18, handZ: -0.47, // base offsets, set by _placeHands
+      lastX: 0, lastZ: 0, lastNow: null,      // for speed-based sway
+    };
     return g;
   }
 
@@ -424,6 +448,22 @@ export class GhostRenderer {
     left.scale.set(ew, eh, ed);
     right.scale.set(ew, eh, ed);
     g.userData.eyeH = eh; // open height; tick() squashes scale.y during a blink
+  }
+
+  // Orb hands float to the sides in front of the body. Base offsets live in
+  // userData; tick() adds bob + sway. Positions set here too so a just-spawned
+  // player looks right before the first tick.
+  _placeHands(g, r, h) {
+    const s = r / 0.3;
+    const orbR = ORB_R * s;
+    const ud = g.userData;
+    ud.handX = r * 1.1;
+    ud.handY = h * 0.15;
+    ud.handZ = -(r + orbR + 0.05);
+    ud.leftHand.scale.set(orbR, orbR, orbR);
+    ud.rightHand.scale.set(orbR, orbR, orbR);
+    ud.leftHand.position.set(-ud.handX, ud.handY, ud.handZ);
+    ud.rightHand.position.set(ud.handX, ud.handY, ud.handZ);
   }
 
   // Per-frame blink driver — update() only runs on network events, so blink has
@@ -450,6 +490,20 @@ export class GhostRenderer {
       const y = ud.eyeH * f;
       ud.left.scale.y = y;
       ud.right.scale.y = y;
+
+      // Orb hands: horizontal speed from container position delta drives the sway.
+      let speed = 0;
+      if (ud.lastNow != null) {
+        const dtS = Math.max(1e-3, (now - ud.lastNow) / 1000);
+        speed = Math.hypot(g.position.x - ud.lastX, g.position.z - ud.lastZ) / dtS;
+      }
+      ud.lastX = g.position.x; ud.lastZ = g.position.z; ud.lastNow = now;
+      const t = now / 1000;
+      const bob = Math.sin(2 * Math.PI * HAND_BOB_HZ * t + ud.handPhase) * HAND_BOB_AMP;
+      const swayAmp = Math.min(HAND_SWAY_MAX, speed * HAND_SWAY_PER_SPEED);
+      const sway = Math.sin(2 * Math.PI * HAND_SWAY_HZ * t + ud.handPhase) * swayAmp;
+      ud.leftHand.position.set(-ud.handX, ud.handY + bob, ud.handZ + sway);
+      ud.rightHand.position.set(ud.handX, ud.handY - bob, ud.handZ - sway);
     }
   }
 
