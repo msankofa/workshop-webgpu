@@ -3794,6 +3794,7 @@ async function animate() {
   worldModels?.update?.();
   syncMultiplayerPlayer(now);
   updateMultiplayerFinder();
+  mpGhostRenderer?.tick(now);
   });
   frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
   // water runs its own reflection / refraction / caustics passes, then we draw

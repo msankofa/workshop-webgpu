@@ -306,26 +306,33 @@ function _lerpState(a, b, alpha) {
 //   Accepts THREE as a constructor param to avoid a static import
 //   (keeps this module usable in Node.js tests that don't have three).
 //   Creature ghosts: a semi-transparent box at body position
-//   Player ghosts:   a capsule at player position
+//   Player ghosts:   a solid capsule (a Group holding the body + two eyes) so
+//                    you can tell where a remote player is facing. The player's
+//                    quaternion is pure yaw, so local -Z is their forward; the
+//                    eyes sit on that face and blink on independent timers.
 // ---------------------------------------------------------------------------
+
+const BLINK_MS = 120;                      // duration of one blink (down then up)
+const BLINK_MIN_MS = 3000, BLINK_MAX_MS = 6000; // idle gap between blinks
 
 export class GhostRenderer {
   constructor(scene, THREE) {
     this._scene    = scene;
     this._THREE    = THREE;
     this._creatures = new Map(); // id(number) → Mesh
-    this._players   = new Map(); // clientId(string) → Mesh
+    this._players   = new Map(); // clientId(string) → Group (container)
     this._cGeo = new THREE.BoxGeometry(0.7, 0.5, 1.0);
     this._pGeo = new THREE.CapsuleGeometry(0.3, 1.2, 4, 8);
+    this._eyeGeo = new THREE.SphereGeometry(1, 8, 8);
     this._cMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5 });
-    this._pMat = new THREE.MeshStandardMaterial({ color: 0xffcc44, transparent: true, opacity: 0.7 });
+    this._pMat = new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: 0.7 });
+    this._eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 }); // unlit flat black
   }
 
   update(state) {
     this._updateSet(state.creatures ?? [], this._creatures, this._cGeo, this._cMat,
       c => c.id, c => c.p, c => c.q);
-    this._updateSet(state.players ?? [], this._players, this._pGeo, this._pMat,
-      p => p.id, p => p.p, p => p.q);
+    this._updatePlayers(state.players ?? []);
   }
 
   _updateSet(items, map, geo, mat, getId, getP, getQ) {
@@ -357,14 +364,100 @@ export class GhostRenderer {
     }
   }
 
+  // Player ghosts are containers (Group) so the eyes stay round while the body
+  // keeps its non-uniform h/r scale. The container carries position + orientation.
+  _updatePlayers(items) {
+    const seen = new Set();
+    for (const item of items) {
+      const id = item.id;
+      seen.add(id);
+      let g = this._players.get(id);
+      if (!g) { g = this._makePlayer(id); this._scene.add(g); this._players.set(id, g); }
+      const [px, py, pz] = item.p;
+      g.position.set(px, py, pz);
+      const [qx, qy, qz, qw] = item.q;
+      g.quaternion.set(qx, qy, qz, qw);
+      const r = item.r ?? 0.3;
+      const h = item.h ?? 1.2;
+      g.userData.body.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
+      this._placeEyes(g, r, h);
+    }
+    for (const [id, g] of this._players) {
+      if (!seen.has(id)) { this._scene.remove(g); this._players.delete(id); }
+    }
+  }
+
+  _makePlayer(id) {
+    const THREE = this._THREE;
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(this._pGeo, this._pMat);
+    const left = new THREE.Mesh(this._eyeGeo, this._eyeMat);
+    const right = new THREE.Mesh(this._eyeGeo, this._eyeMat);
+    g.add(body); g.add(left); g.add(right);
+    // nextBlinkAt is initialised lazily on the first tick (we don't know the
+    // clock here); the id hash staggers players so they don't blink in unison.
+    g.userData = { id, body, left, right, eyeH: 0.14, nextBlinkAt: null, blinkStart: -1 };
+    return g;
+  }
+
+  // Eyes sit on the front (-Z) face, upper-middle, sized/spread with the capsule.
+  _placeEyes(g, r, h) {
+    const s = r / 0.3;
+    const ex = 0.13 * s, ey = h * 0.25, ez = -(r + 0.02);
+    const ew = 0.09 * s, eh = 0.14 * s, ed = 0.06 * s;
+    const { left, right } = g.userData;
+    left.position.set(-ex, ey, ez);
+    right.position.set(ex, ey, ez);
+    left.scale.set(ew, eh, ed);
+    right.scale.set(ew, eh, ed);
+    g.userData.eyeH = eh; // open height; tick() squashes scale.y during a blink
+  }
+
+  // Per-frame blink driver — update() only runs on network events, so blink has
+  // to be driven separately. Squashes eye scale.y 1 -> ~0.1 -> 1 over BLINK_MS.
+  tick(nowMs) {
+    const now = nowMs ?? 0;
+    for (const g of this._players.values()) {
+      const ud = g.userData;
+      if (ud.nextBlinkAt == null) ud.nextBlinkAt = now + (_hashId(ud.id) % BLINK_MIN_MS);
+      let f = 1;
+      if (ud.blinkStart >= 0) {
+        const t = now - ud.blinkStart;
+        if (t >= BLINK_MS) {
+          ud.blinkStart = -1;
+          ud.nextBlinkAt = now + BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
+        } else {
+          const half = BLINK_MS / 2;
+          f = t < half ? 1 - (t / half) * 0.9 : 0.1 + ((t - half) / half) * 0.9;
+        }
+      } else if (now >= ud.nextBlinkAt) {
+        ud.blinkStart = now;
+        f = 1;
+      }
+      const y = ud.eyeH * f;
+      ud.left.scale.y = y;
+      ud.right.scale.y = y;
+    }
+  }
+
   destroy() {
     for (const m of this._creatures.values()) this._scene.remove(m);
-    for (const m of this._players.values())   this._scene.remove(m);
+    for (const g of this._players.values())   this._scene.remove(g);
     this._creatures.clear();
     this._players.clear();
     this._cGeo.dispose();
     this._pGeo.dispose();
+    this._eyeGeo.dispose();
     this._cMat.dispose();
     this._pMat.dispose();
+    this._eyeMat.dispose();
   }
+}
+
+// Small deterministic string hash for staggering per-player blink timers.
+function _hashId(id) {
+  const s = String(id);
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0);
 }

@@ -91,10 +91,18 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   Same reconnect backoff as the host.
 - `export class GhostRenderer` — `constructor(scene, THREE)` (THREE passed in, not statically
   imported, so the module stays importable from plain Node for tests).
-  - `update(state: { creatures?: [], players?: [] })` — creates/reuses one box `Mesh` per
-    creature id and one capsule `Mesh` per player id, sets position/quaternion from `p`/`q`,
-    scales player capsules from optional `h`/`r`, and removes meshes for ids no longer present.
-  - `destroy()` — removes and disposes all ghost meshes/geometries/materials.
+  - `update(state: { creatures?: [], players?: [] })` — creatures reuse one semi-transparent box
+    `Mesh` per id via the generic `_updateSet`. Players go through `_updatePlayers`: each is a
+    `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (off-white
+    `MeshStandardMaterial`, no transparency) plus two flat-black eye `Mesh`es on the container's
+    local **-Z** (forward) face — the player's `q` is pure yaw, so the eyes point where they look.
+    Body keeps the `h`/`r` scale; eyes are placed/sized from `h`/`r` in `_placeEyes` so they stay
+    round despite the body's non-uniform scale. Ids no longer present are removed.
+  - `tick(nowMs)` — per-frame blink driver (must be called each frame; `update()` only runs on
+    network events). Squashes each player's eye `scale.y` 1→~0.1→1 over `BLINK_MS` (120 ms) on an
+    independent 3–6 s timer, staggered by an id hash. Called from `animate()` in
+    `environment-viewer.html` as `mpGhostRenderer?.tick(now)`.
+  - `destroy()` — removes and disposes all ghost meshes/geometries/materials (incl. eye geo/mat).
 
 ### `start-screen.js`
 
@@ -197,8 +205,13 @@ and checks:
 - Sampling after the last snapshot (t=1200) clamps to the last snapshot's state.
 - An empty buffer's `sample()` returns `null`.
 
-It does **not** test `createGuestSession`/`GhostRenderer`, the WebSocket protocol, or slerp
+It does **not** test `createGuestSession`, the WebSocket protocol, or slerp
 correctness — those are unverified by automated tests.
+
+`test-ghost-renderer.mjs` (repo root, plain `node`, minimal `THREE` stub) covers `GhostRenderer`'s
+player path: the container holds a solid body + two forward-facing eyes, `tick()` squashes then
+reopens the eyes across a blink window, absent ids are removed, and `destroy()` disposes the shared
+eye geo/material.
 
 `test-host-backpressure.mjs` (repo root, plain `node`) covers the host guard: `shouldSendSnapshot`
 boundaries, and a fake-socket drive of `hostBroadcastTick` asserting sends stop while
