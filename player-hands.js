@@ -10,8 +10,8 @@
 // Node for tests, same pattern as GhostRenderer.
 
 const ORB_R = 0.12;
-const BASE_X = 0.28, BASE_Y = -0.32, BASE_Z = -0.7; // camera-local rest offsets (-Z = forward)
-const BOB_HZ = 1.1, BOB_AMP = 0.02;
+const BASE_X = 0.4, BASE_Y = -0.32, BASE_Z = -0.7; // camera-local rest offsets (-Z = forward)
+const BOB_HZ = 1.1, BOB_AMP = 0.006;
 const SWAY_HZ = 2.2, SWAY_MAX = 0.12, SWAY_PER_SPEED = 0.06;
 
 export function createViewHands(camera, THREE) {
