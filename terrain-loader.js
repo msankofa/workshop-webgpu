@@ -241,18 +241,21 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
       total = 1;
     }
 
-    // Feathered slope/shore/depth ramps (replace fallbackMaterialAt's hard thresholds at
-    // 0.58/0.34 slope and sea±0.5/1.5 with smoothstep bands). Additive, then renormalized.
+    // Feathered slope/shore/depth ramps — MUST match terrain-textures.js layerWeightsAt (the
+    // vertex bake) so this read field and the terrain material agree (one field). Rock and sand
+    // are OVERRIDES that suppress the biome base past the threshold (cliff → rock, lakebed →
+    // sand), feathered by keepBase so the transition still blends. Edges mirror RAMP there.
     const slope = 1 - upness;
-    const rockW = ssMoist(0.50, 0.66, slope);                                   // was slope>0.58
-    const dirtW = ssMoist(0.26, 0.42, slope) * (1 - rockW);                     // was slope>0.34
-    const sandW = 1 - ssMoist(surfaceSeaLevel - 0.9, surfaceSeaLevel - 0.1, worldY); // was <=sea-0.5
-    const beachW = (1 - ssMoist(surfaceSeaLevel + 0.8, surfaceSeaLevel + 2.2, worldY)) * (1 - sandW); // was <=sea+1.5
-    const landFactor = 1 - sandW; // suppress slope overrides where submerged
+    const rockW = ssMoist(0.42, 0.58, slope);
+    const dirtW = ssMoist(0.26, 0.42, slope) * (1 - rockW);
+    const sandW = 1 - ssMoist(surfaceSeaLevel - 0.9, surfaceSeaLevel - 0.1, worldY);
+    const beachW = (1 - ssMoist(surfaceSeaLevel + 0.8, surfaceSeaLevel + 2.2, worldY)) * (1 - sandW);
+    const keepBase = (1 - rockW) * (1 - sandW);
+    for (let i = 0; i < NLAYERS; i++) _surfW[i] *= keepBase;
     _surfW[LAYER_INDEX.sand] += sandW * total;
-    _surfW[LAYER_INDEX.beach] += beachW * total * landFactor;
-    _surfW[LAYER_INDEX.rock] += rockW * total * landFactor;
-    _surfW[LAYER_INDEX.dirt] += dirtW * total * landFactor;
+    _surfW[LAYER_INDEX.rock] += rockW * total * (1 - sandW);
+    _surfW[LAYER_INDEX.dirt] += dirtW * total * (1 - sandW);
+    _surfW[LAYER_INDEX.beach] += beachW * total * (1 - rockW);
 
     // Top-k selection (k=4), normalized to sum 1.
     const idx = [0, 0, 0, 0];

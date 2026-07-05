@@ -13,7 +13,10 @@ const VERTEX_TOPK = 4;
 // Slope/shore/height feather ramps — SAME edges the read-only surfaceField sampler uses in
 // terrain-loader.js, so the CPU field and the baked vertex weights agree (one field, N
 // consumers). Replaces fallbackMaterialAt's hard 0.58/0.34 slope and sea±0.5/1.5 steps.
-const RAMP = { rock: [0.50, 0.66], dirt: [0.26, 0.42], sandLo: -0.9, sandHi: -0.1, beachLo: 0.8, beachHi: 2.2 };
+// slope = 1 - normalY. rock [0.42,0.58] ≈ full rock past ~65° faces, blending in from ~54°;
+// dirt [0.26,0.42] ≈ 37°–52°. These are BAKE-time thresholds (weights are per-vertex) — changing
+// the cliff angle needs a map reload, not a live slider.
+const RAMP = { rock: [0.42, 0.58], dirt: [0.26, 0.42], sandLo: -0.9, sandHi: -0.1, beachLo: 0.8, beachHi: 2.2 };
 
 const MATERIAL_INDEX = Object.fromEntries(TERRAIN_TEXTURE_LAYERS.map((name, index) => [name, index]));
 const BASE_PATH = 'textures/ground';
@@ -210,6 +213,94 @@ function dominantMaterial(a, b, c) {
   return [a, b, c].sort((x, y) => (MATERIAL_INDEX[y] ?? 0) - (MATERIAL_INDEX[x] ?? 0))[0] || 'grass';
 }
 
+// --- Phase 2 shared math (pure, Node-testable) -------------------------------
+// Feathered per-layer weight vector at one grid cell — the vertex-bake twin of
+// terrain-loader.js surfaceField's weight logic (same masks, same ramp edges), kept as a
+// weight vector instead of an argmax. Fills `out` (length NLAYERS) with raw (un-normalized)
+// weights and returns their sum.
+const _NLAYERS = TERRAIN_TEXTURE_LAYERS.length;
+export function layerWeightsAt(mapData, meta, gridIndex, worldY, normalY, out) {
+  for (let i = 0; i < _NLAYERS; i++) out[i] = 0;
+  const masks = mapData.materialMasks || mapData.materialWeights || null;
+  let total = 0;
+  if (masks) {
+    for (let i = 0; i < _NLAYERS; i++) {
+      const aliases = MASK_ALIASES[TERRAIN_TEXTURE_LAYERS[i]] || [TERRAIN_TEXTURE_LAYERS[i]];
+      let w = 0;
+      for (let a = 0; a < aliases.length; a++) {
+        const arr = masks[aliases[a]];
+        if (Array.isArray(arr) || ArrayBuffer.isView(arr)) w += Number(arr[gridIndex] ?? 0);
+      }
+      out[i] = w;
+      total += w;
+    }
+  }
+  if (total <= 0.001) {
+    for (let i = 0; i < _NLAYERS; i++) out[i] = 0;
+    const biomeId = mapData.biomeIds?.[gridIndex];
+    const biome = meta.biomeNames?.[biomeId] || 'plains';
+    out[MATERIAL_INDEX[BIOME_MATERIAL[biome] || 'grass'] ?? MATERIAL_INDEX.grass] = 1;
+    total = 1;
+  }
+  const seaLevel = Number(meta.seaLevel ?? 0);
+  const upness = upnessFromNormalY(Number.isFinite(normalY) ? normalY : 1);
+  const slope = 1 - upness;
+  const rockW = ssRamp(RAMP.rock[0], RAMP.rock[1], slope);   // steep faces → rock (cliff)
+  const dirtW = ssRamp(RAMP.dirt[0], RAMP.dirt[1], slope) * (1 - rockW); // mid slopes → dirt
+  const sandW = 1 - ssRamp(seaLevel + RAMP.sandLo, seaLevel + RAMP.sandHi, worldY); // submerged → sand
+  const beachW = (1 - ssRamp(seaLevel + RAMP.beachLo, seaLevel + RAMP.beachHi, worldY)) * (1 - sandW);
+  // Rock and sand are OVERRIDES, not additions: past the slope/shore threshold they suppress the
+  // biome/mask base so a cliff reads as rock (not a 50/50 grass-rock mush) and lakebeds read as
+  // sand. keepBase feathers to 0 as either override saturates, so the transition still blends.
+  const keepBase = (1 - rockW) * (1 - sandW);
+  for (let i = 0; i < _NLAYERS; i++) out[i] *= keepBase;
+  out[MATERIAL_INDEX.sand] += sandW * total;
+  out[MATERIAL_INDEX.rock] += rockW * total * (1 - sandW);
+  out[MATERIAL_INDEX.dirt] += dirtW * total * (1 - sandW);
+  out[MATERIAL_INDEX.beach] += beachW * total * (1 - rockW);
+  let sum = 0;
+  for (let i = 0; i < _NLAYERS; i++) sum += out[i];
+  return sum;
+}
+
+// Which global layers a map actually uses, capped to MAX_ACTIVE_LAYERS. Scans the mask/biome
+// presence + the ramp layers (sand/beach/rock/dirt are reachable on any map via slope/shore),
+// ranks by accumulated weight, returns the top global indices sorted ascending for a stable
+// slot order. Always includes at least the grass layer so an empty map still blends.
+export function pickActiveLayers(mapData, meta, sampleGridIndices) {
+  const acc = new Float64Array(_NLAYERS);
+  const tmp = new Float64Array(_NLAYERS);
+  const seaLevel = Number(meta.seaLevel ?? 0);
+  for (const gi of sampleGridIndices) {
+    const worldY = seaLevel; // presence scan only needs mask/biome + always-on ramp layers
+    layerWeightsAt(mapData, meta, gi, worldY, 1, tmp);
+    for (let i = 0; i < _NLAYERS; i++) acc[i] += tmp[i];
+  }
+  // Ramp layers are reachable on virtually any terrain via slope/shore, so seed them so a
+  // map whose sampled cells never crossed a ramp still has the slots when a cliff/shore appears.
+  for (const name of ['sand', 'beach', 'rock', 'dirt']) acc[MATERIAL_INDEX[name]] += 1e-3;
+  acc[MATERIAL_INDEX.grass] += 1e-6;
+  const ranked = [...Array(_NLAYERS).keys()].filter((i) => acc[i] > 0).sort((a, b) => acc[b] - acc[a]);
+  const active = ranked.slice(0, MAX_ACTIVE_LAYERS).sort((a, b) => a - b);
+  return active.length ? active : [MATERIAL_INDEX.grass];
+}
+
+// Restrict a full weight vector to the active-layer set, keep the top-VERTEX_TOPK, normalize
+// to sum 1, and scatter into `slotW` (length MAX_ACTIVE_LAYERS, indexed by active-slot). The
+// slot order matches `activeLayers`, i.e. the DataArrayTexture depth order.
+export function weightsIntoSlots(weights, activeLayers, slotW) {
+  for (let s = 0; s < MAX_ACTIVE_LAYERS; s++) slotW[s] = 0;
+  // gather active-slot weights
+  const idx = [];
+  for (let s = 0; s < activeLayers.length; s++) idx.push([s, weights[activeLayers[s]] || 0]);
+  idx.sort((a, b) => b[1] - a[1]);
+  let sum = 0;
+  const keep = Math.min(VERTEX_TOPK, idx.length);
+  for (let k = 0; k < keep; k++) sum += Math.max(0, idx[k][1]);
+  if (sum <= 1e-8) { slotW[0] = 1; return; }
+  for (let k = 0; k < keep; k++) slotW[idx[k][0]] = Math.max(0, idx[k][1]) / sum;
+}
+
 function ensureUv2(geometry) {
   const uv = geometry.getAttribute('uv');
   if (!uv || geometry.getAttribute('uv2')) return;
@@ -280,6 +371,219 @@ function classifyMesh(mesh, mapData, meta) {
   return true;
 }
 
+// --- Phase 2 browser path: DataArrayTexture pack + splat bake + one node material ----------
+// (All of the below is only reached at runtime from applyTerrainTextures, which is guarded by
+//  `typeof document === 'undefined'` — Node importers only pull the pure math above.)
+const ARRAY_SIZE = 512;
+const FLAT_NORMAL_RGBA = [128, 128, 255, 255];
+
+async function fetchLayerPixels(url, size, fallbackRGBA) {
+  const fb = () => { const d = new Uint8ClampedArray(size * size * 4); for (let i = 0; i < d.length; i += 4) { d[i] = fallbackRGBA[0]; d[i + 1] = fallbackRGBA[1]; d[i + 2] = fallbackRGBA[2]; d[i + 3] = fallbackRGBA[3]; } return d; };
+  if (!url) return fb();
+  try {
+    const blob = await (await fetch(url)).blob();
+    const bmp = await createImageBitmap(blob);
+    const cv = new OffscreenCanvas(size, size);
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, size, size);
+    bmp.close();
+    return ctx.getImageData(0, 0, size, size).data;
+  } catch (_) {
+    return fb();
+  }
+}
+
+// Build the two DataArrayTextures for the active layer set:
+//   albedoArray: rgb = albedo (sRGB), a = roughness (linear, from the layer's roughness map g)
+//   normalArray: rgb = tangent normal, a = AO (linear; drives the moss cavity term)
+// One sampler each regardless of layer count — the whole point of arrays (SeedThree
+// terrain-material.js). WebGPU DataArrayTexture mip generation is broken → LinearFilter,
+// generateMipmaps=false (verified caveat, cited in the merged plan).
+// Pack one active slot's albedo (rgb) + roughness (alpha) and normal (rgb) + AO (alpha) from a
+// source folder (a layer name like 'rock' or a library id like 'library/foo') into the given
+// data arrays. Shared by the initial build and the live source-swap so they never diverge.
+async function packSlice(albedoData, normalData, slot, globalIdx, src, textureFiles, size) {
+  const name = TERRAIN_TEXTURE_LAYERS[globalIdx];
+  const fb = FALLBACK_COLORS[name] ?? 0x808080;
+  const [alb, nrm, rgh, ao] = await Promise.all([
+    fetchLayerPixels(candidateFiles(src, 'color', textureFiles)[0], size, [(fb >> 16) & 255, (fb >> 8) & 255, fb & 255, 255]),
+    fetchLayerPixels(candidateFiles(src, 'normal', textureFiles)[0], size, FLAT_NORMAL_RGBA),
+    fetchLayerPixels(candidateFiles(src, 'roughness', textureFiles)[0], size, null),
+    fetchLayerPixels(candidateFiles(src, 'ao', textureFiles)[0], size, [255, 255, 255, 255]),
+  ]);
+  const base = slot * size * size * 4;
+  const roughByte = Math.round(clamp(ROUGHNESS[name] ?? 0.9, 0, 1) * 255);
+  for (let p = 0; p < size * size; p++) {
+    albedoData[base + p * 4] = alb[p * 4];
+    albedoData[base + p * 4 + 1] = alb[p * 4 + 1];
+    albedoData[base + p * 4 + 2] = alb[p * 4 + 2];
+    albedoData[base + p * 4 + 3] = rgh ? rgh[p * 4 + 1] : roughByte;
+    normalData[base + p * 4] = nrm[p * 4];
+    normalData[base + p * 4 + 1] = nrm[p * 4 + 1];
+    normalData[base + p * 4 + 2] = nrm[p * 4 + 2];
+    normalData[base + p * 4 + 3] = ao ? ao[p * 4] : 255;
+  }
+}
+
+async function buildTerrainArrays(activeLayers, sourceByLayer, textureFiles, webgpu) {
+  const { DataArrayTexture, RepeatWrapping, SRGBColorSpace, LinearFilter } = webgpu;
+  const size = ARRAY_SIZE;
+  const count = activeLayers.length;
+  const albedoData = new Uint8Array(size * size * 4 * count);
+  const normalData = new Uint8Array(size * size * 4 * count);
+  await Promise.all(activeLayers.map((globalIdx, slot) => packSlice(
+    albedoData, normalData, slot, globalIdx,
+    sourceByLayer?.[globalIdx] || TERRAIN_TEXTURE_LAYERS[globalIdx], textureFiles, size,
+  )));
+  const mk = (data, srgb) => {
+    const t = new DataArrayTexture(data, size, size, count);
+    t.wrapS = t.wrapT = RepeatWrapping;
+    t.minFilter = LinearFilter; t.magFilter = LinearFilter;
+    t.generateMipmaps = false; t.anisotropy = 1;
+    if (srgb) t.colorSpace = SRGBColorSpace;
+    t.needsUpdate = true;
+    return t;
+  };
+  return { albedoArray: mk(albedoData, true), normalArray: mk(normalData, false) };
+}
+
+// Bake the merged attribute schema onto one terrain mesh (F2). Emits interpolatable weights
+// (NOT an argmax, NOT addGroup): aSplatWA/aSplatWB = per-active-slot feathered top-4 weights,
+// aDress = (moisture, upness, cavityReserved, reserved). uv stays world (x,z) as before.
+function classifyMeshSplat(mesh, mapData, meta, activeLayers) {
+  const geometry = mesh.geometry;
+  const position = geometry.getAttribute('position');
+  if (!position) return false;
+  const normal = geometry.getAttribute('normal');
+  const world = new THREE.Vector3();
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+  const n = new THREE.Vector3();
+  const uvArr = new Float32Array(position.count * 2);
+  const wa = new Float32Array(position.count * 4);
+  const wb = new Float32Array(position.count * 4);
+  const dress = new Float32Array(position.count * 4);
+  const full = new Float64Array(_NLAYERS);
+  const slotW = new Float64Array(MAX_ACTIVE_LAYERS);
+  const seaLevel = Number(meta.seaLevel ?? 0);
+
+  for (let i = 0; i < position.count; i++) {
+    world.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
+    uvArr[i * 2] = world.x;
+    uvArr[i * 2 + 1] = world.z;
+    let normalY = 1;
+    if (normal) { n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize(); normalY = n.y; }
+    const gi = gridIndexAt(world.x, world.z, meta);
+    layerWeightsAt(mapData, meta, gi, world.y, normalY, full);
+    weightsIntoSlots(full, activeLayers, slotW);
+    wa[i * 4] = slotW[0]; wa[i * 4 + 1] = slotW[1]; wa[i * 4 + 2] = slotW[2]; wa[i * 4 + 3] = slotW[3];
+    wb[i * 4] = slotW[4] || 0; wb[i * 4 + 1] = slotW[5] || 0; wb[i * 4 + 2] = 0; wb[i * 4 + 3] = 0;
+    const biomeId = mapData.biomeIds?.[gi];
+    const biome = meta.biomeNames?.[biomeId] || 'plains';
+    dress[i * 4] = moistureProxyForBiome(biome, world.y, seaLevel);
+    dress[i * 4 + 1] = upnessFromNormalY(normalY);
+    dress[i * 4 + 2] = 0.5; // cavity: neutral vertex fallback; material refines via sampled AO
+    dress[i * 4 + 3] = 0;
+  }
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
+  ensureUv2(geometry);
+  geometry.setAttribute('aSplatWA', new THREE.BufferAttribute(wa, 4));
+  geometry.setAttribute('aSplatWB', new THREE.BufferAttribute(wb, 4));
+  geometry.setAttribute('aDress', new THREE.BufferAttribute(dress, 4));
+  geometry.clearGroups();
+  return true;
+}
+
+// Cheap world-space hash noise (no texture tap) — macro anti-tiling + moss brush break-up
+// without spending a sampler bind. Same idiom as rocks.js hashNoise3.
+function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
+  const { MeshStandardNodeMaterial } = webgpu;
+  const { Fn, texture, attribute, mix, normalMap, vec2, vec3, vec4, float, int, clamp, sin, fract, dot, abs, positionWorld, normalWorld, uniform } = tsl;
+  const { albedoArray, normalArray } = arrays;
+  const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
+
+  const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(12.9898, 78.233))).mul(43758.5453)));
+  const wa = attribute('aSplatWA', 'vec4');
+  const wb = attribute('aSplatWB', 'vec4');
+  const dress = attribute('aDress', 'vec4');
+  const slotWeight = (s) => (s === 0 ? wa.x : s === 1 ? wa.y : s === 2 ? wa.z : s === 3 ? wa.w : s === 4 ? wb.x : wb.y);
+
+  // Per-slot tunable uniforms (back the live layer UI, F3). uniform() takes a RAW number so the
+  // returned node's .value is settable from updateSplatLayer. tile = world-meters per tile;
+  // rough = roughness multiplier; nrm = normal strength. Unrolled over the fixed active slots.
+  const uTile = [], uRough = [], uNrm = [];
+  for (let s = 0; s < activeLayers.length; s++) {
+    const name = TERRAIN_TEXTURE_LAYERS[activeLayers[s]];
+    uTile.push(uniform(uniforms?.tile?.[s] ?? (TILE_METERS[name] ?? 4)));
+    uRough.push(uniform(uniforms?.rough?.[s] ?? 1));
+    uNrm.push(uniform(uniforms?.nrm?.[s] ?? 1));
+  }
+
+  // Triplanar projection weights from the geometric world normal — collapses to plain top-down
+  // (xz) on flat ground (wy≈1, so no visual change and the side taps carry ~0 weight there),
+  // and blends in the vertical projections on slopes to kill the stretch on cliffs. Sharpened
+  // (squared) so the transition is tight.
+  const P = positionWorld;
+  const aN = abs(normalWorld);
+  const wSum = aN.x.add(aN.y).add(aN.z).add(1e-4);
+  const nrmW = aN.div(wSum);
+  const wSq = vec3(nrmW.x.mul(nrmW.x), nrmW.y.mul(nrmW.y), nrmW.z.mul(nrmW.z));
+  const wsSum = wSq.x.add(wSq.y).add(wSq.z).add(1e-4);
+  const triW = vec3(wSq.x.div(wsSum), wSq.y.div(wsSum), wSq.z.div(wsSum));
+  // Triplanar array sample at slot s, tiled by inverse world-meters. Albedo uses this so cliff
+  // rock/dirt no longer smears; the normal/AO tap stays planar-xz (cheaper, and normal-map
+  // stretch on cliffs is far less objectionable than albedo smear).
+  const triSample = (tex, s, invTile) => {
+    const sx = texture(tex, P.zy.mul(invTile)).depth(int(s));
+    const sy = texture(tex, P.xz.mul(invTile)).depth(int(s));
+    const sz = texture(tex, P.xy.mul(invTile)).depth(int(s));
+    return sx.mul(triW.x).add(sy.mul(triW.y)).add(sz.mul(triW.z));
+  };
+
+  let col = vec3(0, 0, 0);
+  let rough = float(0);
+  let nrm = vec3(0, 0, 0);
+  let aoAcc = float(0);
+  for (let s = 0; s < activeLayers.length; s++) {
+    const w = slotWeight(s);
+    const invTile = float(1).div(uTile[s].max(0.01));
+    const a = triSample(albedoArray, s, invTile);
+    const nT = texture(normalArray, P.xz.mul(invTile)).depth(int(s));
+    col = col.add(a.rgb.mul(w));
+    rough = rough.add(a.a.mul(uRough[s]).mul(w));
+    // scale tangent-normal deviation toward flat by the per-layer normal strength
+    const nDev = mix(vec3(0.5, 0.5, 1.0), nT.rgb, uNrm[s]);
+    nrm = nrm.add(nDev.mul(w));
+    aoAcc = aoAcc.add(nT.a.mul(w));
+  }
+
+  // Macro anti-tiling (Phase-5 hook, sampler-free): gentle world-space value break-up so the
+  // repeat grid stops reading as tiles. Kept subtle; the texture-macro version lands in #5.
+  const macro = hash2(positionWorld.xz.mul(0.018)).mul(0.22).add(0.89);
+  col = col.mul(macro);
+
+  // Moss/lichen dressing (Phase-3 hook): the shared mossWeight() law composed onto the blended
+  // surface. cavity = 1 - sampled AO (sheltered nooks collect moss); brush = hash break-up.
+  const moss = mossTint(dress.x, dress.y, clamp(float(1).sub(aoAcc), 0, 1),
+    hash2(positionWorld.xz.mul(0.5)), uniforms?.mossStrength);
+  const mossAlbedo = vec3(0.24, 0.34, 0.16);
+  col = mix(col, mossAlbedo, moss);
+  rough = mix(rough, float(0.95), moss);
+
+  mat.colorNode = vec4(clamp(col, 0, 1), 1);
+  mat.roughnessNode = clamp(rough, 0.04, 1);
+  mat.normalNode = normalMap(vec4(clamp(nrm, 0, 1), 1));
+  mat.userData.splatUniforms = { tile: uTile, rough: uRough, nrm: uNrm };
+  return mat;
+}
+
+// mossTint: the shared mossWeight() Fn (moss-tint.js) scaled by an optional strength uniform.
+// Isolated so makeSplatMaterial reads cleanly; strength lets the UI/understory tune amount.
+function mossTint(moisture, upness, cavity, brush, strength) {
+  const w = mossWeightFn(moisture, upness, cavity, brush);
+  return strength == null ? w : w.mul(strength);
+}
+let mossWeightFn = null; // set on first browser build via dynamic import
+
 export async function applyTerrainTextures(root, mapData, meta = {}, options = {}) {
   if (typeof document === 'undefined') return null;
   const resolution = Number(meta.resolution ?? mapData.resolution);
@@ -293,8 +597,68 @@ export async function applyTerrainTextures(root, mapData, meta = {}, options = {
     seaLevel: Number(meta.seaLevel ?? mapData.seaLevel ?? 0),
     biomeNames: meta.biomeNames || mapData.biomeNames || [],
   };
-  const { materials, report, packs } = await createTerrainMaterials(options);
   root.updateMatrixWorld(true);
+  // Phase 2: the single blended node material is the default. It never goes black — if array
+  // packing or node-material build throws (older adapter, missing WebGPU), fall back to the
+  // legacy per-triangle multi-material so terrain always renders. `legacySplit:true` forces it.
+  if (!options.legacySplit) {
+    try {
+      const result = await applySplatTerrain(root, mapData, fullMeta, options);
+      if (result) return result;
+    } catch (err) {
+      console.warn('[terrain-textures] splat material unavailable, using legacy multi-material:', err?.message || err);
+    }
+  }
+  return applyLegacyTerrain(root, mapData, fullMeta, options);
+}
+
+// New default: one DataArrayTexture-backed MeshStandardNodeMaterial blending the active layer
+// set with feathered per-vertex weights + composed moss dressing. Returns null (→ caller falls
+// back to legacy) if nothing could be textured.
+async function applySplatTerrain(root, mapData, meta, options) {
+  const [webgpu, tsl, mossMod] = await Promise.all([
+    import('three/webgpu'), import('three/tsl'), import('./moss-tint.js'),
+  ]);
+  mossWeightFn = mossMod.mossWeight;
+  const textureFiles = await loadTextureFileSet(options);
+
+  // presence scan: stride the grid so pickActiveLayers is O(a few thousand) not O(res²).
+  const res = meta.resolution;
+  const stride = Math.max(1, Math.floor(res / 64));
+  const samples = [];
+  for (let iz = 0; iz < res; iz += stride) for (let ix = 0; ix < res; ix += stride) samples.push(iz * res + ix);
+  const activeLayers = pickActiveLayers(mapData, meta, samples);
+
+  const arrays = await buildTerrainArrays(activeLayers, options.sourceByLayer || null, textureFiles, webgpu);
+  const material = makeSplatMaterial(arrays, activeLayers, tsl, webgpu, options.splatUniforms || {});
+
+  let texturedMeshes = 0;
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
+    obj.receiveShadow = true;
+    obj.castShadow = false;
+    if (classifyMeshSplat(obj, mapData, meta, activeLayers)) { obj.material = material; texturedMeshes++; }
+  });
+  if (!texturedMeshes) { arrays.albedoArray.dispose(); arrays.normalArray.dispose(); return null; }
+
+  const activeNames = activeLayers.map((gi) => TERRAIN_TEXTURE_LAYERS[gi]);
+  root.userData.terrainTextureMode = 'splat';
+  root.userData.terrainSplat = { material, arrays, activeLayers, activeNames };
+  root.userData.terrainTextureMaterials = material; // truthy → the live layer UI gate passes
+  root.userData.terrainTextureSettings = Object.fromEntries(activeLayers.map((gi, slot) => {
+    const name = TERRAIN_TEXTURE_LAYERS[gi];
+    return [name, {
+      slot, sourceLayer: name, tileMeters: TILE_METERS[name] ?? 4, defaultTileMeters: TILE_METERS[name] ?? 4,
+      roughness: 1, defaultRoughness: 1, normalScale: 1, displacementScale: 0,
+    }];
+  }));
+  root.userData.terrainTextureMeshes = texturedMeshes;
+  root.userData.terrainTextureReport = { mode: 'splat', activeLayers: activeNames };
+  return { material, texturedMeshes, mode: 'splat', activeLayers: activeNames };
+}
+
+async function applyLegacyTerrain(root, mapData, fullMeta, options) {
+  const { materials, report, packs } = await createTerrainMaterials(options);
   let texturedMeshes = 0;
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
@@ -305,6 +669,7 @@ export async function applyTerrainTextures(root, mapData, meta = {}, options = {
       texturedMeshes++;
     }
   });
+  root.userData.terrainTextureMode = 'legacy';
   root.userData.terrainTextureMaterials = materials;
   root.userData.terrainTextureLayerPacks = packs;
   root.userData.terrainTextureSettings = Object.fromEntries(packs.map((pack) => [pack.layer, {
@@ -352,8 +717,11 @@ function applyLayerMaterialSettings(material, settings) {
   material.needsUpdate = true;
 }
 
-export function getTerrainTextureLayerNames() {
-  return [...TERRAIN_TEXTURE_LAYERS];
+export function getTerrainTextureLayerNames(root) {
+  // In splat mode only the map's active layers are tunable — return those so the UI dropdown
+  // lists real, effective layers. Legacy mode (or no root) lists all 13.
+  const active = root?.userData?.terrainSplat?.activeNames;
+  return active ? [...active] : [...TERRAIN_TEXTURE_LAYERS];
 }
 
 export function getTerrainTextureLayerSettings(root, layer) {
@@ -388,7 +756,42 @@ async function loadTextureSourceMaps(source, settings) {
   };
 }
 
+// Repack one active slot's slice of the (already-uploaded) DataArrayTextures from a new source
+// folder and flag both arrays for re-upload — this is how source-swap works live in splat mode
+// without rebuilding the node material (the material's texture nodes reference the same array
+// objects, so mutating .image.data + needsUpdate is enough).
+async function swapSplatSlice(splat, slot, source, textureFiles) {
+  const albedoData = splat.arrays.albedoArray.image.data;
+  const normalData = splat.arrays.normalArray.image.data;
+  await packSlice(albedoData, normalData, slot, splat.activeLayers[slot], source, textureFiles, ARRAY_SIZE);
+  splat.arrays.albedoArray.needsUpdate = true;
+  splat.arrays.normalArray.needsUpdate = true;
+}
+
+// Splat-mode live tuning: drive the one node material's per-slot uniforms (F3 "rewire the layer
+// UI to uniforms") for tile/roughness/normal, and repack a slot's array slice for source-swap.
+async function updateSplatLayer(root, layer, changes) {
+  const splat = root.userData.terrainSplat;
+  const settings = root.userData.terrainTextureSettings?.[layer];
+  const uni = splat?.material?.userData?.splatUniforms;
+  if (!settings || !uni || settings.slot == null) return null;
+  const s = settings.slot;
+  if (Number.isFinite(Number(changes.tileMeters))) { settings.tileMeters = Number(changes.tileMeters); uni.tile[s].value = settings.tileMeters; }
+  if (Number.isFinite(Number(changes.roughness))) { settings.roughness = clamp(Number(changes.roughness), 0, 3); uni.rough[s].value = settings.roughness; }
+  if (Number.isFinite(Number(changes.normalScale))) { settings.normalScale = clamp(Number(changes.normalScale), 0, 3); uni.nrm[s].value = settings.normalScale; }
+  if (changes.sourceLayer !== undefined) {
+    const source = normalizeTextureSource(changes.sourceLayer);
+    if (validTextureSource(source) && source !== settings.sourceLayer) {
+      settings.sourceLayer = source;
+      const textureFiles = await loadTextureFileSet();
+      await swapSplatSlice(splat, s, source, textureFiles);
+    }
+  }
+  return { ...settings };
+}
+
 export async function updateTerrainTextureLayer(root, layer, changes = {}) {
+  if (root?.userData?.terrainTextureMode === 'splat') return updateSplatLayer(root, layer, changes);
   const packs = root?.userData?.terrainTextureLayerPacks;
   const settingsByLayer = root?.userData?.terrainTextureSettings;
   if (!packs || !settingsByLayer || !Object.hasOwn(MATERIAL_INDEX, layer)) return null;

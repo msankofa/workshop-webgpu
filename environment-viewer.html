@@ -2516,7 +2516,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   header('Biomes');
   if (loadedMap?.root?.userData?.terrainTextureMaterials) {
-    const biomeLayers = getTerrainTextureLayerNames();
+    const biomeLayers = getTerrainTextureLayerNames(loadedMap.root);
     let textureSources = [...biomeLayers];
     try {
       const catalog = await fetch('textures/ground/catalog.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null);

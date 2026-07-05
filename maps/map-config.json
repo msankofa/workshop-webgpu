@@ -63,6 +63,15 @@
       "playable": true,
       "mapScale": 1,
       "snapStep": 0.5
+    },
+    "workshop/4-5-26-1.glb": {
+      "displayName": "July 5 - 1",
+      "gameName": "July 5 - 1",
+      "image": "",
+      "playable": true,
+      "mapScale": 1,
+      "snapStep": 0.5
     }
+
   }
 }
