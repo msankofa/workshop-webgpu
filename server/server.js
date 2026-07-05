@@ -1,11 +1,150 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { handlePublishRequest } from './publish-map.js';
 import { guestSendVerdict } from './backpressure.js';
 
 const PORT = process.env.PORT || 8080;
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const STATS_DIR = path.join(ROOT_DIR, 'research', 'stats');
+const TELEMETRY_FIELDS = [
+  'timestamp',
+  'index',
+  'name',
+  'temperature.gpu',
+  'utilization.gpu',
+  'utilization.memory',
+  'clocks.gr',
+  'clocks.mem',
+  'power.draw',
+  'power.limit',
+  'pstate',
+  'memory.used',
+  'memory.total',
+  'fan.speed',
+];
+
+let telemetrySession = null;
+
+function json(res, code, payload) {
+  res.writeHead(code, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function utcStamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function sampleTelemetry(session) {
+  const wallTimeUtc = new Date().toISOString();
+  execFile('nvidia-smi', [
+    `--query-gpu=${TELEMETRY_FIELDS.join(',')}`,
+    '--format=csv,noheader,nounits',
+  ], { windowsHide: true }, (err, stdout) => {
+    if (err) {
+      session.lastError = err.message;
+      return;
+    }
+    const rows = stdout.trim().split(/\r?\n/).filter(Boolean);
+    if (rows.length === 0) return;
+    fs.appendFile(session.path, rows.map(row => `${wallTimeUtc},${row}`).join('\n') + '\n', appendErr => {
+      if (appendErr) session.lastError = appendErr.message;
+    });
+  });
+}
+
+function startTelemetry(options = {}) {
+  if (telemetrySession) return telemetrySession;
+  fs.mkdirSync(STATS_DIR, { recursive: true });
+  const intervalMs = Math.max(250, Math.round(Number(options.intervalMs) || 1000));
+  const maxSeconds = Math.max(1, Math.round(Number(options.maxSeconds) || 900));
+  const file = `gpu-telemetry-${utcStamp()}.csv`;
+  const outPath = path.join(STATS_DIR, file);
+  fs.writeFileSync(outPath, `wallTimeUtc,${TELEMETRY_FIELDS.join(',')}\n`);
+  telemetrySession = {
+    active: true,
+    file,
+    path: outPath,
+    startedAt: new Date().toISOString(),
+    intervalMs,
+    maxSeconds,
+    lastError: null,
+    timer: null,
+    deadlineTimer: null,
+  };
+  sampleTelemetry(telemetrySession);
+  telemetrySession.timer = setInterval(() => sampleTelemetry(telemetrySession), intervalMs);
+  telemetrySession.deadlineTimer = setTimeout(() => stopTelemetry(), maxSeconds * 1000);
+  return telemetrySession;
+}
+
+function stopTelemetry() {
+  if (!telemetrySession) return null;
+  clearInterval(telemetrySession.timer);
+  clearTimeout(telemetrySession.deadlineTimer);
+  const stopped = { ...telemetrySession, active: false, stoppedAt: new Date().toISOString() };
+  delete stopped.timer;
+  delete stopped.deadlineTimer;
+  telemetrySession = null;
+  return stopped;
+}
+
+function telemetryPayload(session = telemetrySession) {
+  if (!session) return { ok: true, active: false };
+  return {
+    ok: true,
+    active: !!session.active,
+    file: session.file,
+    startedAt: session.startedAt,
+    intervalMs: session.intervalMs,
+    maxSeconds: session.maxSeconds,
+    lastError: session.lastError,
+  };
+}
+
+function readJson(req) {
+  return new Promise(resolve => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { resolve({}); }
+    });
+  });
+}
+
+async function handleTelemetryRequest(req, res) {
+  if (req.method === 'OPTIONS') return json(res, 204, {});
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/telemetry/status' && req.method === 'GET') return json(res, 200, telemetryPayload());
+  if (url.pathname === '/telemetry/start' && req.method === 'POST') {
+    const options = await readJson(req);
+    try {
+      const session = startTelemetry(options);
+      return json(res, 200, telemetryPayload(session));
+    } catch (err) {
+      return json(res, 500, { ok: false, active: false, error: err.message });
+    }
+  }
+  if (url.pathname === '/telemetry/stop' && req.method === 'POST') {
+    return json(res, 200, telemetryPayload(stopTelemetry()));
+  }
+  return false;
+}
 
 const httpServer = http.createServer((req, res) => {
+  if (req.url?.startsWith('/telemetry/')) {
+    handleTelemetryRequest(req, res).catch(err => json(res, 500, { ok: false, error: err.message }));
+    return;
+  }
   handlePublishRequest(req, res).catch(err => {
     console.error('publish-map request failed:', err);
     if (!res.headersSent) {

@@ -55,6 +55,9 @@ const DEFAULTS = {
   reflectStrength: 0.08,
   reflectMix: 1.0,
   reflectBrightness: 1.0,
+  reflectResolutionScale: 0.5, // perf: reflector render-target scale (1 = full res); see setReflectionTuning()
+  reflectRate: 1,              // perf: render the reflection every Nth frame (1 = every frame)
+  reflectExclude: null,        // Object3D/list/function returning detail objects hidden only during reflection
   depthScale: 3.0,
   waveStrength: 1.0,
   caustic: 1.0,
@@ -552,19 +555,86 @@ export function createWaterSystem(options = {}) {
   // GLSL equivalent:
   //   vec4 rc = vReflect; rc.xy += N.xz * uReflectStrength * rc.w;
   //   vec3 refl = texture2DProj(uReflect, rc).rgb;
-  const tsl_reflector = reflector();
+  // perf: half-res reflection render target (see render-bottleneck-fixes.md Problem 1).
+  // resolutionScale is read live by ReflectorBaseNode._updateResolution() on every render
+  // (three.webgpu.js:37162-37170, called from updateBefore at 37268), so it is safe to
+  // change at runtime via reflectorBase.resolutionScale = x, not just at construction time.
+  const tsl_reflector = reflector({ resolutionScale: o.reflectResolutionScale });
   const reflectorBase = tsl_reflector.reflector;
   let reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
-  const reflectionRenderStats = { enabled: reflectionEnabled, passes: 0, lastMs: 0 };
+  const reflectionRenderStats = { enabled: reflectionEnabled, passes: 0, skipped: 0, excluded: 0, lastMs: 0 };
   const renderReflection = reflectorBase.updateBefore.bind(reflectorBase);
+  // perf: frame-skip throttle. `reflectEvery` (set via setReflectRate(), declared below with
+  // the rest of the per-frame-update state) controls how often the reflection actually
+  // re-renders; on skipped frames we return early WITHOUT touching textureNode.value, so the
+  // previous render target's texture stays bound (verified safe: three.webgpu.js:37356 only
+  // assigns textureNode.value when a render actually runs).
+  //
+  // ReflectorBaseNode.updateBeforeType is NodeUpdateType.FRAME (three.webgpu.js:37118, since
+  // bounces is false here), so the node system already dedupes repeat calls that share the
+  // same frame.frameId (three.webgpu.js:53044-53060) — but frame.frameId itself is bumped by
+  // *every* renderer._renderScene() call (three.webgpu.js:58670), including this reflector's
+  // own nested render, so it is not a stable "one tick per app frame" counter on its own. We
+  // track distinct frameId *transitions* to build our own frame counter: this wrapper only
+  // executes once per outer renderer.render(scene, camera) call in practice (the water mesh is
+  // only traversed as part of the single base-scene submission), so counting on frameId change
+  // is equivalent to counting real frames while additionally guarding against any accidental
+  // re-entry with an unchanged frameId.
+  let reflectFrameCounter = -1;
+  let reflectLastFrameId = null;
+  const reflectExcludeSeen = new Set();
+  const reflectExcludeScratch = [];
+  function collectReflectExcludes(src, out) {
+    if (!src) return;
+    if (typeof src === 'function') {
+      collectReflectExcludes(src(), out);
+      return;
+    }
+    if (Array.isArray(src) || (typeof src[Symbol.iterator] === 'function' && !src.isObject3D)) {
+      for (const item of src) collectReflectExcludes(item, out);
+      return;
+    }
+    if (src.isObject3D && !reflectExcludeSeen.has(src)) {
+      reflectExcludeSeen.add(src);
+      out.push(src);
+    }
+  }
+  function renderReflectionPruned(frame) {
+    reflectExcludeSeen.clear();
+    reflectExcludeScratch.length = 0;
+    collectReflectExcludes(o.reflectExclude, reflectExcludeScratch);
+    const hidden = [];
+    for (const obj of reflectExcludeScratch) {
+      if (!obj || obj.visible === false) continue;
+      hidden.push(obj);
+      obj.visible = false;
+    }
+    try {
+      renderReflection(frame);
+    } finally {
+      for (const obj of hidden) obj.visible = true;
+      reflectionRenderStats.excluded = hidden.length;
+    }
+  }
   reflectorBase.updateBefore = (frame) => {
     reflectionRenderStats.enabled = reflectionEnabled;
     if (!reflectionEnabled) {
       reflectionRenderStats.lastMs = 0;
       return;
     }
+    const fid = frame && frame.frameId;
+    if (fid === undefined || fid !== reflectLastFrameId) {
+      reflectLastFrameId = fid;
+      reflectFrameCounter++;
+    }
+    // Always renders on the very first frame (0 % N === 0 for any N >= 1) so the reflector
+    // texture is never left blank at startup.
+    if (reflectFrameCounter % reflectEvery !== 0) {
+      reflectionRenderStats.skipped++;
+      return;
+    }
     const t0 = nowMs();
-    renderReflection(frame);
+    renderReflectionPruned(frame);
     reflectionRenderStats.passes++;
     reflectionRenderStats.lastMs = nowMs() - t0;
   };
@@ -960,12 +1030,14 @@ export function createWaterSystem(options = {}) {
   // ---------- per-frame update ----------
   // Reflection  : tsl_reflector (ReflectorNode) fires its own renderer.render() inside
   //               updateBefore() ? triggered automatically by the node system when
-  //               renderer.render(scene, camera) is called by the host loop.
+  //               renderer.render(scene, camera) is called by the host loop. Throttled to
+  //               every `reflectEvery`th frame by the wrapper installed above
+  //               (reflectorBase.updateBefore, water.js:~560) — see setReflectRate().
   // Refraction  : viewportSharedTexture copies the framebuffer inside updateBefore()
   //               via renderer.copyFramebufferToTexture() ? no extra pass needed.
   // Caustics    : CausticTextureNode.updateBefore() renders causticScene to causticsTarget
   //               during the live render loop (issues/001 safe ? same pattern as reflector).
-  let reflectEvery = 1;  // retained for API; no rate effect with ReflectorNode (renders per-frame)
+  let reflectEvery = Math.max(1, Math.round(Number(o.reflectRate) || 1));
   function update(time) {
     tsl_uTime.value = time;
     camera.updateMatrixWorld();
@@ -974,9 +1046,10 @@ export function createWaterSystem(options = {}) {
     drainDeferredDisposals(false);
   }
   function setReflectRate(everyNFrames) {
-    // API preserved. With ReflectorNode the reflector renders every frame automatically;
-    // per-N-frame throttling requires ReflectorNode.updateBeforeType manipulation
-    // which is deferred to a later pass.
+    // Perf: throttles the reflection to render only every `everyNFrames`th real frame.
+    // Consumed by the reflectorBase.updateBefore wrapper (water.js:~560), which counts
+    // distinct frame.frameId transitions and skips renderReflection() on off-frames,
+    // leaving the previous render target's texture bound (safe — see wrapper comment).
     reflectEvery = Math.max(1, Math.round(everyNFrames));
   }
 
@@ -1035,6 +1108,15 @@ export function createWaterSystem(options = {}) {
     reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
     reflectionRenderStats.enabled = reflectionEnabled;
     if (opts.depthScale !== undefined) tsl_uDepthScale.value = opts.depthScale;
+    // perf: reflector render-target scale (1 = full res, 0.5 = half res per dimension).
+    // Safe to change at runtime — ReflectorBaseNode._updateResolution() re-reads
+    // resolutionScale on every render (three.webgpu.js:37162-37170, 37268).
+    if (opts.reflectResolutionScale !== undefined) {
+      o.reflectResolutionScale = Math.max(0.05, Number(opts.reflectResolutionScale) || 1);
+      reflectorBase.resolutionScale = o.reflectResolutionScale;
+    }
+    // perf: every-Nth-frame reflection throttle; same seam as setReflectRate().
+    if (opts.reflectRate !== undefined) setReflectRate(opts.reflectRate);
   }
 
   function setLightDir(v) {
@@ -1096,7 +1178,11 @@ export function createWaterSystem(options = {}) {
       causticLastMs: causticRenderStats.lastMs,
       reflectionEnabled: reflectionRenderStats.enabled,
       reflectionPasses: reflectionRenderStats.passes,
+      reflectionSkipped: reflectionRenderStats.skipped,
+      reflectionExcluded: reflectionRenderStats.excluded,
       reflectionLastMs: reflectionRenderStats.lastMs,
+      reflectionResolutionScale: o.reflectResolutionScale,
+      reflectionRate: reflectEvery,
       ring0Tris: ringTris[0], ring1Tris: ringTris[1], ring2Tris: ringTris[2],
       ring0Verts: ringVerts[0], ring1Verts: ringVerts[1], ring2Verts: ringVerts[2],
       waterTriangles: ringTris[0] + ringTris[1] + ringTris[2],

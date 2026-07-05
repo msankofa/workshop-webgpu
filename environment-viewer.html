@@ -862,7 +862,9 @@ const terrainDebug = {
   waterRing0Tris: 0, waterRing1Tris: 0, waterRing2Tris: 0,
   waterRing0Verts: 0, waterRing1Verts: 0, waterRing2Verts: 0,
   waterCacheHits: 0, waterCacheMisses: 0, waterBuildMs: 0, waterDisposals: 0,
-  waterCausticEnabled: false, waterCausticPasses: 0, waterCausticLastMs: 0, waterReflectionEnabled: false, waterReflectionPasses: 0, waterReflectionLastMs: 0,
+  waterCausticEnabled: false, waterCausticPasses: 0, waterCausticLastMs: 0,
+  waterReflectionEnabled: false, waterReflectionPasses: 0, waterReflectionSkipped: 0, waterReflectionExcluded: 0,
+  waterReflectionLastMs: 0, waterReflectionResolutionScale: 1, waterReflectionRate: 1,
   waterMinBed: Infinity, waterLoaded: false, waterVersion: '',
   treePlacements: 0, lastUpdate: 0, fps: 0, cpuMs: 0,
 };
@@ -944,12 +946,33 @@ function updateTerrainDebug(now) {
 //   perfStats.download()     -> save perf-<timestamp>.csv
 //   perfStats.clear()        -> reset the buffer
 //   perfStats.intervalMs = N -> change sample cadence (ms)
+const PERF_AUTOSTART = new URLSearchParams(location.search).get('perf') === 'on';
+const TELEMETRY_HELPER_URL = new URLSearchParams(location.search).get('telemetryUrl') || 'http://127.0.0.1:8080';
+async function telemetryRequest(path, options = {}) {
+  const res = await fetch(`${TELEMETRY_HELPER_URL}${path}`, {
+    method: options.method || 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  if (!res.ok) throw new Error(`telemetry ${path} failed (${res.status})`);
+  return res.json();
+}
+function csvCell(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
 let perfLogUI = null;
 const perfLog = {
   intervalMs: 1000,
   maxSamples: 600,            // ~10 min at 1 s; oldest samples are ring-trimmed
   samples: [],
-  recording: new URLSearchParams(location.search).get('perf') === 'on',
+  recording: false,
+  telemetryActive: false,
+  telemetryFile: '',
+  telemetryStartedAt: '',
+  telemetryError: '',
+  telemetryStartRequested: false,
   startTime: 0,
   lastSample: -Infinity,
   snapshot(now) {
@@ -960,6 +983,10 @@ const perfLog = {
       fps: +terrainDebug.fps.toFixed(1),
       cpuMs: +terrainDebug.cpuMs.toFixed(3),            // CPU time encoding+submitting the frame (the SP1 perf-gate metric)
       backend: renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
+      telemetryActive: this.telemetryActive,
+      telemetryFile: this.telemetryFile,
+      telemetryStartedAt: this.telemetryStartedAt,
+      telemetryError: this.telemetryError,
       postMode: POST_MODE,
       creatureMode: CREATURE_MODE,
       creatureInstancingMode: cs.instancingMode,
@@ -1048,12 +1075,18 @@ const perfLog = {
       waterCausticLastMs: +terrainDebug.waterCausticLastMs.toFixed(3),
       waterReflectionEnabled: terrainDebug.waterReflectionEnabled,
       waterReflectionPasses: terrainDebug.waterReflectionPasses,
+      waterReflectionSkipped: terrainDebug.waterReflectionSkipped,
+      waterReflectionExcluded: terrainDebug.waterReflectionExcluded,
       waterReflectionLastMs: +terrainDebug.waterReflectionLastMs.toFixed(3),
+      waterReflectionResolutionScale: terrainDebug.waterReflectionResolutionScale,
+      waterReflectionRate: terrainDebug.waterReflectionRate,
       waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
+      forestVisibleVariants: forestGPURef ? forestGPURef.stats.visibleVariants : null,
       forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
       plantDraws: plantsGPURef ? plantsGPURef.stats.draws : 0,
+      plantVisibleVariants: plantsGPURef ? plantsGPURef.stats.visibleVariants : 0,
       plantInstances: plantsGPURef ? plantsGPURef.stats.instances : 0,
       plantVariants: plantsGPURef ? plantsGPURef.stats.variants : 0,
       particleFields: particleFields.length,
@@ -1063,6 +1096,10 @@ const perfLog = {
   },
   maybeSample(now) {
     if (!this.recording) return;
+    if (!this.telemetryStartRequested) {
+      this.telemetryStartRequested = true;
+      this.startTelemetry();
+    }
     if (this.samples.length === 0) this.startTime = now;
     if (now - this.lastSample < this.intervalMs) return;
     this.lastSample = now;
@@ -1073,8 +1110,55 @@ const perfLog = {
   toCSV() {
     if (this.samples.length === 0) return '';
     const cols = Object.keys(this.samples[0]);
-    const rows = this.samples.map(s => cols.map(c => s[c]).join(','));
+    const rows = this.samples.map(s => cols.map(c => csvCell(s[c])).join(','));
     return [cols.join(','), ...rows].join('\n');
+  },
+  async startTelemetry() {
+    this.telemetryError = '';
+    try {
+      const seconds = Math.ceil((this.maxSamples * this.intervalMs) / 1000) + 60;
+      const info = await telemetryRequest('/telemetry/start', {
+        method: 'POST',
+        body: { intervalMs: this.intervalMs, maxSeconds: seconds },
+      });
+      this.telemetryActive = !!info.active;
+      this.telemetryFile = info.file || '';
+      this.telemetryStartedAt = info.startedAt || '';
+      this.telemetryError = info.error || info.lastError || '';
+    } catch (err) {
+      this.telemetryActive = false;
+      this.telemetryFile = '';
+      this.telemetryStartedAt = '';
+      this.telemetryError = err?.message || 'telemetry unavailable';
+    }
+    if (perfLogUI) perfLogUI.refresh();
+  },
+  async stopTelemetry() {
+    if (!this.telemetryActive) return;
+    try {
+      await telemetryRequest('/telemetry/stop', { method: 'POST', body: {} });
+    } catch (err) {
+      this.telemetryError = err?.message || 'telemetry stop failed';
+    }
+    this.telemetryActive = false;
+    if (perfLogUI) perfLogUI.refresh();
+  },
+  async setRecording(on) {
+    if (on === this.recording && (!on || this.telemetryStartRequested || this.telemetryActive || this.telemetryError)) return;
+    if (on) {
+      this.samples.length = 0;
+      this.telemetryStartRequested = true;
+      this.lastSample = -Infinity;
+      this.startTime = performance.now();
+      frameProfiler.reset();
+      await this.startTelemetry();
+      this.recording = true;
+    } else {
+      this.recording = false;
+      this.telemetryStartRequested = false;
+      await this.stopTelemetry();
+    }
+    if (perfLogUI) perfLogUI.refresh();
   },
   download() {
     const csv = this.toCSV();
@@ -1088,6 +1172,7 @@ const perfLog = {
   },
   clear() {
     this.samples.length = 0;
+    this.telemetryStartRequested = false;
     this.lastSample = -Infinity;
     this.startTime = performance.now();
     frameProfiler.reset();
@@ -1118,15 +1203,17 @@ function updatePerfPanel(now) {
   function refresh() {
     recBtn.textContent = perfLog.recording ? '● rec' : '▶ rec';
     recBtn.style.color = perfLog.recording ? '#ff7b7b' : '#c4ccd6';
-    count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms`;
+    const gpu = perfLog.telemetryActive ? ` gpu:${perfLog.telemetryFile || 'on'}` : (perfLog.telemetryError ? ' gpu:off' : '');
+    count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms${gpu}`;
   }
-  recBtn.addEventListener('click', () => { perfLog.recording = !perfLog.recording; refresh(); });
+  recBtn.addEventListener('click', () => { perfLog.setRecording(!perfLog.recording); refresh(); });
   csvBtn.addEventListener('click', () => perfLog.download());
   clrBtn.addEventListener('click', () => perfLog.clear());
   panel.append(label, recBtn, count, csvBtn, clrBtn);
   document.body.appendChild(panel);
   perfLogUI = { refresh };
   refresh();
+  if (PERF_AUTOSTART) perfLog.setRecording(true);
 }
 if (!loadedMap) scene.add(terrainGroup);
 
@@ -1280,7 +1367,8 @@ function syncWaterDebug() {
     terrainDebug.waterRing0Verts = terrainDebug.waterRing1Verts = terrainDebug.waterRing2Verts = 0;
     terrainDebug.waterCacheHits = terrainDebug.waterCacheMisses = 0;
     terrainDebug.waterBuildMs = terrainDebug.waterDisposals = 0;
-    terrainDebug.waterCausticEnabled = false; terrainDebug.waterCausticPasses = 0; terrainDebug.waterCausticLastMs = 0; terrainDebug.waterReflectionEnabled = false; terrainDebug.waterReflectionPasses = 0; terrainDebug.waterReflectionLastMs = 0;
+    terrainDebug.waterCausticEnabled = false; terrainDebug.waterCausticPasses = 0; terrainDebug.waterCausticLastMs = 0;
+    terrainDebug.waterReflectionEnabled = false; terrainDebug.waterReflectionPasses = 0; terrainDebug.waterReflectionSkipped = 0; terrainDebug.waterReflectionExcluded = 0; terrainDebug.waterReflectionLastMs = 0; terrainDebug.waterReflectionResolutionScale = 1; terrainDebug.waterReflectionRate = 1;
     terrainDebug.waterMinBed = Infinity;
     return;
   }
@@ -1313,7 +1401,11 @@ function syncWaterDebug() {
   terrainDebug.waterCausticLastMs = s.causticLastMs || 0;
   terrainDebug.waterReflectionEnabled = !!s.reflectionEnabled;
   terrainDebug.waterReflectionPasses = s.reflectionPasses || 0;
+  terrainDebug.waterReflectionSkipped = s.reflectionSkipped || 0;
+  terrainDebug.waterReflectionExcluded = s.reflectionExcluded || 0;
   terrainDebug.waterReflectionLastMs = s.reflectionLastMs || 0;
+  terrainDebug.waterReflectionResolutionScale = s.reflectionResolutionScale || 1;
+  terrainDebug.waterReflectionRate = s.reflectionRate || 1;
   terrainDebug.waterMinBed = s.minBed;
 }
 
@@ -1395,7 +1487,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   });
   if (FOREST_MODE === 'gpu') {
     ({ createForestPalette } = await import('./forest-palette.js'));
-    ({ createForestGPU } = await import('./forest-gpu.js?v=bill-brightness'));
+    ({ createForestGPU } = await import('./forest-gpu.js?v=visible-gating-debounce-1'));
   }
   // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
   // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
@@ -2725,6 +2817,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     });
     scene.add(cg.mesh);
     grassRef = {
+      mesh: cg.mesh,
       update: (s) => cg.update(s),
       stats: cg.stats,
       sync: () => {}, regenerate: () => {}, applyFade: () => {},
@@ -2752,7 +2845,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const { createPlantPalette } = await import('./plants.js?v=field-fade-1');
     const { plantPlacementRecords } = await import('./plants-placement.js?v=surface-density-3');
     const { buildChunkIndex } = await import('./grass-anchors.js');
-    const { createPlantsGPU } = await import('./plants-gpu.js?v=surface-density-3');
+    const { createPlantsGPU } = await import('./plants-gpu.js?v=visible-gating-debounce-1');
     Object.assign(params, {
       // Radius/start mirror grass's much larger draw distance (grassRadius:344,
       // grassCullStart:228) instead of the old 45-unit bubble -- plants now fade out
@@ -2921,8 +3014,20 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('plantRadiusChunks', 'Placement window (chunks)', 1, 16, 1, fi, () => regeneratePlantsGPU(true));
   }
 
+  function reflectionDetailMeshes() {
+    return [
+      grassRef?.mesh,
+      plantsGPURef?.meshes,
+      // Forest mesh order is 8 per variant; slot 2 is the shadow-only L0 mesh.
+      forestGPURef?.meshes?.filter((_, i) => i % 8 === 2),
+      portCreatures?.system?.reflectionMeshes,
+      portCreatures?.system?.creatures?.map(c => c.group),
+      particleFields.map(e => e.field?.enabled ? e.field.mesh : null),
+    ];
+  }
+
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  _waterPromise = import('./water.js?v=reflection-controls-1').then(({ createWaterSystem }) => {
+  _waterPromise = import('./water.js?v=reflection-prune-1').then(({ createWaterSystem }) => {
     Object.assign(params, {
       waterWaves: 0.0, caustics: 1.0, waterLodR0: 50, waterLodR1: 150,
       waterReflectMix: 1.0, waterReflectBrightness: 1.0, waterReflectRipple: 0.08,
@@ -2938,6 +3043,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       reflectStrength: params.waterReflectRipple,
       refractStrength: params.waterRefractRipple,
       depthScale: params.waterDepthScale,
+      reflectResolutionScale: 0.5,
+      reflectRate: 1,
+      reflectExclude: reflectionDetailMeshes,
     });
     scene.add(waterRef.surface);
     syncWaterChunks(true);
@@ -2952,6 +3060,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       reflectStrength: params.waterReflectRipple,
       refractStrength: params.waterRefractRipple,
       depthScale: params.waterDepthScale,
+      reflectResolutionScale: 0.5,
+      reflectRate: 1,
+      reflectExclude: reflectionDetailMeshes,
     });
     slider('waterReflectMix', 'Reflect amount', 0, 2, 0.01, f2, updateWaterReflection);
     slider('waterReflectBrightness', 'Reflect brightness', 0.2, 2, 0.01, f2, updateWaterReflection);
