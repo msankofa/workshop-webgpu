@@ -170,7 +170,13 @@ Two camera modes, toggled by the `F` key (pointer lock):
   capsule-based ground/gravity movement (`Capsule` from `three/addons`, `groundContact`/
   `slideVelocity` from `collision.js`), substepped 5×/frame, mouse-look via `mousemove` deltas,
   crouch/prone stances, plus light-gun shoot/place controls bound to `mousedown`/`mouseup`
-  (lines 2219–2530+). Exits on `Esc`/`F` (pointer-lock change listener).
+  (lines 2219–2530+). Exits to orbit on `Esc`/`F` (pointer-lock change listener).
+- **Cursor-free pause** (`fpsCursorFree`, a sub-state of FPS): `Q` releases the pointer while
+  keeping the first-person camera **frozen in place** (distinct from exiting to orbit) so the mouse
+  can reach the HUD / minimap layer menu. Movement and mouse-look are gated off; the walk/orbit
+  branches in `animate()` both skip. Clicking the 3D view, or `Q`/`F`, re-locks and resumes walking.
+  Opening the **M** map from FPS enters this pause; closing it (`M`/`Esc`) re-locks. The
+  `pointerlockchange` listener drops to orbit only when the release was *not* a deliberate pause.
 
 For multiplayer guests, `GhostRenderer` (from `multiplayer.js`) renders remote players/creatures
 into the same `scene` but does not drive the local `camera` — the guest's own camera still uses

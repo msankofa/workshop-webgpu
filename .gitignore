@@ -11,6 +11,8 @@ versions/
 *.zip
 research/**/*.pdf
 research/stats/
+# Local research scratch (downloaded repos, extracted archives, analysis notes) — not tracked
+research/
 __pycache__/
 
 # Local scratch / generated traces are kept, but ignore OS cruft

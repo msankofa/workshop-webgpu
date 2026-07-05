@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { applyTerrainTextures } from './terrain-textures.js';
+import {
+  applyTerrainTextures, TERRAIN_TEXTURE_LAYERS, FALLBACK_COLORS, MASK_ALIASES, BIOME_MATERIAL,
+} from './terrain-textures.js';
+import { moistureProxyForBiome, upnessFromNormalY, smoothstep as ssMoist } from './moisture-proxy.js';
 
 const TREE_DENSITY = {
   deep_ocean: 0.0,
@@ -26,6 +29,21 @@ const TREE_DENSITY = {
 function clamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));
 }
+
+// --- SurfaceField layer tables (merged plan §1 F1) ---
+// Reuse the SAME 13-layer set + fallback colors the vertex bake uses (terrain-textures.js),
+// so the read sampler and the eventual material agree on layer identity and tint.
+const LAYER_INDEX = Object.fromEntries(TERRAIN_TEXTURE_LAYERS.map((n, i) => [n, i]));
+const LAYER_RGB = TERRAIN_TEXTURE_LAYERS.map((n) => {
+  const h = FALLBACK_COLORS[n] ?? 0x808080;
+  return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
+});
+const NLAYERS = TERRAIN_TEXTURE_LAYERS.length;
+const SURFACE_TOPK = 4;
+// Module-level scratch for the per-query weight accumulation — avoids an allocation on the
+// hot path (surfaceField is O(1) and safe to call from placement loops). Not re-entrant,
+// which is fine: all callers are single-threaded CPU.
+const _surfW = new Float64Array(NLAYERS);
 
 function mapBasePath(mapKey) {
   return mapKey.replace(/\.glb$/i, '');
@@ -173,6 +191,107 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
     return biomeNames[biomeGrid[nearestIndex(x, z)]] || 'plains';
   }
 
+  // --- SurfaceField (merged plan §1 F1): one read-only sampler feeding ground albedo,
+  // grass/canopy tint, plant density and the moss dressing law. O(1) per query (bilinear
+  // grid reads + small arithmetic), safe to call from placement loops. Purely additive —
+  // it does NOT touch classifyMesh's per-vertex bake or the terrain material.
+  const surfaceSeaLevel = Number(mapData.seaLevel ?? 0);
+  const materialMasks = mapData.materialMasks || mapData.materialWeights || null;
+  const stepX = worldX / Math.max(1, resolution - 1);
+  const stepZ = worldZ / Math.max(1, resolution - 1);
+
+  // normalY from the height grid via central differences (4 bilinear taps). 1 = flat.
+  function normalYAt(x, z) {
+    const hL = bilinear(heights, x - stepX, z);
+    const hR = bilinear(heights, x + stepX, z);
+    const hD = bilinear(heights, x, z - stepZ);
+    const hU = bilinear(heights, x, z + stepZ);
+    const gx = (hR - hL) / (2 * stepX);
+    const gz = (hU - hD) / (2 * stepZ);
+    return 1 / Math.sqrt(gx * gx + gz * gz + 1);
+  }
+
+  // Feathered top-k material weights from the SAME biome/mask/slope logic materialFromMasks/
+  // fallbackMaterialAt use — but kept as a smoothstep-feathered weight vector, NOT an argmax.
+  function surfaceField(x, z) {
+    const gi = nearestIndex(x, z);
+    const worldY = inBounds(x, z) ? bilinear(heights, x, z) : surfaceSeaLevel;
+    const upness = inBounds(x, z) ? upnessFromNormalY(normalYAt(x, z)) : 1;
+    const biome = biomeAt(x, z);
+
+    _surfW.fill(0);
+    // Base weights: authored per-layer masks if present, else a unit spike on the biome layer.
+    let total = 0;
+    if (materialMasks) {
+      for (let i = 0; i < NLAYERS; i++) {
+        const layer = TERRAIN_TEXTURE_LAYERS[i];
+        let w = 0;
+        const aliases = MASK_ALIASES[layer] || [layer];
+        for (let a = 0; a < aliases.length; a++) {
+          const arr = materialMasks[aliases[a]];
+          if (Array.isArray(arr) || ArrayBuffer.isView(arr)) w += Number(arr[gi] ?? 0);
+        }
+        _surfW[i] = w;
+        total += w;
+      }
+    }
+    if (total <= 0.001) {
+      _surfW.fill(0);
+      _surfW[LAYER_INDEX[BIOME_MATERIAL[biome] || 'grass'] ?? LAYER_INDEX.grass] = 1;
+      total = 1;
+    }
+
+    // Feathered slope/shore/depth ramps (replace fallbackMaterialAt's hard thresholds at
+    // 0.58/0.34 slope and sea±0.5/1.5 with smoothstep bands). Additive, then renormalized.
+    const slope = 1 - upness;
+    const rockW = ssMoist(0.50, 0.66, slope);                                   // was slope>0.58
+    const dirtW = ssMoist(0.26, 0.42, slope) * (1 - rockW);                     // was slope>0.34
+    const sandW = 1 - ssMoist(surfaceSeaLevel - 0.9, surfaceSeaLevel - 0.1, worldY); // was <=sea-0.5
+    const beachW = (1 - ssMoist(surfaceSeaLevel + 0.8, surfaceSeaLevel + 2.2, worldY)) * (1 - sandW); // was <=sea+1.5
+    const landFactor = 1 - sandW; // suppress slope overrides where submerged
+    _surfW[LAYER_INDEX.sand] += sandW * total;
+    _surfW[LAYER_INDEX.beach] += beachW * total * landFactor;
+    _surfW[LAYER_INDEX.rock] += rockW * total * landFactor;
+    _surfW[LAYER_INDEX.dirt] += dirtW * total * landFactor;
+
+    // Top-k selection (k=4), normalized to sum 1.
+    const idx = [0, 0, 0, 0];
+    const wt = [0, 0, 0, 0];
+    for (let k = 0; k < SURFACE_TOPK; k++) { idx[k] = -1; wt[k] = -1; }
+    for (let i = 0; i < NLAYERS; i++) {
+      const w = _surfW[i];
+      for (let k = 0; k < SURFACE_TOPK; k++) {
+        if (w > wt[k]) {
+          for (let j = SURFACE_TOPK - 1; j > k; j--) { wt[j] = wt[j - 1]; idx[j] = idx[j - 1]; }
+          wt[k] = w; idx[k] = i;
+          break;
+        }
+      }
+    }
+    let wsum = 0;
+    for (let k = 0; k < SURFACE_TOPK; k++) { if (idx[k] < 0) { wt[k] = 0; } wsum += Math.max(0, wt[k]); }
+    if (wsum <= 1e-8) { idx[0] = LAYER_INDEX.grass; wt[0] = 1; wsum = 1; }
+    let r = 0, g = 0, b = 0;
+    const indices = [], weights = [], layers = [];
+    for (let k = 0; k < SURFACE_TOPK; k++) {
+      if (idx[k] < 0) continue;
+      const nw = Math.max(0, wt[k]) / wsum;
+      const rgb = LAYER_RGB[idx[k]];
+      r += rgb[0] * nw; g += rgb[1] * nw; b += rgb[2] * nw;
+      indices.push(idx[k]); weights.push(nw); layers.push(TERRAIN_TEXTURE_LAYERS[idx[k]]);
+    }
+
+    const moisture = moistureProxyForBiome(biome, worldY, surfaceSeaLevel);
+    const density = (inBounds(x, z) && densityGrid.length) ? bilinear(densityGrid, x, z) : 0;
+    return {
+      materialColor: [r, g, b],
+      materialWeights: { indices, weights, layers },
+      moisture,
+      upness,
+      density,
+    };
+  }
+
   function makeChunks(center, renderRadius = 2, chunkSize = 30) {
     const minIx = Math.floor((-worldX * 0.5) / chunkSize);
     const maxIx = Math.ceil((worldX * 0.5) / chunkSize) - 1;
@@ -243,6 +362,7 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
       if (treeDensityGrid?.length) return bilinear(treeDensityGrid, x, z);
       return TREE_DENSITY[biomeAt(x, z)] ?? 0;
     },
+    surfaceField,
     makeChunks,
     makeAllChunks,
   };

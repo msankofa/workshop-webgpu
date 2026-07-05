@@ -17,15 +17,21 @@ export const PLANT_DEFAULTS = {
   leaf: {
     shape: 'oval',             // 'oval' | 'lance' | 'star' -- base card silhouette before serration is cut in
     style: 'simple',           // 'simple' = one leaf blade per node | 'complex' = compound, built from leafletCount leaflets
+                               // | 'sprigClump' = a bushy crossed-quad clump (SeedThree scrub.js shrubGeometry) with
+                               //   forced ground-plane normals (0,1,0) instead of a flat leaf card -- for shrub presets.
     leafletCount: 1,           // only meaningful when style === 'complex'
     leafletParity: 'odd',      // 'odd' = has a terminal leaflet | 'even' = paired leaflets only
-    arrangement: 'opposite',   // 'alternate' | 'opposite' | 'whorl' -- phyllotaxy along the stem
+    arrangement: 'opposite',   // 'alternate' | 'opposite' | 'whorl' -- phyllotaxy along the stem (ignored by sprigClump,
+                               // which places one clump per node regardless of arrangement)
     whorlCount: 1,             // only meaningful when arrangement === 'whorl'
     serration: { teeth: 0, depth: 0 },   // teeth=0 -> smooth margin
     variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 }, // 'edge' | 'vein' | 'blotch'
     size: [10, 20],           // leaf length range, "mockup px"-equivalent units
     color: 0x3f6b2a,
     veinColor: null,          // null = no visible midrib line; set a hex to enable one
+    sprigQuads: 8,            // only meaningful when style === 'sprigClump' -- quad count per clump
+    blossom: null,            // only meaningful when style === 'sprigClump'; { r, g, b, frac } (0..1 rgb + fraction of
+                               // quads tinted this color) -- fable5 Understory.ts's blossom field, e.g. a flowering shrub
   },
   flower: {
     enabled: false,
@@ -90,15 +96,42 @@ export const PLANT_PRESETS = {
     },
     flower: { enabled: true, shape: 'pouch', petals: 1, frequency: 0.4, color: 0xe8922e, throatColor: 0xfcd9a0 },
   },
+  // ---- shrubs: sprigClump geometry (SeedThree scrub.js shrubGeometry), reusing the same
+  // stem/leaf schema so they're placed/tuned exactly like the herbs above -- one clump per
+  // stem node instead of a flat leaf card. Starter content only; species/variant TYPES are
+  // fully data-driven -- add more shrubs here with zero code changes.
+  juniperMound: {
+    stem: { nodes: [5, 7], nodeSpacing: [10, 16], branchProb: 0, sprawl: 0.05 },
+    leaf: {
+      style: 'sprigClump', sprigQuads: 9,
+      size: [18, 26], color: 0x3a5a34, veinColor: null,
+      variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 },
+    },
+    flower: { enabled: false },
+  },
+  pinkflowerBush: {
+    stem: { nodes: [5, 7], nodeSpacing: [10, 16], branchProb: 0, sprawl: 0.05 },
+    leaf: {
+      style: 'sprigClump', sprigQuads: 8,
+      size: [16, 24], color: 0x3d6b30, veinColor: null,
+      variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 },
+      blossom: { r: 0.58, g: 0.16, b: 0.24, frac: 0.35 },
+    },
+    flower: { enabled: false },
+  },
 };
 
 // Placement metadata: biomes empty array = matches every biome (a generalist, like
 // cleavers); density weights candidates the same way forest-placement.js's speciesTable does.
+// hueVar is the per-instance hue-swing law's species knob (plantPlacementRecords ->
+// rollPlantVariation below); species that omit it fall back to a default there.
 export const PLANT_BIOME_TAGS = {
-  chickweed: { biomes: ['plains', 'forest'], density: 1 },
-  cleavers:  { biomes: [], density: 0.6 },
-  mint:      { biomes: ['plains', 'swamp', 'forest'], density: 1 },
-  jewelweed: { biomes: ['swamp', 'forest'], density: 0.8 },
+  chickweed:      { biomes: ['plains', 'forest'], density: 1, hueVar: 0.12 },
+  cleavers:       { biomes: [], density: 0.6, hueVar: 0.12 },
+  mint:           { biomes: ['plains', 'swamp', 'forest'], density: 1, hueVar: 0.15 },
+  jewelweed:      { biomes: ['swamp', 'forest'], density: 0.8, hueVar: 0.15 },
+  juniperMound:   { biomes: ['taiga', 'snowy_taiga', 'windswept_hills', 'forest'], density: 0.5, hueVar: 0.1 },
+  pinkflowerBush: { biomes: ['meadow', 'forest', 'plains'], density: 0.4, hueVar: 0.14 },
 };
 
 // ---- seeded RNG (mulberry32) -- same convention as grass.js/forest-placement.js ----
@@ -271,12 +304,54 @@ function buildStemQuads(dst, nodes, width) {
   }
 }
 
+// a bushy crossed-quad clump (SeedThree scrub.js shrubGeometry, adapted): `quads` tilted
+// jittered quads fan up-and-out from a shared base, normals forced to (0,1,0) (not the
+// computed face normal) so the clump lights like the ground plane it sits on rather than by
+// card angle. `blossom` optionally tints a `frac` fraction of quads a second color (fable5
+// Understory.ts's `blossom: {r,g,b,frac}` field) for a flowering shrub.
+function buildSprigClumpLocal(leafOpts, len, rng) {
+  const quads = Math.max(1, Math.round(leafOpts.sprigQuads ?? 8));
+  const width = len * 0.6;
+  const baseRgb = hexToRgb01(leafOpts.color);
+  const blossom = leafOpts.blossom;
+  const positions = [], normals = [], colors = [];
+  for (let q = 0; q < quads; q++) {
+    const az = (q / quads) * Math.PI * 2 + (rng() - 0.5) * 1.0;
+    const tilt = 0.22 + rng() * 0.55;
+    const h = len * (0.6 + rng() * 0.55);
+    const w = width * (0.7 + rng() * 0.5);
+    const off = 0.10 * len * rng();
+    const ca = Math.cos(az), sa = Math.sin(az);
+    const cx = ca * off, cz = sa * off;
+    const upx = Math.sin(tilt) * ca, upy = Math.cos(tilt), upz = Math.sin(tilt) * sa;
+    const rx = -sa, rz = ca;
+    const isBlossom = !!blossom && rng() < blossom.frac;
+    const color = isBlossom ? [blossom.r, blossom.g, blossom.b] : baseRgb;
+    const pt = (lx, ly) => [cx + rx * lx + upx * ly * h, upy * ly * h, cz + rz * lx + upz * ly * h];
+    const a = pt(-0.5 * w, 0), b = pt(0.5 * w, 0), c = pt(0.5 * w, 1), d = pt(-0.5 * w, 1);
+    for (const tri of [[a, b, c], [a, c, d]]) {
+      for (const p of tri) { positions.push(p[0], p[1], p[2]); normals.push(0, 1, 0); colors.push(color[0], color[1], color[2]); }
+    }
+  }
+  return { positions, normals, colors };
+}
+
 // attach this node's leaf/leaflet-whorl per the arrangement rule:
 //  - 'opposite': two leaves at 180 deg, rotated 90 deg node-to-node (decussate, like real mint)
 //  - 'whorl': whorlCount leaflets/leaves evenly spaced radially around the node
 //  - 'alternate' (default): one leaf per node, staggered by a fixed angle node-to-node
+// 'sprigClump' ignores arrangement (one bushy clump per node) and rotates by yaw ONLY (never
+// tilt) so the clump's baked (0,1,0) normals survive the world transform unrotated -- a
+// rotation about Y leaves the up vector unchanged, which is exactly the "light like the
+// ground" property shrubGeometry relies on.
 function attachLeavesAtNode(dst, node, nodeIndex, leafOpts, rng) {
   const len = lerp(leafOpts.size[0], leafOpts.size[1], rng()) * UNIT;
+  if (leafOpts.style === 'sprigClump') {
+    const localClump = buildSprigClumpLocal(leafOpts, len, rng);
+    const m = new THREE.Matrix4().makeRotationY(node.yaw).setPosition(node.pos[0], node.pos[1], node.pos[2]);
+    appendTransformed(dst.positions, dst.normals, dst.colors, localClump, m);
+    return;
+  }
   const width = len * 0.55;
   const localLeaf = leafOpts.style === 'complex'
     ? buildCompoundLeafLocal(leafOpts, len, width)
@@ -321,6 +396,41 @@ export function buildPlantGeometry(opts = {}) {
   geom.setIndex(new THREE.BufferAttribute(indexArray, 1));
   geom.computeBoundingSphere();
   return geom;
+}
+
+// ---- per-instance variation law (Phase 1 understory overhaul) ----
+// SeedThree scrub.js's per-instance tint law: species base tint x a hue swing +
+// a ~22%-probability "dry" roll that lifts R and suppresses G/B, plus an age-driven darken
+// (fable5 VegTypes.ts GrowthInstance.age). This is the CANONICAL JS implementation, shared by
+// plant-viewer.html's variation strip and test-plant-variation.mjs; plants-gpu.js's TSL
+// colorNode mirrors these exact constants (GPU compute can't import JS) -- keep them in sync
+// manually if this law changes, same convention as forest-cull.js/forest-gpu.js.
+export const PLANT_DRY_PROBABILITY = 0.22;
+
+export function plantTint(hue, dryness, age) {
+  const hueTint = [1 + hue * 0.5, 1 - hue * 0.3, 1 - hue * 0.2];
+  const dryTint = [1 + dryness * 0.35, 1 - dryness * 0.28, 1 - dryness * 0.35];
+  const ageNorm = clamp01((age - 0.6) / 0.4);
+  const ageTint = [lerp(1.06, 0.88, ageNorm), lerp(1.06, 0.90, ageNorm), lerp(1.0, 0.86, ageNorm)];
+  return [
+    Math.max(0, hueTint[0] * dryTint[0] * ageTint[0]),
+    Math.max(0, hueTint[1] * dryTint[1] * ageTint[1]),
+    Math.max(0, hueTint[2] * dryTint[2] * ageTint[2]),
+  ];
+}
+
+// rng: a `() => number in [0,1)` draw function (e.g. `() => rngObj.next()` or plain Math.random).
+// Draws exactly 4 values, always in this order (hue, dryRoll, dryMag, age) regardless of the
+// dry-roll outcome, so callers appending this after their own existing RNG sequence get a fixed,
+// order-stable draw count -- see plants-placement.js's determinism note.
+export function rollPlantVariation(rng, hueVar = 0.15) {
+  const hue = (rng() * 2 - 1) * hueVar;
+  const dryRoll = rng();
+  const dryMag = rng();
+  const isDry = dryRoll < PLANT_DRY_PROBABILITY;
+  const dryness = isDry ? 0.5 + dryMag * 0.5 : dryMag * 0.3;
+  const age = 0.6 + rng() * 0.4;
+  return { hue, dryness, age };
 }
 
 const FLOWER_SHAPE_PARAMS = {

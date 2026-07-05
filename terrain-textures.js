@@ -1,13 +1,29 @@
 import * as THREE from 'three';
+import { moistureProxyForBiome, upnessFromNormalY, smoothstep as ssRamp } from './moisture-proxy.js';
 
 export const TERRAIN_TEXTURE_LAYERS = ['grass', 'forest', 'meadow', 'taiga', 'dirt', 'savanna', 'swamp', 'sand', 'beach', 'desert', 'gravel', 'rock', 'snow'];
+
+// Merged-plan Phase 2 (row #2): the single blended terrain node material replaces the old
+// per-triangle argmax + addGroup multi-material. Max distinct layers blended on ONE map's
+// terrain stage. Kept small so the per-fragment array-tap bandwidth (albedo+normal per active
+// layer, 2 samplers total via DataArrayTexture) stays inside the R1/R2 budget; per-vertex we
+// still keep only the top-4 (R1 "top-k=4 per fragment") so most slots are 0 at any vertex.
+export const MAX_ACTIVE_LAYERS = 6;
+const VERTEX_TOPK = 4;
+// Slope/shore/height feather ramps — SAME edges the read-only surfaceField sampler uses in
+// terrain-loader.js, so the CPU field and the baked vertex weights agree (one field, N
+// consumers). Replaces fallbackMaterialAt's hard 0.58/0.34 slope and sea±0.5/1.5 steps.
+const RAMP = { rock: [0.50, 0.66], dirt: [0.26, 0.42], sandLo: -0.9, sandHi: -0.1, beachLo: 0.8, beachHi: 2.2 };
 
 const MATERIAL_INDEX = Object.fromEntries(TERRAIN_TEXTURE_LAYERS.map((name, index) => [name, index]));
 const BASE_PATH = 'textures/ground';
 const TILE_METERS = { grass: 4, forest: 3.5, meadow: 4, taiga: 3.5, dirt: 3, savanna: 3.5, swamp: 3, sand: 3.5, beach: 3, desert: 4, gravel: 2.5, rock: 2, snow: 4 };
-const FALLBACK_COLORS = { grass: 0x6f8f45, forest: 0x4f6d38, meadow: 0x82a84f, taiga: 0x536b48, dirt: 0x7b5a3a, savanna: 0x9b8a4a, swamp: 0x4b5435, sand: 0xd8be7c, beach: 0xd7c18a, desert: 0xcfae68, gravel: 0x808080, rock: 0x6f6c64, snow: 0xdde2df };
+// FALLBACK_COLORS / MASK_ALIASES / BIOME_MATERIAL are exported (additive) so the read-only
+// SurfaceField sampler in terrain-loader.js can reuse the SAME layer→color and biome/mask
+// tables the per-vertex bake uses, without duplicating them. classifyMesh is untouched.
+export const FALLBACK_COLORS = { grass: 0x6f8f45, forest: 0x4f6d38, meadow: 0x82a84f, taiga: 0x536b48, dirt: 0x7b5a3a, savanna: 0x9b8a4a, swamp: 0x4b5435, sand: 0xd8be7c, beach: 0xd7c18a, desert: 0xcfae68, gravel: 0x808080, rock: 0x6f6c64, snow: 0xdde2df };
 const ROUGHNESS = { grass: 0.95, forest: 0.96, meadow: 0.95, taiga: 0.96, dirt: 0.92, savanna: 0.93, swamp: 0.98, sand: 0.88, beach: 0.86, desert: 0.9, gravel: 0.98, rock: 0.96, snow: 0.82 };
-const MASK_ALIASES = {
+export const MASK_ALIASES = {
   grass: ['grass', 'plains'],
   forest: ['forest', 'dark_forest', 'jungle'],
   meadow: ['meadow'],
@@ -22,7 +38,7 @@ const MASK_ALIASES = {
   rock: ['rock', 'stone', 'stony_peaks'],
   snow: ['snow', 'snowy_taiga', 'snowy_plains', 'snowy_peaks'],
 };
-const BIOME_MATERIAL = {
+export const BIOME_MATERIAL = {
   deep_ocean: 'sand', ocean: 'sand', beach: 'beach', desert: 'desert', badlands: 'dirt', savanna: 'savanna',
   plains: 'grass', forest: 'forest', dark_forest: 'forest', jungle: 'forest', swamp: 'swamp', taiga: 'taiga',
   snowy_taiga: 'snow', snowy_plains: 'snow', stony_peaks: 'rock', snowy_peaks: 'snow',

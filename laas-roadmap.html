@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAAS v2 Fidelity Roadmap</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1b2029; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#2a323d; --accent:#e8913a; --cool:#3a8fd0; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --s:#3a8fd0; --m:#d29922; --l:#f85149;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f8fa; --panel:#ffffff; --panel2:#f0f3f6; --ink:#1a2029; --muted:#5a6672;
+      --line:#d8dee4; --accent:#c2681c; --cool:#1f6feb; }
+  }
+  :root[data-theme="dark"]{ --bg:#0e1116; --panel:#161b22; --panel2:#1b2029; --ink:#e6edf3; --muted:#9aa7b4; --line:#2a323d; --accent:#e8913a; --cool:#3a8fd0; }
+  :root[data-theme="light"]{ --bg:#f6f8fa; --panel:#ffffff; --panel2:#f0f3f6; --ink:#1a2029; --muted:#5a6672; --line:#d8dee4; --accent:#c2681c; --cool:#1f6feb; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:960px;margin:0 auto;padding:44px 22px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:30px}
+  .kicker{color:var(--accent);font-weight:700;letter-spacing:.09em;text-transform:uppercase;font-size:12px}
+  h1{font-size:30px;margin:.28em 0 .18em;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:70ch}
+  h2{font-size:20px;margin:42px 0 6px;letter-spacing:-.01em}
+  h2 .n{color:var(--accent)}
+  .lead{color:var(--muted);margin:0 0 18px;max-width:78ch}
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:520px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .score{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+  .bar{display:inline-block;height:7px;border-radius:4px;vertical-align:middle;margin-left:8px;min-width:4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px 18px;margin:14px 0}
+  .card h3{margin:0 0 4px;font-size:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+  .card h3 .id{color:var(--accent);font-variant-numeric:tabular-nums}
+  .card p{margin:6px 0 0;color:var(--muted)}
+  .card ul{margin:8px 0 0;padding-left:20px;color:var(--muted)}
+  .card li{margin:3px 0}
+  .tags{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+  .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;border:1px solid var(--line);
+    color:var(--muted);letter-spacing:.03em;white-space:nowrap}
+  .eff-S{color:#fff;background:var(--s);border-color:transparent}
+  .eff-M{color:#111;background:var(--m);border-color:transparent}
+  .eff-L{color:#fff;background:var(--l);border-color:transparent}
+  .tier{display:flex;align-items:baseline;gap:12px;margin-top:40px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+  .tier .lbl{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+    padding:3px 10px;border-radius:6px;background:var(--panel2);border:1px solid var(--line)}
+  .tier .cost{color:var(--muted);font-size:13px;margin-left:auto}
+  .payoff{color:var(--ink);border-left:3px solid var(--accent);padding-left:10px;margin-top:10px !important}
+  .chassis{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:6px 20px 14px;margin:8px 0 6px}
+  .chassis li{margin:6px 0}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:.86em;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .foot{margin-top:46px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">Procedural Creature · WebGPU</div>
+    <h1>LAAS v2 Fidelity Roadmap</h1>
+    <p class="sub">Prioritized build order to close the gap between the current <code>workshop-webgpu</code>
+    renderer and the PROJECT LAAS v2 spec. Ordered by <strong>fidelity-per-effort on top of the chassis we
+    already have</strong> &mdash; not by the spec's phase order. Based on a three-agent codebase audit, 2026-07-04.</p>
+  </header>
+
+  <h2>Where we stand</h2>
+  <p class="lead">The codebase is a strong renderer <em>chassis</em> with almost none of the <em>content and
+  light-transport fidelity</em> the six pillars demand. Overall ~1.5/10 against the spec &mdash; but the
+  hardest-to-retrofit systems (streaming, GPU instancing, tested shader math) already exist.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Pillar</th><th>Score</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>A · Geometry, not textures</td><td class="score">2/10<span class="bar" style="width:20px;background:var(--bad)"></span></td><td>Vegetation is real geometry; ground is texture-splat on a 6-sine heightfield. No rock/cobble/litter meshes.</td></tr>
+      <tr><td>B · Light transport</td><td class="score">1/10<span class="bar" style="width:10px;background:var(--bad)"></span></td><td>One PCF shadow map + flat ambient. No GI, GTAO, bounce, or translucency. Shadows read gray.</td></tr>
+      <tr><td>C · Nothing is bare</td><td class="score">1.5/10<span class="bar" style="width:15px;background:var(--bad)"></span></td><td>No moss/vines/ferns/debris/dressing. A 2-band slope&rarr;material texture swap only.</td></tr>
+      <tr><td>D · Distance holds</td><td class="score">1/10<span class="bar" style="width:10px;background:var(--bad)"></span></td><td>Good LOD plumbing, no craggy content, flat billboard impostors, no volumetric clouds / far-detail synthesis.</td></tr>
+      <tr><td>E · Art direction</td><td class="score">1.5/10<span class="bar" style="width:15px;background:var(--bad)"></span></td><td>Good grade machinery but no ToD color script, auto-exposure, value structure, or composition system.</td></tr>
+      <tr><td>F · The world moves</td><td class="score">2.5/10<span class="bar" style="width:25px;background:var(--warn)"></span></td><td>Grass wind + lake water are real. Trees/plants static, no shared wind field, no streams, wrong particle species.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>The chassis &mdash; build on this, don't rebuild it</h2>
+  <div class="chassis">
+    <ul>
+      <li><strong>CDLOD terrain streaming</strong> (<code>cdlod-terrain.js</code>) &mdash; GPU quadtree LOD + morphing, crack-free, indirect draws.</li>
+      <li><strong>GPU-instanced vegetation</strong> (<code>forest-gpu.js</code>, <code>grass-compute.js</code>, <code>plants-gpu.js</code>) &mdash; deterministic seeded placement, 4-ring LOD, per-instance jitter.</li>
+      <li><strong>Clustered forward+ lighting</strong> (<code>clustered-lights.js</code>) &mdash; 256 dynamic lights, real GGX. Direct only, no bounce.</li>
+      <li><strong>Post/tonemap chain</strong> (<code>post-fx.js</code>) &mdash; AgX/ACES, full grade chain, bloom. Live-tunable, Node-tested, but unopinionated.</li>
+      <li><strong>Lake water</strong> (<code>water.js</code>) &mdash; real reflection + refraction + caustics. Lakes only.</li>
+      <li><strong>Grass wind</strong> + <strong>CPU/GPU math twins</strong> (<code>forest-cull.js</code>, <code>light-cluster.js</code>) &mdash; the one working vegetation motion; Node-testable shader math mirrors.</li>
+    </ul>
+  </div>
+
+  <!-- TIER 1 -->
+  <div class="tier"><span class="lbl">Tier 1</span><strong>Cheapest high-impact wins</strong><span class="cost">reuse existing machinery · days&ndash;weeks</span></div>
+  <p class="lead">Move E / B / F off the floor fast, and produce the review surface (composed shots, non-black shadows) needed to judge everything after.</p>
+
+  <div class="card">
+    <h3><span class="id">T1.1</span> Time-of-day color script + auto-exposure + composition
+      <span class="tags"><span class="tag">Pillar E</span><span class="tag">B</span><span class="tag eff-S">Effort S</span></span></h3>
+    <ul>
+      <li>Map sun elevation &rarr; per-ToD grade presets; enforce the teal-orange split automatically instead of via manual sliders.</li>
+      <li>Add EV-based auto-exposure, replacing the flat manual multiplier.</li>
+      <li>Add &ge;9 camera bookmarks (<code>1</code>&ndash;<code>9</code>) + a &ge;90s flythrough (<code>C</code>). No camera-path system exists today.</li>
+    </ul>
+    <p class="payoff">Turns an unopinionated instrument panel into a directed look. The cheapest 2-point jump on the board.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T1.2</span> Sky-driven ambient + no-black-shadows first slice
+      <span class="tags"><span class="tag">Pillar B</span><span class="tag eff-S">Effort S&ndash;M</span></span></h3>
+    <ul>
+      <li>Replace the flat <code>AmbientLight</code> constant with a hemispheric / SH sky-irradiance term (blue up, terrain-bounce tint down), driven by the sky palette.</li>
+      <li>Add a foliage translucency term (leaves transmit sun) &mdash; zero exists today.</li>
+    </ul>
+    <p class="payoff">Directly attacks "shadowed foliage reads gray." No probe volume yet &mdash; this is the cheap 80%.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T1.3</span> Wind on trees &amp; plants via a shared gust field
+      <span class="tags"><span class="tag">Pillar F</span><span class="tag eff-S">Effort S&ndash;M</span></span></h3>
+    <ul>
+      <li>Author one shared global wind field (direction + gust-noise texture) sampled by <em>all</em> vegetation, not grass's private sine.</li>
+      <li>Wire hierarchical sway into <code>trees.js</code> (trunk&rarr;branch&rarr;leaf) and <code>plants.js</code> &mdash; both fully static today.</li>
+    </ul>
+    <p class="payoff">"Frozen frame one second from motion" &mdash; currently only true where grass is on screen.</p>
+  </div>
+
+  <!-- TIER 2 -->
+  <div class="tier"><span class="lbl">Tier 2</span><strong>Medium builds on the instancing/compute engine</strong><span class="cost">weeks</span></div>
+
+  <div class="card">
+    <h3><span class="id">T2.1</span> GTAO + screen-space contact shadows
+      <span class="tags"><span class="tag">Pillar B</span><span class="tag eff-M">Effort M</span></span></h3>
+    <p>Implement the GTAO pass that <code>post-fx.js</code> stubs as "v2" (needs the MRT normal buffer, already the flagged prerequisite). Add short-raymarch contact shadows so every pebble and grass clump is grounded.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T2.2</span> Ground dressing + near-field debris
+      <span class="tags"><span class="tag">Pillar C</span><span class="tag">A</span><span class="tag eff-M">Effort M&ndash;L</span></span></h3>
+    <ul>
+      <li>Scatter cobbles/pebbles (3+ size classes, water-rounded near streams), twigs, leaf-litter cards, bark chips &mdash; floor is &ge;80k near-field instances; today it's 0.</li>
+      <li>Per-surface dressing: cliff moss/vines/ledge ferns/dirt streaks; tree-base root flare/litter/fungi; stream-margin wet darkening.</li>
+      <li>Per-instance hue/value/age jitter + a dry/broken/dead fraction (<code>tree-age.js</code> exists but is unwired).</li>
+    </ul>
+    <p class="payoff">Kills "bare terrain texture within 10m" &mdash; the single biggest Pillar A/C failure. Depends on nothing; run it parallel to Tier 1.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T2.3</span> CSM cascades + PCSS
+      <span class="tags"><span class="tag">Pillar B</span><span class="tag eff-M">Effort M</span></span></h3>
+    <p>Upgrade the single fixed-frustum 2048&sup2; shadow map to 4 texel-snapped CSM cascades + PCSS contact hardening.</p>
+  </div>
+
+  <!-- TIER 3 -->
+  <div class="tier"><span class="lbl">Tier 3</span><strong>Large builds, high fidelity ceiling</strong><span class="cost">weeks&ndash;months each</span></div>
+
+  <div class="card">
+    <h3><span class="id">T3.1</span> Simulated + eroded heightfield with rivers
+      <span class="tags"><span class="tag">Pillar A</span><span class="tag">D</span><span class="tag eff-L">Effort L</span></span></h3>
+    <p>GPU hydraulic (pipe-model) + thermal erosion &ge;500 iters on a &ge;4096&sup2; grid; flow-accumulation &rarr; river network &rarr; channel carve &rarr; moisture field. Replaces the analytic <code>terrainHeightAt</code>. The geology foundation everything sits on.</p>
+    <p class="payoff">Unblocks T3.2 and improves T2.2 placement. Start of the Tier-3 dependency chain.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T3.2</span> Rock/cliff geometry + far-detail synthesis + cobbled streambeds
+      <span class="tags"><span class="tag">Pillar A</span><span class="tag">D</span><span class="tag eff-L">Effort L</span></span></h3>
+    <ul>
+      <li>Hero rock/cliff generator (&ge;200k tris LOD0, &ge;6 displacement octaves, craggy silhouettes).</li>
+      <li>In-shader distance re-amplification so 10km peaks stay serrated (ridged detail in normal/height domain).</li>
+      <li>Fully-cobbled streambed geometry (needs T3.1 rivers + T2.2 debris).</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T3.3</span> Hillaire atmosphere + volumetric clouds + cloud shadows
+      <span class="tags"><span class="tag">Pillar D</span><span class="tag">B</span><span class="tag">E</span><span class="tag eff-L">Effort L</span></span></h3>
+    <ul>
+      <li>Hillaire-style transmittance + multi-scatter LUTs driving sky, aerial perspective, and IBL (replaces the gradient dome + flat <code>THREE.Fog</code>).</li>
+      <li>Raymarched Worley&ndash;Perlin 2-layer clouds w/ temporal reprojection, sitting below peaks; cloud shadows on terrain. Today: one unlit 2D noise plane.</li>
+    </ul>
+    <p class="payoff">Independent of the terrain rebuild &mdash; can run parallel to T3.1/T3.2.</p>
+  </div>
+
+  <div class="card">
+    <h3><span class="id">T3.4</span> Irradiance probe volume GI + screen-space bounce
+      <span class="tags"><span class="tag">Pillar B</span><span class="tag eff-L">Effort L</span></span></h3>
+    <p>Per-chunk irradiance probe volume (&ge;24&times;24&times;6), async GPU-updated from sky+sun+terrain bounce; + screen-space color bleed. Completes T1.2 into the full no-black-shadows law.</p>
+  </div>
+
+  <!-- TIER 4 -->
+  <div class="tier"><span class="lbl">Tier 4</span><strong>Throughput to actually hit the floors</strong><span class="cost">after content exists</span></div>
+
+  <div class="card">
+    <h3><span class="id">T4.1</span> Meshlet/Hi-Z culling + octahedral impostors + triangle HUD
+      <span class="tags"><span class="tag">Floors</span><span class="tag eff-L">Effort L</span></span></h3>
+    <ul>
+      <li>~64-tri cluster culling with frustum + Hi-Z occlusion &rarr; compacted indirect draws (occlusion is absent today; per-instance frustum cull was deliberately dropped).</li>
+      <li>Octahedral impostors (&ge;8&times;8 views, albedo+normal+depth) replacing the single flat billboard.</li>
+      <li>HUD triangle counter to verify the &ge;5M forest / &ge;3M vista floors.</li>
+    </ul>
+    <p class="payoff">Last on purpose &mdash; meaningless until Tier 3 produces enough geometry to need culling.</p>
+  </div>
+
+  <div class="foot">
+    <strong>Sequencing:</strong> Do Tier 1 first regardless (cheap, and its bookmarks + ambient give you the review surface).
+    T2.2 depends on nothing &mdash; run it parallel. Tier 3 is a chain: T3.1 unblocks T3.2; T3.3 and T3.4 run parallel.
+    T4.1 is last. Keep the CPU/GPU math twins in sync for any new TSL math.
+    <div class="legend">
+      <span><span class="dot" style="background:var(--s)"></span> S &asymp; days</span>
+      <span><span class="dot" style="background:var(--m)"></span> M &asymp; 1&ndash;2 weeks</span>
+      <span><span class="dot" style="background:var(--l)"></span> L &asymp; weeks&ndash;months</span>
+    </div>
+    <p style="margin-top:14px">Agent-readable source: <code>docs/laas-roadmap.md</code>.</p>
+  </div>
+</div>
+</body>
+</html>

@@ -19,6 +19,7 @@ multiplayer relay from one dashboard.
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 126 |
 | `environment-ui.js` | Builds the tabbed `#workshop-ui` shell (Scene/Creatures/Effects/Walk/Perf tabs), re-parents existing DOM panels into it, and builds the read-only "Perf" tab content (live metrics, frame-stage bars, capture controls, raw debug feed). | 648 |
+| `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
 | `server-tool.html` | Browser dashboard served by `server-tool.py`; exposes Start/Restart/Stop/Clear controls, useful launch links, and live logs for each managed server. | 296 |
 
@@ -57,6 +58,55 @@ Builds and appends the `#workshop-ui` `<aside>` to `document.body`, installs its
 
 `PERF_ROWS` (module-level, not exported): array of `[passId, displayLabel, snapshotKey]` tuples mapping profiler pass ids to HUD labels:
 `terrainWindowâ†’"Terrain window"`, `creaturesâ†’"Creatures"`, `waterâ†’"Water"`, `grassGpuâ†’"Grass GPU"`, `forestGpuâ†’"Forest GPU"`, `cdlodGpuâ†’"CDLOD GPU"`, `lightsGpuâ†’"Lights GPU"`, `particlesGpuâ†’"Particles GPU"`, `postRenderâ†’"Render submit"` (relabeled `"Render + post"` when post FX is on), each keyed against `passTerrainWindowMs`, `passCreaturesMs`, etc. (Note: `sky` and `hud` are profiled passes in `frame-profiler.js` but have no row in `PERF_ROWS` â€” they aren't surfaced in the HUD.)
+
+### `world-map.js`
+
+Renders the authored terrain map into the HUD. Split into pure math (unit-tested in Node) and
+browser-only canvas/DOM wrappers.
+
+```js
+export function bakeMapPixels({ res, cellWorld, sampleBiomeColor, sampleHeight, isWater, shaded = true })
+export function minimapImageAffine({ s, heading, px, pz, cx, cy, wx0, wz0, sxu, szv })
+export function bigMapImageAffine({ scale, cx, cy, wx0, wz0, sxu, szv })
+export function worldToBigMap(wx, wz, { scale, cx, cy })
+export const MAP_OVERLAYS               // [{ id, label }, …] display order for the layer menu
+export function overlayColorizer(loadedMap, overlayId)   // { shaded, color(x,z)->[r,g,b] 0..255 }
+export function bakeMapCanvas(loadedMap, { res = 384, overlayId = 'biome' } = {})
+export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeading, getFacing, getOverlayLabel })
+```
+
+- `bakeMapPixels` — pure. Builds an RGBA image coloring each cell via `sampleBiomeColor` and, when
+  `shaded` (default), multiplying by a Lambert hillshade from the height gradient (`isWater` flattens
+  shade on water). Data overlays pass `shaded: false` so their color ramp reads at face value.
+- `MAP_OVERLAYS` / `overlayColorizer` — the selectable minimap data layers, all derived from a loaded
+  authored map: **biome** (`BIOME_COLORS`, shaded — the default), **elevation** (`heightColor`, shaded),
+  **slope** (`slopeColor` of the height gradient, flat), **material** (`surfaceField().materialColor`,
+  shaded), **water depth** / **grass density** / **tree density** (ramp colors, flat). `heightColor`
+  and `slopeColor` are imported from `terrain-generator-js.js` so the layers match the generator
+  preview. The generator also previews continentalness/temperature/humidity/flowNorm, but those noise
+  grids are **not** in the exported map data — adding them needs a generator export change + re-export.
+- `minimapImageAffine` — pure. Returns the canvas `setTransform` params `[a,b,c,d,e,f]` to blit the
+  baked image into the **heading-up** minimap. Derived to agree exactly with the finder's marker
+  projection (`X = cx − s·cosh·(wx−px) − s·sinh·(wz−pz)`, `Y = cy + s·sinh·(wx−px) − s·cosh·(wz−pz)`,
+  `s` = px/world-unit = `70/view`), so terrain and friend dots stay aligned. This alignment is the
+  invariant `test-world-map.mjs` guards against the marker formula.
+- `bigMapImageAffine` / `worldToBigMap` — pure. **North-up** projection (N = +Z up, E = −X right,
+  same handedness as the compass) for the full-screen map.
+- `bakeMapCanvas` — browser. Samples the chosen `overlayId`'s colorizer on a `res × res` grid
+  (upsamples past the ~96-cell source for a crisp big map) and returns `{ canvas, worldX, worldZ,
+  wx0, wz0, sxu, szv, res, overlayId }`.
+- `createWorldMapOverlay` — browser. Builds a hidden full-screen `#world-map` panel; returns
+  `toggle()`, `close()`, `isOpen()`, `update()`. `update()` redraws only while open, and labels the
+  active overlay via `getOverlayLabel`. The data getters are passed in so the module stays decoupled
+  from `environment-viewer.html` globals.
+
+Wiring in `environment-viewer.html`: `worldMapBake` is filled by `rebakeWorldMap()`
+(`bakeMapCanvas(loadedMap, { overlayId: mapOverlayId })`) after the map loads (null for
+procedural/no-map worlds); the finder's `update()` blits it under the rings. The minimap sits in an
+`#mp-dock` flex row with a **Layers** tab nub that expands `#mp-map-menu` to the right; picking a
+layer sets `mapOverlayId`, calls `rebakeWorldMap()`, and both the minimap and the M map pick it up.
+`createWorldMapOverlay` is toggled by **M**; opening it enters the cursor-free pause (frozen
+first-person view + free mouse), and **M**/**Esc** close it and re-lock.
 
 ### Server tool
 
@@ -145,4 +195,13 @@ So the real division of labor: `environment-viewer.html` owns all interactive sc
 - `reset()` clears both CPU pass fields and GPU fields and zeroes `droppedFrames`.
 
 It does not test `environment-ui.js` (which is DOM-dependent and has no test coverage in this repo).
+
+`test-world-map.mjs` (repo root, `node test-world-map.mjs`, same manual-`ok` style) covers
+`world-map.js`'s pure math: the `minimapImageAffine` projection agrees with a replica of the finder's
+own marker formula across several headings/positions (the terrain↔dots alignment invariant), the
+big-map projection is north-up/east-right, and `bakeMapPixels` brightens flat ground by ambient light,
+shades slopes directionally, flattens water, and (with `shaded: false`) emits the sampled color
+verbatim. It also checks `overlayColorizer` returns a valid `[r,g,b]` 0..255 + `shaded` flag for every
+`MAP_OVERLAYS` id and that the water/grass/material layers track their underlying data (30 assertions).
+The browser wrappers (`bakeMapCanvas`, `createWorldMapOverlay`) are canvas/DOM-dependent and untested.
 

@@ -26,15 +26,17 @@ import { createWaterSystem, WATER_VERSION } from './water.js';
 
 ### `createWaterSystem(options = {}) -> WaterSystem`
 
-Key `options` (full list is the `DEFAULTS` object, water.js:45-73):
+Key `options` (full list is the `DEFAULTS` object, water.js:45-75):
 `renderer`, `scene`, `camera`, `ground` (terrain mesh, for caustic emissive
 injection), `size`, `waterLevel`, `heightFn(x, z) -> y`, `lightDir`
 (`THREE.Vector3`, defaults to a fixed sun direction), `shallow`/`deep` colors,
 `refractStrength`, `reflectStrength` (ripple-distortion strengths), `reflectMix`,
-`reflectBrightness`, `depthScale`, `waveStrength`, `caustic`, `causticBedDepth`,
-`causticRes`, clipmap tuning (`lodR0`, `lodR1`, `cellS0/1/2`, `buildBudgetMs`,
-`maxBuildsPerFrame`), `extentX`/`extentZ` (clip the water mesh to a finite map),
-`deferredDisposeFrames`.
+`reflectBrightness`, `reflectResolutionScale` (perf: reflector render-target
+scale, default `0.5` — half resolution per dimension), `reflectRate` (perf:
+render the reflection every Nth frame, default `2`), `depthScale`,
+`waveStrength`, `caustic`, `causticBedDepth`, `causticRes`, clipmap tuning
+(`lodR0`, `lodR1`, `cellS0/1/2`, `buildBudgetMs`, `maxBuildsPerFrame`),
+`extentX`/`extentZ` (clip the water mesh to a finite map), `deferredDisposeFrames`.
 
 Returns a `WaterSystem` object (water.js:1114):
 
@@ -47,8 +49,8 @@ Returns a `WaterSystem` object (water.js:1114):
   regenerate(opts),   // re-derive geometry on terrain/size/waterLevel/heightFn change
   setWaves(strength),
   setCaustic(strength),
-  setReflectionTuning({ reflectStrength, refractStrength, reflectMix, reflectBrightness, depthScale }),
-  setReflectRate(everyNFrames),   // API preserved but currently has no effect (see notes)
+  setReflectionTuning({ reflectStrength, refractStrength, reflectMix, reflectBrightness, depthScale, reflectResolutionScale, reflectRate }),
+  setReflectRate(everyNFrames),   // perf: throttle reflection re-renders to every Nth frame (see notes)
   setLightDir(THREE.Vector3),     // re-aim specular + caustic refraction
   setLodDistances(r0, r1),
   getChunkCount(),
@@ -146,13 +148,18 @@ at environment-ui.js:621-622).
   `reflector()` node, which owns its own mirror camera, render target, and
   oblique near-plane clip (the classic Lengyel/THREE.Reflector technique) —
   replacing a hand-rolled reflection camera from earlier in the file's history.
+  Constructed as `reflector({ resolutionScale: o.reflectResolutionScale })`
+  (water.js:561, default `0.5` = half-res render target in each dimension —
+  the reflection is already distorted by the ripple-normal UV offset and
+  Fresnel-blended, so the loss of sharpness is not noticeable).
   `tsl_reflector.target.rotation.x = -Math.PI/2` orients the mirror plane
   horizontal (local +Z -> world +Y). The reflector's `updateBefore` is wrapped
-  to gate the render behind `reflectionEnabled` (true only when both
-  `reflectMix > 0` and `reflectBrightness > 0`) and to record timing stats
-  (`reflectionRenderStats`). Reflection UV is perturbed by the ripple normal
-  (`tsl_reflector.uvNode.add(N.xz.mul(tsl_uReflectStrength))`) and the sampled
-  color is scaled by `reflectBrightness`, then Fresnel-blended against
+  (water.js:584-605) to gate the render behind `reflectionEnabled` (true only
+  when both `reflectMix > 0` and `reflectBrightness > 0`), throttle it to every
+  `reflectEvery`th frame (see Performance levers below), and record timing
+  stats (`reflectionRenderStats`). Reflection UV is perturbed by the ripple
+  normal (`tsl_reflector.uvNode.add(N.xz.mul(tsl_uReflectStrength))`) and the
+  sampled color is scaled by `reflectBrightness`, then Fresnel-blended against
   refraction by `reflectMix`.
 - **Refraction — `viewportSharedTexture`.** No separate refraction render
   target/pass: `viewportSharedTexture(screenUV.add(refractOffset))` reads back
@@ -189,10 +196,37 @@ at environment-ui.js:621-622).
   sun is currently pointing.
 - **Performance levers:** `buildBudgetMs`/`maxBuildsPerFrame` cap clipmap rebuild
   cost per frame; `causticRes` controls the caustic RT resolution (cost of the
-  extra render pass); `setReflectRate(everyNFrames)` exists in the API but
-  **currently has no effect** — the code comment at water.js:976-981 notes the
-  ReflectorNode always renders every frame, and per-N-frame throttling would
-  require manipulating `ReflectorNode.updateBeforeType`, deferred to a later pass.
+  extra render pass). The reflection render (measured at ~10.6ms/frame average
+  before this fix — see `creature-perf-analysis/render-bottleneck-fixes.md`
+  Problem 1) has two independent throttles, both live and runtime-adjustable:
+  - `reflectResolutionScale` (default `0.5`) sets the reflector render target's
+    resolution scale. Passed at construction (`reflector({ resolutionScale })`,
+    water.js:561) but also safe to change at runtime via `setReflectionTuning({
+    reflectResolutionScale })`, which assigns `reflectorBase.resolutionScale`
+    directly — `ReflectorBaseNode._updateResolution()` re-reads that property
+    on every render (three.webgpu.js:37162-37170, called from `updateBefore` at
+    37268), so a runtime change takes effect on the very next reflection render,
+    no rebuild needed.
+  - `reflectRate` / `setReflectRate(everyNFrames)` (default `2`) throttles how
+    often the reflection actually re-renders. The `reflectorBase.updateBefore`
+    wrapper (water.js:584-605) counts distinct `frame.frameId` transitions (a
+    plain call counter would also work — see the in-code comment on why
+    `frame.frameId` isn't simply "app frame number" on its own, since it's
+    bumped by every internal `renderer._renderScene()` call including the
+    reflector's own nested render) and skips the real `renderReflection(frame)`
+    call on non-multiple frames, returning early **without** touching
+    `textureNode.value` — the previous render target's texture stays bound, so
+    there is no blank-frame flash. The very first frame always renders (frame
+    counter starts such that `0 % N === 0` for any `N`), so there's no blank
+    reflection at startup. `setReflectRate(1)` restores full per-frame
+    rendering. This was previously a dead no-op API (`water.js:976-981` in the
+    pre-throttle version) — it is now wired through.
+  - `reflectionRenderStats` tracks `passes` (real renders only), `skipped`
+    (throttled-away frames), and `lastMs` (wall-clock time of the last real
+    render only — stays at its last value, not reset to 0, while a frame is
+    skipped). Surfaced via `getStats()` as `reflectionPasses`,
+    `reflectionSkipped`, `reflectionLastMs`, `reflectionResolutionScale`,
+    `reflectionRate`.
   Disabling reflection (`reflectMix` or `reflectBrightness` at 0) or caustics
   (`caustic` at 0) skips their respective render passes entirely (checked in
   `reflectorBase.updateBefore` / `CausticTextureNode.updateBefore`).
@@ -212,6 +246,7 @@ callback (~line 2058 onward), backed by the shared `params` object:
 - `waterReflectRipple` — "Reflect ripple", 0-0.3 — ripple-normal distortion strength applied to reflection UVs (`reflectStrength`).
 - `waterRefractRipple` — "Refract ripple", 0-0.3 — ripple-normal distortion strength applied to the refraction screen-UV sample (`refractStrength`).
 - `waterDepthScale` — "Depth tint scale", 0.5-8 — divides water depth to compute the shallow/deep color blend factor (`depthScale`).
+- `reflectResolutionScale` / `reflectRate` (perf) — not yet exposed as sliders in `environment-viewer.html`; adjustable at runtime via `water.setReflectionTuning({ reflectResolutionScale, reflectRate })` or `water.setReflectRate(n)`, and configurable at construction via the same-named `createWaterSystem()` options (defaults `0.5` and `2`).
 
 **Water LOD**
 - `waterLodR0` — "Near radius", 10-200 -> `water.setLodDistances(r0, r1)` — outer radius of clipmap ring 0 (finest cell size).

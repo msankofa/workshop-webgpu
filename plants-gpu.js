@@ -10,7 +10,7 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float, vec2,
   vec3, cos, sin, modInt, positionLocal, normalLocal, clamp, length, floor, bitcast,
-  atomicAdd, atomicStore, atomicLoad,
+  atomicAdd, atomicStore, atomicLoad, time, mix,
 } from 'three/tsl';
 
 // reinterpret an i32 node's bits as u32 (same trick grass-compute.js uses) so negative
@@ -33,8 +33,46 @@ const posRandFn = Fn(([x, z, salt]) => {
   return h.toFloat().div(4294967296.0);
 });
 
+// Per-instance variation tint (hue swing + 22%-dry roll + age darken): a pure-expression TSL
+// mirror of plants.js's plantTint() JS reference (test-plant-variation.mjs covers the JS side;
+// GPU compute can't import it, so keep these constants in sync by hand if the law changes --
+// same convention as forest-cull.js/forest-gpu.js). Built entirely from arithmetic + mix()
+// (linear interpolation, not a branch) -- no If() at material scope, per SeedThree
+// terrain-material.js's documented gotcha (a top-level If() throws when the node graph builds).
+const plantTintNode = Fn(([hue, dryness, age]) => {
+  const hueR = hue.mul(0.5).add(1.0), hueG = hue.mul(-0.3).add(1.0), hueB = hue.mul(-0.2).add(1.0);
+  const dryR = dryness.mul(0.35).add(1.0), dryG = dryness.mul(-0.28).add(1.0), dryB = dryness.mul(-0.35).add(1.0);
+  const ageNorm = clamp(age.sub(0.6).div(0.4), 0, 1);
+  const ageR = mix(float(1.06), float(0.88), ageNorm);
+  const ageG = mix(float(1.06), float(0.90), ageNorm);
+  const ageB = mix(float(1.0), float(0.86), ageNorm);
+  return vec3(hueR.mul(dryR).mul(ageR), hueG.mul(dryG).mul(ageG), hueB.mul(dryB).mul(ageB)).max(vec3(0, 0, 0));
+});
+
+// age->scale law: mature (age~1) plants render at their full placed scale; young (age~0.6)
+// plants are visibly smaller -- same fraction (0.75..1.0) used nowhere else, kept local.
+const ageScaleNode = (age) => age.sub(0.6).div(0.4).clamp(0, 1).mul(0.25).add(0.75);
+
+// Wind sway (SeedThree wind.js grassWindPosition, adapted): composed AFTER the instance
+// yaw/scale/translate transform (i.e. applied to the already-world-space position), so this is
+// a world-space offset, never a vertexNode/local displacement. Phase comes from posRandFn keyed
+// on the instance's own world position (stable across rebuild()'s slot-reassigning re-sorts,
+// same reasoning as the cull kernel's fade dither above) so instances don't sway in lockstep.
+// Amplitude grows with local geometry height (positionLocal.y, pre-transform) squared, same
+// quadratic taper wind.js uses for grass blades (base pinned, tip whips).
+const WIND_DIR = vec3(0.85, 0, 0.53);
+function plantWindOffset(rec0, uWindStrength, uWindSpeed) {
+  const phase = posRandFn(rec0.x, rec0.z, int(11)).mul(Math.PI * 2);
+  const t = time.mul(uWindSpeed);
+  const heightFrac = clamp(positionLocal.y.div(float(1.1)), 0, 1);
+  const k = heightFrac.mul(heightFrac);
+  const sway = sin(t.mul(1.3).add(phase)).mul(0.7).add(sin(t.mul(2.7).add(phase.mul(1.9))).mul(0.3));
+  const amp = uWindStrength.mul(0.16).mul(k);
+  return WIND_DIR.mul(sway.mul(amp));
+}
+
 // opts: { renderer, camera, palette (from plants.js's createPlantPalette), heightAt,
-//         capPerVariant, cullRadius, cullStart }
+//         capPerVariant, cullRadius, cullStart, variationStrength, windStrength, windSpeed }
 export function createPlantsGPU(opts) {
   const { renderer, camera, palette } = opts;
   const heightAt = opts.heightAt || (() => 0);
@@ -42,7 +80,8 @@ export function createPlantsGPU(opts) {
   const V = palette.variants.length;
 
   // source (CPU-filled on chunk change) and draw (compute-written survivors) buffers:
-  // V*CAP instances x 2 vec4 -> rec0=(x,y,z,scale), rec1=(yaw,_,_,_).
+  // V*CAP instances x 2 vec4 -> rec0=(x,y,z,scale), rec1=(yaw,hue,dryness,age). yzw were free
+  // floats reserved for exactly this (Phase 1 per-instance variation) -- no layout change.
   const srcAttr = new StorageInstancedBufferAttribute(new Float32Array(V * CAP * 8), 8);
   const src = storage(srcAttr, 'vec4', V * CAP * 2);
   const drawAttr = new StorageInstancedBufferAttribute(new Float32Array(V * CAP * 8), 8);
@@ -64,6 +103,13 @@ export function createPlantsGPU(opts) {
   // plants stop popping in/out at a fixed ring the way trees/plants used to and instead
   // thin out gradually, matching how grass approaches its own draw distance.
   const uCullStart = uniform(opts.cullStart ?? (opts.cullRadius ?? 45) * 0.7);
+  // Variation strength blends the per-instance tint from flat (0, all plants read the
+  // species' baked vertex color unmodified) to full (1, the complete hue/dryness/age law) --
+  // and wind strength/speed drive plantWindOffset's sway amplitude/tempo. All three are
+  // live uniforms (no rebuild needed to change them), matching wind/grass sliders elsewhere.
+  const uVariationStrength = uniform(opts.variationStrength ?? 1.0);
+  const uWindStrength = uniform(opts.windStrength ?? 0.4);
+  const uWindSpeed = uniform(opts.windSpeed ?? 1.0);
 
   const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V);
 
@@ -99,15 +145,22 @@ export function createPlantsGPU(opts) {
     const recBase = uint(g).mul(uint(CAP)).add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);
     const rec1 = draw.element(recBase.add(uint(1)));
-    const scale = rec0.w, yaw = rec1.x;
+    // rec1 = (yaw, hue, dryness, age) -- yzw were free floats reserved for exactly this
+    // (see file header); no buffer-layout change, just filling fields rebuild() already wrote.
+    const yaw = rec1.x, hue = rec1.y, dryness = rec1.z, age = rec1.w;
+    const scale = rec0.w.mul(ageScaleNode(age));
     const cy = cos(yaw), sy = sin(yaw);
     const px = positionLocal.x, py = positionLocal.y, pz = positionLocal.z;
     const rx = px.mul(cy).add(pz.mul(sy));
     const rz = pz.mul(cy).sub(px.mul(sy));
-    const world = vec3(rec0.x.add(rx.mul(scale)), rec0.y.add(py.mul(scale)), rec0.z.add(rz.mul(scale)));
+    let world = vec3(rec0.x.add(rx.mul(scale)), rec0.y.add(py.mul(scale)), rec0.z.add(rz.mul(scale)));
+    // Wind: composed AFTER the yaw/scale/translate transform above, i.e. a world-space offset
+    // added to the already-placed instance position -- never folded into positionLocal.
+    world = world.add(plantWindOffset(rec0, uWindStrength, uWindSpeed));
     const nx = normalLocal.x, ny = normalLocal.y, nz = normalLocal.z;
     const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
-    return { world, nWorld };
+    const tint = mix(vec3(1, 1, 1), plantTintNode(hue, dryness, age), uVariationStrength);
+    return { world, nWorld, tint };
   }
 
   const meshes = [];
@@ -116,6 +169,10 @@ export function createPlantsGPU(opts) {
     const n = instanceNodes(g);
     mat.positionNode = n.world;
     mat.normalNode = n.nWorld;
+    // material.vertexColors (still true above) multiplies this colorNode by the geometry's
+    // baked vertex color automatically (three.js NodeMaterial VERTEX COLORS step) -- so this
+    // is purely the tint factor, not a replacement for the baked species color.
+    mat.colorNode = n.tint;
     const geom = palette.variants[g].clone();
     geom.instanceCount = CAP;
     geom.indirect = indirectAttrs[g];
@@ -132,6 +189,10 @@ export function createPlantsGPU(opts) {
   const countsArray = countsAttr.array;
   let cpuInstances = 0;
   let dirty = true, lastCamX = NaN, lastCamZ = NaN;
+  let needsRebuild = false;   // chunk mutations set this; rebuild() runs once at update() top
+  let visibleVariants = 0;    // variants with >0 source records this rebuild
+  let submittedDraws = 0;     // meshes actually left visible (== visibleVariants)
+  const allRecords = [];      // reused scratch for the per-rebuild distance sort (no realloc)
 
   // deterministic variant pick within a species (0 .. variantsPerSpecies-1) -- same formula
   // forest-gpu.js uses, so repeated `slot` values pick the same variant consistently.
@@ -141,7 +202,10 @@ export function createPlantsGPU(opts) {
 
   function rebuild() {
     countsArray.fill(0);
-    srcArray.fill(0);
+    // NOTE: srcArray is intentionally NOT zeroed. The cull kernel only reads slots where
+    // localSlot < srcCounts[g] (== countsArray[g]); slots past a variant's live count are
+    // never sampled, so stale data can't leak into a draw. Skipping the full V*CAP*8 fill(0)
+    // keeps the rebuild path light during streaming.
     let total = 0;
     // Sort all pooled instances by true distance to the camera before allocating each
     // variant's CAP slots. chunkRecords is a Map, and Map iteration order is insertion
@@ -151,7 +215,7 @@ export function createPlantsGPU(opts) {
     // backwards. Sorting by actual instance position here removes any dependency on
     // chunk registration order.
     const camX = camera.position.x, camZ = camera.position.z;
-    const allRecords = [];
+    allRecords.length = 0;
     for (const records of chunkRecords.values()) for (const r of records) allRecords.push(r);
     allRecords.sort((a, b) => {
       const da = (a.x - camX) ** 2 + (a.z - camZ) ** 2;
@@ -166,10 +230,28 @@ export function createPlantsGPU(opts) {
       countsArray[g] = slot + 1;
       const base = (g * CAP + slot) * 8;
       srcArray[base] = r.x; srcArray[base + 1] = r.y ?? heightAt(r.x, r.z); srcArray[base + 2] = r.z; srcArray[base + 3] = r.scale;
+      // rec1 = (yaw, hue, dryness, age) -- hue/dryness/age default to "no variation" (0,0,1)
+      // for any caller that hasn't adopted plants-placement.js's rollPlantVariation yet.
       srcArray[base + 4] = r.yaw;
+      srcArray[base + 5] = r.hue ?? 0;
+      srcArray[base + 6] = r.dryness ?? 0;
+      srcArray[base + 7] = r.age ?? 1;
       total++;
     }
     cpuInstances = total;
+    // Zero-instance visibility gating: hide the single mesh of any variant with no source
+    // records so Three's render list skips its always-on indirect draw (frustumCulled=false +
+    // instanceCount pinned to CAP). The reset->cull->finalize compute passes run unconditionally
+    // off storage buffers (unaware of mesh.visible), so a hidden variant stays correct and
+    // reappears immediately when it repopulates. See docs/subsystems/vegetation.md.
+    let visCount = 0;
+    for (let g = 0; g < V; g++) {
+      const vis = countsArray[g] > 0;
+      if (vis) visCount++;
+      meshes[g].visible = vis;
+    }
+    visibleVariants = visCount;
+    submittedDraws = visCount;
     srcAttr.needsUpdate = true;
     countsAttr.needsUpdate = true;
     dirty = true;
@@ -177,24 +259,36 @@ export function createPlantsGPU(opts) {
 
   return {
     meshes,
-    setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
-    clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
+    // Chunk mutations only flag a pending rebuild; the actual rebuild() (full-window rescan +
+    // O(n log n) distance sort + buffer refill + visibility gating) runs at most once per frame
+    // from update()'s top, debouncing the churn when a frame streams in a batch of chunks.
+    setChunk(key, records) { chunkRecords.set(key, records); needsRebuild = true; },
+    clearChunk(key) { if (chunkRecords.delete(key)) needsRebuild = true; },
     setChunks(batch, clearKeys = []) {
       let changed = false;
       for (const key of clearKeys) changed = chunkRecords.delete(key) || changed;
       for (const [key, records] of batch) { chunkRecords.set(key, records); changed = true; }
-      if (changed) rebuild();
+      if (changed) needsRebuild = true;
     },
     setCullRadius(r) { if (uCullRadius.value !== r) { uCullRadius.value = r; dirty = true; } },
     setCullStart(r) { if (uCullStart.value !== r) { uCullStart.value = r; dirty = true; } },
+    // Live uniforms -- no rebuild needed, unlike density/clustering which require re-placing.
+    setVariationStrength(v) { uVariationStrength.value = v; },
+    setWindStrength(v) { uWindStrength.value = v; },
+    setWindSpeed(v) { uWindSpeed.value = v; },
     async update() {
+      // Run any deferred rebuild before the cull reads the source buffer/counts. rebuild()
+      // sets dirty, so the camera-unchanged skip below won't stale a fresh chunk batch.
+      if (needsRebuild) { rebuild(); needsRebuild = false; }
       const camX = camera.position.x, camZ = camera.position.z;
       if (!dirty && camX === lastCamX && camZ === lastCamZ) return;
       uCam.value.set(camX, camZ);
       await renderer.computeAsync([reset, cull, ...finalizers]);
       lastCamX = camX; lastCamZ = camZ; dirty = false;
     },
-    get stats() { return { draws: V, instances: cpuInstances, variants: V }; },
+    // draws is the number of meshes actually submitted (== visibleVariants), not the fixed V;
+    // visibleVariants exposes how many of the V variants survived the zero-instance gate.
+    get stats() { return { draws: submittedDraws, visibleVariants, instances: cpuInstances, variants: V }; },
     dispose() {
       const mats = new Set();
       meshes.forEach(m => { m.geometry.dispose(); mats.add(m.material); });

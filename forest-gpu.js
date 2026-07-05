@@ -294,6 +294,9 @@ export function createForestGPU(opts) {
   const countsArray = countsAttr.array;
   let cpuInstances = 0;
   let dirty = true;
+  let needsRebuild = false;   // chunk mutations set this; rebuild() runs once at update() top
+  let visibleVariants = 0;    // variants with >0 source records this rebuild
+  let submittedDraws = 0;     // meshes actually left visible (visibleVariants * 8)
   let lastCamX = NaN;
   let lastCamZ = NaN;
   let reculls = 0;
@@ -311,7 +314,10 @@ export function createForestGPU(opts) {
   let overflowWarned = false;
   function rebuild() {
     countsArray.fill(0);
-    srcArray.fill(0);
+    // NOTE: srcArray is intentionally NOT zeroed. The cull kernel only reads slots where
+    // localSlot < srcCounts[g] (== countsArray[g]); every slot beyond a variant's live
+    // count is never sampled, so stale data past the count can't leak into a draw. Skipping
+    // the full V*CAP*8 fill(0) (~196k floats at cap 2048) removes it from the hot rebuild path.
     let total = 0, dropped = 0;
     for (const records of chunkRecords.values()) {
       for (const r of records) {
@@ -328,6 +334,22 @@ export function createForestGPU(opts) {
       }
     }
     cpuInstances = total;
+    // Zero-instance visibility gating: a variant with no source records anywhere in the
+    // active window submits 8 always-on indirect draws it doesn't need (frustumCulled=false
+    // + instanceCount pinned to CAP means Three never drops them). Hide all 8 of the
+    // variant's meshes so Three's render list skips them entirely. The compute cull/finalize
+    // passes run unconditionally off storage buffers (unaware of mesh.visible), so a hidden
+    // variant's indirect buffer is still kept live and correct — flipping .visible back on
+    // when it repopulates shows current data immediately. See docs/subsystems/vegetation.md.
+    let visCount = 0;
+    for (let g = 0; g < V; g++) {
+      const vis = countsArray[g] > 0;
+      if (vis) visCount++;
+      const b = g * 8;
+      for (let m = 0; m < 8; m++) meshes[b + m].visible = vis;
+    }
+    visibleVariants = visCount;
+    submittedDraws = visCount * 8;
     if (dropped > 0 && !overflowWarned) {
       overflowWarned = true;
       console.warn(`[forest-gpu] dropped ${dropped} instances this rebuild: a variant exceeded capPerVariant=${CAP}. Raise capPerVariant.`);
@@ -357,9 +379,12 @@ export function createForestGPU(opts) {
     },
     setBillboardBrightness(val) { uBillBrightness.value = val; },
     _palette: palette,
-    setChunk(key, records) { chunkRecords.set(key, records); rebuild(); },
-    setChunks(map) { for (const [k, v] of map) chunkRecords.set(k, v); rebuild(); },
-    clearChunk(key) { if (chunkRecords.delete(key)) rebuild(); },
+    // Chunk mutations only flag a pending rebuild; the actual rebuild() (full-window rescan
+    // + buffer refill + visibility gating) runs at most once per frame from update()'s top,
+    // debouncing the churn when many setChunk/clearChunk calls land in one frame's batch.
+    setChunk(key, records) { chunkRecords.set(key, records); needsRebuild = true; },
+    setChunks(map) { for (const [k, v] of map) chunkRecords.set(k, v); needsRebuild = true; },
+    clearChunk(key) { if (chunkRecords.delete(key)) needsRebuild = true; },
     setLodDistances(r0, r1, r2) {
       let changed = false;
       if (uLodR0.value !== r0) { uLodR0.value = r0; changed = true; }
@@ -372,6 +397,9 @@ export function createForestGPU(opts) {
     // chain goes in ONE computeAsync([...]) submit (three dispatches the array in order on
     // a single encoder): 14 separate awaited submits/frame were the gpu path's CPU cost.
     async update() {
+      // Run any deferred rebuild before the cull reads the source buffer/counts. rebuild()
+      // markDirty()s, so the camera-epsilon skip below won't stale a fresh chunk batch.
+      if (needsRebuild) { rebuild(); needsRebuild = false; }
       const camX = camera.position.x;
       const camZ = camera.position.z;
       if (!dirty && Math.abs(camX - lastCamX) <= EPS && Math.abs(camZ - lastCamZ) <= EPS) {
@@ -385,7 +413,10 @@ export function createForestGPU(opts) {
       dirty = false;
       reculls++;
     },
-    get stats() { return { draws: V * 8, instances: cpuInstances, variants: V, reculls, skippedReculls, dirty }; },
+    // draws is now the number of meshes actually submitted (visible variants * 8), not the
+    // fixed V*8. visibleVariants exposes how many of the V variants survived the zero-instance
+    // gate; variants is still the total variant count for reference.
+    get stats() { return { draws: submittedDraws, visibleVariants, instances: cpuInstances, variants: V, reculls, skippedReculls, dirty }; },
     dispose() {
       const mats = new Set();
       meshes.forEach(m => {

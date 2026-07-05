@@ -132,6 +132,7 @@ const GROUPS = {
   entry:       { label: 'Entry point',       color: '#f25f5c' },
   terrain:     { label: 'Terrain',           color: '#a1887f' },
   vegetation:  { label: 'Vegetation',        color: '#5cb85c' },
+  rocks:       { label: 'Rocks / scree',     color: '#8d6e63' },
   water:       { label: 'Water',             color: '#2f9bf0' },
   sky:         { label: 'Sky / atmosphere',  color: '#9575cd' },
   lighting:    { label: 'Lighting',          color: '#ffca28' },
@@ -180,6 +181,15 @@ const NODES = [
   { id: 'map-collision.js', group: 'terrain', lines: 135,
     desc: 'BVH-accelerated mesh collision (three-mesh-bvh) for static map geometry — separate from the procedural terrain collider.',
     tests: [] },
+  { id: 'moisture-proxy.js', group: 'terrain', lines: 40,
+    desc: 'Pure CPU moisture PROXY (biome->moisture table x elevation-dryness, shore-band floor) + upnessFromNormalY. Backs terrain-loader.js\'s surfaceField(x,z).moisture/upness.',
+    tests: ['test-surface-field.mjs'] },
+  { id: 'moss-tint.js', group: 'terrain', lines: 32,
+    desc: 'Shared moss/lichen dressing weight mossWeight(moisture, upness, cavity, brushNoise) as a TSL Fn — the ONE dressing law reused by the terrain splat material, rocks.js\'s buildRockMaterial, and the future deadwood material.',
+    tests: ['test-moss-tint.mjs'] },
+  { id: 'moss-tint-ref.js', group: 'terrain', lines: 37,
+    desc: 'CPU math-twin of moss-tint.js\'s mossWeight law (Node-testable); also exports the shared smoothstep/clamp01 helpers reused by rocks-placement.js\'s scree gating.',
+    tests: ['test-moss-tint.mjs'] },
 
   // --- vegetation ---
   { id: 'trees.js', group: 'vegetation', lines: 454,
@@ -212,6 +222,17 @@ const NODES = [
   { id: 'grass-height-ref.js', group: 'vegetation', lines: 33,
     desc: 'Tiny shared height-lookup reference used by grass-cells.js and tests to keep CPU/GPU height sampling in sync.',
     tests: ['test-cdlod-morph.mjs', 'test-grass-cells.mjs', 'test-grass-height-tsl.mjs'] },
+
+  // --- rocks / scree (understory-overhaul Phase 3, merged-plan row #7) ---
+  { id: 'rocks.js', group: 'rocks', lines: 220,
+    desc: 'Displaced-icosphere boulder + scree geometry (weld -> plane-wave displace -> squash -> smooth normals; bakes per-vertex upness/cavity attributes) and buildRockMaterial (triplanar PBR + moss/lichen/dirt dressing via moss-tint.js). createRockPalette is fully data-driven (any number of authored rock types). Standalone -- NOT yet wired into environment-viewer.html.',
+    tests: ['test-rocks-geometry.mjs'] },
+  { id: 'rocks-placement.js', group: 'rocks', lines: 150,
+    desc: 'Deterministic seeded placement records for boulders (scatter broadly) + scree (slope/rockness-gated), lowest-of-5-footprint seating against heightAt, per-instance moisture sampling from surfaceField. Exposes boulderCirclesFromRecords for future createTrunkIndex collision wiring.',
+    tests: ['test-rocks-placement.mjs'] },
+  { id: 'dressing-gpu.js', group: 'rocks', lines: 210,
+    desc: 'Generalized reset->cull->finalize->indirect-draw instancing host, factored out of (not edited into) plants-gpu.js\'s spine: arbitrary per-group instance caps/cull radii/shadow flags/materials, so rocks (and later deadfall/fungi) share one production instancing path instead of forking plants-gpu.js again.',
+    tests: [] },
 
   // --- water ---
   { id: 'water.js', group: 'water', lines: 1117,
@@ -284,6 +305,7 @@ const NODES = [
 // doc lives inside multiplayer.md (it's covered there as the relay backend).
 const GROUP_DOCS = {
   entry: 'entry-point.md', terrain: 'terrain.md', vegetation: 'vegetation.md',
+  rocks: 'rocks.md',
   water: 'water.md', sky: 'sky.md', lighting: 'lighting.md', fx: 'fx.md',
   creature: 'creature.md', multiplayer: 'multiplayer.md', infra: 'infra.md',
   server: 'multiplayer.md', legacy: 'legacy.md',
@@ -291,6 +313,7 @@ const GROUP_DOCS = {
 // representative node selected when a doc deep-links back here via #group
 const GROUP_REPRESENTATIVE = {
   entry: 'environment-viewer.html', terrain: 'terrain-system.js', vegetation: 'forest-gpu.js',
+  rocks: 'rocks.js',
   water: 'water.js', sky: 'sky.js', lighting: 'lights.js', fx: 'particles.js',
   creature: 'port-creature-bridge.js', multiplayer: 'multiplayer.js', infra: 'environment-ui.js',
   server: 'server/server.js', legacy: 'creature-viewer.html',
@@ -300,6 +323,7 @@ const DOC_LIST = [
   ['terrain.md', 'Terrain', 'terrain'],
   ['biomes.md', 'Biomes', 'terrain'],
   ['vegetation.md', 'Vegetation', 'vegetation'],
+  ['rocks.md', 'Rocks / scree', 'rocks'],
   ['water.md', 'Water', 'water'],
   ['sky.md', 'Sky / atmosphere', 'sky'],
   ['lighting.md', 'Lighting', 'lighting'],
@@ -357,7 +381,13 @@ const EDGES = [
   ['sky.js', 'celestial-bodies.js', 'static'],
   ['start-screen.js', 'multiplayer.js', 'static'],
   ['terrain-loader.js', 'terrain-textures.js', 'static'],
+  ['terrain-loader.js', 'moisture-proxy.js', 'static'],
   ['terrain-system.js', 'terrain-field.js', 'static'],
+  ['rocks.js', 'moss-tint.js', 'static'],
+  ['rocks.js', 'forest-placement.js', 'static'],
+  ['rocks-placement.js', 'forest-placement.js', 'static'],
+  ['rocks-placement.js', 'moss-tint-ref.js', 'static'],
+  ['moss-tint.js', 'moss-tint-ref.js', 'static'],
   // worker
   ['terrain-worker.js', 'terrain-field.js', 'worker'],
   // legacy app

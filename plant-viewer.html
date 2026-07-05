@@ -29,7 +29,10 @@ import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createLightingRig } from './lights.js';
-import { PLANT_DEFAULTS, PLANT_PRESETS, PLANT_BIOME_TAGS, mergePlantOpts, buildPlantGeometry } from './plants.js';
+import {
+  PLANT_DEFAULTS, PLANT_PRESETS, PLANT_BIOME_TAGS, mergePlantOpts, buildPlantGeometry,
+  rollPlantVariation, plantTint,
+} from './plants.js';
 
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
@@ -96,6 +99,18 @@ let soloPlant = null;
 let gridPlants = [];
 let refreshExport = () => {};   // reassigned once the Export section builds its textarea (Task 10)
 
+// ---- variation strip: ~6 instances of the current species with rolled hue/dryness/age side
+// by side, so the Phase 1 per-instance variation law is directly authorable here -- unlike the
+// world (plants-gpu.js), this viewer renders one hero instance via buildPlantGeometry and has no
+// TSL colorNode, so the tint is baked directly into each instance's vertex-color attribute using
+// the SAME plantTint()/rollPlantVariation() functions plants-placement.js uses for real placement.
+let showVariationStrip = false;
+let variationPlants = [];
+const VARIATION_STRIP_COUNT = 6;
+const VARIATION_STRIP_HUE_VAR = 0.15;   // matches plants-placement.js's DEFAULT_HUE_VAR fallback
+                                        // (species hueVar lives in PLANT_BIOME_TAGS, keyed by
+                                        // species name -- not reachable from a bare opts object)
+
 // buildPlantGeometry bakes vertex colors directly into the geometry, so unlike trees.js there is
 // no separate "materials built once, only geometry regenerates" distinction to preserve -- every
 // opts change disposes the old geometry and builds a new one against this single shared material.
@@ -158,16 +173,63 @@ function buildGrid() {
   }
   fitCameraToGrid();
 }
+// deterministic tiny RNG local to the strip -- reseeded from baseSeed each rebuild so the same
+// tuned plant always shows the same 6 rolls (not a fresh random draw every regenerate).
+function makeStripRNG(seed) {
+  let s = (seed >>> 0) || 1;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function disposeVariationStrip() {
+  for (const p of variationPlants) disposePlant(p);
+  variationPlants = [];
+}
+function buildVariationStrip() {
+  disposeVariationStrip();
+  if (!showVariationStrip) return;
+  const probe = makePlant(opts);
+  const bounds = new THREE.Box3().setFromObject(probe);
+  probe.geometry.dispose();
+  const extent = Math.max(bounds.max.x - bounds.min.x, bounds.max.z - bounds.min.z) || 1;
+  const spacing = Math.max(1.2, extent * 2.2);
+  const rowZ = extent * 2.5 + spacing;   // a separate row so it never overlaps solo/grid
+  const half = (VARIATION_STRIP_COUNT - 1) / 2;
+  const rng = makeStripRNG(baseSeed + 0x7a11);
+  for (let i = 0; i < VARIATION_STRIP_COUNT; i++) {
+    const geom = buildPlantGeometry({ ...opts, seed: baseSeed + 5000 + i });
+    const { hue, dryness, age } = rollPlantVariation(rng, VARIATION_STRIP_HUE_VAR);
+    const tint = plantTint(hue, dryness, age);
+    const colorAttr = geom.getAttribute('color');
+    for (let v = 0; v < colorAttr.count; v++) {
+      colorAttr.setXYZ(v, colorAttr.getX(v) * tint[0], colorAttr.getY(v) * tint[1], colorAttr.getZ(v) * tint[2]);
+    }
+    colorAttr.needsUpdate = true;
+    const ageScale = 0.75 + Math.min(1, Math.max(0, (age - 0.6) / 0.4)) * 0.25;   // mirrors plants-gpu.js's ageScaleNode
+    const mesh = new THREE.Mesh(geom, plantMaterial);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.scale.setScalar(ageScale);
+    mesh.position.set((i - half) * spacing, 0, rowZ);
+    scene.add(mesh);
+    variationPlants.push(mesh);
+  }
+}
+
 function disposeCurrent() {
   if (soloPlant) { disposePlant(soloPlant); soloPlant = null; }
   for (const p of gridPlants) disposePlant(p);
   gridPlants = [];
+  disposeVariationStrip();
 }
 function rebuildView() {
   clearTimeout(regenTimer);
   needsRefit = false;
   disposeCurrent();
   if (mode === 'solo') buildSolo(); else buildGrid();
+  buildVariationStrip();
   refreshExport();
 }
 
@@ -181,6 +243,7 @@ function scheduleRegenerate(refit = false) {
 function regenerateAll() {
   if (mode === 'solo') regenerateSolo(needsRefit);
   else buildGrid();
+  buildVariationStrip();
   needsRefit = false;
   refreshExport();
 }
@@ -617,7 +680,8 @@ optsSlider('stem.sprawl', 'Sprawl', 0, 1, 0.01, pct);
 // ===================== Leaf section =====================
 panelSection('leaf', 'Leaf', () => mutateSection(leafMutateList()));
 optsSelect('leaf.shape', 'Shape', ['oval', 'lance', 'star']);
-optsSelect('leaf.style', 'Style', ['simple', 'complex']);
+optsSelect('leaf.style', 'Style', ['simple', 'complex', 'sprigClump']);
+optsSlider('leaf.sprigQuads', 'Sprig quads (sprigClump only)', 3, 16, 1, fi);
 optsSlider('leaf.leafletCount', 'Leaflet count (complex only)', 1, 12, 1, fi);
 optsSelect('leaf.leafletParity', 'Leaflet parity (complex only)', ['odd', 'even']);
 optsSelect('leaf.arrangement', 'Arrangement', ['alternate', 'opposite', 'whorl']);
@@ -644,6 +708,22 @@ colorControl('Vein color', () => veinColorValue, v => {
   if (opts.leaf.veinColor != null) opts.leaf.veinColor = v;
 }, () => scheduleRegenerate());
 
+// leaf.blossom is nullable ({r,g,b,frac} or null), only meaningful for style: 'sprigClump' --
+// same null-gated toggle pattern as veinColor/throatColor above. frac/color are edited
+// separately from the enable toggle so a disabled blossom remembers its last tuned values.
+let blossomColorValue = opts.leaf.blossom ? [opts.leaf.blossom.r, opts.leaf.blossom.g, opts.leaf.blossom.b] : [0.58, 0.16, 0.24];
+let blossomFracValue = opts.leaf.blossom?.frac ?? 0.35;
+function blossomHex() { return ((Math.round(blossomColorValue[0] * 255) << 16) | (Math.round(blossomColorValue[1] * 255) << 8) | Math.round(blossomColorValue[2] * 255)); }
+function syncBlossom() { if (opts.leaf.blossom) opts.leaf.blossom = { r: blossomColorValue[0], g: blossomColorValue[1], b: blossomColorValue[2], frac: blossomFracValue }; }
+toggleControl('Enable blossom (sprigClump only)', () => opts.leaf.blossom != null, v => {
+  opts.leaf.blossom = v ? { r: blossomColorValue[0], g: blossomColorValue[1], b: blossomColorValue[2], frac: blossomFracValue } : null;
+}, () => scheduleRegenerate());
+colorControl('Blossom color', blossomHex, v => {
+  blossomColorValue = [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+  syncBlossom();
+}, () => scheduleRegenerate());
+rangeControl('Blossom fraction', 0, 1, 0.01, () => blossomFracValue, v => { blossomFracValue = v; syncBlossom(); }, pct, () => scheduleRegenerate());
+
 // ===================== Flower section =====================
 panelSection('flower', 'Flower', () => mutateSection(flowerMutateList()));
 optsToggle('flower.enabled', 'Enabled');
@@ -661,6 +741,13 @@ colorControl('Throat color', () => throatColorValue, v => {
   throatColorValue = v;
   if (opts.flower.throatColor != null) opts.flower.throatColor = v;
 }, () => scheduleRegenerate());
+
+// ===================== Variation preview =====================
+panelSection('variation', 'Variation preview', null);
+toggleControl(`Show variation strip (${VARIATION_STRIP_COUNT} instances)`, () => showVariationStrip, v => {
+  showVariationStrip = v;
+}, () => rebuildView());
+row('<span style="color:#7f8a99">Rolls hue/dryness/age per instance (plants.js rollPlantVariation) and bakes the same plantTint() the world uses into each instance\'s vertex colors -- a row behind the main view.</span>');
 
 // ===================== Export section =====================
 panelSection('export', 'Export', null);

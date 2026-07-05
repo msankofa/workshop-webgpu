@@ -189,12 +189,27 @@ creation.
 ## Friend finder HUD (compass strip + minimap)
 
 `createMultiplayerFinder()` in `environment-viewer.html` (near the session setup) builds a small
-fixed 220px canvas panel (bottom-left, hidden in solo) with three parts: a horizontal compass
+fixed 220px canvas panel (bottom-left) with three parts: a horizontal compass
 strip across the top, a heading-up minimap below it (concentric range rings, 140 m clamp radius),
 and a Track button that cycles which remote player is highlighted/labelled. It is redrawn every
 frame from `animate()` via `updateMultiplayerFinder()`, reading `multiplayerLocalPlayer()` and
 `multiplayerRemotePlayers()` (host: latest `player_state` from guests; guest: the snapshot's
 `players` minus itself).
+
+**Availability.** In multiplayer the panel always shows. In **solo** it shows only when an authored
+map is loaded (so the terrain minimap is useful); the Track button/label row is hidden since there
+are no friends. When an authored map is present the minimap draws a heading-up terrain background
+under the rings and arrows, and pressing **M** opens a north-up full-screen map. Both are provided by
+`world-map.js` — see its "World map HUD" section in `infra.md`. The terrain blit reuses the finder's
+own marker projection (`minimapImageAffine`, with `s = 70/view`) so terrain and friend dots stay
+aligned as the view turns.
+
+**Layer picker.** The minimap lives in an `#mp-dock` flex row with a **Layers** tab nub on its right
+edge; clicking it slides out `#mp-map-menu` listing the data overlays from `MAP_OVERLAYS`
+(biome/elevation/slope/material/water/grass/tree). Picking one sets `mapOverlayId`, re-bakes via
+`rebakeWorldMap()`, and both the minimap and the M map switch to it. Reach the menu with the mouse by
+pressing **Q** (cursor-free pause — see `entry-point.md`), which frees the cursor without leaving the
+first-person view.
 
 **Angle convention — the one thing to get right when touching this code.** Every angle in the
 finder is a clockwise compass bearing with **N = +Z and E = −X** (in three.js Y-up world coords a

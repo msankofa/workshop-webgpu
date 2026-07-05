@@ -25,7 +25,7 @@ buffers so the CPU never reads back GPU state.
 | `plants.js` | Parameterized procedural plant generator (`PLANT_DEFAULTS`/`PLANT_PRESETS`/`buildPlantGeometry`/`createPlantPalette`); 4 species: chickweed, cleavers, mint, jewelweed. See "Plants" below. |
 | `plants-placement.js` | Biome-gated, density-weighted plant placement (mirrors `forest-placement.js`, reuses its `rngFrom`/`hash2`). |
 | `plants-gpu.js` | Single-LOD GPU-instanced plant rendering (mirrors `forest-gpu.js`'s reset→cull→finalize→indirect-draw spine, one distance-cull band instead of 4 LOD bands). |
-| `forest-gpu.js` (399 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. |
+| `forest-gpu.js` (430 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. |
 | `forest-cull.js` (8 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the cull math in `forest-gpu.js`'s TSL `cull` kernel, kept only so the predicate is unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel reimplements the same `dx*dx+dz*dz <= maxDist*maxDist` logic inline). |
 | `grass.js` (536 lines) | `Grass`/`createGrass`: CPU-built single merged-mesh grass field (5 verts/blade) with a TSL `MeshStandardNodeMaterial` (wind sway, distance fade, base→tip color, cloud-shadow noise). Also exports `buildBladeGeometry`, `buildGrassNoiseFns`, and JS parity helpers `grassWindOffset`/`grassFadeKeep` used both at runtime and by tests. |
 | `grass-compute.js` (541 lines) | `createComputeGrass()`: fully GPU-driven grass with two placement paths. Procedural mode (no map): a TSL compute pass regenerates candidate blades over a world-cell window around the camera, plants them on a TSL terrain-height function. Anchor mode (authored maps, when `surfaceGeometry` is passed): CPU-sampled mesh anchors from `grass-anchors.js` are streamed into a chunk-slot storage buffer and a TSL kernel culls them instead. Both paths cull (water/radius/density) and atomically compact survivors into one indirect-drawn instance buffer. |
@@ -119,19 +119,24 @@ export function clamp01(v): number
 export function createGrassStyleAtlas(): THREE.CanvasTexture      // bakes all 5 styles into one atlas (5 tiles in a row)
 
 // plants.js
-export const PLANT_DEFAULTS, PLANT_PRESETS: { chickweed, cleavers, mint, jewelweed }, PLANT_BIOME_TAGS
+export const PLANT_DEFAULTS, PLANT_PRESETS: { chickweed, cleavers, mint, jewelweed, juniperMound, pinkflowerBush }, PLANT_BIOME_TAGS
 export function mergePlantOpts(base, over): opts                  // deep-merge, same convention as trees.js/grass.js
 export function buildPlantGeometry(opts = {}): THREE.BufferGeometry   // indexed geometry with position/normal/color
 export function createPlantPalette({ variantsPerSpecies = 4, masterSeed = 1 } = {}):
-  { variants: THREE.BufferGeometry[], variantsPerSpecies, speciesCount, speciesTags: { key, tag: { biomes, density } }[] }
+  { variants: THREE.BufferGeometry[], variantsPerSpecies, speciesCount, speciesTags: { key, tag: { biomes, density, hueVar? } }[] }
+export const PLANT_DRY_PROBABILITY: number   // 0.22 -- SeedThree scrub.js's dry-roll rate
+export function plantTint(hue, dryness, age): [r,g,b]              // canonical per-instance tint law (Phase 1)
+export function rollPlantVariation(rng: () => number, hueVar = 0.15): { hue, dryness, age }  // draws exactly 4 rng values, fixed order
 
 // plants-placement.js
 export function plantPlacementRecords(chunks, params, heightAt, biomeAt?):
-  { x, z, scale, yaw, speciesIdx, chunkKey, slot }[]
+  { x, z, scale, yaw, speciesIdx, chunkKey, slot, hue, dryness, age }[]
 
 // plants-gpu.js
-export function createPlantsGPU(opts: { renderer, camera, palette, heightAt?, capPerVariant?, cullRadius? }):
-  { meshes, setChunk(key, records), clearChunk(key), setCullRadius(r), update(): Promise<void>, stats, dispose() }
+export function createPlantsGPU(opts: { renderer, camera, palette, heightAt?, capPerVariant?, cullRadius?, cullStart?,
+  variationStrength?, windStrength?, windSpeed? }):
+  { meshes, setChunk(key, records), clearChunk(key), setCullRadius(r), setCullStart(r),
+    setVariationStrength(v), setWindStrength(v), setWindSpeed(v), update(): Promise<void>, stats, dispose() }
 ```
 
 ## Wiring
@@ -164,6 +169,9 @@ In `environment-viewer.html`:
   `createPlantPalette()` bake, a `createPlantsGPU()` instance, and per-chunk placement (mirroring
   `regenerateGPU`'s forest chunk-lifecycle pattern, hooked into `maybeSyncTerrainDecorations()` via
   `regenPlants`) are wired the same way forest/grass are. There is no `?plants=` alternative mode.
+  Cache-bust suffixes bumped for the Phase 1 understory overhaul (per-instance variation, shrub
+  presets, default clumping, wind): `plants.js?v=variation-shrubs-1`,
+  `plants-placement.js?v=variation-clumping-1`, `plants-gpu.js?v=variation-wind-1`.
 
 Inter-module dependencies:
 
@@ -208,10 +216,47 @@ baking is CPU-side-once (`forest-palette.js`), but per-frame work is GPU-only:
   graphs), L2 (full branches + a separately-baked coarse/cheap leaf geometry,
   `leavesCoarse`, controlled by `coarseLeafRatio`/`coarseLeafSizeMult`), L3 (a single
   camera-facing billboard plane per tree, cylindrically aligned so it stays upright). Each variant
-  draws up to 8 meshes (`branchesL0, leavesL0, shadowL0, branchesL1, leavesL1, branchesL2,
-  coarseLeavesL2, billboardL3`), so `stats.draws = V * 8`.
+  owns 8 meshes in `meshes[g*8 + 0..7]` (`branchesL0, leavesL0, shadowL0, branchesL1, leavesL1,
+  branchesL2, coarseLeavesL2, billboardL3`). The *maximum* fan-out is `V * 8`, but `stats.draws`
+  reports the number actually submitted after the zero-instance gate (see below).
 - `dirty`/camera-epsilon tracking (`EPS = 0.001`) skips recull work when the camera hasn't moved and
   nothing else changed (`skippedReculls` counter), same pattern as `grass-compute.js`.
+
+**Zero-instance visibility gating & debounced rebuild (`forest-gpu.js` + `plants-gpu.js`).** Two
+CPU-encode optimizations share the `rebuild()`/`update()` path in both modules:
+- **Visibility gating.** Every vegetation mesh is created with `frustumCulled = false` and
+  `instanceCount` pinned to `CAP`, so Three never drops a variant whose GPU survivor count is zero —
+  it still traverses the render list, binds the pipeline, and encodes a (near-empty) indirect draw,
+  which is *not* free on a CPU-encode-bound frame. `rebuild()` now sets `mesh.visible =
+  countsArray[g] > 0` for each variant (all 8 forest meshes of a variant gated together;
+  plants have one mesh per variant), so Three skips variants with **no source records anywhere in
+  the active window** entirely. This gates on the CPU pre-cull source count, *not* the GPU post-cull
+  survivor count, so it only removes truly-empty variants — a populated variant whose instances are
+  all currently distance/frustum-culled on the GPU still submits its (now zero-`instanceCount`)
+  draws. The reset→cull→finalize compute passes run **unconditionally** off storage buffers every
+  `update()` regardless of `mesh.visible` (the WebGPU compute pipeline is unaware of mesh
+  visibility), so a hidden variant's indirect buffer stays live and correct and the variant reappears
+  with current data the instant it repopulates. `stats.draws` now reports the submitted mesh count
+  (visible variants × 8 for forest, × 1 for plants) rather than the old `V * 8` / `V` constant, and a
+  new `stats.visibleVariants` counter exposes how many of the `V` variants survived the gate. Both
+  propagate to the perf CSV as `forestDraws`/`forestVisibleVariants` and
+  `plantDraws`/`plantVisibleVariants` (columns are derived from `Object.keys` of the snapshot, so the
+  added keys extend the column set without breaking it).
+- **Debounced rebuild.** `setChunk`/`setChunks`/`clearChunk` previously each ran a full `rebuild()`
+  (full-window rescan + buffer refill; plants also an O(n log n) distance `Array.sort` over every
+  live record; forest also a `.fill(0)` over the whole `V*CAP*8` source array) — so a frame that
+  streamed in a batch of chunks paid one full rebuild *per chunk event*. Now those methods only set a
+  `needsRebuild` flag, and the single deferred `rebuild()` runs at the **top of `update()`**, before
+  the compute cull reads the source buffer/counts (rebuild markDirty()s/sets `dirty`, so the
+  camera-unchanged recull skip doesn't stale a fresh batch). External behavior is unchanged: after a
+  frame's batch of mutations the buffers/visibility are identical to what per-call rebuilds would have
+  produced — only the redundant intermediate rebuilds are dropped. Two opportunistic cleanups ride
+  along: `srcArray` is no longer zeroed each rebuild (the cull kernel only reads slots below each
+  variant's live count, so stale tail data is never sampled), and plants reuse a module-scope
+  `allRecords` scratch array for the sort instead of reallocating it per rebuild. One minor
+  consequence: `terrainDebug.treePlacements` (read from `forestGPU.stats.instances` immediately after
+  `setChunks` in `regenerateGPU`) now lags one regeneration, since `cpuInstances` updates at the next
+  `update()`; the directly-sampled `forestInstances` CSV column and the live HUD read remain fresh.
 
 **CPU vs GPU grass.** `grass.js` (`GRASS_MODE=cpu`) builds one full `BufferGeometry` per terrain
 chunk on the main thread (queued/staggered via `buildQueue`/`processQueue` in the viewer's
@@ -274,8 +319,9 @@ lives on the shared `buildBladeGeometry()` template, so both grass modes get it 
 **Plants (`plants.js` / `plants-placement.js` / `plants-gpu.js`).** Procedural understory plants,
 parameterized like `trees.js` rather than hardcoded per species: `PLANT_DEFAULTS` is a schema (stem
 node count/spacing/sprawl; leaf shape/style/leaflet count+parity/arrangement/serration/
-variegation/color; flower shape/petals/frequency/color) and `PLANT_PRESETS.{chickweed,cleavers,
-mint,jewelweed}` are named overrides. `buildPlantGeometry(opts)` returns one indexed
+variegation/color/blossom; flower shape/petals/frequency/color) and `PLANT_PRESETS.{chickweed,
+cleavers,mint,jewelweed,juniperMound,pinkflowerBush}` are named overrides (the last two are Phase 1
+shrub starters — see "Shrubs" below). `buildPlantGeometry(opts)` returns one indexed
 `THREE.BufferGeometry` per plant with baked vertex colors (stem + leaves + flowers all in one mesh,
 one material — no separate branches/leaves/shadow split like forest). Leaf blades are
 fan-triangulated from a base/petiole point around a parametric taper-envelope boundary (`leafEnvelope`:
@@ -296,13 +342,121 @@ param pair (default 0 = old flat-uniform behavior) biases each candidate's accep
 check is the intended extension point for future non-biome terrain masks (water/mountain/snow density
 fields), not just clustering. `createPlantsGPU(opts)` mirrors `forest-gpu.js`'s
 reset→cull→finalize→indirect-draw compute spine but with a single distance-cull band (no LOD levels)
-and one mesh per variant (`stats.draws = V`, not `V * 8`); survival between `cullStart` and
+and one mesh per variant (max fan-out `V`, not `V * 8`; `stats.draws` reports the visible/submitted
+count after zero-instance gating — see "Zero-instance visibility gating & debounced rebuild" above);
+survival between `cullStart` and
 `cullRadius` is a stochastic per-instance dither (`keepRand.greaterThan(edge)`, same technique as
 `grass-compute.js`'s anchor/procedural cull kernels) keyed by a position-based hash (`posRandFn`, not
 buffer-slot index) so the fade pattern stays stable even though `rebuild()` re-sorts and reassigns
 buffer slots every call — plants thin out gradually approaching `cullRadius` instead of popping at a
 fixed ring. Wired in `environment-viewer.html` behind `?plants=gpu` (default on); density/cull-radius/
-cull-start/clustering sliders live in the "Plants" panel.
+cull-start/clustering/variation/wind sliders live in the "Plants" panel.
+
+**Per-instance variation (Phase 1 understory overhaul).** SeedThree `scrub.js`'s per-instance tint
+law, reimplemented as `plants.js`'s `plantTint(hue, dryness, age)` — the CANONICAL JS
+implementation, imported directly by both `plant-viewer.html`'s variation strip and
+`test-plant-variation.mjs` (not a hand-duplicated "twin"; `plants-gpu.js`'s TSL `colorNode` is the
+one hand-synced GPU mirror, since compute shaders can't import JS — kept in sync manually per the
+`forest-cull.js`/`forest-gpu.js` convention, and cross-referenced by comments on both sides).
+`rollPlantVariation(rng, hueVar)` draws exactly 4 RNG values in a fixed order (hue, dry-roll,
+dry-magnitude, age) and is called from `plants-placement.js`'s `emitCandidate` **strictly after**
+the existing species→scale→yaw draw sequence — never reordered, so that sequence's relative
+determinism survives. (Full-output byte-parity across parameter changes is a separate story —
+see "Default structural clumping" below: clumping is default-on and changes positions for every
+caller, so there is no longer a "byte-identical to the pre-clumping baseline" guarantee anywhere;
+same-seed+same-params determinism is still exact.) `hue` is a signed swing scaled by
+a per-species `hueVar` (`PLANT_BIOME_TAGS.<key>.hueVar`, default 0.15 when a species omits it);
+`dryness` follows SeedThree's ~22% (`PLANT_DRY_PROBABILITY`) "dry roll" law (a strong 0.5-1.0 roll on
+that branch, a mild 0-0.3 baseline otherwise) — `plantTint` lifts R and suppresses G/B with it;
+`age` (0.6-1) both darkens the tint slightly (mature > young) and scales the placed instance down
+when young (`plants-gpu.js`'s local `ageScaleNode`, `0.75..1.0` over the same range). Records gained
+`hue`/`dryness`/`age` fields; `plants-gpu.js` writes them into `rec1.yzw` (`rec1` was `(yaw,_,_,_)` —
+three free floats reserved for exactly this, so the storage-buffer layout is unchanged) and reads
+them back in `instanceNodes()`, blending the tint by a live `uVariationStrength` uniform
+(`mix(vec3(1), plantTint(...), strength)`, `setVariationStrength(v)`) so 0 reproduces the flat
+species color exactly. `mat.colorNode` is set to just the tint factor — `material.vertexColors`
+stays `true`, so three.js's own NodeMaterial builder multiplies it by the geometry's baked vertex
+color automatically (`colorNode.mul(vertexColor())`), avoiding a manual `attribute('color')` read.
+
+**Default structural clumping (Phase 1), procedural path.** `plantPlacementRecords`'s flat
+per-chunk loop draws a handful of parent clump centers per chunk first
+(`Math.round(count / clumpChildrenTarget)`, default `clumpChildrenTarget: 6`), then samples each
+child's offset via `sqrt(rng) * clumpRadius` at a uniform-random angle around a randomly-picked
+clump (fable5 `GroundCover.ts`'s `grassPatch` law — `sqrt(rng)` for area-uniform disk sampling,
+not `rng` directly, which would bunch density toward the center). A child that lands outside its
+chunk (clump near an edge) recycles onto a flat-uniform draw rather than clamping to the edge, so
+children never pile up along chunk borders. This is chunk-local (no cross-chunk neighbor scan, so
+it stays O(n) — the perf guardrail), and is the **default**
+(`clumpEnabled: params.clumpEnabled !== false`) — pass `clumpEnabled: false` to get the old
+flat-uniform positions back (useful for A/B comparison; `test-plants-placement.mjs` uses exactly
+that). This clumping is independent of the pre-existing `clusterStrength`/`clusterScale`
+noise-based accept/reject gate (still there, still stacks on top).
+
+**Default structural clumping, surface-anchor path (authored maps).** The surface-anchor branch
+(active whenever `params.surfaceIndex`/`surfacePositions` are passed — i.e. on every
+imported/authored map with a collider, via `sampleChunk()` from `grass-anchors.js`) used to
+`continue` before the clump-center logic ran at all, so authored maps got a flat scatter (only the
+`clusterStrength` noise gate applied) while procedural terrain got fable5 clumping — an
+inconsistency, now fixed. Clump centers are generated once per chunk exactly as above and shared
+by both branches; since surface-anchor positions are already fixed by the mesh sampler (they can't
+be relocated onto a clump like a generated point can), each sampled anchor is instead
+accepted/rejected with a probability that falls off with its distance to the nearest clump center
+(`clumpAcceptProb`: `1 / (1 + (d / clumpRadius)^2)`, 1 at a center, smoothly decaying outward) —
+same "dense near a center, sparse far from all of them" shape as the procedural path's disk
+sampling, just expressed as a gate instead of a generator. The gate runs after `keepCandidate`
+(water/cluster-noise/density-mask rejection) and before `emitCandidate`, preserving the
+surface path's existing y/cave/water-envelope semantics exactly — only the accept/reject test
+changed. `test-plants-placement.mjs` verifies the surface-anchor path now produces a measurably
+clumped distribution (a quadrat variance-to-mean dispersion index, not raw nearest-neighbor
+distance, since the clump gate also changes the total accepted count) and that it stays
+deterministic for a fixed seed.
+
+**Clumping-and-determinism contract.** Clumping consumes RNG draws (clump-center generation, plus
+the surface-anchor accept/reject draw) before/around the per-slot species→scale→yaw→hue sequence,
+for every caller, since `clumpEnabled` defaults to true and there is no uniform-scatter default to
+fall back to. That means output is **not** byte-identical to the pre-clumping era, on either path —
+accepted and by design. What's still guaranteed: same seed + same params always produce identical
+output, run to run and call to call; new draws are always appended after existing ones for a given
+slot/anchor, never interleaved into the middle of the species→scale→yaw→hue sequence itself.
+`environment-viewer.html` already imports this file with a `?v=variation-clumping-1` cache-bust
+(from the original procedural-path clumping work); since the surface-anchor fix above changes
+positions on authored maps too, that cache-bust string should be bumped again whenever this lands
+in `environment-viewer.html` (not done here — out of scope for this change, which is scoped to
+`plants-placement.js`/its tests only).
+
+**Shrubs (Phase 1) — `sprigClump` geometry style.** SeedThree `scrub.js`'s `shrubGeometry()`
+(bushy crossed-quad clump, `quads` tilted jittered quads fanning from a shared base, normals forced
+to `(0,1,0)` rather than the computed face normal so shrubs light like the ground plane they sit on)
+ported into `plants.js` as `leaf.style === 'sprigClump'`, reusing the existing stem/leaf schema and
+per-node attachment loop (`attachLeavesAtNode`) rather than a bespoke shrub engine — one clump
+replaces one node's leaf/leaflet-whorl (ignoring `arrangement`, which is meaningless for a whole
+clump). The per-node placement matrix uses **yaw-only rotation** (`makeRotationY`, never the
+tilt/Euler rotation regular leaves use) specifically because rotating a `(0,1,0)` normal about the Y
+axis leaves it unchanged — that's what keeps the clump's baked up-normals correct after
+`appendTransformed`'s normal-matrix transform, with no special-cased normal path needed.
+`leaf.blossom: {r,g,b,frac}` (fable5 `Understory.ts`'s field) optionally tints a `frac` fraction of
+a clump's quads a second color, baked at the same time as the base color rather than as a separate
+flower pass — `pinkflowerBush` uses it, `juniperMound` doesn't. Two starter presets ship
+(`juniperMound`, `pinkflowerBush`); species/variant TYPES are fully data-driven — more shrubs are
+just more `PLANT_PRESETS`/`PLANT_BIOME_TAGS` entries, no code changes.
+
+**Wind (Phase 1).** Plants previously had no wind at all. `plants-gpu.js`'s `plantWindOffset()`
+adapts SeedThree `wind.js`'s `grassWindPosition()` grass-tier sway: a two-octave `sin` sway whose
+amplitude grows with `positionLocal.y` squared (base pinned, tip whips, same quadratic taper as
+grass blades) and whose per-instance phase comes from `posRandFn` keyed on the instance's own world
+position (the same position-hash the cull kernel's fade dither uses, so it stays stable across
+`rebuild()`'s slot-reassigning re-sorts) — instances don't sway in lockstep. Composed **after** the
+existing yaw/scale/translate instance transform in `instanceNodes()` (i.e. added to the already
+world-space position), never folded into `positionLocal`/`positionNode` pre-transform. Two live
+uniforms, `setWindStrength(v)`/`setWindSpeed(v)`, need no rebuild to change.
+
+**plant-viewer.html's variation strip.** The viewer renders one hero instance via
+`buildPlantGeometry` and has no TSL `colorNode`/GPU instancing, so per-instance variation is
+previewed by directly baking `plantTint()` into a cloned geometry's vertex-color attribute for
+`VARIATION_STRIP_COUNT` (6) instances rolled via the same `rollPlantVariation()`, placed in their
+own row behind the solo/grid view so they never overlap it. Toggled via a "Show variation strip"
+checkbox in a new "Variation preview" panel section; rebuilt alongside every solo/grid regenerate
+so it always reflects the currently-tuned species.
 
 Plants use their own grass-style windowed chunk set around the player (`plantChunksForPlacement()`,
 sized by `plantRadiusChunks`, refreshed as they move) on **both** terrain modes — not
@@ -354,7 +508,12 @@ Both grass modes also get `grassBladeStyle` (select: `streaks`/`dryTip`/`mottle`
 `highContrast`, default `streaks`) — live-swappable, no geometry rebuild.
 
 Plants (`header('Plants')`, `PLANTS_MODE === 'gpu'`, default): `plantDensity` (plants/m², 0-0.2,
-rebakes placement) and `plantCullRadius` (10-150, live-applied via `setCullRadius`).
+rebakes placement), `plantCullRadius`/`plantCullStart` (live-applied via `setCullRadius`/
+`setCullStart`), `plantClusterStrength`/`plantClusterScale` (noise-based accept/reject gate,
+rebakes placement), `plantRadiusChunks` (placement window), and the Phase 1 additions
+`plantVariationStrength` (0-1, live `setVariationStrength`), `plantWindStrength` (0-2, live
+`setWindStrength`), `plantWindSpeed` (0-3, live `setWindSpeed`) — none of the three rebake
+placement.
 
 ## Tests
 
@@ -372,9 +531,10 @@ rebakes placement) and `plantCullRadius` (10-150, live-applied via `setCullRadiu
 | `test-tree-age.mjs` | `tree-age.js` (`applyAge`) | age=1 is value-equivalent to the input opts unchanged; age=0 shrinks length/radius/leaf count/leaf size and reduces `levels`, but never raises `levels` above the species' own count; age values outside `[0,1]` clamp; age=0.5 lands strictly between the age-0 and age-1 results; the input opts object itself is never mutated. |
 | `test-grass-blade-uv.mjs` | `grass.js` (`buildBladeGeometry`) | The shared blade template's new `aBladeUV` attribute exists, is a vec2, has exactly 5 entries, and matches the fixed BL/BR/TR/TL/TC taper mapping used for atlas sampling. |
 | `test-grass-textures.mjs` | `grass-textures.js` (`FIBER_STYLES`, `STYLE_KEYS`, `clamp01`) | Exactly 5 styles in the approved order; every style's `fiber()` stays finite and within `[0.35, 1.45]` across the UV domain; `dryTip.tint()` is exactly 0 at the blade base and nonzero near the tip (its one monotonic-in-v style); `highContrast.tint()` (speckle-based, not monotonic) stays within `[0,1]`; styles without a `tint()` omit it rather than defining a zero function. |
-| `test-plants-defaults.mjs` | `plants.js` (`PLANT_DEFAULTS`, `PLANT_PRESETS`, `PLANT_BIOME_TAGS`, `createPlantPalette`) | Default schema values (simple/opposite/smooth/no-variegation); all 4 presets exist with their species-defining traits (cleavers compound+whorled, mint serrated, jewelweed alternate, chickweed/jewelweed flower shapes); `cleavers`' empty biome allowlist; `createPlantPalette` bakes `speciesCount * variantsPerSpecies` geometries, each species tagged, variants of the same species differing by seed. |
+| `test-plants-defaults.mjs` | `plants.js` (`PLANT_DEFAULTS`, `PLANT_PRESETS`, `PLANT_BIOME_TAGS`, `createPlantPalette`) | Default schema values (simple/opposite/smooth/no-variegation/no-blossom); all 6 presets exist (4 herbs + 2 Phase 1 shrub starters) with their species-defining traits (cleavers compound+whorled, mint serrated, jewelweed alternate, chickweed/jewelweed flower shapes, both shrubs use `sprigClump`, `pinkflowerBush` carries a blossom); `cleavers`' empty biome allowlist; every species carries a positive `hueVar`; `createPlantPalette` bakes `speciesCount * variantsPerSpecies` geometries, each species tagged, variants of the same species differing by seed; a baked `sprigClump` variant's clump vertices carry forced ground-plane `(0,1,0)` normals. |
 | `test-plants-geometry.mjs` | `plants.js` (`buildPlantGeometry`) | Non-empty, all-triangle, sequentially-indexed geometry (position/normal/color attributes) for all 4 presets with and without flowers, for 3 schema-only edge cases the presets don't exercise (even-pinnate compound leaf, variegated leaf, star-shaped leaf), and that the same seed reproduces identical geometry; enabling flowers strictly adds geometry. |
-| `test-plants-placement.mjs` | `plants-placement.js` (`plantPlacementRecords`) | Places plants within chunk bounds with valid `speciesIdx`/`scale`/`yaw`; deterministic for a fixed seed; rejects submerged ground; in an all-desert biome only the biome-generalist species (empty allowlist) is ever picked; in an all-plains biome the swamp-only species never places while the plains-tagged one does; `clusterStrength: 0` matches the omitted-param baseline exactly (byte-identical output, no behavior change for existing callers); `clusterStrength: 1` rejects some baseline-kept candidates but still places plants, deterministically. |
+| `test-plants-placement.mjs` | `plants-placement.js` (`plantPlacementRecords`) | Places plants within chunk bounds with valid `speciesIdx`/`scale`/`yaw`; deterministic for a fixed seed; rejects submerged ground; in an all-desert biome only the biome-generalist species (empty allowlist) is ever picked; in an all-plains biome the swamp-only species never places while the plains-tagged one does; `clusterStrength: 0` matches the omitted-param baseline exactly (both skip the noise gate's RNG draw — this is NOT a claim that either matches the pre-clumping era); `clusterStrength: 1` rejects some baseline-kept candidates but still places plants, deterministically. Phase 1 additions: every record carries a bounded `hue`/`dryness`/`age`; `hue` respects a per-species `hueVar` override; default clumping (`clumpEnabled` omitted/true) produces a strictly smaller median nearest-neighbor distance than `clumpEnabled: false` on the procedural path, stays within chunk bounds, and is deterministic; on the surface-anchor path (authored maps, `surfaceIndex`/`surfacePositions` passed), default clumping produces a strictly higher quadrat variance-to-mean dispersion index than `clumpEnabled: false` (raw nearest-neighbor distance isn't count-invariant there, since the clump gate also rejects candidates) while still preserving authored surface `y`, and is deterministic for a fixed seed. |
+| `test-plant-variation.mjs` | `plants.js` (`plantTint`, `rollPlantVariation`, `PLANT_DRY_PROBABILITY`) and, as an integration check, `plants-placement.js` | `plantTint` is finite and stays within a sane per-channel range across the full hue/dryness/age domain, is a pure/deterministic function, is near-neutral at `(hue=0, dryness=0, age=1)`, dryness lifts R and suppresses G/B, and age materially darkens the tint; `rollPlantVariation` draws exactly 4 RNG values per call (fixed order), keeps hue/dryness/age within their documented bounds over a 200k-sample run, and its "strongly dry" (`dryness >= 0.5`) rate lands within 1% of `PLANT_DRY_PROBABILITY` (0.22); a large real `plantPlacementRecords` run confirms the same bounds/rate hold end-to-end and that placement (including the new fields) is still fully deterministic. |
 
 ## Standalone tooling
 
@@ -482,17 +642,21 @@ slider / per-species age range (`plants.js` has no growth model analogous to `tr
 `applyAge` yet).
 
 Tuning-tab sections: View, Lighting (identical to tree-viewer.html), Stem (`stem.nodes`/
-`nodeSpacing` min-max, `branchProb`, `sprawl`), Leaf (`shape`/`style`/`leafletCount`/
-`leafletParity`/`arrangement`/`whorlCount`/serration/variegation/`size`/`color`, plus a toggle-gated
-vein color since `leaf.veinColor` is nullable), Flower (`enabled`/`shape`/`petals`/`frequency`/
-`color`, plus a toggle-gated throat color for the same nullable-field reason), and Export ("Copy
-plant JSON", no texture replacer needed since plant opts never hold live `Texture` objects).
+`nodeSpacing` min-max, `branchProb`, `sprawl`), Leaf (`shape`/`style` — now including
+`sprigClump`/`leafletCount`/`leafletParity`/`arrangement`/`whorlCount`/serration/variegation/
+`size`/`color`/`sprigQuads`, plus toggle-gated vein color and blossom color/fraction, since
+`leaf.veinColor` and `leaf.blossom` are both nullable), Flower (`enabled`/`shape`/`petals`/
+`frequency`/`color`, plus a toggle-gated throat color for the same nullable-field reason),
+Variation preview (a "Show variation strip" toggle — see below), and Export ("Copy plant JSON",
+no texture replacer needed since plant opts never hold live `Texture` objects).
 
 Species tab: unlike tree-viewer.html's one-time migration of a legacy flat saved-tree list,
 plant-viewer.html has no prior save format — instead, on a genuinely fresh `localStorage` (the
 `plant-viewer:families` key was never set, not merely emptied), it seeds one starter family,
-**"Wildflowers"**, containing the 4 `PLANT_PRESETS` species (chickweed, cleavers, mint, jewelweed)
-with their `PLANT_BIOME_TAGS` biome/density values pre-filled and a `sizeRange` of `[0.85, 1.15]`
+**"Wildflowers"**, containing all `PLANT_PRESETS` species (the 4 herbs plus the 2 Phase 1 shrub
+starters — the seeding code is `Object.keys(PLANT_PRESETS).map(...)`, so it always tracks whatever
+is currently registered there, no hardcoded count) with their `PLANT_BIOME_TAGS` biome/density
+values pre-filled and a `sizeRange` of `[0.85, 1.15]`
 (matching `plants-placement.js`'s existing hardcoded scale jitter — now editable per-species rather
 than a single global constant). "Grow family" (Auto-add mutations / Keep current plant as new
 species) and the Species list/edit panel work identically to tree-viewer.html, using
@@ -508,3 +672,119 @@ factors the shared slugify-filename/write-file/update-manifest logic both routes
 pipeline reads `plant-families/` yet — the "fetch manifest → buildSpeciesFromFamilies → wire into
 placementRecords" game-integration step `families/` already has for trees has no plant equivalent
 yet; that would be a separate follow-on, not part of this tool.
+
+## Deadfall / fungi (Phase 4 / merged-plan row #8)
+
+**Standalone, tested, NOT wired into `environment-viewer.html` yet** — same deferred-integration
+posture as rocks (Phase 3). Deadfall renders on the SAME `dressing-gpu.js` host rocks use; see
+`docs/subsystems/rocks.md` for that host's contract. Reuses the shared `mossWeight()` dressing law
+(`moss-tint.js`) — the deadwood material is the third consumer after the terrain (#3) and rock (#7)
+materials, not a bespoke shader.
+
+### Files
+
+| File | Responsibility |
+|---|---|
+| `deadfall.js` | `buildLog(opts)` / `buildStump(opts)` / `buildMushroom(opts)` swept-tube + lathed geometry with the fable5 `Deadfall.ts` decay law; `buildDeadwoodMaterial(opts)` / `buildMushroomMaterial(opts)` node materials; `createDeadfallPalette({types,masterSeed})` — data-driven, open-ended type/seed table. |
+| `deadfall-placement.js` | `deadfallPlacementRecords(...)` deterministic records in the `dressing-gpu.js` shape; `makeCanopyIndex(...)` chunk-bucketed 3x3 canopy query; `stumpCirclesFromRecords` / `logCirclesFromRecords` collision export. |
+| `deadfall-families.js` | `SNAG_FAMILY` + `withSnags(families)` — the standing-dead-tree preset as an authored tree-family entry (foliage off, blunt broken-top taper), so snags ride the EXISTING forest pipeline with no new renderer. |
+| `test-deadfall-geometry.mjs` | Decay monotonicity (rotten cross-section < mossy < fresh), finite/indexed/unit-normal geometry, shelf-fungi attach only on mossy/rotten logs, mushroom part channel, palette data-drivenness, determinism. |
+| `test-deadfall-placement.mjs` | Moisture to decay class, slope reject (logs only), canopy weighting via a mock chunk-bucketed forest, mushroom hard-gate, seating+tilt, determinism, collision export, empty-table/no-field edge cases. |
+
+### Geometry / decay
+
+- **Logs** — swept elliptical tube along a sagging ground-hugging centerline (local +X), both ends
+  capped. Decay drives a **continuous** cross-section squish + length-taper by decay weight (fresh
+  1.0 / mossy ~0.79 / rotten 0.72 vertical squish; taper 0.94 to 0.88) so the three states read as a
+  monotone silhouette progression at ~5 m, not just a tint change (fable5 only squished `rotten`;
+  we grade it so `mossy` is visibly intermediate). Baked decay weight to `aC0` (fresh 0.15 / mossy
+  0.8 / rotten 1.0). **Shelf fungi** are baked half-brackets (aC1=1) on `mossy`/`rotten` logs only
+  — part of the log mesh, not a separate scatter (how the demo keeps them "live" cheaply).
+- **Stumps** — short vertical broken stub with a lobed root flare `{amp,heightFrac,lobes,phase}`
+  near the base; jagged broken-top cap; `aC0` decay ~0.5-0.8.
+- **Mushrooms** — lathed dome cap (+ slight rim lip) + gill underside disk + stem tube; `aC0` part
+  channel (0 stem / 0.5 gills / 1 cap top), `aC1` per-cap tone. `kind:'shelf'` bakes a half-arc cap
+  with no stem for log/trunk sides.
+- **Aux vertex channels** (two generic floats, each material interprets its own): `aC0` = decay
+  weight (deadwood) / part id (mushroom); `aC1` = shelf-fungus flag (deadwood) / cap tone (mushroom).
+
+### Materials
+
+- `buildDeadwoodMaterial({ moistureNode, brushScale, nodes, upnessNode })` — bark-ish
+  `MeshStandardNodeMaterial` (stays on the node-material family for clustered lights). Base bark
+  lerps fresh to rotten (greyer) by `aC0`; moss = `mossWeight(moisture, upness, cavity=aC0,
+  brushNoise)` — the baked decay weight is fed as the cavity/openness input so more-decayed wood
+  holds visibly more moss (rotten reads mossy in a wet forest; fresh stays mostly bare). Shelf
+  verts (aC1=1) paint a pale tan. Pure expression nodes (no `If()`; `mix`/`select`/`smoothstep`),
+  **zero texture samplers** (world-space hash brush), opaque, no emissive. `moistureNode` is meant
+  to be `nodes.extra` (per-instance moisture from the record); defaults to `DEFAULT_MOISTURE`
+  (`moisture-proxy.js`). The `upness` term feeding the moss gate defaults to `opts.upnessNode`, then
+  `opts.nodes?.nWorld?.y`, then plain `clamp(normalWorld.y)` for standalone previews — under the
+  `dressing-gpu.js` host, tilted logs/stumps have identity model matrices and their yaw/tilt live
+  only in the instance nodes, so `normalWorld` is the pre-tilt AUTHORED-LOCAL up; the host must pass
+  `nodes` (or `nodes.nWorld.y`) through so moss gates on the true post-tilt up instead.
+- `buildMushroomMaterial({ capColor, gillColor, stemColor })` — opaque, part-colored via `aC0`,
+  slight per-cap tone from `aC1`. **No emissive/glow** (the "never fake AAA with glow" rule).
+
+### Placement
+
+`deadfallPlacementRecords(chunks, params, heightAt, surfaceFieldAt, canopyAt, opts)` — deterministic
+(rngFrom/hash2, draws appended after the type→size→yaw sequence). Gating is all O(1) `surfaceField`
+reads plus the bounded 3x3-chunk canopy lookup — **no global O(trees x deadfall) scan**:
+- **moisture to decay class** (dry to fresh, mid to mossy, wet to rotten, with a small RNG jitter at
+  the borders); log type chosen among the class-matching types.
+- **canopy proximity to occurrence weight** via `makeCanopyIndex(forestRecordsByChunk, chunkSize)`,
+  which buckets the forest placement records by chunk and, per candidate, scans only its own chunk +
+  8 neighbors (`canopyAt(x,z) returns {dist,weight}`, weight rising toward a trunk). Logs/stumps take
+  a small floor so a little deadfall appears in the open; mushrooms use floor 0.
+- **slope (1-upness) > `slopeRejectLogs` (~0.5) rejects logs** (they would float/clip); stumps and
+  mushrooms tolerate more slope.
+- **mushrooms cluster** (parent clump centers to children at `sqrt(rng)*radius`, area-uniform disk
+  sampling, same law plants use) and gate HARD on `smoothstep(moisture) x canopyWeight`.
+- Seating: lowest-of-5 footprint against `heightAt` (canonical `terrainHeight`, R6); logs/stumps
+  tilt to the terrain normal via a central-difference height gradient (mushrooms stay upright).
+  Because `dressing-gpu.js`'s `rotateXZY` applies `tiltX`/`tiltZ` BEFORE the per-instance yaw, the
+  height gradient is projected into each instance's own yaw frame (`tiltZ` = slope along the
+  post-yaw heading, `tiltX` = slope along the perpendicular/roll direction) using the yaw already
+  drawn for that record — RNG draw order (type→size→yaw→...) is unchanged, only already-drawn yaw
+  is threaded into the tilt calc. A single `surfaceField` sample per accepted candidate is reused
+  for both the gating checks and the emitted record (no double sampling).
+- Records carry `{x,y,z,scale,yaw,tiltX,tiltZ,extra(=moisture),variant,variantIdx,kind,decayClass,
+  footprintLen(logs),chunkKey,slot}` — the `dressing-gpu.js` shape plus palette-selection metadata.
+  `groupIdx` is added by the wiring layer (variant to flat-group mapping), same as rocks.
+
+### Snag (dead standing tree)
+
+`deadfall-families.js` `SNAG_FAMILY` is a trees.js **opts object** with `leaves.enabled:false` and a
+blunt trunk taper (`taper[0]~0.5-0.62` leaves a snapped stub — trees.js only collapses the very tip
+to 0 when `branch.level === levels`, so a level-0 trunk keeps a blunt top). It enters the world as a
+low-density entry in the authored tree-families table consumed by `buildSpeciesFromFamilies` to
+`placementRecords` to `forest-palette.js` to `forest-gpu.js` — **dead trees for free through the
+existing forest pipeline, no new renderer, no edit to `trees.js` generator core**. Because it is
+pure data (not a generator change), it cannot perturb any existing species' RNG draw order or
+byte-output (determinism tests stay green). `withSnags(families)` merges it into an existing list.
+
+### Deferred env-viewer integration (deadfall)
+
+Mirrors the rocks wiring in `docs/subsystems/rocks.md`, on the SAME `createDressingGPU` host:
+1. `const deadfallPalette = createDeadfallPalette({ masterSeed });`
+2. Expand `deadfallPalette.variants` into `dressing-gpu.js` groups, one group per baked geometry.
+   Pick material + shadow flags by `variant.kind`: `kind==='mushroom'` to `buildMushroomMaterial({
+   capColor: variant.capColor })`, `castShadow:false`, short `cullRadius` (~30 m); logs/stumps to
+   `buildDeadwoodMaterial({ moistureNode: nodes.extra, nodes })`, `castShadow:true`, `cullRadius` ~90 m
+   (passing `nodes` lets the moss gate read the instance-rotated `nodes.nWorld.y` instead of the
+   pre-tilt `normalWorld.y`).
+   Keep the deadfall+fungi total within a sane per-frame instance cap (merged-plan Phase 4 budget
+   ~1k) by splitting caps across groups — independent of how many TYPES exist.
+3. Placement: `deadfallPlacementRecords(chunks, params, terrainHeight, loadedMap.surfaceField,
+   makeCanopyIndex(forestRecordsByChunk, forestChunkSize).canopyAt)` per active chunk; map each
+   record's `{variant,variantIdx}` to a flat `groupIdx` via `deadfallPalette.types` (`type.startIdx
+   + variantIdx`); `record.extra` is already the per-instance moisture; `dressing.setChunk(chunk.key,
+   records)`.
+4. Per-frame: `await dressing.update()`; add `dressing.meshes` to the scene once (self-gating).
+5. Collision (optional): `[...stumpCirclesFromRecords(records), ...logCirclesFromRecords(records)]`
+   to `trunkIndex.setTrunks(chunkKey, [...forestTrunks, ...boulderCircles, ...deadfallCircles])`.
+   Mushrooms get no collision.
+6. Snags: `params.speciesTable = buildSpeciesFromFamilies(withSnags(authoredFamilies))` on the
+   forest params (the forest already consumes `params.speciesTable` when present) — snags then place
+   through the normal forest pipeline at their low family density.

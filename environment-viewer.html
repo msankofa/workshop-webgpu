@@ -47,6 +47,7 @@ import { createFrameProfiler } from './frame-profiler.js';
 import { createEnvironmentUi } from './environment-ui.js';
 import { createWorldModelPanel } from './world-models.js';
 import { loadTerrainMap } from './terrain-loader.js';
+import { bakeMapCanvas, createWorldMapOverlay, minimapImageAffine, MAP_OVERLAYS } from './world-map.js';
 import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
@@ -118,6 +119,9 @@ let portCreatures = null;
 let playerCollider = null;
 let playerInitialized = false;
 let fpsMode = false;
+// Cursor-free pause: the mouse is released (for clicking HUD/menus) while the first-person
+// camera stays frozen in place. Distinct from exiting to orbit — see enterCursorFree / KeyQ.
+let fpsCursorFree = false;
 let stance = 'stand';
 let capsuleH = 1.6;
 
@@ -345,30 +349,78 @@ window.addEventListener('mp:guest_input', e => {
     applyLightIntent(msg, msg.clientId || 'guest');
   }
 });
+// Baked authored-map image (world-map.js) shared by the minimap background and the M
+// overlay. Assigned after loadTerrainMap resolves; null for procedural/no-map worlds.
+let worldMapBake = null;
+// Which data layer the minimap/M map is baked with (see MAP_OVERLAYS in world-map.js).
+let mapOverlayId = 'biome';
+// Re-bake worldMapBake for the current map + overlay. Safe to call before a map loads
+// (leaves the bake null). loadedMap is declared later but this only runs post-load.
+function rebakeWorldMap() {
+  if (!loadedMap) { worldMapBake = null; return; }
+  try {
+    worldMapBake = bakeMapCanvas(loadedMap, { overlayId: mapOverlayId });
+  } catch (err) {
+    worldMapBake = null;
+    showError(`map minimap bake failed: ${err.message || err}`);
+  }
+}
+function mapOverlayLabel() {
+  return (MAP_OVERLAYS.find(o => o.id === mapOverlayId) || {}).label || '';
+}
 function createMultiplayerFinder() {
-  if (mpRole === 'solo') return { update() {} };
   const style = document.createElement('style');
   style.textContent = `
-    #mp-finder {
+    #mp-dock {
       position: fixed;
       left: 12px;
       bottom: 12px;
-      width: 220px;
       z-index: 55;
+      display: flex;
+      align-items: flex-end;
+      font: 11px/1.35 system-ui, sans-serif;
+    }
+    body.gui-hidden #mp-dock { display: none !important; }
+    body.cursor-free, body.cursor-free canvas { cursor: auto !important; }
+    #mp-finder {
+      width: 220px;
       border: 1px solid rgba(255,255,255,0.14);
       border-radius: 8px;
       background: rgba(18,22,28,0.86);
       color: #d8dee9;
-      font: 11px/1.35 system-ui, sans-serif;
       box-shadow: 0 8px 24px rgba(0,0,0,0.32);
       overflow: hidden;
       backdrop-filter: blur(8px);
     }
-    body.gui-hidden #mp-finder { display: none !important; }
     #mp-finder canvas { display: block; width: 220px; height: 178px; background: rgba(0,0,0,0.16); }
     #mp-finder .mp-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; padding: 7px 8px; border-top: 1px solid rgba(255,255,255,0.08); }
     #mp-finder .mp-target { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #b3bdca; }
     #mp-finder button { height: 24px; border: 1px solid rgba(255,255,255,0.16); border-radius: 5px; background: #20252d; color: #d8dee9; cursor: pointer; }
+    /* Layer-picker tab nub + panel that expands to the right of the minimap. */
+    #mp-map-nub {
+      align-self: stretch; width: 20px; margin-left: 6px; padding: 0;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
+      background: rgba(18,22,28,0.86); color: #b3bdca; cursor: pointer;
+      writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px;
+      backdrop-filter: blur(8px);
+    }
+    #mp-map-nub:hover { color: #e8edf3; border-color: rgba(255,255,255,0.28); }
+    #mp-map-menu {
+      width: 0; overflow: hidden; align-self: stretch;
+      transition: width 0.14s ease, margin-left 0.14s ease;
+      border-radius: 8px; background: rgba(18,22,28,0.9);
+      backdrop-filter: blur(8px); box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+    }
+    #mp-map-menu.open { width: 150px; margin-left: 6px; border: 1px solid rgba(255,255,255,0.14); }
+    #mp-map-menu .mp-menu-title { padding: 8px 10px 4px; color: #8a93a3; text-transform: uppercase; letter-spacing: 0.6px; font-size: 10px; white-space: nowrap; }
+    #mp-map-menu .mp-menu-list { padding: 2px 6px 8px; }
+    #mp-map-menu .mp-layer {
+      display: block; width: 100%; text-align: left; margin: 2px 0; padding: 6px 8px;
+      border: 1px solid transparent; border-radius: 5px; background: transparent;
+      color: #c5ccd6; cursor: pointer; white-space: nowrap;
+    }
+    #mp-map-menu .mp-layer:hover { background: rgba(255,255,255,0.06); }
+    #mp-map-menu .mp-layer.active { background: rgba(119,200,161,0.18); border-color: rgba(119,200,161,0.5); color: #eaf3ee; }
   `;
   document.head.appendChild(style);
   const root = document.createElement('div');
@@ -385,7 +437,41 @@ function createMultiplayerFinder() {
   btn.textContent = 'Track';
   row.append(label, btn);
   root.append(canvas, row);
-  document.body.appendChild(root);
+
+  // Dock groups the minimap with a layer-picker tab that expands to its right.
+  const dock = document.createElement('div');
+  dock.id = 'mp-dock';
+  const nub = document.createElement('button');
+  nub.id = 'mp-map-nub';
+  nub.type = 'button';
+  nub.title = 'Minimap layers';
+  nub.textContent = 'Layers';
+  const menu = document.createElement('div');
+  menu.id = 'mp-map-menu';
+  const menuTitle = document.createElement('div');
+  menuTitle.className = 'mp-menu-title';
+  menuTitle.textContent = 'Minimap layer';
+  const menuList = document.createElement('div');
+  menuList.className = 'mp-menu-list';
+  const layerButtons = MAP_OVERLAYS.map(o => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mp-layer' + (o.id === mapOverlayId ? ' active' : '');
+    b.textContent = o.label;
+    b.addEventListener('click', () => {
+      if (o.id === mapOverlayId) return;
+      mapOverlayId = o.id;
+      layerButtons.forEach(lb => lb.el.classList.toggle('active', lb.id === mapOverlayId));
+      rebakeWorldMap();
+      worldMapOverlay.update();
+    });
+    menuList.appendChild(b);
+    return { id: o.id, el: b };
+  });
+  menu.append(menuTitle, menuList);
+  nub.addEventListener('click', () => menu.classList.toggle('open'));
+  dock.append(root, nub, menu);
+  document.body.appendChild(dock);
 
   let trackedId = null;
   btn.addEventListener('click', () => {
@@ -397,7 +483,16 @@ function createMultiplayerFinder() {
   });
 
   function update({ local, remotes }) {
-    root.style.display = mpRole === 'solo' ? 'none' : '';
+    // Multiplayer always shows the panel (friend-finding); solo only when there's a map.
+    if (mpRole === 'solo' && !worldMapBake) { dock.style.display = 'none'; return; }
+    dock.style.display = '';
+    // Solo has no friends: hide the Track row so the panel is just compass + map.
+    row.style.display = mpRole === 'solo' ? 'none' : '';
+    // The layer picker only makes sense once a map is baked.
+    const hasMap = !!worldMapBake;
+    nub.style.display = hasMap ? '' : 'none';
+    menu.style.display = hasMap ? '' : 'none';
+    if (!hasMap) menu.classList.remove('open');
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
     const heading = playerViewHeading();
@@ -421,6 +516,24 @@ function createMultiplayerFinder() {
     ctx.beginPath();
     ctx.rect(10, mapTop, w - 20, 128);
     ctx.clip();
+
+    // Heading-up terrain background. minimapImageAffine reuses the finder's own marker
+    // projection (s = 70/view) so terrain and friend dots stay aligned as the view turns.
+    if (worldMapBake) {
+      const s = 70 / view;
+      const m = minimapImageAffine({
+        s, heading, px: local.p[0], pz: local.p[2], cx, cy,
+        wx0: worldMapBake.wx0, wz0: worldMapBake.wz0, sxu: worldMapBake.sxu, szv: worldMapBake.szv,
+      });
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+      ctx.drawImage(worldMapBake.canvas, 0, 0);
+      ctx.restore();
+      // Mute a touch so the rings/arrows read over bright biomes (snow/desert).
+      ctx.fillStyle = 'rgba(9,12,16,0.22)';
+      ctx.fillRect(10, mapTop, w - 20, 128);
+    }
 
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
@@ -593,10 +706,19 @@ function multiplayerRemotePlayers() {
 }
 
 const mpFinder = createMultiplayerFinder();
+// Full-screen north-up map (M). Available in solo too; friend markers are just empty there.
+const worldMapOverlay = createWorldMapOverlay({
+  getBake: () => worldMapBake,
+  getLocal: () => multiplayerLocalPlayer(),
+  getRemotes: () => multiplayerRemotePlayers(),
+  getHeading: () => playerViewHeading(),
+  getFacing: (player) => playerForwardBearing(player),
+  getOverlayLabel: () => mapOverlayLabel(),
+});
 function updateMultiplayerFinder() {
-  if (mpRole === 'solo') return;
   const local = multiplayerLocalPlayer();
   mpFinder.update({ local, remotes: multiplayerRemotePlayers() });
+  worldMapOverlay.update();
 }
 
 // ===================== end multiplayer session =====================
@@ -616,6 +738,7 @@ if (mapKey) {
     mapCollider = null;
     showError(`map loaded, collision disabled: ${err.message || err}`);
   }
+  rebakeWorldMap();
 }
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
@@ -2853,19 +2976,23 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // ---- plants: single-LOD GPU-instanced understory (chickweed/cleavers/mint/jewelweed) ----
   const PLANTS_MODE = new URLSearchParams(location.search).get('plants') || 'gpu';
   if (PLANTS_MODE === 'gpu') {
-    const { createPlantPalette } = await import('./plants.js?v=field-fade-1');
-    const { plantPlacementRecords } = await import('./plants-placement.js?v=surface-density-3');
+    const { createPlantPalette } = await import('./plants.js?v=variation-shrubs-1');
+    const { plantPlacementRecords } = await import('./plants-placement.js?v=variation-clumping-1');
     const { buildChunkIndex } = await import('./grass-anchors.js');
-    const { createPlantsGPU } = await import('./plants-gpu.js?v=visible-gating-debounce-1');
+    const { createPlantsGPU } = await import('./plants-gpu.js?v=variation-wind-1');
     Object.assign(params, {
       // Radius/start mirror grass's much larger draw distance (grassRadius:344,
       // grassCullStart:228) instead of the old 45-unit bubble -- plants now fade out
       // stochastically between cullStart and cullRadius (see plants-gpu.js's cull kernel)
       // the same way grass thins with distance, rather than popping at a fixed ring.
       plantDensity: 0.02, plantCullRadius: 150, plantCullStart: 105,
-      // clusterStrength blends from uniform-random (0) to fully noise-gated clumps (1);
+      // clusterStrength blends from uniform-random (0) to fully noise-gated clumps (1) ON TOP
+      // OF the structural parent/child clumping plants-placement.js now does by default;
       // clusterScale is the approximate world-unit size of one noise cell/clump.
       plantClusterStrength: 0.6, plantClusterScale: 40,
+      // Phase 1 understory overhaul: per-instance hue/dryness/age tint strength (0 = flat
+      // species color, 1 = full variation law) and wind sway strength/speed.
+      plantVariationStrength: 1.0, plantWindStrength: 0.4, plantWindSpeed: 1.0,
     });
     const plantPalette = createPlantPalette({ variantsPerSpecies: 4, masterSeed: MASTER_SEED });
     const plantSurfacePositions = (loadedMap && mapCollider) ? mapCollider.geometry.attributes.position.array : null;
@@ -2875,6 +3002,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const plantsGPU = createPlantsGPU({
       renderer, camera, palette: plantPalette, heightAt: terrainHeight,
       cullRadius: params.plantCullRadius, cullStart: params.plantCullStart, capPerVariant: 512,
+      variationStrength: params.plantVariationStrength, windStrength: params.plantWindStrength,
+      windSpeed: params.plantWindSpeed,
     });
     plantsGPURef = plantsGPU;
     scene.add(...plantsGPU.meshes);
@@ -3023,6 +3152,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('plantClusterStrength', 'Clustering', 0, 1, 0.05, f2, () => regeneratePlantsGPU(true));
     slider('plantClusterScale', 'Cluster scale', 10, 150, 5, fi, () => regeneratePlantsGPU(true));
     slider('plantRadiusChunks', 'Placement window (chunks)', 1, 16, 1, fi, () => regeneratePlantsGPU(true));
+    // Phase 1 understory overhaul: live uniforms, no placement rebuild needed.
+    slider('plantVariationStrength', 'Variation strength', 0, 1, 0.05, f2, () => plantsGPU.setVariationStrength(params.plantVariationStrength));
+    slider('plantWindStrength', 'Wind strength', 0, 2, 0.02, f2, () => plantsGPU.setWindStrength(params.plantWindStrength));
+    slider('plantWindSpeed', 'Wind speed', 0, 3, 0.05, f2, () => plantsGPU.setWindSpeed(params.plantWindSpeed));
   }
 
   function reflectionDetailMeshes() {
@@ -3452,8 +3585,14 @@ document.body.appendChild(enterHint);
 const exitHint = document.createElement('div');
 exitHint.className = 'walk-ui';
 exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
-exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  LMB shoot/place light  \xb7  R reset  \xb7  F/Esc orbit';
+exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  LMB shoot/place light  \xb7  Q free cursor  \xb7  R reset  \xb7  F/Esc orbit';
 document.body.appendChild(exitHint);
+
+const cursorFreeHint = document.createElement('div');
+cursorFreeHint.className = 'walk-ui';
+cursorFreeHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
+cursorFreeHint.textContent = 'Cursor free \xb7 click menus/HUD \xb7 Q or click view to resume';
+document.body.appendChild(cursorFreeHint);
 
 environmentUi = createEnvironmentUi({ perfLog });
 worldModels = createWorldModelPanel({
@@ -3511,29 +3650,77 @@ function enterFPS() {
 
 function exitFPS() {
   fpsMode = false;
+  fpsCursorFree = false;
+  document.body.classList.remove('cursor-free');
   viewHands.setVisible(false);
   target.set(playerCollider.end.x, playerCollider.end.y - capsuleH * 0.5, playerCollider.end.z);
   camera.fov = 50; camera.updateProjectionMatrix();
   crosshair.style.display = 'none';
   exitHint.style.display = 'none';
+  cursorFreeHint.style.display = 'none';
   enterHint.style.display = 'block';
 }
 
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement === renderer.domElement) { enterFPS(); }
-  else if (fpsMode) { exitFPS(); }
+  if (document.pointerLockElement === renderer.domElement) {
+    fpsCursorFree = false;
+    document.body.classList.remove('cursor-free');
+    enterFPS();
+  } else if (fpsMode && !fpsCursorFree) {
+    // Only drop to orbit when the release was NOT a deliberate cursor-free pause.
+    exitFPS();
+  }
 });
 
+// Q pause: release the pointer but keep the first-person camera frozen so the mouse can
+// reach the HUD/minimap menu. resumeFromCursorFree re-locks and returns to walking.
+function enterCursorFree() {
+  if (!fpsMode || fpsCursorFree) return;
+  fpsCursorFree = true;
+  document.body.classList.add('cursor-free');
+  crosshair.style.display = 'none';
+  cursorFreeHint.style.display = 'block';
+  exitHint.style.display = 'none';
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+function resumeFromCursorFree() {
+  if (!fpsCursorFree) return;
+  // pointerlockchange -> enterFPS clears the flag and restores crosshair/hint.
+  cursorFreeHint.style.display = 'none';
+  renderer.domElement.requestPointerLock();
+}
 
 document.addEventListener('mousemove', e => {
-  if (!fpsMode) return;
+  if (!fpsMode || fpsCursorFree) return;
   camera.rotation.y -= e.movementX / fp.sensitivity;
   camera.rotation.x -= e.movementY / fp.sensitivity;
 });
 
 window.addEventListener('keydown', e => {
   fpsKeys[e.code] = true;
-  if (e.repeat && ['KeyF', 'KeyH', 'KeyR', 'KeyC', 'KeyZ'].includes(e.code)) return;
+  if (e.repeat && ['KeyF', 'KeyQ', 'KeyH', 'KeyR', 'KeyC', 'KeyZ', 'KeyM'].includes(e.code)) return;
+  if (e.code === 'KeyM') {
+    worldMapOverlay.toggle();
+    // Freeze the first-person view and free the cursor while the map is open; closing resumes.
+    if (worldMapOverlay.isOpen()) { if (fpsMode) enterCursorFree(); }
+    else if (fpsCursorFree) resumeFromCursorFree();
+    e.preventDefault();
+  }
+  if (e.code === 'Escape') {
+    if (worldMapOverlay.isOpen()) {
+      worldMapOverlay.close();
+      if (fpsCursorFree) resumeFromCursorFree();
+      e.preventDefault();
+    } else if (fpsCursorFree) {
+      resumeFromCursorFree();
+      e.preventDefault();
+    }
+  }
+  if (e.code === 'KeyQ') {
+    if (fpsCursorFree) resumeFromCursorFree();
+    else if (fpsMode) enterCursorFree();
+    e.preventDefault();
+  }
   if (e.code === 'KeyH') {
     document.body.classList.toggle('gui-hidden');
     e.preventDefault();
@@ -3543,7 +3730,8 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
   }
   if (e.code === 'KeyF') {
-    if (!fpsMode) renderer.domElement.requestPointerLock();
+    if (fpsCursorFree) resumeFromCursorFree();
+    else if (!fpsMode) renderer.domElement.requestPointerLock();
     else document.exitPointerLock();
     e.preventDefault();
   }
@@ -3555,6 +3743,11 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
 
 window.addEventListener('mousedown', e => {
+  if (fpsCursorFree) {
+    // Clicking the 3D view resumes walking; clicks on HUD/menus fall through to the DOM.
+    if (e.button === 0 && e.target === renderer.domElement) resumeFromCursorFree();
+    return;
+  }
   if (!fpsMode || e.button !== 0) return;
   if (worldModels?.handlePrimaryDown?.()) {
     e.preventDefault();
@@ -3803,7 +3996,7 @@ async function animate() {
     clouds2Ref.position.z = camera.position.z;
     clouds2Ref.update(now / 1000, camera.position);
   }
-  if (fpsMode) {
+  if (fpsMode && !fpsCursorFree) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
     for (let i = 0; i < STEPS_PER_FRAME; i++) {
       applyFPSControls(fpsDt);
@@ -3813,7 +4006,8 @@ async function animate() {
     const lgCharge = (lgChargeStart !== null && lgParams.mode === 'shoot')
       ? Math.min((now - lgChargeStart) / LG_MAX_CHARGE_MS, 1) : 0;
     viewHands.update(rawDt, { speed: Math.hypot(playerVelocity.x, playerVelocity.z), charge: lgCharge });
-  } else {
+  } else if (!fpsMode) {
+    // Cursor-free (fpsMode && fpsCursorFree) freezes the view: neither walk nor orbit runs.
     applyCamera();
     updateTerrainWindow(target);
   }

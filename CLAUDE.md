@@ -45,13 +45,14 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Entry / orchestration | `entry-point.md` | `environment-viewer.html` |
 | Terrain | `terrain.md` | `terrain-system.js`, `terrain-field.js`, `cdlod-terrain.js`, `collision.js`, `map-collision.js` |
 | Vegetation | `vegetation.md` | `trees.js`, `forest-gpu.js`, `forest-placement.js`, `grass.js`, `grass-compute.js` |
+| Rocks / scree | `rocks.md` | `rocks.js`, `rocks-placement.js`, `dressing-gpu.js` (standalone; not yet wired into `environment-viewer.html`) |
 | Water | `water.md` | `water.js` |
 | Sky / atmosphere | `sky.md` | `sky.js`, `sky-field.js`, `clouds.js`, `stars.js`, `celestial-bodies.js` |
 | Lighting | `lighting.md` | `lights.js`, `clustered-lights.js` |
 | Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js` |
 | Creature sim | `creature.md` | `port-creature-bridge.js`, `port-creature-system.js` |
 | Multiplayer | `multiplayer.md` | `multiplayer.js`, `start-screen.js`, `server/server.js` |
-| Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js` |
+| Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js`, `world-map.js` |
 | Legacy app | `legacy.md` | `creature-viewer.html`, `creature.js` |
 
 ## Keeping docs and the activity log current

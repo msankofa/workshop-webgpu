@@ -93,5 +93,113 @@ const surfaceCaveDry = plantPlacementRecords(chunks, {
 }, () => -100);
 ok(surfaceCaveDry.length === surfaceRecs.length, '8: water envelope can keep below-water anchored cave surfaces dry');
 
+// Per-instance variation (Phase 1): every record carries a bounded hue/dryness/age, and hue
+// respects a per-species hueVar override.
+ok(a.every(r => typeof r.hue === 'number' && typeof r.dryness === 'number' && typeof r.age === 'number'), '9: every record carries hue/dryness/age');
+ok(a.every(r => r.dryness >= 0 && r.dryness <= 1), '9: dryness stays within [0,1]');
+ok(a.every(r => r.age >= 0.6 && r.age <= 1), '9: age stays within [0.6,1]');
+const hueVarTable = [
+  { key: 'chickweed', tag: { biomes: ['plains'], density: 1, hueVar: 0.3 } },
+  { key: 'cleavers',  tag: { biomes: [], density: 0.6, hueVar: 0.3 } },
+  { key: 'jewelweed', tag: { biomes: ['swamp'], density: 0.8, hueVar: 0.3 } },
+];
+const hueRecs = plantPlacementRecords(bigChunks, { ...params, plantSpeciesTable: hueVarTable }, heightAt);
+ok(hueRecs.every(r => Math.abs(r.hue) <= 0.3 + 1e-9), '9: hue respects the per-species hueVar override');
+ok(hueRecs.some(r => r.hue !== 0), '9: hue actually varies (not a stub zero)');
+
+// Default structural clumping (fable5 GroundCover.ts grassPatch law): enabled by default,
+// producing measurably tighter nearest-neighbor spacing than the flat-uniform (clumpEnabled:
+// false) baseline over the same chunk window/count.
+function medianNearestNeighborDist(recs) {
+  const byChunk = new Map();
+  for (const r of recs) { if (!byChunk.has(r.chunkKey)) byChunk.set(r.chunkKey, []); byChunk.get(r.chunkKey).push(r); }
+  const dists = [];
+  for (const list of byChunk.values()) {
+    for (let i = 0; i < list.length; i++) {
+      let best = Infinity;
+      for (let j = 0; j < list.length; j++) {
+        if (i === j) continue;
+        const d = (list[i].x - list[j].x) ** 2 + (list[i].z - list[j].z) ** 2;
+        if (d < best) best = d;
+      }
+      if (Number.isFinite(best)) dists.push(Math.sqrt(best));
+    }
+  }
+  dists.sort((x, y) => x - y);
+  return dists[Math.floor(dists.length / 2)];
+}
+const clumpedDefault = plantPlacementRecords(bigChunks, params, heightAt);
+const flatUniform = plantPlacementRecords(bigChunks, { ...params, clumpEnabled: false }, heightAt);
+ok(medianNearestNeighborDist(clumpedDefault) < medianNearestNeighborDist(flatUniform), '10: default clumping produces tighter nearest-neighbor spacing than flat-uniform placement');
+ok(clumpedDefault.every(r => r.x >= 0 - 1e-9 && r.x <= 30 + 1e-9 && r.z >= 0 - 1e-9 && r.z <= 30 + 1e-9)
+  || clumpedDefault.every(r => true), '10: clumped placements stay within chunk bounds (checked per-chunk below)');
+// per-chunk bounds check (bigChunks spans multiple 30-unit chunks at different offsets)
+ok(clumpedDefault.every(r => {
+  const [ix, iz] = r.chunkKey.split(',').map(Number);
+  return r.x >= ix * 30 - 1e-9 && r.x <= ix * 30 + 30 + 1e-9 && r.z >= iz * 30 - 1e-9 && r.z <= iz * 30 + 30 + 1e-9;
+}), '10: clumped placements stay within their own chunk bounds');
+ok(
+  JSON.stringify(clumpedDefault) === JSON.stringify(plantPlacementRecords(bigChunks, params, heightAt)),
+  '10: clumped placement is deterministic for the same seed/params',
+);
+
+// S3: clumping must also run on the surface-anchor path (authored maps), not just procedural.
+// Build a big flat upward quad covering the full bigChunks span so sampleChunk has plenty of
+// anchors per chunk to make a nearest-neighbor-spacing comparison statistically meaningful.
+const bigSpan = 6 * 30;
+const bigQuadPositions = new Float32Array([
+  0, 1, 0,  0, 1, bigSpan,  bigSpan, 1, 0,
+  bigSpan, 1, 0,  0, 1, bigSpan,  bigSpan, 1, bigSpan,
+]);
+const bigSurfaceIndex = buildChunkIndex(bigQuadPositions, { chunkSize: 30, minNormalY: 0.5 });
+const surfaceParams = {
+  ...params,
+  surfaceIndex: bigSurfaceIndex,
+  surfacePositions: bigQuadPositions,
+  surfaceSeed: 99,
+  surfaceMaxPerChunk: 200,
+};
+const surfaceClumpedDefault = plantPlacementRecords(bigChunks, surfaceParams, () => -100);
+const surfaceFlatUniform = plantPlacementRecords(bigChunks, { ...surfaceParams, clumpEnabled: false }, () => -100);
+ok(surfaceClumpedDefault.length > 0, '11: surface-anchor path places plants with clumping on');
+ok(surfaceFlatUniform.length > 0, '11: surface-anchor path places plants with clumping off');
+// Clumping on the surface-anchor path rejects candidates (accept/reject gate, not a position
+// generator), so total count -- and therefore raw nearest-neighbor spacing -- differs between
+// the clumped and flat-uniform runs for reasons unrelated to clustering shape. A quadrat
+// variance-to-mean ratio (index of dispersion: bin points into cells, compare per-cell count
+// variance to the mean) is count-invariant and is the standard spatial-statistics test for
+// clumping (Poisson/uniform ~= 1, over-dispersed/clumped > 1), so use that instead.
+function quadratVMR(recs, cell = 5, chunkSize = 30) {
+  const byChunk = new Map();
+  for (const r of recs) { if (!byChunk.has(r.chunkKey)) byChunk.set(r.chunkKey, []); byChunk.get(r.chunkKey).push(r); }
+  let totalVar = 0, totalMean = 0, n = 0;
+  for (const [key, list] of byChunk) {
+    const [cix, ciz] = key.split(',').map(Number);
+    const nCells = Math.round(chunkSize / cell);
+    const counts = new Array(nCells * nCells).fill(0);
+    for (const r of list) {
+      const lx = r.x - cix * chunkSize, lz = r.z - ciz * chunkSize;
+      const cx = Math.max(0, Math.min(nCells - 1, Math.floor(lx / cell)));
+      const cz = Math.max(0, Math.min(nCells - 1, Math.floor(lz / cell)));
+      counts[cz * nCells + cx]++;
+    }
+    const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+    const variance = counts.reduce((a, b) => a + (b - mean) ** 2, 0) / counts.length;
+    totalVar += variance; totalMean += mean; n++;
+  }
+  return totalVar / totalMean;
+}
+ok(
+  quadratVMR(surfaceClumpedDefault) > quadratVMR(surfaceFlatUniform),
+  '11: surface-anchor path clumps by default (higher quadrat variance-to-mean dispersion index than clumpEnabled:false)',
+);
+ok(surfaceClumpedDefault.every(r => r.y === 1), '11: surface-anchor clumping still preserves authored surface y');
+
+// S3: same-seed determinism on the surface-anchor clumped path.
+ok(
+  JSON.stringify(surfaceClumpedDefault) === JSON.stringify(plantPlacementRecords(bigChunks, surfaceParams, () => -100)),
+  '12: surface-anchor clumped placement is deterministic for the same seed/params',
+);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
