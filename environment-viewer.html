@@ -3561,7 +3561,7 @@ window.addEventListener('mousedown', e => {
     return;
   }
   if (!clusteredLightsRef) return;
-  if (lgParams.mode === 'place') lgPlaceAtCrosshair();
+  if (lgParams.mode === 'place') { lgPlaceAtCrosshair(); viewHands.recoil(); }
   else lgChargeStart = performance.now();
 });
 window.addEventListener('mouseup', e => {
@@ -3570,6 +3570,7 @@ window.addEventListener('mouseup', e => {
   lgChargeStart = null;
   lgUpdateChargeRing(0);
   lgFireLight(ratio);
+  viewHands.recoil();
 });
 
 
@@ -3809,7 +3810,9 @@ async function animate() {
       updateFPSPlayer(fpsDt);
     }
     updateTerrainWindow(playerCollider.end);
-    viewHands.update(rawDt, { speed: Math.hypot(playerVelocity.x, playerVelocity.z) });
+    const lgCharge = (lgChargeStart !== null && lgParams.mode === 'shoot')
+      ? Math.min((now - lgChargeStart) / LG_MAX_CHARGE_MS, 1) : 0;
+    viewHands.update(rawDt, { speed: Math.hypot(playerVelocity.x, playerVelocity.z), charge: lgCharge });
   } else {
     applyCamera();
     updateTerrainWindow(target);

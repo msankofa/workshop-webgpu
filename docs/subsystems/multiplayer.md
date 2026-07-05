@@ -118,13 +118,16 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
 
 ### `player-hands.js`
 
-- `export function createViewHands(camera, THREE): { setTint(hsl), setVisible(v), update(dt, {speed}), destroy() }`
+- `export function createViewHands(camera, THREE): { setTint(hsl), setVisible(v), recoil(), update(dt, {speed, charge}), destroy() }`
   — the local player's first-person orb-hand viewmodel. In FPS mode your own capsule isn't drawn,
   so this builds a `Group` of two orb `Mesh`es and `camera.add(group)`s it, so the orbs live in
   camera-local space and follow head look. `update` applies an idle bob + a `speed`-scaled fore/aft
-  sway (matching the remote orbs). `setVisible` toggles it (shown only in FPS), `setTint` colors it
-  from `playerTintHSL(localId)`. **Requires the camera to be in the scene graph** — the entry point
-  calls `scene.add(camera)` for this. THREE is passed in (Node-testable, same as `GhostRenderer`).
+  sway (matching the remote orbs); it also reacts to the light gun — `charge` (0..1) draws the hands
+  up and inward while charging, and `recoil()` fires a short kick (back + up, decays over ~0.18 s)
+  called when the gun shoots or places. `setVisible` toggles it (shown only in FPS), `setTint`
+  colors it from `playerTintHSL(localId)`. **Requires the camera to be in the scene graph** — the
+  entry point calls `scene.add(camera)` for this. THREE is passed in (Node-testable, same as
+  `GhostRenderer`).
 
 ### `start-screen.js`
 

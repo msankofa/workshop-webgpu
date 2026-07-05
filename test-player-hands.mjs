@@ -66,6 +66,26 @@ const swayA = Math.abs(firstOrb(camA).position.z - restZ);
 const swayB = Math.abs(firstOrb(camB).position.z - restZ);
 assert(swayB > swayA, 'faster movement produces larger fore/aft sway');
 
+// --- charge pose: hands raise + draw inward ---------------------------------
+const camC = new Obj3D();
+const vhC = createViewHands(camC, THREE);
+const orbC = firstOrb(camC);
+vhC.update(0, { charge: 0 });
+const restX0 = Math.abs(orbC.position.x), restY0 = orbC.position.y, restZ0 = orbC.position.z;
+vhC.update(0, { charge: 1 });
+assert(Math.abs(orbC.position.x) < restX0, 'charging draws hands inward (smaller |x|)');
+assert(orbC.position.y > restY0, 'charging raises hands');
+assert(orbC.position.z > restZ0, 'charging pulls hands toward the camera (+z)');
+
+// --- recoil kicks then decays -----------------------------------------------
+vhC.update(0, { charge: 0 });            // back to rest baseline
+const baseZ0 = orbC.position.z;
+vhC.recoil();
+vhC.update(0, { charge: 0 });            // kick applied, no time elapsed
+assert(orbC.position.z > baseZ0, 'recoil kicks hands back (+z)');
+vhC.update(1, { charge: 0 });            // long dt -> fully decayed
+assert(Math.abs(orbC.position.z - baseZ0) < 1e-9, 'recoil decays back to rest');
+
 // --- destroy ----------------------------------------------------------------
 hands.destroy();
 assert(!camera.children.includes(group), 'destroy removes the group from the camera');
