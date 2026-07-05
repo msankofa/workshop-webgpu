@@ -383,20 +383,24 @@ export class GhostRenderer {
       this._placeEyes(g, r, h);
     }
     for (const [id, g] of this._players) {
-      if (!seen.has(id)) { this._scene.remove(g); this._players.delete(id); }
+      if (!seen.has(id)) { this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id); }
     }
   }
 
   _makePlayer(id) {
     const THREE = this._THREE;
     const g = new THREE.Group();
-    const body = new THREE.Mesh(this._pGeo, this._pMat);
+    // Per-player body tint: a light pastel keyed by the id hash so players are
+    // easy to tell apart while staying bright enough for the black eyes to read.
+    const bodyMat = this._pMat.clone();
+    bodyMat.color.setHSL((_hashId(id) % 360) / 360, 0.45, 0.72);
+    const body = new THREE.Mesh(this._pGeo, bodyMat);
     const left = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     const right = new THREE.Mesh(this._eyeGeo, this._eyeMat);
     g.add(body); g.add(left); g.add(right);
     // nextBlinkAt is initialised lazily on the first tick (we don't know the
     // clock here); the id hash staggers players so they don't blink in unison.
-    g.userData = { id, body, left, right, eyeH: 0.14, nextBlinkAt: null, blinkStart: -1 };
+    g.userData = { id, body, bodyMat, left, right, eyeH: 0.14, nextBlinkAt: null, blinkStart: -1 };
     return g;
   }
 
@@ -442,7 +446,7 @@ export class GhostRenderer {
 
   destroy() {
     for (const m of this._creatures.values()) this._scene.remove(m);
-    for (const g of this._players.values())   this._scene.remove(g);
+    for (const g of this._players.values())   { this._scene.remove(g); g.userData.bodyMat.dispose(); }
     this._creatures.clear();
     this._players.clear();
     this._cGeo.dispose();

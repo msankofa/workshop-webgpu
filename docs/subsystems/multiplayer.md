@@ -93,8 +93,10 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   imported, so the module stays importable from plain Node for tests).
   - `update(state: { creatures?: [], players?: [] })` — creatures reuse one semi-transparent box
     `Mesh` per id via the generic `_updateSet`. Players go through `_updatePlayers`: each is a
-    `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (off-white
-    `MeshStandardMaterial`, no transparency) plus two flat-black eye `Mesh`es on the container's
+    `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (a
+    per-player `MeshStandardMaterial` cloned from the off-white template and tinted a light pastel
+    keyed by an id hash, so players are easy to tell apart; disposed on removal) plus two
+    flat-black eye `Mesh`es on the container's
     local **-Z** (forward) face — the player's `q` is pure yaw, so the eyes point where they look.
     Body keeps the `h`/`r` scale; eyes are placed/sized from `h`/`r` in `_placeEyes` so they stay
     round despite the body's non-uniform scale. Ids no longer present are removed.
