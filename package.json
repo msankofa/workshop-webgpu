@@ -2,6 +2,9 @@
   "name": "procedural-creature-workshop",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build:claudecraft-sim": "npx esbuild claudecraft-sim/sim-entry.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=claudecraft-sim.bundle.js"
+  },
   "devDependencies": {
     "three": "^0.184.0"
   }
