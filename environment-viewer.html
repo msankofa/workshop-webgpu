@@ -125,7 +125,23 @@ const mpGuestPlayers = new Map();
 // Last-seen fireSeq per remote player, so the guest sounds a replicated shot exactly once
 // per increment (the host broadcasts fireSeq in each player's merged combat fields).
 const mpRemoteFireSeq = new Map();
-const playerCombat = createPlayerCombatFacade();
+// ClaudeCraft mob sim (assigned host/solo only, after portCreatures). Declared here so
+// the player-combat facade can delegate player HP to the sim when it's active.
+let claudecraftCreatures = null;
+let claudecraftVisuals = null;
+// Lazy adapter: forwards player HP/death/revive to the ClaudeCraft sim when the bridge
+// exists (host/solo), else no-ops (guest, or before the bridge is built) and the facade
+// falls back to its default snapshot. This is the seam player-combat.js documents: one HP
+// pool for gun damage AND mob damage. On the host, guest_joined -> ensurePlayer adds the
+// guest as an external sim player, so mobs aggro remote players too; guest_left removes it.
+const claudecraftCombatAdapter = {
+  ensurePlayer: (id, opts) => claudecraftCreatures?.ensurePlayer(id, opts),
+  getPlayerCombat: (id) => (claudecraftCreatures ? claudecraftCreatures.getPlayerCombat(id) : null),
+  damagePlayer: (id, info) => claudecraftCreatures?.damagePlayer(id, info),
+  revivePlayer: (id, pose) => claudecraftCreatures?.revivePlayer(id, pose),
+  removeExternalPlayer: (id) => claudecraftCreatures?.removeExternalPlayer(id),
+};
+const playerCombat = createPlayerCombatFacade({ claudecraftCreatures: claudecraftCombatAdapter });
 const playerPoseHistory = new Map();
 const playerShotState = new Map();
 const playerWeapons = new Map();
@@ -141,12 +157,6 @@ let localWeaponView = null;
 let updateCombatHud = () => {};
 let updateReticle = () => {};
 let portCreatures = null;
-// ClaudeCraft mob simulation bridge (second, independent creature system). Host/solo
-// only â€” a guest renders replicated mob snapshots and never constructs the sim. Assigned
-// after portCreatures so terrainHeight/trunkIndex/capsuleH are all live. Declared here so
-// the player-combat adapter (below) can delegate to it lazily.
-let claudecraftCreatures = null;
-let claudecraftVisuals = null;
 let playerCollider = null;
 let playerInitialized = false;
 let fpsMode = false;
@@ -1302,6 +1312,31 @@ function remoteClaudecraftPlayers() {
     out.push({ id, x: p.p[0], y: p.p[1], z: p.p[2], facing: 2 * Math.atan2(q[1], q[3]) });
   }
   return out;
+}
+// Full-combat readback: the sim owns the local player's HP (via the player-combat
+// facade delegation above), so the workshop HUD already reflects mob damage through
+// localHudState(). This handles the DEATH edge: the workshop has no dedicated respawn
+// screen, so on sim-side death we surface a status message and auto-revive at the
+// player's current pose after a short delay, then reset the sim player entity.
+let ccPlayerDeadSince = null;
+const CC_RESPAWN_MS = 4000;
+function applyClaudecraftCombatToPlayer(now) {
+  if (!claudecraftCreatures) return;
+  const combat = claudecraftCreatures.localPlayerCombat(); // { hp: 0..1, dead }
+  if (combat.dead) {
+    if (ccPlayerDeadSince == null) {
+      ccPlayerDeadSince = now;
+      showStatus('You were slain. Respawningâ€¦');
+    } else if (now - ccPlayerDeadSince >= CC_RESPAWN_MS) {
+      const pose = getLocalPlayerWorldPose();
+      if (pose) claudecraftCreatures.reviveLocalPlayer(pose);
+      ccPlayerDeadSince = null;
+      showStatus('');
+    }
+  } else if (ccPlayerDeadSince != null) {
+    ccPlayerDeadSince = null;
+    showStatus('');
+  }
 }
 // M5A placeholder: one InstancedMesh of red boxes proving the sim loop drives world-space
 // transforms. Replaced by skinned GLB visuals in M5B (createClaudecraftVisuals).
@@ -5168,6 +5203,7 @@ async function animate() {
     });
     const rendered = claudecraftVisuals ? claudecraftVisuals.update(mobs, rawDt) : null;
     renderClaudecraftDebug(mobs, rendered);
+    applyClaudecraftCombatToPlayer(now);
   });
   // water runs its own reflection / refraction / caustics passes, then we draw
   frameProfiler.time('water', () => { if (waterRef) {

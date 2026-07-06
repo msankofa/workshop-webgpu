@@ -33,6 +33,7 @@ export function createClaudecraftCreatures({
   camps,                  // [{ mobId, count, centerWorld, radiusWorld }]
   playerStartWorld,       // {x,z}
   seed = 1,
+  localPlayerId = 'host', // workshop id of the local player (mirrored into localPid)
 }) {
   const scale = makeScale(workshopPlayerHeight);
 
@@ -114,10 +115,53 @@ export function createClaudecraftCreatures({
     );
   }
 
+  // --- player-combat facade adapter -------------------------------------------
+  // player-combat.js delegates the workshop's single source of player HP truth to
+  // this adapter when a ClaudeCraft bridge is active, so BOTH mob damage (resolved
+  // inside sim.tick against the mirrored player entity) and gun PvP damage land on
+  // one HP pool. Workshop player ids map to sim pids: the local id -> localPid, any
+  // other id -> a remote external sim player (created on first sight).
+  function pidFor(id, createIfMissing) {
+    if (id === localPlayerId) return localPid;
+    let pid = remotePids.get(id);
+    if (pid == null && createIfMissing) pid = addRemotePlayer(id);
+    return pid;
+  }
+  function playerEntity(id, createIfMissing = false) {
+    const pid = pidFor(id, createIfMissing);
+    if (pid == null) return null;
+    const meta = sim.players.get(pid);
+    if (!meta) return null;
+    return sim.entities.get(meta.entityId) ?? null;
+  }
+  // Facade hooks (see player-combat.js createPlayerCombatFacade delegated branch).
+  function ensurePlayer(id) { pidFor(id, true); }
+  function getPlayerCombat(id) {
+    const e = playerEntity(id);
+    if (!e) return null;
+    return { hp: e.hp, maxHp: e.maxHp, alive: !e.dead };
+  }
+  function damagePlayer(id, { amount } = {}) {
+    const e = playerEntity(id, true);
+    if (!e) return;
+    const dmg = Number.isFinite(amount) ? amount : 0;
+    e.hp = Math.max(0, e.hp - dmg);
+    if (e.hp <= 0) e.dead = true;
+  }
+  function revivePlayer(id, worldPose) {
+    const pid = pidFor(id, true);
+    if (pid == null) return;
+    const w = worldPose ?? { x: 0, y: 0, z: 0 };
+    sim.reviveExternalPlayer(pid, scale.toSim(w.x), scale.toSim(w.y), scale.toSim(w.z));
+  }
+  function removeExternalPlayer(id) { removeRemotePlayer(id); }
+
   return {
     update, mobs: () => mobs, scale,
     localPlayerCombat, reviveLocalPlayer,
     addRemotePlayer, removeRemotePlayer,
+    // player-combat.js facade adapter surface:
+    ensurePlayer, getPlayerCombat, damagePlayer, revivePlayer, removeExternalPlayer,
     _sim: sim, // escape hatch for debugging only
   };
 }
