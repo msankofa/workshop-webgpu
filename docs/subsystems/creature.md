@@ -113,12 +113,17 @@ matches the workshop's existing "host simulates, guests interpolate ghosts" mode
 - `sim-world-content.js` — `buildClaudecraftWorldContent(...)` builds a minimal `WorldContent`
   (one flat zone, camps converted from workshop coords to sim yards, no NPCs/props/doors).
 - `sim-mob-snapshot.js` — `serializeMobs(entities, scale)` → wire shape
-  `{ id, tid, p:[x,y,z], q:[x,y,z,w], hp:0..1, dead }` (yards → world, hp normalized, pure-yaw quat).
+  `{ id, tid, p:[x,y,z], q:[x,y,z,w], hp:0..1, dead, s }` (yards → world, hp normalized, pure-yaw
+  quat). `s` is the per-mob scale multiplier (`e.scale`: the template scale or a spawn-panel
+  override), defaulting to 1; it multiplies the render `worldScale` (see the scale flow below).
 - `claudecraft-creatures.js` — the top-level factory `createClaudecraftCreatures(...)`. Owns the
   `Sim`, the fixed-20 Hz step loop (spiral-of-death guarded: clamp dt to 0.25 s, max 5 catch-up
   steps/frame), wires the three seams, mirrors player poses in, and reads combat back out. Also
   exposes the **player-combat facade adapter** surface (`ensurePlayer`, `getPlayerCombat`,
   `damagePlayer`, `revivePlayer`, `removeExternalPlayer`) that `player-combat.js` delegates to.
+  Also exposes the **runtime manual-mob API** (see "Runtime manual-mob control" below):
+  `listSpawnableMobs()`, `spawnMob({mobId,world,level,scale,behavior}) → id`, `setMobBehavior(id,b)`,
+  `setMobScale(id,s)`, `removeMob(id)`, `clearSpawnedMobs() → n`, `spawnedMobIds()`.
 
 **Render adapter (plain JS, in `claudecraft-render/`):**
 - `anim_state.js` — verbatim port of ClaudeCraft `render/characters/anim_state.ts`
@@ -172,15 +177,55 @@ scope (changing player size would require rebuilding the sim).
   after `CC_RESPAWN_MS`).
 - **Multiplayer**: `getState()` publishes `mobs: claudecraftCreatures.mobs()` (world-space wire shape).
   `multiplayer.js` `InterpolationBuffer._lerpMobs` matches mobs by id (lerp p/hp, slerp q, carry
-  tid/dead) and `GhostRenderer` renders guest mob boxes. Guests never construct or step the sim; they
+  tid/dead, carry `s` scale defaulting to 1) and `GhostRenderer` renders guest mob boxes (scaled by
+  `s` via the `_updateSet` getScale accessor). Guests never construct or step the sim; they
   receive mobs inside `sim_state` and render the interpolated snapshot. Guest→host aggro works because
   `guest_joined` → `playerCombat.ensurePlayer(clientId)` adds the guest as an external sim player.
+
+### Runtime manual-mob control (the "ClaudeCraft Mobs" panel)
+
+Beyond the sim-construction-time camps, the bridge exposes a runtime API to spawn/manage individual
+mobs, surfaced by an inline **"ClaudeCraft Mobs"** panel in `environment-viewer.html`'s scene-controls
+UI (built next to the particle-editor panel, host/solo only — gated on `claudecraftCreatures` being
+non-null). Panel: a Creature dropdown (all 112 templates, `<optgroup>`-grouped by family), a Behavior
+dropdown (Hostile/Passive/Hold), a Scale slider (0.25–4, default 1), a "Spawn in front of player"
+button (places a mob `SPAWN_AHEAD` units along the player's facing, y snapped to terrain), and a
+"Clear all spawned" button. Runtime-spawned ids are tracked separately (`spawnedIds`) from the seeded
+camp mobs, so clear-all never nukes the camps.
+
+Bridge API (all on the `createClaudecraftCreatures` return object):
+- `spawnMob({ mobId, world:{x,z}, level=1, scale, behavior='hostile' }) → id|null` — `createMob` at a
+  fresh `sim.nextId++`, positioned at world→sim yards with y from the injected `terrainHeight`, scale +
+  behavior applied, injected via `sim.entities.set`. Returns `null` for an unknown `mobId`. The visuals
+  adapter auto-creates a GLB for the new id next frame; `mobs()` reflects it immediately (refreshed).
+- `setMobBehavior(id, 'hostile'|'passive'|'hold')`, `setMobScale(id, s)` (writes `e.scale`),
+  `removeMob(id)` (`sim.entities.delete`; the sim's own `highestThreatTarget`/`updateMobTarget` prune
+  any dangling target/threat reference, so no manual nulling), `clearSpawnedMobs() → n`,
+  `spawnedMobIds()`, `listSpawnableMobs() → [{id,name,family}]`.
+
+The **three behaviors** are ClaudeCraft-native (verified against `mob/locomotion.ts`):
+- **hostile** (`e.hostile=true`) — normal sim AI: aggro/chase/attack in range, leash home.
+- **passive** — the mob wanders around spawn but never chases. `hostile=false` alone does **not** work:
+  the locomotion self-healing net (`mob/locomotion.ts` ~L135) force-re-hostiles any owner-less mob each
+  tick, and the idle detection scan ignores the `hostile` flag entirely. So the bridge re-asserts the
+  invariant every tick (`enforceSpawnedBehaviors`, before `sim.tick`): if the mob entered
+  chase/attack/flee/evade it is snapped back to `idle` with `aggroTargetId`/`inCombat`/`threat` cleared,
+  before it can take a chase step (idle takes no movement step the same tick it re-detects).
+- **hold** — fully inert AND ignores players. Set `e.aiState='hold'`, a value the `updateMob` switch has
+  no case for, so the mob runs no wander, no detection, and no movement. This is strictly stronger than
+  the `moveSpeed=0` candidate (which still lets a mob face + melee an adjacent player); re-asserted each
+  tick like passive.
+
+Per-mob scale flow end-to-end: `serializeMobs` writes `s=e.scale` → host `visual.js` applies it as
+`v.root.scale.setScalar(m.s)` on top of the skinned clip's `normScale*worldScale` → the multiplayer
+snapshot carries `s` through `_lerpMobs` and `GhostRenderer` scales guest mob boxes by it.
 
 ### Tests
 
 `node test-claudecraft-scale.mjs`, `test-claudecraft-worldcontent.mjs`, `test-claudecraft-seams.mjs`,
-`test-claudecraft-mob-snapshot.mjs`, `test-claudecraft-boot.mjs`, and the mob-interpolation block in
-`multiplayer-test.mjs` all run headless in `node`. The in-page render/combat/replication paths (M5/M6)
+`test-claudecraft-mob-snapshot.mjs` (asserts wire `s`), `test-claudecraft-boot.mjs`,
+`test-claudecraft-spawn.mjs` (spawn/scale/behavior/remove API), and the mob-interpolation block in
+`multiplayer-test.mjs` (asserts `s` carries) all run headless in `node`. The in-page render/combat/replication paths (M5/M6)
 require the browser and are verified manually (see the plan's "Manual verification" steps).
 
 ## Tests
