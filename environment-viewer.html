@@ -44,6 +44,7 @@ import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
 import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
 import { createClaudecraftCreatures } from './claudecraft-bridge/claudecraft-creatures.js';
+import { createClaudecraftVisuals } from './claudecraft-render/visual.js';
 import { kindParams } from './particle-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createEnvironmentUi } from './environment-ui.js';
@@ -1277,6 +1278,9 @@ if (mpRole !== 'guest') {
     playerStartWorld: { x: 0, z: 0 },
     seed: 1,
   });
+  // M5B: skinned GLB visuals. worldScale converts the sim-yard model heights to
+  // workshop units (same SCALE the bridge uses for positions).
+  claudecraftVisuals = createClaudecraftVisuals({ scene, worldScale: claudecraftCreatures.scale.SCALE });
 }
 // Local-player world pose (position + yaw facing) fed into the sim each tick so mobs
 // aggro/chase/attack the workshop player. Reuses getLocalPlayerState('host') (the real
@@ -1311,15 +1315,21 @@ const _ccM = new THREE.Matrix4();
 const _ccQ = new THREE.Quaternion();
 const _ccP = new THREE.Vector3();
 const _ccS = new THREE.Vector3(1, 1, 1);
-function renderClaudecraftDebug(mobs) {
-  ccDebugMesh.count = Math.min(mobs.length, 512);
-  for (let i = 0; i < ccDebugMesh.count; i++) {
+// Renders a box for every mob NOT covered by a live GLB visual (unloaded/failed ids).
+// Once M5B visuals are attached, `rendered` (from claudecraftVisuals.update) holds the
+// ids with a real mesh, so those are skipped and only fallbacks get a placeholder box.
+function renderClaudecraftDebug(mobs, rendered) {
+  let n = 0;
+  for (let i = 0; i < mobs.length && n < 512; i++) {
     const m = mobs[i];
+    if (rendered && rendered.has(m.id)) continue;
     _ccP.set(m.p[0], m.p[1], m.p[2]);
     _ccQ.set(m.q[0], m.q[1], m.q[2], m.q[3]);
     _ccM.compose(_ccP, _ccQ, _ccS);
-    ccDebugMesh.setMatrixAt(i, _ccM);
+    ccDebugMesh.setMatrixAt(n, _ccM);
+    n++;
   }
+  ccDebugMesh.count = n;
   ccDebugMesh.instanceMatrix.needsUpdate = true;
 }
 
@@ -5156,7 +5166,8 @@ async function animate() {
       localPlayerWorld,
       remotePlayersWorld: remoteClaudecraftPlayers(),
     });
-    renderClaudecraftDebug(mobs);
+    const rendered = claudecraftVisuals ? claudecraftVisuals.update(mobs, rawDt) : null;
+    renderClaudecraftDebug(mobs, rendered);
   });
   // water runs its own reflection / refraction / caustics passes, then we draw
   frameProfiler.time('water', () => { if (waterRef) {
