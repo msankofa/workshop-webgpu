@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -38,6 +38,7 @@ import * as THREE from 'three';
 import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
 import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix } from 'three/tsl';
 import { Capsule } from 'three/addons/math/Capsule.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
 import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
@@ -53,11 +54,15 @@ import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
 import { createHostSession, createGuestSession, GhostRenderer, playerTintHSL } from './multiplayer.js';
 import { createViewHands } from './player-hands.js';
+import { getWeapon, enabledWeapons, loadout } from './weapons.js';
+import { findPlayerHit, pushPlayerPose, prunePlayerPoseHistory, validateShot } from './combat.js';
+import { createPlayerCombatFacade } from './player-combat.js';
 import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState } from './slider-state.js';
 import { createEntityRegistry } from './entity-registry.js';
 import { LightEntity, normalizeParamsPacket as entityNormalizeParamsPacket } from './entity-types/light.js';
 import { ProjectileEntity } from './entity-types/projectile.js';
 import { createLightEntityRenderer } from './light-entity-renderer.js';
+import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -79,7 +84,7 @@ let mpSharedWorldSettings = false;
 let mpPendingWorldSettings = null;
 let mpPendingCreatureState = [];
 let mpPendingCreatureConfig = null;
-// Host/solo entity registry (lights + projectiles). Guest never ticks it —
+// Host/solo entity registry (lights + projectiles). Guest never ticks it â€”
 // it renders directly from interpolated wire upserts (see mp:onState handling
 // below), so no guest-side mirror registry is needed.
 const entityRegistry = createEntityRegistry();
@@ -91,7 +96,7 @@ const isRenderableLightEntity = w => w && (w.type === 'light' || w.renders === t
 // registry.renderList(filter) applies `filter` to RAW pre-serialize entities
 // (which don't carry the wire-only `renders` flag yet), so the type check has
 // to happen there; isRenderableLightEntity is then re-applied to the
-// serialized output — the single predicate "used everywhere the binder is fed".
+// serialized output â€” the single predicate "used everywhere the binder is fed".
 const isRegisteredLightEntityType = e => e.type === 'light' || e.type === 'projectile';
 function hostLightEntitiesForRender() {
   return entityRegistry.renderList(isRegisteredLightEntityType).filter(isRenderableLightEntity);
@@ -99,9 +104,9 @@ function hostLightEntitiesForRender() {
 let lightBinder = null;
 let mpPendingLightEntities = []; // guest only: interpolated wire upserts, renderable-filtered
 // Declared up here (not at its slider-preset comment block ~L1230) because the
-// guest's onState → receiveSharedWorldSettings() reads it directly, and onState
+// guest's onState â†’ receiveSharedWorldSettings() reads it directly, and onState
 // can fire during a top-level `await` (e.g. the clustered-lights import) BEFORE
-// module eval reaches the old declaration site → TDZ crash. Controls still
+// module eval reaches the old declaration site â†’ TDZ crash. Controls still
 // self-register into it far below; it just needs to exist before sessions start.
 const controlRegistry = [];
 let mpLastCreatureConfigSig = '';
@@ -115,17 +120,38 @@ let captureSharedWorldSettings = () => null;
 let applySharedWorldSettings = values => { mpPendingWorldSettings = values; return false; };
 const MP_PLAYER_SEND_MS = 50;
 const mpGuestPlayers = new Map();
+// Last-seen fireSeq per remote player, so the guest sounds a replicated shot exactly once
+// per increment (the host broadcasts fireSeq in each player's merged combat fields).
+const mpRemoteFireSeq = new Map();
+const playerCombat = createPlayerCombatFacade();
+const playerPoseHistory = new Map();
+const playerShotState = new Map();
+const playerWeapons = new Map();
+const playerTools = new Map();
+const playerAmmo = new Map();
+const DEFAULT_GUN_ID = loadout.defaultWeapon;
+const LIGHT_TOOL_ID = 'light';
+const GUN_FLASH_MS = 120;
+let localGunShotSeq = 0;
+let selectedRadialTool = null;
+let viewHands = null;
+let localWeaponView = null;
+let updateCombatHud = () => {};
+let updateReticle = () => {};
 let portCreatures = null;
 let playerCollider = null;
 let playerInitialized = false;
 let fpsMode = false;
 // Cursor-free pause: the mouse is released (for clicking HUD/menus) while the first-person
-// camera stays frozen in place. Distinct from exiting to orbit — see enterCursorFree / KeyQ.
+// camera stays frozen in place. Distinct from exiting to orbit â€” see enterCursorFree / KeyQ.
 let fpsCursorFree = false;
 let stance = 'stand';
 let capsuleH = 1.6;
+// Flips true once the start screen is dismissed and the world loop starts; drives the
+// audio controller's music state (menu vs gameplay track) via isGameplayActive.
+let gameplayActive = false;
 
-const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', setStatus, dismiss } = await showStartScreen();
+const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', presetName, setStatus, dismiss } = await showStartScreen();
 mpSharedWorldSettings = mpRole !== 'solo' && mpWorldMode === 'shared';
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
@@ -160,6 +186,128 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d23);
 
 // ===================== multiplayer session =====================
+function finiteVec3(v) {
+  return Array.isArray(v) && v.length >= 3 && v.slice(0, 3).every(Number.isFinite) ? v.slice(0, 3) : null;
+}
+function finiteQuat(q) {
+  return Array.isArray(q) && q.length >= 4 && q.slice(0, 4).every(Number.isFinite) ? q.slice(0, 4) : null;
+}
+function clampFinite(value, fallback, min, max) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+function isEnabledGun(id) {
+  const weapon = getWeapon(id);
+  return !!weapon && !weapon.disabled;
+}
+function weaponIdFor(playerId) {
+  const chosen = playerWeapons.get(playerId);
+  return isEnabledGun(chosen) ? chosen : DEFAULT_GUN_ID;
+}
+function toolIdFor(playerId) {
+  const chosen = playerTools.get(playerId);
+  if (chosen === LIGHT_TOOL_ID) return LIGHT_TOOL_ID;
+  return isEnabledGun(chosen) ? chosen : weaponIdFor(playerId);
+}
+function setPlayerWeapon(playerId, requested) {
+  const id = isEnabledGun(requested) ? requested : weaponIdFor(playerId);
+  playerWeapons.set(playerId, id);
+  ensureAmmo(playerId, id);
+  return id;
+}
+function setPlayerTool(playerId, requested) {
+  if (requested === LIGHT_TOOL_ID) {
+    playerTools.set(playerId, LIGHT_TOOL_ID);
+    return LIGHT_TOOL_ID;
+  }
+  const weapon = setPlayerWeapon(playerId, requested);
+  playerTools.set(playerId, weapon);
+  return weapon;
+}
+function defaultAmmoFor(weaponId) {
+  const w = getWeapon(weaponId);
+  const magazineSize = Math.max(0, w?.magazineSize ?? 0);
+  return { mag: magazineSize, reserve: Math.max(0, w?.reserveAmmo ?? 0), magazineSize };
+}
+function ammoKey(playerId, weaponId) { return `${playerId}:${weaponId}`; }
+function ensureAmmo(playerId, weaponId = weaponIdFor(playerId)) {
+  const key = ammoKey(playerId, weaponId);
+  let ammo = playerAmmo.get(key);
+  if (!ammo) {
+    ammo = defaultAmmoFor(weaponId);
+    playerAmmo.set(key, ammo);
+  }
+  return ammo;
+}
+function reloadAmmo(playerId, weaponId = weaponIdFor(playerId)) {
+  const ammo = ensureAmmo(playerId, weaponId);
+  if (ammo.mag >= ammo.magazineSize || ammo.reserve <= 0) return ammo;
+  const needed = ammo.magazineSize - ammo.mag;
+  const moved = Math.min(needed, ammo.reserve);
+  ammo.mag += moved;
+  ammo.reserve -= moved;
+  return ammo;
+}
+function consumeAmmo(playerId, weaponId = weaponIdFor(playerId)) {
+  const ammo = ensureAmmo(playerId, weaponId);
+  if (ammo.mag <= 0) return false;
+  ammo.mag -= 1;
+  return true;
+}
+function mergePlayerCombatFields(player, nowMs = performance.now()) {
+  const id = player.id;
+  const combat = playerCombat.ensurePlayer(id);
+  const shot = playerShotState.get(id);
+  const weapon = setPlayerWeapon(id, player.weapon);
+  const tool = setPlayerTool(id, player.tool ?? weapon);
+  const ammo = ensureAmmo(id, weapon);
+  return {
+    ...player,
+    weapon,
+    tool,
+    hp: combat.hp,
+    maxHp: combat.maxHp,
+    alive: combat.alive,
+    ammoMag: tool === LIGHT_TOOL_ID ? null : ammo.mag,
+    ammoReserve: tool === LIGHT_TOOL_ID ? null : ammo.reserve,
+    magazineSize: tool === LIGHT_TOOL_ID ? null : ammo.magazineSize,
+    firing: !!shot && nowMs - shot.at <= GUN_FLASH_MS,
+    fireSeq: shot?.shotSeq ?? 0,
+    lastShotAt: shot?.at ?? 0,
+  };
+}
+function rememberPlayerPose(player, nowMs = performance.now()) {
+  if (!player) return;
+  pushPlayerPose(playerPoseHistory, player.id, player, nowMs);
+  prunePlayerPoseHistory(playerPoseHistory, nowMs);
+}
+function sanitizeNetworkPlayerState(raw, id) {
+  const p = finiteVec3(raw?.p);
+  if (!p) return null;
+  const weapon = setPlayerWeapon(id, raw?.weapon);
+  const tool = setPlayerTool(id, raw?.tool ?? weapon);
+  return {
+    id,
+    p,
+    q: finiteQuat(raw?.q) ?? [0, 0, 0, 1],
+    h: clampFinite(raw?.h, 1.6, 0.5, 2.4),
+    r: clampFinite(raw?.r, 0.35, 0.15, 0.75),
+    weapon,
+    tool,
+    aimPitch: clampFinite(raw?.aimPitch, 0, -Math.PI * 0.5, Math.PI * 0.5),
+  };
+}
+function getKnownPlayerState(id) {
+  return id === 'host' ? getLocalPlayerState('host') : mpGuestPlayers.get(id);
+}
+function currentCombatPlayers(nowMs = performance.now()) {
+  const players = [];
+  const hostPlayer = getLocalPlayerState('host');
+  if (hostPlayer) players.push(mergePlayerCombatFields(hostPlayer, nowMs));
+  for (const player of mpGuestPlayers.values()) players.push(mergePlayerCombatFields(player, nowMs));
+  return players;
+}
+
 function getLocalPlayerState(id) {
   if (!playerCollider || !playerInitialized) return null;
   const yaw = camera.rotation.y;
@@ -179,11 +327,14 @@ function getLocalPlayerState(id) {
     q: [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)],
     h: height,
     r: radius,
+    weapon: weaponIdFor(id),
+    tool: toolIdFor(id),
+    aimPitch: camera.rotation.x,
   };
 }
 
-// Broadcast the shared creature config to guests as its OWN reliable message — not
-// inside the frame-skippable sim_state — and only when it actually changed (or
+// Broadcast the shared creature config to guests as its OWN reliable message â€” not
+// inside the frame-skippable sim_state â€” and only when it actually changed (or
 // force=true to catch up a newly joined guest). This config is large, O(creatures)
 // STATIC identity data (plan/style/gait/arms) that a guest needs once, not on a
 // timer: resending it every 2 s was the dominant multiplayer payload cost. Driven at
@@ -251,7 +402,7 @@ function receiveSharedWorldSettings(packet) {
 function getState() {
   // Quantize wire numbers: unrounded doubles serialize at up to ~17 chars each and
   // dominate the O(creatures) payload. mm precision (q3) for positions and 1e-4 for
-  // rotations is far below visual scale but ~2.5–3× fewer bytes. See plan §2a.
+  // rotations is far below visual scale but ~2.5â€“3Ã— fewer bytes. See plan Â§2a.
   const q3 = v => Math.round(v * 1e3) / 1e3;
   const q4 = v => Math.round(v * 1e4) / 1e4;
   const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
@@ -264,9 +415,17 @@ function getState() {
     hands: c.arms.map(a => [q3(a.hand.position.x), q3(a.hand.position.y), q3(a.hand.position.z)]),
   }));
   const players = [];
-  const hostPlayer = getLocalPlayerState('host');
-  if (hostPlayer) players.push(hostPlayer);
-  for (const player of mpGuestPlayers.values()) players.push(player);
+  const nowMs = performance.now();
+  const addPlayer = player => {
+    if (!player) return;
+    const merged = mergePlayerCombatFields(player, nowMs);
+    merged.hp = q3(merged.hp);
+    merged.maxHp = q3(merged.maxHp);
+    rememberPlayerPose(merged, nowMs);
+    players.push(merged);
+  };
+  addPlayer(getLocalPlayerState('host'));
+  for (const player of mpGuestPlayers.values()) addPlayer(player);
   return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode };
 }
 
@@ -296,7 +455,15 @@ function syncMultiplayerPlayer(now) {
 }
 
 window.addEventListener('mp:joined', e => {
+  const previousId = localPlayerId();
   mpClientId = e.detail.clientId;
+  if (previousId && previousId !== mpClientId) {
+    setPlayerWeapon(mpClientId, weaponIdFor(previousId));
+    setPlayerTool(mpClientId, toolIdFor(previousId));
+  }
+  viewHands?.setTint(playerTintHSL(localPlayerId()));
+  viewHands?.setTool(toolIdFor(localPlayerId()));
+  localWeaponView?.setTool(toolIdFor(localPlayerId()));
   if (e.detail.worldMode) mpSharedWorldSettings = e.detail.worldMode === 'shared';
 });
 
@@ -308,15 +475,25 @@ if (mpRole === 'host') {
   mpSession = createGuestSession(roomCode, state => {
     mpLatestState = state;
     if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
-    // worldSettings / creatureConfig no longer ride sim_state — they arrive as their
+    // worldSettings / creatureConfig no longer ride sim_state â€” they arrive as their
     // own mp:world_settings / mp:creature_config messages (see listeners below).
     mpPendingCreatureState = state.creatures ?? [];
     // Guest trap (see plan): feed the binder the already-interpolated wire
-    // upserts directly — do NOT build a mirror registry + renderList, the
+    // upserts directly â€” do NOT build a mirror registry + renderList, the
     // wire shape isn't the adapters' internal entity shape.
     mpPendingLightEntities = (state.entities?.upserts ?? []).filter(isRenderableLightEntity);
     lightBinder?.sync(mpPendingLightEntities);
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
+    // Sound remote shots once per fireSeq increment (skip the first sighting so a stale
+    // seq from before we joined doesn't fire retroactively).
+    for (const p of players) {
+      const seen = mpRemoteFireSeq.has(p.id);
+      const prev = mpRemoteFireSeq.get(p.id) ?? 0;
+      if (seen && typeof p.fireSeq === 'number' && p.fireSeq > prev && Array.isArray(p.p)) {
+        envAudio.playAt(weaponFireEvent(p.weapon), audioPos(p.p), undefined, positionalSfxProfiles.gunshot);
+      }
+      mpRemoteFireSeq.set(p.id, p.fireSeq ?? 0);
+    }
     mpGhostRenderer.update({ ...state, creatures: [], players });
   });
 }
@@ -330,21 +507,36 @@ window.addEventListener('mp:world_settings', e => receiveSharedWorldSettings(e.d
 window.addEventListener('mp:guest_input', e => {
   const msg = e.detail;
   if (msg.type === 'player_state' && msg.clientId && msg.player) {
-    mpGuestPlayers.set(msg.clientId, { ...msg.player, id: msg.clientId });
+    const player = sanitizeNetworkPlayerState(msg.player, msg.clientId);
+    if (!player) return;
+    const merged = mergePlayerCombatFields(player);
+    mpGuestPlayers.set(msg.clientId, player);
+    rememberPlayerPose(merged);
     updateHostPlayerGhosts();
   } else if (msg.type === 'guest_joined' && msg.clientId) {
-    // A newly joined guest needs the full static config/settings now — they're no
+    playerCombat.ensurePlayer(msg.clientId);
+    setPlayerWeapon(msg.clientId, DEFAULT_GUN_ID);
+    setPlayerTool(msg.clientId, DEFAULT_GUN_ID);
+    // A newly joined guest needs the full static config/settings now â€” they're no
     // longer heartbeated into sim_state. force=true resends the current full state;
     // already-synced guests no-op on it via their signature check.
     syncSharedWorldSettings({ force: true });
     syncSharedNpcConfig({ force: true });
   } else if (msg.type === 'guest_left' && msg.clientId) {
     mpGuestPlayers.delete(msg.clientId);
+    playerCombat.removePlayer(msg.clientId);
+    playerPoseHistory.delete(msg.clientId);
+    playerShotState.delete(msg.clientId);
+    playerWeapons.delete(msg.clientId);
+    playerTools.delete(msg.clientId);
+    for (const key of [...playerAmmo.keys()]) if (key.startsWith(`${msg.clientId}:`)) playerAmmo.delete(key);
     updateHostPlayerGhosts();
   } else if (msg.type === 'set_target') {
     portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
   } else if (msg.type === 'set_behavior') {
     portCreatures?.system?.setBehavior(msg.behavior);
+  } else if (msg.type === 'combat_intent') {
+    applyCombatIntent(msg, msg.clientId || 'guest');
   } else if (msg.type === 'entity_intent') {
     applyLightIntent(msg, msg.clientId || 'guest');
   }
@@ -581,7 +773,7 @@ function createMultiplayerFinder() {
     const dz = tracked.p[2] - local.p[2];
     const dist = Math.hypot(dx, dz);
     const relDeg = signedDegrees(screenRelativeBearing(worldBearing(dx, dz), heading));
-    label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
+    label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}Â°`;
   }
 
   return { update };
@@ -621,7 +813,7 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
 
   ctx.fillStyle = '#d8dee9';
   ctx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
-  ctx.fillText(`${headingDegrees(heading).toString().padStart(3, '0')}°`, center, 2);
+  ctx.fillText(`${headingDegrees(heading).toString().padStart(3, '0')}Â°`, center, 2);
   ctx.fillStyle = '#77c8a1';
   ctx.beginPath(); ctx.moveTo(center, h - 3); ctx.lineTo(center - 5, h - 11); ctx.lineTo(center + 5, h - 11); ctx.closePath(); ctx.fill();
 }
@@ -744,9 +936,30 @@ if (mapKey) {
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
 // YXZ from the start: getLocalPlayerState reads camera.rotation.y as the wire yaw,
 // and with the default XYZ order a lookAt-driven (orbit mode) yaw decodes folded
-// into ±90°, broadcasting a wrong facing until FPS mode first sets this.
+// into Â±90Â°, broadcasting a wrong facing until FPS mode first sets this.
 camera.rotation.order = 'YXZ';
 camera.position.set(22, 16, 26);
+
+// ===================== audio =====================
+// Imported browser audio system (see docs/superpowers/plans/2026-07-05-environment-audio-import.md).
+// The controller owns its own Web Audio graph; the viewer only injects state and fires events.
+// getPlayerPosition returns the first-person capsule top (camera height) once the player exists,
+// falling back to the orbit camera before spawn. isGameplayActive gates the music track choice.
+const envAudio = createEnvironmentAudio({
+  THREE,
+  scene,
+  camera,
+  getPlayerPosition: () => (playerCollider ? playerCollider.end : camera.position),
+  isGameplayActive: () => gameplayActive,
+  workletUrl: './music-pitch-processor.js?v=1',
+});
+// Maps the current weapon to its firing SFX event id (unassigned ids simply no-op).
+const weaponFireEvent = weaponId => (weaponId === 'm24' ? 'sniper_shoot' : 'machinegun_shoot');
+// Wrap a plain [x,y,z] wire vector as an {x,y,z} position playAt() accepts.
+const audioPos = a => (Array.isArray(a) ? { x: a[0], y: a[1], z: a[2] } : a);
+// Distance walked since the last footstep SFX; a stride-length threshold plays 'footstep'
+// on a velocity-based cadence rather than every frame (see animate()).
+let footstepDist = 0;
 
 // ===================== lights =====================
 const rig = createLightingRig({ scene, ui: false });
@@ -774,7 +987,7 @@ if (SKY_MODE !== 'off' && SKY_MODE !== 'nomoonlight') {
   scene.add(moonLight, moonLight.target);
 }
 
-// Unit vector toward the key light — the SAME direction the rig feeds to the water
+// Unit vector toward the key light â€” the SAME direction the rig feeds to the water
 // specular and the shadow camera. The sky disc, moonlight, and reflection all share it.
 const _skyDir = new THREE.Vector3();
 function skyLightDir() {
@@ -784,7 +997,7 @@ function skyLightDir() {
 
 // ===================== chunked terrain (parameterised; supports lakes) =====================
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
-// terrain extent — the terrain is chunked/infinite and sized by draw distance.
+// terrain extent â€” the terrain is chunked/infinite and sized by draw distance.
 const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
 
 if (loadedMap) {
@@ -803,7 +1016,7 @@ let ground = loadedMap ? loadedMap.root : terrainSystem.materialPatchTarget;
 const _mapHeightRayOrigin = new THREE.Vector3();
 // CPU heightfield baked from the authored-map collider (creature-perf-analysis/plan.md
 // 3.1). When set, terrainHeight() does a bilinear array read instead of a per-call BVH
-// raycast — the dominant cost of creature terrain sampling on authored maps. Installed
+// raycast â€” the dominant cost of creature terrain sampling on authored maps. Installed
 // once after the grass height bake below; it is null during that bake, so the bake still
 // fills via raycast (no chicken-and-egg).
 let cpuHeightField = null;
@@ -893,9 +1106,9 @@ if (loadedMap) {
   // Silent on validated maps; logs detail only on request (?heightfieldCheck) or when the
   // bilinear-vs-raycast error is high enough to matter for foot placement.
   if (new URLSearchParams(location.search).has('heightfieldCheck') || maxErr > 0.5) {
-    console.log(`[terrain] CPU heightfield ${bakeRes}² (cell ${cell.toFixed(2)}u): max err ${maxErr.toFixed(3)}u, mean ${(sumErr / Math.max(1, samples)).toFixed(3)}u over ${samples} pts`);
+    console.log(`[terrain] CPU heightfield ${bakeRes}Â² (cell ${cell.toFixed(2)}u): max err ${maxErr.toFixed(3)}u, mean ${(sumErr / Math.max(1, samples)).toFixed(3)}u over ${samples} pts`);
   }
-  if (maxErr > 0.5) console.warn(`[terrain] heightfield max error ${maxErr.toFixed(2)}u exceeds 0.5u — foot placement may deviate on steep geometry; consider a higher bake resolution or keeping the raycast path.`);
+  if (maxErr > 0.5) console.warn(`[terrain] heightfield max error ${maxErr.toFixed(2)}u exceeds 0.5u â€” foot placement may deviate on steep geometry; consider a higher bake resolution or keeping the raycast path.`);
   cpuHeightField = hf;
   if (loadedMap.grassDensityGrid?.length === loadedMap.resolution * loadedMap.resolution) {
     loadedMap.grassDensityTex = makeFloatDataTexture(loadedMap.grassDensityGrid, loadedMap.resolution);
@@ -951,7 +1164,7 @@ if (!loadedMap && TERRAIN_MODE === 'gpu') {
   ground = cdlodRef.mesh;
 }
 
-// SP4b: GPU particle fields — embers (additive glow) + dust (subtle alpha). ?particles=off disables.
+// SP4b: GPU particle fields â€” embers (additive glow) + dust (subtle alpha). ?particles=off disables.
 // A registry of live fields the editor (control panel) can add to / remove from at runtime; the
 // animate loop updates the enabled ones and the HUD sums their counts. The two species seed the list.
 const PARTICLES_MODE = new URLSearchParams(location.search).get('particles') || 'on';
@@ -980,7 +1193,7 @@ if (PARTICLES_MODE !== 'off') {
   addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90, enabled: false });
 }
 
-// SP4c: node post-processing. ?post=off → plain renderer.render; diagnostic graph modes:
+// SP4c: node post-processing. ?post=off â†’ plain renderer.render; diagnostic graph modes:
 // scene, output, grade, full/on.
 const POST_MODE = new URLSearchParams(location.search).get('post') || 'on';
 let postFX = null;
@@ -1060,16 +1273,17 @@ function updateTerrainDebug(now) {
     `creatures ${cs.count} vis ${cs.visible} sim ${cs.sim} rend ${cs.rendered} body ${cs.bodyOnly} ms ${cs.updateMs.toFixed(2)}\n` +
     `cre stages lod ${cs.lodMs.toFixed(2)} obj ${cs.objectsMs.toFixed(2)} beh ${cs.behaviorMs.toFixed(2)} steer ${cs.steeringMs.toFixed(2)} phys ${cs.physicsMs.toFixed(2)} rend ${cs.renderMs.toFixed(2)}\n` +
     `cre lod ${cs.tiers.join('/')} ik ${cs.ikFull}/${cs.ikCheap} shadows ${cs.shadowCasters}\n` +
-    `terrain ${terrainSystem.renderMode}${cdlodRef ? ' · cdlod' : ''}\n` +
+    `terrain ${terrainSystem.renderMode}${cdlodRef ? ' Â· cdlod' : ''}\n` +
     (cdlodRef
-      ? `terrain draws ${cdlodRef.drawCount} · tris ${cdlodRef.triangleCount.toLocaleString()}\n`
+      ? `terrain draws ${cdlodRef.drawCount} Â· tris ${cdlodRef.triangleCount.toLocaleString()}\n`
       : `chunks ${activeTerrainChunks().length}/${targetTerrainChunkCount()}\n`) +
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} rings ${terrainDebug.waterChunks}/3 pending ${terrainDebug.waterPending} r0:${terrainDebug.waterRing0Tris} r1:${terrainDebug.waterRing1Tris} r2:${terrainDebug.waterRing2Tris} tris ${terrainDebug.waterTriangles.toLocaleString()} cache ${terrainDebug.waterCacheHits}/${terrainDebug.waterCacheMisses} build ${terrainDebug.waterBuildMs.toFixed(1)}ms min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
-    `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` · gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
-    (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
-    (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
+    `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` Â· gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
+    (dressingGPURef ? `dressing draws ${dressingGPURef.stats.draws}/${dressingGPURef.stats.groups} inst ${dressingGPURef.stats.instances}\n` : '') +
+    (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} Â· froxels ${clusteredLightsRef.froxelCount}\n` : '') +
+    (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} Ã—${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
 
@@ -1127,7 +1341,7 @@ const perfLog = {
       calls: r?.render?.calls ?? 0,                     // cumulative renderer calls; retained for old traces
       renderCallsTotal: r?.render?.calls ?? 0,
       // Per-frame counters come from the holder captured right after this frame's draw/compute
-      // submit (before any timestamp-resolve await), not a live renderer.info read — with
+      // submit (before any timestamp-resolve await), not a live renderer.info read â€” with
       // TIMESTAMP_MODE='on' the awaited resolveTimestampsAsync() calls cross a vsync boundary
       // and WebGPURenderer zeroes these before a live read here would see them. Cumulative
       // counters (calls/renderCallsTotal/computeCallsTotal) aren't reset per-frame so they're
@@ -1335,7 +1549,7 @@ function updatePerfPanel(now) {
   const csvBtn = document.createElement('button'); csvBtn.textContent = 'CSV'; csvBtn.style.cssText = btnCss;
   const clrBtn = document.createElement('button'); clrBtn.textContent = 'Clear'; clrBtn.style.cssText = btnCss;
   function refresh() {
-    recBtn.textContent = perfLog.recording ? '● rec' : '▶ rec';
+    recBtn.textContent = perfLog.recording ? 'â— rec' : 'â–¶ rec';
     recBtn.style.color = perfLog.recording ? '#ff7b7b' : '#c4ccd6';
     const gpu = perfLog.telemetryActive ? ` gpu:${perfLog.telemetryFile || 'on'}` : (perfLog.telemetryError ? ' gpu:off' : '');
     count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms${gpu}`;
@@ -1352,8 +1566,8 @@ function updatePerfPanel(now) {
 if (!loadedMap) scene.add(terrainGroup);
 
 // The camera far plane is the larger of terrain draw distance and the diagonal
-// distance to the edge of any cloud layer — cloud fragments at the plane edge
-// are at sqrt((extent/2)²+height²) from the camera and must not be clipped.
+// distance to the edge of any cloud layer â€” cloud fragments at the plane edge
+// are at sqrt((extent/2)Â²+heightÂ²) from the camera and must not be clipped.
 // Fog uses only the terrain-based distance so it doesn't fade in too late on
 // small scenes just because cloud layers are large.
 const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
@@ -1364,7 +1578,7 @@ function setCloudFar(layer, extent, height) {
   if (layer === 2) cloudFar2 = far; else cloudFar1 = far;
 }
 function updateDrawDistance() {
-  // Farthest rendered chunk corner � (radius + 1) chunks out; �2 covers the
+  // Farthest rendered chunk corner ï¿½ (radius + 1) chunks out; ï¿½2 covers the
   // diagonal across the whole loaded ring from the opposite side.
   const chunkSpan = (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize * 2;
   const terrainFar = Math.max(200, terrain.size, chunkSpan);
@@ -1378,6 +1592,9 @@ updateDrawDistance();
 
 // Grass and water load asynchronously below; refs/handles used by the loop & rebuild.
 let grassRef = null, waterRef = null, regenTrees = null, cloudsRef = null, clouds2Ref = null, forestGPURef = null, plantsGPURef = null, regenPlants = null;
+// Dressing (rocks/boulders/scree + deadfall/fungi) share one dressing-gpu.js host; dressingIndexRef
+// is a SEPARATE trunk index for boulder/stump/log collision so it never clobbers the tree trunkIndex.
+let dressingGPURef = null, dressingIndexRef = null, regenDressing = null;
 // Promises resolved when each async module finishes its initial setup. Awaited before dismiss().
 let _grassPromise = Promise.resolve(), _waterPromise = Promise.resolve(), _cloudsPromise = Promise.resolve(), _skyPromise = Promise.resolve();
 let terrainDecorationsDirty = false;
@@ -1464,6 +1681,7 @@ function maybeSyncTerrainDecorations() {
   syncWaterChunks(true);
   if (regenTrees) regenTrees(terrainDecorationsRebuildAll);
   if (regenPlants) regenPlants(terrainDecorationsRebuildAll);
+  if (regenDressing) regenDressing(terrainDecorationsRebuildAll);
   terrainDecorationsRebuildAll = false;
   terrainDecorationsDirty = false;
 }
@@ -1707,7 +1925,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     });
   }
 
-  // Bake intensity constants — must match billBrightness() denominator so the uniform
+  // Bake intensity constants â€” must match billBrightness() denominator so the uniform
   // compensates for whatever the live scene intensity is relative to the bake.
   const BAKE_SUN = 1.2, BAKE_AMB = 0.4;
 
@@ -1860,7 +2078,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); disposeTextureSetSoon(prev); } },
     });
     // Apply immediately only if already decoded (procedural). For authored, wait for
-    // onReady and keep the previous set live until then — never toggle .map through
+    // onReady and keep the previous set live until then â€” never toggle .map through
     // null, which the WebGPU NodeMaterialObserver throws on (null.isTexture).
     if (texSet.ready) { applyTextureSet(texSet); disposeTextureSetSoon(prev); }
   }
@@ -2207,7 +2425,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     chunk.version++;
   }
 
-  // Returns a build job, or null when the chunk has no trees to place — so empty
+  // Returns a build job, or null when the chunk has no trees to place â€” so empty
   // (or fully flooded) chunks allocate no meshes at all. Placements are computed
   // first; the 3 chunk meshes are created only once at least one tree lands. An
   // existing chunk that no longer places any trees is disposed.
@@ -2347,13 +2565,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // Title bar: minimise button + drag handle. Body scrolls if it grows too tall.
   const bar = document.createElement('div'); bar.id = 'ctrl-bar';
   bar.innerHTML = '<span class="ttl">Scene controls</span>';
-  const minBtn = document.createElement('button'); minBtn.id = 'ctrl-min'; minBtn.textContent = '–';
+  const minBtn = document.createElement('button'); minBtn.id = 'ctrl-min'; minBtn.textContent = 'â€“';
   bar.appendChild(minBtn);
   const body = document.createElement('div'); body.id = 'ctrl-body';
   box.appendChild(bar); box.appendChild(body);
   let current = body;   // header() switches this to the active section's body
 
-  minBtn.addEventListener('click', () => { minBtn.textContent = box.classList.toggle('min') ? '+' : '–'; });
+  minBtn.addEventListener('click', () => { minBtn.textContent = box.classList.toggle('min') ? '+' : 'â€“'; });
 
   // Drag the bar to reposition; first move switches right- to left/top-anchoring,
   // and the panel is clamped on-screen.
@@ -2373,7 +2591,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   let timer; const apply = () => { clearTimeout(timer); timer = setTimeout(regenerate, 130); };
   // Controls that change baked tree GEOMETRY (species taxonomy, leaves, base offset)
-  // need the gpu palette rebaked — placement-only re-sync (apply) can't pick them up
+  // need the gpu palette rebaked â€” placement-only re-sync (apply) can't pick them up
   // because the palette is baked once. In baked mode this is just a normal regenerate.
   let rbTimer; const rebakeForest = () => {
     clearTimeout(rbTimer);
@@ -2397,7 +2615,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   function header(text) {
     const sec = document.createElement('div'); sec.className = 'sec collapsed';
     const head = document.createElement('div'); head.className = 'sec-head';
-    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">â–¾</span>';
     const secBody = document.createElement('div'); secBody.className = 'sec-body';
     head.addEventListener('click', () => sec.classList.toggle('collapsed'));
     sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
@@ -2463,7 +2681,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     current.appendChild(billToggleBtn);
   }
   // Texture mode: 'procedural' uses textureless TSL/shaped leaves; 'authored' loads the
-  // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
+  // ez-tree PNG/JPG packs from ./textures (async â€” rebuilds when they decode).
   select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
 
   loadTextures(params.texMode);   // establish a texture set before the first bake
@@ -2496,10 +2714,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // world (it never actually changed the chunked terrain). Cheap, live update.
   slider('size', 'View distance', 200, 1000, 10, fi, () => updateDrawDistance(), terrain, 'terrain');
   // Draw distance = chunk render radius. Streams chunks in/out live (no full
-  // rebuild); label shows the resulting N×N grid. terrainSystem.params is a copy
-  // of `terrain`, so push the value across and extend the camera far plane —
+  // rebuild); label shows the resulting NÃ—N grid. terrainSystem.params is a copy
+  // of `terrain`, so push the value across and extend the camera far plane â€”
   // updateTerrainWindow() in the render loop restreams on the next frame.
-  const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' · ' + n + '×' + n; };
+  const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' Â· ' + n + 'Ã—' + n; };
   const drawDistanceChange = () => {
     terrainSystem.params.renderRadius = Math.round(terrain.renderRadius);
     // SP3: map the chunk draw-distance slider (1..12) onto CDLOD level count so the slider
@@ -2594,7 +2812,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   // ---- SP4c: post-processing controls (bloom + tonemap + grade) ----
   if (postFX) {
-    // Baseline-neutral defaults: tone 'none' (linear), no bloom, identity grade — looks
+    // Baseline-neutral defaults: tone 'none' (linear), no bloom, identity grade â€” looks
     // identical to ?post=off until you push a slider. Build the look from here.
     Object.assign(params, {
       postFX: true, postTone: 'none', postExposure: 1.0,
@@ -2627,7 +2845,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('postVignetteSoft', 'Vignette softness', 0.2, 3, 0.01, f2, applyGrade);
   }
 
-  // ---- SP4b: particle editor — design a field, Add to spawn it, manage the live list ----
+  // ---- SP4b: particle editor â€” design a field, Add to spawn it, manage the live list ----
   if (createParticleField) {
     const clone = p => ({ ...p, wind: [...p.wind], color: [...p.color] });
     const kindDefaults = k => ({ ...kindParams(k), kind: k, count: k === 'dust' ? 8000 : 4000, radius: 90 });
@@ -2686,7 +2904,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     }
     const refreshControls = () => refreshers.forEach(r => r());
 
-    // base species — resets the design to that species' look (then tweak from there)
+    // base species â€” resets the design to that species' look (then tweak from there)
     const kindRow = document.createElement('div'); kindRow.className = 'row';
     kindRow.innerHTML = '<span style="color:#c4ccd6">Base species</span>'; psec.appendChild(kindRow);
     const kindSel = document.createElement('select');
@@ -2717,16 +2935,16 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     pslider('Count', 500, 16000, 500, pfi, () => editor.count, v => editor.count = v, false);
     pslider('Radius', 20, 200, 5, pfi, () => editor.radius, v => editor.radius = v, false);
 
-    // Add — spawn a new field from the current design and select it for further edits.
+    // Add â€” spawn a new field from the current design and select it for further edits.
     const addBtn = document.createElement('button');
     addBtn.textContent = '+ Add particle field';
     addBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
     addBtn.addEventListener('click', () => selectEntry(addParticleField({ kind: editor.kind, params: clone(editor), count: editor.count, radius: editor.radius })));
     psec.appendChild(addBtn);
 
-    // Active-fields list: left-click on/off · right-click edit · double-click delete.
+    // Active-fields list: left-click on/off Â· right-click edit Â· double-click delete.
     const hint = document.createElement('div');
-    hint.textContent = 'click: on/off · right-click: edit · dbl-click: delete';
+    hint.textContent = 'click: on/off Â· right-click: edit Â· dbl-click: delete';
     hint.style.cssText = 'color:#5f6a78;font-size:10px;margin:2px 0 3px';
     psec.appendChild(hint);
     const listBox = document.createElement('div');
@@ -2772,7 +2990,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       let queueToken = 0;
 
       // Uniform blade count per chunk. Density deliberately does NOT vary per chunk
-      // — that produced the visible square/line seams. Distance culling is now done
+      // â€” that produced the visible square/line seams. Distance culling is now done
       // per-blade in the grass shader (see currentFade/applyFade), keyed off true
       // camera distance so grass thins as a smooth ring with no chunk-aligned steps.
       function countForChunk(chunk, activeCount) {
@@ -2963,7 +3181,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     header('Grass');
     slider('grassRadius', 'Radius', 8, 600, 1, fi, () => cg.setRadius(params.grassRadius));
     slider('grassCullStart', 'Cull start', 0, 600, 1, fi, () => cg.setCullStart(params.grassCullStart));
-    slider('grassDensity', 'Density (blades/m²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
+    slider('grassDensity', 'Density (blades/mÂ²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
     slider('grassMaxBlades', 'Max blades', 0, 2000000, 5000, v => (v / 1000).toFixed(0) + 'k', () => cg.setMaxBlades(params.grassMaxBlades));
     slider('grassBladeHeight', 'Blade height', 0.1, 4.0, 0.01, f2, () => cg.setBladeHeight(params.grassBladeHeight));
     slider('grassBladeWidth', 'Blade width', 0.1, 4.0, 0.01, f2, () => cg.setBladeWidth(params.grassBladeWidth));
@@ -3146,7 +3364,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     regeneratePlantsGPU(true);
     regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
     header('Plants');
-    slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
+    slider('plantDensity', 'Density (plants/mÂ²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
     slider('plantCullRadius', 'Cull radius', 10, 300, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
     slider('plantCullStart', 'Cull start (fade begins)', 0, 300, 1, fi, () => plantsGPU.setCullStart(params.plantCullStart));
     slider('plantClusterStrength', 'Clustering', 0, 1, 0.05, f2, () => regeneratePlantsGPU(true));
@@ -3158,10 +3376,305 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('plantWindSpeed', 'Wind speed', 0, 3, 0.05, f2, () => plantsGPU.setWindSpeed(params.plantWindSpeed));
   }
 
+  // ---- dressing: rocks/boulders/scree + deadfall/fungi on the shared dressing-gpu.js host ----
+  // One host, one flat GROUP list: every baked palette variant becomes its own group (own
+  // geometry, cap, cull radius, shadow flag, material). Boulders/scree from rocks.js, logs/
+  // stumps/mushrooms from deadfall.js -- both compose the SAME shared mossWeight() law the
+  // terrain material now uses. Placement binds to the canonical `terrainHeight` and (on authored
+  // maps) `loadedMap.surfaceField`; streaming mirrors the plants windowed-chunk pattern above.
+  const DRESSING_MODE = new URLSearchParams(location.search).get('dressing') || 'gpu';
+  if (DRESSING_MODE === 'gpu') {
+    const { createRockPalette, buildRockMaterial } = await import('./rocks.js?v=dressing-normal-6');
+    const { rockPlacementRecords, boulderCirclesFromRecords } = await import('./rocks-placement.js?v=dressing-wire-1');
+    const { createDeadfallPalette, buildDeadwoodMaterial, buildMushroomMaterial } = await import('./deadfall.js?v=dressing-tex-3');
+    const { deadfallPlacementRecords, stumpCirclesFromRecords, logCirclesFromRecords } = await import('./deadfall-placement.js?v=dressing-wire-1');
+    const { createDressingGPU } = await import('./dressing-gpu.js?v=dressing-cull-2');
+
+    Object.assign(params, {
+      // Placement window must be wide enough that its half-extent (radiusChunks*chunkSize)
+      // exceeds the largest cull radius below, or the square window edge clips the cull circle.
+      dressingRadiusChunks: 12,
+      boulderDensity: 0.0018, screeDensity: 0.09, rockGateStart: 0.3, rockGateEnd: 0.6,
+      boulderCullRadius: 300, screeCullRadius: 110,
+      logDensity: 0.0016, stumpDensity: 0.0011, mushroomDensity: 0.06,
+      deadfallCullRadius: 260, mushroomCullRadius: 130,
+    });
+
+    const rockPalette = createRockPalette({ masterSeed: MASTER_SEED });
+    const deadfallPalette = createDeadfallPalette({ masterSeed: MASTER_SEED });
+
+    // Textures: boulders reuse the terrain's rock layer (triplanar, so no UVs needed) and
+    // logs/stumps reuse the same authored bark pack the forest uses, so dressing matches the
+    // rest of the world. Plain THREE.Textures (not DataArray) -> mipmaps are fine on WebGPU.
+    const _texLoader = new THREE.TextureLoader();
+    // Anisotropy tames the triplanar normal/albedo shimmer on big close boulders under small
+    // camera motion (trilinear alone still pops between mips at oblique angles).
+    const _maxAniso = renderer.backend?.getMaxAnisotropy?.() ?? 8;
+    const loadTex = (url, srgb) => {
+      const t = _texLoader.load(url);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.anisotropy = Math.min(8, _maxAniso);
+      if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    };
+    const rockTextures = {
+      albedo: loadTex('./textures/ground/rock/color.jpg', true),
+      normal: loadTex('./textures/ground/rock/normal.jpg', false),
+      roughness: loadTex('./textures/ground/rock/roughness.jpg', false),
+    };
+    const BARK_SET = 'Bark014_1K-JPG';
+    const barkAlbedo = loadTex(`./textures/bark/${BARK_SET}/${BARK_SET}_Color.jpg`, true);
+    const barkRoughness = loadTex(`./textures/bark/${BARK_SET}/${BARK_SET}_Roughness.jpg`, false);
+
+    // Per-group caps split the TOTAL budgets across variants. Raised from the original
+    // conservative merged-plan gate (512/16000/1000) so higher densities over a larger cull
+    // radius actually materialize instead of clamping to a bubble around the player. Caps are
+    // fixed buffer sizes (not live-tunable); density/cull sliders tune within them.
+    const boulderGroupCount = rockPalette.types.filter(t => !t.scree).reduce((a, t) => a + t.count, 0) || 1;
+    const screeGroupCount = rockPalette.types.filter(t => t.scree).reduce((a, t) => a + t.count, 0) || 1;
+    const boulderCap = Math.max(1, Math.floor(3072 / boulderGroupCount));
+    const screeCap = Math.max(1, Math.floor(48000 / screeGroupCount));
+    const dfCap = Math.max(1, Math.floor(6000 / (deadfallPalette.variants.length || 1)));
+
+    // Flat groups list; a record's groupIdx = base offset for its type + its variantIdx.
+    const groups = [];
+    const ROCK_BASE = groups.length;
+    for (const t of rockPalette.types) {
+      for (let v = 0; v < t.count; v++) {
+        groups.push({
+          key: `${t.key}#${v}`,
+          cullClass: t.scree ? 'scree' : 'boulder',
+          geometry: rockPalette.variants[t.startIdx + v],
+          cap: t.scree ? screeCap : boulderCap,
+          cullRadius: t.scree ? params.screeCullRadius : params.boulderCullRadius,
+          castShadow: !t.scree, // scree is too small/dense to justify shadow-map cost
+          // S1: compose the triplanar detail normal ON TOP of the instance-rotated world
+          // normal (nodes.nWorld); moisture rides the per-instance `extra` float (nodes.extra).
+          buildMaterial: (nodes) => buildRockMaterial({ textures: rockTextures, normalBase: nodes.nWorld, moistureNode: nodes.extra }),
+        });
+      }
+    }
+    const DEADFALL_BASE = groups.length;
+    for (const variant of deadfallPalette.variants) {
+      const isMush = variant.kind === 'mushroom';
+      groups.push({
+        key: `${variant.key}#${variant.kind}`,
+        cullClass: isMush ? 'mushroom' : 'deadwood',
+        geometry: variant.geometry,
+        cap: dfCap,
+        cullRadius: isMush ? params.mushroomCullRadius : params.deadfallCullRadius,
+        castShadow: !isMush, // mushrooms cast no shadow (plan requirement -- set here, per-group)
+        buildMaterial: isMush
+          ? () => buildMushroomMaterial({ capColor: variant.capColor, gillColor: variant.gillColor, stemColor: variant.stemColor })
+          // S5: deadwood moss reads the instance-rotated up (nodes.nWorld.y) so tilted logs
+          // gate moss off their true post-tilt top; moisture rides nodes.extra. Bark albedo/
+          // roughness from the shared authored bark pack (same as the forest).
+          : (nodes) => buildDeadwoodMaterial({ moistureNode: nodes.extra, nodes, albedoMap: barkAlbedo, roughnessMap: barkRoughness }),
+      });
+    }
+
+    // type key -> flat group offset, for mapping placement records (variant key + variantIdx).
+    const rockGroupOf = new Map(rockPalette.types.map(t => [t.key, { offset: ROCK_BASE + t.startIdx, count: t.count }]));
+    const dfGroupOf = new Map(deadfallPalette.types.map(t => [t.key, { offset: DEADFALL_BASE + t.startIdx, count: t.count }]));
+    const toDressing = (recs, groupOf, extraKey) => {
+      const out = [];
+      for (const r of recs) {
+        const g = groupOf.get(r.variant);
+        if (!g) continue;
+        out.push({
+          x: r.x, y: r.y, z: r.z, scale: r.scale, yaw: r.yaw, tiltX: r.tiltX, tiltZ: r.tiltZ,
+          extra: r[extraKey], groupIdx: g.offset + Math.min(r.variantIdx | 0, g.count - 1),
+        });
+      }
+      return out;
+    };
+
+    const dressingGPU = createDressingGPU({ renderer, camera, heightAt: terrainHeight, groups });
+    dressingGPURef = dressingGPU;
+    scene.add(...dressingGPU.meshes);
+
+    // Separate collision index for boulder/stump/log circles (keeps the tree trunkIndex intact).
+    const dressingIndex = createTrunkIndex(mapChunkSize());
+    dressingIndexRef = dressingIndex;
+
+    // Canopy proximity for deadfall gating: reuse the live tree trunkIndex (3x3-neighbour query),
+    // so logs/stumps/mushrooms accumulate under trees without a global tree scan. weight matches
+    // deadfall-placement.js's makeCanopyIndex (smoothstep of squared distance over canopyRadius^2).
+    const canopyR2 = 9 * 9;
+    const _canopyNear = [];
+    const dSmooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+    function canopyAt(x, z) {
+      const near = trunkIndex.nearby(x, z, _canopyNear);
+      let best = Infinity;
+      for (const t of near) { const dx = t.x - x, dz = t.z - z; const d2 = dx * dx + dz * dz; if (d2 < best) best = d2; }
+      if (best === Infinity) return { dist: Infinity, weight: 0 };
+      return { dist: Math.sqrt(best), weight: 1 - dSmooth(0, canopyR2, best) };
+    }
+
+    // Placement tables derive keys/variantCounts straight from the palette so record variantIdx
+    // ranges stay in lockstep with the flat group list.
+    const rockTypeTable = rockPalette.types.map(t => ({
+      key: t.key, scree: t.scree, density: 1, variantCount: t.count,
+      sizeRange: t.scree ? [0.05, 0.28] : [0.3, 2.2], footprintScale: t.scree ? 0.5 : 0.8,
+    }));
+    const deadfallTypeTable = deadfallPalette.types.map(t => ({
+      key: t.key, kind: t.kind, decayClass: t.decayClass, density: 1, variantCount: t.count,
+      footprintScale: 0.7, nominalLength: 4,
+    }));
+    const surfaceFieldAt = loadedMap ? (x, z) => loadedMap.surfaceField(x, z) : null;
+    const rockParamsForRecords = () => ({
+      masterSeed: MASTER_SEED, waterLevel: terrain.waterLevel, rockTypeTable,
+      boulderDensity: params.boulderDensity, screeDensity: params.screeDensity,
+      rockGateStart: params.rockGateStart, rockGateEnd: params.rockGateEnd,
+    });
+    const deadfallParamsForRecords = () => ({
+      // distinct seed from rocks so the two scatters don't correlate (both hash chunk,seed).
+      masterSeed: MASTER_SEED + 0x0deadf, waterLevel: terrain.waterLevel, deadfallTypeTable,
+      logDensity: params.logDensity, stumpDensity: params.stumpDensity,
+      mushroomDensity: params.mushroomDensity, canopyMushWeight: 0.05,
+    });
+
+    // Build one chunk: rocks + deadfall records merged into a single dressing batch entry, and
+    // boulder/stump/log collision circles pushed into the dressing index under the chunk key
+    // (logs are short vs a chunk, so all a chunk's circles resolve within its 3x3 neighbourhood).
+    function buildDressingChunk(chunk) {
+      const rockRecs = rockPlacementRecords([chunk], rockParamsForRecords(), terrainHeight, surfaceFieldAt);
+      const dfRecs = deadfallPlacementRecords([chunk], deadfallParamsForRecords(), terrainHeight, surfaceFieldAt, canopyAt);
+      const circles = boulderCirclesFromRecords(rockRecs)
+        .concat(stumpCirclesFromRecords(dfRecs), logCirclesFromRecords(dfRecs));
+      dressingIndex.setTrunks(chunk.key, circles);
+      return toDressing(rockRecs, rockGroupOf, 'moisture').concat(toDressing(dfRecs, dfGroupOf, 'extra'));
+    }
+
+    // ---- windowed chunk streaming (same structure as the plants block above) ----
+    const dressingChunks = new Set();
+    function dressingChunksForPlacement() {
+      const chunkSize = mapChunkSize();
+      const radiusChunks = Math.floor(params.dressingRadiusChunks ?? 6);
+      if (loadedMap) return loadedMap.makeChunks(terrainFocus, radiusChunks, chunkSize);
+      const cx = Math.floor(terrainFocus.x / chunkSize);
+      const cz = Math.floor(terrainFocus.z / chunkSize);
+      const chunks = [];
+      for (let iz = cz - radiusChunks; iz <= cz + radiusChunks; iz++) {
+        for (let ix = cx - radiusChunks; ix <= cx + radiusChunks; ix++) {
+          const xMin = ix * chunkSize, zMin = iz * chunkSize;
+          chunks.push({ key: `${ix},${iz}`, xMin, zMin, size: chunkSize, centerX: xMin + chunkSize / 2, centerZ: zMin + chunkSize / 2 });
+        }
+      }
+      return chunks;
+    }
+    function dressingWindowKey() {
+      const chunkSize = mapChunkSize();
+      const radiusChunks = Math.floor(params.dressingRadiusChunks ?? 6);
+      let cx = Math.floor(terrainFocus.x / chunkSize);
+      let cz = Math.floor(terrainFocus.z / chunkSize);
+      if (loadedMap) {
+        const minIx = Math.floor((-loadedMap.worldX * 0.5) / chunkSize);
+        const maxIx = Math.ceil((loadedMap.worldX * 0.5) / chunkSize) - 1;
+        const minIz = Math.floor((-loadedMap.worldZ * 0.5) / chunkSize);
+        const maxIz = Math.ceil((loadedMap.worldZ * 0.5) / chunkSize) - 1;
+        cx = Math.max(minIx, Math.min(maxIx, cx));
+        cz = Math.max(minIz, Math.min(maxIz, cz));
+      }
+      return `${cx},${cz}:${radiusChunks}:${chunkSize}`;
+    }
+
+    const DRESSING_BUILD_BUDGET_MS = 2.5;
+    const DRESSING_BUILD_MAX_CHUNKS = 2; // rocks+deadfall per chunk is heavier than plants
+    let lastDressingWindowKey = '';
+    let dressingDesiredKeys = new Set();
+    let dressingBuildQueue = [];
+    const dressingQueuedKeys = new Set();
+    let dressingPendingClearKeys = [];
+
+    function enqueueDressingChunk(chunk) {
+      if (dressingChunks.has(chunk.key) || dressingQueuedKeys.has(chunk.key)) return;
+      dressingBuildQueue.push(chunk);
+      dressingQueuedKeys.add(chunk.key);
+    }
+    function syncDressingToFocus(rebuildExisting = false) {
+      const key = dressingWindowKey();
+      if (!rebuildExisting && key === lastDressingWindowKey) return;
+      lastDressingWindowKey = key;
+      const active = dressingChunksForPlacement().slice();
+      dressingDesiredKeys = new Set(active.map(c => c.key));
+      if (rebuildExisting) {
+        dressingPendingClearKeys.push(...dressingChunks);
+        dressingChunks.clear();
+        dressingBuildQueue = [];
+        dressingQueuedKeys.clear();
+      } else {
+        for (const k of [...dressingChunks]) {
+          if (!dressingDesiredKeys.has(k)) { dressingPendingClearKeys.push(k); dressingChunks.delete(k); }
+        }
+        if (dressingBuildQueue.length) {
+          dressingBuildQueue = dressingBuildQueue.filter(chunk => {
+            const keep = dressingDesiredKeys.has(chunk.key);
+            if (!keep) dressingQueuedKeys.delete(chunk.key);
+            return keep;
+          });
+        }
+      }
+      for (const chunk of active) enqueueDressingChunk(chunk);
+    }
+    function processDressingBuildQueue(drain = false) {
+      if (!dressingPendingClearKeys.length && !dressingBuildQueue.length) return;
+      const batch = new Map();
+      const t0 = performance.now();
+      let built = 0;
+      while (dressingBuildQueue.length) {
+        if (!drain && built >= DRESSING_BUILD_MAX_CHUNKS) break;
+        if (!drain && built > 0 && performance.now() - t0 >= DRESSING_BUILD_BUDGET_MS) break;
+        const chunk = dressingBuildQueue.shift();
+        dressingQueuedKeys.delete(chunk.key);
+        if (!dressingDesiredKeys.has(chunk.key) || dressingChunks.has(chunk.key)) continue;
+        batch.set(chunk.key, buildDressingChunk(chunk));
+        dressingChunks.add(chunk.key);
+        built++;
+      }
+      if (dressingPendingClearKeys.length || batch.size) {
+        const clearKeys = dressingPendingClearKeys;
+        dressingPendingClearKeys = [];
+        for (const k of clearKeys) dressingIndex.clearTrunks(k);
+        dressingGPU.setChunks(batch, clearKeys);
+      }
+    }
+    function regenerateDressingGPU(rebuildExisting) {
+      syncDressingToFocus(rebuildExisting);
+      processDressingBuildQueue(!!rebuildExisting);
+    }
+
+    const rawDressingUpdate = dressingGPU.update;
+    dressingGPU.update = async () => {
+      syncDressingToFocus(false);
+      processDressingBuildQueue(false);
+      return rawDressingUpdate();
+    };
+    regenerateDressingGPU(true);
+    regenDressing = (rebuildExisting = false) => regenerateDressingGPU(rebuildExisting);
+
+    const setCull = (cls, radius) => dressingGPU.setGroupCull(radius, { filter: (spec) => spec.cullClass === cls });
+    header('Dressing (rocks/deadfall)');
+    slider('boulderDensity', 'Boulder density', 0, 0.02, 0.0005, v => v.toFixed(4), () => regenerateDressingGPU(true));
+    slider('screeDensity', 'Scree density', 0, 0.6, 0.005, v => v.toFixed(3), () => regenerateDressingGPU(true));
+    slider('logDensity', 'Log density', 0, 0.02, 0.0005, v => v.toFixed(4), () => regenerateDressingGPU(true));
+    slider('stumpDensity', 'Stump density', 0, 0.02, 0.0005, v => v.toFixed(4), () => regenerateDressingGPU(true));
+    slider('mushroomDensity', 'Mushroom density', 0, 0.5, 0.005, v => v.toFixed(3), () => regenerateDressingGPU(true));
+    // Cull radius = draw distance for that class (live GPU-uniform tune, no rebuild). Keep each
+    // below the placement window's half-extent (dressingRadiusChunks * chunkSize) or the window
+    // edge clips it -- raise the window if you crank these.
+    slider('boulderCullRadius', 'Boulder range', 20, 800, 5, fi, () => setCull('boulder', params.boulderCullRadius));
+    slider('screeCullRadius', 'Scree range', 20, 400, 5, fi, () => setCull('scree', params.screeCullRadius));
+    slider('deadfallCullRadius', 'Log/stump range', 20, 700, 5, fi, () => setCull('deadwood', params.deadfallCullRadius));
+    slider('mushroomCullRadius', 'Mushroom range', 20, 400, 5, fi, () => setCull('mushroom', params.mushroomCullRadius));
+    slider('dressingRadiusChunks', 'Placement window (chunks)', 1, 40, 1, fi, () => regenerateDressingGPU(true));
+  }
+
   function reflectionDetailMeshes() {
     return [
       grassRef?.mesh,
       plantsGPURef?.meshes,
+      dressingGPURef?.meshes,
       // Forest mesh order is 8 per variant; slot 2 is the shadow-only L0 mesh.
       forestGPURef?.meshes?.filter((_, i) => i % 8 === 2),
       portCreatures?.system?.reflectionMeshes,
@@ -3312,7 +3825,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       skyRef.setCelestialType(params.primaryBody);
       applyCelestialLight();
     });
-    // All sky controls update IN PLACE — no rebuild/disposal (runtime rebuild races the
+    // All sky controls update IN PLACE â€” no rebuild/disposal (runtime rebuild races the
     // async WebGPU submit and crashes). Star size is omitted: WebGPU Points are 1px, so a
     // size slider would do nothing (sized stars need the Sprite+instancing path).
     slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS, 'SKY_PARAMS');
@@ -3321,7 +3834,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
   }
 }).catch(err => {
-  showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
+  showError('trees.js could not load (' + err.message + '). Serve both files over http:// â€” e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
 
 // ===================== camera orbit =====================
@@ -3365,7 +3878,7 @@ window.addEventListener('resize', () => {
   if (clusteredLightsRef) clusteredLightsRef.resize(renderer.domElement.width, renderer.domElement.height);
 });
 
-// ===================== FPS walk mode (analytic heightfield capsule collision — SP5a) =====================
+// ===================== FPS walk mode (analytic heightfield capsule collision â€” SP5a) =====================
 const STEPS_PER_FRAME = 5;
 
 playerCollider = new Capsule(
@@ -3380,7 +3893,7 @@ const _fpsForward = new THREE.Vector3();
 const _fpsSide = new THREE.Vector3();
 const _fpsDelta = new THREE.Vector3();
 
-// Tunable movement params — exposed via the debug panel below
+// Tunable movement params â€” exposed via the debug panel below
 const fp = {
   speedStand:  10,   speedCrouch: 5,   speedProne:  2,
   heightStand: 1.6,  heightCrouch: 0.6, heightProne: 0.1,
@@ -3388,7 +3901,7 @@ const fp = {
   runMultiplier: 1.8,
   sensitivity: 1060,
   airStrafe:   5.5,  airDamp:      4,
-  friction:    68,   // ground decel exponent — higher = stops faster
+  friction:    68,   // ground decel exponent â€” higher = stops faster
 };
 
 capsuleH = fp.heightStand;
@@ -3420,13 +3933,13 @@ let lgChargeStart = null;
   // Title bar: minimise button + drag handle (mirrors the Scene controls panel).
   const bar = document.createElement('div'); bar.id = 'fps-bar';
   bar.innerHTML = '<span class="ttl">Walk controls</span>';
-  const minBtn = document.createElement('button'); minBtn.id = 'fps-min'; minBtn.textContent = '–';
+  const minBtn = document.createElement('button'); minBtn.id = 'fps-min'; minBtn.textContent = 'â€“';
   bar.appendChild(minBtn);
   const body = document.createElement('div'); body.id = 'fps-body';
   panel.appendChild(bar); panel.appendChild(body);
   let current = body;   // fpHeader() switches this to the active section's body
 
-  minBtn.addEventListener('click', () => { minBtn.textContent = panel.classList.toggle('min') ? '+' : '–'; });
+  minBtn.addEventListener('click', () => { minBtn.textContent = panel.classList.toggle('min') ? '+' : 'â€“'; });
 
   let drag = null;
   bar.addEventListener('pointerdown', e => {
@@ -3446,7 +3959,7 @@ let lgChargeStart = null;
   function fpHeader(text) {
     const sec = document.createElement('div'); sec.className = 'sec collapsed';
     const head = document.createElement('div'); head.className = 'sec-head';
-    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">â–¾</span>';
     const secBody = document.createElement('div'); secBody.className = 'sec-body';
     head.addEventListener('click', () => sec.classList.toggle('collapsed'));
     sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
@@ -3567,7 +4080,7 @@ lgChargeRing.className = 'walk-ui';
 lgChargeRing.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);border-radius:50%;border:1.5px solid rgba(255,255,255,0.7);pointer-events:none;box-sizing:border-box;display:none';
 document.body.appendChild(lgChargeRing);
 function lgUpdateChargeRing(ratio) {
-  if (ratio <= 0 || !fpsMode || lgParams.mode !== 'shoot') { lgChargeRing.style.display = 'none'; return; }
+  if (ratio <= 0 || !fpsMode || lgParams.mode !== 'shoot' || toolIdFor(localPlayerId()) !== LIGHT_TOOL_ID) { lgChargeRing.style.display = 'none'; return; }
   const size = Math.round(16 + ratio * 36);
   const g = Math.round(255 * (1 - ratio) + 140 * ratio);
   lgChargeRing.style.display = 'block';
@@ -3576,16 +4089,139 @@ function lgUpdateChargeRing(ratio) {
   lgChargeRing.style.borderColor = `rgba(255,${g},0,0.85)`;
 }
 
+function toolOptions() {
+  return [{ id: LIGHT_TOOL_ID, label: 'Light gun' }, ...enabledWeapons().map(w => ({ id: w.id, label: w.displayName }))];
+}
+function localReplicatedPlayer() {
+  const id = localPlayerId();
+  if (mpRole === 'guest') return (mpLatestState?.players ?? []).find(p => p.id === id) ?? null;
+  const player = getLocalPlayerState(id);
+  return player ? mergePlayerCombatFields(player) : null;
+}
+function localHudState() {
+  const id = localPlayerId();
+  const snap = localReplicatedPlayer();
+  const tool = snap?.tool ?? toolIdFor(id);
+  const weapon = snap?.weapon ?? weaponIdFor(id);
+  const weaponDef = getWeapon(weapon);
+  const ammo = tool === LIGHT_TOOL_ID
+    ? { mag: '∞', reserve: '', magazineSize: null }
+    : { mag: snap?.ammoMag ?? ensureAmmo(id, weapon).mag, reserve: snap?.ammoReserve ?? ensureAmmo(id, weapon).reserve, magazineSize: snap?.magazineSize ?? ensureAmmo(id, weapon).magazineSize };
+  return {
+    tool,
+    weapon,
+    weaponName: tool === LIGHT_TOOL_ID ? 'Light gun' : (weaponDef?.displayName ?? weapon),
+    hp: snap?.hp ?? 100,
+    maxHp: snap?.maxHp ?? 100,
+    alive: snap?.alive !== false,
+    ammo,
+  };
+}
+
+const combatHud = document.createElement('div');
+combatHud.className = 'walk-ui';
+combatHud.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:42;min-width:190px;color:#d7dde7;font:12px/1.35 system-ui,sans-serif;pointer-events:none;display:none';
+combatHud.innerHTML = '<div style="height:6px;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.18);margin-bottom:7px"><div id="combat-hp-fill" style="height:100%;width:100%;background:#61d394"></div></div><div id="combat-hp" style="font-weight:600"></div><div id="combat-weapon" style="color:#aeb7c4;margin-top:2px"></div><div id="combat-ammo" style="font:18px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;margin-top:4px"></div>';
+document.body.appendChild(combatHud);
+const combatHpFill = combatHud.querySelector('#combat-hp-fill');
+const combatHpText = combatHud.querySelector('#combat-hp');
+const combatWeaponText = combatHud.querySelector('#combat-weapon');
+const combatAmmoText = combatHud.querySelector('#combat-ammo');
+let lastReticleSig = '';
+updateReticle = () => {
+  const s = localHudState();
+  const lowAmmo = s.tool !== LIGHT_TOOL_ID && Number(s.ammo.mag) <= 0;
+  const sig = `${s.tool}:${lowAmmo}:${s.alive}`;
+  if (sig === lastReticleSig) return;
+  lastReticleSig = sig;
+  const stroke = !s.alive ? 'rgba(255,96,96,.85)' : lowAmmo ? 'rgba(255,180,80,.9)' : 'rgba(255,255,255,.78)';
+  crosshair.innerHTML = s.tool === LIGHT_TOOL_ID
+    ? `<svg viewBox="0 0 28 28"><circle cx="14" cy="14" r="7" fill="none" stroke="${stroke}" stroke-width="1.4"/><path d="M14 3v5M14 20v5M3 14h5M20 14h5" stroke="${stroke}" stroke-width="1.4" stroke-linecap="round"/></svg>`
+    : `<svg viewBox="0 0 28 28"><circle cx="14" cy="14" r="2" fill="${stroke}"/><path d="M14 4v6M14 18v6M4 14h6M18 14h6" stroke="${stroke}" stroke-width="1.35" stroke-linecap="round"/></svg>`;
+};
+updateCombatHud = () => {
+  const s = localHudState();
+  combatHud.style.display = fpsMode ? 'block' : 'none';
+  if (!fpsMode) return;
+  const hpPct = Math.max(0, Math.min(1, s.hp / Math.max(1, s.maxHp)));
+  combatHpFill.style.width = `${Math.round(hpPct * 100)}%`;
+  combatHpFill.style.background = hpPct > 0.5 ? '#61d394' : hpPct > 0.25 ? '#e8c060' : '#e15f5f';
+  combatHpText.textContent = `${Math.round(s.hp)} / ${Math.round(s.maxHp)} HP`;
+  combatWeaponText.textContent = s.weaponName;
+  combatAmmoText.textContent = s.tool === LIGHT_TOOL_ID ? '∞' : `${s.ammo.mag} / ${s.ammo.reserve}`;
+  updateReticle();
+};
+
+const toolRadial = document.createElement('div');
+toolRadial.className = 'walk-ui';
+toolRadial.style.cssText = 'position:fixed;inset:0;z-index:70;display:none;pointer-events:none;font:12px/1.2 system-ui,sans-serif;color:#d7dde7';
+document.body.appendChild(toolRadial);
+let toolRadialOpen = false;
+let radialMoveX = 0, radialMoveY = 0;
+function renderToolRadial() {
+  const options = toolOptions();
+  const active = selectedRadialTool ?? toolIdFor(localPlayerId());
+  toolRadial.innerHTML = '<div style="position:absolute;left:50%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:rgba(255,255,255,.72)"></div>';
+  options.forEach((opt, i) => {
+    const a = -Math.PI / 2 + (i / options.length) * Math.PI * 2;
+    const x = Math.cos(a) * 92;
+    const y = Math.sin(a) * 92;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opt.label;
+    btn.dataset.tool = opt.id;
+    btn.style.cssText = `position:absolute;left:calc(50% + ${x}px);top:calc(50% + ${y}px);transform:translate(-50%,-50%);min-width:86px;padding:8px 10px;border-radius:8px;border:1px solid ${opt.id === active ? 'rgba(255,216,120,.9)' : 'rgba(255,255,255,.2)'};background:${opt.id === active ? 'rgba(70,58,26,.92)' : 'rgba(18,22,28,.9)'};color:#d7dde7;font:12px system-ui,sans-serif;pointer-events:auto`;
+    btn.addEventListener('mousedown', e => { e.preventDefault(); selectedRadialTool = opt.id; closeToolRadial(true); });
+    toolRadial.appendChild(btn);
+  });
+}
+function openToolRadial() {
+  toolRadialOpen = true;
+  selectedRadialTool = toolIdFor(localPlayerId());
+  radialMoveX = 0; radialMoveY = 0;
+  toolRadial.style.display = 'block';
+  renderToolRadial();
+}
+function updateToolRadialByMovement(e) {
+  if (!toolRadialOpen) return;
+  radialMoveX += e.movementX || 0;
+  radialMoveY += e.movementY || 0;
+  const dist = Math.hypot(radialMoveX, radialMoveY);
+  if (dist < 14) return;
+  const options = toolOptions();
+  const angle = Math.atan2(radialMoveY, radialMoveX) + Math.PI / 2;
+  const norm = (angle + Math.PI * 2) % (Math.PI * 2);
+  const idx = Math.round(norm / (Math.PI * 2) * options.length) % options.length;
+  selectedRadialTool = options[idx].id;
+  renderToolRadial();
+}
+function closeToolRadial(commit) {
+  if (!toolRadialOpen) return;
+  toolRadialOpen = false;
+  toolRadial.style.display = 'none';
+  if (commit && selectedRadialTool) selectLocalTool(selectedRadialTool);
+  selectedRadialTool = null;
+}
+function selectLocalTool(toolId) {
+  const id = localPlayerId();
+  const selected = setPlayerTool(id, toolId);
+  if (selected !== LIGHT_TOOL_ID) { setPlayerWeapon(id, selected); lgChargeStart = null; }
+  viewHands?.setTool(selected);
+  localWeaponView?.setTool(selected);
+  updateCombatHud();
+  updateReticle();
+}
+
 const enterHint = document.createElement('div');
 enterHint.className = 'walk-ui';
 enterHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center';
-enterHint.textContent = 'F → walk mode  \xb7  R reset  \xb7  H hide GUI';
+enterHint.textContent = 'F walk mode | R reset | H hide GUI';
 document.body.appendChild(enterHint);
 
 const exitHint = document.createElement('div');
 exitHint.className = 'walk-ui';
 exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
-exitHint.textContent = 'WASD  \xb7  Shift run  \xb7  Space jump  \xb7  LMB shoot/place light  \xb7  Q free cursor  \xb7  R reset  \xb7  F/Esc orbit';
+exitHint.textContent = 'WASD | LMB use tool | E tools | R reload | Q cursor | F/Esc orbit';
 document.body.appendChild(exitHint);
 
 const cursorFreeHint = document.createElement('div');
@@ -3594,7 +4230,20 @@ cursorFreeHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:tr
 cursorFreeHint.textContent = 'Cursor free \xb7 click menus/HUD \xb7 Q or click view to resume';
 document.body.appendChild(cursorFreeHint);
 
-environmentUi = createEnvironmentUi({ perfLog });
+environmentUi = createEnvironmentUi({
+  perfLog,
+  audio: envAudio,
+  sliderState: {
+    capture: captureSliderState,
+    apply: applySliderState,
+    list: listSliderStates,
+    save: saveSliderState,
+    remove: deleteSliderState,
+  },
+});
+// Re-open the previously granted SFX folder handle (if the browser still allows it) so the
+// Audio tab shows loaded events on reload without a fresh folder pick.
+envAudio.restoreSfxFolder();
 worldModels = createWorldModelPanel({
   scene,
   camera,
@@ -3602,12 +4251,148 @@ worldModels = createWorldModelPanel({
   isWalkMode: () => fpsMode,
 });
 
+function createLocalWeaponViewModel(camera) {
+  const loader = new GLTFLoader();
+  const group = new THREE.Group();
+  group.visible = false;
+  camera.add(group);
+  const cache = new Map();
+  const box = new THREE.Box3();
+  const size = new THREE.Vector3();
+  let visible = false;
+  let currentTool = LIGHT_TOOL_ID;
+  let currentObject = null;
+  let recoilT = 0;
+  let t = 0;
+  let loadToken = 0;
+  const fallbackMat = new THREE.MeshBasicMaterial({ color: 0x343a42, depthTest: true, depthWrite: true });
+  const fallbackDarkMat = new THREE.MeshBasicMaterial({ color: 0x0b0f13, depthTest: true, depthWrite: true });
+  const fallbackLensMat = new THREE.MeshBasicMaterial({ color: 0x087391, depthTest: true, depthWrite: true });
+
+  function boxMesh(size, pos, mat = fallbackMat) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), mat);
+    mesh.position.set(pos[0], pos[1], pos[2]);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 10000;
+    return mesh;
+  }
+  function fallbackWeapon(weaponId) {
+    const g = new THREE.Group();
+    if (weaponId === 'm24') {
+      g.add(boxMesh([0.18, 0.10, 0.52], [0.02, -0.02, 0.12]));
+      g.add(boxMesh([0.055, 0.055, 0.82], [0.00, 0.00, -0.52], fallbackDarkMat));
+      g.add(boxMesh([0.13, 0.13, 0.42], [0.02, 0.14, -0.05], fallbackDarkMat));
+      g.add(boxMesh([0.16, 0.16, 0.035], [0.02, 0.14, -0.28], fallbackLensMat));
+      g.add(boxMesh([0.07, 0.20, 0.12], [0.08, -0.18, 0.16], fallbackDarkMat));
+    } else {
+      g.add(boxMesh([0.18, 0.075, 0.30], [0.00, 0.02, -0.05]));
+      g.add(boxMesh([0.075, 0.055, 0.17], [0.00, 0.025, -0.28], fallbackDarkMat));
+      g.add(boxMesh([0.12, 0.025, 0.12], [0.00, 0.075, -0.06], fallbackDarkMat));
+      const grip = boxMesh([0.085, 0.22, 0.10], [0.055, -0.13, 0.08], fallbackDarkMat);
+      grip.rotation.x = -0.30;
+      g.add(grip);
+    }
+    return g;
+  }
+
+  function clearCurrent() {
+    if (currentObject) group.remove(currentObject);
+    currentObject = null;
+  }
+  function normalizeObject(obj, weaponId) {
+    obj.updateMatrixWorld(true);
+    box.setFromObject(obj);
+    box.getSize(size);
+    if (size.x >= size.y && size.x >= size.z) obj.rotation.y = Math.PI * 0.5;
+    else if (size.y >= size.x && size.y >= size.z) obj.rotation.x = Math.PI * 0.5;
+    obj.updateMatrixWorld(true);
+    box.setFromObject(obj);
+    box.getSize(size);
+    const longest = Math.max(size.x, size.y, size.z, 1e-6);
+    const weapon = getWeapon(weaponId);
+    const target = weapon?.viewTargetSize ?? (weaponId === 'm24' ? 1.05 : 0.62);
+    obj.scale.multiplyScalar(target / longest);
+    obj.updateMatrixWorld(true);
+    box.setFromObject(obj);
+    const center = box.getCenter(new THREE.Vector3());
+    obj.position.sub(center);
+  }
+  function applyToolTransform(dt = 0, speed = 0) {
+    const weapon = getWeapon(currentTool);
+    if (!weapon || currentTool === LIGHT_TOOL_ID) { group.visible = false; return; }
+    t += dt;
+    recoilT = Math.max(0, recoilT - dt);
+    const offset = weapon.viewOffset ?? [0.22, -0.18, -0.42];
+    const rot = weapon.viewRotation ?? [0, Math.PI, 0];
+    const sway = Math.sin(t * Math.PI * 4.4) * Math.min(0.035, speed * 0.004);
+    const bob = Math.sin(t * Math.PI * 2.2) * 0.006;
+    const kick = recoilT / 0.16;
+    group.position.set(offset[0] + sway * 0.2, offset[1] + bob + kick * 0.025, offset[2] + kick * 0.08);
+    group.rotation.set(rot[0] + kick * 0.05, rot[1], rot[2] + sway * 0.08);
+    group.visible = visible && !!currentObject;
+  }
+  async function loadTool(toolId) {
+    const token = ++loadToken;
+    clearCurrent();
+    currentTool = toolId;
+    if (toolId === LIGHT_TOOL_ID) { group.visible = false; return; }
+    const weapon = getWeapon(toolId);
+    if (!weapon) { group.visible = false; return; }
+    currentObject = fallbackWeapon(toolId);
+    currentObject.scale.multiplyScalar(weapon.viewScale ?? 1);
+    group.add(currentObject);
+    applyToolTransform(0, 0);
+    if (weapon.viewUseModel === false || !weapon.model) return;
+    try {
+      let template = cache.get(toolId);
+      if (!template) {
+        const gltf = await loader.loadAsync(weapon.model);
+        template = gltf.scene;
+        normalizeObject(template, toolId);
+        template.traverse(o => {
+          if (o.isMesh) {
+            o.frustumCulled = false;
+            o.castShadow = false;
+            o.receiveShadow = false;
+            o.renderOrder = 10000;
+            if (o.material) {
+              const mats = Array.isArray(o.material) ? o.material : [o.material];
+              for (const mat of mats) { mat.depthTest = true; mat.depthWrite = true; }
+            }
+          }
+        });
+        cache.set(toolId, template);
+      }
+      if (token !== loadToken) return;
+      clearCurrent();
+      currentObject = template.clone(true);
+      currentObject.scale.multiplyScalar(weapon.viewScale ?? 1);
+      group.add(currentObject);
+      applyToolTransform(0, 0);
+    } catch (err) {
+      console.warn('[guns] failed to load weapon model', toolId, err);
+      if (token === loadToken) applyToolTransform(0, 0);
+    }
+  }
+  return {
+    setVisible(v) { visible = !!v; applyToolTransform(0, 0); },
+    setTool(toolId) { loadTool(toolId); },
+    recoil() { recoilT = 0.16; },
+    update(dt, { speed = 0 } = {}) { applyToolTransform(dt, speed); },
+    destroy() { clearCurrent(); camera.remove(group); },
+  };
+}
+
 // First-person orb-hand viewmodel (your own two hands, visible only in FPS mode).
 // Tinted to match your own remote ghost via the shared playerTintHSL helper. The
 // camera must be in the scene graph for its viewmodel children to be rendered.
 scene.add(camera);
-const viewHands = createViewHands(camera, THREE);
+viewHands = createViewHands(camera, THREE);
+localWeaponView = createLocalWeaponViewModel(camera);
 function localPlayerId() { return mpRole === 'guest' ? (mpClientId || 'guest') : 'host'; }
+setPlayerTool(localPlayerId(), DEFAULT_GUN_ID);
+viewHands.setTool(toolIdFor(localPlayerId()));
+localWeaponView.setTool(toolIdFor(localPlayerId()));
 viewHands.setTint(playerTintHSL(localPlayerId()));
 
 function resetPlayerPosition(resetLook = true) {
@@ -3642,27 +4427,37 @@ function enterFPS() {
   fpsMode = true;
   camera.fov = 70; camera.updateProjectionMatrix();
   viewHands.setTint(playerTintHSL(localPlayerId()));
+  viewHands.setTool(toolIdFor(localPlayerId()));
   viewHands.setVisible(true);
+  localWeaponView?.setTool(toolIdFor(localPlayerId()));
+  localWeaponView?.setVisible(true);
   crosshair.style.display = 'block';
+  combatHud.style.display = 'block';
   exitHint.style.display = 'block';
   enterHint.style.display = 'none';
+  envAudio.play('vr_drive_on');
 }
 
 function exitFPS() {
   fpsMode = false;
   fpsCursorFree = false;
   document.body.classList.remove('cursor-free');
+  closeToolRadial(false);
   viewHands.setVisible(false);
+  localWeaponView?.setVisible(false);
+  combatHud.style.display = 'none';
   target.set(playerCollider.end.x, playerCollider.end.y - capsuleH * 0.5, playerCollider.end.z);
   camera.fov = 50; camera.updateProjectionMatrix();
   crosshair.style.display = 'none';
   exitHint.style.display = 'none';
   cursorFreeHint.style.display = 'none';
   enterHint.style.display = 'block';
+  envAudio.play('vr_drive_off');
 }
 
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === renderer.domElement) {
+    envAudio.noteGesture();
     fpsCursorFree = false;
     document.body.classList.remove('cursor-free');
     enterFPS();
@@ -3691,19 +4486,21 @@ function resumeFromCursorFree() {
 }
 
 document.addEventListener('mousemove', e => {
+  if (toolRadialOpen) { updateToolRadialByMovement(e); return; }
   if (!fpsMode || fpsCursorFree) return;
   camera.rotation.y -= e.movementX / fp.sensitivity;
   camera.rotation.x -= e.movementY / fp.sensitivity;
 });
 
 window.addEventListener('keydown', e => {
+  envAudio.noteGesture();
   fpsKeys[e.code] = true;
-  if (e.repeat && ['KeyF', 'KeyQ', 'KeyH', 'KeyR', 'KeyC', 'KeyZ', 'KeyM'].includes(e.code)) return;
+  if (e.repeat && ['KeyF', 'KeyQ', 'KeyH', 'KeyR', 'KeyE', 'KeyC', 'KeyZ', 'KeyM'].includes(e.code)) return;
   if (e.code === 'KeyM') {
     worldMapOverlay.toggle();
     // Freeze the first-person view and free the cursor while the map is open; closing resumes.
-    if (worldMapOverlay.isOpen()) { if (fpsMode) enterCursorFree(); }
-    else if (fpsCursorFree) resumeFromCursorFree();
+    if (worldMapOverlay.isOpen()) { envAudio.play('map_menu_open'); if (fpsMode) enterCursorFree(); }
+    else { envAudio.play('map_menu_close'); if (fpsCursorFree) resumeFromCursorFree(); }
     e.preventDefault();
   }
   if (e.code === 'Escape') {
@@ -3717,8 +4514,8 @@ window.addEventListener('keydown', e => {
     }
   }
   if (e.code === 'KeyQ') {
-    if (fpsCursorFree) resumeFromCursorFree();
-    else if (fpsMode) enterCursorFree();
+    if (fpsCursorFree) { envAudio.play('pause_close'); resumeFromCursorFree(); }
+    else if (fpsMode) { envAudio.play('pause_open'); enterCursorFree(); }
     e.preventDefault();
   }
   if (e.code === 'KeyH') {
@@ -3726,7 +4523,12 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
   }
   if (e.code === 'KeyR') {
-    resetPosition();
+    if (fpsMode) reloadGun();
+    else { envAudio.play('vr_model_snap'); resetPosition(); }
+    e.preventDefault();
+  }
+  if (e.code === 'KeyE' && fpsMode) {
+    openToolRadial();
     e.preventDefault();
   }
   if (e.code === 'KeyF') {
@@ -3740,32 +4542,150 @@ window.addEventListener('keydown', e => {
     if (e.code === 'KeyZ') stance = stance === 'prone'  ? 'stand' : 'prone';
   }
 });
-window.addEventListener('keyup', e => { fpsKeys[e.code] = false; });
+window.addEventListener('keyup', e => {
+  fpsKeys[e.code] = false;
+  if (e.code === 'KeyE' && toolRadialOpen) {
+    closeToolRadial(true);
+    e.preventDefault();
+  }
+});
+window.addEventListener('contextmenu', e => {
+  if (fpsMode && e.target === renderer.domElement) e.preventDefault();
+});
 
 window.addEventListener('mousedown', e => {
+  envAudio.noteGesture();
   if (fpsCursorFree) {
     // Clicking the 3D view resumes walking; clicks on HUD/menus fall through to the DOM.
     if (e.button === 0 && e.target === renderer.domElement) resumeFromCursorFree();
     return;
   }
-  if (!fpsMode || e.button !== 0) return;
+  if (!fpsMode || toolRadialOpen) return;
+  if (e.button !== 0) return;
   if (worldModels?.handlePrimaryDown?.()) {
     e.preventDefault();
+    return;
+  }
+  useSelectedToolPrimaryDown();
+});
+window.addEventListener('mouseup', e => {
+  if (!fpsMode || e.button !== 0) return;
+  useSelectedToolPrimaryUp();
+});
+
+
+// ---- player gun helpers ----
+function applyCombatIntent(intent, ownerId) {
+  if (!intent || typeof intent !== 'object') return null;
+  const shooterBase = getKnownPlayerState(ownerId);
+  if (!shooterBase) return null;
+  const nowMs = performance.now();
+  const requestedWeapon = isEnabledGun(intent.weapon) ? intent.weapon : weaponIdFor(ownerId);
+  const weaponId = setPlayerWeapon(ownerId, requestedWeapon);
+  setPlayerTool(ownerId, weaponId);
+  const weapon = getWeapon(weaponId);
+  if (!weapon || weapon.disabled || weapon.mode !== 'hitscan') return null;
+
+  if (intent.action === 'gun.reload') {
+    reloadAmmo(ownerId, weaponId);
+    return { ok: true, action: 'gun.reload' };
+  }
+  if (intent.action !== 'gun.fire') return null;
+
+  const ammo = ensureAmmo(ownerId, weaponId);
+  if (ammo.mag <= 0) return { ok: false, reason: 'no-ammo' };
+  const shooter = mergePlayerCombatFields({ ...shooterBase, id: ownerId, weapon: weaponId, tool: weaponId }, nowMs);
+  const shotIntent = { ...intent, weapon: weaponId };
+  const lastShot = playerShotState.get(ownerId);
+  const validation = validateShot({ shooter, weapon, intent: shotIntent, nowMs, lastShot });
+  if (!validation.ok) return { ok: false, reason: validation.reason };
+  if (!consumeAmmo(ownerId, weaponId)) return { ok: false, reason: 'no-ammo' };
+
+  playerShotState.set(ownerId, { at: nowMs, shotSeq: shotIntent.shotSeq });
+  rememberPlayerPose(shooter, nowMs);
+
+  // A remote (guest-relayed) shot arriving on the host: sound it positionally at the
+  // shooter. The host's own shot already played its non-positional report in
+  // fireGunFromCamera, so skip 'host' here to avoid a double.
+  if (ownerId !== 'host') {
+    envAudio.playAt(weaponFireEvent(weaponId), audioPos(shooter.p), undefined, positionalSfxProfiles.gunshot);
+  }
+
+  const hit = findPlayerHit({
+    shooterId: ownerId,
+    players: currentCombatPlayers(nowMs),
+    origin: shotIntent.origin,
+    dir: shotIntent.dir,
+    range: weapon.range,
+  });
+  if (hit) {
+    playerCombat.applyDamage({
+      targetId: hit.targetId,
+      amount: weapon.damage,
+      source: 'gun',
+      attackerId: ownerId,
+      hitPoint: hit.point,
+      weaponId,
+    });
+    // Positional impact at the hit point; a local-player hit also gets the self damage cue.
+    envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+    if (hit.targetId === 'host') envAudio.play('player_damage');
+  }
+  updateHostPlayerGhosts();
+  return { ok: true, hit };
+}
+
+function fireGunFromCamera() {
+  if (!fpsMode || fpsCursorFree) return;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const id = localPlayerId();
+  const weaponId = weaponIdFor(id);
+  const intent = {
+    type: 'combat_intent',
+    action: 'gun.fire',
+    weapon: weaponId,
+    shotSeq: ++localGunShotSeq,
+    origin: [camera.position.x, camera.position.y, camera.position.z],
+    dir: [dir.x, dir.y, dir.z],
+    clientTime: performance.now(),
+  };
+  const result = mpRole === 'guest' ? (mpSession?.sendInput(intent), { ok: true }) : applyCombatIntent(intent, 'host');
+  if (result?.ok) {
+    viewHands.recoil(); localWeaponView?.recoil();
+    // Own shot: non-positional weapon report. Hit/damage SFX are handled host-side in
+    // applyCombatIntent (which runs locally here for host/solo).
+    envAudio.play(weaponFireEvent(weaponId));
+  }
+}
+function reloadGun() {
+  const id = localPlayerId();
+  const weaponId = weaponIdFor(id);
+  const intent = { type: 'combat_intent', action: 'gun.reload', weapon: weaponId };
+  if (mpRole === 'guest') mpSession?.sendInput(intent);
+  else applyCombatIntent(intent, 'host');
+  updateCombatHud();
+}
+function useSelectedToolPrimaryDown() {
+  const id = localPlayerId();
+  const tool = toolIdFor(id);
+  if (tool !== LIGHT_TOOL_ID) {
+    fireGunFromCamera();
     return;
   }
   if (!clusteredLightsRef) return;
   if (lgParams.mode === 'place') { lgPlaceAtCrosshair(); viewHands.recoil(); }
   else lgChargeStart = performance.now();
-});
-window.addEventListener('mouseup', e => {
-  if (!fpsMode || e.button !== 0 || lgParams.mode !== 'shoot' || lgChargeStart === null) return;
+}
+function useSelectedToolPrimaryUp() {
+  if (toolIdFor(localPlayerId()) !== LIGHT_TOOL_ID) return;
+  if (lgParams.mode !== 'shoot' || lgChargeStart === null) return;
   const ratio = Math.min((performance.now() - lgChargeStart) / LG_MAX_CHARGE_MS, 1);
   lgChargeStart = null;
   lgUpdateChargeRing(0);
   lgFireLight(ratio);
   viewHands.recoil();
-});
-
+}
 
 // ---- light gun helpers ----
 function lgRaycastTerrain() {
@@ -3796,12 +4716,12 @@ function lgParamsPacket() {
     radius: lgClampNumber(lgParams.radius, 30, 0.1, 200),
   };
 }
-// Host/solo-local validated intent handler. Guests never call this directly —
+// Host/solo-local validated intent handler. Guests never call this directly â€”
 // they emit the same intent shape over the wire (mpSession.sendInput) and the
 // host applies it here via the mp:guest_input 'entity_intent' branch. Params
 // are re-normalized (not trusted from the wire) via entity-types/light.js's
-// normalizeParamsPacket, which entityRegistry.create('light'|'projectile', …)
-// also applies internally — double-normalizing is idempotent and cheap.
+// normalizeParamsPacket, which entityRegistry.create('light'|'projectile', â€¦)
+// also applies internally â€” double-normalizing is idempotent and cheap.
 function applyLightIntent(intent, ownerId) {
   if (!intent || typeof intent !== 'object') return null;
   const now = performance.now() / 1000;
@@ -3830,6 +4750,7 @@ function applyLightIntent(intent, ownerId) {
 function lgPlaceAtCrosshair() {
   const hit = lgRaycastTerrain();
   if (!hit.hit) return;
+  envAudio.playAt('vr_light_spawn', { x: hit.x, y: hit.y, z: hit.z }, undefined, positionalSfxProfiles.spawn);
   const intent = { type: 'entity_intent', action: 'light.place', pos: [hit.x, hit.y, hit.z], params: lgParamsPacket() };
   if (mpRole === 'guest') mpSession?.sendInput(intent);
   else applyLightIntent(intent, 'host');
@@ -3837,6 +4758,7 @@ function lgPlaceAtCrosshair() {
 function lgFireLight(chargeRatio) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
+  envAudio.playAt('beam_quick', camera.position, undefined, positionalSfxProfiles.minor);
   const intent = {
     type: 'entity_intent',
     action: 'light.fire',
@@ -3856,7 +4778,7 @@ function applyFPSControls(deltaTime) {
   _fpsSide.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
 
   if (playerOnFloor) {
-    // Direct velocity set — responsive, no momentum build-up fighting damping
+    // Direct velocity set â€” responsive, no momentum build-up fighting damping
     const running = stance === 'stand' && (fpsKeys['ShiftLeft'] || fpsKeys['ShiftRight']);
     const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)] * (running ? fp.runMultiplier : 1);
     let mx = 0, mz = 0;
@@ -3920,6 +4842,14 @@ function updateFPSPlayer(deltaTime) {
   if (tr.pushed) {
     playerCollider.translate(_trunkPush.set(tr.x - playerCollider.start.x, 0, tr.z - playerCollider.start.z));
   }
+  // Dressing solids (boulders/stumps/logs) live in their own index; resolve against it too so
+  // the capsule can't clip a boulder. Scree and mushrooms register no circles (walkable).
+  if (dressingIndexRef) {
+    const dr = dressingIndexRef.resolve(playerCollider.start.x, playerCollider.start.z, playerCollider.radius);
+    if (dr.pushed) {
+      playerCollider.translate(_trunkPush.set(dr.x - playerCollider.start.x, 0, dr.z - playerCollider.start.z));
+    }
+  }
   // Lerp capsule height toward current stance, then pin end above start.
   const targetH = fp['height' + stance[0].toUpperCase() + stance.slice(1)];
   capsuleH += (targetH - capsuleH) * Math.min(1, deltaTime * 12);
@@ -3929,7 +4859,7 @@ function updateFPSPlayer(deltaTime) {
 }
 
 function lgUpdateLights(dt, t) {
-  // Guest never ticks the registry (host-authoritative) — it renders straight
+  // Guest never ticks the registry (host-authoritative) â€” it renders straight
   // off the interpolated wire upserts synced to the binder in the guest
   // session's onState callback (see mpSession = createGuestSession(...)).
   if (mpRole === 'guest') return;
@@ -3962,7 +4892,7 @@ async function resolveFrameTimestamps() {
 async function animate() {
   // setAnimationLoop does NOT await this async callback. If a frame's compute/render work
   // outlasts the vsync interval, the loop re-enters animate() concurrently and the two
-  // overlapping submits recycle each other's command/internal buffers → WebGPU
+  // overlapping submits recycle each other's command/internal buffers â†’ WebGPU
   // "Buffer used in submit while destroyed" (worst at night/look-up, the heaviest sky
   // frames). Serialize: drop any vsync that arrives while a frame is still in flight.
   if (_frameBusy) { frameProfiler.markDropped(); return; }
@@ -3998,22 +4928,41 @@ async function animate() {
   }
   if (fpsMode && !fpsCursorFree) {
     const fpsDt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
+    // Grounded state before the physics substeps, so landing/jump SFX fire only on a
+    // false<->true transition rather than every frame the player rests on the floor.
+    const wasOnFloor = playerOnFloor;
     for (let i = 0; i < STEPS_PER_FRAME; i++) {
       applyFPSControls(fpsDt);
       updateFPSPlayer(fpsDt);
     }
+    // Jump: left the ground this frame while holding Space (standing). Landing: touched down.
+    if (wasOnFloor && !playerOnFloor && fpsKeys['Space'] && stance === 'stand') envAudio.play('jump');
+    else if (!wasOnFloor && playerOnFloor) envAudio.play('landing');
     updateTerrainWindow(playerCollider.end);
-    const lgCharge = (lgChargeStart !== null && lgParams.mode === 'shoot')
+    const lgCharge = (lgChargeStart !== null && lgParams.mode === 'shoot' && toolIdFor(localPlayerId()) === LIGHT_TOOL_ID)
       ? Math.min((now - lgChargeStart) / LG_MAX_CHARGE_MS, 1) : 0;
-    viewHands.update(rawDt, { speed: Math.hypot(playerVelocity.x, playerVelocity.z), charge: lgCharge });
+    const walkSpeed = Math.hypot(playerVelocity.x, playerVelocity.z);
+    // Footstep cadence: accumulate ground distance and play once per stride (longer when running).
+    if (playerOnFloor && walkSpeed > 0.5) {
+      footstepDist += walkSpeed * rawDt;
+      const stride = (fpsKeys['ShiftLeft'] || fpsKeys['ShiftRight']) ? 2.4 : 1.7;
+      if (footstepDist >= stride) { footstepDist = 0; envAudio.play('footstep'); }
+    } else {
+      footstepDist = 0;
+    }
+    viewHands.update(rawDt, { speed: walkSpeed, charge: lgCharge });
+    localWeaponView?.update(rawDt, { speed: walkSpeed });
   } else if (!fpsMode) {
     // Cursor-free (fpsMode && fpsCursorFree) freezes the view: neither walk nor orbit runs.
     applyCamera();
     updateTerrainWindow(target);
   }
+  // Web Audio listener + music/speaker positional update, after the camera/player moved.
+  envAudio.update(now);
   worldModels?.update?.();
   syncMultiplayerPlayer(now);
   updateMultiplayerFinder();
+  updateCombatHud();
   mpGhostRenderer?.tick(now);
   });
   frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
@@ -4025,11 +4974,12 @@ async function animate() {
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
   if (grassRef) await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
-  // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
+  // SP6: GPU forest cullâ†’indirect compute, awaited before draw (like grass/cdlod).
   if (forestGPURef) await frameProfiler.timeAsync('forestGpu', () => forestGPURef.update());
   if (plantsGPURef) await frameProfiler.timeAsync('plantsGpu', () => plantsGPURef.update());
-  // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
-  // written before this frame's draw (unawaited compute races the draw → terrain flicker).
+  if (dressingGPURef) await frameProfiler.timeAsync('dressingGpu', () => dressingGPURef.update());
+  // SP3: CDLOD selectâ†’indirect compute, awaited like grass so the indirect instanceCount is
+  // written before this frame's draw (unawaited compute races the draw â†’ terrain flicker).
   if (cdlodRef) await frameProfiler.timeAsync('cdlodGpu', () => cdlodRef.update());
   // Light gun: update physics/fade/expiry, flush to GPU buffer before cull pass
   lgUpdateLights(rawDt, now / 1000);
@@ -4056,7 +5006,7 @@ async function animate() {
     computeFrameCalls: renderer.info.compute.frameCalls,
   };
   await frameProfiler.timeAsync('timestampResolve', () => resolveFrameTimestamps());
-  // Drain queued sky disposals here — after this frame's submit and inside the frame guard,
+  // Drain queued sky disposals here â€” after this frame's submit and inside the frame guard,
   // so the detached objects are never freed while a submit still references them.
   if (skyRef) skyRef.flushDisposals();
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
@@ -4067,10 +5017,12 @@ async function animate() {
   updatePerfPanel(frameEnd);
   } finally { _frameBusy = false; }
 }
-setStatus('Loading world systems…');
+setStatus('Loading world systemsâ€¦');
 await nextPaint();
 await _forestPromise;
 await Promise.all([_grassPromise, _waterPromise, _cloudsPromise, _skyPromise]);
+if (presetName) applySliderState(listSliderStates()[presetName]?.values);
+gameplayActive = true;
 dismiss();
 renderer.setAnimationLoop(animate);
 </script>

@@ -4,7 +4,7 @@
 
 ## Purpose
 
-`environment-viewer.html` (2854 lines) is the single `<script type="module">` that boots the
+`environment-viewer.html` (4350 lines) is the single `<script type="module">` that boots the
 WebGPU sandbox: it sets up the renderer/scene/camera, loads ~20 subsystem modules (terrain,
 forest, grass, water, sky/clouds, lighting, particles, post-fx, creature sim, multiplayer,
 debug UI), wires their per-frame `update()` calls into one `requestAnimationFrame`-equivalent
@@ -42,10 +42,12 @@ CDN-pinned three@0.184.0, served from jsDelivr:
 | `{ kindParams }` from `./particle-field.js` | particle species presets |
 | `{ createFrameProfiler }` from `./frame-profiler.js` | per-stage CPU/GPU timing used by the render loop |
 | `{ createEnvironmentUi }` from `./environment-ui.js` | mounts the debug/perf UI (see Mode flags / UI integration below) |
+| `{ createEnvironmentAudio, positionalSfxProfiles }` from `./environment-audio.js` | Web Audio controller (SFX/music) injected into the UI and driven by viewer events (see Audio integration below) |
 | `{ loadTerrainMap }` from `./terrain-loader.js` | loads an authored map (`?map=...`) |
 | `{ showStartScreen }` from `./start-screen.js` | pre-renderer map/multiplayer picker, gates everything below it |
 | `{ createMapCollider }` from `./map-collision.js` | BVH collider for authored map meshes |
 | `{ createHostSession, createGuestSession, GhostRenderer }` from `./multiplayer.js` | netcode session + remote-player rendering |
+| `{ listStates, saveState, deleteState }` from `./slider-state.js` (aliased `listSliderStates`/`saveSliderState`/`deleteSliderState`) | named `localStorage`-backed slider-preset storage, shared with `start-screen.js` |
 
 ### Lazy `await import(...)` calls
 
@@ -64,6 +66,8 @@ CDN-pinned three@0.184.0, served from jsDelivr:
 | 2038 | `./water.js?v=reflection-controls-1` | always, inside forest promise (`_waterPromise`) | `reflection-controls-1` — tags the new reflection-tuning sliders (matches commit `740e406 feat(water): add reflection tuning controls`) |
 | 2082 | `./clouds.js` | always, inside forest promise (`_cloudsPromise`) | — |
 | 2156 | `./sky.js?v=sp6d` | `SKY_MODE !== 'off'` (`_skyPromise`) | `sp6d` — SP6 milestone tag, sub-revision d |
+| ~2979 | `./plants.js` + `./plants-placement.js` + `./grass-anchors.js` + `./plants-gpu.js` | `PLANTS_MODE === 'gpu'` (default) | `variation-*-1` on plants/placement/gpu |
+| ~3170 | `./rocks.js` + `./rocks-placement.js` + `./deadfall.js` + `./deadfall-placement.js` + `./dressing-gpu.js` | `DRESSING_MODE === 'gpu'` (default) — rocks + deadfall on the shared `dressing-gpu.js` host | `dressing-wire-1` on all five |
 
 Notably, the forest/grass/water/clouds/sky setup (trees, palette bake, billboard cache, UI
 sliders for each) all live **nested inside the single `_forestPromise.then(async ...)` callback**
@@ -75,9 +79,13 @@ the trees module load rather than fired in parallel from the top.
 
 1. **Importmap + static imports** resolve (lines 26–51).
 2. **Mode flags** read from `URLSearchParams` (lines 55–63): `GRASS_MODE`, `GRASS_RECULL_MODE`,
-   `FOREST_MODE`, `CREATURE_MODE`, `TIMESTAMP_MODE`.
-3. `await showStartScreen()` (line 67) — blocks on map/multiplayer-role selection UI; returns
-   `{ mapKey, mpRole, roomCode, setStatus, dismiss }`. Nothing else runs until the user picks.
+   `FOREST_MODE`, `CREATURE_MODE`, `TIMESTAMP_MODE`. (Also read further down, at their blocks:
+   `PLANTS_MODE` (default `'gpu'`) and `DRESSING_MODE` (default `'gpu'`, gates the shared
+   rocks/deadfall `dressing-gpu.js` block).
+3. `await showStartScreen()` (line 128) — blocks on map/multiplayer-role selection UI; returns
+   `{ mapKey, mpRole, roomCode, mpWorldMode, presetName, setStatus, dismiss }`. `presetName` is the
+   name chosen from the role-select screen's "Load preset" dropdown (`null` for "None"). Nothing
+   else runs until the user picks.
 4. **Renderer setup** (lines 77–98): query `navigator.gpu` adapter limits (so the grass survivor
    storage buffer can exceed the default 128 MB binding), construct `WebGPURenderer`, set
    pixel ratio/size/shadow map, `await renderer.init()`, create `scene`.
@@ -101,13 +109,17 @@ the trees module load rather than fired in parallel from the top.
     panel as it resolves.
 13. **Camera orbit controls** wired (drag/scroll/resize, lines 2178–2217).
 14. **FPS walk mode + light gun** state, panel, and input handlers (lines 2219–2530+).
-15. `environmentUi = createEnvironmentUi({ perfLog })` (line 2452) mounts the separate debug/perf
-    panel from `environment-ui.js`.
-16. **`animate()` defined** (line 2755) but not yet started.
-17. Final gate (lines 2845–2850): `setStatus('Loading world systems…')` →
+15. `environmentUi = createEnvironmentUi({ perfLog, sliderState })` (line 3859) mounts the separate
+    debug/perf panel and the Presets tab from `environment-ui.js`.
+16. **`animate()` defined** but not yet started.
+17. Final gate (lines 4341–4346): `setStatus('Loading world systems…')` →
     `await _forestPromise` → `await Promise.all([_grassPromise, _waterPromise, _cloudsPromise, _skyPromise])`
+    → if `presetName` was set from the start screen, `applySliderState(listSliderStates()[presetName]?.values)`
     → `dismiss()` (closes the start-screen overlay) → `renderer.setAnimationLoop(animate)` starts
-    the render loop — this is the first rendered frame.
+    the render loop — this is the first rendered frame. This is the earliest point every
+    slider/select/toggle control — including the ones built inside the async grass/water/clouds/sky
+    sub-promises — is guaranteed to have finished registering itself into `controlRegistry` (see
+    "Slider state presets" below).
 
 ## Per-frame render loop
 
@@ -187,10 +199,97 @@ read in depth for this doc) — it is documented to use orbit-style camera inter
 creature sandbox; this WebGPU `environment-viewer.html` is the only place in this repo with the
 FPS pointer-lock walk mode and light-gun controls.
 
+## Slider state presets
+
+Every control built via the `slider()`/`select()`/`toggle()` factories (Forest, Lighting,
+Terrain/Water, Post FX, Grass, Clouds, Sky sections — everything in the "Scene controls"/`#ctrl`
+panel) self-registers into a module-level `controlRegistry` array as it's built:
+`{ name, obj, key, sync, onChange }`, where `name` is `'<objName>.<key>'` (`objName` defaults to
+`'params'`; the `rigP`/`terrain`/`SKY_PARAMS` slider calls pass it explicitly).
+
+- `captureSliderState()` reads `obj[key]` off every registered control into a flat
+  `{ [name]: value }` object.
+- `applySliderState(values)` writes matching values back into each control's `obj[key]`, calls
+  its `sync()` to update the DOM widget, then fires each distinct `onChange` handler once
+  (deduped by function identity, since many sliders in one group share a handler like
+  `worldRebuild`) so the live subsystem picks up the change.
+
+`controlRegistry` itself is declared very early (immediately after the mp/light-entity state
+block, ~line 106) rather than alongside `captureSliderState`/`applySliderState` (~line 1553),
+specifically to dodge a TDZ crash: a multiplayer guest's `onState` handler can fire mid-module-init
+(during a top-level `await`, e.g. the clustered-lights import) and reads `controlRegistry`
+indirectly through `applySharedWorldSettings` before module eval would otherwise reach its
+declaration. `captureSliderState`/`applySliderState` are declared at the top level of the module
+(immediately before `_forestPromise`) rather than inside it, so they're reachable both from inside
+the promise chain (where the controls are registered) and from the `createEnvironmentUi(...)` call
+site and the final startup gate (where they're consumed) — `slider()`/`select()`/`toggle()`
+themselves are defined inside `_forestPromise`'s callback and close over the outer
+`controlRegistry`.
+
+The multiplayer shared-world-settings sync (`captureSharedWorldSettings`/`applySharedWorldSettings`,
+also declared near `captureSliderState`/`applySliderState`) reuses the same registry, filtered to
+`terrain.*`/`params.*` entries, to replicate host terrain/world tuning to guests in `mpWorldMode
+=== 'shared'` sessions — see `multiplayer.md`.
+
+Consumers: the Presets tab in `environment-ui.js` (save/load/delete UI, via the `sliderState`
+object) and the start screen's "Load preset" dropdown (`presetName`, applied once, at the final
+startup gate, before `dismiss()`).
+
 ## UI integration point
 
-`environment-ui.js`'s `createEnvironmentUi({ perfLog })` is called once, at line 2452, after all
-other panels exist; it mounts the separate debug/perf-readout panel (covered in `infra.md`). The
-"Scene controls" (`#ctrl`) and "Walk controls" (`#fps`) panels, by contrast, are built **inline**
-in this file (the `header()`/`slider()`/`select()`/`toggle()` closures around lines 1507–1574 and
-the FPS panel construction around line 2273+) — they are not part of `environment-ui.js`.
+`environment-ui.js`'s `createEnvironmentUi({ perfLog, sliderState })` is called once, at line
+3859, after all other panels exist; it mounts the separate debug/perf-readout panel plus the
+Presets tab (covered in `infra.md`). The "Scene controls" (`#ctrl`) and "Walk controls" (`#fps`)
+panels, by contrast, are built **inline** in this file (the `header()`/`slider()`/`select()`/
+`toggle()` closures around lines 1507–1574 and the FPS panel construction around line 2273+) —
+they are not part of `environment-ui.js`.
+
+## Audio integration
+
+`environment-audio.js`'s `createEnvironmentAudio(options)` controller (module contract lives in
+`infra.md`) is instantiated once, right after the `camera` is created, as `envAudio`. Options
+passed by the viewer:
+
+- `THREE`, `scene`, `camera` — shared instances (no module globals).
+- `getPlayerPosition: () => playerCollider ? playerCollider.end : camera.position` — the
+  first-person capsule top once the player spawns, else the orbit camera.
+- `isGameplayActive: () => gameplayActive` — a viewer flag flipped `true` just before
+  `dismiss()` (music picks `music_game` vs `music_menu`).
+- `workletUrl: './music-pitch-processor.js?v=1'`.
+
+`envAudio` is passed into `createEnvironmentUi({ audio: envAudio, ... })`, which builds the Audio
+tab entirely from the controller. `envAudio.restoreSfxFolder()` runs right after UI creation to
+re-open a previously granted SFX folder handle.
+
+Gesture/lifecycle hooks (Web Audio needs a user gesture to unlock, and the listener must track
+the camera):
+
+- `envAudio.noteGesture()` — called from the `keydown`, `mousedown`, and pointer-lock-entry
+  (`pointerlockchange` → locked) handlers.
+- `envAudio.update(now)` — called once per frame in `animate()` **after** the FPS
+  player/camera movement block, so the audio listener and speaker orb use the current camera pose.
+
+### Event → SFX map
+
+Non-positional self/UI events use `envAudio.play(id)`; world events use
+`envAudio.playAt(id, pos, undefined, positionalSfxProfiles.<profile>)` (positions may be plain
+`[x,y,z]` arrays wrapped by the local `audioPos()` helper, or `{x,y,z}`/`Vector3`).
+
+| Trigger | Event | Site |
+|---|---|---|
+| `KeyM` map open / close | `map_menu_open` / `map_menu_close` | keydown handler |
+| `KeyQ` cursor-free toggle | `pause_open` / `pause_close` | keydown handler |
+| First-person enter / exit | `vr_drive_on` / `vr_drive_off` | `enterFPS()` / `exitFPS()` |
+| `KeyR` reset (orbit only) | `vr_model_snap` | keydown handler (`else` branch) |
+| Light placement | `vr_light_spawn` (positional, `spawn`) | `lgPlaceAtCrosshair()` |
+| Light projectile fire | `beam_quick` (positional, `minor`) | `lgFireLight()` |
+| Local hitscan shot | `machinegun_shoot` / `sniper_shoot` (self) | `fireGunFromCamera()` on `result.ok` |
+| Hit registered | `enemy_hit` (positional, `minor`); `player_damage` if the local host is hit | `applyCombatIntent()` |
+| Remote (guest→host) shot | `weaponFireEvent()` (positional, `gunshot`) at the shooter | `applyCombatIntent()` when `ownerId !== 'host'` |
+| Remote shot (guest view) | `weaponFireEvent()` (positional, `gunshot`), once per `fireSeq` increment | guest `onState` (via `mpRemoteFireSeq`) |
+| Jump | `jump` | `animate()`, on grounded→airborne while holding Space |
+| Landing | `landing` | `animate()`, on airborne→grounded transition (`wasOnFloor`) |
+| Footstep | `footstep` | `animate()`, velocity-timed via `footstepDist` stride threshold |
+
+`weaponFireEvent(weaponId)` maps `m24 → sniper_shoot`, everything else → `machinegun_shoot`.
+Unassigned event IDs (no `sound-map.json` entry) simply no-op, so partial maps are fine.

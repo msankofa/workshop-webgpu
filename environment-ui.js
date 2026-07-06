@@ -191,7 +191,7 @@ function installStyle() {
     }
     .wui-tabs {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(8, minmax(0, 1fr));
       border-bottom: 1px solid var(--wui-line);
       background: rgba(255,255,255,0.035);
     }
@@ -443,7 +443,8 @@ function installStyle() {
       accent-color: var(--wui-accent);
     }
     #workshop-ui select,
-    #workshop-ui input[type=number] {
+    #workshop-ui input[type=number],
+    #workshop-ui input[type=text] {
       background: #20252d !important;
       color: var(--wui-text) !important;
       border: 1px solid var(--wui-line) !important;
@@ -540,11 +541,31 @@ function installStyle() {
       .wui-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .wui-tab { font-size: 11px; }
     }
+    .wui-seg-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 7px 0;
+    }
+    .wui-seg {
+      border: 1px solid var(--wui-line);
+      border-radius: 5px;
+      background: #20252d;
+      color: var(--wui-muted);
+      padding: 4px 9px;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .wui-seg.active {
+      color: var(--wui-text);
+      background: rgba(119, 200, 161, 0.14);
+      border-color: rgba(119, 200, 161, 0.42);
+    }
   `;
   document.head.appendChild(style);
 }
 
-export function createEnvironmentUi({ perfLog } = {}) {
+export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
   installStyle();
 
   const shell = makeEl('aside');
@@ -559,6 +580,8 @@ export function createEnvironmentUi({ perfLog } = {}) {
     ['effects', 'Effects'],
     ['walk', 'Walk'],
     ['perf', 'Perf'],
+    ['presets', 'Presets'],
+    ['audio', 'Audio'],
   ];
   const tabButtons = new Map(tabDefs.map(([id, label]) => {
     const btn = makeTab(id, label);
@@ -583,6 +606,8 @@ export function createEnvironmentUi({ perfLog } = {}) {
   const creaturesHost = panelEls.get('creatures');
   const modelsHost = panelEls.get('models');
   const perfHost = panelEls.get('perf');
+  const presetsHost = panelEls.get('presets');
+  const audioHost = panelEls.get('audio');
   sceneHost.id = 'scene-section-host';
   effectsHost.id = 'effects-section-host';
   modelsHost.id = 'models-section-host';
@@ -635,6 +660,9 @@ export function createEnvironmentUi({ perfLog } = {}) {
   mountObserver.observe(document.body, { childList: true, subtree: false });
 
   buildPerfPanel(perfHost, perfLog);
+  buildPresetsPanel(presetsHost, sliderState);
+  if (audio) buildAudioPanel(audioHost, audio);
+  else audioHost.appendChild(makeEl('div', 'wui-empty', 'Audio controller unavailable.'));
 
   return {
     activate,
@@ -812,4 +840,289 @@ function buildPerfPanel(host, perfLog) {
     }
     refreshCapture();
   };
+}
+
+function buildPresetsPanel(host, sliderState) {
+  if (!sliderState) {
+    host.appendChild(makeEl('div', 'wui-empty', 'Preset saving unavailable.'));
+    return;
+  }
+
+  const saveCard = makeEl('div', 'wui-card');
+  saveCard.appendChild(makeEl('div', 'wui-card-title', 'Save current sliders'));
+  const saveBody = makeEl('div', 'wui-card-body wui-capture');
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'State name';
+  nameInput.style.flex = '1 1 140px';
+  nameInput.style.minWidth = '0';
+  const saveBtn = makeEl('button', '', 'Save');
+  saveBody.append(nameInput, saveBtn);
+  saveCard.appendChild(saveBody);
+
+  const listCard = makeEl('div', 'wui-card');
+  listCard.appendChild(makeEl('div', 'wui-card-title', 'Saved states'));
+  const listBody = makeEl('div', 'wui-card-body');
+  listCard.appendChild(listBody);
+
+  host.append(saveCard, listCard);
+
+  function fmtAgo(iso) {
+    const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.round(hrs / 24)}d ago`;
+  }
+
+  function renderList() {
+    listBody.innerHTML = '';
+    const entries = Object.entries(sliderState.list());
+    if (entries.length === 0) {
+      listBody.appendChild(makeEl('div', 'wui-empty', 'No saved states yet.'));
+      return;
+    }
+    entries.sort((a, b) => b[1].savedAt.localeCompare(a[1].savedAt));
+    for (const [name, entry] of entries) {
+      const row = makeEl('div', 'wui-capture');
+      row.style.marginBottom = '6px';
+      const label = makeEl('span', '', `${name} · ${fmtAgo(entry.savedAt)}`);
+      label.style.flex = '1 1 100%';
+      const loadBtn = makeEl('button', '', 'Load');
+      const delBtn = makeEl('button', '', 'Delete');
+      loadBtn.addEventListener('click', () => sliderState.apply(entry.values));
+      delBtn.addEventListener('click', () => { sliderState.remove(name); renderList(); });
+      row.append(label, loadBtn, delBtn);
+      listBody.appendChild(row);
+    }
+  }
+
+  saveBtn.addEventListener('click', () => {
+    const name = nameInput.value.trim();
+    if (!name) return;
+    const existing = sliderState.list();
+    if (existing[name] && !window.confirm(`Overwrite saved state "${name}"?`)) return;
+    sliderState.save(name, sliderState.capture());
+    nameInput.value = '';
+    renderList();
+  });
+
+  renderList();
+}
+
+// Expected `audio.getState()` shape (see docs/subsystems/infra.md for the authoritative copy):
+//   {
+//     masterVolume, musicVolume, sfxVolume,       // 0..1
+//     masterMuted, musicMuted, sfxMuted,          // bool
+//     musicOutput,                                // 'global' | 'speaker'
+//     speakerBehavior,                             // 'front' | 'behind' | 'orbit' | 'above'
+//     effects: { bass, echo, reverb, attenuation, tempo, pitch },
+//     sfxFolderStatus,                             // display string, e.g. "142 events loaded"
+//     currentTrackLabel,                           // display string
+//     musicPlaying,                                // bool
+//   }
+const AUDIO_EFFECT_DEFS = [
+  ['bass', 'Bass', 0, 1, 0.01, 0, v => `${Math.round(v * 100)}%`],
+  ['echo', 'Echo', 0, 1, 0.01, 0, v => `${Math.round(v * 100)}%`],
+  ['reverb', 'Reverb', 0, 1, 0.01, 0, v => `${Math.round(v * 100)}%`],
+  ['attenuation', 'Attenuation', 0, 1, 0.01, 0, v => `${Math.round(v * 100)}%`],
+  ['tempo', 'Tempo', 0.5, 2, 0.01, 1, v => `${Number(v).toFixed(2)}x`],
+  ['pitch', 'Pitch', -12, 12, 1, 0, v => `${v > 0 ? '+' : ''}${v} st`],
+];
+
+function buildAudioPanel(host, audio) {
+  // Keyboard/pointer input inside this panel must not leak to the viewer's global
+  // shortcut handlers (KeyM/KeyQ/KeyF/etc. attached at window/document level).
+  for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'pointerup', 'pointermove', 'click']) {
+    host.addEventListener(type, e => e.stopPropagation());
+  }
+
+  function makeSlider(id, label, min, max, step, initial, format) {
+    const field = makeEl('div', 'wui-field');
+    const span = makeEl('span', '', label);
+    const output = document.createElement('output');
+    output.id = `${id}-out`;
+    output.textContent = format(initial);
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.id = id;
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(initial);
+    field.append(span, output, input);
+    return { field, input, output, format };
+  }
+
+  function makeCheck(id, label, initial) {
+    const row = makeEl('div', 'wui-check');
+    const span = makeEl('span', '', label);
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = id;
+    input.checked = !!initial;
+    row.append(span, input);
+    return { row, input };
+  }
+
+  function makeSegGroup(idPrefix, options) {
+    const group = makeEl('div', 'wui-seg-group');
+    group.id = `${idPrefix}-group`;
+    const buttons = new Map();
+    for (const [value, label] of options) {
+      const btn = makeEl('button', 'wui-seg', label);
+      btn.type = 'button';
+      btn.id = `${idPrefix}-${value}`;
+      btn.dataset.value = value;
+      group.appendChild(btn);
+      buttons.set(value, btn);
+    }
+    function setActive(value) {
+      for (const [v, btn] of buttons) btn.classList.toggle('active', v === value);
+    }
+    return { group, buttons, setActive };
+  }
+
+  // --- SFX folder ------------------------------------------------------
+  const folderCard = makeEl('div', 'wui-card');
+  folderCard.appendChild(makeEl('div', 'wui-card-title', 'SFX folder'));
+  const folderBody = makeEl('div', 'wui-card-body');
+  const folderActions = makeEl('div', 'wui-actions');
+  const pickBtn = makeEl('button', 'wui-btn primary', 'Choose SFX folder…');
+  pickBtn.id = 'audio-sfx-pick';
+  const restoreBtn = makeEl('button', 'wui-btn', 'Restore last folder');
+  restoreBtn.id = 'audio-sfx-restore';
+  folderActions.append(pickBtn, restoreBtn);
+  const status = makeEl('div', 'wui-status', 'No SFX folder loaded.');
+  status.id = 'audio-sfx-status';
+  folderBody.append(folderActions, status);
+  folderCard.appendChild(folderBody);
+
+  pickBtn.addEventListener('click', () => audio.pickSfxFolder?.());
+  restoreBtn.addEventListener('click', () => audio.restoreSfxFolder?.());
+
+  // --- Volume + mute -----------------------------------------------------
+  const volumeCard = makeEl('div', 'wui-card');
+  volumeCard.appendChild(makeEl('div', 'wui-card-title', 'Volume'));
+  const volumeBody = makeEl('div', 'wui-card-body');
+  const volumeDefs = [
+    ['master', 'Master'],
+    ['music', 'Music'],
+    ['sfx', 'SFX'],
+  ];
+  const volumeSliders = new Map();
+  const muteChecks = new Map();
+  for (const [kind, label] of volumeDefs) {
+    const slider = makeSlider(`audio-vol-${kind}`, label, 0, 1, 0.01, 1, v => `${Math.round(v * 100)}%`);
+    slider.input.addEventListener('input', () => {
+      slider.output.textContent = slider.format(Number(slider.input.value));
+      audio.setVolume?.(kind, Number(slider.input.value));
+    });
+    volumeBody.appendChild(slider.field);
+    volumeSliders.set(kind, slider);
+
+    const check = makeCheck(`audio-mute-${kind}`, `Mute ${label.toLowerCase()}`, false);
+    check.input.addEventListener('change', () => audio.setMuted?.(kind, check.input.checked));
+    volumeBody.appendChild(check.row);
+    muteChecks.set(kind, check);
+  }
+  volumeCard.appendChild(volumeBody);
+
+  // --- Output -------------------------------------------------------------
+  const outputCard = makeEl('div', 'wui-card');
+  outputCard.appendChild(makeEl('div', 'wui-card-title', 'Music output'));
+  const outputBody = makeEl('div', 'wui-card-body');
+  const outputSeg = makeSegGroup('audio-output', [['global', 'Global'], ['speaker', 'Speaker']]);
+  outputBody.appendChild(outputSeg.group);
+  const behaviorLabel = makeEl('div', 'wui-row');
+  behaviorLabel.innerHTML = '<span>Speaker behavior</span>';
+  outputBody.appendChild(behaviorLabel);
+  const behaviorSeg = makeSegGroup('audio-speaker', [
+    ['front', 'Front'],
+    ['behind', 'Behind'],
+    ['orbit', 'Orbit'],
+    ['above', 'Above'],
+  ]);
+  outputBody.appendChild(behaviorSeg.group);
+  outputCard.appendChild(outputBody);
+
+  for (const [value, btn] of outputSeg.buttons) {
+    btn.addEventListener('click', () => {
+      audio.setMusicOutput?.(value);
+      outputSeg.setActive(value);
+    });
+  }
+  for (const [value, btn] of behaviorSeg.buttons) {
+    btn.addEventListener('click', () => {
+      audio.setMusicSpeakerBehavior?.(value);
+      behaviorSeg.setActive(value);
+    });
+  }
+
+  // --- Music effects --------------------------------------------------------
+  const fxCard = makeEl('div', 'wui-card');
+  fxCard.appendChild(makeEl('div', 'wui-card-title', 'Music processing'));
+  const fxBody = makeEl('div', 'wui-card-body');
+  const fxSliders = new Map();
+  for (const [key, label, min, max, step, initial, format] of AUDIO_EFFECT_DEFS) {
+    const slider = makeSlider(`audio-fx-${key}`, label, min, max, step, initial, format);
+    slider.input.addEventListener('input', () => {
+      const value = Number(slider.input.value);
+      slider.output.textContent = slider.format(value);
+      audio.setMusicEffect?.(key, value);
+    });
+    fxBody.appendChild(slider.field);
+    fxSliders.set(key, slider);
+  }
+  fxCard.appendChild(fxBody);
+
+  // --- Track controls (optional playlist browsing) ---------------------------
+  const trackCard = makeEl('div', 'wui-card');
+  trackCard.appendChild(makeEl('div', 'wui-card-title', 'Track'));
+  const trackBody = makeEl('div', 'wui-card-body wui-capture');
+  const trackLabel = makeEl('span', '', 'No track playing');
+  trackLabel.id = 'audio-track-label';
+  trackLabel.style.flex = '1 1 100%';
+  const prevBtn = makeEl('button', '', '⏮');
+  prevBtn.id = 'audio-track-prev';
+  const playBtn = makeEl('button', '', '▶');
+  playBtn.id = 'audio-track-play';
+  const nextBtn = makeEl('button', '', '⏭');
+  nextBtn.id = 'audio-track-next';
+  trackBody.append(trackLabel, prevBtn, playBtn, nextBtn);
+  trackCard.appendChild(trackBody);
+
+  prevBtn.addEventListener('click', () => audio.prevTrack?.());
+  playBtn.addEventListener('click', () => audio.togglePlayback?.());
+  nextBtn.addEventListener('click', () => audio.nextTrack?.());
+
+  host.append(folderCard, volumeCard, outputCard, fxCard, trackCard);
+
+  function refresh(state) {
+    if (!state) return;
+    for (const [kind, slider] of volumeSliders) {
+      const value = Number(state[`${kind}Volume`] ?? 1);
+      slider.input.value = String(value);
+      slider.output.textContent = slider.format(value);
+    }
+    for (const [kind, check] of muteChecks) {
+      check.input.checked = !!state[`${kind}Muted`];
+    }
+    outputSeg.setActive(state.musicOutput ?? 'global');
+    behaviorSeg.setActive(state.speakerBehavior ?? 'front');
+    const effects = state.effects || {};
+    for (const [key, slider] of fxSliders) {
+      if (!(key in effects)) continue;
+      const value = Number(effects[key]);
+      slider.input.value = String(value);
+      slider.output.textContent = slider.format(value);
+    }
+    status.textContent = state.sfxFolderStatus || 'No SFX folder loaded.';
+    trackLabel.textContent = state.currentTrackLabel || 'No track playing';
+    playBtn.textContent = state.musicPlaying ? '⏸' : '▶';
+  }
+
+  refresh(audio.getState?.());
+  audio.subscribe?.(refresh);
 }

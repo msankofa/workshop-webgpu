@@ -18,8 +18,9 @@ multiplayer relay from one dashboard.
 | File | Responsibility | Lines |
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 126 |
-| `environment-ui.js` | Builds the tabbed `#workshop-ui` shell (Scene/Creatures/Effects/Walk/Perf tabs), re-parents existing DOM panels into it, and builds the read-only "Perf" tab content (live metrics, frame-stage bars, capture controls, raw debug feed). | 648 |
+| `environment-ui.js` | Builds the tabbed `#workshop-ui` shell (Scene/Creatures/Models/Effects/Walk/Perf/Presets/Audio tabs), re-parents existing DOM panels into it, builds the read-only "Perf" tab content (live metrics, frame-stage bars, capture controls, raw debug feed), builds the "Presets" tab (save/load/delete named slider states via a `sliderState` object passed into `createEnvironmentUi`), and builds the "Audio" tab (SFX folder + volume/mute/output/effects/track controls) when an `audio` controller is passed in. | 1065 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
+| `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
 | `server-tool.html` | Browser dashboard served by `server-tool.py`; exposes Start/Restart/Stop/Clear controls, useful launch links, and live logs for each managed server. | 296 |
 
@@ -40,24 +41,122 @@ Returns:
 - `snapshot(prefixMap = DEFAULT_PREFIXES, opts = {})` â€” flattens latest (or, with `{ smooth: true }`, EMA-smoothed) values into an object keyed by the prefix map's mapped names (e.g. `passCreaturesMs`, `gpuGrassMs`), plus a derived `passGpuAwaitMs` (sum of the awaited GPU-bound passes: grass/forest/cdlod/lights/particles/post) and `droppedFrames`.
 - `reset()` â€” clears all maps and the dropped-frame counter.
 
-Pass names tracked: `sky, terrainWindow, creatures, water, hud, grassGpu, forestGpu, cdlodGpu, lightsGpu, particlesGpu, postRender, timestampResolve` (`DEFAULT_NAMES`). GPU-only counters add `computeTotal` and `renderTotal`.
+Pass names tracked: `sky, terrainWindow, creatures, water, hud, grassGpu, forestGpu, plantsGpu, dressingGpu, cdlodGpu, lightsGpu, particlesGpu, postRender, timestampResolve` (`DEFAULT_NAMES`). GPU-only counters add `computeTotal` and `renderTotal`. `dressingGpu` (snapshot key `passDressingMs`) is the CPU await for the shared rocks/deadfall `dressing-gpu.js` host and folds into `passGpuAwaitMs`; it has a CPU-await prefix only (no GPU-timestamp bucket).
 
 `timestampResolve` â†’ `passTimestampResolveMs` measures the wall-clock cost of `resolveFrameTimestamps()` (the awaited `renderer.resolveTimestampsAsync(...)` calls, only active when `TIMESTAMP_MODE==='on'`). It's zeroed by `beginFrame()` like every other pass, so it reads `0` when timestamps are off. Before this was tracked, that cost (observed ~20ms in timestamps-on captures) was folded silently into `cpuMs` with no corresponding pass column, making `cpuMs` look larger than the sum of all profiled passes.
 
 ### `environment-ui.js`
 
 ```js
-export function createEnvironmentUi({ perfLog } = {})
+export function createEnvironmentUi({ perfLog, sliderState, audio } = {})
 ```
 
 Builds and appends the `#workshop-ui` `<aside>` to `document.body`, installs its stylesheet once (`#workshop-ui-style`), and returns:
-- `activate(tabId)` â€” switches the active tab (`scene | creatures | effects | walk | perf`).
+- `activate(tabId)` â€” switches the active tab (`scene | creatures | models | effects | walk | perf | presets | audio`).
 - `updatePerf` â€” bound to the internal `host._updatePerf(snapshot)` function built in `buildPerfPanel`; renders one perf-log snapshot into the Perf tab (metrics, sparkline, scene-figures rows, per-stage timing bars, capture button state).
+
+`sliderState` (optional) is `{ capture(), apply(values), list(), save(name, values), remove(name) }`,
+supplied by `environment-viewer.html` (`capture`/`apply` wrap its module-level slider registry;
+`list`/`save`/`remove` are re-exported from `slider-state.js`). When omitted, the Presets tab
+renders a "Preset saving unavailable" placeholder instead of the save/load UI.
+
+`buildPresetsPanel(host, sliderState)` (internal, not exported) builds the Presets tab: a "Save
+current sliders" card (name input + Save button, with an overwrite confirmation if the name
+already exists) and a "Saved states" card listing every saved name with a relative timestamp,
+a Load button (`sliderState.apply`), and a Delete button (`sliderState.remove`).
+
+`audio` (optional) is an `environment-audio.js`-shaped controller: `{ getState(), subscribe(listener),
+pickSfxFolder(), restoreSfxFolder(), setVolume(kind, value), setMuted(kind, muted),
+setMusicOutput(mode), setMusicSpeakerBehavior(mode), setMusicEffect(key, value) }`, with `kind` âˆˆ
+`{master, music, sfx}`, output `mode` âˆˆ `{global, speaker}`, and speaker behavior âˆˆ
+`{front, behind, orbit, above}`. When omitted, the Audio tab renders an "Audio controller
+unavailable" placeholder instead.
+
+`buildAudioPanel(host, audio)` (internal, not exported) builds the Audio tab:
+- **SFX folder** card â€” `#audio-sfx-pick` (calls `audio.pickSfxFolder()`), `#audio-sfx-restore`
+  (calls `audio.restoreSfxFolder()`), and a `#audio-sfx-status` status line.
+- **Volume** card â€” one slider + mute checkbox per `kind` âˆˆ `{master, music, sfx}`: sliders
+  `#audio-vol-master` / `#audio-vol-music` / `#audio-vol-sfx` (0..1, call `audio.setVolume(kind, v)`)
+  and checkboxes `#audio-mute-master` / `#audio-mute-music` / `#audio-mute-sfx` (call
+  `audio.setMuted(kind, checked)`).
+- **Music output** card â€” a segmented control `#audio-output-group` with buttons
+  `#audio-output-global` / `#audio-output-speaker` (call `audio.setMusicOutput(mode)`), and a
+  speaker-behavior segmented control `#audio-speaker-group` with buttons `#audio-speaker-front` /
+  `#audio-speaker-behind` / `#audio-speaker-orbit` / `#audio-speaker-above` (call
+  `audio.setMusicSpeakerBehavior(mode)`).
+- **Music processing** card â€” sliders `#audio-fx-bass`, `#audio-fx-echo`, `#audio-fx-reverb`,
+  `#audio-fx-attenuation` (each 0..1), `#audio-fx-tempo` (0.5..2), `#audio-fx-pitch` (-12..12
+  semitones); each calls `audio.setMusicEffect(key, value)` on input.
+- **Track** card (optional playlist browsing) â€” `#audio-track-label` display span plus
+  `#audio-track-prev` / `#audio-track-play` / `#audio-track-next` buttons, calling
+  `audio.prevTrack() / audio.togglePlayback() / audio.nextTrack()` if the controller implements
+  them (guarded with `?.()`; these three methods are not part of the frozen contract listed
+  above, so they no-op silently until/unless `environment-audio.js` adds them).
+
+All inputs/buttons render from and refresh via `audio.getState()` (called once at build time, then
+again on every `audio.subscribe(listener)` callback). The panel assumes this state shape:
+```js
+{
+  masterVolume, musicVolume, sfxVolume,       // 0..1
+  masterMuted, musicMuted, sfxMuted,          // bool
+  musicOutput,                                 // 'global' | 'speaker'
+  speakerBehavior,                              // 'front' | 'behind' | 'orbit' | 'above'
+  effects: { bass, echo, reverb, attenuation, tempo, pitch },
+  sfxFolderStatus,                              // display string
+  currentTrackLabel,                            // display string
+  musicPlaying,                                 // bool
+}
+```
+Any field not present falls back to a sensible default (1 for volumes, `false` for mutes, `'global'`/`'front'`
+for output/behavior) rather than throwing, so a partially-implemented controller still renders.
+
+Every pointer (`pointerdown/up/move`, `click`) and keyboard (`keydown/up`, `keypress`) event
+originating inside the Audio tab has its propagation stopped at the host panel, so the viewer's
+global keyboard shortcuts (`KeyM`/`KeyQ`/`KeyF`/etc., bound at `window`/`document` level in
+`environment-viewer.html`) never fire while a user is dragging a slider or typing into an audio
+control.
 
 `buildPerfPanel(host, perfLog)` (internal, not exported) constructs the Perf tab's cards: Live overview (FPS/Frame/CPU/GPU/Draws/Tris + sparkline canvas), Scene figures (creatures/terrain/grass/water/forest/memory text rows), Frame stages (one row per `PERF_ROWS` entry with a colored progress bar), Capture (record/CSV/clear buttons wired to `perfLog`), and Raw debug (re-parents the existing `#terrain-debug` element).
 
 `PERF_ROWS` (module-level, not exported): array of `[passId, displayLabel, snapshotKey]` tuples mapping profiler pass ids to HUD labels:
 `terrainWindowâ†’"Terrain window"`, `creaturesâ†’"Creatures"`, `waterâ†’"Water"`, `grassGpuâ†’"Grass GPU"`, `forestGpuâ†’"Forest GPU"`, `cdlodGpuâ†’"CDLOD GPU"`, `lightsGpuâ†’"Lights GPU"`, `particlesGpuâ†’"Particles GPU"`, `postRenderâ†’"Render submit"` (relabeled `"Render + post"` when post FX is on), each keyed against `passTerrainWindowMs`, `passCreaturesMs`, etc. (Note: `sky` and `hud` are profiled passes in `frame-profiler.js` but have no row in `PERF_ROWS` â€” they aren't surfaced in the HUD.)
+
+### `environment-audio.js`
+
+`createEnvironmentAudio(options)` returns a controller; the environment viewer owns the audio
+mixer/state and the Audio tab in `environment-ui.js` only reads/drives it. Extracted from the
+shooter's inline audio block (`html-game-v2/src/game/main.js` ~1624-3314) so **none** of the
+shooter runtime is imported — all viewer state is injected through `options`.
+
+Options: `THREE` (required), `scene`, `camera`, `getPlayerPosition()`, `isGameplayActive()`,
+optional `isDucked()`, optional `getSpeakerTargets()` (reserved for a future creature-follow
+speaker mode), and `workletUrl` (default `./music-pitch-processor.js?v=1`).
+
+Returned methods: `init()`, `noteGesture()`, `update(timestampMs)` (call once per frame after
+camera/player movement — refreshes the Web Audio listener and speaker-orb follow),
+`loadSfxFolder(dirHandle)`, `pickSfxFolder()`, `restoreSfxFolder()`, `play(eventId, volume?)`,
+`playAt(eventId, position, volume?, options?)`, `setVolume(kind, value)` /
+`setMuted(kind, muted)` (`kind` = `master`|`music`|`sfx`), `setMusicOutput(mode)`
+(`global`|`speaker`), `setMusicSpeakerBehavior(mode)` (`front`|`behind`|`orbit`|`above`),
+`setMusicEffect(key, value)` (`bass`|`echo`|`reverb`|`attenuation`|`tempo`|`pitch`),
+`getState()`, `subscribe(listener)` (returns an unsubscribe fn), `dispose()`, plus optional
+transport `prevTrack()` / `togglePlayback()` / `nextTrack()`.
+
+`getState()` read contract (consumed by the Audio tab; missing keys fall back to UI defaults):
+`masterVolume`, `musicVolume`, `sfxVolume`, `masterMuted`, `musicMuted`, `sfxMuted`,
+`musicOutput`, `speakerBehavior`, `effects{bass,echo,reverb,attenuation,tempo,pitch}`,
+`sfxFolderStatus`, `currentTrackLabel`, `musicPlaying` (plus extra diagnostic fields:
+`ready`, `sfxFolderName`, `loadedEvents`, `loadedMusicEvents`, `playlist`, `pendingMusicRetry`,
+`pitchAvailable`).
+
+Persistence keys are viewer-specific: settings under `environment-viewer-audio-settings`
+(localStorage), the SFX root folder handle under IndexedDB DB `environment-audio-handles` /
+key `sfx-root-directory`, folder picker id `environment-audio-sfx-folder`. Live SFX edits from
+the source `sfx-browser.html` are received on BroadcastChannel/localStorage `sfx-game` /
+`sfx-game-update` (same-origin only). Music base volumes: `0.14` gameplay / `0.16` menu, with
+optional `0.06` ducking via `isDucked()`. Deviations from the source: airship music output and
+the enemy-follow speaker behavior are omitted. Source compatibility notes live in
+`docs/superpowers/plans/2026-07-05-environment-audio-import.md` and `html-game-v2/HTML_GAME.md`.
 
 ### `world-map.js`
 
@@ -148,8 +247,8 @@ import { createFrameProfiler } from './frame-profiler.js';   // line 46
 import { createEnvironmentUi } from './environment-ui.js';   // line 47
 ```
 
-- `const frameProfiler = createFrameProfiler({ smoothing: 0.2 });` â€” line 334, module-level singleton.
-- `environmentUi = createEnvironmentUi({ perfLog });` â€” line 2452, created once the `#ctrl` panel, `#port-creature-ui`, and `#fps` elements already exist in the DOM.
+- `const frameProfiler = createFrameProfiler({ smoothing: 0.2 });` â€” line 1005, module-level singleton.
+- `environmentUi = createEnvironmentUi({ perfLog, sliderState: { capture, apply, list, save, remove } });` â€” line 3859, created once the `#ctrl` panel, `#port-creature-ui`, and `#fps` elements already exist in the DOM. The `sliderState` methods wrap `captureSliderState`/`applySliderState` (module-level, see the "Slider state presets" section of `entry-point.md`) and the re-exported `listStates`/`saveState`/`deleteState` from `slider-state.js`.
 
 Per-frame, inside `animate()` (~line 2755 onward):
 1. `frameProfiler.beginFrame()` (guarded by a `_frameBusy` re-entrancy flag; a dropped/overlapping frame instead calls `frameProfiler.markDropped()`).
@@ -179,9 +278,9 @@ Consumption: `perfLog.snapshot(now)` (the page's own perf-log object, ~line 480-
 
 `environment-ui.js`'s `createEnvironmentUi` only builds a tabbed *shell* and, via `mountCtrl()`/`routeSections()` (a `MutationObserver` on `#ctrl-body`), re-parents the already-built `#ctrl` panel's `.sec` children into either its `scene` or `effects` tab panel â€” sorted purely by section title against a hardcoded `effectsNames` set (`Post`, `Particles`, `Water`, `Clouds`, `Sky`; everything else, e.g. `Forest`/`Lighting`/`Scene`/`Grass`, lands in `scene`). A separate `mountFixedUi()` (driven by a `MutationObserver` on `document.body`) re-parents `#port-creature-ui` into the `creatures` tab and `#fps` into the `walk` tab. None of these controls are authored by `environment-ui.js` â€” it only relocates existing DOM and restyles it via CSS overrides (the large `!important` block in `installStyle()`).
 
-The one piece of UI `environment-ui.js` genuinely *builds* (not just re-hosts) is the Perf tab: the live-metrics cards, sparkline, per-stage timing bars, and capture controls â€” all read-only, driven by `perfLog`/`frameProfiler` snapshots, with no sliders or settings of its own.
+The pieces of UI `environment-ui.js` genuinely *builds* (not just re-hosts) are the Perf tab (live-metrics cards, sparkline, per-stage timing bars, capture controls â€” all read-only, driven by `perfLog`/`frameProfiler` snapshots), the Presets tab (`buildPresetsPanel`, save/load/delete named slider states via the `sliderState` param), and the Audio tab (`buildAudioPanel`, folder/volume/mute/output/effects/track controls driven by the `audio` param â€” see the Public API section above for its full control-ID surface).
 
-So the real division of labor: `environment-viewer.html` owns all interactive scene/tuning controls (sliders, dropdowns, toggles) and all per-frame profiler instrumentation calls; `environment-ui.js` owns layout/chrome (tabbed shell + CSS) and the read-only performance HUD, while passively absorbing the other modules' pre-built panels into its tabs.
+So the real division of labor: `environment-viewer.html` owns all interactive scene/tuning controls (sliders, dropdowns, toggles), the `controlRegistry`/`captureSliderState`/`applySliderState` machinery those controls self-register into, and all per-frame profiler instrumentation calls; `environment-audio.js` (when present) owns the actual audio mixer/state; `environment-ui.js` owns layout/chrome (tabbed shell + CSS), the read-only performance HUD, the Presets tab's save/load/delete UI, and the Audio tab's controls (both of which only call into the `sliderState`/`audio` objects handed to them, with no storage/mixing logic of their own), while passively absorbing the other modules' pre-built panels into its remaining tabs.
 
 ## Tests
 
