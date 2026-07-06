@@ -81,5 +81,19 @@ console.assert(approx(after.creatures[0].p[0], 10), 'FAIL: after range should re
 const empty = new InterpolationBuffer();
 console.assert(empty.sample(1000) === null, 'FAIL: empty buffer should return null');
 
+// ClaudeCraft mobs interpolate like players (matched by id): position lerps, hp lerps,
+// tid/dead carry from the newer snapshot. Guests render these; they never run the sim.
+{
+  const mbuf = new InterpolationBuffer();
+  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [0, 0, 0], q: [0, 0, 0, 1], hp: 1, dead: false }] }, 1000);
+  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [10, 0, 0], q: [0, 0, 0, 1], hp: 0.5, dead: false }] }, 1100);
+  const s = mbuf.sample(1050);
+  console.assert(Array.isArray(s.mobs), 'FAIL: sampled state should carry a mobs array');
+  console.assert(approx(s.mobs[0].p[0], 5), 'FAIL: mob x interpolates to 5');
+  console.assert(approx(s.mobs[0].hp, 0.75), 'FAIL: mob hp interpolates to 0.75');
+  console.assert(s.mobs[0].tid === 'forest_wolf', 'FAIL: mob tid carried');
+  console.log('mob interpolation OK');
+}
+
 console.log('InterpolationBuffer tests passed.');
 process.exit(0);

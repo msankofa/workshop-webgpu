@@ -1,9 +1,9 @@
-// RELAY_URL: override with ?relay=wss://... for production
+﻿// RELAY_URL: override with ?relay=wss://... for production
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.com';
 
 // ---------------------------------------------------------------------------
-// InterpolationBuffer — ring of 3 snapshots, sample at arbitrary time
+// InterpolationBuffer â€” ring of 3 snapshots, sample at arbitrary time
 // ---------------------------------------------------------------------------
 
 export class InterpolationBuffer {
@@ -15,7 +15,7 @@ export class InterpolationBuffer {
     if (this._snaps.length > 3) this._snaps.shift();
   }
 
-  /** @param {number} renderTime ms — returns interpolated state or null */
+  /** @param {number} renderTime ms â€” returns interpolated state or null */
   sample(renderTime) {
     const s = this._snaps;
     if (s.length === 0) return null;
@@ -50,7 +50,7 @@ function _slerpQ(a, b, t) {
 }
 
 // ---------------------------------------------------------------------------
-// createHostSession — connects as host, broadcasts state at 20 Hz,
+// createHostSession â€” connects as host, broadcasts state at 20 Hz,
 //                     dispatches 'mp:guest_input' events for guest inputs
 // ---------------------------------------------------------------------------
 
@@ -62,18 +62,18 @@ const BROADCAST_MS = 50; // 20 Hz
 // `ws.send()` never blocks: bytes the relay hasn't drained pile up in the
 // socket's outbound buffer (`ws.bufferedAmount`). The host emits a full
 // O(creatures) snapshot every 50 ms, so on a saturated uplink the buffer grows
-// without bound and — because every host→guest world event (avatar, lights,
-// roster) rides this one ordered socket inside `sim_state` — head-of-line-blocks
-// all of them together, freezing guests while guest→host input stays fine.
+// without bound and â€” because every hostâ†’guest world event (avatar, lights,
+// roster) rides this one ordered socket inside `sim_state` â€” head-of-line-blocks
+// all of them together, freezing guests while guestâ†’host input stays fine.
 //
 // Fix: skip a tick when the buffer is already backed up. We SKIP (coalesce to
-// the next fresh `getState()`), never terminate — this socket is the host's only
+// the next fresh `getState()`), never terminate â€” this socket is the host's only
 // relay link and reconnect/backoff already exists. The cap is a small multiple of
-// one worst-case frame, so a healthy link (buffer ≈ 0 each tick) never trips it;
+// one worst-case frame, so a healthy link (buffer â‰ˆ 0 each tick) never trips it;
 // a saturated link degrades to a lower snapshot rate with bounded latency instead
 // of an unbounded queue. See multiplayer-jam-analysis/plan.md.
 // ---------------------------------------------------------------------------
-export const HOST_MAX_BUFFERED_BYTES = 128 * 1024; // ≈ 1–2 worst-case frames
+export const HOST_MAX_BUFFERED_BYTES = 128 * 1024; // â‰ˆ 1â€“2 worst-case frames
 
 /** True when the socket's unflushed buffer is small enough to enqueue another frame. */
 export function shouldSendSnapshot(bufferedAmount, limit = HOST_MAX_BUFFERED_BYTES) {
@@ -95,7 +95,7 @@ export function hostBroadcastTick(ws, getState, sendFrame, onSkip) {
 
 /**
  * @param {string} roomCode
- * @param {() => object} getState  — callback returning { creatures, players }
+ * @param {() => object} getState  â€” callback returning { creatures, players }
  * @returns {{ destroy(): void }}
  */
 export function createHostSession(roomCode, mapKey, getState, options = {}) {
@@ -109,7 +109,7 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
 
   // Opt-in wire-size probe (?netstats): throttled to once / 2 s so it can size real
   // frames at real creature counts without spamming the console. Reuses the payload
-  // string already built for the send — no extra stringify.
+  // string already built for the send â€” no extra stringify.
   const NET_STATS = params.has('netstats');
   function logSnapshotSize(payload, state) {
     if (!NET_STATS) return;
@@ -125,7 +125,7 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
     );
   }
 
-  // Throttled (≤ once / 2 s) signal that the uplink is saturated and frames are
+  // Throttled (â‰¤ once / 2 s) signal that the uplink is saturated and frames are
   // being dropped, so the perf HUD / console can show it instead of silent freezing.
   function reportBackpressure() {
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -180,13 +180,13 @@ export function createHostSession(roomCode, mapKey, getState, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// createGuestSession — connects as guest, feeds InterpolationBuffer,
+// createGuestSession â€” connects as guest, feeds InterpolationBuffer,
 //                      drives onState(interpolatedState) via rAF
 // ---------------------------------------------------------------------------
 
 /**
  * @param {string} roomCode
- * @param {(state: object) => void} onState — called each rAF with interpolated state
+ * @param {(state: object) => void} onState â€” called each rAF with interpolated state
  * @returns {{ sendInput(msg: object): void, destroy(): void }}
  */
 export function createGuestSession(roomCode, onState) {
@@ -243,7 +243,7 @@ export function createGuestSession(roomCode, onState) {
 // upserts by id; a b-upsert with no a-predecessor by its own id but carrying
 // `spawnedFrom` (a projectile that just impacted and became a light) borrows
 // the projectile's last-known record as its lerp predecessor so the landing
-// doesn't pop — see entity-types/projectile.js / light.js header notes.
+// doesn't pop â€” see entity-types/projectile.js / light.js header notes.
 // `removes` pass through from b as-is (no interpolation of tombstones).
 function _lerpEntities(a, b, alpha) {
   const aUpserts = a?.upserts ?? [];
@@ -277,13 +277,51 @@ function _lerpPlayers(aPlayers = [], bPlayers = [], alpha) {
       q: _slerpQ(pa.q, pb.q, alpha),
       h: pa.h != null && pb.h != null ? pa.h + (pb.h - pa.h) * alpha : pb.h,
       r: pa.r != null && pb.r != null ? pa.r + (pb.r - pa.r) * alpha : pb.r,
+      hp: pa.hp != null && pb.hp != null ? pa.hp + (pb.hp - pa.hp) * alpha : pb.hp,
+      maxHp: pb.maxHp ?? pa.maxHp,
+      alive: pb.alive ?? pa.alive,
+      weapon: pb.weapon ?? pa.weapon,
+      tool: pb.tool ?? pa.tool,
+      ammoMag: pb.ammoMag ?? pa.ammoMag,
+      ammoReserve: pb.ammoReserve ?? pa.ammoReserve,
+      magazineSize: pb.magazineSize ?? pa.magazineSize,
+      reloading: pb.reloading ?? false,
+      firing: pb.firing ?? false,
+      fireSeq: pb.fireSeq ?? pa.fireSeq,
+      lastShotAt: pb.lastShotAt ?? pa.lastShotAt,
+      aimPitch: pb.aimPitch ?? pa.aimPitch,
+    };
+  }).filter(Boolean);
+}
+// ClaudeCraft mob interpolation. Matches mobs by id (like players), lerps position +
+// hp, slerps the pure-yaw quaternion, and carries tid/dead from the newer snapshot.
+// Unmatched ids pass through from whichever snapshot has them (union), mirroring the
+// player lerp so a mob mid-despawn doesn't pop before GhostRenderer removes it.
+function _lerpMobs(aMobs = [], bMobs = [], alpha) {
+  const aById = new Map(aMobs.map((m) => [m.id, m]));
+  const bById = new Map(bMobs.map((m) => [m.id, m]));
+  const ids = new Set([...aById.keys(), ...bById.keys()]);
+  return [...ids].map((id) => {
+    const ma = aById.get(id);
+    const mb = bById.get(id);
+    if (!ma) return mb;
+    if (!mb) return ma;
+    return {
+      ...mb,
+      p: _lerpV3(ma.p, mb.p, alpha),
+      q: _slerpQ(ma.q, mb.q, alpha),
+      hp: ma.hp != null && mb.hp != null ? ma.hp + (mb.hp - ma.hp) * alpha : mb.hp,
+      tid: mb.tid ?? ma.tid,
+      dead: mb.dead ?? ma.dead,
     };
   }).filter(Boolean);
 }
 function _lerpState(a, b, alpha) {
+  const aCreatures = a.creatures ?? [];
+  const bCreatures = b.creatures ?? [];
   return {
-    creatures: a.creatures.map((ca, i) => {
-      const cb = b.creatures[i];
+    creatures: aCreatures.map((ca, i) => {
+      const cb = bCreatures[i];
       if (!cb) return ca;
       return {
         id: ca.id,
@@ -298,11 +336,12 @@ function _lerpState(a, b, alpha) {
     entities: _lerpEntities(a.entities, b.entities, alpha),
     worldMode: b.worldMode ?? a.worldMode,
     players: _lerpPlayers(a.players, b.players, alpha),
+    mobs: _lerpMobs(a.mobs, b.mobs, alpha),
   };
 }
 
 // ---------------------------------------------------------------------------
-// GhostRenderer — lightweight ghost meshes for creatures and remote players
+// GhostRenderer â€” lightweight ghost meshes for creatures and remote players
 //   Accepts THREE as a constructor param to avoid a static import
 //   (keeps this module usable in Node.js tests that don't have three).
 //   Creature ghosts: a semi-transparent box at body position
@@ -319,6 +358,7 @@ const BLINK_MIN_MS = 3000, BLINK_MAX_MS = 6000; // idle gap between blinks
 const ORB_R = 0.12;                        // orb radius at the default 0.3 capsule radius
 const HAND_BOB_HZ = 1.1, HAND_BOB_AMP = 0.02;
 const HAND_SWAY_HZ = 2.2, HAND_SWAY_MAX = 0.12, HAND_SWAY_PER_SPEED = 0.06;
+const HELD_FLASH_MS = 140;
 
 // Deterministic light-pastel tint for a player id, shared by the remote ghost body/
 // orbs and the local first-person viewmodel so your hands match your own ghost.
@@ -330,20 +370,32 @@ export class GhostRenderer {
   constructor(scene, THREE) {
     this._scene    = scene;
     this._THREE    = THREE;
-    this._creatures = new Map(); // id(number) → Mesh
-    this._players   = new Map(); // clientId(string) → Group (container)
+    this._creatures = new Map(); // id(number) â†’ Mesh
+    this._players   = new Map(); // clientId(string) â†’ Group (container)
+    this._mobs      = new Map(); // ClaudeCraft mob id(number) â†’ Mesh (guest render path)
+    this._mGeo = new THREE.BoxGeometry(0.8, 1.6, 0.8);
+    this._mMat = new THREE.MeshStandardMaterial({ color: 0xcc6644 });
     this._cGeo = new THREE.BoxGeometry(0.7, 0.5, 1.0);
     this._pGeo = new THREE.CapsuleGeometry(0.3, 1.2, 4, 8);
     this._eyeGeo = new THREE.SphereGeometry(1, 8, 8);
+    this._heldBodyGeo = new THREE.BoxGeometry(1, 1, 1);
+    this._heldBarrelGeo = new THREE.BoxGeometry(1, 1, 1);
     this._cMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5 });
     this._pMat = new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: 0.7 });
     this._eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 }); // unlit flat black
     this._glintMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // eye highlight
+    this._heldMat = new THREE.MeshStandardMaterial({ color: 0x2f3540, roughness: 0.58, metalness: 0.15 });
+    this._heldMuzzleMat = new THREE.MeshBasicMaterial({ color: 0xffd66b });
+    this._lightToolMat = new THREE.MeshBasicMaterial({ color: 0xffb84a });
   }
 
   update(state) {
     this._updateSet(state.creatures ?? [], this._creatures, this._cGeo, this._cMat,
       c => c.id, c => c.p, c => c.q);
+    // ClaudeCraft mobs: guest render path (host renders GLB visuals directly). Same
+    // interpolated wire shape { id, tid, p, q, hp, dead } as the host publishes.
+    this._updateSet(state.mobs ?? [], this._mobs, this._mGeo, this._mMat,
+      m => m.id, m => m.p, m => m.q);
     this._updatePlayers(state.players ?? []);
   }
 
@@ -394,6 +446,7 @@ export class GhostRenderer {
       g.userData.body.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
       this._placeEyes(g, r, h);
       this._placeHands(g, r, h);
+      this._placeHeldItem(g, r, h, item);
     }
     for (const [id, g] of this._players) {
       if (!seen.has(id)) { this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id); }
@@ -417,6 +470,13 @@ export class GhostRenderer {
     const leftHand = new THREE.Mesh(this._eyeGeo, bodyMat);
     const rightHand = new THREE.Mesh(this._eyeGeo, bodyMat);
     g.add(leftHand); g.add(rightHand);
+    const held = new THREE.Group();
+    const heldBody = new THREE.Mesh(this._heldBodyGeo, this._heldMat);
+    const heldBarrel = new THREE.Mesh(this._heldBarrelGeo, this._heldMat);
+    const heldMuzzle = new THREE.Mesh(this._eyeGeo, this._heldMuzzleMat);
+    const heldLight = new THREE.Mesh(this._eyeGeo, this._lightToolMat);
+    held.add(heldBody); held.add(heldBarrel); held.add(heldMuzzle); held.add(heldLight);
+    g.add(held);
     // White highlight glint, parented to each eye (in eye-local space) so it sits
     // just in front of the black, near the top, and closes with the eye on blink.
     const lg = new THREE.Mesh(this._eyeGeo, this._glintMat);
@@ -429,9 +489,11 @@ export class GhostRenderer {
     // clock here); the id hash staggers players so they don't blink in unison.
     g.userData = {
       id, body, bodyMat, left, right, leftHand, rightHand,
+      held, heldBody, heldBarrel, heldMuzzle, heldLight,
       eyeH: 0.14, nextBlinkAt: null, blinkStart: -1,
-      handPhase: (_hashId(id) % 628) / 100, // 0..~2π so hands don't bob in unison
+      handPhase: (_hashId(id) % 628) / 100, // 0..~2Ï€ so hands don't bob in unison
       handX: 0.33, handY: 0.18, handZ: -0.47, // base offsets, set by _placeHands
+      heldFlashUntil: 0,
       lastX: 0, lastZ: 0, lastNow: null,      // for speed-based sway
     };
     return g;
@@ -466,7 +528,33 @@ export class GhostRenderer {
     ud.rightHand.position.set(ud.handX, ud.handY, ud.handZ);
   }
 
-  // Per-frame blink driver — update() only runs on network events, so blink has
+  _placeHeldItem(g, r, h, item) {
+    const ud = g.userData;
+    const tool = item.tool || item.weapon || 'm1911';
+    const isLight = tool === 'light';
+    const isWeapon = !isLight && !!item.weapon;
+    ud.held.visible = isLight || isWeapon;
+    ud.heldBody.visible = isWeapon;
+    ud.heldBarrel.visible = isWeapon;
+    ud.heldLight.visible = isLight;
+    ud.heldMuzzle.visible = isWeapon && !!item.firing;
+    if (!ud.held.visible) return;
+
+    const longGun = item.weapon === 'm24';
+    const s = r / 0.3;
+    ud.held.position.set(0, h * 0.12, -(r + 0.22 * s));
+    ud.heldBody.position.set(0, 0, 0);
+    ud.heldBody.scale.set((longGun ? 0.52 : 0.28) * s, 0.08 * s, 0.1 * s);
+    ud.heldBarrel.position.set(0, 0, -(longGun ? 0.36 : 0.22) * s);
+    ud.heldBarrel.scale.set(0.05 * s, 0.045 * s, (longGun ? 0.5 : 0.26) * s);
+    ud.heldMuzzle.position.set(0, 0, -(longGun ? 0.64 : 0.38) * s);
+    ud.heldMuzzle.scale.set(0.055 * s, 0.055 * s, 0.055 * s);
+    ud.heldLight.position.set(0, 0, -0.08 * s);
+    ud.heldLight.scale.set(0.11 * s, 0.11 * s, 0.11 * s);
+    if (item.firing) ud.heldFlashUntil = (typeof performance !== 'undefined' ? performance.now() : 0) + HELD_FLASH_MS;
+  }
+
+  // Per-frame blink driver â€” update() only runs on network events, so blink has
   // to be driven separately. Squashes eye scale.y 1 -> ~0.1 -> 1 over BLINK_MS.
   tick(nowMs) {
     const now = nowMs ?? 0;
@@ -504,6 +592,7 @@ export class GhostRenderer {
       const sway = Math.sin(2 * Math.PI * HAND_SWAY_HZ * t + ud.handPhase) * swayAmp;
       ud.leftHand.position.set(-ud.handX, ud.handY + bob, ud.handZ + sway);
       ud.rightHand.position.set(ud.handX, ud.handY - bob, ud.handZ - sway);
+      if (ud.heldMuzzle) ud.heldMuzzle.visible = now < ud.heldFlashUntil;
     }
   }
 
@@ -515,10 +604,15 @@ export class GhostRenderer {
     this._cGeo.dispose();
     this._pGeo.dispose();
     this._eyeGeo.dispose();
+    this._heldBodyGeo.dispose();
+    this._heldBarrelGeo.dispose();
     this._cMat.dispose();
     this._pMat.dispose();
     this._eyeMat.dispose();
     this._glintMat.dispose();
+    this._heldMat.dispose();
+    this._heldMuzzleMat.dispose();
+    this._lightToolMat.dispose();
   }
 }
 
