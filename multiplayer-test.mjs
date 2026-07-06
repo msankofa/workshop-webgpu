@@ -85,13 +85,19 @@ console.assert(empty.sample(1000) === null, 'FAIL: empty buffer should return nu
 // tid/dead carry from the newer snapshot. Guests render these; they never run the sim.
 {
   const mbuf = new InterpolationBuffer();
-  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [0, 0, 0], q: [0, 0, 0, 1], hp: 1, dead: false }] }, 1000);
-  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [10, 0, 0], q: [0, 0, 0, 1], hp: 0.5, dead: false }] }, 1100);
+  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [0, 0, 0], q: [0, 0, 0, 1], hp: 1, dead: false, s: 2.5 }] }, 1000);
+  mbuf.push({ mobs: [{ id: 1, tid: 'forest_wolf', p: [10, 0, 0], q: [0, 0, 0, 1], hp: 0.5, dead: false, s: 2.5 }] }, 1100);
   const s = mbuf.sample(1050);
   console.assert(Array.isArray(s.mobs), 'FAIL: sampled state should carry a mobs array');
   console.assert(approx(s.mobs[0].p[0], 5), 'FAIL: mob x interpolates to 5');
   console.assert(approx(s.mobs[0].hp, 0.75), 'FAIL: mob hp interpolates to 0.75');
   console.assert(s.mobs[0].tid === 'forest_wolf', 'FAIL: mob tid carried');
+  console.assert(s.mobs[0].s === 2.5, 'FAIL: mob per-mob scale carried through lerp');
+  // A snapshot missing `s` (backward-safe) defaults to 1 through the lerp.
+  const mbuf2 = new InterpolationBuffer();
+  mbuf2.push({ mobs: [{ id: 2, tid: 'wild_boar', p: [0, 0, 0], q: [0, 0, 0, 1], hp: 1 }] }, 1000);
+  mbuf2.push({ mobs: [{ id: 2, tid: 'wild_boar', p: [4, 0, 0], q: [0, 0, 0, 1], hp: 1 }] }, 1100);
+  console.assert(mbuf2.sample(1050).mobs[0].s === 1, 'FAIL: absent scale defaults to 1');
   console.log('mob interpolation OK');
 }
 

@@ -176,6 +176,10 @@ export function createClaudecraftVisuals({ scene, worldScale }) {
       v.root.position.set(m.p[0], m.p[1], m.p[2]);
       _q.set(m.q[0], m.q[1], m.q[2], m.q[3]);
       v.root.quaternion.copy(_q);
+      // Per-mob scale multiplier (template scale or spawn-panel override). The
+      // skinned clip already carries normScale*worldScale; this root scale layers
+      // the mob's own size multiplier on top (defaults to 1 when absent).
+      v.root.scale.setScalar(m.s != null && m.s > 0 ? m.s : 1);
       // Derive horizontal speed from the world-space delta for the anim state.
       const prev = _prevPos.get(m.id);
       let speed = 0;

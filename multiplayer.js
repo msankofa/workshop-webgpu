@@ -313,6 +313,7 @@ function _lerpMobs(aMobs = [], bMobs = [], alpha) {
       hp: ma.hp != null && mb.hp != null ? ma.hp + (mb.hp - ma.hp) * alpha : mb.hp,
       tid: mb.tid ?? ma.tid,
       dead: mb.dead ?? ma.dead,
+      s: mb.s ?? ma.s ?? 1, // per-mob scale multiplier (default 1 when absent)
     };
   }).filter(Boolean);
 }
@@ -395,11 +396,11 @@ export class GhostRenderer {
     // ClaudeCraft mobs: guest render path (host renders GLB visuals directly). Same
     // interpolated wire shape { id, tid, p, q, hp, dead } as the host publishes.
     this._updateSet(state.mobs ?? [], this._mobs, this._mGeo, this._mMat,
-      m => m.id, m => m.p, m => m.q);
+      m => m.id, m => m.p, m => m.q, m => m.s);
     this._updatePlayers(state.players ?? []);
   }
 
-  _updateSet(items, map, geo, mat, getId, getP, getQ) {
+  _updateSet(items, map, geo, mat, getId, getP, getQ, getScale) {
     const THREE = this._THREE;
     const seen = new Set();
     for (const item of items) {
@@ -419,6 +420,9 @@ export class GhostRenderer {
         const r = item.r ?? 0.3;
         const h = item.h ?? 1.2;
         mesh.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
+      } else if (getScale) {
+        const s = getScale(item); // per-mob scale multiplier (default 1)
+        mesh.scale.setScalar(s != null && s > 0 ? s : 1);
       } else {
         mesh.scale.set(1, 1, 1);
       }
