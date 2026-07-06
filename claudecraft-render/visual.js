@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { VISUALS, visualKeyForMob, hasWalkBack } from './manifest.js';
 import { desiredBaseState, locomotionTimeScale } from './anim_state.js';
 
@@ -28,7 +29,13 @@ const CROSSFADE = 0.2;
 // The normalize transform (scale to def.height, feet to y=0, centered in x/z) is
 // computed once per asset from the source scene, then applied to every clone.
 const _assetCache = new Map();
+// The ClaudeCraft creature GLBs are meshopt-compressed (EXT_meshopt_compression),
+// so the shared loader must have the Meshopt decoder registered — otherwise every
+// loadAsync throws "setMeshoptDecoder must be called before loading compressed
+// files" and each mob falls back to a red placeholder box. (The workshop's own map
+// GLBs are uncompressed, which is why their bare GLTFLoader never needed this.)
 const _loader = new GLTFLoader();
+_loader.setMeshoptDecoder(MeshoptDecoder);
 
 function loadAsset(key) {
   let p = _assetCache.get(key);
@@ -155,17 +162,31 @@ class MobVisual {
  * Returns the Set of mob ids that currently have a live GLB visual, so the caller can
  * suppress the placeholder box for exactly those ids.
  */
+// The sim steps at a fixed 20 Hz but we render at display rate (~60 Hz), and the
+// mob snapshot only changes on a sim tick. Writing snapshot positions straight to
+// the mesh makes each mob teleport in discrete 20 Hz jumps (frozen 2 of every 3
+// frames), and deriving anim speed from raw snapshot deltas reads ~3x too high on
+// a step frame and exactly 0 between steps — which strobes the walk/idle cycle.
+// So we smooth the rendered pose toward the latest snapshot each frame with an
+// exponential follower, and derive the anim speed from that *smoothed* motion.
+const SMOOTH_TAU = 0.09;   // follower time constant (s); ~1.8 sim ticks — smooth but responsive
+const SNAP_DIST = 4;       // world units; a jump larger than this is a teleport (spawn/revive), snap don't glide
+
 export function createClaudecraftVisuals({ scene, worldScale }) {
   const visuals = new Map();  // mobId -> MobVisual
-  const _prevPos = new Map(); // mobId -> [x,y,z] (for speed derivation)
-  const _q = new THREE.Quaternion();
+  const _rpos = new Map();    // mobId -> [x,y,z] smoothed render position
+  const _rprev = new Map();   // mobId -> [x,y,z] smoothed render position last frame (for speed)
+  const _tq = new THREE.Quaternion(); // target quaternion (scratch)
 
   function update(mobs, dt) {
     const seen = new Set();
     const rendered = new Set();
+    // Exponential smoothing factor for this frame's dt (frame-rate independent).
+    const alpha = dt > 1e-4 ? 1 - Math.exp(-dt / SMOOTH_TAU) : 1;
     for (const m of mobs) {
       seen.add(m.id);
       let v = visuals.get(m.id);
+      const fresh = !v;
       if (!v) {
         const key = visualKeyForMob(m.tid);
         v = new MobVisual(key, worldScale);
@@ -173,21 +194,37 @@ export function createClaudecraftVisuals({ scene, worldScale }) {
         visuals.set(m.id, v);
         v.load(); // async; ready flips true when the GLB resolves
       }
-      v.root.position.set(m.p[0], m.p[1], m.p[2]);
-      _q.set(m.q[0], m.q[1], m.q[2], m.q[3]);
-      v.root.quaternion.copy(_q);
+      const tx = m.p[0], ty = m.p[1], tz = m.p[2];
+      // Advance the smoothed render position toward the snapshot target. On first
+      // sight, or on a teleport-sized jump, snap so the mob doesn't glide across
+      // the world.
+      let rp = _rpos.get(m.id);
+      if (fresh || !rp || Math.hypot(tx - rp[0], ty - rp[1], tz - rp[2]) > SNAP_DIST) {
+        rp = [tx, ty, tz];
+      } else {
+        rp[0] += (tx - rp[0]) * alpha;
+        rp[1] += (ty - rp[1]) * alpha;
+        rp[2] += (tz - rp[2]) * alpha;
+      }
+      _rpos.set(m.id, rp);
+      v.root.position.set(rp[0], rp[1], rp[2]);
+      // Smoothly turn toward the snapshot facing (slerp by the same factor).
+      _tq.set(m.q[0], m.q[1], m.q[2], m.q[3]);
+      if (fresh) v.root.quaternion.copy(_tq);
+      else v.root.quaternion.slerp(_tq, alpha);
       // Per-mob scale multiplier (template scale or spawn-panel override). The
       // skinned clip already carries normScale*worldScale; this root scale layers
       // the mob's own size multiplier on top (defaults to 1 when absent).
       v.root.scale.setScalar(m.s != null && m.s > 0 ? m.s : 1);
-      // Derive horizontal speed from the world-space delta for the anim state.
-      const prev = _prevPos.get(m.id);
+      // Derive horizontal speed from the SMOOTHED render delta, so the anim
+      // timescale tracks the mob's actual on-screen motion rather than the 20 Hz
+      // snapshot staircase.
+      const prev = _rprev.get(m.id);
       let speed = 0;
-      if (prev && dt > 1e-4) {
-        const dx = m.p[0] - prev[0], dz = m.p[2] - prev[2];
-        speed = Math.hypot(dx, dz) / dt;
+      if (prev && !fresh && dt > 1e-4) {
+        speed = Math.hypot(rp[0] - prev[0], rp[2] - prev[2]) / dt;
       }
-      _prevPos.set(m.id, [m.p[0], m.p[1], m.p[2]]);
+      _rprev.set(m.id, [rp[0], rp[1], rp[2]]);
       v.update(dt, {
         speed, moving: speed > 0.05, airborne: false, backwards: false,
         dead: !!m.dead, casting: false, swimming: false, sitting: false,
@@ -195,7 +232,7 @@ export function createClaudecraftVisuals({ scene, worldScale }) {
       if (v.ready) rendered.add(m.id);
     }
     for (const [id, v] of visuals) {
-      if (!seen.has(id)) { v.dispose(); visuals.delete(id); _prevPos.delete(id); }
+      if (!seen.has(id)) { v.dispose(); visuals.delete(id); _rpos.delete(id); _rprev.delete(id); }
     }
     return rendered;
   }
@@ -203,7 +240,8 @@ export function createClaudecraftVisuals({ scene, worldScale }) {
   function dispose() {
     for (const v of visuals.values()) v.dispose();
     visuals.clear();
-    _prevPos.clear();
+    _rpos.clear();
+    _rprev.clear();
   }
 
   return { update, dispose };
