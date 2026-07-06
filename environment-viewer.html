@@ -444,7 +444,11 @@ function getState() {
   };
   addPlayer(getLocalPlayerState('host'));
   for (const player of mpGuestPlayers.values()) addPlayer(player);
-  return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode };
+  // ClaudeCraft mobs, already in world-space wire shape ({ id, tid, p, q, hp, dead }).
+  // Host/solo only build the sim; a guest never reaches getState(). Guests receive these
+  // inside sim_state and render them via GhostRenderer (see the guest onState handler).
+  const mobs = claudecraftCreatures?.mobs() ?? [];
+  return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode, mobs };
 }
 
 function updateHostPlayerGhosts() {
