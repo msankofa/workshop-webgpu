@@ -23,7 +23,7 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 | `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~330 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
 | `player-hands.js` | First-person orb-hand viewmodel: `createViewHands(camera, THREE)` — your own two floating hands, camera-attached, shown only in FPS mode | 55 |
-| `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker, map picker, loading screen; resolves `{ mapKey, mpRole, roomCode }` before the sim boots | 253 |
+| `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker (with a "Load preset" slider-state dropdown), map picker, loading screen; resolves `{ mapKey, mpRole, roomCode, mpWorldMode, presetName }` before the sim boots | 305 |
 | `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding (with per-guest send backpressure via `server/backpressure.js`), room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 106 |
 | `server/backpressure.js` | Pure `guestSendVerdict(bufferedAmount, isSimState)` → `'send'\|'skip'\|'kill'`: the relay's two-tier per-guest flow control (skip superseded `sim_state` at `RELAY_GUEST_SKIP_BYTES` = 1 MiB, terminate at `RELAY_GUEST_KILL_BYTES` = 8 MiB). Node-testable, socket-free. | 36 |
 | `server/publish-map.js` | Pure validation/merge helpers (`validateSegment`, `validateSecret`, `mergeMapConfig`) plus `publishMap`'s GitHub Git Data API orchestration and `handlePublishRequest`'s HTTP glue | 190 |
@@ -131,13 +131,14 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
 
 ### `start-screen.js`
 
-- `export async function showStartScreen(): Promise<{ mapKey, mpRole, roomCode, setStatus(msg), dismiss() }>`
+- `export async function showStartScreen(): Promise<{ mapKey, mpRole, roomCode, mpWorldMode, presetName, setStatus(msg), dismiss() }>`
   — builds a full-screen DOM overlay (no Three.js dependency), walks the user through: role
-  choice (Solo / Host / Join) → map choice (host/solo only — guests inherit the host's map) →
-  a loading panel, then resolves with the chosen role/room/map and helpers to update the loading
-  status text or dismiss the overlay. Internally fetches `maps/map-config.json` for the map list
-  and, for Join, opens a short-lived WebSocket to query room presence (`{type:'query', room}`)
-  before resolving.
+  choice (Solo / Host / Join), each with a "Load preset" dropdown (populated from
+  `slider-state.js`'s `listStates()`) that sets `presetName` (or `null` for "None") → map choice
+  (host/solo only — guests inherit the host's map) → a loading panel, then resolves with the
+  chosen role/room/map/world-mode/preset and helpers to update the loading status text or dismiss
+  the overlay. Internally fetches `maps/map-config.json` for the map list and, for Join, opens a
+  short-lived WebSocket to query room presence (`{type:'query', room}`) before resolving.
 
 ## Wiring
 
@@ -150,9 +151,13 @@ import { createHostSession, createGuestSession, GhostRenderer } from './multipla
 
 Boot sequence (top of the module, before the renderer/scene are built):
 
-1. `const { mapKey, mpRole, roomCode, setStatus, dismiss } = await showStartScreen();` — blocks
-   scene setup until the user picks a role (and map, for host/solo). The resolved `mapKey` is
-   later used by `loadTerrainMap`.
+1. `const { mapKey, mpRole, roomCode, mpWorldMode, presetName, setStatus, dismiss } = await showStartScreen();`
+   — blocks scene setup until the user picks a role (and map, for host/solo). The resolved
+   `mapKey` is later used by `loadTerrainMap`; `presetName`, if set, is applied via
+   `applySliderState(...)` at the very end of startup, right before `dismiss()` (see
+   `entry-point.md`'s "Slider state presets" section — this is deferred that late because the
+   slider registry isn't complete until every panel, including the async grass/water/clouds/sky
+   ones, has been built).
 2. `getState()` is defined to read the live `portCreatures` system and shape it into
    `{ creatures: [...], players: [...] }`. Creature entries carry `id`, `p`, `q`, `hp`, `feet`,
    and `hands`. Player entries carry `id`, `p`, `q`, plus capsule `h`/`r`. The host adds its own

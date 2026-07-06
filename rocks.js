@@ -138,12 +138,20 @@ const hashNoise3 = Fn(([p]) => {
 //        OPTIONAL -- the instance-rotated world normal the dressing host builds, passed as
 //        nodes.nWorld; detail normals are composed ON TOP of it so tilted/rotated instances
 //        light correctly. Falls back to view-space normalView for standalone rock previews.),
-//        brushScale = 0.6 }.
+//        brushScale = 0.6, normalStrength = 0.25, roughnessFloor = 0.92 }.
 export function buildRockMaterial(opts = {}) {
   const { textures = {} } = opts;
   const moistureNode = opts.moistureNode ?? float(DEFAULT_MOISTURE);
   const normalBase = opts.normalBase ?? null;
   const brushScale = opts.brushScale ?? 0.6;
+  // Detail-normal influence. The rock normal map's fine per-texel detail turns into black/white
+  // salt-and-pepper sparkle on big up-facing boulder tops (each micro-normal catches light as a
+  // tiny lit/unlit facet), and it aliases/flickers under any small camera motion (the player's
+  // ground-spring micro-bob). It CAN'T be mip/anisotropy filtered away because it's the shading
+  // response to the normal, not the texture itself -- the only real lever is amplitude. Keep this
+  // low (a subtle relief cue, not a rugged surface).
+  const normalStrength = opts.normalStrength ?? 0.25;
+  const roughnessFloor = opts.roughnessFloor ?? 0.92;
 
   const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
   // Closed smooth geometry: render back faces into the shadow map -- kills terminator acne
@@ -156,7 +164,11 @@ export function buildRockMaterial(opts = {}) {
     ? triplanarTexture(texture(textures.albedo), null, null, scale)
     : vec3(0.54, 0.52, 0.47);
   if (textures.roughness) {
-    mat.roughnessNode = triplanarTexture(texture(textures.roughness), null, null, scale).g;
+    mat.roughnessNode = clamp(
+      triplanarTexture(texture(textures.roughness), null, null, scale).g,
+      float(roughnessFloor),
+      float(1.0)
+    );
   }
   if (textures.normal) {
     // tangent-sample -> deviation from flat (z~1 => ~0), world-locked so it doesn't swim
@@ -166,12 +178,12 @@ export function buildRockMaterial(opts = {}) {
       // Wired path: compose the (world-locked) detail deviation ON TOP of the host's
       // instance-rotated world normal, so tilted boulders keep their detail AND their
       // per-instance rotation. The dressing host detects this normalNode and won't clobber it.
-      mat.normalNode = normalize(normalBase.add(d.mul(0.7)));
+      mat.normalNode = normalize(normalBase.add(d.mul(normalStrength)));
     } else {
       // Standalone/preview path: no instance rotation, compose over the view-space vertex
       // normal (rock-viewer.html and unit previews).
       const dView = cameraViewMatrix.mul(vec4(d, 0)).xyz;
-      mat.normalNode = normalize(normalView.add(dView.mul(0.7)));
+      mat.normalNode = normalize(normalView.add(dView.mul(normalStrength)));
     }
   }
 
@@ -182,12 +194,16 @@ export function buildRockMaterial(opts = {}) {
   // moss/lichen/dirt = the ONE shared dressing law (moss-tint.js), reused verbatim from the
   // terrain (#3) and future deadwood (#8) materials.
   const moss = mossWeight(moistureNode, upness, cavity, brush);
-  // lichen: sparser, higher-frequency speckle, gated to EXPOSED rock (mid-high upness, LOW
-  // moisture) -- the opposite gating sense from moss.
-  const lichenNoise = hashNoise3(positionWorld.mul(brushScale * 4.0).add(vec3(17.0, 0.0, 0.0)));
+  // lichen: sparser speckle gated to EXPOSED rock (mid-high upness, LOW moisture) -- the opposite
+  // gating sense from moss. This is analytic per-fragment noise (positionWorld hash), so it can't
+  // be mip/anisotropy filtered: a razor threshold at high frequency crawls/twinkles on up-facing
+  // faces under the tiniest camera motion (the reported "top of the rock jitters"). Keep the
+  // frequency lower and the edge SOFT (smoothstep, not a hard `sub().mul()`) so it antialiases
+  // gracefully instead of aliasing.
+  const lichenNoise = hashNoise3(positionWorld.mul(brushScale * 2.0).add(vec3(17.0, 0.0, 0.0)));
   const exposedGate = smoothstep(float(0.3), float(0.55), upness)
     .mul(float(1).sub(smoothstep(float(0.2), float(0.45), moistureNode)));
-  const lichen = clamp(lichenNoise.sub(0.82).mul(6.0), 0, 1).mul(exposedGate);
+  const lichen = smoothstep(float(0.62), float(0.9), lichenNoise).mul(0.7).mul(exposedGate);
   // dirt streaks on steep faces (1 - upness), independent of moisture.
   const dirtStreak = float(1).sub(upness).mul(0.4);
 

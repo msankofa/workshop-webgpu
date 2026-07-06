@@ -9,12 +9,13 @@
 
 ## Status
 
-**Standalone, tested, NOT wired into `environment-viewer.html` yet.** This was built
-concurrently with a Phase-1 plants agent that owns `plants-gpu.js`/`plants-placement.js`/
-`plants.js`/`plant-viewer.html`/the Plants+Grass blocks of `environment-viewer.html` — this
-subsystem intentionally does not touch any of those files. Wiring into the live viewer is a
-deferred integration step (see "Integration" below), to be coordinated after that concurrent
-work lands.
+**Wired into `environment-viewer.html`** via the `DRESSING_MODE` block (URL flag `?dressing=`,
+default `'gpu'`), sharing one `dressing-gpu.js` host with the deadfall/fungi subsystem — rock
+variants and deadfall variants are both expanded into the same flat group list. See
+"Integration" below for the exact wiring (it matches the recommended recipe). Placement binds to
+`terrainHeight` + `loadedMap.surfaceField`; boulder/stump/log collision circles go into a
+**separate** `dressingIndex` (`createTrunkIndex`) so they never clobber the tree `trunkIndex`,
+and the player push-out resolves against both.
 
 ## Purpose
 
@@ -63,7 +64,14 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   their detail map and their per-instance rotation) and `normalNode` is set. Omit it (standalone
   rock previews) and the detail is composed over view-space `normalView` instead. **The dressing
   host only assigns its own `nodes.nWorld` to `mat.normalNode` when the material left it unset**,
-  so a normal-textured rock's world-locked detail normal is preserved, not clobbered. Dressing =
+  so a normal-textured rock's world-locked detail normal is preserved, not clobbered.
+  `normalStrength` (default **0.25**) scales the detail-normal deviation before it's composed over
+  the base normal; keep it modest, because high-frequency triplanar normal detail shimmers/aliases
+  on big, close boulders under any small camera motion (e.g. the player ground-spring micro-bob
+  while standing still — the observed "texture jitters a few times a second" bug). `roughnessFloor`
+  (default **0.92**) clamps the authored roughness texture high so tiny low-roughness flecks cannot
+  become bright/dark sparkle on sky-facing tops. The wiring layer also sets `anisotropy` on the
+  rock textures for the same reason. Dressing =
   `mossWeight(moistureNode,
   rockUpness, rockCavity, brushNoise)` (moss/lichen albedo mix + roughness bump) + a sparser
   higher-frequency lichen speckle gated to exposed rock (mid-high upness, low moisture) + dirt
@@ -138,8 +146,12 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   `plants-gpu.js`'s chunk API; `groupIdx` selects which of `opts.groups` an instance renders
   as — **palette-to-group variant selection (e.g. `rocks-placement.js`'s `variant`/`variantIdx`
   → a flat `groups` array index) is the placement/wiring layer's job, not this host's.**
-  Returns `{ meshes, setChunk, clearChunk, setChunks, update() (async, runs the compute
-  passes), stats: { draws, groups, instances }, dispose() }`.
+  Returns `{ meshes, setChunk, clearChunk, setChunks, setGroupCull(radius, { start, filter }),
+  update() (async, runs the compute passes), stats: { draws, groups, instances }, dispose() }`.
+  `setGroupCull` retunes cull radius/start live (they're GPU uniforms, so no rebuild — just marks
+  the host dirty so the next `update()` re-runs the cull compute). `filter(spec, groupIndex) =>
+  bool` scopes it to a class of groups; the `environment-viewer.html` wiring tags each group with
+  a `cullClass` (`'boulder'|'scree'|'deadwood'|'mushroom'`) and the range sliders filter on it.
 - Position/normal transform: instances apply a 3-axis Euler rotation (X tilt → Z tilt → Y yaw,
   identical composition for position and normal) via plain trig — no TSL `mat3`/quaternion
   type is used anywhere in this codebase, so this stays consistent with that convention.
@@ -169,11 +181,20 @@ as a perf guardrail (independent of type count) is the **per-group instance cap 
 radius** in `dressing-gpu.js`'s `groups` config (see "Integration" below for the recommended
 starting numbers).
 
-## Integration (deferred — not done in this change)
+## Integration (DONE — `DRESSING_MODE` block in `environment-viewer.html`)
 
-Wiring rocks into the live `environment-viewer.html` world is intentionally NOT part of this
-change (scope fence: avoid colliding with the concurrent Phase-1 plants work touching the same
-file). When that work lands, the wiring step is:
+Rocks + deadfall now share one `dressing-gpu.js` host, built in the `DRESSING_MODE` block right
+after the `PLANTS_MODE` block. The block mirrors the plants windowed-chunk streaming machinery
+(`dressingChunksForPlacement`/`dressingWindowKey`/`processDressingBuildQueue`, budget
+`DRESSING_BUILD_MAX_CHUNKS=2`) and monkeypatches `dressingGPU.update` to sync+drain the build
+queue each frame, exactly like plants. `regenDressing` is called from
+`maybeSyncTerrainDecorations` on terrain edits, and `dressingGPURef.update()` is awaited in
+`animate()` under the `dressingGpu` frame-profiler phase. Notable wiring choices vs the original
+recipe below: **boulders/scree are textured with the terrain's rock layer**
+(`textures/ground/rock/{color,normal,roughness}.jpg`, triplanar — so the S1 detail normal is live),
+logs/stumps sample the **same authored bark pack the forest uses** (`textures/bark/Bark014_1K-JPG`)
+via `buildDeadwoodMaterial`'s `albedoMap`/`roughnessMap`, and collision uses a **separate
+`dressingIndex`** rather than merging into the tree `trunkIndex`. The recipe as implemented:
 
 1. **Build the palette once at load**: `const rockPalette = createRockPalette({ masterSeed });`
 2. **Expand palette types into `dressing-gpu.js` groups**, one group per baked geometry
@@ -210,11 +231,14 @@ file). When that work lands, the wiring step is:
 4. **Per-frame**: `await dressing.update()` alongside the other GPU dressing hosts; add
    `dressing.meshes` to the scene once (they self-gate visibility per group, same convention as
    `plants-gpu.js`).
-5. **Collision** (optional, later): accumulate `boulderCirclesFromRecords(records)` per chunk
-   key and feed them into the same `createTrunkIndex` instance forest trunks already use, via
-   `trunkIndex.setTrunks(chunkKey, [...forestTrunks, ...boulderCircles])`. Scree is
-   intentionally excluded (no collision) per the Phase 3 pass/fail criterion ("player collides
-   with boulders, not scree").
+5. **Collision** (done): a **separate** `dressingIndex = createTrunkIndex(mapChunkSize())` holds
+   `boulderCirclesFromRecords(rockRecs)` merged with the deadfall stump/log circles, set per
+   chunk key under `dressingIndex.setTrunks(chunk.key, circles)` and cleared on unload. The
+   player push-out (`animate()`) resolves against `trunkIndex` (trees) **and** `dressingIndex`.
+   A separate index (rather than merging boulder circles into the tree `trunkIndex`) avoids the
+   per-chunk `setTrunks` clobber where a chunk with both trees and boulders would overwrite one
+   set with the other. Scree is intentionally excluded (no collision) per the Phase 3 pass/fail
+   criterion ("player collides with boulders, not scree").
 6. **TODO**: migrate `plants.js`/`plants-gpu.js`/`plants-placement.js` onto `dressing-gpu.js`
    once this rock host is proven in production (separately-coordinated step, not assumed here).
 7. **TODO**: add a rock/mushroom authoring dressing-viewer later (open question 1b in

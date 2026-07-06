@@ -27,8 +27,8 @@
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
-  float, vec3, mix, clamp, smoothstep, attribute, positionWorld, normalWorld,
-  dot, sin, fract,
+  float, vec3, vec2, mix, clamp, smoothstep, attribute, positionWorld, normalWorld,
+  dot, sin, fract, texture, uv,
 } from 'three/tsl';
 import { mossWeight } from './moss-tint.js';
 import { rngFrom } from './forest-placement.js';
@@ -339,11 +339,27 @@ const hashNoise3 = (p) => fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))).mul(4
 //         INSTANCE-ROTATED world normal -- pass `nodes` (the { nWorld, ... } object handed to
 //         buildMaterial) or `upnessNode` directly (e.g. nodes.nWorld.y) so tilted logs gate moss
 //         off their true post-tilt "up", not the pre-rotation authored-local normalWorld; both
-//         omitted => standalone/preview path, falls back to normalWorld.y) }.
+//         omitted => standalone/preview path, falls back to normalWorld.y),
+//         albedoMap (THREE.Texture, OPTIONAL -- a bark color map, sampled through the swept-tube
+//         UVs (u around the ring, v along length) scaled by uvRepeat; when supplied it replaces
+//         the flat freshBark/rottenBark base, still darkened toward rotten by decay. The wiring
+//         feeds the SAME Bark014 pack trees use, so logs/stumps match the forest bark),
+//         roughnessMap (THREE.Texture, OPTIONAL, sampled .g), uvRepeat=[2,3] ([u,v] tile counts). }
 export function buildDeadwoodMaterial(opts = {}) {
   const moistureNode = opts.moistureNode ?? float(DEFAULT_MOISTURE);
   const brushScale = opts.brushScale ?? 0.7;
-  const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
+  const albedoMap = opts.albedoMap ?? null;
+  const roughnessMap = opts.roughnessMap ?? null;
+  const uvRepeat = opts.uvRepeat ?? [2, 3];
+  // DoubleSide is REQUIRED here, for two reasons: (1) shelf fungi (addShelf) are single-sided
+  // half-bracket sheets that must be visible from both faces; (2) the Grower's swept-tube
+  // winding is inverted relative to its (correct, outward) vertex normals -- proven by the face
+  // normal of a side quad pointing inward -- so under FrontSide culling logs/stumps render
+  // inside-out (you see the lit inner back wall through the culled near wall). DoubleSide draws
+  // both faces and flips the normal per back-facing fragment, so lighting stays correct. (A
+  // future fix could reverse the Grower winding and drop this, but it needs in-browser
+  // validation the module never had -- there is no deadfall geometry viewer.)
+  const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0, side: THREE.DoubleSide });
 
   const decay = attribute('aC0', 'float');
   const shelf = attribute('aC1', 'float');
@@ -351,10 +367,17 @@ export function buildDeadwoodMaterial(opts = {}) {
   const upness = clamp(upnessSource, 0.0, 1.0);
   const brush = clamp(hashNoise3(positionWorld.mul(brushScale)), 0.0, 1.0);
 
-  // fresh bark -> rotten (greyer, darker) purely by decay: a silhouette-independent tone cue
-  const freshBark = vec3(0.34, 0.24, 0.15);
-  const rottenBark = vec3(0.29, 0.27, 0.24);
-  let base = mix(freshBark, rottenBark, decay);
+  // bark UVs (u around the ring, v along the length), tiled so bark doesn't stretch on long logs.
+  const uvNode = uv().mul(vec2(uvRepeat[0], uvRepeat[1]));
+  // fresh bark -> rotten (greyer, darker). With a bark map, start from the sampled color and
+  // grey/darken it toward rotten; without one, mix the two flat tones (preview path).
+  let base;
+  if (albedoMap) {
+    const barkTex = texture(albedoMap, uvNode).xyz;
+    base = mix(barkTex, barkTex.mul(vec3(0.72, 0.74, 0.72)), decay); // rotten: darker, desaturated
+  } else {
+    base = mix(vec3(0.34, 0.24, 0.15), vec3(0.29, 0.27, 0.24), decay);
+  }
 
   // moss gated by moisture x upness (shared law), with the baked decay weight fed as the
   // cavity/openness input so more-decayed wood holds visibly more moss (rotten reads mossy in a
@@ -368,7 +391,8 @@ export function buildDeadwoodMaterial(opts = {}) {
   base = mix(base, shelfAlbedo, shelf);
 
   mat.colorNode = base;
-  mat.roughnessNode = mix(float(1.0), float(0.9), moss);
+  const rough0 = roughnessMap ? texture(roughnessMap, uvNode).g : float(1.0);
+  mat.roughnessNode = mix(rough0, float(0.9), moss);
   return mat;
 }
 
@@ -378,7 +402,9 @@ export function buildMushroomMaterial(opts = {}) {
   const cap = opts.capColor || [0.62, 0.20, 0.16];
   const gill = opts.gillColor || [0.86, 0.80, 0.68];
   const stem = opts.stemColor || [0.90, 0.86, 0.74];
-  const mat = new MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
+  // DoubleSide: the lathed cap/gill/stem share the Grower's inverted-winding convention (see
+  // buildDeadwoodMaterial), and the gill disc is a thin single-sided fan -- both need both faces.
+  const mat = new MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
   const part = attribute('aC0', 'float');   // 0 stem, 0.5 gills, 1 cap
   const tone = attribute('aC1', 'float');
   const capN = vec3(cap[0], cap[1], cap[2]);

@@ -121,7 +121,7 @@ export function createDressingGPU(opts) {
     })().compute(CAP);
     const finalize = Fn(() => { indirectNode.element(1).assign(atomicLoad(survAtomic.element(uint(0)))); })().compute(1);
 
-    return { spec, CAP, srcAttr, src, drawAttr, draw, countAttr, indirectAttr, reset, cull, finalize };
+    return { spec, CAP, srcAttr, src, drawAttr, draw, countAttr, indirectAttr, reset, cull, finalize, uCullRadius, uCullStart };
   });
 
   function instanceNodes(st) {
@@ -219,6 +219,17 @@ export function createDressingGPU(opts) {
 
   return {
     meshes,
+    // Live cull-radius tuning (radius/start are GPU uniforms, so no rebuild -- just re-run the
+    // cull compute next update). `filter(spec, groupIndex) => bool` scopes it to a class of
+    // groups (e.g. only scree); omit to apply to every group. `start` defaults to 0.7*radius.
+    setGroupCull(radius, { start, filter } = {}) {
+      for (let g = 0; g < G; g++) {
+        if (filter && !filter(groupSpecs[g], g)) continue;
+        state[g].uCullRadius.value = radius;
+        state[g].uCullStart.value = start ?? radius * 0.7;
+      }
+      dirty = true;
+    },
     setChunk(key, records) { chunkRecords.set(key, records); needsRebuild = true; },
     clearChunk(key) { if (chunkRecords.delete(key)) needsRebuild = true; },
     setChunks(batch, clearKeys = []) {

@@ -168,13 +168,15 @@ function installStyle() {
       --wui-accent: #77c8a1;
       --wui-warn: #ffc857;
       --wui-bad: #ff7b7b;
+      --wui-rail: 44px;
+      --wui-panel-width: min(360px, calc(100vw - 64px));
       position: fixed;
       top: 10px;
       right: 10px;
       bottom: 10px;
-      width: min(360px, calc(100vw - 20px));
+      width: calc(var(--wui-panel-width) + var(--wui-rail));
       display: grid;
-      grid-template-rows: auto 1fr;
+      grid-template-columns: minmax(0, var(--wui-panel-width)) var(--wui-rail);
       border: 1px solid var(--wui-line);
       border-radius: 8px;
       background: var(--wui-bg);
@@ -184,6 +186,13 @@ function installStyle() {
       box-shadow: 0 12px 36px rgba(0,0,0,0.34);
       backdrop-filter: blur(10px);
       overflow: hidden;
+      transition: width 160ms ease;
+    }
+    #workshop-ui.collapsed {
+      width: var(--wui-rail);
+      grid-template-columns: 0 var(--wui-rail);
+      border-left-color: transparent;
+      border-radius: 8px 0 0 8px;
     }
     body.gui-hidden #workshop-ui { display: none !important; }
     #workshop-ui button, #workshop-ui select, #workshop-ui input, #workshop-ui textarea {
@@ -191,26 +200,41 @@ function installStyle() {
     }
     .wui-tabs {
       display: grid;
-      grid-template-columns: repeat(8, minmax(0, 1fr));
-      border-bottom: 1px solid var(--wui-line);
+      grid-column: 2;
+      grid-row: 1;
+      grid-auto-rows: minmax(64px, 1fr);
+      height: 100%;
+      border-left: 1px solid var(--wui-line);
       background: rgba(255,255,255,0.035);
     }
     .wui-tab {
       min-width: 0;
-      height: 34px;
+      width: 100%;
+      min-height: 64px;
       border: 0;
-      border-right: 1px solid rgba(255,255,255,0.07);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
       background: transparent;
       color: var(--wui-muted);
       cursor: pointer;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      letter-spacing: 0;
+      text-align: center;
     }
-    .wui-tab:last-child { border-right: 0; }
+    .wui-tab:last-child { border-bottom: 0; }
     .wui-tab.active {
       color: var(--wui-text);
       background: rgba(119, 200, 161, 0.12);
-      box-shadow: inset 0 -2px 0 var(--wui-accent);
+      box-shadow: inset -2px 0 0 var(--wui-accent);
     }
-    .wui-panels { min-height: 0; }
+    .wui-panels {
+      grid-column: 1;
+      grid-row: 1;
+      min-height: 0;
+      min-width: 0;
+      border-right: 1px solid rgba(255,255,255,0.07);
+    }
+    #workshop-ui.collapsed .wui-panels { display: none; }
     .wui-panel {
       display: none;
       height: 100%;
@@ -535,11 +559,12 @@ function installStyle() {
     }
     @media (max-width: 720px) {
       #workshop-ui {
-        left: 10px;
-        width: auto;
+        --wui-panel-width: calc(100vw - 64px);
+        top: 8px;
+        right: 0;
+        bottom: 8px;
       }
-      .wui-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .wui-tab { font-size: 11px; }
+      .wui-tab { font-size: 11px; min-height: 58px; }
     }
     .wui-seg-group {
       display: flex;
@@ -574,14 +599,14 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
 
   const tabs = makeEl('nav', 'wui-tabs');
   const tabDefs = [
-    ['scene', 'Scene'],
+    ['world', 'World'],
+    ['nature', 'Nature'],
     ['creatures', 'Creatures'],
-    ['models', 'Models'],
-    ['effects', 'Effects'],
-    ['walk', 'Walk'],
-    ['perf', 'Perf'],
-    ['presets', 'Presets'],
+    ['player', 'Player'],
+    ['assets', 'Assets'],
+    ['look', 'Look'],
     ['audio', 'Audio'],
+    ['tools', 'Tools'],
   ];
   const tabButtons = new Map(tabDefs.map(([id, label]) => {
     const btn = makeTab(id, label);
@@ -600,37 +625,53 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
   shell.append(tabs, panels);
   document.body.appendChild(shell);
 
-  const sceneHost = panelEls.get('scene');
-  const effectsHost = panelEls.get('effects');
-  const walkHost = panelEls.get('walk');
+  const worldHost = panelEls.get('world');
+  const natureHost = panelEls.get('nature');
   const creaturesHost = panelEls.get('creatures');
-  const modelsHost = panelEls.get('models');
-  const perfHost = panelEls.get('perf');
-  const presetsHost = panelEls.get('presets');
+  const playerHost = panelEls.get('player');
+  const assetsHost = panelEls.get('assets');
+  const lookHost = panelEls.get('look');
   const audioHost = panelEls.get('audio');
-  sceneHost.id = 'scene-section-host';
-  effectsHost.id = 'effects-section-host';
-  modelsHost.id = 'models-section-host';
+  const toolsHost = panelEls.get('tools');
+  worldHost.id = 'scene-section-host';
+  natureHost.id = 'nature-section-host';
+  lookHost.id = 'effects-section-host';
+  assetsHost.id = 'models-section-host';
 
+  let activeTab = null;
   function activate(tab) {
-    for (const [id, btn] of tabButtons) btn.classList.toggle('active', id === tab);
-    for (const [id, panel] of panelEls) panel.classList.toggle('active', id === tab);
+    activeTab = tab && panelEls.has(tab) ? tab : null;
+    shell.classList.toggle('collapsed', !activeTab);
+    for (const [id, btn] of tabButtons) {
+      const active = id === activeTab;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-expanded', active ? 'true' : 'false');
+    }
+    for (const [id, panel] of panelEls) panel.classList.toggle('active', id === activeTab);
   }
   tabs.addEventListener('click', event => {
     const btn = event.target.closest('.wui-tab');
-    if (btn) activate(btn.dataset.tab);
+    if (!btn) return;
+    activate(btn.dataset.tab === activeTab ? null : btn.dataset.tab);
   });
-  activate('scene');
+  activate('world');
 
-  const effectsNames = new Set(['Post', 'Particles', 'Water', 'Clouds', 'Sky']);
   function sectionTitle(sec) {
     return sec.querySelector('.sec-head span')?.textContent?.trim() || '';
+  }
+  function hostForSection(sec) {
+    const title = sectionTitle(sec);
+    if (title === 'Scene' || title === 'Biomes' || title.startsWith('Water')) return worldHost;
+    if (title === 'Forest' || title === 'Tree LOD' || title === 'Grass' || title === 'Plants' || title.startsWith('Dressing')) return natureHost;
+    if (title === 'Lighting' || title === 'Post' || title === 'Particles' || title.startsWith('Clouds') || title === 'Sky') return lookHost;
+    return worldHost;
   }
   function routeSections() {
     const ctrlBody = document.getElementById('ctrl-body');
     if (!ctrlBody) return;
-    for (const sec of [...document.querySelectorAll('#ctrl-body > .sec, #scene-section-host > .sec, #effects-section-host > .sec')]) {
-      const target = effectsNames.has(sectionTitle(sec)) ? effectsHost : sceneHost;
+    const selector = '#ctrl-body > .sec, #scene-section-host > .sec, #nature-section-host > .sec, #effects-section-host > .sec';
+    for (const sec of [...document.querySelectorAll(selector)]) {
+      const target = hostForSection(sec);
       if (sec.parentElement !== target) target.appendChild(sec);
     }
   }
@@ -640,7 +681,7 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
     const ctrl = document.getElementById('ctrl');
     const ctrlBody = document.getElementById('ctrl-body');
     if (!ctrl || !ctrlBody || ctrlMounted) return;
-    sceneHost.appendChild(ctrl);
+    worldHost.appendChild(ctrl);
     ctrlMounted = true;
     routeSections();
     ctrlObserver = new MutationObserver(routeSections);
@@ -653,20 +694,20 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
     const portUi = document.getElementById('port-creature-ui');
     if (portUi && portUi.parentElement !== creaturesHost) creaturesHost.appendChild(portUi);
     const fps = document.getElementById('fps');
-    if (fps && fps.parentElement !== walkHost) walkHost.appendChild(fps);
+    if (fps && fps.parentElement !== playerHost) playerHost.appendChild(fps);
   }
   mountFixedUi();
   const mountObserver = new MutationObserver(mountFixedUi);
   mountObserver.observe(document.body, { childList: true, subtree: false });
 
-  buildPerfPanel(perfHost, perfLog);
-  buildPresetsPanel(presetsHost, sliderState);
+  buildPerfPanel(toolsHost, perfLog);
+  buildPresetsPanel(toolsHost, sliderState);
   if (audio) buildAudioPanel(audioHost, audio);
   else audioHost.appendChild(makeEl('div', 'wui-empty', 'Audio controller unavailable.'));
 
   return {
     activate,
-    updatePerf: perfHost._updatePerf,
+    updatePerf: toolsHost._updatePerf,
   };
 }
 

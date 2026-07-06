@@ -1,5 +1,12 @@
 # Render bottleneck: two problems, priorities, and fixes
 
+> **STATUS (2026-07-05): first-choice fixes for Problems 1–3 are SHIPPED and verified.**
+> Implemented 2026-07-04 (agent_log.csv rows for `water` 20:45 and `vegetation` 21:00; snapshots in `versions/`; implementation reviews in `report-water-reflection-review.md` / `report-vegetation-draws-review.md` and the plan critique in `critique-render-bottleneck-plan.md`):
+> - **Problem 1**: half-res reflection (`resolutionScale: 0.5`, runtime-tunable) + every-2nd-frame throttle (`setReflectRate`, resurrected). A later session layered *reflection pruning* on the same seam (`renderReflectionPruned`, `water.js:602` — hides `reflectExclude` objects during the mirror render; commit `61840a6`).
+> - **Problems 2+3**: zero-instance `.visible` gating per variant, rebuilds debounced to once per frame at `update()` top, `srcArray.fill(0)` dropped (cull is count-gated), honest `forestDraws`/`plantDraws` + new `*VisibleVariants` CSV columns.
+> - **Measured outcome** (`research/stats/perf-2026-07-05T06-43-10-616Z.csv`, 124 samples, vs the baseline below — capture conditions not identical, and later work also contributes): fps 37.3 → **64.2**, cpuMs 24.35 → **10.04**, passPostMs 20.79 → **6.70**, waterReflectionLastMs 10.57 → **1.38**, draw calls 352 → **149**, forestDraws 96 → 24, plantDraws 16 → 12.
+> - Still open: Problem 2 follow-ups (L0 shadow-proxy fold 8→7, LOD-band gating investigation) and the secondary findings (water height-cache eviction, dead-code removal).
+
 ## How we know
 
 Clean baseline capture with GPU timestamps **off** (`research/stats/perf-2026-07-05T00-13-18-054Z-baseline.csv`, 164 samples). Timestamp mode was adding ~10–20 ms/frame of `resolveTimestampsAsync` overhead, so it is not a valid frame-pacing baseline — this capture is. Baseline averages:

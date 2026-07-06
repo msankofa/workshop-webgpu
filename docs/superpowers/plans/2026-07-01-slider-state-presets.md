@@ -27,7 +27,7 @@ rest of this directory.
 - Create: `slider-state.js`
 - Test: `test-slider-state.mjs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test-slider-state.mjs`:
 
@@ -78,12 +78,12 @@ console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `node test-slider-state.mjs`
 Expected: FAIL — `Cannot find module './slider-state.js'` (file doesn't exist yet).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `slider-state.js`:
 
@@ -120,12 +120,12 @@ export function deleteState(name) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `node test-slider-state.mjs`
 Expected: `9 passed, 0 failed`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add slider-state.js test-slider-state.mjs
@@ -149,7 +149,7 @@ script with no test harness (same as the rest of this file; see `infra.md`'s not
 implementation; Step 7 is a manual verification pass in the browser, which stands in for the
 "run it and check" cycle here.
 
-- [ ] **Step 1: Add the `slider-state.js` import**
+- [x] **Step 1: Add the `slider-state.js` import**
 
 In `environment-viewer.html`, after the existing import at line 52
 (`import { createHostSession, createGuestSession, GhostRenderer } from './multiplayer.js';`),
@@ -159,7 +159,7 @@ add:
 import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState } from './slider-state.js';
 ```
 
-- [ ] **Step 2: Add `controlRegistry` and capture/apply at module top level**
+- [x] **Step 2: Add `controlRegistry` and capture/apply at module top level**
 
 The `slider()`/`select()`/`toggle()` factory functions are defined *inside* the
 `_forestPromise.then(async (...) => { ... })` callback (they close over the `params` object
@@ -201,7 +201,7 @@ function applySliderState(values) {
 }
 ```
 
-- [ ] **Step 3: Register controls inside `slider()`**
+- [x] **Step 3: Register controls inside `slider()`**
 
 Find (around line 1567):
 
@@ -239,7 +239,7 @@ Replace with:
 (`handler` replaces the inline `(onChange || apply)()` — same value, computed once instead of on
 every `input` event, so it can also be used as the registry's dedupe key in `applySliderState`.)
 
-- [ ] **Step 4: Register controls inside `select()` and `toggle()`**
+- [x] **Step 4: Register controls inside `select()` and `toggle()`**
 
 Find (around line 1586):
 
@@ -290,7 +290,7 @@ Replace with:
   }
 ```
 
-- [ ] **Step 5: Thread `objName` through the `rigP` and `terrain` slider calls**
+- [x] **Step 5: Thread `objName` through the `rigP` and `terrain` slider calls**
 
 These are the only `slider()` call sites that pass a custom `obj` and therefore need the matching
 name so their registry entries read `rigP.<key>` / `terrain.<key>` instead of `params.<key>`
@@ -344,7 +344,7 @@ Replace with:
   slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain, 'terrain');
 ```
 
-- [ ] **Step 6: Thread `objName` through the `SKY_PARAMS` slider calls**
+- [x] **Step 6: Thread `objName` through the `SKY_PARAMS` slider calls**
 
 Find (around line 2271):
 
@@ -362,7 +362,7 @@ Replace with:
     slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setMilkyWayIntensity(SKY_PARAMS.milkyWayIntensity), SKY_PARAMS, 'SKY_PARAMS');
 ```
 
-- [ ] **Step 7: Manual smoke check**
+- [x] **Step 7: Manual smoke check**
 
 Run: `python serve.py` from `workshop-webgpu/`, open `http://127.0.0.1:8080/environment-viewer.html`,
 pick Solo → Infinite World. Open the browser devtools console and run:
@@ -379,7 +379,7 @@ these steps only added registration side effects, the existing `input`/`change` 
 unchanged). No console errors. This step will get a real functional check once Task 3 exposes
 capture/apply through the Presets tab UI.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add environment-viewer.html
@@ -400,7 +400,7 @@ git commit -m "feat(entry): register scene sliders into a capture/apply state re
 
 No automated test — DOM-dependent, same rationale as Task 2. Verified manually in Step 6.
 
-- [ ] **Step 1: Add the 6th tab slot and grid CSS**
+- [x] **Step 1: Add the 6th tab slot and grid CSS**
 
 In `environment-ui.js`, find:
 
@@ -450,7 +450,7 @@ Replace with:
     }
 ```
 
-- [ ] **Step 2: Style the preset name text input**
+- [x] **Step 2: Style the preset name text input**
 
 Find:
 
@@ -479,7 +479,7 @@ Replace with:
     }
 ```
 
-- [ ] **Step 3: Add the `presets` tab definition and panel host**
+- [x] **Step 3: Add the `presets` tab definition and panel host**
 
 Find:
 
@@ -572,7 +572,7 @@ Replace with:
 }
 ```
 
-- [ ] **Step 4: Add `buildPresetsPanel`**
+- [x] **Step 4: Add `buildPresetsPanel`**
 
 Add this new function after `buildPerfPanel` (at the end of the file, after its closing `}`):
 
@@ -647,7 +647,7 @@ function buildPresetsPanel(host, sliderState) {
 }
 ```
 
-- [ ] **Step 5: Wire `sliderState` into the `createEnvironmentUi(...)` call site**
+- [x] **Step 5: Wire `sliderState` into the `createEnvironmentUi(...)` call site**
 
 In `environment-viewer.html`, find:
 
@@ -670,7 +670,7 @@ environmentUi = createEnvironmentUi({
 });
 ```
 
-- [ ] **Step 6: Manual verification**
+- [x] **Step 6: Manual verification**
 
 Run: `python serve.py` from `workshop-webgpu/`, open
 `http://127.0.0.1:8080/environment-viewer.html`, Solo → Infinite World. In the workshop panel:
@@ -688,7 +688,7 @@ Run: `python serve.py` from `workshop-webgpu/`, open
 7. Click **Delete** on `test1` — confirm it disappears and the panel falls back to the empty state.
 8. Check the browser console for errors throughout.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add environment-ui.js environment-viewer.html
@@ -706,7 +706,7 @@ git commit -m "feat(infra): add Presets tab for saving/loading slider states"
 
 No automated test — DOM-dependent. Verified manually in Step 4.
 
-- [ ] **Step 1: Import `listStates` and add the preset selector to the role-select screen**
+- [x] **Step 1: Import `listStates` and add the preset selector to the role-select screen**
 
 In `start-screen.js`, find:
 
@@ -762,7 +762,7 @@ function _presetSelect() {
 }
 ```
 
-- [ ] **Step 2: Thread the selected preset name through `_roleStep`'s three resolve paths**
+- [x] **Step 2: Thread the selected preset name through `_roleStep`'s three resolve paths**
 
 Find:
 
@@ -845,7 +845,7 @@ Replace with:
         resolve({ mpRole: 'guest', roomCode: code, guestMapKey: mapKey, presetName: presetSel.value || null });
 ```
 
-- [ ] **Step 3: Return `presetName` from `showStartScreen()`**
+- [x] **Step 3: Return `presetName` from `showStartScreen()`**
 
 Find:
 
@@ -884,7 +884,7 @@ Replace with:
   };
 ```
 
-- [ ] **Step 4: Capture `presetName` and apply it before the render loop starts**
+- [x] **Step 4: Capture `presetName` and apply it before the render loop starts**
 
 In `environment-viewer.html`, find:
 
@@ -924,7 +924,7 @@ renderer.setAnimationLoop(animate);
 This runs after every panel (including the async grass/water/clouds/sky sections) has finished
 registering its controls, so `controlRegistry` is complete by the time `applySliderState` reads it.
 
-- [ ] **Step 5: Manual verification**
+- [x] **Step 5: Manual verification**
 
 1. In the browser, open the Presets tab and save a state named `startmenu-test` with a few
    sliders changed from default (e.g. Sun elevation to something unusual, Wind strength to max).
@@ -937,7 +937,7 @@ registering its controls, so `controlRegistry` is complete by the time `applySli
    values (no regression to the no-preset path).
 6. Check the browser console for errors throughout.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add start-screen.js environment-viewer.html
@@ -957,7 +957,7 @@ cleanup.
 - Modify: `docs/subsystems/multiplayer.md`
 - Modify: `agent_log.csv`
 
-- [ ] **Step 1: Update `docs/subsystems/infra.md`**
+- [x] **Step 1: Update `docs/subsystems/infra.md`**
 
 In the `environment-ui.js` file-responsibility row (around line 17), update the description to
 mention the Presets tab. Find:
@@ -1012,7 +1012,7 @@ already exists) and a "Saved states" card listing every saved name with a relati
 a Load button (`sliderState.apply`), and a Delete button (`sliderState.remove`).
 ```
 
-- [ ] **Step 2: Update `docs/subsystems/entry-point.md`**
+- [x] **Step 2: Update `docs/subsystems/entry-point.md`**
 
 In the static imports table, add a row after the `multiplayer.js` import row:
 
@@ -1073,7 +1073,7 @@ Consumers: the Presets tab in `environment-ui.js` (save/load/delete UI) and the 
 "Load preset" dropdown (applied once, at the final startup gate, before `dismiss()`).
 ```
 
-- [ ] **Step 3: Update `docs/subsystems/multiplayer.md`**
+- [x] **Step 3: Update `docs/subsystems/multiplayer.md`**
 
 Find:
 
@@ -1129,7 +1129,7 @@ Replace with:
    ones, has been built).
 ```
 
-- [ ] **Step 4: Append to `agent_log.csv`**
+- [x] **Step 4: Append to `agent_log.csv`**
 
 Add one row (adjust the date/time to when this step actually runs):
 
@@ -1137,7 +1137,7 @@ Add one row (adjust the date/time to when this step actually runs):
 2026-07-01T00:00,multi,"slider-state.js;test-slider-state.mjs;environment-viewer.html;environment-ui.js;start-screen.js;docs/subsystems/infra.md;docs/subsystems/entry-point.md;docs/subsystems/multiplayer.md",Added named slider-state presets: a new Presets tab to save/load/delete scene-slider values, plus a start-menu dropdown to load one before the world boots.
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/subsystems/infra.md docs/subsystems/entry-point.md docs/subsystems/multiplayer.md agent_log.csv

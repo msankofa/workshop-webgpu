@@ -7,6 +7,7 @@ const DEFAULT_NAMES = [
   'grassGpu',
   'forestGpu',
   'plantsGpu',
+  'dressingGpu',
   'cdlodGpu',
   'lightsGpu',
   'particlesGpu',
@@ -23,6 +24,7 @@ const DEFAULT_PREFIXES = {
   grassGpu: 'passGrassMs',
   forestGpu: 'passForestMs',
   plantsGpu: 'passPlantsMs',
+  dressingGpu: 'passDressingMs',
   cdlodGpu: 'passCdlodMs',
   lightsGpu: 'passLightsMs',
   particlesGpu: 'passParticlesMs',
@@ -102,6 +104,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
       (source.get('grassGpu') || 0) +
       (source.get('forestGpu') || 0) +
       (source.get('plantsGpu') || 0) +
+      (source.get('dressingGpu') || 0) +
       (source.get('cdlodGpu') || 0) +
       (source.get('lightsGpu') || 0) +
       (source.get('particlesGpu') || 0) +

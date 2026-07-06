@@ -1,4 +1,5 @@
 import { RELAY_URL } from './multiplayer.js';
+import { listStates } from './slider-state.js';
 
 export async function showStartScreen() {
   const config = await fetch('maps/map-config.json')
@@ -15,7 +16,7 @@ export async function showStartScreen() {
   });
   document.body.appendChild(overlay);
 
-  const { mpRole, roomCode, guestMapKey, mpWorldMode } = await _roleStep(overlay);
+  const { mpRole, roomCode, guestMapKey, mpWorldMode, presetName } = await _roleStep(overlay);
 
   let mapKey;
   if (mpRole === 'guest') {
@@ -31,6 +32,7 @@ export async function showStartScreen() {
     mpRole,
     roomCode,
     mpWorldMode,
+    presetName,
     setStatus,
     dismiss: () => overlay.remove(),
   };
@@ -103,6 +105,33 @@ function _errorEl() {
   return el;
 }
 
+function _presetSelect() {
+  const wrap = document.createElement('div');
+  Object.assign(wrap.style, {
+    display: 'flex', alignItems: 'center', gap: '8px',
+    fontSize: '12px', color: '#98a5b5',
+  });
+  const label = document.createElement('span');
+  label.textContent = 'Load preset:';
+  const sel = document.createElement('select');
+  Object.assign(sel.style, {
+    padding: '5px 8px', border: '1px solid #354050', borderRadius: '5px',
+    background: '#20252d', color: '#d8dee9', fontSize: '12px',
+  });
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = 'None';
+  sel.appendChild(noneOpt);
+  for (const name of Object.keys(listStates()).sort()) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  wrap.append(label, sel);
+  return { wrap, sel };
+}
+
 function _rolePanel(titleText, detail, inputPlaceholder, btnLabel) {
   const wrap = document.createElement('div');
   Object.assign(wrap.style, {
@@ -131,6 +160,9 @@ async function _roleStep(overlay) {
     const s = _shell();
     s.appendChild(_title('Creature Workshop'));
 
+    const { wrap: presetWrap, sel: presetSel } = _presetSelect();
+    s.appendChild(presetWrap);
+
     const grid = document.createElement('div');
     Object.assign(grid.style, {
       display: 'grid',
@@ -140,7 +172,7 @@ async function _roleStep(overlay) {
 
     // Solo
     grid.appendChild(_mapCard('Solo', 'Play alone, choose your own map', () => {
-      resolve({ mpRole: 'solo', roomCode: null, guestMapKey: null, mpWorldMode: 'independent' });
+      resolve({ mpRole: 'solo', roomCode: null, guestMapKey: null, mpWorldMode: 'independent', presetName: presetSel.value || null });
     }));
 
     // Host
@@ -168,7 +200,7 @@ async function _roleStep(overlay) {
       const code = hi.value.trim().toUpperCase();
       if (!code) { he.textContent = 'Enter a room code'; he.style.display = ''; return; }
       he.style.display = 'none';
-      resolve({ mpRole: 'host', roomCode: code, guestMapKey: null, mpWorldMode: modeSelect.value });
+      resolve({ mpRole: 'host', roomCode: code, guestMapKey: null, mpWorldMode: modeSelect.value, presetName: presetSel.value || null });
     });
     grid.appendChild(hw);
 
@@ -191,7 +223,7 @@ async function _roleStep(overlay) {
           jb.textContent = 'Join →';
           return;
         }
-        resolve({ mpRole: 'guest', roomCode: code, guestMapKey: mapKey, mpWorldMode: worldMode || 'shared' });
+        resolve({ mpRole: 'guest', roomCode: code, guestMapKey: mapKey, mpWorldMode: worldMode || 'shared', presetName: presetSel.value || null });
       } catch {
         je.textContent = 'Could not connect to relay server';
         je.style.display = '';

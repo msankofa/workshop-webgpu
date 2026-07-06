@@ -675,11 +675,26 @@ yet; that would be a separate follow-on, not part of this tool.
 
 ## Deadfall / fungi (Phase 4 / merged-plan row #8)
 
-**Standalone, tested, NOT wired into `environment-viewer.html` yet** — same deferred-integration
-posture as rocks (Phase 3). Deadfall renders on the SAME `dressing-gpu.js` host rocks use; see
-`docs/subsystems/rocks.md` for that host's contract. Reuses the shared `mossWeight()` dressing law
-(`moss-tint.js`) — the deadwood material is the third consumer after the terrain (#3) and rock (#7)
-materials, not a bespoke shader.
+**Wired into `environment-viewer.html`** via the shared `DRESSING_MODE` block — deadfall variants
+(logs/stumps/mushrooms) are expanded into the SAME flat `dressing-gpu.js` group list as rocks, so
+one host streams both. See `docs/subsystems/rocks.md` "Integration" for the wiring and that host's
+contract. Canopy gating (`canopyAt`) is supplied live from the tree `trunkIndex` (a 3x3-neighbour
+`nearby()` query re-implementing `makeCanopyIndex`'s smoothstep-of-squared-distance weight) rather
+than a rebuilt forest-record index, so logs/stumps/mushrooms accumulate under trees with no global
+scan; deadfall uses `MASTER_SEED + 0x0deadf` so its scatter is decorrelated from rocks. Mushroom
+groups are set `castShadow:false`; stump/log circles register into the shared `dressingIndex` for
+collision (mushrooms/scree do not). Reuses the shared `mossWeight()` dressing law (`moss-tint.js`)
+— the deadwood material is the third consumer after the terrain (#3) and rock (#7) materials, not a
+bespoke shader.
+
+**Winding note:** `deadfall.js` has no geometry viewer, so its `Grower` swept-tube winding was
+never visually validated before the `DRESSING_MODE` wire-up — and it turns out to be **inverted
+relative to its (correct, outward) vertex normals** (a side-quad face normal points inward). Under
+`FrontSide` culling logs/stumps therefore render inside-out (lit inner back wall showing through
+the culled near wall). Both `buildDeadwoodMaterial` and `buildMushroomMaterial` are set
+`side: THREE.DoubleSide`, which is required anyway (shelf fungi and mushroom gills are single-sided
+sheets) and makes lighting correct regardless of the winding. A future cleanup could reverse the
+`Grower` winding and drop DoubleSide on the solid parts, but that needs in-browser validation.
 
 ### Files
 
@@ -710,13 +725,17 @@ materials, not a bespoke shader.
 
 ### Materials
 
-- `buildDeadwoodMaterial({ moistureNode, brushScale, nodes, upnessNode })` — bark-ish
-  `MeshStandardNodeMaterial` (stays on the node-material family for clustered lights). Base bark
-  lerps fresh to rotten (greyer) by `aC0`; moss = `mossWeight(moisture, upness, cavity=aC0,
-  brushNoise)` — the baked decay weight is fed as the cavity/openness input so more-decayed wood
-  holds visibly more moss (rotten reads mossy in a wet forest; fresh stays mostly bare). Shelf
-  verts (aC1=1) paint a pale tan. Pure expression nodes (no `If()`; `mix`/`select`/`smoothstep`),
-  **zero texture samplers** (world-space hash brush), opaque, no emissive. `moistureNode` is meant
+- `buildDeadwoodMaterial({ moistureNode, brushScale, nodes, upnessNode, albedoMap, roughnessMap, uvRepeat })` — bark-ish
+  `MeshStandardNodeMaterial` (stays on the node-material family for clustered lights). Base bark:
+  if `albedoMap` is supplied it's sampled through the swept-tube UVs (u around the ring, v along
+  length) scaled by `uvRepeat` (default `[2,3]`) and darkened/desaturated toward rotten by `aC0`;
+  otherwise it lerps a flat fresh→rotten tone by `aC0` (preview path). The env-viewer feeds the
+  SAME `Bark014_1K-JPG` pack the forest uses so logs/stumps match the trees; `roughnessMap` (`.g`)
+  is optional. Moss = `mossWeight(moisture, upness, cavity=aC0, brushNoise)` — the baked decay
+  weight is fed as the cavity/openness input so more-decayed wood holds visibly more moss (rotten
+  reads mossy in a wet forest; fresh stays mostly bare). Shelf verts (aC1=1) paint a pale tan.
+  Pure expression nodes (no `If()`; `mix`/`select`/`smoothstep`), opaque, no emissive.
+  `side: THREE.DoubleSide` (see the winding note above). `moistureNode` is meant
   to be `nodes.extra` (per-instance moisture from the record); defaults to `DEFAULT_MOISTURE`
   (`moisture-proxy.js`). The `upness` term feeding the moss gate defaults to `opts.upnessNode`, then
   `opts.nodes?.nWorld?.y`, then plain `clamp(normalWorld.y)` for standalone previews — under the
