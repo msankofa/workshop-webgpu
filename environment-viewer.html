@@ -43,6 +43,7 @@ import { createLightingRig } from './lights.js';
 import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
 import { groundContact, slideVelocity, createTrunkIndex } from './collision.js';
 import { createEnvironmentPortCreatures } from './port-creature-bridge.js';
+import { createClaudecraftCreatures } from './claudecraft-bridge/claudecraft-creatures.js';
 import { kindParams } from './particle-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createEnvironmentUi } from './environment-ui.js';
@@ -139,6 +140,12 @@ let localWeaponView = null;
 let updateCombatHud = () => {};
 let updateReticle = () => {};
 let portCreatures = null;
+// ClaudeCraft mob simulation bridge (second, independent creature system). Host/solo
+// only â€” a guest renders replicated mob snapshots and never constructs the sim. Assigned
+// after portCreatures so terrainHeight/trunkIndex/capsuleH are all live. Declared here so
+// the player-combat adapter (below) can delegate to it lazily.
+let claudecraftCreatures = null;
+let claudecraftVisuals = null;
 let playerCollider = null;
 let playerInitialized = false;
 let fpsMode = false;
@@ -1254,6 +1261,68 @@ portCreatures = createEnvironmentPortCreatures({
   isInteractionEnabled: () => !fpsMode,
   mode: mpRole === 'guest' ? 'network' : CREATURE_MODE,
 });
+
+// --- ClaudeCraft mob system (second creature system) ----------------------------
+// Host/solo only: the sim is host-authoritative, so a guest never constructs it â€”
+// it renders the interpolated `mobs` that arrive inside sim_state (see GhostRenderer).
+if (mpRole !== 'guest') {
+  claudecraftCreatures = createClaudecraftCreatures({
+    workshopPlayerHeight: capsuleH,              // live player capsule height (world units)
+    terrainHeight,                               // (x,z) -> world height; procedural AND authored maps
+    waterLevelWorld: terrain.waterLevel ?? 0,
+    trunkResolve: (x, z, r) => trunkIndex.resolve(x, z, r),
+    camps: [
+      { mobId: 'forest_wolf', count: 6, centerWorld: { x: 30, z: 30 }, radiusWorld: 20 },
+    ],
+    playerStartWorld: { x: 0, z: 0 },
+    seed: 1,
+  });
+}
+// Local-player world pose (position + yaw facing) fed into the sim each tick so mobs
+// aggro/chase/attack the workshop player. Reuses getLocalPlayerState('host') (the real
+// capsule/camera pose source); facing is the camera yaw (0 = +Z, matching the sim).
+function getLocalPlayerWorldPose() {
+  const s = getLocalPlayerState('host');
+  if (!s) return null;
+  const facing = 2 * Math.atan2(s.q[1], s.q[3]); // pure-yaw quaternion -> yaw angle
+  return { x: s.p[0], y: s.p[1], z: s.p[2], facing };
+}
+// Remote guest players, converted to the sim pose shape so host-side mobs react to them
+// too. facing derived from each guest's pure-yaw quaternion.
+function remoteClaudecraftPlayers() {
+  if (mpRole !== 'host') return [];
+  const out = [];
+  for (const [id, p] of mpGuestPlayers) {
+    if (!Array.isArray(p?.p)) continue;
+    const q = p.q ?? [0, 0, 0, 1];
+    out.push({ id, x: p.p[0], y: p.p[1], z: p.p[2], facing: 2 * Math.atan2(q[1], q[3]) });
+  }
+  return out;
+}
+// M5A placeholder: one InstancedMesh of red boxes proving the sim loop drives world-space
+// transforms. Replaced by skinned GLB visuals in M5B (createClaudecraftVisuals).
+const ccDebugGeo = new THREE.BoxGeometry(1, 1, 1);
+const ccDebugMat = new THREE.MeshStandardMaterial({ color: 0xcc4444 });
+const ccDebugMesh = new THREE.InstancedMesh(ccDebugGeo, ccDebugMat, 512);
+ccDebugMesh.count = 0;
+ccDebugMesh.frustumCulled = false;
+scene.add(ccDebugMesh);
+const _ccM = new THREE.Matrix4();
+const _ccQ = new THREE.Quaternion();
+const _ccP = new THREE.Vector3();
+const _ccS = new THREE.Vector3(1, 1, 1);
+function renderClaudecraftDebug(mobs) {
+  ccDebugMesh.count = Math.min(mobs.length, 512);
+  for (let i = 0; i < ccDebugMesh.count; i++) {
+    const m = mobs[i];
+    _ccP.set(m.p[0], m.p[1], m.p[2]);
+    _ccQ.set(m.q[0], m.q[1], m.q[2], m.q[3]);
+    _ccM.compose(_ccP, _ccQ, _ccS);
+    ccDebugMesh.setMatrixAt(i, _ccM);
+  }
+  ccDebugMesh.instanceMatrix.needsUpdate = true;
+}
+
 const terrainDebugEl = document.createElement('div');
 terrainDebugEl.id = 'terrain-debug';
 terrainDebugEl.style.cssText = 'position:fixed;right:10px;bottom:10px;background:rgba(20,24,30,.78);border:1px solid #333a45;border-radius:6px;color:#8a93a3;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;padding:7px 9px;pointer-events:none;white-space:pre;z-index:10';
@@ -4005,6 +4074,120 @@ let lgChargeStart = null;
   fpHeader('Look');
   fpSlider('Sensitivity', 'sensitivity', 100, 2000, 10, fi);
 
+  // ---- weapon controls (inside FPS panel) ----
+  let weaponControlId = loadout.defaultWeapon;
+  const weaponControlSyncers = [];
+  function weaponControlWeapon() {
+    return getWeapon(weaponControlId) || enabledWeapons()[0] || null;
+  }
+  function syncAmmoForWeaponConfig(weaponId) {
+    const w = getWeapon(weaponId);
+    if (!w) return;
+    const magSize = Math.max(1, Math.round(w.magazineSize ?? 1));
+    const reserve = Math.max(0, Math.round(w.reserveAmmo ?? 0));
+    for (const [key, ammo] of playerAmmo) {
+      if (!key.endsWith(`:${weaponId}`)) continue;
+      ammo.magazineSize = magSize;
+      ammo.mag = Math.min(magSize, Math.max(0, Math.round(ammo.mag ?? magSize)));
+      ammo.reserve = Math.min(reserve, Math.max(0, Math.round(ammo.reserve ?? reserve)));
+    }
+    const localId = typeof localPlayerId === 'function' ? localPlayerId() : 'host';
+    const localAmmo = ensureAmmo(localId, weaponId);
+    localAmmo.magazineSize = magSize;
+    localAmmo.mag = Math.min(magSize, localAmmo.mag);
+    localAmmo.reserve = Math.min(reserve, localAmmo.reserve);
+  }
+  function applyWeaponControlChange({ reloadView = false, ammo = false } = {}) {
+    const w = weaponControlWeapon();
+    if (!w) return;
+    if (ammo) syncAmmoForWeaponConfig(w.id);
+    if (reloadView && typeof toolIdFor === 'function' && toolIdFor(localPlayerId()) === w.id) {
+      localWeaponView?.setTool(w.id);
+      viewHands?.setTool(w.id);
+    }
+    updateCombatHud?.();
+  }
+  function weaponControlRow(label) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-top:5px;gap:8px';
+    row.innerHTML = '<span>' + label + '</span>';
+    current.appendChild(row);
+    return row;
+  }
+  function weaponControlSlider(label, getValue, setValue, min, max, step, fmt = v => Number(v).toFixed(2), opts = {}) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;margin-top:5px;gap:8px';
+    const valEl = document.createElement('span');
+    valEl.style.color = '#7f8a99';
+    row.innerHTML = '<span>' + label + '</span>';
+    row.appendChild(valEl);
+    current.appendChild(row);
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
+    inp.style.width = '100%';
+    const sync = () => {
+      const v = getValue(weaponControlWeapon());
+      inp.value = Number.isFinite(v) ? v : 0;
+      valEl.textContent = fmt(Number(inp.value));
+    };
+    inp.addEventListener('input', () => {
+      const w = weaponControlWeapon();
+      if (!w) return;
+      const v = parseFloat(inp.value);
+      setValue(w, v);
+      valEl.textContent = fmt(v);
+      applyWeaponControlChange(opts);
+    });
+    current.appendChild(inp);
+    weaponControlSyncers.push(sync);
+    sync();
+    return inp;
+  }
+  function syncWeaponControlSliders() {
+    for (const sync of weaponControlSyncers) sync();
+  }
+
+  fpHeader('Weapon control');
+  {
+    const row = weaponControlRow('Weapon');
+    const sel = document.createElement('select');
+    sel.style.cssText = 'background:#1a2030;color:#c4ccd6;border:1px solid #333a45;border-radius:4px;padding:1px 4px;font:12px system-ui,sans-serif;max-width:120px';
+    for (const w of enabledWeapons()) {
+      const o = document.createElement('option');
+      o.value = w.id;
+      o.textContent = w.displayName || w.id;
+      sel.appendChild(o);
+    }
+    sel.value = weaponControlId;
+    sel.addEventListener('change', () => {
+      weaponControlId = sel.value;
+      selectLocalTool?.(weaponControlId);
+      syncWeaponControlSliders();
+    });
+    row.appendChild(sel);
+  }
+  const getArr = (w, key, i, fallback = 0) => Array.isArray(w?.[key]) ? (w[key][i] ?? fallback) : fallback;
+  const setArr = (w, key, i, v) => { if (!Array.isArray(w[key])) w[key] = [0, 0, 0]; w[key][i] = v; };
+  const deg = r => r * 180 / Math.PI;
+  const rad = d => d * Math.PI / 180;
+  const f2 = v => Number(v).toFixed(2);
+  const f3 = v => Number(v).toFixed(3);
+  weaponControlSlider('Position X', w => getArr(w, 'viewOffset', 0), (w, v) => setArr(w, 'viewOffset', 0, v), -1.5, 1.5, 0.01, f2);
+  weaponControlSlider('Position Y', w => getArr(w, 'viewOffset', 1), (w, v) => setArr(w, 'viewOffset', 1, v), -1.5, 0.8, 0.01, f2);
+  weaponControlSlider('Position Z', w => getArr(w, 'viewOffset', 2), (w, v) => setArr(w, 'viewOffset', 2, v), -2.5, -0.05, 0.01, f2);
+  weaponControlSlider('Scale', w => w?.viewScale ?? 1, (w, v) => { w.viewScale = v; }, 0.05, 4, 0.01, f2, { reloadView: true });
+  weaponControlSlider('Model size', w => w?.viewTargetSize ?? 1, (w, v) => { w.viewTargetSize = v; }, 0.05, 4, 0.01, f2, { reloadView: true });
+  weaponControlSlider('Rotation X', w => deg(getArr(w, 'viewRotation', 0)), (w, v) => setArr(w, 'viewRotation', 0, rad(v)), -180, 180, 1, fi);
+  weaponControlSlider('Rotation Y', w => deg(getArr(w, 'viewRotation', 1)), (w, v) => setArr(w, 'viewRotation', 1, rad(v)), -180, 180, 1, fi);
+  weaponControlSlider('Rotation Z', w => deg(getArr(w, 'viewRotation', 2)), (w, v) => setArr(w, 'viewRotation', 2, rad(v)), -180, 180, 1, fi);
+  weaponControlSlider('Recoil intensity', w => w?.recoil ?? 1, (w, v) => { w.recoil = v; }, 0, 4, 0.05, f2);
+  weaponControlSlider('Fire interval ms', w => w?.fireIntervalMs ?? 250, (w, v) => { w.fireIntervalMs = Math.max(1, Math.round(v)); }, 40, 2000, 10, fi);
+  weaponControlSlider('Damage', w => w?.damage ?? 1, (w, v) => { w.damage = Math.max(1, Math.round(v)); }, 1, 250, 1, fi);
+  weaponControlSlider('Range', w => w?.range ?? 60, (w, v) => { w.range = Math.max(1, Math.round(v)); }, 1, 300, 1, fi);
+  weaponControlSlider('Magazine', w => w?.magazineSize ?? 1, (w, v) => { w.magazineSize = Math.max(1, Math.round(v)); }, 1, 100, 1, fi, { ammo: true });
+  weaponControlSlider('Reserve ammo', w => w?.reserveAmmo ?? 0, (w, v) => { w.reserveAmmo = Math.max(0, Math.round(v)); }, 0, 500, 1, fi, { ammo: true });
+  weaponControlSlider('Spread rad', w => w?.spreadRad ?? 0, (w, v) => { w.spreadRad = v; }, 0, 0.15, 0.001, f3);
+
   // ---- light gun controls (inside FPS panel) ----
   function lgSlider(label, key, min, max, step, fmt) {
     const row = document.createElement('div');
@@ -4326,7 +4509,8 @@ function createLocalWeaponViewModel(camera) {
     const rot = weapon.viewRotation ?? [0, Math.PI, 0];
     const sway = Math.sin(t * Math.PI * 4.4) * Math.min(0.035, speed * 0.004);
     const bob = Math.sin(t * Math.PI * 2.2) * 0.006;
-    const kick = recoilT / 0.16;
+    const recoilMul = weapon.recoil ?? 1;
+    const kick = (recoilT / 0.16) * recoilMul;
     group.position.set(offset[0] + sway * 0.2, offset[1] + bob + kick * 0.025, offset[2] + kick * 0.08);
     group.rotation.set(rot[0] + kick * 0.05, rot[1], rot[2] + sway * 0.08);
     group.visible = visible && !!currentObject;
@@ -4966,6 +5150,14 @@ async function animate() {
   mpGhostRenderer?.tick(now);
   });
   frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
+  if (claudecraftCreatures) frameProfiler.time('claudecraft', () => {
+    const localPlayerWorld = getLocalPlayerWorldPose();
+    const mobs = claudecraftCreatures.update(rawDt, {
+      localPlayerWorld,
+      remotePlayersWorld: remoteClaudecraftPlayers(),
+    });
+    renderClaudecraftDebug(mobs);
+  });
   // water runs its own reflection / refraction / caustics passes, then we draw
   frameProfiler.time('water', () => { if (waterRef) {
     waterRef.update(now / 1000);
