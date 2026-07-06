@@ -3097,6 +3097,100 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     refreshList();
   }
 
+  // ---- ClaudeCraft mobs: manual runtime spawn/behavior/scale/remove panel --------
+  // Host/solo only (a guest never constructs claudecraftCreatures). Mirrors the
+  // particle-editor panel's inline build style. Lets you pick any of the 112 mob
+  // templates, choose Hostile/Passive/Hold, scale it, spawn one in front of the
+  // player (snapped to terrain), and clear everything you spawned (camps survive).
+  if (claudecraftCreatures) {
+    header('ClaudeCraft Mobs');
+    const msec = current;
+    const ccPanel = { mobId: null, behavior: 'hostile', scale: 1 };
+    const roster = claudecraftCreatures.listSpawnableMobs(); // [{id,name,family}]
+
+    // Creature dropdown, grouped by family via <optgroup>.
+    const mobRow = document.createElement('div'); mobRow.className = 'row';
+    mobRow.innerHTML = '<span style="color:#c4ccd6">Creature</span>'; msec.appendChild(mobRow);
+    const mobSel = document.createElement('select');
+    const byFamily = new Map();
+    for (const m of roster) {
+      if (!byFamily.has(m.family)) byFamily.set(m.family, []);
+      byFamily.get(m.family).push(m);
+    }
+    for (const [family, list] of [...byFamily].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const og = document.createElement('optgroup'); og.label = family;
+      for (const m of list.sort((a, b) => a.name.localeCompare(b.name))) {
+        const o = document.createElement('option'); o.value = m.id; o.textContent = m.name;
+        og.appendChild(o);
+      }
+      mobSel.appendChild(og);
+    }
+    ccPanel.mobId = mobSel.value || roster[0]?.id || null;
+    mobSel.value = ccPanel.mobId;
+    mobSel.addEventListener('change', () => { ccPanel.mobId = mobSel.value; });
+    msec.appendChild(mobSel);
+
+    // Behavior dropdown.
+    const behRow = document.createElement('div'); behRow.className = 'row';
+    behRow.innerHTML = '<span style="color:#c4ccd6">Behavior</span>'; msec.appendChild(behRow);
+    const behSel = document.createElement('select');
+    for (const [val, label] of [['hostile', 'Hostile (aggro + chase)'], ['passive', 'Passive (wander, ignore)'], ['hold', 'Hold (pinned, inert)']]) {
+      const o = document.createElement('option'); o.value = val; o.textContent = label; behSel.appendChild(o);
+    }
+    behSel.value = ccPanel.behavior;
+    behSel.addEventListener('change', () => { ccPanel.behavior = behSel.value; });
+    msec.appendChild(behSel);
+
+    // Scale slider (local state, not bound to params).
+    const scRow = document.createElement('div'); scRow.className = 'row';
+    const scVal = document.createElement('span'); scVal.textContent = ccPanel.scale.toFixed(2);
+    scRow.innerHTML = '<span style="color:#c4ccd6">Scale</span>'; scRow.appendChild(scVal);
+    const scInp = document.createElement('input');
+    scInp.type = 'range'; scInp.min = 0.25; scInp.max = 4; scInp.step = 0.05; scInp.value = ccPanel.scale;
+    scInp.addEventListener('input', () => { ccPanel.scale = parseFloat(scInp.value); scVal.textContent = ccPanel.scale.toFixed(2); });
+    msec.appendChild(scRow); msec.appendChild(scInp);
+
+    const ccStatus = document.createElement('div');
+    ccStatus.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 2px';
+    const refreshCcStatus = () => {
+      ccStatus.textContent = `${claudecraftCreatures.spawnedMobIds().length} spawned by you`;
+    };
+    refreshCcStatus();
+
+    // Spawn one mob a few units in front of the local player, snapped to terrain.
+    const SPAWN_AHEAD = 6; // world units in front of the player
+    const spawnBtn = document.createElement('button');
+    spawnBtn.textContent = '+ Spawn in front of player';
+    spawnBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    spawnBtn.addEventListener('click', () => {
+      if (!ccPanel.mobId) return;
+      const pose = getLocalPlayerWorldPose();
+      if (!pose) { showStatus('No player pose yet.'); return; }
+      // facing 0 = +Z (sim convention): forward = (sin f, cos f), matching mob locomotion.
+      const wx = pose.x + Math.sin(pose.facing) * SPAWN_AHEAD;
+      const wz = pose.z + Math.cos(pose.facing) * SPAWN_AHEAD;
+      const id = claudecraftCreatures.spawnMob({
+        mobId: ccPanel.mobId, world: { x: wx, z: wz }, level: 1,
+        scale: ccPanel.scale, behavior: ccPanel.behavior,
+      });
+      if (id == null) showStatus('Spawn failed (unknown mob).');
+      refreshCcStatus();
+    });
+    msec.appendChild(spawnBtn);
+    msec.appendChild(ccStatus);
+
+    // Clear only the mobs YOU spawned (seeded camp mobs are untouched).
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = 'Clear all spawned';
+    clearBtn.style.cssText = 'width:100%;margin:2px 0 4px;padding:5px;background:#3a2c2c;color:#e0c4c4;border:1px solid #4f3a3a;border-radius:4px;cursor:pointer';
+    clearBtn.addEventListener('click', () => { claudecraftCreatures.clearSpawnedMobs(); refreshCcStatus(); });
+    msec.appendChild(clearBtn);
+
+    // TODO (nice-to-have): raycast click-to-remove a single mob. Deferred — the host
+    // renders mobs as per-id GLB roots in claudecraftVisuals (not a pickable batch),
+    // so a picker needs a mobId<->object map exposed from the visuals adapter first.
+  }
+
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
   if (GRASS_MODE === 'cpu') _grassPromise = import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
@@ -4150,8 +4244,9 @@ let lgChargeStart = null;
     const w = weaponControlWeapon();
     if (!w) return;
     if (ammo) syncAmmoForWeaponConfig(w.id);
-    if (reloadView && typeof toolIdFor === 'function' && toolIdFor(localPlayerId()) === w.id) {
-      localWeaponView?.setTool(w.id);
+    if (typeof toolIdFor === 'function' && toolIdFor(localPlayerId()) === w.id) {
+      if (reloadView) localWeaponView?.setTool(w.id);
+      else localWeaponView?.refresh?.();
       viewHands?.setTool(w.id);
     }
     updateCombatHud?.();
@@ -4224,8 +4319,7 @@ let lgChargeStart = null;
   weaponControlSlider('Position X', w => getArr(w, 'viewOffset', 0), (w, v) => setArr(w, 'viewOffset', 0, v), -1.5, 1.5, 0.01, f2);
   weaponControlSlider('Position Y', w => getArr(w, 'viewOffset', 1), (w, v) => setArr(w, 'viewOffset', 1, v), -1.5, 0.8, 0.01, f2);
   weaponControlSlider('Position Z', w => getArr(w, 'viewOffset', 2), (w, v) => setArr(w, 'viewOffset', 2, v), -2.5, -0.05, 0.01, f2);
-  weaponControlSlider('Scale', w => w?.viewScale ?? 1, (w, v) => { w.viewScale = v; }, 0.05, 4, 0.01, f2, { reloadView: true });
-  weaponControlSlider('Model size', w => w?.viewTargetSize ?? 1, (w, v) => { w.viewTargetSize = v; }, 0.05, 4, 0.01, f2, { reloadView: true });
+  weaponControlSlider('Scale', w => w?.viewScale ?? 1, (w, v) => { w.viewScale = v; }, 0.05, 4, 0.01, f2);
   weaponControlSlider('Rotation X', w => deg(getArr(w, 'viewRotation', 0)), (w, v) => setArr(w, 'viewRotation', 0, rad(v)), -180, 180, 1, fi);
   weaponControlSlider('Rotation Y', w => deg(getArr(w, 'viewRotation', 1)), (w, v) => setArr(w, 'viewRotation', 1, rad(v)), -180, 180, 1, fi);
   weaponControlSlider('Rotation Z', w => deg(getArr(w, 'viewRotation', 2)), (w, v) => setArr(w, 'viewRotation', 2, rad(v)), -180, 180, 1, fi);
@@ -4549,9 +4643,19 @@ function createLocalWeaponViewModel(camera) {
     const center = box.getCenter(new THREE.Vector3());
     obj.position.sub(center);
   }
+  function applyCurrentObjectScale(weapon) {
+    if (!currentObject || !weapon) return;
+    const desired = weapon.viewScale ?? 1;
+    const applied = currentObject.userData.viewScaleApplied ?? desired;
+    if (Math.abs(desired - applied) > 1e-6 && applied !== 0) {
+      currentObject.scale.multiplyScalar(desired / applied);
+      currentObject.userData.viewScaleApplied = desired;
+    }
+  }
   function applyToolTransform(dt = 0, speed = 0) {
     const weapon = getWeapon(currentTool);
     if (!weapon || currentTool === LIGHT_TOOL_ID) { group.visible = false; return; }
+    applyCurrentObjectScale(weapon);
     t += dt;
     recoilT = Math.max(0, recoilT - dt);
     const offset = weapon.viewOffset ?? [0.22, -0.18, -0.42];
@@ -4573,6 +4677,7 @@ function createLocalWeaponViewModel(camera) {
     if (!weapon) { group.visible = false; return; }
     currentObject = fallbackWeapon(toolId);
     currentObject.scale.multiplyScalar(weapon.viewScale ?? 1);
+    currentObject.userData.viewScaleApplied = weapon.viewScale ?? 1;
     group.add(currentObject);
     applyToolTransform(0, 0);
     if (weapon.viewUseModel === false || !weapon.model) return;
@@ -4600,6 +4705,7 @@ function createLocalWeaponViewModel(camera) {
       clearCurrent();
       currentObject = template.clone(true);
       currentObject.scale.multiplyScalar(weapon.viewScale ?? 1);
+      currentObject.userData.viewScaleApplied = weapon.viewScale ?? 1;
       group.add(currentObject);
       applyToolTransform(0, 0);
     } catch (err) {
@@ -4610,6 +4716,7 @@ function createLocalWeaponViewModel(camera) {
   return {
     setVisible(v) { visible = !!v; applyToolTransform(0, 0); },
     setTool(toolId) { loadTool(toolId); },
+    refresh() { applyToolTransform(0, 0); },
     recoil() { recoilT = 0.16; },
     update(dt, { speed = 0 } = {}) { applyToolTransform(dt, speed); },
     destroy() { clearCurrent(); camera.remove(group); },
