@@ -20,6 +20,10 @@ import { buildClaudecraftWorldContent } from './sim-world-content.js';
 import { serializeMobs } from './sim-mob-snapshot.js';
 
 const SIM_DT = 1 / 20; // the sim is a fixed 20 Hz step; never call tick faster.
+// Spiral-of-death guards: never accumulate more than a quarter second of real
+// time in one frame, and never run more than 5 catch-up ticks per frame.
+const MAX_FRAME_DT = 0.25;
+const MAX_STEPS_PER_FRAME = 5;
 
 export function createClaudecraftCreatures({
   workshopPlayerHeight,   // world units, from the live player-size setting
@@ -70,9 +74,13 @@ export function createClaudecraftCreatures({
     const mirror = (pid, w) => sim.setPlayerPose(
       pid, scale.toSim(w.x), scale.toSim(w.y), scale.toSim(w.z), w.facing ?? 0,
     );
-    acc += dt;
+    // Clamp incoming dt and cap catch-up steps so a backgrounded/stalled tab
+    // (dt of seconds) can't synchronously replay hundreds of ticks in one frame
+    // (spiral-of-death). Excess accumulated time is dropped, not replayed.
+    acc += Math.min(dt, MAX_FRAME_DT);
+    let steps = 0;
     let stepped = false;
-    while (acc >= SIM_DT) {
+    while (acc >= SIM_DT && steps < MAX_STEPS_PER_FRAME) {
       if (localPlayerWorld) mirror(localPid, localPlayerWorld);
       for (const rp of remotePlayersWorld) {
         let pid = remotePids.get(rp.id);
@@ -81,8 +89,12 @@ export function createClaudecraftCreatures({
       }
       sim.tick();
       acc -= SIM_DT;
+      steps++;
       stepped = true;
     }
+    // If we hit the step cap there is leftover time we will never catch up on;
+    // drop it so acc doesn't grow unbounded and pin us at the cap forever.
+    if (steps >= MAX_STEPS_PER_FRAME) acc = 0;
     if (stepped) {
       mobs.length = 0;
       for (const m of serializeMobs(sim.entities, scale)) mobs.push(m);

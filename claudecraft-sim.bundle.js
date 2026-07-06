@@ -15996,7 +15996,7 @@ function terrainSteepnessAt(x, z, seed) {
   return v;
 }
 function nearSteepWalls(x, z) {
-  return false;
+  return true;
 }
 function terrainDownhill(x, z, seed) {
   const e = STEEPNESS_SAMPLE;

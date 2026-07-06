@@ -432,10 +432,14 @@ export function terrainSteepnessAt(x: number, z: number, seed: number): number {
 // rare interior steep spots stay mob-walkable, exactly as they always were
 // (players get the full gate everywhere in sim.ts).
 export function nearSteepWalls(x: number, z: number): boolean {
-  // Workshop integration: no built-in ridge/rim walls. The climb-slope gate
-  // still runs against the injected terrain via terrainSteepnessAt, which is
-  // what stops mobs scaling the workshop's real cliffs.
-  return false;
+  // Workshop integration: no built-in ridge/rim walls, but return true so the
+  // per-tick mob movement gate (nearSteepWalls && terrainSteepnessAt > MAX)
+  // does NOT short-circuit — the climb-slope check must run against the
+  // injected terrain everywhere, which is what stops mobs scaling the
+  // workshop's real cliffs. (Returning false disabled the gate entirely.)
+  // Trade-off: the steepness memo now runs over the open world each tick;
+  // acceptable at workshop terrain scale.
+  return true;
 }
 
 // Unit downhill direction at (x, z), or null on (near-)flat ground. Drives the
