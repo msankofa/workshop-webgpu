@@ -110,5 +110,73 @@ const custom = createDeadfallPalette({
 ok(custom.variants.length === 12, '7: custom 3-type/12-seed table scales (no hardcoded cap)');
 ok(custom.types[0].kind === 'log' && custom.types[2].kind === 'mushroom', '7: custom type kinds preserved');
 
+// ---- 8: triangle winding -- for a closed log/stump, side-wall triangle face normals (computed
+// from vertex order, NOT the baked vertex normals) must point OUTWARD from the tube's local
+// segment center, i.e. dot(faceNormal, vertexPos - segmentCenter) > 0. This is the actual
+// index-winding signal a renderer's backface cull sees; it is independent of the explicit
+// per-vertex normals Grower bakes (those are always correct per the file's own header comment,
+// which is exactly why a winding bug can hide behind them under DoubleSide). Side-wall quads
+// (`g.quad(a[k], b[k], b[k2], a[k2])` in sweepTube) span exactly TWO adjacent rings (rows sharing
+// a uv.y value), never three, so `segmentCenter` for a sampled triangle is the centroid of every
+// vertex belonging to the ring(s) its 3 corners touch (1 or 2 rings) -- a generic,
+// geometry-agnostic stand-in for the sweep's centerline point near that triangle. Cap-fan
+// triangles (which touch a lone apex vertex outside any >=3-vertex ring) are skipped.
+function sampleWindingOutward(geo) {
+  const pos = geo.getAttribute('position');
+  const uvAttr = geo.getAttribute('uv');
+  const idx = geo.getIndex().array;
+  const v3 = (i) => [pos.getX(i), pos.getY(i), pos.getZ(i)];
+  const vY = (i) => uvAttr.getY(i);
+  // bucket vertex indices by rounded uv.y ("ring")
+  const RING_EPS = 1e-3;
+  const ringKey = (y) => Math.round(y / RING_EPS);
+  const ringBuckets = new Map();
+  for (let i = 0; i < pos.count; i++) {
+    const k = ringKey(vY(i));
+    if (!ringBuckets.has(k)) ringBuckets.set(k, []);
+    ringBuckets.get(k).push(i);
+  }
+  // only keys with >=3 verts are real swept rings (cap apex vertices are lone singletons)
+  const ringCentroid = new Map();
+  for (const [k, bucket] of ringBuckets) {
+    if (bucket.length < 3) continue;
+    let cx = 0, cy = 0, cz = 0;
+    for (const i of bucket) { const [x, y, z] = v3(i); cx += x; cy += y; cz += z; }
+    ringCentroid.set(k, [cx / bucket.length, cy / bucket.length, cz / bucket.length]);
+  }
+  let checked = 0, outward = 0;
+  for (let t = 0; t < idx.length / 3; t++) {
+    const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+    const keys = [...new Set([ringKey(vY(a)), ringKey(vY(b)), ringKey(vY(c))])];
+    const rings = keys.map((k) => ringCentroid.get(k)).filter(Boolean);
+    if (rings.length === 0 || keys.length !== rings.length) continue; // touches a cap apex -- skip
+    const center = rings.length === 1
+      ? rings[0]
+      : [
+          rings.reduce((s, r) => s + r[0], 0) / rings.length,
+          rings.reduce((s, r) => s + r[1], 0) / rings.length,
+          rings.reduce((s, r) => s + r[2], 0) / rings.length,
+        ];
+    const pa = v3(a), pb = v3(b), pc = v3(c);
+    const e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    const e2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+    const faceN = cross3(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2]);
+    const out = [pa[0] - center[0], pa[1] - center[1], pa[2] - center[2]];
+    const d = faceN[0] * out[0] + faceN[1] * out[1] + faceN[2] * out[2];
+    checked++;
+    if (d > 0) outward++;
+  }
+  return { checked, outward };
+}
+function cross3(ax, ay, az, bx, by, bz) { return [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx]; }
+
+const windLog = sampleWindingOutward(buildLog({ rng: rngFrom(11), decay: 'mossy', shelf: false }).geometry);
+ok(windLog.checked > 0, '8: log winding test sampled side-wall triangles');
+ok(windLog.outward === windLog.checked, `8: log side-wall triangles wind outward (${windLog.outward}/${windLog.checked})`);
+
+const windStump = sampleWindingOutward(buildStump({ rng: rngFrom(12) }).geometry);
+ok(windStump.checked > 0, '8: stump winding test sampled side-wall triangles');
+ok(windStump.outward === windStump.checked, `8: stump side-wall triangles wind outward (${windStump.outward}/${windStump.checked})`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

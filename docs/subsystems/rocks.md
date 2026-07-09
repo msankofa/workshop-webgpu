@@ -36,8 +36,11 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
 | `rocks.js` | `buildRockGeometry(rng, opts)` — welded, plane-wave-displaced, squashed icosphere with baked `rockUpness`/`rockCavity` vertex attributes. `buildBoulderMaterial(opts)` — rich triplanar PBR + moss/lichen/dirt dressing, for boulder groups. `buildScreeMaterial(opts)` — cheap planar/flat-color material with constant roughness, for scree groups. `buildRockMaterial` — back-compat alias for `buildBoulderMaterial`. `createRockPalette(opts)` — data-driven palette of any number of rock types. |
 | `rocks-placement.js` | `rockPlacementRecords(...)` — deterministic seeded placement records for boulders (scatter broadly) + scree (slope/rockness-gated), lowest-of-5-footprint seating, per-instance moisture. `boulderCirclesFromRecords(...)` — collision-circle export for `createTrunkIndex`. `rocknessOf(...)` — shared gating helper. |
 | `dressing-gpu.js` | `createDressingGPU(opts)` — generalized reset→cull→finalize→indirect-draw instancing host with per-group instance caps/cull radii/shadow flags/materials. Factored out of (not edited into) `plants-gpu.js`'s spine; the intended shared host for rocks now and deadfall/fungi (Phase 4) later. |
+| `deadfall.js` | `buildLog(opts)`/`buildStump(opts)`/`buildMushroom(opts)` — swept-tube (`Grower`/`sweepTube`) log/stump geometry with baked decay/shelf-fungus vertex channels, plus lathed mushroom caps. `buildDeadwoodMaterial(opts)` — bark/moss/shelf-fungus material for logs/stumps, `THREE.FrontSide` by default (perf-recovery Wave 2, 2026-07-08, Milestone 2). `buildMushroomMaterial(opts)` — part-colored mushroom material, `THREE.DoubleSide` (intentional, see "Deadfall winding and DoubleSide" below). `createDeadfallPalette(opts)` — data-driven palette of any number of deadfall types. |
 | `test-rocks-geometry.mjs` | Welded→indexed, finite verts, unit normals, squash applied, baked upness/cavity in `[0,1]`, determinism, and `createRockPalette`'s data-driven type scaling. |
 | `test-rocks-placement.mjs` | Determinism, record shape, slope/rockness gating (scree vs. flat/non-rocky ground), water rejection, lowest-of-5-footprint seating (cliff-straddling case), scree sink depth, optional `trunkQuery` rejection, `boulderCirclesFromRecords`, `rocknessOf`. |
+| `test-deadfall-geometry.mjs` | `buildLog`/`buildStump`/`buildMushroom`/`createDeadfallPalette` — decay monotonicity, finite/indexed/unit-normal geometry, baked decay weight, shelf-fungus gating (mossy/rotten only), mushroom part channels, determinism, palette data-drivenness, and (Milestone 2) outward triangle winding for log/stump side walls and caps. |
+| `test-deadfall-placement.mjs` | `deadfallPlacementRecords` — moisture→decay mapping, slope rejection for logs, canopy weighting, mushroom hard-gate, determinism, collision-circle export. |
 
 ## Public API
 
@@ -324,6 +327,44 @@ what `dressing-gpu.js` would have done at construction time), and assigns `mesh.
 directly via `dressingGPU.meshes[groupIdx]` (index-aligned with `groups`, since both are built in
 the same loop in `dressing-gpu.js`). Geometry, `instanceCount`, and the indirect draw buffer are
 untouched by the swap — only the material/shader changes.
+
+### Deadfall winding and DoubleSide (perf-recovery Wave 2, 2026-07-08, Milestone 2)
+
+`deadfall.js`'s `Grower`/`sweepTube` mesher previously wound log/stump side-wall triangles and
+the stump's top-cap fan **inward** relative to their (correct, outward) baked vertex normals —
+proven by `test-deadfall-geometry.mjs`'s outward-facing winding assertion (`dot(faceNormal,
+vertex - ringCentroid) > 0` for a sample of side-wall triangles), which failed against the old
+winding. `buildDeadwoodMaterial` worked around this with a blanket `THREE.DoubleSide`, which is
+more expensive than it needs to be for solid, closed log/stump geometry (P5 in
+`docs/superpowers/specs/2026-07-08-terrain-dressing-performance-design.md`).
+
+Fix: `sweepTube`'s side-wall `quad(a[k], b[k], b[k2], a[k2])` calls were reordered to
+`quad(a[k], a[k2], b[k2], b[k])`, and `buildStump`'s top-cap fan `tri(cTop, top[k], top[k2])` was
+reordered to `tri(cTop, top[k2], top[k])` — both flip the two affected triangles to wind
+outward. `buildStump`'s own side-wall quad loop (a separate ring loop, not `sweepTube`) already
+wound outward and was left untouched. `buildDeadwoodMaterial` now defaults to `THREE.FrontSide`;
+the blanket `DoubleSide` workaround comment is gone from that function.
+
+Shelf fungus (`addShelf`) bakes single-sided half-bracket sheets into the SAME log/stump
+geometry/material — `dressing-gpu.js` is one-geometry-one-material-per-group, so shelf fungus
+can't get its own `DoubleSide` submesh without a host change out of Milestone 2's scope. Per the
+design doc's explicit alternative ("keep DoubleSide only for mushroom groups"), shelf fungus
+renders from its outward face only under the new `FrontSide` default; `buildMushroomMaterial`
+(separate groups, low instance counts) keeps `THREE.DoubleSide` unconditionally, since the
+lathed cap/gill/stem use their own winding convention and the gill disc is a thin fan viewed from
+underneath — both genuinely need both faces.
+
+**Perf A/B toggle**: `deadfall.js` calls `globalThis.window?.perfAB?.addToggle('Deadfall
+double-sided', false, fn)` directly from its own module scope (not from
+`environment-viewer.html` — same pattern `terrain-textures.js` uses for its "Terrain shader"
+select/slider), guarded so it no-ops in Node tests where `window` doesn't exist and registers
+only once no matter how many groups call `buildDeadwoodMaterial`. Unlike the rock material
+hot-swap above, this toggle does **not** swap `mesh.material` — every `buildDeadwoodMaterial()`
+instance is tracked in a module-level `Set`, and the toggle callback mutates `mat.side` (
+`THREE.FrontSide` off / `THREE.DoubleSide` on) plus `mat.needsUpdate = true` on each tracked
+material directly, so `positionNode`/`normalNode` (already set once by `dressing-gpu.js` at
+construction) never need replicating. The winding fix itself is one-way and has no toggle; this
+toggle exists solely to A/B the residual `DoubleSide` render cost live.
 
 ## Perf notes (merged-plan §3 gates)
 

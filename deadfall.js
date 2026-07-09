@@ -111,7 +111,12 @@ function sweepTube(g, centers, radii, squish, ringSegs, weightC0, weightC1) {
     const a = ringIds[i].ids, b = ringIds[i + 1].ids;
     for (let k = 0; k < ringSegs; k++) {
       const k2 = (k + 1) % ringSegs;
-      g.quad(a[k], b[k], b[k2], a[k2]);
+      // Winding fixed (P5/Milestone 2): (a[k], b[k], b[k2], a[k2]) produced inward-facing
+      // triangles (verified via test-deadfall-geometry.mjs's outward-normal winding check --
+      // dot(faceNormal, vertex - ringCentroid) was negative for every side-wall quad). Reversing
+      // to (a[k], a[k2], b[k2], b[k]) flips both triangles so they wind outward, matching the
+      // explicit per-vertex normals Grower already bakes and letting FrontSide cull correctly.
+      g.quad(a[k], a[k2], b[k2], b[k]);
     }
   }
   // caps (both ends): center fan, normal along -tangent (start) / +tangent (end)
@@ -252,12 +257,14 @@ export function buildStump(opts = {}) {
       g.quad(a[k], b[k], b[k2], a[k2]);
     }
   }
-  // jagged broken top cap (flat-ish fan with slight height jitter for a snapped look)
+  // jagged broken top cap (flat-ish fan with slight height jitter for a snapped look).
+  // Winding fixed (P5/Milestone 2): tri(cTop, top[k], top[k2]) faced downward/inward (verified
+  // via test-deadfall-geometry.mjs); swap the rim pair so the fan faces up/outward.
   const top = ringIds[segs];
   const cTop = g.vertex(0, h + r0 * 0.05, 0, 0, 1, 0, 0.5, 1, decayC0, 0);
   for (let k = 0; k < ringSegs; k++) {
     const k2 = (k + 1) % ringSegs;
-    g.tri(cTop, top[k], top[k2]);
+    g.tri(cTop, top[k2], top[k]);
   }
   return { geometry: g.build(), height: h };
 }
@@ -329,6 +336,12 @@ export function buildMushroom(opts = {}) {
 // same trick rocks.js uses), for the moss break-up noise.
 const hashNoise3 = (p) => fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))).mul(43758.5453));
 
+// P5/Milestone 2 (docs/superpowers/specs/2026-07-08-terrain-dressing-performance-design.md):
+// every buildDeadwoodMaterial() instance is tracked here so the perfAB "Deadfall double-sided"
+// toggle (registered below) can flip `.side` on all of them at runtime for a live A/B, without
+// deadfall.js owning a reference back to the dressing-gpu.js groups that actually use them.
+const deadwoodMaterials = new Set();
+
 // Deadwood material: bark-ish MeshStandardNodeMaterial (stays on the node-material family so it
 // picks up clustered lights) tinted by the ONE shared mossWeight() law, driven by the baked
 // decay weight (aC0). Pure expression nodes (no If() at material scope -- select()/mix() only),
@@ -344,22 +357,29 @@ const hashNoise3 = (p) => fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))).mul(4
 //         UVs (u around the ring, v along length) scaled by uvRepeat; when supplied it replaces
 //         the flat freshBark/rottenBark base, still darkened toward rotten by decay. The wiring
 //         feeds the SAME Bark014 pack trees use, so logs/stumps match the forest bark),
-//         roughnessMap (THREE.Texture, OPTIONAL, sampled .g), uvRepeat=[2,3] ([u,v] tile counts). }
+//         roughnessMap (THREE.Texture, OPTIONAL, sampled .g), uvRepeat=[2,3] ([u,v] tile counts),
+//         doubleSided=false (perf A/B override -- see the "Deadfall double-sided" perfAB toggle
+//         below; forces THREE.DoubleSide instead of the FrontSide default). }
 export function buildDeadwoodMaterial(opts = {}) {
   const moistureNode = opts.moistureNode ?? float(DEFAULT_MOISTURE);
   const brushScale = opts.brushScale ?? 0.7;
   const albedoMap = opts.albedoMap ?? null;
   const roughnessMap = opts.roughnessMap ?? null;
   const uvRepeat = opts.uvRepeat ?? [2, 3];
-  // DoubleSide is REQUIRED here, for two reasons: (1) shelf fungi (addShelf) are single-sided
-  // half-bracket sheets that must be visible from both faces; (2) the Grower's swept-tube
-  // winding is inverted relative to its (correct, outward) vertex normals -- proven by the face
-  // normal of a side quad pointing inward -- so under FrontSide culling logs/stumps render
-  // inside-out (you see the lit inner back wall through the culled near wall). DoubleSide draws
-  // both faces and flips the normal per back-facing fragment, so lighting stays correct. (A
-  // future fix could reverse the Grower winding and drop this, but it needs in-browser
-  // validation the module never had -- there is no deadfall geometry viewer.)
-  const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0, side: THREE.DoubleSide });
+  // P5/Milestone 2 fix: the Grower's swept-tube side-wall winding (sweepTube's quads) and the
+  // stump's top-cap fan were inverted relative to their (correct, outward) baked vertex normals
+  // -- proven by test-deadfall-geometry.mjs's outward-facing winding assertion, which failed
+  // against the old winding and passes now. With winding fixed, FrontSide renders logs/stumps
+  // correctly, so the blanket DoubleSide workaround is dropped here. Shelf fungi (addShelf) are
+  // still single-sided half-bracket sheets baked into this SAME geometry/material (dressing-gpu.js
+  // is one-geometry-one-material-per-group, so they can't get their own DoubleSide submesh
+  // without a host change out of Milestone 2's scope) -- they render as intended from their
+  // outward face and cull from behind, same as any other bark surface; this is an accepted trade
+  // per the design doc's explicit alternative ("keep DoubleSide only for mushroom groups").
+  const mat = new MeshStandardNodeMaterial({
+    roughness: 1, metalness: 0, side: opts.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+  });
+  deadwoodMaterials.add(mat);
 
   const decay = attribute('aC0', 'float');
   const shelf = attribute('aC1', 'float');
@@ -393,7 +413,35 @@ export function buildDeadwoodMaterial(opts = {}) {
   mat.colorNode = base;
   const rough0 = roughnessMap ? texture(roughnessMap, uvNode).g : float(1.0);
   mat.roughnessNode = mix(rough0, float(0.9), moss);
+  registerDeadfallDoubleSidedToggle();
   return mat;
+}
+
+// Perf A/B control (P5/Milestone 2): "Deadfall double-sided" toggle flips every tracked
+// buildDeadwoodMaterial() instance between the FrontSide default (off, the winding-fixed cheap
+// path) and THREE.DoubleSide (on) at runtime, so the two are directly A/B-comparable live in one
+// session -- the winding fix itself has no toggle (it's simply correct now), this is ONLY for
+// measuring the render-cost delta DoubleSide still carries when deliberately re-enabled. No-op
+// outside environment-viewer.html (window.perfAB is only installed there; guarded with
+// `globalThis.window?.` so this file stays Node-test-safe where `window` doesn't exist at all)
+// and outside a real WebGPU material (`needsUpdate` is a no-op/undefined-safe on any object).
+// Registers once (module-level guard) no matter how many groups call buildDeadwoodMaterial, per
+// Wave 0's queued-registration contract (docs/subsystems/infra.md "Perf A/B control registry").
+let deadfallToggleRegistered = false;
+function registerDeadfallDoubleSidedToggle() {
+  if (deadfallToggleRegistered) return;
+  const registered = globalThis.window?.perfAB?.addToggle(
+    'Deadfall double-sided',
+    false,
+    (v) => {
+      const side = v ? THREE.DoubleSide : THREE.FrontSide;
+      for (const mat of deadwoodMaterials) {
+        mat.side = side;
+        mat.needsUpdate = true;
+      }
+    },
+  );
+  if (registered) deadfallToggleRegistered = true;
 }
 
 // Mushroom material: opaque, part-colored (cap/gills/stem via aC0), NO emissive/glow (the
@@ -402,8 +450,13 @@ export function buildMushroomMaterial(opts = {}) {
   const cap = opts.capColor || [0.62, 0.20, 0.16];
   const gill = opts.gillColor || [0.86, 0.80, 0.68];
   const stem = opts.stemColor || [0.90, 0.86, 0.74];
-  // DoubleSide: the lathed cap/gill/stem share the Grower's inverted-winding convention (see
-  // buildDeadwoodMaterial), and the gill disc is a thin single-sided fan -- both need both faces.
+  // DoubleSide: kept intentionally per P5/Milestone 2 (unlike buildDeadwoodMaterial, whose
+  // blanket DoubleSide was dropped once the log/stump winding bug was fixed). The lathed
+  // cap/gill/stem here use their own winding convention and the gill disc is a thin
+  // single-sided fan viewed from underneath -- both genuinely need both faces, so this is one of
+  // the design doc's named exceptions ("keep DoubleSide only for mushroom groups"), not a
+  // leftover workaround. Mushroom groups are also low-poly/low-instance-count relative to
+  // logs/stumps, so this DoubleSide cost isn't the P5 regression driver.
   const mat = new MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
   const part = attribute('aC0', 'float');   // 0 stem, 0.5 gills, 1 cap
   const tone = attribute('aC1', 'float');
