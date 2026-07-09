@@ -2,14 +2,24 @@
 // spine (reset -> cull -> finalize -> indirect draw) but, unlike grass, placement is
 // CPU-side: createForestPalette bakes V variant geometries once, CPU placementRecords
 // fill a GPU-resident SOURCE buffer (uploaded only on chunk change), and the per-frame
-// compute pass only CULLS (camera distance, transcribing forest-cull.js) and COMPACTS
-// survivors per variant into a DRAW buffer that backs per-variant indirect draws.
+// compute pass only CULLS (camera distance + frustum/cone + far cutoff, transcribing
+// forest-cull.js) and COMPACTS survivors per variant into a DRAW buffer that backs
+// per-variant indirect draws.
 //
 // Layout: one global source/draw buffer of V*CAP instances; variant g owns slots
 // [g*CAP, (g+1)*CAP). Each instance is 2x vec4: rec0=(x,y,z,scale), rec1=(yaw,_,_,_).
 // V = palette.variants.length; each variant draws 3 mesh types (branches/leaves/shadow)
 // that share the variant's survivor list (same trees), so cull runs once per variant
 // region and finalize writes that variant's survivor count into its 3 indirect buffers.
+//
+// Milestones 1-4 (docs/superpowers/specs/2026-07-08-trees-performance-design.md): frustum/cone
+// rejection + a hard far draw-distance cutoff run in the SAME cull pass, before LOD bucketing
+// and before any atomicAdd — a rejected instance never claims a compact slot in any LOD region.
+// The classification math (radial LOD bucketing untouched; cone + far-cutoff new) is hand-synced
+// with forest-cull.js's classifyInstance()/shouldRecull() — that file is the Node-testable CPU
+// twin (same convention as dressing-cull.js/dressing-gpu.js) and is deliberately NOT imported
+// here (forest-gpu.js has never imported forest-cull.js) — keep the two files' math in sync
+// manually when this kernel changes.
 import * as THREE from 'three';
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
@@ -17,7 +27,7 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
-  vec2, vec3, vec4, cos, sin, modInt, positionLocal, normalLocal,
+  vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad,
   normalize, cross, cameraPosition, texture,
 } from 'three/tsl';
@@ -81,6 +91,35 @@ export function createForestGPU(opts) {
   const uLodR0 = uniform(opts.lodR0 ?? 60);
   const uLodR1 = uniform(opts.lodR1 ?? 120);
   const uLodR2 = uniform(opts.lodR2 ?? 220);
+  // Milestone 3: hard far cutoff. Beyond this, instances are rejected outright instead of
+  // falling through to an ever-growing LOD3 billboard population (finding 2/design section 2).
+  // Default ~1.5x the LOD2/billboard radius (opts.lodR2, viewer default 583 -> 875), giving
+  // billboards a bounded visible band past LOD2 rather than "billboard forever".
+  const uMaxDrawRadius = uniform(opts.maxDrawRadius ?? (uLodR2.value * 1.5));
+  // Milestone 2: camera forward (XZ, normalized) + view-cone cosine, shared by every variant's
+  // cull kernel (one camera, one frame) -- same uniform shape as dressing-gpu.js's P4/Milestone 5
+  // cone rejection. uConeMargin is WIDER than dressing's 0.35 default: trees are large, so
+  // canopy clipping at the padded cone edge is very visible; be conservative. uRearMargin is a
+  // small extra cosine tolerance folded into the same unified coneCos threshold (see
+  // forest-cull.js's classifyInstance for the exact math this kernel transcribes).
+  // uTreeRadius is a single conservative canopy half-width (world units, at instance scale=1)
+  // taken as the MAX across every variant's baked bounding box (see variantCanopyRadius below) --
+  // one flat constant rather than a per-variant array, so the cone padding is generous everywhere
+  // (the biggest tree in the palette sets the margin for all of them).
+  const uCamFwd = uniform(new THREE.Vector2(0, -1));
+  const uFovCos = uniform(1);
+  const uConeMargin = uniform(opts.coneMargin ?? 0.5);
+  const uRearMargin = uniform(0.1);
+  const uConeEnabled = uniform(1);
+  function variantCanopyRadius(variant) {
+    if (!variant.branches.boundingBox) variant.branches.computeBoundingBox();
+    if (!variant.leaves.boundingBox) variant.leaves.computeBoundingBox();
+    const box = new THREE.Box3().copy(variant.branches.boundingBox).union(variant.leaves.boundingBox);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    return Math.max(size.x, size.z) * 0.5 * 1.15; // half-width, same 1.15 pad as variantBillboardGeo
+  }
+  const uTreeRadius = uniform(Math.max(0, ...palette.variants.map(variantCanopyRadius)));
 
   // ---- compute kernels: reset (clear V counters) -> cull+compact -> finalize ----
   const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V * LODS);
@@ -96,36 +135,62 @@ export function createForestGPU(opts) {
       const dx = rec0.x.sub(uCam.x);
       const dz = rec0.z.sub(uCam.y);
       const dist2 = dx.mul(dx).add(dz.mul(dz));
-      const r0sq = uLodR0.mul(uLodR0);
-      const r1sq = uLodR1.mul(uLodR1);
-      const r2sq = uLodR2.mul(uLodR2);
-      const lodCap = int(LODS * CAP);
-      const varBase = g.mul(lodCap);
+      const dist = length(vec2(dx, dz));
 
-      If(dist2.lessThanEqual(r0sq), () => {
-        const ci = uint(g.mul(int(LODS)));
-        const s = atomicAdd(survAtomics.element(ci), uint(1));
-        const outBase = uint(varBase).add(s).mul(uint(2));
-        draw.element(outBase).assign(rec0);
-        draw.element(outBase.add(uint(1))).assign(rec1);
-      }).ElseIf(dist2.lessThanEqual(r1sq), () => {
-        const ci = uint(g.mul(int(LODS)).add(int(1)));
-        const s = atomicAdd(survAtomics.element(ci), uint(1));
-        const outBase = uint(varBase.add(int(CAP))).add(s).mul(uint(2));
-        draw.element(outBase).assign(rec0);
-        draw.element(outBase.add(uint(1))).assign(rec1);
-      }).ElseIf(dist2.lessThanEqual(r2sq), () => {
-        const ci = uint(g.mul(int(LODS)).add(int(2)));
-        const s = atomicAdd(survAtomics.element(ci), uint(1));
-        const outBase = uint(varBase.add(int(2 * CAP))).add(s).mul(uint(2));
-        draw.element(outBase).assign(rec0);
-        draw.element(outBase.add(uint(1))).assign(rec1);
-      }).Else(() => {
-        const ci = uint(g.mul(int(LODS)).add(int(3)));
-        const s = atomicAdd(survAtomics.element(ci), uint(1));
-        const outBase = uint(varBase.add(int(3 * CAP))).add(s).mul(uint(2));
-        draw.element(outBase).assign(rec0);
-        draw.element(outBase.add(uint(1))).assign(rec1);
+      // ---- Milestone 3: hard far cutoff (before LOD/cone work) ----
+      const farLive = dist.lessThanEqual(uMaxDrawRadius);
+
+      // ---- Milestone 2: behind-camera / outside-padded-cone rejection ----
+      // Same math as forest-cull.js's classifyInstance() cone branch: normalize the
+      // camera->instance XZ vector, dot with camera forward, compare against a padded cosine
+      // threshold that widens both by a flat uConeMargin AND by this instance's own angular
+      // canopy radius (uTreeRadius*scale / dist, via atan) -- large nearby trees get more
+      // padding than small distant ones. dist<1e-6 guard mirrors the CPU twin (never reject an
+      // instance sitting on the camera). uConeEnabled is a 0/1 float flag for backward compat.
+      const invDist = float(1.0).div(dist.max(float(1e-6)));
+      const nx = dx.mul(invDist);
+      const nz = dz.mul(invDist);
+      const fwdDot = nx.mul(uCamFwd.x).add(nz.mul(uCamFwd.y));
+      const treeRadius = uTreeRadius.mul(rec0.w);
+      const angularPad = atan(treeRadius, dist.max(float(1e-6)));
+      const baseCos = clamp(uFovCos.sub(uConeMargin), -1, 1);
+      const coneCos = cos(acos(baseCos).add(angularPad)).sub(uRearMargin);
+      const coneLive = fwdDot.greaterThanEqual(coneCos).or(dist.lessThan(float(1e-6))).or(uConeEnabled.lessThan(float(0.5)));
+
+      const live = farLive.and(coneLive);
+
+      If(live, () => {
+        const r0sq = uLodR0.mul(uLodR0);
+        const r1sq = uLodR1.mul(uLodR1);
+        const r2sq = uLodR2.mul(uLodR2);
+        const lodCap = int(LODS * CAP);
+        const varBase = g.mul(lodCap);
+
+        If(dist2.lessThanEqual(r0sq), () => {
+          const ci = uint(g.mul(int(LODS)));
+          const s = atomicAdd(survAtomics.element(ci), uint(1));
+          const outBase = uint(varBase).add(s).mul(uint(2));
+          draw.element(outBase).assign(rec0);
+          draw.element(outBase.add(uint(1))).assign(rec1);
+        }).ElseIf(dist2.lessThanEqual(r1sq), () => {
+          const ci = uint(g.mul(int(LODS)).add(int(1)));
+          const s = atomicAdd(survAtomics.element(ci), uint(1));
+          const outBase = uint(varBase.add(int(CAP))).add(s).mul(uint(2));
+          draw.element(outBase).assign(rec0);
+          draw.element(outBase.add(uint(1))).assign(rec1);
+        }).ElseIf(dist2.lessThanEqual(r2sq), () => {
+          const ci = uint(g.mul(int(LODS)).add(int(2)));
+          const s = atomicAdd(survAtomics.element(ci), uint(1));
+          const outBase = uint(varBase.add(int(2 * CAP))).add(s).mul(uint(2));
+          draw.element(outBase).assign(rec0);
+          draw.element(outBase.add(uint(1))).assign(rec1);
+        }).Else(() => {
+          const ci = uint(g.mul(int(LODS)).add(int(3)));
+          const s = atomicAdd(survAtomics.element(ci), uint(1));
+          const outBase = uint(varBase.add(int(3 * CAP))).add(s).mul(uint(2));
+          draw.element(outBase).assign(rec0);
+          draw.element(outBase.add(uint(1))).assign(rec1);
+        });
       });
     });
   })().compute(SRC_TOTAL);
@@ -299,9 +364,17 @@ export function createForestGPU(opts) {
   let submittedDraws = 0;     // meshes actually left visible (visibleVariants * 8)
   let lastCamX = NaN;
   let lastCamZ = NaN;
+  let lastCamFx = NaN;
+  let lastCamFz = NaN;
   let reculls = 0;
   let skippedReculls = 0;
-  const EPS = 0.001;
+  // Milestone 4: threshold-gated recull tuning (replaces the old EPS movement check; see the
+  // coupling warning below and forest-cull.js's shouldRecull). perfAB sliders can retune both
+  // live; changing either does NOT itself force a recull (they only change the gate for FUTURE
+  // frames), matching dressing-gpu.js's equivalent sliders.
+  let recullMoveDist = 1.5;                          // world units of XZ camera travel
+  let recullHeadingCos = Math.cos(2 * Math.PI / 180); // 2 degrees of heading change
+  const _fwd3 = new THREE.Vector3();
   function markDirty() {
     dirty = true;
   }
@@ -359,6 +432,74 @@ export function createForestGPU(opts) {
     markDirty();
   }
 
+  // Milestone 1/4 telemetry: lazy CPU-estimate of the cull kernel's per-instance classification
+  // (rejected-by-frustum, rejected-by-far-cutoff, and per-LOD survivor counts), computed ONLY
+  // when something reads `stats` (e.g. the perf CSV sampler), not every update() call -- same
+  // "don't add a per-frame GPU readback, estimate lazily instead" approach dressing-gpu.js took
+  // for stats.rejectedFrustum in e1a3ff8. Scans the live srcArray/countsArray (the CPU's own
+  // record of what's currently in the window) against the camera pose AS OF THE LAST EXECUTED
+  // RECULL (lastCamX/Z/Fx/Fz), so it reflects "as of the most recent recull", not necessarily
+  // the exact current camera pose if called between updates -- reimplements the same cone/far
+  // math inline in plain JS (not a call into forest-cull.js) for the same no-cross-import reason
+  // forest-gpu.js has never imported forest-cull.js.
+  function computeCullEstimate() {
+    const out = {
+      rejectedFrustum: 0, rejectedFar: 0,
+      lod0: 0, lod1: 0, lod2: 0, billboard: 0,
+    };
+    if (!Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)) return out;
+    const coneEnabled = uConeEnabled.value >= 0.5;
+    const r0 = uLodR0.value, r1 = uLodR1.value, r2 = uLodR2.value, maxR = uMaxDrawRadius.value;
+    for (let g = 0; g < V; g++) {
+      const count = countsArray[g];
+      for (let slot = 0; slot < count; slot++) {
+        const base = (g * CAP + slot) * 8;
+        const x = srcArray[base], z = srcArray[base + 2], scale = srcArray[base + 3];
+        const dx = x - lastCamX, dz = z - lastCamZ;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist > maxR) { out.rejectedFar++; continue; }
+        if (coneEnabled && dist >= 1e-6) {
+          const nx = dx / dist, nz = dz / dist;
+          const fwdDot = nx * lastCamFx + nz * lastCamFz;
+          const treeRadius = uTreeRadius.value * scale;
+          const angularPad = Math.atan2(treeRadius, Math.max(dist, 1e-6));
+          const baseCos = Math.max(-1, Math.min(1, uFovCos.value - uConeMargin.value));
+          const coneCos = Math.cos(Math.acos(baseCos) + angularPad) - uRearMargin.value;
+          if (fwdDot < coneCos) { out.rejectedFrustum++; continue; }
+        }
+        if (dist <= r0) out.lod0++;
+        else if (dist <= r1) out.lod1++;
+        else if (dist <= r2) out.lod2++;
+        else out.billboard++;
+      }
+    }
+    return out;
+  }
+
+  // ---- Milestone 5: perf A/B controls (window.perfAB) ----
+  // Registered here (inside createForestGPU, called once per host construction, same pattern
+  // dressing-gpu.js uses) rather than from environment-viewer.html. No-op outside the viewer
+  // (window.perfAB is only installed there; guarded so this stays Node-test-safe where `window`
+  // doesn't exist).
+  globalThis.window?.perfAB?.addToggle('Forest frustum cull', true, (v) => {
+    uConeEnabled.value = v ? 1 : 0;
+    markDirty();
+  });
+  globalThis.window?.perfAB?.addSlider('Forest cone margin', uConeMargin.value, 0, 0.5, 0.01, (v) => {
+    uConeMargin.value = v;
+    markDirty();
+  });
+  globalThis.window?.perfAB?.addSlider('Tree max draw radius', uMaxDrawRadius.value, uLodR2.value, uLodR2.value * 3, 5, (v) => {
+    uMaxDrawRadius.value = v;
+    markDirty();
+  });
+  globalThis.window?.perfAB?.addSlider('Recull cell size', recullMoveDist, 0.1, 5, 0.1, (v) => {
+    recullMoveDist = v;
+  });
+  globalThis.window?.perfAB?.addSlider('Recull angle deg', 2, 0.5, 15, 0.5, (v) => {
+    recullHeadingCos = Math.cos(v * Math.PI / 180);
+  });
+
   return {
     meshes,
     // Drive the same material binding the baked path uses: fn(branchMat, leafMat) is
@@ -396,27 +537,88 @@ export function createForestGPU(opts) {
     // indirect instanceCount (unawaited races the draw; see grass-compute.js). The whole
     // chain goes in ONE computeAsync([...]) submit (three dispatches the array in order on
     // a single encoder): 14 separate awaited submits/frame were the gpu path's CPU cost.
+    //
+    // Milestone 4: threshold-gated recull (replaces the old EPS=0.001 camera-epsilon check,
+    // which reculled essentially every walking frame). Recull only when the camera has moved
+    // past recullMoveDist, turned past the heading threshold, or `dirty` was set by a data
+    // change (chunk mutation, LOD/far-radius change, perfAB cone toggle/margin) -- those always
+    // fire immediately, no threshold. Hand-synced with forest-cull.js's shouldRecull (same
+    // not-imported twin convention as the cull kernel above).
+    //
+    // COUPLING WARNING: recullMoveDist/recullHeadingCos are coupled to the cone padding
+    // (uConeMargin + uTreeRadius). The padded cone must comfortably cover the worst-case
+    // staleness between reculls -- up to recullMoveDist of travel + the heading threshold's
+    // turn + the instance's own canopy radius -- so large canopies never pop inside the visible
+    // frustum before the next recull fires. Do NOT shrink the cone margin without tightening
+    // these thresholds, and vice versa.
     async update() {
       // Run any deferred rebuild before the cull reads the source buffer/counts. rebuild()
-      // markDirty()s, so the camera-epsilon skip below won't stale a fresh chunk batch.
+      // markDirty()s, so the threshold skip below won't stale a fresh chunk batch.
       if (needsRebuild) { rebuild(); needsRebuild = false; }
       const camX = camera.position.x;
       const camZ = camera.position.z;
-      if (!dirty && Math.abs(camX - lastCamX) <= EPS && Math.abs(camZ - lastCamZ) <= EPS) {
+      camera.getWorldDirection(_fwd3);
+      const fLenSq = _fwd3.x * _fwd3.x + _fwd3.z * _fwd3.z;
+      let camFx = uCamFwd.value.x, camFz = uCamFwd.value.y;
+      if (fLenSq > 1e-8) {
+        const fLen = Math.sqrt(fLenSq);
+        camFx = _fwd3.x / fLen; camFz = _fwd3.z / fLen;
+      }
+      const camFovCos = camera.isPerspectiveCamera
+        ? Math.cos((camera.fov * Math.PI / 180) / 2)
+        : uFovCos.value;
+      const camMoved = (camX - lastCamX) ** 2 + (camZ - lastCamZ) ** 2
+        > recullMoveDist * recullMoveDist;
+      const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos;
+      const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
+        || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
+      if (!dirty && !firstRecull && !camMoved && !camTurned) {
         skippedReculls++;
         return;
       }
       uCam.value.set(camX, camZ);
+      uCamFwd.value.set(camFx, camFz);
+      uFovCos.value = camFovCos;
       await renderer.computeAsync([reset, cull, ...finalizersA, ...finalizersB]);
       lastCamX = camX;
       lastCamZ = camZ;
+      lastCamFx = camFx;
+      lastCamFz = camFz;
       dirty = false;
       reculls++;
     },
-    // draws is now the number of meshes actually submitted (visible variants * 8), not the
-    // fixed V*8. visibleVariants exposes how many of the V variants survived the zero-instance
-    // gate; variants is still the total variant count for reference.
-    get stats() { return { draws: submittedDraws, visibleVariants, instances: cpuInstances, variants: V, reculls, skippedReculls, dirty }; },
+    // Milestone 4/perfAB: live-retune the recull thresholds. Does not itself force a recull
+    // (only changes the gate future update() calls use) -- same "sliders don't force work"
+    // behavior as dressing-gpu.js's cone-margin slider.
+    setRecullThresholds(moveDist, headingDeg) {
+      if (Number.isFinite(moveDist)) recullMoveDist = moveDist;
+      if (Number.isFinite(headingDeg)) recullHeadingCos = Math.cos(headingDeg * Math.PI / 180);
+    },
+    setMaxDrawRadius(r) {
+      if (uMaxDrawRadius.value !== r) { uMaxDrawRadius.value = r; markDirty(); }
+    },
+    setConeEnabled(v) {
+      const nv = v ? 1 : 0;
+      if (uConeEnabled.value !== nv) { uConeEnabled.value = nv; markDirty(); }
+    },
+    setConeMargin(v) {
+      if (uConeMargin.value !== v) { uConeMargin.value = v; markDirty(); }
+    },
+    // draws is the number of meshes actually submitted (visible variants * 8), not the fixed
+    // V*8. visibleVariants exposes how many of the V variants survived the zero-instance gate;
+    // variants is still the total variant count for reference. rejectedFrustum/rejectedFar/
+    // lod0-2/billboard instance counts are lazy CPU estimates (see computeCullEstimate above) —
+    // only computed when `stats` is actually read.
+    get stats() {
+      const est = computeCullEstimate();
+      return {
+        draws: submittedDraws, visibleVariants, instances: cpuInstances, variants: V,
+        reculls, skippedReculls, dirty, cullDispatchInstances: SRC_TOTAL,
+        rejectedFrustum: est.rejectedFrustum, rejectedFar: est.rejectedFar,
+        lod0Instances: est.lod0, lod1Instances: est.lod1, lod2Instances: est.lod2,
+        billboardInstances: est.billboard,
+      };
+    },
     dispose() {
       const mats = new Set();
       meshes.forEach(m => {

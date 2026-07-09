@@ -1682,6 +1682,19 @@ const perfLog = {
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
       forestVisibleVariants: forestGPURef ? forestGPURef.stats.visibleVariants : null,
       forestInstances: forestGPURef ? forestGPURef.stats.instances : null,
+      // perf (2026-07-09, trees-performance-design.md Milestones 1-4): frustum/cone + far-cutoff
+      // rejection counts and per-LOD survivor counts (lazy CPU estimates, see forest-gpu.js's
+      // computeCullEstimate), plus recull-threshold counters -- same shape as the grass
+      // recull/rejectedFrustum columns above.
+      forestReculls: forestGPURef ? forestGPURef.stats.reculls : null,
+      forestSkippedReculls: forestGPURef ? forestGPURef.stats.skippedReculls : null,
+      forestCullDispatchInstances: forestGPURef ? forestGPURef.stats.cullDispatchInstances : null,
+      forestRejectedFrustum: forestGPURef ? forestGPURef.stats.rejectedFrustum : null,
+      forestRejectedFar: forestGPURef ? forestGPURef.stats.rejectedFar : null,
+      forestLod0Instances: forestGPURef ? forestGPURef.stats.lod0Instances : null,
+      forestLod1Instances: forestGPURef ? forestGPURef.stats.lod1Instances : null,
+      forestLod2Instances: forestGPURef ? forestGPURef.stats.lod2Instances : null,
+      forestBillboardInstances: forestGPURef ? forestGPURef.stats.billboardInstances : null,
       plantDraws: plantsGPURef ? plantsGPURef.stats.draws : 0,
       plantVisibleVariants: plantsGPURef ? plantsGPURef.stats.visibleVariants : 0,
       plantInstances: plantsGPURef ? plantsGPURef.stats.instances : 0,

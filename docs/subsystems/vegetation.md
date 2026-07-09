@@ -25,8 +25,8 @@ buffers so the CPU never reads back GPU state.
 | `plants.js` | Parameterized procedural plant generator (`PLANT_DEFAULTS`/`PLANT_PRESETS`/`buildPlantGeometry`/`createPlantPalette`); 4 species: chickweed, cleavers, mint, jewelweed. See "Plants" below. |
 | `plants-placement.js` | Biome-gated, density-weighted plant placement (mirrors `forest-placement.js`, reuses its `rngFrom`/`hash2`). |
 | `plants-gpu.js` | Single-LOD GPU-instanced plant rendering (mirrors `forest-gpu.js`'s reset→cull→finalize→indirect-draw spine, one distance-cull band instead of 4 LOD bands). |
-| `forest-gpu.js` (430 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. |
-| `forest-cull.js` (8 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the cull math in `forest-gpu.js`'s TSL `cull` kernel, kept only so the predicate is unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel reimplements the same `dx*dx+dz*dz <= maxDist*maxDist` logic inline). |
+| `forest-gpu.js` (632 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. Milestones 1-4 (`trees-performance-design.md`) added frustum/cone rejection, a hard far draw-distance cutoff, threshold-gated reculls, and lazy CPU-estimate telemetry — see "Forest frustum/cone culling, far cutoff, and threshold reculls" below. |
+| `forest-cull.js` (107 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the v1 radial cull math in `forest-gpu.js`'s TSL `cull` kernel. `classifyInstance(rec, cam, params)`: twin of the Milestone 2/3 cone + far-cutoff rejection (`{ dist, farLive, coneLive, live }`). `shouldRecull(prev, next, thresholds)`: twin of the Milestone 4 threshold-gated recull predicate. Kept only so the predicates are unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel and the CPU `computeCullEstimate()`/`update()` logic each reimplement the same math inline). |
 | `grass.js` (536 lines) | `Grass`/`createGrass`: CPU-built single merged-mesh grass field (5 verts/blade) with a TSL `MeshStandardNodeMaterial` (wind sway, distance fade, base→tip color, cloud-shadow noise). Also exports `buildBladeGeometry`, `buildGrassNoiseFns`, and JS parity helpers `grassWindOffset`/`grassFadeKeep` used both at runtime and by tests. |
 | `grass-compute.js` (541 lines) | `createComputeGrass()`: fully GPU-driven grass with two placement paths. Procedural mode (no map): a TSL compute pass regenerates candidate blades over a world-cell window around the camera, plants them on a TSL terrain-height function. Anchor mode (authored maps, when `surfaceGeometry` is passed): CPU-sampled mesh anchors from `grass-anchors.js` are streamed into a chunk-slot storage buffer and a TSL kernel culls them instead. Both paths cull (water/radius/density) and atomically compact survivors into one indirect-drawn instance buffer. |
 | `grass-anchors.js` (206 lines) | Pure CPU mesh-anchor sampling for anchor mode, no three.js import. `buildChunkIndex()` bins the map collider's world-space triangle soup into XZ chunks of upward-facing triangles (unit normal `y >= minNormalY`), clipping triangles that span chunks exactly to each chunk rectangle (Sutherland–Hodgman; low-poly maps have triangles bigger than a chunk, so centroid binning would leave grassless holes). `sampleChunk()` draws deterministic area-weighted anchor points `(x,y,z,rand01)` on that surface — so blades land on cave floors, overhangs, and floating islands the top-down heightfield can't represent. |
@@ -57,13 +57,26 @@ export function createForestPalette({ createTree, params, masterSeed, variantsPe
   { variants: { speciesIdx, variant, branches, leaves, shadow, leavesCoarse }[], variantsPerSpecies, speciesCount }
 
 // forest-gpu.js
-export function createForestGPU(opts: { renderer, camera, palette, heightAt?, treeBaseOffset?, capPerVariant?, lodR0?, lodR1?, lodR2?, addEmissive? }):
+export function createForestGPU(opts: { renderer, camera, palette, heightAt?, treeBaseOffset?, capPerVariant?,
+  lodR0?, lodR1?, lodR2?, maxDrawRadius?, coneMargin?, addEmissive? }):
   { meshes, applyTextureSet(fn), billboardMaterials, applyBillboardMap(g, tex), setBillboardBrightness(val),
     setChunk(key, records), setChunks(map), clearChunk(key), setLodDistances(r0, r1, r2),
+    setMaxDrawRadius(r), setConeEnabled(v), setConeMargin(v), setRecullThresholds(moveDist, headingDeg),
     update(): Promise<void>, stats, dispose() }
+  // stats: { draws, visibleVariants, instances, variants, reculls, skippedReculls, dirty,
+  //   cullDispatchInstances, rejectedFrustum, rejectedFar, lod0Instances, lod1Instances,
+  //   lod2Instances, billboardInstances } -- the rejected*/lod*/billboard fields are lazy CPU
+  //   estimates (computeCullEstimate()), not a GPU readback; see the architecture note below.
+  // Also registers perfAB controls from inside createForestGPU itself (no viewer wiring needed):
+  // 'Forest frustum cull' toggle, 'Forest cone margin' / 'Tree max draw radius' /
+  // 'Recull cell size' / 'Recull angle deg' sliders.
 
 // forest-cull.js
 export function cullInstance(rec: {x,z}, cam: {x,z}, maxDist): boolean
+export function classifyInstance(rec: {x,z}, cam: {x,z,fx,fz}, params: {
+  coneEnabled?, fovCos, coneMargin?, rearMargin?, treeRadius?, scale?, maxDrawRadius?
+}): { dist, farLive, coneLive, live }
+export function shouldRecull(prev: {x,z,fx,fz}, next: {x,z,fx,fz}, thresholds?: { moveDist?, headingCos? }): boolean
 
 // grass.js
 export function grassWindOffset(worldX, uTime, uWindSpeed, uWaveSize, uInvExtent): number
@@ -203,15 +216,17 @@ baking is CPU-side-once (`forest-palette.js`), but per-frame work is GPU-only:
   CPU `rebuild()` writes into that range and drops (`console.warn`s once) any tree beyond `CAP` for
   its variant.
 - The compute pipeline is `reset` (zero `V*LODS` atomic survivor counters) → `cull` (one invocation
-  per `V*CAP` source slot: distance-bucket the live ones into 1 of 4 LOD rings using `atomicAdd` to
-  claim a compact output slot in the draw buffer, mirroring `forest-cull.js`'s squared-distance
-  test) → `finalizersA`/`finalizersB` (8 tiny `.compute(1)` kernels per variant, split across two
-  arrays to stay under WebGPU's per-stage storage-binding limit, that copy the atomic counts into
-  each mesh type's `IndirectStorageBufferAttribute` element 1 = `instanceCount`). All of this is
-  submitted in a single `renderer.computeAsync([reset, cull, ...finalizersA, ...finalizersB])` call
-  (`update()`), explicitly awaited so the indirect-draw read of `instanceCount` never races the
-  compute write — the comments note 14 separate awaited submits/frame were a measured CPU cost
-  before this consolidation.
+  per `V*CAP` source slot: reject behind-camera/outside-cone and beyond-max-radius instances FIRST
+  (Milestones 2-3, see below), then distance-bucket the survivors into 1 of 4 LOD rings using
+  `atomicAdd` to claim a compact output slot in the draw buffer, mirroring `forest-cull.js`'s
+  squared-distance test) → `finalizersA`/`finalizersB` (8 tiny `.compute(1)` kernels per variant,
+  split across two arrays to stay under WebGPU's per-stage storage-binding limit, that copy the
+  atomic counts into each mesh type's `IndirectStorageBufferAttribute` element 1 = `instanceCount`).
+  All of this is submitted in a single
+  `renderer.computeAsync([reset, cull, ...finalizersA, ...finalizersB])` call (`update()`),
+  explicitly awaited so the indirect-draw read of `instanceCount` never races the compute write —
+  the comments note 14 separate awaited submits/frame were a measured CPU cost before this
+  consolidation.
 - 4 LOD levels per variant: L0/L1 (full branch+leaf geometry, different materials/instance node
   graphs), L2 (full branches + a separately-baked coarse/cheap leaf geometry,
   `leavesCoarse`, controlled by `coarseLeafRatio`/`coarseLeafSizeMult`), L3 (a single
@@ -219,8 +234,63 @@ baking is CPU-side-once (`forest-palette.js`), but per-frame work is GPU-only:
   owns 8 meshes in `meshes[g*8 + 0..7]` (`branchesL0, leavesL0, shadowL0, branchesL1, leavesL1,
   branchesL2, coarseLeavesL2, billboardL3`). The *maximum* fan-out is `V * 8`, but `stats.draws`
   reports the number actually submitted after the zero-instance gate (see below).
-- `dirty`/camera-epsilon tracking (`EPS = 0.001`) skips recull work when the camera hasn't moved and
-  nothing else changed (`skippedReculls` counter), same pattern as `grass-compute.js`.
+- `dirty`/threshold-gated camera tracking (Milestone 4, see below) skips recull work when the
+  camera hasn't moved/turned past a threshold and nothing else changed (`skippedReculls` counter),
+  same pattern as `grass-compute.js` and `dressing-gpu.js`.
+
+**Forest frustum/cone culling, far cutoff, and threshold reculls (Milestones 1-4,
+`docs/superpowers/specs/2026-07-08-trees-performance-design.md`).** Same shape as `dressing-gpu.js`'s
+P4/Milestone 5 cone culling (`e1a3ff8`), adapted for trees' larger, LOD-banded geometry:
+- **Cone rejection.** `uCamFwd` (XZ, normalized) + `uFovCos` (camera half-FOV cosine) are set every
+  *executed* recull from `camera.getWorldDirection()`/`camera.fov`. The cull kernel normalizes the
+  camera→instance XZ vector, dots it with `uCamFwd`, and compares against a padded cosine threshold:
+  `cos(acos(uFovCos - uConeMargin) + angularPad) - uRearMargin`, where `angularPad =
+  atan2(uTreeRadius * instance.scale, dist)` is the instance's OWN canopy half-width converted to an
+  angle at its distance — a big nearby tree gets more padding than a small distant one, on top of the
+  flat `uConeMargin` cosine pad. `uTreeRadius` is a single conservative constant: the MAX canopy
+  half-width (`max(bbox.x, bbox.z) * 0.5 * 1.15`, same 1.15 pad as `variantBillboardGeo`) across
+  every baked variant, computed once at construction (not a per-variant array). `uConeMargin`
+  defaults to **0.5** (wider than dressing's 0.35 — tree canopies are large, so screen-edge popping
+  is very visible; "be more conservative" per the task). `uRearMargin` (default 0.1) is a small extra
+  cosine tolerance folded into the same threshold so near-perpendicular instances aren't treated as
+  "behind" by float noise. `uConeEnabled` (0/1 float) is the perfAB "Forest frustum cull" toggle —
+  when off, `coneLive` is forced true (pure backward compat, matches pre-Milestone-2 behavior).
+- **Far cutoff.** `uMaxDrawRadius` (default `lodR2 * 1.5` — viewer's `treeLodR2` default 583 gives
+  **875**) rejects any instance beyond it outright, before LOD bucketing — no more "everything past
+  LOD2 becomes an unbounded billboard population" (finding 2). Exposed as `setMaxDrawRadius(r)` and
+  the perfAB "Tree max draw radius" slider (range `[lodR2, lodR2*3]`).
+- **Rejection runs before LOD bucketing and before any `atomicAdd`** — a rejected instance never
+  claims a compact draw slot in any of the 4 LOD regions, so it costs nothing beyond the cull
+  kernel's own read+compare.
+- **Threshold-gated reculls (Milestone 4).** Replaces the old `EPS = 0.001` exact-position check
+  (which reculled essentially every frame while walking) with `forest-cull.js`'s `shouldRecull`
+  logic, inlined in `update()`: recull when the camera has moved past `recullMoveDist` (default
+  **1.5** world units) OR turned past `recullHeadingCos` (default **2 degrees**) OR `dirty` was set
+  by a data change (chunk mutation, `setLodDistances`, `setMaxDrawRadius`, perfAB cone
+  toggle/margin) — those always fire immediately, no threshold. `setRecullThresholds(moveDist,
+  headingDeg)` and the perfAB "Recull cell size"/"Recull angle deg" sliders retune both live
+  without forcing an immediate recull. **Coupling warning** (documented in both files): the cone
+  margin/tree-radius padding must comfortably cover the worst-case staleness between reculls — up
+  to `recullMoveDist` of travel + the heading threshold's turn + the instance's own canopy radius —
+  so nothing pops inside the visible frustum before the next recull fires. Shrinking the cone margin
+  without tightening these thresholds (or vice versa) reintroduces visible popping.
+- **Telemetry (lazy CPU estimate, no GPU readback added).** `stats` gains `cullDispatchInstances`
+  (`SRC_TOTAL = V*CAP`, the fixed dispatch size), `rejectedFrustum`, `rejectedFar`, `lod0Instances`,
+  `lod1Instances`, `lod2Instances`, `billboardInstances`. These come from `computeCullEstimate()`,
+  which re-walks the CPU's own `srcArray`/`countsArray` (the current window's live records) against
+  the camera pose as of the *last executed recull* and reimplements the same cone/far math in plain
+  JS — same "estimate lazily instead of adding a per-frame GPU readback" approach `dressing-gpu.js`
+  took for `stats.rejectedFrustum` in `e1a3ff8`. Only computed when something reads `.stats` (e.g.
+  the perf CSV sampler), not every `update()` call. All 8 fields propagate to the perf CSV as
+  `forestReculls`/`forestSkippedReculls`/`forestCullDispatchInstances`/`forestRejectedFrustum`/
+  `forestRejectedFar`/`forestLod0Instances`/`forestLod1Instances`/`forestLod2Instances`/
+  `forestBillboardInstances`.
+- **perfAB controls**, registered from inside `createForestGPU()` itself (guarded by
+  `globalThis.window?.perfAB?.` so it's a no-op / Node-test-safe outside the viewer, same pattern
+  `dressing-gpu.js` uses): `'Forest frustum cull'` toggle (default on), `'Forest cone margin'`
+  slider (0-0.5, default 0.5), `'Tree max draw radius'` slider (`lodR2` to `lodR2*3`, default
+  `lodR2*1.5`), `'Recull cell size'` slider (0.1-5, default 1.5), `'Recull angle deg'` slider
+  (0.5-15, default 2).
 
 **Zero-instance visibility gating & debounced rebuild (`forest-gpu.js` + `plants-gpu.js`).** Two
 CPU-encode optimizations share the `rebuild()`/`update()` path in both modules:
@@ -497,6 +567,12 @@ Forest GPU-only (`FOREST_MODE === 'gpu'`, header `'Tree LOD'`): `treeLodR0`/`tre
 (LOD ring distances, live-applied via `forestGPU.setLodDistances`), `coarseLeafRatio`,
 `coarseLeafSizeMult` (both rebake the palette), and a billboard-mode toggle button (`cross-quad`).
 
+Forest frustum/cone culling, far cutoff, and recull thresholds (Milestones 1-4) are **not** inline
+`slider()`/`select()` calls — they're perfAB controls registered directly from `forest-gpu.js`
+(see the architecture note above): `'Forest frustum cull'` toggle, `'Forest cone margin'` slider,
+`'Tree max draw radius'` slider, `'Recull cell size'` / `'Recull angle deg'` sliders. They live in
+the Perf A/B panel, not the Tree LOD panel.
+
 Grass CPU mode (`GRASS_MODE === 'cpu'`): `grassCount` (blade count, 0-1.2M), `mapGrassRadiusChunks`
 (map mode only), `grassDistanceCull` (far fade), `wind`.
 
@@ -520,7 +596,7 @@ placement.
 | Test file | Covers | What it actually checks |
 |---|---|---|
 | `_audit_trees.mjs` | `trees.js` (`createTree`) | Headless geometry audit: finite vertex positions, unit-length normals, indices in range and a multiple of 3, UV finiteness/range, across default/rounded-normals-off/atlas/pinned-atlas-cell/shadow-split configs; a "merge fix" regression case (passing texture-like objects where `DEFAULTS` has `null` must not throw and must preserve the reference); and `regenerateLeaves()` leaving branch geometry untouched while changing leaf vertex count. Not a pass/fail harness with assertions library — accumulates a `failures` counter and exits 1 if any check fails. |
-| `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`) | 4 cases: in-range kept, beyond-maxDist culled, diagonal-beyond-radius culled, diagonal-within-radius kept — i.e. the squared-distance circular cull predicate. |
+| `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`, `classifyInstance`, `shouldRecull`) | `cullInstance`: 4 cases, in-range kept / beyond-maxDist culled / diagonal-beyond-radius culled / diagonal-within-radius kept (squared-distance circular cull). `classifyInstance` (Milestones 2-3): behind-camera instance rejected past the rear margin (both far-behind and near-but-behind); straight-ahead in-cone instance kept; an edge instance just outside the raw FOV but inside the padded cone (cone margin + per-instance angular canopy radius) kept, proving anti-pop padding; beyond-`maxDrawRadius` instance rejected via `farLive` even when dead-ahead, within-radius passes; `coneEnabled: false` keeps a behind-camera instance (backward compat). `shouldRecull` (Milestone 4): 0.01-unit drift does not recull, 2-unit move does, 3-degree turn does, NaN prev state (first/forced recull) always does, custom tighter thresholds honored — 23 assertions total. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
 | `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
 | `test-grass-cells.mjs` | `grass-cells.js` (`cellHash`, `candidateBlade`, `windowCellCount`, `maxInstances`, `perCellCount`) and indirectly `grass-height-ref.js` | `candidateBlade` is deterministic and camera-independent; blade XZ falls inside its own cell footprint; blade `y` equals `grassHeightRef` at that XZ (planted on terrain); different slots in a cell give different positions; `cellHash` varies across cells; `maxInstances` = `windowCellCount * Kmax` and the window covers the disk of radius R; `perCellCount` clamps to `[0, Kmax]` and converts density correctly. |
