@@ -13,6 +13,10 @@ It also includes a small local server control tool (`server-tool.py` +
 `server-tool.html`) for starting/stopping the workspace's browser static server and the
 multiplayer relay from one dashboard.
 
+`serve.py` (repo root, not itself under `docs/subsystems/` naming but documented here since
+it's the thing `perfLog`'s auto-save POSTs to) also owns the `/api/save-stats` endpoint that
+lets perf captures save themselves into `research/stats/` — see "Perf capture auto-save" below.
+
 ## Files
 
 | File | Responsibility | Lines |
@@ -304,6 +308,70 @@ key to the snapshot object is sufficient — no separate CSV header change:
 of the `water*` columns already existed before this task (see `water.md`'s Public API) — Wave 0
 only adds the two columns above plus the water URL flags/setters that let their values actually
 move.
+
+## Perf capture auto-save (2026-07-09)
+
+Perf CSVs used to require a manual "CSV" button download followed by moving/renaming the file
+into `research/stats/` by hand (the existing files there, e.g.
+`perf-2026-06-21T04-30-44-809Z-webgl.csv`, were all named this way manually). `perfLog` now
+saves itself.
+
+**Endpoint** (`serve.py`): `POST /api/save-stats?filename=<name>` — body is the raw CSV text.
+- `filename` is passed as a query param (not a header), matching the pattern used by
+  `?telemetryUrl=`-style params elsewhere in this codebase; kept simple since the name is
+  already fully computed client-side.
+- Server-side sanitization is strict and independent of client trust: the filename is reduced
+  to a basename (`os.path.basename`, `\` normalized to `/` first) and must match
+  `^perf-[A-Za-z0-9T:\-=&.]+\.csv$`; anything containing `..`, `/`, `\`, or not matching that
+  pattern gets **400** with an error body. This mirrors the existing `_safe_under_maps` /
+  `_SAFE_MAP_SEGMENT` pattern used by `/api/save-map`.
+- Target directory is `research/stats/` (created if missing). Never overwrites: if the sanitized
+  name already exists, a `-2`, `-3`, ... suffix is inserted before the `.csv` extension until a
+  free name is found.
+- On success: **200** with `{ ok: true, path: "research/stats/<final-name>.csv" }` (relative to
+  repo root, forward-slashed). On rejection: **400** with `{ ok: false, error: "..." }`.
+- Existing static-file serving and the `Cache-Control: no-store` `end_headers()` override are
+  untouched — `/api/save-stats` is routed alongside the pre-existing `/api/save-map` and the
+  `ROUTES` dict dispatch in `do_POST`, all still hitting the same JSON-response helper
+  (`_send_json`), so the no-cache header applies uniformly. No separate CORS headers were added:
+  the page that POSTs here is always served by this same `serve.py` instance (same-origin), and
+  no other server in this codebase sets CORS headers either, so there's nothing to be
+  "consistent with" beyond the existing no-store behavior.
+
+**Client (`environment-viewer.html`, `perfLog`)**:
+- `perfLog.buildFilename()` — `perf-<ISO timestamp>-<sanitized location.search>.csv`. The query
+  string has its leading `?` stripped and any character outside `[A-Za-z0-9=&-]` replaced with
+  `-`; omitted (along with its separator dash) when there's no query string. This matches the
+  convention already used in the manually-renamed files under `research/stats/`.
+- `perfLog.autoUpload()` — fetch-based POST, awaited from `setRecording(false)` once telemetry
+  has stopped, so pressing "rec" to stop a capture saves it immediately. No-ops below 5 samples
+  (`this.samples.length < 5`) or on an empty CSV. On success sets `perfLog.uploadStatus` to
+  `saved <path>` (the server's returned relative path); on any failure (fetch rejects, non-200,
+  endpoint doesn't exist because the page is served some other way) sets `uploadStatus` to
+  `save failed: <message>` and logs exactly one `console.warn` — the manual "CSV" download
+  button is completely unaffected either way and keeps working exactly as before.
+- `perfLog.beaconUpload()` — `navigator.sendBeacon`-based POST for cases where an awaited fetch
+  isn't reliable: wired to `window`'s `pagehide` and `beforeunload` events and to
+  `document`'s `visibilitychange` (fires when `document.visibilityState === 'hidden'`, which
+  also catches tab-switch/backgrounding that may never fire an unload event). Only fires while
+  `perfLog.recording` is still true, and only for >= 5 samples. `sendBeacon` gives no
+  success/failure callback, so `uploadStatus` is set optimistically (`saved <name> (beacon)`) or
+  left alone if the browser's queue call itself throws (logged via `console.warn`). Recording is
+  **not** stopped by these hooks — a tab hidden-and-shown-again keeps recording and just
+  re-sends the samples collected so far next time it goes hidden (or on the eventual real stop).
+- Upload status is surfaced in the perf panel's compact bottom-left control strip (id
+  `perf-log`, built inline in `environment-viewer.html`) as a new trailing status span, refreshed
+  by the existing `perfLogUI.refresh()` call alongside the rec/count text.
+
+**New per-sample context columns** (added to `perfLog.snapshot()`, so `toCSV()` picks them up
+automatically the same way the Wave 0 columns above did — no separate header change):
+
+| Column | Source | Notes |
+|---|---|---|
+| `queryString` | `location.search` | Raw, unsanitized (unlike the filename's sanitized copy) — constant across all rows in one capture. |
+| `camX` / `camY` / `camZ` | `camera.position.{x,y,z}` | 1 decimal. `camera` is a true top-level module-scope `const` (declared ~line 1029, before `perfLog` at ~line 1503), so `snapshot()`'s closure reads it directly — no `setContextProvider` indirection needed. |
+| `camHeading` | `headingDegrees(camera.rotation.y)` (existing helper, ~line 961, already used by the compass/minimap) | Integer degrees, 0-359. |
+| `camSpeed` | Derived: Euclidean distance between this sample's rounded camera position and the previous sample's, divided by elapsed wall-clock seconds (`performance.now()` deltas) | 1 decimal, world-units/sec. `perfLog._lastCamPos`/`_lastCamT` track state between samples and are reset (`_lastCamPos = null`) whenever `setRecording(true)` starts a new run, so the first sample of a run never reports a stale speed from a previous capture. |
 
 ## Perf A/B control registry (`window.perfAB`)
 

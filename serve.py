@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -13,7 +14,11 @@ port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 FAMILIES_DIR = os.path.join(ROOT, 'families')
 PLANT_FAMILIES_DIR = os.path.join(ROOT, 'plant-families')
 MAPS_DIR = os.path.join(ROOT, 'maps')
+STATS_DIR = os.path.join(ROOT, 'research', 'stats')
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
+# environment-viewer.html's perfLog auto-upload names files perf-<ISO>-<sanitized search>.csv
+# (see perfLog.buildFilename); this must stay in sync with that client-side pattern.
+_SAFE_STATS_FILENAME = re.compile(r'^perf-[A-Za-z0-9T:\-=&.]+\.csv$')
 
 
 def _safe_under_maps(*segments):
@@ -55,6 +60,28 @@ def save_family_to(payload, dir_path):
     return filename
 
 
+def save_stats_csv(raw_name, body_bytes):
+    # environment-viewer.html's perfLog auto-uploads its recorded CSV here on stop/unload so
+    # the user no longer has to download + manually move/rename into research/stats/. `raw_name`
+    # is untrusted client input: strip to a basename and re-validate against the strict
+    # perf-<...>.csv pattern (matches the client's own naming convention) before ever touching
+    # the filesystem, so '..'/slashes/backslashes can't escape STATS_DIR.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_STATS_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe stats filename: {raw_name!r}')
+    os.makedirs(STATS_DIR, exist_ok=True)
+    stem, ext = os.path.splitext(basename)
+    candidate = basename
+    n = 2
+    while os.path.exists(os.path.join(STATS_DIR, candidate)):
+        candidate = f'{stem}-{n}{ext}'
+        n += 1
+    target = os.path.join(STATS_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     # tree-viewer.html's "Export family JSON" POSTs to /api/save-family; plant-viewer.html's
     # equivalent POSTs to /api/save-plant-family. Both land straight in their own directory +
@@ -68,6 +95,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/api/save-map':
             self._handle_save_map()
+            return
+        if self.path.startswith('/api/save-stats'):
+            self._handle_save_stats()
             return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
@@ -138,6 +168,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             })
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # environment-viewer.html's perfLog auto-upload (see infra.md "Perf capture auto-save")
+    # POSTs the recorded CSV body here with the filename as a query param, e.g.
+    # POST /api/save-stats?filename=perf-2026-07-09T12-00-00-000Z-perf-on.csv
+    # Body is the raw CSV text (Content-Type: text/csv or navigator.sendBeacon's Blob type).
+    def _handle_save_stats(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 20_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            raw_name = (params.get('filename') or [''])[0]
+            body_bytes = self.rfile.read(length)
+            rel_path = save_stats_csv(raw_name, body_bytes)
+            self._send_json({'ok': True, 'path': rel_path})
+        except ValueError as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    def end_headers(self):
+        # Live-tuning server: never let the browser cache anything it serves.
+        self.send_header('Cache-Control', 'no-store')
+        super().end_headers()
 
     def _send_json(self, payload, status=200):
         data = json.dumps(payload).encode('utf-8')

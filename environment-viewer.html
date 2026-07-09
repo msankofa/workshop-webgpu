@@ -1512,14 +1512,39 @@ const perfLog = {
   telemetryStartRequested: false,
   startTime: 0,
   lastSample: -Infinity,
+  // Camera context (2026-07-09, perf-autosave): previous sample's position+time, used to derive
+  // camSpeed (world units/sec) between consecutive samples. Reset whenever recording (re)starts
+  // so the first sample of a run never reports a bogus speed from a stale previous position.
+  _lastCamPos: null,
+  _lastCamT: 0,
+  uploadStatus: '',   // last save/upload outcome, surfaced in the perf panel status line
   snapshot(now) {
     const r = renderer.info;
     const cs = portCreatures.stats;
+    const camX = +camera.position.x.toFixed(1);
+    const camY = +camera.position.y.toFixed(1);
+    const camZ = +camera.position.z.toFixed(1);
+    let camSpeed = 0;
+    if (this._lastCamPos) {
+      const dt = (now - this._lastCamT) / 1000;
+      if (dt > 0) {
+        const dx = camX - this._lastCamPos.x, dy = camY - this._lastCamPos.y, dz = camZ - this._lastCamPos.z;
+        camSpeed = Math.sqrt(dx * dx + dy * dy + dz * dz) / dt;
+      }
+    }
+    this._lastCamPos = { x: camX, y: camY, z: camZ };
+    this._lastCamT = now;
+    // Heading in degrees, 0-360, via the same helper the compass/minimap use (camera.rotation.y
+    // is the YXZ yaw in radians; see camera.rotation.order comment above).
+    const camHeading = headingDegrees(camera.rotation.y);
     return {
       t: +((now - this.startTime) / 1000).toFixed(2),   // seconds since recording started
       fps: +terrainDebug.fps.toFixed(1),
       cpuMs: +terrainDebug.cpuMs.toFixed(3),            // CPU time encoding+submitting the frame (the SP1 perf-gate metric)
       backend: renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
+      queryString: location.search,
+      camX, camY, camZ, camHeading,
+      camSpeed: +camSpeed.toFixed(1),
       telemetryActive: this.telemetryActive,
       telemetryFile: this.telemetryFile,
       telemetryStartedAt: this.telemetryStartedAt,
@@ -1669,6 +1694,61 @@ const perfLog = {
     const rows = this.samples.map(s => cols.map(c => csvCell(s[c])).join(','));
     return [cols.join(','), ...rows].join('\n');
   },
+  // perf-<ISO timestamp>-<sanitized location.search>.csv — matches the naming convention
+  // already used when manually renaming downloaded CSVs into research/stats/ (see existing
+  // files there, e.g. perf-2026-06-21T04-30-44-809Z-webgl.csv). Query string has its leading
+  // '?' stripped and anything outside [A-Za-z0-9=&-] replaced with '-'; omitted entirely
+  // (along with the trailing '-') when there is no query string.
+  buildFilename() {
+    const iso = new Date().toISOString().replace(/[:.]/g, '-');
+    const q = location.search.replace(/^\?/, '').replace(/[^A-Za-z0-9=&-]/g, '-');
+    return q ? `perf-${iso}-${q}.csv` : `perf-${iso}.csv`;
+  },
+  // Fetch-based upload, used when we have time for a real request/response (recording just
+  // stopped). Never throws — failures (server not running, endpoint missing because the page
+  // is served some other way, etc.) fail silently into `uploadStatus` so the manual CSV button
+  // keeps working exactly as before. At most one console.warn per failure, no spam.
+  async autoUpload() {
+    if (this.samples.length < 5) return;
+    const csv = this.toCSV();
+    if (!csv) return;
+    const filename = this.buildFilename();
+    try {
+      const res = await fetch(`/api/save-stats?filename=${encodeURIComponent(filename)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/csv' },
+        body: csv,
+      });
+      if (!res.ok) throw new Error(`save-stats ${res.status}`);
+      const info = await res.json().catch(() => ({}));
+      this.uploadStatus = `saved ${info.path || filename}`;
+    } catch (err) {
+      this.uploadStatus = `save failed: ${err?.message || err}`;
+      console.warn('[perfLog] auto-save to research/stats failed; use the CSV button instead.', err);
+    }
+    if (perfLogUI) perfLogUI.refresh();
+  },
+  // sendBeacon-based upload for page unload/hidden, where an async fetch's response can't be
+  // awaited (the page may already be gone). Fire-and-forget: the browser guarantees the request
+  // is attempted even as the page tears down, but we get no success/failure signal back, so
+  // `uploadStatus` just optimistically says "sent" (or is left alone on failure to queue).
+  beaconUpload() {
+    if (!this.recording) return;
+    if (this.samples.length < 5) return;
+    if (!navigator.sendBeacon) return;
+    const csv = this.toCSV();
+    if (!csv) return;
+    const filename = this.buildFilename();
+    try {
+      const ok = navigator.sendBeacon(
+        `/api/save-stats?filename=${encodeURIComponent(filename)}`,
+        new Blob([csv], { type: 'text/csv' }),
+      );
+      this.uploadStatus = ok ? `saved ${filename} (beacon)` : 'beacon queue failed';
+    } catch (err) {
+      console.warn('[perfLog] beacon auto-save failed.', err);
+    }
+  },
   async startTelemetry() {
     this.telemetryError = '';
     try {
@@ -1706,6 +1786,8 @@ const perfLog = {
       this.telemetryStartRequested = true;
       this.lastSample = -Infinity;
       this.startTime = performance.now();
+      this._lastCamPos = null;
+      this.uploadStatus = '';
       frameProfiler.reset();
       await this.startTelemetry();
       this.recording = true;
@@ -1713,6 +1795,9 @@ const perfLog = {
       this.recording = false;
       this.telemetryStartRequested = false;
       await this.stopTelemetry();
+      // Auto-save into research/stats/ so recordings don't require the manual
+      // download-and-rename step. Silent no-op below 5 samples or if unreachable.
+      await this.autoUpload();
     }
     if (perfLogUI) perfLogUI.refresh();
   },
@@ -1756,20 +1841,33 @@ function updatePerfPanel(now) {
   const count = document.createElement('span');
   const csvBtn = document.createElement('button'); csvBtn.textContent = 'CSV'; csvBtn.style.cssText = btnCss;
   const clrBtn = document.createElement('button'); clrBtn.textContent = 'Clear'; clrBtn.style.cssText = btnCss;
+  const status = document.createElement('span'); status.style.color = '#7f8a99';
   function refresh() {
     recBtn.textContent = perfLog.recording ? '● rec' : '▶ rec';
     recBtn.style.color = perfLog.recording ? '#ff7b7b' : '#c4ccd6';
     const gpu = perfLog.telemetryActive ? ` gpu:${perfLog.telemetryFile || 'on'}` : (perfLog.telemetryError ? ' gpu:off' : '');
     count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms${gpu}`;
+    status.textContent = perfLog.uploadStatus || '';
   }
   recBtn.addEventListener('click', () => { perfLog.setRecording(!perfLog.recording); refresh(); });
   csvBtn.addEventListener('click', () => perfLog.download());
   clrBtn.addEventListener('click', () => perfLog.clear());
-  panel.append(label, recBtn, count, csvBtn, clrBtn);
+  panel.append(label, recBtn, count, csvBtn, clrBtn, status);
   document.body.appendChild(panel);
   perfLogUI = { refresh };
   refresh();
   if (PERF_AUTOSTART) perfLog.setRecording(true);
+  // Auto-save insurance: 'beforeunload'/'pagehide' cover navigation/close/reload, and
+  // visibilitychange->hidden also fires on tab switch or mobile backgrounding (which may
+  // not fire an unload event at all) — sendBeacon works from all three since it doesn't
+  // need the page to stay alive for a response. Recording is intentionally left running
+  // (not stopped) so a tab-switch-and-back doesn't truncate an in-progress capture; each
+  // hide event just re-sends the samples collected so far.
+  window.addEventListener('pagehide', () => perfLog.beaconUpload());
+  window.addEventListener('beforeunload', () => perfLog.beaconUpload());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') perfLog.beaconUpload();
+  });
 }
 if (!loadedMap) scene.add(terrainGroup);
 
