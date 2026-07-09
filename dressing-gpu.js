@@ -211,6 +211,12 @@ export function createDressingGPU(opts) {
   let submittedDraws = 0;
   const allRecords = [];
   const _fwd3 = new THREE.Vector3();
+  // Threshold-gated recull tuning + counters -- see the coupling warning in update(). The
+  // counters are cheap CPU increments exposed via stats so the perf HUD can later show how
+  // many update() calls actually dispatched compute vs. were skipped as within-threshold.
+  const RECULL_MOVE_DIST = 1.5;                       // world units of XZ travel
+  const RECULL_HEADING_COS = Math.cos(2 * Math.PI / 180); // 2 degrees of heading change
+  let skippedReculls = 0, executedReculls = 0;
 
   // P4/Milestone 5: lazy rejectedFrustum estimate for stats (see the stats getter below for why
   // this isn't computed inside update() every frame). Uses the LAST camera state update() set
@@ -336,8 +342,30 @@ export function createDressingGPU(opts) {
       const camFovCos = camera.isPerspectiveCamera
         ? Math.cos((camera.fov * Math.PI / 180) / 2)
         : uFovCos.value;
-      const rotChanged = camFx !== lastCamFx || camFz !== lastCamFz;
-      if (!dirty && !rotChanged && camX === lastCamX && camZ === lastCamZ) return;
+      // Threshold-gated recull (orchestrator follow-up on Milestone 5; hand-synced with
+      // dressing-cull.js's shouldRecull, same not-imported twin convention as the cull kernel).
+      // Exact float-equality checks here reculled EVERY frame under first-person mouse-look or
+      // walking (forward/position drift a tiny amount each frame -> reset+cull+finalize across
+      // all groups, ~3 kernel dispatches per group, per frame) -- the same disease the trees
+      // spec (docs/superpowers/specs/2026-07-08-trees-performance-design.md, finding 3)
+      // diagnoses for forest-gpu.js. Instead, recull only when the camera has MOVED > 1.5
+      // world units or TURNED > 2 degrees since the last executed recull -- or when `dirty`
+      // was set by a data change (chunk set/clear, setGroupCull, perfAB cone toggle/margin),
+      // which always fires immediately, no threshold.
+      //
+      // COUPLING WARNING: these thresholds (RECULL_MOVE_DIST 1.5 units / RECULL_HEADING_COS
+      // 2 degrees) are coupled to the cone padding (uConeMargin default 0.35). The padded cone
+      // must comfortably cover the worst-case staleness between reculls -- 1.5 units of travel
+      // + 2 degrees of turn + the instance's own radius -- so nothing pops inside the visible
+      // frustum before the next recull. Do NOT shrink the margin (or its perfAB slider default)
+      // without tightening these thresholds, and vice versa.
+      const camMoved = (camX - lastCamX) ** 2 + (camZ - lastCamZ) ** 2
+        > RECULL_MOVE_DIST * RECULL_MOVE_DIST;
+      const camTurned = camFx * lastCamFx + camFz * lastCamFz < RECULL_HEADING_COS;
+      const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
+        || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
+      if (!dirty && !firstRecull && !camMoved && !camTurned) { skippedReculls++; return; }
+      executedReculls++;
       uCam.value.set(camX, camZ);
       uCamFwd.value.set(camFx, camFz);
       uFovCos.value = camFovCos;
@@ -361,6 +389,11 @@ export function createDressingGPU(opts) {
         // edge; good enough for "did the cone roughly halve survivors" HUD purposes. 0 when the
         // cone toggle is off.
         rejectedFrustum: computeRejectedFrustum(),
+        // Threshold-gated recull counters (orchestrator follow-up on Milestone 5): every
+        // update() call either dispatched the reset/cull/finalize kernels (executed) or bailed
+        // as within-threshold (skipped). A healthy stationary/mouse-look session should show
+        // skipped >> executed; executed climbing 1:1 with frames means the gate is broken.
+        skippedReculls, executedReculls,
       };
     },
     dispose() {

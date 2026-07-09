@@ -1,4 +1,4 @@
-import { classifyInstance } from './dressing-cull.js';
+import { classifyInstance, shouldRecull } from './dressing-cull.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -85,6 +85,41 @@ const baseParams = {
   const r = classifyInstance(rec, cam, params);
   ok(r.coneLive === true, 'd: cone check is bypassed entirely when disabled');
   ok(r.live === true, 'd: behind-camera instance survives when cone culling is off');
+}
+
+// (e) shouldRecull(prev, next, thresholds) -- threshold-gated recull predicate. prev/next are
+// { x, z, fx, fz } (XZ position + normalized XZ forward) at the last recull vs. this frame.
+// Defaults: moveDist 1.5 world units, heading 2 degrees. Data-dirty forced reculls are the
+// HOST's job (dirty flag checked before this predicate), not this function's -- so these tests
+// cover only the camera-motion gate.
+{
+  const fwd = (deg) => { const r = deg * Math.PI / 180; return { fx: Math.sin(r), fz: -Math.cos(r) }; };
+  const prev = { x: 0, z: 0, ...fwd(0) };
+
+  // Micro-drift (0.01 units, 0.1 degrees) must NOT trigger a recull -- this is the
+  // first-person mouse-look/walk case that previously reculled every frame via exact
+  // float-equality dirty checks.
+  ok(shouldRecull(prev, { x: 0.01, z: 0, ...fwd(0) }) === false, 'e: 0.01-unit move does not recull');
+  ok(shouldRecull(prev, { x: 0, z: 0, ...fwd(0.1) }) === false, 'e: 0.1-degree turn does not recull');
+  ok(shouldRecull(prev, { x: 0.01, z: 0, ...fwd(0.1) }) === false, 'e: combined micro-drift does not recull');
+
+  // 2-unit move exceeds the 1.5-unit default move threshold.
+  ok(shouldRecull(prev, { x: 2, z: 0, ...fwd(0) }) === true, 'e: 2-unit move triggers recull');
+  ok(shouldRecull(prev, { x: 0, z: -2, ...fwd(0) }) === true, 'e: 2-unit move on the other axis triggers recull');
+
+  // 3-degree turn exceeds the 2-degree default heading threshold.
+  ok(shouldRecull(prev, { x: 0, z: 0, ...fwd(3) }) === true, 'e: 3-degree turn triggers recull');
+
+  // Just inside both thresholds stays skipped.
+  ok(shouldRecull(prev, { x: 1.0, z: 0, ...fwd(1) }) === false, 'e: 1 unit + 1 degree stays under both thresholds');
+
+  // First recull ever (prev state is NaN, nothing valid to compare against) must recull.
+  const nanPrev = { x: NaN, z: NaN, fx: NaN, fz: NaN };
+  ok(shouldRecull(nanPrev, { x: 0, z: 0, ...fwd(0) }) === true, 'e: NaN prev state (first frame) forces recull');
+
+  // Custom thresholds are honored.
+  ok(shouldRecull(prev, { x: 0.2, z: 0, ...fwd(0) }, { moveDist: 0.1 }) === true, 'e: custom tighter moveDist triggers');
+  ok(shouldRecull(prev, { x: 0, z: 0, ...fwd(1) }, { headingCos: Math.cos(0.5 * Math.PI / 180) }) === true, 'e: custom tighter heading threshold triggers');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -51,5 +51,36 @@ export function classifyInstance(rec, cam, params) {
   return { dist, edge, radialLive, coneLive, live: radialLive && coneLive };
 }
 
+// Threshold-gated recull predicate (orchestrator follow-up on Milestone 5; same disease the
+// trees spec -- docs/superpowers/specs/2026-07-08-trees-performance-design.md finding 3 --
+// diagnoses for forest-gpu.js): exact float-equality dirty checks recull EVERY frame under
+// first-person mouse-look/walking, because forward/position drift by tiny amounts each frame.
+// Instead, only recull when the camera has moved or turned enough to matter.
+//
+// prev/next: { x, z, fx, fz } -- XZ camera position + NORMALIZED XZ forward, prev being the
+// state at the last executed recull. thresholds: { moveDist = 1.5 (world units),
+// headingCos = cos(2 degrees) }.
+//
+// COUPLING WARNING: these defaults are coupled to dressing-gpu.js's cone padding
+// (uConeMargin default 0.35). The padded cone must comfortably cover the worst-case staleness
+// between reculls -- up to 1.5 units of camera travel plus 2 degrees of heading change plus the
+// instance's own radius -- so instances never pop inside the visible frustum before the next
+// recull fires. Do NOT shrink the cone margin without tightening these thresholds, and vice
+// versa. dressing-gpu.js's update() hand-syncs this predicate (same not-imported convention as
+// classifyInstance above); data-driven forced reculls (the host's `dirty` flag) bypass it
+// entirely and always fire immediately.
+export function shouldRecull(prev, next, thresholds = {}) {
+  // First frame / no valid previous recull state: always recull.
+  if (!Number.isFinite(prev.x) || !Number.isFinite(prev.z)
+    || !Number.isFinite(prev.fx) || !Number.isFinite(prev.fz)) return true;
+  const moveDist = thresholds.moveDist ?? 1.5;
+  const headingCos = thresholds.headingCos ?? Math.cos(2 * Math.PI / 180);
+  const dx = next.x - prev.x, dz = next.z - prev.z;
+  if (dx * dx + dz * dz > moveDist * moveDist) return true;
+  const dot = next.fx * prev.fx + next.fz * prev.fz;
+  if (dot < headingCos) return true;
+  return false;
+}
+
 function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
 function clamp01(v) { return clamp(v, 0, 1); }
