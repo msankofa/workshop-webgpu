@@ -24,6 +24,7 @@ import { rngFrom } from './forest-placement.js';
 import { DEFAULT_MOISTURE } from './moisture-proxy.js';
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const floatNode = (v) => (v && typeof v === 'object' && (v.isNode || typeof v.mul === 'function')) ? v : float(v);
 
 // ---- weld (mergeVertices substitute) ----
 // three/addons/utils/BufferGeometryUtils.js resolves fine in the browser (importmap ->
@@ -138,20 +139,35 @@ const hashNoise3 = Fn(([p]) => {
 //        OPTIONAL -- the instance-rotated world normal the dressing host builds, passed as
 //        nodes.nWorld; detail normals are composed ON TOP of it so tilted/rotated instances
 //        light correctly. Falls back to view-space normalView for standalone rock previews.),
-//        brushScale = 0.6, normalStrength = 0.25, roughnessFloor = 0.92 }.
-export function buildRockMaterial(opts = {}) {
+//        textureScale = 0.35, brushScale = 0.6, normalStrength = 0.25,
+//        roughnessFloor = 0.92, mossStrength = 1.0, lichenStrength = 0.7,
+//        lichenScale = 2.0, lichenBrightness = 0.85, lichenWhiteness = 0.35 }.
+//        Numeric opts can also be TSL uniform nodes for live tuning.
+//
+// Rich boulder-grade material: triplanar albedo/roughness/normal, moss, and lichen hash
+// dressing. Perf-recovery Wave 1 (2026-07-08, terrain-dressing-performance-design.md P2 /
+// Milestone 1) split this out of the former `buildRockMaterial` (kept below as a thin alias)
+// so scree -- orders of magnitude more instances than boulders -- can use the far cheaper
+// `buildScreeMaterial` instead of paying full triplanar+lichen cost per tiny stone.
+export function buildBoulderMaterial(opts = {}) {
   const { textures = {} } = opts;
   const moistureNode = opts.moistureNode ?? float(DEFAULT_MOISTURE);
   const normalBase = opts.normalBase ?? null;
-  const brushScale = opts.brushScale ?? 0.6;
+  const textureScale = floatNode(opts.textureScale ?? 0.35);
+  const brushScale = floatNode(opts.brushScale ?? 0.6);
   // Detail-normal influence. The rock normal map's fine per-texel detail turns into black/white
   // salt-and-pepper sparkle on big up-facing boulder tops (each micro-normal catches light as a
   // tiny lit/unlit facet), and it aliases/flickers under any small camera motion (the player's
   // ground-spring micro-bob). It CAN'T be mip/anisotropy filtered away because it's the shading
   // response to the normal, not the texture itself -- the only real lever is amplitude. Keep this
   // low (a subtle relief cue, not a rugged surface).
-  const normalStrength = opts.normalStrength ?? 0.25;
-  const roughnessFloor = opts.roughnessFloor ?? 0.92;
+  const normalStrength = floatNode(opts.normalStrength ?? 0.25);
+  const roughnessFloor = floatNode(opts.roughnessFloor ?? 0.92);
+  const mossStrength = floatNode(opts.mossStrength ?? 1.0);
+  const lichenStrength = floatNode(opts.lichenStrength ?? 0.7);
+  const lichenScale = floatNode(opts.lichenScale ?? 2.0);
+  const lichenBrightness = floatNode(opts.lichenBrightness ?? 0.85);
+  const lichenWhiteness = floatNode(opts.lichenWhiteness ?? 0.35);
 
   const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
   // Closed smooth geometry: render back faces into the shadow map -- kills terminator acne
@@ -159,21 +175,20 @@ export function buildRockMaterial(opts = {}) {
   // shadows -- SeedThree rocks.js comment, cited in the merged plan).
   mat.shadowSide = THREE.BackSide;
 
-  const scale = float(0.35);
   let base = textures.albedo
-    ? triplanarTexture(texture(textures.albedo), null, null, scale)
+    ? triplanarTexture(texture(textures.albedo), null, null, textureScale)
     : vec3(0.54, 0.52, 0.47);
   if (textures.roughness) {
     mat.roughnessNode = clamp(
-      triplanarTexture(texture(textures.roughness), null, null, scale).g,
-      float(roughnessFloor),
+      triplanarTexture(texture(textures.roughness), null, null, textureScale).g,
+      roughnessFloor,
       float(1.0)
     );
   }
   if (textures.normal) {
     // tangent-sample -> deviation from flat (z~1 => ~0), world-locked so it doesn't swim
     // with the camera, added over the smooth vertex normal.
-    const d = triplanarTexture(texture(textures.normal), null, null, scale).xyz.mul(2).sub(vec3(1, 1, 2));
+    const d = triplanarTexture(texture(textures.normal), null, null, textureScale).xyz.mul(2).sub(vec3(1, 1, 2));
     if (normalBase) {
       // Wired path: compose the (world-locked) detail deviation ON TOP of the host's
       // instance-rotated world normal, so tilted boulders keep their detail AND their
@@ -193,22 +208,26 @@ export function buildRockMaterial(opts = {}) {
 
   // moss/lichen/dirt = the ONE shared dressing law (moss-tint.js), reused verbatim from the
   // terrain (#3) and future deadwood (#8) materials.
-  const moss = mossWeight(moistureNode, upness, cavity, brush);
+  const moss = clamp(mossWeight(moistureNode, upness, cavity, brush).mul(mossStrength), 0, 1);
   // lichen: sparser speckle gated to EXPOSED rock (mid-high upness, LOW moisture) -- the opposite
   // gating sense from moss. This is analytic per-fragment noise (positionWorld hash), so it can't
   // be mip/anisotropy filtered: a razor threshold at high frequency crawls/twinkles on up-facing
   // faces under the tiniest camera motion (the reported "top of the rock jitters"). Keep the
   // frequency lower and the edge SOFT (smoothstep, not a hard `sub().mul()`) so it antialiases
   // gracefully instead of aliasing.
-  const lichenNoise = hashNoise3(positionWorld.mul(brushScale * 2.0).add(vec3(17.0, 0.0, 0.0)));
+  const lichenNoise = hashNoise3(positionWorld.mul(brushScale.mul(lichenScale)).add(vec3(17.0, 0.0, 0.0)));
   const exposedGate = smoothstep(float(0.3), float(0.55), upness)
     .mul(float(1).sub(smoothstep(float(0.2), float(0.45), moistureNode)));
-  const lichen = smoothstep(float(0.62), float(0.9), lichenNoise).mul(0.7).mul(exposedGate);
+  const lichen = smoothstep(float(0.62), float(0.9), lichenNoise).mul(lichenStrength).mul(exposedGate);
   // dirt streaks on steep faces (1 - upness), independent of moisture.
   const dirtStreak = float(1).sub(upness).mul(0.4);
 
   const mossAlbedo = vec3(0.30, 0.42, 0.22);
-  const lichenAlbedo = vec3(0.72, 0.74, 0.60);
+  // Lichen used to be a fixed pale yellow-grey. On top-facing boulders that reads as white
+  // salt speckle, especially under camera micro-motion. Keep the color live-tunable so the
+  // speckle can shift toward olive/stone and/or dim without removing the lichen mask entirely.
+  const lichenAlbedo = mix(vec3(0.36, 0.43, 0.25), vec3(0.72, 0.74, 0.60), lichenWhiteness)
+    .mul(lichenBrightness);
   const dirtAlbedo = vec3(0.28, 0.22, 0.16);
 
   base = mix(base, dirtAlbedo, dirtStreak);
@@ -216,6 +235,49 @@ export function buildRockMaterial(opts = {}) {
   base = mix(base, lichenAlbedo, lichen);
   mat.colorNode = base;
   mat.roughnessNode = mix(mat.roughnessNode ?? float(1.0), float(0.95), moss);
+
+  return mat;
+}
+
+// Back-compat alias: `buildRockMaterial` used to be the only material builder. Kept as a thin
+// alias to `buildBoulderMaterial` so any caller that hasn't switched to the boulder/scree split
+// (or the toggled-off `?dressing=` A/B path in environment-viewer.html) is unaffected.
+export const buildRockMaterial = buildBoulderMaterial;
+
+// Cheap scree-grade material (perf-recovery Wave 1, terrain-dressing-performance-design.md P2 /
+// Milestone 1): scree instance counts run 10-40x boulder counts (see rocks-placement.js's
+// screeDensity vs boulderDensity), so per-fragment cost matters far more here than visual detail
+// at normal walking-height viewing distance. Deliberately drops, vs buildBoulderMaterial:
+// triplanar sampling (one planar albedo tap, or a flat color if no texture is given), the normal
+// map entirely (no detail-normal compose, no extra sampler), the lichen hash speckle, and the
+// moss dressing law -- replaced by one constant roughness scalar. Keeps `shadowSide = BackSide`
+// and `receiveShadow` (set by the dressing-gpu.js wiring layer, not here) since ground-scatter
+// stones still read as grounded when they take terrain/boulder shadows; scree does not cast
+// shadows already (`castShadow: !t.scree` in environment-viewer.html), unchanged by this split.
+// opts: { textures: { albedo } (THREE.Texture, optional -- flat rock grey if omitted),
+//        textureScale = 0.35, roughness = 0.95, color (vec3 node, overrides the flat-color
+//        fallback when no albedo texture is supplied) }. Numeric opts can also be TSL uniform
+// nodes for live tuning. No moistureNode/normalBase/lichen/moss opts -- intentionally absent,
+// not silently ignored, so a caller passing them gets an unused-var lint signal, not confusion.
+export function buildScreeMaterial(opts = {}) {
+  const { textures = {} } = opts;
+  const textureScale = floatNode(opts.textureScale ?? 0.35);
+  const roughness = floatNode(opts.roughness ?? 0.95);
+
+  const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
+  mat.shadowSide = THREE.BackSide;
+
+  // One planar (not triplanar) albedo sample -- a single texture() tap reuses the same UV set
+  // the geometry already has instead of the 3-sample triplanar blend. Falls back to a flat
+  // rock-grey matching buildBoulderMaterial's fallback when no albedo texture is supplied.
+  mat.colorNode = textures.albedo
+    ? texture(textures.albedo, positionWorld.xz.mul(textureScale))
+    : (opts.color ?? vec3(0.54, 0.52, 0.47));
+  // Constant roughness scalar -- no roughness texture sample, no moss-driven mix.
+  mat.roughnessNode = roughness;
+  // No normalNode assignment: dressing-gpu.js falls back to assigning `nodes.nWorld` (the
+  // instance-rotated world normal) itself when a material leaves normalNode unset, so scree
+  // still shades correctly per-instance -- it just skips the triplanar detail-normal compose.
 
   return mat;
 }

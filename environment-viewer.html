@@ -3753,7 +3753,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // DRESSING_MODE itself is declared at true top-level (near GRASS_MODE/FOREST_MODE) so the
   // perf CSV snapshot closure can read it too.
   if (DRESSING_MODE === 'gpu') {
-    const { createRockPalette, buildRockMaterial } = await import('./rocks.js?v=dressing-lichen-color-8');
+    const { createRockPalette, buildBoulderMaterial, buildScreeMaterial } = await import('./rocks.js?v=dressing-lichen-color-8');
     const { rockPlacementRecords, boulderCirclesFromRecords } = await import('./rocks-placement.js?v=dressing-wire-1');
     const { createDeadfallPalette, buildDeadwoodMaterial, buildMushroomMaterial } = await import('./deadfall.js?v=dressing-tex-3');
     const { deadfallPlacementRecords, stumpCirclesFromRecords, logCirclesFromRecords } = await import('./deadfall-placement.js?v=dressing-wire-1');
@@ -3831,10 +3831,35 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     const dfCap = Math.max(1, Math.floor(6000 / (deadfallPalette.variants.length || 1)));
 
     // Flat groups list; a record's groupIdx = base offset for its type + its variantIdx.
+    // Perf-recovery Wave 1 (2026-07-08, terrain-dressing-performance-design.md P2 / Milestone 1):
+    // scree groups build the cheap buildScreeMaterial() (no triplanar, no normal map, no lichen
+    // noise, constant roughness) instead of the rich buildBoulderMaterial() -- scree runs at
+    // 10-40x the instance count of boulders, so per-fragment cost there dominates. `screeMatNodes`
+    // (declared below) records each scree group's vertex-stage nodes so the perf-A/B toggle can
+    // swap their built material live; `buildScreeMat`/`buildBoulderMat` are the exact per-group
+    // closures used to build the initial (and, for scree, the toggled-alternate) material so the
+    // A/B swap composes identically to the wiring here (same textures/nodes/uniforms).
     const groups = [];
     const ROCK_BASE = groups.length;
+    // groupIdx -> { nodes, build() } for every SCREE group, filled in as dressing-gpu.js calls
+    // each group's buildMaterial(nodes) during createDressingGPU() below. The perf-A/B toggle
+    // needs to hot-swap mesh.material after the host already exists, but dressing-gpu.js only
+    // sets mat.positionNode/normalNode ONCE, at initial mesh construction (see dressing-gpu.js
+    // ~line 148-155) -- it never re-applies them to a later material swap. Capturing `nodes`
+    // here (the same vertex-stage TSL nodes dressing-gpu.js's instanceNodes() built for that
+    // group) lets the toggle build a second, fully-wired material on demand instead of reusing
+    // a half-wired one.
+    const screeMatNodes = new Map();
+    const buildBoulderMat = (nodes) => buildBoulderMaterial({
+      textures: rockTextures, normalBase: nodes.nWorld, moistureNode: nodes.extra,
+      ...rockMaterialUniforms,
+    });
+    const buildScreeMat = (nodes) => buildScreeMaterial({
+      textures: rockTextures, textureScale: rockMaterialUniforms.textureScale,
+    });
     for (const t of rockPalette.types) {
       for (let v = 0; v < t.count; v++) {
+        const groupIdx = groups.length;
         groups.push({
           key: `${t.key}#${v}`,
           cullClass: t.scree ? 'scree' : 'boulder',
@@ -3844,10 +3869,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
           castShadow: !t.scree, // scree is too small/dense to justify shadow-map cost
           // S1: compose the triplanar detail normal ON TOP of the instance-rotated world
           // normal (nodes.nWorld); moisture rides the per-instance `extra` float (nodes.extra).
-          buildMaterial: (nodes) => buildRockMaterial({
-            textures: rockTextures, normalBase: nodes.nWorld, moistureNode: nodes.extra,
-            ...rockMaterialUniforms,
-          }),
+          // Scree groups use the cheap material by default (no normalBase/moistureNode --
+          // buildScreeMaterial doesn't take them); dressing-gpu.js falls back to assigning
+          // nodes.nWorld as normalNode itself when a material leaves it unset.
+          buildMaterial: (nodes) => {
+            if (t.scree) screeMatNodes.set(groupIdx, nodes);
+            return t.scree ? buildScreeMat(nodes) : buildBoulderMat(nodes);
+          },
         });
       }
     }
@@ -3888,6 +3916,24 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
     const dressingGPU = createDressingGPU({ renderer, camera, heightAt: terrainHeight, groups });
     dressingGPURef = dressingGPU;
+
+    // Perf A/B (2026-07-08, terrain-dressing-performance-design.md Milestone 1): instant swap
+    // between the cheap scree material (off, default -- matches the wiring above) and the rich
+    // boulder-grade material (on) for every scree group, for live visual/perf comparison without
+    // a reload. `dressingGPU.meshes` is index-aligned with `groups` (both built in the same
+    // `for (let g = 0; g < G; g++)` loop in dressing-gpu.js), so `screeMatNodes`'s captured
+    // groupIdx keys map directly to `dressingGPU.meshes[groupIdx]`. Swapping only mesh.material
+    // (not geometry/instanceCount/indirect) is safe -- those live on the geometry, untouched here.
+    window.perfAB?.addToggle('Scree rich material', false, (v) => {
+      for (const [groupIdx, nodes] of screeMatNodes) {
+        const mesh = dressingGPU.meshes[groupIdx];
+        if (!mesh) continue;
+        const mat = v ? buildBoulderMat(nodes) : buildScreeMat(nodes);
+        mat.positionNode = nodes.world;
+        if (!mat.normalNode) mat.normalNode = nodes.nWorld;
+        mesh.material = mat;
+      }
+    });
     scene.add(...dressingGPU.meshes);
 
     // Separate collision index for boulder/stump/log circles (keeps the tree trunkIndex intact).

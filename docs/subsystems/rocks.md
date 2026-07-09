@@ -33,7 +33,7 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
 
 | File | Responsibility |
 |---|---|
-| `rocks.js` | `buildRockGeometry(rng, opts)` — welded, plane-wave-displaced, squashed icosphere with baked `rockUpness`/`rockCavity` vertex attributes. `buildRockMaterial(opts)` — triplanar PBR + moss/lichen/dirt dressing. `createRockPalette(opts)` — data-driven palette of any number of rock types. |
+| `rocks.js` | `buildRockGeometry(rng, opts)` — welded, plane-wave-displaced, squashed icosphere with baked `rockUpness`/`rockCavity` vertex attributes. `buildBoulderMaterial(opts)` — rich triplanar PBR + moss/lichen/dirt dressing, for boulder groups. `buildScreeMaterial(opts)` — cheap planar/flat-color material with constant roughness, for scree groups. `buildRockMaterial` — back-compat alias for `buildBoulderMaterial`. `createRockPalette(opts)` — data-driven palette of any number of rock types. |
 | `rocks-placement.js` | `rockPlacementRecords(...)` — deterministic seeded placement records for boulders (scatter broadly) + scree (slope/rockness-gated), lowest-of-5-footprint seating, per-instance moisture. `boulderCirclesFromRecords(...)` — collision-circle export for `createTrunkIndex`. `rocknessOf(...)` — shared gating helper. |
 | `dressing-gpu.js` | `createDressingGPU(opts)` — generalized reset→cull→finalize→indirect-draw instancing host with per-group instance caps/cull radii/shadow flags/materials. Factored out of (not edited into) `plants-gpu.js`'s spine; the intended shared host for rocks now and deadfall/fungi (Phase 4) later. |
 | `test-rocks-geometry.mjs` | Welded→indexed, finite verts, unit normals, squash applied, baked upness/cavity in `[0,1]`, determinism, and `createRockPalette`'s data-driven type scaling. |
@@ -51,10 +51,21 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   `[0, 1]`: `rockUpness` (pre-squash sphere-normal Y — "how up-facing was this point before we
   flattened the boulder", the fable5 `RockBuilder.ts` idea) and `rockCavity` (how far below the
   mean wave displacement a vertex sits — dips read as concave/sheltered).
-- `export function buildRockMaterial({ textures = {}, moistureNode, normalBase, textureScale =
+- **Two material tiers** (perf-recovery Wave 1, 2026-07-08,
+  `terrain-dressing-performance-design.md` P2 / Milestone 1): scree groups run at 10-40x the
+  instance count of boulder groups (`screeDensity` vs `boulderDensity` in
+  `rocks-placement.js`/the `environment-viewer.html` wiring), so per-fragment shader cost matters
+  far more for scree than for the comparatively few, comparatively large, comparatively close
+  boulders. `buildRockMaterial` (the original, single-tier function) was split into
+  `buildBoulderMaterial` (identical behavior, just renamed) for boulder groups and a new, much
+  cheaper `buildScreeMaterial` for scree groups. `buildRockMaterial` still exists as a **thin
+  alias for `buildBoulderMaterial`** so any caller that hasn't opted into the split keeps working
+  unchanged.
+- `export function buildBoulderMaterial({ textures = {}, moistureNode, normalBase, textureScale =
   0.35, brushScale = 0.6, normalStrength = 0.25, roughnessFloor = 0.92, mossStrength = 1.0,
   lichenStrength = 0.7, lichenScale = 2.0, lichenBrightness = 0.85, lichenWhiteness = 0.35 })`
-  — a `MeshStandardNodeMaterial` with `shadowSide = THREE.BackSide`. `textures:
+  — the rich, boulder-grade material. A `MeshStandardNodeMaterial` with `shadowSide =
+  THREE.BackSide`. `textures:
   { albedo, normal, roughness }` (each an optional `THREE.Texture`) drive triplanar
   (`triplanarTexture` from `three/tsl`) albedo/roughness/normal at `scale = 0.35`; omitted
   textures fall back to a flat rock-grey albedo. `moistureNode` is a TSL float node for
@@ -84,6 +95,24 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   streaks by `1 - upness`. `brushNoise` and the lichen speckle are a cheap world-space hash
   (`hashNoise3`), not a texture tap, so the material stays at 3 samplers (triplanar) instead of
   4.
+- `export function buildScreeMaterial({ textures = {}, textureScale = 0.35, roughness = 0.95,
+  color })` — the cheap, scree-grade material. A `MeshStandardNodeMaterial` with `shadowSide =
+  THREE.BackSide` (unchanged from boulders — scree still reads correctly in shadow). Deliberately
+  drops, relative to `buildBoulderMaterial`: triplanar sampling (one **planar** albedo tap via a
+  single `texture()` call on `positionWorld.xz`, or a flat color/`vec3(0.54, 0.52, 0.47)`
+  fallback if no albedo texture and no `color` override are supplied — no roughness/normal
+  textures are sampled at all), the detail normal map entirely (no `normalNode` is set — see
+  below), and the moss/lichen dressing law (no `moistureNode`/`normalBase`/lichen/moss options
+  exist on this function; it does not silently accept and ignore them). `mat.roughnessNode` is
+  set to a single constant scalar (`roughness`, default **0.95**) instead of a
+  texture-sampled-and-moss-mixed node. Because `buildScreeMaterial` leaves `normalNode` unset,
+  `dressing-gpu.js`'s existing fallback (`if (!mat.normalNode) mat.normalNode = nodes.nWorld`)
+  supplies the instance-rotated vertex normal, so scree still shades and lights correctly
+  per-instance — it just has no additional detail-normal compose on top. `castShadow` for scree
+  groups is unchanged by this split (`castShadow: !t.scree` in `environment-viewer.html` — scree
+  already didn't cast shadows before Wave 1); `receiveShadow` defaults `true` same as boulders
+  (set by the `dressing-gpu.js` wiring layer's `spec.receiveShadow ?? true`, not by this
+  function).
 - `export const DEFAULT_ROCK_TYPES` — starter content: two boulder types + one scree type
   (`{ key, detail, squashRange, seedsPerType, scree }` each).
 - `export function createRockPalette({ variants = DEFAULT_ROCK_TYPES, screeVariant,
@@ -142,8 +171,9 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   and must return a `MeshStandardNodeMaterial`-family node material. `dressing-gpu.js` then
   assigns `mat.positionNode = nodes.world` unconditionally, but only assigns `mat.normalNode =
   nodes.nWorld` **when the material left `normalNode` unset** — a material that builds its own
-  normal (e.g. `buildRockMaterial` composing triplanar detail over `nodes.nWorld`) keeps it,
-  and is NOT clobbered. Geometry ownership: the host **clones** each group's `geometry`
+  normal (e.g. `buildBoulderMaterial` composing triplanar detail over `nodes.nWorld`) keeps it,
+  and is NOT clobbered — `buildScreeMaterial` leaves `normalNode` unset, so it always takes this
+  fallback. Geometry ownership: the host **clones** each group's `geometry`
   internally (instanceCount/indirect are written per group, so a shared geometry would corrupt
   siblings) and disposes those clones in `dispose()`; the caller still owns and disposes the
   originals it passed in. Instance records
@@ -208,10 +238,19 @@ queue each frame, exactly like plants. `regenDressing` is called from
 `maybeSyncTerrainDecorations` on terrain edits, and `dressingGPURef.update()` is awaited in
 `animate()` under the `dressingGpu` frame-profiler phase. Notable wiring choices vs the original
 recipe below: **boulders/scree are textured with the terrain's rock layer**
-(`textures/ground/rock/{color,normal,roughness}.jpg`, triplanar — so the S1 detail normal is live),
-logs/stumps sample the **same authored bark pack the forest uses** (`textures/bark/Bark014_1K-JPG`)
-via `buildDeadwoodMaterial`'s `albedoMap`/`roughnessMap`, and collision uses a **separate
-`dressingIndex`** rather than merging into the tree `trunkIndex`. The recipe as implemented:
+(`textures/ground/rock/{color,normal,roughness}.jpg`, triplanar for boulders / planar for scree —
+so the S1 detail normal is live for boulders), logs/stumps sample the **same authored bark pack
+the forest uses** (`textures/bark/Bark014_1K-JPG`) via `buildDeadwoodMaterial`'s
+`albedoMap`/`roughnessMap`, and collision uses a **separate `dressingIndex`** rather than merging
+into the tree `trunkIndex`. **Material tier per group** (perf-recovery Wave 1, 2026-07-08,
+Milestone 1): the `buildMaterial(nodes)` closure for each rock group checks the owning type's
+`scree` flag — scree groups call `buildScreeMaterial()`, everything else (boulders) calls
+`buildBoulderMaterial()`. A **perf A/B toggle** (`window.perfAB?.addToggle('Scree rich
+material', false, ...)`, registered right after `createDressingGPU()` returns) instantly swaps
+every scree group's live `mesh.material` between `buildScreeMaterial()` (off, default) and
+`buildBoulderMaterial()` (on) for visual/perf comparison without a reload — see "Perf A/B
+toggle: material hot-swap mechanics" below for why this needed extra plumbing beyond a plain
+`mesh.material = ...` assignment. The recipe as implemented:
 
 1. **Build the palette once at load**: `const rockPalette = createRockPalette({ masterSeed });`
 2. **Expand palette types into `dressing-gpu.js` groups**, one group per baked geometry
@@ -235,7 +274,11 @@ via `buildDeadwoodMaterial`'s `albedoMap`/`roughnessMap`, and collision uses a *
          : Math.floor(512 / boulderGroupCount),  // ≤512 boulders total across all boulder groups
        cullRadius: type.scree ? 50 : 140,       // scree stays short (40–60m) so overdraw of tiny stones never shows in per-pass GPU ms; boulders can see much further (midground scale anchors)
        castShadow: !type.scree,
-       buildMaterial: (nodes) => buildRockMaterial({ textures: rockTextures, moistureNode: nodes.extra, normalBase: nodes.nWorld }),
+       // Boulder groups: rich triplanar material. Scree groups: cheap planar/flat material
+       // (no moistureNode/normalBase — buildScreeMaterial doesn't take them).
+       buildMaterial: (nodes) => type.scree
+         ? buildScreeMaterial({ textures: rockTextures })
+         : buildBoulderMaterial({ textures: rockTextures, moistureNode: nodes.extra, normalBase: nodes.nWorld }),
      };
    });
    const dressing = createDressingGPU({ renderer, camera, heightAt: terrainHeight, groups });
@@ -262,18 +305,43 @@ via `buildDeadwoodMaterial`'s `albedoMap`/`roughnessMap`, and collision uses a *
    `docs/understory-overhaul-plan.md` recommends in-world-only tuning for v1; revisit if
    tuning proves painful).
 
+### Perf A/B toggle: material hot-swap mechanics
+
+`dressing-gpu.js` calls each group's `buildMaterial(nodes)` exactly once, at
+`createDressingGPU()` construction time, and only ever sets `mat.positionNode`/`mat.normalNode`
+on that one initial material (`if (!mat.normalNode) mat.normalNode = nodes.nWorld`, never
+re-applied later). A perf toggle that later did `mesh.material = buildBoulderMaterial(...)`
+without also setting `positionNode`/`normalNode` itself would render the swapped-in material
+un-positioned (or, for a normal-less scree material being swapped back in, un-lit per-instance).
+
+To make the toggle a true drop-in swap, the `environment-viewer.html` wiring captures each scree
+group's `nodes` object (the same vertex-stage TSL nodes — `{ world, nWorld, yaw, tiltX, tiltZ,
+extra }` — `dressing-gpu.js`'s `instanceNodes()` built for that group) into a `groupIdx -> nodes`
+map (`screeMatNodes`) the first time `buildMaterial(nodes)` runs for that group. The toggle
+callback then, for each captured group: builds the alternate material with the *same* captured
+`nodes`, sets `mat.positionNode = nodes.world` and the `normalNode` fallback itself (replicating
+what `dressing-gpu.js` would have done at construction time), and assigns `mesh.material`
+directly via `dressingGPU.meshes[groupIdx]` (index-aligned with `groups`, since both are built in
+the same loop in `dressing-gpu.js`). Geometry, `instanceCount`, and the indirect draw buffer are
+untouched by the swap — only the material/shader changes.
+
 ## Perf notes (merged-plan §3 gates)
 
 - Placement is chunk-local (one RNG stream per chunk, like every other placement file); gating
   is O(1) `surfaceField`/`heightAt` reads — no O(rocks × trees) or O(n²) scans anywhere in
   `rocks-placement.js`.
-- `buildRockMaterial` binds 3 texture samplers (triplanar albedo/roughness/normal) — the
-  moss/lichen "brush" and lichen speckle noise are a cheap analytic world-space hash
-  (`hashNoise3`), not a 4th texture tap, keeping sampler count flat regardless of dressing
-  complexity. This is a SEPARATE draw from the terrain material's own sampler budget.
-  Opaque/cutout only — no transparent-sorted geometry anywhere in this subsystem.
-  `shadowSide = BackSide` avoids raising the renderer's global `normalBias` (which would eat
-  grass-blade shadows) to fix rock terminator acne.
+- `buildBoulderMaterial` (boulder groups) binds 3 texture samplers (triplanar
+  albedo/roughness/normal) — the moss/lichen "brush" and lichen speckle noise are a cheap
+  analytic world-space hash (`hashNoise3`), not a 4th texture tap, keeping sampler count flat
+  regardless of dressing complexity. `buildScreeMaterial` (scree groups, perf-recovery Wave 1,
+  2026-07-08, Milestone 1) binds at most 1 texture sampler (one **planar**, non-triplanar albedo
+  tap) and skips roughness/normal texture sampling, the triplanar blend, and the moss/lichen hash
+  law entirely (constant roughness scalar instead) — since scree instance counts run 10-40x
+  boulder counts, this per-fragment cost reduction matters far more there than the boulder tier's
+  already-cheap analytic noise. This is a SEPARATE draw from the terrain material's own sampler
+  budget. Opaque/cutout only — no transparent-sorted geometry anywhere in this subsystem.
+  `shadowSide = BackSide` (both tiers) avoids raising the renderer's global `normalBias` (which
+  would eat grass-blade shadows) to fix rock terminator acne.
   `dressing-gpu.js`'s per-group cull radius/cap split (short radius + `castShadow=false` for
   scree, longer radius + shadows for boulders) is the mechanism that keeps a 16k-instance
   scree field from ever showing up as >0.5ms in the per-pass GPU HUD at default settings — this
