@@ -35,10 +35,12 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
 |---|---|
 | `rocks.js` | `buildRockGeometry(rng, opts)` — welded, plane-wave-displaced, squashed icosphere with baked `rockUpness`/`rockCavity` vertex attributes. `buildBoulderMaterial(opts)` — rich triplanar PBR + moss/lichen/dirt dressing, for boulder groups. `buildScreeMaterial(opts)` — cheap planar/flat-color material with constant roughness, for scree groups. `buildRockMaterial` — back-compat alias for `buildBoulderMaterial`. `createRockPalette(opts)` — data-driven palette of any number of rock types. |
 | `rocks-placement.js` | `rockPlacementRecords(...)` — deterministic seeded placement records for boulders (scatter broadly) + scree (slope/rockness-gated), lowest-of-5-footprint seating, per-instance moisture. `boulderCirclesFromRecords(...)` — collision-circle export for `createTrunkIndex`. `rocknessOf(...)` — shared gating helper. |
-| `dressing-gpu.js` | `createDressingGPU(opts)` — generalized reset→cull→finalize→indirect-draw instancing host with per-group instance caps/cull radii/shadow flags/materials. Factored out of (not edited into) `plants-gpu.js`'s spine; the intended shared host for rocks now and deadfall/fungi (Phase 4) later. |
+| `dressing-gpu.js` | `createDressingGPU(opts)` — generalized reset→cull→finalize→indirect-draw instancing host with per-group instance caps/cull radii/shadow flags/materials. Factored out of (not edited into) `plants-gpu.js`'s spine; the intended shared host for rocks now and deadfall/fungi (Phase 4) later. Cull kernel adds behind-camera/outside-view-cone rejection on top of the pre-existing radial distance + dithered edge fade (perf-recovery Wave/P4, 2026-07-09, Milestone 5). |
+| `dressing-cull.js` | `classifyInstance(rec, cam, params)` — Node-testable CPU twin of `dressing-gpu.js`'s cull kernel classification math (radial distance/fade + the new camera-forward/cone check). Hand-synced with the TSL kernel, same convention as `forest-cull.js`/`forest-gpu.js`; **not imported** by `dressing-gpu.js`. |
 | `deadfall.js` | `buildLog(opts)`/`buildStump(opts)`/`buildMushroom(opts)` — swept-tube (`Grower`/`sweepTube`) log/stump geometry with baked decay/shelf-fungus vertex channels, plus lathed mushroom caps. `buildDeadwoodMaterial(opts)` — bark/moss/shelf-fungus material for logs/stumps, `THREE.FrontSide` by default (perf-recovery Wave 2, 2026-07-08, Milestone 2). `buildMushroomMaterial(opts)` — part-colored mushroom material, `THREE.DoubleSide` (intentional, see "Deadfall winding and DoubleSide" below). `createDeadfallPalette(opts)` — data-driven palette of any number of deadfall types. |
 | `test-rocks-geometry.mjs` | Welded→indexed, finite verts, unit normals, squash applied, baked upness/cavity in `[0,1]`, determinism, and `createRockPalette`'s data-driven type scaling. |
 | `test-rocks-placement.mjs` | Determinism, record shape, slope/rockness gating (scree vs. flat/non-rocky ground), water rejection, lowest-of-5-footprint seating (cliff-straddling case), scree sink depth, optional `trunkQuery` rejection, `boulderCirclesFromRecords`, `rocknessOf`. |
+| `test-dressing-cull.mjs` | `classifyInstance` — behind-camera instance rejected beyond the padded cone, screen-edge instance inside the padded (wider-than-raw-FOV) cone kept, radial limit + dithered fade unchanged when the cone check is bypassed (disabled or facing the instance straight-on), and the `coneEnabled=false` back-compat path keeps a behind-camera instance that the cone would otherwise reject. |
 | `test-deadfall-geometry.mjs` | `buildLog`/`buildStump`/`buildMushroom`/`createDeadfallPalette` — decay monotonicity, finite/indexed/unit-normal geometry, baked decay weight, shelf-fungus gating (mossy/rotten only), mushroom part channels, determinism, palette data-drivenness, and (Milestone 2) outward triangle winding for log/stump side walls and caps. |
 | `test-deadfall-placement.mjs` | `deadfallPlacementRecords` — moisture→decay mapping, slope rejection for logs, canopy weighting, mushroom hard-gate, determinism, collision-circle export. |
 
@@ -186,7 +188,8 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   as — **palette-to-group variant selection (e.g. `rocks-placement.js`'s `variant`/`variantIdx`
   → a flat `groups` array index) is the placement/wiring layer's job, not this host's.**
   Returns `{ meshes, setChunk, clearChunk, setChunks, setGroupCull(radius, { start, filter }),
-  update() (async, runs the compute passes), stats: { draws, groups, instances }, dispose() }`.
+  update() (async, runs the compute passes), stats: { draws, groups, instances, rejectedFrustum },
+  dispose() }`.
   `stats` (2026-07-08, perf-recovery Wave 0, terrain-dressing-performance-design.md Milestone 0):
   `draws` is the number of groups with `visible=true` this rebuild (submitted draw calls),
   `groups` is the total group count (`groups.length`, static for the life of the host), and
@@ -202,12 +205,67 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   the host dirty so the next `update()` re-runs the cull compute). `filter(spec, groupIndex) =>
   bool` scopes it to a class of groups; the `environment-viewer.html` wiring tags each group with
   a `cullClass` (`'boulder'|'scree'|'deadwood'|'mushroom'`) and the range sliders filter on it.
+- **Frustum/cone culling** (perf-recovery, 2026-07-09, P4/Milestone 5 in
+  `terrain-dressing-performance-design.md`): the cull kernel's radial-distance + dithered-edge-fade
+  check (unchanged) is now ANDed with a second check that rejects instances behind the camera or
+  outside a padded view cone. Per-frame, `update()` reads `camera.getWorldDirection()` (XZ,
+  normalized) into a `uCamFwd` `vec2` uniform and `cos(camera.fov/2)` (degrees → radians, vertical
+  FOV) into a `uFovCos` uniform shared by every group; `update()` now also recculls on
+  rotation-only camera moves (previously only position changes marked the host dirty, which would
+  have left a player turning in place under-culled). Per-group cull kernel math: normalize
+  `(instance − camera)` in XZ, dot with `uCamFwd`, keep if `dot >= clamp(uFovCos − uConeMargin, −1,
+  1)` (an instance sitting on the camera, `dist < 1e-6`, is never rejected — direction is
+  undefined). `uConeMargin` defaults to **0.35** — deliberately WIDE/generous cosine padding
+  (vertical FOV is also a conservative, narrower-than-horizontal bound to check against, so the
+  default compounds two safety margins), per the design doc's explicit "do not be too aggressive:
+  use a wide cone and padding to avoid visible popping" guidance — dressing instances are small and
+  dense, so any popping at the cone edge reads as obviously wrong. `uConeEnabled` (0/1 float
+  uniform) is a hard bypass for back-compat/A-B: when off, `coneLive` is unconditionally true and
+  the kernel behaves exactly as it did before this milestone. Both uniforms are driven by perf A/B
+  controls registered from inside `createDressingGPU()` itself (see "Perf A/B controls" below —
+  this task could not edit `environment-viewer.html`, so registration moved into the host
+  constructor rather than the usual post-`createDressingGPU()` call-site pattern). `stats.
+  rejectedFrustum` is a **CPU-side estimate**, computed lazily in the `stats` getter (not every
+  `update()`) by re-running the same cone math in plain JS over the already-placed `allRecords`
+  against the last camera state `update()` used — it deliberately does NOT replay the dithered
+  radial-fade dice roll, so it slightly undercounts right at the fade band edge; it exists so the
+  viewer can wire it into the perf HUD later without further `dressing-gpu.js` changes, and reads
+  `0` whenever the cone toggle is off. This was a deliberate scope choice over a true GPU atomic
+  readback (a second atomic counting radial-only survivors, then reading it back with
+  `renderer.getArrayBufferAsync`), which would add a GPU→CPU round-trip to every recull just to
+  feed a debug counter — no existing `dressing-gpu.js`/`plants-gpu.js` stat does that today.
+- **Perf A/B controls** (`window.perfAB`, registered inside `createDressingGPU()`, guarded with
+  `globalThis.window?.perfAB?.` so this stays Node-test-safe): `addToggle('Dressing frustum cull',
+  true, ...)` flips `uConeEnabled`; `addSlider('Dressing cone margin', 0.35, 0, 0.6, 0.01, ...)`
+  retunes `uConeMargin` live — the slider's purpose is to let a user hunt for the narrowest
+  non-popping margin against dense scree in a live session (0 = exactly the raw vertical-FOV
+  cosine, expect visible edge popping; 0.6 = very wide safety margin). Both callbacks mark the
+  host dirty so the next `update()` re-runs the cull compute with the new uniform value.
+- `dressing-cull.js`'s `classifyInstance(rec, cam, params)` is the Node-testable CPU twin of the
+  cull kernel above (radial + cone, same math, same order of checks) — see "Frustum/cone culling
+  Node twin" below. It is a **hand-synced, not imported**, copy (same convention as
+  `forest-cull.js`/`forest-gpu.js`): `dressing-gpu.js` does not import `dressing-cull.js`, and the
+  `stats.rejectedFrustum` CPU estimate above reimplements the cone check inline rather than calling
+  into `dressing-cull.js`, for the same reason. Keep both files' math in sync by hand when either
+  changes.
 - Position/normal transform: instances apply a 3-axis Euler rotation (X tilt → Z tilt → Y yaw,
   identical composition for position and normal) via plain trig — no TSL `mat3`/quaternion
   type is used anywhere in this codebase, so this stays consistent with that convention.
 - `plants-gpu.js` is unedited. Migrating plants onto this host is a **separately-coordinated
   later step** (see `docs/understory-overhaul-plan.md` open question #5) — do not assume it
   has happened.
+
+### Frustum/cone culling Node twin (`dressing-cull.js`)
+
+`export function classifyInstance(rec, cam, params)` — `rec: { x, z }`, `cam: { x, z, fx, fz }`
+(camera position + normalized XZ forward), `params: { cullRadius, cullStart, keepRand,
+coneEnabled = true, fovCos, coneMargin = 0.35 }`. `keepRand` is caller-supplied (tests pass a
+fixed dice-roll value) rather than recomputed here — the dither hash itself (`posRandFn` in
+`dressing-gpu.js`) is untouched by this milestone and stays private to that file. Returns `{ dist,
+edge, radialLive, coneLive, live }`: `radialLive`/`edge` are the pre-existing radial + fade check,
+computed identically to before; `coneLive` is the new behind-camera/outside-cone check (always
+`true` when `coneEnabled` is `false`, or when `dist < 1e-6`); `live` is `radialLive && coneLive`,
+matching the kernel's `If(live, ...)` gate order exactly.
 
 ## Weld implementation (why not `three/addons`)
 
@@ -396,6 +454,7 @@ toggle exists solely to A/B the residual `DoubleSide` render cost live.
 |---|---|---|
 | `test-rocks-geometry.mjs` | `buildRockGeometry`, `createRockPalette` | Weld produces an indexed geometry with fewer unique vertices than the raw non-indexed icosahedron (same triangle/index count); all positions finite; all normals unit length; `squash` measurably shrinks the Y extent relative to X/Z; `rockUpness`/`rockCavity` attributes exist, are bounded `[0,1]`, and vary across a boulder's surface; same-seed determinism (byte-identical positions and baked attributes); `createRockPalette` scales to an arbitrary (tested: 5-entry) type table with zero code changes, honors per-type `seedsPerType`, and the `screeVariant` shorthand. |
 | `test-rocks-placement.mjs` | `rockPlacementRecords`, `boulderCirclesFromRecords`, `rocknessOf` | Determinism for the same seed/params; record shape (`x/y/z/scale/yaw/tiltX/tiltZ/moisture/variant/scree`); scree acceptance rises on steep/rocky ground vs. flat non-rocky ground (isolated boulder/scree density knobs); slope alone (no rock-layer weight) still raises the gate; total rejection when the chunk is fully submerged; lowest-of-5-footprint seating proven with a cliff-straddling case (a boulder whose footprint crosses a height step seats at the LOW side, not its own center height); scree sinks exactly `scale * 0.3` into flat ground; optional `trunkQuery` rejects every boulder when always-true and is a no-op when omitted; `boulderCirclesFromRecords` excludes scree and matches the non-scree record count; `rocknessOf` sums only `gravel`/`rock` layer weights and handles missing input. |
+| `test-dressing-cull.mjs` | `classifyInstance` (`dressing-cull.js`, P4/Milestone 5) | A straight-behind and a near-but-behind instance are both rejected by the cone check; an instance placed at an angle inside the WIDE padded cone but outside the raw FOV is kept (proves the padding actually widens acceptance, not just a raw-FOV check); with the cone disabled (or facing the instance head-on) the pre-existing radial limit and dithered edge-fade behavior is exactly reproduced — in-range kept, beyond-radius culled, fade-band midpoint edge fraction computed correctly, dither `keepRand` equal to `edge` does NOT survive (strict `>`) while just above it does; the `coneEnabled=false` backward-compat path keeps a behind-camera instance that the cone would otherwise reject, as long as it's radially in range. |
 
-Both tests pass as of this writing (`node test-rocks-geometry.mjs`, `node
-test-rocks-placement.mjs`).
+All tests pass as of this writing (`node test-rocks-geometry.mjs`, `node
+test-rocks-placement.mjs`, `node test-dressing-cull.mjs`).
