@@ -372,6 +372,7 @@ automatically the same way the Wave 0 columns above did — no separate header c
 | `camX` / `camY` / `camZ` | `camera.position.{x,y,z}` | 1 decimal. `camera` is a true top-level module-scope `const` (declared ~line 1029, before `perfLog` at ~line 1503), so `snapshot()`'s closure reads it directly — no `setContextProvider` indirection needed. |
 | `camHeading` | `headingDegrees(camera.rotation.y)` (existing helper, ~line 961, already used by the compass/minimap) | Integer degrees, 0-359. |
 | `camSpeed` | Derived: Euclidean distance between this sample's rounded camera position and the previous sample's, divided by elapsed wall-clock seconds (`performance.now()` deltas) | 1 decimal, world-units/sec. `perfLog._lastCamPos`/`_lastCamT` track state between samples and are reset (`_lastCamPos = null`) whenever `setRecording(true)` starts a new run, so the first sample of a run never reports a stale speed from a previous capture. |
+| `fpsCap` (2026-07-09) | top-level `fpsCapValue` variable | `'off'`\|`'60'`\|`'40'`\|`'30'` — the global frame cap's **current** live setting (Perf A/B "FPS cap" select can change it mid-run), not the `?fpsCap=` flag's initial value. See "Global frame cap" below. |
 
 ## Perf A/B control registry (`window.perfAB`)
 
@@ -415,6 +416,12 @@ once, right after `mountPerfAbControl` is defined, flushing every already-queued
 Wave 0 itself registers six water controls from the water-loader block (see `water.md`'s "URL
 flags + Perf A/B panel" section for the full label/range list and which setter each one calls):
 "Water reflection", "Reflect rate", "Reflect scale", "Caustics", "Caustic rate", "Caustic res".
+The 2026-07-09 water milestone adds a seventh water control, **"Water visibility gates"**
+(`addToggle`, default `true` -> `waterRef.setVisibilityGatesEnabled(v)` — see `water.md`'s
+"Visibility/strength gates"), and one loop-level control registered at true top level in
+`environment-viewer.html` (right after `setFpsCap` is defined, queued until the panel mounts):
+**"FPS cap"** (`addSelect`, `['off','60','40','30']`, initial position from `?fpsCap=` else
+`'60'` -> `setFpsCap(v)` — see "Global frame cap" below).
 
 A later wave (2026-07-09, terrain-dressing-performance-design.md Milestones 3B/3C) adds two more,
 registered from `terrain-textures.js`'s `applySplatTerrain` (called via `terrain-loader.js`'s
@@ -428,6 +435,47 @@ just a shader-loop trim), so prebuilding all three for instant swap remains futu
 
 Perf A/B controls are **not** part of the `controlRegistry`/preset-save system (`captureSliderState`/
 `applySliderState`) — they're a live scratch pad for comparison, not saved/restored slider state.
+
+## Global frame cap (2026-07-09, water-performance-design.md follow-on)
+
+`?fpsCap=60|40|30|off`, **default `60`** (any other value falls back to `60`). Caps how often
+the main rAF loop in `environment-viewer.html` (`animate()`, the loop ending in
+`perfLog.maybeSample`) runs its sim+render body. Purpose: on a thermally-throttling GPU
+(the dev machine's RTX 3060 Laptop), an uncapped loop pegs the GPU at whatever peak FPS the
+scene allows and then sags under sustained load — the cap **intentionally trades peak FPS for
+thermal headroom**, so `fps` median at cap 60 should read ~60 in a capture (not more), and a
+capped run's value is steadier sustained frame pacing, not a higher number.
+
+Implementation (all in `environment-viewer.html`):
+
+- `FPS_CAP_URL` is parsed once at top level (near `WATER_URL_FLAGS`); `fpsCapValue` (live
+  setting) and `fpsCapMs` (precomputed `1000/cap` budget, `Infinity` when `'off'`) live next to
+  the `animate()` loop state; `setFpsCap(value)` revalidates and recomputes both — called by the
+  Perf A/B **"FPS cap"** select, so the cap is live-switchable without a reload.
+- The check is the **first thing in `animate()` after the `_frameBusy` re-entrancy guard**
+  (which must stay first — it's a WebGPU submit-safety serializer, not per-frame work): if
+  `performance.now() - lastRenderedFrameTime < fpsCapMs - 0.5`, the callback returns
+  immediately — the entire sim+render body is skipped before `frameProfiler.beginFrame()` or
+  any other work, so a skipped tick costs one `performance.now()` call and one comparison. rAF
+  itself keeps firing every vsync (no `setTimeout` chains); `lastRenderedFrameTime` is only
+  stamped on frames that actually run, so the comparison measures real rendered-frame spacing.
+- **The 0.5ms tolerance prevents vsync beating**: a 60Hz display delivers rAF ticks at ~16.667ms
+  spacing with sub-ms jitter. A hard `< 16.667` test would intermittently measure e.g. 16.4ms,
+  skip that tick, and catch the next one at ~33ms — locking to 30 FPS. With the effective
+  threshold at `16.667 - 0.5 = 16.167ms`, any elapsed time of at least one true vsync interval
+  always passes, so cap 60 on a 60Hz display renders every vsync (~60 FPS median).
+- **What the skip path bypasses (audited 2026-07-09):** nothing time-critical. The host's
+  multiplayer broadcast runs on its own `setInterval` in `multiplayer.js` (`BROADCAST_MS` 50ms),
+  fully outside `animate()` — its `getState()` just reads the last-simulated positions. The
+  guest's `player_state` send (`syncMultiplayerPlayer`, called inside the loop body, own 50ms
+  `MP_PLAYER_SEND_MS` gate) and `mpGhostRenderer.tick(now)` (wall-clock-interpolated) run
+  slightly less often under a low cap — at cap 30 (33.3ms frame spacing) the guest send cadence
+  degrades from 50ms to at worst ~66ms, equivalent to what any 30 FPS device already produces.
+  `envAudio.update()` only refreshes the Web Audio listener pose and speaker-orb follow —
+  actual playback is scheduled on the audio thread, not rAF. Nothing was hoisted above the cap
+  check because nothing inside the body needs per-rAF execution.
+- CSV: the `fpsCap` context column (see the per-sample context columns table above) records the
+  live value per sample.
 
 ## Tests
 

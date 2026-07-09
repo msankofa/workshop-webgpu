@@ -56,14 +56,24 @@ const DEFAULTS = {
   reflectMix: 1.0,
   reflectBrightness: 1.0,
   reflectResolutionScale: 0.5, // perf: reflector render-target scale (1 = full res); see setReflectionTuning()
-  reflectRate: 1,              // perf: render the reflection every Nth frame (1 = every frame)
+  // perf (2026-07-08/09, water-performance-design.md §1/§2): default changed 1 -> 2 (render
+  // the reflection every 2nd frame instead of every frame). Still runtime-overridable via
+  // setReflectRate()/?waterReflectRate=/the Perf A/B "Reflect rate" slider in both directions.
+  reflectRate: 2,              // perf: render the reflection every Nth frame (1 = every frame)
   reflectExclude: null,        // Object3D/list/function returning detail objects hidden only during reflection
   depthScale: 3.0,
   waveStrength: 1.0,
   caustic: 1.0,
   causticBedDepth: 3.0,     // reference bed plane sits this far below the water level
-  causticRes: 1024,
-  causticRate: 1,           // perf: render the caustic pass every Nth frame (1 = every frame); see setCausticRate()
+  // perf (2026-07-08/09, water-performance-design.md §1/§2): default changed 1024 -> 512.
+  // Runtime-overridable via setCausticRes()/?waterCausticRes=/the Perf A/B "Caustic res" select.
+  causticRes: 512,
+  // perf (2026-07-08/09, water-performance-design.md §1/§2): default changed 1 -> 4. The spec's
+  // §1 offers "caustics off by default" as an alternative; rate-4-at-512px was chosen instead of
+  // off-by-default so caustic lighting on the lakebed still reads as present rather than
+  // vanishing outright — see water.md's "Defaults" note for the full rationale. Runtime-
+  // overridable via setCausticRate()/?waterCausticRate=/the Perf A/B "Caustic rate" slider.
+  causticRate: 4,           // perf: render the caustic pass every Nth frame (1 = every frame); see setCausticRate()
   buildBudgetMs: 1.5,
   maxBuildsPerFrame: 1,
   lodR0: 50,
@@ -472,6 +482,15 @@ export function createWaterSystem(options = {}) {
   // no behavior change in this task.
   let CAUSTICS_ENABLED = true;
   let causticStrength = Number(o.caustic) || 0;
+  // perf (2026-07-09, water-performance-design.md §3): grazing/below-horizon light gate shared
+  // by every place that recomputes causticRenderStats.enabled (setCaustic, setCausticsEnabled,
+  // and the live per-frame check in CausticTextureNode.updateBefore below) so they can't drift.
+  // lightDir.y is the sine of the light's elevation (lightDir is a world-space unit vector
+  // toward the light — see setLightDir()); 0.02 ~= 1.15deg above horizon.
+  const CAUSTIC_MIN_LIGHT_ELEVATION = 0.02;
+  const computeCausticEnabled = () => CAUSTICS_ENABLED && causticStrength > 0
+    && causticGroup.children.length > 0
+    && (!visibilityGatesEnabled || lightDir.y > CAUSTIC_MIN_LIGHT_ELEVATION);
   const causticRenderStats = { enabled: CAUSTICS_ENABLED && causticStrength > 0, passes: 0, lastMs: 0 };
   // perf: every-Nth-frame caustic throttle, same seam as reflectEvery (setReflectRate).
   // Defaults to 1 (render every frame the caustic pass would otherwise run) — no default
@@ -577,6 +596,14 @@ export function createWaterSystem(options = {}) {
   // wave/the Perf A/B panel can force reflection off without touching the mix/brightness
   // sliders. Defaults preserve existing behavior exactly.
   let reflectionManualEnabled = true;
+  // perf (2026-07-09, water-performance-design.md §3/§5): master on/off for the new
+  // visibility/strength gates (ring-visibility for reflection, light-elevation for caustics —
+  // the causticStrength/causticGroup-count/reflectMix/reflectBrightness gates predate this task
+  // and are NOT covered by this flag, only the two gates this task adds). Default true; wired
+  // to the Perf A/B "Water visibility gates" toggle in environment-viewer.html so an A/B run can
+  // isolate the gates' effect from the rate/resolution throttles. setVisibilityGatesEnabled()
+  // below is the setter.
+  let visibilityGatesEnabled = true;
   const computeReflectionEnabled = () => reflectionManualEnabled
     && (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
   let reflectionEnabled = computeReflectionEnabled();
@@ -634,9 +661,23 @@ export function createWaterSystem(options = {}) {
       reflectionRenderStats.excluded = hidden.length;
     }
   }
+  // perf (2026-07-09, water-performance-design.md §3): "no visible ring geometry" gate.
+  // waterRings[n] is only non-null once a ring's mesh has actually been committed
+  // (commitRingJob, water.js:~980) — during startup (before the first ring build lands) or on
+  // a fully-dry map (no cell crosses waterLevel, so no ring geometry is ever built) this stays
+  // all-null and there is nothing for a reflection to show. `waterRings` is declared later in
+  // this closure (water.js:~764) but is only ever read here from inside updateBefore(), which
+  // fires during the live render loop long after the whole closure has finished initializing —
+  // no TDZ/ordering hazard. A frustum test against the camera would be the more precise gate
+  // (spec's "camera well above water and plane not in view frustum") but there is no existing
+  // helper in this file for testing the clipmap rings against `camera`'s frustum, and building
+  // one is more than a "cheap check" — deferred; see water.md's "Gates" note for this deviation.
+  function hasVisibleWaterRings() {
+    return !visibilityGatesEnabled || waterRings.some(r => r && r.mesh);
+  }
   reflectorBase.updateBefore = (frame) => {
-    reflectionRenderStats.enabled = reflectionEnabled;
-    if (!reflectionEnabled) {
+    reflectionRenderStats.enabled = reflectionEnabled && hasVisibleWaterRings();
+    if (!reflectionRenderStats.enabled) {
       reflectionRenderStats.lastMs = 0;
       return;
     }
@@ -824,7 +865,10 @@ export function createWaterSystem(options = {}) {
       this.updateBeforeType = NodeUpdateType.RENDER;
     }
     updateBefore(frame) {
-      causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+      // perf (2026-07-09, water-performance-design.md §3): gate on light elevation in addition
+      // to the pre-existing strength/mesh-count gates — see computeCausticEnabled() above for
+      // why (light at/below horizon degenerates the top-down caustic projection).
+      causticRenderStats.enabled = computeCausticEnabled();
       if (!causticRenderStats.enabled) {
         causticRenderStats.lastMs = 0;
         this.value = causticsTarget.texture;
@@ -1126,7 +1170,7 @@ export function createWaterSystem(options = {}) {
   }
   function setCaustic(strength) {
     causticStrength = Math.max(0, Number(strength) || 0);
-    causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+    causticRenderStats.enabled = computeCausticEnabled();
     tsl_c_causticStr.value = causticStrength;
   }
 
@@ -1169,7 +1213,19 @@ export function createWaterSystem(options = {}) {
   // remains its own gate). Default `true` = no override.
   function setCausticsEnabled(enabled) {
     CAUSTICS_ENABLED = !!enabled;
-    causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+    causticRenderStats.enabled = computeCausticEnabled();
+  }
+
+  // perf (2026-07-09, water-performance-design.md §3): master on/off for the ring-visibility
+  // (reflection) and light-elevation (caustics) gates added by this task — see
+  // visibilityGatesEnabled's declaration above. Wired to the Perf A/B "Water visibility gates"
+  // toggle (default true) so a live A/B run can isolate the gates' contribution from the
+  // rate/resolution throttles. Turning it off does NOT touch reflectMix/reflectBrightness/
+  // causticStrength/causticGroup-count — those remain their own independent gates.
+  function setVisibilityGatesEnabled(enabled) {
+    visibilityGatesEnabled = !!enabled;
+    reflectionRenderStats.enabled = reflectionEnabled && hasVisibleWaterRings();
+    causticRenderStats.enabled = computeCausticEnabled();
   }
 
   // perf: throttles the caustic render to every `everyNFrames`th eligible frame, same
@@ -1207,6 +1263,15 @@ export function createWaterSystem(options = {}) {
     refractVec(lightDir.clone().negate(), new THREE.Vector3(0, 1, 0), ETA, refractedFlat);
     tsl_baseRayU.value.copy(refractedFlat);        // caustic vertex shader
     tsl_c_refractedFlat.value.copy(refractedFlat); // caustic ground projection
+    // perf (2026-07-09, water-performance-design.md §3): refresh causticRenderStats.enabled
+    // synchronously, same as every other setter that feeds computeCausticEnabled() (setCaustic,
+    // setCausticsEnabled, setVisibilityGatesEnabled). setLightDir is called every frame by the
+    // lighting rig (rig.connect(waterRef)) as the sun moves, so without this a horizon crossing
+    // would leave getStats().causticEnabled/causticMeshes/causticDraws stale until the next
+    // actual renderer.render() call happened to re-run CausticTextureNode.updateBefore() —
+    // usually the same frame in practice, but not guaranteed (e.g. a paused/no-op render loop),
+    // and the HUD/perf CSV read getStats() independently of the render call.
+    causticRenderStats.enabled = computeCausticEnabled();
   }
 
   function setLodDistances(r0, r1) {
@@ -1280,6 +1345,9 @@ export function createWaterSystem(options = {}) {
       cacheMisses,
       disposalsPending: deferredDisposals.length,
       version: WATER_VERSION,
+      // perf (2026-07-09, water-performance-design.md §3): whether the ring-visibility/
+      // light-elevation gates are armed (see setVisibilityGatesEnabled()).
+      visibilityGatesEnabled,
     };
   }
 
@@ -1289,6 +1357,8 @@ export function createWaterSystem(options = {}) {
     dispose,
     // perf (2026-07-08 Wave 0): pass-through setters, see the block above setLightDir.
     setReflectionEnabled, setCausticsEnabled, setCausticRate, setCausticRes, setQuality,
+    // perf (2026-07-09, water-performance-design.md §3): master gate toggle, see its definition.
+    setVisibilityGatesEnabled,
   };
 }
 

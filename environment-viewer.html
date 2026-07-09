@@ -106,6 +106,18 @@ const WATER_URL_FLAGS = (() => {
   };
 })();
 
+// ---- Global frame-rate cap (2026-07-09, water-performance-design.md Part 2) -------------
+// ?fpsCap=60|40|30|off, default 60. Caps the main rAF loop's sim+render work (not vsync
+// itself) so a thermally-throttling laptop GPU gets sustained headroom instead of pegging at
+// whatever uncapped FPS the scene can hit. 'off' means "no cap" (render every rAF tick, prior
+// behavior). Parsed once at top level so both the initial value and the FPS_CAP_MS lookup are
+// available before animate() is ever called; the live Perf A/B "FPS cap" select can still
+// change fpsCapValue afterward (see the setFpsCap() helper near animate()).
+const FPS_CAP_URL = (() => {
+  const v = new URLSearchParams(location.search).get('fpsCap');
+  return (v === 'off' || v === '30' || v === '40' || v === '60') ? v : '60';
+})();
+
 // ---- Perf A/B control registry (window.perfAB) -----------------------------------------
 // A live runtime-comparison panel, separate from the reproducible-capture URL flags above:
 // URL flags set the STARTING state for a capture run; perfAB sliders/toggles mutate live
@@ -1543,6 +1555,10 @@ const perfLog = {
       cpuMs: +terrainDebug.cpuMs.toFixed(3),            // CPU time encoding+submitting the frame (the SP1 perf-gate metric)
       backend: renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
       queryString: location.search,
+      // perf (2026-07-09, water-performance-design.md Part 2): current frame-cap setting
+      // ('off'|'60'|'40'|'30'), read live so a capture taken mid-toggle (Perf A/B "FPS cap"
+      // select) stays interpretable, same rule as the water Perf A/B columns above.
+      fpsCap: fpsCapValue,
       camX, camY, camZ, camHeading,
       camSpeed: +camSpeed.toFixed(1),
       telemetryActive: this.telemetryActive,
@@ -4236,7 +4252,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }
 
   // ---- water (separate module; optional). Needs a refraction render target. ----
-  _waterPromise = import('./water.js?v=reflection-prune-1').then(({ createWaterSystem }) => {
+  _waterPromise = import('./water.js?v=perf-defaults-gates-1').then(({ createWaterSystem }) => {
     Object.assign(params, {
       waterWaves: 0.0, caustics: 1.0, waterLodR0: 50, waterLodR1: 150,
       waterReflectMix: 1.0, waterReflectBrightness: 1.0, waterReflectRipple: 0.08,
@@ -4302,6 +4318,14 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     window.perfAB?.addSelect(
       'Caustic res', WATER_URL_FLAGS.causticRes ?? 1024, [256, 512, 1024],
       (v) => waterRef.setCausticRes(Number(v)),
+    );
+    // perf (2026-07-09, water-performance-design.md §3): master on/off for the ring-visibility
+    // (reflection) and light-elevation (caustics) gates added by this task. Default true (gates
+    // armed) — matches water.js's own default. Turning it off isolates the new gates' perf
+    // contribution from the pre-existing rate/resolution/strength throttles during an A/B run.
+    window.perfAB?.addToggle(
+      'Water visibility gates', true,
+      (v) => waterRef.setVisibilityGatesEnabled(v),
     );
 
     header('Water');
@@ -5791,6 +5815,33 @@ function lgUpdateLights(dt, t) {
 // ===================== render loop =====================
 const clock = new THREE.Clock();
 let _frameBusy = false;
+// perf (2026-07-09, water-performance-design.md Part 2): global frame-rate cap state.
+// fpsCapValue is the live setting ('off'|'60'|'40'|'30'), fpsCapMs is its precomputed
+// 1000/cap budget (Infinity when off, so the elapsed-time check below always passes and the
+// cap is a true no-op). lastRenderedFrameTime is stamped only on frames that actually run the
+// sim+render body (not on skipped ones), so the elapsed-time comparison measures real frame
+// spacing, not rAF-callback spacing (rAF still fires every vsync even on a skipped frame).
+let fpsCapValue = FPS_CAP_URL;
+let fpsCapMs = fpsCapValue === 'off' ? Infinity : 1000 / Number(fpsCapValue);
+let lastRenderedFrameTime = -Infinity;
+// 0.5ms tolerance: at cap 60 on a 60Hz display, vsync delivers frames at a true ~16.667ms
+// spacing that jitters by a fraction of a ms either side of that average. A hard `< 16.667`
+// comparison would intermittently see e.g. 16.4ms elapsed and skip that tick, then the next
+// tick arrives at ~33ms elapsed (2 vsyncs' worth) — beating against vsync and settling into a
+// 30 FPS lock instead of 60. Subtracting 0.5ms from the budget (16.167ms effective threshold)
+// means any elapsed time >= one true vsync interval always clears it, so cap 60 on a 60Hz
+// display renders every vsync (median ~60 FPS) instead of every other one.
+function setFpsCap(value) {
+  fpsCapValue = (value === 'off' || value === '30' || value === '40' || value === '60') ? value : '60';
+  fpsCapMs = fpsCapValue === 'off' ? Infinity : 1000 / Number(fpsCapValue);
+}
+// Perf A/B panel: live-switchable frame cap, initial position follows the ?fpsCap= URL flag
+// (same "URL sets starting state, perfAB mutates live on top" rule as the water controls).
+// Registered here (top level, right after setFpsCap is defined) rather than from inside a
+// lazy module block, since the frame cap applies to the whole animate() loop, not one
+// subsystem — window.perfAB queues the entry until the "Perf A/B" panel section itself is
+// built further down, same as every other control registered before that point.
+window.perfAB?.addSelect('FPS cap', FPS_CAP_URL, ['off', '60', '40', '30'], (v) => setFpsCap(v));
 async function resolveFrameTimestamps() {
   if (TIMESTAMP_MODE !== 'on') return;
   if (typeof renderer.resolveTimestampsAsync !== 'function') return;
@@ -5817,6 +5868,20 @@ async function animate() {
   // "Buffer used in submit while destroyed" (worst at night/look-up, the heaviest sky
   // frames). Serialize: drop any vsync that arrives while a frame is still in flight.
   if (_frameBusy) { frameProfiler.markDropped(); return; }
+  // perf (2026-07-09, water-performance-design.md Part 2): global frame-rate cap. Must be the
+  // very first check after the busy-guard (before frameProfiler.beginFrame() or any other
+  // per-frame work) so a skipped tick costs one performance.now() call and one comparison —
+  // rAF still fires every vsync (this is not a setTimeout chain), we just no-op most of them
+  // when capped below the display's native rate. Nothing here touches multiplayer send timers
+  // (host broadcast runs on its own setInterval in multiplayer.js, guest send is gated by its
+  // own now-mpLastPlayerSend check that simply runs slightly less often — see water.md /
+  // this task's final report for the full audit) or Web Audio playback (scheduled on the audio
+  // thread, not rAF), so skipping the body here is safe.
+  if (fpsCapMs !== Infinity) {
+    const nowRaw = performance.now();
+    if (nowRaw - lastRenderedFrameTime < fpsCapMs - 0.5) return;
+    lastRenderedFrameTime = nowRaw;
+  }
   _frameBusy = true;
   try {
   frameProfiler.beginFrame();

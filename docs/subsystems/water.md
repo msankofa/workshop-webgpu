@@ -26,15 +26,17 @@ import { createWaterSystem, WATER_VERSION } from './water.js';
 
 ### `createWaterSystem(options = {}) -> WaterSystem`
 
-Key `options` (full list is the `DEFAULTS` object, water.js:45-75):
+Key `options` (full list is the `DEFAULTS` object, water.js:45-83):
 `renderer`, `scene`, `camera`, `ground` (terrain mesh, for caustic emissive
 injection), `size`, `waterLevel`, `heightFn(x, z) -> y`, `lightDir`
 (`THREE.Vector3`, defaults to a fixed sun direction), `shallow`/`deep` colors,
 `refractStrength`, `reflectStrength` (ripple-distortion strengths), `reflectMix`,
 `reflectBrightness`, `reflectResolutionScale` (perf: reflector render-target
 scale, default `0.5` — half resolution per dimension), `reflectRate` (perf:
-render the reflection every Nth frame, default `2`), `depthScale`,
-`waveStrength`, `caustic`, `causticBedDepth`, `causticRes`, clipmap tuning
+render the reflection every Nth frame, default **`2`** since 2026-07-09), `depthScale`,
+`waveStrength`, `caustic`, `causticBedDepth`, `causticRes` (default **`512`**
+since 2026-07-09), `causticRate` (perf: render the caustic pass every Nth
+eligible frame, default **`4`** since 2026-07-09), clipmap tuning
 (`lodR0`, `lodR1`, `cellS0/1/2`, `buildBudgetMs`, `maxBuildsPerFrame`),
 `extentX`/`extentZ` (clip the water mesh to a finite map), `deferredDisposeFrames`.
 
@@ -61,9 +63,12 @@ Returns a `WaterSystem` object (water.js:1114):
   // DEFAULT createWaterSystem() starts with; they only add a way to change it afterward.
   setReflectionEnabled(enabled),  // explicit on/off override, ANDed with the existing reflectMix/reflectBrightness gate (default true = no override)
   setCausticsEnabled(enabled),    // explicit on/off override, ANDed with the existing causticStrength gate (default true = no override)
-  setCausticRate(everyNFrames),   // perf: throttle the caustic pass to every Nth eligible frame, same seam as setReflectRate (default 1 = every frame, unchanged)
-  setCausticRes(resolution),      // perf: resizes the fixed-size causticsTarget WebGLRenderTarget at runtime (causticsTarget.setSize) — default stays whatever causticRes/DEFAULTS.causticRes (1024) was at construction until called
+  setCausticRate(everyNFrames),   // perf: throttle the caustic pass to every Nth eligible frame, same seam as setReflectRate (construction default now 4, see "Defaults" below)
+  setCausticRes(resolution),      // perf: resizes the fixed-size causticsTarget WebGLRenderTarget at runtime (causticsTarget.setSize) — default stays whatever causticRes/DEFAULTS.causticRes (512 since 2026-07-09) was at construction until called
   setQuality(preset),             // 'low'|'medium'|'high' — STORED ONLY in this task (see "Water shader quality tiers" below); nothing reads it yet
+  // perf (2026-07-09, water-performance-design.md §3) — master on/off for the two gates this
+  // task adds (see "Visibility/strength gates" below). Default true (gates armed).
+  setVisibilityGatesEnabled(enabled),
 }
 ```
 
@@ -215,7 +220,9 @@ at environment-ui.js:621-622).
     on every render (three.webgpu.js:37162-37170, called from `updateBefore` at
     37268), so a runtime change takes effect on the very next reflection render,
     no rebuild needed.
-  - `reflectRate` / `setReflectRate(everyNFrames)` (default `1`, i.e. every frame — see the "URL flags" section below for how a later wave/the Perf A/B panel changes this live) throttles how
+  - `reflectRate` / `setReflectRate(everyNFrames)` (default **`2`** since 2026-07-09, i.e. every
+    2nd frame — was `1`/every frame; see the "URL flags" section below for how a URL flag or the
+    Perf A/B panel changes this live in either direction) throttles how
     often the reflection actually re-renders. The `reflectorBase.updateBefore`
     wrapper (water.js:584-605) counts distinct `frame.frameId` transitions (a
     plain call counter would also work — see the in-code comment on why
@@ -239,12 +246,12 @@ at environment-ui.js:621-622).
   (`caustic` at 0) skips their respective render passes entirely (checked in
   `reflectorBase.updateBefore` / `CausticTextureNode.updateBefore`).
 - **Caustic throttle (2026-07-08, perf-recovery Wave 0).** `CausticTextureNode.updateBefore`
-  (water.js:~810-845) now has the exact same every-Nth-frame throttle as the reflector: a
+  (water.js:~845-880) has the exact same every-Nth-frame throttle as the reflector: a
   `causticFrameCounter` counts distinct `frame.frameId` transitions, and on a non-multiple frame
   the function returns **without** touching `this.value` (or rendering), leaving the previous
   `causticsTarget.texture` bound — never a blank/black caustic frame. Controlled by
-  `setCausticRate(everyNFrames)` (default `1`, i.e. this task changes nothing about default
-  behavior — every eligible frame still renders). `causticRenderStats.skipped` counts
+  `setCausticRate(everyNFrames)` (construction default now **`4`** since 2026-07-09, was `1` —
+  see "Defaults" below). `causticRenderStats.skipped` counts
   throttled-away frames, surfaced via `getStats()` as `causticSkipped`; `causticRate` (also from
   `getStats()`) is the currently configured throttle divisor. `setCausticRes(resolution)` calls
   `causticsTarget.setSize(resolution, resolution)` at runtime — the render target was previously
@@ -254,14 +261,73 @@ at environment-ui.js:621-622).
   / `reflectMix > 0 && reflectBrightness > 0`) — both default to `true` (no override), so gating
   behavior is identical to before these setters existed unless something calls them.
 
+### Defaults (2026-07-09, water-performance-design.md §1/§2)
+
+`DEFAULTS` in `water.js` (lines ~45-83) now targets stable gameplay framerate over screenshot
+sharpness:
+
+| Option | Old default | New default |
+|---|---|---|
+| `reflectRate` | `1` (every frame) | **`2`** (every 2nd frame) |
+| `causticRate` | `1` (every frame) | **`4`** (every 4th frame) |
+| `causticRes` | `1024` | **`512`** |
+| `reflectResolutionScale` | `0.5` | unchanged |
+
+The design doc's §1 offered two options for caustics: off by default, or every-4th-frame at
+512px. This task picked **rate-4-at-512px over off-by-default** so caustic lighting on the
+lakebed still reads as present (dimmer/coarser, never absent) instead of vanishing outright —
+caustics are a small, localized visual detail (light patches on the lake bed) rather than a
+scene-wide cost like the reflection pass, so keeping a throttled version live was judged worth
+the residual GPU cost. All four defaults above are still fully overridable in both directions —
+raise or lower — via the `?water*=` URL flags and the "Water"-section Perf A/B panel controls
+(see "URL flags + Perf A/B panel" below); nothing about the override mechanism changed, only the
+values `createWaterSystem()` starts with when no flag/control touches them.
+
+### Visibility/strength gates (2026-07-09, water-performance-design.md §3)
+
+Both the reflection and caustic passes now skip the nested `renderer.render(...)` call entirely
+(not just throttle it) under additional conditions, layered on top of the pre-existing
+`reflectMix`/`reflectBrightness`/`causticStrength` gates:
+
+- **Reflection** — also skipped when there is no visible water ring geometry:
+  `hasVisibleWaterRings()` (water.js:~648, checked inside `reflectorBase.updateBefore`) is
+  `waterRings.some(r => r && r.mesh)` — `false` before the first ring build lands (startup) or
+  on a map with no water cells at all (nothing ever crosses `waterLevel`, so no ring mesh is
+  ever committed). `reflectionRenderStats.enabled` (surfaced as `getStats().reflectionEnabled`)
+  now reflects `reflectionEnabled && hasVisibleWaterRings()`, recomputed on every real render.
+  **Deviation from the spec:** §3 also asks for "the camera well above water and the water plane
+  not in the view frustum." There is no existing frustum-test helper in this file for the
+  clipmap rings against `camera`'s frustum, and building one correctly (three concentric,
+  re-centering rings, not a single static mesh) is more than the "cheap check" the task scoped
+  this gate as — landing it risked either a wrong/flickery gate or scope creep into a mini
+  frustum-culling system. The strength- and ring-count gates are landed; the frustum gate is
+  reported as not implemented rather than approximated.
+- **Caustics** — also skipped when the light direction is at or below the horizon:
+  `computeCausticEnabled()` (water.js:~490) ANDs the pre-existing gates with
+  `lightDir.y > CAUSTIC_MIN_LIGHT_ELEVATION` (`0.02`, ~1.15° above horizon — `lightDir` is the
+  normalized world-space unit vector toward the light, so `.y` is the sine of its elevation).
+  Below that, Snell-refracted caustic rays go near-vertical/invalid and the top-down caustic
+  projection degenerates, so the pass isn't worth its cost. `setLightDir(v)` (called every frame
+  by the lighting rig as the sun moves) recomputes `causticRenderStats.enabled` synchronously so
+  a horizon crossing is reflected in `getStats()` immediately, not just on the next real render.
+
+Both gates are ANDed with a single master toggle, **`visibilityGatesEnabled`** (default `true`),
+settable via `setVisibilityGatesEnabled(enabled)` and surfaced as `getStats().visibilityGatesEnabled`
+— wired to the Perf A/B **"Water visibility gates"** toggle so an A/B run can isolate the two new
+gates' contribution from the rate/resolution/strength throttles that predate this task. Turning
+it off does not touch `reflectMix`/`reflectBrightness`/`causticStrength`/`causticGroup`
+child-count — those remain their own independent, always-on gates.
+
 ## URL flags + Perf A/B panel (2026-07-08, perf-recovery Wave 0)
 
 `environment-viewer.html` parses `water-performance-design.md` §1's URL flags into a
 `WATER_URL_FLAGS` object (top-level, near the other URL flags ~line 95) and applies them as
 runtime-setter calls immediately after `createWaterSystem(...)` returns — **never** as
 construction options — so omitting every `?water*=` flag leaves `createWaterSystem()`'s own
-defaults (`reflectRate: 1`, `caustics: 1.0`/on, `reflectResolutionScale: 0.5`) completely
-untouched:
+defaults (`reflectRate: 2`, `causticRate: 4`, `causticRes: 512`, caustics on,
+`reflectResolutionScale: 0.5` — see "Defaults" above) completely untouched. Since these flags
+only ever *call a setter*, they work in both directions — e.g. `?waterReflectRate=1` raises the
+rate back to every-frame, `?waterCausticRate=8` lowers it further:
 
 | Flag | Values | Setter called |
 |---|---|---|
@@ -282,14 +348,22 @@ round of URL-flag plumbing.
 
 The same water block also registers **Perf A/B panel** controls (`window.perfAB.addToggle` /
 `addSlider` / `addSelect`, see `infra.md` for the registry API) for every flag above except
-`waterQuality`: "Water reflection" toggle, "Reflect rate" slider (1-4 step 1), "Reflect scale"
-select (`[0.25, 0.5, 0.75, 1]`), "Caustics" toggle, "Caustic rate" slider (1-8 step 1), "Caustic
-res" select (`[256, 512, 1024]`). Each control's initial position follows its URL flag when
+`waterQuality`, plus one more added 2026-07-09: "Water reflection" toggle, "Reflect rate" slider
+(1-4 step 1), "Reflect scale" select (`[0.25, 0.5, 0.75, 1]`), "Caustics" toggle, "Caustic rate"
+slider (1-8 step 1), "Caustic res" select (`[256, 512, 1024]`), and **"Water visibility gates"**
+toggle (default `true` — calls `setVisibilityGatesEnabled`, see "Visibility/strength gates"
+above). Each control's initial position follows its URL flag when
 present, else the construction default — so a reload with no flags shows the panel already
-reflecting `reflectRate=1`/caustics-on/etc. The perf CSV's `waterQuality`/`waterCausticRate`
-columns (and the pre-existing `waterReflectionRate`/`waterReflectionResolutionScale` columns)
-read `waterRef.getStats()` **live** every sample, not the flags' initial values, so a capture
-taken while toggling the panel mid-run stays interpretable (per the orchestration plan's rule 7).
+reflecting `reflectRate=2`/`causticRate=4`/caustics-on/gates-on/etc. (see "Defaults" above). The
+perf CSV's `waterQuality`/`waterCausticRate` columns (and the pre-existing
+`waterReflectionRate`/`waterReflectionResolutionScale`/`waterReflectionPasses`/
+`waterCausticPasses` columns) read `waterRef.getStats()` **live** every sample, not the flags'
+initial values, so a capture taken while toggling the panel mid-run stays interpretable (per the
+orchestration plan's rule 7). `waterReflectionPasses`/`waterCausticPasses` count only real,
+non-skipped `renderer.render(...)` calls (`reflectionRenderStats.passes`/
+`causticRenderStats.passes`, incremented at the bottom of each `updateBefore` after a pass
+actually runs, never on a throttled/gated-out frame) — dividing either by the CSV's sampled
+frame count over a window approximates `1 / rate` (lower still when a gate is also active).
 
 ## Tunable parameters
 
@@ -306,7 +380,7 @@ callback (~line 2058 onward), backed by the shared `params` object:
 - `waterReflectRipple` — "Reflect ripple", 0-0.3 — ripple-normal distortion strength applied to reflection UVs (`reflectStrength`).
 - `waterRefractRipple` — "Refract ripple", 0-0.3 — ripple-normal distortion strength applied to the refraction screen-UV sample (`refractStrength`).
 - `waterDepthScale` — "Depth tint scale", 0.5-8 — divides water depth to compute the shallow/deep color blend factor (`depthScale`).
-- `reflectResolutionScale` / `reflectRate` (perf) — not exposed as regular sliders (they'd need a rebuild-free live-tune UI of their own); adjustable at runtime via `water.setReflectionTuning({ reflectResolutionScale, reflectRate })` or `water.setReflectRate(n)`, and configurable at construction via the same-named `createWaterSystem()` options (defaults `0.5` and `1`, i.e. half-res reflection every frame). Since 2026-07-08 (perf-recovery Wave 0) they ARE exposed as **Perf A/B panel** controls ("Reflect rate" 1-4 step 1, "Reflect scale" select `[0.25,0.5,0.75,1]`) — see "URL flags + Perf A/B panel" below.
+- `reflectResolutionScale` / `reflectRate` (perf) — not exposed as regular sliders (they'd need a rebuild-free live-tune UI of their own); adjustable at runtime via `water.setReflectionTuning({ reflectResolutionScale, reflectRate })` or `water.setReflectRate(n)`, and configurable at construction via the same-named `createWaterSystem()` options (defaults `0.5` and **`2`** since 2026-07-09 — was `1`/every-frame; see "Defaults" above). Since 2026-07-08 (perf-recovery Wave 0) they ARE exposed as **Perf A/B panel** controls ("Reflect rate" 1-4 step 1, "Reflect scale" select `[0.25,0.5,0.75,1]`) — see "URL flags + Perf A/B panel" below.
 
 **Water LOD**
 - `waterLodR0` — "Near radius", 10-200 -> `water.setLodDistances(r0, r1)` — outer radius of clipmap ring 0 (finest cell size).
