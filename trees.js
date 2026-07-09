@@ -138,6 +138,18 @@ export class Tree extends THREE.Group {
     });
     for (const t of [bo.map, bo.normalMap]) if (t) t.wrapS = t.wrapT = THREE.RepeatWrapping;
     const lo = this.options.leaves;
+    // DoubleSide kept intentionally (design doc docs/superpowers/specs/2026-07-08-trees-
+    // performance-design.md, finding 5): leaf cards are single-sided quads by construction
+    // (_leafQuad's winding matches its baked normal -- verified in test-trees-geometry.mjs, no
+    // winding bug here) that need to be visible from most azimuths. `doubleBillboard` adds a
+    // second PERPENDICULAR card per leaf, not a backface, so even with it enabled there is a
+    // real ~90 degree viewing wedge where both cards show their backface -- see the matching
+    // comment in forest-gpu.js for the full writeup. This Tree class has no LOD tiers (it's the
+    // single-tree/close-up path used by createTree() callers, not the multi-instance
+    // forest-gpu.js palette), so it gets the same "close leaves stay DoubleSide" treatment
+    // forest-gpu.js gives its LOD0 leaf material -- no perfAB toggle here since this path isn't
+    // the one the design doc's forest measurements target; forest-gpu.js's "Tree leaves
+    // double-sided" toggle covers the live-tunable L1/coarse-L2/billboard materials instead.
     this.leafMat = new THREE.MeshStandardMaterial({
       color: lo.tint,
       roughness: lo.roughness,

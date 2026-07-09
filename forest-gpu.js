@@ -274,8 +274,28 @@ export function createForestGPU(opts) {
     return mesh;
   }
 
+  // P5/Milestone 6 (docs/superpowers/specs/2026-07-08-trees-performance-design.md, finding 5):
+  // PlaneGeometry's default winding faces +local-Z, matching its baked +Z normal. But
+  // instanceNodesBillboard (below) builds world position from `right = cross(worldUp, camDir)`
+  // where camDir points FROM the camera TOWARD the instance (i.e. `right` is the basis for a
+  // quad whose "front" -- the side visible per its ORIGINAL winding -- ends up facing AWAY from
+  // the camera, not toward it: dot(faceNormal, towardCamera) == -1 for every camera position,
+  // verified in test-trees-geometry.mjs section "billboard winding"). That is a real winding
+  // bug, not a genuine two-sided need (a billboard by construction only ever needs to be seen
+  // from the camera side). Reversing each triangle's index order flips the winding so the front
+  // face matches instanceNodesBillboard's actual camera-facing orientation, letting `billMat`
+  // use FrontSide by default instead of paying DoubleSide's disabled-backface-cull cost on every
+  // billboard fragment.
   function buildBillboardGeo(width, height, centerY) {
     const g = new THREE.PlaneGeometry(width, height);
+    const idx = g.getIndex();
+    const arr = idx.array;
+    for (let i = 0; i + 2 < arr.length; i += 3) {
+      const b = arr[i + 1];
+      arr[i + 1] = arr[i + 2];
+      arr[i + 2] = b;
+    }
+    idx.needsUpdate = true;
     g.translate(0, centerY, 0);
     return g;
   }
@@ -292,6 +312,10 @@ export function createForestGPU(opts) {
 
   const uBillBrightness = uniform(1.0);
   const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], meshes = [];
+  // P5/Milestone 6: materials whose `.side` the "Tree leaves double-sided" perfAB toggle flips
+  // at runtime (L1 leaves, coarse L2 leaves, billboards -- see the comment above where they're
+  // created). L0 leaf materials are intentionally excluded; they stay hardcoded DoubleSide.
+  const sideSwitchableMats = new Set();
   for (let g = 0; g < V; g++) {
     const variant = palette.variants[g];
     const n0 = instanceNodes(lodSlotOffset(g, 0));
@@ -308,13 +332,36 @@ export function createForestGPU(opts) {
       });
     }
 
+    // P5/Milestone 6 (finding 5): leaf cards are genuinely single-sided quads (verified in
+    // test-trees-geometry.mjs -- the winding-derived face normal matches the baked vertex
+    // normal, so there is no winding bug to fix here) that must be visible from most azimuths
+    // in a canopy. `doubleBillboard` (trees.js) adds a SECOND perpendicular card per leaf, but
+    // two single-sided perpendicular cards still leave a real ~90 degree viewing wedge where
+    // both show their backface (worked example in the design doc's finding-5 follow-up) --
+    // duplicating backface geometry to close that gap was evaluated and rejected: LOD0 leaves
+    // alone run ~7200 verts/3600 tris per variant, so mirroring every leaf card would double an
+    // already-large per-variant vertex budget (CPU generation + GPU memory + vertex-stage work
+    // on every instance, including off-screen ones under indirect draw) to save DoubleSide's
+    // fragment-stage-only cost -- not a clean trade at this density. Split instead, per the
+    // design doc's explicitly named partial-win option: keep DoubleSide for close LOD0 leaves
+    // (backface gaps are most visible up close) and default L1/coarse-L2 leaves to FrontSide
+    // (farther away, gaps are far less noticeable, and this is also where instance/overdraw
+    // count is largest so the fragment-stage win matters most). L0 leaves are intentionally
+    // NOT part of the "Tree leaves double-sided" toggle below (same "hardcoded exception,
+    // outside the toggle" treatment deadfall.js gives mushroom caps) -- only L1/coarse/billboard
+    // materials, which default to the FrontSide/cheap side, are toggle-switchable.
     const branchMat = makeMat(0.9, false);
     const leafMat = makeMat(1.0, true);
     const branchMat1 = makeMat(0.9, false);
-    const leafMat1 = makeMat(1.0, true);
+    const leafMat1 = makeMat(1.0, false);
     const branchMat2 = makeMat(0.9, false);
-    const coarseMat = makeMat(1.0, true);
-    const billMat = new MeshBasicNodeMaterial({ transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
+    const coarseMat = makeMat(1.0, false);
+    // Billboard winding fixed in buildBillboardGeo (above) so FrontSide is now correct -- see
+    // that function's comment. Toggle-switchable alongside leafMat1/coarseMat.
+    const billMat = new MeshBasicNodeMaterial({ transparent: true, alphaTest: 0.5, side: THREE.FrontSide });
+    sideSwitchableMats.add(leafMat1);
+    sideSwitchableMats.add(coarseMat);
+    sideSwitchableMats.add(billMat);
 
     branchMat.positionNode = n0.world; branchMat.normalNode = n0.nWorld;
     leafMat.positionNode = n0.world; leafMat.normalNode = n0.nWorld;
@@ -498,6 +545,20 @@ export function createForestGPU(opts) {
   });
   globalThis.window?.perfAB?.addSlider('Recull angle deg', 2, 0.5, 15, 0.5, (v) => {
     recullHeadingCos = Math.cos(v * Math.PI / 180);
+  });
+  // P5/Milestone 6 (finding 5): live A/B for the FrontSide default chosen above. Off (default,
+  // matches the shipped FrontSide default) = L1/coarse-L2 leaves + billboards render FrontSide,
+  // the winding-fixed cheap path; On = force THREE.DoubleSide on those SAME materials so the
+  // two are directly comparable in one running session, same "toggle measures a deliberate
+  // re-enable, not the fix itself" contract as deadfall.js's "Deadfall double-sided" toggle.
+  // Does NOT affect L0 leaf materials (hardcoded DoubleSide, see the comment where leafMat is
+  // created) -- only the materials tracked in sideSwitchableMats.
+  globalThis.window?.perfAB?.addToggle('Tree leaves double-sided', false, (v) => {
+    const side = v ? THREE.DoubleSide : THREE.FrontSide;
+    for (const mat of sideSwitchableMats) {
+      mat.side = side;
+      mat.needsUpdate = true;
+    }
   });
 
   return {

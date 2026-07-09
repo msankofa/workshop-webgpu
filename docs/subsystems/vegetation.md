@@ -17,7 +17,7 @@ buffers so the CPU never reads back GPU state.
 
 | File | Responsibility |
 |---|---|
-| `trees.js` (454 lines) | `Tree`/`createTree`: CPU procedural generator. Recursive tapered-tube branch skeleton + billboard/silhouette leaves, merged into 3 `THREE.Mesh`es (branches, leaves, shadow-casting leaves). No GPU/TSL code. |
+| `trees.js` (466 lines) | `Tree`/`createTree`: CPU procedural generator. Recursive tapered-tube branch skeleton + billboard/silhouette leaves, merged into 3 `THREE.Mesh`es (branches, leaves, shadow-casting leaves). Leaf material is hardcoded `THREE.DoubleSide` (genuinely single-sided cards, no winding bug — see "Leaf/billboard side policy" below). No GPU/TSL code. |
 | `tree-textures.js` (97 lines) | `createTextureSource('authored'\|'procedural')`: loads ez-tree bark/leaf texture packs into a 2x2 leaf atlas canvas (authored), or returns a textureless stub set (procedural, WebGPU-friendly). |
 | `forest-placement.js` (234 lines) | Pure, three.js-free placement math lifted verbatim from `environment-viewer.html`: seeded RNG, species taxonomy (`buildSpecies`), per-chunk tree count/placement patterns, and `placementRecords()` — the single entry point the GPU and (formerly) baked paths both consume. Also `buildSpeciesFromFamilies()`, which flattens `tree-viewer.html`-authored families into the same species-table shape, letting `placementRecords()` do biome-filtered, density-weighted species selection instead of picking uniformly at random — see "Game integration" below. `rngFrom`/`hash2` are also reused directly by `plants-placement.js`. |
 | `forest-palette.js` (86 lines) | `createForestPalette()`: bakes a fixed set of variant geometries (species x variantsPerSpecies) ONCE at startup using `trees.js` + (`params.speciesTable` if an authored family table was loaded, else `forest-placement.js`'s `buildSpecies`), flat-coloring each variant's vertices (bark/leaf tint) since materials use `vertexColors: true`. |
@@ -25,7 +25,7 @@ buffers so the CPU never reads back GPU state.
 | `plants.js` | Parameterized procedural plant generator (`PLANT_DEFAULTS`/`PLANT_PRESETS`/`buildPlantGeometry`/`createPlantPalette`); 4 species: chickweed, cleavers, mint, jewelweed. See "Plants" below. |
 | `plants-placement.js` | Biome-gated, density-weighted plant placement (mirrors `forest-placement.js`, reuses its `rngFrom`/`hash2`). |
 | `plants-gpu.js` | Single-LOD GPU-instanced plant rendering (mirrors `forest-gpu.js`'s reset→cull→finalize→indirect-draw spine, one distance-cull band instead of 4 LOD bands). |
-| `forest-gpu.js` (632 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. Milestones 1-4 (`trees-performance-design.md`) added frustum/cone rejection, a hard far draw-distance cutoff, threshold-gated reculls, and lazy CPU-estimate telemetry — see "Forest frustum/cone culling, far cutoff, and threshold reculls" below. |
+| `forest-gpu.js` (693 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. Milestones 1-4 (`trees-performance-design.md`) added frustum/cone rejection, a hard far draw-distance cutoff, threshold-gated reculls, and lazy CPU-estimate telemetry — see "Forest frustum/cone culling, far cutoff, and threshold reculls" below. Milestone 6 fixed billboard winding and set FrontSide as the default for L1/coarse-L2 leaves and billboards — see "Leaf/billboard side policy" below. |
 | `forest-cull.js` (107 lines) | `cullInstance(rec, cam, maxDist)`: pure JS twin of the v1 radial cull math in `forest-gpu.js`'s TSL `cull` kernel. `classifyInstance(rec, cam, params)`: twin of the Milestone 2/3 cone + far-cutoff rejection (`{ dist, farLive, coneLive, live }`). `shouldRecull(prev, next, thresholds)`: twin of the Milestone 4 threshold-gated recull predicate. Kept only so the predicates are unit-testable in Node without a GPU. **Not imported by `forest-gpu.js`** (confirmed — `forest-gpu.js` has no `import` of `forest-cull.js`; the TSL kernel and the CPU `computeCullEstimate()`/`update()` logic each reimplement the same math inline). |
 | `grass.js` (536 lines) | `Grass`/`createGrass`: CPU-built single merged-mesh grass field (5 verts/blade) with a TSL `MeshStandardNodeMaterial` (wind sway, distance fade, base→tip color, cloud-shadow noise). Also exports `buildBladeGeometry`, `buildGrassNoiseFns`, and JS parity helpers `grassWindOffset`/`grassFadeKeep` used both at runtime and by tests. |
 | `grass-compute.js` (541 lines) | `createComputeGrass()`: fully GPU-driven grass with two placement paths. Procedural mode (no map): a TSL compute pass regenerates candidate blades over a world-cell window around the camera, plants them on a TSL terrain-height function. Anchor mode (authored maps, when `surfaceGeometry` is passed): CPU-sampled mesh anchors from `grass-anchors.js` are streamed into a chunk-slot storage buffer and a TSL kernel culls them instead. Both paths cull (water/radius/density) and atomically compact survivors into one indirect-drawn instance buffer. |
@@ -69,7 +69,9 @@ export function createForestGPU(opts: { renderer, camera, palette, heightAt?, tr
   //   estimates (computeCullEstimate()), not a GPU readback; see the architecture note below.
   // Also registers perfAB controls from inside createForestGPU itself (no viewer wiring needed):
   // 'Forest frustum cull' toggle, 'Forest cone margin' / 'Tree max draw radius' /
-  // 'Recull cell size' / 'Recull angle deg' sliders.
+  // 'Recull cell size' / 'Recull angle deg' sliders, 'Tree leaves double-sided' toggle (default
+  // off; flips .side on L1/coarse-L2 leaf + billboard materials only -- see "Leaf/billboard side
+  // policy" below).
 
 // forest-cull.js
 export function cullInstance(rec: {x,z}, cam: {x,z}, maxDist): boolean
@@ -290,7 +292,58 @@ P4/Milestone 5 cone culling (`e1a3ff8`), adapted for trees' larger, LOD-banded g
   `dressing-gpu.js` uses): `'Forest frustum cull'` toggle (default on), `'Forest cone margin'`
   slider (0-0.5, default 0.5), `'Tree max draw radius'` slider (`lodR2` to `lodR2*3`, default
   `lodR2*1.5`), `'Recull cell size'` slider (0.1-5, default 1.5), `'Recull angle deg'` slider
-  (0.5-15, default 2).
+  (0.5-15, default 2), `'Tree leaves double-sided'` toggle (default off — see the
+  double-sided-leaf/billboard section below).
+
+**Leaf/billboard side policy (Milestone 6, `docs/superpowers/specs/2026-07-08-trees-performance-
+design.md`, finding 5).** `trees.js`'s leaf cards (`_leafQuad`) and `forest-gpu.js`'s LOD3
+billboards both used to render `THREE.DoubleSide` unconditionally. Investigated per-geometry
+(`test-trees-geometry.mjs`) rather than applying one blanket fix:
+- **Leaf cards (L0/L1/coarse-L2, same `_leafQuad`/`_leafShape` geometry at different
+  count/size) have NO winding bug.** The winding-derived face normal of a leaf triangle already
+  points the same direction as its baked per-vertex normal (`test-trees-geometry.mjs` section 1/1b
+  confirms this both analytically and against a real generated tree's geometry) — they are
+  genuinely single-sided flat cards by construction, not buggy double-sided geometry. Explicit
+  backface-geometry duplication (mirroring every card with flipped winding + negated normals) was
+  evaluated and **rejected**: a default-options tree's L0 leaf mesh alone is already ~7200
+  verts/3600 tris per variant, so duplicating would push that to ~14400 verts/7200 tris per
+  variant per LOD tier — real CPU generation time, GPU memory, and per-instance vertex-stage cost
+  (paid even for off-screen instances under indirect draw, since `frustumCulled = false`) to save a
+  fragment-stage-only cost (`DoubleSide` only disables backface *rasterization* culling, it doesn't
+  change vertex work). Not a clean trade at this density.
+- **Split by LOD instead** (the design doc's explicitly named partial-win option): L0 leaf
+  materials (`leafMat` — shared by `leavesMesh` and the shadow-casting `leavesShadowMesh`) stay
+  **hardcoded `THREE.DoubleSide`**, no toggle — up close, `doubleBillboard`'s two perpendicular
+  single-sided cards still leave a real ~90-degree viewing wedge where BOTH cards show their
+  backface (two 180-degree front-visible arcs, 90 degrees apart, cover only 270 of 360 degrees),
+  and that gap is most visible at LOD0 range. L1 leaves and coarse L2 leaves (`leafMat1`,
+  `coarseMat`) default to **`THREE.FrontSide`** — farther away, the same gap is far less
+  noticeable, and L1/L2 is also where instance/overdraw count is largest, so the fragment-stage
+  win matters more there. The standalone `trees.js` `Tree` class (used for single-tree/close-up
+  previews, no LOD tiers) keeps its one leaf material hardcoded `DoubleSide` too, same "close
+  leaves" treatment as forest-gpu.js's L0.
+- **Billboards (L3) HAD a real winding bug**, not a genuine two-sided need. `buildBillboardGeo`'s
+  `THREE.PlaneGeometry` used its default winding, but `instanceNodesBillboard` builds world
+  position purely from `right = normalize(cross(worldUp, camDir))` and `worldUp` (no local-Z
+  contribution, no normal override — `billMat` is an unlit `MeshBasicNodeMaterial`) — that
+  transform, combined with the plane's original winding, produced a front face pointing AWAY from
+  the camera for every camera position tested (`test-trees-geometry.mjs` section 2a reproduces
+  this: `dot(faceNormal, towardCamera) == -1` universally). `buildBillboardGeo` now reverses each
+  triangle's index order (swap the last two indices per triangle) so the front face matches the
+  quad's actual camera-facing orientation (section 2b: `dot > 0.9` for every tested camera
+  position); `billMat` now defaults to `THREE.FrontSide`.
+- **`'Tree leaves double-sided'` perfAB toggle** (default **off** = the FrontSide/cheap path)
+  flips `.side` + `needsUpdate = true` at runtime on exactly the materials that stayed
+  side-switchable: `leafMat1` (L1 leaves), `coarseMat` (coarse L2 leaves), and `billMat`
+  (billboards) — tracked in a per-variant-loop `sideSwitchableMats` Set, same "track in a Set, flip
+  `.side` on toggle" pattern `deadfall.js`'s `'Deadfall double-sided'` toggle uses. The toggle does
+  **NOT** affect L0 leaf materials (hardcoded `DoubleSide`, no winding fix applies since there was
+  no bug) or the standalone `trees.js` `Tree` class's leaf material (not part of the forest-gpu.js
+  perf-measured path).
+- Alpha semantics unchanged: `trees.js`'s leaf material's `transparent`/`alphaTest` (only set when
+  a leaf texture map is supplied) and `forest-gpu.js`'s `billMat.alphaTest = 0.5` /
+  `transparent: true` were left exactly as they were — this task only changed `.side`, never
+  transparency mode.
 
 **Zero-instance visibility gating & debounced rebuild (`forest-gpu.js` + `plants-gpu.js`).** Two
 CPU-encode optimizations share the `rebuild()`/`update()` path in both modules:
@@ -605,6 +658,7 @@ placement.
 | `test-grass-wind.mjs` | `grass.js` (`grassWindOffset`, `grassFadeKeep`) | Wind offset is deterministic and continuous across a chunk boundary (no seam, `x=29.99` vs `30.01` differ by < 0.05); `grassFadeKeep` returns 1 near the camera, 0 far away, and a partial value in between. |
 | `test-cdlod-morph.mjs` (relevant parts only) | Imports `grassHeightRef` from `grass-height-ref.js` to verify a CDLOD terrain-morph crack-free property: a fully-morphed fine-LOD edge vertex's height (via `grassHeightRef`) matches the coarser neighboring LOD's height at the same world position, within `1e-6`. The rest of the file (`morphGridCoord`, `nodeSize` from `cdlod-select.js`) is terrain LOD logic outside this subsystem; `grass-height-ref.js`'s only role here is as the shared height oracle used to prove no vertical crack. |
 | `test-tree-age.mjs` | `tree-age.js` (`applyAge`) | age=1 is value-equivalent to the input opts unchanged; age=0 shrinks length/radius/leaf count/leaf size and reduces `levels`, but never raises `levels` above the species' own count; age values outside `[0,1]` clamp; age=0.5 lands strictly between the age-0 and age-1 results; the input opts object itself is never mutated. |
+| `test-trees-geometry.mjs` | `trees.js` leaf-card winding (analytical + against a real generated tree) and `forest-gpu.js`'s `buildBillboardGeo`/`instanceNodesBillboard` billboard winding (Milestone 6, finding 5) | Leaf cards: the winding-derived face normal of `_leafQuad`'s triangles matches its baked per-vertex normal both analytically and for every triangle of a real generated tree's leaf mesh — confirms leaf cards have no winding bug (they're genuinely single-sided by construction, unlike deadfall's log/stump tubes). Billboards: reproduces the pre-fix bug first (original `PlaneGeometry` winding combined with `instanceNodesBillboard`'s camera-facing transform produces a face normal pointing AWAY from the camera, `dot == -1`, for 5 varied camera positions), then proves the fix (reversed index winding gives `dot > 0.9` toward the camera for the same 5 positions) — a real fail-then-pass pair, not a fabricated one. |
 | `test-grass-blade-uv.mjs` | `grass.js` (`buildBladeGeometry`) | The shared blade template's new `aBladeUV` attribute exists, is a vec2, has exactly 5 entries, and matches the fixed BL/BR/TR/TL/TC taper mapping used for atlas sampling. |
 | `test-grass-textures.mjs` | `grass-textures.js` (`FIBER_STYLES`, `STYLE_KEYS`, `clamp01`) | Exactly 5 styles in the approved order; every style's `fiber()` stays finite and within `[0.35, 1.45]` across the UV domain; `dryTip.tint()` is exactly 0 at the blade base and nonzero near the tip (its one monotonic-in-v style); `highContrast.tint()` (speckle-based, not monotonic) stays within `[0,1]`; styles without a `tint()` omit it rather than defining a zero function. |
 | `test-plants-defaults.mjs` | `plants.js` (`PLANT_DEFAULTS`, `PLANT_PRESETS`, `PLANT_BIOME_TAGS`, `createPlantPalette`) | Default schema values (simple/opposite/smooth/no-variegation/no-blossom); all 6 presets exist (4 herbs + 2 Phase 1 shrub starters) with their species-defining traits (cleavers compound+whorled, mint serrated, jewelweed alternate, chickweed/jewelweed flower shapes, both shrubs use `sprigClump`, `pinkflowerBush` carries a blossom); `cleavers`' empty biome allowlist; every species carries a positive `hueVar`; `createPlantPalette` bakes `speciesCount * variantsPerSpecies` geometries, each species tagged, variants of the same species differing by seed; a baked `sprigClump` variant's clump vertices carry forced ground-plane `(0,1,0)` normals. |
