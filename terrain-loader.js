@@ -118,7 +118,20 @@ function deriveTopSurfaceHeights(root, { resolution, worldX, worldZ, seaLevel, w
 // terrain-textures.js's applyFlatTerrain). Callers pass this straight from the
 // ?terrainTexture= URL flag; omitting it (or passing 'splat') is behavior-identical to before
 // this option existed.
-export async function loadTerrainMap(mapKey, { scene, textureMode } = {}) {
+//
+// perf (2026-07-08 Wave 3B/3C, terrain-dressing-performance-design.md Milestone 3): the splat
+// path's material-build options are plumbed straight through as loadTerrainMap options, not
+// hardcoded — `maxShaderLayers` (default 4, the 3C top-K runtime cap; pass 6 for full quality),
+// `slopeCutoff` (3B's live triplanar/planar blend point for dirt/gravel/snow, 0..1, default
+// terrain-textures.js's DEFAULT_TRIPLANAR_SLOPE_CUTOFF), `shaderQuality` ('reduced'|'full',
+// which prebuilt variant is assigned initially — the OTHER variant is still prebuilt so the
+// viewer's "Terrain shader" Perf A/B select can swap instantly), and `prebuildVariants` (default
+// true; false skips building the unused variant, e.g. for tests/perf-isolation). Flag wiring
+// from a `?terrainTextureQuality=` URL param is intentionally NOT added here — the task scope is
+// the loader/material option surface only.
+export async function loadTerrainMap(mapKey, {
+  scene, textureMode, maxShaderLayers, slopeCutoff, shaderQuality, prebuildVariants,
+} = {}) {
   const basePath = mapBasePath(mapKey);
   const [gltf, mapData] = await Promise.all([
     new Promise((resolve, reject) => new GLTFLoader().load(`maps/${mapKey}`, resolve, undefined, reject)),
@@ -157,6 +170,10 @@ export async function loadTerrainMap(mapKey, { scene, textureMode } = {}) {
   }, {
     legacySplit: textureMode === 'legacy',
     flatMaterial: textureMode === 'flat',
+    maxShaderLayers,
+    slopeCutoff,
+    shaderQuality,
+    prebuildVariants,
   });
   if (!textureInfo) {
     terrainRoot.traverse((obj) => {

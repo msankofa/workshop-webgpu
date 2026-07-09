@@ -347,9 +347,16 @@ once, right after `mountPerfAbControl` is defined, flushing every already-queued
 Wave 0 itself registers six water controls from the water-loader block (see `water.md`'s "URL
 flags + Perf A/B panel" section for the full label/range list and which setter each one calls):
 "Water reflection", "Reflect rate", "Reflect scale", "Caustics", "Caustic rate", "Caustic res".
-No terrain-mode or dressing-material swap control is registered in this task — those need two
-prebuilt material variants to exist first, which arrives in a later wave (per the task's explicit
-scope: `terrainTexture` stays URL-flag-only here).
+
+A later wave (2026-07-09, terrain-dressing-performance-design.md Milestones 3B/3C) adds two more,
+registered from `terrain-textures.js`'s `applySplatTerrain` (called via `terrain-loader.js`'s
+static import, not from `environment-viewer.html`) — proof the "any module, static or lazy" claim
+above holds: `"Terrain shader"` (`addSelect`, `['reduced','full']`) swaps `mesh.material` between
+two prebuilt splat-material variants (top-K reduced vs. all-active-layers full) instantly, and
+`"Triplanar slope cutoff"` (`addSlider`, 0..1 step 0.01) drives the live `uSlopeCutoff` uniform
+shared by both variants. The terrain-mode swap (`?terrainTexture=splat|legacy|flat`) itself is
+still URL-flag-only — those three paths build structurally different materials/mesh state (not
+just a shader-loop trim), so prebuilding all three for instant swap remains future work.
 
 Perf A/B controls are **not** part of the `controlRegistry`/preset-save system (`captureSliderState`/
 `applySliderState`) — they're a live scratch pad for comparison, not saved/restored slider state.

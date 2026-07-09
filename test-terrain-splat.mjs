@@ -7,6 +7,7 @@
 
 import {
   layerWeightsAt, pickActiveLayers, weightsIntoSlots, MAX_ACTIVE_LAYERS, TERRAIN_TEXTURE_LAYERS,
+  classifyLayerTriplanar, selectTopShaderLayers, DEFAULT_MAX_SHADER_LAYERS,
 } from './terrain-textures.js';
 
 const L = TERRAIN_TEXTURE_LAYERS;
@@ -64,6 +65,62 @@ ok([...slotW].filter((w) => w > 0).length <= 4, 'no more than top-4 slots are no
 out.fill(0);
 weightsIntoSlots(out, active, slotW);
 ok(slotW[0] === 1 && approx([...slotW].reduce((a, b) => a + b, 0), 1), 'all-zero weights → slot 0 = 1 (safe default)');
+
+// --- 3B: classifyLayerTriplanar — static per-layer triplanar-albedo classification ----------
+// The current map's six active layers: grass, forest, dirt, sand, beach, rock. Per the design
+// (3B), only rock (always) and dirt/gravel (steep-slope layers by construction — the RAMP
+// scheme never puts dirt on flat ground) use triplanar albedo; grass/forest/meadow/sand/beach
+// stay single-sample planar.
+const currentMapLayers = ['grass', 'forest', 'dirt', 'sand', 'beach', 'rock'];
+const triplanarClassified = currentMapLayers.filter((name) => classifyLayerTriplanar(name));
+ok(
+  triplanarClassified.length === 2 && triplanarClassified.includes('rock') && triplanarClassified.includes('dirt'),
+  `exactly rock + dirt classify triplanar on the current map's layer set (got [${triplanarClassified.join(', ')}])`,
+);
+ok(!classifyLayerTriplanar('grass'), 'grass classifies planar');
+ok(!classifyLayerTriplanar('forest'), 'forest classifies planar');
+ok(!classifyLayerTriplanar('sand'), 'sand classifies planar');
+ok(!classifyLayerTriplanar('beach'), 'beach classifies planar');
+ok(classifyLayerTriplanar('rock'), 'rock classifies triplanar');
+ok(classifyLayerTriplanar('dirt'), 'dirt classifies triplanar (steep-slope layer)');
+ok(classifyLayerTriplanar('gravel'), 'gravel classifies triplanar (steep-slope layer, like dirt)');
+ok(!classifyLayerTriplanar('meadow'), 'meadow classifies planar');
+
+// --- 3C: selectTopShaderLayers — top-K runtime cap by baked weight, stable ascending order ---
+// Six weighted layers in (matches the current map's active set), four dominant kept, order
+// stays ascending/stable (same convention as pickActiveLayers' slot order).
+const IDX2 = Object.fromEntries(TERRAIN_TEXTURE_LAYERS.map((n, i) => [n, i]));
+const sixActive = [IDX2.grass, IDX2.forest, IDX2.dirt, IDX2.sand, IDX2.beach, IDX2.rock].sort((a, b) => a - b);
+const weightByLayer = {
+  [IDX2.grass]: 0.5,
+  [IDX2.forest]: 0.05,
+  [IDX2.dirt]: 0.2,
+  [IDX2.sand]: 0.01,
+  [IDX2.beach]: 0.04,
+  [IDX2.rock]: 0.3,
+};
+const top4 = selectTopShaderLayers(sixActive, weightByLayer, 4);
+ok(top4.length === 4, `top-4 selection returns 4 layers (got ${top4.length})`);
+const expectedTop4 = [IDX2.grass, IDX2.dirt, IDX2.rock].sort((a, b) => a - b); // + one more (forest > beach)
+ok(
+  top4.includes(IDX2.grass) && top4.includes(IDX2.rock) && top4.includes(IDX2.dirt) && top4.includes(IDX2.forest),
+  `top-4 keeps the four dominant-weight layers by total baked weight (got [${top4.map((i) => TERRAIN_TEXTURE_LAYERS[i]).join(', ')}])`,
+);
+ok(!top4.includes(IDX2.sand) && !top4.includes(IDX2.beach), 'top-4 drops the two lowest-weight layers (sand, beach)');
+ok(top4.every((v, i) => i === 0 || v > top4[i - 1]), 'top-4 result is sorted ascending (stable slot order)');
+
+// maxShaderLayers >= active layer count is a no-op (keeps everything, same order).
+const keepAll = selectTopShaderLayers(sixActive, weightByLayer, 6);
+ok(keepAll.length === 6 && keepAll.every((v, i) => v === sixActive[i]), 'maxShaderLayers >= active count keeps all layers, unchanged order');
+
+// Default cap is 4.
+ok(DEFAULT_MAX_SHADER_LAYERS === 4, `DEFAULT_MAX_SHADER_LAYERS is 4 (got ${DEFAULT_MAX_SHADER_LAYERS})`);
+
+// Ties break toward the lower (ascending-first) global index, keeping selection deterministic.
+const tiedWeights = { [IDX2.grass]: 0.25, [IDX2.forest]: 0.25, [IDX2.dirt]: 0.25, [IDX2.sand]: 0.25 };
+const tiedActive = [IDX2.grass, IDX2.forest, IDX2.dirt, IDX2.sand].sort((a, b) => a - b);
+const tiedTop2 = selectTopShaderLayers(tiedActive, tiedWeights, 2);
+ok(tiedTop2.length === 2 && tiedTop2[0] === IDX2.grass && tiedTop2[1] === IDX2.forest, 'ties break toward lower global index (deterministic)');
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nAll terrain-splat tests passed.');
 process.exit(failures ? 1 : 0);

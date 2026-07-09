@@ -263,11 +263,12 @@ export function layerWeightsAt(mapData, meta, gridIndex, worldY, normalY, out) {
   return sum;
 }
 
-// Which global layers a map actually uses, capped to MAX_ACTIVE_LAYERS. Scans the mask/biome
-// presence + the ramp layers (sand/beach/rock/dirt are reachable on any map via slope/shore),
-// ranks by accumulated weight, returns the top global indices sorted ascending for a stable
-// slot order. Always includes at least the grass layer so an empty map still blends.
-export function pickActiveLayers(mapData, meta, sampleGridIndices) {
+// Shared presence/weight scan used by both pickActiveLayers (3C's weight source too) and the
+// material build's top-K cap: strided grid sample, accumulated per-global-layer weight, with
+// the same always-seeded ramp/grass floors so a map whose sampled cells never crossed a ramp
+// still carries a (tiny) weight for the slope/shore layers. Returns a plain Float64Array of
+// length TERRAIN_TEXTURE_LAYERS.length, indexed by global layer index.
+function accumulateLayerWeights(mapData, meta, sampleGridIndices) {
   const acc = new Float64Array(_NLAYERS);
   const tmp = new Float64Array(_NLAYERS);
   const seaLevel = Number(meta.seaLevel ?? 0);
@@ -280,9 +281,54 @@ export function pickActiveLayers(mapData, meta, sampleGridIndices) {
   // map whose sampled cells never crossed a ramp still has the slots when a cliff/shore appears.
   for (const name of ['sand', 'beach', 'rock', 'dirt']) acc[MATERIAL_INDEX[name]] += 1e-3;
   acc[MATERIAL_INDEX.grass] += 1e-6;
+  return acc;
+}
+
+// Which global layers a map actually uses, capped to MAX_ACTIVE_LAYERS. Scans the mask/biome
+// presence + the ramp layers (sand/beach/rock/dirt are reachable on any map via slope/shore),
+// ranks by accumulated weight, returns the top global indices sorted ascending for a stable
+// slot order. Always includes at least the grass layer so an empty map still blends.
+export function pickActiveLayers(mapData, meta, sampleGridIndices) {
+  const acc = accumulateLayerWeights(mapData, meta, sampleGridIndices);
   const ranked = [...Array(_NLAYERS).keys()].filter((i) => acc[i] > 0).sort((a, b) => acc[b] - acc[a]);
   const active = ranked.slice(0, MAX_ACTIVE_LAYERS).sort((a, b) => a - b);
   return active.length ? active : [MATERIAL_INDEX.grass];
+}
+
+// --- Milestone 3B: triplanar-albedo layer classification (perf design doc, 3B) --------------
+// Static per-layer classification, NOT a per-map/per-vertex decision — dirt/gravel are the
+// slope-transition layers by construction (RAMP only ever raises their weight past the
+// mid-slope threshold; masks can seed them at low slope too, but they still read as "the
+// cliff-adjacent materials" across every authored map), so a fixed set is enough to decide
+// which layers are worth the extra 2 triplanar taps. Grass/forest/meadow/sand/beach are always
+// planar. Snow is included per the design's "optionally snow on steep peaks" note. The actual
+// steep-vs-flat GATING for dirt/gravel/snow happens per-fragment in the shader using the
+// existing triplanar weight signal (triW/nrmW, already computed from the world normal) against
+// a live-tunable slope-cutoff uniform — this function only decides which layers are eligible.
+const TRIPLANAR_LAYERS = new Set(['rock', 'dirt', 'gravel', 'snow']);
+export function classifyLayerTriplanar(layerName) {
+  return TRIPLANAR_LAYERS.has(layerName);
+}
+
+// --- Milestone 3C: top-K runtime cap (perf design doc, 3C) -----------------------------------
+// The bake keeps top-4 PER-VERTEX weights already (VERTEX_TOPK), but the shader loop itself
+// still iterates every entry in `activeLayers` (up to MAX_ACTIVE_LAYERS=6). This trims the
+// active-layer LIST itself down to `maxShaderLayers` dominant layers (by total baked weight
+// across the mesh/map), so six-layer maps compile a 4-layer loop by default. Ties break toward
+// the lower global index (stable/deterministic — same tie rule as `dominantMaterial`'s spirit).
+// Input `activeLayers` is expected pre-sorted ascending (pickActiveLayers' convention); output
+// preserves that ascending order so DataArrayTexture slot order stays ascending-stable too.
+export const DEFAULT_MAX_SHADER_LAYERS = 4;
+export function selectTopShaderLayers(activeLayers, weightByLayer, maxShaderLayers = DEFAULT_MAX_SHADER_LAYERS) {
+  const cap = Math.max(1, Math.floor(maxShaderLayers));
+  if (activeLayers.length <= cap) return [...activeLayers];
+  const ranked = [...activeLayers].sort((a, b) => {
+    const wb = Number(weightByLayer?.[b] ?? 0);
+    const wa = Number(weightByLayer?.[a] ?? 0);
+    if (wb !== wa) return wb - wa;
+    return a - b; // stable tie-break: lower global index first
+  });
+  return ranked.slice(0, cap).sort((a, b) => a - b);
 }
 
 // Restrict a full weight vector to the active-layer set, keep the top-VERTEX_TOPK, normalize
@@ -493,9 +539,21 @@ function classifyMeshSplat(mesh, mapData, meta, activeLayers) {
   return true;
 }
 
-// Cheap world-space hash noise (no texture tap) — macro anti-tiling + moss brush break-up
-// without spending a sampler bind. Same idiom as rocks.js hashNoise3.
-function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
+// Milestone 3B default: past this slope (0 = flat ground, 1 = vertical face) a steep-gated
+// layer (dirt/gravel/snow) blends fully into its triplanar sample; below it, it's fully planar.
+// Mirrors the RAMP.dirt/RAMP.rock bake-time thresholds (slope = 1-normalY) but is a LIVE uniform
+// (perfAB "Triplanar slope cutoff" slider), not a bake-time constant — the vertex bake doesn't
+// change, only how the shader spends triplanar taps on top of it.
+export const DEFAULT_TRIPLANAR_SLOPE_CUTOFF = 0.3;
+
+// `shaderLayers` (Milestone 3C): the subset of `activeLayers` (by global index) the compiled
+// loop actually samples — the rest keep their DataArrayTexture slot/vertex-bake weight (no
+// re-bake needed) but are simply skipped in the fragment loop, so a "reduced" material can share
+// the SAME geometry attributes and arrays as the "full" material (only the compiled shader
+// differs), which is what makes an instant material swap possible with no rebake. Defaults to
+// `activeLayers` (keep everything) when omitted.
+function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms, shaderLayers = activeLayers) {
+  const keepSlot = new Set(shaderLayers);
   const { MeshStandardNodeMaterial } = webgpu;
   const { Fn, texture, attribute, mix, normalMap, vec2, vec3, vec4, float, int, clamp, sin, fract, dot, abs, positionWorld, normalWorld, uniform } = tsl;
   const { albedoArray, normalArray } = arrays;
@@ -507,7 +565,13 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
   );
   const uMacroStrength = uniformNode(uniforms?.macroStrength, 1);
   const uMossStrength = uniformNode(uniforms?.mossStrength, 1);
+  // 3B: live slope cutoff for the CONDITIONALLY-triplanar layers (dirt/gravel/snow). Rock is
+  // always fully triplanar (never gated); grass/forest/meadow/sand/beach are always planar
+  // (never sample the side projections at all) — see classifyLayerTriplanar.
+  const uSlopeCutoff = uniformNode(uniforms?.slopeCutoff, DEFAULT_TRIPLANAR_SLOPE_CUTOFF);
 
+  // Cheap world-space hash noise (no texture tap) — macro anti-tiling + moss brush break-up
+  // without spending a sampler bind. Same idiom as rocks.js hashNoise3.
   const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(12.9898, 78.233))).mul(43758.5453)));
   const wa = attribute('aSplatWA', 'vec4');
   const wb = attribute('aSplatWB', 'vec4');
@@ -536,25 +600,48 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
   const wSq = vec3(nrmW.x.mul(nrmW.x), nrmW.y.mul(nrmW.y), nrmW.z.mul(nrmW.z));
   const wsSum = wSq.x.add(wSq.y).add(wSq.z).add(1e-4);
   const triW = vec3(wSq.x.div(wsSum), wSq.y.div(wsSum), wSq.z.div(wsSum));
-  // Triplanar array sample at slot s, tiled by inverse world-meters. Albedo uses this so cliff
-  // rock/dirt no longer smears; the normal/AO tap stays planar-xz (cheaper, and normal-map
-  // stretch on cliffs is far less objectionable than albedo smear).
+  // slope = 1 - up-weight, reusing the SAME triplanar weight signal already computed above (no
+  // new texture reads to decide) — this is the "existing slope/weight signal" the design calls
+  // for. steepBlend ramps 0→1 as slope crosses the live uSlopeCutoff uniform (perfAB slider).
+  const slopeSignal = float(1).sub(nrmW.y);
+  const steepBlend = clamp(slopeSignal.sub(uSlopeCutoff).div(float(0.15)).add(0.5), 0, 1);
+  // Triplanar array sample at slot s, tiled by inverse world-meters (3 array reads). Albedo uses
+  // this for triplanar-classified layers so cliff rock/dirt no longer smears.
   const triSample = (tex, s, invTile) => {
     const sx = texture(tex, P.zy.mul(invTile)).depth(int(s));
     const sy = texture(tex, P.xz.mul(invTile)).depth(int(s));
     const sz = texture(tex, P.xy.mul(invTile)).depth(int(s));
     return sx.mul(triW.x).add(sy.mul(triW.y)).add(sz.mul(triW.z));
   };
+  // Planar-only sample at slot s (1 array read) — used for grass/forest/meadow/sand/beach (never
+  // triplanar) and as the "flat side" of the steep-blend mix for dirt/gravel/snow.
+  const planarSample = (tex, s, invTile) => texture(tex, P.xz.mul(invTile)).depth(int(s));
 
   let col = vec3(0, 0, 0);
   let rough = float(0);
   let nrm = vec3(0, 0, 0);
   let aoAcc = float(0);
   for (let s = 0; s < activeLayers.length; s++) {
+    if (!keepSlot.has(activeLayers[s])) continue; // 3C: dropped slot — no compiled sample at all
+    const name = TERRAIN_TEXTURE_LAYERS[activeLayers[s]];
     const w = slotWeight(s);
     const invTile = float(1).div(uTile[s].max(0.01));
-    const a = triSample(albedoArray, s, invTile);
     const nT = texture(normalArray, P.xz.mul(invTile)).depth(int(s));
+    // 3B: albedo sample strategy per layer classification.
+    //  - not triplanar-capable (grass/forest/meadow/sand/beach): 1 planar read, always.
+    //  - rock: always fully triplanar (3 reads) — it's the one layer that's ALWAYS slope-relevant.
+    //  - dirt/gravel/snow: live-gated by steepBlend — flat areas pay only the 1 planar read,
+    //    steep areas mix in the triplanar sample (up to 3 reads), tunable via the perfAB slider.
+    let a;
+    if (!classifyLayerTriplanar(name)) {
+      a = planarSample(albedoArray, s, invTile);
+    } else if (name === 'rock') {
+      a = triSample(albedoArray, s, invTile);
+    } else {
+      const planar = planarSample(albedoArray, s, invTile);
+      const tri = triSample(albedoArray, s, invTile);
+      a = mix(planar, tri, steepBlend);
+    }
     col = col.add(a.rgb.mul(w));
     rough = rough.add(a.a.mul(uRough[s]).mul(w));
     // scale tangent-normal deviation toward flat by the per-layer normal strength
@@ -581,7 +668,7 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
   mat.normalNode = normalMap(vec4(clamp(nrm, 0, 1), 1));
   mat.userData.splatUniforms = {
     tile: uTile, rough: uRough, nrm: uNrm,
-    macroStrength: uMacroStrength, mossStrength: uMossStrength,
+    macroStrength: uMacroStrength, mossStrength: uMossStrength, slopeCutoff: uSlopeCutoff,
   };
   return mat;
 }
@@ -669,6 +756,17 @@ async function applyFlatTerrain(root, meta) {
 // New default: one DataArrayTexture-backed MeshStandardNodeMaterial blending the active layer
 // set with feathered per-vertex weights + composed moss dressing. Returns null (→ caller falls
 // back to legacy) if nothing could be textured.
+//
+// Milestones 3B/3C (perf-recovery design doc): options.maxShaderLayers caps the compiled loop to
+// the N dominant-weight layers (default DEFAULT_MAX_SHADER_LAYERS=4; pass 6 — or omit the cap —
+// for full quality); options.slopeCutoff tunes the 3B triplanar/planar blend point for the
+// steep-gated layers (dirt/gravel/snow). BOTH the "reduced" (top-K) and "full" (all active
+// layers) material variants are built up front sharing the SAME DataArrayTexture arrays and the
+// SAME vertex bake (classifyMeshSplat runs once against the full active-layer set regardless of
+// the cap — dropping a slot from the "reduced" shader loop doesn't require a different bake), so
+// swapping `mesh.material` between them at runtime is instant (no shader recompile, no rebake).
+// options.prebuildVariants (default true) can be set false to skip building the unused variant
+// eagerly (e.g. tests) — the swap perfAB control simply won't be registered in that case.
 async function applySplatTerrain(root, mapData, meta, options) {
   const [webgpu, tsl, mossMod] = await Promise.all([
     import('three/webgpu'), import('three/tsl'), import('./moss-tint.js'),
@@ -682,22 +780,57 @@ async function applySplatTerrain(root, mapData, meta, options) {
   const samples = [];
   for (let iz = 0; iz < res; iz += stride) for (let ix = 0; ix < res; ix += stride) samples.push(iz * res + ix);
   const activeLayers = pickActiveLayers(mapData, meta, samples);
+  const layerWeights = accumulateLayerWeights(mapData, meta, samples);
+  const weightByLayer = Object.fromEntries(activeLayers.map((gi) => [gi, layerWeights[gi]]));
+
+  const maxShaderLayers = Number.isFinite(Number(options.maxShaderLayers)) ? Number(options.maxShaderLayers) : DEFAULT_MAX_SHADER_LAYERS;
+  const reducedLayers = selectTopShaderLayers(activeLayers, weightByLayer, maxShaderLayers);
+  const usingReduced = reducedLayers.length < activeLayers.length;
+  const prebuildVariants = options.prebuildVariants !== false;
 
   const arrays = await buildTerrainArrays(activeLayers, options.sourceByLayer || null, textureFiles, webgpu);
-  const material = makeSplatMaterial(arrays, activeLayers, tsl, webgpu, options.splatUniforms || {});
+  // Shared global uniform NODES (not just values) — both variants must reference the SAME node
+  // instances so a live perfAB slider change (or updateTerrainSplatGlobals) updates whichever
+  // material is currently assigned, and the one swapped away from stays in sync for next time.
+  const sharedSlopeCutoff = tsl.uniform(Number.isFinite(Number(options.slopeCutoff)) ? Number(options.slopeCutoff) : DEFAULT_TRIPLANAR_SLOPE_CUTOFF);
+  const sharedMacroStrength = tsl.uniform(Number.isFinite(Number(options.splatUniforms?.macroStrength)) ? Number(options.splatUniforms.macroStrength) : 1);
+  const sharedMossStrength = tsl.uniform(Number.isFinite(Number(options.splatUniforms?.mossStrength)) ? Number(options.splatUniforms.mossStrength) : 1);
+  const splatUniformOptions = {
+    ...(options.splatUniforms || {}),
+    slopeCutoff: sharedSlopeCutoff, macroStrength: sharedMacroStrength, mossStrength: sharedMossStrength,
+  };
+  // "reduced" = the requested/default cap; "full" = every active layer (only meaningfully
+  // different from "reduced" when the map actually has more active layers than the cap).
+  const reducedMaterial = makeSplatMaterial(arrays, activeLayers, tsl, webgpu, splatUniformOptions, reducedLayers);
+  const fullMaterial = (usingReduced && prebuildVariants)
+    ? makeSplatMaterial(arrays, activeLayers, tsl, webgpu, splatUniformOptions, activeLayers)
+    : reducedMaterial;
+  // Initial assignment: when there's nothing to reduce (map fits inside the cap), reduced ===
+  // full, so it's moot. Otherwise follow options.shaderQuality (default 'reduced', matching
+  // maxShaderLayers' default-on behavior) so the caller can request "full" from load time.
+  const material = (usingReduced && options.shaderQuality === 'full') ? fullMaterial : reducedMaterial;
 
   let texturedMeshes = 0;
+  const texturedMeshList = [];
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
     obj.receiveShadow = true;
     obj.castShadow = false;
-    if (classifyMeshSplat(obj, mapData, meta, activeLayers)) { obj.material = material; texturedMeshes++; }
+    if (classifyMeshSplat(obj, mapData, meta, activeLayers)) {
+      obj.material = material;
+      texturedMeshList.push(obj);
+      texturedMeshes++;
+    }
   });
   if (!texturedMeshes) { arrays.albedoArray.dispose(); arrays.normalArray.dispose(); return null; }
 
   const activeNames = activeLayers.map((gi) => TERRAIN_TEXTURE_LAYERS[gi]);
+  const reducedNames = reducedLayers.map((gi) => TERRAIN_TEXTURE_LAYERS[gi]);
   root.userData.terrainTextureMode = 'splat';
-  root.userData.terrainSplat = { material, arrays, activeLayers, activeNames };
+  root.userData.terrainSplat = {
+    material, arrays, activeLayers, activeNames,
+    reducedMaterial, fullMaterial, reducedLayers, meshes: texturedMeshList,
+  };
   root.userData.terrainTextureMaterials = material; // truthy → the live layer UI gate passes
   root.userData.terrainTextureSettings = Object.fromEntries(activeLayers.map((gi, slot) => {
     const name = TERRAIN_TEXTURE_LAYERS[gi];
@@ -710,9 +843,30 @@ async function applySplatTerrain(root, mapData, meta, options) {
   root.userData.terrainTextureGlobals = {
     macroStrength: Number(uni.macroStrength?.value ?? 1),
     mossStrength: Number(uni.mossStrength?.value ?? 1),
+    slopeCutoff: Number(uni.slopeCutoff?.value ?? DEFAULT_TRIPLANAR_SLOPE_CUTOFF),
   };
   root.userData.terrainTextureMeshes = texturedMeshes;
-  root.userData.terrainTextureReport = { mode: 'splat', activeLayers: activeNames };
+  root.userData.terrainTextureReport = {
+    mode: 'splat', activeLayers: activeNames, shaderLayers: reducedNames, maxShaderLayers,
+  };
+
+  // Perf A/B: register the instant material-swap select + the live slope-cutoff slider. No-op
+  // outside the viewer (window.perfAB is only installed there) and skipped entirely when the
+  // "full" variant wasn't prebuilt (map didn't exceed the cap, so there's nothing to swap to).
+  if (usingReduced && prebuildVariants && fullMaterial !== reducedMaterial) {
+    const initialChoice = options.shaderQuality === 'full' ? 'full' : 'reduced';
+    window.perfAB?.addSelect('Terrain shader', initialChoice, ['reduced', 'full'], (choice) => {
+      const next = choice === 'full' ? fullMaterial : reducedMaterial;
+      for (const mesh of texturedMeshList) mesh.material = next;
+      root.userData.terrainSplat.material = next;
+      root.userData.terrainTextureMaterials = next;
+    });
+  }
+  window.perfAB?.addSlider(
+    'Triplanar slope cutoff', Number(uni.slopeCutoff?.value ?? DEFAULT_TRIPLANAR_SLOPE_CUTOFF), 0, 1, 0.01,
+    (value) => { updateTerrainSplatGlobals(root, { slopeCutoff: value }); },
+  );
+
   return { material, texturedMeshes, mode: 'splat', activeLayers: activeNames };
 }
 
@@ -742,7 +896,13 @@ async function applyLegacyTerrain(root, mapData, fullMeta, options) {
   }]));
   root.userData.terrainTextureMeshes = texturedMeshes;
   root.userData.terrainTextureReport = report;
-  return { materials, texturedMeshes, report };
+  // Bug fix (2026-07-08 Wave 3B/3C checkpoint): this return value feeds straight into
+  // terrain-loader.js's `textureInfo?.mode` → `terrainTextureMode` perf-CSV field. It was
+  // missing `mode`/`activeLayers` entirely, so ?terrainTexture=legacy always reported 'none'
+  // (the loader's fallback) instead of 'legacy'. `activeLayers` stays [] — the legacy per-
+  // triangle path doesn't have a single active-layer set (each mesh gets a full 13-material
+  // multi-material with per-triangle groups), matching applyFlatTerrain's empty-array convention.
+  return { materials, texturedMeshes, report, mode: 'legacy', activeLayers: [] };
 }
 const TEXTURE_MAP_KEYS = ['map', 'normalMap', 'roughnessMap', 'aoMap', 'displacementMap'];
 
@@ -782,6 +942,7 @@ export function updateTerrainSplatGlobals(root, changes = {}) {
   const globals = root.userData.terrainTextureGlobals || (root.userData.terrainTextureGlobals = {
     macroStrength: Number(uni.macroStrength?.value ?? 1),
     mossStrength: Number(uni.mossStrength?.value ?? 1),
+    slopeCutoff: Number(uni.slopeCutoff?.value ?? DEFAULT_TRIPLANAR_SLOPE_CUTOFF),
   });
   if (Number.isFinite(Number(changes.macroStrength))) {
     globals.macroStrength = clamp(Number(changes.macroStrength), 0, 2);
@@ -790,6 +951,13 @@ export function updateTerrainSplatGlobals(root, changes = {}) {
   if (Number.isFinite(Number(changes.mossStrength))) {
     globals.mossStrength = clamp(Number(changes.mossStrength), 0, 2);
     if (uni.mossStrength) uni.mossStrength.value = globals.mossStrength;
+  }
+  // 3B: live-tunable cliff/flat boundary for the steep-gated triplanar layers (dirt/gravel/
+  // snow). The SAME uniform node is shared by the "reduced" and "full" material variants (see
+  // applySplatTerrain), so this updates both regardless of which one is currently assigned.
+  if (Number.isFinite(Number(changes.slopeCutoff))) {
+    globals.slopeCutoff = clamp(Number(changes.slopeCutoff), 0, 1);
+    if (uni.slopeCutoff) uni.slopeCutoff.value = globals.slopeCutoff;
   }
   return { ...globals };
 }
