@@ -282,6 +282,78 @@ The pieces of UI `environment-ui.js` genuinely *builds* (not just re-hosts) are 
 
 So the real division of labor: `environment-viewer.html` owns all interactive scene/tuning controls (sliders, dropdowns, toggles), the `controlRegistry`/`captureSliderState`/`applySliderState` machinery those controls self-register into, and all per-frame profiler instrumentation calls; `environment-audio.js` (when present) owns the actual audio mixer/state; `environment-ui.js` owns layout/chrome (tabbed shell + CSS), the read-only performance HUD, the Presets tab's save/load/delete UI, and the Audio tab's controls (both of which only call into the `sliderState`/`audio` objects handed to them, with no storage/mixing logic of their own), while passively absorbing the other modules' pre-built panels into its remaining tabs.
 
+## Perf CSV fields (2026-07-08, perf-recovery Wave 0)
+
+`terrain-dressing-performance-design.md` Milestone 0 and `water-performance-design.md` §1 add
+columns to `perfLog.snapshot()` (`environment-viewer.html`, ~line 1500 onward) so a downloaded
+`perf-<timestamp>.csv` can distinguish terrain/dressing/water A-B modes without re-reading the
+URL. Since `perfLog.toCSV()` derives its header from `Object.keys(this.samples[0])`, adding a
+key to the snapshot object is sufficient — no separate CSV header change:
+
+| Column | Source | Notes |
+|---|---|---|
+| `terrainTextureMode` | `loadedMap.terrainTextureMode` (`terrain-loader.js`, set from `applyTerrainTextures`'s result) | `'splat'` (default) \| `'legacy'` \| `'flat'` \| `'none'` (no authored map / textures failed). Mirrors `?terrainTexture=`. |
+| `terrainActiveSplatLayers` | `loadedMap.terrainActiveSplatLayers` | Count of layers the splat material actually blends (`<= MAX_ACTIVE_LAYERS`, 6); `0` outside splat mode. |
+| `terrainTextureMeshes` | `loadedMap.terrainTextureMeshes` | Count of meshes assigned the terrain material (pre-existing field, now also read here). |
+| `dressingDraws` / `dressingGroups` / `dressingInstances` | `dressingGPURef.stats.{draws,groups,instances}` (`dressing-gpu.js`) | Pre-existing `stats` fields (see `rocks.md`); this task is the first thing to plumb them into the CSV. `0` when dressing is off. |
+| `dressingMode` | top-level `DRESSING_MODE` const | Mirrors `?dressing=gpu\|off`. Hoisted to true top-level (near `GRASS_MODE`/`FOREST_MODE`) specifically so this top-level `perfLog` closure can read it — the `DRESSING_MODE`-gated host-build block further down the file reuses the same const rather than re-declaring it. |
+| `waterQuality` | `waterRef.getStats().qualityPreset` | Mirrors `?waterQuality=` or the current Perf A/B value once quality tiers exist (Wave 0: stored setting only, see `water.md`). |
+| `waterCausticRate` | `waterRef.getStats().causticRate` | Mirrors `?waterCausticRate=` or the live Perf A/B "Caustic rate" slider value — read **live** every sample (see "Perf A/B control registry" below), not the flag's initial value. |
+
+`waterReflectionRate` / `waterReflectionResolutionScale` / `waterReflectionLastMs` and the rest
+of the `water*` columns already existed before this task (see `water.md`'s Public API) — Wave 0
+only adds the two columns above plus the water URL flags/setters that let their values actually
+move.
+
+## Perf A/B control registry (`window.perfAB`)
+
+A live runtime-comparison panel, introduced 2026-07-08 (perf-recovery Wave 0, orchestration plan
+rule 7) alongside the URL flags above. URL flags set the **starting** state for a reproducible
+capture run; `window.perfAB` sliders/toggles/selects mutate live state **on top**, so two
+settings can be A/B'd in one running session without a reload. Any module — static import or a
+lazily `await import()`ed one — can register a control without editing `environment-viewer.html`:
+
+```js
+window.perfAB?.addToggle(label, initial, onChange)
+window.perfAB?.addSlider(label, initial, min, max, step, onChange)
+window.perfAB?.addSelect(label, initial, options, onChange)   // options: string[]
+```
+
+This is a **frozen API** other subsystems depend on (later perf-recovery waves register terrain
+shader mode, scree material tier, deadfall double-sided toggle, forest/dressing frustum-cull
+controls, etc. from their own module files via these exact three calls) — do not rename or
+change the argument order.
+
+Implementation (`environment-viewer.html`, near the other top-level URL flags, ~line 118):
+`window.perfAB` is installed as an IIFE-built object at true top-level, before any lazy module
+could possibly run. Each `addX` call pushes a plain `{ kind, label, initial, ..., onChange,
+value }` entry into an internal queue and returns a `{ get value() }` accessor; if the "Perf A/B"
+panel section already exists (see below) the entry is mounted into the DOM immediately, otherwise
+it waits in the queue. `onChange` fires with the new value on every user interaction and also
+updates `entry.value`, which is what CSV-coupled snapshot fields should read (see the
+`waterCausticRate`/`waterQuality` example above) — always the **current** live value, not the
+`initial` one, so a capture taken mid-toggle stays interpretable.
+
+The "Perf A/B" panel section itself is built inline in `environment-viewer.html`'s `#ctrl`
+panel-construction closure (same `header`/`slider`/`select`/`toggle` machinery as every other
+section — see Architecture notes above), immediately after the `toggle()` helper is defined and
+before the first real section (`Forest`). `header('Perf A/B')` opens the section and its `secBody`
+element is captured into a local `perfAbBody` binding — controls registered later (e.g. from the
+Water block, or from a genuinely separate lazy module loaded after other `header()` calls have
+moved the shared `current` pointer elsewhere) still land inside the Perf A/B section, not wherever
+`current` happens to point at registration time. `window.perfAB._attachPanel({ mount })` is called
+once, right after `mountPerfAbControl` is defined, flushing every already-queued entry.
+
+Wave 0 itself registers six water controls from the water-loader block (see `water.md`'s "URL
+flags + Perf A/B panel" section for the full label/range list and which setter each one calls):
+"Water reflection", "Reflect rate", "Reflect scale", "Caustics", "Caustic rate", "Caustic res".
+No terrain-mode or dressing-material swap control is registered in this task — those need two
+prebuilt material variants to exist first, which arrives in a later wave (per the task's explicit
+scope: `terrainTexture` stays URL-flag-only here).
+
+Perf A/B controls are **not** part of the `controlRegistry`/preset-save system (`captureSliderState`/
+`applySliderState`) — they're a live scratch pad for comparison, not saved/restored slider state.
+
 ## Tests
 
 `test-frame-profiler.mjs` (repo root) is a standalone Node script (`node test-frame-profiler.mjs`, no test runner/framework â€” uses a manual `ok(cond, msg)` counter and `process.exit(fail ? 1 : 0)`). It exercises `createFrameProfiler` with an injected fake clock (`now: () => t`, `smoothing: 1`) and checks:

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -36,7 +36,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
-import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix } from 'three/tsl';
+import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix, uniform } from 'three/tsl';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createLightingRig } from './lights.js';
@@ -51,11 +51,12 @@ import { createEnvironmentUi } from './environment-ui.js';
 import { createWorldModelPanel } from './world-models.js';
 import { loadTerrainMap } from './terrain-loader.js';
 import { bakeMapCanvas, createWorldMapOverlay, minimapImageAffine, MAP_OVERLAYS } from './world-map.js';
-import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer } from './terrain-textures.js';
+import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer, updateTerrainSplatGlobals } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
 import { createHostSession, createGuestSession, GhostRenderer, playerTintHSL } from './multiplayer.js';
 import { createViewHands } from './player-hands.js';
+import { createProceduralPlayerBody } from './player-procedural-body.js';
 import { getWeapon, enabledWeapons, loadout } from './weapons.js';
 import { findPlayerHit, pushPlayerPose, prunePlayerPoseHistory, validateShot } from './combat.js';
 import { createPlayerCombatFacade } from './player-combat.js';
@@ -77,6 +78,72 @@ const CREATURE_MODE = new URLSearchParams(location.search).get('creatures') || '
 // Timestamp queries require a GPU->CPU readback when resolved. Keep them opt-in so
 // the normal frame profiler measures the app instead of the diagnostic readback.
 const TIMESTAMP_MODE = new URLSearchParams(location.search).get('timestamps') || 'off';
+// Dressing (rocks/boulders/scree + deadfall/fungi) backend: 'gpu' (default) or 'off'. Hoisted
+// to true top-level (rather than declared inline where the DRESSING_MODE block builds the
+// host, further down) so the top-level perfLog.snapshot() closure can read it for the
+// dressingMode perf CSV field (terrain-dressing-performance-design.md Milestone 0).
+const DRESSING_MODE = new URLSearchParams(location.search).get('dressing') || 'gpu';
+
+// ---- Perf recovery (2026-07-08): terrain/dressing/water A-B URL flags -----------------
+// Wave 0 instrumentation flags (terrain-dressing-performance-design.md Milestone 0 +
+// water-performance-design.md §1). None of these change default rendering on their own —
+// they only pick which code path a later wave's material/throttle work will read.
+// 'splat' (default) = current authored-map blended node material; 'legacy' forces the old
+// per-MeshStandardMaterial path (applyTerrainTextures(..., { legacySplit: true })); 'flat' is
+// a diagnostic-only single cheap MeshStandardNodeMaterial (no authored splat build at all).
+const TERRAIN_TEXTURE_MODE = new URLSearchParams(location.search).get('terrainTexture') || 'splat';
+const WATER_URL_FLAGS = (() => {
+  const qs = new URLSearchParams(location.search);
+  const num = (key, dflt) => { const v = qs.get(key); const n = v === null ? NaN : Number(v); return Number.isFinite(n) ? n : dflt; };
+  return {
+    reflection: qs.get('waterReflection') || null,           // 'on'|'off'|null (null = leave default)
+    reflectRate: qs.has('waterReflectRate') ? num('waterReflectRate', 1) : null,
+    reflectScale: qs.has('waterReflectScale') ? num('waterReflectScale', 0.5) : null,
+    caustics: qs.get('waterCaustics') || null,                // 'on'|'off'|null
+    causticRate: qs.has('waterCausticRate') ? num('waterCausticRate', 1) : null,
+    causticRes: qs.has('waterCausticRes') ? num('waterCausticRes', 1024) : null,
+    quality: qs.get('waterQuality') || null,                  // 'low'|'medium'|'high'|null
+  };
+})();
+
+// ---- Perf A/B control registry (window.perfAB) -----------------------------------------
+// A live runtime-comparison panel, separate from the reproducible-capture URL flags above:
+// URL flags set the STARTING state for a capture run; perfAB sliders/toggles mutate live
+// state on top so two settings can be A/B'd in one running session without a reload. Any
+// module (static or lazily `await import()`ed) can register a control via
+// `window.perfAB?.addToggle/addSlider/addSelect(...)` without editing this file — controls
+// registered before the "Perf A/B" panel section is actually built (see the `header`/`slider`/
+// `select`/`toggle` helpers around line ~2723) are queued and flushed the first time the panel
+// builds. See docs/subsystems/infra.md for the frozen API other subsystems depend on.
+(function installPerfAbRegistry() {
+  const queue = [];
+  let panel = null; // set by flushPerfAbQueue() in the ctrl-panel builder: { toggle, slider, select }
+  function addToggle(label, initial, onChange) {
+    const entry = { kind: 'toggle', label, initial, onChange, value: !!initial };
+    queue.push(entry);
+    if (panel) panel.mount(entry);
+    return { get value() { return entry.value; } };
+  }
+  function addSlider(label, initial, min, max, step, onChange) {
+    const entry = { kind: 'slider', label, initial, min, max, step, onChange, value: initial };
+    queue.push(entry);
+    if (panel) panel.mount(entry);
+    return { get value() { return entry.value; } };
+  }
+  function addSelect(label, initial, options, onChange) {
+    const entry = { kind: 'select', label, initial, options, onChange, value: initial };
+    queue.push(entry);
+    if (panel) panel.mount(entry);
+    return { get value() { return entry.value; } };
+  }
+  window.perfAB = {
+    addToggle, addSlider, addSelect,
+    // Internal: called once by the ctrl-panel builder when the "Perf A/B" section exists.
+    _attachPanel(p) { panel = p; queue.forEach((entry) => panel.mount(entry)); },
+    // Internal: perf CSV coupling reads the CURRENT value of every registered control.
+    _entries() { return queue; },
+  };
+})();
 let mpSession = null;
 let mpGhostRenderer = null;
 let mpClientId = null;
@@ -86,7 +153,7 @@ let mpSharedWorldSettings = false;
 let mpPendingWorldSettings = null;
 let mpPendingCreatureState = [];
 let mpPendingCreatureConfig = null;
-// Host/solo entity registry (lights + projectiles). Guest never ticks it â€”
+// Host/solo entity registry (lights + projectiles). Guest never ticks it —
 // it renders directly from interpolated wire upserts (see mp:onState handling
 // below), so no guest-side mirror registry is needed.
 const entityRegistry = createEntityRegistry();
@@ -98,7 +165,7 @@ const isRenderableLightEntity = w => w && (w.type === 'light' || w.renders === t
 // registry.renderList(filter) applies `filter` to RAW pre-serialize entities
 // (which don't carry the wire-only `renders` flag yet), so the type check has
 // to happen there; isRenderableLightEntity is then re-applied to the
-// serialized output â€” the single predicate "used everywhere the binder is fed".
+// serialized output — the single predicate "used everywhere the binder is fed".
 const isRegisteredLightEntityType = e => e.type === 'light' || e.type === 'projectile';
 function hostLightEntitiesForRender() {
   return entityRegistry.renderList(isRegisteredLightEntityType).filter(isRenderableLightEntity);
@@ -106,9 +173,9 @@ function hostLightEntitiesForRender() {
 let lightBinder = null;
 let mpPendingLightEntities = []; // guest only: interpolated wire upserts, renderable-filtered
 // Declared up here (not at its slider-preset comment block ~L1230) because the
-// guest's onState â†’ receiveSharedWorldSettings() reads it directly, and onState
+// guest's onState → receiveSharedWorldSettings() reads it directly, and onState
 // can fire during a top-level `await` (e.g. the clustered-lights import) BEFORE
-// module eval reaches the old declaration site â†’ TDZ crash. Controls still
+// module eval reaches the old declaration site → TDZ crash. Controls still
 // self-register into it far below; it just needs to exist before sessions start.
 const controlRegistry = [];
 let mpLastCreatureConfigSig = '';
@@ -161,7 +228,7 @@ let playerCollider = null;
 let playerInitialized = false;
 let fpsMode = false;
 // Cursor-free pause: the mouse is released (for clicking HUD/menus) while the first-person
-// camera stays frozen in place. Distinct from exiting to orbit â€” see enterCursorFree / KeyQ.
+// camera stays frozen in place. Distinct from exiting to orbit — see enterCursorFree / KeyQ.
 let fpsCursorFree = false;
 let stance = 'stand';
 let capsuleH = 1.6;
@@ -309,7 +376,7 @@ function sanitizeNetworkPlayerState(raw, id) {
     p,
     q: finiteQuat(raw?.q) ?? [0, 0, 0, 1],
     h: clampFinite(raw?.h, 1.6, 0.5, 2.4),
-    r: clampFinite(raw?.r, 0.35, 0.15, 0.75),
+    r: clampFinite(raw?.r, 0.3, 0.15, 0.75),
     weapon,
     tool,
     aimPitch: clampFinite(raw?.aimPitch, 0, -Math.PI * 0.5, Math.PI * 0.5),
@@ -351,8 +418,8 @@ function getLocalPlayerState(id) {
   };
 }
 
-// Broadcast the shared creature config to guests as its OWN reliable message â€” not
-// inside the frame-skippable sim_state â€” and only when it actually changed (or
+// Broadcast the shared creature config to guests as its OWN reliable message — not
+// inside the frame-skippable sim_state — and only when it actually changed (or
 // force=true to catch up a newly joined guest). This config is large, O(creatures)
 // STATIC identity data (plan/style/gait/arms) that a guest needs once, not on a
 // timer: resending it every 2 s was the dominant multiplayer payload cost. Driven at
@@ -420,7 +487,7 @@ function receiveSharedWorldSettings(packet) {
 function getState() {
   // Quantize wire numbers: unrounded doubles serialize at up to ~17 chars each and
   // dominate the O(creatures) payload. mm precision (q3) for positions and 1e-4 for
-  // rotations is far below visual scale but ~2.5â€“3Ã— fewer bytes. See plan Â§2a.
+  // rotations is far below visual scale but ~2.5–3× fewer bytes. See plan §2a.
   const q3 = v => Math.round(v * 1e3) / 1e3;
   const q4 = v => Math.round(v * 1e4) / 1e4;
   const creatures = (portCreatures?.system?.creatures ?? []).map((c, id) => ({
@@ -490,18 +557,22 @@ window.addEventListener('mp:joined', e => {
 });
 
 if (mpRole === 'host') {
-  mpGhostRenderer = new GhostRenderer(scene, THREE);
+  // NOTE: remote procedural bodies (useProceduralBody) are deferred � they need proper
+  // per-frame sync + real weapon model + perf work (Wave 2 increment 2). Capsule ghosts for now.
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
   mpSession = createHostSession(roomCode, mapKey, getState, { worldMode: mpWorldMode });
 } else if (mpRole === 'guest') {
-  mpGhostRenderer = new GhostRenderer(scene, THREE);
+  // NOTE: remote procedural bodies (useProceduralBody) are deferred � they need proper
+  // per-frame sync + real weapon model + perf work (Wave 2 increment 2). Capsule ghosts for now.
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
   mpSession = createGuestSession(roomCode, state => {
     mpLatestState = state;
     if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
-    // worldSettings / creatureConfig no longer ride sim_state â€” they arrive as their
+    // worldSettings / creatureConfig no longer ride sim_state — they arrive as their
     // own mp:world_settings / mp:creature_config messages (see listeners below).
     mpPendingCreatureState = state.creatures ?? [];
     // Guest trap (see plan): feed the binder the already-interpolated wire
-    // upserts directly â€” do NOT build a mirror registry + renderList, the
+    // upserts directly — do NOT build a mirror registry + renderList, the
     // wire shape isn't the adapters' internal entity shape.
     mpPendingLightEntities = (state.entities?.upserts ?? []).filter(isRenderableLightEntity);
     lightBinder?.sync(mpPendingLightEntities);
@@ -539,7 +610,7 @@ window.addEventListener('mp:guest_input', e => {
     playerCombat.ensurePlayer(msg.clientId);
     setPlayerWeapon(msg.clientId, DEFAULT_GUN_ID);
     setPlayerTool(msg.clientId, DEFAULT_GUN_ID);
-    // A newly joined guest needs the full static config/settings now â€” they're no
+    // A newly joined guest needs the full static config/settings now — they're no
     // longer heartbeated into sim_state. force=true resends the current full state;
     // already-synced guests no-op on it via their signature check.
     syncSharedWorldSettings({ force: true });
@@ -795,7 +866,7 @@ function createMultiplayerFinder() {
     const dz = tracked.p[2] - local.p[2];
     const dist = Math.hypot(dx, dz);
     const relDeg = signedDegrees(screenRelativeBearing(worldBearing(dx, dz), heading));
-    label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}Â°`;
+    label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
   }
 
   return { update };
@@ -835,7 +906,7 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
 
   ctx.fillStyle = '#d8dee9';
   ctx.font = '11px ui-monospace, SFMono-Regular, Consolas, monospace';
-  ctx.fillText(`${headingDegrees(heading).toString().padStart(3, '0')}Â°`, center, 2);
+  ctx.fillText(`${headingDegrees(heading).toString().padStart(3, '0')}°`, center, 2);
   ctx.fillStyle = '#77c8a1';
   ctx.beginPath(); ctx.moveTo(center, h - 3); ctx.lineTo(center - 5, h - 11); ctx.lineTo(center + 5, h - 11); ctx.closePath(); ctx.fill();
 }
@@ -942,7 +1013,7 @@ let mapCollider = null;
 if (mapKey) {
   setStatus(`loading authored map ${mapKey}...`);
   await nextPaint();
-  loadedMap = await loadTerrainMap(mapKey, { scene });
+  loadedMap = await loadTerrainMap(mapKey, { scene, textureMode: TERRAIN_TEXTURE_MODE });
   setStatus('building authored map collision...');
   await nextPaint();
   try {
@@ -958,7 +1029,7 @@ if (mapKey) {
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
 // YXZ from the start: getLocalPlayerState reads camera.rotation.y as the wire yaw,
 // and with the default XYZ order a lookAt-driven (orbit mode) yaw decodes folded
-// into Â±90Â°, broadcasting a wrong facing until FPS mode first sets this.
+// into ±90°, broadcasting a wrong facing until FPS mode first sets this.
 camera.rotation.order = 'YXZ';
 camera.position.set(22, 16, 26);
 
@@ -1009,7 +1080,7 @@ if (SKY_MODE !== 'off' && SKY_MODE !== 'nomoonlight') {
   scene.add(moonLight, moonLight.target);
 }
 
-// Unit vector toward the key light â€” the SAME direction the rig feeds to the water
+// Unit vector toward the key light — the SAME direction the rig feeds to the water
 // specular and the shadow camera. The sky disc, moonlight, and reflection all share it.
 const _skyDir = new THREE.Vector3();
 function skyLightDir() {
@@ -1019,7 +1090,7 @@ function skyLightDir() {
 
 // ===================== chunked terrain (parameterised; supports lakes) =====================
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
-// terrain extent â€” the terrain is chunked/infinite and sized by draw distance.
+// terrain extent — the terrain is chunked/infinite and sized by draw distance.
 const terrain = { size: 300, baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2, waterLevel: -0.9, renderRadius: 2, renderMode: 'chunks' };
 
 if (loadedMap) {
@@ -1038,7 +1109,7 @@ let ground = loadedMap ? loadedMap.root : terrainSystem.materialPatchTarget;
 const _mapHeightRayOrigin = new THREE.Vector3();
 // CPU heightfield baked from the authored-map collider (creature-perf-analysis/plan.md
 // 3.1). When set, terrainHeight() does a bilinear array read instead of a per-call BVH
-// raycast â€” the dominant cost of creature terrain sampling on authored maps. Installed
+// raycast — the dominant cost of creature terrain sampling on authored maps. Installed
 // once after the grass height bake below; it is null during that bake, so the bake still
 // fills via raycast (no chicken-and-egg).
 let cpuHeightField = null;
@@ -1128,9 +1199,9 @@ if (loadedMap) {
   // Silent on validated maps; logs detail only on request (?heightfieldCheck) or when the
   // bilinear-vs-raycast error is high enough to matter for foot placement.
   if (new URLSearchParams(location.search).has('heightfieldCheck') || maxErr > 0.5) {
-    console.log(`[terrain] CPU heightfield ${bakeRes}Â² (cell ${cell.toFixed(2)}u): max err ${maxErr.toFixed(3)}u, mean ${(sumErr / Math.max(1, samples)).toFixed(3)}u over ${samples} pts`);
+    console.log(`[terrain] CPU heightfield ${bakeRes}² (cell ${cell.toFixed(2)}u): max err ${maxErr.toFixed(3)}u, mean ${(sumErr / Math.max(1, samples)).toFixed(3)}u over ${samples} pts`);
   }
-  if (maxErr > 0.5) console.warn(`[terrain] heightfield max error ${maxErr.toFixed(2)}u exceeds 0.5u â€” foot placement may deviate on steep geometry; consider a higher bake resolution or keeping the raycast path.`);
+  if (maxErr > 0.5) console.warn(`[terrain] heightfield max error ${maxErr.toFixed(2)}u exceeds 0.5u — foot placement may deviate on steep geometry; consider a higher bake resolution or keeping the raycast path.`);
   cpuHeightField = hf;
   if (loadedMap.grassDensityGrid?.length === loadedMap.resolution * loadedMap.resolution) {
     loadedMap.grassDensityTex = makeFloatDataTexture(loadedMap.grassDensityGrid, loadedMap.resolution);
@@ -1186,7 +1257,7 @@ if (!loadedMap && TERRAIN_MODE === 'gpu') {
   ground = cdlodRef.mesh;
 }
 
-// SP4b: GPU particle fields â€” embers (additive glow) + dust (subtle alpha). ?particles=off disables.
+// SP4b: GPU particle fields — embers (additive glow) + dust (subtle alpha). ?particles=off disables.
 // A registry of live fields the editor (control panel) can add to / remove from at runtime; the
 // animate loop updates the enabled ones and the HUD sums their counts. The two species seed the list.
 const PARTICLES_MODE = new URLSearchParams(location.search).get('particles') || 'on';
@@ -1215,7 +1286,7 @@ if (PARTICLES_MODE !== 'off') {
   addParticleField({ kind: 'dust', name: 'dust', count: 8000, radius: 90, enabled: false });
 }
 
-// SP4c: node post-processing. ?post=off â†’ plain renderer.render; diagnostic graph modes:
+// SP4c: node post-processing. ?post=off → plain renderer.render; diagnostic graph modes:
 // scene, output, grade, full/on.
 const POST_MODE = new URLSearchParams(location.search).get('post') || 'on';
 let postFX = null;
@@ -1278,7 +1349,7 @@ portCreatures = createEnvironmentPortCreatures({
 });
 
 // --- ClaudeCraft mob system (second creature system) ----------------------------
-// Host/solo only: the sim is host-authoritative, so a guest never constructs it â€”
+// Host/solo only: the sim is host-authoritative, so a guest never constructs it —
 // it renders the interpolated `mobs` that arrive inside sim_state (see GhostRenderer).
 if (mpRole !== 'guest') {
   claudecraftCreatures = createClaudecraftCreatures({
@@ -1330,7 +1401,7 @@ function applyClaudecraftCombatToPlayer(now) {
   if (combat.dead) {
     if (ccPlayerDeadSince == null) {
       ccPlayerDeadSince = now;
-      showStatus('You were slain. Respawningâ€¦');
+      showStatus('You were slain. Respawning…');
     } else if (now - ccPlayerDeadSince >= CC_RESPAWN_MS) {
       const pose = getLocalPlayerWorldPose();
       if (pose) claudecraftCreatures.reviveLocalPlayer(pose);
@@ -1391,17 +1462,17 @@ function updateTerrainDebug(now) {
     `creatures ${cs.count} vis ${cs.visible} sim ${cs.sim} rend ${cs.rendered} body ${cs.bodyOnly} ms ${cs.updateMs.toFixed(2)}\n` +
     `cre stages lod ${cs.lodMs.toFixed(2)} obj ${cs.objectsMs.toFixed(2)} beh ${cs.behaviorMs.toFixed(2)} steer ${cs.steeringMs.toFixed(2)} phys ${cs.physicsMs.toFixed(2)} rend ${cs.renderMs.toFixed(2)}\n` +
     `cre lod ${cs.tiers.join('/')} ik ${cs.ikFull}/${cs.ikCheap} shadows ${cs.shadowCasters}\n` +
-    `terrain ${terrainSystem.renderMode}${cdlodRef ? ' Â· cdlod' : ''}\n` +
+    `terrain ${terrainSystem.renderMode}${cdlodRef ? ' · cdlod' : ''}\n` +
     (cdlodRef
-      ? `terrain draws ${cdlodRef.drawCount} Â· tris ${cdlodRef.triangleCount.toLocaleString()}\n`
+      ? `terrain draws ${cdlodRef.drawCount} · tris ${cdlodRef.triangleCount.toLocaleString()}\n`
       : `chunks ${activeTerrainChunks().length}/${targetTerrainChunkCount()}\n`) +
     `pending ${terrainSystem.pendingBuildCount}\n` +
     `grass ${terrainDebug.grassChunks} pending ${terrainDebug.grassPending}\n` +
     `water ${terrainDebug.waterLoaded ? `${terrainDebug.waterVersion || '?'} rings ${terrainDebug.waterChunks}/3 pending ${terrainDebug.waterPending} r0:${terrainDebug.waterRing0Tris} r1:${terrainDebug.waterRing1Tris} r2:${terrainDebug.waterRing2Tris} tris ${terrainDebug.waterTriangles.toLocaleString()} cache ${terrainDebug.waterCacheHits}/${terrainDebug.waterCacheMisses} build ${terrainDebug.waterBuildMs.toFixed(1)}ms min ${Number.isFinite(terrainDebug.waterMinBed) ? terrainDebug.waterMinBed.toFixed(1) : '--'}` : 'not loaded'}\n` +
-    `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` Â· gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
+    `trees ${terrainDebug.treePlacements}` + (forestGPURef ? ` · gpu draws ${forestGPURef.stats.draws} inst ${forestGPURef.stats.instances}` : '') + `\n` +
     (dressingGPURef ? `dressing draws ${dressingGPURef.stats.draws}/${dressingGPURef.stats.groups} inst ${dressingGPURef.stats.instances}\n` : '') +
-    (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} Â· froxels ${clusteredLightsRef.froxelCount}\n` : '') +
-    (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} Ã—${particleFields.length}\n` : '') +
+    (clusteredLightsRef ? `lights ${clusteredLightsRef.lightCount} · froxels ${clusteredLightsRef.froxelCount}\n` : '') +
+    (particleFields.length ? `particles ${particleFields.reduce((s, e) => s + e.field.count, 0).toLocaleString()} ×${particleFields.length}\n` : '') +
     `cpu ${terrainDebug.cpuMs.toFixed(2)}ms  backend ${renderer.backend?.isWebGPUBackend ? 'webgpu' : 'webgl2'}`;
 }
 
@@ -1459,7 +1530,7 @@ const perfLog = {
       calls: r?.render?.calls ?? 0,                     // cumulative renderer calls; retained for old traces
       renderCallsTotal: r?.render?.calls ?? 0,
       // Per-frame counters come from the holder captured right after this frame's draw/compute
-      // submit (before any timestamp-resolve await), not a live renderer.info read â€” with
+      // submit (before any timestamp-resolve await), not a live renderer.info read — with
       // TIMESTAMP_MODE='on' the awaited resolveTimestampsAsync() calls cross a vsync boundary
       // and WebGPURenderer zeroes these before a live read here would see them. Cumulative
       // counters (calls/renderCallsTotal/computeCallsTotal) aren't reset per-frame so they're
@@ -1510,6 +1581,19 @@ const perfLog = {
       pending: terrainSystem.pendingBuildCount,
       terrainDraws: cdlodRef ? cdlodRef.drawCount : activeTerrainChunks().length,
       terrainTris: cdlodRef ? cdlodRef.triangleCount : null,
+      // perf (2026-07-08 Wave 0, terrain-dressing-performance-design.md Milestone 0): terrain
+      // texture A/B fields. Mode/active-layer-count come straight from loadTerrainMap's return
+      // (set once at load from the ?terrainTexture= flag); terrainTextureMeshes is the count of
+      // meshes actually assigned the terrain material (0/null when no authored map is loaded).
+      terrainTextureMode: loadedMap ? loadedMap.terrainTextureMode : 'none',
+      terrainActiveSplatLayers: loadedMap ? loadedMap.terrainActiveSplatLayers : 0,
+      terrainTextureMeshes: loadedMap ? loadedMap.terrainTextureMeshes : 0,
+      // Dressing (rocks/deadfall) draw/group/instance counts, straight from dressing-gpu.js's
+      // stats getter; dressingMode mirrors the ?dressing= URL flag ('gpu' or 'off').
+      dressingDraws: dressingGPURef ? dressingGPURef.stats.draws : 0,
+      dressingGroups: dressingGPURef ? dressingGPURef.stats.groups : 0,
+      dressingInstances: dressingGPURef ? dressingGPURef.stats.instances : 0,
+      dressingMode: DRESSING_MODE,
       grassChunks: terrainDebug.grassChunks,
       grassRecullMode: grassRef?.stats?.recullMode ?? null,
       grassReculls: grassRef?.stats?.reculls ?? null,
@@ -1546,6 +1630,12 @@ const perfLog = {
       waterReflectionLastMs: +terrainDebug.waterReflectionLastMs.toFixed(3),
       waterReflectionResolutionScale: terrainDebug.waterReflectionResolutionScale,
       waterReflectionRate: terrainDebug.waterReflectionRate,
+      // perf (2026-07-08 Wave 0, water-performance-design.md §1): waterQuality is a stored
+      // setting (water.js's setQuality is scaffolding only in this task — see its comment);
+      // waterCausticRate reads the water module's live throttle counter so it stays correct
+      // whether it was set by the ?waterCausticRate= URL flag or the Perf A/B slider.
+      waterQuality: waterRef?.getStats ? waterRef.getStats().qualityPreset : WATER_URL_FLAGS.quality || 'high',
+      waterCausticRate: waterRef?.getStats ? waterRef.getStats().causticRate : (WATER_URL_FLAGS.causticRate ?? 1),
       waterMinBed: Number.isFinite(terrainDebug.waterMinBed) ? +terrainDebug.waterMinBed.toFixed(3) : null,
       treePlacements: terrainDebug.treePlacements,
       forestDraws: forestGPURef ? forestGPURef.stats.draws : (FOREST_MODE === 'baked' ? null : 0),
@@ -1667,7 +1757,7 @@ function updatePerfPanel(now) {
   const csvBtn = document.createElement('button'); csvBtn.textContent = 'CSV'; csvBtn.style.cssText = btnCss;
   const clrBtn = document.createElement('button'); clrBtn.textContent = 'Clear'; clrBtn.style.cssText = btnCss;
   function refresh() {
-    recBtn.textContent = perfLog.recording ? 'â— rec' : 'â–¶ rec';
+    recBtn.textContent = perfLog.recording ? '● rec' : '▶ rec';
     recBtn.style.color = perfLog.recording ? '#ff7b7b' : '#c4ccd6';
     const gpu = perfLog.telemetryActive ? ` gpu:${perfLog.telemetryFile || 'on'}` : (perfLog.telemetryError ? ' gpu:off' : '');
     count.textContent = `${perfLog.samples.length} @ ${perfLog.intervalMs}ms${gpu}`;
@@ -1684,8 +1774,8 @@ function updatePerfPanel(now) {
 if (!loadedMap) scene.add(terrainGroup);
 
 // The camera far plane is the larger of terrain draw distance and the diagonal
-// distance to the edge of any cloud layer â€” cloud fragments at the plane edge
-// are at sqrt((extent/2)Â²+heightÂ²) from the camera and must not be clipped.
+// distance to the edge of any cloud layer — cloud fragments at the plane edge
+// are at sqrt((extent/2)²+height²) from the camera and must not be clipped.
 // Fog uses only the terrain-based distance so it doesn't fade in too late on
 // small scenes just because cloud layers are large.
 const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
@@ -1696,7 +1786,7 @@ function setCloudFar(layer, extent, height) {
   if (layer === 2) cloudFar2 = far; else cloudFar1 = far;
 }
 function updateDrawDistance() {
-  // Farthest rendered chunk corner ï¿½ (radius + 1) chunks out; ï¿½2 covers the
+  // Farthest rendered chunk corner � (radius + 1) chunks out; �2 covers the
   // diagonal across the whole loaded ring from the opposite side.
   const chunkSpan = (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize * 2;
   const terrainFar = Math.max(200, terrain.size, chunkSpan);
@@ -2043,7 +2133,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     });
   }
 
-  // Bake intensity constants â€” must match billBrightness() denominator so the uniform
+  // Bake intensity constants — must match billBrightness() denominator so the uniform
   // compensates for whatever the live scene intensity is relative to the bake.
   const BAKE_SUN = 1.2, BAKE_AMB = 0.4;
 
@@ -2196,7 +2286,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       onReady: (s) => { if (s === texSet) { applyTextureSet(s); regenerate(); disposeTextureSetSoon(prev); } },
     });
     // Apply immediately only if already decoded (procedural). For authored, wait for
-    // onReady and keep the previous set live until then â€” never toggle .map through
+    // onReady and keep the previous set live until then — never toggle .map through
     // null, which the WebGPU NodeMaterialObserver throws on (null.isTexture).
     if (texSet.ready) { applyTextureSet(texSet); disposeTextureSetSoon(prev); }
   }
@@ -2543,7 +2633,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     chunk.version++;
   }
 
-  // Returns a build job, or null when the chunk has no trees to place â€” so empty
+  // Returns a build job, or null when the chunk has no trees to place — so empty
   // (or fully flooded) chunks allocate no meshes at all. Placements are computed
   // first; the 3 chunk meshes are created only once at least one tree lands. An
   // existing chunk that no longer places any trees is disposed.
@@ -2683,13 +2773,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // Title bar: minimise button + drag handle. Body scrolls if it grows too tall.
   const bar = document.createElement('div'); bar.id = 'ctrl-bar';
   bar.innerHTML = '<span class="ttl">Scene controls</span>';
-  const minBtn = document.createElement('button'); minBtn.id = 'ctrl-min'; minBtn.textContent = 'â€“';
+  const minBtn = document.createElement('button'); minBtn.id = 'ctrl-min'; minBtn.textContent = '–';
   bar.appendChild(minBtn);
   const body = document.createElement('div'); body.id = 'ctrl-body';
   box.appendChild(bar); box.appendChild(body);
   let current = body;   // header() switches this to the active section's body
 
-  minBtn.addEventListener('click', () => { minBtn.textContent = box.classList.toggle('min') ? '+' : 'â€“'; });
+  minBtn.addEventListener('click', () => { minBtn.textContent = box.classList.toggle('min') ? '+' : '–'; });
 
   // Drag the bar to reposition; first move switches right- to left/top-anchoring,
   // and the panel is clamped on-screen.
@@ -2709,7 +2799,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   let timer; const apply = () => { clearTimeout(timer); timer = setTimeout(regenerate, 130); };
   // Controls that change baked tree GEOMETRY (species taxonomy, leaves, base offset)
-  // need the gpu palette rebaked â€” placement-only re-sync (apply) can't pick them up
+  // need the gpu palette rebaked — placement-only re-sync (apply) can't pick them up
   // because the palette is baked once. In baked mode this is just a normal regenerate.
   let rbTimer; const rebakeForest = () => {
     clearTimeout(rbTimer);
@@ -2733,7 +2823,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   function header(text) {
     const sec = document.createElement('div'); sec.className = 'sec collapsed';
     const head = document.createElement('div'); head.className = 'sec-head';
-    head.innerHTML = '<span>' + text + '</span><span class="caret">â–¾</span>';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
     const secBody = document.createElement('div'); secBody.className = 'sec-body';
     head.addEventListener('click', () => sec.classList.toggle('collapsed'));
     sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
@@ -2763,6 +2853,59 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     });
     return inp;
   }
+
+  // ---- Perf A/B panel (window.perfAB) ----------------------------------------------
+  // Runtime comparison controls for the perf-recovery work: unlike the sliders above
+  // (bound to `params[key]`), each perfAB control owns its OWN value (the `entry` object
+  // queued by window.perfAB.addToggle/addSlider/addSelect) so any lazily-loaded subsystem
+  // module can register one without touching `params` or this file. mountPerfAbControl()
+  // builds the row from an `entry` the same visual way slider()/select()/toggle() do, but
+  // reads/writes `entry.value` instead of `params[key]` and has no controlRegistry/preset
+  // integration (A/B controls are a live scratch pad, not part of saved slider state).
+  header('Perf A/B');
+  // Capture the Perf A/B section's OWN body element now, at header()-open time — controls can
+  // register much later (e.g. from the water/dressing/forest lazy-loaded blocks further down
+  // this same closure, or from truly separate `await import()`ed modules), by which point
+  // `current` has moved on to whatever section was opened most recently. mountPerfAbControl
+  // must always append into perfAbBody, never the shared `current` pointer.
+  const perfAbBody = current;
+  function mountPerfAbControl(entry) {
+    if (entry.kind === 'toggle') {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = '<span style="color:#c4ccd6">' + entry.label + '</span>';
+      const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!entry.value; inp.style.width = 'auto';
+      inp.addEventListener('change', () => { entry.value = inp.checked; entry.onChange?.(entry.value); });
+      row.appendChild(inp); perfAbBody.appendChild(row);
+      return;
+    }
+    if (entry.kind === 'slider') {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = String(entry.value);
+      row.innerHTML = '<span style="color:#c4ccd6">' + entry.label + '</span>'; row.appendChild(val);
+      const inp = document.createElement('input'); inp.type = 'range';
+      inp.min = entry.min; inp.max = entry.max; inp.step = entry.step; inp.value = entry.value;
+      inp.addEventListener('input', () => {
+        entry.value = parseFloat(inp.value); val.textContent = String(entry.value); entry.onChange?.(entry.value);
+      });
+      perfAbBody.appendChild(row); perfAbBody.appendChild(inp);
+      return;
+    }
+    if (entry.kind === 'select') {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = '<span style="color:#c4ccd6">' + entry.label + '</span>'; perfAbBody.appendChild(row);
+      const sel = document.createElement('select');
+      for (const o of entry.options) {
+        const op = document.createElement('option'); op.value = String(o); op.textContent = String(o);
+        if (String(o) === String(entry.value)) op.selected = true;
+        sel.appendChild(op);
+      }
+      sel.addEventListener('change', () => { entry.value = sel.value; entry.onChange?.(entry.value); });
+      perfAbBody.appendChild(sel);
+      return;
+    }
+  }
+  window.perfAB?._attachPanel({ mount: mountPerfAbControl });
+
   header('Forest');
   const f2 = v => v.toFixed(2), fi = v => String(Math.round(v)), pct = v => Math.round(v * 100) + '%';
   slider('count', 'Tree count', 0, 4500, 1, fi);
@@ -2799,7 +2942,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     current.appendChild(billToggleBtn);
   }
   // Texture mode: 'procedural' uses textureless TSL/shaped leaves; 'authored' loads the
-  // ez-tree PNG/JPG packs from ./textures (async â€” rebuilds when they decode).
+  // ez-tree PNG/JPG packs from ./textures (async — rebuilds when they decode).
   select('texMode', 'Texture mode', ['procedural', 'authored'], () => { loadTextures(params.texMode); regenerate(); });
 
   loadTextures(params.texMode);   // establish a texture set before the first bake
@@ -2832,10 +2975,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // world (it never actually changed the chunked terrain). Cheap, live update.
   slider('size', 'View distance', 200, 1000, 10, fi, () => updateDrawDistance(), terrain, 'terrain');
   // Draw distance = chunk render radius. Streams chunks in/out live (no full
-  // rebuild); label shows the resulting NÃ—N grid. terrainSystem.params is a copy
-  // of `terrain`, so push the value across and extend the camera far plane â€”
+  // rebuild); label shows the resulting N×N grid. terrainSystem.params is a copy
+  // of `terrain`, so push the value across and extend the camera far plane —
   // updateTerrainWindow() in the render loop restreams on the next frame.
-  const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' Â· ' + n + 'Ã—' + n; };
+  const drawFmt = r => { const n = 2 * Math.round(r) + 1; return Math.round(r) + ' · ' + n + '×' + n; };
   const drawDistanceChange = () => {
     terrainSystem.params.renderRadius = Math.round(terrain.renderRadius);
     // SP3: map the chunk draw-distance slider (1..12) onto CDLOD level count so the slider
@@ -2860,6 +3003,15 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       textureSources = [...new Set([...textureSources, ...libraryIds.map(id => `library/${id}`)])];
     } catch (_) { /* catalog is optional */ }
     const biomeState = { layer: biomeLayers[0], sourceLayer: biomeLayers[0], tileMeters: 4, roughness: 0.95, normalScale: 1, displacementScale: 0 };
+    const terrainSplatGlobals = loadedMap.root.userData.terrainTextureGlobals || {};
+    params.terrainMacroStrength = Number(terrainSplatGlobals.macroStrength ?? 1);
+    params.terrainMossStrength = Number(terrainSplatGlobals.mossStrength ?? 1);
+    const syncTerrainSplatGlobals = () => {
+      updateTerrainSplatGlobals(loadedMap.root, {
+        macroStrength: params.terrainMacroStrength,
+        mossStrength: params.terrainMossStrength,
+      });
+    };
     const biomeRefreshers = [];
     const biomeRoot = loadedMap.root;
     const syncBiomeState = () => {
@@ -2907,6 +3059,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     makeBiomeSlider('Roughness', 'roughness', 0, 1, 0.01, f2);
     makeBiomeSlider('Normal strength', 'normalScale', 0, 3, 0.05, f2);
     makeBiomeSlider('Displacement', 'displacementScale', 0, 2, 0.01, f2);
+    if (loadedMap.root.userData.terrainTextureMode === 'splat') {
+      slider('terrainMacroStrength', 'Global noise/static', 0, 2, 0.01, f2, syncTerrainSplatGlobals);
+      slider('terrainMossStrength', 'Global moss amount', 0, 2, 0.01, f2, syncTerrainSplatGlobals);
+    }
     const resetBtn = document.createElement('button');
     resetBtn.textContent = 'Reset layer';
     resetBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
@@ -2930,7 +3086,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
   // ---- SP4c: post-processing controls (bloom + tonemap + grade) ----
   if (postFX) {
-    // Baseline-neutral defaults: tone 'none' (linear), no bloom, identity grade â€” looks
+    // Baseline-neutral defaults: tone 'none' (linear), no bloom, identity grade — looks
     // identical to ?post=off until you push a slider. Build the look from here.
     Object.assign(params, {
       postFX: true, postTone: 'none', postExposure: 1.0,
@@ -2963,7 +3119,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('postVignetteSoft', 'Vignette softness', 0.2, 3, 0.01, f2, applyGrade);
   }
 
-  // ---- SP4b: particle editor â€” design a field, Add to spawn it, manage the live list ----
+  // ---- SP4b: particle editor — design a field, Add to spawn it, manage the live list ----
   if (createParticleField) {
     const clone = p => ({ ...p, wind: [...p.wind], color: [...p.color] });
     const kindDefaults = k => ({ ...kindParams(k), kind: k, count: k === 'dust' ? 8000 : 4000, radius: 90 });
@@ -3022,7 +3178,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     }
     const refreshControls = () => refreshers.forEach(r => r());
 
-    // base species â€” resets the design to that species' look (then tweak from there)
+    // base species — resets the design to that species' look (then tweak from there)
     const kindRow = document.createElement('div'); kindRow.className = 'row';
     kindRow.innerHTML = '<span style="color:#c4ccd6">Base species</span>'; psec.appendChild(kindRow);
     const kindSel = document.createElement('select');
@@ -3053,16 +3209,16 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     pslider('Count', 500, 16000, 500, pfi, () => editor.count, v => editor.count = v, false);
     pslider('Radius', 20, 200, 5, pfi, () => editor.radius, v => editor.radius = v, false);
 
-    // Add â€” spawn a new field from the current design and select it for further edits.
+    // Add — spawn a new field from the current design and select it for further edits.
     const addBtn = document.createElement('button');
     addBtn.textContent = '+ Add particle field';
     addBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
     addBtn.addEventListener('click', () => selectEntry(addParticleField({ kind: editor.kind, params: clone(editor), count: editor.count, radius: editor.radius })));
     psec.appendChild(addBtn);
 
-    // Active-fields list: left-click on/off Â· right-click edit Â· double-click delete.
+    // Active-fields list: left-click on/off · right-click edit · double-click delete.
     const hint = document.createElement('div');
-    hint.textContent = 'click: on/off Â· right-click: edit Â· dbl-click: delete';
+    hint.textContent = 'click: on/off · right-click: edit · dbl-click: delete';
     hint.style.cssText = 'color:#5f6a78;font-size:10px;margin:2px 0 3px';
     psec.appendChild(hint);
     const listBox = document.createElement('div');
@@ -3186,7 +3342,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     clearBtn.addEventListener('click', () => { claudecraftCreatures.clearSpawnedMobs(); refreshCcStatus(); });
     msec.appendChild(clearBtn);
 
-    // TODO (nice-to-have): raycast click-to-remove a single mob. Deferred — the host
+    // TODO (nice-to-have): raycast click-to-remove a single mob. Deferred � the host
     // renders mobs as per-id GLB roots in claudecraftVisuals (not a pickable batch),
     // so a picker needs a mobId<->object map exposed from the visuals adapter first.
   }
@@ -3202,7 +3358,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       let queueToken = 0;
 
       // Uniform blade count per chunk. Density deliberately does NOT vary per chunk
-      // â€” that produced the visible square/line seams. Distance culling is now done
+      // — that produced the visible square/line seams. Distance culling is now done
       // per-blade in the grass shader (see currentFade/applyFade), keyed off true
       // camera distance so grass thins as a smooth ring with no chunk-aligned steps.
       function countForChunk(chunk, activeCount) {
@@ -3393,7 +3549,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     header('Grass');
     slider('grassRadius', 'Radius', 8, 600, 1, fi, () => cg.setRadius(params.grassRadius));
     slider('grassCullStart', 'Cull start', 0, 600, 1, fi, () => cg.setCullStart(params.grassCullStart));
-    slider('grassDensity', 'Density (blades/mÂ²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
+    slider('grassDensity', 'Density (blades/m²)', 0, 16, 0.05, f2, () => cg.setDensity(params.grassDensity));
     slider('grassMaxBlades', 'Max blades', 0, 2000000, 5000, v => (v / 1000).toFixed(0) + 'k', () => cg.setMaxBlades(params.grassMaxBlades));
     slider('grassBladeHeight', 'Blade height', 0.1, 4.0, 0.01, f2, () => cg.setBladeHeight(params.grassBladeHeight));
     slider('grassBladeWidth', 'Blade width', 0.1, 4.0, 0.01, f2, () => cg.setBladeWidth(params.grassBladeWidth));
@@ -3576,7 +3732,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     regeneratePlantsGPU(true);
     regenPlants = (rebuildExisting = false) => regeneratePlantsGPU(rebuildExisting);
     header('Plants');
-    slider('plantDensity', 'Density (plants/mÂ²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
+    slider('plantDensity', 'Density (plants/m²)', 0, 0.2, 0.005, v => v.toFixed(3), () => regeneratePlantsGPU(true));
     slider('plantCullRadius', 'Cull radius', 10, 300, 1, fi, () => plantsGPU.setCullRadius(params.plantCullRadius));
     slider('plantCullStart', 'Cull start (fade begins)', 0, 300, 1, fi, () => plantsGPU.setCullStart(params.plantCullStart));
     slider('plantClusterStrength', 'Clustering', 0, 1, 0.05, f2, () => regeneratePlantsGPU(true));
@@ -3594,9 +3750,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // stumps/mushrooms from deadfall.js -- both compose the SAME shared mossWeight() law the
   // terrain material now uses. Placement binds to the canonical `terrainHeight` and (on authored
   // maps) `loadedMap.surfaceField`; streaming mirrors the plants windowed-chunk pattern above.
-  const DRESSING_MODE = new URLSearchParams(location.search).get('dressing') || 'gpu';
+  // DRESSING_MODE itself is declared at true top-level (near GRASS_MODE/FOREST_MODE) so the
+  // perf CSV snapshot closure can read it too.
   if (DRESSING_MODE === 'gpu') {
-    const { createRockPalette, buildRockMaterial } = await import('./rocks.js?v=dressing-normal-6');
+    const { createRockPalette, buildRockMaterial } = await import('./rocks.js?v=dressing-lichen-color-8');
     const { rockPlacementRecords, boulderCirclesFromRecords } = await import('./rocks-placement.js?v=dressing-wire-1');
     const { createDeadfallPalette, buildDeadwoodMaterial, buildMushroomMaterial } = await import('./deadfall.js?v=dressing-tex-3');
     const { deadfallPlacementRecords, stumpCirclesFromRecords, logCirclesFromRecords } = await import('./deadfall-placement.js?v=dressing-wire-1');
@@ -3608,6 +3765,9 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       dressingRadiusChunks: 12,
       boulderDensity: 0.0018, screeDensity: 0.09, rockGateStart: 0.3, rockGateEnd: 0.6,
       boulderCullRadius: 300, screeCullRadius: 110,
+      rockTextureScale: 0.35, rockNormalStrength: 0.25, rockRoughnessFloor: 0.92,
+      rockMossAmount: 1.0, rockBrushScale: 0.6, rockLichenAmount: 0.7, rockLichenScale: 2.0,
+      rockLichenBrightness: 0.85, rockLichenWhiteness: 0.35,
       logDensity: 0.0016, stumpDensity: 0.0011, mushroomDensity: 0.06,
       deadfallCullRadius: 260, mushroomCullRadius: 130,
     });
@@ -3633,6 +3793,28 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       albedo: loadTex('./textures/ground/rock/color.jpg', true),
       normal: loadTex('./textures/ground/rock/normal.jpg', false),
       roughness: loadTex('./textures/ground/rock/roughness.jpg', false),
+    };
+    const rockMaterialUniforms = {
+      textureScale: uniform(params.rockTextureScale),
+      normalStrength: uniform(params.rockNormalStrength),
+      roughnessFloor: uniform(params.rockRoughnessFloor),
+      mossStrength: uniform(params.rockMossAmount),
+      brushScale: uniform(params.rockBrushScale),
+      lichenStrength: uniform(params.rockLichenAmount),
+      lichenScale: uniform(params.rockLichenScale),
+      lichenBrightness: uniform(params.rockLichenBrightness),
+      lichenWhiteness: uniform(params.rockLichenWhiteness),
+    };
+    const syncRockMaterialUniforms = () => {
+      rockMaterialUniforms.textureScale.value = params.rockTextureScale;
+      rockMaterialUniforms.normalStrength.value = params.rockNormalStrength;
+      rockMaterialUniforms.roughnessFloor.value = params.rockRoughnessFloor;
+      rockMaterialUniforms.mossStrength.value = params.rockMossAmount;
+      rockMaterialUniforms.brushScale.value = params.rockBrushScale;
+      rockMaterialUniforms.lichenStrength.value = params.rockLichenAmount;
+      rockMaterialUniforms.lichenScale.value = params.rockLichenScale;
+      rockMaterialUniforms.lichenBrightness.value = params.rockLichenBrightness;
+      rockMaterialUniforms.lichenWhiteness.value = params.rockLichenWhiteness;
     };
     const BARK_SET = 'Bark014_1K-JPG';
     const barkAlbedo = loadTex(`./textures/bark/${BARK_SET}/${BARK_SET}_Color.jpg`, true);
@@ -3662,7 +3844,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
           castShadow: !t.scree, // scree is too small/dense to justify shadow-map cost
           // S1: compose the triplanar detail normal ON TOP of the instance-rotated world
           // normal (nodes.nWorld); moisture rides the per-instance `extra` float (nodes.extra).
-          buildMaterial: (nodes) => buildRockMaterial({ textures: rockTextures, normalBase: nodes.nWorld, moistureNode: nodes.extra }),
+          buildMaterial: (nodes) => buildRockMaterial({
+            textures: rockTextures, normalBase: nodes.nWorld, moistureNode: nodes.extra,
+            ...rockMaterialUniforms,
+          }),
         });
       }
     }
@@ -3880,6 +4065,17 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('deadfallCullRadius', 'Log/stump range', 20, 700, 5, fi, () => setCull('deadwood', params.deadfallCullRadius));
     slider('mushroomCullRadius', 'Mushroom range', 20, 400, 5, fi, () => setCull('mushroom', params.mushroomCullRadius));
     slider('dressingRadiusChunks', 'Placement window (chunks)', 1, 40, 1, fi, () => regenerateDressingGPU(true));
+
+    header('Rock material');
+    slider('rockTextureScale', 'Texture scale', 0.05, 1.5, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockNormalStrength', 'Normal detail', 0, 1, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockRoughnessFloor', 'Roughness floor', 0, 1, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockMossAmount', 'Moss amount', 0, 2, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockBrushScale', 'Moss grain scale', 0.05, 2, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockLichenAmount', 'Lichen speckles', 0, 2, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockLichenScale', 'Lichen scale', 0.1, 5, 0.05, f2, syncRockMaterialUniforms);
+    slider('rockLichenBrightness', 'Lichen brightness', 0, 1.2, 0.01, f2, syncRockMaterialUniforms);
+    slider('rockLichenWhiteness', 'Lichen whiteness', 0, 1, 0.01, f2, syncRockMaterialUniforms);
   }
 
   function reflectionDetailMeshes() {
@@ -3919,6 +4115,51 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     scene.add(waterRef.surface);
     syncWaterChunks(true);
     rig.connect(waterRef, null);
+
+    // perf (2026-07-08 Wave 0, water-performance-design.md §1): apply URL-flag initial
+    // overrides via the runtime setters (never construction options), so omitting every
+    // ?water*= flag leaves createWaterSystem()'s own defaults (reflectRate=1, caustics on)
+    // completely untouched — this is what "flags don't change default rendering" means here.
+    if (WATER_URL_FLAGS.reflection === 'off') waterRef.setReflectionEnabled(false);
+    else if (WATER_URL_FLAGS.reflection === 'on') waterRef.setReflectionEnabled(true);
+    if (WATER_URL_FLAGS.reflectRate !== null) waterRef.setReflectRate(WATER_URL_FLAGS.reflectRate);
+    if (WATER_URL_FLAGS.reflectScale !== null) waterRef.setReflectionTuning({ reflectResolutionScale: WATER_URL_FLAGS.reflectScale });
+    if (WATER_URL_FLAGS.caustics === 'off') waterRef.setCausticsEnabled(false);
+    else if (WATER_URL_FLAGS.caustics === 'on') waterRef.setCausticsEnabled(true);
+    if (WATER_URL_FLAGS.causticRate !== null) waterRef.setCausticRate(WATER_URL_FLAGS.causticRate);
+    if (WATER_URL_FLAGS.causticRes !== null) waterRef.setCausticRes(WATER_URL_FLAGS.causticRes);
+    if (WATER_URL_FLAGS.quality !== null) waterRef.setQuality(WATER_URL_FLAGS.quality);
+
+    // Perf A/B panel: live runtime comparison controls for the water throttles. Initial slider
+    // position follows the URL flag when present, else the construction default (matches this
+    // task's "initial values come from the URL flags, or current defaults when absent" rule).
+    window.perfAB?.addToggle(
+      'Water reflection',
+      WATER_URL_FLAGS.reflection !== 'off',
+      (v) => waterRef.setReflectionEnabled(v),
+    );
+    window.perfAB?.addSlider(
+      'Reflect rate', WATER_URL_FLAGS.reflectRate ?? 1, 1, 4, 1,
+      (v) => waterRef.setReflectRate(v),
+    );
+    window.perfAB?.addSelect(
+      'Reflect scale', WATER_URL_FLAGS.reflectScale ?? 0.5, [0.25, 0.5, 0.75, 1],
+      (v) => waterRef.setReflectionTuning({ reflectResolutionScale: Number(v) }),
+    );
+    window.perfAB?.addToggle(
+      'Caustics',
+      WATER_URL_FLAGS.caustics !== 'off',
+      (v) => waterRef.setCausticsEnabled(v),
+    );
+    window.perfAB?.addSlider(
+      'Caustic rate', WATER_URL_FLAGS.causticRate ?? 1, 1, 8, 1,
+      (v) => waterRef.setCausticRate(v),
+    );
+    window.perfAB?.addSelect(
+      'Caustic res', WATER_URL_FLAGS.causticRes ?? 1024, [256, 512, 1024],
+      (v) => waterRef.setCausticRes(Number(v)),
+    );
+
     header('Water');
     slider('waterWaves', 'Wave strength', 0, 3, 0.01, f2, () => waterRef.setWaves(params.waterWaves));
     slider('caustics', 'Caustics', 0, 2, 0.01, f2, () => waterRef.setCaustic(params.caustics));
@@ -4037,7 +4278,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       skyRef.setCelestialType(params.primaryBody);
       applyCelestialLight();
     });
-    // All sky controls update IN PLACE â€” no rebuild/disposal (runtime rebuild races the
+    // All sky controls update IN PLACE — no rebuild/disposal (runtime rebuild races the
     // async WebGPU submit and crashes). Star size is omitted: WebGPU Points are 1px, so a
     // size slider would do nothing (sized stars need the Sprite+instancing path).
     slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS, 'SKY_PARAMS');
@@ -4046,7 +4287,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
   }
 }).catch(err => {
-  showError('trees.js could not load (' + err.message + '). Serve both files over http:// â€” e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
+  showError('trees.js could not load (' + err.message + '). Serve both files over http:// — e.g. run "python3 -m http.server" in the folder and open the localhost URL. The scene runs without trees.');
 });
 
 // ===================== camera orbit =====================
@@ -4090,13 +4331,13 @@ window.addEventListener('resize', () => {
   if (clusteredLightsRef) clusteredLightsRef.resize(renderer.domElement.width, renderer.domElement.height);
 });
 
-// ===================== FPS walk mode (analytic heightfield capsule collision â€” SP5a) =====================
+// ===================== FPS walk mode (analytic heightfield capsule collision — SP5a) =====================
 const STEPS_PER_FRAME = 5;
 
 playerCollider = new Capsule(
-  new THREE.Vector3(0, 0.35, 0),
-  new THREE.Vector3(0, 1.0,  0),
-  0.35
+  new THREE.Vector3(0, 0.3, 0),
+  new THREE.Vector3(0, 1.0, 0),
+  0.3
 );
 const playerVelocity = new THREE.Vector3();
 let playerOnFloor = false;
@@ -4105,15 +4346,16 @@ const _fpsForward = new THREE.Vector3();
 const _fpsSide = new THREE.Vector3();
 const _fpsDelta = new THREE.Vector3();
 
-// Tunable movement params â€” exposed via the debug panel below
+// Tunable movement params — exposed via the debug panel below
 const fp = {
-  speedStand:  10,   speedCrouch: 5,   speedProne:  2,
-  heightStand: 1.6,  heightCrouch: 0.6, heightProne: 0.1,
+  // Movement speeds set to match the procedural-body preview tuning (walk 2.05, run 4.2).
+  speedStand:  2.05, speedCrouch: 1.0, speedProne:  0.5,
+  heightStand: 1.8,  heightCrouch: 0.6, heightProne: 0.1, // 1.8/0.3 capsule matches body-preview.html's tuning body
   jumpForce:   10,   gravity:      36,
-  runMultiplier: 1.8,
+  runMultiplier: 2.05,
   sensitivity: 1060,
   airStrafe:   5.5,  airDamp:      4,
-  friction:    68,   // ground decel exponent â€” higher = stops faster
+  friction:    68,   // ground decel exponent — higher = stops faster
 };
 
 capsuleH = fp.heightStand;
@@ -4145,13 +4387,13 @@ let lgChargeStart = null;
   // Title bar: minimise button + drag handle (mirrors the Scene controls panel).
   const bar = document.createElement('div'); bar.id = 'fps-bar';
   bar.innerHTML = '<span class="ttl">Walk controls</span>';
-  const minBtn = document.createElement('button'); minBtn.id = 'fps-min'; minBtn.textContent = 'â€“';
+  const minBtn = document.createElement('button'); minBtn.id = 'fps-min'; minBtn.textContent = '–';
   bar.appendChild(minBtn);
   const body = document.createElement('div'); body.id = 'fps-body';
   panel.appendChild(bar); panel.appendChild(body);
   let current = body;   // fpHeader() switches this to the active section's body
 
-  minBtn.addEventListener('click', () => { minBtn.textContent = panel.classList.toggle('min') ? '+' : 'â€“'; });
+  minBtn.addEventListener('click', () => { minBtn.textContent = panel.classList.toggle('min') ? '+' : '–'; });
 
   let drag = null;
   bar.addEventListener('pointerdown', e => {
@@ -4171,7 +4413,7 @@ let lgChargeStart = null;
   function fpHeader(text) {
     const sec = document.createElement('div'); sec.className = 'sec collapsed';
     const head = document.createElement('div'); head.className = 'sec-head';
-    head.innerHTML = '<span>' + text + '</span><span class="caret">â–¾</span>';
+    head.innerHTML = '<span>' + text + '</span><span class="caret">▾</span>';
     const secBody = document.createElement('div'); secBody.className = 'sec-body';
     head.addEventListener('click', () => sec.classList.toggle('collapsed'));
     sec.appendChild(head); sec.appendChild(secBody); body.appendChild(sec);
@@ -4431,7 +4673,7 @@ function localHudState() {
   const weapon = snap?.weapon ?? weaponIdFor(id);
   const weaponDef = getWeapon(weapon);
   const ammo = tool === LIGHT_TOOL_ID
-    ? { mag: '∞', reserve: '', magazineSize: null }
+    ? { mag: '8', reserve: '', magazineSize: null }
     : { mag: snap?.ammoMag ?? ensureAmmo(id, weapon).mag, reserve: snap?.ammoReserve ?? ensureAmmo(id, weapon).reserve, magazineSize: snap?.magazineSize ?? ensureAmmo(id, weapon).magazineSize };
   return {
     tool,
@@ -4474,7 +4716,7 @@ updateCombatHud = () => {
   combatHpFill.style.background = hpPct > 0.5 ? '#61d394' : hpPct > 0.25 ? '#e8c060' : '#e15f5f';
   combatHpText.textContent = `${Math.round(s.hp)} / ${Math.round(s.maxHp)} HP`;
   combatWeaponText.textContent = s.weaponName;
-  combatAmmoText.textContent = s.tool === LIGHT_TOOL_ID ? '∞' : `${s.ammo.mag} / ${s.ammo.reserve}`;
+  combatAmmoText.textContent = s.tool === LIGHT_TOOL_ID ? '8' : `${s.ammo.mag} / ${s.ammo.reserve}`;
   updateReticle();
 };
 
@@ -4534,6 +4776,7 @@ function selectLocalTool(toolId) {
   if (selected !== LIGHT_TOOL_ID) { setPlayerWeapon(id, selected); lgChargeStart = null; }
   viewHands?.setTool(selected);
   localWeaponView?.setTool(selected);
+  // Third-person weapon mount rebuild on switch is handled per-frame in the animate loop.
   updateCombatHud();
   updateReticle();
 }
@@ -4567,9 +4810,10 @@ environmentUi = createEnvironmentUi({
     remove: deleteSliderState,
   },
 });
-// Re-open the previously granted SFX folder handle (if the browser still allows it) so the
-// Audio tab shows loaded events on reload without a fresh folder pick.
+// Re-open previously granted audio folder handles (if the browser still allows them) so the
+// Audio tab shows loaded events/tracks on reload without a fresh folder pick.
 envAudio.restoreSfxFolder();
+envAudio.restoreMusicFolder();
 worldModels = createWorldModelPanel({
   scene,
   camera,
@@ -4591,6 +4835,27 @@ function createLocalWeaponViewModel(camera) {
   let recoilT = 0;
   let t = 0;
   let loadToken = 0;
+  // Weapon IK anchors are authored in raw-GLB space (weapon-anchors.json); bake them into the
+  // SAME normalized space the model renders in (post-normalizeObject) so resolveTargetRef �
+  // which only applies position+rotation, not scale � lands hands on the model. Exposed via
+  // getBakedAnchors() for the third-person body-held weapon / arm IK.
+  let rawAnchorData = null;
+  const anchorsReady = fetch('./weapon-anchors.json', { cache: 'no-store' }).then(r => r.json()).then(d => { rawAnchorData = d; }).catch(() => {});
+  const bakedAnchors = new Map();
+  function bakeAnchorsFor(weaponId, normalizedTemplate) {
+    if (!rawAnchorData || !rawAnchorData[weaponId] || !rawAnchorData[weaponId].ikAnchors) return;
+    normalizedTemplate.updateMatrixWorld(true);
+    const m = normalizedTemplate.matrixWorld.clone();
+    const rot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(m));
+    const raw = rawAnchorData[weaponId].ikAnchors;
+    const out = {};
+    for (const k in raw) {
+      const p = new THREE.Vector3(raw[k].p[0], raw[k].p[1], raw[k].p[2]).applyMatrix4(m);
+      const q = rot.clone().multiply(new THREE.Quaternion(...(raw[k].q || [0, 0, 0, 1])));
+      out[k] = { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+    }
+    bakedAnchors.set(weaponId, out);
+  }
   const fallbackMat = new THREE.MeshBasicMaterial({ color: 0x343a42, depthTest: true, depthWrite: true });
   const fallbackDarkMat = new THREE.MeshBasicMaterial({ color: 0x0b0f13, depthTest: true, depthWrite: true });
   const fallbackLensMat = new THREE.MeshBasicMaterial({ color: 0x087391, depthTest: true, depthWrite: true });
@@ -4687,6 +4952,8 @@ function createLocalWeaponViewModel(camera) {
         const gltf = await loader.loadAsync(weapon.model);
         template = gltf.scene;
         normalizeObject(template, toolId);
+        await anchorsReady;
+        bakeAnchorsFor(toolId, template);
         template.traverse(o => {
           if (o.isMesh) {
             o.frustumCulled = false;
@@ -4719,6 +4986,7 @@ function createLocalWeaponViewModel(camera) {
     refresh() { applyToolTransform(0, 0); },
     recoil() { recoilT = 0.16; },
     update(dt, { speed = 0 } = {}) { applyToolTransform(dt, speed); },
+    getBakedAnchors(weaponId) { return bakedAnchors.get(weaponId) || null; },
     destroy() { clearCurrent(); camera.remove(group); },
   };
 }
@@ -4729,6 +4997,175 @@ function createLocalWeaponViewModel(camera) {
 scene.add(camera);
 viewHands = createViewHands(camera, THREE);
 localWeaponView = createLocalWeaponViewModel(camera);
+
+// ---- Local procedural body (Wave 2, feature-flagged, default OFF). 'fps-legs' renders the
+// player's own lower body while in FPS (look down to see your legs). Toggle with the B key.
+// Full third-person needs a follow camera � a later increment. ----
+// Local procedural body. B cycles: off -> third-person (full body, chase cam) -> fps-legs -> off.
+let localBodyMode = 'off'; // 'off' | 'third-person' | 'fps-legs'
+let localBody = null;
+let localBodyThird = false;
+const _lbPos = new THREE.Vector3(), _lbVel = new THREE.Vector3(), _lbFwd = new THREE.Vector3();
+// Smoothed crouch/prone weights (player-procedural-body.js consumes state.crouch/state.prone
+// raw each frame with no internal easing), so stance-key toggles (instant) are eased here over
+// ~0.2s to avoid a snap when C/Z are pressed. See specs/2026-07-07-procedural-prone-stance-design.md.
+let lbCrouchW = 0, lbProneW = 0;
+// On-screen debug readout for the local body (so we can see pos/speed/foot-stepping without F12).
+const lbDebug = document.createElement('div');
+lbDebug.style.cssText = 'position:fixed;top:8px;right:8px;z-index:99999;background:rgba(0,0,0,0.72);color:#8fd0a8;font:12px ui-monospace,monospace;padding:6px 9px;border-radius:6px;pointer-events:none;display:none;white-space:pre;';
+document.body.appendChild(lbDebug);
+// Third-person body-held weapon mount (Contract 4/5, docs/subsystems/procedural-body-weapon-contracts.md
+// "Third-person weapon holds"). Lazy-built on entering third-person mode; rebuilt on weapon switch.
+// Only weapons with a tuned thirdPersonHold mount (others stay hidden).
+let lbWeaponMount = null; // { weaponRig, weaponAdjust, weaponFrame, weaponView, controller, weaponId, ready, def }
+let lbWeaponMountToken = 0; // guards against a stale async init resolving after teardown/mode change
+let lbWeaponMountRequestedId = null; // last weaponId an init was kicked for, prevents re-kicking every frame
+let lbWeaponDataPromise = null; // cached fetch of weapon-anchors.json + weapon-poses.json
+const lbWeaponModelCache = new Map(); // weaponId -> normalized template Group, cloned per mount
+
+function teardownLocalWeaponMount() {
+  lbWeaponMountToken++; // invalidate any in-flight init
+  lbWeaponMountRequestedId = null;
+  if (lbWeaponMount) {
+    scene.remove(lbWeaponMount.weaponRig);
+    lbWeaponMount.weaponRig.traverse((o) => {
+      if (o.isMesh) { o.geometry?.dispose?.(); }
+    });
+    lbWeaponMount = null;
+  }
+}
+
+async function loadLocalWeaponMountData() {
+  if (!lbWeaponDataPromise) {
+    lbWeaponDataPromise = Promise.all([
+      fetch('./weapon-anchors.json', { cache: 'no-store' }).then((r) => r.json()),
+      fetch('./weapon-poses.json', { cache: 'no-store' }).then((r) => r.json()),
+    ]).catch((err) => { console.warn('[localBody] weapon mount data load failed', err); return null; });
+  }
+  return lbWeaponDataPromise;
+}
+
+// Copy of createLocalWeaponViewModel's normalizeObject (axis-align longest dim, scale so the
+// longest dim == target, recenter) — duplicated (rather than reused from the closured FPS
+// viewmodel factory) because it also needs to return the applied matrix so anchors can be baked
+// into the same normalized space, same pattern as body-preview.html's normalizeObject.
+const _lbBox = new THREE.Box3(), _lbSize = new THREE.Vector3();
+function normalizeWeaponModel(obj, target) {
+  obj.updateMatrixWorld(true); _lbBox.setFromObject(obj); _lbBox.getSize(_lbSize);
+  if (_lbSize.x >= _lbSize.y && _lbSize.x >= _lbSize.z) obj.rotation.y = Math.PI * 0.5;
+  else if (_lbSize.y >= _lbSize.x && _lbSize.y >= _lbSize.z) obj.rotation.x = Math.PI * 0.5;
+  obj.updateMatrixWorld(true); _lbBox.setFromObject(obj); _lbBox.getSize(_lbSize);
+  const longest = Math.max(_lbSize.x, _lbSize.y, _lbSize.z, 1e-6);
+  obj.scale.multiplyScalar(target / longest);
+  obj.updateMatrixWorld(true); _lbBox.setFromObject(obj);
+  obj.position.sub(_lbBox.getCenter(new THREE.Vector3()));
+  obj.updateMatrixWorld(true);
+  return obj.matrixWorld.clone();
+}
+function bakeWeaponAnchors(rawAnchors, normMatrix) {
+  const rot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(normMatrix));
+  const out = {};
+  for (const k in rawAnchors) {
+    const p = new THREE.Vector3(...rawAnchors[k].p).applyMatrix4(normMatrix);
+    const q = rot.clone().multiply(new THREE.Quaternion(...(rawAnchors[k].q || [0, 0, 0, 1])));
+    out[k] = { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+  }
+  return out;
+}
+
+// Fire-and-forget: builds the mount for `weaponId` against `bodyRef` (the localBody instance
+// alive at call time). Guards every await with a token check so a stale init can't clobber a
+// newer mount or attach to a destroyed body.
+async function initLocalWeaponMount(weaponId, bodyRef) {
+  const def = getWeapon(weaponId);
+  if (!def || !def.thirdPersonHold) return; // only weapons with a tuned third-person hold mount
+  const token = ++lbWeaponMountToken;
+  const data = await loadLocalWeaponMountData();
+  if (!data || token !== lbWeaponMountToken || localBody !== bodyRef || !localBodyThird) return;
+  const [anchorData, poseData] = data;
+  const rawAnchors = anchorData?.[weaponId]?.ikAnchors;
+  if (!rawAnchors) { console.warn('[localBody] no weapon anchors for', weaponId, '- mount skipped'); return; }
+
+  const weaponRig = new THREE.Group();
+  const weaponAdjust = new THREE.Group();
+  weaponRig.add(weaponAdjust);
+  const weaponFrame = new THREE.Group();
+  weaponFrame.rotation.y = Math.PI;
+  weaponAdjust.add(weaponFrame);
+  const weaponView = new THREE.Group();
+  weaponFrame.add(weaponView);
+
+  let template = lbWeaponModelCache.get(weaponId);
+  if (!template) {
+    try {
+      const gltf = await new GLTFLoader().loadAsync(def.model);
+      if (token !== lbWeaponMountToken || localBody !== bodyRef || !localBodyThird) return;
+      template = gltf.scene;
+      normalizeWeaponModel(template, 0.62); // 0.62 = body-preview.html's normalization target
+      lbWeaponModelCache.set(weaponId, template);
+    } catch (err) {
+      console.warn('[localBody] failed to load third-person weapon model', weaponId, err);
+      return;
+    }
+  }
+  const model = template.clone(true); // cached template already normalized, just clone per mount
+  model.updateMatrixWorld(true);
+  const normMatrix = model.matrixWorld.clone();
+  const bakedAnchors = bakeWeaponAnchors(rawAnchors, normMatrix);
+  model.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
+  weaponView.add(model);
+  scene.add(weaponRig);
+
+  function getWeaponDef(id) {
+    if (id !== weaponId) return {};
+    return {
+      id,
+      recoil: def.recoil ?? 0.6,
+      ikAnchors: bakedAnchors,
+      weaponPoses: poseData?.weaponPoses || {},
+      reloadSequence: (poseData?.reloadSequence && poseData.reloadSequence[id]) || null,
+    };
+  }
+  const controller = createWeaponPoseController({ THREE, body: bodyRef, weaponView, getWeaponDef });
+  controller.setWeapon(weaponId);
+
+  lbWeaponMount = { weaponRig, weaponAdjust, weaponFrame, weaponView, controller, weaponId, def, ready: true };
+  if (lbWeaponMountRequestedId === weaponId) lbWeaponMountRequestedId = null;
+}
+
+let createWeaponPoseController = null; // resolved by the lazy import below
+function ensureWeaponPoseController() { // lazy-loads weapon-pose-controller.js once
+  return createWeaponPoseController ? Promise.resolve() : import('./weapon-pose-controller.js').then((m) => { createWeaponPoseController = m.createWeaponPoseController; });
+}
+function setLocalBodyMode(m) {
+  localBodyMode = m;
+  localBodyThird = (m === 'third-person');
+  if (localBody) { localBody.destroy(); localBody = null; }
+  teardownLocalWeaponMount();
+  if (m !== 'off') {
+    const bodyMode = localBodyThird ? 'local-third-person' : 'local-lower-body';
+    localBody = createProceduralPlayerBody({ THREE, scene, terrainHeight, mode: bodyMode, style: {}, adaptGaitToSpeed: true });
+    localBody.setVisible(true);
+  }
+  if (localBodyThird && localBody) {
+    const bodyRef = localBody;
+    const weaponId = weaponIdFor(localPlayerId());
+    lbWeaponMountRequestedId = weaponId; // fire-and-forget below, never awaited here
+    ensureWeaponPoseController()
+      .then(() => { if (localBody === bodyRef && localBodyThird) return initLocalWeaponMount(weaponId, bodyRef); })
+      .catch((err) => console.warn('[localBody] weapon-pose-controller import failed', err));
+  }
+  // In third-person, hide the camera-attached FPS viewmodel so it doesn't fill the screen.
+  const showVM = fpsMode && !localBodyThird;
+  viewHands.setVisible(showVM);
+  localWeaponView?.setVisible(showVM);
+  console.log('[localBody] mode=', m, 'fpsMode=', fpsMode, 'playerInitialized=', playerInitialized);
+}
+addEventListener('keydown', (e) => {
+  if (e.code === 'KeyB' && !e.repeat) {
+    setLocalBodyMode(localBodyMode === 'off' ? 'third-person' : localBodyMode === 'third-person' ? 'fps-legs' : 'off');
+  }
+});
 function localPlayerId() { return mpRole === 'guest' ? (mpClientId || 'guest') : 'host'; }
 setPlayerTool(localPlayerId(), DEFAULT_GUN_ID);
 viewHands.setTool(toolIdFor(localPlayerId()));
@@ -4738,9 +5175,9 @@ viewHands.setTint(playerTintHSL(localPlayerId()));
 function resetPlayerPosition(resetLook = true) {
   const sx = 8, sz = 0;
   const spawnY = terrainHeight(sx, sz);
-  playerCollider.start.set(sx, spawnY + 0.35, sz);
-  playerCollider.end.set(sx,   spawnY + 0.35 + fp.heightStand, sz);
-  playerCollider.radius = 0.35;
+  playerCollider.start.set(sx, spawnY + 0.3, sz);
+  playerCollider.end.set(sx,   spawnY + 0.3 + fp.heightStand, sz);
+  playerCollider.radius = 0.3;
   playerVelocity.set(0, 0, 0);
   playerOnFloor = false;
   stance = 'stand';
@@ -5056,12 +5493,12 @@ function lgParamsPacket() {
     radius: lgClampNumber(lgParams.radius, 30, 0.1, 200),
   };
 }
-// Host/solo-local validated intent handler. Guests never call this directly â€”
+// Host/solo-local validated intent handler. Guests never call this directly —
 // they emit the same intent shape over the wire (mpSession.sendInput) and the
 // host applies it here via the mp:guest_input 'entity_intent' branch. Params
 // are re-normalized (not trusted from the wire) via entity-types/light.js's
-// normalizeParamsPacket, which entityRegistry.create('light'|'projectile', â€¦)
-// also applies internally â€” double-normalizing is idempotent and cheap.
+// normalizeParamsPacket, which entityRegistry.create('light'|'projectile', …)
+// also applies internally — double-normalizing is idempotent and cheap.
 function applyLightIntent(intent, ownerId) {
   if (!intent || typeof intent !== 'object') return null;
   const now = performance.now() / 1000;
@@ -5118,7 +5555,7 @@ function applyFPSControls(deltaTime) {
   _fpsSide.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
 
   if (playerOnFloor) {
-    // Direct velocity set â€” responsive, no momentum build-up fighting damping
+    // Direct velocity set — responsive, no momentum build-up fighting damping
     const running = stance === 'stand' && (fpsKeys['ShiftLeft'] || fpsKeys['ShiftRight']);
     const speed = fp['speed' + stance[0].toUpperCase() + stance.slice(1)] * (running ? fp.runMultiplier : 1);
     let mx = 0, mz = 0;
@@ -5199,7 +5636,7 @@ function updateFPSPlayer(deltaTime) {
 }
 
 function lgUpdateLights(dt, t) {
-  // Guest never ticks the registry (host-authoritative) â€” it renders straight
+  // Guest never ticks the registry (host-authoritative) — it renders straight
   // off the interpolated wire upserts synced to the binder in the guest
   // session's onState callback (see mpSession = createGuestSession(...)).
   if (mpRole === 'guest') return;
@@ -5232,7 +5669,7 @@ async function resolveFrameTimestamps() {
 async function animate() {
   // setAnimationLoop does NOT await this async callback. If a frame's compute/render work
   // outlasts the vsync interval, the loop re-enters animate() concurrently and the two
-  // overlapping submits recycle each other's command/internal buffers â†’ WebGPU
+  // overlapping submits recycle each other's command/internal buffers → WebGPU
   // "Buffer used in submit while destroyed" (worst at night/look-up, the heaviest sky
   // frames). Serialize: drop any vsync that arrives while a frame is still in flight.
   if (_frameBusy) { frameProfiler.markDropped(); return; }
@@ -5303,6 +5740,101 @@ async function animate() {
   syncMultiplayerPlayer(now);
   updateMultiplayerFinder();
   updateCombatHud();
+  if (localBodyMode !== 'off' && localBody) {
+    if (fpsMode && playerInitialized) {
+      const lbState = getLocalPlayerState('host');
+      if (lbState) {
+        // Gait is speed-adaptive (adaptGaitToSpeed:true): the body derives pelvis/stride/lift/
+        // cadence from its own velocity via the baked speed->gait model, blending walk..run
+        // continuously � no manual profile switch needed here.
+        _lbPos.set(lbState.p[0], lbState.p[1], lbState.p[2]);
+        _lbVel.set(playerVelocity.x, 0, playerVelocity.z);
+        // Stance -> body {crouch, prone} (0..1 each). The rig squashes the vertical stack for
+        // crouch and lays the body horizontal + crawls for prone (see proneCfg/crouchCfg in
+        // player-procedural-body.js). Stance toggles (C/Z) are instant, so ease the weights here
+        // over ~0.2s since the body consumes state.crouch/state.prone raw each frame.
+        const lbCrouchTarget = stance === 'crouch' ? 0.7 : 0;
+        const lbProneTarget = stance === 'prone' ? 1 : 0;
+        const lbEase = Math.min(1, rawDt / 0.2);
+        lbCrouchW += (lbCrouchTarget - lbCrouchW) * lbEase;
+        lbProneW += (lbProneTarget - lbProneW) * lbEase;
+        // heightStand, not lbState.h — the stance-lerped capsule would double-squash the crouch.
+        localBody.update(rawDt, {
+          id: 'local', position: _lbPos, yaw: camera.rotation.y, aimPitch: camera.rotation.x,
+          height: fp.heightStand, radius: lbState.r, velocity: _lbVel, onFloor: playerOnFloor,
+          crouch: lbCrouchW, prone: lbProneW, alive: true, weapon: lbState.weapon, tool: lbState.tool,
+        });
+        localBody.setVisible(true);
+        // Third-person chase cam: pull the camera back+up along its own forward so the body is
+        // in view. Movement forward still uses camera yaw, so WASD walks the body away from you.
+        if (localBodyThird) {
+          camera.getWorldDirection(_lbFwd);
+          const eye = playerCollider.end, dist = 3.6;
+          camera.position.set(eye.x - _lbFwd.x * dist, eye.y + 1.0 - _lbFwd.y * dist, eye.z - _lbFwd.z * dist);
+        }
+        // Body-held weapon mount (visual only — see docs/subsystems/procedural-body-weapon-contracts.md
+        // "Third-person weapon holds"). Rebuilds on weapon switch; only for weapons with a tuned thirdPersonHold.
+        {
+          const mountStale = lbWeaponMount && lbWeaponMount.ready && lbWeaponMount.weaponId !== lbState.weapon;
+          const needsFreshMount = !lbWeaponMount && getWeapon(lbState.weapon)?.thirdPersonHold;
+          if ((mountStale || needsFreshMount) && lbWeaponMountRequestedId !== lbState.weapon) {
+            if (mountStale) teardownLocalWeaponMount(); // clears lbWeaponMountRequestedId, so set it after
+            lbWeaponMountRequestedId = lbState.weapon;
+            const bodyRef = localBody, wantWeapon = lbState.weapon;
+            ensureWeaponPoseController()
+              .then(() => { if (localBody === bodyRef && localBodyThird) return initLocalWeaponMount(wantWeapon, bodyRef); })
+              .catch((err) => console.warn('[localBody] weapon-pose-controller import failed', err));
+          }
+        }
+        if (localBodyThird && lbWeaponMount && lbWeaponMount.ready && lbWeaponMount.weaponId === lbState.weapon) {
+          const { weaponRig, weaponAdjust, controller, def } = lbWeaponMount;
+          weaponRig.visible = true;
+          // Rig stays at terrain+1.5 in every stance, matching body-preview.html — the per-stance
+          // holds (thirdPersonHold/crouchHold/proneHold) carry the vertical drop themselves.
+          weaponRig.position.set(_lbPos.x, terrainHeight(_lbPos.x, _lbPos.z) + 1.5, _lbPos.z);
+          // The body rig faces yaw+PI (see player-procedural-body.js update()); the weapon mount
+          // must match that facing or the hold offset points 180deg behind the body.
+          weaponRig.rotation.set(0, camera.rotation.y + Math.PI, 0);
+          const stand = def.thirdPersonHold, crouchH = def.crouchHold || stand, prone = def.proneHold || stand;
+          // lbCrouchW eases to 0.7 (the preview's crouch body weight); normalize so the crouch hold applies fully.
+          const cw = Math.min(1, lbCrouchW / 0.7), pw = lbProneW;
+          const holdLerp = (a, b, c, i) => { const s = a[i] + (b[i] - a[i]) * cw; return s + (c[i] - s) * pw; };
+          weaponAdjust.position.set(
+            holdLerp(stand.position, crouchH.position, prone.position, 0),
+            holdLerp(stand.position, crouchH.position, prone.position, 1),
+            holdLerp(stand.position, crouchH.position, prone.position, 2),
+          );
+          weaponAdjust.rotation.set(
+            holdLerp(stand.rotation, crouchH.rotation, prone.rotation, 0),
+            holdLerp(stand.rotation, crouchH.rotation, prone.rotation, 1),
+            holdLerp(stand.rotation, crouchH.rotation, prone.rotation, 2),
+          );
+          const sStand = stand.scale ?? 1, sCrouch = crouchH.scale ?? sStand, sProne = prone.scale ?? sStand;
+          const sMid = sStand + (sCrouch - sStand) * cw;
+          weaponAdjust.scale.setScalar(sMid + (sProne - sMid) * pw);
+          weaponRig.updateMatrixWorld(true);
+          controller.setAiming(0);
+          controller.update(rawDt, {});
+        } else if (lbWeaponMount) {
+          lbWeaponMount.weaponRig.visible = false;
+        }
+        const lf = localBody.gait?.feet?.left, rf = localBody.gait?.feet?.right;
+        lbDebug.style.display = 'block';
+        lbDebug.textContent =
+          `pos  ${_lbPos.x.toFixed(2)}, ${_lbPos.z.toFixed(2)}\n` +
+          `spd  ${Math.hypot(_lbVel.x, _lbVel.z).toFixed(2)} m/s\n` +
+          `Lfoot ${lf ? lf.current.z.toFixed(2) : '?'} ${lf && lf.stepping ? 'STEP' : 'plant'}\n` +
+          `Rfoot ${rf ? rf.current.z.toFixed(2) : '?'} ${rf && rf.stepping ? 'STEP' : 'plant'}`;
+      }
+    } else {
+      localBody.setVisible(false);
+      if (lbWeaponMount) lbWeaponMount.weaponRig.visible = false;
+      lbDebug.style.display = 'none';
+    }
+  } else {
+    if (lbWeaponMount) lbWeaponMount.weaponRig.visible = false;
+    lbDebug.style.display = 'none';
+  }
   mpGhostRenderer?.tick(now);
   });
   frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
@@ -5324,12 +5856,12 @@ async function animate() {
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
   if (grassRef) await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
-  // SP6: GPU forest cullâ†’indirect compute, awaited before draw (like grass/cdlod).
+  // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
   if (forestGPURef) await frameProfiler.timeAsync('forestGpu', () => forestGPURef.update());
   if (plantsGPURef) await frameProfiler.timeAsync('plantsGpu', () => plantsGPURef.update());
   if (dressingGPURef) await frameProfiler.timeAsync('dressingGpu', () => dressingGPURef.update());
-  // SP3: CDLOD selectâ†’indirect compute, awaited like grass so the indirect instanceCount is
-  // written before this frame's draw (unawaited compute races the draw â†’ terrain flicker).
+  // SP3: CDLOD select→indirect compute, awaited like grass so the indirect instanceCount is
+  // written before this frame's draw (unawaited compute races the draw → terrain flicker).
   if (cdlodRef) await frameProfiler.timeAsync('cdlodGpu', () => cdlodRef.update());
   // Light gun: update physics/fade/expiry, flush to GPU buffer before cull pass
   lgUpdateLights(rawDt, now / 1000);
@@ -5356,7 +5888,7 @@ async function animate() {
     computeFrameCalls: renderer.info.compute.frameCalls,
   };
   await frameProfiler.timeAsync('timestampResolve', () => resolveFrameTimestamps());
-  // Drain queued sky disposals here â€” after this frame's submit and inside the frame guard,
+  // Drain queued sky disposals here — after this frame's submit and inside the frame guard,
   // so the detached objects are never freed while a submit still references them.
   if (skyRef) skyRef.flushDisposals();
   // CPU frame time = sim + scene update + command encoding/submit (render() returns
@@ -5367,7 +5899,7 @@ async function animate() {
   updatePerfPanel(frameEnd);
   } finally { _frameBusy = false; }
 }
-setStatus('Loading world systemsâ€¦');
+setStatus('Loading world systems…');
 await nextPaint();
 await _forestPromise;
 await Promise.all([_grassPromise, _waterPromise, _cloudsPromise, _skyPromise]);

@@ -500,6 +500,13 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
   const { Fn, texture, attribute, mix, normalMap, vec2, vec3, vec4, float, int, clamp, sin, fract, dot, abs, positionWorld, normalWorld, uniform } = tsl;
   const { albedoArray, normalArray } = arrays;
   const mat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
+  const uniformNode = (v, fallback) => (
+    v && typeof v === 'object' && (v.isNode || Object.hasOwn(v, 'value'))
+      ? v
+      : uniform(Number.isFinite(Number(v)) ? Number(v) : fallback)
+  );
+  const uMacroStrength = uniformNode(uniforms?.macroStrength, 1);
+  const uMossStrength = uniformNode(uniforms?.mossStrength, 1);
 
   const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(12.9898, 78.233))).mul(43758.5453)));
   const wa = attribute('aSplatWA', 'vec4');
@@ -558,13 +565,13 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
 
   // Macro anti-tiling (Phase-5 hook, sampler-free): gentle world-space value break-up so the
   // repeat grid stops reading as tiles. Kept subtle; the texture-macro version lands in #5.
-  const macro = hash2(positionWorld.xz.mul(0.018)).mul(0.22).add(0.89);
+  const macro = hash2(positionWorld.xz.mul(0.018)).sub(0.5).mul(0.22).mul(uMacroStrength).add(1.0);
   col = col.mul(macro);
 
   // Moss/lichen dressing (Phase-3 hook): the shared mossWeight() law composed onto the blended
   // surface. cavity = 1 - sampled AO (sheltered nooks collect moss); brush = hash break-up.
   const moss = mossTint(dress.x, dress.y, clamp(float(1).sub(aoAcc), 0, 1),
-    hash2(positionWorld.xz.mul(0.5)), uniforms?.mossStrength);
+    hash2(positionWorld.xz.mul(0.5)), uMossStrength);
   const mossAlbedo = vec3(0.24, 0.34, 0.16);
   col = mix(col, mossAlbedo, moss);
   rough = mix(rough, float(0.95), moss);
@@ -572,7 +579,10 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms) {
   mat.colorNode = vec4(clamp(col, 0, 1), 1);
   mat.roughnessNode = clamp(rough, 0.04, 1);
   mat.normalNode = normalMap(vec4(clamp(nrm, 0, 1), 1));
-  mat.userData.splatUniforms = { tile: uTile, rough: uRough, nrm: uNrm };
+  mat.userData.splatUniforms = {
+    tile: uTile, rough: uRough, nrm: uNrm,
+    macroStrength: uMacroStrength, mossStrength: uMossStrength,
+  };
   return mat;
 }
 
@@ -598,6 +608,15 @@ export async function applyTerrainTextures(root, mapData, meta = {}, options = {
     biomeNames: meta.biomeNames || mapData.biomeNames || [],
   };
   root.updateMatrixWorld(true);
+  // perf (2026-07-08 Wave 0, terrain-dressing-performance-design.md Milestone 0): diagnostic-
+  // only flat material — skips the authored splat/legacy build entirely and assigns ONE cheap
+  // MeshStandardNodeMaterial to every terrain mesh. Never the default path (only reachable via
+  // ?terrainTexture=flat in the viewer); exists purely to isolate "how much of the frame cost is
+  // the splat shader itself" during A/B captures.
+  if (options.flatMaterial) {
+    const result = await applyFlatTerrain(root, fullMeta);
+    if (result) return result;
+  }
   // Phase 2: the single blended node material is the default. It never goes black — if array
   // packing or node-material build throws (older adapter, missing WebGPU), fall back to the
   // legacy per-triangle multi-material so terrain always renders. `legacySplit:true` forces it.
@@ -610,6 +629,41 @@ export async function applyTerrainTextures(root, mapData, meta = {}, options = {
     }
   }
   return applyLegacyTerrain(root, mapData, fullMeta, options);
+}
+
+// Diagnostic-only (?terrainTexture=flat): one flat-color MeshStandardNodeMaterial, no texture
+// samplers, no vertex classification pass beyond finding meshes to assign it to. Falls through
+// to the normal splat/legacy path (returns null) if the WebGPU node-material module is
+// unavailable, same fallback contract as applySplatTerrain.
+async function applyFlatTerrain(root, meta) {
+  let webgpu;
+  try {
+    webgpu = await import('three/webgpu');
+  } catch (err) {
+    console.warn('[terrain-textures] flat material unavailable, falling back:', err?.message || err);
+    return null;
+  }
+  const material = new webgpu.MeshStandardNodeMaterial({
+    color: new THREE.Color(FALLBACK_COLORS.grass),
+    roughness: 0.95,
+    metalness: 0.0,
+  });
+  let texturedMeshes = 0;
+  root.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
+    obj.receiveShadow = true;
+    obj.castShadow = false;
+    obj.material = material;
+    texturedMeshes++;
+  });
+  if (!texturedMeshes) return null;
+  root.userData.terrainTextureMode = 'flat';
+  root.userData.terrainSplat = null;
+  root.userData.terrainTextureMaterials = material;
+  root.userData.terrainTextureSettings = {};
+  root.userData.terrainTextureMeshes = texturedMeshes;
+  root.userData.terrainTextureReport = { mode: 'flat', activeLayers: [] };
+  return { material, texturedMeshes, mode: 'flat', activeLayers: [] };
 }
 
 // New default: one DataArrayTexture-backed MeshStandardNodeMaterial blending the active layer
@@ -652,6 +706,11 @@ async function applySplatTerrain(root, mapData, meta, options) {
       roughness: 1, defaultRoughness: 1, normalScale: 1, displacementScale: 0,
     }];
   }));
+  const uni = material.userData.splatUniforms || {};
+  root.userData.terrainTextureGlobals = {
+    macroStrength: Number(uni.macroStrength?.value ?? 1),
+    mossStrength: Number(uni.mossStrength?.value ?? 1),
+  };
   root.userData.terrainTextureMeshes = texturedMeshes;
   root.userData.terrainTextureReport = { mode: 'splat', activeLayers: activeNames };
   return { material, texturedMeshes, mode: 'splat', activeLayers: activeNames };
@@ -715,6 +774,24 @@ function applyLayerMaterialSettings(material, settings) {
   material.displacementScale = settings.displacementScale;
   material.displacementBias = 0;
   material.needsUpdate = true;
+}
+
+export function updateTerrainSplatGlobals(root, changes = {}) {
+  const uni = root?.userData?.terrainSplat?.material?.userData?.splatUniforms;
+  if (!uni) return null;
+  const globals = root.userData.terrainTextureGlobals || (root.userData.terrainTextureGlobals = {
+    macroStrength: Number(uni.macroStrength?.value ?? 1),
+    mossStrength: Number(uni.mossStrength?.value ?? 1),
+  });
+  if (Number.isFinite(Number(changes.macroStrength))) {
+    globals.macroStrength = clamp(Number(changes.macroStrength), 0, 2);
+    if (uni.macroStrength) uni.macroStrength.value = globals.macroStrength;
+  }
+  if (Number.isFinite(Number(changes.mossStrength))) {
+    globals.mossStrength = clamp(Number(changes.mossStrength), 0, 2);
+    if (uni.mossStrength) uni.mossStrength.value = globals.mossStrength;
+  }
+  return { ...globals };
 }
 
 export function getTerrainTextureLayerNames(root) {

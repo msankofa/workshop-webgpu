@@ -63,6 +63,7 @@ const DEFAULTS = {
   caustic: 1.0,
   causticBedDepth: 3.0,     // reference bed plane sits this far below the water level
   causticRes: 1024,
+  causticRate: 1,           // perf: render the caustic pass every Nth frame (1 = every frame); see setCausticRate()
   buildBudgetMs: 1.5,
   maxBuildsPerFrame: 1,
   lodR0: 50,
@@ -465,9 +466,19 @@ export function createWaterSystem(options = {}) {
 
   // Gate the caustic render pass — reflection+refraction restored in 6.2 via TSL nodes;
   // caustics render pass remains gated here until checkpoint 6.3.
-  const CAUSTICS_ENABLED = true;
+  // perf (2026-07-08 Wave 0): CAUSTICS_ENABLED is now a mutable override behind
+  // setCausticsEnabled() instead of a compile-time constant, so a later wave (or the live
+  // Perf A/B panel) can flip it without touching this file again. Still defaults to `true` —
+  // no behavior change in this task.
+  let CAUSTICS_ENABLED = true;
   let causticStrength = Number(o.caustic) || 0;
   const causticRenderStats = { enabled: CAUSTICS_ENABLED && causticStrength > 0, passes: 0, lastMs: 0 };
+  // perf: every-Nth-frame caustic throttle, same seam as reflectEvery (setReflectRate).
+  // Defaults to 1 (render every frame the caustic pass would otherwise run) — no default
+  // behavior change in this task. setCausticRate() lets a later wave/perfAB slider throttle it.
+  let causticEvery = Math.max(1, Math.round(Number(o.causticRate) || 1));
+  let causticFrameCounter = -1;
+  let causticLastFrameId = null;
 
   // ---- TSL uniform handles for the surface node material ----
   const tsl_uTime       = uniform(0.0,                  'float');
@@ -561,7 +572,14 @@ export function createWaterSystem(options = {}) {
   // change at runtime via reflectorBase.resolutionScale = x, not just at construction time.
   const tsl_reflector = reflector({ resolutionScale: o.reflectResolutionScale });
   const reflectorBase = tsl_reflector.reflector;
-  let reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
+  // perf (2026-07-08 Wave 0): reflectionEnabled is the mix/brightness-derived gate ANDed with
+  // an explicit manual override (setReflectionEnabled, default true = no override) so a later
+  // wave/the Perf A/B panel can force reflection off without touching the mix/brightness
+  // sliders. Defaults preserve existing behavior exactly.
+  let reflectionManualEnabled = true;
+  const computeReflectionEnabled = () => reflectionManualEnabled
+    && (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
+  let reflectionEnabled = computeReflectionEnabled();
   const reflectionRenderStats = { enabled: reflectionEnabled, passes: 0, skipped: 0, excluded: 0, lastMs: 0 };
   const renderReflection = reflectorBase.updateBefore.bind(reflectorBase);
   // perf: frame-skip throttle. `reflectEvery` (set via setReflectRate(), declared below with
@@ -810,6 +828,20 @@ export function createWaterSystem(options = {}) {
       if (!causticRenderStats.enabled) {
         causticRenderStats.lastMs = 0;
         this.value = causticsTarget.texture;
+        return;
+      }
+      // perf: every-Nth-frame throttle (setCausticRate()), same frameId-transition-counting
+      // technique as the reflector's updateBefore wrapper (water.js:~630). On a skipped frame
+      // we return WITHOUT touching this.value, so the previous render target's texture stays
+      // bound — never a blank/black caustic texture. Default causticEvery=1 means every
+      // eligible frame renders, identical to pre-throttle behavior.
+      const fid = frame && frame.frameId;
+      if (fid === undefined || fid !== causticLastFrameId) {
+        causticLastFrameId = fid;
+        causticFrameCounter++;
+      }
+      if (causticFrameCounter % causticEvery !== 0) {
+        causticRenderStats.skipped = (causticRenderStats.skipped || 0) + 1;
         return;
       }
       const t0 = nowMs();
@@ -1105,7 +1137,7 @@ export function createWaterSystem(options = {}) {
     if (opts.reflectBrightness !== undefined) o.reflectBrightness = Number(opts.reflectBrightness) || 0;
     if (opts.reflectMix !== undefined) tsl_uReflectMix.value = o.reflectMix;
     if (opts.reflectBrightness !== undefined) tsl_uReflectBrightness.value = o.reflectBrightness;
-    reflectionEnabled = (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
+    reflectionEnabled = computeReflectionEnabled();
     reflectionRenderStats.enabled = reflectionEnabled;
     if (opts.depthScale !== undefined) tsl_uDepthScale.value = opts.depthScale;
     // perf: reflector render-target scale (1 = full res, 0.5 = half res per dimension).
@@ -1117,6 +1149,56 @@ export function createWaterSystem(options = {}) {
     }
     // perf: every-Nth-frame reflection throttle; same seam as setReflectRate().
     if (opts.reflectRate !== undefined) setReflectRate(opts.reflectRate);
+  }
+
+  // ---- perf (2026-07-08 Wave 0): pass-through setters for the terrain-dressing/water
+  // performance specs' URL flags + Perf A/B panel. Each is a thin wrapper around existing
+  // internal state (mirrors setReflectRate's shape) — none of them change the DEFAULT value
+  // that createWaterSystem() starts with; they only add a way to change it after construction.
+
+  // Explicit on/off override for the reflection pass, independent of reflectMix/brightness
+  // (which remain their own gate — this ANDs with them, it doesn't replace them). Default
+  // `true` = no override, matching pre-existing behavior.
+  function setReflectionEnabled(enabled) {
+    reflectionManualEnabled = !!enabled;
+    reflectionEnabled = computeReflectionEnabled();
+    reflectionRenderStats.enabled = reflectionEnabled;
+  }
+
+  // Explicit on/off override for the caustic pass, independent of causticStrength (which
+  // remains its own gate). Default `true` = no override.
+  function setCausticsEnabled(enabled) {
+    CAUSTICS_ENABLED = !!enabled;
+    causticRenderStats.enabled = CAUSTICS_ENABLED && causticStrength > 0 && causticGroup.children.length > 0;
+  }
+
+  // perf: throttles the caustic render to every `everyNFrames`th eligible frame, same
+  // frameId-transition-counting technique as setReflectRate(). Default 1 = every frame
+  // (current behavior).
+  function setCausticRate(everyNFrames) {
+    causticEvery = Math.max(1, Math.round(Number(everyNFrames) || 1));
+  }
+
+  // perf: resizes the fixed-resolution caustic render target at runtime. causticsTarget is a
+  // THREE.WebGLRenderTarget — .setSize() reallocates its backing texture, which is safe to call
+  // between frames (the CausticTextureNode always rebinds this.value = causticsTarget.texture
+  // after a real render). Default causticRes (1024, from DEFAULTS/options) is unchanged by
+  // this function existing — callers must invoke it explicitly to change resolution.
+  function setCausticRes(resolution) {
+    const res = Math.max(32, Math.round(Number(resolution) || o.causticRes));
+    if (res === causticsTarget.width && res === causticsTarget.height) return;
+    causticsTarget.setSize(res, res);
+    o.causticRes = res;
+  }
+
+  // perf: named quality presets are a STORED setting only in this task (Wave 0 scaffolding —
+  // see water-performance-design.md design section 4, deferred). No rendering path currently
+  // reads `waterQualityPreset`; it exists so ?waterQuality=low|medium|high and the Perf A/B
+  // panel have somewhere to write today, ahead of the later wave that makes low/medium/high
+  // actually change shader/throttle behavior.
+  let waterQualityPreset = 'high';
+  function setQuality(preset) {
+    if (preset === 'low' || preset === 'medium' || preset === 'high') waterQualityPreset = preset;
   }
 
   function setLightDir(v) {
@@ -1183,6 +1265,10 @@ export function createWaterSystem(options = {}) {
       reflectionLastMs: reflectionRenderStats.lastMs,
       reflectionResolutionScale: o.reflectResolutionScale,
       reflectionRate: reflectEvery,
+      causticSkipped: causticRenderStats.skipped || 0,
+      causticRate: causticEvery,
+      causticRes: causticsTarget.width,
+      qualityPreset: waterQualityPreset,
       ring0Tris: ringTris[0], ring1Tris: ringTris[1], ring2Tris: ringTris[2],
       ring0Verts: ringVerts[0], ring1Verts: ringVerts[1], ring2Verts: ringVerts[2],
       waterTriangles: ringTris[0] + ringTris[1] + ringTris[2],
@@ -1197,7 +1283,13 @@ export function createWaterSystem(options = {}) {
     };
   }
 
-  return { surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic, setReflectionTuning, setReflectRate, setLightDir, setLodDistances, getChunkCount, getStats, dispose };
+  return {
+    surface, version: WATER_VERSION, update, resize, regenerate, setWaves, setCaustic,
+    setReflectionTuning, setReflectRate, setLightDir, setLodDistances, getChunkCount, getStats,
+    dispose,
+    // perf (2026-07-08 Wave 0): pass-through setters, see the block above setLightDir.
+    setReflectionEnabled, setCausticsEnabled, setCausticRate, setCausticRes, setQuality,
+  };
 }
 
 export default createWaterSystem;

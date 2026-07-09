@@ -51,8 +51,10 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   `[0, 1]`: `rockUpness` (pre-squash sphere-normal Y — "how up-facing was this point before we
   flattened the boulder", the fable5 `RockBuilder.ts` idea) and `rockCavity` (how far below the
   mean wave displacement a vertex sits — dips read as concave/sheltered).
-- `export function buildRockMaterial({ textures = {}, moistureNode, normalBase, brushScale =
-  0.6 })` — a `MeshStandardNodeMaterial` with `shadowSide = THREE.BackSide`. `textures:
+- `export function buildRockMaterial({ textures = {}, moistureNode, normalBase, textureScale =
+  0.35, brushScale = 0.6, normalStrength = 0.25, roughnessFloor = 0.92, mossStrength = 1.0,
+  lichenStrength = 0.7, lichenScale = 2.0, lichenBrightness = 0.85, lichenWhiteness = 0.35 })`
+  — a `MeshStandardNodeMaterial` with `shadowSide = THREE.BackSide`. `textures:
   { albedo, normal, roughness }` (each an optional `THREE.Texture`) drive triplanar
   (`triplanarTexture` from `three/tsl`) albedo/roughness/normal at `scale = 0.35`; omitted
   textures fall back to a flat rock-grey albedo. `moistureNode` is a TSL float node for
@@ -71,7 +73,11 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   while standing still — the observed "texture jitters a few times a second" bug). `roughnessFloor`
   (default **0.92**) clamps the authored roughness texture high so tiny low-roughness flecks cannot
   become bright/dark sparkle on sky-facing tops. The wiring layer also sets `anisotropy` on the
-  rock textures for the same reason. Dressing =
+  rock textures for the same reason. In the environment viewer these are live **Rock material**
+  sliders backed by TSL uniforms: texture scale, normal detail, roughness floor, moss amount,
+  moss grain scale, lichen speckles, lichen scale, lichen brightness, and lichen whiteness.
+  `lichenWhiteness=0` pushes speckles toward olive/stone; `1` restores the original pale
+  yellow-grey lichen. Dressing =
   `mossWeight(moistureNode,
   rockUpness, rockCavity, brushNoise)` (moss/lichen albedo mix + roughness bump) + a sparser
   higher-frequency lichen speckle gated to exposed rock (mid-high upness, low moisture) + dirt
@@ -148,6 +154,17 @@ a new generalized GPU instancing host (`dressing-gpu.js`) rather than forking
   → a flat `groups` array index) is the placement/wiring layer's job, not this host's.**
   Returns `{ meshes, setChunk, clearChunk, setChunks, setGroupCull(radius, { start, filter }),
   update() (async, runs the compute passes), stats: { draws, groups, instances }, dispose() }`.
+  `stats` (2026-07-08, perf-recovery Wave 0, terrain-dressing-performance-design.md Milestone 0):
+  `draws` is the number of groups with `visible=true` this rebuild (submitted draw calls),
+  `groups` is the total group count (`groups.length`, static for the life of the host), and
+  `instances` is the total CPU-side placed-record count across all groups (post-cap, pre-cull —
+  i.e. what was fed to the GPU cull kernel, not the post-cull survivor count, which the host
+  doesn't currently read back). These three counts were already exposed before this task; Wave 0
+  is what first wires them into the perf CSV (`environment-viewer.html`'s `perfLog.snapshot()`
+  reads `dressingGPURef.stats.{draws,groups,instances}` into the `dressingDraws`/`dressingGroups`/
+  `dressingInstances` columns, alongside a `dressingMode` column mirroring the `?dressing=` URL
+  flag — see `infra.md`'s CSV field list). No new fields were added to `stats` itself; this was a
+  pure consumption change on the viewer side.
   `setGroupCull` retunes cull radius/start live (they're GPU uniforms, so no rebuild — just marks
   the host dirty so the next `update()` re-runs the cull compute). `filter(spec, groupIndex) =>
   bool` scopes it to a class of groups; the `environment-viewer.html` wiring tags each group with

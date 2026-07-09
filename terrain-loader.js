@@ -111,7 +111,14 @@ function deriveTopSurfaceHeights(root, { resolution, worldX, worldZ, seaLevel, w
   return out;
 }
 
-export async function loadTerrainMap(mapKey, { scene } = {}) {
+// perf (2026-07-08 Wave 0, terrain-dressing-performance-design.md Milestone 0): `textureMode`
+// selects which applyTerrainTextures() path builds the authored map's ground material —
+// 'splat' (default, omit textureMode) is the current blended node material; 'legacy' forces
+// { legacySplit: true }; 'flat' forces { flatMaterial: true } (diagnostic-only, see
+// terrain-textures.js's applyFlatTerrain). Callers pass this straight from the
+// ?terrainTexture= URL flag; omitting it (or passing 'splat') is behavior-identical to before
+// this option existed.
+export async function loadTerrainMap(mapKey, { scene, textureMode } = {}) {
   const basePath = mapBasePath(mapKey);
   const [gltf, mapData] = await Promise.all([
     new Promise((resolve, reject) => new GLTFLoader().load(`maps/${mapKey}`, resolve, undefined, reject)),
@@ -147,6 +154,9 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
     worldZ,
     seaLevel: Number(mapData.seaLevel ?? 0),
     biomeNames,
+  }, {
+    legacySplit: textureMode === 'legacy',
+    flatMaterial: textureMode === 'flat',
   });
   if (!textureInfo) {
     terrainRoot.traverse((obj) => {
@@ -356,6 +366,11 @@ export async function loadTerrainMap(mapKey, { scene } = {}) {
     resolution,
     biomeNames,
     terrainTextureMeshes: textureInfo?.texturedMeshes ?? 0,
+    // perf CSV fields (terrain-dressing-performance-design.md Milestone 0): mode is 'splat'
+    // (default), 'legacy', or 'flat' (diagnostic); activeSplatLayers is only populated in
+    // splat mode (the number of layers the splat material actually blends, <= MAX_ACTIVE_LAYERS).
+    terrainTextureMode: textureInfo?.mode ?? 'none',
+    terrainActiveSplatLayers: textureInfo?.activeLayers?.length ?? 0,
     grassDensityGrid: densityGrid,
     heightAt(x, z) { return inBounds(x, z) ? bilinear(heights, x, z) : this.seaLevel; },
     biomeAt,
