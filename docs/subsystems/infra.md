@@ -316,52 +316,41 @@ into `research/stats/` by hand (the existing files there, e.g.
 `perf-2026-06-21T04-30-44-809Z-webgl.csv`, were all named this way manually). `perfLog` now
 saves itself.
 
-**Endpoint** (`serve.py`): `POST /api/save-stats?filename=<name>` — body is the raw CSV text.
-- `filename` is passed as a query param (not a header), matching the pattern used by
-  `?telemetryUrl=`-style params elsewhere in this codebase; kept simple since the name is
-  already fully computed client-side.
-- Server-side sanitization is strict and independent of client trust: the filename is reduced
-  to a basename (`os.path.basename`, `\` normalized to `/` first) and must match
-  `^perf-[A-Za-z0-9T:\-=&.]+\.csv$`; anything containing `..`, `/`, `\`, or not matching that
-  pattern gets **400** with an error body. This mirrors the existing `_safe_under_maps` /
-  `_SAFE_MAP_SEGMENT` pattern used by `/api/save-map`.
-- Target directory is `research/stats/` (created if missing). Never overwrites: if the sanitized
-  name already exists, a `-2`, `-3`, ... suffix is inserted before the `.csv` extension until a
-  free name is found.
-- On success: **200** with `{ ok: true, path: "research/stats/<final-name>.csv" }` (relative to
-  repo root, forward-slashed). On rejection: **400** with `{ ok: false, error: "..." }`.
-- Existing static-file serving and the `Cache-Control: no-store` `end_headers()` override are
-  untouched — `/api/save-stats` is routed alongside the pre-existing `/api/save-map` and the
-  `ROUTES` dict dispatch in `do_POST`, all still hitting the same JSON-response helper
-  (`_send_json`), so the no-cache header applies uniformly. No separate CORS headers were added:
-  the page that POSTs here is always served by this same `serve.py` instance (same-origin), and
-  no other server in this codebase sets CORS headers either, so there's nothing to be
-  "consistent with" beyond the existing no-store behavior.
+**Endpoint** (`serve.py`): `POST /api/save-stats?filename=<name>[&mode=append]` — body is raw
+CSV text.
+- Filename sanitization: reduced to a basename (`\` normalized to `/` first) and must match
+  `^perf-[A-Za-z0-9T:\-=&.]+\.csv$`; anything else (including `..`) gets **400**. Mirrors the
+  `_safe_under_maps` pattern used by `/api/save-map`. Target dir `research/stats/` (created if
+  missing).
+- Default mode never overwrites: an existing name gets a `-2`, `-3`, ... suffix.
+- `mode=append` (2026-07-09) appends the body to the named file, creating it if absent — no
+  collision suffix, so a session's incremental flushes all land in one file. Session filenames
+  are unique per recording (ms-precision timestamp), so appends can't collide across sessions.
+- On success: **200** `{ ok: true, path: "research/stats/<name>.csv" }`; on rejection: **400**
+  `{ ok: false, error: "..." }`.
 
-**Client (`environment-viewer.html`, `perfLog`)**:
-- `perfLog.buildFilename()` — `perf-<ISO timestamp>-<sanitized location.search>.csv`. The query
-  string has its leading `?` stripped and any character outside `[A-Za-z0-9=&-]` replaced with
-  `-`; omitted (along with its separator dash) when there's no query string. This matches the
-  convention already used in the manually-renamed files under `research/stats/`.
-- `perfLog.autoUpload()` — fetch-based POST, awaited from `setRecording(false)` once telemetry
-  has stopped, so pressing "rec" to stop a capture saves it immediately. No-ops below 5 samples
-  (`this.samples.length < 5`) or on an empty CSV. On success sets `perfLog.uploadStatus` to
-  `saved <path>` (the server's returned relative path); on any failure (fetch rejects, non-200,
-  endpoint doesn't exist because the page is served some other way) sets `uploadStatus` to
-  `save failed: <message>` and logs exactly one `console.warn` — the manual "CSV" download
-  button is completely unaffected either way and keeps working exactly as before.
-- `perfLog.beaconUpload()` — `navigator.sendBeacon`-based POST for cases where an awaited fetch
-  isn't reliable: wired to `window`'s `pagehide` and `beforeunload` events and to
-  `document`'s `visibilitychange` (fires when `document.visibilityState === 'hidden'`, which
-  also catches tab-switch/backgrounding that may never fire an unload event). Only fires while
-  `perfLog.recording` is still true, and only for >= 5 samples. `sendBeacon` gives no
-  success/failure callback, so `uploadStatus` is set optimistically (`saved <name> (beacon)`) or
-  left alone if the browser's queue call itself throws (logged via `console.warn`). Recording is
-  **not** stopped by these hooks — a tab hidden-and-shown-again keeps recording and just
-  re-sends the samples collected so far next time it goes hidden (or on the eventual real stop).
-- Upload status is surfaced in the perf panel's compact bottom-left control strip (id
-  `perf-log`, built inline in `environment-viewer.html`) as a new trailing status span, refreshed
-  by the existing `perfLogUI.refresh()` call alongside the rec/count text.
+**Client (`environment-viewer.html`, `perfLog`)** — incremental streaming (2026-07-09; replaced
+the original single-shot `autoUpload()` after long sessions silently lost their capture:
+`navigator.sendBeacon` rejects payloads over ~64 KB, so an 11-minute CSV sent at tab close never
+arrived, and `maxSamples: 600` ring-trimming also drops the start of anything longer):
+- `sessionFilename` is built once per recording start via `buildFilename()`
+  (`perf-<ISO timestamp>-<sanitized location.search>.csv`; must stay accepted by serve.py's
+  `_SAFE_STATS_FILENAME`).
+- `_pendingRowsCSV()` serializes only rows not yet delivered (`_totalRows - _flushedRows`,
+  clamped to what the ring buffer still holds). Column order is locked at first flush
+  (`_flushCols`) so appended rows stay aligned; the header is sent only in the first chunk.
+- `flush()` — fetch POST with `mode=append`, called from `maybeSample()` every
+  `flushIntervalMs` (30 s, first flush at the 5th sample) and awaited on `setRecording(false)`.
+  Advances `_flushedRows` only on a 200; failed chunks stay queued for the next flush.
+  `uploadStatus` shows `saved <n> rows → <file>` or `save failed: <msg>` in the bottom-left
+  perf strip.
+- `beaconUpload()` — same chunk via `sendBeacon`, wired to `pagehide`/`beforeunload`/
+  `visibilitychange→hidden`. Because periodic flushes carry the bulk, the beacon only ever
+  holds the last ≤30 s of rows, which always fits the payload cap. No response is available
+  during teardown, so it advances `_flushedRows` optimistically on queue success.
+- `clear()` resets the flush state and blanks `sessionFilename`; if recording continues, the
+  next flush starts a fresh file and the old partial is left in place.
+- The manual "CSV" download button is unchanged (whole in-memory buffer, browser download).
 
 **New per-sample context columns** (added to `perfLog.snapshot()`, so `toCSV()` picks them up
 automatically the same way the Wave 0 columns above did — no separate header change):

@@ -1530,6 +1530,14 @@ const perfLog = {
   _lastCamPos: null,
   _lastCamT: 0,
   uploadStatus: '',   // last save/upload outcome, surfaced in the perf panel status line
+  // Incremental flush: sendBeacon caps payloads at ~64 KB, so uploading the whole CSV at tab
+  // close silently dropped long sessions. New rows are appended server-side every 30 s instead.
+  flushIntervalMs: 30000,
+  sessionFilename: '',
+  _flushCols: null,     // column order locked at first flush so appended rows stay aligned
+  _flushedRows: 0,
+  _totalRows: 0,        // monotonic; samples[] ring-trims so its length can't track this
+  _lastFlush: -Infinity,
   snapshot(now) {
     const r = renderer.info;
     const cs = portCreatures.stats;
@@ -1714,7 +1722,12 @@ const perfLog = {
     if (now - this.lastSample < this.intervalMs) return;
     this.lastSample = now;
     this.samples.push(this.snapshot(now));
+    this._totalRows++;
     if (this.samples.length > this.maxSamples) this.samples.shift();
+    if (this._totalRows >= 5 && now - this._lastFlush >= this.flushIntervalMs) {
+      this._lastFlush = now;
+      this.flush();
+    }
     if (perfLogUI) perfLogUI.refresh();
   },
   toCSV() {
@@ -1723,59 +1736,56 @@ const perfLog = {
     const rows = this.samples.map(s => cols.map(c => csvCell(s[c])).join(','));
     return [cols.join(','), ...rows].join('\n');
   },
-  // perf-<ISO timestamp>-<sanitized location.search>.csv — matches the naming convention
-  // already used when manually renaming downloaded CSVs into research/stats/ (see existing
-  // files there, e.g. perf-2026-06-21T04-30-44-809Z-webgl.csv). Query string has its leading
-  // '?' stripped and anything outside [A-Za-z0-9=&-] replaced with '-'; omitted entirely
-  // (along with the trailing '-') when there is no query string.
+  // must stay accepted by serve.py's _SAFE_STATS_FILENAME
   buildFilename() {
     const iso = new Date().toISOString().replace(/[:.]/g, '-');
     const q = location.search.replace(/^\?/, '').replace(/[^A-Za-z0-9=&-]/g, '-');
     return q ? `perf-${iso}-${q}.csv` : `perf-${iso}.csv`;
   },
-  // Fetch-based upload, used when we have time for a real request/response (recording just
-  // stopped). Never throws — failures (server not running, endpoint missing because the page
-  // is served some other way, etc.) fail silently into `uploadStatus` so the manual CSV button
-  // keeps working exactly as before. At most one console.warn per failure, no spam.
-  async autoUpload() {
-    if (this.samples.length < 5) return;
-    const csv = this.toCSV();
-    if (!csv) return;
-    const filename = this.buildFilename();
+  _pendingRowsCSV() {
+    let pending = this._totalRows - this._flushedRows;
+    if (pending <= 0) return null;
+    if (pending > this.samples.length) pending = this.samples.length; // ring-trimmed rows are gone
+    const rows = this.samples.slice(this.samples.length - pending);
+    if (!this._flushCols) this._flushCols = Object.keys(rows[0]);
+    const cols = this._flushCols;
+    const header = this._flushedRows === 0 ? cols.join(',') + '\n' : '';
+    return { csv: header + rows.map(s => cols.map(c => csvCell(s[c])).join(',')).join('\n') + '\n', pending };
+  },
+  async flush() {
+    const chunk = this._pendingRowsCSV();
+    if (!chunk) return;
+    if (!this.sessionFilename) this.sessionFilename = this.buildFilename();
     try {
-      const res = await fetch(`/api/save-stats?filename=${encodeURIComponent(filename)}`, {
+      const res = await fetch(`/api/save-stats?filename=${encodeURIComponent(this.sessionFilename)}&mode=append`, {
         method: 'POST',
         headers: { 'Content-Type': 'text/csv' },
-        body: csv,
+        body: chunk.csv,
       });
       if (!res.ok) throw new Error(`save-stats ${res.status}`);
-      const info = await res.json().catch(() => ({}));
-      this.uploadStatus = `saved ${info.path || filename}`;
+      this._flushedRows += chunk.pending;
+      this.uploadStatus = `saved ${this._flushedRows} rows → ${this.sessionFilename}`;
     } catch (err) {
       this.uploadStatus = `save failed: ${err?.message || err}`;
-      console.warn('[perfLog] auto-save to research/stats failed; use the CSV button instead.', err);
+      console.warn('[perfLog] flush failed; rows stay queued for the next flush.', err);
     }
     if (perfLogUI) perfLogUI.refresh();
   },
-  // sendBeacon-based upload for page unload/hidden, where an async fetch's response can't be
-  // awaited (the page may already be gone). Fire-and-forget: the browser guarantees the request
-  // is attempted even as the page tears down, but we get no success/failure signal back, so
-  // `uploadStatus` just optimistically says "sent" (or is left alone on failure to queue).
   beaconUpload() {
-    if (!this.recording) return;
-    if (this.samples.length < 5) return;
-    if (!navigator.sendBeacon) return;
-    const csv = this.toCSV();
-    if (!csv) return;
-    const filename = this.buildFilename();
+    if (!this.recording || this._totalRows < 5 || !navigator.sendBeacon) return;
+    const chunk = this._pendingRowsCSV();
+    if (!chunk) return;
+    if (!this.sessionFilename) this.sessionFilename = this.buildFilename();
     try {
+      // no response to await during teardown; on queue success assume delivery
       const ok = navigator.sendBeacon(
-        `/api/save-stats?filename=${encodeURIComponent(filename)}`,
-        new Blob([csv], { type: 'text/csv' }),
+        `/api/save-stats?filename=${encodeURIComponent(this.sessionFilename)}&mode=append`,
+        new Blob([chunk.csv], { type: 'text/csv' }),
       );
-      this.uploadStatus = ok ? `saved ${filename} (beacon)` : 'beacon queue failed';
+      if (ok) this._flushedRows += chunk.pending;
+      this.uploadStatus = ok ? `saved ${this._flushedRows} rows (beacon)` : 'beacon queue failed';
     } catch (err) {
-      console.warn('[perfLog] beacon auto-save failed.', err);
+      console.warn('[perfLog] beacon flush failed.', err);
     }
   },
   async startTelemetry() {
@@ -1817,6 +1827,11 @@ const perfLog = {
       this.startTime = performance.now();
       this._lastCamPos = null;
       this.uploadStatus = '';
+      this.sessionFilename = this.buildFilename();
+      this._flushCols = null;
+      this._flushedRows = 0;
+      this._totalRows = 0;
+      this._lastFlush = -Infinity;
       frameProfiler.reset();
       await this.startTelemetry();
       this.recording = true;
@@ -1824,9 +1839,7 @@ const perfLog = {
       this.recording = false;
       this.telemetryStartRequested = false;
       await this.stopTelemetry();
-      // Auto-save into research/stats/ so recordings don't require the manual
-      // download-and-rename step. Silent no-op below 5 samples or if unreachable.
-      await this.autoUpload();
+      if (this._totalRows >= 5) await this.flush();
     }
     if (perfLogUI) perfLogUI.refresh();
   },
@@ -1845,6 +1858,11 @@ const perfLog = {
     this.telemetryStartRequested = false;
     this.lastSample = -Infinity;
     this.startTime = performance.now();
+    this.sessionFilename = '';   // next flush starts a fresh file; the old partial stays as-is
+    this._flushCols = null;
+    this._flushedRows = 0;
+    this._totalRows = 0;
+    this._lastFlush = -Infinity;
     frameProfiler.reset();
     if (perfLogUI) perfLogUI.refresh();
   },
@@ -1886,12 +1904,8 @@ function updatePerfPanel(now) {
   perfLogUI = { refresh };
   refresh();
   if (PERF_AUTOSTART) perfLog.setRecording(true);
-  // Auto-save insurance: 'beforeunload'/'pagehide' cover navigation/close/reload, and
-  // visibilitychange->hidden also fires on tab switch or mobile backgrounding (which may
-  // not fire an unload event at all) — sendBeacon works from all three since it doesn't
-  // need the page to stay alive for a response. Recording is intentionally left running
-  // (not stopped) so a tab-switch-and-back doesn't truncate an in-progress capture; each
-  // hide event just re-sends the samples collected so far.
+  // hide/close events flush only the unflushed tail (periodic flushes carry the bulk),
+  // keeping the beacon under the browser's ~64 KB payload cap
   window.addEventListener('pagehide', () => perfLog.beaconUpload());
   window.addEventListener('beforeunload', () => perfLog.beaconUpload());
   document.addEventListener('visibilitychange', () => {
