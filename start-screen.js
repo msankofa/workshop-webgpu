@@ -268,6 +268,7 @@ async function _mapStep(overlay, config, mpRole, roomCode) {
     });
 
     grid.appendChild(_mapCard('Infinite World', 'Procedural terrain, grass, and GPU forest', () => resolve(null)));
+    grid.appendChild(_mapCard('Shoot House', 'Enclosed CQB kill-house — night, no environment', () => resolve('shoot-house')));
 
     const maps = config.maps || {};
     for (const [key, meta] of Object.entries(maps)) {

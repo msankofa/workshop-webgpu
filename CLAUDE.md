@@ -51,7 +51,9 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Lighting | `lighting.md` | `lights.js`, `clustered-lights.js` |
 | Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js` |
 | Creature sim | `creature.md` | `port-creature-bridge.js`, `port-creature-system.js` |
+| Shoot house map | `shoot-house.md` | `shoot-house.js`, `shoot-house-layout.js` |
 | Multiplayer | `multiplayer.md` | `multiplayer.js`, `start-screen.js`, `server/server.js` |
+| Audio / SFX | `audio.md` | `environment-audio.js`, `sound-events.js`, `sfx-browser.html`, `sfx/` |
 | Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js`, `world-map.js` |
 | Legacy app | `legacy.md` | `creature-viewer.html`, `creature.js` |
 

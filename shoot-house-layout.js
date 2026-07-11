@@ -1,4 +1,5 @@
 // shoot-house-layout.js — pure, three-free CQB kill-house layout generator; mirrors right half (x>0) across x=0.
+// v2: open kill-house — wide central corridor, ~3 large rooms per side, barricade cover (not cubes).
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -10,12 +11,13 @@ function mulberry32(seed) {
   };
 }
 
-export const DOOR_W = 1.2;
+export const DOOR_W = 2.4;
 
 const DEFAULTS = {
-  W: 40, L: 60, H: 3.5, T: 0.3, yDeck: 3.2,
+  W: 50, L: 80, H: 4.0, T: 0.3, yDeck: 3.4,
   stepRise: 0.18, stepRun: 0.28,
   floorThickness: 0.1, railH: 1.0,
+  corridorHalf: 4,
 };
 
 // Wall segment along z (fixed x), split by door openings ({z0,z1}, sorted, non-overlapping).
@@ -64,7 +66,7 @@ function boxesOverlap(ax0, ax1, az0, az1, bx0, bx1, bz0, bz1) {
 
 export function generateShootHouse(seed = 1, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts };
-  const { W, L, H, T, yDeck, stepRise, stepRun, floorThickness, railH } = cfg;
+  const { W, L, H, T, yDeck, stepRise, stepRun, floorThickness, railH, corridorHalf } = cfg;
   const rand = mulberry32(seed);
 
   const minX = -W / 2, maxX = W / 2, minZ = -L / 2, maxZ = L / 2;
@@ -78,114 +80,147 @@ export function generateShootHouse(seed = 1, opts = {}) {
     kind: 'interior', cx: 0, cy: -floorThickness / 2, cz: 0, sx: W, sy: floorThickness, sz: L, material: 'floor',
   });
 
-  // perimeter walls inset by T/2 so the outer face is flush with bounds
+  // perimeter walls inset by T/2 so the outer face is flush with bounds; no door openings
   wallAlongZ(prims, 'perimeter', 'wall', maxX - T / 2, minZ, maxZ, H, T, []);
   wallAlongX(prims, 'perimeter', 'wall', maxZ - T / 2, 0, maxX - T, H, T, []);
   wallAlongX(prims, 'perimeter', 'wall', minZ + T / 2, 0, maxX - T, H, T, []);
 
-  // central spine (x=0), 1-2 door openings; one always straddles z=0 to keep spawn clear
-  const spineOpenings = [{ z0: -DOOR_W / 2, z1: DOOR_W / 2 }];
-  if (rand() < 0.5) {
-    const side = rand() < 0.5 ? -1 : 1;
-    const centerZ = side * (10 + rand() * (maxZ - 12));
-    const z0 = Math.max(minZ + 0.5, centerZ - DOOR_W / 2);
-    const z1 = Math.min(maxZ - 0.5, z0 + DOOR_W);
-    if (z1 < spineOpenings[0].z0 - 0.6 || z0 > spineOpenings[0].z1 + 0.6) spineOpenings.push({ z0, z1 });
+  // spine wall at x=corridorHalf: full length, a DOOR_W opening into each of the ~3 room strips
+  const minRoomZ = 18; // enforced minimum room z-extent so rooms stay large
+  const usableZ = L - 2; // small margin so cross walls don't hug the perimeter
+  // seed 2 interior cross-wall z positions splitting the room block into 3 strips, each >= minRoomZ
+  let crossZ;
+  {
+    const z0 = minZ + 1;
+    const z3 = maxZ - 1;
+    const span = z3 - z0;
+    // pick two ordered interior cut points; reject-resample until all 3 strips >= minRoomZ
+    let a, b, tries = 0;
+    do {
+      const t1 = 0.2 + rand() * 0.25;
+      const t2 = 0.55 + rand() * 0.25;
+      a = z0 + span * Math.min(t1, t2);
+      b = z0 + span * Math.max(t1, t2);
+      tries++;
+    } while (tries < 50 && (a - z0 < minRoomZ || b - a < minRoomZ || z3 - b < minRoomZ));
+    crossZ = [a, b];
   }
-  spineOpenings.sort((a, b) => a.z0 - b.z0);
-  wallAlongZ(prims, 'interior', 'wall', 0, minZ, maxZ, H, T, spineOpenings);
+  const roomStrips = [
+    { z0: minZ + 1, z1: crossZ[0] },
+    { z0: crossZ[0], z1: crossZ[1] },
+    { z0: crossZ[1], z1: maxZ - 1 },
+  ];
 
-  // seeded room grid: cross walls at random z, mid wall splits the middle strip
-  const crossZ = [-(8 + rand() * 6), 8 + rand() * 6];
+  // spine door: one opening per room strip, centered in that strip's z-range
+  const spineOpenings = roomStrips.map(s => {
+    const cz = (s.z0 + s.z1) / 2;
+    return { z0: cz - DOOR_W / 2, z1: cz + DOOR_W / 2 };
+  }).sort((a, b) => a.z0 - b.z0);
+  wallAlongZ(prims, 'interior', 'wall', corridorHalf, minZ, maxZ, H, T, spineOpenings);
+
+  // 2 full-height cross walls dividing the side-room block along z; each gets one doorway
   const crossOpenings = crossZ.map(() => {
-    const cx0 = 4 + rand() * (maxX - T - 4 - DOOR_W - 1);
+    const cx0 = corridorHalf + 2 + rand() * (maxX - T - corridorHalf - 2 - DOOR_W - 1);
     return { x0: cx0, x1: cx0 + DOOR_W };
   });
   crossZ.forEach((z, i) => {
-    wallAlongX(prims, 'interior', 'wall', z, 0, maxX - T, H, T, [crossOpenings[i]]);
+    wallAlongX(prims, 'interior', 'wall', z, corridorHalf, maxX - T, H, T, [crossOpenings[i]]);
   });
 
-  // staircase computed before the mid wall so the mid wall can clear its top
+  // staircase near the maxZ end of the corridor, runs along z (climbing toward -z) so its
+  // footprint fits within the corridor width instead of spilling into the room block
   const stepCount = Math.ceil(yDeck / stepRise);
   const actualRise = yDeck / stepCount;
-  const stairXStart = 2.5;
-  const stairZ = crossZ[0] + 3; // guaranteed inside the middle strip
-  const stairWidth = 1.3;
-  const stairFootprint = { x0: stairXStart, x1: stairXStart + stepCount * stepRun, z0: stairZ - stairWidth / 2, z1: stairZ + stairWidth / 2 };
-  // each tread is a floor->top solid block, so the stair reads as a walkable ramp
+  const stairX = corridorHalf - 1.5;
+  const stairWidth = 1.4;
+  const stairZEnd = maxZ - 2.5; // bottom step (z closest to perimeter)
+  const stairFootprint = {
+    x0: stairX - stairWidth / 2, x1: stairX + stairWidth / 2,
+    z0: stairZEnd - stepCount * stepRun, z1: stairZEnd,
+  };
   for (let i = 0; i < stepCount; i++) {
-    const stepX0 = stairXStart + i * stepRun;
+    const stepZ1 = stairZEnd - i * stepRun;
     const topY = actualRise * (i + 1);
     prims.push({
-      kind: 'step', cx: stepX0 + stepRun / 2, cy: topY / 2, cz: stairZ,
-      sx: stepRun, sy: topY, sz: stairWidth, material: 'stair',
+      kind: 'step', cx: stairX, cy: topY / 2, cz: stepZ1 - stepRun / 2,
+      sx: stairWidth, sy: topY, sz: stepRun, material: 'stair',
     });
   }
 
-  const midWallX = stairFootprint.x1 + 1.5 + rand() * 2.5; // past the stair top, leaves deck width
-  const midOpenZ0 = crossZ[0] + 2 + rand() * (crossZ[1] - crossZ[0] - 4 - DOOR_W);
-  const midOpening = { z0: midOpenZ0, z1: midOpenZ0 + DOOR_W };
-  wallAlongZ(prims, 'interior', 'wall', midWallX, crossZ[0], crossZ[1], H, T, [midOpening]);
-
-  // balcony deck adjoins the stair top; upper walkway over the stair room
-  const deckX0 = stairFootprint.x1;
-  const deckX1 = midWallX - 0.3;
-  const deckZ0 = crossZ[0] + T;
-  const deckZ1 = -2;
+  // balcony deck adjoins the stair top (lower-z end), forms a catwalk over the corridor
   const deckThickness = 0.2;
+  const deckZ1 = stairFootprint.z0 - 0.2;
+  const deckZ0 = deckZ1 - 5;
+  const deckX0 = stairX - 1.8;
+  const deckX1 = Math.min(corridorHalf - 0.3, stairX + 1.8);
   prims.push({
     kind: 'balcony', cx: (deckX0 + deckX1) / 2, cy: yDeck - deckThickness / 2, cz: (deckZ0 + deckZ1) / 2,
     sx: deckX1 - deckX0, sy: deckThickness, sz: deckZ1 - deckZ0, material: 'stair',
   });
-  // railing runs along the open edge (z = deckZ1, facing the corridor)
+  // railing on the open edge facing the corridor (z = deckZ0, away from the stair)
   prims.push({
-    kind: 'railing', cx: (deckX0 + deckX1) / 2, cy: yDeck + railH / 2, cz: deckZ1,
+    kind: 'railing', cx: (deckX0 + deckX1) / 2, cy: yDeck + railH / 2, cz: deckZ0,
     sx: deckX1 - deckX0, sy: railH, sz: 0.08, material: 'trim',
   });
 
-  // spawn: clear cell on the central corridor near z=0
-  const spawn = { x: 0, y: 0, z: 0, heading: Math.PI / 2 };
-  const spawnClear = { x0: -1.2, x1: 1.2, z0: -1.2, z1: 1.2 };
+  // spawn: clear cell in the corridor near minZ, looking down the corridor toward +z
+  const spawn = { x: 0, y: 0, z: minZ + 6, heading: Math.PI };
+  const spawnClear = { x0: -1.5, x1: 1.5, z0: spawn.z - 1.5, z1: spawn.z + 1.5 };
 
-  // cover: seeded low blocks, avoiding openings/stairs/spawn
+  // clear zones: door openings, stair footprint, spawn cell — cover must not overlap these
   const doorClearZones = [];
-  for (const o of spineOpenings) doorClearZones.push({ x0: -DOOR_W, x1: DOOR_W, z0: o.z0 - 0.4, z1: o.z1 + 0.4 });
+  for (const o of spineOpenings) doorClearZones.push({ x0: corridorHalf - DOOR_W, x1: corridorHalf + DOOR_W, z0: o.z0 - 0.4, z1: o.z1 + 0.4 });
   crossZ.forEach((z, i) => {
     const o = crossOpenings[i];
     doorClearZones.push({ x0: o.x0 - 0.4, x1: o.x1 + 0.4, z0: z - DOOR_W, z1: z + DOOR_W });
   });
-  doorClearZones.push({ x0: midWallX - DOOR_W, x1: midWallX + DOOR_W, z0: midOpening.z0 - 0.4, z1: midOpening.z1 + 0.4 });
   doorClearZones.push({ x0: stairFootprint.x0 - 0.3, x1: stairFootprint.x1 + 0.3, z0: stairFootprint.z0 - 0.3, z1: stairFootprint.z1 + 0.3 });
   doorClearZones.push(spawnClear);
 
-  const coverH = 0.9, coverSize = 0.8;
-  const coverCount = 6;
-  let placed = 0, tries = 0;
-  while (placed < coverCount && tries < 200) {
-    tries++;
-    const cx = 1 + rand() * (maxX - 1.5);
-    const cz = minZ + 1 + rand() * (L - 2);
-    const half = coverSize / 2;
-    const box = { x0: cx - half, x1: cx + half, z0: cz - half, z1: cz + half };
-    let blocked = false;
-    for (const zone of doorClearZones) {
-      if (boxesOverlap(box.x0, box.x1, box.z0, box.z1, zone.x0, zone.x1, zone.z0, zone.z1)) { blocked = true; break; }
+  // cover: seeded barricades — low walls (long axis x or z), ~1 per room + 1-2 in the corridor
+  const coverH = 1.1, coverLen = 3 + rand() * 1, coverThick = 0.4;
+  const coverRegions = [
+    { x0: corridorHalf + 1, x1: maxX - T - 1, z0: roomStrips[0].z0 + 1, z1: roomStrips[0].z1 - 1 },
+    { x0: corridorHalf + 1, x1: maxX - T - 1, z0: roomStrips[1].z0 + 1, z1: roomStrips[1].z1 - 1 },
+    { x0: corridorHalf + 1, x1: maxX - T - 1, z0: roomStrips[2].z0 + 1, z1: roomStrips[2].z1 - 1 },
+    { x0: 0.5, x1: corridorHalf - 0.5, z0: minZ + 10, z1: maxZ - 10 },
+    { x0: 0.5, x1: corridorHalf - 0.5, z0: minZ + 12, z1: maxZ - 12 },
+  ];
+  for (const region of coverRegions) {
+    let placed = false, tries = 0;
+    while (!placed && tries < 60) {
+      tries++;
+      const along = rand() < 0.5 ? 'x' : 'z';
+      const len = coverLen;
+      const cx = region.x0 + len / 2 + rand() * Math.max(0.01, (region.x1 - region.x0 - len));
+      const cz = region.z0 + len / 2 + rand() * Math.max(0.01, (region.z1 - region.z0 - len));
+      const sx = along === 'x' ? len : coverThick;
+      const sz = along === 'z' ? len : coverThick;
+      const box = { x0: cx - sx / 2, x1: cx + sx / 2, z0: cz - sz / 2, z1: cz + sz / 2 };
+      let blocked = false;
+      for (const zone of doorClearZones) {
+        if (boxesOverlap(box.x0, box.x1, box.z0, box.z1, zone.x0, zone.x1, zone.z0, zone.z1)) { blocked = true; break; }
+      }
+      if (blocked) continue;
+      prims.push({
+        kind: 'cover', cx, cy: coverH / 2, cz, sx, sy: coverH, sz, material: 'trim',
+      });
+      placed = true;
     }
-    if (blocked) continue;
-    // stay clear of perimeter/spine walls themselves
-    if (cx < T + half || cx > maxX - T - half) continue;
-    prims.push({
-      kind: 'cover', cx, cy: coverH / 2, cz, sx: coverSize, sy: coverH, sz: coverSize, material: 'trim',
-    });
-    placed++;
   }
 
-  // interior point lights: seeded, right half only (mirrored below)
-  const lightCount = 5;
-  for (let i = 0; i < lightCount; i++) {
-    const lx = 2 + rand() * (maxX - 4);
-    const lz = minZ + 4 + rand() * (L - 8);
-    lights.push({ x: lx, y: H - 0.5, z: lz, radius: 8 });
+  // interior point lights: one per room strip + corridor lights, right half + straddling only (mirrored below)
+  roomStrips.forEach(s => {
+    const lx = corridorHalf + 4 + rand() * (maxX - T - corridorHalf - 6);
+    const lz = (s.z0 + s.z1) / 2;
+    lights.push({ x: lx, y: H - 0.5, z: lz, radius: 14 });
+  });
+  // corridor lights straddle x=0 so they're emitted once by the mirror step
+  const corridorLightCount = 4;
+  for (let i = 0; i < corridorLightCount; i++) {
+    const t = (i + 0.5) / corridorLightCount;
+    const lz = minZ + t * L;
+    lights.push({ x: 0, y: H - 0.5, z: lz, radius: 12 });
   }
 
   // mirror: every cx>0 primitive/light duplicated with cx -> -cx; cx===0 kept once

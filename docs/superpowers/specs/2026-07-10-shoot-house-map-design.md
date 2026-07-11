@@ -67,32 +67,47 @@ export function generateShootHouse(seed = 1, opts = {}) → {
 
 `Light` = `{ x, y, z, radius }` (color/intensity are global, set at build time, not per-light).
 
+**Design intent (v2 — improvement pass):** an open, readable CQB kill-house that is easy to
+shoot and move through — NOT a maze of tiny rooms. A wide central corridor runs the long axis
+with a few large rooms opening off each side through generous doorways; cover is chest-high
+barricades you can shoot over, not scattered cubes.
+
 **Generation rules**
-- **Dimensions (defaults, `opts` overridable):** width `W=40` (x ∈ `[-20, 20]`), length `L=60`
-  (z ∈ `[-30, 30]`), wall height `H=3.5`, wall thickness `T=0.3`, floor at `y=0`
-  (a single floor slab primitive), open roof (no ceiling), balcony deck at `yDeck=3.2`.
+- **Dimensions (defaults, `opts` overridable):** width `W=50` (x ∈ `[-25, 25]`), length `L=80`
+  (z ∈ `[-40, 40]`), wall height `H=4.0`, wall thickness `T=0.3`, floor at `y=0` (a single floor
+  slab primitive), open roof (no ceiling), balcony deck at `yDeck=3.4`. Door opening width
+  `DOOR_W=2.4` (wide enough to move and shoot through cleanly; ≥ player capsule diameter `0.6`).
 - **Perimeter:** four bounding walls forming a closed rectangle of height `H`. Must fully
-  enclose the footprint (a player cannot leave; the only gaps are interior, never on the
+  enclose the footprint (a player cannot leave; the only openings are interior, never on the
   perimeter).
-- **Central spine:** one wall along `x=0` spanning the length, with 1–2 door openings so the
-  two halves connect. The spine is on the mirror axis, so it is self-symmetric.
-- **Rooms:** subdivide the right half (`x>0`) into a seeded set of rooms using interior walls
-  parallel/perpendicular to the axes; each interior wall dividing two occupied cells gets a
-  door opening (width `DOOR_W=1.2`, ≥ player capsule diameter `0.6`) with a lintel above.
-- **Staircase:** one run in the right half, `stepRise≈0.18`, `stepRun≈0.28`, ascending from the
-  floor to `yDeck`; the top step aligns to the balcony deck height (±`stepRise/2`). Steps are
-  `step` primitives.
-- **Balcony:** a deck primitive at `yDeck` along one interior edge (an upper walkway overlooking
-  the central corridor), fenced with a `railing` primitive (height ~1.0). Reachable only via the
-  staircase.
-- **Cover:** a seeded scattering of low `cover` blocks (height ~0.9) in open floor area, not
-  blocking door openings or the staircase footprint or the spawn cell.
+- **Central corridor:** two longitudinal spine walls at `x = ±corridorHalf` (`corridorHalf≈4`,
+  i.e. an ~8 m central lane) running the full length, each with wide door openings into the side
+  rooms. The corridor is the primary sightline and the spawn lane. Being symmetric about `x=0`,
+  the two spines are mirror twins.
+- **Side rooms:** each half's room block (`x ∈ [corridorHalf, maxX]`, ~21 m deep) is divided
+  along `z` into **~3 large rooms** by full-height cross walls at seeded `z` positions. Every
+  wall between two rooms (and every spine wall) gets a `DOOR_W` door opening with a lintel above.
+  Rooms are big and open — no sub-subdivision into cubicles.
+- **Staircase:** one run near one end, `stepRise≈0.18`, `stepRun≈0.28`, ascending from the floor
+  to `yDeck`; the top tread aligns to the balcony deck height (±`stepRise/2`). Steps are `step`
+  primitives.
+- **Balcony:** a `balcony` deck primitive at `yDeck` forming a catwalk that overlooks the
+  central corridor (an elevated shooting position), fenced with a `railing` primitive
+  (height ~1.0) on its open edge. Reachable only via the staircase.
+- **Cover — barricades, not cubes:** a small seeded set of chest-high `cover` barricades
+  (height ~1.1 m, length ~3–4 m, thickness ~0.4 m — low walls, each oriented along x or z), placed
+  as meaningful shooting cover in the rooms and corridor. They must NOT block door openings, the
+  staircase footprint, or the spawn cell. Far fewer, far more purposeful than a scatter of cubes.
+- **Lights:** roughly one interior light per room plus corridor lights (not a fixed small count),
+  each near ceiling height, sized (`radius`) to actually light its room. Placed per-region so the
+  interior reads clearly at the builder's default intensity.
 - **Mirror:** every primitive and light generated with `cx>0` is duplicated with `cx → -cx`
   (extents unchanged; a wall running along z reflects to the mirrored z-line). Primitives that
-  straddle `x=0` (the spine, the floor slab) are emitted once, centered on the axis. Result:
+  straddle `x=0` (the floor slab; anything centered on the axis) are emitted once. Result:
   `layout(x,z) === layout(-x,z)` for all solids.
-- **Spawn:** a clear floor cell on the central corridor near `z=0` (e.g. `x=0`), `heading`
-  facing down the long axis. `spawn.y = 0` (floor). The viewer offsets by capsule height.
+- **Spawn:** a clear floor cell in the central corridor near one end (e.g. `x=0`, `z` a few metres
+  in from `minZ`), `heading` looking down the corridor along the long axis. `spawn.y = 0`. The
+  viewer offsets by capsule height.
 
 **Determinism:** identical `(seed, opts)` → deep-equal descriptor. Uses a local mulberry32 PRNG
 seeded from `seed`; no `Math.random`, no time, no globals.
@@ -170,7 +185,8 @@ All edits are small and localized:
    - water (`_waterPromise`, ~4283)
    - plants (`PLANTS_MODE` block, ~3705)
    - dressing/rocks (`DRESSING_MODE` block, ~3897)
-   - clouds — keep (night clouds are part of the sky) unless trivially guardable; default keep.
+   - clouds (`_cloudsPromise`) — **guarded off** (v2): a clear night sky over the shoot house.
+     Sky itself stays.
 4. **Spawn** (~line 5431, `resetPlayerPosition`): read the map spawn:
    ```js
    const sx = loadedMap?.spawn?.x ?? 8, sz = loadedMap?.spawn?.z ?? 0;
@@ -193,16 +209,25 @@ the **pure** `generateShootHouse`:
 - **Mirror symmetry:** for every primitive with `cx>0` there is a matching primitive with
   `cx→-cx` and identical extents/kind/material; axis-straddling primitives appear once. Same
   for lights. (The invariant `solidAt(x,z) === solidAt(-x,z)`.)
-- **Enclosure:** perimeter walls cover the full boundary of `bounds` with no gap ≥ `DOOR_W`
-  (the player cannot escape); perimeter has no door openings.
-- **Navigability:** every door opening width ≥ player capsule diameter (`0.6`); the spawn cell
-  is clear of solids; the central spine has ≥1 opening connecting the halves.
-- **Stairs:** step rises/runs within human range; monotonic ascent; the top step aligns to the
+- **Enclosure:** perimeter walls cover the full boundary of `bounds` with no gap ≥ player
+  capsule diameter (`0.6`) — the player cannot escape; perimeter has no door openings.
+- **Navigability:** every door opening width ≥ `DOOR_W` (and ≥ `0.6`); the spawn cell is clear of
+  solids (checked at low and standing height); the corridor connects to every room (each side
+  room is reachable from the central corridor through door openings — a reachability/flood check
+  over the room graph, not just "≥1 opening").
+- **Openness:** rooms are large — assert each enclosed room's floor area is above a sane minimum
+  (no cubicles), and the interior wall count is bounded (a small number of full walls, not a
+  scatter). This guards against regressing to the cramped v1 layout.
+- **Cover:** barricades are chest-high (height in ~`[0.9, 1.3]`), longer than they are thick
+  (a low wall, not a cube), and none overlap a door opening, the stair footprint, or the spawn
+  cell.
+- **Stairs:** step rises/runs within human range; monotonic ascent; the top tread aligns to the
   balcony deck height within `±stepRise/2`.
 - **Balcony:** deck at `yDeck`; railing present along the open edge; deck reachable (its base
   footprint adjoins the stair top).
-- **Lights:** all within `bounds`, above the floor, below `yMax`.
-- **Bounds validity:** all primitives lie within `bounds`; `bounds` is symmetric about `x=0`.
+- **Lights:** all within `bounds`, above the floor, below `yMax`; at least one per room region.
+- **Bounds validity:** all primitives lie within `bounds` (strict, 1e-6); `bounds` symmetric
+  about `x=0`. Run the invariant suite over multiple seeds.
 
 The Three.js builder (`shoot-house.js`), viewer wiring, and control panel are browser/WebGPU —
 verified manually (see Verification).

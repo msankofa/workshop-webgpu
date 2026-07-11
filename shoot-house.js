@@ -12,7 +12,7 @@ const MATERIAL_COLOR = {
 };
 
 const LIGHT_DEFAULT_COLOR = '#fff2d8';
-const LIGHT_DEFAULT_INTENSITY = 10;
+const LIGHT_DEFAULT_INTENSITY = 16;
 
 export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
   const layout = generateShootHouse(seed, opts);

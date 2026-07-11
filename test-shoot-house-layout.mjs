@@ -4,6 +4,7 @@ let fail = 0;
 const ok = (c, m) => { console.log((c ? 'ok   ' : 'FAIL ') + m); if (!c) fail++; };
 
 const CAP_DIAM = 0.6;
+const MIN_ROOM_Z = 18;
 
 // ---- determinism ----
 {
@@ -38,6 +39,7 @@ const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
 for (const seed of SEEDS) {
   const house = generateShootHouse(seed);
   const { bounds, primitives, lights, spawn } = house;
+  const corridorHalf = 4; // matches generator default
 
   // ---- bounds validity ----
   {
@@ -82,7 +84,7 @@ for (const seed of SEEDS) {
     }
     ok(allMirrored, `[seed ${seed}] every cx>0 primitive has a matching cx-> -cx primitive (same kind/material/extents)`);
 
-    // straddling primitives (spine wall pieces, floor slab) appear once, not duplicated
+    // straddling primitives (floor slab, corridor lights' host primitives if any) appear once, not duplicated
     let straddleOnce = true;
     const seen = new Set();
     for (const p of straddling) {
@@ -108,6 +110,10 @@ for (const seed of SEEDS) {
       bucket.splice(idx, 1);
     }
     ok(lightsMirrored, `[seed ${seed}] every light with x>0 has a mirrored x<0 counterpart`);
+
+    // straddling lights (corridor, x=0) exist and are not duplicated
+    const straddlingLights = lights.filter(l => Math.abs(l.x) <= 1e-9);
+    ok(straddlingLights.length > 0, `[seed ${seed}] corridor lights straddle x=0`);
   }
 
   // ---- solidAt(x,z) === solidAt(-x,z) sampled over a grid (functional mirror check) ----
@@ -139,7 +145,6 @@ for (const seed of SEEDS) {
     ok(east.length > 0 && west.length > 0 && north.length > 0 && south.length > 0, `[seed ${seed}] perimeter has segments on all four boundary lines`);
 
     function checkFullCoverage(segs, axisMin, axisMax, along) {
-      // segs: primitives running along `along` axis ('z' or 'x'); check union of [c-s/2,c+s/2] covers [axisMin,axisMax] with no gap >= DOOR_W
       const spans = segs.map(p => {
         const c = along === 'z' ? p.cz : p.cx;
         const s = along === 'z' ? p.sz : p.sx;
@@ -189,15 +194,87 @@ for (const seed of SEEDS) {
     ok(spawnClearAt(1.0), `[seed ${seed}] spawn cell (and immediate neighborhood) is clear of solids at y=1.0`);
     ok(spawnClearAt(0.4), `[seed ${seed}] spawn cell (and immediate neighborhood) is clear of solids at y=0.4 (catches short solids)`);
     ok(spawn.y === 0, `[seed ${seed}] spawn.y is on the floor`);
+    ok(spawn.z > bounds.minZ && spawn.z < 0, `[seed ${seed}] spawn sits in the corridor near the minZ end`);
+    ok(spawn.x === 0, `[seed ${seed}] spawn sits on the central corridor (x=0)`);
 
-    // central spine has >= 1 opening (lintel at cx=0)
-    const spineLintels = lintels.filter(l => Math.abs(l.cx) < 1e-6);
-    ok(spineLintels.length >= 1, `[seed ${seed}] central spine has at least one opening connecting the halves`);
+    // corridor -> every room reachability: each side room (bounded by the spine wall) must have
+    // a spine doorway opening into it, i.e. a lintel at cx=corridorHalf whose z-span falls inside the room's z-range.
+    const spineLintels = lintels.filter(l => Math.abs(l.cx - corridorHalf) < 1e-6);
+    ok(spineLintels.length >= 3, `[seed ${seed}] spine wall has at least 3 door openings (one per room)`);
+
+    // reconstruct room z-strips from the two interior cross walls (kind=interior, wall material, running along x, cx>corridorHalf)
+    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
+    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
+    ok(crossZs.length === 2, `[seed ${seed}] exactly 2 cross walls divide the side-room block into 3 rooms`);
+
+    const roomStrips = [
+      { z0: bounds.minZ, z1: crossZs[0] },
+      { z0: crossZs[0], z1: crossZs[1] },
+      { z0: crossZs[1], z1: bounds.maxZ },
+    ];
+    const roomsReachable = roomStrips.every(strip =>
+      spineLintels.some(l => l.cz > strip.z0 && l.cz < strip.z1));
+    ok(roomsReachable, `[seed ${seed}] every side room has a spine doorway opening directly onto the corridor`);
+  }
+
+  // ---- openness: rooms are large, interior wall count is small ----
+  {
+    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
+    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
+    const roomStrips = [
+      { z0: bounds.minZ, z1: crossZs[0] },
+      { z0: crossZs[0], z1: crossZs[1] },
+      { z0: crossZs[1], z1: bounds.maxZ },
+    ];
+    const roomDepth = bounds.maxX - corridorHalf; // x-extent of the side-room block
+    for (const [i, strip] of roomStrips.entries()) {
+      const zExtent = strip.z1 - strip.z0;
+      const area = zExtent * roomDepth;
+      ok(zExtent >= MIN_ROOM_Z - 1, `[seed ${seed}] room ${i} z-extent >= ${MIN_ROOM_Z}m (got ${zExtent.toFixed(2)})`);
+      ok(area >= MIN_ROOM_Z * 15, `[seed ${seed}] room ${i} floor area is large, not a cubicle (got ${area.toFixed(1)} sq m)`);
+    }
+
+    // interior wall count bounded: 1 spine (right half) + 2 cross walls = a handful of full-wall segments,
+    // not a scatter. Count distinct interior wall "lines" (unique cx for z-walls, unique cz for x-walls) on the right half.
+    const interiorWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx >= -1e-9);
+    const zLines = new Set(interiorWalls.filter(p => p.sz > p.sx).map(p => p.cx.toFixed(3)));
+    const xLines = new Set(interiorWalls.filter(p => p.sx >= p.sz).map(p => p.cz.toFixed(3)));
+    const totalLines = zLines.size + xLines.size;
+    ok(totalLines <= 4, `[seed ${seed}] interior wall line count is small/bounded (got ${totalLines}: ${zLines.size} spine + ${xLines.size} cross)`);
+  }
+
+  // ---- cover: barricades, not cubes ----
+  {
+    const cover = primitives.filter(p => p.kind === 'cover');
+    ok(cover.length > 0, `[seed ${seed}] at least one cover barricade exists`);
+    ok(cover.every(c => c.material === 'trim'), `[seed ${seed}] cover barricades are trim material`);
+    ok(cover.every(c => c.sy >= 0.9 && c.sy <= 1.3), `[seed ${seed}] cover barricade height in [0.9, 1.3]`);
+    ok(cover.every(c => Math.max(c.sx, c.sz) > Math.min(c.sx, c.sz) * 2), `[seed ${seed}] cover barricades are low walls (long axis clearly longer than thickness)`);
+
+    const lintels = primitives.filter(p => p.kind === 'lintel');
+    const stairsAll = primitives.filter(p => p.kind === 'step');
+    const stairX0 = Math.min(...stairsAll.map(s => s.cx - s.sx / 2));
+    const stairX1 = Math.max(...stairsAll.map(s => s.cx + s.sx / 2));
+    const stairZ0 = Math.min(...stairsAll.map(s => s.cz - s.sz / 2));
+    const stairZ1 = Math.max(...stairsAll.map(s => s.cz + s.sz / 2));
+    const spawnClear = { x0: -1.5, x1: 1.5, z0: spawn.z - 1.5, z1: spawn.z + 1.5 };
+    function overlapsAny(c) {
+      const cx0 = c.cx - c.sx / 2, cx1 = c.cx + c.sx / 2, cz0 = c.cz - c.sz / 2, cz1 = c.cz + c.sz / 2;
+      for (const l of lintels) {
+        const lx0 = l.cx - Math.max(l.sx, DOOR_W) / 2 - 0.01, lx1 = l.cx + Math.max(l.sx, DOOR_W) / 2 + 0.01;
+        const lz0 = l.cz - Math.max(l.sz, DOOR_W) / 2 - 0.01, lz1 = l.cz + Math.max(l.sz, DOOR_W) / 2 + 0.01;
+        if (cx0 < lx1 && cx1 > lx0 && cz0 < lz1 && cz1 > lz0) return true;
+      }
+      if (cx0 < stairX1 && cx1 > stairX0 && cz0 < stairZ1 && cz1 > stairZ0) return true;
+      if (cx0 < spawnClear.x1 && cx1 > spawnClear.x0 && cz0 < spawnClear.z1 && cz1 > spawnClear.z0) return true;
+      return false;
+    }
+    ok(cover.every(c => !overlapsAny(c)), `[seed ${seed}] no cover barricade overlaps a door opening, the stair footprint, or the spawn cell`);
   }
 
   // ---- stairs ----
-  // isolate one staircase: mirroring puts a second run at the same z, opposite cx
-  const stairsRight = primitives.filter(p => p.kind === 'step' && p.cx > 0).sort((a, b) => a.cx - b.cx);
+  // stair climbs along z (descending cz = ascending height); isolate right-half run, sort by height
+  const stairsRight = primitives.filter(p => p.kind === 'step' && p.cx > 0).sort((a, b) => (a.cy + a.sy / 2) - (b.cy + b.sy / 2));
   {
     const steps = stairsRight;
     ok(steps.length > 0, `[seed ${seed}] stair has at least one step`);
@@ -205,12 +282,12 @@ for (const seed of SEEDS) {
     const tops = steps.map(s => s.cy + s.sy / 2);
     const rises = tops.map((t, i) => i === 0 ? t : t - tops[i - 1]);
     ok(rises.every(r => r >= 0.12 && r <= 0.22), `[seed ${seed}] each step rise is within human range (0.12-0.22 m)`);
-    const runs = steps.map(s => s.sx);
+    const runs = steps.map(s => s.sz); // run direction is z
     ok(runs.every(r => r >= 0.2 && r <= 0.4), `[seed ${seed}] each step run is within human range (0.2-0.4 m)`);
 
     let monotonic = true;
     for (let i = 1; i < steps.length; i++) {
-      if (tops[i] <= tops[i - 1] || steps[i].cx <= steps[i - 1].cx) monotonic = false;
+      if (tops[i] <= tops[i - 1] || steps[i].cz >= steps[i - 1].cz) monotonic = false;
     }
     ok(monotonic, `[seed ${seed}] steps ascend monotonically in both height and stair-run direction`);
 
@@ -231,21 +308,24 @@ for (const seed of SEEDS) {
     ok(railing.sy >= 0.8 && railing.sy <= 1.3, `[seed ${seed}] railing height is roughly 1.0m`);
 
     const deckTopY = deck.cy + deck.sy / 2;
-    ok(Math.abs(deckTopY - 3.2) < 1e-6, `[seed ${seed}] balcony deck top sits at yDeck (3.2), got ${deckTopY.toFixed(3)}`);
+    ok(Math.abs(deckTopY - 3.4) < 1e-6, `[seed ${seed}] balcony deck top sits at yDeck (3.4), got ${deckTopY.toFixed(3)}`);
 
+    // stair climbs toward -z (last/top step has the lowest cz); deck sits just below it in z
     const topStep = stairsRight[stairsRight.length - 1];
-    const stepEndX = topStep.cx + topStep.sx / 2;
+    const stepTopZ = topStep.cz - topStep.sz / 2; // low-z edge of the top tread
     const deckX0 = deck.cx - deck.sx / 2, deckX1 = deck.cx + deck.sx / 2;
     const deckZ0 = deck.cz - deck.sz / 2, deckZ1 = deck.cz + deck.sz / 2;
-    const stepZ0 = topStep.cz - topStep.sz / 2, stepZ1 = topStep.cz + topStep.sz / 2;
-    const adjoinsX = Math.abs(deckX0 - stepEndX) < 0.5 || (stepEndX >= deckX0 - 0.5 && stepEndX <= deckX1 + 0.5);
-    const overlapsZ = stepZ0 < deckZ1 && stepZ1 > deckZ0;
-    ok(adjoinsX && overlapsZ, `[seed ${seed}] balcony deck footprint adjoins the stair top (reachable)`);
+    const stepX0 = topStep.cx - topStep.sx / 2, stepX1 = topStep.cx + topStep.sx / 2;
+    const adjoinsZ = Math.abs(deckZ1 - stepTopZ) < 0.6;
+    const overlapsX = stepX0 < deckX1 && stepX1 > deckX0;
+    ok(adjoinsZ && overlapsX, `[seed ${seed}] balcony deck footprint adjoins the stair top (reachable)`);
 
     // railing runs along the deck's open edge (matches deck x-span, sits at one z edge)
     ok(Math.abs(railing.sx - deck.sx) < 1e-6, `[seed ${seed}] railing spans the same x-extent as the deck (open edge)`);
     const railZ = railing.cz;
     ok(Math.abs(railZ - deckZ1) < 1e-6 || Math.abs(railZ - deckZ0) < 1e-6, `[seed ${seed}] railing sits on a deck edge`);
+    // deck footprint stays within the corridor half (catwalk over the corridor, not inside a room)
+    ok(deckX1 <= corridorHalf + 1e-6, `[seed ${seed}] balcony deck footprint stays within the corridor lane`);
   }
 
   // ---- lights ----
@@ -257,6 +337,18 @@ for (const seed of SEEDS) {
       l.y > bounds.yMin && l.y < bounds.yMax &&
       l.radius > 0);
     ok(allIn, `[seed ${seed}] all lights are within bounds, above the floor, below yMax`);
+
+    // at least one light per room region
+    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
+    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
+    const roomStrips = [
+      { z0: bounds.minZ, z1: crossZs[0] },
+      { z0: crossZs[0], z1: crossZs[1] },
+      { z0: crossZs[1], z1: bounds.maxZ },
+    ];
+    const roomLights = lights.filter(l => l.x > corridorHalf);
+    const perRoom = roomStrips.every(strip => roomLights.some(l => l.z > strip.z0 && l.z < strip.z1));
+    ok(perRoom, `[seed ${seed}] at least one light per room region`);
   }
 }
 
