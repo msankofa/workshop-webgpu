@@ -303,3 +303,26 @@ gate before the next dependent wave starts. Independent tasks within a wave run 
 - Run/relay the Fable review gates; do not advance a wave until its gate is green.
 - Do the final manual browser verification (Verification section) — agents can't drive WebGPU.
 - Never let a doc drift from code (workshop `CLAUDE.md` rule).
+
+---
+
+## v3 addendum (2026-07-11) — body-scaled, more open
+
+After walking v2, the interior still read as cramped and undifferentiated. v3 keeps the descriptor
+contract and the four-material set unchanged (so `shoot-house.js` is untouched) and revises the pure
+generator only:
+
+- **Body-scaled dimensions.** A new `export const BODY = { radius: 0.3, heightStand: 1.8 }` (the FPS
+  `fp` capsule) drives every body-relative measure: ceiling `H = heightStand*2.4`, `DOOR_W =
+  max(2.4, radius*9)` = 2.7, `coverH = heightStand*0.62`, `railH = heightStand*0.56`, `corridorHalf
+  = max(4, heightStand*2.5)`, `yDeck = H*0.83`. Each is an `opts` override.
+- **Larger footprint:** 50x80 -> 64x100; corridor lane ~9 m; side rooms ~27 m deep.
+- **3-4 rooms per side** (seeded count) instead of a fixed 3, each still >=18 m deep.
+- **Per-room type variation** (seeded, >=1 guaranteed `open`): `open` = large empty area (two
+  lights, no clutter); `cover` = 1-2 chest-high barricades; `pillars` = a colonnade of 2-3
+  full-height square columns (`pillar` kind, `wall` material) for hard cover.
+- **Brighter:** larger light radii, two lights per open room, corridor light count scaled to `L`.
+
+Tests grow to 513 checks: room-count is derived per seed (`roomStripsOf`), plus new coverage for
+room-type variation, the guaranteed empty room, and pillar shape. `shoot-house.js`, the wiring, and
+the adapter contract are unchanged.

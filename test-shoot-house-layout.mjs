@@ -34,12 +34,23 @@ function solidAt(prims, x, z, y = 1.5, opts = {}) {
   return false;
 }
 
+// reconstruct the room z-strips from the interior cross walls (run along x, thin in z, cx>corridorHalf)
+function roomStripsOf(primitives, bounds, corridorHalf) {
+  const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
+  const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
+  const edges = [bounds.minZ, ...crossZs, bounds.maxZ];
+  const strips = edges.slice(0, -1).map((z0, i) => ({ z0, z1: edges[i + 1] }));
+  return { crossZs, strips };
+}
+
 // ---- invariant suite: run for a spread of seeds so seeded topology + optional branches are exercised ----
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+const roomTypesSeen = new Set();
 for (const seed of SEEDS) {
   const house = generateShootHouse(seed);
   const { bounds, primitives, lights, spawn } = house;
-  const corridorHalf = 4; // matches generator default
+  const corridorHalf = 4.5; // matches generator body-scaled default (heightStand 1.8 * 2.5)
+  const wallH = primitives.find(p => p.kind === 'perimeter').sy;
 
   // ---- bounds validity ----
   {
@@ -200,18 +211,12 @@ for (const seed of SEEDS) {
     // corridor -> every room reachability: each side room (bounded by the spine wall) must have
     // a spine doorway opening into it, i.e. a lintel at cx=corridorHalf whose z-span falls inside the room's z-range.
     const spineLintels = lintels.filter(l => Math.abs(l.cx - corridorHalf) < 1e-6);
-    ok(spineLintels.length >= 3, `[seed ${seed}] spine wall has at least 3 door openings (one per room)`);
+    const { crossZs, strips: roomStrips } = roomStripsOf(primitives, bounds, corridorHalf);
+    const roomCount = roomStrips.length;
+    ok(roomCount >= 3 && roomCount <= 4, `[seed ${seed}] 3–4 large rooms per side (got ${roomCount})`);
+    ok(spineLintels.length >= roomCount, `[seed ${seed}] spine wall has at least one door opening per room`);
+    ok(crossZs.length === roomCount - 1, `[seed ${seed}] ${roomCount - 1} cross walls divide the side-room block into ${roomCount} rooms`);
 
-    // reconstruct room z-strips from the two interior cross walls (kind=interior, wall material, running along x, cx>corridorHalf)
-    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
-    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
-    ok(crossZs.length === 2, `[seed ${seed}] exactly 2 cross walls divide the side-room block into 3 rooms`);
-
-    const roomStrips = [
-      { z0: bounds.minZ, z1: crossZs[0] },
-      { z0: crossZs[0], z1: crossZs[1] },
-      { z0: crossZs[1], z1: bounds.maxZ },
-    ];
     const roomsReachable = roomStrips.every(strip =>
       spineLintels.some(l => l.cz > strip.z0 && l.cz < strip.z1));
     ok(roomsReachable, `[seed ${seed}] every side room has a spine doorway opening directly onto the corridor`);
@@ -219,13 +224,7 @@ for (const seed of SEEDS) {
 
   // ---- openness: rooms are large, interior wall count is small ----
   {
-    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
-    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
-    const roomStrips = [
-      { z0: bounds.minZ, z1: crossZs[0] },
-      { z0: crossZs[0], z1: crossZs[1] },
-      { z0: crossZs[1], z1: bounds.maxZ },
-    ];
+    const { crossZs, strips: roomStrips } = roomStripsOf(primitives, bounds, corridorHalf);
     const roomDepth = bounds.maxX - corridorHalf; // x-extent of the side-room block
     for (const [i, strip] of roomStrips.entries()) {
       const zExtent = strip.z1 - strip.z0;
@@ -234,13 +233,13 @@ for (const seed of SEEDS) {
       ok(area >= MIN_ROOM_Z * 15, `[seed ${seed}] room ${i} floor area is large, not a cubicle (got ${area.toFixed(1)} sq m)`);
     }
 
-    // interior wall count bounded: 1 spine (right half) + 2 cross walls = a handful of full-wall segments,
-    // not a scatter. Count distinct interior wall "lines" (unique cx for z-walls, unique cz for x-walls) on the right half.
+    // interior wall count bounded: 1 spine (right half) + (roomCount-1) cross walls = a handful of
+    // full-wall segments, not a scatter. Pillars (kind='pillar') and cover are excluded by the kind filter.
     const interiorWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx >= -1e-9);
     const zLines = new Set(interiorWalls.filter(p => p.sz > p.sx).map(p => p.cx.toFixed(3)));
     const xLines = new Set(interiorWalls.filter(p => p.sx >= p.sz).map(p => p.cz.toFixed(3)));
     const totalLines = zLines.size + xLines.size;
-    ok(totalLines <= 4, `[seed ${seed}] interior wall line count is small/bounded (got ${totalLines}: ${zLines.size} spine + ${xLines.size} cross)`);
+    ok(totalLines === 1 + crossZs.length, `[seed ${seed}] interior wall lines = 1 spine + ${crossZs.length} cross (got ${totalLines})`);
   }
 
   // ---- cover: barricades, not cubes ----
@@ -308,7 +307,8 @@ for (const seed of SEEDS) {
     ok(railing.sy >= 0.8 && railing.sy <= 1.3, `[seed ${seed}] railing height is roughly 1.0m`);
 
     const deckTopY = deck.cy + deck.sy / 2;
-    ok(Math.abs(deckTopY - 3.4) < 1e-6, `[seed ${seed}] balcony deck top sits at yDeck (3.4), got ${deckTopY.toFixed(3)}`);
+    // deck is an elevated catwalk: reachable-height, below the wall top (open roof above it)
+    ok(deckTopY > 2.5 && deckTopY < wallH, `[seed ${seed}] balcony deck top is an elevated catwalk below wall height (got ${deckTopY.toFixed(3)}, wallH ${wallH.toFixed(3)})`);
 
     // stair climbs toward -z (last/top step has the lowest cz); deck sits just below it in z
     const topStep = stairsRight[stairsRight.length - 1];
@@ -339,17 +339,40 @@ for (const seed of SEEDS) {
     ok(allIn, `[seed ${seed}] all lights are within bounds, above the floor, below yMax`);
 
     // at least one light per room region
-    const crossWalls = primitives.filter(p => p.kind === 'interior' && p.material === 'wall' && p.cx > corridorHalf + 0.01 && p.sz <= 0.5 + 1e-6);
-    const crossZs = [...new Set(crossWalls.map(p => Number(p.cz.toFixed(6))))].sort((a, b) => a - b);
-    const roomStrips = [
-      { z0: bounds.minZ, z1: crossZs[0] },
-      { z0: crossZs[0], z1: crossZs[1] },
-      { z0: crossZs[1], z1: bounds.maxZ },
-    ];
+    const { strips: roomStrips } = roomStripsOf(primitives, bounds, corridorHalf);
     const roomLights = lights.filter(l => l.x > corridorHalf);
     const perRoom = roomStrips.every(strip => roomLights.some(l => l.z > strip.z0 && l.z < strip.z1));
     ok(perRoom, `[seed ${seed}] at least one light per room region`);
   }
+
+  // ---- room-type variation: open / cover / pillars ----
+  {
+    const { strips: roomStrips } = roomStripsOf(primitives, bounds, corridorHalf);
+    const cover = primitives.filter(p => p.kind === 'cover' && p.cx > corridorHalf);
+    const pillars = primitives.filter(p => p.kind === 'pillar' && p.cx > corridorHalf);
+    const classify = (s) => {
+      if (pillars.some(p => p.cz > s.z0 && p.cz < s.z1)) return 'pillars';
+      if (cover.some(c => c.cz > s.z0 && c.cz < s.z1)) return 'cover';
+      return 'open';
+    };
+    const types = roomStrips.map(classify);
+    types.forEach(t => roomTypesSeen.add(t));
+    ok(types.includes('open'), `[seed ${seed}] at least one large empty (open) room`);
+
+    // pillars are full-height square columns, clear of doors/stairs/spawn
+    ok(pillars.every(p => Math.abs(p.sy - wallH) < 1e-6), `[seed ${seed}] pillars are full ceiling height`);
+    ok(pillars.every(p => Math.abs(p.sx - p.sz) < 1e-6), `[seed ${seed}] pillars have a square footprint`);
+
+    // an 'open' room is genuinely empty: no cover or pillar solids inside its strip
+    const openStrips = roomStrips.filter(s => classify(s) === 'open');
+    const openEmpty = openStrips.every(s =>
+      !cover.some(c => c.cz > s.z0 && c.cz < s.z1) && !pillars.some(p => p.cz > s.z0 && p.cz < s.z1));
+    ok(openEmpty, `[seed ${seed}] open rooms contain no cover or pillars (large empty area)`);
+  }
 }
+
+// ---- variation is exercised across the seed set ----
+ok(roomTypesSeen.has('open') && roomTypesSeen.has('cover') && roomTypesSeen.has('pillars'),
+  `all three room types (open, cover, pillars) appear across seeds ${SEEDS.join(',')} (saw: ${[...roomTypesSeen].join(', ')})`);
 
 process.exit(fail ? 1 : 0);
