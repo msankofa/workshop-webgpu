@@ -13,7 +13,7 @@
 // instead of touching the DOM.
 
 import { SOUND_EVENTS } from './sound-events.js';
-import { getFileByKey } from './asset-paths.js';
+import { getFileByKey, extensionOf } from './asset-paths.js';
 import { createHandleStore } from './file-handles.js';
 import { subscribeLiveUpdates, rememberLiveMessage } from './live-updates.js';
 
@@ -73,12 +73,15 @@ export function createEnvironmentAudio(options = {}) {
   const sfxHandleStoreName = 'handles';
   const sfxRootHandleKey = 'sfx-root-directory';
   const sfxPickerId = 'environment-audio-sfx-folder';
+  const musicRootHandleKey = 'music-root-directory';
+  const musicPickerId = 'environment-audio-music-folder';
   const liveSfxChannelName = 'sfx-game';
   const liveSfxStorageKey = 'sfx-game-update';
   const sfxHandleStore = createHandleStore(sfxHandleDbName, sfxHandleStoreName);
 
   const soundEventIds = new Set(SOUND_EVENTS);
   const musicEventIds = new Set(['music_menu', 'music_game']);
+  const musicFileExtensions = new Set(['.wav', '.mp3', '.ogg', '.m4a', '.flac']);
 
   // ---- Mixer / context state ----
   let audioCtx = null;
@@ -95,8 +98,11 @@ export function createEnvironmentAudio(options = {}) {
   let desiredMusicEventId = '';
   let desiredMusicPath = '';
   let musicUserPaused = false;
+  let musicSourceMode = 'game';
   let musicOutputMode = 'global';
   let musicSpeakerBehavior = 'front';
+  let musicFolderHandle = null;
+  let musicFolderPaths = [];
   let lastGameplayActive = null;
   const musicEffectSettings = {
     bass: 0,
@@ -132,14 +138,20 @@ export function createEnvironmentAudio(options = {}) {
       musicMuted: audioSettings.musicMuted,
       sfxMuted: audioSettings.sfxMuted,
       musicOutput: musicOutputMode,
+      musicSource: musicSourceMode,
       speakerBehavior: musicSpeakerBehavior,
       effects: { ...musicEffectSettings },
       sfxFolderStatus: statusText,
+      musicFolderStatus: musicFolderHandle
+        ? `${musicFolderHandle.name} - ${musicFolderPaths.length} track${musicFolderPaths.length === 1 ? '' : 's'}`
+        : 'No music folder loaded.',
       currentTrackLabel: currentMusic?.label || '',
       musicPlaying: isMusicPlaying(),
       // Extra fields retained for internal/diagnostic use.
       ready: !!audioCtx,
       sfxFolderName: sfxDirHandle?.name || '',
+      musicFolderName: musicFolderHandle?.name || '',
+      musicFolderTrackCount: musicFolderPaths.length,
       loadedEvents: Object.keys(sfxBuffers).length,
       loadedMusicEvents: Object.keys(musicPaths).length,
       playlist: activeMusicPlaylist(),
@@ -447,6 +459,7 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   function musicEntryVolume(eventId) {
+    if (eventId === 'music_folder') return 1;
     return normalizeSfxVolume(musicPaths[eventId]?.volume);
   }
 
@@ -818,6 +831,10 @@ export function createEnvironmentAudio(options = {}) {
     musicUrlCache.clear();
   }
 
+  function folderMusicCacheKey(relPath) {
+    return `music-folder:${relPath}`;
+  }
+
   function resetMusicPlayback() {
     musicRequestId++;
     pendingMusicRetry = false;
@@ -838,6 +855,18 @@ export function createEnvironmentAudio(options = {}) {
     const file = await fileHandle.getFile();
     const entry = { url: URL.createObjectURL(file) };
     musicUrlCache.set(relPath, entry);
+    return entry;
+  }
+
+  async function cacheFolderMusicPath(relPath) {
+    if (!relPath || !musicFolderHandle) return null;
+    const key = folderMusicCacheKey(relPath);
+    const cached = musicUrlCache.get(key);
+    if (cached) return cached;
+    const fileHandle = await getFileByKey(musicFolderHandle, relPath);
+    const file = await fileHandle.getFile();
+    const entry = { url: URL.createObjectURL(file) };
+    musicUrlCache.set(key, entry);
     return entry;
   }
 
@@ -1031,6 +1060,14 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   function syncMusicForState(fadeDuration = 0.7) {
+    if (musicSourceMode === 'folder') {
+      const currentPath = currentMusic?.eventId === 'music_folder' && musicFolderPaths.includes(currentMusic.path)
+        ? currentMusic.path
+        : musicFolderPaths[0];
+      if (currentPath) playFolderMusicPath(currentPath, fadeDuration);
+      else stopMusic(fadeDuration);
+      return;
+    }
     playMusicEvent(desiredMusicEvent(), fadeDuration);
   }
 
@@ -1053,6 +1090,9 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   function activeMusicPlaylist() {
+    if (musicSourceMode === 'folder') {
+      return musicFolderPaths.map(path => ({ eventId: 'music_folder', path, label: musicTrackLabel(path) }));
+    }
     const eventId = desiredMusicEvent();
     return musicEntryPaths(musicPaths[eventId]).map(path => ({ eventId, path, label: musicTrackLabel(path) }));
   }
@@ -1088,9 +1128,40 @@ export function createEnvironmentAudio(options = {}) {
     return true;
   }
 
+  function playFolderMusicPath(relPath, fadeDuration = 0.35) {
+    if (!relPath || !musicFolderHandle || !musicFolderPaths.includes(relPath)) return false;
+    desiredMusicEventId = 'music_folder';
+    desiredMusicPath = relPath;
+    const requestId = ++musicRequestId;
+    if (currentMusic?.eventId === 'music_folder' && currentMusic.path === relPath) {
+      startMusicTrack(currentMusic, fadeDuration);
+      notify();
+      return true;
+    }
+    const activate = cached => activateMusicTrack(requestId, 'music_folder', relPath, cached, fadeDuration, {
+      sourcePath: relPath,
+      label: musicTrackLabel(relPath),
+    });
+    const cached = musicUrlCache.get(folderMusicCacheKey(relPath));
+    if (cached) {
+      activate(cached);
+      return true;
+    }
+    cacheFolderMusicPath(relPath)
+      .then(entry => {
+        if (!entry) throw new Error('No music file');
+        activate(entry);
+      })
+      .catch(() => {
+        if (requestId === musicRequestId) showSfxStatus(`Music missing ${musicTrackLabel(relPath)}`);
+      });
+    return true;
+  }
+
   function playMusicPlaylistEntry(entry, fadeDuration = 0.35) {
     if (!entry) return false;
     musicUserPaused = false;
+    if (entry.eventId === 'music_folder') return playFolderMusicPath(entry.path, fadeDuration);
     return playGameMusicPath(entry.eventId, entry.path, fadeDuration);
   }
 
@@ -1164,6 +1235,85 @@ export function createEnvironmentAudio(options = {}) {
     musicSpeakerBehavior = behavior;
     updateMusicSpeakerOrb();
     notify();
+  }
+
+  function setMusicSource(mode) {
+    if (mode !== 'game' && mode !== 'folder') return;
+    if (mode === 'folder' && !musicFolderPaths.length) {
+      showSfxStatus('Choose a music folder first');
+      return;
+    }
+    if (musicSourceMode === mode) return;
+    musicSourceMode = mode;
+    musicUserPaused = false;
+    syncMusicForState(0.35);
+    notify();
+  }
+
+  // ---- Specific music folder loading ----
+  async function scanMusicFolder(dirHandle, dirPath = '') {
+    const paths = [];
+    for await (const entry of dirHandle.values()) {
+      const relPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+      if (entry.kind === 'file' && musicFileExtensions.has(extensionOf(entry.name))) {
+        paths.push(relPath);
+      } else if (entry.kind === 'directory') {
+        paths.push(...await scanMusicFolder(entry, relPath));
+      }
+    }
+    return paths.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
+
+  async function loadMusicFolder(dirHandle, { activate = true } = {}) {
+    const paths = await scanMusicFolder(dirHandle);
+    if (!paths.length) {
+      if (musicSourceMode === 'folder') stopMusic(0.25);
+      showSfxStatus(`${dirHandle.name} has no supported music files`);
+      notify();
+      return;
+    }
+    resetMusicPlayback();
+    musicFolderHandle = dirHandle;
+    musicFolderPaths = paths;
+    await sfxHandleStore.save(musicRootHandleKey, dirHandle);
+    showSfxStatus(`Music folder ${dirHandle.name}: ${musicFolderPaths.length} track${musicFolderPaths.length === 1 ? '' : 's'}`);
+    if (activate) {
+      musicSourceMode = 'folder';
+      musicUserPaused = false;
+      syncMusicForState(0.25);
+    }
+    notify();
+  }
+
+  async function pickMusicFolder() {
+    if (!window.showDirectoryPicker) {
+      showSfxStatus('Music folder picker requires Chrome or Edge');
+      return;
+    }
+    try {
+      const opts = { mode: 'read', id: musicPickerId };
+      const stored = await sfxHandleStore.get(musicRootHandleKey);
+      if (stored && await stored.queryPermission({ mode: 'read' }) === 'granted') {
+        opts.startIn = stored;
+      }
+      const handle = await window.showDirectoryPicker(opts);
+      await loadMusicFolder(handle, { activate: true });
+    } catch (err) {
+      if (err.name !== 'AbortError') showSfxStatus('Music folder load failed');
+    }
+  }
+
+  async function restoreMusicFolder() {
+    const stored = await sfxHandleStore.get(musicRootHandleKey);
+    if (!stored) return;
+    try {
+      const perm = await stored.queryPermission({ mode: 'read' });
+      if (perm === 'granted') {
+        await loadMusicFolder(stored, { activate: true });
+      }
+    } catch {
+      // Music folder restoration is optional.
+    }
   }
 
   // ---- SFX folder loading + sound-map.json ----
@@ -1323,7 +1473,7 @@ export function createEnvironmentAudio(options = {}) {
       musicPaths[eventId] = createMusicEntry(paths, mode, volume);
       await warmMusicPaths(paths);
       showSfxStatus(`Music updated ${eventId}`);
-      if (currentMusic?.eventId === eventId || desiredMusicEvent() === eventId) {
+      if (musicSourceMode === 'game' && (currentMusic?.eventId === eventId || desiredMusicEvent() === eventId)) {
         playMusicEvent(eventId, 0.4);
       }
       notify();
@@ -1386,7 +1536,7 @@ export function createEnvironmentAudio(options = {}) {
     } else if (payload.type === 'sfx-removed') {
       if (isMusicEvent(payload.eventId)) {
         delete musicPaths[payload.eventId];
-        if (currentMusic?.eventId === payload.eventId || desiredMusicEvent() === payload.eventId) {
+        if (musicSourceMode === 'game' && (currentMusic?.eventId === payload.eventId || desiredMusicEvent() === payload.eventId)) {
           syncMusicForState(0.4);
         }
         showSfxStatus(`Music removed ${payload.eventId}`);
@@ -1483,6 +1633,10 @@ export function createEnvironmentAudio(options = {}) {
     loadSfxFolder: loadSfxSounds,
     pickSfxFolder,
     restoreSfxFolder,
+    loadMusicFolder,
+    pickMusicFolder,
+    restoreMusicFolder,
+    setMusicSource,
     play: playSfxEvent,
     playAt: playSfxEventAt,
     setVolume,

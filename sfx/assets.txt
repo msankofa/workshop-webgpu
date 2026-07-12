@@ -1,0 +1,5 @@
+# SFX Browser assets
+explosions/explosion-1.mp3
+gun-shots/pistol-1.wav
+gun-shots/rifle-1.mp3
+gun-shots/rifle-4.mp3

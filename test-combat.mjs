@@ -9,6 +9,9 @@ import {
   pushPlayerPose,
   samplePlayerPose,
   prunePlayerPoseHistory,
+  rayVerticalCylinderHit,
+  raymarchTerrainHit,
+  resolveHitscan,
 } from './combat.js';
 
 let pass = 0, fail = 0;
@@ -173,6 +176,63 @@ const WEAPON = { id: 'rifle', damage: 25, range: 120, fireIntervalMs: 220 };
   prunePlayerPoseHistory(history, 5000, 750);
   const pruned = samplePlayerPose(history, 'p1', 1050);
   ok(pruned !== null && near(pruned.p[0], 10), `8e: pruning old samples still returns the newest — got ${pruned && pruned.p[0]}`);
+}
+
+// 9. Ray into a vertical cylinder (trunk/rock column) hits the near face.
+{
+  const col = { x: 0, z: 10, r: 0.4, minY: 0, maxY: 12 };
+  const res = rayVerticalCylinderHit([0, 1, 0], [0, 0, 1], 50, col);
+  ok(res.hit === true, '9: ray hits cylinder body');
+  ok(near(res.distance, 10 - 0.4), `9: hit at near face — got ${res.distance}`);
+  ok(res.normal && near(res.normal[2], -1), `9: outward normal faces the shooter — got ${JSON.stringify(res.normal)}`);
+}
+
+// 9b. Shot passing above a short column (rock) misses; a tall column (tree) is hit.
+{
+  const shortCol = { x: 0, z: 10, r: 0.5, minY: 0, maxY: 1.5 };
+  const tallCol = { x: 0, z: 10, r: 0.5, minY: 0, maxY: 12 };
+  const overShort = rayVerticalCylinderHit([0, 4, 0], [0, 0, 1], 50, shortCol);
+  ok(overShort.hit === false, '9b: shot above a short rock misses its body');
+  const intoTall = rayVerticalCylinderHit([0, 4, 0], [0, 0, 1], 50, tallCol);
+  ok(intoTall.hit === true, '9b: same shot hits a tall trunk');
+}
+
+// 9c. Downward shot onto a column top hits the cap with an upward normal.
+{
+  const col = { x: 0, z: 5, r: 1, minY: 0, maxY: 2 };
+  const res = rayVerticalCylinderHit([0, 6, 5], [0, -1, 0], 50, col);
+  ok(res.hit === true && res.normal && near(res.normal[1], 1), `9c: top-cap hit with up normal — got ${JSON.stringify(res && res.normal)}`);
+}
+
+// 10. Terrain raymarch finds the ground crossing on a downward ray over a flat field.
+{
+  const flat = () => 0;
+  const res = raymarchTerrainHit([0, 5, 0], [0, -1, 0], 20, flat, null, 0.25);
+  ok(res.hit === true && near(res.point[1], 0, 0.26), `10: flat-ground crossing near y=0 — got ${res.hit && res.point[1]}`);
+  const miss = raymarchTerrainHit([0, 5, 0], [0, 1, 0], 20, flat, null, 0.25);
+  ok(miss.hit === false, '10b: upward ray never crosses flat ground');
+}
+
+// 11. resolveHitscan picks the nearest surface and reports its kind.
+{
+  const flat = () => 0;
+  const players = [{ id: 'p2', p: [0, 1, 30], r: 0.35, h: 1.8, alive: true }];
+  const creatures = [{ id: 'c1', p: [0, 1, 12], r: 0.6, h: 1.6, alive: true }];
+  const obstacles = [{ id: 't1', x: 0, z: 8, r: 0.4, minY: 0, maxY: 12 }];
+  // Obstacle at z=8 is nearest.
+  const h1 = resolveHitscan({ shooterId: 's', origin: [0, 1, 0], dir: [0, 0, 1], range: 50, players, creatures, obstacles, heightAt: flat });
+  ok(h1.kind === 'obstacle' && h1.id === 't1', `11: nearest is the tree — got ${h1.kind}/${h1.id}`);
+  // Remove the obstacle: creature at z=12 wins over the far player.
+  const h2 = resolveHitscan({ shooterId: 's', origin: [0, 1, 0], dir: [0, 0, 1], range: 50, players, creatures, obstacles: [], heightAt: flat });
+  ok(h2.kind === 'creature' && h2.id === 'c1', `11b: creature beats the farther player — got ${h2.kind}/${h2.id}`);
+  // Aim at empty air over flat ground → terrain or none, never a phantom entity hit.
+  const h3 = resolveHitscan({ shooterId: 's', origin: [0, 1, 0], dir: [1, 0, 0], range: 50, players, creatures, obstacles, heightAt: flat });
+  ok(h3.kind === 'none' || h3.kind === 'terrain', `11c: clear shot hits nothing solid — got ${h3.kind}`);
+  ok(Array.isArray(h3.point) && h3.point.length === 3, '11d: always returns a tracer endpoint');
+  // A ClaudeCraft mob nearer than everything else wins with kind 'mob'.
+  const mobs = [{ id: 'wolf1', p: [0, 1, 5], r: 0.5, h: 1.8, alive: true }];
+  const h4 = resolveHitscan({ shooterId: 's', origin: [0, 1, 0], dir: [0, 0, 1], range: 50, players, creatures, mobs, obstacles: [], heightAt: flat });
+  ok(h4.kind === 'mob' && h4.id === 'wolf1', `11e: nearest mob wins with kind 'mob' — got ${h4.kind}/${h4.id}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

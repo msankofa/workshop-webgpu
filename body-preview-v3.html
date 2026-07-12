@@ -1,0 +1,3994 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Body + Weapon Preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #10141b; color: #dfe6ef; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #c { position: fixed; inset: 0; display: block; }
+  #panel {
+    position: fixed; top: 12px; left: 12px; width: 260px; max-height: calc(100% - 24px); overflow: auto;
+    background: rgba(18, 24, 33, 0.92); border: 1px solid #2a3444; border-radius: 10px; padding: 12px 14px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  #optPanel {
+    position: fixed; top: 12px; right: 12px; width: 430px; max-height: calc(100% - 24px); overflow: auto;
+    background: rgba(16, 22, 30, 0.94); border: 1px solid #334155; border-radius: 8px; padding: 12px 14px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 30px rgba(0,0,0,0.38);
+  }
+  .panelHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; }
+  #panel h1, #optPanel h2 { font-size: 14px; margin: 0; letter-spacing: .2px; }
+  .collapseBtn { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; display: inline-grid; place-items: center; font: 16px/1 ui-monospace, monospace; }
+  .panelBody { display: block; }
+  #panel.collapsed, #optPanel.collapsed { width: auto; min-width: 220px; overflow: hidden; }
+  #panel.collapsed .panelBody, #optPanel.collapsed .panelBody { display: none; }
+  #panel.collapsed .panelHead, #optPanel.collapsed .panelHead { margin-bottom: 0; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+  .row label { color: #9fb0c4; }
+  select, button { background: #1d2735; color: #dfe6ef; border: 1px solid #33455c; border-radius: 6px; padding: 5px 8px; font: inherit; cursor: pointer; }
+  button[disabled] { opacity: 0.48; cursor: default; }
+  button:hover { background: #26374c; }
+  button:active { background: #2f4258; }
+  .mini { padding: 4px 7px; font-size: 12px; }
+  input[type=range] { width: 130px; }
+  .btns { display: flex; gap: 8px; margin: 10px 0; }
+  .btns button { flex: 1; }
+  #log { margin-top: 10px; border-top: 1px solid #2a3444; padding-top: 8px; font-family: ui-monospace, monospace; font-size: 11px; color: #8fd0a8; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+  #err { position: fixed; bottom: 12px; left: 12px; right: 12px; color: #ffb3b3; font-family: ui-monospace, monospace; font-size: 12px; }
+  .note { color: #6b7d92; font-size: 11px; margin-top: 6px; }
+  .sec { margin: 12px 0 4px; color: #5cc8ff; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; border-top: 1px solid #2a3444; padding-top: 8px; }
+  .row .val { color: #cbd6e2; font-family: ui-monospace, monospace; min-width: 40px; text-align: right; }
+  .rtKeys { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; max-height: 148px; overflow: auto; }
+  .rtKey { display: flex; justify-content: space-between; gap: 8px; padding: 4px 6px; border: 1px solid #2a3444; border-radius: 6px; background: rgba(20,30,41,.6); cursor: pointer; font-size: 11px; color: #9fb0c4; }
+  .rtKey:hover { background: #22303f; }
+  .rtKey.sel { border-color: #5cc8ff; color: #e6edf6; background: #1c2c3d; }
+  .rtKey .kt { font-family: ui-monospace, monospace; color: #f0b35f; }
+  .rtKey .kev { color: #8fd0a8; }
+  #rtExport { width: 100%; box-sizing: border-box; height: 120px; margin-top: 6px; background: #111923; color: #cbd6e2; border: 1px solid #2a3444; border-radius: 6px; font: 10px/1.35 ui-monospace, monospace; resize: vertical; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+  .kpi { border: 1px solid #2a3444; border-radius: 8px; padding: 8px; background: rgba(20, 30, 41, 0.75); }
+  .kpi b { display: block; font-size: 11px; color: #8da1b8; font-weight: 600; }
+  .kpi span { display: block; margin-top: 4px; font: 15px/1.1 ui-monospace, monospace; color: #e6edf6; }
+  .kpi.good span { color: #8fd0a8; }
+  .barRow { display: grid; grid-template-columns: 78px 1fr 46px; align-items: center; gap: 8px; margin: 7px 0; font-size: 11px; color: #9fb0c4; }
+  .barTrack { height: 8px; background: #182232; border-radius: 999px; overflow: hidden; }
+  .barFill { display: block; height: 100%; width: 0%; background: #5cc8ff; border-radius: 999px; transition: width .12s ease; }
+  .barFill.base { background: #8da1b8; }
+  .barFill.current { background: #f0b35f; }
+  .barFill.best { background: #8fd0a8; }
+  .paramRow { display: grid; grid-template-columns: 92px 64px 1fr 64px; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: #9fb0c4; }
+  .deltaTrack { position: relative; height: 8px; background: #182232; border-radius: 999px; overflow: hidden; }
+  .deltaTrack::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #5b6b7f; }
+  .deltaFill { position: absolute; top: 0; height: 100%; background: #8fd0a8; border-radius: 999px; }
+  canvas.stat { width: 100%; height: 92px; display: block; background: #111923; border: 1px solid #2a3444; border-radius: 8px; }
+  table.stats { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; }
+  table.stats th, table.stats td { border-bottom: 1px solid #243044; padding: 5px 4px; text-align: right; color: #aab8c7; }
+  table.stats th:first-child, table.stats td:first-child { text-align: left; }
+  table.stats th { color: #6f85a0; font-weight: 600; }
+  #optProgress { height: 6px; background: #182232; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+  #optProgressFill { display: block; height: 100%; width: 0%; background: #8fd0a8; }
+  #panel, #optPanel { display: none; }
+  #bodyPreviewUi {
+    --bp-bg: rgba(18, 22, 28, 0.92);
+    --bp-card: rgba(255,255,255,0.045);
+    --bp-line: rgba(255,255,255,0.12);
+    --bp-text: #d8dee9;
+    --bp-muted: #8d97a8;
+    --bp-accent: #77c8a1;
+    --bp-rail: 44px;
+    --bp-panel-width: min(380px, calc(100vw - 64px));
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: calc(var(--bp-panel-width) + var(--bp-rail));
+    display: grid;
+    grid-template-columns: minmax(0, var(--bp-panel-width)) var(--bp-rail);
+    overflow: hidden;
+    z-index: 60;
+    border: 1px solid var(--bp-line);
+    border-radius: 8px;
+    background: var(--bp-bg);
+    box-shadow: 0 12px 36px rgba(0,0,0,0.34);
+    backdrop-filter: blur(10px);
+    transition: width 160ms ease;
+  }
+  #bodyPreviewUi.collapsed {
+    width: var(--bp-rail);
+    grid-template-columns: 0 var(--bp-rail);
+    border-left-color: transparent;
+    border-radius: 8px 0 0 8px;
+  }
+  .bpui-tabs {
+    display: grid;
+    grid-column: 2;
+    grid-row: 1;
+    grid-auto-rows: minmax(58px, 1fr);
+    min-height: 0;
+    border-left: 1px solid var(--bp-line);
+    background: rgba(255,255,255,0.035);
+  }
+  .bpui-tab {
+    width: 100%;
+    min-width: 0;
+    min-height: 58px;
+    padding: 6px 0;
+    border: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    border-radius: 0;
+    background: transparent;
+    color: var(--bp-muted);
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    text-align: center;
+  }
+  .bpui-tab:last-child { border-bottom: 0; }
+  .bpui-tab:hover { background: rgba(255,255,255,0.055); }
+  .bpui-tab.active {
+    color: var(--bp-text);
+    background: rgba(119, 200, 161, 0.12);
+    box-shadow: inset -2px 0 0 var(--bp-accent);
+  }
+  .bpui-panels {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid rgba(255,255,255,0.07);
+  }
+  #bodyPreviewUi.collapsed .bpui-panels { display: none; }
+  .bpui-panel {
+    display: none;
+    box-sizing: border-box;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+    scrollbar-color: #465364 transparent;
+  }
+  .bpui-panel.active { display: block; }
+  .bpui-title {
+    margin: 1px 2px 10px;
+    color: var(--bp-text);
+    font-size: 14px;
+    font-weight: 650;
+  }
+  .bpui-title span { color: var(--bp-accent); }
+  .bpui-card {
+    overflow: hidden;
+    margin-bottom: 8px;
+    border: 1px solid var(--bp-line);
+    border-radius: 6px;
+    background: var(--bp-card);
+  }
+  .bpui-card-title,
+  #bodyPreviewUi .sec {
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
+    padding: 7px 9px;
+    border: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    color: var(--bp-muted);
+    font-size: 11px;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .bpui-card-body { padding: 5px 9px 8px; }
+  #bodyPreviewUi .row {
+    display: grid;
+    grid-template-columns: minmax(98px, 1fr) minmax(0, 160px) 42px;
+    align-items: center;
+    gap: 8px;
+    margin: 7px 0;
+  }
+  #bodyPreviewUi .row label { min-width: 0; color: var(--bp-muted); }
+  #bodyPreviewUi .row select,
+  #bodyPreviewUi .row input:not([type=checkbox]) { box-sizing: border-box; width: 100% !important; min-width: 0; }
+  #bodyPreviewUi .row input[type=checkbox] { justify-self: end; }
+  #bodyPreviewUi .row .val { min-width: 0; color: var(--bp-text); }
+  #bodyPreviewUi .btns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  #bodyPreviewUi .btns:has(button:nth-child(3)) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #bodyPreviewUi .btns button { min-width: 0; padding-inline: 5px; }
+  #bodyPreviewUi .note { color: var(--bp-muted); }
+  .bpui-segmented {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
+    padding: 2px;
+    margin: 7px 0 9px;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 6px;
+    background: rgba(0,0,0,0.2);
+  }
+  .bpui-segmented button { border: 0; background: transparent; color: var(--bp-muted); }
+  .bpui-segmented button.active { background: rgba(119,200,161,0.16); color: var(--bp-text); }
+  .bpui-subhead { margin: 10px 0 3px; color: var(--bp-muted); font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+  .bpui-grip-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
+  .bpui-grip-actions .row { display: flex !important; grid-template-columns: none !important; margin: 0 !important; }
+  .bpui-grip-status { display: grid; gap: 4px; margin-top: 8px; }
+  .bpui-grip-result { display: grid; grid-template-columns: 48px repeat(3, minmax(0,1fr)); gap: 5px; align-items: center; padding: 6px; border: 1px solid rgba(255,255,255,.09); border-radius: 5px; background: rgba(0,0,0,.15); }
+  .bpui-grip-result b { color: #ff8d98; font-size: 10px; text-transform: uppercase; }
+  .bpui-grip-result.good b { color: #8fd0a8; }
+  .bpui-grip-result span { color: var(--bp-muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; text-align: right; }
+  #bodyPreviewUi #log { max-height: 220px; padding: 8px 0 0; }
+  #bodyPreviewUi .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bpui-bone-name {
+    margin: 3px 0 8px;
+    color: var(--bp-accent);
+    font: 600 13px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  .bpui-bone-grid {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 5px 9px;
+    margin: 0;
+    color: var(--bp-muted);
+    font-size: 11px;
+  }
+  .bpui-bone-grid dt, .bpui-bone-grid dd { min-width: 0; margin: 0; }
+  .bpui-bone-grid dd {
+    color: var(--bp-text);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  .bpui-map-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 4px 0 8px;
+  }
+  .bpui-map-metric {
+    min-width: 0;
+    padding: 7px;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 5px;
+    background: rgba(0,0,0,0.16);
+  }
+  .bpui-map-metric b { display: block; color: var(--bp-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+  .bpui-map-metric span { display: block; margin-top: 2px; color: var(--bp-text); font: 15px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .bpui-map-list { display: grid; gap: 3px; }
+  .bpui-map-row {
+    display: grid;
+    grid-template-columns: 8px minmax(88px, 0.85fr) minmax(0, 1.15fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 4px 5px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.12);
+    font-size: 10px;
+  }
+  .bpui-map-dot { width: 7px; height: 7px; border-radius: 50%; background: #707985; }
+  .bpui-map-row.mapped .bpui-map-dot { background: #39ff88; }
+  .bpui-map-row.ambiguous .bpui-map-dot { background: #ffd447; }
+  .bpui-map-row.missing .bpui-map-dot { background: #ff6b6b; }
+  .bpui-map-row.optional .bpui-map-dot { background: #707985; }
+  .bpui-map-target { color: var(--bp-muted); }
+  .bpui-map-bone { min-width: 0; color: var(--bp-text); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #v3boneMap { width: 100%; min-width: 0; }
+  #err { right: calc(min(380px, 100vw - 64px) + 66px); }
+  @media (max-width: 720px) {
+    #bodyPreviewUi { --bp-panel-width: calc(100vw - 54px); top: 8px; right: 0; bottom: 8px; }
+    #bodyPreviewUi .row { grid-template-columns: minmax(92px, 1fr) minmax(0, 145px) 40px; }
+    #err { right: 56px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <div class="panelHead">
+    <h1>Body + Weapon Preview <span style="color:#5cc8ff">v3</span></h1>
+    <button class="collapseBtn" id="toggleMainPanel" title="Collapse body panel" aria-label="Collapse body panel" aria-expanded="true">-</button>
+  </div>
+  <div class="panelBody">
+
+  <div class="row">
+    <label for="mode">Body mode</label>
+    <select id="mode">
+      <option value="local-third-person">third-person (full)</option>
+      <option value="remote">remote (full)</option>
+      <option value="local-lower-body">fps-legs (lower)</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="stance">Stance</label>
+    <select id="stance">
+      <option value="stand">stand</option>
+      <option value="crouch">crouch</option>
+      <option value="prone">prone</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="weapon">Weapon</label>
+    <select id="weapon">
+      <option value="m1911">m1911</option>
+      <option value="m24">m24</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="walk">Walk</label>
+    <input type="checkbox" id="walk" checked />
+  </div>
+  <div class="row">
+    <label for="run">Run</label>
+    <input type="checkbox" id="run" />
+  </div>
+  <div class="row">
+    <label for="autopace">Auto-pace</label>
+    <input type="checkbox" id="autopace" />
+  </div>
+  <div class="note"><b>WASD</b> to move (relative to camera), mouse-drag to orbit. Walk/Run pick the gait profile &amp; speed.</div>
+  <div class="row">
+    <label for="speed">Speed</label>
+    <input type="range" id="speed" min="0" max="8" step="0.05" value="2.05" />
+  </div>
+  <div class="row">
+    <label for="aim">Aim</label>
+    <input type="range" id="aim" min="0" max="1" step="0.02" value="0" />
+  </div>
+
+  <div class="btns">
+    <button id="fire">Fire</button>
+    <button id="reload">Reload</button>
+  </div>
+
+  <div class="sec">Reload Tuner</div>
+  <div class="row">
+    <label for="rtEnable">Enable tuner</label>
+    <input type="checkbox" id="rtEnable" />
+  </div>
+  <div class="note">Scrub the reload against the real body, nudge each key's hand-target
+    offset, and export <code>weapon-poses.json</code>. Body frame: X = left+, Y = up+, Z = forward+.</div>
+  <div class="row">
+    <button id="rtPlay">Play</button>
+    <span class="val" id="rtTime">0.00 / 0.00</span>
+  </div>
+  <div class="row">
+    <label for="rtScrub">Scrub</label>
+    <input type="range" id="rtScrub" min="0" max="1" step="0.005" value="0" />
+  </div>
+  <div id="rtKeys" class="rtKeys"></div>
+  <div id="rtEditor"></div>
+  <div class="row">
+    <button id="rtCopy">Copy weapon-poses.json</button>
+    <button id="rtDownload">Download</button>
+  </div>
+  <textarea id="rtExport" spellcheck="false"></textarea>
+
+  <div class="sec">Body Preview V3</div>
+  <div class="row">
+    <label for="v3mode">Visual mode</label>
+    <select id="v3mode">
+      <option value="procedural">procedural</option>
+      <option value="generated-skin" selected>generated skin</option>
+      <option value="overlay">overlay</option>
+      <option value="imported-rigid" disabled>imported rigid</option>
+      <option value="imported-skinned">imported skinned</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="v3mat">Skin material</label>
+    <select id="v3mat">
+      <option value="neutral">neutral cloth</option>
+      <option value="armor">armor shell</option>
+      <option value="matte">skin matte</option>
+    </select>
+  </div>
+  <div class="row"><label for="v3skinop">Skin opacity</label><input type="range" id="v3skinop" min="0.05" max="1" step="0.01" value="0.82" /><span class="val" id="v3skinop_v"></span></div>
+  <div class="row"><label for="v3rigop">Rig opacity</label><input type="range" id="v3rigop" min="0" max="1" step="0.01" value="0.18" /><span class="val" id="v3rigop_v"></span></div>
+  <div class="row"><label for="v3limbr">Limb radius</label><input type="range" id="v3limbr" min="0.45" max="1.9" step="0.01" value="1.12" /><span class="val" id="v3limbr_v"></span></div>
+  <div class="row"><label for="v3torsor">Torso radius</label><input type="range" id="v3torsor" min="0.45" max="1.9" step="0.01" value="1.00" /><span class="val" id="v3torsor_v"></span></div>
+  <div class="row"><label for="v3blend">Joint blend</label><input type="range" id="v3blend" min="0" max="1.8" step="0.01" value="0.92" /><span class="val" id="v3blend_v"></span></div>
+  <div class="row"><label for="v3wire">Wireframe</label><input type="checkbox" id="v3wire" /></div>
+  <div class="row"><label for="v3driver">Driver</label><input type="checkbox" id="v3driver" /></div>
+  <div class="row"><label for="v3importbones">Imported bones</label><input type="checkbox" id="v3importbones" checked /></div>
+  <div class="row">
+    <label for="v3asset">Import test</label>
+    <select id="v3asset">
+      <option value="rogue_hooded">rogue hooded</option>
+      <option value="rogue">rogue</option>
+      <option value="ranger">ranger</option>
+      <option value="knight">knight</option>
+      <option value="barbarian">barbarian</option>
+      <option value="mage">mage</option>
+      <option value="male_base">male base character</option>
+    </select>
+  </div>
+  <div class="btns"><button id="v3load">Load model</button><button id="v3clear">Clear model</button></div>
+
+  <div class="sec">Full-body retargeting</div>
+  <div class="row"><label for="v3legretarget">Drive imported rig</label><input type="checkbox" id="v3legretarget" disabled /></div>
+  <div class="row"><label for="v3legblend">Retarget blend</label><input type="range" id="v3legblend" min="0" max="1" step="0.01" value="1" disabled /><span class="val" id="v3legblend_v"></span></div>
+  <div class="note" id="v3legstatus">Load a mapped skinned model.</div>
+  <div class="bpui-subhead">Grip tuning</div>
+  <div class="bpui-segmented" id="v3gripside" role="group" aria-label="Hand to tune">
+    <button type="button" data-side="left">Left hand</button>
+    <button type="button" data-side="right" class="active">Right hand</button>
+  </div>
+  <div class="bpui-subhead">Alignment</div>
+  <div class="row"><label for="v3griptx">Palm side</label><input type="range" id="v3griptx" min="-15" max="15" step="0.2" value="0" /><span class="val" id="v3griptx_v">0.0cm</span></div>
+  <div class="row"><label for="v3gripty">Palm length</label><input type="range" id="v3gripty" min="-15" max="15" step="0.2" value="0" /><span class="val" id="v3gripty_v">0.0cm</span></div>
+  <div class="row"><label for="v3griptz">Palm depth</label><input type="range" id="v3griptz" min="-15" max="15" step="0.2" value="0" /><span class="val" id="v3griptz_v">0.0cm</span></div>
+  <div class="bpui-subhead">Orientation</div>
+  <div class="row"><label for="v3griprx">Pitch</label><input type="range" id="v3griprx" min="-180" max="180" step="1" value="0" /><span class="val" id="v3griprx_v">0deg</span></div>
+  <div class="row"><label for="v3gripry">Yaw</label><input type="range" id="v3gripry" min="-180" max="180" step="1" value="0" /><span class="val" id="v3gripry_v">0deg</span></div>
+  <div class="row"><label for="v3griprz">Roll</label><input type="range" id="v3griprz" min="-180" max="180" step="1" value="0" /><span class="val" id="v3griprz_v">0deg</span></div>
+  <div class="bpui-subhead">Closure</div>
+  <div class="row"><label for="v3gripfinger">Fingers</label><input type="range" id="v3gripfinger" min="0" max="1.5" step="0.02" value="1" /><span class="val" id="v3gripfinger_v">1.00x</span></div>
+  <div class="row"><label for="v3gripthumb">Thumb</label><input type="range" id="v3gripthumb" min="0" max="1.5" step="0.02" value="1" /><span class="val" id="v3gripthumb_v">1.00x</span></div>
+  <div class="bpui-grip-actions">
+    <button type="button" id="v3gripreset">Reset selected hand</button>
+    <div class="row"><label for="v3gripdebug">Diagnostics</label><input type="checkbox" id="v3gripdebug" checked /></div>
+  </div>
+  <div class="bpui-grip-status" id="v3gripstatus">Load and drive a model to validate its grips.</div>
+
+  <div class="sec">Weapon placement (body-space)</div>
+  <div class="row"><label for="wx">Lateral X</label><input type="range" id="wx" min="-1.2" max="1.2" step="0.01" value="0.2" /><span class="val" id="wx_v"></span></div>
+  <div class="row"><label for="wy">Vertical Y</label><input type="range" id="wy" min="-2.0" max="1.2" step="0.01" value="0.44" /><span class="val" id="wy_v"></span></div>
+  <div class="row"><label for="wz">Forward Z</label><input type="range" id="wz" min="-1.0" max="2.0" step="0.01" value="0.42" /><span class="val" id="wz_v"></span></div>
+  <div class="row"><label for="wyaw">Yaw</label><input type="range" id="wyaw" min="-3.14" max="3.14" step="0.02" value="-0.02" /><span class="val" id="wyaw_v"></span></div>
+  <div class="row"><label for="wpitch">Pitch</label><input type="range" id="wpitch" min="-3.14" max="3.14" step="0.02" value="-0.04" /><span class="val" id="wpitch_v"></span></div>
+  <div class="row"><label for="wroll">Roll</label><input type="range" id="wroll" min="-3.14" max="3.14" step="0.02" value="-0.08" /><span class="val" id="wroll_v"></span></div>
+  <div class="row"><label for="wscale">Scale</label><input type="range" id="wscale" min="0.3" max="2" step="0.02" value="0.68" /><span class="val" id="wscale_v"></span></div>
+
+  <div class="sec">Speed → gait model</div>
+  <div class="row"><label for="model">Fit model drives gait</label><input type="checkbox" id="model" /></div>
+  <div class="btns"><button id="addSample">Add sample @ speed</button><button id="resetSamples">Reset</button></div>
+  <div class="note">Scrub <b>Speed</b> to see the fit interpolate/extrapolate. To tune a new point: turn the model <i>off</i>, dial the gait sliders at a speed, hit <b>Add sample</b>, turn it back <i>on</i> — the curve now passes through it.</div>
+  <div class="note" id="modelinfo" style="color:#8fd0a8"></div>
+
+  <div class="sec">Gait</div>
+  <div class="row"><label for="gp">Pelvis height</label><input type="range" id="gp" min="0.3" max="0.85" step="0.01" value="0.58" /><span class="val" id="gp_v"></span></div>
+  <div class="row"><label for="gstride">Stride</label><input type="range" id="gstride" min="0.15" max="1.6" step="0.01" value="1.35" /><span class="val" id="gstride_v"></span></div>
+  <div class="row"><label for="glift">Step lift</label><input type="range" id="glift" min="0.02" max="0.6" step="0.005" value="0.45" /><span class="val" id="glift_v"></span></div>
+  <div class="row"><label for="gdur">Step duration</label><input type="range" id="gdur" min="0.1" max="0.45" step="0.01" value="0.31" /><span class="val" id="gdur_v"></span></div>
+  <div class="row"><label for="gtrigger">Step trigger</label><input type="range" id="gtrigger" min="0.08" max="0.55" step="0.005" value="0.28" /><span class="val" id="gtrigger_v"></span></div>
+  <div class="row"><label for="ghipw">Hip width</label><input type="range" id="ghipw" min="0.25" max="0.62" step="0.005" value="0.42" /><span class="val" id="ghipw_v"></span></div>
+
+  <div class="sec">Prone pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = prone)</span></div>
+  <div class="row"><label for="ppitch">Pitch</label><input type="range" id="ppitch" min="0" max="1.7" step="0.02" value="1.46" /><span class="val" id="ppitch_v"></span></div>
+  <div class="row"><label for="phip">Hip height</label><input type="range" id="phip" min="0.1" max="0.6" step="0.01" value="0.25" /><span class="val" id="phip_v"></span></div>
+  <div class="row"><label for="ptorso">Torso fwd</label><input type="range" id="ptorso" min="0" max="0.7" step="0.01" value="0.33" /><span class="val" id="ptorso_v"></span></div>
+  <div class="row"><label for="phead">Head fwd</label><input type="range" id="phead" min="0" max="1" step="0.01" value="0.75" /><span class="val" id="phead_v"></span></div>
+  <div class="row"><label for="pheadp">Head pitch</label><input type="range" id="pheadp" min="-1.5" max="0.5" step="0.02" value="-1.28" /><span class="val" id="pheadp_v"></span></div>
+  <div class="row"><label for="pfootb">Foot back</label><input type="range" id="pfootb" min="0" max="1.2" step="0.01" value="1.06" /><span class="val" id="pfootb_v"></span></div>
+  <div class="row"><label for="pfoots">Foot spread</label><input type="range" id="pfoots" min="0" max="0.5" step="0.01" value="0.50" /><span class="val" id="pfoots_v"></span></div>
+  <div class="row"><label for="pshf">Shoulder fwd</label><input type="range" id="pshf" min="0" max="0.7" step="0.01" value="0.58" /><span class="val" id="pshf_v"></span></div>
+
+  <div class="sec">Crouch pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = crouch)</span></div>
+  <div class="row"><label for="cpdrop">Pelvis drop</label><input type="range" id="cpdrop" min="0" max="0.7" step="0.01" value="0.62" /><span class="val" id="cpdrop_v"></span></div>
+  <div class="row"><label for="ctdrop">Torso drop</label><input type="range" id="ctdrop" min="0" max="0.7" step="0.01" value="0.25" /><span class="val" id="ctdrop_v"></span></div>
+  <div class="row"><label for="chdrop">Head drop</label><input type="range" id="chdrop" min="0" max="0.7" step="0.01" value="0.10" /><span class="val" id="chdrop_v"></span></div>
+  <div class="row"><label for="csdrop">Shoulder drop</label><input type="range" id="csdrop" min="0" max="0.7" step="0.01" value="0.19" /><span class="val" id="csdrop_v"></span></div>
+  <div class="row"><label for="clean">Lean fwd</label><input type="range" id="clean" min="0" max="1.2" step="0.02" value="0.10" /><span class="val" id="clean_v"></span></div>
+  <div class="row"><label for="cfwd">Shift fwd</label><input type="range" id="cfwd" min="0" max="0.6" step="0.01" value="0.00" /><span class="val" id="cfwd_v"></span></div>
+
+  <div class="sec">Eyes</div>
+  <div class="row"><label for="ewidth">Width</label><input type="range" id="ewidth" min="0.002" max="0.05" step="0.001" value="0.044" /><span class="val" id="ewidth_v"></span></div>
+  <div class="row"><label for="elength">Length</label><input type="range" id="elength" min="0.004" max="0.09" step="0.001" value="0.049" /><span class="val" id="elength_v"></span></div>
+  <div class="row"><label for="edepth">Depth</label><input type="range" id="edepth" min="0.001" max="0.03" step="0.001" value="0.030" /><span class="val" id="edepth_v"></span></div>
+  <div class="row"><label for="ex">X position</label><input type="range" id="ex" min="-0.05" max="0.05" step="0.001" value="0" /><span class="val" id="ex_v"></span></div>
+  <div class="row"><label for="ey">Y position</label><input type="range" id="ey" min="-0.08" max="0.08" step="0.001" value="0.053" /><span class="val" id="ey_v"></span></div>
+  <div class="row"><label for="ez">Z position</label><input type="range" id="ez" min="0.05" max="0.15" step="0.001" value="0.102" /><span class="val" id="ez_v"></span></div>
+  <div class="row"><label for="espace">Spacing</label><input type="range" id="espace" min="0.01" max="0.12" step="0.001" value="0.120" /><span class="val" id="espace_v"></span></div>
+
+  <div class="sec">Humanoid mapping</div>
+  <div class="bpui-map-summary">
+    <div class="bpui-map-metric"><b>Coverage</b><span id="v3mapCoverage">--</span></div>
+    <div class="bpui-map-metric"><b>Mapped</b><span id="v3mapMapped">--</span></div>
+    <div class="bpui-map-metric"><b>Extra</b><span id="v3mapExtra">--</span></div>
+  </div>
+  <div id="v3mapList" class="bpui-map-list"></div>
+  <div class="btns"><button id="v3mapReset">Reset automatic mapping</button></div>
+
+  <div class="sec">Imported bone inspector</div>
+  <div id="v3boneEmpty" class="note">No imported bone selected.</div>
+  <div id="v3boneDetails" hidden>
+    <div class="bpui-bone-name" id="v3boneName"></div>
+    <dl class="bpui-bone-grid">
+      <dt>Parent</dt><dd id="v3boneParent">--</dd>
+      <dt>Depth</dt><dd id="v3boneDepth">--</dd>
+      <dt>Local pos</dt><dd id="v3boneLocalPos">--</dd>
+      <dt>Local rot</dt><dd id="v3boneLocalRot">--</dd>
+      <dt>World pos</dt><dd id="v3boneWorldPos">--</dd>
+      <dt>V2 role</dt><dd><select id="v3boneMap"></select></dd>
+      <dt>Status</dt><dd id="v3boneMapStatus">--</dd>
+    </dl>
+    <div class="btns"><button id="v3boneClear">Clear selection</button></div>
+  </div>
+
+  <div class="sec" id="jointSec" style="display:none">Joint: <span id="jointName" style="color:#dfe6ef;text-transform:none;letter-spacing:0"></span></div>
+  <div id="jointBody" style="display:none">
+    <div class="row"><label for="jpole">Pole swing</label><input type="range" id="jpole" min="-3.14" max="3.14" step="0.02" value="0" /><span class="val" id="jpole_v"></span></div>
+    <div class="row"><label for="jpoleprone">Pole swing (prone)</label><input type="range" id="jpoleprone" min="-3.14" max="3.14" step="0.02" value="0" /><span class="val" id="jpoleprone_v"></span></div>
+    <div class="note" id="jointNote" style="display:none">Tuned via crouch/prone panels.</div>
+  </div>
+  <div class="note">Click a joint on the body to select it; click empty space to deselect.</div>
+
+  <div class="sec">Rig bends</div>
+  <div class="btns"><button id="kneeFlip">Flip knees</button><button id="elbowFlip">Flip elbows</button></div>
+  <div class="btns"><button id="copyTune">Copy tuning → log</button></div>
+
+  <div class="note">Weapon is a placeholder box; anchors are authored in real-GLB space so exact hand contact needs the GLB. This harness previews gait, weapon-pose blending, recoil, and the reload arm/event sequence driving <code>setArmTarget</code>.</div>
+
+  <div id="log"></div>
+  </div>
+</div>
+<div id="optPanel">
+  <div class="panelHead">
+    <h2>Gait Optimizer <span style="color:#8fd0a8">compare</span></h2>
+    <button class="collapseBtn" id="toggleOptPanel" title="Collapse optimizer panel" aria-label="Collapse optimizer panel" aria-expanded="true">-</button>
+  </div>
+  <div class="panelBody">
+
+  <div class="row">
+    <label for="optScenario">Scenario set</label>
+    <select id="optScenario">
+      <option value="balanced">balanced</option>
+      <option value="terrain">terrain stress</option>
+      <option value="speed">speed changes</option>
+      <option value="control">turning/control</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="optAlgo">Optimizer</label>
+    <select id="optAlgo">
+      <option value="anneal">annealed local search</option>
+      <option value="random">random search</option>
+    </select>
+  </div>
+  <div class="row"><label for="optIters">Candidates</label><input type="range" id="optIters" min="20" max="600" step="20" value="180" /><span class="val" id="optIters_v">180</span></div>
+  <div class="row"><label for="optSpread">Search radius</label><input type="range" id="optSpread" min="0.04" max="0.55" step="0.01" value="0.18" /><span class="val" id="optSpread_v">0.18</span></div>
+  <div class="row"><label for="optStyle">Style guard</label><input type="range" id="optStyle" min="0" max="3" step="0.05" value="1.25" /><span class="val" id="optStyle_v">1.25</span></div>
+  <div class="row"><label for="optPelvis">Posture target</label><input type="range" id="optPelvis" min="0.50" max="0.64" step="0.005" value="0.58" /><span class="val" id="optPelvis_v">0.580</span></div>
+  <div class="row"><label for="optTempo">Tempo guard</label><input type="range" id="optTempo" min="0" max="3" step="0.05" value="1.10" /><span class="val" id="optTempo_v">1.10</span></div>
+  <div class="row"><label for="optSeed">Seed</label><input id="optSeed" value="body-v2" style="width:130px" /></div>
+
+  <div class="btns">
+    <button id="optRun">Run Optimize</button>
+    <button id="optStop">Stop</button>
+  </div>
+  <div class="btns">
+    <button id="optEval">Evaluate Current</button>
+    <button id="optBaseline">Set Baseline</button>
+    <button id="optApplyBest">Apply Best</button>
+  </div>
+  <div class="row">
+    <label for="optPreview">Preview config</label>
+    <select id="optPreview">
+      <option value="current">current sliders</option>
+      <option value="baseline">baseline</option>
+      <option value="best">best found</option>
+    </select>
+  </div>
+  <div id="optProgress"><span id="optProgressFill"></span></div>
+  <div class="note" id="optStatus">Scores are lower-is-better. Baseline is captured from the sliders on load.</div>
+
+  <div class="kpis">
+    <div class="kpi"><b>Baseline</b><span id="scoreBase">--</span></div>
+    <div class="kpi"><b>Current</b><span id="scoreCurrent">--</span></div>
+    <div class="kpi good"><b>Best</b><span id="scoreBest">--</span></div>
+    <div class="kpi good"><b>Gain</b><span id="scoreGain">--</span></div>
+  </div>
+
+  <div class="sec">Score history</div>
+  <canvas id="scoreChart" class="stat" width="420" height="92"></canvas>
+
+  <div class="sec">Penalty breakdown</div>
+  <div id="optBars"></div>
+
+  <div class="sec">Parameter delta</div>
+  <div id="paramDeltas"></div>
+
+  <div class="sec">Scenario scores</div>
+  <table class="stats">
+    <thead><tr><th>Scenario</th><th>Base</th><th>Current</th><th>Best</th></tr></thead>
+    <tbody id="scenarioStats"></tbody>
+  </table>
+  </div>
+</div>
+<div id="err"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { createProceduralPlayerBody, createGaitScheduler, GAIT_DEFAULTS } from './player-procedural-body.js?v=23';
+import { createWeaponPoseController } from './weapon-pose-controller.js?v=5';
+import { WEAPONS } from './weapons.js';
+
+// Populate the weapon dropdown from every weapon that ships a GLB (the markup only hardcodes
+// m1911/m24). Weapons without authored anchors still load — the GLB shows so their hold can be
+// tuned here (anchors are authored separately in weapon-anchor-editor.html).
+(() => {
+  const sel = document.getElementById('weapon');
+  if (!sel) return;
+  sel.innerHTML = '';
+  for (const [id, w] of Object.entries(WEAPONS)) {
+    if (!w.model) continue;
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = w.displayName || id;
+    sel.appendChild(opt);
+  }
+})();
+
+function installBodyPreviewUi() {
+  const mainPanel = document.getElementById('panel');
+  const optimizePanel = document.getElementById('optPanel');
+  const mainBody = mainPanel?.querySelector('.panelBody');
+  const optimizeBody = optimizePanel?.querySelector('.panelBody');
+  if (!mainBody || !optimizeBody) return;
+
+  const tabDefs = [
+    ['body', 'Body'],
+    ['skin', 'Skin'],
+    ['weapon', 'Weapon'],
+    ['gait', 'Gait'],
+    ['poses', 'Poses'],
+    ['rig', 'Rig'],
+    ['optimize', 'Optimize'],
+  ];
+  const shell = document.createElement('aside');
+  shell.id = 'bodyPreviewUi';
+  shell.setAttribute('aria-label', 'Body Preview V3 controls');
+  const tabs = document.createElement('nav');
+  tabs.className = 'bpui-tabs';
+  tabs.setAttribute('aria-label', 'Control sections');
+  const panels = document.createElement('div');
+  panels.className = 'bpui-panels';
+  const tabButtons = new Map();
+  const panelElements = new Map();
+
+  for (const [id, label] of tabDefs) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'bpui-tab';
+    button.dataset.tab = id;
+    button.textContent = label;
+    button.setAttribute('aria-controls', `bpui-${id}`);
+    tabs.appendChild(button);
+    tabButtons.set(id, button);
+
+    const panel = document.createElement('section');
+    panel.id = `bpui-${id}`;
+    panel.className = 'bpui-panel';
+    panel.dataset.panel = id;
+    const title = document.createElement('h2');
+    title.className = 'bpui-title';
+    title.innerHTML = `${label} <span>v3</span>`;
+    panel.appendChild(title);
+    panels.appendChild(panel);
+    panelElements.set(id, panel);
+  }
+
+  function appendCard(tabId, titleNode, nodes, fallbackTitle) {
+    if (!nodes.length) return;
+    const card = document.createElement('section');
+    card.className = 'bpui-card';
+    if (titleNode) {
+      card.appendChild(titleNode);
+    } else {
+      const title = document.createElement('div');
+      title.className = 'bpui-card-title';
+      title.textContent = fallbackTitle;
+      card.appendChild(title);
+    }
+    const body = document.createElement('div');
+    body.className = 'bpui-card-body';
+    body.append(...nodes);
+    card.appendChild(body);
+    panelElements.get(tabId).appendChild(card);
+  }
+
+  function tabForSection(title, fallbackTab) {
+    if (title.startsWith('Body Preview')) return 'skin';
+    if (title.startsWith('Weapon placement')) return 'weapon';
+    if (title.startsWith('Speed') || title === 'Gait') return 'gait';
+    if (title.startsWith('Prone pose') || title.startsWith('Crouch pose')) return 'poses';
+    if (title === 'Eyes' || title.startsWith('Humanoid mapping') || title.startsWith('Imported bone') || title.startsWith('Full-body retargeting') || title.startsWith('Joint:') || title === 'Rig bends') return 'rig';
+    return fallbackTab;
+  }
+
+  function routeSections(source, defaultTab, defaultTitle) {
+    let tabId = defaultTab;
+    let titleNode = null;
+    let title = defaultTitle;
+    let nodes = [];
+    const flush = () => {
+      appendCard(tabId, titleNode, nodes, title);
+      titleNode = null;
+      nodes = [];
+    };
+    for (const node of [...source.children]) {
+      if (node.classList.contains('sec')) {
+        flush();
+        titleNode = node;
+        title = node.textContent.trim();
+        tabId = tabForSection(title, defaultTab);
+      } else {
+        nodes.push(node);
+      }
+    }
+    flush();
+  }
+
+  routeSections(mainBody, 'body', 'Preview');
+  routeSections(optimizeBody, 'optimize', 'Optimizer');
+  shell.append(panels, tabs);
+  document.body.appendChild(shell);
+  mainPanel.remove();
+  optimizePanel.remove();
+
+  let activeTab = null;
+  function activate(tabId) {
+    activeTab = panelElements.has(tabId) ? tabId : null;
+    shell.classList.toggle('collapsed', !activeTab);
+    for (const [id, button] of tabButtons) {
+      const active = id === activeTab;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-expanded', active ? 'true' : 'false');
+    }
+    for (const [id, panel] of panelElements) panel.classList.toggle('active', id === activeTab);
+    try { localStorage.setItem('body-preview-v3-active-tab', activeTab || ''); } catch {}
+  }
+  window.bodyPreviewV3Ui = { activate };
+  tabs.addEventListener('click', (event) => {
+    const button = event.target.closest('.bpui-tab');
+    if (button) activate(button.dataset.tab === activeTab ? null : button.dataset.tab);
+  });
+  let initialTab = 'body';
+  try {
+    const saved = localStorage.getItem('body-preview-v3-active-tab');
+    if (saved === '' || panelElements.has(saved)) initialTab = saved;
+  } catch {}
+  activate(initialTab);
+}
+
+installBodyPreviewUi();
+
+const errEl = document.getElementById('err');
+const logEl = document.getElementById('log');
+const showError = (m) => { errEl.textContent = '⚠ ' + m; };
+addEventListener('error', (e) => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => showError((e.reason && e.reason.message) || String(e.reason)));
+
+function log(line) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent = `${t}  ${line}\n` + logEl.textContent;
+}
+
+// --- terrain ---------------------------------------------------------------
+function terrainHeight(x, z) {
+  return 0.35 * Math.sin(x * 0.35) * Math.cos(z * 0.32)
+       + 0.18 * Math.sin(x * 0.9 + 1.3) * Math.sin(z * 0.7);
+}
+
+// --- scene / renderer ------------------------------------------------------
+const canvas = document.getElementById('c');
+const renderer = new WebGPURenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x121821);
+scene.fog = new THREE.Fog(0x121821, 14, 40);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(3.2, 2.4, 4.2);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xbcd3ff, 0x2a3038, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+sun.position.set(6, 10, 4);
+scene.add(sun);
+
+// terrain mesh matching terrainHeight
+{
+  const size = 40, seg = 120;
+  const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x2c3a2f, roughness: 1, metalness: 0 }));
+  scene.add(mesh);
+  const grid = new THREE.GridHelper(size, 40, 0x3a4a5a, 0x263141);
+  grid.position.y = 0.01;
+  scene.add(grid);
+}
+
+// --- weapon def (merge anchor sidecar + poses sidecar) ---------------------
+let WEAPON_ANCHORS = {}, WEAPON_POSES = {};
+const WEAPON_MODEL_CACHE = {}; // id -> loaded+normalized model, reused across switches
+let currentWeaponModel = null;
+let currentWeaponId = null;
+let weaponLoadToken = 0; // guards against rapid select toggling
+async function loadWeaponData() {
+  const [a, p] = await Promise.all([
+    fetch('./weapon-anchors.json', { cache: 'no-store' }).then((r) => r.json()),
+    fetch('./weapon-poses.json', { cache: 'no-store' }).then((r) => r.json()),
+  ]);
+  WEAPON_ANCHORS = a; WEAPON_POSES = p;
+}
+// Load (or reuse) the real GLB for a weapon id, normalize it, bake anchors, mount it.
+async function switchWeaponModel(id) {
+  const token = ++weaponLoadToken;
+  ui.weapon.disabled = true;
+  let model = WEAPON_MODEL_CACHE[id];
+  if (!model) {
+    const gltf = await gltfLoader.loadAsync(WEAPONS[id].model);
+    if (token !== weaponLoadToken) { ui.weapon.disabled = false; return; }
+    model = gltf.scene;
+    const normMatrix = normalizeObject(model, 0.62);
+    // Weapons not yet authored in weapon-anchor-editor.html have no entry here — bake an empty
+    // set so the GLB still displays (hands won't grip until anchors are authored).
+    const rawAnchors = WEAPON_ANCHORS[id]?.ikAnchors;
+    if (!rawAnchors) log('weapon=' + id + ' has NO anchors yet (author in weapon-anchor-editor.html)');
+    BAKED_ANCHORS[id] = bakeAnchors(rawAnchors || {}, normMatrix);
+    model.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
+    WEAPON_MODEL_CACHE[id] = model;
+  }
+  if (token !== weaponLoadToken) return;
+  if (currentWeaponModel) weaponView.remove(currentWeaponModel);
+  model.visible = true;
+  weaponView.add(model);
+  currentWeaponModel = model;
+  syncV3WeaponDisplayModel(model);
+  currentWeaponId = id;
+  if (typeof syncV3GripTuningUi === 'function') syncV3GripTuningUi();
+  ui.weapon.disabled = false;
+  if (controller) controller.setWeapon(id);
+  bodyState.weapon = id;
+  log('weapon=' + id + ' GLB ready + anchors baked');
+}
+// ikAnchors come from BAKED_ANCHORS (raw-GLB-space anchors transformed into the normalized
+// meter space the model renders in — see bakeAnchors). weaponPoses are already in meter/camera
+// space; the fixed 180deg weaponFrame spin + the sliders handle third-person orientation.
+
+function getWeaponDef(id) {
+  const rawSeq = (WEAPON_POSES.reloadSequence && WEAPON_POSES.reloadSequence[id]) || null;
+  const anchors = BAKED_ANCHORS[id] || {};
+  return {
+    id,
+    recoil: 0.6,
+    ikAnchors: anchors,
+    weaponPoses: WEAPON_POSES.weaponPoses || {},
+    reloadSequence: rawSeq || null,
+  };
+}
+
+// --- body + weapon controller ----------------------------------------------
+let body = null, controller = null;
+
+// Weapon mount hierarchy (so the whole thing is tunable, and the controller can still drive
+// the innermost weaponView pose):
+//   weaponRig    — placed at the body each frame, rotated by body yaw (body-facing space)
+//     weaponAdjust — user sliders: position/rotation/scale in body-facing space
+//       weaponFrame  — fixed 180deg spin: camera-forward (-Z) -> body-forward (+Z)
+//         weaponView   — driven by the pose controller (placeholder box GLB stand-in)
+const weaponRig = new THREE.Group();
+scene.add(weaponRig);
+const weaponAdjust = new THREE.Group();
+weaponRig.add(weaponAdjust);
+const weaponFrame = new THREE.Group();
+weaponFrame.rotation.y = Math.PI;
+weaponAdjust.add(weaponFrame);
+const weaponView = new THREE.Group();
+weaponFrame.add(weaponView);
+
+// The controller keeps solving against the original full-size weaponView. Imported skins render
+// a mirrored display copy transformed through the same calibrated driver frame as their joints.
+const v3WeaponDisplay = new THREE.Group();
+v3WeaponDisplay.name = 'bodyPreviewV3ImportedWeapon';
+v3WeaponDisplay.visible = false;
+scene.add(v3WeaponDisplay);
+let v3WeaponDisplayModel = null;
+const v3GripFrameCorrectionCache = new Map();
+const v3GripDiagnosticGroup = new THREE.Group();
+v3GripDiagnosticGroup.name = 'bodyPreviewV3GripDiagnostics';
+scene.add(v3GripDiagnosticGroup);
+let v3GripDiagnosticLines = null;
+function updateV3GripDiagnosticLines(segments) {
+  if (v3GripDiagnosticLines) {
+    v3GripDiagnosticGroup.remove(v3GripDiagnosticLines);
+    v3GripDiagnosticLines.geometry.dispose();
+    v3GripDiagnosticLines.material.dispose();
+    v3GripDiagnosticLines = null;
+  }
+  if (!segments.length) return;
+  const positions = [];
+  const colors = [];
+  for (const { from, to, color } of segments) {
+    positions.push(from.x, from.y, from.z, to.x, to.y, to.z);
+    colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  v3GripDiagnosticLines = new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }),
+  );
+  v3GripDiagnosticLines.renderOrder = 20;
+  v3GripDiagnosticGroup.add(v3GripDiagnosticLines);
+}
+function syncV3WeaponDisplayModel(model) {
+  v3GripFrameCorrectionCache.clear();
+  if (v3WeaponDisplayModel) v3WeaponDisplay.remove(v3WeaponDisplayModel);
+  v3WeaponDisplayModel = model ? model.clone(true) : null;
+  if (v3WeaponDisplayModel) {
+    v3WeaponDisplayModel.name = 'bodyPreviewV3ImportedWeaponModel';
+    v3WeaponDisplayModel.visible = true;
+    v3WeaponDisplay.add(v3WeaponDisplayModel);
+  }
+}
+
+const gltfLoader = new GLTFLoader();
+gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+
+// Copy of environment-viewer.html's normalizeObject: axis-align the longest dim, scale so the
+// longest dim == target (m1911 uses 0.62), then recenter. Returns the applied local matrix so we
+// can bake raw-GLB-space anchors into the same normalized meter space the model renders in.
+const _box = new THREE.Box3(), _size = new THREE.Vector3();
+function normalizeObject(obj, target = 0.62) {
+  obj.updateMatrixWorld(true); _box.setFromObject(obj); _box.getSize(_size);
+  if (_size.x >= _size.y && _size.x >= _size.z) obj.rotation.y = Math.PI * 0.5;
+  else if (_size.y >= _size.x && _size.y >= _size.z) obj.rotation.x = Math.PI * 0.5;
+  obj.updateMatrixWorld(true); _box.setFromObject(obj); _box.getSize(_size);
+  const longest = Math.max(_size.x, _size.y, _size.z, 1e-6);
+  obj.scale.multiplyScalar(target / longest);
+  obj.updateMatrixWorld(true); _box.setFromObject(obj);
+  obj.position.sub(_box.getCenter(new THREE.Vector3()));
+  obj.updateMatrixWorld(true);
+  return obj.matrixWorld.clone();
+}
+// Baked (normalized meter-space) anchors per weapon, filled after the GLB loads.
+const BAKED_ANCHORS = {};
+function bakeAnchors(rawAnchors, normMatrix) {
+  const rot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(normMatrix));
+  const out = {};
+  for (const k in rawAnchors) {
+    const p = new THREE.Vector3(...rawAnchors[k].p).applyMatrix4(normMatrix);
+    const q = rot.clone().multiply(new THREE.Quaternion(...(rawAnchors[k].q || [0, 0, 0, 1])));
+    out[k] = { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+  }
+  return out;
+}
+
+// --- Body Preview V3 generated skin ----------------------------------------
+const V3_SEGMENT_SPECS = Object.freeze([
+  { id: 'pelvisWaist', a: 'pelvis', b: 'waist', kind: 'torso', r: 0.18 },
+  { id: 'waistTorso', a: 'waist', b: 'torso', kind: 'torso', r: 0.22 },
+  { id: 'torsoNeck', a: 'torso', b: 'neck', kind: 'torso', r: 0.16 },
+  { id: 'neckHead', a: 'neck', b: 'head', kind: 'head', r: 0.12 },
+  { id: 'leftShoulderBridge', a: 'torso', b: 'leftShoulder', kind: 'torso', r: 0.10 },
+  { id: 'rightShoulderBridge', a: 'torso', b: 'rightShoulder', kind: 'torso', r: 0.10 },
+  { id: 'leftHipBridge', a: 'pelvis', b: 'leftHip', kind: 'torso', r: 0.11 },
+  { id: 'rightHipBridge', a: 'pelvis', b: 'rightHip', kind: 'torso', r: 0.11 },
+  { id: 'leftUpperArm', a: 'leftShoulder', b: 'leftElbow', kind: 'limb', r: 0.055 },
+  { id: 'leftLowerArm', a: 'leftElbow', b: 'leftWrist', kind: 'limb', r: 0.050 },
+  { id: 'leftHand', a: 'leftWrist', b: 'leftHand', kind: 'limb', r: 0.045 },
+  { id: 'rightUpperArm', a: 'rightShoulder', b: 'rightElbow', kind: 'limb', r: 0.055 },
+  { id: 'rightLowerArm', a: 'rightElbow', b: 'rightWrist', kind: 'limb', r: 0.050 },
+  { id: 'rightHand', a: 'rightWrist', b: 'rightHand', kind: 'limb', r: 0.045 },
+  { id: 'leftUpperLeg', a: 'leftHip', b: 'leftKnee', kind: 'limb', r: 0.075 },
+  { id: 'leftLowerLeg', a: 'leftKnee', b: 'leftAnkle', kind: 'limb', r: 0.065 },
+  { id: 'leftFoot', a: 'leftAnkle', b: 'leftFoot', kind: 'limb', r: 0.050 },
+  { id: 'rightUpperLeg', a: 'rightHip', b: 'rightKnee', kind: 'limb', r: 0.075 },
+  { id: 'rightLowerLeg', a: 'rightKnee', b: 'rightAnkle', kind: 'limb', r: 0.065 },
+  { id: 'rightFoot', a: 'rightAnkle', b: 'rightFoot', kind: 'limb', r: 0.050 },
+]);
+const V3_JOINT_NAMES = [...new Set(V3_SEGMENT_SPECS.flatMap((s) => [s.a, s.b]))];
+const V3_MATERIAL_PRESETS = {
+  neutral: { skin: 0x8995a3, joint: 0xb7c0cc, roughness: 0.82, metalness: 0.03 },
+  armor: { skin: 0x53606e, joint: 0x8994a1, roughness: 0.58, metalness: 0.22 },
+  matte: { skin: 0xb48773, joint: 0xd0a38d, roughness: 0.9, metalness: 0.0 },
+};
+const _v3A = new THREE.Vector3();
+const _v3B = new THREE.Vector3();
+const _v3Mid = new THREE.Vector3();
+const _v3Dir = new THREE.Vector3();
+const _v3Up = new THREE.Vector3(0, 1, 0);
+const _bodyMaterialDefaults = new WeakMap();
+let v3Skin = null;
+
+function createV3Skin() {
+  const group = new THREE.Group();
+  group.name = 'bodyPreviewV3GeneratedSkin';
+  group.visible = false;
+  scene.add(group);
+
+  const segmentGeo = new THREE.CylinderGeometry(1, 1, 1, 18, 1, false);
+  const jointGeo = new THREE.SphereGeometry(1, 16, 8);
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0x8995a3, roughness: 0.82, metalness: 0.03, transparent: true, opacity: 0.82 });
+  const jointMat = new THREE.MeshStandardMaterial({ color: 0xb7c0cc, roughness: 0.82, metalness: 0.03, transparent: true, opacity: 0.82 });
+  const segments = V3_SEGMENT_SPECS.map((spec) => {
+    const mesh = new THREE.Mesh(segmentGeo, skinMat);
+    mesh.name = 'v3Skin_' + spec.id;
+    mesh.frustumCulled = false;
+    group.add(mesh);
+    return { spec, mesh };
+  });
+  const joints = {};
+  for (const name of V3_JOINT_NAMES) {
+    const mesh = new THREE.Mesh(jointGeo, jointMat);
+    mesh.name = 'v3SkinJoint_' + name;
+    mesh.frustumCulled = false;
+    joints[name] = mesh;
+    group.add(mesh);
+  }
+
+  const driverPositions = new Float32Array(V3_SEGMENT_SPECS.length * 2 * 3);
+  const driverGeo = new THREE.BufferGeometry();
+  driverGeo.setAttribute('position', new THREE.BufferAttribute(driverPositions, 3));
+  const driverMat = new THREE.LineBasicMaterial({ color: 0x5cc8ff, transparent: true, opacity: 0.72, depthTest: false, depthWrite: false });
+  const driver = new THREE.LineSegments(driverGeo, driverMat);
+  driver.name = 'v3SkinDriver';
+  driver.frustumCulled = false;
+  group.add(driver);
+
+  v3Skin = { group, segmentGeo, jointGeo, skinMat, jointMat, driverMat, segments, joints, driver };
+  return v3Skin;
+}
+
+function ensureV3Skin() {
+  return v3Skin || createV3Skin();
+}
+
+function segmentRadius(spec, cfg) {
+  const scale = (spec.kind === 'torso' || spec.kind === 'head') ? cfg.torsoRadius : cfg.limbRadius;
+  return spec.r * scale;
+}
+
+function jointRadius(name, cfg) {
+  const torso = name === 'pelvis' || name === 'waist' || name === 'torso' || name === 'neck' || name === 'head';
+  const end = /Hand$|Foot$/.test(name);
+  const base = torso ? 0.085 * cfg.torsoRadius : (end ? 0.052 : 0.066) * cfg.limbRadius;
+  return base * cfg.jointBlend;
+}
+
+function applyV3Material(cfg) {
+  const skin = ensureV3Skin();
+  const p = V3_MATERIAL_PRESETS[cfg.material] || V3_MATERIAL_PRESETS.neutral;
+  skin.skinMat.color.setHex(p.skin);
+  skin.skinMat.roughness = p.roughness;
+  skin.skinMat.metalness = p.metalness;
+  skin.skinMat.opacity = cfg.skinOpacity;
+  skin.skinMat.transparent = cfg.skinOpacity < 1;
+  skin.skinMat.wireframe = cfg.wireframe;
+  skin.jointMat.color.setHex(p.joint);
+  skin.jointMat.roughness = p.roughness;
+  skin.jointMat.metalness = p.metalness;
+  skin.jointMat.opacity = cfg.skinOpacity;
+  skin.jointMat.transparent = cfg.skinOpacity < 1;
+  skin.jointMat.wireframe = cfg.wireframe;
+}
+
+function forEachObjectMaterial(obj, fn) {
+  if (!obj.material) return;
+  if (Array.isArray(obj.material)) obj.material.forEach(fn);
+  else fn(obj.material);
+}
+
+function applyBodyRigOpacity(targetBody, opacity) {
+  if (!targetBody || !targetBody.group) return;
+  targetBody.group.traverse((obj) => {
+    forEachObjectMaterial(obj, (mat) => {
+      if (!_bodyMaterialDefaults.has(mat)) {
+        _bodyMaterialDefaults.set(mat, { opacity: mat.opacity, transparent: mat.transparent, depthWrite: mat.depthWrite });
+      }
+      const base = _bodyMaterialDefaults.get(mat);
+      const nextTransparent = base.transparent || opacity < 0.999;
+      const nextDepthWrite = opacity > 0.999 ? base.depthWrite : false;
+      if (mat.transparent !== nextTransparent || mat.depthWrite !== nextDepthWrite) mat.needsUpdate = true;
+      mat.transparent = nextTransparent;
+      mat.depthWrite = nextDepthWrite;
+      mat.opacity = base.opacity * opacity;
+    });
+  });
+}
+
+function readJointPosition(targetBody, name, out) {
+  const obj = targetBody?.joints?.[name];
+  if (!obj || obj.visible === false) return null;
+  obj.getWorldPosition(out);
+  return out;
+}
+
+function updateV3Preview(targetBody, cfg) {
+  const skin = ensureV3Skin();
+  const skinVisible = cfg.mode === 'generated-skin' || cfg.mode === 'overlay';
+  skin.group.visible = skinVisible && !!targetBody?.joints;
+  applyBodyRigOpacity(targetBody, cfg.mode === 'procedural' ? 1 : cfg.rigOpacity);
+  if (!skin.group.visible) return;
+
+  applyV3Material(cfg);
+  const driverAttr = skin.driver.geometry.attributes.position;
+  let driverIndex = 0;
+  for (const { spec, mesh } of skin.segments) {
+    const a = readJointPosition(targetBody, spec.a, _v3A);
+    const b = readJointPosition(targetBody, spec.b, _v3B);
+    if (!a || !b) {
+      mesh.visible = false;
+      driverAttr.setXYZ(driverIndex++, 0, 0, 0);
+      driverAttr.setXYZ(driverIndex++, 0, 0, 0);
+      continue;
+    }
+    const length = a.distanceTo(b);
+    if (length < 0.001) {
+      mesh.visible = false;
+      driverAttr.setXYZ(driverIndex++, a.x, a.y, a.z);
+      driverAttr.setXYZ(driverIndex++, a.x, a.y, a.z);
+      continue;
+    }
+    mesh.visible = true;
+    _v3Mid.copy(a).add(b).multiplyScalar(0.5);
+    _v3Dir.subVectors(b, a).normalize();
+    mesh.position.copy(_v3Mid);
+    mesh.quaternion.setFromUnitVectors(_v3Up, _v3Dir);
+    const radius = segmentRadius(spec, cfg);
+    mesh.scale.set(radius, length, radius);
+    driverAttr.setXYZ(driverIndex++, a.x, a.y, a.z);
+    driverAttr.setXYZ(driverIndex++, b.x, b.y, b.z);
+  }
+  driverAttr.needsUpdate = true;
+  skin.driver.visible = !!cfg.showDriver;
+
+  for (const name of V3_JOINT_NAMES) {
+    const mesh = skin.joints[name];
+    const pos = readJointPosition(targetBody, name, _v3A);
+    if (!pos || cfg.jointBlend <= 0.001) {
+      mesh.visible = false;
+      continue;
+    }
+    mesh.visible = true;
+    mesh.position.copy(pos);
+    mesh.scale.setScalar(jointRadius(name, cfg));
+  }
+}
+
+// --- Body Preview V3 imported-model diagnostics ----------------------------
+const V3_IMPORT_ASSETS = Object.freeze({
+  male_base: './models/male_base_character_low_poly.glb',
+  rogue_hooded: './claudecraft-assets/models/chars/players/rogue_hooded.glb',
+  rogue: './claudecraft-assets/models/chars/players/rogue.glb',
+  ranger: './claudecraft-assets/models/chars/players/ranger.glb',
+  knight: './claudecraft-assets/models/chars/players/knight.glb',
+  barbarian: './claudecraft-assets/models/chars/players/barbarian.glb',
+  mage: './claudecraft-assets/models/chars/players/mage.glb',
+});
+const V3_HUMANOID_TARGETS = Object.freeze([
+  { id: 'hips', label: 'Hips', driver: 'pelvis', aliases: ['hips', 'pelvis'] },
+  { id: 'spine', label: 'Spine', driver: 'waist', aliases: ['spine', 'spine1', 'abdomen', 'waist'] },
+  { id: 'chest', label: 'Chest', driver: 'torso', aliases: ['chest', 'upperchest', 'spine2', 'spine3'] },
+  { id: 'neck', label: 'Neck', driver: 'neck', required: false, aliases: ['neck'] },
+  { id: 'head', label: 'Head', driver: 'head', aliases: ['head', 'headbone'] },
+  { id: 'leftShoulder', label: 'Left shoulder', driver: 'torso -> leftShoulder', required: false, aliases: ['shoulderl', 'leftshoulder', 'claviclel', 'leftclavicle', 'mixamorigleftshoulder'] },
+  { id: 'leftUpperArm', label: 'Left upper arm', driver: 'leftShoulder -> leftElbow', aliases: ['upperarml', 'leftupperarm', 'leftarm', 'mixamorigleftarm'] },
+  { id: 'leftLowerArm', label: 'Left lower arm', driver: 'leftElbow -> leftWrist', aliases: ['lowerarml', 'forearml', 'leftlowerarm', 'leftforearm', 'mixamorigleftforearm'] },
+  { id: 'leftHandPivot', label: 'Left hand pivot', driver: 'leftWrist', aliases: ['wristl', 'leftwrist', 'mixamorigleftwrist'] },
+  { id: 'leftHandEnd', label: 'Left hand end', driver: 'leftHand', required: false, aliases: ['handl', 'lefthand', 'mixamoriglefthand'] },
+  { id: 'rightShoulder', label: 'Right shoulder', driver: 'torso -> rightShoulder', required: false, aliases: ['shoulderr', 'rightshoulder', 'clavicler', 'rightclavicle', 'mixamorigrightshoulder'] },
+  { id: 'rightUpperArm', label: 'Right upper arm', driver: 'rightShoulder -> rightElbow', aliases: ['upperarmr', 'rightupperarm', 'rightarm', 'mixamorigrightarm'] },
+  { id: 'rightLowerArm', label: 'Right lower arm', driver: 'rightElbow -> rightWrist', aliases: ['lowerarmr', 'forearmr', 'rightlowerarm', 'rightforearm', 'mixamorigrightforearm'] },
+  { id: 'rightHandPivot', label: 'Right hand pivot', driver: 'rightWrist', aliases: ['wristr', 'rightwrist', 'mixamorigrightwrist'] },
+  { id: 'rightHandEnd', label: 'Right hand end', driver: 'rightHand', required: false, aliases: ['handr', 'righthand'] },
+  { id: 'leftUpperLeg', label: 'Left upper leg', driver: 'leftHip -> leftKnee', aliases: ['upperlegl', 'thighl', 'leftupperleg', 'leftupleg', 'leftthigh', 'mixamorigleftupleg'] },
+  { id: 'leftLowerLeg', label: 'Left lower leg', driver: 'leftKnee -> leftAnkle', aliases: ['lowerlegl', 'calfl', 'leftlowerleg', 'leftleg', 'leftcalf', 'mixamorigleftleg'] },
+  { id: 'leftFoot', label: 'Left foot', driver: 'leftAnkle -> leftFoot', aliases: ['footl', 'leftfoot', 'mixamorigleftfoot'] },
+  { id: 'leftToes', label: 'Left toes', driver: 'leftFoot forward', required: false, aliases: ['toesl', 'toel', 'lefttoes', 'lefttoe', 'lefttoebase', 'mixamoriglefttoebase'] },
+  { id: 'rightUpperLeg', label: 'Right upper leg', driver: 'rightHip -> rightKnee', aliases: ['upperlegr', 'thighr', 'rightupperleg', 'rightupleg', 'rightthigh', 'mixamorigrightupleg'] },
+  { id: 'rightLowerLeg', label: 'Right lower leg', driver: 'rightKnee -> rightAnkle', aliases: ['lowerlegr', 'calfr', 'rightlowerleg', 'rightleg', 'rightcalf', 'mixamorigrightleg'] },
+  { id: 'rightFoot', label: 'Right foot', driver: 'rightAnkle -> rightFoot', aliases: ['footr', 'rightfoot', 'mixamorigrightfoot'] },
+  { id: 'rightToes', label: 'Right toes', driver: 'rightFoot forward', required: false, aliases: ['toesr', 'toer', 'righttoes', 'righttoe', 'righttoebase', 'mixamorigrighttoebase'] },
+]);
+const V3_HUMANOID_TARGET_BY_ID = new Map(V3_HUMANOID_TARGETS.map((target) => [target.id, target]));
+const V3_MAPPING_COLORS = Object.freeze({
+  mapped: new THREE.Color(0x39ff88),
+  ambiguous: new THREE.Color(0xffd447),
+  extra: new THREE.Color(0x707985),
+  invalid: new THREE.Color(0xff4d5e),
+});
+const V3_LEG_CHAINS = Object.freeze([
+  { side: 'left', upper: 'leftUpperLeg', lower: 'leftLowerLeg', foot: 'leftFoot', toes: 'leftToes', hipJoint: 'leftHip', kneeJoint: 'leftKnee', ankleJoint: 'leftAnkle', footJoint: 'leftFoot' },
+  { side: 'right', upper: 'rightUpperLeg', lower: 'rightLowerLeg', foot: 'rightFoot', toes: 'rightToes', hipJoint: 'rightHip', kneeJoint: 'rightKnee', ankleJoint: 'rightAnkle', footJoint: 'rightFoot' },
+]);
+const V3_ARM_CHAINS = Object.freeze([
+  { side: 'left', shoulder: 'leftShoulder', upper: 'leftUpperArm', lower: 'leftLowerArm', handPivot: 'leftHandPivot', handEnd: 'leftHandEnd', shoulderJoint: 'leftShoulder', elbowJoint: 'leftElbow', wristJoint: 'leftWrist', handJoint: 'leftHand' },
+  { side: 'right', shoulder: 'rightShoulder', upper: 'rightUpperArm', lower: 'rightLowerArm', handPivot: 'rightHandPivot', handEnd: 'rightHandEnd', shoulderJoint: 'rightShoulder', elbowJoint: 'rightElbow', wristJoint: 'rightWrist', handJoint: 'rightHand' },
+]);
+const V3_MAPPING_STORAGE_KEY = 'body-preview-v3-mapping-overrides';
+let v3MappingOverrides = {};
+try { v3MappingOverrides = JSON.parse(localStorage.getItem(V3_MAPPING_STORAGE_KEY) || '{}') || {}; } catch {}
+const _v3ImportCenter = new THREE.Vector3();
+let v3ImportGroup = null;
+let v3Import = null;
+let v3ImportToken = 0;
+const V3_GRIP_TUNING_STORAGE_KEY = 'body-preview-v3-grip-tuning';
+const V3_GRIP_TUNING_DEFAULTS = Object.freeze({
+  tx: 0, ty: 0, tz: 0,
+  rx: 0, ry: 0, rz: 0,
+  finger: 1, thumb: 1,
+});
+let v3GripTuningProfiles = {};
+let v3GripTuneSide = 'right';
+try {
+  v3GripTuningProfiles = JSON.parse(localStorage.getItem(V3_GRIP_TUNING_STORAGE_KEY) || '{}') || {};
+} catch {}
+
+function v3GripTuningKey() {
+  return (v3Import?.id || 'unloaded') + ':' + (currentWeaponId || 'm1911');
+}
+
+function getV3GripTuning(side) {
+  const key = v3GripTuningKey();
+  const profile = v3GripTuningProfiles[key] || (v3GripTuningProfiles[key] = {});
+  return profile[side] || (profile[side] = { ...V3_GRIP_TUNING_DEFAULTS });
+}
+
+function persistV3GripTuning() {
+  try { localStorage.setItem(V3_GRIP_TUNING_STORAGE_KEY, JSON.stringify(v3GripTuningProfiles)); } catch {}
+}
+
+function normalizeV3BoneName(name) {
+  const localName = String(name || '').toLowerCase().split(/[:|]/).pop();
+  return localName.replace(/\.\d+$/, '').replace(/_\d+$/, '').replace(/^mixamorig\d*/, '').replace(/^bip\d*/, '').replace(/[^a-z0-9]/g, '');
+}
+
+function v3BoneSide(name) {
+  const normalized = normalizeV3BoneName(name);
+  if (normalized.includes('left') || /(?:arm|hand|wrist|shoulder|clavicle|leg|foot|toe|toes|thigh|calf)l$/.test(normalized)) return 'left';
+  if (normalized.includes('right') || /(?:arm|hand|wrist|shoulder|clavicle|leg|foot|toe|toes|thigh|calf)r$/.test(normalized)) return 'right';
+  return null;
+}
+
+function v3TargetSide(targetId) {
+  if (targetId.startsWith('left')) return 'left';
+  if (targetId.startsWith('right')) return 'right';
+  return null;
+}
+
+function scoreV3BoneTarget(bone, target) {
+  const normalized = normalizeV3BoneName(bone.name);
+  if (!normalized) return 0;
+  if (/(slot|socket|helper|twist|ik|control|end)/.test(normalized) || /^(root|armature)$/.test(normalized)) return 0;
+  const targetSide = v3TargetSide(target.id);
+  const boneSide = v3BoneSide(bone.name);
+  if (target.id.endsWith('HandEnd') && /hand(?:thumb|index|middle|ring|pinky)/.test(normalized)) return 0;
+  if (targetSide && boneSide && targetSide !== boneSide) return 0;
+  let score = 0;
+  for (const alias of target.aliases) {
+    if (normalized === alias) score = Math.max(score, 1);
+    else if (normalized.endsWith(alias)) score = Math.max(score, 0.93);
+    else if (alias.length >= 5 && normalized.includes(alias)) score = Math.max(score, 0.72);
+  }
+  if (/hand[lr]?$/.test(normalized)) {
+    const parentName = normalizeV3BoneName(bone.parent?.name);
+    if (target.id.endsWith('HandPivot')) {
+      if (/(lowerarm|forearm)/.test(parentName)) score = Math.max(score, 1);
+      else if (/wrist/.test(parentName)) score = Math.max(score, 0.82);
+    } else if (target.id.endsWith('HandEnd') && /(lowerarm|forearm)/.test(parentName)) {
+      score = Math.min(score, 0.84);
+    }
+  }
+  if (targetSide && !boneSide) score *= 0.72;
+  return Math.max(0, score);
+}
+
+function persistV3MappingOverrides() {
+  try { localStorage.setItem(V3_MAPPING_STORAGE_KEY, JSON.stringify(v3MappingOverrides)); } catch {}
+}
+
+function buildV3BoneMapping() {
+  if (!v3Import?.root) return null;
+  restoreV3RigBindPose(v3Import.retarget);
+  const bones = [];
+  v3Import.root.traverse((object) => { if (object.isBone) bones.push(object); });
+  const overrides = v3MappingOverrides[v3Import.id] || {};
+  const byTarget = new Map();
+  const byBone = new Map();
+  const usedTargets = new Set();
+  const usedBones = new Set();
+  const ignoredBones = new Set();
+
+  const assign = (target, bone, confidence, source) => {
+    const entry = { target, bone, confidence, source, status: confidence >= 0.88 || source === 'manual' ? 'mapped' : 'ambiguous' };
+    byTarget.set(target.id, entry);
+    byBone.set(bone.uuid, entry);
+    usedTargets.add(target.id);
+    usedBones.add(bone.uuid);
+  };
+
+  for (const bone of bones) {
+    if (!Object.prototype.hasOwnProperty.call(overrides, bone.name)) continue;
+    const targetId = overrides[bone.name];
+    if (targetId === null) {
+      ignoredBones.add(bone.uuid);
+      continue;
+    }
+    const target = V3_HUMANOID_TARGET_BY_ID.get(targetId);
+    if (target && !usedTargets.has(target.id)) assign(target, bone, 1, 'manual');
+  }
+
+  const candidates = [];
+  for (const bone of bones) {
+    if (usedBones.has(bone.uuid) || ignoredBones.has(bone.uuid)) continue;
+    for (const target of V3_HUMANOID_TARGETS) {
+      if (usedTargets.has(target.id)) continue;
+      const score = scoreV3BoneTarget(bone, target);
+      if (score >= 0.55) candidates.push({ bone, target, score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  for (const candidate of candidates) {
+    if (usedBones.has(candidate.bone.uuid) || usedTargets.has(candidate.target.id)) continue;
+    assign(candidate.target, candidate.bone, candidate.score, 'automatic');
+  }
+
+  const mapping = {
+    bones,
+    byTarget,
+    byBone,
+    extras: bones.filter((bone) => !usedBones.has(bone.uuid)),
+    missing: V3_HUMANOID_TARGETS.filter((target) => !usedTargets.has(target.id)),
+  };
+  mapping.requiredTargets = V3_HUMANOID_TARGETS.filter((target) => target.required !== false);
+  mapping.mappedRequired = mapping.requiredTargets.filter((target) => byTarget.has(target.id));
+  mapping.missingRequired = mapping.requiredTargets.filter((target) => !byTarget.has(target.id));
+  v3Import.mapping = mapping;
+  prepareV3RigRetarget();
+  applyV3BoneMappingColors();
+  renderV3BoneMapping();
+  refreshV3BoneInspector();
+  log(`v3 mapping ${v3Import.id}: required=${mapping.mappedRequired.length}/${mapping.requiredTargets.length}, roles=${byTarget.size}/${V3_HUMANOID_TARGETS.length}, extras=${mapping.extras.length}`);
+  return mapping;
+}
+
+function applyV3BoneMappingColors() {
+  const helper = v3Import?.skeletonHelper;
+  const mapping = v3Import?.mapping;
+  const segmentBones = helper?.userData.segmentBones;
+  const colors = helper?.geometry.getAttribute('color');
+  if (!mapping || !segmentBones || !colors) return;
+  segmentBones.forEach((bone, index) => {
+    const entry = mapping.byBone.get(bone.uuid);
+    const invalid = v3Import?.retarget?.invalidBones?.has(bone.uuid);
+    const color = invalid ? V3_MAPPING_COLORS.invalid : (entry ? V3_MAPPING_COLORS[entry.status] : V3_MAPPING_COLORS.extra);
+    colors.setXYZ(index * 2, color.r, color.g, color.b);
+    colors.setXYZ(index * 2 + 1, color.r, color.g, color.b);
+  });
+  colors.needsUpdate = true;
+}
+
+function renderV3BoneMapping() {
+  const mapping = v3Import?.mapping;
+  const coverage = document.getElementById('v3mapCoverage');
+  const mapped = document.getElementById('v3mapMapped');
+  const extra = document.getElementById('v3mapExtra');
+  const list = document.getElementById('v3mapList');
+  if (!coverage || !mapped || !extra || !list) return;
+  if (!mapping) {
+    coverage.textContent = '--';
+    mapped.textContent = '--';
+    extra.textContent = '--';
+    list.replaceChildren();
+    return;
+  }
+  coverage.textContent = `${Math.round(mapping.mappedRequired.length / mapping.requiredTargets.length * 100)}%`;
+  mapped.textContent = `${mapping.byTarget.size}/${V3_HUMANOID_TARGETS.length}`;
+  extra.textContent = String(mapping.extras.length);
+  const rows = V3_HUMANOID_TARGETS.map((target) => {
+    const entry = mapping.byTarget.get(target.id);
+    const row = document.createElement('div');
+    row.className = `bpui-map-row ${entry?.status || (target.required === false ? 'optional' : 'missing')}`;
+    row.title = entry ? `${entry.source}, confidence ${Math.round(entry.confidence * 100)}% | V2 driver: ${target.driver}` : `Missing | V2 driver: ${target.driver}`;
+    const dot = document.createElement('span');
+    dot.className = 'bpui-map-dot';
+    const targetLabel = document.createElement('span');
+    targetLabel.className = 'bpui-map-target';
+    targetLabel.textContent = target.label;
+    const boneLabel = document.createElement('span');
+    boneLabel.className = 'bpui-map-bone';
+    boneLabel.textContent = entry ? (entry.bone.name || '(unnamed)') : 'missing';
+    row.append(dot, targetLabel, boneLabel);
+    if (entry) {
+      row.tabIndex = 0;
+      row.addEventListener('click', () => selectV3ImportedBone(entry.bone));
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') selectV3ImportedBone(entry.bone);
+      });
+    }
+    return row;
+  });
+  list.replaceChildren(...rows);
+}
+
+function ensureV3ImportGroup() {
+  if (v3ImportGroup) return v3ImportGroup;
+  v3ImportGroup = new THREE.Group();
+  v3ImportGroup.name = 'bodyPreviewV3ImportedModel';
+  v3ImportGroup.visible = false;
+  scene.add(v3ImportGroup);
+  return v3ImportGroup;
+}
+
+function disposeV3Object(root) {
+  if (!root) return;
+  root.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose();
+    forEachObjectMaterial(obj, (mat) => mat.dispose());
+  });
+}
+
+function isV3RootMotionSegment(bone) {
+  if (!bone?.parent?.isBone) return false;
+  const parentName = normalizeV3BoneName(bone.parent.name);
+  const boneName = normalizeV3BoneName(bone.name);
+  return /^(root|rootjoint|armature)$/.test(parentName) && /^(hips|pelvis)/.test(boneName);
+}
+
+function collapseV3HiddenSkeletonSegments(helper) {
+  const positions = helper?.geometry?.getAttribute('position');
+  const hidden = helper?.userData?.hiddenSegmentIndices;
+  if (!positions || !hidden?.size) return;
+  for (const index of hidden) {
+    positions.setXYZ(index * 2 + 1, positions.getX(index * 2), positions.getY(index * 2), positions.getZ(index * 2));
+  }
+  positions.needsUpdate = true;
+}
+
+function createV3SkeletonHelper(root) {
+  const helper = new THREE.SkeletonHelper(root);
+  helper.name = 'bodyPreviewV3ImportedSkeleton';
+  helper.userData.segmentBones = helper.bones.filter((bone) => bone.parent?.isBone);
+  helper.userData.hiddenSegmentIndices = new Set();
+  helper.userData.segmentBones.forEach((bone, index) => {
+    if (isV3RootMotionSegment(bone)) helper.userData.hiddenSegmentIndices.add(index);
+  });
+  const baseUpdateMatrixWorld = helper.updateMatrixWorld.bind(helper);
+  helper.updateMatrixWorld = (force) => {
+    baseUpdateMatrixWorld(force);
+    collapseV3HiddenSkeletonSegments(helper);
+  };
+  const segmentColors = new Float32Array(helper.userData.segmentBones.length * 2 * 3);
+  helper.geometry.setAttribute('color', new THREE.BufferAttribute(segmentColors, 3));
+  helper.material.color.set(0xffffff);
+  helper.material.vertexColors = true;
+  helper.material.needsUpdate = true;
+  helper.material.depthTest = false;
+  helper.material.depthWrite = false;
+  helper.material.transparent = true;
+  helper.material.opacity = 0.95;
+  helper.renderOrder = 1000;
+  scene.add(helper);
+  return helper;
+}
+
+function disposeV3SkeletonHelper(helper) {
+  if (!helper) return;
+  scene.remove(helper);
+  helper.geometry?.dispose();
+  helper.material?.dispose();
+}
+
+function clearV3ImportedModel({ cancelLoad = true, quiet = false } = {}) {
+  if (cancelLoad) {
+    v3ImportToken++;
+    if (ui?.v3load) ui.v3load.disabled = false;
+  }
+  const group = ensureV3ImportGroup();
+  deselectV3ImportedBone();
+  disposeV3SkeletonHelper(v3Import?.skeletonHelper);
+  if (v3Import?.root) {
+    group.remove(v3Import.root);
+    disposeV3Object(v3Import.root);
+  }
+  v3Import = null;
+  group.visible = false;
+  syncV3RigRetargetUi(null);
+  renderV3BoneMapping();
+  if (!quiet) log('v3 import cleared');
+}
+
+function normalizeV3Humanoid(root, targetHeight = 1.8) {
+  root.updateMatrixWorld(true);
+  _box.setFromObject(root);
+  _box.getSize(_size);
+  const height = Math.max(_size.y, 1e-6);
+  root.scale.multiplyScalar(targetHeight / height);
+  root.updateMatrixWorld(true);
+  _box.setFromObject(root);
+  _box.getCenter(_v3ImportCenter);
+  root.position.x -= _v3ImportCenter.x;
+  root.position.z -= _v3ImportCenter.z;
+  root.position.y -= _box.min.y;
+  root.updateMatrixWorld(true);
+}
+
+function measureV3BaseBodyHeight(fallback = 1.8) {
+  if (!body?.group) return fallback;
+  body.group.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(body.group);
+  const height = bounds.getSize(new THREE.Vector3()).y;
+  return Number.isFinite(height) && height > 0.1 ? height : fallback;
+}
+
+function logV3ImportDiagnostics(id, gltf, root) {
+  let meshes = 0;
+  let skinnedMeshes = 0;
+  const boneNames = new Set();
+  root.traverse((obj) => {
+    if (obj.isMesh) meshes++;
+    if (obj.isSkinnedMesh) {
+      skinnedMeshes++;
+      for (const bone of obj.skeleton?.bones || []) boneNames.add(bone.name || '(unnamed)');
+    }
+    if (obj.isBone) boneNames.add(obj.name || '(unnamed)');
+  });
+  const clips = (gltf.animations || []).map((clip) => clip.name || '(unnamed)');
+  log(`v3 import ${id}: meshes=${meshes} skinned=${skinnedMeshes} bones=${boneNames.size} clips=${clips.length}`);
+  log('v3 bones: ' + [...boneNames].slice(0, 24).join(', '));
+  log('v3 clips: ' + clips.slice(0, 12).join(', '));
+}
+
+async function loadV3ImportedModel(id) {
+  const path = V3_IMPORT_ASSETS[id];
+  if (!path) {
+    log('v3 import missing asset=' + id);
+    return;
+  }
+  const token = ++v3ImportToken;
+  ui.v3load.disabled = true;
+  try {
+    const gltf = await gltfLoader.loadAsync(path);
+    if (token !== v3ImportToken) {
+      disposeV3Object(gltf.scene);
+      return;
+    }
+    clearV3ImportedModel({ cancelLoad: false, quiet: true });
+    const group = ensureV3ImportGroup();
+    group.position.set(0, 0, 0);
+    group.rotation.set(0, 0, 0);
+    group.scale.set(1, 1, 1);
+    const root = gltf.scene;
+    const targetHeight = measureV3BaseBodyHeight(bodyState.height || 1.8);
+    normalizeV3Humanoid(root, targetHeight);
+    root.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.castShadow = false;
+        obj.frustumCulled = false;
+      }
+    });
+    group.add(root);
+    root.updateMatrixWorld(true);
+    const skeletonHelper = createV3SkeletonHelper(root);
+    v3Import = { id, path, root, skeletonHelper, animations: gltf.animations || [], targetHeight, originalPose: captureV3OriginalBonePose(root), gripFingers: captureV3GripFingers(root), retarget: null };
+    syncV3GripTuningUi();
+    buildV3BoneMapping();
+    ui.v3mode.value = 'imported-skinned';
+    logV3ImportDiagnostics(id, gltf, root);
+    log('v3 height fit: imported=' + targetHeight.toFixed(3) + 'm, matched to rendered V2 body bounds');
+  } catch (e) {
+    showError((e && e.message) || String(e));
+    log('v3 import failed: ' + ((e && e.message) || String(e)));
+  } finally {
+    if (token === v3ImportToken) ui.v3load.disabled = false;
+  }
+}
+
+function captureV3OriginalBonePose(root) {
+  const poses = new Map();
+  root.traverse((object) => {
+    if (!object.isBone) return;
+    poses.set(object.uuid, {
+      position: object.position.clone(),
+      quaternion: object.quaternion.clone(),
+      scale: object.scale.clone(),
+    });
+  });
+  return poses;
+}
+
+function captureV3GripFingers(root) {
+  const fingers = [];
+  root.traverse((object) => {
+    if (!object.isBone) return;
+    const name = normalizeV3BoneName(object.name);
+    const match = name.match(/(?:left|right)hand(thumb|index|middle|ring|pinky)([123])$/);
+    if (!match) return;
+    fingers.push({
+      bone: object,
+      quaternion: object.quaternion.clone(),
+      side: name.startsWith('left') ? 'left' : 'right',
+      digit: match[1],
+      thumb: match[1] === 'thumb',
+      segment: Number(match[2]),
+    });
+  });
+  return fingers;
+}
+
+function createV3HandAnatomyFrame(handBone, fingers, side) {
+  const roots = fingers.filter((finger) => finger.side === side && finger.segment === 1);
+  const fingerRoots = roots.filter((finger) => !finger.thumb);
+  const thumbRoot = roots.find((finger) => finger.thumb);
+  if (fingerRoots.length < 2 || !thumbRoot) return null;
+
+  const fingerAxis = new THREE.Vector3();
+  for (const finger of fingerRoots) {
+    fingerAxis.add(handBone.worldToLocal(finger.bone.getWorldPosition(new THREE.Vector3())));
+  }
+  fingerAxis.multiplyScalar(1 / fingerRoots.length).normalize();
+  const thumbAxis = handBone.worldToLocal(thumbRoot.bone.getWorldPosition(new THREE.Vector3()));
+  thumbAxis.addScaledVector(fingerAxis, -thumbAxis.dot(fingerAxis)).normalize();
+  if (fingerAxis.lengthSq() < 0.5 || thumbAxis.lengthSq() < 0.5) return null;
+
+  // Anchor +Z points from the palm into the weapon. Thumb handedness resolves
+  // the otherwise ambiguous normal direction for mirrored hands.
+  const palmNormal = new THREE.Vector3().crossVectors(fingerAxis, thumbAxis)
+    .multiplyScalar(side === 'left' ? 1 : -1).normalize();
+  const acrossPalm = new THREE.Vector3().crossVectors(fingerAxis, palmNormal).normalize();
+  palmNormal.crossVectors(acrossPalm, fingerAxis).normalize();
+  const basis = new THREE.Matrix4().makeBasis(acrossPalm, fingerAxis, palmNormal);
+  return {
+    basisLocalQuaternion: new THREE.Quaternion().setFromRotationMatrix(basis),
+    acrossPalmLocal: acrossPalm,
+    fingerAxisLocal: fingerAxis,
+    palmNormalLocal: palmNormal,
+  };
+}
+
+function calibrateV3FingerCurlAxes(handBone, grip, fingers, side) {
+  if (!grip?.acrossPalmLocal || !grip?.palmNormalLocal) return;
+  const handWorld = handBone.getWorldQuaternion(new THREE.Quaternion());
+  const acrossWorld = grip.acrossPalmLocal.clone().applyQuaternion(handWorld).normalize();
+  const palmWorld = grip.palmNormalLocal.clone().applyQuaternion(handWorld).normalize();
+  for (const finger of fingers) {
+    if (finger.side !== side) continue;
+    const fingerWorld = finger.bone.getWorldQuaternion(new THREE.Quaternion());
+    finger.curlAxisLocal = acrossWorld.clone().applyQuaternion(fingerWorld.clone().invert()).normalize();
+    const child = finger.bone.children.find((node) => node.isBone);
+    const directionLocal = child?.position?.lengthSq() > 1e-10
+      ? child.position.clone().normalize()
+      : new THREE.Vector3(0, 1, 0);
+    const directionWorld = directionLocal.applyQuaternion(fingerWorld).normalize();
+    const towardPalm = new THREE.Vector3().crossVectors(acrossWorld, directionWorld).dot(palmWorld);
+    finger.curlSign = towardPalm >= 0 ? 1 : -1;
+  }
+}
+
+function restoreV3RigBindPose(retarget) {
+  if (!retarget?.bind) return;
+  for (const bind of retarget.bind.values()) {
+    bind.bone.position.copy(bind.position);
+    bind.bone.quaternion.copy(bind.quaternion);
+    bind.bone.scale.copy(bind.scale);
+  }
+  for (const finger of v3Import?.gripFingers || []) finger.bone.quaternion.copy(finger.quaternion);
+  v3Import?.root?.updateMatrixWorld(true);
+}
+
+function v3IsBoneAncestor(ancestor, bone) {
+  for (let node = bone?.parent; node; node = node.parent) {
+    if (node === ancestor) return true;
+  }
+  return false;
+}
+
+function syncV3RigRetargetUi(retarget) {
+  if (!ui?.v3legretarget || !ui?.v3legblend) return;
+  const valid = !!retarget?.valid;
+  ui.v3legretarget.disabled = !valid;
+  ui.v3legblend.disabled = !valid;
+  if (!valid) ui.v3legretarget.checked = false;
+  const status = document.getElementById('v3legstatus');
+  if (!status) return;
+  status.textContent = retarget?.message || 'Load a mapped skinned model.';
+  status.style.color = valid ? '#8fd0a8' : '#ff7d88';
+}
+
+function prepareV3RigRetarget() {
+  if (!v3Import?.mapping || !v3Import.originalPose) {
+    syncV3RigRetargetUi(null);
+    return null;
+  }
+  restoreV3RigBindPose(v3Import.retarget);
+  const mapping = v3Import.mapping;
+  const requiredRoles = [
+    'hips', 'spine', 'chest',
+    ...V3_LEG_CHAINS.flatMap((chain) => [chain.upper, chain.lower, chain.foot]),
+    ...V3_ARM_CHAINS.flatMap((chain) => [chain.upper, chain.lower, chain.handPivot]),
+  ];
+  const optionalRoles = ['neck', 'head', 'leftToes', 'rightToes', ...V3_ARM_CHAINS.flatMap((chain) => [chain.shoulder, chain.handEnd])];
+  const issues = [];
+  const invalidBones = new Set();
+  const usedBones = new Set();
+  const bind = new Map();
+
+  const addRole = (role, required) => {
+    const entry = mapping.byTarget.get(role);
+    if (!entry) {
+      if (required) issues.push('missing ' + (V3_HUMANOID_TARGET_BY_ID.get(role)?.label || role));
+      return null;
+    }
+    if (required && entry.status !== 'mapped') {
+      issues.push('ambiguous ' + (V3_HUMANOID_TARGET_BY_ID.get(role)?.label || role));
+      invalidBones.add(entry.bone.uuid);
+    }
+    if (usedBones.has(entry.bone.uuid)) {
+      issues.push('duplicate bone mapping');
+      invalidBones.add(entry.bone.uuid);
+      return null;
+    }
+    const pose = v3Import.originalPose.get(entry.bone.uuid);
+    if (!pose) {
+      if (required) issues.push('missing bind pose for ' + entry.bone.name);
+      invalidBones.add(entry.bone.uuid);
+      return null;
+    }
+    usedBones.add(entry.bone.uuid);
+    const value = { bone: entry.bone, position: pose.position.clone(), quaternion: pose.quaternion.clone(), scale: pose.scale.clone(), axis: null };
+    bind.set(role, value);
+    return value;
+  };
+
+  for (const role of requiredRoles) addRole(role, true);
+  for (const role of optionalRoles) if (!bind.has(role)) addRole(role, false);
+  v3Import.root.updateMatrixWorld(true);
+
+  const invalidateChain = (label, bones) => {
+    issues.push(label);
+    for (const bone of bones) if (bone) invalidBones.add(bone.uuid);
+  };
+  const setAxis = (role, childRole, label) => {
+    const value = bind.get(role);
+    const child = bind.get(childRole)?.bone;
+    if (!value || !child || !v3IsBoneAncestor(value.bone, child)) {
+      invalidateChain(label, [value?.bone, child]);
+      return false;
+    }
+    const childWorld = child.getWorldPosition(new THREE.Vector3());
+    const axis = value.bone.worldToLocal(childWorld);
+    if (![axis.x, axis.y, axis.z].every(Number.isFinite) || axis.lengthSq() < 1e-10) {
+      invalidateChain(label + ' zero-length bind axis', [value.bone, child]);
+      return false;
+    }
+    value.axis = axis.normalize();
+    return true;
+  };
+
+  const hips = bind.get('hips')?.bone;
+  const spine = bind.get('spine')?.bone;
+  const chest = bind.get('chest')?.bone;
+  if (!hips || !spine || !chest || !v3IsBoneAncestor(hips, spine) || !v3IsBoneAncestor(spine, chest)) {
+    invalidateChain('torso hierarchy', [hips, spine, chest]);
+  } else {
+    setAxis('spine', 'chest', 'spine hierarchy');
+    const chestChild = bind.has('neck') ? 'neck' : (bind.has('head') ? 'head' : null);
+    if (chestChild) setAxis('chest', chestChild, 'chest hierarchy');
+    else invalidateChain('missing chest child', [chest]);
+    if (bind.has('neck') && bind.has('head')) setAxis('neck', 'head', 'neck hierarchy');
+  }
+
+  for (const chain of V3_LEG_CHAINS) {
+    const upper = bind.get(chain.upper)?.bone;
+    const lower = bind.get(chain.lower)?.bone;
+    const foot = bind.get(chain.foot)?.bone;
+    if (!hips || !upper || !lower || !foot || !v3IsBoneAncestor(hips, upper) || !v3IsBoneAncestor(upper, lower) || !v3IsBoneAncestor(lower, foot)) {
+      invalidateChain(chain.side + ' leg hierarchy', [upper, lower, foot]);
+      continue;
+    }
+    setAxis(chain.upper, chain.lower, chain.side + ' upper leg hierarchy');
+    setAxis(chain.lower, chain.foot, chain.side + ' lower leg hierarchy');
+    if (bind.has(chain.toes) && setAxis(chain.foot, chain.toes, chain.side + ' foot hierarchy')) {
+      const footBind = bind.get(chain.foot);
+      const bindWorldInverse = footBind.bone.getWorldQuaternion(new THREE.Quaternion()).invert();
+      footBind.upAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(bindWorldInverse).normalize();
+    }
+  }
+
+  for (const chain of V3_ARM_CHAINS) {
+    const shoulder = bind.get(chain.shoulder)?.bone;
+    const upper = bind.get(chain.upper)?.bone;
+    const lower = bind.get(chain.lower)?.bone;
+    const handPivot = bind.get(chain.handPivot)?.bone;
+    const armRoot = shoulder || chest;
+    if (!armRoot || !upper || !lower || !handPivot || !v3IsBoneAncestor(armRoot, upper) || !v3IsBoneAncestor(upper, lower) || !v3IsBoneAncestor(lower, handPivot)) {
+      invalidateChain(chain.side + ' arm hierarchy', [shoulder, upper, lower, handPivot]);
+      continue;
+    }
+    if (shoulder) setAxis(chain.shoulder, chain.upper, chain.side + ' shoulder hierarchy');
+    setAxis(chain.upper, chain.lower, chain.side + ' upper arm hierarchy');
+    setAxis(chain.lower, chain.handPivot, chain.side + ' lower arm hierarchy');
+  }
+
+  const uniqueIssues = [...new Set(issues)];
+  const retarget = {
+    valid: uniqueIssues.length === 0,
+    issues: uniqueIssues,
+    invalidBones,
+    bind,
+    calibrationReady: false,
+    driverScale: 1,
+    driverOffset: new THREE.Vector3(),
+    orientationCorrection: new Map(),
+    armReach: new Map(),
+    armScale: new Map(),
+    handGrip: new Map(),
+    handSolveAngle: new Map(),
+    legReach: new Map(),
+    legScale: new Map(),
+    message: uniqueIssues.length ? 'Disabled: ' + uniqueIssues.join(', ') : 'Ready: full imported rig mapped.',
+  };
+  for (const chain of V3_ARM_CHAINS) {
+    const handRole = bind.has(chain.handEnd) ? chain.handEnd : chain.handPivot;
+    const handBone = bind.get(handRole)?.bone;
+    const roots = (v3Import.gripFingers || []).filter((finger) => finger.side === chain.side && !finger.thumb && finger.segment === 1);
+    if (!handBone || !roots.length) continue;
+    const palmCenterLocal = new THREE.Vector3();
+    for (const finger of roots) {
+      const rootWorld = finger.bone.getWorldPosition(new THREE.Vector3());
+      palmCenterLocal.add(handBone.worldToLocal(rootWorld));
+    }
+    palmCenterLocal.multiplyScalar(0.55 / roots.length);
+    const anatomy = createV3HandAnatomyFrame(handBone, v3Import.gripFingers || [], chain.side);
+    const grip = { role: handRole, bone: handBone, palmCenterLocal, ...anatomy };
+    retarget.handGrip.set(chain.side, grip);
+    calibrateV3FingerCurlAxes(handBone, grip, v3Import.gripFingers || [], chain.side);
+  }
+  v3Import.retarget = retarget;
+  syncV3RigRetargetUi(retarget);
+  applyV3BoneMappingColors();
+  return retarget;
+}
+
+function initializeV3RigCalibration(body, state, retarget, group) {
+  if ((state.prone || 0) > 0.01 || (state.crouch || 0) > 0.01) {
+    retarget.message = 'Stand upright once to calibrate imported rig scale.';
+    syncV3RigRetargetUi(retarget);
+    return false;
+  }
+  const joints = body?.joints;
+  if (!joints) return false;
+
+  const importedLengths = [];
+  const driverLengths = [];
+  for (const chain of V3_LEG_CHAINS) {
+    const upper = retarget.bind.get(chain.upper)?.bone;
+    const lower = retarget.bind.get(chain.lower)?.bone;
+    const foot = retarget.bind.get(chain.foot)?.bone;
+    if (!upper || !lower || !foot || !joints[chain.hipJoint] || !joints[chain.kneeJoint] || !joints[chain.ankleJoint]) return false;
+    importedLengths.push(
+      upper.getWorldPosition(new THREE.Vector3()).distanceTo(lower.getWorldPosition(new THREE.Vector3())) +
+      lower.getWorldPosition(new THREE.Vector3()).distanceTo(foot.getWorldPosition(new THREE.Vector3()))
+    );
+    driverLengths.push(
+      joints[chain.hipJoint].getWorldPosition(new THREE.Vector3()).distanceTo(joints[chain.kneeJoint].getWorldPosition(new THREE.Vector3())) +
+      joints[chain.kneeJoint].getWorldPosition(new THREE.Vector3()).distanceTo(joints[chain.ankleJoint].getWorldPosition(new THREE.Vector3()))
+    );
+  }
+  const importedLegLength = importedLengths.reduce((sum, value) => sum + value, 0) / importedLengths.length;
+  const driverLegLength = driverLengths.reduce((sum, value) => sum + value, 0) / driverLengths.length;
+  if (!Number.isFinite(importedLegLength) || !Number.isFinite(driverLegLength) || driverLegLength < 1e-6) return false;
+  retarget.driverScale = THREE.MathUtils.clamp(importedLegLength / driverLegLength, 0.2, 3);
+
+  const hipsBone = retarget.bind.get('hips').bone;
+  const importedHipsLocal = group.worldToLocal(hipsBone.getWorldPosition(new THREE.Vector3()));
+  const referencePelvisLocal = new THREE.Vector3(0, (state.height || 1.8) * (body.gait?.cfg?.pelvisHeightRatio ?? 0.58), 0);
+  retarget.driverOffset.copy(importedHipsLocal).addScaledVector(referencePelvisLocal, -retarget.driverScale);
+
+  const groupWorld = group.getWorldQuaternion(new THREE.Quaternion());
+  const inverseGroup = groupWorld.clone().invert();
+  const correctionPairs = [
+    ['hips', 'pelvis'],
+    ['head', 'head'],
+    ...V3_LEG_CHAINS.map((chain) => [chain.foot, chain.footJoint]),
+  ];
+  for (const [role, jointName] of correctionPairs) {
+    const imported = retarget.bind.get(role)?.bone;
+    const driver = joints[jointName];
+    if (!imported || !driver) continue;
+    const driverRelative = inverseGroup.clone().multiply(driver.getWorldQuaternion(new THREE.Quaternion()));
+    const importedRelative = inverseGroup.clone().multiply(imported.getWorldQuaternion(new THREE.Quaternion()));
+    retarget.orientationCorrection.set(role, driverRelative.invert().multiply(importedRelative));
+  }
+
+  // V2's unarmed hand bind orientation equals the yaw-only body orientation. Use that stable
+  // frame explicitly; the live hand joints may already contain weapon-anchor quaternions.
+  const handBindWorld = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), state.yaw || 0);
+  const handBindRelative = inverseGroup.clone().multiply(handBindWorld);
+  for (const chain of V3_ARM_CHAINS) {
+    const role = retarget.bind.has(chain.handEnd) ? chain.handEnd : chain.handPivot;
+    const imported = retarget.bind.get(role)?.bone;
+    if (!imported) continue;
+    const importedRelative = inverseGroup.clone().multiply(imported.getWorldQuaternion(new THREE.Quaternion()));
+    retarget.orientationCorrection.set(role, handBindRelative.clone().invert().multiply(importedRelative));
+  }
+  retarget.calibrationReady = true;
+  retarget.message = 'Ready: driver calibrated to ' + (retarget.driverScale * 100).toFixed(0) + '% of V2 scale.';
+  syncV3RigRetargetUi(retarget);
+  return true;
+}
+
+function mapV3DriverPoint(group, retarget, joint, target = new THREE.Vector3()) {
+  joint.getWorldPosition(target);
+  group.worldToLocal(target);
+  target.multiplyScalar(retarget.driverScale).add(retarget.driverOffset);
+  return group.localToWorld(target);
+}
+
+function solveV3BoneDirection(bind, startWorld, endWorld, blend) {
+  const parent = bind?.bone?.parent;
+  if (!parent || !bind.axis) return false;
+  const startParent = parent.worldToLocal(startWorld.clone());
+  const targetDirection = parent.worldToLocal(endWorld.clone()).sub(startParent);
+  if (targetDirection.lengthSq() < 1e-10) return false;
+  targetDirection.normalize();
+  const bindDirection = bind.axis.clone().applyQuaternion(bind.quaternion).normalize();
+  const correction = new THREE.Quaternion().setFromUnitVectors(bindDirection, targetDirection);
+  bind.bone.quaternion.slerpQuaternions(bind.quaternion, correction.multiply(bind.quaternion), blend);
+  return true;
+}
+
+function solveV3BoneQuaternion(role, driverWorld, retarget, group, blend) {
+  const bind = retarget.bind.get(role);
+  const correction = retarget.orientationCorrection.get(role);
+  if (!bind || !driverWorld || !correction || !bind.bone.parent) return false;
+  const groupWorld = group.getWorldQuaternion(new THREE.Quaternion());
+  const driverRelative = groupWorld.clone().invert().multiply(driverWorld);
+  const desiredWorld = groupWorld.multiply(driverRelative.multiply(correction));
+  const parentWorldInverse = bind.bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+  const desiredLocal = parentWorldInverse.multiply(desiredWorld);
+  bind.bone.quaternion.slerpQuaternions(bind.quaternion, desiredLocal, blend);
+  return true;
+}
+
+function solveV3BoneOrientation(role, driver, retarget, group, blend) {
+  return solveV3BoneQuaternion(role, driver?.getWorldQuaternion(new THREE.Quaternion()), retarget, group, blend);
+}
+
+function getV3TerrainFootFrame(state, position) {
+  const epsilon = 0.04;
+  const normal = new THREE.Vector3(
+    terrainHeight(position.x - epsilon, position.z) - terrainHeight(position.x + epsilon, position.z),
+    epsilon * 2,
+    terrainHeight(position.x, position.z - epsilon) - terrainHeight(position.x, position.z + epsilon)
+  ).normalize();
+  const forward = new THREE.Vector3(Math.sin(state.yaw || 0), 0, Math.cos(state.yaw || 0));
+  forward.addScaledVector(normal, -forward.dot(normal));
+  if (forward.lengthSq() < 1e-10) forward.set(0, 0, 1);
+  else forward.normalize();
+  return { normal, forward };
+}
+
+function solveV3FootOrientation(bind, state, position, blend) {
+  const parent = bind?.bone?.parent;
+  if (!parent || !bind.axis || !bind.upAxis) return false;
+  const { normal, forward } = getV3TerrainFootFrame(state, position);
+  const startParent = parent.worldToLocal(position.clone());
+  const targetDirection = parent.worldToLocal(position.clone().add(forward)).sub(startParent).normalize();
+  const bindDirection = bind.axis.clone().applyQuaternion(bind.quaternion).normalize();
+  const directionCorrection = new THREE.Quaternion().setFromUnitVectors(bindDirection, targetDirection);
+  const candidateLocal = directionCorrection.multiply(bind.quaternion);
+  const parentWorld = parent.getWorldQuaternion(new THREE.Quaternion());
+  const candidateWorld = parentWorld.clone().multiply(candidateLocal);
+
+  const currentUp = bind.upAxis.clone().applyQuaternion(candidateWorld);
+  currentUp.addScaledVector(forward, -currentUp.dot(forward)).normalize();
+  const desiredUp = normal.clone().addScaledVector(forward, -normal.dot(forward)).normalize();
+  const twistAngle = Math.atan2(new THREE.Vector3().crossVectors(currentUp, desiredUp).dot(forward), THREE.MathUtils.clamp(currentUp.dot(desiredUp), -1, 1));
+  const desiredWorld = new THREE.Quaternion().setFromAxisAngle(forward, twistAngle).multiply(candidateWorld);
+  const desiredLocal = parentWorld.invert().multiply(desiredWorld);
+  bind.bone.quaternion.slerpQuaternions(bind.quaternion, desiredLocal, blend);
+  return true;
+}
+
+function solveV3HandOrientation(chain, joints, retarget, blend, targetFrameWorld = null) {
+  const role = retarget.bind.has(chain.handEnd) ? chain.handEnd : chain.handPivot;
+  const bind = retarget.bind.get(role);
+  const driver = joints[chain.handJoint];
+  const grip = retarget.handGrip.get(chain.side);
+  if (!bind?.bone?.parent || !driver || !grip?.basisLocalQuaternion) return false;
+  const desiredFrame = targetFrameWorld
+    ? targetFrameWorld.clone()
+    : driver.getWorldQuaternion(new THREE.Quaternion());
+  const desiredWorld = desiredFrame.multiply(grip.basisLocalQuaternion.clone().invert());
+  const parentWorldInverse = bind.bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+  const desiredLocal = parentWorldInverse.multiply(desiredWorld);
+  bind.bone.quaternion.slerpQuaternions(bind.quaternion, desiredLocal, blend);
+  bind.bone.updateWorldMatrix(true, false);
+  const solvedFrame = bind.bone.getWorldQuaternion(new THREE.Quaternion())
+    .multiply(grip.basisLocalQuaternion);
+  retarget.handSolveAngle.set(
+    chain.side,
+    THREE.MathUtils.radToDeg(solvedFrame.angleTo(targetFrameWorld || driver.getWorldQuaternion(new THREE.Quaternion()))),
+  );
+  return true;
+}
+function mapV3ArmDriverPoint(group, retarget, chain, joints, jointName) {
+  const upper = retarget.bind.get(chain.upper)?.bone;
+  const driverShoulder = joints[chain.shoulderJoint];
+  const driverElbow = joints[chain.elbowJoint];
+  const driverWrist = joints[chain.wristJoint];
+  const lower = retarget.bind.get(chain.lower)?.bone;
+  const hand = retarget.bind.get(chain.handPivot)?.bone;
+  if (!upper || !lower || !hand || !driverShoulder || !driverElbow || !driverWrist || !joints[jointName]) return null;
+
+  const importedLength =
+    upper.getWorldPosition(new THREE.Vector3()).distanceTo(lower.getWorldPosition(new THREE.Vector3())) +
+    lower.getWorldPosition(new THREE.Vector3()).distanceTo(hand.getWorldPosition(new THREE.Vector3()));
+  const driverLength =
+    driverShoulder.getWorldPosition(new THREE.Vector3()).distanceTo(driverElbow.getWorldPosition(new THREE.Vector3())) +
+    driverElbow.getWorldPosition(new THREE.Vector3()).distanceTo(driverWrist.getWorldPosition(new THREE.Vector3()));
+  const armScale = driverLength > 1e-6 ? importedLength / driverLength : retarget.driverScale;
+  retarget.armScale.set(chain.side, armScale);
+
+  const importedRootLocal = group.worldToLocal(upper.getWorldPosition(new THREE.Vector3()));
+  const driverShoulderLocal = group.worldToLocal(driverShoulder.getWorldPosition(new THREE.Vector3()));
+  const pointLocal = group.worldToLocal(joints[jointName].getWorldPosition(new THREE.Vector3()));
+  pointLocal.sub(driverShoulderLocal).multiplyScalar(armScale).add(importedRootLocal);
+  return group.localToWorld(pointLocal);
+}
+
+function solveV3TwoBoneChain(upperRole, lowerRole, endRole, poleWorld, targetWorld, retarget, group, blend) {
+  const upperBind = retarget.bind.get(upperRole);
+  const lowerBind = retarget.bind.get(lowerRole);
+  const endBind = retarget.bind.get(endRole);
+  if (!upperBind || !lowerBind || !endBind) return null;
+
+  const root = upperBind.bone.getWorldPosition(new THREE.Vector3());
+  const joint = lowerBind.bone.getWorldPosition(new THREE.Vector3());
+  const end = endBind.bone.getWorldPosition(new THREE.Vector3());
+  const upperLength = root.distanceTo(joint);
+  const lowerLength = joint.distanceTo(end);
+  if (upperLength < 1e-6 || lowerLength < 1e-6) return null;
+
+  const axis = targetWorld.clone().sub(root);
+  const rawDistance = axis.length();
+  if (rawDistance < 1e-6) return null;
+  axis.multiplyScalar(1 / rawDistance);
+  const minReach = Math.abs(upperLength - lowerLength) + 1e-5;
+  const maxReach = upperLength + lowerLength - 1e-5;
+  const distance = THREE.MathUtils.clamp(rawDistance, minReach, maxReach);
+  const solvedTarget = root.clone().addScaledVector(axis, distance);
+
+  const pole = poleWorld.clone().sub(root);
+  pole.addScaledVector(axis, -pole.dot(axis));
+  if (pole.lengthSq() < 1e-10) {
+    pole.set(0, 0, 1);
+    pole.addScaledVector(axis, -pole.dot(axis));
+    if (pole.lengthSq() < 1e-10) pole.set(1, 0, 0);
+  }
+  pole.normalize();
+
+  const along = (upperLength * upperLength - lowerLength * lowerLength + distance * distance) / (2 * distance);
+  const bend = Math.sqrt(Math.max(0, upperLength * upperLength - along * along));
+  const solvedElbow = root.clone().addScaledVector(axis, along).addScaledVector(pole, bend);
+
+  solveV3BoneDirection(upperBind, root, solvedElbow, blend);
+  group.updateMatrixWorld(true);
+  const actualElbow = lowerBind.bone.getWorldPosition(new THREE.Vector3());
+  solveV3BoneDirection(lowerBind, actualElbow, solvedTarget, blend);
+  group.updateMatrixWorld(true);
+
+  const actualEnd = endBind.bone.getWorldPosition(new THREE.Vector3());
+  return {
+    target: targetWorld,
+    actual: actualEnd,
+    error: actualEnd.distanceTo(targetWorld),
+    clamped: rawDistance > maxReach || rawDistance < minReach,
+  };
+}
+
+function solveV3TwoBoneArm(chain, poleWorld, targetWorld, retarget, group, blend) {
+  return solveV3TwoBoneChain(chain.upper, chain.lower, chain.handPivot, poleWorld, targetWorld, retarget, group, blend);
+}
+
+function mapV3LegDriverPoint(group, retarget, chain, joints, jointName) {
+  const upper = retarget.bind.get(chain.upper)?.bone;
+  const lower = retarget.bind.get(chain.lower)?.bone;
+  const foot = retarget.bind.get(chain.foot)?.bone;
+  const driverHip = joints[chain.hipJoint];
+  const driverKnee = joints[chain.kneeJoint];
+  const driverAnkle = joints[chain.ankleJoint];
+  if (!upper || !lower || !foot || !driverHip || !driverKnee || !driverAnkle || !joints[jointName]) return null;
+
+  const importedLength =
+    upper.getWorldPosition(new THREE.Vector3()).distanceTo(lower.getWorldPosition(new THREE.Vector3())) +
+    lower.getWorldPosition(new THREE.Vector3()).distanceTo(foot.getWorldPosition(new THREE.Vector3()));
+  const driverLength =
+    driverHip.getWorldPosition(new THREE.Vector3()).distanceTo(driverKnee.getWorldPosition(new THREE.Vector3())) +
+    driverKnee.getWorldPosition(new THREE.Vector3()).distanceTo(driverAnkle.getWorldPosition(new THREE.Vector3()));
+  const legScale = driverLength > 1e-6 ? importedLength / driverLength : retarget.driverScale;
+  retarget.legScale.set(chain.side, legScale);
+
+  const importedRootLocal = group.worldToLocal(upper.getWorldPosition(new THREE.Vector3()));
+  const driverHipLocal = group.worldToLocal(driverHip.getWorldPosition(new THREE.Vector3()));
+  const pointLocal = group.worldToLocal(joints[jointName].getWorldPosition(new THREE.Vector3()));
+  pointLocal.sub(driverHipLocal).multiplyScalar(legScale).add(importedRootLocal);
+  return group.localToWorld(pointLocal);
+}
+
+function solveV3HandToGrip(chain, poleWorld, gripWorld, joints, retarget, group, blend, targetFrameWorld = null) {
+  let result = solveV3TwoBoneArm(chain, poleWorld, gripWorld, retarget, group, blend);
+  solveV3HandOrientation(chain, joints, retarget, blend, targetFrameWorld);
+  group.updateMatrixWorld(true);
+
+  const grip = retarget.handGrip.get(chain.side);
+  if (!grip) return result;
+  const palmWorld = grip.bone.localToWorld(grip.palmCenterLocal.clone());
+  const wristWorld = grip.bone.getWorldPosition(new THREE.Vector3());
+  const adjustedWrist = wristWorld.add(gripWorld.clone().sub(palmWorld));
+  result = solveV3TwoBoneArm(chain, poleWorld, adjustedWrist, retarget, group, blend);
+  solveV3HandOrientation(chain, joints, retarget, blend, targetFrameWorld);
+  group.updateMatrixWorld(true);
+
+  const actualPalm = grip.bone.localToWorld(grip.palmCenterLocal.clone());
+  if (!result) return null;
+  result.target = gripWorld;
+  result.actual = actualPalm;
+  result.error = actualPalm.distanceTo(gripWorld);
+  return result;
+}
+
+function applyV3WeaponGrip(blend) {
+  const fingers = v3Import?.gripFingers || [];
+  if (!fingers.length || !currentWeaponId) return;
+  const fallbackAxis = new THREE.Vector3(1, 0, 0);
+  const fingerAngles = [0, 0.92, 1.18, 0.96];
+  const thumbAngles = [0, 0.58, 0.76, 0.62];
+  for (const finger of fingers) {
+    const tuning = getV3GripTuning(finger.side);
+    const closure = finger.thumb ? tuning.thumb : tuning.finger;
+    const angle = ((finger.thumb ? thumbAngles : fingerAngles)[finger.segment] || 0) *
+      (finger.curlSign || 1) * closure;
+    const axis = finger.curlAxisLocal || fallbackAxis;
+    const target = finger.quaternion.clone().multiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+    finger.bone.quaternion.slerpQuaternions(finger.quaternion, target, blend);
+  }
+}
+
+function updateV3RigRetarget(body, state, cfg, group) {
+  const retarget = v3Import?.retarget;
+  if (!retarget?.valid) {
+    restoreV3RigBindPose(retarget);
+    return false;
+  }
+  restoreV3RigBindPose(retarget);
+  if (!cfg.legRetarget || cfg.legRetargetBlend <= 0) {
+    retarget.message = cfg.legRetarget ? 'Bind pose: retarget blend is zero.' : (retarget.calibrationReady ? 'Ready: driver scale ' + (retarget.driverScale * 100).toFixed(0) + '%.' : 'Ready: full imported rig mapped.');
+    syncV3RigRetargetUi(retarget);
+    group.updateMatrixWorld(true);
+    return false;
+  }
+
+  const joints = body?.joints;
+  const requiredJoints = ['pelvis', 'waist', 'torso', 'neck', 'head',
+    ...V3_LEG_CHAINS.flatMap((chain) => [chain.hipJoint, chain.kneeJoint, chain.ankleJoint, chain.footJoint]),
+    ...V3_ARM_CHAINS.flatMap((chain) => [chain.shoulderJoint, chain.elbowJoint, chain.wristJoint, chain.handJoint]),
+  ];
+  if (!joints || requiredJoints.some((name) => !joints[name])) {
+    retarget.valid = false;
+    retarget.message = 'Disabled: V2 full-body driver joints unavailable.';
+    syncV3RigRetargetUi(retarget);
+    applyV3BoneMappingColors();
+    return false;
+  }
+
+  group.updateMatrixWorld(true);
+  if (!retarget.calibrationReady && !initializeV3RigCalibration(body, state, retarget, group)) return false;
+  const blend = THREE.MathUtils.clamp(cfg.legRetargetBlend, 0, 1);
+  const point = (name) => mapV3DriverPoint(group, retarget, joints[name]);
+
+  const hipsBind = retarget.bind.get('hips');
+  const pelvisWorld = point('pelvis');
+  hipsBind.bone.position.lerpVectors(hipsBind.position, hipsBind.bone.parent.worldToLocal(pelvisWorld.clone()), blend);
+  solveV3BoneOrientation('hips', joints.pelvis, retarget, group, blend);
+  group.updateMatrixWorld(true);
+
+  solveV3BoneDirection(retarget.bind.get('spine'), point('pelvis'), point('waist'), blend);
+  group.updateMatrixWorld(true);
+  solveV3BoneDirection(retarget.bind.get('chest'), point('waist'), point('torso'), blend);
+  group.updateMatrixWorld(true);
+  if (retarget.bind.get('neck')?.axis) {
+    solveV3BoneDirection(retarget.bind.get('neck'), point('neck'), point('head'), blend);
+    group.updateMatrixWorld(true);
+  }
+  solveV3BoneOrientation('head', joints.head, retarget, group, blend);
+  group.updateMatrixWorld(true);
+
+
+  for (const chain of V3_ARM_CHAINS) {
+    const shoulder = mapV3ArmDriverPoint(group, retarget, chain, joints, chain.shoulderJoint);
+    const elbow = mapV3ArmDriverPoint(group, retarget, chain, joints, chain.elbowJoint);
+    const wrist = mapV3ArmDriverPoint(group, retarget, chain, joints, chain.wristJoint);
+    if (!shoulder || !elbow || !wrist) continue;
+    if (retarget.bind.get(chain.shoulder)?.axis) {
+      solveV3BoneDirection(retarget.bind.get(chain.shoulder), point('torso'), shoulder, blend);
+      group.updateMatrixWorld(true);
+    }
+    const armSolve = solveV3HandToGrip(chain, elbow, wrist, joints, retarget, group, blend);
+    if (armSolve) retarget.armReach.set(chain.side, armSolve);
+
+  }
+  applyV3WeaponGrip(blend);
+  group.updateMatrixWorld(true);
+
+  for (const chain of V3_LEG_CHAINS) {
+    const upperBind = retarget.bind.get(chain.upper);
+    const mappedHip = point(chain.hipJoint);
+    if (upperBind?.bone?.parent) {
+      const mappedHipLocal = upperBind.bone.parent.worldToLocal(mappedHip.clone());
+      upperBind.bone.position.lerpVectors(upperBind.position, mappedHipLocal, blend);
+      group.updateMatrixWorld(true);
+    }
+    const knee = mapV3LegDriverPoint(group, retarget, chain, joints, chain.kneeJoint);
+    const ankle = mapV3LegDriverPoint(group, retarget, chain, joints, chain.ankleJoint);
+    if (!knee || !ankle) continue;
+    const legSolve = solveV3TwoBoneChain(chain.upper, chain.lower, chain.foot, knee, ankle, retarget, group, blend);
+    if (legSolve) retarget.legReach.set(chain.side, legSolve);
+    solveV3FootOrientation(retarget.bind.get(chain.foot), state, ankle, blend);
+    group.updateMatrixWorld(true);
+  }
+
+  const maxArmError = Math.max(0, ...[...retarget.armReach.values()].map((result) => result.error));
+  const maxLegError = Math.max(0, ...[...retarget.legReach.values()].map((result) => result.error));
+  retarget.message = 'Driving full rig at ' + (retarget.driverScale * 100).toFixed(0) + '% V2 scale; grip ' + (maxArmError * 100).toFixed(1) + 'cm, feet ' + (maxLegError * 100).toFixed(1) + 'cm.';
+  syncV3RigRetargetUi(retarget);
+  return true;
+}
+
+const v3GripRaycaster = new THREE.Raycaster();
+function v3GripAnchorWorld(side) {
+  const anchor = BAKED_ANCHORS[currentWeaponId]?.[side + 'Grip'];
+  if (!anchor) return null;
+  const position = new THREE.Vector3(...anchor.p).applyMatrix4(v3WeaponDisplay.matrixWorld);
+  const quaternion = v3WeaponDisplay.getWorldQuaternion(new THREE.Quaternion())
+    .multiply(new THREE.Quaternion(...(anchor.q || [0, 0, 0, 1])));
+  const cacheKey = currentWeaponId + ':' + side;
+  let correction = v3GripFrameCorrectionCache.get(cacheKey);
+  if (!correction) {
+    const boundsLength = Math.max(
+      0.1,
+      new THREE.Box3().setFromObject(v3WeaponDisplayModel).getSize(new THREE.Vector3()).length(),
+    );
+    let nearest = null;
+    for (let x = -1; x <= 1; x++) {
+      for (let y = -1; y <= 1; y++) {
+        for (let z = -1; z <= 1; z++) {
+          if (x === 0 && y === 0 && z === 0) continue;
+          const direction = new THREE.Vector3(x, y, z).normalize().applyQuaternion(quaternion);
+          v3GripRaycaster.set(position, direction);
+          v3GripRaycaster.near = 0;
+          v3GripRaycaster.far = boundsLength;
+          const hit = v3GripRaycaster.intersectObject(v3WeaponDisplayModel, true)[0];
+          if (hit && (!nearest || hit.distance < nearest.distance)) {
+            nearest = { distance: hit.distance, direction: direction.clone() };
+          }
+        }
+      }
+    }
+
+    const corrected = quaternion.clone();
+    if (nearest) {
+      const palmNormal = nearest.direction.normalize();
+      const fingerAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
+      fingerAxis.addScaledVector(palmNormal, -fingerAxis.dot(palmNormal));
+      if (fingerAxis.lengthSq() < 1e-8) fingerAxis.set(1, 0, 0).applyQuaternion(quaternion);
+      fingerAxis.normalize();
+      const acrossPalm = new THREE.Vector3().crossVectors(fingerAxis, palmNormal).normalize();
+      const basis = new THREE.Matrix4().makeBasis(acrossPalm, fingerAxis, palmNormal);
+      corrected.setFromRotationMatrix(basis);
+    }
+    correction = quaternion.clone().invert().multiply(corrected);
+    v3GripFrameCorrectionCache.set(cacheKey, correction);
+  }
+
+  const rawQuaternion = quaternion.clone();
+  quaternion.multiply(correction);
+  const correctionAngle = THREE.MathUtils.radToDeg(rawQuaternion.angleTo(quaternion));
+  const tuning = getV3GripTuning(side);
+  position.add(new THREE.Vector3(tuning.tx, tuning.ty, tuning.tz)
+    .multiplyScalar(0.01)
+    .applyQuaternion(quaternion));
+  quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(tuning.rx),
+    THREE.MathUtils.degToRad(tuning.ry),
+    THREE.MathUtils.degToRad(tuning.rz),
+    'XYZ',
+  )));
+  return {
+    position,
+    quaternion,
+    frameFlipped: correctionAngle > 20,
+    correctionAngle,
+  };
+}
+
+function pushV3GripFrameSegments(segments, origin, quaternion, length, colors) {
+  const axes = [
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(0, 0, 1),
+  ];
+  axes.forEach((axis, index) => {
+    const to = origin.clone().add(axis.applyQuaternion(quaternion).multiplyScalar(length));
+    segments.push({ from: origin.clone(), to, color: colors[index] });
+  });
+}
+
+function validateV3ImportedGrips(cfg) {
+  const status = document.getElementById('v3gripstatus');
+  const retarget = v3Import?.retarget;
+  const active = !!(v3WeaponDisplay.visible && v3WeaponDisplayModel && retarget?.valid);
+  v3GripDiagnosticGroup.visible = active && cfg.showGripDiagnostics;
+  if (!active) {
+    updateV3GripDiagnosticLines([]);
+    if (status) {
+      status.textContent = 'Load and drive a model to validate its grips.';
+      status.style.color = '';
+    }
+    return;
+  }
+
+  const segments = [];
+  const results = [];
+  const desiredColors = [new THREE.Color(0xff4d5e), new THREE.Color(0x5dff83), new THREE.Color(0x53a7ff)];
+  const actualColors = [new THREE.Color(0xffa0aa), new THREE.Color(0xb0ffc1), new THREE.Color(0x9fd0ff)];
+  const hitColor = new THREE.Color(0x42e58b);
+  const missColor = new THREE.Color(0xff5d6c);
+
+  for (const chain of V3_ARM_CHAINS) {
+    const grip = retarget.handGrip.get(chain.side);
+    const anchor = v3GripAnchorWorld(chain.side);
+    if (!grip?.basisLocalQuaternion || !anchor) {
+      results.push({ side: chain.side, valid: false, reason: 'missing anatomical or anchor frame' });
+      continue;
+    }
+
+    const palm = grip.bone.localToWorld(grip.palmCenterLocal.clone());
+    const actualFrame = grip.bone.getWorldQuaternion(new THREE.Quaternion())
+      .multiply(grip.basisLocalQuaternion);
+    const positionError = palm.distanceTo(anchor.position);
+    const angleError = THREE.MathUtils.radToDeg(actualFrame.angleTo(anchor.quaternion));
+    const driverFrame = body?.joints?.[chain.handJoint]?.getWorldQuaternion(new THREE.Quaternion());
+    const importedToDriverAngle = driverFrame
+      ? THREE.MathUtils.radToDeg(actualFrame.angleTo(driverFrame))
+      : NaN;
+    const driverToAnchorAngle = driverFrame
+      ? THREE.MathUtils.radToDeg(driverFrame.angleTo(anchor.quaternion))
+      : NaN;
+
+    pushV3GripFrameSegments(segments, anchor.position, anchor.quaternion, 0.11, desiredColors);
+    pushV3GripFrameSegments(segments, palm, actualFrame, 0.075, actualColors);
+
+    const weaponBounds = new THREE.Box3().setFromObject(v3WeaponDisplayModel);
+    const anchorInsideBounds = weaponBounds.containsPoint(anchor.position);
+    const inward = new THREE.Vector3(0, 0, 1).applyQuaternion(anchor.quaternion).normalize();
+    v3GripRaycaster.set(anchor.position, inward);
+    v3GripRaycaster.near = 0;
+    v3GripRaycaster.far = Math.max(0.1, weaponBounds.getSize(new THREE.Vector3()).length());
+    const anchorInwardHit = v3GripRaycaster.intersectObject(v3WeaponDisplayModel, true).length > 0;
+    const inverseAnchor = anchor.quaternion.clone().invert();
+
+    const distal = (v3Import.gripFingers || []).filter(
+      (finger) => finger.side === chain.side && finger.segment === 3,
+    );
+    let fingerHits = 0;
+    let fingerCount = 0;
+    let thumbHit = false;
+    const fingerDepths = [];
+    for (const finger of distal) {
+      const tip = finger.bone.getWorldPosition(new THREE.Vector3());
+      const tipInAnchor = tip.clone().sub(anchor.position).applyQuaternion(inverseAnchor);
+      if (!finger.thumb) fingerDepths.push(tipInAnchor.z);
+      const direction = tip.clone().sub(palm);
+      const distance = direction.length();
+      let hit = false;
+      if (distance > 1e-5) {
+        v3GripRaycaster.set(palm, direction.multiplyScalar(1 / distance));
+        v3GripRaycaster.near = 0;
+        v3GripRaycaster.far = distance;
+        hit = v3GripRaycaster.intersectObject(v3WeaponDisplayModel, true).length > 0;
+      }
+      if (finger.thumb) thumbHit = hit;
+      else {
+        fingerCount++;
+        if (hit) fingerHits++;
+      }
+      segments.push({ from: palm.clone(), to: tip, color: hit ? hitColor : missColor });
+    }
+
+    const positionPass = positionError <= 0.035;
+    const orientationPass = angleError <= 20;
+    const enclosurePass = fingerHits >= Math.min(2, fingerCount) && thumbHit;
+    results.push({
+      side: chain.side,
+      valid: positionPass && orientationPass && enclosurePass,
+      positionError,
+      angleError,
+      importedToDriverAngle,
+      driverToAnchorAngle,
+      solveAngle: retarget.handSolveAngle.get(chain.side),
+      frameFlipped: anchor.frameFlipped,
+      frameCorrectionAngle: anchor.correctionAngle,
+      anchorInsideBounds,
+      anchorInwardHit,
+      minFingerDepth: fingerDepths.length ? Math.min(...fingerDepths) : NaN,
+      maxFingerDepth: fingerDepths.length ? Math.max(...fingerDepths) : NaN,
+      fingerHits,
+      fingerCount,
+      thumbHit,
+    });
+  }
+
+  updateV3GripDiagnosticLines(cfg.showGripDiagnostics ? segments : []);
+  retarget.gripValidation = results;
+  if (!status) return;
+  const rows = results.map((result) => {
+    const row = document.createElement('div');
+    row.className = 'bpui-grip-result' + (result.valid ? ' good' : '');
+    const badge = document.createElement('b');
+    badge.textContent = result.side + ' ' + (result.valid ? 'pass' : 'fail');
+    const position = document.createElement('span');
+    const frame = document.createElement('span');
+    const closure = document.createElement('span');
+    if (result.reason) {
+      position.textContent = result.reason;
+      frame.textContent = '--';
+      closure.textContent = '--';
+    } else {
+      position.textContent = (result.positionError * 100).toFixed(1) + 'cm';
+      frame.textContent = result.angleError.toFixed(0) + 'deg';
+      closure.textContent = result.fingerHits + '/' + result.fingerCount + (result.thumbHit ? ' +T' : ' -T');
+      row.title =
+        'Solve ' + (result.solveAngle ?? NaN).toFixed(0) + 'deg; skin-driver ' +
+        result.importedToDriverAngle.toFixed(0) + 'deg; driver-anchor ' +
+        result.driverToAnchorAngle.toFixed(0) + 'deg; anchor ' +
+        (result.anchorInsideBounds ? 'inside bounds' : 'outside bounds') + ', ' +
+        (result.anchorInwardHit ? 'mesh facing' : 'mesh miss');
+    }
+    row.append(badge, position, frame, closure);
+    return row;
+  });
+  status.replaceChildren(...rows);
+}
+
+function updateV3ImportedWeapon(cfg) {
+  const retarget = v3Import?.retarget;
+  const importedMode = cfg.mode === 'imported-skinned' || cfg.mode === 'overlay';
+  const active = !!(v3Import && v3WeaponDisplayModel && importedMode && cfg.legRetarget && retarget?.valid && retarget.calibrationReady);
+  v3WeaponDisplay.visible = active;
+  if (currentWeaponModel) currentWeaponModel.visible = !active;
+  if (!active) {
+    validateV3ImportedGrips(cfg);
+    return;
+  }
+
+  weaponView.updateMatrixWorld(true);
+  const mappedPosition = weaponView.getWorldPosition(new THREE.Vector3());
+  v3ImportGroup.worldToLocal(mappedPosition);
+  mappedPosition.multiplyScalar(retarget.driverScale).add(retarget.driverOffset);
+  v3ImportGroup.localToWorld(mappedPosition);
+
+  v3WeaponDisplay.position.copy(mappedPosition);
+  v3WeaponDisplay.quaternion.copy(weaponView.getWorldQuaternion(new THREE.Quaternion()));
+  // Weapon size is authored by normalizeObject() and the weapon Scale control. Skin
+  // normalization only affects placement, never the visible weapon dimensions.
+  v3WeaponDisplay.scale.copy(weaponView.getWorldScale(new THREE.Vector3()));
+  v3WeaponDisplay.updateMatrixWorld(true);
+
+  // Preserve authored scale and rotation. If the mapped mount is outside the imported
+  // arm reach, translate the entire weapon rigidly by the average residual and re-solve.
+  const blend = THREE.MathUtils.clamp(cfg.legRetargetBlend, 0, 1);
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const residual = new THREE.Vector3();
+    let residualCount = 0;
+    for (const chain of V3_ARM_CHAINS) {
+      const anchor = v3GripAnchorWorld(chain.side);
+      const pole = mapV3ArmDriverPoint(v3ImportGroup, retarget, chain, body?.joints, chain.elbowJoint);
+      if (!anchor || !pole) continue;
+      const result = solveV3HandToGrip(
+        chain,
+        pole,
+        anchor.position,
+        body.joints,
+        retarget,
+        v3ImportGroup,
+        blend,
+        anchor.quaternion,
+      );
+      if (!result) continue;
+      retarget.armReach.set(chain.side, result);
+      residual.add(result.actual.clone().sub(anchor.position));
+      residualCount++;
+    }
+    if (iteration < 2 && residualCount) {
+      v3WeaponDisplay.position.add(residual.multiplyScalar(1 / residualCount));
+      v3WeaponDisplay.updateMatrixWorld(true);
+    }
+  }
+  applyV3WeaponGrip(blend);
+  v3ImportGroup.updateMatrixWorld(true);
+  validateV3ImportedGrips(cfg);
+}
+
+function updateV3ImportedModel(state, cfg, body) {
+  const group = ensureV3ImportGroup();
+  const visible = !!v3Import && (cfg.mode === 'imported-skinned' || cfg.mode === 'overlay');
+  group.visible = visible;
+  if (v3Import?.skeletonHelper) {
+    v3Import.skeletonHelper.visible = visible && cfg.showImportBones;
+  }
+  if (!visible) {
+    restoreV3RigBindPose(v3Import?.retarget);
+    updateV3BoneSelection(false);
+    return;
+  }
+  const groundY = terrainHeight(state.position.x, state.position.z);
+  group.position.set(state.position.x, groundY, state.position.z);
+  group.rotation.set(0, state.yaw + Math.PI, 0);
+  group.updateMatrixWorld(true);
+  updateV3RigRetarget(body, state, cfg, group);
+  group.updateMatrixWorld(true);
+  updateV3BoneSelection(cfg.showImportBones);
+}
+let kneeSign = 1, elbowSign = 1;
+let savedIkCfg = null; // survives rebuild (mesh refs go stale, values don't)
+function rebuildBody(mode) {
+  if (body && body.ikCfg) savedIkCfg = { ...body.ikCfg };
+  deselectJoint();
+  if (controller) controller = null;
+  if (body) body.destroy();
+  body = createProceduralPlayerBody({ THREE, scene, terrainHeight, mode, style: { kneeSign, elbowSign } });
+  if (savedIkCfg) Object.assign(body.ikCfg, savedIkCfg);
+  ensureV3Skin();
+  controller = createWeaponPoseController({
+    THREE, body, weaponView, getWeaponDef,
+    onEvent: (name, payload) => { if (!payload || !payload.informational) log('event: ' + name); },
+  });
+  controller.setWeapon(currentWeaponId || 'm1911');
+}
+
+// --- sim state -------------------------------------------------------------
+const bodyState = {
+  id: 'preview',
+  position: new THREE.Vector3(0, terrainHeight(0, 0) + 0.9, 0),
+  yaw: 0, aimPitch: 0,
+  height: 1.8, radius: 0.3,
+  velocity: new THREE.Vector3(),
+  onFloor: true, crouch: 0, prone: 0, alive: true,
+  weapon: 'm1911', tool: null,
+};
+
+let paceDir = 1; // +1 walks toward +Z (yaw 0), -1 toward -Z (yaw PI)
+
+// WASD key state (camera-relative movement).
+const keys = { w: false, a: false, s: false, d: false };
+const KEYMAP = { KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', ArrowUp: 'w', ArrowLeft: 'a', ArrowDown: 's', ArrowRight: 'd' };
+addEventListener('keydown', (e) => { const k = KEYMAP[e.code]; if (k) { keys[k] = true; e.preventDefault(); } });
+addEventListener('keyup', (e) => { const k = KEYMAP[e.code]; if (k) { keys[k] = false; } });
+const _fwd = new THREE.Vector3(), _rgt = new THREE.Vector3(), _mv = new THREE.Vector3(), _UP = new THREE.Vector3(0, 1, 0);
+const $ = (id) => document.getElementById(id);
+
+// --- imported bone inspection ---------------------------------------------
+const _v3BoneWorld = new THREE.Vector3();
+const _v3BoneParentWorld = new THREE.Vector3();
+const _v3BoneScreen = new THREE.Vector3();
+const _v3BoneParentScreen = new THREE.Vector3();
+let v3SelectedBone = null;
+let v3BoneHighlight = null;
+const v3BoneEmpty = $('v3boneEmpty');
+const v3BoneDetails = $('v3boneDetails');
+const v3BoneName = $('v3boneName');
+const v3BoneParent = $('v3boneParent');
+const v3BoneDepth = $('v3boneDepth');
+const v3BoneLocalPos = $('v3boneLocalPos');
+const v3BoneLocalRot = $('v3boneLocalRot');
+const v3BoneWorldPos = $('v3boneWorldPos');
+const v3BoneMap = $('v3boneMap');
+const v3BoneMapStatus = $('v3boneMapStatus');
+
+{
+  const automatic = document.createElement('option');
+  automatic.value = '__auto__';
+  automatic.textContent = 'Use automatic mapping';
+  const unassigned = document.createElement('option');
+  unassigned.value = '__none__';
+  unassigned.textContent = 'Unassigned / extra';
+  const targetOptions = V3_HUMANOID_TARGETS.map((target) => {
+    const option = document.createElement('option');
+    option.value = target.id;
+    option.textContent = target.label;
+    return option;
+  });
+  v3BoneMap.append(automatic, unassigned, ...targetOptions);
+}
+
+function ensureV3BoneHighlight() {
+  if (v3BoneHighlight) return v3BoneHighlight;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: 0xffd447,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    opacity: 1,
+  });
+  const line = new THREE.LineSegments(geometry, lineMaterial);
+  line.renderOrder = 1010;
+  const markerGeometry = new THREE.SphereGeometry(0.025, 12, 8);
+  const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xffd447, depthTest: false, depthWrite: false });
+  const parentMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+  const boneMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+  parentMarker.renderOrder = 1011;
+  boneMarker.renderOrder = 1011;
+  const group = new THREE.Group();
+  group.name = 'bodyPreviewV3BoneSelection';
+  group.visible = false;
+  group.add(line, parentMarker, boneMarker);
+  group.userData = { line, parentMarker, boneMarker };
+  scene.add(group);
+  v3BoneHighlight = group;
+  return group;
+}
+
+function v3BoneHierarchyDepth(bone) {
+  let depth = 0;
+  for (let parent = bone?.parent; parent?.isBone; parent = parent.parent) depth++;
+  return depth;
+}
+
+function formatV3Vector(v) {
+  return `${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}`;
+}
+
+function refreshV3BoneInspector() {
+  const bone = v3SelectedBone;
+  const selected = !!bone;
+  v3BoneEmpty.hidden = selected;
+  v3BoneDetails.hidden = !selected;
+  if (!selected) {
+    v3BoneMap.disabled = true;
+    v3BoneMapStatus.textContent = '--';
+    return;
+  }
+  v3BoneName.textContent = bone.name || '(unnamed bone)';
+  v3BoneParent.textContent = bone.parent?.isBone ? (bone.parent.name || '(unnamed bone)') : '(skeleton root)';
+  v3BoneDepth.textContent = String(v3BoneHierarchyDepth(bone));
+  v3BoneLocalPos.textContent = formatV3Vector(bone.position);
+  v3BoneLocalRot.textContent = `${THREE.MathUtils.radToDeg(bone.rotation.x).toFixed(1)}deg, ${THREE.MathUtils.radToDeg(bone.rotation.y).toFixed(1)}deg, ${THREE.MathUtils.radToDeg(bone.rotation.z).toFixed(1)}deg`;
+  bone.getWorldPosition(_v3BoneWorld);
+  v3BoneWorldPos.textContent = formatV3Vector(_v3BoneWorld);
+  const entry = v3Import?.mapping?.byBone.get(bone.uuid);
+  const override = v3Import ? v3MappingOverrides[v3Import.id]?.[bone.name] : undefined;
+  v3BoneMap.disabled = false;
+  v3BoneMap.value = override === null ? '__none__' : (typeof override === 'string' ? override : '__auto__');
+  if (entry) {
+    v3BoneMapStatus.textContent = `${entry.source} -> ${entry.target.label} (${Math.round(entry.confidence * 100)}%)`;
+    v3BoneMapStatus.style.color = entry.status === 'mapped' ? '#39ff88' : '#ffd447';
+  } else {
+    v3BoneMapStatus.textContent = 'extra / unmapped';
+    v3BoneMapStatus.style.color = '#a5adb8';
+  }
+}
+
+function updateV3BoneSelection(showHighlight = true) {
+  const highlight = ensureV3BoneHighlight();
+  const bone = v3SelectedBone;
+  const parent = bone?.parent;
+  const valid = !!bone && !!parent?.isBone && !!v3Import?.root;
+  const drawable = valid && !isV3RootMotionSegment(bone);
+  highlight.visible = drawable && showHighlight;
+  if (!drawable) {
+    refreshV3BoneInspector();
+    return;
+  }
+  parent.getWorldPosition(_v3BoneParentWorld);
+  bone.getWorldPosition(_v3BoneWorld);
+  const { line, parentMarker, boneMarker } = highlight.userData;
+  const positions = line.geometry.attributes.position;
+  positions.setXYZ(0, _v3BoneParentWorld.x, _v3BoneParentWorld.y, _v3BoneParentWorld.z);
+  positions.setXYZ(1, _v3BoneWorld.x, _v3BoneWorld.y, _v3BoneWorld.z);
+  positions.needsUpdate = true;
+  parentMarker.position.copy(_v3BoneParentWorld);
+  boneMarker.position.copy(_v3BoneWorld);
+  refreshV3BoneInspector();
+}
+
+function selectV3ImportedBone(bone) {
+  if (!bone?.isBone) return;
+  v3SelectedBone = bone;
+  updateV3BoneSelection(true);
+  window.bodyPreviewV3Ui?.activate('rig');
+  log(`v3 bone selected: ${bone.name || '(unnamed bone)'}`);
+}
+
+function deselectV3ImportedBone() {
+  v3SelectedBone = null;
+  if (v3BoneHighlight) v3BoneHighlight.visible = false;
+  refreshV3BoneInspector();
+}
+
+function pointSegmentDistance(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq)) : 0;
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+function pickV3ImportedBoneAt(clientX, clientY) {
+  const helper = v3Import?.skeletonHelper;
+  const bones = helper?.userData.segmentBones;
+  if (!helper?.visible || !bones?.length) return false;
+  const rect = canvas.getBoundingClientRect();
+  let bestBone = null;
+  let bestDistance = 12;
+  for (const bone of bones) {
+    const parent = bone.parent;
+    if (!parent?.isBone || isV3RootMotionSegment(bone)) continue;
+    parent.getWorldPosition(_v3BoneParentWorld);
+    bone.getWorldPosition(_v3BoneWorld);
+    _v3BoneParentScreen.copy(_v3BoneParentWorld).project(camera);
+    _v3BoneScreen.copy(_v3BoneWorld).project(camera);
+    if (_v3BoneParentScreen.z < -1 || _v3BoneParentScreen.z > 1 || _v3BoneScreen.z < -1 || _v3BoneScreen.z > 1) continue;
+    const ax = rect.left + (_v3BoneParentScreen.x * 0.5 + 0.5) * rect.width;
+    const ay = rect.top + (-_v3BoneParentScreen.y * 0.5 + 0.5) * rect.height;
+    const bx = rect.left + (_v3BoneScreen.x * 0.5 + 0.5) * rect.width;
+    const by = rect.top + (-_v3BoneScreen.y * 0.5 + 0.5) * rect.height;
+    const distance = pointSegmentDistance(clientX, clientY, ax, ay, bx, by);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestBone = bone;
+    }
+  }
+  if (!bestBone) return false;
+  selectV3ImportedBone(bestBone);
+  return true;
+}
+
+$('v3boneClear').addEventListener('click', deselectV3ImportedBone);
+v3BoneMap.addEventListener('change', () => {
+  if (!v3Import || !v3SelectedBone) return;
+  const assetOverrides = { ...(v3MappingOverrides[v3Import.id] || {}) };
+  const value = v3BoneMap.value;
+  if (value === '__auto__') {
+    delete assetOverrides[v3SelectedBone.name];
+  } else if (value === '__none__') {
+    assetOverrides[v3SelectedBone.name] = null;
+  } else if (V3_HUMANOID_TARGET_BY_ID.has(value)) {
+    for (const [boneName, targetId] of Object.entries(assetOverrides)) {
+      if (targetId === value) delete assetOverrides[boneName];
+    }
+    assetOverrides[v3SelectedBone.name] = value;
+  }
+  v3MappingOverrides[v3Import.id] = assetOverrides;
+  persistV3MappingOverrides();
+  buildV3BoneMapping();
+});
+$('v3mapReset').addEventListener('click', () => {
+  if (!v3Import) return;
+  delete v3MappingOverrides[v3Import.id];
+  persistV3MappingOverrides();
+  buildV3BoneMapping();
+});
+
+// --- joint picking: click a joint sphere/mesh to select it and tune its IK pole -------------
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let pointerDownPos = null;
+let selectedJoint = null; // { name, mesh, prevMaterial }
+const jointSec = $('jointSec'), jointBody = $('jointBody'), jointNameEl = $('jointName'), jointNote = $('jointNote');
+const jpole = $('jpole'), jpoleprone = $('jpoleprone');
+let activePoleKeys = null;
+function jointPoleKeys(name) {
+  const arm = /^(left|right)(Shoulder|Elbow|Wrist|Hand)$/.exec(name);
+  if (arm) return { base: arm[1] + 'ArmPole', prone: arm[1] + 'ArmPoleProne' };
+  const leg = /^(left|right)(Hip|Knee|Ankle|Foot)$/.exec(name);
+  if (leg) return { base: leg[1] + 'LegPole', prone: leg[1] + 'LegPoleProne' };
+  return null;
+}
+function refreshJointVals() {
+  $('jpole_v').textContent = parseFloat(jpole.value).toFixed(2);
+  $('jpoleprone_v').textContent = parseFloat(jpoleprone.value).toFixed(2);
+}
+function showJointPanel(name) {
+  jointSec.style.display = '';
+  jointBody.style.display = '';
+  jointNameEl.textContent = name;
+  activePoleKeys = jointPoleKeys(name);
+  const rows = jointBody.querySelectorAll('.row');
+  if (activePoleKeys && body && body.ikCfg) {
+    rows.forEach((r) => { r.style.display = ''; });
+    jointNote.style.display = 'none';
+    jpole.value = body.ikCfg[activePoleKeys.base];
+    jpoleprone.value = body.ikCfg[activePoleKeys.prone];
+    refreshJointVals();
+  } else {
+    rows.forEach((r) => { r.style.display = 'none'; });
+    jointNote.style.display = '';
+  }
+}
+function hideJointPanel() {
+  jointSec.style.display = 'none';
+  jointBody.style.display = 'none';
+  activePoleKeys = null;
+}
+jpole.addEventListener('input', () => {
+  refreshJointVals();
+  if (activePoleKeys && body && body.ikCfg) body.ikCfg[activePoleKeys.base] = parseFloat(jpole.value);
+});
+jpoleprone.addEventListener('input', () => {
+  refreshJointVals();
+  if (activePoleKeys && body && body.ikCfg) body.ikCfg[activePoleKeys.prone] = parseFloat(jpoleprone.value);
+});
+function restoreJointMaterial() {
+  // materials are shared across joints, so the highlight is a per-mesh clone, not a shared-material edit.
+  if (selectedJoint && selectedJoint.mesh.material !== selectedJoint.prevMaterial) {
+    selectedJoint.mesh.material.dispose();
+    selectedJoint.mesh.material = selectedJoint.prevMaterial;
+  }
+}
+function selectJoint(name, mesh) {
+  restoreJointMaterial();
+  const prevMaterial = mesh.material;
+  const hi = prevMaterial.clone();
+  hi.emissive = new THREE.Color(0x2a8fff);
+  hi.emissiveIntensity = 0.9;
+  mesh.material = hi;
+  selectedJoint = { name, mesh, prevMaterial };
+  showJointPanel(name);
+}
+function deselectJoint() {
+  restoreJointMaterial();
+  selectedJoint = null;
+  hideJointPanel();
+}
+function pickJointAt(clientX, clientY) {
+  if (!body || !body.joints) return;
+  pointerNDC.x = (clientX / innerWidth) * 2 - 1;
+  pointerNDC.y = -(clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const entries = Object.entries(body.joints).filter(([, m]) => !!m);
+  const hits = raycaster.intersectObjects(entries.map(([, m]) => m), false);
+  if (!hits.length) { deselectJoint(); return; }
+  const name = entries.find(([, m]) => m === hits[0].object)[0];
+  selectJoint(name, hits[0].object);
+}
+canvas.addEventListener('pointerdown', (e) => { pointerDownPos = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!pointerDownPos) return;
+  const moved = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+  pointerDownPos = null;
+  if (moved >= 5) return;
+  if (pickV3ImportedBoneAt(e.clientX, e.clientY)) {
+    deselectJoint();
+    return;
+  }
+  deselectV3ImportedBone();
+  if ($('v3mode').value === 'imported-skinned') {
+    deselectJoint();
+    return;
+  }
+  pickJointAt(e.clientX, e.clientY);
+});
+
+const ui = {
+  mode: $('mode'), stance: $('stance'), weapon: $('weapon'), walk: $('walk'), run: $('run'), autopace: $('autopace'), speed: $('speed'), aim: $('aim'),
+  v3mode: $('v3mode'), v3mat: $('v3mat'), v3skinop: $('v3skinop'), v3rigop: $('v3rigop'), v3limbr: $('v3limbr'), v3torsor: $('v3torsor'), v3blend: $('v3blend'), v3wire: $('v3wire'), v3driver: $('v3driver'), v3importbones: $('v3importbones'), v3asset: $('v3asset'), v3load: $('v3load'), v3clear: $('v3clear'), v3legretarget: $('v3legretarget'), v3legblend: $('v3legblend'), v3gripdebug: $('v3gripdebug'),
+  v3griptx: $('v3griptx'), v3gripty: $('v3gripty'), v3griptz: $('v3griptz'),
+  v3griprx: $('v3griprx'), v3gripry: $('v3gripry'), v3griprz: $('v3griprz'),
+  v3gripfinger: $('v3gripfinger'), v3gripthumb: $('v3gripthumb'),
+  wx: $('wx'), wy: $('wy'), wz: $('wz'), wyaw: $('wyaw'), wpitch: $('wpitch'), wroll: $('wroll'), wscale: $('wscale'),
+  gp: $('gp'), gstride: $('gstride'), glift: $('glift'), gdur: $('gdur'), gtrigger: $('gtrigger'), ghipw: $('ghipw'),
+  ppitch: $('ppitch'), phip: $('phip'), ptorso: $('ptorso'), phead: $('phead'), pheadp: $('pheadp'), pfootb: $('pfootb'), pfoots: $('pfoots'), pshf: $('pshf'),
+  cpdrop: $('cpdrop'), ctdrop: $('ctdrop'), chdrop: $('chdrop'), csdrop: $('csdrop'), clean: $('clean'), cfwd: $('cfwd'),
+  ewidth: $('ewidth'), elength: $('elength'), edepth: $('edepth'), ex: $('ex'), ey: $('ey'), ez: $('ez'), espace: $('espace'),
+  rtEnable: $('rtEnable'), rtPlay: $('rtPlay'), rtTime: $('rtTime'), rtScrub: $('rtScrub'),
+  rtKeys: $('rtKeys'), rtEditor: $('rtEditor'), rtCopy: $('rtCopy'), rtDownload: $('rtDownload'), rtExport: $('rtExport'),
+};
+const VAL_SLIDERS = ['v3skinop', 'v3rigop', 'v3limbr', 'v3torsor', 'v3blend', 'v3legblend',
+  'wx', 'wy', 'wz', 'wyaw', 'wpitch', 'wroll', 'wscale', 'gp', 'gstride', 'glift', 'gdur', 'gtrigger', 'ghipw',
+  'ppitch', 'phip', 'ptorso', 'phead', 'pheadp', 'pfootb', 'pfoots', 'pshf',
+  'cpdrop', 'ctdrop', 'chdrop', 'csdrop', 'clean', 'cfwd',
+  'ewidth', 'elength', 'edepth', 'ex', 'ey', 'ez', 'espace'];
+function refreshVals() {
+  for (const k of VAL_SLIDERS) {
+    const precision = k[0] === 'e' || k === 'gtrigger' || k === 'ghipw' ? 3 : 2;
+    $(k + '_v').textContent = parseFloat(ui[k].value).toFixed(precision);
+  }
+}
+for (const k of VAL_SLIDERS) ui[k].addEventListener('input', refreshVals);
+refreshVals();
+
+const V3_GRIP_SLIDER_FIELDS = Object.freeze([
+  ['v3griptx', 'tx'], ['v3gripty', 'ty'], ['v3griptz', 'tz'],
+  ['v3griprx', 'rx'], ['v3gripry', 'ry'], ['v3griprz', 'rz'],
+  ['v3gripfinger', 'finger'], ['v3gripthumb', 'thumb'],
+]);
+function refreshV3GripSliderValues() {
+  for (const [id, field] of V3_GRIP_SLIDER_FIELDS) {
+    const value = parseFloat(ui[id].value);
+    const output = $(id + '_v');
+    if (field === 'tx' || field === 'ty' || field === 'tz') output.textContent = value.toFixed(1) + 'cm';
+    else if (field === 'rx' || field === 'ry' || field === 'rz') output.textContent = Math.round(value) + 'deg';
+    else output.textContent = value.toFixed(2) + 'x';
+  }
+}
+function syncV3GripTuningUi() {
+  const tuning = getV3GripTuning(v3GripTuneSide);
+  for (const [id, field] of V3_GRIP_SLIDER_FIELDS) ui[id].value = tuning[field];
+  document.querySelectorAll('#v3gripside button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.side === v3GripTuneSide);
+  });
+  refreshV3GripSliderValues();
+}
+for (const [id, field] of V3_GRIP_SLIDER_FIELDS) {
+  ui[id].addEventListener('input', () => {
+    getV3GripTuning(v3GripTuneSide)[field] = parseFloat(ui[id].value);
+    persistV3GripTuning();
+    refreshV3GripSliderValues();
+  });
+}
+$('v3gripside').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-side]');
+  if (!button) return;
+  v3GripTuneSide = button.dataset.side;
+  syncV3GripTuningUi();
+});
+$('v3gripreset').addEventListener('click', () => {
+  const key = v3GripTuningKey();
+  const profile = v3GripTuningProfiles[key] || (v3GripTuningProfiles[key] = {});
+  profile[v3GripTuneSide] = { ...V3_GRIP_TUNING_DEFAULTS };
+  persistV3GripTuning();
+  syncV3GripTuningUi();
+});
+syncV3GripTuningUi();
+
+function getV3PreviewConfig() {
+  return {
+    mode: ui.v3mode.value,
+    material: ui.v3mat.value,
+    skinOpacity: parseFloat(ui.v3skinop.value),
+    rigOpacity: parseFloat(ui.v3rigop.value),
+    limbRadius: parseFloat(ui.v3limbr.value),
+    torsoRadius: parseFloat(ui.v3torsor.value),
+    jointBlend: parseFloat(ui.v3blend.value),
+    wireframe: ui.v3wire.checked,
+    showDriver: ui.v3driver.checked,
+    showImportBones: ui.v3importbones.checked,
+    importAsset: ui.v3asset.value,
+    legRetarget: ui.v3legretarget.checked,
+    legRetargetBlend: parseFloat(ui.v3legblend.value),
+    showGripDiagnostics: ui.v3gripdebug.checked,
+  };
+}
+
+const optUi = {
+  scenario: $('optScenario'), algo: $('optAlgo'), iters: $('optIters'), spread: $('optSpread'), seed: $('optSeed'),
+  style: $('optStyle'), pelvis: $('optPelvis'), tempo: $('optTempo'),
+  run: $('optRun'), stop: $('optStop'), eval: $('optEval'), baseline: $('optBaseline'), applyBest: $('optApplyBest'),
+  preview: $('optPreview'), status: $('optStatus'), progress: $('optProgressFill'),
+};
+function refreshOptVals() {
+  $('optIters_v').textContent = parseInt(optUi.iters.value, 10);
+  $('optSpread_v').textContent = parseFloat(optUi.spread.value).toFixed(2);
+  $('optStyle_v').textContent = parseFloat(optUi.style.value).toFixed(2);
+  $('optPelvis_v').textContent = parseFloat(optUi.pelvis.value).toFixed(3);
+  $('optTempo_v').textContent = parseFloat(optUi.tempo.value).toFixed(2);
+}
+optUi.iters.addEventListener('input', refreshOptVals);
+optUi.spread.addEventListener('input', refreshOptVals);
+optUi.style.addEventListener('input', () => { refreshOptVals(); renderOptimizationStats(); });
+optUi.pelvis.addEventListener('input', () => { refreshOptVals(); renderOptimizationStats(); });
+optUi.tempo.addEventListener('input', () => { refreshOptVals(); renderOptimizationStats(); });
+refreshOptVals();
+
+function setupCollapsiblePanel(panelId, buttonId, storageKey, label) {
+  const panel = $(panelId);
+  const button = $(buttonId);
+  if (!panel || !button) return;
+  function setCollapsed(collapsed) {
+    panel.classList.toggle('collapsed', collapsed);
+    button.textContent = collapsed ? '+' : '-';
+    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    button.title = collapsed ? `Expand ${label}` : `Collapse ${label}`;
+    button.setAttribute('aria-label', button.title);
+    try { localStorage.setItem(storageKey, collapsed ? '1' : '0'); } catch {}
+  }
+  let startCollapsed = false;
+  try { startCollapsed = localStorage.getItem(storageKey) === '1'; } catch {}
+  setCollapsed(startCollapsed);
+  button.addEventListener('click', () => setCollapsed(!panel.classList.contains('collapsed')));
+}
+setupCollapsiblePanel('panel', 'toggleMainPanel', 'body-preview-v2-main-collapsed', 'body panel');
+setupCollapsiblePanel('optPanel', 'toggleOptPanel', 'body-preview-v2-opt-collapsed', 'optimizer panel');
+
+// --- speed -> gait fitted model -------------------------------------------
+// Least-squares fits over authored (+ user-added) sample points. pelvis/stride/lift use a
+// straight line; stepDuration uses a power law (dur = A * v^B) because cadence physically
+// tracks ~1/speed and a linear fit would cross zero / go negative when extrapolated fast.
+// With 1 sample every fit is a flat constant; 2 samples pin an exact line/power law; 3+
+// become genuine regressions. See the walk/run trend analysis in chat.
+function linFit(xs, ys) {
+  const n = xs.length;
+  if (n === 1) return { m: 0, b: ys[0], fn: () => ys[0] };
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; }
+  const d = n * sxx - sx * sx;
+  const m = d === 0 ? 0 : (n * sxy - sx * sy) / d;
+  const b = (sy - m * sx) / n;
+  return { m, b, fn: (x) => m * x + b };
+}
+function powFit(xs, ys) {
+  const n = xs.length;
+  if (n === 1) return { A: ys[0], B: 0, fn: () => ys[0] };
+  const lf = linFit(xs.map(Math.log), ys.map(Math.log));  // ln y = ln A + B ln x
+  const A = Math.exp(lf.b), B = lf.m;
+  return { A, B, fn: (x) => A * Math.pow(Math.max(x, 1e-3), B) };
+}
+const DEFAULT_SAMPLES = () => ([
+  { speed: 0.5,  pelvis: 0.61, stride: 1.35, lift: 0.275, dur: 0.22 }, // creep
+  { speed: 2.05, pelvis: 0.58, stride: 1.35, lift: 0.45,  dur: 0.31 }, // walk
+  { speed: 4.2,  pelvis: 0.52, stride: 1.35, lift: 0.45,  dur: 0.23 }, // run
+  { speed: 7.7,  pelvis: 0.58, stride: 1.31, lift: 0.6,   dur: 0.14 }, // sprint
+]);
+let SAMPLES = DEFAULT_SAMPLES();
+let MODEL = null;
+const CLAMP = { pelvis: [0.3, 0.85], stride: [0.15, 1.6], lift: [0.02, 0.6], dur: [0.1, 0.45] };
+const clamp = (v, [a, b]) => Math.max(a, Math.min(b, v));
+function refitModel() {
+  const xs = SAMPLES.map((s) => s.speed);
+  MODEL = {
+    pelvis: linFit(xs, SAMPLES.map((s) => s.pelvis)),
+    stride: linFit(xs, SAMPLES.map((s) => s.stride)),
+    lift:   linFit(xs, SAMPLES.map((s) => s.lift)),
+    dur:    powFit(xs, SAMPLES.map((s) => s.dur)),
+  };
+  const lin = (f) => `${f.m.toFixed(4)}·v + ${f.b.toFixed(3)}`;
+  document.getElementById('modelinfo').innerHTML =
+    `${SAMPLES.length} samples @ [${SAMPLES.map((s) => s.speed.toFixed(2)).join(', ')}]<br>` +
+    `pelvis ≈ ${lin(MODEL.pelvis)}<br>` +
+    `stepDur ≈ ${MODEL.dur.A.toFixed(3)}·v^${MODEL.dur.B.toFixed(3)}<br>` +
+    `stride ≈ ${lin(MODEL.stride)}<br>` +
+    `lift ≈ ${lin(MODEL.lift)}`;
+}
+function applyModelToSliders(speed) {
+  ui.gp.value      = clamp(MODEL.pelvis.fn(speed), CLAMP.pelvis).toFixed(3);
+  ui.gstride.value = clamp(MODEL.stride.fn(speed), CLAMP.stride).toFixed(3);
+  ui.glift.value   = clamp(MODEL.lift.fn(speed),   CLAMP.lift).toFixed(3);
+  ui.gdur.value    = clamp(MODEL.dur.fn(speed),    CLAMP.dur).toFixed(3);
+  refreshVals();
+}
+refitModel();
+
+ui.model = $('model');
+ui.model.addEventListener('change', () => {
+  if (ui.model.checked) { applyModelToSliders(parseFloat(ui.speed.value)); log('model: ON (speed drives gait)'); }
+  else log('model: OFF (manual gait)');
+});
+$('addSample').addEventListener('click', () => {
+  const s = {
+    speed: parseFloat(ui.speed.value),
+    pelvis: parseFloat(ui.gp.value), stride: parseFloat(ui.gstride.value),
+    lift: parseFloat(ui.glift.value), dur: parseFloat(ui.gdur.value),
+  };
+  const i = SAMPLES.findIndex((x) => Math.abs(x.speed - s.speed) < 0.05); // replace near-same speed
+  if (i >= 0) SAMPLES[i] = s; else SAMPLES.push(s);
+  SAMPLES.sort((a, b) => a.speed - b.speed);
+  refitModel();
+  log(`sample @ ${s.speed.toFixed(2)} (${SAMPLES.length} total)`);
+});
+$('resetSamples').addEventListener('click', () => { SAMPLES = DEFAULT_SAMPLES(); refitModel(); log('samples reset (2 authored)'); });
+
+// --- gait optimizer --------------------------------------------------------
+const OPT_HEIGHT = 1.8;
+const OPT_RADIUS = 0.3;
+const OPT_LEG_LEN = OPT_HEIGHT * 0.62;
+const OPT_THIGH = OPT_LEG_LEN * 0.52;
+const OPT_SHIN = OPT_LEG_LEN * 0.48;
+const OPT_TERMS = [
+  ['reach', 'Reach'],
+  ['clearance', 'Clearance'],
+  ['smooth', 'Smooth'],
+  ['cadence', 'Cadence'],
+  ['symmetry', 'Symmetry'],
+  ['settle', 'Settle'],
+  ['lag', 'Lag'],
+  ['style', 'Style'],
+];
+const OPT_PARAMS = [
+  { key: 'pelvisHeightRatio', slider: 'gp', label: 'Pelvis', lo: 0.50, hi: 0.64, digits: 3 },
+  { key: 'maxStepDistance', slider: 'gstride', label: 'Stride', lo: 0.35, hi: 1.60, digits: 3 },
+  { key: 'stepLift', slider: 'glift', label: 'Lift', lo: 0.06, hi: 0.60, digits: 3 },
+  { key: 'stepDuration', slider: 'gdur', label: 'Duration', lo: 0.16, hi: 0.42, digits: 3 },
+  { key: 'triggerDistance', slider: 'gtrigger', label: 'Trigger', lo: 0.10, hi: 0.46, digits: 3 },
+  { key: 'hipWidthRatio', slider: 'ghipw', label: 'Hip width', lo: 0.30, hi: 0.56, digits: 3 },
+];
+const OPT_SCENARIO_BANK = {
+  walk: { label: 'walk flat', type: 'straight', speed: 2.05, duration: 4.8, yaw: 0, terrain: 'flat', weight: 1 },
+  run: { label: 'run flat', type: 'straight', speed: 4.2, duration: 4.2, yaw: 0, terrain: 'flat', weight: 1 },
+  sprint: { label: 'sprint flat', type: 'straight', speed: 7.0, duration: 3.4, yaw: 0, terrain: 'flat', weight: 0.8 },
+  roughWalk: { label: 'walk rough', type: 'straight', speed: 2.2, duration: 5.2, yaw: 0.25, terrain: 'rough', weight: 1.15 },
+  roughRun: { label: 'run rough', type: 'straight', speed: 4.0, duration: 4.4, yaw: -0.15, terrain: 'rough', weight: 1.05 },
+  stop: { label: 'stop settle', type: 'stop', speed: 2.8, duration: 5.2, moveTime: 2.8, yaw: 0, terrain: 'flat', weight: 1.1 },
+  turn: { label: 'wide turn', type: 'turn', speed: 2.6, duration: 5.4, startYaw: -0.7, turn: 1.65, terrain: 'flat', weight: 1 },
+  roughTurn: { label: 'rough turn', type: 'turn', speed: 2.3, duration: 5.6, startYaw: -0.9, turn: 1.8, terrain: 'rough', weight: 1.15 },
+  strafe: { label: 'strafe', type: 'strafe', speed: 1.7, duration: 4.4, faceYaw: 0, moveYaw: Math.PI * 0.5, terrain: 'flat', weight: 0.8 },
+};
+const OPT_SCENARIO_SETS = {
+  balanced: ['walk', 'run', 'roughWalk', 'stop', 'turn', 'strafe'],
+  terrain: ['roughWalk', 'roughRun', 'roughTurn', 'stop'],
+  speed: ['walk', 'run', 'sprint', 'stop'],
+  control: ['turn', 'roughTurn', 'strafe', 'walk'],
+};
+function clampRange(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function fmtScore(v) { return Number.isFinite(v) ? v.toFixed(2) : '--'; }
+function flatHeight() { return 0; }
+function optTerrain(sc) { return sc.terrain === 'rough' ? terrainHeight : flatHeight; }
+function rotateOptYaw(lx, lz, yaw) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  return { x: lx * cy + lz * sy, z: -lx * sy + lz * cy };
+}
+function visualDurationForSpeed(speed) {
+  if (speed < 0.75) return 0.34;
+  if (speed < 3.0) return 0.31;
+  if (speed < 5.6) return 0.23;
+  return 0.16;
+}
+function stylePenaltyForCfg(cfg) {
+  const styleWeight = parseFloat(optUi.style.value);
+  const tempoWeight = parseFloat(optUi.tempo.value);
+  if (styleWeight <= 0 && tempoWeight <= 0) return 0;
+  const pelvisTarget = parseFloat(optUi.pelvis.value);
+  const baseline = optBaselineCfg || GAIT_DEFAULTS;
+  const lowPelvis = Math.max(0, pelvisTarget - 0.035 - cfg.pelvisHeightRatio) / 0.04;
+  const pelvisDrift = Math.abs(cfg.pelvisHeightRatio - pelvisTarget) / 0.12;
+  const shortDuration = Math.max(0, baseline.stepDuration * 0.92 - cfg.stepDuration) / 0.055;
+  const lowTrigger = Math.max(0, baseline.triggerDistance * 0.78 - cfg.triggerDistance) / 0.08;
+  const shortStride = Math.max(0, baseline.maxStepDistance * 0.78 - cfg.maxStepDistance) / 0.35;
+  return styleWeight * (lowPelvis * lowPelvis * 4.0 + pelvisDrift * pelvisDrift * 0.65)
+    + tempoWeight * (shortDuration * shortDuration * 1.8 + lowTrigger * lowTrigger * 0.8 + shortStride * shortStride * 0.45);
+}
+function hashSeed(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function rand() {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function readGaitCfgFromSliders() {
+  return {
+    ...GAIT_DEFAULTS,
+    pelvisHeightRatio: parseFloat(ui.gp.value),
+    maxStepDistance: parseFloat(ui.gstride.value),
+    stepLift: parseFloat(ui.glift.value),
+    stepDuration: parseFloat(ui.gdur.value),
+    triggerDistance: parseFloat(ui.gtrigger.value),
+    hipWidthRatio: parseFloat(ui.ghipw.value),
+  };
+}
+function applyGaitCfgToSliders(cfg) {
+  ui.model.checked = false;
+  for (const p of OPT_PARAMS) {
+    ui[p.slider].value = clampRange(cfg[p.key], p.lo, p.hi).toFixed(p.digits);
+  }
+  refreshVals();
+  storeActiveProfile();
+}
+function scenarioMotion(sc, t) {
+  let speed = sc.speed || 0;
+  let moveYaw = sc.yaw || 0;
+  let faceYaw = sc.faceYaw;
+  if (sc.type === 'stop' && t >= sc.moveTime) speed = 0;
+  if (sc.type === 'turn') {
+    const u = clampRange(t / Math.max(0.001, sc.duration), 0, 1);
+    const e = u * u * (3 - 2 * u);
+    moveYaw = (sc.startYaw || 0) + (sc.turn || 0) * e;
+  }
+  if (sc.type === 'strafe') {
+    moveYaw = sc.moveYaw || Math.PI * 0.5;
+    faceYaw = sc.faceYaw ?? 0;
+  }
+  const yaw = faceYaw ?? moveYaw;
+  return { speed, yaw, vx: Math.sin(moveYaw) * speed, vz: Math.cos(moveYaw) * speed };
+}
+function simulateScenario(rawCfg, sc) {
+  const cfg = { ...GAIT_DEFAULTS, ...rawCfg };
+  const terrain = optTerrain(sc);
+  const gait = createGaitScheduler(cfg);
+  const dt = 1 / 60;
+  const frames = Math.max(1, Math.round(sc.duration / dt));
+  const pos = { x: -2.4, z: -2.2 };
+  const hipWidth = OPT_RADIUS * 2 * cfg.hipWidthRatio;
+  const prev = {
+    left: { stepping: false, current: null, angle: null, steps: 0, stepDist: 0 },
+    right: { stepping: false, current: null, angle: null, steps: 0, stepDist: 0 },
+  };
+  const acc = { reach: 0, clearance: 0, smooth: 0, lag: 0 };
+  let samples = 0;
+  let stepSamples = 0;
+  let distance = 0;
+  let plantedSlide = 0;
+
+  for (let i = 0; i < frames; i++) {
+    const t = i * dt;
+    const m = scenarioMotion(sc, t);
+    pos.x += m.vx * dt;
+    pos.z += m.vz * dt;
+    distance += Math.hypot(m.vx * dt, m.vz * dt);
+    const groundY = terrain(pos.x, pos.z);
+    const pelvisY = groundY + OPT_HEIGHT * cfg.pelvisHeightRatio;
+    gait.update(dt, {
+      hip: { x: pos.x, y: pelvisY, z: pos.z },
+      yaw: m.yaw,
+      velocity: { x: m.vx, z: m.vz },
+      hipWidth,
+    }, terrain);
+
+    for (const side of ['left', 'right']) {
+      const foot = gait.feet[side];
+      if (!foot.initialized) continue;
+      const started = foot.stepping && !prev[side].stepping;
+      if (started) {
+        prev[side].steps++;
+        prev[side].stepDist += Math.hypot(foot.stepEnd.x - foot.stepStart.x, foot.stepEnd.z - foot.stepStart.z);
+      }
+      const hipLocal = rotateOptYaw(foot.side * hipWidth * 0.5, 0, m.yaw);
+      const hx = pos.x + hipLocal.x;
+      const hz = pos.z + hipLocal.z;
+      const dx = foot.current.x - hx;
+      const dy = foot.current.y - pelvisY;
+      const dz = foot.current.z - hz;
+      const reach = Math.hypot(dx, dy, dz);
+      const over = Math.max(0, reach - OPT_LEG_LEN * 0.985);
+      const under = Math.max(0, OPT_LEG_LEN * 0.20 - reach);
+      acc.reach += over * over * 260 + under * under * 30;
+
+      const targetLag = Math.hypot(foot.current.x - foot.target.x, foot.current.z - foot.target.z);
+      if (!foot.stepping) acc.lag += Math.min(1.2, targetLag) * 0.35;
+
+      if (foot.stepping) {
+        stepSamples++;
+        const clearance = foot.current.y - terrain(foot.current.x, foot.current.z);
+        const lowClear = Math.max(0, 0.025 - clearance);
+        const highClear = Math.max(0, clearance - Math.max(0.12, cfg.stepLift * 1.25));
+        acc.clearance += lowClear * lowClear * 900 + highClear * highClear * 4;
+      }
+
+      const d = clampRange(reach, Math.abs(OPT_THIGH - OPT_SHIN) + 1e-4, OPT_THIGH + OPT_SHIN - 1e-4);
+      const cosK = clampRange((OPT_THIGH * OPT_THIGH + OPT_SHIN * OPT_SHIN - d * d) / (2 * OPT_THIGH * OPT_SHIN), -1, 1);
+      const angle = Math.acos(cosK);
+      if (prev[side].angle != null) acc.smooth += Math.abs(angle - prev[side].angle) * 0.18;
+      prev[side].angle = angle;
+
+      if (!foot.stepping && prev[side].current) {
+        plantedSlide += Math.hypot(foot.current.x - prev[side].current.x, foot.current.z - prev[side].current.z);
+      }
+      prev[side].current = { x: foot.current.x, y: foot.current.y, z: foot.current.z };
+      prev[side].stepping = foot.stepping;
+      samples++;
+    }
+  }
+
+  const left = prev.left;
+  const right = prev.right;
+  const totalSteps = left.steps + right.steps;
+  const meanSpeed = distance / sc.duration;
+  const stepRate = totalSteps / sc.duration;
+  const wantedStepRate = meanSpeed < 0.12 ? 0 : clampRange(meanSpeed / Math.max(0.42, cfg.maxStepDistance * 0.58), 0.8, 7.0);
+  const cadenceMiss = meanSpeed < 0.12 ? totalSteps * 0.6 : Math.abs(stepRate - wantedStepRate) / Math.max(1, wantedStepRate);
+  const visualRateCap = meanSpeed < 0.12 ? 0 : 1 / Math.max(0.12, visualDurationForSpeed(meanSpeed) * 0.86);
+  const overTempo = visualRateCap > 0 ? Math.max(0, stepRate - visualRateCap) / visualRateCap : 0;
+  const avgL = left.steps ? left.stepDist / left.steps : 0;
+  const avgR = right.steps ? right.stepDist / right.steps : 0;
+  const endSettle = Math.hypot(gait.feet.left.current.x - gait.feet.left.rest.x, gait.feet.left.current.z - gait.feet.left.rest.z)
+    + Math.hypot(gait.feet.right.current.x - gait.feet.right.rest.x, gait.feet.right.current.z - gait.feet.right.rest.z);
+  const terms = {
+    reach: acc.reach / Math.max(1, samples),
+    clearance: acc.clearance / Math.max(1, stepSamples),
+    smooth: acc.smooth / Math.max(1, samples) + plantedSlide * 0.5,
+    cadence: cadenceMiss * cadenceMiss * 5 + overTempo * overTempo * 10 + Math.max(0, totalSteps / Math.max(1, distance) - 5.7) * 0.8,
+    symmetry: Math.abs(left.steps - right.steps) * 0.45 + Math.abs(avgL - avgR) * 2.5,
+    settle: sc.type === 'stop' ? endSettle * 5 : 0,
+    lag: acc.lag / Math.max(1, samples),
+    style: 0,
+  };
+  const score = Object.values(terms).reduce((a, b) => a + b, 0);
+  return { label: sc.label, score, terms, steps: totalSteps, distance };
+}
+function evaluateGaitCfg(cfg, setName = optUi.scenario.value) {
+  const ids = OPT_SCENARIO_SETS[setName] || OPT_SCENARIO_SETS.balanced;
+  const terms = Object.fromEntries(OPT_TERMS.map(([k]) => [k, 0]));
+  const scenarios = [];
+  let totalWeight = 0;
+  let score = 0;
+  for (const id of ids) {
+    const sc = OPT_SCENARIO_BANK[id];
+    const result = simulateScenario(cfg, sc);
+    const w = sc.weight || 1;
+    scenarios.push({ id, label: sc.label, score: result.score });
+    score += result.score * w;
+    totalWeight += w;
+    for (const [k] of OPT_TERMS) terms[k] += result.terms[k] * w;
+  }
+  for (const [k] of OPT_TERMS) terms[k] /= Math.max(1e-6, totalWeight);
+  terms.style = stylePenaltyForCfg(cfg);
+  return { setName, score: score / Math.max(1e-6, totalWeight) + terms.style, terms, scenarios };
+}
+function candidateFrom(anchor, best, rng, radius, algo, iter, iterations) {
+  const out = { ...anchor };
+  const localRadius = algo === 'anneal' ? radius * (0.18 + 0.82 * (1 - iter / Math.max(1, iterations))) : radius;
+  const center = algo === 'anneal' ? best : anchor;
+  for (const p of OPT_PARAMS) {
+    const span = p.hi - p.lo;
+    const global = rng() < 0.08;
+    const v = global ? p.lo + rng() * span : center[p.key] + (rng() * 2 - 1) * span * localRadius;
+    out[p.key] = clampRange(v, p.lo, p.hi);
+  }
+  return out;
+}
+
+let optBaselineCfg = readGaitCfgFromSliders();
+let optBaselineResult = null;
+let optCurrentResult = null;
+let optBestCfg = null;
+let optBestResult = null;
+let optHistory = [];
+let optRunning = false;
+let optCancel = false;
+function resultFor(cfg) {
+  return evaluateGaitCfg(cfg, optUi.scenario.value);
+}
+function ensureOptResults() {
+  optBaselineResult = resultFor(optBaselineCfg);
+  optCurrentResult = resultFor(readGaitCfgFromSliders());
+  if (optBestCfg) optBestResult = resultFor(optBestCfg);
+}
+function drawScoreChart(history) {
+  const canvas = $('scoreChart');
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#111923';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#243044';
+  ctx.lineWidth = 1 * dpr;
+  for (let i = 1; i < 4; i++) {
+    const y = (h * i) / 4;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  if (!history.length) return;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = Math.max(1e-6, max - min);
+  ctx.strokeStyle = '#8fd0a8';
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath();
+  history.forEach((v, i) => {
+    const x = history.length === 1 ? 0 : (i / (history.length - 1)) * w;
+    const y = h - ((v - min) / span) * (h - 12 * dpr) - 6 * dpr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+function renderBreakdown() {
+  const results = [
+    ['base', 'Base', optBaselineResult],
+    ['current', 'Now', optCurrentResult],
+    ['best', 'Best', optBestResult],
+  ].filter(([, , r]) => r);
+  let html = '';
+  for (const [key, label] of OPT_TERMS) {
+    const max = Math.max(0.01, ...results.map(([, , r]) => r.terms[key]));
+    for (const [cls, tag, result] of results) {
+      const value = result.terms[key];
+      html += `<div class="barRow"><span>${label} ${tag}</span><div class="barTrack"><i class="barFill ${cls}" style="width:${clampRange((value / max) * 100, 1, 100).toFixed(1)}%"></i></div><span>${fmtScore(value)}</span></div>`;
+    }
+  }
+  $('optBars').innerHTML = html;
+}
+function renderParamDeltas() {
+  const cmp = optBestCfg || readGaitCfgFromSliders();
+  let html = '';
+  for (const p of OPT_PARAMS) {
+    const base = optBaselineCfg[p.key];
+    const next = cmp[p.key];
+    const pct = clampRange(((next - base) / (p.hi - p.lo)) * 100, -50, 50);
+    const width = Math.abs(pct);
+    const left = pct < 0 ? 50 - width : 50;
+    html += `<div class="paramRow"><span>${p.label}</span><span>${base.toFixed(3)}</span><div class="deltaTrack"><i class="deltaFill" style="left:${left.toFixed(1)}%;width:${Math.max(1, width).toFixed(1)}%"></i></div><span>${next.toFixed(3)}</span></div>`;
+  }
+  $('paramDeltas').innerHTML = html;
+}
+function renderScenarioRows() {
+  const currentById = new Map((optCurrentResult?.scenarios || []).map((s) => [s.id, s]));
+  const bestById = new Map((optBestResult?.scenarios || []).map((s) => [s.id, s]));
+  const rows = (optBaselineResult?.scenarios || []).map((base) => {
+    const cur = currentById.get(base.id);
+    const best = bestById.get(base.id);
+    return `<tr><td>${base.label}</td><td>${fmtScore(base.score)}</td><td>${fmtScore(cur?.score)}</td><td>${fmtScore(best?.score)}</td></tr>`;
+  });
+  $('scenarioStats').innerHTML = rows.join('');
+}
+function renderOptimizationStats() {
+  ensureOptResults();
+  $('scoreBase').textContent = fmtScore(optBaselineResult.score);
+  $('scoreCurrent').textContent = fmtScore(optCurrentResult.score);
+  $('scoreBest').textContent = optBestResult ? fmtScore(optBestResult.score) : '--';
+  const gain = optBestResult ? ((optBaselineResult.score - optBestResult.score) / Math.max(1e-6, optBaselineResult.score)) * 100 : NaN;
+  $('scoreGain').textContent = Number.isFinite(gain) ? `${gain.toFixed(1)}%` : '--';
+  renderBreakdown();
+  renderParamDeltas();
+  renderScenarioRows();
+  drawScoreChart(optHistory);
+}
+async function runOptimization() {
+  if (optRunning) return;
+  optRunning = true;
+  optCancel = false;
+  optUi.run.disabled = true;
+  optUi.stop.disabled = false;
+  optUi.progress.style.width = '0%';
+  const startTime = performance.now();
+  const iterations = parseInt(optUi.iters.value, 10);
+  const radius = parseFloat(optUi.spread.value);
+  const algo = optUi.algo.value;
+  const rng = mulberry32(hashSeed(optUi.seed.value || 'body-v2'));
+  const anchor = readGaitCfgFromSliders();
+  optCurrentResult = resultFor(anchor);
+  optBestCfg = { ...anchor };
+  optBestResult = optCurrentResult;
+  optHistory = [optBestResult.score];
+  optUi.status.textContent = `Running ${iterations} candidates...`;
+  for (let i = 0; i < iterations && !optCancel; i++) {
+    const cand = candidateFrom(anchor, optBestCfg, rng, radius, algo, i, iterations);
+    const result = resultFor(cand);
+    if (result.score < optBestResult.score) {
+      optBestCfg = cand;
+      optBestResult = result;
+    }
+    optHistory.push(optBestResult.score);
+    if (i % 8 === 0 || i === iterations - 1) {
+      optUi.progress.style.width = `${(((i + 1) / iterations) * 100).toFixed(1)}%`;
+      optUi.status.textContent = `Candidate ${i + 1}/${iterations}, best ${fmtScore(optBestResult.score)}`;
+      renderOptimizationStats();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }
+  optRunning = false;
+  optUi.run.disabled = false;
+  optUi.stop.disabled = true;
+  optUi.progress.style.width = optCancel ? '0%' : '100%';
+  const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+  optUi.status.textContent = optCancel ? 'Optimization stopped.' : `Done in ${elapsed}s. Best ${fmtScore(optBestResult.score)}.`;
+  renderOptimizationStats();
+  if (!optCancel) log(`optimizer best=${fmtScore(optBestResult.score)} cfg=${JSON.stringify(optBestCfg)}`);
+}
+optUi.stop.disabled = true;
+optUi.run.addEventListener('click', runOptimization);
+optUi.stop.addEventListener('click', () => { optCancel = true; optUi.status.textContent = 'Stopping after current batch...'; });
+optUi.eval.addEventListener('click', () => { optHistory = []; renderOptimizationStats(); log(`current gait score=${fmtScore(optCurrentResult.score)}`); });
+optUi.baseline.addEventListener('click', () => {
+  optBaselineCfg = readGaitCfgFromSliders();
+  optBestCfg = null;
+  optBestResult = null;
+  optHistory = [];
+  renderOptimizationStats();
+  log('optimizer baseline captured');
+});
+optUi.applyBest.addEventListener('click', () => {
+  if (!optBestCfg) return;
+  applyGaitCfgToSliders(optBestCfg);
+  optUi.preview.value = 'current';
+  renderOptimizationStats();
+  log('applied optimizer best to gait sliders');
+});
+optUi.preview.addEventListener('change', () => {
+  if (optUi.preview.value === 'baseline') applyGaitCfgToSliders(optBaselineCfg);
+  if (optUi.preview.value === 'best' && optBestCfg) applyGaitCfgToSliders(optBestCfg);
+  renderOptimizationStats();
+});
+optUi.scenario.addEventListener('change', () => { optHistory = []; renderOptimizationStats(); });
+renderOptimizationStats();
+
+// --- locomotion modes: Walk / Run are mutually exclusive; each owns an editable gait+speed
+// profile that is loaded into the sliders on switch and updated in place as you tune it. ---
+// Authored speeds; the in-game FPS controller is set to match these (fp.speedStand = 2.05,
+// runMultiplier = 2.05 -> run 4.2) so the game and preview look the same.
+const LOCO_PROFILES = {
+  walk: { speed: 2.05, gait: { pelvisHeightRatio: 0.58, maxStepDistance: 1.35, stepLift: 0.45, stepDuration: 0.31, triggerDistance: 0.28, hipWidthRatio: 0.42 } },
+  run:  { speed: 4.2,  gait: { pelvisHeightRatio: 0.52, maxStepDistance: 1.35, stepLift: 0.45, stepDuration: 0.23, triggerDistance: 0.28, hipWidthRatio: 0.42 } },
+};
+let activeLoco = 'walk'; // 'idle' | 'walk' | 'run'
+function applyProfile(p) {
+  ui.speed.value = p.speed;
+  ui.gp.value = p.gait.pelvisHeightRatio;
+  ui.gstride.value = p.gait.maxStepDistance;
+  ui.glift.value = p.gait.stepLift;
+  ui.gdur.value = p.gait.stepDuration;
+  ui.gtrigger.value = p.gait.triggerDistance ?? 0.28;
+  ui.ghipw.value = p.gait.hipWidthRatio ?? 0.42;
+  refreshVals();
+}
+function setLoco(name) {
+  activeLoco = name;
+  ui.walk.checked = name === 'walk';
+  ui.run.checked = name === 'run';
+  if (name !== 'idle') { applyProfile(LOCO_PROFILES[name]); log('mode: ' + name); }
+  else log('mode: idle');
+}
+// Persist slider tweaks back into whichever profile is active, so switching away and back keeps them.
+function storeActiveProfile() {
+  if (activeLoco === 'idle') return;
+  const p = LOCO_PROFILES[activeLoco];
+  p.speed = parseFloat(ui.speed.value);
+  p.gait.pelvisHeightRatio = parseFloat(ui.gp.value);
+  p.gait.maxStepDistance = parseFloat(ui.gstride.value);
+  p.gait.stepLift = parseFloat(ui.glift.value);
+  p.gait.stepDuration = parseFloat(ui.gdur.value);
+  p.gait.triggerDistance = parseFloat(ui.gtrigger.value);
+  p.gait.hipWidthRatio = parseFloat(ui.ghipw.value);
+}
+for (const k of ['speed', 'gp', 'gstride', 'glift', 'gdur', 'gtrigger', 'ghipw']) ui[k].addEventListener('input', storeActiveProfile);
+ui.walk.addEventListener('change', () => setLoco(ui.walk.checked ? 'walk' : 'idle'));
+ui.run.addEventListener('change', () => setLoco(ui.run.checked ? 'run' : 'idle'));
+
+// Per-weapon, per-stance holds: mount offset differs by stance (standing vs lying down) and by
+// weapon (pistol vs rifle geometry). Seeded from the tuned holds baked into weapons.js.
+const WEAPON_KEYS = ['wx', 'wy', 'wz', 'wpitch', 'wyaw', 'wroll', 'wscale'];
+function holdFromDef(h) {
+  return { wx: h.position[0], wy: h.position[1], wz: h.position[2], wpitch: h.rotation[0], wyaw: h.rotation[1], wroll: h.rotation[2], wscale: h.scale };
+}
+// Default hold for weapons not yet authored in weapons.js, so their sliders + export still
+// work here (seeded from the m1911 pistol hold — the user tunes from this starting point).
+const DEFAULT_HOLD = { position: [0.2, 0.44, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 };
+const WEAPON_HOLDS = {};
+for (const id of Object.keys(WEAPONS)) {
+  const w = WEAPONS[id];
+  const stand = w.thirdPersonHold || DEFAULT_HOLD;         // stand == crouch mount
+  const prone = w.proneHold || w.thirdPersonHold || DEFAULT_HOLD;
+  WEAPON_HOLDS[id] = { stand: holdFromDef(stand), crouch: holdFromDef(stand), prone: holdFromDef(prone) };
+}
+let prevStance = ui.stance.value;
+let prevWeapon = ui.weapon.value;
+function loadWeaponHold(weaponId, stance) {
+  const h = WEAPON_HOLDS[weaponId] && WEAPON_HOLDS[weaponId][stance]; if (!h) return;
+  for (const k of WEAPON_KEYS) { ui[k].value = h[k]; ui[k].dispatchEvent(new Event('input')); }
+}
+function saveWeaponHold(weaponId, stance) {
+  const out = WEAPON_HOLDS[weaponId] && WEAPON_HOLDS[weaponId][stance];
+  if (out) for (const k of WEAPON_KEYS) out[k] = parseFloat(ui[k].value);
+}
+loadWeaponHold(prevWeapon, prevStance);
+ui.stance.addEventListener('change', () => {
+  saveWeaponHold(prevWeapon, prevStance);
+  prevStance = ui.stance.value;
+  loadWeaponHold(prevWeapon, prevStance);
+  log('stance=' + prevStance);
+});
+ui.weapon.addEventListener('change', () => {
+  saveWeaponHold(prevWeapon, prevStance);
+  prevWeapon = ui.weapon.value;
+  loadWeaponHold(prevWeapon, prevStance);
+  syncV3GripTuningUi();
+  switchWeaponModel(prevWeapon).catch((e) => showError((e && e.message) || String(e)));
+  rtOnWeaponChange();
+});
+
+ui.mode.addEventListener('change', () => rebuildBody(ui.mode.value));
+ui.v3mode.addEventListener('change', () => log('v3 visual=' + ui.v3mode.value));
+ui.v3mat.addEventListener('change', () => log('v3 material=' + ui.v3mat.value));
+ui.v3load.addEventListener('click', () => loadV3ImportedModel(ui.v3asset.value));
+ui.v3clear.addEventListener('click', clearV3ImportedModel);
+$('fire').addEventListener('click', () => { controller.play('fire'); controller.recoil(1); log('action: fire'); });
+$('reload').addEventListener('click', () => { controller.play('reload'); log('action: reload'); });
+
+// ===================== Reload Tuner =====================
+// Scrub/play the active weapon's reload sequence against the real body, nudge each key's
+// hand-target offset (X/Y/Z) + key time live, and export weapon-poses.json. Edits mutate
+// WEAPON_POSES in place; getWeaponDef() returns that same reloadSequence object by reference,
+// so the controller (holding it as s.activeSeq) reflects changes on the next frame.
+const RT = { enabled: false, playing: false, t: 0, keyIndex: -1, channel: 'left' };
+function rtSeq() {
+  const id = ui.weapon.value;
+  return (WEAPON_POSES.reloadSequence && WEAPON_POSES.reloadSequence[id]) || null;
+}
+function rtDuration() { const s = rtSeq(); return s && typeof s.duration === 'number' ? s.duration : 0; }
+// The numeric array a key's channel exposes for tuning, or null for string/named refs.
+function rtEditable(key, channel) {
+  const ref = key && key[channel];
+  if (ref && typeof ref === 'object') {
+    if (Array.isArray(ref.body)) return { arr: ref.body, kind: 'body' };
+    if (Array.isArray(ref.offset)) return { arr: ref.offset, kind: 'offset' };
+  }
+  return null;
+}
+function rtRefSummary(ref) {
+  if (ref == null) return '—';
+  if (typeof ref === 'string') return ref;
+  if (ref.body) return 'body[' + ref.body.map((n) => n.toFixed(2)).join(', ') + ']';
+  if (ref.weaponAnchor) return ref.weaponAnchor + '+off';
+  if (ref.camera) return 'camera';
+  if (ref.world) return 'world';
+  return '?';
+}
+function rtSyncExport() { ui.rtExport.value = JSON.stringify(WEAPON_POSES, null, 2); }
+function rtRefreshTime() {
+  const seq = rtSeq();
+  let near = '';
+  if (seq && seq.keys.length) {
+    let best = seq.keys[0], bd = Infinity;
+    for (const k of seq.keys) { const d = Math.abs(k.t - RT.t); if (d < bd) { bd = d; best = k; } }
+    near = ' · near ' + best.t.toFixed(2) + (best.event ? ' (' + best.event + ')' : '');
+  }
+  ui.rtTime.textContent = RT.t.toFixed(2) + ' / ' + rtDuration().toFixed(2) + near;
+}
+function rtBuildKeys() {
+  const seq = rtSeq();
+  ui.rtKeys.innerHTML = '';
+  if (!seq) return;
+  seq.keys.forEach((key, i) => {
+    const row = document.createElement('div');
+    row.className = 'rtKey' + (i === RT.keyIndex ? ' sel' : '');
+    const refs = [];
+    if (key.left != null) refs.push('L:' + rtRefSummary(key.left));
+    if (key.right != null) refs.push('R:' + rtRefSummary(key.right));
+    row.innerHTML = '<span class="kt">' + key.t.toFixed(2) + '</span><span>' + refs.join('  ') + '</span>' +
+      (key.event ? '<span class="kev">' + key.event + '</span>' : '<span></span>');
+    row.addEventListener('click', () => rtSelectKey(i));
+    ui.rtKeys.appendChild(row);
+  });
+}
+function rtSliderRow(box, label, value, min, max, step, onInput) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const rng = document.createElement('input'); rng.type = 'range';
+  rng.min = min; rng.max = max; rng.step = step; rng.value = String(value);
+  const val = document.createElement('span'); val.className = 'val'; val.textContent = (+value).toFixed(3);
+  rng.addEventListener('input', () => { const v = parseFloat(rng.value); val.textContent = v.toFixed(3); onInput(v); });
+  row.appendChild(lab); row.appendChild(rng); row.appendChild(val);
+  box.appendChild(row);
+}
+function rtBuildEditor() {
+  const box = ui.rtEditor;
+  box.innerHTML = '';
+  const seq = rtSeq();
+  const key = seq && RT.keyIndex >= 0 ? seq.keys[RT.keyIndex] : null;
+  if (!key) return;
+
+  // Hand-channel picker (only channels present on this key; skip if just one).
+  const channels = ['left', 'right'].filter((c) => key[c] != null);
+  if (channels.length > 1) {
+    const row = document.createElement('div'); row.className = 'row';
+    const lab = document.createElement('label'); lab.textContent = 'Hand';
+    row.appendChild(lab);
+    for (const c of channels) {
+      const b = document.createElement('button'); b.className = 'mini'; b.textContent = c;
+      if (c === RT.channel) b.style.borderColor = '#5cc8ff';
+      b.addEventListener('click', () => { RT.channel = c; rtBuildEditor(); });
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  } else if (channels.length === 1) {
+    RT.channel = channels[0];
+  }
+
+  const edit = rtEditable(key, RT.channel);
+  if (edit) {
+    const labels = edit.kind === 'body' ? ['X (left+)', 'Y (up+)', 'Z (fwd+)'] : ['X', 'Y', 'Z'];
+    for (let i = 0; i < 3; i++) {
+      rtSliderRow(box, labels[i], edit.arr[i], -0.8, 0.8, 0.005, (v) => {
+        edit.arr[i] = v; rtBuildKeys(); rtSyncExport();
+      });
+    }
+  } else {
+    const note = document.createElement('div'); note.className = 'note';
+    const ref = key[RT.channel];
+    note.textContent = typeof ref === 'string'
+      ? 'Channel "' + RT.channel + '" is a named anchor ("' + ref + '") — no numeric offset here' +
+        (ref === 'beltMagazine' ? ' (belt pouch lives in weapon-pose-controller.js).' : '.')
+      : 'No editable offset on this channel.';
+    box.appendChild(note);
+  }
+
+  // Key time, clamped between neighbors so ordering stays stable.
+  const prevT = RT.keyIndex > 0 ? seq.keys[RT.keyIndex - 1].t + 0.005 : 0;
+  const nextT = RT.keyIndex < seq.keys.length - 1 ? seq.keys[RT.keyIndex + 1].t - 0.005 : rtDuration();
+  rtSliderRow(box, 't (time)', key.t, prevT, nextT, 0.005, (v) => {
+    key.t = v; RT.t = v; ui.rtScrub.value = String(v); rtBuildKeys(); rtRefreshTime(); rtSyncExport();
+  });
+}
+function rtSelectKey(i) {
+  RT.keyIndex = i;
+  const seq = rtSeq();
+  const key = seq && seq.keys[i];
+  if (key) {
+    RT.t = key.t; ui.rtScrub.value = String(key.t);
+    RT.channel = rtEditable(key, 'left') ? 'left' : (rtEditable(key, 'right') ? 'right' : (key.left != null ? 'left' : 'right'));
+  }
+  rtBuildKeys(); rtBuildEditor(); rtRefreshTime();
+}
+function rtOnWeaponChange() {
+  RT.keyIndex = -1; RT.t = 0; RT.playing = false; ui.rtPlay.textContent = 'Play';
+  ui.rtScrub.max = String(rtDuration() || 1); ui.rtScrub.value = '0';
+  if (RT.enabled && rtSeq()) rtSelectKey(0);
+  else { rtBuildKeys(); ui.rtEditor.innerHTML = ''; }
+  rtSyncExport(); rtRefreshTime();
+}
+ui.rtEnable.addEventListener('change', () => {
+  RT.enabled = ui.rtEnable.checked;
+  if (RT.enabled) {
+    ui.rtScrub.max = String(rtDuration() || 1);
+    if (RT.keyIndex < 0 && rtSeq()) rtSelectKey(0); else { rtBuildKeys(); rtBuildEditor(); }
+    rtSyncExport();
+  } else {
+    RT.playing = false; ui.rtPlay.textContent = 'Play';
+    if (controller) controller.play('idle');
+  }
+  rtRefreshTime();
+});
+ui.rtPlay.addEventListener('click', () => {
+  if (!RT.enabled) { ui.rtEnable.checked = true; ui.rtEnable.dispatchEvent(new Event('change')); }
+  RT.playing = !RT.playing;
+  ui.rtPlay.textContent = RT.playing ? 'Pause' : 'Play';
+});
+ui.rtScrub.addEventListener('input', () => {
+  RT.playing = false; ui.rtPlay.textContent = 'Play';
+  RT.t = parseFloat(ui.rtScrub.value);
+  rtRefreshTime();
+});
+ui.rtCopy.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(ui.rtExport.value); }
+  catch { ui.rtExport.select(); document.execCommand('copy'); }
+  ui.rtCopy.textContent = 'Copied!';
+  setTimeout(() => { ui.rtCopy.textContent = 'Copy weapon-poses.json'; }, 1200);
+});
+ui.rtDownload.addEventListener('click', () => {
+  const blob = new Blob([ui.rtExport.value], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'weapon-poses.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+$('kneeFlip').addEventListener('click', () => { kneeSign *= -1; rebuildBody(ui.mode.value); log('kneeSign=' + kneeSign); });
+$('elbowFlip').addEventListener('click', () => { elbowSign *= -1; rebuildBody(ui.mode.value); log('elbowSign=' + elbowSign); });
+$('copyTune').addEventListener('click', () => {
+  storeActiveProfile(); // capture any live edits into the active profile first
+  saveWeaponHold(prevWeapon, prevStance); // snapshot live slider edits back into the active hold
+  const holdToObj = (h) => ({
+    position: [h.wx, h.wy, h.wz], rotation: [h.wpitch, h.wyaw, h.wroll], scale: h.wscale,
+  });
+  const activeHolds = WEAPON_HOLDS[prevWeapon] || {};
+  const t = {
+    weapon: prevWeapon,
+    weaponAdjust: holdToObj(activeHolds[prevStance]), // active weapon+stance's hold
+    weaponHolds: {
+      thirdPersonHold: holdToObj(activeHolds.stand), // stand == crouch mount, paste into weapons.js
+      proneHold: holdToObj(activeHolds.prone),
+    },
+    loco: { active: activeLoco, walk: LOCO_PROFILES.walk, run: LOCO_PROFILES.run },
+    gaitCfg: readGaitCfgFromSliders(),
+    proneCfg: body ? { ...body.proneCfg } : null,
+    crouchCfg: body ? { ...body.crouchCfg } : null,
+    eyeCfg: body ? { ...body.eyeCfg } : null,
+    ikCfg: body ? { ...body.ikCfg } : null,
+    speedModel: {
+      samples: SAMPLES,
+      fit: {
+        pelvis: { m: MODEL.pelvis.m, b: MODEL.pelvis.b },   // pelvis = m*v + b
+        stride: { m: MODEL.stride.m, b: MODEL.stride.b },
+        lift:   { m: MODEL.lift.m,   b: MODEL.lift.b },
+        dur:    { A: MODEL.dur.A,    B: MODEL.dur.B },       // dur = A * v^B
+      },
+    },
+    optimizer: {
+      scenarioSet: optUi.scenario.value,
+      styleGuard: parseFloat(optUi.style.value),
+      postureTarget: parseFloat(optUi.pelvis.value),
+      tempoGuard: parseFloat(optUi.tempo.value),
+      baseline: optBaselineCfg,
+      best: optBestCfg,
+      baselineScore: optBaselineResult?.score ?? null,
+      bestScore: optBestResult?.score ?? null,
+    },
+    bodyPreviewV3: getV3PreviewConfig(),
+    kneeSign, elbowSign,
+  };
+  log('TUNING ' + JSON.stringify(t));
+});
+
+// --- loop ------------------------------------------------------------------
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(clock.getDelta(), 1 / 30);
+
+  // Pace the body in a straight line along Z, reversing at the ends. Constant heading makes
+  // the gait easy to read. Body forward heading is (sin yaw, cos yaw): yaw 0 -> +Z, yaw PI -> -Z.
+  // Movement: WASD (camera-relative) drives the body; the body faces its heading. Falls back to
+  // the straight-line Auto-pace demo when no keys are down and Auto-pace is on; otherwise idles.
+  const speed = parseFloat(ui.speed.value);
+  // Fit-model mode: the speed slider drives the gait sliders (which the loop below reads into
+  // the rig). Written every frame so scrubbing speed continuously re-evaluates the fit.
+  if (ui.model.checked && MODEL) applyModelToSliders(speed);
+  const mz = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+  const mx = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+
+  if (mz !== 0 || mx !== 0) {
+    camera.getWorldDirection(_fwd); _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, 1); else _fwd.normalize();
+    _rgt.crossVectors(_fwd, _UP).normalize();           // camera right on the ground plane
+    _mv.copy(_fwd).multiplyScalar(mz).addScaledVector(_rgt, mx);
+    if (_mv.lengthSq() > 1e-6) {
+      _mv.normalize();
+      bodyState.yaw = Math.atan2(-_mv.x, -_mv.z);        // module faces -Z at yaw 0; face travel dir
+      bodyState.velocity.set(_mv.x * speed, 0, _mv.z * speed);
+      const nx = bodyState.position.x + _mv.x * speed * dt;
+      const nz = bodyState.position.z + _mv.z * speed * dt;
+      bodyState.position.set(nx, terrainHeight(nx, nz) + 0.9, nz);
+    }
+  } else if (ui.autopace.checked && speed > 0.01) {
+    let nz = bodyState.position.z + paceDir * speed * dt;
+    if (nz > 6) { nz = 6; paceDir = -1; } else if (nz < -6) { nz = -6; paceDir = 1; }
+    bodyState.velocity.set(0, 0, paceDir * speed);
+    bodyState.position.set(0, terrainHeight(0, nz) + 0.9, nz);
+    bodyState.yaw = paceDir > 0 ? Math.PI : 0;
+  } else {
+    bodyState.velocity.set(0, 0, 0);
+  }
+  bodyState.aimPitch = 0;
+
+  // Stance drives the body's crouch (squash) / prone (lie-down) weights.
+  const stance = ui.stance.value;
+  bodyState.crouch = stance === 'crouch' ? 0.7 : 0;
+  bodyState.prone = stance === 'prone' ? 1 : 0;
+
+  if (body && body.eyeCfg) {
+    const e = body.eyeCfg;
+    e.width = parseFloat(ui.ewidth.value);
+    e.length = parseFloat(ui.elength.value);
+    e.depth = parseFloat(ui.edepth.value);
+    e.x = parseFloat(ui.ex.value);
+    e.y = parseFloat(ui.ey.value);
+    e.z = parseFloat(ui.ez.value);
+    e.spacing = parseFloat(ui.espace.value);
+  }
+
+  if (body) body.update(dt, bodyState);
+
+  // weaponRig at the body, head-height, facing body yaw. weaponAdjust carries the live slider
+  // offsets in body-facing space; weaponFrame (child) applies the fixed 180deg camera->body
+  // spin, so the sliders read intuitively (+X body-right, +Z body-forward).
+  weaponRig.position.set(bodyState.position.x, terrainHeight(bodyState.position.x, bodyState.position.z) + 1.5, bodyState.position.z);
+  // The body rig faces yaw+PI (it's built to face -Z, see player-procedural-body.js update()).
+  // The weapon mount MUST use that same facing, otherwise the position offset in weaponAdjust
+  // points 180deg behind the body and the arms chase the grip backwards. weaponFrame's fixed PI
+  // spin then lands the barrel pointing body-forward. (+Z body-forward, +X body-side.)
+  weaponRig.rotation.set(0, bodyState.yaw + Math.PI, 0);
+  weaponAdjust.position.set(parseFloat(ui.wx.value), parseFloat(ui.wy.value), parseFloat(ui.wz.value));
+  weaponAdjust.rotation.set(parseFloat(ui.wpitch.value), parseFloat(ui.wyaw.value), parseFloat(ui.wroll.value));
+  weaponAdjust.scale.setScalar(parseFloat(ui.wscale.value));
+
+  if (body && body.gait) {
+    const c = body.gait.cfg;
+    c.pelvisHeightRatio = parseFloat(ui.gp.value);
+    c.maxStepDistance = parseFloat(ui.gstride.value);
+    c.stepLift = parseFloat(ui.glift.value);
+    c.stepDuration = parseFloat(ui.gdur.value);
+    c.triggerDistance = parseFloat(ui.gtrigger.value);
+    c.hipWidthRatio = parseFloat(ui.ghipw.value);
+  }
+  if (body && body.proneCfg) {
+    const p = body.proneCfg;
+    p.pitch = parseFloat(ui.ppitch.value);
+    p.hipHeight = parseFloat(ui.phip.value);
+    p.torsoFwd = parseFloat(ui.ptorso.value);
+    p.headFwd = parseFloat(ui.phead.value);
+    p.headPitch = parseFloat(ui.pheadp.value);
+    p.footBack = parseFloat(ui.pfootb.value);
+    p.footSpread = parseFloat(ui.pfoots.value);
+    p.shoulderFwd = parseFloat(ui.pshf.value);
+  }
+  if (body && body.crouchCfg) {
+    const c = body.crouchCfg;
+    c.pelvisDrop = parseFloat(ui.cpdrop.value);
+    c.torsoDrop = parseFloat(ui.ctdrop.value);
+    c.headDrop = parseFloat(ui.chdrop.value);
+    c.shoulderDrop = parseFloat(ui.csdrop.value);
+    c.lean = parseFloat(ui.clean.value);
+    c.fwd = parseFloat(ui.cfwd.value);
+  }
+
+  if (controller) {
+    // Refresh the mount's world matrices BEFORE the controller resolves weapon anchors, so
+    // slider changes to weaponAdjust actually move the IK hand targets (not just the visible
+    // gun, which the renderer updates later).
+    weaponRig.updateMatrixWorld(true);
+    controller.setAiming(parseFloat(ui.aim.value));
+    if (RT.enabled) {
+      // Host-authoritative scrub: feed an explicit reload actionTime so the controller
+      // evaluates exactly at RT.t and never self-advances or auto-completes.
+      const dur = rtDuration();
+      if (RT.playing && dur > 0) {
+        RT.t += dt;
+        if (RT.t >= dur) RT.t = 0;
+        ui.rtScrub.value = String(RT.t);
+        rtRefreshTime();
+      }
+      controller.update(dt, { action: 'reload', actionTime: RT.t });
+    } else {
+      controller.update(dt, {});
+    }
+  }
+
+  const v3Cfg = getV3PreviewConfig();
+  updateV3Preview(body, v3Cfg);
+  updateV3ImportedModel(bodyState, v3Cfg, body);
+  updateV3ImportedWeapon(v3Cfg);
+
+  controls.target.lerp(bodyState.position, 0.08);
+  controls.update();
+  renderer.renderAsync(scene, camera);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+(async function main() {
+  try {
+    await renderer.init();
+    await loadWeaponData();
+    await switchWeaponModel(ui.weapon.value);
+    rebuildBody(ui.mode.value);
+    rtOnWeaponChange(); // populate the reload-tuner key list + export from loaded weapon-poses.json
+    renderer.setAnimationLoop(frame);
+    log('ready');
+  } catch (e) {
+    showError((e && e.message) || String(e));
+  }
+})();
+</script>
+</body>
+</html>

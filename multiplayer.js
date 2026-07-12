@@ -2,6 +2,13 @@
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.com';
 
+// Wave 2/B1: optional remote procedural walking body (see docs/subsystems/
+// procedural-body-weapon-contracts.md, Contract 2). Static import is safe under
+// plain Node (this module never touches THREE/DOM at import time; THREE is
+// injected at call time), so it does not break multiplayer-test.mjs /
+// test-ghost-renderer.mjs / test-multiplayer-guns.mjs.
+import { createProceduralPlayerBody } from './player-procedural-body.js';
+
 // ---------------------------------------------------------------------------
 // InterpolationBuffer â€” ring of 3 snapshots, sample at arbitrary time
 // ---------------------------------------------------------------------------
@@ -368,9 +375,22 @@ export function playerTintHSL(id) {
 }
 
 export class GhostRenderer {
-  constructor(scene, THREE) {
+  // options:
+  //   terrainHeight(x, z) -> y   default () => 0. Passed straight through to
+  //     createProceduralPlayerBody for foot planting; environment-viewer.html
+  //     will wire the real terrain sampler later.
+  //   useProceduralBody: boolean  default false. When false, behavior is
+  //     byte-for-byte the existing capsule ghost (nothing below is exercised).
+  //     When true, each remote player also gets a createProceduralPlayerBody
+  //     instance (mode:'remote') driven from the interpolated wire pose, and
+  //     the old capsule/eyes/orb-hands are hidden (still created, so flipping
+  //     the flag at runtime would still work, though it is a constructor-only
+  //     option today).
+  constructor(scene, THREE, options = {}) {
     this._scene    = scene;
     this._THREE    = THREE;
+    this._terrainHeight = options.terrainHeight || (() => 0);
+    this._useProceduralBody = options.useProceduralBody === true;
     this._creatures = new Map(); // id(number) â†’ Mesh
     this._players   = new Map(); // clientId(string) â†’ Group (container)
     this._mobs      = new Map(); // ClaudeCraft mob id(number) â†’ Mesh (guest render path)
@@ -451,10 +471,66 @@ export class GhostRenderer {
       this._placeEyes(g, r, h);
       this._placeHands(g, r, h);
       this._placeHeldItem(g, r, h, item);
+      if (this._useProceduralBody) this._updateProceduralBody(g, item);
     }
     for (const [id, g] of this._players) {
-      if (!seen.has(id)) { this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id); }
+      if (!seen.has(id)) {
+        if (g.userData.bodyProc) g.userData.bodyProc.destroy();
+        this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id);
+      }
     }
+  }
+
+  // Wave 2/B1: drive a per-player createProceduralPlayerBody follower from the
+  // interpolated wire pose. Visual only — never writes back into `item`/state.
+  // Velocity is derived from the position delta since the last call (there is
+  // no replicated velocity field and remote feet/hands are never replicated,
+  // per the contract doc's global guardrails), so the gait is a local guess,
+  // not a replay of the sender's real feet.
+  _updateProceduralBody(g, item) {
+    const THREE = this._THREE;
+    const ud = g.userData;
+    if (!ud.bodyProc) {
+      ud.bodyProc = createProceduralPlayerBody({
+        THREE, scene: this._scene, terrainHeight: this._terrainHeight, mode: 'remote',
+      });
+      const [th, ts, tl] = playerTintHSL(item.id);
+      ud.bodyProc.setTint({ h: th, s: ts, l: tl });
+    }
+
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const dt = ud.bodyLastT != null ? Math.max(0, (now - ud.bodyLastT) / 1000) : 0;
+    const [px, py, pz] = item.p;
+    let vx = 0, vz = 0;
+    if (ud.bodyLastPos && dt > 0) {
+      vx = (px - ud.bodyLastPos.x) / dt;
+      vz = (pz - ud.bodyLastPos.z) / dt;
+    }
+    ud.bodyLastPos = { x: px, y: py, z: pz };
+    ud.bodyLastT = now;
+
+    // Yaw from the wire quaternion. `player_state`'s q is documented (see
+    // multiplayer.md's angle-convention section) as pure yaw around Y, so this
+    // general formula reduces exactly to `y` for q = (0, sin(y/2), 0, cos(y/2));
+    // written generally rather than the 2*atan2(qy,qw) shortcut so it stays
+    // correct even if a caller's q ever carries tiny roll/pitch noise.
+    const [qx, qy, qz, qw] = item.q;
+    const yaw = Math.atan2(2 * (qw * qy + qx * qz), 1 - 2 * (qy * qy + qz * qz));
+
+    ud.bodyProc.update(dt, {
+      id: item.id,
+      position: new THREE.Vector3(px, py, pz),
+      yaw,
+      aimPitch: item.aimPitch || 0,
+      height: item.h ?? 1.2,
+      radius: item.r ?? 0.3,
+      velocity: new THREE.Vector3(vx, 0, vz),
+      onFloor: true,
+      crouch: 0,
+      alive: item.alive !== false,
+      weapon: item.weapon,
+      tool: item.tool,
+    });
   }
 
   _makePlayer(id) {
@@ -499,7 +575,18 @@ export class GhostRenderer {
       handX: 0.33, handY: 0.18, handZ: -0.47, // base offsets, set by _placeHands
       heldFlashUntil: 0,
       lastX: 0, lastZ: 0, lastNow: null,      // for speed-based sway
+      bodyProc: null, bodyLastPos: null, bodyLastT: null, // Wave 2/B1 procedural body
     };
+    if (this._useProceduralBody) {
+      // Keep the capsule/eyes/orb-hands meshes (so nothing else in this class
+      // has to special-case their absence) but hide them — the procedural body
+      // renders instead. Held-item placeholder stays visible (unposed follow-up).
+      body.visible = false;
+      left.visible = false;
+      right.visible = false;
+      leftHand.visible = false;
+      rightHand.visible = false;
+    }
     return g;
   }
 
@@ -602,7 +689,10 @@ export class GhostRenderer {
 
   destroy() {
     for (const m of this._creatures.values()) this._scene.remove(m);
-    for (const g of this._players.values())   { this._scene.remove(g); g.userData.bodyMat.dispose(); }
+    for (const g of this._players.values())   {
+      if (g.userData.bodyProc) g.userData.bodyProc.destroy();
+      this._scene.remove(g); g.userData.bodyMat.dispose();
+    }
     this._creatures.clear();
     this._players.clear();
     this._cGeo.dispose();

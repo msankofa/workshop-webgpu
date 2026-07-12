@@ -24,6 +24,7 @@ function mat(opts = {}) {
 }
 const THREE = {
   Group, Mesh,
+  Vector3: Vec,
   SphereGeometry: geo,
   MeshStandardMaterial: function (o) { return mat(o); },
 };
@@ -85,6 +86,30 @@ vhC.update(0, { charge: 0 });            // kick applied, no time elapsed
 assert(orbC.position.z > baseZ0, 'recoil kicks hands back (+z)');
 vhC.update(1, { charge: 0 });            // long dt -> fully decayed
 assert(Math.abs(orbC.position.z - baseZ0) < 1e-9, 'recoil decays back to rest');
+
+// --- reload: hands glide toward sequence targets, then ease back ------------
+const camR = new Obj3D();
+const vhR = createViewHands(camR, THREE);
+vhR.setTool('m1911');
+const leftOrbR = camR.children[0].children[0];
+vhR.update(0.016, { speed: 0 });                 // idle baseline
+const idleLx = leftOrbR.position.x, idleLy = leftOrbR.position.y;
+const reloadTgt = { active: true, left: [-0.5, -0.2, -0.4], right: [0.5, -0.2, -0.4] };
+for (let i = 0; i < 45; i++) vhR.update(0.016, { speed: 0, reload: reloadTgt });
+assert(Math.abs(leftOrbR.position.x - reloadTgt.left[0]) < 0.05, 'reload glides left orb to the resolved target x');
+assert(Math.abs(leftOrbR.position.y - reloadTgt.left[1]) < 0.05, 'reload glides left orb to the resolved target y');
+// mid-glide (fresh instance) sits between idle and target, not snapped to either
+const camR2 = new Obj3D();
+const vhR2 = createViewHands(camR2, THREE);
+vhR2.setTool('m1911');
+const leftOrbR2 = camR2.children[0].children[0];
+vhR2.update(0.016, { speed: 0 });
+vhR2.update(0.016, { speed: 0, reload: reloadTgt });
+vhR2.update(0.016, { speed: 0, reload: reloadTgt });
+assert(leftOrbR2.position.x < idleLx && leftOrbR2.position.x > reloadTgt.left[0], 'reload eases in (mid-glide, not snapped)');
+// ending the reload eases the hands back to the idle pose
+for (let i = 0; i < 80; i++) vhR.update(0.016, { speed: 0, reload: null });
+assert(Math.abs(leftOrbR.position.x - idleLx) < 0.02 && Math.abs(leftOrbR.position.y - idleLy) < 0.02, 'hands return to idle after reload ends');
 
 // --- destroy ----------------------------------------------------------------
 hands.destroy();

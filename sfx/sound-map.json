@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "events": {
+    "pistol_shoot": "assets/pistol_shoot.wav",
+    "sniper_shoot": "assets/sniper_shoot.wav",
+    "rifle_shoot": "assets/rifle_shoot.wav",
+    "explosion": "assets/explosion.wav"
+  },
+  "sources": {
+    "pistol_shoot": "gun-shots/pistol-1.wav",
+    "sniper_shoot": "gun-shots/rifle-4.mp3",
+    "rifle_shoot": "gun-shots/rifle-1.mp3",
+    "explosion": "explosions/explosion-1.mp3"
+  }
+}

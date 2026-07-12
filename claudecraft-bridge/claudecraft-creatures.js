@@ -15,7 +15,7 @@ import {
   Sim, MOBS, createMob, setActiveWorldContent, setHeightProvider, setWaterLevelProvider,
   setExternalColliderResolver,
 } from '../claudecraft-sim.bundle.js';
-import { makeScale } from './sim-scale.js';
+import { makeScale, SIM_HUMANOID_HEIGHT } from './sim-scale.js';
 import { buildClaudecraftWorldContent } from './sim-world-content.js';
 import { serializeMobs } from './sim-mob-snapshot.js';
 
@@ -58,6 +58,13 @@ export function createClaudecraftCreatures({
 
   let acc = 0;
   const mobs = []; // latest wire snapshot, refreshed each sim tick
+
+  // Gun-engagement tags: mob id -> seconds remaining. While tagged, a mob's leash
+  // anchor is pinned to its own position each tick so it can't leash home and
+  // full-heal (resetEvadingMob) — otherwise a ranged shot just aggros a mob that
+  // then runs back to spawn and resets to full HP. Refreshed on every gun hit.
+  const gunTag = new Map();
+  const GUN_TAG_SECONDS = 6;
 
   // --- runtime manual-mob control (spawn panel) --------------------------------
   // Ids the panel spawned at runtime (separate from the seeded camp mobs, so
@@ -148,7 +155,9 @@ export function createClaudecraftCreatures({
         mirror(pid, rp);
       }
       enforceSpawnedBehaviors(); // re-assert passive/hold before the sim drives AI
+      pinGunTaggedLeashes();     // keep recently-shot mobs engaged (no leash-home heal)
       sim.tick();
+      decayGunTags(SIM_DT);
       acc -= SIM_DT;
       steps++;
       stepped = true;
@@ -288,8 +297,73 @@ export function createClaudecraftCreatures({
   }
   function removeExternalPlayer(id) { removeRemotePlayer(id); }
 
+  // --- gun-target surface (workshop hitscan) -----------------------------------
+  // World-space hit capsules for every live mob, so the workshop's resolveHitscan
+  // can register bullet hits. Height tracks the humanoid reference × per-mob scale,
+  // matching the render sizing (claudecraft-render/visual.js normalizes each model
+  // to def.height yards then applies worldScale × root scale).
+  function mobCombatCapsules() {
+    const out = [];
+    for (const [key, e] of sim.entities.entries()) {
+      if (e.kind !== 'mob' || e.dead) continue;
+      const s = (Number.isFinite(e.scale) && e.scale > 0) ? e.scale : 1;
+      const h = SIM_HUMANOID_HEIGHT * scale.SCALE * s;
+      out.push({
+        id: e.id ?? key, alive: true, h,
+        r: Math.max(0.3, h * 0.3),
+        p: [scale.toWorld(e.pos.x), scale.toWorld(e.pos.y) + h * 0.5, scale.toWorld(e.pos.z)],
+      });
+    }
+    return out;
+  }
+
+  // Pin every gun-tagged mob's leash to its current spot so the sim's leash check
+  // (mob/ai chase case) never trips → it can't run home and full-heal. Prunes dead/gone.
+  function pinGunTaggedLeashes() {
+    for (const id of [...gunTag.keys()]) {
+      const mob = sim.entities.get(id);
+      if (!mob || mob.dead || mob.kind !== 'mob') { gunTag.delete(id); continue; }
+      if (mob.aiState === 'evade') { mob.aiState = 'idle'; mob.evadeStall = 0; }
+      mob.leashAnchor = { x: mob.pos.x, y: mob.pos.y, z: mob.pos.z };
+    }
+  }
+  function decayGunTags(step) {
+    for (const [id, t] of gunTag) {
+      const n = t - step;
+      if (n <= 0) gunTag.delete(id); else gunTag.set(id, n);
+    }
+  }
+
+  // Apply gun damage to one mob through the sim's real damage path (threat, death,
+  // loot all handled). `attackerId` is a workshop player id → sim player entity, so
+  // the mob aggros the shooter. Tags the mob so it commits to the fight instead of
+  // leashing home and healing. Returns true if the mob took damage.
+  function damageMob(mobId, { amount, attackerId } = {}) {
+    const mob = sim.entities.get(mobId);
+    if (!mob || mob.kind !== 'mob' || mob.dead) return false;
+    const dmg = Number.isFinite(amount) ? amount : 0;
+    if (dmg <= 0) return false;
+    // A mob mid-evade is damage-immune (sim rule) and about to full-heal on reaching
+    // spawn — pull it out so the shot lands.
+    if (mob.aiState === 'evade') { mob.aiState = 'idle'; mob.evadeStall = 0; }
+    const attacker = playerEntity(attackerId ?? localPlayerId, true) ?? mob;
+    sim.dealDamage(attacker, mob, Math.round(dmg), false, 'physical', 'Gunfire', 'hit');
+    // Commit the mob to chasing the shooter (threat alone can leave an idle mob outside
+    // its aggro radius standing still) and keep it engaged so its HP loss sticks.
+    if (attacker !== mob && !mob.dead) {
+      mob.aggroTargetId = attacker.id;
+      if (mob.aiState !== 'attack') mob.aiState = 'chase';
+      mob.inCombat = true;
+      mob.leashAnchor = { x: mob.pos.x, y: mob.pos.y, z: mob.pos.z };
+      gunTag.set(mobId, GUN_TAG_SECONDS);
+    }
+    refreshMobs();
+    return true;
+  }
+
   return {
     update, mobs: () => mobs, scale,
+    mobCombatCapsules, damageMob,
     localPlayerCombat, reviveLocalPlayer,
     // runtime manual-mob control (spawn panel):
     listSpawnableMobs, spawnMob, setMobBehavior, setMobScale, removeMob,

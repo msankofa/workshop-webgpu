@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SFX Browser</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #080810; color: #bbc; font-family: 'Courier New', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Header ────────────────────────── */
+  #header {
+    padding: 10px 18px;
+    background: #0d0d1c;
+    border-bottom: 1px solid #1a1a33;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  h1 { color: #0ff; font-size: 14px; letter-spacing: 4px; white-space: nowrap; }
+  #pick-btn {
+    padding: 7px 14px;
+    background: #0ff;
+    color: #000;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  #pick-btn:hover { background: #fff; }
+  .toggle-btn {
+    padding: 6px 12px;
+    background: #111;
+    border: 1px solid #2a2a44;
+    color: #556;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .toggle-btn:hover { border-color: #445; color: #889; }
+  #play-all-btn.active { background: #001c10; border-color: #0f8; color: #0f8; }
+  #loop-btn.active     { background: #1a1400; border-color: #ff0; color: #ff0; }
+  #search {
+    padding: 6px 10px;
+    background: #111;
+    border: 1px solid #2a2a44;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 13px;
+    width: 200px;
+    outline: none;
+  }
+  #search:focus { border-color: #0ff8; }
+  #now-playing { font-size: 12px; color: #0cc; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #status { font-size: 11px; color: #445; white-space: nowrap; }
+  #keys { font-size: 10px; color: #334; white-space: nowrap; }
+  #keys span { color: #445; }
+  #vol-wrap { display: flex; align-items: center; gap: 8px; color: #445; font-size: 11px; flex-shrink: 0; }
+  input[type=range] { accent-color: #0ff; width: 70px; cursor: pointer; }
+
+  /* ── Layout ────────────────────────── */
+  #layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ───────────────────────── */
+  #sidebar { width: 190px; background: #0a0a18; border-right: 1px solid #1a1a33; display: flex; flex-direction: column; flex-shrink: 0; }
+  .sidebar-hdr { padding: 8px 12px; font-size: 10px; letter-spacing: 2px; color: #445; border-bottom: 1px solid #1a1a33; text-transform: uppercase; flex-shrink: 0; }
+  #folder-list { flex: 1; overflow-y: auto; }
+  .folder-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #778;
+    border-bottom: 1px solid #0f0f1e;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+  }
+  .folder-item:hover { background: #111128; color: #aab; }
+  .folder-item.active { background: #001c1c; color: #0ff; border-left: 2px solid #0ff; padding-left: 10px; }
+  .folder-count { font-size: 10px; color: #334; }
+  .folder-item.active .folder-count { color: #0aa4; }
+
+  /* ── Main ──────────────────────────── */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── View tabs ─────────────────────── */
+  #view-tabs { display: flex; background: #0b0b1a; border-bottom: 1px solid #1a1a33; flex-shrink: 0; }
+  .vtab {
+    padding: 10px 18px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #445;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-bottom: -1px;
+    white-space: nowrap;
+  }
+  .vtab:hover { color: #778; background: #0d0d1e; }
+  .vtab.active { color: #0ff; border-bottom-color: #0ff; background: #0a0a1c; }
+  #vtab-favs.active    { color: #ffd700; border-bottom-color: #ffd700; }
+  #vtab-assets.active  { color: #0f8;    border-bottom-color: #0f8; }
+  .tab-badge { font-size: 10px; opacity: 0.7; margin-left: 3px; }
+
+  /* ── Grid area ─────────────────────── */
+  #grid-area { flex: 1; overflow-y: auto; padding: 14px; }
+  #folder-title {
+    font-size: 15px;
+    letter-spacing: 3px;
+    color: #0ff;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1a1a33;
+    display: none;
+  }
+  #folder-title.fav   { color: #ffd700; }
+  #folder-title.asset { color: #0f8; }
+  #sound-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+  #empty { color: #334; text-align: center; padding: 80px 20px; font-size: 13px; line-height: 2; }
+  #empty span { display: block; font-size: 11px; color: #223; margin-top: 8px; }
+
+  /* ── Cards ─────────────────────────── */
+  .sound-card {
+    background: #0d0d1c;
+    border: 1px solid #1c1c33;
+    padding: 9px 10px;
+    cursor: pointer;
+    transition: border-color 0.1s, background 0.1s;
+    user-select: none;
+  }
+  .sound-card:hover  { border-color: #0ff3; background: #101022; }
+  .sound-card.playing { border-color: #0ff; background: #002222; }
+
+  .sound-top {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 6px;
+  }
+  .sound-name {
+    font-size: 12px;
+    color: #889;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+  .sound-card.playing .sound-name { color: #0ff; }
+  .sound-folder-label { font-size: 10px; color: #334; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* star */
+  .star-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    color: #334; transition: color 0.1s, transform 0.1s;
+  }
+  .star-btn:hover  { color: #ffd70066; transform: scale(1.2); }
+  .star-btn.starred { color: #ffd700; }
+  .star-btn.starred:hover { color: #ffaa00; }
+
+  /* plus */
+  .plus-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 15px; font-weight: bold; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    color: #334; transition: color 0.1s, transform 0.1s;
+  }
+  .plus-btn:hover     { color: #0f84; transform: scale(1.15); }
+  .plus-btn.in-assets { color: #0f8; }
+  .plus-btn.in-assets:hover { color: #f446; }
+  .plus-btn.event-assigned { color: #0ff; text-shadow: 0 0 8px #0ff8; }
+  .plus-btn.event-assigned:hover { color: #9ff; }
+
+  #ep-overlay {
+    position: fixed;
+    inset: 0;
+    background: #0008;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  #ep-popup {
+    width: min(420px, calc(100vw - 28px));
+    max-height: 70vh;
+    overflow-y: auto;
+    background: #0d0d1c;
+    border: 1px solid #0ff6;
+    box-shadow: 0 0 28px #000c, 0 0 18px #0ff2;
+    padding: 12px;
+  }
+  #ep-popup h2 {
+    color: #0ff;
+    font-size: 13px;
+    letter-spacing: 2px;
+    margin-bottom: 4px;
+  }
+  #ep-popup .ep-file {
+    color: #778;
+    font-size: 11px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ep-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 7px;
+    border: 1px solid #1c1c33;
+    background: #101022;
+    color: #99a;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    margin-top: 5px;
+  }
+  .ep-row:hover { border-color: #0ff5; color: #ccd; }
+  .ep-row.mine {
+    border-color: #0ff8;
+    color: #0ff;
+    background: #002626;
+  }
+  .ep-row.taken {
+    border-color: #ff05;
+    color: #aa8;
+    background: #1a1608;
+  }
+  .ep-icon {
+    width: 18px;
+    flex-shrink: 0;
+    text-align: center;
+    font-weight: bold;
+  }
+  .ep-main { flex: 1; min-width: 0; }
+  .ep-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ep-status {
+    color: #556;
+    font-size: 10px;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ep-row.mine .ep-status { color: #7cc; }
+  .ep-row.taken .ep-status { color: #bb8; }
+
+  /* rename */
+  .rename-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    color: #334; transition: color 0.1s; opacity: 0;
+  }
+  .sound-card:hover .rename-btn { opacity: 1; }
+  .rename-btn:hover { color: #0ff9; }
+  .rename-input {
+    flex: 1; min-width: 0;
+    background: #0d1a1a; border: 1px solid #0ff8;
+    color: #0ff; padding: 1px 4px;
+    font: inherit; font-size: 12px; outline: none;
+  }
+
+  /* playback row */
+  .sound-row { display: flex; align-items: center; gap: 7px; }
+  .play-btn {
+    width: 22px; height: 22px;
+    background: #141428; border: 1px solid #2a2a44;
+    color: #667; font-size: 9px; cursor: pointer;
+    flex-shrink: 0; border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sound-card.playing .play-btn { border-color: #0ff; color: #0ff; background: #003333; }
+  .progress-wrap { flex: 1; height: 3px; background: #1a1a2e; border-radius: 2px; overflow: hidden; cursor: pointer; }
+  .progress-bar  { height: 100%; background: #0ff; width: 0%; border-radius: 2px; box-shadow: 0 0 4px #0ff8; }
+  .sound-duration { font-size: 10px; color: #334; min-width: 28px; text-align: right; }
+
+  /* ── Scrollbars ─────────────────────── */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: #0a0a14; }
+  ::-webkit-scrollbar-thumb { background: #2a2a44; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a66; }
+
+  /* ── UMAP tab ───────────────────────── */
+  #vtab-umap.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+  #umap-area { flex: 1; display: none; overflow: hidden; position: relative; }
+  #umap-area.visible { display: flex; }
+  #umap-canvas { flex: 1; display: block; cursor: crosshair; }
+  #umap-legend {
+    width: 155px; flex-shrink: 0;
+    background: #0a0a18;
+    border-left: 1px solid #1a1a33;
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  .leg-hdr { padding: 7px 12px; font-size: 10px; letter-spacing: 2px; color: #334; border-bottom: 1px solid #1a1a33; flex-shrink: 0; }
+  .leg-all { padding: 6px 12px; font-size: 11px; color: #556; cursor: pointer; border-bottom: 1px solid #1a1a33; letter-spacing: 1px; flex-shrink: 0; }
+  .leg-all:hover { color: #0ff; background: #111128; }
+  .leg-item { padding: 4px 10px; display: flex; align-items: center; gap: 7px; cursor: pointer; flex-shrink: 0; }
+  .leg-item:hover { background: #111128; }
+  .leg-item.hi { background: #0d0d22; }
+  .leg-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .leg-label { color: #667; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .leg-item.hi .leg-label { color: #ccd; }
+  #umap-msg {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #334; text-align: center; font-size: 13px; line-height: 2.2;
+    pointer-events: none; white-space: nowrap;
+  }
+  #umap-msg code { color: #445; font-size: 12px; }
+  #umap-tip {
+    position: fixed; background: #0d0d1c; border: 1px solid #a78bfa66;
+    padding: 5px 10px; font-size: 11px; color: #ccd;
+    pointer-events: none; display: none; z-index: 100; line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>SFX BROWSER</h1>
+  <button id="pick-btn">OPEN FOLDER</button>
+  <button id="play-all-btn" class="toggle-btn">▶▶ PLAY ALL</button>
+  <button id="loop-btn" class="toggle-btn">↺ LOOP</button>
+  <input id="search" type="text" placeholder="filter sounds…" />
+  <div id="now-playing"></div>
+  <div id="status"></div>
+  <div id="keys"><span>←→</span> nav &nbsp;<span>SPC</span> stop</div>
+  <div id="vol-wrap">VOL<input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" /></div>
+</div>
+
+<div id="layout">
+  <div id="sidebar">
+    <div class="sidebar-hdr">FOLDERS</div>
+    <div id="folder-list"></div>
+  </div>
+
+  <div id="main">
+    <div id="view-tabs">
+      <button class="vtab active" id="vtab-browser">BROWSER</button>
+      <button class="vtab" id="vtab-favs">★ FAVORITES <span class="tab-badge" id="fav-count">0</span></button>
+      <button class="vtab" id="vtab-assets">+ ASSETS <span class="tab-badge" id="asset-count">0</span></button>
+      <button class="vtab" id="vtab-umap">◎ UMAP</button>
+    </div>
+    <div id="grid-area">
+      <div id="empty">Click OPEN FOLDER and select your SFX directory.<span>Requires Chrome or Edge</span></div>
+      <div id="folder-title"></div>
+      <div id="sound-grid"></div>
+    </div>
+    <div id="umap-area">
+      <canvas id="umap-canvas"></canvas>
+      <div id="umap-legend">
+        <div class="leg-hdr">FOLDERS</div>
+        <div class="leg-all" id="leg-all">SHOW ALL</div>
+      </div>
+      <div id="umap-msg"></div>
+    </div>
+  </div>
+</div>
+<div id="umap-tip"></div>
+
+<script type="module">
+// Shared event registry with the game/audio system — keeps this browser's assignable
+// events in exact sync with what environment-audio.js loads and environment-viewer.html
+// fires. Requires serving over http (python serve.py), not file://.
+import { SOUND_EVENT_DEFS as SOUND_EVENTS } from './sound-events.js';
+
+// ── State ────────────────────────────────────────────────
+let folders       = {};   // { "Root/SubFolder": [FileHandle, ...] }
+let rootHandle    = null;
+let favorites     = new Set();   // relative keys "SubFolder/file.wav"
+let assets        = new Set();   // same format
+let soundMap      = {};          // { eventId: source relative key }
+let playAllActive = false;
+let loopActive    = false;
+let currentAudio  = null;
+let currentCard   = null;
+let currentObjURL = null;
+let allCards      = [];
+let volume        = 0.8;
+let currentFolder = null;
+let currentTab    = 'browser';
+const pickerId    = 'sfx-browser-working-dir';
+const handleDbName = 'sfx-browser-handles';
+const handleStoreName = 'handles';
+const rootHandleKey = 'root-directory';
+const liveSfxChannelName = 'sfx-game';
+const liveSfxStorageKey = 'sfx-game-update';
+// SOUND_EVENTS is imported from ./sound-events.js (shared registry) at the top of this module.
+let liveSfxChannel = null;
+try {
+  if ('BroadcastChannel' in window) {
+    liveSfxChannel = new BroadcastChannel(liveSfxChannelName);
+  }
+} catch {
+  liveSfxChannel = null;
+}
+
+// ── DOM ──────────────────────────────────────────────────
+const folderList  = document.getElementById('folder-list');
+const grid        = document.getElementById('sound-grid');
+const folderTitle = document.getElementById('folder-title');
+const emptyDiv    = document.getElementById('empty');
+const searchInput = document.getElementById('search');
+const statusEl    = document.getElementById('status');
+const nowPlaying  = document.getElementById('now-playing');
+const playAllBtn  = document.getElementById('play-all-btn');
+const loopBtn     = document.getElementById('loop-btn');
+
+// ── Volume ────────────────────────────────────────────────
+document.getElementById('volume').addEventListener('input', e => {
+  volume = parseFloat(e.target.value);
+  if (currentAudio) currentAudio.volume = volume;
+});
+
+// ── Play All ──────────────────────────────────────────────
+playAllBtn.addEventListener('click', () => {
+  playAllActive = !playAllActive;
+  playAllBtn.classList.toggle('active', playAllActive);
+  if (!playAllActive) { stopCurrent(); return; }
+  const visible = allCards.filter(c => c.style.display !== 'none');
+  if (!visible.length) { setPlayAllOff(); return; }
+  const start = (currentCard && visible.includes(currentCard)) ? currentCard : visible[0];
+  start.click();
+});
+
+// ── Loop ──────────────────────────────────────────────────
+loopBtn.addEventListener('click', () => {
+  loopActive = !loopActive;
+  loopBtn.classList.toggle('active', loopActive);
+  if (currentAudio) currentAudio.loop = loopActive && !playAllActive;
+});
+
+// ── Folder picker ─────────────────────────────────────────
+document.getElementById('pick-btn').addEventListener('click', async () => {
+  try {
+    const handle = await pickRootDirectory();
+    await saveStoredHandle(rootHandleKey, handle);
+    await loadRootHandle(handle);
+  } catch (e) {
+    if (e.name !== 'AbortError') showStatus('Error: ' + e.message);
+  }
+});
+
+// ── Directory scanner ─────────────────────────────────────
+async function pickRootDirectory() {
+  const opts = { mode: 'readwrite', id: pickerId };
+  const stored = await getStoredHandle(rootHandleKey);
+
+  if (stored && await hasHandlePermission(stored)) {
+    opts.startIn = stored;
+  }
+
+  return window.showDirectoryPicker(opts);
+}
+
+async function hasHandlePermission(handle) {
+  if (!handle) return false;
+
+  const opts = { mode: 'readwrite' };
+  if (await handle.queryPermission(opts) === 'granted') return true;
+  return await handle.requestPermission(opts) === 'granted';
+}
+
+function openHandleDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(handleDbName, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(handleStoreName);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getStoredHandle(key) {
+  try {
+    const db = await openHandleDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(handleStoreName, 'readonly');
+      const req = tx.objectStore(handleStoreName).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function saveStoredHandle(key, handle) {
+  try {
+    const db = await openHandleDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(handleStoreName, 'readwrite');
+      tx.objectStore(handleStoreName).put(handle, key);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Some browsers disable persistent FileSystemHandle storage.
+  }
+}
+
+const AUDIO_RE = /\.(wav|mp3|ogg|m4a|aac|flac|opus|webm)$/i;
+
+async function scanDir(handle, path) {
+  const wavs = [];
+  for await (const entry of handle.values()) {
+    if (entry.kind === 'file' && AUDIO_RE.test(entry.name)) {
+      wavs.push(entry);
+    } else if (entry.kind === 'directory' && entry.name.toLowerCase() !== 'assets') {
+      await scanDir(entry, path + '/' + entry.name);
+    }
+  }
+  if (wavs.length) {
+    wavs.sort((a, b) => {
+      const na = parseInt(a.name.match(/(\d+)(?=\.\w+$)/)?.[1] ?? '0');
+      const nb = parseInt(b.name.match(/(\d+)(?=\.\w+$)/)?.[1] ?? '0');
+      return na - nb || a.name.localeCompare(b.name);
+    });
+    folders[path] = wavs;
+  }
+}
+
+// ── Relative key: "SubFolder/file.wav" ───────────────────
+function relKey(folderPath, fileName) {
+  const prefix = rootHandle.name + '/';
+  const rel = folderPath.startsWith(prefix) ? folderPath.slice(prefix.length) : folderPath;
+  return rel + '/' + fileName;
+}
+
+// ── Generic set persistence ───────────────────────────────
+async function loadSet(name, set) {
+  try {
+    const fh = await rootHandle.getFileHandle(name + '.txt');
+    const text = await (await fh.getFile()).text();
+    for (const line of text.split('\n')) {
+      const l = line.trim();
+      if (l && !l.startsWith('#')) set.add(l);
+    }
+  } catch { /* file doesn't exist yet */ }
+}
+
+async function saveSet(name, set) {
+  try {
+    const fh = await rootHandle.getFileHandle(name + '.txt', { create: true });
+    const w = await fh.createWritable();
+    await w.write(`# SFX Browser ${name}\n` + [...set].sort().join('\n') + '\n');
+    await w.close();
+  } catch (e) {
+    showStatus(`⚠ Could not save ${name}.txt`);
+  }
+}
+
+// ── Copy file to assets/ ──────────────────────────────────
+function soundEventById(id) {
+  return SOUND_EVENTS.find(ev => ev.id === id) || null;
+}
+
+function hasEventAssignment(eventId) {
+  return Object.prototype.hasOwnProperty.call(soundMap, eventId);
+}
+
+function eventIdsForKey(key) {
+  return SOUND_EVENTS
+    .filter(ev => soundMap[ev.id] === key)
+    .map(ev => ev.id);
+}
+
+function isKeyUsedByOtherEvent(key, exceptEventId = null) {
+  return Object.entries(soundMap)
+    .some(([eventId, srcKey]) => eventId !== exceptEventId && srcKey === key);
+}
+
+function eventAssetPath(eventId) {
+  return `assets/${eventId}.wav`;
+}
+
+function publishSfxUpdate(message) {
+  const payload = {
+    version: 1,
+    source: 'sfx-browser',
+    ts: Date.now(),
+    nonce: Math.random().toString(36).slice(2),
+    ...message
+  };
+
+  try {
+    liveSfxChannel?.postMessage(payload);
+  } catch {
+    // BroadcastChannel may be unavailable on some file:// setups.
+  }
+
+  try {
+    localStorage.setItem(liveSfxStorageKey, JSON.stringify(payload));
+  } catch {
+    // localStorage is only a fallback transport.
+  }
+}
+
+async function loadSoundMap() {
+  soundMap = {};
+
+  try {
+    const fh = await rootHandle.getFileHandle('sound-map.json');
+    const data = JSON.parse(await (await fh.getFile()).text());
+    const events = data.events || {};
+    const sources = data.sources || {};
+
+    SOUND_EVENTS.forEach(ev => {
+      if (!events[ev.id]) return;
+      soundMap[ev.id] = sources[ev.id] || '';
+    });
+  } catch {
+    soundMap = {};
+  }
+}
+
+async function saveSoundMap() {
+  const events = {};
+  const sources = {};
+
+  SOUND_EVENTS.forEach(ev => {
+    if (!hasEventAssignment(ev.id)) return;
+    events[ev.id] = eventAssetPath(ev.id);
+    if (soundMap[ev.id]) sources[ev.id] = soundMap[ev.id];
+  });
+
+  const payload = { version: 1, events, sources };
+  const fh = await rootHandle.getFileHandle('sound-map.json', { create: true });
+  const w = await fh.createWritable();
+  await w.write(JSON.stringify(payload, null, 2) + '\n');
+  await w.close();
+}
+
+async function copyFileToAssets(fh, destName) {
+  const assetsDir = await rootHandle.getDirectoryHandle('assets', { create: true });
+  const file = await fh.getFile();
+  const dest = await assetsDir.getFileHandle(destName, { create: true });
+  const w = await dest.createWritable();
+  await w.write(await file.arrayBuffer());
+  await w.close();
+}
+
+async function deleteEventAsset(eventId) {
+  try {
+    const assetsDir = await rootHandle.getDirectoryHandle('assets');
+    await assetsDir.removeEntry(`${eventId}.wav`);
+  } catch {
+    // Missing files are harmless; sound-map.json is the source of truth.
+  }
+}
+
+async function copyToAssets(fh) {
+  try {
+    const file = await fh.getFile();
+    await copyFileToAssets(fh, file.name);
+    showStatus(`✓ ${file.name} → assets/`, 2500);
+    return true;
+  } catch (e) {
+    showStatus('⚠ Copy failed: ' + e.message);
+    return false;
+  }
+}
+
+// ── Sidebar ───────────────────────────────────────────────
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
+}
+
+function refreshCardEventBadge(card) {
+  if (!card) return;
+
+  const key = card.dataset.key;
+  const plusBtn = card.querySelector('.plus-btn');
+  if (!key || !plusBtn) return;
+
+  const eventIds = eventIdsForKey(key);
+  const labels = eventIds
+    .map(id => soundEventById(id)?.label || id)
+    .sort();
+
+  plusBtn.classList.toggle('event-assigned', eventIds.length > 0);
+  plusBtn.classList.toggle('in-assets', eventIds.length > 0);
+
+  if (eventIds.length > 0) {
+    plusBtn.innerHTML = eventIds.length > 1 ? `&#8853;${eventIds.length}` : '&#8853;';
+    plusBtn.title = `Assigned to: ${labels.join(', ')}`;
+  } else {
+    plusBtn.textContent = '+';
+    plusBtn.title = 'Assign game event';
+  }
+}
+
+function visibleCardsForKey(key) {
+  return allCards.filter(card => card.dataset.key === key);
+}
+
+function refreshCardsForKeys(...keys) {
+  [...new Set(keys.filter(Boolean))].forEach(key => {
+    visibleCardsForKey(key).forEach(card => {
+      refreshCardEventBadge(card);
+      if (currentTab === 'assets' && !assets.has(key)) removeCardFromGrid(card);
+    });
+  });
+}
+
+async function assignEvent(eventId, srcFh, srcKey) {
+  const oldKey = soundMap[eventId] || '';
+  await copyFileToAssets(srcFh, `${eventId}.wav`);
+
+  if (oldKey && oldKey !== srcKey && !isKeyUsedByOtherEvent(oldKey, eventId)) {
+    assets.delete(oldKey);
+  }
+
+  soundMap[eventId] = srcKey;
+  assets.add(srcKey);
+  await saveSoundMap();
+  await saveSet('assets', assets);
+  updateCounts();
+  refreshCardsForKeys(oldKey, srcKey);
+  publishSfxUpdate({
+    type: 'sfx-updated',
+    eventId,
+    path: eventAssetPath(eventId)
+  });
+  showStatus(`Assigned ${soundEventById(eventId)?.label || eventId}`, 1800);
+}
+
+async function unassignEvent(eventId) {
+  const oldKey = soundMap[eventId] || '';
+  delete soundMap[eventId];
+
+  if (oldKey && !isKeyUsedByOtherEvent(oldKey)) {
+    assets.delete(oldKey);
+  }
+
+  await saveSoundMap();
+  await saveSet('assets', assets);
+  await deleteEventAsset(eventId);
+  updateCounts();
+  refreshCardsForKeys(oldKey);
+  publishSfxUpdate({
+    type: 'sfx-removed',
+    eventId
+  });
+  showStatus(`Unassigned ${soundEventById(eventId)?.label || eventId}`, 1800);
+}
+
+function showEventPicker(card, fh, folderPath) {
+  const srcKey = relKey(folderPath, fh.name);
+  const overlay = document.createElement('div');
+  overlay.id = 'ep-overlay';
+  overlay.innerHTML = `
+    <div id="ep-popup" role="dialog" aria-modal="true">
+      <h2>ASSIGN EVENT</h2>
+      <div class="ep-file">${escapeHtml(fh.name)}</div>
+      <div id="ep-rows"></div>
+    </div>
+  `;
+
+  const rows = overlay.querySelector('#ep-rows');
+  const close = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    overlay.remove();
+  };
+  const onKeyDown = e => {
+    if (e.key === 'Escape') close();
+  };
+
+  function renderRows() {
+    rows.innerHTML = '';
+
+    SOUND_EVENTS.forEach(ev => {
+      const assigned = hasEventAssignment(ev.id);
+      const assignedKey = soundMap[ev.id] || '';
+      const mine = assigned && assignedKey === srcKey;
+      const taken = assigned && !mine;
+      const button = document.createElement('button');
+      button.className = `ep-row${mine ? ' mine' : ''}${taken ? ' taken' : ''}`;
+      button.type = 'button';
+
+      let status = 'Unassigned';
+      if (mine) {
+        status = 'Assigned to this sound - click to unassign';
+      } else if (taken) {
+        status = assignedKey ? `Assigned to ${assignedKey}` : `Assigned to ${eventAssetPath(ev.id)}`;
+      }
+
+      button.innerHTML = `
+        <span class="ep-icon">${mine ? '&#10003;' : taken ? '&#9889;' : '&#9675;'}</span>
+        <span class="ep-main">
+          <span class="ep-label">${escapeHtml(ev.label)}</span>
+          <span class="ep-status">${escapeHtml(status)}</span>
+        </span>
+      `;
+
+      button.addEventListener('click', async e => {
+        e.stopPropagation();
+        try {
+          if (mine) {
+            await unassignEvent(ev.id);
+          } else {
+            await assignEvent(ev.id, fh, srcKey);
+          }
+          refreshCardEventBadge(card);
+          renderRows();
+        } catch (err) {
+          showStatus('Assign failed: ' + err.message);
+        }
+      });
+
+      rows.appendChild(button);
+    });
+  }
+
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener('keydown', onKeyDown);
+  document.body.appendChild(overlay);
+  renderRows();
+}
+
+function buildSidebar() {
+  folderList.innerHTML = '';
+  const names = Object.keys(folders).sort((a, b) =>
+    a.split('/').pop().localeCompare(b.split('/').pop())
+  );
+  for (const name of names) {
+    const item = document.createElement('div');
+    item.className = 'folder-item';
+    item.dataset.path = name;
+    item.innerHTML = `<span>${name.split('/').pop()}</span><span class="folder-count">${folders[name].length}</span>`;
+    item.addEventListener('click', () => showFolder(name, item));
+    folderList.appendChild(item);
+  }
+  folderList.querySelector('.folder-item')?.click();
+}
+
+function setActiveFolder(el) {
+  folderList.querySelectorAll('.folder-item').forEach(i => i.classList.remove('active'));
+  if (el) el.classList.add('active');
+}
+
+// ── View tabs ─────────────────────────────────────────────
+document.getElementById('vtab-browser').addEventListener('click', () => switchTab('browser'));
+document.getElementById('vtab-favs').addEventListener('click',    () => switchTab('favs'));
+document.getElementById('vtab-assets').addEventListener('click',  () => switchTab('assets'));
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.vtab').forEach(t => t.classList.remove('active'));
+  document.getElementById('vtab-' + tab).classList.add('active');
+  stopCurrent();
+  setPlayAllOff();
+
+  const gridArea = document.getElementById('grid-area');
+  const umapArea = document.getElementById('umap-area');
+  const isUmap   = tab === 'umap';
+  gridArea.style.display = isUmap ? 'none' : '';
+  umapArea.classList.toggle('visible', isUmap);
+
+  if (isUmap) { initUmapTab(); return; }
+
+  emptyDiv.style.display = 'none';
+  folderTitle.style.display = 'block';
+
+  if (tab === 'browser') {
+    if (currentFolder && folders[currentFolder]) {
+      folderTitle.className = '';
+      folderTitle.textContent = currentFolder.split('/').pop().toUpperCase();
+      renderGrid(folders[currentFolder].map(fh => ({ fh, folderPath: currentFolder })), false);
+    } else {
+      folderTitle.style.display = 'none';
+      grid.innerHTML = ''; allCards = [];
+      emptyDiv.style.display = 'block';
+    }
+  } else {
+    const set = tab === 'favs' ? favorites : assets;
+    folderTitle.className = tab;
+    folderTitle.textContent = tab === 'favs' ? '★ FAVORITES' : '+ ASSETS';
+    renderGrid(gatherSet(set), true);
+  }
+}
+
+function showFolder(name, itemEl) {
+  currentFolder = name;
+  stopCurrent();
+  setPlayAllOff();
+  setActiveFolder(itemEl);
+
+  // Always switch to browser tab when a folder is clicked
+  currentTab = 'browser';
+  document.querySelectorAll('.vtab').forEach(t => t.classList.remove('active'));
+  document.getElementById('vtab-browser').classList.add('active');
+
+  emptyDiv.style.display = 'none';
+  folderTitle.className = '';
+  folderTitle.textContent = name.split('/').pop().toUpperCase();
+  folderTitle.style.display = 'block';
+  renderGrid(folders[name].map(fh => ({ fh, folderPath: name })), false);
+}
+
+// ── Gather all items in a set across all folders ──────────
+function gatherSet(set) {
+  const items = [];
+  for (const [path, files] of Object.entries(folders)) {
+    for (const fh of files) {
+      if (set.has(relKey(path, fh.name))) items.push({ fh, folderPath: path });
+    }
+  }
+  return items.sort((a, b) =>
+    a.folderPath.localeCompare(b.folderPath) || a.fh.name.localeCompare(b.fh.name)
+  );
+}
+
+// ── Build grid ────────────────────────────────────────────
+function renderGrid(items, showFolderLabel) {
+  grid.innerHTML = '';
+  allCards = [];
+  searchInput.value = '';
+  for (const { fh, folderPath } of items) {
+    const card = createCard(fh, folderPath, showFolderLabel);
+    grid.appendChild(card);
+    allCards.push(card);
+  }
+}
+
+function createCard(fh, folderPath, showFolderLabel) {
+  const card = document.createElement('div');
+  card.className = 'sound-card';
+  card._fileHandle = fh;
+  const label    = fh.name.replace(/\.[^.]+$/, '');
+  const key      = relKey(folderPath, fh.name);
+  const isStarred = favorites.has(key);
+  const isAsset   = assets.has(key);
+  card.dataset.name = fh.name.toLowerCase();
+  card.dataset.key = key;
+
+  card.innerHTML = `
+    ${showFolderLabel ? `<div class="sound-folder-label">${folderPath.split('/').pop()}</div>` : ''}
+    <div class="sound-top">
+      <div class="sound-name" title="${fh.name}">${label}</div>
+      <button class="rename-btn" title="Rename">✎</button>
+      <button class="star-btn${isStarred ? ' starred' : ''}" title="Favorite">★</button>
+      <button class="plus-btn${isAsset ? ' in-assets' : ''}" title="Assign game event">+</button>
+    </div>
+    <div class="sound-row">
+      <div class="play-btn">▶</div>
+      <div class="progress-wrap"><div class="progress-bar"></div></div>
+      <div class="sound-duration">--:--</div>
+    </div>
+  `;
+
+  // Play / stop
+  card.addEventListener('click', () =>
+    card.classList.contains('playing') ? stopCurrent() : playCard(card, fh)
+  );
+
+  // Seek
+  const pw = card.querySelector('.progress-wrap');
+  pw.addEventListener('click', e => {
+    e.stopPropagation();
+    if (currentAudio && currentCard === card && currentAudio.duration)
+      currentAudio.currentTime = (e.offsetX / pw.offsetWidth) * currentAudio.duration;
+  });
+
+  // ✎ Rename
+  card.querySelector('.rename-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    startRename(card, fh, folderPath);
+  });
+
+  // ★ Star toggle
+  const starBtn = card.querySelector('.star-btn');
+  starBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    if (favorites.has(key)) {
+      favorites.delete(key);
+      starBtn.classList.remove('starred');
+      if (currentTab === 'favs') removeCardFromGrid(card);
+    } else {
+      favorites.add(key);
+      starBtn.classList.add('starred');
+    }
+    await saveSet('favorites', favorites);
+    updateCounts();
+  });
+
+  refreshCardEventBadge(card);
+
+  // + Game event assignment
+  const plusBtn = card.querySelector('.plus-btn');
+  plusBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    showEventPicker(card, fh, folderPath);
+  });
+
+  return card;
+}
+
+function removeCardFromGrid(card) {
+  if (currentCard === card) stopCurrent();
+  card.remove();
+  allCards = allCards.filter(c => c !== card);
+}
+
+// ── Playback ──────────────────────────────────────────────
+async function playCard(card, fh) {
+  stopCurrent();
+  const url = URL.createObjectURL(await fh.getFile());
+  currentObjURL = url;
+  const audio = new Audio(url);
+  audio.volume = volume;
+  audio.loop = loopActive && !playAllActive;
+  currentAudio = audio;
+  currentCard  = card;
+
+  card.classList.add('playing');
+  card.querySelector('.play-btn').textContent = '■';
+  nowPlaying.textContent = '♪ ' + fh.name.replace(/\.[^.]+$/, '');
+
+  const pb = card.querySelector('.progress-bar');
+  const de = card.querySelector('.sound-duration');
+  audio.addEventListener('loadedmetadata', () => { de.textContent = fmtTime(audio.duration); });
+  audio.addEventListener('timeupdate', () => {
+    if (audio.duration) pb.style.width = (audio.currentTime / audio.duration * 100) + '%';
+  });
+  audio.addEventListener('ended', () => playAllActive ? advancePlayAll() : stopCurrent());
+  audio.play().catch(console.error);
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function advancePlayAll() {
+  const visible = allCards.filter(c => c.style.display !== 'none');
+  const idx = currentCard ? visible.indexOf(currentCard) : -1;
+  const next = visible[idx + 1];
+  if (next) playCard(next, next._fileHandle);
+  else { setPlayAllOff(); stopCurrent(); }
+}
+
+function stopCurrent() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (currentObjURL) { URL.revokeObjectURL(currentObjURL); currentObjURL = null; }
+  if (currentCard) {
+    currentCard.classList.remove('playing');
+    currentCard.querySelector('.play-btn').textContent = '▶';
+    currentCard.querySelector('.progress-bar').style.width = '0%';
+    currentCard = null;
+  }
+  nowPlaying.textContent = '';
+  if (umapPlot) { umapPlot.playingKey = null; umapPlot.dirty = true; }
+}
+
+function setPlayAllOff() {
+  playAllActive = false;
+  playAllBtn.classList.remove('active');
+}
+
+// ── Search ────────────────────────────────────────────────
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase();
+  allCards.forEach(c => { c.style.display = c.dataset.name.includes(q) ? '' : 'none'; });
+});
+
+// ── Keyboard ──────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (document.getElementById('ep-overlay')) return;
+  if (e.target === searchInput) return;
+  if (e.code === 'Space') { e.preventDefault(); if (currentCard) stopCurrent(); return; }
+  const fwd = e.code === 'ArrowRight' || e.code === 'ArrowDown';
+  const bwd = e.code === 'ArrowLeft'  || e.code === 'ArrowUp';
+  if (!fwd && !bwd) return;
+  e.preventDefault();
+  const visible = allCards.filter(c => c.style.display !== 'none');
+  if (!visible.length) return;
+  const idx = currentCard ? visible.indexOf(currentCard) : -1;
+  visible[Math.max(0, Math.min(visible.length - 1, idx + (fwd ? 1 : -1)))]?.click();
+});
+
+// ── Helpers ───────────────────────────────────────────────
+function fmtTime(s) {
+  if (!isFinite(s)) return '--:--';
+  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+function updateCounts() {
+  document.getElementById('fav-count').textContent   = favorites.size;
+  document.getElementById('asset-count').textContent = assets.size;
+}
+
+let statusTimer = null;
+function showStatus(msg, ms = 3000) {
+  statusEl.textContent = msg;
+  clearTimeout(statusTimer);
+  if (ms > 0) statusTimer = setTimeout(() => { statusEl.textContent = ''; }, ms);
+}
+
+// ── Rename ───────────────────────────────────────────────
+async function getDirHandleByPath(path) {
+  const prefix = rootHandle.name + '/';
+  const rel = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  if (!rel) return rootHandle;
+  let dir = rootHandle;
+  for (const part of rel.split('/').filter(Boolean)) {
+    dir = await dir.getDirectoryHandle(part);
+  }
+  return dir;
+}
+
+async function renameFile(oldFh, folderPath, newBaseName) {
+  const ext    = oldFh.name.match(/\.[^.]+$/)?.[0] || '';
+  const newName = newBaseName + ext;
+  if (newName === oldFh.name) return null;
+  const dir  = await getDirHandleByPath(folderPath);
+  const buf  = await (await oldFh.getFile()).arrayBuffer();
+  const newFh = await dir.getFileHandle(newName, { create: true });
+  const w    = await newFh.createWritable();
+  await w.write(buf);
+  await w.close();
+  await dir.removeEntry(oldFh.name);
+  return newFh;
+}
+
+function startRename(card, fh, folderPath) {
+  const nameEl  = card.querySelector('.sound-name');
+  const oldBase = fh.name.replace(/\.[^.]+$/, '');
+
+  const input = document.createElement('input');
+  input.className = 'rename-input';
+  input.value = oldBase;
+  nameEl.replaceWith(input);
+  input.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const newBase = input.value.trim();
+    input.replaceWith(nameEl);
+    if (!commit || !newBase || newBase === oldBase) return;
+
+    try {
+      showStatus('Renaming…', 0);
+      const newFh = await renameFile(fh, folderPath, newBase);
+      if (!newFh) { showStatus(''); return; }
+
+      // Update folders array
+      const arr = folders[folderPath];
+      const fi  = arr.indexOf(fh);
+      if (fi !== -1) arr[fi] = newFh;
+
+      // Update favorites / assets keys
+      const oldKey = relKey(folderPath, fh.name);
+      const newKey = relKey(folderPath, newFh.name);
+      let changed  = false;
+      if (favorites.has(oldKey)) { favorites.delete(oldKey); favorites.add(newKey); changed = true; }
+      if (assets.has(oldKey))    { assets.delete(oldKey);    assets.add(newKey);    changed = true; }
+      let mapChanged = false;
+      const renamedEventIds = [];
+      for (const [eventId, srcKey] of Object.entries(soundMap)) {
+        if (srcKey !== oldKey) continue;
+        soundMap[eventId] = newKey;
+        assets.add(newKey);
+        await copyFileToAssets(newFh, `${eventId}.wav`);
+        renamedEventIds.push(eventId);
+        mapChanged = true;
+        changed = true;
+      }
+      if (mapChanged) await saveSoundMap();
+      if (changed) { await saveSet('favorites', favorites); await saveSet('assets', assets); }
+      renamedEventIds.forEach(eventId => {
+        publishSfxUpdate({
+          type: 'sfx-updated',
+          eventId,
+          path: eventAssetPath(eventId)
+        });
+      });
+
+      // Replace card (refreshes all stale closures)
+      if (currentCard === card) stopCurrent();
+      const showLabel = !!card.querySelector('.sound-folder-label');
+      const newCard   = createCard(newFh, folderPath, showLabel);
+      const ci = allCards.indexOf(card);
+      card.replaceWith(newCard);
+      if (ci !== -1) allCards[ci] = newCard;
+
+      showStatus(`✓ Renamed to ${newFh.name}`, 2500);
+    } catch (e) {
+      showStatus('⚠ Rename failed: ' + e.message);
+    }
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); finish(true);  }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+// ── UMAP ─────────────────────────────────────────────────
+let umapPlot     = null;
+let umapReady    = false;  // data loaded at least once for current root
+
+document.getElementById('vtab-umap').addEventListener('click', () => switchTab('umap'));
+document.getElementById('leg-all').addEventListener('click', () => {
+  if (!umapPlot) return;
+  umapPlot.filter = null;
+  document.querySelectorAll('.leg-item').forEach(el => el.classList.remove('hi'));
+  umapPlot.dirty = true;
+});
+
+async function initUmapTab() {
+  const canvas  = document.getElementById('umap-canvas');
+  const area    = document.getElementById('umap-area');
+  const msgEl   = document.getElementById('umap-msg');
+  const tip     = document.getElementById('umap-tip');
+  const legend  = document.getElementById('umap-legend');
+
+  // Create plot instance once
+  if (!umapPlot) {
+    umapPlot = new UmapPlot(canvas, p => {
+      // Play clicked point
+      const handle = findHandleByKey(p.key);
+      if (!handle) return;
+      stopCurrent();
+      (async () => {
+        const url = URL.createObjectURL(await handle.getFile());
+        currentObjURL = url;
+        const audio = new Audio(url);
+        audio.volume = volume;
+        currentAudio = audio;
+        nowPlaying.textContent = '♪ ' + p.file.replace(/\.[^.]+$/, '');
+        umapPlot.playingKey = p.key;
+        umapPlot.dirty = true;
+        audio.addEventListener('ended', () => stopCurrent());
+        audio.play().catch(console.error);
+      })();
+    });
+
+    umapPlot.onHover = (p, cx, cy) => {
+      if (p) {
+        tip.style.display = 'block';
+        tip.style.left    = (cx + 14) + 'px';
+        tip.style.top     = (cy - 8)  + 'px';
+        tip.innerHTML     = `<strong>${p.file.replace(/\.[^.]+$/, '')}</strong><br>` +
+                            `<span style="color:#667">${p.folder || '—'}</span>`;
+      } else {
+        tip.style.display = 'none';
+      }
+    };
+
+    // Size canvas to fit container; resize on window change
+    const sizeCanvas = () => {
+      const lw = legend.offsetWidth;
+      canvas.width  = Math.max(100, area.clientWidth  - lw);
+      canvas.height = Math.max(100, area.clientHeight);
+      umapPlot.fit();
+    };
+    new ResizeObserver(sizeCanvas).observe(area);
+  }
+
+  if (umapReady) return;
+
+  if (!rootHandle) {
+    msgEl.innerHTML = 'Open a folder first.';
+    msgEl.style.display = 'block';
+    return;
+  }
+
+  msgEl.innerHTML = 'Loading umap.json…';
+  msgEl.style.display = 'block';
+
+  try {
+    const fh   = await rootHandle.getFileHandle('umap.json');
+    const data = JSON.parse(await (await fh.getFile()).text());
+    msgEl.style.display = 'none';
+    umapPlot.load(data);
+    buildUmapLegend(umapPlot, legend);
+    umapReady = true;
+  } catch {
+    msgEl.innerHTML =
+      'No <code>umap.json</code> found.<br>' +
+      '<code>python umap_gen.py "path/to/sfx/folder"</code>';
+    msgEl.style.display = 'block';
+  }
+}
+
+function buildUmapLegend(plot, legendEl) {
+  // Remove old items (keep hdr + leg-all)
+  legendEl.querySelectorAll('.leg-item').forEach(el => el.remove());
+  for (const folder of plot.folderList) {
+    const item = document.createElement('div');
+    item.className = 'leg-item';
+    item.innerHTML =
+      `<span class="leg-dot" style="background:${plot.colors[folder]}"></span>` +
+      `<span class="leg-label" title="${folder}">${folder.split('/').pop()}</span>`;
+    item.addEventListener('click', () => {
+      const active = plot.filter === folder;
+      plot.filter = active ? null : folder;
+      legendEl.querySelectorAll('.leg-item').forEach(el => el.classList.remove('hi'));
+      if (!active) item.classList.add('hi');
+      plot.dirty = true;
+    });
+    legendEl.appendChild(item);
+  }
+}
+
+function findHandleByKey(key) {
+  for (const [path, files] of Object.entries(folders)) {
+    const prefix = rootHandle.name + '/';
+    const rel = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+    for (const fh of files) {
+      if (rel + '/' + fh.name === key) return fh;
+    }
+  }
+  return null;
+}
+
+// ── UmapPlot class ────────────────────────────────────────
+class UmapPlot {
+  constructor(canvas, onPlay) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext('2d');
+    this.onPlay = onPlay;
+    this.onHover = null;
+
+    this.points     = [];
+    this.colors     = {};
+    this.folderList = [];
+    this.filter     = null;
+    this.playingKey = null;
+    this.hovered    = null;
+
+    this.scale = 1; this.ox = 0; this.oy = 0;
+    this.drag  = null; this.dragged = false;
+    this.dirty = false;
+
+    this._bind();
+    this._loop();
+  }
+
+  load(data) {
+    this.points = data.points;
+    this._buildColors();
+    this.fit();
+    this.dirty = true;
+  }
+
+  _buildColors() {
+    this.folderList = [...new Set(this.points.map(p => p.folder))].sort();
+    this.folderList.forEach((f, i) => {
+      const h = Math.round(15 + (i / this.folderList.length) * 315);
+      this.colors[f] = `hsl(${h},65%,58%)`;
+    });
+  }
+
+  fit() {
+    if (!this.points.length) return;
+    const W = this.canvas.width, H = this.canvas.height;
+    const pad = 32;
+    const xs = this.points.map(p => p.x), ys = this.points.map(p => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const rx = x1 - x0 || 1, ry = y1 - y0 || 1;
+    this.scale = Math.min((W - pad * 2) / rx, (H - pad * 2) / ry);
+    this.ox = (W - rx * this.scale) / 2 - x0 * this.scale;
+    this.oy = (H - ry * this.scale) / 2 - y0 * this.scale;
+    this.dirty = true;
+  }
+
+  toScreen(px, py) { return [px * this.scale + this.ox, py * this.scale + this.oy]; }
+
+  _loop() {
+    if (this.dirty) { this._draw(); this.dirty = false; }
+    requestAnimationFrame(() => this._loop());
+  }
+
+  _draw() {
+    const { ctx, canvas, filter, hovered, playingKey } = this;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const r = Math.max(1.5, Math.min(6, 3.5 * Math.pow(this.scale / 40, 0.25)));
+
+    for (const p of this.points) {
+      const [x, y] = this.toScreen(p.x, p.y);
+      if (x < -8 || x > W + 8 || y < -8 || y > H + 8) continue;
+
+      const dim    = filter && p.folder !== filter;
+      const isHov  = p === hovered;
+      const isPlay = p.key === playingKey;
+
+      ctx.globalAlpha = dim ? 0.07 : (isHov ? 1 : 0.78);
+      ctx.fillStyle   = isPlay ? '#fff' : (this.colors[p.folder] || '#a78bfa');
+      ctx.beginPath();
+      ctx.arc(x, y, isHov ? r * 2.2 : isPlay ? r * 1.6 : r, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isPlay && !dim) {
+        ctx.globalAlpha = 0.45;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth   = 1.5;
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _nearest(sx, sy, thresh = 13) {
+    let best = null, bd = Infinity;
+    for (const p of this.points) {
+      const [px, py] = this.toScreen(p.x, p.y);
+      const d = Math.hypot(sx - px, sy - py);
+      if (d < thresh && d < bd) { best = p; bd = d; }
+    }
+    return best;
+  }
+
+  _bind() {
+    const c = this.canvas;
+
+    c.addEventListener('wheel', e => {
+      e.preventDefault();
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const k = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+      this.ox = mx - (mx - this.ox) * k;
+      this.oy = my - (my - this.oy) * k;
+      this.scale *= k;
+      this.dirty = true;
+    }, { passive: false });
+
+    c.addEventListener('mousedown', e => {
+      this.drag = { sx: e.clientX, sy: e.clientY, ox: this.ox, oy: this.oy };
+      this.dragged = false;
+    });
+
+    c.addEventListener('mousemove', e => {
+      const rect = c.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      if (this.drag) {
+        const dx = e.clientX - this.drag.sx, dy = e.clientY - this.drag.sy;
+        if (Math.abs(dx) + Math.abs(dy) > 4) this.dragged = true;
+        this.ox = this.drag.ox + dx;
+        this.oy = this.drag.oy + dy;
+        this.dirty = true;
+        return;
+      }
+      const prev = this.hovered;
+      this.hovered = this._nearest(mx, my);
+      if (this.hovered !== prev) {
+        c.style.cursor = this.hovered ? 'pointer' : 'crosshair';
+        this.dirty = true;
+        this.onHover?.(this.hovered, e.clientX, e.clientY);
+      }
+    });
+
+    c.addEventListener('mouseup', e => {
+      if (!this.drag) return;
+      if (!this.dragged) {
+        const rect = c.getBoundingClientRect();
+        const p = this._nearest(e.clientX - rect.left, e.clientY - rect.top, 16);
+        if (p) this.onPlay(p);
+      }
+      this.drag = null;
+    });
+
+    c.addEventListener('mouseleave', () => {
+      this.drag = null;
+      if (this.hovered) { this.hovered = null; this.dirty = true; this.onHover?.(null); }
+    });
+
+    c.addEventListener('dblclick', () => this.fit());
+  }
+}
+
+// ── Auto-restore last session on page load ────────────────
+async function loadRootHandle(handle) {
+  rootHandle = handle;
+  folders = {}; favorites = new Set(); assets = new Set(); soundMap = {};
+  umapReady = false;
+  showStatus('Loading…', 0);
+  await scanDir(rootHandle, rootHandle.name);
+  await loadSet('favorites', favorites);
+  await loadSet('assets', assets);
+  await loadSoundMap();
+  updateCounts();
+  const n = Object.keys(folders).length;
+  showStatus(`${n} folder${n !== 1 ? 's' : ''}`, 0);
+  buildSidebar();
+}
+
+(async () => {
+  const stored = await getStoredHandle(rootHandleKey);
+  if (!stored) return;
+  // Only auto-load if permission is already granted — don't prompt on startup
+  const perm = await stored.queryPermission({ mode: 'readwrite' });
+  if (perm === 'granted') loadRootHandle(stored).catch(() => {});
+})();
+</script>
+</body>
+</html>

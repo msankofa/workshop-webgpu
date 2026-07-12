@@ -28,3 +28,17 @@ export function deleteState(name) {
   delete store[name];
   writeStore(store);
 }
+
+// Merge exported states back in. Skips names that already exist unless `overwrite`.
+export function importStates(incoming, { overwrite = false } = {}) {
+  const store = readStore();
+  let added = 0;
+  for (const [name, entry] of Object.entries(incoming || {})) {
+    if (!entry || !entry.values) continue;
+    if (store[name] && !overwrite) continue;
+    store[name] = { savedAt: entry.savedAt || new Date().toISOString(), values: entry.values };
+    added++;
+  }
+  writeStore(store);
+  return added;
+}

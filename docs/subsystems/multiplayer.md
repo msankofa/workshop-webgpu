@@ -21,7 +21,7 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 | File | Responsibility | Lines |
 |---|---|---|
 | `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~330 |
-| `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `light-entity-renderer.js` | Replicated entity registry + light/projectile adapters + clustered-light slot binder (see §9) | — |
+| `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `entity-types/effect.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`, `light-entity-renderer.js`, `effect-renderer.js` | Replicated entity registry + light/projectile/effect/combat-projectile/explosion adapters + clustered-light slot binder + combat-effect (tracer/spark/fireball) renderer (see §9, §5b) | — |
 | `player-hands.js` | First-person orb-hand viewmodel: `createViewHands(camera, THREE)` — your own two floating hands, camera-attached, shown only in FPS mode | 55 |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker (with a "Load preset" slider-state dropdown), map picker, loading screen; resolves `{ mapKey, mpRole, roomCode, mpWorldMode, presetName }` before the sim boots | 305 |
 | `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding (with per-guest send backpressure via `server/backpressure.js`), room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 106 |
@@ -90,8 +90,19 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   `CustomEvent('mp:' + msg.type, {detail: msg})`. Runs its own `requestAnimationFrame` loop that
   samples the buffer at `now - 100ms` (fixed interpolation delay) and calls `onState(state)`.
   Same reconnect backoff as the host.
-- `export class GhostRenderer` — `constructor(scene, THREE)` (THREE passed in, not statically
-  imported, so the module stays importable from plain Node for tests).
+- `export class GhostRenderer` — `constructor(scene, THREE, options = {})` (THREE passed in, not
+  statically imported, so the module stays importable from plain Node for tests). `options`:
+  - `terrainHeight(x, z) -> y` — default `() => 0`. Forwarded to `createProceduralPlayerBody` for
+    foot planting; `environment-viewer.html` does not wire the real terrain sampler in yet (Wave
+    2/B1 is flag-gated off by default, so this is currently inert in production).
+  - `useProceduralBody` — default `false`. **Feature flag, constructor-only today.** When `false`
+    (unchanged default), `GhostRenderer` behaves exactly as before — capsule + eyes + orb hands, no
+    procedural body work runs at all. When `true`, each remote player also gets a
+    `createProceduralPlayerBody({ THREE, scene, terrainHeight, mode: 'remote' })` instance (see
+    `docs/subsystems/procedural-body-weapon-contracts.md` Contract 2 and `player-procedural-body.js`)
+    and the old capsule/eyes/orb-hands meshes are hidden (`visible = false`) rather than skipped, so
+    flipping the flag back would still render correctly — they are just never unhidden today since
+    the flag is read once at construction.
   - `update(state: { creatures?: [], players?: [] })` — creatures reuse one semi-transparent box
     `Mesh` per id via the generic `_updateSet`. Players go through `_updatePlayers`: each is a
     `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (a
@@ -103,7 +114,32 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     placed/sized from `h`/`r` in `_placeEyes` so they stay round despite the body's non-uniform
     scale; glints are in eye-local space so they close with the eye on blink. Each player also gets
     two floating **orb hands** (shared sphere geo, tinted with the same per-player body material)
-    placed to the sides in front by `_placeHands`. Ids no longer present are removed.
+    placed to the sides in front by `_placeHands`. Ids no longer present are removed (also destroys
+    that player's `bodyProc`, if any).
+  - **Remote procedural body (`useProceduralBody: true`)** — `_updateProceduralBody(g, item)` lazily
+    creates `g.userData.bodyProc` on first sight of a player, tints it via `setTint` with the same
+    `playerTintHSL` hue used for the capsule, then every `update()` call:
+    - **position**: `item.p` (capsule center) passed straight through as a `THREE.Vector3` — the
+      body module only uses x/z from it (for terrain sampling + gait) and takes height/radius
+      separately, so no center-vs-root conversion is needed.
+    - **yaw**: derived from the wire quaternion `item.q` via the general
+      `atan2(2(qw·qy+qx·qz), 1-2(qy²+qz²))` formula, which reduces exactly to the stored yaw for a
+      pure-Y quaternion (the documented convention for `player_state`/snapshot `q`, see the "Angle
+      convention" section below) but stays correct even with roll/pitch noise.
+    - **velocity**: horizontal-only, derived from the position delta since the previous call divided
+      by the elapsed wall-clock time (`performance.now()`), never from a replicated velocity or feet
+      — per the contracts doc's guardrail ("MP v1 derives remote gait locally from interpolated
+      positions — do NOT replicate feet/hands"). This is a local gait guess, not a replay of the
+      sender's real stride.
+    - **aimPitch/height/radius/alive/weapon/tool**: passed through from `item.aimPitch`/`h`/`r`/
+      `alive`/`weapon`/`tool` (with `h`/`r` defaulting to 1.2/0.3 like the capsule path). The body
+      module hides/collapses itself when `alive === false` (Contract 2); `GhostRenderer` does not
+      duplicate that check.
+    - Arm posing (weapon-aim IK via `setArmTarget`) is **not** wired here — arms idle per the body's
+      own gait pose. That is a later follow-up; the held-gun placeholder box from the capsule path
+      is left visible and unchanged in the meantime.
+    - `destroy()` and the per-id removal path both call `bodyProc.destroy()` before dropping the
+      player, so nothing leaks when a player disconnects or the whole renderer is torn down.
   - `tick(nowMs)` — per-frame driver (must be called each frame; `update()` only runs on network
     events). Squashes each player's eye `scale.y` 1→~0.1→1 over `BLINK_MS` (120 ms) on an
     independent 3–6 s timer, staggered by an id hash; also animates the orb hands with an idle bob
@@ -194,23 +230,31 @@ creation.
 ## Friend finder HUD (compass strip + minimap)
 
 `createMultiplayerFinder()` in `environment-viewer.html` (near the session setup) builds a small
-fixed 220px canvas panel (bottom-left) with three parts: a horizontal compass
-strip across the top, a heading-up minimap below it (concentric range rings, 140 m clamp radius),
-and a Track button that cycles which remote player is highlighted/labelled. It is redrawn every
-frame from `animate()` via `updateMultiplayerFinder()`, reading `multiplayerLocalPlayer()` and
-`multiplayerRemotePlayers()` (host: latest `player_state` from guests; guest: the snapshot's
-`players` minus itself).
+fixed 240px canvas panel (bottom-left, `#mp-dock` anchored `bottom:46px` so it clears the
+`#perf-log` bar below it) with three parts: a horizontal compass strip across the top, a heading-up
+minimap below it (240×232 canvas; concentric range rings; radar radius `R` and rings scale off the
+canvas height), and a Track button that cycles which remote player is highlighted/labelled. It is
+redrawn every frame from `animate()` via `updateMultiplayerFinder()`, reading
+`multiplayerLocalPlayer()` and `multiplayerRemotePlayers()` (host: latest `player_state` from guests;
+guest: the snapshot's `players` minus itself).
+
+**Zoom.** The radar view radius (`view`, world units mapped to `R` px) is a closure variable clamped
+to `[MIN_VIEW=40, MAX_VIEW=600]`, default 140. A `+`/`−` control overlaid in the map's bottom-right
+corner and the scroll wheel over the canvas both drive it via `zoomBy(factor)`; the wheel handler
+calls `preventDefault`/`stopPropagation` so it does not also dolly the main camera.
 
 **Availability.** In multiplayer the panel always shows. In **solo** it shows only when an authored
 map is loaded (so the terrain minimap is useful); the Track button/label row is hidden since there
 are no friends. When an authored map is present the minimap draws a heading-up terrain background
 under the rings and arrows, and pressing **M** opens a north-up full-screen map. Both are provided by
 `world-map.js` — see its "World map HUD" section in `infra.md`. The terrain blit reuses the finder's
-own marker projection (`minimapImageAffine`, with `s = 70/view`) so terrain and friend dots stay
+own marker projection (`minimapImageAffine`, with `s = R/view`) so terrain and friend dots stay
 aligned as the view turns.
 
-**Layer picker.** The minimap lives in an `#mp-dock` flex row with a **Layers** tab nub on its right
-edge; clicking it slides out `#mp-map-menu` listing the data overlays from `MAP_OVERLAYS`
+**Layer picker.** The minimap lives in an `#mp-dock` flex row (top-aligned) with a **Layers** tab nub
+on its right edge, pinned to the canvas height so it lines up flush with the map even when the Track
+row makes the finder taller; clicking it slides out `#mp-map-menu` listing the data overlays from
+`MAP_OVERLAYS`
 (biome/elevation/slope/material/water/grass/tree). Picking one sets `mapOverlayId`, re-bakes via
 `rebakeWorldMap()`, and both the minimap and the M map switch to it. Reach the menu with the mouse by
 pressing **Q** (cursor-free pause — see `entry-point.md`), which frees the cursor without leaving the
@@ -403,12 +447,49 @@ Responsibilities today:
 - Guests render remote players as simple capsules.
 - Host renders guest capsules.
 
-Limitations:
+Player HP and gun combat **are** replicated (host-authoritative); see subsection 5b below. Limitations that remain:
 
 - Player movement is not server-authoritative.
 - The host accepts pose updates rather than simulating guest input.
 - There is no collision authority for guests relative to shared dynamic objects.
-- No inventory, interaction, health, combat, or action lifecycle is replicated.
+- No inventory or general interaction/action lifecycle is replicated (beyond combat).
+
+#### 5b. Player Combat (guns)
+
+Status: implemented (hitscan, melee, projectile). Files: `environment-viewer.html`, `multiplayer.js`, `combat.js`, `player-combat.js`, `weapons.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`.
+
+**Weapon modes.** Every GLB in `models/guns/` is wired. `weapons.js` entries carry `mode: 'hitscan' | 'melee' | 'projectile'`; `applyCombatIntent` dispatches on it:
+- **hitscan** (`m1911`, `five_seven`, `m24`, `cz_805_bren`): the original resolve-a-ray path below.
+- **melee** (`knife`): unlimited ammo (the mag path is skipped), resolves a short `resolveWorldShot` at `weapon.range`, applies `applyHitDamage`, and draws only a `hit_spark` (no tracer) via `spawnMeleeImpact`.
+- **projectile** (`grenade`, `rpg`): spawns a replicated `combat-projectile` entity (`spawnCombatProjectile`) from `weapon.projectile` (`speed/blastRadius/life/radius/gravity/arc/fuse/bounces/fizzleOnExpire`); damage is dealt on **detonation**, not at the fire call.
+- **full-auto** (`cz_805_bren`, `automatic: true`): LMB-hold repeats fire. `tickAutoFire(now)` in the frame loop re-calls `fireGunFromCamera()` once `weapon.fireIntervalMs` elapses while `primaryHeld` (set/cleared in the mouse handlers + `enterCursorFree`); `validateShot`'s cooldown gate remains the host-authoritative cadence.
+
+Protocol — guests send fire as an **intent**, never a damage claim:
+
+```js
+{ type: 'combat_intent', action: 'gun.fire', weapon: 'm1911',
+  shotSeq, clientFireTime, origin:[x,y,z], dir:[x,y,z] }
+```
+
+- Host-local firing calls `applyCombatIntent(intent, 'host')`; guests call `mpSession.sendInput(intent)`, routed through the `combat_intent` branch of the `mp:guest_input` handler.
+- `applyCombatIntent` validates (`combat.js:validateShot`: shooter alive, weapon equipped, `shotSeq` newer than `playerShotState`, cooldown elapsed, origin drift, finite dir), then resolves the shot against the **whole world** via `combat.js:resolveHitscan` and applies damage by hit `kind`.
+- **World hit resolution** (`combat.js:resolveHitscan`, `environment-viewer.html:resolveWorldShot`) picks the nearest of: player capsules (`currentCombatPlayers()`), workshop-creature capsules (`creatureCombatCapsules()` — `portCreatures` bodies, host/solo only), ClaudeCraft mob capsules (`claudecraftCreatures.mobCombatCapsules()`, host/solo only), obstacle columns (tree `trunkIndex` + rock/log `dressingIndexRef` `{x,z,r}` circles, built into vertical cylinders by `obstacleColumnsAlongRay`), and terrain (`raymarchTerrainHit` over `terrainHeight`). Nearest-wins gives **terrain/obstacle occlusion for free** — shots no longer pass through ground, trees, or rocks. Returns `{ kind:'player'|'creature'|'mob'|'obstacle'|'terrain'|'none', id, point, normal, distance }`.
+- Damage routing: `kind:'player'` → `player-combat.js` facade `applyDamage`; `kind:'creature'` → the hit `portCreatures` body's `takeDamage(weapon.damage)`; `kind:'mob'` → `claudecraftCreatures.damageMob(id, { amount, attackerId })`, which runs the sim's real `sim.dealDamage(shooterEntity, mob, …, 'physical', 'Gunfire', 'hit')` path so threat/death/loot are handled and the mob aggros the shooter. Player HP authority is the host-owned `createPlayerCombatFacade` (delegates to the ClaudeCraft bridge when creatures are active so gun and mob damage share one player HP pool; host-owned fallback map otherwise). Gun code never mutates player/mob HP directly.
+- Mob hit capsules (`claudecraft-bridge/claudecraft-creatures.js:mobCombatCapsules`) are world-space, height `SIM_HUMANOID_HEIGHT·SCALE·mobScale` (matches the render sizing), radius `0.3·height`, centred at `feet + h/2`.
+- **Leash/heal guard:** the sim full-heals a mob when it leashes home (`resetEvadingMob`), so a ranged shot would just aggro a mob that runs back to spawn and resets to full HP. `damageMob` therefore tags the hit mob (`gunTag`, 6 s, refreshed per hit): while tagged, `pinGunTaggedLeashes()` re-pins its leash anchor to its own position each sim tick (so the chase-state leash check never trips → no evade→heal), pulls it out of any `evade` state (which is otherwise damage-immune), and forces `aggroTargetId`/`chase` onto the shooter. Result: sustained OR sparse gunfire reliably whittles the mob down and kills it instead of it healing between shots.
+- **Replicated combat effects** (`entity-types/effect.js` `EffectEntity`, `effect-renderer.js`): every resolved shot host-spawns a `gun_tracer` (muzzle→impact) and, for solid hits, a surface-tinted `hit_spark` effect entity. A third kind, `explosion` (expanding fireball rays scaled by blast radius), is spawned by the explosion entity's visual. These ride `entityRegistry.snapshot()` like lights, so all clients render identical effects. `effect-renderer.js` draws additive `LineSegments`+`Points`, fading each entity by wall-clock keyed on its id (`firstSeen`); fed per-frame via `updateShotEffects()` from `entityRegistry.renderList({type:'effect'})` (host/solo) or the interpolated `mpPendingEffects` upserts (guest). Guest shooters also get an immediate local-predicted tracer (`spawnLocalPredictedTracer`, hitscan only); damage stays host-confirmed.
+- **Projectiles + explosions** (`entity-types/combat-projectile.js`, `entity-types/explosion.js`): a fired rocket/grenade is a host-owned `combat-projectile` registry entity that flies under `sim` velocity/gravity, sweeps its path each `tick` via injected `ctx.raycast` (`projectileRaycast` → `resolveWorldShot`, terrain excluded so it owns its own ground-contact check), grenades bounce off terrain (≤2), and detonates on solid contact / fuse / life-end into an `explosion` entity (rockets `fizzleOnExpire` with no blast). It serializes as `type:'projectile'` (`renders:true`) so it borrows the light renderer's moving-light path; `isRegisteredLightEntityType` now also matches `'combat-projectile'`. `explosion` deals radial damage **once, in `create()`** via injected `ctx.applyBlast` (`applyExplosionBlast`: players/creatures/mobs by `blastDamageAt` falloff `0.45 + 0.55·(1−d/r)`, floor 12, **friendly-fire + self-damage ON**), then spawns its `explosion`-kind effect via `ctx.spawnEffect`. Both `ctx` closures are injected in the `entityRegistry.tick(dt, ctx)` call. Explosion is **not** a capped type (`CAPPED_TYPES` = `light`+`projectile` only) — the registry cap rejects *before* `create()` runs, so a capped explosion would silently drop its create()-time damage.
+- Extended host-owned player snapshot fields (guest-supplied values ignored): `hp`, `maxHp`, `alive`, `weapon`, `tool`, `firing`, `fireSeq`, `lastShotAt`, `ammoMag`, `ammoReserve`, `reloading`, `aimPitch`. `_lerpPlayers()` lerps `hp` and carries the rest.
+**ADS optics (aim-down-sights view + scope).** Right-mouse hold eases `localAimAmount` 0→1 (`environment-viewer.html`); each weapon carries optics fields in `weapons.js`:
+- `aimOffset [x,y,z]` / `aimRotation [x,y,z]` (euler rad) — the fully-aimed first-person view position and orientation. `applyToolTransform` lerps `viewOffset → aimOffset` and `viewRotation → aimRotation` by the aim amount (replacing the old hard-coded derived offset and yaw-only tweak), so ADS placement is fully tunable per weapon.
+- `aimEyeForward` (m) — "focus": a render-time camera dolly forward along the look vector by `aimEyeForward · aim`, applied in `updateAimOptics()` after the frame's camera is finalized (safe because `camera.position` is reset from `playerCollider.end` each substep). Skipped in third-person (`localBodyThird`).
+- `sightType` (`'iron' | 'optical'`) — gates the scope overlay/blur (optical only). FOV zoom applies to both types.
+- `magnification` — `updateAimOptics()` sets `camera.fov = lerp(70, 2·atan(tan(70/2)/mag), aim)` (`ADS_BASE_FOV = 70`); returns to 70 at `aim=0`, and orbit/exit still own fov 50.
+- `scopeBlur`, `scopeRadius` (fraction of viewport height), `scopeCenter [x,y]` (fraction of viewport) — drive a DOM scope overlay (`updateScopeOverlay`): `scopeVignette` darkens outside the scope circle to black; `scopeBlurEl` applies `backdrop-filter: blur(scopeBlur·10px)` masked to the periphery (outside the circle). Both fade in with aim; the overlay is first-person + optical only and is hidden on `exitFPS`.
+
+Panel: the "Weapon control" → **Aim / optics** group adds Aim X/Y/Z, Aim rot X/Y/Z, Focus (eye-in), a **Lock aim (preview)** checkbox, a Sight type dropdown, Magnification, Blur intensity, Magnifier radius, and Magnifier X/Y sliders. **Lock aim** sets the `aimLock` flag: the aim easing pins `localAimTarget = 1` even while cursor-free (as long as a real weapon is equipped), and the frozen-view branch drives `localWeaponView.update` so the gun eases into and holds the aim pose for tuning without holding RMB. Numeric fields persist through the `controlRegistry` (`weapon.<id>.aimOffset.*`, `aimRotation.*`, `scopeCenter.*`, `aimEyeForward`, `magnification`, `scopeBlur`, `scopeRadius`) and the `pcw:weaponTuning` localStorage mirror; `sightType` (a string, outside the numeric registry) is mirrored separately as `weaponSight.<id>`. `aimLock` is a session-only authoring toggle (not persisted). Every weapon-control slider row also has an **editable number box** (right of the label): type an exact value (e.g. `10.5`) that the range bar's step can't drag to. A **Fine (x0.1 step)** checkbox near the weapon selector (`setWeaponFineMode`) drops every slider + number box to 1/10 its base step (and shows one extra decimal) for finer dragging/spinner nudges; the number box already accepts any typed value regardless. Both are session-only.
+
+- **Approximations / not yet done:** obstacle column height is derived from the collision radius (`~1.4·r` for rocks/logs, hugging the visible prop; a fixed tall value for trees) since the circles store only `{x,z,r}`; authored-map geometry (`map-collision.js` BVH) is not yet an occluder; workshop-creature gun damage imparts no knockback (attacker passed as `null`); mob capsule height assumes a humanoid reference (odd-shaped/boss mobs get an approximate capsule). Grenade/RPG flight is closed-form ballistic (velocity + gravity + terrain bounce), not Rapier — Rapier is still deferred until physics-prop work. Third-person weapon holds / IK anchors / poses for `five_seven`, `cz_805_bren`, `knife`, `grenade`, `rpg` are numerically seeded (from the same-class weapon) but not yet visually authored in `body-preview.html` / `weapon-anchor-editor.html`.
 
 #### 6. Shared Creature/NPC Configuration
 
@@ -472,7 +553,15 @@ Limitations:
 Status: implemented for lights + projectiles (milestone A of the entity-registry migration).
 
 Files: `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`,
-`light-entity-renderer.js`, `environment-viewer.html`, `multiplayer.js`
+`entity-types/effect.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`,
+`light-entity-renderer.js`, `effect-renderer.js`, `environment-viewer.html`, `multiplayer.js`.
+The `effect` type (`gun_tracer`/`hit_spark`/`explosion`, short-lived, self-destroying, uncapped)
+is registered alongside the light adapters and rendered by `effect-renderer.js`; see §5b. Two
+weapon adapters join them (also uncapped): `combat-projectile` (rocket/grenade flight, serializes
+as `type:'projectile'` so it shares the moving-light renderer; its registry type is matched by
+`isRegisteredLightEntityType`) and `explosion` (radial-damage burst that damages once in
+`create()` via injected `ctx.applyBlast` — kept uncapped precisely because the cap rejects before
+`create()` runs). See §5b for the fire-path + blast math.
 
 This replaces the earlier ad-hoc "shared light bridge" (the old `mpSharedLights`/`lights`/
 `light_state` path) with a general **host-authoritative replicated entity registry**. Design +

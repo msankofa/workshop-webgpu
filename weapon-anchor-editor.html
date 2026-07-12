@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weapon Anchor Editor</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
+    max-width: calc(100vw - 320px); z-index: 5; }
+  #panel { position: fixed; top: 10px; right: 10px; width: 300px; max-height: calc(100vh - 20px);
+    overflow-y: auto; background: rgba(20,24,30,.9); border: 1px solid #333a45; border-radius: 8px;
+    color: #c4ccd6; font: 12px/1.45 system-ui, sans-serif; user-select: none; z-index: 20;
+    padding: 10px 12px 14px; box-sizing: border-box; }
+  #panel h2 { font-size: 12px; color: #8a93a3; margin: 12px 0 4px; text-transform: uppercase;
+    letter-spacing: .04em; border-top: 1px solid #2a313c; padding-top: 8px; }
+  #panel h2:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+  #panel .row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin: 5px 0; }
+  #panel .row span.lbl { color: #7f8a99; flex: 0 0 auto; }
+  #panel select, #panel input[type=text], #panel input[type=number] {
+    width: 100%; background: #222831; color: #c4ccd6; border: 1px solid #3a434f; border-radius: 4px;
+    padding: 3px 4px; box-sizing: border-box; font: 12px system-ui, sans-serif; }
+  #panel input[type=file] { width: 100%; color: #7f8a99; font-size: 11px; }
+  #panel button { background: #2a313c; color: #c4ccd6; border: 1px solid #3a434f; border-radius: 4px;
+    padding: 5px 6px; cursor: pointer; font: 12px system-ui, sans-serif; }
+  #panel button:hover { background: #333c49; }
+  #panel button.active { background: #3a5a7a; border-color: #4d7aa3; color: #eaf3ff; }
+  #panel button:disabled { opacity: .4; cursor: default; }
+  #panel button.full { width: 100%; margin: 3px 0; }
+  #panel .btn-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin: 4px 0; }
+  #panel .btn-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 4px 0; }
+  #panel textarea { width: 100%; height: 220px; background: #15181d; color: #9fe39f;
+    border: 1px solid #3a434f; border-radius: 4px; font: 10.5px/1.4 monospace; resize: vertical;
+    box-sizing: border-box; }
+  #panel .hint { color: #6b7583; font-size: 11px; margin: 2px 0 6px; }
+  #panel .pos-fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin: 4px 0; }
+  #placing-banner { position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    background: #3a5a7a; color: #eaf3ff; padding: 6px 14px; border-radius: 6px; font: 12px system-ui, sans-serif;
+    z-index: 30; display: none; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &mdash; standalone weapon anchor editor (points only; run via serve.py)</div>
+<div id="placing-banner">Click the weapon model to place the anchor&hellip;</div>
+
+<!-- three@0.184.0: same CDN pins as environment-viewer.html -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { WEAPONS } from './weapons.js';
+
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// Anchors are authored in each weapon's raw glTF-local space (the model's own coordinate
+// frame as exported, before any runtime rotate/scale/re-center normalization that
+// environment-viewer.html's `createLocalWeaponViewModel` applies to the *object's own
+// transform* — since that normalization is a transform ON the object, not baked into its
+// vertices, an anchor's local-space p/q composes correctly through it automatically at
+// runtime via `object.localToWorld(...)`. This tool intentionally keeps the loaded model at
+// an identity transform so raycast hits land directly in that same local space.)
+const BASELINE_ANCHOR_NAMES = ['rightGrip', 'leftGrip', 'magwell', 'chargingHandle', 'muzzle'];
+const ANCHORS_URL = './weapon-anchors.json';
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d23);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.6, 0.4, 0.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x1a1712, 1.1);
+scene.add(hemi);
+const dir = new THREE.DirectionalLight(0xffffff, 2.2);
+dir.position.set(1.5, 2.2, 1.8);
+scene.add(dir);
+scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+
+scene.add(new THREE.GridHelper(2, 20, 0x3a4250, 0x262b33));
+scene.add(new THREE.AxesHelper(0.3));
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== model loading =====================
+const loader = new GLTFLoader();
+const modelGroup = new THREE.Group(); // kept at identity: local space === world space
+scene.add(modelGroup);
+let currentGltfScene = null;
+let bboxHelper = null;
+
+async function loadModelFromUrl(url) {
+  const gltf = await loader.loadAsync(url);
+  setModel(gltf.scene);
+}
+function setModel(object3d) {
+  if (currentGltfScene) { modelGroup.remove(currentGltfScene); }
+  currentGltfScene = object3d;
+  modelGroup.add(currentGltfScene);
+  if (bboxHelper) { scene.remove(bboxHelper); bboxHelper.dispose?.(); }
+  bboxHelper = new THREE.BoxHelper(currentGltfScene, 0xffcc55);
+  scene.add(bboxHelper);
+  fitCameraTo(currentGltfScene);
+}
+function fitCameraTo(object3d) {
+  const box = new THREE.Box3().setFromObject(object3d);
+  if (box.isEmpty()) return;
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const dist = Math.max(sphere.radius * 2.6, 0.15);
+  const dir3 = camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(dir3.x) || dir3.lengthSq() === 0) dir3.set(0.6, 0.4, 0.9).normalize();
+  controls.target.copy(sphere.center);
+  camera.position.copy(sphere.center).addScaledVector(dir3, dist);
+  controls.update();
+}
+function collectMeshes() {
+  const meshes = [];
+  if (currentGltfScene) currentGltfScene.traverse(o => { if (o.isMesh) meshes.push(o); });
+  return meshes;
+}
+
+// ===================== anchor data + markers =====================
+// In-memory copy of the full weapon-anchors.json shape, across every weapon touched this
+// session — the export textarea always reflects this whole object so Copy/Download can
+// replace the sidecar file directly.
+let anchorFile = {};
+try {
+  const res = await fetch(ANCHORS_URL, { cache: 'no-store' });
+  if (res.ok) anchorFile = await res.json();
+} catch (err) {
+  console.warn('[anchor-editor] could not fetch weapon-anchors.json (expected if not served via serve.py)', err);
+}
+
+let currentWeaponId = 'm1911';
+let selectedAnchorName = null;
+let placingMode = false;
+const markerGroups = new Map(); // name -> THREE.Group
+
+function anchorsForCurrentWeapon() {
+  if (!anchorFile[currentWeaponId]) anchorFile[currentWeaponId] = { ikAnchors: {} };
+  if (!anchorFile[currentWeaponId].ikAnchors) anchorFile[currentWeaponId].ikAnchors = {};
+  return anchorFile[currentWeaponId].ikAnchors;
+}
+
+function makeMarker(name) {
+  const group = new THREE.Group();
+  group.name = 'anchor:' + name;
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.013, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0x36e0ff, depthTest: false, transparent: true, opacity: 0.9 }),
+  );
+  sphere.renderOrder = 999;
+  sphere.userData.isAnchorHandle = true;
+  sphere.userData.anchorName = name;
+  group.add(sphere);
+  group.add(new THREE.AxesHelper(0.05));
+  group.userData.sphere = sphere;
+  return group;
+}
+function refreshMarkerColors() {
+  for (const [name, group] of markerGroups) {
+    const selected = name === selectedAnchorName;
+    group.userData.sphere.material.color.set(selected ? 0xffa53c : 0x36e0ff);
+    group.userData.sphere.scale.setScalar(selected ? 1.6 : 1);
+  }
+}
+function rebuildMarkersForCurrentWeapon() {
+  for (const group of markerGroups.values()) modelGroup.remove(group);
+  markerGroups.clear();
+  const anchors = anchorsForCurrentWeapon();
+  for (const name of Object.keys(anchors)) {
+    const a = anchors[name];
+    const group = makeMarker(name);
+    group.position.fromArray(a.p);
+    group.quaternion.fromArray(a.q);
+    modelGroup.add(group);
+    markerGroups.set(name, group);
+  }
+  refreshMarkerColors();
+  refreshAnchorNameSelect();
+  refreshJSON();
+}
+function syncAnchorFromMarker(name) {
+  const group = markerGroups.get(name);
+  if (!group) return;
+  const anchors = anchorsForCurrentWeapon();
+  anchors[name] = { p: group.position.toArray(), q: group.quaternion.toArray() };
+  refreshJSON();
+}
+function selectAnchor(name) {
+  selectedAnchorName = name;
+  refreshMarkerColors();
+  const group = name ? markerGroups.get(name) : null;
+  if (group) transformControls.attach(group);
+  else transformControls.detach();
+  anchorNameSelect.value = name || '';
+}
+function deleteAnchor(name) {
+  if (!name) return;
+  const anchors = anchorsForCurrentWeapon();
+  delete anchors[name];
+  const group = markerGroups.get(name);
+  if (group) { modelGroup.remove(group); markerGroups.delete(name); }
+  if (selectedAnchorName === name) selectAnchor(null);
+  refreshAnchorNameSelect();
+  refreshJSON();
+}
+function placeOrMoveAnchor(name, localPoint, localQuat) {
+  const anchors = anchorsForCurrentWeapon();
+  anchors[name] = { p: localPoint.toArray(), q: localQuat.toArray() };
+  let group = markerGroups.get(name);
+  if (!group) {
+    group = makeMarker(name);
+    modelGroup.add(group);
+    markerGroups.set(name, group);
+  }
+  group.position.copy(localPoint);
+  group.quaternion.copy(localQuat);
+  refreshAnchorNameSelect();
+  selectAnchor(name);
+  refreshJSON();
+}
+
+// ===================== TransformControls gizmo =====================
+const transformControls = new TransformControls(camera, renderer.domElement);
+transformControls.setSpace('local');
+transformControls.setSize(0.6);
+scene.add(transformControls.getHelper ? transformControls.getHelper() : transformControls);
+transformControls.addEventListener('dragging-changed', e => { controls.enabled = !e.value; });
+transformControls.addEventListener('objectChange', () => {
+  if (selectedAnchorName) syncAnchorFromMarker(selectedAnchorName);
+});
+
+// ===================== raycast: select marker / place new anchor =====================
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+function ndcFromEvent(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNdc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+}
+renderer.domElement.addEventListener('pointerdown', ev => {
+  if (transformControls.dragging) return;
+  ndcFromEvent(ev);
+  raycaster.setFromCamera(pointerNdc, camera);
+
+  if (placingMode) {
+    const hits = raycaster.intersectObjects(collectMeshes(), true);
+    if (hits.length) {
+      const hit = hits[0];
+      const localPoint = modelGroup.worldToLocal(hit.point.clone());
+      let localQuat = new THREE.Quaternion();
+      if (hit.face) {
+        const worldNormal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+        const invModelQuat = modelGroup.quaternion.clone().invert();
+        const localNormal = worldNormal.applyQuaternion(invModelQuat);
+        localQuat.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNormal.clone().negate());
+      }
+      const name = anchorNameForNewPlacement();
+      if (name) placeOrMoveAnchor(name, localPoint, localQuat);
+    }
+    setPlacingMode(false);
+    return;
+  }
+
+  // Not placing: try to select an existing marker under the cursor.
+  const handles = [...markerGroups.values()].map(g => g.userData.sphere);
+  const hits = raycaster.intersectObjects(handles, false);
+  if (hits.length) selectAnchor(hits[0].object.userData.anchorName);
+});
+
+function setPlacingMode(on) {
+  placingMode = on;
+  document.getElementById('placing-banner').style.display = on ? 'block' : 'none';
+  placeBtn.classList.toggle('active', on);
+}
+
+// ===================== UI panel =====================
+const panel = document.createElement('div');
+panel.id = 'panel';
+document.body.appendChild(panel);
+
+function h2(text) { const el = document.createElement('h2'); el.textContent = text; panel.appendChild(el); return el; }
+function row() { const el = document.createElement('div'); el.className = 'row'; panel.appendChild(el); return el; }
+function hint(text) { const el = document.createElement('div'); el.className = 'hint'; el.textContent = text; panel.appendChild(el); return el; }
+
+// --- Weapon section ---
+h2('Weapon');
+const weaponSelect = document.createElement('select');
+for (const w of Object.values(WEAPONS)) {
+  const opt = document.createElement('option');
+  opt.value = w.id;
+  opt.textContent = w.displayName + (w.model ? '' : ' (no model)');
+  weaponSelect.appendChild(opt);
+}
+weaponSelect.value = currentWeaponId;
+panel.appendChild(weaponSelect);
+hint('Model path: ' + (WEAPONS[currentWeaponId]?.model || '(none)'));
+const modelPathHint = panel.lastChild;
+
+const loadRow = row();
+const loadBtn = document.createElement('button');
+loadBtn.textContent = 'Load model';
+loadBtn.className = 'full';
+loadRow.appendChild(loadBtn);
+
+const filePickRow = row();
+const filePicker = document.createElement('input');
+filePicker.type = 'file';
+filePicker.accept = '.glb,.gltf';
+filePickRow.appendChild(filePicker);
+hint('Or pick a local .glb/.gltf (e.g. from models/guns/) instead of the default path above.');
+
+weaponSelect.addEventListener('change', () => {
+  currentWeaponId = weaponSelect.value;
+  modelPathHint.textContent = 'Model path: ' + (WEAPONS[currentWeaponId]?.model || '(none)');
+  rebuildMarkersForCurrentWeapon();
+});
+loadBtn.addEventListener('click', () => {
+  const path = WEAPONS[currentWeaponId]?.model;
+  if (!path) { showError('No model path for ' + currentWeaponId); return; }
+  loadModelFromUrl(path).catch(err => showError('Failed to load ' + path + ': ' + err.message));
+});
+filePicker.addEventListener('change', () => {
+  const file = filePicker.files && filePicker.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  loadModelFromUrl(url).catch(err => showError('Failed to load file: ' + err.message))
+    .finally(() => URL.revokeObjectURL(url));
+});
+
+// --- Anchor section ---
+h2('Anchors');
+const anchorNameSelect = document.createElement('select');
+panel.appendChild(anchorNameSelect);
+
+const customRow = row();
+const customNameInput = document.createElement('input');
+customNameInput.type = 'text';
+customNameInput.placeholder = 'custom anchor name';
+customRow.appendChild(customNameInput);
+
+function refreshAnchorNameSelect() {
+  const anchors = anchorsForCurrentWeapon();
+  const names = new Set(BASELINE_ANCHOR_NAMES);
+  for (const n of Object.keys(anchors)) names.add(n);
+  const prevValue = anchorNameSelect.value;
+  anchorNameSelect.innerHTML = '';
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    opt.textContent = n + (anchors[n] ? '' : '  (unset)');
+    anchorNameSelect.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = '__custom__';
+  custom.textContent = 'custom (use text box) →';
+  anchorNameSelect.appendChild(custom);
+  if ([...anchorNameSelect.options].some(o => o.value === prevValue)) anchorNameSelect.value = prevValue;
+}
+function anchorNameForNewPlacement() {
+  if (anchorNameSelect.value === '__custom__') {
+    const name = customNameInput.value.trim();
+    if (!name) { showError('Enter a custom anchor name first'); return null; }
+    return name;
+  }
+  return anchorNameSelect.value;
+}
+anchorNameSelect.addEventListener('change', () => {
+  if (anchorNameSelect.value !== '__custom__' && markerGroups.has(anchorNameSelect.value)) {
+    selectAnchor(anchorNameSelect.value);
+  }
+});
+
+const placeRow = row();
+const placeBtn = document.createElement('button');
+placeBtn.textContent = 'Add / move anchor (click model)';
+placeBtn.className = 'full';
+placeRow.appendChild(placeBtn);
+placeBtn.addEventListener('click', () => setPlacingMode(!placingMode));
+
+const deleteRow = row();
+const deleteBtn = document.createElement('button');
+deleteBtn.textContent = 'Delete selected anchor';
+deleteBtn.className = 'full';
+deleteRow.appendChild(deleteBtn);
+deleteBtn.addEventListener('click', () => deleteAnchor(selectedAnchorName));
+
+// --- Transform mode ---
+h2('Gizmo');
+const modeGrid = document.createElement('div');
+modeGrid.className = 'btn-grid2';
+panel.appendChild(modeGrid);
+const translateBtn = document.createElement('button'); translateBtn.textContent = 'Translate'; translateBtn.className = 'active';
+const rotateBtn = document.createElement('button'); rotateBtn.textContent = 'Rotate';
+modeGrid.appendChild(translateBtn); modeGrid.appendChild(rotateBtn);
+translateBtn.addEventListener('click', () => { transformControls.setMode('translate'); translateBtn.classList.add('active'); rotateBtn.classList.remove('active'); });
+rotateBtn.addEventListener('click', () => { transformControls.setMode('rotate'); rotateBtn.classList.add('active'); translateBtn.classList.remove('active'); });
+
+hint('Nudge (local axes):');
+const NUDGE_POS = 0.005;
+const NUDGE_ROT = THREE.MathUtils.degToRad(2);
+function nudgeGrid(labels, handlers) {
+  const grid = document.createElement('div');
+  grid.className = 'btn-grid3';
+  panel.appendChild(grid);
+  labels.forEach((label, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.addEventListener('click', handlers[i]);
+    grid.appendChild(btn);
+  });
+}
+function withSelected(fn) {
+  return () => {
+    if (!selectedAnchorName) return;
+    const group = markerGroups.get(selectedAnchorName);
+    if (!group) return;
+    fn(group);
+    syncAnchorFromMarker(selectedAnchorName);
+  };
+}
+nudgeGrid(
+  ['X-', 'Y-', 'Z-'],
+  [
+    withSelected(g => { g.position.x -= NUDGE_POS; }),
+    withSelected(g => { g.position.y -= NUDGE_POS; }),
+    withSelected(g => { g.position.z -= NUDGE_POS; }),
+  ],
+);
+nudgeGrid(
+  ['X+', 'Y+', 'Z+'],
+  [
+    withSelected(g => { g.position.x += NUDGE_POS; }),
+    withSelected(g => { g.position.y += NUDGE_POS; }),
+    withSelected(g => { g.position.z += NUDGE_POS; }),
+  ],
+);
+nudgeGrid(
+  ['Rot X-', 'Rot Y-', 'Rot Z-'],
+  [
+    withSelected(g => g.rotateX(-NUDGE_ROT)),
+    withSelected(g => g.rotateY(-NUDGE_ROT)),
+    withSelected(g => g.rotateZ(-NUDGE_ROT)),
+  ],
+);
+nudgeGrid(
+  ['Rot X+', 'Rot Y+', 'Rot Z+'],
+  [
+    withSelected(g => g.rotateX(NUDGE_ROT)),
+    withSelected(g => g.rotateY(NUDGE_ROT)),
+    withSelected(g => g.rotateZ(NUDGE_ROT)),
+  ],
+);
+
+// --- Export ---
+h2('Export (weapon-anchors.json)');
+const jsonArea = document.createElement('textarea');
+panel.appendChild(jsonArea);
+const exportRow = row();
+const copyBtn = document.createElement('button'); copyBtn.textContent = 'Copy JSON'; copyBtn.className = 'full';
+exportRow.appendChild(copyBtn);
+const downloadRow = row();
+const downloadBtn = document.createElement('button'); downloadBtn.textContent = 'Download JSON'; downloadBtn.className = 'full';
+downloadRow.appendChild(downloadBtn);
+
+function refreshJSON() {
+  jsonArea.value = JSON.stringify(anchorFile, null, 2);
+}
+copyBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(jsonArea.value);
+    copyBtn.textContent = 'Copied!';
+  } catch {
+    jsonArea.select();
+    document.execCommand('copy');
+    copyBtn.textContent = 'Copied!';
+  }
+  setTimeout(() => { copyBtn.textContent = 'Copy JSON'; }, 1200);
+});
+downloadBtn.addEventListener('click', () => {
+  const blob = new Blob([jsonArea.value], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'weapon-anchors.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ===================== init =====================
+rebuildMarkersForCurrentWeapon();
+loadModelFromUrl(WEAPONS[currentWeaponId].model).catch(err => showError('Failed to load default model: ' + err.message));
+
+// ===================== render loop =====================
+renderer.setAnimationLoop(() => {
+  controls.update();
+  bboxHelper?.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

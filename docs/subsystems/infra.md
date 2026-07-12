@@ -59,15 +59,58 @@ Builds and appends the `#workshop-ui` `<aside>` to `document.body`, installs its
 - `activate(tabId)` â€” switches the active tab (`scene | creatures | models | effects | walk | perf | presets | audio`).
 - `updatePerf` â€” bound to the internal `host._updatePerf(snapshot)` function built in `buildPerfPanel`; renders one perf-log snapshot into the Perf tab (metrics, sparkline, scene-figures rows, per-stage timing bars, capture button state).
 
-`sliderState` (optional) is `{ capture(), apply(values), list(), save(name, values), remove(name) }`,
+`sliderState` (optional) is `{ capture(), apply(values), list(), save(name, values), remove(name), import(obj, { overwrite }) }`,
 supplied by `environment-viewer.html` (`capture`/`apply` wrap its module-level slider registry;
-`list`/`save`/`remove` are re-exported from `slider-state.js`). When omitted, the Presets tab
+`list`/`save`/`remove`/`import` are re-exported from `slider-state.js`). When omitted, the Presets tab
 renders a "Preset saving unavailable" placeholder instead of the save/load UI.
 
 `buildPresetsPanel(host, sliderState)` (internal, not exported) builds the Presets tab: a "Save
 current sliders" card (name input + Save button, with an overwrite confirmation if the name
-already exists) and a "Saved states" card listing every saved name with a relative timestamp,
-a Load button (`sliderState.apply`), and a Delete button (`sliderState.remove`).
+already exists), a "Backup" card (Export all / Import buttons — download all states as a JSON
+file, or merge an exported file back in via `sliderState.import`, with an overwrite-existing
+confirmation), and a "Saved states" card listing every saved name with a relative timestamp,
+a Load button (`sliderState.apply`), a per-row Export button (downloads that one state), and a
+Delete button (`sliderState.remove`). Since presets live only in `localStorage` (`pcw:sliderStates`),
+Export/Import is the only way to move them between browsers or back them up.
+
+**Folder seeding:** on startup (`environment-viewer.html`, just before `createEnvironmentUi`) the viewer
+fetches `serve.py`'s `GET /api/list-states` (which enumerates `*.json` in the repo's `states/`
+directory), fetches each file via `states/<name>`, and merges them into `localStorage` with
+`importStates(..., { overwrite: false })` — so any preset already in `localStorage` wins and the
+folder acts as a restore-on-clear backup. Files may be either a full exported store
+(`{ name: { savedAt, values } }`) or a single-preset export (same shape, one key). Seeding is
+skipped silently if the endpoint is absent (e.g. the page was opened without `serve.py`).
+
+**Weapon tuning is part of the preset system too.** The FPS panel's "Weapon control" sliders
+(Position/Rotation/Scale + recoil/fire-rate/damage/range/magazine/reserve/spread) mutate the in-memory
+`weapons.js` defs. Each enabled weapon's tunable fields self-register into `controlRegistry` under
+`weapon.<id>.<field>[.<index>]` names, so `captureSliderState`/`applySliderState` carry them into named
+presets and the `states/*.json` export exactly like the world sliders. The `weapon.` prefix keeps them
+out of the MP shared-world broadcast (`captureSharedWorldSettings` only syncs `terrain.`/`params.`).
+Separately, every weapon-slider change mirrors the current `weapon.*` values to `localStorage`
+(`pcw:weaponTuning`) and that mirror is re-applied at load (in the eager `#fps` panel block, after the
+fields register), so a plain refresh keeps weapon tuning without loading a named preset. The baked
+per-weapon defaults in `weapons.js` are the base these overrides sit on top of.
+
+**First-person view feel** (`view-feel.js` + the FPS panel's "View feel" sliders). `view-feel.js` is a
+pure, THREE-free math module (same convention as `weapon-sequence.js`, unit-tested by
+`test-view-feel.mjs`): run/gun bob axis, trauma screen-shake sampling/decay, `easeToward`, momentum-lean
+target, HUD-drag target, and `clampLookPitch`. `environment-viewer.html` owns the runtime state in two
+objects near the `fp` movement config: `feel` (tunables) and `look` (per-frame state). The key
+architectural point is that **mouse look writes authoritative `look.yaw`/`look.pitch`, not
+`camera.rotation`** — each fps frame `updateViewFeel()` composes `camera.rotation` (YXZ) from those plus
+visual-only offsets (strafe tilt roll, momentum lean pitch, trauma shake, view-recoil kick). Anything
+that needs the *true* aim reads `look.*`: `getLocalPlayerState` (wire yaw/aimPitch), `fireGunFromCamera`
+(bullet direction, built from a `look`-only Euler), the local procedural body's facing, and the
+third-person weapon-rig yaw — so shake/tilt/lean never deflect shots or leak to other players. Trauma is
+added on every shot (scaled by weapon recoil), on local damage (`localDamageFeedback`), and on nearby
+explosions (`addWorldImpactShake`, distance-falloff; also exposed as `window.addViewShake`). The
+`feel.*` sliders self-register into `controlRegistry` under `feel.<key>` names (ride presets + the
+`states/*.json` export; the `feel.` prefix keeps them out of the MP shared-world sync) and mirror to
+`localStorage` (`pcw:viewFeel`) for plain-refresh persistence, same pattern as weapon tuning. The
+run/gun weapon bob itself is applied in the FP weapon viewmodel's `applyToolTransform`
+(`environment-viewer.html`) and exposed via `getViewBob()` so the orb-hands (`player-hands.js`) inherit
+it at `HAND_BOB_FOLLOW`.
 
 `audio` (optional) is an `environment-audio.js`-shaped controller: `{ getState(), subscribe(listener),
 pickSfxFolder(), restoreSfxFolder(), setVolume(kind, value), setMuted(kind, muted),
@@ -252,7 +295,7 @@ import { createEnvironmentUi } from './environment-ui.js';   // line 47
 ```
 
 - `const frameProfiler = createFrameProfiler({ smoothing: 0.2 });` â€” line 1005, module-level singleton.
-- `environmentUi = createEnvironmentUi({ perfLog, sliderState: { capture, apply, list, save, remove } });` â€” line 3859, created once the `#ctrl` panel, `#port-creature-ui`, and `#fps` elements already exist in the DOM. The `sliderState` methods wrap `captureSliderState`/`applySliderState` (module-level, see the "Slider state presets" section of `entry-point.md`) and the re-exported `listStates`/`saveState`/`deleteState` from `slider-state.js`.
+- `environmentUi = createEnvironmentUi({ perfLog, sliderState: { capture, apply, list, save, remove, import } });` â€” line 3859, created once the `#ctrl` panel, `#port-creature-ui`, and `#fps` elements already exist in the DOM. The `sliderState` methods wrap `captureSliderState`/`applySliderState` (module-level, see the "Slider state presets" section of `entry-point.md`) and the re-exported `listStates`/`saveState`/`deleteState`/`importStates` from `slider-state.js`.
 
 Per-frame, inside `animate()` (~line 2755 onward):
 1. `frameProfiler.beginFrame()` (guarded by a `_frameBusy` re-entrancy flag; a dropped/overlapping frame instead calls `frameProfiler.markDropped()`).

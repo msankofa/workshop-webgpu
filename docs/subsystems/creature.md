@@ -23,7 +23,7 @@ standalone WebGL page.
 
 `port-creature-system.js` has a single top-level export:
 
-- `createPortCreatureSystem({ scene, terrainHeight, resolveTrunks, nearbyTrunks, terrainSettings, rebuildTerrain, camera, lod })` — factory. Returns an object with:
+- `createPortCreatureSystem({ scene, terrainHeight, resolveTrunks, nearbyTrunks, terrainSettings, rebuildTerrain, camera, lod, getPlayerPose, damagePlayer })` — factory. The last two are optional callbacks (host/solo only) used by the player-interaction layer below. Returns an object with:
   - `update(dt)` — runs one full sim/render frame.
   - `resetCreatures()` — rebuilds the creature roster from current settings/config.
   - `clearRenderBatches()` — zeroes the instanced-mesh batches (used when creatures are hidden).
@@ -31,7 +31,17 @@ standalone WebGL page.
   - `selectFromRaycaster(raycaster)` — hit-tests creatures/instanced batches for picking.
   - `setTargetPoint(point)` — sets `simTarget` and switches behavior to `'target'`.
   - `setBehavior(b)` — sets the active behavior and syncs the toolbar `<select>`.
-  - getters: `stats`, `creatures`, `currentBehavior`.
+  - `setCreatureRole(creature, role)` — sets `creature.role` (`'wild'|'pet'|'hostile'`, invalid values fall back to `'wild'`).
+  - `setPetCommand(creature, cmd, point?)` — makes a creature a pet and sets its active command (`'follow'|'stay'|'goto'|'attack'`); `point` (goto only) is cloned and its `y` snapped to `terrainHeight`.
+  - `tameNearestToPlayer(maxDist = 6)` — converts the nearest `wild` creature within `maxDist` of the live player to a `follow` pet; returns the creature or `null` (no live player / nothing in range).
+  - `commandAllPets(cmd, point?)` — applies `setPetCommand` to every current pet.
+  - `untamePet(creature)` — reverts a pet to `wild`/`follow`/no target.
+  - `aggroAllWild()` — sets every alive `wild` creature's role to `hostile`; returns the count aggroed. Dev/test trigger for F3 (no wildlife-density awareness yet — that's F4).
+  - `calmAllHostile()` — reverts every `hostile` creature to `wild` and clears `combatTarget`/`punchArm`, resetting `attackState` to `'ready'` (skipped for a creature already `'dying'`).
+  - `setWildlife(opts)` — shallow-merges validated `{enabled, target, ringMin, ringMax, cullRadius, hardMax}` fields into the wildlife spawner state (invalid/missing keys ignored, `ringMax`/`cullRadius` clamped to stay `>= ringMin`/`ringMax`); returns a shallow copy of the applied public fields.
+  - `spawnCreatureAt(x, z, opts?)` — spawns one `ROLE_WILD` creature at `(x,z)` with a freshly randomized body/style; `opts.wildlife` (bool) tags it as spawner-managed. Returns the new `Creature`.
+  - `despawnCreature(creature)` — removes and disposes a single creature (mirrors `removeDeadCreatures`'s splice/dispose pattern); returns `false` if the creature isn't in the roster.
+  - getters: `stats`, `creatures`, `pets` (creatures with `role === 'pet'`), `playerThreats` (count of `hostile` creatures with `isCombatActive()`), `reflectionMeshes`, `currentBehavior`, `wildlife` (shallow copy of the spawner's public state), `wildlifeCount` (count of spawner-managed wild creatures currently alive).
 
   (Everything else — `Creature`, `KinematicChain`, `BODY_PLANS`, `GAITS`, `Grabbable`,
   `SpatialGrid`, the instanced batch helper `createCreaturePartBatches`, etc. — is internal/module-scoped,
@@ -52,6 +62,145 @@ In `environment-viewer.html`:
 - Tree collision: `resolveTrunks`/`nearbyTrunks` are forwarded from `trunkIndex` (in `collision.js`) so creatures can avoid/steer around tree trunks; this is separate from the `map-collision.js` `createMapCollider`, which (per a grep of the file) is not referenced by the creature wiring — it appears to serve other movement/collision (e.g. player/vehicle), not creatures.
 - Picking/interaction: pointerdown/click/dblclick listeners on `renderer.domElement` call `system.selectFromRaycaster` (single click, gated by `isInteractionEnabled()`/`!fpsMode`) and `system.setTargetPoint` (double-click against the `ground()` mesh) for the `target` behavior.
 - Stats are read directly off `portCreatures.stats` for the on-screen terrain/perf debug HUD and the frame-profiler snapshot (`creatureVisible`, `creatures`, `creatureRendered`, etc.).
+
+## Player interaction: roles, follow mode, pet commands
+
+Pure decision math lives in `creature-interaction.js` (THREE-free, unit-tested in
+`test-creature-interaction.mjs`), imported by `port-creature-system.js`. `update(dt)` refreshes a
+module-scoped player snapshot (`_playerPos`/`_playerAlive`/`hasLivePlayer()`) each frame from the
+injected `getPlayerPose()`; role/pet code reads that snapshot rather than calling `getPlayerPose()`
+on hot loops. Host/solo only — guests run `mode:'network'` and never touch this layer.
+
+- **Global `follow` mode**: a new `Mode` option (`follow`, "Follow Me") in `port-creature-bridge.js`'s
+  toolbar. In `Creature.computeSteering`, the `'follow'` branch uses `followDesire(...)` (stops
+  inside a `standoff` ring around the player; `spreadAngle` fans grouped followers out so they don't
+  stack) when `hasLivePlayer()`, else falls back to the same roam-to-`roamTarget` logic as the
+  default `wander` branch (so followers don't freeze with no player). Each `Creature` gets a stable
+  `_followPhase` (random angle set once in the constructor) used both as the fan-out `spreadAngle`
+  and to vary `standoff` (~2.2-3.0 m) per creature.
+- **Per-creature role, orthogonal to the global behavior**: `creature.role` (`ROLE_WILD` default,
+  `ROLE_PET`, `ROLE_HOSTILE`) and `petCommand`
+  (`CMD_FOLLOW` default, `CMD_STAY`, `CMD_GOTO`, `CMD_ATTACK`) + `petTarget` (a `THREE.Vector3` or
+  `null`). In the `update()` roster loop, a pet's `steerBehavior`/`steerTarget` are derived from its
+  own `petCommand` **before** the global `currentBehavior` is consulted, so a tamed pet keeps
+  following even while the toolbar Mode is `wander`/`stay`/anything else: `CMD_FOLLOW` → behavior
+  `'follow'`, `CMD_STAY` → `'stay'`, `CMD_GOTO` → `'target'` with `c.petTarget` as the target point
+  (reuses the existing `'target'` stop-distance logic, so the pet naturally holds position once it
+  arrives). `CMD_ATTACK` is out of scope for F2 and is currently treated as `CMD_FOLLOW` (marked
+  `// TODO(F3): pet attack` at the call site) — a later workstream adds pet-vs-hostile combat.
+- **Public API** (see above): `setPetCommand`, `tameNearestToPlayer`, `commandAllPets`, `untamePet`,
+  `pets` getter.
+- **Keybinds** in `environment-viewer.html` (host/solo only, guarded on `mpRole !== 'guest'` and
+  `portCreatures?.system`): `T` tames the nearest wild creature within 6 m of the player
+  (`tameNearestToPlayer()`); `G` raycasts the camera-forward ray against the terrain (reuses the
+  light-gun's `lgRaycastTerrain()` march-against-`terrainHeight` helper) and sends every pet there
+  (`commandAllPets(CMD_GOTO, hit)`); `Y` toggles all pets between `CMD_FOLLOW` and `CMD_STAY`; `K`
+  toggles hostiles — if `playerThreats > 0` it calls `calmAllHostile()`, else `aggroAllWild()`
+  (both console.log a one-line result; dev/test trigger until F4 wires a wildlife-driven spawner).
+  (`H` was already bound to the GUI-hide toggle, so the follow/stay toggle uses `Y` instead of the
+  design doc's suggested `H`.) `CMD_FOLLOW`/`CMD_STAY`/`CMD_GOTO` are imported directly from
+  `creature-interaction.js` into `environment-viewer.html`.
+
+### Hostile creatures attacking the player (F3)
+
+`ROLE_HOSTILE` creatures approach the player, melee-attack, and deal damage through the injected
+`damagePlayer` callback — reusing the existing team-vs-team punch/IK pipeline unchanged rather than
+building a parallel one.
+
+- **Steering**: `computeSteering`'s `'hostile'` branch calls `hostileDesire(this.pos.x, this.pos.z,
+  _playerPos.x, _playerPos.z, this.attackRange(), this.isWeak(), _hostileOut)` when `hasLivePlayer()`
+  — approaches until `attackRange()`, then flees directly away when `isWeak()` (same weak-health
+  threshold as team combat). No live player falls back to the same roam-to-`roamTarget` logic as
+  `follow`/default, so hostiles don't freeze.
+- **Player proxy** (`port-creature-system.js`, module scope, declared right after `hasLivePlayer()`):
+  `_playerProxy` duck-types as a `Creature` combat target — `pos` (aliases the live `_playerPos`
+  Vector3), `isCombatActive()`, `bodyContactToward(fromWorld, pad)` (surface point on the player
+  capsule, using a reusable `_proxyContact` scratch Vector3 — no per-hit allocation),
+  `localPointInBody(worldPoint, pad)` (delegates to `meleeHitsPlayer` from `creature-interaction.js`),
+  and `takeDamage(_amount, _attacker)` (ignores both args and calls `damagePlayer(HOSTILE_PLAYER_DAMAGE,
+  _playerProxy.pos)`). Because every downstream combat method (`choosePunchArm`, `enemyTarget`
+  override below, `sweptHandHitsBody`, the windup/recover state machine, the render damage gate) only
+  ever calls methods on `target`/`this.combatTarget`, the proxy is a complete drop-in and none of that
+  code needed to change beyond the gates below. `HOSTILE_PLAYER_DAMAGE = 7` (tunable constant next to
+  the proxy) is the flat per-hit damage; it does not scale with `ATTACK_DAMAGE` (the creature-vs-creature
+  constant), since the proxy's `takeDamage` ignores the `amount` argument passed to it.
+- **Targeting**: in `updateCombat`, target selection is `this.role === ROLE_HOSTILE ? (hasLivePlayer()
+  ? _playerProxy : null) : this.enemyTarget(all)` — everything else in the state machine (windup/recover
+  timers, `attackCooldown`, `isWeak()` abort back to `'ready'`) is unchanged.
+- **Always-active combat**: the roster loop's `updateCombat` active flag is `(currentBehavior ===
+  'combat' && c.role !== ROLE_PET) || c.role === ROLE_HOSTILE` — hostiles run their attack state
+  machine regardless of the global Mode dropdown, since their target is the player, not another team.
+- **Relaxed gates**: three `currentBehavior === 'combat'` checks tied to `this.punchArm === arm` are
+  widened to `(currentBehavior === 'combat' || this.role === ROLE_HOSTILE)` so a hostile's punch
+  animates and lands identically to a team-combat punch: the `updateArmState` windup/recover pose gate,
+  the `renderArms` `snapState` gate (arm snaps straight to the strike pose instead of lerping — without
+  this a hostile's punch looks sluggish), and the `renderArms` damage-application gate (which calls
+  `this.combatTarget.takeDamage(ATTACK_DAMAGE, this)` — routed to the proxy's `takeDamage`, so the
+  `ATTACK_DAMAGE` argument is passed but discarded in favor of `HOSTILE_PLAYER_DAMAGE`).
+- **Healing-forage interaction**: `wantsHealingForage()`'s early-return in `updateCombat` is unaffected
+  because the roster loop only ever assigns `c.healingTarget` inside `if (currentBehavior === 'forage'
+  || currentBehavior === 'combat')` — a hostile creature under the (typical) `wander`/other global Mode
+  never gets a `healingTarget`, so it always proceeds to attack when healthy. If the global Mode happens
+  to be `combat` *and* a hostile creature wants healing, it will still break off to forage (same as any
+  other creature) while its steering stays `'hostile'` — an edge case left as-is, matching how
+  `ROLE_WILD` creatures already behave in team combat.
+- **Public API / keybind**: `aggroAllWild()`, `calmAllHostile()`, `playerThreats` getter (see above);
+  `K` key toggles between them (see Keybinds above).
+
+### Ambient wildlife spawning (F4)
+
+Keeps roughly `target` `ROLE_WILD` creatures roaming around the player at all times, spawning them
+on a ring and culling ones that wander too far, so the world feels populated without the roster
+growing unbounded.
+
+- **State**: module-scoped `_wildlife = { enabled, target, ringMin, ringMax, cullRadius, hardMax,
+  interval, _timer, _seq }` (near the other scene state, right after `directionYaw`). `enabled`
+  defaults `false` (opt-in via the `J` key or `setWildlife`); `target` is the desired steady-state
+  count of spawner-managed wild creatures near the player; `ringMin`/`ringMax` bound the spawn
+  annulus (world units from the player); `cullRadius` is the distance beyond which a spawner-managed
+  creature despawns; `hardMax` is an absolute cap on total roster size (`creatures.length`) that
+  spawning never exceeds, regardless of deficit; `interval` throttles how often the spawn plan runs
+  (seconds); `_timer` accumulates `dt`; `_seq` is a monotonically increasing seed index so every
+  wildlife spawn gets a fresh, distinct randomized body/style instead of repeating.
+- **Throttled planner** (`update()`, right after `refreshPlayerSnapshot()`, before the LOD pass):
+  only runs when `_wildlife.enabled && hasLivePlayer()`. Accumulates `_wildlife._timer += dt`; once
+  it crosses `interval` (reset to 0), builds an `existing` array of `{id: creature, x, z}` for every
+  creature with `c._wildlife && c.role === ROLE_WILD` — **only spawner-tagged, still-wild creatures
+  are managed**; a tamed pet, a hostile, or a hand-placed roster creature (even if role happens to be
+  `wild`) is never touched — then calls `wildlifeSpawnPlan({ playerX, playerZ, existing, target,
+  ringMin, ringMax, cullRadius, rand: Math.random, maxSpawnPerCall: 2 })` from `creature-interaction.js`.
+  Every `id` in `despawnIds` is passed to `despawnCreature`; every `{x,z}` in `spawns` is passed to
+  `spawnCreatureAt(x, z, { wildlife: true })`, but only while `creatures.length < hardMax`, so the
+  hard cap always wins even if the plan wants to spawn more. The `existing` array (and the plan call)
+  only allocate inside this throttled block, never per frame.
+- **Spawn/despawn helpers** (module scope, next to `removeDeadCreatures`):
+  - `spawnCreatureAt(x, z, opts = {})` — builds a config via `variedCreatureConfig(_wildlife._seq++,
+    Math.max(4, _wildlife.target))` (reusing the roster's own diverse-body randomizer), overrides
+    `config.spawn = [x, 0, z]` (`createCreatureFromConfig` recomputes `y` from `terrainHeight`),
+    creates the `Creature`, sets `role = ROLE_WILD` and `_wildlife = !!opts.wildlife`, pushes it onto
+    `creatures`, and returns it.
+  - `despawnCreature(creature)` — finds the creature's index in `creatures`; returns `false` if not
+    present; otherwise mirrors `removeDeadCreatures`'s per-entry pattern (`selectCreature(null)` if it
+    was selected, `splice`, `dispose()`) and returns `true`. No manual spatial-grid removal needed —
+    `creatureGrid` is fully cleared and rebuilt from `creatures` every frame in `update()`.
+- **Wildlife roams regardless of global Mode**: in the roster loop's per-creature role branch (after
+  the `ROLE_PET`/`ROLE_HOSTILE` cases, before the default global-behavior fallback), `c.role ===
+  ROLE_WILD && c._wildlife` forces `steerBehavior = 'wander'` — so spawner-managed wildlife always
+  roams even when the toolbar Mode is `stay`/`target`/anything else, instead of freezing like
+  ordinary roster creatures under those modes. Non-wildlife `ROLE_WILD` creatures (the normal roster)
+  are unaffected and keep following the global Mode exactly as before.
+- **Public API / keybind**: `setWildlife`, `spawnCreatureAt`, `despawnCreature`, `wildlife`/
+  `wildlifeCount` getters (see above); `J` toggles `enabled` (`setWildlife({ enabled: !wildlife.enabled
+  })`, console.logs the new state) in the same host/solo-only keybind block as `T`/`G`/`Y`/`K`.
+
+### Creatures HUD (F5, discoverability)
+
+`environment-viewer.html` builds a compact fixed panel `#creature-command-hud` (bottom-right,
+host/solo only, `pointer-events:none`) right after the `portCreatures` construction, exposing
+`updateCreatureCommandHud(nowMs)` (default no-op on guests). `animate()` calls it after
+`updateCombatHud()`; it refreshes ~4 Hz from the system getters (`pets.length`, `playerThreats`,
+`wildlife.enabled`, `wildlifeCount`) and shows the keybind legend (`T` tame · `G` go-to · `Y`
+follow/stay · `K` aggro/calm · `J` wildlife). No sim coupling — pure read-only status.
 
 ## Architecture notes
 
@@ -228,6 +377,117 @@ snapshot carries `s` through `_lerpMobs` and `GhostRenderer` scales guest mob bo
 `multiplayer-test.mjs` (asserts `s` carries) all run headless in `node`. The in-page render/combat/replication paths (M5/M6)
 require the browser and are verified manually (see the plan's "Manual verification" steps).
 
+## Local player procedural body + third-person weapon mount
+
+A third, unrelated system: the **local player's own** procedural body (`player-procedural-body.js`,
+Contract 2 in `docs/subsystems/procedural-body-weapon-contracts.md`), toggled in `environment-viewer.html`
+with the `B` key (`setLocalBodyMode`, cycles `off -> third-person -> fps-legs -> off`; state in
+`localBodyMode`/`localBody`/`localBodyThird`). `third-person` builds a full body (`mode:
+'local-third-person'`) plus a chase camera; `fps-legs` builds lower-body-only (`mode:
+'local-lower-body'`) so you can look down and see your own legs while still in first-person view.
+Both feed the body speed-adaptive gait (`adaptGaitToSpeed: true`) and smoothed `{crouch, prone}`
+stance weights (`lbCrouchW`/`lbProneW`, eased ~0.2s from the instant C/Z stance toggle) each frame.
+
+**Body-aware arm IK** (`solveArm`/`solveTwoBone`): the analytic 2-bone solve is constrained by a
+vertical torso capsule rebuilt each `update()` (`_torsoCapsule`: spine at `pos.x/pos.z`, `yMin/yMax`
+spanning pelvis→shoulders padded by `TORSO_CAPSULE_Y_PAD`, `radius = radius + TORSO_CAPSULE_RADIUS_MARGIN`)
+and passed into `solveArm`. Two corrections keep reload/reach poses from breaking joints:
+- **Adaptive outward pole** (no backward bend): `deriveOutwardPole` redirects the pole's horizontal
+  component to point away from the spine before solving. It is a no-op when the pole is already
+  outward, so the idle pose (fixed pole `(0,-0.4,-elbowSign)` + `ikCfg` twist, already outward+down)
+  is unchanged.
+- **Elbow capsule clamp + one re-solve** (no torso penetration): if the solved elbow (`_joint`) is
+  inside the capsule (`capsuleContainsPoint`), the elbow is projected onto the root→target axis
+  (`projectOntoAxis`), a forced-outward pole is derived from that projection, and `solveTwoBone` runs
+  once more. Only the pole is changed — bone lengths and the hand target stay exact (no joint is
+  translated directly). Projecting onto the axis first isolates the small bend term the pole actually
+  controls; deriving "outward" from the raw elbow under-corrects.
+The pure math (`capsuleContainsPoint`, `pushPointOutOfCapsule`, `deriveOutwardPole`, `projectOntoAxis`)
+is exported and unit-tested headlessly in `test-player-body-ik.mjs`. Tunables: `TORSO_CAPSULE_RADIUS_MARGIN`
+(0.10) and `TORSO_CAPSULE_Y_PAD` (0.06) — too fat and reach-across-body poses stiffen, too thin and
+limbs clip.
+
+**Third-person weapon mount** (`environment-viewer.html`, added alongside the body wiring): in
+`third-person` mode the camera-attached FPS viewmodel (`localWeaponView`) is hidden and a
+body-held weapon is mounted in the world instead, so the gun rides in the body's hands rather than
+floating in front of the camera. Mirrors the mount hierarchy and per-frame placement already
+prototyped in `body-preview.html`:
+- **Lazy init** (`initLocalWeaponMount`, called fire-and-forget from `setLocalBodyMode` when
+  entering `third-person`): `await import('./weapon-pose-controller.js')` (lazy, matching this
+  file's other optional-subsystem imports), fetch `weapon-anchors.json` + `weapon-poses.json`
+  (cached in `lbWeaponDataPromise`), load the current weapon's GLB, normalize it to
+  `def.viewTargetSize` (same normalization the FPS viewmodel uses — `normalizeWeaponModel`, a
+  copy of `createLocalWeaponViewModel`'s `normalizeObject`), bake `weapon-anchors.json`'s raw-GLB-space
+  anchors into that normalized space (`bakeWeaponAnchors`), and build the mount hierarchy
+  `weaponRig -> weaponAdjust -> weaponFrame (rotY=PI) -> weaponView`, added to `scene`. Creates
+  `createWeaponPoseController({ THREE, body: localBody, weaponView, getWeaponDef })` against the
+  **current** `localBody` instance and calls `controller.setWeapon(weaponId)`.
+- **Guard/scope**: only mounts if `getWeapon(weaponId).thirdPersonHold` exists and
+  `weapon-anchors.json` has anchors for that id — `m1911` and `m24` both have holds now (`m24`'s
+  are seeded from `m1911`, unpreviewed); `knife` etc. still have none, so they stay unmounted/hidden.
+  Fetch/GLB-load failures `console.warn` and leave the mount unbuilt rather than throwing.
+- **Rebuild on weapon switch**: a per-frame check (in the same `localBodyThird` block, before the
+  mount placement code) detects `lbWeaponMount.weaponId !== lbState.weapon` (mount is stale) or no
+  mount yet but the current weapon has a `thirdPersonHold` (needs a fresh mount), and kicks
+  `teardownLocalWeaponMount()` + `initLocalWeaponMount(lbState.weapon, localBody)`. Guarded by
+  `lbWeaponMountRequestedId` (set to the weapon id being requested, cleared once that mount lands
+  or on teardown) so the check doesn't re-kick an init every frame while one is in flight. GLB
+  loads are cached per weapon id in `lbWeaponModelCache` (normalized template `Group`, cloned with
+  `.clone(true)` per mount) so toggling between weapons doesn't re-fetch the model each time.
+- **Teardown/re-init ordering**: `teardownLocalWeaponMount()` runs unconditionally at the top of
+  `setLocalBodyMode` (before the old `localBody` is even destroyed and before a new one may be
+  created), and bumps `lbWeaponMountToken` so any in-flight async init from a previous mode switch
+  becomes a no-op when it resolves (checked via `token !== lbWeaponMountToken`, plus `localBody ===
+  bodyRef` and `localBodyThird` re-checks after every `await`). This guarantees the controller
+  is only ever created against the body instance alive on that specific `setLocalBodyMode` call —
+  never a stale one — even if the player mashes `B` while a GLB load is in flight.
+- **Per-frame** (in the `localBodyMode !== 'off'` block, after `localBody.update(...)`):
+  `weaponRig` is placed at the player position with `y = terrainHeight(x,z) + 1.5` and rotation
+  `(0, camera.rotation.y + Math.PI, 0)` (the body rig faces yaw+PI internally, so the mount must
+  match or the hold offsets point backwards — same as `body-preview.html`). The stance-aware hold
+  blends `weapons.js`'s `thirdPersonHold` -> `crouchHold` (by `lbCrouchW / 0.7`) -> `proneHold`
+  (by `lbProneW`) component-wise for position/rotation/scale (`crouchHold`/`proneHold` fall back
+  to `thirdPersonHold` if absent) into `weaponAdjust`, then
+  `weaponRig.updateMatrixWorld(true)` runs *before* `controller.update(rawDt, {})` so anchor
+  resolution sees fresh matrices (mirrors `body-preview.html`'s ordering). `controller.setAiming(0)`
+  — third-person has no aim-down-sights yet. Visibility mirrors the existing
+  `localBody.setVisible(true/false)` branches (mount visible only in `third-person` mode with
+  `playerInitialized && fpsMode`).
+- **Visual only**: never moves the player/camera or touches hit-registration (Contract 5's
+  guardrails), matching the rest of this subsystem's IK/gait work.
+
+## Reload sequence tuner (`body-preview-v3.html`)
+
+`body-preview-v3.html` has a **Reload Tuner** panel section (Weapon tab) for authoring/correcting
+the reload keys in `weapon-poses.json` against the real body — the only faithful way to tune the
+**body-relative** targets (`{body:[x,y,z]}`, `beltMagazine`) that caused the m1911 through-torso
+reach, since the weapon-only `weapon-anchor-editor.html` has no body to judge penetration against.
+
+- **Scrub/play**: when enabled, the animate loop drives
+  `controller.update(dt, { action: 'reload', actionTime: RT.t })` (host-authoritative path — the
+  controller evaluates at exactly `RT.t` and never self-advances/auto-completes). Play advances
+  `RT.t` by `dt` and loops at `duration`; the scrub slider sets it directly. Disabling reverts to
+  the normal `controller.update(dt, {})` and calls `controller.play('idle')` once.
+- **Live edits**: the key list is built from `WEAPON_POSES.reloadSequence[id].keys`; the selected
+  key's editable channel exposes X/Y/Z sliders (`{body}` → `body`; `{weaponAnchor,offset}` →
+  `offset`) plus a `t` slider clamped between neighbor times. Edits mutate `WEAPON_POSES` **in
+  place** — `getWeaponDef(id)` returns that same `reloadSequence` object by reference and the
+  controller holds it as `s.activeSeq`, so changes apply on the next frame without a re-play. String
+  refs (`rightGrip`, `beltMagazine`, …) render read-only.
+- **Export**: a textarea mirrors `JSON.stringify(WEAPON_POSES, null, 2)`; Copy/Download buttons
+  emit the whole sidecar to paste back over `weapon-poses.json` (browser can't write disk).
+- Body frame is +x = left, +y = up, +z = forward (matches `body.rootAnchor`); slider labels state
+  it. The tuner adds no logic to `weapon-sequence.js` / `weapon-pose-controller.js` — host-side only.
+  Design: `docs/superpowers/specs/2026-07-11-reload-sequence-tuner-design.md`.
+
 ## Tests
 
-No dedicated test file exists for this subsystem in `workshop-webgpu`. The repo root contains test files for terrain, grass, forest, collision, light-cluster, post-grade, sky, particle-field, frame-profiler, and CDLOD systems (e.g. `test-collision.mjs`, `test-forest-cull.mjs`, `test-terrain-system.mjs`), but none named `test-creature*.mjs` or covering `port-creature-bridge.js` / `port-creature-system.js`.
+`node test-creature-interaction.mjs` covers the pure player-interaction decision math in
+`creature-interaction.js` (`followDesire`, `hostileDesire`, `meleeHitsPlayer`, `wildlifeSpawnPlan`),
+including boundary cases at the exact `attackRange`/capsule-radius edges. `node test-combat.mjs`
+covers the unrelated player-vs-player/creature hitscan gun math in `combat.js` (not the IK melee
+pipeline). No other dedicated test file exists for `port-creature-bridge.js` / `port-creature-system.js`
+itself (body plans, IK, steering, the melee state machine) — those remain verified manually in-browser.
+The weapon-mount pieces are covered indirectly by `node test-weapon-pose-controller.mjs` and
+`node test-player-body-gait.mjs`, which exercise the controller/body modules the mount wires together
+(no browser-only mount code itself is unit-tested).

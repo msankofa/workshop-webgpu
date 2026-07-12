@@ -901,12 +901,34 @@ function buildPresetsPanel(host, sliderState) {
   saveBody.append(nameInput, saveBtn);
   saveCard.appendChild(saveBody);
 
+  const ioCard = makeEl('div', 'wui-card');
+  ioCard.appendChild(makeEl('div', 'wui-card-title', 'Backup'));
+  const ioBody = makeEl('div', 'wui-card-body wui-capture');
+  const exportBtn = makeEl('button', '', 'Export all');
+  const importBtn = makeEl('button', '', 'Import');
+  const importInput = document.createElement('input');
+  importInput.type = 'file';
+  importInput.accept = 'application/json,.json';
+  importInput.style.display = 'none';
+  ioBody.append(exportBtn, importBtn, importInput);
+  ioCard.appendChild(ioBody);
+
   const listCard = makeEl('div', 'wui-card');
   listCard.appendChild(makeEl('div', 'wui-card-title', 'Saved states'));
   const listBody = makeEl('div', 'wui-card-body');
   listCard.appendChild(listBody);
 
-  host.append(saveCard, listCard);
+  host.append(saveCard, ioCard, listCard);
+
+  function downloadStates(states, filename) {
+    const blob = new Blob([JSON.stringify(states, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   function fmtAgo(iso) {
     const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -931,10 +953,12 @@ function buildPresetsPanel(host, sliderState) {
       const label = makeEl('span', '', `${name} · ${fmtAgo(entry.savedAt)}`);
       label.style.flex = '1 1 100%';
       const loadBtn = makeEl('button', '', 'Load');
+      const exportOneBtn = makeEl('button', '', 'Export');
       const delBtn = makeEl('button', '', 'Delete');
       loadBtn.addEventListener('click', () => sliderState.apply(entry.values));
+      exportOneBtn.addEventListener('click', () => downloadStates({ [name]: entry }, `slider-state-${name}.json`));
       delBtn.addEventListener('click', () => { sliderState.remove(name); renderList(); });
-      row.append(label, loadBtn, delBtn);
+      row.append(label, loadBtn, exportOneBtn, delBtn);
       listBody.appendChild(row);
     }
   }
@@ -949,6 +973,36 @@ function buildPresetsPanel(host, sliderState) {
     renderList();
   });
 
+  exportBtn.addEventListener('click', () => {
+    const states = sliderState.list();
+    if (Object.keys(states).length === 0) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadStates(states, `slider-states-${stamp}.json`);
+  });
+
+  importBtn.addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', async () => {
+    const file = importInput.files?.[0];
+    importInput.value = '';
+    if (!file) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      window.alert('Could not read that file — expected exported slider-state JSON.');
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    const overwrite = sliderState.import
+      ? window.confirm('Overwrite states whose names already exist? Cancel keeps existing ones.')
+      : false;
+    const added = sliderState.import
+      ? sliderState.import(parsed, { overwrite })
+      : (Object.entries(parsed).forEach(([n, e]) => e?.values && sliderState.save(n, e.values)), Object.keys(parsed).length);
+    renderList();
+    window.alert(`Imported ${added} saved state${added === 1 ? '' : 's'}.`);
+  });
+
   renderList();
 }
 
@@ -957,9 +1011,11 @@ function buildPresetsPanel(host, sliderState) {
 //     masterVolume, musicVolume, sfxVolume,       // 0..1
 //     masterMuted, musicMuted, sfxMuted,          // bool
 //     musicOutput,                                // 'global' | 'speaker'
+//     musicSource,                                // 'game' | 'folder'
 //     speakerBehavior,                             // 'front' | 'behind' | 'orbit' | 'above'
 //     effects: { bass, echo, reverb, attenuation, tempo, pitch },
 //     sfxFolderStatus,                             // display string, e.g. "142 events loaded"
+//     musicFolderStatus,                           // display string for scanned folder music
 //     currentTrackLabel,                           // display string
 //     musicPlaying,                                // bool
 //   }
@@ -1043,6 +1099,24 @@ function buildAudioPanel(host, audio) {
   pickBtn.addEventListener('click', () => audio.pickSfxFolder?.());
   restoreBtn.addEventListener('click', () => audio.restoreSfxFolder?.());
 
+  // --- Specific music folder ----------------------------------------------
+  const musicFolderCard = makeEl('div', 'wui-card');
+  musicFolderCard.appendChild(makeEl('div', 'wui-card-title', 'Music folder'));
+  const musicFolderBody = makeEl('div', 'wui-card-body');
+  const musicFolderActions = makeEl('div', 'wui-actions');
+  const musicPickBtn = makeEl('button', 'wui-btn primary', 'Choose music folder...');
+  musicPickBtn.id = 'audio-music-pick';
+  const musicRestoreBtn = makeEl('button', 'wui-btn', 'Restore music folder');
+  musicRestoreBtn.id = 'audio-music-restore';
+  musicFolderActions.append(musicPickBtn, musicRestoreBtn);
+  const musicFolderStatus = makeEl('div', 'wui-status', 'No music folder loaded.');
+  musicFolderStatus.id = 'audio-music-status';
+  musicFolderBody.append(musicFolderActions, musicFolderStatus);
+  musicFolderCard.appendChild(musicFolderBody);
+
+  musicPickBtn.addEventListener('click', () => audio.pickMusicFolder?.());
+  musicRestoreBtn.addEventListener('click', () => audio.restoreMusicFolder?.());
+
   // --- Volume + mute -----------------------------------------------------
   const volumeCard = makeEl('div', 'wui-card');
   volumeCard.appendChild(makeEl('div', 'wui-card-title', 'Volume'));
@@ -1074,6 +1148,14 @@ function buildAudioPanel(host, audio) {
   const outputCard = makeEl('div', 'wui-card');
   outputCard.appendChild(makeEl('div', 'wui-card-title', 'Music output'));
   const outputBody = makeEl('div', 'wui-card-body');
+  const sourceLabel = makeEl('div', 'wui-row');
+  sourceLabel.innerHTML = '<span>Music source</span>';
+  outputBody.appendChild(sourceLabel);
+  const sourceSeg = makeSegGroup('audio-source', [['game', 'Game'], ['folder', 'Folder']]);
+  outputBody.appendChild(sourceSeg.group);
+  const outputLabel = makeEl('div', 'wui-row');
+  outputLabel.innerHTML = '<span>Output</span>';
+  outputBody.appendChild(outputLabel);
   const outputSeg = makeSegGroup('audio-output', [['global', 'Global'], ['speaker', 'Speaker']]);
   outputBody.appendChild(outputSeg.group);
   const behaviorLabel = makeEl('div', 'wui-row');
@@ -1088,6 +1170,12 @@ function buildAudioPanel(host, audio) {
   outputBody.appendChild(behaviorSeg.group);
   outputCard.appendChild(outputBody);
 
+  for (const [value, btn] of sourceSeg.buttons) {
+    btn.addEventListener('click', () => {
+      audio.setMusicSource?.(value);
+      sourceSeg.setActive(value);
+    });
+  }
   for (const [value, btn] of outputSeg.buttons) {
     btn.addEventListener('click', () => {
       audio.setMusicOutput?.(value);
@@ -1138,7 +1226,7 @@ function buildAudioPanel(host, audio) {
   playBtn.addEventListener('click', () => audio.togglePlayback?.());
   nextBtn.addEventListener('click', () => audio.nextTrack?.());
 
-  host.append(folderCard, volumeCard, outputCard, fxCard, trackCard);
+  host.append(folderCard, musicFolderCard, volumeCard, outputCard, fxCard, trackCard);
 
   function refresh(state) {
     if (!state) return;
@@ -1150,6 +1238,7 @@ function buildAudioPanel(host, audio) {
     for (const [kind, check] of muteChecks) {
       check.input.checked = !!state[`${kind}Muted`];
     }
+    sourceSeg.setActive(state.musicSource ?? 'game');
     outputSeg.setActive(state.musicOutput ?? 'global');
     behaviorSeg.setActive(state.speakerBehavior ?? 'front');
     const effects = state.effects || {};
@@ -1160,6 +1249,9 @@ function buildAudioPanel(host, audio) {
       slider.output.textContent = slider.format(value);
     }
     status.textContent = state.sfxFolderStatus || 'No SFX folder loaded.';
+    musicFolderStatus.textContent = state.musicFolderStatus || 'No music folder loaded.';
+    const folderSourceBtn = sourceSeg.buttons.get('folder');
+    if (folderSourceBtn) folderSourceBtn.disabled = !Number(state.musicFolderTrackCount || 0);
     trackLabel.textContent = state.currentTrackLabel || 'No track playing';
     playBtn.textContent = state.musicPlaying ? '⏸' : '▶';
   }

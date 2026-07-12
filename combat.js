@@ -87,6 +87,132 @@ export function rayCapsuleHit(origin, dir, range, capsule) {
   return { hit: true, distance: best.t, point: best.point };
 }
 
+// Ray vs a finite vertical cylinder (a trunk/rock collision column).
+//   column: { x, z, r, minY, maxY } — axis at (x,z), radius r, spanning [minY, maxY].
+// Tests the cylindrical body plus both end caps; returns the earliest valid hit as
+// { hit:true, distance, point, normal } (normal points outward), else { hit:false }.
+export function rayVerticalCylinderHit(origin, dir, range, column) {
+  const d = normalizeDir(dir);
+  if (!d || !(range > 0)) return { hit: false };
+  const { x: cx, z: cz, r } = column;
+  const minY = Math.min(column.minY, column.maxY);
+  const maxY = Math.max(column.minY, column.maxY);
+  const [ox, oy, oz] = origin;
+  let best = null;
+  const consider = (t, point, normal) => {
+    if (t < 0 || t > range) return;
+    if (best === null || t < best.t) best = { t, point, normal };
+  };
+
+  // Cylindrical body: solve the XZ-plane quadratic, accept roots whose Y is in [minY, maxY].
+  const a = d[0] * d[0] + d[2] * d[2];
+  if (a > 1e-12) {
+    const dx = ox - cx, dz = oz - cz;
+    const b = 2 * (dx * d[0] + dz * d[2]);
+    const c = dx * dx + dz * dz - r * r;
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      for (const t of [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]) {
+        if (t < 0 || t > range) continue;
+        const py = oy + d[1] * t;
+        if (py < minY || py > maxY) continue;
+        const px = ox + d[0] * t, pz = oz + d[2] * t;
+        const nlen = Math.hypot(px - cx, pz - cz) || 1;
+        consider(t, [px, py, pz], [(px - cx) / nlen, 0, (pz - cz) / nlen]);
+      }
+    }
+  }
+
+  // End caps: intersect the ray with each Y plane, accept if within radius.
+  for (const [capY, ny] of [[maxY, 1], [minY, -1]]) {
+    if (Math.abs(d[1]) < 1e-12) continue;
+    const t = (capY - oy) / d[1];
+    if (t < 0 || t > range) continue;
+    const px = ox + d[0] * t, pz = oz + d[2] * t;
+    if ((px - cx) * (px - cx) + (pz - cz) * (pz - cz) <= r * r) {
+      consider(t, [px, capY, pz], [0, ny, 0]);
+    }
+  }
+
+  if (!best) return { hit: false };
+  return { hit: true, distance: best.t, point: best.point, normal: best.normal };
+}
+
+// Marches a ray against a closed-form height field, returning the first sample below ground
+// as { hit:true, distance, point, normal }. `heightAt(x,z)->y`; optional `normalAt(x,z)->
+// [nx,ny,nz]` (defaults to straight up). `step` is the march increment in metres.
+export function raymarchTerrainHit(origin, dir, range, heightAt, normalAt, step = 0.5) {
+  const d = normalizeDir(dir);
+  if (!d || !(range > 0) || typeof heightAt !== 'function') return { hit: false };
+  let prevT = 0;
+  let prevAbove = origin[1] - heightAt(origin[0], origin[2]);
+  for (let t = step; t <= range; t += step) {
+    const x = origin[0] + d[0] * t, y = origin[1] + d[1] * t, z = origin[2] + d[2] * t;
+    const above = y - heightAt(x, z);
+    if (above <= 0) {
+      // Linear-interpolate the crossing between the last two samples for a tighter point.
+      const span = prevAbove - above;
+      const frac = span > 1e-9 ? prevAbove / span : 0;
+      const ht = prevT + (t - prevT) * frac;
+      const px = origin[0] + d[0] * ht, py = origin[1] + d[1] * ht, pz = origin[2] + d[2] * ht;
+      const normal = typeof normalAt === 'function' ? normalAt(px, pz) : [0, 1, 0];
+      return { hit: true, distance: ht, point: [px, py, pz], normal };
+    }
+    prevT = t; prevAbove = above;
+  }
+  return { hit: false };
+}
+
+// Resolves a single hitscan shot against every world surface and returns the nearest hit:
+//   { kind:'player'|'creature'|'mob'|'obstacle'|'terrain', id, point, normal, distance }
+// or { kind:'none', point, distance } (endpoint at max range) when nothing is struck.
+// `players`/`creatures`/`mobs` are capsule lists (`{ id, p, r, h, alive }`); `obstacles` are
+// vertical columns (`{ id, x, z, r, minY, maxY }`); terrain via heightAt/normalAt.
+export function resolveHitscan({
+  shooterId, origin, dir, range,
+  players, creatures, mobs, obstacles, heightAt, normalAt, terrainStep = 0.5,
+}) {
+  const d = normalizeDir(dir);
+  if (!d || !(range > 0)) return null;
+  let best = null;
+  const consider = (distance, kind, id, point, normal) => {
+    if (distance < 0 || distance > range) return;
+    if (best !== null && distance >= best.distance) return;
+    best = { kind, id, point, normal, distance };
+  };
+
+  const capsuleHit = (list, kind) => {
+    if (!list) return;
+    for (const c of list) {
+      if (!c || c.id === shooterId || c.alive === false) continue;
+      const res = rayCapsuleHit(origin, d, range, { p: c.p, r: c.r, h: c.h });
+      if (res.hit) {
+        const nlen = Math.hypot(res.point[0] - c.p[0], res.point[2] - c.p[2]) || 1;
+        consider(res.distance, kind, c.id, res.point,
+          [(res.point[0] - c.p[0]) / nlen, 0, (res.point[2] - c.p[2]) / nlen]);
+      }
+    }
+  };
+  capsuleHit(players, 'player');
+  capsuleHit(creatures, 'creature');
+  capsuleHit(mobs, 'mob');
+
+  if (obstacles) {
+    for (const col of obstacles) {
+      const res = rayVerticalCylinderHit(origin, d, range, col);
+      if (res.hit) consider(res.distance, 'obstacle', col.id, res.point, res.normal);
+    }
+  }
+
+  const terrain = raymarchTerrainHit(origin, d, range, heightAt, normalAt, terrainStep);
+  if (terrain.hit) consider(terrain.distance, 'terrain', null, terrain.point, terrain.normal);
+
+  if (best) return best;
+  return { kind: 'none', id: null, distance: range, normal: null,
+    point: [origin[0] + d[0] * range, origin[1] + d[1] * range, origin[2] + d[2] * range] };
+}
+
 function testSphere(origin, d, range, center, r, considerT) {
   const oc = sub(origin, center);
   const A = dot(d, d); // 1 (d is normalized)

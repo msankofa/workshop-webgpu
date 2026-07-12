@@ -334,6 +334,7 @@ const CREATURE_UI_HTML = `
         <option value="wander" selected>Wander</option>
         <option value="stay">Stay Still</option>
         <option value="target">Target Follow</option>
+        <option value="follow">Follow Me</option>
         <option value="direction">Direction Walk</option>
         <option value="forage">Forage</option>
         <option value="combat">Combat</option>
@@ -419,6 +420,8 @@ export function createEnvironmentPortCreatures({
   rebuildWorld,
   isInteractionEnabled = () => true,
   mode = 'on',
+  getPlayerPose = null,
+  damagePlayer = null,
 }) {
   ensurePortCreatureUi();
 
@@ -440,6 +443,8 @@ export function createEnvironmentPortCreatures({
     terrainHeight,
     resolveTrunks,
     nearbyTrunks,
+    getPlayerPose,
+    damagePlayer,
     terrainSettings: creatureTerrain,
     rebuildTerrain: (respawn = true) => {
       terrain.baseAmp = creatureTerrain.amplitude;

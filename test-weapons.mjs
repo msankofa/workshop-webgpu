@@ -21,20 +21,30 @@ for (const w of enabled) {
   check(isFinitePositive(w.damage), `${w.id}.damage should be finite and positive â€” got ${w.damage}`);
   check(isFinitePositive(w.range), `${w.id}.range should be finite and positive â€” got ${w.range}`);
   check(isFinitePositive(w.fireIntervalMs), `${w.id}.fireIntervalMs should be finite and positive â€” got ${w.fireIntervalMs}`);
-  check(Number.isFinite(w.magazineSize) && w.magazineSize > 0, `${w.id}.magazineSize should be finite and positive â€” got ${w.magazineSize}`);
-  check(Number.isFinite(w.reserveAmmo) && w.reserveAmmo >= 0, `${w.id}.reserveAmmo should be finite and non-negative â€” got ${w.reserveAmmo}`);
+  // Melee (knife) has no magazine — it's unlimited. Ranged/projectile weapons must carry ammo.
+  if (w.mode !== 'melee') {
+    check(Number.isFinite(w.magazineSize) && w.magazineSize > 0, `${w.id}.magazineSize should be finite and positive â€” got ${w.magazineSize}`);
+    check(Number.isFinite(w.reserveAmmo) && w.reserveAmmo >= 0, `${w.id}.reserveAmmo should be finite and non-negative â€” got ${w.reserveAmmo}`);
+  }
+  // Projectile weapons need a projectile sub-spec (speed + blastRadius drive the flight/blast).
+  if (w.mode === 'projectile') {
+    check(w.projectile && isFinitePositive(w.projectile.speed), `${w.id}.projectile.speed should be finite and positive`);
+    check(w.projectile && isFinitePositive(w.projectile.blastRadius), `${w.id}.projectile.blastRadius should be finite and positive`);
+  }
 }
 
 // m1911 and m24 must specifically be enabled per M0 requirements.
 check(getWeapon('m1911') && !getWeapon('m1911').disabled, 'm1911 should be defined and enabled');
 check(getWeapon('m24') && !getWeapon('m24').disabled, 'm24 should be defined and enabled');
 
-// Future weapons should exist but be disabled.
-for (const id of ['knife', 'grenade', 'rpg']) {
+// Every weapon in models/guns/ is now wired and enabled.
+for (const id of ['five_seven', 'cz_805_bren', 'knife', 'grenade', 'rpg']) {
   const w = getWeapon(id);
   check(w !== undefined, `${id} should be defined`);
-  check(w && w.disabled === true, `${id} should be disabled:true`);
+  check(w && !w.disabled, `${id} should be enabled (no disabled flag)`);
 }
+// cz_805_bren is the full-auto weapon.
+check(getWeapon('cz_805_bren') && getWeapon('cz_805_bren').automatic === true, 'cz_805_bren should be automatic:true');
 
 // All weapon model paths must be strings under models/guns/.
 for (const w of Object.values(WEAPONS)) {

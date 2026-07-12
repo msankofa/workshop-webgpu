@@ -1,0 +1,799 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Body + Weapon Preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #10141b; color: #dfe6ef; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #c { position: fixed; inset: 0; display: block; }
+  #panel {
+    position: fixed; top: 12px; left: 12px; width: 260px; max-height: calc(100% - 24px); overflow: auto;
+    background: rgba(18, 24, 33, 0.92); border: 1px solid #2a3444; border-radius: 10px; padding: 12px 14px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  #panel h1 { font-size: 14px; margin: 0 0 10px; letter-spacing: .3px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+  .row label { color: #9fb0c4; }
+  select, button { background: #1d2735; color: #dfe6ef; border: 1px solid #33455c; border-radius: 6px; padding: 5px 8px; font: inherit; cursor: pointer; }
+  button:hover { background: #26374c; }
+  button:active { background: #2f4258; }
+  input[type=range] { width: 130px; }
+  .btns { display: flex; gap: 8px; margin: 10px 0; }
+  .btns button { flex: 1; }
+  #log { margin-top: 10px; border-top: 1px solid #2a3444; padding-top: 8px; font-family: ui-monospace, monospace; font-size: 11px; color: #8fd0a8; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+  #err { position: fixed; bottom: 12px; left: 12px; right: 12px; color: #ffb3b3; font-family: ui-monospace, monospace; font-size: 12px; }
+  .note { color: #6b7d92; font-size: 11px; margin-top: 6px; }
+  .sec { margin: 12px 0 4px; color: #5cc8ff; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; border-top: 1px solid #2a3444; padding-top: 8px; }
+  .row .val { color: #cbd6e2; font-family: ui-monospace, monospace; min-width: 40px; text-align: right; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>Body + Weapon Preview <span style="color:#5cc8ff">v31</span></h1>
+
+  <div class="row">
+    <label for="mode">Body mode</label>
+    <select id="mode">
+      <option value="local-third-person">third-person (full)</option>
+      <option value="remote">remote (full)</option>
+      <option value="local-lower-body">fps-legs (lower)</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="stance">Stance</label>
+    <select id="stance">
+      <option value="stand">stand</option>
+      <option value="crouch">crouch</option>
+      <option value="prone">prone</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="weapon">Weapon</label>
+    <select id="weapon">
+      <option value="m1911">m1911</option>
+      <option value="m24">m24</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="walk">Walk</label>
+    <input type="checkbox" id="walk" checked />
+  </div>
+  <div class="row">
+    <label for="run">Run</label>
+    <input type="checkbox" id="run" />
+  </div>
+  <div class="row">
+    <label for="autopace">Auto-pace</label>
+    <input type="checkbox" id="autopace" />
+  </div>
+  <div class="note"><b>WASD</b> to move (relative to camera), mouse-drag to orbit. Walk/Run pick the gait profile &amp; speed.</div>
+  <div class="row">
+    <label for="speed">Speed</label>
+    <input type="range" id="speed" min="0" max="8" step="0.05" value="2.05" />
+  </div>
+  <div class="row">
+    <label for="aim">Aim</label>
+    <input type="range" id="aim" min="0" max="1" step="0.02" value="0" />
+  </div>
+
+  <div class="btns">
+    <button id="fire">Fire</button>
+    <button id="reload">Reload</button>
+  </div>
+
+  <div class="sec">Weapon placement (body-space)</div>
+  <div class="row"><label for="wx">Lateral X</label><input type="range" id="wx" min="-1.2" max="1.2" step="0.01" value="0.2" /><span class="val" id="wx_v"></span></div>
+  <div class="row"><label for="wy">Vertical Y</label><input type="range" id="wy" min="-2.0" max="1.2" step="0.01" value="0.44" /><span class="val" id="wy_v"></span></div>
+  <div class="row"><label for="wz">Forward Z</label><input type="range" id="wz" min="-1.0" max="2.0" step="0.01" value="0.42" /><span class="val" id="wz_v"></span></div>
+  <div class="row"><label for="wyaw">Yaw</label><input type="range" id="wyaw" min="-3.14" max="3.14" step="0.02" value="-0.02" /><span class="val" id="wyaw_v"></span></div>
+  <div class="row"><label for="wpitch">Pitch</label><input type="range" id="wpitch" min="-3.14" max="3.14" step="0.02" value="-0.04" /><span class="val" id="wpitch_v"></span></div>
+  <div class="row"><label for="wroll">Roll</label><input type="range" id="wroll" min="-3.14" max="3.14" step="0.02" value="-0.08" /><span class="val" id="wroll_v"></span></div>
+  <div class="row"><label for="wscale">Scale</label><input type="range" id="wscale" min="0.3" max="2" step="0.02" value="0.68" /><span class="val" id="wscale_v"></span></div>
+
+  <div class="sec">Speed → gait model</div>
+  <div class="row"><label for="model">Fit model drives gait</label><input type="checkbox" id="model" /></div>
+  <div class="btns"><button id="addSample">Add sample @ speed</button><button id="resetSamples">Reset</button></div>
+  <div class="note">Scrub <b>Speed</b> to see the fit interpolate/extrapolate. To tune a new point: turn the model <i>off</i>, dial the gait sliders at a speed, hit <b>Add sample</b>, turn it back <i>on</i> — the curve now passes through it.</div>
+  <div class="note" id="modelinfo" style="color:#8fd0a8"></div>
+
+  <div class="sec">Gait</div>
+  <div class="row"><label for="gp">Pelvis height</label><input type="range" id="gp" min="0.3" max="0.85" step="0.01" value="0.58" /><span class="val" id="gp_v"></span></div>
+  <div class="row"><label for="gstride">Stride</label><input type="range" id="gstride" min="0.15" max="1.6" step="0.01" value="1.35" /><span class="val" id="gstride_v"></span></div>
+  <div class="row"><label for="glift">Step lift</label><input type="range" id="glift" min="0.02" max="0.6" step="0.005" value="0.45" /><span class="val" id="glift_v"></span></div>
+  <div class="row"><label for="gdur">Step duration</label><input type="range" id="gdur" min="0.1" max="0.45" step="0.01" value="0.31" /><span class="val" id="gdur_v"></span></div>
+
+  <div class="sec">Prone pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = prone)</span></div>
+  <div class="row"><label for="ppitch">Pitch</label><input type="range" id="ppitch" min="0" max="1.7" step="0.02" value="1.46" /><span class="val" id="ppitch_v"></span></div>
+  <div class="row"><label for="phip">Hip height</label><input type="range" id="phip" min="0.1" max="0.6" step="0.01" value="0.25" /><span class="val" id="phip_v"></span></div>
+  <div class="row"><label for="ptorso">Torso fwd</label><input type="range" id="ptorso" min="0" max="0.7" step="0.01" value="0.33" /><span class="val" id="ptorso_v"></span></div>
+  <div class="row"><label for="phead">Head fwd</label><input type="range" id="phead" min="0" max="1" step="0.01" value="0.75" /><span class="val" id="phead_v"></span></div>
+  <div class="row"><label for="pheadp">Head pitch</label><input type="range" id="pheadp" min="-1.5" max="0.5" step="0.02" value="-1.28" /><span class="val" id="pheadp_v"></span></div>
+  <div class="row"><label for="pfootb">Foot back</label><input type="range" id="pfootb" min="0" max="1.2" step="0.01" value="1.06" /><span class="val" id="pfootb_v"></span></div>
+  <div class="row"><label for="pfoots">Foot spread</label><input type="range" id="pfoots" min="0" max="0.5" step="0.01" value="0.50" /><span class="val" id="pfoots_v"></span></div>
+  <div class="row"><label for="pshf">Shoulder fwd</label><input type="range" id="pshf" min="0" max="0.7" step="0.01" value="0.58" /><span class="val" id="pshf_v"></span></div>
+
+  <div class="sec">Crouch pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = crouch)</span></div>
+  <div class="row"><label for="cpdrop">Pelvis drop</label><input type="range" id="cpdrop" min="0" max="0.7" step="0.01" value="0.62" /><span class="val" id="cpdrop_v"></span></div>
+  <div class="row"><label for="ctdrop">Torso drop</label><input type="range" id="ctdrop" min="0" max="0.7" step="0.01" value="0.25" /><span class="val" id="ctdrop_v"></span></div>
+  <div class="row"><label for="chdrop">Head drop</label><input type="range" id="chdrop" min="0" max="0.7" step="0.01" value="0.10" /><span class="val" id="chdrop_v"></span></div>
+  <div class="row"><label for="csdrop">Shoulder drop</label><input type="range" id="csdrop" min="0" max="0.7" step="0.01" value="0.19" /><span class="val" id="csdrop_v"></span></div>
+  <div class="row"><label for="clean">Lean fwd</label><input type="range" id="clean" min="0" max="1.2" step="0.02" value="0.10" /><span class="val" id="clean_v"></span></div>
+  <div class="row"><label for="cfwd">Shift fwd</label><input type="range" id="cfwd" min="0" max="0.6" step="0.01" value="0.00" /><span class="val" id="cfwd_v"></span></div>
+
+  <div class="sec">Eyes</div>
+  <div class="row"><label for="ewidth">Width</label><input type="range" id="ewidth" min="0.002" max="0.05" step="0.001" value="0.044" /><span class="val" id="ewidth_v"></span></div>
+  <div class="row"><label for="elength">Length</label><input type="range" id="elength" min="0.004" max="0.09" step="0.001" value="0.049" /><span class="val" id="elength_v"></span></div>
+  <div class="row"><label for="edepth">Depth</label><input type="range" id="edepth" min="0.001" max="0.03" step="0.001" value="0.030" /><span class="val" id="edepth_v"></span></div>
+  <div class="row"><label for="ex">X position</label><input type="range" id="ex" min="-0.05" max="0.05" step="0.001" value="0" /><span class="val" id="ex_v"></span></div>
+  <div class="row"><label for="ey">Y position</label><input type="range" id="ey" min="-0.08" max="0.08" step="0.001" value="0.053" /><span class="val" id="ey_v"></span></div>
+  <div class="row"><label for="ez">Z position</label><input type="range" id="ez" min="0.05" max="0.15" step="0.001" value="0.102" /><span class="val" id="ez_v"></span></div>
+  <div class="row"><label for="espace">Spacing</label><input type="range" id="espace" min="0.01" max="0.12" step="0.001" value="0.120" /><span class="val" id="espace_v"></span></div>
+
+  <div class="sec" id="jointSec" style="display:none">Joint: <span id="jointName" style="color:#dfe6ef;text-transform:none;letter-spacing:0"></span></div>
+  <div id="jointBody" style="display:none">
+    <div class="row"><label for="jpole">Pole swing</label><input type="range" id="jpole" min="-3.14" max="3.14" step="0.02" value="0" /><span class="val" id="jpole_v"></span></div>
+    <div class="row"><label for="jpoleprone">Pole swing (prone)</label><input type="range" id="jpoleprone" min="-3.14" max="3.14" step="0.02" value="0" /><span class="val" id="jpoleprone_v"></span></div>
+    <div class="note" id="jointNote" style="display:none">Tuned via crouch/prone panels.</div>
+  </div>
+  <div class="note">Click a joint on the body to select it; click empty space to deselect.</div>
+
+  <div class="sec">Rig bends</div>
+  <div class="btns"><button id="kneeFlip">Flip knees</button><button id="elbowFlip">Flip elbows</button></div>
+  <div class="btns"><button id="copyTune">Copy tuning → log</button></div>
+
+  <div class="note">Weapon is a placeholder box; anchors are authored in real-GLB space so exact hand contact needs the GLB. This harness previews gait, weapon-pose blending, recoil, and the reload arm/event sequence driving <code>setArmTarget</code>.</div>
+
+  <div id="log"></div>
+</div>
+<div id="err"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { createProceduralPlayerBody } from './player-procedural-body.js?v=23';
+import { createWeaponPoseController } from './weapon-pose-controller.js?v=5';
+import { WEAPONS } from './weapons.js';
+
+const errEl = document.getElementById('err');
+const logEl = document.getElementById('log');
+const showError = (m) => { errEl.textContent = '⚠ ' + m; };
+addEventListener('error', (e) => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => showError((e.reason && e.reason.message) || String(e.reason)));
+
+function log(line) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent = `${t}  ${line}\n` + logEl.textContent;
+}
+
+// --- terrain ---------------------------------------------------------------
+function terrainHeight(x, z) {
+  return 0.35 * Math.sin(x * 0.35) * Math.cos(z * 0.32)
+       + 0.18 * Math.sin(x * 0.9 + 1.3) * Math.sin(z * 0.7);
+}
+
+// --- scene / renderer ------------------------------------------------------
+const canvas = document.getElementById('c');
+const renderer = new WebGPURenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x121821);
+scene.fog = new THREE.Fog(0x121821, 14, 40);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(3.2, 2.4, 4.2);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xbcd3ff, 0x2a3038, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+sun.position.set(6, 10, 4);
+scene.add(sun);
+
+// terrain mesh matching terrainHeight
+{
+  const size = 40, seg = 120;
+  const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x2c3a2f, roughness: 1, metalness: 0 }));
+  scene.add(mesh);
+  const grid = new THREE.GridHelper(size, 40, 0x3a4a5a, 0x263141);
+  grid.position.y = 0.01;
+  scene.add(grid);
+}
+
+// --- weapon def (merge anchor sidecar + poses sidecar) ---------------------
+let WEAPON_ANCHORS = {}, WEAPON_POSES = {};
+const WEAPON_MODEL_CACHE = {}; // id -> loaded+normalized model, reused across switches
+let currentWeaponModel = null;
+let currentWeaponId = null;
+let weaponLoadToken = 0; // guards against rapid select toggling
+async function loadWeaponData() {
+  const [a, p] = await Promise.all([
+    fetch('./weapon-anchors.json', { cache: 'no-store' }).then((r) => r.json()),
+    fetch('./weapon-poses.json', { cache: 'no-store' }).then((r) => r.json()),
+  ]);
+  WEAPON_ANCHORS = a; WEAPON_POSES = p;
+}
+// Load (or reuse) the real GLB for a weapon id, normalize it, bake anchors, mount it.
+async function switchWeaponModel(id) {
+  const token = ++weaponLoadToken;
+  ui.weapon.disabled = true;
+  let model = WEAPON_MODEL_CACHE[id];
+  if (!model) {
+    const gltf = await gltfLoader.loadAsync(WEAPONS[id].model);
+    if (token !== weaponLoadToken) { ui.weapon.disabled = false; return; }
+    model = gltf.scene;
+    const normMatrix = normalizeObject(model, 0.62);
+    BAKED_ANCHORS[id] = bakeAnchors(WEAPON_ANCHORS[id].ikAnchors, normMatrix);
+    model.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
+    WEAPON_MODEL_CACHE[id] = model;
+  }
+  if (token !== weaponLoadToken) return;
+  if (currentWeaponModel) weaponView.remove(currentWeaponModel);
+  weaponView.add(model);
+  currentWeaponModel = model;
+  currentWeaponId = id;
+  ui.weapon.disabled = false;
+  if (controller) controller.setWeapon(id);
+  bodyState.weapon = id;
+  log('weapon=' + id + ' GLB ready + anchors baked');
+}
+// ikAnchors come from BAKED_ANCHORS (raw-GLB-space anchors transformed into the normalized
+// meter space the model renders in — see bakeAnchors). weaponPoses are already in meter/camera
+// space; the fixed 180deg weaponFrame spin + the sliders handle third-person orientation.
+function getWeaponDef(id) {
+  const rawSeq = (WEAPON_POSES.reloadSequence && WEAPON_POSES.reloadSequence[id]) || null;
+  return {
+    id,
+    recoil: 0.6,
+    ikAnchors: BAKED_ANCHORS[id] || {},
+    weaponPoses: WEAPON_POSES.weaponPoses || {},
+    reloadSequence: rawSeq || null,
+  };
+}
+
+// --- body + weapon controller ----------------------------------------------
+let body = null, controller = null;
+
+// Weapon mount hierarchy (so the whole thing is tunable, and the controller can still drive
+// the innermost weaponView pose):
+//   weaponRig    — placed at the body each frame, rotated by body yaw (body-facing space)
+//     weaponAdjust — user sliders: position/rotation/scale in body-facing space
+//       weaponFrame  — fixed 180deg spin: camera-forward (-Z) -> body-forward (+Z)
+//         weaponView   — driven by the pose controller (placeholder box GLB stand-in)
+const weaponRig = new THREE.Group();
+scene.add(weaponRig);
+const weaponAdjust = new THREE.Group();
+weaponRig.add(weaponAdjust);
+const weaponFrame = new THREE.Group();
+weaponFrame.rotation.y = Math.PI;
+weaponAdjust.add(weaponFrame);
+const weaponView = new THREE.Group();
+weaponFrame.add(weaponView);
+const gltfLoader = new GLTFLoader();
+
+// Copy of environment-viewer.html's normalizeObject: axis-align the longest dim, scale so the
+// longest dim == target (m1911 uses 0.62), then recenter. Returns the applied local matrix so we
+// can bake raw-GLB-space anchors into the same normalized meter space the model renders in.
+const _box = new THREE.Box3(), _size = new THREE.Vector3();
+function normalizeObject(obj, target = 0.62) {
+  obj.updateMatrixWorld(true); _box.setFromObject(obj); _box.getSize(_size);
+  if (_size.x >= _size.y && _size.x >= _size.z) obj.rotation.y = Math.PI * 0.5;
+  else if (_size.y >= _size.x && _size.y >= _size.z) obj.rotation.x = Math.PI * 0.5;
+  obj.updateMatrixWorld(true); _box.setFromObject(obj); _box.getSize(_size);
+  const longest = Math.max(_size.x, _size.y, _size.z, 1e-6);
+  obj.scale.multiplyScalar(target / longest);
+  obj.updateMatrixWorld(true); _box.setFromObject(obj);
+  obj.position.sub(_box.getCenter(new THREE.Vector3()));
+  obj.updateMatrixWorld(true);
+  return obj.matrixWorld.clone();
+}
+// Baked (normalized meter-space) anchors per weapon, filled after the GLB loads.
+const BAKED_ANCHORS = {};
+function bakeAnchors(rawAnchors, normMatrix) {
+  const rot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(normMatrix));
+  const out = {};
+  for (const k in rawAnchors) {
+    const p = new THREE.Vector3(...rawAnchors[k].p).applyMatrix4(normMatrix);
+    const q = rot.clone().multiply(new THREE.Quaternion(...(rawAnchors[k].q || [0, 0, 0, 1])));
+    out[k] = { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+  }
+  return out;
+}
+
+let kneeSign = 1, elbowSign = 1;
+let savedIkCfg = null; // survives rebuild (mesh refs go stale, values don't)
+function rebuildBody(mode) {
+  if (body && body.ikCfg) savedIkCfg = { ...body.ikCfg };
+  deselectJoint();
+  if (controller) controller = null;
+  if (body) body.destroy();
+  body = createProceduralPlayerBody({ THREE, scene, terrainHeight, mode, style: { kneeSign, elbowSign } });
+  if (savedIkCfg) Object.assign(body.ikCfg, savedIkCfg);
+  controller = createWeaponPoseController({
+    THREE, body, weaponView, getWeaponDef,
+    onEvent: (name, payload) => { if (!payload || !payload.informational) log('event: ' + name); },
+  });
+  controller.setWeapon(currentWeaponId || 'm1911');
+}
+
+// --- sim state -------------------------------------------------------------
+const bodyState = {
+  id: 'preview',
+  position: new THREE.Vector3(0, terrainHeight(0, 0) + 0.9, 0),
+  yaw: 0, aimPitch: 0,
+  height: 1.8, radius: 0.3, // the game's fp.heightStand + capsule radius match these (parity contract)
+  velocity: new THREE.Vector3(),
+  onFloor: true, crouch: 0, prone: 0, alive: true,
+  weapon: 'm1911', tool: null,
+};
+
+let paceDir = 1; // +1 walks toward +Z (yaw 0), -1 toward -Z (yaw PI)
+
+// WASD key state (camera-relative movement).
+const keys = { w: false, a: false, s: false, d: false };
+const KEYMAP = { KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd', ArrowUp: 'w', ArrowLeft: 'a', ArrowDown: 's', ArrowRight: 'd' };
+addEventListener('keydown', (e) => { const k = KEYMAP[e.code]; if (k) { keys[k] = true; e.preventDefault(); } });
+addEventListener('keyup', (e) => { const k = KEYMAP[e.code]; if (k) { keys[k] = false; } });
+const _fwd = new THREE.Vector3(), _rgt = new THREE.Vector3(), _mv = new THREE.Vector3(), _UP = new THREE.Vector3(0, 1, 0);
+const $ = (id) => document.getElementById(id);
+
+// --- joint picking: click a joint sphere/mesh to select it and tune its IK pole -------------
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let pointerDownPos = null;
+let selectedJoint = null; // { name, mesh, prevMaterial }
+const jointSec = $('jointSec'), jointBody = $('jointBody'), jointNameEl = $('jointName'), jointNote = $('jointNote');
+const jpole = $('jpole'), jpoleprone = $('jpoleprone');
+let activePoleKeys = null;
+function jointPoleKeys(name) {
+  const arm = /^(left|right)(Shoulder|Elbow|Wrist|Hand)$/.exec(name);
+  if (arm) return { base: arm[1] + 'ArmPole', prone: arm[1] + 'ArmPoleProne' };
+  const leg = /^(left|right)(Hip|Knee|Ankle|Foot)$/.exec(name);
+  if (leg) return { base: leg[1] + 'LegPole', prone: leg[1] + 'LegPoleProne' };
+  return null;
+}
+function refreshJointVals() {
+  $('jpole_v').textContent = parseFloat(jpole.value).toFixed(2);
+  $('jpoleprone_v').textContent = parseFloat(jpoleprone.value).toFixed(2);
+}
+function showJointPanel(name) {
+  jointSec.style.display = '';
+  jointBody.style.display = '';
+  jointNameEl.textContent = name;
+  activePoleKeys = jointPoleKeys(name);
+  const rows = jointBody.querySelectorAll('.row');
+  if (activePoleKeys && body && body.ikCfg) {
+    rows.forEach((r) => { r.style.display = ''; });
+    jointNote.style.display = 'none';
+    jpole.value = body.ikCfg[activePoleKeys.base];
+    jpoleprone.value = body.ikCfg[activePoleKeys.prone];
+    refreshJointVals();
+  } else {
+    rows.forEach((r) => { r.style.display = 'none'; });
+    jointNote.style.display = '';
+  }
+}
+function hideJointPanel() {
+  jointSec.style.display = 'none';
+  jointBody.style.display = 'none';
+  activePoleKeys = null;
+}
+jpole.addEventListener('input', () => {
+  refreshJointVals();
+  if (activePoleKeys && body && body.ikCfg) body.ikCfg[activePoleKeys.base] = parseFloat(jpole.value);
+});
+jpoleprone.addEventListener('input', () => {
+  refreshJointVals();
+  if (activePoleKeys && body && body.ikCfg) body.ikCfg[activePoleKeys.prone] = parseFloat(jpoleprone.value);
+});
+function restoreJointMaterial() {
+  // materials are shared across joints, so the highlight is a per-mesh clone, not a shared-material edit.
+  if (selectedJoint && selectedJoint.mesh.material !== selectedJoint.prevMaterial) {
+    selectedJoint.mesh.material.dispose();
+    selectedJoint.mesh.material = selectedJoint.prevMaterial;
+  }
+}
+function selectJoint(name, mesh) {
+  restoreJointMaterial();
+  const prevMaterial = mesh.material;
+  const hi = prevMaterial.clone();
+  hi.emissive = new THREE.Color(0x2a8fff);
+  hi.emissiveIntensity = 0.9;
+  mesh.material = hi;
+  selectedJoint = { name, mesh, prevMaterial };
+  showJointPanel(name);
+}
+function deselectJoint() {
+  restoreJointMaterial();
+  selectedJoint = null;
+  hideJointPanel();
+}
+function pickJointAt(clientX, clientY) {
+  if (!body || !body.joints) return;
+  pointerNDC.x = (clientX / innerWidth) * 2 - 1;
+  pointerNDC.y = -(clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const entries = Object.entries(body.joints).filter(([, m]) => !!m);
+  const hits = raycaster.intersectObjects(entries.map(([, m]) => m), false);
+  if (!hits.length) { deselectJoint(); return; }
+  const name = entries.find(([, m]) => m === hits[0].object)[0];
+  selectJoint(name, hits[0].object);
+}
+canvas.addEventListener('pointerdown', (e) => { pointerDownPos = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!pointerDownPos) return;
+  const moved = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+  pointerDownPos = null;
+  if (moved < 5) pickJointAt(e.clientX, e.clientY); // small threshold: click, not an orbit drag
+});
+
+const ui = {
+  mode: $('mode'), stance: $('stance'), weapon: $('weapon'), walk: $('walk'), run: $('run'), autopace: $('autopace'), speed: $('speed'), aim: $('aim'),
+  wx: $('wx'), wy: $('wy'), wz: $('wz'), wyaw: $('wyaw'), wpitch: $('wpitch'), wroll: $('wroll'), wscale: $('wscale'),
+  gp: $('gp'), gstride: $('gstride'), glift: $('glift'), gdur: $('gdur'),
+  ppitch: $('ppitch'), phip: $('phip'), ptorso: $('ptorso'), phead: $('phead'), pheadp: $('pheadp'), pfootb: $('pfootb'), pfoots: $('pfoots'), pshf: $('pshf'),
+  cpdrop: $('cpdrop'), ctdrop: $('ctdrop'), chdrop: $('chdrop'), csdrop: $('csdrop'), clean: $('clean'), cfwd: $('cfwd'),
+  ewidth: $('ewidth'), elength: $('elength'), edepth: $('edepth'), ex: $('ex'), ey: $('ey'), ez: $('ez'), espace: $('espace'),
+};
+const VAL_SLIDERS = ['wx', 'wy', 'wz', 'wyaw', 'wpitch', 'wroll', 'wscale', 'gp', 'gstride', 'glift', 'gdur',
+  'ppitch', 'phip', 'ptorso', 'phead', 'pheadp', 'pfootb', 'pfoots', 'pshf',
+  'cpdrop', 'ctdrop', 'chdrop', 'csdrop', 'clean', 'cfwd',
+  'ewidth', 'elength', 'edepth', 'ex', 'ey', 'ez', 'espace'];
+function refreshVals() {
+  for (const k of VAL_SLIDERS) {
+    const precision = k[0] === 'e' ? 3 : 2;
+    $(k + '_v').textContent = parseFloat(ui[k].value).toFixed(precision);
+  }
+}
+for (const k of VAL_SLIDERS) ui[k].addEventListener('input', refreshVals);
+refreshVals();
+
+// --- speed -> gait fitted model -------------------------------------------
+// Least-squares fits over authored (+ user-added) sample points. pelvis/stride/lift use a
+// straight line; stepDuration uses a power law (dur = A * v^B) because cadence physically
+// tracks ~1/speed and a linear fit would cross zero / go negative when extrapolated fast.
+// With 1 sample every fit is a flat constant; 2 samples pin an exact line/power law; 3+
+// become genuine regressions. See the walk/run trend analysis in chat.
+function linFit(xs, ys) {
+  const n = xs.length;
+  if (n === 1) return { m: 0, b: ys[0], fn: () => ys[0] };
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; }
+  const d = n * sxx - sx * sx;
+  const m = d === 0 ? 0 : (n * sxy - sx * sy) / d;
+  const b = (sy - m * sx) / n;
+  return { m, b, fn: (x) => m * x + b };
+}
+function powFit(xs, ys) {
+  const n = xs.length;
+  if (n === 1) return { A: ys[0], B: 0, fn: () => ys[0] };
+  const lf = linFit(xs.map(Math.log), ys.map(Math.log));  // ln y = ln A + B ln x
+  const A = Math.exp(lf.b), B = lf.m;
+  return { A, B, fn: (x) => A * Math.pow(Math.max(x, 1e-3), B) };
+}
+const DEFAULT_SAMPLES = () => ([
+  { speed: 0.5,  pelvis: 0.61, stride: 1.35, lift: 0.275, dur: 0.22 }, // creep
+  { speed: 2.05, pelvis: 0.58, stride: 1.35, lift: 0.45,  dur: 0.31 }, // walk
+  { speed: 4.2,  pelvis: 0.52, stride: 1.35, lift: 0.45,  dur: 0.23 }, // run
+  { speed: 7.7,  pelvis: 0.58, stride: 1.31, lift: 0.6,   dur: 0.14 }, // sprint
+]);
+let SAMPLES = DEFAULT_SAMPLES();
+let MODEL = null;
+const CLAMP = { pelvis: [0.3, 0.85], stride: [0.15, 1.6], lift: [0.02, 0.6], dur: [0.1, 0.45] };
+const clamp = (v, [a, b]) => Math.max(a, Math.min(b, v));
+function refitModel() {
+  const xs = SAMPLES.map((s) => s.speed);
+  MODEL = {
+    pelvis: linFit(xs, SAMPLES.map((s) => s.pelvis)),
+    stride: linFit(xs, SAMPLES.map((s) => s.stride)),
+    lift:   linFit(xs, SAMPLES.map((s) => s.lift)),
+    dur:    powFit(xs, SAMPLES.map((s) => s.dur)),
+  };
+  const lin = (f) => `${f.m.toFixed(4)}·v + ${f.b.toFixed(3)}`;
+  document.getElementById('modelinfo').innerHTML =
+    `${SAMPLES.length} samples @ [${SAMPLES.map((s) => s.speed.toFixed(2)).join(', ')}]<br>` +
+    `pelvis ≈ ${lin(MODEL.pelvis)}<br>` +
+    `stepDur ≈ ${MODEL.dur.A.toFixed(3)}·v^${MODEL.dur.B.toFixed(3)}<br>` +
+    `stride ≈ ${lin(MODEL.stride)}<br>` +
+    `lift ≈ ${lin(MODEL.lift)}`;
+}
+function applyModelToSliders(speed) {
+  ui.gp.value      = clamp(MODEL.pelvis.fn(speed), CLAMP.pelvis).toFixed(3);
+  ui.gstride.value = clamp(MODEL.stride.fn(speed), CLAMP.stride).toFixed(3);
+  ui.glift.value   = clamp(MODEL.lift.fn(speed),   CLAMP.lift).toFixed(3);
+  ui.gdur.value    = clamp(MODEL.dur.fn(speed),    CLAMP.dur).toFixed(3);
+  refreshVals();
+}
+refitModel();
+
+ui.model = $('model');
+ui.model.addEventListener('change', () => {
+  if (ui.model.checked) { applyModelToSliders(parseFloat(ui.speed.value)); log('model: ON (speed drives gait)'); }
+  else log('model: OFF (manual gait)');
+});
+$('addSample').addEventListener('click', () => {
+  const s = {
+    speed: parseFloat(ui.speed.value),
+    pelvis: parseFloat(ui.gp.value), stride: parseFloat(ui.gstride.value),
+    lift: parseFloat(ui.glift.value), dur: parseFloat(ui.gdur.value),
+  };
+  const i = SAMPLES.findIndex((x) => Math.abs(x.speed - s.speed) < 0.05); // replace near-same speed
+  if (i >= 0) SAMPLES[i] = s; else SAMPLES.push(s);
+  SAMPLES.sort((a, b) => a.speed - b.speed);
+  refitModel();
+  log(`sample @ ${s.speed.toFixed(2)} (${SAMPLES.length} total)`);
+});
+$('resetSamples').addEventListener('click', () => { SAMPLES = DEFAULT_SAMPLES(); refitModel(); log('samples reset (2 authored)'); });
+
+// --- locomotion modes: Walk / Run are mutually exclusive; each owns an editable gait+speed
+// profile that is loaded into the sliders on switch and updated in place as you tune it. ---
+// Authored speeds; the in-game FPS controller is set to match these (fp.speedStand = 2.05,
+// runMultiplier = 2.05 -> run 4.2) so the game and preview look the same.
+const LOCO_PROFILES = {
+  walk: { speed: 2.05, gait: { pelvisHeightRatio: 0.58, maxStepDistance: 1.35, stepLift: 0.45, stepDuration: 0.31 } },
+  run:  { speed: 4.2,  gait: { pelvisHeightRatio: 0.52, maxStepDistance: 1.35, stepLift: 0.45, stepDuration: 0.23 } },
+};
+let activeLoco = 'walk'; // 'idle' | 'walk' | 'run'
+function applyProfile(p) {
+  ui.speed.value = p.speed;
+  ui.gp.value = p.gait.pelvisHeightRatio;
+  ui.gstride.value = p.gait.maxStepDistance;
+  ui.glift.value = p.gait.stepLift;
+  ui.gdur.value = p.gait.stepDuration;
+  refreshVals();
+}
+function setLoco(name) {
+  activeLoco = name;
+  ui.walk.checked = name === 'walk';
+  ui.run.checked = name === 'run';
+  if (name !== 'idle') { applyProfile(LOCO_PROFILES[name]); log('mode: ' + name); }
+  else log('mode: idle');
+}
+// Persist slider tweaks back into whichever profile is active, so switching away and back keeps them.
+function storeActiveProfile() {
+  if (activeLoco === 'idle') return;
+  const p = LOCO_PROFILES[activeLoco];
+  p.speed = parseFloat(ui.speed.value);
+  p.gait.pelvisHeightRatio = parseFloat(ui.gp.value);
+  p.gait.maxStepDistance = parseFloat(ui.gstride.value);
+  p.gait.stepLift = parseFloat(ui.glift.value);
+  p.gait.stepDuration = parseFloat(ui.gdur.value);
+}
+for (const k of ['speed', 'gp', 'gstride', 'glift', 'gdur']) ui[k].addEventListener('input', storeActiveProfile);
+ui.walk.addEventListener('change', () => setLoco(ui.walk.checked ? 'walk' : 'idle'));
+ui.run.addEventListener('change', () => setLoco(ui.run.checked ? 'run' : 'idle'));
+
+// Per-weapon, per-stance holds: mount offset differs by stance (standing vs lying down) and by
+// weapon (pistol vs rifle geometry). Seeded from the tuned holds baked into weapons.js.
+const WEAPON_KEYS = ['wx', 'wy', 'wz', 'wpitch', 'wyaw', 'wroll', 'wscale'];
+function holdFromDef(h) {
+  return { wx: h.position[0], wy: h.position[1], wz: h.position[2], wpitch: h.rotation[0], wyaw: h.rotation[1], wroll: h.rotation[2], wscale: h.scale };
+}
+const WEAPON_HOLDS = {};
+for (const id of Object.keys(WEAPONS)) {
+  const w = WEAPONS[id];
+  if (!w.thirdPersonHold || !w.proneHold) continue; // skip weapons without a body-hold (melee etc)
+  WEAPON_HOLDS[id] = { stand: holdFromDef(w.thirdPersonHold), crouch: holdFromDef(w.crouchHold || w.thirdPersonHold), prone: holdFromDef(w.proneHold) };
+}
+let prevStance = ui.stance.value;
+let prevWeapon = ui.weapon.value;
+function loadWeaponHold(weaponId, stance) {
+  const h = WEAPON_HOLDS[weaponId] && WEAPON_HOLDS[weaponId][stance]; if (!h) return;
+  for (const k of WEAPON_KEYS) { ui[k].value = h[k]; ui[k].dispatchEvent(new Event('input')); }
+}
+function saveWeaponHold(weaponId, stance) {
+  const out = WEAPON_HOLDS[weaponId] && WEAPON_HOLDS[weaponId][stance];
+  if (out) for (const k of WEAPON_KEYS) out[k] = parseFloat(ui[k].value);
+}
+loadWeaponHold(prevWeapon, prevStance);
+ui.stance.addEventListener('change', () => {
+  saveWeaponHold(prevWeapon, prevStance);
+  prevStance = ui.stance.value;
+  loadWeaponHold(prevWeapon, prevStance);
+  log('stance=' + prevStance);
+});
+ui.weapon.addEventListener('change', () => {
+  saveWeaponHold(prevWeapon, prevStance);
+  prevWeapon = ui.weapon.value;
+  loadWeaponHold(prevWeapon, prevStance);
+  switchWeaponModel(prevWeapon).catch((e) => showError((e && e.message) || String(e)));
+});
+
+ui.mode.addEventListener('change', () => rebuildBody(ui.mode.value));
+$('fire').addEventListener('click', () => { controller.play('fire'); controller.recoil(1); log('action: fire'); });
+$('reload').addEventListener('click', () => { controller.play('reload'); log('action: reload'); });
+$('kneeFlip').addEventListener('click', () => { kneeSign *= -1; rebuildBody(ui.mode.value); log('kneeSign=' + kneeSign); });
+$('elbowFlip').addEventListener('click', () => { elbowSign *= -1; rebuildBody(ui.mode.value); log('elbowSign=' + elbowSign); });
+$('copyTune').addEventListener('click', () => {
+  storeActiveProfile(); // capture any live edits into the active profile first
+  saveWeaponHold(prevWeapon, prevStance); // snapshot live slider edits back into the active hold
+  const holdToObj = (h) => ({
+    position: [h.wx, h.wy, h.wz], rotation: [h.wpitch, h.wyaw, h.wroll], scale: h.wscale,
+  });
+  const activeHolds = WEAPON_HOLDS[prevWeapon] || {};
+  const t = {
+    weapon: prevWeapon,
+    weaponAdjust: holdToObj(activeHolds[prevStance]), // active weapon+stance's hold
+    weaponHolds: {
+      thirdPersonHold: holdToObj(activeHolds.stand), // paste into weapons.js
+      crouchHold: holdToObj(activeHolds.crouch),
+      proneHold: holdToObj(activeHolds.prone),
+    },
+    loco: { active: activeLoco, walk: LOCO_PROFILES.walk, run: LOCO_PROFILES.run },
+    proneCfg: body ? { ...body.proneCfg } : null,
+    crouchCfg: body ? { ...body.crouchCfg } : null,
+    eyeCfg: body ? { ...body.eyeCfg } : null,
+    ikCfg: body ? { ...body.ikCfg } : null,
+    speedModel: {
+      samples: SAMPLES,
+      fit: {
+        pelvis: { m: MODEL.pelvis.m, b: MODEL.pelvis.b },   // pelvis = m*v + b
+        stride: { m: MODEL.stride.m, b: MODEL.stride.b },
+        lift:   { m: MODEL.lift.m,   b: MODEL.lift.b },
+        dur:    { A: MODEL.dur.A,    B: MODEL.dur.B },       // dur = A * v^B
+      },
+    },
+    kneeSign, elbowSign,
+  };
+  log('TUNING ' + JSON.stringify(t));
+});
+
+// --- loop ------------------------------------------------------------------
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(clock.getDelta(), 1 / 30);
+
+  // Pace the body in a straight line along Z, reversing at the ends. Constant heading makes
+  // the gait easy to read. Body forward heading is (sin yaw, cos yaw): yaw 0 -> +Z, yaw PI -> -Z.
+  // Movement: WASD (camera-relative) drives the body; the body faces its heading. Falls back to
+  // the straight-line Auto-pace demo when no keys are down and Auto-pace is on; otherwise idles.
+  const speed = parseFloat(ui.speed.value);
+  // Fit-model mode: the speed slider drives the gait sliders (which the loop below reads into
+  // the rig). Written every frame so scrubbing speed continuously re-evaluates the fit.
+  if (ui.model.checked && MODEL) applyModelToSliders(speed);
+  const mz = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+  const mx = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+
+  if (mz !== 0 || mx !== 0) {
+    camera.getWorldDirection(_fwd); _fwd.y = 0;
+    if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, 1); else _fwd.normalize();
+    _rgt.crossVectors(_fwd, _UP).normalize();           // camera right on the ground plane
+    _mv.copy(_fwd).multiplyScalar(mz).addScaledVector(_rgt, mx);
+    if (_mv.lengthSq() > 1e-6) {
+      _mv.normalize();
+      bodyState.yaw = Math.atan2(-_mv.x, -_mv.z);        // module faces -Z at yaw 0; face travel dir
+      bodyState.velocity.set(_mv.x * speed, 0, _mv.z * speed);
+      const nx = bodyState.position.x + _mv.x * speed * dt;
+      const nz = bodyState.position.z + _mv.z * speed * dt;
+      bodyState.position.set(nx, terrainHeight(nx, nz) + 0.9, nz);
+    }
+  } else if (ui.autopace.checked && speed > 0.01) {
+    let nz = bodyState.position.z + paceDir * speed * dt;
+    if (nz > 6) { nz = 6; paceDir = -1; } else if (nz < -6) { nz = -6; paceDir = 1; }
+    bodyState.velocity.set(0, 0, paceDir * speed);
+    bodyState.position.set(0, terrainHeight(0, nz) + 0.9, nz);
+    bodyState.yaw = paceDir > 0 ? Math.PI : 0;
+  } else {
+    bodyState.velocity.set(0, 0, 0);
+  }
+  bodyState.aimPitch = 0;
+
+  // Stance drives the body's crouch (squash) / prone (lie-down) weights.
+  const stance = ui.stance.value;
+  bodyState.crouch = stance === 'crouch' ? 0.7 : 0;
+  bodyState.prone = stance === 'prone' ? 1 : 0;
+
+  if (body && body.eyeCfg) {
+    const e = body.eyeCfg;
+    e.width = parseFloat(ui.ewidth.value);
+    e.length = parseFloat(ui.elength.value);
+    e.depth = parseFloat(ui.edepth.value);
+    e.x = parseFloat(ui.ex.value);
+    e.y = parseFloat(ui.ey.value);
+    e.z = parseFloat(ui.ez.value);
+    e.spacing = parseFloat(ui.espace.value);
+  }
+
+  if (body) body.update(dt, bodyState);
+
+  // weaponRig at the body, head-height, facing body yaw. weaponAdjust carries the live slider
+  // offsets in body-facing space; weaponFrame (child) applies the fixed 180deg camera->body
+  // spin, so the sliders read intuitively (+X body-right, +Z body-forward).
+  weaponRig.position.set(bodyState.position.x, terrainHeight(bodyState.position.x, bodyState.position.z) + 1.5, bodyState.position.z);
+  // The body rig faces yaw+PI (it's built to face -Z, see player-procedural-body.js update()).
+  // The weapon mount MUST use that same facing, otherwise the position offset in weaponAdjust
+  // points 180deg behind the body and the arms chase the grip backwards. weaponFrame's fixed PI
+  // spin then lands the barrel pointing body-forward. (+Z body-forward, +X body-side.)
+  weaponRig.rotation.set(0, bodyState.yaw + Math.PI, 0);
+  weaponAdjust.position.set(parseFloat(ui.wx.value), parseFloat(ui.wy.value), parseFloat(ui.wz.value));
+  weaponAdjust.rotation.set(parseFloat(ui.wpitch.value), parseFloat(ui.wyaw.value), parseFloat(ui.wroll.value));
+  weaponAdjust.scale.setScalar(parseFloat(ui.wscale.value));
+
+  if (body && body.gait) {
+    const c = body.gait.cfg;
+    c.pelvisHeightRatio = parseFloat(ui.gp.value);
+    c.maxStepDistance = parseFloat(ui.gstride.value);
+    c.stepLift = parseFloat(ui.glift.value);
+    c.stepDuration = parseFloat(ui.gdur.value);
+  }
+  if (body && body.proneCfg) {
+    const p = body.proneCfg;
+    p.pitch = parseFloat(ui.ppitch.value);
+    p.hipHeight = parseFloat(ui.phip.value);
+    p.torsoFwd = parseFloat(ui.ptorso.value);
+    p.headFwd = parseFloat(ui.phead.value);
+    p.headPitch = parseFloat(ui.pheadp.value);
+    p.footBack = parseFloat(ui.pfootb.value);
+    p.footSpread = parseFloat(ui.pfoots.value);
+    p.shoulderFwd = parseFloat(ui.pshf.value);
+  }
+  if (body && body.crouchCfg) {
+    const c = body.crouchCfg;
+    c.pelvisDrop = parseFloat(ui.cpdrop.value);
+    c.torsoDrop = parseFloat(ui.ctdrop.value);
+    c.headDrop = parseFloat(ui.chdrop.value);
+    c.shoulderDrop = parseFloat(ui.csdrop.value);
+    c.lean = parseFloat(ui.clean.value);
+    c.fwd = parseFloat(ui.cfwd.value);
+  }
+
+  if (controller) {
+    // Refresh the mount's world matrices BEFORE the controller resolves weapon anchors, so
+    // slider changes to weaponAdjust actually move the IK hand targets (not just the visible
+    // gun, which the renderer updates later).
+    weaponRig.updateMatrixWorld(true);
+    controller.setAiming(parseFloat(ui.aim.value));
+    controller.update(dt, {});
+  }
+
+  controls.target.lerp(bodyState.position, 0.08);
+  controls.update();
+  renderer.renderAsync(scene, camera);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+(async function main() {
+  try {
+    await renderer.init();
+    await loadWeaponData();
+    await switchWeaponModel(ui.weapon.value);
+    rebuildBody(ui.mode.value);
+    renderer.setAnimationLoop(frame);
+    log('ready');
+  } catch (e) {
+    showError((e && e.message) || String(e));
+  }
+})();
+</script>
+</body>
+</html>

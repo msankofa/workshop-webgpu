@@ -1,6 +1,11 @@
 import * as THREE from 'three';
+import {
+  ROLE_WILD, ROLE_PET, ROLE_HOSTILE,
+  CMD_FOLLOW, CMD_STAY, CMD_GOTO, CMD_ATTACK,
+  followDesire, hostileDesire, meleeHitsPlayer, wildlifeSpawnPlan,
+} from './creature-interaction.js';
 
-export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {} }) {
+export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {}, getPlayerPose = null, damagePlayer = null }) {
 const CREATURE_INSTANCING_MODE = new URLSearchParams(globalThis.location?.search || '').get('creatureInstancing') || 'parts';
 const creaturePerf = {
   detailDistance: lod.detailDistance ?? lod.near ?? 120,
@@ -770,6 +775,8 @@ const robotPalette = {
 };
 const _rotated = new THREE.Vector3(), _fwd = new THREE.Vector3(), _n = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _wander = new THREE.Vector3(), _sep = new THREE.Vector3(), _away = new THREE.Vector3(), _steer = new THREE.Vector3();
+const _followOut = {}, _hostileOut = {}; // reusable outputs for followDesire/hostileDesire (no per-frame alloc)
+const _chooseContact = new THREE.Vector3(); // holds the chosen punch-arm contact (proxy targets reuse one scratch)
 const _com = { x: 0, z: 0 }, _near = { x: 0, z: 0 };
 const _frontAvg = new THREE.Vector3(), _backAvg = new THREE.Vector3(), _leftAvg = new THREE.Vector3(), _rightAvg = new THREE.Vector3();
 const _fabrikDir = new THREE.Vector3();
@@ -1377,6 +1384,10 @@ class Creature {
     this.style = style;
     this.gait = gait;
     this.behavior = null;
+    this.role = ROLE_WILD;       // player-interaction role: wild | pet | hostile
+    this.petCommand = CMD_FOLLOW; // active pet command when role === pet
+    this.petTarget = null;       // goto point / attack target for pet commands
+    this._followPhase = Math.random() * Math.PI * 2; // stable ring slot so grouped followers fan out
     this.config = config;
     this.armSettings = cloneArmSettings(config?.arms || armSettingsFromModel());
     this.teamId = Number.isFinite(Number(config?.teamId)) ? Math.max(0, Math.round(Number(config.teamId))) : 0;
@@ -2047,7 +2058,10 @@ class Creature {
       const score = Math.abs(localTarget.x - arm.restLocal.x) + Math.abs(localTarget.z - arm.restLocal.z) * 0.35 + sidePenalty;
       if (score < bestScore) {
         bestScore = score;
-        best = { arm, contact };
+        // Copy into a dedicated scratch: proxy targets reuse one Vector3 for every contact call,
+        // so storing the raw reference would alias the last-iterated arm's contact. Consumed
+        // synchronously by the sole caller before the next choosePunchArm.
+        best = { arm, contact: _chooseContact.copy(contact) };
       }
     }
     return best;
@@ -2153,7 +2167,7 @@ class Creature {
       return;
     }
 
-    const target = this.enemyTarget(all);
+    const target = this.role === ROLE_HOSTILE ? (hasLivePlayer() ? _playerProxy : null) : this.enemyTarget(all);
     this.combatTarget = target;
     if (this.wantsHealingForage() && (this.healingTarget || this.stowedFood())) {
       if (this.attackState !== 'ready') {
@@ -2295,6 +2309,34 @@ class Creature {
       const stopDistance = all.length > 1 ? 1.7 : 0.6;
       if (_wander.length() <= stopDistance) _wander.set(0, 0, 0);
       else _wander.normalize();
+    } else if (behavior === 'follow') {
+      if (hasLivePlayer()) {
+        const standoff = 2.2 + (this._followPhase / (Math.PI * 2)) * 0.8; // ~2.2-3.0m, per-creature
+        followDesire(this.pos.x, this.pos.z, _playerPos.x, _playerPos.z, standoff, this._followPhase, _followOut);
+        _wander.set(_followOut.dx, 0, _followOut.dz);
+      } else {
+        _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        if (_wander.length() < 0.8) {
+          this.roamTarget = randomTarget();
+          _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        }
+        if (_wander.lengthSq() > 1e-6) _wander.normalize();
+      }
+    } else if (behavior === 'hostile') {
+      if (hasLivePlayer()) {
+        // Stop close enough that an arm can actually reach (mirrors team-combat close distance),
+        // not at the full attackRange() which the windup gate uses.
+        const stopDist = Math.max(0.32, Math.min(this.attackRange() * 0.62, this.maxArmReach() * 0.72 + this.collisionRadius() * 0.22));
+        hostileDesire(this.pos.x, this.pos.z, _playerPos.x, _playerPos.z, stopDist, this.isWeak(), _hostileOut);
+        _wander.set(_hostileOut.dx, 0, _hostileOut.dz);
+      } else {
+        _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        if (_wander.length() < 0.8) {
+          this.roamTarget = randomTarget();
+          _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        }
+        if (_wander.lengthSq() > 1e-6) _wander.normalize();
+      }
     } else if (behavior === 'forage') {
       if (targetPoint) {
         _wander.set(targetPoint.x - this.pos.x, 0, targetPoint.z - this.pos.z);
@@ -2874,7 +2916,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     arm.stateTime += dt;
     arm.acquireCooldown = Math.max(0, (arm.acquireCooldown || 0) - dt);
 
-    if (currentBehavior === 'combat' && this.punchArm === arm && this.attackState !== 'ready') {
+    if ((currentBehavior === 'combat' || this.role === ROLE_HOSTILE) && this.punchArm === arm && this.attackState !== 'ready') {
       this.releaseArmFocus(arm);
       // Drive the hand to near-full extension along the shoulder->contact line so
       // the arm straightens and the HAND leads the strike. Aiming straight at a
@@ -2989,7 +3031,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       const desired = this.updateArmState(arm, shoulderWorld, dt);
       if (arm.aim.lengthSq() < 1e-8) arm.aim.copy(desired);
       const snapState = arm.state === 'reach' || arm.state === 'grab'
-        || (currentBehavior === 'combat' && this.punchArm === arm && this.attackState !== 'ready');
+        || ((currentBehavior === 'combat' || this.role === ROLE_HOSTILE) && this.punchArm === arm && this.attackState !== 'ready');
       if (snapState) {
         arm.aim.copy(desired);
       } else {
@@ -3012,7 +3054,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       arm.hand.position.copy(handPoint);
       arm.hand.quaternion.copy(this.group.quaternion);
 
-      if (currentBehavior === 'combat'
+      if ((currentBehavior === 'combat' || this.role === ROLE_HOSTILE)
           && this.punchArm === arm
           && this.attackState === 'windup'
           && !this.attackApplied
@@ -3232,7 +3274,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
 
     // Punch debug: red = where the hand is driven (extended strike), green = the
     // body-surface contact point it is aiming through, red line = shoulder->strike.
-    const punching = currentBehavior === 'combat' && this.punchArm && this.attackState !== 'ready';
+    const punching = (currentBehavior === 'combat' || this.role === ROLE_HOSTILE) && this.punchArm && this.attackState !== 'ready';
     dbg.punchStrike.visible = punching;
     dbg.punchContact.visible = punching;
     dbg.punchLink.visible = punching;
@@ -3269,6 +3311,57 @@ let selectedCreature = null;
 let networkCreatureSnapshot = [];
 let creatureEditScope = 'all';
 let directionYaw = 0;
+
+// Ambient wildlife spawner state (F4): ring-spawns/culls ROLE_WILD creatures around the player.
+const _wildlife = { enabled: false, target: 8, ringMin: 40, ringMax: 70, cullRadius: 120, hardMax: 40, interval: 1.5, _timer: 0, _seq: 0 };
+
+// Player-interaction state (foundation). Refreshed from getPlayerPose() at the top of update();
+// all role/pet/hostile/wildlife code reads this snapshot, never getPlayerPose() on hot loops.
+const _playerPos = new THREE.Vector3();
+let _hasPlayer = false;
+let _playerAlive = true;
+let _playerYaw = 0;
+let _playerRadius = 0.35;
+let _playerHeight = 1.6;
+function refreshPlayerSnapshot() {
+  const pose = getPlayerPose ? getPlayerPose() : null;
+  if (!pose) { _hasPlayer = false; return; }
+  _playerPos.set(pose.x || 0, pose.y || 0, pose.z || 0);
+  _playerYaw = pose.yaw || 0;
+  _playerAlive = pose.alive !== false;
+  _playerRadius = pose.radius || 0.35;
+  _playerHeight = pose.height || 1.6;
+  _hasPlayer = true;
+}
+function hasLivePlayer() { return _hasPlayer && _playerAlive; }
+
+const _proxyContact = new THREE.Vector3(); // scratch for _playerProxy.bodyContactToward (no per-hit alloc)
+const HOSTILE_PLAYER_DAMAGE = 7; // per-hit damage a ROLE_HOSTILE creature deals to the player
+// Duck-types as a Creature combat target so hostile creatures reuse the existing punch/IK pipeline
+// (choosePunchArm/updateCombat/sweptHandHitsBody) unchanged — they just see "an enemy".
+const _playerProxy = {
+  isPlayerProxy: true,
+  pos: _playerPos, // shares the live snapshot Vector3, tracks the player automatically
+  isCombatActive() { return hasLivePlayer(); },
+  // Surface point on the player capsule toward `fromWorld` (mirrors Creature.bodyContactToward).
+  bodyContactToward(fromWorld, pad = 0) {
+    const dx = fromWorld.x - _playerPos.x, dz = fromWorld.z - _playerPos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const r = _playerRadius + pad * 0.5;
+    const y = Math.max(_playerPos.y - _playerHeight * 0.5, Math.min(_playerPos.y + _playerHeight * 0.5, fromWorld.y));
+    return _proxyContact.set(_playerPos.x + (dx / d) * r, y, _playerPos.z + (dz / d) * r);
+  },
+  // Whether a probe point is inside the player capsule (mirrors Creature.localPointInBody).
+  localPointInBody(worldPoint, pad = 0) {
+    return hasLivePlayer() && meleeHitsPlayer({ handX: worldPoint.x, handY: worldPoint.y, handZ: worldPoint.z, playerX: _playerPos.x, playerY: _playerPos.y, playerZ: _playerPos.z, playerRadius: _playerRadius, playerHeight: _playerHeight, margin: pad });
+  },
+  takeDamage(_amount, _attacker) { if (damagePlayer) damagePlayer(HOSTILE_PLAYER_DAMAGE, _playerProxy.pos); },
+};
+
+function setCreatureRole(creature, role) {
+  if (!creature) return;
+  creature.role = (role === ROLE_PET || role === ROLE_HOSTILE || role === ROLE_WILD) ? role : ROLE_WILD;
+}
 const simTarget = new THREE.Vector3(0, terrainHeight(0, 0) + 0.08, 0);
 
 function teamSizeValue() {
@@ -4341,6 +4434,29 @@ function removeDeadCreatures() {
   updateLoadedCreatureConfigsFromScene();
 }
 
+// Spawns one wild creature at (x,z) with a freshly randomized body/style; `_seq` keeps every
+// wildlife spawn visually varied instead of repeating the roster's index-based look.
+function spawnCreatureAt(x, z, opts = {}) {
+  const config = variedCreatureConfig(_wildlife._seq++, Math.max(4, _wildlife.target));
+  config.spawn = [x, 0, z];
+  const c = createCreatureFromConfig(config);
+  c.role = ROLE_WILD;
+  c._wildlife = !!opts.wildlife;
+  creatures.push(c);
+  return c;
+}
+
+// Mirrors removeDeadCreatures' splice/dispose pattern for a single creature. Returns false if
+// the creature is no longer in the roster (already despawned/removed elsewhere).
+function despawnCreature(creature) {
+  const idx = creatures.indexOf(creature);
+  if (idx === -1) return false;
+  if (selectedCreature === creature) selectCreature(null);
+  creatures.splice(idx, 1);
+  creature.dispose();
+  return true;
+}
+
 function creatureToConfig(creature) {
   return {
     index: creatures.indexOf(creature),
@@ -4780,6 +4896,22 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
   function update(dt) {
     const updateStart = performance.now();
     frameIndex++;
+    refreshPlayerSnapshot();
+    if (_wildlife.enabled && hasLivePlayer()) {
+      _wildlife._timer += dt;
+      if (_wildlife._timer >= _wildlife.interval) {
+        _wildlife._timer = 0;
+        const existing = [];
+        for (const c of creatures) if (c._wildlife && c.role === ROLE_WILD) existing.push({ id: c, x: c.pos.x, z: c.pos.z });
+        const plan = wildlifeSpawnPlan({
+          playerX: _playerPos.x, playerZ: _playerPos.z, existing,
+          target: _wildlife.target, ringMin: _wildlife.ringMin, ringMax: _wildlife.ringMax,
+          cullRadius: _wildlife.cullRadius, rand: Math.random, maxSpawnPerCall: 2,
+        });
+        for (const id of plan.despawnIds) despawnCreature(id);
+        for (const s of plan.spawns) if (creatures.length < _wildlife.hardMax) spawnCreatureAt(s.x, s.z, { wildlife: true });
+      }
+    }
     let stageStart = updateStart;
     updateCreatureLod();
     creatureStats.lodMs = performance.now() - stageStart;
@@ -4807,6 +4939,7 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     if (currentBehavior === 'forage' || currentBehavior === 'combat') {
       for (const c of creatures) {
         if (!c.lodShouldSim || !c.lodArmsActive) continue;
+        if (c.role === ROLE_PET || c.role === ROLE_HOSTILE) continue; // pets/hostiles never forage/heal-hijack
         if (currentBehavior === 'combat' && !c.wantsHealingForage()) continue;
         const object = forageObjectForCreature(c, _forageClaims);
         if (object) {
@@ -4818,7 +4951,7 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
       }
     }
 
-    for (const c of creatures) if (c.lodShouldSim) c.updateCombat(creatures, dt, currentBehavior === 'combat');
+    for (const c of creatures) if (c.lodShouldSim) c.updateCombat(creatures, dt, (currentBehavior === 'combat' && c.role !== ROLE_PET) || c.role === ROLE_HOSTILE);
     for (const c of creatures) if (c.lodShouldSim) c.updateEating(dt);
     creatureStats.behaviorMs = performance.now() - stageStart;
 
@@ -4828,15 +4961,28 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
       c.updateForageState((currentBehavior === 'forage' || c.healingTarget) ? _forageObjects.get(c) || null : null, dt);
       const gait = sceneMode === 'varied' ? c.gait : currentGait();
       const dir = sceneMode === 'varied' ? (c.config?.direction ?? directionYaw) : directionYaw;
-      const steerTarget = currentBehavior === 'race' && c.config?.raceTarget
-        ? c._raceTargetScratch.fromArray(c.config.raceTarget)
-        : (currentBehavior === 'forage' || (currentBehavior === 'combat' && c.healingTarget))
-          ? _forageTargets.get(c) || null
-        : simTarget;
+      let steerBehavior, steerTarget;
+      if (c.role === ROLE_PET) {
+        // Tamed pets ignore the global Mode entirely and follow their own command.
+        if (c.petCommand === CMD_GOTO && c.petTarget) { steerBehavior = 'target'; steerTarget = c.petTarget; }
+        else if (c.petCommand === CMD_STAY) { steerBehavior = 'stay'; steerTarget = null; }
+        else { steerBehavior = 'follow'; steerTarget = null; } // CMD_FOLLOW, and CMD_ATTACK // TODO(F3): pet attack
+      } else if (c.role === ROLE_HOSTILE) {
+        steerBehavior = 'hostile'; steerTarget = null;
+      } else if (c.role === ROLE_WILD && c._wildlife) {
+        // Ambient wildlife roams regardless of the global Mode, so it doesn't freeze under stay/etc.
+        steerBehavior = 'wander'; steerTarget = null;
+      } else {
+        steerTarget = currentBehavior === 'race' && c.config?.raceTarget
+          ? c._raceTargetScratch.fromArray(c.config.raceTarget)
+          : (currentBehavior === 'forage' || (currentBehavior === 'combat' && c.healingTarget))
+            ? _forageTargets.get(c) || null
+          : simTarget;
+        steerBehavior = currentBehavior === 'combat' && c.healingTarget ? 'forage' : currentBehavior;
+      }
       const raceStart = currentBehavior === 'race' && c.config?.spawn
         ? c._raceStartScratch.fromArray(c.config.spawn)
         : null;
-      const steerBehavior = currentBehavior === 'combat' && c.healingTarget ? 'forage' : currentBehavior;
       c.computeSteering(creatures, gait, steerBehavior, steerTarget, dir, raceStart);
     }
     creatureGrid.clear();
@@ -4900,7 +5046,7 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     creatureStats.instancedShadows = 0;
   }
 
-  function selectFromRaycaster(raycaster) {
+  function pickCreatureFromRaycaster(raycaster) {
     const pickables = [];
     if (creatureBatches) pickables.push(...creatureBatches.pickables);
     for (const creature of creatures) {
@@ -4915,10 +5061,32 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     const hit = raycaster.intersectObjects(pickables, false).find(h =>
       h.object.userData.creature || h.object.userData.creatureBatch
     );
-    const owner = hit?.object.userData.creatureBatch
+    return hit?.object.userData.creatureBatch
       ? creatureBatches.ownerForHit(hit)
-      : hit?.object.userData.creature;
-    selectCreature(owner || null);
+      : hit?.object.userData.creature || null;
+  }
+
+  function selectFromRaycaster(raycaster) {
+    selectCreature(pickCreatureFromRaycaster(raycaster) || null);
+  }
+
+  // Tame the wild creature under the crosshair (raycaster), else the nearest wild creature within
+  // maxDist of the player. Returns { tamed, creature, nearestDist } so the caller can show feedback.
+  function tameFromView(raycaster, maxDist = 16) {
+    let target = raycaster ? pickCreatureFromRaycaster(raycaster) : null;
+    if (target && (target.role !== ROLE_WILD || !target.isCombatActive())) target = null;
+    let nearestDist = Infinity;
+    if (!target && hasLivePlayer()) {
+      let bestD = maxDist;
+      for (const c of creatures) {
+        if (c.role !== ROLE_WILD || !c.isCombatActive()) continue;
+        const d = Math.hypot(c.pos.x - _playerPos.x, c.pos.z - _playerPos.z);
+        if (d < nearestDist) nearestDist = d;
+        if (d <= bestD) { bestD = d; target = c; }
+      }
+    }
+    if (target) { setPetCommand(target, CMD_FOLLOW); return { tamed: true, creature: target, nearestDist: 0 }; }
+    return { tamed: false, creature: null, nearestDist };
   }
 
   function applyNetworkCreatureSnapshot(items) {
@@ -5008,6 +5176,78 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     if (el) el.value = b;
   }
 
+  // Tames/commands a creature: role -> pet, sets its active command, and (for goto) a
+  // terrain-snapped target point. `point` null clears the goto target.
+  function setPetCommand(creature, cmd, point = null) {
+    if (!creature) return;
+    creature.role = ROLE_PET;
+    creature.petCommand = (cmd === CMD_STAY || cmd === CMD_GOTO || cmd === CMD_ATTACK) ? cmd : CMD_FOLLOW;
+    if (point) {
+      if (!creature.petTarget) creature.petTarget = new THREE.Vector3();
+      creature.petTarget.set(point.x, terrainHeight(point.x, point.z) + 0.08, point.z);
+    } else {
+      creature.petTarget = null;
+    }
+  }
+
+  function tameNearestToPlayer(maxDist = 6) {
+    if (!hasLivePlayer()) return null;
+    let best = null, bestD = maxDist;
+    for (const c of creatures) {
+      if (c.role !== ROLE_WILD || !c.isCombatActive()) continue; // skip non-wild and dead/dying
+      const d = Math.hypot(c.pos.x - _playerPos.x, c.pos.z - _playerPos.z);
+      if (d <= bestD) { bestD = d; best = c; }
+    }
+    if (!best) return null;
+    setPetCommand(best, CMD_FOLLOW);
+    return best;
+  }
+
+  function commandAllPets(cmd, point = null) {
+    for (const c of creatures) if (c.role === ROLE_PET) setPetCommand(c, cmd, point);
+  }
+
+  function untamePet(creature) {
+    if (!creature) return;
+    creature.role = ROLE_WILD;
+    creature.petCommand = CMD_FOLLOW;
+    creature.petTarget = null;
+  }
+
+  // Turns every alive wild creature hostile toward the player (dev/test trigger). Returns count.
+  function aggroAllWild() {
+    let n = 0;
+    for (const c of creatures) if (c.role === ROLE_WILD && c.isCombatActive()) { c.role = ROLE_HOSTILE; n++; }
+    return n;
+  }
+
+  // Reverts every hostile creature back to wild and clears its combat/attack state.
+  function calmAllHostile() {
+    for (const c of creatures) {
+      if (c.role !== ROLE_HOSTILE) continue;
+      c.role = ROLE_WILD;
+      c.combatTarget = null;
+      c.punchArm = null;
+      if (c.attackState !== 'dying') {
+        c.attackState = 'ready';
+        c.attackTimer = 0;
+        c.attackApplied = false;
+      }
+    }
+  }
+
+  // Shallow-merges validated numeric/boolean fields into _wildlife (unknown/invalid keys ignored);
+  // returns a shallow copy of the public fields for the caller to read back the applied state.
+  function setWildlife(opts = {}) {
+    if (typeof opts.enabled === 'boolean') _wildlife.enabled = opts.enabled;
+    if (Number.isFinite(opts.target)) _wildlife.target = Math.max(0, Math.round(opts.target));
+    if (Number.isFinite(opts.ringMin)) _wildlife.ringMin = Math.max(0, opts.ringMin);
+    if (Number.isFinite(opts.ringMax)) _wildlife.ringMax = Math.max(_wildlife.ringMin, opts.ringMax);
+    if (Number.isFinite(opts.cullRadius)) _wildlife.cullRadius = Math.max(_wildlife.ringMax, opts.cullRadius);
+    if (Number.isFinite(opts.hardMax)) _wildlife.hardMax = Math.max(1, Math.round(opts.hardMax));
+    return { enabled: _wildlife.enabled, target: _wildlife.target, ringMin: _wildlife.ringMin, ringMax: _wildlife.ringMax, cullRadius: _wildlife.cullRadius, hardMax: _wildlife.hardMax };
+  }
+
   return {
     update,
     updateNetworkCreatures,
@@ -5017,12 +5257,28 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     selectFromRaycaster,
     setTargetPoint,
     setBehavior,
+    setCreatureRole,
+    setPetCommand,
+    tameNearestToPlayer,
+    tameFromView,
+    pickCreatureFromRaycaster,
+    commandAllPets,
+    untamePet,
+    aggroAllWild,
+    calmAllHostile,
+    setWildlife,
+    spawnCreatureAt,
+    despawnCreature,
     exportSharedNpcConfig,
     applySharedNpcConfig,
     applyNetworkCreatureSnapshot,
     get stats() { return creatureStats; },
     get creatures() { return creatures; },
+    get pets() { return creatures.filter(c => c.role === ROLE_PET); },
+    get playerThreats() { return creatures.filter(c => c.role === ROLE_HOSTILE && c.isCombatActive()).length; },
     get reflectionMeshes() { return creatureBatches ? creatureBatches.meshes : []; },
     get currentBehavior() { return currentBehavior; },
+    get wildlife() { return { enabled: _wildlife.enabled, target: _wildlife.target, ringMin: _wildlife.ringMin, ringMax: _wildlife.ringMax, cullRadius: _wildlife.cullRadius, hardMax: _wildlife.hardMax }; },
+    get wildlifeCount() { return creatures.filter(c => c._wildlife && c.role === ROLE_WILD).length; },
   };
 }

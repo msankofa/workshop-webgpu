@@ -15,6 +15,7 @@ FAMILIES_DIR = os.path.join(ROOT, 'families')
 PLANT_FAMILIES_DIR = os.path.join(ROOT, 'plant-families')
 MAPS_DIR = os.path.join(ROOT, 'maps')
 STATS_DIR = os.path.join(ROOT, 'research', 'stats')
+STATES_DIR = os.path.join(ROOT, 'states')
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
 # environment-viewer.html's perfLog auto-upload names files perf-<ISO>-<sanitized search>.csv
 # (see perfLog.buildFilename); this must stay in sync with that client-side pattern.
@@ -93,6 +94,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         '/api/save-family': FAMILIES_DIR,
         '/api/save-plant-family': PLANT_FAMILIES_DIR,
     }
+
+    # GET /api/list-states — enumerate *.json files dropped in states/ so the viewer can
+    # auto-populate its saved-states list on load. Filenames are read from disk (not client
+    # input), so there's nothing to sanitize; the client fetches each via /states/<name>.
+    def do_GET(self):
+        if urllib.parse.urlparse(self.path).path == '/api/list-states':
+            self._handle_list_states()
+            return
+        super().do_GET()
+
+    def _handle_list_states(self):
+        try:
+            files = []
+            if os.path.isdir(STATES_DIR):
+                for entry in sorted(os.listdir(STATES_DIR)):
+                    if entry.lower().endswith('.json') and os.path.isfile(os.path.join(STATES_DIR, entry)):
+                        files.append(entry)
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
     def do_POST(self):
         if self.path == '/api/save-map':

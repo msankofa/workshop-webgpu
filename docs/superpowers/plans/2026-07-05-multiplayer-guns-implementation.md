@@ -2,6 +2,10 @@
 
 > For agentic workers: implement this plan task-by-task. Keep checkboxes current. Do not add Rapier in this pass; hitscan/player combat needs protocol correctness, not rigid-body simulation.
 
+> **Audit status (2026-07-06):** M0–M3 fully landed and green under test. M4/M5 functionally present but diverged from the planned API (see inline notes). M6 (tracers/hit-fx/occlusion) and M7 (docs + agent_log) are unimplemented. Tests passing: `test-weapons.mjs`, `test-combat.mjs`, `test-player-combat.mjs`, `test-multiplayer-guns.mjs`, `multiplayer-test.mjs`.
+>
+> **Guns cannot damage ClaudeCraft creatures/mobs today** — `combat.js:findPlayerHit` and `currentCombatPlayers()` only ever consider host+guest player capsules; there is no mob-hit path and no `damageMob`-equivalent in the ClaudeCraft bridge. The shared-HP-pool language in this plan refers to *mobs damaging players* and *guns damaging players* sharing one **player** HP pool, not to guns hitting mob HP. Adding gun-vs-mob damage would be new scope.
+
 ## Goal
 
 Add player-held guns to the workshop multiplayer system:
@@ -106,12 +110,12 @@ to:
 
 ### Steps
 
-- [ ] Define weapon ids: `m1911`, `m24`.
-- [ ] Map each weapon to model path, fire interval, damage, range, recoil, tracer color.
-- [ ] Add `loadout.defaultWeapon = 'm1911'`.
-- [ ] Keep grenade, RPG, and knife in the config as `disabled: true` future entries.
-- [ ] Add a test that every enabled weapon has finite positive `damage`, `range`, and `fireIntervalMs`.
-- [ ] Add a test that model paths are strings under `models/guns/`.
+- [x] Define weapon ids: `m1911`, `m24`.
+- [x] Map each weapon to model path, fire interval, damage, range, recoil, tracer color.
+- [x] Add `loadout.defaultWeapon = 'm1911'`.
+- [x] Keep grenade, RPG, and knife in the config as `disabled: true` future entries.
+- [x] Add a test that every enabled weapon has finite positive `damage`, `range`, and `fireIntervalMs`.
+- [x] Add a test that model paths are strings under `models/guns/`.
 
 ### Acceptance
 
@@ -127,27 +131,27 @@ to:
 
 ### Steps
 
-- [ ] Implement vector helpers using arrays, no Three import.
-- [ ] Implement `normalizeDir(dir)`.
-- [ ] Implement `rayCapsuleHit(origin, dir, range, capsule)`.
-- [ ] Implement `findPlayerHit({ shooterId, players, origin, dir, range, occlusion })`.
-- [ ] Implement `validateShot({ shooter, weapon, intent, nowMs, lastShot })`.
-- [ ] Implement `applyGunDamage(targetCombat, weapon)`.
-- [ ] Add pose history helpers:
+- [x] Implement vector helpers using arrays, no Three import.
+- [x] Implement `normalizeDir(dir)`.
+- [x] Implement `rayCapsuleHit(origin, dir, range, capsule)`.
+- [x] Implement `findPlayerHit({ shooterId, players, origin, dir, range, occlusion })`.
+- [x] Implement `validateShot({ shooter, weapon, intent, nowMs, lastShot })`.
+- [x] Implement `applyGunDamage(targetCombat, weapon)`.
+- [x] Add pose history helpers:
   - `pushPlayerPose(history, id, pose, nowMs)`
   - `samplePlayerPose(history, id, targetTimeMs)`
   - `prunePlayerPoseHistory(history, nowMs, maxAgeMs)`
 
 ### Tests
 
-- [ ] Ray through capsule hits.
-- [ ] Ray beside capsule misses.
-- [ ] Nearest target wins.
-- [ ] Shooter cannot hit self.
-- [ ] Dead target is ignored.
-- [ ] Cooldown rejection works.
-- [ ] Duplicate/stale `shotSeq` is rejected.
-- [ ] Pose history interpolates by time.
+- [x] Ray through capsule hits.
+- [x] Ray beside capsule misses.
+- [x] Nearest target wins.
+- [x] Shooter cannot hit self.
+- [x] Dead target is ignored.
+- [x] Cooldown rejection works.
+- [x] Duplicate/stale `shotSeq` is rejected.
+- [x] Pose history interpolates by time.
 
 ### Acceptance
 
@@ -163,28 +167,28 @@ to:
 
 ### Steps
 
-- [ ] Implement fallback HP state:
+- [x] Implement fallback HP state:
   - `ensurePlayer(id)`
   - `getSnapshot(id)`
   - `applyDamage({ targetId, amount, source, attackerId, hitPoint, weaponId })`
   - `revive(id, worldPose)`
   - `removePlayer(id)`
-- [ ] Add optional ClaudeCraft adapter hooks:
+- [x] Add optional ClaudeCraft adapter hooks:
   - `getPlayerCombat(id)`
   - `damagePlayer(id, packet)`
   - `revivePlayer(id, pose)`
   - `removeExternalPlayer(id)`
-- [ ] Make facade choose ClaudeCraft adapter when present and fallback map otherwise.
-- [ ] Return a normalized snapshot shape in both modes.
+- [x] Make facade choose ClaudeCraft adapter when present and fallback map otherwise.
+- [x] Return a normalized snapshot shape in both modes.
 
 ### Tests
 
-- [ ] Fallback damage reduces HP.
-- [ ] Fallback death sets `alive:false`.
-- [ ] Revive restores HP.
-- [ ] Missing player is initialized safely.
-- [ ] Fake ClaudeCraft adapter receives damage calls.
-- [ ] Facade snapshot shape is identical in fallback and delegated mode.
+- [x] Fallback damage reduces HP.
+- [x] Fallback death sets `alive:false`.
+- [x] Revive restores HP.
+- [x] Missing player is initialized safely.
+- [x] Fake ClaudeCraft adapter receives damage calls.
+- [x] Facade snapshot shape is identical in fallback and delegated mode.
 
 ### Acceptance
 
@@ -201,23 +205,23 @@ to:
 
 ### Steps
 
-- [ ] Create `playerCombat` after multiplayer/ClaudeCraft setup is known.
-- [ ] Merge `playerCombat.getSnapshot(id)` into every player entry returned by `getState()`.
-- [ ] On host `player_state`, ignore guest `hp`, `alive`, `fireSeq`, `lastShotAt`.
-- [ ] Add `combat_intent` branch in the `mp:guest_input` handler.
-- [ ] Implement `applyCombatIntent(intent, ownerId)` beside `applyLightIntent`.
-- [ ] Host-local firing calls `applyCombatIntent(intent, 'host')`.
-- [ ] Guest firing sends `mpSession.sendInput(intent)`.
-- [ ] Track `lastShotSeq` and `lastShotAt` per player on the host.
-- [ ] Push accepted player poses into `playerPoseHistory`.
-- [ ] If ClaudeCraft bridge is active, mirror accepted guest poses into the bridge as planned by the ClaudeCraft integration.
-- [ ] On `guest_left`, remove pose history and fallback combat state; release ClaudeCraft external player if active.
-- [ ] Update `_lerpPlayers()` to carry/interpolate combat fields.
+- [x] Create `playerCombat` after multiplayer/ClaudeCraft setup is known.
+- [x] Merge `playerCombat.getSnapshot(id)` into every player entry returned by `getState()`.
+- [x] On host `player_state`, ignore guest `hp`, `alive`, `fireSeq`, `lastShotAt`.
+- [x] Add `combat_intent` branch in the `mp:guest_input` handler.
+- [x] Implement `applyCombatIntent(intent, ownerId)` beside `applyLightIntent`.
+- [x] Host-local firing calls `applyCombatIntent(intent, 'host')`.
+- [x] Guest firing sends `mpSession.sendInput(intent)`.
+- [x] Track `lastShotSeq` and `lastShotAt` per player on the host.
+- [x] Push accepted player poses into `playerPoseHistory`.
+- [x] If ClaudeCraft bridge is active, mirror accepted guest poses into the bridge as planned by the ClaudeCraft integration.
+- [x] On `guest_left`, remove pose history and fallback combat state; release ClaudeCraft external player if active.
+- [x] Update `_lerpPlayers()` to carry/interpolate combat fields.
 
 ### Tests
 
-- [ ] Extend `multiplayer-test.mjs` to verify `hp` interpolation.
-- [ ] Verify `alive`, `weapon`, `fireSeq`, and `lastShotAt` pass through from the newer snapshot.
+- [x] Extend `multiplayer-test.mjs` to verify `hp` interpolation. *(landed as `test-multiplayer-guns.mjs`; `multiplayer-test.mjs` also passes)*
+- [x] Verify `alive`, `weapon`, `fireSeq`, and `lastShotAt` pass through from the newer snapshot.
 
 ### Acceptance
 
@@ -236,16 +240,16 @@ to:
 
 ### Steps
 
-- [ ] Add optional gun model group to `createViewHands`.
-- [ ] Add API:
-  - `setWeapon(weaponDef)`
-  - `setWeaponVisible(visible)`
-  - `recoil(strength = 1)`
-- [ ] Load `models/guns/low-poly_m1911.glb` through the existing GLTFLoader path in `environment-viewer.html`.
-- [ ] Attach the cloned/loaded model to the camera viewmodel group.
-- [ ] Add per-weapon local offset/rotation/scale in `weapons.js`.
-- [ ] Keep orb hands visible unless the model framing requires hiding or shrinking them.
-- [ ] On local accepted fire input, call `viewHands.recoil(weapon.recoil)`.
+- [x] Add optional gun model group to `createViewHands`. *(DIVERGED: shipped as a separate inline `createLocalWeaponViewModel()` in `environment-viewer.html:~4580`, not inside `createViewHands`.)*
+- [ ] Add API: *(DIVERGED — names differ: actual API is `setTool(toolId)` / `setVisible(v)` / `recoil()`.)*
+  - `setWeapon(weaponDef)` → actual: `setTool(toolId)`
+  - `setWeaponVisible(visible)` → actual: `setVisible(visible)`
+  - `recoil(strength = 1)` → actual: `recoil()` takes **no** strength arg
+- [x] Load `models/guns/low-poly_m1911.glb` through the existing GLTFLoader path in `environment-viewer.html`.
+- [x] Attach the cloned/loaded model to the camera viewmodel group.
+- [x] Add per-weapon local offset/rotation/scale in `weapons.js`. *(`viewOffset`/`viewRotation`/`viewScale`/`viewTargetSize`)*
+- [x] Keep orb hands visible unless the model framing requires hiding or shrinking them.
+- [ ] On local accepted fire input, call `viewHands.recoil(weapon.recoil)`. *(PARTIAL: `recoil()` is called but with no argument; per-weapon `weapon.recoil` strength is not applied through the kick — only the viewmodel's internal transform reads it.)*
 
 ### Acceptance
 
@@ -262,11 +266,11 @@ to:
 
 ### Steps
 
-- [ ] Extend `GhostRenderer._makePlayer()` with a gun mount group.
-- [ ] Load or inject shared gun model resources from `environment-viewer.html`, or start with a simple box placeholder if asset loading inside `GhostRenderer` would tangle responsibilities.
-- [ ] Position remote gun relative to the player's local -Z forward direction and orb hands.
-- [ ] Watch `fireSeq`; when it changes, run recoil/muzzle flash animation on that remote player.
-- [ ] Hide/lower gun for `alive:false`.
+- [x] Extend `GhostRenderer._makePlayer()` with a gun mount group. *(`held` group)*
+- [x] Load or inject shared gun model resources from `environment-viewer.html`, or start with a simple box placeholder if asset loading inside `GhostRenderer` would tangle responsibilities. *(box/sphere placeholder; no GLB — allowed by plan)*
+- [x] Position remote gun relative to the player's local -Z forward direction and orb hands. *(`_placeHeldItem()`, m24 sized as long gun)*
+- [ ] Watch `fireSeq`; when it changes, run recoil/muzzle flash animation on that remote player. *(PARTIAL: muzzle-flash via `heldFlashUntil` on `firing` works; there is no positional recoil kick on the remote held mesh. `fireSeq` diff is watched only in `environment-viewer.html` to play a sound.)*
+- [ ] Hide/lower gun for `alive:false`. *(MISSING: `alive` is only passed through in `_lerpPlayers()`; `_makePlayer`/`_placeHeldItem` never read it to hide/lower the gun or body.)*
 
 ### Acceptance
 
@@ -286,15 +290,15 @@ to:
 
 ### Steps
 
-- [ ] Add short-lived effect adapter:
+- [ ] Add short-lived effect adapter: *(MISSING: no `entity-types/effect.js`; `gun_tracer`/`hit_spark`/`muzzle_flash` do not exist anywhere.)*
   - `gun_tracer`
   - `hit_spark`
   - optional `muzzle_flash`
-- [ ] Host creates tracer entity for accepted shots.
-- [ ] Host creates hit spark entity at confirmed hit point.
-- [ ] Guest renders effects from `entities.upserts`, same as light/projectile path.
-- [ ] Add procedural terrain occlusion by ray stepping against `terrainHeight(x,z)`.
-- [ ] Add authored map occlusion using `mapCollider`/BVH ray query. If `mapCollider` lacks a forward ray API, add one there rather than duplicating BVH logic in combat code.
+- [ ] Host creates tracer entity for accepted shots. *(MISSING: `applyCombatIntent` applies damage + audio only, never spawns an entity.)*
+- [ ] Host creates hit spark entity at confirmed hit point. *(MISSING)*
+- [ ] Guest renders effects from `entities.upserts`, same as light/projectile path. *(MISSING)*
+- [ ] Add procedural terrain occlusion by ray stepping against `terrainHeight(x,z)`. *(MISSING: `combat.js` supports an optional `occlusion(origin,point)` hook but the call site passes none, so nothing blocks shots.)*
+- [ ] Add authored map occlusion using `mapCollider`/BVH ray query. If `mapCollider` lacks a forward ray API, add one there rather than duplicating BVH logic in combat code. *(MISSING)*
 
 ### Acceptance
 
@@ -312,11 +316,11 @@ to:
 
 ### Steps
 
-- [ ] Document `combat_intent`.
-- [ ] Document extended player snapshot fields.
-- [ ] Document host-owned player combat facade.
-- [ ] Document why Rapier is deferred.
-- [ ] Log the landed milestones in `agent_log.csv`.
+- [x] Document `combat_intent`. *(`multiplayer.md` §5b)*
+- [x] Document extended player snapshot fields. *(`multiplayer.md` §5b)*
+- [x] Document host-owned player combat facade. *(`multiplayer.md` §5b + `creature.md` delegated branch)*
+- [x] Document why Rapier is deferred. *(`multiplayer.md` §5b)*
+- [x] Log the landed milestones in `agent_log.csv`. *(rows dated 2026-07-06T15:30/15:35)*
 
 ### Acceptance
 

@@ -1,0 +1,247 @@
+{
+  "_comment": "Weapon poses + sequences — Contract 5 (docs/subsystems/procedural-body-weapon-contracts.md). weaponPoses are weapon-root transforms relative to camera/body. Sequences reference weaponPoses by name in their `poses` subset so weapon-sequence.js's evaluateSequence(seq, t) stays a pure function of its own data, with no external lookup table.",
+  "weaponPoses": {
+    "lowReady": {
+      "p": [
+        0.24,
+        -0.42,
+        -0.62
+      ],
+      "r": [
+        -0.08,
+        -0.04,
+        -0.02
+      ],
+      "scale": 1
+    },
+    "aimed": {
+      "p": [
+        0.3,
+        -0.31,
+        -0.68
+      ],
+      "r": [
+        -0.02,
+        -0.04,
+        -0.03
+      ],
+      "scale": 1
+    },
+    "reloadRaise": {
+      "p": [
+        0.22,
+        -0.2,
+        -0.5
+      ],
+      "r": [
+        0.25,
+        -0.12,
+        0.2
+      ],
+      "scale": 1
+    }
+  },
+  "reloadSequence": {
+    "m1911": {
+      "duration": 1.45,
+      "commitAmmoAt": 1.05,
+      "poses": {
+        "aimed": {
+          "p": [
+            0.3,
+            -0.31,
+            -0.68
+          ],
+          "r": [
+            -0.02,
+            -0.04,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "reloadRaise": {
+          "p": [
+            0.22,
+            -0.2,
+            -0.5
+          ],
+          "r": [
+            0.25,
+            -0.12,
+            0.2
+          ],
+          "scale": 1
+        }
+      },
+      "keys": [
+        {
+          "t": 0,
+          "weaponPose": "aimed",
+          "right": "rightGrip",
+          "left": "leftGrip"
+        },
+        {
+          "t": 0.18,
+          "weaponPose": "reloadRaise",
+          "right": "rightGrip",
+          "left": "magwell"
+        },
+        {
+          "t": 0.35,
+          "right": "rightGrip",
+          "left": {
+            "body": [
+              0.12,
+              -0.3,
+              0.26
+            ]
+          },
+          "event": "detachMagazine"
+        },
+        {
+          "t": 0.48,
+          "left": {
+            "body": [
+              0.32,
+              -0.36,
+              0.12
+            ]
+          },
+          "event": "tossMagazine"
+        },
+        {
+          "t": 0.68,
+          "left": "beltMagazine",
+          "event": "spawnFreshMagazine"
+        },
+        {
+          "t": 0.95,
+          "left": "magwell",
+          "event": "insertMagazine"
+        },
+        {
+          "t": 1.15,
+          "left": "chargingHandle",
+          "event": "grabChargingHandle"
+        },
+        {
+          "t": 1.28,
+          "left": {
+            "weaponAnchor": "chargingHandle",
+            "offset": [
+              0,
+              0,
+              -0.12
+            ]
+          },
+          "event": "pullChargingHandle"
+        },
+        {
+          "t": 1.38,
+          "left": "leftGrip",
+          "weaponPose": "aimed",
+          "event": "releaseChargingHandle"
+        }
+      ]
+    },
+    "m24": {
+      "_comment": "Bolt-action cycle: chargingHandle stands in for the bolt handle (the m24 GLB has no separate bolt anchor). Slower than the m1911 pistol reload. First-pass timing — tune in weapon-anchor-editor.html.",
+      "duration": 2,
+      "commitAmmoAt": 1.15,
+      "poses": {
+        "aimed": {
+          "p": [
+            0.3,
+            -0.31,
+            -0.68
+          ],
+          "r": [
+            -0.02,
+            -0.04,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "reloadRaise": {
+          "p": [
+            0.22,
+            -0.2,
+            -0.5
+          ],
+          "r": [
+            0.25,
+            -0.12,
+            0.2
+          ],
+          "scale": 1
+        }
+      },
+      "keys": [
+        {
+          "t": 0,
+          "weaponPose": "aimed",
+          "right": "rightGrip",
+          "left": "leftGrip"
+        },
+        {
+          "t": 0.22,
+          "weaponPose": "reloadRaise",
+          "right": "rightGrip",
+          "left": "chargingHandle",
+          "event": "grabBolt"
+        },
+        {
+          "t": 0.45,
+          "left": {
+            "weaponAnchor": "chargingHandle",
+            "offset": [
+              0,
+              0.02,
+              -0.14
+            ]
+          },
+          "event": "openBolt"
+        },
+        {
+          "t": 0.75,
+          "left": {
+            "body": [
+              0.26,
+              -0.42,
+              0.2
+            ]
+          },
+          "event": "grabRound"
+        },
+        {
+          "t": 1.05,
+          "left": "magwell",
+          "event": "insertRound"
+        },
+        {
+          "t": 1.35,
+          "left": "chargingHandle",
+          "event": "grabBoltReturn"
+        },
+        {
+          "t": 1.6,
+          "left": {
+            "weaponAnchor": "chargingHandle",
+            "offset": [
+              0,
+              0.02,
+              0.1
+            ]
+          },
+          "event": "closeBolt"
+        },
+        {
+          "t": 1.8,
+          "left": "leftGrip",
+          "weaponPose": "aimed",
+          "event": "boltHome"
+        }
+      ]
+    }
+  }
+}
