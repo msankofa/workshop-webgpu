@@ -27,6 +27,65 @@ export function makePalette(overrides = {}) {
   return Object.assign({}, DEFAULT_PALETTE, overrides);
 }
 
+// ---- Time-of-day dome states -------------------------------------------------
+// Three keyframed dome parameter sets blended by sun elevation. `night` reproduces
+// today's DEFAULT_PALETTE look plus the transition constants that used to be baked into
+// sky.js's colorNode (zenithSoftness 0.55, glowWidth ~= 1/9, glowStrength 0.4).
+export const DEFAULT_SKY_STATES = {
+  day:   { top: '#2b6bd6', horizon: '#bcd4f0', bottom: '#7fa8d8', glow: '#e8eef6',
+           horizonHeight: 0.0, zenithSoftness: 0.55, glowWidth: 0.11, glowStrength: 0.25 },
+  dusk:  { top: '#1a2a5c', horizon: '#c85a3c', bottom: '#2a1a3e', glow: '#ff8a4a',
+           horizonHeight: 0.0, zenithSoftness: 0.50, glowWidth: 0.18, glowStrength: 0.60 },
+  night: { top: '#0a1026', horizon: '#243b66', bottom: '#0b1430', glow: '#3a5a8c',
+           horizonHeight: 0.0, zenithSoftness: 0.55, glowWidth: 0.11, glowStrength: 0.40 },
+};
+
+// Sun-elevation anchors (degrees) that select / blend the states.
+export const DEFAULT_THRESHOLDS = { dayAbove: 8, duskPeak: 0, nightBelow: -8 };
+
+const SKY_COLOR_KEYS = ['top', 'horizon', 'bottom', 'glow'];
+const SKY_NUM_KEYS = ['horizonHeight', 'zenithSoftness', 'glowWidth', 'glowStrength'];
+
+export function makeSkyStates(overrides = {}) {
+  const out = {};
+  for (const k of ['day', 'dusk', 'night']) out[k] = Object.assign({}, DEFAULT_SKY_STATES[k], overrides[k] || {});
+  return out;
+}
+
+function hex2rgb(hex) { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function ch(v) { return Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'); }
+// Linear RGB-space hex interpolation. Endpoints are exact (integer identity), so a state
+// returned at its own anchor elevation is byte-for-byte that state's color.
+export function lerpHex(a, b, t) {
+  const A = hex2rgb(a), B = hex2rgb(b);
+  return '#' + ch(A[0] + (B[0] - A[0]) * t) + ch(A[1] + (B[1] - A[1]) * t) + ch(A[2] + (B[2] - A[2]) * t);
+}
+
+function lerpState(a, b, t) {
+  const out = {};
+  for (const k of SKY_COLOR_KEYS) out[k] = lerpHex(a[k], b[k], t);
+  for (const k of SKY_NUM_KEYS) out[k] = a[k] + (b[k] - a[k]) * t;
+  return out;
+}
+
+// Dome parameter set for a sun elevation. Only ever blends ADJACENT, explicitly-authored
+// states (day<->dusk, dusk<->night), so colors never take a muddy direct blue->red
+// midpoint. Clamps to day above `dayAbove` and to night below `nightBelow`.
+export function domeParamsAtElevation(elevDeg, thresholds = DEFAULT_THRESHOLDS, states = DEFAULT_SKY_STATES) {
+  const { dayAbove, duskPeak, nightBelow } = thresholds;
+  const { day, dusk, night } = states;
+  if (elevDeg >= dayAbove) return lerpState(day, day, 0);
+  if (elevDeg <= nightBelow) return lerpState(night, night, 0);
+  if (elevDeg >= duskPeak) return lerpState(dusk, day, (elevDeg - duskPeak) / (dayAbove - duskPeak));
+  return lerpState(night, dusk, (elevDeg - nightBelow) / (duskPeak - nightBelow));
+}
+
+function smooth01(e0, e1, x) { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
+// 0 in full day, 1 in full night, smooth through dusk. Monotonic non-increasing in elevation.
+export function nightnessAtElevation(elevDeg, thresholds = DEFAULT_THRESHOLDS) {
+  return 1 - smooth01(thresholds.nightBelow, thresholds.dayAbove, elevDeg);
+}
+
 // Sky dome radius (faithful to the source spec).
 export function skyRadius(far, size) {
   return Math.min(far * 0.88, Math.max(420, (Number(size) || 120) * 2.65));
@@ -142,7 +201,9 @@ export function generateStars(radius, palette, rng) {
 export function generateMilkyWay(radius, palette, rng) {
   if (!palette.milkyWay) return null;
   const shell = radius * 0.82;
-  const bandCount = Math.round((palette.starCount || 1400) * 1.1);
+  // Density multiplier (band points per star); defaults to 1.1 so an unset palette matches the
+  // historic count. Exposed as the "Milky Way density" control.
+  const bandCount = Math.round((palette.starCount || 1400) * (palette.milkyWayDensity ?? 1.1));
   const position = new Float32Array(bandCount * 3);
   const brightness = new Float32Array(bandCount);
   const phase = new Float32Array(bandCount);
@@ -230,6 +291,10 @@ function weightedPick(rng, items, weights) {
 // celestial-bodies module turns into a sprite. Night/dusk only (caller gates on palette).
 export function generateCelestialBodies(radius, palette, rng) {
   const out = [];
+  // Global size multiplier on generated bodies (the "Planet/moon size" control). Count
+  // overrides (planetCount/moonCount) still consume their RNG draw when set, so overriding a
+  // count doesn't reshuffle the rest of the sky's stream more than the count change itself.
+  const bodyScale = palette.bodyScale ?? 1;
   const place = (dir, r) => {
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
     return { x: dir.x / len * r, y: dir.y / len * r, z: dir.z / len * r };
@@ -240,31 +305,34 @@ export function generateCelestialBodies(radius, palette, rng) {
     const rr = Math.sqrt(Math.max(0, 1 - y * y));
     return { x: Math.cos(theta) * rr, y, z: Math.sin(theta) * rr };
   };
-  // 1-2 extra moons (ice/rocky only — "gas moon" or "terrestrial moon" don't read as sensible).
-  const moonN = 1 + ((rng() * 2) | 0);
+  // Extra moons (ice/rocky only — "gas moon" or "terrestrial moon" don't read as sensible).
+  // Default 1-2; palette.moonCount overrides the count while still consuming the RNG draw.
+  const moonRoll = 1 + ((rng() * 2) | 0);
+  const moonN = palette.moonCount != null ? Math.max(0, palette.moonCount | 0) : moonRoll;
   for (let i = 0; i < moonN; i++) {
     const r = radius * (0.7 + rng() * 0.08);
     const kind = weightedPick(rng, MOON_KINDS, MOON_WEIGHTS);
     out.push({ type: 'moon', companion: false, kind, detail: 'low', gas: kind === 'gas',
       position: place(dir(), r), radius: r,
-      size: radius * (0.018 + rng() * 0.02), color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
+      size: radius * (0.018 + rng() * 0.02) * bodyScale, color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
       phase: rng(), seed: rng() });
   }
-  // 2-4 small distant planets.
-  const distN = 2 + ((rng() * 3) | 0);
+  // Small distant planets. Default 2-4; palette.planetCount overrides (RNG draw still consumed).
+  const distRoll = 2 + ((rng() * 3) | 0);
+  const distN = palette.planetCount != null ? Math.max(0, palette.planetCount | 0) : distRoll;
   for (let i = 0; i < distN; i++) {
     const r = radius * (0.72 + rng() * 0.06);
     const kind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
     out.push({ type: 'planet', scaleClass: 'distant', kind, detail: 'low', gas: kind === 'gas',
       position: place(dir(), r), radius: r,
-      size: radius * (0.01 + rng() * 0.015), color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
+      size: radius * (0.01 + rng() * 0.015) * bodyScale, color: randomKindColor(rng, kind), color2: randomKindColor(rng, kind),
       rings: false, glow: rng() < 0.3, glowRadius: 1.15 + rng() * 0.35, glowIntensity: 0.35 + rng() * 0.3,
       seed: rng() });
   }
   // Exactly one large near planet.
   const nearDir = dir();
   const nearR = radius * 0.6;
-  const nearSize = radius * (0.06 + rng() * 0.04);
+  const nearSize = radius * (0.06 + rng() * 0.04) * bodyScale;
   const nearKind = weightedPick(rng, PLANET_KINDS, KIND_WEIGHTS);
   const near = { type: 'planet', scaleClass: 'near', kind: nearKind, detail: 'high', gas: nearKind === 'gas',
     position: place(nearDir, nearR), radius: nearR,

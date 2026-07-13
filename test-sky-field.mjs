@@ -123,5 +123,84 @@ import { generateMilkyWay, generateCelestialBodies } from './sky-field.js';
   ok(['terrestrial', 'gas', 'ice', 'volcanic', 'rocky'].every(k => seen.has(k)), 'all 5 planet kinds appear across 200 seeds');
 }
 
+// ---- Palette-driven controls: counts, body scale, Milky Way density ----
+{
+  // Count overrides pin the generated counts regardless of seed.
+  const b = generateCelestialBodies(1000, makePalette({ planetCount: 6, moonCount: 3 }), makeRng(3));
+  ok(b.filter(x => x.type === 'planet' && x.scaleClass === 'distant').length === 6, 'planetCount overrides distant-planet count');
+  ok(b.filter(x => x.type === 'moon' && !x.companion).length === 3, 'moonCount overrides extra-moon count');
+  const zero = generateCelestialBodies(1000, makePalette({ planetCount: 0, moonCount: 0 }), makeRng(3));
+  ok(zero.filter(x => x.type === 'planet' && x.scaleClass === 'distant').length === 0, 'planetCount 0 yields no distant planets');
+  ok(zero.filter(x => x.type === 'moon' && !x.companion).length === 0, 'moonCount 0 yields no extra moons');
+
+  // bodyScale multiplies every body's size; the near planet stays exactly one near planet.
+  const s1 = generateCelestialBodies(1000, makePalette({ bodyScale: 1 }), makeRng(4));
+  const s2 = generateCelestialBodies(1000, makePalette({ bodyScale: 2 }), makeRng(4));
+  const near1 = s1.find(x => x.scaleClass === 'near'), near2 = s2.find(x => x.scaleClass === 'near');
+  ok(approx(near2.size, near1.size * 2, 1e-9), 'bodyScale scales body size linearly');
+
+  // Milky Way density scales the band point count off the star count.
+  const mwA = generateMilkyWay(1000, makePalette({ starCount: 1000, milkyWayDensity: 1 }), makeRng(2));
+  const mwB = generateMilkyWay(1000, makePalette({ starCount: 1000, milkyWayDensity: 2 }), makeRng(2));
+  ok(mwA.bandCount === 1000 && mwB.bandCount === 2000, 'milkyWayDensity scales band count off starCount');
+  const mwDefault = generateMilkyWay(1000, makePalette({ starCount: 1000 }), makeRng(2));
+  ok(mwDefault.bandCount === 1100, 'unset milkyWayDensity keeps the historic 1.1x');
+}
+
+import { DEFAULT_SKY_STATES, makeSkyStates, DEFAULT_THRESHOLDS,
+  lerpHex, domeParamsAtElevation, nightnessAtElevation } from './sky-field.js';
+
+// ---- makeSkyStates: per-state defaults-merge, fresh object ----
+{
+  ok(makeSkyStates().night.top === DEFAULT_SKY_STATES.night.top, 'makeSkyStates() clones defaults');
+  ok(makeSkyStates({ day: { top: '#123456' } }).day.top === '#123456', 'makeSkyStates() applies per-state override');
+  ok(makeSkyStates({ day: { top: '#123456' } }).day.glowWidth === DEFAULT_SKY_STATES.day.glowWidth, 'unspecified state fields keep defaults');
+  ok(makeSkyStates() !== DEFAULT_SKY_STATES, 'makeSkyStates() returns a fresh object');
+}
+
+// ---- lerpHex: endpoints exact, midpoint componentwise, identity ----
+{
+  ok(lerpHex('#000000', '#ffffff', 0) === '#000000', 'lerpHex t=0 returns first color');
+  ok(lerpHex('#000000', '#ffffff', 1) === '#ffffff', 'lerpHex t=1 returns second color');
+  ok(lerpHex('#000000', '#ffffff', 0.5) === '#808080', 'lerpHex midpoint is componentwise mid');
+  ok(lerpHex('#204060', '#204060', 0.37) === '#204060', 'lerpHex of equal colors is identity');
+}
+
+// ---- domeParamsAtElevation: anchor identity, interpolation, clamp, determinism ----
+{
+  const th = DEFAULT_THRESHOLDS;                 // { dayAbove:8, duskPeak:0, nightBelow:-8 }
+  const S = DEFAULT_SKY_STATES;
+  const atDay   = domeParamsAtElevation(th.dayAbove,   th, S);
+  const atDusk  = domeParamsAtElevation(th.duskPeak,   th, S);
+  const atNight = domeParamsAtElevation(th.nightBelow, th, S);
+  ok(atDay.top === S.day.top && atDay.glowStrength === S.day.glowStrength, 'exact day params at dayAbove');
+  ok(atDusk.top === S.dusk.top && atDusk.glowWidth === S.dusk.glowWidth, 'exact dusk params at duskPeak');
+  ok(atNight.top === S.night.top && atNight.horizon === S.night.horizon, 'exact night params at nightBelow');
+  ok(domeParamsAtElevation(90, th, S).top === S.day.top, 'above dayAbove clamps to day');
+  ok(domeParamsAtElevation(-90, th, S).bottom === S.night.bottom, 'below nightBelow clamps to night');
+  const mid = domeParamsAtElevation((th.duskPeak + th.dayAbove) / 2, th, S);
+  const lo = Math.min(S.dusk.glowStrength, S.day.glowStrength), hi = Math.max(S.dusk.glowStrength, S.day.glowStrength);
+  ok(mid.glowStrength > lo && mid.glowStrength < hi, 'dusk<->day glowStrength interpolates between');
+  const mid2 = domeParamsAtElevation((th.nightBelow + th.duskPeak) / 2, th, S);
+  ok(mid2.glowWidth !== S.night.glowWidth && mid2.glowWidth !== S.dusk.glowWidth, 'night<->dusk params interpolate');
+  ok(domeParamsAtElevation(3, th, S).horizon === domeParamsAtElevation(3, th, S).horizon, 'deterministic per elevation');
+}
+
+// ---- nightnessAtElevation: endpoints + monotonic non-increasing in elevation ----
+{
+  const th = DEFAULT_THRESHOLDS;
+  ok(nightnessAtElevation(th.dayAbove, th) === 0, 'nightness 0 at dayAbove');
+  ok(nightnessAtElevation(20, th) === 0, 'nightness 0 well above dayAbove');
+  ok(nightnessAtElevation(th.nightBelow, th) === 1, 'nightness 1 at nightBelow');
+  ok(nightnessAtElevation(-20, th) === 1, 'nightness 1 well below nightBelow');
+  let mono = true, prev = -Infinity;
+  for (let e = 20; e >= -20; e -= 0.5) {          // falling elevation -> non-decreasing nightness
+    const n = nightnessAtElevation(e, th);
+    if (n < prev - 1e-9) mono = false;
+    prev = n;
+  }
+  ok(mono, 'nightness is monotonic non-decreasing as elevation falls');
+}
+
 console.log(fail ? `\n${fail} FAILED` : '\nall passed');
 process.exit(fail ? 1 : 0);
