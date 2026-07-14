@@ -31,8 +31,15 @@ gracefully if they fail to load.
 export function createSky({ scene, camera, size, palette: overrides, sunDir, parts = {} })
 ```
 Returns an object with: `group`, `setSunDir(v)`, `setPalette(o)`, `setCelestialType(type)`,
-`setStarCount(n)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setRadius()`, `rebuild(r)`,
-`update()`, `flushDisposals()`, `dispose()`, getters `radius` and `isMoon`.
+`setStarCount(n)`, `setStarOpacity(v)`, `setStarColor(hex)`, `setSunSize(v)`,
+`setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius()`, `rebuild(r)`, `update()`,
+`updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`, `setGlowDirectionality(v)`,
+`flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `nightness`, `skyStates`,
+`thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no rebuild), like
+`setMilkyWayIntensity`. `updateDome(elevationDeg)` blends the day/dusk/night dome states by
+sun elevation and writes uniforms only — never rebuilds. `nightness` (0 in day, 1 at night)
+is the single shared "how dark is it" scalar; `setCelestialOpacityMode(true)` multiplies
+star/Milky-Way/body opacity by it.
 
 **sky-field.js**
 ```js
@@ -43,11 +50,17 @@ export function isMoonBody(palette)
 export function sunSpritePlacement(dir, radius, palette)
 export function makeRng(seed)
 export function generateStars(radius, palette, rng)
-export function generateMilkyWay(radius, palette, rng)
-export function generateCelestialBodies(radius, palette, rng)
+export function generateMilkyWay(radius, palette, rng)   // band count = starCount * (palette.milkyWayDensity ?? 1.1)
+export function generateCelestialBodies(radius, palette, rng)  // reads palette.planetCount / moonCount (count overrides) and bodyScale (size ×)
 export const PLANET_KINDS   // ['terrestrial','gas','ice','volcanic','rocky']
 export const MOON_KINDS     // ['ice','rocky'] — moons only roll from this subset
 export function randomKindColor(rng, kind)  // continuous HSL color generation, not a fixed palette
+export const DEFAULT_SKY_STATES   // { day, dusk, night } dome keyframes (colors + transition params)
+export const DEFAULT_THRESHOLDS   // { dayAbove:8, duskPeak:0, nightBelow:-8 } sun-elevation anchors (deg)
+export function makeSkyStates(overrides = {})            // per-state defaults-merge, fresh object
+export function lerpHex(a, b, t)                         // RGB-space hex interpolation (exact endpoints)
+export function domeParamsAtElevation(elevDeg, thresholds, states)  // blend adjacent states by elevation
+export function nightnessAtElevation(elevDeg, thresholds)           // 1 - smoothstep(nightBelow, dayAbove)
 ```
 
 **stars.js**
@@ -58,7 +71,7 @@ export function createMilkyWay(milkyData, palette)
 
 **celestial-bodies.js**
 ```js
-export function createCelestialBodies(bodyData)
+export function createCelestialBodies(bodyData, { resScale = 1 } = {})  // resScale scales the painter canvas edge (512 HD / 256 simple)
 export const PAINTER_TUNING   // { terrestrial, gas, ice, volcanic, rocky } visual constants, mutable
 ```
 
@@ -88,7 +101,7 @@ without affecting the other.
   inside a `.then()/.catch()` chain (clouds are optional — catch is a no-op).
   Two independent `Clouds` instances are created (`cloudsRef`, `clouds2Ref`) — two
   cloud layers at different heights/extents/puff sizes (layer 1: height 120, extent
-  2000; layer 2: height 280, extent 4000) — both added directly to `scene`. Each gets
+  8000; layer 2: height 280, extent 16000) — both added directly to `scene`. Each gets
   its own `header('Clouds (layer N)')` + `slider(...)` UI block.
 - **Sky** (`environment-viewer.html` ~line 2156): `await import('./sky.js?v=sp7-hdplanets')`,
   gated by `SKY_MODE` (`?sky=` URL param: `off`, `nostars`, `nomilkyway`, `nobodies`,
@@ -116,13 +129,47 @@ without affecting the other.
 
 ## Architecture notes
 
-- **Day/night palette system**: a single `DEFAULT_PALETTE` object in `sky-field.js`
-  (this project has one continuous environment, not per-map presets) carries dome
-  gradient colors (`top`/`horizon`/`bottom`/`glow`), sun/moon disc colors and size,
-  an explicit `celestialType: 'sun'|'moon'` plus an opacity-based fallback inference
-  (`isMoonBody`: `sunOpacity < 0.6` ⇒ moon, only used if `celestialType` is unset),
-  and star/Milky Way tuning. `makePalette(overrides)` is a defaults-merge, never
-  mutates `DEFAULT_PALETTE`.
+- **Time-of-day dome states**: the dome gradient is no longer a single static palette.
+  `sky-field.js` defines three keyframed states — `DEFAULT_SKY_STATES.day` / `.dusk` /
+  `.night` — each carrying dome colors (`top`/`horizon`/`bottom`/`glow`) and transition
+  params (`horizonHeight`, `zenithSoftness`, `glowWidth`, `glowStrength`). `night`
+  reproduces the historic `DEFAULT_PALETTE` look plus the constants that used to be baked
+  into `sky.js`'s `colorNode` (`zenithSoftness 0.55`, `glowWidth ~= 1/9`, `glowStrength
+  0.4`). Every frame the viewer calls `skyRef.updateDome(rig.elevation)`;
+  `domeParamsAtElevation(elevDeg, thresholds, states)` blends the two ADJACENT states around
+  the current sun elevation (day↔dusk above `duskPeak`, dusk↔night below it), clamping to
+  `day` above `dayAbove` and `night` below `nightBelow` (`DEFAULT_THRESHOLDS = { dayAbove:8,
+  duskPeak:0, nightBelow:-8 }` degrees). Because only adjacent, authored states ever blend,
+  colors never take a muddy direct blue→red midpoint. The dome material is built once from
+  a persistent uniform bundle (`makeDomeUniforms`: 4 color + 4 transition + `sunDir` +
+  `glowDirectionality`), so `updateDome` and every slider are pure `.value` writes — the same
+  no-rebuild discipline that protects the star/body path. `nightnessAtElevation` returns a
+  monotonic 0(day)→1(night) scalar exposed as `skyRef.nightness`, the shared darkness source
+  of truth; the "Celestial opacity follows time" toggle multiplies star/Milky-Way/body
+  opacity by it. The still-single `DEFAULT_PALETTE` remains for the sun/moon disc colors,
+  sizes, `celestialType`, and star/Milky-Way tuning; `makePalette(overrides)` still never
+  mutates it.
+- **Directional horizon glow**: the glow band in the dome `colorNode` is biased toward the
+  sun's azimuth via `dot(normalize(pos.xz), normalize(uSunDir.xz))` mapped to `[0,1]` and
+  mixed by `uGlowDirectionality` (0 = even ring, 1 = concentrated toward the sun). `sunDir`
+  is updated in `setSunDir`.
+- **Seed / re-roll**: the generators (`generateStars`/`generateMilkyWay`/
+  `generateCelestialBodies`) are deterministic — they take an `rng`, not entropy — so the
+  whole sky is a pure function of the seed fed to `makeRng`. Previously `build()` used three
+  hardcoded seed constants (`0x5a17`-salted starCount for stars, `0xb1a5`, `0xc0de`), so
+  every page load rendered the identical sky. Now `build()` derives all three streams from a
+  single `palette.seed` (defaulting to `1` if unset) via XOR salts —
+  `makeRng((seed ^ 0x5a17)>>>0)` / `^ 0xb1a5` / `^ 0xc0de` — keeping the star field, Milky
+  Way, and bodies decorrelated while re-rolling together. `setSeed(n)` sets `palette.seed`
+  and calls `rebuild()` (the one runtime control that legitimately rebuilds — a seed change
+  is a geometry change; it's safe because it's a discrete call, not a per-frame drag, so the
+  age-gated `_pending` disposal frees the old tree after the in-flight submit). To keep a
+  seed rebuild from discarding live-adjusted state, `setStarCount`/`setMilkyWayIntensity` now
+  also write their value back into `palette` (not just the draw-range / uniform). The seed
+  itself is owned by `SKY_PARAMS.seed` in `environment-viewer.html`, randomized once per load
+  (`Math.random()*0xffffffff>>>0`) so sessions differ, and exposed as a UI number field +
+  Reroll button. `sky-field.js`/`DEFAULT_PALETTE` are untouched — seed handling lives
+  entirely in `sky.js` and the viewer, so the Node tests are unaffected.
 - **Sun/moon sprite placement**: `sunSpritePlacement(dir, radius, palette)` places the
   disc along the normalized light direction at `0.74 * radius`, with sprite scale
   `radius * sunSize * 2.15 * (moon ? 2.4 : 1)` (moon renders larger than the sun).
@@ -135,7 +182,13 @@ without affecting the other.
   rather than dome regeneration). Disposal of an actually-replaced tree (e.g. on
   `setPalette`/`rebuild`) is deferred via an age-gated `_pending` queue
   (`flushDisposals`, called once/frame by the viewer) so a tree is freed only after
-  surviving ≥2 frames past detach.
+  surviving ≥2 frames past detach. **`disposeTree` skips geometry disposal for
+  `THREE.Sprite`s** (`!o.isSprite`): every Sprite shares one module-level `QuadGeometry`, so
+  disposing the old sun/moon/celestial-body sprites' geometry destroys the buffer the
+  *newly-built* sprites still draw from — reproducing the "buffer used in submit while
+  destroyed" freeze whenever the camera faces the sky sprites (sprites are `frustumCulled`, so
+  it only shows looking up). This was latent until `setSeed` made `rebuild()` reachable at
+  runtime for the first time.
 - **Star field + Milky Way generation**: `generateStars` places points on a
   `0.83 * radius` shell, upper hemisphere only (`y ∈ [0.06, 0.96]`), with 0-3
   reserved Pleiades-like clusters (tight core + looser halo, jittered around a random
@@ -196,7 +249,10 @@ without affecting the other.
 - **Clouds world-space noise fix** (`faa7b1e`, "fix(clouds): sample noise in world
   space to prevent stretching", 2026-06-30): previously the TSL noise was driven by
   the plane's `attribute('uv')`. Because `setExtent(worldUnits)` scales the cloud
-  mesh (`scale.set(s, 1, s)` where `s = worldUnits / 2000`) rather than resizing the
+  mesh (`scale.set(s, s, 1)` where `s = worldUnits / 2000` — the mesh is laid flat by
+  `rotation.x=-PI/2`, so the plane spans local X and Y and both must be scaled; an
+  earlier `scale.set(s, 1, s)` only grew world X and left world Z pinned at 2000, a
+  one-axis stretch) rather than resizing the
   geometry, UV space stays fixed at `[0,1]` across the whole plane regardless of
   scale — so changing extent changed how many world-units one noise cycle spanned,
   visibly stretching the cloud pattern. The fix replaces `uvCoord = attribute('uv')`
@@ -204,6 +260,14 @@ without affecting the other.
   fragment's actual world-space XZ position. Since `positionWorld` is unaffected by
   the mesh's `scale` the way UV is, noise frequency is now fixed in world units and
   is scale-invariant.
+- **Clouds opt out of scene fog** (`mat.fog = false`): the viewer's `worldFog.far` is
+  deliberately pinned to `terrainFar` (the map extent), not the cloud far distance
+  (`environment-viewer.html` ~line 2099 + comment). With fog enabled, a fogged cloud
+  material fades to the fog color at the map edge — a hard wall that no `setExtent`
+  increase can push past, because it's the fog, not geometry or the camera far plane
+  (which does include `cloudFar`), doing the clamping. Clouds already have their own
+  distance-based `uFade` horizon fade, so scene fog on them is redundant as well as
+  harmful; disabling it lets the cloud extent actually reach past the terrain.
 - **Clouds horizon fade** is also camera-centered: `uCameraXZ` is a `vec2` uniform
   updated every frame from `update(elapsedTime, cameraPosition)`, and alpha divides
   by `length(positionWorld.xz - uCameraXZ) + 1`, so fade always radiates from the
@@ -236,20 +300,52 @@ All defined inline in `environment-viewer.html` (sliders built with the local
 "Clouds (layer 2)" headers, routed into the "Effects" tab by `environment-ui.js`).
 `environment-ui.js` itself defines no sky/cloud parameters.
 
-**Sky** (`SKY_PARAMS`, ~line 2140):
+**Sky** (`SKY_PARAMS`, ~line 4610). The panel splits into **live** controls (uniform /
+draw-range writes, applied immediately, no rebuild) and **regeneration** controls (change
+generated geometry, so they only edit `SKY_PARAMS` and are committed by the **Apply** button
+or Reroll — a single rebuild via `setPalette(skyPaletteOverrides())`, never live-dragged).
+
+Live:
 - `primaryBody` — select `sun` | `moon` → `skyRef.setCelestialType()` + swaps key light.
-- `starCount` — 200–3000 → `skyRef.setStarCount()` (draw-range only, no rebuild).
+- `starCount` — 200–3000 → `skyRef.setStarCount()` (draw-range only).
+- `starOpacity` ("Star brightness") — 0–1 → `skyRef.setStarOpacity()` (`_uOpacity` uniform).
+- `starColor` ("Star color") — colour picker → `skyRef.setStarColor()` (`_uColor` uniform).
 - `sunSize` ("Body size") — 0.02–0.2 → `skyRef.setSunSize()`.
 - `milkyWayIntensity` — 0–1.5 → `skyRef.setMilkyWayIntensity()`.
 
+Regeneration (slider + editable number field each; committed on Apply/Reroll):
+- `planetCount` ("Planets") — 0–8 → `palette.planetCount` (distant-planet count override).
+- `moonCount` ("Moons") — 0–6 → `palette.moonCount` (extra-moon count override).
+- `bodyScale` ("Planet/moon size") — 0.3–3 → `palette.bodyScale` (× on generated body sizes).
+- `bodyResolution` ("Planet resolution") — 0.5–2 → `palette.bodyResolution` → painter canvas
+  edge (`resScale`; 512 HD / 256 simple base, clamped 96–2048).
+- `milkyWayDensity` — 0.2–3 → `palette.milkyWayDensity` (band points per star; default 1.1).
+- `seed` ("Sky seed") — number field + "Reroll — new sky" button. Randomized once per load;
+  type a value to reproduce a specific sky. Reroll and the seed field both rebuild via
+  `setPalette`, so any pending regeneration edits apply at the same time.
+
+Time of day (`header('Sky — time of day')`, live — mutate `skyRef.skyStates` /
+`skyRef.thresholds` in place, applied by the per-frame `updateDome`, no rebuild):
+- Per state `day` / `dusk` / `night`: colour inputs `top` / `horizon` / `bottom` / `glow`
+  and sliders `horizonHeight` (−0.4..0.4), `zenithSoftness` (0.1..1.0), `glowWidth`
+  (0.02..0.4), `glowStrength` (0..1).
+- Sun→time mapping: `dayAbove` (0..30°), `duskPeak` (−15..15°), `nightBelow` (−30..0°).
+- `glow toward sun` (0..1) → `skyRef.setGlowDirectionality()`.
+- `Celestial opacity follows time` (toggle) → `skyRef.setCelestialOpacityMode()`.
+
+Star point *size* is deliberately not exposed: on the WebGPU backend `THREE.Points` render as
+1px primitives (`sizeNode` ignored), so a size slider would have no effect — variable-size
+stars would require switching the field to instanced sprites.
+
 **Clouds layer 1** (`params`, ~line 2083): `cloudHeight` (20–400), `cloudExtent`
-(500–8000), `cloudCover` (0–0.9), `cloudPuff` (0.3–3), `cloudSoftness` (0.05–0.5),
+(500–32000, default 8000), `cloudCover` (0–0.9), `cloudPuff` (0.3–3), `cloudSoftness` (0.05–0.5),
 `cloudOpacity` (0–1), `cloudFade` (0.002–0.05), `cloudSpeed` (0–4) — each maps 1:1 to
 a `Clouds` setter (`setExtent`/`setCoverage`/`setPuff`/`setSoftness`/`setOpacity`/
 `setFade`/`setSpeed`); `cloudHeight` sets `position.y` directly.
 
 **Clouds layer 2**: same parameter set prefixed `cloud2*`, independent `Clouds`
-instance, different default ranges (e.g. `cloud2Puff` 0.3–6, `cloud2Height` 20–600).
+instance, different default ranges (e.g. `cloud2Puff` 0.3–6, `cloud2Height` 20–600,
+`cloud2Extent` 500–32000 default 16000).
 
 ## Tests
 
@@ -277,7 +373,14 @@ instance, different default ranges (e.g. `cloud2Puff` 0.3–6, `cloud2Height` 20
   restricted to `ice`/`rocky`), `detail` matches near/companion vs. distant/extra, all
   5 planet kinds appear across 200 seeds, `gas` stays derived from `kind` for
   `paintBodySimple` backward-compatibility, every body carries a `[0,1)` `seed` and a
-  `color2` string.
+  `color2` string. Also covers the palette-driven controls: `planetCount`/`moonCount` pin the
+  generated counts (incl. 0), `bodyScale` scales body size linearly, and `milkyWayDensity`
+  scales the band count off `starCount` (with the unset default holding at 1.1×).
+- Time-of-day blend math: `makeSkyStates` (per-state defaults-merge, fresh object), `lerpHex`
+  (exact endpoints, componentwise midpoint, identity), `domeParamsAtElevation` (exact state
+  params at each anchor, interpolation between adjacent states, clamping outside the range,
+  determinism), and `nightnessAtElevation` (0 at/above `dayAbove`, 1 at/below `nightBelow`,
+  monotonic across the band).
 
 `test-celestial-bodies-smoke.mjs` (repo root, plain Node script) exercises the real
 `celestial-bodies.js` paint dispatch with a minimal `document.createElement('canvas')`
