@@ -4707,6 +4707,66 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     regenRow('bodyScale', 'Planet/moon size', 0.3, 3, 0.05, false);
     regenRow('bodyResolution', 'Planet resolution', 0.5, 2, 0.1, false);
     regenRow('milkyWayDensity', 'Milky Way density', 0.2, 3, 0.05, false);
+
+    // ---- Time-of-day sky colors (live: mutate skyRef.skyStates / thresholds in place). ----
+    header('Sky — time of day');
+    const S = skyRef.skyStates;
+    const colorRow = (label, get, set) => {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>';
+      const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
+      inp.style.cssText = 'width:48px;height:20px;background:#222831;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+      inp.addEventListener('input', () => set(inp.value));
+      row.appendChild(inp); current.appendChild(row);
+    };
+    const stateSlider = (st, key, label, min, max, step) => {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = (+st[key]).toFixed(2);
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+      const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = st[key];
+      inp.addEventListener('input', () => { st[key] = parseFloat(inp.value); val.textContent = (+st[key]).toFixed(2); });
+      current.appendChild(row); current.appendChild(inp);
+    };
+    for (const name of ['day', 'dusk', 'night']) {
+      const st = S[name];
+      const lbl = document.createElement('div'); lbl.className = 'row';
+      lbl.innerHTML = '<span style="color:#8892a0;font-size:11px;text-transform:uppercase">' + name + '</span>';
+      current.appendChild(lbl);
+      colorRow('top', () => st.top, v => st.top = v);
+      colorRow('horizon', () => st.horizon, v => st.horizon = v);
+      colorRow('bottom', () => st.bottom, v => st.bottom = v);
+      colorRow('glow', () => st.glow, v => st.glow = v);
+      stateSlider(st, 'horizonHeight', 'horizon pos', -0.4, 0.4, 0.01);
+      stateSlider(st, 'zenithSoftness', 'zenith softness', 0.1, 1.0, 0.01);
+      stateSlider(st, 'glowWidth', 'glow width', 0.02, 0.4, 0.01);
+      stateSlider(st, 'glowStrength', 'glow strength', 0, 1, 0.02);
+    }
+    // Sun -> time-of-day mapping (elevation anchors, degrees).
+    const TH = skyRef.thresholds;
+    const threshSlider = (key, label, min, max) => {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = (+TH[key]).toFixed(0) + '°';
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+      const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = 1; inp.value = TH[key];
+      inp.addEventListener('input', () => { TH[key] = parseFloat(inp.value); val.textContent = (+TH[key]).toFixed(0) + '°'; });
+      current.appendChild(row); current.appendChild(inp);
+    };
+    threshSlider('dayAbove', 'day above', 0, 30);
+    threshSlider('duskPeak', 'dusk peak', -15, 15);
+    threshSlider('nightBelow', 'night below', -30, 0);
+    // Directional glow strength toward the sun (0 = even ring, 1 = concentrated).
+    {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = '0.35';
+      row.innerHTML = '<span style="color:#c4ccd6">glow toward sun</span>'; row.appendChild(val);
+      const inp = document.createElement('input'); inp.type = 'range'; inp.min = 0; inp.max = 1; inp.step = 0.02; inp.value = 0.35;
+      inp.addEventListener('input', () => { const v = parseFloat(inp.value); val.textContent = v.toFixed(2); skyRef.setGlowDirectionality(v); });
+      current.appendChild(row); current.appendChild(inp);
+    }
+    // Celestial opacity follows time of day (stars/Milky Way/bodies fade in at night).
+    params.celestialFollowTime = false;
+    toggle('celestialFollowTime', 'Celestial opacity follows time', () => skyRef.setCelestialOpacityMode(params.celestialFollowTime));
+
     const applyBtn = document.createElement('button');
     applyBtn.type = 'button'; applyBtn.textContent = 'Apply changes';
     applyBtn.style.cssText = 'width:100%;margin-top:4px;background:#2b3a2b;color:#cfe6cf;border:1px solid #47593a;border-radius:4px;padding:3px 6px;cursor:pointer;font:inherit';
