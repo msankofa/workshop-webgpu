@@ -5,31 +5,53 @@
 // this file builds node materials + canvas textures and manages the lifecycle.
 import * as THREE from 'three';
 import { MeshBasicNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
-import { Fn, float, vec3, mix, smoothstep, positionLocal, normalize, pow, max, abs } from 'three/tsl';
+import { Fn, float, vec3, mix, smoothstep, positionLocal, normalize, pow, max, abs, dot, uniform } from 'three/tsl';
 import { makePalette, skyRadius, isMoonBody, sunSpritePlacement, makeRng,
-  generateStars, generateMilkyWay, generateCelestialBodies } from './sky-field.js?v=sp7-hdplanets';
+  generateStars, generateMilkyWay, generateCelestialBodies,
+  makeSkyStates, DEFAULT_THRESHOLDS, domeParamsAtElevation, nightnessAtElevation } from './sky-field.js?v=sp7-hdplanets';
 import { createSkyStars, createMilkyWay } from './stars.js?v=sp7-hdplanets';
 import { createCelestialBodies } from './celestial-bodies.js?v=sp7-hdplanets';
 
 const _c = hex => new THREE.Color(hex);
 const v3 = c => vec3(c.r, c.g, c.b);
 
-// Gradient dome: bottom→horizon→top by view-direction Y, plus a horizon glow band.
-function makeSkyDomeMaterial(palette) {
+// Gradient dome: bottom->horizon->top by view-direction Y, plus a directional horizon glow.
+// All colors + transition params + sun direction are UNIFORMS so the per-frame time-of-day
+// blend and every slider write .value with no material rebuild (rebuild races the WebGPU submit).
+function makeSkyDomeMaterial(u) {
   const mat = new MeshBasicNodeMaterial({ side: THREE.BackSide, depthTest: false, depthWrite: false });
   mat.fog = false;
-  const top = _c(palette.top), hor = _c(palette.horizon), bot = _c(palette.bottom), glow = _c(palette.glow);
   mat.colorNode = Fn(() => {
-    const y = normalize(positionLocal).y;                       // -1 (down) .. 1 (up)
-    const up = smoothstep(0.0, 0.55, y);                        // horizon → zenith
-    const down = smoothstep(0.0, -0.5, y);                      // horizon → nadir
-    const aboveCol = mix(v3(hor), v3(top), up);
-    const belowCol = mix(v3(hor), v3(bot), down);
+    const p = normalize(positionLocal);
+    const y = p.y.sub(u.horizonHeight);                          // horizon band shifts with time of day
+    const up = smoothstep(0.0, u.zenithSoftness, y);            // horizon -> zenith
+    const down = smoothstep(0.0, -0.5, y);                      // horizon -> nadir
+    const aboveCol = mix(u.horizon, u.top, up);
+    const belowCol = mix(u.horizon, u.bottom, down);
     const base = mix(aboveCol, belowCol, smoothstep(0.05, -0.05, y));  // soft horizon crossover
-    const glowBand = pow(max(float(1).sub(abs(y).mul(9.0)), float(0)), float(2.0)); // tight horizon glow
-    return mix(base, v3(glow), glowBand.mul(0.4));
+    const band = pow(max(float(1).sub(abs(y).div(u.glowWidth)), float(0)), float(2.0)); // horizon glow falloff
+    // Bias the glow toward the sun azimuth: dot of horizontal dome dir vs sun dir, mapped [0,1].
+    const align = dot(normalize(p.xz), normalize(u.sunDir.xz)).mul(0.5).add(0.5);
+    const glowAmt = band.mul(mix(float(1.0), align, u.glowDirectionality)).mul(u.glowStrength);
+    return mix(base, u.glow, glowAmt);
   })();
   return mat;
+}
+
+// Build the persistent dome uniform bundle from an initial dome parameter set.
+function makeDomeUniforms(state) {
+  return {
+    top: uniform(new THREE.Color(state.top)),
+    horizon: uniform(new THREE.Color(state.horizon)),
+    bottom: uniform(new THREE.Color(state.bottom)),
+    glow: uniform(new THREE.Color(state.glow)),
+    horizonHeight: uniform(state.horizonHeight),
+    zenithSoftness: uniform(state.zenithSoftness),
+    glowWidth: uniform(state.glowWidth),
+    glowStrength: uniform(state.glowStrength),
+    sunDir: uniform(new THREE.Vector3(0, 1, 0)),
+    glowDirectionality: uniform(0.35),
+  };
 }
 
 // 256² sun (warm disc + corona) or 512² moon (glow + shaded sphere + maria).
@@ -79,11 +101,39 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   let radius = skyRadius(camera.far, size);
   let dir = (sunDir || new THREE.Vector3(0.6, 0.55, 0.58)).clone().normalize();
 
-  let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyGas;
+  let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyGas, bodiesGroup;
+
+  // Time-of-day: keyframed states + elevation thresholds live here (the UI mutates these
+  // objects in place via the getters below; updateDome reads them every frame).
+  let skyStates = makeSkyStates(overrides && overrides.skyStates);
+  let thresholds = Object.assign({}, DEFAULT_THRESHOLDS, overrides && overrides.thresholds);
+  const domeU = makeDomeUniforms(domeParamsAtElevation(elevFromDir(), thresholds, skyStates));
+  domeU.sunDir.value.copy(dir);
+  let _nightness = nightnessAtElevation(elevFromDir(), thresholds);
+  let celestialFollowTime = false;
+
+  function elevFromDir() { return Math.asin(Math.max(-1, Math.min(1, dir.y))) * 180 / Math.PI; }
+
+  // Write the blended dome params for a sun elevation into the uniforms + scene.background,
+  // cache nightness, and (when enabled) fade celestials by nightness. Pure uniform/opacity
+  // writes — no rebuild, no dispose.
+  function applyDome(elevDeg) {
+    const pr = domeParamsAtElevation(elevDeg, thresholds, skyStates);
+    domeU.top.value.set(pr.top); domeU.horizon.value.set(pr.horizon);
+    domeU.bottom.value.set(pr.bottom); domeU.glow.value.set(pr.glow);
+    domeU.horizonHeight.value = pr.horizonHeight; domeU.zenithSoftness.value = pr.zenithSoftness;
+    domeU.glowWidth.value = pr.glowWidth; domeU.glowStrength.value = pr.glowStrength;
+    _nightness = nightnessAtElevation(elevDeg, thresholds);
+    if (scene && scene.background && scene.background.isColor) scene.background.set(pr.bottom);
+    const f = celestialFollowTime ? _nightness : 1;
+    if (starsPoints && starsPoints.material._uOpacity) starsPoints.material._uOpacity.value = (palette.starOpacity ?? 1) * f;
+    if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = (palette.milkyWayIntensity ?? 0.7) * f;
+    if (bodiesGroup) bodiesGroup.traverse(o => { if (o.isSprite && o.material) o.material.opacity = f; });
+  }
 
   function build() {
     // dome
-    dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 40, 18), makeSkyDomeMaterial(palette));
+    dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 40, 18), makeSkyDomeMaterial(domeU));
     dome.renderOrder = -1000; dome.frustumCulled = false;
     group.add(dome);
     // Build BOTH the sun disc and the moon disc up front. Switching between them is a
@@ -99,23 +149,31 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     // range (setStarCount) rather than rebuilding — runtime rebuild/dispose races the
     // async WebGPU submit and crashes. Generated count is clamped to STAR_MAX so the
     // slider (≤3000) never needs more vertices than exist.
+    // One base seed drives all three generators so a single control re-rolls the whole sky.
+    // XOR salts keep the star field / Milky Way / bodies decorrelated (a shared raw seed
+    // would sync their RNG streams). setSeed() changes palette.seed and rebuilds.
+    const seed = (palette.seed >>> 0) || 1;
     if (parts.stars !== false) {
       starsMax = Math.max(3000, palette.starCount | 0);
-      const rng = makeRng((palette.starCount | 0) ^ 0x5a17);
+      const rng = makeRng((seed ^ 0x5a17) >>> 0);
       starsPoints = createSkyStars(generateStars(radius, makePalette({ ...palette, starCount: starsMax }), rng), palette);
       starsPoints.geometry.setDrawRange(0, Math.min(palette.starCount | 0, starsMax));
       group.add(starsPoints);
     }
     // milky way (intensity is a live uniform — see setMilkyWayIntensity)
     if (parts.milkyWay !== false) {
-      const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng(0xb1a5)), palette);
+      const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng((seed ^ 0xb1a5) >>> 0)), palette);
       if (milky) { group.add(milky); milkyGas = milky.userData.gas || null; }
     }
     // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker)
+    bodiesGroup = null;
     if (parts.bodies !== false && palette.milkyWay) {
-      group.add(createCelestialBodies(generateCelestialBodies(radius, palette, makeRng(0xc0de))));
+      bodiesGroup = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng((seed ^ 0xc0de) >>> 0)),
+        { resScale: palette.bodyResolution ?? 1 });
+      group.add(bodiesGroup);
     }
-    if (scene) scene.background = _c(palette.bottom);
+    if (scene && (!scene.background || !scene.background.isColor)) scene.background = new THREE.Color();
+    applyDome(elevFromDir());
   }
 
   function makeDisc(color, moon) {
@@ -161,7 +219,12 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   const _pending = [];
   function disposeTree(root) {
     root.traverse(o => {
-      if (o.geometry) o.geometry.dispose();
+      // THREE.Sprite instances share ONE module-level geometry (a QuadGeometry). Disposing a
+      // sprite's geometry here destroys the buffer EVERY other live sprite (the sun/moon discs
+      // and celestial bodies) still draws from — the "buffer used in submit while destroyed"
+      // freeze that appears the moment the camera faces the sky sprites. Only free geometry we
+      // actually own (dome mesh, star/Milky-Way points); leave shared sprite geometry alone.
+      if (o.geometry && !o.isSprite) o.geometry.dispose();
       const mat = o.material;
       if (mat) {
         if (mat.map && mat.map.userData?.proceduralSkyTexture) mat.map.dispose();
@@ -179,14 +242,33 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 
   return {
     group,
-    setSunDir(v) { dir.copy(v).normalize(); placeSun(); },
+    setSunDir(v) { dir.copy(v).normalize(); domeU.sunDir.value.copy(dir); placeSun(); },
+    // Time-of-day: blend the dome to the given sun elevation (degrees). Uniform writes only.
+    updateDome(elevDeg) { applyDome(elevDeg); },
+    // When true, celestial (stars/Milky Way/bodies) opacity is multiplied by nightness.
+    setCelestialOpacityMode(on) { celestialFollowTime = !!on; },
+    // Directional horizon glow: 0 = even ring, 1 = fully concentrated toward the sun.
+    setGlowDirectionality(v) { domeU.glowDirectionality.value = v; },
+    get nightness() { return _nightness; },
+    get skyStates() { return skyStates; },
+    get thresholds() { return thresholds; },
     setPalette(o) { palette = makePalette(o); rebuild(radius); },
     // Sun/Moon switch is a pure visibility toggle — no rebuild, no disposal.
     setCelestialType(type) { palette.celestialType = type; updateDiscVisibility(); },
     // In-place runtime controls — NO rebuild/disposal (the slider-rebuild crash fix):
-    setStarCount(n) { if (starsPoints) starsPoints.geometry.setDrawRange(0, Math.max(0, Math.min(n | 0, starsMax))); },
+    // Persist into palette (as well as the live draw-range / uniform) so a seed rebuild,
+    // which re-runs build() from the palette, keeps the current count/intensity.
+    setStarCount(n) { palette.starCount = Math.max(0, n | 0); if (starsPoints) starsPoints.geometry.setDrawRange(0, Math.min(palette.starCount, starsMax)); },
+    // Foreground-star brightness + color are live uniforms (no rebuild), same as Milky Way intensity.
+    setStarOpacity(v) { palette.starOpacity = v; if (starsPoints && starsPoints.material._uOpacity) starsPoints.material._uOpacity.value = v; },
+    setStarColor(hex) { palette.starColor = hex; if (starsPoints && starsPoints.material._uColor) starsPoints.material._uColor.value.set(hex); },
     setSunSize(v) { palette.sunSize = v; placeSun(); },
-    setMilkyWayIntensity(v) { if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = v; },
+    setMilkyWayIntensity(v) { palette.milkyWayIntensity = v; if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = v; },
+    // New sky: re-roll every generator from a fresh base seed. Unlike the controls above this
+    // DOES rebuild (the seed changes generated geometry), which is safe here because it's a
+    // discrete call — not a per-frame slider drag — so detach + age-gated disposal frees the
+    // old tree only after the in-flight submit ends.
+    setSeed(n) { palette.seed = (n >>> 0) || 1; rebuild(radius); },
     // View-distance / chunk-size changes resize the sky by SCALING the group (the whole
     // sky is radius-relative) — no geometry rebuild, no disposal, so it can't race a submit.
     // skyRadius is clamped to camera.far*0.88, so the scaled dome never crosses the far plane.
