@@ -301,7 +301,7 @@ scene.background = new THREE.Color(0x1a1d23);
 
 // Combat effect renderer (bullet tracers + impact sparks). Fed each frame from the entity
 // registry (host/solo) or interpolated wire upserts (guest); see updateShotEffects().
-const effectRenderer = createEffectRenderer({ THREE, scene });
+const effectRenderer = createEffectRenderer({ THREE, scene, terrainHeight });
 // Guest-side predicted tracers (shooter's own shots) + latest replicated effect upserts.
 const localShotEffects = [];
 let mpPendingEffects = [];
@@ -1095,12 +1095,20 @@ function updateMultiplayerFinder() {
 let loadedMap = null;
 let mapCollider = null;
 if (mapKey) {
-  if (mapKey === 'shoot-house') {
+  // 'shoot-house' (legacy) => house; 'shoot-house-<type>' => that variant (demo | house | …).
+  const shootHouseType = mapKey === 'shoot-house' ? 'house'
+    : (typeof mapKey === 'string' && mapKey.startsWith('shoot-house-')) ? mapKey.slice('shoot-house-'.length)
+    : null;
+  if (shootHouseType) {
     setStatus('building shoot house...');
     await nextPaint();
     const { createShootHouse } = await import('./shoot-house.js');
-    const shSeed = Number(new URLSearchParams(location.search).get('seed')) || 1;
-    loadedMap = createShootHouse({ scene, THREE, seed: shSeed });
+    const shParams = new URLSearchParams(location.search);
+    const shSeed = Number(shParams.get('seed')) || 1;
+    const shOpts = {};
+    if (shParams.get('size')) shOpts.size = shParams.get('size');           // compact | standard | sprawl
+    if (shParams.get('difficulty')) shOpts.difficulty = shParams.get('difficulty'); // easy | normal | hard
+    loadedMap = createShootHouse({ scene, THREE, seed: shSeed, type: shootHouseType, opts: shOpts });
   } else {
     setStatus(`loading authored map ${mapKey}...`);
     await nextPaint();
@@ -1461,6 +1469,8 @@ portCreatures = createEnvironmentPortCreatures({
   damagePlayer: (amount, hitPoint) => playerCombat.applyDamage({
     targetId: 'host', amount, source: 'creature', attackerId: 'creature', hitPoint,
   }),
+  // Finite maps (loadedMap) bound roam picks to the map extent; infinite terrain (loadedMap null) = unbounded roam.
+  getWorldBounds: () => loadedMap ? { minX: -loadedMap.worldX * 0.5, maxX: loadedMap.worldX * 0.5, minZ: -loadedMap.worldZ * 0.5, maxZ: loadedMap.worldZ * 0.5 } : null,
 });
 
 // Transient toast for creature-command feedback so key presses are visibly confirmed.
@@ -1482,7 +1492,6 @@ let creatureToast = () => {};
   };
 }
 const _petRaycaster = new THREE.Raycaster();
-window.__pc = portCreatures; // TEMP debug hook — remove after diagnosing creature movement
 
 // Compact on-screen HUD for the creature-interaction controls (host/solo). Shows live
 // pet/threat/wildlife counts plus the keybinds so the features are discoverable.
@@ -3398,6 +3407,16 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       gain: params.postGain, saturation: params.postSaturation, temperature: params.postTemperature,
       tint: params.postTint, vignette: params.postVignette, vignetteSoft: params.postVignetteSoft,
     });
+    // Shoot house is an emissive-neon interior: push a bloom + filmic-tone default so trim/grid glow.
+    if (NO_ENVIRONMENT) {
+      Object.assign(params, {
+        postTone: 'agx', postExposure: 1.1,
+        postBloomStrength: 0.05, postBloomThreshold: 1.85, postBloomRadius: 0.05, postBloomSmooth: 0.085,
+        postContrast: 1.05, postVignette: 0.28,
+      });
+      postFX.setEnabled(true); postFX.setToneMapping(params.postTone); postFX.setExposure(params.postExposure);
+      applyBloom(); applyGrade();
+    }
     header('Post');
     toggle('postFX', 'Post FX', () => postFX.setEnabled(params.postFX));
     select('postTone', 'Tone mapping', ['none', 'neutral', 'aces', 'agx', 'reinhard'], () => postFX.setToneMapping(params.postTone));
@@ -4544,7 +4563,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   if (NO_ENVIRONMENT) { /* clear night sky over the shoot house */ }
   else _cloudsPromise = import('./clouds.js').then(({ Clouds }) => {
     Object.assign(params, {
-      cloudHeight: 120, cloudExtent: 2000,
+      cloudHeight: 120, cloudExtent: 8000,
       cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
       cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01,
     });
@@ -4562,7 +4581,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance();
     header('Clouds (layer 1)');
     slider('cloudHeight', 'Height', 20, 400, 1, fi, () => { cloudsRef.position.y = params.cloudHeight; setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
-    slider('cloudExtent', 'Extent', 500, 8000, 10, fi, () => { cloudsRef.setExtent(params.cloudExtent); setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
+    slider('cloudExtent', 'Extent', 500, 32000, 10, fi, () => { cloudsRef.setExtent(params.cloudExtent); setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
     slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
     slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
     slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
@@ -4571,7 +4590,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
 
     Object.assign(params, {
-      cloud2Height: 280, cloud2Extent: 4000,
+      cloud2Height: 280, cloud2Extent: 16000,
       cloud2Cover: 0.3, cloud2Opacity: 0.5, cloud2Speed: 0.6,
       cloud2Puff: 3.0, cloud2Softness: 0.3, cloud2Fade: 0.01,
     });
@@ -4590,7 +4609,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
 
     header('Clouds (layer 2)');
     slider('cloud2Height', 'Height', 20, 600, 1, fi, () => { clouds2Ref.position.y = params.cloud2Height; setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance(); });
-    slider('cloud2Extent', 'Extent', 500, 8000, 10, fi, () => { clouds2Ref.setExtent(params.cloud2Extent); setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance(); });
+    slider('cloud2Extent', 'Extent', 500, 32000, 10, fi, () => { clouds2Ref.setExtent(params.cloud2Extent); setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance(); });
     slider('cloud2Cover', 'Coverage', 0, 0.9, 0.01, f2, () => clouds2Ref.setCoverage(params.cloud2Cover));
     slider('cloud2Puff', 'Puff size', 0.3, 6, 0.01, f2, () => clouds2Ref.setPuff(params.cloud2Puff));
     slider('cloud2Softness', 'Softness', 0.05, 0.5, 0.01, f2, () => clouds2Ref.setSoftness(params.cloud2Softness));
@@ -4602,10 +4621,23 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // The primary disc is locked to the rig light direction; the Sun/Moon dropdown swaps
   // the active key light (warm rig sun <-> dedicated cool moonLight). ?sky=off skips it all.
   if (SKY_MODE !== 'off') {
-  const SKY_PARAMS = { starCount: 3000, starSize: 2.2, sunSize: 0.06, milkyWayIntensity: 0.7 };
+  // seed: random per load so the night sky differs each session (the generators are
+  // deterministic, so without this every load produced the identical sky). The Sky panel
+  // exposes it as an editable value + Reroll button.
+  const SKY_PARAMS = {
+    seed: (Math.random() * 0xffffffff) >>> 0,
+    // live (uniform / draw-range) — take effect immediately
+    starCount: 3000, starSize: 2.2, starOpacity: 1.0, starColor: '#dfe8ff',
+    sunSize: 0.06, milkyWayIntensity: 0.7,
+    // regeneration (change generated geometry) — take effect on Apply / Reroll
+    planetCount: 3, moonCount: 1, bodyScale: 1.0, bodyResolution: 1.0, milkyWayDensity: 1.1,
+  };
   params.primaryBody = 'moon';   // 'select' reads/writes the global params object
-  const skyPaletteOverrides = () => ({ celestialType: params.primaryBody, starCount: SKY_PARAMS.starCount,
-    starSize: SKY_PARAMS.starSize, sunSize: SKY_PARAMS.sunSize, milkyWayIntensity: SKY_PARAMS.milkyWayIntensity });
+  const skyPaletteOverrides = () => ({ celestialType: params.primaryBody, seed: SKY_PARAMS.seed,
+    starCount: SKY_PARAMS.starCount, starSize: SKY_PARAMS.starSize, starOpacity: SKY_PARAMS.starOpacity,
+    starColor: SKY_PARAMS.starColor, sunSize: SKY_PARAMS.sunSize, milkyWayIntensity: SKY_PARAMS.milkyWayIntensity,
+    milkyWayDensity: SKY_PARAMS.milkyWayDensity, planetCount: SKY_PARAMS.planetCount, moonCount: SKY_PARAMS.moonCount,
+    bodyScale: SKY_PARAMS.bodyScale, bodyResolution: SKY_PARAMS.bodyResolution });
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
     const moon = params.primaryBody === 'moon';
     const effectiveSun = moon ? 0.15 : rigP.sunIntensity;
@@ -4633,12 +4665,68 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       skyRef.setCelestialType(params.primaryBody);
       applyCelestialLight();
     });
-    // All sky controls update IN PLACE — no rebuild/disposal (runtime rebuild races the
-    // async WebGPU submit and crashes). Star size is omitted: WebGPU Points are 1px, so a
-    // size slider would do nothing (sized stars need the Sprite+instancing path).
+    // --- Live controls (uniforms / draw-range): take effect immediately, no rebuild. ---
+    // Star point SIZE is intentionally absent: WebGPU renders Points as 1px, so a size slider
+    // would do nothing (sized stars need the Sprite+instancing path).
     slider('starCount', 'Star count', 200, 3000, 50, fi, () => skyRef && skyRef.setStarCount(SKY_PARAMS.starCount), SKY_PARAMS, 'SKY_PARAMS');
+    slider('starOpacity', 'Star brightness', 0, 1, 0.02, f2, () => skyRef && skyRef.setStarOpacity(SKY_PARAMS.starOpacity), SKY_PARAMS, 'SKY_PARAMS');
+    // Star color is a live uniform too, but wants a colour picker rather than a slider.
+    const starColRow = document.createElement('div'); starColRow.className = 'row';
+    starColRow.innerHTML = '<span style="color:#c4ccd6">Star color</span>';
+    const starColInp = document.createElement('input'); starColInp.type = 'color'; starColInp.value = SKY_PARAMS.starColor;
+    starColInp.style.cssText = 'width:48px;height:20px;background:#222831;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    starColInp.addEventListener('input', () => { SKY_PARAMS.starColor = starColInp.value; if (skyRef) skyRef.setStarColor(SKY_PARAMS.starColor); });
+    starColRow.appendChild(starColInp); current.appendChild(starColRow);
     slider('sunSize', 'Body size', 0.02, 0.2, 0.005, f2, () => skyRef && skyRef.setSunSize(SKY_PARAMS.sunSize), SKY_PARAMS, 'SKY_PARAMS');
     slider('milkyWayIntensity', 'Milky Way', 0, 1.5, 0.05, f2, () => skyRef && skyRef.setMilkyWayIntensity(SKY_PARAMS.milkyWayIntensity), SKY_PARAMS, 'SKY_PARAMS');
+
+    // --- Regeneration controls: these change generated geometry, so they do NOT live-update
+    // (a rebuild on every drag frame is the crash path). Each edits SKY_PARAMS only; the Apply
+    // button commits ONE rebuild (via setPalette) with the current values at the current seed.
+    // Each row is a slider + editable number field. ---
+    const regenNote = document.createElement('div'); regenNote.className = 'row';
+    regenNote.innerHTML = '<span style="color:#8892a0;font-size:11px">Regenerate — edit then Apply</span>';
+    current.appendChild(regenNote);
+    const applySky = () => { if (skyRef) skyRef.setPalette(skyPaletteOverrides()); };
+    const regenRow = (key, label, min, max, step, intVal) => {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>';
+      const num = document.createElement('input'); num.type = 'number';
+      num.min = min; num.max = max; num.step = step; num.value = SKY_PARAMS[key];
+      num.style.cssText = 'width:64px;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;font:inherit';
+      row.appendChild(num); current.appendChild(row);
+      const rng = document.createElement('input'); rng.type = 'range';
+      rng.min = min; rng.max = max; rng.step = step; rng.value = SKY_PARAMS[key];
+      current.appendChild(rng);
+      const set = v => { v = Math.max(min, Math.min(max, intVal ? Math.round(v) : v)); SKY_PARAMS[key] = v; num.value = v; rng.value = v; };
+      rng.addEventListener('input', () => set(parseFloat(rng.value)));
+      num.addEventListener('change', () => set(parseFloat(num.value) || min));
+    };
+    regenRow('planetCount', 'Planets', 0, 8, 1, true);
+    regenRow('moonCount', 'Moons', 0, 6, 1, true);
+    regenRow('bodyScale', 'Planet/moon size', 0.3, 3, 0.05, false);
+    regenRow('bodyResolution', 'Planet resolution', 0.5, 2, 0.1, false);
+    regenRow('milkyWayDensity', 'Milky Way density', 0.2, 3, 0.05, false);
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button'; applyBtn.textContent = 'Apply changes';
+    applyBtn.style.cssText = 'width:100%;margin-top:4px;background:#2b3a2b;color:#cfe6cf;border:1px solid #47593a;border-radius:4px;padding:3px 6px;cursor:pointer;font:inherit';
+    applyBtn.addEventListener('click', applySky);
+    current.appendChild(applyBtn);
+
+    // --- Seed: reproduce a specific sky, or Reroll for a new one. Both commit a rebuild via
+    // setPalette, so any pending regeneration edits above are applied at the same time. ---
+    const seedRow = document.createElement('div'); seedRow.className = 'row';
+    seedRow.innerHTML = '<span style="color:#c4ccd6">Sky seed</span>';
+    const seedInp = document.createElement('input');
+    seedInp.type = 'number'; seedInp.min = 0; seedInp.step = 1; seedInp.value = SKY_PARAMS.seed;
+    seedInp.style.cssText = 'width:100px;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;font:inherit';
+    seedRow.appendChild(seedInp); current.appendChild(seedRow);
+    seedInp.addEventListener('change', () => { SKY_PARAMS.seed = (parseInt(seedInp.value, 10) || 0) >>> 0; seedInp.value = SKY_PARAMS.seed; applySky(); });
+    const rerollBtn = document.createElement('button');
+    rerollBtn.type = 'button'; rerollBtn.textContent = 'Reroll — new sky';
+    rerollBtn.style.cssText = 'width:100%;margin-top:4px;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px 6px;cursor:pointer;font:inherit';
+    rerollBtn.addEventListener('click', () => { SKY_PARAMS.seed = (Math.random() * 0xffffffff) >>> 0; seedInp.value = SKY_PARAMS.seed; applySky(); });
+    current.appendChild(rerollBtn);
   }).catch(err => { showError('sky.js could not load (' + err.message + ')'); });
   }
 }).catch(err => {
@@ -4703,8 +4791,8 @@ const _fpsDelta = new THREE.Vector3();
 
 // Tunable movement params — exposed via the debug panel below
 const fp = {
-  // Movement speeds set to match the procedural-body preview tuning (walk 2.05, run 4.2).
-  speedStand:  2.05, speedCrouch: 1.0, speedProne:  0.5,
+  // Movement speeds (walk 4.0, run = walk * runMultiplier ≈ 8.2).
+  speedStand:  4.0, speedCrouch: 1.0, speedProne:  0.5,
   heightStand: 1.8,  heightCrouch: 0.6, heightProne: 0.1, // 1.8/0.3 capsule matches body-preview.html's tuning body
   jumpForce:   10,   gravity:      36,
   runMultiplier: 2.05,
@@ -5030,6 +5118,32 @@ let lgChargeStart = null;
   weaponControlSlider('Reserve ammo', w => w?.reserveAmmo ?? 0, (w, v) => { w.reserveAmmo = Math.max(0, Math.round(v)); }, 0, 500, 1, fi, { ammo: true });
   weaponControlSlider('Spread rad', w => w?.spreadRad ?? 0, (w, v) => { w.spreadRad = v; }, 0, 0.15, 0.001, f3);
 
+  fpHeader('Muzzle / firing FX');
+  const muzzleProfile = (w) => {
+    if (!w.muzzleFx) w.muzzleFx = {};
+    if (!Array.isArray(w.muzzleFx.offset)) w.muzzleFx.offset = [0, 0, 0];
+    return w.muzzleFx;
+  };
+  const getMuzzle = (w, key, fallback) => muzzleProfile(w)[key] ?? fallback;
+  const setMuzzle = (w, key, value) => { muzzleProfile(w)[key] = value; };
+  weaponControlSlider('Muzzle offset X', w => muzzleProfile(w).offset[0] ?? 0, (w, v) => { muzzleProfile(w).offset[0] = v; }, -0.75, 0.75, 0.005, f3);
+  weaponControlSlider('Muzzle offset Y', w => muzzleProfile(w).offset[1] ?? 0, (w, v) => { muzzleProfile(w).offset[1] = v; }, -0.75, 0.75, 0.005, f3);
+  weaponControlSlider('Muzzle offset Z', w => muzzleProfile(w).offset[2] ?? 0, (w, v) => { muzzleProfile(w).offset[2] = v; }, -0.75, 0.75, 0.005, f3);
+  weaponControlSlider('Flash forward', w => getMuzzle(w, 'flashForward', 0.02), (w, v) => setMuzzle(w, 'flashForward', v), -0.2, 0.5, 0.005, f3);
+  weaponControlSlider('Flash size', w => getMuzzle(w, 'flashSize', 0.13), (w, v) => setMuzzle(w, 'flashSize', v), 0.001, 1, 0.005, f3);
+  weaponControlSlider('Flash growth', w => getMuzzle(w, 'flashGrowth', 0.4), (w, v) => setMuzzle(w, 'flashGrowth', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Flash duration', w => getMuzzle(w, 'flashDuration', 0.08), (w, v) => setMuzzle(w, 'flashDuration', v), 0.01, 0.5, 0.005, f3);
+  weaponControlSlider('Flash opacity', w => getMuzzle(w, 'flashOpacity', 0.85), (w, v) => setMuzzle(w, 'flashOpacity', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Smoke forward', w => getMuzzle(w, 'smokeForward', 0), (w, v) => setMuzzle(w, 'smokeForward', v), -0.2, 0.5, 0.005, f3);
+  weaponControlSlider('Smoke travel', w => getMuzzle(w, 'smokeTravel', 0.42), (w, v) => setMuzzle(w, 'smokeTravel', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Smoke spread', w => getMuzzle(w, 'smokeSpread', 0.06), (w, v) => setMuzzle(w, 'smokeSpread', v), 0, 0.5, 0.005, f3);
+  weaponControlSlider('Smoke rise', w => getMuzzle(w, 'smokeRise', 0.1), (w, v) => setMuzzle(w, 'smokeRise', v), -0.5, 1, 0.01, f2);
+  weaponControlSlider('Smoke size', w => getMuzzle(w, 'smokeSize', 0.08), (w, v) => setMuzzle(w, 'smokeSize', v), 0.001, 1, 0.005, f3);
+  weaponControlSlider('Smoke growth', w => getMuzzle(w, 'smokeGrowth', 0.28), (w, v) => setMuzzle(w, 'smokeGrowth', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Smoke duration', w => getMuzzle(w, 'smokeDuration', 0.42), (w, v) => setMuzzle(w, 'smokeDuration', v), 0.01, 2, 0.01, f2);
+  weaponControlSlider('Smoke opacity', w => getMuzzle(w, 'smokeOpacity', 0.22), (w, v) => setMuzzle(w, 'smokeOpacity', v), 0, 1, 0.01, f2);
+  weaponControlSlider('Smoke wisps', w => getMuzzle(w, 'smokeCount', 2), (w, v) => setMuzzle(w, 'smokeCount', Math.round(v)), 0, 12, 1, fi);
+
   fpHeader('Aim / optics');
   weaponControlSlider('Aim X', w => getArr(w, 'aimOffset', 0), (w, v) => setArr(w, 'aimOffset', 0, v), -1.5, 1.5, 0.01, f2);
   weaponControlSlider('Aim Y', w => getArr(w, 'aimOffset', 1), (w, v) => setArr(w, 'aimOffset', 1, v), -1.5, 0.8, 0.01, f2);
@@ -5076,6 +5190,10 @@ let lgChargeStart = null;
     if (Array.isArray(w.aimOffset)) for (let i = 0; i < 3; i++) entries.push({ name: `weapon.${w.id}.aimOffset.${i}`, obj: w.aimOffset, key: i });
     if (Array.isArray(w.aimRotation)) for (let i = 0; i < 3; i++) entries.push({ name: `weapon.${w.id}.aimRotation.${i}`, obj: w.aimRotation, key: i });
     if (Array.isArray(w.scopeCenter)) for (let i = 0; i < 2; i++) entries.push({ name: `weapon.${w.id}.scopeCenter.${i}`, obj: w.scopeCenter, key: i });
+    if (Array.isArray(w.muzzleFx?.offset)) for (let i = 0; i < 3; i++) entries.push({ name: `weapon.${w.id}.muzzleFx.offset.${i}`, obj: w.muzzleFx.offset, key: i });
+    for (const key of ['flashForward', 'flashSize', 'flashGrowth', 'flashDuration', 'flashOpacity', 'smokeForward', 'smokeTravel', 'smokeSpread', 'smokeRise', 'smokeSize', 'smokeGrowth', 'smokeDuration', 'smokeOpacity', 'smokeCount']) {
+      if (typeof w.muzzleFx?.[key] === 'number') entries.push({ name: `weapon.${w.id}.muzzleFx.${key}`, obj: w.muzzleFx, key });
+    }
     for (const key of ['viewScale', 'recoil', 'fireIntervalMs', 'damage', 'range', 'magazineSize', 'reserveAmmo', 'spreadRad', 'aimEyeForward', 'magnification', 'scopeBlur', 'scopeRadius']) {
       if (typeof w[key] === 'number') entries.push({ name: `weapon.${w.id}.${key}`, obj: w, key });
     }
@@ -5396,6 +5514,7 @@ try {
 environmentUi = createEnvironmentUi({
   perfLog,
   audio: envAudio,
+  creatures: portCreatures,
   sliderState: {
     capture: captureSliderState,
     apply: applySliderState,
@@ -5427,6 +5546,12 @@ function createLocalWeaponViewModel(camera) {
   let visible = false;
   let currentTool = LIGHT_TOOL_ID;
   let currentObject = null;
+  // Empty kept beside the normalized model under `group`. Its pose is rebuilt from the raw
+  // GLB anchor through currentObject.matrix, avoiding the old double-normalization caused by
+  // parenting an already-baked point beneath the normalized root.
+  let muzzleMarker = null;
+  const muzzlePoint = new THREE.Vector3();
+  const muzzleQuat = new THREE.Quaternion();
   let recoilT = 0;
   let reloadT = 0;
   let reloadDur = 1.2; // fallback duration for weapons with no reloadSequence entry
@@ -5446,6 +5571,8 @@ function createLocalWeaponViewModel(camera) {
   let t = 0;
   let bobPhase = 0;             // run/walk bob phase, advanced by bob speed not raw time
   let carryBlend = 0;          // eased 0->1 when running (gun swings across the chest)
+  let moveBlend = 0;           // eased 0->1 when moving (idle<->walk bob cross-fade)
+  let runBlend = 0;            // eased 0->1 when running (walk<->run bob cross-fade)
   const viewBob = { x: 0, y: 0, z: 0 }; // camera-local bob translation this frame, read by the orb-hands
   let loadToken = 0;
   // Weapon IK anchors are authored in raw-GLB space (weapon-anchors.json); bake them into the
@@ -5505,7 +5632,35 @@ function createLocalWeaponViewModel(camera) {
 
   function clearCurrent() {
     if (currentObject) group.remove(currentObject);
+    if (muzzleMarker) group.remove(muzzleMarker);
     currentObject = null;
+    muzzleMarker = null;
+  }
+  function refreshMuzzleMarker() {
+    if (!currentObject || !muzzleMarker) return;
+    const raw = rawAnchorData?.[currentTool]?.ikAnchors?.muzzle;
+    const p = Array.isArray(raw?.p) ? raw.p : [0, 0, -0.55];
+    const q = Array.isArray(raw?.q) ? raw.q : [0, 0, 0, 1];
+    currentObject.updateMatrix();
+    muzzlePoint.set(p[0], p[1], p[2]).applyMatrix4(currentObject.matrix);
+    const offset = getWeapon(currentTool)?.muzzleFx?.offset;
+    if (Array.isArray(offset)) {
+      muzzlePoint.x += offset[0] || 0;
+      muzzlePoint.y += offset[1] || 0;
+      muzzlePoint.z += offset[2] || 0;
+    }
+    muzzleMarker.position.copy(muzzlePoint);
+    muzzleMarker.quaternion.copy(currentObject.quaternion)
+      .multiply(muzzleQuat.set(q[0], q[1], q[2], q[3]).normalize());
+    muzzleMarker.updateMatrix();
+  }
+  // Pin an empty at the authored raw-GLB muzzle pose (falls back to a forward barrel point).
+  // The marker inherits all view pose/bob/recoil animation from its shared `group` parent.
+  function attachMuzzleMarker() {
+    if (!currentObject) return;
+    muzzleMarker = new THREE.Object3D();
+    group.add(muzzleMarker);
+    refreshMuzzleMarker();
   }
   function normalizeObject(obj, weaponId) {
     obj.updateMatrixWorld(true);
@@ -5570,21 +5725,27 @@ function createLocalWeaponViewModel(camera) {
     // top-level so this closure reads them directly. viewBob is exposed for the orb-hands. ---
     const swayDamp = (1 - 0.85 * aimAmt) * (reloading ? 0.2 : 1);
     const moving = speed > 0.4;
-    const bobAmount = (running ? feel.bobRun : moving ? feel.bobWalk : feel.bobWalk * 0.22) * swayDamp;
-    const bobSpeed = running ? 10 : moving ? 7 : 3;
+    // Idle<->walk<->run are eased blends, not hard switches, so amplitude, phase rate and bob
+    // *shape* all cross-fade across the boundary instead of popping the gun in one frame.
+    moveBlend = easeToward(moveBlend, moving ? 1 : 0, dt, 8);
+    runBlend = easeToward(runBlend, running ? 1 : 0, dt, 6);
+    const idleAmp = feel.bobWalk * 0.22;
+    const bobAmount = (idleAmp + (feel.bobWalk - idleAmp) * moveBlend
+                        + (feel.bobRun - feel.bobWalk) * runBlend) * swayDamp;
+    const bobSpeed = 3 + 4 * moveBlend + 3 * runBlend;   // 3 idle -> 7 walk -> 10 run
     bobPhase += dt * bobSpeed;
     // Camera-local (yaw-only) move axis -> perpendicular bob direction.
     const cy = Math.cos(look.yaw), sy = Math.sin(look.yaw);
     const localRight = moveX * cy - moveZ * sy;
     const localFwd = moveX * -sy + moveZ * -cy;   // world forward is (-sin,0,-cos)
     const axis = runBobAxis(localRight, -localFwd);
-    const runBob = Math.sin(bobPhase) * bobAmount * 1.65;
-    const sideBob = running ? axis.x * runBob : Math.sin(bobPhase * 0.5) * bobAmount * 0.45;
-    const depthBob = running ? axis.z * runBob : 0;
-    const vertBob = running ? Math.abs(Math.cos(bobPhase * 1.15)) * bobAmount * 0.38
-                            : Math.abs(Math.sin(bobPhase)) * bobAmount * 0.5;
-    const rollBob = running ? axis.x * Math.sin(bobPhase) * bobAmount * 0.9
-                            : Math.sin(bobPhase * 0.5) * bobAmount * 0.35;
+    // Unit (amplitude-free) walk-form and run-form shapes, cross-faded by runBlend.
+    const rb = runBlend, wb = 1 - runBlend;
+    const s1 = Math.sin(bobPhase), sHalf = Math.sin(bobPhase * 0.5);
+    const sideBob = (wb * sHalf * 0.45 + rb * axis.x * s1 * 1.65) * bobAmount;
+    const depthBob = (rb * axis.z * s1 * 1.65) * bobAmount;
+    const vertBob = (wb * Math.abs(s1) * 0.5 + rb * Math.abs(Math.cos(bobPhase * 1.15)) * 0.38) * bobAmount;
+    const rollBob = (wb * sHalf * 0.35 + rb * axis.x * s1 * 0.9) * bobAmount;
     // Run carry lean: gun swings inward/down across the chest (eased so it isn't instant).
     const carryTarget = running && !reloading ? (1 - aimAmt) : 0;
     carryBlend = easeToward(carryBlend, carryTarget, dt, 10);
@@ -5645,6 +5806,7 @@ function createLocalWeaponViewModel(camera) {
     currentObject.userData.viewScaleApplied = weapon.viewScale ?? 1;
     group.add(currentObject);
     applyToolTransform(0, 0);
+    attachMuzzleMarker();
     if (weapon.viewUseModel === false || !weapon.model) return;
     try {
       let template = cache.get(toolId);
@@ -5675,6 +5837,7 @@ function createLocalWeaponViewModel(camera) {
       currentObject.userData.viewScaleApplied = weapon.viewScale ?? 1;
       group.add(currentObject);
       applyToolTransform(0, 0);
+      attachMuzzleMarker();
     } catch (err) {
       console.warn('[guns] failed to load weapon model', toolId, err);
       if (token === loadToken) applyToolTransform(0, 0);
@@ -5683,7 +5846,7 @@ function createLocalWeaponViewModel(camera) {
   return {
     setVisible(v) { visible = !!v; applyToolTransform(0, 0); },
     setTool(toolId) { loadTool(toolId); },
-    refresh() { applyToolTransform(0, 0); },
+    refresh() { applyToolTransform(0, 0); refreshMuzzleMarker(); },
     recoil() { recoilT = 0.16; },
     reload() {
       const seq = rawPoseData?.reloadSequence?.[currentTool] || null;
@@ -5692,6 +5855,22 @@ function createLocalWeaponViewModel(camera) {
       reloadT = reloadDur;
     },
     update(dt, { speed = 0, aim = 0, running = false, moveX = 0, moveZ = 0 } = {}) { applyToolTransform(dt, speed, aim, running, moveX, moveZ); },
+    // World position of the weapon's muzzle this frame (for first-person muzzle FX). Returns
+    // null when no weapon is mounted so callers can skip rather than fire from the eye.
+    getMuzzleWorldPosition(out = new THREE.Vector3()) {
+      if (!muzzleMarker || !group.visible) return null;
+      camera.updateMatrixWorld(true);
+      return muzzleMarker.getWorldPosition(out);
+    },
+    getMuzzleWorldPose(outPosition = new THREE.Vector3(), outDirection = new THREE.Vector3()) {
+      if (!muzzleMarker || !group.visible) return null;
+      refreshMuzzleMarker();
+      camera.updateMatrixWorld(true);
+      muzzleMarker.getWorldPosition(outPosition);
+      muzzleMarker.getWorldQuaternion(muzzleQuat);
+      outDirection.set(0, 0, 1).applyQuaternion(muzzleQuat).normalize();
+      return outPosition;
+    },
     getReloadHandTargets() { return reloadHandTargets; },
     getViewBob() { return viewBob; },
     getBakedAnchors(weaponId) { return bakedAnchors.get(weaponId) || null; },
@@ -6200,6 +6379,12 @@ function obstacleColumnsAlongRay(origin, dir, range) {
 
 // Host-side world hitscan: nearest of players, creatures, obstacles, terrain (occlusion for
 // free). Returns the resolver result plus the creature `ref` for the winning creature hit.
+// Exact wall/geometry occluder: nearest solid hit on the map's collision BVH. Used instead of
+// the heightfield terrain march for geometry-only maps (shoot house), where bilinear wall-top
+// interpolation otherwise creates invisible ramps that block shots beside walls and doorways.
+function mapShotOccluder(origin, d, range) {
+  return mapCollider ? mapCollider.raycast(origin, d, range) : null;
+}
 function resolveWorldShot({ shooterId, origin, dir, range, nowMs }) {
   const creatures = creatureCombatCapsules();
   const hit = resolveHitscan({
@@ -6208,7 +6393,10 @@ function resolveWorldShot({ shooterId, origin, dir, range, nowMs }) {
     creatures,
     mobs: claudecraftCreatures?.mobCombatCapsules() ?? null,
     obstacles: obstacleColumnsAlongRay(origin, dir, range),
-    heightAt: terrainHeight,
+    occluder: mapCollider ? mapShotOccluder : undefined,
+    // Skip the heightfield terrain march on geometry-only maps — the BVH (which includes the
+    // floor slab) is the accurate ground there; keep it for terrain/authored maps.
+    heightAt: NO_ENVIRONMENT ? null : terrainHeight,
   });
   if (hit && hit.kind === 'creature') {
     hit.creatureRef = creatures.find(c => c.id === hit.id)?.ref || null;
@@ -6233,6 +6421,8 @@ function tracerStart(origin, end) {
 }
 
 // Host/solo: create the replicated tracer + impact-spark entities for a resolved shot.
+// (Muzzle flash is a LOCAL first-person effect spawned in fireGunFromCamera at the real
+// viewmodel muzzle — never from the eye/shot origin, which would sit in the shooter's face.)
 function spawnShotEffects(origin, hit, weapon, ownerId) {
   if (!hit || !Array.isArray(hit.point)) return;
   const now = performance.now() / 1000;
@@ -6266,6 +6456,23 @@ function spawnLocalPredictedTracer(origin, dir, weapon) {
   });
 }
 let localTracerSeq = 0;
+
+// Local first-person muzzle flash at the actual viewmodel muzzle (all roles; not replicated —
+// it's a view effect for the shooter, like recoil). Skips when no muzzle is resolvable.
+const _muzzleTmp = new THREE.Vector3();
+const _muzzleDirTmp = new THREE.Vector3();
+function spawnLocalMuzzleFlash(fallbackDir, weapon) {
+  const mw = localWeaponView?.getMuzzleWorldPose?.(_muzzleTmp, _muzzleDirTmp);
+  if (!mw) return;
+  const profile = weapon?.muzzleFx || {};
+  const dir = _muzzleDirTmp.lengthSq() > 1e-8 ? _muzzleDirTmp : new THREE.Vector3(...fallbackDir);
+  const life = Math.max(profile.flashDuration ?? 0.08, profile.smokeDuration ?? 0.42);
+  localShotEffects.push({
+    id: `local-muzzle-${++localTracerSeq}`, type: 'effect', kind: 'muzzle_flash',
+    p: [mw.x, mw.y, mw.z], dir: [dir.x, dir.y, dir.z], color: [1, 0.9, 0.62],
+    muzzleFx: { ...profile }, life, bornMs: performance.now(),
+  });
+}
 
 // Per-frame effect feed: merge replicated effects (registry on host, wire upserts on guest)
 // with any live local predicted tracers, then hand the union to the renderer.
@@ -6455,8 +6662,13 @@ function fireGunFromCamera() {
   const result = mpRole === 'guest' ? (mpSession?.sendInput(intent), { ok: true }) : applyCombatIntent(intent, 'host');
   if (result?.ok) {
     lastAutoFireMs = performance.now();  // gate full-auto repeat off this shot (tickAutoFire)
+    const w = getWeapon(weaponId);
+    // Muzzle flash: local first-person view effect at the real barrel, every role except melee.
+    if (w && (w.mode || 'hitscan') !== 'melee') spawnLocalMuzzleFlash(intent.dir, w);
     // Guest local-predicted tracer only for hitscan; projectiles/melee wait for host state.
-    if (mpRole === 'guest') { const w = getWeapon(weaponId); if (w && (w.mode || 'hitscan') === 'hitscan') spawnLocalPredictedTracer(intent.origin, intent.dir, w); }
+    if (mpRole === 'guest' && w && (w.mode || 'hitscan') === 'hitscan') {
+      spawnLocalPredictedTracer(intent.origin, intent.dir, w);
+    }
     viewHands.recoil(); localWeaponView?.recoil();
     // View-feel impact: kick the view up (+ a little sideways jitter) and add screen-shake
     // trauma, both scaled by the weapon's recoil. Visual only — aim/wire unaffected.
@@ -6841,6 +7053,7 @@ async function animate() {
     if (skyRef.group.userData.followCamera) skyRef.group.position.copy(camera.position);
     const d = skyLightDir();
     skyRef.setSunDir(d);
+    skyRef.updateDome(rig.elevation);   // blend day/dusk/night by sun elevation (uniform writes only)
     if (moonLight) {
       moonLight.position.copy(camera.position).addScaledVector(d, 120);
       moonLight.target.position.copy(camera.position);
