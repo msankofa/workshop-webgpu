@@ -290,7 +290,10 @@ magazine prop — third-person emits reload events but wires no `onEvent`, so ne
 run flag and world XZ velocity) and adds a run/gun bob on top of the aimed offset: a directional
 side-to-side keyed off the strafe-relative move axis (`runBobAxis` in `view-feel.js`) plus vertical/depth/
 roll terms and an eased "carry" lean that swings the gun across the chest while sprinting. Amplitudes come
-from `feel.bobWalk`/`feel.bobRun` and are damped by aim and reload. The net camera-local bob translation is
+from `feel.bobWalk`/`feel.bobRun` and are damped by aim and reload. Idle↔walk↔run is not a hard switch:
+`moveBlend`/`runBlend` are eased 0→1 blends so bob amplitude, phase rate, and the walk-form vs run-form
+*shape* all cross-fade across the boundary — a hard switch popped the gun (and the bob-following hands) in
+one frame because player speed is set directly on Shift. The net camera-local bob translation is
 stored in `viewBob` and exposed via `getViewBob()`; the orb-hands read it through `update(dt, { …, bob })`
 and inherit it at `HAND_BOB_FOLLOW` so the hands ride with the gun instead of detaching. This is separate
 from the reload hand targets above (bob applies to the idle/base pose; the reload blend sits on top). See

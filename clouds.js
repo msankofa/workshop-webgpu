@@ -213,6 +213,7 @@ export class Clouds extends THREE.Mesh {
     const mat = new MeshBasicNodeMaterial({
       transparent: true,
       side: THREE.DoubleSide,
+      fog: false,   // clouds use their own horizon fade; scene fog (far=terrain size) would clamp them to the map edge
     });
     // Clouds are pure white; all shading is in the alpha channel.
     mat.colorNode   = vec3(1, 1, 1);
@@ -252,7 +253,9 @@ export class Clouds extends THREE.Mesh {
   setFade(fade)         { this.material._uFade.value = fade; }
   setExtent(worldUnits) {
     const s = worldUnits / 2000;
-    this.scale.set(s, 1, s);
+    // Mesh is laid flat via rotation.x=-PI/2, so the plane spans local X and Y
+    // (local Z is the normal). Scale both in-plane axes, not X/Z.
+    this.scale.set(s, s, 1);
   }
 }
 

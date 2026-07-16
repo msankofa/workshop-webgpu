@@ -20,7 +20,7 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 
 | File | Responsibility | Lines |
 |---|---|---|
-| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~330 |
+| `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~737 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `entity-types/effect.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`, `light-entity-renderer.js`, `effect-renderer.js` | Replicated entity registry + light/projectile/effect/combat-projectile/explosion adapters + clustered-light slot binder + combat-effect (tracer/spark/fireball) renderer (see §9, §5b) | — |
 | `player-hands.js` | First-person orb-hand viewmodel: `createViewHands(camera, THREE)` — your own two floating hands, camera-attached, shown only in FPS mode | 55 |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker (with a "Load preset" slider-state dropdown), map picker, loading screen; resolves `{ mapKey, mpRole, roomCode, mpWorldMode, presetName }` before the sim boots | 305 |
@@ -103,6 +103,11 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     and the old capsule/eyes/orb-hands meshes are hidden (`visible = false`) rather than skipped, so
     flipping the flag back would still render correctly — they are just never unhidden today since
     the flag is read once at construction.
+  - `playerGroups()` (2026-07-15) — read-only accessor returning the live `id -> Group` map
+    `_updatePlayers` maintains, for external raycasting/inspection. Used by `environment-viewer.html`'s
+    bot inspector (`docs/subsystems/bots.md`) to Alt+Click-select a bot in the scene; the id also
+    identifies guest players (both share this same map), so callers filtering to bots only should
+    check the id against their own `botPlayers` map.
   - `update(state: { creatures?: [], players?: [] })` — creatures reuse one semi-transparent box
     `Mesh` per id via the generic `_updateSet`. Players go through `_updatePlayers`: each is a
     `Group` container (positioned/oriented by `p`/`q`) holding a **solid** capsule body (a
@@ -116,6 +121,24 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     two floating **orb hands** (shared sphere geo, tinted with the same per-player body material)
     placed to the sides in front by `_placeHands`. Ids no longer present are removed (also destroys
     that player's `bodyProc`, if any).
+  - **Death pose** (2026-07-14, capsule path only — the procedural-body path already had its own
+    `alive`-gated collapse, see below): when `item.alive === false`, the fall is animated smoothly
+    over `FALL_MS` (450ms), not snapped. `_updatePlayers` edge-detects the alive→dead transition,
+    captures the container's current (upright) quaternion/position into `userData.fallFromQ/P`
+    once, and keeps `userData.fallTargetQ/P` refreshed with the resting pose every call (tipping
+    the upright yaw quaternion -90° around its own local X axis via `_fallTipQ`, built once in the
+    constructor, so the capsule falls face-forward along whatever direction it was last facing,
+    and dropping from mid-capsule height to resting-on-side height, `py - h/2 + r`) — but it never
+    writes `g.quaternion`/`g.position` directly while dead. `tick(nowMs)` owns the actual visible
+    transform while `userData.dead` is set: it lazily starts `userData.fallStartAt` on the first
+    tick after death, then `slerp`/`lerpVectors`s from `fallFrom*` to `fallTarget*` over `FALL_MS`.
+    Eyes, orb hands, and the held-item placeholder are hidden while dead (`_placeHeldItem` also
+    gates on `item.alive` directly). Added for combat bots (see `docs/subsystems/bots.md`) but
+    applies to any pose carrying `alive: false`, capsule-mode humans included, once a caller
+    supplies it — `updateHostPlayerGhosts()` currently only merges `alive` in for bots, not the
+    local host or guest poses, so human capsule ghosts don't get this yet. Covered by
+    `test-ghost-renderer.mjs` (its minimal THREE stub gained `Quaternion.slerp`/`Vector3.lerpVectors`
+    for this).
   - **Remote procedural body (`useProceduralBody: true`)** — `_updateProceduralBody(g, item)` lazily
     creates `g.userData.bodyProc` on first sight of a player, tints it via `setTint` with the same
     `playerTintHSL` hue used for the capsule, then every `update()` call:
@@ -210,7 +233,9 @@ Boot sequence (top of the module, before the renderer/scene are built):
      Ghost updates happen inside `multiplayer.js`'s own `requestAnimationFrame` loop, **not** from
      the main `animate()` render loop in `environment-viewer.html` - the two rAF loops run
      independently.
-   - `mpRole === 'solo'` -> neither is created; `mpSession`/`mpGhostRenderer` stay `null`.
+   - `mpRole === 'solo'` -> no `mpSession` (no relay connection), but `mpGhostRenderer` **is**
+     still constructed (2026-07-14) — combat bots are host/solo-only sim and need somewhere to
+     render even with no multiplayer session; see `docs/subsystems/bots.md`.
 4. `window.addEventListener('mp:guest_input', ...)` on the host side stores `player_state`, removes
    `guest_left` capsules, and still handles `set_target` / `set_behavior` messages forwarded from
    guests by applying them to `portCreatures.system`.
@@ -477,7 +502,7 @@ Protocol — guests send fire as an **intent**, never a damage claim:
 - Damage routing: `kind:'player'` → `player-combat.js` facade `applyDamage`; `kind:'creature'` → the hit `portCreatures` body's `takeDamage(weapon.damage)`; `kind:'mob'` → `claudecraftCreatures.damageMob(id, { amount, attackerId })`, which runs the sim's real `sim.dealDamage(shooterEntity, mob, …, 'physical', 'Gunfire', 'hit')` path so threat/death/loot are handled and the mob aggros the shooter. Player HP authority is the host-owned `createPlayerCombatFacade` (delegates to the ClaudeCraft bridge when creatures are active so gun and mob damage share one player HP pool; host-owned fallback map otherwise). Gun code never mutates player/mob HP directly.
 - Mob hit capsules (`claudecraft-bridge/claudecraft-creatures.js:mobCombatCapsules`) are world-space, height `SIM_HUMANOID_HEIGHT·SCALE·mobScale` (matches the render sizing), radius `0.3·height`, centred at `feet + h/2`.
 - **Leash/heal guard:** the sim full-heals a mob when it leashes home (`resetEvadingMob`), so a ranged shot would just aggro a mob that runs back to spawn and resets to full HP. `damageMob` therefore tags the hit mob (`gunTag`, 6 s, refreshed per hit): while tagged, `pinGunTaggedLeashes()` re-pins its leash anchor to its own position each sim tick (so the chase-state leash check never trips → no evade→heal), pulls it out of any `evade` state (which is otherwise damage-immune), and forces `aggroTargetId`/`chase` onto the shooter. Result: sustained OR sparse gunfire reliably whittles the mob down and kills it instead of it healing between shots.
-- **Replicated combat effects** (`entity-types/effect.js` `EffectEntity`, `effect-renderer.js`): every resolved shot host-spawns a `gun_tracer` (muzzle→impact) and, for solid hits, a surface-tinted `hit_spark` effect entity. A third kind, `explosion` (expanding fireball rays scaled by blast radius), is spawned by the explosion entity's visual. These ride `entityRegistry.snapshot()` like lights, so all clients render identical effects. `effect-renderer.js` draws additive `LineSegments`+`Points`, fading each entity by wall-clock keyed on its id (`firstSeen`); fed per-frame via `updateShotEffects()` from `entityRegistry.renderList({type:'effect'})` (host/solo) or the interpolated `mpPendingEffects` upserts (guest). Guest shooters also get an immediate local-predicted tracer (`spawnLocalPredictedTracer`, hitscan only); damage stays host-confirmed.
+- **Replicated combat effects** (`entity-types/effect.js` `EffectEntity`, `effect-renderer.js`): `gun_tracer` (muzzle→impact line), `hit_spark` (surface-tinted rays + a dust puff on world surfaces), and `explosion` (layered blast) are **replicated** — host-spawned, riding `entityRegistry.snapshot()` like lights, so every client renders an identical result from one tiny wire object per effect. `muzzle_flash` is **not replicated**: it's a local first-person view effect (like recoil) spawned in `fireGunFromCamera` via `spawnLocalMuzzleFlash` at the **actual viewmodel muzzle** (`localWeaponView.getMuzzleWorldPosition()` — an empty pinned at the weapon's baked `muzzle` anchor), NOT at the eye/shot origin, and kept small so it never fills the shooter's view. Remote players' muzzle flashes are not currently shown (their tracer already marks the shot). `effect-renderer.js` is a **port of html-game-v2's layered explosion** (fireball flash, warm shell rays, expanding shockwave ground-ring, ballistic ember dots, gravity+bounce shrapnel streaks, and dark lingering smoke): every sub-particle is regenerated each frame **deterministically** from the wire object + hashed id + wall-clock age (`firstSeen`), so no per-particle state is replicated. It draws additive `LineSegments`+`Points` for streaks/rings/embers and a **`SpriteNodeMaterial` sprite pool** (soft radial `CanvasTexture`, additive glow + normal-blend smoke) for the fireball and smoke — classic `SpriteMaterial` is avoided because the WebGPU backend needs the node material. Effect `life` is the outer envelope (explosion 1.8 s so smoke lingers; the blast **point-light** is a separate short-lived `ExplosionEntity` `renders:true`). Fed per-frame via `updateShotEffects()` from `entityRegistry.renderList({type:'effect'})` (host/solo) or the interpolated `mpPendingEffects` upserts (guest). Guest shooters also get an immediate local-predicted tracer (`spawnLocalPredictedTracer`, hitscan only) + muzzle flash; damage stays host-confirmed.
 - **Projectiles + explosions** (`entity-types/combat-projectile.js`, `entity-types/explosion.js`): a fired rocket/grenade is a host-owned `combat-projectile` registry entity that flies under `sim` velocity/gravity, sweeps its path each `tick` via injected `ctx.raycast` (`projectileRaycast` → `resolveWorldShot`, terrain excluded so it owns its own ground-contact check), grenades bounce off terrain (≤2), and detonates on solid contact / fuse / life-end into an `explosion` entity (rockets `fizzleOnExpire` with no blast). It serializes as `type:'projectile'` (`renders:true`) so it borrows the light renderer's moving-light path; `isRegisteredLightEntityType` now also matches `'combat-projectile'`. `explosion` deals radial damage **once, in `create()`** via injected `ctx.applyBlast` (`applyExplosionBlast`: players/creatures/mobs by `blastDamageAt` falloff `0.45 + 0.55·(1−d/r)`, floor 12, **friendly-fire + self-damage ON**), then spawns its `explosion`-kind effect via `ctx.spawnEffect`. Both `ctx` closures are injected in the `entityRegistry.tick(dt, ctx)` call. Explosion is **not** a capped type (`CAPPED_TYPES` = `light`+`projectile` only) — the registry cap rejects *before* `create()` runs, so a capped explosion would silently drop its create()-time damage.
 - Extended host-owned player snapshot fields (guest-supplied values ignored): `hp`, `maxHp`, `alive`, `weapon`, `tool`, `firing`, `fireSeq`, `lastShotAt`, `ammoMag`, `ammoReserve`, `reloading`, `aimPitch`. `_lerpPlayers()` lerps `hp` and carries the rest.
 **ADS optics (aim-down-sights view + scope).** Right-mouse hold eases `localAimAmount` 0→1 (`environment-viewer.html`); each weapon carries optics fields in `weapons.js`:
@@ -555,7 +580,7 @@ Status: implemented for lights + projectiles (milestone A of the entity-registry
 Files: `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`,
 `entity-types/effect.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`,
 `light-entity-renderer.js`, `effect-renderer.js`, `environment-viewer.html`, `multiplayer.js`.
-The `effect` type (`gun_tracer`/`hit_spark`/`explosion`, short-lived, self-destroying, uncapped)
+The `effect` type (`gun_tracer`/`hit_spark`/`explosion` replicated; `muzzle_flash` local-only, short-lived, self-destroying, uncapped)
 is registered alongside the light adapters and rendered by `effect-renderer.js`; see §5b. Two
 weapon adapters join them (also uncapped): `combat-projectile` (rocket/grenade flight, serializes
 as `type:'projectile'` so it shares the moving-light renderer; its registry type is matched by

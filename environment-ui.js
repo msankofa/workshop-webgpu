@@ -1,3 +1,5 @@
+import { buildStatsPanel } from './creature-stats.js';
+
 const PERF_ROWS = [
   ['terrainWindow', 'Terrain window', 'passTerrainWindowMs'],
   ['creatures', 'Creatures', 'passCreaturesMs'],
@@ -590,7 +592,7 @@ function installStyle() {
   document.head.appendChild(style);
 }
 
-export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
+export function createEnvironmentUi({ perfLog, sliderState, audio, creatures } = {}) {
   installStyle();
 
   const shell = makeEl('aside');
@@ -602,6 +604,7 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
     ['world', 'World'],
     ['nature', 'Nature'],
     ['creatures', 'Creatures'],
+    ['stats', 'Stats'],
     ['player', 'Player'],
     ['assets', 'Assets'],
     ['look', 'Look'],
@@ -628,6 +631,7 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
   const worldHost = panelEls.get('world');
   const natureHost = panelEls.get('nature');
   const creaturesHost = panelEls.get('creatures');
+  const statsHost = panelEls.get('stats');
   const playerHost = panelEls.get('player');
   const assetsHost = panelEls.get('assets');
   const lookHost = panelEls.get('look');
@@ -700,6 +704,7 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {}) {
   const mountObserver = new MutationObserver(mountFixedUi);
   mountObserver.observe(document.body, { childList: true, subtree: false });
 
+  buildStatsPanel(statsHost, creatures);
   buildPerfPanel(toolsHost, perfLog);
   buildPresetsPanel(toolsHost, sliderState);
   if (audio) buildAudioPanel(audioHost, audio);

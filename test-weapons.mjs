@@ -25,6 +25,13 @@ for (const w of enabled) {
   if (w.mode !== 'melee') {
     check(Number.isFinite(w.magazineSize) && w.magazineSize > 0, `${w.id}.magazineSize should be finite and positive â€” got ${w.magazineSize}`);
     check(Number.isFinite(w.reserveAmmo) && w.reserveAmmo >= 0, `${w.id}.reserveAmmo should be finite and non-negative â€” got ${w.reserveAmmo}`);
+    check(w.muzzleFx && Array.isArray(w.muzzleFx.offset) && w.muzzleFx.offset.length === 3
+      && w.muzzleFx.offset.every(Number.isFinite), `${w.id}.muzzleFx.offset should be a finite vec3`);
+    for (const key of ['flashForward', 'flashSize', 'flashGrowth', 'flashDuration', 'flashOpacity',
+      'smokeForward', 'smokeTravel', 'smokeSpread', 'smokeRise', 'smokeSize', 'smokeGrowth',
+      'smokeDuration', 'smokeOpacity', 'smokeCount']) {
+      check(Number.isFinite(w.muzzleFx?.[key]), `${w.id}.muzzleFx.${key} should be finite`);
+    }
   }
   // Projectile weapons need a projectile sub-spec (speed + blastRadius drive the flight/blast).
   if (w.mode === 'projectile') {

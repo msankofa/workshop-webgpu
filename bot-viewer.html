@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
+    max-width: calc(100vw - 280px); z-index: 5; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &middot; WASD&nbsp;moves&nbsp;the&nbsp;dummy&nbsp;target &mdash; standalone combat-bot tuning tool</div>
+
+<!-- three@0.184.0: same CDN pins as environment-viewer.html/plant-viewer.html -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createMapCollider } from './map-collision.js';
+
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(8, 9, 8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(3, 1, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+// ===================== lighting =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 0.1; rig.dirLight.shadow.camera.far = 40;
+rig.dirLight.shadow.camera.left = -12; rig.dirLight.shadow.camera.right = 12;
+rig.dirLight.shadow.camera.top = 12; rig.dirLight.shadow.camera.bottom = -12;
+
+// ===================== test map scaffolding =====================
+// Swappable layouts (rooms / maze, see "map layouts" section below) share this scaffolding:
+// a mapRoot group rebuilt per layout, and mutable mapCollider/activeWalls/activeBounds that
+// applyLayout() replaces wholesale rather than the map being fixed at load time.
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x3d4450, roughness: 0.9 });
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x2a2f37, roughness: 1 });
+
+function box(mat, x, y, z, w, h, d) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  mapRoot.add(m);
+  return m;
+}
+
+const WALL_H = 3, WALL_T = 0.3;
+let mapCollider = null;
+let activeWalls = [];
+let activeBounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== stub bot =====================
+import { createBotEntity, stepBotPhysics, toWirePose } from './bot-entity.js';
+
+let botSpawnPoint = { x: 0, y: 0, z: 0 };  // set per-layout by applyLayout()
+const botMat = new THREE.MeshStandardMaterial({ color: 0xff7043, roughness: 0.6 });
+const facingMat = new THREE.MeshStandardMaterial({ color: 0xffe0b2 });
+
+let bot = null;
+let botMesh = null;
+let facingMesh = null;
+
+function spawnBot() {
+  if (bot) return;
+  bot = createBotEntity('bot-1', botSpawnPoint);
+  const geom = new THREE.CapsuleGeometry(bot.capsule.radius, bot.capsule.end.y - bot.capsule.start.y, 4, 8);
+  botMesh = new THREE.Mesh(geom, botMat);
+  botMesh.castShadow = true;
+  scene.add(botMesh);
+  // Facing indicator, colored by FSM state (patrol/seek/aim/fire) -- see updateBot's color pick.
+  facingMesh = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 8), facingMat);
+  facingMesh.rotation.x = Math.PI / 2;
+  scene.add(facingMesh);
+}
+function removeBot() {
+  if (!bot) return;
+  scene.remove(botMesh); botMesh.geometry.dispose();
+  scene.remove(facingMesh); facingMesh.geometry.dispose();
+  bot = null; botMesh = null; facingMesh = null;
+  botState = BOT_PATROL; patrolIdx = 0; pathMode = null; currentPath = []; lastKnownTarget = null;
+}
+
+function updateBot(dt) {
+  if (!bot) return;
+  stepBotPhysics(bot, dt, { mapCollider });
+  const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
+  botMesh.position.copy(mid);
+  facingMesh.position.copy(mid).addScaledVector(new THREE.Vector3(Math.sin(bot.yaw), 0, Math.cos(bot.yaw)), bot.capsule.radius + 0.2);
+  facingMesh.rotation.z = -bot.yaw;
+  facingMesh.material.color.setHex(
+    botState === BOT_FIRE ? 0xff5252 :
+    botState === BOT_AIM ? 0xffe0b2 :
+    botState === BOT_SEEK ? 0xffa726 :
+    0x5c6673);
+}
+
+// ===================== dummy player capsule (WASD-controlled target) =====================
+let dummySpawnPoint = { x: 0, y: 0, z: 0 };  // set per-layout by applyLayout()
+const dummyMat = new THREE.MeshStandardMaterial({ color: 0x42a5f5, roughness: 0.6 });
+
+let dummy = null;
+let dummyMesh = null;
+const dummyKeys = {};
+addEventListener('keydown', e => { dummyKeys[e.code] = true; });
+addEventListener('keyup', e => { dummyKeys[e.code] = false; });
+
+function spawnDummy() {
+  if (dummy) return;
+  dummy = createBotEntity('dummy', dummySpawnPoint);
+  const geom = new THREE.CapsuleGeometry(dummy.capsule.radius, dummy.capsule.end.y - dummy.capsule.start.y, 4, 8);
+  dummyMesh = new THREE.Mesh(geom, dummyMat);
+  dummyMesh.castShadow = true;
+  scene.add(dummyMesh);
+}
+function removeDummy() {
+  if (!dummy) return;
+  scene.remove(dummyMesh); dummyMesh.geometry.dispose();
+  dummy = null; dummyMesh = null;
+}
+
+const DUMMY_SPEED = 3.5;
+const _dummyForward = new THREE.Vector3();
+const _dummySide = new THREE.Vector3();
+// WASD basis lifted from applyFPSControls's camera-forward/side extraction
+// (environment-viewer.html) -- not the function itself; the dummy owns its own capsule/
+// velocity via bot-entity.js, no fpsKeys/playerCollider globals involved.
+function updateDummy(dt) {
+  if (!dummy) return;
+  camera.updateMatrixWorld();
+  _dummyForward.setFromMatrixColumn(camera.matrixWorld, 0);
+  _dummyForward.crossVectors(camera.up, _dummyForward).normalize();
+  _dummySide.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  let mx = 0, mz = 0;
+  if (dummyKeys['KeyW']) { mx += _dummyForward.x; mz += _dummyForward.z; }
+  if (dummyKeys['KeyS']) { mx -= _dummyForward.x; mz -= _dummyForward.z; }
+  if (dummyKeys['KeyA']) { mx -= _dummySide.x;    mz -= _dummySide.z; }
+  if (dummyKeys['KeyD']) { mx += _dummySide.x;    mz += _dummySide.z; }
+  const len = Math.hypot(mx, mz);
+  if (len > 0) { dummy.velocity.x = (mx / len) * DUMMY_SPEED; dummy.velocity.z = (mz / len) * DUMMY_SPEED; }
+  else { dummy.velocity.x = 0; dummy.velocity.z = 0; }
+  stepBotPhysics(dummy, dt, { mapCollider });
+  dummyMesh.position.copy(dummy.capsule.start.clone().add(dummy.capsule.end).multiplyScalar(0.5));
+}
+
+// ===================== bot FSM: patrol/seek movement (Phase 2) + aim/fire (Phase 1) =====================
+import {
+  BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE, TURN_RATE_RAD_S,
+  chooseBotState, aimAnglesTo, aimError, slewAngle,
+} from './bot-activity.js';
+import { resolveHitscan } from './combat.js';
+import { getWeapon } from './weapons.js';
+import { buildNavGrid, findPath, smoothPath, isWalkableCell, cellToWorld } from './nav-grid.js';
+
+const BOT_WEAPON = getWeapon('m1911');
+const EYE_LIFT = 0.85; // fraction up the capsule used as eye/muzzle height, both bot and dummy
+let botState = BOT_PATROL;
+let botTargetVisible = false;
+let lastShotAt = -Infinity;
+let shotSeq = 0;
+const tracers = []; // { line, expireAt }
+
+function eyePos(entity) {
+  return entity.capsule.start.clone().lerp(entity.capsule.end, EYE_LIFT);
+}
+function botXZ(entity) {
+  return { x: entity.capsule.start.x, z: entity.capsule.start.z };
+}
+
+// Nav grid bake: point-in-rect test against the active layout's wall data (not a BVH query --
+// for these hand-built test maps the rectangles are already known, matching the
+// "authoring-time data" shortcut the real shoot-house map would use too). WALL_MARGIN keeps
+// the walkable area off the wall surfaces so paths don't hug them.
+const NAV_CELL = 0.5;
+const WALL_MARGIN = 0.35;
+function pointInWall(x, z) {
+  for (const w of activeWalls) {
+    if (Math.abs(x - w.x) <= w.w / 2 + WALL_MARGIN && Math.abs(z - w.z) <= w.d / 2 + WALL_MARGIN) return true;
+  }
+  return false;
+}
+function navWalkable(x, z) {
+  if (x < activeBounds.minX || x > activeBounds.maxX || z < activeBounds.minZ || z > activeBounds.maxZ) return false;
+  return !pointInWall(x, z);
+}
+let navGrid = null;
+
+// ===================== map layouts =====================
+// Two swappable layouts, both producing { walls, bounds, botSpawn, dummySpawn, patrolPoints,
+// cameraTarget }: the original hand-built two-room map, and a procedurally generated maze for
+// stress-testing pathfinding (long winding corridors, dead ends, many more turns than the
+// rooms map's single doorway).
+function buildRoomsLayout() {
+  return {
+    walls: [
+      { x: 0, z: -3, w: 6 + WALL_T, d: WALL_T },      // room A north
+      { x: 0, z: 3, w: 6 + WALL_T, d: WALL_T },        // room A south
+      { x: -3, z: 0, w: WALL_T, d: 6 + WALL_T },       // room A west
+      { x: 3, z: -1.75, w: WALL_T, d: 2.5 },           // room A east, north segment (doorway gap below)
+      { x: 3, z: 2.375, w: WALL_T, d: 1.25 },          // room A east, south segment
+      { x: 6, z: -3, w: 6 + WALL_T, d: WALL_T },       // room B north
+      { x: 6, z: 3, w: 6 + WALL_T, d: WALL_T },        // room B south
+      { x: 9, z: 0, w: WALL_T, d: 6 + WALL_T },        // room B east
+    ],
+    bounds: { minX: -3, maxX: 9, minZ: -3, maxZ: 3 },
+    botSpawn: { x: 6, y: 0, z: 0 },
+    dummySpawn: { x: 0, y: 0, z: 0 },
+    patrolPoints: [{ x: 7, z: -1.5 }, { x: 7, z: 1.5 }, { x: 0, z: 1.5 }, { x: 0, z: -1.5 }],
+    cameraTarget: { x: 3, y: 1, z: 0 },
+  };
+}
+
+const MAZE_COLS = 8, MAZE_ROWS = 8, MAZE_CELL = 2.5;
+
+// Recursive-backtracker maze carve: iterative DFS with a random neighbor order. Produces long,
+// winding, dead-end-heavy corridors -- a real stress test for A* + string-pulling, unlike the
+// rooms layout's single doorway. Not seeded (interactive stress-testing tool, not asserted by
+// any test) -- click "Maze layout" again for a fresh one.
+function generateMazeCells(cols, rows) {
+  const idx = (c, r) => r * cols + c;
+  const cells = Array.from({ length: cols * rows }, () => ({ N: true, S: true, E: true, W: true }));
+  const visited = new Array(cols * rows).fill(false);
+  const stack = [{ c: 0, r: 0 }];
+  visited[0] = true;
+  while (stack.length > 0) {
+    const { c, r } = stack[stack.length - 1];
+    const options = [];
+    if (r > 0 && !visited[idx(c, r - 1)]) options.push({ c, r: r - 1, dir: 'N', opp: 'S' });
+    if (r < rows - 1 && !visited[idx(c, r + 1)]) options.push({ c, r: r + 1, dir: 'S', opp: 'N' });
+    if (c > 0 && !visited[idx(c - 1, r)]) options.push({ c: c - 1, r, dir: 'W', opp: 'E' });
+    if (c < cols - 1 && !visited[idx(c + 1, r)]) options.push({ c: c + 1, r, dir: 'E', opp: 'W' });
+    if (options.length === 0) { stack.pop(); continue; }
+    const pick = options[Math.floor(Math.random() * options.length)];
+    cells[idx(c, r)][pick.dir] = false;
+    cells[idx(pick.c, pick.r)][pick.opp] = false;
+    visited[idx(pick.c, pick.r)] = true;
+    stack.push({ c: pick.c, r: pick.r });
+  }
+  return cells;
+}
+
+function buildMazeLayout() {
+  const cols = MAZE_COLS, rows = MAZE_ROWS, cell = MAZE_CELL;
+  const originX = -(cols * cell) / 2, originZ = -(rows * cell) / 2;
+  const cells = generateMazeCells(cols, rows);
+  const cellCenter = (c, r) => ({ x: originX + c * cell + cell / 2, z: originZ + r * cell + cell / 2 });
+  const walls = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cw = cells[r * cols + c];
+      const { x: cx, z: cz } = cellCenter(c, r);
+      if (cw.N) walls.push({ x: cx, z: originZ + r * cell, w: cell + WALL_T, d: WALL_T });
+      if (cw.W) walls.push({ x: originX + c * cell, z: cz, w: WALL_T, d: cell + WALL_T });
+      if (r === rows - 1 && cw.S) walls.push({ x: cx, z: originZ + (r + 1) * cell, w: cell + WALL_T, d: WALL_T });
+      if (c === cols - 1 && cw.E) walls.push({ x: originX + (c + 1) * cell, z: cz, w: WALL_T, d: cell + WALL_T });
+    }
+  }
+  const start = cellCenter(0, 0), end = cellCenter(cols - 1, rows - 1);
+  return {
+    walls,
+    bounds: { minX: originX, maxX: originX + cols * cell, minZ: originZ, maxZ: originZ + rows * cell },
+    botSpawn: { x: start.x, y: 0, z: start.z },
+    dummySpawn: { x: end.x, y: 0, z: end.z },
+    patrolPoints: [cellCenter(0, 0), cellCenter(cols - 1, 0), cellCenter(cols - 1, rows - 1), cellCenter(0, rows - 1)],
+    cameraTarget: { x: 0, y: 1, z: 0 },
+  };
+}
+
+// Tears down the previous layout's geometry/collider/grid and rebuilds everything from
+// `layout`. Bot/dummy are removed rather than repositioned -- their old coordinates are
+// meaningless in a differently-shaped map.
+function applyLayout(layout) {
+  for (const m of [...mapRoot.children]) {
+    mapRoot.remove(m);
+    m.geometry.dispose();
+  }
+  if (mapCollider) mapCollider.dispose();
+
+  activeWalls = layout.walls;
+  activeBounds = layout.bounds;
+  botSpawnPoint = layout.botSpawn;
+  dummySpawnPoint = layout.dummySpawn;
+  patrolPoints = layout.patrolPoints;
+
+  const floorW = activeBounds.maxX - activeBounds.minX;
+  const floorD = activeBounds.maxZ - activeBounds.minZ;
+  box(floorMat, (activeBounds.minX + activeBounds.maxX) / 2, -0.05, (activeBounds.minZ + activeBounds.maxZ) / 2, floorW, 0.1, floorD);
+  for (const w of activeWalls) box(wallMat, w.x, WALL_H / 2, w.z, w.w, WALL_H, w.d);
+
+  mapCollider = createMapCollider(mapRoot);
+  navGrid = buildNavGrid(navWalkable, activeBounds, NAV_CELL);
+  rebuildNavOverlay();
+
+  removeBot();
+  removeDummy();
+  patrolIdx = 0; pathMode = null; currentPath = []; lastKnownTarget = null; botState = BOT_PATROL;
+
+  const diag = Math.hypot(floorW, floorD);
+  camera.position.set(layout.cameraTarget.x + diag * 0.6, diag * 0.55, layout.cameraTarget.z + diag * 0.6);
+  controls.target.set(layout.cameraTarget.x, layout.cameraTarget.y, layout.cameraTarget.z);
+  controls.update();
+}
+
+const BOT_MOVE_SPEED = 2.4;
+const WAYPOINT_REACH = 0.35;
+
+let patrolPoints = [];
+let patrolIdx = 0;
+let currentPath = [];      // waypoint queue for whichever movement mode is active
+let pathMode = null;       // 'patrol' | 'seek' | null
+let lastKnownTarget = null; // {x,z} last position the target was seen at, or null
+
+// Pops waypoints as they're reached, steering entity.velocity toward the next one. Returns
+// true once the path is fully consumed (arrived), zeroing velocity either way when empty.
+function followPath(entity, path, speed) {
+  while (path.length > 0) {
+    const target = path[0];
+    const p = botXZ(entity);
+    const dx = target.x - p.x, dz = target.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < WAYPOINT_REACH) { path.shift(); continue; }
+    entity.velocity.x = (dx / dist) * speed;
+    entity.velocity.z = (dz / dist) * speed;
+    return false;
+  }
+  entity.velocity.x = 0; entity.velocity.z = 0;
+  return true;
+}
+function requestPath(entity, toXZ) {
+  const raw = findPath(navGrid, botXZ(entity), toXZ);
+  if (!raw) return [];
+  return smoothPath(navGrid, raw).slice(1); // drop the waypoint at the entity's own current cell
+}
+function updatePatrolMovement() {
+  if (patrolPoints.length === 0) return;
+  if (pathMode !== 'patrol' || currentPath.length === 0) {
+    currentPath = requestPath(bot, patrolPoints[patrolIdx]);
+    pathMode = 'patrol';
+    if (currentPath.length === 0) { patrolIdx = (patrolIdx + 1) % patrolPoints.length; return; }
+  }
+  if (followPath(bot, currentPath, BOT_MOVE_SPEED)) {
+    patrolIdx = (patrolIdx + 1) % patrolPoints.length;
+    pathMode = null;
+  }
+}
+function updateSeekMovement() {
+  if (!lastKnownTarget) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+  if (pathMode !== 'seek' || currentPath.length === 0) {
+    currentPath = requestPath(bot, lastKnownTarget);
+    pathMode = 'seek';
+    if (currentPath.length === 0) { lastKnownTarget = null; return; } // unreachable -- give up
+  }
+  if (followPath(bot, currentPath, BOT_MOVE_SPEED)) {
+    lastKnownTarget = null; // reached the last-seen spot, nothing there -- give up, back to patrol
+    pathMode = null;
+  }
+}
+// Turns the bot to face its direction of travel while patrolling/seeking (aim/fire drives
+// yaw/pitch itself, this only runs for the movement states).
+function faceMovement(dt) {
+  const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
+  if (speed < 0.05) return;
+  const targetYaw = Math.atan2(bot.velocity.x, bot.velocity.z);
+  bot.yaw = slewAngle(bot.yaw, targetYaw, TURN_RATE_RAD_S * dt);
+  bot.pitch = slewAngle(bot.pitch, 0, TURN_RATE_RAD_S * dt);
+}
+
+const losMat = new THREE.LineBasicMaterial({ color: 0x30a46c, transparent: true, opacity: 0.5 });
+const losGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const losLine = new THREE.Line(losGeom, losMat);
+losLine.visible = false;
+scene.add(losLine);
+
+// Harness-local: no ammo/applyCombatIntent pipeline yet -- that pipeline reuse is the
+// still-pending "wire into environment-viewer.html" step, done only once this proves out here.
+function updateBotSentry(dt, now) {
+  if (!bot) {
+    botState = BOT_PATROL; botTargetVisible = false; losLine.visible = false;
+    pathMode = null; currentPath = []; lastKnownTarget = null;
+    return;
+  }
+  let visible = false, err = Infinity, targetYaw = bot.yaw, targetPitch = bot.pitch;
+  if (dummy) {
+    const botEye = eyePos(bot);
+    const targetEye = eyePos(dummy);
+    losLine.visible = true;
+    const posAttr = losGeom.attributes.position;
+    posAttr.setXYZ(0, botEye.x, botEye.y, botEye.z);
+    posAttr.setXYZ(1, targetEye.x, targetEye.y, targetEye.z);
+    posAttr.needsUpdate = true;
+
+    const dist = botEye.distanceTo(targetEye);
+    if (dist <= SENSE_RANGE && dist > 1e-4) {
+      const dir = targetEye.clone().sub(botEye).multiplyScalar(1 / dist);
+      const blocked = mapCollider.raycast([botEye.x, botEye.y, botEye.z], [dir.x, dir.y, dir.z], dist - 0.05);
+      visible = !blocked;
+    }
+    losLine.material.color.setHex(visible ? 0x30a46c : 0x8a3a3a);
+    if (visible) {
+      lastKnownTarget = botXZ(dummy);
+      const angles = aimAnglesTo(botEye, targetEye);
+      targetYaw = angles.yaw; targetPitch = angles.pitch;
+      err = aimError(bot.yaw, bot.pitch, targetYaw, targetPitch);
+    }
+  } else {
+    losLine.visible = false;
+  }
+  botTargetVisible = visible;
+
+  const readyToFire = visible && (now - lastShotAt >= BOT_WEAPON.fireIntervalMs);
+  const { state } = chooseBotState({
+    current: botState,
+    ctx: { targetVisible: visible, aimError: err, readyToFire, hasLastKnown: !!lastKnownTarget },
+  });
+  botState = state;
+
+  if (state === BOT_AIM || state === BOT_FIRE) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = [];
+    const maxDelta = TURN_RATE_RAD_S * dt;
+    bot.yaw = slewAngle(bot.yaw, targetYaw, maxDelta);
+    bot.pitch = slewAngle(bot.pitch, targetPitch, maxDelta);
+    if (state === BOT_FIRE) { fireBotShot(eyePos(bot), now); lastShotAt = now; }
+  } else if (state === BOT_SEEK) {
+    updateSeekMovement();
+    faceMovement(dt);
+  } else {
+    updatePatrolMovement();
+    faceMovement(dt);
+  }
+}
+
+function fireBotShot(origin, now) {
+  const dir = new THREE.Vector3(
+    Math.sin(bot.yaw) * Math.cos(bot.pitch),
+    Math.sin(bot.pitch),
+    Math.cos(bot.yaw) * Math.cos(bot.pitch),
+  );
+  const dumMid = dummy.capsule.start.clone().add(dummy.capsule.end).multiplyScalar(0.5);
+  const hit = resolveHitscan({
+    shooterId: 'bot-1',
+    origin: [origin.x, origin.y, origin.z],
+    dir: [dir.x, dir.y, dir.z],
+    range: BOT_WEAPON.range,
+    players: [{ id: 'dummy', p: [dumMid.x, dumMid.y, dumMid.z], r: dummy.capsule.radius,
+      h: dummy.capsule.end.y - dummy.capsule.start.y, alive: true }],
+    heightAt: () => -1e6, normalAt: () => [0, 1, 0],
+    occluder: (o, d, range) => mapCollider.raycast(o, d, range),
+  });
+  spawnTracer(origin, new THREE.Vector3(hit.point[0], hit.point[1], hit.point[2]), hit.kind === 'player');
+  shotSeq++;
+  if (shotLogEl) shotLogEl.textContent = `#${shotSeq} ${hit.kind}${hit.kind === 'player' ? ' HIT' : ''} @ ${hit.distance.toFixed(1)}m`;
+}
+
+function spawnTracer(from, to, isHit) {
+  const geom = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const mat = new THREE.LineBasicMaterial({ color: isHit ? 0xff5252 : 0xffca28, transparent: true, opacity: 0.9 });
+  const line = new THREE.Line(geom, mat);
+  scene.add(line);
+  tracers.push({ line, expireAt: performance.now() + 150 });
+}
+function updateTracers(now) {
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    if (now >= tracers[i].expireAt) {
+      scene.remove(tracers[i].line);
+      tracers[i].line.geometry.dispose();
+      tracers[i].line.material.dispose();
+      tracers.splice(i, 1);
+    }
+  }
+}
+
+// ===================== nav grid debug overlay =====================
+// Per the spec: "the single highest-leverage thing the harness buys" -- path bugs are nearly
+// invisible without seeing both the baked walkable cells and the live path together. Rebuilt
+// by applyLayout() each time the map (and so the grid) changes.
+const navPointsGeom = new THREE.BufferGeometry();
+const navPointsMat = new THREE.PointsMaterial({ color: 0x4fc3f7, size: 0.06, transparent: true, opacity: 0.55 });
+const navPoints = new THREE.Points(navPointsGeom, navPointsMat);
+navPoints.visible = false;
+navPoints.frustumCulled = false; // point count/extent changes per layout; skip stale-bounds culling
+scene.add(navPoints);
+
+function rebuildNavOverlay() {
+  const pts = [];
+  for (let r = 0; r < navGrid.rows; r++) {
+    for (let c = 0; c < navGrid.cols; c++) {
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      const w = cellToWorld(navGrid, c, r);
+      pts.push(w.x, 0.03, w.z);
+    }
+  }
+  navPointsGeom.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  navPathLine.visible = false;
+}
+
+const navPathMat = new THREE.LineBasicMaterial({ color: 0xffee58 });
+let navPathLine = new THREE.Line(new THREE.BufferGeometry(), navPathMat);
+navPathLine.visible = false;
+scene.add(navPathLine);
+
+function updateNavPathLine() {
+  if (!navPoints.visible || !bot || currentPath.length === 0) { navPathLine.visible = false; return; }
+  const p = botXZ(bot);
+  const pts = [new THREE.Vector3(p.x, 0.05, p.z), ...currentPath.map(w => new THREE.Vector3(w.x, 0.05, w.z))];
+  navPathLine.geometry.dispose();
+  navPathLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+  navPathLine.visible = true;
+}
+
+// ===================== control panel =====================
+const panelStyle = document.createElement('style');
+panelStyle.textContent = '#ctrl{position:fixed;top:10px;right:10px;width:230px;background:rgba(20,24,30,.86);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none;z-index:20;padding:10px 12px}#ctrl .ttl{font-size:12px;color:#8a93a3;font-weight:600;margin-bottom:6px}#ctrl button{width:100%;background:#2a313c;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:6px;cursor:pointer;margin:4px 0}#ctrl button:hover{background:#333c49}#ctrl .row{display:flex;justify-content:space-between;margin:4px 0;color:#7f8a99}#ctrl .row span.v{color:#c4ccd6}';
+document.head.appendChild(panelStyle);
+
+const ctrl = document.createElement('div'); ctrl.id = 'ctrl'; document.body.appendChild(ctrl);
+ctrl.innerHTML = '<div class="ttl">Map layout</div>';
+const roomsBtn = document.createElement('button'); roomsBtn.textContent = 'Rooms layout';
+const mazeBtn = document.createElement('button'); mazeBtn.textContent = 'Maze layout (new)';
+roomsBtn.addEventListener('click', () => applyLayout(buildRoomsLayout()));
+mazeBtn.addEventListener('click', () => applyLayout(buildMazeLayout()));
+ctrl.appendChild(roomsBtn); ctrl.appendChild(mazeBtn);
+
+const botTtl = document.createElement('div'); botTtl.className = 'ttl'; botTtl.style.marginTop = '10px';
+botTtl.textContent = 'Bot controls';
+ctrl.appendChild(botTtl);
+const spawnBtn = document.createElement('button'); spawnBtn.textContent = 'Spawn bot';
+const removeBtn = document.createElement('button'); removeBtn.textContent = 'Remove bot';
+spawnBtn.addEventListener('click', spawnBot);
+removeBtn.addEventListener('click', removeBot);
+ctrl.appendChild(spawnBtn); ctrl.appendChild(removeBtn);
+
+const posRow = document.createElement('div'); posRow.className = 'row';
+posRow.innerHTML = '<span>pos</span><span class="v" id="bot-pos">-</span>';
+const floorRow = document.createElement('div'); floorRow.className = 'row';
+floorRow.innerHTML = '<span>onFloor</span><span class="v" id="bot-floor">-</span>';
+const stateRow = document.createElement('div'); stateRow.className = 'row';
+stateRow.innerHTML = '<span>state</span><span class="v" id="bot-state">-</span>';
+ctrl.appendChild(posRow); ctrl.appendChild(floorRow); ctrl.appendChild(stateRow);
+const posEl = document.getElementById('bot-pos');
+const floorEl = document.getElementById('bot-floor');
+const stateEl = document.getElementById('bot-state');
+
+const dummyTtl = document.createElement('div'); dummyTtl.className = 'ttl'; dummyTtl.style.marginTop = '10px';
+dummyTtl.textContent = 'Dummy target (WASD)';
+ctrl.appendChild(dummyTtl);
+const dummySpawnBtn = document.createElement('button'); dummySpawnBtn.textContent = 'Spawn dummy';
+const dummyRemoveBtn = document.createElement('button'); dummyRemoveBtn.textContent = 'Remove dummy';
+dummySpawnBtn.addEventListener('click', spawnDummy);
+dummyRemoveBtn.addEventListener('click', removeDummy);
+ctrl.appendChild(dummySpawnBtn); ctrl.appendChild(dummyRemoveBtn);
+
+const visRow = document.createElement('div'); visRow.className = 'row';
+visRow.innerHTML = '<span>visible</span><span class="v" id="bot-vis">-</span>';
+const shotRow = document.createElement('div'); shotRow.className = 'row';
+shotRow.innerHTML = '<span>last shot</span><span class="v" id="bot-shot">-</span>';
+ctrl.appendChild(visRow); ctrl.appendChild(shotRow);
+const visEl = document.getElementById('bot-vis');
+const shotLogEl = document.getElementById('bot-shot');
+
+const navTtl = document.createElement('div'); navTtl.className = 'ttl'; navTtl.style.marginTop = '10px';
+navTtl.textContent = 'Nav grid (Phase 2)';
+ctrl.appendChild(navTtl);
+const navToggleBtn = document.createElement('button'); navToggleBtn.textContent = 'Toggle nav overlay';
+navToggleBtn.addEventListener('click', () => { navPoints.visible = !navPoints.visible; });
+ctrl.appendChild(navToggleBtn);
+
+applyLayout(buildRoomsLayout()); // initial map -- everything above must be defined before this runs
+
+let lastT = performance.now();
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  updateDummy(dt);
+  updateBotSentry(dt, now);
+  updateBot(dt);
+  updateTracers(now);
+  updateNavPathLine();
+  if (bot) {
+    const p = toWirePose(bot).p;
+    posEl.textContent = p.map(v => v.toFixed(2)).join(', ');
+    floorEl.textContent = String(bot.onFloor);
+    stateEl.textContent = botState;
+    visEl.textContent = dummy ? String(botTargetVisible) : '-';
+  } else {
+    posEl.textContent = '-'; floorEl.textContent = '-'; stateEl.textContent = '-'; visEl.textContent = '-';
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

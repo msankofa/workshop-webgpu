@@ -2,20 +2,18 @@
 // Consumes shoot-house-layout.js's pure descriptor; browser/WebGPU only, no Node test.
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { generateShootHouse } from './shoot-house-layout.js';
-
-const MATERIAL_COLOR = {
-  floor: 0x2a2a2c,
-  wall: 0x8a8a86,
-  trim: 0xa8a8a4,
-  stair: 0x6e6e6c,
-};
+import { generateShootHouse, generateDemoRoom, generateRoomGallery } from './shoot-house-layout.js';
+import { MATERIALS, DEFAULT_MATERIAL } from './shoot-house-style.js';
 
 const LIGHT_DEFAULT_COLOR = '#fff2d8';
 const LIGHT_DEFAULT_INTENSITY = 16;
 
-export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
-  const layout = generateShootHouse(seed, opts);
+// type: 'demo' (internetcore reference room) | 'rooms' (phase-3 archetype gallery) |
+//       'house' (legacy v2 procedural kill-house).
+export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts = {} }) {
+  const layout = type === 'demo' ? generateDemoRoom(opts)
+    : type === 'rooms' ? generateRoomGallery({ ...opts, seed })
+    : generateShootHouse(seed, opts);
   const { bounds, primitives, lights: lightDefs, spawn } = layout;
 
   const root = new THREE.Group();
@@ -36,11 +34,13 @@ export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
     const merged = mergeGeometries(geos, false);
     for (const g of geos) g.dispose();
     if (!merged) continue;
+    const spec = MATERIALS[material] ?? DEFAULT_MATERIAL;
     const mat = new MeshStandardNodeMaterial({
-      color: MATERIAL_COLOR[material] ?? 0x808080,
-      roughness: 0.9,
-      metalness: 0,
+      color: spec.color,
+      roughness: spec.roughness,
+      metalness: spec.metalness,
     });
+    if (spec.em) { mat.emissive.set(spec.color); mat.emissiveIntensity = spec.emissiveIntensity ?? 2.2; }
     const mesh = new THREE.Mesh(merged, mat);
     mesh.castShadow = false;
     mesh.receiveShadow = false;
@@ -49,13 +49,19 @@ export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
     materials.push(mat);
   }
 
-  // interior point lights, shared color/intensity
+  // interior point lights. Each may carry a per-light `color` (room tint) and `intensity` multiplier
+  // (dim/dark rooms). The global panel color only overrides lights with no explicit color; the global
+  // intensity slider scales every light by its own multiplier.
   let lightColor = LIGHT_DEFAULT_COLOR;
   let lightIntensity = LIGHT_DEFAULT_INTENSITY;
   const pointLights = lightDefs.map((l) => {
-    const light = new THREE.PointLight(lightColor, lightIntensity, l.radius * 2);
+    const baseColor = l.color ?? null;
+    const mult = l.intensity ?? 1;
+    const light = new THREE.PointLight(baseColor ?? lightColor, lightIntensity * mult, l.radius * 2);
     light.position.set(l.x, l.y, l.z);
     light.castShadow = false;
+    light.userData.baseColor = baseColor;
+    light.userData.mult = mult;
     root.add(light);
     return light;
   });
@@ -64,12 +70,12 @@ export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
 
   function setLightColor(hex) {
     lightColor = hex;
-    for (const l of pointLights) l.color.set(hex);
+    for (const l of pointLights) if (!l.userData.baseColor) l.color.set(hex);
   }
 
   function setLightIntensity(v) {
     lightIntensity = v;
-    for (const l of pointLights) l.intensity = v;
+    for (const l of pointLights) l.intensity = v * l.userData.mult;
   }
 
   let panel = null;
@@ -92,6 +98,9 @@ export function createShootHouse({ scene, THREE, seed = 1, opts = {} }) {
     root,
     worldX,
     worldZ,
+    // Absolute footprint (unlike worldX/worldZ, which are just widths) -- used to bake the
+    // combat-bot nav grid over the real floor area (see environment-viewer.html's bot wiring).
+    bounds: { minX: bounds.minX, maxX: bounds.maxX, minZ: bounds.minZ, maxZ: bounds.maxZ },
     worldYMin: bounds.yMin,
     worldYMax: bounds.yMax,
     seaLevel: bounds.yMin - 10,

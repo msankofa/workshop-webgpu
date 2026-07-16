@@ -111,6 +111,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   domeU.sunDir.value.copy(dir);
   let _nightness = nightnessAtElevation(elevFromDir(), thresholds);
   let celestialFollowTime = false;
+  let stableCelestialLayering = false;
 
   function elevFromDir() { return Math.asin(Math.max(-1, Math.min(1, dir.y))) * 180 / Math.PI; }
 
@@ -170,6 +171,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     if (parts.bodies !== false && palette.milkyWay) {
       bodiesGroup = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng((seed ^ 0xc0de) >>> 0)),
         { resScale: palette.bodyResolution ?? 1 });
+      bodiesGroup.userData.setStableLayering?.(stableCelestialLayering);
       group.add(bodiesGroup);
     }
     if (scene && (!scene.background || !scene.background.isColor)) scene.background = new THREE.Color();
@@ -247,6 +249,10 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     updateDome(elevDeg) { applyDome(elevDeg); },
     // When true, celestial (stars/Milky Way/bodies) opacity is multiplied by nightness.
     setCelestialOpacityMode(on) { celestialFollowTime = !!on; },
+    setStableCelestialLayering(on) {
+      stableCelestialLayering = !!on;
+      bodiesGroup?.userData.setStableLayering?.(stableCelestialLayering);
+    },
     // Directional horizon glow: 0 = even ring, 1 = fully concentrated toward the sun.
     setGlowDirectionality(v) { domeU.glowDirectionality.value = v; },
     get nightness() { return _nightness; },

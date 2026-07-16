@@ -2,10 +2,15 @@ import * as THREE from 'three';
 import {
   ROLE_WILD, ROLE_PET, ROLE_HOSTILE,
   CMD_FOLLOW, CMD_STAY, CMD_GOTO, CMD_ATTACK,
-  followDesire, hostileDesire, meleeHitsPlayer, wildlifeSpawnPlan,
+  followDesire, hostileDesire, meleeHitsPlayer, wildlifeSpawnPlan, pickRoamTarget,
 } from './creature-interaction.js';
+import {
+  ACT_WANDER, ACT_SLEEP, ACT_HUNT, ACT_SOCIALIZE, ACT_GRAZE, ACT_DURATION,
+  HUNT_SENSE, SOCIAL_SENSE, THREAT_NEAR, chooseActivity, activitySteer,
+  defaultTemperament, sampleTemperament, TEMPERAMENT_COLORS,
+} from './creature-activity.js';
 
-export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {}, getPlayerPose = null, damagePlayer = null }) {
+export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {}, getPlayerPose = null, damagePlayer = null, getWorldBounds = null }) {
 const CREATURE_INSTANCING_MODE = new URLSearchParams(globalThis.location?.search || '').get('creatureInstancing') || 'parts';
 const creaturePerf = {
   detailDistance: lod.detailDistance ?? lod.near ?? 120,
@@ -31,10 +36,17 @@ function terrainNormal(x, z, out = _normal) {
 
 // ===================== body plans and gaits =====================
 const FOOT_GROUND = 0.06;
-let ARENA_R = 13.0, SOFT_EDGE = 14.0;
 const SEP_RADIUS = 2.3, MIN_GAP = 1.55;
 const TRUNK_AVOID_MARGIN = 1.2;   // how far out creatures start steering around a trunk
-const WANDER_W = 1.0, SEP_W = 2.2, BOUNDARY_GAIN = 4.0;
+const WANDER_W = 1.0, SEP_W = 2.2;
+const ROAM_MIN_STEP = 6, ROAM_MAX_STEP = 20; // meters; a few-to-~15s walk at gait.maxSpeed (0.35-2.6)
+const _temperamentMats = new Map(); // shared MeshBasicMaterial per temperament badge color
+function temperamentMat(name) {
+  const hex = TEMPERAMENT_COLORS[name] ?? TEMPERAMENT_COLORS.balanced;
+  let m = _temperamentMats.get(hex);
+  if (!m) { m = new THREE.MeshBasicMaterial({ color: hex }); m.userData.shared = true; _temperamentMats.set(hex, m); }
+  return m;
+}
 const GRAV = 10.0, KP = 60, KD = 16, H_DRAG = 1.15, BOUNCE = 0.25, BODY_MIN_CLEAR = 0.30;
 const BODY_VOLUME_CLEAR = 0.10, BODY_COLLISION_PAD = 0.28;
 const ORIENT_LERP = 0.08;
@@ -986,6 +998,8 @@ const FORAGE_IGNORE_TIME = 3.8;
 const MAX_HEALTH = 100;
 const WEAK_HEALTH = 34;
 const HEAL_AMOUNT = 24;
+const SLEEP_REGEN = 3.2; // HP/sec while ACT_SLEEP
+const GRAZE_REGEN = 1.1; // HP/sec while ACT_GRAZE (lighter than sleep)
 const EAT_COOLDOWN = 0.75;
 const ATTACK_DAMAGE = 16;
 const ATTACK_COOLDOWN = 0.5;
@@ -1069,9 +1083,14 @@ function removeGrabbable(object) {
   refreshObjectCount();
 }
 
-function randomTarget() {
-  const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * ARENA_R;
-  return new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r);
+const _roamOut = { x: 0, z: 0 };
+// Self-relative wander pick (anti-backtrack + world bounds); updates creature.roamTarget/roamPrev in place.
+function nextRoamTarget(creature) {
+  const bounds = getWorldBounds ? getWorldBounds() : null;
+  pickRoamTarget(creature.pos.x, creature.pos.z, creature.roamPrev.x, creature.roamPrev.z, ROAM_MIN_STEP, ROAM_MAX_STEP, bounds, Math.random, _roamOut);
+  creature.roamPrev.copy(creature.pos);
+  creature.roamTarget.set(_roamOut.x, 0, _roamOut.z);
+  return creature.roamTarget;
 }
 
 function addContactPulse(position) {
@@ -1624,12 +1643,33 @@ class Creature {
     this.roll = 0;
     this.preferredPitch = 0;
     this.preferredRoll = 0;
-    this.roamTarget = randomTarget();
+    this.roamPrev = spawn.clone();
+    this.roamTarget = new THREE.Vector3();
+    nextRoamTarget(this);
     this.desiredDir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    this._prevPos = spawn.clone(); // odometer anchor (updated per physicsStep)
+    this.metrics = { // locomotion diagnostics; only updated while lodShouldSim
+      speed: 0, speedAvg: 0, maxSpeed: 0, effAvg: 0,
+      headingErr: 0, headingErrAvg: 0, groundedFrac: 0, groundedAvg: 0,
+      uncomfortable: 0, distance: 0, simTime: 0, stallTime: 0, stallFrac: 0,
+      // Stage 2 richer diagnostics
+      dragAvg: 0, scanFailPct: 0, stuckPct: 0, comOutsidePct: 0, wobbleDeg: 0,
+      pitchMean: 0, pitchVar: 0, rollMean: 0, rollVar: 0 // internal EMA state for wobble
+    };
     this.forageTarget = null;
     this.forageCloseTime = 0;
     this.forageIgnore = new Map();
     this.forageCrouch = 0;
+    this.activity = ACT_WANDER; // wild-activity FSM (Phase 2)
+    this.temperament = config?.temperament?.weights || defaultTemperament(); // per-creature activity bias (Phase 3)
+    this.temperamentName = config?.temperament?.name || 'balanced';
+    this.temperamentPip = new THREE.Mesh(boxGeometry(0.16, 0.16, 0.16), temperamentMat(this.temperamentName)); // in-world personality badge
+    this.temperamentPip.position.set(plan.bodyScale.x * 0.58, plan.bodyScale.y * 0.66 + 0.17, plan.bodyScale.z * 0.36);
+    this.group.add(this.temperamentPip);
+    this.activityTimer = ACT_DURATION[ACT_WANDER][0] + Math.random() * (ACT_DURATION[ACT_WANDER][1] - ACT_DURATION[ACT_WANDER][0]); // desync
+    this.huntTarget = null;
+    this.socialTarget = null;
+    this.restPose = 0;
     this._forageTargetScratch = new THREE.Vector3();
     this._raceTargetScratch = new THREE.Vector3();
     this._raceStartScratch = new THREE.Vector3();
@@ -1879,8 +1919,8 @@ class Creature {
       if (o.geometry && o.geometry !== pointGeo) o.geometry.dispose();
     });
     this.group.traverse(o => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material && !Array.isArray(o.material)) o.material.dispose();
+      if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+      if (o.material && !Array.isArray(o.material) && !o.material.userData.shared) o.material.dispose();
     });
     const removeLoosePart = part => {
       scene.remove(part);
@@ -2130,10 +2170,59 @@ class Creature {
     return best;
   }
 
+  // Wild-activity FSM (Phase 2): senses prey/kin/threat via the spatial grid, (re)picks an
+  // activity on timer expiry or threat-interrupt, latches hunt/social targets, eases restPose.
+  updateActivity(all, dt) {
+    this.activityTimer -= dt;
+    let preyBestScore = Infinity, preyCandidate = null, preyDist = Infinity;
+    let kinDist = Infinity, kinCandidate = null;
+    let threatDist = Infinity;
+    _nearbyScratch.length = 0;
+    creatureGrid.nearby(this.pos.x, this.pos.z, _nearbyScratch);
+    for (const other of _nearbyScratch) {
+      if (other === this) continue;
+      const d = Math.hypot(other.pos.x - this.pos.x, other.pos.z - this.pos.z);
+      if (d <= HUNT_SENSE && other.teamId !== this.teamId && other.isCombatActive()) {
+        const score = d + (other.isWeak() ? -0.9 : 0); // prefer weaker prey when close (mirrors enemyTarget)
+        if (score < preyBestScore) { preyBestScore = score; preyCandidate = other; preyDist = d; }
+      }
+      if (d <= SOCIAL_SENSE && other.teamId === this.teamId && d < kinDist) { kinDist = d; kinCandidate = other; }
+      if (d <= THREAT_NEAR && other.role === ROLE_HOSTILE && d < threatDist) threatDist = d;
+    }
+    if (hasLivePlayer()) {
+      const dp = Math.hypot(_playerPos.x - this.pos.x, _playerPos.z - this.pos.z);
+      if (dp <= THREAT_NEAR && dp < threatDist) threatDist = dp;
+    }
+
+    const threatInterrupt = threatDist < THREAT_NEAR && (this.activity === ACT_SLEEP || this.activity === ACT_GRAZE);
+    if (this.activityTimer <= 0 || threatInterrupt) {
+      const ctx = { preyDist, kinDist, threatDist, hp01: this.health / MAX_HEALTH, restedness: 1 };
+      const { activity, duration } = chooseActivity({ current: this.activity, ctx, weights: this.temperament, rand: Math.random });
+      this.activity = activity;
+      this.activityTimer = duration;
+      this.huntTarget = activity === ACT_HUNT ? preyCandidate : null;
+      this.socialTarget = activity === ACT_SOCIALIZE ? kinCandidate : null;
+    }
+    if (this.activity === ACT_HUNT && (!this.huntTarget || !this.huntTarget.isCombatActive())) {
+      this.huntTarget = null;
+      this.activityTimer = 0; // re-decide next frame
+    }
+    if (this.activity === ACT_SOCIALIZE && this.socialTarget && !this.socialTarget.isCombatActive()) {
+      this.socialTarget = null;
+      this.activityTimer = 0;
+    }
+
+    const poseAlpha = 1 - Math.pow(0.035, Math.max(0.001, dt));
+    this.restPose += (activitySteer(this.activity).restPose - this.restPose) * poseAlpha;
+    if (this.activity === ACT_SLEEP) this.health = Math.min(MAX_HEALTH, this.health + SLEEP_REGEN * dt);
+    else if (this.activity === ACT_GRAZE) this.health = Math.min(MAX_HEALTH, this.health + GRAZE_REGEN * dt);
+  }
+
   takeDamage(amount, attacker = null) {
     if (!this.isCombatActive()) return;
     this.health = Math.max(0, this.health - amount);
     this.hitFlash = 0.28;
+    if (this.activity === ACT_SLEEP || this.activity === ACT_GRAZE) this.activityTimer = 0; // wake and re-decide
     if (attacker) {
       const dx = this.pos.x - attacker.pos.x;
       const dz = this.pos.z - attacker.pos.z;
@@ -2167,7 +2256,8 @@ class Creature {
       return;
     }
 
-    const target = this.role === ROLE_HOSTILE ? (hasLivePlayer() ? _playerProxy : null) : this.enemyTarget(all);
+    const target = this.role === ROLE_HOSTILE ? (hasLivePlayer() ? _playerProxy : null)
+      : (this.activity === ACT_HUNT && this.huntTarget ? this.huntTarget : this.enemyTarget(all));
     this.combatTarget = target;
     if (this.wantsHealingForage() && (this.healingTarget || this.stowedFood())) {
       if (this.attackState !== 'ready') {
@@ -2317,7 +2407,7 @@ class Creature {
       } else {
         _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         if (_wander.length() < 0.8) {
-          this.roamTarget = randomTarget();
+          nextRoamTarget(this);
           _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         }
         if (_wander.lengthSq() > 1e-6) _wander.normalize();
@@ -2332,7 +2422,7 @@ class Creature {
       } else {
         _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         if (_wander.length() < 0.8) {
-          this.roamTarget = randomTarget();
+          nextRoamTarget(this);
           _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         }
         if (_wander.lengthSq() > 1e-6) _wander.normalize();
@@ -2346,7 +2436,7 @@ class Creature {
       } else {
         _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         if (_wander.length() < 0.8) {
-          this.roamTarget = randomTarget();
+          nextRoamTarget(this);
           _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
         }
         if (_wander.lengthSq() > 1e-6) _wander.normalize();
@@ -2363,6 +2453,21 @@ class Creature {
         else _wander.normalize();
       } else {
         _wander.set(0, 0, 0);
+      }
+    } else if (behavior === 'hunt') {
+      const prey = this.huntTarget;
+      if (prey && prey.isCombatActive()) {
+        _wander.set(prey.pos.x - this.pos.x, 0, prey.pos.z - this.pos.z);
+        const stopDistance = Math.max(0.32, Math.min(this.attackRange() * 0.62, this.maxArmReach() * 0.72 + this.collisionRadius() * 0.22));
+        if (_wander.length() <= stopDistance) _wander.set(0, 0, 0);
+        else _wander.normalize();
+      } else {
+        _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        if (_wander.length() < 0.8) {
+          nextRoamTarget(this);
+          _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
+        }
+        if (_wander.lengthSq() > 1e-6) _wander.normalize();
       }
     } else if (behavior === 'race') {
       const start = raceStart || this.pos;
@@ -2392,7 +2497,7 @@ class Creature {
     } else {
       _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
       if (_wander.length() < 0.8) {
-        this.roamTarget = randomTarget();
+        nextRoamTarget(this);
         _wander.set(this.roamTarget.x - this.pos.x, 0, this.roamTarget.z - this.pos.z);
       }
       if (_wander.lengthSq() > 1e-6) _wander.normalize();
@@ -2435,13 +2540,9 @@ class Creature {
       }
     }
 
-    const sepScale = behavior === 'race' ? 0.35 : behavior === 'combat' ? 0.7 : 1.0;
+    const sepScale = behavior === 'race' ? 0.35 : (behavior === 'combat' || behavior === 'hunt') ? 0.7 : 1.0;
     _steer.copy(_wander).multiplyScalar(behavior === 'stay' ? 0 : WANDER_W).addScaledVector(_sep, SEP_W * sepScale);
-    const dc = Math.hypot(this.pos.x, this.pos.z);
-    if (behavior !== 'race' && dc > SOFT_EDGE) {
-      _steer.addScaledVector(_away.set(-this.pos.x / dc, 0, -this.pos.z / dc), (dc - SOFT_EDGE) * BOUNDARY_GAIN);
-    }
-if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
+    if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     else this.desiredDir.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
 
     if (!this.isCombatActive()) this.currentMaxSpeed = 0;
@@ -2624,7 +2725,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
   physicsStep(h, gait, debug = false) {
     const activeMaxSpeed = this.currentMaxSpeed ?? gait.maxSpeed;
     const speedFraction = clamp(Math.hypot(this.vel.x, this.vel.z) / Math.max(0.001, gait.maxSpeed), 0, 1);
-    const crouch = clamp(this.forageCrouch || 0, 0, 1);
+    const crouch = clamp((this.forageCrouch || 0) + (this.restPose || 0), 0, 1); // forage + FSM rest-pose settle
     const bodyHeight = this.plan.bodyHeight * lerp(gait.stationaryHeight, gait.movingHeight, speedFraction) * lerp(1, 0.54, crouch);
     const triggerH = lerp(gait.stationaryTrigger.h, gait.movingTrigger.h, speedFraction);
     const triggerV = lerp(gait.stationaryTrigger.v, gait.movingTrigger.v, speedFraction);
@@ -2697,6 +2798,7 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
       }
     }
     const fG = groundedCount / this.legs.length;
+    let comInside = false, haveSupport = false; // COM vs support-polygon (stability metric)
     let nx = 0, ny = 1, nz = 0, haveNormal = groundedCount > 0;
     // Reuse the pooled hull buffer; empty unless groundedCount >= 2 fills it below.
     let poly = _hullOut; poly.length = 0;
@@ -2709,7 +2811,9 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     } else if (groundedCount >= 2) {
       poly = convexHull(_groundedBuf, groundedCount, _hullOut);
       polyY /= groundedCount;
-      if (poly.length >= 3 && pointInPoly(_com.x, _com.z, poly)) {
+      haveSupport = poly.length >= 3;
+      comInside = haveSupport && pointInPoly(_com.x, _com.z, poly);
+      if (comInside) {
         nx = 0;
         ny = 1;
         nz = 0;
@@ -2764,6 +2868,49 @@ if (_steer.lengthSq() > 1e-6) this.desiredDir.copy(_steer).normalize();
     this.applyBodyTerrainClearance();
 
     this.updateBodyOrientation(gait);
+
+    // --- basic locomotion metrics (smoothed for a stable readout) ---
+    const m = this.metrics;
+    const spd = Math.hypot(this.vel.x, this.vel.z);
+    const desired = activeMaxSpeed;
+    const eff = desired > 0.02 ? clamp(spd / desired, 0, 2) : 0;
+    const headErr = Math.abs(diff); // radians; steering error before this step's turn
+    m.distance += Math.hypot(this.pos.x - this._prevPos.x, this.pos.z - this._prevPos.z);
+    this._prevPos.set(this.pos.x, this.pos.y, this.pos.z);
+    m.simTime += h;
+    if (desired > 0.05 && spd < 0.12) m.stallTime += h; // wants to move but nearly still
+    m.speed = spd;
+    m.maxSpeed = desired;
+    m.groundedFrac = fG;
+    m.headingErr = headErr;
+    m.uncomfortable = anyUncomfortable ? 1 : 0;
+    const a = clamp(h / 0.5, 0, 1); // EMA, ~0.5s time constant
+    m.speedAvg += (spd - m.speedAvg) * a;
+    m.effAvg += (eff - m.effAvg) * a;
+    m.headingErrAvg += (headErr - m.headingErrAvg) * a;
+    m.groundedAvg += (fG - m.groundedAvg) * a;
+    m.stallFrac = m.simTime > 0 ? m.stallTime / m.simTime : 0;
+
+    // Stage 2: limb-drag (planted-foot overextension), scan-fail, stuck legs, balance, wobble.
+    let nGround = 0, dragSum = 0, scanFail = 0, stuck = 0;
+    for (const leg of this.legs) {
+      if (!leg.targetGrounded) scanFail++;
+      if (leg.wants && !leg.canMove) stuck++;
+      if (!leg.stepping && leg.targetGrounded) {
+        nGround++;
+        dragSum += Math.hypot(leg.end.x - leg.restX, leg.end.z - leg.restZ);
+      }
+    }
+    m.dragAvg += ((nGround ? dragSum / nGround : 0) - m.dragAvg) * a;
+    m.scanFailPct += ((scanFail / this.legs.length) * 100 - m.scanFailPct) * a;
+    m.stuckPct += ((stuck / this.legs.length) * 100 - m.stuckPct) * a;
+    if (haveSupport) m.comOutsidePct += ((comInside ? 0 : 100) - m.comOutsidePct) * a;
+    m.pitchMean += (this.pitch - m.pitchMean) * a;
+    m.pitchVar += ((this.pitch - m.pitchMean) ** 2 - m.pitchVar) * a;
+    m.rollMean += (this.roll - m.rollMean) * a;
+    m.rollVar += ((this.roll - m.rollMean) ** 2 - m.rollVar) * a;
+    m.wobbleDeg = Math.sqrt(m.pitchVar + m.rollVar) * 180 / Math.PI;
+
     if (debug) {
       let origin = null;
       if (groundedCount === 1 && firstGroundedEnd) {
@@ -3498,6 +3645,9 @@ function refreshSelectedInspector() {
   const segmentCount = selectedCreature.legs[0]?.segments.length ?? 0;
   if (title) title.textContent = `Creature ${index + 1}`;
   if (summary) {
+    const tName = selectedCreature.temperamentName || 'balanced';
+    const tHex = '#' + (TEMPERAMENT_COLORS[tName] ?? TEMPERAMENT_COLORS.balanced).toString(16).padStart(6, '0');
+    const tSwatch = `<span style="display:inline-block;width:9px;height:9px;background:${tHex};border-radius:2px;margin:0 4px -1px 0"></span>`;
     summary.innerHTML = [
       `legs: ${legCount}`,
       `segments/leg: ${segmentCount}`,
@@ -3505,6 +3655,8 @@ function refreshSelectedInspector() {
       `health: ${Math.round(selectedCreature.health)}/${MAX_HEALTH}`,
       `speed: ${formatOption(selectedCreature.gait.maxSpeed)}`,
       `mode: ${currentBehavior}`,
+      `temperament: ${tSwatch}${tName}`,
+      `activity: <span id="inspectorActivity">${selectedCreature.activity}</span>`,
       `style: ${selectedCreature.style.label || 'custom'}`
     ].join('<br>');
   }
@@ -4294,7 +4446,8 @@ function variedCreatureConfig(index, count) {
     gait,
     arms: armSettingsFromSeed(rng, groupSpread('arms')),
     behavior: null,
-    direction
+    direction,
+    temperament: sampleTemperament(rng)
   };
   return currentBehavior === 'race' ? applyRaceLane(config, index, count) : config;
 }
@@ -4469,7 +4622,8 @@ function creatureToConfig(creature) {
     style: cloneStyle(creature.style),
     gait: cloneGait(creature.gait),
     arms: cloneArmSettings(creature.armSettings),
-    direction: creature.config?.direction ?? directionYaw
+    direction: creature.config?.direction ?? directionYaw,
+    temperament: creature.config?.temperament
   };
 }
 
@@ -4486,7 +4640,8 @@ function creatureToSharedConfig(creature) {
     style: cloneStyle(creature.style),
     gait: cloneGait(creature.gait),
     arms: cloneArmSettings(creature.armSettings),
-    direction: base.direction ?? directionYaw
+    direction: base.direction ?? directionYaw,
+    temperament: base.temperament
   };
 }
 
@@ -4793,6 +4948,7 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
   const FIXED = 1 / 60;
   let acc = 0;
   let frameIndex = 0;
+  let _inspActivityTimer = 0;
 
   function updateCreatureLod() {
     if (camera) camera.getWorldPosition(_cameraPos);
@@ -4893,10 +5049,19 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     }
   }
 
+  // Wild-activity FSM eligibility: ambient wildlife always runs it; other wild creatures only under the default 'wander' Mode.
+  function fsmEligible(c) { return c.role === ROLE_WILD && (c._wildlife || currentBehavior === 'wander'); }
+
   function update(dt) {
     const updateStart = performance.now();
     frameIndex++;
     refreshPlayerSnapshot();
+    _inspActivityTimer += dt; // live-refresh only the inspector's activity span (~5Hz), not the editable config textarea
+    if (selectedCreature && _inspActivityTimer >= 0.2) {
+      _inspActivityTimer = 0;
+      const el = document.getElementById('inspectorActivity');
+      if (el && el.textContent !== selectedCreature.activity) el.textContent = selectedCreature.activity;
+    }
     if (_wildlife.enabled && hasLivePlayer()) {
       _wildlife._timer += dt;
       if (_wildlife._timer >= _wildlife.interval) {
@@ -4951,7 +5116,8 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
       }
     }
 
-    for (const c of creatures) if (c.lodShouldSim) c.updateCombat(creatures, dt, (currentBehavior === 'combat' && c.role !== ROLE_PET) || c.role === ROLE_HOSTILE);
+    for (const c of creatures) if (c.lodShouldSim && fsmEligible(c)) c.updateActivity(creatures, dt);
+    for (const c of creatures) if (c.lodShouldSim) c.updateCombat(creatures, dt, (currentBehavior === 'combat' && c.role !== ROLE_PET) || c.role === ROLE_HOSTILE || (c.role === ROLE_WILD && c.activity === ACT_HUNT));
     for (const c of creatures) if (c.lodShouldSim) c.updateEating(dt);
     creatureStats.behaviorMs = performance.now() - stageStart;
 
@@ -4969,9 +5135,11 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
         else { steerBehavior = 'follow'; steerTarget = null; } // CMD_FOLLOW, and CMD_ATTACK // TODO(F3): pet attack
       } else if (c.role === ROLE_HOSTILE) {
         steerBehavior = 'hostile'; steerTarget = null;
-      } else if (c.role === ROLE_WILD && c._wildlife) {
-        // Ambient wildlife roams regardless of the global Mode, so it doesn't freeze under stay/etc.
-        steerBehavior = 'wander'; steerTarget = null;
+      } else if (fsmEligible(c)) {
+        // Wild-activity FSM: ambient wildlife always, other wild creatures only under the default 'wander' Mode.
+        if (c.activity === ACT_HUNT) { steerBehavior = 'hunt'; steerTarget = null; }
+        else if (c.activity === ACT_SOCIALIZE && c.socialTarget) { steerBehavior = 'target'; steerTarget = c.socialTarget.pos; }
+        else { steerBehavior = activitySteer(c.activity).steer; steerTarget = null; }
       } else {
         steerTarget = currentBehavior === 'race' && c.config?.raceTarget
           ? c._raceTargetScratch.fromArray(c.config.raceTarget)
@@ -5274,6 +5442,9 @@ document.getElementById('optionsToggle').addEventListener('change', e => {
     applyNetworkCreatureSnapshot,
     get stats() { return creatureStats; },
     get creatures() { return creatures; },
+    get selected() { return selectedCreature; },
+    // select a creature (or null to clear) — shows/hides the selection box; ignores despawned refs
+    select(creature) { selectCreature(creature && creatures.includes(creature) ? creature : null); },
     get pets() { return creatures.filter(c => c.role === ROLE_PET); },
     get playerThreats() { return creatures.filter(c => c.role === ROLE_HOSTILE && c.isCombatActive()).length; },
     get reflectionMeshes() { return creatureBatches ? creatureBatches.meshes : []; },

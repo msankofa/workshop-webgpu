@@ -6,8 +6,47 @@ let failed = false;
 function assert(cond, msg) { if (!cond) { failed = true; console.error('FAIL:', msg); } }
 
 // --- minimal THREE stub -----------------------------------------------------
-class Vec { constructor() { this.x = 0; this.y = 0; this.z = 0; } set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; } }
-class Quat { constructor() { this.x = 0; this.y = 0; this.z = 0; this.w = 1; } set(x, y, z, w) { this.x = x; this.y = y; this.z = z; this.w = w; return this; } }
+class Vec {
+  constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+  set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+  copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+  clone() { return new Vec(this.x, this.y, this.z); }
+  lerpVectors(v1, v2, alpha) {
+    this.x = v1.x + (v2.x - v1.x) * alpha;
+    this.y = v1.y + (v2.y - v1.y) * alpha;
+    this.z = v1.z + (v2.z - v1.z) * alpha;
+    return this;
+  }
+}
+class Quat {
+  constructor() { this.x = 0; this.y = 0; this.z = 0; this.w = 1; }
+  set(x, y, z, w) { this.x = x; this.y = y; this.z = z; this.w = w; return this; }
+  copy(q) { this.x = q.x; this.y = q.y; this.z = q.z; this.w = q.w; return this; }
+  clone() { return new Quat().set(this.x, this.y, this.z, this.w); }
+  setFromAxisAngle(axis, angle) {
+    const half = angle / 2, s = Math.sin(half);
+    this.x = axis.x * s; this.y = axis.y * s; this.z = axis.z * s; this.w = Math.cos(half);
+    return this;
+  }
+  multiply(q) {
+    const { x: ax, y: ay, z: az, w: aw } = this;
+    const { x: bx, y: by, z: bz, w: bw } = q;
+    this.x = ax * bw + aw * bx + ay * bz - az * by;
+    this.y = ay * bw + aw * by + az * bx - ax * bz;
+    this.z = az * bw + aw * bz + ax * by - ay * bx;
+    this.w = aw * bw - ax * bx - ay * by - az * bz;
+    return this;
+  }
+  // Minimal slerp (no shortest-path flip, no renormalization) -- fine for the test's purposes,
+  // which only check that the animation progresses monotonically from `from` toward `target`.
+  slerp(qb, t) {
+    this.x += (qb.x - this.x) * t;
+    this.y += (qb.y - this.y) * t;
+    this.z += (qb.z - this.z) * t;
+    this.w += (qb.w - this.w) * t;
+    return this;
+  }
+}
 class Obj3D {
   constructor() { this.position = new Vec(); this.quaternion = new Quat(); this.scale = new Vec().set(1, 1, 1); this.children = []; this.userData = {}; }
   add(c) { this.children.push(c); return this; }
@@ -24,7 +63,7 @@ function mat(opts = {}) {
   };
 }
 const THREE = {
-  Group, Mesh,
+  Group, Mesh, Vector3: Vec, Quaternion: Quat,
   BoxGeometry: geo, CapsuleGeometry: geo, SphereGeometry: geo,
   MeshStandardMaterial: function (o) { return mat(o); },
   MeshBasicMaterial: function (o) { return mat(o); },
@@ -92,6 +131,26 @@ gr.tick(1000);
 const handY1 = leftHand.position.y;
 gr.tick(1200);
 assert(leftHand.position.y !== handY1, 'hands bob over time');
+
+// --- death pose: fallen players smoothly tip over (not snapped) -------------
+gr.update({ creatures: [], players: [
+  { id: 'alice', p: [1, 2, 3], q: [0, 0, 0, 1], h: 1.2, r: 0.3 },
+  { id: 'bob',   p: [4, 5, 6], q: [0, 0, 0, 1], h: 1.2, r: 0.3, alive: false },
+] });
+const bobG = gr._players.get('bob');
+const restY = 5 - 1.2 * 0.5 + 0.3;
+assert(bobG.position.y === 5, 'position untouched by update() alone -- tick() owns the fall (got y=' + bobG.position.y + ')');
+gr.tick(2000); // first tick after death: animation starts, t=0
+assert(bobG.position.y === 5, 'fall animation starts from the upright pose, not snapped (got y=' + bobG.position.y + ')');
+assert(bobG.quaternion.w === 1, 'fall animation starts from the upright quaternion');
+gr.tick(2200); // partway through the fall
+assert(bobG.position.y < 5 && bobG.position.y > restY, 'fall animation is partway through mid-flight (got y=' + bobG.position.y + ')');
+gr.tick(3200); // well past the fall duration
+assert(Math.abs(bobG.position.y - restY) < 1e-9, 'fall animation settles at the resting height (got y=' + bobG.position.y + ')');
+assert(!(bobG.quaternion.x === 0 && bobG.quaternion.y === 0 && bobG.quaternion.z === 0 && bobG.quaternion.w === 1), 'dead player tips out of the upright quaternion once settled');
+assert(bobG.userData.left.visible === false && bobG.userData.leftHand.visible === false, 'dead player hides eyes/hands');
+assert(bobG.userData.held.visible === false, 'dead player hides held item');
+assert(g.position.y === 2 && g.quaternion.w === 1, 'a live neighbor (alice) is unaffected');
 
 // --- removal cleans up the container ----------------------------------------
 const aliceMat = g.userData.bodyMat;

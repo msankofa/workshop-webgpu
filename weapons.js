@@ -9,6 +9,28 @@
 //   import { getWeapon, enabledWeapons, loadout } from './weapons.js';
 //   const def = getWeapon(loadout.defaultWeapon);
 
+// Each ranged weapon owns an independent muzzle profile. `offset` is measured in the
+// normalized view-weapon space after the authored muzzle anchor has been transformed out of
+// raw GLB coordinates. The remaining values drive the local first-person flash/smoke effect.
+const muzzleFx = (overrides = {}) => ({
+  offset: [0, 0, 0],
+  flashForward: 0.02,
+  flashSize: 0.13,
+  flashGrowth: 0.4,
+  flashDuration: 0.08,
+  flashOpacity: 0.85,
+  smokeForward: 0,
+  smokeTravel: 0.42,
+  smokeSpread: 0.06,
+  smokeRise: 0.1,
+  smokeSize: 0.08,
+  smokeGrowth: 0.28,
+  smokeDuration: 0.42,
+  smokeOpacity: 0.22,
+  smokeCount: 2,
+  ...overrides,
+});
+
 export const WEAPONS = {
   m1911: {
     id: 'm1911',
@@ -37,6 +59,7 @@ export const WEAPONS = {
     viewRotation: [-0.0175, -0.2094, -0.0349],
     viewScale: 0.99,
     viewTargetSize: 0.95,
+    muzzleFx: muzzleFx(),
     // Third-person body-held weapon offset (relative to the body's hold mount), tuned in
     // body-preview.html. Position [x,y,z] meters, rotation [x,y,z] euler, uniform scale.
     // NOTE: values are in the preview's mount space verbatim — the game normalizes the
@@ -77,6 +100,7 @@ export const WEAPONS = {
     viewRotation: [-0.0175, -0.1571, 0.0175],
     viewScale: 1,
     viewTargetSize: 0.95,
+    muzzleFx: muzzleFx(),
     // Seeded from m1911 (same pistol class); visually tuned in the later authoring pass.
     thirdPersonHold: { position: [0.2, 0.44, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
     crouchHold: { position: [0.2, -0.09, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
@@ -108,6 +132,7 @@ export const WEAPONS = {
     viewRotation: [0, -0.1745, 0],
     viewScale: 1.26,
     viewTargetSize: 1.55,
+    muzzleFx: muzzleFx(),
     // Tuned in body-preview.html 2026-07-08.
     thirdPersonHold: { position: [0.3, 0.92, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
     crouchHold: { position: [0.3, -0.09, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
@@ -140,6 +165,7 @@ export const WEAPONS = {
     viewRotation: [0, -0.1571, 0],
     viewScale: 1.3,
     viewTargetSize: 1.3,
+    muzzleFx: muzzleFx(),
     // Seeded from m24 (rifle class); visually tuned in the later authoring pass.
     thirdPersonHold: { position: [0.3, 0.92, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
     crouchHold: { position: [0.3, -0.09, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
@@ -168,6 +194,7 @@ export const WEAPONS = {
     scopeCenter: [0.5, 0.5],
     viewRotation: [0, Math.PI, 0],
     viewScale: 1,
+    muzzleFx: muzzleFx({ flashOpacity: 0, smokeOpacity: 0, smokeCount: 0 }),
     // Melee: unlimited (no magazine); applyCombatIntent skips the ammo path for mode 'melee'.
   },
   grenade: {
@@ -195,6 +222,7 @@ export const WEAPONS = {
     scopeCenter: [0.5, 0.5],
     viewRotation: [0, 0, 0],
     viewScale: 1,
+    muzzleFx: muzzleFx({ flashOpacity: 0, smokeOpacity: 0, smokeCount: 0 }),
     // Thrown arc: lobs (arc adds upward velocity), falls under gravity, bounces off terrain,
     // detonates on the fuse timer or first solid contact. speed/damage/blastRadius/life/gravity
     // ported from html-game-v2 fireGrenade. See combat-projectile.js.
@@ -225,6 +253,7 @@ export const WEAPONS = {
     scopeCenter: [0.5, 0.5],
     viewRotation: [0, Math.PI, 0],
     viewScale: 1,
+    muzzleFx: muzzleFx({ flashSize: 0.2, smokeSize: 0.12, smokeGrowth: 0.4 }),
     // Flat, fast rocket: no gravity, flies straight until it hits something or its life ends
     // (then fizzles with no blast). speed/damage/blastRadius/life ported from html-game-v2
     // fireRocket. See combat-projectile.js.

@@ -144,12 +144,17 @@ const ATMO_COLOR = {
   ice: [210, 230, 255],
 };
 
-function paintBodyHD(body) {
+// Clamp a scaled canvas edge to a sane, even-ish range so the "Planet resolution" control
+// can't ask for a 1px or a 16k texture. Bake is one-time per rebuild, so higher is affordable.
+function resPx(base, scale) { return Math.max(96, Math.min(2048, Math.round(base * (scale || 1)))); }
+
+function paintBodyHD(body, resScale) {
   // Higher resolution than paintBodySimple: this painter is only used for detail: 'high'
   // bodies (the near planet + its moons, or anything shown in stellar-viewer.html), which get
   // viewed up close/scaled up — 256px was visibly blurry once magnified. This is a one-time
   // bake cost per body (not per-frame), so the extra canvas-fill work is cheap to afford.
-  const S = 512;
+  // resScale (from the "Planet resolution" control) scales the base 512px edge.
+  const S = resPx(512, resScale);
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const g = cv.getContext('2d');
   const cx = S / 2, cy = S / 2, R = S * 0.26;
@@ -281,8 +286,8 @@ function paintBodyHD(body) {
 }
 
 // A soft shaded sphere (moon/rocky planet) with optional bands/rings/glow.
-function paintBodySimple(body) {
-  const S = 256;
+function paintBodySimple(body, resScale) {
+  const S = resPx(256, resScale);
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
   const g = cv.getContext('2d');
   // Keep the disc small enough that the glow + rings fade out before the canvas edge —
@@ -326,10 +331,10 @@ function paintBodySimple(body) {
   return markTex(new THREE.CanvasTexture(cv));
 }
 
-export function createCelestialBodies(bodyData) {
+export function createCelestialBodies(bodyData, { resScale = 1 } = {}) {
   const group = new THREE.Group();
-  for (const body of bodyData) {
-    const tex = body.detail === 'high' ? paintBodyHD(body) : paintBodySimple(body);
+  for (const [index, body] of bodyData.entries()) {
+    const tex = body.detail === 'high' ? paintBodyHD(body, resScale) : paintBodySimple(body, resScale);
     const mat = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
     mat.fog = false;
     const spr = new THREE.Sprite(mat);
@@ -337,8 +342,17 @@ export function createCelestialBodies(bodyData) {
     const s = body.size * (body.rings ? 5 : body.glow ? 3.6 : 2.9);
     spr.scale.set(s, s, 1);
     spr.renderOrder = -996;
+    // Optional deterministic painter order. Generated companions follow their
+    // parent planet in bodyData, so they remain visibly in front instead of
+    // swapping layers when camera pitch changes transparent depth sorting.
+    spr.userData.stableRenderOrder = -996 + index * 0.001;
     group.add(spr);
   }
+  group.userData.setStableLayering = (enabled) => {
+    for (const spr of group.children) {
+      spr.renderOrder = enabled ? spr.userData.stableRenderOrder : -996;
+    }
+  };
   return group;
 }
 

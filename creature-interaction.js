@@ -63,6 +63,36 @@ export function meleeHitsPlayer({
   return Math.sqrt(dx * dx + dz * dz + dy * dy) <= playerRadius + margin;
 }
 
+function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// Self-relative wander target: heading biased away from where we came from (`prev`), distance in
+// [minStep, maxStep]. `bounds` is null (infinite world) or {minX,maxX,minZ,maxZ}; out-of-bounds
+// picks retry, then clamp as a last resort. Deterministic given `rand`. Writes/returns `out`.
+const ROAM_CONE = (110 * Math.PI) / 180; // half-angle around "forward" (self - prev) that new headings prefer
+export function pickRoamTarget(selfX, selfZ, prevX, prevZ, minStep, maxStep, bounds, rand = Math.random, out = {}) {
+  const fx = selfX - prevX, fz = selfZ - prevZ;
+  const prevDist = Math.hypot(fx, fz);
+  const hasForward = prevDist > EPS;
+  const forwardAng = hasForward ? Math.atan2(fx, fz) : 0;
+  const tries = 8;
+  let lastX = selfX, lastZ = selfZ;
+  for (let i = 0; i < tries; i++) {
+    const free = !hasForward || i >= tries - 2; // widen to full circle once bounds keep rejecting us
+    const ang = free ? rand() * Math.PI * 2 : forwardAng + (rand() * 2 - 1) * ROAM_CONE;
+    const dist = minStep + rand() * Math.max(0, maxStep - minStep);
+    const tx = selfX + Math.sin(ang) * dist;
+    const tz = selfZ + Math.cos(ang) * dist;
+    if (!bounds || (tx >= bounds.minX && tx <= bounds.maxX && tz >= bounds.minZ && tz <= bounds.maxZ)) {
+      out.x = tx; out.z = tz;
+      return out;
+    }
+    lastX = tx; lastZ = tz;
+  }
+  out.x = bounds ? clampNum(lastX, bounds.minX, bounds.maxX) : lastX;
+  out.z = bounds ? clampNum(lastZ, bounds.minZ, bounds.maxZ) : lastZ;
+  return out;
+}
+
 // Keep ~`target` wild creatures around the player: cull any `existing` ({id,x,z}) beyond
 // `cullRadius`, and spawn up to `maxSpawnPerCall` new ones on the ring [ringMin,ringMax].
 // Deterministic given `rand`.

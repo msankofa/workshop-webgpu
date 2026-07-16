@@ -422,6 +422,7 @@ export function createEnvironmentPortCreatures({
   mode = 'on',
   getPlayerPose = null,
   damagePlayer = null,
+  getWorldBounds = null,
 }) {
   ensurePortCreatureUi();
 
@@ -445,6 +446,7 @@ export function createEnvironmentPortCreatures({
     nearbyTrunks,
     getPlayerPose,
     damagePlayer,
+    getWorldBounds,
     terrainSettings: creatureTerrain,
     rebuildTerrain: (respawn = true) => {
       terrain.baseAmp = creatureTerrain.amplitude;

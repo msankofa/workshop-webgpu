@@ -122,11 +122,25 @@ export function createMapCollider(root, { maxTriangles = 250000 } = {}) {
     return _raycaster.intersectObject(colliderMesh, false)[0] || null;
   }
 
+  // Nearest solid world hit along a ray, as arrays. Triangles are baked in world space on an
+  // identity mesh, so the face normal is already the world normal. `dir` need not be unit.
+  function raycast(origin, dir, maxDistance = 200) {
+    _raycaster.ray.origin.set(origin[0], origin[1], origin[2]);
+    _raycaster.ray.direction.set(dir[0], dir[1], dir[2]).normalize();
+    _raycaster.near = 0;
+    _raycaster.far = maxDistance;
+    const hit = _raycaster.intersectObject(colliderMesh, false)[0];
+    if (!hit) return null;
+    const n = hit.face ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z] : [0, 1, 0];
+    return { distance: hit.distance, point: [hit.point.x, hit.point.y, hit.point.z], normal: n };
+  }
+
   return {
     geometry,
     triangleCount,
     resolveCapsule,
     raycastDown,
+    raycast,
     dispose() {
       geometry.boundsTree = null;
       geometry.dispose();

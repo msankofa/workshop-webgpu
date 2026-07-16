@@ -367,6 +367,7 @@ const ORB_R = 0.12;                        // orb radius at the default 0.3 caps
 const HAND_BOB_HZ = 1.1, HAND_BOB_AMP = 0.02;
 const HAND_SWAY_HZ = 2.2, HAND_SWAY_MAX = 0.12, HAND_SWAY_PER_SPEED = 0.06;
 const HELD_FLASH_MS = 140;
+const FALL_MS = 450; // duration of the death-pose tip-over animation
 
 // Deterministic light-pastel tint for a player id, shared by the remote ghost body/
 // orbs and the local first-person viewmodel so your hands match your own ghost.
@@ -408,6 +409,10 @@ export class GhostRenderer {
     this._heldMat = new THREE.MeshStandardMaterial({ color: 0x2f3540, roughness: 0.58, metalness: 0.15 });
     this._heldMuzzleMat = new THREE.MeshBasicMaterial({ color: 0xffd66b });
     this._lightToolMat = new THREE.MeshBasicMaterial({ color: 0xffb84a });
+    // Death pose: tip the upright yaw quaternion -90 deg around its own local X axis so a dead
+    // player/bot capsule falls face-forward instead of just vanishing or standing inert.
+    this._uprightQ = new THREE.Quaternion();
+    this._fallTipQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
   }
 
   update(state) {
@@ -419,6 +424,9 @@ export class GhostRenderer {
       m => m.id, m => m.p, m => m.q, m => m.s);
     this._updatePlayers(state.players ?? []);
   }
+
+  // id -> Group, for external raycasting/picking (bot inspector click-to-select).
+  playerGroups() { return this._players; }
 
   _updateSet(items, map, geo, mat, getId, getP, getQ, getScale) {
     const THREE = this._THREE;
@@ -462,15 +470,39 @@ export class GhostRenderer {
       let g = this._players.get(id);
       if (!g) { g = this._makePlayer(id); this._scene.add(g); this._players.set(id, g); }
       const [px, py, pz] = item.p;
-      g.position.set(px, py, pz);
       const [qx, qy, qz, qw] = item.q;
-      g.quaternion.set(qx, qy, qz, qw);
       const r = item.r ?? 0.3;
       const h = item.h ?? 1.2;
+      const isDead = item.alive === false;
+      const ud = g.userData;
+      if (isDead) {
+        if (!ud.dead) {
+          // Just died: capture the current (upright) pose as the fall's start point and let
+          // tick() animate from there -- _updatePlayers itself only maintains the resting
+          // target below, it never snaps the visible transform directly while dead.
+          ud.dead = true;
+          ud.fallStartAt = null; // set on tick()'s first frame after this, using its own clock
+          ud.fallFromQ.copy(g.quaternion);
+          ud.fallFromP.copy(g.position);
+        }
+        // Drop from mid-capsule height to resting-on-side height (the capsule's long axis is
+        // now horizontal), and tip forward along whatever direction it was last facing.
+        this._uprightQ.set(qx, qy, qz, qw);
+        ud.fallTargetQ.copy(this._uprightQ).multiply(this._fallTipQ);
+        ud.fallTargetP.set(px, py - h * 0.5 + r, pz);
+      } else {
+        ud.dead = false;
+        g.quaternion.set(qx, qy, qz, qw);
+        g.position.set(px, py, pz);
+      }
       g.userData.body.scale.set(r / 0.3, (h + r * 2) / 1.8, r / 0.3);
       this._placeEyes(g, r, h);
       this._placeHands(g, r, h);
       this._placeHeldItem(g, r, h, item);
+      // Extremities look wrong sideways on a fallen capsule -- hide them once dead (held item is
+      // already hidden by _placeHeldItem's own alive check below).
+      g.userData.left.visible = g.userData.right.visible = !isDead && !this._useProceduralBody;
+      g.userData.leftHand.visible = g.userData.rightHand.visible = !isDead && !this._useProceduralBody;
       if (this._useProceduralBody) this._updateProceduralBody(g, item);
     }
     for (const [id, g] of this._players) {
@@ -576,6 +608,14 @@ export class GhostRenderer {
       heldFlashUntil: 0,
       lastX: 0, lastZ: 0, lastNow: null,      // for speed-based sway
       bodyProc: null, bodyLastPos: null, bodyLastT: null, // Wave 2/B1 procedural body
+      // Death-pose fall animation (tick()-driven, see FALL_MS): `dead` is the edge-detected
+      // state, `fallStartAt` is set on the first tick() after death, `fallFromQ`/`fallFromP` are
+      // the last upright pose (captured once at the moment of death) that the fall lerps away
+      // from, and `fallTargetQ`/`fallTargetP` are the resting fallen pose _updatePlayers keeps
+      // refreshed (harmless to recompute every call since a dead bot's wire pose is frozen).
+      dead: false, fallStartAt: null,
+      fallFromQ: new THREE.Quaternion(), fallFromP: new THREE.Vector3(),
+      fallTargetQ: new THREE.Quaternion(), fallTargetP: new THREE.Vector3(),
     };
     if (this._useProceduralBody) {
       // Keep the capsule/eyes/orb-hands meshes (so nothing else in this class
@@ -621,6 +661,7 @@ export class GhostRenderer {
 
   _placeHeldItem(g, r, h, item) {
     const ud = g.userData;
+    if (item.alive === false) { ud.held.visible = false; return; }
     const tool = item.tool || item.weapon || 'm1911';
     const isLight = tool === 'light';
     const isWeapon = !isLight && !!item.weapon;
@@ -651,6 +692,15 @@ export class GhostRenderer {
     const now = nowMs ?? 0;
     for (const g of this._players.values()) {
       const ud = g.userData;
+      if (ud.dead) {
+        // Smoothly animate the fall rather than snapping straight to the resting pose --
+        // _updatePlayers only maintains fallFrom*/fallTarget*, this is the only place that
+        // writes g.quaternion/g.position while dead.
+        if (ud.fallStartAt == null) ud.fallStartAt = now;
+        const t = Math.min(1, (now - ud.fallStartAt) / FALL_MS);
+        g.quaternion.copy(ud.fallFromQ).slerp(ud.fallTargetQ, t);
+        g.position.lerpVectors(ud.fallFromP, ud.fallTargetP, t);
+      }
       if (ud.nextBlinkAt == null) ud.nextBlinkAt = now + (_hashId(ud.id) % BLINK_MIN_MS);
       let f = 1;
       if (ud.blinkStart >= 0) {

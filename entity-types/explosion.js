@@ -13,7 +13,8 @@
 // Wire shape (serialize):
 //   { id, type:'explosion', p:[x,y,z], radius, color:[r,g,b], life, intensity, renders:true }
 
-const DEFAULT_LIFE = 0.5; // seconds the flash marker lives
+const DEFAULT_LIFE = 0.42;   // seconds the blast point-light lives (short, punchy flash)
+const VISUAL_LIFE = 1.8;     // seconds the replicated visual effect lives (smoke lingers)
 const DEFAULT_COLOR = [1, 0.55, 0.2];
 const DAMAGE_FLOOR = 12; // minimum damage a target inside the radius takes (edge hit)
 
@@ -59,7 +60,9 @@ export const ExplosionEntity = {
     // spawnEffect is a host-tick closure onto entityRegistry.create('effect', …); guests
     // receive the effect over the wire and never run this path.
     if (typeof ctx.spawnEffect === 'function') {
-      ctx.spawnEffect({ kind: 'explosion', p, color, radius, life, ownerId: input.ownerId || null });
+      // Visual outlives the light: the effect-renderer sub-times flash/shockwave/embers/
+      // shrapnel/smoke inside VISUAL_LIFE, so smoke lingers after the point-light fades.
+      ctx.spawnEffect({ kind: 'explosion', p, color, radius, life: VISUAL_LIFE, ownerId: input.ownerId || null });
     }
 
     return {
@@ -80,8 +83,8 @@ export const ExplosionEntity = {
   serialize(entity) {
     const s = entity.state;
     const p = entity.transform.p;
-    // Flash fades over life so the light marker dims as it ages.
-    const k = Math.max(0, 1 - entity.sim.age / s.life);
+    // Flash fades over life, sharp curve so the light blooms bright then drops fast.
+    const k = Math.pow(Math.max(0, 1 - entity.sim.age / s.life), 2);
     return {
       id: entity.id,
       type: 'explosion',

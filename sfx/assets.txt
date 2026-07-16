@@ -1,5 +1,10 @@
 # SFX Browser assets
+bullet-impact/body-impact.wav
+bullet-impact/impact-1.wav
 explosions/explosion-1.mp3
 gun-shots/pistol-1.wav
 gun-shots/rifle-1.mp3
 gun-shots/rifle-4.mp3
+player/footstep.wav
+player/jump.wav
+player/pain-grunt-2.wav

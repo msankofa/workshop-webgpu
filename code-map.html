@@ -139,6 +139,7 @@ const GROUPS = {
   fx:          { label: 'Particles / FX',    color: '#ff8a65' },
   creature:    { label: 'Creature sim',      color: '#26c6da' },
   shoothouse:  { label: 'Shoot House map',   color: '#78909c' },
+  bots:        { label: 'Combat bots',       color: '#c0ca33' },
   multiplayer: { label: 'Multiplayer',       color: '#ec407a' },
   audio:       { label: 'Audio / SFX',       color: '#26a69a' },
   infra:       { label: 'Infra / UI',        color: '#9e9e9e' },
@@ -156,12 +157,38 @@ const NODES = [
     tests: [] },
 
   // --- shoot house ---
-  { id: 'shoot-house.js', group: 'shoothouse', lines: 146,
-    desc: 'Three.js builder for the procedural CQB shoot-house map. Merges the layout descriptor\'s boxes per material into a few MeshStandardNodeMaterial meshes, builds controllable interior point lights, and returns the loadedMap-shaped adapter the viewer loads in place of an authored map. Browser/WebGPU only; lazily imported when the &quot;Shoot House&quot; map is picked.',
+  { id: 'shoot-house.js', group: 'shoothouse', lines: 155,
+    desc: 'Three.js builder for the procedural CQB shoot-house map. Merges the layout descriptor\'s boxes per material into a few MeshStandardNodeMaterial meshes, builds controllable interior point lights, and returns the loadedMap-shaped adapter the viewer loads in place of an authored map (now including a bounds field the combat-bot nav-grid bake reads). Browser/WebGPU only; lazily imported when the &quot;Shoot House&quot; map is picked.',
     tests: [] },
-  { id: 'shoot-house-layout.js', group: 'shoothouse', lines: 213,
-    desc: 'Pure (no Three.js) seeded generator for the mirror-symmetric shoot-house layout: perimeter walls, spine, seeded rooms + door openings, staircase, balcony, cover, and interior light placements. Node-testable; mirrors the right half across x=0.',
-    tests: ['test-shoot-house-layout.mjs'] },
+  { id: 'shoot-house-layout.js', group: 'shoothouse', lines: 599,
+    desc: 'Pure (no Three.js) seeded generator for the shoot-house layout: generateShootHouse (v2 asymmetric house), generateDemoRoom (phase-0/2 internetcore reference + cover-vocabulary showcase), and generateRoomGallery (phase-3 row of one bay per room archetype). Exports SHOOTHOUSE_TYPES (dropdown registry). Node-testable.',
+    tests: ['test-shoot-house-layout.mjs', 'test-shoot-house-collision.mjs', 'test-shoot-house-demo.mjs', 'test-shoot-house-rooms.mjs'] },
+  { id: 'shoot-house-style.js', group: 'shoothouse', lines: 40,
+    desc: 'Pure data (no Three.js): the internetcore aesthetic system — PALETTE + per-material PBR MATERIALS specs (color/roughness/metalness/emissive), incl. neon (cyan) + neonMagenta wing accents. Single source of aesthetic truth consumed by the builder so a look change propagates to every shoot-house variant.',
+    tests: [] },
+  { id: 'shoot-house-pieces.js', group: 'shoothouse', lines: 133,
+    desc: 'Pure (no Three.js) phase-2 CQB cover vocabulary: holoBarrier, lightPillar, halfWallBaffle, holoPlatform, portalDoor (+ PIECES registry). Each returns shoot-house-style.js-keyed boxes (dark body + emissive accent). The composable atoms phase-3 room archetypes arrange around doors/sightlines.',
+    tests: ['test-shoot-house-pieces.mjs'] },
+  { id: 'shoot-house-rooms.js', group: 'shoothouse', lines: 89,
+    desc: 'Pure (no Three.js) phase-3 room archetypes: ROOM_ARCHETYPES registry + buildRoomContent(id, ctx) composing phase-2 pieces into designed layouts (gauntlet/atrium/crossfire/overwatch/open), entry-relative and seed-varied. Imports the pieces module only.',
+    tests: ['test-shoot-house-rooms.mjs'] },
+
+  // --- combat bots ---
+  { id: 'bot-entity.js', group: 'bots', lines: 82,
+    desc: 'Capsule state + gravity/map-collision physics step + wire-pose conversion for FSM-driven combat bots. No FSM itself. Imported by bot-viewer.html (also drives its WASD dummy target) and by environment-viewer.html\'s live bot wiring; stepBotPhysics falls back to a heightAt ground-snap when no mapCollider exists (open procedural terrain). toWirePose applies a +pi offset converting bot.yaw (dz-forward) to the wire quaternion\'s camera-relative convention (-Z-forward) -- fixed 2026-07-14, previously the wire pose faced opposite the bot\'s actual aim/movement direction.',
+    tests: [] },
+  { id: 'bot-activity.js', group: 'bots', lines: 65,
+    desc: 'Pure, THREE-free FSM decision math (Phase 1+2): patrol/seek/aim/fire chooseBotState gated by target visibility + aim error + caller-owned fire-cooldown readiness + caller-owned last-known-target flag, plus aimAnglesTo/aimError/slewAngle turn-rate-capped aim tracking. Node-tested. retreat still pending a bot HP model (Phase 3).',
+    tests: ['test-bot-activity.mjs'] },
+  { id: 'squad-activity.js', group: 'bots', lines: 39,
+    desc: 'Pure, THREE-free squad AI decision math (Phase 1): rollTemperament (per-bot spawn-time trait), tickSquadLossDecision (edge-triggered, temperament-gated retreat roll once a squad drops below SQUAD_LOSS_THRESHOLD), formationAngleFor/formationOffset (fixed ring position around a squad leader). Node-tested. No outpost-leader AI yet -- environment-viewer.html\'s panel has manual Retreat/Attack debug buttons standing in for it this phase.',
+    tests: ['test-squad-activity.mjs'] },
+  { id: 'nav-grid.js', group: 'bots', lines: 146,
+    desc: 'Pure, THREE-free 2D walkable grid + A* pathfinding for indoor bot navigation: buildNavGrid (bake from a walkableTest callback), findPath (8-connected A*, no corner-cutting, nearest-walkable snapping), smoothPath (greedy string-pull). Node-tested. bot-activity.js never touches grid cells directly, only the waypoint queue the wiring layer produces from this.',
+    tests: ['test-nav-grid.mjs'] },
+  { id: 'bot-viewer.html', group: 'bots', kind: 'tool', lines: 640,
+    desc: 'Standalone WebGPU harness for building/tuning combat bots outside the game (same shell pattern as plant-viewer.html). Two swappable test maps via applyLayout() (hand-built two-room rooms map, and an 8x8 procedurally generated maze that rerolls on each "Maze layout" click, for stress-testing pathfinding), spawn/remove panel for a bot, a WASD-controlled dummy target, patrol/seek movement via nav-grid.js, and aim/fire (LOS raycast, aim tracking, cooldown-gated fire with a harness-local combat.js hitscan + tracer). Toggleable nav-grid/path debug overlay. Not part of environment-viewer.html\'s module graph, but still the fast iteration loop for FSM/nav changes before they land in the live wiring.',
+    tests: [] },
 
   // --- terrain ---
   { id: 'terrain-system.js', group: 'terrain', lines: 598,
@@ -291,9 +318,9 @@ const NODES = [
     desc: 'Creature class used only by the legacy creature-viewer.html — an earlier, simpler rig, unrelated to port-creature-system.js.', tests: [] },
 
   // --- multiplayer ---
-  { id: 'multiplayer.js', group: 'multiplayer', lines: 239,
-    desc: 'Host/guest session setup, InterpolationBuffer and GhostRenderer for multiplayer sync. Statically imported; talks to the relay server over the network.',
-    tests: ['multiplayer-test.mjs'] },
+  { id: 'multiplayer.js', group: 'multiplayer', lines: 766,
+    desc: 'Host/guest session setup, InterpolationBuffer and GhostRenderer for multiplayer sync. Statically imported; talks to the relay server over the network. GhostRenderer\'s capsule-ghost path renders a smooth fall-over death pose (item.alive === false tips the capsule -90deg around local X and drops it to resting-on-side height over FALL_MS=450ms, tick()-driven so it animates rather than snapping; hides eyes/hands/held item) -- added 2026-07-14 for combat bots, applies to any player/bot pose carrying alive:false.',
+    tests: ['multiplayer-test.mjs', 'test-ghost-renderer.mjs'] },
   { id: 'start-screen.js', group: 'multiplayer', lines: 253,
     desc: 'Pre-game menu/UI that kicks off host/guest session creation using multiplayer.js\'s RELAY_URL.', tests: [] },
 
@@ -335,7 +362,7 @@ const GROUP_DOCS = {
   water: 'water.md', sky: 'sky.md', lighting: 'lighting.md', fx: 'fx.md',
   creature: 'creature.md', multiplayer: 'multiplayer.md', infra: 'infra.md',
   server: 'multiplayer.md', legacy: 'legacy.md', audio: 'audio.md',
-  shoothouse: 'shoot-house.md',
+  shoothouse: 'shoot-house.md', bots: 'bots.md',
 };
 // representative node selected when a doc deep-links back here via #group
 const GROUP_REPRESENTATIVE = {
@@ -344,7 +371,7 @@ const GROUP_REPRESENTATIVE = {
   water: 'water.js', sky: 'sky.js', lighting: 'lights.js', fx: 'particles.js',
   creature: 'port-creature-bridge.js', multiplayer: 'multiplayer.js', infra: 'environment-ui.js',
   server: 'server/server.js', legacy: 'creature-viewer.html', audio: 'environment-audio.js',
-  shoothouse: 'shoot-house.js',
+  shoothouse: 'shoot-house.js', bots: 'bot-entity.js',
 };
 const DOC_LIST = [
   ['entry-point.md', 'Entry point orchestration', 'entry'],
@@ -358,6 +385,7 @@ const DOC_LIST = [
   ['fx.md', 'Particles / FX', 'fx'],
   ['creature.md', 'Creature sim', 'creature'],
   ['shoot-house.md', 'Shoot House map', 'shoothouse'],
+  ['bots.md', 'Combat bots', 'bots'],
   ['multiplayer.md', 'Multiplayer (+ server)', 'multiplayer'],
   ['audio.md', 'Audio / SFX', 'audio'],
   ['infra.md', 'Infra / UI', 'infra'],
@@ -372,7 +400,13 @@ const EDGES = [
   // shoot house
   ['environment-viewer.html', 'shoot-house.js', 'dynamic'],
   ['shoot-house.js', 'shoot-house-layout.js', 'static'],
+  ['shoot-house.js', 'shoot-house-style.js', 'static'],
+  ['shoot-house-layout.js', 'shoot-house-pieces.js', 'static'],
+  ['shoot-house-layout.js', 'shoot-house-rooms.js', 'static'],
+  ['shoot-house-rooms.js', 'shoot-house-pieces.js', 'static'],
   ['shoot-house-layout.js', 'test-shoot-house-layout.mjs', 'twin'],
+  ['shoot-house-pieces.js', 'test-shoot-house-pieces.mjs', 'twin'],
+  ['shoot-house-rooms.js', 'test-shoot-house-rooms.mjs', 'twin'],
   // environment-viewer.html — static
   ['environment-viewer.html', 'lights.js', 'static'],
   ['environment-viewer.html', 'terrain-system.js', 'static'],
@@ -385,6 +419,10 @@ const EDGES = [
   ['environment-viewer.html', 'start-screen.js', 'static'],
   ['environment-viewer.html', 'map-collision.js', 'static'],
   ['environment-viewer.html', 'multiplayer.js', 'static'],
+  ['environment-viewer.html', 'bot-entity.js', 'static'],
+  ['environment-viewer.html', 'bot-activity.js', 'static'],
+  ['environment-viewer.html', 'squad-activity.js', 'static'],
+  ['environment-viewer.html', 'nav-grid.js', 'static'],
   // environment-viewer.html — dynamic (lazy await-import)
   ['environment-viewer.html', 'clustered-lights.js', 'dynamic'],
   ['environment-viewer.html', 'cdlod-terrain.js', 'dynamic'],

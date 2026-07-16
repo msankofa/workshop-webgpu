@@ -20,7 +20,7 @@
 </style>
 </head>
 <body>
-<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &middot; F&nbsp;walk &mdash; environment sandbox: terrain, lakes, forest, grass, water &amp; clouds</div>
+<div id="info">drag&nbsp;orbit &middot; WASD&nbsp;pan &middot; scroll&nbsp;zoom &middot; F&nbsp;walk &mdash; environment sandbox: terrain, lakes, forest, grass, water &amp; clouds</div>
 
 <!-- three@0.184.0: three.webgpu.js and three.tsl.js both verified at jsDelivr (2026-06-19) -->
 <script type="importmap">
@@ -74,6 +74,13 @@ import { createLightEntityRenderer } from './light-entity-renderer.js';
 import { createEffectRenderer } from './effect-renderer.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
+import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose } from './bot-entity.js';
+import {
+  BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE as BOT_SENSE_RANGE, TURN_RATE_RAD_S as BOT_TURN_RATE_RAD_S,
+  chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle,
+} from './bot-activity.js';
+import { buildNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath } from './nav-grid.js';
+import { rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset } from './squad-activity.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -265,7 +272,16 @@ let capsuleH = 1.6;
 // audio controller's music state (menu vs gameplay track) via isGameplayActive.
 let gameplayActive = false;
 
-const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', presetName, setStatus, dismiss } = await showStartScreen();
+// "Restart Game" (pause menu) writes the current session's settings here and reloads; picked up
+// here to silently re-enter the same game instead of showing the role/map picker again.
+const RESTART_STORAGE_KEY = 'ecw-restart-config';
+let _resumeConfig = null;
+try {
+  const raw = sessionStorage.getItem(RESTART_STORAGE_KEY);
+  if (raw) { _resumeConfig = JSON.parse(raw); sessionStorage.removeItem(RESTART_STORAGE_KEY); }
+} catch {}
+
+const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', presetName, setStatus, dismiss } = await showStartScreen(_resumeConfig);
 mpSharedWorldSettings = mpRole !== 'solo' && mpWorldMode === 'shared';
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
@@ -419,13 +435,17 @@ function sanitizeNetworkPlayerState(raw, id) {
   };
 }
 function getKnownPlayerState(id) {
-  return id === 'host' ? getLocalPlayerState('host') : mpGuestPlayers.get(id);
+  if (id === 'host') return getLocalPlayerState('host');
+  const botRec = botPlayers.get(id);
+  if (botRec) return botToWirePose(botRec.bot);
+  return mpGuestPlayers.get(id);
 }
 function currentCombatPlayers(nowMs = performance.now()) {
   const players = [];
   const hostPlayer = getLocalPlayerState('host');
   if (hostPlayer) players.push(mergePlayerCombatFields(hostPlayer, nowMs));
   for (const player of mpGuestPlayers.values()) players.push(mergePlayerCombatFields(player, nowMs));
+  for (const rec of botPlayers.values()) players.push(mergePlayerCombatFields(botToWirePose(rec.bot), nowMs));
   return players;
 }
 
@@ -549,6 +569,7 @@ function getState() {
   };
   addPlayer(getLocalPlayerState('host'));
   for (const player of mpGuestPlayers.values()) addPlayer(player);
+  for (const rec of botPlayers.values()) addPlayer(botToWirePose(rec.bot));
   // ClaudeCraft mobs, already in world-space wire shape ({ id, tid, p, q, hp, dead }).
   // Host/solo only build the sim; a guest never reaches getState(). Guests receive these
   // inside sim_state and render them via GhostRenderer (see the guest onState handler).
@@ -556,10 +577,17 @@ function getState() {
   return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode, mobs };
 }
 
+// Host and solo both render bots this way (bots are host/solo-only sim, never on a guest);
+// host additionally folds in guest players. Called every bot tick plus on guest state receipt.
 function updateHostPlayerGhosts() {
-  if (mpRole === 'host' && mpGhostRenderer) {
-    mpGhostRenderer.update({ creatures: [], players: [...mpGuestPlayers.values()] });
-  }
+  if (mpRole === 'guest' || !mpGhostRenderer) return;
+  // `alive` drives GhostRenderer's fall-over death pose -- botToWirePose doesn't know about HP
+  // (that lives in playerCombat), so it's merged in here rather than threaded through the wire shape.
+  const botPoses = [...botPlayers.entries()].map(([id, rec]) => ({
+    ...botToWirePose(rec.bot), alive: playerCombat.getSnapshot(id).alive,
+  }));
+  const guestPoses = mpRole === 'host' ? [...mpGuestPlayers.values()] : [];
+  mpGhostRenderer.update({ creatures: [], players: [...guestPoses, ...botPoses] });
 }
 
 function syncMultiplayerPlayer(now) {
@@ -639,6 +667,10 @@ if (mpRole === 'host') {
     }
     mpGhostRenderer.update({ ...state, creatures: [], players });
   });
+} else if (mpRole === 'solo') {
+  // No session, but bots are host/solo-only sim (never a guest) and need somewhere to render —
+  // updateHostPlayerGhosts() feeds this the same way it feeds the host's guest-ghost renderer.
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
 }
 
 // Guest: shared config/settings arrive as their own messages (out of sim_state), so a
@@ -1521,6 +1553,701 @@ if (mpRole !== 'guest' && portCreatures?.system) {
       (sys.playerThreats > 0 ? '#e0a0a0' : '#d8dee9') + '">' + sys.playerThreats + '</b><br>' +
       'Wildlife <b>' + (w.enabled ? 'on' : 'off') + '</b>' + (w.enabled ? ' (' + sys.wildlifeCount + ')' : '');
   };
+}
+
+// --- Combat bots (FSM-driven player-shaped entities) ----------------------------
+// Host/solo-only sim (never runs on a guest), reusing the human combat/player pipeline as-is
+// (getKnownPlayerState/currentCombatPlayers/getState/applyCombatIntent/playerCombat above already
+// fold botPlayers in). Movement/physics is bot-entity.js + nav-grid.js, proven standalone in
+// bot-viewer.html; this is the "drag and drop" wiring step. See
+// docs/superpowers/specs/2026-07-13-combat-bot-fsm-design.md and docs/subsystems/bots.md.
+const botPlayers = new Map(); // id -> { bot, fsmState, lastFireAt, lastKnownTarget, lastSeenAt, pathMode, currentPath, patrolIdx, spawnPos, deadSince, wanderTarget, weaponId }
+let botNavGrid = null;
+let botSpawnPoints = []; // [{x,z}] -- shoot-house only; open/authored terrain paths via an on-demand local window instead (see requestBotPath)
+let botIdSeq = 0;
+let botSpawnMode = 'manual'; // 'manual' | 'round' -- both toggleable at runtime from the panel
+let botRoundTarget = 3;
+let botRespawnEnabled = true; // toggleable from the panel -- off leaves fallen bots dead in place
+let botWeaponId = 'm1911'; // toggleable from the panel; applied at spawn time, remembered per-bot (rec.weaponId) so changing it mid-match doesn't retroactively re-equip existing bots
+let botMaxHp = 100; // slider; applied at spawn time only (existing bots keep whatever max they spawned with)
+let botMoveSpeed = 2.4; // slider; read live every tick by all active bots
+let botSightRange = BOT_SENSE_RANGE; // slider; read live every tick by all active bots
+let botSeekTenacitySec = 6; // slider; how long (seconds) a bot keeps pursuing a lost target's last-known position before giving up and returning to patrol
+let botSquadModeEnabled = false; // panel toggle; spawn/round-mode groups bots into squads of SQUAD_MIN_SIZE+ instead of independent bots
+let botTemperamentMin = 0.15, botTemperamentMax = 0.85; // sliders
+const SQUAD_MIN_SIZE = 5;
+const SQUAD_FORMATION_RADIUS = 5; // metres, loose ring around the squad leader
+const BOT_RETREAT_SPEED_MULT = 1.45;
+const squads = new Map(); // squadId -> Squad record
+let squadIdSeq = 0;
+let botNoticeTimeSec = 0.6; // slider; reaction delay from first spotting a target to being allowed to fire at it -- resets if line of sight breaks
+let botAccuracy = 60; // slider, 0-100%; 100 = perfectly on target, lower adds random spread to the fired shot (not the bot's visible aim -- see botFire)
+let botStatusEl = null; // set by the debug panel, refreshed each updateBots() tick
+let playerImmortal = false; // toggleable from the "Player" panel -- protects the local host/solo
+  // player from bot/explosion damage; has no effect on guests, who aren't damage-authoritative
+  // for themselves (the host decides guest damage, this toggle only covers the local machine).
+const BOT_NEAR_MISS_RADIUS = 2.5; // metres a shot has to pass a bot's capsule by to still alert it, even without hitting it
+const BOT_ALERT_PROPAGATE_RADIUS = 15; // metres; nearby living bots share a squadmate's threat awareness
+// The local player is only perceivable/hittable by bots while actually looking through their
+// eyes (FPS mode, not the third-person body view or the orbit/dev camera) -- matches the "showVM"
+// first-person check used elsewhere (see localBodyThird's other call sites).
+function hostVisibleToBots() { return fpsMode && !localBodyThird; }
+const BOT_RESPAWN_MS = 4000; // matches CC_RESPAWN_MS's human-death convention above
+const BOT_RELOAD_MS = 1800; // a bot with an empty mag can't fire until this elapses -- previously
+  // reloadAmmo() ran instantly the moment the mag hit empty, so bots effectively never ran dry
+const BOT_NOTICE_GRACE_MS = 400; // a target briefly ducking out of LOS (branch sway, a doorframe,
+  // a quick sidestep) doesn't reset the notice-time clock unless the break lasts longer than this
+const BOT_MAX_SPREAD_RAD = 0.15; // spread applied to a bot's fired shot at 0% accuracy (matches
+  // the "Spread rad" weapon-tuning slider's own max, environment-viewer.html's weaponControlSlider)
+const BOT_NAV_CELL = 0.5;
+const BOT_NAV_FLOOR_TOLERANCE = 0.25; // metres; how close a raycast-down hit must be to the map's
+  // constant floor height (0 on shoot-house) to count as open floor rather than a wall/cover top
+const BOT_WAYPOINT_REACH = 0.35;
+const BOT_COLLIDE_PAD = 0.05; // metres of buffer over combined capsule radii -- keeps bots from phasing into each other or the local player
+const BOT_LOCAL_NAV_RADIUS = 18; // metres; half-width of the on-demand local A* window used on
+  // open/authored terrain -- these maps run 1200-4000m across (see maps/*-data.json), far too
+  // large to bake a single static grid over the way shoot-house's bounded interior is baked below.
+const BOT_LOCAL_NAV_CELL = 1.5;
+const BOT_TERRAIN_SLOPE_TOLERANCE = 0.9; // metres of rise between adjacent local-grid cells before a cell counts as too steep to walk
+const BOT_NAV_OBSTACLE_RADIUS = 0.3; // matches bot-entity.js's DEFAULT_RADIUS -- used to test tree/rock clearance for nav + LOS
+const BOT_PATH_RETRY_MS = 500; // throttle re-requesting a path after a "no walkable route to goal" result, so a stuck bot doesn't rebuild the local nav grid every single frame
+const BOT_STUCK_ESCAPE_RETRIES = 6; // ~3s of throttled retries (BOT_PATH_RETRY_MS apart) with zero progress before giving up on pathfinding and steering straight for the bot's own spawn point as a guaranteed escape -- covers the case where the bot's *own* position, not just the goal, has fallen outside walkable reach (e.g. pushed there by pushBotsApart), where every retry fails identically no matter what goal is tried
+
+// Generic per-cell walkability test: whatever surface is directly above (x,z) must be close to
+// the map's floor baseline (0 on shoot-house, see shoot-house.js#heightAt) -- a wall/pillar/cover
+// top reads much higher and is correctly excluded. Only meaningful when the floor is flat, which
+// is why this test (and the static full-map bake below) is shoot-house only; other maps use
+// botTerrainWalkable's slope-based test instead (see requestBotPath).
+function botNavWalkable(x, z) {
+  return mapCollider ? Math.abs(terrainHeight(x, z)) < BOT_NAV_FLOOR_TOLERANCE : false;
+}
+// Walkability test for open/authored terrain: flat-ish (small height delta to its neighbors, so
+// gentle rolling ground passes but a cliff or wall face doesn't), not underwater, and clear of
+// tree trunks/rocks (trunkIndex/dressingIndexRef -- the same spatial indices the player's own
+// collision uses, see resolveTrunks below). Used only by requestBotPath's on-demand local window,
+// never baked into a static grid (see BOT_LOCAL_NAV_RADIUS).
+function botTerrainWalkable(x, z) {
+  const h = terrainHeight(x, z);
+  if (!Number.isFinite(h)) return false;
+  // terrain.waterLevel covers both cases (synced from loadedMap.seaLevel when an authored map is
+  // active, see :1234) -- the old loadedMap?.seaLevel-only check left procedural open terrain with
+  // no underwater rejection at all, so bots could path straight into a lake.
+  if (h <= terrain.waterLevel + 0.15) return false;
+  const dhx = Math.abs(terrainHeight(x + BOT_LOCAL_NAV_CELL, z) - h);
+  const dhz = Math.abs(terrainHeight(x, z + BOT_LOCAL_NAV_CELL) - h);
+  if (Math.max(dhx, dhz) >= BOT_TERRAIN_SLOPE_TOLERANCE) return false;
+  if (trunkIndex.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
+  if (dressingIndexRef && dressingIndexRef.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
+  return true;
+}
+function sampleBotSpawnPoints(grid, count) {
+  const cells = [];
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      if (botIsWalkableCell(grid, c, r)) cells.push(botCellToWorld(grid, c, r));
+    }
+  }
+  if (cells.length === 0) return [];
+  const step = Math.max(1, Math.floor(cells.length / count));
+  const out = [];
+  for (let i = 0; i < cells.length && out.length < count; i += step) out.push(cells[i]);
+  return out;
+}
+if (NO_ENVIRONMENT && mapCollider && loadedMap?.bounds) {
+  botNavGrid = buildNavGrid(botNavWalkable, loadedMap.bounds, BOT_NAV_CELL);
+  botSpawnPoints = sampleBotSpawnPoints(botNavGrid, 8);
+}
+
+function botSpawnSlot(index) {
+  if (botSpawnPoints.length) return botSpawnPoints[index % botSpawnPoints.length];
+  // No authored spawn points -- spread by index instead of stacking every slot on one point.
+  const pose = getLocalPlayerWorldPose();
+  const base = pose ? { x: pose.x, z: pose.z } : { x: 0, z: 0 };
+  const ang = index * 2.399963; // golden angle -- avoids grid/ring alignment artifacts
+  const rad = 6 + (index % 4) * 2.5;
+  return { x: base.x + Math.cos(ang) * rad, z: base.z + Math.sin(ang) * rad };
+}
+function spawnBotAt(pos) {
+  const id = `bot-${++botIdSeq}`;
+  const bot = createBotEntity(id, { x: pos.x, y: terrainHeight(pos.x, pos.z), z: pos.z });
+  const weaponId = botWeaponId;
+  bot.weapon = weaponId;
+  bot.tool = weaponId;
+  botPlayers.set(id, {
+    bot, fsmState: BOT_PATROL, lastFireAt: -Infinity, lastKnownTarget: null, lastSeenAt: -Infinity,
+    pathMode: null, currentPath: [], patrolIdx: 0, spawnPos: { x: pos.x, z: pos.z },
+    deadSince: null, wanderTarget: null, weaponId, reloadUntil: null, targetAcquiredAt: null,
+    lastVisibleAt: -Infinity, losTargetId: null, losVisible: false, nextLosCheckAt: 0,
+    squadId: null, isLeader: false, temperament: rollTemperament(botTemperamentMin, botTemperamentMax), formationAngle: 0,
+    pathRetryAt: 0, pathFailCount: 0,
+  });
+  playerCombat.ensurePlayer(id, { maxHp: botMaxHp, hp: botMaxHp });
+  setPlayerWeapon(id, weaponId);
+  setPlayerTool(id, weaponId);
+  updateHostPlayerGhosts();
+  return id;
+}
+function spawnBotAtSlot(index) { return spawnBotAt(botSpawnSlot(index)); }
+
+// Groups already-spawned bot ids into a squad: first id leads, everyone gets a fixed formation
+// angle around the ring (assigned once here, not re-randomized per frame -- see squad-activity.js).
+function formSquad(botIds) {
+  const id = `squad-${++squadIdSeq}`;
+  const leaderId = botIds[0];
+  const squad = { id, outpostId: null, teamId: 'bots', leaderId, memberIds: new Set(botIds),
+    initialSize: botIds.length, order: 'hold', orderTarget: null, lossRetreatDecided: false };
+  const leaderRec = botPlayers.get(leaderId);
+  squad.spawnPos = leaderRec ? botMidXZ(leaderRec.bot) : { x: 0, z: 0 };
+  squads.set(id, squad);
+  botIds.forEach((bid, i) => {
+    const rec = botPlayers.get(bid);
+    rec.squadId = id;
+    rec.isLeader = bid === leaderId;
+    rec.formationAngle = formationAngleFor(i, botIds.length);
+  });
+  return squad;
+}
+// Spawns one full squad (SQUAD_MIN_SIZE bots at consecutive slots) and forms it. Used by both the
+// round-mode top-up loop and the manual spawn button when squad mode is on.
+function spawnSquadAtSlot(startIndex) {
+  const ids = [];
+  for (let i = 0; i < SQUAD_MIN_SIZE; i++) ids.push(spawnBotAtSlot(startIndex + i));
+  return formSquad(ids);
+}
+function despawnBot(id) {
+  if (!botPlayers.has(id)) return;
+  botPlayers.delete(id);
+  playerCombat.removePlayer(id);
+  playerPoseHistory.delete(id);
+  playerShotState.delete(id);
+  playerWeapons.delete(id);
+  playerTools.delete(id);
+  for (const key of [...playerAmmo.keys()]) if (key.startsWith(`${id}:`)) playerAmmo.delete(key);
+  updateHostPlayerGhosts();
+}
+function despawnAllBots() {
+  for (const id of [...botPlayers.keys()]) despawnBot(id);
+}
+
+function botMidXZ(bot) {
+  const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
+  return { x: mid.x, z: mid.z };
+}
+// Blocked by the same things a bot's actual bullet would be blocked by: map geometry (walls) via
+// mapCollider, AND trees/rocks via the tree-trunk/dressing obstacle columns (obstacleColumnsAlongRay
+// + resolveHitscan, the exact pipeline resolveWorldShot uses for real shots) -- previously this
+// only checked mapCollider, so a bot could lock onto and fire at someone standing behind a tree or
+// boulder as if it wasn't there.
+function botHasLineOfSight(eye, targetP, dist) {
+  if (!(dist > 1e-4)) return true;
+  const origin = [eye.x, eye.y, eye.z];
+  const raw = [targetP[0] - eye.x, targetP[1] - eye.y, targetP[2] - eye.z];
+  const len = Math.hypot(raw[0], raw[1], raw[2]) || 1;
+  const dir = [raw[0] / len, raw[1] / len, raw[2] / len];
+  const block = resolveHitscan({
+    shooterId: '__bot-los__', origin, dir, range: dist,
+    players: null, creatures: null, mobs: null,
+    obstacles: obstacleColumnsAlongRay(origin, dir, dist),
+    occluder: mapCollider ? mapShotOccluder : undefined,
+  });
+  return !block || block.kind === 'none' || block.distance >= dist - 0.25;
+}
+// Nearest alive human (host + guests) within sense range, ignoring line of sight -- cheap
+// distance-only pass so target tracking stays frame-fresh even though the LOS raycast itself
+// (see pickBotTarget) is throttled.
+function nearestBotCandidate(eye) {
+  const candidates = [hostVisibleToBots() ? getLocalPlayerState('host') : null, ...mpGuestPlayers.values()].filter(Boolean);
+  let best = null, bestDist = botSightRange;
+  for (const p of candidates) {
+    if (!playerCombat.getSnapshot(p.id).alive) continue;
+    const dist = Math.hypot(p.p[0] - eye.x, p.p[1] - eye.y, p.p[2] - eye.z);
+    if (dist >= bestDist) continue;
+    best = p; bestDist = dist;
+  }
+  return best ? { p: best, dist: bestDist } : null;
+}
+const BOT_LOS_CHECK_INTERVAL_MS = 120; // botHasLineOfSight walks the tree/rock obstacle index via
+  // the same pipeline real shots resolve against -- too expensive to re-run every frame for every
+  // bot x every candidate, so the raycast itself is cached per bot on this cadence. Position/
+  // distance (nearestBotCandidate) stay live every tick; only the occlusion test is throttled.
+// Nearest alive human (host + guests) within sense range and line of sight. Bots never target
+// each other or ClaudeCraft mobs -- see spec's "Open questions" (out of scope for this pass).
+// The host is only a candidate while actually visible through their own eyes (hostVisibleToBots)
+// -- switching to the third-person body view or the orbit/dev camera makes the local player
+// imperceptible to bots, same as if they'd walked out of the map.
+function pickBotTarget(eye, rec, nowMs) {
+  const near = nearestBotCandidate(eye);
+  if (!near) { rec.losTargetId = null; return null; }
+  if (rec.losTargetId !== near.p.id || nowMs >= rec.nextLosCheckAt) {
+    rec.losVisible = botHasLineOfSight(eye, near.p.p, near.dist);
+    rec.losTargetId = near.p.id;
+    rec.nextLosCheckAt = nowMs + BOT_LOS_CHECK_INTERVAL_MS;
+  }
+  return rec.losVisible ? near.p : null;
+}
+// Ammo/reload readiness is checked by the caller (botTickOne) before this is ever called -- no
+// ensureAmmo/reloadAmmo here, applyCombatIntent's own ammo bookkeeping (consumeAmmo) is enough.
+// `botAccuracy` (panel-tunable, 0-100%) jitters only the fired bullet's direction, not the bot's
+// visible aim (bot.yaw/pitch stay exactly on target) -- so a low-accuracy bot still looks like
+// it's aiming right at you, it just doesn't always land the shot.
+function botFire(id, rec, nowMs) {
+  const bot = rec.bot;
+  const weaponId = rec.weaponId;
+  const spread = (1 - Math.min(100, Math.max(0, botAccuracy)) / 100) * BOT_MAX_SPREAD_RAD;
+  const fireYaw = bot.yaw + (Math.random() * 2 - 1) * spread;
+  const firePitch = bot.pitch + (Math.random() * 2 - 1) * spread;
+  const cp = Math.cos(firePitch);
+  const dir = [Math.sin(fireYaw) * cp, Math.sin(firePitch), Math.cos(fireYaw) * cp];
+  const eye = bot.capsule.end;
+  const intent = {
+    type: 'combat_intent', action: 'gun.fire', weapon: weaponId,
+    shotSeq: (playerShotState.get(id)?.shotSeq ?? 0) + 1,
+    origin: [eye.x, eye.y, eye.z], dir, clientTime: nowMs,
+  };
+  const result = applyCombatIntent(intent, id);
+  if (result?.ok) rec.lastFireAt = nowMs;
+}
+
+// --- Bot threat awareness: getting shot (or shot at) hands a bot a "last known" position to
+// react to exactly like actually spotting a target does, and nearby squadmates share it too, so
+// a firefight pulls in bots that never had direct line of sight on the shooter themselves.
+function alertBot(rec, threatXZ, nowMs) {
+  rec.lastKnownTarget = { x: threatXZ.x, z: threatXZ.z };
+  rec.lastSeenAt = nowMs;
+}
+function propagateBotAlert(sourceRec, threatXZ, nowMs) {
+  const originXZ = botMidXZ(sourceRec.bot);
+  for (const other of botPlayers.values()) {
+    if (other === sourceRec) continue;
+    if (!playerCombat.getSnapshot(other.bot.id).alive) continue;
+    const p = botMidXZ(other.bot);
+    if (Math.hypot(p.x - originXZ.x, p.z - originXZ.z) <= BOT_ALERT_PROPAGATE_RADIUS) alertBot(other, threatXZ, nowMs);
+  }
+}
+function alertBotAndSquad(rec, threatXZ, nowMs) {
+  alertBot(rec, threatXZ, nowMs);
+  propagateBotAlert(rec, threatXZ, nowMs);
+}
+// Every living bot whose capsule the shot passed within BOT_NEAR_MISS_RADIUS of -- whether it was
+// the confirmed hit or a miss -- gets alerted to the shooter's current position (not just the
+// point of impact, so a bot reacts toward where the attack actually came from). `origin`/`dir`
+// are the shot's own plain-array vectors (already unit-length, see combat.js's normalizeDir
+// callers); `hit` bounds how far along the ray to check (the shot can't have alerted anything
+// past where it stopped).
+function alertBotsToShot(origin, dir, range, shooterId, hit, nowMs) {
+  const shooter = getKnownPlayerState(shooterId);
+  const threatXZ = shooter ? { x: shooter.p[0], z: shooter.p[2] } : { x: origin[0], z: origin[2] };
+  const travelled = hit && hit.kind !== 'none' ? hit.distance : range;
+  for (const [id, rec] of botPlayers) {
+    if (id === shooterId) continue;
+    if (!playerCombat.getSnapshot(id).alive) continue;
+    const mid = rec.bot.capsule.start.clone().add(rec.bot.capsule.end).multiplyScalar(0.5);
+    const ox = mid.x - origin[0], oy = mid.y - origin[1], oz = mid.z - origin[2];
+    const t = Math.max(0, Math.min(travelled, ox * dir[0] + oy * dir[1] + oz * dir[2]));
+    const cx = origin[0] + dir[0] * t, cy = origin[1] + dir[1] * t, cz = origin[2] + dir[2] * t;
+    const d = Math.hypot(mid.x - cx, mid.y - cy, mid.z - cz);
+    if (d <= BOT_NEAR_MISS_RADIUS) alertBotAndSquad(rec, threatXZ, nowMs);
+  }
+}
+
+// Hard position correction so bots don't phase into each other or into the local player -- pairwise
+// XZ push-apart, same style as the legacy creature-viewer's resolveCreatureCollisions. O(n^2) but n
+// is capped at 10 (the round-mode target slider's max), trivial even every frame. Dead bots are
+// skipped (they're a fallen body, not something to shove around).
+const _botPushDelta = new THREE.Vector3();
+function pushBotsApart() {
+  const bots = [...botPlayers.entries()]
+    .filter(([id]) => playerCombat.getSnapshot(id).alive)
+    .map(([, rec]) => rec.bot);
+  const localPose = getLocalPlayerState('host');
+  for (let i = 0; i < bots.length; i++) {
+    for (let j = i + 1; j < bots.length; j++) {
+      const a = bots[i], b = bots[j];
+      let dx = b.capsule.start.x - a.capsule.start.x;
+      let dz = b.capsule.start.z - a.capsule.start.z;
+      let dist = Math.hypot(dx, dz);
+      const minDist = a.capsule.radius + b.capsule.radius + BOT_COLLIDE_PAD;
+      if (dist >= minDist) continue;
+      if (dist < 1e-4) { dx = 1; dz = 0; dist = 1; } // exactly coincident -- push along an arbitrary axis
+      const push = (minDist - dist) * 0.5;
+      const nx = dx / dist, nz = dz / dist;
+      a.capsule.translate(_botPushDelta.set(-nx * push, 0, -nz * push));
+      b.capsule.translate(_botPushDelta.set(nx * push, 0, nz * push));
+    }
+    if (!localPose) continue;
+    const a = bots[i];
+    let dx = a.capsule.start.x - localPose.p[0];
+    let dz = a.capsule.start.z - localPose.p[2];
+    let dist = Math.hypot(dx, dz);
+    const minDist = a.capsule.radius + (localPose.r ?? 0.3) + BOT_COLLIDE_PAD;
+    if (dist >= minDist) continue;
+    if (dist < 1e-4) { dx = 1; dz = 0; dist = 1; }
+    const push = minDist - dist;
+    a.capsule.translate(_botPushDelta.set((dx / dist) * push, 0, (dz / dist) * push));
+  }
+}
+
+// Pops waypoints as they're reached, steering bot.velocity toward the next one; true once the
+// path is fully consumed. Mirrors bot-viewer.html's followPath (proven in the harness).
+function followBotPath(bot, path) {
+  while (path.length > 0) {
+    const wp = path[0];
+    const p = botMidXZ(bot);
+    const dx = wp.x - p.x, dz = wp.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < BOT_WAYPOINT_REACH) { path.shift(); continue; }
+    const rec = botPlayers.get(bot.id);
+    const retreating = !!(rec?.squadId && squads.get(rec.squadId)?.order === 'retreat');
+    const speed = retreating ? botMoveSpeed * BOT_RETREAT_SPEED_MULT : botMoveSpeed;
+    bot.velocity.x = (dx / dist) * speed;
+    bot.velocity.z = (dz / dist) * speed;
+    return false;
+  }
+  bot.velocity.x = 0; bot.velocity.z = 0;
+  return true;
+}
+// A* + smoothing against the static full-map bake when one exists (shoot-house -- small, bounded
+// interiors, cheap to pre-bake once at load, see botNavGrid above). Otherwise (open procedural
+// terrain, or an authored terrain map -- both can run into the thousands of metres, see
+// BOT_LOCAL_NAV_RADIUS) build a small window centered on the bot fresh each call, clamp the goal
+// into that window, and path within it. The FSM re-requests a path once the current one is
+// consumed or invalidated, so the window "follows" the bot toward a far-off goal over several
+// replans rather than pathing the whole map at once.
+function requestBotPath(bot, toXZ) {
+  if (botNavGrid) {
+    const raw = botFindPath(botNavGrid, botMidXZ(bot), toXZ);
+    if (!raw) return [];
+    return botSmoothPath(botNavGrid, raw).slice(1);
+  }
+  const center = botMidXZ(bot);
+  const bounds = {
+    minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
+    minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
+  };
+  const grid = buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL);
+  const goal = {
+    x: Math.min(bounds.maxX - BOT_LOCAL_NAV_CELL, Math.max(bounds.minX + BOT_LOCAL_NAV_CELL, toXZ.x)),
+    z: Math.min(bounds.maxZ - BOT_LOCAL_NAV_CELL, Math.max(bounds.minZ + BOT_LOCAL_NAV_CELL, toXZ.z)),
+  };
+  const raw = botFindPath(grid, center, goal);
+  if (raw) return botSmoothPath(grid, raw).slice(1);
+  // No walkable route to the goal (steep slope, water, or an obstacle in the way) -- retarget to
+  // the nearest walkable cell to the goal instead of ever beelining straight through unwalkable
+  // ground (the old behavior here literally pathed bots down slopes/into depressions they couldn't
+  // climb back out of -- see bots.md's "Squad member terrain-trap" note). Only truly hold position
+  // (empty path) if even that fails, meaning the bot's own spot isn't connected to any walkable cell.
+  const nearGoal = nearestWalkableInGrid(grid, goal.x, goal.z);
+  if (nearGoal) {
+    const retry = botFindPath(grid, center, nearGoal);
+    if (retry) return botSmoothPath(grid, retry).slice(1);
+  }
+  return [];
+}
+// Brute-force nearest-walkable-cell scan over a local nav grid (at most ~24x24 cells at the
+// default BOT_LOCAL_NAV_RADIUS/BOT_LOCAL_NAV_CELL, trivial to scan in full) -- used only as
+// requestBotPath's unreachable-goal fallback, not on any hot per-frame path.
+function nearestWalkableInGrid(grid, x, z) {
+  let best = null, bestDist = Infinity;
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      if (!botIsWalkableCell(grid, c, r)) continue;
+      const w = botCellToWorld(grid, c, r);
+      const d = Math.hypot(w.x - x, w.z - z);
+      if (d < bestDist) { bestDist = d; best = w; }
+    }
+  }
+  return best;
+}
+// Cycles the baked spawn points as patrol stops when a static nav grid exists (shoot-house);
+// otherwise wanders to fresh random points around the bot's own spawn -- requestBotPath still
+// routes the walk there through a local A* window, so this only needs to pick a destination, not
+// a walkable one.
+function nextPatrolTarget(rec) {
+  if (botSpawnPoints.length) return botSpawnPoints[rec.patrolIdx % botSpawnPoints.length];
+  if (!rec.wanderTarget || Math.hypot(rec.wanderTarget.x - rec.bot.capsule.start.x, rec.wanderTarget.z - rec.bot.capsule.start.z) < BOT_WAYPOINT_REACH) {
+    const ang = Math.random() * Math.PI * 2, rad = 6 + Math.random() * 10;
+    rec.wanderTarget = { x: rec.spawnPos.x + Math.cos(ang) * rad, z: rec.spawnPos.z + Math.sin(ang) * rad };
+  }
+  return rec.wanderTarget;
+}
+// Movement goal for a squadded non-leader bot: a fixed point on a loose ring around the current
+// leader position. Returns null (caller falls back to nextPatrolTarget) when unsquadded, leading,
+// or the leader can't be resolved (dead, no successor promoted yet this tick).
+function squadMemberGoal(rec) {
+  if (!rec.squadId || rec.isLeader) return null;
+  const squad = squads.get(rec.squadId);
+  const leader = squad && botPlayers.get(squad.leaderId);
+  if (!leader) return null;
+  return formationOffset(botMidXZ(leader.bot), rec.formationAngle, SQUAD_FORMATION_RADIUS);
+}
+function botFaceMovement(bot, dt) {
+  const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
+  if (speed < 0.05) return;
+  const targetYaw = Math.atan2(bot.velocity.x, bot.velocity.z);
+  bot.yaw = slewAngle(bot.yaw, targetYaw, BOT_TURN_RATE_RAD_S * dt);
+  bot.pitch = slewAngle(bot.pitch, 0, BOT_TURN_RATE_RAD_S * dt);
+}
+// Turns toward a world XZ point regardless of movement direction -- used while seeking a
+// last-known threat position, so a bot keeps its weapon trained on where the danger came from
+// even while sidestepping/pathing around cover, instead of just looking wherever it's walking.
+function botFaceTarget(bot, targetXZ, dt) {
+  const dx = targetXZ.x - bot.capsule.start.x, dz = targetXZ.z - bot.capsule.start.z;
+  if (Math.hypot(dx, dz) < 1e-4) return;
+  const targetYaw = Math.atan2(dx, dz);
+  bot.yaw = slewAngle(bot.yaw, targetYaw, BOT_TURN_RATE_RAD_S * dt);
+}
+function botTickMovement(rec, dt, nowMs) {
+  const bot = rec.bot;
+  if (rec.fsmState === BOT_SEEK) {
+    if (!rec.lastKnownTarget) { bot.velocity.x = 0; bot.velocity.z = 0; }
+    else {
+      if (rec.pathMode !== 'seek' || rec.currentPath.length === 0) {
+        rec.currentPath = requestBotPath(bot, rec.lastKnownTarget);
+        rec.pathMode = 'seek';
+        if (rec.currentPath.length === 0) rec.lastKnownTarget = null; // unreachable -- give up
+      }
+      if (rec.currentPath.length && followBotPath(bot, rec.currentPath)) { rec.lastKnownTarget = null; rec.pathMode = null; }
+    }
+    if (rec.lastKnownTarget) botFaceTarget(bot, rec.lastKnownTarget, dt);
+    else botFaceMovement(bot, dt);
+  } else {
+    // pathRetryAt throttles re-requesting a path right after a "no walkable route" result (empty
+    // currentPath from requestBotPath, see there) -- without this, a bot whose goal keeps landing
+    // on unreachable ground (e.g. a squad follower's formation point on the far side of a slope)
+    // would rebuild the local nav grid every single tick forever instead of just standing still
+    // for a beat and trying again.
+    const canRetry = nowMs >= (rec.pathRetryAt ?? 0);
+    if ((rec.pathMode !== 'patrol' || rec.currentPath.length === 0) && canRetry) {
+      // Retreat overrides formation/patrol for every member -- head for the squad's spawn spot.
+      const squad = rec.squadId && squads.get(rec.squadId);
+      // A squadded non-leader with no target of its own heads for its formation slot around the
+      // leader instead of wandering off on its own patrol; unsquadded/leaderless bots fall through.
+      const goal = (squad && squad.order === 'retreat' && squad.spawnPos)
+        ? (rec.isLeader ? squad.spawnPos : formationOffset(squad.spawnPos, rec.formationAngle, SQUAD_FORMATION_RADIUS)) // ring offset, not the literal point -- avoids collapsing the squad onto one coordinate
+        : (squadMemberGoal(rec) ?? nextPatrolTarget(rec));
+      rec.currentPath = requestBotPath(bot, goal);
+      rec.pathMode = 'patrol';
+      if (rec.currentPath.length === 0) {
+        rec.patrolIdx++;
+        rec.pathRetryAt = nowMs + BOT_PATH_RETRY_MS; // no walkable route right now -- stop trying every tick
+        rec.pathFailCount = (rec.pathFailCount ?? 0) + 1;
+      } else {
+        rec.pathFailCount = 0;
+      }
+    }
+    if (rec.currentPath.length && followBotPath(bot, rec.currentPath)) { rec.patrolIdx++; rec.pathMode = null; }
+    else if (rec.currentPath.length === 0) {
+      if ((rec.pathFailCount ?? 0) >= BOT_STUCK_ESCAPE_RETRIES) {
+        // Every goal has failed identically for a while -- the bot's own position, not just the
+        // goal, must be the problem (see BOT_STUCK_ESCAPE_RETRIES). Bypass the nav grid entirely
+        // and steer straight for its own spawn point, which is independently trusted walkable
+        // ground (either a validated botSpawnPoints entry or near the player's original spot) --
+        // a deliberate one-off escape, not a general substitute for real pathfinding.
+        const sp = rec.spawnPos;
+        const dx = sp.x - bot.capsule.start.x, dz = sp.z - bot.capsule.start.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.3) { bot.velocity.x = (dx / dist) * botMoveSpeed; bot.velocity.z = (dz / dist) * botMoveSpeed; }
+        else { bot.velocity.x = 0; bot.velocity.z = 0; rec.pathFailCount = 0; } // reached spawn -- let normal pathing retry fresh from here
+      } else {
+        bot.velocity.x = 0; bot.velocity.z = 0; // hold position instead of drifting on stale velocity
+      }
+    }
+    botFaceMovement(bot, dt);
+  }
+}
+
+function botTickOne(id, rec, dt, nowMs) {
+  const bot = rec.bot;
+  const eye = { x: bot.capsule.end.x, y: bot.capsule.end.y, z: bot.capsule.end.z };
+  const target = pickBotTarget(eye, rec, nowMs);
+  const targetVisible = !!target;
+  let aimYaw = bot.yaw, aimPitch = bot.pitch, err = Infinity;
+  if (targetVisible) {
+    if (rec.targetAcquiredAt == null) rec.targetAcquiredAt = nowMs; // "notice time" starts counting from first spotting, see below
+    rec.lastVisibleAt = nowMs;
+    rec.lastKnownTarget = { x: target.p[0], z: target.p[2] };
+    rec.lastSeenAt = nowMs;
+    // A bot actively engaging pulls nearby squadmates into the same fight even if they don't
+    // have their own line of sight on the target yet (reinforcements converge on gunfire).
+    propagateBotAlert(rec, rec.lastKnownTarget, nowMs);
+    const aimPoint = { x: target.p[0], y: target.p[1] + (target.h ?? 1.6) * 0.3, z: target.p[2] };
+    const angles = aimAnglesTo(eye, aimPoint);
+    aimYaw = angles.yaw; aimPitch = angles.pitch;
+    err = botAimError(bot.yaw, bot.pitch, aimYaw, aimPitch);
+  } else if (rec.targetAcquiredAt != null && nowMs - rec.lastVisibleAt >= BOT_NOTICE_GRACE_MS) {
+    // Losing sight resets the reaction clock -- but only after a short grace window, so a target
+    // strafing behind a branch or a doorframe for a frame or two doesn't cheat them a free reset
+    // on the bot's notice timer every time.
+    rec.targetAcquiredAt = null;
+  }
+  const weapon = getWeapon(rec.weaponId);
+  // Ammo/reload: an empty mag isn't refilled the instant it hits 0 (that made bots' ammo
+  // effectively unlimited) -- it starts a BOT_RELOAD_MS timer and can't fire again until it
+  // elapses, at which point the mag is actually refilled.
+  const ammo = ensureAmmo(id, rec.weaponId);
+  if (ammo.mag <= 0) {
+    if (rec.reloadUntil == null) rec.reloadUntil = nowMs + BOT_RELOAD_MS;
+    else if (nowMs >= rec.reloadUntil) { reloadAmmo(id, rec.weaponId); rec.reloadUntil = null; }
+  } else {
+    rec.reloadUntil = null;
+  }
+  // "Notice time" (panel-tunable): a freshly-spotted target isn't fired on immediately, even at
+  // point-blank/zero aim error -- gives the player a beat to react instead of an instant snap-shot.
+  const noticed = rec.targetAcquiredAt != null && (nowMs - rec.targetAcquiredAt) >= botNoticeTimeSec * 1000;
+  const readyToFire = noticed && ammo.mag > 0 && nowMs - rec.lastFireAt >= (weapon?.fireIntervalMs ?? 340);
+  // "Seek tenacity": how long (seconds, panel-tunable) a bot keeps pursuing a lost target's
+  // last-known position before giving up. Expired memory drops the path too, so the next tick
+  // re-plans a fresh patrol target instead of finishing a stale seek walk.
+  const hasLastKnown = !targetVisible && !!rec.lastKnownTarget && (nowMs - rec.lastSeenAt) < botSeekTenacitySec * 1000;
+  if (!targetVisible && rec.lastKnownTarget && !hasLastKnown) {
+    rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
+  }
+  const { state } = chooseBotState({ current: rec.fsmState, ctx: { targetVisible, aimError: err, readyToFire, hasLastKnown } });
+  rec.fsmState = state;
+
+  if (state === BOT_AIM || state === BOT_FIRE) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    rec.pathMode = null; rec.currentPath = [];
+    const maxDelta = BOT_TURN_RATE_RAD_S * dt;
+    bot.yaw = slewAngle(bot.yaw, aimYaw, maxDelta);
+    bot.pitch = slewAngle(bot.pitch, aimPitch, maxDelta);
+    if (state === BOT_FIRE && readyToFire) botFire(id, rec, nowMs);
+  } else {
+    botTickMovement(rec, dt, nowMs);
+  }
+  stepBotPhysics(bot, dt, { mapCollider, heightAt: terrainHeight });
+}
+
+// Per-squad bookkeeping, once per updateBots tick: loss-triggered retreat decision (leader
+// temperament-gated) and leader succession when the current leader dies. Runs after the per-bot
+// FSM loop so alive/dead state for this tick is settled.
+function updateSquads() {
+  for (const squad of squads.values()) {
+    const memberIds = [...squad.memberIds].filter(bid => botPlayers.has(bid));
+    if (memberIds.length === 0) continue;
+    const aliveCount = memberIds.reduce((n, bid) => n + (playerCombat.getSnapshot(bid).alive ? 1 : 0), 0);
+    const leaderRec = botPlayers.get(squad.leaderId);
+    const leaderTemperament = leaderRec ? leaderRec.temperament : 0.5;
+    const { lossRetreatDecided, retreat } = tickSquadLossDecision({
+      initialSize: squad.initialSize, aliveCount, lossRetreatDecided: squad.lossRetreatDecided, leaderTemperament,
+    });
+    squad.lossRetreatDecided = lossRetreatDecided;
+    if (retreat) { squad.order = 'retreat'; squad.orderTarget = squad.spawnPos; }
+
+    // Leader succession: promote the first other alive member when the leader is dead.
+    if (!playerCombat.getSnapshot(squad.leaderId).alive) {
+      const successorId = memberIds.find(bid => bid !== squad.leaderId && playerCombat.getSnapshot(bid).alive);
+      if (successorId) {
+        if (leaderRec) leaderRec.isLeader = false;
+        squad.leaderId = successorId;
+        botPlayers.get(successorId).isLeader = true;
+      }
+    }
+  }
+}
+
+// --- Bot inspector: click-to-select debug tool (host/solo only) -----------------
+// Alt+Click a bot in the scene, or a row in the "Bot Inspector" panel table, to select it; the
+// panel then shows its live FSM/path/squad state. Built to diagnose movement glitches directly
+// instead of guessing from a screenshot -- see docs/subsystems/bots.md.
+let selectedBotId = null;
+let selectedBotMarker = null;
+let refreshBotInspectorPanel = () => {};
+const _botPickRaycaster = new THREE.Raycaster();
+
+function selectBot(id) {
+  selectedBotId = botPlayers.has(id) ? id : null;
+  if (selectedBotId != null) ensureBotMarker();
+  refreshBotInspectorPanel();
+}
+function cycleSelectedBot(delta) {
+  const ids = [...botPlayers.keys()];
+  if (ids.length === 0) { selectedBotId = null; refreshBotInspectorPanel(); return; }
+  const i = selectedBotId == null ? -1 : ids.indexOf(selectedBotId);
+  selectBot(ids[(i + delta + ids.length) % ids.length]);
+}
+function pickBotAtScreen(clientX, clientY) {
+  if (!mpGhostRenderer) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  _botPickRaycaster.setFromCamera({
+    x: ((clientX - rect.left) / rect.width) * 2 - 1,
+    y: -((clientY - rect.top) / rect.height) * 2 + 1,
+  }, camera);
+  const botTargets = [...mpGhostRenderer.playerGroups().values()].filter(g => botPlayers.has(g.userData.id));
+  const hits = _botPickRaycaster.intersectObjects(botTargets, true);
+  if (!hits.length) return;
+  let obj = hits[0].object;
+  while (obj && !botPlayers.has(obj.userData?.id)) obj = obj.parent;
+  if (obj) selectBot(obj.userData.id);
+}
+function ensureBotMarker() {
+  if (selectedBotMarker) return selectedBotMarker;
+  const geo = new THREE.RingGeometry(0.5, 0.65, 24);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffd66b, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthTest: false });
+  selectedBotMarker = new THREE.Mesh(geo, mat);
+  selectedBotMarker.rotation.x = -Math.PI / 2;
+  selectedBotMarker.renderOrder = 999;
+  scene.add(selectedBotMarker);
+  return selectedBotMarker;
+}
+// Moves the local player capsule (and orbit target) straight to a world XZ point -- used by the
+// bot inspector's "teleport to" table action, no path/collision involved.
+function teleportPlayerTo(x, z) {
+  const gy = terrainHeight(x, z);
+  playerCollider.start.set(x, gy + 0.3, z);
+  playerCollider.end.set(x, gy + 0.3 + capsuleH, z);
+  playerVelocity.set(0, 0, 0);
+  playerOnFloor = false;
+  target.x = x; target.z = z;
+  if (fpsMode) camera.position.copy(playerCollider.end);
+  else applyCamera();
+}
+let botInspectorNextRefresh = 0;
+function updateBotInspector(nowMs) {
+  if (selectedBotId != null && !botPlayers.has(selectedBotId)) selectedBotId = null;
+  if (selectedBotMarker) selectedBotMarker.visible = selectedBotId != null;
+  if (selectedBotId != null) {
+    const p = botPlayers.get(selectedBotId).bot.capsule.start;
+    selectedBotMarker.position.set(p.x, p.y + 0.05, p.z);
+  }
+  if (nowMs < botInspectorNextRefresh) return;
+  botInspectorNextRefresh = nowMs + 150;
+  refreshBotInspectorPanel();
+}
+
+function updateBots(dt) {
+  if (mpRole === 'guest') return;
+  const nowMs = performance.now();
+  if (botSpawnMode === 'round') {
+    if (botSquadModeEnabled) {
+      while (botPlayers.size + SQUAD_MIN_SIZE <= botRoundTarget) spawnSquadAtSlot(botPlayers.size);
+    } else {
+      while (botPlayers.size < botRoundTarget) spawnBotAtSlot(botPlayers.size);
+    }
+  }
+  for (const [id, rec] of botPlayers) {
+    const combat = playerCombat.getSnapshot(id);
+    if (!combat.alive) {
+      if (rec.deadSince == null) rec.deadSince = nowMs;
+      else if (botRespawnEnabled && nowMs - rec.deadSince >= BOT_RESPAWN_MS) {
+        const sp = rec.spawnPos;
+        rec.bot = createBotEntity(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
+        rec.bot.weapon = rec.weaponId; rec.bot.tool = rec.weaponId;
+        playerCombat.revive(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
+        rec.deadSince = null; rec.fsmState = BOT_PATROL; rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
+        rec.reloadUntil = null; rec.targetAcquiredAt = null; rec.lastVisibleAt = -Infinity;
+        rec.losTargetId = null; rec.losVisible = false; rec.nextLosCheckAt = 0; rec.pathRetryAt = 0; rec.pathFailCount = 0;
+      }
+      continue;
+    }
+    rec.deadSince = null;
+    botTickOne(id, rec, dt, nowMs);
+  }
+  updateSquads();
+  pushBotsApart();
+  updateHostPlayerGhosts();
+  updateBotInspector(nowMs);
+  if (botStatusEl) botStatusEl.textContent = `${botPlayers.size} bot${botPlayers.size === 1 ? '' : 's'} active`;
 }
 
 // --- ClaudeCraft mob system (second creature system) ----------------------------
@@ -3270,6 +3997,17 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP, 'rigP');
   slider('sunIntensity',     'Sun intensity',  0, 4,   0.05, f2,  () => { rig.setSunIntensity(rigP.sunIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); },         rigP, 'rigP');
   slider('ambientIntensity', 'Ambient',        0, 2,   0.05, f2,  () => { rig.setAmbientIntensity(rigP.ambientIntensity); forestGPURef?.setBillboardBrightness(billBrightness()); }, rigP, 'rigP');
+  params.moonShadows = true;
+  function applyDirectionalShadowMode() {
+    const moon = params.primaryBody === 'moon';
+    const enabled = params.moonShadows !== false;
+    // In Moon mode, disabling moon shadows is a true shadow kill-switch. Do not
+    // silently fall back to the dim rig light's shadow map, or the diagnostic
+    // toggle cannot isolate a shadow-frustum boundary.
+    rig.dirLight.castShadow = moon ? (!moonLight && enabled) : true;
+    if (moonLight) moonLight.castShadow = moon && enabled;
+  }
+  toggle('moonShadows', 'Moon shadows', applyDirectionalShadowMode);
   params.pointLights = false;
   toggle('pointLights', 'Point lights', () => {
     if (clusteredLightsRef) clusteredLightsRef.setCount(params.pointLights ? 256 : 0);
@@ -3662,6 +4400,281 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     // TODO (nice-to-have): raycast click-to-remove a single mob. Deferred � the host
     // renders mobs as per-id GLB roots in claudecraftVisuals (not a pickable batch),
     // so a picker needs a mobId<->object map exposed from the visuals adapter first.
+  }
+
+  // ---- Player: local debug toggles (host/solo only -- guests aren't damage-authoritative for
+  // themselves, see playerImmortal's declaration comment) --------------------------
+  if (mpRole !== 'guest') {
+    header('Player');
+    const playerSec = current;
+    const immortalRow = document.createElement('div'); immortalRow.className = 'row';
+    immortalRow.innerHTML = '<span style="color:#c4ccd6">Immortality</span>';
+    const immortalChk = document.createElement('input');
+    immortalChk.type = 'checkbox'; immortalChk.checked = playerImmortal; immortalChk.style.width = 'auto';
+    immortalChk.addEventListener('change', () => { playerImmortal = immortalChk.checked; });
+    immortalRow.appendChild(immortalChk); playerSec.appendChild(immortalRow);
+  }
+
+  // ---- Combat bots: manual/round spawn panel (host/solo only) --------------------
+  // FSM-driven bots reusing the human combat pipeline (applyCombatIntent/playerCombat), see
+  // docs/subsystems/bots.md. Two spawn modes, both switchable at runtime: manual (spawn/despawn
+  // one at a time) and round (auto-maintains a target count, refilling as bots die or are removed).
+  if (mpRole !== 'guest') {
+    header('Combat Bots');
+    const botSec = current;
+
+    const modeRow = document.createElement('div'); modeRow.className = 'row';
+    modeRow.innerHTML = '<span style="color:#c4ccd6">Spawn mode</span>'; botSec.appendChild(modeRow);
+    const modeSel = document.createElement('select');
+    for (const [val, label] of [['manual', 'Manual'], ['round', 'Round-based']]) {
+      const o = document.createElement('option'); o.value = val; o.textContent = label; modeSel.appendChild(o);
+    }
+    modeSel.value = botSpawnMode;
+    botSec.appendChild(modeSel);
+
+    const targetRow = document.createElement('div'); targetRow.className = 'row';
+    const targetVal = document.createElement('span'); targetVal.textContent = String(botRoundTarget);
+    targetRow.innerHTML = '<span style="color:#c4ccd6">Target count</span>'; targetRow.appendChild(targetVal);
+    const targetInp = document.createElement('input');
+    targetInp.type = 'range'; targetInp.min = 1; targetInp.max = 10; targetInp.step = 1; targetInp.value = botRoundTarget;
+    targetInp.addEventListener('input', () => { botRoundTarget = parseInt(targetInp.value, 10); targetVal.textContent = String(botRoundTarget); });
+    botSec.appendChild(targetRow); botSec.appendChild(targetInp);
+    const syncBotModeVisibility = () => {
+      const show = botSpawnMode === 'round' ? '' : 'none';
+      targetRow.style.display = show; targetInp.style.display = show;
+    };
+    modeSel.addEventListener('change', () => { botSpawnMode = modeSel.value; syncBotModeVisibility(); });
+    syncBotModeVisibility();
+
+    const respawnRow = document.createElement('div'); respawnRow.className = 'row';
+    respawnRow.innerHTML = '<span style="color:#c4ccd6">Auto-respawn</span>';
+    const respawnChk = document.createElement('input');
+    respawnChk.type = 'checkbox'; respawnChk.checked = botRespawnEnabled; respawnChk.style.width = 'auto';
+    respawnChk.addEventListener('change', () => { botRespawnEnabled = respawnChk.checked; });
+    respawnRow.appendChild(respawnChk); botSec.appendChild(respawnRow);
+
+    const weaponRow = document.createElement('div'); weaponRow.className = 'row';
+    weaponRow.innerHTML = '<span style="color:#c4ccd6">Weapon</span>'; botSec.appendChild(weaponRow);
+    const weaponSel = document.createElement('select');
+    for (const w of enabledWeapons().filter(w => w.mode === 'hitscan')) {
+      const o = document.createElement('option'); o.value = w.id; o.textContent = w.displayName; weaponSel.appendChild(o);
+    }
+    weaponSel.value = botWeaponId;
+    weaponSel.addEventListener('change', () => { botWeaponId = weaponSel.value; });
+    botSec.appendChild(weaponSel);
+    const weaponNote = document.createElement('div');
+    weaponNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 6px';
+    weaponNote.textContent = 'Applies to newly spawned bots; existing bots keep their weapon.';
+    botSec.appendChild(weaponNote);
+
+    // Behavior/trait sliders -- not part of `params` (that object drives scene regeneration via
+    // apply()), so these are hand-rolled rather than using the shared slider() helper. Health and
+    // weapon are spawn-time traits (existing bots keep theirs); speed/sight/tenacity are read live
+    // by botTickOne/pickBotTarget every tick, so moving these sliders affects bots immediately.
+    function botSliderRow(label, min, max, step, initial, fmt, onInput) {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = fmt(initial);
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+      botSec.appendChild(row);
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = initial;
+      inp.addEventListener('input', () => { const v = parseFloat(inp.value); val.textContent = fmt(v); onInput(v); });
+      botSec.appendChild(inp);
+      return inp;
+    }
+    botSliderRow('Health', 20, 300, 5, botMaxHp, v => String(v), v => { botMaxHp = v; });
+    botSliderRow('Move speed', 0.5, 6, 0.1, botMoveSpeed, v => v.toFixed(1), v => { botMoveSpeed = v; });
+    botSliderRow('Sight range (m)', 5, 50, 1, botSightRange, v => String(v), v => { botSightRange = v; });
+    botSliderRow('Seek tenacity (s)', 1, 20, 1, botSeekTenacitySec, v => String(v), v => { botSeekTenacitySec = v; });
+    botSliderRow('Notice time (s)', 0, 3, 0.1, botNoticeTimeSec, v => v.toFixed(1), v => { botNoticeTimeSec = v; });
+    botSliderRow('Accuracy (%)', 10, 100, 5, botAccuracy, v => String(v), v => { botAccuracy = v; });
+
+    botStatusEl = document.createElement('div');
+    botStatusEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 2px';
+    botStatusEl.textContent = `${botPlayers.size} bots active`;
+
+    const botSpawnBtn = document.createElement('button');
+    botSpawnBtn.textContent = '+ Spawn bot';
+    botSpawnBtn.style.cssText = 'width:100%;margin:8px 0 4px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    botSpawnBtn.addEventListener('click', () => {
+      if (botSquadModeEnabled) spawnSquadAtSlot(botPlayers.size);
+      else spawnBotAtSlot(botPlayers.size);
+    });
+    botSec.appendChild(botSpawnBtn);
+    botSec.appendChild(botStatusEl);
+
+    const botClearBtn = document.createElement('button');
+    botClearBtn.textContent = 'Despawn all bots';
+    botClearBtn.style.cssText = 'width:100%;margin:2px 0 4px;padding:5px;background:#3a2c2c;color:#e0c4c4;border:1px solid #4f3a3a;border-radius:4px;cursor:pointer';
+    botClearBtn.addEventListener('click', despawnAllBots);
+    botSec.appendChild(botClearBtn);
+
+    if (!botNavGrid) {
+      const navNote = document.createElement('div');
+      navNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 4px';
+      navNote.textContent = 'No static nav grid on this map (shoot-house only) — bots path within a small local window around themselves instead of the whole map.';
+      botSec.appendChild(navNote);
+    }
+  }
+
+  // ---- Squads & Outposts (Phase 1: loss-retreat decision, formation ring, manual debug orders) --
+  // No outpost-leader AI yet this phase -- "Force retreat"/"Force attack" directly set squad.order
+  // as a stand-in for the AI that will eventually decide it. See squad-activity.js, docs/subsystems/bots.md.
+  if (mpRole !== 'guest') {
+    header('Squads & Outposts');
+    const squadSec = current;
+
+    const squadModeRow = document.createElement('div'); squadModeRow.className = 'row';
+    squadModeRow.innerHTML = '<span style="color:#c4ccd6">Squad mode</span>';
+    const squadModeChk = document.createElement('input');
+    squadModeChk.type = 'checkbox'; squadModeChk.checked = botSquadModeEnabled; squadModeChk.style.width = 'auto';
+    squadModeChk.addEventListener('change', () => { botSquadModeEnabled = squadModeChk.checked; });
+    squadModeRow.appendChild(squadModeChk); squadSec.appendChild(squadModeRow);
+    const squadModeNote = document.createElement('div');
+    squadModeNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 6px';
+    squadModeNote.textContent = `When on, spawns/round-mode top-up in groups of ${SQUAD_MIN_SIZE} bots formed into a squad instead of independent bots.`;
+    squadSec.appendChild(squadModeNote);
+
+    function squadSliderRow(label, min, max, step, initial, fmt, onInput) {
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.textContent = fmt(initial);
+      row.innerHTML = '<span style="color:#c4ccd6">' + label + '</span>'; row.appendChild(val);
+      squadSec.appendChild(row);
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = initial;
+      inp.addEventListener('input', () => { const v = parseFloat(inp.value); val.textContent = fmt(v); onInput(v); });
+      squadSec.appendChild(inp);
+      return inp;
+    }
+    squadSliderRow('Temperament min', 0, 1, 0.05, botTemperamentMin, v => v.toFixed(2), v => { botTemperamentMin = v; });
+    squadSliderRow('Temperament max', 0, 1, 0.05, botTemperamentMax, v => v.toFixed(2), v => { botTemperamentMax = v; });
+    const temperamentNote = document.createElement('div');
+    temperamentNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 6px';
+    temperamentNote.textContent = 'Rolled per bot at spawn (0 = cautious, retreats readily as a leader; 1 = aggressive, rarely retreats).';
+    squadSec.appendChild(temperamentNote);
+
+    const squadStatusEl = document.createElement('div');
+    squadStatusEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 6px';
+    squadSec.appendChild(squadStatusEl);
+
+    const squadListEl = document.createElement('div');
+    squadListEl.style.cssText = 'font-size:10px;margin:0 0 6px';
+    squadSec.appendChild(squadListEl);
+
+    function refreshSquadPanel() {
+      squadStatusEl.textContent = `${squads.size} squad${squads.size === 1 ? '' : 's'}`;
+      squadListEl.innerHTML = '';
+      for (const squad of squads.values()) {
+        const aliveCount = [...squad.memberIds].filter(bid => botPlayers.has(bid) && playerCombat.getSnapshot(bid).alive).length;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:4px;color:#c4ccd6;margin:2px 0;padding:2px 0;border-top:1px solid #2a323d';
+        const label = document.createElement('span');
+        label.textContent = `${squad.id}: ${aliveCount}/${squad.initialSize} alive, ${squad.order}`;
+        row.appendChild(label);
+        const btnWrap = document.createElement('span');
+        const retreatBtn = document.createElement('button');
+        retreatBtn.textContent = 'Retreat';
+        retreatBtn.style.cssText = 'padding:2px 6px;margin-right:3px;background:#3a2c2c;color:#e0c4c4;border:1px solid #4f3a3a;border-radius:3px;cursor:pointer;font-size:10px';
+        retreatBtn.addEventListener('click', () => { squad.order = 'retreat'; squad.orderTarget = squad.spawnPos; refreshSquadPanel(); });
+        const attackBtn = document.createElement('button');
+        attackBtn.textContent = 'Attack';
+        attackBtn.style.cssText = 'padding:2px 6px;background:#2c3a2c;color:#c4e0c4;border:1px solid #3a4f3a;border-radius:3px;cursor:pointer;font-size:10px';
+        attackBtn.addEventListener('click', () => { squad.order = 'attack'; squad.orderTarget = null; refreshSquadPanel(); });
+        btnWrap.appendChild(retreatBtn); btnWrap.appendChild(attackBtn);
+        row.appendChild(btnWrap);
+        squadListEl.appendChild(row);
+      }
+    }
+    refreshSquadPanel();
+    setInterval(refreshSquadPanel, 1000);
+  }
+
+  // ---- Bot Inspector: per-bot debug readout + table -------------------------------
+  // Alt+Click a bot in the scene, or a row below, to select it (see selectBot/pickBotAtScreen
+  // above updateBots). Built for diagnosing bot movement/pathing glitches live.
+  if (mpRole !== 'guest') {
+    header('Bot Inspector');
+    const inspSec = current;
+
+    const inspHint = document.createElement('div');
+    inspHint.style.cssText = 'color:#6f7a89;font-size:10px;margin:0 0 6px';
+    inspHint.textContent = 'Alt+Click a bot in the scene, or a row below, to inspect it. ←/→ cycles.';
+    inspSec.appendChild(inspHint);
+
+    const inspNavRow = document.createElement('div');
+    inspNavRow.style.cssText = 'display:flex;gap:4px;margin-bottom:4px';
+    const prevBtn = document.createElement('button');
+    prevBtn.textContent = '← Prev';
+    const nextBtn = document.createElement('button');
+    nextBtn.textContent = 'Next →';
+    const deselectBtn = document.createElement('button');
+    deselectBtn.textContent = 'Clear';
+    for (const b of [prevBtn, nextBtn, deselectBtn]) {
+      b.style.cssText = 'flex:1;padding:4px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer;font-size:10px';
+    }
+    prevBtn.addEventListener('click', () => cycleSelectedBot(-1));
+    nextBtn.addEventListener('click', () => cycleSelectedBot(1));
+    deselectBtn.addEventListener('click', () => selectBot(null));
+    inspNavRow.appendChild(prevBtn); inspNavRow.appendChild(nextBtn); inspNavRow.appendChild(deselectBtn);
+    inspSec.appendChild(inspNavRow);
+
+    const inspBody = document.createElement('div');
+    inspBody.style.cssText = 'font-size:10px;color:#c4ccd6;line-height:1.6;margin:4px 0 8px;white-space:pre-wrap';
+    inspSec.appendChild(inspBody);
+
+    const teleportBtn = document.createElement('button');
+    teleportBtn.textContent = 'Teleport to selected';
+    teleportBtn.style.cssText = 'width:100%;margin:0 0 8px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
+    teleportBtn.addEventListener('click', () => {
+      const rec = selectedBotId != null && botPlayers.get(selectedBotId);
+      if (rec) teleportPlayerTo(rec.bot.capsule.start.x, rec.bot.capsule.start.z);
+    });
+    inspSec.appendChild(teleportBtn);
+
+    const tableEl = document.createElement('div');
+    tableEl.style.cssText = 'font-size:9px;max-height:220px;overflow-y:auto';
+    inspSec.appendChild(tableEl);
+
+    refreshBotInspectorPanel = () => {
+      const rec = selectedBotId != null && botPlayers.get(selectedBotId);
+      if (!rec) {
+        inspBody.textContent = 'No bot selected.';
+      } else {
+        const combat = playerCombat.getSnapshot(selectedBotId);
+        const p = rec.bot.capsule.start;
+        const speed = Math.hypot(rec.bot.velocity.x, rec.bot.velocity.z);
+        const ammo = ensureAmmo(selectedBotId, rec.weaponId);
+        const squad = rec.squadId ? squads.get(rec.squadId) : null;
+        inspBody.textContent =
+          `id: ${selectedBotId}\n` +
+          `state: ${rec.fsmState}  hp: ${Math.round(combat.hp)}/${Math.round(combat.maxHp)}${combat.alive ? '' : ' (dead)'}\n` +
+          `pos: ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}  speed: ${speed.toFixed(2)}\n` +
+          `pathMode: ${rec.pathMode ?? 'none'}  waypoints: ${rec.currentPath.length}  failCount: ${rec.pathFailCount ?? 0}\n` +
+          `squad: ${squad ? `${squad.id} (${rec.isLeader ? 'leader' : 'member'}, ${squad.order})` : 'none'}\n` +
+          `target: ${rec.lastKnownTarget ? 'tracking' : 'none'}  ammo: ${ammo.mag}/${ammo.reserve}${rec.reloadUntil != null ? ' (reloading)' : ''}`;
+      }
+      tableEl.innerHTML = '';
+      for (const [id, memberRec] of botPlayers) {
+        const combat = playerCombat.getSnapshot(id);
+        const p = memberRec.bot.capsule.start;
+        const row = document.createElement('div');
+        const isSel = id === selectedBotId;
+        row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 3px;border-top:1px solid #2a323d;cursor:pointer;' +
+          (isSel ? 'background:#2c3947' : '');
+        const label = document.createElement('span');
+        label.style.cssText = 'flex:1;color:' + (combat.alive ? '#c4ccd6' : '#8a6a6a');
+        label.textContent = `${id}  ${memberRec.fsmState}  hp${Math.round(combat.hp)}  (${p.x.toFixed(0)},${p.z.toFixed(0)})  fail${memberRec.pathFailCount ?? 0}`;
+        row.appendChild(label);
+        const goBtn = document.createElement('button');
+        goBtn.textContent = 'Go';
+        goBtn.style.cssText = 'padding:1px 5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:3px;cursor:pointer;font-size:9px';
+        goBtn.addEventListener('click', ev => { ev.stopPropagation(); teleportPlayerTo(p.x, p.z); });
+        row.appendChild(goBtn);
+        row.addEventListener('click', () => selectBot(id));
+        tableEl.appendChild(row);
+      }
+    };
+    refreshBotInspectorPanel();
   }
 
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
@@ -4566,6 +5579,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       cloudHeight: 120, cloudExtent: 8000,
       cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
       cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01,
+      cloudsVisible: true, cloudDepthWrite: true,
     });
     cloudsRef = new Clouds();
     cloudsRef.rotation.x = -Math.PI / 2;   // lay the quad flat, high above the world
@@ -4580,6 +5594,17 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     scene.add(cloudsRef);
     setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance();
     header('Clouds (layer 1)');
+    toggle('cloudsVisible', 'All cloud layers', () => {
+      cloudsRef.visible = params.cloudsVisible;
+      if (clouds2Ref) clouds2Ref.visible = params.cloudsVisible;
+    });
+    toggle('cloudDepthWrite', 'Cloud depth write', () => {
+      for (const cloud of [cloudsRef, clouds2Ref]) {
+        if (!cloud) continue;
+        cloud.material.depthWrite = params.cloudDepthWrite;
+        cloud.material.needsUpdate = true;
+      }
+    });
     slider('cloudHeight', 'Height', 20, 400, 1, fi, () => { cloudsRef.position.y = params.cloudHeight; setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
     slider('cloudExtent', 'Extent', 500, 32000, 10, fi, () => { cloudsRef.setExtent(params.cloudExtent); setCloudFar(1, params.cloudExtent, params.cloudHeight); updateDrawDistance(); });
     slider('cloudCover', 'Coverage', 0, 0.9, 0.01, f2, () => cloudsRef.setCoverage(params.cloudCover));
@@ -4604,6 +5629,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     clouds2Ref.setPuff(params.cloud2Puff);
     clouds2Ref.setSoftness(params.cloud2Softness);
     clouds2Ref.setFade(params.cloud2Fade);
+    clouds2Ref.visible = params.cloudsVisible;
+    clouds2Ref.material.depthWrite = params.cloudDepthWrite;
     scene.add(clouds2Ref);
     setCloudFar(2, params.cloud2Extent, params.cloud2Height); updateDrawDistance();
 
@@ -4641,13 +5668,11 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   function applyCelestialLight() {        // swap warm sun <-> cool moon as the key light
     const moon = params.primaryBody === 'moon';
     const effectiveSun = moon ? 0.15 : rigP.sunIntensity;
-    const useMoonShadow = moon && !!moonLight;
     rig.setSunIntensity(effectiveSun);
-    rig.dirLight.castShadow = !useMoonShadow;
     if (moonLight) {
       moonLight.intensity = moon ? 0.35 : 0.0;
-      moonLight.castShadow = moon;
     }
+    applyDirectionalShadowMode();
     forestGPURef?.setBillboardBrightness(billBrightness(effectiveSun));
   }
   const skyParts = {
@@ -4766,6 +5791,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     // Celestial opacity follows time of day (stars/Milky Way/bodies fade in at night).
     params.celestialFollowTime = false;
     toggle('celestialFollowTime', 'Celestial opacity follows time', () => skyRef.setCelestialOpacityMode(params.celestialFollowTime));
+    params.stableCelestialLayering = false;
+    toggle('stableCelestialLayering', 'Stable body layering', () => skyRef.setStableCelestialLayering(params.stableCelestialLayering));
 
     const applyBtn = document.createElement('button');
     applyBtn.type = 'button'; applyBtn.textContent = 'Apply changes';
@@ -4808,6 +5835,22 @@ function applyCamera() {
                       target.z + radius * Math.sin(phi) * Math.cos(theta));
   camera.lookAt(target);
 }
+// WASD pans the orbit target across the ground plane, using the current view heading (theta)
+// so W always walks "into" the view regardless of drag-rotation. Shift runs, matching FPS mode.
+const ORBIT_PAN_SPEED = 10, ORBIT_RUN_MULT = 2.4;
+function updateOrbitPan(dt) {
+  const sinT = Math.sin(theta), cosT = Math.cos(theta);
+  let mx = 0, mz = 0;
+  if (fpsKeys['KeyW']) { mx -= sinT; mz -= cosT; }
+  if (fpsKeys['KeyS']) { mx += sinT; mz += cosT; }
+  if (fpsKeys['KeyA']) { mx -= cosT; mz += sinT; }
+  if (fpsKeys['KeyD']) { mx += cosT; mz -= sinT; }
+  const len = Math.hypot(mx, mz);
+  if (len < 1e-6) return;
+  const speed = ORBIT_PAN_SPEED * ((fpsKeys['ShiftLeft'] || fpsKeys['ShiftRight']) ? ORBIT_RUN_MULT : 1) * dt;
+  target.x += (mx / len) * speed;
+  target.z += (mz / len) * speed;
+}
 function resetOrbitCamera() {
   target.copy(initialTarget);
   radius = initialRadius;
@@ -4815,7 +5858,7 @@ function resetOrbitCamera() {
   phi = initialPhi;
   applyCamera();
 }
-renderer.domElement.addEventListener('pointerdown', e => { if (fpsMode) return; dragging = true; px = e.clientX; py = e.clientY; });
+renderer.domElement.addEventListener('pointerdown', e => { if (fpsMode || e.altKey) return; dragging = true; px = e.clientX; py = e.clientY; });
 window.addEventListener('pointerup', () => { dragging = false; });
 window.addEventListener('pointermove', e => {
   if (!dragging) return;
@@ -4823,8 +5866,14 @@ window.addEventListener('pointermove', e => {
   phi = Math.max(0.15, Math.min(Math.PI - 0.15, phi)); px = e.clientX; py = e.clientY;
 });
 renderer.domElement.addEventListener('wheel', e => {
-  if (fpsMode) return;
-  e.preventDefault(); radius *= 1 + Math.sign(e.deltaY) * 0.08;
+  if (fpsMode && !localBodyThird) return; // orbit-only, except third-person chase-cam zoom below
+  e.preventDefault();
+  if (localBodyThird) {
+    lbCamDist *= 1 + Math.sign(e.deltaY) * 0.08;
+    lbCamDist = Math.max(1.8, Math.min(9, lbCamDist));
+    return;
+  }
+  radius *= 1 + Math.sign(e.deltaY) * 0.08;
   radius = Math.max(4, Math.min(70, radius));
 }, { passive: false });
 window.addEventListener('resize', () => {
@@ -5546,7 +6595,7 @@ document.body.appendChild(enterHint);
 const exitHint = document.createElement('div');
 exitHint.className = 'walk-ui';
 exitHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
-exitHint.textContent = 'WASD | LMB use tool | E tools | R reload | Q cursor | F/Esc orbit';
+exitHint.textContent = 'WASD | LMB use tool | E tools | R reload | Q cursor | F orbit | Esc menu';
 document.body.appendChild(exitHint);
 
 const cursorFreeHint = document.createElement('div');
@@ -5554,6 +6603,51 @@ cursorFreeHint.className = 'walk-ui';
 cursorFreeHint.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#8a93a3;font:12px/1.5 system-ui,sans-serif;pointer-events:none;text-align:center;display:none';
 cursorFreeHint.textContent = 'Cursor free \xb7 click menus/HUD \xb7 Q or click view to resume';
 document.body.appendChild(cursorFreeHint);
+
+// ---- Esc pause menu: restart the current game or return to the role/map picker ----
+const pauseMenuOverlay = document.createElement('div');
+pauseMenuOverlay.id = 'pause-menu';
+pauseMenuOverlay.style.cssText = 'position:fixed;inset:0;z-index:200;display:none;place-items:center;background:rgba(10,12,16,0.72);font:14px system-ui,sans-serif;color:#eef3f8';
+pauseMenuOverlay.innerHTML = `
+  <div style="width:min(280px,90%);display:grid;gap:12px;background:#1a2029;border:1px solid #354050;border-radius:10px;padding:22px;text-align:center">
+    <div style="font-size:19px;font-weight:650">Paused</div>
+    <button type="button" id="pause-restart" style="padding:10px;border:1px solid #354050;border-radius:6px;background:#20252d;color:#d8dee9;cursor:pointer;font-size:13px">Restart Game</button>
+    <button type="button" id="pause-mainmenu" style="padding:10px;border:1px solid #354050;border-radius:6px;background:#20252d;color:#d8dee9;cursor:pointer;font-size:13px">Main Menu</button>
+    <div style="font-size:11px;color:#8a93a3">Esc to resume</div>
+  </div>`;
+document.body.appendChild(pauseMenuOverlay);
+for (const btn of pauseMenuOverlay.querySelectorAll('button')) {
+  btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#6aa7ff'; });
+  btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#354050'; });
+}
+pauseMenuOverlay.querySelector('#pause-restart').addEventListener('click', () => restartGame());
+pauseMenuOverlay.querySelector('#pause-mainmenu').addEventListener('click', () => goToMainMenu());
+
+let pauseMenuOpen = false;
+function openPauseMenu() {
+  if (pauseMenuOpen) return;
+  pauseMenuOpen = true;
+  if (fpsMode && !fpsCursorFree) enterCursorFree();
+  pauseMenuOverlay.style.display = 'grid';
+}
+function closePauseMenu() {
+  if (!pauseMenuOpen) return;
+  pauseMenuOpen = false;
+  pauseMenuOverlay.style.display = 'none';
+  if (fpsMode && fpsCursorFree) resumeFromCursorFree();
+}
+// Persists the current session's settings so the reload silently re-enters the same game
+// (see RESTART_STORAGE_KEY / _resumeConfig near the top) instead of showing the picker.
+function restartGame() {
+  try {
+    sessionStorage.setItem(RESTART_STORAGE_KEY, JSON.stringify({ mapKey, mpRole, roomCode, mpWorldMode, presetName }));
+  } catch {}
+  location.reload();
+}
+function goToMainMenu() {
+  try { sessionStorage.removeItem(RESTART_STORAGE_KEY); } catch {}
+  location.reload();
+}
 
 // Seed the saved-states list from files in states/ (listed by serve.py's /api/list-states).
 // Non-overwrite: a preset already in localStorage wins, so in-app edits survive reloads while
@@ -5952,6 +7046,7 @@ localWeaponView = createLocalWeaponViewModel(camera);
 let localBodyMode = 'off'; // 'off' | 'third-person' | 'fps-legs'
 let localBody = null;
 let localBodyThird = false;
+let lbCamDist = 3.6; // chase-cam distance behind the body; mouse wheel zoom, see wheel listener above
 const _lbPos = new THREE.Vector3(), _lbVel = new THREE.Vector3(), _lbFwd = new THREE.Vector3();
 const _lbWpnPos = new THREE.Vector3(); // debug: world position of the mounted third-person weapon
 // Smoothed crouch/prone weights (player-procedural-body.js consumes state.crouch/state.prone
@@ -6171,8 +7266,21 @@ function resetPosition() {
   if (!fpsMode) resetOrbitCamera();
 }
 
+let hasEnteredFPSOnce = false;
 function enterFPS() {
   if (!playerInitialized) resetPlayerPosition(true);
+  // Returning from real orbit (not resuming a cursor-free pause, where fpsMode is already true,
+  // and not the very first entry, which keeps the authored map spawn point): walk in at wherever
+  // the orbit camera is currently looking (`target`, moved by drag/WASD pan) instead of teleporting
+  // back to the stale position exitFPS() left the collider at.
+  if (hasEnteredFPSOnce && !fpsMode) {
+    const gy = terrainHeight(target.x, target.z);
+    playerCollider.start.set(target.x, gy + 0.3, target.z);
+    playerCollider.end.set(target.x, gy + 0.3 + capsuleH, target.z);
+    playerVelocity.set(0, 0, 0);
+    playerOnFloor = false;
+  }
+  hasEnteredFPSOnce = true;
   camera.rotation.order = 'YXZ';
   camera.position.copy(playerCollider.end);
   // Seed authoritative look from the current camera so the view doesn't snap, and reset feel state.
@@ -6211,6 +7319,9 @@ function exitFPS() {
   envAudio.play('vr_drive_off');
 }
 
+// Set just before the F key deliberately releases pointer lock to go to orbit; distinguishes
+// that intentional exit from Escape/alt-tab/focus-loss, which should open the pause menu instead.
+let intentionalOrbitExit = false;
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === renderer.domElement) {
     envAudio.noteGesture();
@@ -6218,8 +7329,14 @@ document.addEventListener('pointerlockchange', () => {
     document.body.classList.remove('cursor-free');
     enterFPS();
   } else if (fpsMode && !fpsCursorFree) {
-    // Only drop to orbit when the release was NOT a deliberate cursor-free pause.
-    exitFPS();
+    if (intentionalOrbitExit) {
+      intentionalOrbitExit = false;
+      exitFPS();
+    } else {
+      // Escape (browser force-exits pointer lock), alt-tab, focus loss, etc: pause instead of
+      // dropping into orbit/spectator mode.
+      openPauseMenu();
+    }
   }
 });
 
@@ -6253,7 +7370,7 @@ window.addEventListener('keydown', e => {
   envAudio.noteGesture();
   fpsKeys[e.code] = true;
   if (e.repeat && ['KeyF', 'KeyQ', 'KeyH', 'KeyR', 'KeyE', 'KeyC', 'KeyZ', 'KeyM', 'KeyT', 'KeyG', 'KeyY', 'KeyK', 'KeyJ'].includes(e.code)) return;
-  if (e.code === 'KeyM') {
+  if (e.code === 'KeyM' && !pauseMenuOpen) {
     worldMapOverlay.toggle();
     // Freeze the first-person view and free the cursor while the map is open; closing resumes.
     if (worldMapOverlay.isOpen()) { envAudio.play('map_menu_open'); if (fpsMode) enterCursorFree(); }
@@ -6265,12 +7382,15 @@ window.addEventListener('keydown', e => {
       worldMapOverlay.close();
       if (fpsCursorFree) resumeFromCursorFree();
       e.preventDefault();
-    } else if (fpsCursorFree) {
-      resumeFromCursorFree();
+    } else if (pauseMenuOpen) {
+      closePauseMenu();
+      e.preventDefault();
+    } else {
+      openPauseMenu();
       e.preventDefault();
     }
   }
-  if (e.code === 'KeyQ') {
+  if (e.code === 'KeyQ' && !pauseMenuOpen) {
     if (fpsCursorFree) { envAudio.play('pause_close'); resumeFromCursorFree(); }
     else if (fpsMode) { envAudio.play('pause_open'); enterCursorFree(); }
     e.preventDefault();
@@ -6288,10 +7408,10 @@ window.addEventListener('keydown', e => {
     openToolRadial();
     e.preventDefault();
   }
-  if (e.code === 'KeyF') {
+  if (e.code === 'KeyF' && !pauseMenuOpen) {
     if (fpsCursorFree) resumeFromCursorFree();
     else if (!fpsMode) renderer.domElement.requestPointerLock();
-    else document.exitPointerLock();
+    else { intentionalOrbitExit = true; document.exitPointerLock(); }
     e.preventDefault();
   }
   if (fpsMode) {
@@ -6340,6 +7460,12 @@ window.addEventListener('keydown', e => {
       creatureToast(state.enabled ? 'Wildlife ON — creatures spawn around you' : 'Wildlife OFF');
     }
   }
+  // Bot inspector cycling: unused elsewhere, safe to claim globally (host/solo only, bots never
+  // run on a guest). Skipped while a form control has focus so it doesn't fight range-slider input.
+  if (mpRole !== 'guest' && !(e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable))) {
+    if (e.code === 'ArrowRight') { cycleSelectedBot(1); e.preventDefault(); }
+    else if (e.code === 'ArrowLeft') { cycleSelectedBot(-1); e.preventDefault(); }
+  }
 });
 window.addEventListener('keyup', e => {
   fpsKeys[e.code] = false;
@@ -6354,6 +7480,7 @@ window.addEventListener('contextmenu', e => {
 
 window.addEventListener('mousedown', e => {
   envAudio.noteGesture();
+  if (e.altKey && e.button === 0 && mpRole !== 'guest') { pickBotAtScreen(e.clientX, e.clientY); e.preventDefault(); return; }
   if (fpsCursorFree) {
     // Clicking the 3D view resumes walking; clicks on HUD/menus fall through to the DOM.
     if (e.button === 0 && e.target === renderer.domElement) resumeFromCursorFree();
@@ -6447,9 +7574,14 @@ function mapShotOccluder(origin, d, range) {
 }
 function resolveWorldShot({ shooterId, origin, dir, range, nowMs }) {
   const creatures = creatureCombatCapsules();
+  // A bot shooter's hit-test never includes the host capsule while the host isn't visible to
+  // bots (third-person body view / orbit camera, see hostVisibleToBots) -- otherwise a bot could
+  // still physically register a hit on a body it was never allowed to perceive or aim at.
+  let players = currentCombatPlayers(nowMs);
+  if (botPlayers.has(shooterId) && !hostVisibleToBots()) players = players.filter(p => p.id !== 'host');
   const hit = resolveHitscan({
     shooterId, origin, dir, range,
-    players: currentCombatPlayers(nowMs),
+    players,
     creatures,
     mobs: claudecraftCreatures?.mobCombatCapsules() ?? null,
     obstacles: obstacleColumnsAlongRay(origin, dir, range),
@@ -6480,14 +7612,29 @@ function tracerStart(origin, end) {
   return [origin[0] + dx * f, origin[1] + dy * f, origin[2] + dz * f];
 }
 
+// The ballistic ray still begins at the authoritative eye/head origin, but its visual line
+// may begin at a muzzle pose captured by the shooter at fire time. Keep that client-supplied
+// cosmetic point close to the validated shot origin; invalid/missing values retain the old
+// near-eye fallback used by bots and clients without a resolvable weapon anchor.
+const MAX_TRACER_MUZZLE_OFFSET = 2;
+function tracerEffectStart(origin, end, capturedMuzzle) {
+  const muzzle = finiteVec3(capturedMuzzle);
+  const shot = finiteVec3(origin);
+  if (muzzle && shot) {
+    const dx = muzzle[0] - shot[0], dy = muzzle[1] - shot[1], dz = muzzle[2] - shot[2];
+    if (Math.hypot(dx, dy, dz) <= MAX_TRACER_MUZZLE_OFFSET) return muzzle;
+  }
+  return tracerStart(origin, end);
+}
+
 // Host/solo: create the replicated tracer + impact-spark entities for a resolved shot.
 // (Muzzle flash is a LOCAL first-person effect spawned in fireGunFromCamera at the real
 // viewmodel muzzle — never from the eye/shot origin, which would sit in the shooter's face.)
-function spawnShotEffects(origin, hit, weapon, ownerId) {
+function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null) {
   if (!hit || !Array.isArray(hit.point)) return;
   const now = performance.now() / 1000;
   entityRegistry.create('effect', {
-    kind: 'gun_tracer', p0: tracerStart(origin, hit.point), p1: hit.point,
+    kind: 'gun_tracer', p0: tracerEffectStart(origin, hit.point, capturedMuzzle), p1: hit.point,
     color: weapon.tracerColor || [1, 0.85, 0.45], ownerId,
   }, { now });
   if (hit.kind === 'none') return;
@@ -6503,7 +7650,7 @@ function spawnShotEffects(origin, hit, weapon, ownerId) {
 
 // Guest shooter: immediate local-predicted tracer (damage/impact stay host-confirmed). A
 // short terrain raymarch gives a plausible endpoint; the authoritative effect follows.
-function spawnLocalPredictedTracer(origin, dir, weapon) {
+function spawnLocalPredictedTracer(origin, dir, weapon, capturedMuzzle = null) {
   let end = [origin[0] + dir[0] * weapon.range, origin[1] + dir[1] * weapon.range, origin[2] + dir[2] * weapon.range];
   for (let t = 1; t <= weapon.range; t += 1) {
     const x = origin[0] + dir[0] * t, y = origin[1] + dir[1] * t, z = origin[2] + dir[2] * t;
@@ -6511,7 +7658,7 @@ function spawnLocalPredictedTracer(origin, dir, weapon) {
   }
   localShotEffects.push({
     id: `local-tracer-${++localTracerSeq}`, type: 'effect', kind: 'gun_tracer',
-    p: tracerStart(origin, end), p1: end, color: weapon.tracerColor || [1, 0.85, 0.45],
+    p: tracerEffectStart(origin, end, capturedMuzzle), p1: end, color: weapon.tracerColor || [1, 0.85, 0.45],
     life: 0.09, bornMs: performance.now(),
   });
 }
@@ -6530,6 +7677,7 @@ function spawnLocalMuzzleFlash(fallbackDir, weapon) {
   localShotEffects.push({
     id: `local-muzzle-${++localTracerSeq}`, type: 'effect', kind: 'muzzle_flash',
     p: [mw.x, mw.y, mw.z], dir: [dir.x, dir.y, dir.z], color: [1, 0.9, 0.62],
+    weaponId: weapon?.id, followMuzzle: true,
     muzzleFx: { ...profile }, life, bornMs: performance.now(),
   });
 }
@@ -6541,8 +7689,28 @@ function updateShotEffects(nowMs) {
     ? mpPendingEffects
     : entityRegistry.renderList(e => e.type === 'effect');
   if (localShotEffects.length) {
+    const currentWeaponId = weaponIdFor(localPlayerId());
+    let queriedMuzzlePose = false;
+    let hasMuzzlePose = false;
     for (let i = localShotEffects.length - 1; i >= 0; i--) {
-      if (nowMs - localShotEffects[i].bornMs > localShotEffects[i].life * 1000) localShotEffects.splice(i, 1);
+      const effect = localShotEffects[i];
+      if (nowMs - effect.bornMs > effect.life * 1000) {
+        localShotEffects.splice(i, 1);
+        continue;
+      }
+      // Local muzzle smoke/flash is a viewmodel effect. Keep its per-shot age, but refresh
+      // the source pose every render frame so camera/player strafing cannot leave it behind.
+      // Tracers and impact effects remain fixed in world space.
+      if (effect.followMuzzle && effect.weaponId === currentWeaponId) {
+        if (!queriedMuzzlePose) {
+          queriedMuzzlePose = true;
+          hasMuzzlePose = !!localWeaponView?.getMuzzleWorldPose?.(_muzzleTmp, _muzzleDirTmp);
+        }
+        if (hasMuzzlePose) {
+          effect.p[0] = _muzzleTmp.x; effect.p[1] = _muzzleTmp.y; effect.p[2] = _muzzleTmp.z;
+          effect.dir[0] = _muzzleDirTmp.x; effect.dir[1] = _muzzleDirTmp.y; effect.dir[2] = _muzzleDirTmp.z;
+        }
+      }
     }
   }
   effectRenderer.sync(localShotEffects.length ? base.concat(localShotEffects) : base, nowMs);
@@ -6552,12 +7720,14 @@ function updateShotEffects(nowMs) {
 // Shared by the hitscan and melee fire branches.
 function applyHitDamage(hit, weapon, weaponId, ownerId) {
   if (hit && hit.kind === 'player') {
-    playerCombat.applyDamage({
-      targetId: hit.id, amount: weapon.damage, source: 'gun',
-      attackerId: ownerId, hitPoint: hit.point, weaponId,
-    });
-    envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
-    if (hit.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
+    if (!(playerImmortal && hit.id === 'host')) {
+      playerCombat.applyDamage({
+        targetId: hit.id, amount: weapon.damage, source: 'gun',
+        attackerId: ownerId, hitPoint: hit.point, weaponId,
+      });
+      envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+      if (hit.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
+    }
   } else if (hit && hit.kind === 'creature' && hit.creatureRef) {
     hit.creatureRef.takeDamage(weapon.damage, null);
     envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
@@ -6585,16 +7755,22 @@ function projectileRaycast(from, to, radius, ownerId) {
 // once from ExplosionEntity.create (host tick), so guests never run it.
 function applyExplosionBlast({ center, radius, damage, ownerId, floor }) {
   const cx = center[0], cy = center[1], cz = center[2];
+  const attacker = getKnownPlayerState(ownerId);
+  const threatXZ = attacker ? { x: attacker.p[0], z: attacker.p[2] } : { x: cx, z: cz };
   for (const pl of currentCombatPlayers()) {
     if (!pl.alive) continue;
     const d = Math.hypot(pl.p[0] - cx, pl.p[1] - cy, pl.p[2] - cz);
     const dmg = blastDamageAt(damage, d, radius, floor);
     if (dmg <= 0) continue;
-    playerCombat.applyDamage({
-      targetId: pl.id, amount: dmg, source: 'explosion',
-      attackerId: ownerId, hitPoint: pl.p, weaponId: null,
-    });
-    if (pl.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
+    if (!(playerImmortal && pl.id === 'host')) {
+      playerCombat.applyDamage({
+        targetId: pl.id, amount: dmg, source: 'explosion',
+        attackerId: ownerId, hitPoint: pl.p, weaponId: null,
+      });
+      if (pl.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
+    }
+    const rec = botPlayers.get(pl.id);
+    if (rec) alertBotAndSquad(rec, threatXZ, performance.now());
   }
   for (const c of creatureCombatCapsules()) {
     const d = Math.hypot(c.p[0] - cx, c.p[1] - cy, c.p[2] - cz);
@@ -6682,9 +7858,10 @@ function applyCombatIntent(intent, ownerId) {
     range: weapon.range,
     nowMs,
   });
+  alertBotsToShot(shotIntent.origin, shotIntent.dir, weapon.range, ownerId, hit, nowMs);
   applyHitDamage(hit, weapon, weaponId, ownerId);
   if (mode === 'melee') spawnMeleeImpact(hit, weapon, ownerId);
-  else spawnShotEffects(shotIntent.origin, hit, weapon, ownerId);
+  else spawnShotEffects(shotIntent.origin, hit, weapon, ownerId, shotIntent.tracerOrigin);
   updateHostPlayerGhosts();
   return { ok: true, hit };
 }
@@ -6710,15 +7887,27 @@ function fireGunFromCamera() {
   const dir = new THREE.Vector3(0, 0, -1).applyEuler(_lookEuler);
   const id = localPlayerId();
   const weaponId = weaponIdFor(id);
+  // Origin must track the shooter's actual head position, not the rendered camera: in
+  // third-person the camera sits lbCamDist behind the body (chase cam, see animate()), and
+  // validateShot's MAX_ORIGIN_DRIFT (combat.js, ~1.25m for anti-cheat) silently rejects every
+  // shot whose origin has drifted further than that from playerCollider.end — which used to be
+  // every third-person shot with no error shown, since result.ok just came back false.
+  const originPos = localBodyThird ? playerCollider.end : camera.position;
+  // Capture the visual muzzle once before recoil. This does not change the authoritative
+  // ray origin/direction; it only gives this shot's tracer a barrel-aligned world-space start.
+  const capturedMuzzle = !localBodyThird
+    ? localWeaponView?.getMuzzleWorldPose?.(_muzzleTmp, _muzzleDirTmp)
+    : null;
   const intent = {
     type: 'combat_intent',
     action: 'gun.fire',
     weapon: weaponId,
     shotSeq: ++localGunShotSeq,
-    origin: [camera.position.x, camera.position.y, camera.position.z],
+    origin: [originPos.x, originPos.y, originPos.z],
     dir: [dir.x, dir.y, dir.z],
     clientTime: performance.now(),
   };
+  if (capturedMuzzle) intent.tracerOrigin = [capturedMuzzle.x, capturedMuzzle.y, capturedMuzzle.z];
   const result = mpRole === 'guest' ? (mpSession?.sendInput(intent), { ok: true }) : applyCombatIntent(intent, 'host');
   if (result?.ok) {
     lastAutoFireMs = performance.now();  // gate full-auto repeat off this shot (tickAutoFire)
@@ -6727,7 +7916,7 @@ function fireGunFromCamera() {
     if (w && (w.mode || 'hitscan') !== 'melee') spawnLocalMuzzleFlash(intent.dir, w);
     // Guest local-predicted tracer only for hitscan; projectiles/melee wait for host state.
     if (mpRole === 'guest' && w && (w.mode || 'hitscan') === 'hitscan') {
-      spawnLocalPredictedTracer(intent.origin, intent.dir, w);
+      spawnLocalPredictedTracer(intent.origin, intent.dir, w, intent.tracerOrigin);
     }
     viewHands.recoil(); localWeaponView?.recoil();
     // View-feel impact: kick the view up (+ a little sideways jitter) and add screen-shake
@@ -7166,6 +8355,7 @@ async function animate() {
     viewHands.update(rawDt, { speed: walkSpeed, charge: lgCharge, reload: localWeaponView?.getReloadHandTargets?.(), bob: localWeaponView?.getViewBob?.() });
   } else if (!fpsMode) {
     // Cursor-free (fpsMode && fpsCursorFree) freezes the view: neither walk nor orbit runs.
+    if (!pauseMenuOpen) updateOrbitPan(rawDt);
     applyCamera();
     updateTerrainWindow(target);
   }
@@ -7208,7 +8398,7 @@ async function animate() {
         // in view. Movement forward still uses camera yaw, so WASD walks the body away from you.
         if (localBodyThird) {
           camera.getWorldDirection(_lbFwd);
-          const eye = playerCollider.end, dist = 3.6;
+          const eye = playerCollider.end, dist = lbCamDist;
           camera.position.set(eye.x - _lbFwd.x * dist, eye.y + 1.0 - _lbFwd.y * dist, eye.z - _lbFwd.z * dist);
         }
         // Body-held weapon mount (visual only — see docs/subsystems/procedural-body-weapon-contracts.md
@@ -7289,6 +8479,7 @@ async function animate() {
   updateAimOptics();
   });
   frameProfiler.time('creatures', () => { applyPendingSharedNpcs(); portCreatures.update(rawDt); });
+  frameProfiler.time('bots', () => updateBots(rawDt));
   if (claudecraftCreatures) frameProfiler.time('claudecraft', () => {
     const localPlayerWorld = getLocalPlayerWorldPose();
     const mobs = claudecraftCreatures.update(rawDt, {

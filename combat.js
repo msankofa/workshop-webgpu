@@ -171,7 +171,7 @@ export function raymarchTerrainHit(origin, dir, range, heightAt, normalAt, step 
 // vertical columns (`{ id, x, z, r, minY, maxY }`); terrain via heightAt/normalAt.
 export function resolveHitscan({
   shooterId, origin, dir, range,
-  players, creatures, mobs, obstacles, heightAt, normalAt, terrainStep = 0.5,
+  players, creatures, mobs, obstacles, heightAt, normalAt, terrainStep = 0.5, occluder,
 }) {
   const d = normalizeDir(dir);
   if (!d || !(range > 0)) return null;
@@ -203,6 +203,13 @@ export function resolveHitscan({
       const res = rayVerticalCylinderHit(origin, d, range, col);
       if (res.hit) consider(res.distance, 'obstacle', col.id, res.point, res.normal);
     }
+  }
+
+  // Exact world-geometry occluder (e.g. a map BVH raycast). Preferred over the heightfield
+  // terrain march for vertical geometry like walls.
+  if (typeof occluder === 'function') {
+    const w = occluder(origin, d, range);
+    if (w && w.distance >= 0) consider(w.distance, 'world', null, w.point, w.normal || [0, 1, 0]);
   }
 
   const terrain = raymarchTerrainHit(origin, d, range, heightAt, normalAt, terrainStep);

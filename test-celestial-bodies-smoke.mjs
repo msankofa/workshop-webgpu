@@ -32,6 +32,12 @@ const group = createCelestialBodies(bodies);
 ok(group.children.length === bodies.length, 'one sprite per generated body');
 ok(group.children.every(s => s.isSprite), 'every child is a THREE.Sprite');
 ok(group.children.every(s => s.material.map && s.material.map.isTexture), 'every sprite has a texture map');
+ok(typeof group.userData.setStableLayering === 'function', 'stable-layering control is exposed');
+ok(group.children.every(s => s.renderOrder === -996), 'camera-depth sorting is the default');
+group.userData.setStableLayering(true);
+ok(group.children.every((s, i, a) => i === 0 || s.renderOrder > a[i - 1].renderOrder), 'stable layering assigns deterministic painter order');
+group.userData.setStableLayering(false);
+ok(group.children.every(s => s.renderOrder === -996), 'stable layering can be disabled live');
 
 // Every kind must paint without throwing, at both detail levels, regardless of what
 // generateCelestialBodies happened to roll above.

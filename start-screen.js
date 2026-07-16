@@ -1,7 +1,15 @@
 import { RELAY_URL } from './multiplayer.js';
 import { listStates } from './slider-state.js';
+import { SHOOTHOUSE_TYPES } from './shoot-house-layout.js';
 
-export async function showStartScreen() {
+// type id -> mapKey. 'house' keeps the legacy 'shoot-house' key; others become 'shoot-house-<id>'.
+// The viewer reverses this: 'shoot-house' => house, 'shoot-house-<id>' => type <id>.
+const _shootHouseMapKey = id => (id === 'house' ? 'shoot-house' : `shoot-house-${id}`);
+
+// resumeConfig (optional): { mapKey, mpRole, roomCode, mpWorldMode, presetName }. When given, skips
+// the role/map picker entirely and goes straight to the loading step with those settings — used to
+// silently re-enter the same game after a "Restart" from the in-game pause menu (environment-viewer.html).
+export async function showStartScreen(resumeConfig) {
   const config = await fetch('maps/map-config.json')
     .then(r => r.ok ? r.json() : { maps: {} })
     .catch(() => ({ maps: {} }));
@@ -16,13 +24,13 @@ export async function showStartScreen() {
   });
   document.body.appendChild(overlay);
 
-  const { mpRole, roomCode, guestMapKey, mpWorldMode, presetName } = await _roleStep(overlay);
-
-  let mapKey;
-  if (mpRole === 'guest') {
-    mapKey = guestMapKey;
+  let mapKey, mpRole, roomCode, mpWorldMode, presetName;
+  if (resumeConfig) {
+    ({ mapKey, mpRole, roomCode, mpWorldMode, presetName } = resumeConfig);
   } else {
-    mapKey = await _mapStep(overlay, config, mpRole, roomCode);
+    let guestMapKey;
+    ({ mpRole, roomCode, guestMapKey, mpWorldMode, presetName } = await _roleStep(overlay));
+    mapKey = mpRole === 'guest' ? guestMapKey : await _mapStep(overlay, config, mpRole, roomCode);
   }
 
   const { setStatus } = _loadingStep(overlay, { mapKey, mpRole, roomCode, mpWorldMode });
@@ -72,6 +80,59 @@ function _mapCard(label, detail, onClick) {
   btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#354050'; });
   btn.addEventListener('click', onClick);
   return btn;
+}
+
+// A card-shaped shoot-house picker: a type dropdown (from SHOOTHOUSE_TYPES) + launch button.
+function _shootHouseCard(onPick) {
+  const card = document.createElement('div');
+  Object.assign(card.style, {
+    minHeight: '92px', border: '1px solid #354050', borderRadius: '8px',
+    background: '#1a2029', color: '#eef3f8', padding: '16px',
+    display: 'flex', flexDirection: 'column', gap: '8px',
+  });
+
+  const title = document.createElement('div');
+  title.textContent = 'Shoot House';
+  Object.assign(title.style, { fontWeight: '650', fontSize: '15px' });
+
+  const desc = document.createElement('div');
+  Object.assign(desc.style, { fontSize: '12px', color: '#98a5b5', minHeight: '30px' });
+
+  const row = document.createElement('div');
+  Object.assign(row.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+
+  const select = document.createElement('select');
+  Object.assign(select.style, {
+    flex: '1', padding: '6px 8px', border: '1px solid #354050', borderRadius: '5px',
+    background: '#20252d', color: '#d8dee9', fontSize: '13px', cursor: 'pointer',
+  });
+  for (const t of SHOOTHOUSE_TYPES) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.label;
+    select.appendChild(opt);
+  }
+  const syncDesc = () => {
+    const t = SHOOTHOUSE_TYPES.find(x => x.id === select.value);
+    desc.textContent = t?.desc || '';
+  };
+  select.addEventListener('change', syncDesc);
+  syncDesc();
+
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.textContent = 'Enter →';
+  Object.assign(go.style, {
+    padding: '6px 12px', border: '1px solid #354050', borderRadius: '5px',
+    background: '#20252d', color: '#d8dee9', cursor: 'pointer', fontSize: '12px',
+  });
+  go.addEventListener('mouseenter', () => { go.style.borderColor = '#6aa7ff'; });
+  go.addEventListener('mouseleave', () => { go.style.borderColor = '#354050'; });
+  go.addEventListener('click', () => onPick(_shootHouseMapKey(select.value)));
+
+  row.append(select, go);
+  card.append(title, desc, row);
+  return card;
 }
 
 function _input(placeholder) {
@@ -268,7 +329,7 @@ async function _mapStep(overlay, config, mpRole, roomCode) {
     });
 
     grid.appendChild(_mapCard('Infinite World', 'Procedural terrain, grass, and GPU forest', () => resolve(null)));
-    grid.appendChild(_mapCard('Shoot House', 'Enclosed CQB kill-house — night, no environment', () => resolve('shoot-house')));
+    grid.appendChild(_shootHouseCard(mapKey => resolve(mapKey)));
 
     const maps = config.maps || {};
     for (const [key, meta] of Object.entries(maps)) {

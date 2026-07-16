@@ -48,6 +48,9 @@ CDN-pinned three@0.184.0, served from jsDelivr:
 | `{ createMapCollider }` from `./map-collision.js` | BVH collider for authored map meshes |
 | `{ createHostSession, createGuestSession, GhostRenderer }` from `./multiplayer.js` | netcode session + remote-player rendering |
 | `{ listStates, saveState, deleteState }` from `./slider-state.js` (aliased `listSliderStates`/`saveSliderState`/`deleteSliderState`) | named `localStorage`-backed slider-preset storage, shared with `start-screen.js` |
+| `{ createBotEntity, stepBotPhysics, toWirePose }` from `./bot-entity.js` (aliased `botToWirePose`) | combat-bot capsule/physics/pose — see `bots.md` |
+| `{ chooseBotState, aimAnglesTo, aimError, slewAngle, ... }` from `./bot-activity.js` | combat-bot FSM decision math (aliased `botAimError` etc. to dodge existing names) |
+| `{ buildNavGrid, isWalkableCell, cellToWorld, findPath, smoothPath }` from `./nav-grid.js` (aliased `botIsWalkableCell` etc.) | shoot-house-only bot pathing grid |
 
 ### Lazy `await import(...)` calls
 
@@ -90,8 +93,10 @@ the trees module load rather than fired in parallel from the top.
    storage buffer can exceed the default 128 MB binding), construct `WebGPURenderer`, set
    pixel ratio/size/shadow map, `await renderer.init()`, create `scene`.
 5. **Multiplayer session** (lines 100–128): if `mpRole === 'host'`, `createHostSession`; if
-   `'guest'`, construct `GhostRenderer` + `createGuestSession`; wires `mp:guest_input` events
-   into the (not-yet-created) `portCreatures`.
+   `'guest'`, construct `GhostRenderer` + `createGuestSession`; if `'solo'`, construct
+   `GhostRenderer` anyway (added for combat bots — host/solo-only sim, needs somewhere to render
+   even with no session; see `bots.md`). Wires `mp:guest_input` events into the (not-yet-created)
+   `portCreatures`.
 6. **Authored map load** (lines 130–145, conditional on `mapKey`): `await loadTerrainMap(...)`,
    then `createMapCollider`.
 7. **Camera** constructed (line 147), **lighting rig** (`createLightingRig`, line 151) with
@@ -133,6 +138,7 @@ corrupt WebGPU buffers. Per frame, in order:
    (`STEPS_PER_FRAME = 5`) or orbit `applyCamera()`; then `updateTerrainWindow(...)` (chunk
    streaming, shadow focus, triggers grass/water/tree resync).
 4. **Creatures**: `portCreatures.update(rawDt)`.
+4b. **Bots**: `updateBots(rawDt)` — host/solo only (no-ops on a guest); see `bots.md`.
 5. **Water**: `waterRef.update(now)` (its own reflection/refraction/caustic passes).
 6. **HUD**: `updateTerrainDebug(now)`.
 7. **Grass** (awaited): `grassRef.update(now)` — GPU generate+cull must finish before draw.
@@ -177,18 +183,49 @@ All read once at top-level via `URLSearchParams` and gate which lazy imports/bra
 Two camera modes, toggled by the `F` key (pointer lock):
 
 - **Orbit** (default): spherical orbit around `target` (`theta`/`phi`/`radius`), drag to rotate,
-  wheel to zoom (radius clamped 4–70), driven by `applyCamera()` each frame (lines 2178–2211).
+  wheel to zoom (radius clamped 4–70), WASD to pan `target` across the ground plane along the
+  current view heading (`updateOrbitPan()`, shift runs), driven by `applyCamera()` each frame.
 - **FPS walk** (`fpsMode`): entered via `renderer.domElement.requestPointerLock()` on `F`;
   capsule-based ground/gravity movement (`Capsule` from `three/addons`, `groundContact`/
   `slideVelocity` from `collision.js`), substepped 5×/frame, mouse-look via `mousemove` deltas,
   crouch/prone stances, plus light-gun shoot/place controls bound to `mousedown`/`mouseup`
-  (lines 2219–2530+). Exits to orbit on `Esc`/`F` (pointer-lock change listener).
+  (lines 2219–2530+). Exits to orbit only via `F` (which sets `intentionalOrbitExit = true` before
+  calling `document.exitPointerLock()`); any other pointer-lock loss — `Escape`, alt-tab, focus
+  loss — is treated by the `pointerlockchange` listener as unintentional and opens the pause menu
+  instead (see below), never orbit. `enterFPS()` (`hasEnteredFPSOnce` flag) only keeps the authored
+  map spawn point on the very first entry; every later orbit→FPS transition (not a cursor-free
+  resume, where `fpsMode` is already true) snaps `playerCollider` to the orbit camera's current
+  `target` x/z first, so walking in lands wherever you last drag-rotated/WASD-panned to instead of
+  teleporting back to the stale pre-orbit position `exitFPS()` left behind.
 - **Cursor-free pause** (`fpsCursorFree`, a sub-state of FPS): `Q` releases the pointer while
   keeping the first-person camera **frozen in place** (distinct from exiting to orbit) so the mouse
   can reach the HUD / minimap layer menu. Movement and mouse-look are gated off; the walk/orbit
-  branches in `animate()` both skip. Clicking the 3D view, or `Q`/`F`, re-locks and resumes walking.
-  Opening the **M** map from FPS enters this pause; closing it (`M`/`Esc`) re-locks. The
-  `pointerlockchange` listener drops to orbit only when the release was *not* a deliberate pause.
+  branches in `animate()` both skip. Clicking the 3D view, or `Q`, re-locks and resumes walking.
+  Opening the **M** map from FPS enters this pause; closing it (`M`/`Esc`) re-locks. `Q` and `M` are
+  no-ops while the pause menu (below) is open, to avoid re-locking the pointer underneath it.
+
+### Pause menu (`Esc`)
+
+`Escape` always opens an in-game pause overlay (`pauseMenuOpen`, `pauseMenuOverlay`) — from FPS,
+third-person, or orbit — with **Restart Game** and **Main Menu** buttons; pressing `Escape` again
+closes it. `openPauseMenu()` freezes the view the same way `Q`'s cursor-free pause does
+(`enterCursorFree()`) when in FPS mode; it's a no-op in orbit mode, where the cursor is already
+free (orbit panning via `updateOrbitPan()` is explicitly skipped while the menu is open so held
+WASD doesn't pan the camera underneath it). `worldMapOverlay` still takes priority: `Escape` closes
+the map first if it's open, same as before.
+
+Both buttons reload the page (`location.reload()`) rather than tearing down in-place — this is a
+single long-lived module script with a live multiplayer socket, WebGPU context, and hundreds of
+lines of module-scope state, so a full reload is the only reliable way to reset everything cleanly.
+The difference is what happens on the next load:
+
+- **Restart Game** first writes the current session's `{ mapKey, mpRole, roomCode, mpWorldMode,
+  presetName }` to `sessionStorage['ecw-restart-config']`. On reload, this is read and removed
+  before `showStartScreen()` is called, and passed in as `resumeConfig` — `start-screen.js` then
+  skips the role/map picker entirely and goes straight to the loading step with those settings, so
+  the game silently re-enters the same map/role/room instead of showing the picker.
+- **Main Menu** clears `sessionStorage['ecw-restart-config']` (in case a stale one exists) and
+  reloads, landing on the normal `showStartScreen()` role/map picker.
 
 For multiplayer guests, `GhostRenderer` (from `multiplayer.js`) renders remote players/creatures
 into the same `scene` but does not drive the local `camera` — the guest's own camera still uses

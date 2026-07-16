@@ -17,13 +17,14 @@ standalone WebGL page.
 | File | Responsibility | Lines |
 |---|---|---|
 | `port-creature-bridge.js` | Wires the creature system into `environment-viewer.html`: builds/injects the floating toolbar + panel DOM/CSS, derives an arena size from the terrain system, forwards terrain/trunk callbacks into the simulation, handles pointer click/dblclick raycasting (select creature / set target point), and exposes a thin `update`/`reset`/`stats` wrapper (including an "off" mode that zeroes stats and hides creatures without simulating). | 524 |
-| `port-creature-system.js` | The ported simulation itself: body plans, gaits, styles, seeded randomization, `KinematicChain` (FABRIK IK), `Creature` class (steering, physics, leg stepping, combat, foraging, rendering), `Grabbable` objects, spatial-grid collision/separation, LOD tiers, and an instanced-mesh batching layer for WebGPU rendering. | 4830 |
+| `port-creature-system.js` | The ported simulation itself: body plans, gaits, styles, seeded randomization, `KinematicChain` (FABRIK IK), `Creature` class (steering, physics, leg stepping, combat, foraging, wild-activity FSM, rendering), `Grabbable` objects, spatial-grid collision/separation, LOD tiers, and an instanced-mesh batching layer for WebGPU rendering. | 5369 |
+| `creature-activity.js` | Pure, THREE-free decision math for the wild-creature activity FSM (Phase 2): activity constants, sense ranges, `chooseActivity`, `activitySteer`. Node-tested (`test-creature-activity.mjs`). | 110 |
 
 ## Public API
 
 `port-creature-system.js` has a single top-level export:
 
-- `createPortCreatureSystem({ scene, terrainHeight, resolveTrunks, nearbyTrunks, terrainSettings, rebuildTerrain, camera, lod, getPlayerPose, damagePlayer })` — factory. The last two are optional callbacks (host/solo only) used by the player-interaction layer below. Returns an object with:
+- `createPortCreatureSystem({ scene, terrainHeight, resolveTrunks, nearbyTrunks, terrainSettings, rebuildTerrain, camera, lod, getPlayerPose, damagePlayer, getWorldBounds })` — factory. `getPlayerPose`/`damagePlayer` are optional callbacks (host/solo only) used by the player-interaction layer below. `getWorldBounds` is an optional `() => {minX,maxX,minZ,maxZ}|null` used to keep wander/roam picks inside a finite map (see "Wander/roam targeting" below); `null`/absent/returns-null means an infinite world. Returns an object with:
   - `update(dt)` — runs one full sim/render frame.
   - `resetCreatures()` — rebuilds the creature roster from current settings/config.
   - `clearRenderBatches()` — zeroes the instanced-mesh batches (used when creatures are hidden).
@@ -49,7 +50,7 @@ standalone WebGL page.
 
 `port-creature-bridge.js` exports one factory:
 
-- `createEnvironmentPortCreatures({ scene, renderer, camera, ground, terrain, terrainSystem, terrainHeight, resolveTrunks, nearbyTrunks, rebuildWorld, isInteractionEnabled, mode })` — returns `{ update(dt), reset(), stats (getter), system }`, where `system` is the object returned by `createPortCreatureSystem`.
+- `createEnvironmentPortCreatures({ scene, renderer, camera, ground, terrain, terrainSystem, terrainHeight, resolveTrunks, nearbyTrunks, rebuildWorld, isInteractionEnabled, mode, getPlayerPose, damagePlayer, getWorldBounds })` — returns `{ update(dt), reset(), stats (getter), system }`, where `system` is the object returned by `createPortCreatureSystem`. `getWorldBounds` is forwarded straight through to `createPortCreatureSystem`.
 
 ## Wiring
 
@@ -59,9 +60,33 @@ In `environment-viewer.html`:
 - Construction (line ~351): `const portCreatures = createEnvironmentPortCreatures({ scene, renderer, camera, ground: () => ground, terrain, terrainSystem, terrainHeight, resolveTrunks: (px, pz, r) => trunkIndex.resolve(px, pz, r), nearbyTrunks: (px, pz) => trunkIndex.nearby(px, pz), rebuildWorld, isInteractionEnabled: () => !fpsMode, mode: CREATURE_MODE })`, where `CREATURE_MODE` comes from the `?creatures=` URL param (default `'on'`) and `trunkIndex` is a `createTrunkIndex(...)` from `collision.js`.
 - Per-frame call: `frameProfiler.time('creatures', () => portCreatures.update(rawDt));` (line ~2804), profiled under the `'creatures'` pass alongside terrain/water/etc.
 - Terrain height: the bridge passes the scene's real `terrainHeight` function straight through to the sim, so creature ground contact follows the actual procedural terrain (not a separate height function). It also derives a synthetic `creatureTerrain` settings object (amplitude/lake/waterLevel/arena size) from the live `terrain`/`terrainSystem` params for the sim's internal "rebuild terrain" UI action, which on rebuild copies values back into the real `terrain` object and calls `rebuildWorld()`.
+- World bounds for wander: `getWorldBounds: () => loadedMap ? { minX: -loadedMap.worldX*0.5, maxX: loadedMap.worldX*0.5, minZ: -loadedMap.worldZ*0.5, maxZ: loadedMap.worldZ*0.5 } : null` is passed at the `createEnvironmentPortCreatures` call site — finite for an authored/shoot-house map (`loadedMap` set), `null` (infinite roam) for the procedural infinite terrain.
 - Tree collision: `resolveTrunks`/`nearbyTrunks` are forwarded from `trunkIndex` (in `collision.js`) so creatures can avoid/steer around tree trunks; this is separate from the `map-collision.js` `createMapCollider`, which (per a grep of the file) is not referenced by the creature wiring — it appears to serve other movement/collision (e.g. player/vehicle), not creatures.
 - Picking/interaction: pointerdown/click/dblclick listeners on `renderer.domElement` call `system.selectFromRaycaster` (single click, gated by `isInteractionEnabled()`/`!fpsMode`) and `system.setTargetPoint` (double-click against the `ground()` mesh) for the `target` behavior.
 - Stats are read directly off `portCreatures.stats` for the on-screen terrain/perf debug HUD and the frame-profiler snapshot (`creatureVisible`, `creatures`, `creatureRendered`, etc.).
+
+## Wander/roam targeting
+
+Roam destinations (`creature.roamTarget`, used by the default `wander` behavior and as the
+no-live-player fallback for `follow`/`hostile`/`forage`) are **self-relative**, not anchored to
+world origin. Picking is `pickRoamTarget(selfX, selfZ, prevX, prevZ, minStep, maxStep, bounds, rand, out)`
+in `creature-interaction.js` (pure, unit-tested in `test-creature-interaction.mjs`): picks a
+heading biased away from `prev` (a ±110° cone around `self - prev`, so creatures don't
+double back on themselves) and a distance in `[minStep, maxStep]`; retries a few times against
+`bounds` (`{minX,maxX,minZ,maxZ}` or `null` for an infinite world), widening to any heading on the
+last couple of tries, then clamps into `bounds` as a last resort. `port-creature-system.js` wraps
+this as `nextRoamTarget(creature)` (module-scoped, `ROAM_MIN_STEP = 6`, `ROAM_MAX_STEP = 20`
+meters — reachable in a few seconds to ~15s at typical `gait.maxSpeed`), which reads world bounds
+from the factory's `getWorldBounds` callback, updates `creature.roamTarget` in place, and sets
+`creature.roamPrev` to the creature's position at pick time (initialized to spawn position in the
+constructor) for the next anti-backtrack pick. All five `roamTarget` assignment sites (constructor
+initial pick, plus the `follow`/`hostile`/`forage`/default-wander branches of `computeSteering`)
+route through `nextRoamTarget`; the "within 0.8 m of target → pick a new one" arrival trigger is
+unchanged. The previous uncapped boundary force in `computeSteering` (`dc = hypot(pos.x, pos.z)`
+pulling every creature back toward world origin once `dc > SOFT_EDGE`) has been **removed** —
+containment is now handled entirely at pick-time via `bounds`, not by a per-frame force that used
+to dominate steering and drag distant creatures to `(0,0)`. `ARENA_R`/`SOFT_EDGE`/`BOUNDARY_GAIN`
+no longer exist.
 
 ## Player interaction: roles, follow mode, pet commands
 
@@ -193,6 +218,78 @@ growing unbounded.
   `wildlifeCount` getters (see above); `J` toggles `enabled` (`setWildlife({ enabled: !wildlife.enabled
   })`, console.logs the new state) in the same host/solo-only keybind block as `T`/`G`/`Y`/`K`.
 
+### Wild-activity FSM (Phase 2)
+
+`ROLE_WILD` creatures can autonomously choose among life activities instead of only obeying the
+single global Mode. Design: `docs/superpowers/specs/2026-07-12-wild-activity-fsm-design.md`.
+Pure decision math lives in `creature-activity.js` (THREE-free, unit-tested in
+`test-creature-activity.mjs`), imported by `port-creature-system.js`.
+
+- **Activities**: `ACT_WANDER` (default, existing roam), `ACT_SLEEP` (stay put, settles low via
+  `restPose`, slow HP regen, wakes on threat/damage), `ACT_HUNT` (approaches `huntTarget` to melee
+  range, then the existing combat FSM strikes), `ACT_SOCIALIZE` (approaches `socialTarget` kin and
+  loiters at a standoff), `ACT_GRAZE` (stay put, head-down crouch via `restPose`, light HP regen).
+  Sense ranges: `HUNT_SENSE=18`, `SOCIAL_SENSE=14`, `THREAT_NEAR=8` (metres); per-activity duration
+  bands in `ACT_DURATION`.
+- **Eligibility gate** (`fsmEligible(c)` in `port-creature-system.js`, reused by both the
+  `updateActivity` pass and the roster loop): `c.role === ROLE_WILD && (c._wildlife ||
+  currentBehavior === 'wander')` — ambient wildlife always runs the FSM (ignoring the global Mode,
+  same as before); ordinary wild roster creatures run it only under the default `'wander'` Mode, so
+  every other explicit Mode (combat/forage/race/target/stay/direction/follow) still overrides
+  globally for authoring. Pets, hostiles, and non-`ROLE_WILD` creatures are never eligible.
+- **Per-creature state** (constructor): `activity` (`ACT_WANDER` initial), `activityTimer`
+  (randomized within the wander duration band so creatures desync), `huntTarget`/`socialTarget`
+  (`null`), `restPose` (`0`).
+- **`updateActivity(all, dt)`** (`Creature` method) — called once per FSM-eligible creature per
+  frame, in a pass before `updateCombat`: ticks `activityTimer`; queries the spatial grid
+  (`creatureGrid.nearby`, same scratch-array pattern as `computeSteering`/`enemyTarget`) for the
+  nearest prey (different `teamId`, `isCombatActive()`, within `HUNT_SENSE`, preferring weaker via
+  the same `isWeak()` bonus `enemyTarget` uses), nearest kin (same `teamId`, within `SOCIAL_SENSE`),
+  and nearest threat (`ROLE_HOSTILE` creature or the live player via `hasLivePlayer()`/`_playerPos`,
+  within `THREAT_NEAR`). On timer expiry, or a threat-interrupt while `ACT_SLEEP`/`ACT_GRAZE`, calls
+  `chooseActivity({ current, ctx, rand: Math.random })` and latches `huntTarget`/`socialTarget` from
+  the sensed candidates for the new activity (or clears them). If the current `ACT_HUNT`/
+  `ACT_SOCIALIZE` target goes invalid (dead/gone) mid-activity, clears it and forces `activityTimer =
+  0` to re-decide next frame rather than waiting out the timer. Eases `restPose` toward
+  `activitySteer(activity).restPose` using the same lerp-toward-target idiom as `forageCrouch`.
+  Applies `SLEEP_REGEN`/`GRAZE_REGEN` (HP/sec tuning consts near `HEAL_AMOUNT`) while resting.
+- **Wake on damage**: `takeDamage` sets `activityTimer = 0` when `activity` is `ACT_SLEEP`/
+  `ACT_GRAZE`, so a napping creature re-decides (and stops resting) next frame instead of getting
+  punched while inert.
+- **Steering hookup**: the roster loop maps `activity` to `steerBehavior`/`steerTarget` for
+  FSM-eligible creatures: `ACT_HUNT` → new `'hunt'` branch in `computeSteering` (mirrors `'combat'`'s
+  approach — steers toward `this.huntTarget.pos`, stops at the same melee stop-distance expression,
+  falls through to a `nextRoamTarget` wander pick if `huntTarget` is null/inactive; also added to the
+  `sepScale` 0.7 case alongside `'combat'`); `ACT_SOCIALIZE` with a valid `socialTarget` → reuses the
+  existing `'target'` branch aimed at `socialTarget.pos` (its standoff-stop distance doubles as the
+  loiter range); anything else → `activitySteer(activity).steer` (`'wander'` or `'stay'`).
+- **Combat hookup**: `updateCombat`'s target selection prefers `this.huntTarget` over `enemyTarget`
+  for non-hostile roles when `activity === ACT_HUNT`; the roster loop's `updateCombat` active flag
+  gains `|| (c.role === ROLE_WILD && c.activity === ACT_HUNT)` so a hunting wild creature runs its
+  attack state machine even when the global Mode isn't `'combat'`.
+- **Render**: the body-lowering crouch in `physicsStep` folds `restPose` in alongside `forageCrouch`
+  (`clamp((this.forageCrouch||0) + (this.restPose||0), 0, 1)`) so sleeping/grazing creatures visibly
+  settle low; full prone/curl posing is out of scope for Phase 2.
+- **Per-creature temperament (Phase 3)**: `creature-activity.js` exports `TEMPERAMENTS` (six
+  archetypes — `balanced`/`predator`/`sleepy`/`social`/`grazer`/`restless`, each a base weight table
+  biasing one drive) and `sampleTemperament(rand, jitter = 0.15)` → `{ name, weights }` (picks one
+  archetype, ±15% per-weight jitter so same-archetype peers differ, floors weights at 0.05).
+  `variedCreatureConfig` seeds `config.temperament` from its seeded RNG; the `Creature` constructor
+  reads `this.temperament`/`this.temperamentName` (defaulting to `defaultTemperament()`/`'balanced'`)
+  and `updateActivity` passes `weights: this.temperament` into `chooseActivity`. `temperament`
+  round-trips through `creatureToConfig`/`creatureToSharedConfig` so it survives scene resets, JSON
+  export/import, and MP replication. Uniform-mode creatures (`creatureConfigFromCurrent`) stay
+  `balanced` by design — uniform mode means identical creatures.
+- **Presenting temperament**: `TEMPERAMENT_COLORS` (in `creature-activity.js`, name→hex, one source
+  of truth) drives both surfaces. In-world: each creature carries a `temperamentPip` — a small box
+  above the shoulder using a shared `MeshBasicMaterial` per color (cached in `temperamentMat()`,
+  marked `userData.shared` so dispose skips it). Inspector panel (`refreshSelectedInspector`): a
+  color-swatch + name `temperament:` line plus a live `activity:` line — the activity value lives in
+  a `#inspectorActivity` span that `update(dt)` refreshes ~5 Hz (only the span, so the editable
+  config textarea isn't clobbered). Note: `Creature.dispose()`'s group traverse now respects
+  `userData.shared` for both geometry and material (previously it disposed cached shared box
+  geometries unconditionally).
+
 ### Creatures HUD (F5, discoverability)
 
 `environment-viewer.html` builds a compact fixed panel `#creature-command-hud` (bottom-right,
@@ -226,6 +323,75 @@ WebGPU/integration-specific adaptations identified:
 - Surfaces read-only creature perf stats in its debug snapshot/HUD: `creatureVisible`, `creatures`, `creatureRendered` (`environment-ui.js:618`) and a `passCreaturesMs` frame-profiler entry (`environment-ui.js:3`).
 
 The actual tunables live in the creature system's own toolbar/panels (built in `port-creature-bridge.js`'s `CREATURE_UI_HTML`/`CREATURE_UI_STYLE` and populated dynamically by `port-creature-system.js`'s `renderOptions()`/`renderModelOptions()`/random-group functions): Preset, Gait, Count, Objects, Team Size, Mode (behavior), Scene (uniform/varied), Seed, Debug toggle, plus the Gait Controls / Model + Terrain panels and the lettered randomize-group buttons (S/G/M/A/T) inherited from the original app's `RANDOM_GROUPS` system.
+
+## Locomotion metrics + Stats analysis panel (Stages 1–2)
+
+For diagnosing which body/gait parameter combinations produce broken locomotion (limb-drag,
+wrong-heading, stalling, low top speed), each `Creature` carries a `this.metrics` bag updated at the
+end of `physicsStep()` (only while `lodShouldSim`). Most values are already computed inside that step
+and were previously discarded unless the global `debug` flag was on; they are now persisted as
+lightweight EMA-smoothed fields (~0.5s time constant), plus a few cheap accumulators.
+
+- **Fields** (`port-creature-system.js`, `Creature` ctor + end of `physicsStep`): `speed`/`speedAvg`
+  (horizontal `|vel|`), `maxSpeed` (current desired speed = `currentMaxSpeed`), `effAvg`
+  (speed/desired), `headingErr`/`headingErrAvg` (radians, steering error before the step's turn),
+  `groundedFrac`/`groundedAvg` (grounded-leg fraction `fG`), `uncomfortable` (0/1), `distance`
+  (XZ odometer via `_prevPos`), `simTime`, `stallTime` (time with desired>0.05 but `|vel|`<0.12),
+  `stallFrac`. **Stage 2 richer diagnostics**: `dragAvg` (mean planted-foot overextension =
+  `hypot(end−rest)` over grounded legs — the "dragging limbs" signal), `scanFailPct` (fraction of legs
+  with no valid foothold), `stuckPct` (legs that `wants && !canMove`), `comOutsidePct` (COM outside the
+  support polygon when one exists — captured via `comInside`/`haveSupport` in the same step), and
+  `wobbleDeg` (√(var pitch + var roll) via EMA mean/variance state `pitchMean/pitchVar/rollMean/rollVar`).
+  Far/unsimulated creatures freeze their metrics (no `physicsStep` runs).
+- **API**: `port-creature-system.js` exposes `get selected()` (the private `selectedCreature`) and a
+  guarded `select(creature)` setter (ignores despawned refs; `null` clears) so UI can read/drive the
+  current pick; `get creatures()` exposes the roster. Each creature's `.metrics`/`.plan`/`.gait`/
+  `.armSettings` are public.
+
+**Stats tab** — a new `['stats','Stats']` tab in `environment-ui.js`'s `tabDefs`, built by
+`buildStatsPanel(statsHost, creatures)` (new module `creature-stats.js`), with `creatures` =
+`portCreatures` threaded through `createEnvironmentUi({ ..., creatures: portCreatures })` in
+`environment-viewer.html`. The panel:
+- **Live vs Snapshot mode** (toggle at top; default **Live**): a `dataset()` returns either the living
+  roster (`sys.creatures.map(liveRow)`, re-sampled with fresh metrics each refresh) or the frozen
+  captured `db`. Every db-derived figure + the table read `dataset()`, so in Live mode they redraw at
+  ~2.5 Hz (throttled in the rAF loop, only while the tab is visible — PCA etc. is heavier than the
+  readout). Capture/Clear controls hide in Live mode (nothing to capture); Export freezes the current
+  live dataset. Category tags are keyed by creature id in a `catById` map so they survive mode switches
+  and re-samples, and still apply to snapshot rows.
+- **Live readout** of the selected creature's metrics (refreshed ~8 Hz only while the tab is visible).
+- **Database**: "Add selected" / "Capture all" snapshot flat feature records (static params from
+  `plan`/`gait`/`armSettings` + runtime metrics) into an in-memory array mirrored to
+  `localStorage['pcw:creatureStatsDb']`; stable per-creature ids via a `WeakMap`.
+  Export JSON / Export CSV via Blob download; Clear.
+  **Click a row to toggle that creature's selection box**: a reverse `id → live creature` lookup
+  (`liveById`, read-only over `sys.creatures`) resolves the row to its still-live creature and calls
+  `sys.select(c)` (or `select(null)` to clear) — the same path a 3D-view click uses, so the amber
+  `BoxHelper` shows/hides. The selected row is highlighted amber; rows whose creature has despawned are
+  dimmed and inert. The highlight re-syncs each readout tick, so selecting in the 3D view lights the row
+  too. Uses the guarded `select(creature)` method on the system API.
+- **Categories** (Stage 2): each captured row carries a user-assignable `category` string. Type a name
+  in the category box (a `<datalist>` autocompletes existing ones) and Add/Capture/Tag applies it;
+  re-capturing a row preserves its category. Category is a table column and a CSV field, and is the
+  default "color by" for the scatter figures — so you can label creatures (e.g. "dragging" vs "fine")
+  and see the groups separate.
+- **Figures** (Stage 2, all in `stats-charts.js` — a robust Canvas-2D toolkit with margins,
+  nice-rounded gridline ticks via `niceTicks`, axis titles, legends, colorbars):
+  - **Charts** — per-creature `barPlot` (bars colored by category) + distribution `histPlot` of a
+    picked feature.
+  - **Relationship (X vs Y)** — `scatterPlot` of any independent parameter X against any metric Y with
+    a least-squares fit line and a Pearson **r / r²** annotation + a plain-language read
+    ("strong correlation: higher Comfort H → higher Limb drag"). This is the "does parameter A drive
+    metric B, and past what threshold" figure. Math: `linreg`/`pearson` in `stats-math.js`.
+  - **Ordination (PCA)** — `scatterPlot` of PC1/PC2 (`pca` over ~17 standardized features), colored by
+    category (legend) or any numeric feature (colorbar), axes labelled with explained-variance %.
+  - **By category** — `barPlot` of a metric's mean per category with ±1 SD whiskers and n, plus an
+    `(none)` group for untagged rows.
+  - **Live trace** — `linePlot` rolling time-series of a metric for the selected creature.
+- **Modules & tests**: `stats-math.js` (`pca`, `pearson`, `linreg`, `niceTicks`, eigen helpers) is
+  Node-tested in `test-stats-math.mjs` (32 checks). `creature-stats.js` pure shaping (`extractFeatures`,
+  `toCsv`, `histogram`) is Node-tested in `test-creature-stats.mjs` (20 checks). `stats-charts.js` is
+  Canvas rendering (browser-only, not unit-tested).
 
 ## Second creature system: the ClaudeCraft mob simulation
 
@@ -385,6 +551,17 @@ with the `B` key (`setLocalBodyMode`, cycles `off -> third-person -> fps-legs ->
 `localBodyMode`/`localBody`/`localBodyThird`). `third-person` builds a full body (`mode:
 'local-third-person'`) plus a chase camera; `fps-legs` builds lower-body-only (`mode:
 'local-lower-body'`) so you can look down and see your own legs while still in first-person view.
+In `third-person`, WASD movement and mouse look are unchanged from FPS mode (same `fpsKeys`/`look.*`
+pipeline drives the capsule and camera yaw/pitch regardless of view mode); the chase cam just pulls
+the camera back along its own forward vector each frame. Mouse wheel zooms that pull-back distance
+(`lbCamDist`, clamped `[1.8, 9]`, default `3.6`) via the same `wheel` listener that drives orbit-camera
+zoom pre-spawn — it branches on `localBodyThird` to zoom the chase cam instead of the orbit radius.
+`fireGunFromCamera` (`environment-viewer.html`) must use `playerCollider.end` (the actual body/head
+position), not `camera.position`, as the fired shot's `origin` when `localBodyThird` is true — the
+chase cam sits `lbCamDist` behind the body, and `validateShot`'s `MAX_ORIGIN_DRIFT` anti-cheat check
+(`combat.js`, ~1.25 m) silently rejects (`{ok:false, reason:'origin-too-far'}`, no client-visible
+error) any shot whose origin drifts further than that from the shooter's head, which used to be
+every third-person shot.
 Both feed the body speed-adaptive gait (`adaptGaitToSpeed: true`) and smoothed `{crouch, prone}`
 stance weights (`lbCrouchW`/`lbProneW`, eased ~0.2s from the instant C/Z stance toggle) each frame.
 
@@ -483,8 +660,12 @@ reach, since the weapon-only `weapon-anchor-editor.html` has no body to judge pe
 ## Tests
 
 `node test-creature-interaction.mjs` covers the pure player-interaction decision math in
-`creature-interaction.js` (`followDesire`, `hostileDesire`, `meleeHitsPlayer`, `wildlifeSpawnPlan`),
-including boundary cases at the exact `attackRange`/capsule-radius edges. `node test-combat.mjs`
+`creature-interaction.js` (`followDesire`, `hostileDesire`, `meleeHitsPlayer`, `wildlifeSpawnPlan`,
+`pickRoamTarget`), including boundary cases at the exact `attackRange`/capsule-radius edges and
+`pickRoamTarget`'s distance band, anti-backtrack cone, bounds retry/clamp, and determinism.
+`node test-creature-activity.mjs` covers the pure wild-activity FSM decision math in
+`creature-activity.js` (`chooseActivity`/`activitySteer`): eligibility gating, threat-interrupt,
+hp-weighted sleep, duration bounds, determinism. `node test-combat.mjs`
 covers the unrelated player-vs-player/creature hitscan gun math in `combat.js` (not the IK melee
 pipeline). No other dedicated test file exists for `port-creature-bridge.js` / `port-creature-system.js`
 itself (body plans, IK, steering, the melee state machine) — those remain verified manually in-browser.
