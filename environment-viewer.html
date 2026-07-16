@@ -219,6 +219,7 @@ let captureSharedWorldSettings = () => null;
 let applySharedWorldSettings = values => { mpPendingWorldSettings = values; return false; };
 const MP_PLAYER_SEND_MS = 50;
 const mpGuestPlayers = new Map();
+const botPlayers = new Map(); // must be declared before createHostSession's getState wiring below, else TDZ on a fast connection
 // Last-seen fireSeq per remote player, so the guest sounds a replicated shot exactly once
 // per increment (the host broadcasts fireSeq in each player's merged combat fields).
 const mpRemoteFireSeq = new Map();
@@ -1561,7 +1562,7 @@ if (mpRole !== 'guest' && portCreatures?.system) {
 // fold botPlayers in). Movement/physics is bot-entity.js + nav-grid.js, proven standalone in
 // bot-viewer.html; this is the "drag and drop" wiring step. See
 // docs/superpowers/specs/2026-07-13-combat-bot-fsm-design.md and docs/subsystems/bots.md.
-const botPlayers = new Map(); // id -> { bot, fsmState, lastFireAt, lastKnownTarget, lastSeenAt, pathMode, currentPath, patrolIdx, spawnPos, deadSince, wanderTarget, weaponId }
+// botPlayers itself is declared up near mpGuestPlayers.
 let botNavGrid = null;
 let botSpawnPoints = []; // [{x,z}] -- shoot-house only; open/authored terrain paths via an on-demand local window instead (see requestBotPath)
 let botIdSeq = 0;
