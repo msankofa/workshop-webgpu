@@ -324,6 +324,7 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
     const asRoot = (wt) => ({
       position: [wt.position.x, wt.position.y, wt.position.z],
       quaternion: [wt.quaternion.x, wt.quaternion.y, wt.quaternion.z, wt.quaternion.w],
+      scale: [wt.scale.x, wt.scale.y, wt.scale.z],
     });
     const weaponRoot = asRoot(worldTransformOf(THREE, weaponView));
     const ctx = {

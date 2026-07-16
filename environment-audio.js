@@ -1335,6 +1335,94 @@ export function createEnvironmentAudio(options = {}) {
     throw lastError || new Error('No sound paths to load');
   }
 
+  // ---- SFX loading over http (no folder picker) ----
+  // Same sound-map.json shape as loadSfxSounds, fetched from the server instead of a picked
+  // FileSystemDirectoryHandle, so SFX play without the user granting folder access first.
+  async function decodeSfxUrl(baseUrl, relPath) {
+    const res = await fetch(baseUrl + relPath, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`sfx fetch failed: ${relPath}`);
+    return audioCtx.decodeAudioData(await res.arrayBuffer());
+  }
+
+  async function decodeFirstAvailableSfxUrl(baseUrl, relPaths) {
+    let lastError = null;
+    for (const relPath of relPaths.filter(Boolean)) {
+      try {
+        return await decodeSfxUrl(baseUrl, relPath);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError || new Error('No sound paths to load');
+  }
+
+  async function loadSfxSoundsHttp(baseUrl = './sfx/') {
+    resetMusicPlayback();
+    sfxDirHandle = null;
+    sfxBuffers = {};
+    musicPaths = {};
+
+    if (!initAudio()) {
+      showPersistentSfxStatus('Audio unavailable');
+      return false;
+    }
+
+    let map;
+    try {
+      const res = await fetch(baseUrl + 'sound-map.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error('not found');
+      map = await res.json();
+    } catch {
+      showPersistentSfxStatus('No sound-map.json found');
+      return false;
+    }
+
+    const validIds = new Set(SOUND_EVENTS);
+    const events = map.events || {};
+    const sources = map.sources || {};
+    const modes = map.modes || {};
+    const volumes = map.volumes || {};
+    const entries = Object.entries(events)
+      .filter(([eventId]) => validIds.has(eventId))
+      .map(([eventId, relPaths]) => [
+        eventId,
+        normalizeAudioList(relPaths),
+        normalizeAudioList(sources[eventId]),
+        modes[eventId] === 'sequence' ? 'sequence' : 'random',
+        normalizeSfxVolume(volumes[eventId]),
+      ]);
+
+    // ensureMusicEntriesReady no-ops for every entry here (isMusicEvent is false for all ids
+    // in this project's sound-map.json) -- kept for parity with loadSfxSounds in case that changes.
+    let loadedEvents = 0;
+    let loadedSounds = 0;
+    let failed = (await ensureMusicEntriesReady(entries)).failed;
+
+    for (const [eventId, relPaths, sourcePaths, mode, volume] of entries) {
+      if (isMusicEvent(eventId)) continue;
+      const buffers = [];
+      const count = Math.max(relPaths.length, sourcePaths.length);
+      for (let i = 0; i < count; i++) {
+        try {
+          buffers.push(await decodeFirstAvailableSfxUrl(baseUrl, [relPaths[i], sourcePaths[i]]));
+        } catch {
+          failed++;
+        }
+      }
+      if (buffers.length) {
+        sfxBuffers[eventId] = createSfxEntry(buffers, mode, volume);
+        loadedEvents++;
+        loadedSounds += buffers.length;
+      }
+    }
+
+    const failedText = failed ? `, ${failed} missing` : '';
+    showPersistentSfxStatus(`SFX ${loadedEvents} event${loadedEvents !== 1 ? 's' : ''}, ${loadedSounds} sound${loadedSounds !== 1 ? 's' : ''} loaded from ${baseUrl}${failedText}`);
+    syncMusicForState();
+    notify();
+    return loadedEvents > 0;
+  }
+
   async function ensureMusicPathReady(eventId, relPaths, sourcePaths, mode, volume = 1) {
     if (!relPaths.length && !sourcePaths.length) return { count: 0, failed: 0 };
     const { paths, failed } = await warmAvailableMusicPaths(relPaths, sourcePaths);
@@ -1450,17 +1538,22 @@ export function createEnvironmentAudio(options = {}) {
     }
   }
 
+  // Prefers a previously picked+granted folder (live-editable via sfx-browser.html); falls
+  // back to fetching the repo's sfx/ folder over http so SFX play with zero setup.
   async function restoreSfxFolder() {
     const stored = await sfxHandleStore.get(sfxRootHandleKey);
-    if (!stored) return;
-    try {
-      const perm = await stored.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') {
-        await loadSfxSounds(stored);
+    if (stored) {
+      try {
+        const perm = await stored.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') {
+          await loadSfxSounds(stored);
+          return;
+        }
+      } catch {
+        // fall through to the http fallback below
       }
-    } catch {
-      showSfxStatus('');
     }
+    await loadSfxSoundsHttp();
   }
 
   // ---- Live SFX updates (Task 6) ----
@@ -1631,6 +1724,7 @@ export function createEnvironmentAudio(options = {}) {
     noteGesture,
     update,
     loadSfxFolder: loadSfxSounds,
+    loadSfxHttp: loadSfxSoundsHttp,
     pickSfxFolder,
     restoreSfxFolder,
     loadMusicFolder,

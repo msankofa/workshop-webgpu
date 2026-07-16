@@ -11,7 +11,6 @@ The body preview and environment viewer mostly match because they use the same d
 
 Exact parity is not currently guaranteed. In particular:
 
-- Third-person anchor resolution drops inherited weapon scale, so a hand target can miss the visibly scaled gun.
 - `body-preview-v3.html` ignores the authored crouch hold used by the environment viewer.
 - Both preview and runtime apply newly resolved arm targets one frame late.
 - Arm reach is clamped, so an unreachable grip cannot be met exactly.
@@ -198,27 +197,13 @@ This is primarily shared-data and copy-parity, not a mechanically enforced invar
 
 ## Known parity gaps and limitations
 
-### 1. Third-person anchor scale is dropped
+### 1. ~~Third-person anchor scale is dropped~~ (fixed 2026-07-15)
 
-This is the most important current transform defect.
+`weapon-pose-controller.js`'s `asRoot()` now decomposes and forwards `scale` alongside position/quaternion. `weapon-sequence.js`'s `composeRoot()` takes an explicit `scale` argument and multiplies the local anchor position by it component-wise before rotating; the two weapon-anchor call sites (plain string ref and `{ weaponAnchor, offset }` ref) pass `weaponRoot.scale`, while body/camera-ref call sites still omit it (those offsets are already authored in body-scale units and must not be scaled by the weapon). Covered by `test-weapon-sequence.mjs`.
 
-`weapon-pose-controller.js` lines 78-97 decompose the weapon's world transform into position, quaternion, and scale. Its `asRoot()` conversion at lines 324-338 forwards only position and quaternion. `weapon-sequence.js` lines 258-266 therefore has no scale to apply.
+Previously: `asRoot()` forwarded only position and quaternion, so `handTarget = rootPosition + rootRotation * bakedAnchor` diverged from the visible `rootPosition + rootRotation * (rootScale * bakedAnchor)` whenever a weapon's `thirdPersonHold` scale wasn't `1` (e.g. `0.68` for the M1911, `2` for the M24/Bren/RPG) — the hand would visibly miss the grip.
 
-The visible model follows:
-
-```text
-visibleAnchor = rootPosition + rootRotation * (rootScale * bakedAnchor)
-```
-
-The controller currently targets:
-
-```text
-handTarget = rootPosition + rootRotation * bakedAnchor
-```
-
-The two match only when inherited scale is `1`, the anchor is at the root origin, or the discrepancy happens to be hidden by tuning. Current third-person holds include non-unit scales such as `0.68` for the M1911 and `2` for the M24, Bren, and RPG.
-
-The preview and environment viewer share this bug, so they may match each other while both miss the rendered weapon grip. The first-person reload path handles scale differently by explicitly multiplying baked anchor positions by `viewScale`.
+The first-person reload path was unaffected; it already handled scale separately by explicitly multiplying baked anchor positions by `viewScale`.
 
 ### 2. `body-preview-v3.html` crouch hold differs from runtime
 
@@ -279,7 +264,7 @@ Remote multiplayer representations currently use simplified body/hand placeholde
 
 The following existing test suites pass as of the date above:
 
-- `node test-weapon-sequence.mjs`: 51 passed, 0 failed.
+- `node test-weapon-sequence.mjs`: 54 passed, 0 failed (includes weaponRoot.scale coverage).
 - `node test-weapon-pose-controller.mjs`: all assertions passed.
 - `node test-player-body-ik.mjs`: 30 passed, 0 failed.
 - `node test-player-hands.mjs`: passed.
@@ -288,7 +273,6 @@ They cover sequence evaluation, target reference behavior, hand glide, weapon po
 
 They do not currently cover:
 
-- Anchor transformation under a non-unit parent or pose scale.
 - End-to-end GLB normalization/baking parity between preview and environment viewer.
 - Required-anchor schema validation.
 - Weapon-ID/model-ID agreement in the anchor editor.
@@ -297,7 +281,7 @@ They do not currently cover:
 
 ## Recommended hardening work
 
-1. Carry uniform/world scale through `resolveTargetRef()`, or resolve weapon anchors with the full weapon matrix.
+1. ~~Carry uniform/world scale through `resolveTargetRef()`, or resolve weapon anchors with the full weapon matrix.~~ Done (see gap #1 above).
 2. Extract weapon normalization and anchor baking into one shared module used by both preview and environment viewer.
 3. Make V3 seed and export `crouchHold` exactly as `body-preview.html` does.
 4. Add anchor schema validation and automatically reload the selected weapon model in the editor.

@@ -257,11 +257,15 @@ function addVec(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 
 // Composes a root transform ({ position:[x,y,z], quaternion:[x,y,z,w] }) with a local
 // position/quaternion, producing a world-space { position, quaternion }.
-function composeRoot(root, localP, localQ) {
+// `scale` is opt-in per call site (only weapon-anchor refs pass root.scale) so body/camera
+// refs, whose offsets are already authored in body-scale units, aren't scaled a second time.
+function composeRoot(root, localP, localQ, scale) {
   const rootPos = (root && root.position) || [0, 0, 0];
   const rootQuat = (root && root.quaternion) || IDENTITY_Q;
+  const s = scale || [1, 1, 1];
+  const scaledP = [localP[0] * s[0], localP[1] * s[1], localP[2] * s[2]];
   return {
-    position: addVec(rootPos, rotateVecByQuat(rootQuat, localP)),
+    position: addVec(rootPos, rotateVecByQuat(rootQuat, scaledP)),
     quaternion: quatMultiply(rootQuat, localQ),
   };
 }
@@ -284,7 +288,7 @@ export function resolveTargetRef(ref, ctx = {}) {
     if (anchor) {
       // Weapon-anchor string form.
       if (weaponRoot) {
-        return { ...composeRoot(weaponRoot, anchor.p, anchor.q || IDENTITY_Q), space: 'world', anchorName: ref };
+        return { ...composeRoot(weaponRoot, anchor.p, anchor.q || IDENTITY_Q, weaponRoot.scale), space: 'world', anchorName: ref };
       }
       return { position: anchor.p.slice(), quaternion: (anchor.q || IDENTITY_Q).slice(), space: 'weapon', anchorName: ref };
     }
@@ -308,7 +312,7 @@ export function resolveTargetRef(ref, ctx = {}) {
       const offset = ref.offset || [0, 0, 0];
       const localP = addVec(basePos, offset);
       if (weaponRoot) {
-        return { ...composeRoot(weaponRoot, localP, baseQuat), space: 'world', anchorName: ref.weaponAnchor };
+        return { ...composeRoot(weaponRoot, localP, baseQuat, weaponRoot.scale), space: 'world', anchorName: ref.weaponAnchor };
       }
       return { position: localP, quaternion: baseQuat.slice(), space: 'weapon', anchorName: ref.weaponAnchor };
     }

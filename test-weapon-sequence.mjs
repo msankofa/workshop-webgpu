@@ -174,6 +174,26 @@ const reloadSeq = poseData.reloadSequence.m1911;
   const expectedWorldPos = m1911Anchors.rightGrip.p.map((v, i) => v + weaponRoot.position[i]);
   assert(approxEqualVec(rGripWorld.position, expectedWorldPos), 'weapon-anchor world position = anchor + root translation (identity rotation)');
 
+  // 1c. weapon-anchor string, weaponRoot carries non-unit scale => anchor position scales
+  // with the visible (scaled) weapon model, not just its root translation/rotation.
+  const scaledWeaponRoot = { position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [2, 2, 2] };
+  const rGripScaled = resolveTargetRef('rightGrip', { anchors: m1911Anchors, weaponRoot: scaledWeaponRoot });
+  const expectedScaledPos = m1911Anchors.rightGrip.p.map(v => v * 2);
+  assert(approxEqualVec(rGripScaled.position, expectedScaledPos), 'weapon-anchor world position honors weaponRoot.scale');
+
+  // { weaponAnchor, offset } form must also honor weaponRoot.scale.
+  const withOffsetScaled = resolveTargetRef(
+    { weaponAnchor: 'chargingHandle', offset: [0, 0, -0.12] },
+    { anchors: m1911Anchors, weaponRoot: scaledWeaponRoot },
+  );
+  const expectedOffsetScaledPos = m1911Anchors.chargingHandle.p.map((v, i) => (v + [0, 0, -0.12][i]) * 2);
+  assert(approxEqualVec(withOffsetScaled.position, expectedOffsetScaledPos), '{weaponAnchor,offset} world position honors weaponRoot.scale');
+
+  // A body-local `{ body }` ref must NOT be scaled by the weapon root even when bodyRoot is
+  // approximated from the same transform (guards against a naive fix that scales everything).
+  const bodyRefUnscaled = resolveTargetRef({ body: [0, 0.1, 0] }, { bodyRoot: scaledWeaponRoot });
+  assert(approxEqualVec(bodyRefUnscaled.position, [0, 0.1, 0]), '{body} ref ignores root scale (only weapon-anchor refs scale)');
+
   // 2. body-anchor string (not present in anchors) => body space.
   const belt = resolveTargetRef('beltMagazine', { anchors: m1911Anchors });
   assert(belt.space === 'body', 'string not found in anchors classifies as space "body"');

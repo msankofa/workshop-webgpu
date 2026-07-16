@@ -26,7 +26,14 @@ getSpeakerTargets?, workletUrl }`. Returns:
 - `playAt(eventId, position, vol?, opts?)` — positional SFX; `opts` is a panner profile from
   `positionalSfxProfiles` (`gunshot`, `heavyGunshot`, `explosion`, `minor`, `spawn`, …).
 - `pickSfxFolder()` / `restoreSfxFolder()` / `loadSfxFolder(handle)` — load a folder's
-  `sound-map.json` and decode its wavs into buffers. Music folder equivalents also exist.
+  `sound-map.json` and decode its wavs into buffers via the File System Access API (Chrome/Edge
+  only, requires a user-granted directory handle). Music folder equivalents also exist.
+- `loadSfxHttp(baseUrl?)` — same `sound-map.json` shape, fetched over http instead of a picked
+  folder; no permission/gesture needed since it's a same-origin static-file fetch. `restoreSfxFolder()`
+  calls this automatically whenever no folder handle is stored or its permission isn't silently
+  `'granted'`, so SFX load with zero setup on a fresh browser/profile. A folder picked later via
+  `pickSfxFolder()` takes over (and is needed for the live-edit `BroadcastChannel` path from
+  `sfx-browser.html`).
 - `setVolume(kind,v)`, `setMuted(kind,b)`, music controls, `subscribe()`/`getState()` (drives the
   Audio tab in `environment-ui.js`), `dispose()`.
 
