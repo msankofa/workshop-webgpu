@@ -197,7 +197,10 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   (host/solo only — guests inherit the host's map) → a loading panel, then resolves with the
   chosen role/room/map/world-mode/preset and helpers to update the loading status text or dismiss
   the overlay. Internally fetches `maps/map-config.json` for the map list and, for Join, opens a
-  short-lived WebSocket to query room presence (`{type:'query', room}`) before resolving.
+  short-lived WebSocket to query room presence (`{type:'query', room}`) before resolving. Also
+  starts a standalone menu-music `<audio>` loop for the role/map picker (stopped before the loading
+  step) — see `docs/subsystems/audio.md` "Start-screen menu music" for how it reads
+  `sfx/sound-map.json` independently of `environment-audio.js`.
 
 ## Wiring
 

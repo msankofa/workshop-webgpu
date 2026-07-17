@@ -2,14 +2,15 @@
   "version": 1,
   "events": {
     "pistol_shoot": "assets/pistol_shoot.wav",
-    "sniper_shoot": "assets/sniper_shoot.wav",
-    "rifle_shoot": "assets/rifle_shoot.wav",
-    "explosion": "assets/explosion.wav",
+    "sniper_shoot": "assets/sniper_shoot.mp3",
+    "rifle_shoot": "assets/rifle_shoot.mp3",
+    "explosion": "assets/explosion.mp3",
     "enemy_hit": "assets/enemy_hit.wav",
     "bullet_impact": "assets/bullet_impact.wav",
     "player_damage": "assets/player_damage.wav",
     "footstep": "assets/footstep.wav",
-    "jump": "assets/jump.wav"
+    "jump": "assets/jump.wav",
+    "music_menu": "assets/music_menu.mp3"
   },
   "sources": {
     "pistol_shoot": "gun-shots/pistol-1.wav",
@@ -20,6 +21,7 @@
     "bullet_impact": "bullet-impact/impact-1.wav",
     "player_damage": "player/pain-grunt-2.wav",
     "footstep": "player/footstep.wav",
-    "jump": "player/jump.wav"
+    "jump": "player/jump.wav",
+    "music_menu": "music/t e l e p a t h テレパシー能力者 - 現実を超えて - 12 セックスファンタジー.mp3"
   }
 }

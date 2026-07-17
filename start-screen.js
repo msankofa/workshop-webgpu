@@ -24,6 +24,11 @@ export async function showStartScreen(resumeConfig) {
   });
   document.body.appendChild(overlay);
 
+  // Only the interactive role/map picker gets its own music -- a "Restart" resume skips
+  // straight to loading, where environment-audio.js's own music_menu track (same event,
+  // loaded from the same sound-map.json) takes over almost immediately anyway.
+  const menuMusic = resumeConfig ? null : _startMenuMusic();
+
   let mapKey, mpRole, roomCode, mpWorldMode, presetName;
   if (resumeConfig) {
     ({ mapKey, mpRole, roomCode, mpWorldMode, presetName } = resumeConfig);
@@ -33,6 +38,10 @@ export async function showStartScreen(resumeConfig) {
     mapKey = mpRole === 'guest' ? guestMapKey : await _mapStep(overlay, config, mpRole, roomCode);
   }
 
+  // Stop before the loading step, not on dismiss() -- environment-audio.js starts its own
+  // music_menu playback as soon as it initializes during loading, and both would otherwise
+  // overlap and phase against each other for the whole load.
+  menuMusic?.stop();
   const { setStatus } = _loadingStep(overlay, { mapKey, mpRole, roomCode, mpWorldMode });
 
   return {
@@ -43,6 +52,77 @@ export async function showStartScreen(resumeConfig) {
     presetName,
     setStatus,
     dismiss: () => overlay.remove(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Menu music: a plain <audio> loop reading the same sfx/sound-map.json that
+// sfx-browser.html writes to (event id 'music_menu'), so a track is assigned the
+// same way as every other game sound -- open sfx-browser.html, ASSIGN EVENT ->
+// "Music - Menu" on any track. No-ops silently if nothing is assigned yet.
+// This exists separately from environment-audio.js's own music_menu playback
+// because that controller isn't constructed until after this screen resolves.
+
+const MENU_MUSIC_EVENT = 'music_menu';
+const MENU_MUSIC_BASE_VOLUME = 0.16; // matches environment-audio.js's menu base volume
+const AUDIO_SETTINGS_KEY = 'environment-viewer-audio-settings'; // shared with environment-audio.js
+
+function _menuMusicVolume() {
+  try {
+    const s = JSON.parse(localStorage.getItem(AUDIO_SETTINGS_KEY) || 'null') || {};
+    if (s.masterMuted || s.musicMuted) return 0;
+    const masterVol = typeof s.masterVol === 'number' ? s.masterVol : 1;
+    const musicVol = typeof s.musicVol === 'number' ? s.musicVol : 1;
+    return Math.max(0, Math.min(1, masterVol)) * Math.max(0, Math.min(1, musicVol)) * MENU_MUSIC_BASE_VOLUME;
+  } catch {
+    return MENU_MUSIC_BASE_VOLUME;
+  }
+}
+
+function _startMenuMusic() {
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = 'auto';
+  audio.volume = _menuMusicVolume();
+
+  let stopped = false;
+  let onGesture = null;
+
+  fetch('sfx/sound-map.json')
+    .then(r => (r.ok ? r.json() : null))
+    .then(map => {
+      if (stopped || !map) return;
+      const relPath = map.events?.[MENU_MUSIC_EVENT] || map.sources?.[MENU_MUSIC_EVENT];
+      if (!relPath) return;
+      audio.src = 'sfx/' + relPath;
+      const tryPlay = () => audio.play().catch(() => {});
+      tryPlay();
+      // Autoplay is commonly blocked until a user gesture; retry once on the first click/key.
+      onGesture = tryPlay;
+      document.addEventListener('pointerdown', onGesture, { once: true });
+      document.addEventListener('keydown', onGesture, { once: true });
+    })
+    .catch(() => {});
+
+  return {
+    stop(fadeMs = 250) {
+      if (stopped) return;
+      stopped = true;
+      if (onGesture) {
+        document.removeEventListener('pointerdown', onGesture);
+        document.removeEventListener('keydown', onGesture);
+      }
+      if (!fadeMs || audio.paused) { audio.pause(); return; }
+      const startVol = audio.volume;
+      const t0 = performance.now();
+      const step = () => {
+        const k = Math.min(1, (performance.now() - t0) / fadeMs);
+        audio.volume = startVol * (1 - k);
+        if (k < 1) requestAnimationFrame(step);
+        else audio.pause();
+      };
+      requestAnimationFrame(step);
+    },
   };
 }
 

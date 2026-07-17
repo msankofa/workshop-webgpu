@@ -5,6 +5,7 @@ explosions/explosion-1.mp3
 gun-shots/pistol-1.wav
 gun-shots/rifle-1.mp3
 gun-shots/rifle-4.mp3
+music/t e l e p a t h テレパシー能力者 - 現実を超えて - 12 セックスファンタジー.mp3
 player/footstep.wav
 player/jump.wav
 player/pain-grunt-2.wav

@@ -452,10 +452,11 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   // [ADAPTATION] Viewer callback replacing shooter desiredMusicEvent().
+  // Gameplay does NOT fall back to music_menu when music_game is unassigned -- silence
+  // during gameplay is preferred over the menu track bleeding into actual play.
   function desiredMusicEvent() {
-    return isGameplayActive?.() && musicEntryPaths(musicPaths.music_game).length
-      ? 'music_game'
-      : 'music_menu';
+    if (isGameplayActive?.()) return musicEntryPaths(musicPaths.music_game).length ? 'music_game' : '';
+    return 'music_menu';
   }
 
   function musicEntryVolume(eventId) {

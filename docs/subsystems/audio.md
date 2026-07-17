@@ -9,7 +9,7 @@ sound files to game events. No build step; everything is plain ES modules served
 |---|---|
 | `environment-audio.js` | The runtime controller. Owns its own Web Audio graph (master→sfx gain, HRTF panners), music playback with effects, settings persistence, and the SFX/music folder loaders. Created once in `environment-viewer.html` as `envAudio`. |
 | `sound-events.js` | The single source of truth for event ids. `SOUND_EVENT_DEFS` = `[{id,label}]`; `SOUND_EVENTS` = id array; `soundEventById()`. Both the controller and `sfx-browser.html` import this so their event lists can never drift. |
-| `sfx-browser.html` | Standalone assignment tool. Browses a folder of `.wav` files and binds them to event ids, writing `assets/<eventId>.wav` + `sound-map.json`. Imports `SOUND_EVENT_DEFS` (module script — serve over http). |
+| `sfx-browser.html` | Standalone assignment tool. Browses a folder of audio files (`.wav`/`.mp3`/`.ogg`/`.m4a`/`.aac`/`.flac`/`.opus`/`.webm`) and binds them to event ids, writing `assets/<eventId><ext>` (source extension preserved) + `sound-map.json`. Imports `SOUND_EVENT_DEFS` (module script — serve over http). |
 | `sfx/` | The canonical in-repo sound library both tools point at. See `sfx/README.md`. |
 | `asset-paths.js` | `getFileByKey(dirHandle, relPath)`, `extensionOf()` — path helpers over File System Access handles. |
 | `file-handles.js` | `createHandleStore(db, store)` — IndexedDB persistence of picked directory handles so folders auto-restore. |
@@ -37,8 +37,10 @@ getSpeakerTargets?, workletUrl }`. Returns:
 - `setVolume(kind,v)`, `setMuted(kind,b)`, music controls, `subscribe()`/`getState()` (drives the
   Audio tab in `environment-ui.js`), `dispose()`.
 
-`sound-map.json` shape: `{ version, events: { <id>: "assets/<id>.wav" | [paths] },
-sources: {...}, modes: {...}, volumes: {...} }`. Only ids in `SOUND_EVENTS` are loaded.
+`sound-map.json` shape: `{ version, events: { <id>: "assets/<id><ext>" | [paths] },
+sources: {...}, modes: {...}, volumes: {...} }`. Only ids in `SOUND_EVENTS` are loaded. `<ext>` is
+whatever the assigned source file actually was (`sfx-browser.html` preserves it instead of forcing
+`.wav`) — matters for `music_menu`/`music_game`, which are typically mp3/ogg, not wav.
 
 ## Wiring in `environment-viewer.html`
 
@@ -77,6 +79,23 @@ picker) *and* loadable (`environment-audio` skips ids not in the list).
 ## Known gaps
 
 - **`music_menu`/`music_game`** are driven by the music system (`desiredMusicEvent`), not `play()`.
+  `desiredMusicEvent()` picks `music_game` during gameplay only if a track is actually assigned to
+  it; otherwise it returns `''` (silence), not `music_menu` — the menu track intentionally does not
+  bleed into gameplay just because no game track exists yet.
+
+## Start-screen menu music
+
+`start-screen.js` plays a track during the role/map picker (`_startMenuMusic()`), before
+`environment-viewer.html` has constructed `envAudio` at all — it can't reuse the controller, so it's
+a standalone `<audio loop>` element that fetches `sfx/sound-map.json` directly and reads the
+`music_menu` event's path, same id and same file `sfx-browser.html` writes to. It reads
+`localStorage['environment-viewer-audio-settings']` (`masterVol`/`musicVol`/`*Muted`) read-only so
+menu volume matches the in-game Audio tab, scaled by the same 0.16 base menu volume
+`environment-audio.js` uses. It stops (0.25s fade) right before the loading step begins, not on
+`dismiss()` — `envAudio`'s own `music_menu` playback starts as soon as it initializes during
+loading, so leaving the start-screen copy running any longer would double it up. A "Restart" resume
+(`resumeConfig` set) skips it entirely since that path goes straight to loading. No-ops silently if
+no track is assigned to `music_menu` yet.
 
 ## Multiplayer impact audio
 

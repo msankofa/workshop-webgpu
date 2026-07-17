@@ -589,8 +589,16 @@ function isKeyUsedByOtherEvent(key, exceptEventId = null) {
     .some(([eventId, srcKey]) => eventId !== exceptEventId && srcKey === key);
 }
 
+function extOf(name) {
+  const m = /\.[^.]+$/.exec(name || '');
+  return m ? m[0].toLowerCase() : '.wav';
+}
+
+// Keeps the source file's real extension instead of forcing .wav -- matters for
+// music tracks, which are almost never actually wav files.
 function eventAssetPath(eventId) {
-  return `assets/${eventId}.wav`;
+  const key = soundMap[eventId];
+  return `assets/${eventId}${key ? extOf(key) : '.wav'}`;
 }
 
 function publishSfxUpdate(message) {
@@ -659,10 +667,10 @@ async function copyFileToAssets(fh, destName) {
   await w.close();
 }
 
-async function deleteEventAsset(eventId) {
+async function deleteEventAsset(eventId, ext = '.wav') {
   try {
     const assetsDir = await rootHandle.getDirectoryHandle('assets');
-    await assetsDir.removeEntry(`${eventId}.wav`);
+    await assetsDir.removeEntry(`${eventId}${ext}`);
   } catch {
     // Missing files are harmless; sound-map.json is the source of truth.
   }
@@ -730,7 +738,10 @@ function refreshCardsForKeys(...keys) {
 
 async function assignEvent(eventId, srcFh, srcKey) {
   const oldKey = soundMap[eventId] || '';
-  await copyFileToAssets(srcFh, `${eventId}.wav`);
+  const oldExt = oldKey ? extOf(oldKey) : '';
+  const newExt = extOf(srcFh.name);
+  await copyFileToAssets(srcFh, `${eventId}${newExt}`);
+  if (oldExt && oldExt !== newExt) await deleteEventAsset(eventId, oldExt);
 
   if (oldKey && oldKey !== srcKey && !isKeyUsedByOtherEvent(oldKey, eventId)) {
     assets.delete(oldKey);
@@ -752,6 +763,7 @@ async function assignEvent(eventId, srcFh, srcKey) {
 
 async function unassignEvent(eventId) {
   const oldKey = soundMap[eventId] || '';
+  const oldExt = oldKey ? extOf(oldKey) : '.wav';
   delete soundMap[eventId];
 
   if (oldKey && !isKeyUsedByOtherEvent(oldKey)) {
@@ -760,7 +772,7 @@ async function unassignEvent(eventId) {
 
   await saveSoundMap();
   await saveSet('assets', assets);
-  await deleteEventAsset(eventId);
+  await deleteEventAsset(eventId, oldExt);
   updateCounts();
   refreshCardsForKeys(oldKey);
   publishSfxUpdate({
@@ -1186,7 +1198,7 @@ function startRename(card, fh, folderPath) {
         if (srcKey !== oldKey) continue;
         soundMap[eventId] = newKey;
         assets.add(newKey);
-        await copyFileToAssets(newFh, `${eventId}.wav`);
+        await copyFileToAssets(newFh, `${eventId}${extOf(newFh.name)}`);
         renamedEventIds.push(eventId);
         mapChanged = true;
         changed = true;
