@@ -2,7 +2,7 @@
 // Run: node test-bot-activity.mjs
 import {
   BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE, AIM_TOLERANCE_RAD, TURN_RATE_RAD_S,
-  chooseBotState, aimAnglesTo, aimError, slewAngle,
+  chooseBotState, aimAnglesTo, aimError, slewAngle, trackStuck, STUCK_MIN_SPEED,
 } from './bot-activity.js';
 
 let failed = 0;
@@ -105,6 +105,24 @@ ok(aimError(0.4, 0.1, 0.4, 0.1) === 0, 'aimError is zero for identical yaw/pitch
 ok(SENSE_RANGE > 0 && SENSE_RANGE < 200, 'SENSE_RANGE is a plausible in-map distance');
 // TURN_RATE_RAD_S is positive and finite
 ok(TURN_RATE_RAD_S > 0 && Number.isFinite(TURN_RATE_RAD_S), 'TURN_RATE_RAD_S is a positive finite rate');
+
+// trackStuck: fast enough, or deliberately stationary (aim/fire) -> never stuck
+{
+  const a = trackStuck({ speed: 1, moving: true, stuckSince: null, nowMs: 1000 });
+  ok(a.stuckSince === null && a.stuckMs === 0, 'above STUCK_MIN_SPEED clears stuck state');
+  const b = trackStuck({ speed: 0, moving: false, stuckSince: null, nowMs: 1000 });
+  ok(b.stuckSince === null, 'not moving by design (aim/fire) is never flagged stuck');
+}
+// trackStuck: below-speed while moving latches stuckSince on first tick, then accumulates
+{
+  const first = trackStuck({ speed: 0.02, moving: true, stuckSince: null, nowMs: 1000 });
+  ok(first.stuckSince === 1000 && first.stuckMs === 0, 'first below-speed tick latches stuckSince to nowMs');
+  const later = trackStuck({ speed: 0.02, moving: true, stuckSince: first.stuckSince, nowMs: 1800 });
+  ok(later.stuckSince === 1000 && later.stuckMs === 800, 'stuckSince persists, stuckMs grows with elapsed time');
+  const recovered = trackStuck({ speed: 1, moving: true, stuckSince: later.stuckSince, nowMs: 2000 });
+  ok(recovered.stuckSince === null, 'moving fast again clears the latch');
+}
+ok(STUCK_MIN_SPEED > 0, 'STUCK_MIN_SPEED is a plausible positive threshold');
 
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
 console.log('bot-activity: all assertions passed');

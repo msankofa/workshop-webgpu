@@ -368,9 +368,10 @@ saves itself.
 **Endpoint** (`serve.py`): `POST /api/save-stats?filename=<name>[&mode=append]` — body is raw
 CSV text.
 - Filename sanitization: reduced to a basename (`\` normalized to `/` first) and must match
-  `^perf-[A-Za-z0-9T:\-=&.]+\.csv$`; anything else (including `..`) gets **400**. Mirrors the
-  `_safe_under_maps` pattern used by `/api/save-map`. Target dir `research/stats/` (created if
-  missing).
+  `^(?:perf|bots)-[A-Za-z0-9T:\-=&.]+\.csv$` (2026-07-16: added the `bots-` prefix for
+  `botStatsLog`, see `docs/subsystems/bots.md`); anything else (including `..`) gets **400**.
+  Mirrors the `_safe_under_maps` pattern used by `/api/save-map`. Target dir `research/stats/`
+  (created if missing).
 - Default mode never overwrites: an existing name gets a `-2`, `-3`, ... suffix.
 - `mode=append` (2026-07-09) appends the body to the named file, creating it if absent — no
   collision suffix, so a session's incremental flushes all land in one file. Session filenames

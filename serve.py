@@ -18,8 +18,9 @@ STATS_DIR = os.path.join(ROOT, 'research', 'stats')
 STATES_DIR = os.path.join(ROOT, 'states')
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
 # environment-viewer.html's perfLog auto-upload names files perf-<ISO>-<sanitized search>.csv
-# (see perfLog.buildFilename); this must stay in sync with that client-side pattern.
-_SAFE_STATS_FILENAME = re.compile(r'^perf-[A-Za-z0-9T:\-=&.]+\.csv$')
+# (see perfLog.buildFilename); botStatsLog.buildFilename uses bots-<ISO>.csv. Both prefixes
+# must stay in sync with their client-side pattern.
+_SAFE_STATS_FILENAME = re.compile(r'^(?:perf|bots)-[A-Za-z0-9T:\-=&.]+\.csv$')
 
 
 def _safe_under_maps(*segments):

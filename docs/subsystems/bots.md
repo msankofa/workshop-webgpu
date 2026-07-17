@@ -312,16 +312,57 @@ retreat clump, etc. above) directly instead of guessing from a screenshot. All i
   `renderOrder`) that `updateBotInspector` repositions onto the selected bot's capsule-base position
   every `updateBots` tick; hidden (not removed) when nothing is selected.
 - **Panel** ("Bot Inspector" section): a live text readout of the selected bot (fsm state, hp/alive,
-  position, XZ speed, `pathMode`/waypoint count/`pathFailCount`, squad id + leader/member + order,
-  whether it has a live target, ammo/reload) refreshed at ~150ms via `refreshBotInspectorPanel`
+  time in current state, position, XZ speed + stuck flag, `pathMode`/waypoint count/`pathFailCount`,
+  squad id + leader/member + order, live target + distance to it, ammo/reload, and lifetime
+  shots/hits/kills/deaths/distance traveled) refreshed at ~150ms via `refreshBotInspectorPanel`
   (throttled the same way `updateCreatureCommandHud` is), Prev/Next/Clear buttons mirroring the
-  arrow keys, a "Teleport to selected" button, and a table of every live bot (id, state, hp,
-  rounded position, fail count) — each row selectable by click and carries its own "Go" teleport
-  button, with the selected row highlighted.
+  arrow keys, a "Teleport to selected" button, a record-to-file toggle (below), and a table of every
+  live bot (id, state, hp, rounded position, fail count, kills/deaths, stuck flag) — each row
+  selectable by click and carries its own "Go" teleport button, with the selected row highlighted
+  and stuck bots tinted amber.
 - **Teleport**: `teleportPlayerTo(x, z)` snaps the local player's capsule (`playerCollider`) and the
   orbit camera's `target` straight to a world XZ point at `terrainHeight(x,z)`, matching the same
   ground-contact convention `resetPlayerPosition`/bot spawning use — no path or collision check, an
   instant jump for inspection purposes only.
+
+### Per-bot stats: tracked fields (2026-07-16)
+
+Beyond the state already listed above, every `botPlayers` record also carries lifetime counters,
+initialized in `spawnBotAt` and persisting across that bot's own respawns (only `stateEnteredAt`/
+`lastPos`/`stuckSince` are re-anchored on respawn, so the teleport-to-spawn jump isn't counted as
+travel):
+
+- `shotsFired` — bumped in `botFire` when `applyCombatIntent` returns `ok`.
+- `hitsLanded` / `kills` — bumped by `bumpBotCombatCounters(attackerId, targetId, wasTargetAlive)`,
+  called from both `applyHitDamage` (hitscan/melee) and `applyExplosionBlast` (radial). Kills are
+  only counted on the tick a hit actually flips a target from alive to dead — `wasTargetAlive` is
+  sampled *before* `playerCombat.applyDamage`, so a follow-up hit on an already-dead target doesn't
+  double-count.
+- `deaths` — bumped on the same alive→dead transition, on the target's own record.
+- `stateEnteredAt` — reset whenever `botTickOne` sees `fsmState` change; `nowMs - stateEnteredAt` is
+  time-in-current-state.
+- `distanceTraveled` — accumulated every `botTickOne` tick from the XZ delta against `lastPos`.
+- `stuckSince` — `bot-activity.js`'s `trackStuck({ speed, moving, stuckSince, nowMs })` (pure,
+  Node-tested in `test-bot-activity.mjs`): latches a timestamp the first tick a bot's XZ speed drops
+  below `STUCK_MIN_SPEED` (0.15 m/s) while `moving` (fsmState is `patrol`/`seek` — `aim`/`fire` are
+  deliberately stationary and never flagged). Cleared the moment speed recovers. This is the direct
+  diagnostic for "glitched movement" reports: a bot with a growing `stuckMs` while its `fsmState`
+  claims it should be walking is stuck on something pathing/physics isn't resolving.
+
+### Continuous file logging: `botStatsLog` (2026-07-16)
+
+A "Record all bots to file" toggle in the Bot Inspector panel starts `botStatsLog`, which samples
+every live bot every `intervalMs` (500ms) into a ring buffer and batch-POSTs CSV chunks to
+`/api/save-stats?filename=bots-<ISO>.csv&mode=append` — the same endpoint and append convention
+`perfLog` (`docs/subsystems/infra.md`) uses for `perf-*.csv`, just with a `bots-` filename prefix
+(both prefixes are accepted by `serve.py`'s `_SAFE_STATS_FILENAME`). The file updates live on disk
+while recording (flushes every 5s once ≥20 unflushed rows are queued, plus a `sendBeacon` flush on
+`pagehide`/`beforeunload`/tab-hide), so it can be tailed or opened mid-session, not just after
+stopping. Each row is one bot's full snapshot at that tick: fsm state, hp/alive, position, speed,
+path state, squad info, ammo, and all the lifetime counters above (`shotsFired`, `hitsLanded`,
+`kills`, `deaths`, `timeInStateMs`, `distanceTraveled`, `stuckMs`, `distToTarget`). Recording state
+and row count live in `botStatsLog`/`botStatsLogUI`, refreshed on the same ~150ms cycle as the
+inspector panel.
 
 ## Not yet built (see spec for phasing)
 

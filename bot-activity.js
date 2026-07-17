@@ -42,6 +42,17 @@ export function aimAnglesTo(from, to) {
   return { yaw: Math.atan2(dx, dz), pitch: Math.atan2(dy, horiz) };
 }
 
+export const STUCK_MIN_SPEED = 0.15; // m/s -- below this while patrol/seek counts as "not moving"
+
+// `moving` = true while the bot's fsmState implies it should be making progress (patrol/seek);
+// aim/fire/dead states are deliberately stationary and shouldn't read as stuck. Latches
+// stuckSince on first below-speed tick so the caller can report how long it's been stuck.
+export function trackStuck({ speed, moving, stuckSince = null, nowMs }) {
+  if (!moving || speed >= STUCK_MIN_SPEED) return { stuckSince: null, stuckMs: 0 };
+  const since = stuckSince ?? nowMs;
+  return { stuckSince: since, stuckMs: nowMs - since };
+}
+
 // Normalize an angle to (-PI, PI].
 function wrapAngle(a) {
   a = a % (Math.PI * 2);
