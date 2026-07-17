@@ -77,7 +77,7 @@ import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
 import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose } from './bot-entity.js';
 import {
   BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE as BOT_SENSE_RANGE, TURN_RATE_RAD_S as BOT_TURN_RATE_RAD_S,
-  chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle,
+  chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle, trackStuck as botTrackStuck,
 } from './bot-activity.js';
 import { buildNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath } from './nav-grid.js';
 import { rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset } from './squad-activity.js';
@@ -1681,6 +1681,11 @@ function spawnBotAt(pos) {
     lastVisibleAt: -Infinity, losTargetId: null, losVisible: false, nextLosCheckAt: 0,
     squadId: null, isLeader: false, temperament: rollTemperament(botTemperamentMin, botTemperamentMax), formationAngle: 0,
     pathRetryAt: 0, pathFailCount: 0,
+    // Lifetime combat/movement stats, exposed by the bot inspector and botStatsLog (below).
+    // shotsFired/hitsLanded/kills/deaths persist across this bot's own respawns; distanceTraveled
+    // does too (lastPos is re-anchored on respawn so the teleport-to-spawn jump isn't counted).
+    shotsFired: 0, hitsLanded: 0, kills: 0, deaths: 0, stateEnteredAt: performance.now(),
+    distanceTraveled: 0, lastPos: { x: pos.x, z: pos.z }, stuckSince: null,
   });
   playerCombat.ensurePlayer(id, { maxHp: botMaxHp, hp: botMaxHp });
   setPlayerWeapon(id, weaponId);
@@ -1806,7 +1811,7 @@ function botFire(id, rec, nowMs) {
     origin: [eye.x, eye.y, eye.z], dir, clientTime: nowMs,
   };
   const result = applyCombatIntent(intent, id);
-  if (result?.ok) rec.lastFireAt = nowMs;
+  if (result?.ok) { rec.lastFireAt = nowMs; rec.shotsFired++; }
 }
 
 // --- Bot threat awareness: getting shot (or shot at) hands a bot a "last known" position to
@@ -6290,7 +6295,10 @@ let lgChargeStart = null;
   // enabled weapon's tunable fields into controlRegistry so captureSliderState/applySliderState — and
   // the states/*.json export — carry them. The 'weapon.' prefix keeps them out of the MP shared-world
   // broadcast (which only syncs 'terrain.'/'params.'). A localStorage mirror (pcw:weaponTuning) is also
-  // restored at load so a plain refresh keeps tuning without loading a named preset.
+  // restored at load so a plain refresh keeps tuning without loading a named preset — gated behind
+  // ?tune=1 so a saved override can't silently outlive a later weapons.js update for anyone who
+  // isn't actively tuning (it would otherwise mask new defaults forever with no way to notice).
+  const TUNE_MODE = new URLSearchParams(location.search).has('tune');
   const WEAPON_TUNING_KEY = 'pcw:weaponTuning';
   const onWeaponTuningApplied = () => applyWeaponControlChange({ reloadView: true, ammo: true });
   for (const w of enabledWeapons()) {
@@ -6310,6 +6318,7 @@ let lgChargeStart = null;
     for (const e of entries) controlRegistry.push({ ...e, sync: syncWeaponControlSliders, onChange: onWeaponTuningApplied });
   }
   saveWeaponTuning = () => {
+    if (!TUNE_MODE) return;
     const all = captureSliderState();
     const wv = {};
     for (const k in all) if (k.startsWith('weapon.')) wv[k] = all[k];
@@ -6317,7 +6326,7 @@ let lgChargeStart = null;
     for (const w of enabledWeapons()) if (w.sightType) wv[`weaponSight.${w.id}`] = w.sightType;
     if (Object.keys(wv).length) { try { localStorage.setItem(WEAPON_TUNING_KEY, JSON.stringify(wv)); } catch {} }
   };
-  try {
+  if (TUNE_MODE) try {
     const saved = JSON.parse(localStorage.getItem(WEAPON_TUNING_KEY) || 'null');
     if (saved) {
       for (const k in saved) {

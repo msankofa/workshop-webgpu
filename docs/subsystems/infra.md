@@ -90,7 +90,13 @@ out of the MP shared-world broadcast (`captureSharedWorldSettings` only syncs `t
 Separately, every weapon-slider change mirrors the current `weapon.*` values to `localStorage`
 (`pcw:weaponTuning`) and that mirror is re-applied at load (in the eager `#fps` panel block, after the
 fields register), so a plain refresh keeps weapon tuning without loading a named preset. The baked
-per-weapon defaults in `weapons.js` are the base these overrides sit on top of.
+per-weapon defaults in `weapons.js` are the base these overrides sit on top of. Both the save and the
+load side are gated behind the `?tune=1` query param (`TUNE_MODE`): without it, weapon-slider edits
+never write to `pcw:weaponTuning` and any existing entry is never read back. This exists because the
+mirror has no versioning — a saved override would otherwise silently keep masking `weapons.js` updates
+forever for anyone whose browser had ever written one (a real incident: a stale local override made a
+weapons.js aim-pose fix look like it hadn't deployed). Add `?tune=1` to the URL to opt back into
+live-tuning persistence.
 
 **First-person view feel** (`view-feel.js` + the FPS panel's "View feel" sliders). `view-feel.js` is a
 pure, THREE-free math module (same convention as `weapon-sequence.js`, unit-tested by
