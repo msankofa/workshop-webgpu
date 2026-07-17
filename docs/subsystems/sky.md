@@ -30,16 +30,21 @@ gracefully if they fail to load.
 ```js
 export function createSky({ scene, camera, size, palette: overrides, sunDir, parts = {} })
 ```
-Returns an object with: `group`, `setSunDir(v)`, `setPalette(o)`, `setCelestialType(type)`,
-`setStarCount(n)`, `setStarOpacity(v)`, `setStarColor(hex)`, `setSunSize(v)`,
-`setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius()`, `rebuild(r)`, `update()`,
-`updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`, `setGlowDirectionality(v)`,
-`flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `nightness`, `skyStates`,
-`thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no rebuild), like
-`setMilkyWayIntensity`. `updateDome(elevationDeg)` blends the day/dusk/night dome states by
-sun elevation and writes uniforms only — never rebuilds. `nightness` (0 in day, 1 at night)
-is the single shared "how dark is it" scalar; `setCelestialOpacityMode(true)` multiplies
-star/Milky-Way/body opacity by it.
+Returns an object with: `group`, `setSunDir(v)`, `setMoonDir(v)`, `setCelestialVisibility(sunVisible,
+moonVisible)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
+`setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius()`,
+`rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
+`setGlowDirectionality(v)`, `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`,
+`nightness`, `skyStates`, `thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no
+rebuild), like `setMilkyWayIntensity`. `updateDome(elevationDeg)` blends the day/dusk/night dome
+states by sun elevation and writes uniforms only — never rebuilds. `nightness` (0 in day, 1 at
+night) is the single shared "how dark is it" scalar; `setCelestialOpacityMode(true)` multiplies
+star/Milky-Way/body opacity by it. `setMoonDir(v)` sets an independent moon direction (normalized,
+stored separately from the sun direction) and repositions only the moon sprite; the `moonDir`
+getter returns a clone (or `null` if never set) so a caller can aim a separate moon light.
+`setCelestialVisibility(sunVisible, moonVisible)` sets `sunSprite.visible`/`moonSprite.visible`
+directly, for an external time-of-day driver that wants both discs visible/hidden independently of
+`primaryBody`/`setCelestialType`.
 
 **sky-field.js**
 ```js
@@ -129,6 +134,17 @@ without affecting the other.
 
 ## Architecture notes
 
+- **Independent sun/moon directions**: `sky.js` used to track a single `dir` and place both the
+  sun and moon sprites from it. It now holds `dir` (sun) plus a separate `moonDir` (`null` until
+  `setMoonDir(v)` is first called). `setSunDir(v)` always repositions the sun sprite; it only
+  repositions the moon sprite too when `moonDir` is still unset, preserving the old shared-direction
+  behavior for any caller that never calls `setMoonDir`. Once `setMoonDir` has been called, the sun
+  and moon sprites move independently (`placeSun()`/`placeMoon()`), which is what lets an anti-sun
+  time-of-day driver put the moon opposite the sun. `setCelestialVisibility(sunVisible, moonVisible)`
+  gives an external driver (e.g. a time-of-day clock) direct control of each disc's `visible` flag;
+  the pre-existing `primaryBody`/`setCelestialType`/`updateDiscVisibility` path — a single
+  sun-XOR-moon toggle keyed on `isMoonBody(palette)` — is untouched and still governs visibility
+  whenever `setCelestialVisibility` isn't used.
 - **Time-of-day dome states**: the dome gradient is no longer a single static palette.
   `sky-field.js` defines three keyframed states — `DEFAULT_SKY_STATES.day` / `.dusk` /
   `.night` — each carrying dome colors (`top`/`horizon`/`bottom`/`glow`) and transition
@@ -332,6 +348,19 @@ Time of day (`header('Sky — time of day')`, live — mutate `skyRef.skyStates`
 - Sun→time mapping: `dayAbove` (0..30°), `duskPeak` (−15..15°), `nightBelow` (−30..0°).
 - `glow toward sun` (0..1) → `skyRef.setGlowDirectionality()`.
 - `Celestial opacity follows time` (toggle) → `skyRef.setCelestialOpacityMode()`.
+
+Separately, `header('Time of day')` (~line 4155, distinct from the dome-palette editor above) is a
+sun/moon-position driver: `todEnabled` toggle, `todHour`/`todLatitude`/`todDayOfYear`/`todMoonPhase`
+sliders, and a `todPlaying`/`todSpeed` auto-advance clock, all stored on the same `params` object
+the forest/tree tuning panel uses (`_forestPromise`'s callback, ~line 3196) — reused as a general
+settings bag rather than a dedicated object. `params` is forward-declared `let params = null` at
+module scope (2026-07-17, next to `applyTimeOfDay`) specifically so `animate()`'s per-frame
+time-of-day tick (`if (params.todEnabled) ...`, ~line 8577) can read it directly; it used to be a
+bare `const` inside the forest closure, invisible to `animate()`, which threw `ReferenceError:
+params is not defined` on every frame once this driver's code was added. `animate()`'s read is
+still only reachable once `skyRef` is truthy (guarded by the same `if (skyRef)` this whole block is
+nested in), and `skyRef` is assigned later in that same synchronous callback than `params` is, so
+there's no window where `skyRef` is set but `params` isn't.
 
 Star point *size* is deliberately not exposed: on the WebGPU backend `THREE.Points` render as
 1px primitives (`sizeNode` ignored), so a size slider would have no effect — variable-size

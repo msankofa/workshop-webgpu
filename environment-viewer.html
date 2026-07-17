@@ -81,6 +81,8 @@ import {
 } from './bot-activity.js';
 import { buildNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath } from './nav-grid.js';
 import { rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset } from './squad-activity.js';
+import { sunPosition, moonPosition } from './solar-position.js';
+import { lerpHex } from './sky-field.js';
 
 // Grass backend: 'gpu' (default, compute/indirect) or 'cpu' (legacy per-chunk meshes,
 // kept for the SP2 A/B perf comparison; removed in SP2 cleanup).
@@ -1225,6 +1227,14 @@ function skyLightDir() {
   const a = rig.azimuth * Math.PI / 180, e = rig.elevation * Math.PI / 180;
   return _skyDir.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
 }
+// Same az/el -> direction convention as skyLightDir/lights.js toDir, for an arbitrary
+// (elevation, azimuth) pair rather than the rig's stored current values — used by the
+// time-of-day driver, which needs sun and moon directions at once.
+const _sunDirScratch = new THREE.Vector3(), _moonDirScratch = new THREE.Vector3();
+function dirFromAzEl(elevDeg, azDeg, out) {
+  const a = azDeg * Math.PI / 180, e = elevDeg * Math.PI / 180;
+  return out.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+}
 
 // ===================== chunked terrain (parameterised; supports lakes) =====================
 // `size` is the view/far distance in world units (camera far plane + fog), NOT a
@@ -2109,6 +2119,7 @@ function botTickOne(id, rec, dt, nowMs) {
     rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
   }
   const { state } = chooseBotState({ current: rec.fsmState, ctx: { targetVisible, aimError: err, readyToFire, hasLastKnown } });
+  if (state !== rec.fsmState) rec.stateEnteredAt = nowMs;
   rec.fsmState = state;
 
   if (state === BOT_AIM || state === BOT_FIRE) {
@@ -2122,6 +2133,13 @@ function botTickOne(id, rec, dt, nowMs) {
     botTickMovement(rec, dt, nowMs);
   }
   stepBotPhysics(bot, dt, { mapCollider, heightAt: terrainHeight });
+
+  const p = bot.capsule.start;
+  rec.distanceTraveled += Math.hypot(p.x - rec.lastPos.x, p.z - rec.lastPos.z);
+  rec.lastPos = { x: p.x, z: p.z };
+  const moving = state === BOT_PATROL || state === BOT_SEEK;
+  const stuck = botTrackStuck({ speed: Math.hypot(bot.velocity.x, bot.velocity.z), moving, stuckSince: rec.stuckSince, nowMs });
+  rec.stuckSince = stuck.stuckSince;
 }
 
 // Per-squad bookkeeping, once per updateBots tick: loss-triggered retreat decision (leader
@@ -2219,7 +2237,118 @@ function updateBotInspector(nowMs) {
   if (nowMs < botInspectorNextRefresh) return;
   botInspectorNextRefresh = nowMs + 150;
   refreshBotInspectorPanel();
+  if (botStatsLogUI) botStatsLogUI.refresh();
 }
+
+// Continuous per-bot CSV log, one row per bot per sample tick -- same ring-buffer + batched-POST
+// pattern as perfLog (~line 2398) but sampling botPlayers instead of the perf HUD, and its own
+// bots-<ISO>.csv filename prefix (see serve.py's _SAFE_STATS_FILENAME). Auto-flushes to disk via
+// /api/save-stats?mode=append while recording, so the file updates live during a running session.
+const botStatsLog = {
+  recording: false,
+  intervalMs: 500,
+  flushIntervalMs: 5000,
+  maxSamples: 20000,
+  samples: [],
+  lastSample: -Infinity,
+  sessionFilename: null,
+  uploadStatus: '',
+  _flushedRows: 0,
+  _totalRows: 0,
+  _lastFlush: -Infinity,
+  _flushCols: null,
+  start() {
+    this.recording = true;
+    this.samples.length = 0;
+    this.sessionFilename = null;
+    this.uploadStatus = '';
+    this._flushedRows = 0; this._totalRows = 0; this._flushCols = null;
+    this.lastSample = -Infinity; this._lastFlush = performance.now();
+  },
+  async stop() {
+    this.recording = false;
+    if (this._totalRows > this._flushedRows) await this.flush();
+  },
+  sampleBot(id, rec, nowMs) {
+    const combat = playerCombat.getSnapshot(id);
+    const p = rec.bot.capsule.start;
+    const speed = Math.hypot(rec.bot.velocity.x, rec.bot.velocity.z);
+    const ammo = ensureAmmo(id, rec.weaponId);
+    const squad = rec.squadId ? squads.get(rec.squadId) : null;
+    const dist = rec.lastKnownTarget ? Math.hypot(rec.lastKnownTarget.x - p.x, rec.lastKnownTarget.z - p.z) : null;
+    this.samples.push({
+      t: +(nowMs / 1000).toFixed(2), id, fsmState: rec.fsmState,
+      hp: Math.round(combat.hp), maxHp: Math.round(combat.maxHp), alive: combat.alive,
+      x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2), speed: +speed.toFixed(2),
+      pathMode: rec.pathMode ?? '', waypoints: rec.currentPath.length, pathFailCount: rec.pathFailCount ?? 0,
+      squadId: rec.squadId ?? '', isLeader: rec.isLeader, squadOrder: squad ? squad.order : '',
+      ammoMag: ammo.mag, ammoReserve: ammo.reserve,
+      shotsFired: rec.shotsFired, hitsLanded: rec.hitsLanded, kills: rec.kills, deaths: rec.deaths,
+      timeInStateMs: Math.round(nowMs - rec.stateEnteredAt), distanceTraveled: +rec.distanceTraveled.toFixed(2),
+      stuckMs: rec.stuckSince != null ? Math.round(nowMs - rec.stuckSince) : 0,
+      distToTarget: dist != null ? +dist.toFixed(2) : '',
+    });
+    this._totalRows++;
+    if (this.samples.length > this.maxSamples) this.samples.shift();
+  },
+  maybeSample(nowMs) {
+    if (!this.recording) return;
+    if (nowMs - this.lastSample < this.intervalMs) return;
+    this.lastSample = nowMs;
+    for (const [id, rec] of botPlayers) this.sampleBot(id, rec, nowMs);
+    if (this._totalRows - this._flushedRows >= 20 && nowMs - this._lastFlush >= this.flushIntervalMs) {
+      this._lastFlush = nowMs;
+      this.flush();
+    }
+  },
+  _pendingRowsCSV() {
+    let pending = this._totalRows - this._flushedRows;
+    if (pending <= 0) return null;
+    if (pending > this.samples.length) pending = this.samples.length; // ring-trimmed rows are gone
+    const rows = this.samples.slice(this.samples.length - pending);
+    if (!this._flushCols) this._flushCols = Object.keys(rows[0]);
+    const cols = this._flushCols;
+    const header = this._flushedRows === 0 ? cols.join(',') + '\n' : '';
+    return { csv: header + rows.map(s => cols.map(c => csvCell(s[c])).join(',')).join('\n') + '\n', pending };
+  },
+  buildFilename() {
+    const iso = new Date().toISOString().replace(/[:.]/g, '-');
+    return `bots-${iso}.csv`;
+  },
+  async flush() {
+    const chunk = this._pendingRowsCSV();
+    if (!chunk) return;
+    if (!this.sessionFilename) this.sessionFilename = this.buildFilename();
+    try {
+      const res = await fetch(`/api/save-stats?filename=${encodeURIComponent(this.sessionFilename)}&mode=append`, {
+        method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: chunk.csv,
+      });
+      if (!res.ok) throw new Error(`save-stats ${res.status}`);
+      this._flushedRows += chunk.pending;
+      this.uploadStatus = `saved ${this._flushedRows} rows -> ${this.sessionFilename}`;
+    } catch (err) {
+      this.uploadStatus = `save failed: ${err?.message || err}`;
+    }
+    if (botStatsLogUI) botStatsLogUI.refresh();
+  },
+  beaconUpload() {
+    if (!this.recording || !navigator.sendBeacon) return;
+    const chunk = this._pendingRowsCSV();
+    if (!chunk) return;
+    if (!this.sessionFilename) this.sessionFilename = this.buildFilename();
+    const ok = navigator.sendBeacon(
+      `/api/save-stats?filename=${encodeURIComponent(this.sessionFilename)}&mode=append`,
+      new Blob([chunk.csv], { type: 'text/csv' }),
+    );
+    if (ok) this._flushedRows += chunk.pending;
+  },
+};
+let botStatsLogUI = null;
+window.addEventListener('pagehide', () => botStatsLog.beaconUpload());
+window.addEventListener('beforeunload', () => botStatsLog.beaconUpload());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') botStatsLog.beaconUpload();
+});
 
 function updateBots(dt) {
   if (mpRole === 'guest') return;
@@ -2243,6 +2372,9 @@ function updateBots(dt) {
         rec.deadSince = null; rec.fsmState = BOT_PATROL; rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
         rec.reloadUntil = null; rec.targetAcquiredAt = null; rec.lastVisibleAt = -Infinity;
         rec.losTargetId = null; rec.losVisible = false; rec.nextLosCheckAt = 0; rec.pathRetryAt = 0; rec.pathFailCount = 0;
+        // Re-anchor state-entry/position tracking at the new spot so the teleport-to-spawn jump
+        // doesn't get counted as traveled distance; shotsFired/hitsLanded/kills/deaths carry over.
+        rec.stateEnteredAt = nowMs; rec.lastPos = { x: sp.x, z: sp.z }; rec.stuckSince = null;
       }
       continue;
     }
@@ -2253,6 +2385,7 @@ function updateBots(dt) {
   pushBotsApart();
   updateHostPlayerGhosts();
   updateBotInspector(nowMs);
+  botStatsLog.maybeSample(nowMs);
   if (botStatusEl) botStatusEl.textContent = `${botPlayers.size} bot${botPlayers.size === 1 ? '' : 's'} active`;
 }
 
@@ -2817,6 +2950,13 @@ if (!loadedMap) scene.add(terrainGroup);
 // small scenes just because cloud layers are large.
 const worldFog = new THREE.Fog(0x1a1d23, 70, 200);
 let skyRef = null;   // procedural night sky (assigned once ./sky.js loads, below)
+let applyTimeOfDay = null;   // time-of-day driver fn, assigned once ./sky.js loads (needs skyRef/rigP/billBrightness)
+let todTick = null;          // per-frame step (reads callback-local params: enabled check + clock advance); assigned with applyTimeOfDay
+// Forest/tree tuning + time-of-day state, assigned once the forest promise below resolves.
+// Forward-declared here (module scope) because animate()'s time-of-day tick reads it directly,
+// not just through applyTimeOfDay -- it was a bare `const` inside that closure, invisible to
+// animate(), which threw "params is not defined" every frame once todEnabled code was added.
+let params = null;
 let cloudFar1 = 0, cloudFar2 = 0;
 function setCloudFar(layer, extent, height) {
   const far = (extent != null && height != null) ? Math.hypot(extent / 2, height) : 0;
@@ -3017,6 +3157,13 @@ function captureSliderState() {
   for (const c of controlRegistry) values[c.name] = c.obj[c.key];
   return values;
 }
+// Refreshes just the on-screen slider/number display for the given fully-qualified control
+// names (e.g. 'rigP.elevation'), without touching values or firing onChange — used by the
+// time-of-day driver, which writes rigP/params directly and only needs sliders to catch up.
+function syncControlDisplays(names) {
+  const set = new Set(names);
+  for (const c of controlRegistry) if (set.has(c.name)) c.sync();
+}
 function applySliderState(values) {
   if (!values) return;
   for (const c of controlRegistry) {
@@ -3052,7 +3199,7 @@ applySharedWorldSettings = values => {
 
 const _forestPromise = Promise.all([import('./trees.js'), import('./tree-textures.js')]).then(async ([{ createTree }, { createTextureSource }]) => {
   const MASTER_SEED = 20260616;
-  const params = {
+  params = {
     count: loadedMap ? 500 : 18, placement: 'random', maxSize: 0.55, sizeVar: 0.6, skew: 0,
     varPattern: 'random', species: 3, diversity: 0.5, generalization: 0.5,
     treeBaseOffset: -0.1, leafCount: 10, leafSize: 1, leafStart: 0.25, leafSpread: 0,
@@ -3998,6 +4145,43 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // Multiplier to bring baked-at-(BAKE_SUN+BAKE_AMB) billboard textures up to scene brightness.
   const billBrightness = (effectiveSun = rigP.sunIntensity) =>
     (effectiveSun + rigP.ambientIntensity * 0.5) / (BAKE_SUN + BAKE_AMB * 0.5);
+
+  // ---- time-of-day driver ----
+  // Ramp targets: sun/ambient max match the manual rig defaults above, so the driver and
+  // manual sliders agree at "full daylight" instead of fighting each other.
+  const todSunMax = rigP.sunIntensity, todAmbMax = rigP.ambientIntensity, todAmbNight = 0.12;
+  const TOD_SUN_WARM = '#ffb066', TOD_SUN_NEUTRAL = '#fff4e0', TOD_MOON_MAX = 0.35;
+  const smoothstep = (edge0, edge1, x) => {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  };
+  params.todEnabled = false; params.todHour = 12; params.todLatitude = 45;
+  params.todDayOfYear = 172; params.todMoonPhase = 12; params.todSpeed = 0; params.todPlaying = false;
+  let todActivated = false;   // first-activation latch for the one-time setCelestialOpacityMode(true)
+  header('Time of day');
+  toggle('todEnabled', 'Drive from time of day', () => {
+    if (params.todEnabled) applyTimeOfDay?.();
+  });
+  const todHourFmt = v => { const h = Math.floor(v), m = Math.round((v - h) * 60) % 60; return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); };
+  slider('todHour', 'Time', 0, 24, 0.05, todHourFmt, () => applyTimeOfDay?.(), params, 'params');
+  slider('todLatitude', 'Latitude', -90, 90, 1, fi, () => applyTimeOfDay?.(), params, 'params');
+  slider('todDayOfYear', 'Day of year', 1, 365, 1, fi, () => applyTimeOfDay?.(), params, 'params');
+  slider('todMoonPhase', 'Moon phase offset (h)', 0, 24, 0.5, f2, () => applyTimeOfDay?.(), params, 'params');
+  slider('todSpeed', 'Speed (min/sec)', 0, 600, 5, fi, () => {}, params, 'params');
+  const todPlayBtn = document.createElement('button');
+  todPlayBtn.type = 'button'; todPlayBtn.textContent = 'Play';
+  todPlayBtn.style.cssText = 'width:100%;margin-top:4px;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:3px 6px;cursor:pointer;font:inherit';
+  todPlayBtn.addEventListener('click', () => {
+    params.todPlaying = !params.todPlaying;
+    todPlayBtn.textContent = params.todPlaying ? 'Pause' : 'Play';
+  });
+  current.appendChild(todPlayBtn);
+  controlRegistry.push({
+    name: 'params.todPlaying', obj: params, key: 'todPlaying',
+    onChange: () => {},
+    sync: () => { todPlayBtn.textContent = params.todPlaying ? 'Pause' : 'Play'; },
+  });
+
   header('Lighting');
   slider('elevation',        'Sun elevation',  2, 88,  1,    fi,  () => rig.setElevation(rigP.elevation),               rigP, 'rigP');
   slider('azimuth',          'Azimuth',        0, 360, 1,    fi,  () => rig.setAzimuth(rigP.azimuth),                   rigP, 'rigP');
@@ -4628,6 +4812,27 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     inspBody.style.cssText = 'font-size:10px;color:#c4ccd6;line-height:1.6;margin:4px 0 8px;white-space:pre-wrap';
     inspSec.appendChild(inspBody);
 
+    const logRow = document.createElement('div');
+    logRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px';
+    const logBtn = document.createElement('button');
+    logBtn.style.cssText = 'padding:4px 8px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer;font-size:10px';
+    const logStatus = document.createElement('span');
+    logStatus.style.cssText = 'font-size:9px;color:#6f7a89;flex:1';
+    function refreshLogUI() {
+      logBtn.textContent = botStatsLog.recording ? 'Stop recording' : 'Record all bots to file';
+      logStatus.textContent = botStatsLog.recording
+        ? (botStatsLog.uploadStatus || `recording (${botStatsLog._totalRows} rows)`)
+        : (botStatsLog.uploadStatus || 'not recording');
+    }
+    logBtn.addEventListener('click', async () => {
+      if (botStatsLog.recording) await botStatsLog.stop(); else botStatsLog.start();
+      refreshLogUI();
+    });
+    botStatsLogUI = { refresh: refreshLogUI };
+    logRow.appendChild(logBtn); logRow.appendChild(logStatus);
+    inspSec.appendChild(logRow);
+    refreshLogUI();
+
     const teleportBtn = document.createElement('button');
     teleportBtn.textContent = 'Teleport to selected';
     teleportBtn.style.cssText = 'width:100%;margin:0 0 8px;padding:5px;background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;cursor:pointer';
@@ -4651,13 +4856,17 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         const speed = Math.hypot(rec.bot.velocity.x, rec.bot.velocity.z);
         const ammo = ensureAmmo(selectedBotId, rec.weaponId);
         const squad = rec.squadId ? squads.get(rec.squadId) : null;
+        const nowMs = performance.now();
+        const dist = rec.lastKnownTarget ? Math.hypot(rec.lastKnownTarget.x - p.x, rec.lastKnownTarget.z - p.z) : null;
+        const stuckMs = rec.stuckSince != null ? nowMs - rec.stuckSince : 0;
         inspBody.textContent =
           `id: ${selectedBotId}\n` +
-          `state: ${rec.fsmState}  hp: ${Math.round(combat.hp)}/${Math.round(combat.maxHp)}${combat.alive ? '' : ' (dead)'}\n` +
-          `pos: ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}  speed: ${speed.toFixed(2)}\n` +
+          `state: ${rec.fsmState}  hp: ${Math.round(combat.hp)}/${Math.round(combat.maxHp)}${combat.alive ? '' : ' (dead)'}  time in state: ${(( nowMs - rec.stateEnteredAt) / 1000).toFixed(1)}s\n` +
+          `pos: ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}  speed: ${speed.toFixed(2)}${stuckMs > 0 ? `  STUCK ${(stuckMs / 1000).toFixed(1)}s` : ''}\n` +
           `pathMode: ${rec.pathMode ?? 'none'}  waypoints: ${rec.currentPath.length}  failCount: ${rec.pathFailCount ?? 0}\n` +
           `squad: ${squad ? `${squad.id} (${rec.isLeader ? 'leader' : 'member'}, ${squad.order})` : 'none'}\n` +
-          `target: ${rec.lastKnownTarget ? 'tracking' : 'none'}  ammo: ${ammo.mag}/${ammo.reserve}${rec.reloadUntil != null ? ' (reloading)' : ''}`;
+          `target: ${rec.lastKnownTarget ? `tracking (${dist.toFixed(1)}m)` : 'none'}  ammo: ${ammo.mag}/${ammo.reserve}${rec.reloadUntil != null ? ' (reloading)' : ''}\n` +
+          `shots: ${rec.shotsFired}  hits: ${rec.hitsLanded}  kills: ${rec.kills}  deaths: ${rec.deaths}  distance traveled: ${rec.distanceTraveled.toFixed(1)}m`;
       }
       tableEl.innerHTML = '';
       for (const [id, memberRec] of botPlayers) {
@@ -4668,8 +4877,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         row.style.cssText = 'display:flex;align-items:center;gap:4px;padding:2px 3px;border-top:1px solid #2a323d;cursor:pointer;' +
           (isSel ? 'background:#2c3947' : '');
         const label = document.createElement('span');
-        label.style.cssText = 'flex:1;color:' + (combat.alive ? '#c4ccd6' : '#8a6a6a');
-        label.textContent = `${id}  ${memberRec.fsmState}  hp${Math.round(combat.hp)}  (${p.x.toFixed(0)},${p.z.toFixed(0)})  fail${memberRec.pathFailCount ?? 0}`;
+        const stuck = memberRec.stuckSince != null;
+        label.style.cssText = 'flex:1;color:' + (!combat.alive ? '#8a6a6a' : stuck ? '#e0a33a' : '#c4ccd6');
+        label.textContent = `${id}  ${memberRec.fsmState}  hp${Math.round(combat.hp)}  (${p.x.toFixed(0)},${p.z.toFixed(0)})  fail${memberRec.pathFailCount ?? 0}` +
+          `  k${memberRec.kills}/d${memberRec.deaths}${stuck ? '  STUCK' : ''}`;
         row.appendChild(label);
         const goBtn = document.createElement('button');
         goBtn.textContent = 'Go';
@@ -5681,6 +5892,60 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     applyDirectionalShadowMode();
     forestGPURef?.setBillboardBrightness(billBrightness(effectiveSun));
   }
+  // Time-of-day driver: called once per frame while params.todEnabled — computes real
+  // sun/moon geometry and drives the rig + sky + moonlight from it, overwriting whatever
+  // the manual Lighting sliders hold. skyRef may not exist yet on the very first calls
+  // (sky.js hasn't resolved) — each skyRef use below is guarded.
+  applyTimeOfDay = function applyTimeOfDay() {
+    const sun = sunPosition({ hour: params.todHour, latitudeDeg: params.todLatitude, dayOfYear: params.todDayOfYear });
+    const moon = moonPosition({ hour: params.todHour, latitudeDeg: params.todLatitude, dayOfYear: params.todDayOfYear, phaseOffsetHours: params.todMoonPhase });
+
+    rig.setElevation(sun.elevationDeg);
+    rig.setAzimuth(sun.azimuthDeg);
+    rigP.elevation = sun.elevationDeg; rigP.azimuth = sun.azimuthDeg;
+
+    if (!skyRef) {
+      syncControlDisplays(['rigP.elevation', 'rigP.azimuth']);
+      return;
+    }
+    skyRef.updateDome(sun.elevationDeg);
+    const nightness = skyRef.nightness;
+    skyRef.setSunDir(dirFromAzEl(sun.elevationDeg, sun.azimuthDeg, _sunDirScratch));
+    skyRef.setMoonDir(dirFromAzEl(moon.elevationDeg, moon.azimuthDeg, _moonDirScratch));
+    skyRef.setCelestialVisibility(sun.elevationDeg > -2, moon.elevationDeg > -2);
+
+    const sunIntensity = todSunMax * smoothstep(-2, 8, sun.elevationDeg);
+    rig.setSunIntensity(sunIntensity);
+    rigP.sunIntensity = sunIntensity;
+    rig.setSunColor(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, smoothstep(0, 12, sun.elevationDeg)));
+
+    const ambient = todAmbNight + (todAmbMax - todAmbNight) * (1 - nightness);
+    rig.setAmbientIntensity(ambient);
+    rigP.ambientIntensity = ambient;
+
+    if (moonLight) {
+      moonLight.intensity = TOD_MOON_MAX * smoothstep(-2, 10, moon.elevationDeg) * nightness;
+      moonLight.position.copy(camera.position).addScaledVector(_moonDirScratch, 120);
+      moonLight.target.position.copy(camera.position);
+      moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+    }
+
+    forestGPURef?.setBillboardBrightness(billBrightness(sunIntensity));
+
+    if (!todActivated) { todActivated = true; skyRef.setCelestialOpacityMode(true); }
+    syncControlDisplays(['rigP.elevation', 'rigP.azimuth', 'rigP.sunIntensity', 'rigP.ambientIntensity']);
+  };
+  // Per-frame driver step, called from animate() via the module-level ref so params stays
+  // in this callback's scope. Returns true when it drove the frame (loop skips the manual path).
+  todTick = (dtSec) => {
+    if (!params.todEnabled) return false;
+    if (params.todPlaying) {
+      params.todHour = (params.todHour + params.todSpeed * dtSec / 60) % 24;
+      syncControlDisplays(['params.todHour']);
+    }
+    applyTimeOfDay();
+    return true;
+  };
   const skyParts = {
     stars:    !['nostars', 'domeonly'].includes(SKY_MODE),
     milkyWay: !['nomilkyway', 'domeonly'].includes(SKY_MODE),
@@ -7728,13 +7993,24 @@ function updateShotEffects(nowMs) {
 
 // Apply a resolved hitscan/melee hit's damage to whatever it struck + play its impact cue.
 // Shared by the hitscan and melee fire branches.
+// Credits shotsFired/hitsLanded/kills/deaths onto botPlayers records (no-op for a non-bot
+// id, e.g. the human host). wasTargetAlive must be sampled before applyDamage so a kill/death
+// is only counted on the tick that actually flips alive -> dead, not on every follow-up hit.
+function bumpBotCombatCounters(attackerId, targetId, wasTargetAlive) {
+  const becameDead = wasTargetAlive && !playerCombat.getSnapshot(targetId).alive;
+  const attackerRec = botPlayers.get(attackerId);
+  if (attackerRec) { attackerRec.hitsLanded++; if (becameDead) attackerRec.kills++; }
+  if (becameDead) { const targetRec = botPlayers.get(targetId); if (targetRec) targetRec.deaths++; }
+}
 function applyHitDamage(hit, weapon, weaponId, ownerId) {
   if (hit && hit.kind === 'player') {
     if (!(playerImmortal && hit.id === 'host')) {
+      const wasAlive = playerCombat.getSnapshot(hit.id).alive;
       playerCombat.applyDamage({
         targetId: hit.id, amount: weapon.damage, source: 'gun',
         attackerId: ownerId, hitPoint: hit.point, weaponId,
       });
+      bumpBotCombatCounters(ownerId, hit.id, wasAlive);
       envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
       if (hit.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
     }
@@ -7777,6 +8053,7 @@ function applyExplosionBlast({ center, radius, damage, ownerId, floor }) {
         targetId: pl.id, amount: dmg, source: 'explosion',
         attackerId: ownerId, hitPoint: pl.p, weaponId: null,
       });
+      bumpBotCombatCounters(ownerId, pl.id, true); // pl.alive already checked true by the loop guard above
       if (pl.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
     }
     const rec = botPlayers.get(pl.id);
@@ -8307,16 +8584,18 @@ async function animate() {
   if (aimLock && fpsMode && toolIdFor(localPlayerId()) !== LIGHT_TOOL_ID) localAimTarget = 1;
   localAimAmount += (localAimTarget - localAimAmount) * Math.min(1, rawDt / 0.12);
   frameProfiler.time('sky', () => { if (skyRef) {
-    // Sky follows the camera (infinitely distant, no parallax) and the celestial disc +
-    // moonlight track the rig light direction so they stay locked to the water reflection.
+    // Sky follows the camera (infinitely distant, no parallax) regardless of driver mode.
     if (skyRef.group.userData.followCamera) skyRef.group.position.copy(camera.position);
-    const d = skyLightDir();
-    skyRef.setSunDir(d);
-    skyRef.updateDome(rig.elevation);   // blend day/dusk/night by sun elevation (uniform writes only)
-    if (moonLight) {
-      moonLight.position.copy(camera.position).addScaledVector(d, 120);
-      moonLight.target.position.copy(camera.position);
-      moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+    if (!(todTick && todTick(rawDt))) {
+      // Driver off: sky disc, moonlight, and reflection all share the same rig-driven direction.
+      const d = skyLightDir();
+      skyRef.setSunDir(d);
+      skyRef.updateDome(rig.elevation);   // blend day/dusk/night by sun elevation (uniform writes only)
+      if (moonLight) {
+        moonLight.position.copy(camera.position).addScaledVector(d, 120);
+        moonLight.target.position.copy(camera.position);
+        moonLight.target.updateMatrixWorld(); moonLight.updateMatrixWorld();
+      }
     }
     skyRef.update(now / 1000);
   } });

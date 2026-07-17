@@ -169,6 +169,64 @@ ambientIntensity: 0.8 }`; point lights start disabled (count 0) until toggled.
 sliders: `tile`, `zSlices`, `near`/`far` (600), `maxPerFroxel`, `capLights`, `count` (256),
 `reserve` (33), and `animate` (only `true` if URL has `?lightsAnimate=on`).
 
+## Time-of-day driver
+
+`environment-viewer.html` also has a "Time of day" header, built directly above "Lighting"
+in the same forest-panel scope, that can drive the rig from real solar geometry instead of
+manual sliders. It statically imports `sunPosition`/`moonPosition` from `solar-position.js`
+(pure declination/hour-angle math, no three.js dependency — see `docs/subsystems/sky.md`) and
+`lerpHex` from `sky-field.js`.
+
+- **Master toggle**: `params.todEnabled` (toggle, off by default). While on, `applyTimeOfDay()`
+  runs once per frame from the sky block in `animate()` and **overwrites** `rigP.elevation`,
+  `rigP.azimuth`, `rigP.sunIntensity`, `rigP.ambientIntensity` and their on-screen sliders every
+  frame — manual drags to the Elevation/Azimuth/Sun intensity/Ambient sliders while the driver
+  is on are visually reflected but overwritten the next frame. Turning the toggle off simply
+  stops calling `applyTimeOfDay()`; the rig keeps whatever values the driver last wrote, and
+  manual sliders regain normal control from there.
+- **Clock inputs**: `todHour` (0–24, HH:MM display), `todLatitude` (−90–90, default 45),
+  `todDayOfYear` (1–365, default 172 ≈ solstice), `todMoonPhase` (0–24 h offset fed to
+  `moonPosition`'s anti-sun approximation, default 12). `todSpeed` (0–600 game-min/real-sec) +
+  a Play/Pause button (`todPlaying`) auto-advance `todHour` in the per-frame sky block:
+  `todHour = (todHour + todSpeed * rawDt / 60) % 24`.
+- **`applyTimeOfDay()` behavior** (only reachable while `skyRef` — the lazy-loaded `sky.js`
+  instance — exists; a no-op-safe early return handles the brief window before it resolves):
+  1. Computes `sun = sunPosition({...})` and `moon = moonPosition({...})` for the current clock.
+  2. Drives `rig.setElevation(sun.elevationDeg)` / `rig.setAzimuth(sun.azimuthDeg)` directly
+     (azimuth/elevation from `solar-position.js` map straight onto the rig's convention, no
+     conversion — see `docs/superpowers/specs/2026-07-16-time-of-day-cycle-design.md`).
+  3. `skyRef.updateDome(sun.elevationDeg)`, then reads `skyRef.nightness` for the ambient ramp.
+  4. Sets independent sun/moon directions via `skyRef.setSunDir`/`setMoonDir` (a local
+     `dirFromAzEl(elevDeg, azDeg, out)` helper mirrors `skyLightDir()`'s az/el-to-vector
+     convention) and `skyRef.setCelestialVisibility(sunVisible, moonVisible)`, each visible when
+     that body's elevation is above −2°.
+  5. **Sun intensity** ramps in as the sun rises: `todSunMax * smoothstep(-2, 8, sun.elevationDeg)`
+     (`todSunMax = rigP.sunIntensity`, the manual default, so driver and manual peaks agree).
+  6. **Sun color** warms near the horizon: `lerpHex('#ffb066', '#fff4e0', smoothstep(0, 12,
+     sun.elevationDeg))` — orange low sun to neutral daylight by ~12° elevation.
+  7. **Ambient** cross-fades day/night fill: `todAmbNight + (todAmbMax - todAmbNight) * (1 -
+     nightness)`, with `todAmbNight = 0.12` and `todAmbMax = rigP.ambientIntensity`.
+  8. **Moon light**: `moonLight.intensity = 0.35 * smoothstep(-2, 10, moon.elevationDeg) *
+     nightness`, aimed at the moon direction (not the sun direction) — it only shows up once the
+     moon has cleared the horizon AND the scene has actually gone dark, so day + high moon
+     doesn't wash out the sunlit ramp.
+  9. Rebrightens tree billboards via `forestGPURef?.setBillboardBrightness(billBrightness(...))`,
+     same helper the manual sliders use.
+  10. **First activation** (latched via a local `todActivated` flag) calls
+      `skyRef.setCelestialOpacityMode(true)` once, so stars/Milky Way/planets start fading in
+      with `nightness` automatically — this is the same call the "Celestial opacity follows
+      time" checkbox makes manually.
+  - After writing `rigP`/`params`, it calls a small `syncControlDisplays(names)` helper (refreshes
+    each registered slider's DOM label/value from its bound object without re-firing `onChange`)
+    so the Lighting sliders visually track the driven values every frame.
+- **Persistence**: `todEnabled`/`todHour`/`todLatitude`/`todDayOfYear`/`todMoonPhase`/`todSpeed`
+  live on the shared `params` object, so they're captured for free by the generic
+  `slider()`/`toggle()` self-registration (`controlRegistry` → `captureSliderState`/
+  `applySliderState`/`saveSliderState`) that already backs presets and multiplayer world-setting
+  sync — there is no separate export/import block to hand-maintain. `todPlaying` is registered
+  the same way via a manual `controlRegistry.push` (it's driven by a Play/Pause button, not a
+  standard slider/toggle control).
+
 ## Tests
 
 `test-light-cluster.mjs` is a standalone Node script (no test framework — manual `ok()`

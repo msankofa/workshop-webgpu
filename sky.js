@@ -100,6 +100,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   group.userData.followCamera = true;
   let radius = skyRadius(camera.far, size);
   let dir = (sunDir || new THREE.Vector3(0.6, 0.55, 0.58)).clone().normalize();
+  let moonDir = null; // unset until setMoonDir() is called; setSunDir() drives the moon sprite until then
 
   let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyGas, bodiesGroup;
 
@@ -194,12 +195,13 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     if (moonSprite) moonSprite.visible = moon;
   }
 
-  function placeDisc(spr) {
-    const p = sunSpritePlacement([dir.x, dir.y, dir.z], radius, { ...palette, celestialType: spr.userData.moon ? 'moon' : 'sun' });
+  function placeDisc(spr, d) {
+    const p = sunSpritePlacement([d.x, d.y, d.z], radius, { ...palette, celestialType: spr.userData.moon ? 'moon' : 'sun' });
     spr.position.set(p.position.x, p.position.y, p.position.z);
     spr.scale.set(p.scale, p.scale, 1);
   }
-  function placeSun() { if (sunSprite) placeDisc(sunSprite); if (moonSprite) placeDisc(moonSprite); }
+  function placeSun() { if (sunSprite) placeDisc(sunSprite, dir); if (moonSprite) placeDisc(moonSprite, moonDir || dir); }
+  function placeMoon() { if (moonSprite) placeDisc(moonSprite, moonDir); }
 
   build();
   const builtRadius = radius;   // geometry is fixed at this radius; setRadius() only scales
@@ -244,7 +246,19 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 
   return {
     group,
-    setSunDir(v) { dir.copy(v).normalize(); domeU.sunDir.value.copy(dir); placeSun(); },
+    setSunDir(v) {
+      dir.copy(v).normalize(); domeU.sunDir.value.copy(dir);
+      if (sunSprite) placeDisc(sunSprite, dir);
+      if (!moonDir && moonSprite) placeDisc(moonSprite, dir); // back-compat: no independent moon dir yet
+    },
+    // Time-of-day: independent moon direction — does not move the sun sprite.
+    setMoonDir(v) { moonDir = (moonDir || new THREE.Vector3()).copy(v).normalize(); placeMoon(); },
+    get moonDir() { return moonDir ? moonDir.clone() : null; },
+    // Explicit per-disc visibility for an external driver, bypassing setCelestialType/updateDiscVisibility.
+    setCelestialVisibility(sunVisible, moonVisible) {
+      if (sunSprite) sunSprite.visible = !!sunVisible;
+      if (moonSprite) moonSprite.visible = !!moonVisible;
+    },
     // Time-of-day: blend the dome to the given sun elevation (degrees). Uniform writes only.
     updateDome(elevDeg) { applyDome(elevDeg); },
     // When true, celestial (stars/Milky Way/bodies) opacity is multiplied by nightness.
