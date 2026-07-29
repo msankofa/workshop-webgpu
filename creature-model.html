@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Procedural Creature Model</title>
+<style>
+  :root {
+    --bg: #16130e;
+    --panel: #1e1a13;
+    --ink: #d8cdb4;
+    --dim: #9a8f78;
+    --accent: #c9a45c;
+    --rule: #3a3325;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Georgia, 'Iowan Old Style', Palatino, serif;
+    line-height: 1.6;
+  }
+  .page { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { text-align: center; margin-bottom: 40px; }
+  h1 { font-size: 2rem; font-weight: normal; letter-spacing: 0.06em; color: var(--accent); }
+  header p { color: var(--dim); font-style: italic; margin-top: 8px; }
+  h2 {
+    font-size: 1.15rem; font-weight: normal; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--accent);
+    margin: 56px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--rule);
+  }
+  h3.sub { font-weight: normal; color: var(--accent); margin: 20px 0 6px; }
+  p + p { margin-top: 12px; }
+  em { color: var(--accent); font-style: italic; }
+  ul, ol { margin: 10px 0 0 24px; }
+  li + li { margin-top: 6px; }
+  .figure { margin: 8px auto 0; max-width: 820px; }
+  .figure svg { width: 100%; height: auto; display: block; border-radius: 4px; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+  .figure figcaption { text-align: center; color: var(--dim); font-style: italic; font-size: .9rem; margin-top: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px;
+  }
+  .card h3 { font-weight: normal; color: var(--accent); letter-spacing: .08em; margin-bottom: 8px; }
+  .card .tag { color: var(--dim); font-size: .82rem; font-style: italic; }
+  .card p { font-size: .95rem; margin-top: 8px; }
+  .loop {
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 20px 24px; margin-top: 20px; font-size: .98rem;
+  }
+  .loop ol { margin-left: 20px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--accent); font-weight: normal; letter-spacing: .1em; text-transform: uppercase; font-size: .8rem; }
+  td code, p code, li code { font-family: Consolas, Menlo, monospace; font-size: .85em; color: var(--ink); background: #262115; padding: 1px 5px; border-radius: 3px; }
+  .rule-callout {
+    border-left: 3px solid var(--accent); background: var(--panel);
+    padding: 14px 20px; margin-top: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>The Procedural Creature Model</h1>
+  <p>The four parts of a procedural creature, and how they work together</p>
+</header>
+
+<p>This page is for anyone who works on the bots in <code>bot-viewer-v2.html</code>, or who plans to build new creature types (a dog, a bird, a fish) on the same code. It names the four parts of a procedural creature, shows how they work together, and states the one design rule that keeps the code healthy.</p>
+
+<figure class="figure">
+<svg viewBox="0 0 800 860" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Vitruvian-man style diagram of a bot: a robot figure in two overlaid poses inside a square and a circle that measure its reach, annotated with mind, senses, and body, with the environment shown as the world around the figure.">
+  <defs>
+    <filter id="parchment" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="0 0 0 0 0.72  0 0 0 0 0.65  0 0 0 0 0.50  0 0 0 0.06 0"/>
+      <feComposite in2="SourceGraphic" operator="over"/>
+    </filter>
+    <style>
+      .paper { fill: #e6d9b8; }
+      .ink   { stroke: #4a3b26; fill: none; }
+      .inkf  { fill: #4a3b26; }
+      .limb  { stroke: #4a3b26; stroke-width: 13; stroke-linecap: round; fill: none; }
+      .joint { fill: #e6d9b8; stroke: #4a3b26; stroke-width: 3; }
+      .ghost { opacity: 0.42; }
+      .lbl   { font-family: Georgia, 'Iowan Old Style', Palatino, serif; fill: #4a3b26; font-style: italic; }
+      .lbl-b { font-size: 21px; letter-spacing: 3px; }
+      .lbl-s { font-size: 13.5px; }
+      .leader { stroke: #4a3b26; stroke-width: 1; opacity: 0.55; fill: none; }
+    </style>
+  </defs>
+
+  <!-- parchment -->
+  <rect class="paper" x="0" y="0" width="800" height="860"/>
+  <rect x="0" y="0" width="800" height="860" filter="url(#parchment)" fill="#e6d9b8" opacity="0.5"/>
+
+  <!-- mirrored notebook line, da Vinci style -->
+  <text class="lbl lbl-s" transform="translate(800,0) scale(-1,1)" x="130" y="38" opacity="0.65">the creature is the joint product of every value</text>
+
+  <!-- the square and circle: reach measurements, as in the original Vitruvian drawing -->
+  <circle class="ink" cx="400" cy="385" r="245" stroke-width="2.5"/>
+  <rect class="ink" x="160" y="150" width="480" height="480" stroke-width="2.5"/>
+
+  <!-- hearing radius -->
+  <circle class="ink" cx="400" cy="178" r="95" stroke-width="1.2" stroke-dasharray="2 6" opacity="0.7"/>
+  <!-- vision cone -->
+  <g opacity="0.75">
+    <path class="ink" d="M 412 172 L 648 84" stroke-width="1.4" stroke-dasharray="7 5"/>
+    <path class="ink" d="M 412 184 L 672 208" stroke-width="1.4" stroke-dasharray="7 5"/>
+    <path class="ink" d="M 648 84 A 262 262 0 0 1 672 208" stroke-width="1.4" stroke-dasharray="7 5"/>
+  </g>
+
+  <!-- ghost pose: arms raised to the circle, legs spread to the circle -->
+  <g class="ghost">
+    <path class="limb" d="M 356 240 L 300 218 L 252 189"/>
+    <path class="limb" d="M 444 240 L 500 218 L 548 189"/>
+    <circle class="joint" cx="300" cy="218" r="7"/>
+    <circle class="joint" cx="500" cy="218" r="7"/>
+    <circle class="inkf" cx="252" cy="189" r="9"/>
+    <circle class="inkf" cx="548" cy="189" r="9"/>
+    <path class="limb" d="M 382 368 L 320 480 L 256 583"/>
+    <path class="limb" d="M 418 368 L 480 480 L 544 583"/>
+    <circle class="joint" cx="320" cy="480" r="7"/>
+    <circle class="joint" cx="480" cy="480" r="7"/>
+    <circle class="inkf" cx="256" cy="583" r="9"/>
+    <circle class="inkf" cx="544" cy="583" r="9"/>
+  </g>
+
+  <!-- primary pose: arms horizontal to the square, legs together on its base -->
+  <path class="limb" d="M 356 240 L 255 240 L 163 240"/>
+  <path class="limb" d="M 444 240 L 545 240 L 637 240"/>
+  <circle class="joint" cx="255" cy="240" r="7"/>
+  <circle class="joint" cx="545" cy="240" r="7"/>
+  <circle class="inkf" cx="163" cy="240" r="9"/>
+  <circle class="inkf" cx="637" cy="240" r="9"/>
+
+  <path class="limb" d="M 383 368 L 380 495 L 378 614"/>
+  <path class="limb" d="M 417 368 L 420 495 L 422 614"/>
+  <circle class="joint" cx="380" cy="495" r="7"/>
+  <circle class="joint" cx="420" cy="495" r="7"/>
+  <rect class="inkf" x="360" y="616" width="38" height="13" rx="5"/>
+  <rect class="inkf" x="404" y="616" width="38" height="13" rx="5"/>
+
+  <!-- torso, pelvis, neck, head -->
+  <rect class="inkf" x="393" y="199" width="14" height="16"/>
+  <rect x="356" y="212" width="88" height="122" rx="15" fill="#e6d9b8" stroke="#4a3b26" stroke-width="4"/>
+  <rect x="366" y="338" width="68" height="34" rx="11" fill="#e6d9b8" stroke="#4a3b26" stroke-width="4"/>
+  <line class="ink" x1="368" y1="252" x2="432" y2="252" stroke-width="2.5"/>
+  <line class="ink" x1="368" y1="300" x2="432" y2="300" stroke-width="2.5"/>
+  <circle class="ink" cx="400" cy="276" r="9" stroke-width="2.5"/>
+  <rect x="376" y="156" width="48" height="44" rx="9" fill="#e6d9b8" stroke="#4a3b26" stroke-width="4"/>
+  <rect class="inkf" x="384" y="170" width="32" height="9" rx="4"/>
+
+  <!-- labels + leaders -->
+  <text class="lbl lbl-b" x="118" y="92">MIND</text>
+  <text class="lbl lbl-s" x="118" y="112">the state machine — intent, and when to switch it</text>
+  <path class="leader" d="M 200 120 Q 300 140 374 162"/>
+
+  <text class="lbl lbl-b" x="596" y="52">SENSES</text>
+  <text class="lbl lbl-s" x="596" y="72">the filter — field of view,</text>
+  <text class="lbl lbl-s" x="596" y="89">hearing, reaction delay</text>
+
+  <text class="lbl lbl-b" x="648" y="330">BODY</text>
+  <text class="lbl lbl-s" x="648" y="350">rig, gait, and IK —</text>
+  <text class="lbl lbl-s" x="648" y="367">it works out the</text>
+  <text class="lbl lbl-s" x="648" y="384">limbs on its own</text>
+  <path class="leader" d="M 642 322 Q 590 280 552 248"/>
+
+  <text class="lbl lbl-b" x="26" y="496">ENVIRONMENT</text>
+  <text class="lbl lbl-s" x="26" y="516">the world around the creature —</text>
+  <text class="lbl lbl-s" x="26" y="533">terrain, threats, sounds</text>
+  <g opacity="0.85">
+    <path class="ink" d="M 26 600 L 56 565 L 80 590 L 104 555 L 138 600" stroke-width="2"/>
+    <line class="ink" x1="18" y1="600" x2="146" y2="600" stroke-width="2"/>
+    <path class="ink" d="M 52 628 A 13 13 0 0 1 52 652" stroke-width="1.6"/>
+    <path class="ink" d="M 62 620 A 24 24 0 0 1 62 660" stroke-width="1.6"/>
+  </g>
+
+  <text class="lbl lbl-s" x="400" y="678" text-anchor="middle">the square and the circle measure the body:</text>
+  <text class="lbl lbl-s" x="400" y="695" text-anchor="middle">the full reach of its limbs, in two poses</text>
+
+  <!-- measure ticks -->
+  <line class="ink" x1="160" y1="722" x2="640" y2="722" stroke-width="1.5"/>
+  <g class="ink" stroke-width="1.5">
+    <line x1="160" y1="714" x2="160" y2="730"/><line x1="220" y1="717" x2="220" y2="727"/>
+    <line x1="280" y1="717" x2="280" y2="727"/><line x1="340" y1="717" x2="340" y2="727"/>
+    <line x1="400" y1="712" x2="400" y2="732"/><line x1="460" y1="717" x2="460" y2="727"/>
+    <line x1="520" y1="717" x2="520" y2="727"/><line x1="580" y1="717" x2="580" y2="727"/>
+    <line x1="640" y1="714" x2="640" y2="730"/>
+  </g>
+  <text class="lbl lbl-s" x="400" y="752" text-anchor="middle">the body limits the mind · the mind activates the body</text>
+
+  <text class="lbl lbl-s" x="400" y="812" text-anchor="middle" font-size="16">the vitruvian bot — mind, senses, body, environment</text>
+</svg>
+<figcaption>The same robot in two poses. The square and the circle measure how far its body can reach. The environment is the world around it.</figcaption>
+</figure>
+
+<h2>What a procedural creature is</h2>
+<p>A procedural creature is a creature that code defines completely. Variable values decide its appearance, its actions, its states, and how it responds to its environment. Change the values and you get a different creature.</p>
+<p>The creature you see is the result of all its variables acting together. In that sense, every variable relates to every other variable. But the code must not tangle them together. Keep each variable independent in the code. Let the connections appear only in the creature on screen.</p>
+
+<h2>The four parts</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Body</h3>
+    <span class="tag">structure and movement</span>
+    <p>Which parts exist, how they connect, and their proportions — plus the machinery that moves them: gait, inverse kinematics (IK), stepping, stance, and balance. The body moves itself. Give it a destination, and it works out the limbs on its own. The mind never controls the knees.</p>
+  </div>
+  <div class="card">
+    <h3>Mind</h3>
+    <span class="tag">the state machine</span>
+    <p>Holds the creature's current intent: patrol, flee, pursue, or help a wounded ally. It changes intent when conditions change. Its output is small: a goal, an urgency, and a stance. It never sends muscle commands.</p>
+  </div>
+  <div class="card">
+    <h3>Senses</h3>
+    <span class="tag">the filter in front of the mind</span>
+    <p>The mind never reacts to the world directly. It reacts only to what passes through the field-of-view cone, the hearing radius, and the reaction delay. Two creatures in the same situation often act differently. The main reason: they perceived different situations.</p>
+  </div>
+  <div class="card">
+    <h3>Environment</h3>
+    <span class="tag">everything that puts pressure on the creature</span>
+    <p>Terrain, threats, sounds, and other creatures. It does not command the creature. It only exists, and pressure comes from that.</p>
+  </div>
+</div>
+
+<h2>How the parts work together</h2>
+<div class="loop">
+  <ol>
+    <li>The environment produces events.</li>
+    <li>The senses decide what the creature notices.</li>
+    <li>The mind decides what to do about it, and when.</li>
+    <li>The body decides whether it can do it, and how.</li>
+    <li>The action changes the environment. The loop repeats.</li>
+  </ol>
+</div>
+
+<h2>How mind and body limit each other</h2>
+<p>The limits run in both directions:</p>
+<ul>
+  <li><em>The body limits the mind.</em> The mind can only choose actions the body can perform. A prone creature cannot start sprinting instantly. A creature without hands cannot grab.</li>
+  <li><em>The mind activates the body.</em> The body acts only when the mind commits to a goal.</li>
+</ul>
+<p>The code shows this directly. The state machine picks "get to cover". The nav grid answers "here is a path you can reach". The stance and gait system answers "here is how fast you cross it".</p>
+
+<h2>Two ways to make creatures different</h2>
+<h3 class="sub">Change values — works today</h3>
+<p>Change parameter values and a different creature appears. The specialist roles prove this: sniper and technical are pure data (<code>sightScale</code>, <code>closeRange</code>, <code>swapOnDryMag</code>). The logic has no role branches. Stances derive from the rig instead of hardcoded heights. Weapon carries resolve through one shared table.</p>
+<h3 class="sub">Change structure — not ready yet</h3>
+<p>The current bots assume a humanoid: two legs, arms and hands, and combat-shaped states. These assumptions live in the structure of the code, not in data. To build a dog, a bird, or a fish, each assumption must become swappable data:</p>
+<ul>
+  <li>a body plan (leg count, proportions, skeleton),</li>
+  <li>a gait module that reads the body plan,</li>
+  <li>a species-specific state set that plugs into the same state machine,</li>
+  <li>sense tuning (field of view, hearing, reaction) per species.</li>
+</ul>
+<p>The legacy creature-viewer already solved the structure half. Its <code>BODY_PLANS</code>, <code>GAITS</code>, and <code>MODEL_STYLES</code> are composable data with arbitrary leg counts. But it has none of v2's behavior depth. The goal is the merge: that structural generality carrying bot-v2's behavior machinery.</p>
+
+<div class="rule-callout"><strong>The design rule:</strong> when two creatures differ, express the difference as a data field, not as an if-branch. Every <code>if (role === …)</code> you avoid brings "creature = a point in parameter space" closer to being literally true.</div>
+
+<h2>Where each part lives in the code</h2>
+<table>
+  <tr><th>Part</th><th>Code (bot-viewer-v2)</th></tr>
+  <tr><td>Mind</td><td>FSM in <code>bot-entity.js</code> + <code>bot-states/</code>, roles in <code>bot-roles.js</code>, squads in <code>bot-squad.js</code></td></tr>
+  <tr><td>Senses</td><td>FOV cone + hearing in <code>bot-alert.js</code>, reaction delay, squad alert propagation</td></tr>
+  <tr><td>Body</td><td>instanced rig (<code>body-part-batches.js</code>), stances (<code>bot-stance.js</code>), weapon holds (<code>weapon-hold-resolver.js</code>), ragdoll (<code>ragdoll.js</code>)</td></tr>
+  <tr><td>Environment</td><td>maze/walls, <code>bot-terrain.js</code>, <code>nav-grid.js</code> (the body's reachability answer), <code>bot-cover.js</code></td></tr>
+  <tr><td>The limits</td><td>FSM goal → nav-grid path → stance/gait speed</td></tr>
+</table>
+
+</div>
+</body>
+</html>
