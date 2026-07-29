@@ -149,6 +149,14 @@ That works only if the existing discipline holds:
 - When the harness and the game disagree on shared behavior, that is a bug in one of them,
   not a fork.
 
+The contract flows both ways. When the merge reshapes the bot architecture — the where/how
+steering seam, the unified perception model, an extracted brain module — v3 must adopt those
+same changes. Shared modules propagate automatically (both apps import the same files); the
+architectural changes must be actively back-ported into v3's inline harness code. After that,
+v3's capsule locomotion is one interchangeable "how" backend behind the same seam the creature
+bodies use. A v3 that keeps iterating on the pre-merge architecture no longer ports cleanly,
+which defeats its purpose.
+
 ## Out of scope for this doc
 
 Non-combat gameplay directions and new body plans (birds, fish, worms) are under discussion

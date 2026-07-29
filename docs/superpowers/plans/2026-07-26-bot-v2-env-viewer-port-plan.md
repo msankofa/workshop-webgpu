@@ -38,7 +38,10 @@ merged system. So this port gates everything downstream, not just bot parity.
 **The harness survives this port.** The bot viewer continues as **bot viewer v3** after the
 port — an independent harness, never dissolved into the game. Its purpose stays: develop bots
 in shared, pure modules so they port cleanly into environment viewer v2 (see
-`docs/merged-procedural-creature.md`, "The bot viewer survives as bot viewer v3").
+`docs/merged-procedural-creature.md`, "The bot viewer survives as bot viewer v3"). The contract
+is two-way: merge-driven architectural changes (the where/how steering seam, unified perception,
+a brain extraction) get back-ported into v3 so the harness keeps iterating on the same
+architecture the game runs.
 
 Two merge-aware notes for the port itself:
 
