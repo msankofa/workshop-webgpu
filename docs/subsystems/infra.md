@@ -1,4 +1,4 @@
-﻿# Infra / Debug UI
+# Infra / Debug UI
 
 > ðŸ—ºï¸ [View this subsystem in the interactive code map](../../code-map.html#infra)
 
@@ -16,13 +16,31 @@ multiplayer relay from one dashboard.
 `serve.py` (repo root, not itself under `docs/subsystems/` naming but documented here since
 it's the thing `perfLog`'s auto-save POSTs to) also owns the `/api/save-stats` endpoint that
 lets perf captures save themselves into `research/stats/` — see "Perf capture auto-save" below.
+`POST /api/save-bot-state?filename=bot-state-trace-<YYYYMMDD-HHMMSS>.tsv` is the same pattern for
+`bot-viewer-v2.html`'s state recorder, writing into `bot-states/` (filename validated against
+`_SAFE_BOT_STATE_FILENAME`, `-N` suffix on collision) — see `docs/subsystems/bot-state-codes.md`.
+It also owns `GET /api/list-states` (see "Folder seeding" below) and `GET /api/list-music`
+(enumerates `sfx/music/*.{mp3,wav,ogg,m4a,flac,opus,webm}`, no client input involved — see
+`docs/subsystems/audio.md`'s "Start-screen menu music" for the consumer, `start-screen.js`'s
+`_musicPicker`). `GET /api/list-maze-layouts` + `POST /api/save-maze-layout?filename=layout-<kind>-<stamp>.json`
+(2026-07-30) are the same list/save pair for `maze layouts/`: the harness's "Export layout JSON"
+button saves pcw-layout worlds there, and `start-screen.js`'s Maze Layouts card lists them
+(filename validated against `_SAFE_MAZE_LAYOUT_FILENAME`, body must parse as JSON, `-N` suffix on
+collision). Every response also carries `Document-Policy: js-profiling`, which opts served
+pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf traces.
+
+- **`bot-diag-<stamp>.json`** (added 2026-07-29) — counters saved beside each trace through the same
+  `POST /api/save-bot-state` endpoint; `_SAFE_BOT_STATE_FILENAME` now accepts either
+  `bot-state-trace-YYYYMMDD-HHMMSS.tsv` or `bot-diag-YYYYMMDD-HHMMSS.json` and still rejects anything
+  else (basename-reduced, regex-validated, `-N` collision suffix). Kept out of the TSV on purpose:
+  comment lines or extra rows there break consumers that read the trace by column index.
 
 ## Files
 
 | File | Responsibility | Lines |
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 126 |
-| `environment-ui.js` | Builds the tabbed `#workshop-ui` shell (Scene/Creatures/Models/Effects/Walk/Perf/Presets/Audio tabs), re-parents existing DOM panels into it, builds the read-only "Perf" tab content (live metrics, frame-stage bars, capture controls, raw debug feed), builds the "Presets" tab (save/load/delete named slider states via a `sliderState` object passed into `createEnvironmentUi`), and builds the "Audio" tab (SFX folder + volume/mute/output/effects/track controls) when an `audio` controller is passed in. | 1065 |
+| `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
@@ -56,7 +74,7 @@ export function createEnvironmentUi({ perfLog, sliderState, audio } = {})
 ```
 
 Builds and appends the `#workshop-ui` `<aside>` to `document.body`, installs its stylesheet once (`#workshop-ui-style`), and returns:
-- `activate(tabId)` â€” switches the active tab (`scene | creatures | models | effects | walk | perf | presets | audio`).
+- `activate(tabId)` â€” switches the active tab (`world | entities | player | assets | audio | tools`).
 - `updatePerf` â€” bound to the internal `host._updatePerf(snapshot)` function built in `buildPerfPanel`; renders one perf-log snapshot into the Perf tab (metrics, sparkline, scene-figures rows, per-stage timing bars, capture button state).
 
 `sliderState` (optional) is `{ capture(), apply(values), list(), save(name, values), remove(name), import(obj, { overwrite }) }`,
@@ -183,7 +201,9 @@ shooter runtime is imported — all viewer state is injected through `options`.
 
 Options: `THREE` (required), `scene`, `camera`, `getPlayerPosition()`, `isGameplayActive()`,
 optional `isDucked()`, optional `getSpeakerTargets()` (reserved for a future creature-follow
-speaker mode), and `workletUrl` (default `./music-pitch-processor.js?v=1`).
+speaker mode), `workletUrl` (default `./music-pitch-processor.js?v=1`), and two flags used by
+`bot-viewer-v2.html`: `autoplayOnGesture` (default `true`; `false` stops a user gesture from
+starting music that wasn't already playing) and `shuffle` (default `false`).
 
 Returned methods: `init()`, `noteGesture()`, `update(timestampMs)` (call once per frame after
 camera/player movement — refreshes the Web Audio listener and speaker-orb follow),
@@ -191,13 +211,16 @@ camera/player movement — refreshes the Web Audio listener and speaker-orb foll
 `playAt(eventId, position, volume?, options?)`, `setVolume(kind, value)` /
 `setMuted(kind, muted)` (`kind` = `master`|`music`|`sfx`), `setMusicOutput(mode)`
 (`global`|`speaker`), `setMusicSpeakerBehavior(mode)` (`front`|`behind`|`orbit`|`above`),
-`setMusicEffect(key, value)` (`bass`|`echo`|`reverb`|`attenuation`|`tempo`|`pitch`),
+`setMusicEffect(key, value)` (`bass` dB 0-18 | `echo`/`reverb` % 0-100 | `attenuation` % 0-200 |
+`tempo` % 50-200 | `pitch` semitones ±12 — these are raw controller units, not 0-1),
+`loadMusicHttp(opts)` (the `sfx/music/` listing source), `setShuffle(bool)`,
+`getMusicProgress()` / `seekMusic(fraction)` (polled transport position — not in `getState()`),
 `getState()`, `subscribe(listener)` (returns an unsubscribe fn), `dispose()`, plus optional
 transport `prevTrack()` / `togglePlayback()` / `nextTrack()`.
 
 `getState()` read contract (consumed by the Audio tab; missing keys fall back to UI defaults):
 `masterVolume`, `musicVolume`, `sfxVolume`, `masterMuted`, `musicMuted`, `sfxMuted`,
-`musicOutput`, `speakerBehavior`, `effects{bass,echo,reverb,attenuation,tempo,pitch}`,
+`musicOutput`, `speakerBehavior`, `shuffle`, `effects{bass,echo,reverb,attenuation,tempo,pitch}`,
 `sfxFolderStatus`, `currentTrackLabel`, `musicPlaying` (plus extra diagnostic fields:
 `ready`, `sfxFolderName`, `loadedEvents`, `loadedMusicEvents`, `playlist`, `pendingMusicRetry`,
 `pitchAvailable`).
@@ -276,6 +299,10 @@ dashboard and JSON API; the dashboard then starts the actual managed processes:
   `stellar-viewer.html`, `biome-explainer.html`, and other module-based pages.
 - `relay` starts `node server.js` in `server/` with `PORT=<port>`. This is the
   local WebSocket relay used by multiplayer.
+- `compress` starts `node index.mjs` in `glb-shrink-server/` with `PORT=<port>`
+  (default `3847`). This is the local API used by `weapon-viewer-v2.html`'s Compress panel to
+  shrink weapon `.glb` files (Draco geometry + WebP textures) — see
+  `docs/subsystems/weapon-compression.md`.
 
 Both managed servers default to port `8080`, so for local multiplayer testing the usual
 setup is to run the static server on another port, such as `8001`, and leave the relay
@@ -290,7 +317,9 @@ Implementation notes: `server-tool.py` keeps one `subprocess.Popen` per managed 
 captures stdout/stderr into an in-memory ring buffer, exposes `/api/status`,
 `/api/logs`, `/api/start`, `/api/stop`, `/api/restart`, and `/api/clear-logs`, and
 terminates managed processes on Ctrl+C. If the relay exits immediately with a missing
-`ws` import, install dependencies in `server/` with `npm install`.
+`ws` import, install dependencies in `server/` with `npm install`. Same for `compress`
+exiting immediately with a missing module — `npm install` in `glb-shrink-server/` (see that
+folder's note in `weapon-compression.md` about Google-Drive-synced paths and `sharp`).
 
 ## Wiring (`environment-viewer.html`)
 
@@ -329,8 +358,7 @@ Consumption: `perfLog.snapshot(now)` (the page's own perf-log object, ~line 480-
 
 `environment-ui.js` is **not** where the subsystem tuning sliders (terrain, water, grass, forest, sky, lights) are defined â€” confirmed by reading both files. Those are built entirely inline in `environment-viewer.html`'s "control panel" section (~line 1507 onward), which constructs the `#ctrl` floating panel itself (own `<style>` block, drag handling, minimize button) plus a local `slider(key, label, min, max, step, fmt, onChange, obj)` helper and a `header(text)` helper that opens collapsible `.sec` sections. The section titles built there are: `Forest`, `Tree LOD`, `Lighting`, `Scene`, `Post`, `Particles`, `Grass` (x2), `Water`, `Water Reflection`, `Water LOD`, `Clouds (layer 1)`, `Clouds (layer 2)`, `Sky`.
 
-`environment-ui.js`'s `createEnvironmentUi` only builds a tabbed *shell* and, via `mountCtrl()`/`routeSections()` (a `MutationObserver` on `#ctrl-body`), re-parents the already-built `#ctrl` panel's `.sec` children into either its `scene` or `effects` tab panel â€” sorted purely by section title against a hardcoded `effectsNames` set (`Post`, `Particles`, `Water`, `Clouds`, `Sky`; everything else, e.g. `Forest`/`Lighting`/`Scene`/`Grass`, lands in `scene`). A separate `mountFixedUi()` (driven by a `MutationObserver` on `document.body`) re-parents `#port-creature-ui` into the `creatures` tab and `#fps` into the `walk` tab. None of these controls are authored by `environment-ui.js` â€” it only relocates existing DOM and restyles it via CSS overrides (the large `!important` block in `installStyle()`).
-
+`environment-ui.js`'s `createEnvironmentUi` builds the compact inspector shell and, via `mountCtrl()`/`routeSections()` (a `MutationObserver` on `#ctrl-body`), re-parents already-built `#ctrl` `.sec` elements into World, Entities, Player, or Tools according to their title. World receives terrain, biome, water, vegetation, dressing, atmosphere, and image-FX sections; Entities receives ClaudeCraft and combat sections; Player receives the Player utilities section; Tools receives Perf A/B. `mountFixedUi()` re-parents `#port-creature-ui` under the parent `Procedural Creatures` accordion and `#fps` into Player. The stats UI is hosted in the creature accordion's `Analytics` child. None of these controls are authored by `environment-ui.js` -- it only relocates existing DOM and restyles it.
 The pieces of UI `environment-ui.js` genuinely *builds* (not just re-hosts) are the Perf tab (live-metrics cards, sparkline, per-stage timing bars, capture controls â€” all read-only, driven by `perfLog`/`frameProfiler` snapshots), the Presets tab (`buildPresetsPanel`, save/load/delete named slider states via the `sliderState` param), and the Audio tab (`buildAudioPanel`, folder/volume/mute/output/effects/track controls driven by the `audio` param â€” see the Public API section above for its full control-ID surface).
 
 So the real division of labor: `environment-viewer.html` owns all interactive scene/tuning controls (sliders, dropdowns, toggles), the `controlRegistry`/`captureSliderState`/`applySliderState` machinery those controls self-register into, and all per-frame profiler instrumentation calls; `environment-audio.js` (when present) owns the actual audio mixer/state; `environment-ui.js` owns layout/chrome (tabbed shell + CSS), the read-only performance HUD, the Presets tab's save/load/delete UI, and the Audio tab's controls (both of which only call into the `sliderState`/`audio` objects handed to them, with no storage/mixing logic of their own), while passively absorbing the other modules' pre-built panels into its remaining tabs.
@@ -538,3 +566,25 @@ verbatim. It also checks `overlayColorizer` returns a valid `[r,g,b]` 0..255 + `
 `MAP_OVERLAYS` id and that the water/grass/material layers track their underlying data (30 assertions).
 The browser wrappers (`bakeMapCanvas`, `createWorldMapOverlay`) are canvas/DOM-dependent and untested.
 
+
+## Inspector layout (2026-07-18)
+
+`environment-ui.js` now presents the live controls as a right-docked in-game inspector: a 56px icon rail remains visible when closed, and the open state is a 400px-or-less scrollable column. The six destinations are `world`, `entities`, `player`, `assets`, `audio`, and `tools`; clicking an active rail icon closes the drawer. Each icon has an accessible label and a hover tooltip.
+
+`routeSections()` still re-parents existing `#ctrl` sections, but now routes terrain, biome, water, vegetation, dressing, atmosphere, and image-FX controls into World; ClaudeCraft and combat controls into Entities; Player utilities into Player; and Perf A/B into Tools. The pre-existing procedural-creature UI is nested below a parent `Procedural Creatures` accordion, with the stats UI nested below `Analytics`; no slider bindings or runtime control ownership moved out of their source modules.
+
+On viewports at or below 720px the dock becomes a bottom sheet with a horizontal icon strip. CSS transitions handle drawer, tab, accordion, hover, slider-readout, toggle, and compact action-toast feedback without taking focus from gameplay.
+
+The host/solo #creature-command-hud (pets, threats, wildlife, and interaction-key summary) is also re-parented into the Procedural Creatures body, so it no longer floats over the game or competes with the dock. Population uses an explicit subheading instead of an overlaid pseudo-element; the collapsed dock explicitly removes its panel layer.
+The rail is stacked above the panel and permits its hover tooltip to escape the collapsed dock boundary, so labels remain readable.
+
+The inspector starts collapsed. When open on desktop, its left-edge resize nub supports pointer and Arrow-key resizing across the available viewport and persists the preferred width in `pcw:inspectorWidth`.
+
+## Theme controls (2026-07-18)
+
+The inspector's Theme destination persists its state under `pcw:uiTheme`. Its component picker edits Settings panel, Map, or Health / ammo surface, border, text, and accent colors with a native color picker, hex input, surface-opacity slider, and bundled color-map presets. Paint mode sets a brush cursor and captures a click on `#workshop-ui`, `#mp-dock`/`#world-map`, or `#combat-hud` to select the corresponding component and element. The Theme module only changes CSS variables; it does not alter map data, combat values, or gameplay controls.
+Paint-mode pointer and click events are consumed after selection, so the clicked UI control cannot also activate.
+
+A paint-picked target receives a persistent outline and remains the active color-editor target after paint mode is disabled; while painting, only the color picker and surface-opacity slider stay interactive.
+
+Theme paint uses right-click for target selection and consumes that context action only; ordinary left-click interactions remain available while paint mode is on.

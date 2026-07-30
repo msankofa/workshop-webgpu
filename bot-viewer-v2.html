@@ -11241,11 +11241,23 @@ const exportLayoutRow = document.createElement('div');
 exportLayoutRow.style.cssText = 'display:flex;gap:4px;margin:0 0 6px';
 const exportLayoutBtn = document.createElement('button');
 exportLayoutBtn.textContent = 'Export layout JSON';
-exportLayoutBtn.title = 'Download the live walls/cover/bounds/spawns as a pcw-layout file the shoot-house loader can open';
+exportLayoutBtn.title = 'Save the live walls/cover/bounds/spawns as a pcw-layout file into "maze layouts/" (falls back to a download off-server)';
 exportLayoutBtn.style.cssText = 'margin:0;flex:1';
-exportLayoutBtn.addEventListener('click', () => {
-  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
-  downloadTraceFile(`layout-${activeLayoutKind}-${stamp}.json`, JSON.stringify(captureInterchangeLayout(), null, 2), 'application/json');
+exportLayoutBtn.addEventListener('click', async () => {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const filename = `layout-${activeLayoutKind}-${stamp}.json`;
+  const text = JSON.stringify(captureInterchangeLayout(), null, 2);
+  try {
+    const r = await fetch(`/api/save-maze-layout?filename=${encodeURIComponent(filename)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+    const result = await r.json();
+    if (result?.ok) {
+      exportLayoutBtn.textContent = `Saved ${result.path}`;
+      setTimeout(() => { exportLayoutBtn.textContent = 'Export layout JSON'; }, 2500);
+      return;
+    }
+  } catch { /* no endpoint (file:// or plain static server): the download below still works */ }
+  downloadTraceFile(filename, text, 'application/json');
 });
 exportLayoutRow.append(exportLayoutBtn);
 

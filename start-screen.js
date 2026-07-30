@@ -9,7 +9,9 @@ const _shootHouseMapKey = id => (id === 'house' ? 'shoot-house' : `shoot-house-$
 // resumeConfig (optional): { mapKey, mpRole, roomCode, mpWorldMode, presetName }. When given, skips
 // the role/map picker entirely and goes straight to the loading step with those settings — used to
 // silently re-enter the same game after a "Restart" from the in-game pause menu (environment-viewer.html).
-export async function showStartScreen(resumeConfig) {
+// opts.mazeLayouts: show the Maze Layouts card (harness-exported pcw-layout worlds). Only the
+// v2 viewer decodes the 'layout:<path>' mapKeys it resolves, so callers must opt in.
+export async function showStartScreen(resumeConfig, { mazeLayouts = false } = {}) {
   const config = await fetch('maps/map-config.json')
     .then(r => r.ok ? r.json() : { maps: {} })
     .catch(() => ({ maps: {} }));
@@ -25,17 +27,25 @@ export async function showStartScreen(resumeConfig) {
   document.body.appendChild(overlay);
 
   // Only the interactive role/map picker gets its own music -- a "Restart" resume skips
-  // straight to loading, where environment-audio.js's own music_menu track (same event,
-  // loaded from the same sound-map.json) takes over almost immediately anyway.
+  // straight to loading, where environment-audio.js's own music_menu track takes over almost
+  // immediately anyway. Autoplays the first track from sfx/music/ once the listing below
+  // resolves (menu only -- gameplay never falls back to it, see environment-audio.js's
+  // desiredMusicEvent); the song list lets the player switch tracks or stop it.
   const menuMusic = resumeConfig ? null : _startMenuMusic();
+  // Track list comes from sfx/music/ via serve.py so any file dropped there is selectable
+  // (and autoplayable) with no manual assignment step; the picker itself renders before this
+  // resolves and grows in place once it does (see _musicPicker).
+  const musicTracksPromise = menuMusic
+    ? fetch('/api/list-music', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).then(d => d?.files || []).catch(() => [])
+    : Promise.resolve([]);
 
   let mapKey, mpRole, roomCode, mpWorldMode, presetName;
   if (resumeConfig) {
     ({ mapKey, mpRole, roomCode, mpWorldMode, presetName } = resumeConfig);
   } else {
     let guestMapKey;
-    ({ mpRole, roomCode, guestMapKey, mpWorldMode, presetName } = await _roleStep(overlay));
-    mapKey = mpRole === 'guest' ? guestMapKey : await _mapStep(overlay, config, mpRole, roomCode);
+    ({ mpRole, roomCode, guestMapKey, mpWorldMode, presetName } = await _roleStep(overlay, musicTracksPromise, menuMusic));
+    mapKey = mpRole === 'guest' ? guestMapKey : await _mapStep(overlay, config, mpRole, roomCode, mazeLayouts);
   }
 
   // Stop before the loading step, not on dismiss() -- environment-audio.js starts its own
@@ -56,14 +66,13 @@ export async function showStartScreen(resumeConfig) {
 }
 
 // ---------------------------------------------------------------------------
-// Menu music: a plain <audio> loop reading the same sfx/sound-map.json that
-// sfx-browser.html writes to (event id 'music_menu'), so a track is assigned the
-// same way as every other game sound -- open sfx-browser.html, ASSIGN EVENT ->
-// "Music - Menu" on any track. No-ops silently if nothing is assigned yet.
-// This exists separately from environment-audio.js's own music_menu playback
-// because that controller isn't constructed until after this screen resolves.
+// Menu music: a plain <audio> loop over tracks in sfx/music/, listed via serve.py's
+// GET /api/list-music (see _musicPicker). Selections:
+//   <file> -- a track name from sfx/music/.
+//   'off'  -- explicit silence (clicking the currently-playing row again).
+// This exists separately from environment-audio.js's own music_menu playback because that
+// controller isn't constructed until after this screen resolves.
 
-const MENU_MUSIC_EVENT = 'music_menu';
 const MENU_MUSIC_BASE_VOLUME = 0.16; // matches environment-audio.js's menu base volume
 const AUDIO_SETTINGS_KEY = 'environment-viewer-audio-settings'; // shared with environment-audio.js
 
@@ -79,6 +88,11 @@ function _menuMusicVolume() {
   }
 }
 
+function _resolveMusicPath(selection) {
+  if (!selection || selection === 'off') return null;
+  return 'sfx/music/' + selection;
+}
+
 function _startMenuMusic() {
   const audio = new Audio();
   audio.loop = true;
@@ -88,30 +102,36 @@ function _startMenuMusic() {
   let stopped = false;
   let onGesture = null;
 
-  fetch('sfx/sound-map.json')
-    .then(r => (r.ok ? r.json() : null))
-    .then(map => {
-      if (stopped || !map) return;
-      const relPath = map.events?.[MENU_MUSIC_EVENT] || map.sources?.[MENU_MUSIC_EVENT];
-      if (!relPath) return;
-      audio.src = 'sfx/' + relPath;
-      const tryPlay = () => audio.play().catch(() => {});
-      tryPlay();
-      // Autoplay is commonly blocked until a user gesture; retry once on the first click/key.
-      onGesture = tryPlay;
-      document.addEventListener('pointerdown', onGesture, { once: true });
-      document.addEventListener('keydown', onGesture, { once: true });
-    })
-    .catch(() => {});
+  function armGesture() {
+    if (onGesture) return;
+    const tryPlay = () => audio.play().catch(() => {});
+    onGesture = tryPlay;
+    document.addEventListener('pointerdown', onGesture, { once: true });
+    document.addEventListener('keydown', onGesture, { once: true });
+  }
+
+  function disarmGesture() {
+    if (!onGesture) return;
+    document.removeEventListener('pointerdown', onGesture);
+    document.removeEventListener('keydown', onGesture);
+    onGesture = null;
+  }
+
+  function setTrack(selection) {
+    if (stopped) return;
+    disarmGesture();
+    const path = _resolveMusicPath(selection);
+    if (!path) { audio.pause(); audio.removeAttribute('src'); return; }
+    audio.src = path;
+    audio.play().catch(() => armGesture());
+  }
 
   return {
+    setTrack,
     stop(fadeMs = 250) {
       if (stopped) return;
       stopped = true;
-      if (onGesture) {
-        document.removeEventListener('pointerdown', onGesture);
-        document.removeEventListener('keydown', onGesture);
-      }
+      disarmGesture();
       if (!fadeMs || audio.paused) { audio.pause(); return; }
       const startVol = audio.volume;
       const t0 = performance.now();
@@ -124,6 +144,71 @@ function _startMenuMusic() {
       requestAnimationFrame(step);
     },
   };
+}
+
+// A scrollable song list for the role/map picker -- one row per track in sfx/music/, listed
+// via /api/list-music. The first track autoplays as soon as the listing resolves and starts
+// highlighted to match; clicking another row switches to it, clicking the active row again
+// stops it. Empty sfx/music/ means an empty (silent) list -- nothing to autoplay.
+function _musicPicker(tracksPromise, menuMusic) {
+  const wrap = document.createElement('div');
+  Object.assign(wrap.style, { display: 'flex', flexDirection: 'column', gap: '6px' });
+
+  const label = document.createElement('div');
+  label.textContent = 'Music';
+  Object.assign(label.style, { fontSize: '12px', color: '#98a5b5' });
+
+  const list = document.createElement('div');
+  Object.assign(list.style, {
+    display: 'flex', flexDirection: 'column',
+    maxHeight: '132px', overflowY: 'auto',
+    border: '1px solid #354050', borderRadius: '6px',
+    background: '#1a2029',
+  });
+
+  const rows = new Map(); // selection value -> row element
+  let activeValue = null; // currently playing selection, null = stopped
+
+  function setActive(value) {
+    activeValue = value;
+    for (const [v, row] of rows) {
+      row.style.background = v === value ? '#26314a' : 'transparent';
+      row.style.color = v === value ? '#eef3f8' : '#d8dee9';
+    }
+  }
+
+  function addRow(value, text) {
+    const row = document.createElement('div');
+    row.textContent = text;
+    Object.assign(row.style, {
+      padding: '7px 10px', cursor: 'pointer', fontSize: '12px',
+      color: '#d8dee9', userSelect: 'none',
+    });
+    row.addEventListener('mouseenter', () => { if (activeValue !== value) row.style.background = '#20252d'; });
+    row.addEventListener('mouseleave', () => { if (activeValue !== value) row.style.background = 'transparent'; });
+    row.addEventListener('click', () => {
+      if (activeValue === value) {
+        setActive(null);
+        menuMusic?.setTrack('off');
+        return;
+      }
+      setActive(value);
+      menuMusic?.setTrack(value);
+    });
+    rows.set(value, row);
+    list.appendChild(row);
+  }
+
+  tracksPromise.then(tracks => {
+    for (const file of tracks) addRow(file, file.replace(/\.[^.]+$/, ''));
+    if (tracks.length) {
+      setActive(tracks[0]);
+      menuMusic?.setTrack(tracks[0]);
+    }
+  });
+
+  wrap.append(label, list);
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +300,68 @@ function _shootHouseCard(onPick) {
   return card;
 }
 
+// A card listing harness-exported pcw-layout worlds from "maze layouts/" (via serve.py's
+// GET /api/list-maze-layouts). Resolves 'layout:maze layouts/<file>' mapKeys. Removes itself
+// when the folder is empty or the endpoint is absent (file:// or a plain static server).
+function _mazeLayoutCard(onPick) {
+  const card = document.createElement('div');
+  Object.assign(card.style, {
+    minHeight: '92px', border: '1px solid #354050', borderRadius: '8px',
+    background: '#1a2029', color: '#eef3f8', padding: '16px',
+    display: 'flex', flexDirection: 'column', gap: '8px',
+  });
+
+  const title = document.createElement('div');
+  title.textContent = 'Maze Layouts';
+  Object.assign(title.style, { fontWeight: '650', fontSize: '15px' });
+
+  const desc = document.createElement('div');
+  desc.textContent = 'Bot-viewer-exported worlds, identical geometry in both apps';
+  Object.assign(desc.style, { fontSize: '12px', color: '#98a5b5', minHeight: '30px' });
+
+  const row = document.createElement('div');
+  Object.assign(row.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+
+  const select = document.createElement('select');
+  Object.assign(select.style, {
+    flex: '1', minWidth: '0', padding: '6px 8px', border: '1px solid #354050', borderRadius: '5px',
+    background: '#20252d', color: '#d8dee9', fontSize: '13px', cursor: 'pointer',
+  });
+  const loadingOpt = document.createElement('option');
+  loadingOpt.textContent = 'loading…';
+  select.appendChild(loadingOpt);
+
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.textContent = 'Enter →';
+  go.disabled = true;
+  Object.assign(go.style, {
+    padding: '6px 12px', border: '1px solid #354050', borderRadius: '5px',
+    background: '#20252d', color: '#d8dee9', cursor: 'pointer', fontSize: '12px',
+  });
+  go.addEventListener('mouseenter', () => { go.style.borderColor = '#6aa7ff'; });
+  go.addEventListener('mouseleave', () => { go.style.borderColor = '#354050'; });
+  go.addEventListener('click', () => onPick(`layout:maze layouts/${select.value}`));
+
+  fetch('/api/list-maze-layouts', { cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : null)).then(d => d?.files || []).catch(() => [])
+    .then(files => {
+      if (!files.length) { card.remove(); return; }
+      select.replaceChildren();
+      for (const f of files) {
+        const opt = document.createElement('option');
+        opt.value = f;
+        opt.textContent = f.replace(/^layout-/, '').replace(/\.json$/i, '');
+        select.appendChild(opt);
+      }
+      go.disabled = false;
+    });
+
+  row.append(select, go);
+  card.append(title, desc, row);
+  return card;
+}
+
 function _input(placeholder) {
   const el = document.createElement('input');
   Object.assign(el.style, {
@@ -295,7 +442,7 @@ function _rolePanel(titleText, detail, inputPlaceholder, btnLabel) {
 
 // ---------------------------------------------------------------------------
 
-async function _roleStep(overlay) {
+async function _roleStep(overlay, musicTracksPromise, menuMusic) {
   return new Promise(resolve => {
     _clear(overlay);
     const s = _shell();
@@ -303,6 +450,8 @@ async function _roleStep(overlay) {
 
     const { wrap: presetWrap, sel: presetSel } = _presetSelect();
     s.appendChild(presetWrap);
+
+    if (menuMusic) s.appendChild(_musicPicker(musicTracksPromise, menuMusic));
 
     const grid = document.createElement('div');
     Object.assign(grid.style, {
@@ -394,7 +543,7 @@ async function _queryRoom(code) {
   });
 }
 
-async function _mapStep(overlay, config, mpRole, roomCode) {
+async function _mapStep(overlay, config, mpRole, roomCode, mazeLayouts = false) {
   return new Promise(resolve => {
     _clear(overlay);
     const s = _shell();
@@ -410,6 +559,7 @@ async function _mapStep(overlay, config, mpRole, roomCode) {
 
     grid.appendChild(_mapCard('Infinite World', 'Procedural terrain, grass, and GPU forest', () => resolve(null)));
     grid.appendChild(_shootHouseCard(mapKey => resolve(mapKey)));
+    if (mazeLayouts) grid.appendChild(_mazeLayoutCard(mapKey => resolve(mapKey)));
 
     const maps = config.maps || {};
     for (const [key, meta] of Object.entries(maps)) {
@@ -430,7 +580,9 @@ function _loadingStep(overlay, { mapKey, mpRole, roomCode, mpWorldMode }) {
   _clear(overlay);
   const s = _shell();
 
-  const parts = [mapKey || 'Infinite World'];
+  const parts = [typeof mapKey === 'string' && mapKey.startsWith('layout:')
+    ? mapKey.slice('layout:'.length).split('/').pop()
+    : (mapKey || 'Infinite World')];
   if (mpRole === 'host') parts.push(`Host · ${roomCode}`);
   if (mpRole === 'guest') parts.push(`Guest · ${roomCode}`);
   if (mpRole === 'host' && mpWorldMode === 'shared') parts.push('Shared settings');

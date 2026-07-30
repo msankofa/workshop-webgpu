@@ -178,7 +178,7 @@ All read once at top-level via `URLSearchParams` and gate which lazy imports/bra
 | `map` → `mapKey` | none | set via the start screen, not a raw query flag here; when present, loads an authored map instead of the procedural terrain |
 | `perf` | off | `perfLog.recording` starts pre-enabled |
 | `botTrace` (v2 copy only) | off | starts the 9-slot bot state-code tracer; `botTraceTick=<ms>` sets the motion heartbeat (default 1000, `0` = change rows only) |
-| `layout` (v2 copy only) | — | URL of a `pcw-layout` JSON (see `layout-interchange.js`); overrides the shoot-house generator so a harness-exported world runs with identical geometry, and its `role:'bot'` spawns replace the sampled spawn slots |
+| `layout` (v2 copy only) | — | URL of a `pcw-layout` JSON (see `layout-interchange.js`); overrides the shoot-house generator so a harness-exported world runs with identical geometry, and its `role:'bot'` spawns replace the sampled spawn slots. The start screen's Maze Layouts card is the UI for the same thing (it resolves a `layout:<path>` mapKey); the URL param overrides the card and is the scriptable/repro path |
 
 ### Bot state-code tracer (`environment-viewer-v2.html` only)
 

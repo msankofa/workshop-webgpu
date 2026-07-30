@@ -16,11 +16,25 @@ PLANT_FAMILIES_DIR = os.path.join(ROOT, 'plant-families')
 MAPS_DIR = os.path.join(ROOT, 'maps')
 STATS_DIR = os.path.join(ROOT, 'research', 'stats')
 STATES_DIR = os.path.join(ROOT, 'states')
+BOT_STATES_DIR = os.path.join(ROOT, 'bot-states')
+MAZE_LAYOUTS_DIR = os.path.join(ROOT, 'maze layouts')
+MUSIC_DIR = os.path.join(ROOT, 'sfx', 'music')
+_MUSIC_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.opus', '.webm'}
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
 # environment-viewer.html's perfLog auto-upload names files perf-<ISO>-<sanitized search>.csv
 # (see perfLog.buildFilename); botStatsLog.buildFilename uses bots-<ISO>.csv. Both prefixes
 # must stay in sync with their client-side pattern.
 _SAFE_STATS_FILENAME = re.compile(r'^(?:perf|bots)-[A-Za-z0-9T:\-=&.]+\.csv$')
+# bot-viewer-v2.html's state recorder names dumps bot-state-trace-<YYYYMMDD-HHMMSS>.tsv
+# (see botStateFileStamp); keep in sync with that client-side pattern.
+# Three siblings per take: the state trace, the diagnostic counters, and the combat event stream.
+_SAFE_BOT_STATE_FILENAME = re.compile(
+    r'^(bot-state-trace-\d{8}-\d{6}\.tsv'
+    r'|bot-diag-\d{8}-\d{6}\.json'
+    r'|bot-events-\d{8}-\d{6}\.tsv)$')
+# bot-viewer-v2.html's "Export layout JSON" names files layout-<kind>-<YYYYMMDDHHMMSS>.json;
+# keep in sync with that client-side pattern (kind is a maze/world generator id).
+_SAFE_MAZE_LAYOUT_FILENAME = re.compile(r'^layout-[A-Za-z0-9 _.-]+\.json$')
 
 
 def _safe_under_maps(*segments):
@@ -86,6 +100,43 @@ def save_stats_csv(raw_name, body_bytes, append=False):
     return os.path.relpath(target, ROOT).replace(os.sep, '/')
 
 
+def save_maze_layout(raw_name, body_bytes):
+    # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_MAZE_LAYOUT_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe layout filename: {raw_name!r}')
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    os.makedirs(MAZE_LAYOUTS_DIR, exist_ok=True)
+    stem, ext = os.path.splitext(basename)
+    candidate = basename
+    n = 2
+    while os.path.exists(os.path.join(MAZE_LAYOUTS_DIR, candidate)):
+        candidate = f'{stem}-{n}{ext}'
+        n += 1
+    target = os.path.join(MAZE_LAYOUTS_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_bot_state_trace(raw_name, body_bytes):
+    # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_BOT_STATE_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe trace filename: {raw_name!r}')
+    os.makedirs(BOT_STATES_DIR, exist_ok=True)
+    stem, ext = os.path.splitext(basename)
+    candidate = basename
+    n = 2
+    while os.path.exists(os.path.join(BOT_STATES_DIR, candidate)):
+        candidate = f'{stem}-{n}{ext}'
+        n += 1
+    target = os.path.join(BOT_STATES_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     # tree-viewer.html's "Export family JSON" POSTs to /api/save-family; plant-viewer.html's
     # equivalent POSTs to /api/save-plant-family. Both land straight in their own directory +
@@ -99,11 +150,68 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # GET /api/list-states — enumerate *.json files dropped in states/ so the viewer can
     # auto-populate its saved-states list on load. Filenames are read from disk (not client
     # input), so there's nothing to sanitize; the client fetches each via /states/<name>.
+    #
+    # GET /api/list-music — same idea for sfx/music/: start-screen.js builds its menu-music
+    # dropdown from this instead of a hand-maintained manifest, so dropping a new track in the
+    # folder makes it selectable with no sfx-browser step. Filenames are read from disk, so
+    # there's nothing to sanitize; the client fetches each via /sfx/music/<name>.
     def do_GET(self):
-        if urllib.parse.urlparse(self.path).path == '/api/list-states':
+        path = urllib.parse.urlparse(self.path).path
+        if path == '/api/list-states':
             self._handle_list_states()
             return
+        if path == '/api/list-music':
+            self._handle_list_music()
+            return
+        if path == '/api/list-bot-states':
+            self._handle_list_bot_states()
+            return
+        if path == '/api/list-maze-layouts':
+            self._handle_list_maze_layouts()
+            return
         super().do_GET()
+
+    # GET /api/list-maze-layouts -- start-screen.js builds its Maze Layouts map card from this.
+    # Filenames come off disk, so there is nothing to sanitize; the client fetches
+    # "maze layouts/<name>" as a static file.
+    def _handle_list_maze_layouts(self):
+        try:
+            files = []
+            if os.path.isdir(MAZE_LAYOUTS_DIR):
+                for entry in sorted(os.listdir(MAZE_LAYOUTS_DIR)):
+                    if entry.lower().endswith('.json') and os.path.isfile(os.path.join(MAZE_LAYOUTS_DIR, entry)):
+                        files.append(entry)
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    # GET /api/list-bot-states -- bot-trace-viewer.html builds its saved-take dropdown from this.
+    # Filenames come off disk, so there is nothing to sanitize; the client fetches bot-states/<name>.
+    def _handle_list_bot_states(self):
+        try:
+            files = []
+            if os.path.isdir(BOT_STATES_DIR):
+                for entry in sorted(os.listdir(BOT_STATES_DIR)):
+                    # State traces only. bot-events-*.tsv lives here too but is a different schema,
+                    # and offering it in the take dropdown would just fail to parse.
+                    if entry.startswith('bot-state-trace-') and entry.lower().endswith('.tsv') \
+                            and os.path.isfile(os.path.join(BOT_STATES_DIR, entry)):
+                        files.append(entry)
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    def _handle_list_music(self):
+        try:
+            files = []
+            if os.path.isdir(MUSIC_DIR):
+                for entry in sorted(os.listdir(MUSIC_DIR)):
+                    ext = os.path.splitext(entry)[1].lower()
+                    if ext in _MUSIC_EXTENSIONS and os.path.isfile(os.path.join(MUSIC_DIR, entry)):
+                        files.append(entry)
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
     def _handle_list_states(self):
         try:
@@ -122,6 +230,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith('/api/save-stats'):
             self._handle_save_stats()
+            return
+        if self.path.startswith('/api/save-bot-state'):
+            self._handle_save_bot_state()
+            return
+        if self.path.startswith('/api/save-maze-layout'):
+            self._handle_save_maze_layout()
             return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
@@ -213,9 +327,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)
 
+    # POST /api/save-bot-state?filename=bot-state-trace-<stamp>.tsv — the state recorder's
+    # "Save state-code TSV" button, so a take lands in bot-states/ with no download dialog.
+    # -N suffix on collision (two dumps inside the same second).
+    def _handle_save_bot_state(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 20_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_bot_state_trace(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-maze-layout?filename=layout-<kind>-<stamp>.json -- bot-viewer-v2's
+    # "Export layout JSON" button, so a world lands in "maze layouts/" and appears in the
+    # start screen's Maze Layouts card with no download/move step. -N suffix on collision.
+    def _handle_save_maze_layout(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 20_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_maze_layout(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
     def end_headers(self):
         # Live-tuning server: never let the browser cache anything it serves.
         self.send_header('Cache-Control', 'no-store')
+        # Opt pages into the JS self-profiling API (new Profiler(...)) for perf work.
+        self.send_header('Document-Policy', 'js-profiling')
         super().end_headers()
 
     def _send_json(self, payload, status=200):

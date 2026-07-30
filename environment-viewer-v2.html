@@ -324,7 +324,7 @@ try {
   if (raw) { _resumeConfig = JSON.parse(raw); sessionStorage.removeItem(RESTART_STORAGE_KEY); }
 } catch {}
 
-const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', presetName, setStatus, dismiss } = await showStartScreen(_resumeConfig);
+const { mapKey, mpRole, roomCode, mpWorldMode = 'shared', presetName, setStatus, dismiss } = await showStartScreen(_resumeConfig, { mazeLayouts: true });
 mpSharedWorldSettings = mpRole !== 'solo' && mpWorldMode === 'shared';
 
 // Surface any runtime/load error on the page, so a blank viewport tells us why.
@@ -1245,7 +1245,10 @@ let loadedMap = null;
 let mapCollider = null;
 if (mapKey) {
   // 'shoot-house' (legacy) => house; 'shoot-house-<type>' => that variant (demo | house | …).
-  const shootHouseType = mapKey === 'shoot-house' ? 'house'
+  // 'layout:<path>' => a pcw-layout pick from the start screen's Maze Layouts card.
+  const layoutMapPath = (typeof mapKey === 'string' && mapKey.startsWith('layout:')) ? mapKey.slice('layout:'.length) : null;
+  const shootHouseType = layoutMapPath ? 'house'
+    : mapKey === 'shoot-house' ? 'house'
     : (typeof mapKey === 'string' && mapKey.startsWith('shoot-house-')) ? mapKey.slice('shoot-house-'.length)
     : null;
   if (shootHouseType) {
@@ -1257,12 +1260,15 @@ if (mapKey) {
     const shOpts = {};
     if (shParams.get('size')) shOpts.size = shParams.get('size');           // compact | standard | sprawl
     if (shParams.get('difficulty')) shOpts.difficulty = shParams.get('difficulty'); // easy | normal | hard
-    // ?layout=<url>: a pcw-layout JSON (e.g. a bot-viewer-exported world) overrides the generator type,
-    // so both apps run identical geometry and ?botTrace=1 takes diff cleanly against harness takes.
+    // A pcw-layout JSON (e.g. a bot-viewer-exported world) overrides the generator type, so both
+    // apps run identical geometry and ?botTrace=1 takes diff cleanly against harness takes.
+    // Source: the start screen's Maze Layouts card ('layout:<path>' mapKey), or ?layout=<url> which
+    // overrides it (the scriptable path for repro links).
+    const shLayoutUrl = shParams.get('layout') || layoutMapPath;
     let shInterchange = null;
-    if (shParams.get('layout')) {
-      setStatus(`fetching layout ${shParams.get('layout')}...`);
-      shInterchange = await (await fetch(shParams.get('layout'))).json();
+    if (shLayoutUrl) {
+      setStatus(`fetching layout ${shLayoutUrl}...`);
+      shInterchange = await (await fetch(shLayoutUrl)).json();
     }
     loadedMap = createShootHouse({ scene, THREE, seed: shSeed, type: shootHouseType, opts: shOpts, interchange: shInterchange });
   } else {
