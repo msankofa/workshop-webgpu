@@ -65,7 +65,7 @@ ok(validateLayout({ ...doc, covers: [{ kind: 'cover', x: 500, z: 500, w: 1, d: 1
 
 // ---- walls / covers -> primitives ------------------------------------------
 const sh = toShootHouseLayout(doc);
-ok(sh.primitives.length === harness.walls.length + harness.covers.length, 'every rect becomes exactly one primitive');
+ok(sh.primitives.length === harness.walls.length + harness.covers.length + 1, 'every rect becomes exactly one primitive, plus the synthesized floor slab');
 const wallPrim = sh.primitives[0];
 eq(wallPrim, { kind: 'wall', cx: 0, cy: 1.5, cz: -3, sx: 6.3, sy: 3, sz: 0.3, material: 'wall' },
   'wall rect -> centred prim: cy = h/2, sx/sz = w/d, sy = wall height');
@@ -73,13 +73,22 @@ const coverPrim = sh.primitives[harness.walls.length + 1];
 eq(coverPrim, { kind: 'cover', cx: 6.6, cy: 0.7, cz: 1.1, sx: 1.2, sy: 1.4, sz: 0.6, material: 'trim' },
   'cover rect -> prim keeping its own height');
 ok(sh.primitives.slice(0, 8).every((p) => p.material === 'wall'), 'walls bucket to the wall material');
-ok(sh.primitives.slice(8).every((p) => p.material === 'trim'), 'covers bucket to the trim material');
-eq(sh.lights, [], 'the descriptor carries no lights (app-side in v1)');
+ok(sh.primitives.slice(8, 11).every((p) => p.material === 'trim'), 'covers bucket to the trim material');
+const floorPrim = sh.primitives.at(-1);
+ok(floorPrim.material === 'floor' && floorPrim.kind === 'interior', 'a floor slab is synthesized last');
+ok(floorPrim.cy + floorPrim.sy / 2 === doc.bounds.yMin, 'its top sits at bounds.yMin, wherever that is');
+ok(floorPrim.sx === doc.bounds.maxX - doc.bounds.minX && floorPrim.sz === doc.bounds.maxZ - doc.bounds.minZ,
+  'and it spans the full footprint');
+ok(sh.lights.length > 0 && sh.lights.every((l) => [l.x, l.y, l.z, l.radius, l.intensity].every(Number.isFinite)),
+  'a default ceiling light grid is synthesized (the document itself still carries none)');
+const bare = toShootHouseLayout(doc, { floor: false, defaultLights: false });
+ok(bare.primitives.length === harness.walls.length + harness.covers.length && bare.lights.length === 0,
+  'floor and lights are caller options; off reproduces the bare conversion');
 eq(sh.spawn, { x: 6, y: 0, z: 0, heading: Math.PI }, 'the single shoot-house spawn resolves to the bot spawn');
 ok(sh.spawns.length === 6, 'the full spawn list rides along for consumers that want it');
 eq(sh.bounds, doc.bounds, 'bounds pass through unchanged');
 eq(toShootHouseLayout(doc, { materials: { wall: 'panel', cover: 'neon' } }).primitives.map((p) => p.material),
-  [...Array(8).fill('panel'), ...Array(3).fill('neon')], 'material keys are a caller option, not schema');
+  [...Array(8).fill('panel'), ...Array(3).fill('neon'), 'floor'], 'material keys are a caller option, not schema');
 
 // ---- round trip ------------------------------------------------------------
 eq(fromShootHouseLayout(sh), doc, 'doc -> shoot-house -> doc is lossless for harness content');
@@ -95,7 +104,7 @@ const raised = createLayout({
 const raisedRect = raised.covers.at(-1);
 ok(raisedRect.y === 0.8 && raisedRect.h === 1.2, 'a raised cover keeps its base y and its own height');
 ok(raised.bounds.yMax === 3, 'derived yMax spans the tallest rect top');
-const raisedPrim = toShootHouseLayout(raised).primitives.at(-1);
+const raisedPrim = toShootHouseLayout(raised, { floor: false, defaultLights: false }).primitives.at(-1);
 ok(raisedPrim.cy === 1.4 && raisedPrim.sy === 1.2, 'base y threads into the prim centre (cy = y + h/2), not dropped to the floor');
 eq(fromShootHouseLayout(toShootHouseLayout(raised)), raised, 'a non-flat layout round-trips exactly');
 ok(sightRectsFor(raised).at(-1).h === 2, 'sight rects report the box TOP (y + h), so a lifted rect reads at its real height');

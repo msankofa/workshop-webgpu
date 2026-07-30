@@ -154,7 +154,7 @@ export function validateLayout(layout) {
  * terrain, meta }`, i.e. exactly what shoot-house.js#createShootHouse already consumes.
  * `materials` is app-side dressing and never comes from the document.
  */
-export function toShootHouseLayout(source, { materials = DEFAULT_MATERIALS } = {}) {
+export function toShootHouseLayout(source, { materials = DEFAULT_MATERIALS, floor = true, defaultLights = true } = {}) {
   const layout = source && source.format === LAYOUT_FORMAT ? source : createLayout(source);
   const primitives = [];
   const push = (r, material) => primitives.push({
@@ -166,15 +166,53 @@ export function toShootHouseLayout(source, { materials = DEFAULT_MATERIALS } = {
   for (const r of layout.walls) push(r, materials.wall ?? DEFAULT_MATERIALS.wall);
   for (const r of layout.covers) push(r, materials.cover ?? DEFAULT_MATERIALS.cover);
 
+  // The document carries geometry only; the shoot-house builder expects a floor slab and lights
+  // among its primitives (generators author their own). Both are synthesized from the document's
+  // own bounds -- ground sits at bounds.yMin, wherever that is, not at a hardcoded 0.
+  // Slab top sits at bounds.yMin and pokes 0.1 below it; bounds stay untouched so the
+  // conversion is stable across repeated passes (floor and lights re-derive identically).
+  const bounds = { ...layout.bounds };
+  if (floor) {
+    const t = 0.1;
+    primitives.push({
+      kind: 'interior', material: 'floor',
+      cx: q((bounds.minX + bounds.maxX) / 2), cy: q(bounds.yMin - t / 2), cz: q((bounds.minZ + bounds.maxZ) / 2),
+      sx: q(bounds.maxX - bounds.minX), sy: t, sz: q(bounds.maxZ - bounds.minZ),
+    });
+  }
+
   return {
-    bounds: { ...layout.bounds },
+    bounds,
     primitives,
-    lights: [],                     // lighting is app-side in v1
+    lights: defaultLights ? _defaultLightGrid(layout) : [],
     spawn: playerSpawn(layout.spawns),
     spawns: layout.spawns.map((s) => ({ ...s })),
     terrain: layout.terrain ?? null,
     meta: { type: 'layout', name: layout.name ?? null, source: LAYOUT_FORMAT },
   };
+}
+
+// A plain ceiling grid (~12 m pitch, generator light look) so imported worlds aren't pitch black.
+// App-side dressing synthesized at conversion time; the document itself never carries lights.
+function _defaultLightGrid(layout) {
+  const b = layout.bounds;
+  let tallest = 2.6;
+  for (const r of layout.walls) tallest = Math.max(tallest, r.y + r.h);
+  for (const r of layout.covers) tallest = Math.max(tallest, r.y + r.h);
+  const y = q(Math.max(b.yMin + 2.2, tallest - 0.5));
+  const w = b.maxX - b.minX, d = b.maxZ - b.minZ;
+  const nx = Math.max(1, Math.min(8, Math.round(w / 12)));
+  const nz = Math.max(1, Math.min(8, Math.round(d / 12)));
+  const lights = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < nz; j++) {
+      lights.push({
+        x: q(b.minX + ((i + 0.5) * w) / nx), y, z: q(b.minZ + ((j + 0.5) * d) / nz),
+        radius: 16, color: '#fff2d8', intensity: 1,
+      });
+    }
+  }
+  return lights;
 }
 
 // Which authored spawn a single-spawn consumer (the FPS player) should use.
