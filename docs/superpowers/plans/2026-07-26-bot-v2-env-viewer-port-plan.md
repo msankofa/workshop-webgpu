@@ -269,8 +269,12 @@ the dummy target, debug CSV recorders (env has `botStatsLog` already), `bot-scor
 - **G1 — flat-floor trap.** Every v2 offset is authored against floor y=0. Anything lifted from the
   harness must be re-derived terrain-relative. Shoot-house hides this bug class — QA every phase on
   a non-flat map too (this already caused the 2026-07-19 weapon-rig bug).
-- **G2 — Phase 1.5 MUST-FIX is still open**: `teardownLocalWeaponMount` traverse-disposes geometry now
-  shared by every bot clone. Land it before spawning more/longer-lived bots.
+- **G2 — RESOLVED (verified 2026-07-29)**: `teardownLocalWeaponMount` no longer disposes the
+  clone-shared geometry — the fix is in the working copies of `environment-viewer.html` and
+  `environment-viewer-v2.html` but NOT in the committed HEAD, so a `git checkout --` of the v1
+  file would resurrect the bug. Verified: mounts `skeletonClone` a shared cached template
+  (geometry/materials shared across all mounts); only Groups/markers are per-instance, so
+  `scene.remove` is the complete teardown.
 - **G3 — locate by symbol, never line.** Both HTML files drift constantly; every line ref above is
   a 2026-07-26 snapshot. `bot-viewer-v2.html` grew 60 lines *during* the scoping scan.
 - **G4 — shared-asset disposal**: geo tagged `userData.shared` must be skipped in destroy paths;

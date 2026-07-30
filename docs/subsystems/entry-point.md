@@ -177,6 +177,25 @@ All read once at top-level via `URLSearchParams` and gate which lazy imports/bra
 | `sky` → `SKY_MODE` | `on` | `off` skips `sky.js` + moonlight entirely; `nostars`/`nomilkyway`/`nobodies`/`domeonly`/`nomoonlight` selectively disable sky parts (bisection kill-switches) |
 | `map` → `mapKey` | none | set via the start screen, not a raw query flag here; when present, loads an authored map instead of the procedural terrain |
 | `perf` | off | `perfLog.recording` starts pre-enabled |
+| `botTrace` (v2 copy only) | off | starts the 9-slot bot state-code tracer; `botTraceTick=<ms>` sets the motion heartbeat (default 1000, `0` = change rows only) |
+| `layout` (v2 copy only) | — | URL of a `pcw-layout` JSON (see `layout-interchange.js`); overrides the shoot-house generator so a harness-exported world runs with identical geometry, and its `role:'bot'` spawns replace the sampled spawn slots |
+
+### Bot state-code tracer (`environment-viewer-v2.html` only)
+
+`?botTrace=1` enables the port of bot-viewer-v2's state-code trace capture: `bot-state-code.js` is
+lazily imported (nothing is fetched with the flag off), every bot's discrete state is encoded into a
+9-char code at the tail of `botTickOne` (and once per dead bot in `updateBots`), and a row is pushed
+to a 20k-entry ring buffer whenever the code changes — plus a `tick` heartbeat row every
+`botTraceTick` ms so a bot walking a patrol ring is distinguishable from one standing still. Columns
+match the harness's `botStateTraceTsv` exactly so takes from both apps diff slot-by-slot. Dump with
+`window.botTrace.save()` in the console: it POSTs to serve.py's `/api/save-bot-state`, landing in
+`bot-states/bot-state-trace-env-<YYYYMMDD-HHMMSS>.tsv` (the `-env-` infix keeps game takes from
+colliding with harness takes), and falls back to a browser download when that endpoint is absent.
+`window.botTrace.rows`/`.tsv()` expose the buffer directly. Since the Phase A brain swap
+(2026-07-29) the descriptor reads the live v2 brain: slot 1 covers the full state ladder via
+`STATE_NAMES`, slot 2/3 read the real alert tier and escalation score (`rec.alertTierLast`,
+`rec.alertScore`), 6 (ammo) and 7 (health) were always real; role, push element and packs stay at
+calm defaults until Phases C/C½ port those systems.
 
 ## Camera / control modes
 
@@ -330,3 +349,7 @@ Non-positional self/UI events use `envAudio.play(id)`; world events use
 
 `weaponFireEvent(weaponId)` maps `m24 → sniper_shoot`, everything else → `machinegun_shoot`.
 Unassigned event IDs (no `sound-map.json` entry) simply no-op, so partial maps are fine.
+
+### Themeable HUD targets
+
+`environment-viewer.html` gives the first-person health/ammo HUD the stable `#combat-hud` id. `environment-ui.js` uses that ID, plus the minimap/full-map IDs, for its non-gameplay Theme paint-selection and CSS-variable styling layer.
