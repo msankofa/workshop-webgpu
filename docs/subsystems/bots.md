@@ -757,7 +757,10 @@ A **second, unrelated** squad implementation. The Phase 1 system above is wired 
 harness's authoritative FSM (cover, alerts, roles, medic, bounding overwatch). They share no code.
 The intent is that this one absorbs the Phase 1 feature set (temperament, loss-retreat, outposts,
 ammo) and both ship together via `docs/superpowers/plans/2026-07-26-bot-v2-env-viewer-port-plan.md`
-— at which point `squad-activity.js` retires.
+— at which point `squad-activity.js` retires. **Status (2026-07-30):** retired inside
+`environment-viewer-v2.html` by the Phase C½ port below; `environment-viewer.html` (v1) still
+imports it, so the module and its test stay. Temperament and loss-retreat were dropped rather than
+absorbed — the v2 model expresses morale through succession shock and the flee/heal ladder.
 
 ### Design rule
 
@@ -1323,7 +1326,7 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 |---|---|
 | `bot-entity.js` | Capsule/physics/pose, including the wire-quaternion facing fix — Browser/THREE only. |
 | `bot-activity.js` | Pure FSM decision math (patrol/seek/aim/fire) — Node-tested, THREE-free. |
-| `squad-activity.js` | Pure squad decision math for the **env-viewer** Phase 1 system (temperament roll, loss-retreat latch, formation geometry) — Node-tested, THREE-free. Retires when the v2 squad system ports over. |
+| `squad-activity.js` | Pure squad decision math for the **env-viewer** Phase 1 system (temperament roll, loss-retreat latch, formation geometry) — Node-tested, THREE-free. **v1-only since 2026-07-30**: `environment-viewer-v2.html` uses `bot-squad.js` instead. |
 | `bot-squad.js` | Pure squad math for the **v2 harness**: balanced roster partitioning, leader election + succession shock, formation kinds/slot geometry, corridor fit — Node-tested (`test-bot-squad.mjs`), THREE-free. |
 | `bot-roles.js` | Role registry (`rifleman`/`medic`/`squadleader`/`sniper`/`technical`) + batch assignment + `leadership`-ordered leader pick and the bounding-overwatch split — Node-tested (`test-bot-roles.mjs`), THREE-free. |
 | `nav-grid.js` | Pure walkable-grid + A* pathfinding, used both for shoot-house's static bake and the terrain local-window — Node-tested, THREE-free. |
@@ -4580,8 +4583,8 @@ as pure data, never as a branch on a role id:
 | `canRevive` (via `ROLE_MEDIC`) | the medic-duty gate in `updateBotSentry` |
 
 Sniper and technical are pure descriptors — no code path names them. Technical defaults to 0%: its
-RPG fires through `applyCombatIntent`'s projectile mode with no ballistic lead, which is the
-explosives AI (Phase C-and-a-half).
+RPG fires through `applyCombatIntent`'s projectile mode with no ballistic lead (unchanged by C½,
+which lands the arc solver on grenades only — the harness does not lead rockets either).
 
 **Sidearms (`bot-sidearm.js`).** `rec.weaponId` now means *the gun in hand*; the loadout is
 `rec.primaryWeaponId` + `rec.sidearmId`. `ensureAmmo` already pools per `id:weaponId`, so each slot
@@ -4675,8 +4678,8 @@ still `playerCombat`, the fire path is still `applyCombatIntent`, and guest earl
 **Tracer slots now live.** Slot 4 (role) reads `rec.role` — the alphabet is two chars (`rm`), so
 sniper/technical/squad-leader encode as the line's `r`, per `bot-state-code.js`'s own `ROLE_NAMES`.
 Slot 8 (packs) is `packSlot(rec.healthPacks.length, rec.reviveKits > 0)`. The heal-flee commit
-latch is live in slot 9 (`LATCH_HEAL_FLEE = 8` — bit 4 is `LATCH_HOLD`, which this port has no
-channel for). Still pinned: slot 5 (push element) and the hold latch, both C-and-a-half. Two
+latch is live in slot 9 (`LATCH_HEAL_FLEE = 8`; `LATCH_HOLD` at bit 4 had no channel until C½,
+which added one). Slot 5 (push element) and the hold latch both went live in C½ below. Two
 re-stamps keep codes legal at the frame boundary, mirroring the existing `BOT_FIRE`->`AIM` one: a
 `BOT_HEAL` that spent its last charge this frame re-stamps to `BOT_PATROL` (`heal-needs-pack`), and
 so does a `MEDIC_MOVE`/`MEDIC_TEND` with neither packs nor a kit left (`duty-requires-resource`).
@@ -4684,3 +4687,157 @@ so does a `MEDIC_MOVE`/`MEDIC_TEND` with neither packs nor a kit left (`duty-req
 **Panel.** Combat Bots gains `Medic %`, `Sniper %`, `Technical %`, `Run speed x`, and `Stances` /
 `Sidearms` toggles. The Bot Inspector gains role, stance, packs (+ revive kit), heal flag, the
 in-hand/primary/backup weapons with a draw indicator, and the live medic action.
+
+## Phase C½: teams, squads, explosives AI (2026-07-30, `environment-viewer-v2.html`)
+
+The last behaviour phase before open-terrain nav (Phase D). Three systems, one substrate: a bot now
+belongs to a **side**, a side's bots form **squads**, and a squad throws and dodges **ordnance**.
+
+### Team model (the harness's "sides", mirrored)
+
+`BOT_TEAM_DEFS = { alpha, bravo }` with `BOT_TEAMS` as the spawn-side order, matching
+`bot-viewer-v2.html`. Every bot carries `rec.teamId` **and** `bot.team` (re-stamped on respawn,
+because respawn swaps the entity) so hash visitors can read the side straight off the entity via
+`e.botRec`. `teamOfId(id)` answers for any combat id; a non-bot id is `HUMAN_TEAM`.
+
+**Where the player sits.** Humans (host + guests) are a *third party hostile to every bot team* —
+exactly the role the harness's WASD dummy targets play there (`rebuildFrameEnemyLists` pushes them
+into every team's list). They are never a squad member, never an ally-report audience, and never a
+medic patient. `hostVisibleToBots()` still gates whether the host is perceivable at all.
+
+`rebuildEnemyCandidates()` builds one candidate array **per team**, once per frame: alive humans
+plus every living bot on another side. Bot candidates are pooled `{ id, p, h }` objects reused
+across frames (no per-frame garbage), with `p` the capsule midpoint so `humanAimInto`'s `+0.3h`
+lift resolves the same upper-chest point it does for a human wire pose. `selectBotTarget` and
+`secondVisibleThreat` read `botEnemyCandidates(rec.teamId)`.
+
+Bot-vs-bot damage needs no new path: `resolveWorldShot` already folds `botPlayers` into
+`currentCombatPlayers()` and `resolveHitscan` excludes the shooter, so once targeting includes
+enemy bots the existing `fireBotShot` → `applyCombatIntent` → `applyHitDamage` chain carries HP,
+counters, casualty reports and MP replication. `playerCombat` stays the sole HP authority.
+
+**Team scoping** — every site that meant "ally" and previously meant "any bot":
+
+| Site | Rule |
+|---|---|
+| `recordBotAllyHit` | the report carries the **victim's** side; `latestAlertNear` filters on team, so one side's casualties never alert the other |
+| `recordBotNearMisses` / `_nmVisit` | skips bots on the **shooter's** side (a friendly round whistling past alerts nobody); the old "bot fire records no near-misses" early-out is gone |
+| `sharedAllyAlertNear` / `_saVisit` | one side's chatter only |
+| `livingTeammatesNear` | teammates, not everyone standing nearby (feeds the push-tier group test and aim seeding) |
+| `fleeSquadCentroid` / `_fsqVisit` | same side |
+| `_mdAllyVisit`, the medic corpse scan, `_mcVisit` | a medic never heals, revives or regroups on the enemy; squadmates are preferred via the `squadmate:` field |
+| `coverGroupIndex` / `_giVisit` | S10 peek phasing counts same-side holders |
+| `_contactMe.team` / `_escMe.team` | the bound bot's real side |
+
+Friendly fire stays **on at the damage level and off at the decision level**, as in the harness:
+`chooseGrenadeThrow` vetoes a throw with an ally in the ring and target selection never returns a
+teammate, but `applyExplosionBlast` damages whoever is inside the radius, thrower included.
+
+Health packs stay side-neutral (any bot scavenges any ground pack) — harness parity.
+
+**Spawn placement.** `botSpawnTeam` is `'both'` (default) | `'alpha'` | `'bravo'`;
+`nextSpawnTeam()` fills the emptier living side, the rule the harness's auto-adder uses.
+`teamSpawnPoints(teamId)` splits the authored spawn points in half along the map's **long axis**
+(cached per `botSpawnPoints` identity) — the side model `bot-structures.js`'s `teamSideRegions`
+bakes in the harness, derived here from whatever points the map authored, so it works for
+shoot-house and pcw-layout maps alike. With no authored points the golden-angle ring is offset by
+`teamIndex * PI`. Both spawn paths (manual button, round/squad top-up) route through it.
+
+### Squads (`bot-squad.js`, at harness fidelity)
+
+`squad-activity.js` is **retired inside the v2 copy only** — `environment-viewer.html` (v1) still
+imports it, and the module plus `test-squad-activity.mjs` are untouched. `pickExploreGoal` was the
+one non-squad function in it, so it is inlined into `environment-viewer-v2.html` beside
+`nextExploreGoal`.
+
+Squad records match the harness's shape: `memberIds` / `detachIds` Sets, `seq` (ascending =
+younger; older squads keep command through a merge), `heirIds` (the named line of succession),
+`successionShockUntil`, `liveCount`, `kind`, and reused `leaderPos` / `leaderYaw`.
+
+Lifecycle:
+
+1. **Spawn.** `spawnSquadAtSlot(startIndex, teamId, count)` runs `planSquadIntake` first, so
+   reinforcements top up understrength same-side squads (`fillSquadOpenings`, oldest squad first)
+   before any new squad forms; roles come from `assignRolesToBatch` for the joiners and
+   `squadRoleTemplate` (leader at slot 0) for each new squad. Env spawns one bot at a time, so the
+   batch is materialised and then bound with `dealSquadChunks` + `formSquad`.
+2. **Roster.** `formSquad` elects immediately (`electSquadLeader`) rather than leaving it to the
+   first tick — an unresolved leader reads as a dead one, and the squad would open its life inside
+   a succession shock.
+3. **Succession.** `updateSquads(nowMs)` runs `stepSquadSuccession` per squad: a dead leader leaves
+   the squad leaderless for `SUCCESSION_SHOCK_MS` before an heir (or an election) takes over.
+   `rec.isLeader` follows command, not the spawn role.
+4. **Formation.** `formationRanks` ranks the **living** only (so a formation closes over its
+   casualties) and puts support at the back; `chooseFormationKind` picks wedge/column/line/ring from
+   the panel override, contact, and a throttled corridor probe (`squadCorridorClear`, which reuses
+   whichever walkability test backs the active map's nav). Members walk their slot via
+   `updateSquadFormationMovement`, wired into the **out-of-combat** dispatch branch only, so it
+   biases movement that was already idle and never pre-empts the FSM. A follower parked on its slot
+   longer than `SQUAD_HOLD_MAX_MS` falls back to its own patrol — a frozen leader must not freeze
+   the whole squad.
+5. **Reconciler.** `reconcileSquads` runs `planSquadReconcile` every `SQUAD_RECONCILE_MS` and applies
+   split / mergeDetachments / merge / absorb ops; strength counts living bodies only. It is pure
+   bookkeeping (nobody is moved), so it is safe mid-firefight.
+
+The squad tick runs **before** the per-bot FSM loop — rosters settle before any member reads them —
+replacing the old post-loop `updateSquads()`.
+
+**Push element (S11) + hold channel (S13) go live.** `BOT_PUSH_TIER_ENABLED = true`.
+`applyPushElement` derives a stable bounding split from `rec.squadRank` (rostered) or an emergent
+hash-sweep ranking (independent); support roles never draw the maneuver element. The base element
+expresses itself as a short self-issued hold (`commandBotHold`, `PUSH_HOLD_LEASE_MS`, re-armed each
+frame the tier is live), and a medic asks its patient to hold with a `'heal'` reason that outranks
+`'overwatch'`. `holding` is resolved above the stance resolve (the stance ctx reads it) and consumed
+by a dispatch branch that still aims and fires — overwatch *is* that.
+
+### Explosives AI (decision math only)
+
+`bot-grenade.js` plus `bot-projectiles.js`'s arc solver, bound to env's **existing** projectile and
+explosion entities. No new FX, no new entity type, and no `createProjectileManager` — env's registry
+already owns projectile lifetime.
+
+- **Throw decision.** `grenadeCandidate` runs cheap gates first (per-bot cooldown, per-team volley
+  cooldown via `teamLastGrenadeAt`, stock, rough range) and only then scans the roster:
+  enemies = `botEnemyCandidates(rec.teamId)`, allies = living same-side bots. `chooseGrenadeThrow`
+  returns an aim point, a score and a reason (`cluster` / `cover` / `blind`).
+- **Ballistic aiming.** `solveGrenadeThrow` drops the aim to the ground under the target (a lob
+  solved to chest height lands metres long), solves with `solveBallisticArc`, lifts by the
+  integrator's own error term, then clearance-checks the `sampleArcPoints` legs against
+  `mapCollider` **and against `terrainHeight`** — the G1 flat-floor fix the harness does not need.
+- **Launch.** `spawnBotOrdnance` creates a `combat-projectile` registry entity with the solved
+  velocity (`dir` normalised, `speed = |v|`, `arc` zeroed so the spec's loft is not applied twice),
+  host-only — exactly the type `applyCombatIntent`'s projectile branch spawns. Detonation therefore
+  runs the normal `ExplosionEntity` → `applyExplosionBlast` path, which already calls
+  `recordBotAllyHit` per victim with the blast's own threat point, so blasts feed the alert tiers
+  the way the harness's `detonateBlast` does.
+- **Evade.** `refreshGrenadeThreats()` snapshots live bouncing projectiles once per tick from the
+  registry, so a **player-thrown** grenade is dodged too. `grenadeEvade` picks the most urgent blast
+  covering the bot; `grenadeEvadeGoal` is a no-alloc straight-sprint cell search on the static grid,
+  with `fleeAwayFromXZ` as the open-terrain fallback (the static grid is shoot-house-only). The
+  evade handler outranks every other movement branch; a wind-up outranks everything but that.
+  `rec.evadingUntil` (a self-expiring stamp, `GRENADE_EVADE_POSE_LINGER_MS`) feeds `sc.evading`,
+  which is what resolves `STANCE_DASH`.
+- **Inventory.** `rec.grenades = throwCountFor(settings) + role.bonusGrenades`, a per-life stock
+  independent of the primary's ammo, restocked on respawn. The technical's RPG keeps firing as its
+  primary through `applyCombatIntent`; the harness does not ballistically lead rockets either.
+
+### Tracer
+
+Slot 5 (push element) is live via `BOT_ELEMENT_SLOT = { base: 'b', move: 'm' }` — the same table the
+harness uses — and `LATCH_HOLD` (bit 4) is live as `holdUntil > now && state in PSU`, mirroring the
+dispatch's `holding` rather than the bare lease. All nine slots now read real fields. The
+`element-requires-push` rule holds because `rec.pushElement` is set only while `alertTier ===
+'push'` and cleared otherwise (and on death). TSV columns are unchanged: `team` is now the real side
+and `squad_rank` is `rec.squadRank`.
+
+### Panel
+
+"Squads & Outposts" becomes **"Squads & Sides"**: Spawn team (Both / Alpha / Bravo), Squad mode,
+Formation (auto plus the four kinds), Squad size, Slot spacing, Merge radius, a Grenades toggle, and
+a per-squad status list (`id  side  core+detached  kind  leader/LEADERLESS`) under a living-per-side
+header. The temperament sliders and the Force retreat / Force attack buttons are gone with
+`squad-activity.js`. The Bot Inspector shows team, squad rank, formation kind and the shock flag.
+
+**Deferred:** a grenade-in-hand visual during the wind-up (env's mount path is one `skeletonClone`d
+template; the harness swaps to the grenade GLB), per-side bot tinting, and open-terrain cover bakes
+(Phase D). The danger-field A* term stays off.
