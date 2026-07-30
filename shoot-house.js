@@ -4,17 +4,27 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { generateShootHouse, generateDemoRoom, generateRoomGallery } from './shoot-house-layout.js';
 import { MATERIALS, DEFAULT_MATERIAL } from './shoot-house-style.js';
+import { toShootHouseLayout, validateLayout } from './layout-interchange.js';
 
 const LIGHT_DEFAULT_COLOR = '#fff2d8';
 const LIGHT_DEFAULT_INTENSITY = 16;
 
 // type: 'demo' (internetcore reference room) | 'rooms' (phase-3 archetype gallery) |
 //       'house' (legacy v2 procedural kill-house).
-export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts = {} }) {
-  const layout = type === 'demo' ? generateDemoRoom(opts)
+// `interchange` (or opts.layout) -- a pcw-layout document (layout-interchange.js) -- overrides
+// `type` entirely: a bot-viewer-authored world builds through this same mesh + adapter path.
+export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts = {}, interchange = null }) {
+  const doc = interchange || opts.layout || null;
+  if (doc) {
+    const check = validateLayout(doc);
+    if (!check.ok) throw new Error(`invalid pcw-layout: ${check.errors.join('; ')}`);
+    for (const w of check.warnings) console.warn(`[shoot-house] layout warning: ${w}`);
+  }
+  const layout = doc ? toShootHouseLayout(doc)
+    : type === 'demo' ? generateDemoRoom(opts)
     : type === 'rooms' ? generateRoomGallery({ ...opts, seed })
     : generateShootHouse(seed, opts);
-  const { bounds, primitives, lights: lightDefs, spawn } = layout;
+  const { bounds, primitives, lights: lightDefs, spawn, spawns = null } = layout;
 
   const root = new THREE.Group();
   root.name = 'shoot-house';
@@ -101,12 +111,18 @@ export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts 
     // Absolute footprint (unlike worldX/worldZ, which are just widths) -- used to bake the
     // combat-bot nav grid over the real floor area (see environment-viewer.html's bot wiring).
     bounds: { minX: bounds.minX, maxX: bounds.maxX, minZ: bounds.minZ, maxZ: bounds.maxZ },
+    // Raw generator boxes ({kind,cx,cy,cz,sx,sy,sz,material}), kind tags intact -- the bot
+    // visibility/corner bakes need the AABB rect list the merged meshes throw away.
+    primitives,
     worldYMin: bounds.yMin,
     worldYMax: bounds.yMax,
     seaLevel: bounds.yMin - 10,
     resolution: Math.max(64, Math.ceil(Math.max(worldX, worldZ))),
     heightAt() { return 0; },
     spawn,
+    // Full authored spawn list (roles: player/bot/dummy/patrol) when the map came from a
+    // pcw-layout document; null for the generators, which only author one player spawn.
+    spawns,
     setLightColor,
     setLightIntensity,
     dispose,

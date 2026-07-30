@@ -59,7 +59,9 @@ Atrium pillars are wide (1.2 m) and spread (cluster radius 2.2 m) so you move *b
 | `shoot-house-style.js` | **Pure data, no Three.js.** Single source of aesthetic truth: `PALETTE`, `MATERIALS` (material key → `{color, roughness, metalness, em?, emissiveIntensity?}`), `DEFAULT_MATERIAL`. Consumed by the builder so a look change propagates to every variant. | 39 |
 | `shoot-house-pieces.js` | **Pure, no Three.js.** Phase-2 CQB cover vocabulary: `holoBarrier`, `lightPillar`, `halfWallBaffle`, `holoPlatform`, `portalDoor` (+ `PIECES` registry). Each returns an array of `shoot-house-style.js`-keyed boxes (dark body + emissive `accent`). Decoupled from the layout module (defaults are pre-derived from the FPS capsule) to avoid an import cycle — the layout module is the consumer. | 133 |
 | `shoot-house-rooms.js` | **Pure, no Three.js.** Phase-3 room archetypes: `ROOM_ARCHETYPES` (registry) + `buildRoomContent(id, ctx)` composing phase-2 pieces into designed layouts (gauntlet/atrium/crossfire/overwatch/open), entry-relative and seed-varied. Imports pieces only (no cycle). | 89 |
-| `shoot-house.js` | Three.js builder: dispatches on `type` (`demo`/`house`), merges the descriptor's boxes per material into a few `MeshStandardNodeMaterial` meshes (materials read from `shoot-house-style.js`; `em` specs become emissive buckets), builds the interior `THREE.PointLight`s honoring per-light color/intensity + a global color/intensity control panel, and returns the `loadedMap`-shaped adapter the viewer consumes. Browser/WebGPU only. | 150 |
+| `layout-interchange.js` | **Pure, no Three.js.** The `pcw-layout` interchange schema (v1) shared with the bot-viewer harness: `createLayout`, `validateLayout`, `toShootHouseLayout`, `fromShootHouseLayout`, `sightRectsFor`. Geometry + gameplay data only. | 230 |
+| `test-layout-interchange.mjs` | Node test — 60 checks: schema/validation, rect→primitive mapping, round-trip losslessness, non-flat (base-y ≠ 0 and negative) rects, geometric classification of foreign kinds, and nav/sight bake equivalence across a round trip. | 151 |
+| `shoot-house.js` | Three.js builder: takes a `pcw-layout` document (`interchange`) or dispatches on `type` (`demo`/`rooms`/`house`), merges the descriptor's boxes per material into a few `MeshStandardNodeMaterial` meshes (materials read from `shoot-house-style.js`; `em` specs become emissive buckets), builds the interior `THREE.PointLight`s honoring per-light color/intensity + a global color/intensity control panel, and returns the `loadedMap`-shaped adapter the viewer consumes (including the raw `primitives` list the merged meshes throw away). Browser/WebGPU only. | 171 |
 | `test-shoot-house-layout.mjs` | Node test (no framework) — 552 checks over 8 seeds, incl. flood-fill reachability. | 314 |
 | `test-shoot-house-collision.mjs` | Node test — analytic ray-vs-box over the layout (same nearest hit a map-BVH raycast returns): asserts doorway openings are clear at every height and wall shots land on the real face within T/2; demonstrates the old heightfield's off-face aliased blocker. | 130 |
 | `test-shoot-house-demo.mjs` | Node test — 30 checks: `SHOOTHOUSE_TYPES` registry, demo-room shape/enclosure/doorway/spawn, every material key known to `shoot-house-style.js`, roof-off, neon lights, phase-2 vocabulary showcase (baffle/pillar/platform/ramp present). | ~75 |
@@ -154,14 +156,75 @@ demo two-tone wing zoning. `opts`: `seed`, `bayW` (15), `bayD` (20), `gap` (4), 
     (`heightStand*0.56`≈1.0), `corridorHalf` (`max(4.5, heightStand*2.6)`≈4.68), `yDeck` (`H*0.83`≈3.59),
     `yMezz` (`H*0.44`≈1.9).
 
+`layout-interchange.js` (the **`pcw-layout` v1** schema; pure, no Three.js, no imports)
+
+The app-neutral layout document that makes a bot-viewer-v2 world and a shoot-house map the same
+thing. A world authored in the harness exports as one of these and loads here through the normal
+mesh-build + adapter path — the point being that identical geometry in both apps makes bot
+state-code traces diffable.
+
+```js
+{ format: 'pcw-layout', version: 1, name?: string,
+  bounds: { minX, maxX, minZ, maxZ, yMin, yMax },
+  walls:  [ { kind: 'wall', x, z, w, d, h, y } ],   // x/z = centre, w/d = FULL extents,
+  covers: [ { kind, x, z, w, d, h, y } ],           // y = base (bottom), h = the rect's own height
+  spawns: [ { id, role, x, y, z, heading? } ],      // role: player | bot | dummy | patrol
+  terrain: null }                                   // RESERVED v1
+```
+
+- **Flatness is not in the schema.** Every rect carries its own base `y`, so stacked/sloped content
+  round-trips unchanged; `heightAt() === 0` in the builder is an artifact of the current mesh path,
+  not a format rule. `terrain` is reserved for a ground descriptor (field seed, heightmap ref, pads):
+  v1 always writes `null` and both apps ignore it, but it survives a round trip.
+- **Geometry + gameplay data only.** Materials, themes and lights stay app-side; the document never
+  carries them. `walls` also state their height per rect, so the format does not depend on the
+  harness's global `WALL_H`.
+- Coordinates are quantized to 1e-9 m so the centre/extent conversion (`y` → `cy = y + h/2` → `y`)
+  lands back on the same double. Headings are left alone (an angle, not a length).
+
+API:
+- `export const LAYOUT_FORMAT = 'pcw-layout'`, `LAYOUT_VERSION = 1`, `DEFAULT_MATERIALS =
+  { wall: 'wall', cover: 'trim' }`, `SIGHT_BLOCK_HEIGHT = 1.5` (mirrors `nav-visibility.js`; kept
+  local so this module stays dependency-free).
+- `createLayout(source)` → normalized v1 document. Accepts a bot-viewer-shaped world
+  (`{ walls, covers, bounds, wallHeight, botSpawn, dummySpawn, patrolPoints, terrain, name }`) or an
+  existing document (idempotent). Derives `bounds.yMin/yMax` from the rects when absent.
+- `validateLayout(doc)` → `{ ok, errors, warnings }`. Never throws. Errors: wrong format/version,
+  non-finite or degenerate bounds, non-finite/non-positive rects, non-finite spawn positions, a
+  non-object `terrain`. Warnings: a rect entirely outside bounds, an unknown spawn role, no geometry.
+- `toShootHouseLayout(doc, { materials } = {})` → `{ bounds, primitives, lights: [], spawn, spawns,
+  terrain, meta:{type:'layout',name,source} }` — exactly the generator descriptor `createShootHouse`
+  consumes. Walls → `{kind:'wall', material: materials.wall}`, covers → `{kind, material:
+  materials.cover}`, each `cy = y + h/2`. `spawn` resolves to the first `player`-role spawn, else the
+  first `bot`, else the first entry (heading defaults to `Math.PI`).
+- `fromShootHouseLayout(sh, { name } = {})` → v1 document. Prims tagged `wall`/`cover` map straight
+  back; **every other kind is classified geometrically** — a box that is not decor (`sign`/`neon`/
+  `grid`), whose top is above 0.05 and whose bottom is below `SIGHT_BLOCK_HEIGHT`, becomes a cover
+  with its tag preserved. That mirrors the `shootHouseSightRects` filter the environment viewer
+  applies to bake bot cover, so floor slabs, lintels and raised decks drop out on both paths.
+- `sightRectsFor(doc)` → `[{x,z,w,d,h,kind}]` for `buildSightGrid`, where `h` is the box **top**
+  (`y + h`) — a rect lifted off the floor reads at its real height instead of its own thickness.
+
+Round-tripping is lossless for harness-authored content and for the surviving subset of a generator
+layout (`test-layout-interchange.mjs` asserts both, plus grid-identical nav/sight bakes either way).
+
 `shoot-house.js`
-- `export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts = {} })` → adapter
-  object. `type` picks the layout generator (`'demo'` → `generateDemoRoom`, `'rooms'` →
-  `generateRoomGallery`, else `generateShootHouse`).
+- `export function createShootHouse({ scene, THREE, seed = 1, type = 'house', opts = {}, interchange = null })`
+  → adapter object. When `interchange` (or `opts.layout`) holds a `pcw-layout` document it is
+  validated (throwing on errors, `console.warn` on warnings) and converted by `toShootHouseLayout`,
+  short-circuiting the generators; otherwise `type` picks the layout generator (`'demo'` →
+  `generateDemoRoom`, `'rooms'` → `generateRoomGallery`, else `generateShootHouse`). The mesh merge,
+  lights, panel and adapter are shared by both paths — an interchange layout just arrives with an
+  empty `lights` list. The adapter gains a `spawns` field (the document's full role-tagged spawn
+  list, `null` for the generators).
   Adds the built root to `scene` itself (matching `loadTerrainMap`). Adapter fields the viewer
   reads: `kind:'shoot-house'`, `root`, `worldX`, `worldZ`, `bounds` (`{minX,maxX,minZ,maxZ}`, the
   absolute footprint — unlike `worldX`/`worldZ` which are just widths; used to bake the combat-bot
-  nav grid, see `docs/subsystems/bots.md`), `worldYMin`, `worldYMax`,
+  nav grid, see `docs/subsystems/bots.md`), `primitives` (the generator's raw box list, passed
+  through unmodified with `kind` tags intact — the merged per-material meshes destroy the AABB
+  structure, and the bot cover/visibility bakes in `environment-viewer-v2.html` recover their
+  sight-blocker rects from it: `{x:cx, z:cz, w:sx, d:sz, h:cy+sy/2}`, minus decorative kinds and
+  boxes that float above eye height), `worldYMin`, `worldYMax`,
   `seaLevel` (`yMin-10`, far below the floor), `resolution`, `heightAt(x,z)` (returns 0 — the
   floor; stairs/balconies/mezzanines are resolved by the BVH `mapCollider` the viewer builds over
   `root`), `spawn`, `setLightColor(hex)` (only recolors lights **without** a per-light tint),
@@ -236,6 +299,15 @@ strength 0.9 / threshold 0.6, contrast, vignette) so the emissive grid/trim/neon
 - **Spawn** (`resetPlayerPosition`, ~line 5456): reads `loadedMap?.spawn?.x/z ?? 8/0` and, on a
   look-reset, `loadedMap?.spawn?.heading ?? Math.PI` — the `??` fallbacks preserve prior
   behavior for every other map.
+
+**Loading a `pcw-layout` file (not yet wired).** `createShootHouse` accepts the document today; the
+viewer side still needs a one-line source for it — fetch/`FileReader` the JSON and pass it as
+`interchange` in the same `if (mapKey)` branch that picks a `shootHouseType`, e.g.
+`createShootHouse({ scene, THREE, interchange: await (await fetch(layoutUrl)).json() })`. Everything
+downstream (`createMapCollider`, `NO_ENVIRONMENT`, `rebakeWorldMap`, the bot cover bake off
+`loadedMap.primitives`) works unchanged, because the document produces the same descriptor shape the
+generators do. The document's role-tagged spawns also reach the viewer as `loadedMap.spawns`, which
+is what `sampleBotSpawnPoints` should prefer over grid sampling once a harness world is loaded.
 
 The start screen (`start-screen.js` `_mapStep`) shows a **"Shoot House" dropdown card** next to
 "Infinite World" (built by `_shootHouseCard`, populated from `SHOOTHOUSE_TYPES`): a type `<select>` +
