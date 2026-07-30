@@ -114,6 +114,16 @@ import {
   DANGER_DEATH_WEIGHT, DANGER_HIT_WEIGHT, DANGER_FLEE_SCALE, DANGER_PATROL_SCALE, DANGER_PACK_SCALE,
 } from './bot-danger.js';
 import { investigationRadius, interceptPoint, pincerOffsets, standoffPoint } from './bot-pursuit.js';
+// --- Phase C: roles / medic / health packs / sidearms / stances ---
+import { ROLE_MEDIC, ROLE_SNIPER, ROLE_TECHNICAL, DEFAULT_ROLE, getRole, assignRolesToBatch } from './bot-roles.js';
+import { MEDIC_MOVE, MEDIC_TEND, MEDIC_DEFAULTS, decideMedicAction, cohesionTarget,
+  medicChaseSpeedFactor, medicTendRadiusFor } from './bot-medic.js';
+import { makePack, drawFromPacks, hasHealResource, canHold, addPack, hasReviveMaterials,
+  consumeRevivePacks, packClaimIntent, packRunSafe } from './bot-health-packs.js';
+import { SIDEARM_DRAW_MS, SIDEARM_LULL_MS, pickSidearmId, chooseWeaponSlot, outOfAllAmmo } from './bot-sidearm.js';
+import { STANCE_CROUCH, STANCE_PRONE, STANCE_STAND, STANCE_DEFAULTS, chooseBotStance, stepStanceTransition,
+  stanceSpeedFactor, stanceSpreadScale, stanceHeightScale, stanceCapsuleHeightScale,
+  stanceTurnRateScale, stepStanceWeights, blendStanceHeightScale } from './bot-stance.js';
 import { createBotSpatialHash } from './bot-spatial-hash.js';
 import { buildSightGrid, buildLazyVisibilityField, cellIndexAt, SIGHT_BLOCK_HEIGHT } from './nav-visibility.js';
 import { buildCornerMap } from './nav-corners.js';
@@ -1812,8 +1822,20 @@ function botMeshBlockedAt(x, z) {
 // top reads much higher and is correctly excluded. Only meaningful when the floor is flat, which
 // is why this test (and the static full-map bake below) is shoot-house only; other maps use
 // botTerrainWalkable's slope-based test instead (see requestBotPath).
-function botNavWalkable(x, z) {
+function botNavFloorAt(x, z) {
   return mapCollider ? Math.abs(terrainHeight(x, z)) < BOT_NAV_FLOOR_TOLERANCE : false;
+}
+// Harness parity (WALL_MARGIN 0.55): a cell is walkable only when the floor is clear a capsule
+// margin away in all 8 directions too, so baked paths keep bots off wall faces and corners.
+// Bake-time-only cost (9 probes/cell); generated doorways are 2.7 m wide, so no route closes.
+const BOT_NAV_WALL_MARGIN = 0.55;
+function botNavWalkable(x, z) {
+  if (!botNavFloorAt(x, z)) return false;
+  const M = BOT_NAV_WALL_MARGIN;
+  return botNavFloorAt(x + M, z) && botNavFloorAt(x - M, z)
+    && botNavFloorAt(x, z + M) && botNavFloorAt(x, z - M)
+    && botNavFloorAt(x + M, z + M) && botNavFloorAt(x - M, z + M)
+    && botNavFloorAt(x + M, z - M) && botNavFloorAt(x - M, z - M);
 }
 // Walkability test for open/authored terrain: flat-ish (small height delta to its neighbors, so
 // gentle rolling ground passes but a cliff or wall face doesn't), not underwater, clear of tree
@@ -1895,12 +1917,35 @@ function botSpawnSlot(index) {
   const rad = 6 + (index % 4) * 2.5;
   return { x: base.x + Math.cos(ang) * rad, z: base.z + Math.sin(ang) * rad };
 }
-function spawnBotAt(pos) {
+// Roles arrive per batch (assignRolesToBatch spaces specialists deterministically), but env spawns
+// one bot at a time -- so a rolling queue is refilled from the sliders whenever it drains.
+const BOT_ROLE_BATCH = 10;
+let botRoleQueue = [];
+function nextBotRole() {
+  if (!botRoleQueue.length) botRoleQueue = assignRolesToBatch(BOT_ROLE_BATCH, currentRoleMixOpts());
+  return botRoleQueue.shift() ?? DEFAULT_ROLE;
+}
+function currentRoleMixOpts() {
+  botRoleMix[ROLE_SNIPER] = botSniperPercent;
+  botRoleMix[ROLE_TECHNICAL] = botTechnicalPercent;
+  return { medicPercent: botMedicPercent, mix: botRoleMix };
+}
+// The backup a role brings: its own named gun if it has one, else a pistol picked per bot.
+function sidearmForRole(roleId, primaryId, seed) {
+  if (!botSidearmEnabled) return null;
+  const named = getRole(roleId).sidearm;
+  if (named && named !== primaryId) return named;
+  return pickSidearmId(primaryId, seed);
+}
+function spawnBotAt(pos, roleId = nextBotRole()) {
   const id = `bot-${++botIdSeq}`;
   const bot = createBotEntity(id, { x: pos.x, y: terrainHeight(pos.x, pos.z), z: pos.z });
-  const weaponId = botWeaponId;
+  const role = getRole(roleId);
+  const weaponId = role.weapon ?? botWeaponId;   // a role may bring its own loadout
   bot.weapon = weaponId;
   bot.tool = weaponId;
+  bot.primaryWeapon = weaponId;
+  bot.sidearm = sidearmForRole(role.id, weaponId, botSeedFromId(id));
   botPlayers.set(id, {
     bot, fsmState: BOT_PATROL, lastFireAt: -Infinity, lastKnownTarget: null,
     lastKnownTargetAt: null, lastKnownTargetMotion: null,
@@ -1941,6 +1986,23 @@ function spawnBotAt(pos) {
     tierPerception: null, alertHold: null, alertReport: null, alertMarkMode: null,
     alertScore: 0, alertTierLast: null, alertWarySince: null, spinLatched: false,
     commitBits: 0, stateCode: null, traceLastPos: null, traceTickAt: null,
+    // --- Phase C actor fields (roles / packs / medic / sidearm / stance) ---
+    role: role.id, maxPacks: role.maxPacks,
+    healthPacks: Array.from({ length: role.startingPacks }, () => makePack(1)), // dropped on death
+    reviveKits: 0,
+    primaryWeaponId: weaponId, sidearmId: bot.sidearm,
+    swapUntil: 0,                // sidearm draw timer: no firing or reloading until it expires
+    lastGunfightAt: null,        // last frame with contact; the lull past it re-holsters the pistol
+    lastSelfThreatAt: null,      // last frame someone shot at us ("in a gunfight" test)
+    healRequested: false, healArrived: false, healSafetySince: null, healThreatId: null,
+    healStartedAt: null, healUnsafePrev: false,
+    packSeekGoal: null, packPickupCrouchUntil: 0,
+    medicAction: null, medicTendTargetId: null, medicTendStartedAt: 0,
+    medicClaimBy: null, medicClaimUntil: 0,
+    medicFlood: null, medicFloodAt: 0, medicFloodBuf: null, // own buffers: the flood pool is per-call
+    diedAt: null, deathXZ: null,
+    stance: STANCE_STAND, stanceLatch: null, stanceWeights: null, stanceForcedCrouch: false,
+    standHeight: bot.capsule.end.y - bot.capsule.start.y,
   });
   playerCombat.ensurePlayer(id, { maxHp: botMaxHp, hp: botMaxHp });
   setPlayerWeapon(id, weaponId);
@@ -1974,7 +2036,9 @@ function formSquad(botIds) {
 // round-mode top-up loop and the manual spawn button when squad mode is on.
 function spawnSquadAtSlot(startIndex) {
   const ids = [];
-  for (let i = 0; i < SQUAD_MIN_SIZE; i++) ids.push(spawnBotAtSlot(startIndex + i));
+  // One batch of roles for the whole squad, so specialists spread across it rather than clumping.
+  const roles = assignRolesToBatch(SQUAD_MIN_SIZE, currentRoleMixOpts());
+  for (let i = 0; i < SQUAD_MIN_SIZE; i++) ids.push(spawnBotAt(botSpawnSlot(startIndex + i), roles[i]));
   return formSquad(ids);
 }
 function despawnBot(id) {
@@ -1992,6 +2056,8 @@ function despawnBot(id) {
 }
 function despawnAllBots() {
   for (const id of [...botPlayers.keys()]) despawnBot(id);
+  clearWorldHealthPacks();   // no bots left to scavenge them
+  botRoleQueue.length = 0;   // next spawn starts a fresh role batch
 }
 
 function botMidXZ(bot) {
@@ -2082,14 +2148,22 @@ let _botPathDebugCount = 0; // TEMP diagnostic (2026-07-19): remove once explore
 function requestBotPath(bot, toXZ) {
   if (botNavGrid) {
     const center = botMidXZ(bot);
+    // Harness parity: own cell nav-blocked (pushed into the wall margin) keeps the snapped start
+    // waypoint so the bot steps back onto the grid first; otherwise drop it.
+    const ownCell = worldToCell(botNavGrid, center.x, center.z);
+    const keepStart = !botIsWalkableCell(botNavGrid, ownCell.c, ownCell.r);
+    const finish = (raw) => {
+      const smoothed = botSmoothPath(botNavGrid, raw, SMOOTH_LOOKAHEAD);
+      return keepStart ? smoothed : smoothed.slice(1);
+    };
     const raw = botFindPath(botNavGrid, center, toXZ);
-    if (raw) return botSmoothPath(botNavGrid, raw).slice(1);
+    if (raw) return finish(raw);
     // No route on the static bake either -- same nearest-walkable-goal retry the local-window
     // branch below already had (this branch used to have none at all).
     const nearGoal = nearestWalkableInGrid(botNavGrid, toXZ.x, toXZ.z);
     if (nearGoal) {
       const retry = botFindPath(botNavGrid, center, nearGoal);
-      if (retry) return botSmoothPath(botNavGrid, retry).slice(1);
+      if (retry) return finish(retry);
     }
     return [];
   }
@@ -2339,7 +2413,12 @@ function resetBotBrainState(rec) {
   rec.alertHold = null; rec.alertReport = null; rec.alertMarkMode = null;
   rec.alertScore = 0; rec.alertTierLast = null; rec.alertWarySince = null; rec.spinLatched = false;
   rec.commitBits = 0;
-  for (const kind of ['cover', 'flee', 'seek', 'pursue', 'recover']) goalClaims.release(rec.id, kind);
+  for (const kind of ['cover', 'flee', 'seek', 'pursue', 'recover', 'pack']) goalClaims.release(rec.id, kind);
+  rec.packSeekGoal = null;
+  rec.medicAction = null; rec.medicTendTargetId = null;
+  rec.medicFlood = null; rec.medicFloodAt = 0;
+  rec.stance = STANCE_STAND; rec.stanceLatch = null; rec.stanceForcedCrouch = false;
+  rec.packPickupCrouchUntil = 0;
 }
 
 // --- tuning (the harness's botBehaviorSettings, minus what the env panel sliders already own) ---
@@ -2360,8 +2439,35 @@ const botBehaviorSettings = {
 // A10 reaction/spread. reactionMs is overwritten from the "Notice time" slider each tick.
 const botAimSettings = { ...AIM_DEFAULTS, reactionMs: 700, reactionPerMetreMs: 40, reactionMaxMs: 2000 };
 const botInvestigationSettings = { durationMs: 12000, initialRadius: 1.25, expansionMetresPerSecond: 2.5, maxRadius: 12 };
-// Phase A has no roles/loadout switching, so the knife rung can never arm (Phase C owns loadouts).
+// Phase C wires the SECOND rung of the last-resort ladder (the role sidearm), not the third: env
+// has no bot melee fire path, so the knife stays disarmed and a genuinely dry bot flees instead.
+// bot-sidearm's outOfAllAmmo is what now decides "dry" -- a spent primary with a loaded pistol
+// keeps the bot fireCapable rather than sending it running.
 const botKnifeSecondaryEnabled = false;
+// --- Phase C tuning -------------------------------------------------------------
+let botSidearmEnabled = true;      // every bot carries a backup behind its primary (bot-sidearm.js)
+let botMedicPercent = 20;          // % of each spawn batch that becomes a medic (bot-roles.js)
+let botSniperPercent = 0;          // specialist mix, same terms as medicPercent
+let botTechnicalPercent = 0;       // RPG ballistics are Phase C-and-a-half: default off
+let botRunMultiplier = 1.7;        // STANCE_RUN speed multiplier (harness botMovementSettings default)
+const botRoleMix = {};             // refilled per batch from the sliders above
+const botStanceSettings = { ...STANCE_DEFAULTS };   // proneEnabled stays false, like the harness
+const botHealthSettings = {
+  retreatEnabled: true,
+  threshold01: 0.35,   // at/below this HP a bot breaks off to heal
+  resume01: 0.85,      // heal until here
+  safeDistance: 12,    // healUnsafeBand centre: a visible threat inside this cancels the channel
+  safeHoldMs: 900,     // unbroken safe time before the heal actually starts
+  healPerSecond: 22,
+};
+const botPackSettings = {
+  dropScatter: 0.35, pickupRadius: 0.9, shortProximity: 12, pickupCrouchMs: 600,
+  worldSpawnCount: 0,  // ambient packs seeded at map load; 0 = corpse drops only
+};
+const botMedicSettings = {
+  healAllyPerSecond: 26, reviveChannelMs: 2600, reviveHp: 45,
+  medicClaimLeaseMs: 1500, healHoldRadius: 4.5, healHoldLeaseMs: 700,
+};
 // The push tier's bounding-overwatch element needs bot-squad.js ranks (Phase C-and-a-half), so the
 // escalation ladder is capped at 'defensive' here -- an element-less push is also an illegal state code.
 const BOT_PUSH_TIER_ENABLED = false;
@@ -2421,6 +2527,9 @@ const _topOff = { magFrac: 0, targetVisible: false, concealed: false };
 const _fsmCtx = {};
 const _fleeScore = { threatDistance: 0, pathDist: 0, covered: false, exposure01: 0, centroidDistance: null, coverScore: 0 };
 const _spreadIn = { moveSpeed01: 0, heldMs: 0, bloomDeg: 0 };
+const _packCell = { c: 0, r: 0 };
+const _packThreatXZ = { x: 0, z: 0 };
+const _stanceCtx = {};             // chooseBotStance argument, refilled per bot per frame
 const _selCandidates = [];
 const _selCandidateDistSq = [];
 
@@ -2429,13 +2538,21 @@ function cellIdxOf(c, r) { return r * botNavGrid.cols + c; }
 function navCellKey(c, r) { return `${c},${r}`; }
 const goalClaims = createGoalClaims((id) => !!botPlayers.get(id) && playerCombat.getSnapshot(id).alive);
 function currentBotWeapon() { return getWeapon(activeBot?.weaponId || botWeaponId) || getWeapon('m1911'); }
-function botSightDistance() { return botSightRange; }
+// The slider is the line's number; a role scales it (sniper 1.5x), so perception, the standoff
+// clamp and the tactical rings all move together for that bot.
+function botSightDistanceFor(rec) { return botSightRange * getRole(rec?.role).sightScale; }
+function botSightDistance() { return botSightDistanceFor(activeBot); }
+// Every movement path funnels through here, so stance owns locomotion (walk/run/crouch) in one edit.
 // Retreating squads still move faster (squad-activity.js wiring, kept until Phase C-and-a-half).
 function currentBotMoveSpeed() {
   const squad = activeBot?.squadId ? squads.get(activeBot.squadId) : null;
-  return squad?.order === 'retreat' ? botMoveSpeed * BOT_RETREAT_SPEED_MULT : botMoveSpeed;
+  const base = squad?.order === 'retreat' ? botMoveSpeed * BOT_RETREAT_SPEED_MULT : botMoveSpeed;
+  return base * stanceSpeedFactor(activeBot?.stance ?? STANCE_STAND, botStanceSettings, botRunMultiplier);
 }
-function botTurnRateRadS() { return BOT_TURN_RATE_RAD_S; }
+// Crouch/prone swing the muzzle slower; STAND scales to 1 so a disabled stance system is untouched.
+function botTurnRateRadS() {
+  return BOT_TURN_RATE_RAD_S * stanceTurnRateScale(activeBot?.stance ?? STANCE_STAND, botStanceSettings);
+}
 // Preferred fighting distance: longer-range guns want more standoff, clamped inside sight range.
 function botWeaponStandoff(weapon) {
   const maxStandoff = Math.max(4, botSightDistance() - 4);
@@ -2449,9 +2566,57 @@ function normalizeXZ(vector) {
 
 // --- ammo: env's ensureAmmo/reload model stays the source of truth -----------------
 function ensureBotAmmo() { return ensureAmmo(bot.id, activeBot.weaponId); }
+// --- sidearms (bot-sidearm.js): rec.weaponId is the gun IN HAND --------------------
+// The loadout is rec.primaryWeaponId + rec.sidearmId; ensureAmmo already pools per weapon id, so
+// each slot keeps its own mag/reserve with no extra bookkeeping.
+function botHasSidearm() { return botSidearmEnabled && !!activeBot?.sidearmId; }
+function botOnSidearm() { return !!activeBot?.sidearmId && activeBot.weaponId === activeBot.sidearmId; }
+function botSwapping(nowMs) { return (activeBot?.swapUntil ?? 0) > nowMs; }
+function botOtherSlotAmmo() {
+  const other = botOnSidearm() ? activeBot.primaryWeaponId : activeBot.sidearmId;
+  return other ? ensureAmmo(bot.id, other) : null;
+}
+const _outOfAmmoQ = { active: null, other: null, hasSidearm: false };
 function botOutOfAllAmmo() {
-  const ammo = ensureBotAmmo();
-  return ammo.mag <= 0 && ammo.reserve <= 0;
+  _outOfAmmoQ.active = ensureBotAmmo();
+  _outOfAmmoQ.other = botOtherSlotAmmo() ?? undefined;
+  _outOfAmmoQ.hasSidearm = botHasSidearm();
+  return outOfAllAmmo(_outOfAmmoQ);
+}
+// Put `slot` in hand: the draw costs SIDEARM_DRAW_MS of no-fire time and abandons any reload in
+// progress -- swapping is what a bot does *because* it has no time to reload.
+function swapBotWeaponSlot(slot, nowMs) {
+  const id = slot === 'sidearm' ? activeBot?.sidearmId : activeBot?.primaryWeaponId;
+  if (!id || activeBot.weaponId === id) return false;
+  activeBot.weaponId = id;
+  bot.weapon = id; bot.tool = id;
+  setPlayerWeapon(bot.id, id); setPlayerTool(bot.id, id);
+  botReloadUntil = null; activeBot.reloadStartedAt = null;
+  activeBot.swapUntil = nowMs + SIDEARM_DRAW_MS;
+  return true;
+}
+const _slotCtx = { active: 'primary', hasSidearm: false, swapping: false, inGunfight: false,
+  quietMs: Infinity, primary: null, sidearm: null, swapOnDryMag: true, closeRange: 0, targetDist: Infinity };
+// Decide and perform the swap for the bound bot. `inGunfight` = someone to shoot or someone
+// shooting at us; the role supplies swapOnDryMag/closeRange as plain data (bot-roles.js).
+function updateBotWeaponSlot(nowMs, inGunfight, targetDist = Infinity) {
+  if (!activeBot || !bot) return;
+  if (inGunfight) activeBot.lastGunfightAt = nowMs;
+  const role = getRole(activeBot.role);
+  const onSidearm = botOnSidearm();
+  _slotCtx.active = onSidearm ? 'sidearm' : 'primary';
+  _slotCtx.hasSidearm = botHasSidearm();
+  _slotCtx.swapping = botSwapping(nowMs);
+  _slotCtx.inGunfight = inGunfight;
+  _slotCtx.quietMs = nowMs - (activeBot.lastGunfightAt ?? -Infinity);
+  _slotCtx.primary = ensureAmmo(bot.id, activeBot.primaryWeaponId);
+  // undefined, never null: chooseWeaponSlot's `sidearm = {}` default only fires on undefined.
+  _slotCtx.sidearm = activeBot.sidearmId ? ensureAmmo(bot.id, activeBot.sidearmId) : undefined;
+  _slotCtx.swapOnDryMag = role.swapOnDryMag;
+  _slotCtx.closeRange = role.closeRange;
+  _slotCtx.targetDist = targetDist;
+  const want = chooseWeaponSlot(_slotCtx);
+  if (want) swapBotWeaponSlot(want, nowMs);
 }
 // Empty mag starts a timed reload; `force` also tops off a partial mag during a lull (A9).
 function updateBotReload(nowMs, force = false) {
@@ -2563,6 +2728,8 @@ function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   pushAllyReport({ victimId, team: BOT_TEAM, x: v.x, z: v.z,
     threat: { x: threat.x, z: threat.z }, at: nowMs,
     lethal: !playerCombat.getSnapshot(victimId).alive });
+  // Phase C: a bot pushed under the health threshold breaks off to heal (no-op above it).
+  beginBotHealthRetreat(rec, attackerId, nowMs);
 }
 // Every living bot the shot passed within NEAR_MISS_RADIUS of gets a firsthand near-miss report
 // (replaces the v1 alertBotsToShot broadcast, which handed every bot a free last-known position).
@@ -2616,6 +2783,507 @@ function sharedAllyAlertNear(me, nowMs) {
   _saBest = null;
   return best;
 }
+// --- health packs (world pickups; bot-health-packs.js owns the charge math) --------
+// Host-only world items: a small black box with a white plus, dropped on death and collected off
+// the ground. Guests do not see them yet (see docs/subsystems/bots.md, Phase C deferred list).
+const worldHealthPacks = [];   // { group, x, z, pack:{charge01}, seq, droppedAt, capsule }
+const PACK_DESPAWN_MS = 60000;
+const PACK_CAP = 64;
+const packHash = createBotSpatialHash(8);
+let packHashDirty = true;
+let packSeq = 0;               // spawn-order stamp: pickup ordering + oldest-first eviction
+function packHashEnsure() {
+  if (!packHashDirty) return;
+  packHashDirty = false;
+  packHash.rebuild(worldHealthPacks);
+}
+const _packEvictCell = { c: 0, r: 0 };
+function packClaimed(record) {
+  if (!botNavGrid) return false;
+  const cell = worldToCellInto(botNavGrid, record.x, record.z, _packEvictCell);
+  return goalClaims.isClaimedByOther(cellIdxOf(cell.c, cell.r), undefined);
+}
+// Age out stale unclaimed packs; past the hard cap evict oldest unclaimed first, then oldest outright.
+function despawnStaleHealthPacks(nowMs) {
+  for (let i = worldHealthPacks.length - 1; i >= 0; i--) {
+    const record = worldHealthPacks[i];
+    if (nowMs - record.droppedAt >= PACK_DESPAWN_MS && !packClaimed(record)) removeWorldHealthPack(record);
+  }
+  if (worldHealthPacks.length <= PACK_CAP) return;
+  for (let i = 0; i < worldHealthPacks.length && worldHealthPacks.length > PACK_CAP; ) {
+    if (!packClaimed(worldHealthPacks[i])) removeWorldHealthPack(worldHealthPacks[i]);
+    else i++;
+  }
+  while (worldHealthPacks.length > PACK_CAP) removeWorldHealthPack(worldHealthPacks[0]);
+}
+const PACK_BOX = new THREE.BoxGeometry(0.24, 0.14, 0.30);
+const PACK_BOX_MAT = new MeshStandardNodeMaterial({ color: 0x141414, roughness: 0.55, metalness: 0.1 });
+const PACK_PLUS_MAT = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.4, emissive: 0x222222 });
+const PACK_PLUS_BAR_H = new THREE.BoxGeometry(0.17, 0.03, 0.05);
+const PACK_PLUS_BAR_V = new THREE.BoxGeometry(0.05, 0.03, 0.17);
+function buildHealthPackMesh() {
+  const group = new THREE.Group();
+  const box = new THREE.Mesh(PACK_BOX, PACK_BOX_MAT);
+  const barH = new THREE.Mesh(PACK_PLUS_BAR_H, PACK_PLUS_MAT);
+  const barV = new THREE.Mesh(PACK_PLUS_BAR_V, PACK_PLUS_MAT);
+  barH.position.y = barV.position.y = 0.075;   // sit the plus on the top face
+  for (const m of [box, barH, barV]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  group.add(box, barH, barV);
+  return group;
+}
+function spawnWorldHealthPack(x, z, pack) {
+  if (!pack || pack.charge01 <= 1e-4) return null;
+  const snapped = botNearestWalkableXZ(x, z);   // keep packs on standable ground
+  x = snapped.x; z = snapped.z;
+  const group = buildHealthPackMesh();
+  group.position.set(x, terrainHeight(x, z) + 0.09, z);
+  scene.add(group);
+  // capsule.start satisfies the spatial hash's rebuild() contract (it reads capsule.start.x/z).
+  const record = { group, x, z, pack, seq: packSeq++, droppedAt: performance.now(), capsule: { start: { x, z } } };
+  worldHealthPacks.push(record);
+  packHashDirty = true;
+  return record;
+}
+function removeWorldHealthPack(record) {
+  const idx = worldHealthPacks.indexOf(record);
+  if (idx >= 0) worldHealthPacks.splice(idx, 1);
+  scene.remove(record.group);
+  packHashDirty = true;
+}
+function clearWorldHealthPacks() {
+  for (const record of worldHealthPacks.splice(0)) scene.remove(record.group);
+  packHashDirty = true;
+}
+// Nearest walkable XZ to (x,z): the nav grid when there is one, else the point itself.
+function botNearestWalkableXZ(x, z) {
+  if (!botNavGrid) return { x, z };
+  const cell = nearestWalkableNavCell(worldToCell(botNavGrid, x, z));
+  return cell ? botCellToWorld(botNavGrid, cell.c, cell.r) : { x, z };
+}
+// Drop every pack a dying bot still holds, scattered a little so they don't z-fight.
+function dropBotHealthPacks(rec, x, z) {
+  const packs = rec?.healthPacks;
+  if (!packs?.length) return;
+  const scatter = botPackSettings.dropScatter;
+  for (let i = 0; i < packs.length; i++) {
+    const angle = (i / packs.length) * Math.PI * 2;
+    spawnWorldHealthPack(x + Math.cos(angle) * scatter, z + Math.sin(angle) * scatter, packs[i]);
+  }
+  packs.length = 0;
+}
+// LOS + range from a bot's eye to a ground pack (bots run a 360deg check here, so no cone gate).
+const _packEye = { x: 0, y: 0, z: 0 };
+const _packTargetP = [0, 0, 0];
+function botCanSeePack(entity, rec, record) {
+  const eye = botEyeInto(entity, _packEye);
+  const dx = record.x - eye.x, dz = record.z - eye.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > botSightDistanceFor(rec)) return { visible: false, dist };
+  if (dist < 1e-4) return { visible: true, dist };
+  _packTargetP[0] = record.x; _packTargetP[1] = terrainHeight(record.x, record.z) + 0.15; _packTargetP[2] = record.z;
+  const d3 = Math.hypot(_packTargetP[0] - eye.x, _packTargetP[1] - eye.y, _packTargetP[2] - eye.z);
+  return { visible: botHasLineOfSight(eye, _packTargetP, d3), dist };
+}
+// The nearest pack this bot would collect: room to hold it, able to see it, and either wounded
+// (distance-agnostic) or within short proximity. Returns { record, dist } or null.
+const _packSeekCell = { c: 0, r: 0 };
+let _psEntity = null, _psRec = null, _psHurt = false, _psBest = null;
+function _psVisit(record) {
+  if (botNavGrid) {
+    const cell = worldToCellInto(botNavGrid, record.x, record.z, _packSeekCell);
+    if (goalClaims.isClaimedByOther(cellIdxOf(cell.c, cell.r), _psEntity.id)) return;
+  }
+  const seen = botCanSeePack(_psEntity, _psRec, record);
+  if (!seen.visible) return;
+  if (!_psHurt && seen.dist > botPackSettings.shortProximity) return;
+  // Plain distance: the harness inflates this by its danger field, which this port keeps OFF
+  // (see the plan's Phase A note -- the danger A* term lands with Phase D profiling).
+  const cmp = seen.dist;
+  if (!_psBest || cmp < _psBest.cmp || (cmp === _psBest.cmp && record.seq < _psBest.record.seq)) {
+    _psBest = { record, dist: seen.dist, cmp };
+  }
+}
+function nearestSeekablePack(entity, rec, hurt) {
+  if (!worldHealthPacks.length || !canHold(rec?.healthPacks, rec?.maxPacks)) return null;
+  packHashEnsure();
+  _psEntity = entity; _psRec = rec; _psHurt = hurt; _psBest = null;
+  packHash.forEachNear(entity.capsule.start.x, entity.capsule.start.z, botSightDistanceFor(rec), _psVisit);
+  const best = _psBest;
+  _psEntity = null; _psRec = null; _psBest = null;
+  return best;
+}
+// Collect any packs within pickupRadius (step on it, grab it), respecting the per-role cap.
+const _puNear = [];
+let _puX = 0, _puZ = 0;
+function _puVisit(record) {
+  if (Math.hypot(record.x - _puX, record.z - _puZ) <= botPackSettings.pickupRadius) _puNear.push(record);
+}
+function collectPacksUnderfoot(entity, rec, nowMs) {
+  const packs = rec?.healthPacks;
+  if (!packs || !worldHealthPacks.length) return false;
+  packHashEnsure();
+  _puX = entity.capsule.start.x; _puZ = entity.capsule.start.z;
+  _puNear.length = 0;
+  packHash.forEachNear(_puX, _puZ, botPackSettings.pickupRadius, _puVisit);
+  if (_puNear.length > 1) _puNear.sort((a, b) => b.seq - a.seq);
+  let collected = false;
+  for (const record of _puNear) {
+    if (!canHold(packs, rec?.maxPacks)) break;
+    if (addPack(packs, record.pack, rec?.maxPacks)) {
+      removeWorldHealthPack(record);
+      collected = true;
+      rec.packPickupCrouchUntil = nowMs + botPackSettings.pickupCrouchMs;   // brief dip to grab it
+    }
+  }
+  _puNear.length = 0;
+  return collected;
+}
+// playerCombat stays the sole HP authority: a heal is a clamped negative-damage application, so
+// nothing else grows a second HP owner. Returns the HP actually applied.
+function healBotHp(id, amount) {
+  const snap = playerCombat.getSnapshot(id);
+  if (!snap.alive || !(amount > 0)) return 0;
+  const applied = Math.min(amount, Math.max(0, snap.maxHp - snap.hp));
+  if (applied <= 1e-6) return 0;
+  playerCombat.applyDamage({ targetId: id, amount: -applied, source: 'heal', attackerId: id, weaponId: null });
+  return applied;
+}
+// A wounded bot breaks off to heal. Mirrors the harness's beginBotHealthRetreat, including the
+// bound-actor special case: the bound rec's truth lives in the registers until commitBotActor.
+function beginBotHealthRetreat(rec, threatId, nowMs) {
+  if (!rec || rec.healRequested || !botHealthSettings.retreatEnabled) return;
+  const snap = playerCombat.getSnapshot(rec.id);
+  if (!snap.alive || snap.hp / Math.max(1, snap.maxHp) > botHealthSettings.threshold01) return;
+  rec.healRequested = true;
+  rec.healArrived = false;
+  rec.healSafetySince = null;
+  rec.healThreatId = threatId || null;
+  rec.healStartedAt = nowMs;
+  // Shot recovery only improves a firing position; a wounded bot's retreat outranks it.
+  rec.muzzleRecoveryTarget = null;
+  rec.recoveryIssueActive = false;
+  rec.combatMoveGoal = null;
+  rec.currentPath = [];
+  rec.pathMode = null;
+  if (rec === activeBot) {
+    botMuzzleRecoveryTarget = null; botRecoveryIssueActive = false;
+    botCombatMoveGoal = null; currentPath = []; pathMode = null;
+  }
+}
+function clearBotHealthRetreat(rec = activeBot) {
+  if (!rec) return;
+  rec.healRequested = false; rec.healArrived = false; rec.healSafetySince = null;
+  rec.healThreatId = null; rec.healStartedAt = null;
+}
+// Banded safety verdict for the heal channel: a target hovering at safeDistance can no longer
+// pump HEAL<->FLEE every tick (healUnsafeBand's hysteresis).
+const _healStatus = { ready: false, unsafe: false };
+function updateHealSafety(rec, nowMs, visible, targetDistance) {
+  if (!rec.healRequested || !rec.healArrived) {
+    rec.healSafetySince = null; rec.healUnsafePrev = false;
+    _healStatus.ready = false; _healStatus.unsafe = false;
+    return _healStatus;
+  }
+  const unsafe = visible && healUnsafeBand(targetDistance, !!rec.healUnsafePrev, botHealthSettings.safeDistance);
+  rec.healUnsafePrev = unsafe;
+  if (unsafe) {
+    rec.healSafetySince = null;
+    _healStatus.ready = false; _healStatus.unsafe = true;
+    return _healStatus;
+  }
+  rec.healSafetySince ??= nowMs;
+  _healStatus.ready = nowMs - rec.healSafetySince >= botHealthSettings.safeHoldMs;
+  _healStatus.unsafe = false;
+  return _healStatus;
+}
+// BOT_HEAL dispatch: stand still and pour pack charge into own HP until the resume line.
+function updateBotHealing(dt) {
+  bot.velocity.x = 0; bot.velocity.z = 0;
+  const packs = activeBot.healthPacks;
+  if (!hasHealResource(packs)) { clearBotHealthRetreat(); return; }
+  const snap = playerCombat.getSnapshot(bot.id);
+  const wanted = Math.min(botHealthSettings.healPerSecond * dt, Math.max(0, snap.maxHp - snap.hp));
+  const applied = drawFromPacks(packs, wanted);   // spends charge; a partial heal leaves a partial pack
+  if (applied > 0) healBotHp(bot.id, applied);
+  const after = playerCombat.getSnapshot(bot.id);
+  if (after.hp / Math.max(1, after.maxHp) >= botHealthSettings.resume01 || !hasHealResource(packs)) {
+    clearBotHealthRetreat();
+  }
+}
+// Walk to the pack this bot claimed. Movement only; the caller layers firing on top.
+function updatePackSeekMovement(nowMs, speed = currentBotMoveSpeed()) {
+  const goal = activeBot?.packSeekGoal;
+  if (!goal) return false;
+  const stale = pathMode !== 'packseek' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 0.5;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, nowMs);
+    if (fresh) { currentPath = fresh; pathMode = 'packseek'; botCombatMoveGoal = { x: goal.x, z: goal.z }; }
+    else refused = true;   // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+    pathMode = null; botCombatMoveGoal = null; return false;
+  }
+  if (followPath(bot, currentPath, speed)) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+// --- medic role (bot-medic.js owns the pure decisions) ----------------------------
+// A medic's cached bounded flood-fill of nav path distances from its own cell, so ally selection is
+// wall-aware. G5: floodFill's pooled buffers are only valid until the next call, and this result is
+// held across frames -- so each medic passes its OWN `out` buffer pair.
+const MEDIC_NAV_FLOOD_MS = 200;
+function medicNavFlood(rec, selfXZ, nowMs) {
+  if (!botNavGrid) return null;
+  if (rec.medicFlood && nowMs - rec.medicFloodAt < MEDIC_NAV_FLOOD_MS) return rec.medicFlood;
+  const reach = Math.max(MEDIC_DEFAULTS.responseRadius, MEDIC_DEFAULTS.reviveRadius);
+  rec.medicFloodBuf ??= {};
+  rec.medicFlood = floodFill(botNavGrid, selfXZ, {
+    maxRadius: Math.ceil(reach / botNavGrid.cellSize) + 1, out: rec.medicFloodBuf,
+  });
+  rec.medicFloodAt = nowMs;
+  return rec.medicFlood;
+}
+function medicNavCost(flood, x, z) {
+  const cell = nearestWalkableNavCell(worldToCell(botNavGrid, x, z));
+  if (!cell) return Infinity;
+  const d = flood.dist[cell.r * botNavGrid.cols + cell.c];
+  return Number.isFinite(d) ? d : Infinity;
+}
+// Tag each candidate with its nav path cost and drop the unreachable ones (in place).
+function attachMedicNavCost(rec, selfXZ, nowMs, allies, corpses) {
+  if (!allies.length && !corpses.length) return;
+  const flood = medicNavFlood(rec, selfXZ, nowMs);
+  if (!flood) return;
+  for (const list of [allies, corpses]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = medicNavCost(flood, list[i].x, list[i].z);
+      if (!Number.isFinite(c)) { list.splice(i, 1); continue; }   // unreachable -> not a candidate
+      list[i].cost = c;
+    }
+  }
+}
+let _mdRec = null, _mdNow = 0, _mdSx = 0, _mdSz = 0, _mdRespSq = 0, _mdAllies = null;
+function _mdAllyVisit(entity) {
+  const other = entity.botRec;
+  if (!other || other === _mdRec) return;
+  // Never tend fellow medics: support units self-heal, and medic-on-medic healing makes them
+  // converge (and can deadlock two into a mutual heal).
+  if (other.role === ROLE_MEDIC) return;
+  // Skip a patient another living medic already committed to, so medics spread across the wounded.
+  if (other.medicClaimUntil > _mdNow && other.medicClaimBy != null && other.medicClaimBy !== _mdRec.id) return;
+  const snap = playerCombat.getSnapshot(other.id);
+  if (!snap.alive) return;
+  const hp01 = snap.hp / Math.max(1, snap.maxHp);
+  if (hp01 > MEDIC_DEFAULTS.healAllyThreshold01) return;
+  const x = entity.capsule.start.x, z = entity.capsule.start.z;
+  if ((x - _mdSx) ** 2 + (z - _mdSz) ** 2 <= _mdRespSq) {
+    // MED-2: a patient in FLEE outruns the default chase, so the tend band + chase speed widen.
+    _mdAllies.push({ id: other.id, x, z, hp01, fleeing: other.fsmState === BOT_FLEE });
+  }
+}
+// Snapshot the bound medic's living/fallen teammates and decide its duty this frame. Returns the
+// { state, kind, targetId, x, z, dist } action (also stored on the rec) or null.
+const _medicSelfXZ = { x: 0, z: 0 };
+function decideMedicDuty(nowMs, threatXZ = null) {
+  const rec = activeBot;
+  const selfXZ = botXZInto(bot, _medicSelfXZ);
+  const allies = [];
+  const corpses = [];
+  _mdRec = rec; _mdNow = nowMs; _mdSx = selfXZ.x; _mdSz = selfXZ.z; _mdAllies = allies;
+  _mdRespSq = MEDIC_DEFAULTS.responseRadius * MEDIC_DEFAULTS.responseRadius;
+  botHash.forEachNear(selfXZ.x, selfXZ.z, MEDIC_DEFAULTS.responseRadius, _mdAllyVisit);
+  _mdRec = null; _mdAllies = null;
+  // Corpses aren't in the hash (it holds the living roster), so scan the dead recs directly.
+  const revSq = MEDIC_DEFAULTS.reviveRadius * MEDIC_DEFAULTS.reviveRadius;
+  for (const other of botPlayers.values()) {
+    if (other === rec || other.diedAt == null) continue;
+    if (other.medicClaimUntil > nowMs && other.medicClaimBy != null && other.medicClaimBy !== rec.id) continue;
+    const x = other.deathXZ?.x ?? other.bot.capsule.start.x, z = other.deathXZ?.z ?? other.bot.capsule.start.z;
+    if ((x - selfXZ.x) ** 2 + (z - selfXZ.z) ** 2 <= revSq) corpses.push({ id: other.id, x, z, diedAt: other.diedAt });
+  }
+  attachMedicNavCost(rec, selfXZ, nowMs, allies, corpses);
+  maybeBuildReviveKit(rec, nowMs, corpses, selfXZ);
+  // S12: TEND is only chosen inside tendRadius, so the medic's own cell IS the prospective spot.
+  let exposed = false;
+  if (threatXZ && botVisibilityField && botNavGrid) {
+    _alertBake.field = botVisibilityField; _alertBake.navGrid = botNavGrid;
+    exposed = exposedToThreat(_alertBake, selfXZ, threatXZ);
+  }
+  let action = decideMedicAction({
+    self: selfXZ, allies, corpses,
+    hasKit: rec.reviveKits > 0, hasCharge: hasHealResource(rec.healthPacks),
+    now: nowMs, cfg: MEDIC_DEFAULTS,
+  });
+  if (!action) action = stickyHealTend(rec, selfXZ);   // finish topping an ally past the threshold
+  if (action && action.state === MEDIC_TEND && exposed && threatXZ) {
+    const hide = nearestConcealedCellNear(action.x, action.z, threatXZ.x, threatXZ.z,
+      medicTendRadiusFor(!!action.fleeing, MEDIC_DEFAULTS));
+    if (hide) { action.state = MEDIC_MOVE; action.seekConcealment = true; action.hideX = hide.x; action.hideZ = hide.z; }
+  }
+  if (action) {
+    const targetRec = botPlayers.get(action.targetId);
+    if (targetRec) {
+      targetRec.medicClaimBy = rec.id;
+      targetRec.medicClaimUntil = nowMs + botMedicSettings.medicClaimLeaseMs;
+    }
+  }
+  rec.medicAction = action;
+  if (!action) rec.medicTendTargetId = null;
+  return action;
+}
+// Keep tending an ally already being healed until it reaches the resume line, even after it climbs
+// past the (lower) selection threshold.
+function stickyHealTend(rec, selfXZ) {
+  if (!rec.medicTendTargetId || !hasHealResource(rec.healthPacks)) return null;
+  const cur = botPlayers.get(rec.medicTendTargetId);
+  if (!cur) return null;
+  const snap = playerCombat.getSnapshot(cur.id);
+  if (!snap.alive) return null;
+  if (snap.hp / Math.max(1, snap.maxHp) >= MEDIC_DEFAULTS.allyResumeHp01) return null;
+  const p = cur.bot.capsule.start;
+  const fleeing = cur.fsmState === BOT_FLEE;
+  if (Math.hypot(p.x - selfXZ.x, p.z - selfXZ.z) > medicTendRadiusFor(fleeing, MEDIC_DEFAULTS)) return null;
+  return { state: MEDIC_TEND, kind: 'heal', targetId: cur.id, x: p.x, z: p.z, fleeing };
+}
+// A medic fuses 3 packs into one revive kit when carrying a full load or when a still-revivable
+// ally is down within reach.
+function maybeBuildReviveKit(rec, nowMs, corpses, selfXZ) {
+  if (rec.reviveKits > 0 || !hasReviveMaterials(rec.healthPacks)) return;
+  const corpseNear = corpses.some((c) => nowMs - c.diedAt <= MEDIC_DEFAULTS.reviveWindowMs &&
+    Math.hypot(c.x - selfXZ.x, c.z - selfXZ.z) <= MEDIC_DEFAULTS.reviveRadius);
+  if (rec.healthPacks.length >= rec.maxPacks || corpseNear) {
+    if (consumeRevivePacks(rec.healthPacks)) rec.reviveKits += 1;
+  }
+}
+// S12: nearest walkable cell within `radius` of (px,pz) the threat at (tx,tz) cannot see, or null.
+const _hideRC = { c: 0, r: 0 };
+const _hideXZ = { x: 0, z: 0 };
+function nearestConcealedCellNear(px, pz, tx, tz, radius) {
+  if (!botNavGrid || !botVisibilityField) return null;
+  const threatCell = cellIndexAt(botNavGrid, tx, tz);
+  if (threatCell < 0) return null;
+  const centre = worldToCellInto(botNavGrid, px, pz, _hideRC);
+  const span = Math.max(1, Math.min(6, Math.round(radius / botNavGrid.cellSize)));
+  const spanSq = span * span;
+  let bestC = -1, bestR = -1, bestSq = Infinity;
+  for (let dr = -span; dr <= span; dr++) {
+    for (let dc = -span; dc <= span; dc++) {
+      const d2 = dc * dc + dr * dr;
+      if (d2 > spanSq || d2 >= bestSq) continue;
+      const c = centre.c + dc, r = centre.r + dr;
+      if (!botIsWalkableCell(botNavGrid, c, r)) continue;
+      if (botVisibilityField.canSee(threatCell, cellIdxOf(c, r))) continue;
+      bestSq = d2; bestC = c; bestR = r;
+    }
+  }
+  return bestC < 0 ? null : cellToWorldInto(botNavGrid, bestC, bestR, _hideXZ);
+}
+// Path to the current medic-duty target. Movement only -- firing is layered on by the caller.
+function updateMedicMoveMovement(nowMs, speed = currentBotMoveSpeed() * medicChaseSpeedFactor(activeBot?.medicAction?.fleeing)) {
+  const action = activeBot?.medicAction;
+  if (!action) return false;
+  const goal = action.seekConcealment && action.hideX != null
+    ? { x: action.hideX, z: action.hideZ } : { x: action.x, z: action.z };
+  const stale = pathMode !== 'medic' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 0.5;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, nowMs);
+    if (fresh) { currentPath = fresh; pathMode = 'medic'; botCombatMoveGoal = goal; }
+  }
+  if (currentPath.length === 0) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+  if (followPath(bot, currentPath, speed)) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+// Channel a heal (pack charge into a wounded ally) or a revive. Stationary; the caller adds
+// fire-while-tend (pack in the off hand, sidearm in the other).
+function updateMedicTend(dt, nowMs) {
+  bot.velocity.x = 0; bot.velocity.z = 0;
+  const rec = activeBot;
+  const action = rec?.medicAction;
+  if (!action) return;
+  const targetRec = botPlayers.get(action.targetId);
+  if (!targetRec) { rec.medicTendTargetId = null; return; }
+  if (action.kind === 'revive') {
+    if (rec.medicTendTargetId !== action.targetId) { rec.medicTendTargetId = action.targetId; rec.medicTendStartedAt = nowMs; }
+    if (nowMs - rec.medicTendStartedAt >= botMedicSettings.reviveChannelMs) {
+      reviveCombatBot(targetRec, nowMs);
+      rec.reviveKits = Math.max(0, rec.reviveKits - 1);
+      rec.medicTendTargetId = null;
+      rec.medicAction = null;
+    }
+    return;
+  }
+  rec.medicTendTargetId = action.targetId;
+  const snap = playerCombat.getSnapshot(targetRec.id);
+  const wanted = Math.min(botMedicSettings.healAllyPerSecond * dt, Math.max(0, snap.maxHp - snap.hp));
+  const applied = drawFromPacks(rec.healthPacks, wanted);
+  if (applied > 0) healBotHp(targetRec.id, applied);
+  const after = playerCombat.getSnapshot(targetRec.id);
+  // Topped back up by the medic: drop the ally's own heal-retreat latch so it doesn't flee.
+  if (after.hp / Math.max(1, after.maxHp) >= botHealthSettings.resume01 && targetRec.healRequested) {
+    clearBotHealthRetreat(targetRec);
+  }
+}
+// Bring a fallen ally back: stand it up where it fell at reviveHp. HP authority stays playerCombat.
+function reviveCombatBot(targetRec, nowMs) {
+  const id = targetRec.id;
+  const p = targetRec.bot.capsule.start;
+  playerCombat.revive(id, { x: p.x, y: p.y, z: p.z });   // full HP...
+  const snap = playerCombat.getSnapshot(id);
+  const trim = snap.hp - Math.min(snap.maxHp, botMedicSettings.reviveHp);
+  if (trim > 0) playerCombat.applyDamage({ targetId: id, amount: trim, source: 'revive', attackerId: id, weaponId: null });
+  targetRec.deadSince = null; targetRec.diedAt = null; targetRec.deathXZ = null;
+  targetRec.medicClaimBy = null; targetRec.medicClaimUntil = 0;
+  targetRec.fsmState = BOT_PATROL;
+  targetRec.reloadUntil = null; targetRec.reloadStartedAt = null;
+  targetRec.pathFailCount = 0; targetRec.stuckReplanCount = 0;
+  targetRec.escapeTarget = null; targetRec.escapeStartedAt = null;
+  resetBotBrainState(targetRec);
+  clearBotHealthRetreat(targetRec);
+  targetRec.stateEnteredAt = nowMs; targetRec.stuckSince = null;
+  targetRec.lastPos = { x: p.x, z: p.z };
+  targetRec.lastSafePos = { x: p.x, y: p.y, z: p.z };
+  hostGhostsDirty = true;
+}
+let _mcRec = null, _mcOut = null;
+function _mcVisit(entity) {
+  const other = entity.botRec;
+  if (!other || other === _mcRec || other.role === ROLE_MEDIC) return;
+  _mcOut.push({ x: entity.capsule.start.x, z: entity.capsule.start.z });
+}
+// Loose keep-together: regroup toward the local living team centroid when the medic drifts too far.
+// Anchors on the fighting line (fellow medics excluded) so two medics don't pair off together.
+function updateMedicCohesionMovement(nowMs) {
+  const rec = activeBot;
+  const selfXZ = botXZInto(bot, _medicSelfXZ);
+  const teammates = [];
+  _mcRec = rec; _mcOut = teammates;
+  botHash.forEachNear(selfXZ.x, selfXZ.z, MEDIC_DEFAULTS.cohesionNeighborRadius, _mcVisit);
+  _mcRec = null; _mcOut = null;
+  const goal = cohesionTarget(selfXZ, teammates, MEDIC_DEFAULTS);
+  if (!goal) {
+    if (pathMode === 'cohesion') { pathMode = null; currentPath = []; botCombatMoveGoal = null; }
+    return false;
+  }
+  const stale = pathMode !== 'cohesion' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 1.0;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, nowMs);
+    if (fresh) { currentPath = fresh; pathMode = 'cohesion'; botCombatMoveGoal = { x: goal.x, z: goal.z }; }
+    else refused = true;
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+    pathMode = null; botCombatMoveGoal = null; return false;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
 let _ltRadius = 0, _ltPx = 0, _ltPz = 0, _ltCount = 0;
 function _ltVisit(other) {
   if (Math.hypot(other.capsule.start.x - _ltPx, other.capsule.start.z - _ltPz) <= _ltRadius) _ltCount++;
@@ -3311,14 +3979,20 @@ function fleeSquadCentroid(source) {
   return _fsqN ? { x: _fsqSx / _fsqN, z: _fsqSz / _fsqN } : null;
 }
 function updateFleeMovement(nowMs) {
+  // A wounded bot with no pack routes to the nearest visible dropped pack instead of generic cover.
+  if (activeBot.healRequested && !hasHealResource(activeBot.healthPacks) && activeBot.packSeekGoal) {
+    if (updatePackSeekMovement(nowMs, currentBotMoveSpeed() * 1.24)) return;
+  }
+  if (activeBot.healRequested && activeBot.healArrived) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
   if (pathMode !== 'flee' || !botCombatMoveGoal || currentPath.length === 0) {
     // Kite-flee has no arrival latch, so a failing search would re-run the flood every frame.
-    const blocked = nowMs < (activeBot.fleeSearchBlockedUntil ?? -Infinity);
+    const blocked = !activeBot.healRequested && nowMs < (activeBot.fleeSearchBlockedUntil ?? -Infinity);
     const plan = blocked ? null : findFleeGoal(nowMs);
     if (!plan) {
       goalClaims.release(bot.id, 'flee');
       bot.velocity.x = 0; bot.velocity.z = 0;
-      if (!blocked) activeBot.fleeSearchBlockedUntil = nowMs + FLEE_SEARCH_BACKOFF_MS;
+      if (activeBot.healRequested) { activeBot.healArrived = true; activeBot.healSafetySince = null; }
+      else if (!blocked) activeBot.fleeSearchBlockedUntil = nowMs + FLEE_SEARCH_BACKOFF_MS;
       return;
     }
     currentPath = plan.path;
@@ -3326,12 +4000,15 @@ function updateFleeMovement(nowMs) {
     botCombatMoveGoal = { x: plan.x, z: plan.z };
     goalClaims.claim(bot.id, 'flee', cellIdxOf(plan.c, plan.r));
   }
-  if (followPath(bot, currentPath, currentBotMoveSpeed() * 1.12)) {
+  if (followPath(bot, currentPath, currentBotMoveSpeed() * (activeBot.healRequested ? 1.24 : 1.12))) {
     goalClaims.release(bot.id, 'flee');
     const completedGoal = { x: botCombatMoveGoal.x, z: botCombatMoveGoal.z };
     updateInvestigationPreferenceAfterFlee(completedGoal);
     rememberFleeGoal(completedGoal);
     pathMode = null; botCombatMoveGoal = null;
+    // The retreat reached its selected safe node: hold there long enough to evaluate real local
+    // danger. Only the sentry's unsafe branch may release this latch and pick another goal.
+    if (activeBot.healRequested) { activeBot.healArrived = true; activeBot.healSafetySince = null; }
   }
 }
 
@@ -3522,7 +4199,9 @@ function botShotSpreadRad(nowMs) {
   _spreadIn.heldMs = aimHeldMs(nowMs);
   _spreadIn.bloomDeg = activeBot.spreadBloomDeg ?? 0;
   const inaccuracy01 = 1 - Math.min(100, Math.max(0, botAccuracy)) / 100;
-  return spreadHalfAngleRad(_spreadIn, botAimSettings) + inaccuracy01 * BOT_MAX_SPREAD_RAD;
+  // Stance steadies (crouch) or throws (run/dash) the cone, on top of the slider's ceiling.
+  return (spreadHalfAngleRad(_spreadIn, botAimSettings) + inaccuracy01 * BOT_MAX_SPREAD_RAD)
+    * stanceSpreadScale(activeBot?.stance ?? STANCE_STAND, botStanceSettings);
 }
 const _fireDir = { x: 0, y: 0, z: 0 };
 // The brain decides to fire; applyCombatIntent stays the ONLY fire path (ammo, tracers, muzzle
@@ -3635,6 +4314,39 @@ function updateBotSentry(rec, dt, nowMs) {
     botMissStreak = 0;
   }
   updateAimAcquisition(nowMs, dt, visible, targetDistance);
+  // --- health packs: collect anything underfoot, then decide whether to go seek a dropped pack ---
+  collectPacksUnderfoot(bot, rec, nowMs);
+  const combatSnap = playerCombat.getSnapshot(bot.id);
+  const wantsHeal = rec.healRequested || combatSnap.hp / Math.max(1, combatSnap.maxHp) <= botHealthSettings.threshold01;
+  const hasPack = hasHealResource(rec.healthPacks);
+  // Wounded-and-empty (survival, any visible range) or healthy-with-room (opportunistic top-up,
+  // only when close). A wounded bot that already holds a pack heals instead of scavenging.
+  const wantsPack = wantsHeal ? !hasPack : canHold(rec.healthPacks, rec.maxPacks);
+  // Claim only from a state that will actually walk to the pack (last tick's state -- a one-tick lag
+  // beats phantom claims from FIRE/COVER that starve wounded bots), and never via a run that closes
+  // on the live threat (the commonest pack source is a corpse at the enemy's feet).
+  const packThreat = botTarget ? (_packThreatXZ.x = botTarget.p[0], _packThreatXZ.z = botTarget.p[2], _packThreatXZ) : lastKnownTarget;
+  let seekable = (wantsPack && packClaimIntent(botState, wantsHeal, hasPack))
+    ? nearestSeekablePack(bot, rec, wantsHeal) : null;
+  if (seekable && !packRunSafe(bot.capsule.start, seekable.record, packThreat)) seekable = null;
+  rec.packSeekGoal = seekable ? { x: seekable.record.x, z: seekable.record.z } : null;
+  if (seekable && botNavGrid) {
+    const packCell = worldToCellInto(botNavGrid, seekable.record.x, seekable.record.z, _packCell);
+    goalClaims.claim(bot.id, 'pack', cellIdxOf(packCell.c, packCell.r));
+  } else {
+    goalClaims.release(bot.id, 'pack');
+  }
+  const healStatus = updateHealSafety(rec, nowMs, visible, targetDistance);
+  // A wounded, packless bot that reached safety with no pack in sight gives up on healing and
+  // rejoins the fight (a later hit re-triggers the retreat) -- no permanent packless flee-lock.
+  if (rec.healRequested && !hasPack && !seekable && healStatus.ready) clearBotHealthRetreat(rec);
+  if (rec.healRequested && rec.healArrived && healStatus.unsafe) {
+    // The first retreat cell did not break danger: keep the intent, release the arrival latch so
+    // FLEE selects the next (preferably covered) nav goal.
+    rec.healArrived = false; rec.healSafetySince = null;
+    currentPath = []; pathMode = null; botCombatMoveGoal = null;
+  }
+  if (rec.healRequested && botMuzzleRecoveryTarget) { botMuzzleRecoveryTarget = null; botRecoveryIssueActive = false; }
   // Seek tenacity (panel slider): an expired last-known memory drops the search outright.
   if (!visible && lastKnownTarget && lastKnownTargetAt != null && nowMs - lastKnownTargetAt > botSeekTenacitySec * 1000) {
     lastKnownTarget = null; lastKnownTargetMotion = null; lastKnownTargetAt = null;
@@ -3654,6 +4366,7 @@ function updateBotSentry(rec, dt, nowMs) {
   // botAimReady is the A10 recognition gate: seeing a target is no longer the same as being able
   // to shoot it. The FSM still reads `visible`, so a bot mid-delay still turns, closes, takes cover.
   const readyToFire = visible && botAimReady(nowMs) && botReloadUntil == null && ammo.mag > 0 &&
+    !botSwapping(nowMs) &&   // the pistol is out of the holster but not yet up
     (nowMs - lastShotAt >= (currentBotWeapon()?.fireIntervalMs ?? 340));
   const attackerOutOfAmmo = botOutOfAllAmmo();
   const knifeRequested = botKnifeSecondaryEnabled && visible && botReloadUntil == null && attackerOutOfAmmo;
@@ -3690,6 +4403,7 @@ function updateBotSentry(rec, dt, nowMs) {
   const nearMiss = alertTier ? null : latestNearMiss(recentAllyHits, bot, nowMs);
   // Being shot AT or HIT myself: the one cue no tier may suppress and no state may ignore.
   const selfThreat = latestSelfThreat(recentAllyHits, bot, nowMs);
+  if (selfThreat) rec.lastSelfThreatAt = nowMs;   // read below by the sidearm "in a gunfight" test
   // H6a: shot from inside CLOSE_THREAT_RADIUS but outside the cone -- spin onto it, preempting aim.
   const closeThreatNear = !!selfThreat?.threat &&
     Math.hypot(selfThreat.threat.x - bot.capsule.start.x, selfThreat.threat.z - bot.capsule.start.z) <= CLOSE_THREAT_RADIUS;
@@ -3791,14 +4505,17 @@ function updateBotSentry(rec, dt, nowMs) {
   c.keepsMissing = keepsMissing; c.pursueHealthOk = pursueHealthOk;
   c.fleeDistance = weaponFleeDistance; c.fleeExitBuffer = botBehaviorSettings.fleeExitBuffer;
   c.fleeCommitted = fleeCommitted; c.knifeRequested = knifeRequested;
-  // Health packs / medic are Phase C: the heal chain is pinned to its calm, absent values.
-  c.healRequested = false; c.healFleeCommitted = false;
-  c.healReady = false; c.healUnsafe = false; c.hasHealResource = false;
+  // Phase C: the heal chain is live (bot-health-packs.js + the retreat latch above).
+  c.healRequested = rec.healRequested;
+  c.healFleeCommitted = rec.healRequested && botState === BOT_FLEE && pathMode === 'flee' && currentPath.length > 0;
+  c.healReady = healStatus.ready; c.healUnsafe = healStatus.unsafe; c.hasHealResource = hasPack;
   c.coverAvailable = coverAvailable; c.atCoverAnchor = atCoverAnchor; c.coverValid = coverValid;
   c.allyHitNearby = !!coverAlert; c.coverCommitted = coverCommitted;
   c.fireCapable = !attackerOutOfAmmo; c.knifeCapable = botKnifeSecondaryEnabled;
   c.closeSelfThreat = closeSelfThreat; c.reloading = botReloadUntil != null;
-  rec.commitBits = (fleeCommitted ? 1 : 0) | (coverCommitted ? 2 : 0);   // stashed for the state code
+  // 1/2/8 mirror bot-state-code's LATCH_FLEE / LATCH_COVER / LATCH_HEAL_FLEE (bit 4 is LATCH_HOLD,
+  // which this port has no channel for -- see the tracer note).
+  rec.commitBits = (fleeCommitted ? 1 : 0) | (coverCommitted ? 2 : 0) | (c.healFleeCommitted ? 8 : 0);
   const concealedFromTarget = !visible || rec.peek?.phase === 'in';
   let state = chooseBotStateName(botState, c);
   // H6a: that AIM is a spin onto whoever just shot us from behind, not onto botTarget.
@@ -3807,6 +4524,16 @@ function updateBotSentry(rec, dt, nowMs) {
     _spinAt.x = selfThreat.threat.x; _spinAt.y = eye.y; _spinAt.z = selfThreat.threat.z;
     aimAnglesTo(eye, _spinAt, _aimAngles);
     targetYaw = _aimAngles.yaw; targetPitch = _aimAngles.pitch;
+  }
+  // Medic duty layers on top of the combat FSM: a medic breaks toward a wounded/fallen ally and
+  // still fires while moving/tending. Own-survival (flee/self-heal) and a knife commit outrank it;
+  // cohesion is handled in the patrol branch below.
+  if (rec.role === ROLE_MEDIC && !rec.healRequested && state !== BOT_FLEE && state !== BOT_KNIFE) {
+    const duty = decideMedicDuty(nowMs, coverThreat || selfThreat?.threat || null);
+    if (duty) state = duty.state;
+  } else if (rec.role === ROLE_MEDIC) {
+    rec.medicAction = null;
+    rec.medicTendTargetId = null;
   }
   // Cover lifecycle before botState stamps: "cover state => committed corner" self-heals.
   if (state === BOT_COVER_MOVE || state === BOT_COVER_HOLD) {
@@ -3826,6 +4553,29 @@ function updateBotSentry(rec, dt, nowMs) {
     alertExposed = exposedToThreat(_alertBake, botHere, alertThreat.threat);
   }
   if (stepAlertHold(alertSt, state === BOT_PATROL && !visible && !!alertThreat && !alertExposed, nowMs)) state = 'alert';
+  // Stance resolve: the one point where the final state is known and nothing has consumed it yet.
+  // auto pick -> hysteresis latch, then stamped on the rec for every seam (speed/turn/spread/capsule).
+  // No UI force-override and no grenade-evade dash here: those are Phase C-and-a-half's channels.
+  const forcedCrouch = (state === BOT_HEAL && rec.role !== ROLE_MEDIC) || rec.packPickupCrouchUntil > nowMs;
+  rec.stanceForcedCrouch = forcedCrouch;
+  if (botStanceSettings.enabled) {
+    const sc = _stanceCtx;   // one reused ctx across all bots (M1): every field is overwritten here
+    sc.forcedCrouch = forcedCrouch;
+    sc.holding = false;      // the S13 commanded-hold channel lands with squads (Phase C-and-a-half)
+    sc.holdElapsedMs = 0;
+    sc.peekPhase = rec.peek?.phase ?? null;
+    sc.peekExposed = rec.peek ? peekExposed(rec.peek) : false;
+    sc.targetVisible = visibleSettled;
+    sc.targetDistance = targetDistance;
+    sc.distanceToLastKnown = lastKnownTarget   // no last-known point reads as "far", never as near
+      ? Math.hypot(lastKnownTarget.x - bot.capsule.start.x, lastKnownTarget.z - bot.capsule.start.z) : Infinity;
+    sc.alertHeld = state === 'alert';
+    sc.medicTend = rec.role === ROLE_MEDIC;
+    sc.evading = false;
+    const desired = chooseBotStance(state, sc, botStanceSettings);
+    const latch = rec.stanceLatch ??= { stance: STANCE_STAND, changedAt: nowMs, blockedUntil: 0 };
+    rec.stance = stepStanceTransition(latch, desired, nowMs, botStanceSettings);
+  } else { rec.stanceLatch = null; rec.stance = STANCE_STAND; }
   if (state === BOT_COVER_MOVE && botState !== BOT_COVER_MOVE) rec.coverMoveSince = nowMs;
   else if (state !== BOT_COVER_MOVE) rec.coverMoveSince = null;
   if (state !== botState) rec.stateEnteredAt = nowMs;
@@ -3840,6 +4590,19 @@ function updateBotSentry(rec, dt, nowMs) {
     pathMode = null; currentPath = []; botCombatMoveGoal = null;
     faceAimDirection(targetYaw, targetPitch, dt);
     if (state === BOT_FIRE && fireBotShot(nowMs)) lastShotAt = nowMs;
+  } else if (state === BOT_HEAL) {
+    updateBotHealing(dt);
+    faceThreatAndAhead(threatFacing(null) || botCombatMoveGoal, dt, nowMs);
+  } else if (state === MEDIC_MOVE) {
+    // Approach a wounded/fallen ally; still aim and fire at any visible enemy en route (like flee).
+    updateMedicMoveMovement(nowMs);
+    if (visible) { faceAimDirection(targetYaw, targetPitch, dt); if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(nowMs)) lastShotAt = nowMs; }
+    else faceThreatAndAhead(selfThreat?.threat, dt, nowMs);
+  } else if (state === MEDIC_TEND) {
+    // Channel a heal/revive on the ally; fire-while-tend (pack in the off hand, sidearm in the other).
+    updateMedicTend(dt, nowMs);
+    if (visible) { faceAimDirection(targetYaw, targetPitch, dt); if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(nowMs)) lastShotAt = nowMs; }
+    else faceThreatAndAhead(threatFacing(null) || rec.medicAction, dt, nowMs);
   } else if (state === BOT_PURSUE) {
     updatePursuitMovement(nowMs);
     faceAimDirection(targetYaw, targetPitch, dt);
@@ -3875,12 +4638,20 @@ function updateBotSentry(rec, dt, nowMs) {
     pathMode = null; currentPath = []; botCombatMoveGoal = null;
     faceThreatAndAhead(threatFacing(null), dt, nowMs);
   } else {
-    updatePatrolMovement(nowMs);
+    // Out of combat: grab a nearby pack, else (medics) regroup toward the team, else patrol.
+    if (updatePackSeekMovement(nowMs)) { /* seeking a pack */ }
+    else if (rec.role === ROLE_MEDIC && updateMedicCohesionMovement(nowMs)) { /* regrouping */ }
+    else updatePatrolMovement(nowMs);
     faceMovementScanning(dt, nowMs);   // A4: glance off-axis while walking
   }
+  // Re-decide the slot on this frame's POST-fire ammo: the shot that emptied the mag draws the
+  // pistol now, instead of starting a reload the next frame would immediately cancel.
+  const inGunfight = visible || nowMs - (rec.lastSelfThreatAt ?? -Infinity) < SIDEARM_LULL_MS ||
+    (!!report && nowMs - report.at < SIDEARM_LULL_MS);
+  updateBotWeaponSlot(nowMs, inGunfight, targetDistance);
   // A9: top off a partial mag during a lull -- nothing can shoot back while unseen or tucked in.
   updateBotReload(nowMs);
-  const heldAmmo = ensureBotAmmo();
+  const heldAmmo = ensureBotAmmo();   // re-read: the swap above may have changed what's in hand
   if (botReloadUntil == null && heldAmmo.magazineSize > 0) {
     _topOff.magFrac = heldAmmo.mag / heldAmmo.magazineSize;
     _topOff.targetVisible = visible;
@@ -3888,10 +4659,61 @@ function updateBotSentry(rec, dt, nowMs) {
     if (shouldTopOffReload(_topOff)) updateBotReload(nowMs, true);
   }
   // The round that emptied the mag is fired INSIDE the FIRE frame, so by the time the state is
-  // sampled the gun is reloading or dry -- a FIRE stamp would then describe a bot that cannot
-  // fire. The harness dodges this by swapping to a sidearm (Phase C here), so re-stamp instead:
-  // AIM is the same stationary face-the-target frame the bot actually spent.
-  if (botState === BOT_FIRE && (botReloadUntil != null || ensureBotAmmo().mag <= 0)) botState = BOT_AIM;
+  // sampled the gun is reloading, dry, or mid-swap -- a FIRE stamp would then describe a bot that
+  // cannot fire. Re-stamp: AIM is the same stationary face-the-target frame the bot actually spent.
+  if (botState === BOT_FIRE && (botReloadUntil != null || botSwapping(nowMs) || ensureBotAmmo().mag <= 0)) botState = BOT_AIM;
+  // Resource rungs that spent their last charge THIS frame are no longer what the bot is doing;
+  // re-stamp them too, so the state code never claims a heal/tend with nothing left to give.
+  if (botState === BOT_HEAL && !hasHealResource(rec.healthPacks)) botState = BOT_PATROL;
+  if ((botState === MEDIC_MOVE || botState === MEDIC_TEND) &&
+      !hasHealResource(rec.healthPacks) && rec.reviveKits <= 0) {
+    rec.medicAction = null; rec.medicTendTargetId = null;
+    botState = BOT_PATROL;
+  }
+}
+
+// --- stance -> capsule (bot-stance.js) --------------------------------------------
+// Which stance the BODY shows: the resolved stance, or -- with the decider off -- the legacy
+// heal/pack-pickup dip.
+function poseStanceFor(rec) {
+  if (!botStanceSettings.enabled) return rec?.stanceForcedCrouch ? STANCE_CROUCH : STANCE_STAND;
+  return rec?.stance ?? STANCE_STAND;
+}
+// Rig config handed to stanceCapsuleHeightScale, refilled per bot per frame (M1). The rig lives on
+// the GhostRenderer's procedural body (env has no per-bot body object), so the collision/LOS capsule
+// shrinks by exactly the fraction the visible body does -- never a guessed constant.
+const _stanceRig = { pelvisHeightRatio: 0, pelvisDrop: 0, headDrop: 0, hipHeight: 0, headUp: 0 };
+function stanceHeightScaleFor(rec, stance) {
+  const body = environmentBotBody(rec.id);
+  const cfg = body?.crouchCfg, pcfg = body?.proneCfg, ratio = body?.gait?.cfg?.pelvisHeightRatio;
+  if (!cfg || !pcfg || !(ratio > 0)) return stanceHeightScale(stance, botStanceSettings);
+  const r = _stanceRig;
+  r.pelvisHeightRatio = ratio; r.pelvisDrop = cfg.pelvisDrop; r.headDrop = cfg.headDrop;
+  r.hipHeight = pcfg.hipHeight; r.headUp = pcfg.headUp;
+  const radius = rec.bot.capsule.radius;
+  return stanceCapsuleHeightScale(stance, r, rec.standHeight + radius * 2, botStanceSettings);
+}
+// Scale only the capsule's straight section, feet fixed, always from the stored standing height so
+// a return to STAND restores exactly. Also stamps the eased weights onto the entity for the wire.
+function applyStanceHeight(rec, dt) {
+  const entity = rec.bot;
+  rec.stanceWeights = stepStanceWeights(rec.stanceWeights ??= { crouch01: 0, prone01: 0 },
+    poseStanceFor(rec), dt, botStanceSettings);
+  const w = rec.stanceWeights;
+  entity.crouch01 = w.crouch01;   // read by bot-entity's toWirePose -> GhostRenderer pose
+  entity.prone01 = w.prone01;
+  entity.standHeight = rec.standHeight;   // rig poses from the standing profile, not the shrunk one
+  if (!rec.standHeight) return;
+  const cap = entity.capsule;
+  const caps = cap.radius * 2;
+  const standTotal = rec.standHeight + caps;
+  // Fully upright is the common case: skip both derived scales rather than blending toward 1.
+  const scale = (w.crouch01 > 1e-4 || w.prone01 > 1e-4)
+    ? blendStanceHeightScale(stanceHeightScaleFor(rec, STANCE_CROUCH), stanceHeightScaleFor(rec, STANCE_PRONE), w.crouch01, w.prone01)
+    : 1;
+  // A vertical capsule cannot be shorter than its own two caps, so this floors rather than inverts.
+  const want = Math.max(0, standTotal * scale - caps);
+  if (Math.abs((cap.end.y - cap.start.y) - want) > 1e-6) cap.end.y = cap.start.y + want;
 }
 
 // Per-bot tick: sentry (decide + move) -> physics -> fall catch -> stuck tracking -> trace.
@@ -3924,6 +4746,7 @@ function botTickOne(id, rec, dt, nowMs) {
     }
   }
   stepBotPhysics(bot, dt, { mapCollider, heightAt: terrainHeight });
+  applyStanceHeight(rec, dt);   // one eased weight pair drives the rig pose AND the capsule
   if (bot.onFloor) {
     rec.lastSafePos = { x: bot.capsule.start.x, y: bot.capsule.start.y, z: bot.capsule.start.z };
   } else if (bot.capsule.start.y < rec.lastSafePos.y - BOT_FALL_CATCH_DROP_M) {
@@ -4183,17 +5006,43 @@ function updateBots(dt) {
       while (botPlayers.size < botRoundTarget) spawnBotAtSlot(botPlayers.size);
     }
   }
+  despawnStaleHealthPacks(nowMs);   // ground packs age out / evict past the cap before anyone seeks
   rebuildBotHash();   // index the living roster before any bot's neighbour queries read it
   for (const [id, rec] of botPlayers) {
     const combat = playerCombat.getSnapshot(id);
     if (!combat.alive) {
       // Death edge: free the cells this bot had committed to so a living one can take them now
       // (isClaimedByOther already ignores dead owners -- this stops the record leaking until respawn).
-      if (rec.deadSince == null) { rec.deadSince = nowMs; goalClaims.release(id); }
-      else if (botRespawnEnabled && nowMs - rec.deadSince >= BOT_RESPAWN_MS) {
+      if (rec.deadSince == null) {
+        rec.deadSince = nowMs;
+        goalClaims.release(id);
+        // Death edge: the corpse is a revive candidate for reviveWindowMs, and everything it was
+        // carrying hits the ground for whoever scavenges it first.
+        rec.diedAt = nowMs;
+        rec.deathXZ = { x: rec.bot.capsule.start.x, z: rec.bot.capsule.start.z };
+        dropBotHealthPacks(rec, rec.deathXZ.x, rec.deathXZ.z);
+        rec.reviveKits = 0;
+        rec.medicAction = null; rec.medicTendTargetId = null;
+        rec.packSeekGoal = null;
+        clearBotHealthRetreat(rec);
+        rec.stance = STANCE_STAND; rec.stanceLatch = null;
+      } else if (botRespawnEnabled && nowMs - rec.deadSince >= BOT_RESPAWN_MS) {
         const sp = rec.spawnPos;
         rec.bot = createBotEntity(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
+        // Respawn re-issues the role loadout: primary in hand, backup on the belt, packs restocked.
+        const role = getRole(rec.role);
+        rec.weaponId = rec.primaryWeaponId;
+        rec.sidearmId = sidearmForRole(role.id, rec.primaryWeaponId, botSeedFromId(id));
+        rec.swapUntil = 0; rec.lastGunfightAt = null; rec.lastSelfThreatAt = null;
+        rec.healthPacks = Array.from({ length: role.startingPacks }, () => makePack(1));
+        rec.diedAt = null; rec.deathXZ = null;
+        rec.medicClaimBy = null; rec.medicClaimUntil = 0;
+        rec.medicFlood = null; rec.medicFloodAt = 0;
+        rec.stanceWeights = null; rec.stanceForcedCrouch = false; rec.packPickupCrouchUntil = 0;
+        rec.standHeight = rec.bot.capsule.end.y - rec.bot.capsule.start.y;
+        setPlayerWeapon(id, rec.weaponId); setPlayerTool(id, rec.weaponId);
         rec.bot.weapon = rec.weaponId; rec.bot.tool = rec.weaponId;
+        rec.bot.primaryWeapon = rec.primaryWeaponId; rec.bot.sidearm = rec.sidearmId;
         playerCombat.revive(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
         rec.deadSince = null; rec.fsmState = BOT_PATROL; rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
         rec.reloadUntil = null; rec.reloadStartedAt = null;
@@ -4251,12 +5100,10 @@ const _btLatchQ = { flee: false, cover: false, hold: false, healFlee: false, sig
 const _btDesc = { state: 'P', tier: '0', score: 0, role: 'r', element: '-', ammo: '-', health: '0', packs: '0', latches: 0 };
 
 // Discretize a botPlayers rec into the reused descriptor, mirroring bot-viewer-v2's
-// botStateDescriptor. Slots 1-3 (state / alert tier / escalation score), the ammo and health
-// bands and the commit latches all read the ported brain's real fields. Still pinned at their
-// absent values, because the systems that fill them are later phases: role (Phase C's
-// bot-roles.js), push element (Phase C-and-a-half's squads -- see BOT_PUSH_TIER_ENABLED, which
-// also keeps the tier below '4' so element '-' stays legal), packs and the heal-flee latch
-// (Phase C's health packs), and the held-in-place latch (Phase C-and-a-half's hold channel).
+// botStateDescriptor. Slots 1-4 and 6-9 (state / alert tier / escalation score / role / ammo /
+// health / packs / latches) all read the ported brain's real fields. Still pinned at their absent
+// values: the push element (Phase C-and-a-half's squads -- see BOT_PUSH_TIER_ENABLED, which also
+// keeps the tier below '4' so element '-' stays legal) and the held-in-place latch (same phase).
 function botTraceDescriptor(id, rec, nowMs) {
   const combat = playerCombat.getSnapshot(id);
   const dead = !combat.alive;
@@ -4273,16 +5120,19 @@ function botTraceDescriptor(id, rec, nowMs) {
   // transition frame must not carry the previous state's latch across.
   _btLatchQ.flee = !!(rec.commitBits & 1) && d.state === 'E';
   _btLatchQ.cover = !!(rec.commitBits & 2) && 'CG'.includes(d.state);
+  _btLatchQ.healFlee = !!(rec.commitBits & 8) && 'EH'.includes(d.state);
   // Masked off slot-1 'P' as well: the brain's two movement-level stamps ('alert', 'reposition')
   // collapse onto patrol, and the model has no room for a grace window on a patrolling bot.
   _btLatchQ.sightGrace = !dead && rec.visDebounce?.lastTrueAt != null && !rec.targetVisible && !'PD'.includes(d.state);
   d.tier = dead ? '0' : botTraceApi.tierSlot(rec.alertTierLast, rec.alertMarkMode === 'near');
   d.score = dead ? 0 : Math.min(9, Math.max(0, Math.round(rec.alertScore ?? 0)));
-  d.role = 'r';
+  // Slot 4 is a two-char alphabet ('rm'): every non-medic role -- sniper, technical, squad leader --
+  // encodes as the line's 'r', exactly as bot-state-code.js's own ROLE_NAMES defines it.
+  d.role = rec.role === ROLE_MEDIC ? 'm' : 'r';
   d.element = '-';
   d.ammo = botTraceApi.ammoSlot(_btAmmoQ);
   d.health = dead ? '0' : botTraceApi.healthBand(combat.hp, combat.maxHp);
-  d.packs = '0';
+  d.packs = botTraceApi.packSlot(rec.healthPacks?.length ?? 0, (rec.reviveKits ?? 0) > 0);
   d.latches = dead ? 0 : botTraceApi.latchBits(_btLatchQ);
   return d;
 }
@@ -6672,6 +7522,27 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     botSliderRow('Seek tenacity (s)', 1, 20, 1, botSeekTenacitySec, v => String(v), v => { botSeekTenacitySec = v; });
     botSliderRow('Notice time (s)', 0, 3, 0.1, botNoticeTimeSec, v => v.toFixed(1), v => { botNoticeTimeSec = v; });
     botSliderRow('Accuracy (%)', 10, 100, 5, botAccuracy, v => String(v), v => { botAccuracy = v; });
+    // Phase C: role mix (applied per spawn batch) + the stance run multiplier.
+    botSliderRow('Medic %', 0, 100, 5, botMedicPercent, v => String(v), v => { botMedicPercent = v; botRoleQueue.length = 0; });
+    botSliderRow('Sniper %', 0, 100, 5, botSniperPercent, v => String(v), v => { botSniperPercent = v; botRoleQueue.length = 0; });
+    botSliderRow('Technical %', 0, 100, 5, botTechnicalPercent, v => String(v), v => { botTechnicalPercent = v; botRoleQueue.length = 0; });
+    botSliderRow('Run speed x', 1, 3, 0.05, botRunMultiplier, v => v.toFixed(2), v => { botRunMultiplier = v; });
+    const roleNote = document.createElement('div');
+    roleNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 6px';
+    roleNote.textContent = 'Roles are dealt per spawn batch and bring their own loadout (medic five-seven, sniper m24, technical RPG). Technical ballistics land with the explosives AI.';
+    botSec.appendChild(roleNote);
+    const stanceRow = document.createElement('div'); stanceRow.className = 'row';
+    stanceRow.innerHTML = '<span style="color:#c4ccd6">Stances</span>';
+    const stanceChk = document.createElement('input');
+    stanceChk.type = 'checkbox'; stanceChk.checked = botStanceSettings.enabled; stanceChk.style.width = 'auto';
+    stanceChk.addEventListener('change', () => { botStanceSettings.enabled = stanceChk.checked; });
+    stanceRow.appendChild(stanceChk); botSec.appendChild(stanceRow);
+    const sidearmRow = document.createElement('div'); sidearmRow.className = 'row';
+    sidearmRow.innerHTML = '<span style="color:#c4ccd6">Sidearms</span>';
+    const sidearmChk = document.createElement('input');
+    sidearmChk.type = 'checkbox'; sidearmChk.checked = botSidearmEnabled; sidearmChk.style.width = 'auto';
+    sidearmChk.addEventListener('change', () => { botSidearmEnabled = sidearmChk.checked; });
+    sidearmRow.appendChild(sidearmChk); botSec.appendChild(sidearmRow);
 
     botStatusEl = document.createElement('div');
     botStatusEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 2px';
@@ -6871,6 +7742,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
           `pathMode: ${rec.pathMode ?? 'none'}  waypoints: ${rec.currentPath.length}  failCount: ${rec.pathFailCount ?? 0}\n` +
           `squad: ${squad ? `${squad.id} (${rec.isLeader ? 'leader' : 'member'}, ${squad.order})` : 'none'}\n` +
           `target: ${rec.lastKnownTarget ? `tracking (${dist.toFixed(1)}m)` : 'none'}  ammo: ${ammo.mag}/${ammo.reserve}${rec.reloadUntil != null ? ' (reloading)' : ''}\n` +
+          `role: ${getRole(rec.role).label}  stance: ${rec.stance}  packs: ${rec.healthPacks.length}/${rec.maxPacks}` +
+          `${rec.reviveKits > 0 ? ` +${rec.reviveKits} kit` : ''}${rec.healRequested ? '  HEALING' : ''}\n` +
+          `in hand: ${rec.weaponId}${rec.swapUntil > nowMs ? ' (drawing)' : ''}  primary: ${rec.primaryWeaponId}  backup: ${rec.sidearmId ?? 'none'}\n` +
+          `${rec.medicAction ? `medic: ${rec.medicAction.kind} -> ${rec.medicAction.targetId} (${rec.medicAction.state})\n` : ''}` +
           `shots: ${rec.shotsFired}  hits: ${rec.hitsLanded}  kills: ${rec.kills}  deaths: ${rec.deaths}  distance traveled: ${rec.distanceTraveled.toFixed(1)}m\n` +
           (() => {
             const mount = botVisualWeaponMounts.get(selectedBotId);

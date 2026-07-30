@@ -50,6 +50,7 @@ CDN-pinned three@0.184.0, served from jsDelivr:
 | `{ listStates, saveState, deleteState }` from `./slider-state.js` (aliased `listSliderStates`/`saveSliderState`/`deleteSliderState`) | named `localStorage`-backed slider-preset storage, shared with `start-screen.js` |
 | `{ createBotEntity, stepBotPhysics, toWirePose }` from `./bot-entity.js` (aliased `botToWirePose`) | combat-bot capsule/physics/pose — see `bots.md`. The v2 copy also takes `createGoalClaims` + the Phase-B separation surface (`resolveBotPairsHashed`, `separationXZHashed`, `waypointContestedHashed`, `blendSeparationDir`) and `createBotSpatialHash` from `./bot-spatial-hash.js` |
 | `{ chooseBotState, aimAnglesTo, aimError, slewAngle, ... }` from `./bot-activity.js` | combat-bot FSM decision math (aliased `botAimError` etc. to dodge existing names) |
+| `{ getRole, assignRolesToBatch, ... }` from `./bot-roles.js`, `{ decideMedicAction, cohesionTarget, ... }` from `./bot-medic.js`, `{ drawFromPacks, packClaimIntent, packRunSafe, ... }` from `./bot-health-packs.js`, `{ chooseWeaponSlot, outOfAllAmmo, ... }` from `./bot-sidearm.js`, `{ chooseBotStance, stepStanceTransition, ... }` from `./bot-stance.js` | v2 copy only (Phase C): role descriptors, medic duty, health-pack charge math, sidearm slot choice, per-bot stance — see `bots.md` |
 | `{ buildNavGrid, isWalkableCell, cellToWorld, findPath, smoothPath }` from `./nav-grid.js` (aliased `botIsWalkableCell` etc.) | shoot-house-only bot pathing grid |
 
 ### Lazy `await import(...)` calls
@@ -194,8 +195,10 @@ colliding with harness takes), and falls back to a browser download when that en
 `window.botTrace.rows`/`.tsv()` expose the buffer directly. Since the Phase A brain swap
 (2026-07-29) the descriptor reads the live v2 brain: slot 1 covers the full state ladder via
 `STATE_NAMES`, slot 2/3 read the real alert tier and escalation score (`rec.alertTierLast`,
-`rec.alertScore`), 6 (ammo) and 7 (health) were always real; role, push element and packs stay at
-calm defaults until Phases C/C½ port those systems.
+`rec.alertScore`), 6 (ammo) and 7 (health) were always real. Phase C (2026-07-30) lit slot 4
+(role, from `rec.role`), slot 8 (packs, `packSlot(rec.healthPacks.length, rec.reviveKits > 0)`)
+and the heal-flee commit latch in slot 9; only slot 5 (push element) and the hold latch stay at
+calm defaults, until Phase C½ ports squads.
 
 ## Camera / control modes
 

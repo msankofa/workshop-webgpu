@@ -4483,8 +4483,8 @@ fall catch, stuck/escape, `ensureAmmo` as the ammo authority, and `botHasLineOfS
 injected occluder (trees/rocks through the same pipeline shots resolve against) behind the v2
 LOS-throttle cache. Contracts preserved: `botPlayers` is still the record store, `playerCombat`
 the only HP authority, `applyCombatIntent` the only fire path, guest early-outs intact. Out of
-Phase A scope (signals defaulted calm): roles/medic/packs (Phase C), squads/formations/explosives
-(C½), sidearms/stances (C), open-terrain nav (D). QA instrument: `?botTrace=1` state-code takes
+Phase A scope (signals defaulted calm): roles/medic/packs/sidearms/stances (Phase C — landed
+2026-07-30, see below), squads/formations/explosives (C½), open-terrain nav (D). QA instrument: `?botTrace=1` state-code takes
 diff slot-by-slot against harness takes on the same `pcw-layout` map (see `layout-interchange.js`).
 
 ## Phase B: separation, spatial hash, goal claims (2026-07-30, `environment-viewer-v2.html`)
@@ -4557,3 +4557,130 @@ inline re-path deliberately calls the unbudgeted `requestPath` behind the per-en
 
 No trace columns changed — `bot-state-code.js` has no slot for separation or claims, so the
 `?botTrace=1` TSV stays byte-identical to the harness's.
+
+## Phase C: roles, medic, health packs, sidearms, stances (2026-07-30, `environment-viewer-v2.html`)
+
+Five harness systems landed together, because they share one substrate: a role is a data
+descriptor whose fields the brain reads, and packs/medic/sidearm/stance are what those fields
+select. All of it merges INTO the `botPlayers` rec (never beside it), like the Phase A actor fields.
+
+**Roles (`bot-roles.js`).** Env spawns one bot at a time, so `assignRolesToBatch` fills a rolling
+`botRoleQueue` (`BOT_ROLE_BATCH = 10`) drained by `nextBotRole()`; `spawnSquadAtSlot` deals one
+batch for the whole squad so specialists spread across it. Panel sliders `Medic %` / `Sniper %` /
+`Technical %` feed `currentRoleMixOpts()` and flush the queue on change. Role fields are consumed
+as pure data, never as a branch on a role id:
+
+| Field | Consumed by |
+|---|---|
+| `weapon` | `spawnBotAt` — `role.weapon ?? botWeaponId` (medic five-seven, sniper m24, technical RPG) |
+| `sidearm` | `sidearmForRole()` — a named backup, else `pickSidearmId` |
+| `sightScale` | `botSightDistanceFor(rec)` — the one sight-range accessor, so perception, the standoff clamp and pack visibility all scale together |
+| `swapOnDryMag`, `closeRange` | `updateBotWeaponSlot` -> `chooseWeaponSlot` |
+| `maxPacks`, `startingPacks` | rec `maxPacks` / `healthPacks` at spawn and respawn |
+| `canRevive` (via `ROLE_MEDIC`) | the medic-duty gate in `updateBotSentry` |
+
+Sniper and technical are pure descriptors — no code path names them. Technical defaults to 0%: its
+RPG fires through `applyCombatIntent`'s projectile mode with no ballistic lead, which is the
+explosives AI (Phase C-and-a-half).
+
+**Sidearms (`bot-sidearm.js`).** `rec.weaponId` now means *the gun in hand*; the loadout is
+`rec.primaryWeaponId` + `rec.sidearmId`. `ensureAmmo` already pools per `id:weaponId`, so each slot
+keeps its own mag/reserve with no new bookkeeping. `updateBotWeaponSlot(now, inGunfight, dist)`
+runs at the **tail** of the sentry, on post-fire ammo, so the round that empties a mag draws the
+pistol on that frame instead of starting a reload the next frame cancels. `swapBotWeaponSlot`
+writes `rec.weaponId` + `bot.weapon`/`bot.tool` + `setPlayerWeapon`/`setPlayerTool` and stamps
+`rec.swapUntil = now + SIDEARM_DRAW_MS`; `updateEnvironmentBotWeaponMount` already rebuilds on a
+`rec.weaponId` change, so the visible gun follows for free. `readyToFire` and the `BOT_FIRE`->`AIM`
+re-stamp both gate on `botSwapping()`. `botOutOfAllAmmo()` is `outOfAllAmmo({active, other,
+hasSidearm})`, so a spent primary with a loaded pistol keeps a bot `fireCapable` instead of sending
+it fleeing. `inGunfight` = visible target, or a self-threat within `SIDEARM_LULL_MS`, or a fresh
+ally report. **Deferred:** back/hip stow visuals (the harness's `syncBotStowMounts` builds extra
+low-part mounts; env's mount path is a single `skeletonClone`d template) and the `BOT_KNIFE` rung
+(`botKnifeSecondaryEnabled = false` — env has no bot melee fire path, so a genuinely dry bot flees).
+
+**Health packs (`bot-health-packs.js`).** Host-owned world items: `worldHealthPacks` + `packHash`
+(`createBotSpatialHash(8)`, rebuilt only when the list changes), `PACK_DESPAWN_MS 60000`,
+`PACK_CAP 64` with claimed-cell-aware eviction, drained by `despawnStaleHealthPacks` at the top of
+`updateBots`. Packs drop on the **death edge** in `updateBots` (`dropBotHealthPacks`, scattered by
+`botPackSettings.dropScatter`) and are collected by `collectPacksUnderfoot` at the top of every
+sentry tick. Seeking: `packClaimIntent(botState, wantsHeal, hasPack)` gates the claim on last
+tick's state (only PATROL and a wounded FLEE walk to a pack — every other state would be a phantom
+claim), `packRunSafe` rejects a run that closes on the live threat, and the chosen cell takes a
+`'pack'` goal claim. The harness's danger-field inflation of the pack distance is **not** ported
+(env has no `botDangerField` — the danger A* term is Phase D).
+
+**Heal chain.** `beginBotHealthRetreat` is hooked into `recordBotAllyHit`, the single damage-report
+point (hitscan *and* blast). It sets `rec.healRequested`, which lights the ladder's heal rungs:
+FLEE to a retreat cell -> `healArrived` -> `updateHealSafety` (`healUnsafeBand` hysteresis around
+`botHealthSettings.safeDistance`) -> `BOT_HEAL`. `updateBotHealing` spends pack charge with
+`drawFromPacks` and applies it through `healBotHp`, a **clamped negative `applyDamage`** — so
+`playerCombat` stays the sole HP authority and no second HP owner appears. `updateFleeMovement`
+detours to a pack at 1.24x speed when wounded and empty, and latches `healArrived` on arrival or
+on a failed retreat search.
+
+**Medic (`bot-medic.js`).** Medic duty layers on top of the resolved FSM state, between
+`chooseBotStateName` and the cover lifecycle: own-survival (`healRequested`), FLEE and KNIFE
+outrank it. `decideMedicDuty` snapshots wounded allies off the spatial hash (fellow medics
+excluded; a patient another medic has leased is skipped) and corpses off the `rec.diedAt` /
+`rec.deathXZ` stamps set at the death edge, ranks both by **nav path cost**, and returns
+`MEDIC_MOVE` / `MEDIC_TEND`. Both dispatch branches fire while moving/tending. `updateMedicTend`
+heals through `healBotHp` or, after `reviveChannelMs`, calls `reviveCombatBot` — which stands the
+corpse up where it fell via `playerCombat.revive` trimmed to `reviveHp` by a follow-up
+`applyDamage`, clears `deadSince`/`diedAt`, and runs `resetBotBrainState`. Out of combat a medic
+falls through to `updateMedicCohesionMovement` (`cohesionTarget`, local group only).
+
+> **G5 (amended).** `floodFill` results are pooled and valid only until the next call. The medic
+> nav flood is cached for `MEDIC_NAV_FLOOD_MS = 200`, i.e. **across frames**, so `medicNavFlood`
+> passes the medic's own `rec.medicFloodBuf` as `out`. `findFleeGoal` still uses the pool — it
+> drains its result inside one call.
+
+**Stances (`bot-stance.js`).** Resolved once per bot per tick, immediately after the alert hold and
+before any dispatch consumes the state: `chooseBotStance(state, _stanceCtx, botStanceSettings)` ->
+`stepStanceTransition` hysteresis latch -> `rec.stance`. Prone stays default-off
+(`STANCE_DEFAULTS.proneEnabled`), and there is no UI force-override and no `STANCE_DASH` (the
+grenade-evade trigger is C-and-a-half), so the live set is stand / crouch / run. Seams:
+
+| Seam | Hook |
+|---|---|
+| Movement speed | `currentBotMoveSpeed()` x `stanceSpeedFactor(stance, settings, botRunMultiplier)` — this is what gives walk vs. run speed variation; `Run speed x` slider, default 1.7 |
+| Turn rate | `botTurnRateRadS()` x `stanceTurnRateScale` |
+| Weapon spread | `botShotSpreadRad()` x `stanceSpreadScale` |
+| Capsule height | `applyStanceHeight(rec, dt)` in `botTickOne`, right after `stepBotPhysics` |
+
+`applyStanceHeight` eases `rec.stanceWeights` with `stepStanceWeights` and scales the capsule's
+straight section from the stored `rec.standHeight`, feet fixed. The scale is **derived from the
+rig**, not from the flat `*HeightScale` constants: `stanceHeightScaleFor` reads the live
+`pelvisHeightRatio`/`crouchCfg`/`proneCfg` off the GhostRenderer's procedural body
+(`environmentBotBody(id)`) and feeds `stanceCapsuleHeightScale`, falling back to
+`stanceHeightScale` before the body exists. One weight pair therefore drives the silhouette and the
+hitbox, so they cannot disagree mid-blend.
+
+**Multiplayer.** Three additive, default-safe wire fields, all emitted only when a sender actually
+stamped them, so an unstanced viewer produces the exact wire pose it always did:
+
+| Field | Producer | Consumer |
+|---|---|---|
+| `crouch` (0..1) | `toWirePose` from `bot.crouch01` | `GhostRenderer._updateProceduralBody` — was hard-coded `crouch: 0` |
+| `prone` (0..1) | `toWirePose` from `bot.prone01` | same (the rig already had a `state.prone` channel) |
+| `standFullHeight` | `toWirePose` from `bot.standHeight` | rig `height`, preferred over `fullHeight` |
+
+`h`/`fullHeight` stay the **live** (shrunk) capsule so a crouched bot really is a shorter hit/LOS
+target, while `standFullHeight` is the standing profile the rig poses from — otherwise the
+renderer's own crouch channel would double up on an already-shortened body. `_lerpPlayers` carries
+all three (crouch/prone interpolate like `h`; absent on both sides stays absent). HP authority is
+still `playerCombat`, the fire path is still `applyCombatIntent`, and guest early-outs are intact.
+**Deferred:** guests do not see world health packs — that needs a pack entity type in the registry
+(the standing lights-first registry migration) rather than a wire field.
+
+**Tracer slots now live.** Slot 4 (role) reads `rec.role` — the alphabet is two chars (`rm`), so
+sniper/technical/squad-leader encode as the line's `r`, per `bot-state-code.js`'s own `ROLE_NAMES`.
+Slot 8 (packs) is `packSlot(rec.healthPacks.length, rec.reviveKits > 0)`. The heal-flee commit
+latch is live in slot 9 (`LATCH_HEAL_FLEE = 8` — bit 4 is `LATCH_HOLD`, which this port has no
+channel for). Still pinned: slot 5 (push element) and the hold latch, both C-and-a-half. Two
+re-stamps keep codes legal at the frame boundary, mirroring the existing `BOT_FIRE`->`AIM` one: a
+`BOT_HEAL` that spent its last charge this frame re-stamps to `BOT_PATROL` (`heal-needs-pack`), and
+so does a `MEDIC_MOVE`/`MEDIC_TEND` with neither packs nor a kit left (`duty-requires-resource`).
+
+**Panel.** Combat Bots gains `Medic %`, `Sniper %`, `Technical %`, `Run speed x`, and `Stances` /
+`Sidearms` toggles. The Bot Inspector gains role, stance, packs (+ revive kit), heal flag, the
+in-hand/primary/backup weapons with a draw indicator, and the live medic action.

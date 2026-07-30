@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Capsule } from 'three/addons/math/Capsule.js';
 
 const DEFAULT_RADIUS = 0.3;
-const DEFAULT_STAND_HEIGHT = 1.7;
+const DEFAULT_STAND_HEIGHT = 1.8; // matches the player/body-preview authored hold height
 const GRAVITY = 30;
 
 // spawnPos is the ground-contact point {x, y, z} (y = floor height under the spawn, not the
@@ -24,6 +24,7 @@ export function createBotEntity(id, spawnPos, opts = {}) {
     pitch: 0,
     weapon: null,
     tool: null,
+    isBot: true,
   };
 }
 
@@ -57,6 +58,12 @@ export function stepBotPhysics(bot, dt, { mapCollider, slopeLimitY = 0.5, height
   }
 }
 
+// Bot-bot pushout/steering + movement-goal claims live in bot-separation.js (pure, THREE-free,
+// Node-tested); re-exported so bot consumers keep a single entity-module import.
+export { resolveBotPairs, separationXZ, blendSeparationDir, waypointContested, createGoalClaims } from './bot-separation.js';
+// Spatial-hash-backed variants of the same three neighbor queries (see bot-spatial-hash.js).
+export { resolveBotPairsHashed, separationXZHashed, waypointContestedHashed } from './bot-separation.js';
+
 // Same field shape getLocalPlayerState returns (environment-viewer.html:432) so a bot can be
 // pushed into the game's players list unchanged once wired in (spec's "Bot state shape").
 //
@@ -65,16 +72,30 @@ export function stepBotPhysics(bot, dt, { mapCollider, slopeLimitY = 0.5, height
 // to local -Z) treats 0 as -Z-forward -- a fixed pi offset apart. Skipping the +pi here was the
 // original bug: the mesh's -Z face (where the ghost's eyes sit, see multiplayer.js) pointed
 // opposite the bot's actual aim/movement direction.
+// `crouch`/`prone` (0..1 stance pose weights, bot-stance.js) and `standFullHeight` are only emitted
+// when a caller has actually stamped them on the entity, so a viewer that never set a stance
+// produces the exact wire pose it always did and GhostRenderer's `?? 0` defaults read upright.
+// `h`/`fullHeight` stay the LIVE capsule (a crouched bot really is a shorter hit/LOS target);
+// `standFullHeight` is the standing profile the rig poses from, so the renderer's own crouch
+// channel isn't doubled up by an already-shrunk capsule.
 export function toWirePose(bot) {
   const halfYaw = (bot.yaw + Math.PI) * 0.5;
   const height = Math.max(0.1, bot.capsule.end.y - bot.capsule.start.y);
   const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
+  const crouch01 = bot.crouch01, prone01 = bot.prone01;
   return {
+    ...(crouch01 > 0 ? { crouch: crouch01 } : null),
+    ...(prone01 > 0 ? { prone: prone01 } : null),
+    ...(bot.standHeight > 0 ? { standFullHeight: bot.standHeight + bot.capsule.radius * 2 } : null),
     id: bot.id,
     p: [mid.x, mid.y, mid.z],
     q: [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)],
     h: height,
     r: bot.capsule.radius,
+    isBot: true,
+    fullHeight: height + bot.capsule.radius * 2,
+    onFloor: bot.onFloor,
+    velocity: [bot.velocity.x, bot.velocity.y, bot.velocity.z],
     weapon: bot.weapon,
     tool: bot.tool,
     aimPitch: bot.pitch,

@@ -8,6 +8,18 @@ export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.
 // injected at call time), so it does not break multiplayer-test.mjs /
 // test-ghost-renderer.mjs / test-multiplayer-guns.mjs.
 import { createProceduralPlayerBody } from './player-procedural-body.js';
+import { createBodyPartBatches } from './body-part-batches.js';
+
+// Per-bot body style keyed off the id hash, so every bot renders a distinct color under
+// instancing (the batch tints each part from these role colors). Shell is the saturated base;
+// plate is a dark version of the same hue; trim a light one.
+function botBodyStyle(THREE, id) {
+  const hue = (_hashId(id) % 360) / 360;
+  const shell = new THREE.Color().setHSL(hue, 0.55, 0.44).getHex();
+  const plate = new THREE.Color().setHSL(hue, 0.50, 0.15).getHex();
+  const trim  = new THREE.Color().setHSL(hue, 0.42, 0.62).getHex();
+  return { shell, plate, trim };
+}
 
 // ---------------------------------------------------------------------------
 // InterpolationBuffer â€” ring of 3 snapshots, sample at arbitrary time
@@ -297,6 +309,10 @@ function _lerpPlayers(aPlayers = [], bPlayers = [], alpha) {
       fireSeq: pb.fireSeq ?? pa.fireSeq,
       lastShotAt: pb.lastShotAt ?? pa.lastShotAt,
       aimPitch: pb.aimPitch ?? pa.aimPitch,
+      // Stance weights interpolate like `h`; absent on both sides leaves them absent (upright).
+      crouch: pa.crouch != null && pb.crouch != null ? pa.crouch + (pb.crouch - pa.crouch) * alpha : pb.crouch,
+      prone: pa.prone != null && pb.prone != null ? pa.prone + (pb.prone - pa.prone) * alpha : pb.prone,
+      standFullHeight: pb.standFullHeight ?? pa.standFullHeight,
     };
   }).filter(Boolean);
 }
@@ -392,6 +408,17 @@ export class GhostRenderer {
     this._THREE    = THREE;
     this._terrainHeight = options.terrainHeight || (() => 0);
     this._useProceduralBody = options.useProceduralBody === true;
+    // Bots-only render LOD: camera-distance accessor + squared-distance tiers. When set, distant
+    // bot bodies run their procedural solve on a stride and hide entirely past hideD2. Humans/local
+    // are exempt (few of them; popping on real players is more noticeable).
+    this._getCameraPos = options.getCameraPos || null;
+    this._botLod = options.botLod || null; // { nearD2, midD2, hideD2 }
+    this._lodFrame = 0;
+    this._camPos = null;
+    // Phase 4: instance bot bodies into a shared InstancedMesh pool (per-part draw call instead of
+    // ~31 per bot). Created lazily on the first bot body. Bots only; humans/local keep the mesh path.
+    this._instanceBots = options.instanceBots === true;
+    this._bodyBatches = null;
     this._creatures = new Map(); // id(number) â†’ Mesh
     this._players   = new Map(); // clientId(string) â†’ Group (container)
     this._mobs      = new Map(); // ClaudeCraft mob id(number) â†’ Mesh (guest render path)
@@ -464,6 +491,11 @@ export class GhostRenderer {
   // keeps its non-uniform h/r scale. The container carries position + orientation.
   _updatePlayers(items) {
     const seen = new Set();
+    this._lodFrame++;
+    this._camPos = this._getCameraPos ? this._getCameraPos() : null;
+    // Immediate-mode instancing: zero the pool, every visible bot re-adds its parts below, upload
+    // at the end. Runs every frame on the host (updateHostPlayerGhosts drives update() per frame).
+    if (this._bodyBatches) this._bodyBatches.beginFrame();
     for (const item of items) {
       const id = item.id;
       seen.add(id);
@@ -499,11 +531,17 @@ export class GhostRenderer {
       this._placeEyes(g, r, h);
       this._placeHands(g, r, h);
       this._placeHeldItem(g, r, h, item);
+      // Dead actors retain the existing capsule fall pose; living actors are fully replaced.
+      const useProc = this._useProceduralBody && !isDead;
+      g.userData.body.visible = !useProc;
+      g.userData.held.visible = !useProc && g.userData.held.visible;
       // Extremities look wrong sideways on a fallen capsule -- hide them once dead (held item is
       // already hidden by _placeHeldItem's own alive check below).
-      g.userData.left.visible = g.userData.right.visible = !isDead && !this._useProceduralBody;
-      g.userData.leftHand.visible = g.userData.rightHand.visible = !isDead && !this._useProceduralBody;
-      if (this._useProceduralBody) this._updateProceduralBody(g, item);
+      g.userData.left.visible = g.userData.right.visible = !isDead && !useProc;
+      g.userData.leftHand.visible = g.userData.rightHand.visible = !isDead && !useProc;
+      if (this._useProceduralBody) {
+        this._updateProceduralBodyLod(g, item);
+      }
     }
     for (const [id, g] of this._players) {
       if (!seen.has(id)) {
@@ -511,6 +549,7 @@ export class GhostRenderer {
         this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id);
       }
     }
+    if (this._bodyBatches) this._bodyBatches.endFrame();
   }
 
   // Wave 2/B1: drive a per-player createProceduralPlayerBody follower from the
@@ -519,15 +558,53 @@ export class GhostRenderer {
   // no replicated velocity field and remote feet/hands are never replicated,
   // per the contract doc's global guardrails), so the gait is a local guess,
   // not a replay of the sender's real feet.
+  // Bots-only distance LOD gate around _updateProceduralBody. Alive bots past hideD2 are hidden and
+  // skipped; nearer ones run the full solve on a per-bot-staggered stride (near=every frame,
+  // mid=every 2nd, far=every 4th). Humans/local and dead actors always take the full path.
+  _updateProceduralBodyLod(g, item) {
+    const ud = g.userData;
+    const lod = this._botLod, camPos = this._camPos;
+    if (!lod || !camPos || !item.isBot || item.alive === false || !ud.bodyProc) {
+      if (ud.bodyProc && ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
+      this._updateProceduralBody(g, item);
+      if (ud.bodyProc && ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches);
+      return;
+    }
+    const px = item.p[0], pz = item.p[2];
+    const dx = px - camPos.x, dz = pz - camPos.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > lod.hideD2) {
+      if (!ud.bodyHidden) { ud.bodyProc.setVisible(false); ud.bodyHidden = true; }
+      return; // hidden bodies cost nothing this frame (and are not flushed → absent from the batch)
+    }
+    if (ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
+    const stride = d2 < lod.nearD2 ? 1 : d2 < lod.midD2 ? 2 : 4;
+    if (stride === 1 || ((this._lodFrame + (ud.lodPhase || 0)) % stride) === 0) {
+      this._updateProceduralBody(g, item);
+    }
+    // Flush every frame even when the IK solve was strided, so the held pose persists in the batch
+    // (beginFrame zeroed it). Cheap: a matrix compose + setMatrixAt per part.
+    if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches);
+  }
+
   _updateProceduralBody(g, item) {
     const THREE = this._THREE;
     const ud = g.userData;
     if (!ud.bodyProc) {
-      ud.bodyProc = createProceduralPlayerBody({
-        THREE, scene: this._scene, terrainHeight: this._terrainHeight, mode: 'remote',
+      const instanceThis = this._instanceBots && item.isBot;
+      if (instanceThis && !this._bodyBatches) {
+        this._bodyBatches = createBodyPartBatches({ THREE, scene: this._scene });
+      }
+      ud.bodyProc = createProceduralPlayerBody({ THREE, scene: this._scene, terrainHeight: this._terrainHeight,
+        mode: 'remote', adaptGaitToSpeed: true, movementDynamics: true,
+        // Per-bot color (instanced): distinct hue per id. Non-instanced bots keep the old dark style.
+        style: item.isBot ? (instanceThis ? botBodyStyle(THREE, item.id) : { shell: 0x1f5b3a, plate: 0x101410, trim: 0x0a0d0a }) : {},
+        batches: instanceThis ? this._bodyBatches : null,
       });
-      const [th, ts, tl] = playerTintHSL(item.id);
-      ud.bodyProc.setTint({ h: th, s: ts, l: tl });
+      if (!item.isBot) {
+        const [th, ts, tl] = playerTintHSL(item.id);
+        ud.bodyProc.setTint({ h: th, s: ts, l: tl });
+      }
     }
 
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -539,6 +616,10 @@ export class GhostRenderer {
       vz = (pz - ud.bodyLastPos.z) / dt;
     }
     ud.bodyLastPos = { x: px, y: py, z: pz };
+    if (Array.isArray(item.velocity)) {
+      vx = Number.isFinite(item.velocity[0]) ? item.velocity[0] : vx;
+      vz = Number.isFinite(item.velocity[2]) ? item.velocity[2] : vz;
+    }
     ud.bodyLastT = now;
 
     // Yaw from the wire quaternion. `player_state`'s q is documented (see
@@ -554,15 +635,21 @@ export class GhostRenderer {
       position: new THREE.Vector3(px, py, pz),
       yaw,
       aimPitch: item.aimPitch || 0,
-      height: item.h ?? 1.2,
+      // h is the capsule's straight middle; include its two rounded caps for the rig. A sender that
+      // shrinks the capsule for stance also sends `standFullHeight` -- pose from that, or the rig's
+      // own crouch channel doubles up on an already-shortened body.
+      height: item.standFullHeight ?? item.fullHeight ?? ((item.h ?? 1.2) + (item.r ?? 0.3) * 2),
       radius: item.r ?? 0.3,
       velocity: new THREE.Vector3(vx, 0, vz),
-      onFloor: true,
-      crouch: 0,
+      onFloor: item.onFloor !== false,
+      // Stance pose weights (bot-stance.js) when the sender carries them; absent = upright.
+      crouch: Number.isFinite(item.crouch) ? item.crouch : 0,
+      prone: Number.isFinite(item.prone) ? item.prone : 0,
       alive: item.alive !== false,
       weapon: item.weapon,
       tool: item.tool,
     });
+    return dt;
   }
 
   _makePlayer(id) {
@@ -604,6 +691,8 @@ export class GhostRenderer {
       held, heldBody, heldBarrel, heldMuzzle, heldLight,
       eyeH: 0.14, nextBlinkAt: null, blinkStart: -1,
       handPhase: (_hashId(id) % 628) / 100, // 0..~2Ï€ so hands don't bob in unison
+      lodPhase: _hashId(id) % 4, // stagger the far-body update stride so bots don't all solve on the same frame
+      bodyHidden: false,         // true while this bot is past the LOD hide distance
       handX: 0.33, handY: 0.18, handZ: -0.47, // base offsets, set by _placeHands
       heldFlashUntil: 0,
       lastX: 0, lastZ: 0, lastNow: null,      // for speed-based sway
