@@ -1707,6 +1707,7 @@ let botSightRects = [];       // {x,z,w,d,h} AABBs recovered from loadedMap.prim
 let botVisibilityField = null; // nav-visibility.js lazy field
 let botCornerMap = null;       // nav-corners.js cover anchors/peeks
 let botSpawnPoints = []; // [{x,z}] -- shoot-house only; open/authored terrain paths via an on-demand local window instead (see requestBotPath)
+let botPatrolRing = []; // [{x,z}] -- authored role:'patrol' points from a pcw-layout map; empty for generators
 let botIdSeq = 0;
 let botSpawnMode = 'manual'; // 'manual' | 'round' -- both toggleable at runtime from the panel
 let botRoundTarget = 3;
@@ -1714,7 +1715,7 @@ let botRespawnEnabled = true; // toggleable from the panel -- off leaves fallen 
 let botWeaponId = 'm1911'; // toggleable from the panel; applied at spawn time, remembered per-bot (rec.weaponId) so changing it mid-match doesn't retroactively re-equip existing bots
 let botMaxHp = 100; // slider; applied at spawn time only (existing bots keep whatever max they spawned with)
 let botMoveSpeed = 2.4; // slider; read live every tick by all active bots
-let botSightRange = BOT_SENSE_RANGE; // slider; read live every tick by all active bots
+let botSightRange = 50; // slider; harness default (BOT_SENSE_RANGE=25 was the legacy env default and halved their vision)
 let botSeekTenacitySec = 6; // slider; how long (seconds) a bot keeps pursuing a lost target's last-known position before giving up and returning to patrol
 let botSquadModeEnabled = false; // panel toggle; spawn/round-mode groups bots into squads of SQUAD_MIN_SIZE+ instead of independent bots
 let botTemperamentMin = 0.15, botTemperamentMax = 0.85; // sliders
@@ -1868,11 +1869,12 @@ function shootHouseSightRects(primitives) {
 }
 if (NO_ENVIRONMENT && mapCollider && loadedMap?.bounds) {
   botNavGrid = buildNavGrid(botNavWalkable, loadedMap.bounds, BOT_NAV_CELL);
-  // A pcw-layout map may author its own bot spawn slots; generators return spawns: null.
+  // A pcw-layout map may author its own bot spawn slots and patrol route; generators return spawns: null.
   const authoredBotSpawns = (loadedMap.spawns || []).filter((s) => s.role === 'bot');
   botSpawnPoints = authoredBotSpawns.length
     ? authoredBotSpawns.map((s) => ({ x: s.x, z: s.z }))
     : sampleBotSpawnPoints(botNavGrid, 8);
+  botPatrolRing = (loadedMap.spawns || []).filter((s) => s.role === 'patrol').map((s) => ({ x: s.x, z: s.z }));
   const bakeStart = performance.now();
   botSightRects = shootHouseSightRects(loadedMap.primitives);
   // No terrain args anywhere here: shoot-house heightAt() === 0, so there is no ridge occlusion to
@@ -2848,7 +2850,14 @@ function recordBotShotResult(hit, nowMs) {
 // --- patrol -----------------------------------------------------------------------
 // Baked spawn points double as the shoot-house patrol ring; open/authored maps keep v1's
 // directional exploration (Phase D owns their nav).
-function botPatrolPoints() { return botSpawnPoints; }
+// Authored patrol route wins; a spawn-slot ring needs >= 2 points to be a route at all -- a
+// harness-exported map has ONE bot spawn, and a 1-point ring left every bot standing on its
+// own goal forever. No ring => exploration-goal wander.
+const _emptyPatrolRing = [];
+function botPatrolPoints() {
+  if (botPatrolRing.length >= 2) return botPatrolRing;
+  return botSpawnPoints.length >= 2 ? botSpawnPoints : _emptyPatrolRing;
+}
 // Skip patrol points this bot could never walk to: the region labels make "can I get there at
 // all" a lookup, so a cut-off bot takes the next one it can actually reach.
 function advanceToReachablePatrolPoint() {
