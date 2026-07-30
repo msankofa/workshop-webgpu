@@ -76,7 +76,8 @@ import { createEffectRenderer } from './effect-renderer.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
-import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose, createGoalClaims } from './bot-entity.js';
+import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose, createGoalClaims,
+  resolveBotPairsHashed, separationXZHashed, waypointContestedHashed, blendSeparationDir } from './bot-entity.js';
 import {
   BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE as BOT_SENSE_RANGE, TURN_RATE_RAD_S as BOT_TURN_RATE_RAD_S,
   chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle, trackStuck as botTrackStuck,
@@ -2019,40 +2020,52 @@ function botHasLineOfSight(eye, targetP, dist) {
 // itself is cached per bot on this cadence (see botSeesCached). Distance/FOV stay live every tick.
 const BOT_LOS_CHECK_INTERVAL_MS = 120;
 
-// Hard position correction so bots don't phase into each other or into the local player -- pairwise
-// XZ push-apart, same style as the legacy creature-viewer's resolveCreatureCollisions. O(n^2) but n
-// is capped at 10 (the round-mode target slider's max), trivial even every frame. Dead bots are
-// skipped (they're a fallen body, not something to shove around).
+// --- Phase B: spatial-hash neighbour index (bot-spatial-hash.js) ------------------
+// One index over living bot entities, rebuilt twice per tick (before the FSM loop, and again after
+// it has moved everyone) exactly as the harness's rebuildBotHash does. Every per-bot neighbour
+// query below reads it instead of walking botPlayers, so the crowd scans stop being O(n^2).
+const botHash = createBotSpatialHash(2);
+const _hashLiving = [];   // reused rebuild input, never re-allocated
+function rebuildBotHash() {
+  _hashLiving.length = 0;
+  for (const [id, rec] of botPlayers) {
+    if (!playerCombat.getSnapshot(id).alive) continue;
+    rec.bot.botRec = rec;  // entity -> rec back-ref (respawn swaps the entity, so re-stamp here)
+    _hashLiving.push(rec.bot);
+  }
+  botHash.rebuild(_hashLiving);
+  return _hashLiving;
+}
+
+// Hard position correction so bots don't phase into each other or into the local player. The
+// bot-bot pass is the harness's hashed penetration-only pushout (bot-separation.js), followed by a
+// wall re-resolve of everyone it moved so a doorway squeeze can't shove anyone through geometry.
+// The local-player pass is env-specific (the harness has no player) and stays O(n) pairwise.
 const _botPushDelta = new THREE.Vector3();
-function pushBotsApart() {
-  const bots = [...botPlayers.entries()]
-    .filter(([id]) => playerCombat.getSnapshot(id).alive)
-    .map(([, rec]) => rec.bot);
-  const localPose = getLocalPlayerState('host');
-  for (let i = 0; i < bots.length; i++) {
-    for (let j = i + 1; j < bots.length; j++) {
-      const a = bots[i], b = bots[j];
-      let dx = b.capsule.start.x - a.capsule.start.x;
-      let dz = b.capsule.start.z - a.capsule.start.z;
-      let dist = Math.hypot(dx, dz);
-      const minDist = a.capsule.radius + b.capsule.radius + BOT_COLLIDE_PAD;
-      if (dist >= minDist) continue;
-      if (dist < 1e-4) { dx = 1; dz = 0; dist = 1; } // exactly coincident -- push along an arbitrary axis
-      const push = (minDist - dist) * 0.5;
-      const nx = dx / dist, nz = dz / dist;
-      a.capsule.translate(_botPushDelta.set(-nx * push, 0, -nz * push));
-      b.capsule.translate(_botPushDelta.set(nx * push, 0, nz * push));
+const _botSepResolveOpts = {};   // hoisted: resolveCapsule's defaults, no per-frame alloc
+function pushBotsApart(living = rebuildBotHash()) {
+  if (living.length > 1) {
+    // Per-entity radii are uniform here, so one pass radius reproduces the old combined minDist
+    // (2r + BOT_COLLIDE_PAD) exactly while keeping the env's pad the harness has no equivalent of.
+    let maxR = 0;
+    for (let i = 0; i < living.length; i++) if (living[i].capsule.radius > maxR) maxR = living[i].capsule.radius;
+    for (const entity of resolveBotPairsHashed(living, botHash, maxR + BOT_COLLIDE_PAD * 0.5)) {
+      if (mapCollider) mapCollider.resolveCapsule(entity.capsule, entity.velocity, _botSepResolveOpts);
     }
-    if (!localPose) continue;
-    const a = bots[i];
+  }
+  const localPose = getLocalPlayerState('host');
+  if (!localPose) return;
+  for (let i = 0; i < living.length; i++) {
+    const a = living[i];
     let dx = a.capsule.start.x - localPose.p[0];
     let dz = a.capsule.start.z - localPose.p[2];
     let dist = Math.hypot(dx, dz);
     const minDist = a.capsule.radius + (localPose.r ?? 0.3) + BOT_COLLIDE_PAD;
     if (dist >= minDist) continue;
-    if (dist < 1e-4) { dx = 1; dz = 0; dist = 1; }
+    if (dist < 1e-4) { dx = 1; dz = 0; dist = 1; } // exactly coincident -- push along an arbitrary axis
     const push = minDist - dist;
     a.capsule.translate(_botPushDelta.set((dx / dist) * push, 0, (dz / dist) * push));
+    if (mapCollider) mapCollider.resolveCapsule(a.capsule, a.velocity, _botSepResolveOpts);
   }
 }
 
@@ -2352,7 +2365,11 @@ const botKnifeSecondaryEnabled = false;
 const BOT_PUSH_TIER_ENABLED = false;
 const NAV_CELL = BOT_NAV_CELL;
 const WAYPOINT_REACH = BOT_WAYPOINT_REACH;
-const WAYPOINT_CONTEST_RELAX = 0.45;
+const SEPARATION_RADIUS = 1.5;       // m, neighbours inside this repel during path-following
+const SEPARATION_WEIGHT = 0.5;       // blend factor of the separation force into the move direction
+const SEPARATION_PROBE_M = 0.45;     // m, look-ahead for the separation walkability gate
+const WAYPOINT_CONTEST_RANGE = 0.75; // m, neighbour distance that counts as blocking the waypoint
+const WAYPOINT_CONTEST_RELAX = 0.45; // m, extra reach allowed when the waypoint is crowd-blocked
 const NAV_REPATH_COOLDOWN_MS = 350;
 const SMOOTH_LOOKAHEAD = 16;
 const PATROL_STALL_DIST_M = 0.35;
@@ -2547,23 +2564,32 @@ function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
 }
 // Every living bot the shot passed within NEAR_MISS_RADIUS of gets a firsthand near-miss report
 // (replaces the v1 alertBotsToShot broadcast, which handed every bot a free last-known position).
+const _nmOrigin = { x: 0, y: 0, z: 0 }, _nmDir = { x: 0, y: 0, z: 0 }, _nmMid = { x: 0, y: 0, z: 0 };
+const _nmThreat = { x: 0, z: 0 };
+let _nmTravelled = 0, _nmHitId = null, _nmShooterId = null, _nmNow = 0;
+function _nmVisit(e) {
+  if (e.id === _nmShooterId || e.id === _nmHitId) return;
+  const c = e.capsule;
+  _nmMid.x = (c.start.x + c.end.x) * 0.5; _nmMid.y = (c.start.y + c.end.y) * 0.5; _nmMid.z = (c.start.z + c.end.z) * 0.5;
+  if (shotMissDistance(_nmOrigin, _nmDir, _nmTravelled, _nmMid) > NEAR_MISS_RADIUS) return;
+  const prior = recentAllyHits.find(r => r.kind === NEAR_MISS_KIND && r.victimId === e.id && _nmNow - r.at <= NEAR_MISS_WINDOW_MS);
+  if (prior) { prior.at = _nmNow; prior.x = c.start.x; prior.z = c.start.z; prior.threat.x = _nmThreat.x; prior.threat.z = _nmThreat.z; return; }
+  pushAllyReport({ victimId: e.id, team: BOT_TEAM, x: c.start.x, z: c.start.z,
+    threat: { x: _nmThreat.x, z: _nmThreat.z }, at: _nmNow, lethal: false, kind: NEAR_MISS_KIND });
+}
 function recordBotNearMisses(origin, dir, range, shooterId, hit, nowMs) {
   if (botPlayers.has(shooterId)) return; // bot-on-bot fire is not a thing in Phase A
   const shooter = getKnownPlayerState(shooterId);
-  const threat = shooter ? { x: shooter.p[0], z: shooter.p[2] } : { x: origin[0], z: origin[2] };
-  const travelled = hit && hit.kind !== 'none' ? hit.distance : range;
-  const dirV = { x: dir[0], y: dir[1], z: dir[2] };
-  for (const [id, rec] of botPlayers) {
-    if (id === shooterId || id === hit?.id) continue;
-    if (!playerCombat.getSnapshot(id).alive) continue;
-    const c = rec.bot.capsule;
-    const mid = { x: (c.start.x + c.end.x) * 0.5, y: (c.start.y + c.end.y) * 0.5, z: (c.start.z + c.end.z) * 0.5 };
-    if (shotMissDistance({ x: origin[0], y: origin[1], z: origin[2] }, dirV, travelled, mid) > NEAR_MISS_RADIUS) continue;
-    const prior = recentAllyHits.find(r => r.kind === NEAR_MISS_KIND && r.victimId === id && nowMs - r.at <= NEAR_MISS_WINDOW_MS);
-    if (prior) { prior.at = nowMs; prior.x = c.start.x; prior.z = c.start.z; prior.threat.x = threat.x; prior.threat.z = threat.z; continue; }
-    pushAllyReport({ victimId: id, team: BOT_TEAM, x: c.start.x, z: c.start.z,
-      threat: { x: threat.x, z: threat.z }, at: nowMs, lethal: false, kind: NEAR_MISS_KIND });
-  }
+  _nmThreat.x = shooter ? shooter.p[0] : origin[0];
+  _nmThreat.z = shooter ? shooter.p[2] : origin[2];
+  _nmTravelled = hit && hit.kind !== 'none' ? hit.distance : range;
+  _nmOrigin.x = origin[0]; _nmOrigin.y = origin[1]; _nmOrigin.z = origin[2];
+  _nmDir.x = dir[0]; _nmDir.y = dir[1]; _nmDir.z = dir[2];
+  _nmHitId = hit?.id ?? null; _nmShooterId = shooterId; _nmNow = nowMs;
+  // XZ-projected distance never exceeds the 3D distance, so the padded XZ AABB of the shot segment
+  // is a conservative prefilter -- the exact 3D shotMissDistance test still runs per candidate.
+  botHash.forEachSegment(origin[0], origin[2], origin[0] + dir[0] * _nmTravelled, origin[2] + dir[2] * _nmTravelled,
+    NEAR_MISS_RADIUS + 0.5, _nmVisit);
 }
 function latestAllyHitNear(me, nowMs) {
   _alertMe.id = me.id; _alertMe.team = BOT_TEAM;
@@ -2571,25 +2597,31 @@ function latestAllyHitNear(me, nowMs) {
   return latestAlertNear(recentAllyHits, _alertMe, nowMs, ALLY_ALERT_RADIUS);
 }
 // Freshest FIRSTHAND report carried by an alerted teammate in contact range -- one hop only.
+// Hash-backed with hoisted scratch/visitors, so a per-bot-per-tick scan costs no walk of the roster.
+let _saMe = null, _saNow = 0, _saPx = 0, _saPz = 0, _saBest = null;
+function _saVisit(other) {
+  if (other === _saMe) return;
+  const rep = other.botRec?.alertReport;
+  if (!rep || _saNow - rep.at > alertWindowMs(rep)) return;
+  if (Math.hypot(other.capsule.start.x - _saPx, other.capsule.start.z - _saPz) > SEMI_ALERT_SHARE_RADIUS) return;
+  if (!_saBest || rep.at > _saBest.at) _saBest = rep;
+}
 function sharedAllyAlertNear(me, nowMs) {
-  let best = null;
-  for (const rec of botPlayers.values()) {
-    const other = rec.bot;
-    if (other === me || !playerCombat.getSnapshot(other.id).alive) continue;
-    const rep = rec.alertReport;
-    if (!rep || nowMs - rep.at > alertWindowMs(rep)) continue;
-    if (Math.hypot(other.capsule.start.x - me.capsule.start.x, other.capsule.start.z - me.capsule.start.z) > SEMI_ALERT_SHARE_RADIUS) continue;
-    if (!best || rep.at > best.at) best = rep;
-  }
+  _saMe = me; _saNow = nowMs; _saPx = me.capsule.start.x; _saPz = me.capsule.start.z; _saBest = null;
+  botHash.forEachNear(_saPx, _saPz, SEMI_ALERT_SHARE_RADIUS, _saVisit);
+  _saMe = null;
+  const best = _saBest;
+  _saBest = null;
   return best;
 }
+let _ltRadius = 0, _ltPx = 0, _ltPz = 0, _ltCount = 0;
+function _ltVisit(other) {
+  if (Math.hypot(other.capsule.start.x - _ltPx, other.capsule.start.z - _ltPz) <= _ltRadius) _ltCount++;
+}
 function livingTeammatesNear(me, radius) {
-  let count = 0;
-  for (const rec of botPlayers.values()) {
-    if (!playerCombat.getSnapshot(rec.bot.id).alive) continue;
-    if (Math.hypot(rec.bot.capsule.start.x - me.capsule.start.x, rec.bot.capsule.start.z - me.capsule.start.z) <= radius) count++;
-  }
-  return count;
+  _ltRadius = radius; _ltPx = me.capsule.start.x; _ltPz = me.capsule.start.z; _ltCount = 0;
+  botHash.forEachNear(_ltPx, _ltPz, radius, _ltVisit); // includes self (me is in the living hash)
+  return _ltCount;
 }
 
 // --- pathing ----------------------------------------------------------------------
@@ -2610,18 +2642,27 @@ function requestPathBudgeted(entity, toXZ, nowMs = botFrameNow) {
 }
 const _fpXZ = { x: 0, z: 0 };
 const _fpOwnCell = { c: 0, r: 0 };
-let _fpLegNext = null, _fpLegOk = false;
+const _navAheadCell = { c: 0, r: 0 };
+let _fpEntity = null, _fpLegNext = null, _fpLegOk = false;
 // Lazy cache of lineWalkable(p, next); p is fixed per followPath call, so key it on the waypoint.
 const _fpNextLeg = (from, next) => {
   if (_fpLegNext !== next) { _fpLegNext = next; _fpLegOk = lineWalkable(botNavGrid, from, next); }
   return _fpLegOk;
 };
-const _fpOpts = { relaxRadius: WAYPOINT_CONTEST_RELAX, contested: null, canSkipTo: null };
+// A neighbour parked closer to the waypoint would starve the reach test forever -- hence the relax.
+const _fpContested = (wp, dist) => waypointContestedHashed(_fpEntity, botHash, wp, dist, WAYPOINT_CONTEST_RANGE);
+const _fpOpts = { relaxRadius: WAYPOINT_CONTEST_RELAX, contested: _fpContested, canSkipTo: null };
+// True if the nav cell ~half a metre along (mx,mz) from _fpXZ is blocked (no grid = never blocked).
+// Bound to the followPath scratch rather than a fresh closure per call, so the gate costs no alloc.
+function navBlockedAhead(mx, mz) {
+  if (!botNavGrid) return false;
+  const cell = worldToCellInto(botNavGrid, _fpXZ.x + mx * SEPARATION_PROBE_M, _fpXZ.z + mz * SEPARATION_PROBE_M, _navAheadCell);
+  return !botIsWalkableCell(botNavGrid, cell.c, cell.r);
+}
 // Pops waypoints as they're reached (nav-grid's advancePath), steering velocity toward the next.
-// Soft separation is Phase B; this is the harness shape minus the spatial-hash blend.
 function followPath(entity, path, speed) {
   const p = botXZInto(entity, _fpXZ);
-  _fpLegNext = null;
+  _fpEntity = entity; _fpLegNext = null;
   _fpOpts.canSkipTo = botNavGrid ? _fpNextLeg : null;
   while (path.length > 0) {
     const target = advancePath(p, path, WAYPOINT_REACH, _fpOpts);
@@ -2640,8 +2681,19 @@ function followPath(entity, path, speed) {
         if (fresh.length > 0) { path.length = 0; path.push(...fresh); continue; }
       }
     }
-    entity.velocity.x = (dx / dist) * speed;
-    entity.velocity.z = (dz / dist) * speed;
+    let mx = dx / dist, mz = dz / dist;
+    // Soft separation: steer away from living neighbours so bots don't grind on the hard pushout.
+    const sep = separationXZHashed(entity, botHash, SEPARATION_RADIUS);
+    if (sep) {
+      // Walkability gate: crowds may deflect the heading along the hall, never into a wall.
+      const m = blendSeparationDir(mx, mz, sep, SEPARATION_WEIGHT, navBlockedAhead);
+      mx = m.x; mz = m.z;
+    }
+    // Crowd-spike reversal stays allowed (it is what dissolves corner jams) but damped: backing
+    // away from the waypoint is a shuffle, not a full-speed sprint (kills the jam oscillation).
+    const spd = (mx * (dx / dist) + mz * (dz / dist)) < 0 ? speed * 0.4 : speed;
+    entity.velocity.x = mx * spd;
+    entity.velocity.z = mz * spd;
     botPatrolTravelHeading.x = dx / dist; botPatrolTravelHeading.z = dz / dist;
     return false;
   }
@@ -3236,15 +3288,18 @@ function findFleeGoal(nowMs) {
   return chosen;
 }
 // S9: the local squad's XZ centroid (self excluded), or null when nobody living is near.
+let _fsqSelf = null, _fsqX = 0, _fsqZ = 0, _fsqSx = 0, _fsqSz = 0, _fsqN = 0;
+function _fsqVisit(other) {
+  if (other === _fsqSelf) return;
+  const p = other.capsule.start;
+  if (Math.hypot(p.x - _fsqX, p.z - _fsqZ) > FLEE_SQUAD_RADIUS) return;
+  _fsqSx += p.x; _fsqSz += p.z; _fsqN++;
+}
 function fleeSquadCentroid(source) {
-  let sx = 0, sz = 0, n = 0;
-  for (const rec of botPlayers.values()) {
-    if (rec.bot === bot || !playerCombat.getSnapshot(rec.bot.id).alive) continue;
-    const p = rec.bot.capsule.start;
-    if (Math.hypot(p.x - source.x, p.z - source.z) > FLEE_SQUAD_RADIUS) continue;
-    sx += p.x; sz += p.z; n++;
-  }
-  return n ? { x: sx / n, z: sz / n } : null;
+  _fsqSelf = bot; _fsqX = source.x; _fsqZ = source.z; _fsqSx = 0; _fsqSz = 0; _fsqN = 0;
+  botHash.forEachNear(source.x, source.z, FLEE_SQUAD_RADIUS, _fsqVisit);
+  _fsqSelf = null;
+  return _fsqN ? { x: _fsqSx / _fsqN, z: _fsqSz / _fsqN } : null;
 }
 function updateFleeMovement(nowMs) {
   if (pathMode !== 'flee' || !botCombatMoveGoal || currentPath.length === 0) {
@@ -3313,18 +3368,21 @@ function secondVisibleThreat(primaryXZ, contact = null) {
 // S10 peek phasing: how many same-team bots already hold a corner against ~this same threat nearby.
 const COVER_GROUP_RADIUS = 8;
 const COVER_GROUP_THREAT_EPS = 3;
+let _giX = 0, _giZ = 0, _giTx = 0, _giTz = 0, _giCount = 0;
+function _giVisit(e) {
+  const other = e.botRec;
+  if (!other || other === activeBot || !other.coverCorner) return;
+  if (Math.hypot(e.capsule.start.x - _giX, e.capsule.start.z - _giZ) > COVER_GROUP_RADIUS) return;
+  const t = other.coverThreat;
+  if (!t || Math.hypot(t.x - _giTx, t.z - _giTz) > COVER_GROUP_THREAT_EPS) return;
+  _giCount++;
+}
 function coverGroupIndex(threatPos) {
   if (!threatPos || !bot) return 0;
-  let count = 0;
-  for (const rec of botPlayers.values()) {
-    if (rec === activeBot || !rec.coverCorner) continue;
-    const p = rec.bot.capsule.start;
-    if (Math.hypot(p.x - bot.capsule.start.x, p.z - bot.capsule.start.z) > COVER_GROUP_RADIUS) continue;
-    const t = rec.coverThreat;
-    if (!t || Math.hypot(t.x - threatPos.x, t.z - threatPos.z) > COVER_GROUP_THREAT_EPS) continue;
-    count++;
-  }
-  return count;
+  _giX = bot.capsule.start.x; _giZ = bot.capsule.start.z;
+  _giTx = threatPos.x; _giTz = threatPos.z; _giCount = 0;
+  botHash.forEachNear(_giX, _giZ, COVER_GROUP_RADIUS, _giVisit);
+  return _giCount;
 }
 function commitCoverCorner(rec, threatPos, nowMs) {
   if (!activeBot || !rec) return;
@@ -4116,10 +4174,13 @@ function updateBots(dt) {
       while (botPlayers.size < botRoundTarget) spawnBotAtSlot(botPlayers.size);
     }
   }
+  rebuildBotHash();   // index the living roster before any bot's neighbour queries read it
   for (const [id, rec] of botPlayers) {
     const combat = playerCombat.getSnapshot(id);
     if (!combat.alive) {
-      if (rec.deadSince == null) rec.deadSince = nowMs;
+      // Death edge: free the cells this bot had committed to so a living one can take them now
+      // (isClaimedByOther already ignores dead owners -- this stops the record leaking until respawn).
+      if (rec.deadSince == null) { rec.deadSince = nowMs; goalClaims.release(id); }
       else if (botRespawnEnabled && nowMs - rec.deadSince >= BOT_RESPAWN_MS) {
         const sp = rec.spawnPos;
         rec.bot = createBotEntity(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
@@ -4143,7 +4204,7 @@ function updateBots(dt) {
   }
   bindBotActor(null);   // no bot is bound between frames: a stale binding would leak registers
   updateSquads();
-  pushBotsApart();
+  pushBotsApart(rebuildBotHash());   // re-index: the ticks above moved everyone, then push apart
   // The one ghost flush per frame (clears hostGhostsDirty): last bot mutation is above, and the
   // weapon mounts below read the bodies it drives. Live bots move every tick, so their presence
   // alone dirties the pass; with none and nothing flagged there is nothing to re-push.

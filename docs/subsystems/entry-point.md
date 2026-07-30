@@ -48,7 +48,7 @@ CDN-pinned three@0.184.0, served from jsDelivr:
 | `{ createMapCollider }` from `./map-collision.js` | BVH collider for authored map meshes |
 | `{ createHostSession, createGuestSession, GhostRenderer }` from `./multiplayer.js` | netcode session + remote-player rendering |
 | `{ listStates, saveState, deleteState }` from `./slider-state.js` (aliased `listSliderStates`/`saveSliderState`/`deleteSliderState`) | named `localStorage`-backed slider-preset storage, shared with `start-screen.js` |
-| `{ createBotEntity, stepBotPhysics, toWirePose }` from `./bot-entity.js` (aliased `botToWirePose`) | combat-bot capsule/physics/pose — see `bots.md` |
+| `{ createBotEntity, stepBotPhysics, toWirePose }` from `./bot-entity.js` (aliased `botToWirePose`) | combat-bot capsule/physics/pose — see `bots.md`. The v2 copy also takes `createGoalClaims` + the Phase-B separation surface (`resolveBotPairsHashed`, `separationXZHashed`, `waypointContestedHashed`, `blendSeparationDir`) and `createBotSpatialHash` from `./bot-spatial-hash.js` |
 | `{ chooseBotState, aimAnglesTo, aimError, slewAngle, ... }` from `./bot-activity.js` | combat-bot FSM decision math (aliased `botAimError` etc. to dodge existing names) |
 | `{ buildNavGrid, isWalkableCell, cellToWorld, findPath, smoothPath }` from `./nav-grid.js` (aliased `botIsWalkableCell` etc.) | shoot-house-only bot pathing grid |
 

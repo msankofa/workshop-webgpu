@@ -4486,3 +4486,74 @@ the only HP authority, `applyCombatIntent` the only fire path, guest early-outs 
 Phase A scope (signals defaulted calm): roles/medic/packs (Phase C), squads/formations/explosives
 (C½), sidearms/stances (C), open-terrain nav (D). QA instrument: `?botTrace=1` state-code takes
 diff slot-by-slot against harness takes on the same `pcw-layout` map (see `layout-interchange.js`).
+
+## Phase B: separation, spatial hash, goal claims (2026-07-30, `environment-viewer-v2.html`)
+
+Crowd handling now matches the harness. `botHash = createBotSpatialHash(2)` is rebuilt by
+`rebuildBotHash()` **twice per `updateBots` tick** — once before the per-bot loop (so every
+neighbour query in the ladder reads this frame's positions) and once after it, feeding the pushout
+pass. The rebuild also stamps `entity.botRec = rec`, the entity→record back-ref the visitors need
+(respawn swaps the entity, so it is re-stamped rather than set at spawn — the harness's
+`entity.botActor` equivalent).
+
+Per-frame order inside `updateBots`: guest early-out → `botFrameNow`/`botFrameCounter` →
+`replanBudgetLeft` reset → round-mode spawn top-up → **`rebuildBotHash()`** → per-rec loop
+(dead: death-edge `goalClaims.release(id)` / respawn / trace row; living: `botTickOne` = bind,
+`updateBotSentry`, movement, `stepBotPhysics`, commit) → `bindBotActor(null)` → `updateSquads()` →
+**`pushBotsApart(rebuildBotHash())`** → ghost flush → weapon mounts → inspector → stats.
+
+**Pushout.** `pushBotsApart` is the harness's `resolveBotPairsHashed` penetration-only pass
+followed by `mapCollider.resolveCapsule` on every entity it moved, so a doorway squeeze cannot
+shove anyone through geometry. The env's `BOT_COLLIDE_PAD` is preserved by passing an explicit
+pass radius (`maxCapsuleRadius + BOT_COLLIDE_PAD * 0.5`, i.e. the old `2r + pad` minDist). The
+local-player push is env-specific (the harness has no player) and stays an O(n) pairwise pass
+after the bot-bot one, with the same wall re-resolve. This lands review finding **R5**; **R2**
+(nav-grid erosion by capsule radius) and **R6** (off-nav spawn positions) are still open — R2
+edits `nav-grid.js` and the review requires it to ship with R1.
+
+**Soft steering.** `followPath` now blends `separationXZHashed(entity, botHash, SEPARATION_RADIUS)`
+into the move direction via `blendSeparationDir`, gated by `navBlockedAhead` (a
+`SEPARATION_PROBE_M` look-ahead cell test bound to the `_fpXZ` scratch — crowds may deflect a
+heading along a hall, never into a wall), and damps a crowd-spike reversal to `speed * 0.4`. The
+harness's `terrainSpeedFactor` slope drag is deliberately not ported (Phase D owns open terrain).
+Tunables: `SEPARATION_RADIUS 1.5`, `SEPARATION_WEIGHT 0.5`, `SEPARATION_PROBE_M 0.45`.
+
+**Waypoint contest.** `_fpOpts.contested` is `waypointContestedHashed(..., WAYPOINT_CONTEST_RANGE)`
+(was a Phase A `null` stub), so `advancePath` relaxes reach by `WAYPOINT_CONTEST_RELAX` when a
+neighbour is parked nearer the waypoint — still guarded by `canSkipTo = _fpNextLeg`, the
+`lineWalkable` check on the next leg. Tunables: `WAYPOINT_CONTEST_RANGE 0.75`, `_RELAX 0.45`.
+
+**Claims.** `goalClaims` (`createGoalClaims`, alive predicate = `botPlayers` membership +
+`playerCombat` snapshot) is now released on all three exits: respawn (`resetBotBrainState`,
+per-kind), despawn (`despawnBot`, all kinds) and the **death edge** in `updateBots` (all kinds).
+`isClaimedByOther` already ignored dead owners, so the death release is a leak fix, not a
+behaviour change.
+
+| State / event | Kind | Claimed at | Released at |
+|---|---|---|---|
+| `BOT_COVER_MOVE` / `BOT_COVER_HOLD` | `cover` | `commitCoverCorner` (anchor cell) | `releaseCoverCorner` — cover invalid/blacklisted, cover exit, recovery reposition, muzzle-recovery episode start/clear |
+| `BOT_SEEK` (investigate cell) | `seek` | `updateSeekMovement` on plan commit (`planNextInvestigationGoal` skips others' cells) | `finishInvestigation`; `state !== BOT_SEEK` after dispatch; recovery reposition |
+| `BOT_PURSUE` (approach bearing) | `pursue` | `pursuitStandoffGoal` | `state !== BOT_PURSUE` after dispatch |
+| `BOT_FLEE` (retreat cell) | `flee` | `updateFleeMovement` on plan commit (`findFleeGoal` skips others' cells) | arrival, failed search, `state !== BOT_FLEE` after dispatch, recovery reposition |
+| muzzle-recovery reposition | `recover` | `beginMuzzleRecovery` (`findMuzzleRecoveryCell` skips others' cells) | `updateMuzzleRecoveryMovement` arrival, `clearMuzzleRecoveryEpisode` |
+| any → death | all kinds | — | `updateBots` death edge (**new in Phase B**) |
+| any → respawn | all kinds | — | `resetBotBrainState` |
+| any → despawn | all kinds | — | `despawnBot` |
+
+**Neighbour scans on the hash.** `sharedAllyAlertNear`, `livingTeammatesNear`, `fleeSquadCentroid`,
+`coverGroupIndex` and `recordBotNearMisses` were per-bot walks of `botPlayers` (O(n²) per tick for
+the first two and cover-group); they are now hoisted-visitor hash queries mirroring the harness's
+`_saVisit`/`_ltVisit`/`_fsqVisit`/`_giVisit`/`_nmVisit`. `recordBotNearMisses` uses
+`forEachSegment` with the harness's `NEAR_MISS_RADIUS + 0.5` AABB pad as a conservative prefilter
+before the exact 3D `shotMissDistance` test. Scratch is module-scope and drained inside one call,
+so none of these allocate per frame.
+
+**Replan budgeting** was already ported in Phase A and is unchanged: `requestPathBudgeted`
+(per-entity `REPLAN_COOLDOWN_MS` + `replanJitterMs` phase, global `REPLAN_BUDGET_PER_FRAME = 8`
+reset at the top of `updateBots`) returns `null` on refusal, and `requestPath` remains a thin wrapper
+over `requestBotPath` so the static-grid vs. local-window abstraction is untouched. `followPath`'s
+inline re-path deliberately calls the unbudgeted `requestPath` behind the per-entity
+`NAV_REPATH_COOLDOWN_MS` latch, exactly as the harness does.
+
+No trace columns changed — `bot-state-code.js` has no slot for separation or claims, so the
+`?botTrace=1` TSV stays byte-identical to the harness's.
