@@ -87,7 +87,7 @@ import {
   chooseBotStateName, stepVisibleDebounce, resetVisibleDebounce, healUnsafeBand,
   spreadAnchor, spreadAnchorRadius, botSeedFromId, pursueBreakThreshold, shouldTopOffReload,
 } from './bot-activity.js';
-import { buildNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath,
+import { buildNavGrid, finalizeNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath,
   lineWalkable, floodFill, floodPath, advancePath, worldToCell, worldToCellInto, cellToWorldInto, regionAt } from './nav-grid.js';
 import {
   AIM_DEFAULTS, reactionDelayMs, spreadHalfAngleRad, bloomAfterShot, decayBloomDeg, dispersedDirection,
@@ -1762,6 +1762,7 @@ let squadIdSeq = 0;
 let botNoticeTimeSec = 0.6; // slider; reaction delay from first spotting a target to being allowed to fire at it -- resets if line of sight breaks
 let botAccuracy = 60; // slider, 0-100%; 100 = perfectly on target, lower widens bot-aim.js's dispersion cone on the fired shot (not the bot's visible aim -- see botShotSpreadRad)
 let botStatusEl = null; // set by the debug panel, refreshed each updateBots() tick
+let botNavNoteEl = null; // nav-regime readout in the same panel (static bake / terrain zone / local windows)
 let playerImmortal = false; // toggleable from the "Player" panel -- protects the local host/solo
   // player from bot/explosion damage; has no effect on guests, who aren't damage-authoritative
   // for themselves (the host decides guest damage, this toggle only covers the local machine).
@@ -1920,6 +1921,229 @@ if (NO_ENVIRONMENT && mapCollider && loadedMap?.bounds) {
   console.log(`[bot cover bake] grid ${botNavGrid.cols}x${botNavGrid.rows} @${BOT_NAV_CELL}m, `
     + `${botVisibilityField.walkableCount} walkable cells, ${botSightRects.length} sight rects, `
     + `${botCornerMap.corners.length} corners in ${(performance.now() - bakeStart).toFixed(1)} ms`);
+}
+
+// ==================== Phase D: open-terrain combat-zone nav ====================
+// Terrain maps run 1200-4000 m across; a full-map bake at a usable pitch is 640k+ cells and the
+// pairwise visibility field is walkableCount^2 bits (see bench-bot-nav.mjs -- 140 MB at 384 m
+// alone, 13 GB at 1200 m), so "one grid over the map" is off the table and the field must stay
+// lazy. What IS affordable is a bounded PERSISTENT grid over the area the fight is actually in:
+// 384 m at the 1.5 m local-window pitch is 65k cells / 0.6 MB, and it buys every cell-indexed
+// system the port already has -- cover corners, crest cover, flee scoring, danger memory, region
+// labels -- none of which a throwaway per-request window can carry.
+// So: a persistent zone grid anchored on the local player, rebaked when the anchor drifts out of
+// it, sampled across frames on a millisecond budget (the walkability predicate runs a capsule
+// sweep against the collision BVH; 65k of those in one frame is a visible hitch). Bots outside
+// the zone keep the pre-existing local-window path -- degradation, not failure.
+const BOT_ZONE_SPAN = 384;              // metres per side of the persistent terrain grid
+const BOT_ZONE_CELL = BOT_LOCAL_NAV_CELL; // same pitch as the local windows, so botMeshBlockedAt's cache keys line up exactly
+const BOT_ZONE_REBAKE_DRIFT = 96;       // metres the anchor may leave the zone centre before a rebake
+const BOT_ZONE_BAKE_BUDGET_MS = 3;      // per-frame sampling budget
+const BOT_ZONE_RETRY_MS = 4000;         // after a rebake, minimum wait before another can start
+const BOT_ZONE_EDGE_MARGIN = BOT_ZONE_CELL * 2; // stay this far inside the zone to count as covered
+const BOT_ZONE_SIGHT_CAP = 1200;        // biggest-first cap on derived sight-blocker rects
+const BOT_ZONE_CREST_MIN_RISE = 0.6;    // metres of climb anchor->brow before terrain reads as cover (harness value)
+// Crest geometry diverges from the harness's 2 m uphill span / 12 m threat probe, and it has to.
+// Those are authored for a 0.5 m grid inside a ~170 m arena; here the pitch is 1.5 m and the slope
+// gate caps a cell's rise at 0.9 m, so 2 m of run cannot lift a brow above a 1.6 m eye and 12 m of
+// baseline is too short for gentle ground to occlude at all. bench-bot-nav.mjs --crest measures it:
+// at 2 m / 12 m the bake finds ZERO crests on rugged synthetic terrain, at 4.5 m / 24 m it finds ~100.
+const BOT_ZONE_CREST_SPAN_M = 4.5;
+const BOT_ZONE_CREST_FAR_M = 24;
+// Sight blockers are NOT nav blockers. Rasterization marks a cell only when a rect covers the cell
+// CENTRE, so anything narrower than the pitch occludes nothing while still emitting corner records:
+// tree trunks (0.3-0.6 m) are therefore excluded outright and only boulder/stump-grade dressing
+// circles qualify. Hills, cliffs and authored geometry occlude through the field's terrain-height
+// test instead of through rects.
+const BOT_ZONE_SIGHT_MIN_FOOTPRINT = BOT_ZONE_CELL;
+
+let botNavZone = null;    // bounds of the live persistent grid, or null when there isn't one
+let botZoneBake = null;   // in-progress incremental bake
+let botZoneNextTryAt = 0;
+let botZoneBakeCount = 0;
+
+// True when the persistent grid can answer for (x,z) -- inside its bounds by a margin, so a path
+// request never starts one cell from the edge and immediately runs out of grid.
+function botNavGridCovers(x, z) {
+  if (!botNavGrid) return false;
+  if (!botNavZone) return true;   // shoot-house: the grid IS the map
+  const m = BOT_ZONE_EDGE_MARGIN;
+  return x >= botNavZone.minX + m && x <= botNavZone.maxX - m
+    && z >= botNavZone.minZ + m && z <= botNavZone.maxZ - m;
+}
+// True when (x,z) is blocked by SLOPE ALONE: continuous ground the capsule can still stand on, so
+// connectStrandedRegions may carve a pass through it. Only called for cells botTerrainWalkable
+// already rejected, and only from the bake -- botMeshBlockedAt is cached from that same call.
+function botTerrainSoftBlocked(x, z) {
+  const h = terrainHeight(x, z);
+  if (!Number.isFinite(h) || h <= terrain.waterLevel + 0.15) return false;
+  if (trunkIndex.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
+  if (dressingIndexRef && dressingIndexRef.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
+  if (botMeshBlockedAt(x, z)) return false;
+  return true;
+}
+// Dressing circles ({x,z,r}) inside `bounds` turned into sight rects, biggest first. The index is
+// chunk-bucketed and streamed, so this walks it chunk by chunk and dedupes; chunks that have not
+// streamed in yet simply contribute nothing, which errs toward VISIBLE exactly as the field does.
+// Height mirrors the bullet-column convention (rock top ~= radius * 1.4).
+function botTerrainSightRects(bounds) {
+  if (!dressingIndexRef) return [];
+  const chunk = Math.max(8, terrainSystem?.params?.chunkSize || 30);
+  const scratch = [];
+  const seen = new Set();
+  const out = [];
+  for (let z = bounds.minZ; z <= bounds.maxZ + chunk; z += chunk) {
+    for (let x = bounds.minX; x <= bounds.maxX + chunk; x += chunk) {
+      dressingIndexRef.nearby(x, z, scratch);
+      for (const c of scratch) {
+        if (c.x < bounds.minX || c.x > bounds.maxX || c.z < bounds.minZ || c.z > bounds.maxZ) continue;
+        const w = c.r * 2;
+        if (w < BOT_ZONE_SIGHT_MIN_FOOTPRINT) continue;
+        const h = Math.max(GUN_ROCK_MIN_H, c.r * GUN_ROCK_H_PER_RADIUS);
+        if (h < SIGHT_BLOCK_HEIGHT) continue;
+        const key = `${c.x.toFixed(2)},${c.z.toFixed(2)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ x: c.x, z: c.z, w, d: w, h, kind: 'rock' });
+      }
+    }
+  }
+  out.sort((a, b) => b.w - a.w);
+  if (out.length > BOT_ZONE_SIGHT_CAP) out.length = BOT_ZONE_SIGHT_CAP;
+  return out;
+}
+// Where the zone wants to sit: the local player is the centre of gravity of every fight that
+// matters here (bots spawn around them and their sight range is 50 m), and it is the one anchor
+// that exists on both authored and infinite procedural terrain.
+function botZoneAnchor() {
+  const pose = getLocalPlayerWorldPose();
+  if (pose) return { x: pose.x, z: pose.z };
+  for (const rec of botPlayers.values()) return botXZ(rec.bot);
+  return null;
+}
+function beginBotZoneBake(cx, cz) {
+  const half = BOT_ZONE_SPAN / 2;
+  const cols = Math.max(1, Math.ceil(BOT_ZONE_SPAN / BOT_ZONE_CELL));
+  const n = cols * cols;
+  botZoneBake = {
+    bounds: { minX: cx - half, maxX: cx + half, minZ: cz - half, maxZ: cz + half },
+    cols, rows: cols, cellSize: BOT_ZONE_CELL, minX: cx - half, minZ: cz - half,
+    cells: new Uint8Array(n), heights: new Float32Array(n), soft: new Uint8Array(n),
+    row: 0, sampleMs: 0,
+  };
+}
+// One frame's slice of the bake. Returns true while work remains.
+function stepBotZoneBake() {
+  const b = botZoneBake;
+  if (!b) return false;
+  const t0 = performance.now();
+  while (b.row < b.rows) {
+    const z = b.minZ + (b.row + 0.5) * b.cellSize;
+    const base = b.row * b.cols;
+    for (let c = 0; c < b.cols; c++) {
+      const x = b.minX + (c + 0.5) * b.cellSize;
+      const h = terrainHeight(x, z);
+      b.heights[base + c] = Number.isFinite(h) ? h : 0;
+      const ok = botTerrainWalkable(x, z);
+      b.cells[base + c] = ok ? 1 : 0;
+      if (!ok && botTerrainSoftBlocked(x, z)) b.soft[base + c] = 1;
+    }
+    b.row++;
+    if (performance.now() - t0 >= BOT_ZONE_BAKE_BUDGET_MS) { b.sampleMs += performance.now() - t0; return true; }
+  }
+  b.sampleMs += performance.now() - t0;
+  finishBotZoneBake(b);
+  return false;
+}
+function finishBotZoneBake(b) {
+  const t0 = performance.now();
+  const grid = finalizeNavGrid({
+    cols: b.cols, rows: b.rows, cellSize: b.cellSize, minX: b.minX, minZ: b.minZ,
+    cells: b.cells, heights: b.heights, soft: b.soft,
+  });
+  const rects = botTerrainSightRects(b.bounds);
+  const field = buildLazyVisibilityField(grid, buildSightGrid(grid, rects), { terrain: { heights: grid.heights } });
+  const perM = 1 / b.cellSize;
+  // Anchor/peek offsets are authored for a ~0.5 m grid; at this pitch they would quantize onto the
+  // same cell and every wall corner would self-cull, so they scale with the cell.
+  const cornerMap = buildCornerMap(grid, rects, field, {
+    heights: grid.heights,
+    inset: b.cellSize * 0.6, offFace: b.cellSize * 0.5, peekPast: b.cellSize * 1.2,
+    crest: {
+      minRise: BOT_ZONE_CREST_MIN_RISE, maxSpan: Math.max(1, Math.round(BOT_ZONE_CREST_SPAN_M * perM)),
+      farCells: Math.max(2, Math.round(BOT_ZONE_CREST_FAR_M * perM)),
+      spacingCells: Math.max(1, Math.round(4 * perM)), stride: grid.cols > 220 ? 2 : 1,
+    },
+  });
+  adoptBotNavGrid(grid, field, cornerMap, b.bounds, rects);
+  botZoneBake = null;
+  botZoneBakeCount++;
+  const walk = field.walkableCount;
+  const crests = cornerMap.corners.reduce((n, rec) => n + (rec.kind === 'crest' ? 1 : 0), 0);
+  const stranded = (grid.regionSizes || []).reduce((n, size, i) => n + (i !== grid.mainRegion && size >= 6 ? 1 : 0), 0);
+  console.log(`[bot zone bake #${botZoneBakeCount}] ${grid.cols}x${grid.rows} @${b.cellSize}m over `
+    + `${BOT_ZONE_SPAN}m centred (${((b.bounds.minX + b.bounds.maxX) / 2).toFixed(0)}, `
+    + `${((b.bounds.minZ + b.bounds.maxZ) / 2).toFixed(0)}), ${walk} walkable, `
+    + `${rects.length} sight rects, ${cornerMap.corners.length} corners (${crests} crest`
+    + `${cornerMap.crestCapped ? ', CAP HIT' : ''}), ${grid.carved.length} carved cells, `
+    + `${stranded} stranded region(s) — sampling ${b.sampleMs.toFixed(0)} ms across frames + `
+    + `${(performance.now() - t0).toFixed(0)} ms finalize`);
+}
+// Swap a freshly baked grid in. Every cell INDEX in flight -- goal claims, danger memory, cover
+// corner records, medic flood caches, live paths -- belongs to the grid being replaced, so it all
+// goes. Cheaper and far safer than trying to remap indices between two different lattices.
+function adoptBotNavGrid(grid, field, cornerMap, bounds, rects) {
+  botNavGrid = grid;
+  botVisibilityField = field;
+  botCornerMap = cornerMap;
+  botNavZone = bounds;
+  botSightRects = rects;
+  goalClaims.clear();
+  clearDangerField(botDangerField);
+  for (const rec of botPlayers.values()) {
+    rec.coverCorner = null; rec.coverThreat = null; rec.peek = null;
+    rec.coverStartedAt = null; rec.coverMoveSince = null; rec.coverHoldSince = null;
+    rec.coverBlacklist?.clear?.();
+    rec.medicFlood = null; rec.medicFloodAt = 0;
+    rec.muzzleRecoveryTarget = null; rec.muzzleRecoveryVisitedCells?.clear?.();
+    rec.patrolLocalGoal = null;
+    rec.fleeGoalHistory = [];
+    rec.currentPath = []; rec.pathMode = null;
+  }
+}
+function refreshBotNavNote() {
+  if (!botNavNoteEl) return;
+  if (NO_ENVIRONMENT) {
+    botNavNoteEl.textContent = `Static full-map nav bake (${botNavGrid ? `${botNavGrid.cols}x${botNavGrid.rows}` : 'none'}) — cover corners and region labels cover the whole map.`;
+    return;
+  }
+  if (botZoneBake) {
+    botNavNoteEl.textContent = `Baking terrain combat zone… ${Math.round((botZoneBake.row / botZoneBake.rows) * 100)}%`;
+    return;
+  }
+  if (botNavGrid && botNavZone) {
+    const crests = botCornerMap ? botCornerMap.corners.reduce((n, r) => n + (r.kind === 'crest' ? 1 : 0), 0) : 0;
+    botNavNoteEl.textContent = `Terrain combat zone ${BOT_ZONE_SPAN} m @${BOT_ZONE_CELL} m — ${botCornerMap?.corners.length ?? 0} cover corners (${crests} crest). Bots outside it path in local windows.`;
+    return;
+  }
+  botNavNoteEl.textContent = 'No nav grid yet — spawn a bot to bake the terrain combat zone.';
+}
+// Called once per bot tick: keeps the zone baked and anchored, and does nothing at all when there
+// are no bots (a terrain map with the bot system idle pays zero).
+function updateBotNavZone(nowMs) {
+  if (NO_ENVIRONMENT) return;              // shoot-house has its full-map static bake already
+  if (botPlayers.size === 0) return;
+  if (botZoneBake) { stepBotZoneBake(); return; }
+  const anchor = botZoneAnchor();
+  if (!anchor) return;
+  if (botNavZone) {
+    const cx = (botNavZone.minX + botNavZone.maxX) / 2, cz = (botNavZone.minZ + botNavZone.maxZ) / 2;
+    if (Math.hypot(anchor.x - cx, anchor.z - cz) < BOT_ZONE_REBAKE_DRIFT) return;
+    if (nowMs < botZoneNextTryAt) return;
+  }
+  botZoneNextTryAt = nowMs + BOT_ZONE_RETRY_MS;
+  beginBotZoneBake(anchor.x, anchor.z);
+  stepBotZoneBake();
 }
 
 // Authored spawn points split into two halves along the map's long axis, one per team -- the
@@ -2422,8 +2646,10 @@ function pushBotsApart(living = rebuildBotHash()) {
 // replans rather than pathing the whole map at once.
 let _botPathDebugCount = 0; // TEMP diagnostic (2026-07-19): remove once explore-movement bug is found
 function requestBotPath(bot, toXZ) {
-  if (botNavGrid) {
-    const center = botMidXZ(bot);
+  const center = botMidXZ(bot);
+  // A bounded terrain zone grid can only answer for bots inside it; outside, fall through to the
+  // local window exactly as before the zone existed.
+  if (botNavGridCovers(center.x, center.z)) {
     // Harness parity: own cell nav-blocked (pushed into the wall margin) keeps the snapped start
     // waypoint so the bot steps back onto the grid first; otherwise drop it.
     const ownCell = worldToCell(botNavGrid, center.x, center.z);
@@ -2443,12 +2669,9 @@ function requestBotPath(bot, toXZ) {
     }
     return [];
   }
-  const center = botMidXZ(bot);
-  const bounds = {
-    minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
-    minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
-  };
-  const grid = buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL);
+  const grid = buildLocalNavWindow(center);
+  const bounds = { minX: grid.minX, maxX: grid.minX + grid.cols * grid.cellSize,
+    minZ: grid.minZ, maxZ: grid.minZ + grid.rows * grid.cellSize };
   const goal = {
     x: Math.min(bounds.maxX - BOT_LOCAL_NAV_CELL, Math.max(bounds.minX + BOT_LOCAL_NAV_CELL, toXZ.x)),
     z: Math.min(bounds.maxZ - BOT_LOCAL_NAV_CELL, Math.max(bounds.minZ + BOT_LOCAL_NAV_CELL, toXZ.z)),
@@ -2476,34 +2699,51 @@ function requestBotPath(bot, toXZ) {
   if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath] EMPTY (no route at all)', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal); }
   return [];
 }
-// Brute-force nearest-walkable-cell scan over a local nav grid (at most ~24x24 cells at the
-// default BOT_LOCAL_NAV_RADIUS/BOT_LOCAL_NAV_CELL, trivial to scan in full) -- used only as
-// requestBotPath's unreachable-goal fallback, not on any hot per-frame path.
+// The throwaway window used wherever the persistent grid can't answer. Slope-costed since Phase D:
+// heights make A* charge climbs (and smoothPath refuse shortcuts back over them) instead of only
+// hard-rejecting cells past BOT_TERRAIN_SLOPE_TOLERANCE.
+function buildLocalNavWindow(center) {
+  const bounds = {
+    minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
+    minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
+  };
+  return buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL, { heightAt: terrainHeight });
+}
+// Nearest walkable cell to (x,z). Scans a bounded window of cells around the query first: a hit
+// inside the window's inscribed radius IS the global nearest, so this is exact, and only a miss
+// pays for the full sweep. The full sweep was fine on a ~24x24 local window and is 65k cells on
+// the persistent terrain zone grid.
+const NEAREST_WALKABLE_WINDOW_CELLS = 32;
 function nearestWalkableInGrid(grid, x, z) {
+  const qc = Math.floor((x - grid.minX) / grid.cellSize), qr = Math.floor((z - grid.minZ) / grid.cellSize);
+  const W = NEAREST_WALKABLE_WINDOW_CELLS;
+  const windowed = scanNearestWalkable(grid, x, z, Math.max(0, qc - W), Math.min(grid.cols - 1, qc + W),
+    Math.max(0, qr - W), Math.min(grid.rows - 1, qr + W));
+  if (windowed && windowed.dist <= W * grid.cellSize) return windowed.point;
+  const full = scanNearestWalkable(grid, x, z, 0, grid.cols - 1, 0, grid.rows - 1);
+  return full ? full.point : null;
+}
+function scanNearestWalkable(grid, x, z, c0, c1, r0, r1) {
   let best = null, bestDist = Infinity;
-  for (let r = 0; r < grid.rows; r++) {
-    for (let c = 0; c < grid.cols; c++) {
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
       if (!botIsWalkableCell(grid, c, r)) continue;
       const w = botCellToWorld(grid, c, r);
       const d = Math.hypot(w.x - x, w.z - z);
       if (d < bestDist) { bestDist = d; best = w; }
     }
   }
-  return best;
+  return best ? { point: best, dist: bestDist } : null;
 }
 // Nearest walkable cell to the bot's OWN position -- the stuck-escape recovery target (see
 // BOT_STUCK_ESCAPE_RETRIES). Deliberately not lastSafePos/spawnPos: this is "somewhere the nav
 // grid agrees is reachable and close by", which is what a stall (nav-valid path never found from
 // here, or physically blocked despite one) actually needs to get moving again.
 function botNearestWalkableToBot(bot) {
-  if (botNavGrid) return nearestWalkableInGrid(botNavGrid, bot.capsule.start.x, bot.capsule.start.z);
+  const px = bot.capsule.start.x, pz = bot.capsule.start.z;
+  if (botNavGridCovers(px, pz)) return nearestWalkableInGrid(botNavGrid, px, pz);
   const center = botMidXZ(bot);
-  const bounds = {
-    minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
-    minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
-  };
-  const grid = buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL);
-  return nearestWalkableInGrid(grid, center.x, center.z);
+  return nearestWalkableInGrid(buildLocalNavWindow(center), center.x, center.z);
 }
 // Far exploration goal along the bot's fixed exploreHeading (see BOT_EXPLORE_* above). Keeps the
 // current goal until arrival, then chains a new one from the bot's current position via
@@ -2552,7 +2792,7 @@ function nextPatrolTarget(rec) {
 // Reuses whichever walkability test already backs the active map's nav (see requestBotPath).
 function squadCorridorClear(pos, yaw, halfWidth) {
   if (!(halfWidth > 0)) return true;
-  const walkable = botNavGrid ? botNavWalkable : botTerrainWalkable;
+  const walkable = NO_ENVIRONMENT ? botNavWalkable : botTerrainWalkable;
   const fx = Math.sin(yaw), fz = Math.cos(yaw);
   const rx = -fz, rz = fx;
   for (const side of [-1, 1]) {
@@ -2578,7 +2818,8 @@ function humanAimInto(state, out) {
 // `botPlayers` recs ARE the v2 actors -- the actor fields are merged into the rec at spawnBotAt,
 // never kept beside it. Phases A-C-and-a-half are in: FSM ladder, cover/alerts/aim, separation,
 // roles/medic/packs/sidearms/stances, teams, bot-squad.js rosters/formations, explosives AI.
-// Still out of scope: open-terrain cover bakes (Phase D) and the danger-field A* term.
+// Phase D adds open-terrain nav: a persistent player-anchored combat-zone grid with slope cost,
+// terrain-aware cover/crest bakes, and the team danger field (see BOT_ZONE_* above).
 
 let activeBot = null;        // bound rec (the v2 "actor")
 let bot = null;              // activeBot.bot entity
@@ -2841,6 +3082,24 @@ function nextSpawnTeam() {
 function cellIdxOf(c, r) { return r * botNavGrid.cols + c; }
 function navCellKey(c, r) { return `${c},${r}`; }
 const goalClaims = createGoalClaims((id) => !!botPlayers.get(id) && playerCombat.getSnapshot(id).alive);
+// Phase D: team-scoped memory of where allies died / were hit, keyed on nav-grid cell indices.
+// Read by the flee, patrol-resume, pack, medic and cover-corner scoring loops (harness parity).
+const botDangerField = createDangerField();
+const _dangerNb = new Int32Array(8);   // cellNeighbors8 out-param, consumed inside one recordDanger call
+// Death edge: full weight on the cell plus its 8 neighbours, and a bot that died holding a cover
+// corner poisons that corner's anchor/peek as well -- or the next bot walks straight back into it.
+function paintBotDeathDanger(rec, nowMs) {
+  if (!botNavGrid || !rec.deathXZ) return;
+  const deathCell = cellIndexAt(botNavGrid, rec.deathXZ.x, rec.deathXZ.z);
+  if (deathCell >= 0) {
+    const n = cellNeighbors8(deathCell, botNavGrid.cols, botNavGrid.rows, _dangerNb);
+    recordDanger(botDangerField, rec.teamId, deathCell, DANGER_DEATH_WEIGHT, nowMs, _dangerNb, n);
+  }
+  const corner = rec.coverCorner;
+  if (!corner) return;
+  recordDanger(botDangerField, rec.teamId, corner.anchorCell, DANGER_DEATH_WEIGHT, nowMs);
+  if (corner.peekCell != null) recordDanger(botDangerField, rec.teamId, corner.peekCell, DANGER_DEATH_WEIGHT, nowMs);
+}
 function currentBotWeapon() { return getWeapon(activeBot?.weaponId || botWeaponId) || getWeapon('m1911'); }
 // The slider is the line's number; a role scales it (sniper 1.5x), so perception, the standoff
 // clamp and the tactical rings all move together for that bot.
@@ -3049,6 +3308,8 @@ function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   const threat = threatXZ || (attacker ? { x: attacker.p[0], z: attacker.p[2] } : null);
   if (!threat) return;
   const v = botXZ(rec.bot);
+  // Weaker evidence than a death and no neighbour spread -- one cell only (harness parity).
+  if (botNavGrid) recordDanger(botDangerField, rec.teamId, cellIndexAt(botNavGrid, v.x, v.z), DANGER_HIT_WEIGHT, nowMs);
   // The report carries the VICTIM's side: latestAlertNear filters on team, so a casualty on one
   // team can never alert the other.
   pushAllyReport({ victimId, team: rec.teamId, x: v.x, z: v.z,
@@ -3217,17 +3478,19 @@ function botCanSeePack(entity, rec, record) {
 // (distance-agnostic) or within short proximity. Returns { record, dist } or null.
 const _packSeekCell = { c: 0, r: 0 };
 let _psEntity = null, _psRec = null, _psHurt = false, _psBest = null;
+let _psNow = 0, _psTeam = null, _psDanger = false;   // danger read hoisted per call, not per pack
 function _psVisit(record) {
+  let cellIdx = -1;
   if (botNavGrid) {
     const cell = worldToCellInto(botNavGrid, record.x, record.z, _packSeekCell);
-    if (goalClaims.isClaimedByOther(cellIdxOf(cell.c, cell.r), _psEntity.id)) return;
+    cellIdx = cellIdxOf(cell.c, cell.r);
+    if (goalClaims.isClaimedByOther(cellIdx, _psEntity.id)) return;
   }
   const seen = botCanSeePack(_psEntity, _psRec, record);
   if (!seen.visible) return;
   if (!_psHurt && seen.dist > botPackSettings.shortProximity) return;
-  // Plain distance: the harness inflates this by its danger field, which this port keeps OFF
-  // (see the plan's Phase A note -- the danger A* term lands with Phase D profiling).
-  const cmp = seen.dist;
+  // Selection runs on danger-inflated distance; `dist` stays the raw metres callers expect.
+  const cmp = _psDanger ? seen.dist + dangerPenalty(botDangerField, _psTeam, cellIdx, _psNow, DANGER_PACK_SCALE) : seen.dist;
   if (!_psBest || cmp < _psBest.cmp || (cmp === _psBest.cmp && record.seq < _psBest.record.seq)) {
     _psBest = { record, dist: seen.dist, cmp };
   }
@@ -3236,6 +3499,8 @@ function nearestSeekablePack(entity, rec, hurt) {
   if (!worldHealthPacks.length || !canHold(rec?.healthPacks, rec?.maxPacks)) return null;
   packHashEnsure();
   _psEntity = entity; _psRec = rec; _psHurt = hurt; _psBest = null;
+  _psTeam = rec?.teamId ?? entity.team; _psNow = botFrameNow || performance.now();
+  _psDanger = hasDanger(botDangerField, _psTeam);
   packHash.forEachNear(entity.capsule.start.x, entity.capsule.start.z, botSightDistanceFor(rec), _psVisit);
   const best = _psBest;
   _psEntity = null; _psRec = null; _psBest = null;
@@ -3390,7 +3655,8 @@ function attachMedicNavCost(rec, selfXZ, nowMs, allies, corpses) {
     for (let i = list.length - 1; i >= 0; i--) {
       const c = medicNavCost(flood, list[i].x, list[i].z);
       if (!Number.isFinite(c)) { list.splice(i, 1); continue; }   // unreachable -> not a candidate
-      list[i].cost = c;
+      // Minimized cost: a casualty lying in the team's kill zone reads as further away.
+      list[i].cost = c + dangerPenalty(botDangerField, rec.teamId, cellIndexAt(botNavGrid, list[i].x, list[i].z), nowMs, DANGER_PATROL_SCALE);
     }
   }
 }
@@ -4046,6 +4312,7 @@ function choosePatrolResumeGoal() {
   const flood = floodFill(botNavGrid, start, {});
   if (!flood) return null;
   let bestForward = null, bestFallback = null;
+  const dangerLive = hasDanger(botDangerField, activeBot?.teamId ?? null);   // hoisted: skip the lookups for a clean team
   for (let index = 0; index < points.length; index++) {
     const goal = points[index];
     if (Math.hypot(goal.x - start.x, goal.z - start.z) < WAYPOINT_REACH) continue;
@@ -4057,7 +4324,10 @@ function choosePatrolResumeGoal() {
     const firstDx = first.x - start.x, firstDz = first.z - start.z;
     const firstDistance = Math.hypot(firstDx, firstDz);
     const alignment = firstDistance > 1e-4 ? (firstDx * botPatrolTravelHeading.x + firstDz * botPatrolTravelHeading.z) / firstDistance : -1;
-    const candidate = { x: goal.x, z: goal.z, index, score: flood.dist[cellIdxOf(cell.c, cell.r)] - alignment * 0.5 };
+    let score = flood.dist[cellIdxOf(cell.c, cell.r)] - alignment * 0.5;
+    // Minimized score: danger ADDS here (a waypoint the team keeps dying at reads as farther).
+    if (dangerLive) score += dangerPenalty(botDangerField, activeBot.teamId, cellIdxOf(cell.c, cell.r), botFrameNow, DANGER_PATROL_SCALE);
+    const candidate = { x: goal.x, z: goal.z, index, score };
     if (alignment >= -0.1) { if (!bestForward || candidate.score < bestForward.score) bestForward = candidate; }
     else if (!bestFallback || candidate.score < bestFallback.score) bestFallback = candidate;
   }
@@ -4306,6 +4576,7 @@ function findFleeGoal(nowMs) {
   const threatCell = botVisibilityField ? cellIndexAt(botNavGrid, threat.x, threat.z) : -1;
   const coverEligible = threatCell !== -1 && botNavGrid.cells[threatCell] === 1;
   const squad = fleeSquadCentroid(source);
+  const dangerLive = hasDanger(botDangerField, activeBot?.teamId ?? null);   // hoisted: skip the lookups for a clean team
   const candidates = [];
   for (let dr = -maxSearchRadius; dr <= maxSearchRadius; dr++) {
     for (let dc = -maxSearchRadius; dc <= maxSearchRadius; dc++) {
@@ -4324,7 +4595,9 @@ function findFleeGoal(nowMs) {
         ? fleePathExposureFromParents(botVisibilityField, botNavGrid, threatCell, flood.parent, flood.startKey, key) : 0;
       _fleeScore.centroidDistance = squad ? Math.hypot(goal.x - squad.x, goal.z - squad.z) : null;
       _fleeScore.coverScore = botBehaviorSettings.coverScore;
-      candidates.push({ ...goal, c, r, score: fleeCandidateScore(_fleeScore), covered });
+      let score = fleeCandidateScore(_fleeScore);   // maximized, so danger SUBTRACTS
+      if (dangerLive) score -= dangerPenalty(botDangerField, activeBot.teamId, key, nowMs, DANGER_FLEE_SCALE);
+      candidates.push({ ...goal, c, r, score, covered });
     }
   }
   if (candidates.length === 0) return null;
@@ -4398,8 +4671,10 @@ function coverCornerValid(rec, threatPos, secondaryThreat = null) {
 }
 function findCoverCorner(threatPos, secondaryThreat = null, nowMs = botFrameNow) {
   if (!bot || !threatPos || !botVisibilityField || !botCornerMap || !botNavGrid) return null;
+  // Danger is a hard veto here, not a penalty: a scarce good corner must not win on distance alone.
   const skip = rec => coverBlacklisted(activeBot.coverBlacklist, rec.anchorCell, nowMs) ||
-    goalClaims.isClaimedByOther(rec.anchorCell, bot.id);
+    goalClaims.isClaimedByOther(rec.anchorCell, bot.id) ||
+    dangerBlocksCover(botDangerField, activeBot.teamId, rec.anchorCell, nowMs, 0.35); // 0.35: neighbour spread (0.4) vetoes too
   return pickCoverCorner({ corners: botCornerMap.corners, field: botVisibilityField, navGrid: botNavGrid, searchRadius: COVER_SEARCH_RADIUS, skip },
     botXZInto(bot, _xzScratchA), threatPos, secondaryThreat);
 }
@@ -5662,6 +5937,7 @@ function updateBots(dt) {
       while (botPlayers.size < botRoundTarget) spawnBotAtSlot(botPlayers.size);
     }
   }
+  updateBotNavZone(nowMs);   // Phase D: keep the persistent terrain grid baked and anchored
   despawnStaleHealthPacks(nowMs);   // ground packs age out / evict past the cap before anyone seeks
   rebuildBotHash();   // index the living roster before any bot's neighbour queries read it
   refreshGrenadeThreats();   // one scan of the live ordnance, read by every bot's evade check
@@ -5678,6 +5954,7 @@ function updateBots(dt) {
         // carrying hits the ground for whoever scavenges it first.
         rec.diedAt = nowMs;
         rec.deathXZ = { x: rec.bot.capsule.start.x, z: rec.bot.capsule.start.z };
+        paintBotDeathDanger(rec, nowMs);   // before the cover teardown below: it reads rec.coverCorner
         dropBotHealthPacks(rec, rec.deathXZ.x, rec.deathXZ.z);
         rec.reviveKits = 0;
         rec.medicAction = null; rec.medicTendTargetId = null;
@@ -5736,6 +6013,7 @@ function updateBots(dt) {
   updateBotInspector(nowMs);
   botStatsLog.maybeSample(nowMs);
   if (botStatusEl) botStatusEl.textContent = `${botPlayers.size} bot${botPlayers.size === 1 ? '' : 's'} active`;
+  refreshBotNavNote();
 }
 
 // --- 9-slot bot state-code tracer (bot-state-code.js), ?botTrace=1 ---------------
@@ -8230,12 +8508,10 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     botClearBtn.addEventListener('click', despawnAllBots);
     botSec.appendChild(botClearBtn);
 
-    if (!botNavGrid) {
-      const navNote = document.createElement('div');
-      navNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 4px';
-      navNote.textContent = 'No static nav grid on this map (shoot-house only) — bots path within a small local window around themselves instead of the whole map.';
-      botSec.appendChild(navNote);
-    }
+    botNavNoteEl = document.createElement('div');
+    botNavNoteEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 4px';
+    botSec.appendChild(botNavNoteEl);
+    refreshBotNavNote();
   }
 
   // ---- Squads & Sides (bot-squad.js rosters; squad-activity.js retired in Phase C-and-a-half) ----

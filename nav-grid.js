@@ -40,10 +40,20 @@ export function buildNavGrid(walkableTest, bounds, cellSize,
       if (heights) heights[k] = heightAt(x, z);
     }
   }
-  const grid = { cols, rows, cellSize, minX, minZ, cells, heights, soft, carved: [],
-    slope: { ...SLOPE_COST_DEFAULTS, ...(slopeCost || {}) } };
+  const grid = { cols, rows, cellSize, minX, minZ, cells, heights, soft };
+  return finalizeNavGrid(grid, { connectRegions: doConnect, minConnectRegion, slopeCost });
+}
+
+// Region labelling + connectivity repair for a grid whose cells/heights/soft arrays the CALLER
+// filled in. buildNavGrid is this plus the sampling loop; the split exists so a bake too large to
+// run inside one frame can sample incrementally and finalize once (environment-viewer-v2's
+// terrain combat-zone grid does exactly that).
+export function finalizeNavGrid(grid,
+  { connectRegions: doConnect = true, minConnectRegion = 6, slopeCost = null } = {}) {
+  if (!grid.carved) grid.carved = [];
+  if (!grid.slope) grid.slope = { ...SLOPE_COST_DEFAULTS, ...(slopeCost || {}) };
   labelRegions(grid);
-  if (doConnect && soft) connectStrandedRegions(grid, minConnectRegion);
+  if (doConnect && grid.soft) connectStrandedRegions(grid, minConnectRegion);
   return grid;
 }
 

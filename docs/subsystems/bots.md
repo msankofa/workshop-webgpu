@@ -4857,3 +4857,237 @@ slips, both fixed:
   now selects the harness's arena profiles (`ARENA_SFX`) when `NO_ENVIRONMENT` and the shared
   outdoor profiles otherwise. The harness's voice budget / distance cull / synth fallback remain
   Phase E items.
+
+## Phase D: open terrain (2026-07-30, `environment-viewer-v2.html` + `nav-grid.js` + `nav-corners.js`)
+
+Before this phase, everything cell-indexed in the ported brain was dead outside the shoot house.
+`botNavGrid` was baked only under `NO_ENVIRONMENT`, so on terrain maps cover corners, crest cover,
+the flee/hide scans, region labels and the danger field all sat behind `if (!botNavGrid) return
+null` guards, and pathing was a throwaway 36 m A* window rebuilt per request with a binary
+`BOT_TERRAIN_SLOPE_TOLERANCE` walk gate and no slope cost at all.
+
+### The architecture decision, and the bench behind it
+
+`bench-bot-nav.mjs` (new, repo root; flags `--rugged`, `--blockers`, `--crest`) builds grids at
+env-viewer map scales over synthetic-but-env-shaped ground (rolling hills over a continental tilt,
+a water level, a scattered trunk/rock field) and times the module work separately from the per-cell
+walkability predicate — the predicate is the part that differs in the browser, where it also runs a
+cached capsule-vs-BVH sweep.
+
+Numbers that decided it (rolling profile, Node 22):
+
+| span m | cell m | cells | walkable | build ms | grid MB | lazy field ms | flee scan ms | corner bake ms | corners | **eager field MB** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 128 | 0.5 | 65,536 | 46,729 | 40 | 0.6 | 3.2 | 0.63 | 18 | 544 | **260** |
+| 256 | 1.5 | 29,241 | 17,563 | 12 | 0.3 | 0.3 | 0.03 | 10 | 671 | **37** |
+| **384** | **1.5** | **65,536** | **34,232** | **19** | **0.6** | **0.7** | **0.24** | **8** | **1,281** | **140** |
+| 512 | 1.5 | 116,964 | 56,967 | 42 | 1.1 | 0.9 | 0.61 | 13 | 2,193 | **387** |
+| 1024 | 2.0 | 262,144 | 123,759 | 119 | 2.5 | 1.9 | 0.83 | 54 | 2,451 | **1,826** |
+| 1200 | 1.5 | 640,000 | 329,828 | 292 | 6.1 | 4.5 | 0.04 | 77 | 3,822 | **12,969** |
+
+Reference point: the *existing* per-request local window is 576 cells at **0.35 ms every time a bot
+asks for a path**.
+
+Three things fall out of that table:
+
+1. **The eager visibility field is confirmed dead** at any env scale — `walkableCount²` bits is
+   140 MB at 384 m and 13 GB over a whole 1200 m map. `buildLazyVisibilityField` is mandatory, and
+   it is cheap: construction is sub-millisecond (it only builds the walkable index), a
+   1,681-candidate flee scan against one threat cell costs 0.24 ms, and its 64-row FIFO cache tops
+   out at 0.3 MB. `rowFor` is the one expensive call (9 ms at 384 m, 384 ms at 1200 m) —
+   environment-viewer never calls it, and shouldn't start.
+2. **A whole-map grid is not quite the wall it looked like** — 1200 m at 1.5 m is 292 ms and
+   6.1 MB, survivable *in Node*. It is not survivable in the browser: the real predicate adds a BVH
+   capsule sweep per cell and 640k of those at map load is seconds. It also over-serves — bots
+   fight inside a 50 m sight bubble, not across a kilometre.
+3. **384 m at 1.5 m is the sweet spot** — 65k cells, 0.6 MB, a ~20 ms build plus a single-digit-ms corner bake, and
+   the same pitch as `BOT_LOCAL_NAV_CELL`, which means it shares `botMeshBlockedAt`'s cache keys
+   exactly instead of doubling the BVH sweeps.
+
+**Decision: hybrid — a persistent, player-anchored, time-sliced combat-zone grid, with the existing
+local windows kept for everything outside it.** Not a full-map coarse grid (browser bake cost, and
+cover records at a coarse pitch are worthless), not local-windows-only (they cannot carry cover,
+danger or region labels), not a bounded grid that rebakes per fight (the anchor would thrash).
+
+### What that looks like in code
+
+`updateBotNavZone(nowMs)` runs once per bot tick, before the per-bot loop, and does nothing at all
+when there are no bots. It anchors on the **local player** — bots spawn around them, their sight
+range is 50 m, and it is the one anchor that exists on both authored and infinite procedural
+terrain — falling back to the first living bot when there is no player pose.
+
+The bake is **time-sliced**: `stepBotZoneBake()` samples whole rows until it has spent
+`BOT_ZONE_BAKE_BUDGET_MS` (3 ms), then returns and resumes next frame. `nav-grid.js` gained
+`finalizeNavGrid(grid, opts)` for this — the region-labelling + `connectStrandedRegions` half of
+`buildNavGrid`, callable on a grid whose `cells`/`heights`/`soft` arrays the caller filled in
+itself. `buildNavGrid` is now that function plus its sampling loop, so the two paths cannot drift
+(a Node test asserts they produce identical cells, labels, carves and paths).
+
+While a bake is in flight the previous grid stays live, and before the *first* bake `botNavGrid` is
+null — i.e. exactly the pre-Phase-D local-window behaviour. Degradation, never failure.
+
+`adoptBotNavGrid` swaps the finished grid in and **throws away every cell index in flight** — goal
+claims, the danger field, per-bot cover corners, medic flood caches, flee-goal history, live paths.
+Cell indices belong to a lattice; remapping them between two different ones is not worth the bug
+surface.
+
+### Tunables (all in `environment-viewer-v2.html`, in the zone block)
+
+| Constant | Value | Note |
+|---|---|---|
+| `BOT_ZONE_SPAN` | 384 m | zone side length; the bench's sweet spot |
+| `BOT_ZONE_CELL` | `BOT_LOCAL_NAV_CELL` (1.5 m) | same pitch as the local windows, so `botMeshBlockedAt`'s cache is shared |
+| `BOT_ZONE_REBAKE_DRIFT` | 96 m | anchor drift from the zone centre before a rebake |
+| `BOT_ZONE_BAKE_BUDGET_MS` | 3 ms | per-frame sampling budget |
+| `BOT_ZONE_RETRY_MS` | 4000 ms | floor between rebakes |
+| `BOT_ZONE_EDGE_MARGIN` | 3 m (2 cells) | how far inside the zone a query must be to count as covered |
+| `BOT_ZONE_SIGHT_CAP` | 1200 | biggest-first cap on derived sight-blocker rects |
+| `BOT_ZONE_SIGHT_MIN_FOOTPRINT` | 1.5 m | below the cell pitch a rect occludes nothing (see below) |
+| `BOT_ZONE_CREST_MIN_RISE` | 0.6 m | harness value, unchanged |
+| `BOT_ZONE_CREST_SPAN_M` | **4.5 m** | harness uses 2 m — diverged, see below |
+| `BOT_ZONE_CREST_FAR_M` | **24 m** | harness uses 12 m — diverged, see below |
+| `NEAREST_WALKABLE_WINDOW_CELLS` | 32 | bounds `nearestWalkableInGrid`'s scan |
+
+### Slope-costed pathing
+
+Both regimes now pass `heightAt: terrainHeight` into `buildNavGrid`, so A* and `floodFill` charge
+`slopeFactor` (uphill 1.8×/grade, downhill 0.6×/grade, capped at 6×) and `smoothPath`'s
+`chordClimb` refuses a string-pull shortcut that would climb back over the hill the search just
+routed around. The binary `BOT_TERRAIN_SLOPE_TOLERANCE` (0.9 m rise per 1.5 m cell) stays as the
+hard walkability gate; slope cost sits on top of it, exactly as in the harness.
+
+The zone grid additionally passes `softBlockedTest: botTerrainSoftBlocked` — "blocked by slope
+alone, i.e. continuous ground the capsule can still stand on" — so `connectStrandedRegions` can
+carve the cheapest chain of steep cells linking a stranded pocket to the main region. Water, tree
+trunks, dressing circles and BVH-blocked cells are hard blocks and are never carved. The bake log
+reports carved-cell and stranded-region counts, matching the harness's `reportNavRegions`
+discipline: a repaired map should be visibly repaired.
+
+Local windows get `heightAt` but no soft test — they are 24×24 and a carve inside one is
+meaningless.
+
+### Cover on terrain: what counts as a sight blocker
+
+Sight blockers come from the **dressing index** (`dressingIndexRef` — boulders, stumps, logs),
+walked chunk-by-chunk over the zone bounds and deduped, with height from the same convention the
+bullet columns already use (`r * GUN_ROCK_H_PER_RADIUS`, floor `GUN_ROCK_MIN_H`).
+
+Included: dressing circles whose footprint is at least the cell pitch **and** whose derived height
+clears `SIGHT_BLOCK_HEIGHT` (1.5 m) — in practice r ≥ ~1.1 m, i.e. boulder grade.
+
+Excluded, deliberately:
+
+- **Tree trunks.** `buildSightGrid` marks a cell only when a rect covers the cell **centre**, so a
+  0.3–0.6 m trunk at a 1.5 m pitch occludes nothing at all — while still emitting up to 8 corner
+  records each. Thousands of corner records that hide nobody is the worst of both worlds.
+- **Hills, cliffs and authored mesh geometry.** These occlude through the field's *terrain* path
+  (`buildLazyVisibilityField(..., { terrain: { heights } })` tests each visited cell's ground
+  against the eye-to-eye chord), not through rects. That is also what makes crest cover honest.
+- **Chunks that have not streamed in yet** contribute nothing. The dressing index is streamed, so a
+  zone edge can be under-blocked. That errs toward VISIBLE, the direction the whole vis-field
+  design already errs in.
+
+`nav-corners.js` gained `inset` / `offFace` / `peekPast` options (defaults unchanged, so
+shoot-house and both bot viewers keep their exact behaviour). The authored 0.6 / 0.4 / 0.5 m offsets
+assume a ~0.5 m grid; at 1.5 m they can quantize anchor and peek onto the same cell, which is a
+record with no lean in it. The zone bake scales them with the cell (0.6×, 0.5×, 1.2×). A matching
+guard drops any record whose anchor and peek land on one cell — such a record could never be
+*selected* anyway (`pickCoverCorner` needs the threat to not-see the anchor and to see the peek,
+a contradiction on one cell), so this only shrinks the list.
+
+### Crest cover: a measured divergence from the harness
+
+The harness bakes crests with `maxSpan: 2 m`, `farCells: 12 m`. **Those values find zero crests
+here**, and `bench-bot-nav.mjs --crest` shows why:
+
+```
+crest sweep @384 m / 1.5 m cell, rugged synthetic terrain
+  span   2 m   far 12 m:   0    far 18 m:   0    far 24 m:  18
+  span   3 m   far 12 m:   0    far 18 m:   0    far 24 m:  82
+  span 4.5 m   far 12 m:   0    far 18 m:   0    far 24 m: 100
+  span   6 m   far 12 m:   0    far 18 m:   0    far 24 m: 101
+  span   9 m   far 12 m:   0    far 18 m:   0    far 24 m: 103
+```
+
+Two independent geometric reasons:
+
+- **Span.** A brow only hides a 1.6 m eye if it stands ~1.8 m above the anchor. The walk gate caps a
+  cell's rise at 0.9 m, so that needs at least 3 cells of run — 4.5 m at this pitch. The harness's
+  2 m is ~4 cells on *its* 0.5 m grid; here it is one.
+- **Probe distance.** Env terrain is far gentler than the harness's authored hills, so the
+  threat-side probe has to sit ~24 m out before the ground between it and the anchor rises enough
+  to occlude.
+
+On the *rolling* (gentle) profile the sweep finds zero crests at every setting, which is the correct
+answer: flat ground has no reverse-slope cover. Crest counts are map-dependent; the bake log prints
+them plus a `CAP HIT` marker when `maxRecords` (800) truncates.
+
+### Danger field, now live
+
+`bot-danger.js` was imported but unused. It is wired at harness fidelity — and note it is **not** an
+A* cost term in the harness either, despite how the port plan phrased it. It is a scoring term plus
+one hard veto:
+
+| Site | Use | Scale |
+|---|---|---|
+| bot death edge | `recordDanger` on the death cell + its 8 neighbours; a bot that died holding a cover corner also poisons that corner's anchor and peek | `DANGER_DEATH_WEIGHT` 1.0 |
+| `recordBotAllyHit` | one cell, no spread (weaker evidence) | `DANGER_HIT_WEIGHT` 0.35 |
+| `findFleeGoal` | maximized score, danger **subtracts** | `DANGER_FLEE_SCALE` 6 |
+| `choosePatrolResumeGoal` | minimized score, danger **adds** | `DANGER_PATROL_SCALE` 4 |
+| `nearestSeekablePack` (`_psVisit`) | danger-inflated distance drives selection; the returned `dist` stays raw metres | `DANGER_PACK_SCALE` 3 |
+| `attachMedicNavCost` | minimized cost, danger adds | `DANGER_PATROL_SCALE` 4 |
+| `findCoverCorner` | `dangerBlocksCover` hard veto at 0.35 (below the 0.4 neighbour-spread share, so spread vetoes too) | — |
+
+Every read site hoists `hasDanger(field, team)` out of its loop, so a clean team pays one Map lookup
+for a whole scan. Records decay with a 25 s half-life on read (no timers), and the field is cleared
+whenever a grid is adopted, since its keys are cell indices.
+
+### Routing, and what happens outside the zone
+
+`botNavGridCovers(x, z)` is the new gate: true when `botNavGrid` exists **and** either it is the
+shoot-house full-map bake (`botNavZone === null`, the grid *is* the map) or the point is inside the
+zone by `BOT_ZONE_EDGE_MARGIN`.
+
+- `requestBotPath` uses the persistent grid when the bot is covered, else the local window (goal
+  clamped into it) exactly as before.
+- `botNearestWalkableToBot` likewise; both now share one `buildLocalNavWindow(center)` helper.
+- `nearestWalkableInGrid` was a full-grid brute-force sweep — fine on 576 cells, 65k on the zone
+  grid. It now scans a ±32-cell window first and accepts that answer only when it falls within the
+  window's inscribed radius (in which case it provably *is* the global nearest), falling back to
+  the full sweep otherwise. Exact, just usually cheap.
+- `squadCorridorClear` picked its walkability predicate off `botNavGrid ? botNavWalkable : …`;
+  `botNavWalkable` is the shoot-house flat-floor test and would have been wrong the moment a
+  terrain grid existed. It keys off `NO_ENVIRONMENT` now.
+- Patrol/explore on terrain is unchanged in *intent* (no authored patrol ring means directional
+  explore goals) but now routes over the zone grid wherever the bot is inside it — slope cost,
+  region labels and all — instead of hopping 36 m windows.
+
+The Combat Bots panel's static "no nav grid on this map" note is now a live readout
+(`refreshBotNavNote`): static bake / bake progress percentage / zone size and corner counts / "spawn
+a bot to bake the zone".
+
+### Shoot-house is untouched
+
+The `NO_ENVIRONMENT` static bake block is the same call sequence it was; `botNavZone` stays null
+there, so `botNavGridCovers` is unconditionally true and every path takes the static-bake branch as
+before. `updateBotNavZone` returns immediately when `NO_ENVIRONMENT`. The only shared-code changes
+that reach it are the `finalizeNavGrid` refactor (identical output, asserted by test) and the
+corner-map same-cell guard (drops records that could never be selected).
+
+### Known consequences and what is deferred
+
+- **Cell-denominated radii read 3× larger on the zone grid** than on shoot-house's 0.5 m grid:
+  `fleeSearchRadius` 5 cells is 2.5 m indoors and 7.5 m on terrain; `BOT_RECOVERY_CELL_RADIUS` 2 is
+  1 m vs 3 m. Left as-is on purpose — a 2.5 m flee hop is meaningless on open ground — but it is a
+  scale change worth watching in QA. `COVER_SEARCH_RADIUS` (10) is already metres and unaffected.
+- **Bot-vs-bot fights far from the player** get no cover, crest or danger, because the zone follows
+  the player. Multi-zone or centroid-of-conflict anchoring is a follow-up, not this phase.
+- **Sight blockers are dressing-only.** Authored map structures that are mesh-only (not in the
+  dressing index, not tall enough to register in the height field) produce no wall corners. A
+  BVH-raycast blocker bake is the fallback the cover/corners plan already sketched.
+- **`rowFor` stays unused.** It is the one lazy-field call that scales badly; if a future consumer
+  wants whole rows, re-measure first.
+- **Browser bake cost is unmeasured.** The Node predicate is 0.2–0.9 µs/cell and the real one adds a
+  cached BVH capsule sweep. The 3 ms/frame budget makes wall-clock duration a non-issue (65k cells
+  is ~1–2 s of background frames), but the first zone bake after a map load does more first-time BVH
+  sweeps than any prior code path.

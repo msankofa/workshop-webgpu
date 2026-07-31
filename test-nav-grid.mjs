@@ -1,6 +1,6 @@
 // Node tests for nav-grid.js (pure walkable-grid + A* pathfinding).
 // Run: node test-nav-grid.mjs
-import { buildNavGrid, isWalkableCell, worldToCell, findPath, smoothPath } from './nav-grid.js';
+import { buildNavGrid, finalizeNavGrid, isWalkableCell, worldToCell, findPath, smoothPath, floodFill, regionAt, reachable } from './nav-grid.js';
 
 let failed = 0;
 function ok(cond, msg) { if (!cond) { failed++; console.error('FAIL:', msg); } }
@@ -88,6 +88,173 @@ ok(grid.cols === 20 && grid.rows === 10, `grid dimensions match bounds/cellSize 
 {
   const path = findPath(grid, { x: 2.1, z: 2.1 }, { x: 2.4, z: 2.4 });
   ok(Array.isArray(path) && path.length === 1, 'start and goal in the same cell yields a single-point path');
+}
+
+// ---- slope costing: a height grid makes searches route around hills, not over them ----
+{
+  const bounds = { minX: 0, maxX: 40, minZ: 0, maxZ: 24 };
+  // One steep dome straddling the direct line; everything is walkable, so only cost can divert a path.
+  const domeH = (x, z) => {
+    const d = Math.hypot(x - 20, z - 12);
+    return d >= 7 ? 0 : 5 * (1 + Math.cos((d / 7) * Math.PI)) / 2;
+  };
+  const flat = buildNavGrid(() => true, bounds, 1);
+  const hilly = buildNavGrid(() => true, bounds, 1, { heightAt: domeH });
+
+  ok(flat.heights === null, 'a grid built without heightAt carries no height array');
+  ok(hilly.heights instanceof Float32Array && hilly.heights.length === hilly.cols * hilly.rows,
+    'heightAt populates a per-cell height array');
+
+  const from = { x: 2.5, z: 12.5 }, to = { x: 37.5, z: 12.5 };
+  const flatPath = findPath(flat, from, to);
+  const hillyPath = findPath(hilly, from, to);
+  const peakOf = (path) => Math.max(...path.map(p => domeH(p.x, p.z)));
+  const walked = (path) => path.reduce((sum, p, i) => sum + (i ? Math.hypot(p.x - path[i - 1].x, p.z - path[i - 1].z) : 0), 0);
+  ok(peakOf(flatPath) > 4, `flat-cost path drives straight over the summit (peak ${peakOf(flatPath).toFixed(2)} m)`);
+  ok(peakOf(hillyPath) < 1, `slope-costed path stays off the dome (peak ${peakOf(hillyPath).toFixed(2)} m)`);
+  ok(walked(hillyPath) > walked(flatPath), 'going around is a longer walk, as expected');
+
+  // ... and the string-pull must not undo it by shortcutting straight back over the summit.
+  const smoothed = smoothPath(hilly, hillyPath);
+  ok(Math.max(...smoothed.map(p => domeH(p.x, p.z))) < 1, 'smoothPath keeps the detour off the summit');
+  ok(smoothed.length < hillyPath.length, 'smoothPath still removes redundant waypoints');
+
+  const gentle = buildNavGrid(() => true, bounds, 1, { heightAt: domeH, slopeCost: { up: 0, down: 0 } });
+  ok(peakOf(findPath(gentle, from, to)) > 4, 'zeroed slope weights reproduce the flat-cost route');
+
+  // A flat height grid must not perturb anything: same route as no heights at all.
+  const level = buildNavGrid(() => true, bounds, 1, { heightAt: () => 2 });
+  const levelPath = findPath(level, from, to);
+  ok(levelPath.length === flatPath.length && levelPath.every((p, i) => p.x === flatPath[i].x && p.z === flatPath[i].z),
+    'a constant-height grid produces the identical path to a height-less one');
+}
+
+// ---- floodFill charges slope too, so flee/goal scoring ranks uphill escapes as costlier ----
+{
+  const bounds = { minX: 0, maxX: 30, minZ: 0, maxZ: 10 };
+  const ramp = buildNavGrid(() => true, bounds, 1, { heightAt: (x) => x * 0.3 });
+  const flood = floodFill(ramp, { x: 15.5, z: 5.5 });
+  const at = (c, r) => flood.dist[r * ramp.cols + c];
+  ok(at(25, 5) > at(5, 5), 'uphill cells cost more than downhill cells at the same distance');
+  const flat = floodFill(buildNavGrid(() => true, bounds, 1), { x: 15.5, z: 5.5 });
+  ok(Math.abs(flat.dist[5 * 30 + 25] - 10) < 1e-9, 'a height-less grid still measures plain metres');
+}
+
+// ---- pooled flood buffers: a bounded run must leave no trace outside its own window ----
+{
+  const bounds = { minX: 0, maxX: 20, minZ: 0, maxZ: 10 };
+  const open = buildNavGrid(() => true, bounds, 1);
+  // Cheapest 8-connected cost between two cells on a flat open grid.
+  const ideal = (dc, dr) => {
+    const a = Math.abs(dc), b = Math.abs(dr);
+    return Math.SQRT2 * Math.min(a, b) + (Math.max(a, b) - Math.min(a, b));
+  };
+  const R = 2;
+  const a = floodFill(open, { x: 2.5, z: 2.5 }, { maxRadius: R });
+  ok(Math.abs(a.dist[2 * open.cols + 4] - ideal(2, 0)) < 1e-9, 'bounded flood measures cells inside its window');
+  const b = floodFill(open, { x: 15.5, z: 7.5 }, { maxRadius: R });
+  // Every cell the first flood wrote must read as untouched to the second one.
+  let leaked = 0;
+  for (let r = 0; r <= 4; r++) {
+    for (let c = 0; c <= 4; c++) {
+      if (b.dist[r * open.cols + c] !== Infinity || b.parent[r * open.cols + c] !== -1) leaked++;
+    }
+  }
+  ok(leaked === 0, `a later flood sees no leftovers from the previous one (${leaked} stale cells)`);
+  ok(Math.abs(b.dist[7 * open.cols + 13] - ideal(2, 0)) < 1e-9, 'the second bounded flood is itself correct');
+  ok(b.parent[7 * open.cols + 14] === 7 * open.cols + 15, 'parent links point back toward the second start');
+  // An unbounded run then wipes the whole buffer, not just a window.
+  floodFill(open, { x: 10.5, z: 5.5 }, {});
+  const c2 = floodFill(open, { x: 1.5, z: 1.5 }, { maxRadius: 1 });
+  let wide = 0;
+  for (let k = 0; k < open.cols * open.rows; k++) if (c2.dist[k] !== Infinity) wide++;
+  ok(wide === 9, `after an unbounded run a radius-1 flood still reports only its 9 cells (got ${wide})`);
+}
+
+// ---- the `out` buffer pair survives intervening pooled floods (medics hold results across frames) ----
+{
+  const bounds = { minX: 0, maxX: 20, minZ: 0, maxZ: 10 };
+  const open = buildNavGrid(() => true, bounds, 1);
+  const buf = {};
+  const held = floodFill(open, { x: 4.5, z: 4.5 }, { maxRadius: 3, out: buf });
+  ok(held.dist === buf.dist && buf.dist.length === open.cols * open.rows, 'out buffers are allocated into the caller object');
+  const before = Array.from(held.dist);
+  floodFill(open, { x: 4.5, z: 4.5 }, { maxRadius: 3 });        // same window, pooled
+  floodFill(open, { x: 16.5, z: 8.5 }, { maxRadius: 3 });       // ... and elsewhere
+  ok(before.every((d, k) => d === held.dist[k]), 'a retained out-flood is untouched by later pooled floods');
+  ok(Math.abs(held.dist[4 * open.cols + 7] - 3) < 1e-9, 'the retained flood still measures its own distances');
+  // Reusing the same buffers clears the previous run's window rather than reallocating.
+  const dist0 = buf.dist;
+  const again = floodFill(open, { x: 15.5, z: 5.5 }, { maxRadius: 2, out: buf });
+  ok(again.dist === dist0, 'a second out-flood reuses the already-allocated buffers');
+  let stale = 0;
+  for (let r = 1; r <= 7; r++) for (let c = 1; c <= 7; c++) if (again.dist[r * open.cols + c] !== Infinity) stale++;
+  ok(stale === 0, `reusing an out buffer clears the earlier window (${stale} stale cells)`);
+}
+
+// ---- connected-component labels: reachability as a lookup, not as a failed search ----
+{
+  const bounds = { minX: 0, maxX: 20, minZ: 0, maxZ: 10 };
+  // Two rooms with no door between them.
+  const split = buildNavGrid((x) => x < 9 || x > 11, bounds, 1);
+  ok(split.regionSizes.length === 2, `a walled-off map should label 2 regions, got ${split.regionSizes.length}`);
+  const left = { x: 2.5, z: 5.5 }, right = { x: 17.5, z: 5.5 };
+  ok(regionAt(split, left.x, left.z) !== regionAt(split, right.x, right.z), 'the two rooms carry different labels');
+  ok(!reachable(split, left, right), 'reachable() sees through the wall');
+  ok(findPath(split, left, right) === null, 'findPath refuses a cross-region route');
+  // ... and the label must never promise a route the search cannot walk.
+  const open = buildNavGrid(() => true, bounds, 1);
+  ok(open.regionSizes.length === 1 && open.mainRegion === 0, 'an open map is one region');
+  ok(reachable(open, left, right) && findPath(open, left, right), 'an open map stays fully reachable');
+
+  // Diagonal-only contact is not connectivity: A* refuses to cut that corner, so the labels must too.
+  const pinch = buildNavGrid((x, z) => {
+    const c = Math.floor(x), r = Math.floor(z);
+    return (c <= 4 && r <= 4) || (c >= 5 && r >= 5);
+  }, { minX: 0, maxX: 10, minZ: 0, maxZ: 10 }, 1);
+  ok(pinch.regionSizes.length === 2, `two blocks touching at a corner must stay 2 regions, got ${pinch.regionSizes.length}`);
+  ok(findPath(pinch, { x: 1.5, z: 1.5 }, { x: 8.5, z: 8.5 }) === null, 'no route through a diagonal pinch');
+
+  // The point of baking them: the answer arrives without expanding the whole component.
+  const big = buildNavGrid((x) => x < 99 || x > 101, { minX: 0, maxX: 200, minZ: 0, maxZ: 200 }, 1);
+  const t0 = performance.now();
+  for (let i = 0; i < 50; i++) findPath(big, { x: 5.5, z: 5.5 }, { x: 195.5, z: 195.5 });
+  const perCall = (performance.now() - t0) / 50;
+  ok(perCall < 0.05, `an unreachable-goal search should be a lookup, took ${perCall.toFixed(3)} ms`);
+}
+
+// finalizeNavGrid: the same grid, whether the sampling loop ran inside buildNavGrid or the caller
+// filled the arrays itself across several frames (environment-viewer-v2's terrain zone bake).
+{
+  const bounds = { minX: 0, maxX: 16, minZ: 0, maxZ: 16 };
+  const cell = 1;
+  const height = (x, z) => Math.sin(x * 0.4) * 2 + Math.cos(z * 0.3) * 1.5;
+  const steep = (x, z) => Math.abs(height(x + cell, z) - height(x, z)) >= 1.2;
+  const walk = (x, z) => !(x >= 7 && x < 9) && !steep(x, z);
+  const soft = (x, z) => !(x >= 7 && x < 9) && steep(x, z);
+  const built = buildNavGrid(walk, bounds, cell, { heightAt: height, softBlockedTest: soft });
+
+  const cols = 16, rows = 16;
+  const manual = { cols, rows, cellSize: cell, minX: 0, minZ: 0,
+    cells: new Uint8Array(cols * rows), heights: new Float32Array(cols * rows), soft: new Uint8Array(cols * rows) };
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = (c + 0.5) * cell, z = (r + 0.5) * cell, k = r * cols + c;
+      const okCell = walk(x, z);
+      manual.cells[k] = okCell ? 1 : 0;
+      if (!okCell) manual.soft[k] = soft(x, z) ? 1 : 0;
+      manual.heights[k] = height(x, z);
+    }
+  }
+  finalizeNavGrid(manual);
+  ok(manual.cells.every((v, i) => v === built.cells[i]), 'finalizeNavGrid: carving matches buildNavGrid');
+  ok(manual.mainRegion === built.mainRegion && manual.regionSizes.length === built.regionSizes.length,
+    'finalizeNavGrid: region labels match buildNavGrid');
+  ok(manual.carved.length === built.carved.length, 'finalizeNavGrid: same cells carved');
+  ok(manual.slope && manual.slope.up > 0, 'finalizeNavGrid: fills in slope-cost defaults');
+  const a = findPath(manual, { x: 1.5, z: 1.5 }, { x: 14.5, z: 14.5 });
+  const b = findPath(built, { x: 1.5, z: 1.5 }, { x: 14.5, z: 14.5 });
+  ok(JSON.stringify(a) === JSON.stringify(b), 'finalizeNavGrid: identical paths out of both grids');
 }
 
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
