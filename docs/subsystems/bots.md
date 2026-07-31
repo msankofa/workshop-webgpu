@@ -1471,7 +1471,9 @@ Everything a shader reads is a `uniform`, so switching theme is a value write �
 rebuild, which on the WebGPU backend means a pipeline recompile hitch.
 
 - **Sky dome** — `MeshBasicNodeMaterial`, `BackSide`, `fog = false`, re-centred on the camera every
-  frame (radius 150 < `camera.far` 200). Vertical gradient, a banded nebula (2-octave fbm — each
+  frame (base radius 150 < `camera.far` 200; the v2 Camera panel's "view distance (m)" slider raises
+  `camera.far` up to 2000 and rescales the dome to 75% of it, since the dome depth-tests and would
+  otherwise hide everything beyond its radius). Vertical gradient, a banded nebula (2-octave fbm — each
   extra octave is 8 more hashes across every background pixel), three star layers, a sun glow, and
   an optionally-lit planet with a limb terminator and an atmospheric halo. The star field took
   three rounds of browser QA and each failure mode is worth knowing:
@@ -5091,3 +5093,209 @@ corner-map same-cell guard (drops records that could never be selected).
   cached BVH capsule sweep. The 3 ms/frame budget makes wall-clock duration a non-issue (65k cells
   is ~1–2 s of background frames), but the first zone bake after a map load does more first-time BVH
   sweeps than any prior code path.
+
+## Phase E: bot mount carries, stow, grenade wind-up (2026-07-30, `environment-viewer-v2.html`)
+
+The third-person bot weapon mount was static: `weaponAdjust` got `def.thirdPersonHold` verbatim, so a
+sprinting bot held its rifle exactly like a standing one, and a crouched one held it at standing
+height. This slice ports the harness's mount surgery. All of it lives in the mount block of
+`environment-viewer-v2.html` (`destroyEnvironmentBotWeaponMount` through `syncEnvironmentBotWeaponMounts`),
+is host/solo-side only, and is purely visual â€” no FSM, ammo or damage path reads any of it. Guests
+render bots through `GhostRenderer`, which does not run this code.
+
+### 1. Locomotion carries (`weapon-hold-resolver.js`)
+
+`updateEnvironmentBotWeaponMount` now resolves the hold the same way `bot-viewer-v2.html:1462` does:
+
+```js
+_envMountLoco.stance  = rec.stance ?? STANCE_STAND;      // bot-stance.js latch, already on the rec
+_envMountLoco.aiming  = !!rec.weaponAimPoint;            // env's existing "gun is up" signal
+_envMountLoco.moving  = Math.hypot(bot.velocity.x, bot.velocity.z) > CARRY_MOVING_SPEED;
+const locomotion = locomotionFor(_envMountLoco);         // idle | walk | run | dash | aim
+rec.carryBlend   = rec.carryLocomotion == null           // snap on frame 1 / after a weapon swap
+  ? snapCarryBlend(rec.carryBlend, carryDeltaFor(mount.def, locomotion))
+  : stepCarryBlend(rec.carryBlend, carryDeltaFor(mount.def, locomotion), dt);
+const hold = resolveWeaponHold(mount.def, rec.stanceWeights, rec.carryBlend, _envMountHold);
+```
+
+Two axes, combined differently, exactly as the resolver documents. **Stance** (`rec.stanceWeights`,
+the eased `{crouch01, prone01}` that `applyStanceHeight` already computes for the rig) lerps the
+authored `thirdPersonHold`/`crouchHold`/`proneHold`. **Locomotion** is an additive delta eased on top
+at `CARRY_BLEND_RATE` (9/s, ~180 ms). Two consequences worth knowing:
+
+- Bots now also get the **stance** holds, which environment-viewer-v2 never applied before. This is
+  correct and free â€” the mount root is `terrainHeight(x,z) + 1.5`, the ground-anchored,
+  stance-invariant frame the holds were authored in â€” but it is a visible change beyond the carries.
+- `locomotionFor` returns `aim` whenever `weaponAimPoint` is set, and the aim carry delta is zero, so
+  a firing bot never holds a carry pose and `environmentBotWeaponMuzzle` is unaffected while aiming.
+  During the ~180 ms blend *out* of a carry into aim the gun is mid-pose, but
+  `alignEnvironmentBotWeaponToPoint` still solves the barrel onto the target, so shots stay honest.
+  (The harness behaves identically; `!carrying` guards the solve in both.)
+
+One deliberate divergence: the harness derives `aiming` from the FSM state (`BOT_AIM || BOT_FIRE ||
+BOT_FLEE`), so a bot fleeing from nothing still holds its gun up. env keeps its existing
+`weaponAimPoint` signal — set exactly when the sentry resolved a *visible* target this tick — which is
+also what already gated the barrel solve. A fleeing bot with no visible target therefore shows the run
+carry here and an aimed hold in the harness. It cannot fire in that state either way (`err` is
+`Infinity` without a target), so this is a pose difference only.
+
+The one-handed dash tuck is ported too: on `STANCE_DASH` the support hand comes off the weapon and
+tucks at the chest (`DASH_HAND_FWD/SIDE/UP`), written *after* `controller.update` so it wins over the
+grip targets, and released when the carry stops being one-handed. Unlike the harness's shared
+`_dashHand` scratch, env keeps a **per-rec** target object (`rec.dashHandTarget`) â€” `setArmTarget`
+stores the reference, and a shared vector would alias across every bot in the roster.
+
+Pistol walk/run carries are still unauthored upstream (`CARRY_PRESETS.pistol` exists but was never
+tuned against a body); sidearms therefore keep their current look. No poses were invented here.
+
+### 2. Sidearm stow visuals
+
+Whatever the bot is *not* holding rides its body: long guns slung on the back, pistols on the right
+hip (`PISTOL_IDS` from `bot-sidearm.js` picks which). Placement values are copied verbatim from the
+harness (`bot-viewer-v2.html:1558`), including the `scale` convention:
+
+| Slot | position (torso-local, m) | rotation (XYZ, rad) | scale |
+|---|---|---|---|
+| `back` | `[0.02, -0.06, -0.20]` | `[-PI/2, 0.61, 0]` | `0.95 x thirdPersonHold.scale` |
+| `hip` | `[0.22, -0.32, 0.02]` | `[PI/2, 0.25, 0]` | `0.95 x thirdPersonHold.scale` |
+
+`scale` multiplies the weapon's authored hold scale (rifles 2x, pistols 0.68x) â€” a flat number would
+render a slung rifle at half size. The transform is `torso.position + yawÂ·offset` with rotation
+`yaw Â· euler(rotation)`, matching `flushStowedWeapons`.
+
+Where env **diverges from the harness**: the harness has an instanced weapon-batch pool
+(`weapon-part-batches.js`) and stows a 2-part vertex-coverage LOD of the gun into it.
+`environment-viewer-v2.html` has no such pool â€” its held mount is a per-bot `skeletonClone`. So a stow
+prop is a second cheap `skeletonClone` of the **same** `lbWeaponModelCache` template (shared
+geometry/materials, `castShadow` off, no pose controller, no IK, no anchors), built lazily by
+`requestEnvironmentBotStowProp` and then **kept for the bot's life**, toggled by visibility rather
+than rebuilt. That is what makes the grenade wind-up below affordable: a bot that throws repeatedly
+reuses one clone instead of re-cloning every 420 ms.
+
+Swapping is implicit: `rec.weaponId` is the gun in hand, so when the sidearm is drawn the held mount
+rebuilds on the existing token machinery and the primary appears on the back the same frame.
+
+### 3. Grenade wind-up
+
+The harness "swaps its mount to the grenade" via `setBotEquippedWeapon('grenade')` â€” but `grenade`
+has no `thirdPersonHold` and no entry in `weapon-anchors.json`, so `createBotWeaponMount` bails and
+the harness actually winds up **empty-handed**. env shows the real thing instead, without touching
+the async mount machinery at all. During `rec.grenadeThrow`:
+
+- `environmentBotHeldWeaponId(rec)` reports `'grenade'`, so the stow set covers both guns and the
+  primary appears on the back;
+- the held `weaponRig` is simply hidden (`visible = false`) â€” `rec.weaponId` never changes, so no
+  mount is destroyed, no token is spent and no GLB is re-requested;
+- the right arm is driven to a cocked-back target (`GRENADE_WINDUP_HAND`) and the left is released
+  from the (now stowed) gun, both written after `controller.update`;
+- a grenade prop â€” one more `skeletonClone`, `GRENADE_HAND_SCALE` 0.22 of the 0.62 m normalization â€”
+  follows `body.joints.rightHand`, so it sits in the hand regardless of IK reach.
+
+`updateGrenadeThrow` clears `rec.grenadeThrow` on release, and death/evade clear it too; on top of
+that `hideEnvironmentBotProps` runs on the dead branch, so a bot killed mid-wind-up cannot leave a
+grenade floating in its hand.
+
+### LOD and lifecycle
+
+The LOD gate moved **above** the mount lookup so the new props stride and hide on exactly the same
+tiers as the held gun (`BOT_RENDER_LOD` near/mid/hide, `rec.lodPhase` stagger). The dt accumulator
+moved from `mount.lodDtAccum` to `rec.mountDtAccum` for the same reason â€” it has to survive a mount
+rebuild now. `hideEnvironmentBotProps` (dead, or past `hideD2`) hides every prop, releases both
+overridden arm targets and nulls `rec.carryLocomotion` so the carry snaps rather than glides when the
+bot comes back. `destroyEnvironmentBotProps(id)` is called from `despawnBot` only â€” a weapon swap
+rebuilds the held mount but must keep the body props.
+
+### Tunables
+
+| Name | Value | Effect |
+|---|---|---|
+| `CARRY_MOVING_SPEED` | 0.35 m/s | above this a standing bot shows the walk carry, not idle |
+| `CARRY_BLEND_RATE` (resolver) | 9 /s | ~180 ms carry ease, matched to the stance blend |
+| `DASH_HAND_FWD/SIDE/UP` | 0.16 / 0.14 / -0.04 | freed support hand on a dash |
+| `STOW_PLACEMENTS.back/hip` | see table above | slung / holstered transform |
+| `GRENADE_HAND_SCALE` | 0.22 | grenade prop size (x the 0.62 m normalization) |
+| `GRENADE_WINDUP_HAND` | back -0.30, side 0.22, up 0.30 | torso-local cocked-hand offset |
+
+### Deferred
+
+- **Pistol walk/run/dash carries.** Unauthored upstream; authoring belongs in
+  `weapon-animation-viewer.html`, not here.
+- **No stow LOD.** The harness drops a stowed gun to its 2 biggest sub-meshes; env clones the whole
+  model because it has no part-level pool to drop into. Worth revisiting if stow props show up in a
+  bot-count profile.
+- **Guests see none of this.** `GhostRenderer` renders bots from the wire pose and does not run the
+  mount path, so a guest sees no carries, no stowed guns and no grenade. Replicating it needs new
+  wire fields and is out of scope for this slice.
+- **Wind-up arm is a static target, not an arc.** The hand snaps to one cocked pose and the IK glides
+  into it; there is no authored throw animation.
+
+## Phase E: ragdolls, team colors, overhead indicators (2026-07-30, `multiplayer.js` + `bot-entity.js`)
+
+The body-visuals half of Phase E. Everything here lands in `GhostRenderer` (env-viewer bots render
+**only** through it), so host, solo and guest all get it from one implementation. Full API notes in
+`docs/subsystems/multiplayer.md`; this section is the bot-side summary and the wire contract.
+
+### Three new wire fields
+
+All additive, emitted from `toWirePose` **only when a caller stamped them**, and optional with safe
+renderer defaults — a viewer that never stamps any produces the exact wire pose it always did.
+
+| Field | Stamped at | Consumer |
+|---|---|---|
+| `team` (`'alpha'`\|`'bravo'`) | already on the entity — `spawnBotAt` and the respawn branch set `bot.team = teamId` | `botBodyStyle` → the ghost body's shell/plate/trim |
+| `alertTier` (`'seen'`\|`'heard'`\|`'push'`\|`'near'`\|`null`) | `rec.bot.alertTier = rec.alertMarkMode` beside the existing `rec.alertMarkMode`/`alertScore` writes in the alert-ring block; cleared to `null` on the death edge | the overhead "!" mark |
+| `deathImpulse` (`[x, y, z]`, magnitude = m/s) | `rec.bot.deathImpulse = rec.lastHitImpulse` on the death edge; `rec.lastHitImpulse` is refreshed in `recordBotAllyHit` by `shotImpulseXZ(threat, victimXZ)` (shot-travel direction × `BOT_DEATH_KNOCKBACK` = 7, with a 0.25× upward component) | kicks the death ragdoll once, on the alive→dead edge |
+
+`_lerpPlayers` needs no change: it returns `{ ...pb, … }`, so any field on the newer snapshot rides
+through. `team` is stable for a life; `alertTier` correctly disappears the moment the host stops
+sending it; `deathImpulse` only exists while the bot is dead (respawn builds a fresh entity).
+
+`hp`/`maxHp` needed no new field either, but `updateHostPlayerGhosts` was only merging `alive` into
+its bot poses — it now merges `hp`/`maxHp` from the same `playerCombat.getSnapshot` call. The guest
+path already had them via `mergePlayerCombatFields` inside `getState()`.
+
+### Team colors
+
+`botBodyStyle(THREE, id, team)` returns the harness's authored side palette (mirroring
+`bot-viewer-v2.html`'s `BOT_TEAM_DEFS`, exported as `BOT_TEAM_STYLES`) instead of a per-id hue:
+alpha = green family (`0x1f5b3a` / `0x101410` / `0x57d68d`), bravo = red family (`0x64252a` /
+`0x171012` / `0xff8a80`), the harness `facing` color landing in the ghost's `trim` slot. Per-bot
+variation stays as an id-keyed 0.86–1.14 brightness scale inside the family. **Both** body paths use
+it now — previously only the instanced path was colored and every non-instanced bot was the same
+fixed dark green. A pose with no `team` keeps the old distinct-hue-per-id fallback.
+
+### Ragdoll deaths
+
+Bots use the real solver (`ragdoll.js` / `ragdoll-body.js`) instead of the canned tip-over; humans
+keep the tip-over. Seeded from the rig's live joints at the moment of death (`ragdollFromBody`),
+kicked by `deathImpulse` (`applyDeathImpulse`), stepped against the renderer's own `terrainHeight`,
+and slept at the harness's thresholds (`kineticEnergy < 1e-4` held for 500 ms). At most
+`maxLiveRagdolls` (12) corpses are stepped at once; a death past that falls back to the tip-over.
+**The instanced path needed no fallback** — `setRagdollPose` writes the same part transforms the gait
+solve does and `flush()` walks the same placeholders, so a corpse rides the shared `InstancedMesh`
+pool like any living bot. Corpses hold their settled pose until the record disappears; respawn and
+despawn both retire the solver and release its budget slot.
+
+### Overhead indicators
+
+Harness-style billboarded health bar (only while damaged) and alert "!" (only while `alertTier` is
+live), hidden past `overlayHideD2` (default `min(60², botLod.hideD2)`). Colors match the harness
+(`ALERT_MARK_COLORS`, and the green/amber/red HP thresholds at 0.55/0.30). Shared geometry and
+materials built lazily; one `Group` per bot, parented to its ghost container so it dies with it; the
+billboard is derived from the camera **position** the renderer already holds, so no new constructor
+option and no per-frame allocation.
+
+### Deferred
+
+- **No blast-specific ragdoll launch.** `applyBlastImpulse` (radial + upward pop) is not wired; a
+  grenade/RPG death reports the blast direction through the same `deathImpulse` vector and gets
+  `applyDeathImpulse`'s directional shove instead of a tumble. Wiring it needs a 3D blast origin on
+  the wire — `recordBotAllyHit` only receives an XZ threat point.
+- **No per-weapon knockback.** `weaponKnockback(weapon)` exists in `ragdoll-body.js` but the stamp
+  site has no weapon def in hand, so `BOT_DEATH_KNOCKBACK` is a single constant.
+- **No escalation-score digit** beside the "!" (the harness draws one from a canvas texture).
+- **No corpse cap / cull.** The harness retires old corpses (`botCorpseCap`); here a corpse lives as
+  long as its bot record does, which the env viewer already bounds by respawning bots.
+- **Deaths with no recorded hit** (fall damage, or a kill that never went through
+  `recordBotAllyHit`) fall back to the pose's replicated velocity, then to a small shove down the
+  bot's facing.

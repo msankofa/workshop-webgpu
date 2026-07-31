@@ -121,10 +121,13 @@ import { MEDIC_MOVE, MEDIC_TEND, MEDIC_DEFAULTS, decideMedicAction, cohesionTarg
   medicChaseSpeedFactor, medicTendRadiusFor } from './bot-medic.js';
 import { makePack, drawFromPacks, hasHealResource, canHold, addPack, hasReviveMaterials,
   consumeRevivePacks, packClaimIntent, packRunSafe } from './bot-health-packs.js';
-import { SIDEARM_DRAW_MS, SIDEARM_LULL_MS, pickSidearmId, chooseWeaponSlot, outOfAllAmmo } from './bot-sidearm.js';
+import { SIDEARM_DRAW_MS, SIDEARM_LULL_MS, PISTOL_IDS, pickSidearmId, chooseWeaponSlot, outOfAllAmmo } from './bot-sidearm.js';
 import { STANCE_CROUCH, STANCE_PRONE, STANCE_STAND, STANCE_DEFAULTS, chooseBotStance, stepStanceTransition,
   stanceSpeedFactor, stanceSpreadScale, stanceHeightScale, stanceCapsuleHeightScale,
   stanceTurnRateScale, stepStanceWeights, blendStanceHeightScale } from './bot-stance.js';
+// --- Phase E: third-person weapon carries (shared with bot-viewer-v2 and the authoring tool) ---
+import { resolveWeaponHold, carryDeltaFor, locomotionFor, isCarryLocomotion, isOneHanded,
+  hasCarryVocabulary, stepCarryBlend, snapCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
 // --- Phase C-and-a-half: squads / explosives AI ---
 import { SQUAD_MAX_SIZE, SQUAD_MIN_SIZE, SQUAD_DEFAULTS, SQUAD_MERGE_RADIUS, FORMATION_KINDS,
   partitionSquadSizes, squadRoleTemplate, electSquadLeader, stepSquadSuccession, chooseFormationKind,
@@ -648,9 +651,12 @@ function updateHostPlayerGhosts() {
   if (mpRole === 'guest' || !mpGhostRenderer) return;
   // `alive` drives GhostRenderer's fall-over death pose -- botToWirePose doesn't know about HP
   // (that lives in playerCombat), so it's merged in here rather than threaded through the wire shape.
-  const botPoses = [...botPlayers.entries()].map(([id, rec]) => ({
-    ...botToWirePose(rec.bot), alive: playerCombat.getSnapshot(id).alive,
-  }));
+  // hp/maxHp ride along too (Phase E overhead health bars); the guest path gets them from
+  // mergePlayerCombatFields inside getState(), which this local render path never goes through.
+  const botPoses = [...botPlayers.entries()].map(([id, rec]) => {
+    const snap = playerCombat.getSnapshot(id);
+    return { ...botToWirePose(rec.bot), alive: snap.alive, hp: snap.hp, maxHp: snap.maxHp };
+  });
   const guestPoses = mpRole === 'host' ? [...mpGuestPlayers.values()] : [];
   mpGhostRenderer.update({ creatures: [], players: [...guestPoses, ...botPoses] });
 }
@@ -2274,6 +2280,16 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
     evadingUntil: 0,             // self-expiring dash-pose stamp; outlives the threat by the linger
     pushElement: null, pushStartedAt: null, squadLeaderId: null,
     holdUntil: 0, holdSince: 0, holdReason: null, holdFacingXZ: null,
+    // --- Phase E visual-only mount state (weapon carries / stow props / grenade wind-up) ---
+    carryBlend: null,           // eased {position,rotation} walk/run/dash delta on the stance hold
+    carryLocomotion: null,      // last resolved carry name; null snaps instead of gliding a stale pose
+    stowProps: null,            // Map weaponId -> { group } built lazily, kept for the bot's life
+    stowPending: null,          // Set of weaponIds with a build in flight (no duplicate clones)
+    grenadeProp: null,          // Object3D in the throwing hand during a wind-up
+    grenadePropPending: false,
+    grenadeArmHeld: false,      // true while this code owns the right arm target
+    dashHandTarget: null, grenadeHandTarget: null, // per-bot arm-target objects: a shared scratch would alias across bots
+    mountDtAccum: 0,
   });
   playerCombat.ensurePlayer(id, { maxHp: botMaxHp, hp: botMaxHp });
   setPlayerWeapon(id, weaponId);
@@ -2540,6 +2556,7 @@ function despawnBot(id) {
   const rec = botPlayers.get(id);
   if (!rec) return;
   destroyEnvironmentBotWeaponMount(id);
+  destroyEnvironmentBotProps(id);
   goalClaims.release(id); // a removed bot must not keep holding cover/seek/flee cells
   const squad = rec.squadId ? squads.get(rec.squadId) : null;
   if (squad) { squad.memberIds.delete(id); squad.detachIds.delete(id); }   // roster must not hold a ghost
@@ -3301,6 +3318,13 @@ function pushAllyReport(rep) {
 // A bot took damage: publish the casualty report the escalation/cover machinery reads. `threatXZ`
 // overrides the attacker's live position (a blast reports where it went off, not where the
 // launcher stands now). Called AFTER applyDamage, so a killing blow reads as lethal here.
+// Phase E: shot-travel direction (threat -> victim) at a fixed knockback, wired as `deathImpulse`.
+const BOT_DEATH_KNOCKBACK = 7;
+function shotImpulseXZ(threat, victimXZ) {
+  const dx = victimXZ.x - threat.x, dz = victimXZ.z - threat.z;
+  const m = Math.hypot(dx, dz) || 1;
+  return [(dx / m) * BOT_DEATH_KNOCKBACK, BOT_DEATH_KNOCKBACK * 0.25, (dz / m) * BOT_DEATH_KNOCKBACK];
+}
 function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   const rec = botPlayers.get(victimId);
   if (!rec) return;
@@ -3308,6 +3332,7 @@ function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   const threat = threatXZ || (attacker ? { x: attacker.p[0], z: attacker.p[2] } : null);
   if (!threat) return;
   const v = botXZ(rec.bot);
+  rec.lastHitImpulse = shotImpulseXZ(threat, v);   // Phase E: read at the death edge to kick the ragdoll
   // Weaker evidence than a death and no neighbour spread -- one cell only (harness parity).
   if (botNavGrid) recordDanger(botDangerField, rec.teamId, cellIndexAt(botNavGrid, v.x, v.z), DANGER_HIT_WEIGHT, nowMs);
   // The report carries the VICTIM's side: latestAlertNear filters on team, so a casualty on one
@@ -5352,6 +5377,7 @@ function updateBotSentry(rec, dt, nowMs) {
   }
   rec.alertMarkMode = alertTier ? (firsthand ? 'seen' : 'heard') : nearMiss ? 'near' : null;
   rec.alertScore = alertTier ? esc.score : 0;
+  rec.bot.alertTier = rec.alertMarkMode;   // Phase E: replicated so ghosts can draw the overhead "!"
   rec.alertTierLast = alertTier;   // A10 reads it next frame: an alerted bot reacts faster
   // S11: split the group into base-of-fire and maneuver elements for the duration of the push.
   if (alertTier === 'push') {
@@ -5953,6 +5979,8 @@ function updateBots(dt) {
         // Death edge: the corpse is a revive candidate for reviveWindowMs, and everything it was
         // carrying hits the ground for whoever scavenges it first.
         rec.diedAt = nowMs;
+        rec.bot.deathImpulse = rec.lastHitImpulse ?? null;   // Phase E: kicks the ghost's death ragdoll
+        rec.bot.alertTier = null;                            // a corpse carries no live alert cue
         rec.deathXZ = { x: rec.bot.capsule.start.x, z: rec.bot.capsule.start.z };
         paintBotDeathDanger(rec, nowMs);   // before the cover teardown below: it reads rec.coverCorner
         dropBotHealthPacks(rec, rec.deathXZ.x, rec.deathXZ.z);
@@ -5980,6 +6008,7 @@ function updateBots(dt) {
         rec.medicClaimBy = null; rec.medicClaimUntil = 0;
         rec.medicFlood = null; rec.medicFloodAt = 0;
         rec.stanceWeights = null; rec.stanceForcedCrouch = false; rec.packPickupCrouchUntil = 0;
+        rec.carryLocomotion = null; rec.mountDtAccum = 0;   // a respawned bot snaps its carry, never glides the corpse's
         rec.grenades = throwCountFor(botGrenadeSettings) + role.bonusGrenades;   // per-life stock
         rec.lastGrenadeAt = null; rec.grenadeCheckAt = null;
         rec.standHeight = rec.bot.capsule.end.y - rec.bot.capsule.start.y;
@@ -11400,11 +11429,170 @@ function destroyEnvironmentBotWeaponMount(id) {
   botVisualWeaponMountTokens.set(id, (botVisualWeaponMountTokens.get(id) ?? 0) + 1);
   botVisualWeaponMountRequests.delete(id);
   botVisualWeaponMountRetryAfter.delete(id);
+  const rec = botPlayers.get(id);
+  if (rec) rec.carryLocomotion = null; // snap the new weapon's carry instead of gliding the old one's
   const mount = botVisualWeaponMounts.get(id);
   if (!mount) return;
   scene.remove(mount.weaponRig);
   // Geometry/materials belong to the shared cached template (lbWeaponModelCache) — never disposed here.
   botVisualWeaponMounts.delete(id);
+}
+
+// Removes the stow/grenade props. Separate from the held mount: a weapon swap rebuilds the mount but
+// must keep the body props, so only the bot's despawn calls this.
+function destroyEnvironmentBotProps(id) {
+  const rec = botPlayers.get(id);
+  if (!rec) return;
+  if (rec.stowProps) for (const prop of rec.stowProps.values()) scene.remove(prop.group);
+  rec.stowProps = null; rec.stowPending = null;
+  if (rec.grenadeProp) scene.remove(rec.grenadeProp);
+  rec.grenadeProp = null; rec.grenadePropPending = false; rec.grenadeArmHeld = false;
+}
+
+// Shared normalized-template loader for the prop paths (stow, grenade in hand). Deliberately the
+// SAME cache the held mount fills, so a stowed rifle and a held one are one GLB and one normalize.
+const envWeaponTemplatePromises = new Map();
+function loadEnvironmentWeaponTemplate(weaponId) {
+  const cached = lbWeaponModelCache.get(weaponId);
+  if (cached) return Promise.resolve(cached);
+  if (!envWeaponTemplatePromises.has(weaponId)) {
+    const def = getWeapon(weaponId);
+    if (!def?.model) return Promise.resolve(null);
+    envWeaponTemplatePromises.set(weaponId, attachDracoLoader(new GLTFLoader()).loadAsync(def.model).then((gltf) => {
+      let template = lbWeaponModelCache.get(weaponId);
+      if (!template) {
+        template = gltf.scene;
+        normalizeWeaponModel(template, 0.62); // same normalization target as the held mount
+        lbWeaponModelCache.set(weaponId, template);
+      }
+      return template;
+    }).catch((error) => {
+      envWeaponTemplatePromises.delete(weaponId);
+      console.warn('[environment-bot] failed to load weapon template', weaponId, error);
+      return null;
+    }));
+  }
+  return envWeaponTemplatePromises.get(weaponId);
+}
+
+function cloneEnvironmentPropModel(template) {
+  const model = skeletonClone(template); // SkeletonUtils.clone: skinned-mesh-safe, shares geometry/materials
+  model.traverse((obj) => { if (obj.isMesh) { obj.castShadow = false; obj.frustumCulled = false; } });
+  const group = new THREE.Group();
+  group.add(model);
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
+
+// ---- stowed weapons (ported from bot-viewer-v2.html:1548): whatever the bot is NOT holding rides
+// its body -- long guns slung across the back, pistols on the right hip. No pose controller, no IK,
+// no anchors: one transform per frame on a clone of the cached template.
+// Torso-local (metres), applied after the body yaw; +X is the bot's right, +Z its facing. Templates
+// normalize with their long axis on +Z, so the X rotation stands the gun up, Y sets the diagonal.
+// `scale` multiplies the weapon's authored thirdPersonHold scale (rifles 2x, pistols 0.68x).
+const STOW_PLACEMENTS = {
+  back: { position: [0.02, -0.06, -0.20], rotation: [-Math.PI / 2, 0.61, 0], scale: 0.95 },
+  hip: { position: [0.22, -0.32, 0.02], rotation: [Math.PI / 2, 0.25, 0], scale: 0.95 },
+};
+function stowPlacementFor(weaponId) {
+  return PISTOL_IDS.includes(weaponId) ? STOW_PLACEMENTS.hip : STOW_PLACEMENTS.back;
+}
+// A grenade wind-up counts as "in hand", so both guns go on the body for its duration.
+function environmentBotHeldWeaponId(rec) {
+  return rec.grenadeThrow ? 'grenade' : rec.weaponId;
+}
+function requestEnvironmentBotStowProp(rec, weaponId) {
+  const pending = rec.stowPending ??= new Set();
+  if (pending.has(weaponId)) return;
+  pending.add(weaponId);
+  void loadEnvironmentWeaponTemplate(weaponId).then((template) => {
+    pending.delete(weaponId);
+    if (!template || !rec.stowProps || botPlayers.get(rec.id) !== rec || rec.stowProps.has(weaponId)) return;
+    const placement = stowPlacementFor(weaponId);
+    rec.stowProps.set(weaponId, {
+      group: cloneEnvironmentPropModel(template), placement,
+      scale: placement.scale * (getWeapon(weaponId)?.thirdPersonHold?.scale ?? 1),
+    });
+  });
+}
+const _stowEuler = new THREE.Euler();
+const _stowYawQuat = new THREE.Quaternion();
+const _stowLocalQuat = new THREE.Quaternion();
+const _stowOffset = new THREE.Vector3();
+function updateEnvironmentBotStowProps(rec, body) {
+  const props = rec.stowProps ??= new Map();
+  for (const prop of props.values()) prop.group.visible = false;
+  const torso = body.joints?.torso;
+  if (!torso) return;
+  const held = environmentBotHeldWeaponId(rec);
+  _stowYawQuat.setFromEuler(_stowEuler.set(0, body.motion?.visualYaw ?? rec.bot.yaw, 0, 'YXZ'));
+  for (const weaponId of [rec.primaryWeaponId, botSidearmEnabled ? rec.sidearmId : null]) {
+    if (!weaponId || weaponId === held) continue;
+    const prop = props.get(weaponId);
+    if (!prop) { requestEnvironmentBotStowProp(rec, weaponId); continue; }
+    const { position, rotation } = prop.placement;
+    _stowOffset.set(position[0], position[1], position[2]).applyQuaternion(_stowYawQuat);
+    prop.group.position.copy(torso.position).add(_stowOffset);
+    _stowLocalQuat.setFromEuler(_stowEuler.set(rotation[0], rotation[1], rotation[2], 'XYZ'));
+    prop.group.quaternion.copy(_stowYawQuat).multiply(_stowLocalQuat);
+    prop.group.scale.setScalar(prop.scale);
+    prop.group.visible = true;
+  }
+}
+
+// ---- grenade wind-up: the harness swaps its whole mount to 'grenade', which has no thirdPersonHold
+// and no anchors, so it renders empty-handed. env shows the real thing instead: the held gun goes to
+// the back (stow key above), the right arm cocks back and a grenade prop rides the hand.
+const GRENADE_HAND_SCALE = 0.22;   // of the 0.62 m normalization: a fist-sized grenade
+const GRENADE_WINDUP_HAND = { back: -0.30, side: 0.22, up: 0.30 }; // torso-local cocked-hand offset
+const _grenadeRight = new THREE.Vector3(), _grenadeFwd = new THREE.Vector3();
+function requestEnvironmentBotGrenadeProp(rec) {
+  if (rec.grenadePropPending) return;
+  rec.grenadePropPending = true;
+  void loadEnvironmentWeaponTemplate('grenade').then((template) => {
+    rec.grenadePropPending = false;
+    if (!template || botPlayers.get(rec.id) !== rec || rec.grenadeProp) return;
+    const group = cloneEnvironmentPropModel(template);
+    group.scale.setScalar(GRENADE_HAND_SCALE);
+    rec.grenadeProp = group;
+  });
+}
+function updateEnvironmentBotGrenadeProp(rec, body) {
+  if (!rec.grenadeThrow) {
+    if (rec.grenadeProp) rec.grenadeProp.visible = false;
+    if (rec.grenadeArmHeld) { body?.setArmTarget?.('right', null); rec.grenadeArmHeld = false; }
+    return;
+  }
+  if (!rec.grenadeProp) requestEnvironmentBotGrenadeProp(rec);
+  const torso = body.joints?.torso;
+  if (torso) {
+    _grenadeRight.set(1, 0, 0).applyQuaternion(torso.quaternion);
+    _grenadeFwd.set(0, 0, 1).applyQuaternion(torso.quaternion);
+    const target = rec.grenadeHandTarget ??= { position: new THREE.Vector3(), weight: 1 };
+    target.position.copy(torso.position)
+      .addScaledVector(_grenadeFwd, GRENADE_WINDUP_HAND.back)
+      .addScaledVector(_grenadeRight, GRENADE_WINDUP_HAND.side);
+    target.position.y += GRENADE_WINDUP_HAND.up;
+    body.setArmTarget?.('right', target);
+    body.setArmTarget?.('left', null);   // the support hand is off the (stowed) gun for the throw
+    rec.grenadeArmHeld = true;
+  }
+  const hand = body.joints?.rightHand;
+  if (rec.grenadeProp && hand) {
+    rec.grenadeProp.position.copy(hand.position);
+    rec.grenadeProp.visible = true;
+  }
+}
+
+// Everything this bot hangs on its body, off in one call (dead, culled, or past the LOD hide range).
+function hideEnvironmentBotProps(rec, body) {
+  if (rec.stowProps) for (const prop of rec.stowProps.values()) prop.group.visible = false;
+  if (rec.grenadeProp) rec.grenadeProp.visible = false;
+  if (rec.grenadeArmHeld) { body?.setArmTarget?.('right', null); rec.grenadeArmHeld = false; }
+  // Release a dash tuck here too: the carry state is reset, so nothing else would ever free the arm.
+  if (isOneHanded(rec.carryLocomotion)) body?.setArmTarget?.('left', null);
+  rec.carryLocomotion = null;   // back in range / revived: snap the carry rather than glide a stale one
 }
 
 async function createEnvironmentBotWeaponMount(id, bodyRef, weaponId) {
@@ -11546,6 +11734,17 @@ function environmentBotWeaponMuzzle(id) {
   return [p.x, p.y, p.z];
 }
 
+// Per-frame mount scratch: fully consumed inside updateEnvironmentBotWeaponMount, never retained.
+const _envMountLoco = { stance: STANCE_STAND, aiming: false, moving: false };
+const _envMountHold = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+const _envMountEuler = new THREE.Euler();
+const _envLockOpts = { lockPosePosition: 'lowReady' };
+const _envNoOpts = {};
+const _envDashRight = new THREE.Vector3(), _envDashFwd = new THREE.Vector3();
+const CARRY_MOVING_SPEED = 0.35;   // m/s above which a standing bot shows the walk carry, not idle
+// Where the freed support hand goes on a dash: tucked in front of the chest, elbow turned outward.
+const DASH_HAND_FWD = 0.16, DASH_HAND_SIDE = 0.14, DASH_HAND_UP = -0.04;
+
 function updateEnvironmentBotWeaponMount(id, rec, dt) {
   const body = environmentBotBody(id);
   const bot = rec.bot;
@@ -11553,26 +11752,34 @@ function updateEnvironmentBotWeaponMount(id, rec, dt) {
   let mount = botVisualWeaponMounts.get(id);
   if (!body || !alive) {
     if (mount) mount.weaponRig.visible = false;
-    return;
-  }
-  if (!mount || mount.bodyRef !== body || mount.weaponId !== rec.weaponId) {
-    if (mount) destroyEnvironmentBotWeaponMount(id);
-    requestEnvironmentBotWeaponMount(id, body, rec.weaponId);
+    hideEnvironmentBotProps(rec, body);
     return;
   }
   // Held-weapon LOD: hide past the body's hide distance, and stride the (expensive) mount update on
   // the same distance tiers so the gun freezes/hides in step with the strided body. dt is accumulated
   // across skipped frames so the reload animation still plays at the right wall-clock rate.
+  // Gated BEFORE the mount lookup so the stow/grenade props stride and hide on the same tiers.
   const camPos = camera.position;
   const ldx = bot.capsule.start.x - camPos.x, ldz = bot.capsule.start.z - camPos.z;
   const ld2 = ldx * ldx + ldz * ldz;
-  if (ld2 > BOT_RENDER_LOD.hideD2) { mount.weaponRig.visible = false; return; }
+  if (ld2 > BOT_RENDER_LOD.hideD2) {
+    if (mount) mount.weaponRig.visible = false;
+    hideEnvironmentBotProps(rec, body);
+    return;
+  }
   const stride = ld2 < BOT_RENDER_LOD.nearD2 ? 1 : ld2 < BOT_RENDER_LOD.midD2 ? 2 : 4;
   if (rec.lodPhase == null) rec.lodPhase = botLodPhase(id);
-  mount.lodDtAccum = (mount.lodDtAccum ?? 0) + dt;
+  rec.mountDtAccum = (rec.mountDtAccum ?? 0) + dt;
   if (stride > 1 && ((botWeaponLodFrame + rec.lodPhase) % stride) !== 0) return; // off-stride: hold last pose
-  dt = mount.lodDtAccum;
-  mount.lodDtAccum = 0;
+  dt = rec.mountDtAccum;
+  rec.mountDtAccum = 0;
+  updateEnvironmentBotStowProps(rec, body);
+  if (!mount || mount.bodyRef !== body || mount.weaponId !== rec.weaponId) {
+    if (mount) destroyEnvironmentBotWeaponMount(id);
+    requestEnvironmentBotWeaponMount(id, body, rec.weaponId);
+    updateEnvironmentBotGrenadeProp(rec, body);
+    return;
+  }
   const torso = body.joints?.torso;
   const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
   const weaponX = torso?.position.x ?? mid.x;
@@ -11581,19 +11788,35 @@ function updateEnvironmentBotWeaponMount(id, rec, dt) {
   const weaponY = terrainHeight(weaponX, weaponZ) + 1.5;
   const headYaw = body.motion?.headYaw ?? 0;
   const bodyYaw = (body.motion?.visualYaw ?? bot.yaw) + headYaw;
-  mount.weaponRig.visible = true;
-  mount.weaponRig.position.set(weaponX, weaponY, weaponZ);
-  mount.weaponRig.quaternion.setFromEuler(new THREE.Euler(0, bodyYaw, 0, 'YXZ'));
-  mount.weaponAdjust.position.fromArray(mount.def.thirdPersonHold.position);
-  mount.weaponAdjust.quaternion.setFromEuler(new THREE.Euler(...mount.def.thirdPersonHold.rotation));
-  mount.weaponAdjust.scale.setScalar(mount.def.thirdPersonHold.scale ?? 1);
-  mount.weaponRig.updateMatrixWorld(true);
 
+  // Carry resolve (weapon-hold-resolver.js, shared with bot-viewer-v2 and the authoring tool).
+  // Stance holds blend CONTINUOUSLY on the eased crouch/prone weights; the walk/run/dash carry is an
+  // ADDITIVE delta eased on top. `aiming` wins over both, so a firing bot never holds a carry pose.
   // The ported brain aims and fires from six states, not two; weaponAimPoint is set exactly when
   // the sentry resolved a visible target this tick, so it is the honest "gun is up" signal.
   const aiming = !!rec.weaponAimPoint;
+  _envMountLoco.stance = rec.stance ?? STANCE_STAND;
+  _envMountLoco.aiming = aiming;
+  _envMountLoco.moving = Math.hypot(bot.velocity.x, bot.velocity.z) > CARRY_MOVING_SPEED;
+  const locomotion = locomotionFor(_envMountLoco);
+  const carrying = isCarryLocomotion(locomotion) && hasCarryVocabulary(mount.def);
+  const carryTarget = carryDeltaFor(mount.def, locomotion);
+  // Snap on the first frame (or straight after a weapon swap); ease every frame after.
+  rec.carryBlend = rec.carryLocomotion == null
+    ? snapCarryBlend(rec.carryBlend, carryTarget)
+    : stepCarryBlend(rec.carryBlend, carryTarget, dt);
+  const hold = resolveWeaponHold(mount.def, rec.stanceWeights, rec.carryBlend, _envMountHold);
+
+  mount.weaponRig.visible = true;
+  mount.weaponRig.position.set(weaponX, weaponY, weaponZ);
+  mount.weaponRig.quaternion.setFromEuler(_envMountEuler.set(0, bodyYaw, 0, 'YXZ'));
+  mount.weaponAdjust.position.fromArray(hold.position);
+  mount.weaponAdjust.quaternion.setFromEuler(_envMountEuler.set(hold.rotation[0], hold.rotation[1], hold.rotation[2], 'XYZ'));
+  mount.weaponAdjust.scale.setScalar(hold.scale ?? 1);
+  mount.weaponRig.updateMatrixWorld(true);
+
   const reloading = rec.reloadUntil != null;
-  mount.controller.setAiming(aiming ? 1 : 0);
+  mount.controller.setAiming(locomotion === LOCOMOTION_AIM ? 1 : 0);
   if (reloading && mount.reloadStartedAt !== rec.reloadStartedAt) {
     mount.controller.play('reload');
     mount.reloadStartedAt = rec.reloadStartedAt;
@@ -11601,11 +11824,34 @@ function updateEnvironmentBotWeaponMount(id, rec, dt) {
     mount.reloadStartedAt = null;
   }
   const lockAimedPosition = aiming && !reloading;
-  mount.controller.update(dt, lockAimedPosition ? { lockPosePosition: 'lowReady' } : {});
-  if (lockAimedPosition && rec.weaponAimPoint && alignEnvironmentBotWeaponToPoint(mount, rec.weaponAimPoint)) {
+  mount.controller.update(dt, lockAimedPosition ? _envLockOpts : _envNoOpts);
+  // A carry deliberately points the weapon away from the target, so it must never be barrel-solved
+  // onto the aim point -- that would undo the entire muzzle-down/up pose.
+  if (!carrying && lockAimedPosition && rec.weaponAimPoint && alignEnvironmentBotWeaponToPoint(mount, rec.weaponAimPoint)) {
     // The gun moved after the IK solve; resolve the hands against its corrected transform.
-    mount.controller.update(0, { lockPosePosition: 'lowReady' });
+    mount.controller.update(0, _envLockOpts);
   }
+  // One-handed dash: take the support hand off the weapon and tuck it at the chest, elbow outward.
+  // Written AFTER controller.update, which drives both hands to their grips.
+  const oneHanded = carrying && isOneHanded(locomotion);
+  if (torso && (oneHanded || isOneHanded(rec.carryLocomotion))) {
+    if (oneHanded) {
+      _envDashRight.set(1, 0, 0).applyQuaternion(torso.quaternion);   // body right, as the rig derives it
+      _envDashFwd.set(0, 0, 1).applyQuaternion(torso.quaternion);
+      const target = rec.dashHandTarget ??= { position: new THREE.Vector3(), weight: 1 };
+      target.position.copy(torso.position)
+        .addScaledVector(_envDashFwd, DASH_HAND_FWD)
+        .addScaledVector(_envDashRight, -DASH_HAND_SIDE);
+      target.position.y += DASH_HAND_UP;
+      body.setArmTarget?.('left', target);
+    } else {
+      body.setArmTarget?.('left', null);
+    }
+  }
+  rec.carryLocomotion = locomotion;
+  // Last: the wind-up owns the right arm and hides the gun, so it must overwrite the pose above.
+  updateEnvironmentBotGrenadeProp(rec, body);
+  if (rec.grenadeThrow) mount.weaponRig.visible = false;
 }
 
 function syncEnvironmentBotWeaponMounts(dt) {

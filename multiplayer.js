@@ -9,11 +9,35 @@ export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.
 // test-ghost-renderer.mjs / test-multiplayer-guns.mjs.
 import { createProceduralPlayerBody } from './player-procedural-body.js';
 import { createBodyPartBatches } from './body-part-batches.js';
+// Phase E death ragdolls. Both modules are pure (no THREE/DOM at import time; THREE is injected),
+// so this stays safe under plain Node for multiplayer-test.mjs / test-ghost-renderer.mjs.
+import { stepRagdoll, kineticEnergy } from './ragdoll.js';
+import { ragdollFromBody, applyDeathImpulse } from './ragdoll-body.js';
 
-// Per-bot body style keyed off the id hash, so every bot renders a distinct color under
-// instancing (the batch tints each part from these role colors). Shell is the saturated base;
-// plate is a dark version of the same hue; trim a light one.
-function botBodyStyle(THREE, id) {
+// Team identity for bot bodies, mirroring bot-viewer-v2's BOT_TEAM_DEFS so a bot reads the same
+// side in both viewers (alpha = green family, bravo = red family).
+export const BOT_TEAM_STYLES = {
+  alpha: { shell: 0x1f5b3a, plate: 0x101410, trim: 0x57d68d },
+  bravo: { shell: 0x64252a, plate: 0x171012, trim: 0xff8a80 },
+};
+
+// Scale a packed hex color's channels (subtle per-bot brightness variation inside a team family).
+function _shadeHex(hex, f) {
+  const r = Math.min(255, Math.round(((hex >> 16) & 255) * f));
+  const g = Math.min(255, Math.round(((hex >> 8) & 255) * f));
+  const b = Math.min(255, Math.round((hex & 255) * f));
+  return (r << 16) | (g << 8) | b;
+}
+
+// Body style for one bot: the team palette with an id-keyed brightness jitter so a squad reads as
+// one side while individuals stay distinguishable. A bot with no replicated `team` (old peer, or a
+// spawner that never stamped one) falls back to the original distinct-hue-per-id scheme.
+function botBodyStyle(THREE, id, team) {
+  const def = BOT_TEAM_STYLES[team];
+  if (def) {
+    const f = 0.86 + (_hashId(id) % 29) / 100; // 0.86 .. 1.14
+    return { shell: _shadeHex(def.shell, f), plate: _shadeHex(def.plate, f), trim: _shadeHex(def.trim, f) };
+  }
   const hue = (_hashId(id) % 360) / 360;
   const shell = new THREE.Color().setHSL(hue, 0.55, 0.44).getHex();
   const plate = new THREE.Color().setHSL(hue, 0.50, 0.15).getHex();
@@ -385,6 +409,21 @@ const HAND_SWAY_HZ = 2.2, HAND_SWAY_MAX = 0.12, HAND_SWAY_PER_SPEED = 0.06;
 const HELD_FLASH_MS = 140;
 const FALL_MS = 450; // duration of the death-pose tip-over animation
 
+// --- Phase E: bot death ragdolls (bot-viewer-v2 parity) ---------------------
+const RAGDOLL_SLEEP_ENERGY = 1e-4;  // kineticEnergy below this counts as settled
+const RAGDOLL_SLEEP_MS = 500;       // ...held that long, the corpse stops simulating
+const RAGDOLL_MAX_LIVE = 12;        // awake corpses stepped per frame; overflow deaths tip over instead
+const RAGDOLL_MAX_DT = 0.05;        // clamp a stalled frame so the solver can't spiral
+const RAGDOLL_MAX_IMPULSE = 18;     // m/s cap on the replicated death impulse
+const RAGDOLL_FALLBACK_IMPULSE = 4; // shove along facing when no hit direction was replicated
+const RAGDOLL_GRAVITY = 25;
+
+// --- Phase E: overhead indicators -------------------------------------------
+const OVERLAY_HIDE_D2 = 60 * 60;    // squared XZ distance past which bars/marks are hidden
+const OVERLAY_LIFT = 0.40;          // metres above the capsule crown
+const HP_BAR_W = 0.78, HP_FILL_W = 0.70;
+const ALERT_MARK_COLORS = { seen: 0xff5252, heard: 0xffd93d, push: 0x66ff66, base: 0xffffff, near: 0x4fc3f7 };
+
 // Deterministic light-pastel tint for a player id, shared by the remote ghost body/
 // orbs and the local first-person viewmodel so your hands match your own ghost.
 export function playerTintHSL(id) {
@@ -440,6 +479,21 @@ export class GhostRenderer {
     // player/bot capsule falls face-forward instead of just vanishing or standing inert.
     this._uprightQ = new THREE.Quaternion();
     this._fallTipQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+    // Phase E: bots ragdoll on death instead of tipping over; humans keep the tip-over above.
+    this._ragdollDeaths = options.ragdollDeaths !== false;
+    this._ragdollMaxLive = options.maxLiveRagdolls ?? RAGDOLL_MAX_LIVE;
+    this._ragdollAwake = 0;      // exact count of corpses still being stepped (see _retireRagdoll)
+    this._ragdollLastT = null;
+    this._ragdollDt = 0;
+    this._ragdollStepOpts = { gravity: RAGDOLL_GRAVITY, groundHeight: (x, z) => this._terrainHeight(x, z) };
+    // Phase E: overhead health bars + alert "!" marks. Assets are built lazily on the first bot
+    // that needs one, so a renderer with no bots (and the Node tests) never allocates them.
+    this._ov = null;
+    this._overlayD2 = options.overlayHideD2 ?? Math.min(OVERLAY_HIDE_D2, this._botLod?.hideD2 ?? Infinity);
+    this._axisX = new THREE.Vector3(1, 0, 0);
+    this._axisY = new THREE.Vector3(0, 1, 0);
+    this._bbYawQ = new THREE.Quaternion();
+    this._bbPitchQ = new THREE.Quaternion();
   }
 
   update(state) {
@@ -493,6 +547,11 @@ export class GhostRenderer {
     const seen = new Set();
     this._lodFrame++;
     this._camPos = this._getCameraPos ? this._getCameraPos() : null;
+    // One shared clock for every corpse this frame (update() is per-frame on host, per-rAF on guest).
+    const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    this._ragdollDt = this._ragdollLastT != null
+      ? Math.min(RAGDOLL_MAX_DT, Math.max(0, (nowMs - this._ragdollLastT) / 1000)) : 0;
+    this._ragdollLastT = nowMs;
     // Immediate-mode instancing: zero the pool, every visible bot re-adds its parts below, upload
     // at the end. Runs every frame on the host (updateHostPlayerGhosts drives update() per frame).
     if (this._bodyBatches) this._bodyBatches.beginFrame();
@@ -516,13 +575,19 @@ export class GhostRenderer {
           ud.fallStartAt = null; // set on tick()'s first frame after this, using its own clock
           ud.fallFromQ.copy(g.quaternion);
           ud.fallFromP.copy(g.position);
+          this._startBotRagdoll(g, item); // bots flop for real; everything else keeps the tip-over
         }
-        // Drop from mid-capsule height to resting-on-side height (the capsule's long axis is
-        // now horizontal), and tip forward along whatever direction it was last facing.
-        this._uprightQ.set(qx, qy, qz, qw);
-        ud.fallTargetQ.copy(this._uprightQ).multiply(this._fallTipQ);
-        ud.fallTargetP.set(px, py - h * 0.5 + r, pz);
+        if (ud.ragdoll) {
+          this._stepBotRagdoll(ud, nowMs);
+        } else {
+          // Drop from mid-capsule height to resting-on-side height (the capsule's long axis is
+          // now horizontal), and tip forward along whatever direction it was last facing.
+          this._uprightQ.set(qx, qy, qz, qw);
+          ud.fallTargetQ.copy(this._uprightQ).multiply(this._fallTipQ);
+          ud.fallTargetP.set(px, py - h * 0.5 + r, pz);
+        }
       } else {
+        if (ud.ragdoll) this._retireRagdoll(ud); // respawned into the same ghost id
         ud.dead = false;
         g.quaternion.set(qx, qy, qz, qw);
         g.position.set(px, py, pz);
@@ -531,8 +596,10 @@ export class GhostRenderer {
       this._placeEyes(g, r, h);
       this._placeHands(g, r, h);
       this._placeHeldItem(g, r, h, item);
-      // Dead actors retain the existing capsule fall pose; living actors are fully replaced.
-      const useProc = this._useProceduralBody && !isDead;
+      this._updateOverlays(g, item, r, h);
+      // Dead actors retain the existing capsule fall pose; a ragdolling corpse is drawn by the
+      // procedural body instead, so it keeps the procedural path. Living actors always do.
+      const useProc = this._useProceduralBody && (!isDead || !!ud.ragdoll);
       g.userData.body.visible = !useProc;
       g.userData.held.visible = !useProc && g.userData.held.visible;
       // Extremities look wrong sideways on a fallen capsule -- hide them once dead (held item is
@@ -545,6 +612,7 @@ export class GhostRenderer {
     }
     for (const [id, g] of this._players) {
       if (!seen.has(id)) {
+        if (g.userData.ragdoll) this._retireRagdoll(g.userData);
         if (g.userData.bodyProc) g.userData.bodyProc.destroy();
         this._scene.remove(g); g.userData.bodyMat.dispose(); this._players.delete(id);
       }
@@ -564,6 +632,22 @@ export class GhostRenderer {
   _updateProceduralBodyLod(g, item) {
     const ud = g.userData;
     const lod = this._botLod, camPos = this._camPos;
+    // A ragdolling corpse is posed from the solver, never from the gait/IK solve. It still obeys the
+    // body's hide distance and still flushes every frame (the batch is zeroed each beginFrame).
+    if (ud.ragdoll) {
+      if (lod && camPos) {
+        const dx = item.p[0] - camPos.x, dz = item.p[2] - camPos.z;
+        if (dx * dx + dz * dz > lod.hideD2) {
+          if (!ud.bodyHidden) { ud.bodyProc.setVisible(false); ud.bodyHidden = true; }
+          return;
+        }
+      }
+      if (ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
+      // Asleep: the pose is frozen, so skip the re-pose and let flush reuse last frame's matrices.
+      if (!ud.ragdollAsleep) ud.bodyProc.setRagdollPose(ud.ragdollPose);
+      if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches, !ud.ragdollAsleep);
+      return;
+    }
     if (!lod || !camPos || !item.isBot || item.alive === false || !ud.bodyProc) {
       if (ud.bodyProc && ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
       this._updateProceduralBody(g, item);
@@ -587,6 +671,64 @@ export class GhostRenderer {
     if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches);
   }
 
+  // Alive -> dead edge for a bot: seed a Verlet ragdoll from the rig's live joint world positions
+  // (so the corpse flops from where it died) and kick it along the replicated death impulse. Bails
+  // to the capsule tip-over when there is no rig to seed from or the live-corpse budget is full.
+  _startBotRagdoll(g, item) {
+    const ud = g.userData;
+    if (!this._ragdollDeaths || !item.isBot || !ud.bodyProc) return;
+    if (this._ragdollAwake >= this._ragdollMaxLive) return;
+    const px = item.p[0], pz = item.p[2];
+    const yaw = _yawFromQuat(item.q);
+    const { rd, pose } = ragdollFromBody(this._THREE, ud.bodyProc, {
+      origin: { x: px, y: this._terrainHeight(px, pz), z: pz }, yaw,
+    });
+    // Direction of the killing blow when the sender stamped one (magnitude = m/s), else the bot's
+    // own last motion, else a small shove down its facing axis so it never falls perfectly straight.
+    const imp = item.deathImpulse;
+    let dx = 0, dy = 0, dz = 0;
+    if (Array.isArray(imp)) { dx = imp[0] || 0; dy = imp[1] || 0; dz = imp[2] || 0; }
+    else if (Array.isArray(item.velocity)) { dx = item.velocity[0] || 0; dz = item.velocity[2] || 0; }
+    let strength = Math.hypot(dx, dy, dz);
+    if (!(strength > 0.05)) { dx = Math.sin(yaw); dy = 0; dz = Math.cos(yaw); strength = RAGDOLL_FALLBACK_IMPULSE; }
+
+    applyDeathImpulse(rd, { dir: { x: dx, y: dy, z: dz }, strength: Math.min(RAGDOLL_MAX_IMPULSE, strength) });
+    ud.ragdoll = rd;
+    ud.ragdollPose = pose;
+    ud.ragdollSettledSince = null;
+    ud.ragdollAsleep = false;
+    this._ragdollAwake++;
+  }
+
+  // Advance one corpse; once its kinetic energy has stayed under the sleep threshold for
+  // RAGDOLL_SLEEP_MS it stops simulating and just holds its final pose until the record disappears.
+  _stepBotRagdoll(ud, nowMs) {
+    if (ud.ragdollAsleep) return;
+    stepRagdoll(ud.ragdoll, this._ragdollDt, this._ragdollStepOpts);
+    if (kineticEnergy(ud.ragdoll) < RAGDOLL_SLEEP_ENERGY) {
+      if (ud.ragdollSettledSince == null) ud.ragdollSettledSince = nowMs;
+      else if (nowMs - ud.ragdollSettledSince >= RAGDOLL_SLEEP_MS) {
+        ud.ragdollAsleep = true;
+        this._ragdollAwake--;
+      }
+    } else {
+      ud.ragdollSettledSince = null;
+    }
+  }
+
+  // Drop a corpse's ragdoll (respawn into the same ghost id, or the ghost going away).
+  _retireRagdoll(ud) {
+    if (!ud.ragdollAsleep) this._ragdollAwake--;
+    ud.ragdoll = null;
+    ud.ragdollPose = null;
+    ud.ragdollSettledSince = null;
+    ud.ragdollAsleep = false;
+    // The gait solve was skipped for the whole corpse's life; re-anchor its clock so the first
+    // frame back doesn't feed update() a multi-second dt (and a bogus velocity with it).
+    ud.bodyLastT = null;
+    ud.bodyLastPos = null;
+  }
+
   _updateProceduralBody(g, item) {
     const THREE = this._THREE;
     const ud = g.userData;
@@ -597,8 +739,8 @@ export class GhostRenderer {
       }
       ud.bodyProc = createProceduralPlayerBody({ THREE, scene: this._scene, terrainHeight: this._terrainHeight,
         mode: 'remote', adaptGaitToSpeed: true, movementDynamics: true,
-        // Per-bot color (instanced): distinct hue per id. Non-instanced bots keep the old dark style.
-        style: item.isBot ? (instanceThis ? botBodyStyle(THREE, item.id) : { shell: 0x1f5b3a, plate: 0x101410, trim: 0x0a0d0a }) : {},
+        // Team colors (both the instanced and mesh bot paths); humans keep the tinted default style.
+        style: item.isBot ? botBodyStyle(THREE, item.id, item.team) : {},
         batches: instanceThis ? this._bodyBatches : null,
       });
       if (!item.isBot) {
@@ -627,8 +769,7 @@ export class GhostRenderer {
     // general formula reduces exactly to `y` for q = (0, sin(y/2), 0, cos(y/2));
     // written generally rather than the 2*atan2(qy,qw) shortcut so it stays
     // correct even if a caller's q ever carries tiny roll/pitch noise.
-    const [qx, qy, qz, qw] = item.q;
-    const yaw = Math.atan2(2 * (qw * qy + qx * qz), 1 - 2 * (qy * qy + qz * qz));
+    const yaw = _yawFromQuat(item.q);
 
     ud.bodyProc.update(dt, {
       id: item.id,
@@ -705,6 +846,9 @@ export class GhostRenderer {
       dead: false, fallStartAt: null,
       fallFromQ: new THREE.Quaternion(), fallFromP: new THREE.Vector3(),
       fallTargetQ: new THREE.Quaternion(), fallTargetP: new THREE.Vector3(),
+      // Phase E: bot death ragdoll (null until the alive->dead edge) + overhead indicator group.
+      ragdoll: null, ragdollPose: null, ragdollSettledSince: null, ragdollAsleep: false,
+      overlay: null,
     };
     if (this._useProceduralBody) {
       // Keep the capsule/eyes/orb-hands meshes (so nothing else in this class
@@ -775,13 +919,100 @@ export class GhostRenderer {
     if (item.firing) ud.heldFlashUntil = (typeof performance !== 'undefined' ? performance.now() : 0) + HELD_FLASH_MS;
   }
 
+  // Shared overhead-indicator geometry/materials, built on the first bot that needs one. Box (not
+  // plane) geometry keeps this usable from the Node ghost tests' minimal THREE stub.
+  _overlayAssets() {
+    if (this._ov) return this._ov;
+    const THREE = this._THREE;
+    const flat = (color, extra) => new THREE.MeshBasicMaterial({ color, depthWrite: false, toneMapped: false, ...extra });
+    this._ov = {
+      barGeo: new THREE.BoxGeometry(HP_BAR_W, 0.10, 0.012),
+      fillGeo: new THREE.BoxGeometry(HP_FILL_W, 0.058, 0.012),
+      exBarGeo: new THREE.BoxGeometry(0.07, 0.24, 0.02),
+      exDotGeo: new THREE.BoxGeometry(0.07, 0.07, 0.02),
+      bgMat: flat(0x161a20, { transparent: true, opacity: 0.9 }),
+      hpMats: [flat(0x63e6a4), flat(0xffd166), flat(0xff6b6b)], // healthy / hurt / critical
+      alertMats: Object.fromEntries(Object.entries(ALERT_MARK_COLORS).map(([m, c]) => [m, flat(c)])),
+    };
+    return this._ov;
+  }
+
+  // One indicator group per bot, parented to its ghost container so it lives and dies with it.
+  _makeOverlay(g) {
+    const THREE = this._THREE, ov = this._overlayAssets();
+    const group = new THREE.Group();
+    const bar = new THREE.Group();
+    const bg = new THREE.Mesh(ov.barGeo, ov.bgMat);
+    const fill = new THREE.Mesh(ov.fillGeo, ov.hpMats[0]);
+    fill.position.set(0, 0, 0.008);
+    bar.add(bg); bar.add(fill);
+    const mark = new THREE.Group();
+    const exBar = new THREE.Mesh(ov.exBarGeo, ov.alertMats.seen);
+    exBar.position.set(0, 0.11, 0);
+    const exDot = new THREE.Mesh(ov.exDotGeo, ov.alertMats.seen);
+    exDot.position.set(0, -0.09, 0);
+    mark.add(exBar); mark.add(exDot);
+    mark.position.set(0, 0.34, 0);
+    group.add(bar); group.add(mark);
+    group.renderOrder = 6; // harness parity: overlays draw last so they don't z-fight the body
+    g.add(group);
+    const o = { group, bar, fill, mark, exBar, exDot, hpTier: -1, alertMode: null };
+    g.userData.overlay = o;
+    return o;
+  }
+
+  // Health bar (while damaged) + alert "!" (while a cue is live) above a bot's head, billboarded at
+  // the camera and hidden past _overlayD2. Bots only; humans and the local player carry neither.
+  _updateOverlays(g, item, r, h) {
+    const ud = g.userData;
+    if (!item.isBot) { if (ud.overlay) ud.overlay.group.visible = false; return; }
+    const alive = item.alive !== false;
+    const maxHp = item.maxHp > 0 ? item.maxHp : 100;
+    const hp01 = Number.isFinite(item.hp) ? Math.max(0, Math.min(1, item.hp / maxHp)) : 1;
+    const mode = alive ? (item.alertTier || null) : null;
+    const showHp = alive && hp01 < 0.999;
+    const camPos = this._camPos;
+    let inRange = true;
+    if (camPos) {
+      const dx = item.p[0] - camPos.x, dz = item.p[2] - camPos.z;
+      inRange = dx * dx + dz * dz <= this._overlayD2;
+    }
+    if (!inRange || (!showHp && !mode)) { if (ud.overlay) ud.overlay.group.visible = false; return; }
+    const o = ud.overlay || this._makeOverlay(g);
+    o.group.visible = true;
+    o.bar.visible = showHp;
+    o.mark.visible = !!mode;
+    o.group.position.set(0, h * 0.5 + r + OVERLAY_LIFT, 0);
+    if (showHp) {
+      o.fill.scale.x = hp01;
+      o.fill.position.x = -(HP_FILL_W * 0.5) * (1 - hp01);
+      const tier = hp01 > 0.55 ? 0 : hp01 > 0.30 ? 1 : 2;
+      if (tier !== o.hpTier) { o.hpTier = tier; o.fill.material = this._ov.hpMats[tier]; }
+    }
+    if (mode && mode !== o.alertMode) {
+      o.alertMode = mode;
+      const mat = this._ov.alertMats[mode] || this._ov.alertMats.base;
+      o.exBar.material = mat; o.exDot.material = mat;
+    }
+    // Billboard: face the camera in world space, minus the container's own yaw (this is a child of
+    // it). No camera quaternion needed -- the look direction is derived from the two positions.
+    if (camPos) {
+      const wy = item.p[1] + h * 0.5 + r + OVERLAY_LIFT;
+      const dx = camPos.x - item.p[0], dy = camPos.y - wy, dz = camPos.z - item.p[2];
+      const flat = Math.sqrt(dx * dx + dz * dz) || 1e-6;
+      const yaw = Math.atan2(dx, dz) - _yawFromQuat(item.q);
+      o.group.quaternion.copy(this._bbYawQ.setFromAxisAngle(this._axisY, yaw))
+        .multiply(this._bbPitchQ.setFromAxisAngle(this._axisX, -Math.atan2(dy, flat)));
+    }
+  }
+
   // Per-frame blink driver â€” update() only runs on network events, so blink has
   // to be driven separately. Squashes eye scale.y 1 -> ~0.1 -> 1 over BLINK_MS.
   tick(nowMs) {
     const now = nowMs ?? 0;
     for (const g of this._players.values()) {
       const ud = g.userData;
-      if (ud.dead) {
+      if (ud.dead && !ud.ragdoll) {
         // Smoothly animate the fall rather than snapping straight to the resting pose --
         // _updatePlayers only maintains fallFrom*/fallTarget*, this is the only place that
         // writes g.quaternion/g.position while dead.
@@ -846,7 +1077,22 @@ export class GhostRenderer {
     this._heldMat.dispose();
     this._heldMuzzleMat.dispose();
     this._lightToolMat.dispose();
+    if (this._ov) {
+      const ov = this._ov;
+      for (const gGeo of [ov.barGeo, ov.fillGeo, ov.exBarGeo, ov.exDotGeo]) gGeo.dispose();
+      ov.bgMat.dispose();
+      for (const m of ov.hpMats) m.dispose();
+      for (const m of Object.values(ov.alertMats)) m.dispose();
+      this._ov = null;
+    }
   }
+}
+
+// Yaw around Y from a wire quaternion. The general form (not the 2*atan2(qy,qw) shortcut) so it
+// stays correct if a caller's pure-yaw q ever carries tiny roll/pitch noise.
+function _yawFromQuat(q) {
+  const [qx, qy, qz, qw] = q;
+  return Math.atan2(2 * (qw * qy + qx * qz), 1 - 2 * (qy * qy + qz * qz));
 }
 
 // Small deterministic string hash for staggering per-player blink timers.

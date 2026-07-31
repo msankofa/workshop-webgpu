@@ -78,6 +78,10 @@ export { resolveBotPairsHashed, separationXZHashed, waypointContestedHashed } fr
 // `h`/`fullHeight` stay the LIVE capsule (a crouched bot really is a shorter hit/LOS target);
 // `standFullHeight` is the standing profile the rig poses from, so the renderer's own crouch
 // channel isn't doubled up by an already-shrunk capsule.
+// Phase E adds three more stamped-only fields, all optional with safe renderer defaults:
+// `team` (side identity -> GhostRenderer's body palette), `alertTier` (overhead "!" mode:
+// 'seen'|'heard'|'push'|'near'), and `deathImpulse` ([x,y,z] m/s of the killing blow, read once on
+// the alive->dead edge to kick the death ragdoll).
 export function toWirePose(bot) {
   const halfYaw = (bot.yaw + Math.PI) * 0.5;
   const height = Math.max(0.1, bot.capsule.end.y - bot.capsule.start.y);
@@ -87,6 +91,9 @@ export function toWirePose(bot) {
     ...(crouch01 > 0 ? { crouch: crouch01 } : null),
     ...(prone01 > 0 ? { prone: prone01 } : null),
     ...(bot.standHeight > 0 ? { standFullHeight: bot.standHeight + bot.capsule.radius * 2 } : null),
+    ...(bot.team ? { team: bot.team } : null),
+    ...(bot.alertTier ? { alertTier: bot.alertTier } : null),
+    ...(bot.deathImpulse ? { deathImpulse: bot.deathImpulse } : null),
     id: bot.id,
     p: [mid.x, mid.y, mid.z],
     q: [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)],

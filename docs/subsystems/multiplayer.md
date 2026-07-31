@@ -112,8 +112,12 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     per part type total, independent of bot count. Lazily builds one `_bodyBatches` on the first bot;
     `_updatePlayers` wraps its loop in `beginFrame()`/`endFrame()`; each visible bot flushes every
     frame (even on IK-strided frames — the held pose persists) and hidden bots are simply not flushed.
-    Per-bot color comes from `botBodyStyle(id)` (hue per id hash). **Bots only** — humans/local keep
-    the per-mesh path. See `docs/subsystems/bots.md` "Phase 4 perf".
+    Per-bot color comes from `botBodyStyle(THREE, id, team)` (see "Bot team colors"). **Bots only** —
+    humans/local keep the per-mesh path. See `docs/subsystems/bots.md` "Phase 4 perf".
+  - `ragdollDeaths` / `maxLiveRagdolls` (2026-07-30) — default `true` / `12`. See "Bot death
+    ragdolls" below.
+  - `overlayHideD2` (2026-07-30) — squared XZ distance past which overhead health bars / alert marks
+    are hidden. Defaults to `min(60², botLod.hideD2)`. See "Overhead indicators" below.
   - `playerGroups()` (2026-07-15) — read-only accessor returning the live `id -> Group` map
     `_updatePlayers` maintains, for external raycasting/inspection. Used by `environment-viewer.html`'s
     bot inspector (`docs/subsystems/bots.md`) to Alt+Click-select a bot in the scene; the id also
@@ -185,6 +189,85 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
 - `export function playerTintHSL(id): [h, s, l]` — deterministic light-pastel tint (in 0..1) for a
   player id. Used by `GhostRenderer` for the body + orbs and by the local FPS viewmodel
   (`player-hands.js`) so your own hands match your own ghost.
+- `export const BOT_TEAM_STYLES` — see "Bot team colors" below.
+
+#### Bot team colors (2026-07-30, Phase E)
+
+`botBodyStyle(THREE, id, team)` now returns a **team** palette instead of a per-id hue, and both the
+instanced and the mesh bot path use it (previously only the instanced path was colored; mesh bots all
+shared one fixed dark green).
+
+| team | shell | plate | trim |
+|---|---|---|---|
+| `alpha` | `0x1f5b3a` | `0x101410` | `0x57d68d` |
+| `bravo` | `0x64252a` | `0x171012` | `0xff8a80` |
+
+Values mirror `bot-viewer-v2.html`'s authored `BOT_TEAM_DEFS` (its `facing` color becomes the ghost
+body's `trim` slot) so a bot reads as the same side in both viewers. Each bot's three colors are
+scaled by an id-keyed brightness factor in `0.86 .. 1.14` (`_shadeHex`), so a squad reads as one
+family while individuals stay distinguishable. A pose with **no** `team` (an old peer, or a spawner
+that never stamped one) falls back to the original distinct-hue-per-id scheme, so nothing regresses.
+Humans and the local player are untouched — they still use `playerTintHSL`.
+
+#### Bot death ragdolls (2026-07-30, Phase E)
+
+Bots no longer use the canned `FALL_MS` tip-over; they flop with the real solver (`ragdoll.js` +
+`ragdoll-body.js`, both pure/Node-tested and imported statically — neither touches THREE at import
+time). Humans and any capsule-mode actor keep the tip-over unchanged.
+
+- **Start** (`_startBotRagdoll`, on the alive→dead edge): `ragdollFromBody(THREE, ud.bodyProc, …)`
+  seeds 16 Verlet particles from the rig's **live joint world positions**, so the corpse flops from
+  the pose it died in. Then `applyDeathImpulse` kicks it along `item.deathImpulse` (the replicated
+  shot-travel vector, magnitude = m/s, capped at 18); with none stamped it falls back to the pose's
+  `velocity`, and failing that to a 4 m/s shove down its facing axis so it never falls perfectly straight.
+  Bails to the tip-over if there is no `bodyProc` to seed from (procedural bodies off, or the bot
+  never rendered) or the live budget is full.
+- **Step** (`_stepBotRagdoll`): one `stepRagdoll` per frame with `{ gravity: 25, groundHeight:
+  terrainHeight }` — corpses settle onto real terrain via the sampler the renderer already holds. `dt`
+  is the renderer's own wall clock, clamped to `RAGDOLL_MAX_DT` (50 ms) so a stalled frame can't
+  spiral the solver.
+- **Sleep** (harness parity): once `kineticEnergy` has stayed under `RAGDOLL_SLEEP_ENERGY` (1e-4) for
+  `RAGDOLL_SLEEP_MS` (500 ms) the corpse stops simulating and holds its final pose. Sleeping corpses
+  also skip the per-frame `setRagdollPose` and flush with `refreshMatrices = false` (reusing last
+  frame's world matrices), so a settled body costs only its instanced-batch re-add.
+- **Budget**: `_ragdollAwake` is an exact count of corpses still being stepped, maintained on start /
+  sleep / retire. A death while `_ragdollAwake >= maxLiveRagdolls` (12) silently falls back to the
+  tip-over, so a simultaneous wipe degrades instead of stalling the frame.
+- **Instanced path**: fully supported, no per-corpse mesh fallback. `player-procedural-body.js`'s
+  `setRagdollPose` writes the same part transforms `update()` does (world-space, `group` at identity),
+  and `flush(pool)` walks the same placeholders — so a corpse rides the shared `InstancedMesh` pool
+  exactly like a living bot. `_updateProceduralBodyLod` gains a corpse branch (ahead of the gait/LOD
+  logic) that poses from the solver instead of the IK solve and still obeys `botLod.hideD2`.
+- **Lifecycle**: `_retireRagdoll` drops the solver on respawn into the same ghost id and on despawn,
+  releasing the budget slot; it also nulls `bodyLastT`/`bodyLastPos` so the first live frame back
+  doesn't feed `bodyProc.update()` a multi-second `dt` (the gait solve is skipped for a corpse's whole
+  life, so that clock would otherwise be stale by the full respawn delay).
+- `tick(nowMs)`'s tip-over animation is gated on `!ud.ragdoll`, so it never fights the solver for the
+  container transform.
+
+#### Overhead indicators (2026-07-30, Phase E)
+
+`_updateOverlays(g, item, r, h)` draws a health bar + alert "!" above **bot** ghosts (host, solo, and
+guest all get them, since both render paths go through `_updatePlayers`). Humans/local carry neither.
+
+- **Data sources, all already on the wire**: `hp`/`maxHp` (added to `updateHostPlayerGhosts`'s bot
+  poses from `playerCombat.getSnapshot`; the guest path already had them via
+  `mergePlayerCombatFields` inside `getState()`), `alive`, and the new `alertTier` wire field.
+- **Health bar**: shown only while alive **and** damaged (`hp01 < 0.999`). Fill scales on X and
+  left-anchors (`position.x = -0.35·(1-hp01)`); its material is swapped between three shared
+  materials at the harness's thresholds (green > 0.55, amber > 0.30, red below).
+- **Alert "!"**: bar + dot, shown while `alertTier` is set and the bot is alive. Colors are the
+  harness's `ALERT_MARK_COLORS` — `seen` red `0xff5252`, `heard` amber `0xffd93d`, `push` green
+  `0x66ff66`, `near` cyan `0x4fc3f7`, `base` white. The escalation-score digit (a canvas texture in
+  the harness) is **not** ported.
+- **Billboarding without a camera quaternion**: the group is a child of the ghost container, so its
+  orientation is built from the two positions the renderer already has — yaw `atan2(dx, dz)` minus the
+  container's own yaw, then pitch about local X. No new constructor option, no per-frame allocation
+  (two scratch quaternions + two axis vectors live on the renderer).
+- **Cost**: geometry/materials are shared and built lazily on the first bot that needs one, so a
+  renderer with no bots (and the Node tests' minimal THREE stub) never allocates them; box — not
+  plane — geometry keeps the stub usable. One `Group` per bot, created the first time that bot is
+  damaged or alerted, freed with its container. Hidden past `overlayHideD2`.
 
 ### `player-hands.js`
 
