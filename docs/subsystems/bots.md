@@ -3038,6 +3038,24 @@ still seeds a teammate-position anchor — needs `attackerTeam` on reports (S3 r
 
 The v2 harness now has a dedicated Camera panel: damped OrbitControls with tighter near zoom, adaptive far zoom, screen-space panning, and optional auto-rotation; click a living bot for smooth third-person follow or Shift-click it for first-person POV. Auto-follow chooses the nearest living bot when the followed actor disappears. F frames the followed bot, O returns to orbit, and V enters POV. The optional auto scene shuffle alternates rooms and freshly seeded mazes at a configurable interval, retaining the living team/role roster and dummy count across the rebuild. Follow framing now owns its focus and zoom while auto-rotation is active only in manual orbit, preventing controller drift. It preserves a user-selected zoom, widens gradually for movement and long engagements, blends toward the active target, holds on a killed followed bot for 1.25 seconds, then auto-selects the nearest living bot; the Follow nearest bot button and ] shortcut use the same proximity rule. Follow mode also raycasts the existing map BVH between its focus and desired camera position: the Occlusion guard pulls the camera inward immediately before walls block the subject, then eases it back to the requested zoom after the view clears.
 
+### POV HUD + eye-bridge anchor restore (2026-07-30)
+
+POV mode has a DOM overlay (`#povHud`, toggled by `setCameraMode` via `updatePovHudVisibility`):
+a centre crosshair, and a hitmarker X that pops when the followed bot's shot lands (red and
+longer-lived when the hit was fatal). The hitmarker hooks `creditBotHit` — the one place every
+bot-victim damage path (bullet, knife, blast) already credits through, after the health decrement
+so lethality reads correctly — plus the dummy branch of `applyCombatDamage`; blast damage to
+dummies threads the thrower through `source.attacker` since the active-bot global no longer points
+at the thrower when a projectile lands. A red diamond marker (`povSpotMark`, updated once per
+frame by `updatePovSpotMarker`) floats above the head of the enemy the followed bot currently
+sees (`actor.target` + `actor.targetVisible` — single-slot threat model, so at most one) and
+lingers `POV_SPOT_LINGER_MS` (1.2 s) after sight loss.
+
+The 2026-07-27 comfort presets blended the POV camera 68–84% back toward the capsule-axis point
+(`headBlend` 0.32/0.16), undoing the 2026-07-26 eye-bridge anchor fix — the camera sat inside the
+head. All presets now use `headBlend: 1`: the camera anchors at the animated head's eye bridge and
+comfort is purely temporal damping (position/rotation rates, dead zone, max lag).
+
 ### Terrain fix: weapon mount height was world-absolute (2026-07-25)
 
 First browser bug from the terrain work: held guns hung at a fixed world height instead of riding
@@ -5299,3 +5317,106 @@ option and no per-frame allocation.
 - **Deaths with no recorded hit** (fall damage, or a kill that never went through
   `recordBotAllyHit`) fall back to the pose's replicated velocity, then to a small shove down the
   bot's facing.
+
+## Phase E: audio gating, FX pooling, knife
+
+Wave 2 of the harness port (`environment-viewer-v2.html` only; v1 untouched).
+
+### Bot combat audio gating
+
+Every *positional* bot / remote combat voice now goes through one gate, `playAtCulled(eventId,
+position, kind, maxPerWindow)`, a port of the harness's layer (`bot-viewer-v2.html:140-177`):
+
+1. **Distance cull** — squared-distance test against the listener (`playerCollider.end`, else the
+   camera) before any Web Audio node is built. `audioCullDist(kind)` picks per map: the shoot house
+   keeps the harness's arena numbers (`AUDIO_CULL_ARENA` — gunshot/launch/explosion 70 m, impact
+   60 m, step 26 m), the outdoor map uses each class's own panner-profile `maxDistance`
+   (`AUDIO_CULL_OUTDOOR` — gunshot 250, launch 220, impact 100, step 30). An `inverse` panner
+   *clamps* at `maxDistance` instead of reaching zero, so that is exactly where the fade ends and a
+   distant firefight is still faintly audible up to it. `explosion` is the exception: the shared
+   `largeExplosion` profile clamps at 1100 m and never fades, so its 420 m cull is a deliberate
+   budget bound, not the profile's range.
+2. **Voice budget** — `sfxBudgetOk(eventId, maxPerWindow, windowMs = 100)`, one rolling window per
+   event id shared by all bots. Harness-identical caps: gunshot 8, impact (`bullet_impact` /
+   `enemy_hit`) 8, launch 4, `knife_swing` 4, `footstep` 4, explosion 3.
+3. **Procedural fallback** — a loaded sample always wins (`envAudio.hasSfxEvent`); otherwise
+   `synthVoice(eventId)` from `weapon-sfx-synth.js` is played via `envAudio.playSynthAt`, so
+   `rocket_launch` / `explosion` / `grenade_throw` / `grenade_bounce` are never silent.
+
+`combatSfxProfile(kind)` (the arena-vs-outdoor panner picker) is unchanged for
+`gunshot`/`launch`/`explosion` and gained `impact` and `step` entries; `playAtCulled` calls it.
+
+Routed through the gate: bot/remote gunfire (`applyCombatIntent`, and the guest's `fireSeq` remote
+shots), bot grenade launch (`releaseGrenade`), explosions (`applyExplosionBlast`), all impact cues
+(`spawnShotEffects`, `spawnMeleeImpact`, `applyHitDamage`, the guest's `hit_spark` pass).
+
+**Not gated:** the human player's own first-person shot report is `envAudio.play(...)` —
+non-positional, never distance-culled and never budget-culled. Same for `player_damage`.
+
+**Bot footsteps** are ported (`updateBotFootstepSfx`, harness `bot-viewer-v2.html:2532`): a 1.7 m
+stride accumulator per bot fed from `capsule.start`, called every frame from the bot loop after
+`botTickOne`. It needs no animation hook — the capsule is the source, and it is not think-strided.
+Panel toggles `botAudioEnabled` and `botSynthSfxEnabled` sit in the bots section.
+
+### Effect entity churn
+
+`effect-renderer.js` already pools everything it owns (line/point buffers plus two sprite pools), so
+the per-shot churn was **not** in the renderer and **not** muzzle flashes — bots never spawn one
+(`spawnLocalMuzzleFlash` is a first-person-only view effect). It was the entity façade:
+`entityRegistry.renderList(e => e.type === 'effect')` ran **every render frame** and re-serialized
+every live effect, allocating a fresh wire object plus 3-4 fresh arrays each, on top of `list()`'s
+two array allocations.
+
+Fix (host/solo render side only): effects never move or change after creation
+(`EffectEntity.update` only advances `age`), so `createEffectEntity(init, nowSec)` serializes the
+wire **once** at spawn into `hostEffectWires`, and `liveHostEffectWires()` compacts that array in
+place each frame against `entityRegistry.get(id)` (a Map lookup, no allocation). `MAX_EFFECT_ENTITIES`
+(220, ≈110 hitscan shots in flight) caps the array; a new effect past the cap destroys the oldest.
+
+**Replication is unchanged.** `snapshot()` still walks the registry and serializes independently, so
+guest upserts are byte-identical; the cap only produces an ordinary early `removes` tombstone, which
+guests already handle. The guest render path (`mpPendingEffects`) is untouched.
+
+### Bot knife (last rung of the dry ladder)
+
+Phase C's note that "env has no bot melee fire path" was wrong: `applyCombatIntent` resolves
+`mode === 'melee'` (skips the magazine, resolves the short ray, draws `spawnMeleeImpact`).
+`botKnifeSecondaryEnabled` is now a `let`, default **on**, with a panel checkbox.
+
+Ladder position, harness-faithful — the dry rungs run **primary → sidearm → knife → flee**:
+`bot-sidearm.js`'s `outOfAllAmmo` decides "dry"; a spent primary with a loaded pistol swaps
+(`updateBotWeaponSlot`), a bot with both slots empty raises `knifeRequested`, and
+`chooseBotStateName` returns `BOT_KNIFE` above the flee rungs. Only a knife commit that times out
+(`KNIFE_COMMIT_MAX_MS` 12 s, then `KNIFE_COMMIT_COOLDOWN_MS` 6 s of `rec.knifeBlockUntil`) drops the
+bot through to flee — both constants already existed and were dead until now.
+
+- `updateKnifeMovement(targetDistance, nowMs)` — paths to `standoffGoalFromTarget(target,
+  knife.range * 0.72)` (that helper was also dead-but-correct since Phase C) and stops inside blade
+  range. No entry distance gate: a dry bot charges from anywhere, the commit cap is the backstop.
+- `fireBotKnife(targetDistance, nowMs)` — builds a `combat_intent` with `weapon: 'knife'` and goes
+  through `applyCombatIntent`, which stays the only fire path. The fire-rate gate applies and is
+  correct for melee (`validateShot` against the knife's 1500 ms `fireIntervalMs`). It deliberately
+  does *not* call `recordBotShotResult`: that is the blocked-**shot** heuristic (blacklist cover,
+  reposition for a clear muzzle) and a 2 m blade landing on a wall is not a firing-position problem.
+- **In hand vs slot.** `rec.weaponId` always stays the *firearm* slot so the swap/reload ladder keeps
+  operating on the gun the bot goes back to; `rec.knifeOut` is the harness's `equippedWeapon`, and
+  `environmentBotHeldWeaponId(rec)` now reports `grenade → knife → weaponId`. The held id is written
+  last in the tick so a same-frame slot swap cannot overwrite it.
+- **State-code tracer stays truthful**: `mag`/`reserve` read `rec.weaponId` (the dry firearm), so the
+  `knife-needs-dry` rule still holds, and slot 1 is `K` from the FSM name.
+
+**Visual gap (reported, not invented):** `weapon-anchors.json` has **no `knife` entry**, so
+`createEnvironmentBotWeaponMount` bails on the missing `ikAnchors` and the IK weapon mount cannot
+hold a knife. Until the knife is authored there it rides the right hand as a plain prop
+(`updateEnvironmentBotKnifeProp`), exactly like the grenade wind-up prop: position from the rig's own
+`rightHand` joint, scale from the knife's authored `thirdPersonHold.scale`, rotation body-yaw only.
+Both firearms stow on the body while it is out and the firearm rig is hidden. Blade orientation is
+therefore approximate — authoring `knife.ikAnchors` (grips + a blade tip) is what removes the
+approximation and enables a real knife pose/attack sequence.
+
+### Dead code removed (Phase A leftovers)
+
+`findPlayerHit` (unused `combat.js` import), `chooseBotState` (unused `bot-activity.js` import,
+superseded by `chooseBotStateName`), `mapOverlayLabel()`, and the `_fireEye` scratch (harness
+remnant — env's `fireBotShot` reads `bot.capsule.end` directly). Each had exactly one occurrence in
+the file: its own declaration.

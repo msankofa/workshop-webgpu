@@ -13,6 +13,14 @@ and `post-grade.js` are pure-JS, Node-testable "twins" of math that is otherwise
 expressed inline as TSL shader graphs — they exist purely so the shader math has a CPU
 reference that can be unit-tested without a browser/GPU.
 
+A third, unrelated layer — `effect-renderer.js` — draws **combat** visuals (tracers, impact
+sparks, muzzle flashes, layered explosions, smoke). It is not part of the particle/post stack
+and shares no code with it: it is a CPU-side, per-frame-regenerated draw over the serialized
+`effect` entities from `entity-types/effect.js`. Because it exists to make host and guest render
+an identical blast from one wire object, its replication contract lives in
+`docs/subsystems/multiplayer.md` §5b; the section below covers it as a visual layer — its draw
+systems, pool ceilings, effect kinds and the rules a caller has to keep to.
+
 ## Files
 
 | File | Responsibility | Lines |
@@ -21,6 +29,8 @@ reference that can be unit-tested without a browser/GPU.
 | `particles.js` | GPU particle field: persistent compute-simulated state buffer, atomic survivor compaction into an indirect draw, camera-facing billboard quad rendering. | 213 |
 | `post-fx.js` | Configurable TSL post-processing graph: scene pass → bloom → tone mapping → inline color grade → output. Builds/rebuilds a `PostProcessing` node graph. | 106 |
 | `post-grade.js` | Pure-JS CPU reference for the color-grade math used inline in `post-fx.js`'s `gradeNode`. Node-tested. | 34 |
+| `effect-renderer.js` | Combat-effect draw layer: tracers, impact sparks, muzzle flashes, layered explosions, smoke puffs. Stateless — every sub-particle is regenerated each frame from the wire object + id hash + age. Browser/THREE only. | 446 |
+| `entity-types/effect.js` | Pure `EffectEntity` (`create`/`update`/`serialize`) — the authoritative wire shapes and defaults for every effect kind. No THREE. | 98 |
 
 ## Public API
 
@@ -50,6 +60,13 @@ reference that can be unit-tested without a browser/GPU.
   - `setGrade(g)` — partial update of `{ brightness, contrast, gamma, gain, saturation, temperature, tint, vignette, vignetteSoft }`.
   - `resize()` — no-op (PassNode auto-tracks renderer size).
   - `dispose()`.
+
+### `effect-renderer.js`
+- `createEffectRenderer({ THREE, scene, terrainHeight = null, maxSegments = 3072, maxPoints = 1024 }) -> { sync(list, nowMs), dispose() }`.
+  `sync` takes the serialized effect wire objects and must be called **every render frame** (nothing
+  persists between calls). `terrainHeight(x, z)` is injected because an explosion needs the real
+  ground under it, not its own Y — a rocket can detonate on a wall, a trunk or in mid-air. See
+  "Combat effects" below.
 
 ### `post-grade.js`
 - `grade(rgb, p = {}, uv = [0.5, 0.5]) -> [r, g, b]` — applies the full grade chain (gain → brightness → contrast(pivot 0.18) → gamma → white balance → saturation → vignette) to one RGB triplet at one UV. All `p` fields default to identity.
@@ -83,6 +100,75 @@ Note: `environment-ui.js` itself defines no FX sliders — it only (a) lists per
 **Particles** (~1704-1792, an editor for a "design" that can be added as a new field or live-edits the selected field via `field.setParams`):
 `particlesEnabled` (master on/off for all active fields), base species select (`ember`/`dust`), then per-field `Size, Opacity, Color R/G/B, Flicker, Buoyancy, Drag, Curl strength, Wind X/Y, Speed, Lifetime`. `Count` and `Radius` are also editable but are non-live (`pslider(..., live=false)`) — they schedule a debounced (220ms) field rebuild (`rebuildEntry`) instead of a uniform write, since GPU buffer capacity can't change live.
 
+## Combat effects (`effect-renderer.js`)
+
+Unlike the particle field, nothing here is simulated or stored. `sync(list, nowMs)` rebuilds every
+sub-particle of every live effect from three inputs: the wire object, a hash of its `id`, and its age
+(`nowMs - firstSeen[id]`). That is what lets one ~10-field snapshot object reproduce an identical
+blast on every client, and it is also why the renderer costs whatever the current list costs, every
+frame — a caller keeping 900 effects alive pays for 900 effects each frame.
+
+**Draw systems.** One pooled `LineSegments` (`maxSegments` 3072) and one pooled `Points`
+(`maxPoints` 1024), both additive, for tracers, spark rays, shockwave rings, embers and shrapnel
+streaks; plus two **sprite pools** — `GLOW_POOL` 220 additive and `SMOKE_POOL` 260 normal-blend —
+for the layers that need per-puff colour/opacity/scale. Sprites use `SpriteNodeMaterial`, not classic
+`SpriteMaterial`, because the WebGPU backend requires the node material; the shared soft radial
+texture is one `CanvasTexture` generated on the CPU. Pools are immediate-mode: counters reset at the
+top of `sync`, leftovers are hidden at the bottom, and overflow is silently dropped.
+
+**Effect kinds.** Defaults and wire shapes are authoritative in `entity-types/effect.js`
+(`DEFAULT_LIFE`, `EffectEntity.create`).
+
+| Kind | Default life | Drawn as |
+|---|---|---|
+| `gun_tracer` | 0.12 s | additive streak + glow sprites along the core (`tracer-visual.js` drives the head/tail) |
+| `hit_spark` | 0.6 s | 6 additive rays (fade in 0.22 s) + a point; world surfaces (`terrain`/`obstacle`) also get a lingering dust sprite |
+| `muzzle_flash` | 0.42 s | small glow sprite at the muzzle tip + barrel-relative smoke wisps, all shaped by `muzzleFx` |
+| `explosion` | 1.8 s | seven sub-timed layers: fireball core (<0.2 s), body puffs (<0.34 s), ground shockwave ring (<0.42 s), shell rays (<0.28 s), 22 ballistic embers (<0.52 s), 12 shrapnel streaks (<0.72 s), 10 staggered smoke puffs (to ~1.8 s) |
+| `smoke_puff` | 1.2 s | exactly **one** smoke sprite |
+
+`life` is the **outer envelope** of the whole effect, not one layer — an explosion's 1.8 s exists so
+its smoke can linger long after the flash has gone. The shockwave ring is skipped when the blast is
+more than `0.8 × radius` above the injected ground height, so airbursts and wall/creature hits don't
+paint a ring on the terrain.
+
+### `smoke_puff`
+
+`{ id, type:'effect', kind:'smoke_puff', p, color, life, size, growth, rise, drift, opacity }`.
+
+| Field | Default | Unit / meaning |
+|---|---|---|
+| `life` | 1.2 | s, the puff's whole existence |
+| `size` | 0.35 | m, starting sprite radius |
+| `growth` | 0.9 | m gained over a full life |
+| `rise` | 0.35 | m/s of buoyancy |
+| `drift` | `[0,0,0]` | m/s of wind / inherited velocity |
+| `opacity` | 0.3 | peak alpha |
+| `color` | `[0.42,0.4,0.38]` | smoke grey (the warm effect default is overridden for this kind) |
+
+Rendered position is `p + drift·t + up·rise·t`, radius is `size + growth·(t/life)`, alpha fades in
+fast (over `life/6`) and out to zero. Per-puff jitter, size variance and brightness variance are all
+hashed off the `id`, so a trail doesn't read as identical dots on a straight line.
+
+**Two rules a caller has to keep to** — both cost real debugging time when broken:
+
+1. **Ids must be unique across every effect kind, and never reused.** `firstSeen` is keyed by `id`
+   alone, and a reused id inherits the previous holder's birth time — the new puff spawns already
+   half-dead, or never appears at all.
+2. **Never mutate `p` after spawn.** All motion comes from `drift` + `rise` integrated against the
+   effect's own age. Moving `p` to follow a projectile turns a trail into one dot dragged along
+   behind it.
+
+A puff is **one sprite, not an emitter**: a rocket trail is 30–60 independent short-lived puff
+entities, one spawned every 35 ms of flight. That is what makes it stateless, and also why a long
+trail is the thing most likely to exhaust `SMOKE_POOL`.
+
+**Callers.** `environment-viewer.html` feeds the renderer from `entityRegistry.renderList({type:'effect'})`
+(host/solo) or the interpolated guest upserts — see `docs/subsystems/multiplayer.md` §5b.
+`bot-viewer-v2.html` feeds it a plain local list (`botEffects` / `pushEffect` / `updateEffects`,
+capped at 900) and is the source of the rocket-trail puffs — see `docs/subsystems/bots.md`
+("Explosives in the v2 harness").
+
 ## Tests
 
 - **`test-particle-field.mjs`** (Node, no GPU): exercises `particle-field.js` directly.
@@ -100,3 +186,37 @@ Note: `environment-ui.js` itself defines no FX sliders — it only (a) lists per
   - `vignette` darkens the corner but not the center; higher `vignetteSoft` darkens less away from the extreme edge than lower softness, at a fixed sample point.
 
 Neither test file touches `particles.js` or `post-fx.js` directly — both are GPU/TSL/three.js-dependent and not Node-testable; only their pure-JS math twins are covered.
+
+`effect-renderer.js` is likewise untested directly (it imports `three/webgpu` and touches a canvas).
+Its inputs are covered indirectly instead: `test-tracer-visual.mjs` for the tracer segment math it
+calls, and `test-bot-explosives.mjs` for the puff-spawn cadence its rocket-trail caller drives.
+`entity-types/effect.js` is pure and Node-importable but has no test of its own — the defaults table
+above is the only spec for them.
+
+## Host effect-entity wire cache (environment-viewer-v2.html)
+
+`effect-renderer.js` pools every visual object it owns, but the *entity façade* above it did not:
+`entityRegistry.renderList(e => e.type === 'effect')` ran once per render frame and re-serialized
+every live effect, allocating a fresh wire object plus 3-4 arrays each (plus `list()`'s own two
+arrays). At 90-bot full-auto scale that was the dominant per-frame garbage in the combat path.
+
+Effects are immutable after creation — `EffectEntity.update` only advances `sim.age` — so the v2
+viewer serializes each effect's wire **once**, at spawn:
+
+- `createEffectEntity(init, nowSec)` wraps `entityRegistry.create('effect', …)` and pushes
+  `EffectEntity.serialize(entity)` onto `hostEffectWires`. Every host-side effect spawn goes through
+  it, including the adapter-facing `ctx.spawnEffect` handed to `entityRegistry.tick`.
+- `liveHostEffectWires()` compacts that array in place each frame, dropping entries whose id no
+  longer resolves via `entityRegistry.get` (a Map lookup, no allocation). The registry's own tick is
+  still what expires effects, so the render list can never disagree with what guests are told.
+- `MAX_EFFECT_ENTITIES` = 220 (≈110 hitscan shots in flight, 2 effects each). A spawn past the cap
+  destroys the oldest tracked effect first.
+
+**Replication is untouched.** `snapshot()` walks the registry and serializes independently of this
+cache, so guest `upserts` are byte-identical to before; the cap only emits an ordinary early
+`removes` tombstone. The guest render path still reads `mpPendingEffects` from the wire. The cache is
+therefore a **host/solo render-side** optimisation with no guest-visible behaviour change.
+
+Note: bots never spawn `muzzle_flash` entities — `spawnLocalMuzzleFlash` is a local first-person view
+effect (not replicated) fired only from `fireGunFromCamera`. Bot shots produce `gun_tracer` +
+`hit_spark` only.

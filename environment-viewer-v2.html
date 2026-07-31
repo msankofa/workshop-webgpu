@@ -62,7 +62,7 @@ import { createProceduralPlayerBody } from './player-procedural-body.js';
 import { getWeapon, enabledWeapons, loadout } from './weapons.js';
 import { reloadPoseDelta, evaluateSequence, resolveTargetRef } from './weapon-sequence.js';
 import { runBobAxis, traumaShake, decayTrauma, addTrauma, easeToward, momentumLeanTarget, hudDragTarget, clampLookPitch } from './view-feel.js';
-import { findPlayerHit, pushPlayerPose, prunePlayerPoseHistory, validateShot, resolveHitscan } from './combat.js';
+import { pushPlayerPose, prunePlayerPoseHistory, validateShot, resolveHitscan } from './combat.js';
 import { createPlayerCombatFacade } from './player-combat.js';
 import { listStates as listSliderStates, saveState as saveSliderState, deleteState as deleteSliderState, importStates as importSliderStates } from './slider-state.js';
 import { createEntityRegistry } from './entity-registry.js';
@@ -75,12 +75,13 @@ import { createLightEntityRenderer } from './light-entity-renderer.js';
 import { createEffectRenderer } from './effect-renderer.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
+import { synthVoice } from './weapon-sfx-synth.js';
 import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
 import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose, createGoalClaims,
   resolveBotPairsHashed, separationXZHashed, waypointContestedHashed, blendSeparationDir } from './bot-entity.js';
 import {
   BOT_PATROL, BOT_SEEK, BOT_AIM, BOT_FIRE, SENSE_RANGE as BOT_SENSE_RANGE, TURN_RATE_RAD_S as BOT_TURN_RATE_RAD_S,
-  chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle, trackStuck as botTrackStuck,
+  aimAnglesTo, aimError as botAimError, slewAngle, trackStuck as botTrackStuck,
   // --- v2 brain surface (Phase A port; inert until the brain lands) ---
   BOT_PURSUE, BOT_FLEE, BOT_HEAL, BOT_KNIFE, BOT_COVER_MOVE, BOT_COVER_HOLD,
   AIM_TOLERANCE_RAD, CLOSE_THREAT_RADIUS, SEEK_SPREAD_RING_M,
@@ -726,7 +727,7 @@ if (mpRole === 'host') {
       if (fx.kind !== 'hit_spark' || mpSeenImpactFx.has(fx.id) || !Array.isArray(fx.p)) continue;
       mpSeenImpactFx.add(fx.id);
       const flesh = fx.surface === 'player' || fx.surface === 'creature' || fx.surface === 'mob';
-      envAudio.playAt(flesh ? 'enemy_hit' : 'bullet_impact', audioPos(fx.p), undefined, positionalSfxProfiles.minor);
+      playAtCulled(flesh ? 'enemy_hit' : 'bullet_impact', fx.p, 'impact', 8);
     }
     for (const id of mpSeenImpactFx) if (!liveFxIds.has(id)) mpSeenImpactFx.delete(id);
     const players = (state.players ?? []).filter(p => p.id !== mpClientId);
@@ -736,7 +737,7 @@ if (mpRole === 'host') {
       const seen = mpRemoteFireSeq.has(p.id);
       const prev = mpRemoteFireSeq.get(p.id) ?? 0;
       if (seen && typeof p.fireSeq === 'number' && p.fireSeq > prev && Array.isArray(p.p)) {
-        envAudio.playAt(weaponFireEvent(p.weapon), audioPos(p.p), undefined, combatSfxProfile('gunshot'));
+        playAtCulled(weaponFireEvent(p.weapon), p.p, 'gunshot', 8);
       }
       mpRemoteFireSeq.set(p.id, p.fireSeq ?? 0);
     }
@@ -806,9 +807,6 @@ function rebakeWorldMap() {
     worldMapBake = null;
     showError(`map minimap bake failed: ${err.message || err}`);
   }
-}
-function mapOverlayLabel() {
-  return (MAP_OVERLAYS.find(o => o.id === mapOverlayId) || {}).label || '';
 }
 function createMultiplayerFinder() {
   const style = document.createElement('style');
@@ -1342,11 +1340,61 @@ const ARENA_SFX = {
   gunshot: { distanceModel: 'inverse', refDistance: 8, maxDistance: 90, rolloffFactor: 0.9 },
   launch: { distanceModel: 'inverse', refDistance: 9, maxDistance: 90, rolloffFactor: 0.85 },
   explosion: { distanceModel: 'inverse', refDistance: 12, maxDistance: 130, rolloffFactor: 0.7 },
+  impact: positionalSfxProfiles.short,   // harness BOT_SFX.impact
+  step: { distanceModel: 'inverse', refDistance: 2.5, maxDistance: 26, rolloffFactor: 1.5 },
+};
+// Outdoor overrides; anything unlisted falls through to the shared gunshot profile (unchanged).
+const OUTDOOR_SFX = {
+  explosion: positionalSfxProfiles.largeExplosion,
+  impact: positionalSfxProfiles.minor,
+  step: positionalSfxProfiles.short,
 };
 const combatSfxProfile = kind => (NO_ENVIRONMENT && ARENA_SFX[kind]) ? ARENA_SFX[kind]
-  : (kind === 'explosion' ? positionalSfxProfiles.largeExplosion : positionalSfxProfiles.gunshot);
+  : (OUTDOOR_SFX[kind] || positionalSfxProfiles.gunshot);
 // Wrap a plain [x,y,z] wire vector as an {x,y,z} position playAt() accepts.
 const audioPos = a => (Array.isArray(a) ? { x: a[0], y: a[1], z: a[2] } : a);
+
+// --- combat SFX gating (bot-viewer-v2.html:140-177 parity) -------------------------
+// 90 bots on full auto request hundreds of voices a second. Two gates run before any node graph
+// is built: a hard distance cull, then a per-event voice budget window.
+let botAudioEnabled = true;      // panel toggle: silences every gated (positional) combat voice
+let botSynthSfxEnabled = true;   // procedural fallback for events the sfx folder has no file for
+// Cull radius per sound class. The shoot house keeps the harness's arena numbers; the outdoor map
+// is ~1 km across, so each class culls at its own panner profile's maxDistance instead -- an
+// inverse panner CLAMPS at maxDistance rather than reaching zero, so that is where the fade ends
+// and a distant firefight is still faintly audible right up to it. largeExplosion clamps at 1100 m
+// (never fades), so its cull is a deliberate budget bound, not the profile's range.
+const AUDIO_CULL_ARENA = { gunshot: 70, launch: 70, explosion: 70, impact: 60, step: 26 };
+const AUDIO_CULL_OUTDOOR = { gunshot: 250, launch: 220, explosion: 420, impact: 100, step: 30 };
+const audioCullDist = kind => (NO_ENVIRONMENT ? AUDIO_CULL_ARENA : AUDIO_CULL_OUTDOOR)[kind] ?? 120;
+// Per-event-id voice budget: cap how many of the SAME event may start per window so the graph
+// doesn't clip into mush or stall the audio thread. Windows are shared across all bots.
+const sfxWindows = new Map();
+function sfxBudgetOk(eventId, maxPerWindow, windowMs = 100) {
+  const now = performance.now();
+  let w = sfxWindows.get(eventId);
+  if (!w || now - w.start > windowMs) { w = { start: now, count: 0 }; sfxWindows.set(eventId, w); }
+  if (w.count >= maxPerWindow) return false;
+  w.count++;
+  return true;
+}
+// Every positional bot/remote combat voice goes through here. A loaded sample always wins;
+// weapon-sfx-synth.js covers the ids the sfx folder has no file for, so explosives are never silent.
+function playAtCulled(eventId, position, kind, maxPerWindow = 6) {
+  if (!botAudioEnabled || !position) return;
+  const pos = audioPos(position);
+  if (!pos) return;
+  const listener = playerCollider ? playerCollider.end : camera.position;
+  const maxDist = audioCullDist(kind);
+  const dx = pos.x - listener.x, dy = pos.y - listener.y, dz = pos.z - listener.z;
+  if (dx * dx + dy * dy + dz * dz > maxDist * maxDist) return;
+  if (!sfxBudgetOk(eventId, maxPerWindow)) return;
+  const profile = combatSfxProfile(kind);
+  if (envAudio.hasSfxEvent(eventId)) { envAudio.playAt(eventId, pos, undefined, profile); return; }
+  if (!botSynthSfxEnabled) return;
+  const voice = synthVoice(eventId);
+  if (voice) envAudio.playSynthAt(voice, pos, { profile });
+}
 // Distance walked since the last footstep SFX; a stride-length threshold plays 'footstep'
 // on a velocity-based cadence rather than every frame (see animate()).
 let footstepDist = 0;
@@ -2287,6 +2335,9 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
     stowPending: null,          // Set of weaponIds with a build in flight (no duplicate clones)
     grenadeProp: null,          // Object3D in the throwing hand during a wind-up
     grenadePropPending: false,
+    knifeSince: null, knifeBlockUntil: 0, knifeOut: false, // last-resort melee commit (cap + cooldown)
+    knifeProp: null, knifePropPending: false,
+    stepPrev: null, stepDist: 0,   // footstep SFX stride accumulator
     grenadeArmHeld: false,      // true while this code owns the right arm target
     dashHandTarget: null, grenadeHandTarget: null, // per-bot arm-target objects: a shared scratch would alias across bots
     mountDtAccum: 0,
@@ -2926,6 +2977,22 @@ function commitBotActor(rec = activeBot) {
   rec.patrolTravelHeading = botPatrolTravelHeading;
 }
 
+// Bot footsteps (bot-viewer-v2.html:2532): stride-based like the local player's, but per bot and
+// culled/budgeted so only nearby bots are heard. Runs every frame -- the brain may be think-strided,
+// the capsule is not.
+const BOT_FOOTSTEP_STRIDE = 1.7;
+function updateBotFootstepSfx(rec) {
+  if (!botAudioEnabled) return;
+  const foot = rec.bot.capsule.start;
+  if (!rec.stepPrev) { rec.stepPrev = { x: foot.x, z: foot.z }; rec.stepDist = 0; return; }
+  const dx = foot.x - rec.stepPrev.x, dz = foot.z - rec.stepPrev.z;
+  rec.stepPrev.x = foot.x; rec.stepPrev.z = foot.z;
+  rec.stepDist += Math.sqrt(dx * dx + dz * dz);   // not hypot: this is per bot per frame
+  if (rec.stepDist < BOT_FOOTSTEP_STRIDE) return;
+  rec.stepDist = 0;
+  playAtCulled('footstep', foot, 'step', 4);
+}
+
 // Wipe every brain register on a rec (respawn): a revived bot re-acquires and re-plans from
 // scratch rather than inheriting the perception, cover commit and search frontier it died with.
 function resetBotBrainState(rec) {
@@ -2955,6 +3022,8 @@ function resetBotBrainState(rec) {
   rec.pushElement = null; rec.pushStartedAt = null; rec.squadLeaderId = null;
   rec.holdUntil = 0; rec.holdSince = 0; rec.holdReason = null; rec.holdFacingXZ = null;
   rec.squadHoldSince = null; rec.squadHoldBroken = false;
+  rec.stepPrev = null; rec.stepDist = 0;   // a respawn teleport must not bank as walked distance
+  rec.knifeSince = null; rec.knifeBlockUntil = 0; rec.knifeOut = false;
 }
 
 // --- tuning (the harness's botBehaviorSettings, minus what the env panel sliders already own) ---
@@ -2975,11 +3044,11 @@ const botBehaviorSettings = {
 // A10 reaction/spread. reactionMs is overwritten from the "Notice time" slider each tick.
 const botAimSettings = { ...AIM_DEFAULTS, reactionMs: 700, reactionPerMetreMs: 40, reactionMaxMs: 2000 };
 const botInvestigationSettings = { durationMs: 12000, initialRadius: 1.25, expansionMetresPerSecond: 2.5, maxRadius: 12 };
-// Phase C wires the SECOND rung of the last-resort ladder (the role sidearm), not the third: env
-// has no bot melee fire path, so the knife stays disarmed and a genuinely dry bot flees instead.
-// bot-sidearm's outOfAllAmmo is what now decides "dry" -- a spent primary with a loaded pistol
-// keeps the bot fireCapable rather than sending it running.
-const botKnifeSecondaryEnabled = false;
+// Phase E: the knife is the THIRD and last rung of the last-resort ladder, below the role sidearm
+// and above flee -- applyCombatIntent resolves mode 'melee', so env does have a bot melee fire path.
+// bot-sidearm's outOfAllAmmo decides "dry": a spent primary with a loaded pistol swaps, a bot with
+// both slots empty draws the knife, and only a knife commit that times out falls through to flee.
+let botKnifeSecondaryEnabled = true;
 // --- Phase C tuning -------------------------------------------------------------
 let botSidearmEnabled = true;      // every bot carries a backup behind its primary (bot-sidearm.js)
 let botMedicPercent = 20;          // % of each spawn batch that becomes a medic (bot-roles.js)
@@ -3045,7 +3114,6 @@ let botFrameNow = 0;               // performance.now() stamped once per updateB
 const _xzScratchA = { x: 0, z: 0 };
 const _sentryEye = { x: 0, y: 0, z: 0 };
 const _sentryTargetEye = { x: 0, y: 0, z: 0 };
-const _fireEye = { x: 0, y: 0, z: 0 };
 const _selOrigin = { x: 0, y: 0, z: 0 };
 const _selTargetEye = { x: 0, y: 0, z: 0 };
 const _aimAngles = { yaw: 0, pitch: 0 };
@@ -4543,6 +4611,54 @@ function standoffGoalFromTarget(target, range) {
 function goalChanged(goal, threshold = 0.65) {
   return !botCombatMoveGoal || Math.hypot(goal.x - botCombatMoveGoal.x, goal.z - botCombatMoveGoal.z) > threshold;
 }
+// --- knife (bot-viewer-v2.html:6624/8276) -----------------------------------------
+// Charge to blade range and hold there. No distance gate on entry: a dry bot closes from anywhere,
+// and the commit cap in botTickOne is what ends a charge that never lands.
+const _knifeTargetXZ = { x: 0, z: 0 };
+function updateKnifeMovement(targetDistance, nowMs) {
+  const knife = getWeapon('knife');
+  if (!botTarget || !knife) return;
+  if (targetDistance <= knife.range) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    return;
+  }
+  _knifeTargetXZ.x = botTarget.p[0]; _knifeTargetXZ.z = botTarget.p[2];
+  const goal = standoffGoalFromTarget(_knifeTargetXZ, Math.max(0.25, knife.range * 0.72));
+  let refused = false;
+  if (pathMode !== 'knife' || goalChanged(goal, 0.35) || currentPath.length === 0) {
+    const fresh = requestPathBudgeted(bot, goal, nowMs);
+    if (fresh) { currentPath = fresh; pathMode = 'knife'; botCombatMoveGoal = goal; }
+    else refused = true;   // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    if (!refused) { pathMode = null; botCombatMoveGoal = null; }
+    return;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) { pathMode = null; botCombatMoveGoal = null; }
+}
+// Melee swing: same single fire path as a bullet. applyCombatIntent's mode==='melee' branch skips
+// the magazine, resolves the 2 m ray along the bot's current facing and draws spawnMeleeImpact;
+// validateShot's cadence gate is the knife's own 1500 ms fireIntervalMs.
+function fireBotKnife(targetDistance, nowMs) {
+  const knife = getWeapon('knife');
+  if (!knife || !botTarget || targetDistance > knife.range) return false;
+  const id = bot.id;
+  const cp = Math.cos(bot.pitch);
+  _fireDir.x = Math.sin(bot.yaw) * cp; _fireDir.y = Math.sin(bot.pitch); _fireDir.z = Math.cos(bot.yaw) * cp;
+  const eye = bot.capsule.end;
+  const result = applyCombatIntent({
+    type: 'combat_intent', action: 'gun.fire', weapon: 'knife',
+    shotSeq: (playerShotState.get(id)?.shotSeq ?? 0) + 1,
+    origin: [eye.x, eye.y, eye.z], dir: [_fireDir.x, _fireDir.y, _fireDir.z], clientTime: nowMs,
+  }, id);
+  if (!result?.ok) return false;
+  playAtCulled('knife_swing', eye, 'impact', 4);
+  // Deliberately NOT recordBotShotResult: that is the blocked-SHOT heuristic (blacklist cover,
+  // reposition for a clear muzzle). A 2 m blade landing on a wall is not a firing-position problem.
+  return true;
+}
 const _pursuitTargetXZ = { x: 0, z: 0 };
 const _pursuitSelfXZ = { x: 0, z: 0 };
 const _pursuitVel = { x: 0, y: 0, z: 0 };
@@ -5109,8 +5225,7 @@ function releaseGrenade(rec, pending, nowMs) {
   rec.grenades -= 1;
   rec.lastGrenadeAt = nowMs;
   teamLastGrenadeAt.set(rec.teamId, nowMs);
-  envAudio.playAt(weaponFireEvent('grenade'), audioPos([_grenadeOrigin.x, _grenadeOrigin.y, _grenadeOrigin.z]),
-    undefined, combatSfxProfile('launch'));
+  playAtCulled(weaponFireEvent('grenade'), _grenadeOrigin, 'launch', 4);
   hostGhostsDirty = true;
 }
 // Owns the bot's movement for the whole wind-up; returns true while it does.
@@ -5328,7 +5443,19 @@ function updateBotSentry(rec, dt, nowMs) {
     !botSwapping(nowMs) &&   // the pistol is out of the holster but not yet up
     (nowMs - lastShotAt >= (currentBotWeapon()?.fireIntervalMs ?? 340));
   const attackerOutOfAmmo = botOutOfAllAmmo();
-  const knifeRequested = botKnifeSecondaryEnabled && visible && botReloadUntil == null && attackerOutOfAmmo;
+  // Knife commit cap (harness parity): the rung outranks nearly the whole ladder, so a charge that
+  // never lands must expire or the bot camps KNIFE forever. Expiry blocks the rung, which drops the
+  // dry bot to the flee rung below it.
+  if (botState !== BOT_KNIFE) rec.knifeSince = null;
+  else {
+    rec.knifeSince ??= nowMs;
+    if (nowMs - rec.knifeSince > KNIFE_COMMIT_MAX_MS) {
+      rec.knifeBlockUntil = nowMs + KNIFE_COMMIT_COOLDOWN_MS;
+      rec.knifeSince = null;
+    }
+  }
+  const knifeRequested = botKnifeSecondaryEnabled && visible && !rec.healRequested &&
+    botReloadUntil == null && attackerOutOfAmmo && nowMs >= (rec.knifeBlockUntil ?? 0);
   // A selected flee path is an active action: keep it until followPath reaches its last waypoint.
   const fleeCommitted = botState === BOT_FLEE && pathMode === 'flee' && currentPath.length > 0 && !!botCombatMoveGoal;
   const combat = playerCombat.getSnapshot(bot.id);
@@ -5571,6 +5698,10 @@ function updateBotSentry(rec, dt, nowMs) {
     pathMode = null; currentPath = []; botCombatMoveGoal = null;
     faceAimDirection(targetYaw, targetPitch, dt);
     if (state === BOT_FIRE && fireBotShot(nowMs)) lastShotAt = nowMs;
+  } else if (state === BOT_KNIFE) {
+    updateKnifeMovement(targetDistance, nowMs);
+    faceAimDirection(targetYaw, targetPitch, dt);
+    if (fireBotKnife(targetDistance, nowMs)) lastShotAt = nowMs;
   } else if (state === BOT_HEAL) {
     updateBotHealing(dt);
     faceThreatAndAhead(threatFacing(null) || botCombatMoveGoal, dt, nowMs);
@@ -5639,6 +5770,16 @@ function updateBotSentry(rec, dt, nowMs) {
     _topOff.targetVisible = visible;
     _topOff.concealed = concealedFromTarget;
     if (shouldTopOffReload(_topOff)) updateBotReload(nowMs, true);
+  }
+  // What is actually IN HAND, harness-faithful (setBotEquippedWeapon): a knife commit holds the
+  // knife, otherwise the gun slot. rec.weaponId stays the FIREARM slot either way, so the swap /
+  // reload ladder above keeps operating on the gun the bot goes back to. Written last so a swap
+  // this frame cannot overwrite it.
+  rec.knifeOut = botKnifeSecondaryEnabled && botState === BOT_KNIFE;
+  const heldWeaponId = rec.knifeOut ? 'knife' : rec.weaponId;
+  if (bot.weapon !== heldWeaponId) {
+    bot.weapon = heldWeaponId; bot.tool = heldWeaponId;
+    setPlayerWeapon(bot.id, heldWeaponId); setPlayerTool(bot.id, heldWeaponId);
   }
   // The round that emptied the mag is fired INSIDE the FIRE frame, so by the time the state is
   // sampled the gun is reloading, dry, or mid-swap -- a FIRE stamp would then describe a bot that
@@ -6031,6 +6172,7 @@ function updateBots(dt) {
     }
     rec.deadSince = null;
     botTickOne(id, rec, dt, nowMs);
+    updateBotFootstepSfx(rec);
   }
   bindBotActor(null);   // no bot is bound between frames: a stale binding would leak registers
   pushBotsApart(rebuildBotHash());   // re-index: the ticks above moved everyone, then push apart
@@ -8516,6 +8658,17 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     sidearmChk.type = 'checkbox'; sidearmChk.checked = botSidearmEnabled; sidearmChk.style.width = 'auto';
     sidearmChk.addEventListener('change', () => { botSidearmEnabled = sidearmChk.checked; });
     sidearmRow.appendChild(sidearmChk); botSec.appendChild(sidearmRow);
+    const botToggleRow = (label, get, set) => {
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = `<span style="color:#c4ccd6">${label}</span>`;
+      const chk = document.createElement('input');
+      chk.type = 'checkbox'; chk.checked = get(); chk.style.width = 'auto';
+      chk.addEventListener('change', () => set(chk.checked));
+      row.appendChild(chk); botSec.appendChild(row);
+    };
+    botToggleRow('Knife (last resort)', () => botKnifeSecondaryEnabled, v => { botKnifeSecondaryEnabled = v; });
+    botToggleRow('Bot combat audio', () => botAudioEnabled, v => { botAudioEnabled = v; });
+    botToggleRow('Synth SFX fallback', () => botSynthSfxEnabled, v => { botSynthSfxEnabled = v; });
 
     botStatusEl = document.createElement('div');
     botStatusEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 2px';
@@ -11447,6 +11600,8 @@ function destroyEnvironmentBotProps(id) {
   rec.stowProps = null; rec.stowPending = null;
   if (rec.grenadeProp) scene.remove(rec.grenadeProp);
   rec.grenadeProp = null; rec.grenadePropPending = false; rec.grenadeArmHeld = false;
+  if (rec.knifeProp) scene.remove(rec.knifeProp);
+  rec.knifeProp = null; rec.knifePropPending = false;
 }
 
 // Shared normalized-template loader for the prop paths (stow, grenade in hand). Deliberately the
@@ -11498,9 +11653,9 @@ const STOW_PLACEMENTS = {
 function stowPlacementFor(weaponId) {
   return PISTOL_IDS.includes(weaponId) ? STOW_PLACEMENTS.hip : STOW_PLACEMENTS.back;
 }
-// A grenade wind-up counts as "in hand", so both guns go on the body for its duration.
+// A grenade wind-up and a knife commit both count as "in hand", so both guns go on the body.
 function environmentBotHeldWeaponId(rec) {
-  return rec.grenadeThrow ? 'grenade' : rec.weaponId;
+  return rec.grenadeThrow ? 'grenade' : rec.knifeOut ? 'knife' : rec.weaponId;
 }
 function requestEnvironmentBotStowProp(rec, weaponId) {
   const pending = rec.stowPending ??= new Set();
@@ -11585,10 +11740,39 @@ function updateEnvironmentBotGrenadeProp(rec, body) {
   }
 }
 
+// ---- knife in hand: weapon-anchors.json has no `knife` ikAnchors, so the IK weapon mount cannot
+// build one (createEnvironmentBotWeaponMount bails on a missing rawAnchors). Until the knife is
+// authored there, it rides the right hand as a plain prop like the grenade -- position from the
+// rig's own hand joint, scale from the knife's authored thirdPersonHold. Rotation is body yaw only.
+const _knifeYawQuat = new THREE.Quaternion();
+const _knifeEuler = new THREE.Euler();
+function requestEnvironmentBotKnifeProp(rec) {
+  if (rec.knifePropPending) return;
+  rec.knifePropPending = true;
+  void loadEnvironmentWeaponTemplate('knife').then((template) => {
+    rec.knifePropPending = false;
+    if (!template || botPlayers.get(rec.id) !== rec || rec.knifeProp) return;
+    const group = cloneEnvironmentPropModel(template);
+    group.scale.setScalar(getWeapon('knife')?.thirdPersonHold?.scale ?? 0.68);
+    rec.knifeProp = group;
+  });
+}
+function updateEnvironmentBotKnifeProp(rec, body) {
+  if (!rec.knifeOut) { if (rec.knifeProp) rec.knifeProp.visible = false; return; }
+  if (!rec.knifeProp) { requestEnvironmentBotKnifeProp(rec); return; }
+  const hand = body.joints?.rightHand;
+  if (!hand) { rec.knifeProp.visible = false; return; }
+  rec.knifeProp.position.copy(hand.position);
+  _knifeYawQuat.setFromEuler(_knifeEuler.set(0, body.motion?.visualYaw ?? rec.bot.yaw, 0, 'YXZ'));
+  rec.knifeProp.quaternion.copy(_knifeYawQuat);
+  rec.knifeProp.visible = true;
+}
+
 // Everything this bot hangs on its body, off in one call (dead, culled, or past the LOD hide range).
 function hideEnvironmentBotProps(rec, body) {
   if (rec.stowProps) for (const prop of rec.stowProps.values()) prop.group.visible = false;
   if (rec.grenadeProp) rec.grenadeProp.visible = false;
+  if (rec.knifeProp) rec.knifeProp.visible = false;
   if (rec.grenadeArmHeld) { body?.setArmTarget?.('right', null); rec.grenadeArmHeld = false; }
   // Release a dash tuck here too: the carry state is reset, so nothing else would ever free the arm.
   if (isOneHanded(rec.carryLocomotion)) body?.setArmTarget?.('left', null);
@@ -11851,7 +12035,8 @@ function updateEnvironmentBotWeaponMount(id, rec, dt) {
   rec.carryLocomotion = locomotion;
   // Last: the wind-up owns the right arm and hides the gun, so it must overwrite the pose above.
   updateEnvironmentBotGrenadeProp(rec, body);
-  if (rec.grenadeThrow) mount.weaponRig.visible = false;
+  updateEnvironmentBotKnifeProp(rec, body);
+  if (rec.grenadeThrow || rec.knifeOut) mount.weaponRig.visible = false;
 }
 
 function syncEnvironmentBotWeaponMounts(dt) {
@@ -12286,6 +12471,40 @@ function tracerEffectStart(origin, end, capturedMuzzle) {
   return tracerStart(origin, end);
 }
 
+// ---- host effect churn ----------------------------------------------------------------
+// effect-renderer.js already pools every visual object it owns (line/point buffers + two sprite
+// pools), so the churn at 90-bot full auto was NOT the renderer. It was the entity façade:
+// renderList() re-serialized every live effect EVERY RENDER FRAME -- a fresh wire object plus 3-4
+// fresh arrays each, on top of list()'s two array allocations. Effects never move or change after
+// creation (EffectEntity.update only advances age), so their wire is serialized ONCE at spawn and
+// the same object is handed to the renderer for the rest of its life.
+// Replication is untouched: snapshot() still walks the registry and serializes independently, so a
+// guest's upserts/removes are byte-identical to before. The cap below simply destroys the oldest
+// effect early, which reaches guests as an ordinary tombstone they already handle.
+const MAX_EFFECT_ENTITIES = 220;   // ~2 effects per hitscan shot -> ~110 shots in flight at once
+const hostEffectWires = [];
+function createEffectEntity(init, nowSec) {
+  if (hostEffectWires.length >= MAX_EFFECT_ENTITIES) {
+    entityRegistry.destroy(hostEffectWires.shift().id, 'recycled');
+  }
+  const entity = entityRegistry.create('effect', init, { now: nowSec });
+  if (!entity) return null;
+  hostEffectWires.push(EffectEntity.serialize(entity));
+  return entity;
+}
+// Compact in place against the registry (a Map lookup per entry, no allocation); the registry's own
+// tick is what expires them, so this can never disagree with what guests are told.
+function liveHostEffectWires() {
+  let write = 0;
+  for (let i = 0; i < hostEffectWires.length; i++) {
+    const wire = hostEffectWires[i];
+    if (!entityRegistry.get(wire.id)) continue;
+    hostEffectWires[write++] = wire;
+  }
+  hostEffectWires.length = write;
+  return hostEffectWires;
+}
+
 // Host/solo: create the replicated tracer + impact-spark entities for a resolved shot.
 // (Muzzle flash is a LOCAL first-person effect spawned in fireGunFromCamera at the real
 // viewmodel muzzle — never from the eye/shot origin, which would sit in the shooter's face.)
@@ -12296,19 +12515,19 @@ function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null) {
   const tracerFx = normalizeTracerFx(weapon.tracerFx);
   const tracerLife = tracerLifetime(p0, hit.point, tracerFx);
   if (tracerLife > 0) {
-    entityRegistry.create('effect', {
+    createEffectEntity({
       kind: 'gun_tracer', p0, p1: hit.point,
       color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx, life: tracerLife, ownerId,
-    }, { now });
+    }, now);
   }
   if (hit.kind === 'none') return;
-  entityRegistry.create('effect', {
+  createEffectEntity({
     kind: 'hit_spark', p: hit.point, normal: hit.normal || [0, 1, 0],
     color: sparkColorFor(hit.kind), surface: hit.kind, ownerId,
-  }, { now });
+  }, now);
   // World-surface impact report; entity hits (player/creature) already play 'enemy_hit'.
   if (hit.kind !== 'player' && hit.kind !== 'creature') {
-    envAudio.playAt('bullet_impact', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+    playAtCulled('bullet_impact', hit.point, 'impact', 8);
   }
 }
 
@@ -12355,9 +12574,7 @@ function spawnLocalMuzzleFlash(fallbackDir, weapon) {
 // Per-frame effect feed: merge replicated effects (registry on host, wire upserts on guest)
 // with any live local predicted tracers, then hand the union to the renderer.
 function updateShotEffects(nowMs) {
-  const base = mpRole === 'guest'
-    ? mpPendingEffects
-    : entityRegistry.renderList(e => e.type === 'effect');
+  const base = mpRole === 'guest' ? mpPendingEffects : liveHostEffectWires();
   if (localShotEffects.length) {
     const currentWeaponId = weaponIdFor(localPlayerId());
     let queriedMuzzlePose = false;
@@ -12407,15 +12624,15 @@ function applyHitDamage(hit, weapon, weaponId, ownerId) {
       });
       bumpBotCombatCounters(ownerId, hit.id, wasAlive);
       recordBotAllyHit(hit.id, ownerId, performance.now()); // casualty report the alert tiers read
-      envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+      playAtCulled('enemy_hit', hit.point, 'impact', 8);
       if (hit.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
     }
   } else if (hit && hit.kind === 'creature' && hit.creatureRef) {
     hit.creatureRef.takeDamage(weapon.damage, null);
-    envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+    playAtCulled('enemy_hit', hit.point, 'impact', 8);
   } else if (hit && hit.kind === 'mob') {
     claudecraftCreatures?.damageMob(hit.id, { amount: weapon.damage, attackerId: ownerId });
-    envAudio.playAt('enemy_hit', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+    playAtCulled('enemy_hit', hit.point, 'impact', 8);
   }
 }
 
@@ -12465,7 +12682,7 @@ function applyExplosionBlast({ center, radius, damage, ownerId, floor }) {
     const dmg = blastDamageAt(damage, d, radius, floor);
     if (dmg > 0) claudecraftCreatures.damageMob(m.id, { amount: dmg, attackerId: ownerId });
   }
-  envAudio.playAt('explosion', audioPos(center), undefined, combatSfxProfile('explosion'));
+  playAtCulled('explosion', center, 'explosion', 3);
   addWorldImpactShake(center, 0.6, radius * 2.5); // screen shake from a nearby blast (falls off with distance)
 }
 
@@ -12521,7 +12738,7 @@ function applyCombatIntent(intent, ownerId) {
   // shooter. The host's own shot already played its non-positional report in
   // fireGunFromCamera, so skip 'host' here to avoid a double.
   if (ownerId !== 'host') {
-    envAudio.playAt(weaponFireEvent(weaponId), audioPos(shooter.p), undefined, combatSfxProfile('gunshot'));
+    playAtCulled(weaponFireEvent(weaponId), shooter.p, 'gunshot', 8);
   }
 
   if (mode === 'projectile') {
@@ -12551,12 +12768,12 @@ function applyCombatIntent(intent, ownerId) {
 // Melee impact: just the surface spark (no tracer line). Mirrors spawnShotEffects' spark half.
 function spawnMeleeImpact(hit, weapon, ownerId) {
   if (!hit || hit.kind === 'none' || !Array.isArray(hit.point)) return;
-  entityRegistry.create('effect', {
+  createEffectEntity({
     kind: 'hit_spark', p: hit.point, normal: hit.normal || [0, 1, 0],
     color: sparkColorFor(hit.kind), surface: hit.kind, ownerId,
-  }, { now: performance.now() / 1000 });
+  }, performance.now() / 1000);
   if (hit.kind !== 'player' && hit.kind !== 'creature' && hit.kind !== 'mob') {
-    envAudio.playAt('bullet_impact', audioPos(hit.point), undefined, positionalSfxProfiles.minor);
+    playAtCulled('bullet_impact', hit.point, 'impact', 8);
   }
 }
 
@@ -12891,7 +13108,7 @@ function lgUpdateLights(dt, t) {
     terrainHeight, now: t,
     raycast: projectileRaycast,        // combat-projectile swept-hit against world
     applyBlast: applyExplosionBlast,   // explosion create()-time radial damage
-    spawnEffect: (init) => entityRegistry.create('effect', init, { now: t }),
+    spawnEffect: (init) => createEffectEntity(init, t),
   });
   lightBinder?.sync(hostLightEntitiesForRender());
 }
