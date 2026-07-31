@@ -730,7 +730,7 @@ if (mpRole === 'host') {
       const seen = mpRemoteFireSeq.has(p.id);
       const prev = mpRemoteFireSeq.get(p.id) ?? 0;
       if (seen && typeof p.fireSeq === 'number' && p.fireSeq > prev && Array.isArray(p.p)) {
-        envAudio.playAt(weaponFireEvent(p.weapon), audioPos(p.p), undefined, positionalSfxProfiles.gunshot);
+        envAudio.playAt(weaponFireEvent(p.weapon), audioPos(p.p), undefined, combatSfxProfile('gunshot'));
       }
       mpRemoteFireSeq.set(p.id, p.fireSeq ?? 0);
     }
@@ -1330,6 +1330,15 @@ const WEAPON_FIRE_EVENTS = {
   grenade: 'grenade_throw', knife: 'knife_swing',
 };
 const weaponFireEvent = weaponId => WEAPON_FIRE_EVENTS[weaponId] || 'pistol_shoot';
+// Shoot-house maps use arena-scaled panner profiles (harness parity: the shared outdoor-tuned
+// profiles have gunshot refDistance 25, which in a ~40m interior plays every shot at full volume).
+const ARENA_SFX = {
+  gunshot: { distanceModel: 'inverse', refDistance: 8, maxDistance: 90, rolloffFactor: 0.9 },
+  launch: { distanceModel: 'inverse', refDistance: 9, maxDistance: 90, rolloffFactor: 0.85 },
+  explosion: { distanceModel: 'inverse', refDistance: 12, maxDistance: 130, rolloffFactor: 0.7 },
+};
+const combatSfxProfile = kind => (NO_ENVIRONMENT && ARENA_SFX[kind]) ? ARENA_SFX[kind]
+  : (kind === 'explosion' ? positionalSfxProfiles.largeExplosion : positionalSfxProfiles.gunshot);
 // Wrap a plain [x,y,z] wire vector as an {x,y,z} position playAt() accepts.
 const audioPos = a => (Array.isArray(a) ? { x: a[0], y: a[1], z: a[2] } : a);
 // Distance walked since the last footstep SFX; a stride-length threshold plays 'footstep'
@@ -2446,7 +2455,7 @@ function requestBotPath(bot, toXZ) {
   };
   const raw = botFindPath(grid, center, goal);
   if (raw) {
-    const path = botSmoothPath(grid, raw).slice(1);
+    const path = botSmoothPath(grid, raw, SMOOTH_LOOKAHEAD).slice(1);
     if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath]', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal, 'pathLen', path.length, 'lastWp', path[path.length - 1]); }
     return path;
   }
@@ -2459,7 +2468,7 @@ function requestBotPath(bot, toXZ) {
   if (nearGoal) {
     const retry = botFindPath(grid, center, nearGoal);
     if (retry) {
-      const path = botSmoothPath(grid, retry).slice(1);
+      const path = botSmoothPath(grid, retry, SMOOTH_LOOKAHEAD).slice(1);
       if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath] FALLBACK', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal, 'nearGoal', nearGoal, 'pathLen', path.length); }
       return path;
     }
@@ -4801,7 +4810,7 @@ function releaseGrenade(rec, pending, nowMs) {
   rec.lastGrenadeAt = nowMs;
   teamLastGrenadeAt.set(rec.teamId, nowMs);
   envAudio.playAt(weaponFireEvent('grenade'), audioPos([_grenadeOrigin.x, _grenadeOrigin.y, _grenadeOrigin.z]),
-    undefined, positionalSfxProfiles.gunshot);
+    undefined, combatSfxProfile('launch'));
   hostGhostsDirty = true;
 }
 // Owns the bot's movement for the whole wind-up; returns true while it does.
@@ -11934,7 +11943,7 @@ function applyExplosionBlast({ center, radius, damage, ownerId, floor }) {
     const dmg = blastDamageAt(damage, d, radius, floor);
     if (dmg > 0) claudecraftCreatures.damageMob(m.id, { amount: dmg, attackerId: ownerId });
   }
-  envAudio.playAt('explosion', audioPos(center), undefined, positionalSfxProfiles.largeExplosion);
+  envAudio.playAt('explosion', audioPos(center), undefined, combatSfxProfile('explosion'));
   addWorldImpactShake(center, 0.6, radius * 2.5); // screen shake from a nearby blast (falls off with distance)
 }
 
@@ -11990,7 +11999,7 @@ function applyCombatIntent(intent, ownerId) {
   // shooter. The host's own shot already played its non-positional report in
   // fireGunFromCamera, so skip 'host' here to avoid a double.
   if (ownerId !== 'host') {
-    envAudio.playAt(weaponFireEvent(weaponId), audioPos(shooter.p), undefined, positionalSfxProfiles.gunshot);
+    envAudio.playAt(weaponFireEvent(weaponId), audioPos(shooter.p), undefined, combatSfxProfile('gunshot'));
   }
 
   if (mode === 'projectile') {

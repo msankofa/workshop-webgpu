@@ -4841,3 +4841,19 @@ header. The temperament sliders and the Force retreat / Force attack buttons are
 **Deferred:** a grenade-in-hand visual during the wind-up (env's mount path is one `skeletonClone`d
 template; the harness swaps to the grenade GLB), per-side bot tinting, and open-terrain cover bakes
 (Phase D). The danger-field A* term stays off.
+
+## Swarm-audit parity fixes (2026-07-30, `environment-viewer-v2.html`)
+
+A six-agent audit comparing the two apps' bots dimension-by-dimension surfaced two quick parity
+slips, both fixed:
+
+- **Local-window smoothing bound** — `requestBotPath`'s local-window branch (and its
+  nearest-walkable retry) called `botSmoothPath` without the `SMOOTH_LOOKAHEAD` cap every other
+  call site passes, defaulting the string-pull lookahead to `Infinity`. Low impact on a ~24×24
+  window, but now bounded like the static-bake branch.
+- **Arena-scaled combat SFX** — gunfire/launch/explosion positional audio played through the
+  outdoor-tuned `positionalSfxProfiles` (gunshot `refDistance` 25) even on shoot-house maps, where
+  the harness's own `BOT_SFX` comment documents that as every-shot-at-full-volume. `combatSfxProfile(kind)`
+  now selects the harness's arena profiles (`ARENA_SFX`) when `NO_ENVIRONMENT` and the shared
+  outdoor profiles otherwise. The harness's voice budget / distance cull / synth fallback remain
+  Phase E items.
