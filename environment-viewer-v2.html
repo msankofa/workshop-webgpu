@@ -59,6 +59,7 @@ import { createMapCollider } from './map-collision.js';
 import { createHostSession, createGuestSession, GhostRenderer, playerTintHSL } from './multiplayer.js';
 import { createViewHands } from './player-hands.js';
 import { createProceduralPlayerBody } from './player-procedural-body.js';
+import { botDesignForRole } from './bot-body-design.js';
 import { getWeapon, enabledWeapons, loadout } from './weapons.js';
 import { reloadPoseDelta, evaluateSequence, resolveTargetRef } from './weapon-sequence.js';
 import { runBobAxis, traumaShake, decayTrauma, addTrauma, easeToward, momentumLeanTarget, hudDragTarget, clampLookPitch } from './view-feel.js';
@@ -76,6 +77,14 @@ import { createEffectRenderer } from './effect-renderer.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
+import { buildVoiceLine, voiceIdentity, voiceEventId, voiceLineDurationS } from './bot-voice.js';
+import { createVoiceDirector } from './bot-voice-director.js';
+import {
+  evaluateWhizz, pickImpactVoice, createWhizzVoice, createProjectileWhizzTracker,
+  synthVoice as ballisticSynthVoice, PROJECTILE_WHIZZ_RADIUS,
+} from './ballistic-audio.js';
+import { botDamageVoice, createBotDamageAudio } from './bot-damage-audio.js';
+import { createAudioBudget } from './combat-audio-budget.js';
 import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
 import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose, createGoalClaims,
   resolveBotPairsHashed, separationXZHashed, waypointContestedHashed, blendSeparationDir } from './bot-entity.js';
@@ -107,7 +116,7 @@ import {
   coverCornerValid as coverCornerValidPure, pickCoverCorner,
   stepCoverGate, noteCoverSwitch, coverSwitchAllowed, coverInBand, COVER_PEEK_MISS_LIMIT,
   coverHoldExitReason,
-  coverSeatBand, coverCommitTimedOut, createCoverBlacklist, blacklistCover, coverBlacklisted,
+  coverSeatBand, COVER_ANCHOR_REACH, coverCommitTimedOut, createCoverBlacklist, blacklistCover, coverBlacklisted,
   fleePathExposureFromParents, fleeCandidateScore,
 } from './bot-cover.js';
 import {
@@ -656,7 +665,8 @@ function updateHostPlayerGhosts() {
   // mergePlayerCombatFields inside getState(), which this local render path never goes through.
   const botPoses = [...botPlayers.entries()].map(([id, rec]) => {
     const snap = playerCombat.getSnapshot(id);
-    return { ...botToWirePose(rec.bot), alive: snap.alive, hp: snap.hp, maxHp: snap.maxHp };
+    // role comes off the rec, not the entity: the v2 actor fields live on the rec (see spawnBotAt).
+    return { ...botToWirePose(rec.bot), role: rec.role, alive: snap.alive, hp: snap.hp, maxHp: snap.maxHp };
   });
   const guestPoses = mpRole === 'host' ? [...mpGuestPlayers.values()] : [];
   mpGhostRenderer.update({ creatures: [], players: [...guestPoses, ...botPoses] });
@@ -702,11 +712,19 @@ const BOT_INSTANCED = new URLSearchParams(location.search).get('instanceBots') !
 if (mpRole === 'host') {
   // Remote/bot bodies render as full procedural bodies (useProceduralBody). Perf/instancing work
   // is tracked in docs/superpowers/reviews/2026-07-19-bot-port/PLAN-fable-review.md (Phases 2-4).
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED,
+    // Armour + per-role kit. Without this bots rendered as the bare default rig here, while
+    // bot-viewer-v2 showed the full armoured design — the two viewers disagreed on what a bot
+    // looks like. Memoised per role in bot-body-design.js, so all bots of a role share geometry.
+    getDesign: (item) => botDesignForRole(item.role) });
   mpSession = createHostSession(roomCode, mapKey, getState, { worldMode: mpWorldMode });
 } else if (mpRole === 'guest') {
   // Remote/bot bodies render as full procedural bodies (useProceduralBody); see PLAN-fable-review.md.
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED,
+    // Armour + per-role kit. Without this bots rendered as the bare default rig here, while
+    // bot-viewer-v2 showed the full armoured design — the two viewers disagreed on what a bot
+    // looks like. Memoised per role in bot-body-design.js, so all bots of a role share geometry.
+    getDesign: (item) => botDesignForRole(item.role) });
   mpSession = createGuestSession(roomCode, state => {
     mpLatestState = state;
     if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
@@ -746,7 +764,11 @@ if (mpRole === 'host') {
 } else if (mpRole === 'solo') {
   // No session, but bots are host/solo-only sim (never a guest) and need somewhere to render —
   // updateHostPlayerGhosts() feeds this the same way it feeds the host's guest-ghost renderer.
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED,
+    // Armour + per-role kit. Without this bots rendered as the bare default rig here, while
+    // bot-viewer-v2 showed the full armoured design — the two viewers disagreed on what a bot
+    // looks like. Memoised per role in bot-body-design.js, so all bots of a role share geometry.
+    getDesign: (item) => botDesignForRole(item.role) });
 }
 
 // Guest: shared config/settings arrive as their own messages (out of sim_state), so a
@@ -1342,12 +1364,19 @@ const ARENA_SFX = {
   explosion: { distanceModel: 'inverse', refDistance: 12, maxDistance: 130, rolloffFactor: 0.7 },
   impact: positionalSfxProfiles.short,   // harness BOT_SFX.impact
   step: { distanceModel: 'inverse', refDistance: 2.5, maxDistance: 26, rolloffFactor: 1.5 },
+  // A round passing you is an intimate sound: it must fall away fast or every distant miss
+  // reads as a round past your ear.
+  whizz: { distanceModel: 'inverse', refDistance: 2, maxDistance: 24, rolloffFactor: 1.6 },
+  // A distress siren has to carry further than the clang that caused it.
+  distress: { distanceModel: 'inverse', refDistance: 14, maxDistance: 120, rolloffFactor: 0.6 },
 };
 // Outdoor overrides; anything unlisted falls through to the shared gunshot profile (unchanged).
 const OUTDOOR_SFX = {
   explosion: positionalSfxProfiles.largeExplosion,
   impact: positionalSfxProfiles.minor,
   step: positionalSfxProfiles.short,
+  whizz: ARENA_SFX.whizz,   // the whizz radius is body-scale, so the map size is irrelevant
+  distress: { distanceModel: 'inverse', refDistance: 26, maxDistance: 200, rolloffFactor: 0.45 },
 };
 const combatSfxProfile = kind => (NO_ENVIRONMENT && ARENA_SFX[kind]) ? ARENA_SFX[kind]
   : (OUTDOOR_SFX[kind] || positionalSfxProfiles.gunshot);
@@ -1364,13 +1393,23 @@ let botSynthSfxEnabled = true;   // procedural fallback for events the sfx folde
 // inverse panner CLAMPS at maxDistance rather than reaching zero, so that is where the fade ends
 // and a distant firefight is still faintly audible right up to it. largeExplosion clamps at 1100 m
 // (never fades), so its cull is a deliberate budget bound, not the profile's range.
-const AUDIO_CULL_ARENA = { gunshot: 70, launch: 70, explosion: 70, impact: 60, step: 26 };
-const AUDIO_CULL_OUTDOOR = { gunshot: 250, launch: 220, explosion: 420, impact: 100, step: 30 };
+const AUDIO_CULL_ARENA = { gunshot: 70, launch: 70, explosion: 70, impact: 60, step: 26, whizz: 24, distress: 110 };
+const AUDIO_CULL_OUTDOOR = { gunshot: 250, launch: 220, explosion: 420, impact: 100, step: 30, whizz: 24, distress: 220 };
 const audioCullDist = kind => (NO_ENVIRONMENT ? AUDIO_CULL_ARENA : AUDIO_CULL_OUTDOOR)[kind] ?? 120;
 // Per-event-id voice budget: cap how many of the SAME event may start per window so the graph
 // doesn't clip into mush or stall the audio thread. Windows are shared across all bots.
 const sfxWindows = new Map();
+// A ricochet REPLACES an impact, so it draws from the impact's window instead of opening a
+// second one -- otherwise the impact class would quietly get twice the budget it had.
+// Aliased ids share one burst window: a ricochet replaces an impact, and the five hit tiers are
+// one "bot was struck" class -- five private windows would let them burst 5x the intended rate.
+const SFX_BUDGET_ALIAS = {
+  bullet_ricochet: 'bullet_impact',
+  bot_hit_heavy: 'bot_hit_light', bot_hit_critical: 'bot_hit_light',
+  bot_hit_ricochet: 'bot_hit_light', bot_hit_blast: 'bot_hit_light',
+};
 function sfxBudgetOk(eventId, maxPerWindow, windowMs = 100) {
+  eventId = SFX_BUDGET_ALIAS[eventId] || eventId;
   const now = performance.now();
   let w = sfxWindows.get(eventId);
   if (!w || now - w.start > windowMs) { w = { start: now, count: 0 }; sfxWindows.set(eventId, w); }
@@ -1380,7 +1419,9 @@ function sfxBudgetOk(eventId, maxPerWindow, windowMs = 100) {
 }
 // Every positional bot/remote combat voice goes through here. A loaded sample always wins;
 // weapon-sfx-synth.js covers the ids the sfx folder has no file for, so explosives are never silent.
-function playAtCulled(eventId, position, kind, maxPerWindow = 6) {
+// `synthBuild` is an optional per-call builder (a whizz shaped by THIS round's miss distance and
+// arrival delay); a loaded sample still wins, and ballistic-audio.js supplies the generic fallback.
+function playAtCulled(eventId, position, kind, maxPerWindow = 6, synthBuild = null) {
   if (!botAudioEnabled || !position) return;
   const pos = audioPos(position);
   if (!pos) return;
@@ -1392,9 +1433,152 @@ function playAtCulled(eventId, position, kind, maxPerWindow = 6) {
   const profile = combatSfxProfile(kind);
   if (envAudio.hasSfxEvent(eventId)) { envAudio.playAt(eventId, pos, undefined, profile); return; }
   if (!botSynthSfxEnabled) return;
-  const voice = synthVoice(eventId);
+  const voice = synthBuild || synthVoice(eventId) || ballisticSynthVoice(eventId) || botDamageVoice(eventId);
   if (voice) envAudio.playSynthAt(voice, pos, { profile });
 }
+// Sustained sibling of playAtCulled: a siren/damage bed ends on an event, not after a duration,
+// so it goes through playSynthLoop and returns a controller handle (or false).
+function playLoopCulled(build, position, { kind = 'distress', volume = 0.75, isAlive, getPosition } = {}) {
+  if (!botAudioEnabled || !botSynthSfxEnabled || !position) return false;
+  const pos = audioPos(position);
+  if (!pos) return false;
+  return envAudio.playSynthLoop(build, pos, {
+    profile: combatSfxProfile(kind), volume, cullDistance: audioCullDist(kind), isAlive, getPosition,
+  });
+}
+// Incoming rounds. The listener is the local player's head, and combat resolves host-side only,
+// so a guest hears no whizz at all (see docs/subsystems/audio.md, Ballistic audio).
+const WHIZZ_PER_WINDOW = 6;   // cap per 100ms sfxBudgetOk window
+function playBallisticWhizz(origin, dir, travelled, shooterId, weapon) {
+  const ev = evaluateWhizz({
+    origin, dir, travelled,
+    listenerPos: playerCollider ? playerCollider.end : camera.position,
+    shooterId, listenerId: localPlayerId(), weapon,
+  });
+  if (!ev) return;
+  playAtCulled('bullet_whizz', ev.point, 'whizz', WHIZZ_PER_WINDOW, createWhizzVoice(ev));
+}
+// Rockets/grenades fly curved, bouncing paths, so the straight-ray closest approach above is
+// wrong for them -- sample proximity per tick and fire once, as each starts receding.
+const projectileWhizz = createProjectileWhizzTracker({ radius: PROJECTILE_WHIZZ_RADIUS });
+const _projWhizzLive = new Set();
+function stepProjectileWhizz() {
+  const listener = playerCollider ? playerCollider.end : camera.position;
+  _projWhizzLive.clear();
+  for (const e of entityRegistry.list({ type: 'combat-projectile' })) {
+    _projWhizzLive.add(e.id);
+    const pass = projectileWhizz.step(e.id, e.transform.p, listener);
+    if (pass) playAtCulled('bullet_whizz', pass.point, 'whizz', WHIZZ_PER_WINDOW, createWhizzVoice(pass));
+  }
+  projectileWhizz.retain(_projWhizzLive);
+}
+// --- squad chatter (bot-voice.js lexicon, bot-voice-director.js arbitration) ----------------
+// Every callout rides an FSM edge the brain already publishes; the director decides which of the
+// bots with something to say actually gets to say it.
+// Positional vs flat: a bot muttering to itself belongs in the world, but a squadmate's radio
+// traffic belongs in the player's earpiece. HUMAN_TEAM is a third party hostile to every bot team
+// (see BOT_TEAM_DEFS), so today no bot is on the player's net and every line is positional --
+// botVoiceNetTeam() is the one seam that flips when a player-allied bot team is added.
+// A callout has to carry about as far as the gunfire it is about; at 55 the listener sat outside
+// voice range while still hearing every shot, so the squad read as silent.
+const VOICE_SFX_ARENA = { distanceModel: 'inverse', refDistance: 14, maxDistance: 95, rolloffFactor: 0.6 };
+const VOICE_SFX_OUTDOOR = { distanceModel: 'inverse', refDistance: 14, maxDistance: 110, rolloffFactor: 0.8 };
+const botVoiceProfile = () => (NO_ENVIRONMENT ? VOICE_SFX_ARENA : VOICE_SFX_OUTDOOR);
+function botVoiceNetTeam() { return null; }   // no bot team shares the player's radio net yet
+let botChatterEnabled = true;
+let botChatterVolume = 0.85;
+let botChatterRadio = true;
+// One concurrency ceiling shared by the voice and damage tracks: without this each module builds
+// its own private budget and the documented cross-track preemption never happens.
+const combatAudioBudget = createAudioBudget();
+const botVoiceDirector = createVoiceDirector({ maxDistance: botVoiceProfile().maxDistance, budget: combatAudioBudget });
+const botVoiceIdentities = new Map();
+function botVoiceIdentity(id, teamId) {
+  let identity = botVoiceIdentities.get(id);
+  if (!identity) { identity = voiceIdentity(id, teamId ?? 0); botVoiceIdentities.set(id, identity); }
+  return identity;
+}
+function botVoiceListener() { return playerCollider ? playerCollider.end : camera.position; }
+// A callout comes out of the bot's head, not its feet.
+function botVoiceHead(entity) { return entity?.capsule?.end ?? null; }
+// False when nothing actually started (suspended context, muted bus, culled) so the caller can
+// hand the director's slot straight back instead of holding it for a silent line.
+function playBotVoice(rec, lineId, identity, flat) {
+  const head = botVoiceHead(rec.bot);
+  if (!head) return false;
+  const eventId = voiceEventId(lineId);
+  const profile = botVoiceProfile();
+  if (envAudio.hasSfxEvent(eventId)) {
+    if (flat) return envAudio.play(eventId, botChatterVolume) !== false;
+    return envAudio.playAt(eventId, head, botChatterVolume, profile) !== false;
+  }
+  const build = buildVoiceLine(lineId, identity, { radio: botChatterRadio || flat });
+  return envAudio.playSynthAt(build, flat ? null : head, { profile, volume: botChatterVolume }) !== false;
+}
+// One FSM edge -> one director request. Returns true only when the bot actually spoke.
+function sayBotLine(rec, lineId, nowMs, eventKey = null) {
+  if (!botChatterEnabled || !botAudioEnabled || !rec?.bot) return false;
+  if (!playerCombat.getSnapshot(rec.bot.id).alive) return false;
+  const head = botVoiceHead(rec.bot);
+  if (!head) return false;
+  const flat = rec.teamId === botVoiceNetTeam();
+  const listener = botVoiceListener();
+  const identity = botVoiceIdentity(rec.bot.id, rec.teamId);
+  const decision = botVoiceDirector.request({
+    lineId, botId: rec.bot.id, teamId: rec.teamId, squadId: rec.squadId ?? null, eventKey, now: nowMs,
+    distance: flat ? 0 : Math.hypot(head.x - listener.x, head.y - listener.y, head.z - listener.z),
+    durationS: voiceLineDurationS(lineId, identity, { radio: botChatterRadio || flat }),
+  });
+  if (!decision.ok) return false;
+  if (playBotVoice(rec, lineId, identity, flat)) return true;
+  botVoiceDirector.release(decision.token);
+  return false;
+}
+// Several bots may witness the same event; the one nearest the listener is the one that speaks.
+function sayBestBotLine(recs, lineId, nowMs, eventKey) {
+  if (!botChatterEnabled || !botAudioEnabled || !recs.length) return false;
+  const listener = botVoiceListener();
+  const decision = botVoiceDirector.requestBest(recs.map((rec) => {
+    const head = botVoiceHead(rec.bot);
+    const flat = rec.teamId === botVoiceNetTeam();
+    return {
+      lineId, botId: rec.bot.id, teamId: rec.teamId, squadId: rec.squadId ?? null, eventKey, now: nowMs,
+      distance: !head ? Infinity : flat ? 0 : Math.hypot(head.x - listener.x, head.y - listener.y, head.z - listener.z),
+      durationS: voiceLineDurationS(lineId, botVoiceIdentity(rec.bot.id, rec.teamId), { radio: botChatterRadio }),
+    };
+  }));
+  if (!decision.ok) return false;
+  const chosen = recs.find(r => r.bot.id === decision.botId);
+  if (chosen && playBotVoice(chosen, lineId, botVoiceIdentity(chosen.bot.id, chosen.teamId), chosen.teamId === botVoiceNetTeam())) return true;
+  botVoiceDirector.release(decision.token);
+  return false;
+}
+// Rising edges only, called once per bot per sentry frame just before the state stamp: a state
+// that persists says its line once, and "engaging" is a FIRE entry rather than a per-shot bark.
+function updateBotVoiceState(rec, prevState, state, outOfAmmo, nowMs) {
+  if (!botChatterEnabled || !rec) return;
+  if (state !== prevState) {
+    if (state === BOT_FIRE) sayBotLine(rec, 'firing', nowMs);
+    else if (state === BOT_COVER_MOVE) sayBotLine(rec, 'cover', nowMs);
+    else if (state === BOT_PURSUE) sayBotLine(rec, 'moving', nowMs);
+  }
+  const holdReason = rec.holdUntil > nowMs ? rec.holdReason : null;
+  if (holdReason === 'overwatch' && rec.voiceHoldReason !== 'overwatch') sayBotLine(rec, 'overwatch', nowMs);
+  rec.voiceHoldReason = holdReason;
+  const tendId = state === MEDIC_TEND ? (rec.medicTendTargetId ?? rec.medicAction?.targetId ?? null) : null;
+  if (tendId && rec.voiceTendId !== tendId) sayBotLine(rec, 'reviving', nowMs, `reviving:${tendId}`);
+  rec.voiceTendId = tendId;
+  if (outOfAmmo && !rec.voiceDry) sayBotLine(rec, 'no_ammo', nowMs);
+  rec.voiceDry = !!outOfAmmo;
+}
+// Rides the squad's own contact report (bot-alert.js recordContact): the bot that publishes the
+// sighting is the one that calls it; teammates read the report back and stay quiet.
+function sayBotContact(rec, targetId, nowMs) {
+  if (!rec || rec.voiceContactId === targetId) return;
+  rec.voiceContactId = targetId;
+  sayBotLine(rec, 'contact', nowMs, `contact:${targetId}`);
+}
+
 // Distance walked since the last footstep SFX; a stride-length threshold plays 'footstep'
 // on a velocity-based cadence rather than every frame (see animate()).
 let footstepDist = 0;
@@ -1813,7 +1997,6 @@ const BOT_EXPLORE_HISTORY_SIZE = 6; // remembered past goals used for the exclus
 const BOT_EXPLORE_ARRIVE_DIST = 5; // metres; close enough to a far explore goal to count as "arrived" and roll the next one
 const squads = new Map(); // squadId -> Squad record
 let squadIdSeq = 0;
-let botNoticeTimeSec = 0.6; // slider; reaction delay from first spotting a target to being allowed to fire at it -- resets if line of sight breaks
 let botAccuracy = 60; // slider, 0-100%; 100 = perfectly on target, lower widens bot-aim.js's dispersion cone on the fired shot (not the bot's visible aim -- see botShotSpreadRad)
 let botStatusEl = null; // set by the debug panel, refreshed each updateBots() tick
 let botNavNoteEl = null; // nav-regime readout in the same panel (static bake / terrain zone / local windows)
@@ -1823,15 +2006,16 @@ let playerImmortal = false; // toggleable from the "Player" panel -- protects th
 // Near-miss radius and semi-alert propagation now live in bot-alert.js (NEAR_MISS_RADIUS /
 // SEMI_ALERT_SHARE_RADIUS): the v1 "every bot within 15 m learns the shooter's exact position"
 // broadcast was replaced by firsthand reports plus one-hop propagation in the ported brain.
-// The local player is only perceivable/hittable by bots while actually looking through their
-// eyes (FPS mode, not the third-person body view or the orbit/dev camera) -- matches the "showVM"
-// first-person check used elsewhere (see localBodyThird's other call sites).
-function hostVisibleToBots() { return fpsMode && !localBodyThird; }
+// The local player is perceivable/hittable by bots whenever they have a body standing in the world
+// -- first person OR the third-person body view. Only the orbit/dev camera (fpsMode off) is a true
+// spectator with no body to shoot at. Excluding third person meant a bot could never target the
+// person shooting it.
+function hostVisibleToBots() { return fpsMode; }
 const BOT_RESPAWN_MS = 4000; // matches CC_RESPAWN_MS's human-death convention above
 const BOT_RELOAD_MS = 1800; // a bot with an empty mag can't fire until this elapses -- previously
   // reloadAmmo() ran instantly the moment the mag hit empty, so bots effectively never ran dry
-// The notice-time re-acquire grace is bot-aim.js's reacquireGraceMs now (botAimSettings), so the
-// "Notice time (s)" slider feeds reactionDelayMs instead of a hand-rolled clock.
+// Reaction/re-acquire timing is entirely bot-aim.js's (botAimSettings); the old "Notice time (s)"
+// slider is gone -- it overwrote reactionMs every tick and broke harness parity.
 const BOT_MAX_SPREAD_RAD = 0.15; // spread applied to a bot's fired shot at 0% accuracy (matches
   // the "Spread rad" weapon-tuning slider's own max, environment-viewer.html's weaponControlSlider)
 const BOT_NAV_CELL = 0.5;
@@ -2005,11 +2189,16 @@ const BOT_ZONE_CREST_MIN_RISE = 0.6;    // metres of climb anchor->brow before t
 const BOT_ZONE_CREST_SPAN_M = 4.5;
 const BOT_ZONE_CREST_FAR_M = 24;
 // Sight blockers are NOT nav blockers. Rasterization marks a cell only when a rect covers the cell
-// CENTRE, so anything narrower than the pitch occludes nothing while still emitting corner records:
-// tree trunks (0.3-0.6 m) are therefore excluded outright and only boulder/stump-grade dressing
-// circles qualify. Hills, cliffs and authored geometry occlude through the field's terrain-height
-// test instead of through rects.
+// CENTRE, so only boulder/stump-grade dressing circles are wide enough to be worth turning into
+// CORNER-bearing rects. Hills, cliffs and authored geometry occlude through the field's
+// terrain-height test instead of through rects.
 const BOT_ZONE_SIGHT_MIN_FOOTPRINT = BOT_ZONE_CELL;
+// Tree trunks are occluders ONLY (see botTerrainOccluders): live botHasLineOfSight raycasts them
+// via obstacleColumnsAlongRay, so a field baked without them validates peeks that are trunk-blocked
+// in play and the holder exits 'stale'/'drought' having never seen anything. They are kept out of
+// the CORNER rect list -- a tree is not a wall face to lean around, and nav-corners' burial scan is
+// O(rects^2), so folding thousands of trunks into it would dominate the bake.
+const BOT_ZONE_TRUNK_CAP = 4000;
 
 let botNavZone = null;    // bounds of the live persistent grid, or null when there isn't one
 let botZoneBake = null;   // in-progress incremental bake
@@ -2066,6 +2255,32 @@ function botTerrainSightRects(bounds) {
   if (out.length > BOT_ZONE_SIGHT_CAP) out.length = BOT_ZONE_SIGHT_CAP;
   return out;
 }
+// `cornerRects` plus every tree trunk in `bounds`, at the SAME radius the bullet/LOS columns use
+// (TRUNK_RADIUS_PER_SCALE), so the baked field and the live raycast share one occluder set.
+// Biggest-first cap: if it bites, the trunks that actually cover a cell centre are the survivors.
+function botTerrainOccluders(bounds, cornerRects) {
+  if (!trunkIndex) return cornerRects;
+  const chunk = Math.max(8, terrainSystem?.params?.chunkSize || 30);
+  const scratch = [];
+  const seen = new Set();
+  const trunks = [];
+  for (let z = bounds.minZ; z <= bounds.maxZ + chunk; z += chunk) {
+    for (let x = bounds.minX; x <= bounds.maxX + chunk; x += chunk) {
+      trunkIndex.nearby(x, z, scratch);
+      for (const c of scratch) {
+        if (c.x < bounds.minX || c.x > bounds.maxX || c.z < bounds.minZ || c.z > bounds.maxZ) continue;
+        const key = `${c.x.toFixed(2)},${c.z.toFixed(2)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        trunks.push({ x: c.x, z: c.z, w: c.r * 2, d: c.r * 2, h: GUN_TREE_COLUMN_H, kind: 'tree' });
+      }
+    }
+  }
+  if (trunks.length === 0) return cornerRects;
+  trunks.sort((a, b) => b.w - a.w);
+  if (trunks.length > BOT_ZONE_TRUNK_CAP) trunks.length = BOT_ZONE_TRUNK_CAP;
+  return cornerRects.concat(trunks);
+}
 // Where the zone wants to sit: the local player is the centre of gravity of every fight that
 // matters here (bots spawn around them and their sight range is 50 m), and it is the one anchor
 // that exists on both authored and infinite procedural terrain.
@@ -2116,7 +2331,12 @@ function finishBotZoneBake(b) {
     cells: b.cells, heights: b.heights, soft: b.soft,
   });
   const rects = botTerrainSightRects(b.bounds);
-  const field = buildLazyVisibilityField(grid, buildSightGrid(grid, rects), { terrain: { heights: grid.heights } });
+  const tOcc = performance.now();
+  // Corners come from `rects` (rocks); the FIELD is baked over `occluders` (rocks + trunks) so a
+  // bake-validated peek is not blocked by a tree the live raycast sees.
+  const occluders = botTerrainOccluders(b.bounds, rects);
+  const occMs = performance.now() - tOcc;
+  const field = buildLazyVisibilityField(grid, buildSightGrid(grid, occluders), { terrain: { heights: grid.heights } });
   const perM = 1 / b.cellSize;
   // Anchor/peek offsets are authored for a ~0.5 m grid; at this pitch they would quantize onto the
   // same cell and every wall corner would self-cull, so they scale with the cell.
@@ -2129,7 +2349,7 @@ function finishBotZoneBake(b) {
       spacingCells: Math.max(1, Math.round(4 * perM)), stride: grid.cols > 220 ? 2 : 1,
     },
   });
-  adoptBotNavGrid(grid, field, cornerMap, b.bounds, rects);
+  adoptBotNavGrid(grid, field, cornerMap, b.bounds, occluders);
   botZoneBake = null;
   botZoneBakeCount++;
   const walk = field.walkableCount;
@@ -2138,26 +2358,74 @@ function finishBotZoneBake(b) {
   console.log(`[bot zone bake #${botZoneBakeCount}] ${grid.cols}x${grid.rows} @${b.cellSize}m over `
     + `${BOT_ZONE_SPAN}m centred (${((b.bounds.minX + b.bounds.maxX) / 2).toFixed(0)}, `
     + `${((b.bounds.minZ + b.bounds.maxZ) / 2).toFixed(0)}), ${walk} walkable, `
-    + `${rects.length} sight rects, ${cornerMap.corners.length} corners (${crests} crest`
+    + `${rects.length} corner rects + ${occluders.length - rects.length} trunk occluders `
+    + `(${occMs.toFixed(1)} ms), ${cornerMap.corners.length} corners (${crests} crest`
     + `${cornerMap.crestCapped ? ', CAP HIT' : ''}), ${grid.carved.length} carved cells, `
     + `${stranded} stranded region(s) — sampling ${b.sampleMs.toFixed(0)} ms across frames + `
     + `${(performance.now() - t0).toFixed(0)} ms finalize`);
 }
-// Swap a freshly baked grid in. Every cell INDEX in flight -- goal claims, danger memory, cover
-// corner records, medic flood caches, live paths -- belongs to the grid being replaced, so it all
-// goes. Cheaper and far safer than trying to remap indices between two different lattices.
+// The replacement corner must sit on ~the same ground AND still lean the same way.
+const COVER_REMAP_PEEK_DOT = 0.7;
+function remapCoverCorner(cornerMap, old, maxDist) {
+  let best = null, bestSq = maxDist * maxDist;
+  for (const rec of cornerMap.corners) {
+    if (rec.kind !== old.kind) continue;
+    if (rec.peekDir.x * old.peekDir.x + rec.peekDir.z * old.peekDir.z < COVER_REMAP_PEEK_DOT) continue;
+    const d = (rec.anchorPos.x - old.anchorPos.x) ** 2 + (rec.anchorPos.z - old.anchorPos.z) ** 2;
+    if (d < bestSq) { bestSq = d; best = rec; }
+  }
+  return best;
+}
+// Blacklist keys are anchor cell indices on the OLD lattice; carry them across by world position.
+function remapCoverBlacklist(map, oldGrid, grid) {
+  if (!map || map.size === 0 || !oldGrid) return;
+  const carried = [];
+  for (const [cell, expiresAt] of map) {
+    const c = cell % oldGrid.cols, r = (cell - (cell % oldGrid.cols)) / oldGrid.cols;
+    if (r >= oldGrid.rows) continue;
+    const next = cellIndexAt(grid, oldGrid.minX + (c + 0.5) * oldGrid.cellSize,
+      oldGrid.minZ + (r + 0.5) * oldGrid.cellSize);
+    if (next >= 0) carried.push([next, expiresAt]);
+  }
+  map.clear();
+  for (const [cell, expiresAt] of carried) map.set(cell, expiresAt);
+}
+// Replay the casualty ring onto the new lattice, each report keeping its ORIGINAL timestamp so
+// bot-danger's read-time decay ages it exactly as it was before the rebake.
+function restampDangerField() {
+  clearDangerField(botDangerField);
+  for (const r of recentAllyHits) {
+    if (r.kind || r.at == null) continue;   // near-miss / contact reports carry no danger
+    const cell = cellIndexAt(botNavGrid, r.x, r.z);
+    if (cell < 0) continue;
+    recordDanger(botDangerField, r.team, cell, DANGER_HIT_WEIGHT, r.at);
+    if (r.lethal) paintDangerPatch(r.team, cell, DANGER_DEATH_WEIGHT, r.at);
+  }
+}
+// Swap a freshly baked grid in. Every cell INDEX in flight belongs to the grid being replaced, so
+// each one is either remapped through its WORLD position or dropped. Committed cover holds survive:
+// nulling them made every bot in the fight abandon cover simultaneously on a 96 m player drift,
+// which is exactly the "hide for a few seconds, then charge back in" bug.
 function adoptBotNavGrid(grid, field, cornerMap, bounds, rects) {
+  const oldGrid = botNavGrid;
   botNavGrid = grid;
   botVisibilityField = field;
   botCornerMap = cornerMap;
   botNavZone = bounds;
   botSightRects = rects;
   goalClaims.clear();
-  clearDangerField(botDangerField);
+  restampDangerField();
+  const remapDist = grid.cellSize * 1.5;
   for (const rec of botPlayers.values()) {
-    rec.coverCorner = null; rec.coverThreat = null; rec.peek = null;
-    rec.coverStartedAt = null; rec.coverMoveSince = null; rec.coverHoldSince = null;
-    rec.coverBlacklist?.clear?.();
+    remapCoverBlacklist(rec.coverBlacklist, oldGrid, grid);
+    const kept = rec.coverCorner ? remapCoverCorner(cornerMap, rec.coverCorner, remapDist) : null;
+    rec.coverCorner = kept;
+    if (kept) goalClaims.claim(rec.id, 'cover', kept.anchorCell);
+    else {
+      rec.coverThreat = null; rec.peek = null;
+      rec.coverStartedAt = null; rec.coverMoveSince = null; rec.coverHoldSince = null;
+    }
+    rec.coverThreatCell = null;   // re-snapped against the new grid on the next tick
     rec.medicFlood = null; rec.medicFloodAt = 0;
     rec.muzzleRecoveryTarget = null; rec.muzzleRecoveryVisitedCells?.clear?.();
     rec.patrolLocalGoal = null;
@@ -2343,7 +2611,6 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
     lastKnownTargetAt: null, lastKnownTargetMotion: null,
     pathMode: null, currentPath: [], patrolIdx: 0, spawnPos: { x: pos.x, z: pos.z },
     deadSince: null, wanderTarget: null, weaponId, reloadUntil: null, reloadStartedAt: null,
-    losTargetId: null, losVisible: false, nextLosCheckAt: 0,
     teamId,
     squadId: null, squadRank: -1, isLeader: false,
     squadHoldSince: null, squadHoldBroken: false,
@@ -2375,6 +2642,7 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
     coverCorner: null, coverThreat: null, coverStartedAt: null, coverMoveSince: null, coverHoldSince: null,
     coverBlacklist: createCoverBlacklist(), coverGate: { invalidSince: null, switchedAt: null },
     coverPeekOffsetS: 0, coverProbeFailedAt: -Infinity, peek: null, peekMissStreak: 0,
+    coverThreatCell: null,   // last threat position that resolved to a walkable cell (see coverThreatOnGrid)
     allyDownHandledAt: -Infinity, contactSeedBlockUntil: 0,
     visDebounce: { lastTrueAt: null }, attention: null, patrolScan: null,
     tierPerception: null, alertHold: null, alertReport: null, alertMarkMode: null,
@@ -2388,6 +2656,8 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
     swapUntil: 0,                // sidearm draw timer: no firing or reloading until it expires
     lastGunfightAt: null,        // last frame with contact; the lull past it re-holsters the pistol
     lastSelfThreatAt: null,      // last frame someone shot at us ("in a gunfight" test)
+    lastSelfThreatXZ: null,      // where that round came from (POV damage arrow / facing cues)
+    aimPrimedUntil: 0,           // A10b: a torn-down contact discounts the next acquisition
     healRequested: false, healArrived: false, healSafetySince: null, healThreatId: null,
     healStartedAt: null, healUnsafePrev: false,
     packSeekGoal: null, packPickupCrouchUntil: 0,
@@ -2711,11 +2981,10 @@ function botMidXZ(bot) {
   const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
   return { x: mid.x, z: mid.z };
 }
-// Blocked by the same things a bot's actual bullet would be blocked by: map geometry (walls) via
-// mapCollider, AND trees/rocks via the tree-trunk/dressing obstacle columns (obstacleColumnsAlongRay
-// + resolveHitscan, the exact pipeline resolveWorldShot uses for real shots) -- previously this
-// only checked mapCollider, so a bot could lock onto and fire at someone standing behind a tree or
-// boulder as if it wasn't there.
+// Blocked by exactly what a bot's actual bullet is blocked by: map geometry (walls) via mapCollider,
+// trees/rocks via the obstacle columns, AND the terrain heightfield -- the same resolveHitscan
+// arguments resolveWorldShot builds. Without the terrain march, bots saw and fired through hills
+// while their rounds stopped in the dirt.
 function botHasLineOfSight(eye, targetP, dist) {
   if (!(dist > 1e-4)) return true;
   const origin = [eye.x, eye.y, eye.z];
@@ -2727,13 +2996,10 @@ function botHasLineOfSight(eye, targetP, dist) {
     players: null, creatures: null, mobs: null,
     obstacles: obstacleColumnsAlongRay(origin, dir, dist),
     occluder: mapCollider ? mapShotOccluder : undefined,
+    heightAt: NO_ENVIRONMENT ? null : terrainHeight,   // same gate resolveWorldShot uses
   });
   return !block || block.kind === 'none' || block.distance >= dist - 0.25;
 }
-// Occlusion cadence: botHasLineOfSight walks the tree/rock obstacle index via the same pipeline
-// real shots resolve against -- too expensive to re-run every frame for every bot, so the raycast
-// itself is cached per bot on this cadence (see botSeesCached). Distance/FOV stay live every tick.
-const BOT_LOS_CHECK_INTERVAL_MS = 120;
 
 // --- Phase B: spatial-hash neighbour index (bot-spatial-hash.js) ------------------
 // One index over living bot entities, rebuilt twice per tick (before the FSM loop, and again after
@@ -3079,6 +3345,7 @@ function resetBotBrainState(rec) {
   rec.targetUnseenSince = null; rec.targetMotion = null; rec.lastTargetId = null; rec.lastTargetSeenAt = null;
   rec.hasAimPoint = false; rec.weaponAimPoint = null;
   rec.aimContactAt = null; rec.aimReadyAt = 0; rec.aimLostAt = null; rec.aimTargetId = null; rec.spreadBloomDeg = 0;
+  rec.aimPrimedUntil = 0;
   rec.blockedShotStreak = 0; rec.missStreak = 0;
   rec.muzzleRecoveryTarget = null; rec.recoveryIssueActive = false; rec.muzzleRecoveryVisitedCells.clear();
   rec.combatMoveGoal = null; rec.investigation = null; rec.fleeGoalHistory.length = 0;
@@ -3120,8 +3387,8 @@ const botBehaviorSettings = {
   fleeGoalMemory: 3,
   coverScore: 12,               // fleeCandidateScore's endpoint-cover bonus
 };
-// A10 reaction/spread. reactionMs is overwritten from the "Notice time" slider each tick.
-const botAimSettings = { ...AIM_DEFAULTS, reactionMs: 700, reactionPerMetreMs: 40, reactionMaxMs: 2000 };
+// A10 reaction/spread. Harness parity: bot-aim.js's defaults, unmodified and never overwritten.
+const botAimSettings = { ...AIM_DEFAULTS };
 const botInvestigationSettings = { durationMs: 12000, initialRadius: 1.25, expansionMetresPerSecond: 2.5, maxRadius: 12 };
 // Phase E: the knife is the THIRD and last rung of the last-resort ladder, below the role sidearm
 // and above flee -- applyCombatIntent resolves mode 'melee', so env does have a bot melee fire path.
@@ -3143,6 +3410,7 @@ const botHealthSettings = {
   safeDistance: 12,    // healUnsafeBand centre: a visible threat inside this cancels the channel
   safeHoldMs: 900,     // unbroken safe time before the heal actually starts
   healPerSecond: 22,
+  retreatSearchRadius: 10,   // wounded flee search widens to this (harness parity)
 };
 const botPackSettings = {
   dropScatter: 0.35, pickupRadius: 0.9, shortProximity: 12, pickupCrouchMs: 600,
@@ -3250,15 +3518,23 @@ const goalClaims = createGoalClaims((id) => !!botPlayers.get(id) && playerCombat
 // Read by the flee, patrol-resume, pack, medic and cover-corner scoring loops (harness parity).
 const botDangerField = createDangerField();
 const _dangerNb = new Int32Array(8);   // cellNeighbors8 out-param, consumed inside one recordDanger call
-// Death edge: full weight on the cell plus its 8 neighbours, and a bot that died holding a cover
-// corner poisons that corner's anchor/peek as well -- or the next bot walks straight back into it.
+// The harness's death stamp is a 3x3 patch on a 0.5 m grid: 1.5 x 1.5 m of vetoed ground. Denominate
+// that in METRES, not cells -- on the 1.5 m terrain-zone grid a single cell already covers exactly
+// that area, and spreading there would veto 9x the ground (threshold 0.35, ~38 s decay) and blanket
+// a whole corner cluster after two deaths, leaving released bots nowhere to re-hide.
+const DANGER_PATCH_M = 1.5;
+function paintDangerPatch(team, cellIdx, weight, atMs) {
+  if (!botNavGrid || cellIdx == null || cellIdx < 0) return;
+  const n = botNavGrid.cellSize * 3 <= DANGER_PATCH_M + 1e-6
+    ? cellNeighbors8(cellIdx, botNavGrid.cols, botNavGrid.rows, _dangerNb) : 0;
+  recordDanger(botDangerField, team, cellIdx, weight, atMs, n ? _dangerNb : null, n);
+}
+// Death edge: full weight on the patch above, and a bot that died holding a cover corner poisons
+// that corner's anchor/peek as well -- or the next bot walks straight back into it.
 function paintBotDeathDanger(rec, nowMs) {
   if (!botNavGrid || !rec.deathXZ) return;
   const deathCell = cellIndexAt(botNavGrid, rec.deathXZ.x, rec.deathXZ.z);
-  if (deathCell >= 0) {
-    const n = cellNeighbors8(deathCell, botNavGrid.cols, botNavGrid.rows, _dangerNb);
-    recordDanger(botDangerField, rec.teamId, deathCell, DANGER_DEATH_WEIGHT, nowMs, _dangerNb, n);
-  }
+  if (deathCell >= 0) paintDangerPatch(rec.teamId, deathCell, DANGER_DEATH_WEIGHT, nowMs);
   const corner = rec.coverCorner;
   if (!corner) return;
   recordDanger(botDangerField, rec.teamId, corner.anchorCell, DANGER_DEATH_WEIGHT, nowMs);
@@ -3317,6 +3593,7 @@ function swapBotWeaponSlot(slot, nowMs) {
   setPlayerWeapon(bot.id, id); setPlayerTool(bot.id, id);
   botReloadUntil = null; activeBot.reloadStartedAt = null;
   activeBot.swapUntil = nowMs + SIDEARM_DRAW_MS;
+  if (slot === 'sidearm') sayBotLine(activeBot, 'sidearm', nowMs);
   return true;
 }
 const _slotCtx = { active: 'primary', hasSidearm: false, swapping: false, inGunfight: false,
@@ -3349,9 +3626,14 @@ function updateBotReload(nowMs, force = false) {
     if (nowMs >= botReloadUntil) { reloadAmmo(bot.id, activeBot.weaponId); botReloadUntil = null; activeBot.reloadStartedAt = null; }
     return;
   }
-  if (ammo.mag <= 0 && ammo.reserve > 0) { botReloadUntil = nowMs + BOT_RELOAD_MS; activeBot.reloadStartedAt = nowMs; return; }
+  if (ammo.mag <= 0 && ammo.reserve > 0) {
+    botReloadUntil = nowMs + BOT_RELOAD_MS; activeBot.reloadStartedAt = nowMs;
+    sayBotLine(activeBot, 'reloading', nowMs);
+    return;
+  }
   if (force && ammo.mag > 0 && ammo.mag < ammo.magazineSize && ammo.reserve > 0) {
     botReloadUntil = nowMs + BOT_RELOAD_MS; activeBot.reloadStartedAt = nowMs;
+    sayBotLine(activeBot, 'reloading', nowMs);
   }
 }
 
@@ -3368,7 +3650,7 @@ function withinBotFov(yaw, fromPos, toPos) {
 // Per-team enemy candidate lists, rebuilt once per frame (the harness's rebuildFrameEnemyLists).
 // Every bot team's list is: alive humans (host + guests -- hostile to everyone, like the harness's
 // dummy targets) PLUS every living bot on another team. The host is only perceivable while
-// actually looking through their own eyes (hostVisibleToBots).
+// perceivable while they have a body in the world at all (hostVisibleToBots).
 const _teamEnemyLists = new Map();   // teamId -> reused array of candidates
 const _botCandidates = new Map();    // bot id -> reused { id, p:[x,y,z], h } (no per-frame garbage)
 let _enemyListFrame = -1;
@@ -3404,16 +3686,7 @@ function botEnemyCandidates(teamId = activeBot?.teamId) {
   if (_enemyListFrame !== botFrameCounter) { _enemyListFrame = botFrameCounter; rebuildEnemyCandidates(); }
   return _teamEnemyLists.get(teamId) || _teamEnemyList(teamId ?? BOT_TEAMS[0]);
 }
-// The occlusion test is the expensive half (obstacle columns + resolveHitscan), so it is cached
-// per bot on BOT_LOS_CHECK_INTERVAL_MS while distance/FOV stay live every tick.
-function botSeesCached(rec, eye, candidate, dist, nowMs) {
-  if (rec.losTargetId !== candidate.id || nowMs >= rec.nextLosCheckAt) {
-    rec.losVisible = botHasLineOfSight(eye, candidate.p, dist);
-    rec.losTargetId = candidate.id;
-    rec.nextLosCheckAt = nowMs + BOT_LOS_CHECK_INTERVAL_MS;
-  }
-  return rec.losVisible;
-}
+const TARGET_STICK_CLOSER_SQ = 0.7 * 0.7; // newcomer must be >=30% closer (linear) to steal a visible target
 // Staggered acquisition: full re-scan every Nth frame per bot; an alert tier may only SHORTEN the
 // stride. Retention of an occluded-but-living target is bounded by TARGET_RETAIN_MAX_MS.
 function selectBotTarget(nowMs) {
@@ -3440,12 +3713,24 @@ function selectBotTarget(nowMs) {
     while (j >= 0 && _selCandidateDistSq[j] > distanceSq) { _selCandidateDistSq[j + 1] = _selCandidateDistSq[j]; _selCandidates[j + 1] = _selCandidates[j]; j--; }
     _selCandidateDistSq[j + 1] = distanceSq; _selCandidates[j + 1] = candidate;
   }
-  let best = null;
+  let best = null, bestDistSq = Infinity;
   for (let i = 0; i < count; i++) {
     const candidate = _selCandidates[i];
-    if (!botSeesCached(activeBot, origin, candidate, Math.sqrt(_selCandidateDistSq[i]), nowMs)) continue;
+    if (!botHasLineOfSight(origin, candidate.p, Math.sqrt(_selCandidateDistSq[i]))) continue;
     best = candidate;
+    bestDistSq = _selCandidateDistSq[i];
     break;
+  }
+  // Stickiness: stealing the slot resets the paid A10 acquisition, so a marginally nearer enemy
+  // must not take it every scan. Keep the incumbent unless it lost its own line of sight or the
+  // newcomer is decisively (>=30% linear) closer.
+  if (best && held && best !== held) {
+    for (let i = 0; i < count; i++) {
+      if (_selCandidates[i] !== held) continue;
+      if (bestDistSq < TARGET_STICK_CLOSER_SQ * _selCandidateDistSq[i]) break;
+      if (botHasLineOfSight(origin, held.p, Math.sqrt(_selCandidateDistSq[i]))) best = held;
+      break;
+    }
   }
   for (let i = 0; i < count; i++) _selCandidates[i] = null;
   const unseen = activeBot.targetUnseenSince;
@@ -3475,9 +3760,13 @@ function shotImpulseXZ(threat, victimXZ) {
 function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   const rec = botPlayers.get(victimId);
   if (!rec) return;
+  // The victim's OWN reaction is unconditional (harness applyBotDamage): being shot is a fact even
+  // when the shooter can't be resolved to a position. Only the squad bookkeeping below needs one.
+  rec.lastSelfThreatAt = nowMs;
+  beginBotHealthRetreat(rec, attackerId, nowMs);
   const attacker = threatXZ ? null : getKnownPlayerState(attackerId);
   const threat = threatXZ || (attacker ? { x: attacker.p[0], z: attacker.p[2] } : null);
-  if (!threat) return;
+  if (!threat) return;   // no bearing: no danger stamp, no casualty report, no ragdoll impulse
   const v = botXZ(rec.bot);
   rec.lastHitImpulse = shotImpulseXZ(threat, v);   // Phase E: read at the death edge to kick the ragdoll
   // Weaker evidence than a death and no neighbour spread -- one cell only (harness parity).
@@ -3487,8 +3776,6 @@ function recordBotAllyHit(victimId, attackerId, nowMs, threatXZ = null) {
   pushAllyReport({ victimId, team: rec.teamId, x: v.x, z: v.z,
     threat: { x: threat.x, z: threat.z }, at: nowMs,
     lethal: !playerCombat.getSnapshot(victimId).alive });
-  // Phase C: a bot pushed under the health threshold breaks off to heal (no-op above it).
-  beginBotHealthRetreat(rec, attackerId, nowMs);
 }
 // Every living bot the shot passed within NEAR_MISS_RADIUS of gets a firsthand near-miss report
 // (replaces the v1 alertBotsToShot broadcast, which handed every bot a free last-known position).
@@ -4015,6 +4302,7 @@ function reviveCombatBot(targetRec, nowMs) {
   const trim = snap.hp - Math.min(snap.maxHp, botMedicSettings.reviveHp);
   if (trim > 0) playerCombat.applyDamage({ targetId: id, amount: trim, source: 'revive', attackerId: id, weaponId: null });
   targetRec.deadSince = null; targetRec.diedAt = null; targetRec.deathXZ = null;
+  botDamageAudio.onRevived({ id });   // no onBotRevived hook here: this is the only revive path
   targetRec.medicClaimBy = null; targetRec.medicClaimUntil = 0;
   targetRec.fsmState = BOT_PATROL;
   targetRec.reloadUntil = null; targetRec.reloadStartedAt = null;
@@ -4785,11 +5073,32 @@ function updatePursuitMovement(nowMs) {
 }
 
 // --- flee -------------------------------------------------------------------------
+// Who a fleeing bot is actually running from: the attacker it remembers putting it under the health
+// threshold (looked up live, so it flees from where that shooter is NOW), else the current target.
+// Flying on botTarget alone meant a wounded bot that had lost or never had a target found no threat,
+// so findFleeGoal returned null and the bot "arrived" standing still in the open.
+const _fleeThreatXZ = { x: 0, z: 0 };
+function currentFleeThreat() {
+  const rememberedId = activeBot?.healRequested ? activeBot.healThreatId : null;
+  if (rememberedId) {
+    const state = getKnownPlayerState(rememberedId);
+    if (state?.p && playerCombat.getSnapshot(rememberedId).alive) {
+      _fleeThreatXZ.x = state.p[0]; _fleeThreatXZ.z = state.p[2];
+      return _fleeThreatXZ;
+    }
+  }
+  if (botTarget?.p) { _fleeThreatXZ.x = botTarget.p[0]; _fleeThreatXZ.z = botTarget.p[2]; return _fleeThreatXZ; }
+  return null;
+}
 function findFleeGoal(nowMs) {
-  if (!bot || !botTarget || !botNavGrid) return null;
+  const threatXZ = currentFleeThreat();
+  if (!bot || !threatXZ || !botNavGrid) return null;
   const source = botXZ(bot);
-  const threat = { x: botTarget.p[0], z: botTarget.p[2] };
-  const maxSearchRadius = botBehaviorSettings.fleeSearchRadius;
+  const threat = { x: threatXZ.x, z: threatXZ.z };
+  // A wounded bot searching for a heal spot gets the wider retreat radius (harness parity).
+  const maxSearchRadius = activeBot?.healRequested
+    ? Math.max(botBehaviorSettings.fleeSearchRadius, botHealthSettings.retreatSearchRadius)
+    : botBehaviorSettings.fleeSearchRadius;
   const flood = floodFill(botNavGrid, source, { maxRadius: maxSearchRadius });
   if (!flood) return null;
   const startCell = flood.start;
@@ -4885,18 +5194,75 @@ function updateFleeMovement(nowMs) {
 
 // --- cover ------------------------------------------------------------------------
 const _coverBake = { field: null, navGrid: null };
+// Threat snapping (env-only): the field's canSee() fails CLOSED for unwalkable / out-of-grid cells,
+// and the human player is off-grid by nature -- steep ground, rock tops, standing on cover, outside
+// the 384 m zone. Unsnapped, one such frame invalidates every corner at once and releases the whole
+// team from cover. The harness never hits this: its threats are grid-walking bots.
+const COVER_THREAT_SNAP_CELLS = 4;   // bounded ring; farther off-grid falls back to the remembered cell
+const _threatSnapA = { x: 0, z: 0 }, _threatSnapB = { x: 0, z: 0 };
+// Nearest walkable cell centre to (x,z) within the ring, or null. A threat already on a walkable
+// cell returns its EXACT position, so nothing changes on grids where threats are always on one.
+function snapToWalkableXZ(x, z, out) {
+  const g = botNavGrid;
+  if (!g) return null;
+  const c0 = Math.floor((x - g.minX) / g.cellSize), r0 = Math.floor((z - g.minZ) / g.cellSize);
+  if (c0 >= 0 && r0 >= 0 && c0 < g.cols && r0 < g.rows && g.cells[r0 * g.cols + c0] === 1) {
+    out.x = x; out.z = z; return out;
+  }
+  let bestSq = Infinity;
+  for (let dr = -COVER_THREAT_SNAP_CELLS; dr <= COVER_THREAT_SNAP_CELLS; dr++) {
+    const r = r0 + dr;
+    if (r < 0 || r >= g.rows) continue;
+    for (let dc = -COVER_THREAT_SNAP_CELLS; dc <= COVER_THREAT_SNAP_CELLS; dc++) {
+      const c = c0 + dc;
+      if (c < 0 || c >= g.cols || g.cells[r * g.cols + c] !== 1) continue;
+      const wx = g.minX + (c + 0.5) * g.cellSize, wz = g.minZ + (r + 0.5) * g.cellSize;
+      const d = (wx - x) ** 2 + (wz - z) ** 2;
+      if (d < bestSq) { bestSq = d; out.x = wx; out.z = wz; }
+    }
+  }
+  return bestSq === Infinity ? null : out;
+}
+// A grid-answerable stand-in for the threat: its own cell, else the nearest walkable one, else the
+// last one that resolved (re-snapped, so a rebake can't leave a stale cell behind). null = unknown.
+function coverThreatOnGrid(threatPos, out) {
+  if (!threatPos || !botNavGrid) return null;
+  const snapped = snapToWalkableXZ(threatPos.x, threatPos.z, out);
+  if (snapped) {
+    if (activeBot) {
+      const mem = activeBot.coverThreatCell ??= { x: 0, z: 0 };
+      mem.x = snapped.x; mem.z = snapped.z;
+    }
+    return snapped;
+  }
+  const mem = activeBot?.coverThreatCell;
+  return mem ? snapToWalkableXZ(mem.x, mem.z, out) : null;
+}
 function coverCornerValid(rec, threatPos, secondaryThreat = null) {
+  if (!botVisibilityField || !botNavGrid) return false;   // harness parity (bot-viewer-v2 :7970)
+  const threat = coverThreatOnGrid(threatPos, _threatSnapA);
+  if (!threat) return true;   // threat cell unknowable: keep the current assessment, never fail closed
   _coverBake.field = botVisibilityField; _coverBake.navGrid = botNavGrid;
-  return coverCornerValidPure(_coverBake, rec, threatPos, secondaryThreat);
+  // The secondary is a pure veto and already fails open on a bad cell, so an unsnappable one drops.
+  return coverCornerValidPure(_coverBake, rec, threat,
+    secondaryThreat ? coverThreatOnGridSecondary(secondaryThreat) : null);
+}
+// Same snap for the second shooter, but it never writes the remembered cell (that memory tracks the
+// bot's primary threat) and never falls back to it.
+function coverThreatOnGridSecondary(threatPos) {
+  return snapToWalkableXZ(threatPos.x, threatPos.z, _threatSnapB);
 }
 function findCoverCorner(threatPos, secondaryThreat = null, nowMs = botFrameNow) {
   if (!bot || !threatPos || !botVisibilityField || !botCornerMap || !botNavGrid) return null;
+  const threat = coverThreatOnGrid(threatPos, _threatSnapA);
+  if (!threat) return null;   // no answerable threat cell: pickCoverCorner would reject everything
   // Danger is a hard veto here, not a penalty: a scarce good corner must not win on distance alone.
   const skip = rec => coverBlacklisted(activeBot.coverBlacklist, rec.anchorCell, nowMs) ||
     goalClaims.isClaimedByOther(rec.anchorCell, bot.id) ||
     dangerBlocksCover(botDangerField, activeBot.teamId, rec.anchorCell, nowMs, 0.35); // 0.35: neighbour spread (0.4) vetoes too
   return pickCoverCorner({ corners: botCornerMap.corners, field: botVisibilityField, navGrid: botNavGrid, searchRadius: COVER_SEARCH_RADIUS, skip },
-    botXZInto(bot, _xzScratchA), threatPos, secondaryThreat);
+    botXZInto(bot, _xzScratchA), threat,
+    secondaryThreat ? coverThreatOnGridSecondary(secondaryThreat) : null);
 }
 // H6b second shooter: the nearest OTHER acquirable enemy, else a contact report describing someone
 // clearly elsewhere. Only a cover-corner veto, so erring shy just means fewer vetoes.
@@ -4974,6 +5340,8 @@ function updateCoverMoveMovement(nowMs) {
   const rec = activeBot.coverCorner;
   activeBot.peek = null; activeBot.coverHoldSince = null;   // re-pathing restarts cycle + drought clock
   if (!rec) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+  // Final approach owns the last leg: pathing cannot finish this journey (see coverAnchorLeg).
+  if (stepCoverAnchorApproach(rec)) return;
   const stale = pathMode !== 'cover' || !botCombatMoveGoal || currentPath.length === 0 ||
     Math.hypot(botCombatMoveGoal.x - rec.anchorPos.x, botCombatMoveGoal.z - rec.anchorPos.z) > 0.1;
   let refused = false;
@@ -4988,6 +5356,35 @@ function updateCoverMoveMovement(nowMs) {
     return;
   }
   if (followPath(bot, currentPath, currentBotMoveSpeed() * 1.12)) { pathMode = null; botCombatMoveGoal = null; }
+}
+// findPath/followPath only ever steer to cell CENTRES (nav-grid cellToWorld), and on the 1.5 m
+// terrain-zone grid a centre can sit ~1.06 m from the anchor -- outside COVER_ANCHOR_REACH (0.45 m).
+// The bot then parks, never reads as seated, and times out at 6 s into a blacklist + re-engage.
+// So the tail of the journey is walked straight to the exact anchor instead.
+const COVER_FINAL_APPROACH_STOP = COVER_ANCHOR_REACH * 0.6;   // land well inside the seat band
+const _coverLegXZ = { x: 0, z: 0 };
+// Distance to the anchor when the direct walk is both short enough and nav-clear, else Infinity.
+// On a 0.5 m grid the leg is 0.85 m and arrival already registers from the path itself, so this is
+// effectively inert there (shoot-house and the harness are unaffected).
+function coverAnchorLeg(rec) {
+  const here = botXZInto(bot, _coverLegXZ);
+  const dist = Math.hypot(rec.anchorPos.x - here.x, rec.anchorPos.z - here.z);
+  const cell = botNavGrid?.cellSize ?? BOT_NAV_CELL;
+  if (dist > Math.max(BOT_WAYPOINT_REACH + cell, cell * 1.5)) return Infinity;
+  if (botNavGrid && !lineWalkable(botNavGrid, here, rec.anchorPos)) return Infinity;
+  return dist;
+}
+// True when the final approach has taken over movement for this frame.
+function stepCoverAnchorApproach(rec) {
+  const dist = coverAnchorLeg(rec);
+  if (dist === Infinity) return false;
+  if (pathMode === 'cover') { currentPath = []; pathMode = null; botCombatMoveGoal = null; }
+  if (dist > COVER_FINAL_APPROACH_STOP) {
+    const speed = currentBotMoveSpeed() * 1.12;
+    bot.velocity.x = ((rec.anchorPos.x - _coverLegXZ.x) / dist) * speed;
+    bot.velocity.z = ((rec.anchorPos.z - _coverLegXZ.z) / dist) * speed;
+  } else { bot.velocity.x = 0; bot.velocity.z = 0; }
+  return true;
 }
 // Position-driven slide along the baked anchor->peek line; re-seats after any pushout shove.
 function placeBotXZ(entity, p) {
@@ -5044,6 +5441,13 @@ function resetAimAcquisition(rec) {
   if (!rec) return;
   rec.aimContactAt = null; rec.aimReadyAt = 0; rec.aimLostAt = null; rec.aimTargetId = null;
 }
+// A10b: tearing down a live contact (retarget, occlusion past the grace) leaves the bot primed --
+// the next acquisition inside the window is an attention shift, not fresh recognition.
+const AIM_PRIMED_WINDOW_MS = 4000;
+const AIM_UNDER_FIRE_MS = 4000;
+function primeAimAcquisition(rec, nowMs) {
+  if (rec?.aimContactAt != null) rec.aimPrimedUntil = nowMs + AIM_PRIMED_WINDOW_MS;
+}
 function updateAimAcquisition(nowMs, dt, visible, distance) {
   const rec = activeBot;
   rec.spreadBloomDeg = decayBloomDeg(rec.spreadBloomDeg, dt, botAimSettings);
@@ -5051,14 +5455,23 @@ function updateAimAcquisition(nowMs, dt, visible, distance) {
   if (!visible) {
     if (rec.aimContactAt == null) return;
     rec.aimLostAt ??= nowMs;
-    if (nowMs - rec.aimLostAt > botAimSettings.reacquireGraceMs) resetAimAcquisition(rec);
+    if (nowMs - rec.aimLostAt > botAimSettings.reacquireGraceMs) {
+      primeAimAcquisition(rec, nowMs);
+      resetAimAcquisition(rec);
+    }
     return;
   }
   rec.aimLostAt = null;
   if (rec.aimContactAt != null && rec.aimTargetId === targetId) return;
+  // Fresh contact: pay the delay once. Taking fire personally counts as alerted even before any
+  // squad report scores a tier; a primed bot pays the discounted attention-shift delay.
   rec.aimTargetId = targetId;
   rec.aimContactAt = nowMs;
-  rec.aimReadyAt = nowMs + reactionDelayMs(distance, { alerted: !!rec.alertTierLast, jitter01: Math.random() }, botAimSettings);
+  rec.aimReadyAt = nowMs + reactionDelayMs(distance, {
+    alerted: !!rec.alertTierLast || nowMs - (rec.lastSelfThreatAt ?? -Infinity) < AIM_UNDER_FIRE_MS,
+    primed: nowMs < (rec.aimPrimedUntil ?? 0),
+    jitter01: Math.random(),
+  }, botAimSettings);
 }
 function aimHeldMs(nowMs) { return activeBot?.aimContactAt == null ? 0 : nowMs - activeBot.aimContactAt; }
 function botAimReady(nowMs) {
@@ -5194,6 +5607,7 @@ function refreshGrenadeThreats() {
     if (e.state?.bounces !== true) continue;   // rockets fly too fast to dodge; grenades bounce
     const fuse = e.sim?.fuse;
     _grenadeThreats.push({
+      id: e.id,   // so a warning call-out can be deduped per grenade, not per bot
       p: e.transform.p,
       blastRadius: e.state.blastRadius,
       fuseRemainingS: Number.isFinite(fuse) ? Math.max(0, fuse - e.sim.age) : Math.max(0, e.sim?.life ?? 0),
@@ -5305,6 +5719,7 @@ function releaseGrenade(rec, pending, nowMs) {
   rec.lastGrenadeAt = nowMs;
   teamLastGrenadeAt.set(rec.teamId, nowMs);
   playAtCulled(weaponFireEvent('grenade'), _grenadeOrigin, 'launch', 4);
+  sayBotLine(rec, 'grenade_out', nowMs);
   hostGhostsDirty = true;
 }
 // Owns the bot's movement for the whole wind-up; returns true while it does.
@@ -5357,7 +5772,14 @@ function updateGrenadeEvade(dt, nowMs) {
   const rec = activeBot;
   if (!rec || !botGrenadesEnabled || _grenadeThreats.length === 0) return false;
   const evade = grenadeEvade(grenadeBodyInto(bot.capsule, _grenadeSelf), _grenadeThreats, botGrenadeSettings);
-  if (!evade) { rec.grenadeEvadeAt = null; return false; }
+  if (!evade) { rec.grenadeEvadeAt = null; rec.voiceEvadeId = null; return false; }
+  // grenadeEvade returns a copy of the threat's position, so the source grenade is found by value.
+  const evadeThreat = _grenadeThreats.find(g => g.p[0] === evade.from[0] && g.p[2] === evade.from[2]);
+  const evadeThreatId = evadeThreat?.id ?? 'blast';
+  if (rec.voiceEvadeId !== evadeThreatId) {
+    rec.voiceEvadeId = evadeThreatId;
+    sayBotLine(rec, 'grenade_warn', nowMs, `grenade_warn:${evadeThreatId}`);
+  }
   rec.evadingUntil = nowMs + GRENADE_EVADE_POSE_LINGER_MS;   // read by next frame's stance resolve
   rec.grenadeThrow = null;   // drop a wind-up: not the moment to be standing still
   if (!rec.grenadeEvadeAt || nowMs - rec.grenadeEvadeAt > GRENADE_EVADE_REPLAN_MS || currentPath.length === 0) {
@@ -5395,12 +5817,13 @@ function updateBotSentry(rec, dt, nowMs) {
     rec.lastTargetId = sentryTargetId;
     rec.lastTargetSeenAt = null;
     botMissStreak = 0;
+    rec.voiceContactId = null;   // a new opponent is a new call-out
     resetVisibleDebounce(rec.visDebounce);
-    resetAimAcquisition(rec);
+    primeAimAcquisition(rec, nowMs);   // a retarget is an attention shift, not a fresh fight
+    resetAimAcquisition(rec);          // ...but the paid-for acquisition still describes one opponent
   }
   let visible = false, err = Infinity, targetYaw = bot.yaw, targetPitch = bot.pitch, targetDistance = Infinity;
   botTargetVisGate = '-';
-  botAimSettings.reactionMs = Math.max(0, botNoticeTimeSec * 1000);
   updateBotReload(nowMs);
   rec.weaponAimPoint = null;
   if (botTarget) {
@@ -5411,7 +5834,7 @@ function updateBotSentry(rec, dt, nowMs) {
     botTargetVisGate = 'r';   // beyond sight range unless the tests below resolve it
     if (dist <= botSightDistance() && dist > 1e-4) {
       const inFov = withinBotFov(bot.yaw, botEye, targetEye);
-      const clear = inFov && botSeesCached(rec, botEye, botTarget, dist, nowMs);
+      const clear = inFov && botHasLineOfSight(botEye, botTarget.p, dist);   // fresh every frame, harness parity
       visible = clear;
       botTargetVisGate = visible ? 'y' : !inFov ? 'f' : 'w';   // wall beats FOV when both reject
     }
@@ -5439,6 +5862,7 @@ function updateBotSentry(rec, dt, nowMs) {
       _contactMe.id = bot.id; _contactMe.team = rec.teamId;
       _contactMe.x = bot.capsule.start.x; _contactMe.z = bot.capsule.start.z;
       recordContact(recentAllyHits, _contactMe, lastKnownTarget, nowMs, pushAllyReport);
+      sayBotContact(rec, botTarget.id, nowMs);
       const angles = aimAnglesTo(botEye, targetEye, _aimAngles);
       targetYaw = angles.yaw; targetPitch = angles.pitch;
       botAimTarget.yaw = targetYaw; botAimTarget.pitch = targetPitch;
@@ -5465,6 +5889,7 @@ function updateBotSentry(rec, dt, nowMs) {
   else if (rec.lastTargetSeenAt != null && nowMs - rec.lastTargetSeenAt > MISS_STREAK_SIGHT_RESET_MS) {
     rec.lastTargetSeenAt = null;
     botMissStreak = 0;
+    rec.voiceContactId = null;   // sight broke long enough that a re-acquire is news again
   }
   updateAimAcquisition(nowMs, dt, visible, targetDistance);
   // --- health packs: collect anything underfoot, then decide whether to go seek a dropped pack ---
@@ -5556,6 +5981,12 @@ function updateBotSentry(rec, dt, nowMs) {
     rec.alertWarySince ??= nowMs;
     if (BOT_PUSH_TIER_ENABLED && esc.score >= ALERT_PUSH_SCORE && livingTeammatesNear(bot, SUPPORT_RADIUS) >= SUPPORT_GROUP_MIN) {
       alertTier = 'push';
+      // Seed the search anchor from the report so a pushing bot with no contact has somewhere to go.
+      if (!lastKnownTarget) {
+        lastKnownTarget = { x: report.threat.x, z: report.threat.z, fromReport: true };
+        lastKnownTargetAt = report.at;
+        lastKnownTargetMotion = null;
+      }
     } else if (esc.score >= ALERT_DEFENSIVE_SCORE) {
       alertTier = 'defensive';
     } else if (nowMs - rec.alertWarySince < SEMI_ALERT_WARY_MS) {
@@ -5568,7 +5999,11 @@ function updateBotSentry(rec, dt, nowMs) {
   const nearMiss = alertTier ? null : latestNearMiss(recentAllyHits, bot, nowMs);
   // Being shot AT or HIT myself: the one cue no tier may suppress and no state may ignore.
   const selfThreat = latestSelfThreat(recentAllyHits, bot, nowMs);
-  if (selfThreat) rec.lastSelfThreatAt = nowMs;   // read below by the sidearm "in a gunfight" test
+  if (selfThreat) {
+    rec.lastSelfThreatAt = nowMs;   // read below by the sidearm "in a gunfight" test
+    (rec.lastSelfThreatXZ ??= { x: 0, z: 0 }).x = selfThreat.threat.x;   // copied: the report record is pooled
+    rec.lastSelfThreatXZ.z = selfThreat.threat.z;
+  }
   // H6a: shot from inside CLOSE_THREAT_RADIUS but outside the cone -- spin onto it, preempting aim.
   const closeThreatNear = !!selfThreat?.threat &&
     Math.hypot(selfThreat.threat.x - bot.capsule.start.x, selfThreat.threat.z - bot.capsule.start.z) <= CLOSE_THREAT_RADIUS;
@@ -5754,6 +6189,7 @@ function updateBotSentry(rec, dt, nowMs) {
   if (state === BOT_COVER_MOVE && botState !== BOT_COVER_MOVE) rec.coverMoveSince = nowMs;
   else if (state !== BOT_COVER_MOVE) rec.coverMoveSince = null;
   if (state !== botState) rec.stateEnteredAt = nowMs;
+  updateBotVoiceState(rec, botState, state, attackerOutOfAmmo, nowMs);   // before the stamp: needs both states
   botState = state;
   if (state !== BOT_FLEE) goalClaims.release(bot.id, 'flee');
   if (state !== BOT_SEEK) goalClaims.release(bot.id, 'seek');
@@ -6222,7 +6658,7 @@ function updateBots(dt) {
         const role = getRole(rec.role);
         rec.weaponId = rec.primaryWeaponId;
         rec.sidearmId = sidearmForRole(role.id, rec.primaryWeaponId, botSeedFromId(id));
-        rec.swapUntil = 0; rec.lastGunfightAt = null; rec.lastSelfThreatAt = null;
+        rec.swapUntil = 0; rec.lastGunfightAt = null; rec.lastSelfThreatAt = null; rec.lastSelfThreatXZ = null;
         rec.healthPacks = Array.from({ length: role.startingPacks }, () => makePack(1));
         rec.diedAt = null; rec.deathXZ = null;
         rec.medicClaimBy = null; rec.medicClaimUntil = 0;
@@ -6238,7 +6674,7 @@ function updateBots(dt) {
         playerCombat.revive(id, { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z });
         rec.deadSince = null; rec.fsmState = BOT_PATROL; rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
         rec.reloadUntil = null; rec.reloadStartedAt = null;
-        rec.losTargetId = null; rec.losVisible = false; rec.nextLosCheckAt = 0; rec.pathRetryAt = 0; rec.pathFailCount = 0;
+        rec.pathRetryAt = 0; rec.pathFailCount = 0;
         rec.stuckReplanCount = 0; rec.stuckReplanAt = 0; rec.escapeTarget = null; rec.escapeStartedAt = null;
         resetBotBrainState(rec);   // a revived bot re-acquires and re-plans; it inherits nothing
         // Re-anchor state-entry/position tracking at the new spot so the teleport-to-spawn jump
@@ -8714,7 +9150,6 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     botSliderRow('Move speed', 0.5, 6, 0.1, botMoveSpeed, v => v.toFixed(1), v => { botMoveSpeed = v; });
     botSliderRow('Sight range (m)', 5, 50, 1, botSightRange, v => String(v), v => { botSightRange = v; });
     botSliderRow('Seek tenacity (s)', 1, 20, 1, botSeekTenacitySec, v => String(v), v => { botSeekTenacitySec = v; });
-    botSliderRow('Notice time (s)', 0, 3, 0.1, botNoticeTimeSec, v => v.toFixed(1), v => { botNoticeTimeSec = v; });
     botSliderRow('Accuracy (%)', 10, 100, 5, botAccuracy, v => String(v), v => { botAccuracy = v; });
     // Phase C: role mix (applied per spawn batch) + the stance run multiplier.
     botSliderRow('Medic %', 0, 100, 5, botMedicPercent, v => String(v), v => { botMedicPercent = v; botRoleQueue.length = 0; });
@@ -8748,6 +9183,16 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     botToggleRow('Knife (last resort)', () => botKnifeSecondaryEnabled, v => { botKnifeSecondaryEnabled = v; });
     botToggleRow('Bot combat audio', () => botAudioEnabled, v => { botAudioEnabled = v; });
     botToggleRow('Synth SFX fallback', () => botSynthSfxEnabled, v => { botSynthSfxEnabled = v; });
+    // Squad chatter. Chattiness drives the director's rate limits, so it is the control that
+    // decides whether a 90-bot firefight sounds like a squad or like a crowd.
+    botToggleRow('Squad chatter', () => botChatterEnabled, v => { botChatterEnabled = v; });
+    botToggleRow('Chatter radio FX', () => botChatterRadio, v => { botChatterRadio = v; });
+    botSliderRow('Chatter volume', 0, 1.5, 0.05, botChatterVolume, v => v.toFixed(2), v => { botChatterVolume = v; });
+    botSliderRow('Chattiness', 0, 2, 0.05, botVoiceDirector.getChattiness(), v => v.toFixed(2), v => botVoiceDirector.setChattiness(v));
+    const chatterNote = document.createElement('div');
+    chatterNote.style.cssText = 'color:#6f7a89;font-size:10px;margin:2px 0 6px';
+    chatterNote.textContent = 'Call-outs are driven by the bots’ own FSM state. Chattiness scales the rate limits; below 0.35 the ambient flavour lines (engaging, moving up, covering fire, reloading) stop and only information survives.';
+    botSec.appendChild(chatterNote);
 
     botStatusEl = document.createElement('div');
     botStatusEl.style.cssText = 'color:#6f7a89;font-size:10px;margin:4px 0 2px';
@@ -12498,7 +12943,7 @@ function mapShotOccluder(origin, d, range) {
 function resolveWorldShot({ shooterId, origin, dir, range, nowMs }) {
   const creatures = creatureCombatCapsules();
   // A bot shooter's hit-test never includes the host capsule while the host isn't visible to
-  // bots (third-person body view / orbit camera, see hostVisibleToBots) -- otherwise a bot could
+  // bots (orbit/dev camera with no body in the world, see hostVisibleToBots) -- otherwise a bot could
   // still physically register a hit on a body it was never allowed to perceive or aim at.
   let players = currentCombatPlayers(nowMs);
   if (botPlayers.has(shooterId) && !hostVisibleToBots()) players = players.filter(p => p.id !== 'host');
@@ -12587,7 +13032,7 @@ function liveHostEffectWires() {
 // Host/solo: create the replicated tracer + impact-spark entities for a resolved shot.
 // (Muzzle flash is a LOCAL first-person effect spawned in fireGunFromCamera at the real
 // viewmodel muzzle — never from the eye/shot origin, which would sit in the shooter's face.)
-function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null) {
+function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null, shotDir = null) {
   if (!hit || !Array.isArray(hit.point)) return;
   const now = performance.now() / 1000;
   const p0 = tracerEffectStart(origin, hit.point, capturedMuzzle);
@@ -12605,8 +13050,10 @@ function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null) {
     color: sparkColorFor(hit.kind), surface: hit.kind, ownerId,
   }, now);
   // World-surface impact report; entity hits (player/creature) already play 'enemy_hit'.
+  // A grazing hit on hard geometry sings off instead; the ricochet REPLACES the impact voice.
   if (hit.kind !== 'player' && hit.kind !== 'creature') {
-    playAtCulled('bullet_impact', hit.point, 'impact', 8);
+    const voice = pickImpactVoice(hit, shotDir);
+    if (voice && voice !== 'enemy_hit') playAtCulled(voice, hit.point, 'impact', 8);
   }
 }
 
@@ -12687,11 +13134,91 @@ function updateShotEffects(nowMs) {
 // Credits shotsFired/hitsLanded/kills/deaths onto botPlayers records (no-op for a non-bot
 // id, e.g. the human host). wasTargetAlive must be sampled before applyDamage so a kill/death
 // is only counted on the tick that actually flips alive -> dead, not on every follow-up hit.
-function bumpBotCombatCounters(attackerId, targetId, wasTargetAlive) {
-  const becameDead = wasTargetAlive && !playerCombat.getSnapshot(targetId).alive;
+// Damage/death listeners. Several audio tracks want a "bot was hit" / "bot died" signal; they
+// subscribe here rather than each editing the damage path, which keeps the alive->dead edge
+// detected in exactly one place.
+const botDamageListeners = new Set();
+const botDeathListeners = new Set();
+function onBotDamaged(fn) { botDamageListeners.add(fn); return () => botDamageListeners.delete(fn); }
+function onBotDied(fn) { botDeathListeners.add(fn); return () => botDeathListeners.delete(fn); }
+function emitTo(set, label, evt) {
+  for (const fn of set) { try { fn(evt); } catch (err) { console.warn(`${label} listener`, err); } }
+}
+
+// Mechanical damage/death audio. Every world query is an id lookup so bot-damage-audio.js stays
+// viewer-agnostic. The siren's life is the medic revive window; a plain respawn (BOT_RESPAWN_MS,
+// shorter than that window) is hard-cut by the sweep instead, because a respawn is not a revive.
+const botDamageAudio = createBotDamageAudio({
+  enabled: () => botAudioEnabled,
+  playOneShot: (eventId, pos) => playAtCulled(eventId, pos, 'impact', 6),
+  // A kill is rare and high-value: gate it on concurrent death voices, not the 100ms rate window.
+  playPriorityOneShot: (eventId, pos) => playAtCulled(eventId, pos, 'distress', Infinity),
+  playLoop: (build, pos, opts) => playLoopCulled(build, pos, { kind: 'distress', ...opts }),
+  getPosition: id => botPlayers.get(id)?.bot?.capsule?.start ?? null,
+  getHp01: (id) => {
+    if (!botPlayers.has(id)) return null;
+    const snap = playerCombat.getSnapshot(id);
+    return Math.max(0, Math.min(1, (snap.hp ?? 0) / (snap.maxHp || 100)));
+  },
+  isAlive: id => botPlayers.has(id) && playerCombat.getSnapshot(id).alive === true,
+  exists: id => botPlayers.has(id),
+  getListenerPosition: () => (playerCollider ? playerCollider.end : camera.position),
+  getThreshold01: () => botHealthSettings.threshold01,
+  getReviveWindowMs: () => MEDIC_DEFAULTS.reviveWindowMs,
+  budget: combatAudioBudget,
+});
+onBotDamaged(evt => botDamageAudio.onDamaged({
+  id: evt.targetId, position: evt.hitPoint, amount: evt.amount,
+  hpBefore01: evt.hpBefore01, hpAfter01: evt.hpAfter01, cause: evt.cause, fatal: evt.fatal,
+}));
+onBotDied(evt => botDamageAudio.onDied({
+  id: evt.targetId, position: evt.hitPoint ?? evt.rec?.bot?.capsule?.start ?? null,
+  diedAt: evt.now, revivable: true,
+}));
+
+// Casualty call-outs ride the death event, not the damage path. The victim's squad reports it
+// (nearest living teammate inside the call-out radius); a bot killer claims the kill on its own
+// net. A human killer is not on any bot net, so nothing is said for it.
+onBotDied((evt) => {
+  const victim = botPlayers.get(evt.targetId);
+  if (!botChatterEnabled || !victim?.bot) return;
+  const now = evt.now ?? performance.now();
+  const vx = victim.bot.capsule.start.x, vz = victim.bot.capsule.start.z;
+  const witnesses = [];
+  for (const [id, rec] of botPlayers) {
+    if (id === evt.targetId || rec.teamId !== victim.teamId || !rec.bot) continue;
+    if (!playerCombat.getSnapshot(id).alive) continue;
+    if (Math.hypot(rec.bot.capsule.start.x - vx, rec.bot.capsule.start.z - vz) > CONTACT_SHARE_RADIUS) continue;
+    witnesses.push(rec);
+  }
+  sayBestBotLine(witnesses, 'man_down', now, `man_down:${evt.targetId}`);
+  const killer = botPlayers.get(evt.attackerId);
+  if (killer?.bot && killer.teamId !== victim.teamId && playerCombat.getSnapshot(evt.attackerId).alive) {
+    sayBotLine(killer, 'enemy_down', now, `enemy_down:${evt.targetId}`);
+  }
+});
+
+function bumpBotCombatCounters(attackerId, targetId, wasTargetAlive, info = null) {
+  const snap = playerCombat.getSnapshot(targetId);
+  const becameDead = wasTargetAlive && !snap.alive;
   const attackerRec = botPlayers.get(attackerId);
   if (attackerRec) { attackerRec.hitsLanded++; if (becameDead) attackerRec.kills++; }
   if (becameDead) { const targetRec = botPlayers.get(targetId); if (targetRec) targetRec.deaths++; }
+
+  // Only bots get the mechanical damage voices; the human host has its own player_damage sound.
+  const targetRec = botPlayers.get(targetId);
+  if (!targetRec) return;
+  const maxHp = snap.maxHp || 100;
+  const hpAfter01 = Math.max(0, Math.min(1, (snap.hp ?? 0) / maxHp));
+  const amount = info?.amount ?? 0;
+  const evt = {
+    targetId, attackerId, rec: targetRec, now: performance.now(),
+    hitPoint: info?.hitPoint ?? null, amount,
+    hpAfter01, hpBefore01: Math.max(0, Math.min(1, hpAfter01 + amount / maxHp)),
+    cause: info?.cause ?? 'bullet', fatal: becameDead,
+  };
+  emitTo(botDamageListeners, 'botDamaged', evt);
+  if (becameDead) emitTo(botDeathListeners, 'botDied', evt);
 }
 function applyHitDamage(hit, weapon, weaponId, ownerId) {
   if (hit && hit.kind === 'player') {
@@ -12701,9 +13228,10 @@ function applyHitDamage(hit, weapon, weaponId, ownerId) {
         targetId: hit.id, amount: weapon.damage, source: 'gun',
         attackerId: ownerId, hitPoint: hit.point, weaponId,
       });
-      bumpBotCombatCounters(ownerId, hit.id, wasAlive);
+      bumpBotCombatCounters(ownerId, hit.id, wasAlive, { amount: weapon.damage, hitPoint: hit.point, cause: weaponId === 'knife' ? 'knife' : 'bullet' });
       recordBotAllyHit(hit.id, ownerId, performance.now()); // casualty report the alert tiers read
-      playAtCulled('enemy_hit', hit.point, 'impact', 8);
+      // Bots are robots and get a struck-metal tier via onBotDamaged; only the human host is flesh.
+      if (!botPlayers.has(hit.id)) playAtCulled('enemy_hit', hit.point, 'impact', 8);
       if (hit.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
     }
   } else if (hit && hit.kind === 'creature' && hit.creatureRef) {
@@ -12745,7 +13273,8 @@ function applyExplosionBlast({ center, radius, damage, ownerId, floor }) {
         targetId: pl.id, amount: dmg, source: 'explosion',
         attackerId: ownerId, hitPoint: pl.p, weaponId: null,
       });
-      bumpBotCombatCounters(ownerId, pl.id, true); // pl.alive already checked true by the loop guard above
+      // pl.alive already checked true by the loop guard above
+      bumpBotCombatCounters(ownerId, pl.id, true, { amount: dmg, hitPoint: { x: pl.p[0], y: pl.p[1], z: pl.p[2] }, cause: 'blast' });
       if (pl.id === 'host') { envAudio.play('player_damage'); localDamageFeedback(); }
     }
     recordBotAllyHit(pl.id, ownerId, performance.now(), threatXZ); // no-op for a non-bot id
@@ -12837,9 +13366,15 @@ function applyCombatIntent(intent, ownerId) {
     nowMs,
   });
   recordBotNearMisses(shotIntent.origin, shotIntent.dir, weapon.range, ownerId, hit, nowMs);
+  // Same "how close did that pass" geometry the near-miss reports use, sounded for the local ear.
+  // Melee swings are excluded: a knife arc is not a round in flight.
+  if (mode === 'hitscan') {
+    playBallisticWhizz(shotIntent.origin, shotIntent.dir,
+      hit && hit.kind !== 'none' ? hit.distance : weapon.range, ownerId, weapon);
+  }
   applyHitDamage(hit, weapon, weaponId, ownerId);
   if (mode === 'melee') spawnMeleeImpact(hit, weapon, ownerId);
-  else spawnShotEffects(shotIntent.origin, hit, weapon, ownerId, shotIntent.tracerOrigin);
+  else spawnShotEffects(shotIntent.origin, hit, weapon, ownerId, shotIntent.tracerOrigin, shotIntent.dir);
   hostGhostsDirty = true;
   return { ok: true, hit };
 }
@@ -13189,6 +13724,7 @@ function lgUpdateLights(dt, t) {
     applyBlast: applyExplosionBlast,   // explosion create()-time radial damage
     spawnEffect: (init) => createEffectEntity(init, t),
   });
+  stepProjectileWhizz();   // host/solo only: guests never tick the registry
   lightBinder?.sync(hostLightEntitiesForRender());
 }
 
@@ -13344,6 +13880,7 @@ async function animate() {
   if (fpsMode && fpsCursorFree && aimLock) localWeaponView?.update(rawDt, { speed: 0, aim: localAimAmount });
   // Web Audio listener + music/speaker positional update, after the camera/player moved.
   envAudio.update(now);
+  botDamageAudio.update(now);
   worldModels?.update?.();
   syncMultiplayerPlayer(now);
   updateMultiplayerFinder();

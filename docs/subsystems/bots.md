@@ -1963,7 +1963,7 @@ the first frame, at any range, forever. Two halves now sit in that gap, each wit
 | Export | Purpose |
 |---|---|
 | `AIM_DEFAULTS` | every tunable below, and the source of `botAimSettings` |
-| `reactionDelayMs(distance, {alerted, jitter01}, s)` | recognition delay for a fresh contact, in ms |
+| `reactionDelayMs(distance, {alerted, primed, jitter01}, s)` | recognition delay for a fresh contact, in ms |
 | `settleFactor01(heldMs, s)` | 1 at acquisition → 0 after `settleMs`; scales the first-shot penalty |
 | `spreadHalfAngleRad({moveSpeed01, heldMs, bloomDeg}, s)` | half-angle of the cone the next round is drawn from |
 | `bloomAfterShot(deg, s)` / `decayBloomDeg(deg, dtS, s)` | recoil climb per shot and its recovery |
@@ -1988,7 +1988,35 @@ Three properties worth keeping:
 - **Occlusion under `reacquireGraceMs` (600 ms) doesn't re-arm it.** Otherwise a bot fighting across
   a pillar pays the delay on every flicker and never fires.
 - **A target switch resets it**, beside the existing miss-streak/debounce reset — the delay describes
-  one opponent.
+  one opponent. Since 2026-07-31 the reset also *primes* the bot (see below), so the replacement
+  contact pays the attention-shift discount, not full recognition.
+
+### Faster fire decision — A10b (2026-07-31)
+
+Bots visibly aimed at enemies for seconds without firing. Two causes: the harness overrode the
+module defaults with `reactionMs 700 / perMetre 40 / cap 2000` (~1.5 s at 20 m), and every teardown
+of a paid acquisition — a target switch, or any sight break past the grace — re-charged the *full*
+delay. With two enemies trading the "nearest" slot on the 4-frame scan, a bot could re-pay forever.
+Four changes, all in the same A10 seam:
+
+- **Module defaults restored** — `botAimSettings` is now plain `{ ...AIM_DEFAULTS }`
+  (260 ms + 12 ms/m, cap 900). Note the **bots** save slots persist `aim`, so an old slot loads the
+  old slow values back; re-save after loading.
+- **Primed window** — `primeAimAcquisition` stamps `aimPrimedUntil = now + 4 s` whenever a live
+  contact is torn down (retarget in `updateBotSentry`, grace expiry in `updateAimAcquisition`).
+  Fresh contacts while primed pass `primed: true` to `reactionDelayMs`, which applies
+  `primedReactionScale` (default 0.4). The hard actor reset clears it.
+- **Taking fire counts as alerted** — the `alerted` input is now
+  `alertTierLast || lastSelfThreatAt within 4 s`, so a bot being shot at reacts at the alert scale
+  even before any squad report scores a tier.
+- **Reaction floor** — `reactionMinMs` (default 100) keeps the stacked scales
+  (alert × primed × jitter) from producing inhuman sub-50 ms reactions.
+
+Alongside, `selectBotTarget` gained **stickiness**: a newcomer must be ≥30 % (linear) closer to
+steal the slot from a still-visible incumbent (`TARGET_STICK_CLOSER_SQ`), because every steal
+resets the paid acquisition. An incumbent that lost its own LOS is still replaced immediately.
+Panel: two new *Aim & reaction* sliders (`Reaction floor (ms)`, `Primed reaction ×`); the readout's
+aim row appends `(primed)` while the discount window is live.
 
 ### Spread
 
@@ -3060,6 +3088,78 @@ The anchor itself is user-tunable: `povEyeOffset` ({y, z}, head-local metres, z 
 face) is added inside `botPovAnimatedEyePoint` before `localToWorld`, driven by the "POV eye
 up/down (m)" and "POV eye forward (m)" sliders in the Camera panel (defaults 0/0 keep the authored
 eye bridge). The no-head capsule fallback applies y as world up and z along the bot's yaw.
+
+### POV debug HUD (2026-07-31)
+
+A game-style overlay ("POV debug readout" toggle in the Camera panel, default on) showing the
+followed bot's *perceived* state so the rendered view can be checked against what the bot actually
+knows. Every field reads off the followed **actor** (committed each think tick, so it is exact even
+under think stagger). The widgets, all inside `#povHud`, updated by `updatePovDebugHud` with
+change-guarded DOM writes:
+
+- **Dynamic crosshair** — the four bars' gap is the live spread half-angle projected to screen
+  pixels (`spreadRad × pxPerRad` from `camera.fov`); colour is the fire decision (white = no seen
+  target, orange = seen but inside the A10 delay, red = shot legal). `layoutPovCrosshair`.
+- **Reaction ring** (`#povRing`) — conic-gradient countdown around the crosshair while the
+  recognition delay runs on a seen target; masked to a thin ring.
+- **Target plate** (`#povTarget`, above the crosshair) — target id, distance, visibility gate
+  spelled out (`CLEAR`/wall/fov/range), the target's health bar, and the aim gate line
+  (`+340ms (primed)` / `READY` / `FIRING`) with border colour matching the crosshair state.
+- **State chip** (`#povState`, below the crosshair) — a dot in the `botStateColor` orb colour +
+  state name + time-in-state, with the alert tier as a coloured badge (SEEN/HEARD/PUSH/BASE/NEAR,
+  matching the overhead-mark colour language).
+- **Vitals** (`#povVitals`, bottom-centre) — name/team/role/stance/life/k-d line, health bar
+  (hue-scaled), magazine bar with reserve count and a pulsing reload sweep + countdown, and
+  grenade/pack/revive-kit pips.
+- **Squad widget** (`#povSquad`) — one row per member with a live health bar; leader starred,
+  followed bot arrowed, dead members dimmed; header shows formation/engaged/push element. Rows
+  rebuild only when membership or leadership changes.
+- **Text panel** (`#povDebug`) — the residual ground-truth numbers not worth a widget: state line,
+  shots/hits, target + aim gate, last-known contact (age, `[report]` origin), nav mode + waypoint
+  count + goal coordinates.
+
+The panel column (`#povLeft`) sits top-left under `#info` — measured from `#info`'s live rect (it
+wraps on narrow windows), deliberately clear of the bottom-left `#hud-bottom` row
+(fps / navwarn / score / now-playing) and the bottom-centre vitals.
+
+Second pass (same day) made it diagnostic rather than just informative:
+
+- **Aim reticle** (`povReticle`) — a ring at the bot's *actual* muzzle bearing (entity yaw/pitch,
+  not the free-look camera), radius = the spread cone at that distance, colour = the fire
+  decision. Together with the target plate's `err` readout (the real `aimError` vs
+  `AIM_TOLERANCE_RAD` gate) it shows the one gate that decides AIM vs FIRE.
+- **Direction arrows** (`.pov-edge`) on a ring around the crosshair, angle = horizontal bearing
+  relative to the camera heading: `▲` current target while outside the camera's horizontal FOV
+  (colour = aim gate), `‼` whoever shot this bot (fresh `lastSelfThreatXZ`, now committed on the
+  actor), `!` the squad-alert threat bearing in the tier colour.
+- **SEEK/COVER markers** — a fading ghost diamond at `lastKnownTarget` (yellowed when
+  `[report]`-seeded), cover anchor + peek-seat diamonds with the slide line between them, and the
+  state chip appends the live peek phase (`peek in/out EXPOSED`) during COVER_HOLD. The followed
+  bot's ground FOV wedge is forced on (and `buildFovWedgeGeometry` now uses the *effective* cone —
+  base fovDegrees maxed with the alert-tier widening — for all bots).
+- **Acquisition-churn visibility** — the target plate shows `cand N` (in-cone candidate count,
+  stamped by `selectBotTarget`), and the reaction ring flashes grey for 300 ms whenever a paid
+  acquisition is torn down (`aimResetAt`, stamped in `primeAimAcquisition`) — retarget re-pays are
+  unmistakable.
+- **Perceived-enemy marks** — `selectBotTarget` now commits candidate *identities*
+  (`actor.perceivedEnemies`, up to `PERCEIVED_ENEMY_MAX` = 8 `{entity, distSq}` entries,
+  nearest-first, same `.alive`-guarded retention convention as `actor.target`; cleared on map
+  reset). The world pass draws a small diamond over each one (minus the committed target): solid
+  white = LOS re-verified clear this frame (HUD-only rays, followed bot only), faint grey = in
+  cone but occluded. The plate's count becomes `cand N (M vis)`. This makes the single-slot
+  amnesia visible — five enemies in the cone, one target — and the list is the seam a future
+  multi-threat contact memory would replace (risk-scored target choice, threat-to-support ratio).
+- **Shape + hygiene** — a centre dot appears only when the shot is legal (ready never rides on hue
+  alone); `layoutPovCrosshair` is change-guarded; the squad key is allocation-free (size/leader +
+  stale-row sweep); the toggle is split into **POV debug widgets** (screen) and **POV debug
+  markers** (world), both persisted in the ui slot group (`debug.povScreen` / `debug.povWorld`).
+
+The world markers are drawn `depthTest: false` on purpose (through walls — they describe intent
+and memory, not sight): the cyan polyline (`povPathLine`, 64-waypoint cap) through the actor's
+actual `path` queue and the cyan diamond (`povGoalMark`) at the terminal goal (path end, else
+combat move goal / pack goal / cover anchor). The spotted-enemy diamond also encodes the fire
+decision by colour: grey = lingering memory after sight loss, orange = seen but inside the
+reaction delay, red = the shot is legal.
 
 ### Terrain fix: weapon mount height was world-absolute (2026-07-25)
 
@@ -5475,3 +5575,135 @@ around one shared seed (`BOT_SPAWN_HOME_SPREAD` 6 m) — an authored team marker
 one, else a sampled point. A one-marker layout therefore forms squads up around the marker instead
 of stacking the whole roster onto it. `botSpawnSlot` survives only as the gridless fallback
 (authored marker, else player-relative golden-angle arcs, i.e. terrain before the first zone bake).
+
+### Harness combat parity — aim/disengage (2026-07-31, `environment-viewer-v2.html`)
+
+Nine divergences between env-viewer-v2's bot combat and the authoritative `bot-viewer-v2.html`
+harness were closed. Where the two disagreed, the harness won.
+
+**Awareness / aim**
+
+- `botAimSettings` is now a plain `{ ...AIM_DEFAULTS }` (260 ms base / 12 ms per metre / 900 ms
+  ceiling) instead of the env-only 700/40/2000 override. The "Notice time (s)" slider — which
+  overwrote `reactionMs` from `botNoticeTimeSec` on every sentry tick and so pinned reaction to a
+  UI value the harness has no equivalent of — is deleted along with its variable and DOM row.
+- Aim priming (A10b) is ported: `primeAimAcquisition` stamps `aimPrimedUntil` (4 s window) when a
+  live contact is torn down — on retarget in `updateBotSentry` and on occlusion outliving
+  `reacquireGraceMs`. `updateAimAcquisition` passes `primed:` into `reactionDelayMs`, which scales
+  the delay ×0.4, so a mid-fight re-sight is an attention shift rather than fresh recognition. The
+  same call now also treats recent personal fire (`lastSelfThreatAt` within `AIM_UNDER_FIRE_MS`,
+  4 s) as `alerted`, not just a scored squad tier.
+- Target stickiness: `selectBotTarget` keeps the incumbent target unless it has lost its own line
+  of sight or a newcomer is at least 30% closer (`TARGET_STICK_CLOSER_SQ`). Previously it was pure
+  nearest-visible, so two enemies trading the nearest slot re-paid the acquisition delay forever.
+- Line of sight now matches the bullet. `botHasLineOfSight` passes `heightAt: terrainHeight` (gated
+  on `NO_ENVIRONMENT` exactly as `resolveWorldShot` does), so bots no longer see through hills that
+  stop their rounds. The 120 ms per-bot occlusion cache (`botSeesCached`,
+  `BOT_LOS_CHECK_INTERVAL_MS`, and the `losTargetId`/`losVisible`/`nextLosCheckAt` rec fields) is
+  gone: the current target is raycast fresh every frame and candidates fresh on their scan tick,
+  as the harness does.
+
+**Disengage under fire**
+
+- `currentFleeThreat()` resolves the remembered attacker first (`healThreatId` → live position via
+  `getKnownPlayerState`, alive-checked) and falls back to the current target; `findFleeGoal` flees
+  from that and only bails when neither resolves. `healThreatId` was written but never read, so a
+  wounded bot with no live target found no threat, `findFleeGoal` returned null, and the bot
+  latched `healArrived` standing still in the open.
+- `recordBotAllyHit` no longer gates the victim's own reaction on resolving the attacker's
+  position. `lastSelfThreatAt` and `beginBotHealthRetreat` run unconditionally (mirroring the
+  harness's `applyBotDamage`); only the danger-field stamp, the casualty report and the ragdoll
+  impulse — all of which genuinely need a bearing — stay behind the `threat` check.
+- `botHealthSettings.retreatSearchRadius` (10) is added, and a wounded flee search uses
+  `max(fleeSearchRadius, retreatSearchRadius)`.
+- Stamps: `lastSelfThreatXZ` is recorded alongside `lastSelfThreatAt` (copied, since the report
+  record is pooled), and the `push` alert tier seeds `lastKnownTarget` from the ally report when
+  nothing firsthand holds the slot, so a pushing bot with no contact has somewhere to go.
+
+**Host visibility**
+
+`hostVisibleToBots()` is now just `fpsMode`. It previously required `fpsMode && !localBodyThird`,
+which meant a host in the third-person body view could never become a bot target or be hit by a
+bot round — bots ignored the person shooting them. A body in the world (first or third person) is
+a valid enemy; only the orbit/dev camera, which has no body, stays invisible.
+
+**Perf note.** Dropping the LOS cache means `botHasLineOfSight` — which builds obstacle columns and
+runs the terrain march, both heavier than the harness's single BVH raycast — now runs once per bot
+per frame for the current target plus once per candidate on each scan tick, versus roughly eight
+times a second per bot before. This is the harness's cadence and was applied deliberately; if bot
+counts make it a measurable frame cost, the fix is to make `botHasLineOfSight` cheaper (a dedicated
+sight ray), not to reinstate the stale cache.
+
+### Harness combat parity — cover (2026-07-31, `environment-viewer-v2.html`)
+
+Bots hid for a few seconds and then walked straight back into the fight. The shared cover logic
+(`bot-cover.js` plus the ported ladder in `bot-activity.js`) is a faithful port of the harness; the
+divergence was entirely in the env-side INPUTS it is fed. The harness bakes one static 0.5 m grid
+over a bounded arena and its threats are grid-walking bots; the terrain path here is a 384 m combat
+zone at 1.5 m cells, re-anchored on the local player, with a human threat that is off-grid by
+nature. Every fix below is env glue — no shared module was edited, so harness behaviour is
+unchanged by construction.
+
+**1. Cover seats were unreachable on the 1.5 m grid.** `COVER_ANCHOR_REACH` is 0.45 m, but
+`findPath`/`followPath` only ever steer to cell CENTRES, and a 1.5 m cell centre can sit ~1.06 m
+from the anchor. The bot parked, never registered arrival, hit the 6 s `coverCommitTimedOut`, got
+its own corner blacklisted, and re-engaged. `updateCoverMoveMovement` now hands the tail of the
+journey to `stepCoverAnchorApproach`/`coverAnchorLeg`, which walks straight to the exact
+`anchorPos`. The leg is bounded by `max(BOT_WAYPOINT_REACH + cellSize, cellSize * 1.5)` (0.85 m at
+0.5 m cells, 2.25 m at 1.5 m) and gated on `lineWalkable`, so it can never substitute for a path or
+cut a wall corner. On a 0.5 m grid arrival already registered from the path itself, so this is
+effectively inert for shoot-house.
+
+**2. A threat on a bad cell fail-closed every corner.** `field.canSee` returns false for
+out-of-bounds or unwalkable cells, so `coverCornerValid` invalidated every corner and
+`pickCoverCorner` found none whenever the threat stood on a slope, a rock, on top of cover, or
+outside the zone — which for the human player is most of the time. Both wrappers now route the
+threat through `coverThreatOnGrid`, which returns the exact position when its own cell is walkable
+(so nothing changes where threats already walk the grid), else the nearest walkable cell centre
+within `COVER_THREAT_SNAP_CELLS` (4), else the bot's remembered last-resolvable cell
+(`rec.coverThreatCell`, re-snapped so a rebake cannot leave a stale one). If nothing resolves,
+`coverCornerValid` returns `true` — keep the current assessment rather than fail closed. The 0.35 s
+`stepCoverGate` grace is untouched. The secondary threat snaps through
+`coverThreatOnGridSecondary`, which never writes or reads the memory and drops to `null` when
+unsnappable (it is a pure veto and already fails open).
+
+**3. A zone rebake wiped all cover state mid-hold.** `adoptBotNavGrid` nulled every bot's corner,
+peek and hold clocks, cleared the danger field and every blacklist on each 96 m player drift, so
+the whole team abandoned cover at the same instant. It now carries across whatever is still
+representable: committed corners are re-resolved against the new corner map by WORLD position
+(`remapCoverCorner`, same `kind`, `peekDir` dot ≥ 0.7, anchor within 1.5 cells) and the hold plus
+its claim survive; blacklists are remapped cell → world → cell (`remapCoverBlacklist`); the danger
+field is replayed from the casualty ring (`restampDangerField`), each report keeping its ORIGINAL
+timestamp so `bot-danger`'s read-time decay ages it exactly as before. Paths, medic floods and
+patrol/flee goals are still dropped — they re-derive in a frame.
+
+**4. The bake validated peeks that live LOS blocks.** The zone sight bake only turned dressing
+circles ≥ 1.5 m across into rects, but live `botHasLineOfSight` raycasts tree trunks through
+`obstacleColumnsAlongRay`. A bake-validated peek could therefore be trunk-blocked in play: the
+holder peeked, saw nothing, and exited `stale`/`drought` at 5.5–6 s. `botTerrainOccluders` now
+appends every trunk in the zone at the SAME radius the bullet columns use
+(`TRUNK_RADIUS_PER_SCALE`), capped at `BOT_ZONE_TRUNK_CAP` (4000) biggest-first. Trunks are
+occluders only: the field is baked over `occluders`, `buildCornerMap` still sees the rock-only
+`rects`, so a tree never authors a lean-around corner and nav-corners' O(rects²) burial scan is
+unaffected. Measured cost: `buildSightGrid` with 4000 extra trunk rects is +0.03 ms, and the gather
+(chunk walk + dedupe + sort) is ~2–3 ms; both land in `finishBotZoneBake`'s synchronous tail
+(already 100 ms+), not in the 3 ms/frame sampling budget. The gather time is logged live as the
+`(N.N ms)` beside the trunk count in `[bot zone bake #N]`. **Residual:** rasterization marks a cell
+only when a rect covers the cell CENTRE, and trunks are 0.53–1.32 m across on a 1.5 m pitch, so
+only ~39% of them mark a cell (measured on a synthetic 384 m zone). This narrows the bake/live gap
+substantially but does not close it; closing it fully would mean inflating trunk rects to a full
+cell, which would make forests opaque to every LOS-based system and was not done.
+
+**5. The danger veto footprint was 9× too large in area.** The harness paints the death cell plus
+its 8 neighbours on a 0.5 m grid — a 1.5 × 1.5 m patch. On the 1.5 m zone grid the same rule paints
+4.5 × 4.5 m, so two deaths blanketed a whole corner cluster (veto threshold 0.35, ~38 s decay) and
+released bots could not re-hide. `paintDangerPatch` denominates the stamp in METRES: neighbours are
+painted only when `cellSize * 3 <= DANGER_PATCH_M` (1.5). At 0.5 m cells that is the harness's
+exact 3×3 stamp, bit-identical; at 1.5 m cells a single cell already covers exactly 2.25 m², the
+same area the harness patch covers.
+
+**6. Null-bake guard.** `coverCornerValid` gained the harness's `if (!visField || !navGrid) return
+false` guard (bot-viewer-v2.html :7970), which the env wrapper was missing.
+
+**Verified:** the extracted module script passes `node --check`; all 29 `test-bot-*.mjs` plus
+`test-nav-grid`, `test-nav-visibility`, `test-nav-corners` and `test-nav-connect` pass (33/33).
