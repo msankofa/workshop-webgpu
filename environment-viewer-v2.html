@@ -2233,6 +2233,81 @@ function botSpawnSlot(index, teamId = null) {
   const rad = 6 + (index % 4) * 2.5;
   return { x: base.x + Math.cos(ang) * rad, z: base.z + Math.sin(ang) * rad };
 }
+// Harness spawn placement (bot-viewer-v2 findBotSpawnPoint): rejection-sample walkable ground
+// clear of every live bot instead of rotating fixed slots -- a layout with one authored marker
+// was stacking the whole roster onto it.
+const BOT_SPAWN_SQUAD_SPREAD = 7;
+const BOT_SPAWN_HOME_SPREAD = 6;
+const BOT_SPAWN_CLEARANCE = 1.2;
+function liveBotXZ() {
+  const out = [];
+  for (const [id, rec] of botPlayers) {
+    if (!playerCombat.getSnapshot(id).alive) continue;
+    out.push({ x: rec.bot.capsule.start.x, z: rec.bot.capsule.start.z });
+  }
+  return out;
+}
+function botSpawnClearOf(occupied, x, z) {
+  return occupied.every(o => Math.hypot(x - o.x, z - o.z) > BOT_SPAWN_CLEARANCE);
+}
+function botTeamSideOk(teamId, x, z) {
+  const b = loadedMap?.bounds;
+  if (!teamId || !b) return true;
+  const useZ = (b.maxZ - b.minZ) >= (b.maxX - b.minX);
+  const mid = useZ ? (b.minZ + b.maxZ) / 2 : (b.minX + b.maxX) / 2;
+  return (BOT_TEAMS.indexOf(teamId) === 0) === ((useZ ? z : x) < mid);
+}
+function findBotSpawnPoint({ near = null, spread = BOT_SPAWN_SQUAD_SPREAD, teamId = null } = {}) {
+  const occupied = liveBotXZ();
+  const grid = botNavGrid;
+  if (near) {
+    for (let attempt = 0; attempt < 48; attempt++) {
+      // sqrt keeps the sample area-uniform instead of clumping everyone onto the anchor.
+      const ang = Math.random() * Math.PI * 2;
+      const rad = Math.sqrt(Math.random()) * spread;
+      let x = near.x + Math.cos(ang) * rad, z = near.z + Math.sin(ang) * rad;
+      if (grid) {
+        const cell = worldToCell(grid, x, z);
+        if (!botIsWalkableCell(grid, cell.c, cell.r)) continue;
+        const w = botCellToWorld(grid, cell.c, cell.r);
+        x = w.x; z = w.z;
+      } else if (!(NO_ENVIRONMENT ? botNavWalkable(x, z) : botTerrainWalkable(x, z))) continue;
+      if (botSpawnClearOf(occupied, x, z)) return { x, z };
+    }
+  }
+  if (grid) {
+    // Sided first pass keeps teams on their halves; second pass takes anywhere reachable.
+    for (const sided of teamId ? [true, false] : [false]) {
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const c = Math.floor(Math.random() * grid.cols), r = Math.floor(Math.random() * grid.rows);
+        if (!botIsWalkableCell(grid, c, r)) continue;
+        if (grid.regions && grid.mainRegion != null && grid.regions[r * grid.cols + c] !== grid.mainRegion) continue;
+        const w = botCellToWorld(grid, c, r);
+        if (sided && !botTeamSideOk(teamId, w.x, w.z)) continue;
+        if (botSpawnClearOf(occupied, w.x, w.z)) return { x: w.x, z: w.z };
+      }
+    }
+  }
+  return botSpawnSlot(botIdSeq, teamId); // gridless fallback: authored marker or player-relative arc
+}
+// Harness planSpawnAnchors: reinforcements land beside the squad they join; each new squad forms
+// up around one shared seed (an authored team marker when the layout has one, else a sampled point).
+function planSpawnAnchors(teamId, total, intake) {
+  const anchors = new Array(total).fill(null);
+  if (!intake) return anchors;
+  const targets = squadOpeningTargets(teamId, intake.joining);
+  for (let i = 0; i < targets.length && i < total; i++) {
+    const squad = targets[i];
+    if (squad.hasLeaderPos) anchors[i] = { point: { x: squad.leaderPos.x, z: squad.leaderPos.z }, spread: BOT_SPAWN_SQUAD_SPREAD };
+  }
+  let at = intake.joining;
+  for (const size of intake.sizes) {
+    const marks = teamSpawnPoints(teamId);
+    const seed = marks.length ? marks[Math.floor(Math.random() * marks.length)] : findBotSpawnPoint({ teamId });
+    for (let i = 0; i < size && at < total; i++) anchors[at++] = { point: seed, spread: BOT_SPAWN_HOME_SPREAD };
+  }
+  return anchors;
+}
 // Roles arrive per batch (assignRolesToBatch spaces specialists deterministically), but env spawns
 // one bot at a time -- so a rolling queue is refilled from the sliders whenever it drains.
 const BOT_ROLE_BATCH = 10;
@@ -2349,7 +2424,8 @@ function spawnBotAt(pos, roleId = nextBotRole(), teamId = nextSpawnTeam()) {
   return id;
 }
 function spawnBotAtSlot(index, teamId = nextSpawnTeam()) {
-  return spawnBotAt(botSpawnSlot(index, teamId), nextBotRole(), teamId);
+  // index kept for call-site compat; placement is sampled, not slot-rotated (harness parity).
+  return spawnBotAt(findBotSpawnPoint({ teamId }), nextBotRole(), teamId);
 }
 
 // ===================== squads (bot-squad.js owns the pure roster/formation math) =====================
@@ -2444,9 +2520,12 @@ function spawnSquadAtSlot(startIndex, teamId = nextSpawnTeam(), count = botSquad
   const intake = planSquadIntake(teamId, total);
   const roleIds = [...assignRolesToBatch(intake.joining, currentRoleMixOpts()),
     ...intake.sizes.flatMap(size => squadRoleTemplate(size, currentRoleMixOpts()))];
+  const anchors = planSpawnAnchors(teamId, total, intake);
   const spawned = [];
   for (let i = 0; i < total; i++) {
-    const id = spawnBotAt(botSpawnSlot(startIndex + i, teamId), roleIds[i] ?? DEFAULT_ROLE, teamId);
+    const anchor = anchors[i];
+    const pos = findBotSpawnPoint({ near: anchor?.point ?? null, spread: anchor?.spread ?? BOT_SPAWN_SQUAD_SPREAD, teamId });
+    const id = spawnBotAt(pos, roleIds[i] ?? DEFAULT_ROLE, teamId);
     spawned.push(botPlayers.get(id));
   }
   fillSquadOpenings(spawned.slice(0, intake.joining), teamId);

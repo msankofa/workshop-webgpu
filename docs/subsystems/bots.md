@@ -3056,6 +3056,11 @@ The 2026-07-27 comfort presets blended the POV camera 68–84% back toward the c
 head. All presets now use `headBlend: 1`: the camera anchors at the animated head's eye bridge and
 comfort is purely temporal damping (position/rotation rates, dead zone, max lag).
 
+The anchor itself is user-tunable: `povEyeOffset` ({y, z}, head-local metres, z out through the
+face) is added inside `botPovAnimatedEyePoint` before `localToWorld`, driven by the "POV eye
+up/down (m)" and "POV eye forward (m)" sliders in the Camera panel (defaults 0/0 keep the authored
+eye bridge). The no-head capsule fallback applies y as world up and z along the bot's yaw.
+
 ### Terrain fix: weapon mount height was world-absolute (2026-07-25)
 
 First browser bug from the terrain work: held guns hung at a fixed world height instead of riding
@@ -5420,3 +5425,53 @@ approximation and enables a real knife pose/attack sequence.
 superseded by `chooseBotStateName`), `mapOverlayLabel()`, and the `_fireEye` scratch (harness
 remnant — env's `fireBotShot` reads `bot.capsule.end` directly). Each had exactly one occurrence in
 the file: its own declaration.
+
+---
+
+## Bot appearance redesign — design spec + studio (2026-07-31)
+
+Bot bodies are no longer the rig's hardcoded default look. `player-procedural-body.js` gained a
+`design` option (exported defaults `BODY_DESIGN_DEFAULTS`; every field matches the old hardcoded
+geometry, so callers that omit it render the identical body) plus a `gear` accessory system —
+primitive descriptors (lathe/box/sphere/cylinder/capsule/torus/cone) parented to core parts through
+inverse-scale anchors, shared-geometry cached, instancing-compatible. Full field reference:
+`docs/subsystems/procedural-body-weapon-contracts.md`.
+
+- **`bot-body-design.js`** — the bots' spec, `BOT_BODY_DESIGN`. Second pass (2026-07-31) replaced
+  the placeholder shapes with modelled ones and gave the rig real material variation: a helmeted
+  head sized to ~0.23 × 0.26 m with lens eyes, metal brow, vent slats, chin guard and temple bolts;
+  extruded boots (~0.11 × 0.12 × 0.30 m) with a shaped rubber sole, toe cap, instep strap and
+  ankle cuff, replacing a 0.16 × 0.06 × 0.35 m flipper; extruded gloves with the palm facing
+  inward, replacing a lathe blob; pauldrons on the shoulder joints, sternum/collar/back plates,
+  rubber belt, and spline-smoothed profiles throughout (`profileSmooth: 48`).
+  `BOT_DESIGN_ADDONS` holds role markers — `visorSlit` (the slit face, deliberately NOT the
+  general look) and `antenna` — composed via `botDesignWith(...)`; neither is wired to a role yet.
+  `bot-viewer-v2.html` passes the spec in `createBotProceduralBody`; the dummy and the env-viewer
+  bodies are untouched.
+- **`bot-design-studio.html`** — the iteration harness the spec is authored in: a WebGPU page
+  rendering design variants side by side through the same `createVisualSystem` bot materials and
+  themes as bot-viewer-v2, driven from the console or browser automation rather than sliders.
+  `window.__studio` API: `setSlots` (each slot takes `design`, `style`, `weapon`), `setAnim`
+  (idle/walk/run/crouch/prone plus `aim*` variants), `setTheme`, camera presets, `setPaused`,
+  `showLabels`, and — the two that make close review possible — `focusPart(name, {dir, side})`,
+  which fills the viewport with one part's real world bounds including its gear children, and
+  `measurePart(name)`, which reports a part's extents in ITS OWN frame (a world AABB inflates as
+  soon as a pose rotates the part). Slots carry real weapon mounts reusing the game's GLB
+  templates, baked anchors, `weapon-part-batches` and `weapon-pose-controller`, so designs are
+  judged in a combat pose rather than a T-stance. Iterate there, then update `bot-body-design.js`.
+
+Reviewing at lineup distance hides everything that matters: the near-black head, the buried eyes,
+the faceted silhouettes and the invisible boot detail were all invisible until parts were framed
+individually and measured. Use `focusPart`/`measurePart` per part, not a full-body screenshot.
+
+### Harness spawn placement (2026-07-31, `environment-viewer-v2.html`)
+
+Slot rotation is gone: bot placement is the harness's `findBotSpawnPoint` rejection sampler.
+Anchored spawns disc-sample area-uniformly (sqrt radius) within the spread; free spawns take a
+random walkable, main-region cell — preferring the team's map half on layout maps — and every
+candidate must be `BOT_SPAWN_CLEARANCE` (1.2 m) clear of all live bots. `planSpawnAnchors` puts
+reinforcements beside the squad they join (`BOT_SPAWN_SQUAD_SPREAD` 7 m) and forms each new squad
+around one shared seed (`BOT_SPAWN_HOME_SPREAD` 6 m) — an authored team marker when the layout has
+one, else a sampled point. A one-marker layout therefore forms squads up around the marker instead
+of stacking the whole roster onto it. `botSpawnSlot` survives only as the gridless fallback
+(authored marker, else player-relative golden-angle arcs, i.e. terrain before the first zone bake).
