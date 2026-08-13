@@ -85,7 +85,7 @@ import { createLightingRig } from './lights.js';
 import { createMapCollider } from './map-collision.js';
 import { createPostFX } from './post-fx.js';
 import { createVisualSystem } from './bot-viewer-visuals.js';
-import { createSlotSection, assignKnown } from './bot-viewer-slots.js';
+import { createSlotSection, assignKnown, readSlots } from './bot-viewer-slots.js';
 import { botDesignForRole, setBotBodyKind, getBotBodyKind, BOT_BODY_KINDS } from './bot-body-design.js';
 // What bots are made of: 'armoured' (the Mark VII mech) or 'soldier' (the clothed human in a plate
 // carrier and helmet). Set from the URL before any body is built so the first spawn is already
@@ -17764,6 +17764,40 @@ slotsBody.append(restoreRow, restoreStatus,
   ...allSlots.nodes, ...mazeSlots.nodes, ...botSlots.nodes, ...uiSlots.nodes, exportLayoutRow);
 
 applyLayout(buildRoomsLayout()); // initial map -- everything above must be defined before this runs
+
+// Shipped presets: panel states committed with the repo, so someone opening the hosted page gets a
+// configured arena instead of the stock one. They sit in the same dropdown as the local slots and
+// never replace them -- a returning user's own slots and autosave always win, and the seed runs at
+// most once. ?preset=1 forces it, ?preset=0 suppresses it.
+const PRESET_SEEDED_KEY = 'pcw:bv2:presetSeeded';
+async function loadShippedPresets() {
+  let file;
+  // No file, offline, or opened over file://: the viewer simply has no presets, which is the
+  // behaviour that shipped before this existed.
+  try {
+    const response = await fetch('./bot-viewer-presets.json', { cache: 'no-cache' });
+    if (!response.ok) return;
+    file = await response.json();
+  } catch { return; }
+  const presets = (file?.presets || []).filter(p => p?.group === 'all' && p.data);
+  if (!presets.length) return;
+  allSlots.setPresets(presets);
+
+  const param = new URLSearchParams(location.search).get('preset');
+  let seeded = true, hasOwn = true;
+  try {
+    seeded = !!localStorage.getItem(PRESET_SEEDED_KEY);
+    hasOwn = !!readAutosave() || Object.keys(readSlots('all')).length > 0;
+  } catch { /* storage blocked: treat as a return visit and leave the panel alone */ }
+  if (param === '0' || (param !== '1' && (seeded || hasOwn))) return;
+
+  const chosen = presets.find(p => p.isDefault) || presets[0];
+  try { applyAllState(chosen.data); } catch (err) { console.warn('[presets] default did not apply:', err); return; }
+  try { localStorage.setItem(PRESET_SEEDED_KEY, new Date().toISOString()); } catch { /* private mode */ }
+  allSlots.refresh(`standard "${chosen.name}" applied`);
+  updateRestoreButton();
+}
+loadShippedPresets();
 
 let lastT = performance.now();
 const fpsEl = document.getElementById('fps');

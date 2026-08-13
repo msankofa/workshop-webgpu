@@ -9585,3 +9585,60 @@ fix is about. A held position dims its ring to 0.4 opacity once reached.
   existing `mp:guest_input` channel, which needs no relay change.
 - **Browser-verified: no.** Node tests pass (`test-bot-orders.mjs`, `test-env-command-wheel.mjs`);
   nothing here has been watched on screen.
+
+## Shipped panel presets (2026-08-13, `bot-viewer-presets.json`)
+
+The hosted page had no configured state: `bot-viewer-v3.html` booted to the stock arena, and the only
+way to a tuned one was for the visitor to tweak the panel themselves. The save slots could not help,
+because they live in `localStorage` and are therefore per-browser — nothing in them reaches anyone
+else. Presets are the committed half of that system.
+
+### The file
+
+`bot-viewer-presets.json` at the repo root, generated from the `bot-viewer-saves/` mirrors (which stay
+gitignored — one file per Save click would flood `git status`). Shape:
+
+```json
+{ "version": 1, "presets": [ { "id": "all-1", "group": "all", "name": "everything 1",
+                               "savedAt": "…", "isDefault": true, "data": { maze, bots, ui } } ] }
+```
+
+`data` is exactly a `captureAllState()` payload, so `applyAllState` reads it with no translation. To
+refresh a preset: click Save in the viewer while served by `serve.py`, then copy the newest
+`bot-viewer-saves/bv2-all-slot<N>-*.json`'s `data` into the matching preset. `test-bot-viewer-slots.mjs`
+validates the file — unique ids, exactly one `isDefault`, every `all` preset carrying maze/bots/ui.
+
+### They coexist with local slots, they do not replace them
+
+Presets appear in the same dropdown as the numbered slots, under their own value namespace
+(`preset:<id>`, `PRESET_PREFIX`/`isPresetValue` in `bot-viewer-slots.js`), so a shipped preset can
+never collide with a slot the user saved. They are read-only: Save and Delete are disabled while one
+is selected, refused rather than silently redirected to another slot. Load works, and deliberately
+leaves the rename field empty so the next Save names a new slot instead of reading as an edit to the
+shipped one. `createSlotSection` takes them via `setPresets(list)` rather than at build time, because
+they arrive from a `fetch` after the panel is already built.
+
+### The seed, and why it is allowed to be automatic
+
+`loadShippedPresets()` applies the `isDefault` preset on a visitor's first load. That is the thing the
+autosave deliberately refuses to do — see "restoring is offered, never automatic" — so the exemption
+is narrow and every clause of it is pinned in `test-bot-viewer-save-all.mjs`:
+
+- It is skipped when `readAutosave()` returns anything, or when the `all` group has any saved slot.
+  A returning user's own state always wins.
+- It writes `pcw:bv2:presetSeeded`, so it runs at most once even for someone who clears their slots.
+- Blocked storage (private mode, a thrown `localStorage`) is read as a *return* visit, not a fresh
+  one — the failure direction that leaves the panel alone.
+- `?preset=1` forces it, `?preset=0` suppresses it.
+- A missing, non-OK or unparseable file returns silently: the viewer then behaves exactly as it did
+  before presets existed.
+- A preset that throws while applying does not mark the seed as done, so a bad file is retried rather
+  than being permanently swallowed.
+
+The seed runs after `applyLayout(buildRoomsLayout())`, so a first-time visitor's map is built twice on
+that one load. That is accepted rather than fixed: sequencing the fetch ahead of the initial layout
+would make the whole boot wait on the network.
+
+**Browser-verified: no.** Node tests pass (`test-bot-viewer-slots.mjs`, `test-bot-viewer-save-all.mjs`,
+`test-bot-viewer-slot-coverage.mjs`, `test-bot-viewer-panel-layout.mjs`); the dropdown and the
+first-visit seed have not been watched on screen.

@@ -1,8 +1,10 @@
 // node test-bot-viewer-slots.mjs
 // Covers the storage + state-merge half of bot-viewer-slots.js. The panel widget half needs a DOM
 // and is left to browser QA.
+import { readFile } from 'node:fs/promises';
 import {
   readSlots, writeSlots, saveSlot, loadSlot, deleteSlot, pickKeys, assignKnown, SLOT_COUNT,
+  PRESET_PREFIX, isPresetValue,
 } from './bot-viewer-slots.js';
 
 let failures = 0;
@@ -108,6 +110,37 @@ console.log('assignKnown');
 
   check('null target is a no-op', assignKnown(null, { a: 1 }) === 0);
   check('null source is a no-op', assignKnown({ a: 1 }, null) === 0);
+}
+
+console.log('preset value namespace');
+{
+  check('a preset value is recognised', isPresetValue(PRESET_PREFIX + 'all-1'));
+  // The whole point of the prefix: a numbered slot and a preset can never resolve to each other,
+  // so a shipped file can never overwrite what a user saved into slot 1.
+  check('a numbered slot is not a preset', !isPresetValue('1'));
+  check('a bare id is not a preset', !isPresetValue('all-1'));
+  check('the prefix is stable', PRESET_PREFIX === 'preset:');
+}
+
+console.log('shipped presets file');
+{
+  const raw = await readFile(new URL('./bot-viewer-presets.json', import.meta.url), 'utf8');
+  let file = null;
+  try { file = JSON.parse(raw); } catch (err) { check('parses as JSON', false, err.message); }
+  const presets = file?.presets || [];
+  check('parses as JSON', !!file);
+  check('carries at least one preset', presets.length > 0);
+  check('every preset has an id, group and data',
+    presets.every(p => p && typeof p.id === 'string' && p.id && typeof p.group === 'string' && p.data));
+  check('ids are unique', new Set(presets.map(p => p.id)).size === presets.length);
+  // Two defaults would make which one seeds a first-time visitor depend on array order.
+  check('exactly one preset is the default', presets.filter(p => p.isDefault).length === 1);
+  // An id that parses as a slot number would collide in the dropdown once the prefix is stripped.
+  check('no id looks like a slot number', presets.every(p => !/^\d+$/.test(p.id)));
+  const allGroup = presets.filter(p => p.group === 'all');
+  check('the "all" group is populated', allGroup.length > 0);
+  check('every "all" preset carries maze, bots and ui',
+    allGroup.every(p => p.data.maze && p.data.bots && p.data.ui));
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

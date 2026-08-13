@@ -126,5 +126,22 @@ check('restoring is offered, never automatic',
   /Restore last session/.test(html) && !/applyAllState\(readAutosave/.test(html));
 check('a full quota cannot break the panel', /catch \{ \/\* quota or a capture mid-rebuild/.test(html));
 
+// --- shipped presets ---------------------------------------------------------------------------
+// The seed applies a state automatically, which is the thing the autosave deliberately refuses to
+// do. It is only allowed because it cannot fire for anyone who has state of their own; that is the
+// whole safety argument, so every clause of it is pinned here rather than left to reading.
+check('the shipped preset file is fetched', /fetch\('\.\/bot-viewer-presets\.json'/.test(html));
+check('presets are handed to the combined row', /allSlots\.setPresets\(presets\)/.test(html));
+check('a missing or unreadable preset file is survivable',
+  /if \(!response\.ok\) return;[\s\S]{0,80}\} catch \{ return; \}/.test(html));
+check('the seed never overrides an autosave or a user slot',
+  /hasOwn = !!readAutosave\(\) \|\| Object\.keys\(readSlots\('all'\)\)\.length > 0/.test(html)
+  && /if \(param === '0' \|\| \(param !== '1' && \(seeded \|\| hasOwn\)\)\) return;/.test(html));
+check('the seed runs at most once', /localStorage\.setItem\(PRESET_SEEDED_KEY/.test(html));
+check('blocked storage is treated as a return visit, not a fresh one',
+  /let seeded = true, hasOwn = true;/.test(html));
+check('a preset that fails to apply does not mark the seed as done',
+  /catch \(err\) \{ console\.warn\('\[presets\] default did not apply:', err\); return; \}/.test(html));
+
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
