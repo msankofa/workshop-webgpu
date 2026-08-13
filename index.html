@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>workshop-webgpu — index</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161c;
+    --panel: #1b1e26;
+    --panel-border: #2a2e3a;
+    --sunken: #11131a;
+    --text: #d8dce6;
+    --muted: #8890a4;
+    --accent: #6fb7ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; }
+  body { padding: 0 0 60px; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 22px; }
+
+  header { border-bottom: 1px solid var(--panel-border);
+    background: radial-gradient(ellipse at 50% 0%, #1a1d26 0%, #101218 100%); padding: 38px 0 26px; }
+  header h1 { font-size: 26px; margin: 0 0 8px; letter-spacing: -.01em; }
+  header h1 .mono { font-family: "SF Mono", Consolas, monospace; }
+  header .lede { font-size: 13.5px; line-height: 1.65; color: var(--muted); margin: 0; max-width: 70ch; }
+  header .lede strong { color: var(--text); font-weight: 600; }
+
+  /* Sticky control bar: search plus subsystem filters. */
+  .controls { position: sticky; top: 0; z-index: 10; background: rgba(20,22,28,.94);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--panel-border); padding: 12px 0; }
+  .controls .wrap { display: flex; flex-direction: column; gap: 10px; }
+  #search { width: 100%; padding: 9px 11px; background: var(--sunken); border: 1px solid var(--panel-border);
+    border-radius: 7px; color: var(--text); font-size: 13px; }
+  #search:focus { outline: none; border-color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 20px;
+    background: var(--sunken); border: 1px solid var(--panel-border); font-size: 11.5px;
+    cursor: pointer; user-select: none; color: var(--text); }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .chip.off { opacity: .34; }
+  .chip:hover { border-color: #444a5c; }
+
+  section { margin-top: 30px; }
+  section > h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
+    margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  section > h2 .dot { width: 10px; height: 10px; border-radius: 50%; }
+  section > h2 .count { color: #5d6478; font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 11px; }
+  .card { display: block; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 9px;
+    padding: 13px 14px; text-decoration: none; color: var(--text); transition: border-color .12s, transform .12s; }
+  .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .card .name { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+  .card .file { font-family: "SF Mono", Consolas, monospace; font-size: 10.5px; color: var(--muted);
+    word-break: break-all; margin-bottom: 7px; }
+  .card .desc { font-size: 12.5px; line-height: 1.5; color: #b9bfcd; }
+  .card .badges { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .badge { font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase; padding: 2px 6px;
+    border-radius: 4px; background: #2a2e3a; color: var(--muted); }
+  .badge.local { background: #3a2f22; color: #e0b070; }
+  .badge.frozen { background: #2c2f3a; color: #98a0b6; }
+
+  /* Featured row sits above the filtered body and is never hidden by search. */
+  .featured .grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .featured .card { background: linear-gradient(160deg, #1d2330 0%, #1b1e26 70%); border-color: #333a4c; }
+
+  #empty { display: none; color: var(--muted); font-size: 13px; padding: 30px 0; }
+
+  footer { margin-top: 46px; border-top: 1px solid var(--panel-border); padding-top: 18px;
+    font-size: 12px; color: var(--muted); line-height: 1.7; }
+  footer code { font-family: "SF Mono", Consolas, monospace; background: var(--sunken);
+    border: 1px solid var(--panel-border); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1><span class="mono">workshop-webgpu</span></h1>
+    <p class="lede">Every browser-runnable page in the procedural creature workshop — a WebGPU sandbox built on
+    Three.js r0.184 with TSL shader nodes. These are <strong>live tools, not screenshots</strong>: each link opens the
+    real viewer, harness or studio. Start with the bot viewer or the environment sandbox.</p>
+  </div>
+</header>
+
+<div class="controls">
+  <div class="wrap">
+    <input id="search" type="search" placeholder="Search pages — try &quot;bot&quot;, &quot;terrain&quot;, &quot;weapon&quot;, &quot;audio&quot;…" autocomplete="off">
+    <div class="chips" id="chips"></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <section class="featured" id="featured">
+    <h2>Start here</h2>
+    <div class="grid" id="featured-grid"></div>
+  </section>
+
+  <div id="sections"></div>
+  <p id="empty">No page matches that search.</p>
+
+  <footer>
+    <p>Source: <a href="https://github.com/msankofa/workshop-webgpu">github.com/msankofa/workshop-webgpu</a> ·
+    Subsystem docs live in <a href="https://github.com/msankofa/workshop-webgpu/tree/sp1-webgpu-renderer-migration/docs/subsystems"><code>docs/subsystems/</code></a> ·
+    Architecture notes in <a href="https://github.com/msankofa/workshop-webgpu/blob/sp1-webgpu-renderer-migration/CLAUDE.md"><code>CLAUDE.md</code></a></p>
+    <p>Pages marked <span class="badge local">local server</span> talk to a backend on <code>127.0.0.1</code> and only
+    partly work here — run them from a local checkout (<code>python serve.py</code>) to get the full tool.</p>
+  </footer>
+</div>
+
+<script>
+// Colors mirror GROUPS in code-map.html so the two pages agree on subsystem identity.
+const GROUPS = {
+  bots:        { label: 'Combat bots',        color: '#c0ca33' },
+  entry:       { label: 'World / environment', color: '#f25f5c' },
+  terrain:     { label: 'Terrain & vegetation', color: '#a1887f' },
+  creature:    { label: 'Creature & body',    color: '#26c6da' },
+  weapons:     { label: 'Weapons',            color: '#7e57c2' },
+  audio:       { label: 'Audio / SFX',        color: '#26a69a' },
+  materials:   { label: 'Materials (TSL)',    color: '#4dd0e1' },
+  demos:       { label: 'Demos',              color: '#ff8a65' },
+  infra:       { label: 'Infra / reference',  color: '#9e9e9e' },
+  legacy:      { label: 'Legacy',             color: '#cfd3dc' },
+};
+
+const PAGES = [
+  // --- combat bots ---
+  { f: 'bot-viewer-v3.html', n: 'Bot Viewer v3', g: 'bots', star: 1,
+    d: 'The live standalone combat harness. All new bot work lands here: squads, roles, stances, drones, roads and damage FX.' },
+  { f: 'bot-viewer-v2.html', n: 'Bot Viewer v2', g: 'bots', badges: ['frozen'],
+    d: 'Frozen snapshot as of 2026-08-08. Kept as a reference point for behaviour and performance comparisons against v3.' },
+  { f: 'bot-viewer.html', n: 'Bot Viewer v1', g: 'bots',
+    d: 'The original bot harness that v2 and v3 grew out of.' },
+  { f: 'bot-viewer-v2-camera.html', n: 'Bot Viewer — camera fork', g: 'bots',
+    d: 'Forked intent-model camera rewrite, kept separate pending a merge back into the main viewer.' },
+  { f: 'bot-design-studio.html', n: 'Bot Design Studio', g: 'bots',
+    d: 'Appearance iteration workflow: author a bot design spec and see the rig rebuild against it.' },
+  { f: 'bot-state-machine.html', n: 'Bot State Machine', g: 'bots',
+    d: 'The bot behaviour state machine drawn out — states, transitions and the conditions that fire them.' },
+  { f: 'bot-trace-viewer.html', n: 'Bot Trace Viewer', g: 'bots',
+    d: 'Loads a recorded state-code trace and replays what every bot was doing, frame by frame.' },
+  { f: 'damage-simulator.html', n: 'Damage Simulator', g: 'bots',
+    d: 'Single-bot harness for tuning hit effects: wounds, blood, decals and damage classes in isolation.' },
+  { f: 'structure-viewer.html', n: 'Structure Viewer', g: 'bots',
+    d: 'Previews the procedural structures and cover pieces that get scattered across bot maps.' },
+
+  // --- world / environment ---
+  { f: 'environment-viewer.html', n: 'Environment Sandbox', g: 'entry', star: 1,
+    d: 'The main WebGPU app. Terrain, forest, grass, water, sky, clouds, post-FX and clustered lights, with inline tuning sliders for every subsystem.' },
+  { f: 'environment-viewer-v2.html', n: 'Environment Sandbox v2', g: 'entry',
+    d: 'The next-generation environment entry point, where the bot and creature systems merge into one world.' },
+
+  // --- terrain & vegetation ---
+  { f: 'terrain-generator-v4.html', n: 'Terrain Generator v4', g: 'terrain',
+    d: 'Standalone terrain authoring: landform vocabulary, erosion passes and placed landmarks.' },
+  { f: 'biome-explainer.html', n: 'Biome Explainer', g: 'terrain',
+    d: 'Walks through how a biome is born. Every slider is a real terrain parameter, not an illustration.' },
+  { f: 'tree-viewer.html', n: 'Tree Viewer', g: 'terrain',
+    d: 'Procedural tree generation and its presets, isolated from the forest placement system.' },
+  { f: 'plant-viewer.html', n: 'Plant Viewer', g: 'terrain',
+    d: 'Preview harness for the understory plant meshes.' },
+  { f: 'stellar-viewer.html', n: 'Stellar Object Viewer', g: 'terrain',
+    d: 'Sky-side companion: stars and celestial bodies on their own.' },
+
+  // --- creature & body ---
+  { f: 'creature-model.html', n: 'The Procedural Creature Model', g: 'creature',
+    d: 'An illustrated explainer of how the creature rig is put together, drawn in a notebook style.' },
+  { f: 'body-preview-v3.html', n: 'Body + Weapon Preview v3', g: 'creature',
+    d: 'The current procedural body preview: pose retargeting, limb frames and weapon mounting.' },
+  { f: 'body-preview-v2.html', n: 'Body + Weapon Preview v2', g: 'creature',
+    d: 'Earlier body preview, superseded by v3.' },
+  { f: 'body-preview.html', n: 'Body + Weapon Preview v1', g: 'creature',
+    d: 'The first procedural body preview.' },
+  { f: 'ragdoll-viewer.html', n: 'Ragdoll Viewer', g: 'creature',
+    d: 'The pure Verlet ragdoll solver on its own, for tuning death poses before they reach the game.' },
+
+  // --- weapons ---
+  { f: 'weapon-viewer-v2.html', n: 'Weapon Viewer v2', g: 'weapons', badges: ['local'],
+    d: 'Inspect the weapon GLBs and drive the compression presets. The compression half needs the local shrink server.' },
+  { f: 'weapon-anchor-editor.html', n: 'Weapon Anchor Editor', g: 'weapons',
+    d: 'Authors the grip and mount anchors that decide how a body holds each weapon.' },
+  { f: 'weapon-animation-viewer.html', n: 'Weapon Animation Viewer', g: 'weapons',
+    d: 'Plays weapon poses and hold transitions against the rig.' },
+
+  // --- audio ---
+  { f: 'sound-studio.html', n: 'Sound Studio', g: 'audio',
+    d: 'Live editor for every authored number the procedural audio depends on, backed by the sound-params schema.' },
+  { f: 'voice-line-studio.html', n: 'Voice Line Studio', g: 'audio', badges: ['local'],
+    d: 'Authors the bot voice lexicon and auditions baked takes. Baking new lines needs the local voice server.' },
+  { f: 'sfx-browser.html', n: 'SFX Browser', g: 'audio',
+    d: 'Browse and audition the sound-effect library.' },
+
+  // --- materials ---
+  { f: 'material-viewer.html', n: 'Material Viewer', g: 'materials',
+    d: 'Portable TSL material demos: dissolve, hologram visor, damage overheat and foliage SSS.' },
+
+  // --- demos ---
+  { f: 'demos/flight-sim.html', n: 'Flight Sim', g: 'demos',
+    d: 'One flight core, three airframes, with AI and combat wired in.' },
+  { f: 'demos/easyfire.html', n: 'EasyFire', g: 'demos',
+    d: 'Evaluation of fluid-simulated fire.' },
+  { f: 'demos/volumetric-smoke.html', n: 'Volumetric Explosions', g: 'demos',
+    d: 'Bounded raymarched smoke and explosion volumes.' },
+  { f: 'demos/sdf-bug-v2.html', n: 'SDF Bug v2', g: 'demos',
+    d: 'A raymarched beetle walking a leaf with no geometry at all, driven by the shared locomotion module.' },
+  { f: 'demos/sdf-bug.html', n: 'SDF Bug', g: 'demos',
+    d: 'The first raymarched bug on a leaf.' },
+  { f: 'demos/sdf-creature.html', n: 'SDF Creature', g: 'demos',
+    d: 'A creature rendered purely as a signed distance field.' },
+  { f: 'demos/wildlife-mobs.html', n: 'Wildlife Mobs', g: 'demos',
+    d: 'Pirate Nation mobs repurposed as ambient wildlife.' },
+  { f: 'demos/pose-retarget.html', n: 'Pose Retargeting', g: 'demos',
+    d: 'Retargets CC0 motion clips onto the soldier rig.' },
+  { f: 'demos/spsa-gait-tuning.html', n: 'SPSA Gait Tuning', g: 'demos',
+    d: 'SPSA optimisation run head-to-head against the shipped gait model.' },
+
+  // --- infra / reference ---
+  { f: 'code-map.html', n: 'Code Map', g: 'infra', star: 1,
+    d: 'Interactive dependency graph of the whole codebase. Search it, filter by subsystem, click any node for a written explanation of what that file owns and why.' },
+  { f: 'server-tool.html', n: 'Server Tool', g: 'infra', badges: ['local'],
+    d: 'Dashboard that starts and stops the local static server and multiplayer relay. Only useful from a local checkout.' },
+  { f: 'laas-roadmap.html', n: 'LAAS Fidelity Roadmap', g: 'infra',
+    d: 'Prioritised build order for closing the gap to the target fidelity.' },
+  { f: 'ui-layout-mock.html', n: 'UI Layout Mock', g: 'infra',
+    d: 'Layout mock for the workshop control panel.' },
+  { f: 'research/lod/cdlod-sota-practices.html', n: 'CDLOD Practices', g: 'infra',
+    d: 'Written research note on state-of-the-art continuous LOD for seamless terrain.' },
+  { f: 'research/webgpu/webgpu-parallelism-over-serial-synthesis.html', n: 'WebGPU Parallelism', g: 'infra',
+    d: 'Written research note comparing parallel and serial execution in web graphics.' },
+
+  // --- legacy ---
+  { f: 'creature-viewer.html', n: 'Creature Viewer', g: 'legacy',
+    d: 'The pre-migration WebGL viewer for the original balancing-creature rig. Predates WebGPU and is not wired into anything current.' },
+];
+
+const BADGE_LABEL = { local: 'local server', frozen: 'frozen' };
+
+const featuredGrid = document.getElementById('featured-grid');
+const sectionsEl = document.getElementById('sections');
+const chipsEl = document.getElementById('chips');
+const searchEl = document.getElementById('search');
+const emptyEl = document.getElementById('empty');
+const off = new Set();
+
+function cardHTML(p) {
+  const badges = [...(p.badges || [])]
+    .map(b => `<span class="badge ${b}">${BADGE_LABEL[b] || b}</span>`).join('');
+  return `<a class="card" href="${p.f}" data-hay="${(p.n + ' ' + p.f + ' ' + p.d + ' ' + GROUPS[p.g].label).toLowerCase()}" data-g="${p.g}">
+    <div class="name">${p.n}</div>
+    <div class="file">${p.f}</div>
+    <div class="desc">${p.d}</div>
+    ${badges ? `<div class="badges">${badges}</div>` : ''}
+  </a>`;
+}
+
+// Featured cards are duplicates of entries below, surfaced for a cold visitor.
+featuredGrid.innerHTML = PAGES.filter(p => p.star).map(cardHTML).join('');
+
+for (const [key, meta] of Object.entries(GROUPS)) {
+  const pages = PAGES.filter(p => p.g === key);
+  if (!pages.length) continue;
+  const sec = document.createElement('section');
+  sec.dataset.g = key;
+  sec.innerHTML = `<h2><span class="dot" style="background:${meta.color}"></span>${meta.label}
+    <span class="count">${pages.length}</span></h2>
+    <div class="grid">${pages.map(cardHTML).join('')}</div>`;
+  sectionsEl.appendChild(sec);
+
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.dataset.g = key;
+  chip.innerHTML = `<span class="dot" style="background:${meta.color}"></span>${meta.label}`;
+  chip.onclick = () => { off.has(key) ? off.delete(key) : off.add(key); chip.classList.toggle('off'); apply(); };
+  chipsEl.appendChild(chip);
+}
+
+function apply() {
+  const q = searchEl.value.trim().toLowerCase();
+  let shown = 0;
+  for (const sec of sectionsEl.children) {
+    let visible = 0;
+    for (const card of sec.querySelector('.grid').children) {
+      const ok = !off.has(card.dataset.g) && (!q || card.dataset.hay.includes(q));
+      card.style.display = ok ? '' : 'none';
+      if (ok) visible++;
+    }
+    sec.style.display = visible ? '' : 'none';
+    shown += visible;
+  }
+  // The featured row is a shortcut, not a result set, so searching retires it.
+  document.getElementById('featured').style.display = (q || off.size) ? 'none' : '';
+  emptyEl.style.display = shown ? 'none' : 'block';
+}
+
+searchEl.addEventListener('input', apply);
+searchEl.addEventListener('keydown', e => { if (e.key === 'Escape') { searchEl.value = ''; apply(); } });
+</script>
+</body>
+</html>
