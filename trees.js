@@ -36,6 +36,7 @@ function makeRNG(seed) {
 const DEFAULTS = {
   seed: 1,
   levels: 3,                              // recursion depth; 0 = trunk only
+  evergreen: false,                       // conifer branching: taper to a point, children shorten toward the tip
   length:     [15, 11, 7, 3],             // branch length per level
   radius:     [1.2, 0.55, 0.3, 0.16],     // base radius per level
   taper:      [0.72, 0.75, 0.8, 0.85],    // fraction of radius lost along length
@@ -60,7 +61,8 @@ const DEFAULTS = {
     roundedNormals: true, // bend leaf normals outward so the canopy lights as a volume
     shape: 'quad',        // 'quad' = atlas card, 'simple' = textureless leaf polygon
     atlas: null,          // {cols,rows} to pick a random cell per leaf from a sprite sheet;
-                          // add {cell:n} to pin every leaf to one cell (e.g. one species)
+                          // add {cell:n} to pin every leaf to one cell (e.g. one species).
+                          // Cells count row-major from the atlas image's TOP-left.
     shadowFraction: 0,    // 0..1 of leaves that cast shadows (billboards are muddy, so default off)
     tint: 0x4f7a3a,
     roughness: 1.0,
@@ -69,10 +71,14 @@ const DEFAULTS = {
   },
 };
 
-// deep-merge user options over defaults (arrays/primitives replace; objects merge)
+// Only plain objects get merged key-by-key; class instances (THREE.Texture) replace wholesale.
+const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
+  && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+
+// deep-merge user options over defaults (arrays/primitives/class instances replace; objects merge)
 function merge(base, over) {
   if (over == null) return Array.isArray(base) ? base.slice() : base;
-  if (base == null || Array.isArray(base) || typeof base !== 'object') return over;
+  if (!isPlainObject(base) || !isPlainObject(over)) return over;
   const out = {};
   for (const k of new Set([...Object.keys(base), ...Object.keys(over)])) {
     out[k] = k in over ? merge(base[k], over[k]) : base[k];
@@ -240,7 +246,9 @@ export class Tree extends THREE.Group {
 
     for (let i = 0; i <= branch.sectionCount; i++) {
       // taper down the length; collapse the very tip of terminal branches
-      let radius = branch.radius * (1 - at(o.taper, branch.level) * (i / branch.sectionCount));
+      // evergreens ignore the taper table and always narrow to a point (ez-tree TreeType.Evergreen)
+      const taper = o.evergreen ? 1 : at(o.taper, branch.level);
+      let radius = branch.radius * (1 - taper * (i / branch.sectionCount));
       if (i === branch.sectionCount && branch.level === o.levels) radius = 0.001;
 
       _q.setFromEuler(orientation);
@@ -313,6 +321,16 @@ export class Tree extends THREE.Group {
     }
   }
 
+  // Fisher-Yates over [0, count), drawn from the tree's own RNG so it stays seed-deterministic.
+  _shuffledSlots(count) {
+    const arr = Array.from({ length: count }, (_, k) => k);
+    for (let k = count - 1; k > 0; k--) {
+      const r = Math.floor(this.rng.next() * (k + 1));
+      [arr[k], arr[r]] = [arr[r], arr[k]];
+    }
+    return arr;
+  }
+
   _spawnChildren(branch, sections) {
     const o = this.options;
     const childLevel = branch.level + 1;
@@ -325,6 +343,11 @@ export class Tree extends THREE.Group {
     const angle = at(o.angle, childLevel) * DEG;
     const childLen = at(o.length, childLevel);
     const childRadCap = at(o.radius, childLevel);
+    // Height slot and azimuth slot have to be drawn independently. Reusing k for both puts child
+    // k at height k AND angle k, which is a helix — obvious on evergreens, where the trunk carries
+    // ~100 children whose length also tracks height. ez-tree shuffles its angle slots for this.
+    const radialOffset = this.rng.next();
+    const angleSlots = this._shuffledSlots(count);
 
     for (let k = 0; k < count; k++) {
       // stratified height along the parent, jittered within its slot
@@ -338,8 +361,8 @@ export class Tree extends THREE.Group {
       const parentRadius = s0.radius * (1 - t) + s1.radius * t;
       const radius = Math.min(childRadCap, parentRadius * 0.85);
 
-      // stratified azimuth around the branch axis, jittered
-      const azimuth = ((k + this.rng.range(-0.4, 0.4)) / count) * Math.PI * 2;
+      // stratified azimuth around the branch axis, jittered, on a slot uncorrelated with height
+      const azimuth = (radialOffset + (angleSlots[k] + this.rng.range(-0.4, 0.4)) / count) * Math.PI * 2;
       _cq.setFromEuler(s0.orientation)
         .multiply(_cqa.setFromAxisAngle(UP, azimuth))
         .multiply(_cqb.setFromAxisAngle(RIGHT, angle));
@@ -347,7 +370,8 @@ export class Tree extends THREE.Group {
       this.queue.push({
         origin,
         orientation: new THREE.Euler().setFromQuaternion(_cq),
-        length: childLen * this.rng.range(0.8, 1.0),
+        // evergreen children shorten toward the tip, which is what makes the conifer cone
+        length: childLen * (o.evergreen ? 1 - frac : 1) * this.rng.range(0.8, 1.0),
         radius,
         level: childLevel,
         sectionCount: at(o.sections, childLevel),
@@ -382,7 +406,10 @@ export class Tree extends THREE.Group {
         const cell = Number.isFinite(lo.atlas.cell)
           ? ((lo.atlas.cell % (cols * rows)) + cols * rows) % (cols * rows)
           : Math.floor(this.rng.next() * cols * rows);
-        const cx = cell % cols, cy = Math.floor(cell / cols), du = 1 / cols, dv = 1 / rows;
+        // Cells are numbered row-major from the atlas image's TOP-left, the order a sprite sheet
+        // is packed and read. UV v runs the other way (flipY puts v=1 at the image top), so the
+        // row has to be mirrored here or every cell samples the wrong row.
+        const cx = cell % cols, cy = rows - 1 - Math.floor(cell / cols), du = 1 / cols, dv = 1 / rows;
         uv = [cx * du, cy * dv, (cx + 1) * du, (cy + 1) * dv];
       }
       // Both billboards of one leaf share a bucket so the leaf casts (or not) as a whole.

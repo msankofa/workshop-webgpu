@@ -1,0 +1,2194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — SDF bug walking on a leaf (no geometry)</title>
+<!--
+  A macro photograph of a bug on a brussels sprout, with no photograph, no model and no textures.
+  Two triangles in the scene graph; everything else is solved per pixel in a fragment shader.
+
+  WHERE THIS CAME FROM
+  --------------------
+  `sdf-creature.html` next door is a reimplementation of a three.js demo by Drin (@DrinLajci), posted
+  2026-08-06 — one alien, no geometry, a fullscreen quad and a raymarched signed distance field. The
+  technique and the framing are his. https://x.com/DrinLajci
+
+  This page asks a different question of the same technique: not "can a shape be an expression"
+  (settled), but "how far does it get toward a specific photographic image". The target was a macro
+  shot of a small round beetle on a green dome — the bug lit from behind so its shell glows, huge
+  glossy black eyes, thin translucent legs, dew sparkling on the leaf, and the whole background
+  dissolved into green bokeh.
+
+  WHAT THE DISTANCE FIELD GAVE FOR FREE, AND WHAT IT DID NOT
+  ----------------------------------------------------------
+  Free, because they are the same field answering different questions:
+
+    - The contact shadow under the bug. The shadow ray from a point on the leaf toward the key light
+      hits the bug's body, because the bug and the leaf are the same field. Nothing was told that the
+      bug is standing on anything.
+    - The occlusion in the crevices where six legs meet the leaf, from the same field again.
+    - The glow through the shell. Thickness is measured by stepping into the surface toward the light
+      and asking whether we are still inside, which is a question only an SDF answers cheaply. Thin
+      places — leg segments, the rim of the shell, the edge of the pronotum — light up; the middle of
+      the abdomen stays opaque. That single term is most of what makes the bug read as a living
+      translucent thing rather than as painted plastic.
+    - The eyes. Iris, pupil, two glints and the green rim caught from the leaf are angular bands on
+      the eyeball's own surface. Four spheres' worth of apparent detail, zero extra distance
+      evaluations.
+
+  Not free, and worth being plain about: the photographic look is a separate job from the shape. The
+  bokeh background is not marched at all — it is authored as soft discs, because a real out-of-focus
+  background contains no geometry to solve. And the depth of field is a second pass over a render
+  target, exactly as it would be for a rasterised scene. The distance field draws the subject; it does
+  not make the picture look photographed.
+
+  THE LEAF IS A QUADRATIC, NOT A MARCH — AND THAT WAS NOT A PREMATURE OPTIMISATION
+  -------------------------------------------------------------------------------
+  This began by sphere-tracing `min(bug, leaf)` from the camera, the way `sdf-creature.html` does. It
+  does not work at this framing. The leaf is a 2.4-unit sphere seen from 2.55 units away, so a wide
+  band of pixels crosses it at a glancing angle, and a ray tangent to a sphere of radius R passing at
+  clearance e needs roughly 1.8 * sqrt(R/e) steps to get by. Measured: 12.7 distance evaluations per
+  pixel on average, and 0.2% of pixels exhausting a 104-step loop bound while still mid-scene — which
+  draws backdrop straight through the leaf, in a ragged line along exactly the silhouette the eye is
+  most likely to be looking at.
+
+  So the leaf is not marched. It is a sphere, so its intersection is a quadratic: exact at every
+  incidence angle including tangency, constant time, and 2.4 distance evaluations per pixel across the
+  whole frame instead of 12.7. Only the bug is sphere-traced, and only inside its own bounding sphere.
+  Rays that hit neither bounding volume cost nothing, which is two thirds of the frame.
+
+  The consequence, and it is load-bearing: the leaf's surface variation can no longer be a
+  displacement of the field, because a displaced sphere is not a quadratic. It is a normal
+  perturbation in the shader instead. That is not a compromise for this picture — the reference photo's
+  sprout has a clean silhouette with all of its texture in the shading, so the constraint and the
+  subject happen to agree.
+
+  `sceneMap` is still the full distance field, and it is still what the normal, shadow, occlusion and
+  thickness taps read, because those need the distance from an arbitrary point and only an SDF gives
+  that. The acceleration applies to the primary ray alone.
+
+  THE GRADE IS OURS ON PURPOSE
+  ----------------------------
+  `renderer.outputColorSpace` is set to linear and tone mapping to none, so the renderer does not
+  insert its own output pass. Tone mapping, gamma and the vignette all happen at the end of the depth
+  of field pass, where the rest of the photographic grade lives. Leaving the default in place would
+  apply sRGB twice — once here and once in the renderer's pass — and wash the image out.
+
+  VERIFICATION, GIVEN THAT NONE OF THIS CAN BE CHECKED IN NODE
+  -----------------------------------------------------------
+  `demos/bug-sdf.js` is a hand-synced CPU twin of this field, and `test-demo-sdf-bug.mjs` asserts the
+  parts that are arithmetic rather than taste: that all six feet reach the leaf at every leg spread and
+  every phase of the idle cycle, that the whole bug stays inside the bounding sphere its march is
+  confined to at the extremes of every slider, that the accelerated trace agrees with a slow march of
+  the same field, that the field never gets steeper than the step factor can survive, and that the
+  default framing actually puts the subject in shot at a sensible size. Same hand-synced-twin pattern
+  as `forest-cull.js` / `light-cluster.js` / `post-grade.js`, and the same caveat: nothing enforces
+  that the twin agrees with the TSL below. Edit one, edit the other.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/sdf-bug.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0c0f0b;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #dfe4d8; }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12); --muted: #93a08a; --accent: #a8d46a;
+    position: fixed; top: 10px; right: 10px; width: 320px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(14,18,13,0.92); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.45); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line);
+    cursor: pointer; user-select: none; }
+  #panel h2::before { content: '▾ '; }
+  #panel h2.shut::before { content: '▸ '; }
+  #panel h2.shut + div { display: none; }
+  .row { display: grid; grid-template-columns: 1fr 50px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .crow { display: grid; grid-template-columns: 1fr 34px; gap: 6px; align-items: center; margin: 5px 0; }
+  .crow label { color: var(--muted); font-size: 11px; }
+  .crow input { width: 34px; height: 20px; padding: 0; border: 1px solid var(--line);
+    border-radius: 4px; background: none; }
+  .srow { display: grid; grid-template-columns: 1fr; gap: 4px; margin: 5px 0; }
+  .srow label { color: var(--muted); font-size: 11px; }
+  .srow select { width: 100%; padding: 5px 6px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: #dfe4d8;
+    border: 1px solid var(--line); border-radius: 5px; }
+  .hint { color: var(--muted); font-size: 10px; line-height: 1.5; margin: 2px 0 6px; }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(168,212,106,0.16); color: var(--accent); border-color: rgba(168,212,106,0.45); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: #dfe4d8; font-weight: 600; }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #7d8a74; font-size: 11px;
+    pointer-events: none; user-select: none; }
+  #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #7d8a74; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="boot">starting WebGPU…</div>
+
+<div id="panel" hidden>
+  <h1>SDF bug walking on a leaf</h1>
+  <p class="sub">One quad, one distance field, no geometry — and the creature sim's own walk cycle.</p>
+
+  <h2>Walk</h2>
+  <div>
+    <label class="chk"><input type="checkbox" id="walk" checked> walk</label>
+    <div class="seg" id="gaitSeg">
+      <button data-gait="scurry" class="on">Scurry</button>
+      <button data-gait="creep">Creep</button>
+      <button data-gait="dash">Dash</button>
+    </div>
+    <div class="seg"><button id="reparkBtn">Park at the authored pose</button></div>
+    <div id="walkRows"></div>
+  </div>
+
+  <h2>Bugs</h2>
+  <div>
+    <div class="srow"><label for="bugPreset">Saved</label><select id="bugPreset"></select></div>
+    <div class="seg">
+      <button id="bugSave">Save this bug</button>
+      <button id="bugSpawn">Spawn it</button>
+    </div>
+    <div class="seg">
+      <button id="bugSpawnDraft">Spawn a copy of this one</button>
+      <button id="bugRemove">Remove the last</button>
+    </div>
+    <div class="hint" id="bugHint"></div>
+  </div>
+
+  <h2>Leaf shape</h2>
+  <div>
+    <div class="seg" id="leafSeg">
+      <button data-leaf="dome" class="on">Dome</button>
+      <button data-leaf="flat">Flat disc</button>
+    </div>
+    <div class="hint">A flat leaf is a disc rather than a plane, so the out-of-focus background survives. It
+      is also the honest way to judge the gait: curvature is the confounder in every measurement of this
+      rig, and a plane removes it.</div>
+  </div>
+
+  <h2>Joint limits</h2>
+  <div>
+    <label class="chk" title="Off restores the old FABRIK solve, which left the knee bending backwards for most of a walk."><input type="checkbox" id="limitsOn" checked> hold the legs to a plausible pose</label>
+    <div id="limitRows"></div>
+    <div class="hint" id="limitHint"></div>
+  </div>
+
+  <h2>View</h2>
+  <div>
+    <label class="chk"><input type="checkbox" id="spin" checked> slow orbit</label>
+    <label class="chk"><input type="checkbox" id="quality" checked> shadows, occlusion and subsurface</label>
+    <label class="chk"><input type="checkbox" id="dofOn" checked> depth of field</label>
+    <div class="seg" id="debugSeg">
+      <button data-debug="0" class="on">Shaded</button>
+      <button data-debug="1">Normals</button>
+      <button data-debug="2">Blur</button>
+    </div>
+    <div id="viewRows"></div>
+  </div>
+
+  <h2>Depth of field</h2>
+  <div>
+    <label class="chk"><input type="checkbox" id="autoFocus" checked> focus on whatever is at frame centre</label>
+    <div id="dofRows"></div>
+  </div>
+
+  <h2>Light</h2>
+  <div>
+    <label class="chk"><input type="checkbox" id="keyFollow" checked> key light turns with the camera</label>
+    <div id="lightRows"></div>
+  </div>
+
+  <h2>Shell</h2>
+  <div id="shellRows"></div>
+
+  <h2>Subsurface glow</h2>
+  <div id="sssRows"></div>
+
+  <h2>Anatomy</h2>
+  <div id="anatomyRows"></div>
+
+  <h2>Eyes</h2>
+  <div class="srow"><label for="eyeStyle">Appearance</label><select id="eyeStyle"></select></div>
+  <div class="hint" id="eyeHint"></div>
+  <div id="eyeRows"></div>
+  <div class="hint">Mounts are independent of appearance — any of the twelve works on any combination.</div>
+  <div id="eyeMountRows"></div>
+
+  <h2>Leaf</h2>
+  <div id="leafRows"></div>
+
+  <h2>Backdrop and grade</h2>
+  <div id="gradeRows"></div>
+
+  <div id="stats"></div>
+  <div id="credit">
+    The technique, and the demo that prompted this one, are
+    <a href="https://x.com/DrinLajci" target="_blank" rel="noopener">Drin (@DrinLajci)</a>'s:
+    <em>"This alien has no geometry. No model, no textures, no vertices."</em> See
+    <code>sdf-creature.html</code> for the direct reimplementation. This page is the same technique
+    aimed at one specific photograph. Covered by <code>test-demo-sdf-bug.mjs</code>.
+  </div>
+</div>
+
+<div id="hint">Drag to orbit. The bug walks an alternating tripod driven by the same locomotion code as the creature sim &mdash; six independent legs now, because a gait cannot be mirrored.</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial } from 'three/webgpu';
+import {
+  Fn, Loop, Break, If, uniform, uniformArray, uv, texture, select,
+  vec2, vec3, vec4, float, int,
+  normalize, dot, cross, length, min, max, abs, clamp, mix, smoothstep, step, sign, fract, floor,
+  sqrt, sin, cos, acos, atan, pow, exp,
+} from 'three/tsl';
+// The walk cycle. `bug-rig.js` owns the six legs and the gait; it imports the stepping itself from
+// `../creature-locomotion.js`, which is the same module `port-creature-system.js` runs. Nothing about
+// walking is reimplemented on this page - it reads eighteen joint positions and a rotation.
+import { createBugRig, BUG_LEGS, BODY_PIVOT, BUG_GAIT } from './bug-rig.js';
+import { createBugEyes, EYE_STYLES, EYE_MODIFIERS, STALK_REACH, OCELLI } from './bug-eyes.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+//
+// EVERY NUMBER IN THIS BLOCK ALSO LIVES IN `demos/bug-sdf.js`, which is the CPU twin the Node test
+// asserts against. They are transcribed by hand and nothing enforces that they agree. If you move a
+// leg here, move it there. The LEG TABLE is the exception: it is imported from `bug-rig.js` now,
+// because the rig and the shader have to agree about six legs frame by frame.
+//
+// ===========================================================================
+// WHAT V2 CHANGES, AND WHY EACH ONE IS FORCED
+//
+// 1. THE MIRROR IS GONE FROM THE LEGS. v1 drew three leg expressions at abs(p.x) and got six legs for
+//    the price of three. A gait is left/right asymmetric by definition - that is what a gait IS - so
+//    the legs are now six independent evaluations reading their joints from uniforms. The field's leg
+//    term therefore costs twice what it did. Eyes and antennae stay mirrored, being still symmetric.
+//
+// 2. THE BODY MOVES, SO THE SAMPLE POINT MOVES INSTEAD. Every body primitive is still written at its
+//    authored position; `bugMap` carries the incoming world point into authored space first
+//    (`pA = BODY_PIVOT + Rt * (pWorld - bodyPos)`) and hands that to the untouched body code. A
+//    rotation is an isometry, so the result is still a true distance and the march is still safe.
+//    Non-uniform scale would NOT be safe here, which is why bodyWidth stays inside the ellipsoid radii
+//    rather than being applied to the point.
+//
+// 3. THE LEGS STAY IN WORLD SPACE. Their joints come from the CPU already in world coordinates, and
+//    the union of a body distance with a leg distance is valid across the two frames precisely because
+//    the transform between them preserves distance.
+//
+// 4. THE FEET NO LONGER FOLLOW THE BOB. v1's bob was deliberately applied to the body, hips and head
+//    rather than to a warp of p, so that the feet stayed planted. The hips are now driven by the rig,
+//    so the bob is what it always claimed to be: breathing.
+//
+// 5. THE BOUNDING SPHERE IS COMPUTED PER FRAME. It was a constant because the bug never moved. It now
+//    comes from the actual joint positions on the CPU, which is exact and costs nothing on the GPU.
+// ===========================================================================
+
+const ID_SHELL = 0, ID_HEAD = 1, ID_EYE = 2, ID_LEG = 3, ID_ANT = 4, ID_SPROUT = 5;
+
+// Only SHELL and HEAD are joined by a union that BLENDS the material id, and they are adjacent for
+// that reason. A linearly blended id walks through every palette entry between its endpoints, so a
+// seam between id 0 and id 3 would paint two bands of unrelated colour across the join.
+// `sdf-creature.html` documents the trap at length; every other union here switches its id at the
+// midpoint instead of ramping.
+
+const STEP_FACTOR = 0.85;   // 1 / 1.17, the measured worst gradient of the bug's field
+const MARCH_STEPS = 96;     // generous: only ~5% of pixels enter the loop, and it breaks on hit
+const HIT_EPS = 0.0011;
+const MAX_T = 14.0;
+
+const SHADOW_STEPS = 16;
+const AO_SAMPLES = 4;
+const SSS_SAMPLES = 4;
+// Texture fetches, not distance evaluations, so these are the cheapest samples on the page. The count
+// has to rise with the blur radius or the spiral's arms show up as spokes inside the big background
+// discs; 64 plus the per-pixel jitter holds together at the default radius.
+const DOF_TAPS = 64;
+
+const BUG_BOUND_AT = [0, 0.29, 0.1], BUG_BOUND_R = 0.9;
+
+const MAX_TAPER_SLOPE = 0.25;
+// A tapered capsule's plain form OVER-estimates by sqrt(1 + slope^2), and over-estimating is what
+// makes a march step past a surface however small STEP_FACTOR is. This is that bound at
+// MAX_TAPER_SLOPE; the test asserts no segment in the model is steeper.
+const TAPER_SAFETY = 1 / Math.sqrt(1 + MAX_TAPER_SLOPE ** 2);
+
+// Six legs, in the rig's order: row 0 left, row 0 right, row 1 left, ... Only the RADII are read here;
+// the joint POSITIONS arrive as uniforms every frame.
+const LEG_RADII = [];
+for (const L of BUG_LEGS) for (const _side of [-1, 1]) LEG_RADII.push(L.r);
+const LEG_COUNT = LEG_RADII.length;
+
+// How far from the body pivot the authored body reaches, antenna tips included. Used only to seed the
+// per-frame bounding sphere, so it is a safe over-estimate rather than a measurement.
+const BODY_EXTENT = 0.68;
+const EYE = { at: [0.135, 0.288, 0.452], r: 0.086 };
+// The fifteen eyes. Both halves live in one module so the stalk's tip and the ocelli's fold cannot drift
+// apart between the field that draws them and the shading that lights them.
+const eyes = createBugEyes({ EYE });
+const HEAD = { at: [0, 0.262, 0.400], r: [0.175, 0.155, 0.140] };
+const ANTENNA = { r: [0.020, 0.028], tip: 0.030 };
+
+// NEITHER THE ANTENNA ROOT NOR ITS DIRECTION IS AUTHORED. Both are solved against the eye, because both
+// have driven an antenna through an eyeball during this demo's life:
+//
+//   - The root was a fixed point 0.041 from the eye centre, inside an eyeball of radius 0.086, so the
+//     antennae simply grew out of the eyes. Moving the point would have fixed one eye size; `eyeSize` is
+//     a slider to 1.5.
+//   - Once the pitch became a slider, the DIRECTION could aim the shaft at the eye even from a root well
+//     clear of it — a low root pitched up, or a crown root pitched down, buried the shaft up to 57 mm
+//     into the eyeball. Clearing the root is not the same as clearing the antenna.
+//
+// So: the root rides the head's surface at the elevation `antennaHeight` asks for, then is pushed out to
+// the eyeball's surface if it is inside one; and the shaft is then tilted away from the eye by the
+// smallest rotation that makes it tangent.
+//
+// `antennaHeight` is an ELEVATION on the head, not a height in world units, and that reparameterisation
+// is what allows a wide range. The first version added the slider straight to the root's y and could not
+// be opened past 0.11: x and z stayed put while y climbed, so it drove out through the crown. The head is
+// an ellipsoid, so climbing it means drawing in on x and z at the same time — which is what an elevation
+// does and a vertical offset cannot. The bearing is fixed FORWARD, because a root behind the eye puts the
+// eye in the shaft's path.
+// Bearings are DERIVED and normalised, not typed as decimals. Hand-rounded "unit" vectors are not unit:
+// [0.532, 0.847] has length 1.000216, invisible in a render but enough to make a dot product of two parallel
+// directions read 1.0002, and to leave a drift in every angle computed from it.
+const unit2 = (a, b) => { const m = Math.hypot(a, b); return [a / m, b / m]; };
+
+const ANTENNA_BEARING = unit2(0.343, 0.657);   // head-space x,z bearing of the root: forward, inboard of the eye
+const ANTENNA_DEPTH = 0.9;                     // fraction of the head's radii, i.e. just under the skin
+const ANTENNA_RING_MIN = 0.55;                 // floor on that bearing, so the poles cannot drag it to the midline
+const ANTENNA_HEIGHT_RANGE = [-0.7, 0.95];
+const ANTENNA_HEIGHT_DEFAULT = -0.15;
+const ANTENNA_CLEAR = 0.014;
+
+// Shaft pitch, 0 being horizontal. Range and default derived from the direction the shaft was authored at
+// before this became a control, so the default pose is EXACTLY the old one rather than approximately it.
+const AUTHORED_DIR = [0.107, -0.040, 0.170];
+const ANTENNA_HORIZ = unit2(AUTHORED_DIR[0], AUTHORED_DIR[2]);
+const ANTENNA_LEN = Math.hypot(...AUTHORED_DIR);
+const ANTENNA_ANGLE_RANGE = [-0.9, 0.9];
+const ANTENNA_ANGLE_DEFAULT = Math.asin(AUTHORED_DIR[1] / ANTENNA_LEN);
+// Hard cap on the CORRECTED pitch: past a quarter turn cos(pitch) goes negative, the shaft reverses its
+// horizontal bearing and runs back across x = 0, and since everything paired is drawn with abs(x) its own
+// reflection then walks into the opposite eye.
+const MAX_PITCH = Math.PI / 2 - 0.05;
+
+// ---------------------------------------------------------------------------
+// Distance-field vocabulary
+// ---------------------------------------------------------------------------
+
+// iq's ellipsoid bound. Not a true distance, but it under-estimates, which is what a march needs.
+const sdEllipsoid = (p, r) => {
+  const k0 = length(p.div(r));
+  const k1 = length(p.div(r.mul(r)));
+  return k0.mul(k0.sub(1.0)).div(max(k1, float(1e-5)));
+};
+
+// A tapered capsule between two arbitrary points. `sdf-creature.html`'s round cone runs along +Y and
+// would need a rotation per segment; a leg is far easier to author as "hip here, knee there".
+const sdSegTaper = (p, a, b, ra, rb) => {
+  const pa = p.sub(a);
+  const ba = b.sub(a);
+  const h = clamp(dot(pa, ba).div(max(dot(ba, ba), float(1e-9))), 0, 1);
+  return length(pa.sub(ba.mul(h))).sub(mix(ra, rb, h)).mul(TAPER_SAFETY);
+};
+
+/** Hard union. Keeps ids discrete, so the eyeball's rim and the leaf's edge stay crisp. */
+const opU = (a, b) => {
+  const takeB = step(b.x, a.x);
+  return vec2(min(a.x, b.x), mix(a.y, b.y, takeB));
+};
+
+/** Smooth union with a linearly blended id — legal only between adjacent palette slots. */
+const sminM = (a, b, k) => {
+  const kk = float(k);
+  const h = clamp(float(0.5).add(b.x.sub(a.x).mul(0.5).div(kk)), 0, 1);
+  return vec2(mix(b.x, a.x, h).sub(kk.mul(h).mul(h.oneMinus())), mix(b.y, a.y, h));
+};
+
+/** Same fused shape, id switched at the midpoint. Everything that is not SHELL/HEAD uses this. */
+const sminHard = (a, b, k) => {
+  const kk = float(k);
+  const h = clamp(float(0.5).add(b.x.sub(a.x).mul(0.5).div(kk)), 0, 1);
+  return vec2(mix(b.x, a.x, h).sub(kk.mul(h).mul(h.oneMinus())), mix(b.y, a.y, step(float(0.5), h)));
+};
+
+/**
+ * Both roots of a ray against a sphere, as vec3(discriminant, near, far). This is the whole of the
+ * leaf's intersection and the whole of the bug's bounding test. Negative x means a miss.
+ */
+const sphereSpan = (ro, rd, c, r) => {
+  const oc = ro.sub(c);
+  const b = dot(oc, rd);
+  const cc = dot(oc, oc).sub(r.mul(r));
+  const h = b.mul(b).sub(cc);
+  const s = sqrt(max(h, float(0)));
+  return vec3(h, b.negate().sub(s), b.negate().add(s));
+};
+
+// A stable hash on a quantised cell, used for the dew specks and the blur's per-pixel jitter.
+//
+// Deliberately NOT the usual `fract(sin(dot(p, k)) * 43758.5)`. The dew cells run to several hundred on
+// each axis, so that form's argument reaches tens of thousands, where f32 has less precision than the
+// spacing between adjacent cells and the specks fall into visible stripes. This is Dave Hoskins' hash,
+// which folds into the unit cube first and stays well behaved at these magnitudes.
+const hash31 = (c) => {
+  const p3 = fract(c.mul(0.1031));
+  const q = p3.add(dot(p3, p3.yzx.add(33.33)));
+  return fract(q.x.add(q.y).mul(q.z));
+};
+
+// ---------------------------------------------------------------------------
+// Uniforms
+// ---------------------------------------------------------------------------
+
+const u = {
+  time: uniform(0),
+  yaw: uniform(-0.75),
+  pitch: uniform(0.1),
+  dist: uniform(2.55),
+  aspect: uniform(1.85),
+  framing: uniform(new THREE.Vector2(-0.1, -0.16)),
+  zoom: uniform(2.35),
+
+  sproutR: uniform(2.4),
+  // 0 is the dome, 1 is a flat disc of the same radius. Both are exact intersections rather than marches,
+  // so the choice costs a select rather than a code path — see `leafHit`.
+  leafFlat: uniform(0),
+
+  // How many slots are live. Declared as an INT because it is a loop bound now rather than something
+  // compared against: `Loop` builds its end expression as an int, and handing it a float would leave a
+  // conversion in the hot path of every shading tap.
+  bugCount: uniform(1, 'int'),
+
+  // Key light, as azimuth and elevation so it can be swung around without editing a vector.
+  //
+  // These defaults are BEHIND the subject on purpose, and it is worth knowing why. The transmission
+  // term below is a back-lit approximation: it is driven by `dot(rd, lightDir)`, which is only positive
+  // when the light is on the far side of what you are looking at. Put the key on the camera's side —
+  // the obvious "light the subject" instinct — and the glow through the shell, which is the single
+  // thing that makes this bug read as alive rather than moulded, silently does not fire at all. The
+  // camera-facing side is carried by the sky fill, the leaf bounce and the rim instead.
+  //
+  // The azimuth is RELATIVE TO THE CAMERA by default, because the camera orbits. A world-fixed key
+  // would swing from behind the bug to in front of it as the orbit came round, and the glow would come
+  // and go with it — which is honest lighting and a poor demonstration. `keyFollow` at 0 pins the light
+  // to the world instead, which is the setting to use when judging whether the shape is right rather
+  // than whether the picture is pretty.
+  keyAz: uniform(2.75),
+  keyEl: uniform(0.65),
+  keyFollow: uniform(1),
+  keyGain: uniform(1.25),
+  bounceGain: uniform(1.0),
+  rimGain: uniform(1.0),
+  ambient: uniform(0.055),
+
+  sssGain: uniform(1.35),
+  sssPower: uniform(3.4),
+  sssDistort: uniform(0.36),
+  sssCol: uniform(new THREE.Color('#ff8a3a')),
+
+  leafDark: uniform(new THREE.Color('#14461f')),
+  leafBright: uniform(new THREE.Color('#5fbe3a')),
+  leafWax: uniform(0.75),
+  leafBump: uniform(0.35),
+  speckAmt: uniform(0.012),
+  speckDensity: uniform(280),
+  speckGain: uniform(1.1),
+
+  bokehGain: uniform(1.0),
+  exposure: uniform(1.0),
+  vignette: uniform(0.55),
+
+  quality: uniform(1),
+  debugMode: uniform(0),      // 0 shaded, 1 normals, 2 blur amount
+};
+
+// ---------------------------------------------------------------------------
+// Per-bug uniforms
+//
+// Everything that makes one bug a different bug from another, as `uniformArray`s of MAX_BUGS entries. The
+// global `u` above keeps what the whole picture shares — camera, light, leaf, grade — and nothing else.
+//
+// WHY ARRAYS AND NOT N SETS OF UNIFORMS. The field has to be evaluated for a specific bug from inside a
+// loop, so the index is a value rather than something known when the shader is written. `uniformArray`
+// supports a dynamic `.element(i)`, which was worth verifying before designing around: it does, index
+// arithmetic works, and the array holds the live Vector3/Color objects so a per-frame write is a mutation
+// rather than a reallocation.
+//
+// THE COST IS PADDING. Every element of a uniform array is padded to a vec4, so a MAX_BUGS array of floats
+// costs the same as one of vec4s — the 18 scalars below are 4x larger than they read. At six bugs the whole
+// per-bug block is about 4.6 KB against a 64 KB minimum binding size, so it is not worth packing scalars
+// into vec4s and losing the names. It would be worth it at a hundred bugs.
+// ---------------------------------------------------------------------------
+
+// HOW MANY SLOTS, and what actually bounds it.
+//
+// This was 6, chosen on an unmeasured guess about cost. The measurements say the guess was protecting the
+// wrong thing:
+//
+//   - The CPU walk is 6 microseconds per bug per frame. Forty-eight of them is 1.7% of a 60 fps frame.
+//   - The packed uniforms are 544 bytes per bug, so WebGPU's guaranteed 64 KB binding holds about 120.
+//   - What 6 was really protecting was the SHADER, because the per-slot work used to be unrolled in JS: one
+//     march per slot whether or not it held a bug, plus one gate compare per slot inside `sceneMap`, which
+//     the 16 shadow, 4 occlusion and 4 thickness taps call for every shaded pixel.
+//
+// So the unrolling went instead. `Loop(u.bugCount, ...)` emits a real dynamic loop, which makes the shader's
+// size independent of this number and an EMPTY SLOT COST NOTHING AT ALL rather than one compare per tap.
+// With that, the cap is only a buffer-size choice, and 24 leaves the per-bug block at about 13 KB — a fifth
+// of the 64 KB floor, with room for the joints and everything else.
+//
+// The live cost is now linear in the bugs actually on the leaf, and each of those is bounded twice over: its
+// march only runs for pixels whose ray crosses its own bounding sphere, and the shading taps reject it with
+// one subtract when it cannot beat the distance already found.
+const MAX_BUGS = 24;
+
+// The scalar fields, with the single-bug defaults they had as plain uniforms.
+const BUG_SCALARS = {
+  scale: 1.0,
+  bodyWidth: 1.0,
+  antennaLen: 1.0,
+  antennaHeight: ANTENNA_HEIGHT_DEFAULT,
+  antennaAngle: ANTENNA_ANGLE_DEFAULT,
+  eyeSize: 1.0,
+  grooveDepth: 0.01,
+  lipAmt: 0.55,
+  // Twelve appearances share five knobs, because a panel with a slider per appearance would be unreadable.
+  eyeStyle: 0,
+  eyeGloss: 1.0,
+  eyePupil: 0.34,
+  // Facets across the eye's diameter is pi * this, so 7 gives about 22 — the range a beetle actually reads
+  // at, and coarse enough that each facet is several pixels rather than moire.
+  eyeFacets: 7.0,
+  // The three mounts are independent flags, not appearances: any of the twelve works on any of the eight
+  // combinations, so the dropdown is not the place for them.
+  eyeStalkOn: 0,
+  eyeStalk: 1.0,
+  eyeOcelliOn: 0,
+  eyeOcelli: OCELLI.count,
+  eyeGemOn: 0,
+};
+
+const BUG_COLOURS = {
+  eyeTint: '#6b3c14',
+  shellRear: '#93c53a',
+  shellFront: '#f46a2c',
+  shellCrest: '#ffa03c',
+  headCol: '#cfe155',
+  legCol: '#f3ba62',
+  antCol: '#e6e78a',
+};
+
+// EVERY PER-BUG FIELD IN ONE ARRAY, and this is not an optimisation — it is a hard device limit.
+//
+// The first version of this gave each field its own `uniformArray`: eighteen scalars, seven colours, five
+// vectors and the joints, thirty-two in all. Every `uniformArray` is a `BufferNode`, which means its OWN
+// BINDING, and WebGPU guarantees only `maxUniformBuffersPerShaderStage = 12`. The result was an invalid bind
+// group layout and a pipeline that would not create:
+//
+//     THREE.[Invalid PipelineLayout (unlabeled)] is invalid due to a previous error.
+//      - While calling [Device].CreateRenderPipeline(...)
+//
+// which names the pipeline and not the cause, so it is worth recording what the cause was. Nothing in Node
+// could have caught it: the graph builds perfectly, the arrays are all valid, and the limit is only consulted
+// when a real device is asked for a real pipeline.
+//
+// So: one vec4 array, `BUG_STRIDE` entries per bug, plus one for the joints. Two bindings. The padding note
+// from before now cuts the other way — since every element pads to a vec4 anyway, packing three floats
+// alongside a vec3 is free rather than a compromise.
+const BUG_STRIDE = 16;
+
+// Which vec4 of a bug's block holds what. Vectors take xyz and lend their w to a scalar that had nowhere
+// better to be, which is why the pairings below look arbitrary — they are, and only this table knows them.
+const F = {
+  POS: 0,        // xyz body position,      w scale
+  ROW0: 1,       // xyz inverse rotation r0, w body width
+  ROW1: 2,       // xyz inverse rotation r1, w antenna length
+  ROW2: 3,       // xyz inverse rotation r2, w antenna height
+  BOUND: 4,      // xyz bounding centre,     w bounding radius
+  ANAT: 5,       // antenna angle, eye size, groove depth, lip amount
+  EYE_A: 6,      // eye style, gloss, pupil, facets
+  EYE_B: 7,      // stalk on, stalk length, ocelli on, ocelli count
+  EYE_C: 8,      // gem on, spare, spare, spare
+  TINT: 9,       // rgb eye tint
+  SHELL_R: 10, SHELL_F: 11, SHELL_C: 12, HEAD: 13, LEG: 14, ANT: 15,
+};
+
+// Where each named scalar lives, so the CPU writer and the shader reader cannot drift apart: both go through
+// this table rather than each knowing the layout.
+const SCALAR_AT = {
+  scale: [F.POS, 'w'],
+  bodyWidth: [F.ROW0, 'w'],
+  antennaLen: [F.ROW1, 'w'],
+  antennaHeight: [F.ROW2, 'w'],
+  antennaAngle: [F.ANAT, 'x'], eyeSize: [F.ANAT, 'y'], grooveDepth: [F.ANAT, 'z'], lipAmt: [F.ANAT, 'w'],
+  eyeStyle: [F.EYE_A, 'x'], eyeGloss: [F.EYE_A, 'y'], eyePupil: [F.EYE_A, 'z'], eyeFacets: [F.EYE_A, 'w'],
+  eyeStalkOn: [F.EYE_B, 'x'], eyeStalk: [F.EYE_B, 'y'],
+  eyeOcelliOn: [F.EYE_B, 'z'], eyeOcelli: [F.EYE_B, 'w'],
+  eyeGemOn: [F.EYE_C, 'x'],
+};
+const COLOUR_AT = {
+  eyeTint: F.TINT,
+  shellRear: F.SHELL_R, shellFront: F.SHELL_F, shellCrest: F.SHELL_C,
+  headCol: F.HEAD, legCol: F.LEG, antCol: F.ANT,
+};
+
+const bugData = uniformArray(
+  Array.from({ length: MAX_BUGS * BUG_STRIDE }, () => new THREE.Vector4()), 'vec4');
+
+// Six legs x hip/knee/foot, for every slot, in UNIT AUTHORED space — see `bug-rig.js`'s `jointsUnit`. The
+// bug used to be evaluated in two frames at once, the body in authored space and the legs in world space;
+// one frame is what lets the scale be a single multiply at the end of the field instead of a factor
+// threaded through every primitive, and it removes the mixed-frame hazard that made the eyes render flat.
+const JOINTS_PER_BUG = LEG_COUNT * 3;
+const bugJoints = uniformArray(
+  Array.from({ length: MAX_BUGS * JOINTS_PER_BUG }, () => new THREE.Vector3()), 'vec3');
+
+// The body's inverse rotation is passed as three ROWS rather than a mat3. Three dot products cost the same as
+// a matrix multiply, and it leaves three spare `w` channels that scalars are now living in.
+
+/** The bounding sphere alone, for the two places that reject a bug before evaluating its field. */
+function bugBound(idx) {
+  const v = bugData.element(idx.mul(BUG_STRIDE).add(F.BOUND));
+  return { at: v.xyz, r: v.w };
+}
+
+/**
+ * Every per-bug field, resolved for one bug. `idx` is an int node, so it may come from a loop.
+ *
+ * The vec4s are fetched ONCE each and then read component-wise. Fetching per field would build a separate
+ * element node for every one of the twenty-five, which the shader compiler would have to fold back together.
+ */
+function bugFields(idx) {
+  const base = idx.mul(BUG_STRIDE);
+  const v = [];
+  const at = (k) => (v[k] ??= bugData.element(base.add(k)));
+
+  const B = { idx };
+  for (const [name, [slot, comp]] of Object.entries(SCALAR_AT)) B[name] = at(slot)[comp];
+  for (const [name, slot] of Object.entries(COLOUR_AT)) B[name] = at(slot).xyz;
+  B.bodyPos = at(F.POS).xyz;
+  B.invRow0 = at(F.ROW0).xyz;
+  B.invRow1 = at(F.ROW1).xyz;
+  B.invRow2 = at(F.ROW2).xyz;
+  B.boundAt = at(F.BOUND).xyz;
+  B.boundR = at(F.BOUND).w;
+  B.joint = (j) => bugJoints.element(idx.mul(JOINTS_PER_BUG).add(j));
+  return B;
+}
+
+// Three gaits, all the same code with different numbers. `dash` is the one that shows the scheduler
+// doing something: at a high enough speed the trigger distances are met before a tripod has landed, so
+// the cap on concurrent steps starts refusing legs.
+const GAIT_PRESETS = {
+  creep:  { ...BUG_GAIT, label: 'Creep',  maxSpeed: 0.14, stepDuration: 0.20, stepLift: 0.026, maxConcurrentFraction: 0.34 },
+  scurry: { ...BUG_GAIT },
+  dash:   { ...BUG_GAIT, label: 'Dash',   maxSpeed: 0.62, stepDuration: 0.085, stepLift: 0.050,
+            movingTrigger: { h: 0.15, v: 0.075 }, comfort: { h: 0.24, v: 0.15 } },
+};
+
+const _jointBuf = [];
+
+// The widest leg radius, in unit authored space. The bound has to cover the SURFACE, not just the joint
+// centres, and the old constant here was 0.02 — safe only because the outermost joint is the foot, whose
+// radius is 0.010. A knee reaching furthest would have poked through it.
+const MAX_LEG_R = Math.max(...BUG_LEGS.flatMap((l) => l.r));
+
+/**
+ * One bug: a rig that walks it and a settings object that describes it.
+ *
+ * The settings are PLAIN DATA — numbers and hex strings, no nodes and no THREE objects — for two reasons.
+ * They are what the Save button puts in localStorage, so they have to survive `JSON.stringify`; and they
+ * are the single description a spawned bug is built from, so "spawn that specific bug" is a structured
+ * clone rather than a list of fields somebody has to remember to copy.
+ */
+const defaultSettings = () => ({ ...BUG_SCALARS, ...BUG_COLOURS, gait: 'scurry', legSpread: 1 });
+
+const bugs = [];
+
+/** Where to put a newly spawned bug: somewhere on the leaf that is not on top of anything already there. */
+function spawnSpot(rig) {
+  const r = rig.state.roamRadius;
+  let best = null, bestGap = -1;
+  // Best of twelve tries rather than a rejection loop, which cannot fail to terminate when the leaf is
+  // full. Bugs do not collide — see the note in the panel — so this only has to avoid an ugly first frame.
+  for (let k = 0; k < 12; k++) {
+    const a = Math.random() * Math.PI * 2, d = r * (0.25 + 0.7 * Math.random());
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    let gap = Infinity;
+    for (const other of bugs) {
+      gap = Math.min(gap, Math.hypot(x - other.rig.body.pos.x, z - other.rig.body.pos.z));
+    }
+    if (gap > bestGap) { bestGap = gap; best = { x, z, yaw: a + Math.PI }; }
+  }
+  return best;
+}
+
+function makeBug(settings, { place = true } = {}) {
+  const st = { ...defaultSettings(), ...settings };
+  const rig = createBugRig({
+    THREE,
+    sproutR: u.sproutR.value,
+    groundShape: leafShape,
+    // Both of these are the whole point of a per-bug rig: a smaller bug has shorter legs AND a faster,
+    // shorter-strided gait, and `createBugRig` scales the gait itself so a caller cannot forget to.
+    scale: st.scale,
+    gait: GAIT_PRESETS[st.gait] ?? BUG_GAIT,
+    legSpread: st.legSpread,
+  });
+  const bug = { rig, settings: st };
+  bugs.push(bug);
+  rig.reset(place ? spawnSpot(rig) : undefined);
+  applyAppearance(bugs.length - 1);
+  return bug;
+}
+
+/**
+ * Copy one bug's settings into its uniform slot. Appearance only — the pose is `pushBug`.
+ *
+ * Both sides of the packing go through `SCALAR_AT` and `COLOUR_AT`, so a field cannot be written to one slot
+ * and read from another. That mattered enough to be worth the indirection: with the layout spelled out twice
+ * the failure is a bug wearing another field's value, which reads as a puzzling appearance rather than as an
+ * error.
+ */
+const _hex = new THREE.Color();
+
+function applyAppearance(i) {
+  const st = bugs[i].settings;
+  const base = i * BUG_STRIDE;
+  for (const [name, [slot, comp]] of Object.entries(SCALAR_AT)) {
+    bugData.array[base + slot][comp] = st[name];
+  }
+  for (const [name, slot] of Object.entries(COLOUR_AT)) {
+    // Through a THREE.Color so the hex-to-linear conversion is the one `uniform(new Color())` used to do;
+    // copying the string's bytes into a vector would have shifted every colour on the page.
+    _hex.set(st[name]);
+    const v = bugData.array[base + slot];
+    v.x = _hex.r; v.y = _hex.g; v.z = _hex.b;
+  }
+}
+
+/** How far past the pivot this bug's eyes reach, in unit space, so the bound can cover them. */
+function eyeReach(st) {
+  const dx = EYE.at[0] - BODY_PIVOT[0], dy = EYE.at[1] - BODY_PIVOT[1], dz = EYE.at[2] - BODY_PIVOT[2];
+  const base = Math.hypot(dx, dy, dz);
+  const stalk = st.eyeStalkOn > 0.5 ? STALK_REACH * st.eyeStalk : 0;
+  return base + stalk + EYE.r * st.eyeSize + 0.01;
+}
+
+/**
+ * Push one bug's pose into its uniform slot.
+ *
+ * The bounding sphere is recomputed from the joints that actually exist this frame. v1 could hard-code it
+ * because the bug never moved; a constant would now either clip a leg mid-step or have to be inflated to
+ * cover the whole roaming area, and the march's cost is proportional to how much of the ray it admits.
+ *
+ * The joints arrive in UNIT authored space, so the radius is measured there and multiplied by the scale
+ * once at the end: `|world - bodyPos| = |unit - pivot| * scale`, the transform being a similarity.
+ */
+function pushBug(i) {
+  const { rig, settings } = bugs[i];
+  const b = rig.body;
+  const base = i * BUG_STRIDE;
+  const m = rig.inverseRotation.elements;   // column-major
+  const pos = bugData.array[base + F.POS];
+  pos.x = b.pos.x; pos.y = b.pos.y; pos.z = b.pos.z;
+  const r0 = bugData.array[base + F.ROW0];
+  r0.x = m[0]; r0.y = m[3]; r0.z = m[6];
+  const r1 = bugData.array[base + F.ROW1];
+  r1.x = m[1]; r1.y = m[4]; r1.z = m[7];
+  const r2 = bugData.array[base + F.ROW2];
+  r2.x = m[2]; r2.y = m[5]; r2.z = m[8];
+
+  rig.jointsUnit(_jointBuf);
+  // Stalked eyes reach past the body's own extent, and a bound that excludes them slices the eyeballs off
+  // in mid-air. Everything else stays inside BODY_EXTENT.
+  let far = Math.max(BODY_EXTENT, eyeReach(settings));
+  const jbase = i * JOINTS_PER_BUG;
+  for (let j = 0; j < JOINTS_PER_BUG; j++) {
+    const x = _jointBuf[j * 3], y = _jointBuf[j * 3 + 1], z = _jointBuf[j * 3 + 2];
+    bugJoints.array[jbase + j].set(x, y, z);
+    far = Math.max(far, Math.hypot(x - BODY_PIVOT[0], y - BODY_PIVOT[1], z - BODY_PIVOT[2]) + MAX_LEG_R);
+  }
+  const bound = bugData.array[base + F.BOUND];
+  bound.x = b.pos.x; bound.y = b.pos.y; bound.z = b.pos.z;
+  bound.w = far * settings.scale;
+}
+
+/** Every live bug, plus the count the shader's per-slot branches read. */
+function pushPose() {
+  u.bugCount.value = bugs.length;
+  for (let i = 0; i < bugs.length; i++) pushBug(i);
+}
+
+// The first bug is the one the panel edits. Parked at the authored pose, so the opening frame is still v1's.
+let leafShape = 'dome';
+const rig = makeBug({}, { place: false }).rig;
+pushPose();
+
+const keyDir = () => {
+  const az = u.keyAz.add(u.yaw.mul(u.keyFollow));
+  return normalize(vec3(
+    sin(az).mul(cos(u.keyEl)),
+    sin(u.keyEl),
+    cos(az).mul(cos(u.keyEl)),
+  ));
+};
+
+// ---------------------------------------------------------------------------
+// The bug
+//
+// Read top to bottom: this list IS the model file. Six legs, two antennae, two eyes and a shell, and
+// every paired thing is one expression mirrored with abs(x).
+// ---------------------------------------------------------------------------
+
+const bugMap = Fn(([pw, bugIdx]) => {
+  const B = bugFields(bugIdx);
+  const w = B.bodyWidth;
+  const S = B.scale;
+
+  // Into UNIT AUTHORED space: rotate in, then divide by the bug's size. Every primitive below is written
+  // exactly where it was authored at size 1, and this one transform is what lets the whole body walk, tilt
+  // AND resize without any of them changing.
+  //
+  // The legs come in through this frame too, as `B.joint(j)` — the rig transforms them on the CPU. They
+  // used to be evaluated in world space here, which meant the field spoke two frames at once; that is the
+  // shape of mistake that made the eyes render as flat discs, and with a scale in play it would have meant
+  // multiplying some terms and not others.
+  //
+  // A rotation followed by a uniform divide is a SIMILARITY, so a distance measured here times `S` is the
+  // true distance — which is the one multiply at the end of this function, and what keeps the march safe.
+  const rel = pw.sub(B.bodyPos);
+  const p = vec3(
+    dot(rel, B.invRow0), dot(rel, B.invRow1), dot(rel, B.invRow2),
+  ).div(S).add(vec3(BODY_PIVOT[0], BODY_PIVOT[1], BODY_PIVOT[2]));
+
+  // Breathing only now. In v1 this also carried the hips, so that the feet could stay planted while the
+  // body rose and fell; the rig owns the hips and the feet in v2, so this is back to being a shell tic.
+  const bob = sin(u.time.mul(2.2)).mul(0.006);
+  const br = float(1).add(sin(u.time.mul(2.2)).mul(0.012));
+  const mx = abs(p.x);
+
+  // Shell: a big abdomen fused to a smaller pronotum, then the head fused onto that.
+  const abdomen = sdEllipsoid(
+    vec3(p.x, p.y.sub(float(0.33).add(bob)), p.z.add(0.1)),
+    vec3(float(0.285).mul(w).mul(br), float(0.255).mul(br), float(0.36).mul(br)));
+  const pronotum = sdEllipsoid(
+    vec3(p.x, p.y.sub(float(0.31).add(bob)), p.z.sub(0.22)),
+    vec3(float(0.235).mul(w), 0.205, 0.16));
+  let res = sminM(vec2(abdomen, float(ID_SHELL)), vec2(pronotum, float(ID_SHELL)), 0.09);
+
+  const head = sdEllipsoid(
+    vec3(p.x, p.y.sub(float(HEAD.at[1]).add(bob)), p.z.sub(HEAD.at[2])),
+    vec3(float(HEAD.r[0]).mul(w), HEAD.r[1], HEAD.r[2]));
+  // The one blended-id union in the field, hence SHELL and HEAD being adjacent palette slots: the
+  // orange pronotum grades into the yellow-green face across the fillet instead of switching on a line.
+  res = sminM(res, vec2(head, float(ID_HEAD)), 0.055);
+
+  // The elytra's centre groove. ADDED to the field, so it pushes the surface inward — the same
+  // mechanism as `sdf-creature.html`'s dent, and with the same hazard: an added displacement's
+  // gradient stacks on the field's own, and past a sum of 1 the march overshoots and pinholes the
+  // silhouette. The gaussian is deliberately wide and shallow for that reason, and the Node test
+  // measures the resulting worst gradient rather than trusting it.
+  const gx = p.x.div(0.07);
+  const groove = B.grooveDepth
+    .mul(exp(gx.mul(gx).negate()))
+    .mul(smoothstep(0.26, 0.52, p.y.sub(bob)))
+    .mul(smoothstep(0.3, 0.14, p.z))
+    .mul(smoothstep(-0.5, -0.26, p.z));
+  res = vec2(res.x.add(groove), res.y);
+
+  // Legs. SIX independent evaluations in UNIT AUTHORED space, reading hip/knee/foot from the rig.
+  //
+  // This is the change that costs something: v1 got six legs out of three expressions by evaluating
+  // them at abs(p.x), and that trick is unavailable to a gait, which is asymmetric by construction -
+  // the whole point of an alternating tripod is that the left and right of each row are in opposite
+  // phase. So the leg term of the field is twice what it was, and it is not recoverable.
+  //
+  // No `groundY` here either. v1 solved each foot's height from the leaf in the shader; the rig solves
+  // it on the CPU now, against the same closed form, and the answer arrives in the uniform.
+  //
+  // These were in WORLD space until the bugs gained sizes. The rig transforms them on the CPU instead, so
+  // the whole field speaks one frame — which is what lets the scale be a single multiply on the way out.
+  const pm = vec3(mx, p.y, p.z);   // still used by the antennae and eyes, which stay mirrored
+  let legD = null;
+  for (let i = 0; i < LEG_COUNT; i++) {
+    const r = LEG_RADII[i];
+    const hip = B.joint(i * 3 + 0);
+    const knee = B.joint(i * 3 + 1);
+    const foot = B.joint(i * 3 + 2);
+    // `p`, not `pw`, and the radii come from the authored table unscaled: both sides of the comparison are
+    // in unit authored space now. A radius does not depend on leg spread, so this table serves every bug.
+    const femur = sdSegTaper(p, hip, knee, float(r[0]), float(r[1]));
+    const tibia = sdSegTaper(p, knee, foot, float(r[1]), float(r[2]));
+    const d = min(femur, tibia);
+    legD = legD === null ? d : min(legD, d);
+  }
+  res = sminHard(res, vec2(legD, float(ID_LEG)), 0.022);
+
+  // Antennae: a widening club with a ball on the end, swaying a little.
+
+  // Step 1 — the root, at the elevation the height slider asks for, on the head's own surface. Placing
+  // it as a fraction of the head's RADII rather than at a height is what keeps it under the skin at
+  // every setting, with no clamp needed.
+  const eyeC = vec3(EYE.at[0], EYE.at[1], EYE.at[2]);
+  //
+  // The bearing is FLOORED, then the whole direction NORMALISED. Without the floor the ring collapses toward
+  // the pole at extreme elevation and drags the root onto the midline - 23 mm out at the top of the slider -
+  // which makes the eye subtend a huge angle from the root and leaves the shaft nowhere to point.
+  // Normalising afterwards returns the direction to the unit sphere, so the root still lands exactly at
+  // ANTENNA_DEPTH of the head's radii and cannot escape the skull however the floor distorts the bearing.
+  const elev = B.antennaHeight;
+  const ring = max(sqrt(max(float(1).sub(elev.mul(elev)), float(0))), float(ANTENNA_RING_MIN));
+  const rawDir = vec3(ring.mul(ANTENNA_BEARING[0]), elev, ring.mul(ANTENNA_BEARING[1]));
+  const nDir = rawDir.div(max(length(rawDir), float(1e-9)));
+  const rootRaw = vec3(
+    float(HEAD.at[0]).add(nDir.x.mul(ANTENNA_DEPTH * HEAD.r[0])),
+    float(HEAD.at[1]).add(nDir.y.mul(ANTENNA_DEPTH * HEAD.r[1])),
+    float(HEAD.at[2]).add(nDir.z.mul(ANTENNA_DEPTH * HEAD.r[2])),
+  );
+
+  // Step 2 — push it out of the eyeball if it is inside one.
+  const eyeKeep = float(EYE.r).mul(B.eyeSize).add(ANTENNA_CLEAR);
+  const rv = rootRaw.sub(eyeC);
+  const rvLen = max(length(rv), float(1e-5));
+  const root = eyeC.add(rv.div(rvLen).mul(max(rvLen, eyeKeep)));
+  const ab = vec3(root.x, root.y.add(bob), root.z);
+
+  // Step 3 - the shaft. The pitch the slider asks for, CLAMPED OUT of the band that aims at the eyeball.
+  //
+  // The correction is PITCH ONLY, and that is the whole trick. Rotating the shaft freely toward tangency is
+  // a smaller correction and it was wrong: the eye is OUTBOARD of the root, so rotating away from it rotates
+  // inboard, and at extreme elevation the root sits nearly on the midline, so the shaft crossed x = 0 -
+  // where, everything paired being drawn with abs(x), it is its own reflection walking into the OPPOSITE eye.
+  // Holding the horizontal bearing fixed and positive makes the mirror plane unreachable.
+  //
+  // With the bearing fixed, dot(shaft, toEye) = P*cos(pitch) + Q*sin(pitch) = M*cos(pitch - psi), so pitches
+  // that hit the eye form one contiguous band and the fix is to clamp to whichever edge is nearer. Closed
+  // form, no iteration, and the slider is obeyed everywhere outside that band.
+  const toEye = eyeC.sub(root);
+  const wLen = max(length(toEye), float(1e-6));
+  const P = toEye.x.mul(ANTENNA_HORIZ[0]).add(toEye.z.mul(ANTENNA_HORIZ[1]));
+  const Q = toEye.y;
+  const M = max(length(vec2(P, Q)), float(1e-9));
+  const tangent = sqrt(max(wLen.mul(wLen).sub(eyeKeep.mul(eyeKeep)), float(0))).div(M);
+  const psi = atan(Q, P);
+  const half = acos(clamp(tangent, -1, 1));      // 0 when no pitch can hit the eye at all
+  const delta = B.antennaAngle.sub(psi);
+  const inBand = step(abs(delta), half);         // 1 while the requested pitch is aimed at the eye
+  const pitch = clamp(
+    mix(B.antennaAngle, psi.add(sign(delta).mul(half)), inBand),
+    float(-MAX_PITCH), float(MAX_PITCH),
+  );
+  const dir = vec3(
+    cos(pitch).mul(ANTENNA_HORIZ[0]), sin(pitch), cos(pitch).mul(ANTENNA_HORIZ[1]),
+  ).mul(float(ANTENNA_LEN).mul(B.antennaLen));
+
+  const at = vec3(
+    ab.x.add(dir.x).add(cos(u.time.mul(0.9)).mul(0.022).mul(B.antennaLen)),
+    ab.y.add(dir.y).add(sin(u.time.mul(1.1)).mul(0.018).mul(B.antennaLen)),
+    ab.z.add(dir.z),
+  );
+  const antD = min(
+    sdSegTaper(pm, ab, at, float(ANTENNA.r[0]), float(ANTENNA.r[1])),
+    length(pm.sub(at)).sub(ANTENNA.tip),
+  );
+  res = sminHard(res, vec2(antD, float(ID_ANT)), 0.018);
+
+  // Eyes: hard union, so the dome keeps a crisp rim where it breaks the head's surface.
+  // Still the mirrored point, the eyes being symmetric even when the gait is not, so `side` is +1 here:
+  // in mirrored space both eyes ARE the right one. Twelve of the fifteen styles leave this a plain sphere.
+  const eye = eyes.eyeDistance({
+    pm, side: float(1), bob, eyeSize: B.eyeSize,
+    stalkOn: B.eyeStalkOn, stalkLen: B.eyeStalk,
+    ocelliOn: B.eyeOcelliOn, ocelliCount: B.eyeOcelli,
+    gemOn: B.eyeGemOn,
+  });
+  res = opU(res, vec2(eye, float(ID_EYE)));
+  // Unit space out, world space back. The id rides along untouched.
+  return vec2(res.x.mul(S), res.y);
+});
+// A real function call, not an inline paste. Without this the whole model would be duplicated across
+// the march, the four normal taps, sixteen shadow steps, four occlusion taps and four thickness taps.
+bugMap.setLayout({
+  name: 'bugMap', type: 'vec2',
+  inputs: [{ name: 'pw', type: 'vec3' }, { name: 'bugIdx', type: 'int' }],
+});
+
+/**
+ * The full field: the bug and the leaf it stands on. The primary ray does not use this — see
+ * `traceScene` — but every shading tap does, because they ask for the distance from an arbitrary point
+ * and that is the one question only an SDF answers.
+ *
+ * The leaf being in here is what makes the contact shadow and the crevice occlusion real rather than
+ * faked: a shadow ray cast from the leaf finds the bug because they are the same function.
+ */
+const sceneMap = Fn(([p]) => {
+  // The leaf. The dome is a sphere, so its distance is exact and SIGNED — negative inside. The flat leaf has
+  // to be both as well, or the two shapes would disagree about which side of the surface a shading tap is
+  // on. So it is not a zero-thickness disc but the solid `{radial <= R, y <= 0}`: a half-infinite cylinder
+  // whose top face is the leaf. `length(max(q, 0)) + min(max(q.x, q.y), 0)` is its exact signed distance —
+  // the first term handles everything outside, including the rim corner where the nearest point is the edge
+  // rather than the face, and the second is negative inside by the distance to the nearer boundary.
+  const radial = length(vec2(p.x, p.z));
+  const leafDome = length(p.sub(vec3(0, u.sproutR.negate(), 0))).sub(u.sproutR);
+  const q = vec2(radial.sub(u.sproutR), p.y);
+  const leafFlatD = length(max(q, vec2(0))).add(min(max(q.x, q.y), float(0)));
+  const leaf = select(u.leafFlat.greaterThan(0.5), leafFlatD, leafDome);
+
+  const d = leaf.toVar();
+  const id = float(ID_SPROUT).toVar();
+
+  // Every live bug, nearest wins — with a bounding-sphere reject in front of each one.
+  //
+  // THE REJECT IS WHAT MAKES THIS AFFORDABLE. This function is not the primary ray; it is what the sixteen
+  // shadow steps, four occlusion taps and four thickness taps call, so a naive min over six bugs would
+  // multiply the most-called function on the page by six. `length(p - centre) - radius` is a lower bound on
+  // the distance to that bug, so if it already exceeds the best distance so far, that bug cannot win and
+  // its field can be skipped exactly rather than approximately. Shading taps are local, so most bugs are
+  // rejected by one subtract.
+  Loop(u.bugCount, ({ i }) => {
+    const bb = bugBound(i);
+    const near = length(p.sub(bb.at)).sub(bb.r);
+    If(near.lessThan(d), () => {
+      const b = bugMap(p, i);
+      If(b.x.lessThan(d), () => { d.assign(b.x); id.assign(b.y); });
+    });
+  });
+
+  return vec2(d, id);
+});
+sceneMap.setLayout({ name: 'sceneMap', type: 'vec2', inputs: [{ name: 'p', type: 'vec3' }] });
+
+// ---------------------------------------------------------------------------
+// Shading taps
+// ---------------------------------------------------------------------------
+
+const calcNormal = Fn(([p]) => {
+  const e = float(0.0012);
+  const dx = vec3(e, e.negate(), e.negate());
+  const dy = vec3(e.negate(), e.negate(), e);
+  const dz = vec3(e.negate(), e, e.negate());
+  const dw = vec3(e, e, e);
+  return normalize(
+    dx.mul(sceneMap(p.add(dx)).x)
+      .add(dy.mul(sceneMap(p.add(dy)).x))
+      .add(dz.mul(sceneMap(p.add(dz)).x))
+      .add(dw.mul(sceneMap(p.add(dw)).x)),
+  );
+});
+calcNormal.setLayout({ name: 'calcNormal', type: 'vec3', inputs: [{ name: 'p', type: 'vec3' }] });
+
+// Penumbra shadow: the ratio of clearance to distance travelled is a free soft shadow, and it is the
+// thing that puts the bug's shadow onto the leaf without a shadow map, a light camera or a second
+// render pass. Nothing here knows the bug is standing on anything.
+const softShadow = Fn(([ro, rd, maxT]) => {
+  const res = float(1).toVar();
+  const t = float(0.02).toVar();
+  Loop(SHADOW_STEPS, () => {
+    const h = sceneMap(ro.add(rd.mul(t))).x;
+    res.assign(min(res, h.mul(9.0).div(t)));
+    t.addAssign(clamp(h, 0.01, 0.22));
+    If(res.lessThan(0.004), () => { Break(); });
+    If(t.greaterThan(maxT), () => { Break(); });
+  });
+  return clamp(res, 0, 1);
+});
+softShadow.setLayout({
+  name: 'softShadow', type: 'float',
+  inputs: [{ name: 'ro', type: 'vec3' }, { name: 'rd', type: 'vec3' }, { name: 'maxT', type: 'float' }],
+});
+
+const calcAO = Fn(([p, n]) => {
+  const occ = float(0).toVar();
+  const sca = float(1).toVar();
+  Loop(AO_SAMPLES, ({ i }) => {
+    const h = float(0.012).add(float(0.10).mul(float(i)));
+    occ.addAssign(h.sub(sceneMap(p.add(n.mul(h))).x).mul(sca));
+    sca.mulAssign(0.8);
+  });
+  return clamp(float(1).sub(occ.mul(1.9)), 0, 1);
+});
+calcAO.setLayout({
+  name: 'calcAO', type: 'float',
+  inputs: [{ name: 'p', type: 'vec3' }, { name: 'n', type: 'vec3' }],
+});
+
+/**
+ * How much material lies between this point and the light, as 0 (paper thin) to 1 (solid).
+ *
+ * This is the term that makes the shell glow, and it is the clearest thing in this demo that a
+ * rasteriser cannot simply have. A mesh renderer needs a baked thickness map — authored per model, in
+ * UV space, wrong the moment the shape changes. Here it is four questions asked of the same distance
+ * function: step toward the light and check whether we are still inside. Widen the body with a slider
+ * and the glow thickens correctly, because there is nothing to re-bake.
+ */
+const thickness = Fn(([p, n, L]) => {
+  const inside = float(0).toVar();
+  // Geometric spacing from 2 cm out to 28, so the four samples span half the abdomen's depth. The reach
+  // is what decides how far in from an edge the glow carries: too short and only a hairline rim lights
+  // up, which is not what the reference photo does — there the whole front third of the shell glows.
+  const t = float(0.02).toVar();
+  Loop(SSS_SAMPLES, () => {
+    // Start just under the surface, or a back-lit point would read as thin from its first sample.
+    const q = p.sub(n.mul(0.004)).add(L.mul(t));
+    inside.addAssign(smoothstep(0.004, -0.004, sceneMap(q).x));
+    t.mulAssign(2.4);
+  });
+  return clamp(inside.div(SSS_SAMPLES), 0, 1);
+});
+thickness.setLayout({
+  name: 'thickness', type: 'float',
+  inputs: [{ name: 'p', type: 'vec3' }, { name: 'n', type: 'vec3' }, { name: 'L', type: 'vec3' }],
+});
+
+// ---------------------------------------------------------------------------
+// The backdrop
+//
+// NOT GEOMETRY, and not marched. A real out-of-focus background contains nothing to solve — it is
+// large soft shapes and blown-out highlights — so it is authored as discs in screen space and left for
+// the depth-of-field pass to smear. Values well above 1 on purpose: the highlights have to clip
+// through the tone curve for the bokeh to read as light rather than as paint.
+// ---------------------------------------------------------------------------
+
+const DISCS = [
+  [0.62, 0.55, 0.40, 2.30, 2.45, 1.05],
+  [1.35, 0.72, 0.34, 1.70, 1.90, 0.85],
+  [0.95, 0.18, 0.28, 1.35, 1.60, 0.58],
+  [-0.18, 0.92, 0.24, 1.15, 1.40, 0.58],
+  [0.20, 0.62, 0.30, 0.52, 0.95, 0.30],
+  [-0.52, 0.40, 0.36, 0.26, 0.55, 0.20],
+  [-1.15, 0.10, 0.34, 0.11, 0.24, 0.10],
+  [0.34, -0.62, 0.34, 0.14, 0.32, 0.13],
+  [-0.70, -0.55, 0.30, 0.07, 0.16, 0.07],
+];
+
+const backdrop = (px) => {
+  // Base wash: dark green in the bottom left, warm yellow-green toward the top right.
+  const g = smoothstep(float(-1.4), float(1.4), px.x.mul(0.55).add(px.y.mul(0.85)));
+  const col = mix(vec3(0.035, 0.070, 0.032), vec3(0.38, 0.58, 0.18), g).toVar();
+  for (const [x, y, r, cr, cg, cb] of DISCS) {
+    // A disc with a soft edge rather than a gaussian, so the blur pass turns it into a bokeh circle
+    // with a shoulder instead of a formless smudge.
+    const d = length(px.sub(vec2(x, y)));
+    col.addAssign(vec3(cr, cg, cb).mul(smoothstep(float(r), float(r * 0.45), d)));
+  }
+  return col.mul(u.bokehGain);
+};
+
+// ---------------------------------------------------------------------------
+// Pass 1 — solve the picture, and record how out of focus each pixel is
+//
+// Output is vec4(linear HDR colour, normalised depth). Depth rather than a blur radius, because the
+// second pass needs to compare its own depth against every tap's, and because storing depth is what
+// makes focusing on whatever is at frame centre a single texture fetch rather than a CPU raycast.
+// ---------------------------------------------------------------------------
+
+const scenePass = Fn(() => {
+  const q = uv();
+  const ndc = q.mul(2).sub(1);
+  const px = vec2(ndc.x.mul(u.aspect), ndc.y).add(u.framing);
+
+  // Virtual camera. Nothing here comes from the scene camera — the quad's own uniforms are the whole
+  // viewpoint, which is what lets this drop into a box of any size with no scene graph attached.
+  const target = vec3(0, 0.3, 0);
+  const ro = vec3(
+    sin(u.yaw).mul(cos(u.pitch)),
+    sin(u.pitch),
+    cos(u.yaw).mul(cos(u.pitch)),
+  ).mul(u.dist).add(target);
+  const fwd = normalize(target.sub(ro));
+  const right = normalize(cross(fwd, vec3(0, 1, 0)));
+  const upv = cross(right, fwd);
+  const rd = normalize(fwd.mul(u.zoom).add(right.mul(px.x)).add(upv.mul(px.y)));
+
+  // ---- the bugs: one bounded march each ------------------------------------
+  //
+  // ONE MARCH PER BUG, not one march over all of them. Taking `min` across every bug at each step would
+  // make each step N times dearer for every marching pixel; a separate span-bounded march per bug means a
+  // pixel only pays for the bugs its own ray actually crosses, which for bugs a body-length apart is one.
+  // The bounds are recomputed on the CPU from the joints that exist this frame — see `pushPose`.
+  //
+  // The loop is DYNAMIC, over the live count rather than over the slots. Unrolled in JS it emitted a march
+  // per slot whether or not that slot held a bug, which is what kept the slot count small; this way an empty
+  // slot is not visited at all and the shader's size does not depend on MAX_BUGS.
+  //
+  // `tBug` keeps the nearest hit across the bugs, so overlapping silhouettes resolve correctly, and each
+  // march is cut short at whatever has been found so far: a bug behind another is not marched past the
+  // surface that hides it. The nearest hit still wins whatever the slot order is — a later bug that is
+  // actually nearer lies inside its own truncated span and is found there — so the order changes the cost
+  // and not the image.
+  const tBug = float(-1).toVar();
+  const bugId = float(-1).toVar();
+  const bugHit = float(0).toVar();     // which bug won, as a float so it can live in a var
+  Loop(u.bugCount, ({ i }) => {
+    const b = bugBound(i);
+    const bound = sphereSpan(ro, rd, b.at, b.r);
+    If(bound.x.greaterThan(0.0).and(bound.z.greaterThan(0.0)), () => {
+      const t = max(bound.y, float(0.001)).toVar();
+      const near = select(tBug.greaterThan(0.0), tBug, float(MAX_T));
+      const tEnd = min(min(bound.z, float(MAX_T)), near);
+      Loop(MARCH_STEPS, () => {
+        If(t.greaterThan(tEnd), () => { Break(); });
+        const r = bugMap(ro.add(rd.mul(t)), i);
+        If(r.x.lessThan(float(HIT_EPS).mul(t)), () => {
+          tBug.assign(t);
+          bugId.assign(r.y);
+          bugHit.assign(i.toFloat());
+          Break();
+        });
+        t.addAssign(r.x.mul(STEP_FACTOR));
+      });
+    });
+  });
+
+  // ---- the leaf: a quadratic ----------------------------------------------
+  // Exact at every incidence angle, including the tangent rays along the silhouette that made a march
+  // of this surface stall and tear. Constant time, and free for the two thirds of the frame that miss.
+  const sproutC = vec3(0, u.sproutR.negate(), 0);
+  const leafSpan = sphereSpan(ro, rd, sproutC, u.sproutR);
+  const tDome = select(
+    leafSpan.x.greaterThan(0.0).and(leafSpan.y.greaterThan(0.001)),
+    leafSpan.y, float(-1),
+  );
+  // The flat leaf is a DISC, not a plane. An infinite plane would fill everything below the horizon and
+  // take the out-of-focus background with it, and the background is half of what this demo is arguing
+  // about. A disc keeps the silhouette: one ray-plane solve plus a radial test, cheaper than the quadratic.
+  const denom = select(abs(rd.y).lessThan(float(1e-6)), float(-1e-6), rd.y);
+  const tPlane = ro.y.negate().div(denom);
+  const hitPlane = ro.add(rd.mul(tPlane));
+  const tFlat = select(
+    tPlane.greaterThan(float(0.001))
+      .and(length(vec2(hitPlane.x, hitPlane.z)).lessThan(u.sproutR)),
+    tPlane, float(-1),
+  );
+  const tLeaf = select(u.leafFlat.greaterThan(0.5), tFlat, tDome);
+
+  // Nearer wins. -1 becomes a large number so one `min` sorts both cases.
+  const FAR = float(1e9);
+  const tB = select(tBug.greaterThan(0.0), tBug, FAR);
+  const tL = select(tLeaf.greaterThan(0.0), tLeaf, FAR);
+  const t = min(tB, tL);
+  const matId = select(tB.lessThanEqual(tL), bugId, float(ID_SPROUT));
+  const hit = t.lessThan(float(1e8));
+
+  const outCol = backdrop(px).toVar();
+  const depth = float(1).toVar();     // a miss is as far away as it gets, so it blurs the most
+
+  If(hit, () => {
+    const p = ro.add(rd.mul(t));
+    depth.assign(clamp(t.div(MAX_T), 0, 1));
+
+    const isLeaf = matId.greaterThan(float(ID_SPROUT - 0.5));
+    const n = vec3(0).toVar();
+    // The leaf's normal is analytic and exact, so there is no reason to spend four map calls on it —
+    // and it is 30% of the frame.
+    If(isLeaf, () => {
+      const sn = select(u.leafFlat.greaterThan(0.5), vec3(0, 1, 0), normalize(p.sub(sproutC)));
+      // The leaf's surface variation lives HERE rather than in the field, because a displaced sphere
+      // is no longer a quadratic. Two sine pairs, differentiated analytically, tilt the normal — the
+      // waxy unevenness of the reference photo's sprout without touching the silhouette.
+      const b1x = cos(p.x.mul(1.7).add(1.3)).mul(sin(p.z.mul(1.5).sub(0.4))).mul(1.7);
+      const b1z = sin(p.x.mul(1.7).add(1.3)).mul(cos(p.z.mul(1.5).sub(0.4))).mul(1.5);
+      const b2x = cos(p.x.mul(7.3).sub(2.1)).mul(sin(p.z.mul(6.9).add(0.8))).mul(7.3 * 0.16);
+      const b2z = sin(p.x.mul(7.3).sub(2.1)).mul(cos(p.z.mul(6.9).add(0.8))).mul(6.9 * 0.16);
+      n.assign(normalize(sn.sub(vec3(b1x.add(b2x), 0, b1z.add(b2z)).mul(u.leafBump.mul(0.06)))));
+    }).Else(() => {
+      n.assign(calcNormal(p));
+    });
+
+    // ---- albedo ----------------------------------------------------------
+    // Ids blend at the one smooth-union seam that ramps them, so these weights are soft rather than an
+    // equality test. Width exactly one palette slot: the largest band that still guarantees a
+    // non-neighbour contributes nothing, and the smallest that lets a blended id ramp all the way
+    // across the fillet instead of snapping halfway.
+    const wOf = (k) => smoothstep(float(1.0), float(0.0), abs(matId.sub(float(k))));
+    const wShell = wOf(ID_SHELL), wHead = wOf(ID_HEAD), wEye = wOf(ID_EYE);
+    const wLeg = wOf(ID_LEG), wAnt = wOf(ID_ANT), wLeaf = wOf(ID_SPROUT);
+
+    // The shell's green-to-orange gradient is spatial, not per-material: the reference bug is green at
+    // the rear and hot orange over the shoulders, which is one ramp along the body rather than two
+    // materials meeting.
+    // In AUTHORED space, not world: the green-to-orange ramp is a property of the bug, so it has to
+    // travel with it. Reading world y here would repaint the shell as the bug walked downhill.
+    // WHICHEVER BUG WAS HIT. Every per-bug appearance field is looked up through this, so a slot's colours
+    // and eyes follow its own geometry rather than the last bug the loop happened to touch. On a leaf pixel
+    // the index is meaningless and harmless — its weights are zero.
+    const H = bugFields(int(bugHit));
+    const relH = p.sub(H.bodyPos);
+    const pA = vec3(
+      dot(relH, H.invRow0), dot(relH, H.invRow1), dot(relH, H.invRow2),
+    ).div(H.scale).add(vec3(BODY_PIVOT[0], BODY_PIVOT[1], BODY_PIVOT[2]));
+    const shellT = smoothstep(float(-0.34), float(0.24), pA.z.add(pA.y.sub(0.33).mul(0.55)));
+    const shell = mix(H.shellRear, H.shellFront, shellT).toVar();
+    shell.assign(mix(shell, H.shellCrest, smoothstep(float(0.44), float(0.58), pA.y).mul(0.7)));
+    // The elytra's lip: a dark band where the surface turns vertical, which on an ellipsoid is exactly
+    // where the wing case overhangs. Geometry picks the line out; nothing is authored for it.
+    const lipBand = exp(n.y.div(0.14).mul(n.y.div(0.14)).negate());
+    shell.assign(shell.mul(mix(float(1), float(0.6), lipBand.mul(H.lipAmt))));
+
+    // The leaf: two greens mixed by a low-frequency wobble, brighter toward the crown.
+    const leafV = sin(p.x.mul(1.7).add(1.3)).mul(sin(p.z.mul(1.5).sub(0.4))).mul(0.5).add(0.5);
+    const leaf = mix(u.leafDark, u.leafBright, leafV).toVar();
+    // Brighter toward the crown. On the dome that is a height; on a flat leaf every point has the same
+    // height, so the ramp would flatten to one constant and the leaf would lose half its variation. The
+    // radial distance is the same gradient expressed in the coordinate that still varies.
+    const crown = select(
+      u.leafFlat.greaterThan(0.5),
+      smoothstep(u.sproutR, float(0), length(vec2(p.x, p.z))),
+      smoothstep(float(-0.6), float(0.05), p.y),
+    );
+    leaf.assign(mix(leaf, u.leafBright, crown.mul(0.55)));
+
+    const albedo = shell.mul(wShell)
+      .add(H.headCol.mul(wHead))
+      .add(H.legCol.mul(wLeg))
+      .add(H.antCol.mul(wAnt))
+      .add(leaf.mul(wLeaf))
+      .add(vec3(0.02).mul(wEye))
+      .div(max(wShell.add(wHead).add(wLeg).add(wAnt).add(wLeaf).add(wEye), float(1e-3)))
+      .toVar();
+
+    // ---- lighting --------------------------------------------------------
+    const L = keyDir();
+
+    // A real branch, not a `mix` against a 0/1 uniform. Blending toward 1 would still run the shadow
+    // march, the occlusion taps and the thickness taps every frame and then throw the results away, so
+    // the checkbox would change the picture without changing the cost — which for a demo whose whole
+    // argument is about cost is the wrong way round. `u.quality` is uniform across the draw, so every
+    // lane takes the same path and the work is genuinely skipped.
+    const sh = float(1).toVar();
+    const ao = float(1).toVar();
+    const thin = float(0).toVar();
+    If(u.quality.greaterThan(0.5), () => {
+      sh.assign(softShadow(p.add(n.mul(0.005)), L, float(4.0)));
+      ao.assign(calcAO(p, n));
+      thin.assign(float(1).sub(thickness(p, n, L)));
+    });
+
+    const key = max(dot(n, L), float(0)).mul(sh);
+    const sky = max(dot(n, vec3(0, 1, 0)), float(0)).mul(0.5).add(0.5).mul(ao);
+    // Green bounce off the leaf onto everything facing down — the belly, the undersides of the legs,
+    // the lower rim of the eyes. In the reference photo this is most of what stops the shadow side
+    // going black.
+    const bounce = max(dot(n, vec3(0, -1, 0)), float(0)).mul(ao).mul(u.bounceGain);
+    const fres = pow(clamp(float(1).add(dot(rd, n)), 0, 1), float(3.0));
+
+    const keyCol = vec3(1.32, 1.12, 0.82).mul(u.keyGain);
+    const bounceCol = vec3(0.20, 0.42, 0.14);
+    const lit = albedo.mul(
+      keyCol.mul(key)
+        .add(vec3(0.22, 0.34, 0.26).mul(sky))
+        .add(bounceCol.mul(bounce))
+        .add(vec3(u.ambient)),
+    ).toVar();
+
+    // Waxy sheen. The leaf gets a tighter, stronger one than the bug — that is the difference between
+    // a damp leaf and a matte shell.
+    const hv = normalize(L.sub(rd));
+    const specPow = mix(float(30.0), float(90.0), wLeaf);
+    const specAmt = mix(float(0.30), u.leafWax, wLeaf);
+    lit.addAssign(vec3(pow(max(dot(n, hv), float(0)), specPow).mul(specAmt).mul(sh)));
+    lit.addAssign(vec3(0.55, 0.72, 0.30).mul(fres).mul(0.22).mul(ao).mul(u.rimGain));
+
+    // ---- subsurface glow -------------------------------------------------
+    // Thin parts of the bug transmit. The wrap term is the standard back-lit approximation — view
+    // direction against a light direction bent by the normal — and the thickness that scales it comes
+    // from the distance field rather than from a baked map.
+    const sssMask = wShell.add(wHead).add(wLeg).add(wAnt);
+    const ltDir = normalize(L.add(n.mul(u.sssDistort)));
+    const ltDot = pow(clamp(dot(rd, ltDir), 0, 1), u.sssPower);
+    // `thin` is 0 when the quality branch above was skipped, so this term switches itself off.
+    const sss = ltDot.add(0.12).mul(thin).mul(sssMask).mul(u.sssGain);
+    lit.addAssign(albedo.mul(u.sssCol).mul(sss).mul(2.0));
+
+    // ---- the eye ---------------------------------------------------------
+    // Iris, pupil, two glints and the green edge caught off the leaf, all painted as angular bands on
+    // the eyeball's own surface. No extra shapes and no extra distance evaluations — the argument for
+    // doing faces this way at all.
+    //
+    // IN AUTHORED SPACE, like the shell ramp above. Every band is an angle measured from the eye's
+    // centre, so both the point and the view direction have to be in the space the centre is authored in.
+    // Against world `p` the vector is dominated by the bug's offset from the origin, `dot(en, glintA)`
+    // collapses to a 0.08-wide range around -0.8, no band fires anywhere on the eyeball, and the eye
+    // renders as a flat disc of the green bounce term. `sign(p.x)` picks the wrong side too, so both eyes
+    // get the same one. Only the directions are rotated — the rows are a rotation, so the dot products
+    // are the same ones the world-space normal would have given.
+    const rdA = vec3(dot(rd, H.invRow0), dot(rd, H.invRow1), dot(rd, H.invRow2));
+    const LA = vec3(dot(L, H.invRow0), dot(L, H.invRow1), dot(L, H.invRow2));
+    // nA is the field's OWN normal, rotated in like the rest. A cut gem is flat where the sphere is
+    // curved, so without it every highlight would sit on a ghost sphere the silhouette contradicts.
+    const nA = vec3(dot(n, H.invRow0), dot(n, H.invRow1), dot(n, H.invRow2));
+    const eyeCol = eyes.eyeColour({
+      pA, rdA, LA, nA,
+      bob: sin(u.time.mul(2.2)).mul(0.006),
+      side: sign(pA.x), style: H.eyeStyle, eyeSize: H.eyeSize,
+      stalkOn: H.eyeStalkOn, stalkLen: H.eyeStalk,
+      ocelliOn: H.eyeOcelliOn, ocelliCount: H.eyeOcelli,
+      gemOn: H.eyeGemOn,
+      sh, time: u.time, bounceCol,
+      tint: H.eyeTint, gloss: H.eyeGloss, pupil: H.eyePupil, facets: H.eyeFacets,
+    });
+    lit.assign(mix(lit, eyeCol, wEye));
+
+    // ---- dew on the leaf -------------------------------------------------
+    // Hashed cells on the surface, so the specks stay put as the camera moves and twinkle as the light
+    // catches them. Shading only, so unlike everything else on this leaf it costs no field gradient.
+    const cell = floor(p.mul(u.speckDensity));
+    const h1 = hash31(cell);
+    const spark = step(float(1).sub(u.speckAmt), h1);
+    const twinkle = float(0.3).add(pow(max(dot(n, hv), float(0)), float(8.0)).mul(0.9));
+    lit.addAssign(vec3(1.0, 1.0, 0.94)
+      .mul(spark.mul(hash31(cell.add(7.3)).mul(0.7).add(0.4)))
+      .mul(twinkle).mul(u.speckGain).mul(wLeaf).mul(sh));
+
+    outCol.assign(mix(lit, n.mul(0.5).add(0.5), step(float(0.5), u.debugMode).mul(step(u.debugMode, float(1.5)))));
+  });
+
+  return vec4(outCol, depth);
+})();
+
+// ---------------------------------------------------------------------------
+// Pass 2 — depth of field, then the grade
+//
+// A gather: for each pixel, sample a disc of neighbours and keep the ones whose own blur circle is
+// large enough to reach here. That last test is what stops a blurred background bleeding over the
+// sharp bug in front of it.
+//
+// The colour being HDR through the gather is the point: a blown-out highlight spreads into a bright
+// circle with a defined edge, which is what bokeh actually is. Tone mapping first would give grey mush.
+// ---------------------------------------------------------------------------
+
+const dofPass = (rtTex, resolution, focusAuto, focusManual, aperture, maxRadius, dofEnabled) => Fn(() => {
+  const q = uv();
+  const texel = vec2(1).div(resolution);
+
+  // TWO DIFFERENT VERTICAL CONVENTIONS MEET HERE, and using one for both draws the picture upside down.
+  //
+  // A plane's `uv()` has v = 0 at the BOTTOM. A render target stores row 0 at the TOP, because the
+  // rasteriser writes in framebuffer order and WebGPU's fragment coordinate has y = 0 at the top. So
+  // sampling the target with the same `uv()` that pass one drew with reads the last row where the first
+  // one belongs. Three's own output pass sidesteps this by sampling with `screenUV`, which is already
+  // top-origin; the flip is spelled out here instead so the two spaces stay visibly distinct — `q` is
+  // where we are on the screen, `sv` is where to read the target.
+  const sv = vec2(q.x, q.y.oneMinus());
+  const here = texture(rtTex, sv);
+
+  // Focus: either whatever is at the centre of frame — one fetch, because pass 1 stored depth — or a
+  // hand-set distance.
+  const focus = mix(focusManual.div(MAX_T), texture(rtTex, vec2(0.5, 0.5)).w, focusAuto);
+
+  // Circle of confusion, in the 0..1 units the depth was stored in. Asymmetric on purpose: at macro
+  // distances the far side of focus falls apart much faster than the near side.
+  const cocOf = (d) => {
+    const s = d.sub(focus);
+    return clamp(abs(s).mul(mix(float(1.0), float(2.1), step(float(0), s))).mul(aperture), 0, 1);
+  };
+
+  const rHere = cocOf(here.w).mul(maxRadius).mul(dofEnabled);
+  const acc = here.xyz.toVar();
+  const wsum = float(1).toVar();
+
+  // A per-pixel angular offset. Without it 48 taps on a golden-angle spiral leave visible spokes in
+  // the big soft background discs; with it they become fine grain, which suits the photographic look.
+  const jitter = hash31(vec3(q.x.mul(resolution.x), q.y.mul(resolution.y), 1.0)).mul(6.2831853);
+
+  Loop(DOF_TAPS, ({ i }) => {
+    const fi = float(i);
+    const ang = fi.mul(2.39996).add(jitter);
+    const rad = sqrt(fi.add(0.5).div(DOF_TAPS));
+    const off = vec2(cos(ang), sin(ang)).mul(rad.mul(rHere));
+    const s = texture(rtTex, sv.add(off.mul(texel)));
+    const rThere = cocOf(s.w).mul(maxRadius).mul(dofEnabled);
+    // The tap contributes only in so far as its own blur circle reaches this pixel.
+    const w = clamp(rThere.sub(length(off)).add(1.0), 0, 1);
+    acc.addAssign(s.xyz.mul(w));
+    wsum.addAssign(w);
+  });
+
+  const col = acc.div(max(wsum, float(1e-4))).toVar();
+
+  // Debug: show the blur radius itself, which is the fastest way to see why something is soft.
+  const showBlur = step(float(1.5), u.debugMode);
+  col.assign(mix(col, vec3(cocOf(here.w)), showBlur));
+
+  // ---- grade -------------------------------------------------------------
+  // Ours, entirely: the renderer is in linear with tone mapping off, so nothing is applied twice.
+  const e = col.mul(u.exposure);
+  // Clamped BEFORE the S-curve, not after. The Reinhard term is scaled by 1.36 so it tops out above 1,
+  // and the curve below turns back downward past 1 — a bright highlight would come out darker than a
+  // mid tone.
+  const mapped = clamp(e.div(e.add(1.0)).mul(1.36), 0, 1).toVar();
+  // A gentle S-curve. The reference photo has deep shadows and a bright, slightly clipped highlight,
+  // which a plain Reinhard curve will not give on its own.
+  mapped.assign(mix(mapped, mapped.mul(mapped).mul(vec3(3.0).sub(mapped.mul(2.0))), 0.35));
+
+  const ndc = q.mul(2).sub(1);
+  const vig = mix(float(1), float(0.62),
+    smoothstep(float(0.55), float(1.35), length(ndc.mul(vec2(0.92, 1.0)))).mul(u.vignette));
+
+  return vec4(pow(clamp(mapped.mul(vig), 0, 1), vec3(0.4545)), 1.0);
+})();
+
+// ---------------------------------------------------------------------------
+// Renderer and the two passes
+// ---------------------------------------------------------------------------
+
+const renderer = new WebGPURenderer({ antialias: false });
+// No output pass: we own tone mapping and gamma at the end of the DoF pass. Leaving the defaults would
+// have the renderer apply sRGB on top of ours and wash the picture out.
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+document.getElementById('boot').remove();
+document.getElementById('panel').hidden = false;
+
+// Half float, so the backdrop's highlights stay above 1 all the way through the gather.
+const rt = new THREE.RenderTarget(2, 2, {
+  type: THREE.HalfFloatType,
+  format: THREE.RGBAFormat,
+  colorSpace: THREE.NoColorSpace,
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  wrapS: THREE.ClampToEdgeWrapping,
+  wrapT: THREE.ClampToEdgeWrapping,
+  depthBuffer: false,
+});
+
+const resolution = uniform(new THREE.Vector2(2, 2));
+const focusAuto = uniform(1);
+const focusManual = uniform(2.37);   // the centre ray's distance at the default view, per the Node test
+const aperture = uniform(2.6);
+const maxRadius = uniform(28);
+const dofEnabled = uniform(1);
+
+// Both passes are a full-screen quad under the same orthographic camera, and both read `uv()`. Using
+// the same mechanism for each removes any chance of the second pass sampling the first upside down.
+const quadGeo = new THREE.PlaneGeometry(2, 2);
+const flatCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+
+function makePass(node) {
+  const mat = new MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
+  mat.fragmentNode = node;
+  const scene = new THREE.Scene();
+  const mesh = new THREE.Mesh(quadGeo, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return scene;
+}
+
+const sceneScene = makePass(scenePass);
+const dofScene = makePass(
+  dofPass(rt.texture, resolution, focusAuto, focusManual, aperture, maxRadius, dofEnabled),
+);
+
+let renderScale = 0.85;
+let appliedScale = renderScale;   // what the device actually allowed, which is what the stats report
+
+// Past `maxTextureDimension2D` a render target does not allocate, and the slider would read as broken
+// rather than as limited. WebGPU guarantees at least 8192, so that is the floor; the device's real number
+// is asked for first, and `renderer.init()` has already run by the time layout() is called so it is there.
+// The optional chaining is for a non-WebGPU backend, which has no `device` at all.
+const RT_DIM_FLOOR = 8192;
+const maxRtDim = () => renderer.backend?.device?.limits?.maxTextureDimension2D ?? RT_DIM_FLOOR;
+
+function layout() {
+  const w = innerWidth, h = innerHeight;
+  const base = Math.min(devicePixelRatio, 1.5);
+  // Clamp the RATIO rather than the render target itself: sizing the target below the drawing buffer
+  // would stretch the image, where a lower ratio just solves it more coarsely.
+  const limit = maxRtDim();
+  const fit = Math.min(limit / Math.max(w * base, 1), limit / Math.max(h * base, 1));
+  appliedScale = Math.min(renderScale, fit);
+  renderer.setPixelRatio(base * appliedScale);
+  renderer.setSize(w, h);
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  rt.setSize(Math.max(size.x, 2), Math.max(size.y, 2));
+  resolution.value.set(rt.width, rt.height);
+  u.aspect.value = w / h;
+}
+layout();
+addEventListener('resize', layout);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+
+function slider(host, label, get, set, lo, hi, stepSize, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = lo; inp.max = hi; inp.step = stepSize; inp.value = get();
+  out.textContent = fmt(+inp.value);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp);
+  host.append(row);
+}
+
+function colour(host, label, target) {
+  const row = document.createElement('div'); row.className = 'crow';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'color';
+  inp.value = '#' + target.value.getHexString();
+  inp.addEventListener('input', () => { target.value.set(inp.value); });
+  row.append(lab, inp);
+  host.append(row);
+}
+
+const el = (id) => document.getElementById(id);
+
+slider(el('viewRows'), 'Camera distance', () => u.dist.value, (v) => { u.dist.value = v; }, 1.4, 5, 0.01);
+slider(el('viewRows'), 'Camera height', () => u.pitch.value, (v) => { u.pitch.value = v; }, -0.5, 0.9, 0.005);
+// Up to 4. Cost is quadratic in this: the march is per-pixel, so 2x here is 4x the pixels and 4x the
+// distance-field evaluations. It is clamped to what the device can actually allocate, and the stats line
+// says so when it clamps.
+slider(el('viewRows'), 'Resolution scale', () => renderScale, (v) => { renderScale = v; layout(); }, 0.3, 4, 0.05);
+
+slider(el('dofRows'), 'Focus distance', () => focusManual.value, (v) => { focusManual.value = v; }, 1, 8, 0.01);
+slider(el('dofRows'), 'Aperture', () => aperture.value, (v) => { aperture.value = v; }, 0.2, 8, 0.05);
+slider(el('dofRows'), 'Maximum blur (px)', () => maxRadius.value, (v) => { maxRadius.value = v; }, 2, 90, 1, (v) => v.toFixed(0));
+
+slider(el('lightRows'), 'Key direction', () => u.keyAz.value, (v) => { u.keyAz.value = v; }, -3.14, 3.14, 0.01);
+slider(el('lightRows'), 'Key height', () => u.keyEl.value, (v) => { u.keyEl.value = v; }, -0.3, 1.5, 0.01);
+slider(el('lightRows'), 'Key strength', () => u.keyGain.value, (v) => { u.keyGain.value = v; }, 0, 3, 0.02);
+slider(el('lightRows'), 'Bounce off the leaf', () => u.bounceGain.value, (v) => { u.bounceGain.value = v; }, 0, 3, 0.02);
+slider(el('lightRows'), 'Rim', () => u.rimGain.value, (v) => { u.rimGain.value = v; }, 0, 3, 0.02);
+slider(el('lightRows'), 'Ambient', () => u.ambient.value, (v) => { u.ambient.value = v; }, 0, 0.3, 0.005);
+
+// --- the bug the panel edits ------------------------------------------------------------------------
+// Slot 0 is the DRAFT. Every per-bug control below writes into its settings object and then pushes that
+// object into slot 0's uniforms, so the panel is always describing one bug rather than a global bug. Spawn
+// copies the same object, which is what makes "spawn that specific bug" a clone instead of a list of fields
+// somebody has to remember to keep in step.
+const draft = () => bugs[0].settings;
+
+function setDraft(k, v) {
+  draft()[k] = v;
+  applyAppearance(0);
+}
+
+const bugSlider = (host, label, key, lo, hi, stepSize, fmt) =>
+  slider(host, label, () => draft()[key], (v) => setDraft(key, v), lo, hi, stepSize, fmt);
+
+/** A colour picker over a settings HEX STRING rather than a THREE.Color, so it saves and reloads. */
+function bugColour(host, label, key) {
+  const row = document.createElement('div'); row.className = 'crow';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'color';
+  inp.value = draft()[key];
+  inp.dataset.bugKey = key;
+  inp.addEventListener('input', () => { setDraft(key, inp.value); });
+  row.append(lab, inp);
+  host.append(row);
+}
+
+bugColour(el('shellRows'), 'Shell, rear', 'shellRear');
+bugColour(el('shellRows'), 'Shell, front', 'shellFront');
+bugColour(el('shellRows'), 'Shell, crest', 'shellCrest');
+bugColour(el('shellRows'), 'Head', 'headCol');
+bugColour(el('shellRows'), 'Legs', 'legCol');
+bugColour(el('shellRows'), 'Antennae', 'antCol');
+// Past the default this starts to pit the silhouette: the groove is added to the field, so its
+// gradient stacks on the body's, and past a sum of 1 the march overshoots. The Node test asserts the
+// bound at the default value, not at this slider's maximum.
+bugSlider(el('shellRows'), 'Wing-case groove', 'grooveDepth', 0, 0.022, 0.001, (v) => v.toFixed(3));
+bugSlider(el('shellRows'), 'Wing-case lip', 'lipAmt', 0, 1, 0.01);
+
+colour(el('sssRows'), 'Transmitted colour', u.sssCol);
+slider(el('sssRows'), 'Glow strength', () => u.sssGain.value, (v) => { u.sssGain.value = v; }, 0, 4, 0.02);
+slider(el('sssRows'), 'Tightness', () => u.sssPower.value, (v) => { u.sssPower.value = v; }, 1, 10, 0.1, (v) => v.toFixed(1));
+slider(el('sssRows'), 'Normal bend', () => u.sssDistort.value, (v) => { u.sssDistort.value = v; }, 0, 1, 0.01);
+
+// --- walk ------------------------------------------------------------------------------------------
+let walking = true;
+el('walk').addEventListener('change', (e) => { walking = e.target.checked; });
+el('reparkBtn').addEventListener('click', () => {
+  rig.reset();
+  pushPose();
+});
+
+for (const btn of el('gaitSeg').querySelectorAll('button')) {
+  btn.addEventListener('click', () => {
+    const gaitKey = btn.dataset.gait;
+    for (const b of el('gaitSeg').querySelectorAll('button')) b.classList.toggle('on', b === btn);
+    // Recorded in the settings so a saved bug remembers how it walks, and applied through `setGait` rather
+    // than assigned over `state.gait`: the presets are authored at size 1, so a half-size bug handed one
+    // directly would silently get a full-size bug's step timing back.
+    draft().gait = gaitKey;
+    bugs[0].rig.setGait(GAIT_PRESETS[gaitKey]);
+    buildWalkRows();
+  });
+}
+
+// Rebuilt on a preset change so the sliders show the preset's numbers rather than the previous gait's.
+function buildWalkRows() {
+  const host = el('walkRows');
+  host.innerHTML = '';
+  const g = rig.state.gait;
+  slider(host, 'Top speed', () => g.maxSpeed, (v) => { g.maxSpeed = v; }, 0.04, 1.0, 0.01);
+  slider(host, 'Step duration', () => g.stepDuration, (v) => { g.stepDuration = v; }, 0.05, 0.4, 0.005,
+    (v) => v.toFixed(3) + 's');
+  slider(host, 'Step lift', () => g.stepLift, (v) => { g.stepLift = v; }, 0, 0.12, 0.002, (v) => v.toFixed(3));
+  slider(host, 'Feet off the ground at once', () => g.maxConcurrentFraction * LEG_COUNT,
+    (v) => { g.maxConcurrentFraction = v / LEG_COUNT; }, 1, 6, 1, (v) => v.toFixed(0) + ' of 6');
+  slider(host, 'Step trigger, moving', () => g.movingTrigger.h, (v) => { g.movingTrigger.h = v; },
+    0.03, 0.3, 0.005, (v) => v.toFixed(3));
+  slider(host, 'Reach limit', () => g.comfort.h, (v) => { g.comfort.h = v; }, 0.08, 0.4, 0.005,
+    (v) => v.toFixed(3));
+  slider(host, 'Turn rate', () => g.turnSpeed, (v) => { g.turnSpeed = v; }, 0.3, 6, 0.1, (v) => v.toFixed(1));
+  slider(host, 'Roaming radius', () => rig.state.roamRadius, (v) => { rig.state.roamRadius = v; },
+    0.15, 1.6, 0.01);
+}
+buildWalkRows();
+
+// --- the bug list: save, spawn, remove ----------------------------------------------------------------
+//
+// "Save a bug's settings and spawn that specific bug" only works if a bug IS its settings, which is why
+// `settings` is plain JSON-able data and not a bag of uniform handles. Saving is `JSON.stringify`, spawning
+// is a clone, and a preset written by an older version of the page still loads because `makeBug` fills in
+// whatever keys are missing from `defaultSettings`.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: bugs do not collide. Each one steers by its own wander target and
+// they walk through each other. `demos/creature-collision.js` exists and would give separation cheaply, but
+// wiring it in is a behaviour change rather than a rendering one, and it was not asked for.
+const PRESET_KEY = 'pcw:sdfBugPresets';
+
+function loadPresets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PRESET_KEY) ?? '{}');
+    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  } catch {
+    // A corrupt or unreadable store must not take the page down with it — an empty list is recoverable.
+    return {};
+  }
+}
+
+function savePresets(all) {
+  try {
+    localStorage.setItem(PRESET_KEY, JSON.stringify(all));
+  } catch (e) {
+    setBugHint(`Could not save: ${e.name}. The bug is still spawnable from this page.`);
+  }
+}
+
+function setBugHint(msg) {
+  el('bugHint').innerHTML = msg;
+}
+
+function describeBugs() {
+  const parts = bugs.map((b, i) => `${i === 0 ? 'draft' : `#${i}`} ${b.settings.scale.toFixed(2)}×`);
+  const room = MAX_BUGS - bugs.length;
+  setBugHint(`On the leaf: ${parts.join(', ')}. `
+    + (room > 0 ? `Room for ${room} more.` : `That is all ${MAX_BUGS} slots.`)
+    + ' They do not collide, so they walk through one another.');
+}
+
+function refreshPresetList() {
+  const sel = el('bugPreset');
+  const names = Object.keys(loadPresets()).sort();
+  const keep = sel.value;
+  sel.innerHTML = '';
+  if (!names.length) {
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '(none saved yet)';
+    sel.append(opt);
+    return;
+  }
+  for (const n of names) {
+    const opt = document.createElement('option');
+    opt.value = n; opt.textContent = n;
+    sel.append(opt);
+  }
+  if (names.includes(keep)) sel.value = keep;
+}
+
+function spawn(settings) {
+  if (bugs.length >= MAX_BUGS) {
+    setBugHint(`All ${MAX_BUGS} slots are full. Remove one first.`);
+    return null;
+  }
+  const bug = makeBug(settings);
+  pushPose();
+  describeBugs();
+  return bug;
+}
+
+el('bugSave').addEventListener('click', () => {
+  // A generated name rather than a prompt(): a modal dialog blocks the render loop, and the panel is the
+  // wrong place to lose a frame. Renaming is not offered because nothing here needs it.
+  const all = loadPresets();
+  const st = { ...draft() };
+  let n = 1;
+  while (all[`bug ${n}`]) n++;
+  const name = `bug ${n}`;
+  all[name] = st;
+  savePresets(all);
+  refreshPresetList();
+  el('bugPreset').value = name;
+  setBugHint(`Saved as <b>${name}</b>. It will still be there next time this page loads.`);
+});
+
+el('bugSpawn').addEventListener('click', () => {
+  const name = el('bugPreset').value;
+  const all = loadPresets();
+  if (!name || !all[name]) { setBugHint('Nothing saved to spawn yet — save this bug first.'); return; }
+  if (spawn(all[name])) setBugHint(`Spawned <b>${name}</b>. The panel still edits the draft, slot 0.`);
+});
+
+el('bugSpawnDraft').addEventListener('click', () => {
+  if (spawn({ ...draft() })) {
+    setBugHint('Spawned a copy of the draft. Change the sliders now and only the draft follows them.');
+  }
+});
+
+el('bugRemove').addEventListener('click', () => {
+  if (bugs.length <= 1) { setBugHint('The draft cannot be removed — it is the bug the panel edits.'); return; }
+  bugs.pop();
+  // The slot's uniforms are left as they were; `u.bugCount` is what stops the shader reading them.
+  pushPose();
+  describeBugs();
+});
+
+refreshPresetList();
+describeBugs();
+
+// --- leaf shape --------------------------------------------------------------------------------------
+{
+  const seg = el('leafSeg');
+  for (const btn of seg.querySelectorAll('button')) {
+    btn.addEventListener('click', () => {
+      leafShape = btn.dataset.leaf;
+      u.leafFlat.value = leafShape === 'flat' ? 1 : 0;
+      for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b === btn);
+      // Every rig re-solves its footing, and the roaming radius changes with the shape: a dome's outer part
+      // is its steep part, so the bug is held to the mild cap, while a disc has no steep part at all.
+      reground();
+      buildWalkRows();
+    });
+  }
+}
+
+// --- joint limits ------------------------------------------------------------------------------------
+// The checkbox exists so the defect is inspectable rather than just described: off, the legs go back to the
+// FABRIK solve with no bound, and the knee spends most of a walk below the hip-to-foot chord. The readout
+// under the sliders counts that live, because "the knee bends the wrong way" is far easier to see in a
+// number than to catch by eye at fifteen steps a second.
+{
+  const host = el('limitRows');
+  const lim = rig.state.limits;
+  const saved = { ...lim };
+  slider(host, 'Fore/aft swing', () => lim.swing, (v) => { lim.swing = v; saved.swing = v; },
+    0.15, 1.4, 0.01, (v) => (v * 180 / Math.PI).toFixed(0) + '°');
+  slider(host, 'Straightest the knee may get', () => lim.reach, (v) => { lim.reach = v; saved.reach = v; },
+    0.7, 0.999, 0.001, (v) => (v * 100).toFixed(1) + '% of span');
+  // The checkbox has to switch the SOLVER as well as the limits, or the comparison it offers is false: the
+  // pole is what stops the knee inverting, and with the limits merely relaxed the inversion rate stays at
+  // zero. Measured with both switched: 0.0% against 59.5%.
+  el('limitsOn').addEventListener('change', (e) => {
+    rig.state.legSolver = e.target.checked ? 'two-bone' : 'fabrik';
+    if (e.target.checked) Object.assign(lim, saved);
+    else Object.assign(lim, { swing: null, reach: 0.999 });
+    // Cleared so the readout measures the setting you just chose rather than both mixed together.
+    jointSamples = 0; jointInverted = 0; jointWorstSwing = 0; jointWorstShort = 0;
+  });
+}
+
+// SIZE IS A REBUILD, not a multiply. A smaller bug has shorter segments, a lower pivot, a shallower foot
+// sink and a different gait — and the gait does not scale linearly, so `setScale` re-derives it by Froude
+// similarity rather than multiplying. The uniform carries the same number so the field can scale to match.
+slider(el('anatomyRows'), 'Size', () => draft().scale, (v) => {
+  setDraft('scale', v);
+  bugs[0].rig.setScale(v);
+  buildWalkRows();     // the gait numbers moved, so the sliders showing them have to be rebuilt
+  pushPose();
+}, 0.35, 2.5, 0.01, (v) => v.toFixed(2) + '×');
+slider(el('anatomyRows'), 'Body width', () => draft().bodyWidth, (v) => setDraft('bodyWidth', v), 0.7, 1.35, 0.01);
+// Leg spread now belongs to the RIG, not the shader: v1 scaled the knee and foot inside bugMap, but the
+// joints arrive as uniforms in v2, so the stance has to change where the legs are built. A wider stance
+// is also a longer tibia, which means rebuilding the IK chains rather than nudging a number.
+slider(el('anatomyRows'), 'Leg spread', () => draft().legSpread, (v) => {
+  draft().legSpread = v;
+  bugs[0].rig.setLegSpread(v);
+  bugs[0].rig.reset({ x: bugs[0].rig.body.pos.x, z: bugs[0].rig.body.pos.z, yaw: bugs[0].rig.body.yaw });
+  pushPose();
+}, 0.75, 1.25, 0.01);
+bugSlider(el('anatomyRows'), 'Antenna length', 'antennaLen', 0.6, 1.5, 0.01);
+// Elevation on the head, from the cheek to the crown. It is an ANGLE on the skull rather than a height in
+// world units, which is what lets the range be this wide: raising y alone drove the root out through the
+// top of the head and could not be opened past 0.11. Whatever it is set to, the root stays under the skin
+// by construction and is still pushed clear of the eyeball afterwards.
+bugSlider(el('anatomyRows'), 'Antenna height', 'antennaHeight',
+  ANTENNA_HEIGHT_RANGE[0], ANTENNA_HEIGHT_RANGE[1], 0.01, (v) => v.toFixed(2));
+// Shaft pitch, 0 being level. Aim it into an eye and it stops at the eyeball's tangent instead of entering,
+// so the slider is obeyed everywhere it geometrically can be and grazes where it cannot.
+bugSlider(el('anatomyRows'), 'Antenna angle', 'antennaAngle',
+  ANTENNA_ANGLE_RANGE[0], ANTENNA_ANGLE_RANGE[1], 0.01, (v) => (v * 180 / Math.PI).toFixed(0) + '°');
+bugSlider(el('anatomyRows'), 'Eye size', 'eyeSize', 0.6, 1.5, 0.01);
+
+// --- eyes ------------------------------------------------------------------------------------------
+// One dropdown for fifteen styles, and five knobs they share. What each knob means depends on the style,
+// so the hint says — a slider whose label lies is worse than one that is missing.
+const EYE_HINTS = {
+  bead:     'Two fixed highlight bands plus the leaf’s bounce. Gloss scales the bands.',
+  compound: 'Hex facets in equal-angle coordinates, so they compress toward the rim. Facets sets the count.',
+  pseudo:   'The dark spot that follows the camera, on a plain tinted eye. One dot product.',
+  iris:     'Refracted cornea over a painted iris, so it shifts as you orbit. Pupil sets its size.',
+  slit:     'The same iris with a vertical slit pupil. Pupil sets its length.',
+  toon:     'Light quantised to three bands with hard edges. Gloss and facets do nothing here.',
+  irid:     'Thin-film hue from the view angle. Gloss controls saturation as well as the highlight.',
+  milky:    'Cloud sampled from the field, almost no specular. Reads as blind. Tint is ignored.',
+  sensor:   'Emissive, written HDR so the depth-of-field pass blooms it. Pupil sets the core size.',
+  aperture: 'Camera shutter: rings, folded blades, and an iris that breathes. Facets sets the blades, 4 to 12.',
+  matcap:   'Highlight locked to the camera, from a view-space frame. Always reads wet.',
+  wet:      'The original bead plus a hairline meniscus arc. Gloss sets the arc’s brightness.',
+};
+{
+  const sel = el('eyeStyle');
+  for (const [i, s] of EYE_STYLES.entries()) {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = `${i + 1}. ${s.label}`;
+    sel.append(opt);
+  }
+  sel.value = String(draft().eyeStyle);
+  const showHint = () => {
+    const s = EYE_STYLES[draft().eyeStyle];
+    el('eyeHint').textContent = EYE_HINTS[s.key] ?? '';
+  };
+  sel.addEventListener('change', () => {
+    setDraft('eyeStyle', Number(sel.value));
+    showHint();
+    // Only the stalked style changes how far the bug reaches, and the bound is computed on the CPU.
+    pushPose();
+  });
+  showHint();
+}
+/** A checkbox bound to a 0/1 uniform. The mounts are built rather than authored, being data. */
+function toggle(host, label, get, set, title = '') {
+  const row = document.createElement('label');
+  row.className = 'chk';
+  if (title) row.title = title;
+  const inp = document.createElement('input');
+  inp.type = 'checkbox';
+  inp.checked = get() > 0.5;
+  inp.addEventListener('change', () => { set(inp.checked ? 1 : 0); });
+  row.append(inp, document.createTextNode(' ' + label));
+  host.append(row);
+}
+
+bugColour(el('eyeRows'), 'Eye tint', 'eyeTint');
+bugSlider(el('eyeRows'), 'Gloss', 'eyeGloss', 0, 3, 0.01);
+bugSlider(el('eyeRows'), 'Pupil / core', 'eyePupil', 0.05, 0.9, 0.01);
+// Shown as the count across the eye, which is what you are actually judging, not the lattice frequency.
+bugSlider(el('eyeRows'), 'Facets across', 'eyeFacets', 3, 20, 0.25, (v) => (v * Math.PI).toFixed(0));
+// The mounts. Each is a flag the field and the shading both read, so they compose freely.
+{
+  const host = el('eyeMountRows');
+  const flags = { stalk: 'eyeStalkOn', ocelli: 'eyeOcelliOn', gem: 'eyeGemOn' };
+  for (const mod of EYE_MODIFIERS) {
+    toggle(host, `${mod.label} (${mod.cost})`, () => draft()[flags[mod.key]], (v) => {
+      setDraft(flags[mod.key], v);
+      // Only the stalk changes how far the bug reaches, and the bound is computed on the CPU.
+      if (mod.key === 'stalk') pushPose();
+    }, mod.cost);
+  }
+  slider(host, 'Stalk length', () => draft().eyeStalk, (v) => {
+    setDraft('eyeStalk', v);
+    pushPose();
+  }, 0.2, 1.6, 0.01);
+  // Crowding the ring shrinks its eyes rather than overlapping them: past 8 the authored radius no longer
+  // fits its wedge, and a folded field that overlaps reports less than the true distance.
+  slider(host, 'Ocelli count', () => draft().eyeOcelli, (v) => { setDraft('eyeOcelli', Math.round(v)); },
+    3, 10, 1, (v) => v.toFixed(0));
+}
+
+colour(el('leafRows'), 'Leaf, shadow', u.leafDark);
+colour(el('leafRows'), 'Leaf, light', u.leafBright);
+// The legs re-solve their footing from this every frame, so the bug stays standing on the leaf as it
+// changes size. That is the closed form the analytic sphere bought.
+// The rig has to hear about this too: the feet are solved against the dome, so a leaf radius that
+// only reached the shader would leave the bug standing on the surface it used to have.
+slider(el('leafRows'), 'Leaf radius', () => u.sproutR.value, (v) => {
+  u.sproutR.value = v;
+  reground();
+}, 0.9, 6, 0.02);
+
+/**
+ * Re-derive every rig's ground after the leaf's radius or shape changes.
+ *
+ * EVERY rig, not just the draft's: the feet are solved against the surface on the CPU, so a leaf that only
+ * reached the shader would leave the spawned bugs standing on the shape it used to have. Each bug is
+ * re-parked where it already was, but clamped back inside the new roaming radius — shrinking the leaf can
+ * otherwise leave a bug standing off the edge of it.
+ */
+function reground() {
+  for (const bug of bugs) {
+    const { rig: r } = bug;
+    r.setGround({ sproutR: u.sproutR.value, shape: leafShape });
+    const d = Math.hypot(r.body.pos.x, r.body.pos.z);
+    const lim = r.state.roamRadius;
+    const k = d > lim ? lim / Math.max(d, 1e-6) : 1;
+    r.reset({ x: r.body.pos.x * k, z: r.body.pos.z * k, yaw: r.body.yaw });
+  }
+  pushPose();
+}
+slider(el('leafRows'), 'Surface unevenness', () => u.leafBump.value, (v) => { u.leafBump.value = v; }, 0, 1.5, 0.02);
+slider(el('leafRows'), 'Wax', () => u.leafWax.value, (v) => { u.leafWax.value = v; }, 0, 2, 0.02);
+slider(el('leafRows'), 'Dew amount', () => u.speckAmt.value, (v) => { u.speckAmt.value = v; }, 0, 0.06, 0.001, (v) => v.toFixed(3));
+slider(el('leafRows'), 'Dew size', () => u.speckDensity.value, (v) => { u.speckDensity.value = v; }, 80, 700, 5, (v) => v.toFixed(0));
+slider(el('leafRows'), 'Dew brightness', () => u.speckGain.value, (v) => { u.speckGain.value = v; }, 0, 3, 0.02);
+
+slider(el('gradeRows'), 'Backdrop brightness', () => u.bokehGain.value, (v) => { u.bokehGain.value = v; }, 0, 2.5, 0.02);
+slider(el('gradeRows'), 'Exposure', () => u.exposure.value, (v) => { u.exposure.value = v; }, 0.2, 3, 0.02);
+slider(el('gradeRows'), 'Vignette', () => u.vignette.value, (v) => { u.vignette.value = v; }, 0, 1, 0.02);
+
+let spin = true;
+el('spin').addEventListener('change', (e) => { spin = e.target.checked; });
+el('quality').addEventListener('change', (e) => { u.quality.value = e.target.checked ? 1 : 0; });
+el('dofOn').addEventListener('change', (e) => { dofEnabled.value = e.target.checked ? 1 : 0; });
+el('keyFollow').addEventListener('change', (e) => { u.keyFollow.value = e.target.checked ? 1 : 0; });
+el('autoFocus').addEventListener('change', (e) => { focusAuto.value = e.target.checked ? 1 : 0; });
+for (const btn of document.querySelectorAll('#debugSeg button')) {
+  btn.addEventListener('click', () => {
+    u.debugMode.value = +btn.dataset.debug;
+    for (const b of document.querySelectorAll('#debugSeg button')) b.classList.toggle('on', b === btn);
+  });
+}
+for (const h of document.querySelectorAll('#panel h2')) {
+  h.addEventListener('click', () => h.classList.toggle('shut'));
+}
+
+// Drag to turn the bug.
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  u.yaw.value -= (e.clientX - lastX) * 0.007;
+  u.pitch.value = Math.max(-0.5, Math.min(0.9, u.pitch.value + (e.clientY - lastY) * 0.004));
+  lastX = e.clientX; lastY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup', () => { dragging = false; });
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+const statsEl = el('stats');
+const limitHintEl = el('limitHint');
+const clock = new THREE.Clock();
+let frames = 0, acc = 0, msAcc = 0;
+let jointSamples = 0, jointInverted = 0, jointWorstSwing = 0, jointWorstShort = 0;
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t0 = performance.now();
+
+  u.time.value = clock.elapsedTime;
+  if (spin && !dragging) u.yaw.value += dt * 0.12;
+
+  // Step every bug, then hand the shader the result. Each rig runs its own fixed 1/60 substeps, so the gait
+  // does not change character with the frame rate — and a big bug and a small one keep their own step
+  // timing, which is the whole point of scaling the gait rather than the geometry alone.
+  let anyStepped = false;
+  for (let i = 0; i < bugs.length; i++) {
+    const stepped = bugs[i].rig.update(dt, { walk: walking });
+    if (!stepped.steps) continue;
+    anyStepped = true;
+    pushBug(i);
+    // Sampled on the sim's own step rather than on the stats refresh, because a knee inversion is a
+    // transient: it appears mid-stride and is gone long before half a second has passed.
+    for (const q of bugs[i].rig.legPose()) {
+      jointSamples++;
+      if (q.inverted) jointInverted++;
+      jointWorstSwing = Math.max(jointWorstSwing, Math.abs(q.swing || 0));
+      jointWorstShort = Math.max(jointWorstShort, q.shortfall);
+    }
+  }
+  if (anyStepped) u.bugCount.value = bugs.length;
+
+  renderer.setRenderTarget(rt);
+  renderer.render(sceneScene, flatCam);
+  renderer.setRenderTarget(null);
+  renderer.render(dofScene, flatCam);
+
+  msAcc += performance.now() - t0;
+  frames++; acc += dt;
+  if (acc >= 0.5) {
+    const fps = frames / acc, ms = msAcc / frames;
+    const mp = (rt.width * rt.height) / 1e6;
+    let airborne = 0, legTotal = 0, offDome = 0, speed = 0;
+    for (const bug of bugs) {
+      airborne += bug.rig.legs.filter(l => l.stepping).length;
+      legTotal += bug.rig.legs.length;
+      offDome = Math.max(offDome, bug.rig.worstFootError());
+      speed = Math.max(speed, Math.hypot(bug.rig.body.vel.x, bug.rig.body.vel.z));
+    }
+    const planted = legTotal - airborne;
+    statsEl.innerHTML =
+      `<b>${fps.toFixed(0)}</b> fps &nbsp; <b>${ms.toFixed(2)}</b> ms cpu-side<br>` +
+      `solving <b>${mp.toFixed(2)}</b> Mpx at ${rt.width}&times;${rt.height}` +
+      (appliedScale < renderScale - 1e-6
+        ? ` &nbsp; <b>scale capped at ${appliedScale.toFixed(2)}</b> by the ${maxRtDim()}px texture limit`
+        : '') + `<br>` +
+      `up to <b>${MARCH_STEPS}</b> march steps per pixel, <b>${DOF_TAPS}</b> blur taps<br>` +
+      `<b>${bugs.length}</b> of ${MAX_BUGS} bugs &mdash; <b>${legTotal}</b> legs, ` +
+      `<b>${legTotal * 2}</b> tapered capsules; v1 drew <b>${LEG_COUNT}</b> from three, mirrored<br>` +
+      `<b>${planted}</b> feet planted, <b>${airborne}</b> in the air &nbsp; ` +
+      `fastest <b>${speed.toFixed(3)}</b><br>` +
+      `worst planted foot is <b>${(offDome * 1000).toFixed(2)} mm</b> off the leaf's surface<br>` +
+      `bounds ${bugs.map((_, i) => bugData.array[i * BUG_STRIDE + F.BOUND].w.toFixed(2)).join(' / ')} &nbsp; ` +
+      `the leaf still costs <b>${u.leafFlat.value > 0.5 ? 'one plane solve' : 'one quadratic'}</b>`;
+
+    // Since the walk started, not since the last refresh: the number to watch is whether a knee has EVER
+    // inverted, and a rate over the last half second would hide a rare one.
+    if (jointSamples) {
+      limitHintEl.innerHTML =
+        `Since the walk began, the knee has bent backwards on <b>`
+        + `${(100 * jointInverted / jointSamples).toFixed(2)}%</b> of ${jointSamples} leg samples. `
+        + `Widest hip swing <b>${(jointWorstSwing * 180 / Math.PI).toFixed(0)}°</b>, `
+        + `and the furthest a drawn foot has fallen short of its target is `
+        + `<b>${(jointWorstShort * 1000).toFixed(0)} mm</b>. `
+        + `Turn the limits off and the first number climbs past 60%.`;
+    }
+    frames = 0; acc = 0; msAcc = 0;
+  }
+});
+</script>
+</body>
+</html>

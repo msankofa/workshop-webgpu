@@ -29,6 +29,12 @@ SERVERS = {
         "defaultPort": 8080,
         "urlPath": "",
     },
+    "compress": {
+        "label": "GLB compression",
+        "description": "Runs glb-shrink-server for the weapon-viewer-v2 Compress panel.",
+        "defaultPort": 3847,
+        "urlPath": "",
+    },
 }
 
 
@@ -82,6 +88,11 @@ class ManagedProcess:
         elif self.server_id == "relay":
             command = ["node", "server.js"]
             cwd = ROOT / "server"
+            env = os.environ.copy()
+            env["PORT"] = str(self.port)
+        elif self.server_id == "compress":
+            command = ["node", "index.mjs"]
+            cwd = ROOT / "glb-shrink-server"
             env = os.environ.copy()
             env["PORT"] = str(self.port)
         else:

@@ -257,5 +257,69 @@ ok(grid.cols === 20 && grid.rows === 10, `grid dimensions match bounds/cellSize 
   ok(JSON.stringify(a) === JSON.stringify(b), 'finalizeNavGrid: identical paths out of both grids');
 }
 
+// ---- rasterized blockers vs the per-cell scan ----
+// The fast path only earns its place if it produces the SAME grid. Both arrays are compared byte
+// for byte, including `soft`, since connectivity repair turns on the hard/soft difference.
+{
+  const inRect = (r, x, z, m = 0) =>
+    Math.abs(x - r.x) <= r.w / 2 + m && Math.abs(z - r.z) <= r.d / 2 + m;
+  const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const arr = t => Array.from(t);
+
+  let s = 0x9e3779b9;
+  const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+  let mismatches = 0, trials = 0;
+  for (const margin of [0, 0.25, 0.55]) {
+    for (let trial = 0; trial < 12; trial++) {
+      const bounds = { minX: -15, maxX: 15, minZ: -12, maxZ: 12 };
+      const cellSize = [0.5, 1, 1.5][trial % 3];
+      const rects = [];
+      for (let i = 0; i < 14; i++) {
+        const vertical = rnd() < 0.5;
+        const len = 2 + rnd() * 7;
+        rects.push({
+          x: -13 + rnd() * 26, z: -10 + rnd() * 20,
+          w: vertical ? 0.3 : len, d: vertical ? len : 0.3,
+        });
+      }
+      // Ground with real slope, so softBlockedTest has something to mark.
+      const ground = (x, z) => Math.sin(x * 0.5) * 1.6 + Math.cos(z * 0.4) * 1.4;
+      const steep = (x, z) => Math.abs(ground(x + 0.25, z) - ground(x - 0.25, z)) / 0.5 > 1.1;
+
+      // Old shape: one predicate that scans the rects itself.
+      const scanTest = (x, z) => !rects.some(r => inRect(r, x, z, margin)) && !steep(x, z);
+      const scanSoft = (x, z) => !rects.some(r => inRect(r, x, z, margin)) && steep(x, z);
+      const a = buildNavGrid(scanTest, bounds, cellSize,
+        { heightAt: ground, softBlockedTest: scanSoft });
+
+      // New shape: rects rasterized, predicate handles only what is left.
+      const b = buildNavGrid((x, z) => !steep(x, z), bounds, cellSize,
+        { heightAt: ground, softBlockedTest: (x, z) => steep(x, z), blockers: rects, blockerMargin: margin });
+
+      trials++;
+      if (!same(arr(a.cells), arr(b.cells)) || !same(arr(a.soft), arr(b.soft))) {
+        mismatches++;
+        if (mismatches === 1) {
+          const bad = arr(a.cells).findIndex((v, i) => v !== b.cells[i]);
+          console.error(`  first cells mismatch at index ${bad} (margin ${margin}, cell ${cellSize})`);
+        }
+      }
+    }
+  }
+  ok(mismatches === 0, `rasterized blockers match the per-cell scan byte for byte (${trials - mismatches}/${trials} random maps)`);
+
+  // Rasterized rects must be HARD blocked, or connectivity repair would carve through a wall.
+  {
+    const bounds = { minX: 0, maxX: 12, minZ: 0, maxZ: 12 };
+    const wall = [{ x: 6, z: 6, w: 0.4, d: 12 }];
+    const g = buildNavGrid(() => true, bounds, 0.5,
+      { heightAt: () => 0, softBlockedTest: () => true, blockers: wall });
+    let hardWall = true;
+    for (let i = 0; i < g.cells.length; i++) if (!g.cells[i] && g.soft[i]) hardWall = false;
+    ok(hardWall, 'cells claimed by a rasterized rect are never marked soft-blocked');
+  }
+}
+
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
 console.log('nav-grid: all assertions passed');

@@ -1,0 +1,2046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Design Studio</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; }
+  #hud { position: fixed; top: 10px; left: 12px; color: #8a93a3; z-index: 5;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; user-select: none; pointer-events: none; }
+  .slot-label { position: fixed; transform: translate(-50%, 0); color: #dbe4f0;
+    background: rgba(20,24,30,.78); border: 1px solid #333a45; border-radius: 4px;
+    padding: 2px 8px; font: 12px/1.4 ui-monospace, Consolas, monospace; z-index: 4;
+    user-select: none; pointer-events: none; white-space: nowrap; }
+
+  /* ---- manual control panel ---- */
+  #panel { position: fixed; top: 0; right: 0; width: 392px; height: 100%; z-index: 6;
+    background: rgba(17,20,25,.94); border-left: 1px solid #2b323d; color: #c7d0dd;
+    font: 12px/1.45 ui-monospace, Consolas, monospace; overflow-y: auto; overflow-x: hidden; }
+  #panel.hidden { transform: translateX(100%); }
+  #panelToggle { position: fixed; top: 10px; right: 10px; z-index: 7; }
+  #panel h3 { margin: 0; padding: 7px 10px; background: #1b2028; border-top: 1px solid #2b323d;
+    border-bottom: 1px solid #2b323d; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8fa0b6; cursor: pointer; user-select: none; }
+  #panel h3::before { content: '▾ '; }
+  #panel h3.collapsed::before { content: '▸ '; }
+  #panel h3.collapsed + .body { display: none; }
+  #panel .body { padding: 8px 10px 12px; }
+  #panel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #panel .row > label { flex: 0 0 72px; color: #8a93a3; overflow: hidden; text-overflow: ellipsis; }
+  /* The slider needs real travel: at 0.001 steps a short track makes fine placement impossible. */
+  #panel input[type=range] { flex: 1 1 auto; min-width: 120px; height: 16px; accent-color: #53d68d; }
+  #panel input[type=number], #panel input[type=text], #panel select {
+    background: #0f1216; color: #dbe4f0; border: 1px solid #333a45; border-radius: 3px;
+    padding: 2px 4px; font: 11px ui-monospace, Consolas, monospace; }
+  #panel input[type=number] { flex: 0 0 62px; }
+  #panel input[type=text], #panel select { flex: 1 1 auto; min-width: 0; }
+  #panel input[type=color] { flex: 0 0 40px; height: 20px; background: #0f1216;
+    border: 1px solid #333a45; border-radius: 3px; padding: 0; }
+  #panel button { background: #232a34; color: #cfd8e5; border: 1px solid #39424f; border-radius: 3px;
+    padding: 3px 7px; font: 11px ui-monospace, Consolas, monospace; cursor: pointer; }
+  #panel button:hover { background: #2d3542; }
+  #panel button.on { background: #2f6b4c; border-color: #53d68d; color: #eafff2; }
+  #panel .btns { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+  #panel .note { color: #6c7787; font-size: 10.5px; margin: 4px 0 0; }
+  #gearList { height: 190px; overflow-y: auto; border: 1px solid #2b323d; border-radius: 3px;
+    background: #0f1216; margin-top: 5px; }
+  #gearList .item { padding: 2px 6px; cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; border-bottom: 1px solid #171b21; }
+  #gearList .item:hover { background: #1b2028; }
+  #gearList .item.sel { background: #2f6b4c; color: #eafff2; }
+  #gearList .item .dim { color: #6c7787; }
+  #gearList .item.sel .dim { color: #bfe8d3; }
+  #panel .count { color: #53d68d; }
+</style>
+</head>
+<body>
+<div id="hud">bot design studio</div>
+<button id="panelToggle">controls</button>
+<div id="panel"></div>
+
+<!-- three@0.184.0: same CDN pins as bot-viewer-v2.html.
+     MINIFIED builds. The unminified three.webgpu.js is 1.97 MB against 0.61 MB for the min build —
+     the same library, 3.2x the bytes to fetch and 3.2x the JavaScript to parse before the first
+     frame. There is no debugging benefit here because three is never stepped through; the project's
+     own modules stay unminified and are what actually gets read in the devtools. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
+import { createLightingRig } from './lights.js';
+import { createPostFX } from './post-fx.js';
+import { createVisualSystem } from './bot-viewer-visuals.js';
+import { createBodyPartBatches } from './body-part-batches.js';
+import { createWeaponPartBatches, bakeSkinnedGeometry } from './weapon-part-batches.js';
+import { createWeaponPoseController } from './weapon-pose-controller.js';
+import { WEAPONS, getWeapon } from './weapons.js';
+import { locomotionFor, resolveWeaponHold, carryDeltaFor, hasCarryVocabulary, isCarryLocomotion, snapCarryBlend, stepCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
+import { createProceduralPlayerBody, BODY_DESIGN_DEFAULTS, clearSharedBodyGeometry } from './player-procedural-body.js';
+import { BOT_BODY_DESIGN, botDesignWith, botDesignHuman, BOT_HELMETS } from './bot-body-design.js';
+import { withHumanHead, withHeadKit, FACE_EXPRESSIONS, SKIN_TONES, HAIR_COLORS } from './bot-face.js';
+import { BOT_BODIES, BOT_HEAD_KEYS, BOT_KITS, composeBot, headOf, bodyOf } from './bot-body-versions.js';
+import { withPads, withCarrier, withPack } from './bot-human-body.js';
+
+window.__ready = false;
+window.__errors = [];
+const hud = document.getElementById('hud');
+function noteError(msg) {
+  window.__errors.push(String(msg));
+  hud.textContent = '⚠ ' + msg;
+  hud.style.color = '#ffb3b3';
+}
+addEventListener('error', e => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(0, 1.7, 6.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.minDistance = 0.4;
+controls.maxDistance = 60;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.update();
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== lighting / visuals =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+
+const overheadLight = new THREE.PointLight(0xffffff, 28, 22, 2);
+overheadLight.position.set(0, 7, 2);
+scene.add(overheadLight);
+
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'full', tone: 'none', bloomStrength: 0.10, bloomRadius: 0.7, bloomThreshold: 0.0 } });
+const visuals = createVisualSystem({ THREE, renderer, scene, camera, postFX, rig, overheadLight });
+
+const floor = new THREE.Mesh(new THREE.BoxGeometry(36, 0.1, 24), visuals.materials.floor);
+floor.position.set(0, -0.05, 0);
+floor.castShadow = true; floor.receiveShadow = true;
+scene.add(floor);
+visuals.setBounds({ minX: -18, maxX: 18, minZ: -12, maxZ: 12 });
+
+// ===================== bot slots =====================
+// Rebuilt on every setSlots — see buildSlots. A single pool that lived for the whole session
+// leaked: each design tweak mints new geometries (the cache is keyed by content), and each new
+// geometry mints another InstancedMesh bucket that is never evicted. Capacity is small because a
+// handful of slots never needs the 8192 default.
+let batches = createBodyPartBatches({ THREE, scene, materials: visuals.botMaterials, capacity: 256 });
+const groundHeight = () => 0;
+const SPACING = 2.0;
+// Rows are spaced WIDER than columns: a bot is ~0.9 m across but the back row has to clear the
+// front one's pauldrons and still be readable, so depth buys more than width does. At 3.0 the two
+// rows still interleaved from a normal camera height — with a weapon held out front, a bot occupies
+// far more depth than its own body.
+const ROW_SPACING = 4.8;
+let slotsPerRow = 6;   // set by the Gallery panel; anything past this wraps to another row
+
+// Matches the in-game alpha team (bot-viewer-v2.html BOT_TEAM_DEFS + trim 0x0a0d0a).
+const DEFAULT_STYLE = { shell: 0x46554c, plate: 0x1b201d, trim: 0x0a0d0a, accent: 0x53d68d };
+
+let slots = [];
+let paused = false;
+let labelsVisible = true;
+let animMode = 'aim';
+const ANIM_MODES = ['idle', 'turntable', 'walk', 'run', 'crouchIdle', 'crouchWalk', 'prone', 'aim', 'aimTurntable', 'aimWalk', 'aimCrouch', 'aimProne'];
+const ANIM_CFG = {
+  idle:         { speed: 0,   crouch: 0, prone: 0, stance: 'stand' },
+  turntable:    { speed: 0,   crouch: 0, prone: 0, stance: 'stand', spin: 0.6 },
+  walk:         { speed: 1.5, crouch: 0, prone: 0, stance: 'stand', radius: 1.1 },
+  run:          { speed: 4.0, crouch: 0, prone: 0, stance: 'run',   radius: 1.4 },
+  crouchIdle:   { speed: 0,   crouch: 1, prone: 0, stance: 'crouch' },
+  crouchWalk:   { speed: 0.9, crouch: 1, prone: 0, stance: 'crouch', radius: 1.1 },
+  prone:        { speed: 0,   crouch: 0, prone: 1, stance: 'prone' },
+  aim:          { speed: 0,   crouch: 0, prone: 0, stance: 'stand', aiming: true },
+  aimTurntable: { speed: 0,   crouch: 0, prone: 0, stance: 'stand', aiming: true, spin: 0.6 },
+  aimWalk:      { speed: 1.5, crouch: 0, prone: 0, stance: 'stand', aiming: true, radius: 1.1 },
+  aimCrouch:    { speed: 0,   crouch: 1, prone: 0, stance: 'crouch', aiming: true },
+  aimProne:     { speed: 0,   crouch: 0, prone: 1, stance: 'prone', aiming: true },
+};
+
+// ===================== weapon mounts =====================
+// Simplified copy of bot-viewer-v2's held-weapon system: shared GLB template (normalized to 0.62m,
+// anchors baked into that space, skinned meshes frozen), one instancing pool, per-slot rig +
+// weapon-pose-controller driving the hands, hold resolved per frame from stance/aiming/moving.
+const weaponBatches = createWeaponPartBatches({ THREE, scene, castShadow: false });
+let weaponDataPromise = null;
+function loadWeaponData() {
+  if (!weaponDataPromise) {
+    weaponDataPromise = Promise.all([
+      fetch('./weapon-anchors.json', { cache: 'no-store' }).then(r => r.json()),
+      fetch('./weapon-poses.json', { cache: 'no-store' }).then(r => r.json()),
+    ]).catch(err => { weaponDataPromise = null; throw err; });
+  }
+  return weaponDataPromise;
+}
+
+function normalizeWeaponModel(model, targetSize) {
+  const box = new THREE.Box3(), size = new THREE.Vector3();
+  model.updateMatrixWorld(true);
+  box.setFromObject(model); box.getSize(size);
+  if (size.x >= size.y && size.x >= size.z) model.rotation.y = Math.PI * 0.5;
+  else if (size.y >= size.x && size.y >= size.z) model.rotation.x = Math.PI * 0.5;
+  model.updateMatrixWorld(true);
+  box.setFromObject(model); box.getSize(size);
+  model.scale.multiplyScalar(targetSize / Math.max(size.x, size.y, size.z, 1e-6));
+  model.updateMatrixWorld(true);
+  box.setFromObject(model);
+  model.position.sub(box.getCenter(new THREE.Vector3()));
+  model.updateMatrixWorld(true);
+  return model.matrixWorld.clone();
+}
+
+function bakeWeaponAnchors(rawAnchors, matrix) {
+  const rotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(matrix));
+  const anchors = {};
+  for (const key in rawAnchors) {
+    const raw = rawAnchors[key];
+    const position = new THREE.Vector3(...raw.p).applyMatrix4(matrix);
+    const quaternion = rotation.clone().multiply(new THREE.Quaternion(...(raw.q || [0, 0, 0, 1])));
+    anchors[key] = { p: [position.x, position.y, position.z], q: [quaternion.x, quaternion.y, quaternion.z, quaternion.w] };
+  }
+  return anchors;
+}
+
+const weaponTemplateCache = new Map();
+function loadWeaponTemplate(weaponId, def, rawAnchors) {
+  if (!weaponTemplateCache.has(weaponId)) {
+    const promise = attachDracoLoader(new GLTFLoader()).loadAsync(def.model).then((gltf) => {
+      const template = gltf.scene;
+      const normalizedMatrix = normalizeWeaponModel(template, 0.62);
+      const bakedAnchors = bakeWeaponAnchors(rawAnchors, normalizedMatrix);
+      template.updateMatrixWorld(true);
+      const instanceParts = [];
+      template.traverse((obj) => {
+        if (!obj.isMesh) return;
+        const geometry = obj.isSkinnedMesh ? bakeSkinnedGeometry(THREE, obj) : obj.geometry;
+        instanceParts.push({ geometry, material: obj.material, localMatrix: obj.matrixWorld.clone() });
+      });
+      return { bakedAnchors, instanceParts };
+    }).catch((err) => { weaponTemplateCache.delete(weaponId); throw err; });
+    weaponTemplateCache.set(weaponId, promise);
+  }
+  return weaponTemplateCache.get(weaponId);
+}
+
+async function createSlotWeaponMount(slot, weaponId) {
+  const def = getWeapon(weaponId);
+  if (!def?.model || !def.thirdPersonHold) return;
+  const token = ++slot.weaponToken;
+  const [anchorData, poseData] = await loadWeaponData();
+  const rawAnchors = anchorData?.[weaponId]?.ikAnchors || {};
+  const { bakedAnchors, instanceParts } = await loadWeaponTemplate(weaponId, def, rawAnchors);
+  if (token !== slot.weaponToken || !slots.includes(slot)) return;
+  const weaponRig = new THREE.Group();
+  const weaponAdjust = new THREE.Group();
+  const weaponFrame = new THREE.Group();
+  const weaponView = new THREE.Group();
+  weaponFrame.rotation.y = Math.PI;
+  weaponRig.add(weaponAdjust);
+  weaponAdjust.add(weaponFrame);
+  weaponFrame.add(weaponView);
+  const controller = createWeaponPoseController({
+    THREE,
+    body: slot.body,
+    weaponView,
+    getWeaponDef: (id) => id === weaponId ? {
+      id,
+      recoil: def.recoil ?? 0.6,
+      ikAnchors: bakedAnchors,
+      weaponPoses: poseData?.weaponPoses || {},
+      reloadSequence: null,
+    } : {},
+  });
+  controller.setWeapon(weaponId);
+  slot.mount = { weaponRig, weaponAdjust, weaponView, controller, def, weaponId, instanceParts, placed: false, carryBlend: null, carryLocomotion: null };
+}
+
+const _mountLockOpts = { lockPosePosition: 'lowReady' };
+const _mountNoOpts = {};
+const _mountHold = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+const _mountRootEuler = new THREE.Euler();
+const _mountRootQuat = new THREE.Quaternion();
+const _mountHoldEuler = new THREE.Euler();
+const _mountHoldQuat = new THREE.Quaternion();
+const _weaponPartMatrix = new THREE.Matrix4();
+const _mountLoco = { stance: 'stand', aiming: false, moving: false };
+
+function updateSlotWeapon(slot, dt) {
+  const mount = slot.mount;
+  if (!mount) return;
+  const cfg = ANIM_CFG[animMode] || ANIM_CFG.idle;
+  _mountLoco.stance = cfg.stance || 'stand';
+  _mountLoco.aiming = !!cfg.aiming;
+  _mountLoco.moving = cfg.speed > 0;
+  const locomotion = locomotionFor(_mountLoco);
+  const carryTarget = carryDeltaFor(mount.def, locomotion);
+  mount.carryBlend = mount.carryLocomotion == null
+    ? snapCarryBlend(mount.carryBlend, carryTarget)
+    : stepCarryBlend(mount.carryBlend, carryTarget, dt);
+  mount.carryLocomotion = locomotion;
+  slot.stanceWeights.crouch01 = slot.crouch;
+  slot.stanceWeights.prone01 = slot.prone;
+  const hold = resolveWeaponHold(mount.def, slot.stanceWeights, mount.carryBlend, _mountHold);
+  const motion = slot.body.motion;
+  const gaitW = 1 - slot.prone;
+  const yawOnly = motion?.visualYaw ?? slot.state.yaw;
+  const sway = (motion?.sway ?? 0) * gaitW;
+  const weaponX = (motion?.bodyPosition.x ?? slot.state.position.x) + Math.cos(yawOnly) * sway;
+  const weaponZ = (motion?.bodyPosition.z ?? slot.state.position.z) - Math.sin(yawOnly) * sway;
+  const weaponY = 1.5 + (motion?.bob ?? 0) * gaitW;
+  const bodyYaw = yawOnly + (motion?.headYaw ?? 0);
+  mount.weaponRig.position.set(weaponX, weaponY, weaponZ);
+  mount.weaponRig.quaternion.copy(_mountRootQuat.setFromEuler(_mountRootEuler.set(0, bodyYaw, 0, 'YXZ')));
+  mount.weaponAdjust.position.fromArray(hold.position);
+  mount.weaponAdjust.quaternion.copy(_mountHoldQuat.setFromEuler(_mountHoldEuler.set(hold.rotation[0], hold.rotation[1], hold.rotation[2], 'XYZ')));
+  mount.weaponAdjust.scale.setScalar(hold.scale ?? 1);
+  mount.placed = true;
+  const isAiming = locomotion === LOCOMOTION_AIM;
+  mount.controller.setAiming(isAiming ? 1 : 0);
+  mount.controller.update(dt, isAiming ? _mountLockOpts : _mountNoOpts);
+}
+
+function flushSlotWeapon(slot) {
+  const mount = slot.mount;
+  if (!mount?.placed) return;
+  mount.weaponRig.updateMatrixWorld(true);
+  const view = mount.weaponView.matrixWorld;
+  for (const part of mount.instanceParts) {
+    _weaponPartMatrix.multiplyMatrices(view, part.localMatrix);
+    weaponBatches.add(part.geometry, part.material, _weaponPartMatrix);
+  }
+}
+
+// Set by the control panel once it exists, so a rebuild from any source (panel, console setSlots)
+// re-syncs the gear list and selection outline.
+let onSlotsBuilt = null;
+
+function destroySlots() {
+  for (const s of slots) { s.weaponToken++; s.mount = null; s.body.destroy(); s.el.remove(); }
+  slots = [];
+}
+
+function buildSlots(specs) {
+  destroySlots();
+  // Order matters: drop the InstancedMesh buckets (they reference the geometries) BEFORE clearing
+  // the shared geometry cache, and only once every live body is destroyed.
+  batches.dispose();
+  clearSharedBodyGeometry();
+  batches = createBodyPartBatches({ THREE, scene, materials: visuals.botMaterials, capacity: 256 });
+  explode.factor = 0;          // part objects are new; explode re-applies by name, not by ref
+  clearHighlights();
+  window.__ready = false;
+  framesSinceBuild = 0;
+  const cols = Math.max(1, Math.min(slotsPerRow, specs.length));
+  const rows = Math.ceil(specs.length / cols);
+  specs.forEach((spec, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    // Last row centres on its own count, so a ragged final row doesn't sit lopsided.
+    const inRow = Math.min(cols, specs.length - row * cols);
+    const cx = (col - (inRow - 1) / 2) * SPACING;
+    // Rows run BACKWARD from the camera, front row at z=0, so the newest lineup reads first.
+    const cz = -row * ROW_SPACING + (rows - 1) * ROW_SPACING * 0.5;
+    const body = createProceduralPlayerBody({
+      THREE, scene, terrainHeight: groundHeight, mode: 'remote',
+      style: { ...DEFAULT_STYLE, ...(spec.style || {}) },
+      design: spec.design || null,
+      adaptGaitToSpeed: true, movementDynamics: true,
+      batches,
+    });
+    const el = document.createElement('div');
+    el.className = 'slot-label';
+    el.textContent = spec.label || ('#' + (i + 1));
+    document.body.appendChild(el);
+    const slot = {
+      spec, body, el, cx, cz,
+      theta: Math.PI * 0.5,   // circle phase; PI/2 starts the bot at the slot's front
+      yaw: Math.PI,           // rig faces the +Z default camera at yaw PI
+      crouch: 0, prone: 0,
+      stanceWeights: { crouch01: 0, prone01: 0 },
+      mount: null, weaponToken: 0,
+      state: {
+        position: new THREE.Vector3(cx, 0.9, cz),
+        velocity: new THREE.Vector3(),
+        yaw: Math.PI, aimPitch: 0, height: 1.8, radius: 0.3,
+        onFloor: true, crouch: 0, prone: 0, alive: true,
+      },
+    };
+    slots.push(slot);
+    // weapon: spec.weapon names a WEAPONS id, null/'none' disables; default rifle
+    const weaponId = spec.weapon === undefined ? 'cz_805_bren' : spec.weapon;
+    if (weaponId && weaponId !== 'none') {
+      createSlotWeaponMount(slot, weaponId).catch(err => noteError('weapon: ' + (err?.message || err)));
+    }
+  });
+  updateHud();
+  if (onSlotsBuilt) onSlotsBuilt();
+}
+
+function updateHud() {
+  if (window.__errors.length) return;
+  hud.textContent = `bot design studio · ${slots.length} slot(s) · anim=${animMode}${paused ? ' (paused)' : ''}`
+    + `${explode.factor ? ` · explode=${explode.mode} ${explode.factor}` : ''} · theme=${visuals.themeKey}`;
+}
+
+// ===================== animation =====================
+const _labelPos = new THREE.Vector3();
+function stepSlot(s, dt) {
+  const cfg = ANIM_CFG[animMode] || ANIM_CFG.idle;
+  const st = s.state;
+  const blend = 1 - Math.exp(-6 * dt);
+  s.crouch += (cfg.crouch - s.crouch) * blend;
+  s.prone += (cfg.prone - s.prone) * blend;
+  st.crouch = s.crouch;
+  st.prone = s.prone;
+
+  if (cfg.speed > 0) {
+    // walk a small circle around the slot center; yaw 0 faces +Z (toward the default camera)
+    s.theta += (cfg.speed / cfg.radius) * dt;
+    const x = s.cx + Math.cos(s.theta) * cfg.radius;
+    const z = s.cz + Math.sin(s.theta) * cfg.radius;
+    st.velocity.set((x - st.position.x) / dt, 0, (z - st.position.z) / dt);
+    st.position.set(x, 0.9, z);
+    st.yaw = Math.atan2(st.velocity.x, st.velocity.z);
+  } else {
+    if (cfg.spin) s.yaw += cfg.spin * dt;
+    st.velocity.set(0, 0, 0);
+    st.position.set(s.cx, 0.9, s.cz);
+    st.yaw = s.yaw;
+  }
+  s.body.update(dt, st);
+}
+
+function placeLabel(s) {
+  _labelPos.set(s.state.position.x, 2.15, s.state.position.z).project(camera);
+  const visible = _labelPos.z < 1;
+  s.el.style.display = visible ? '' : 'none';
+  if (!visible) return;
+  s.el.style.left = ((_labelPos.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+  s.el.style.top = ((-_labelPos.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+}
+
+// ===================== public driving API =====================
+const CAMERA_PRESETS = {
+  lineup:  { pos: [0, 1.7, 6.5], target: [0, 1.0, 0] },
+  front:   { pos: [0, 1.4, 4.2], target: [0, 1.0, 0] },
+  high:    { pos: [4.5, 4.5, 5.5], target: [0, 0.9, 0] },
+  side:    { pos: [5.2, 1.4, 0.4], target: [0, 1.0, 0] },
+  back:    { pos: [0, 1.6, -5.2], target: [0, 1.0, 0] },
+};
+
+// ============================ inspection tooling ============================
+// The rig is FLAT and WORLD-SPACE: update() rewrites every part's absolute position/quaternion each
+// frame, and instanced parts are transform-only Object3D placeholders whose flush() checks each
+// part's OWN .visible flag (ancestor visibility is ignored). So: explode must be a per-frame pass
+// applied after the pose solve and before flush; hiding must set flags on every placeholder in a
+// subtree; and nothing in the scene is raycastable per-part, so the audit builds its own mirror.
+
+// Named groups for explode/solo. Gear are descendants of their host, so they follow automatically.
+function groupsFor(slot) {
+  const p = slot.body.parts;
+  if (!p) return {};
+  // arms/legs also carry non-Object3D fields (chain, target) — keep only real nodes.
+  const nodes = (o) => Object.values(o).filter(n => n && n.isObject3D);
+  const sub = (roots) => { const out = []; const walk = n => { out.push(n); n.children.forEach(walk); }; roots.filter(Boolean).forEach(walk); return out; };
+  const head = [p.core.head, p.core.neck].filter(Boolean);
+  return {
+    head:  { dir: [0, 1, 0],           roots: head,                 parts: sub(head) },
+    torso: { dir: [0, 0.35, 0],        roots: [p.core.torso],       parts: sub([p.core.torso]) },
+    waist: { dir: [0, 0, 0.6],         roots: [p.core.waist],       parts: sub([p.core.waist]) },
+    pelvis:{ dir: [0, -0.15, 0],       roots: [p.core.pelvis],      parts: sub([p.core.pelvis]) },
+    armL:  { dir: [-1, 0.15, 0],       roots: nodes(p.arms.left),  parts: sub(nodes(p.arms.left)) },
+    armR:  { dir: [1, 0.15, 0],        roots: nodes(p.arms.right), parts: sub(nodes(p.arms.right)) },
+    legL:  { dir: [-0.45, -0.35, 0],   roots: nodes(p.legs.left),  parts: sub(nodes(p.legs.left)) },
+    legR:  { dir: [0.45, -0.35, 0],    roots: nodes(p.legs.right), parts: sub(nodes(p.legs.right)) },
+  };
+}
+
+const explode = { factor: 0, mode: 'groups', spread: 0.9, weapon: false };
+const _explodeBase = new WeakMap();   // gear placeholder -> its authored local position
+const _expDir = new THREE.Vector3();
+
+// Runs AFTER the pose solve, BEFORE flush. Groups translate rigidly along a canonical direction
+// table (canonical, not pose-derived, so the layout is stable frame to frame); gear offsets inside
+// its anchor's frame along its own authored offset direction, which peels armour off the chassis.
+function applyExplode(slot) {
+  if (!explode.factor) return;
+  const k = explode.factor * explode.spread;
+  if (explode.mode === 'gear') {
+    for (const g of slot.body.parts?.gear || []) {
+      let base = _explodeBase.get(g);
+      if (!base) { base = g.position.clone(); _explodeBase.set(g, base); }
+      _expDir.copy(base);
+      if (_expDir.lengthSq() < 1e-8) _expDir.set(0, 0, 1); else _expDir.normalize();
+      g.position.copy(base).addScaledVector(_expDir, k);
+    }
+    return;
+  }
+  const groups = groupsFor(slot);
+  for (const name in groups) {
+    const gr = groups[name];
+    _expDir.set(gr.dir[0], gr.dir[1], gr.dir[2]);
+    // translation only — limb quaternions are pose-derived and placeSegment re-stretches them
+    for (const root of gr.roots) if (root) root.position.addScaledVector(_expDir, k);
+  }
+}
+
+// Restores authored gear offsets when explode is switched off (update() does not touch gear).
+function resetExplode() {
+  for (const s of slots) {
+    for (const g of s.body.parts?.gear || []) {
+      const base = _explodeBase.get(g);
+      if (base) g.position.copy(base);
+    }
+  }
+}
+
+// ---- highlight overlays ----
+// Per-instance colour CANNOT be used for this: the metal/rubber/fabric/eye buckets never allocate
+// an instanceColor, and calling setColorAt on one allocates a zero-filled buffer that turns every
+// other instance in that bucket black.
+const overlayGroup = new THREE.Group();
+overlayGroup.name = 'StudioOverlays';
+scene.add(overlayGroup);
+const overlayMeshes = [];
+// DoubleSide is required: Raycaster honours material.side, and several rig geometries (lathes,
+// extrusions) have windings that leave their outward surface back-facing. With FrontSide the audit
+// shot straight through them and reported visible parts as occluded.
+const _auditMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+function clearHighlights() {
+  for (const m of overlayMeshes) { overlayGroup.remove(m); m.material.dispose(); }
+  overlayMeshes.length = 0;
+}
+
+// ---- part framing: fill the viewport with one body part, for close design review ----
+// Parts are Object3D placeholders in instanced mode (no Mesh), so Box3.setFromObject sees nothing;
+// walk the subtree and expand by each node's own geometry bounds in world space instead.
+const _partBox = new THREE.Box3();
+const _geoBox = new THREE.Box3();
+const _boxCenter = new THREE.Vector3();
+const _boxSize = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+
+function expandByPart(node, box) {
+  if (node.geometry) {
+    if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+    _geoBox.copy(node.geometry.boundingBox).applyMatrix4(node.matrixWorld);
+    box.union(_geoBox);
+  }
+  for (const child of node.children) expandByPart(child, box);
+}
+
+// Direction the camera sits in, relative to the bot (which faces +Z).
+const VIEW_DIRS = {
+  front: [0, 0.10, 1], back: [0, 0.10, -1], side: [1, 0.10, 0.12], left: [-1, 0.10, 0.12],
+  three: [0.85, 0.30, 0.90], top: [0.10, 1, 0.45], low: [0.35, -0.35, 0.95],
+};
+
+// Resolves a name to placeholder nodes. Accepts joint/core names, group names, and 'gear#<index>'
+// (the index being the position in design.gear that an authoring tool actually edits).
+function resolveParts(name, slot, side = 'right') {
+  if (name === 'all') return (slot.body.parts?.all || []).filter(n => n.geometry);
+  const m = /^gear#(\d+)$/.exec(String(name));
+  if (m) {
+    const idx = +m[1];
+    const hits = (slot.body.parts?.gear || []).filter(g => g.userData.gear.index === idx);
+    if (!hits.length) throw new Error('no gear#' + idx);
+    return hits;
+  }
+  const groups = groupsFor(slot);
+  if (groups[name]) return groups[name].parts;
+  const j = slot.body.joints;
+  const cap = side === 'left' ? 'left' : 'right';
+  const node = j[name] || j[cap + name.charAt(0).toUpperCase() + name.slice(1)];
+  if (!node) throw new Error('unknown part: ' + name);
+  const out = []; (function walk(n) { out.push(n); n.children.forEach(walk); })(node);
+  return out;
+}
+
+// World AABB over a set of placeholders (they are not Meshes, so Box3.setFromObject sees nothing).
+const _wb = new THREE.Box3(), _wbg = new THREE.Box3();
+function worldBounds(nodes) {
+  _wb.makeEmpty();
+  for (const n of nodes) {
+    if (!n.geometry) continue;
+    n.updateWorldMatrix(true, false);
+    if (!n.geometry.boundingBox) n.geometry.computeBoundingBox();
+    _wbg.copy(n.geometry.boundingBox).applyMatrix4(n.matrixWorld);
+    _wb.union(_wbg);
+  }
+  return _wb;
+}
+
+// ---- camera glide ----
+const glide = { active: false, t: 0, dur: 1, fromPos: new THREE.Vector3(), fromTgt: new THREE.Vector3(),
+                toPos: new THREE.Vector3(), toTgt: new THREE.Vector3(), settle: 0, resolve: null };
+function finishGlide(result) { const r = glide.resolve; glide.resolve = null; glide.active = false; controls.enabled = true; if (r) r(result); }
+function stepGlide(dt) {
+  if (!glide.active) return;
+  if (glide.t < 1) {
+    glide.t = Math.min(1, glide.t + dt / Math.max(0.05, glide.dur));
+    const e = glide.t * glide.t * (3 - 2 * glide.t);   // smoothstep
+    camera.position.lerpVectors(glide.fromPos, glide.toPos, e);
+    controls.target.lerpVectors(glide.fromTgt, glide.toTgt, e);
+    controls.update();
+    return;
+  }
+  // resolve two rendered frames after arrival so a screenshot never races the async present
+  if (++glide.settle >= 2) finishGlide({ arrived: true });
+}
+
+window.__studio = {
+  version: 3,
+  // debug handles for the console-driven design loop
+  THREE, scene, camera, visuals, batches,
+  slotBodies: () => slots.map(s => s.body),
+  viewDirs: Object.keys(VIEW_DIRS),
+  partNames: ['head', 'neck', 'torso', 'waist', 'pelvis', 'hand', 'foot', 'knee', 'elbow', 'shoulder', 'hip', 'wrist', 'ankle', 'all'],
+  // Freeze the sim so a part holds still while it is inspected.
+  setPaused(v) { paused = !!v; updateHud(); },
+  get paused() { return paused; },
+  showLabels(v) { labelsVisible = !!v; for (const s of slots) s.el.style.visibility = labelsVisible ? '' : 'hidden'; },
+  /**
+   * Fill the viewport with one part of one slot.
+   * focusPart('hand', { slot: 0, dir: 'three', margin: 1.4, side: 'right' })
+   */
+  focusPart(name, { slot = 0, dir = 'three', margin = 1.45, side = 'right' } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const j = s.body.joints;
+    const cap = side === 'left' ? 'left' : 'right';
+    const node = name === 'all' ? null
+      : (j[name] || j[cap + name.charAt(0).toUpperCase() + name.slice(1)]);
+    _partBox.makeEmpty();
+    if (node) {
+      node.updateWorldMatrix(true, true);
+      expandByPart(node, _partBox);
+    } else {
+      for (const part of [j.pelvis, j.torso, j.head, j.leftFoot, j.rightFoot, j.leftHand, j.rightHand]) {
+        if (!part) continue;
+        part.updateWorldMatrix(true, true);
+        expandByPart(part, _partBox);
+      }
+    }
+    if (_partBox.isEmpty()) throw new Error('no geometry for part ' + name);
+    _partBox.getCenter(_boxCenter);
+    _partBox.getSize(_boxSize);
+    const radius = Math.max(_boxSize.x, _boxSize.y, _boxSize.z) * 0.5;
+    const fov = camera.fov * Math.PI / 180;
+    const distance = Math.max(0.12, (radius * margin) / Math.tan(fov * 0.5));
+    const d = VIEW_DIRS[dir] || VIEW_DIRS.three;
+    _camDir.set(d[0], d[1], d[2]).normalize();
+    camera.position.copy(_boxCenter).addScaledVector(_camDir, distance);
+    controls.target.copy(_boxCenter);
+    controls.update();
+    return { part: name, center: _boxCenter.toArray().map(v => +v.toFixed(3)), size: _boxSize.toArray().map(v => +v.toFixed(3)) };
+  },
+  // ---------------- exploded diagram ----------------
+  /**
+   * setExplode(1, { mode: 'gear' }) peels every armour piece off the chassis along its own
+   * authored offset; mode 'groups' separates head/torso/waist/pelvis/arms/legs instead.
+   * factor 0 restores. The weapon is suppressed while exploded (it is posed from body motion in a
+   * separate pool and would float).
+   */
+  setExplode(factor, { mode = 'groups', spread = 0.9, weapon = false } = {}) {
+    if (mode !== 'groups' && mode !== 'gear') throw new Error("mode must be 'groups' or 'gear'");
+    const wasOn = explode.factor > 0;
+    explode.factor = Math.max(0, +factor || 0);
+    explode.mode = mode; explode.spread = spread; explode.weapon = weapon;
+    if (wasOn && !explode.factor) resetExplode();
+    updateHud();
+    const s = slots[0];
+    return { factor: explode.factor, mode, groups: s ? Object.keys(groupsFor(s)).length : 0,
+             gearPieces: s ? (s.body.parts?.gear || []).length : 0 };
+  },
+  getExplode() { return explode.factor ? { factor: explode.factor, mode: explode.mode, spread: explode.spread } : null; },
+
+  // ---------------- glide focus ----------------
+  /** Smoothly flies the camera onto a part and resolves once the image has settled. */
+  glideTo(name, { slot = 0, dir = 'three', margin = 1.45, side = 'right', seconds = 1.2 } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const nodes = resolveParts(name, s, side);
+    const box = worldBounds(nodes);
+    if (box.isEmpty()) throw new Error('no geometry for ' + name);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.5;
+    const fov = camera.fov * Math.PI / 180;
+    const distance = Math.max(0.12, (radius * margin) / Math.tan(fov * 0.5));
+    const d = VIEW_DIRS[dir] || VIEW_DIRS.three;
+    const to = new THREE.Vector3(d[0], d[1], d[2]).normalize().multiplyScalar(distance).add(center);
+    if (glide.active) finishGlide({ cancelled: true });
+    glide.fromPos.copy(camera.position); glide.fromTgt.copy(controls.target);
+    glide.toPos.copy(to); glide.toTgt.copy(center);
+    glide.t = 0; glide.dur = Math.max(0.01, seconds); glide.settle = 0; glide.active = true;
+    controls.enabled = false;   // a user drag would fight the tween
+    return new Promise((res) => {
+      glide.resolve = (r) => res({ part: name, ...r,
+        center: center.toArray().map(v => +v.toFixed(3)), size: size.toArray().map(v => +v.toFixed(3)) });
+    });
+  },
+  /** Chained glides across several parts — one call for a whole review sweep. */
+  async tourParts(names, { slot = 0, secondsPer = 1.0, dwell = 0.4 } = {}) {
+    const out = [];
+    for (const n of names) {
+      out.push(await this.glideTo(n, { slot, seconds: secondsPer }));
+      if (dwell) await new Promise(r => setTimeout(r, dwell * 1000));
+    }
+    return out;
+  },
+  get cameraMoving() { return glide.active; },
+
+  // ---------------- solo / layers ----------------
+  /** Hides everything except one part (or restores with null). */
+  solo(name, { slot = 0, side = 'right' } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const all = s.body.parts?.all || [];
+    if (name == null) { for (const p of all) p.visible = true; return { solo: null, hidden: 0 }; }
+    const keep = new Set(resolveParts(name, s, side));
+    let hidden = 0;
+    // .visible must be set on EVERY placeholder: flush() ignores ancestor visibility.
+    for (const p of all) { p.visible = keep.has(p); if (!p.visible) hidden++; }
+    return { solo: name, hidden, shown: keep.size };
+  },
+  /** Toggle whole layers, e.g. setLayers({ gear:false }) to see the bare chassis. */
+  setLayers({ gear, chassis, joints, eyes } = {}, { slot = 0 } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const p = s.body.parts; if (!p) return {};
+    const eyeSet = new Set(p.core.eyes ? [p.core.eyes.left, p.core.eyes.right] : []);
+    const gearSet = new Set(p.gear);
+    const jointSet = new Set([p.arms.left, p.arms.right, p.legs.left, p.legs.right]
+      .flatMap(o => Object.values(o))
+      .filter(n => n && n.isObject3D && n.geometry && n.geometry.type === 'SphereGeometry'));
+    for (const n of p.all || []) {
+      if (eyeSet.has(n)) { if (eyes !== undefined) n.visible = !!eyes; }
+      else if (gearSet.has(n)) { if (gear !== undefined) n.visible = !!gear; }
+      else if (jointSet.has(n)) { if (joints !== undefined) n.visible = !!joints; }
+      else if (chassis !== undefined) n.visible = !!chassis;
+    }
+    return { gear, chassis, joints, eyes };
+  },
+
+  /** Every gear piece with its live world bounds — the index matches design.gear. */
+  gearParts({ slot = 0 } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    return (s.body.parts?.gear || []).map((g) => {
+      const b = worldBounds([g]);
+      const sz = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+      const u = g.userData.gear;
+      return { name: 'gear#' + u.index, index: u.index, id: u.id, anchor: u.anchor, role: u.role,
+               type: u.type, mirror: u.mirror,
+               center: c.toArray().map(v => +v.toFixed(3)), size: sz.toArray().map(v => +v.toFixed(3)) };
+    });
+  },
+  partGroups({ slot = 0 } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const gs = groupsFor(s);
+    return Object.keys(gs).map(n => ({ name: n, parts: gs[n].parts.length }));
+  },
+
+  /**
+   * THE ONE THAT BREAKS THE STALL: is a part actually visible, or is it buried?
+   * Raycasts surface samples from several directions against a mesh mirror of the body and reports
+   * the fraction of samples whose FIRST hit is the part itself, plus who is occluding it.
+   * Pauses the sim so samples and mirror agree.
+   */
+  auditVisibility(names, { slot = 0, views = ['front', 'side', 'left', 'back', 'top'], samples = 40 } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const wasPaused = paused; paused = true;
+    const all = (s.body.parts?.all || []).filter(n => n.geometry && n.visible);
+    for (const n of all) n.updateWorldMatrix(true, false);
+    // mesh mirror: placeholders are not raycastable, so build real Meshes sharing their geometry
+    const mirror = all.map((n) => {
+      const m = new THREE.Mesh(n.geometry, _auditMat);
+      m.matrixAutoUpdate = false; m.matrix.copy(n.matrixWorld); m.matrixWorld.copy(n.matrixWorld);
+      m.userData.src = n; return m;
+    });
+    const nameOf = (n) => n.userData.gear ? 'gear#' + n.userData.gear.index : (n._role || 'part');
+    const ray = new THREE.Raycaster();
+    const list = Array.isArray(names) ? names : [names];
+    const out = list.map((nm) => {
+      const targets = new Set(resolveParts(nm, s, 'right'));
+      const box = worldBounds([...targets]);
+      const center = box.getCenter(new THREE.Vector3());
+      const far = Math.max(6, box.getSize(new THREE.Vector3()).length() * 12);
+      // sample points on the target's surface
+      const pts = [];
+      for (const t of targets) {
+        if (!t.geometry) continue;
+        const pos = t.geometry.attributes.position;
+        const stride = Math.max(1, Math.floor(pos.count / Math.max(1, samples / targets.size)));
+        for (let i = 0; i < pos.count; i += stride) {
+          pts.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(t.matrixWorld));
+        }
+      }
+      const perView = {}; const occl = {};
+      let best = 0;
+      for (const v of views) {
+        const d = VIEW_DIRS[v] || VIEW_DIRS.three;
+        const dir = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+        let seen = 0;
+        for (const p of pts) {
+          const origin = p.clone().addScaledVector(dir, far);
+          ray.set(origin, dir.clone().negate());
+          const hit = ray.intersectObjects(mirror, false)[0];
+          if (!hit) continue;
+          if (targets.has(hit.object.userData.src)) seen++;
+          else { const o = nameOf(hit.object.userData.src); occl[o] = (occl[o] || 0) + 1; }
+        }
+        const f = pts.length ? seen / pts.length : 0;
+        perView[v] = +f.toFixed(3); best = Math.max(best, f);
+      }
+      const occluders = Object.entries(occl).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => `${k} (${n})`);
+      return { part: nm, samples: pts.length, visibility: perView, maxVisible: +best.toFixed(3),
+               verdict: best < 0.02 ? 'INVISIBLE from every view tested' : best < 0.12 ? 'barely visible' : 'reads',
+               occluders };
+    });
+    paused = wasPaused;
+    return out;
+  },
+
+  /**
+   * Extents of a part in ITS OWN frame, in metres — a world AABB inflates whenever the pose
+   * rotates the part, so proportions must be read locally.
+   */
+  measurePart(name, { slot = 0, side = 'right' } = {}) {
+    const s = slots[slot];
+    if (!s) throw new Error('no slot ' + slot);
+    const j = s.body.joints;
+    const cap = side === 'left' ? 'left' : 'right';
+    const node = j[name] || j[cap + name.charAt(0).toUpperCase() + name.slice(1)];
+    if (!node) throw new Error('no part ' + name);
+    node.updateWorldMatrix(true, true);
+    const toLocal = new THREE.Matrix4().copy(node.matrixWorld).invert();
+    const box = new THREE.Box3();
+    const b = new THREE.Box3();
+    const m = new THREE.Matrix4();
+    (function walk(n) {
+      if (n.geometry) {
+        if (!n.geometry.boundingBox) n.geometry.computeBoundingBox();
+        m.multiplyMatrices(toLocal, n.matrixWorld);
+        b.copy(n.geometry.boundingBox).applyMatrix4(m);
+        box.union(b);
+      }
+      for (const c of n.children) walk(c);
+    })(node);
+    const size = new THREE.Vector3(); box.getSize(size);
+    // node scale is baked into matrixWorld's inverse, so re-apply it to report true metres
+    const ws = new THREE.Vector3(); node.getWorldScale(ws);
+    return { part: name, size: [size.x * ws.x, size.y * ws.y, size.z * ws.z].map(v => +v.toFixed(3)) };
+  },
+  defaults: JSON.parse(JSON.stringify(BODY_DESIGN_DEFAULTS)),
+  animModes: ANIM_MODES,
+  themeKeys: visuals.themeKeys,
+  // Re-adopts into the panel afterwards. Without it the panel keeps the PREVIOUS scene's
+  // workingDesign, and its next rebuild() writes that stale design back over slot 0 — a
+  // console-set scene silently reverts to whatever was being edited before.
+  setSlots(specs) { buildSlots(specs); if (typeof adoptSlotDesign === 'function') adoptSlotDesign(); },
+  getSlots() { return slots.map(s => s.spec); },
+  setAnim(mode) {
+    if (!ANIM_MODES.includes(mode)) throw new Error('unknown anim: ' + mode);
+    animMode = mode;
+    updateHud();
+  },
+  setTheme(key) { visuals.setThemeKey(key); updateHud(); },
+  setCamera({ pos, target, fov }) {
+    if (pos) camera.position.set(pos[0], pos[1], pos[2]);
+    if (target) controls.target.set(target[0], target[1], target[2]);
+    if (fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    controls.update();
+  },
+  preset(name) {
+    const p = CAMERA_PRESETS[name];
+    if (!p) throw new Error('unknown preset: ' + name);
+    this.setCamera(p);
+  },
+  // Frame one slot up close (portrait framing; y picks the focus height, e.g. 1.55 for the head).
+  frameSlot(i, dist = 1.6, y = 1.1) {
+    const s = slots[i];
+    if (!s) throw new Error('no slot ' + i);
+    this.setCamera({ pos: [s.cx + dist * 0.35, y + 0.25, s.cz + dist], target: [s.cx, y, s.cz] });
+    // dolly relative to the slot, not the lineup center
+    camera.position.x = s.cx + dist * 0.35;
+    camera.position.z = s.cz + dist;
+    controls.update();
+  },
+  setLabels(labels) {
+    labels.forEach((text, i) => { if (slots[i]) slots[i].el.textContent = text; });
+  },
+};
+
+// ===================== manual control panel =====================
+// Sliders/entries/dropdowns over the same descriptors bot-body-design.js stores, so anything tuned
+// here can be pasted straight back into that file (Copy gear JS / Copy diff).
+//
+// Two costs to respect, both learned from the rig's shape:
+//  - position/rotation/scale are placeholder LOCAL transforms, so they can be written live at drag
+//    rate with no rebuild. update() never touches gear, so one write sticks.
+//  - size/type/bevel/segments/role mint geometry or re-bucket materials, and every distinct
+//    geometry adds an InstancedMesh bucket that is never evicted. Those apply on RELEASE and go
+//    through a coalesced buildSlots, exactly like the comment on buildSlots warns.
+// Group edits are per-field: position/rotation add a delta, sizes/scales multiply, and
+// role/type/anchor/flags set absolutely. Multiplying is what keeps a selection's internal
+// proportions intact instead of flattening every piece to one value.
+
+const panel = document.getElementById('panel');
+const panelToggle = document.getElementById('panelToggle');
+panelToggle.onclick = () => panel.classList.toggle('hidden');
+
+const cloneD = (o) => JSON.parse(JSON.stringify(o));
+const GEAR_TYPES = ['rbox', 'box', 'sphere', 'cylinder', 'capsule', 'torus', 'cone', 'lathe', 'extrude'];
+const GEAR_ROLES = ['shell', 'plate', 'trim', 'accent', 'metal', 'rubber', 'fabric', 'eye', 'visor',
+  'skin', 'hair', 'sclera', 'pupil', 'mouth'];
+const GEAR_ANCHORS = ['torso', 'waist', 'pelvis', 'neck', 'head',
+  'shoulderL', 'shoulderR', 'elbowL', 'elbowR', 'handL', 'handR',
+  'hipL', 'hipR', 'kneeL', 'kneeR', 'footL', 'footR'];
+// Side-less anchor names expand to both sides (see GEAR_PAIRS in player-procedural-body.js), which
+// is what the "mirror pair" toggle switches on and off. Only these six have a paired host.
+const GEAR_PAIR_NAMES = ['shoulder', 'elbow', 'hand', 'hip', 'knee', 'foot'];
+// Component labels per type — `size` means something different for each (see gearGeometry).
+const SIZE_LABELS = {
+  box: ['x', 'y', 'z'], rbox: ['x', 'y', 'z'], sphere: ['radius'],
+  cylinder: ['r top', 'r bot', 'height'], capsule: ['radius', 'length'],
+  torus: ['radius', 'tube'], cone: ['radius', 'height'], lathe: [], extrude: [],
+};
+
+let workingDesign = null;     // the design being edited (sparse override, same shape as the file)
+let baseline = null;          // deep copy at panel init, for Copy diff
+let editSlotIndex = 0;
+let panelStyle = { ...DEFAULT_STYLE };
+const selection = new Set();  // gear indices
+let symmetry = true;
+const undoStack = [], redoStack = [];
+const paletteFields = {};     // palette key -> colour picker, re-synced when a slot or preset lands
+const _sizePreview = new Map();   // gear index -> [sx,sy,sz] shown until the rebuild lands
+let dragBase = null;              // index -> descriptor snapshot taken at drag start
+
+function el(tag, cls, parent) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function primaryIndex() { let m = Infinity; for (const i of selection) m = Math.min(m, i); return m === Infinity ? -1 : m; }
+function selGear() { return [...selection].map(i => workingDesign.gear[i]).filter(Boolean); }
+function primaryGear() { const i = primaryIndex(); return i < 0 ? null : workingDesign.gear[i]; }
+
+// ---- undo ----
+function commitUndo() {
+  undoStack.push(cloneD(workingDesign));
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack.length = 0;
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(cloneD(workingDesign));
+  workingDesign = undoStack.pop();
+  pruneSelection(); rebuild(); syncFields();
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(cloneD(workingDesign));
+  workingDesign = redoStack.pop();
+  pruneSelection(); rebuild(); syncFields();
+}
+function pruneSelection() {
+  for (const i of [...selection]) if (!workingDesign.gear[i]) selection.delete(i);
+}
+
+// ---- live transform write (no rebuild) ----
+function applyLiveTransforms() {
+  for (const s of slots) {
+    if (s.spec.design !== workingDesign) continue;
+    for (const p of s.body.parts?.gear || []) {
+      const u = p.userData.gear;
+      const g = workingDesign.gear[u.index];
+      if (!g) continue;
+      const mx = u.mirror ? -1 : 1;
+      p.position.set((g.position?.[0] || 0) * mx, g.position?.[1] || 0, g.position?.[2] || 0);
+      p.rotation.set(g.rotation?.[0] || 0, (g.rotation?.[1] || 0) * mx, (g.rotation?.[2] || 0) * mx);
+      let sx = 1, sy = 1, sz = 1;
+      if (Array.isArray(g.scale)) { sx = g.scale[0]; sy = g.scale[1]; sz = g.scale[2]; }
+      else if (g.scale != null) { sx = sy = sz = g.scale; }
+      const pv = _sizePreview.get(u.index);
+      if (pv) { sx *= pv[0]; sy *= pv[1]; sz *= pv[2]; }
+      p.scale.set(sx, sy, sz);
+      // explode caches each piece's authored position on first use; drop the stale entry so it
+      // re-captures from the value just written instead of snapping back to the old one.
+      _explodeBase.delete(p);
+    }
+  }
+}
+
+// Node-scale stand-in for a size change, so a size slider still moves something while dragging.
+// Only types whose `size` maps cleanly onto local axes get one; the rest wait for the rebuild.
+function previewScaleFor(type, oldS, newS) {
+  const r = (a, b) => (b > 1e-6 && a > 1e-6 ? a / b : 1);
+  switch (type) {
+    case 'box': case 'rbox': return [r(newS[0], oldS[0]), r(newS[1], oldS[1]), r(newS[2], oldS[2])];
+    case 'sphere': { const k = r(newS[0], oldS[0]); return [k, k, k]; }
+    case 'cylinder': { const k = r(newS[0], oldS[0]); return [k, r(newS[2], oldS[2]), k]; }
+    case 'cone': { const k = r(newS[0], oldS[0]); return [k, r(newS[1], oldS[1]), k]; }
+    default: return null;
+  }
+}
+
+// ---- coalesced rebuild ----
+let rebuildQueued = false;
+function rebuild() {
+  if (rebuildQueued) return;
+  rebuildQueued = true;
+  requestAnimationFrame(() => {
+    rebuildQueued = false;
+    const specs = slots.map(s => s.spec);
+    if (specs[editSlotIndex]) {
+      specs[editSlotIndex] = { ...specs[editSlotIndex], design: workingDesign, style: { ...panelStyle } };
+    }
+    buildSlots(specs);
+    _sizePreview.clear();
+    applyLiveTransforms();
+    rebuildSelOverlay();
+    refreshList();
+  });
+}
+
+// ---- selection outline ----
+// Per-instance colour cannot be used to highlight (the untinted buckets have no instanceColor and
+// setColorAt would blacken the whole bucket), so the outline is its own line geometry.
+const selOverlay = new THREE.Group();
+selOverlay.name = 'StudioSelection';
+scene.add(selOverlay);
+const selMat = new THREE.LineBasicMaterial({ color: 0x53d68d, depthTest: false, transparent: true, opacity: 0.9 });
+const _edgeCache = new Map();
+let selLines = [];
+function edgesFor(geo) {
+  let e = _edgeCache.get(geo.uuid);
+  if (!e) { e = new THREE.EdgesGeometry(geo, 30); _edgeCache.set(geo.uuid, e); }
+  return e;
+}
+function rebuildSelOverlay() {
+  for (const l of selLines) selOverlay.remove(l);
+  selLines = [];
+  const s = slots[editSlotIndex];
+  if (!s) return;
+  for (const p of s.body.parts?.gear || []) {
+    if (!selection.has(p.userData.gear.index) || !p.geometry || !p.visible) continue;
+    const line = new THREE.LineSegments(edgesFor(p.geometry), selMat);
+    line.matrixAutoUpdate = false;
+    line.renderOrder = 999;
+    line.userData.src = p;
+    selOverlay.add(line);
+    selLines.push(line);
+  }
+}
+function updateSelOverlay() {
+  for (const l of selLines) { l.matrix.copy(l.userData.src.matrixWorld); l.matrixWorld.copy(l.userData.src.matrixWorld); }
+}
+
+// ---- control factories ----
+function mkRow(parent, label) {
+  const r = el('div', 'row', parent);
+  if (label != null) { const l = el('label', null, r); l.textContent = label; l.title = label; }
+  return r;
+}
+function mkRange(parent, label, { min, max, step, value = 0, onStart, onInput, onEnd }) {
+  const row = mkRow(parent, label);
+  const sl = el('input', null, row); sl.type = 'range'; sl.min = min; sl.max = max; sl.step = step; sl.value = value;
+  const nb = el('input', null, row); nb.type = 'number'; nb.step = step; nb.value = value;
+  let dragging = false;
+  sl.addEventListener('pointerdown', () => { dragging = true; onStart && onStart(); });
+  const end = () => { if (!dragging) return; dragging = false; onEnd && onEnd(+sl.value); };
+  sl.addEventListener('pointerup', end);
+  sl.addEventListener('pointercancel', end);
+  sl.addEventListener('input', () => { nb.value = sl.value; onInput && onInput(+sl.value); });
+  nb.addEventListener('change', () => {
+    sl.value = nb.value; onStart && onStart(); onInput && onInput(+nb.value); onEnd && onEnd(+nb.value);
+  });
+  return {
+    row,
+    set(v) {
+      if (document.activeElement === sl || document.activeElement === nb) return;
+      sl.value = v; nb.value = Math.round(v * 1e4) / 1e4;
+    },
+    enable(on) { sl.disabled = !on; nb.disabled = !on; row.style.opacity = on ? '' : '.4'; },
+  };
+}
+function mkSelect(parent, label, options, onChange) {
+  const row = mkRow(parent, label);
+  const sel = el('select', null, row);
+  for (const o of options) { const op = el('option', null, sel); op.value = o; op.textContent = o; }
+  sel.addEventListener('change', () => onChange(sel.value));
+  return { row, set(v) { sel.value = v == null ? '' : v; }, get value() { return sel.value; },
+           enable(on) { sel.disabled = !on; row.style.opacity = on ? '' : '.4'; } };
+}
+function mkCheck(parent, label, onChange) {
+  const row = mkRow(parent, label);
+  const cb = el('input', null, row); cb.type = 'checkbox'; cb.style.flex = '0 0 auto';
+  cb.addEventListener('change', () => onChange(cb.checked));
+  return { row, set(v) { cb.checked = !!v; }, get value() { return cb.checked; },
+           enable(on) { cb.disabled = !on; row.style.opacity = on ? '' : '.4'; } };
+}
+function mkColor(parent, label, onChange) {
+  const row = mkRow(parent, label);
+  const c = el('input', null, row); c.type = 'color';
+  c.addEventListener('change', () => onChange(parseInt(c.value.slice(1), 16)));
+  return { row, set(v) { c.value = '#' + (v >>> 0).toString(16).padStart(6, '0'); } };
+}
+function mkButtons(parent, defs) {
+  const bar = el('div', 'btns', parent);
+  const out = {};
+  for (const [label, fn] of defs) { const b = el('button', null, bar); b.textContent = label; b.onclick = fn; out[label] = b; }
+  return out;
+}
+function section(title, collapsed = false) {
+  const h = el('h3', collapsed ? 'collapsed' : null, panel);
+  h.textContent = title;
+  const body = el('div', 'body', panel);
+  h.onclick = () => h.classList.toggle('collapsed');
+  return body;
+}
+
+// ---- group edit helpers ----
+function captureBase() {
+  dragBase = new Map();
+  for (const i of selection) dragBase.set(i, cloneD(workingDesign.gear[i]));
+}
+// Multiplied values otherwise land as 0.3326086956521739. The exporter rounds anyway, so round at
+// the source and keep what the panel shows identical to what gets pasted back into the file.
+const rnd = (v) => Math.round(v * 1e5) / 1e5;
+// Additive: the slider reads the primary piece's value, and every other selected piece moves by the
+// same delta, so a selection keeps its internal spacing.
+function editAdditive(field, axis, v) {
+  const prim = primaryIndex();
+  const pb = dragBase?.get(prim);
+  if (!pb) return;
+  const delta = v - (pb[field]?.[axis] ?? 0);
+  for (const i of selection) {
+    const b = dragBase.get(i), g = workingDesign.gear[i];
+    if (!b || !g) continue;
+    const base = b[field] || [0, 0, 0];
+    const next = [base[0] || 0, base[1] || 0, base[2] || 0];
+    // With symmetry on, an X nudge moves a mirrored pair apart rather than sliding both one way.
+    const sgn = (symmetry && field === 'position' && axis === 0 && (base[0] || 0) < 0) ? -1 : 1;
+    next[axis] = rnd((base[axis] || 0) + delta * sgn);
+    g[field] = next;
+  }
+  applyLiveTransforms();
+}
+// Multiplicative: the slider reads the primary's value and everything scales by the same ratio.
+function editSizeAxis(axis, v) {
+  const prim = primaryIndex();
+  const pb = dragBase?.get(prim);
+  if (!pb) return;
+  const ov = pb.size?.[axis] ?? 0;
+  const factor = ov > 1e-6 ? v / ov : 1;
+  for (const i of selection) {
+    const b = dragBase.get(i), g = workingDesign.gear[i];
+    if (!b || !g || !b.size) continue;
+    const next = b.size.slice();
+    next[axis] = i === prim ? v : rnd((b.size[axis] || 0) * factor);
+    g.size = next;
+    const pv = previewScaleFor(g.type, b.size, next);
+    if (pv) _sizePreview.set(i, pv);
+  }
+  applyLiveTransforms();
+}
+function editScalar(field, v, { multiply = false } = {}) {
+  const prim = primaryIndex();
+  const pb = dragBase?.get(prim);
+  if (!pb) return;
+  const ov = pb[field] ?? 0;
+  const factor = multiply && ov > 1e-6 ? v / ov : 1;
+  for (const i of selection) {
+    const b = dragBase.get(i), g = workingDesign.gear[i];
+    if (!b || !g) continue;
+    g[field] = (!multiply || i === prim || b[field] == null) ? v : rnd(b[field] * factor);
+  }
+}
+function editUniformScale(v) {
+  const prim = primaryIndex();
+  const pb = dragBase?.get(prim);
+  if (!pb) return;
+  const scalar = (s) => (Array.isArray(s) ? (s[0] + s[1] + s[2]) / 3 : (s ?? 1));
+  const factor = v / (scalar(pb.scale) || 1);
+  for (const i of selection) {
+    const b = dragBase.get(i), g = workingDesign.gear[i];
+    if (!b || !g) continue;
+    if (Array.isArray(b.scale)) g.scale = b.scale.map(c => rnd(c * factor));
+    else g.scale = rnd(Math.max(0.01, scalar(b.scale) * factor));
+  }
+  applyLiveTransforms();
+}
+// Absolute: categorical fields are meant to be set the same across a selection.
+function editAbsolute(field, v) {
+  commitUndo();
+  for (const i of selection) { const g = workingDesign.gear[i]; if (g) g[field] = v; }
+  rebuild(); syncFields();
+}
+
+// =============================== sections ===============================
+// ---- selection ----
+{
+  const b = section('Selection');
+  const slotSel = mkSelect(b, 'edit slot', ['0'], (v) => {
+    editSlotIndex = +v;
+    adoptSlotDesign();
+  });
+  const filterRow = mkRow(b, 'filter');
+  const filterBox = el('input', null, filterRow);
+  filterBox.type = 'text';
+  filterBox.placeholder = 'text, or role:metal anchor:head';
+  filterBox.addEventListener('input', refreshList);
+
+  mkButtons(b, [
+    ['select filtered', () => { for (const g of filteredIndices()) selection.add(g); afterSelect(); }],
+    ['none', () => { selection.clear(); afterSelect(); }],
+    ['invert', () => {
+      const f = new Set(filteredIndices());
+      for (const i of f) selection.has(i) ? selection.delete(i) : selection.add(i);
+      afterSelect();
+    }],
+  ]);
+
+  const list = el('div', null, b);
+  list.id = 'gearList';
+  const countEl = el('div', 'note', b);
+
+  // `key:value` tokens filter by field; anything else is a substring over id/anchor/role/type.
+  function matches(g, i, q) {
+    if (!q) return true;
+    for (const tok of q.toLowerCase().split(/\s+/).filter(Boolean)) {
+      const m = /^(role|anchor|type|id):(.*)$/.exec(tok);
+      if (m) {
+        const val = String(m[1] === 'id' ? (g.id ?? '') : (g[m[1]] ?? (m[1] === 'anchor' ? 'torso' : ''))).toLowerCase();
+        if (!val.includes(m[2])) return false;
+      } else {
+        const hay = `${i} ${g.id ?? ''} ${g.anchor ?? 'torso'} ${g.role ?? ''} ${g.type ?? ''}`.toLowerCase();
+        if (!hay.includes(tok)) return false;
+      }
+    }
+    return true;
+  }
+  function filteredIndices() {
+    const q = filterBox.value.trim();
+    const out = [];
+    (workingDesign?.gear || []).forEach((g, i) => { if (matches(g, i, q)) out.push(i); });
+    return out;
+  }
+  let lastClicked = -1;
+  window.__refreshGearList = function refresh() {
+    const idx = filteredIndices();
+    list.innerHTML = '';
+    for (const i of idx) {
+      const g = workingDesign.gear[i];
+      const item = el('div', 'item' + (selection.has(i) ? ' sel' : ''), list);
+      item.innerHTML = `${i}. ${g.id ? g.id + ' ' : ''}<span class="dim">${g.anchor || 'torso'} · ${g.type} · ${g.role || 'trim'}</span>`;
+      item.onclick = (e) => {
+        if (e.shiftKey && lastClicked >= 0) {
+          const a = Math.min(lastClicked, i), z = Math.max(lastClicked, i);
+          for (const k of idx) if (k >= a && k <= z) selection.add(k);
+        } else if (e.ctrlKey || e.metaKey) {
+          selection.has(i) ? selection.delete(i) : selection.add(i);
+          lastClicked = i;
+        } else {
+          selection.clear(); selection.add(i); lastClicked = i;
+        }
+        afterSelect();
+      };
+    }
+    countEl.innerHTML = `<span class="count">${selection.size}</span> selected of ${idx.length} shown · ${workingDesign?.gear?.length || 0} total`;
+    // Keep the slot dropdown honest after a rebuild. Keyed on the LABELS, not just the count: a
+    // gallery swap can land the same number of slots holding entirely different models.
+    const sel = slotSel.row.querySelector('select');
+    const key = slots.map((s, i) => `${i} — ${s.spec.label || ''}`);
+    if ([...sel.options].map((o) => o.textContent).join('|') !== key.join('|')) {
+      sel.innerHTML = '';
+      for (let i = 0; i < key.length; i++) { const op = el('option', null, sel); op.value = String(i); op.textContent = key[i]; }
+      sel.value = String(editSlotIndex);
+    }
+  };
+}
+function refreshList() { window.__refreshGearList && window.__refreshGearList(); }
+function afterSelect() { refreshList(); rebuildSelOverlay(); syncFields(); }
+
+// ---- transform (live) ----
+const posFields = [], rotFields = [];
+let scaleField = null;
+{
+  const b = section('Transform (live)');
+  const start = () => { commitUndo(); captureBase(); };
+  ['x', 'y', 'z'].forEach((ax, a) => {
+    posFields.push(mkRange(b, 'pos ' + ax, { min: -1, max: 1, step: 0.001,
+      onStart: start, onInput: (v) => editAdditive('position', a, v) }));
+  });
+  ['x', 'y', 'z'].forEach((ax, a) => {
+    rotFields.push(mkRange(b, 'rot ' + ax, { min: -3.15, max: 3.15, step: 0.005,
+      onStart: start, onInput: (v) => editAdditive('rotation', a, v) }));
+  });
+  scaleField = mkRange(b, 'scale', { min: 0.05, max: 4, step: 0.005, value: 1,
+    onStart: start, onInput: editUniformScale });
+  const symCb = mkCheck(b, 'symmetry x', (v) => { symmetry = v; });
+  symCb.set(true);
+  mkButtons(b, [
+    ['nudge -x', () => nudge(0, -0.005)], ['+x', () => nudge(0, 0.005)],
+    ['-y', () => nudge(1, -0.005)], ['+y', () => nudge(1, 0.005)],
+    ['-z', () => nudge(2, -0.005)], ['+z', () => nudge(2, 0.005)],
+    ['mirror x', () => {
+      commitUndo();
+      for (const g of selGear()) if (g.position) g.position = [-g.position[0], g.position[1], g.position[2]];
+      applyLiveTransforms(); syncFields();
+    }],
+  ]);
+  el('div', 'note', b).textContent = 'Position, rotation and scale apply instantly. Groups take a delta; scale multiplies.';
+}
+function nudge(axis, d) {
+  if (!selection.size) return;
+  commitUndo(); captureBase();
+  for (const i of selection) {
+    const g = workingDesign.gear[i], base = dragBase.get(i)?.position || [0, 0, 0];
+    const next = [base[0] || 0, base[1] || 0, base[2] || 0];
+    const sgn = (symmetry && axis === 0 && (base[0] || 0) < 0) ? -1 : 1;
+    next[axis] = rnd((base[axis] || 0) + d * sgn);
+    g.position = next;
+  }
+  applyLiveTransforms(); syncFields();
+}
+
+// ---- shape (rebuild on release) ----
+const sizeFields = [];
+let typeSel, anchorSel, bevelField, depthField, radialField, segField, smoothCb, mirrorCb;
+{
+  const b = section('Shape (applies on release)');
+  typeSel = mkSelect(b, 'type', GEAR_TYPES, (v) => editAbsolute('type', v));
+  for (let a = 0; a < 3; a++) {
+    sizeFields.push(mkRange(b, 'size ' + a, { min: 0, max: 1.2, step: 0.001,
+      onStart: () => { commitUndo(); captureBase(); },
+      onInput: (v) => editSizeAxis(a, v),
+      onEnd: () => rebuild() }));
+  }
+  depthField = mkRange(b, 'depth', { min: 0, max: 0.6, step: 0.001,
+    onStart: () => { commitUndo(); captureBase(); },
+    onInput: (v) => editScalar('depth', v, { multiply: true }), onEnd: () => rebuild() });
+  bevelField = mkRange(b, 'bevel', { min: 0, max: 0.08, step: 0.0005,
+    onStart: () => { commitUndo(); captureBase(); },
+    onInput: (v) => editScalar('bevel', v, { multiply: true }), onEnd: () => rebuild() });
+  radialField = mkRange(b, 'radial', { min: 3, max: 32, step: 1,
+    onStart: () => { commitUndo(); captureBase(); },
+    onInput: (v) => editScalar('radial', Math.round(v)), onEnd: () => rebuild() });
+  segField = mkRange(b, 'segments', { min: 1, max: 12, step: 1,
+    onStart: () => { commitUndo(); captureBase(); },
+    onInput: (v) => editScalar('seg', Math.round(v)), onEnd: () => rebuild() });
+  smoothCb = mkCheck(b, 'smooth', (v) => editAbsolute('smooth', v));
+  mirrorCb = mkCheck(b, 'mirror pair', (v) => {
+    commitUndo();
+    for (const g of selGear()) {
+      const base = String(g.anchor || 'torso').replace(/[LR]$/, '');
+      if (!GEAR_PAIR_NAMES.includes(base)) continue;   // torso/head/etc have no paired host
+      g.anchor = v ? base : base + 'R';
+    }
+    rebuild(); syncFields();
+  });
+  anchorSel = mkSelect(b, 'anchor', GEAR_PAIR_NAMES.concat(GEAR_ANCHORS), (v) => editAbsolute('anchor', v));
+
+  // Lathe profiles and extrude outlines are point arrays; a full curve editor is a separate job,
+  // so these scale the existing points, which covers "make it wider / taller" without one.
+  const scaleRow = mkRow(b, 'pts scale');
+  const sx = el('input', null, scaleRow); sx.type = 'number'; sx.step = 0.01; sx.value = 1; sx.title = 'radius / outline X';
+  const sy = el('input', null, scaleRow); sy.type = 'number'; sy.step = 0.01; sy.value = 1; sy.title = 'height / outline Y';
+  mkButtons(b, [
+    ['apply pts scale', () => {
+      commitUndo();
+      for (const g of selGear()) {
+        if (g.profile) g.profile = g.profile.map(([r, y]) => [r * +sx.value, y * +sy.value]);
+        if (g.outline) g.outline = g.outline.map(([x, y]) => [x * +sx.value, y * +sy.value]);
+      }
+      rebuild();
+    }],
+    ['duplicate', () => {
+      if (!selection.size) return;
+      commitUndo();
+      const added = [];
+      for (const i of [...selection].sort((a, z) => a - z)) {
+        workingDesign.gear.push(cloneD(workingDesign.gear[i]));
+        added.push(workingDesign.gear.length - 1);
+      }
+      selection.clear(); added.forEach(i => selection.add(i));
+      rebuild(); syncFields();
+    }],
+    ['delete', () => {
+      if (!selection.size) return;
+      commitUndo();
+      const drop = new Set(selection);
+      workingDesign.gear = workingDesign.gear.filter((_, i) => !drop.has(i));
+      selection.clear();
+      rebuild(); syncFields();
+    }],
+    ['add rbox', () => {
+      commitUndo();
+      workingDesign.gear.push({ anchor: 'torso', type: 'rbox', role: 'plate',
+        position: [0, 0.2, 0.2], size: [0.12, 0.12, 0.06], bevel: 0.008 });
+      selection.clear(); selection.add(workingDesign.gear.length - 1);
+      rebuild(); syncFields();
+    }],
+  ]);
+}
+
+// ---- gallery ----
+// FIVE INDEPENDENT AXES, crossed at display time. The first cut of this was a flat list of
+// pre-baked combinations, which quietly welded the axes together — skin tone only existed on a
+// 'determined' face, expressions only on the current body — so the one thing a gallery is for,
+// varying one thing while holding the rest still, was the thing it could not do.
+const GALLERY_AXES = {
+  body: { label: 'body', values: BOT_BODIES.map((b) => [b.key, b.label]), fallback: 'current' },
+  head: { label: 'head', values: BOT_HEAD_KEYS.map((k) => [k, k]), fallback: 'as authored' },
+  kit: { label: 'kit', values: BOT_KITS.map((k) => [k, k]), fallback: 'none' },
+  expression: { label: 'expression', values: Object.keys(FACE_EXPRESSIONS).map((k) => [k, k]), fallback: 'determined' },
+  skin: { label: 'skin', values: Object.keys(SKIN_TONES).map((k) => [k, k]), fallback: 'tan' },
+};
+// A cross product gets large fast (6 x 4 x 6 x 8 x 5 = 5760), and each model is a whole body of
+// geometry. Cap it and SAY what was dropped — a silently truncated gallery reads as "that's all of
+// them", which is the exact wrong conclusion to hand someone comparing designs.
+const GALLERY_CAP = 36;
+const axisSel = {};
+function galleryPick(name) {
+  const sel = axisSel[name];
+  const chosen = sel ? [...sel.selectedOptions].map((o) => o.value) : [];
+  return chosen.length ? chosen : [GALLERY_AXES[name].fallback];
+}
+function showGallery() {
+  const bodies = galleryPick('body'), heads = galleryPick('head'), kits = galleryPick('kit');
+  const exprs = galleryPick('expression'), skins = galleryPick('skin');
+  const specs = [];
+  let dropped = 0;
+  for (const b of bodies) for (const h of heads) for (const k of kits) {
+    // Expression and skin tone only exist on a human head — the skull is only `skin`-roled there,
+    // and helmets have no brow or mouth. Collapsing them off avoids eight identical helmets.
+    const es = h === 'human' ? exprs : [null];
+    const ss = h === 'human' ? skins : [null];
+    for (const e of es) for (const s of ss) {
+      if (specs.length >= GALLERY_CAP) { dropped++; continue; }
+      // Label only the axes that actually vary, so a one-axis sweep reads as "v1, v2, v3…".
+      const bits = [];
+      if (bodies.length > 1) bits.push(BOT_BODIES.find((x) => x.key === b)?.label ?? b);
+      if (heads.length > 1) bits.push(h);
+      if (kits.length > 1 && k !== 'none') bits.push(k);
+      if (e && exprs.length > 1) bits.push(e);
+      if (s && skins.length > 1) bits.push(s);
+      specs.push({
+        label: bits.join(' · ') || (BOT_BODIES.find((x) => x.key === b)?.label ?? b),
+        style: s ? { skin: SKIN_TONES[s], hair: HAIR_COLORS[s === 'pale' ? 'blond' : 'black'] } : undefined,
+        weapon: h === 'human' && bodies.length * heads.length === 1 ? 'none' : undefined,
+        design: composeBot(b, h, { expression: e || 'determined' }, k === 'none' ? [] : [k]),
+      });
+    }
+  }
+  if (!specs.length) return flash('nothing to show');
+  buildSlots(specs);
+  editSlotIndex = 0;
+  adoptSlotDesign();
+  fitAllSlots();
+  flash(`${specs.length} model(s), ${Math.min(slotsPerRow, specs.length)} per row`
+    + (dropped ? ` — ${dropped} more not shown (cap ${GALLERY_CAP})` : ''));
+}
+// Frames the whole grid. Solves for BOTH axes and takes the larger distance, because a wide lineup
+// is limited by horizontal fov and a tall single bot by vertical, and using one blindly crops the
+// other. The x nudge shifts the lineup out from under the control panel.
+function fitAllSlots(pad = 1.2) {
+  if (!slots.length) return;
+  const xs = slots.map((s) => s.cx), zs = slots.map((s) => s.cz);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const width = (Math.max(...xs) - Math.min(...xs)) + 1.8;   // + one body's width of margin
+  const vfov = camera.fov * Math.PI / 180;
+  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  // + the row depth: the far row is that much further away and still has to fit the frame.
+  const rowDepth = Math.max(...zs) - Math.min(...zs);
+  const dist = Math.max(width / (2 * Math.tan(hfov / 2)), 2.4 / (2 * Math.tan(vfov / 2))) * pad + rowDepth;
+  const shift = panel.classList.contains('hidden') ? 0
+    : (panel.offsetWidth / window.innerWidth) * dist * Math.tan(hfov / 2);
+  // ELEVATE once there is more than one row, or the back row hides behind the front one. A bot
+  // holding a weapon occupies well over its own body depth, so a level camera merges the rows.
+  const depth = Math.max(...zs) - Math.min(...zs);
+  const eye = 1.35 + depth * 0.42;
+  window.__studio.setCamera({
+    pos: [cx + shift, eye, Math.max(...zs) + dist],
+    target: [cx + shift, 1.05, (Math.min(...zs) + Math.max(...zs)) / 2],
+  });
+}
+{
+  const b = section('Gallery');
+  for (const [name, axis] of Object.entries(GALLERY_AXES)) {
+    const row = mkRow(b, axis.label);
+    const sel = el('select', null, row);
+    sel.multiple = true;
+    sel.size = Math.min(6, axis.values.length);
+    sel.style.flex = '1 1 auto';
+    for (const [value, label] of axis.values) {
+      const o = el('option', null, sel);
+      o.value = value; o.textContent = label;
+    }
+    axisSel[name] = sel;
+    // Selecting nothing on an axis means "hold it still", not "show none" — otherwise every axis
+    // would have to be touched before anything renders at all.
+    mkButtons(b, [['all ' + axis.label, () => { for (const o of sel.options) o.selected = true; showGallery(); }],
+                  ['clear', () => { for (const o of sel.options) o.selected = false; showGallery(); }]]);
+  }
+  mkRange(b, 'per row', { min: 1, max: 12, step: 1, value: slotsPerRow,
+    onInput: (v) => { slotsPerRow = Math.max(1, Math.round(v)); },
+    onEnd: () => { if (slots.length) { rebuild(); fitAllSlots(); } } });
+  mkButtons(b, [['show', () => showGallery()], ['fit view', () => fitAllSlots()]]);
+  el('div', 'note', b).textContent =
+    'Each list is an axis and they are crossed. Ctrl-click for several; an axis with nothing selected is held at one value. Expression and skin only apply to the human head.';
+}
+
+// ---- head ----
+// A head swap replaces the SKULL as well as the gear on it, so it rebuilds workingDesign wholesale
+// and every gear index shifts. That is why the selection is dropped rather than remapped: an index
+// that survives a face swap points at a different piece, which is worse than pointing at nothing.
+const face = { body: 'current', head: 'human', expression: 'neutral', hair: true, ears: true };
+let headSel = null, bodySel = null;
+const faceFields = {};   // only meaningful on a human head, greyed out under a helmet
+
+// Head swap that KEEPS body edits: it rewrites only the `anchor: 'head'` pieces and the skull
+// fields those were authored against. Picking a different BODY is the opposite — that reloads the
+// stored version wholesale, because you asked for a different body, not for yours to be patched.
+function headSwap(design, headKey, opts) {
+  if (headKey === 'human') return withHumanHead(design, opts);
+  const src = headKey === 'as authored'
+    ? headOf(composeBot(face.body, 'as authored'))
+    : { gear: BOT_HELMETS[headKey] || [], shape: headOf(BOT_BODY_DESIGN).shape, role: 'shell' };
+  return {
+    ...design, ...src.shape,
+    roles: { ...(design.roles || null), head: src.role ?? 'shell' },
+    gear: [...src.gear, ...bodyOf(design)],
+  };
+}
+function applyHead() {
+  commitUndo();
+  // Cloned: these arrays hand back the module's own descriptor objects, and editing one in the
+  // panel would rewrite the shipped design for every slot that shares it.
+  workingDesign = cloneD(headSwap(workingDesign, face.head, face));
+  selection.clear();
+  rebuild(); syncFields();
+}
+function applyBody() {
+  commitUndo();
+  workingDesign = cloneD(composeBot(face.body, face.head, face));
+  selection.clear();
+  rebuild(); syncFields(); syncHeadFields();
+}
+// A design is "human" if it carries eye whites — the one role no helmet uses. Anything else is
+// reported as 'as authored' rather than guessed at: telling a Mark VII from a Mark VIII from v3's
+// slit by inspecting gear would be a pile of shape heuristics that silently rot.
+function syncHeadFields() {
+  face.head = (workingDesign?.gear || []).some((g) => g.role === 'sclera') ? 'human' : 'as authored';
+  headSel?.set(face.head);
+  bodySel?.set(face.body);
+  for (const f of Object.values(faceFields)) f.enable(face.head === 'human');
+}
+{
+  const b = section('Body & head');
+  bodySel = mkSelect(b, 'body', BOT_BODIES.map((x) => x.label), (v) => {
+    face.body = (BOT_BODIES.find((x) => x.label === v) || {}).key || 'current';
+    applyBody();
+  });
+  bodySel.set(BOT_BODIES.find((x) => x.key === face.body)?.label);
+  el('div', 'note', b).textContent = 'Body versions are frozen snapshots, oldest first. Changing the body reloads it and discards edits; changing the head keeps them.';
+  headSel = mkSelect(b, 'head', BOT_HEAD_KEYS, (v) => { face.head = v; applyHead(); syncHeadFields(); });
+  headSel.set(face.head);
+  faceFields.expr = mkSelect(b, 'expression', Object.keys(FACE_EXPRESSIONS), (v) => { face.expression = v; applyHead(); });
+  faceFields.expr.set(face.expression);
+  faceFields.hair = mkCheck(b, 'hair', (v) => { face.hair = v; applyHead(); });
+  faceFields.hair.set(face.hair);
+  faceFields.ears = mkCheck(b, 'ears', (v) => { face.ears = v; applyHead(); });
+  faceFields.ears.set(face.ears);
+  faceFields.skin = mkSelect(b, 'skin tone', Object.keys(SKIN_TONES), (v) => { panelStyle.skin = SKIN_TONES[v]; rebuild(); syncFields(); });
+  faceFields.hairCol = mkSelect(b, 'hair colour', Object.keys(HAIR_COLORS), (v) => { panelStyle.hair = HAIR_COLORS[v]; rebuild(); syncFields(); });
+  el('div', 'note', b).textContent =
+    'Expression is authored, not animated: each preset mints its own brow/lid/mouth geometry, so a bot picks one when it is built.';
+}
+
+// ---- material ----
+let roleSel;
+{
+  const b = section('Material');
+  roleSel = mkSelect(b, 'gear role', GEAR_ROLES, (v) => editAbsolute('role', v));
+  el('div', 'note', b).textContent = 'shell/plate/trim/accent take the team palette below. skin and hair are per-body tints the team colour never touches. The rest are shared and untinted.';
+  for (const key of ['shell', 'plate', 'trim', 'accent', 'skin', 'hair']) {
+    const c = mkColor(b, key, (v) => { panelStyle[key] = v; rebuild(); });
+    c.set(panelStyle[key]);
+    paletteFields[key] = c;
+  }
+  // These are plain standard materials, so the edits are live. eye and visor are driven by theme
+  // uniforms every frame (applyBots), so they are deliberately not exposed here.
+  for (const key of ['metal', 'rubber', 'fabric', 'sclera', 'pupil', 'mouth']) {
+    const m = visuals.botMaterials[key];
+    if (!m) continue;
+    const c = mkColor(b, key, (v) => m.color.setHex(v));
+    c.set(m.color.getHex());
+    mkRange(b, key + ' rough', { min: 0, max: 1, step: 0.01, value: m.roughness, onInput: (v) => { m.roughness = v; } });
+    mkRange(b, key + ' metal', { min: 0, max: 1, step: 0.01, value: m.metalness, onInput: (v) => { m.metalness = v; } });
+  }
+}
+
+// ---- chassis proportions ----
+{
+  const b = section('Chassis', true);
+  const P = [
+    ['legLenRatio', 0.3, 0.9], ['thighFrac', 0.3, 0.7], ['shinFrac', 0.3, 0.7],
+    ['armLenRatio', 0.25, 0.7], ['upperArmFrac', 0.3, 0.7], ['forearmFrac', 0.3, 0.7],
+    ['limbThicknessRatio', 0.1, 0.7], ['armThickScale', 0.4, 1.6],
+    ['torsoZScale', 0.2, 1.2], ['headZScale', 0.4, 1.4], ['pelvisZScale', 0.3, 1.2],
+    ['torsoRadial', 6, 32, 1], ['headRadial', 6, 32, 1], ['profileSmooth', 0, 48, 1],
+  ];
+  const fields = {};
+  for (const [k, min, max, step] of P) {
+    fields[k] = mkRange(b, k, { min, max, step: step || 0.005,
+      value: workingDesign?.[k] ?? BODY_DESIGN_DEFAULTS[k],
+      onStart: () => commitUndo(),
+      onInput: (v) => { workingDesign[k] = step === 1 ? Math.round(v) : v; },
+      onEnd: () => rebuild() });
+  }
+  for (const grp of ['neck', 'waist']) {
+    for (const f of ['rTop', 'rBot', 'h']) {
+      mkRange(b, `${grp} ${f}`, { min: 0.02, max: 0.6, step: 0.002,
+        value: (workingDesign?.[grp] || BODY_DESIGN_DEFAULTS[grp])[f],
+        onStart: () => commitUndo(),
+        onInput: (v) => { workingDesign[grp] = { ...(workingDesign[grp] || BODY_DESIGN_DEFAULTS[grp]), [f]: v }; },
+        onEnd: () => rebuild() });
+    }
+  }
+  const scaleRow = mkRow(b, 'profile x');
+  const px = el('input', null, scaleRow); px.type = 'number'; px.step = 0.01; px.value = 1;
+  const py = el('input', null, scaleRow); py.type = 'number'; py.step = 0.01; py.value = 1;
+  const which = mkSelect(b, 'profile', ['torsoProfile', 'headProfile', 'pelvisProfile'], () => {});
+  mkButtons(b, [['scale profile', () => {
+    commitUndo();
+    const k = which.value;
+    const src = workingDesign[k] || BODY_DESIGN_DEFAULTS[k];
+    workingDesign[k] = src.map(([r, y]) => [r * +px.value, y * +py.value]);
+    rebuild();
+  }]]);
+  el('div', 'note', b).textContent = 'Chassis edits rebuild the body. The torso profile is what controls chest bulk.';
+}
+
+// ---- view / actions ----
+{
+  const b = section('View & output');
+  mkButtons(b, [
+    ['solo sel', () => { const s = slots[editSlotIndex]; if (!s || !selection.size) return;
+      const keep = new Set();
+      for (const p of s.body.parts?.gear || []) if (selection.has(p.userData.gear.index)) keep.add(p);
+      for (const p of s.body.parts?.all || []) p.visible = keep.has(p);
+      rebuildSelOverlay(); }],
+    ['show all', () => { const s = slots[editSlotIndex]; if (!s) return;
+      for (const p of s.body.parts?.all || []) p.visible = true; rebuildSelOverlay(); }],
+    ['hide gear', () => window.__studio.setLayers({ gear: false }, { slot: editSlotIndex })],
+    ['frame sel', () => {
+      if (!selection.size) return;
+      window.__studio.glideTo('gear#' + primaryIndex(), { slot: editSlotIndex, seconds: 0.6 });
+    }],
+  ]);
+  mkButtons(b, [
+    ['undo', undo], ['redo', redo],
+    ['reset all', () => { commitUndo(); workingDesign = cloneD(baseline); selection.clear(); rebuild(); syncFields(); }],
+    ['reset sel', () => {
+      commitUndo();
+      for (const i of selection) if (baseline.gear[i]) workingDesign.gear[i] = cloneD(baseline.gear[i]);
+      rebuild(); syncFields();
+    }],
+  ]);
+  mkButtons(b, [
+    ['copy gear JS', () => copyOut(gearSource(workingDesign.gear))],
+    ['copy diff', () => copyOut(diffSource())],
+    ['save', () => { localStorage.setItem('pcw:botDesignStudio', JSON.stringify(workingDesign)); flash('saved'); }],
+    ['load', () => {
+      const raw = localStorage.getItem('pcw:botDesignStudio');
+      if (!raw) return flash('nothing saved');
+      commitUndo(); workingDesign = JSON.parse(raw); selection.clear(); rebuild(); syncFields(); flash('loaded');
+    }],
+  ]);
+  mkButtons(b, [
+    ['critique head', () => runCritique('head', { slot: critiqueSlot() })],
+    ['critique body', () => runCritique('all', { slot: critiqueSlot(), margin: 1.15 })],
+  ]);
+  const out = el('div', 'note', b);
+  out.id = 'panelOut';
+}
+function flash(msg) { const o = document.getElementById('panelOut'); if (o) o.textContent = msg; }
+function copyOut(text) {
+  navigator.clipboard.writeText(text).then(() => flash(`copied ${text.split('\n').length} lines`),
+    () => { console.log(text); flash('clipboard blocked — logged to console'); });
+}
+
+// ---- source emitters ----
+const num = (v) => String(Math.round(v * 1e4) / 1e4);
+const arr = (a) => '[' + a.map(num).join(', ') + ']';
+const pts = (a) => '[' + a.map(p => '[' + p.map(num).join(', ') + ']').join(', ') + ']';
+const KEY_ORDER = ['anchor', 'type', 'role', 'id', 'smooth', 'axis', 'mirror', 'position', 'rotation',
+                   'scale', 'size', 'depth', 'bevel', 'corner', 'seg', 'radial', 'profile', 'outline'];
+function gearLine(g) {
+  const parts = [];
+  for (const k of KEY_ORDER) {
+    if (g[k] === undefined) continue;
+    const v = g[k];
+    if (k === 'profile' || k === 'outline') parts.push(`${k}: ${pts(v)}`);
+    else if (Array.isArray(v)) parts.push(`${k}: ${arr(v)}`);
+    else if (typeof v === 'string') parts.push(`${k}: '${v}'`);
+    else if (typeof v === 'number') parts.push(`${k}: ${num(v)}`);
+    else parts.push(`${k}: ${v}`);
+  }
+  return '  { ' + parts.join(', ') + ' },';
+}
+function gearSource(gear) { return gear.map(gearLine).join('\n'); }
+function diffSource() {
+  const lines = [];
+  const chassis = [];
+  for (const k of Object.keys(workingDesign)) {
+    if (k === 'gear') continue;
+    if (JSON.stringify(workingDesign[k]) !== JSON.stringify(baseline[k] ?? BODY_DESIGN_DEFAULTS[k])) {
+      chassis.push(`  ${k}: ${JSON.stringify(workingDesign[k])},`);
+    }
+  }
+  if (chassis.length) lines.push('// chassis overrides', ...chassis, '');
+  if (workingDesign.gear.length !== baseline.gear.length) {
+    lines.push(`// gear count changed ${baseline.gear.length} -> ${workingDesign.gear.length}; full array:`,
+      gearSource(workingDesign.gear));
+  } else {
+    const changed = [];
+    workingDesign.gear.forEach((g, i) => {
+      if (JSON.stringify(g) !== JSON.stringify(baseline.gear[i])) changed.push(`  // gear#${i}\n` + gearLine(g));
+    });
+    lines.push(changed.length ? `// ${changed.length} changed piece(s)` : '// no gear changes', ...changed);
+  }
+  return lines.join('\n');
+}
+
+// ---- field sync ----
+function syncFields() {
+  const g = primaryGear();
+  const on = !!g;
+  const labels = on ? (SIZE_LABELS[g.type] || []) : [];
+  posFields.forEach((f, a) => { f.enable(on); f.set(g?.position?.[a] ?? 0); });
+  rotFields.forEach((f, a) => { f.enable(on); f.set(g?.rotation?.[a] ?? 0); });
+  const sc = Array.isArray(g?.scale) ? (g.scale[0] + g.scale[1] + g.scale[2]) / 3 : (g?.scale ?? 1);
+  scaleField.enable(on); scaleField.set(sc);
+  sizeFields.forEach((f, a) => {
+    const has = on && a < labels.length;
+    f.enable(has);
+    f.row.querySelector('label').textContent = has ? 'size ' + labels[a] : 'size —';
+    f.set(g?.size?.[a] ?? 0);
+  });
+  depthField.enable(on && g.type === 'extrude'); depthField.set(g?.depth ?? 0);
+  bevelField.enable(on); bevelField.set(g?.bevel ?? 0);
+  radialField.enable(on); radialField.set(g?.radial ?? 14);
+  segField.enable(on); segField.set(g?.seg ?? 2);
+  smoothCb.set(!!g?.smooth);
+  const anchorName = String(g?.anchor || 'torso');
+  mirrorCb.set(on && GEAR_PAIR_NAMES.includes(anchorName));
+  anchorSel.enable(on); anchorSel.set(anchorName);
+  typeSel.enable(on); typeSel.set(g?.type ?? 'rbox');
+  roleSel.enable(on); roleSel.set(g?.role ?? 'trim');
+  for (const [k, f] of Object.entries(paletteFields)) f.set(panelStyle[k]);
+  refreshList();
+}
+
+// ---- init / slot adoption ----
+function adoptSlotDesign() {
+  const s = slots[editSlotIndex];
+  const src = s?.spec?.design || { gear: [] };
+  workingDesign = cloneD(src);
+  if (!Array.isArray(workingDesign.gear)) workingDesign.gear = [];
+  baseline = cloneD(workingDesign);
+  panelStyle = { ...DEFAULT_STYLE, ...(s?.spec?.style || {}) };
+  selection.clear();
+  undoStack.length = 0; redoStack.length = 0;
+  rebuild(); syncFields(); syncHeadFields();
+}
+// Called after the default scene is built at the bottom of this file — `slots` is empty until then.
+onSlotsBuilt = () => { refreshList(); rebuildSelOverlay(); };
+
+window.__studio.controls = {
+  get design() { return workingDesign; },
+  get selection() { return [...selection]; },
+  select(indices) { selection.clear(); for (const i of indices) selection.add(i); afterSelect(); },
+  gearSource: () => gearSource(workingDesign.gear),
+  diff: () => diffSource(),
+  rebuild, undo, redo,
+};
+
+// ===================== frame loop =====================
+let lastT = performance.now();
+var framesSinceBuild = 0;
+// One frame, callable directly. The critique capture drives this rather than waiting on rAF:
+// requestAnimationFrame does not fire in a backgrounded tab, so a capture kicked off while the
+// window is not foreground would wait forever — and even if it didn't, nothing new would have been
+// drawn for it to read back.
+async function drawFrame(dt) {
+  const step = paused ? 0 : Math.max(dt, 1e-4);
+  batches.beginFrame();
+  weaponBatches.beginFrame();
+  for (const s of slots) {
+    // A paused frame still re-solves at dt=0, so the pose holds exactly while the camera moves.
+    stepSlot(s, step || 1e-6);
+    updateSlotWeapon(s, step);
+    // update() rewrites world transforms every frame, so the explode offset must be re-applied
+    // here — after the solve, before the flush that reads matrixWorld.
+    applyExplode(s);
+    s.body.flush(batches);
+    if (!explode.factor || explode.weapon) flushSlotWeapon(s);
+    placeLabel(s);
+  }
+  batches.endFrame();
+  weaponBatches.endFrame();
+  updateSelOverlay();
+
+  stepGlide(dt);
+  controls.update();
+  visuals.update(dt);
+  await postFX.renderAsync();
+
+  if (!window.__ready && ++framesSinceBuild > 2) window.__ready = true;
+}
+async function loopTick() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  await drawFrame(dt);
+}
+renderer.setAnimationLoop(loopTick);
+
+window.__studio.shipped = JSON.parse(JSON.stringify(BOT_BODY_DESIGN));
+window.__studio.designWith = botDesignWith;
+
+// Default scene: the clothed human holding every weapon, plus one unarmed. ONE design object shared
+// across all of them — the geometry cache is keyed on descriptor content, so N slots of the same
+// body cost the same geometry as one, and any edit in the panel shows up on every weapon at once.
+//
+// `grenade` is listed even though it has no thirdPersonHold and will therefore render empty-handed.
+// Dropping it would hide a real gap; labelled, the missing hold is visible rather than silent.
+const STUDIO_HUMAN = composeBot('human', 'human', { expression: 'determined' });
+const STUDIO_KIT = withPack(withCarrier(withPads(STUDIO_HUMAN)));
+// Helmet, glasses and mask are independent flags, so these four cover the range without repeating
+// the body: bare head, helmet only, helmet + shades, helmet + shades + mask.
+slotsPerRow = 4;
+buildSlots([
+  { label: 'bare head', weapon: 'none', design: STUDIO_KIT },
+  { label: 'helmet', weapon: 'cz_805_bren', design: withHeadKit(STUDIO_KIT, { helmet: true }) },
+  { label: 'helmet + shades', weapon: 'cz_805_bren', design: withHeadKit(STUDIO_KIT, { helmet: true, glasses: true }) },
+  { label: 'helmet + shades + mask', weapon: 'cz_805_bren',
+    design: withHeadKit(STUDIO_KIT, { helmet: true, glasses: true, mask: true }) },
+]);
+// Slot 0 (unarmed) becomes the editable copy — the body reads clearest with nothing in the way.
+adoptSlotDesign();
+fitAllSlots();
+
+// ===================== critique popup =====================
+// The stopping point for the generate -> view -> WAIT loop: a contact sheet of one part from every
+// angle, and a box for the comment that decides what happens next. Nothing gets changed until a
+// comment lands here.
+//
+// Every angle, not one: a single view is what let a boom mic ship in five disconnected pieces, each
+// of which looked correctly placed from the side.
+//
+// The comment POSTs to /api/save-notes, which serve.py already exposes for the trace viewer's notes
+// panel. It overwrites one file in place rather than accumulating artifacts, which is what the loop
+// wants -- the current critique is the only one that matters.
+// Names must exist in VIEW_DIRS. focusPart silently falls back to 'three' for an unknown one, so a
+// typo here costs a duplicate tile rather than an error — check against __studio.viewDirs.
+const CRITIQUE_VIEWS = ['front', 'three', 'side', 'back', 'left', 'top'];
+const CRITIQUE_NOTE = 'notes-helmet-critique.html';
+const CRITIQUE_KEY = 'pcw:helmetCritique';   // same pcw: prefix as the panel's save/load slot
+
+// The slot to judge: whichever one carries a helmet, else the edit slot. Judging the bare head by
+// accident is a whole wasted round trip.
+function critiqueSlot() {
+  const i = slots.findIndex((s) => /helmet/.test(s.spec?.label || ''));
+  return i >= 0 ? i : editSlotIndex;
+}
+
+// Let the REAL animation loop draw each frame and just wait for it. Driving drawFrame() directly
+// instead was tried and is worse in both directions: called alongside the loop, two async renders
+// interleave on one renderer and the read-back returns a stale present (every tile came out as the
+// same wide shot); with the loop suspended, the frames render blown out and empty.
+//
+// The cost of depending on the loop is that rAF is suspended in a backgrounded tab, so this throws
+// there rather than waiting forever on a frame that is never coming.
+const nextFrame = () => new Promise((resolve, reject) => {
+  if (document.hidden) {
+    reject(new Error('studio tab is in the background — rAF is suspended there, so no new frame renders. Bring the window to the front and capture again.'));
+    return;
+  }
+  requestAnimationFrame(() => resolve());
+});
+
+async function captureViews(part, { slot = 0, dirs = CRITIQUE_VIEWS, margin = 1.5, side = 'right' } = {}) {
+  const wasPaused = window.__studio.paused;
+  window.__studio.setPaused(true);          // hold the pose identical across every angle
+  window.__studio.showLabels(false);
+  const shots = [];
+  try {
+    for (const dir of dirs) {
+      window.__studio.focusPart(part, { slot, dir, margin, side });
+      await nextFrame(); await nextFrame();   // one to draw the moved camera, one to present it
+      shots.push({ dir, url: renderer.domElement.toDataURL('image/png') });
+    }
+  } finally {
+    window.__studio.setPaused(wasPaused);
+    window.__studio.showLabels(true);
+  }
+  return shots;
+}
+
+// Centre-square CROP, not a fit. The viewport is wide and focusPart already filled it with the
+// part, so letterboxing the whole frame into a square cell would shrink the subject to a third of
+// the tile and defeat the point of looking closely.
+async function contactSheet(shots, cell = 460) {
+  const imgs = await Promise.all(shots.map((s) => new Promise((res, rej) => {
+    const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = s.url;
+  })));
+  const cols = Math.min(shots.length, 3);
+  const rows = Math.ceil(shots.length / cols);
+  const c = document.createElement('canvas');
+  c.width = cols * cell; c.height = rows * cell;
+  const g = c.getContext('2d');
+  g.fillStyle = '#0b0f14'; g.fillRect(0, 0, c.width, c.height);
+  imgs.forEach((im, i) => {
+    const x = (i % cols) * cell, y = Math.floor(i / cols) * cell;
+    const src = Math.min(im.width, im.height);
+    g.drawImage(im, (im.width - src) / 2, (im.height - src) / 2, src, src, x, y, cell, cell);
+    g.strokeStyle = '#1d2a36'; g.strokeRect(x + 0.5, y + 0.5, cell - 1, cell - 1);
+    g.fillStyle = '#8fd6ff'; g.font = 'bold 18px monospace';
+    g.fillText(shots[i].dir, x + 12, y + 28);
+  });
+  return c.toDataURL('image/png');
+}
+
+function openCritique(sheetUrl, caption) {
+  document.getElementById('critiqueModal')?.remove();
+  const wrap = el('div', '', document.body);
+  wrap.id = 'critiqueModal';
+  Object.assign(wrap.style, {
+    position: 'fixed', inset: '0', zIndex: '9999', background: 'rgba(4,7,10,0.93)',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px',
+    padding: '14px', overflow: 'auto', font: '13px system-ui, sans-serif', color: '#cfe3f2',
+  });
+  const head = el('div', '', wrap);
+  head.textContent = caption;
+  Object.assign(head.style, { opacity: '0.75', letterSpacing: '0.02em' });
+
+  const img = el('img', '', wrap);
+  img.src = sheetUrl;
+  Object.assign(img.style, {
+    maxWidth: 'min(1180px, 97vw)', maxHeight: '58vh', objectFit: 'contain',
+    border: '1px solid #24333f', borderRadius: '6px', background: '#0b0f14',
+  });
+
+  const ta = el('textarea', '', wrap);
+  ta.id = 'critiqueText';
+  ta.placeholder = 'What is wrong with it? Be blunt — this is the only input that changes anything.';
+  Object.assign(ta.style, {
+    width: 'min(1180px, 97vw)', height: '18vh', minHeight: '90px', resize: 'vertical',
+    background: '#0e151c', color: '#e6f1fa', border: '1px solid #24333f', borderRadius: '6px',
+    padding: '10px', font: '13px ui-monospace, monospace',
+  });
+
+  const row = el('div', '', wrap);
+  Object.assign(row.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+  const status = el('span', '', row);
+  Object.assign(status.style, { opacity: '0.7', marginLeft: '8px' });
+
+  function mkBtn(label, fn) {
+    const btn = el('button', '', row);
+    btn.textContent = label;
+    Object.assign(btn.style, {
+      background: '#16222c', color: '#cfe3f2', border: '1px solid #2c3d4b',
+      borderRadius: '5px', padding: '7px 14px', cursor: 'pointer', font: '13px system-ui, sans-serif',
+    });
+    btn.addEventListener('click', fn);
+    return btn;
+  }
+
+  mkBtn('send comment', async () => {
+    const text = ta.value.trim();
+    if (!text) { status.textContent = 'nothing typed'; return; }
+    // localStorage FIRST and unconditionally, because it cannot fail. The POST is best-effort:
+    // serve.py only grew /api/save-notes on 2026-08-02, so any server process started before that
+    // 404s it and returns an HTML error page, and a typed critique must not be lost to a stale
+    // process the page has no way to detect.
+    localStorage.setItem(CRITIQUE_KEY, JSON.stringify({ text, caption, at: new Date().toISOString() }));
+    status.textContent = 'saved — ';
+    // Wrapped in minimal HTML because save-notes' filename guard requires .html; the comment stays
+    // plain text inside <pre> so it reads the same in a browser and in a file read.
+    const body = `<!doctype html><meta charset="utf-8"><title>${caption}</title>\n`
+      + `<h3>${caption}</h3>\n<pre>${text.replace(/[<&]/g, (ch) => (ch === '<' ? '&lt;' : '&amp;'))}</pre>\n`;
+    try {
+      const res = await fetch(`/api/save-notes?filename=${CRITIQUE_NOTE}`, { method: 'POST', body });
+      const json = res.headers.get('content-type')?.includes('json') ? await res.json() : { ok: false, error: `server has no /api/save-notes (HTTP ${res.status}) — restart serve.py to enable the file copy` };
+      status.textContent += json.ok ? `also written to ${json.path}` : `browser only (${json.error})`;
+    } catch (err) {
+      status.textContent += 'browser only (' + err.message + ')';
+    }
+    flash('critique received');
+  });
+  mkBtn('save sheet', () => {
+    const a = document.createElement('a');
+    a.href = sheetUrl; a.download = 'critique-sheet.png'; a.click();
+  });
+  mkBtn('close', () => wrap.remove());
+  ta.focus();
+}
+
+async function runCritique(part, opts = {}) {
+  flash('capturing…');
+  try {
+    const shots = await captureViews(part, opts);
+    const sheet = await contactSheet(shots);
+    openCritique(sheet, `${part} — slot ${opts.slot ?? 0} — ${shots.map((s) => s.dir).join(' / ')}`);
+    flash(`captured ${shots.length} views`);
+  } catch (err) {
+    flash('capture failed: ' + err.message);
+    console.error(err);
+  }
+}
+window.__studio.critique = runCritique;
+</script>
+</body>
+</html>

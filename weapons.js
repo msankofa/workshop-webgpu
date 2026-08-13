@@ -31,10 +31,23 @@ const muzzleFx = (overrides = {}) => ({
   ...overrides,
 });
 
+// Hitscan damage stays immediate. This profile controls only the visible tracer streak;
+// every accepted hitscan shot emits one.
+const tracerFx = (overrides = {}) => ({
+  speed: 750,
+  length: 1.2,
+  width: 0.04,
+  opacity: 0.85,
+  glow: 0.35,
+  minVisibleDistance: 3,
+  ...overrides,
+});
+
 export const WEAPONS = {
   m1911: {
     id: 'm1911',
     displayName: 'M1911',
+    carryClass: 'pistol',   // walk/run/dash carry deltas: weapon-hold-resolver.js CARRY_PRESETS
     mode: 'hitscan',
     model: 'models/guns/low-poly_m1911.glb',
     damage: 33,
@@ -60,6 +73,7 @@ export const WEAPONS = {
     viewScale: 0.99,
     viewTargetSize: 0.95,
     muzzleFx: muzzleFx(),
+    tracerFx: tracerFx({ speed: 350, length: 0.65, width: 0.035, opacity: 0.65, glow: 0.2, minVisibleDistance: 4 }),
     // Third-person body-held weapon offset (relative to the body's hold mount), tuned in
     // body-preview.html. Position [x,y,z] meters, rotation [x,y,z] euler, uniform scale.
     // NOTE: values are in the preview's mount space verbatim — the game normalizes the
@@ -68,8 +82,11 @@ export const WEAPONS = {
     // pre-compensate `scale` for viewTargetSize; that only matches the model size while
     // shrinking the pose/anchor geometry.
     thirdPersonHold: { position: [0.2, 0.44, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
-    // Crouch hold: same mount space as thirdPersonHold, dropped to shoulder height.
-    crouchHold: { position: [0.2, -0.09, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    // Crouch/kneel holds: same mount space as thirdPersonHold, Y dropped by the rig's own
+    // shoulder drop for that stance (0.773 crouch, 0.516 kneel) so the gun keeps its standing
+    // height relative to the shoulders. Derivation in docs/subsystems/procedural-body-weapon-contracts.md.
+    crouchHold: { position: [0.2, -0.333, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    kneelHold: { position: [0.2, -0.076, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
     // Prone weapon hold: dropped low and pushed forward so the gun sits at ground level in
     // the outstretched hands. Tuned in body-preview.html (stance=prone).
     proneHold: { position: [0.14, -0.91, 0.98], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
@@ -77,6 +94,7 @@ export const WEAPONS = {
   five_seven: {
     id: 'five_seven',
     displayName: 'Five-seveN',
+    carryClass: 'pistol',
     mode: 'hitscan',
     model: 'models/guns/low_poly_five_seven.glb',
     damage: 20,
@@ -101,14 +119,17 @@ export const WEAPONS = {
     viewScale: 1,
     viewTargetSize: 0.95,
     muzzleFx: muzzleFx(),
+    tracerFx: tracerFx({ speed: 650, length: 0.8, width: 0.035, opacity: 0.7, glow: 0.22, minVisibleDistance: 4 }),
     // Seeded from m1911 (same pistol class); visually tuned in the later authoring pass.
     thirdPersonHold: { position: [0.2, 0.44, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
-    crouchHold: { position: [0.2, -0.09, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    crouchHold: { position: [0.2, -0.333, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    kneelHold: { position: [0.2, -0.076, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
     proneHold: { position: [0.14, -0.91, 0.98], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
   },
   m24: {
     id: 'm24',
     displayName: 'M24 Sniper Rifle',
+    carryClass: 'rifle',
     mode: 'hitscan',
     model: 'models/guns/low-poly_m24_sniper_rifle.glb',
     damage: 95,
@@ -133,14 +154,17 @@ export const WEAPONS = {
     viewScale: 1.26,
     viewTargetSize: 1.55,
     muzzleFx: muzzleFx(),
+    tracerFx: tracerFx({ speed: 850, length: 1.8, width: 0.045, opacity: 0.9, glow: 0.4, minVisibleDistance: 5 }),
     // Tuned in body-preview.html 2026-07-08.
     thirdPersonHold: { position: [0.3, 0.92, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
-    crouchHold: { position: [0.3, -0.09, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
+    crouchHold: { position: [0.3, 0.147, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
+    kneelHold: { position: [0.3, 0.404, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
     proneHold: { position: [0.35, -0.43, -0.12], rotation: [-0.04, 0.08, -0.08], scale: 2 },
   },
   cz_805_bren: {
     id: 'cz_805_bren',
     displayName: 'CZ 805 Bren',
+    carryClass: 'rifle',
     mode: 'hitscan',
     automatic: true,        // hold-to-fire; tickAutoFire repeats at fireIntervalMs
     model: 'models/guns/low-poly_cz_805_bren.glb',
@@ -166,11 +190,13 @@ export const WEAPONS = {
     viewScale: 1.3,
     viewTargetSize: 1.3,
     muzzleFx: muzzleFx(),
+    tracerFx: tracerFx({ speed: 820, length: 1.4, width: 0.04, opacity: 0.82, glow: 0.32, minVisibleDistance: 4 }),
     // Seeded from m24 (rifle class); visually tuned in the later authoring pass. sightType
     // was left as m24's 'optical' until a playtest caught the AR getting a sniper-scope
     // vignette on ADS -- assault rifles use iron sights here, not the scope overlay.
     thirdPersonHold: { position: [0.3, 0.92, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
-    crouchHold: { position: [0.3, -0.09, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
+    crouchHold: { position: [0.3, 0.147, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
+    kneelHold: { position: [0.3, 0.404, -0.68], rotation: [-0.1, 0.08, -0.08], scale: 2 },
     proneHold: { position: [0.35, -0.43, -0.12], rotation: [-0.04, 0.08, -0.08], scale: 2 },
   },
   knife: {
@@ -178,9 +204,11 @@ export const WEAPONS = {
     displayName: 'Combat Knife',
     mode: 'melee',
     model: 'models/guns/low_poly_combat_knife.glb',
-    damage: 35,
+    // Combat bots use this as their reload-time secondary: two landed hits kill a
+    // full-health (100 HP) target, and its short interval makes it decisively melee.
+    damage: 50,
     range: 2,
-    fireIntervalMs: 500,
+    fireIntervalMs: 1500,
     spreadRad: 0,
     pelletCount: 1,
     recoil: 0.2,
@@ -197,6 +225,13 @@ export const WEAPONS = {
     viewRotation: [0, Math.PI, 0],
     viewScale: 1,
     muzzleFx: muzzleFx({ flashOpacity: 0, smokeOpacity: 0, smokeCount: 0 }),
+    tracerFx: tracerFx({ opacity: 0, glow: 0 }),
+    // First-pass third-person hold. The bot viewer deliberately does not play a
+    // knife attack sequence yet; this is enough to load and display the secondary.
+    thirdPersonHold: { position: [0.20, 0.44, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    crouchHold: { position: [0.20, -0.333, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    kneelHold: { position: [0.20, -0.076, 0.42], rotation: [-0.04, -0.02, -0.08], scale: 0.68 },
+    proneHold: { position: [0.14, -0.91, 0.98], rotation: [-0.04, 0.08, -0.08], scale: 0.68 },
     // Melee: unlimited (no magazine); applyCombatIntent skips the ammo path for mode 'melee'.
   },
   grenade: {
@@ -225,6 +260,7 @@ export const WEAPONS = {
     viewRotation: [0, 0, 0],
     viewScale: 1,
     muzzleFx: muzzleFx({ flashOpacity: 0, smokeOpacity: 0, smokeCount: 0 }),
+    tracerFx: tracerFx({ opacity: 0, glow: 0 }),
     // Thrown arc: lobs (arc adds upward velocity), falls under gravity, bounces off terrain,
     // detonates on the fuse timer or first solid contact. speed/damage/blastRadius/life/gravity
     // ported from html-game-v2 fireGrenade. See combat-projectile.js.
@@ -233,6 +269,7 @@ export const WEAPONS = {
   rpg: {
     id: 'rpg',
     displayName: 'RPG-7',
+    carryClass: 'rifle',
     mode: 'projectile',
     model: 'models/guns/low-poly_rpg-7.glb',
     damage: 110,
@@ -256,15 +293,26 @@ export const WEAPONS = {
     viewRotation: [0, Math.PI, 0],
     viewScale: 1,
     muzzleFx: muzzleFx({ flashSize: 0.2, smokeSize: 0.12, smokeGrowth: 0.4 }),
+    tracerFx: tracerFx({ opacity: 0, glow: 0 }),
     // Flat, fast rocket: no gravity, flies straight until it hits something or its life ends
     // (then fizzles with no blast). speed/damage/blastRadius/life ported from html-game-v2
     // fireRocket. See combat-projectile.js.
     projectile: { speed: 108, blastRadius: 8.2, life: 19, radius: 0.42, gravity: 0, fizzleOnExpire: true },
-    // Stand hold authored in body-preview-v3.html 2026-07-11; crouch derived (Y→-0.09 shoulder
-    // convention); prone seeded from m24 (placeholder — retune in body-preview.html stance=prone).
+    // Stand hold authored in body-preview-v3.html 2026-07-11; crouch/kneel derived from the rig's
+    // shoulder drop; prone seeded from m24 (placeholder — retune in body-preview.html stance=prone).
     thirdPersonHold: { position: [0.4, 0.96, -1], rotation: [-0.04, -0.02, -0.08], scale: 2 },
-    crouchHold: { position: [0.4, -0.09, -1], rotation: [-0.04, -0.02, -0.08], scale: 2 },
+    crouchHold: { position: [0.4, 0.187, -1], rotation: [-0.04, -0.02, -0.08], scale: 2 },
+    kneelHold: { position: [0.4, 0.444, -1], rotation: [-0.04, -0.02, -0.08], scale: 2 },
     proneHold: { position: [0.35, -0.43, -0.12], rotation: [-0.04, 0.08, -0.08], scale: 2 },
+    // Overrides the shared CARRY_PRESETS.rifle walk carry (weapon-hold-resolver.js) -- the RPG's
+    // length read backwards at the generic rifle walk pose. Stance-aware: the standing walk carry
+    // does not read right prone (and vice versa), so this opts into the { stand, crouch, prone } map
+    // shape carryDeltaFor blends by the rig's own weights; crouch is unauthored and falls back to
+    // stand. Both retuned in weapon-animation-viewer.html.
+    carryHolds: { walk: {
+      stand: { position: [0.14, -0.05, 0.34], rotation: [1.03, 0.18, -1.21] },
+      prone: { position: [-0.18, -0.05, -0.36], rotation: [-0.09, 0.02, 0.09] },
+    } },
   },
 };
 

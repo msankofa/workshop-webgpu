@@ -121,10 +121,12 @@ export function makeRng(seed) {
   };
 }
 
-// One unit-sphere point on the upper hemisphere (y in [0.06, 0.96]).
+// One unit-sphere point on the upper hemisphere (y in [0.06, 1.0]). The upper bound reaches
+// the zenith so the star field fills the point directly overhead instead of leaving a bare
+// circular cap there (y capped at 0.96 left a ~16-degree hole at the zenith).
 function hemiDir(rng) {
   const theta = rng() * Math.PI * 2;
-  const y = 0.06 + rng() * 0.9;
+  const y = 0.06 + rng() * 0.94;
   const r = Math.sqrt(Math.max(0, 1 - y * y));
   return { x: Math.cos(theta) * r, y, z: Math.sin(theta) * r };
 }

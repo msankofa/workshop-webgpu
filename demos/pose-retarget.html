@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — retargeting CC0 clips onto our soldier</title>
+<!--
+  DEMO — can borrowed animation clips drive OUR procedural soldier?
+
+  WHAT THIS TARGETS
+  -----------------
+  The real thing, not a stand-in: `createProceduralPlayerBody` from `../player-procedural-body.js`
+  with a design from `../bot-body-design.js` (`setBotBodyKind('soldier')`, `botDesignForRole(...)`).
+  That is the same body the bot viewers and the environment viewer build, so whatever works here
+  works there. This demo is the one exception to the demos/ isolation rule for the same reason
+  `spsa-gait-tuning.html` is: the point IS the repo module, and a private copy would prove nothing.
+
+  Those modules take `THREE` as an injected parameter and need no renderer, which is why this can
+  drive them from a WebGPU page and why the checks in `test-pose-retarget.mjs` can build a whole
+  body in Node.
+
+  THE SEAM
+  --------
+  `body.setRagdollPose(P)` already exists for the ragdoll, and it takes SIXTEEN JOINT WORLD
+  POSITIONS, not rotations:
+
+      head, neck, chest, pelvis, shoulderL/R, elbowL/R, handL/R, hipL/R, kneeL/R, footL/R
+
+  That is a better seam for this than rotations. Retargeting rotations between two skeletons means
+  reconciling bone axes, rest orientations and differing joint counts. Feeding positions sidesteps
+  all of it: the limb is placed where the clip puts the joint, and our IK owns everything between.
+
+  TWO THINGS THE POSITION SEAM DOES NOT SOLVE, both handled here:
+
+  1. PROPORTIONS — and the obvious fix does not work. A clip authored on a stylised 0.4 m-legged
+     character does not fit a 1.8 m soldier, so the first version of this demo scaled every joint
+     about the hips by `ourLegLen / theirLegLen`. Measured headlessly, that ×2.96 blow-up put the
+     head at 3.29 m and the feet 1.55 m apart, because the donors are chibi — short legs, big head —
+     and NO single factor fixes a proportion mismatch.
+
+     What works is taking only the DIRECTIONS from the clip and stepping OUR OWN bone lengths along
+     them, so the result has our skeleton's dimensions exactly and the donor's angles exactly. The
+     pose is then dropped so the lower foot rests on the floor.
+
+  2. WHICH LIMB IS WHICH. `bot-limb-map.js:10-13` warns that `parts.arms.left` is the VISUAL left
+     arm wired to the INTERNAL `arms.right`. That mirror reaches `setRagdollPose` too. Verified by
+     building a body and feeding a pose: a joint handed to `handL` comes out at `joints.rightHand`.
+     Because the API places limbs at world POSITIONS, picking the wrong key never crosses the arms —
+     the pose still looks right — but it silently decides WHICH limb's gear, holster and weapon
+     follow the motion. So it is a toggle here ("swap sides"), not a guess.
+
+  WHERE THE CLIPS COME FROM — two CC0 sources, and the second is the better one
+  ----------------------------------------------------------------------------
+  * **Pirate Nation** (`proofofplay/piratenation-art`, CC0-1.0, streamed from the Git LFS media
+    host). One skinned character, 16 joints, 32 clips. Strong on personality — three idles, waves,
+    a celebration, a surprised reaction, five dances, pushups — and weak on combat.
+
+  * **KayKit by Kay Lousberg** (CC0-1.0), already sitting in `../claudecraft-assets/`. A 23-joint
+    rig and **22 clips per character**, and they are the ones a shooter actually needs: Idle,
+    Walking_A, Running_A, Running_Strafe_Left/Right, Walking_Backwards, Death_A, Hit_A, Block,
+    1H/2H melee attacks, 2H_Ranged_Shoot, Jump_Idle. The rig even carries `handslot.l/r` weapon
+    sockets. It is local, so it loads instantly and works offline.
+
+  Both are read through the same canonical 16-joint skeleton, so the retarget code does not know or
+  care which one is playing.
+
+  MAKING A CARTOON CLIP READ AS A SOLDIER
+  ---------------------------------------
+  A faithful retarget of a KayKit walk is still a KayKit walk, and on a 1.8 m soldier it reads as a
+  pantomime sneak. Four post-passes fix that, all of them live controls rather than baked constants.
+
+  Every one of them moves an ENDPOINT and then re-solves the middle joint by two-bone IK, so bone
+  lengths survive untouched — measured worst error over 240 frames of `Walking_A` is 3e-15 m.
+
+  * BOB DAMPING. The donors pump the hips far harder than a person does: measured on our soldier,
+    `Walking_A` swings the hips through **224 mm**, where a real walk is nearer 40-50 mm. The stance
+    height is pulled back toward its own running mean and the KNEES ABSORB THE DIFFERENCE, feet left
+    exactly where they were — which is what real legs do. At the 0.6 default the swing drops to
+    99 mm, a 56% cut. Pushing the slider to 1.0 only reaches 60%, because the lift is clamped per
+    leg so a damped hip can never out-reach thigh + shin. That ceiling is physical, not a bug.
+
+  * ARM PLACEMENT ON THREE AXES. Inset squeezes the LATERAL offset toward the mid-line, because the
+    donors are barrel-chested and their arms swing wide to clear the belly — hands come in 32% at
+    the 0.45 default, 57% at 0.8. But inset is a MULTIPLIER on one axis, so it can only narrow; it
+    cannot raise, drop or shift a carry. LIFT and PUSH are additive offsets along the body's own up
+    and forward axes, in arm-length units, so the hands are placeable anywhere in reach.
+
+  * WEAPON IN HAND — mounted by the game's own pipeline. The weapon goes first and the hands follow
+    it, which is the direction bot-viewer-v3.html works in. Nothing about where a rifle sits is
+    decided here.
+
+  * SLING. The same mount, dropped and rolled onto the back, with the arms left completely to the
+    clip. That is what makes the unedited hands-free animations usable as they are — no weapon pose
+    to blend, no arm authoring, and the whole 22-clip library stays in play.
+
+  WHAT THE FIRST VERSION OF THIS PANEL GOT WRONG, AND WHY
+  ------------------------------------------------------
+  It invented a weapon pipeline instead of using the one the repo already had, and every symptom
+  followed from that: an enormous CZ, pistols inside the torso, everything backwards. The corrections
+  are worth keeping written down because each one is a fact about this codebase.
+
+  * THE GUN GLBs ARE DRACO-COMPRESSED. `GLTFLoader.parse()` throws "No DRACOLoader instance
+    provided" on every file in `../models/guns/`, so nothing drew at all and the error only reached
+    a corner banner. `../draco-loader.js` is the shared fix; `code-map.html` already flags it as
+    required by any loader touching those files.
+
+  * MODELS MUST GO THROUGH `normalizeBotWeaponModel` (bot-viewer-v3.html:2150). It rotates the
+    LONGEST AXIS ONTO Z, scales that axis to the target size, and RECENTRES the model on its
+    bounding box. The CZ's raw bbox is 8.2 x 173.3 x 33.6 — its longest axis is Y, so any code
+    assuming a forward axis without this step draws it sideways. The missing recentre is why weapons
+    sat inside the torso.
+
+  * THE THIRD-PERSON TARGET SIZE IS A FLAT 0.62 FOR EVERY WEAPON — NOT `viewTargetSize`. That field
+    is the FIRST-PERSON view-model size, and `weapons.js:80` says so explicitly: "the game
+    normalizes the third-person GLB to the preview's 0.62 target (NOT viewTargetSize) so the hold
+    scale, pose offsets (lowReady etc.), and baked anchors all read identically." Using it here made
+    the CZ 2.1x oversized (1.3 -> 0.62), the M24 2.5x, and the pistols 1.53x, and it displaced every
+    baked anchor by the same factor, so the hands reached for grips that were no longer on the gun.
+
+  * `weapon-anchors.json` IS AUTHORED IN RAW-GLB SPACE AND MUST BE BAKED. Read raw and compared
+    against raw meshes, the anchor spans look inconsistent by 1.4x to 125x — which is what made them
+    look broken. They are not: `bakeBotWeaponAnchors` (bot-viewer-v3.html:2166) transforms them
+    through the normalized model's matrix, and they were never meant to set scale in the first place.
+
+  * THE HOLD IS AUTHORED, NOT DERIVED. `weapons.js` carries `thirdPersonHold` per weapon
+    { position, rotation, scale }, tuned in body-preview.html, and `resolveWeaponHold` blends it
+    against crouch and prone. Deriving a grip from geometry was solving a problem that was already
+    solved and tuned.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/pose-retarget.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #12161d;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #d8dee9; }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12); --muted: #8d97a8; --accent: #77c8a1; --warn: #d8a657; --bad: #e08a7a;
+    position: fixed; top: 10px; right: 10px; width: 336px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  select { width: 100%; padding: 5px 6px; font: inherit; font-size: 11px; margin: 2px 0 4px;
+    background: rgba(255,255,255,0.045); color: #d8dee9;
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; flex-wrap: wrap; }
+  .seg button { flex: 1; min-width: 58px; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button:hover { border-color: rgba(119,200,161,0.45); }
+  .seg button.on { background: rgba(119,200,161,0.16); color: var(--accent); border-color: rgba(119,200,161,0.45); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .hide { display: none !important; }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: #d8dee9; font-weight: 600; }
+  #stats b.warn { color: var(--warn); }
+  #stats b.bad { color: var(--bad); }
+  #note { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #note a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #6d7788; font-size: 11px;
+    pointer-events: none; user-select: none; }
+  #load { position: fixed; left: 12px; top: 12px; color: #77c8a1; font-size: 11px;
+    background: rgba(18,22,28,0.9); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+    padding: 6px 10px; display: none; }
+  #load.show { display: block; }
+  #load.err { color: #e08a7a; }
+</style>
+</head>
+<body>
+
+<div id="load"></div>
+<div id="hint">Drag to orbit, scroll to zoom. The soldier on the right is the real game body.</div>
+
+<div id="panel">
+  <h1>Pose retarget</h1>
+  <p class="sub">CC0 clips driving the real procedural soldier through <code>setRagdollPose</code>.</p>
+
+  <h2>Clip source</h2>
+  <select id="source"></select>
+  <select id="clip"></select>
+  <div class="seg">
+    <button id="btnPlay" class="on">Pause</button>
+    <button id="btnStep">Step</button>
+  </div>
+  <div class="row"><label for="speed">speed</label><output id="speedOut"></output>
+    <input type="range" id="speed" min="0" max="2" step="0.05" value="1"></div>
+
+  <h2>Soldier</h2>
+  <select id="role"></select>
+  <label class="chk"><input type="checkbox" id="showSoldier" checked> our procedural soldier</label>
+  <label class="chk"><input type="checkbox" id="showSource" checked> the source character</label>
+  <label class="chk"><input type="checkbox" id="showJoints"> retargeted joint markers</label>
+  <label class="chk"><input type="checkbox" id="swapSides"> swap sides (which limb carries the gear)</label>
+  <label class="chk"><input type="checkbox" id="plant" checked> drop the pose so the lowest foot rests on the floor</label>
+
+  <h2>Fit</h2>
+  <div class="row"><label for="scale">scale trim</label><output id="scaleOut"></output>
+    <input type="range" id="scale" min="0.5" max="1.6" step="0.01" value="1"></div>
+
+  <h2>Fixing the cartoon</h2>
+  <p class="sub" style="margin:0 0 4px">Both default ON. Drag either to zero to see what it was doing.</p>
+  <div class="row"><label for="bob">bob damping</label><output id="bobOut"></output>
+    <input type="range" id="bob" min="0" max="1" step="0.01" value="0.6"></div>
+  <div class="row"><label for="inset">arm inset (lateral)</label><output id="insetOut"></output>
+    <input type="range" id="inset" min="0" max="1" step="0.01" value="0.45"></div>
+  <div class="row"><label for="armLift">arm lift (vertical)</label><output id="armLiftOut"></output>
+    <input type="range" id="armLift" min="-0.5" max="0.5" step="0.01" value="0"></div>
+  <div class="row"><label for="armPush">arm push (fore/aft)</label><output id="armPushOut"></output>
+    <input type="range" id="armPush" min="-0.5" max="0.5" step="0.01" value="0"></div>
+
+  <h2>Weapon</h2>
+  <select id="weapon"></select>
+  <div class="seg" id="carrySeg">
+    <button data-carry="hold" class="on">In hand</button>
+    <button data-carry="sling">Slung</button>
+  </div>
+  <div class="row"><label for="holdBlend">hold blend</label><output id="holdBlendOut"></output>
+    <input type="range" id="holdBlend" min="0" max="1" step="0.01" value="1"></div>
+  <p class="sub" style="margin:0">Every weapon is normalized to the same 0.62 m target that
+    <code>bot-viewer-v3.html</code> uses, then placed by the authored <code>thirdPersonHold</code>
+    in <code>weapons.js</code>, so there is nothing here to tune by hand.</p>
+  <div class="row"><label for="mountTrim">mount trim (m)</label><output id="mountTrimOut"></output>
+    <input type="range" id="mountTrim" min="-0.5" max="0.5" step="0.01" value="0"></div>
+  <div class="row"><label for="slingDrop">sling drop</label><output id="slingDropOut"></output>
+    <input type="range" id="slingDrop" min="0" max="0.9" step="0.01" value="0.35"></div>
+  <label class="chk"><input type="checkbox" id="flipForward"> flip facing (if the barrel points backwards)</label>
+
+  <div id="stats"></div>
+  <div id="note">
+    Clips from <a href="https://github.com/proofofplay/piratenation-art" target="_blank" rel="noopener">proofofplay/piratenation-art</a>
+    and <a href="https://kaylousberg.com" target="_blank" rel="noopener">KayKit by Kay Lousberg</a>, both CC0-1.0.
+    The body is the repo's own <code>createProceduralPlayerBody</code>.
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// The KayKit models in claudecraft-assets/ are MESHOPT-COMPRESSED — their CREDITS.md notes the pack
+// was optimised for shipping. Without this decoder GLTFLoader throws outright ("setMeshoptDecoder
+// must be called before loading compressed files") and none of them load. `body-preview-v3.html`
+// already does the same thing for the same files.
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+// The weapon GLBs in ../models/guns/ were compressed through glb-shrink-server and carry
+// KHR_draco_mesh_compression, so GLTFLoader.parse() throws "No DRACOLoader instance provided" on
+// every one of them. That is exactly why the weapon was invisible in the first version of this
+// panel: loadWeapon() threw and the error went to the corner banner. The repo already has a shared
+// attach helper, and code-map.html flags it as required by any loader that touches models/guns.
+import { attachDracoLoader } from '../draco-loader.js';
+// The weapon pipeline the game already has. Nothing about mounting a weapon is invented here:
+// `getWeapon` carries the model path, `viewTargetSize` and the authored `thirdPersonHold`;
+// `resolveWeaponHold` blends that hold the same way bot-viewer-v3.html:2321 does.
+import { getWeapon } from '../weapons.js';
+import { resolveWeaponHold } from '../weapon-hold-resolver.js';
+
+// The two repo modules this demo exists to drive.
+import { createProceduralPlayerBody, BODY_DESIGN_DEFAULTS } from '../player-procedural-body.js';
+import { setBotBodyKind, botDesignForRole, SOLDIER_ROLE_DESIGNS } from '../bot-body-design.js';
+
+// ---------------------------------------------------------------------------
+// Clip sources
+// ---------------------------------------------------------------------------
+
+const MEDIA = 'https://media.githubusercontent.com/media/proofofplay/piratenation-art/main';
+const lfs = (...segs) => `${MEDIA}/${segs.map(encodeURIComponent).join('/')}`;
+
+const SOURCES = [
+  { id: 'knight', label: 'KayKit Knight — 22 clips (local)', url: '../claudecraft-assets/models/chars/players/knight.glb' },
+  { id: 'rogue', label: 'KayKit Rogue — 22 clips (local)', url: '../claudecraft-assets/models/chars/players/rogue.glb' },
+  { id: 'barbarian', label: 'KayKit Barbarian — 22 clips (local)', url: '../claudecraft-assets/models/chars/players/barbarian.glb' },
+  { id: 'ranger', label: 'KayKit Ranger — 22 clips (local)', url: '../claudecraft-assets/models/chars/players/ranger.glb' },
+  { id: 'mage', label: 'KayKit Mage — 22 clips (local)', url: '../claudecraft-assets/models/chars/players/mage.glb' },
+  { id: 'rustbeard', label: 'Pirate Nation Rustbeard — 32 clips (streamed)', url: lfs('Voxel Game Assets', 'Lore Characters', 'rustbeard', 'avatar_rustbeard_001.gltf') },
+];
+
+// ---------------------------------------------------------------------------
+// One canonical skeleton, so the retarget never learns a rig's private names.
+//
+// Resolution is by EXACT match on a normalised name, deliberately not the fuzzy scoring in
+// `body-preview-v3.html:1283`. Fuzziness is what would let `LeftHandThumb1` answer to `lefthand`.
+// The normaliser itself is the same idea as `normalizeV3BoneName` (body-preview-v3.html:1258):
+// lowercase, drop everything before a `:` or `|`, strip a trailing `_12`/`.003`, strip a
+// `mixamorig1` prefix, then drop every non-alphanumeric character.
+//
+// Aliases are ORDERED — the first one that matches a bone wins. That matters for the hand: KayKit
+// ships both `wrist.l` and its child `hand.l`, and the wrist is the joint our arm chain ends at.
+// ---------------------------------------------------------------------------
+
+const normalizeBone = (name) => String(name || '').toLowerCase().split(/[:|]/).pop()
+  .replace(/[._]\d+$/, '').replace(/^mixamorig\d*/, '').replace(/[^a-z0-9]/g, '');
+
+const SLOTS = {
+  hips: ['hips', 'body', 'pelvis'],
+  chest: ['chest', 'spine2', 'torax', 'upperchest'],
+  head: ['head'],
+  leftUpperArm: ['upperarml', 'leftarm', 'arml', 'leftupperarm'],
+  leftLowerArm: ['lowerarml', 'leftforearm', 'forearml', 'leftlowerarm'],
+  leftHand: ['wristl', 'lefthand', 'handl', 'leftwrist'],
+  rightUpperArm: ['upperarmr', 'rightarm', 'armr', 'rightupperarm'],
+  rightLowerArm: ['lowerarmr', 'rightforearm', 'forearmr', 'rightlowerarm'],
+  rightHand: ['wristr', 'righthand', 'handr', 'rightwrist'],
+  leftUpperLeg: ['upperlegl', 'leftupleg', 'legl', 'leftupperleg', 'thighl'],
+  leftLowerLeg: ['lowerlegl', 'leftleg', 'leftlowerleg', 'calfl'],
+  leftFoot: ['footl', 'leftfoot'],
+  rightUpperLeg: ['upperlegr', 'rightupleg', 'legr', 'rightupperleg', 'thighr'],
+  rightLowerLeg: ['lowerlegr', 'rightleg', 'rightlowerleg', 'calfr'],
+  rightFoot: ['footr', 'rightfoot'],
+};
+const SLOT_IDS = Object.keys(SLOTS);
+
+function resolveSlots(bones) {
+  const byName = new Map();
+  for (const b of bones) {
+    const key = normalizeBone(b.name);
+    if (key && !byName.has(key)) byName.set(key, b);
+  }
+  const found = new Map();
+  for (const [slot, aliases] of Object.entries(SLOTS)) {
+    for (const alias of aliases) {
+      if (byName.has(alias)) { found.set(slot, byName.get(alias)); break; }
+    }
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Scene
+// ---------------------------------------------------------------------------
+
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#171b22');
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.05, 200);
+camera.position.set(2.6, 1.9, 4.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.95, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 1;
+controls.maxDistance = 30;
+
+scene.add(new THREE.HemisphereLight('#a8bdd4', '#2a2f38', 1.6));
+const sun = new THREE.DirectionalLight('#ffe9c8', 2.2);
+sun.position.set(4, 8, 5);
+scene.add(sun);
+
+scene.add(new THREE.Mesh(
+  new THREE.CircleGeometry(20, 48).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: '#232833', roughness: 0.96 }),
+));
+const grid = new THREE.GridHelper(30, 60, 0x3a4250, 0x2a303a);
+grid.position.y = 0.001;
+scene.add(grid);
+
+const sourceGroup = new THREE.Group();
+sourceGroup.position.x = -1.1;
+scene.add(sourceGroup);
+
+// ---------------------------------------------------------------------------
+// Our soldier — the real one
+// ---------------------------------------------------------------------------
+
+setBotBodyKind('soldier');
+
+const soldierRoot = new THREE.Group();
+soldierRoot.position.x = 1.0;
+scene.add(soldierRoot);
+
+let body = null, bodyRole = 'rifleman';
+
+// How far BELOW the shoulder v3's mount sits. v3 anchors the weapon at `feetY + 1.5`
+// (bot-viewer-v3.html:2347, body-preview-v3.html:3925), but 1.5 is only meaningful against v3's own
+// torso height — and this demo's torso is not that, because the trunk is rescaled to the donor clip.
+// Copying the constant put the gun above the shoulders and the arms went straight up after it.
+// So measure the relationship instead of the number: run the rig's OWN gait to a settled stance,
+// read where its shoulders actually land, and keep the same shoulder-relative offset afterwards.
+let mountBelowShoulder = 0;
+
+function measureMountOffset(b) {
+  const state = {
+    position: new THREE.Vector3(), velocity: new THREE.Vector3(),
+    yaw: 0, alive: true, grounded: true,
+  };
+  for (let i = 0; i < 240; i++) b.update(1 / 60, state);   // the gait eases; one frame is not a stance
+  soldierRoot.updateMatrixWorld(true);
+  const at = (o) => o.getWorldPosition(new THREE.Vector3());
+  const feet = Math.min(at(b.joints.leftFoot).y, at(b.joints.rightFoot).y);
+  const shoulder = (at(b.joints.leftShoulder).y + at(b.joints.rightShoulder).y) / 2;
+  return (shoulder - feet) - 1.5;
+}
+
+function buildSoldier(role) {
+  if (body) { body.destroy(); soldierRoot.clear(); }
+  bodyRole = role;
+  body = createProceduralPlayerBody({
+    THREE, scene: soldierRoot, terrainHeight: () => 0, mode: 'remote',
+    design: botDesignForRole(role),
+  });
+  mountBelowShoulder = measureMountOffset(body);
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// Loading a clip source
+// ---------------------------------------------------------------------------
+
+const loader = new GLTFLoader();
+loader.setMeshoptDecoder(MeshoptDecoder);   // KayKit characters
+attachDracoLoader(loader);                  // weapon GLBs
+const sourceCache = new Map();
+const loadEl = document.getElementById('load');
+const say = (m, err = false) => { loadEl.textContent = m; loadEl.classList.toggle('err', err); loadEl.classList.add('show'); };
+const hide = () => loadEl.classList.remove('show');
+
+let src = null;   // { scene, clips, mixer, slots, rest, legLen }
+
+async function loadSource(def) {
+  if (sourceCache.has(def.id)) return sourceCache.get(def.id);
+  say(`Loading ${def.label}…`);
+
+  const res = await fetch(def.url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} — ${def.url}`);
+  const buf = await res.arrayBuffer();
+  // Both container forms appear here: the KayKit files are binary .glb, the Pirate Nation one is
+  // .gltf JSON with its buffer embedded as a base64 data URI. parse() takes either.
+  const isGlb = new DataView(buf).getUint32(0, true) === 0x46546c67;
+  const gltf = await loader.parseAsync(isGlb ? buf : new TextDecoder().decode(buf), '');
+
+  const bones = [];
+  gltf.scene.traverse(o => { if (o.isBone) bones.push(o); });
+  if (!bones.length) throw new Error('no bones — this source is not skinned');
+
+  const slots = resolveSlots(bones);
+  const missing = SLOT_IDS.filter(s => !slots.has(s));
+  if (missing.length) throw new Error(`unmapped slots: ${missing.join(', ')}`);
+
+  // Rest-pose measurements, taken BEFORE any clip runs. Only the TRUNK lengths are kept: the limb
+  // lengths come from our own body, never from the donor.
+  gltf.scene.updateMatrixWorld(true);
+  const w = (b) => b.getWorldPosition(new THREE.Vector3());
+  const at = (slot) => w(slots.get(slot));
+  const rest = {
+    legLen: at('leftUpperLeg').distanceTo(at('leftLowerLeg')) + at('leftLowerLeg').distanceTo(at('leftFoot')),
+    spine: at('hips').distanceTo(at('chest')),
+    neck: at('chest').distanceTo(at('head')),
+    shoulderL: at('chest').distanceTo(at('leftUpperArm')),
+    shoulderR: at('chest').distanceTo(at('rightUpperArm')),
+    hipL: at('hips').distanceTo(at('leftUpperLeg')),
+    hipR: at('hips').distanceTo(at('rightUpperLeg')),
+  };
+  rest.trunk = at('hips').distanceTo(at('head'));
+
+  const entry = {
+    scene: gltf.scene, clips: gltf.animations, slots, rest,
+    mixer: new THREE.AnimationMixer(gltf.scene),
+    boneCount: bones.length, label: def.label,
+  };
+  sourceCache.set(def.id, entry);
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
+// The retarget
+//
+// Only the DIRECTIONS come from the clip. Every length comes from our own soldier.
+//
+// The obvious approach — scale the donor's joint positions about the hips by one factor — is what
+// this demo tried first, and it is wrong. The KayKit characters are stylised: short legs, big head.
+// Matching their leg to ours means a ×2.96 blow-up, which put the head at 3.29 m and the feet
+// 1.55 m apart. Any single factor has the same problem, because the donor's PROPORTIONS are not
+// ours and no scalar fixes proportions.
+//
+// So each joint is rebuilt by stepping our own bone length along the donor's unit direction:
+//
+//     knee = hip  + dir(theirHip -> theirKnee)  * ourThighLen
+//     foot = knee + dir(theirKnee -> theirFoot) * ourShinLen
+//
+// The pose then has our skeleton's dimensions exactly and the donor's angles exactly, which is the
+// whole point. Trunk offsets (spine, neck, shoulder and hip placement) have no counterpart in
+// `limbLengths`, so they are scaled by one trunk factor derived from documented constants:
+// `legLen / BODY_DESIGN_DEFAULTS.legLenRatio` recovers our design height H, and the trunk is
+// whatever is left above the legs.
+// ---------------------------------------------------------------------------
+
+const _up = new THREE.Vector3(), _v = new THREE.Vector3();
+const pose = {};                       // ragdoll key -> Vector3, reused every frame
+for (const k of ['head', 'neck', 'chest', 'pelvis', 'shoulderL', 'shoulderR', 'elbowL', 'elbowR',
+  'handL', 'handR', 'hipL', 'hipR', 'kneeL', 'kneeR', 'footL', 'footR']) pose[k] = new THREE.Vector3();
+
+const canon = {};                      // canonical slot -> Vector3
+for (const s of SLOT_IDS) canon[s] = new THREE.Vector3();
+
+const _tmp = new THREE.Vector3();
+
+// ---------------------------------------------------------------------------
+// Weapons — the game's pipeline, not a parallel one
+//
+// The first version of this panel invented its own mounting: bounding-box scale, an ad-hoc barrel
+// axis, and grip sliders. That produced a giant CZ, tiny pistols inside the torso, and everything
+// backwards. None of it was necessary — the repo already has the whole path, and this now walks it:
+//
+//   1. `getWeapon(id)` (weapons.js) supplies the model path and the authored `thirdPersonHold`
+//      { position, rotation, scale } tuned in body-preview.html.
+//
+//   2. `normalizeBotWeaponModel` (copied from bot-viewer-v3.html:2150) puts the model in the
+//      canonical space every other consumer assumes: the LONGEST AXIS IS ROTATED ONTO Z, the model
+//      is scaled so that axis equals THIRD_PERSON_TARGET, and it is RECENTRED on its own bounding
+//      box. Skipping the rotation is why the CZ came out backwards — its raw bbox is
+//      8.2 x 173.3 x 33.6, so its longest axis is Y, not forward. Skipping the recentre is why
+//      weapons sat inside the torso. Using `viewTargetSize` here — which an earlier version of this
+//      file did — is why the CZ was 2.1x oversized.
+//
+//   3. `bakeBotWeaponAnchors` (copied from bot-viewer-v3.html:2166) moves the raw-GLB anchors from
+//      `weapon-anchors.json` into that same normalized space. This is the piece whose absence made
+//      the sidecar look broken earlier: comparing RAW anchors against RAW meshes gives ratios from
+//      1.4x to 125x, but the anchors were never meant to be read raw, and never meant to set scale
+//      — the normalization target does that. Baked, they land on the model.
+//
+//   4. The mount is bot-viewer-v3.html's two-node rig (v3:2345-2352): an outer node carrying the
+//      world position and BODY YAW ONLY, and an inner node carrying the authored hold's position,
+//      rotation and scale. v3's comment is explicit that mounting to the torso instead
+//      double-counts every stance and puts the gun under the floor, so the outer node sits in the
+//      ground-anchored frame: the body's XZ at `feetY + 1.5`.
+//
+// Hands then follow the weapon, which is the direction the game works in. v3 does that through
+// `weapon-pose-controller.js` driving `setArmTarget`; this demo cannot, because **setArmTarget is
+// inert under setRagdollPose** — arm targets are consumed by solveArm on the update() path only.
+// So the baked grip anchors are blended into the hand positions instead. Same source of truth,
+// same result, one layer lower.
+// ---------------------------------------------------------------------------
+
+const WEAPON_IDS = ['none', 'cz_805_bren', 'm24', 'rpg', 'five_seven', 'm1911'];
+
+// The chain is v3's, node for node (bot-viewer-v3.html:2243-2250). Skipping either of the middle
+// two is why the weapon sat in the wrong place: `weaponFrame` is a FIXED 180-degree spin, and
+// `weaponView` carries the authored pose from weapon-poses.json that brings the gun down off the
+// shoulder into a carry. In v3 `weapon-pose-controller.js` drives weaponView and resolves the arm
+// targets from it; here the pose is applied directly, because setArmTarget is inert under
+// setRagdollPose.
+const weaponRig = new THREE.Group();      // world position + body yaw
+const weaponAdjust = new THREE.Group();   // the authored thirdPersonHold
+const weaponFrame = new THREE.Group();    // fixed PI, v3:2246
+const weaponView = new THREE.Group();     // weapon-poses.json pose
+weaponFrame.rotation.y = Math.PI;
+weaponRig.add(weaponAdjust);
+weaponAdjust.add(weaponFrame);
+weaponFrame.add(weaponView);
+let weaponPoses = null;
+
+let weaponModel = null, bakedAnchors = null, weaponDef = null;
+let rawAnchorData = null;
+const _hold = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+
+/** Which pose key is the trigger hand. The swap toggle moves it with everything else. */
+const TRIGGER_KEY = () => (state.swap ? 'L' : 'R');
+const SUPPORT_KEY = () => (state.swap ? 'R' : 'L');
+
+// THIRD_PERSON_TARGET is the whole reason the CZ was enormous. `viewTargetSize` is the FIRST-PERSON
+// view-model size and weapons.js:80 says in as many words not to use it here: "the game normalizes
+// the third-person GLB to the preview's 0.62 target (NOT viewTargetSize) so the hold scale, pose
+// offsets (lowReady etc.), and baked anchors all read identically". One flat number for every
+// weapon, because the authored holds and anchors were all tuned against it.
+const THIRD_PERSON_TARGET = 0.62;
+
+// Verbatim from bot-viewer-v3.html:2150 (normalizeBotWeaponModel). Longest axis onto Z, scale that
+// axis to the target, recentre. Returns the matrix the anchors have to be baked through.
+const _nBox = new THREE.Box3(), _nSize = new THREE.Vector3();
+function normalizeBotWeaponModel(model, targetSize) {
+  model.updateMatrixWorld(true);
+  _nBox.setFromObject(model); _nBox.getSize(_nSize);
+  if (_nSize.x >= _nSize.y && _nSize.x >= _nSize.z) model.rotation.y = Math.PI * 0.5;
+  else if (_nSize.y >= _nSize.x && _nSize.y >= _nSize.z) model.rotation.x = Math.PI * 0.5;
+  model.updateMatrixWorld(true);
+  _nBox.setFromObject(model); _nBox.getSize(_nSize);
+  model.scale.multiplyScalar(targetSize / Math.max(_nSize.x, _nSize.y, _nSize.z, 1e-6));
+  model.updateMatrixWorld(true);
+  _nBox.setFromObject(model);
+  model.position.sub(_nBox.getCenter(new THREE.Vector3()));
+  model.updateMatrixWorld(true);
+  return model.matrixWorld.clone();
+}
+
+// Verbatim from bot-viewer-v3.html:2166 (bakeBotWeaponAnchors). Raw anchors live in raw-GLB space;
+// this puts them in the normalized space the model actually renders in.
+function bakeBotWeaponAnchors(rawAnchors, matrix) {
+  if (!rawAnchors) return null;
+  const rotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(matrix));
+  const anchors = {};
+  for (const key in rawAnchors) {
+    const raw = rawAnchors[key];
+    const position = new THREE.Vector3(...raw.p).applyMatrix4(matrix);
+    const quaternion = rotation.clone().multiply(new THREE.Quaternion(...(raw.q || [0, 0, 0, 1])));
+    anchors[key] = { p: [position.x, position.y, position.z], q: [quaternion.x, quaternion.y, quaternion.z, quaternion.w] };
+  }
+  return anchors;
+}
+
+async function loadWeapon(id) {
+  if (id === 'none') { weaponModel = null; weaponDef = null; bakedAnchors = null; weaponView.clear(); return; }
+  weaponDef = getWeapon(id);
+  if (!weaponDef) throw new Error(`weapons.js has no entry for ${id}`);
+  if (!rawAnchorData) rawAnchorData = await (await fetch('../weapon-anchors.json', { cache: 'no-store' })).json();
+  if (!weaponPoses) weaponPoses = (await (await fetch('../weapon-poses.json', { cache: 'no-store' })).json()).weaponPoses;
+
+  say(`Loading ${weaponDef.displayName}…`);
+  const res = await fetch(`../${weaponDef.model}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} — ${weaponDef.model}`);
+  const gltf = await loader.parseAsync(await res.arrayBuffer(), '');
+
+  weaponView.clear();
+  weaponModel = gltf.scene;
+  const normalizedMatrix = normalizeBotWeaponModel(weaponModel, THIRD_PERSON_TARGET);
+  bakedAnchors = bakeBotWeaponAnchors(rawAnchorData?.[id]?.ikAnchors, normalizedMatrix);
+  weaponView.add(weaponModel);
+}
+
+const _holdEuler = new THREE.Euler(), _rigEuler = new THREE.Euler();
+// Grip anchors in the SAME space as `pose` (soldierRoot-local), not world — see placeWeapon.
+const _gripPose = { right: new THREE.Vector3(), left: new THREE.Vector3() };
+// Shoulder-to-grip distance per hand, surfaced in the readout so a hand that falls short is visible.
+const gripReach = { trigger: null, support: null };
+let gripsValid = false;
+
+/**
+ * Mount the weapon exactly as v3 does, then read the grip anchors back out in world space so the
+ * hands have something real to reach for.
+ *
+ * `resolveWeaponHold` is handed no stance weights and no carry blend: this demo has neither a
+ * stance machine nor a locomotion state, so it gets the plain standing hold, which is the correct
+ * degenerate case rather than a fabricated one.
+ */
+function placeWeapon() {
+  weaponRig.visible = !!weaponModel;
+  gripsValid = false;
+  if (!weaponModel) return;
+
+  const hold = resolveWeaponHold(weaponDef, null, null, _hold);
+  // weaponRig's local +Z must be the direction the soldier FACES. body-preview-v3.html:892 states
+  // the convention outright — weaponFrame is the "fixed 180deg spin: camera-forward (-Z) ->
+  // body-forward (+Z)" — so everything below weaponRig is authored in a +Z-forward frame.
+  const yaw = Math.atan2(bodyFwd.x, bodyFwd.z);
+
+  const carryPose = weaponPoses?.lowReady;
+  if (carryPose) {
+    weaponView.position.fromArray(carryPose.p);
+    weaponView.quaternion.setFromEuler(_holdEuler.set(carryPose.r[0], carryPose.r[1], carryPose.r[2], 'XYZ'));
+    weaponView.scale.setScalar(carryPose.scale ?? 1);
+  }
+  // Shoulder-relative, not feet-relative: see measureMountOffset. On a rig with v3's own torso the
+  // two are identical, and on this one — whose trunk is rescaled to the donor clip — only this one
+  // keeps the gun at the carry height the holds were authored for.
+  const shoulderY = (pose.shoulderL.y + pose.shoulderR.y) * 0.5;
+  weaponRig.position.set(pose.pelvis.x, shoulderY - mountBelowShoulder + state.mountTrim, pose.pelvis.z);
+  weaponRig.quaternion.setFromEuler(_rigEuler.set(0, yaw, 0, 'YXZ'));
+  weaponAdjust.position.fromArray(hold.position);
+  weaponAdjust.quaternion.setFromEuler(_holdEuler.set(hold.rotation[0], hold.rotation[1], hold.rotation[2], 'XYZ'));
+  weaponAdjust.scale.setScalar(hold.scale ?? 1);
+
+  if (state.carry === 'sling') {
+    // Slung: same mount, dropped and rolled onto the back. Everything else is untouched, so the
+    // clip keeps both arms — which is the whole reason a sling is worth having.
+    weaponAdjust.position.y -= state.slingDrop;
+    weaponAdjust.position.z -= 0.30;
+    weaponAdjust.quaternion.multiply(new THREE.Quaternion().setFromEuler(_holdEuler.set(0, 0, 1.15, 'XYZ')));
+  }
+
+  // THE GRIPS COME BACK IN THE WRONG SPACE UNLESS THEY ARE CONVERTED. The body was built with
+  // `scene: soldierRoot` (soldierRoot.position.x = 1.0, so the soldier stands beside the donor), so
+  // every joint in `pose` is in soldierRoot-LOCAL space. `matrixWorld` is world space. Blending a
+  // world-space grip into a local-space hand put the target a full metre to the side — further than
+  // the 0.65 m arm can reach — so the clamp pinned the hand at full extension and the arms never
+  // went near the gun, however well the weapon itself was placed.
+  soldierRoot.updateWorldMatrix(true, false);
+  weaponRig.updateMatrixWorld(true);
+  if (bakedAnchors?.rightGrip && bakedAnchors?.leftGrip) {
+    _gripPose.right.fromArray(bakedAnchors.rightGrip.p).applyMatrix4(weaponView.matrixWorld);
+    _gripPose.left.fromArray(bakedAnchors.leftGrip.p).applyMatrix4(weaponView.matrixWorld);
+    soldierRoot.worldToLocal(_gripPose.right);
+    soldierRoot.worldToLocal(_gripPose.left);
+    gripsValid = true;
+  }
+}
+
+const state = {
+  playing: true, speed: 1, plant: true, swap: false, scaleTrim: 1, showJoints: false,
+  // Fixes for what a chibi clip does wrong on a soldier. `armInset` only squeezes the LATERAL axis;
+  // `armLift` and `armPush` move the hands on the other two, so the whole carry is placeable rather
+  // than only narrowable.
+  bobDamp: 0.6, armInset: 0.45, armLift: 0, armPush: 0,
+  // Weapon.
+  weapon: 'none', carry: 'hold', holdBlend: 1, flipForward: false, slingDrop: 0.35, mountTrim: 0,
+};
+
+const _dir = new THREE.Vector3();
+/** Unit direction from canonical joint `a` to `b`; falls back to +Y if they coincide. */
+function dir(a, b) {
+  _dir.subVectors(canon[b], canon[a]);
+  const len = _dir.length();
+  return len > 1e-7 ? _dir.divideScalar(len) : _dir.set(0, 1, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Two-bone IK
+//
+// Every post-pass below moves an endpoint — a hand pulled inboard, a hip lifted out of a bob, a hand
+// snapped onto a grip. Moving an endpoint invalidates the middle joint, and re-deriving it by simply
+// scaling the old bone would stretch the limb, which is the one thing the whole retarget is built to
+// avoid. So the middle joint is re-solved instead, which keeps both bone lengths exact by
+// construction.
+//
+// `poleHint` is the joint's ORIGINAL position, so the clip's own bend plane survives: knees keep
+// bending the way the animator bent them instead of snapping to some arbitrary pole vector.
+// ---------------------------------------------------------------------------
+
+const _ax = new THREE.Vector3(), _perp = new THREE.Vector3();
+function solveMid(out, root, end, l1, l2, poleHint) {
+  _ax.subVectors(end, root);
+  let d = _ax.length();
+  if (d < 1e-6) { _ax.set(0, -1, 0); d = 1e-6; } else _ax.divideScalar(d);
+  const reach = Math.min(d, l1 + l2 - 1e-5);
+  const a = (l1 * l1 - l2 * l2 + reach * reach) / (2 * reach);
+  const h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+  _perp.subVectors(poleHint, root).addScaledVector(_ax, -_perp.dot(_ax));
+  if (_perp.lengthSq() < 1e-12) _perp.set(_ax.z, 0, -_ax.x);
+  if (_perp.lengthSq() < 1e-12) _perp.set(0, 0, 1);
+  _perp.normalize();
+  out.copy(root).addScaledVector(_ax, a).addScaledVector(_perp, h);
+}
+
+// A body frame built from the pose itself, so it works for any donor without knowing its axes.
+const bodyLat = new THREE.Vector3(), bodyUp = new THREE.Vector3(), bodyFwd = new THREE.Vector3();
+function updateBodyFrame() {
+  bodyLat.subVectors(pose.shoulderR, pose.shoulderL);
+  if (bodyLat.lengthSq() < 1e-12) bodyLat.set(1, 0, 0);
+  bodyLat.normalize();
+  bodyUp.subVectors(pose.chest, pose.pelvis);
+  if (bodyUp.lengthSq() < 1e-12) bodyUp.set(0, 1, 0);
+  bodyUp.addScaledVector(bodyLat, -bodyUp.dot(bodyLat)).normalize();
+  // Built the same way `rdBasis` builds it (player-procedural-body.js:1910): forward = up x lateral.
+  // The demo originally used lateral x up, which is the exact opposite, and put every mounted
+  // weapon behind the soldier. Measured, not reasoned: see test-pose-retarget.mjs.
+  // cross(lat, up), NOT cross(up, lat). rdBasis (player-procedural-body.js:1934) uses the latter,
+  // but its result is the body's LOCAL +Z, and the eyes sit on local -Z (:1932) — so copying
+  // rdBasis points this vector out the back of the soldier. Measured off a posed rig rather than
+  // reasoned: the head's world quaternion applied to (0,0,-1) agrees with cross(lat, up), dot 1.000.
+  bodyFwd.crossVectors(bodyLat, bodyUp).normalize();
+  if (state.flipForward) bodyFwd.negate();
+}
+
+// Running mean of the stance height, for the bob damper. Reset whenever the motion changes, or the
+// mean chases the old clip for a second and the first stride looks wrong.
+let bobMean = null;
+const resetBob = () => { bobMean = null; };
+
+function retarget() {
+  if (!src || !body) return;
+  src.scene.updateMatrixWorld(true);
+  for (const s of SLOT_IDS) src.slots.get(s).getWorldPosition(canon[s]);
+
+  // The donor rigs carry no neck joint — their head bone already SITS at the base of the skull — so
+  // the skull top is synthesised along the head bone's own +Y. Without it the ragdoll gets a
+  // zero-length neck and its head basis is undefined.
+  _up.set(0, 1, 0).applyQuaternion(src.slots.get('head').getWorldQuaternion(new THREE.Quaternion()));
+
+  const { legLen, thighLen, shinLen, armLen } = body.limbLengths;
+  const halfArm = armLen * 0.5;                                   // upperArmFrac = forearmFrac = 0.5
+  const designH = legLen / BODY_DESIGN_DEFAULTS.legLenRatio;      // recovers H (1.8 on the baseline)
+  const trunkK = ((designH - legLen) / Math.max(src.rest.trunk, 1e-6)) * state.scaleTrim;
+
+  // Source left/right. Which of OUR limbs they land on is the swap toggle; it changes nothing about
+  // the shape of the pose, only which limb's gear and weapon follow it.
+  const L = state.swap ? 'R' : 'L', R = state.swap ? 'L' : 'R';
+
+  pose.pelvis.set(0, 0, 0);
+  pose.chest.copy(pose.pelvis).addScaledVector(dir('hips', 'chest'), src.rest.spine * trunkK);
+  pose.neck.copy(pose.chest).addScaledVector(dir('chest', 'head'), src.rest.neck * trunkK);
+  pose.head.copy(pose.neck).addScaledVector(_up, src.rest.neck * trunkK * 0.6);
+
+  for (const [side, key] of [['left', L], ['right', R]]) {
+    const up = side === 'left' ? 'leftUpperArm' : 'rightUpperArm';
+    const lo = side === 'left' ? 'leftLowerArm' : 'rightLowerArm';
+    const hd = side === 'left' ? 'leftHand' : 'rightHand';
+    pose[`shoulder${key}`].copy(pose.chest)
+      .addScaledVector(dir('chest', up), src.rest[side === 'left' ? 'shoulderL' : 'shoulderR'] * trunkK);
+    pose[`elbow${key}`].copy(pose[`shoulder${key}`]).addScaledVector(dir(up, lo), halfArm);
+    pose[`hand${key}`].copy(pose[`elbow${key}`]).addScaledVector(dir(lo, hd), halfArm);
+
+    const hip = side === 'left' ? 'leftUpperLeg' : 'rightUpperLeg';
+    const knee = side === 'left' ? 'leftLowerLeg' : 'rightLowerLeg';
+    const foot = side === 'left' ? 'leftFoot' : 'rightFoot';
+    pose[`hip${key}`].copy(pose.pelvis)
+      .addScaledVector(dir('hips', hip), src.rest[side === 'left' ? 'hipL' : 'hipR'] * trunkK);
+    pose[`knee${key}`].copy(pose[`hip${key}`]).addScaledVector(dir(hip, knee), thighLen);
+    pose[`foot${key}`].copy(pose[`knee${key}`]).addScaledVector(dir(knee, foot), shinLen);
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-passes. The reconstruction above is faithful to the donor; these three fix the ways a
+  // clip authored for a short round cartoon reads wrong on a tall soldier.
+  // -------------------------------------------------------------------------
+
+  updateBodyFrame();
+
+  // 1. ARM PLACEMENT, on all three body axes.
+  //
+  //    INSET squeezes the LATERAL offset toward the mid-line: the donors are barrel-chested, so
+  //    their arms swing wide to clear the belly, and the same angles leave a narrower soldier
+  //    holding its arms out. But inset is a MULTIPLIER on one axis, so it can only ever narrow —
+  //    it cannot raise, drop or shift a carry, which is why it alone was not enough.
+  //
+  //    LIFT and PUSH are additive offsets along the body's own up and forward axes, in arm-length
+  //    units, so the hands can be moved anywhere in the shoulder's reach rather than only pulled in.
+  //
+  //    All three move the HAND; the elbow is then re-solved, so the swing, the bend plane and both
+  //    bone lengths survive untouched.
+  if (state.armInset > 0 || state.armLift !== 0 || state.armPush !== 0) {
+    for (const key of ['L', 'R']) {
+      const sh = pose[`shoulder${key}`], el = pose[`elbow${key}`], hd = pose[`hand${key}`];
+      _v.subVectors(hd, sh);
+      _v.addScaledVector(bodyLat, -_v.dot(bodyLat) * state.armInset);
+      _v.addScaledVector(bodyUp, state.armLift * armLen);
+      _v.addScaledVector(bodyFwd, state.armPush * armLen);
+      const maxReach = armLen - 1e-4;
+      if (_v.length() > maxReach) _v.setLength(maxReach);
+      _tmp.copy(el);                                     // keep the original bend plane
+      hd.copy(sh).add(_v);
+      solveMid(el, sh, hd, halfArm, halfArm, _tmp);
+    }
+  }
+
+  // 2. BOB DAMPING. The cartoon walk pumps the hips up and down far harder than a person does, and
+  //    on a 1.8 m soldier that reads as a pantomime sneak. The stance height is measured against its
+  //    own running mean and pulled back toward it, then the KNEES ARE RE-SOLVED with the feet left
+  //    exactly where they were — so the legs absorb the difference, which is what real legs do.
+  //    The lift is clamped per leg so a damped hip can never out-reach thigh + shin.
+  if (state.bobDamp > 0) {
+    const stance = -Math.min(pose.footL.y, pose.footR.y);
+    if (bobMean === null) bobMean = stance;
+    bobMean += (stance - bobMean) * 0.03;
+    let dy = (bobMean - stance) * state.bobDamp;
+
+    for (const key of ['L', 'R']) {
+      const hip = pose[`hip${key}`], foot = pose[`foot${key}`];
+      const maxSpan = (thighLen + shinLen) - 1e-4;
+      const dx = hip.x - foot.x, dz = hip.z - foot.z;
+      const flat = Math.sqrt(dx * dx + dz * dz);
+      const maxY = Math.sqrt(Math.max(0, maxSpan * maxSpan - flat * flat));
+      dy = Math.min(dy, maxY - (hip.y - foot.y));        // never ask for a longer leg than we have
+    }
+
+    if (Math.abs(dy) > 1e-6) {
+      for (const key in pose) if (key !== 'footL' && key !== 'footR') pose[key].y += dy;
+      for (const key of ['L', 'R']) {
+        _tmp.copy(pose[`knee${key}`]);
+        solveMid(pose[`knee${key}`], pose[`hip${key}`], pose[`foot${key}`], thighLen, shinLen, _tmp);
+      }
+    }
+  }
+
+  // Drop the pose so the lower foot rests on y=0. Every clip in both libraries animates its root, so
+  // without this the figure sinks or floats by whatever the donor's own ground plane happened to be.
+  const lift = state.plant ? -Math.min(pose.footL.y, pose.footR.y) : legLen;
+  for (const key in pose) pose[key].y += lift;
+
+  // 3. THE WEAPON GOES FIRST, AND THE HANDS FOLLOW IT.
+  //
+  //    This is the direction the game works in and the first version of this demo had it backwards.
+  //    The weapon is mounted from its authored `thirdPersonHold`; the grip anchors are then read
+  //    back out in world space and blended into the hands. Nothing about where a rifle sits is
+  //    invented here any more — it is whatever body-preview.html tuned.
+  placeWeapon();
+  const holding = state.weapon !== 'none' && state.carry === 'hold' && state.holdBlend > 0 && gripsValid;
+  if (holding) {
+    for (const [key, grip] of [[TRIGGER_KEY(), _gripPose.right], [SUPPORT_KEY(), _gripPose.left]]) {
+      const sh = pose[`shoulder${key}`], el = pose[`elbow${key}`], hd = pose[`hand${key}`];
+      // Reported in the readout: an unreachable grip is a real answer, not a failure to notice one.
+      gripReach[grip === _gripPose.right ? 'trigger' : 'support'] = grip.distanceTo(sh);
+      _tmp.copy(el);
+      hd.lerp(grip, state.holdBlend);
+      _v.subVectors(hd, sh);
+      if (_v.length() > armLen - 1e-4) { _v.setLength(armLen - 1e-4); hd.copy(sh).add(_v); }
+      solveMid(el, sh, hd, halfArm, halfArm, _tmp);
+    }
+  }
+
+  body.setRagdollPose(pose);
+  finishRagdollPose();
+  if (body.flush) body.flush(true);
+}
+
+// ---------------------------------------------------------------------------
+// What setRagdollPose leaves undone
+//
+// `setRagdollPose` is the DEATH-POSE path, and it is missing two things a standing, geared soldier
+// needs. Both are visible: they are the backwards feet and the armour plates floating beside the
+// elbows. `player-procedural-body.js:1370-1373` already documents the cause in the update() path's
+// own comment — `placeSegment`/`poseLimb` build joint rotations with `setFromUnitVectors`, which
+// "gives +Y along the bone but an ARBITRARY ROLL … that is why outboard leg pistons rendered
+// front-centre. jointFrame re-rolls the basis against the body orientation."
+//
+// `poseLimb` never calls `jointFrame`, and never orients the foot at all beyond that arbitrary
+// roll. So the two passes below replicate exactly what `solveLeg`/`solveArm` do afterwards:
+//
+//   jointFrame(node, from, to, orientation)   player-procedural-body.js:1253-1266, :1349-1351, :1410-1412
+//   leg.foot.quaternion = groundQ * orientation                                            :1378-1379
+//
+// Gear is parented to those joint nodes (`anchor.add(part)`, :1058), so orienting them is what puts
+// the pauldrons, elbow plates and knee pads back on the limb.
+// ---------------------------------------------------------------------------
+
+const _bodyQ = new THREE.Quaternion();
+const _jfUp = new THREE.Vector3(), _jfRef = new THREE.Vector3();
+const _jfRight = new THREE.Vector3(), _jfFwd = new THREE.Vector3(), _jfMat = new THREE.Matrix4();
+
+/** Body orientation, built exactly as `rdBasis` does (player-procedural-body.js:1903-1915). */
+function bodyOrientation(out) {
+  _jfUp.subVectors(pose.neck, pose.pelvis);
+  if (_jfUp.lengthSq() < 1e-8) _jfUp.set(0, 1, 0); else _jfUp.normalize();
+  _jfRight.subVectors(pose.shoulderR, pose.shoulderL);
+  if (_jfRight.lengthSq() < 1e-8) _jfRight.set(1, 0, 0); else _jfRight.normalize();
+  _jfFwd.crossVectors(_jfUp, _jfRight);
+  if (_jfFwd.lengthSq() < 1e-6) _jfFwd.set(0, 0, -1); else _jfFwd.normalize();
+  _jfRight.crossVectors(_jfUp, _jfFwd).normalize();
+  _jfMat.makeBasis(_jfRight, _jfUp, _jfFwd);
+  return out.setFromRotationMatrix(_jfMat);
+}
+
+/** `jointFrame`, copied from player-procedural-body.js:1253-1266. */
+function jointFrame(node, from, to, orientation) {
+  if (!node) return;
+  _jfUp.subVectors(to, from);
+  if (_jfUp.lengthSq() < 1e-10) _jfUp.set(0, 1, 0); else _jfUp.normalize();
+  _jfRef.set(0, 0, 1).applyQuaternion(orientation);
+  _jfRight.crossVectors(_jfUp, _jfRef);
+  if (_jfRight.lengthSq() < 1e-8) {
+    _jfRef.set(1, 0, 0).applyQuaternion(orientation);
+    _jfRight.crossVectors(_jfUp, _jfRef);
+    if (_jfRight.lengthSq() < 1e-8) _jfRight.set(1, 0, 0);
+  }
+  _jfRight.normalize();
+  _jfFwd.crossVectors(_jfRight, _jfUp).normalize();
+  _jfMat.makeBasis(_jfRight, _jfUp, _jfFwd);
+  node.quaternion.setFromRotationMatrix(_jfMat);
+}
+
+function finishRagdollPose() {
+  const j = body.joints;
+  bodyOrientation(_bodyQ);
+
+  // Ragdoll key 'L' drives the VISUAL RIGHT limb — verified by feeding a pose and reading back
+  // which named joint arrived (see test-pose-retarget.mjs), and consistent with the mirror
+  // bot-limb-map.js:10-13 documents.
+  for (const [key, side] of [['L', 'right'], ['R', 'left']]) {
+    const hip = pose[`hip${key}`], knee = pose[`knee${key}`], foot = pose[`foot${key}`];
+    jointFrame(j[`${side}Hip`], hip, knee, _bodyQ);
+    jointFrame(j[`${side}Knee`], knee, foot, _bodyQ);
+    jointFrame(j[`${side}Ankle`], knee, foot, _bodyQ);
+    // Flat ground here, so `groundQ` is identity and the foot is simply body-oriented. On terrain
+    // this is where the ground normal would go, as solveLeg does.
+    if (j[`${side}Foot`]) j[`${side}Foot`].quaternion.copy(_bodyQ);
+
+    const sh = pose[`shoulder${key}`], el = pose[`elbow${key}`], hd = pose[`hand${key}`];
+    jointFrame(j[`${side}Shoulder`], sh, el, _bodyQ);
+    jointFrame(j[`${side}Elbow`], el, hd, _bodyQ);
+    jointFrame(j[`${side}Wrist`], el, hd, _bodyQ);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Joint markers — a cheap way to see the retargeted skeleton independently of the mesh
+// ---------------------------------------------------------------------------
+
+const markerRoot = new THREE.Group();
+soldierRoot.add(markerRoot);
+// The weapon rig lives in the soldier's own group, so the mount maths is in pose coordinates.
+soldierRoot.add(weaponRig);
+const markers = new Map();
+for (const key in pose) {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(0.035, 10, 8),
+    new THREE.MeshBasicMaterial({ color: key.endsWith('L') ? '#77c8a1' : key.endsWith('R') ? '#7aa7d8' : '#e8c46a' }),
+  );
+  markerRoot.add(m);
+  markers.set(key, m);
+}
+function updateMarkers() {
+  markerRoot.visible = state.showJoints;
+  if (!state.showJoints) return;
+  for (const [key, m] of markers) m.position.copy(pose[key]);
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const sourceSel = $('source'), clipSel = $('clip'), roleSel = $('role');
+
+for (const s of SOURCES) sourceSel.add(new Option(s.label, s.id));
+for (const role of Object.keys(SOLDIER_ROLE_DESIGNS)) roleSel.add(new Option(role, role));
+
+let action = null;
+
+function playClip(name) {
+  if (!src) return;
+  const clip = src.clips.find(c => c.name === name);
+  if (!clip) return;
+  if (action) action.stop();
+  action = src.mixer.clipAction(clip);
+  action.reset().play();
+  clipSel.value = name;
+  resetBob();          // the stance mean belongs to one motion; carrying it over spoils the first stride
+  src.mixer.update(0);
+  retarget();
+}
+
+async function selectSource(id, keepClip = null) {
+  const def = SOURCES.find(s => s.id === id);
+  src = await loadSource(def);
+  clipSel.innerHTML = '';
+  for (const c of src.clips) clipSel.add(new Option(c.name, c.name));
+
+  sourceGroup.clear();
+  sourceGroup.add(src.scene);
+  // Show the donor at our soldier's size so the two read as comparable rather than as a giant
+  // standing next to a doll.
+  src.scene.scale.setScalar(body.limbLengths.legLen / src.rest.legLen);
+
+  const wanted = keepClip && src.clips.some(c => c.name === keepClip) ? keepClip
+    : (src.clips.find(c => /walk/i.test(c.name)) ?? src.clips[0]).name;
+  playClip(wanted);
+  hide();
+}
+
+const guard = (fn) => fn().catch(err => { say(String(err.message || err), true); console.error(err); });
+
+sourceSel.onchange = () => guard(() => selectSource(sourceSel.value));
+clipSel.onchange = () => playClip(clipSel.value);
+roleSel.onchange = () => { buildSoldier(roleSel.value); retarget(); };
+
+$('btnPlay').onclick = (e) => {
+  state.playing = !state.playing;
+  e.target.textContent = state.playing ? 'Pause' : 'Play';
+  e.target.classList.toggle('on', state.playing);
+};
+$('btnStep').onclick = () => { if (src) { src.mixer.update(1 / 30); retarget(); } };
+
+$('showSoldier').onchange = (e) => { soldierRoot.visible = e.target.checked; };
+$('showSource').onchange = (e) => { sourceGroup.visible = e.target.checked; };
+$('showJoints').onchange = (e) => { state.showJoints = e.target.checked; };
+$('swapSides').onchange = (e) => { state.swap = e.target.checked; retarget(); };
+$('plant').onchange = (e) => { state.plant = e.target.checked; retarget(); };
+
+function bindRange(id, key, after) {
+  const el = $(id), out = $(id + 'Out');
+  const sync = () => { state[key] = +el.value; out.textContent = (+el.value).toFixed(2); after?.(); };
+  el.oninput = sync; sync();
+}
+bindRange('speed', 'speed');
+bindRange('scale', 'scaleTrim', () => retarget());
+bindRange('bob', 'bobDamp', () => retarget());
+bindRange('inset', 'armInset', () => retarget());
+bindRange('armLift', 'armLift', () => retarget());
+bindRange('armPush', 'armPush', () => retarget());
+bindRange('holdBlend', 'holdBlend', () => retarget());
+bindRange('mountTrim', 'mountTrim', () => retarget());
+bindRange('slingDrop', 'slingDrop', () => retarget());
+
+const weaponSel = $('weapon');
+for (const id of WEAPON_IDS) weaponSel.add(new Option(id === 'none' ? 'none' : (getWeapon(id)?.displayName ?? id), id));
+weaponSel.onchange = () => guard(async () => {
+  state.weapon = weaponSel.value;
+  await loadWeapon(state.weapon);
+  hide();
+  retarget();
+});
+
+$('carrySeg').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  for (const x of $('carrySeg').children) x.classList.toggle('on', x === b);
+  state.carry = b.dataset.carry;
+  retarget();
+};
+
+$('flipForward').onchange = (e) => { state.flipForward = e.target.checked; retarget(); };
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+const clock = new THREE.Clock();
+let acc = 0, frames = 0, fpsNow = 0;
+
+renderer.setAnimationLoop(async () => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (src && state.playing) {
+    src.mixer.update(dt * state.speed);
+    retarget();
+  }
+  updateMarkers();
+  controls.update();
+  await renderer.renderAsync(scene, camera);
+
+  acc += dt; frames++;
+  if (acc >= 0.4) { fpsNow = Math.round(frames / acc); acc = 0; frames = 0; updateStats(); }
+});
+
+function updateStats() {
+  if (!src || !body) return;
+  const trunkK = ((body.limbLengths.legLen / BODY_DESIGN_DEFAULTS.legLenRatio - body.limbLengths.legLen)
+    / Math.max(src.rest.trunk, 1e-6)) * state.scaleTrim;
+  const lowFoot = Math.min(pose.footL.y, pose.footR.y);
+  const cls = Math.abs(lowFoot) < 0.01 ? '' : Math.abs(lowFoot) < 0.05 ? 'warn' : 'bad';
+
+  $('stats').innerHTML = `
+    <div><b>${fpsNow}</b> fps &nbsp;·&nbsp; clip <b>${clipSel.value || '—'}</b></div>
+    <div>Source rig: <b>${src.boneCount}</b> bones, <b>${src.clips.length}</b> clips,
+      all <b>${SLOT_IDS.length}</b> canonical slots resolved</div>
+    <div>Limb lengths are <b>ours</b> (thigh ${body.limbLengths.thighLen.toFixed(3)} m,
+      shin ${body.limbLengths.shinLen.toFixed(3)} m, arm ${body.limbLengths.armLen.toFixed(3)} m);
+      only the angles come from the clip. Trunk offsets scaled <b>×${trunkK.toFixed(3)}</b>.</div>
+    <div>Lowest foot <b class="${cls}">${lowFoot >= 0 ? '+' : ''}${lowFoot.toFixed(3)} m</b>${state.plant ? ' (planted)' : ''}</div>
+    ${gripReach.trigger == null ? '' : (() => {
+      const arm = body.limbLengths.armLen;
+      const one = (label, d) => {
+        if (d == null) return `${label} —`;
+        const k = d > arm ? 'bad' : d > arm * 0.95 ? 'warn' : '';
+        return `${label} <b class="${k}">${d.toFixed(3)} m</b>${d > arm ? ' (out of reach)' : ''}`;
+      };
+      return `<div>Shoulder to grip: ${one('trigger', gripReach.trigger)},
+        ${one('support', gripReach.support)} &nbsp;·&nbsp; arm reach ${arm.toFixed(3)} m</div>`;
+    })()}
+    <div style="margin-top:6px">Source <b>${state.swap ? 'left' : 'left'}</b> arm feeds
+      <code>shoulder${state.swap ? 'R' : 'L'}</code>, which drives our
+      <b>${state.swap ? 'visual left' : 'visual right'}</b> limb — the side the gear follows.</div>
+  `;
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+guard(async () => {
+  buildSoldier('rifleman');
+  await selectSource('knight');
+});
+</script>
+</body>
+</html>

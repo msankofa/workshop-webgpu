@@ -41,6 +41,36 @@ snap = profiler.snapshot();
 ok(snap.passCreaturesMs === 0 && snap.gpuGrassMs === 0, 'reset clears timing fields');
 ok(snap.droppedFrames === 0, 'reset clears dropped frames');
 
+// --- beginFrame zeroes custom (non-default) timer names too -----------------
+// bot-viewer-v2 records sim/render/etc., none of which are in DEFAULT_NAMES. Before this,
+// beginFrame() was a no-op for them and a skipped phase reported the previous frame's value.
+let t2 = 0;
+const p2 = createFrameProfiler({ now: () => t2, smoothing: 0.5 });
+const CUSTOM = { sim: 'simMs', render: 'renderMs' };
+
+p2.time('sim', () => { t2 += 8; });
+p2.time('render', () => { t2 += 4; });
+p2.recordGpu('grassGpu', 2.5);
+ok(p2.snapshot(CUSTOM).simMs === 8, 'custom-named timer recorded');
+ok(p2.snapshot(CUSTOM, { smooth: true }).simMs === 8, 'first sample seeds the smoothed value');
+
+p2.beginFrame();
+snap = p2.snapshot(CUSTOM);
+ok(snap.simMs === 0, 'beginFrame zeroes a custom-named CPU timer');
+ok(snap.renderMs === 0, 'beginFrame zeroes every custom-named CPU timer');
+ok(snap.gpuGrassMs === 0, 'beginFrame still zeroes the default GPU names');
+ok(p2.snapshot(CUSTOM, { smooth: true }).simMs === 8, 'beginFrame leaves the smoothed value alone');
+
+// A phase that genuinely runs short decays the EMA rather than carrying the old value forward.
+p2.time('sim', () => {});
+ok(p2.snapshot(CUSTOM).simMs === 0, 'a zero-length phase reads 0');
+ok(p2.snapshot(CUSTOM, { smooth: true }).simMs === 4, 'smoothed value decays instead of snapping');
+
+// Defaults keep working for the environment viewers, which record them every frame.
+p2.time('creatures', () => { t2 += 3; });
+p2.beginFrame();
+ok(p2.snapshot().passCreaturesMs === 0, 'default names still zeroed by beginFrame');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
 

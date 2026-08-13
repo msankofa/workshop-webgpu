@@ -89,6 +89,7 @@
       .lbl-b { font-size: 21px; letter-spacing: 3px; }
       .lbl-s { font-size: 13.5px; }
       .leader { stroke: #4a3b26; stroke-width: 1; opacity: 0.55; fill: none; }
+      #mind-head:hover rect { stroke: #8a6425; }
     </style>
   </defs>
 
@@ -150,8 +151,11 @@
   <line class="ink" x1="368" y1="252" x2="432" y2="252" stroke-width="2.5"/>
   <line class="ink" x1="368" y1="300" x2="432" y2="300" stroke-width="2.5"/>
   <circle class="ink" cx="400" cy="276" r="9" stroke-width="2.5"/>
-  <rect x="376" y="156" width="48" height="44" rx="9" fill="#e6d9b8" stroke="#4a3b26" stroke-width="4"/>
-  <rect class="inkf" x="384" y="170" width="32" height="9" rx="4"/>
+  <g id="mind-head" style="cursor:pointer"><title>Open the mind</title>
+    <rect x="376" y="156" width="48" height="44" rx="9" fill="#e6d9b8" stroke="#4a3b26" stroke-width="4"/>
+    <rect class="inkf" x="384" y="170" width="32" height="9" rx="4"/>
+    <circle cx="400" cy="178" r="40" fill="transparent"/>
+  </g>
 
   <!-- labels + leaders -->
   <text class="lbl lbl-b" x="118" y="92">MIND</text>
@@ -194,7 +198,7 @@
 
   <text class="lbl lbl-s" x="400" y="812" text-anchor="middle" font-size="16">the vitruvian bot — mind, senses, body, environment</text>
 </svg>
-<figcaption>The same robot in two poses. The square and the circle measure how far its body can reach. The environment is the world around it.</figcaption>
+<figcaption>The same robot in two poses. The square and the circle measure how far its body can reach. The environment is the world around it. <strong>Click the head to open the bot's mind.</strong></figcaption>
 </figure>
 
 <h2>What a procedural creature is</h2>
@@ -270,5 +274,18 @@
 </table>
 
 </div>
+<script type="module">
+  document.getElementById('mind-head').addEventListener('click', async () => {
+    try { (await import('./creature-mind.js')).openMind(); }
+    catch (err) {
+      console.error(err);
+      const n = document.createElement('div');
+      n.textContent = 'The mind view needs the local server: run "python serve.py", then open http://127.0.0.1:8080/creature-model.html';
+      n.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#2a1e1e;color:#e8c9c9;padding:10px 18px;border-radius:6px;font-family:Georgia,serif;z-index:60;max-width:90vw';
+      document.body.appendChild(n);
+      setTimeout(() => n.remove(), 8000);
+    }
+  });
+</script>
 </body>
 </html>

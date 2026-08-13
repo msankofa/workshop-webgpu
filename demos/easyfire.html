@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — EasyFire evaluation (fluid-simulated fire)</title>
+<!--
+  EVALUATION DEMO — is threejs-easyfire affordable in this project?
+
+  THIRD-PARTY LIBRARY / CREDIT
+  ----------------------------
+  threejs-easyfire, by bandinopla. MIT licensed. Pinned here at 0.1.7 from jsDelivr.
+    https://github.com/bandinopla/threejs-easyfire
+  Not our work in any part. This page only wires it up and measures it. It is loaded from a CDN
+  rather than vendored precisely because nothing here should imply we have adopted it yet.
+
+  WHAT IT ACTUALLY IS
+  -------------------
+  Not an explosion renderer. It is an Eulerian fluid simulation — velocity, pressure, divergence,
+  vorticity and a dye field on 3D voxel grids, advanced by TSL compute passes each frame, and drawn
+  by raymarching the dye grid through a VolumeNodeMaterial. That is a very different animal from
+  `volumetric-smoke.html` next door, which marches a closed-form density function with no state at
+  all. This one SIMULATES; ours EVALUATES. The difference is the whole cost story.
+
+  The dye field is `vec4(density, temperature, age, colourMass)`, and colour comes from a
+  temperature ramp with three editable tiers plus a base colour at temperature zero. So the smoke
+  is not a separate system you can swap out — it is the cold end of the same field. See the
+  "Smoke and colour" section of the panel: dragging tier 1's transition up turns more of the plume
+  to soot, and that is the only sense in which its smoke can be controlled.
+
+  WHY IT MIGHT FIT HERE
+  ---------------------
+  It targets exactly our stack: WebGPU only, TSL node materials, no GLSL.
+
+  BUT IT DOES NOT RUN ON THE THREE WE PIN, and that is the single most important thing this page
+  established. Every symbol its bundle imports (38 from three/tsl, 13 from three, 4 from
+  three/webgpu) does exist in our 0.184 — checking symbols was simply the wrong test. Two failures
+  sit behind that clean result:
+
+    1. The bundle also imports two ADDON modules by path, and
+       `three/examples/jsm/tsl/math/curlNoise.js` is new in 0.185. On 0.184 it fails at module
+       resolution, before a line of the library runs.
+    2. Past that, 0.184's TSL emits WGSL the library's own shaders will not compile:
+       "no matching constructor for 'vec3<u32>(vec2<f32>, abstract-float)'", alongside a
+       "length of parameters exceeds maximum length of function 'vec3()'" warning from the same
+       call. That is a codegen difference between 0.184 and 0.185, not something callers control.
+
+  So THIS PAGE PINS THREE 0.185.1 — the version the library is developed against — while the app
+  itself stays on 0.184. Adopting EasyFire therefore means bumping three across the project first.
+  That is a real cost to weigh alongside the frame cost this page measures, and it is why the demo
+  loads three from a CDN rather than sharing the repo's copy.
+
+  WHY IT PROBABLY DOES NOT FIT EXPLOSIONS
+  ---------------------------------------
+  Per fire instance it allocates 11 3D textures and runs a fixed per-frame compute cost regardless
+  of how much fire is visible. A blast lives 2.6 s, several land at once, anywhere on the map, and
+  has to degrade under a volley. A simulation has no equivalent of a step-count tier. Sustained
+  fire — burning wreckage, a fire pool, a bot alight — is the shape that earns a grid, and that is
+  what this page sets up: one fire, one place, burning for as long as you watch it.
+
+  WHAT TO MEASURE
+  ---------------
+  The three-way A/B at the top of the panel is the point of the page:
+    Scene only          — the baseline, the fire pass removed from the graph entirely
+    Fire, sim frozen    — the raymarch alone (simulate = false), so the grid is drawn but not stepped
+    Fire + simulation   — everything
+  The gap between 1 and 2 is what drawing costs. The gap between 2 and 3 is what simulating costs.
+  Only the second one scales with grid resolution the way people assume.
+
+  THE ONE THING THAT IS EASY TO GET WRONG
+  ---------------------------------------
+  The volume is LIT, not emissive. three's VolumetricLightingModel does
+  `scatteringDensity.mulAssign(scatteringNode)` (three.webgpu.js:29160), so the fire is a multiplier
+  over light that reaches the volume — and two rules decide what reaches it. The fire pass runs
+  `camera.layers.mask = this._layers.mask` (:40996), so only layer-10 lights are even considered,
+  and `if (… || lightNode.light.distance === undefined) return;` (:29222) drops any light without a
+  `.distance`, which excludes Hemisphere and Directional outright. With no qualifying light the
+  whole image is `0 × fire = 0`: black in every mode, unaffected by every tuning slider, and no
+  error anywhere. The library's `scatteringEmissiveNode` escape hatch is unused in 0.1.7, so there
+  is no unlit path. This page therefore ships a SpotLight confined to layer 10, matching
+  demo.ts:34-51. If you fork this wiring, that light is not decoration — it is the picture.
+
+  This harness was built by reading the shipped bundle and the author's demo rather than by running
+  the library. If its surface differs, the panel shows the error rather than a black screen.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/easyfire.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161b;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { display: block; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12); --text: #d8dee9; --muted: #8d97a8; --accent: #ff9d4d;
+    --warn: #ffc857; --bad: #ff7b7b; --good: #77c8a1;
+    position: fixed; top: 10px; right: 10px; width: 330px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,20,26,0.93); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,0.4); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(255,157,77,0.16); color: var(--accent); border-color: rgba(255,157,77,0.45); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .colorRow { display: grid; grid-template-columns: 1fr 40px; gap: 6px; align-items: center; margin: 5px 0; }
+  .colorRow label { color: var(--muted); font-size: 11px; }
+  .colorRow input { width: 100%; height: 20px; padding: 0; border: 1px solid var(--line);
+    background: none; border-radius: 4px; }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--text); font-weight: 600; }
+  #stats .good { color: var(--good); } #stats .warn { color: var(--warn); } #stats .bad { color: var(--bad); }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #note { color: var(--warn); font-size: 10px; margin-top: 6px; display: none; }
+  #err { display: none; margin-top: 10px; padding: 9px 10px; border-radius: 5px;
+    background: rgba(255,123,123,0.12); border: 1px solid rgba(255,123,123,0.4);
+    color: #ffd2d2; font-size: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #8a93a3; font-size: 11px;
+    pointer-events: none; user-select: none; max-width: 46ch; }
+  #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #8a93a3;
+    font-size: 13px; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="boot">Compiling fluid-simulation shaders…</div>
+
+<div id="panel">
+  <h1>EasyFire — cost evaluation</h1>
+  <p class="sub">A third-party fluid simulation, measured before anyone commits to it.</p>
+
+  <h2>What is it costing</h2>
+  <div class="seg" id="modeSeg">
+    <button data-mode="off">Scene only</button>
+    <button data-mode="draw">Fire, sim frozen</button>
+    <button data-mode="full" class="on">Fire + sim</button>
+    <button data-mode="solo">Fire only</button>
+  </div>
+  <p class="sub" style="margin:6px 0 0">"Fire only" outputs the fire pass on its own. It is a
+    diagnostic, <b>not a cost measurement</b> — without the scene's depth the march cannot terminate
+    early, so its raymarch figure runs well above the composited one.</p>
+  <p class="sub" style="margin:6px 0 0">Gap 1→2 is what drawing costs. Gap 2→3 is what simulating costs.</p>
+
+  <h2>Grids</h2>
+  <label class="chk"><input type="checkbox" id="showBounds"> show simulation bounds</label>
+  <div id="gridRows"></div>
+  <div id="note">Changing a grid reallocates its 3D textures.</div>
+
+  <h2>March</h2>
+  <div id="marchRows"></div>
+
+  <h2>Simulation</h2>
+  <div id="simRows"></div>
+
+  <h2>Smoke and colour</h2>
+  <p class="sub" style="margin:0 0 6px">Smoke is not a separate system — it is the cold end of the
+    same dye field. These are the only controls it has.</p>
+  <div id="colorRows"></div>
+  <div id="stopRows"></div>
+
+  <div id="stats"></div>
+  <div id="err"></div>
+  <div id="credit">
+    Fire simulation by
+    <a href="https://github.com/bandinopla/threejs-easyfire" target="_blank" rel="noopener">bandinopla/threejs-easyfire</a>
+    (MIT), pinned at 0.1.7 and loaded from a CDN — not vendored, because nothing here implies we
+    have adopted it. This page is only a harness around it. Our own marched explosions, which are a
+    closed-form density field rather than a simulation, are in <code>volumetric-smoke.html</code>.
+  </div>
+</div>
+
+<div id="hint">Drag to orbit, scroll to zoom. The thing worth watching is the stats block, not the fire.</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "threejs-easyfire": "https://cdn.jsdelivr.net/npm/threejs-easyfire@0.1.7/dist/threejs-easyfire.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, RenderPipeline, MeshStandardNodeMaterial } from 'three/webgpu';
+import { pass } from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const QS = new URLSearchParams(location.search);
+// ?volbox=1 adds the library's own box + axes helper on the default layer, so it shows in the main
+// pass and proves where the volume really is.
+const DEBUG_BOX = QS.get('volbox') === '1';
+// ?volnoise=1 swaps the volume's scattering source from the dye field to the curl-noise texture and
+// stops the simulation, so it isolates emission from everything downstream of it. It is NOT a
+// control for whether the volume draws: the noise sample goes through the same lighting multiply as
+// the fire, so an unlit volume renders black here too.
+const DEBUG_NOISE = QS.get('volnoise') === '1';
+
+const errEl = document.getElementById('err');
+const bootEl = document.getElementById('boot');
+// Any failure here is interesting information, not a crash to hide.
+function fail(where, e) {
+  bootEl.style.display = 'none';
+  errEl.style.display = 'block';
+  errEl.textContent = `Failed at: ${where}\n\n${e && e.stack ? e.stack : e}`;
+  console.error(where, e);
+}
+addEventListener('error', (e) => fail('uncaught', e.error || e.message));
+addEventListener('unhandledrejection', (e) => fail('unhandled rejection', e.reason));
+
+let EasyFire, AdvectionMethod;
+try {
+  ({ EasyFire, AdvectionMethod } = await import('threejs-easyfire'));
+} catch (e) {
+  fail('importing threejs-easyfire from the CDN', e);
+  throw e;
+}
+
+// ---------------------------------------------------------------------------
+// Scene — deliberately cheap, so the numbers below are the fire and nothing else
+// ---------------------------------------------------------------------------
+
+// trackTimestamp is construction-only. Without it this page can only time CPU submission, which for
+// a GPU-bound fluid sim measures almost nothing — see the readout note.
+const renderer = new WebGPURenderer({ antialias: true, trackTimestamp: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0f13);
+scene.fog = new THREE.Fog(0x0d0f13, 22, 70);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(7.5, 4.2, 9.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.8, 0);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0x33405a, 0x0a0b0e, 0.55));
+const key = new THREE.DirectionalLight(0xbfd0ff, 0.9);
+key.position.set(-6, 9, 5);
+scene.add(key);
+
+// THE VOLUME IS LIT, NOT EMISSIVE — this light is why anything is visible at all.
+// three's VolumetricLightingModel does `scatteringDensity.mulAssign(scatteringNode)`
+// (three.webgpu.js:29160), so the fire multiplies light arriving in the volume. Two rules decide
+// what reaches it, and the two lights above fail both:
+//   1. The fire pass sets `camera.layers.mask = this._layers.mask` (:40996), i.e. layer 10 only.
+//   2. `if (… || lightNode.light.distance === undefined) return;` (:29222) — a light with no
+//      `.distance` never contributes, which rules out Hemisphere and Directional entirely.
+// So the volume needs a Spot or Point light that is ALSO on layer 10. The library's own demo does
+// exactly this (demo.ts:34-51). Its `scatteringEmissiveNode` escape hatch is unused in 0.1.7, so
+// there is no unlit path to fall back on.
+const volumeLight = new THREE.SpotLight(0xffffff, 5);
+volumeLight.position.set(0, 12, 0);
+volumeLight.angle = Math.PI / 2;
+volumeLight.penumbra = 1;
+volumeLight.decay = 1;
+volumeLight.distance = 0;          // defined is what matters, not the value — see the check above
+// Layer 10 ONLY, so it lights the volume without touching the scene or the "Scene only" baseline.
+volumeLight.layers.disableAll();
+volumeLight.layers.enable(10);
+volumeLight.target.position.set(0, 0, 0);
+scene.add(volumeLight);
+scene.add(volumeLight.target);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new MeshStandardNodeMaterial({ color: 0x1b1f26, roughness: 0.95, metalness: 0 }));
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// The thing on fire.
+const wreck = new THREE.Group();
+const charred = new MeshStandardNodeMaterial({ color: 0x2a2622, roughness: 0.9, metalness: 0.1 });
+const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.1, 1.6), charred);
+hull.position.y = 0.55;
+wreck.add(hull);
+for (const [x, z, ry] of [[-1.7, 0.9, 0.4], [1.8, -0.7, -0.9], [0.3, 1.5, 1.2]]) {
+  const debris = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.5), charred);
+  debris.position.set(x, 0.18, z);
+  debris.rotation.y = ry;
+  wreck.add(debris);
+}
+scene.add(wreck);
+
+// The emitter is a SEPARATE invisible mesh, and its vertex count is load-bearing.
+// EasyFire emits one compute invocation per vertex, and each writes exactly ONE voxel — so the
+// crate above, a box with 24 vertices, seeds 24 voxels and draws no visible fire. The library's own
+// demo burns a teapot, i.e. thousands of points. This sphere is 561.
+const emitterGeo = new THREE.SphereGeometry(0.85, 32, 16);
+const emitterTemplate = new THREE.Mesh(emitterGeo, charred);
+emitterTemplate.visible = false;
+emitterTemplate.position.set(0, 0.7, 0);
+scene.add(emitterTemplate);
+const EMITTER_VERTS = emitterGeo.getAttribute('position').count;
+
+// ---------------------------------------------------------------------------
+// The library
+// ---------------------------------------------------------------------------
+
+// Defaults read out of the shipped 0.1.7 bundle, not the README — the two disagree.
+const cfg = {
+  physics: 64,     // simulation grid, cubic
+  render: 100,     // dye grid the raymarch samples, cubic
+  noise: 64,       // curl-noise grid
+  steps: 22,       // raymarch iterations — the library demo's value, not the 12 default
+  world: 6,        // bounding box edge, world units
+};
+// Emission strength, taken from the library demo's own tuned values rather than guessed. The
+// deposit per vertex is uEmitDensity * 0.2 * emitMultiplier, and the multiplier is the part that
+// carries it: 21, not the 1 that getFireFor defaults to.
+const EMIT_DENSITY = 0.031;
+const EMIT_TEMPERATURE = 12;
+const EMIT_MULTIPLIER = 21;
+const voxelSize = () => cfg.world / cfg.physics;
+
+let fire = null;
+try {
+  fire = new EasyFire(renderer, {
+    dyeAdvectionMethod: AdvectionMethod ? AdvectionMethod.SemiLagrangian : 0,
+    size: {
+      boundingBox: new THREE.Vector3(cfg.world, cfg.world, cfg.world),
+      renderResolution: new THREE.Vector3(cfg.render, cfg.render, cfg.render),
+      physicsResolution: new THREE.Vector3(cfg.physics, cfg.physics, cfg.physics),
+    },
+    steps: cfg.steps,
+    renderLayer: 10,
+    debug: { renderVolumeBox: DEBUG_BOX, noise: DEBUG_NOISE, renderColliders: false },
+    noise: { size: cfg.noise, frecuency: 30 },
+    vertexEmissionWorldRadius: 0.01,
+    burnableMeshes: [{ geometriesInsideOf: emitterTemplate, maxCount: 1, id: 'wreck' }],
+  });
+  // The box's own origin is its centre, so lift it half a side to sit the floor near the ground.
+  fire.position.set(0, cfg.world * 0.5 - 0.4, 0);
+  scene.add(fire);
+  await fire.initialize();
+  fire.fireDensity = EMIT_DENSITY;
+  fire.temperature = EMIT_TEMPERATURE;
+  // Defaults the page was silently inheriting: the colour ramp saturates at temperature 1 and the
+  // radiance multiplier is 15, both far from what the library demo runs.
+  fire.temperatureAtMaxColor = 10;
+  fire.uRadianceMultiplier.value = 78;   // a uniform field, no accessor — hence the .value write
+  fire.keyLightPosition = volumeLight.position.clone();   // self-shadowing agrees with the lamp
+} catch (e) {
+  fail('constructing or initializing EasyFire', e);
+  throw e;
+}
+
+// The emitter proxy is what actually burns. The library demo parents it to the burning object
+// rather than placing it in the scene, so it rides the object's matrix — same here.
+let proxy = null;
+try {
+  proxy = fire.getFireFor('wreck', { emitMultiplier: EMIT_MULTIPLIER, tintFactor: 0 });
+  if (proxy) emitterTemplate.add(proxy);
+  else fail('getFireFor("wreck")', 'returned null — no emitter instance was available');
+} catch (e) {
+  fail('getFireFor("wreck")', e);
+}
+
+// Our own wireframe of the simulation bounds. The library has a debug.renderVolumeBox flag, but it
+// is construct-time only, and "where is the box" is the first question when nothing appears.
+const boundsBox = new THREE.Mesh(
+  new THREE.BoxGeometry(cfg.world, cfg.world, cfg.world),
+  new THREE.MeshBasicMaterial({ color: 0x4b7fd4, wireframe: true, transparent: true, opacity: 0.25 }));
+boundsBox.position.copy(fire.position);
+boundsBox.visible = false;
+scene.add(boundsBox);
+
+// ---------------------------------------------------------------------------
+// Post chain — the fire composites as its own pass over the scene's depth
+// ---------------------------------------------------------------------------
+
+const post = new RenderPipeline(renderer);
+const scenePass = pass(scene, camera);
+// demo/demo.ts:173 — `scenePass.add(fireScene)`, i.e. the PASS node, with depth taken separately
+// from getTextureNode('depth') on line 168. Verified against the file, not a summary of it.
+const sceneDepth = scenePass.getTextureNode('depth');
+let fireNode = null;
+try {
+  fireNode = fire.getRenderPass(scene, camera, sceneDepth);
+} catch (e) {
+  fail('fire.getRenderPass(scene, camera, sceneDepth)', e);
+}
+
+let mode = 'full';
+function applyMode() {
+  fire.simulate = mode === 'full' || mode === 'solo';
+  post.outputNode = mode === 'solo' && fireNode ? fireNode
+    : (mode !== 'off' && fireNode) ? scenePass.add(fireNode) : scenePass;
+  post.needsUpdate = true;
+}
+applyMode();
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+
+function slider(host, label, get, set, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  out.textContent = fmt(+inp.value);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp);
+  host.append(row);
+}
+function colorPicker(host, label, hex, set) {
+  const row = document.createElement('div'); row.className = 'colorRow';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'color'; inp.value = hex;
+  inp.addEventListener('input', () => set(new THREE.Color(inp.value)));
+  row.append(lab, inp);
+  host.append(row);
+}
+const intFmt = (v) => String(v | 0);
+
+const note = document.getElementById('note');
+let gridTimer = 0;
+// A grid change reallocates 3D textures, so it is debounced like a shader rebuild.
+function scheduleGrid(fn) {
+  note.style.display = 'block';
+  clearTimeout(gridTimer);
+  gridTimer = setTimeout(() => {
+    try { fn(); } catch (e) { fail('changing grid resolution', e); }
+    note.style.display = 'none';
+  }, 300);
+}
+
+const gridRows = document.getElementById('gridRows');
+slider(gridRows, 'Physics grid (cubic)', () => cfg.physics, (v) => {
+  cfg.physics = v | 0;
+  scheduleGrid(() => fire.setPhysicsGridResolution({ x: cfg.physics, y: cfg.physics, z: cfg.physics }));
+}, 16, 128, 8, intFmt);
+slider(gridRows, 'Render grid (cubic)', () => cfg.render, (v) => {
+  cfg.render = v | 0;
+  scheduleGrid(() => fire.setRenderGridResolution({ x: cfg.render, y: cfg.render, z: cfg.render }));
+}, 32, 160, 4, intFmt);
+slider(gridRows, 'Noise grid', () => cfg.noise, (v) => {
+  cfg.noise = v | 0;
+  scheduleGrid(() => fire.setNoiseGridResolution(cfg.noise));
+}, 16, 128, 8, intFmt);
+
+const marchRows = document.getElementById('marchRows');
+// EasyFire only reads config.steps when it builds the material, but three's VolumeNodeMaterial
+// re-reads material.steps every render (three.webgpu.js:28921), so the live knob is on the material.
+slider(marchRows, 'Raymarch steps', () => cfg.steps, (v) => {
+  cfg.steps = v | 0;
+  fire.config.steps = cfg.steps;
+  if (fire.volumetricMaterial) fire.volumetricMaterial.steps = cfg.steps;
+}, 4, 48, 1, intFmt);
+slider(marchRows, 'Blur strength', () => fire.config.blurStrength ?? 0,
+  (v) => { fire.config.blurStrength = v; }, 0, 1, 0.02);
+
+const simRows = document.getElementById('simRows');
+// Not a look control. The volume is a multiplier over this light, so at zero the fire is invisible
+// no matter what every other slider says.
+slider(simRows, 'Volume light intensity', () => volumeLight.intensity,
+  (v) => { volumeLight.intensity = v; }, 0, 60, 0.5, (v) => v.toFixed(1));
+slider(simRows, 'Radiance multiplier', () => fire.uRadianceMultiplier.value,
+  (v) => { fire.uRadianceMultiplier.value = v; }, 1, 200, 1, intFmt);
+// Fire density is the knob that decides whether anything is visible at all — see EMIT_DENSITY.
+slider(simRows, 'Fire density (emitted per vertex)', () => fire.fireDensity, (v) => { fire.fireDensity = v; },
+  0, 1.5, 0.01);
+slider(simRows, 'Emit temperature', () => fire.temperature, (v) => { fire.temperature = v; }, 0, 40, 0.5,
+  (v) => v.toFixed(1));
+slider(simRows, 'Simulation speed', () => fire.simulationSpeed ?? 2, (v) => { fire.simulationSpeed = v; },
+  0, 6, 0.1);
+slider(simRows, 'Buoyancy', () => fire.buoyancy ?? 6.1, (v) => { fire.buoyancy = v; }, 0, 20, 0.1);
+
+const colorRows = document.getElementById('colorRows');
+const hexOf = (c) => (c && c.getHexString ? `#${c.getHexString()}` : '#000000');
+try {
+  colorPicker(colorRows, 'Base (soot, temperature 0)', hexOf(fire.getColor('base')),
+    (c) => fire.setColor('base', c));
+  colorPicker(colorRows, 'Tier 1 (first flame)', hexOf(fire.getColor('tier1')),
+    (c) => fire.setColor('tier1', c));
+  colorPicker(colorRows, 'Tier 3 (hot core)', hexOf(fire.getColor('tier3')),
+    (c) => fire.setColor('tier3', c));
+} catch (e) { fail('reading the colour ramp', e); }
+
+const stopRows = document.getElementById('stopRows');
+// Tier 1's transition is where soot becomes flame, i.e. how much of the plume reads as smoke.
+const stop1 = { from: 0.01, to: 0.1 };
+slider(stopRows, 'Soot → flame, start', () => stop1.from,
+  (v) => { stop1.from = v; fire.setColorStop('tier1', { ...stop1 }); }, 0, 0.5, 0.005, (v) => v.toFixed(3));
+slider(stopRows, 'Soot → flame, end', () => stop1.to,
+  (v) => { stop1.to = v; fire.setColorStop('tier1', { ...stop1 }); }, 0.01, 0.8, 0.005, (v) => v.toFixed(3));
+
+document.getElementById('showBounds').addEventListener('change', (e) => { boundsBox.visible = e.target.checked; });
+
+for (const btn of document.querySelectorAll('#modeSeg button')) {
+  btn.addEventListener('click', () => {
+    mode = btn.dataset.mode;
+    for (const b of document.querySelectorAll('#modeSeg button')) b.classList.toggle('on', b === btn);
+    applyMode();
+    frames = 0; acc = 0; msAcc = 0;   // drop the running average, KEEP the baselines to compare to
+    // The GPU figures are last-resolved values, not averages, so they survive a mode change and
+    // read as that mode's cost when they are not. Zero them and let the next resolve refill.
+    gpuRenderMs = 0; gpuComputeMs = 0;
+  });
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+// Estimate, not a measurement: 2 dye textures at the render grid, 8 fields at the physics grid,
+// 1 curl-noise texture, 4 channels each. The library's own docs say 11 textures.
+function vramEstimate(bytesPerChannel) {
+  const p = cfg.physics ** 3, r = cfg.render ** 3, n = cfg.noise ** 3;
+  return (2 * r + 8 * p + n) * 4 * bytesPerChannel;
+}
+const mb = (b) => (b / (1024 * 1024)).toFixed(1);
+
+const statsEl = document.getElementById('stats');
+let prevTime = performance.now();   // plain delta: THREE.Clock is deprecated and Timer adds nothing here
+let frames = 0, acc = 0, msAcc = 0;
+// Baselines persist across mode switches — the whole point is to compare against "scene only", so
+// clearing them on every click (as this page first did) made the delta permanently unavailable.
+let baseCpu = null, baseGpu = null;
+
+// GPU pass durations. The render figure is the raymarch, the compute figure is the fluid step, and
+// that split is exactly the question this page asks. Resolves a frame or two late, which is fine for
+// an average. Pattern copied from bot-viewer-v3.html:16185.
+let gpuRenderMs = 0, gpuComputeMs = 0;
+function pollGpuTimestamps() {
+  if (typeof renderer.resolveTimestampsAsync !== 'function') return;
+  try {
+    renderer.resolveTimestampsAsync(THREE.TimestampQuery?.RENDER || 'render')
+      .then((ms) => { if (Number.isFinite(ms)) gpuRenderMs = ms; }).catch(() => {});
+    renderer.resolveTimestampsAsync(THREE.TimestampQuery?.COMPUTE || 'compute')
+      .then((ms) => { if (Number.isFinite(ms)) gpuComputeMs = ms; }).catch(() => {});
+  } catch { /* no timestamp-query support: the GPU rows read 0 and say so */ }
+}
+const MODE_LABEL = { off: 'scene only', draw: 'fire drawn, sim frozen', full: 'fire + simulation',
+  solo: 'fire pass alone' };
+
+// What the library actually built, so "is the volume even there" is answerable from the panel
+// rather than by reading the bundle again. The mesh must exist and must sit on the render layer.
+// Identify it by material, not by geometry type — ?volbox=1 adds a second BoxGeometry mesh.
+const volumeMesh = fire.children.find((c) => c.isMesh && c.material === fire.volumetricMaterial) || null;
+const RIG = volumeMesh
+  ? `volume mesh ok, layer mask ${volumeMesh.layers.mask}, on layer 10: ${volumeMesh.layers.isEnabled(10)}`
+  : 'NO VOLUME MESH among fire.children';
+
+bootEl.style.display = 'none';
+
+renderer.setAnimationLoop(() => {
+  const t0 = performance.now();
+  const dt = Math.min((t0 - prevTime) / 1000, 0.05);
+  prevTime = t0;
+
+  if (fire.update && mode !== 'off') {
+    try { fire.update(dt); } catch (e) { fail('fire.update(dt)', e); }
+  }
+
+  controls.update();
+  try { post.render(); } catch (e) { return fail('post.render()', e); }
+  pollGpuTimestamps();
+
+  msAcc += performance.now() - t0;
+  frames++; acc += dt;
+  if (acc >= 0.5) {
+    const fps = frames / acc, ms = msAcc / frames;
+    const gpuTotal = gpuRenderMs + gpuComputeMs;
+    if (mode === 'off') { baseCpu = ms; baseGpu = gpuTotal; }
+    const dCpu = baseCpu == null ? null : ms - baseCpu;
+    const dGpu = baseGpu == null ? null : gpuTotal - baseGpu;
+    const cls = fps >= 55 ? 'good' : fps >= 30 ? 'warn' : 'bad';
+    const sign = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
+    statsEl.innerHTML =
+      `<b class="${cls}">${fps.toFixed(0)}</b> fps ` +
+      `<span class="warn">(vsync-capped — fps says nothing until it drops)</span><br>` +
+      `mode: <b>${MODE_LABEL[mode]}</b><br>` +
+      `<b>GPU:</b> raymarch <b>${gpuRenderMs.toFixed(2)}</b> ms · fluid step <b>${gpuComputeMs.toFixed(2)}</b> ms` +
+      (dGpu == null ? '' : ` · <b>${sign(dGpu)}</b> ms over baseline`) +
+      `<br>cpu submit: <b>${ms.toFixed(2)}</b> ms` +
+      (dCpu == null ? '' : ` (${sign(dCpu)})`) +
+      ` <span class="warn">— submission only, not the GPU's work</span>` +
+      (baseCpu == null ? '<br><span class="warn">click "Scene only" once to set the baseline</span>' : '') +
+      `<br>grids: <b>${cfg.physics}³</b> physics · <b>${cfg.render}³</b> render · <b>${cfg.noise}³</b> noise` +
+      `<br>emitter: <b>${EMITTER_VERTS}</b> vertices = <b>${EMITTER_VERTS}</b> voxels written per frame` +
+      (proxy ? '' : ' <span class="bad">— no proxy!</span>') +
+      ` · voxel <b>${(voxelSize() * 1000).toFixed(0)}</b> mm` +
+      `<br>3D texture memory: <b>${mb(vramEstimate(2))}</b>–<b>${mb(vramEstimate(4))}</b> MB ` +
+      `<span class="warn">(estimated, half vs full float)</span>` +
+      `<br><span class="${volumeMesh ? '' : 'bad'}">${RIG}</span>` +
+      (DEBUG_NOISE ? '<br><span class="warn">?volnoise=1 — drawing the noise field, not the fire</span>' : '') +
+      (DEBUG_BOX ? '<br><span class="warn">?volbox=1 — library volume helper on</span>' : '');
+    frames = 0; acc = 0; msAcc = 0;
+  }
+});
+</script>
+</body>
+</html>

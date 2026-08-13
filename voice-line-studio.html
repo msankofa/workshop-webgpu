@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voice Line Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #080810; color: #bbc; font-family: 'Courier New', monospace;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px;
+  }
+  h1 { color: #0ff; font-size: 14px; letter-spacing: 4px; white-space: nowrap; }
+  h3 { color: #889; font-size: 11px; letter-spacing: 1px; margin: 10px 0 6px; text-transform: uppercase; }
+
+  #header {
+    padding: 10px 18px; background: #0d0d1c; border-bottom: 1px solid #1a1a33;
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  }
+  #status { flex: 1; text-align: right; font-size: 11px; color: #667; overflow: hidden; white-space: nowrap; }
+  #audio-gate {
+    padding: 6px 14px; background: #0ff; color: #000; border: none; cursor: pointer;
+    font-family: inherit; font-weight: bold; font-size: 11px; letter-spacing: 1px;
+  }
+  #audio-gate.live { background: #001c10; color: #0f8; border: 1px solid #0f8; }
+
+  #main { flex: 1; overflow: hidden; display: flex; }
+  .col { overflow-y: auto; padding: 14px; height: 100%; }
+  .col + .col { border-left: 1px solid #1a1a33; }
+  .col-voices { width: 220px; flex-shrink: 0; }
+  .col-events { width: 240px; flex-shrink: 0; }
+  .col-editor { flex: 1; min-width: 0; }
+
+  .item {
+    padding: 6px 8px; cursor: pointer; border-left: 2px solid transparent;
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  }
+  .item:hover { background: #10101f; }
+  .item.sel { background: #001c22; border-left-color: #0ff; color: #0ff; }
+  .item .meta { color: #556; font-size: 10px; flex-shrink: 0; }
+  .item.shared { opacity: 0.55; font-style: italic; }
+
+  button {
+    padding: 5px 11px; background: #111; border: 1px solid #2a2a44; color: #99a;
+    font-family: inherit; font-size: 11px; cursor: pointer; letter-spacing: 1px;
+  }
+  button:hover { border-color: #0ff8; color: #0ff; }
+  button:disabled { opacity: 0.35; cursor: default; }
+  button.primary { background: #001c22; border-color: #0ff; color: #0ff; }
+  button.chip { padding: 3px 8px; font-size: 10px; letter-spacing: 0; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+
+  input[type=number], input[type=text], select {
+    background: #111; border: 1px solid #2a2a44; color: #ccc; font-family: inherit;
+    font-size: 11px; padding: 4px 6px; outline: none;
+  }
+  input:focus, select:focus { border-color: #0ff8; }
+  input[type=text].wide { flex: 1; min-width: 160px; }
+
+  .banner { padding: 8px 10px; border-radius: 2px; font-size: 11px; margin-bottom: 10px; line-height: 1.4; }
+  .banner.info { background: #001622; border: 1px solid #045; color: #6cf; }
+  .banner.ok { background: #001c10; border: 1px solid #0a4; color: #6e6; }
+
+  .variant-card { border: 1px solid #1a1a33; padding: 8px 10px; margin-bottom: 8px; }
+  .variant-card .head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot.baked { background: #0f8; }
+  .dot.unbaked { background: #556; }
+  .bake-note { color: #667; font-size: 10px; margin-top: 4px; }
+
+  #footer {
+    padding: 8px 18px; background: #0d0d1c; border-top: 1px solid #1a1a33;
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0; font-size: 11px; color: #889;
+  }
+  #footer .cmd { color: #0cc; font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>VOICE LINE STUDIO</h1>
+  <button id="audio-gate">ENABLE AUDIO</button>
+  <button id="save-copy">COPY sound-params.json</button>
+  <button id="save-download">DOWNLOAD</button>
+  <div id="status"></div>
+</div>
+<div id="main">
+  <div class="col col-voices" id="voice-col"></div>
+  <div class="col col-events" id="event-col"></div>
+  <div class="col col-editor" id="editor-col"></div>
+</div>
+<div id="footer">
+  <button id="refresh-manifest">↻ refresh bake status</button>
+  <span id="bake-summary">loading manifest...</span>
+</div>
+
+<script type="module">
+import {
+  SOUND_PARAMS, setMapOverride, exportParams, loadSoundParams,
+} from './sound-params.js';
+import {
+  lineIds, lineText, voiceLine, voiceLexiconVariants, seedSyllables,
+  buildAdHocVoiceLine, buildSampleVoiceLine, voiceIdentity,
+} from './bot-voice.js';
+import { createVoiceBank } from './bot-voice-bank.js';
+
+const $ = id => document.getElementById(id);
+const status = msg => { $('status').textContent = msg; };
+
+// Delivery tags v3 actually supports for inline direction -- verified against ElevenLabs' own docs
+// (help.elevenlabs.io) before this list was written, not guessed. Kept short: the point is a quick
+// insert, not a full catalogue.
+const DELIVERY_TAGS = ['[whispers]', '[shouts]', '[sighs]', '[laughs]', '[pause]'];
+
+// The local relay server (voice-bake-server.mjs) that holds the ElevenLabs key and can write to
+// disk -- a static-served page can do neither itself. Declared up top since both auto-save and
+// generation depend on it.
+const BAKE_SERVER_URL = 'http://127.0.0.1:8097';
+
+// ---------------------------------------------------------------------------
+// Voices: read from sfx/voice/manifest.json, NOT a live ElevenLabs account
+// listing. The account catalog (bake-voices.mjs's elevenCatalog()) needs the
+// API key, which must never reach the browser -- so "which voices exist" here
+// means "which voices have been baked at least once", not the full roster.
+// A brand-new 11th voice that has never been baked cannot be authored for
+// here until it is baked once from the command line first.
+// ---------------------------------------------------------------------------
+let manifest = null;
+let voices = [];   // [{ id: 'eleven/harry', slug: 'harry', ext, lines: Set }]
+let selectedVoice = null;
+let selectedEvent = null;
+
+// A voice's first customized variant (index 0) writes to the SAME filename its shared-lexicon
+// bake already used before any customization existed -- file existence alone cannot tell "this
+// file has the new text" from "this file still has the old shared text nobody has re-baked yet".
+// Tracking edits made in THIS session closes that gap: anything touched here is shown as unbaked
+// regardless of what is already on disk, until it is explicitly cleared (see clearDirty below).
+//
+// Keyed per VARIANT, not per line: an earlier version keyed this per line, which meant editing
+// ANY one variant marked every OTHER variant of that same line unbaked too, even ones untouched
+// and still correctly baked -- a real bug an adversarial review caught, not a hypothetical.
+const dirtyVariants = new Set();   // `${voiceId}|${lineId}|${variantIndex}`
+const dirtyKey = (voiceId, lineId, i) => `${voiceId}|${lineId}|${i}`;
+function markDirty(voiceId, lineId, i) { dirtyVariants.add(dirtyKey(voiceId, lineId, i)); }
+function clearDirty(voiceId, lineId, i) { dirtyVariants.delete(dirtyKey(voiceId, lineId, i)); }
+function isDirty(voiceId, lineId, i) { return dirtyVariants.has(dirtyKey(voiceId, lineId, i)); }
+function clearDirtyForLine(voiceId, lineId) {
+  for (const k of dirtyVariants) if (k.startsWith(`${voiceId}|${lineId}|`)) dirtyVariants.delete(k);
+}
+
+// `preserveDirty`: the initial boot load has nothing dirty yet (blanket-clearing was previously
+// harmless there), but every LATER call -- the manual refresh button, or the reload after a
+// generate for ONE variant -- must not silently clear dirty flags on OTHER variants that were
+// never actually re-baked. Only generateVariant()'s success path clears a specific key explicitly.
+async function loadManifest({ preserveDirty = true } = {}) {
+  try {
+    const res = await fetch('./sfx/voice/manifest.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    manifest = await res.json();
+    if (!preserveDirty) dirtyVariants.clear();
+  } catch (err) {
+    manifest = { sets: [] };
+    status(`no manifest (${err.message}). Run: node bake-voices.mjs --manifest`);
+  }
+  voices = (manifest.sets || [])
+    .filter(s => s.engine === 'eleven')
+    .map(s => ({ id: s.set, slug: s.voice, ext: s.ext, lines: new Set(s.lines), prev: new Set(s.prev || []) }));
+  if (!selectedVoice && voices.length) selectedVoice = voices[0].id;
+  renderVoices();
+  renderEvents();
+  renderEditor();
+  renderBakeSummary();
+}
+
+function manifestEntry(voiceId) { return voices.find(v => v.id === voiceId) || null; }
+
+// ---------------------------------------------------------------------------
+// Data model: SOUND_PARAMS.voiceLexicon[voiceId][lineId].variants[], a
+// separate map section from voiceLines so the studio's existing lexicon
+// (shared/default text, code-shipped lines) is untouched by this tool.
+// ---------------------------------------------------------------------------
+function customVariants(voiceId, lineId) {
+  return SOUND_PARAMS.voiceLexicon?.[voiceId]?.[lineId]?.variants ?? null;
+}
+function isCustomized(voiceId, lineId) {
+  const v = customVariants(voiceId, lineId);
+  return Array.isArray(v) && v.length > 0;
+}
+function completionCount(voiceId) {
+  return lineIds().filter(id => isCustomized(voiceId, id)).length;
+}
+
+// Append-only by construction: adding always writes to the end, deleting only ever removes the
+// last entry. bake-voices.mjs names files by array index (${lineId}, then ${lineId}__v1, __v2...),
+// so reordering or removing a middle variant would desync an already-baked file from the text it
+// no longer matches. Restricting the UI to append/pop-last makes that desync impossible rather
+// than just discouraged.
+//
+// Does NOT mark anything dirty itself -- only the caller knows which specific index actually
+// changed (persistCurrent knows it edited index i; addVariant knows it added a new last index;
+// deleteLastVariant/revertToShared know nothing needs to look unbaked, since removing a variant
+// cannot make a DIFFERENT one stale). Marking dirty here unconditionally is what caused the
+// whole-line-goes-unbaked bug.
+function writeVoiceLexicon(voiceId, lineId, variants) {
+  const voiceDoc = JSON.parse(JSON.stringify(SOUND_PARAMS.voiceLexicon?.[voiceId] || {}));
+  if (variants && variants.length) voiceDoc[lineId] = { variants };
+  else delete voiceDoc[lineId];
+  setMapOverride('voiceLexicon', voiceId, Object.keys(voiceDoc).length ? voiceDoc : undefined);
+  scheduleAutoSave();
+}
+
+function addVariant(voiceId, lineId, text, intensity) {
+  const current = customVariants(voiceId, lineId) || [];
+  writeVoiceLexicon(voiceId, lineId, [...current, { text, intensity }]);
+  markDirty(voiceId, lineId, current.length);
+  renderEvents();
+  renderEditor();
+  renderBakeSummary();
+}
+function deleteLastVariant(voiceId, lineId) {
+  const current = customVariants(voiceId, lineId) || [];
+  if (!current.length) return;
+  writeVoiceLexicon(voiceId, lineId, current.slice(0, -1));
+  clearDirty(voiceId, lineId, current.length - 1);
+  renderEvents();
+  renderEditor();
+  renderBakeSummary();
+}
+function revertToShared(voiceId, lineId) {
+  writeVoiceLexicon(voiceId, lineId, null);
+  clearDirtyForLine(voiceId, lineId);
+  renderEvents();
+  renderEditor();
+  renderBakeSummary();
+}
+
+// Port of sound-studio.html's addVoiceLine, trimmed to what this tool needs: a new event with no
+// rhythm/formant authoring surface, since that is exactly the LEXICON-tab clutter this tool exists
+// to avoid. Syllables are auto-seeded; hand-tuning them stays a sound-studio.html job.
+function addNewEvent(rawId, rawText) {
+  const clean = String(rawId).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!clean) return 'needs an id';
+  if (lineIds().includes(clean)) return `"${clean}" already exists`;
+  const say = String(rawText).trim() || clean.replace(/_/g, ' ');
+  setMapOverride('voiceLines', clean, {
+    event: `bot_vo_${clean}`, text: say, contour: [1, 0.95], drive: 4, syllables: seedSyllables(say),
+  });
+  selectedEvent = clean;
+  scheduleAutoSave();
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-save to disk, through the local relay server (POST /save writes
+// sound-params.json directly -- a static-served page has no other way to
+// write a local file). Without this, every edit lived in browser memory only
+// until someone remembered to click DOWNLOAD/COPY and manually overwrite the
+// file -- a page reload or crash lost everything authored since the last
+// manual export. Debounced so a burst of edits (typing, several button
+// clicks) becomes one write, not one per keystroke.
+// ---------------------------------------------------------------------------
+let autoSaveTimer = null;
+function scheduleAutoSave() {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => { saveToDisk().catch(() => {}); }, 800);
+}
+// `force`: GENERATE needs this awaited and completed BEFORE it fires the request, not debounced --
+// the relay's manifest step reads sound-params.json from disk to recognise brand-new events, and a
+// debounced save racing a generate call was exactly how a first-ever take for a new event could
+// get baked (spending real money) and then silently dropped from the manifest.
+async function saveToDisk({ force = false } = {}) {
+  if (force) clearTimeout(autoSaveTimer);
+  try {
+    const res = await fetch(`${BAKE_SERVER_URL}/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc: exportParams() }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || `http ${res.status}`);
+    return true;
+  } catch (err) {
+    // Not surfaced as an error by default -- the debounced background save failing quietly (relay
+    // not running yet) must not spam status() on every keystroke. GENERATE's caller checks the
+    // return value directly when it actually needs to know the save succeeded.
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio: synth preview needs no baking at all (buildAdHocVoiceLine); baked
+// preview needs the real take, fetched directly by voice id via
+// takeFromSet() rather than a bot-hash assignment -- this tool always wants
+// a SPECIFIC voice, never "whichever one a bot id happens to hash to".
+// ---------------------------------------------------------------------------
+let ctx = null, master = null;
+function ensureCtx() {
+  if (ctx) return ctx;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  master.gain.value = 0.8;
+  master.connect(ctx.destination);
+  $('audio-gate').textContent = `AUDIO LIVE @ ${ctx.sampleRate} Hz`;
+  $('audio-gate').classList.add('live');
+  return ctx;
+}
+const bank = createVoiceBank({
+  decode: (ab) => ensureCtx().decodeAudioData(ab),
+  canDecode: () => !!ctx,
+});
+bank.init();
+
+function previewIdentity() {
+  return voiceIdentity(`bot-${Number($('preview-bot')?.value) || 0}`, 0);
+}
+function playSynthPreview(text) {
+  ensureCtx();
+  const build = buildAdHocVoiceLine(text, previewIdentity(), { radio: true });
+  if (!build) { status('nothing to preview'); return; }
+  build(ctx, master, ctx.currentTime + 0.03);
+  status(`synth preview: "${text}"`);
+}
+// The bank fetches lazily: a take that has never been requested before is ALWAYS a cache miss on
+// its first lookup, since nothing in this tool ever prefetches. getBuffer()'s first call queues an
+// urgent fetch and returns null -- that used to surface directly as "take not loaded yet", forcing
+// a manual second click once the (real, ~100ms-1s) fetch+decode had quietly finished in the
+// background. Polling here instead means one click waits for the take rather than failing once.
+// Confirmed as the actual mechanism by three independent traces, not assumed.
+async function resolveWithRetry(getBuffer, { maxWaitMs = 4000, pollMs = 150 } = {}) {
+  let buf = getBuffer();
+  if (buf) return buf;
+  status('loading audio...');
+  const start = Date.now();
+  while (!buf && Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, pollMs));
+    buf = getBuffer();
+  }
+  return buf;
+}
+async function playBakedPreview(voiceId, lineId, variantIndex) {
+  ensureCtx();
+  const buf = await resolveWithRetry(() => bank.takeFromSet(voiceId, lineId, variantIndex));
+  if (!buf) { status('take failed to load -- confirm it is actually baked, or try again'); return; }
+  const build = buildSampleVoiceLine(buf, previewIdentity(), { radio: true });
+  build(ctx, master, ctx.currentTime + 0.03);
+  status(`baked preview: ${voiceId} / ${lineId} variant ${variantIndex}`);
+}
+async function playDefaultPreview(voiceId, lineId) {
+  ensureCtx();
+  const buf = await resolveWithRetry(() => bank.takeDefault(voiceId, lineId));
+  if (!buf) { status('default take failed to load -- confirm it is actually baked, or try again'); return; }
+  const build = buildSampleVoiceLine(buf, previewIdentity(), { radio: true });
+  build(ctx, master, ctx.currentTime + 0.03);
+  status(`baked default preview: ${voiceId} / ${lineId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Generation: calls the local voice-bake-server.mjs relay, which holds the
+// ElevenLabs key server-side and makes the one real, paid API call. Text is
+// sent exactly as currently shown in the tool, not re-read from disk -- an
+// unsaved edit must generate what you are looking at, not a stale copy.
+// ---------------------------------------------------------------------------
+async function generateVariant(voiceId, lineId, variantIndex, text, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'generating...';
+  status(`generating ${voiceId} / ${lineId} variant ${variantIndex} -- this is a real ElevenLabs call`);
+  try {
+    // Awaited and forced, not the debounced background save -- the relay's manifest step needs
+    // sound-params.json on disk to already know about this line (in particular a brand-new event)
+    // BEFORE the generate call, or the resulting file gets written but silently dropped from the
+    // manifest, which is a paid call producing an invisible take.
+    await saveToDisk({ force: true });
+    const res = await fetch(`${BAKE_SERVER_URL}/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceId, lineId, variantIndex, text }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || `http ${res.status}`);
+    status(`generated ${voiceId} / ${lineId} variant ${variantIndex}`);
+    // The bank caches decoded audio forever once fetched -- without invalidating the exact key
+    // that was just overwritten on disk, "▶ baked" keeps playing whatever was cached before this
+    // regenerate, indistinguishable from the generate having silently failed. refreshManifest()
+    // first, since a brand-new variant/voice was never in the bank's manifest snapshot at all.
+    await bank.refreshManifest();
+    bank.invalidate(voiceId, lineId, variantIndex);
+    clearDirty(voiceId, lineId, variantIndex);
+    await loadManifest();
+  } catch (err) {
+    const offline = err instanceof TypeError; // fetch throws TypeError on a refused connection
+    status(offline
+      ? `voice-bake-server not reachable at ${BAKE_SERVER_URL} -- run: node voice-bake-server.mjs`
+      : `generate failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+
+async function restorePrevious(voiceId, lineId, variantIndex, btn) {
+  btn.disabled = true;
+  status(`restoring previous take for ${voiceId} / ${lineId} variant ${variantIndex}...`);
+  try {
+    const res = await fetch(`${BAKE_SERVER_URL}/restore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceId, lineId, variantIndex }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || `http ${res.status}`);
+    await bank.refreshManifest();
+    bank.invalidate(voiceId, lineId, variantIndex);
+    clearDirty(voiceId, lineId, variantIndex);
+    await loadManifest();
+    status(`restored previous take for ${voiceId} / ${lineId} variant ${variantIndex}`);
+  } catch (err) {
+    status(`restore failed: ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
+// The protected default slot's own generate/restore -- deliberately NOT reusing generateVariant()/
+// restorePrevious(), which are keyed by variantIndex and hit /generate + bakeOneEleven (the variant
+// slot). The default has its own file, its own dirty tracking is unnecessary (it is not part of
+// customVariants()/isDirty() at all -- baked/unbaked comes straight from the manifest, since
+// nothing ever silently overwrites this slot the way a voice's own variant 0 used to), and its own
+// server route, since the TEXT is resolved server-side from the shared lexicon, never sent by the
+// client the way a variant's text is.
+async function generateDefault(voiceId, lineId, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'generating...';
+  status(`generating default take for ${voiceId} / ${lineId} -- this is a real ElevenLabs call`);
+  try {
+    await saveToDisk({ force: true });
+    const res = await fetch(`${BAKE_SERVER_URL}/generate-default`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceId, lineId }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || `http ${res.status}`);
+    status(`generated default take for ${voiceId} / ${lineId}`);
+    await bank.refreshManifest();
+    bank.invalidateDefault(voiceId, lineId);
+    await loadManifest();
+  } catch (err) {
+    const offline = err instanceof TypeError;
+    status(offline
+      ? `voice-bake-server not reachable at ${BAKE_SERVER_URL} -- run: node voice-bake-server.mjs`
+      : `generate default failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+async function restoreDefault(voiceId, lineId, btn) {
+  btn.disabled = true;
+  status(`restoring previous default take for ${voiceId} / ${lineId}...`);
+  try {
+    const res = await fetch(`${BAKE_SERVER_URL}/restore-default`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceId, lineId }),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.ok) throw new Error(body.error || `http ${res.status}`);
+    await bank.refreshManifest();
+    bank.invalidateDefault(voiceId, lineId);
+    await loadManifest();
+    status(`restored previous default take for ${voiceId} / ${lineId}`);
+  } catch (err) {
+    status(`restore default failed: ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function renderVoices() {
+  const host = $('voice-col');
+  host.innerHTML = '<h3>Voices</h3>';
+  if (!voices.length) {
+    host.innerHTML += '<div class="banner info">No baked ElevenLabs voices found. Run <code>node bake-voices.mjs --engine=eleven --voice=all</code> at least once before lines can be authored here -- this tool can only see voices that have already been baked, not the full account.</div>';
+    return;
+  }
+  const total = lineIds().length;
+  for (const v of voices) {
+    const el = document.createElement('div');
+    el.className = 'item' + (v.id === selectedVoice ? ' sel' : '');
+    el.innerHTML = `<span>${v.slug}</span><span class="meta">${completionCount(v.id)}/${total}</span>`;
+    el.addEventListener('click', () => { selectedVoice = v.id; selectedEvent = null; renderVoices(); renderEvents(); renderEditor(); });
+    host.appendChild(el);
+  }
+}
+
+function renderEvents() {
+  const host = $('event-col');
+  host.innerHTML = `<h3>Events${selectedVoice ? ` (${manifestEntry(selectedVoice)?.slug})` : ''}</h3>`;
+  if (!selectedVoice) { host.innerHTML += '<div class="banner info">Pick a voice.</div>'; return; }
+
+  for (const id of lineIds()) {
+    const customized = isCustomized(selectedVoice, id);
+    const el = document.createElement('div');
+    el.className = 'item' + (id === selectedEvent ? ' sel' : '') + (customized ? '' : ' shared');
+    el.innerHTML = `<span>${id}</span><span class="meta">${customized ? 'customized' : 'shared'}</span>`;
+    el.addEventListener('click', () => { selectedEvent = id; renderEvents(); renderEditor(); });
+    host.appendChild(el);
+  }
+
+  const addRow = document.createElement('div');
+  addRow.style.cssText = 'margin-top:10px;padding-top:10px;border-top:1px solid #1a1a33';
+  addRow.innerHTML = `<div class="row">
+    <input type="text" id="new-event-id" placeholder="new event id" style="width:100%">
+  </div>
+  <div class="row">
+    <input type="text" id="new-event-text" placeholder="fallback text" style="width:100%">
+  </div>
+  <button id="new-event-add">ADD EVENT</button>`;
+  host.appendChild(addRow);
+  $('new-event-add').addEventListener('click', () => {
+    const err = addNewEvent($('new-event-id').value, $('new-event-text').value);
+    if (err) { status(err); return; }
+    status(`added event "${selectedEvent}"`);
+    renderEvents(); renderEditor();
+  });
+}
+
+function renderEditor() {
+  const host = $('editor-col');
+  host.innerHTML = '';
+  if (!selectedVoice || !selectedEvent) {
+    host.innerHTML = '<div class="banner info">Pick a voice, then an event, to write or audition its lines.</div>';
+    return;
+  }
+
+  const entry = manifestEntry(selectedVoice);
+  const defaultLine = voiceLine(selectedEvent);
+  const info = document.createElement('div');
+  info.className = 'banner info';
+  info.innerHTML = `Shared default: <strong>"${defaultLine?.text ?? selectedEvent}"</strong> -- every voice with nothing customized here speaks this.`;
+  host.appendChild(info);
+
+  const identityRow = document.createElement('div');
+  identityRow.className = 'row';
+  identityRow.innerHTML = `<span style="color:#667">preview as bot #</span><input type="number" id="preview-bot" value="0" style="width:60px">`;
+  host.appendChild(identityRow);
+
+  const own = customVariants(selectedVoice, selectedEvent) || [];
+  if (!own.length) {
+    const empty = document.createElement('div');
+    empty.className = 'banner ok';
+    empty.textContent = `${entry?.slug} has nothing customized for "${selectedEvent}" yet -- it uses the shared default above.`;
+    host.appendChild(empty);
+  } else {
+    own.forEach((variant, i) => {
+      const fileId = i > 0 ? `${selectedEvent}__v${i}` : selectedEvent;
+      const baked = !isDirty(selectedVoice, selectedEvent, i) && !!entry?.lines?.has(fileId);
+      const hasPrev = !!entry?.prev?.has(fileId);
+      const card = document.createElement('div');
+      card.className = 'variant-card';
+      card.innerHTML = `
+        <div class="head">
+          <span class="dot ${baked ? 'baked' : 'unbaked'}" title="${baked ? 'baked' : 'not baked yet'}"></span>
+          <input type="text" class="wide" value="${variant.text.replace(/"/g, '&quot;')}" data-role="text">
+          <select data-role="tone"></select>
+          <select data-role="tag"><option value="">+tag</option>${DELIVERY_TAGS.map(t => `<option>${t}</option>`).join('')}</select>
+        </div>
+        <div class="row">
+          <button data-role="play-synth">▶ synth</button>
+          <button data-role="save">SAVE</button>
+          <button data-role="play-baked" ${baked ? '' : 'disabled'}>▶ baked</button>
+          <button data-role="generate" class="primary">${baked ? 'RE-GENERATE' : 'GENERATE'}</button>
+          ${hasPrev ? '<button data-role="restore">↺ undo last regen</button>' : ''}
+          ${i === own.length - 1 ? '<button data-role="delete">DELETE (last)</button>' : ''}
+        </div>
+        <div class="bake-note" data-role="bake-note">${baked ? 'baked' : `not baked -- click GENERATE (spends real ElevenLabs credits), or run: node bake-voices.mjs --engine=eleven --voice=${entry?.slug}`}</div>
+      `;
+      const toneSel = card.querySelector('[data-role=tone]');
+      const p = SOUND_PARAMS.voiceIntensity;
+      const anchors = [['calm', p.anchorCalm], ['wary', p.anchorWary], ['defensive/urgent', p.anchorDefensive], ['push/max', p.anchorPush]];
+      for (const [label, val] of anchors) {
+        const o = document.createElement('option');
+        o.value = val; o.textContent = `${label} (${val.toFixed(2)})`;
+        if (Math.abs(val - variant.intensity) < 0.001) o.selected = true;
+        toneSel.appendChild(o);
+      }
+      const textInput = card.querySelector('[data-role=text]');
+      card.querySelector('[data-role=tag]').addEventListener('change', (e) => {
+        const tag = e.target.value;
+        if (!tag) return;
+        const pos = textInput.selectionStart ?? textInput.value.length;
+        textInput.value = textInput.value.slice(0, pos) + tag + ' ' + textInput.value.slice(pos);
+        e.target.value = '';
+        textInput.focus();
+      });
+      // Shared by SAVE and GENERATE: whatever is currently in the text field and tone dropdown
+      // becomes the stored variant. GENERATE used to skip this and only forward textInput.value to
+      // the request -- the audio got the right text, but the tone was never captured anywhere, and
+      // the re-render after a successful generate rebuilt the card from whatever was last actually
+      // saved, silently reverting any tone/tag change the user hadn't explicitly saved first.
+      // Confirmed by three independent read-throughs before this fix, not assumed.
+      function persistCurrent() {
+        const updated = [...own];
+        updated[i] = { text: textInput.value, intensity: Number(toneSel.value) };
+        writeVoiceLexicon(selectedVoice, selectedEvent, updated);
+        markDirty(selectedVoice, selectedEvent, i);
+        return updated[i];
+      }
+      card.querySelector('[data-role=save]').addEventListener('click', () => {
+        persistCurrent();
+        status(`saved variant ${i} for ${entry?.slug}/${selectedEvent}`);
+        renderEvents(); renderEditor(); renderBakeSummary();
+      });
+      card.querySelector('[data-role=play-synth]').addEventListener('click', () => playSynthPreview(textInput.value));
+      const playBaked = card.querySelector('[data-role=play-baked]');
+      if (playBaked) playBaked.addEventListener('click', () => playBakedPreview(selectedVoice, selectedEvent, i));
+      card.querySelector('[data-role=generate]').addEventListener('click', (e) => {
+        // Only guard the DESTRUCTIVE case: a first-ever generate has no prior take to lose, so
+        // confirming it would just be friction. Overwriting one that already exists is the one
+        // that needs a deliberate yes, same as it costs real money either way.
+        if (baked && !confirm(`Regenerate "${selectedEvent}" for ${entry?.slug}? This spends a real ElevenLabs credit and replaces the current take (the previous one can be undone once afterward).`)) return;
+        const saved = persistCurrent();
+        generateVariant(selectedVoice, selectedEvent, i, saved.text, e.target);
+      });
+      const restoreBtn = card.querySelector('[data-role=restore]');
+      if (restoreBtn) restoreBtn.addEventListener('click', (e) => restorePrevious(selectedVoice, selectedEvent, i, e.target));
+      const del = card.querySelector('[data-role=delete]');
+      if (del) del.addEventListener('click', () => deleteLastVariant(selectedVoice, selectedEvent));
+      host.appendChild(card);
+    });
+  }
+
+  // Protected default slot (`${lineId}__default`, bake-voices.mjs#bakeDefaultEleven) -- its own
+  // permanent file, never touched by variant generation, available regardless of whether this
+  // voice has customized variants (comparing "the default" against "my new take" is the normal
+  // case, not the edge case). Not baked automatically: establishing it is a real, separate paid
+  // call, so it only exists once someone actually asks for it.
+  const defaultFileId = `${selectedEvent}__default`;
+  const defaultBaked = !!entry?.lines?.has(defaultFileId);
+  const defaultHasPrev = !!entry?.prev?.has(defaultFileId);
+  const controls = document.createElement('div');
+  controls.className = 'row';
+  controls.style.marginTop = '10px';
+  controls.innerHTML = `<button id="add-variant">+ ADD VARIANT</button>
+    <button id="play-default-synth">▶ synth default</button>
+    <button id="play-default-baked" ${defaultBaked ? '' : 'disabled'} title="${defaultBaked ? '' : 'not baked yet'}">▶ baked default</button>
+    <button id="generate-default" class="primary">${defaultBaked ? 'RE-GENERATE DEFAULT' : 'GENERATE DEFAULT'}</button>
+    ${defaultHasPrev ? '<button id="restore-default">↺ undo last default regen</button>' : ''}
+    ${own.length ? '<button id="revert-voice-line">REVERT TO SHARED (deletes all customized variants for this event)</button>' : ''}`;
+  host.appendChild(controls);
+  $('add-variant').addEventListener('click', () => {
+    const text = prompt(`New variant text for ${entry?.slug} / ${selectedEvent}:`, defaultLine?.text || '');
+    if (!text) return;
+    addVariant(selectedVoice, selectedEvent, text, SOUND_PARAMS.voiceIntensity.anchorWary);
+    status(`added variant for ${entry?.slug}/${selectedEvent} -- unbaked until you run the bake command below`);
+  });
+  $('play-default-synth').addEventListener('click', () => playSynthPreview(defaultLine?.text || selectedEvent));
+  const playDefaultBaked = $('play-default-baked');
+  if (playDefaultBaked && defaultBaked) {
+    playDefaultBaked.addEventListener('click', () => playDefaultPreview(selectedVoice, selectedEvent));
+  }
+  $('generate-default').addEventListener('click', async (e) => {
+    if (defaultBaked && !confirm(`Regenerate the protected default take for "${selectedEvent}" / ${entry?.slug}? This spends a real ElevenLabs credit and replaces the current default (the previous one can be undone once afterward).`)) return;
+    await generateDefault(selectedVoice, selectedEvent, e.target);
+  });
+  const restoreDefaultBtn = $('restore-default');
+  if (restoreDefaultBtn) restoreDefaultBtn.addEventListener('click', (e) => restoreDefault(selectedVoice, selectedEvent, e.target));
+  const revertBtn = $('revert-voice-line');
+  if (revertBtn) revertBtn.addEventListener('click', () => {
+    if (!confirm(`Remove all of ${entry?.slug}'s customized variants for "${selectedEvent}"? It will go back to speaking the shared default.`)) return;
+    revertToShared(selectedVoice, selectedEvent);
+    status(`${entry?.slug}/${selectedEvent} reverted to the shared default`);
+  });
+}
+
+function renderBakeSummary() {
+  const unbaked = new Map(); // slug -> count
+  for (const v of voices) {
+    for (const id of lineIds()) {
+      const own = customVariants(v.id, id);
+      if (!own) continue;
+      own.forEach((_, i) => {
+        const fileId = i > 0 ? `${id}__v${i}` : id;
+        if (isDirty(v.id, id, i) || !v.lines.has(fileId)) unbaked.set(v.slug, (unbaked.get(v.slug) || 0) + 1);
+      });
+    }
+  }
+  const host = $('bake-summary');
+  if (!unbaked.size) { host.textContent = 'everything customized here is already baked'; return; }
+  const parts = [...unbaked.entries()].map(([slug, n]) =>
+    `${slug}: ${n} unbaked -- <span class="cmd">node bake-voices.mjs --engine=eleven --voice=${slug}</span>`);
+  host.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+$('audio-gate').addEventListener('click', () => { ensureCtx(); ctx.resume(); });
+$('refresh-manifest').addEventListener('click', async () => {
+  status('refreshing manifest...');
+  await bank.refreshManifest();   // covers a CLI bake run outside this tab -- the bank's own manifest snapshot needs it too
+  // Deliberate/manual, unlike the automatic reload after one generate/restore call: this click IS
+  // the user asserting "check disk now" -- possibly after running the bake CLI directly, which this
+  // tab has no other way to learn about. Trust it fully rather than only clearing the one pair an
+  // automatic reload would know to clear.
+  await loadManifest({ preserveDirty: false });
+  status('bake status refreshed');
+});
+$('save-copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(JSON.stringify(exportParams(), null, 2));
+  status('copied sound-params.json to clipboard');
+});
+$('save-download').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(exportParams(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sound-params.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  status('downloaded -- save it over sound-params.json in this directory');
+});
+
+// Boot: load whatever sound-params.json already says (including any prior session's edits from
+// this tool or sound-studio.html), then the manifest, then draw.
+(async () => {
+  const res = await loadSoundParams();
+  status(res.ok ? `sound-params.json loaded (${res.applied} overrides)` : `sound-params.json not loaded (${res.reason})`);
+  await loadManifest({ preserveDirty: false });   // nothing has been edited yet -- trust the disk state fully
+})();
+</script>
+</body>
+</html>

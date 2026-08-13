@@ -1,0 +1,5 @@
+t_ms	type	attacker	attacker_team	victim	victim_team	weapon	cause	amount	victim_health	ax	az	vx	vz	dist
+1289	damage	bot-527	bravo	bot-517	alpha	five_seven	bullet	20.00	52.84	29.45	-13.90	30.70	31.16	45.08
+1461	damage	bot-527	bravo	bot-517	alpha	five_seven	bullet	20.00	32.84	29.45	-13.90	30.61	31.43	45.35
+1643	damage	bot-527	bravo	bot-517	alpha	five_seven	bullet	20.00	12.84	29.45	-13.90	30.39	32.17	46.08
+1819	kill	bot-527	bravo	bot-517	alpha	five_seven	bullet	20.00	0.00	29.45	-13.90	30.14	33.03	46.93

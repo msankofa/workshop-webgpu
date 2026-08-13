@@ -2,6 +2,7 @@
 // Run: node test-squad-activity.mjs
 import {
   SQUAD_LOSS_THRESHOLD, rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset,
+  columnOffset, chooseFormationKind, pickExploreGoal,
 } from './squad-activity.js';
 
 let failed = 0;
@@ -170,6 +171,84 @@ function seededRand(seed) {
   const leaderPos = { x: 100, z: 50 };
   const p = formationOffset(leaderPos, 0, 5);
   ok(Math.abs(p.x - 105) < 1e-9 && Math.abs(p.z - 50) < 1e-9, `formationOffset translates with a non-origin leaderPos (got x=${p.x}, z=${p.z})`);
+}
+
+// columnOffset: memberIndex 0 collapses to the leader position (leader itself never calls this,
+// but the math should still be sane at the boundary)
+{
+  const p = columnOffset({ x: 10, z: -4 }, 0.7, 0, 3);
+  ok(Math.abs(p.x - 10) < 1e-9 && Math.abs(p.z + 4) < 1e-9, 'columnOffset memberIndex 0 collapses to leaderPos');
+}
+// columnOffset: heading 0 (+Z forward) trails members along -Z, spaced by `spacing`
+{
+  const p1 = columnOffset({ x: 0, z: 0 }, 0, 1, 3);
+  const p2 = columnOffset({ x: 0, z: 0 }, 0, 2, 3);
+  ok(Math.abs(p1.x) < 1e-9 && Math.abs(p1.z + 3) < 1e-9, `heading 0, index 1 trails to -Z by one spacing (got x=${p1.x}, z=${p1.z})`);
+  ok(Math.abs(p2.x) < 1e-9 && Math.abs(p2.z + 6) < 1e-9, `heading 0, index 2 trails to -Z by two spacings (got x=${p2.x}, z=${p2.z})`);
+}
+// columnOffset: distance from leader grows linearly with memberIndex
+{
+  const leaderPos = { x: 5, z: 5 };
+  for (let i = 0; i < 6; i++) {
+    const p = columnOffset(leaderPos, 1.1, i, 2.5);
+    const dist = Math.hypot(p.x - leaderPos.x, p.z - leaderPos.z);
+    ok(Math.abs(dist - i * 2.5) < 1e-9, `columnOffset distance scales linearly (member ${i}, got ${dist})`);
+  }
+}
+
+// chooseFormationKind: manual override wins regardless of engaged/corridor
+{
+  ok(chooseFormationKind({ manual: 'column', engaged: true, corridorClear: true }) === 'column', 'manual column wins even when engaged and corridor is clear');
+  ok(chooseFormationKind({ manual: 'ring', engaged: false, corridorClear: false }) === 'ring', 'manual ring wins even in a narrow corridor');
+}
+// chooseFormationKind: engaged always forces ring, even in a narrow corridor
+{
+  ok(chooseFormationKind({ manual: 'auto', engaged: true, corridorClear: false }) === 'ring', 'combat engagement forces ring even when the corridor is narrow');
+}
+// chooseFormationKind: auto + not engaged follows corridor width
+{
+  ok(chooseFormationKind({ manual: 'auto', engaged: false, corridorClear: true }) === 'ring', 'auto + clear corridor + not engaged picks ring');
+  ok(chooseFormationKind({ manual: 'auto', engaged: false, corridorClear: false }) === 'column', 'auto + narrow corridor + not engaged picks column');
+}
+// chooseFormationKind: defaults (no args) behave as auto + not engaged + corridor clear -> ring
+{
+  ok(chooseFormationKind({}) === 'ring', 'chooseFormationKind defaults to ring with no context');
+}
+
+// pickExploreGoal: with zero jitter, lands exactly on the heading at some distance in [minDist, maxDist]
+{
+  const pos = { x: 0, z: 0 };
+  for (let i = 0; i < 20; i++) {
+    const goal = pickExploreGoal({ pos, heading: 0, coneJitterRad: 0, minDist: 80, maxDist: 300, history: [], exclusionRadius: 50, rand: seededRand(100 + i) });
+    ok(Math.abs(goal.x) < 1e-9, `zero jitter stays exactly on heading (x=${goal.x})`);
+    ok(goal.z >= 80 - 1e-9 && goal.z <= 300 + 1e-9, `goal distance falls within [minDist, maxDist] (got ${goal.z})`);
+  }
+}
+// pickExploreGoal: rejects candidates within exclusionRadius of history, retries until clear
+{
+  const pos = { x: 0, z: 0 };
+  const history = [{ x: 0, z: 100 }]; // sits inside the [80,300] range directly on heading 0
+  // coneJitterRad 0 makes angle always 0, so only the dist-roll (every 2nd rand() call) matters:
+  // first attempt rolls dist=102 (within 50m of the history point at z=100 -> rejected), second
+  // attempt rolls dist=278 (clear of it -> accepted).
+  const rolls = [0, 0.1, 0, 0.9];
+  let call = 0;
+  const rand = () => rolls[call++] ?? 0.9;
+  const goal = pickExploreGoal({ pos, heading: 0, coneJitterRad: 0, minDist: 80, maxDist: 300, history, exclusionRadius: 50, rand });
+  const distFromHistory = Math.hypot(goal.x - history[0].x, goal.z - history[0].z);
+  ok(Math.abs(goal.z - 278) < 1e-9, `pickExploreGoal retries past a rejected candidate to the next roll (got z=${goal.z})`);
+  ok(distFromHistory >= 50, `pickExploreGoal avoids landing within exclusionRadius of a remembered point (got ${distFromHistory})`);
+}
+// pickExploreGoal: empty history never rejects (nothing to be close to)
+{
+  const goal = pickExploreGoal({ pos: { x: 0, z: 0 }, heading: 1.5, coneJitterRad: 0.5, minDist: 80, maxDist: 300, history: [], exclusionRadius: 50, rand: seededRand(7) });
+  ok(Number.isFinite(goal.x) && Number.isFinite(goal.z), 'pickExploreGoal with empty history returns a finite point on the first attempt');
+}
+// pickExploreGoal: goals chain outward from the given pos, not a fixed origin
+{
+  const goalFromOrigin = pickExploreGoal({ pos: { x: 0, z: 0 }, heading: 0, coneJitterRad: 0, minDist: 100, maxDist: 100, history: [], exclusionRadius: 50, rand: () => 0.5 });
+  const goalFromFar = pickExploreGoal({ pos: { x: 500, z: 500 }, heading: 0, coneJitterRad: 0, minDist: 100, maxDist: 100, history: [], exclusionRadius: 50, rand: () => 0.5 });
+  ok(Math.abs((goalFromFar.x - 500) - goalFromOrigin.x) < 1e-9, 'pickExploreGoal offsets relative to the passed-in pos, not a fixed origin');
 }
 
 // SQUAD_LOSS_THRESHOLD is a sane fraction

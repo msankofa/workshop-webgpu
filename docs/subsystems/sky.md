@@ -76,7 +76,12 @@ export function createMilkyWay(milkyData, palette)
 
 **celestial-bodies.js**
 ```js
-export function createCelestialBodies(bodyData, { resScale = 1 } = {})  // resScale scales the painter canvas edge (512 HD / 256 simple)
+export function createCelestialBodies(bodyData, { resScale = 1, faceMode = 'billboard' } = {})
+// resScale scales the painter canvas edge (512 HD / 256 simple).
+// faceMode: 'billboard' (default) → camera-facing THREE.Sprites (used by stellar-viewer.html);
+//           'fixed' → plane meshes oriented once toward the group origin, so distant planets
+//           don't appear to rotate as the view yaws (used by sky.js). Both disable frustum
+//           culling so small bodies don't pop out at the view edge.
 export const PAINTER_TUNING   // { terrestrial, gas, ice, volcanic, rocky } visual constants, mutable
 ```
 
@@ -90,8 +95,8 @@ export class Clouds extends THREE.Mesh {
   setCoverage(coverage)
   setPuff(puff)
   setSoftness(softness)
-  setFade(fade)
-  setExtent(worldUnits)
+  setFade(fade)          // 0..1 edge dimming (0 = clouds full to the plane edge, 1 = dim toward it)
+  setExtent(worldUnits)  // also updates the fade's half-extent uniform
 }
 export default Clouds;
 ```
@@ -186,10 +191,11 @@ without affecting the other.
   (`Math.random()*0xffffffff>>>0`) so sessions differ, and exposed as a UI number field +
   Reroll button. `sky-field.js`/`DEFAULT_PALETTE` are untouched — seed handling lives
   entirely in `sky.js` and the viewer, so the Node tests are unaffected.
-- **Sun/moon sprite placement**: `sunSpritePlacement(dir, radius, palette)` places the
-  disc along the normalized light direction at `0.74 * radius`, with sprite scale
-  `radius * sunSize * 2.15 * (moon ? 2.4 : 1)` (moon renders larger than the sun).
-  `sky.js` builds **both** sun and moon sprite/discs up front at `build()` time and
+- **Sun/moon disc placement**: `sunSpritePlacement(dir, radius, palette)` places the
+  disc along the normalized light direction at `0.74 * radius`, with disc scale
+  `radius * sunSize * 2.15 * (moon ? 2.4 : 1)` (moon renders larger than the sun). The discs are
+  plane meshes (see the camera-oriented note below), re-oriented toward the camera each time
+  `placeDisc` repositions them. `sky.js` builds **both** sun and moon discs up front at `build()` time and
   toggles visibility (`updateDiscVisibility`/`setCelestialType`) rather than
   rebuilding — comments in `sky.js` explicitly call out that a runtime
   rebuild/dispose was the cause of a "night freeze" bug (GPU buffer destroyed while
@@ -200,13 +206,27 @@ without affecting the other.
   (`flushDisposals`, called once/frame by the viewer) so a tree is freed only after
   surviving ≥2 frames past detach. **`disposeTree` skips geometry disposal for
   `THREE.Sprite`s** (`!o.isSprite`): every Sprite shares one module-level `QuadGeometry`, so
-  disposing the old sun/moon/celestial-body sprites' geometry destroys the buffer the
-  *newly-built* sprites still draw from — reproducing the "buffer used in submit while
-  destroyed" freeze whenever the camera faces the sky sprites (sprites are `frustumCulled`, so
-  it only shows looking up). This was latent until `setSeed` made `rebuild()` reachable at
-  runtime for the first time.
+  disposing a sprite's geometry destroys the buffer other live sprites still draw from —
+  reproducing the "buffer used in submit while destroyed" freeze. This guard is now defensive:
+  `sky.js` builds **no sprites** — the sun/moon discs and the celestial bodies are plane meshes
+  (see below), and each mesh owns its **own** 1×1 `PlaneGeometry` (never a shared module-level
+  one), so `disposeTree` frees them normally on a rebuild without the shared-buffer hazard.
+- **Sky render-order stack** (all sky materials use `depthWrite:false`, so within the sky it's
+  pure painter's order, back → front): dome `-1000` → Milky-Way gas `-999` → Milky-Way band
+  `-998` → background stars `-997` → celestial bodies `-996` (with `stableCelestialLayering` on,
+  `-996 + index*0.001` so companions never swap layers by pitch) → sun/moon disc `-995`. The key
+  constraint: **stars sit behind the bodies**, so an opaque planet occludes background stars
+  instead of stars twinkling in front of it.
+- **Discs and bodies are camera-oriented plane meshes, not billboards.** The sun/moon discs
+  (`makeDisc`) and celestial bodies (`createCelestialBodies(..., { faceMode: 'fixed' })`) are
+  `THREE.Mesh` quads oriented **once** toward the group origin (the camera) via a fixed basis
+  with world-up as the up reference — re-oriented only when repositioned, not every frame. A
+  `THREE.Sprite` re-faces the camera each frame, which made the painted spheres appear to spin as
+  the view yawed; a fixed mesh sits still. All are `frustumCulled = false` so small bodies don't
+  pop out at the view edge.
 - **Star field + Milky Way generation**: `generateStars` places points on a
-  `0.83 * radius` shell, upper hemisphere only (`y ∈ [0.06, 0.96]`), with 0-3
+  `0.83 * radius` shell, upper hemisphere only (`y ∈ [0.06, 1.0]` — the range reaches the zenith
+  so there's no bare circular gap directly overhead), with 0-3
   reserved Pleiades-like clusters (tight core + looser halo, jittered around a random
   hemisphere direction) when `starCount >= 800`; each star carries twinkle attributes
   (`phase`, `speed`, `strength`) consumed entirely on the GPU. `generateMilkyWay`
@@ -284,10 +304,19 @@ without affecting the other.
   (which does include `cloudFar`), doing the clamping. Clouds already have their own
   distance-based `uFade` horizon fade, so scene fog on them is redundant as well as
   harmful; disabling it lets the cloud extent actually reach past the terrain.
-- **Clouds horizon fade** is also camera-centered: `uCameraXZ` is a `vec2` uniform
-  updated every frame from `update(elapsedTime, cameraPosition)`, and alpha divides
-  by `length(positionWorld.xz - uCameraXZ) + 1`, so fade always radiates from the
-  camera regardless of where in the world it sits.
+- **Clouds horizon fade** is camera-centered AND extent-relative: `uCameraXZ` is a `vec2`
+  uniform updated every frame from `update(elapsedTime, cameraPosition)`; distance from the
+  camera is normalized by `uHalfExtent` (the plane's world half-size, kept in sync by
+  `setExtent`). Alpha = `coverage * opacity * haze * edge`, where `haze = max(1 - norm*uFade,
+  0.25)` keeps clouds readable across the whole plane and `edge = smoothstep(1.0, 0.85, norm)`
+  fades only the outer 15% to hide the plane's finite boundary. This replaced an earlier
+  `alpha = … / (uFade * rawDistance)` that dropped clouds to near-invisible within ~1000 world
+  units, so the deck vanished well before the horizon. `uFade` is now a 0..1 edge-dim amount
+  (`setFade`; default 0.5), not a raw distance rate.
+- **Clouds never write depth** (`depthWrite: false`): as a transparent, depth-writing plane the
+  cloud deck punched holes in the (also transparent, alpha-tested) tree foliage behind/below it —
+  branches vanished where the invisible parts of the cloud plane had written depth. Every other
+  sky material already sets `depthWrite:false`; clouds now match.
 - **Clouds drift timing**: `Clouds` accumulates its own `_scaledTime` from deltas
   between successive `update()` calls multiplied by `this.speed`, so changing
   `setSpeed` at runtime changes the rate without jumping/discontinuing the noise

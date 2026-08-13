@@ -32,6 +32,7 @@ import { createLightingRig } from './lights.js';
 import { createTree } from './trees.js';
 import { createTextureSource } from './tree-textures.js';
 import { applyAge } from './tree-age.js';
+import { EZ_TREE_FAMILIES } from './tree-presets.js';
 
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
@@ -87,8 +88,10 @@ window.addEventListener('resize', () => {
 // trees.js's Tree constructor deep-merges user options over its internal DEFAULTS and stores
 // the merged result as `.options` — using that (rather than re-declaring DEFAULTS here) keeps
 // `opts`'s shape guaranteed identical to what createTree()/regenerate() expect.
+// Cloned, not aliased: merge() shares nested objects with trees.js's DEFAULTS, so writing to
+// opts.bark/opts.leaves in place would edit that module-level default for every later tree.
 const _genTree = createTree({});
-const opts = _genTree.options;
+const opts = structuredClone(_genTree.options);
 _genTree.dispose();
 // Captured once, immediately, before any user interaction — the Restart button resets to this
 // regardless of how far the live `opts` has drifted since.
@@ -651,6 +654,7 @@ function pushUndo() {
 function applyOptsAndRefresh() {
   applyTexSetToOpts();
   resyncForceAngles();
+  resyncAtlasControls();
   rebuildTraitSliders();
   refreshAllControls();
   refreshSeedLabel();
@@ -719,6 +723,7 @@ function buildStructureUI() {
     rebuildTraitSliders();
     scheduleRegenerate(true);
   });
+  optsToggle('evergreen', 'Evergreen (conifer)');
 
   for (const p of LEVEL_PARAMS) {
     const traitBody = panelSection(`trait-${p.key}`, p.label, () => mutateSection(traitMutateList(p)), structureBody, 'structure');
@@ -785,6 +790,12 @@ optsSelect('leaves.shape', 'Shape', ['quad', 'simple']);
 let atlasPinned = false;
 let atlasCell = 0;
 function applyAtlas() { opts.leaves.atlas = atlasPinned ? { cols: 2, rows: 2, cell: atlasCell } : null; }
+// The reverse: a loaded species carries its own atlas cell (the ez-tree presets pin one per leaf
+// type), so these two controls have to follow opts rather than fight it.
+function resyncAtlasControls() {
+  atlasPinned = !!opts.leaves.atlas;
+  atlasCell = opts.leaves.atlas?.cell ?? 0;
+}
 toggleControl('Pin leaf atlas cell (authored mode only)', () => atlasPinned, v => { atlasPinned = v; applyAtlas(); }, () => scheduleRegenerate());
 rangeControl('Atlas cell', 0, 3, 1, () => atlasCell, v => { atlasCell = Math.round(v); applyAtlas(); }, fi, () => scheduleRegenerate());
 
@@ -822,6 +833,7 @@ const BIOME_NAMES = [
 ];
 const FAMILIES_KEY = 'tree-viewer:families';
 const LEGACY_SAVED_TREES_KEY = 'tree-viewer:saved-trees';
+const PRESETS_SEEDED_KEY = 'tree-viewer:ez-presets-seeded';
 function newId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
 // Same map/normalMap-stripping replacer Export uses — species snapshots never hold live Texture
@@ -845,6 +857,19 @@ if (!Array.isArray(families)) {
       biomes: [], density: 1, sizeRange: [0.8, 1.2], ageRange: [1, 1],
     })),
   }] : [];
+}
+// Seed the 16 stock ez-tree presets (tree-presets.js) so a first run opens on the same starting
+// set the upstream editor ships instead of one bare default tree. Matched on the baked stable ids
+// so re-running never duplicates them, and gated on a flag so a family you delete stays deleted.
+{
+  const seeded = localStorage.getItem(PRESETS_SEEDED_KEY) === '1';
+  const have = new Set(families.map(f => f.id));
+  const missing = seeded ? [] : EZ_TREE_FAMILIES.filter(f => !have.has(f.id));
+  if (!seeded) {
+    families.push(...structuredClone(missing));
+    localStorage.setItem(PRESETS_SEEDED_KEY, '1');
+    if (missing.length) localStorage.setItem(FAMILIES_KEY, JSON.stringify(families));
+  }
 }
 function persistFamilies() { localStorage.setItem(FAMILIES_KEY, JSON.stringify(families)); }
 function familyById(id) { return families.find(f => f.id === id); }
@@ -875,6 +900,7 @@ function loadOpts(savedOpts) {
 function resetOptsQuiet(source) {
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(source));
+  applyTexSetToOpts();   // snapshots omit live maps, so put the current mode's back
   resyncForceAngles();
 }
 

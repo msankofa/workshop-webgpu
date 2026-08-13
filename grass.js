@@ -77,6 +77,11 @@ const DEFAULTS = {
   fadeStart: 1e6,          // world distance from camera where blades start shrinking
   fadeEnd: 1e6 + 1,        // world distance where blades are fully collapsed
   heightFn: null,          // optional (x, z) => y to conform blade bases to terrain
+  // Optional (x, z, y) => boolean placement gate, applied after the water test. Returning false
+  // drops that blade as a gap, exactly the way a submerged base is dropped -- so a host with
+  // solid geometry standing in the field (bot-viewer's walls and cover) can keep grass from
+  // growing through it without having to carve the field into pieces.
+  acceptFn: null,
 };
 
 // deep-merge user options over defaults (arrays/primitives replace; objects merge)
@@ -223,6 +228,7 @@ function buildGeometry(o) {
   const rng = makeRNG(o.seed);
   const n = Math.max(0, Math.floor(o.count));
   const heightFn = o.heightFn || (() => 0);
+  const acceptFn = typeof o.acceptFn === 'function' ? o.acceptFn : null;
   const R = o.radius;
   const useSquare = o.size > 0;
   // UVs (and the cloud-shadow noise) map the field into 0..1 over its full extent:
@@ -259,6 +265,7 @@ function buildGeometry(o) {
     }
     const by = heightFn(bx, bz);
     if (by < minBaseY) continue; // submerged / on the waterline — skip this spot
+    if (acceptFn && !acceptFn(bx, bz, by)) continue; // host-rejected (inside geometry, on a path)
 
     const h = o.bladeHeight + rng() * o.heightVariation;
     const yaw = rng() * Math.PI * 2;

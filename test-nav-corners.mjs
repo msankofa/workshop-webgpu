@@ -1,8 +1,8 @@
 // Node tests for nav-corners.js (baked corner/cover-anchor map).
 // Run: node test-nav-corners.mjs
 import { buildNavGrid } from './nav-grid.js';
-import { buildSightGrid, buildVisibilityField, buildHeightGrid } from './nav-visibility.js';
-import { buildCornerMap, ANCHOR_INSET, ANCHOR_OFFACE, PEEK_PAST } from './nav-corners.js';
+import { buildSightGrid, buildVisibilityField, buildLazyVisibilityField, buildHeightGrid } from './nav-visibility.js';
+import { buildCornerMap, updateCornerMapInBounds, ANCHOR_INSET, ANCHOR_OFFACE, PEEK_PAST } from './nav-corners.js';
 
 let failed = 0;
 function ok(cond, msg) { if (!cond) { failed++; console.error('FAIL:', msg); } }
@@ -169,6 +169,117 @@ function checkRecords(grid, field, records, label) {
   for (const map of [tight, scaled]) {
     ok(map.corners.every(rec => rec.anchorCell !== rec.peekCell),
       'no record has its anchor and peek quantized onto the same cell');
+  }
+}
+
+// ---- footprint-local update vs a full rebake ----
+// updateCornerMapInBounds exists so a wall coming down mid-fight does not pay for a whole-map corner
+// bake. The claim it must earn is that its result EQUALS a full rebake for wall records. The crest
+// half is scan-order dependent by construction, so it is measured and bounded, not asserted equal.
+// Lazy field throughout: the eager bake is quadratic and this block bakes ~20 maps.
+{
+  const key = rec => [rec.kind, rec.corner.x.toFixed(4), rec.corner.z.toFixed(4),
+    rec.anchorCell, rec.peekCell, rec.peekDir.x, rec.peekDir.z].join('|');
+  const setOf = recs => new Set(recs.map(key));
+  const diff = (a, b) => [...a].filter(k => !b.has(k));
+  const footprint = r => ({ minX: r.x - r.w / 2, maxX: r.x + r.w / 2, minZ: r.z - r.d / 2, maxZ: r.z + r.d / 2 });
+
+  const cellSize = 0.5;
+  const bounds = { minX: -12, maxX: 12, minZ: -12, maxZ: 12 };
+  const base = [];
+  for (let i = -2; i <= 2; i++) {
+    base.push({ x: i * 5, z: 0, w: 0.3, d: 9, h: 3 });   // vertical fins
+    base.push({ x: 0, z: i * 5, w: 9, d: 0.3, h: 3 });   // horizontal fins
+  }
+  const rebake = (rects, heights = null, opts = {}) => {
+    const grid = buildNavGrid((x, z) => !rects.some(rc => inRect(rc, x, z)), bounds, cellSize);
+    const field = buildLazyVisibilityField(grid, buildSightGrid(grid, rects),
+      heights ? { terrain: { heights } } : {});
+    return { grid, field, map: buildCornerMap(grid, rects, field, { heights, ...opts }) };
+  };
+
+  // Every single-wall removal, compared against the full rebake of the same post-change world.
+  let mismatches = 0;
+  for (let victim = 0; victim < base.length; victim++) {
+    const before = rebake(base);
+    const after = base.filter((_, i) => i !== victim);
+    const full = rebake(after);
+    // The local update runs against the POST-change grid and field, exactly as the viewer will:
+    // nav and the sight grid are patched first, corners last.
+    const local = updateCornerMapInBounds(before.map, full.grid, after, full.field, footprint(base[victim]));
+    const a = setOf(full.map.corners), b = setOf(local.corners);
+    const missing = diff(a, b), extra = diff(b, a);
+    if (missing.length || extra.length) {
+      mismatches++;
+      if (mismatches === 1) console.error(`  first mismatch removing rect ${victim}: ${missing.length} missing, ${extra.length} extra`);
+    }
+  }
+  ok(mismatches === 0, `local corner update equals a full rebake over all ${base.length} single-wall removals`);
+
+  // Shortening a wall below sight height must delete its corners the same way removing it does.
+  {
+    const victim = 4;
+    const before = rebake(base);
+    const after = base.map((r, i) => (i === victim ? { ...r, h: 1.2 } : r));
+    const full = rebake(after);
+    const local = updateCornerMapInBounds(before.map, full.grid, after, full.field, footprint(base[victim]));
+    ok(diff(setOf(full.map.corners), setOf(local.corners)).length === 0
+      && diff(setOf(local.corners), setOf(full.map.corners)).length === 0,
+      'local corner update equals a full rebake when a wall is shortened below sight height');
+  }
+
+  // Splitting one wall into two halves with a gap -- the shape a breach takes.
+  {
+    const victim = 0, g = base[victim];
+    const before = rebake(base);
+    const after = base.filter((_, i) => i !== victim).concat([
+      { ...g, z: g.z - g.d / 4 - 1, d: g.d / 2 - 2 },
+      { ...g, z: g.z + g.d / 4 + 1, d: g.d / 2 - 2 },
+    ]);
+    const full = rebake(after);
+    const local = updateCornerMapInBounds(before.map, full.grid, after, full.field, footprint(g));
+    ok(diff(setOf(full.map.corners), setOf(local.corners)).length === 0
+      && diff(setOf(local.corners), setOf(full.map.corners)).length === 0,
+      'local corner update equals a full rebake when a wall is split in two');
+    const keys = local.corners.map(key);
+    ok(new Set(keys).size === keys.length, 'local corner update emits no duplicate records');
+  }
+
+  // With terrain, wall records must still be exact; the crest half is only bounded. The ground is
+  // the same reverse slope the crest tests above use (flat, 4 m ramp, plateau), which is a shape
+  // known to emit crests -- a gentle sine emits none, and a bound over zero records proves nothing.
+  {
+    const tBounds = { minX: 0, maxX: 40, minZ: 0, maxZ: 24 };
+    const tCell = 1;
+    const ground = (x) => (x < 18 ? 0 : x > 22 ? 5 : ((x - 18) / 4) * 5);
+    const fins = [
+      { x: 8, z: 12, w: 1, d: 9, h: 3 },
+      { x: 30, z: 6, w: 1, d: 9, h: 3 },
+      { x: 30, z: 18, w: 9, d: 1, h: 3 },
+    ];
+    const tBake = (rects, heights) => {
+      const grid = buildNavGrid((x, z) => !rects.some(rc => inRect(rc, x, z)), tBounds, tCell);
+      const field = buildLazyVisibilityField(grid, buildSightGrid(grid, rects), { terrain: { heights } });
+      return { grid, field, map: buildCornerMap(grid, rects, field, { heights }) };
+    };
+    const gridH = buildNavGrid(() => true, tBounds, tCell);
+    const heights = buildHeightGrid(gridH, (x) => ground(x));
+    const before = tBake(fins, heights);
+    const after = fins.slice(1);
+    const full = tBake(after, heights);
+    const local = updateCornerMapInBounds(before.map, full.grid, after, full.field, footprint(fins[0]), { heights });
+
+    const fw = setOf(full.map.corners.filter(r => r.kind === 'wall'));
+    const lw = setOf(local.corners.filter(r => r.kind === 'wall'));
+    ok(diff(fw, lw).length === 0 && diff(lw, fw).length === 0,
+      'with terrain present, wall records still match a full rebake exactly');
+
+    const fc = full.map.corners.filter(r => r.kind === 'crest').length;
+    const lc = local.corners.filter(r => r.kind === 'crest').length;
+    ok(fc > 0, `the crest comparison actually has crests to compare (${fc})`);
+    console.log(`  crest drift: full bake ${fc}, local update ${lc} (${local.crestExact ? 'untouched' : 'rescanned'})`);
+    ok(Math.abs(fc - lc) <= Math.max(2, Math.round(fc * 0.1)),
+      `crest count after a local update stays within 10% of a full bake (${fc} vs ${lc})`);
   }
 }
 

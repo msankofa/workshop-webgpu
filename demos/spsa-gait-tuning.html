@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — SPSA vs the shipped gait model</title>
+<!--
+  DEMO — searching the REAL biped gait model with SPSA.
+
+  WHERE THIS CAME FROM
+  --------------------
+  docs/research/quantum-software-transferable-techniques.md, item 2. Variational quantum algorithms
+  cannot get clean gradients, because every evaluation is a noisy sample off real hardware, so that
+  field standardised on SPSA — it estimates a descent direction from exactly TWO evaluations per
+  iteration no matter how many parameters are in play. Qiskit ships it as the default for VQE.
+
+  NOTHING HERE IS A STAND-IN
+  --------------------------
+  An earlier version of this page scored a toy kinematic quadruped invented for the demo. It has
+  been replaced. Every walk on this page runs `stepGait` from `player-procedural-body.js` — the
+  same scheduler the player body uses in game, which is THREE-free by contract (Contract 3) exactly
+  so it can be driven headlessly like this.
+
+    * The parameters being tuned are GAIT_SPEED_MODEL — the least-squares speed->gait fit authored
+      in body-preview.html — plus the two speed-independent constants stepGait reads.
+    * The baseline drawn on the chart is that shipped model at its shipped coefficients. It is what
+      the game walks with today, not a straw man.
+    * The metrics are read off real foot states: a swing foot passing through the ground, a planted
+      foot dragged outside leg reach, both feet airborne at once, stride asymmetry and irregularity.
+
+  Scoring and simulation live in `../gait-objective.js`, with 116 assertions in
+  `test-gait-objective.mjs`. The optimisers live in `../spsa.js`, with 41 more in `test-spsa.mjs`.
+  `node ../tune-gait.mjs` runs the same search headlessly and prints a pasteable result.
+
+  WHAT IS NOT TUNED, AND WHY
+  --------------------------
+  GAIT_DEFAULTS declares `lookAhead`, but nothing in player-procedural-body.js ever reads it — it is
+  a dead parameter, and optimising it would move a number that changes nothing. `standSpeed` and
+  `teleportDistance` are thresholds for standing still and for respawn, inert while walking.
+  `pelvisHeightRatio` IS tuned, unlike in the first version of this page: it is not just a rig
+  cosmetic, update() writes it from the speed model every frame and it decides whether a leg can
+  reach the ground at all.
+
+  THE DEFECT THIS PAGE IS ABOUT
+  -----------------------------
+  A step's landing point is chosen when the foot LIFTS and is never revised. During the swing the
+  hip keeps moving, so the foot lands behind where it aimed. Traced at a dash, the planted foot runs
+  from 0.36 m to 1.46 m behind the hip and is never once underneath it.
+
+  That is not cosmetic. Legs are solved by an analytic two-bone IK (solveTwoBone) that clamps the
+  foot to 0.999 of full extension along the hip->target line. There is no FABRIK on the legs and
+  nothing stretches the bones, so a target out of reach means the DRAWN foot is not where the
+  simulation put it — and a planted foot that moves is a foot skating across the ground. The
+  scheduler's own workspace cannot catch it either, because constrainFootTarget's maxReach is a
+  purely horizontal bound that never sees the drop to the ground.
+
+  LEAN INTO STEP
+  --------------
+  Nothing in the scheduler is changed. It is handed a BALANCE POINT — pelvis + lead along the
+  heading — in place of the pelvis, and the rest anchor follows whatever hip it is given. Leg reach
+  is still measured from the true hip socket, since that is where the leg attaches. The green dashed
+  marker on screen is that balance point.
+
+  `lead = leadScale * speed * effectiveStepDuration`, i.e. a fraction of the hip travel the foot has
+  to catch up on. An earlier version projected the torso lean instead, and that was measurably the
+  wrong quantity: torsoLean saturates at 0.20 rad, so even at its slider maximum it offered 0.32 m
+  at sprint speed where the requirement is about 0.9 m.
+
+  `leadScale` 0 reproduces current behaviour exactly, so this adds a knob without moving anything
+  until it is turned. At the shipped coefficients it takes the clean score from 2.486 to 3.871, and
+  cuts the planted foot's overshoot at a dash from 0.184 m to 0.010 m. The optimum is interior
+  (about 0.75) and it moves with stepOverlap: 0.75 at overlap 0, 0.54 at bot-viewer-v3's 0.22.
+
+  WHAT THE SEARCH FINDS, AND WHAT IT DOES NOT
+  -------------------------------------------
+  Searching all eleven parameters scores WORSE than tuning the lead alone (about 3.2 against 3.87).
+  The least-squares fit authored in body-preview.html is already good; the only thing missing from
+  it was the lead. That is the result, and it is why GAIT_MODELS.tuned ships the shipped
+  coefficients unchanged with only a lead term added.
+
+  Getting there meant closing three objective exploits, each of which scored a visibly bad gait as
+  near-perfect: measuring cadence from the CONFIGURED step duration instead of the effective one
+  (the search set one high and drove the other to the floor, scoring an 8 Hz shuffle at 3.99);
+  leaving the pelvis loosely bounded (it squatted to 0.40 of body height); and penalising a flight
+  phase at running speed (which punished the overlap setting the user tuned by eye).
+
+  One thing the objective cannot adjudicate: this rig steps about twice as fast as a human, roughly
+  3.75 footfalls/s at 1 m/s advancing 0.27 m each against a human's ~1.8 and ~0.55. Forcing human
+  cadence measurably makes the slide WORSE, because longer ground contact drags the foot further
+  behind a hip whose leg spans only 0.35 m horizontally. The shuffle is how this geometry buys low
+  slide. So cadence here is a don't-regress rule against the shipped model, not a target — the
+  underlying limit is that the legs are short for the hip height, which no coefficient can fix.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/spsa-gait-tuning.html
+-->
+<style>
+  :root {
+    --bg: #12161d; --panel: #1a2029; --line: #2a3340; --ink: #d8dee9; --dim: #8b97a8;
+    --spsa: #6ea8fe; --fd: #f0a35e; --rs: #7f8a9b; --base: #9c8f6a; --good: #7ddc9a; --warn: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+
+  header { flex: none; padding: 9px 14px; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; }
+  header h1 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .15em;
+    text-transform: uppercase; color: var(--dim); }
+  .ctl { display: flex; align-items: center; gap: 6px; }
+  .ctl label { color: var(--dim); white-space: nowrap; }
+  .ctl.live label::after { content: ' ●'; color: var(--good); font-size: 9px; }
+  button { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: #3d4a5c; }
+  button.primary { background: #23405f; border-color: #365a80; }
+  input[type=range] { width: 100px; accent-color: var(--spsa); }
+  input[type=number] { width: 66px; background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: inherit; }
+  .val { color: var(--ink); min-width: 30px; font-variant-numeric: tabular-nums; }
+
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 1px; background: var(--line); min-height: 0; }
+  section { background: var(--bg); min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .head { flex: none; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--dim);
+    font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase; }
+  .body { flex: 1; min-height: 0; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .right { display: grid; grid-template-rows: minmax(120px, 1fr) auto auto; gap: 1px; background: var(--line); }
+  .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+  .legend { display: flex; gap: 13px; padding: 6px 12px; flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: 5px; color: var(--dim); font-size: 11px; }
+  .swatch { width: 11px; height: 3px; border-radius: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 3px 8px; text-align: right; border-bottom: 1px solid #1d2530; }
+  th { color: var(--dim); font-weight: 500; font-size: 10.5px; letter-spacing: .05em; }
+  th:first-child, td:first-child { text-align: left; }
+  td.z { color: #4a5666; }
+  td.bad { color: var(--warn); }
+  .note { padding: 8px 12px 11px; color: var(--dim); border-top: 1px solid var(--line); font-size: 11.5px; }
+  .note b { color: var(--ink); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>SPSA vs the shipped gait model</h1>
+  <div class="ctl"><button id="run" class="primary">Run</button><button id="reset">Reset</button></div>
+  <div class="ctl live"><label for="preview">Preview speed</label><input type="range" id="preview" min="0.6" max="6.0" step="0.1" value="2.05"><span class="val" id="previewV">2.05</span></div>
+  <div class="ctl live"><label for="lean" title="Applies to the TOP walker only, so you can A/B it against the search's own choice">Lean into step (top)</label><input type="range" id="lean" min="0" max="1.5" step="0.05" value="0"><span class="val" id="leanV">0.0</span></div>
+  <div class="ctl live"><label for="rate">Iters/frame</label><input type="range" id="rate" min="1" max="24" step="1" value="6"><span class="val" id="rateV">6</span></div>
+  <div class="ctl"><label for="budget">Budget</label><input type="number" id="budget" value="3000" min="200" max="40000" step="200"><span class="val">evals</span></div>
+  <div class="ctl"><label for="walk">Sample walk</label><input type="range" id="walk" min="0.8" max="3.0" step="0.2" value="1.6"><span class="val" id="walkV">1.6</span><span class="val">s</span></div>
+  <div class="ctl"><label for="seed">Seed</label><input type="number" id="seed" value="3" min="1" max="9999" step="1"></div>
+  <div class="ctl"><input type="checkbox" id="race" checked><label for="race">Race FD + random</label></div>
+</header>
+
+<main>
+  <section>
+    <div class="head">Shipped model (top) vs best found (bottom) — real stepGait, live</div>
+    <div class="body"><canvas id="stage"></canvas></div>
+  </section>
+  <section class="right">
+    <div class="pane">
+      <div class="head">Clean reference score vs evaluations spent</div>
+      <div class="body"><canvas id="chart"></canvas></div>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--spsa)"></i>SPSA — 2 evals/iter</span>
+        <span><i class="swatch" style="background:var(--fd)"></i>Finite diff — 16 evals/iter</span>
+        <span><i class="swatch" style="background:var(--rs)"></i>Random</span>
+        <span><i class="swatch" style="background:var(--base)"></i>Shipped model</span>
+      </div>
+    </div>
+    <div class="pane"><div class="head">Artifacts per speed — shipped → best</div><div id="profile"></div></div>
+    <div class="pane"><div class="head">Parameters</div><div id="params"></div><div class="note" id="note"></div></div>
+  </section>
+</main>
+
+<script type="module">
+import {
+  GAIT_PARAMS, GAIT_BOUNDS, GAIT_BASELINE, SPEED_SWEEP, TERRAINS,
+  cfgForSpeed, sampleGait, scoreGait, profileGait, createWalker, RIG,
+} from '../gait-objective.js';
+import { createSpsa, createFiniteDifference, createRandomSearch, calibrateSpsa, mulberry32 } from '../spsa.js';
+
+const N = GAIT_PARAMS.length;
+const SCORE_EVERY = 20;      // clean reference costs ~1.3 ms, so it is sampled, not called per iteration
+const REF_DURATION = 1.6;    // matches the longer reference to within 0.02 (asserted in the test)
+
+const ui = Object.fromEntries(['run', 'reset', 'preview', 'previewV', 'rate', 'rateV', 'budget',
+  'walk', 'walkV', 'seed', 'race', 'profile', 'params', 'note', 'lean', 'leanV']
+  .map(id => [id, document.getElementById(id)]));
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
+
+let session = null, running = false;
+const BASE_SCORE = scoreGait(GAIT_BASELINE, { duration: REF_DURATION });
+// The top walker's live score, which moves with the Lean-into-step slider.
+let shippedScore = BASE_SCORE;
+let shippedOver = profileGait(GAIT_BASELINE, { duration: REF_DURATION });
+
+function newSession() {
+  const seed = Math.max(1, Number(ui.seed.value) | 0);
+  const budget = Math.max(200, Number(ui.budget.value) | 0);
+  const duration = Number(ui.walk.value);
+  const theta0 = GAIT_BASELINE.slice();     // start from what the game ships, and try to beat it
+
+  // Each racer gets its own generator seeded the same way, so they face the same noise.
+  const objectiveFor = () => { const rng = mulberry32(seed + 13); return t => -sampleGait(t, rng, { duration }); };
+  const cal = calibrateSpsa({
+    theta0, objective: (() => { const rng = mulberry32(seed + 991); return t => -sampleGait(t, rng, { duration }); })(),
+    bounds: GAIT_BOUNDS, maxIter: budget / 2, seed,
+  });
+
+  const racers = [{
+    kind: 'spsa', name: 'SPSA', colour: cssVar('--spsa'),
+    opt: createSpsa({ theta0, objective: objectiveFor(), bounds: GAIT_BOUNDS, a: cal.a, c: cal.c, maxIter: budget / 2, seed }),
+  }];
+  if (ui.race.checked) {
+    racers.push({
+      kind: 'fd', name: 'Finite diff', colour: cssVar('--fd'),
+      opt: createFiniteDifference({ theta0, objective: objectiveFor(), bounds: GAIT_BOUNDS, a: cal.a, c: cal.c, maxIter: Math.max(1, Math.round(budget / (2 * N))) }),
+    });
+    racers.push({
+      kind: 'rs', name: 'Random', colour: cssVar('--rs'),
+      opt: createRandomSearch({ theta0, objective: objectiveFor(), bounds: GAIT_BOUNDS, seed }),
+    });
+  }
+  for (const r of racers) {
+    r.best = theta0.slice(); r.bestScore = BASE_SCORE; r.curve = [{ evals: 0, value: BASE_SCORE }]; r.sinceScore = 0;
+  }
+
+  session = { budget, duration, cal, racers, done: false };
+  walkers.best.setTheta(theta0);
+}
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function advance() {
+  if (!session || session.done) return;
+  let live = false;
+  for (const r of session.racers) {
+    if (r.opt.evals >= session.budget) continue;
+    live = true;
+    r.opt.step();
+    // Scoring the iterate cleanly is the expensive part, so it happens on a cadence.
+    if (++r.sinceScore >= SCORE_EVERY) {
+      r.sinceScore = 0;
+      const candidate = r.kind === 'rs' ? r.opt.best.theta : r.opt.theta;
+      const value = scoreGait(candidate, { duration: REF_DURATION });
+      r.curve.push({ evals: r.opt.evals, value });
+      if (value > r.bestScore) {
+        r.bestScore = value; r.best = candidate.slice();
+        if (r.kind === 'spsa') walkers.best.setTheta(r.best);
+      }
+    }
+  }
+  if (!live) { session.done = true; setRunning(false); }
+}
+
+// ---------------------------------------------------------------------------
+// Live preview — two real walkers, stepped every frame
+// ---------------------------------------------------------------------------
+
+const walkers = {
+  shipped: createWalker(GAIT_BASELINE, { speed: 2.05, terrainPhase: 0 }),
+  best: createWalker(GAIT_BASELINE, { speed: 2.05, terrainPhase: 0 }),
+};
+
+const stage = document.getElementById('stage'), chart = document.getElementById('chart');
+const sctx = stage.getContext('2d'), cctx = chart.getContext('2d');
+// Real rig proportions (thigh 0.580, shin 0.536, reach 1.116 against a 1.044 m pelvis), derived in
+// gait-objective.js from BODY_DESIGN_DEFAULTS. A first pass here guessed two equal 0.5 m segments,
+// which is both the wrong length and the wrong split, and drew every leg permanently overstretched.
+const { thighLen: THIGH, shinLen: SHIN, legLen: REACH } = RIG;
+
+function fitCanvas(cv, ctx) {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w, h };
+}
+
+// Equal-segment 2-link IK. Out-of-reach targets straighten the leg and are flagged.
+//
+// Knee direction: the walker travels along +z, which is rightwards on screen, and a human knee
+// points the way the body is going. Of the two perpendiculars to the hip->foot vector, (-uy, uz)
+// is the forward one and (uy, -uz) is the backward one. This used the backward one, which drew
+// every leg bending like a bird's hock.
+function knee(hz, hy, fz, fy) {
+  const dz = fz - hz, dy = fy - hy;
+  const raw = Math.hypot(dz, dy) || 1e-6;
+  const stretched = raw > REACH;
+  // Unequal segments, so the knee is NOT at the midpoint: a is where the circles intersect.
+  const d = Math.min(Math.max(raw, Math.abs(THIGH - SHIN) + 1e-4), REACH * 0.9999);
+  const uz = dz / raw, uy = dy / raw;
+  const a = (THIGH * THIGH - SHIN * SHIN + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, THIGH * THIGH - a * a));
+  return { z: hz + uz * a - uy * h, y: hy + uy * a + uz * h, stretched };
+}
+
+function drawWalker(ctx, walker, ox, oy, scale, label, tint) {
+  const hip = walker.hip;
+  const toX = wz => ox + (wz - hip.z) * scale;
+  const toY = wy => oy - (wy - hip.y + 0.9) * scale;
+
+  ctx.save();
+  // terrain profile, sampled from the same function the scorer uses
+  ctx.beginPath();
+  const half = (ox + 240) / scale;
+  for (let i = 0; i <= 160; i++) {
+    const wz = hip.z - half + (i / 160) * half * 2;
+    const y = toY(walker.terrain(0, wz));
+    if (i === 0) ctx.moveTo(toX(wz), y); else ctx.lineTo(toX(wz), y);
+  }
+  ctx.strokeStyle = '#2c3644'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.lineTo(ox + 400, oy + 200); ctx.lineTo(ox - 400, oy + 200); ctx.closePath();
+  ctx.fillStyle = '#171d26'; ctx.fill();
+
+  const hy = hip.y;
+  for (const key of ['right', 'left']) {         // far leg first
+    const foot = walker.feet[key];
+    const near = key === 'left';
+    const k = knee(hip.z, hy, foot.current.z, foot.current.y);
+    ctx.lineWidth = near ? 3.4 : 2.3;
+    ctx.strokeStyle = k.stretched ? cssVar('--warn') : (near ? tint : '#48545f');
+    ctx.beginPath();
+    ctx.moveTo(toX(hip.z), toY(hy));
+    ctx.lineTo(toX(k.z), toY(k.y));
+    ctx.lineTo(toX(foot.current.z), toY(foot.current.y));
+    ctx.stroke();
+    const fx = toX(foot.current.z), fy = toY(foot.current.y);
+    ctx.beginPath(); ctx.arc(fx, fy, 3.6, 0, Math.PI * 2);
+    if (!foot.stepping) { ctx.fillStyle = near ? tint : '#48545f'; ctx.fill(); }
+    else { ctx.strokeStyle = '#48545f'; ctx.lineWidth = 1.4; ctx.stroke(); }
+  }
+
+  // pelvis, torso, head. Proportions follow the rig's H=1.8 so the figure reads at the right scale.
+  const cz = toX(hip.z);
+  const pw = 0.34 * scale, ph = 0.22 * scale;
+  ctx.fillStyle = tint;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(cz - pw / 2, toY(hy) - ph / 2, pw, ph, ph / 3);
+  else ctx.rect(cz - pw / 2, toY(hy) - ph / 2, pw, ph);
+  ctx.fill();
+  // Torso and head pitch forward by the lean the shipped locomotion layer would apply. Canvas y
+  // grows downward, so a positive rotation tips the top toward +z, which is the way it is walking.
+  ctx.save();
+  ctx.translate(cz, toY(hy));
+  ctx.rotate(walker.lean);
+  ctx.globalAlpha = 0.55;
+  ctx.fillRect(-pw * 0.34, -0.61 * scale, pw * 0.68, 0.5 * scale);
+  ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.arc(0, -0.72 * scale, 0.11 * scale, 0, Math.PI * 2); ctx.fill();
+  // Facing nub: without it there is no way to tell which way the figure is walking, which is
+  // exactly what you need in order to judge whether the knees bend the right way.
+  ctx.beginPath(); ctx.arc(0.10 * scale, -0.73 * scale, 0.032 * scale, 0, Math.PI * 2);
+  ctx.fillStyle = '#12161d'; ctx.fill();
+  ctx.restore();
+
+  // The balance point the scheduler is handed: pelvis + lead, along the heading. Drawn as a
+  // measured bar with the number on it, because the interesting question is how it compares to the
+  // distance the planted foot ends up behind the hip.
+  if (walker.lead > 1e-6) {
+    const g = cssVar('--good');
+    const px = toX(hip.z), bx = toX(hip.z + walker.lead);
+    const gy = toY(walker.terrain(0, hip.z) - 0.06);
+    ctx.strokeStyle = g; ctx.fillStyle = g; ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(px, toY(hy)); ctx.lineTo(px, gy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(bx, toY(hy)); ctx.lineTo(bx, gy); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px, gy); ctx.lineTo(bx, gy); ctx.stroke();
+    ctx.beginPath(); ctx.arc(bx, gy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText(`balance point +${walker.lead.toFixed(3)} m`, bx + 6, gy + 4);
+  }
+
+  // Labels last, so the figure never paints over its own text.
+  const cfg = walker.cfg;
+  const top = oy - 1.98 * scale;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#8b97a8'; ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText(label, 10, top);
+  ctx.fillStyle = '#6b7686'; ctx.font = '10px system-ui, sans-serif';
+  ctx.fillText(`step ${cfg.stepDuration.toFixed(3)}s   lift ${cfg.stepLift.toFixed(3)}m   stride cap ${cfg.maxStepDistance.toFixed(2)}m   trigger ${cfg.triggerDistance.toFixed(2)}   lean ${(walker.lean * 180 / Math.PI).toFixed(1)}deg   lead ${walker.lead.toFixed(3)}m`,
+    10, top + 14);
+  ctx.restore();
+}
+
+function drawStage(dt) {
+  const { w, h } = fitCanvas(stage, sctx);
+  sctx.clearRect(0, 0, w, h);
+  // A figure stands ~1.73 m tall plus a label above it, so each of the two stacked walkers needs
+  // about 2.2 m of vertical room. Scaling by h/4.6 is what stops the upper torso being clipped.
+  const scale = Math.min(118, h / 4.6);
+  walkers.shipped.advance(dt); walkers.best.advance(dt);
+  // Nearest swept speed, so the over-extension figure matches what the preview is showing.
+  const near = shippedOver.reduce((a, b) =>
+    Math.abs(b.speed - walkers.shipped.speed) < Math.abs(a.speed - walkers.shipped.speed) ? b : a);
+  const delta = shippedScore - BASE_SCORE;
+  const leanTag = delta > 0.0005
+    ? `  |  lean-in +${delta.toFixed(3)}  (${BASE_SCORE.toFixed(3)} → ${shippedScore.toFixed(3)})`
+    : '';
+  drawWalker(sctx, walkers.shipped, w / 2, h * 0.47, scale,
+    `SHIPPED GAIT_SPEED_MODEL — score ${shippedScore.toFixed(3)}${leanTag}  |  leg past ext. ${(near.overextend * 100).toFixed(0)}% @ ${near.speed.toFixed(2)} m/s`,
+    cssVar('--base'));
+  const spsa = session?.racers[0];
+  drawWalker(sctx, walkers.best, w / 2, h * 0.965, scale,
+    `BEST FOUND — score ${(spsa?.bestScore ?? BASE_SCORE).toFixed(3)}`, cssVar('--spsa'));
+}
+
+function drawChart() {
+  const { w, h } = fitCanvas(chart, cctx);
+  cctx.clearRect(0, 0, w, h);
+  if (!session) return;
+  const pad = { l: 44, r: 10, t: 10, b: 22 };
+  const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+  let lo = Math.min(BASE_SCORE, ...session.racers.flatMap(r => r.curve.map(p => p.value)));
+  const hi = 4.02;
+  lo = Math.min(lo, hi - 0.1) - 0.03;
+  const X = e => pad.l + (e / session.budget) * iw;
+  const Y = v => pad.t + (1 - (v - lo) / (hi - lo)) * ih;
+
+  cctx.strokeStyle = '#222b36'; cctx.fillStyle = '#6b7686';
+  cctx.font = '10px system-ui, sans-serif'; cctx.textAlign = 'right'; cctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (i / 4) * (hi - lo), y = Math.round(Y(v)) + .5;
+    cctx.beginPath(); cctx.moveTo(pad.l, y); cctx.lineTo(w - pad.r, y); cctx.stroke();
+    cctx.fillText(v.toFixed(2), pad.l - 5, y + 3);
+  }
+  cctx.textAlign = 'center';
+  for (let i = 0; i <= 4; i++) {
+    const e = (i / 4) * session.budget;
+    cctx.fillText(e >= 1000 ? `${(e / 1000).toFixed(1)}k` : String(Math.round(e)), X(e), h - 7);
+  }
+
+  cctx.setLineDash([3, 3]);
+  cctx.strokeStyle = cssVar('--base');
+  cctx.beginPath(); cctx.moveTo(pad.l, Y(BASE_SCORE)); cctx.lineTo(w - pad.r, Y(BASE_SCORE)); cctx.stroke();
+  cctx.strokeStyle = '#33503f';
+  cctx.beginPath(); cctx.moveTo(pad.l, Y(4)); cctx.lineTo(w - pad.r, Y(4)); cctx.stroke();
+  cctx.setLineDash([]);
+  cctx.textAlign = 'left'; cctx.fillStyle = '#33503f';
+  cctx.fillText('artifact-free ceiling', pad.l + 4, Y(4) + 11);
+
+  for (const r of session.racers) {
+    if (r.curve.length < 2) continue;
+    cctx.strokeStyle = r.colour; cctx.lineWidth = r.kind === 'spsa' ? 2 : 1.3;
+    cctx.globalAlpha = r.kind === 'spsa' ? 1 : 0.75;
+    cctx.beginPath();
+    r.curve.forEach((p, i) => (i ? cctx.lineTo(X(p.evals), Y(p.value)) : cctx.moveTo(X(p.evals), Y(p.value))));
+    cctx.stroke(); cctx.globalAlpha = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Readouts
+// ---------------------------------------------------------------------------
+
+const fmt = (v, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : '—');
+const cell = (a, b, d = 3) => {
+  const worse = b > a + 1e-9;
+  const cls = b <= 1e-9 ? 'z' : (worse ? 'bad' : '');
+  return `<td class="${cls}">${fmt(a, d)} → ${fmt(b, d)}</td>`;
+};
+
+let baseProfile = null, bestProfileCache = null, bestProfileKey = '';
+
+function drawProfile() {
+  const spsa = session?.racers[0];
+  const best = spsa?.best ?? GAIT_BASELINE;
+  const key = best.join(',');
+  if (!baseProfile) baseProfile = profileGait(GAIT_BASELINE, { duration: REF_DURATION });
+  if (key !== bestProfileKey) { bestProfileKey = key; bestProfileCache = profileGait(best, { duration: REF_DURATION }); }
+
+  const rows = SPEED_SWEEP.map((s, i) => {
+    const a = baseProfile[i], b = bestProfileCache[i];
+    const oa = `${(a.overextend * 100).toFixed(0)}% → ${(b.overextend * 100).toFixed(0)}%`;
+    return `<tr><td>${s.toFixed(2)} m/s</td>${cell(a.clip, b.clip, 4)}${cell(a.reach, b.reach, 4)}${cell(a.airborne, b.airborne)}${cell(a.float, b.float)}${cell(a.jitter, b.jitter)}<td class="${b.overextend > 0.05 ? 'bad' : ''}">${oa}</td><td>${fmt(a.penalty)} → ${fmt(b.penalty)}</td></tr>`;
+  }).join('');
+  ui.profile.innerHTML =
+    `<table><thead><tr><th>Speed</th><th>Ground clip</th><th>Reach</th><th>Airborne</th><th>Float</th><th>Jitter</th><th title="Diagnostic only, not scored: fraction of ticks with the leg past full extension, assuming a rigid pelvis">Leg past full ext.*</th><th>Penalty</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function drawParams() {
+  const best = session?.racers[0]?.best ?? GAIT_BASELINE;
+  const rows = GAIT_PARAMS.map((p, i) => {
+    const frac = (best[i] - p.min) / (p.max - p.min);
+    const baseFrac = (p.base - p.min) / (p.max - p.min);
+    const bar = `<div style="position:relative;height:6px;background:#1d2530;border-radius:3px;overflow:hidden">
+      <div style="position:absolute;left:0;top:0;bottom:0;width:${(frac * 100).toFixed(1)}%;background:var(--spsa);opacity:.75"></div>
+      <div style="position:absolute;left:${(baseFrac * 100).toFixed(1)}%;top:0;bottom:0;width:2px;background:var(--base)"></div></div>`;
+    return `<tr><td>${p.label}</td><td>${fmt(p.base, 4)} → ${fmt(best[i], 4)}</td><td style="width:38%">${bar}</td></tr>`;
+  }).join('');
+  ui.params.innerHTML = `<table><tbody>${rows}</tbody></table>`;
+}
+
+function drawNote() {
+  if (!session) return;
+  const [spsa, fd, rs] = [session.racers[0], session.racers.find(r => r.kind === 'fd'), session.racers.find(r => r.kind === 'rs')];
+  let s = `<b>${N} parameters.</b> SPSA spends 2 evaluations an iteration, finite differences ${2 * N}. `;
+  s += `Evaluations ${spsa.opt.evals}/${session.budget}, SPSA iterations ${spsa.opt.iter}`;
+  if (fd) s += ` against ${fd.opt.iter}`;
+  s += `. Shipped model <b>${BASE_SCORE.toFixed(3)}</b>, SPSA <b>${spsa.bestScore.toFixed(3)}</b>`;
+  if (fd && rs) s += `, finite diff <b>${fd.bestScore.toFixed(3)}</b>, random <b>${rs.bestScore.toFixed(3)}</b>`;
+  s += '. ';
+  if (spsa.bestScore >= 3.9995) s += `<b style="color:var(--good)">Artifact-free.</b> The score has saturated, so the metrics no longer distinguish between gaits that reach it — separate seeds land on visibly different walks that all score 4.000.`;
+  else if (spsa.bestScore > BASE_SCORE + 0.01) s += `Ahead of the shipped model by <b>${(spsa.bestScore - BASE_SCORE).toFixed(3)}</b>.`;
+  s += ` <b>*</b> A red leg is past full extension. At this reference body a straight leg spans only <b>${Math.sqrt(RIG.legLen ** 2 - RIG.pelvisHeight ** 2).toFixed(3)} m</b> horizontally while the scheduler may plan a foot out to 0.76 m, so it happens often at speed. This <b>is</b> scored: the rig solves legs with an analytic two-bone IK that clamps the foot to 0.999 of full extension, so nothing absorbs the overshoot — the drawn foot simply is not where the simulation put it, and a planted foot that moves is a foot skating along the ground.`;
+  ui.note.innerHTML = s;
+}
+
+// ---------------------------------------------------------------------------
+// Loop and wiring
+// ---------------------------------------------------------------------------
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now;
+  if (running) { const k = Number(ui.rate.value) | 0; for (let i = 0; i < k; i++) advance(); }
+  drawStage(dt); drawChart(); drawProfile(); drawParams(); drawNote();
+  requestAnimationFrame(frame);
+}
+
+function setRunning(v) { running = v; ui.run.textContent = v ? 'Pause' : 'Run'; }
+
+ui.run.addEventListener('click', () => {
+  if (!session || session.done) newSession();
+  setRunning(!running);
+});
+ui.reset.addEventListener('click', () => { newSession(); setRunning(false); });
+
+// Live controls: take effect immediately and never interrupt a run.
+ui.preview.addEventListener('input', () => {
+  const v = Number(ui.preview.value);
+  ui.previewV.textContent = v.toFixed(2);
+  walkers.shipped.setSpeed(v); walkers.best.setSpeed(v);
+});
+// Applies to the TOP walker only. The bottom one always shows whatever the search chose for
+// leadScale, so the two are a straight A/B: your manual lean against the optimiser's.
+//
+// The visual effect is genuinely tiny — at 2 m/s the lean is 3.5 deg and the lead is 6 cm, which is
+// about 7 screen pixels — so the slider looked dead when it only moved the feet. The score is
+// recomputed on every change instead, because that is where the effect is actually legible.
+ui.lean.addEventListener('input', () => {
+  const v = Number(ui.lean.value);
+  ui.leanV.textContent = v.toFixed(2);
+  const t = GAIT_BASELINE.slice(); t[8] = v;
+  walkers.shipped.setTheta(t);
+  shippedScore = scoreGait(t, { duration: REF_DURATION });          // ~1.3 ms, fine on a drag
+  shippedOver = profileGait(t, { duration: REF_DURATION });
+});
+ui.rate.addEventListener('input', () => { ui.rateV.textContent = ui.rate.value; });
+ui.walk.addEventListener('input', () => { ui.walkV.textContent = Number(ui.walk.value).toFixed(1); });
+
+// Session controls: rebuild the search, but KEEP RUNNING if it was running. An earlier version
+// paused here, which made every slider look like it had done nothing at all.
+for (const el of [ui.budget, ui.seed, ui.walk, ui.race]) {
+  el.addEventListener('change', () => { const wasRunning = running; newSession(); setRunning(wasRunning); });
+}
+
+ui.preview.dispatchEvent(new Event('input'));
+newSession();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+t_ms	bot_id	team	code	changed_slots	x	z	yaw_deg	speed	moved	goal_dist	path_len	path_mode
+0	bot-1	alpha	P00r-4410	initial	13.60	21.34	91	2.45			2	patrol
+0	bot-2	bravo	P00r-4410	initial	-5.48	-6.50	342	2.06			5	patrol
+0	bot-3	alpha	P00r-4410	initial	10.76	22.58	288	0.00			0	
+0	bot-4	bravo	P00r-4410	initial	-6.41	-6.08	187	2.51		3.77	1	squad
+1006	bot-1	alpha	P00r-4410	tick	15.87	21.89	60	2.34	2.33		2	patrol
+1006	bot-2	bravo	P00r-4410	tick	-6.67	-4.59	347	2.40	2.25		5	patrol
+1006	bot-3	alpha	P00r-4410	tick	11.23	22.31	236	2.44	0.54	2.14	1	squad
+1006	bot-4	bravo	P00r-4410	tick	-6.79	-7.60	188	0.09	1.56		0	
+2006	bot-1	alpha	P00r-4410	tick	18.27	22.00	81	2.40	2.40		1	patrol
+2006	bot-2	bravo	P00r-4410	tick	-8.12	-2.86	316	2.15	2.26		5	patrol
+2006	bot-3	alpha	P00r-4410	tick	13.65	22.06	65	2.44	2.43	1.26	1	squad
+2006	bot-4	bravo	P00r-4410	tick	-6.95	-7.50	210	2.27	0.19	1.88	1	squad
+3023	bot-1	alpha	P00r-4410	tick	20.67	22.03	113	2.26	2.41		1	patrol
+3023	bot-2	bravo	P00r-4410	tick	-9.53	-1.01	304	2.45	2.33		4	patrol
+3023	bot-3	alpha	P00r-4410	tick	15.99	22.06	97	2.33	2.35	1.94	1	squad
+3023	bot-4	bravo	P00r-4410	tick	-8.68	-5.94	288	2.21	2.32	1.57	1	squad

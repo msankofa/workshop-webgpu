@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structure Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1014; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 12px; bottom: 12px; z-index: 5; color: #9aa5b5;
+    font: 11.5px/1.6 ui-monospace, Consolas, monospace; user-select: none; pointer-events: none;
+    background: rgba(14,16,20,.62); border: 1px solid #262d38; border-radius: 6px; padding: 8px 11px; }
+  #hud b { color: #dbe4f0; font-weight: 600; }
+  #hud .warn { color: #ffc07a; }
+  #hud .bad { color: #ff9a9a; }
+  #err { position: fixed; left: 12px; top: 12px; z-index: 8; max-width: 60vw; color: #ffb3b3;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; display: none; white-space: pre-wrap; }
+  /* Gallery labels: projected each frame from the slot centres. Clickable, so a slot can be
+     rerolled where you are already looking rather than by counting to it in the panel. */
+  #labels { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+  #labels .lbl { position: absolute; transform: translate(-50%, 0); pointer-events: auto; cursor: pointer;
+    font: 11px/1.3 ui-monospace, Consolas, monospace; color: #cfd8e5; white-space: nowrap;
+    background: rgba(14,16,20,.72); border: 1px solid #313a47; border-radius: 4px; padding: 2px 6px; }
+  #labels .lbl:hover { border-color: #e66b1a; color: #ffd9bd; }
+  #labels .lbl small { color: #7f8a99; }
+  #panelToggle { position: fixed; top: 10px; right: 10px; z-index: 22; min-height: 26px; padding: 3px 10px;
+    background: #171b21; color: #c7d0dd; border: 1px solid #333c48; border-radius: 5px; cursor: pointer;
+    font: 12px ui-monospace, Consolas, monospace; }
+  #ctrl.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="hud">booting…</div>
+<div id="labels"></div>
+<button id="panelToggle" title="Show or hide the control panel (P)">panel</button>
+<div id="ctrl"></div>
+
+<!-- three@0.184.0: same CDN pins as bot-viewer-v3.html / damage-simulator.html. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+// structure-viewer.html -- a standalone bench for bot-structures.js. Generate structures, theme
+// them exactly as bot-viewer-v3.html does, and see what each parameter actually does to the form.
+//
+// Two modes. FIELD renders one scattered set over a square map, which is what v3 renders. GALLERY
+// puts one specimen per grid slot, each on its own seed and individually rerollable -- that is the
+// mode that makes families of form visible, which is the point of the tool.
+//
+// What this deliberately does NOT build: the nav grid, visibility field, cover-corner bake and BVH
+// collider. All four are bot-AI infrastructure, all four are the expensive part of a viewer, and
+// none of them changes how a structure looks. See docs/structure-viewer-plan.md.
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createPostFX } from './post-fx.js';
+import { createVisualSystem } from './bot-viewer-visuals.js';
+import { floraFor } from './bot-viewer-visuals-style.js';
+import { createBotFlora } from './bot-flora.js';
+import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
+import { STRUCTURE_DEFAULTS, generateStructures, generateOne } from './bot-structures.js';
+import { BOT_TERRAIN_DEFAULTS, createTerrainField, footprintRange, buildTerrainMeshArrays } from './bot-terrain.js';
+import { installPanelTheme, createSection, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
+import { createSlotSection } from './bot-viewer-slots.js';
+
+window.__ready = false;
+window.__errors = [];
+const errEl = document.getElementById('err');
+function noteError(msg) {
+  window.__errors.push(String(msg));
+  errEl.textContent = '⚠ ' + msg;
+  errEl.style.display = 'block';
+}
+addEventListener('error', (e) => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== engine =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 900);
+camera.position.set(40, 32, 40);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.minDistance = 2;
+controls.maxPolarAngle = Math.PI * 0.495;   // never under the ground plane
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== lighting / visuals =====================
+// ui:false matters -- createLightingRig defaults to building its own panel, which would fight the
+// theme system for control of the same rig.
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+// Light direction and shadow frustum are owned by the theme via visuals.setBounds -> fitKeyLight.
+// Do not call rig.setAzimuth/setElevation after this point: lights.js would recompute from its own
+// stale internal state and the theme would silently lose the argument.
+
+const overheadLight = new THREE.PointLight(0xffffff, 20, 26, 2);
+overheadLight.position.set(6, 14, 0);
+scene.add(overheadLight);
+
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'full', tone: 'none', bloomStrength: 0.10, bloomRadius: 0.7, bloomThreshold: 0.0 } });
+
+let flora = null;                    // built below; onLookChange can fire before it exists
+let syncFloraPanel = () => {};
+let syncFloraCounts = () => {};
+const visuals = createVisualSystem({
+  THREE, renderer, scene, camera, postFX, rig, overheadLight,
+  // A theme switch swaps the flora block wholesale, and flora is geometry this module does not own.
+  onLookChange: () => rebuildFlora(),
+});
+
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+const wallMat = visuals.materials.wall;
+const floorMat = visuals.materials.floor;
+const terrainMat = visuals.materials.terrain;
+const coverMat = visuals.materials.cover;
+const box = (mat, x, y, z, w, h, d) => boxMesh(mapRoot, mat, x, y, z, w, h, d);
+const instancedBoxes = (mat, boxes) => emitBoxes(mapRoot, mat, boxes);
+
+// ===================== settings =====================
+const MODE = { FIELD: 'field', GALLERY: 'gallery' };
+const view = {
+  mode: MODE.FIELD,
+  fieldSize: 140,      // m, square map side in field mode
+  slotSize: 40,        // m, per-specimen cell in gallery mode
+  slotCount: 9,
+  gallerySeed: 1,
+  galleryKind: 'cycle',   // cycle | building | pocket | obstacles | portal
+  autoFrame: true,
+};
+// The gallery does not reject-sample, so a specimen wider than its cell reaches into the neighbour.
+// Floored at the widest thing the defaults can build — a terrace, whose ramp makes it far wider than
+// any building. test-structure-viewer.mjs measures that width and fails if this floor drops under it.
+const SLOT_MIN = 36;
+
+const params = { ...STRUCTURE_DEFAULTS };
+let WALL_H = 3, WALL_T = 0.3;
+
+const terrainSettings = { ...BOT_TERRAIN_DEFAULTS };
+let terrainPads = [];
+let terrainField = createTerrainField(terrainSettings, terrainPads);
+let activeBounds = { minX: -70, maxX: 70, minZ: -70, maxZ: 70 };
+function rebuildTerrainField() {
+  terrainField = createTerrainField(terrainSettings, terrainPads,
+    activeBounds.maxX > activeBounds.minX ? { bounds: activeBounds } : {});
+}
+function groundHeight(x, z) { return terrainField.heightAt(x, z); }
+function slabTransformOnTerrain(x, z, w, d, baseY, h) {
+  return slabOnGround(x, z, w, d, baseY, h,
+    terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4).max : 0);
+}
+function boxTransformOnTerrain(x, z, w, h, d) {
+  return boxOnGround(x, z, w, h, d,
+    terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4) : null);
+}
+
+// ===================== flora =====================
+flora = createBotFlora({ THREE, renderer, camera, parent: scene, seed: 1, onStats: () => syncFloraCounts() });
+function rebuildFlora() {
+  if (!flora) return;
+  syncFloraPanel();
+  if (activeBounds.maxX <= activeBounds.minX) return;
+  const on = visuals.toggles.flora;
+  flora.setEnabled(on);
+  if (!on) return;
+  flora.rebuild({
+    bounds: activeBounds,
+    wallBoxes: activeWallBoxes,
+    coverBoxes: activeCoverBoxes,
+    vineBoxes: activeSlabs,   // vines hang off canopy and deck edges; slabs are NOT ground keep-outs
+    pads: [],
+    groundHeight,
+    flora: floraFor(visuals.theme),
+  });
+  syncFloraCounts();
+}
+
+// ===================== the scene the panel drives =====================
+const TERRAIN_FLOOR_PAD = 3;
+let activeWallBoxes = [], activeCoverBoxes = [], activeSlabs = [];
+let built = { walls: [], covers: [], slabs: [], pads: [], placed: [] };
+let slots = [];               // gallery: { kind, x, z, seed, radius, counts }
+let terrainTriangleCount = 0;
+
+function buildFloorMesh() {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2;
+  const cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  const w = activeBounds.maxX - activeBounds.minX, d = activeBounds.maxZ - activeBounds.minZ;
+  if (!terrainSettings.enabled) {
+    terrainTriangleCount = 0;
+    box(floorMat, cx, -0.05, cz, w, 0.1, d);
+    return;
+  }
+  const padded = {
+    minX: activeBounds.minX - TERRAIN_FLOOR_PAD, maxX: activeBounds.maxX + TERRAIN_FLOOR_PAD,
+    minZ: activeBounds.minZ - TERRAIN_FLOOR_PAD, maxZ: activeBounds.maxZ + TERRAIN_FLOOR_PAD,
+  };
+  const m = buildTerrainMeshArrays(padded, terrainField);
+  terrainTriangleCount = m.triangleCount;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(m.colors, 3));
+  geom.setIndex(new THREE.BufferAttribute(m.indices, 1));
+  geom.computeBoundingSphere();
+  const mesh = new THREE.Mesh(geom, terrainMat);
+  mesh.receiveShadow = true;
+  mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+  mapRoot.add(mesh);
+}
+
+// Gallery grid: as square as the count allows, so 9 is 3x3 rather than 9x1.
+function galleryLayout() {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(view.slotCount)));
+  const rows = Math.max(1, Math.ceil(view.slotCount / cols));
+  const cell = Math.max(SLOT_MIN, view.slotSize);
+  const w = cols * cell, d = rows * cell;
+  return { cols, rows, cell, w, d };
+}
+
+const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace'];
+// Per-slot reroll counters. A slot's seed is its own function of (base, index, its own counter), so
+// rerolling one slot cannot disturb another -- holding the others still is the point of a gallery.
+const slotSeedOffsets = {};
+function buildGallery() {
+  const { cols, cell, w, d } = galleryLayout();
+  const walls = [], covers = [], slabs = [];
+  slots = [];
+  for (let i = 0; i < view.slotCount; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = -w / 2 + cell * (c + 0.5), z = -d / 2 + cell * (r + 0.5);
+    const kind = view.galleryKind === 'cycle' ? KINDS[i % KINDS.length] : view.galleryKind;
+    const seed = (view.gallerySeed + i * 7919 + (slotSeedOffsets[i] || 0) * 104729) >>> 0;
+    const one = generateOne(kind, { ...params, wallT: WALL_T, wallHeight: WALL_H }, seed, { x, z });
+    walls.push(...one.walls); covers.push(...one.covers); slabs.push(...one.slabs);
+    slots.push({ i, kind, x, z, seed, radius: one.radius,
+      counts: { walls: one.walls.length, covers: one.covers.length, slabs: one.slabs.length } });
+  }
+  return { walls, covers, slabs, pads: [], placed: slots.map(s => ({ kind: s.kind, x: s.x, z: s.z, radius: s.radius })) };
+}
+
+// The one rebuild. `frame` refits the camera; a slider tweak must leave the viewpoint alone.
+function rebuildScene({ frame = false } = {}) {
+  clearBoxes(mapRoot);
+
+  if (view.mode === MODE.GALLERY) {
+    const g = galleryLayout();
+    activeBounds = { minX: -g.w / 2, maxX: g.w / 2, minZ: -g.d / 2, maxZ: g.d / 2 };
+  } else {
+    const half = view.fieldSize / 2;
+    activeBounds = { minX: -half, maxX: half, minZ: -half, maxZ: half };
+    slots = [];
+  }
+  visuals.setBounds(activeBounds);   // floor grid, scan ring, accent lights and shadow box follow
+
+  // Generation is terrain-independent, so it runs first and its pads feed the field. Order matters:
+  // every height read below (the mesh, the sunk walls, the lifted slabs) must see the same
+  // post-flatten field, or a building floats off the pad that was levelled for it.
+  built = view.mode === MODE.GALLERY
+    ? buildGallery()
+    // wallHeight must be the live WALL_H: a lintel fills from its head to the wall top, so a stale
+    // value leaves a floating bar or a gap over every door.
+    // padTerrain: with terrain off a pad-only kind renders nothing, so the generator keeps it out
+    // of Mixed rather than burning a slot on an invisible structure. Picking Terraces by name
+    // still places them -- an empty field would be a worse answer than a flat one.
+    : generateStructures(activeBounds, { ...params, padTerrain: terrainSettings.enabled, wallT: WALL_T, wallHeight: WALL_H }, []);
+  terrainPads = terrainSettings.enabled ? built.pads.map(p => ({ ...p })) : [];
+  rebuildTerrainField();
+
+  buildFloorMesh();
+  activeWallBoxes = built.walls.map(w => boxTransformOnTerrain(w.x, w.z, w.w, WALL_H, w.d));
+  activeCoverBoxes = built.covers.map(cv => boxTransformOnTerrain(cv.x, cv.z, cv.w, cv.h, cv.d));
+  activeSlabs = built.slabs.map(s => slabTransformOnTerrain(s.x, s.z, s.w, s.d, s.y, s.h));
+  instancedBoxes(wallMat, activeWallBoxes);
+  instancedBoxes(coverMat, activeCoverBoxes);
+  instancedBoxes(wallMat, activeSlabs);   // same concrete as the walls they span
+  rebuildFlora();
+
+  if (frame || view.autoFrame) frameCamera();
+  syncLabels();
+  updateHud();
+}
+
+function frameCamera() {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2;
+  const cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  const span = Math.max(activeBounds.maxX - activeBounds.minX, activeBounds.maxZ - activeBounds.minZ);
+  controls.target.set(cx, 0, cz);
+  camera.position.set(cx + span * 0.52, span * 0.46, cz + span * 0.52);
+  controls.maxDistance = span * 2.5;
+  camera.far = Math.max(400, span * 6);
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+// ===================== readouts =====================
+const hud = document.getElementById('hud');
+const STANDING = 1.8;   // a slab whose underside drops below this is a trap, not an overhang
+function updateHud() {
+  const requested = view.mode === MODE.GALLERY ? view.slotCount : params.count;
+  const placed = built.placed.length;
+  const dropped = requested - placed;
+  const kinds = {};
+  for (const s of built.placed) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
+  const headroom = activeSlabs.length
+    ? Math.min(...activeSlabs.map(s => s.y - s.h / 2 - groundHeight(s.x, s.z)))
+    : null;
+  const footprint = built.placed.length ? Math.max(...built.placed.map(s => s.radius)) : 0;
+  const span = (activeBounds.maxX - activeBounds.minX).toFixed(0);
+  const flo = flora ? flora.stats : null;
+  // Gallery slots do not reject-sample, so a specimen bigger than its cell silently reaches into
+  // the neighbour and reads as one messy structure rather than two clean ones. Say so.
+  const overhang = view.mode === MODE.GALLERY
+    ? slots.filter(s => s.radius > galleryLayout().cell / 2).length : 0;
+
+  const lines = [
+    `<b>${view.mode}</b> · ${span}×${span} m`,
+    dropped > 0
+      ? `placed <b>${placed}</b> of ${requested} <span class="warn">(${dropped} found no room)</span>`
+      : `placed <b>${placed}</b> of ${requested}`,
+    Object.keys(kinds).length ? `  ${Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(' · ')}` : '',
+    `walls <b>${built.walls.length}</b> · covers <b>${built.covers.length}</b> · slabs <b>${built.slabs.length}</b>`,
+    overhang > 0
+      ? `largest footprint <b>${footprint.toFixed(1)}</b> m radius <span class="warn">(${overhang} slot${overhang > 1 ? 's' : ''} outgrew the cell — raise slot size)</span>`
+      : `largest footprint <b>${footprint.toFixed(1)}</b> m radius`,
+    headroom === null ? 'no slabs'
+      : `min slab headroom <b class="${headroom < STANDING ? 'bad' : ''}">${headroom.toFixed(2)}</b> m${headroom < STANDING ? ' — a bot cannot pass under this' : ''}`,
+    terrainSettings.enabled ? `terrain <b>${terrainTriangleCount.toLocaleString()}</b> tris` : 'terrain off',
+    flo && visuals.toggles.flora
+      ? `flora: ${flo.blades.toLocaleString()} blades${flo.capped ? ' <span class="warn">(capped)</span>' : ''} · ${flo.plants} plants · ${flo.vines} vines`
+      : 'flora off',
+  ];
+  hud.innerHTML = lines.filter(Boolean).join('<br>');
+}
+
+// ===================== gallery labels =====================
+const labelHost = document.getElementById('labels');
+let labelEls = [];
+function syncLabels() {
+  labelHost.textContent = '';
+  labelEls = [];
+  if (view.mode !== MODE.GALLERY) return;
+  for (const s of slots) {
+    const el = document.createElement('div');
+    el.className = 'lbl';
+    el.innerHTML = `${s.kind} <small>#${s.i + 1} · seed ${s.seed}</small>`;
+    el.title = `${s.counts.walls} walls, ${s.counts.covers} covers, ${s.counts.slabs} slabs, `
+      + `${s.radius.toFixed(1)} m radius. Click to reroll just this slot.`;
+    el.addEventListener('click', () => rerollSlot(s.i));
+    labelHost.appendChild(el);
+    labelEls.push({ el, slot: s });
+  }
+}
+const labelPos = new THREE.Vector3();
+function placeLabels() {
+  if (!labelEls.length) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  for (const { el, slot } of labelEls) {
+    labelPos.set(slot.x, groundHeight(slot.x, slot.z) + 0.2, slot.z).project(camera);
+    const behind = labelPos.z > 1;
+    el.style.display = behind ? 'none' : 'block';
+    if (behind) continue;
+    el.style.left = `${(labelPos.x * 0.5 + 0.5) * w}px`;
+    el.style.top = `${(-labelPos.y * 0.5 + 0.5) * h}px`;
+  }
+}
+function rerollSlot(i) {
+  if (!slots[i]) return;
+  slotSeedOffsets[i] = (slotSeedOffsets[i] || 0) + 1;
+  rebuildScene();
+}
+
+// ===================== panel =====================
+installPanelTheme('#ctrl');
+const ctrl = document.getElementById('ctrl');
+const el = (tag, props) => Object.assign(document.createElement(tag), props || {});
+const syncers = [];
+const syncAll = () => { for (const s of syncers) s(); };
+
+// The theme styles #ctrl as a fixed flex column that does not scroll; the scrolling region is
+// .panel-body. Sections go in there, not straight onto #ctrl, or a long panel clips its own tail.
+const panelHead = el('div', { className: 'panel-head' });
+panelHead.append(
+  el('div', { className: 'head-left', textContent: 'Structures' }),
+  el('span', { className: 'hint', textContent: 'P hides · F frames' }),
+);
+const panelBody = el('div', { className: 'panel-body' });
+ctrl.append(panelHead, panelBody);
+
+function head(title, collapsed = true) { return createSection(panelBody, title, { collapsed }); }
+
+function slider(host, label, min, max, step, dec, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const name = el('span', { textContent: label });
+  const val = el('span', { className: 'v' });
+  if (hint) row.title = hint;
+  row.append(name, val);
+  const input = el('input', { type: 'range', min: String(min), max: String(max), step: String(step) });
+  const sync = () => { const v = get(); input.value = String(v); val.textContent = Number(v).toFixed(dec); };
+  input.addEventListener('input', () => { set(parseFloat(input.value)); sync(); });
+  syncers.push(sync);
+  host.append(row, input);
+  return input;
+}
+
+function numberBox(host, label, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const input = el('input', { type: 'number' });
+  input.style.cssText = 'flex:0 0 90px;text-align:right';
+  if (hint) row.title = hint;
+  const sync = () => { input.value = String(get()); };
+  input.addEventListener('change', () => { const v = parseFloat(input.value); if (Number.isFinite(v)) set(v); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), input);
+  host.append(row);
+  return input;
+}
+
+function dropdown(host, label, options, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const sel = el('select');
+  sel.style.cssText = 'flex:1;margin-left:6px;min-width:0';
+  for (const o of options) {
+    const [value, text] = Array.isArray(o) ? o : [o, o];
+    sel.append(el('option', { value, textContent: text }));
+  }
+  if (hint) row.title = hint;
+  const sync = () => { sel.value = String(get()); };
+  sel.addEventListener('change', () => { set(sel.value); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), sel);
+  host.append(row);
+  return sel;
+}
+
+function checkbox(host, label, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const input = el('input', { type: 'checkbox' });
+  if (hint) row.title = hint;
+  const sync = () => { input.checked = !!get(); };
+  input.addEventListener('change', () => { set(input.checked); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), input);
+  host.append(row);
+  return input;
+}
+
+function button(host, label, onClick, { primary = false, hint } = {}) {
+  const b = el('button', { textContent: label });
+  if (primary) b.className = 'primary';
+  if (hint) b.title = hint;
+  b.addEventListener('click', onClick);
+  host.append(b);
+  return b;
+}
+
+function note(host, text) {
+  const d = el('div', { textContent: text });
+  d.style.cssText = 'color:var(--wui-muted);font-size:11px;margin:6px 0 2px';
+  host.append(d);
+  return d;
+}
+
+// A structure param slider: every one of these rebuilds, and none of them reframes the camera.
+const P = (host, label, key, min, max, step, dec, hint) =>
+  slider(host, label, min, max, step, dec, () => params[key], (v) => { params[key] = v; rebuildScene(); }, hint);
+
+// ---- Mode ----
+{
+  const b = head('Mode', false);
+  dropdown(b, 'mode', [[MODE.FIELD, 'Field — one scattered map'], [MODE.GALLERY, 'Gallery — one per slot']],
+    () => view.mode, (v) => { view.mode = v; rebuildScene({ frame: true }); syncAll(); },
+    'Field is what bot-viewer-v3 renders. Gallery isolates one specimen per slot so families of form are visible.');
+  slider(b, 'field size (m)', 40, 300, 2, 0, () => view.fieldSize,
+    (v) => { view.fieldSize = v; if (view.mode === MODE.FIELD) rebuildScene(); },
+    'Square map side. Structure count is absolute, not per area, so a bigger map is a sparser one.');
+  slider(b, 'gallery slots', 1, 16, 1, 0, () => view.slotCount,
+    (v) => { view.slotCount = v; if (view.mode === MODE.GALLERY) rebuildScene({ frame: true }); });
+  slider(b, 'slot size (m)', SLOT_MIN, 70, 1, 0, () => view.slotSize,
+    (v) => { view.slotSize = v; if (view.mode === MODE.GALLERY) rebuildScene({ frame: true }); },
+    `Per-specimen cell. Floored at ${SLOT_MIN} m: below that a large building overhangs its neighbours.`);
+  dropdown(b, 'gallery kind', [['cycle', 'Cycle through all four'], ...KINDS],
+    () => view.galleryKind, (v) => { view.galleryKind = v; if (view.mode === MODE.GALLERY) rebuildScene(); });
+  numberBox(b, 'gallery seed', () => view.gallerySeed, (v) => {
+    view.gallerySeed = v >>> 0;
+    for (const k of Object.keys(slotSeedOffsets)) delete slotSeedOffsets[k];
+    if (view.mode === MODE.GALLERY) rebuildScene();
+  });
+  button(b, '🎲 Reroll every gallery slot', () => {
+    view.gallerySeed = (view.gallerySeed + 1) >>> 0;
+    for (const k of Object.keys(slotSeedOffsets)) delete slotSeedOffsets[k];
+    rebuildScene();
+    syncAll();
+  }, { hint: 'Click a slot label in the scene to reroll just that one' });
+  checkbox(b, 'refit camera on rebuild', () => view.autoFrame, (v) => { view.autoFrame = v; });
+  button(b, 'Frame the map', () => frameCamera());
+}
+
+// ---- Structure ----
+{
+  const b = head('Structure', false);
+  numberBox(b, 'seed', () => params.seed, (v) => { params.seed = v >>> 0; rebuildScene(); });
+  button(b, '🎲 Reroll seed', () => { params.seed = (params.seed + 1) >>> 0; rebuildScene(); syncAll(); }, { primary: true });
+  P(b, 'count', 'count', 0, 40, 1, 0, 'How many to try to place. Absolute, not per area.');
+  dropdown(b, 'mix', ['mixed', 'buildings', 'pockets', 'obstacles', 'portals', 'colonnades', 'slots', 'ramparts', 'corners', 'terraces'],
+    () => params.mix, (v) => { params.mix = v; rebuildScene(); });
+  P(b, 'separation (m)', 'minSeparation', 0, 30, 0.5, 1, 'Gap between footprints. These gaps are the firing lanes.');
+  P(b, 'edge margin (m)', 'edgeMargin', 0, 20, 0.5, 1, 'Keeps structures clear of the map perimeter.');
+  P(b, 'attempts', 'attempts', 1, 120, 1, 0, 'Rejection-sampling tries before a structure is dropped.');
+  note(b, 'Changing a size parameter can still move later structures: placement is sampled against '
+    + 'what is already down. Probability parameters (window, canopy, obstacle height) hold the field still.');
+}
+
+// ---- Wall ----
+{
+  const b = head('Wall');
+  slider(b, 'wall height (m)', 1, 6, 0.05, 2, () => WALL_H, (v) => { WALL_H = v; rebuildScene(); },
+    'Also the height lintels and portal decks are built up to.');
+  slider(b, 'wall thickness (m)', 0.1, 1.2, 0.02, 2, () => WALL_T, (v) => { WALL_T = v; rebuildScene(); });
+}
+
+// ---- Building ----
+{
+  const b = head('Building');
+  P(b, 'min side (m)', 'buildingMin', 3, 20, 0.5, 1);
+  P(b, 'max side (m)', 'buildingMax', 4, 30, 0.5, 1);
+  P(b, 'door width (m)', 'doorWidth', 0.8, 5, 0.05, 2);
+  P(b, 'door height (m)', 'doorHeight', 1.8, 4, 0.05, 2, 'Clear height; the wall above becomes a lintel.');
+  P(b, 'window sill (m)', 'windowSill', 0, 2, 0.05, 2, 'Emitted as cover: shoot over it, do not walk through it.');
+  P(b, 'window height (m)', 'windowHeight', 0.3, 3, 0.05, 2);
+  P(b, 'window chance', 'windowChance', 0, 1, 0.01, 2, 'Per non-door side.');
+  P(b, 'canopy chance', 'roofChance', 0, 1, 0.01, 2, 'A cantilevered soffit over one side.');
+  P(b, 'canopy overhang (m)', 'roofOverhang', 0, 4, 0.05, 2);
+  P(b, 'slab thickness (m)', 'slabT', 0.05, 1.2, 0.01, 2, 'Lintels and canopies. Portal decks are 2.2x this.');
+}
+
+// ---- Pocket ----
+{
+  const b = head('Pocket');
+  P(b, 'cells per side', 'pocketCells', 2, 10, 1, 0);
+  P(b, 'cell size (m)', 'pocketCell', 1.5, 8, 0.1, 1);
+}
+
+// ---- Obstacles ----
+{
+  const b = head('Obstacles');
+  P(b, 'min per field', 'clusterMin', 1, 20, 1, 0);
+  P(b, 'max per field', 'clusterMax', 1, 30, 1, 0);
+  P(b, 'field radius (m)', 'clusterRadius', 1, 20, 0.5, 1);
+  P(b, 'cover height (m)', 'coverHeight', 0.4, 2, 0.05, 2, 'Shoot-over height.');
+  P(b, 'tall height (m)', 'tallHeight', 1.2, 4, 0.05, 2, 'At or above 1.5 m these block sight and yield cover corners.');
+  P(b, 'tall share', 'tallShare', 0, 1, 0.01, 2);
+}
+
+// ---- Portal ----
+{
+  const b = head('Portal');
+  P(b, 'min span (m)', 'portalMin', 2, 20, 0.5, 1, 'Clear distance between the two piers.');
+  P(b, 'max span (m)', 'portalMax', 2, 30, 0.5, 1);
+}
+
+// ---- Colonnade ----
+{
+  const b = head('Colonnade');
+  note(b, 'Posts are covers, not walls, because only covers carry their own height. At tall height '
+    + 'they block sight and yield cover corners, so the grid is transparent at range and opaque up close.');
+  P(b, 'min posts per side', 'colonnadeMin', 2, 8, 1, 0);
+  P(b, 'max posts per side', 'colonnadeMax', 2, 10, 1, 0);
+  P(b, 'pitch (m)', 'colonnadePitch', 1.5, 7, 0.1, 1, 'Distance between post centres, jittered ±20%.');
+  P(b, 'post size (m)', 'colonnadePost', 0.3, 2.5, 0.05, 2, 'Jittered ±25%. Below about 0.5 m a post reads as a pole.');
+  P(b, 'soffit chance', 'colonnadeRoofChance', 0, 1, 0.01, 2, 'A deck carried on the posts, at wall height.');
+}
+
+// ---- Slot ----
+{
+  const b = head('Slot');
+  note(b, 'Two parallel walls and nothing else — a firing lane you commit to. The nav raster inflates '
+    + 'each wall by 0.55 m, so a gap under about 1.6 m seals shut and the slot becomes a solid block.');
+  P(b, 'min run (m)', 'slotMin', 3, 30, 0.5, 1);
+  P(b, 'max run (m)', 'slotMax', 3, 40, 0.5, 1);
+  P(b, 'min gap (m)', 'slotGapMin', 1.6, 10, 0.1, 1);
+  P(b, 'max gap (m)', 'slotGapMax', 1.6, 14, 0.1, 1);
+}
+
+// ---- Rampart ----
+{
+  const b = head('Rampart');
+  P(b, 'min length (m)', 'rampartMin', 4, 30, 0.5, 1);
+  P(b, 'max length (m)', 'rampartMax', 4, 40, 0.5, 1);
+  P(b, 'thickness (m)', 'rampartThickness', 0.2, 3, 0.05, 2, 'Jittered ±25%.');
+  P(b, 'soffit chance', 'rampartSoffitChance', 0, 1, 0.01, 2);
+  P(b, 'soffit reach (m)', 'rampartSoffitDepth', 0.5, 8, 0.1, 1, 'How far the soffit projects from the wall face.');
+}
+
+// ---- Corner ----
+{
+  const b = head('Corner');
+  P(b, 'min arm (m)', 'cornerMin', 2, 16, 0.5, 1);
+  P(b, 'max arm (m)', 'cornerMax', 2, 22, 0.5, 1);
+}
+
+// ---- Terrace ----
+{
+  const b = head('Terrace');
+  note(b, 'The only kind made of ground rather than geometry, so it needs uneven ground turned on to '
+    + 'show anything. Nav reads one height per cell, which is why a slab is something bots walk under '
+    + 'and never onto — a terrace raises the ground instead, so the top IS the walkable surface.');
+  P(b, 'rise (m)', 'terraceRise', 0.5, 8, 0.1, 1, 'How far the top stands above local ground.');
+  P(b, 'top radius (m)', 'terraceRadius', 2, 16, 0.5, 1);
+  P(b, 'rim falloff (m)', 'terraceRim', 0.2, 8, 0.1, 1,
+    'A smoothstep rim peaks at 1.5 x rise / falloff. Above the nav slope gate the sides exclude themselves and the ramp is the only way up; widen this far enough and it becomes a hill you can walk up anywhere.');
+  P(b, 'ramp steps', 'terraceRampSteps', 2, 12, 1, 0);
+  P(b, 'ramp grade', 'terraceRampSlope', 0.1, 0.8, 0.01, 2, 'Rise over run. Nav refuses ground above 0.85.');
+  P(b, 'ramp width (m)', 'terraceRampWidth', 0.8, 6, 0.1, 1);
+}
+
+// ---- Terrain ----
+{
+  const b = head('Terrain');
+  checkbox(b, 'uneven ground', () => terrainSettings.enabled, (v) => { terrainSettings.enabled = v; rebuildScene(); },
+    'Off = a flat slab. On = a displaced mesh; walls sink into it and slabs lift off it.');
+  numberBox(b, 'terrain seed', () => terrainSettings.seed, (v) => { terrainSettings.seed = v >>> 0; rebuildScene(); });
+  const T = (label, key, min, max, step, dec, hint) =>
+    slider(b, label, min, max, step, dec, () => terrainSettings[key], (v) => { terrainSettings[key] = v; rebuildScene(); }, hint);
+  T('hill amplitude (m)', 'hillAmp', 0, 8, 0.05, 2);
+  T('hill wavelength (m)', 'hillScale', 4, 80, 0.5, 1);
+  T('hill octaves', 'hillOctaves', 1, 6, 1, 0);
+  dropdown(b, 'landform', ['rolling', 'ridged', 'billowy'],
+    () => terrainSettings.landform, (v) => { terrainSettings.landform = v; rebuildScene(); });
+  T('terrace steps', 'terraceSteps', 0, 12, 1, 0, 'Benches carved into the hills. 0 = off.');
+  T('ripple amplitude (m)', 'rippleAmp', 0, 1.5, 0.01, 2);
+  T('mesh cell (m)', 'meshCell', 0.2, 2, 0.05, 2, 'Triangle pitch. Lower is finer and much more expensive.');
+  T('max slope shading', 'shadeRock', 0, 1, 0.01, 2, 'Vertex-colour lift on steep faces.');
+}
+
+// ---- Flora ----
+{
+  const b = head('Flora');
+  note(b, 'Growth comes from the active theme. Only eco-brutalism ships a flora block; every other '
+    + 'theme grows nothing and pays nothing. The on/off toggle is in Visuals.');
+  const F = (label, key, min, max, step, dec, hint) =>
+    slider(b, label, min, max, step, dec,
+      () => floraFor(visuals.theme)[key],
+      (v) => { const f = visuals.theme.flora; if (f) { f[key] = v; rebuildFlora(); } }, hint);
+  F('grass density (per m²)', 'grassDensity', 0, 78, 0.5, 1, 'Blades per square metre, before the blade cap binds.');
+  F('grass height (m)', 'grassHeight', 0.05, 1.5, 0.01, 2);
+  F('plant density', 'plantDensity', 0, 3, 0.01, 2);
+  F('vine density', 'vineDensity', 0, 3, 0.01, 2);
+  F('vine length (m)', 'vineLength', 0.2, 4, 0.05, 2);
+  const counts = el('div');
+  counts.style.cssText = 'color:var(--wui-muted);font-size:11px;margin:6px 0 2px;min-height:14px';
+  b.append(counts);
+  syncFloraCounts = () => {
+    const s = flora ? flora.stats : null;
+    counts.textContent = !s || !visuals.toggles.flora ? 'flora off'
+      : `${s.blades.toLocaleString()} blades${s.capped ? ` (capped — asked ${s.askedDensity.toFixed(1)}/m², built ${s.builtDensity.toFixed(1)})` : ''}`
+        + ` · ${s.plants} plants · ${s.vines} vines`;
+    updateHud();
+  };
+  // A theme switch replaces the flora block wholesale, so the sliders must be pushed back from the
+  // new theme or they keep editing the old one's numbers.
+  syncFloraPanel = () => syncAll();
+}
+
+// ---- Visuals ----
+// buildPanel() emits a flat list including a "Bot lighting" block, which is dead weight in a
+// bot-less viewer. Dropped host-side rather than by changing the module, so v2/v3 are untouched.
+{
+  const b = head('Visuals');
+  const nodes = visuals.buildPanel({ heading: false });
+  const titleOf = (n) => (n.classList && n.classList.contains('ttl') ? n.textContent : null);
+  const from = nodes.findIndex(n => titleOf(n) === 'Bot lighting');
+  const to = nodes.findIndex(n => titleOf(n) === 'Sky detail');
+  const keep = from >= 0 && to > from ? [...nodes.slice(0, from), ...nodes.slice(to)] : nodes;
+  b.append(...keep);
+}
+
+// ---- Presets ----
+// A distinct group name: bot-viewer-slots hardcodes its storage prefix and namespaces only by
+// group, so reusing 'maze' or 'ui' would share and corrupt bot-viewer-v3's saved slots.
+{
+  const b = head('Presets');
+  const capture = () => ({
+    view: { ...view },
+    params: { ...params },
+    wall: { WALL_H, WALL_T },
+    terrain: { ...terrainSettings },
+    look: visuals.getLookState(),
+    sections: readSectionStates(ctrl),
+  });
+  const apply = (data) => {
+    if (!data) return;
+    Object.assign(view, data.view || {});
+    Object.assign(params, data.params || {});
+    if (data.wall) { WALL_H = data.wall.WALL_H ?? WALL_H; WALL_T = data.wall.WALL_T ?? WALL_T; }
+    Object.assign(terrainSettings, data.terrain || {});
+    if (data.look) visuals.applyLookState(data.look);
+    applySectionStates(ctrl, data.sections);
+    rebuildScene({ frame: true });
+    syncAll();
+  };
+  const { nodes } = createSlotSection({ group: 'structures', label: 'preset', capture, apply });
+  b.append(...nodes);
+}
+
+// panel show/hide
+const panelToggle = document.getElementById('panelToggle');
+panelToggle.addEventListener('click', () => ctrl.classList.toggle('hidden'));
+addEventListener('keydown', (e) => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'p' || e.key === 'P') ctrl.classList.toggle('hidden');
+  if (e.key === 'f' || e.key === 'F') frameCamera();
+});
+
+// ===================== frame loop =====================
+let lastT = performance.now();
+let framesSinceBuild = 0;
+async function drawFrame(dt) {
+  controls.update();
+  visuals.update(dt);
+  if (flora) await flora.update(dt, performance.now() / 1000);
+  placeLabels();
+  await postFX.renderAsync();
+  if (!window.__ready && ++framesSinceBuild > 2) window.__ready = true;
+}
+renderer.setAnimationLoop(async () => {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  await drawFrame(dt);
+});
+
+syncAll();
+rebuildScene({ frame: true });
+</script>
+</body>
+</html>

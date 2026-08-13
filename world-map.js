@@ -180,10 +180,34 @@ export function bakeMapCanvas(loadedMap, { res = 384, overlayId = 'biome' } = {}
   const isWater = (ix, iz) => sampleHeight(ix, iz) < seaLevel - 0.05;
 
   const { data } = bakeMapPixels({ res, cellWorld: sxu, sampleBiomeColor, sampleHeight, isWater, shaded: overlay.shaded });
+  let minHeight = Infinity, maxHeight = -Infinity;
+  for (let iz = 0; iz < res; iz += 4) for (let ix = 0; ix < res; ix += 4) {
+    const h = sampleHeight(ix, iz); minHeight = Math.min(minHeight, h); maxHeight = Math.max(maxHeight, h);
+  }
+  const rawStep = Math.max(1, (maxHeight - minHeight) / 14);
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const contourStep = Math.max(1, Math.round(rawStep / magnitude) * magnitude);
+  const terrainDetailCanvas = document.createElement('canvas');
+  terrainDetailCanvas.width = res; terrainDetailCanvas.height = res;
+  const detailData = new Uint8ClampedArray(res * res * 4);
+  for (let iz = 0; iz < res; iz++) for (let ix = 0; ix < res; ix++) {
+    const o = (iz * res + ix) * 4;
+    const h = sampleHeight(ix, iz);
+    if (h < seaLevel - 0.05) continue;
+    const gx = (sampleHeight(ix + 1, iz) - sampleHeight(ix - 1, iz)) / (2 * sxu);
+    const gz = (sampleHeight(ix, iz + 1) - sampleHeight(ix, iz - 1)) / (2 * szv);
+    const invLength = 1 / Math.hypot(gx, 1, gz);
+    const shade = clamp(0.52 + ((-gx * 0.42 + 0.78 - gz * 0.46) * invLength) * 0.48, 0.35, 1);
+    const contourBand = Math.abs(h / contourStep - Math.round(h / contourStep));
+    const contourAlpha = contourBand < 0.055 ? (Math.round(h / contourStep) % 5 === 0 ? 105 : 66) : 0;
+    detailData[o] = 5; detailData[o + 1] = 8; detailData[o + 2] = 10;
+    detailData[o + 3] = Math.max(Math.round((1 - shade) * 65), contourAlpha);
+  }
+  terrainDetailCanvas.getContext('2d').putImageData(new ImageData(detailData, res, res), 0, 0);
   const canvas = document.createElement('canvas');
   canvas.width = res; canvas.height = res;
   canvas.getContext('2d').putImageData(new ImageData(data, res, res), 0, 0);
-  return { canvas, worldX, worldZ, wx0, wz0, sxu, szv, res, overlayId };
+  return { canvas, terrainDetailCanvas, worldX, worldZ, wx0, wz0, sxu, szv, res, overlayId };
 }
 
 // --- browser: full-screen map overlay (M) ------------------------------------------------
@@ -205,28 +229,26 @@ function drawArrow(ctx, x, y, angle, size, color) {
 
 // getBake() -> bake object or null; getLocal() -> {p:[x,y,z]}; getRemotes() -> [{id,p,q}];
 // getHeading() -> radians (view heading); getFacing(player) -> radians (their forward bearing).
-export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeading, getFacing, getOverlayLabel }) {
+export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeading, getFacing }) {
   const style = document.createElement('style');
   style.textContent = `
     #world-map { position: fixed; inset: 0; z-index: 90; display: none; align-items: center;
       justify-content: center; background: rgba(6,8,11,0.72); backdrop-filter: blur(3px); }
     #world-map.open { display: flex; }
     #world-map canvas { border: 1px solid rgba(255,255,255,0.16); border-radius: 6px;
-      box-shadow: 0 12px 48px rgba(0,0,0,0.5); background: rgba(9,12,16,0.9); }
-    #world-map .wm-hint { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-      color: #b3bdca; font: 12px system-ui, sans-serif; opacity: 0.8; }
+      box-shadow: 0 12px 48px rgba(0,0,0,0.5); background: rgba(9,12,16,0.9); cursor: crosshair; }
   `;
   document.head.appendChild(style);
   const root = document.createElement('div');
   root.id = 'world-map';
   const canvas = document.createElement('canvas');
-  const hint = document.createElement('div');
-  hint.className = 'wm-hint';
-  hint.textContent = 'M / Esc to close';
-  root.append(canvas, hint);
+  root.append(canvas);
   document.body.appendChild(root);
 
   let open = false;
+  let zoom = 1;
+  let hover = null;
+  const MIN_ZOOM = 0.7, MAX_ZOOM = 4;
 
   function draw() {
     const side = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.82);
@@ -246,8 +268,12 @@ export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeadin
     }
 
     const pad = 14;
-    const scale = (side - pad * 2) / Math.max(bake.worldX, bake.worldZ);
+    const scale = ((side - pad * 2) / Math.max(bake.worldX, bake.worldZ)) * zoom;
     const cx = side / 2, cy = side / 2;
+    const hoveredWorld = hover && hover.x >= pad && hover.x <= side - pad && hover.y >= pad && hover.y <= side - pad
+      ? { x: (cx - hover.x) / scale, z: (cy - hover.y) / scale } : null;
+    const hoverOnMap = hoveredWorld && hoveredWorld.x >= bake.wx0 && hoveredWorld.x <= bake.wx0 + bake.worldX
+      && hoveredWorld.z >= bake.wz0 && hoveredWorld.z <= bake.wz0 + bake.worldZ;
 
     ctx.save();
     ctx.beginPath(); ctx.rect(pad, pad, side - pad * 2, side - pad * 2); ctx.clip();
@@ -255,6 +281,7 @@ export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeadin
     ctx.imageSmoothingEnabled = true;
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     ctx.drawImage(bake.canvas, 0, 0);
+    ctx.drawImage(bake.terrainDetailCanvas, 0, 0);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     const proj = { scale, cx, cy };
@@ -277,14 +304,44 @@ export function createWorldMapOverlay({ getBake, getLocal, getRemotes, getHeadin
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     ctx.fillText('N', cx, pad + 4);
 
-    const label = getOverlayLabel && getOverlayLabel();
-    if (label) {
-      ctx.fillStyle = '#b3bdca';
-      ctx.font = '12px system-ui, sans-serif';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText(label, pad + 6, pad + 6);
+    if (hoverOnMap) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(pad, pad, side - pad * 2, side - pad * 2); ctx.clip();
+      ctx.strokeStyle = 'rgba(236,242,249,0.8)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, hover.y + 0.5); ctx.lineTo(side - pad, hover.y + 0.5);
+      ctx.moveTo(hover.x + 0.5, pad); ctx.lineTo(hover.x + 0.5, side - pad);
+      ctx.stroke();
+      ctx.restore();
+      const label = `X ${Math.round(hoveredWorld.x)}  Z ${Math.round(hoveredWorld.z)}`;
+      ctx.font = '12px ui-monospace, SFMono-Regular, Consolas, monospace';
+      const labelW = ctx.measureText(label).width + 12;
+      const labelX = clamp(hover.x + 12, pad + 4, side - pad - labelW - 4);
+      const labelY = clamp(hover.y + 12, pad + 4, side - pad - 25);
+      ctx.fillStyle = 'rgba(9,12,16,0.88)';
+      ctx.fillRect(labelX, labelY, labelW, 21);
+      ctx.strokeStyle = 'rgba(255,255,255,0.20)'; ctx.strokeRect(labelX + 0.5, labelY + 0.5, labelW - 1, 20);
+      ctx.fillStyle = '#e7edf4'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, labelX + 6, labelY + 10.5);
     }
   }
+  canvas.addEventListener('mousemove', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    hover = {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    };
+    draw();
+  });
+  canvas.addEventListener('mouseleave', () => { hover = null; draw(); });
+  root.addEventListener('wheel', (event) => {
+    if (!open) return;
+    event.preventDefault();
+    const nextZoom = clamp(zoom * (event.deltaY > 0 ? 1 / 1.15 : 1.15), MIN_ZOOM, MAX_ZOOM);
+    if (nextZoom === zoom) return;
+    zoom = nextZoom;
+    draw();
+  }, { passive: false });
 
   return {
     isOpen: () => open,

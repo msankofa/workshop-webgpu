@@ -21,7 +21,9 @@
 import * as THREE from 'three';
 
 // Cell order in the 2x2 leaf atlas: cell index -> source file (authored mode).
-// The viewer maps speciesIndex % 4 -> this cell.
+// The viewer maps speciesIndex % 4 -> this cell. Cells are row-major from the canvas's TOP-left,
+// which is the convention trees.js's leaves.atlas expects (it mirrors the row itself, since UV v
+// runs up while canvas y runs down).
 export const LEAF_FILES = ['oak', 'aspen', 'ash', 'pine'];   // cells 0,1,2,3
 export const LEAF_ATLAS = { cols: 2, rows: 2 };
 const TEX_DIR = './textures';

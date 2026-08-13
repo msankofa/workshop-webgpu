@@ -39,6 +39,14 @@ ok(group.children.every((s, i, a) => i === 0 || s.renderOrder > a[i - 1].renderO
 group.userData.setStableLayering(false);
 ok(group.children.every(s => s.renderOrder === -996), 'stable layering can be disabled live');
 
+// faceMode:'fixed' (the environment sky path) builds plane meshes oriented once toward the
+// camera instead of camera-facing sprites, and disables frustum culling so small moons don't
+// pop out at the view edge.
+const fixedGroup = createCelestialBodies(bodies, { faceMode: 'fixed' });
+ok(fixedGroup.children.every(m => m.isMesh && !m.isSprite), 'faceMode:fixed yields plane meshes, not sprites');
+ok(fixedGroup.children.every(m => m.frustumCulled === false), 'fixed bodies disable frustum culling');
+ok(fixedGroup.children.every(m => m.material.map && m.material.map.isTexture), 'every fixed body keeps its texture map');
+
 // Every kind must paint without throwing, at both detail levels, regardless of what
 // generateCelestialBodies happened to roll above.
 for (const kind of ['terrestrial', 'gas', 'ice', 'volcanic', 'rocky']) {

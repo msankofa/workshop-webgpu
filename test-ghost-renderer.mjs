@@ -5,6 +5,10 @@ import { GhostRenderer, playerTintHSL } from './multiplayer.js';
 let failed = false;
 function assert(cond, msg) { if (!cond) { failed = true; console.error('FAIL:', msg); } }
 
+// What the overhead overlay reads off a wire item. 'alertTier' is conditional (only sent while a cue
+// is live), so it is allowed to be absent; the rest must always survive the trip to a guest.
+const INSIGNIA_INPUT_FIELDS = ['role', 'id', 'p', 'h', 'alertTier'];
+
 // --- minimal THREE stub -----------------------------------------------------
 class Vec {
   constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
@@ -48,8 +52,12 @@ class Quat {
   }
 }
 class Obj3D {
-  constructor() { this.position = new Vec(); this.quaternion = new Quat(); this.scale = new Vec().set(1, 1, 1); this.children = []; this.userData = {}; }
-  add(c) { this.children.push(c); return this; }
+  constructor() {
+    this.position = new Vec(); this.quaternion = new Quat(); this.rotation = new Vec();
+    this.scale = new Vec().set(1, 1, 1); this.children = []; this.userData = {}; this.visible = true;
+  }
+  add(...cs) { for (const c of cs) this.children.push(c); return this; }
+  remove(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return this; }
 }
 class Group extends Obj3D {}
 class Mesh extends Obj3D { constructor(geo, mat) { super(); this.geometry = geo; this.material = mat; } }
@@ -62,8 +70,14 @@ function mat(opts = {}) {
     clone() { return mat(opts); },
   };
 }
+class Color {
+  constructor(c) { this.value = c; }
+  setHSL(h, s, l) { this.h = h; this.s = s; this.l = l; return this; }
+  set(c) { this.value = c; return this; }
+  getHex() { return 0x808080; }
+}
 const THREE = {
-  Group, Mesh, Vector3: Vec, Quaternion: Quat,
+  Group, Mesh, Vector3: Vec, Quaternion: Quat, Color,
   BoxGeometry: geo, CapsuleGeometry: geo, SphereGeometry: geo,
   MeshStandardMaterial: function (o) { return mat(o); },
   MeshBasicMaterial: function (o) { return mat(o); },
@@ -151,6 +165,116 @@ assert(!(bobG.quaternion.x === 0 && bobG.quaternion.y === 0 && bobG.quaternion.z
 assert(bobG.userData.left.visible === false && bobG.userData.leftHand.visible === false, 'dead player hides eyes/hands');
 assert(bobG.userData.held.visible === false, 'dead player hides held item');
 assert(g.position.y === 2 && g.quaternion.w === 1, 'a live neighbor (alice) is unaffected');
+
+// --- bot overhead overlay: health bar, alert "!", role insignia --------------
+{
+  const s2 = new Scene();
+  const gr2 = new GhostRenderer(s2, THREE);
+  const medic = { id: 'm1', p: [0, 1, 0], q: [0, 0, 0, 1], h: 1.2, r: 0.3, isBot: true,
+    role: 'medic', hp: 40, maxHp: 100, alertTier: 'seen' };
+  gr2.update({ creatures: [], players: [medic] });
+  const mg = s2.children.find(c => c.userData?.overlay);
+  assert(mg, 'a bot ghost builds an overhead overlay');
+  const ov = mg.userData.overlay;
+  assert(ov.bar.visible === true, 'health bar shows while damaged');
+  assert(ov.mark.visible === true, 'alert mark shows while a cue is live');
+  assert(ov.insignia && ov.insignia.visible === true, 'a medic gets a role insignia');
+  assert(ov.insignia.children.length === 2, 'the medic cross is two bars');
+  assert(ov.insignia.position.y > 0, 'insignia sits above the bar and the "!"');
+
+  // Role change swaps the marker rather than stacking a second one.
+  const before = ov.insignia;
+  gr2.update({ creatures: [], players: [{ ...medic, role: 'sniper' }] });
+  assert(ov.insignia !== before, 'changing role rebuilds the insignia');
+  assert(!mg.children.includes(before) && !ov.group.children.includes(before), 'the old insignia is removed, not stacked');
+  assert(ov.insignia.children.length === 1, 'the sniper ring is a single mark');
+
+  // A role with no marker, and a dead bot, both hide it.
+  gr2.update({ creatures: [], players: [{ ...medic, role: 'nosuchrole' }] });
+  assert(!ov.insignia, 'an unknown role gets no insignia at all');
+  gr2.update({ creatures: [], players: [{ ...medic, alive: false }] });
+  assert(!ov.insignia || ov.insignia.visible === false, 'a dead bot hides its insignia');
+
+  // A human ghost never gets one.
+  gr2.update({ creatures: [], players: [{ id: 'h1', p: [3, 1, 0], q: [0, 0, 0, 1], h: 1.2, r: 0.3, role: 'medic' }] });
+  const hg = s2.children.find(c => c !== mg && c instanceof Group);
+  assert(!hg?.userData?.overlay?.group?.visible, 'a human ghost shows no bot overlay');
+  gr2.destroy();
+}
+
+// --- the overlay's inputs must actually survive the wire ---------------------
+// The insignia and the role kit both key off item.role, and for a GUEST the only source of that field
+// is toWirePose. The host patches pose.role from its own rec, so a missing entity-side role looks
+// perfect on the host and renders bare rigs with no insignia on every guest. Nothing tested the wire
+// producer, which is exactly why that went unnoticed.
+{
+  // The repo's local `three` ships empty examples/jsm stubs (the browser loads addons from a CDN
+  // importmap), so bot-entity.js's Capsule import is redirected -- same hook test-bot-entity-rescue
+  // uses.
+  const { registerHooks } = await import('node:module');
+  const CAPSULE_STUB = 'data:text/javascript,' + encodeURIComponent(`export class Capsule {
+    constructor(start, end, radius) { this.start = start; this.end = end; this.radius = radius; }
+  }`);
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === 'three/addons/math/Capsule.js') return { url: CAPSULE_STUB, shortCircuit: true };
+      return nextResolve(specifier, context);
+    },
+  });
+  const { toWirePose } = await import('./bot-entity.js');
+  const pt = (x, y, z) => ({
+    x, y, z,
+    clone() { return pt(this.x, this.y, this.z); },
+    add(v) { this.x += v.x; this.y += v.y; this.z += v.z; return this; },
+    multiplyScalar(s) { this.x *= s; this.y *= s; this.z *= s; return this; },
+  });
+  const bot = {
+    id: 'b1', yaw: 0, pitch: 0, crouch01: 0, prone01: 0, standHeight: 0, team: 'alpha', role: 'medic',
+    onFloor: true, velocity: pt(0, 0, 0), weapon: 'm1911', tool: 'm1911',
+    capsule: { start: pt(0, 0, 0), end: pt(0, 1.5, 0), radius: 0.3 },
+  };
+  const wire = toWirePose(bot);
+  assert(wire.role === 'medic', 'toWirePose puts role on the wire (got ' + wire.role + ')');
+  assert(INSIGNIA_INPUT_FIELDS.every(f => f in wire || f === 'alertTier'),
+    'every field the overhead overlay reads is emitted by toWirePose');
+  const bare = toWirePose({ ...bot, role: null });
+  assert(!('role' in bare), 'a role-less bot omits the field rather than sending null');
+}
+
+// --- rebuildBotBodies must retire a live ragdoll (the body-kind-switch freeze) ----
+// Switching body kind throws every rig away mid-flight. A corpse still ragdolling is posed FROM that
+// rig each frame, so dropping it without retiring the ragdoll left ud.ragdoll set with bodyProc null
+// and threw on the next frame -- which stopped the whole animate loop.
+{
+  const s3 = new Scene();
+  const gr3 = new GhostRenderer(s3, THREE, { botLod: { nearD2: 1, midD2: 4, hideD2: 1e9 } });
+  const item = { id: 'z1', p: [0, 1, 0], q: [0, 0, 0, 1], h: 1.2, r: 0.3, isBot: true };
+  gr3.update({ creatures: [], players: [item] });
+  const zg = gr3._players.get('z1');
+  const ud = zg.userData;
+  let destroyed = false;
+  ud.bodyProc = { destroy() { destroyed = true; }, flush() {}, setVisible() {}, setRagdollPose() {} };
+  ud.ragdoll = { particles: [] };
+  ud.ragdollPose = {};
+  ud.ragdollAsleep = false;
+  gr3._ragdollAwake = 1;
+
+  gr3.rebuildBotBodies();
+  assert(destroyed, 'rebuildBotBodies destroys the old rig');
+  assert(ud.bodyProc === null, 'rebuildBotBodies clears bodyProc');
+  assert(ud.ragdoll === null, 'rebuildBotBodies retires a live ragdoll instead of orphaning it');
+  assert(gr3._ragdollAwake === 0, 'the live-corpse budget is given its slot back (got ' + gr3._ragdollAwake + ')');
+
+  // Even with a ragdoll still set, the LOD path must not dereference a null rig. It falls through to
+  // rebuilding the body, which this minimal THREE stub cannot complete -- so the assertion is on the
+  // failure MODE, not on reaching the end: anything but a null dereference means the guard held.
+  ud.ragdoll = { particles: [] };
+  let threw = null;
+  try { gr3._updateProceduralBodyLod(zg, item); } catch (err) { threw = err; }
+  assert(!/of null|of undefined/.test(threw?.message ?? ''),
+    'the ragdoll LOD branch survives a null bodyProc (got: ' + (threw && threw.message) + ')');
+  gr3.destroy();
+}
 
 // --- removal cleans up the container ----------------------------------------
 const aliceMat = g.userData.bodyMat;

@@ -43,6 +43,7 @@ const DEFAULT_GPU_PREFIXES = {
   computeTotal: 'gpuComputeMs',
   renderTotal: 'gpuRenderMs',
 };
+const DEFAULT_GPU_NAMES = Object.keys(DEFAULT_GPU_PREFIXES);   // hoisted: beginFrame runs per frame
 
 function round3(v) {
   return Math.round((Number.isFinite(v) ? v : 0) * 1000) / 1000;
@@ -63,9 +64,13 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     return v;
   }
 
+  // Zeroes every name seen so far plus the defaults, so a timer that doesn't run reads 0, not stale.
   function beginFrame() {
+    for (const name of latest.keys()) latest.set(name, 0);
     for (const name of DEFAULT_NAMES) latest.set(name, 0);
-    for (const name of Object.keys(DEFAULT_GPU_PREFIXES)) gpuLatest.set(name, 0);
+    for (const name of gpuLatest.keys()) gpuLatest.set(name, 0);
+    for (const name of DEFAULT_GPU_NAMES) gpuLatest.set(name, 0);
+    // smooth/gpuSmooth are deliberately untouched: the HUD's EMA decays instead of snapping to 0.
   }
 
   function time(name, fn) {

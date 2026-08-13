@@ -43,10 +43,12 @@ function buildPoints(data, { color, opacity, twinkle, renderOrder }) {
   return pts;
 }
 
-// Foreground sky stars (strong twinkle).
+// Foreground sky stars (strong twinkle). renderOrder -997 sits IN FRONT of the Milky Way
+// (band -998, gas -999) but BEHIND the celestial bodies (-996) and sun/moon disc (-995), so
+// opaque planets occlude the background star field instead of stars twinkling over them.
 export function createSkyStars(starData, palette) {
   return buildPoints(starData, {
-    color: palette.starColor, opacity: palette.starOpacity, twinkle: 0.3, renderOrder: -995,
+    color: palette.starColor, opacity: palette.starOpacity, twinkle: 0.3, renderOrder: -997,
   });
 }
 
@@ -91,12 +93,12 @@ export function createMilkyWay(milkyData, palette) {
   })();
   gas.opacityNode = float(1);
   const gasMesh = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.995, 40, 18), gas);
-  gasMesh.renderOrder = -997; gasMesh.frustumCulled = false;
+  gasMesh.renderOrder = -999; gasMesh.frustumCulled = false;
   gasMesh.material._uIntensity = uIntensity;
 
   // ---- Band points ----
   const band = buildPoints(milkyData, {
-    color: palette.starColor, opacity: 0.9, twinkle: 0.15, renderOrder: -996,
+    color: palette.starColor, opacity: 0.9, twinkle: 0.15, renderOrder: -998,
   });
 
   group.add(gasMesh, band);

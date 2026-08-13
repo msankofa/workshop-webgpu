@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
+    max-width: calc(100vw - 460px); z-index: 5; }
+  #info b { color: #d8dee9; font-weight: 600; }
+
+  /* Panel language is environment-viewer's in-game inspector (see environment-ui.js): right-docked
+     strip, vertical tab rail, uppercase card headers, same token names. backdrop-filter is
+     deliberately absent -- env-viewer measured it re-blurring a full-height strip over a live
+     canvas every frame, and dropped it. */
+  #mv-ui {
+    --wui-bg: rgba(18, 22, 28, 0.92);
+    --wui-panel: rgba(255,255,255,0.045);
+    --wui-line: rgba(255,255,255,0.12);
+    --wui-text: #d8dee9;
+    --wui-muted: #8d97a8;
+    --wui-accent: #77c8a1;
+    --wui-warn: #ffc857;
+    --wui-bad: #ff7b7b;
+    --wui-rail: 44px;
+    --wui-panel-width: min(380px, calc(100vw - 64px));
+    position: fixed; top: 10px; right: 10px; bottom: 10px;
+    width: calc(var(--wui-panel-width) + var(--wui-rail));
+    display: grid;
+    grid-template-columns: minmax(0, var(--wui-panel-width)) var(--wui-rail);
+    border: 1px solid var(--wui-line);
+    border-radius: 8px;
+    background: var(--wui-bg);
+    color: var(--wui-text);
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+    z-index: 60;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.34);
+    overflow: hidden;
+    transition: width 160ms ease;
+  }
+  #mv-ui.collapsed {
+    width: var(--wui-rail);
+    grid-template-columns: 0 var(--wui-rail);
+    border-left-color: transparent;
+    border-radius: 8px 0 0 8px;
+  }
+  #mv-ui button, #mv-ui select, #mv-ui input, #mv-ui textarea { font: inherit; }
+
+  .wui-tabs {
+    display: grid; grid-column: 2; grid-row: 1;
+    grid-auto-rows: minmax(64px, 1fr); height: 100%;
+    border-left: 1px solid var(--wui-line);
+    background: rgba(255,255,255,0.035);
+  }
+  .wui-tab {
+    min-width: 0; width: 100%; min-height: 64px;
+    border: 0; border-bottom: 1px solid rgba(255,255,255,0.07);
+    background: transparent; color: var(--wui-muted); cursor: pointer;
+    writing-mode: vertical-rl; transform: rotate(180deg); text-align: center;
+  }
+  .wui-tab:last-child { border-bottom: 0; }
+  .wui-tab.active {
+    color: var(--wui-text);
+    background: rgba(119, 200, 161, 0.12);
+    box-shadow: inset -2px 0 0 var(--wui-accent);
+  }
+  .wui-panels { grid-column: 1; grid-row: 1; min-height: 0; min-width: 0;
+    border-right: 1px solid rgba(255,255,255,0.07); }
+  #mv-ui.collapsed .wui-panels { display: none; }
+  .wui-panel { display: none; height: 100%; min-height: 0; overflow-y: auto;
+    padding: 10px; box-sizing: border-box; }
+  .wui-panel.active { display: block; }
+
+  .wui-card { border: 1px solid var(--wui-line); border-radius: 6px;
+    background: var(--wui-panel); margin-bottom: 8px; overflow: hidden; }
+  .wui-card-title { padding: 7px 9px; color: var(--wui-muted); font-size: 11px;
+    font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .wui-card-body { padding: 8px 9px; }
+
+  /* demo picker */
+  .mv-demo { border: 1px solid var(--wui-line); border-radius: 6px; background: var(--wui-panel);
+    margin-bottom: 8px; padding: 9px; cursor: pointer; text-align: left; width: 100%;
+    color: var(--wui-text); display: block; }
+  .mv-demo:hover { border-color: rgba(119,200,161,0.5); }
+  .mv-demo.active { border-color: var(--wui-accent); background: rgba(119,200,161,0.10); }
+  .mv-demo-name { font-weight: 650; margin-bottom: 3px; }
+  .mv-demo-blurb { color: var(--wui-muted); margin-bottom: 6px; }
+  .mv-pill { display: inline-block; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.04em; padding: 2px 6px; border-radius: 999px;
+    border: 1px solid var(--wui-line); color: var(--wui-muted); margin-right: 4px; }
+  .mv-pill.cost-low { color: var(--wui-accent); border-color: rgba(119,200,161,0.4); }
+  .mv-pill.cost-medium { color: var(--wui-warn); border-color: rgba(255,200,87,0.4); }
+  .mv-pill.cost-hero { color: var(--wui-bad); border-color: rgba(255,123,123,0.4); }
+
+  /* rows */
+  .mv-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center;
+    margin-bottom: 7px; }
+  .mv-row label { color: var(--wui-muted); min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .mv-val { color: var(--wui-text); font-variant-numeric: tabular-nums; font-size: 11px;
+    min-width: 46px; text-align: right; }
+  .mv-row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--wui-accent);
+    margin: 0; }
+  .mv-sub { grid-column: 1 / -1; color: var(--wui-muted); font-size: 11px; margin: -2px 0 2px; }
+  .mv-auto { display: inline-flex; align-items: center; gap: 4px; color: var(--wui-muted);
+    font-size: 11px; cursor: pointer; }
+  .mv-auto input { accent-color: var(--wui-accent); margin: 0; }
+  .mv-inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+  #mv-ui select, #mv-ui input[type=color], #mv-ui input[type=number] {
+    background: rgba(255,255,255,0.06); color: var(--wui-text);
+    border: 1px solid var(--wui-line); border-radius: 4px; padding: 3px 5px; }
+  #mv-ui input[type=color] { padding: 1px; width: 40px; height: 22px; }
+  #mv-ui button.mv-btn {
+    background: rgba(255,255,255,0.06); color: var(--wui-text);
+    border: 1px solid var(--wui-line); border-radius: 4px; padding: 4px 9px; cursor: pointer; }
+  #mv-ui button.mv-btn:hover { border-color: rgba(119,200,161,0.5); }
+  #mv-ui textarea { width: 100%; box-sizing: border-box; min-height: 220px;
+    background: rgba(0,0,0,0.28); color: #cfe6da; border: 1px solid var(--wui-line);
+    border-radius: 4px; padding: 7px; font: 11px/1.5 ui-monospace, Consolas, monospace;
+    resize: vertical; }
+  .mv-note { color: var(--wui-muted); }
+  .mv-note code { color: #cfe6da; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &mdash; <b>material demo loader</b>; every demo here drops into the game unchanged</div>
+
+<!-- three@0.184.0: same CDN pins as environment-viewer.html / plant-viewer.html -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { DEMOS } from './materials/index.js';
+
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const bg = new THREE.Color(0x1a1d23);
+scene.background = bg;
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(2.4, 1.6, 2.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.75, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+const rig = createLightingRig({ scene, ui: false, elevation: 42, azimuth: 35 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 0.1; rig.dirLight.shadow.camera.far = 60;
+rig.dirLight.shadow.camera.left = -8; rig.dirLight.shadow.camera.right = 8;
+rig.dirLight.shadow.camera.top = 8; rig.dirLight.shadow.camera.bottom = -8;
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0x23272e, roughness: 1 }),
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(20, 20, 0x3a4250, 0x2a303a);
+grid.position.y = 0.002;
+scene.add(grid);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== subjects =====================
+// Every subject is a Group of meshes sharing one material slot, so swapping demos is a single
+// assignment. The bot stand-in is built from primitives rather than importing the real rig: the
+// viewer stays standalone, which is the same reason the demos themselves import nothing local.
+const subjectRoot = new THREE.Group();
+scene.add(subjectRoot);
+
+function meshOf(geo, y = 0, x = 0, z = 0) {
+  const m = new THREE.Mesh(geo);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+const SUBJECTS = {
+  sphere: () => [meshOf(new THREE.SphereGeometry(0.7, 96, 64), 0.75)],
+  box: () => [meshOf(new THREE.BoxGeometry(1.1, 1.1, 1.1, 24, 24, 24), 0.75)],
+  torusKnot: () => [meshOf(new THREE.TorusKnotGeometry(0.55, 0.19, 220, 40), 0.9)],
+  capsule: () => [meshOf(new THREE.CapsuleGeometry(0.42, 0.8, 24, 48), 0.85)],
+  leaves: () => {
+    const out = [];
+    for (let i = 0; i < 14; i++) {
+      const card = meshOf(new THREE.PlaneGeometry(0.5, 0.72, 6, 8));
+      const a = (i / 14) * Math.PI * 2;
+      const r = 0.35 + (i % 3) * 0.22;
+      card.position.set(Math.cos(a) * r, 0.55 + (i % 5) * 0.16, Math.sin(a) * r);
+      card.rotation.set((i % 4) * 0.22 - 0.3, a + Math.PI / 2, (i % 3) * 0.18);
+      out.push(card);
+    }
+    return out;
+  },
+  bot: () => {
+    // Rough bot silhouette: torso, head, visor band, arms, legs. Proportions only need to be
+    // close enough that shell materials read at gameplay distance.
+    const out = [];
+    out.push(meshOf(new THREE.BoxGeometry(0.62, 0.72, 0.38, 12, 12, 8), 1.02));
+    out.push(meshOf(new THREE.BoxGeometry(0.34, 0.30, 0.32, 8, 8, 8), 1.55));
+    out.push(meshOf(new THREE.BoxGeometry(0.30, 0.09, 0.02, 8, 4, 2), 1.57, 0, 0.17));
+    for (const s of [-1, 1]) {
+      out.push(meshOf(new THREE.CapsuleGeometry(0.085, 0.42, 8, 16), 1.00, s * 0.40));
+      out.push(meshOf(new THREE.CapsuleGeometry(0.105, 0.46, 8, 16), 0.40, s * 0.16));
+    }
+    return out;
+  },
+};
+
+let subjectMeshes = [];
+let subjectKey = 'sphere';
+
+function buildSubject(key) {
+  for (const m of subjectMeshes) { subjectRoot.remove(m); m.geometry.dispose(); }
+  subjectMeshes = SUBJECTS[key]();
+  for (const m of subjectMeshes) {
+    if (current) m.material = current.material;
+    subjectRoot.add(m);
+  }
+  subjectKey = key;
+}
+
+// ===================== demo loading =====================
+let current = null;          // active handle
+let currentEntry = null;
+const paramOverrides = {};   // per-demo id -> {key: value}, so switching back keeps your tuning
+const animated = new Set();  // param keys currently oscillating
+let paramHost = null;
+let portArea = null;
+
+async function loadDemo(entry) {
+  const mod = await entry.load();
+  const overrides = paramOverrides[entry.id] ?? {};
+  const next = mod.create({ params: overrides });
+  if (current) current.dispose();
+  current = next;
+  currentEntry = entry;
+  currentModules.set(entry.id, mod);
+  for (const m of subjectMeshes) m.material = current.material;
+  animated.clear();
+  buildParams();
+  buildPort();
+  renderDemoList();
+}
+const currentModules = new Map();
+
+// A rebuildOn param changed: re-create the material from scratch with the tuning preserved.
+async function rebuildCurrent() {
+  if (!currentEntry) return;
+  const mod = currentModules.get(currentEntry.id) ?? await currentEntry.load();
+  const next = mod.create({ params: { ...current.params } });
+  current.dispose();
+  current = next;
+  for (const m of subjectMeshes) m.material = current.material;
+  buildParams();
+  buildPort();
+}
+
+function recordOverride(key, value) {
+  if (!currentEntry) return;
+  (paramOverrides[currentEntry.id] ??= {})[key] = value;
+  buildPort();
+}
+
+// ===================== panel =====================
+const ui = document.createElement('aside');
+ui.id = 'mv-ui';
+ui.setAttribute('aria-label', 'Material inspector');
+
+const TABS = [
+  ['demos', 'Demos', 'M'],
+  ['params', 'Params', 'P'],
+  ['stage', 'Stage', 'S'],
+  ['port', 'Port', 'C'],
+];
+const tabsNav = document.createElement('nav');
+tabsNav.className = 'wui-tabs';
+const panelsWrap = document.createElement('div');
+panelsWrap.className = 'wui-panels';
+const tabButtons = new Map(), panelEls = new Map();
+
+for (const [id, label, icon] of TABS) {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'wui-tab'; btn.textContent = icon;
+  btn.title = label; btn.setAttribute('aria-label', label);
+  btn.addEventListener('click', () => activate(id));
+  tabsNav.appendChild(btn); tabButtons.set(id, btn);
+
+  const panel = document.createElement('section');
+  panel.className = 'wui-panel';
+  panelsWrap.appendChild(panel); panelEls.set(id, panel);
+}
+ui.append(panelsWrap, tabsNav);
+document.body.appendChild(ui);
+
+let activeTab = null;
+function activate(id) {
+  if (activeTab === id) { ui.classList.toggle('collapsed'); return; }
+  activeTab = id;
+  ui.classList.remove('collapsed');
+  for (const [k, el] of panelEls) el.classList.toggle('active', k === id);
+  for (const [k, b] of tabButtons) b.classList.toggle('active', k === id);
+}
+
+function card(host, title) {
+  const c = document.createElement('div'); c.className = 'wui-card';
+  const t = document.createElement('div'); t.className = 'wui-card-title'; t.textContent = title;
+  const b = document.createElement('div'); b.className = 'wui-card-body';
+  c.append(t, b); host.appendChild(c);
+  return b;
+}
+
+// ---- Demos tab ----
+function renderDemoList() {
+  const host = panelEls.get('demos');
+  host.textContent = '';
+  const body = card(host, 'Demos');
+  for (const entry of DEMOS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mv-demo' + (currentEntry && currentEntry.id === entry.id ? ' active' : '');
+    const name = document.createElement('div');
+    name.className = 'mv-demo-name'; name.textContent = entry.name;
+    const blurb = document.createElement('div');
+    blurb.className = 'mv-demo-blurb'; blurb.textContent = entry.blurb;
+    const pills = document.createElement('div');
+    const cost = document.createElement('span');
+    cost.className = `mv-pill cost-${entry.cost}`; cost.textContent = entry.cost + ' cost';
+    const target = document.createElement('span');
+    target.className = 'mv-pill'; target.textContent = entry.targets;
+    pills.append(cost, target);
+    btn.append(name, blurb, pills);
+    btn.addEventListener('click', () => loadDemo(entry).catch(e => showError(e.message)));
+    body.appendChild(btn);
+  }
+  const note = card(host, 'Contract');
+  note.innerHTML = '<div class="mv-note">Each demo is a module under <code>materials/</code> exporting '
+    + '<code>meta</code> and <code>create()</code>. It imports only three, so the game can import '
+    + 'the same file and drive the same params from entity state. The Port tab writes the snippet.</div>';
+}
+
+// ---- Params tab ----
+function buildParams() {
+  const host = panelEls.get('params');
+  host.textContent = '';
+  rows.clear();
+  if (!current) {
+    host.innerHTML = '<div class="wui-card"><div class="wui-card-body mv-note">Pick a demo first.</div></div>';
+    return;
+  }
+  const head = card(host, current.meta.name);
+  head.innerHTML = `<div class="mv-note">${current.meta.notes ?? ''}</div>`;
+  paramHost = card(host, 'Parameters');
+
+  for (const p of current.meta.params) {
+    const type = p.type ?? 'float';
+    const row = document.createElement('div');
+    row.className = 'mv-row';
+    const label = document.createElement('label');
+    label.textContent = p.label;
+    const val = document.createElement('span');
+    val.className = 'mv-val';
+    row.append(label, val);
+
+    const isRebuild = (current.meta.rebuildOn ?? []).includes(p.key);
+
+    if (type === 'float') {
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = p.min; slider.max = p.max; slider.step = p.step ?? 0.01;
+      slider.value = current.params[p.key];
+      val.textContent = Number(current.params[p.key]).toFixed(stepDigits(p.step));
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value);
+        val.textContent = v.toFixed(stepDigits(p.step));
+        current.params[p.key] = v;
+        recordOverride(p.key, v);
+        if (isRebuild) rebuildCurrent().catch(e => showError(e.message));
+        else current.setParam(p.key, v);
+      });
+      row.appendChild(slider);
+      row._slider = slider; row._val = val; row._spec = p;
+
+      if (!isRebuild) {
+        const auto = document.createElement('label');
+        auto.className = 'mv-auto';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.addEventListener('change', () => {
+          if (cb.checked) animated.add(p.key); else animated.delete(p.key);
+        });
+        auto.append(cb, document.createTextNode('loop'));
+        const sub = document.createElement('div');
+        sub.className = 'mv-sub';
+        sub.appendChild(auto);
+        if (p.hint) sub.appendChild(Object.assign(document.createElement('span'),
+          { textContent: ' · ' + p.hint }));
+        row.appendChild(sub);
+      } else if (p.hint) {
+        const sub = document.createElement('div');
+        sub.className = 'mv-sub'; sub.textContent = p.hint;
+        row.appendChild(sub);
+      }
+      rows.set(p.key, row);
+    } else if (type === 'color') {
+      const picker = document.createElement('input');
+      picker.type = 'color';
+      picker.value = '#' + new THREE.Color(current.params[p.key]).getHexString();
+      val.textContent = '';
+      val.appendChild(picker);
+      picker.addEventListener('input', () => {
+        const hex = parseInt(picker.value.slice(1), 16);
+        current.setParam(p.key, hex);
+        recordOverride(p.key, hex);
+      });
+      if (p.hint) {
+        const sub = document.createElement('div');
+        sub.className = 'mv-sub'; sub.textContent = p.hint;
+        row.appendChild(sub);
+      }
+    } else if (type === 'vec3') {
+      val.textContent = '';
+      const sub = document.createElement('div');
+      sub.className = 'mv-sub mv-inline';
+      const followSun = document.createElement('label');
+      followSun.className = 'mv-auto';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.addEventListener('change', () => { sunDriven[p.key] = cb.checked; });
+      sunDriven[p.key] = true;
+      followSun.append(cb, document.createTextNode('follow the sun'));
+      sub.appendChild(followSun);
+      if (p.hint) sub.appendChild(Object.assign(document.createElement('span'),
+        { textContent: ' · ' + p.hint }));
+      row.appendChild(sub);
+    }
+    paramHost.appendChild(row);
+  }
+
+  const actions = card(host, 'Actions');
+  const reset = document.createElement('button');
+  reset.className = 'mv-btn'; reset.type = 'button'; reset.textContent = 'Reset to defaults';
+  reset.addEventListener('click', () => {
+    if (!currentEntry) return;
+    delete paramOverrides[currentEntry.id];
+    loadDemo(currentEntry).catch(e => showError(e.message));
+  });
+  actions.appendChild(reset);
+}
+const rows = new Map();
+const sunDriven = {};
+
+function stepDigits(step) {
+  if (!step || step >= 1) return 0;
+  return String(step).split('.')[1]?.length ?? 2;
+}
+
+// ---- Stage tab ----
+function buildStage() {
+  const host = panelEls.get('stage');
+  host.textContent = '';
+
+  const shapeBody = card(host, 'Subject');
+  const shapeRow = document.createElement('div');
+  shapeRow.className = 'mv-inline';
+  const sel = document.createElement('select');
+  for (const [key, label] of [
+    ['sphere', 'Sphere'], ['box', 'Box'], ['torusKnot', 'Torus knot'],
+    ['capsule', 'Capsule'], ['bot', 'Bot stand-in'], ['leaves', 'Leaf cards'],
+  ]) {
+    const o = document.createElement('option');
+    o.value = key; o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = subjectKey;
+  sel.addEventListener('change', () => buildSubject(sel.value));
+  shapeRow.append(Object.assign(document.createElement('span'), { textContent: 'Shape' }), sel);
+  shapeBody.appendChild(shapeRow);
+
+  const spinRow = document.createElement('label');
+  spinRow.className = 'mv-auto';
+  spinRow.style.marginTop = '8px';
+  const spinCb = document.createElement('input');
+  spinCb.type = 'checkbox'; spinCb.checked = spin;
+  spinCb.addEventListener('change', () => { spin = spinCb.checked; });
+  spinRow.append(spinCb, document.createTextNode('auto-rotate'));
+  shapeBody.appendChild(spinRow);
+
+  const envBody = card(host, 'Environment');
+  addSlider(envBody, 'Sun elevation', 2, 88, 1, rig.elevation, v => rig.setElevation(v));
+  addSlider(envBody, 'Sun azimuth', 0, 360, 1, rig.azimuth, v => rig.setAzimuth(v));
+  addSlider(envBody, 'Sun intensity', 0, 6, 0.05, rig.dirLight.intensity, v => rig.setSunIntensity(v));
+
+  const bgRow = document.createElement('div');
+  bgRow.className = 'mv-inline';
+  bgRow.style.marginTop = '6px';
+  const bgPick = document.createElement('input');
+  bgPick.type = 'color'; bgPick.value = '#' + bg.getHexString();
+  bgPick.addEventListener('input', () => bg.set(bgPick.value));
+  bgRow.append(Object.assign(document.createElement('span'), { textContent: 'Background' }), bgPick);
+  envBody.appendChild(bgRow);
+
+  const gridRow = document.createElement('label');
+  gridRow.className = 'mv-auto';
+  gridRow.style.marginTop = '8px';
+  const gridCb = document.createElement('input');
+  gridCb.type = 'checkbox'; gridCb.checked = true;
+  gridCb.addEventListener('change', () => { grid.visible = gridCb.checked; ground.visible = gridCb.checked; });
+  gridRow.append(gridCb, document.createTextNode('ground and grid'));
+  envBody.appendChild(gridRow);
+}
+
+function addSlider(host, label, min, max, step, value, onInput) {
+  const row = document.createElement('div');
+  row.className = 'mv-row';
+  const l = document.createElement('label'); l.textContent = label;
+  const v = document.createElement('span'); v.className = 'mv-val';
+  v.textContent = Number(value).toFixed(stepDigits(step));
+  const s = document.createElement('input');
+  s.type = 'range'; s.min = min; s.max = max; s.step = step; s.value = value;
+  s.addEventListener('input', () => {
+    const val = parseFloat(s.value);
+    v.textContent = val.toFixed(stepDigits(step));
+    onInput(val);
+  });
+  row.append(l, v, s);
+  host.appendChild(row);
+  return row;
+}
+
+// ---- Port tab ----
+function buildPort() {
+  const host = panelEls.get('port');
+  host.textContent = '';
+  const body = card(host, 'Drop into the game');
+  if (!current) {
+    body.innerHTML = '<div class="mv-note">Pick a demo first.</div>';
+    return;
+  }
+  portArea = document.createElement('textarea');
+  portArea.readOnly = true;
+  portArea.value = portSnippet();
+  body.appendChild(portArea);
+
+  const copy = document.createElement('button');
+  copy.className = 'mv-btn'; copy.type = 'button'; copy.textContent = 'Copy';
+  copy.style.marginTop = '6px';
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(portArea.value); copy.textContent = 'Copied'; }
+    catch { portArea.select(); copy.textContent = 'Select + copy'; }
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1400);
+  });
+  body.appendChild(copy);
+
+  const note = card(host, 'Notes');
+  note.innerHTML = `<div class="mv-note">Base: <code>${current.meta.base}</code><br>`
+    + `Targets: ${current.meta.targets}<br>Cost: ${current.meta.cost}<br><br>`
+    + `${current.meta.notes ?? ''}</div>`;
+}
+
+function formatValue(spec, value) {
+  const type = spec.type ?? 'float';
+  if (type === 'color') return '0x' + new THREE.Color(value).getHexString();
+  if (type === 'vec3') {
+    const v = Array.isArray(value) ? value : [value.x, value.y, value.z];
+    return `[${v.map(n => Number(n).toFixed(3)).join(', ')}]`;
+  }
+  return String(Number(value).toFixed(stepDigits(spec.step)));
+}
+
+// Only the params you actually changed, because that is what you would paste.
+function portSnippet() {
+  const meta = current.meta;
+  const changed = meta.params.filter(p => {
+    const a = current.params[p.key], b = p.value;
+    if ((p.type ?? 'float') === 'vec3') return false;
+    return String(a) !== String(b);
+  });
+  const lines = changed.map(p => `    ${p.key}: ${formatValue(p, current.params[p.key])},`);
+  const createCall = changed.length
+    ? `const fx = create({\n  params: {\n${lines.join('\n')}\n  },\n});`
+    : 'const fx = create();';
+
+  const driveHint = meta.id === 'dissolve'
+    ? `\n// Per frame, from the spawn or death timer:\nfx.setParam('progress', t);`
+    : meta.id === 'damage-overheat'
+      ? `\n// Per frame, from entity state:\nfx.setParam('damage', 1 - bot.health / bot.maxHealth);\nfx.setParam('heat', bot.hitHeat);`
+      : meta.id === 'foliage-sss'
+        ? `\n// Per frame, from the sun:\nfx.setParam('lightDirection', sunDir);   // surface -> light, normalised`
+        : '';
+
+  return `import { create } from './materials/${meta.id}.js';\n\n${createCall}\nmesh.material = fx.material;\n${driveHint}\n\n// On teardown:\n// fx.dispose();`;
+}
+
+// ===================== boot =====================
+// Declared before buildStage() reads it: `let` has no hoisted value, so ordering is load-bearing.
+let spin = true;
+
+buildSubject('sphere');
+renderDemoList();
+buildParams();
+buildStage();
+buildPort();
+activate('demos');
+await loadDemo(DEMOS[0]);
+
+// ===================== loop =====================
+const clock = new THREE.Clock();
+const sunDir = new THREE.Vector3();
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const t = clock.elapsedTime;
+
+  if (spin) subjectRoot.rotation.y += dt * 0.35;
+
+  if (current) {
+    // Oscillate any param with 'loop' ticked, and move its slider so the panel stays truthful.
+    for (const key of animated) {
+      const row = rows.get(key);
+      if (!row || !row._spec) continue;
+      const p = row._spec;
+      const k = Math.sin(t * 0.9) * 0.5 + 0.5;
+      const v = p.min + (p.max - p.min) * k;
+      current.setParam(key, v);
+      row._slider.value = v;
+      row._val.textContent = v.toFixed(stepDigits(p.step));
+    }
+
+    // Any vec3 param marked "follow the sun" tracks the rig, which is what the game would do.
+    for (const p of current.meta.params) {
+      if ((p.type ?? 'float') !== 'vec3' || !sunDriven[p.key]) continue;
+      sunDir.copy(rig.dirLight.position).normalize();
+      current.setParam(p.key, sunDir);
+    }
+
+    current.update(dt, t);
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

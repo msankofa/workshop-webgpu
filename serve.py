@@ -17,7 +17,10 @@ MAPS_DIR = os.path.join(ROOT, 'maps')
 STATS_DIR = os.path.join(ROOT, 'research', 'stats')
 STATES_DIR = os.path.join(ROOT, 'states')
 BOT_STATES_DIR = os.path.join(ROOT, 'bot-states')
+NOTES_DIR = os.path.join(ROOT, 'notes')
 MAZE_LAYOUTS_DIR = os.path.join(ROOT, 'maze layouts')
+SLOT_SAVES_DIR = os.path.join(ROOT, 'bot-viewer-saves')
+BODY_TUNING_DIR = os.path.join(ROOT, 'body-tuning')
 MUSIC_DIR = os.path.join(ROOT, 'sfx', 'music')
 _MUSIC_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.opus', '.webm'}
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
@@ -35,6 +38,15 @@ _SAFE_BOT_STATE_FILENAME = re.compile(
 # bot-viewer-v2.html's "Export layout JSON" names files layout-<kind>-<YYYYMMDDHHMMSS>.json;
 # keep in sync with that client-side pattern (kind is a maze/world generator id).
 _SAFE_MAZE_LAYOUT_FILENAME = re.compile(r'^layout-[A-Za-z0-9 _.-]+\.json$')
+# bot-trace-viewer.html's Notes panel names files notes-<slugified takeLabel>.html (see
+# slugifyTakeLabel client-side); keep the charset in sync with that client-side slugify.
+_SAFE_NOTES_FILENAME = re.compile(r'^notes-[a-z0-9_-]+\.html$')
+# bot-viewer-v2.html mirrors every panel slot save to disk as
+# bv2-<group>-slot<N>-<YYYYMMDD-HHMMSS>.json (see exportSlotToDisk client-side).
+_SAFE_SLOT_FILENAME = re.compile(r'^bv2-(all|maze|bots|ui)-slot[1-9]\d?-\d{8}-\d{6}\.json$')
+# body-preview.html's "Save tuning to disk" names files body-tuning-[<label>-]<YYYYMMDD-HHMMSS>.json
+# (see buildTuningFilename client-side); keep the label charset in sync with its slugify.
+_SAFE_BODY_TUNING_FILENAME = re.compile(r'^body-tuning-(?:[a-z0-9-]{1,40}-)?\d{8}-\d{6}\.json$')
 
 
 def _safe_under_maps(*segments):
@@ -119,6 +131,66 @@ def save_maze_layout(raw_name, body_bytes):
     return os.path.relpath(target, ROOT).replace(os.sep, '/')
 
 
+def save_notes(raw_name, body_bytes):
+    # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
+    # Unlike every other save_* helper here, this always overwrites the same file in place --
+    # the same note is resaved repeatedly as the user types, not a new artifact each time -- so
+    # there is deliberately no collision-suffix logic.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_NOTES_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe notes filename: {raw_name!r}')
+    os.makedirs(NOTES_DIR, exist_ok=True)
+    target = os.path.join(NOTES_DIR, basename)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_slot_export(raw_name, body_bytes):
+    # Every panel slot save is mirrored here, so a save survives the browser's localStorage being
+    # cleared and lands somewhere backed up. Each save is its own timestamped file rather than an
+    # overwrite: the point is a history you can go back through, not a single current state.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_SLOT_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe slot filename: {raw_name!r}')
+    os.makedirs(SLOT_SAVES_DIR, exist_ok=True)
+    target = os.path.join(SLOT_SAVES_DIR, basename)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_body_tuning(raw_name, body_bytes):
+    # Gait / locomotion / pose tuning from body-preview.html. Each save is its own timestamped
+    # file, not an overwrite: tuning is exploratory and the point is being able to go back to the
+    # one that looked right, not to keep a single current state.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_BODY_TUNING_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe tuning filename: {raw_name!r}')
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    os.makedirs(BODY_TUNING_DIR, exist_ok=True)
+    stem, ext = os.path.splitext(basename)
+    candidate = basename
+    n = 2
+    while os.path.exists(os.path.join(BODY_TUNING_DIR, candidate)):
+        candidate = f'{stem}-{n}{ext}'
+        n += 1
+    target = os.path.join(BODY_TUNING_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_damage_tuning(body_bytes):
+    # damage-simulator.html's "save to disk". One file, overwritten in place, so it can be committed
+    # and read as the shared default by bot-viewer-v3 -- not a history like the other save_* helpers.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'damage-tuning.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'damage-tuning.json'
+
+
 def save_bot_state_trace(raw_name, body_bytes):
     # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
     basename = os.path.basename((raw_name or '').replace('\\', '/'))
@@ -169,6 +241,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/list-maze-layouts':
             self._handle_list_maze_layouts()
             return
+        if path == '/api/list-body-tuning':
+            self._handle_list_body_tuning()
+            return
         super().do_GET()
 
     # GET /api/list-maze-layouts -- start-screen.js builds its Maze Layouts map card from this.
@@ -180,6 +255,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if os.path.isdir(MAZE_LAYOUTS_DIR):
                 for entry in sorted(os.listdir(MAZE_LAYOUTS_DIR)):
                     if entry.lower().endswith('.json') and os.path.isfile(os.path.join(MAZE_LAYOUTS_DIR, entry)):
+                        files.append(entry)
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    # GET /api/list-body-tuning -- body-preview.html builds its Load dropdown from this, newest
+    # first so the most recent session is the default pick. Filenames come off disk, so there is
+    # nothing to sanitize; the client fetches body-tuning/<name> as a static file.
+    def _handle_list_body_tuning(self):
+        try:
+            files = []
+            if os.path.isdir(BODY_TUNING_DIR):
+                for entry in sorted(os.listdir(BODY_TUNING_DIR), reverse=True):
+                    if entry.lower().endswith('.json') and os.path.isfile(os.path.join(BODY_TUNING_DIR, entry)):
                         files.append(entry)
             self._send_json({'ok': True, 'files': files})
         except Exception as exc:
@@ -236,6 +325,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith('/api/save-maze-layout'):
             self._handle_save_maze_layout()
+            return
+        if self.path.startswith('/api/save-notes'):
+            self._handle_save_notes()
+            return
+        if self.path.startswith('/api/save-slot-export'):
+            self._handle_save_slot_export()
+            return
+        if self.path.startswith('/api/save-body-tuning'):
+            self._handle_save_body_tuning()
+            return
+        if self.path.startswith('/api/save-damage-tuning'):
+            self._handle_save_damage_tuning()
             return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
@@ -355,6 +456,67 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             raw_name = (params.get('filename') or [''])[0]
             rel_path = save_maze_layout(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-slot-export?filename=bv2-<group>-slot<N>-<stamp>.json -- bot-viewer-v2's
+    # panel slots mirror themselves to bot-viewer-saves/ on every save, so settings survive a
+    # cleared localStorage. Fire-and-forget from the client: a failure here is never surfaced.
+    def _handle_save_slot_export(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 5_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_slot_export(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-body-tuning?filename=body-tuning-[<label>-]<stamp>.json -- body-preview.html's
+    # "Save tuning to disk" button, so a gait/locomotion session lands in body-tuning/ with no
+    # download dialog and can be reloaded from the Load dropdown. -N suffix on collision.
+    def _handle_save_body_tuning(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 5_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_body_tuning(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-damage-tuning -- damage-simulator.html's "save to disk". Overwrites
+    # damage-tuning.json at the repo root, which bot-viewer-v3 reads as its blood FX defaults.
+    def _handle_save_damage_tuning(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_damage_tuning(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-notes?filename=notes-<slug>.html -- bot-trace-viewer.html's Notes panel
+    # autosave (debounced while typing) and its beforeunload/pagehide sendBeacon flush both land
+    # here; the same route handles either since a beacon is just a POST with a Blob body.
+    def _handle_save_notes(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_notes(raw_name, self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

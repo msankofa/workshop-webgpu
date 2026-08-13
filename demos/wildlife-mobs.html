@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Pirate Nation mobs as wildlife</title>
+<!--
+  DEMO — can we drop the Pirate Nation mob creatures in as wildlife?
+
+  SOURCE / LICENCE
+  ----------------
+  Models stream live from https://github.com/proofofplay/piratenation-art, which is licensed
+  CC0-1.0 (public domain, commercial use, no attribution required). Nothing is vendored into this
+  repo; every model is fetched at runtime.
+
+  THE ONE ACCESS FACT THAT MATTERS
+  --------------------------------
+  The assets are stored in Git LFS. `raw.githubusercontent.com` returns a ~130 byte POINTER file,
+  not the model — four separate investigations concluded from this that the assets were unusable.
+  They are not. The LFS media host serves the real bytes publicly:
+
+      https://media.githubusercontent.com/media/<owner>/<repo>/<branch>/<path>
+
+  and it answers with `Access-Control-Allow-Origin: *`, so the browser can fetch it directly with
+  no proxy and no local copy. That header was verified before this demo was written.
+
+  WHY THIS IS THE EASY HALF OF THE PORT
+  ------------------------------------
+  These creatures are NOT skinned. Verified by parsing the glTF: no `skins` array, no JOINTS_0 /
+  WEIGHTS_0 attributes, and every animation channel targets translation/rotation/scale on a plain
+  node. They are rigid part hierarchies driven by node-transform keyframes.
+
+  That is exactly how our own bodies work — `bot-limb-map.js:32` describes our parts as
+  "transform-only Object3D in instanced mode". So there is no rig to convert and no skinning to
+  reimplement: GLTFLoader + AnimationMixer plays these natively in r0.184.
+
+  Every creature ships the same three clips: `idle`, `hit`, `attack`.
+
+  WHAT THIS DEMO IS ACTUALLY FOR
+  ------------------------------
+  Deciding two things by looking at them:
+
+    1. Does the chunky voxel art read acceptably next to our stuff, or does it fight the neon and
+       eco-brutalist bot themes? That is an art call, not a technical one, and no measurement
+       settles it.
+    2. Is the draw-call cost tolerable? This is the real problem and the panel does not hide it.
+       These models carry ONE MATERIAL PER MESH PART — 35 materials on the Anglerfish, 66 on the
+       Wyvern — so a herd of them costs draw calls in proportion. Watch the counter climb as you
+       raise the population. Our own bots solved this with `body-part-batches.js`; these would
+       need the same treatment before shipping.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/wildlife-mobs.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #12161d;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #d8dee9; }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12); --muted: #8d97a8; --accent: #77c8a1; --warn: #d8a657;
+    position: fixed; top: 10px; right: 10px; width: 322px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  select { width: 100%; padding: 5px 6px; font: inherit; font-size: 11px; margin: 2px 0 4px;
+    background: rgba(255,255,255,0.045); color: #d8dee9;
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; flex-wrap: wrap; }
+  .seg button { flex: 1; min-width: 62px; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button:hover { border-color: rgba(119,200,161,0.45); }
+  .seg button.on { background: rgba(119,200,161,0.16); color: var(--accent); border-color: rgba(119,200,161,0.45); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: #d8dee9; font-weight: 600; }
+  #stats .warn b { color: var(--warn); }
+  #note { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #note a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #6d7788; font-size: 11px;
+    pointer-events: none; user-select: none; }
+  #load { position: fixed; left: 12px; top: 12px; color: var(--accent, #77c8a1); font-size: 11px;
+    background: rgba(18,22,28,0.9); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+    padding: 6px 10px; display: none; }
+  #load.show { display: block; }
+  #load.err { color: #e08a7a; }
+</style>
+</head>
+<body>
+
+<div id="load"></div>
+<div id="hint">Drag to orbit, scroll to zoom. Click a creature to make it attack.</div>
+
+<div id="panel">
+  <h1>Mobs as wildlife</h1>
+  <p class="sub">CC0 creatures streamed from GitHub LFS, played as rigid node animation.</p>
+
+  <h2>Species</h2>
+  <select id="species"></select>
+  <select id="element"></select>
+  <div class="seg" id="loadSeg">
+    <button id="btnLoad">Load</button>
+    <button id="btnAll">Load one of each</button>
+  </div>
+
+  <h2>Population</h2>
+  <div class="row"><label for="count">herd size</label><output id="countOut"></output>
+    <input type="range" id="count" min="1" max="40" step="1" value="6"></div>
+  <div class="seg"><button id="btnClear">Clear all</button></div>
+
+  <h2>Clips</h2>
+  <p class="sub" style="margin:0 0 6px">Every mob ships exactly these three.</p>
+  <div class="seg" id="clipSeg">
+    <button data-clip="idle" class="on">idle</button>
+    <button data-clip="hit">hit</button>
+    <button data-clip="attack">attack</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="autoAct" checked> act at random while wandering</label>
+
+  <h2>Behaviour</h2>
+  <label class="chk"><input type="checkbox" id="wander" checked> wander on the ground</label>
+  <div class="row"><label for="speed">move speed</label><output id="speedOut"></output>
+    <input type="range" id="speed" min="0" max="3" step="0.05" value="0.9"></div>
+  <div class="row"><label for="height">target height (m)</label><output id="heightOut"></output>
+    <input type="range" id="height" min="0.4" max="6" step="0.1" value="1.8"></div>
+
+  <h2>Scene</h2>
+  <label class="chk"><input type="checkbox" id="grid" checked> ground grid</label>
+  <label class="chk"><input type="checkbox" id="spin"> orbit the camera</label>
+
+  <div id="stats"></div>
+  <div id="note">
+    Models from <a href="https://github.com/proofofplay/piratenation-art" target="_blank" rel="noopener">proofofplay/piratenation-art</a>,
+    licensed CC0-1.0. Fetched live from the Git LFS media host, which sends
+    <code>Access-Control-Allow-Origin: *</code>. Nothing is stored in this repo.
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ---------------------------------------------------------------------------
+// Where the assets live
+// ---------------------------------------------------------------------------
+
+// raw.githubusercontent.com would hand back a 130 byte LFS pointer here. This host serves the file.
+const MEDIA = 'https://media.githubusercontent.com/media/proofofplay/piratenation-art/main';
+
+// Every segment is encoded separately and the ORIGINAL STRING IS AUTHORITATIVE, trailing spaces and
+// all. The upstream folder names are genuinely inconsistent — "Mob Enemies " has a trailing space,
+// and so do "Anglerfish Water ", "Harpy Air ", "Trilobite Fire " and friends while their siblings do
+// not. Trimming any of these produces a 404.
+const lfs = (...segs) => `${MEDIA}/${segs.map(encodeURIComponent).join('/')}`;
+const MOBS = 'Mob Enemies ';
+
+// The whole bestiary: 25 families, 146 variants, every path verified to return a real model.
+//
+// Nothing here follows a single convention. Some families name the variant folder after the
+// creature ("Anglerfish Air"), some use a voxel-grid id ("mob_6x6_mechacharybdis_air"), some nest a
+// display name one level deeper ("mob_6x6_charybdis/Charybdis Neutral Uncommon Updated"), and some
+// are just an affinity ("Air Affinity "). Typos are upstream and load-bearing: "Shipwrecked Spirit
+// Lighting " (not Lightning), "Kepling" inside the Kelpling folder. Nothing here may be tidied.
+//
+// Excluded on purpose: "Raw Files" and "Deprecated" folders, thumbnail directories, and the `VE`
+// (VoxEdit source) exports. Where a folder held a model AND a subfolder held the same model, the
+// shallower one is kept.
+//
+// Mist Monster genuinely ships twelve, because the creature and its mist are separate models.
+const ROSTER = {
+  Anglerfish: ['Anglerfish Air', 'Anglerfish Earth', 'Anglerfish Fire', 'Anglerfish Lightning', 'Anglerfish Neutral ', 'Anglerfish Water '],
+  Blowfish: ['Blowfish Air', 'Blowfish Earth ', 'Blowfish Fire', 'Blowfish Lightning ', 'Blowfish Neutral', 'Blowfish Water '],
+  Charybdis: ['mob_6x6_charybdis/Charybdis Neutral Uncommon Updated', 'mob_6x6_charybdis_Earth/Charybdis Earth Uncommon Updated ', 'mob_6x6_charybdis_Fire/Charybdis Fire Uncommon Updated', 'mob_6x6_charybdis_Light/Charybdis Lightning Uncommon Updated ', 'mob_6x6_charybdis_Water/Charybdis Water Uncommon Updated'],
+  'Crasher (Living Wave)': ['mob_6x6_crasher/Crasher Neutral Affinity Common Updated ', 'mob_6x6_crasher_air/Crasher Air Common Updated ', 'mob_6x6_crasher_earth/crasher earth common updated ', 'mob_6x6_crasher_fire/crasher fire common updated ', 'mob_6x6_crasher_light/crasher lightning common updated ', 'mob_6x6_crasher_water/crasher water common updated '],
+  'Deep One': ['deepone', 'deepone_air', 'deepone_earth', 'deepone_fire', 'deepone_lightning', 'deepone_water'],
+  'Demogorgon Whale': ['Demogorgon Whale Air', 'Demogorgon Whale Earth', 'Demogorgon Whale Fire', 'Demogorgon Whale Lightning', 'Demogorgon Whale Neutral', 'Demogorgon Whale Water', 'Demogorgon Whale White'],
+  'Foam Monster ': ['seafoamtentacle', 'seafoamtentacle_air', 'seafoamtentacle_earth', 'seafoamtentacle_fire', 'seafoamtentacle_lightning', 'seafoamtentacle_water'],
+  'Giant Squid ': ['Giant Squid Air ', 'Giant Squid Earth', 'Giant Squid Fire', 'Giant Squid Lightning ', 'Giant Squid Neutral', 'Giant Squid Water'],
+  'Hammerdead Shark': ['hammerdeadshark', 'hammerdeadshark_air', 'hammerdeadshark_earth', 'hammerdeadshark_fire', 'hammerdeadshark_lightning', 'hammerdeadshark_water'],
+  Harpy: ['Harpy Air ', 'Harpy Earth', 'Harpy Fire', 'Harpy Lightning ', 'Harpy Neutral ', 'Harpy Water '],
+  'Hexa Croc': ['Hexa Croc Air ', 'Hexa Croc Earth ', 'Hexa Croc Fire', 'Hexa Croc Lightning', 'Hexa Croc Neutral ', 'Hexa Croc Water '],
+  Hippogriff: ['Hippogriff Air', 'Hippogriff Earth', 'Hippogriff Fire', 'Hippogriff Lightning ', 'Hippogriff Neutral ', 'Hippogriff Water '],
+  Kelpling: ['Air Affinity ', 'Earth Affinity', 'Fire Affinity', 'Lightning Affinity', 'Slimy Kepling (No affinity) Common', 'Water Affinity '],
+  'Mecha Charybdis': ['mob_6x6_mechacharybdis', 'mob_6x6_mechacharybdis_air', 'mob_6x6_mechacharybdis_earth', 'mob_6x6_mechacharybdis_fire', 'mob_6x6_mechacharybdis_lightning', 'mob_6x6_mechacharybdis_water'],
+  'Mecha Hammerhead': ['mob_6x6_mechahammerhead', 'mob_6x6_mechahammerhead_air', 'mob_6x6_mechahammerhead_earth', 'mob_6x6_mechahammerhead_fire', 'mob_6x6_mechahammerhead_lightning', 'mob_6x6_mechahammerhead_water'],
+  Megasquito: ['mob_6x6_giantmosquito/Megasquito Neutral common '],
+  'Mist Monster': ['mistmonster_creature', 'mistmonster_creature_air', 'mistmonster_creature_earth', 'mistmonster_creature_fire', 'mistmonster_creature_lightning', 'mistmonster_creature_water', 'mistmonster_mist', 'mistmonster_mist_air', 'mistmonster_mist_earth', 'mistmonster_mist_fire', 'mistmonster_mist_lightning', 'mistmonster_mist_water'],
+  'Mutant Jellyfish': ['Mutant Jelly Fish Earth ', 'Mutant Jelly Fish Fire ', 'Mutant Jellyfish Air ', 'Mutant Jellyfish Lightning', 'Mutant Jellyfish Neutral ', 'Mutant Jellyfish Water '],
+  'Sea Lion': ['Sea Lion Air', 'Sea Lion Earth', 'Sea Lion Fire', 'Sea Lion Lightning ', 'Sea Lion Neutral ', 'Sea Lion Water'],
+  'Shipwrecked Spirit': ['Shipwrecked Air ', 'Shipwrecked Spirit Earth ', 'Shipwrecked Spirit Fire ', 'Shipwrecked Spirit Lighting ', 'Shipwrecked Spirit Neutral', 'Shipwrecked Spirit Water '],
+  'Spout (fka Stormling) ': ['mob_6x6_spout/Spout Neutral Common '],
+  Trilobite: ['Trilobite Air', 'Trilobite Earth', 'Trilobite Fire ', 'Trilobite Lightning ', 'Trilobite Neutral', 'Trilobite Water '],
+  Wyvern: ['Wyvern Air Rare', 'Wyvern Earth Rare', 'Wyvern Fire Rare', 'Wyvern Lightning Rare', 'Wyvern Neutral Rare', 'Wyvern Water Rare'],
+  undeadcharybdis: ['mob_6x6_undeadcharybdis', 'mob_6x6_undeadcharybdis_air', 'mob_6x6_undeadcharybdis_earth', 'mob_6x6_undeadcharybdis_fire', 'mob_6x6_undeadcharybdis_lightning', 'mob_6x6_undeadcharybdis_water'],
+  undeadmegasquito: ['mob_6x6_undeadmegasquito', 'mob_6x6_undeadmegasquito_air', 'mob_6x6_undeadmegasquito_earth', 'mob_6x6_undeadmegasquito_fire', 'mob_6x6_undeadmegasquito_lightning', 'mob_6x6_undeadmegasquito_water'],
+};
+
+const modelUrl = (species, variant) => lfs('Voxel Game Assets', MOBS, species, variant, 'model.gltf');
+
+// ---------------------------------------------------------------------------
+// Scene
+// ---------------------------------------------------------------------------
+
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#171b22');
+scene.fog = new THREE.Fog('#171b22', 30, 96);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 300);
+camera.position.set(9, 5.4, 12);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.1, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 2;
+controls.maxDistance = 90;
+
+scene.add(new THREE.HemisphereLight('#9fb6d0', '#2a2f38', 1.5));
+const sun = new THREE.DirectionalLight('#ffe9c8', 2.3);
+sun.position.set(7, 12, 5);
+scene.add(sun);
+
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(60, 64).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: '#232833', roughness: 0.96, metalness: 0 }),
+);
+scene.add(ground);
+
+const grid = new THREE.GridHelper(120, 120, 0x3a4250, 0x2a303a);
+grid.position.y = 0.002;
+scene.add(grid);
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+const loader = new GLTFLoader();
+const cache = new Map();      // url -> { scene, clips, stats }
+const loadEl = document.getElementById('load');
+
+function say(msg, isErr = false) {
+  loadEl.textContent = msg;
+  loadEl.classList.toggle('err', isErr);
+  loadEl.classList.add('show');
+}
+const hide = () => loadEl.classList.remove('show');
+
+/**
+ * Fetch a model once and keep the parsed result. The returned prototype is never added to the scene
+ * itself — instances are `.clone()`d off it, which shares geometry and material references, so a
+ * herd of 40 costs one download and one set of GPU buffers.
+ */
+async function loadModel(species, variant) {
+  const url = modelUrl(species, variant);
+  if (cache.has(url)) return cache.get(url);
+
+  say(`Loading ${species} — ${variant.trim()}…`);
+  const t0 = performance.now();
+
+  // Fetched by hand rather than via loader.load so the transferred byte count can be reported. These
+  // are self-contained glTF: the buffer and every texture are embedded as base64 data URIs, so this
+  // single request is the whole model. Base64 inflates it by about a third — a real port should
+  // re-export to .glb.
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  const text = await res.text();
+  const gltf = await loader.parseAsync(text, '');
+
+  let tris = 0, meshes = 0;
+  const materials = new Set();
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    meshes++;
+    materials.add(o.material.uuid);
+    const g = o.geometry;
+    tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+    g.computeBoundingBox();
+  });
+
+  const entry = {
+    scene: gltf.scene,
+    clips: gltf.animations,
+    stats: {
+      bytes: text.length,
+      ms: Math.round(performance.now() - t0),
+      meshes, materials: materials.size, tris: Math.round(tris),
+      clipNames: gltf.animations.map(a => a.name),
+    },
+  };
+  cache.set(url, entry);
+  hide();
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
+// Instances
+// ---------------------------------------------------------------------------
+
+const critters = [];
+const herdRoot = new THREE.Group();
+scene.add(herdRoot);
+
+const state = {
+  clip: 'idle',
+  speed: 0.9, height: 1.8,
+  wander: true, autoAct: true,
+};
+
+/**
+ * One wildlife instance. The animation clips address nodes BY NAME, and `.clone()` preserves names,
+ * so a per-instance AnimationMixer bound to the clone resolves every track correctly. That only
+ * holds because these models are unskinned — a skinned model would need SkeletonUtils.clone here.
+ */
+function spawn(entry, species) {
+  const obj = entry.scene.clone(true);
+
+  // Upstream scale is not normalised across species, so fit each one to a common target height and
+  // sit it on the ground. Without this the Trilobite and the Wyvern differ by an order of magnitude.
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const k = state.height / Math.max(size.y, 1e-4);
+
+  const pivot = new THREE.Group();
+  obj.scale.setScalar(k);
+  obj.position.y = -box.min.y * k;
+  pivot.add(obj);
+
+  const a = Math.random() * Math.PI * 2, r = 2 + Math.random() * 14;
+  pivot.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  herdRoot.add(pivot);
+
+  const mixer = new THREE.AnimationMixer(obj);
+  const actions = {};
+  for (const c of entry.clips) {
+    const act = mixer.clipAction(c);
+    actions[c.name] = act;
+    if (c.name === 'hit' || c.name === 'attack') { act.loop = THREE.LoopOnce; act.clampWhenFinished = true; }
+  }
+  (actions[state.clip] || actions.idle || Object.values(actions)[0])?.play();
+
+  const critter = {
+    species, pivot, obj, mixer, actions, entry,
+    baseScale: k, current: state.clip,
+    heading: Math.random() * Math.PI * 2,
+    turn: (Math.random() - 0.5) * 0.4,
+    nextAct: 2 + Math.random() * 6,
+  };
+  critters.push(critter);
+  return critter;
+}
+
+/** Crossfade into a clip; one-shots fall back to idle when they finish. */
+function play(critter, name, { once = false } = {}) {
+  const next = critter.actions[name];
+  if (!next) return;
+  const prev = critter.actions[critter.current];
+  next.reset();
+  next.enabled = true;
+  next.setEffectiveWeight(1);
+  if (prev && prev !== next) next.crossFadeFrom(prev, 0.18, false);
+  next.play();
+  critter.current = name;
+
+  if (once) {
+    const onDone = (e) => {
+      if (e.action !== next) return;
+      critter.mixer.removeEventListener('finished', onDone);
+      play(critter, 'idle');
+    };
+    critter.mixer.addEventListener('finished', onDone);
+  }
+}
+
+function clearHerd() {
+  for (const c of critters) herdRoot.remove(c.pivot);
+  critters.length = 0;
+}
+
+function refitAll() {
+  for (const c of critters) {
+    const box = new THREE.Box3().setFromObject(c.obj);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const k = c.baseScale * (state.height / Math.max(size.y, 1e-4));
+    c.obj.scale.setScalar(k);
+    const b2 = new THREE.Box3().setFromObject(c.obj);
+    c.obj.position.y -= b2.min.y;
+    c.baseScale = k;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+const speciesSel = $('species'), elementSel = $('element');
+
+for (const name of Object.keys(ROSTER)) {
+  speciesSel.add(new Option(name, name));
+}
+// The upstream folder names encode the affinity a dozen different ways, so the dropdown label is
+// derived by looking for the affinity word anywhere in the path. Everything else falls back to the
+// last path segment. The OPTION VALUE always keeps the exact upstream string, spaces and typos and
+// all, because that is what has to go into the URL.
+const AFFINITIES = ['air', 'earth', 'fire', 'lightning', 'lighting', 'water', 'neutral', 'white'];
+function elementLabel(variant) {
+  const hay = variant.toLowerCase();
+  const found = AFFINITIES.find(a => new RegExp(`(^|[^a-z])${a}([^a-z]|$)`).test(hay));
+  if (found) return found === 'lighting' ? 'lightning (sic)' : found;
+  const leaf = variant.split('/').pop().trim();
+  return leaf || variant.trim() || 'default';
+}
+
+function fillElements() {
+  elementSel.innerHTML = '';
+  for (const v of ROSTER[speciesSel.value]) elementSel.add(new Option(elementLabel(v), v));
+}
+fillElements();
+speciesSel.onchange = fillElements;
+
+async function guard(fn) {
+  try { await fn(); }
+  catch (err) { say(String(err.message || err), true); console.error(err); }
+}
+
+$('btnLoad').onclick = () => guard(async () => {
+  const entry = await loadModel(speciesSel.value, elementSel.value);
+  clearHerd();
+  const n = +$('count').value;
+  for (let i = 0; i < n; i++) spawn(entry, speciesSel.value);
+});
+
+// One of every family. That is 25 sequential downloads of roughly 2 MB each, so it is deliberately
+// not the default and it reports progress rather than appearing to hang.
+$('btnAll').onclick = () => guard(async () => {
+  clearHerd();
+  const families = Object.keys(ROSTER);
+  let n = 0;
+  for (const species of families) {
+    say(`Loading the bestiary — ${++n}/${families.length}: ${species.trim()}…`);
+    try {
+      spawn(await loadModel(species, ROSTER[species][0]), species);
+    } catch (err) {
+      console.warn(`skipped ${species}:`, err.message);   // one bad family must not kill the sweep
+    }
+  }
+  hide();
+});
+
+$('btnClear').onclick = clearHerd;
+
+$('clipSeg').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  for (const x of $('clipSeg').children) x.classList.toggle('on', x === b);
+  state.clip = b.dataset.clip;
+  const once = state.clip !== 'idle';
+  for (const c of critters) play(c, state.clip, { once });
+};
+
+function bindRange(id, key, fmt = (v) => v.toFixed(2), after) {
+  const el = $(id), out = $(id + 'Out');
+  const sync = () => { state[key] = +el.value; out.textContent = fmt(+el.value); after?.(); };
+  el.oninput = sync; sync();
+}
+bindRange('speed', 'speed');
+bindRange('height', 'height', (v) => v.toFixed(1), () => refitAll());
+$('count').oninput = () => { $('countOut').textContent = $('count').value; };
+$('countOut').textContent = $('count').value;
+
+$('wander').onchange = (e) => state.wander = e.target.checked;
+$('autoAct').onchange = (e) => state.autoAct = e.target.checked;
+$('grid').onchange = (e) => grid.visible = e.target.checked;
+let spinCam = false;
+$('spin').onchange = (e) => spinCam = e.target.checked;
+
+// Click a creature to make it attack.
+const ray = new THREE.Raycaster();
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!critters.length) return;
+  const p = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(p, camera);
+  const hit = ray.intersectObject(herdRoot, true)[0];
+  if (!hit) return;
+  const critter = critters.find(c => {
+    let n = hit.object;
+    while (n) { if (n === c.pivot) return true; n = n.parent; }
+    return false;
+  });
+  if (critter) play(critter, 'attack', { once: true });
+});
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+const statsEl = $('stats');
+const clock = new THREE.Clock();
+let acc = 0, frames = 0, fps = 0;
+
+renderer.setAnimationLoop(async () => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  for (const c of critters) {
+    c.mixer.update(dt);
+
+    if (state.wander) {
+      c.turn += (Math.random() - 0.5) * 0.6 * dt;
+      c.turn = THREE.MathUtils.clamp(c.turn, -0.9, 0.9);
+      c.heading += c.turn * dt;
+      const v = state.speed;
+      c.pivot.position.x += Math.sin(c.heading) * v * dt;
+      c.pivot.position.z += Math.cos(c.heading) * v * dt;
+      // Turn back at the edge of the clearing rather than wandering into the fog.
+      const d = Math.hypot(c.pivot.position.x, c.pivot.position.z);
+      if (d > 22) c.heading = Math.atan2(-c.pivot.position.x, -c.pivot.position.z);
+      c.pivot.rotation.y = c.heading;
+    }
+
+    if (state.autoAct) {
+      c.nextAct -= dt;
+      if (c.nextAct <= 0) {
+        c.nextAct = 3 + Math.random() * 8;
+        if (c.current === 'idle') play(c, Math.random() < 0.5 ? 'attack' : 'hit', { once: true });
+      }
+    }
+  }
+
+  if (spinCam) {
+    const a = dt * 0.16;
+    const { x, z } = camera.position;
+    camera.position.x = x * Math.cos(a) - z * Math.sin(a);
+    camera.position.z = x * Math.sin(a) + z * Math.cos(a);
+    camera.lookAt(controls.target);
+  }
+  controls.update();
+
+  await renderer.renderAsync(scene, camera);
+
+  acc += dt; frames++;
+  if (acc >= 0.5) { fps = Math.round(frames / acc); acc = 0; frames = 0; updateStats(); }
+});
+
+function updateStats() {
+  const info = renderer.info.render;
+  const kinds = [...new Set(critters.map(c => c.species))];
+  const proto = critters[0]?.entry.stats;
+
+  // Materials are per-instance draw work, so state the total the herd implies. This is the number
+  // that decides whether these can ship as-is.
+  const totalMats = critters.reduce((n, c) => n + c.entry.stats.materials, 0);
+  const heavy = (info.drawCalls || 0) > 600;
+
+  statsEl.innerHTML = `
+    <div><b>${fps}</b> fps &nbsp;·&nbsp; <b>${critters.length}</b> in herd (${kinds.length} species)</div>
+    <div class="${heavy ? 'warn' : ''}"><b>${info.drawCalls ?? 0}</b> draw calls &nbsp;·&nbsp; <b>${(info.triangles ?? 0).toLocaleString()}</b> tris</div>
+    ${proto ? `
+    <div style="margin-top:6px">Per model — <b>${proto.meshes}</b> meshes, <b>${proto.materials}</b> materials, <b>${proto.tris.toLocaleString()}</b> tris</div>
+    <div>Downloaded <b>${(proto.bytes / 1048576).toFixed(2)} MB</b> of glTF in <b>${proto.ms} ms</b></div>
+    <div>Clips: <b>${proto.clipNames.join(', ')}</b></div>
+    <div style="margin-top:6px">Herd implies <b>${totalMats}</b> material bindings — one per mesh part,
+      which is the batching problem <code>body-part-batches.js</code> already solves for our bots.</div>` : ''}
+  `;
+}
+updateStats();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// Start with something on screen.
+guard(async () => {
+  const entry = await loadModel('Anglerfish', 'Anglerfish Air');
+  for (let i = 0; i < 6; i++) spawn(entry, 'Anglerfish');
+});
+</script>
+</body>
+</html>

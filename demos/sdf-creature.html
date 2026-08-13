@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — SDF creature (no geometry)</title>
+<!--
+  DEMO 2 of 2 — a creature drawn entirely by raymarching a signed distance field.
+
+  ORIGINAL TECHNIQUE / CREDIT
+  --------------------------
+  This is a reimplementation of a three.js demo by Drin (@DrinLajci), posted 2026-08-06:
+
+      "This alien has no geometry.
+       No model, no textures, no vertices.
+       The scene is one fullscreen quad and every pixel is solved in the fragment shader by
+       raymarching a signed distance field."
+
+  Profile: https://x.com/DrinLajci
+
+  The idea, the framing, the one-eyed horned alien and the cursor-driven blob are Drin's. In the
+  original the purple lobe is attached to the mouse and fuses into the body as you drag it over —
+  that interaction is the demo's actual point, because it is only possible when a shape is an
+  expression rather than a vertex buffer. Move the cursor here and the same thing happens: the blob
+  is a second ellipsoid smooth-unioned into the body every frame, at no cost beyond one more
+  distance evaluation. Nothing is re-meshed, nothing is re-uploaded, there is no CSG step.
+
+  What is ours is the port to Three.js r0.184's WebGPU/TSL node system (the original is a GLSL
+  fragment shader), the parametric variant uniforms, the lit/colliding blob described below, and the
+  second half of this page — the part that answers what the technique is actually FOR in this project.
+
+  THE BLOB AS A LIGHT
+  -------------------
+  The blob emits. It glows on its own surface, casts a coloured pool onto the body with a real
+  shadow ray, and leaves a halo in the air around its silhouette. All of that is the same distance
+  field being asked different questions, so the light lands on the deformed surface rather than on
+  where the surface used to be. The glow bleeds across the fused seam because the material id is
+  blended by the smooth union along with the distance — the light and the shape agree for free.
+
+  PHASE VERSUS COLLIDE
+  --------------------
+  Phase is Drin's original and it is TWO behaviours at once, which is easy to miss until you take one
+  away: the blob's centre goes wherever the cursor is (it interpenetrates), AND the smooth union
+  fuses the two into a single continuous surface with a fillet and a colour that bleeds across the
+  seam. The fusing is the headline of the technique.
+
+  Collide is the deliberate counterpoint, and it has to undo BOTH halves or it undoes neither. The
+  blob is stopped at the surface instead of entering it, and the union goes hard — the blend radius
+  drops to a hairline, so the two keep their own silhouettes, their own colours, and meet at a crease
+  instead of melting together. Stopping the blob without also killing the blend still produces one
+  fused object; it just produces it slightly further out.
+
+  What replaces the fillet as the contact cue: the body dents inward under the blob, the blob
+  flattens against it, ambient occlusion darkens the crevice between them, and the blob casts a key
+  shadow onto the body it is resting on. The two shares of the requested press are complementary —
+  the body gives `dentGain` of it and the blob is stopped short by the rest — so the blob ends up
+  sunk exactly as far as the dented surface has receded.
+
+  Resolving that needs the body's distance AT THE BLOB CENTRE, which the fragment shader cannot ask
+  for without recursing into its own map function. So it is solved once per frame on the CPU against
+  `collisionSdf`, a hand-synced JS twin of the body — the same pattern (and the same drift caveat) as
+  `forest-cull.js`, `light-cluster.js` and `post-grade.js` elsewhere in this repo. The twin is
+  deliberately COARSER than the shader: legs, body, horns and eye, with no mouth cut and no tooth. A
+  collision proxy is always allowed to be simpler than the render surface, and every feature left out
+  is one less thing that can drift. `test-demo-creature-sdf.mjs` covers it.
+
+  WHY THIS IS IN OUR REPO
+  -----------------------
+  Not as a renderer. Marching every pixel of the screen cannot coexist with CDLOD terrain, the GPU
+  forest, water and 90 instanced bots; it competes with the rasterizer instead of helping it.
+
+  It is here because this project has no portraits, no avatars, no thumbnails and no loading visual
+  anywhere. `start-screen.js:579-599` is a flat #12161d panel with a text status line, and the role
+  and map picker cards are solid #1a2029. An SDF creature is exactly the right fill for those: no
+  asset to author, no GLB to load, no render target to manage, no geometry in the scene graph, and
+  the cost is fixed by the size of the box you draw it in. Switch to "Start screen" below and watch
+  the marched-pixel counter: four 200px cards are a fraction of one fullscreen pass.
+
+  The variant uniforms are the second reason. Body width, horn length, eye size and palette are all
+  just numbers, so a roster of distinct-looking creatures costs one shader and a seed — which is the
+  same promise the rest of this workshop is built on.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/sdf-creature.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #12161d;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #d8dee9; }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  /* ---- start-screen mock (portraits mode) ---- */
+  #ui { position: fixed; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 26px; pointer-events: none; }
+  #ui.show { display: flex; }
+  #ui h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.34em;
+    text-transform: uppercase; color: #8d97a8; }
+  #cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+  .card { width: 208px; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
+    background: rgba(18,22,28,0.72); overflow: hidden; pointer-events: auto; cursor: pointer;
+    transition: border-color 140ms ease, transform 140ms ease; }
+  .card:hover { border-color: rgba(119,200,161,0.5); transform: translateY(-3px); }
+  .card.sel { border-color: #77c8a1; }
+  /* The quad is drawn behind this box; nothing is painted into it from HTML. */
+  .thumb { height: 208px; }
+  .meta { padding: 10px 12px 12px; border-top: 1px solid rgba(255,255,255,0.09); }
+  .meta .name { font-size: 13px; font-weight: 600; }
+  .meta .role { font-size: 11px; color: #8d97a8; margin-top: 2px; }
+  .bars { margin-top: 8px; display: grid; gap: 4px; }
+  .bar { display: grid; grid-template-columns: 46px 1fr; gap: 7px; align-items: center;
+    font-size: 10px; color: #8d97a8; }
+  .bar i { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.12); display: block; }
+  .bar i span { display: block; height: 100%; border-radius: 2px; background: #77c8a1; }
+  #uifoot { font-size: 11px; color: #6d7788; }
+
+  /* ---- control panel ---- */
+  #panel {
+    --line: rgba(255,255,255,0.12); --muted: #8d97a8; --accent: #77c8a1;
+    position: fixed; top: 10px; right: 10px; width: 316px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 46px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(119,200,161,0.16); color: var(--accent); border-color: rgba(119,200,161,0.45); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: #d8dee9; font-weight: 600; }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #6d7788; font-size: 11px;
+    pointer-events: none; user-select: none; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>Select your specimen</h1>
+  <div id="cards"></div>
+  <div id="uifoot">Every portrait above is one quad. No mesh, no texture, no file loaded.</div>
+</div>
+
+<div id="panel">
+  <h1>SDF creature</h1>
+  <p class="sub">One quad, one distance field, no geometry — after Drin's demo.</p>
+
+  <h2>View</h2>
+  <div class="seg" id="modeSeg">
+    <button data-mode="stage" class="on">Stage</button>
+    <button data-mode="portraits">Start screen</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="spin" checked> auto-rotate</label>
+  <label class="chk"><input type="checkbox" id="shadowOn" checked> soft shadows and ambient occlusion</label>
+  <label class="chk"><input type="checkbox" id="normalsOn"> show surface normals</label>
+
+  <h2>Cursor blob</h2>
+  <label class="chk"><input type="checkbox" id="blobFollow" checked> blob follows the cursor</label>
+  <div class="seg" id="contactSeg">
+    <button data-collide="0">Phase</button>
+    <button data-collide="1" class="on">Collide</button>
+  </div>
+  <div id="blobRows"></div>
+
+  <h2>Blob light</h2>
+  <label class="chk"><input type="checkbox" id="blobLit" checked> blob lights the body</label>
+  <div id="lightRows"></div>
+
+  <h2>Anatomy</h2>
+  <div id="shapeRows"></div>
+
+  <h2>Render scale</h2>
+  <div id="scaleRows"></div>
+
+  <div id="stats"></div>
+  <div id="credit">
+    Reimplementation of a three.js demo by
+    <a href="https://x.com/DrinLajci" target="_blank" rel="noopener">Drin (@DrinLajci)</a>, posted
+    2026-08-06: <em>"This alien has no geometry. No model, no textures, no vertices. The scene is one
+    fullscreen quad and every pixel is solved in the fragment shader by raymarching a signed distance
+    field."</em> The concept and the character are Drin's; the TSL/WebGPU port and the start-screen
+    application are ours.
+  </div>
+</div>
+
+<div id="hint">Move the pointer to press the glowing blob against the body. Phase lets it sink through, Collide makes the two deform around each other. Hold and drag to turn the creature.</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial } from 'three/webgpu';
+import {
+  Fn, Loop, Break, If, uniform, uv, vec2, vec3, vec4, float,
+  normalize, dot, cross, length, min, max, abs, clamp, mix, smoothstep, step,
+  sqrt, sin, cos, pow, exp,
+} from 'three/tsl';
+import { resolveBlob, restingBlob } from './creature-collision.js';
+
+// ---------------------------------------------------------------------------
+// Distance-field vocabulary
+//
+// Everything the creature is made of is one of these three functions plus a blend. That is the
+// whole appeal of the technique: a shape is an expression, not a vertex buffer, so "wider body" or
+// "longer horns" is a uniform rather than a rebuild.
+//
+// Every result carries a material id alongside the distance as vec2(distance, id), so shading can
+// tell an eyeball from skin without a second trace.
+// ---------------------------------------------------------------------------
+
+const sdSphere = Fn(([p, r]) => length(p).sub(r));
+
+// Exact-ish ellipsoid (iq's bound). Not a true distance, but it under-estimates, which is what the
+// march needs to stay safe.
+const sdEllipsoid = Fn(([p, r]) => {
+  const k0 = length(p.div(r));
+  const k1 = length(p.div(r.mul(r)));
+  return k0.mul(k0.sub(1.0)).div(max(k1, float(1e-5)));
+});
+
+// Round cone along +Y, base radius r1 at y=0, tip radius r2 at y=h. Used for horns and legs.
+// Written branchless with step/mix rather than early returns so it inlines cleanly into TSL.
+const sdRoundCone = Fn(([p, r1, r2, h]) => {
+  const b = r1.sub(r2).div(h);
+  const a = sqrt(max(float(1).sub(b.mul(b)), float(0)));
+  const q = vec2(length(p.xz), p.y);
+  const k = dot(q, vec2(b.negate(), a));
+  const dBase = length(q).sub(r1);
+  const dTip = length(q.sub(vec2(0, h))).sub(r2);
+  const dSide = dot(q, vec2(a, b)).sub(r1);
+  return mix(mix(dSide, dTip, step(a.mul(h), k)), dBase, step(k, float(0)));
+});
+
+// Hard union. Keeps material ids discrete, so an eyeball edge stays crisp.
+const opU = (a, b) => {
+  const takeB = step(b.x, a.x);
+  return vec2(min(a.x, b.x), mix(a.y, b.y, takeB));
+};
+
+// Smooth union with a BLENDED id, so the seam gets a soft colour transition for free — this is what
+// makes the glowing blob melt into the body instead of sitting on it as a separate ball. Mesh CSG
+// has no equivalent of this.
+//
+// A linearly blended id walks through every palette entry it passes: a seam between id 0 and id 3
+// is briefly id 1 and id 2, so it paints two bands of unrelated colour across the join. That is why
+// ID_BLOB is 1, immediately next to ID_SKIN — this is the only pair that is ever soft-blended, and
+// adjacency is what keeps the walk from crossing anything. Every other union uses `sminHard` below.
+const sminM = (a, b, k) => {
+  const kk = float(k);
+  const h = clamp(float(0.5).add(b.x.sub(a.x).mul(0.5).div(kk)), 0, 1);
+  return vec2(
+    mix(b.x, a.x, h).sub(kk.mul(h).mul(h.oneMinus())),
+    mix(b.y, a.y, h),
+  );
+};
+
+// Same fused SHAPE, but the id switches at the midpoint instead of ramping. Used wherever the two
+// materials are not palette neighbours — a horn against skin, the mouth interior against skin — so
+// the fillet is still smooth while the colour changes on a line and never visits a third material.
+const sminHard = (a, b, k) => {
+  const kk = float(k);
+  const h = clamp(float(0.5).add(b.x.sub(a.x).mul(0.5).div(kk)), 0, 1);
+  return vec2(
+    mix(b.x, a.x, h).sub(kk.mul(h).mul(h.oneMinus())),
+    mix(b.y, a.y, step(float(0.5), h)),
+  );
+};
+
+// Smooth subtraction — smax(a, -cut, k). Cuts the mouth open and paints its inside with `cutId`.
+// Hard id pick, for the reason above: the mouth's dark red is four palette slots from skin.
+const opSubM = (a, cut, k, cutId) => {
+  const kk = float(k);
+  const nb = cut.negate();
+  const h = clamp(float(0.5).sub(nb.sub(a.x).mul(0.5).div(kk)), 0, 1);
+  return vec2(
+    mix(nb, a.x, h).add(kk.mul(h).mul(h.oneMinus())),
+    mix(float(cutId), a.y, step(float(0.5), h)),
+  );
+};
+
+const rotZ = (p, ang) => vec3(
+  p.x.mul(cos(ang)).sub(p.y.mul(sin(ang))),
+  p.x.mul(sin(ang)).add(p.y.mul(cos(ang))),
+  p.z,
+);
+const rotX = (p, ang) => vec3(
+  p.x,
+  p.y.mul(cos(ang)).sub(p.z.mul(sin(ang))),
+  p.y.mul(sin(ang)).add(p.z.mul(cos(ang))),
+);
+
+// Material ids
+// ORDER MATTERS. ID_BLOB sits next to ID_SKIN because theirs is the one union whose id is blended
+// rather than switched, and a blended id paints every palette entry it passes over. Everything else
+// is switched, so its position in this list is free.
+const ID_SKIN = 0, ID_BLOB = 1, ID_HORN = 2, ID_EYE = 3, ID_MOUTH = 4, ID_TOOTH = 5;
+
+const MARCH_STEPS = 88;
+const SHADOW_STEPS = 20;
+const AO_SAMPLES = 4;
+
+// ---------------------------------------------------------------------------
+// One creature material. Every variant is the same graph with different uniforms.
+// ---------------------------------------------------------------------------
+
+let matSerial = 0;
+
+function makeCreatureMaterial(variant) {
+  const id = matSerial++;
+  const u = {
+    time:      uniform(0),
+    yaw:       uniform(variant.yaw ?? 0.35),
+    pitch:     uniform(variant.pitch ?? 0.06),
+    dist:      uniform(variant.dist ?? 4.3),
+    aspect:    uniform(1),
+    blink:     uniform(1),          // 1 open, 0 shut — driven from JS
+    bodyWidth: uniform(variant.bodyWidth ?? 1.0),
+    hornLen:   uniform(variant.hornLen ?? 1.0),
+    eyeSize:   uniform(variant.eyeSize ?? 1.0),
+    legLen:    uniform(variant.legLen ?? 1.0),
+    // The cursor blob. Everything here is written from JS every frame. `blobK` is the smooth-union
+    // radius, i.e. how far ahead of contact the two shapes start reaching for each other.
+    blobPos:   uniform(new THREE.Vector3(-0.34, 0.80, 0.28)),
+    blobR:     uniform(variant.blobR ?? 0.30),
+    blobK:     uniform(variant.blobK ?? 0.22),
+    // Collision response, all resolved on the CPU (see `resolveBlob`). At rest these are the
+    // identity: no dent, no squash, and a contact normal that the squash transform ignores.
+    dentAmt:   uniform(0),                                   // metres the body surface recedes
+    dentR:     uniform(0.66),                                // falloff radius of that dent
+    contactN:  uniform(new THREE.Vector3(0, 1, 0)),          // axis the blob flattens along
+    squashS:   uniform(1),                                   // 1 = round, <1 = flattened
+    // Emission.
+    blobGlow:  uniform(1.0),
+    blobRange: uniform(1.35),
+    blobLit:   uniform(1),
+    skin:      uniform(new THREE.Color(variant.skin ?? '#79cfcb')),
+    cheek:     uniform(new THREE.Color(variant.cheek ?? '#6b3fbf')),
+    horn:      uniform(new THREE.Color(variant.horn ?? '#e2724d')),
+    bgTop:     uniform(new THREE.Color(variant.bgTop ?? '#f4713a')),
+    bgBottom:  uniform(new THREE.Color(variant.bgBottom ?? '#c8421f')),
+    corner:    uniform(variant.corner ?? 0),      // rounded-corner radius, in uv units
+    quality:   uniform(1),                        // 1 = shadows + AO on, 0 = flat
+    showNormals: uniform(0),
+  };
+
+  // ---- the creature ------------------------------------------------------
+  // Read top to bottom: this list IS the model file.
+  const map = Fn(([pIn]) => {
+    // Idle motion: a slow bob plus a squash-and-stretch that conserves rough volume.
+    const bob = sin(u.time.mul(1.6)).mul(0.035);
+    const squash = sin(u.time.mul(1.6).add(0.6)).mul(0.028);
+    const p = vec3(
+      pIn.x.div(float(1).add(squash)),
+      pIn.y.sub(bob).div(float(1).sub(squash)),
+      pIn.z.div(float(1).add(squash)),
+    ).toVar();
+
+    const w = u.bodyWidth;
+
+    // Legs — two stubby cones, mirrored with abs(x).
+    const legP = vec3(abs(p.x).sub(float(0.255).mul(w)), p.y, p.z.sub(0.02));
+    let res = vec2(sdRoundCone(legP, float(0.15), float(0.118), float(0.42).mul(u.legLen)), float(ID_SKIN));
+
+    // Body — a pear: a big upper blob smoothly fused to a smaller lower one.
+    const upper = sdEllipsoid(p.sub(vec3(0, 1.02, 0)), vec3(float(0.60).mul(w), 0.66, float(0.56).mul(w)));
+    const lower = sdEllipsoid(p.sub(vec3(0, 0.56, 0)), vec3(float(0.50).mul(w), 0.40, float(0.48).mul(w)));
+    const body = sminM(vec2(upper, float(ID_SKIN)), vec2(lower, float(ID_SKIN)), 0.32);
+    res = sminM(res, body, 0.15);
+
+    // Horns — mirrored with abs(x), so one expression makes both. In that mirrored space "+x is
+    // outward" holds on either side, which is why a single constant tilt leans both horns out.
+    const hp1 = vec3(abs(p.x).sub(float(0.30).mul(w)), p.y.sub(1.40), p.z.add(0.02));
+    const hp = rotX(rotZ(hp1, float(-0.30)), float(0.26));
+    const horn = sdRoundCone(hp, float(0.10), float(0.012), float(0.34).mul(u.hornLen));
+    res = sminHard(res, vec2(horn, float(ID_HORN)), 0.05);
+
+    // The dent. Applied to the body but BEFORE the blob joins, so the blob is not dented by its own
+    // pressure. This is a cosmetic displacement of the surface rather than a solve, and its depth is
+    // clamped on the CPU so the added gradient stays well under 1 — an SDF that locally grows faster
+    // than distance makes the march overshoot and punch holes in the silhouette.
+    res = vec2(
+      res.x.add(u.dentAmt.mul(smoothstep(u.dentR, float(0), length(p.sub(u.blobPos))))),
+      res.y,
+    );
+
+    // The cursor blob. This is the whole argument for the technique: an independent shape follows
+    // the mouse and MERGES with the body — a real fused surface with a fillet, re-solved from
+    // scratch every pixel of every frame. The blended material id carries the colour across the
+    // seam with it. There is no mesh to rebuild, so moving it costs exactly one more ellipsoid
+    // evaluation whether it is out in the open air or halfway inside the torso.
+    //
+    // Under collision the blob also flattens: the coordinate along the contact normal is divided by
+    // `squashS` before the ellipsoid is evaluated, which compresses the shape by that factor, and the
+    // result is multiplied by the same factor to keep the field under-estimating.
+    const q = p.sub(u.blobPos);
+    const qn = dot(q, u.contactN);
+    const qSquashed = q.add(u.contactN.mul(qn.div(max(u.squashS, float(0.05))).sub(qn)));
+    const blob = sdEllipsoid(qSquashed,
+      vec3(u.blobR, u.blobR.mul(0.97), u.blobR.mul(0.90))).mul(u.squashS);
+    res = sminM(res, vec2(blob, float(ID_BLOB)), u.blobK);
+
+    // Eye — hard union so the eyeball keeps a crisp rim against the skin.
+    const eye = sdSphere(p.sub(vec3(0.10, 1.16, float(0.32).mul(w))), float(0.30).mul(u.eyeSize));
+    res = opU(res, vec2(eye, float(ID_EYE)));
+
+    // Mouth — cut into the body, its inside painted by the subtraction's own id.
+    const mouth = sdEllipsoid(p.sub(vec3(0.14, 0.70, float(0.50).mul(w))), vec3(0.155, 0.10, 0.15));
+    res = opSubM(res, mouth, 0.035, ID_MOUTH);
+
+    // One tooth, because it is the detail that makes the whole thing read as friendly.
+    const tooth = sdEllipsoid(p.sub(vec3(0.075, 0.762, float(0.50).mul(w))), vec3(0.030, 0.044, 0.032));
+    res = opU(res, vec2(tooth, float(ID_TOOTH)));
+
+    return res;
+  });
+  // A real function call, not an inline paste. Without this the map body would be duplicated ~29
+  // times across the trace, the normal taps, the shadow march and the AO taps.
+  map.setLayout({ name: `creatureMap${id}`, type: 'vec2', inputs: [{ name: 'p', type: 'vec3' }] });
+
+  // ---- trace helpers -----------------------------------------------------
+
+  const calcNormal = Fn(([p]) => {
+    const e = float(0.0014);
+    const dx = vec3(e, e.negate(), e.negate());
+    const dy = vec3(e.negate(), e.negate(), e);
+    const dz = vec3(e.negate(), e, e.negate());
+    const dw = vec3(e, e, e);
+    return normalize(
+      dx.mul(map(p.add(dx)).x)
+        .add(dy.mul(map(p.add(dy)).x))
+        .add(dz.mul(map(p.add(dz)).x))
+        .add(dw.mul(map(p.add(dw)).x)),
+    );
+  });
+  calcNormal.setLayout({ name: `creatureNormal${id}`, type: 'vec3', inputs: [{ name: 'p', type: 'vec3' }] });
+
+  // Penumbra shadow: the ratio of clearance to travelled distance is a free soft shadow, which is
+  // one of the things an SDF gives you that a rasteriser has to buy with a shadow map.
+  //
+  // `maxT` is what lets the same function serve both lights. The sun is effectively at infinity, so
+  // it passes a long reach. The blob is a metre away and is itself part of the field, so it passes
+  // the distance to its own surface and the ray stops just short — otherwise the blob would occlude
+  // its own light and cast nothing at all.
+  const softShadow = Fn(([ro, rd, maxT]) => {
+    const res = float(1).toVar();
+    const t = float(0.03).toVar();
+    Loop(SHADOW_STEPS, () => {
+      const h = map(ro.add(rd.mul(t))).x;
+      res.assign(min(res, h.mul(10.0).div(t)));
+      t.addAssign(clamp(h, 0.012, 0.20));
+      If(res.lessThan(0.004), () => { Break(); });
+      If(t.greaterThan(maxT), () => { Break(); });
+    });
+    return clamp(res, 0, 1);
+  });
+  softShadow.setLayout({
+    name: `creatureShadow${id}`, type: 'float',
+    inputs: [{ name: 'ro', type: 'vec3' }, { name: 'rd', type: 'vec3' }, { name: 'maxT', type: 'float' }],
+  });
+
+  const calcAO = Fn(([p, n]) => {
+    const occ = float(0).toVar();
+    const sca = float(1).toVar();
+    Loop(AO_SAMPLES, ({ i }) => {
+      const h = float(0.014).add(float(0.13).mul(float(i)));
+      occ.addAssign(h.sub(map(p.add(n.mul(h))).x).mul(sca));
+      sca.mulAssign(0.82);
+    });
+    return clamp(float(1).sub(occ.mul(1.7)), 0, 1);
+  });
+  calcAO.setLayout({
+    name: `creatureAO${id}`, type: 'float',
+    inputs: [{ name: 'p', type: 'vec3' }, { name: 'n', type: 'vec3' }],
+  });
+
+  // ---- the one fragment shader that draws everything ---------------------
+
+  const shaded = Fn(() => {
+    const q = uv();                          // 0..1 across the quad
+    const ndc = q.mul(2).sub(1);
+    const px = vec2(ndc.x.mul(u.aspect), ndc.y);
+
+    // Background first, so a miss still has something to show. Vertical ramp plus a soft glow
+    // behind the subject, which is what sells the studio-backdrop look.
+    const bg = mix(u.bgBottom, u.bgTop, smoothstep(float(-0.9), float(0.95), ndc.y)).toVar();
+    bg.mulAssign(mix(float(0.74), float(1.12), smoothstep(float(1.15), float(0.0), length(px.mul(vec2(1.0, 1.25))))));
+
+    // Virtual camera. Nothing here comes from the scene camera — the quad's own uniforms are the
+    // entire viewpoint, which is why this drops into a UI card with no scene graph attached.
+    const target = vec3(0, 0.98, 0);
+    const ro = vec3(
+      sin(u.yaw).mul(cos(u.pitch)),
+      sin(u.pitch),
+      cos(u.yaw).mul(cos(u.pitch)),
+    ).mul(u.dist).add(target);
+    const fwd = normalize(target.sub(ro));
+    const right = normalize(cross(fwd, vec3(0, 1, 0)));
+    const upv = cross(right, fwd);
+    const rd = normalize(fwd.mul(2.35).add(right.mul(px.x)).add(upv.mul(px.y)));
+
+    // The march.
+    const t = float(0.6).toVar();
+    const matId = float(-1).toVar();
+    Loop(MARCH_STEPS, () => {
+      const p = ro.add(rd.mul(t));
+      const r = map(p);
+      If(r.x.lessThan(float(0.0012).mul(t)), () => {
+        matId.assign(r.y);
+        Break();
+      });
+      t.addAssign(r.x.mul(0.92));
+      If(t.greaterThan(9.0), () => { Break(); });
+    });
+
+    const outCol = bg.toVar();
+
+    If(matId.greaterThan(float(-0.5)), () => {
+      const p = ro.add(rd.mul(t));
+      const n = calcNormal(p);
+
+      // Palette lookup. Ids blend at the smooth-union seams, so these weights are deliberately
+      // soft rather than an equality test — that softness is the blob fading into the skin.
+      // Width exactly 1, i.e. one palette slot. That is the largest band that still guarantees a
+      // non-neighbour contributes nothing (any other entry is at least 1 away), and the smallest one
+      // that lets a blended id ramp all the way across the fillet instead of snapping halfway.
+      const wOf = (k) => smoothstep(float(1.0), float(0.0), abs(matId.sub(float(k))));
+      const albedo = u.skin
+        .mul(wOf(ID_SKIN))
+        .add(vec3(0.94, 0.93, 0.90).mul(wOf(ID_EYE)))
+        .add(u.horn.mul(wOf(ID_HORN)))
+        .add(u.cheek.mul(wOf(ID_BLOB)))
+        .add(vec3(0.30, 0.05, 0.08).mul(wOf(ID_MOUTH)))
+        .add(vec3(1.0, 0.99, 0.96).mul(wOf(ID_TOOTH)))
+        .div(max(
+          wOf(ID_SKIN).add(wOf(ID_EYE)).add(wOf(ID_HORN))
+            .add(wOf(ID_BLOB)).add(wOf(ID_MOUTH)).add(wOf(ID_TOOTH)),
+          float(1e-3),
+        )).toVar();
+
+      // The eye is painted, not modelled: iris, pupil, glint and the blink lid are all angular
+      // bands on the eyeball's own surface. Four spheres' worth of detail for zero extra distance
+      // evaluations, which is the argument for doing UI portraits this way at all.
+      const eyeLocal = normalize(p.sub(vec3(0.10, 1.16, float(0.32).mul(u.bodyWidth))));
+      const gazeDir = normalize(vec3(0.20, -0.03, 1.0));
+      const facing = dot(eyeLocal, gazeDir);
+      const eyeMask = wOf(ID_EYE);
+      const iris = smoothstep(float(0.80), float(0.845), facing);
+      const pupil = smoothstep(float(0.962), float(0.972), facing);
+      const glint = smoothstep(float(0.955), float(0.990),
+        dot(eyeLocal, normalize(vec3(-0.42, 0.58, 0.85))));
+      const eyeCol = mix(vec3(0.95, 0.94, 0.91), vec3(0.28, 0.15, 0.07), iris).toVar();
+      eyeCol.assign(mix(eyeCol, vec3(0.05, 0.03, 0.02), pupil));
+      eyeCol.addAssign(vec3(glint.mul(0.95)));
+      // Lid: skin colour sweeping down over the eyeball as `blink` closes.
+      const lid = smoothstep(u.blink.mul(2.0).sub(1.0), u.blink.mul(2.0).sub(0.88), eyeLocal.y);
+      eyeCol.assign(mix(eyeCol, u.skin.mul(0.92), lid));
+      albedo.assign(mix(albedo, eyeCol, eyeMask));
+
+      // Lighting: one key, one sky fill, one back rim. Deliberately small — the shape is doing the
+      // work, and this is the budget a 208px card can afford.
+      const keyDir = normalize(vec3(-0.55, 0.78, 0.62));
+      const sh = mix(float(1), softShadow(p.add(n.mul(0.006)), keyDir, float(3.2)), u.quality);
+      const ao = mix(float(1), calcAO(p, n), u.quality);
+
+      const key = max(dot(n, keyDir), float(0)).mul(sh);
+      const sky = max(dot(n, vec3(0, 1, 0)), float(0)).mul(0.5).add(0.5).mul(ao);
+      const back = max(dot(n, normalize(vec3(0.6, -0.2, -0.75))), float(0)).mul(0.35);
+      const fres = pow(clamp(float(1).add(dot(rd, n)), 0, 1), float(3.0));
+
+      const lit = albedo.mul(
+        vec3(1.18, 1.10, 0.98).mul(key)
+          .add(vec3(0.30, 0.38, 0.50).mul(sky))
+          .add(u.bgTop.mul(back).mul(0.65))            // bounce from the backdrop
+          .add(vec3(0.06)),
+      ).toVar();
+
+      // Soft-skin sheen, plus a rim in the backdrop colour so the silhouette separates.
+      const spec = pow(max(dot(n, normalize(keyDir.sub(rd))), float(0)), float(28.0)).mul(0.35).mul(sh);
+      lit.addAssign(vec3(spec));
+      lit.addAssign(u.bgTop.mul(fres).mul(0.30).mul(ao));
+
+      // ---- the blob as a light source ------------------------------------
+      // A point light living inside the same field it illuminates. The shadow ray stops just short
+      // of the blob's own surface (see softShadow's maxT), so the blob lights the body without
+      // occluding itself, and the pool it casts lands on the DENTED surface rather than on where the
+      // surface would have been — the deformation and the lighting read the same distance function.
+      const blobW = wOf(ID_BLOB);
+      const toBlob = u.blobPos.sub(p);
+      const blobDist = max(length(toBlob), float(1e-4));
+      const blobL = toBlob.div(blobDist);
+      const reach = blobDist.div(u.blobRange);
+      const atten = float(1).div(float(1).add(reach.mul(reach).mul(3.0)));
+      const bsh = mix(float(1),
+        softShadow(p.add(n.mul(0.006)), blobL, max(blobDist.sub(u.blobR.mul(1.15)), float(0.02))),
+        u.quality);
+      // Wrapped diffuse: a small glowing ball at skin range looks wrong with a hard terminator.
+      const bnl = clamp(dot(n, blobL).mul(0.65).add(0.35), 0, 1);
+      lit.addAssign(
+        u.cheek.mul(u.blobGlow).mul(2.1)
+          .mul(bnl.mul(atten).mul(bsh))
+          .mul(float(1).sub(blobW))     // the blob's own surface is lit by emission, not by itself
+          .mul(u.blobLit),
+      );
+
+      // Emission on the blob itself. Driven by the blended material id, so it fades out across the
+      // fused seam exactly as the colour does and the glow never has a hard edge against the skin.
+      lit.addAssign(u.cheek.mul(u.blobGlow).mul(blobW).mul(1.35));
+
+      outCol.assign(mix(lit, n.mul(0.5).add(0.5), u.showNormals));
+    });
+
+    // Halo in the air. The ray's closest approach to the blob centre, solved analytically rather
+    // than marched, then hidden behind anything the march hit in front of that point.
+    const w = u.blobPos.sub(ro);
+    const tClosest = dot(w, rd);
+    const perp = length(w.sub(rd.mul(max(tClosest, float(0)))));
+    const spread = u.blobR.mul(2.1);
+    const halo = exp(perp.div(spread).mul(perp.div(spread)).negate())
+      .mul(step(float(0), tClosest))
+      .mul(smoothstep(tClosest.sub(0.3), tClosest.add(0.3), t));
+    outCol.addAssign(u.cheek.mul(u.blobGlow).mul(halo).mul(0.5).mul(u.blobLit));
+
+    // Contact shadow on the backdrop, so the creature is standing on something rather than floating.
+    const groundShade = smoothstep(float(0.44), float(0.0), length(px.sub(vec2(0.0, -0.72)).mul(vec2(0.55, 1.9))));
+    outCol.assign(mix(outCol, outCol.mul(0.55), groundShade.mul(step(matId, float(-0.5))).mul(0.8)));
+
+    // Tone + gamma. Cheap Reinhard so the highlights on a saturated skin do not clip to white.
+    const mapped = outCol.div(outCol.add(1.0)).mul(1.34);
+    const final = pow(clamp(mapped, 0, 1), vec3(0.4545));
+
+    // Rounded-corner mask, so a portrait fills a card without an HTML overflow clip. Another
+    // distance field, this time in 2D and three lines long.
+    const halfSize = vec2(0.5, 0.5);
+    const cr = u.corner;
+    const d2 = abs(q.sub(0.5)).sub(halfSize.sub(cr));
+    const rr = length(max(d2, vec2(0))).add(min(max(d2.x, d2.y), float(0))).sub(cr);
+    const alpha = smoothstep(float(0.004), float(-0.004), rr);
+
+    return vec4(final, alpha);
+  })();
+
+  const mat = new MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false });
+  mat.colorNode = shaded.xyz;
+  mat.opacityNode = shaded.w;
+  return { mat, u };
+}
+
+// ---------------------------------------------------------------------------
+// Renderer — an orthographic pixel-space stage. Every creature is a quad in it.
+// ---------------------------------------------------------------------------
+
+const renderer = new WebGPURenderer({ antialias: false });
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(0, innerWidth, innerHeight, 0, -1, 1);
+const quadGeo = new THREE.PlaneGeometry(1, 1);
+
+function addQuad(variant) {
+  const { mat, u } = makeCreatureMaterial(variant);
+  const mesh = new THREE.Mesh(quadGeo, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { mesh, u, mat };
+}
+
+// Stage: one big creature.
+const stage = addQuad({ yaw: 0.35, dist: 4.3, corner: 0.0 });
+
+// ---------------------------------------------------------------------------
+// The cursor blob
+//
+// Placing it is the only part that needs JS: unproject the cursor through the same virtual camera
+// the shader builds, and hand the shader one world-space point. Everything after that — contact,
+// the fillet, the colour bleeding across the seam — is the smooth union in `map`, re-solved from
+// scratch on every pixel of every frame. There is no mesh to rebuild and no CSG pass, which is why
+// dragging a shape halfway through a body is free here and is not free anywhere else in this repo.
+// ---------------------------------------------------------------------------
+
+// Cursor in normalised device coords. Seeded near the authored rest position so the first frame looks right,
+// and never reset when the pointer leaves the canvas — snapping the blob home on a trip to the
+// slider panel would read as a bug.
+const cursor = { nx: -0.28, ny: -0.12 };
+let blobFollow = true;
+let blobDepth = -0.85;   // metres from the orbit target, negative is toward the camera
+let collide = true;
+let dentGain = 0.5;
+let squashGain = 0.55;
+// Two blend radii for the same uniform, because the two modes want opposite things from it. Phase
+// wants a wide fillet — that fusing IS the technique being demonstrated. Collide wants a hairline,
+// so the shapes keep their own silhouettes and meet at a crease. It cannot be 0: `sminM` divides by
+// it, and at a hairline the material-id blend collapses to a sharp boundary anyway, which is what
+// makes the colour change read as an edge between two objects rather than a gradient across one.
+let fuseK = 0.22;
+let contactK = 0.012;
+
+const anatomyOf = (u) => ({
+  time: u.time.value,
+  bodyWidth: u.bodyWidth.value,
+  legLen: u.legLen.value,
+  hornLen: u.hornLen.value,
+  eyeSize: u.eyeSize.value,
+});
+
+function writeBlob(u, r) {
+  u.blobPos.value.set(r.pos[0], r.pos[1], r.pos[2]);
+  u.contactN.value.set(r.contactN[0], r.contactN[1], r.contactN[2]);
+  u.dentAmt.value = r.dentAmt;
+  u.dentR.value = r.dentR;
+  u.squashS.value = r.squashS;
+  return r;
+}
+
+// The portrait cards are static, so they place the blob directly instead of resolving a ray.
+function authoredBlob(u) {
+  const w = u.bodyWidth.value;
+  writeBlob(u, restingBlob([-0.34 * w, 0.80, 0.28 * w], u.blobR.value));
+}
+
+let lastContact = null;
+
+function updateStageBlob() {
+  const u = stage.u;
+  // Parked at its authored pose the blob is decoration, not contact, so it always fuses there.
+  if (!blobFollow) { u.blobK.value = fuseK; authoredBlob(u); lastContact = null; return; }
+  u.blobK.value = collide ? contactK : fuseK;
+
+  // Rebuild the shader's camera basis exactly. Any drift here shows up as the blob lagging behind
+  // the cursor, so this mirrors the `shaded` function line for line.
+  const yaw = u.yaw.value, pitch = u.pitch.value, dist = u.dist.value;
+  const tx = 0, ty = 0.98, tz = 0;
+  const dx = Math.sin(yaw) * Math.cos(pitch), dy = Math.sin(pitch), dz = Math.cos(yaw) * Math.cos(pitch);
+  const rox = tx + dx * dist, roy = ty + dy * dist, roz = tz + dz * dist;
+  const fx = -dx, fy = -dy, fz = -dz;                       // normalize(target - ro)
+
+  // right = normalize(cross(fwd, up)), up = (0,1,0)
+  let rx = -fz, ry = 0, rz = fx;
+  const rl = Math.hypot(rx, ry, rz) || 1;
+  rx /= rl; ry /= rl; rz /= rl;
+
+  // upv = cross(right, fwd)
+  const ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
+
+  const px = cursor.nx * u.aspect.value, py = cursor.ny;
+  let vx = fx * 2.35 + rx * px + ux * py;
+  let vy = fy * 2.35 + ry * px + uy * py;
+  let vz = fz * 2.35 + rz * px + uz * py;
+  const vl = Math.hypot(vx, vy, vz) || 1;
+  vx /= vl; vy /= vl; vz /= vl;
+
+  // The cursor proposes a depth along its own ray; `resolveBlob` decides how far the blob actually
+  // gets. Depth is measured from the orbit target so the blob keeps a constant standoff from the
+  // body as the camera turns, instead of swinging in and out of it.
+  lastContact = writeBlob(u, resolveBlob(
+    { ro: [rox, roy, roz], rd: [vx, vy, vz], t: dist + blobDepth },
+    anatomyOf(u),
+    { blobR: u.blobR.value, dentGain, squashGain, collide },
+  ));
+}
+
+// Start screen: four variants, same shader, different numbers.
+const VARIANTS = [
+  { name: 'Teal Scout',  role: 'Recon',    skin: '#79cfcb', cheek: '#6b3fbf', horn: '#e2724d',
+    bgTop: '#f4713a', bgBottom: '#c0401d', bodyWidth: 1.00, hornLen: 1.00, eyeSize: 1.00, legLen: 1.0,
+    stats: [70, 55, 80] },
+  { name: 'Ochre Bruiser', role: 'Assault', skin: '#e0a54a', cheek: '#9c3b2e', horn: '#5c3b22',
+    bgTop: '#3f6fb0', bgBottom: '#1d3b6b', bodyWidth: 1.28, hornLen: 1.45, eyeSize: 0.86, legLen: 0.82,
+    stats: [95, 85, 35] },
+  { name: 'Violet Seer',  role: 'Support',  skin: '#b48ee0', cheek: '#3d8fb0', horn: '#f0d9a8',
+    bgTop: '#2fae8e', bgBottom: '#15604f', bodyWidth: 0.90, hornLen: 0.55, eyeSize: 1.26, legLen: 1.18,
+    stats: [45, 40, 95] },
+  { name: 'Ash Runner',   role: 'Skirmish', skin: '#8f9aa6', cheek: '#d6524e', horn: '#22272e',
+    bgTop: '#d9b23a', bgBottom: '#9a6c14', bodyWidth: 0.82, hornLen: 1.15, eyeSize: 0.94, legLen: 1.30,
+    stats: [55, 95, 60] },
+];
+
+const cardsEl = document.getElementById('cards');
+const portraits = VARIANTS.map((v, i) => {
+  const card = document.createElement('div');
+  card.className = 'card' + (i === 0 ? ' sel' : '');
+  card.innerHTML =
+    `<div class="thumb"></div>` +
+    `<div class="meta"><div class="name">${v.name}</div><div class="role">${v.role}</div>` +
+    `<div class="bars">` +
+    ['Power', 'Speed', 'Sense'].map((label, k) =>
+      `<div class="bar"><span>${label}</span><i><span style="width:${v.stats[k]}%"></span></i></div>`).join('') +
+    `</div></div>`;
+  card.addEventListener('click', () => {
+    for (const c of cardsEl.children) c.classList.remove('sel');
+    card.classList.add('sel');
+  });
+  cardsEl.append(card);
+
+  const q = addQuad({ ...v, yaw: -0.5 + i * 0.34, pitch: 0.05, dist: 4.05, corner: 0.045 });
+  authoredBlob(q.u);   // portraits are not interactive, so their blob stays where it was authored
+  return { ...q, card, thumb: card.querySelector('.thumb'), blinkPhase: i * 1.7 + 0.4 };
+});
+
+// ---------------------------------------------------------------------------
+// Layout — the quads are placed to match the cards' own rects, so the HTML owns the layout and
+// the shader only ever fills a box it is handed. That is the shape a real integration takes.
+// ---------------------------------------------------------------------------
+
+let mode = 'stage';
+let renderScale = 1.0;
+let markedPixels = 0;
+
+function place(entry, left, top, w, h) {
+  entry.mesh.position.set(left + w / 2, innerHeight - (top + h / 2), 0);
+  entry.mesh.scale.set(w, h, 1);
+  entry.u.aspect.value = w / h;
+}
+
+function layout() {
+  const w = innerWidth, h = innerHeight;
+  camera.right = w; camera.top = h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * renderScale);
+  renderer.setSize(w, h);
+
+  stage.mesh.visible = mode === 'stage';
+  const dpr = renderer.getPixelRatio();
+  markedPixels = 0;
+
+  if (mode === 'stage') {
+    place(stage, 0, 0, w, h);
+    markedPixels = w * h * dpr * dpr;
+    for (const p of portraits) p.mesh.visible = false;
+  } else {
+    for (const p of portraits) {
+      p.mesh.visible = true;
+      const r = p.thumb.getBoundingClientRect();
+      place(p, r.left, r.top, r.width, r.height);
+      markedPixels += r.width * r.height * dpr * dpr;
+    }
+  }
+}
+
+document.getElementById('ui').classList.toggle('show', mode === 'portraits');
+requestAnimationFrame(layout);
+addEventListener('resize', layout);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+
+function slider(host, label, get, set, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  out.textContent = fmt(+inp.value);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp);
+  host.append(row);
+}
+
+const blobRows = document.getElementById('blobRows');
+slider(blobRows, 'Blob radius', () => stage.u.blobR.value, (v) => { stage.u.blobR.value = v; }, 0.05, 0.7, 0.005);
+// The star of the demo, and the thing Collide switches off. At 0.5 the body starts reaching for the
+// blob from a hand's width away and swallows it into one surface; at 0.01 they merely touch.
+slider(blobRows, 'Fuse radius — phase', () => fuseK, (v) => { fuseK = v; }, 0.01, 0.6, 0.005);
+// Collide's counterpart. Keep it small: this is a contact patch, not a weld.
+slider(blobRows, 'Contact fillet — collide', () => contactK, (v) => { contactK = v; }, 0.002, 0.15, 0.002, (v) => v.toFixed(3));
+slider(blobRows, 'Depth from body', () => blobDepth, (v) => { blobDepth = v; }, -1.8, 1.0, 0.01);
+// The two halves of the contact. They are complementary by construction: the body absorbs `dentGain`
+// of the requested penetration and the blob is pushed out by the remainder.
+slider(blobRows, 'Body give (dent)', () => dentGain, (v) => { dentGain = v; }, 0, 1, 0.01);
+slider(blobRows, 'Blob give (squash)', () => squashGain, (v) => { squashGain = v; }, 0, 1, 0.01);
+
+const lightRows = document.getElementById('lightRows');
+slider(lightRows, 'Glow', () => stage.u.blobGlow.value, (v) => { stage.u.blobGlow.value = v; }, 0, 3, 0.02);
+slider(lightRows, 'Light range', () => stage.u.blobRange.value, (v) => { stage.u.blobRange.value = v; }, 0.2, 4, 0.02);
+
+const shapeRows = document.getElementById('shapeRows');
+const anat = [
+  ['Body width', 'bodyWidth', 0.65, 1.5],
+  ['Horn length', 'hornLen', 0.0, 2.0],
+  ['Eye size', 'eyeSize', 0.55, 1.5],
+  ['Leg length', 'legLen', 0.5, 1.8],
+];
+for (const [label, key, lo, hi] of anat) {
+  slider(shapeRows, label, () => stage.u[key].value, (v) => { stage.u[key].value = v; }, lo, hi, 0.01);
+}
+slider(shapeRows, 'Camera distance', () => stage.u.dist.value, (v) => { stage.u.dist.value = v; }, 2.6, 8, 0.05);
+
+slider(document.getElementById('scaleRows'), 'Resolution scale',
+  () => renderScale, (v) => { renderScale = v; layout(); }, 0.25, 1.5, 0.05);
+
+for (const btn of document.querySelectorAll('#modeSeg button')) {
+  btn.addEventListener('click', () => {
+    mode = btn.dataset.mode;
+    for (const b of document.querySelectorAll('#modeSeg button')) b.classList.toggle('on', b === btn);
+    document.getElementById('ui').classList.toggle('show', mode === 'portraits');
+    requestAnimationFrame(layout);
+  });
+}
+
+let spin = true;
+document.getElementById('spin').addEventListener('change', (e) => { spin = e.target.checked; });
+document.getElementById('shadowOn').addEventListener('change', (e) => {
+  const v = e.target.checked ? 1 : 0;
+  stage.u.quality.value = v;
+  for (const p of portraits) p.u.quality.value = v;
+});
+document.getElementById('normalsOn').addEventListener('change', (e) => {
+  stage.u.showNormals.value = e.target.checked ? 1 : 0;
+});
+
+document.getElementById('blobFollow').addEventListener('change', (e) => { blobFollow = e.target.checked; });
+document.getElementById('blobLit').addEventListener('change', (e) => {
+  const v = e.target.checked ? 1 : 0;
+  stage.u.blobLit.value = v;
+  for (const p of portraits) p.u.blobLit.value = v;
+});
+for (const btn of document.querySelectorAll('#contactSeg button')) {
+  btn.addEventListener('click', () => {
+    collide = btn.dataset.collide === '1';
+    for (const b of document.querySelectorAll('#contactSeg button')) b.classList.toggle('on', b === btn);
+  });
+}
+
+// Moving the pointer carries the blob; holding a button turns the creature. Two gestures on one
+// surface, because the blob has to be draggable across the body for the merge to be the point.
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (mode !== 'stage') return;
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  cursor.nx = (e.clientX / innerWidth) * 2 - 1;
+  cursor.ny = (1 - e.clientY / innerHeight) * 2 - 1;
+  if (!dragging) return;
+  stage.u.yaw.value -= (e.clientX - lastX) * 0.008;
+  stage.u.pitch.value = Math.max(-0.6, Math.min(0.9, stage.u.pitch.value + (e.clientY - lastY) * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup', () => { dragging = false; });
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+const statsEl = document.getElementById('stats');
+const clock = new THREE.Clock();
+let frames = 0, acc = 0, msAcc = 0;
+
+// Blink: mostly open, snapping shut for ~130 ms on a per-creature cycle.
+function blinkAt(t, phase) {
+  const cycle = 4.1;
+  const k = ((t + phase) % cycle) / cycle;
+  const shut = Math.exp(-Math.pow((k - 0.5) * 46, 2));
+  return 1 - shut;
+}
+
+renderer.setAnimationLoop(async () => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const now = clock.elapsedTime;
+  const t0 = performance.now();
+
+  stage.u.time.value = now;
+  stage.u.blink.value = blinkAt(now, 0);
+  if (spin && !dragging && mode === 'stage') stage.u.yaw.value += dt * 0.4;
+  // After the yaw update, so the blob stays under the cursor while the creature turns beneath it.
+  updateStageBlob();
+
+  for (const p of portraits) {
+    p.u.time.value = now;
+    p.u.blink.value = blinkAt(now, p.blinkPhase);
+    if (spin) p.u.yaw.value += dt * 0.18;
+  }
+
+  if (mode === 'portraits') {
+    // Cards can reflow (wrap on a narrow window), so keep the quads pinned to their rects.
+    for (const p of portraits) {
+      const r = p.thumb.getBoundingClientRect();
+      place(p, r.left, r.top, r.width, r.height);
+    }
+  }
+
+  await renderer.renderAsync(scene, camera);
+
+  msAcc += performance.now() - t0;
+  frames++; acc += dt;
+  if (acc >= 0.5) {
+    const fps = frames / acc, ms = msAcc / frames;
+    const mp = markedPixels / 1e6;
+    const quads = scene.children.filter((c) => c.visible).length;
+    const contact = lastContact && lastContact.contact
+      ? `press <b>${lastContact.press.toFixed(3)}</b> m, dent <b>${lastContact.dentAmt.toFixed(3)}</b> m, squash <b>${lastContact.squashS.toFixed(2)}</b>`
+      : 'blob clear of the body';
+    statsEl.innerHTML =
+      `<b>${fps.toFixed(0)}</b> fps &nbsp; <b>${ms.toFixed(2)}</b> ms cpu-side<br>` +
+      `marching <b>${mp.toFixed(2)}</b> Mpx across <b>${quads}</b> quad${quads === 1 ? '' : 's'}<br>` +
+      `up to <b>${MARCH_STEPS}</b> distance evaluations per pixel<br>` +
+      `contact: ${contact}<br>` +
+      `geometry in the scene: <b>${quads * 2}</b> triangles total`;
+    frames = 0; acc = 0; msAcc = 0;
+  }
+});
+</script>
+</body>
+</html>

@@ -175,13 +175,14 @@ export class Clouds extends THREE.Mesh {
     this._lastTime = undefined;
 
     // ---- TSL uniform handles ----
-    const uTime      = uniform(0.0,  'float');   // scaled elapsed time (seconds)
-    const uCoverage  = uniform(0.4,  'float');   // noise bias → cloud cover
-    const uPuff      = uniform(1.0,  'float');   // noise frequency divisor → puff size
-    const uSoftness  = uniform(0.3,  'float');   // smoothstep half-width
-    const uFade      = uniform(0.01, 'float');   // horizon-fade rate
-    const uOpacity   = uniform(0.9,  'float');   // base alpha multiplier
-    const uCameraXZ  = uniform(new THREE.Vector2(), 'vec2'); // camera XZ for horizon fade
+    const uTime       = uniform(0.0,  'float');   // scaled elapsed time (seconds)
+    const uCoverage   = uniform(0.4,  'float');   // noise bias → cloud cover
+    const uPuff       = uniform(1.0,  'float');   // noise frequency divisor → puff size
+    const uSoftness   = uniform(0.3,  'float');   // smoothstep half-width
+    const uFade       = uniform(0.5,  'float');   // horizon dimming: 0 = clouds full to the edge, 1 = dim toward the edge
+    const uOpacity    = uniform(0.9,  'float');   // base alpha multiplier
+    const uCameraXZ   = uniform(new THREE.Vector2(), 'vec2'); // camera XZ, fade centre
+    const uHalfExtent = uniform(1000.0, 'float'); // world half-size of the plane; setExtent keeps this in sync
 
     // World-space XZ position normalised to ~1 unit per 1000 world units.
     // Using positionWorld instead of UV keeps the noise frequency fixed in world
@@ -202,17 +203,23 @@ export class Clouds extends THREE.Mesh {
       float(0.5).mul(n).add(uCoverage)
     );
 
-    // ---- Horizon fade by XZ distance from the camera ----
-    // Measures how far each fragment is from the camera horizontally, so the fade
-    // is always camera-centred regardless of where in the world the camera sits.
-    // +1 avoids division-by-zero directly overhead.
-    const horizDist = length(positionWorld.xz.sub(uCameraXZ)).add(1.0);
-    const alpha = cloudVal.mul(uOpacity).div(uFade.mul(horizDist));
+    // ---- Extent-relative horizon fade ----
+    // Distance from the camera as a FRACTION of the plane's half-size, so the fade behaves the
+    // same whatever the extent (the old fade divided by raw distance, so a 0.01 rate dropped
+    // clouds to near-invisible by ~1000 units and they vanished well before the horizon). Clouds
+    // now stay readable across the whole plane (haze floored at 0.25) and only the outer 15% fades
+    // to zero to hide the plane's finite edge — so the deck reaches close to the horizon.
+    const norm = length(positionWorld.xz.sub(uCameraXZ)).div(uHalfExtent);
+    const haze = max(float(1.0).sub(norm.mul(uFade)), float(0.25));
+    const edge = smoothstep(float(1.0), float(0.85), norm);   // 1 inside, → 0 at the plane edge
+    const alpha = cloudVal.mul(uOpacity).mul(haze).mul(edge);
 
     // ---- Assemble unlit material ----
     const mat = new MeshBasicNodeMaterial({
       transparent: true,
       side: THREE.DoubleSide,
+      depthWrite: false,   // never occlude the scene: a transparent depth-writing plane punched holes
+                           // in the (also transparent, alpha-tested) tree foliage behind/below it
       fog: false,   // clouds use their own horizon fade; scene fog (far=terrain size) would clamp them to the map edge
     });
     // Clouds are pure white; all shading is in the alpha channel.
@@ -220,13 +227,14 @@ export class Clouds extends THREE.Mesh {
     mat.opacityNode = alpha;
 
     // Expose uniform handles so the public setters can update them live
-    mat._uTime     = uTime;
-    mat._uCoverage = uCoverage;
-    mat._uPuff     = uPuff;
-    mat._uSoftness = uSoftness;
-    mat._uFade     = uFade;
-    mat._uOpacity  = uOpacity;
-    mat._uCameraXZ = uCameraXZ;
+    mat._uTime       = uTime;
+    mat._uCoverage   = uCoverage;
+    mat._uPuff       = uPuff;
+    mat._uSoftness   = uSoftness;
+    mat._uFade       = uFade;
+    mat._uOpacity    = uOpacity;
+    mat._uCameraXZ   = uCameraXZ;
+    mat._uHalfExtent = uHalfExtent;
 
     this.material = mat;
 
@@ -256,6 +264,7 @@ export class Clouds extends THREE.Mesh {
     // Mesh is laid flat via rotation.x=-PI/2, so the plane spans local X and Y
     // (local Z is the normal). Scale both in-plane axes, not X/Z.
     this.scale.set(s, s, 1);
+    this.material._uHalfExtent.value = worldUnits / 2;   // keep the extent-relative fade in sync
   }
 }
 

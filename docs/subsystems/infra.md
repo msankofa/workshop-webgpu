@@ -39,7 +39,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 
 | File | Responsibility | Lines |
 |---|---|---|
-| `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 126 |
+| `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
@@ -55,7 +55,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
 ```
 
 Returns:
-- `beginFrame()` â€” zeroes the current-frame CPU/GPU pass values (called once at the top of `animate()`).
+- `beginFrame()` â€” zeroes the current-frame CPU/GPU pass values (called once at the top of `animate()`). Since 2026-08-04 it zeroes **every name recorded so far** (each key already in the internal `latest` / `gpuLatest` maps) *plus* `DEFAULT_NAMES` / `DEFAULT_GPU_NAMES`, not just the defaults. That matters for any app whose pass names aren't the environment viewer's: `bot-viewer-v2.html` records `sim`, `bodyFlush`, `weaponFlush`, `botFx`, `visuals`, `fx`, `audio`, `panelFx`, `ui*`, `render`, and before this change `beginFrame()` was a no-op for them, so a conditionally-executed phase reported the *previous* frame's value instead of 0. The environment viewers are unaffected: they record every default name every frame, so iterating the recorded keys is a superset of the old loop. The smoothed (`{ smooth: true }`) maps are deliberately **not** zeroed â€” the HUD's EMA is supposed to decay across a skipped frame, not snap to zero.
 - `time(name, fn)` â€” runs `fn()` synchronously, records elapsed `now() - t0` under `name`, returns `fn()`'s result.
 - `async timeAsync(name, fn)` â€” same as `time` but awaits `fn()`.
 - `recordGpu(name, ms)` â€” records a GPU timestamp/duration directly (used for `resolveTimestampsAsync` results and for tagging `postRender`'s GPU cost).

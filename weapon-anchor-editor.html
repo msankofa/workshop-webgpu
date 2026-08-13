@@ -61,6 +61,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { WEAPONS } from './weapons.js';
+import { attachDracoLoader } from './draco-loader.js';
 
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
@@ -113,7 +114,7 @@ window.addEventListener('resize', () => {
 });
 
 // ===================== model loading =====================
-const loader = new GLTFLoader();
+const loader = attachDracoLoader(new GLTFLoader());
 const modelGroup = new THREE.Group(); // kept at identity: local space === world space
 scene.add(modelGroup);
 let currentGltfScene = null;
@@ -131,6 +132,7 @@ function setModel(object3d) {
   bboxHelper = new THREE.BoxHelper(currentGltfScene, 0xffcc55);
   scene.add(bboxHelper);
   fitCameraTo(currentGltfScene);
+  updateHandScaleFromModel();
 }
 function fitCameraTo(object3d) {
   const box = new THREE.Box3().setFromObject(object3d);
@@ -141,12 +143,89 @@ function fitCameraTo(object3d) {
   if (!isFinite(dir3.x) || dir3.lengthSq() === 0) dir3.set(0.6, 0.4, 0.9).normalize();
   controls.target.copy(sphere.center);
   camera.position.copy(sphere.center).addScaledVector(dir3, dist);
+  // adapt clip planes to the model's unit scale (some GLBs are hundreds of units across)
+  camera.near = Math.max(dist / 1000, 1e-4);
+  camera.far = dist * 50;
+  camera.updateProjectionMatrix();
   controls.update();
 }
 function collectMeshes() {
   const meshes = [];
   if (currentGltfScene) currentGltfScene.traverse(o => { if (o.isMesh) meshes.push(o); });
   return meshes;
+}
+
+// ===================== hand proxies (grip anchors) =====================
+// Grip frame convention: +Y = fingers, +Z = out of the palm INTO the weapon, right thumb
+// at +X (left mirrored). Anchor position = palm contact point. Proxies are sized so the
+// hand:weapon ratio matches the game (weapons normalize their longest dimension to 0.62m).
+let showHandProxies = true;
+let currentHandScale = 1;
+
+function makeHandProxy(side) {
+  const mirror = side === 'right' ? 1 : -1;
+  // x-ray overlay like the anchor spheres — hands must stay visible even when the
+  // anchor sits inside the weapon volume (fingers naturally interpenetrate the grip)
+  const mat = new THREE.MeshStandardMaterial({
+    color: side === 'right' ? 0xffb066 : 0x66c8ff,
+    transparent: true, opacity: 0.45, depthWrite: false, depthTest: false, roughness: 0.85,
+  });
+  const hand = new THREE.Group();
+  hand.name = 'handProxy:' + side;
+  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.080, 0.085, 0.024), mat);
+  palm.position.set(0, 0.006, -0.012);
+  hand.add(palm);
+  const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.023, 0.055, 10), mat);
+  wrist.position.set(0, -0.062, -0.014);
+  hand.add(wrist);
+  for (let i = 0; i < 4; i++) {
+    const root = new THREE.Group();
+    root.position.set(mirror * (0.0285 - i * 0.019), 0.048, -0.010);
+    root.rotation.x = 0.85; // proximal curl toward +Z (into the weapon)
+    const seg1 = new THREE.Mesh(new THREE.BoxGeometry(0.0155, 0.040, 0.015), mat);
+    seg1.position.y = 0.020;
+    root.add(seg1);
+    const mid = new THREE.Group();
+    mid.position.y = 0.040;
+    mid.rotation.x = 1.05;
+    const seg2 = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.032, 0.0135), mat);
+    seg2.position.y = 0.016;
+    mid.add(seg2);
+    root.add(mid);
+    hand.add(root);
+  }
+  const thumb = new THREE.Group();
+  thumb.position.set(mirror * 0.043, 0.012, -0.008);
+  thumb.rotation.set(0.55, 0, mirror * -1.0);
+  const t1 = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.052, 0.017), mat);
+  t1.position.y = 0.026;
+  thumb.add(t1);
+  const tTip = new THREE.Group();
+  tTip.position.y = 0.052;
+  tTip.rotation.x = 0.8;
+  const t2 = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.030, 0.015), mat);
+  t2.position.y = 0.015;
+  tTip.add(t2);
+  thumb.add(tTip);
+  hand.add(thumb);
+  hand.traverse(o => { if (o.isMesh) o.renderOrder = 900; }); // above weapon, below anchor spheres (999)
+  return hand;
+}
+
+function refreshHandProxies() {
+  for (const [name, group] of markerGroups) {
+    const proxy = group.userData.handProxy;
+    if (!proxy) continue;
+    proxy.visible = showHandProxies;
+    proxy.scale.setScalar(currentHandScale);
+  }
+}
+function updateHandScaleFromModel() {
+  if (!currentGltfScene) return;
+  const size = new THREE.Box3().setFromObject(currentGltfScene).getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim > 1e-6) currentHandScale = maxDim / 0.62;
+  refreshHandProxies();
 }
 
 // ===================== anchor data + markers =====================
@@ -185,6 +264,13 @@ function makeMarker(name) {
   group.add(sphere);
   group.add(new THREE.AxesHelper(0.05));
   group.userData.sphere = sphere;
+  if (name === 'rightGrip' || name === 'leftGrip') {
+    const proxy = makeHandProxy(name === 'rightGrip' ? 'right' : 'left');
+    proxy.visible = showHandProxies;
+    proxy.scale.setScalar(currentHandScale);
+    group.add(proxy);
+    group.userData.handProxy = proxy;
+  }
   return group;
 }
 function refreshMarkerColors() {
@@ -210,11 +296,16 @@ function rebuildMarkersForCurrentWeapon() {
   refreshAnchorNameSelect();
   refreshJSON();
 }
+function stampGripFrameConvention(name) {
+  // grips edited against the hand proxies satisfy the palm-v1 frame convention
+  if (name === 'rightGrip' || name === 'leftGrip') anchorFile[currentWeaponId].gripFrame = 'palm-v1';
+}
 function syncAnchorFromMarker(name) {
   const group = markerGroups.get(name);
   if (!group) return;
   const anchors = anchorsForCurrentWeapon();
   anchors[name] = { p: group.position.toArray(), q: group.quaternion.toArray() };
+  stampGripFrameConvention(name);
   refreshJSON();
 }
 function selectAnchor(name) {
@@ -238,6 +329,7 @@ function deleteAnchor(name) {
 function placeOrMoveAnchor(name, localPoint, localQuat) {
   const anchors = anchorsForCurrentWeapon();
   anchors[name] = { p: localPoint.toArray(), q: localQuat.toArray() };
+  stampGripFrameConvention(name);
   let group = markerGroups.get(name);
   if (!group) {
     group = makeMarker(name);
@@ -415,6 +507,19 @@ deleteBtn.textContent = 'Delete selected anchor';
 deleteBtn.className = 'full';
 deleteRow.appendChild(deleteBtn);
 deleteBtn.addEventListener('click', () => deleteAnchor(selectedAnchorName));
+
+const handsRow = row();
+const handsLabel = document.createElement('span');
+handsLabel.className = 'lbl';
+handsLabel.textContent = 'Show hands at grips';
+const handsToggle = document.createElement('input');
+handsToggle.type = 'checkbox';
+handsToggle.id = 'showHands';
+handsToggle.checked = true;
+handsRow.appendChild(handsLabel);
+handsRow.appendChild(handsToggle);
+handsToggle.addEventListener('change', () => { showHandProxies = handsToggle.checked; refreshHandProxies(); });
+hint('Grip frame: +Y fingers, +Z out of palm into the weapon, right thumb +X. Anchor sits at the palm contact point — rotate until the hand grips naturally.');
 
 // --- Transform mode ---
 h2('Gizmo');

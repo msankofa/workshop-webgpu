@@ -9,6 +9,11 @@ import {
   HUNT_SENSE, SOCIAL_SENSE, THREAT_NEAR, chooseActivity, activitySteer,
   defaultTemperament, sampleTemperament, TEMPERAMENT_COLORS,
 } from './creature-activity.js';
+// Skeleton vocabulary. Lifted out so a plan can be built and inspected without the sim or the DOM.
+import { createCreaturePlans } from './creature-plan.js';
+// Walk cycle: foot targets, step scheduling, the step arc, balance and FABRIK. Lifted out so
+// demos/sdf-bug-v2 can drive a raymarched creature from the same code instead of a fourth twin.
+import { createCreatureLocomotion } from './creature-locomotion.js';
 
 export function createPortCreatureSystem({ scene, terrainHeight, resolveTrunks = null, nearbyTrunks = null, terrainSettings, rebuildTerrain, camera = null, lod = {}, getPlayerPose = null, damagePlayer = null, getWorldBounds = null }) {
 const CREATURE_INSTANCING_MODE = new URLSearchParams(globalThis.location?.search || '').get('creatureInstancing') || 'parts';
@@ -35,7 +40,6 @@ function terrainNormal(x, z, out = _normal) {
 }
 
 // ===================== body plans and gaits =====================
-const FOOT_GROUND = 0.06;
 const SEP_RADIUS = 2.3, MIN_GAP = 1.55;
 const TRUNK_AVOID_MARGIN = 1.2;   // how far out creatures start steering around a trunk
 const WANDER_W = 1.0, SEP_W = 2.2;
@@ -47,174 +51,32 @@ function temperamentMat(name) {
   if (!m) { m = new THREE.MeshBasicMaterial({ color: hex }); m.userData.shared = true; _temperamentMats.set(hex, m); }
   return m;
 }
-const GRAV = 10.0, KP = 60, KD = 16, H_DRAG = 1.15, BOUNCE = 0.25, BODY_MIN_CLEAR = 0.30;
 const BODY_VOLUME_CLEAR = 0.10, BODY_COLLISION_PAD = 0.28;
-const ORIENT_LERP = 0.08;
 
-const initA = Math.PI / 5;
-const upOut = new THREE.Vector3(0.35, -0.35, 0).normalize();
-const forward = new THREE.Vector3(0, 0, 1);
+// Plan vocabulary and the four stock skeletons now live in creature-plan.js. These are bindings:
+// same functions, same mutable Vector3 data, no behaviour change.
+const _plans = createCreaturePlans({ THREE });
+const { segment, pair, finalizePlan, BODY_PLANS, clonePlan, serializePlan, deserializePlan,
+        editPlanWithSettings, anchorsForPlan } = _plans;
 
-function segment(length, dir = forward) {
-  return { length, initDirection: dir.clone() };
-}
-
-function pair(attachment, rest, segments) {
-  const left = {
-    attachment: new THREE.Vector3(-attachment.x, attachment.y, attachment.z),
-    rest: new THREE.Vector3(-rest.x, rest.y, rest.z),
-    side: -1,
-    row: 0,
-    segments: segments.map(s => ({ length: s.length, initDirection: s.initDirection.clone() }))
-  };
-  const right = {
-    attachment: new THREE.Vector3(attachment.x, attachment.y, attachment.z),
-    rest: new THREE.Vector3(rest.x, rest.y, rest.z),
-    side: 1,
-    row: 0,
-    segments: segments.map(s => ({ length: s.length, initDirection: new THREE.Vector3(-s.initDirection.x, s.initDirection.y, s.initDirection.z) }))
-  };
-  return [left, right];
-}
-
-function finalizePlan(plan) {
-  plan.legs.sort((a, b) => b.rest.z - a.rest.z || a.side - b.side);
-  const rows = [...new Set(plan.legs.map(l => l.rest.z))].sort((a, b) => b - a);
-  for (const leg of plan.legs) leg.row = rows.indexOf(leg.rest.z);
-  return plan;
-}
-
-const BODY_PLANS = {
-  quadbot: finalizePlan({
-    label: 'Quad Bot',
-    bodyHeight: 1.08,
-    bodyScale: new THREE.Vector3(0.62, 0.40, 0.82),
-    head: true,
-    legs: [
-      ...pair(new THREE.Vector3(0.28, -0.24, 0.32), new THREE.Vector3(0.86, 0, 0.86), [
-        segment(0.42, upOut), segment(0.46, forward), segment(0.34, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.30, -0.24, -0.34), new THREE.Vector3(0.95, 0, -1.02), [
-        segment(0.44, upOut), segment(0.50, forward), segment(0.38, forward)
-      ])
-    ]
-  }),
-  hexbot: finalizePlan({
-    label: 'Hex Bot',
-    bodyHeight: 1.10,
-    bodyScale: new THREE.Vector3(0.66, 0.38, 1.12),
-    head: true,
-    legs: [
-      ...pair(new THREE.Vector3(0.28, -0.25, 0.52), new THREE.Vector3(0.92, 0, 1.22), [
-        segment(0.42, upOut), segment(0.46, forward), segment(0.34, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.32, -0.25, 0.00), new THREE.Vector3(1.08, 0, 0.02), [
-        segment(0.44, upOut), segment(0.48, forward), segment(0.36, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.30, -0.25, -0.50), new THREE.Vector3(1.00, 0, -1.28), [
-        segment(0.46, upOut), segment(0.52, forward), segment(0.40, forward)
-      ])
-    ]
-  }),
-  octobot: finalizePlan({
-    label: 'Octo Bot',
-    bodyHeight: 1.14,
-    bodyScale: new THREE.Vector3(0.68, 0.38, 1.34),
-    head: true,
-    legs: [
-      ...pair(new THREE.Vector3(0.28, -0.25, 0.74), new THREE.Vector3(0.92, 0, 1.52), [
-        segment(0.42, upOut), segment(0.46, forward), segment(0.34, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.33, -0.25, 0.28), new THREE.Vector3(1.10, 0, 0.62), [
-        segment(0.42, upOut), segment(0.48, forward), segment(0.36, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.33, -0.25, -0.24), new THREE.Vector3(1.10, 0, -0.62), [
-        segment(0.44, upOut), segment(0.50, forward), segment(0.38, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.28, -0.25, -0.74), new THREE.Vector3(0.98, 0, -1.56), [
-        segment(0.46, upOut), segment(0.54, forward), segment(0.40, forward)
-      ])
-    ]
-  }),
-  crawler: finalizePlan({
-    label: 'Crawler',
-    bodyHeight: 1.0,
-    bodyScale: new THREE.Vector3(0.72, 0.44, 0.88),
-    head: false,
-    legs: [
-      ...pair(new THREE.Vector3(0.18, -0.26, 0.18), new THREE.Vector3(0.95, 0, 0.72), [
-        segment(0.50, new THREE.Vector3(Math.sin(initA), -0.42, Math.cos(initA)).normalize()),
-        segment(0.56, forward)
-      ]),
-      ...pair(new THREE.Vector3(0.18, -0.26, -0.18), new THREE.Vector3(1.00, 0, -0.86), [
-        segment(0.52, new THREE.Vector3(Math.sin(initA), -0.42, -Math.cos(initA)).normalize()),
-        segment(0.60, forward)
-      ])
-    ]
-  })
-};
-
-const GAITS = {
-  walk: {
-    label: 'Walk',
-    maxSpeed: 1.05,
-    turnSpeed: 1.85,
-    stationaryHeight: 1.00,
-    movingHeight: 1.08,
-    stationaryTrigger: { h: 0.28, v: 0.36 },
-    movingTrigger: { h: 0.78, v: 0.44 },
-    comfort: { h: 1.22, v: 0.78 },
-    stepDuration: 0.20,
-    stepLift: 0.24,
-    lookAhead: 0.20,
-    scanHeight: 1.75,
-    scanDepth: 3.8,
-    scanGrid: 0.22,
-    scanHeightBias: 0.34,
-    maxConcurrentFraction: 0.24,
-    samePairCooldown: 0.16,
-    crossPairCooldown: 0.10,
-    uncomfortableSpeedMultiplier: 0.28,
-    rowPairSteps: false,
-    rotationLerp: 0.16,
-    preferredRotationLerp: 0.14,
-    preferredPitchLeeway: Math.PI / 7
-  },
-  gallop: {
-    label: 'Gallop',
-    maxSpeed: 1.65,
-    turnSpeed: 1.55,
-    stationaryHeight: 1.06,
-    movingHeight: 1.30,
-    stationaryTrigger: { h: 0.36, v: 0.44 },
-    movingTrigger: { h: 1.10, v: 0.58 },
-    comfort: { h: 1.55, v: 0.98 },
-    stepDuration: 0.15,
-    stepLift: 0.34,
-    lookAhead: 0.30,
-    scanHeight: 2.1,
-    scanDepth: 4.4,
-    scanGrid: 0.24,
-    scanHeightBias: 0.46,
-    maxConcurrentFraction: 0.50,
-    samePairCooldown: 0.09,
-    crossPairCooldown: 0.16,
-    uncomfortableSpeedMultiplier: 0.58,
-    rowPairSteps: true,
-    rotationLerp: 0.16,
-    preferredRotationLerp: 0.14,
-    preferredPitchLeeway: Math.PI / 8
-  }
-};
-
-function cloneGait(gait) {
-  return {
-    ...gait,
-    stationaryTrigger: { ...gait.stationaryTrigger },
-    movingTrigger: { ...gait.movingTrigger },
-    comfort: { ...gait.comfort }
-  };
-}
+// Locomotion bindings. Same functions, same mutable Vector3 data, no behaviour change - the leg
+// methods below are now one-line delegations, kept because the rest of the sim calls them.
+const _loco = createCreatureLocomotion({ THREE });
+const { KinematicChain, rotateXZ, averageVec, orientFromUpForward,
+        GAITS, cloneGait, LOCOMOTION,
+        easeInOut, lerp, clamp, horizontalDistance,
+        convexHull, pointInPoly, nearestOnPoly } = _loco;
+const { FOOT_GROUND, GRAV, KP, KD, H_DRAG, BOUNCE, BODY_MIN_CLEAR, ORIENT_LERP } = LOCOMOTION;
+const _legBy = _loco.legBy, _adjacentPartners = _loco.adjacentPartners;
+const _diagonalPartners = _loco.diagonalPartners, _cacheLegPartners = _loco.cacheLegPartners;
+const _isGrounded = _loco.isGrounded, _legDisplacement = _loco.legDisplacement;
+const _canWalkLegMove = _loco.canWalkLegMove, _canGallopLegMove = _loco.canGallopLegMove;
+const _startStep = _loco.startStep, _scheduleSteps = _loco.scheduleSteps;
+const _advanceLeg = _loco.advanceLeg, _bodySupport = _loco.bodySupport;
+const _orientFromFeet = _loco.orientFromFeet;
+// One solver per world, bound to this world's ground function.
+const _legSolver = _loco.createLegSolver({ terrainHeight, footGround: FOOT_GROUND });
+const _footfallPulse = (leg) => addContactPulse(leg.end);
 
 const gaitSettings = Object.fromEntries(Object.entries(GAITS).map(([key, gait]) => [key, cloneGait(gait)]));
 
@@ -417,52 +279,12 @@ function currentGait() {
   return gaitSettings[currentGaitKey];
 }
 
-function clonePlan(plan) {
-  return finalizePlan({
-    label: plan.label,
-    bodyHeight: plan.bodyHeight,
-    bodyScale: plan.bodyScale.clone(),
-    head: plan.head,
-    legs: plan.legs.map(leg => ({
-      attachment: leg.attachment.clone(),
-      rest: leg.rest.clone(),
-      side: leg.side,
-      row: leg.row,
-      segments: leg.segments.map(s => ({ length: s.length, initDirection: s.initDirection.clone() }))
-    }))
-  });
-}
-
+// The counts are drawn HERE and passed in, because the editable min/max they come from lives with
+// the panel. They must stay the first two draws off this rng or a seed stops reproducing.
 function generateBodyPlan(rng) {
   const pairCount = LEG_PAIRS_PARAM.sampleCount(rng);
   const segmentCount = SEGMENTS_PARAM.sampleCount(rng);
-  const bodyDepth = randRange(rng, 0.72, 1.68);
-  const bodyWidth = randRange(rng, 0.48, 0.92);
-  const bodyHeight = randRange(rng, 0.86, 1.35);
-  const plan = {
-    label: 'Generated',
-    bodyHeight,
-    bodyScale: new THREE.Vector3(bodyWidth, randRange(rng, 0.30, 0.58), bodyDepth),
-    head: rng() > 0.18,
-    legs: []
-  };
-
-  for (let i = 0; i < pairCount; i++) {
-    const t = pairCount === 1 ? 0.5 : i / (pairCount - 1);
-    const z = lerp(bodyDepth * 0.82, -bodyDepth * 0.92, t);
-    const restZ = z + randRange(rng, -0.45, 0.45) + (t < 0.5 ? 0.35 : -0.35);
-    const hip = new THREE.Vector3(randRange(rng, 0.14, 0.36), randRange(rng, -0.38, -0.12), z * randRange(rng, 0.38, 0.62));
-    const rest = new THREE.Vector3(randRange(rng, 0.78, 1.55), 0, restZ);
-    const segments = [];
-    for (let s = 0; s < segmentCount; s++) {
-      const length = randRange(rng, 0.28, 0.62) * (s === segmentCount - 1 ? randRange(rng, 0.72, 1.2) : 1);
-      const lift = s === 0 ? randRange(rng, -0.55, -0.16) : randRange(rng, -0.12, 0.16);
-      segments.push(segment(length, new THREE.Vector3(randRange(rng, 0.08, 0.55), lift, z >= 0 ? 0.72 : -0.72).normalize()));
-    }
-    plan.legs.push(...pair(hip, rest, segments));
-  }
-
-  return finalizePlan(plan);
+  return _plans.generateBodyPlan(rng, { pairCount, segmentCount });
 }
 
 function installGeneratedPlan(plan) {
@@ -478,66 +300,9 @@ function installGeneratedPlan(plan) {
   if (select) select.value = currentPlanKey;
 }
 
-function serializePlan(plan) {
-  if (!plan) return null;
-  return {
-    label: plan.label,
-    bodyHeight: plan.bodyHeight,
-    bodyScale: plan.bodyScale.toArray(),
-    head: plan.head,
-    legs: plan.legs.map(leg => ({
-      attachment: leg.attachment.toArray(),
-      rest: leg.rest.toArray(),
-      side: leg.side,
-      row: leg.row,
-      segments: leg.segments.map(segment => ({
-        length: segment.length,
-        initDirection: segment.initDirection.toArray()
-      }))
-    }))
-  };
-}
-
-function deserializePlan(data) {
-  return finalizePlan({
-    label: data.label || 'Generated',
-    bodyHeight: data.bodyHeight,
-    bodyScale: new THREE.Vector3().fromArray(data.bodyScale),
-    head: data.head !== false,
-    legs: data.legs.map(leg => ({
-      attachment: new THREE.Vector3().fromArray(leg.attachment),
-      rest: new THREE.Vector3().fromArray(leg.rest),
-      side: leg.side,
-      row: leg.row,
-      segments: leg.segments.map(segment => ({
-        length: segment.length,
-        initDirection: new THREE.Vector3().fromArray(segment.initDirection)
-      }))
-    }))
-  });
-}
-
 function editedPlan() {
   const plan = clonePlan(BODY_PLANS[currentPlanKey]);
   return editPlanWithSettings(plan, modelSettings);
-}
-
-function editPlanWithSettings(plan, settings) {
-  plan.bodyHeight *= settings.scale * settings.bodyHeight;
-  plan.bodyScale.multiplyScalar(settings.scale);
-  plan.bodyScale.x *= settings.bodyWidth;
-  plan.bodyScale.y *= settings.bodyThickness;
-  plan.bodyScale.z *= settings.bodyDepth;
-  for (const leg of plan.legs) {
-    leg.attachment.multiplyScalar(settings.scale);
-    leg.attachment.x *= settings.hipX;
-    leg.attachment.y *= settings.hipY;
-    leg.rest.multiplyScalar(settings.scale);
-    leg.rest.x *= settings.restX;
-    leg.rest.z *= settings.restZ;
-    for (const segment of leg.segments) segment.length *= settings.scale * settings.segmentScale;
-  }
-  return finalizePlan(plan);
 }
 
 // ===================== geometry helpers =====================
@@ -549,41 +314,6 @@ function placeSegment(mesh, a, b) {
   mesh.position.copy(_mid);
   mesh.scale.set(1, len / mesh.userData.base, 1);
   mesh.quaternion.setFromUnitVectors(_upAxis, _seg.normalize());
-}
-
-const _bx = new THREE.Vector3(), _by = new THREE.Vector3(), _bz = new THREE.Vector3(), _basis = new THREE.Matrix4();
-function orientFromUpForward(up, fwd, out) {
-  _by.copy(up).normalize();
-  _bx.crossVectors(_by, fwd);
-  if (_bx.lengthSq() < 1e-6) _bx.set(1, 0, 0);
-  _bx.normalize();
-  _bz.crossVectors(_bx, _by).normalize();
-  _basis.makeBasis(_bx, _by, _bz);
-  return out.setFromRotationMatrix(_basis);
-}
-
-function easeInOut(t) { return t * t * (3 - 2 * t); }
-function lerp(a, b, t) { return a + (b - a) * t; }
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
-function rotateXZ(local, yaw, out = new THREE.Vector3()) {
-  const cy = Math.cos(yaw), sy = Math.sin(yaw);
-  return out.set(
-    local.x * cy + local.z * sy,
-    local.y,
-    -local.x * sy + local.z * cy
-  );
-}
-
-function averageVec(points, out = new THREE.Vector3()) {
-  out.set(0, 0, 0);
-  if (!points.length) return out;
-  for (const p of points) out.add(p);
-  return out.multiplyScalar(1 / points.length);
-}
-
-function horizontalDistance(a, b) {
-  return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
 function groundTarget(x, z) {
@@ -604,127 +334,6 @@ function addCircleSegments(points, center, radius, segments = 28) {
       new THREE.Vector3(center.x + Math.cos(a) * radius, center.y, center.z + Math.sin(a) * radius),
       new THREE.Vector3(center.x + Math.cos(b) * radius, center.y, center.z + Math.sin(b) * radius)
     );
-  }
-}
-
-// ===================== support-polygon geometry (XZ) =====================
-// Support-polygon convex hull, pooled (creature-perf-analysis/plan.md 2.2): writes
-// the hull into the caller's reused `out` array instead of allocating p/lo/up and a
-// concat every call. `out` holds references to the same point objects passed in
-// (from _groundedBuf), valid only until the next convexHull call. Comparator and
-// cross-product are hoisted to module scope so they aren't re-created per call.
-const _hullSort = (a, b) => a.x - b.x || a.z - b.z;
-const _hullCross = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
-const _hullP = [], _hullLo = [], _hullUp = [];
-function convexHull(pts, count, out) {
-  out.length = 0;
-  if (count < 3) { for (let i = 0; i < count; i++) out.push(pts[i]); return out; }
-  const p = _hullP; p.length = 0;
-  for (let i = 0; i < count; i++) p.push(pts[i]);
-  p.sort(_hullSort);
-  const lo = _hullLo; lo.length = 0;
-  for (const q of p) {
-    while (lo.length >= 2 && _hullCross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop();
-    lo.push(q);
-  }
-  const up = _hullUp; up.length = 0;
-  for (let i = p.length - 1; i >= 0; i--) {
-    const q = p[i];
-    while (up.length >= 2 && _hullCross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop();
-    up.push(q);
-  }
-  lo.pop();
-  up.pop();
-  for (let i = 0; i < lo.length; i++) out.push(lo[i]);
-  for (let i = 0; i < up.length; i++) out.push(up[i]);
-  return out;
-}
-
-function pointInPoly(px, pz, poly) {
-  if (poly.length < 3) return false;
-  let sign = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length];
-    const c = (b.x - a.x) * (pz - a.z) - (b.z - a.z) * (px - a.x);
-    if (Math.abs(c) < 1e-9) continue;
-    const s = Math.sign(c);
-    if (sign === 0) sign = s;
-    else if (s !== sign) return false;
-  }
-  return true;
-}
-
-function nearestOnPoly(px, pz, poly, out) {
-  let bd = Infinity;
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length];
-    const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1e-9;
-    let t = ((px - a.x) * dx + (pz - a.z) * dz) / L2;
-    t = clamp(t, 0, 1);
-    const qx = a.x + t * dx, qz = a.z + t * dz, d = (qx - px) ** 2 + (qz - pz) ** 2;
-    if (d < bd) { bd = d; out.x = qx; out.z = qz; }
-  }
-  return out;
-}
-
-// ===================== FABRIK chain =====================
-class KinematicChain {
-  constructor(segments) {
-    this.lengths = segments.map(s => s.length);
-    this.totalLength = this.lengths.reduce((s, n) => s + n, 0);
-    this.initDirections = segments.map(s => s.initDirection.clone());
-    this.points = [];
-    this.maxIterations = 12;
-    this.tolerance = 0.0001;
-  }
-
-  reset(root, orientation) {
-    this.points = [root.clone()];
-    for (let i = 0; i < this.lengths.length; i++) {
-      const dir = this.initDirections[i].clone().applyQuaternion(orientation).normalize();
-      this.points.push(this.points[i].clone().addScaledVector(dir, this.lengths[i]));
-    }
-  }
-
-  solve(root, target, orientation) {
-    if (this.points.length !== this.lengths.length + 1) this.reset(root, orientation);
-
-    this.points[0].copy(root);
-    const total = this.totalLength;
-    const distance = root.distanceTo(target);
-
-    if (distance >= total - 1e-5) {
-      _fabrikDir.subVectors(target, root).normalize();
-      for (let i = 0; i < this.lengths.length; i++) {
-        this.points[i + 1].copy(this.points[i]).addScaledVector(_fabrikDir, this.lengths[i]);
-      }
-      return this.points;
-    }
-
-    for (let i = 1; i < this.points.length; i++) {
-      if (this.points[i].distanceToSquared(this.points[i - 1]) < 1e-8) {
-        _fabrikDir.copy(this.initDirections[i - 1]).applyQuaternion(orientation).normalize();
-        this.points[i].copy(this.points[i - 1]).addScaledVector(_fabrikDir, this.lengths[i - 1]);
-      }
-    }
-
-    for (let iter = 0; iter < this.maxIterations; iter++) {
-      this.points[this.points.length - 1].copy(target);
-      for (let i = this.points.length - 2; i >= 0; i--) {
-        _fabrikDir.subVectors(this.points[i], this.points[i + 1]).normalize();
-        this.points[i].copy(this.points[i + 1]).addScaledVector(_fabrikDir, this.lengths[i]);
-      }
-
-      this.points[0].copy(root);
-      for (let i = 0; i < this.lengths.length; i++) {
-        _fabrikDir.subVectors(this.points[i + 1], this.points[i]).normalize();
-        this.points[i + 1].copy(this.points[i]).addScaledVector(_fabrikDir, this.lengths[i]);
-      }
-
-      if (this.points[this.points.length - 1].distanceToSquared(target) < this.tolerance) break;
-    }
-
-    return this.points;
   }
 }
 
@@ -789,14 +398,8 @@ const _rotated = new THREE.Vector3(), _fwd = new THREE.Vector3(), _n = new THREE
 const _wander = new THREE.Vector3(), _sep = new THREE.Vector3(), _away = new THREE.Vector3(), _steer = new THREE.Vector3();
 const _followOut = {}, _hostileOut = {}; // reusable outputs for followDesire/hostileDesire (no per-frame alloc)
 const _chooseContact = new THREE.Vector3(); // holds the chosen punch-arm contact (proxy targets reuse one scratch)
-const _com = { x: 0, z: 0 }, _near = { x: 0, z: 0 };
-const _frontAvg = new THREE.Vector3(), _backAvg = new THREE.Vector3(), _leftAvg = new THREE.Vector3(), _rightAvg = new THREE.Vector3();
-const _fabrikDir = new THREE.Vector3();
 const _clearEuler = new THREE.Euler(), _clearQ = new THREE.Quaternion(), _clearV = new THREE.Vector3();
-const _legRestGround = new THREE.Vector3(), _legMoveDir = new THREE.Vector3(), _legLookAhead = new THREE.Vector3();
 const _armAxis = new THREE.Vector3(), _armPole = new THREE.Vector3(), _armPreferred = new THREE.Vector3();
-const _groundedBuf = Array.from({ length: 16 }, () => ({ x: 0, y: 0, z: 0 }));
-const _hullOut = [];
 const _nearbyScratch = [];
 const _trunkScratch = [];
 const _instMatrix = new THREE.Matrix4();
@@ -1629,12 +1232,7 @@ class Creature {
     // 1.3: leg row/side topology is fixed at construction, so precompute partner
     // lists here rather than re-deriving them (with fresh Sets/arrays) per leg per
     // fixed step inside scheduleSteps.
-    for (const leg of this.legs) {
-      leg.adjacentPartnersCached = this.adjacentPartners(leg);
-      leg.diagonalPartnersCached = this.diagonalPartners(leg);
-      leg.rowMateCached = this.legBy(leg.row, -leg.side);
-      leg.crossRowsCached = this.legs.filter(l => Math.abs(l.row - leg.row) === 1);
-    }
+    _cacheLegPartners(this.legs);
 
     this.pos = spawn.clone();
     this.vel = new THREE.Vector3();
@@ -1941,7 +1539,7 @@ class Creature {
   }
 
   isGrounded(leg) {
-    return !leg.stepping && leg.targetGrounded;
+    return _isGrounded(leg);
   }
 
   // Cached at construction (see constructor Phase 1 block): pure functions of
@@ -2553,173 +2151,39 @@ class Creature {
   }
 
   legBy(row, side) {
-    return this.legs.find(l => l.row === row && l.side === side) || null;
+    return _legBy(this.legs, row, side);
   }
 
   diagonalPartners(leg) {
-    const rows = [...new Set(this.legs.map(l => l.row))].sort((a, b) => a - b);
-    if (rows.length < 2) return [];
-    const idx = rows.indexOf(leg.row);
-    const candidates = [];
-    const prev = rows[Math.max(0, idx - 1)];
-    const next = rows[Math.min(rows.length - 1, idx + 1)];
-    for (const row of new Set([prev, next])) {
-      if (row !== leg.row) {
-        const found = this.legBy(row, -leg.side);
-        if (found) candidates.push(found);
-      }
-    }
-    return candidates;
+    return _diagonalPartners(this.legs, leg);
   }
 
   adjacentPartners(leg) {
-    const partners = [];
-    const sameRow = this.legBy(leg.row, -leg.side);
-    if (sameRow) partners.push(sameRow);
-    for (const other of this.legs) {
-      if (other === leg) continue;
-      if (other.side === leg.side && Math.abs(other.row - leg.row) === 1) partners.push(other);
-    }
-    return partners;
+    return _adjacentPartners(this.legs, leg);
   }
 
   legDisplacement(leg) {
-    return horizontalDistance(leg.end, leg.target);
+    return _legDisplacement(leg);
   }
 
   canWalkLegMove(leg, gait) {
-    if (!leg.wants || leg.stepping) return false;
-    if (!leg.targetGrounded) return true;
-
-    const adjacent = leg.adjacentPartnersCached;
-    if (adjacent.some(l => l.targetGrounded && !this.isGrounded(l))) return false;
-    if (adjacent.some(l => l.targetGrounded && l.timeSinceStopMove < gait.crossPairCooldown)) return false;
-
-    const diagonals = leg.diagonalPartnersCached;
-    if (diagonals.some(l => l.targetGrounded && l.timeSinceBeginMove < gait.samePairCooldown)) return false;
-
-    const grounded = this.legs.some(l => this.isGrounded(l));
-    const alreadyAtTarget = leg.end.distanceToSquared(leg.target) < 0.01;
-    return grounded && !alreadyAtTarget;
+    return _canWalkLegMove(leg, gait, this.legs);
   }
 
   canGallopLegMove(leg, gait) {
-    if (!leg.wants || leg.stepping) return false;
-    if (!leg.targetGrounded) return true;
-    if (!this.legs.some(l => this.isGrounded(l))) return false;
-
-    const rowMate = leg.rowMateCached;
-    leg.primary = leg.phase === 0 || !rowMate || !rowMate.targetGrounded;
-    if (!leg.primary) {
-      return rowMate?.stepping && rowMate.timeSinceBeginMove >= gait.samePairCooldown;
-    }
-
-    const crossRows = leg.crossRowsCached;
-    if (crossRows.some(l => l.targetGrounded && l.timeSinceBeginMove < gait.crossPairCooldown)) return false;
-    return true;
+    return _canGallopLegMove(leg, gait, this.legs);
   }
 
   scheduleSteps(gait) {
-    for (const leg of this.legs) {
-      leg.canMove = gait.rowPairSteps ? this.canGallopLegMove(leg, gait) : this.canWalkLegMove(leg, gait);
-    }
-
-    const moving = this.legs.filter(l => l.stepping);
-    const maxConcurrent = Math.max(1, Math.floor(this.legs.length * gait.maxConcurrentFraction));
-    if (moving.length >= maxConcurrent) return;
-
-    const candidates = this.legs
-      .filter(l => l.canMove)
-      .sort((a, b) => this.legDisplacement(b) - this.legDisplacement(a));
-
-    if (!candidates.length) return;
-
-    if (gait.rowPairSteps) {
-      const row = candidates[0].row;
-      const rowLegs = candidates
-        .filter(l => l.row === row)
-        .sort((a, b) => Number(b.primary) - Number(a.primary) || this.legDisplacement(b) - this.legDisplacement(a))
-        .slice(0, maxConcurrent - moving.length);
-      for (const leg of rowLegs) this.startStep(leg, gait);
-      return;
-    }
-
-    const activePhases = new Set(moving.map(l => l.phase));
-    for (const leg of candidates) {
-      if (this.legs.filter(l => l.stepping).length >= maxConcurrent) break;
-      if (activePhases.has(leg.phase) && this.legs.length <= 4) continue;
-      this.startStep(leg, gait);
-      activePhases.add(leg.phase);
-    }
+    _scheduleSteps(this.legs, gait);
   }
 
   startStep(leg, gait) {
-    leg.stepping = true;
-    leg.t = 0;
-    leg.timeSinceBeginMove = 0;
-    leg.stepStart.copy(leg.end);
-    leg.stepEnd.copy(leg.target);
+    _startStep(leg);
   }
 
   updateLegTarget(leg, gait, triggerH, fullScan = true) {
-    rotateXZ(leg.restLocal, this.yaw, _rotated);
-    const restX = this.pos.x + _rotated.x;
-    const restZ = this.pos.z + _rotated.z;
-    _legRestGround.set(restX, terrainHeight(restX, restZ) + FOOT_GROUND, restZ);
-    leg.restX = _legRestGround.x;
-    leg.restY = _legRestGround.y;
-    leg.restZ = _legRestGround.z;
-
-    if (this.vel.lengthSq() > 0.0001) {
-      _legMoveDir.copy(this.vel).setY(0).normalize();
-    } else {
-      _legMoveDir.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
-    }
-    _legLookAhead.copy(_legRestGround).addScaledVector(_legMoveDir, triggerH * gait.lookAhead * 3.0);
-    leg.lookAhead.copy(_legLookAhead);
-    leg.scanStart.set(_legLookAhead.x, _legLookAhead.y + gait.scanHeight, _legLookAhead.z);
-    leg.scanEnd.set(_legLookAhead.x, _legLookAhead.y - gait.scanDepth, _legLookAhead.z);
-
-    if (!fullScan) {
-      const y = terrainHeight(_legLookAhead.x, _legLookAhead.z) + FOOT_GROUND;
-      leg.target.set(_legLookAhead.x, y, _legLookAhead.z);
-      leg.groundPosition.copy(leg.target);
-      leg.targetGrounded = true;
-      return _legRestGround;
-    }
-
-    let bestScore = Infinity, bestX = 0, bestY = 0, bestZ = 0, hasBest = false;
-    const sg = gait.scanGrid;
-    for (let di = -1; di <= 1; di++) {
-      for (let dj = -1; dj <= 1; dj++) {
-        const x = _legLookAhead.x + di * sg;
-        const z = _legLookAhead.z + dj * sg;
-        const y = terrainHeight(x, z) + FOOT_GROUND;
-        if (y > leg.scanStart.y || y < leg.scanEnd.y) continue;
-
-        const comfortH = Math.hypot(x - _legRestGround.x, z - _legRestGround.z);
-        const comfortV = Math.abs(y - _legRestGround.y);
-        if (comfortH > gait.comfort.h || comfortV > gait.comfort.v + 0.15) continue;
-
-        const dlx = x - _legLookAhead.x, dly = y - _legLookAhead.y, dlz = z - _legLookAhead.z;
-        let score = dlx * dlx + dly * dly + dlz * dlz;
-        const ahead = (x - _legRestGround.x) * _legMoveDir.x + (z - _legRestGround.z) * _legMoveDir.z;
-        if (ahead < 0) score += Math.abs(ahead) * gait.scanHeightBias;
-        if (score < bestScore) { bestScore = score; bestX = x; bestY = y; bestZ = z; hasBest = true; }
-      }
-    }
-
-    if (hasBest) {
-      leg.target.set(bestX, bestY, bestZ);
-      leg.groundPosition.set(bestX, bestY, bestZ);
-      leg.targetGrounded = true;
-    } else {
-      leg.target.copy(_legLookAhead);
-      leg.target.y = _legRestGround.y;
-      leg.targetGrounded = false;
-    }
-
-    return _legRestGround;
+    return _legSolver.solveLegTarget(leg, gait, triggerH, fullScan, this);
   }
 
   physicsStep(h, gait, debug = false) {
@@ -2747,95 +2211,23 @@ class Creature {
       if (fullFootScan) creatureStats.ikFull++;
       else creatureStats.ikCheap++;
 
-      const dh = horizontalDistance(leg.end, leg.target);
-      const dv = Math.abs(leg.end.y - leg.target.y);
-      const comfortDh = horizontalDistance(leg.end, restGround);
-      const comfortDv = Math.abs(leg.end.y - restGround.y);
-      leg.uncomfortable = dh > gait.comfort.h || dv > gait.comfort.v;
-      if (comfortDh > gait.comfort.h || comfortDv > gait.comfort.v) leg.uncomfortable = true;
-
-      if (leg.stepping) {
-        leg.t += h / gait.stepDuration;
-        const tc = Math.min(leg.t, 1), e = easeInOut(tc);
-        leg.end.lerpVectors(leg.stepStart, leg.stepEnd, e);
-        leg.end.y += Math.sin(Math.PI * tc) * gait.stepLift;
-        if (leg.t >= 1) {
-          leg.stepping = false;
-          leg.end.copy(leg.stepEnd);
-          leg.timeSinceStopMove = 0;
-          addContactPulse(leg.end);
-        }
-        leg.wants = false;
-      } else {
-        leg.wants = !leg.targetGrounded || dh > triggerH || dv > triggerV;
-      }
+      _advanceLeg(leg, gait, h, triggerH, triggerV, restGround, _footfallPulse);
     }
     this.forceFootTargetRefresh = false;
 
     this.scheduleSteps(gait);
 
-    let cx = 0, cy = 0, cz = 0;
-    for (const leg of this.legs) {
-      cx += leg.end.x;
-      cy += leg.end.y;
-      cz += leg.end.z;
-    }
-    cx /= this.legs.length;
-    cy /= this.legs.length;
-    cz /= this.legs.length;
-    _com.x = (cx + this.pos.x) * 0.5;
-    _com.z = (cz + this.pos.z) * 0.5;
-    const comY = (cy + this.pos.y) * 0.5 + 0.01;
-
-    let groundedCount = 0, firstGroundedEnd = null, polyY = 0;
-    for (const leg of this.legs) {
-      if (!leg.stepping && leg.targetGrounded) {
-        if (groundedCount === 0) firstGroundedEnd = leg.end;
-        const pt = _groundedBuf[groundedCount];
-        pt.x = leg.end.x; pt.y = leg.end.y; pt.z = leg.end.z;
-        polyY += leg.end.y;
-        groundedCount++;
-      }
-    }
-    const fG = groundedCount / this.legs.length;
-    let comInside = false, haveSupport = false; // COM vs support-polygon (stability metric)
-    let nx = 0, ny = 1, nz = 0, haveNormal = groundedCount > 0;
-    // Reuse the pooled hull buffer; empty unless groundedCount >= 2 fills it below.
-    let poly = _hullOut; poly.length = 0;
-
-    if (groundedCount === 1) {
-      const g = firstGroundedEnd;
-      nx = _com.x - g.x;
-      ny = comY - g.y;
-      nz = _com.z - g.z;
-    } else if (groundedCount >= 2) {
-      poly = convexHull(_groundedBuf, groundedCount, _hullOut);
-      polyY /= groundedCount;
-      haveSupport = poly.length >= 3;
-      comInside = haveSupport && pointInPoly(_com.x, _com.z, poly);
-      if (comInside) {
-        nx = 0;
-        ny = 1;
-        nz = 0;
-      } else {
-        nearestOnPoly(_com.x, _com.z, poly, _near);
-        nx = _com.x - _near.x;
-        ny = comY - polyY;
-        nz = _com.z - _near.z;
-      }
-    }
-
-    if (haveNormal) {
-      const L = Math.hypot(nx, ny, nz) || 1;
-      nx /= L; ny /= L; nz /= L;
-    }
+    // Where the body is held up from: mean foot height, and the direction the height spring pushes
+    // along (straight up while the COM is over the support polygon, tilting off it once it is not).
+    const sup = _bodySupport(this.legs, this.pos);
+    const fG = sup.fG;
 
     this.vel.y -= GRAV * h;
-    if (haveNormal) {
-      const preferredY = cy + bodyHeight;
+    if (sup.haveNormal) {
+      const preferredY = sup.cy + bodyHeight;
       let mag = GRAV + KP * (preferredY - this.pos.y) - KD * this.vel.y;
       mag = clamp(mag, 0, GRAV * 4 * fG);
-      let ax = nx * mag, ay = ny * mag, az = nz * mag;
+      let ax = sup.nx * mag, ay = sup.ny * mag, az = sup.nz * mag;
       if (Math.hypot(ax, az) > ay) { ax = 0; ay = 0; az = 0; }
       this.vel.x += ax * h;
       this.vel.y += ay * h;
@@ -2904,7 +2296,7 @@ class Creature {
     m.dragAvg += ((nGround ? dragSum / nGround : 0) - m.dragAvg) * a;
     m.scanFailPct += ((scanFail / this.legs.length) * 100 - m.scanFailPct) * a;
     m.stuckPct += ((stuck / this.legs.length) * 100 - m.stuckPct) * a;
-    if (haveSupport) m.comOutsidePct += ((comInside ? 0 : 100) - m.comOutsidePct) * a;
+    if (sup.haveSupport) m.comOutsidePct += ((sup.comInside ? 0 : 100) - m.comOutsidePct) * a;
     m.pitchMean += (this.pitch - m.pitchMean) * a;
     m.pitchVar += ((this.pitch - m.pitchMean) ** 2 - m.pitchVar) * a;
     m.rollMean += (this.roll - m.rollMean) * a;
@@ -2913,20 +2305,21 @@ class Creature {
 
     if (debug) {
       let origin = null;
-      if (groundedCount === 1 && firstGroundedEnd) {
-        origin = new THREE.Vector3(firstGroundedEnd.x, firstGroundedEnd.y, firstGroundedEnd.z);
-      } else if (groundedCount >= 2) {
-        if (poly.length >= 3 && pointInPoly(_com.x, _com.z, poly)) {
-          origin = new THREE.Vector3(_com.x, polyY, _com.z);
+      if (sup.groundedCount === 1 && sup.firstGroundedEnd) {
+        const g = sup.firstGroundedEnd;
+        origin = new THREE.Vector3(g.x, g.y, g.z);
+      } else if (sup.groundedCount >= 2) {
+        if (sup.poly.length >= 3 && pointInPoly(sup.comX, sup.comZ, sup.poly)) {
+          origin = new THREE.Vector3(sup.comX, sup.polyY, sup.comZ);
         } else {
-          origin = new THREE.Vector3(_near.x, polyY, _near.z);
+          origin = new THREE.Vector3(sup.nearX, sup.polyY, sup.nearZ);
         }
       }
       this.debugData = {
-        poly: poly.map(p => new THREE.Vector3(p.x, p.y + 0.05, p.z)),
-        com: new THREE.Vector3(_com.x, comY, _com.z),
+        poly: sup.poly.map(p => new THREE.Vector3(p.x, p.y + 0.05, p.z)),
+        com: new THREE.Vector3(sup.comX, sup.comY, sup.comZ),
         origin,
-        normal: new THREE.Vector3(nx, ny, nz),
+        normal: new THREE.Vector3(sup.nx, sup.ny, sup.nz),
         legs: this.legs.map(leg => ({
           rest: new THREE.Vector3(leg.restX, leg.restY + 0.06, leg.restZ),
           lookAhead: leg.lookAhead.clone().add(new THREE.Vector3(0, 0.08, 0)),
@@ -2946,37 +2339,7 @@ class Creature {
   }
 
   updateBodyOrientation(gait) {
-    _frontAvg.set(0, 0, 0); _backAvg.set(0, 0, 0);
-    _leftAvg.set(0, 0, 0);  _rightAvg.set(0, 0, 0);
-    let nF = 0, nB = 0, nL = 0, nR = 0;
-    for (const leg of this.legs) {
-      const e = leg.end;
-      if (leg.restLocal.z > 0) { _frontAvg.x += e.x; _frontAvg.y += e.y; _frontAvg.z += e.z; nF++; }
-      else                      { _backAvg.x  += e.x; _backAvg.y  += e.y; _backAvg.z  += e.z; nB++; }
-      if (leg.side < 0)         { _leftAvg.x  += e.x; _leftAvg.y  += e.y; _leftAvg.z  += e.z; nL++; }
-      else                      { _rightAvg.x += e.x; _rightAvg.y += e.y; _rightAvg.z += e.z; nR++; }
-    }
-    if (!nF || !nB || !nL || !nR) return;
-    if (nF > 1) _frontAvg.multiplyScalar(1 / nF);
-    if (nB > 1) _backAvg.multiplyScalar(1 / nB);
-    if (nL > 1) _leftAvg.multiplyScalar(1 / nL);
-    if (nR > 1) _rightAvg.multiplyScalar(1 / nR);
-
-    const fvY = _frontAvg.y - _backAvg.y;
-    const fvH = Math.hypot(_frontAvg.x - _backAvg.x, _frontAvg.z - _backAvg.z) || 1e-3;
-    const svY = _rightAvg.y - _leftAvg.y;
-    const svH = Math.hypot(_rightAvg.x - _leftAvg.x, _rightAvg.z - _leftAvg.z) || 1e-3;
-
-    const pitchT = -Math.atan2(fvY, fvH);
-    const rollT = Math.atan2(svY, svH);
-
-    this.preferredPitch += (pitchT - this.preferredPitch) * gait.preferredRotationLerp;
-    this.preferredRoll += (rollT - this.preferredRoll) * gait.preferredRotationLerp;
-
-    const pitchTarget = clamp(this.preferredPitch, -gait.preferredPitchLeeway, gait.preferredPitchLeeway);
-    const rollTarget = clamp(this.preferredRoll, -Math.PI / 5, Math.PI / 5);
-    this.pitch += (pitchTarget - this.pitch) * gait.rotationLerp;
-    this.roll += (rollTarget - this.roll) * gait.rotationLerp;
+    _orientFromFeet(this.legs, gait, this);
   }
 
   setArmState(arm, state) {

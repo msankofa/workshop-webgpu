@@ -611,6 +611,7 @@ import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { createProceduralPlayerBody, createGaitScheduler, GAIT_DEFAULTS } from './player-procedural-body.js?v=23';
 import { createWeaponPoseController } from './weapon-pose-controller.js?v=5';
@@ -947,7 +948,7 @@ function syncV3WeaponDisplayModel(model) {
   }
 }
 
-const gltfLoader = new GLTFLoader();
+const gltfLoader = attachDracoLoader(new GLTFLoader());
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
 // Copy of environment-viewer.html's normalizeObject: axis-align the longest dim, scale so the
@@ -1867,8 +1868,8 @@ function prepareV3RigRetarget() {
 }
 
 function initializeV3RigCalibration(body, state, retarget, group) {
-  if ((state.prone || 0) > 0.01 || (state.crouch || 0) > 0.01) {
-    retarget.message = 'Stand upright once to calibrate imported rig scale.';
+  if ((state.prone || 0) > 0.01 || (state.crouch || 0) > 0.01 || (state.velocity?.lengthSq() || 0) > 0.0025) {
+    retarget.message = 'Stand still upright once to calibrate imported rig scale.';
     syncV3RigRetargetUi(retarget);
     return false;
   }
@@ -1898,7 +1899,8 @@ function initializeV3RigCalibration(body, state, retarget, group) {
 
   const hipsBone = retarget.bind.get('hips').bone;
   const importedHipsLocal = group.worldToLocal(hipsBone.getWorldPosition(new THREE.Vector3()));
-  const referencePelvisLocal = new THREE.Vector3(0, (state.height || 1.8) * (body.gait?.cfg?.pelvisHeightRatio ?? 0.58), 0);
+  retarget.calibrationPelvisRatio = body.gait?.cfg?.pelvisHeightRatio ?? 0.58;
+  const referencePelvisLocal = new THREE.Vector3(0, (state.height || 1.8) * retarget.calibrationPelvisRatio, 0);
   retarget.driverOffset.copy(importedHipsLocal).addScaledVector(referencePelvisLocal, -retarget.driverScale);
 
   const groupWorld = group.getWorldQuaternion(new THREE.Quaternion());
@@ -1978,7 +1980,7 @@ function getV3TerrainFootFrame(state, position) {
     epsilon * 2,
     terrainHeight(position.x, position.z - epsilon) - terrainHeight(position.x, position.z + epsilon)
   ).normalize();
-  const forward = new THREE.Vector3(Math.sin(state.yaw || 0), 0, Math.cos(state.yaw || 0));
+  const forward = new THREE.Vector3(-Math.sin(state.yaw || 0), 0, -Math.cos(state.yaw || 0)); // body faces -Z at yaw 0
   forward.addScaledVector(normal, -forward.dot(normal));
   if (forward.lengthSq() < 1e-10) forward.set(0, 0, 1);
   else forward.normalize();
@@ -2013,9 +2015,17 @@ function solveV3HandOrientation(chain, joints, retarget, blend, targetFrameWorld
   const driver = joints[chain.handJoint];
   const grip = retarget.handGrip.get(chain.side);
   if (!bind?.bone?.parent || !driver || !grip?.basisLocalQuaternion) return false;
-  const desiredFrame = targetFrameWorld
-    ? targetFrameWorld.clone()
-    : driver.getWorldQuaternion(new THREE.Quaternion());
+  let fallbackFrame = null;
+  if (!targetFrameWorld) {
+    // Relaxed-hand fallback: fingers world-down, palm faces the body midline.
+    const driverYawQuat = driver.getWorldQuaternion(new THREE.Quaternion());
+    const fingersDown = new THREE.Vector3(0, -1, 0);
+    const palmInward = new THREE.Vector3(chain.side === 'right' ? -1 : 1, 0, 0).applyQuaternion(driverYawQuat);
+    palmInward.addScaledVector(fingersDown, -palmInward.dot(fingersDown)).normalize();
+    const acrossPalm = new THREE.Vector3().crossVectors(fingersDown, palmInward).normalize();
+    fallbackFrame = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(acrossPalm, fingersDown, palmInward));
+  }
+  const desiredFrame = targetFrameWorld ? targetFrameWorld.clone() : fallbackFrame.clone();
   const desiredWorld = desiredFrame.multiply(grip.basisLocalQuaternion.clone().invert());
   const parentWorldInverse = bind.bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
   const desiredLocal = parentWorldInverse.multiply(desiredWorld);
@@ -2025,7 +2035,7 @@ function solveV3HandOrientation(chain, joints, retarget, blend, targetFrameWorld
     .multiply(grip.basisLocalQuaternion);
   retarget.handSolveAngle.set(
     chain.side,
-    THREE.MathUtils.radToDeg(solvedFrame.angleTo(targetFrameWorld || driver.getWorldQuaternion(new THREE.Quaternion()))),
+    THREE.MathUtils.radToDeg(solvedFrame.angleTo(targetFrameWorld || fallbackFrame)),
   );
   return true;
 }
@@ -2200,6 +2210,9 @@ function updateV3RigRetarget(body, state, cfg, group) {
   }
 
   group.updateMatrixWorld(true);
+  // recalibrate if the pelvis-height slider moved since the baked driverOffset was computed
+  const liveRatio = body.gait?.cfg?.pelvisHeightRatio ?? 0.58;
+  if (retarget.calibrationReady && Math.abs(liveRatio - retarget.calibrationPelvisRatio) > 1e-3) retarget.calibrationReady = false;
   if (!retarget.calibrationReady && !initializeV3RigCalibration(body, state, retarget, group)) return false;
   const blend = THREE.MathUtils.clamp(cfg.legRetargetBlend, 0, 1);
   const point = (name) => mapV3DriverPoint(group, retarget, joints[name]);
@@ -2271,41 +2284,52 @@ function v3GripAnchorWorld(side) {
     .multiply(new THREE.Quaternion(...(anchor.q || [0, 0, 0, 1])));
   const cacheKey = currentWeaponId + ':' + side;
   let correction = v3GripFrameCorrectionCache.get(cacheKey);
+  if (!correction && WEAPON_ANCHORS[currentWeaponId]?.gripFrame === 'palm-v1') {
+    // palm-v1 grips were authored against the editor hand proxies — the anchor IS the palm frame
+    correction = new THREE.Quaternion();
+    v3GripFrameCorrectionCache.set(cacheKey, correction);
+  }
   if (!correction) {
-    const boundsLength = Math.max(
-      0.1,
-      new THREE.Box3().setFromObject(v3WeaponDisplayModel).getSize(new THREE.Vector3()).length(),
-    );
-    let nearest = null;
-    for (let x = -1; x <= 1; x++) {
-      for (let y = -1; y <= 1; y++) {
-        for (let z = -1; z <= 1; z++) {
-          if (x === 0 && y === 0 && z === 0) continue;
-          const direction = new THREE.Vector3(x, y, z).normalize().applyQuaternion(quaternion);
-          v3GripRaycaster.set(position, direction);
-          v3GripRaycaster.near = 0;
-          v3GripRaycaster.far = boundsLength;
-          const hit = v3GripRaycaster.intersectObject(v3WeaponDisplayModel, true)[0];
-          if (hit && (!nearest || hit.distance < nearest.distance)) {
-            nearest = { distance: hit.distance, direction: direction.clone() };
-          }
-        }
+    // Legacy anchors: Y-twist is arbitrary per weapon/side; derive the palm frame from weapon geometry instead.
+    const weaponBox = new THREE.Box3().setFromObject(v3WeaponDisplayModel);
+    const boxCenter = weaponBox.getCenter(new THREE.Vector3());
+    const boxDiag = Math.max(0.1, weaponBox.getSize(new THREE.Vector3()).length());
+
+    const fingerAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
+    const elbow = body?.joints?.[side + 'Elbow']?.getWorldPosition(new THREE.Vector3());
+    const wrist = body?.joints?.[side + 'Wrist']?.getWorldPosition(new THREE.Vector3());
+    if (elbow && wrist) {
+      const forearm = wrist.clone().sub(elbow);
+      if (forearm.lengthSq() > 1e-10 && forearm.dot(fingerAxis) < 0) fingerAxis.negate();
+    }
+    fingerAxis.normalize();
+
+    const palmNormal = boxCenter.clone().sub(position);
+    palmNormal.addScaledVector(fingerAxis, -palmNormal.dot(fingerAxis));
+    if (palmNormal.length() < 0.05 * boxDiag) {
+      const muzzle = BAKED_ANCHORS[currentWeaponId]?.muzzle;
+      if (muzzle) {
+        palmNormal.copy(new THREE.Vector3(...muzzle.p).applyMatrix4(v3WeaponDisplay.matrixWorld).sub(position));
+        palmNormal.addScaledVector(fingerAxis, -palmNormal.dot(fingerAxis));
+      }
+      if (!muzzle || palmNormal.length() < 1e-6) {
+        palmNormal.copy(new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion));
+        palmNormal.addScaledVector(fingerAxis, -palmNormal.dot(fingerAxis));
       }
     }
+    palmNormal.normalize();
 
-    const corrected = quaternion.clone();
-    if (nearest) {
-      const palmNormal = nearest.direction.normalize();
-      const fingerAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
-      fingerAxis.addScaledVector(palmNormal, -fingerAxis.dot(palmNormal));
-      if (fingerAxis.lengthSq() < 1e-8) fingerAxis.set(1, 0, 0).applyQuaternion(quaternion);
-      fingerAxis.normalize();
-      const acrossPalm = new THREE.Vector3().crossVectors(fingerAxis, palmNormal).normalize();
-      const basis = new THREE.Matrix4().makeBasis(acrossPalm, fingerAxis, palmNormal);
-      corrected.setFromRotationMatrix(basis);
-    }
+    const acrossPalm = new THREE.Vector3().crossVectors(fingerAxis, palmNormal).normalize();
+    palmNormal.crossVectors(acrossPalm, fingerAxis).normalize();
+    const corrected = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(acrossPalm, fingerAxis, palmNormal));
     correction = quaternion.clone().invert().multiply(corrected);
     v3GripFrameCorrectionCache.set(cacheKey, correction);
+    // debug surface for CDP diagnostics (module scope is unreachable from the console)
+    (window.__v3AnchorDebug = window.__v3AnchorDebug || {})[cacheKey] = {
+      position: position.toArray(), rawQ: quaternion.toArray(), fingerAxis: fingerAxis.toArray(),
+      palmNormal: palmNormal.toArray(), acrossPalm: acrossPalm.toArray(),
+      boxCenter: boxCenter.toArray(), boxDiag, forearm: elbow && wrist ? wrist.clone().sub(elbow).normalize().toArray() : null,
+    };
   }
 
   const rawQuaternion = quaternion.clone();

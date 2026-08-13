@@ -75,25 +75,45 @@ function lerpPose(a, b, t) {
 
 // --- world-space transform helper ------------------------------------------
 
-function worldTransformOf(THREE, obj) {
+// `out`, when passed, is a { position, quaternion, scale } scratch triple that gets
+// overwritten in place instead of allocating a fresh result (callers that immediately
+// flatten the result — see asRoot() in update() — can safely reuse one across calls).
+function worldTransformOf(THREE, obj, out) {
   if (!obj) {
+    if (out) {
+      out.position.x = 0; out.position.y = 0; out.position.z = 0;
+      out.quaternion.x = 0; out.quaternion.y = 0; out.quaternion.z = 0; out.quaternion.w = 1;
+      out.scale.x = 1; out.scale.y = 1; out.scale.z = 1;
+      return out;
+    }
     return { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1) };
   }
+  const target = out || { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1) };
+  // Only reads obj.matrixWorld, so ancestors+self is enough — never force a descendant walk
+  // (updateWorldMatrix(true, false) skips children; updateMatrixWorld(true) would force all of them).
+  if (typeof obj.updateWorldMatrix === 'function' && obj.matrixWorld && typeof obj.matrixWorld.decompose === 'function') {
+    obj.updateWorldMatrix(true, false);
+    obj.matrixWorld.decompose(target.position, target.quaternion, target.scale);
+    return target;
+  }
+  // Object has the old matrixWorld pipeline but not updateWorldMatrix (unlikely with real
+  // THREE, kept as a defensive fallback).
   if (typeof obj.updateMatrixWorld === 'function' && obj.matrixWorld && typeof obj.matrixWorld.decompose === 'function') {
     obj.updateMatrixWorld(true);
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    obj.matrixWorld.decompose(position, quaternion, scale);
-    return { position, quaternion, scale };
+    obj.matrixWorld.decompose(target.position, target.quaternion, target.scale);
+    return target;
   }
   // Flat object with no parent-chain matrix pipeline (test shim, or an already-world
   // root node) — its local transform IS its world transform.
-  return {
-    position: (obj.position || new THREE.Vector3()).clone(),
-    quaternion: (obj.quaternion || new THREE.Quaternion()).clone(),
-    scale: (obj.scale || new THREE.Vector3(1, 1, 1)).clone(),
-  };
+  // Reset any field the flat object lacks: a reused `out` would otherwise leak the
+  // previous call's values where the old allocating path returned identity defaults.
+  if (obj.position) target.position.copy(obj.position);
+  else { target.position.x = 0; target.position.y = 0; target.position.z = 0; }
+  if (obj.quaternion) target.quaternion.copy(obj.quaternion);
+  else { target.quaternion.x = 0; target.quaternion.y = 0; target.quaternion.z = 0; target.quaternion.w = 1; }
+  if (obj.scale) target.scale.copy(obj.scale);
+  else { target.scale.x = 1; target.scale.y = 1; target.scale.z = 1; }
+  return target;
 }
 
 // --- controller --------------------------------------------------------------
@@ -111,11 +131,22 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
   }
   const glide = { left: makeGlideState(), right: makeGlideState() };
 
-  function toThree(r) {
-    return {
-      position: new THREE.Vector3(r.position[0], r.position[1], r.position[2]),
-      quaternion: new THREE.Quaternion(r.quaternion[0], r.quaternion[1], r.quaternion[2], r.quaternion[3]),
-    };
+  // Scratch triples for worldTransformOf()/toThree() results that are consumed synchronously
+  // within a single call and never retained afterward (see call sites below for the
+  // non-overlapping-lifetime reasoning that makes reuse safe).
+  const rootScratch = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1) };
+  // driveHandGlide needs `to` and `from`/`from0` alive at the same time (distance/lerp math
+  // against both), so these must be two distinct slots, not one shared with `rootScratch`.
+  const glideScratchTo = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+  const glideScratchFrom = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+  // Hoisted so setFromEuler() below doesn't allocate a THREE.Euler every frame.
+  const poseEulerScratch = new THREE.Euler();
+
+  function toThree(r, out) {
+    const target = out || { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+    target.position.x = r.position[0]; target.position.y = r.position[1]; target.position.z = r.position[2];
+    target.quaternion.x = r.quaternion[0]; target.quaternion.y = r.quaternion[1]; target.quaternion.z = r.quaternion[2]; target.quaternion.w = r.quaternion[3];
+    return target;
   }
 
   const s = {
@@ -183,7 +214,10 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
   // the idle path uses interned strings), so `ref !== g.toRef` reliably detects a genuine ref flip.
   function driveHandGlide(side, ref, hint, dt, ctx) {
     const g = glide[side];
-    const to = toThree(resolveTargetRef(ref, ctx));
+    // `to` must stay valid for the whole function (read again in the blend branch below), so it
+    // gets its own scratch slot distinct from `from`/`from0` (glideScratchFrom), which is only
+    // read immediately after being computed and is safe to overwrite between those two uses.
+    const to = toThree(resolveTargetRef(ref, ctx), glideScratchTo);
     if (!g.init) {
       // First frame: snap onto the current ref so the hand doesn't glide in from the origin.
       g.init = true; g.fromRef = ref; g.toRef = ref; g.p = 1; g.dist = 1e-4;
@@ -191,7 +225,7 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
     } else if (ref !== g.toRef) {
       // Ref flipped: start a new glide from where we were heading to the new target. Capture the
       // transition distance now so progress advances at constant speed over THIS distance.
-      const from0 = toThree(resolveTargetRef(g.toRef, ctx));
+      const from0 = toThree(resolveTargetRef(g.toRef, ctx), glideScratchFrom);
       g.fromRef = g.toRef;
       g.toRef = ref;
       g.dist = Math.max(1e-4, from0.position.distanceTo(to.position));
@@ -201,7 +235,7 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
     if (g.p >= 1) {
       g.pos.copy(to.position); g.quat.copy(to.quaternion);
     } else {
-      const from = toThree(resolveTargetRef(g.fromRef, ctx));
+      const from = toThree(resolveTargetRef(g.fromRef, ctx), glideScratchFrom);
       g.pos.set(
         from.position.x + (to.position.x - from.position.x) * g.p,
         from.position.y + (to.position.y - from.position.y) * g.p,
@@ -297,6 +331,16 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
     }
     weaponPose = s.basePose;
 
+    // Some mounts (the remote bot viewer) aim by rotating a hand/grip pivot. Their
+    // authored hold position is already the correct place in the hands, so an ADS
+    // pose translation must not be combined with that extra parent rotation: it
+    // would swing the weapon away from the grip. Keep the pose's rotation/scale
+    // and arm targets, but lock only its translation to the named base pose.
+    if (state.lockPosePosition) {
+      const lockedPose = poseNamed(state.lockPosePosition);
+      weaponPose = { ...weaponPose, p: [...lockedPose.p] };
+    }
+
     // Recoil kick applies on top of whatever pose we landed on above.
     weaponPose = {
       p: [weaponPose.p[0], weaponPose.p[1], weaponPose.p[2] + recoilOffset * RECOIL_Z],
@@ -309,7 +353,8 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
         weaponView.position.set(weaponPose.p[0], weaponPose.p[1], weaponPose.p[2]);
       }
       if (weaponView.quaternion && weaponView.quaternion.setFromEuler) {
-        weaponView.quaternion.setFromEuler(new THREE.Euler(weaponPose.r[0], weaponPose.r[1], weaponPose.r[2]));
+        poseEulerScratch.x = weaponPose.r[0]; poseEulerScratch.y = weaponPose.r[1]; poseEulerScratch.z = weaponPose.r[2];
+        weaponView.quaternion.setFromEuler(poseEulerScratch);
       }
       if (weaponView.scale && weaponView.scale.set) {
         const sc = weaponPose.scale ?? 1;
@@ -326,7 +371,10 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
       quaternion: [wt.quaternion.x, wt.quaternion.y, wt.quaternion.z, wt.quaternion.w],
       scale: [wt.scale.x, wt.scale.y, wt.scale.z],
     });
-    const weaponRoot = asRoot(worldTransformOf(THREE, weaponView));
+    // rootScratch is reused for both calls below: asRoot() flattens each result into a plain
+    // {position:[],quaternion:[],scale:[]} object synchronously before the next call runs, so
+    // the two worldTransformOf() calls never need their scratch data alive at the same time.
+    const weaponRoot = asRoot(worldTransformOf(THREE, weaponView, rootScratch));
     const ctx = {
       anchors: def.ikAnchors || {},
       bodyAnchors: def.bodyAnchors || DEFAULT_BODY_ANCHORS,
@@ -334,13 +382,16 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
       // body.rootAnchor is the chest-height, facing-yaw node; body.group is fixed at the world
       // origin (the rig writes meshes in absolute world space), so resolving body-space refs
       // against group would ignore player position + facing. Fall back to group if no anchor.
-      bodyRoot: asRoot(worldTransformOf(THREE, body && (body.rootAnchor || body.group))),
+      bodyRoot: asRoot(worldTransformOf(THREE, body && (body.rootAnchor || body.group), rootScratch)),
       cameraRoot: weaponRoot, // no camera injected; approximate with weapon root
     };
 
     driveHandGlide('right', rightRef, rightHint, dt, ctx);
     driveHandGlide('left', leftRef, leftHint, dt, ctx);
   }
+
+  // Allocation-free accessor for hot loops that only need the current action name.
+  function getAction() { return s.action; }
 
   function getDebug() {
     const recoilK = s.recoilElapsed >= RECOIL_DURATION ? 0 : 1 - s.recoilElapsed / RECOIL_DURATION;
@@ -354,5 +405,5 @@ export function createWeaponPoseController({ THREE, body, weaponView, getWeaponD
     };
   }
 
-  return { update, play, setWeapon, setAiming, recoil, getDebug };
+  return { update, play, setWeapon, setAiming, recoil, getDebug, getAction };
 }

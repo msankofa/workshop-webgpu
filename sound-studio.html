@@ -1,0 +1,1848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sound Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #080810; color: #bbc; font-family: 'Courier New', monospace;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px;
+  }
+  h1 { color: #0ff; font-size: 14px; letter-spacing: 4px; white-space: nowrap; }
+  h2 { color: #0cc; font-size: 12px; letter-spacing: 2px; margin-bottom: 8px; text-transform: uppercase; }
+  h3 { color: #889; font-size: 11px; letter-spacing: 1px; margin: 12px 0 6px; text-transform: uppercase; }
+
+  #header {
+    padding: 10px 18px; background: #0d0d1c; border-bottom: 1px solid #1a1a33;
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  }
+  #tabs { display: flex; gap: 2px; margin-left: 10px; }
+  .tab {
+    padding: 6px 14px; background: #111; border: 1px solid #2a2a44; color: #667;
+    cursor: pointer; letter-spacing: 1px; font-family: inherit; font-size: 11px;
+  }
+  .tab:hover { border-color: #445; color: #99a; }
+  .tab.active { background: #001c22; border-color: #0ff; color: #0ff; }
+  #status { flex: 1; text-align: right; font-size: 11px; color: #667; overflow: hidden; white-space: nowrap; }
+  #audio-gate {
+    padding: 6px 14px; background: #0ff; color: #000; border: none; cursor: pointer;
+    font-family: inherit; font-weight: bold; font-size: 11px; letter-spacing: 1px;
+  }
+  #audio-gate.live { background: #001c10; color: #0f8; border: 1px solid #0f8; }
+
+  #main { flex: 1; overflow: hidden; position: relative; }
+  .page { position: absolute; inset: 0; display: none; overflow: hidden; }
+  .page.active { display: flex; }
+
+  .col { overflow-y: auto; padding: 14px; height: 100%; }
+  .col + .col { border-left: 1px solid #1a1a33; }
+  .col-list { width: 260px; flex-shrink: 0; }
+  .col-params { width: 340px; flex-shrink: 0; }
+  .col-main { flex: 1; min-width: 0; }
+
+  .item {
+    padding: 5px 8px; cursor: pointer; border-left: 2px solid transparent;
+    display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  }
+  .item:hover { background: #10101f; }
+  .item.sel { background: #001c22; border-left-color: #0ff; color: #0ff; }
+  .item .meta { color: #556; font-size: 10px; flex-shrink: 0; }
+  .item.warn .meta { color: #f80; }
+
+  button {
+    padding: 5px 11px; background: #111; border: 1px solid #2a2a44; color: #99a;
+    font-family: inherit; font-size: 11px; cursor: pointer; letter-spacing: 1px;
+  }
+  button:hover { border-color: #0ff8; color: #0ff; }
+  button:disabled { opacity: 0.35; cursor: default; }
+  button.primary { background: #001c22; border-color: #0ff; color: #0ff; }
+  button.on { background: #1a1400; border-color: #ff0; color: #ff0; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+
+  .picker { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .picker .dim { font-size: 10px; letter-spacing: 1px; margin-left: 6px; }
+  button.chip { padding: 3px 8px; font-size: 10px; letter-spacing: 0; }
+  button.chip.on { background: #001c22; border-color: #0ff; color: #0ff; }
+  /* The source table grows a column per baked voice, so it scrolls itself rather than the page. */
+  .tablewrap { overflow-x: auto; max-width: 100%; }
+  canvas { width: 100%; display: block; background: #08080f; border: 1px solid #16162a; margin: 4px 0 2px; }
+
+  .param { margin-bottom: 7px; }
+  .param label { display: flex; justify-content: space-between; font-size: 11px; color: #889; gap: 8px; }
+  .param label .val { color: #0cc; flex-shrink: 0; }
+  .param.dirty label { color: #ff0; }
+  .param.dirty label .val { color: #ff0; }
+  .param input[type=range] { width: 100%; height: 16px; accent-color: #0cc; }
+  .param .note { font-size: 10px; color: #556; line-height: 1.4; margin-top: 2px; }
+  .param .sub { display: flex; gap: 4px; }
+  .param .sub > div { flex: 1; }
+  .param .sub span { font-size: 9px; color: #667; }
+
+  input[type=number], input[type=text], select {
+    background: #111; border: 1px solid #2a2a44; color: #ccc; font-family: inherit;
+    font-size: 11px; padding: 3px 5px; outline: none;
+  }
+  input:focus, select:focus { border-color: #0ff8; }
+
+  canvas { display: block; background: #05050c; border: 1px solid #1a1a33; width: 100%; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  th, td { padding: 4px 7px; text-align: right; border-bottom: 1px solid #16162a; }
+  th { color: #667; font-weight: normal; text-align: right; font-size: 10px; text-transform: uppercase; }
+  td:first-child, th:first-child { text-align: left; color: #99a; }
+  tr.bad td { color: #f66; }
+  tr.good td { color: #0f8; }
+
+  .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 10px 0; }
+  .readout div { background: #0c0c18; border: 1px solid #1a1a33; padding: 6px 9px; }
+  .readout .k { font-size: 10px; color: #667; text-transform: uppercase; }
+  .readout .v { font-size: 15px; color: #0cc; }
+  .readout .v.bad { color: #f66; }
+  .readout .v.good { color: #0f8; }
+
+  pre {
+    background: #05050c; border: 1px solid #1a1a33; padding: 10px; font-size: 11px;
+    color: #9a9; overflow: auto; max-height: 55vh; line-height: 1.45; white-space: pre-wrap;
+  }
+  .banner { padding: 8px 11px; margin-bottom: 10px; font-size: 11px; line-height: 1.5; border-left: 3px solid; }
+  .banner.err { background: #1c0808; border-color: #f66; color: #f99; }
+  .banner.warn { background: #1c1408; border-color: #f80; color: #fc8; }
+  .banner.ok { background: #081c10; border-color: #0f8; color: #8fb; }
+  .banner.info { background: #0c0c18; border-color: #445; color: #99a; }
+  .hint { font-size: 10px; color: #556; line-height: 1.5; margin-top: 6px; }
+  .syl-row { display: flex; gap: 4px; align-items: center; margin-bottom: 4px; }
+  .syl-row select { width: 62px; }
+  .syl-row input { width: 58px; }
+  .syl-row .lbl { font-size: 10px; color: #556; width: 14px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>SOUND STUDIO</h1>
+  <button id="audio-gate">ENABLE AUDIO</button>
+  <div id="tabs"></div>
+  <div id="status">no audio context yet</div>
+</div>
+
+<div id="main">
+  <div class="page" id="page-bench">
+    <div class="col col-list"><h2>Sounds</h2><div id="bench-list"></div></div>
+    <div class="col col-main">
+      <h2>Analysis</h2>
+      <div class="row">
+        <button id="bench-play" class="primary">PLAY</button>
+        <button id="bench-loop">LOOP</button>
+        <button id="bench-stop">STOP</button>
+        <span style="color:#556">render</span>
+        <input type="number" id="bench-seconds" value="2" min="0.2" max="20" step="0.1" style="width:56px">
+        <span style="color:#556">s</span>
+        <button id="bench-analyze">RE-ANALYZE</button>
+      </div>
+      <div class="banner info" id="bench-desc"></div>
+      <div class="readout" id="bench-readout"></div>
+      <h3>Waveform</h3>
+      <canvas id="bench-wave" height="120"></canvas>
+      <h3>Spectrum (log Hz, dBFS)</h3>
+      <canvas id="bench-spec" height="180"></canvas>
+      <div class="hint" id="bench-hint"></div>
+    </div>
+    <div class="col col-params"><h2>Parameters</h2><div id="bench-params"></div></div>
+  </div>
+
+  <div class="page" id="page-lexicon">
+    <div class="col col-list">
+      <h2>Lexicon</h2>
+      <div id="lex-list"></div>
+      <div class="hint">A line's identity by ear is its beat pattern, not its vowels. Two lines closer than the minimum rhythm distance are flagged, because a half-heard fragment has to stay identifiable.</div>
+    </div>
+    <div class="col col-main">
+      <h2>Phrase</h2>
+      <div class="row">
+        <button id="lex-play" class="primary">SPEAK</button>
+        <span style="color:#556">bot</span><input type="number" id="lex-bot" value="7" style="width:52px">
+        <span style="color:#556">team</span><input type="number" id="lex-team" value="0" style="width:44px">
+        <button id="lex-radio" class="on">RADIO</button>
+        <button id="lex-revert">REVERT LINE</button>
+        <button id="lex-delete">DELETE LINE</button>
+      </div>
+      <div class="row">
+        <span style="color:#556">new line</span>
+        <input type="text" id="lex-new-id" placeholder="fall_back" style="width:110px">
+        <input type="text" id="lex-new-text" placeholder="fall back" style="width:150px">
+        <button id="lex-add">ADD LINE</button>
+        <span class="dim" id="lex-add-hint"></span>
+      </div>
+      <div id="lex-editor"></div>
+      <h3>Rhythm distance to every other line</h3>
+      <div id="lex-rhythm"></div>
+    </div>
+    <div class="col col-params"><h2>Voice</h2><div id="lex-params"></div></div>
+  </div>
+
+  <div class="page" id="page-mix">
+    <div class="col col-main">
+      <h2>Distance and masking</h2>
+      <div class="banner info">
+        Every category attenuates on the WebAudio <em>inverse</em> model:
+        gain = ref / (ref + rolloff x (clamp(d, ref, max) - ref)).
+        This is where a callout that carries 55 m competes with gunfire that carries 90 m.
+      </div>
+      <div class="row">
+        <span style="color:#556">listener distance</span>
+        <input type="range" id="mix-dist" min="1" max="150" value="40" step="1" style="width:220px">
+        <span id="mix-dist-val" style="color:#0cc">40 m</span>
+      </div>
+      <div id="mix-table"></div>
+      <h3>Masking test</h3>
+      <div class="row">
+        <select id="mix-line"></select>
+        <button id="mix-run" class="primary">MEASURE</button>
+        <span style="color:#556">vs</span>
+        <select id="mix-bed">
+          <option value="rifle_shoot">rifle_shoot (sample)</option>
+          <option value="pistol_shoot">pistol_shoot (sample)</option>
+          <option value="explosion">explosion (sample)</option>
+        </select>
+        <span style="color:#556">shots/s</span>
+        <input type="number" id="mix-rate" value="4" min="0.5" max="20" step="0.5" style="width:52px">
+      </div>
+      <div class="hint">Renders the voice and a bed of real gunfire offline, applies each one's own distance attenuation at the slider position, and compares band-limited energy across the speech band (300-3400 Hz). That is the question "will I actually hear this", which neither listening alone nor a spectrum answers.</div>
+      <div id="mix-result"></div>
+      <canvas id="mix-canvas" height="150"></canvas>
+    </div>
+    <div class="col col-params"><h2>Ranges</h2><div id="mix-params"></div></div>
+  </div>
+
+  <div class="page" id="page-triggers">
+    <div class="col col-main">
+      <h2>Firefight simulation</h2>
+      <div class="banner info">
+        Runs the real director and the real budget against a synthetic firefight, with no audio and
+        no renderer. Every refusal carries the reason the director gave, so the bar chart below is
+        what the arbitration actually did rather than a guess about it.
+      </div>
+      <div class="row">
+        <span style="color:#556">bots</span><input type="number" id="sim-bots" value="24" min="2" max="200" style="width:56px">
+        <span style="color:#556">squads</span><input type="number" id="sim-squads" value="4" min="1" max="20" style="width:48px">
+        <span style="color:#556">seconds</span><input type="number" id="sim-secs" value="60" min="5" max="600" style="width:56px">
+        <span style="color:#556">events/s</span><input type="number" id="sim-rate" value="6" min="0.2" max="60" step="0.2" style="width:56px">
+        <span style="color:#556">arena m</span><input type="number" id="sim-radius" value="60" min="5" max="400" style="width:56px">
+        <span style="color:#556">seed</span><input type="number" id="sim-seed" value="1" style="width:48px">
+        <button id="sim-run" class="primary">RUN</button>
+      </div>
+      <div id="sim-summary"></div>
+      <h3>Timeline: what reached the listener</h3>
+      <canvas id="sim-timeline" height="220"></canvas>
+      <h3>Why lines were refused</h3>
+      <div id="sim-reasons"></div>
+    </div>
+    <div class="col col-params">
+      <h2>Director</h2><div id="trig-params-director"></div>
+      <h2 style="margin-top:16px">Budget</h2><div id="trig-params-budget"></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-sources">
+    <div class="col col-main">
+      <h2>Voice source A/B</h2>
+      <div class="row">
+        <button id="src-load" class="primary">LOAD BAKED TAKES</button>
+        <button id="src-stop">STOP</button>
+        <label><input type="checkbox" id="src-radio" checked> radio channel</label>
+        <label><input type="checkbox" id="src-robot"> robot vocoder</label>
+        <label>bot id <input type="number" id="src-bot" value="7" min="0" max="99" style="width:4em"></label>
+      </div>
+      <div class="hint">
+        Takes are baked <b>dry</b>. The radio channel and the vocoder are runtime inserts, so one
+        file plays over comms or out loud, as a human or as a machine. The vocoder is what carries
+        per-bot identity for a sampled voice: the carrier is seeded per bot, so 90 bots sharing one
+        file still do not sound like one throat. Bake more with
+        <code>node bake-voices.mjs --engine=eleven --voice=all</code>.
+      </div>
+      <div id="src-status" class="hint"></div>
+      <div id="src-picker" class="picker"></div>
+      <div class="tablewrap"><table id="src-table"></table></div>
+    </div>
+    <div class="col col-params">
+      <h2>Robot vocoder</h2>
+      <div class="banner info">
+        A vocoder makes a machine voice out of a <i>real</i> one. It chops the take into frequency
+        bands, measures how loud each band is moment to moment, and uses those levels to open and
+        close the same bands of a synthetic buzz. The words and timing come from the take. The
+        voice you actually hear is the buzz.
+      </div>
+
+      <h3>1. Bands &mdash; how finely it listens</h3>
+      <div class="hint">Each bar is one band. Wider bars overlap and blur vowels together; narrow
+        bars leave gaps that swallow parts of the sound.</div>
+      <canvas id="voc-bands" height="120"></canvas>
+      <div id="voc-p-bands"></div>
+
+      <h3>2. Follower &mdash; how fast it reacts</h3>
+      <div class="hint">Grey is the take's real loudness. Green is what the vocoder tracks. Too slow
+        and consonants smear; too fast and the buzz leaks into the envelope.</div>
+      <canvas id="voc-follow" height="120"></canvas>
+      <div id="voc-p-follow"></div>
+
+      <h3>3. Carrier &mdash; what the machine sounds like</h3>
+      <div class="hint">A pure buzz has no way to make an "s". The noise is what gives it one.</div>
+      <div id="voc-p-carrier"></div>
+
+      <h3>4. Output</h3>
+      <div class="hint">Grey is the take going in, green is the vocoded result. Big gaps mean the
+        band settings are throwing that part of the voice away.</div>
+      <canvas id="voc-spec" height="120"></canvas>
+      <div id="voc-p-out"></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-export">
+    <div class="col col-main">
+      <h2>sound-params.json</h2>
+      <div class="row">
+        <button id="exp-copy" class="primary">COPY</button>
+        <button id="exp-download">DOWNLOAD</button>
+        <button id="exp-reload">RELOAD FROM FILE</button>
+        <button id="exp-reset">RESET ALL</button>
+      </div>
+      <div class="hint">
+        Save the downloaded file over <code>sound-params.json</code> in this directory. Both v2
+        viewers fetch it at boot, and <code>test-sound-params.mjs</code> checks it against the
+        schema, so a bad hand-edit fails a test instead of quietly half-loading.
+      </div>
+      <div id="exp-audit"></div>
+      <h3>Document (only what differs from the code defaults)</h3>
+      <pre id="exp-json"></pre>
+    </div>
+    <div class="col col-params">
+      <h2>Sections</h2>
+      <div id="exp-sections"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import {
+  SOUND_PARAM_SCHEMA, SOUND_PARAMS, SECTION_IDS, MAP_SECTION_IDS,
+  setParam, setMapOverride, resetParams, exportParams, applyParamOverrides,
+  auditParams, sectionIsDirty, onParamsChanged, loadSoundParams,
+} from './sound-params.js';
+import {
+  VOICE_LINES, VOWEL_FORMANTS, lineIds, lineText, voiceLine, buildVoiceLine, buildSampleVoiceLine,
+  voiceIdentity, voiceLineDurationS, rhythmDistance, MIN_RHYTHM_DISTANCE,
+} from './bot-voice.js';
+import {
+  botDamageVoice, BOT_DAMAGE_EVENT_IDS, botDeathSirenVoice, botDamageLoopVoice,
+} from './bot-damage-audio.js';
+import { synthVoice as ballisticVoice, SYNTH_EVENT_IDS as BALLISTIC_IDS, createWhizzVoice } from './ballistic-audio.js';
+import { synthVoice as weaponVoice, SYNTH_EVENT_IDS as WEAPON_IDS } from './weapon-sfx-synth.js';
+import { createVoiceDirector, linePriority, lineCooldownMs, AMBIENT_LINES } from './bot-voice-director.js';
+import { createAudioBudget } from './combat-audio-budget.js';
+
+const $ = id => document.getElementById(id);
+const status = msg => { $('status').textContent = msg; };
+
+// ---------------------------------------------------------------------------
+// Sound registry: everything the studio can play. Each entry yields a builder
+// on demand, so it always reflects the CURRENT parameters rather than a snapshot.
+// ---------------------------------------------------------------------------
+const SUSTAINED = 'sustained';
+
+function registry() {
+  const out = [];
+  for (const id of lineIds()) {
+    const line = voiceLine(id);
+    out.push({
+      id: `vo:${id}`, group: 'Voice lines', label: id, section: 'voice',
+      desc: `"${line?.text ?? id}" -- ${line?.syllables?.length ?? 0} syllables, drive ${line?.drive ?? 4}. Priority ${linePriority(id)}, cooldown ${lineCooldownMs(id)} ms${AMBIENT_LINES.has(id) ? ', ambient' : ''}.`,
+      make: () => buildVoiceLine(id, voiceIdentity(benchBotId(), 0)),
+      seconds: () => voiceLineDurationS(id, voiceIdentity(benchBotId(), 0)) + 0.15,
+    });
+  }
+  for (const id of BOT_DAMAGE_EVENT_IDS) {
+    out.push({
+      id: `dmg:${id}`, group: 'Damage / death', label: id, section: 'damage',
+      desc: 'One-shot mechanical damage voice. Bots are robots, so every voice here is struck metal or arcing electronics rather than flesh.',
+      make: () => botDamageVoice(id), seconds: () => 1.6,
+    });
+  }
+  out.push({
+    id: 'dmg:siren', group: 'Damage / death', label: 'bot_death_siren', section: 'siren', kind: SUSTAINED,
+    desc: 'The distress beacon. A machine reporting a fault: square-wave beeps with real silence between them, pitch stepping down in discrete stages. Deliberately not a continuous glide -- that is air-raid synthesis and reads as horror rather than hardware.',
+    make: () => botDeathSirenVoice({ seed: benchBotId(), windowS: 12 }), seconds: () => 12,
+  });
+  out.push({
+    id: 'dmg:loop', group: 'Damage / death', label: 'bot_damage_loop', section: 'damageLoop', kind: SUSTAINED,
+    desc: 'Sustained bed for the few closest badly-hurt bots: an arcing short over a failing servo.',
+    make: () => botDamageLoopVoice({ seed: benchBotId(), severity01: 0.7 }), seconds: () => 6,
+  });
+  for (const id of BALLISTIC_IDS) {
+    out.push({
+      id: `bal:${id}`, group: 'Ballistics', label: id, section: 'ballistic',
+      desc: id === 'bullet_whizz'
+        ? 'A round passing close. Peak gain and bandpass centre both scale off the perpendicular miss distance, with a downsweep as it recedes.'
+        : 'Strike tick, falling metal whine, thin band-passed air tail.',
+      make: () => ballisticVoice(id), seconds: () => 1.0,
+    });
+  }
+  for (const d of [1, 3, 6]) {
+    out.push({
+      id: `bal:whizz${d}`, group: 'Ballistics', label: `whizz @ ${d} m`, section: 'ballistic',
+      desc: `Closest approach ${d} m. Compare the three to hear how miss distance reads.`,
+      make: () => createWhizzVoice({ distance: d }), seconds: () => 0.6,
+    });
+  }
+  for (const id of WEAPON_IDS) {
+    out.push({
+      id: `wpn:${id}`, group: 'Weapons', label: id, section: null,
+      desc: 'Procedural fallback used when no sample is loaded for this event. Not parameterized in the registry yet -- playable and measurable here, edited in weapon-sfx-synth.js.',
+      make: () => weaponVoice(id), seconds: () => 2.0,
+    });
+  }
+  return out;
+}
+
+let SOUNDS = registry();
+const soundById = id => SOUNDS.find(s => s.id === id);
+
+// ---------------------------------------------------------------------------
+// Audio: live playback plus offline rendering for analysis.
+// ---------------------------------------------------------------------------
+let ctx = null;
+let master = null;
+let liveHandles = [];
+let loopTimer = null;
+
+function ensureCtx() {
+  if (ctx) return ctx;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  master.gain.value = 0.8;
+  master.connect(ctx.destination);
+  $('audio-gate').textContent = `AUDIO LIVE @ ${ctx.sampleRate} Hz`;
+  $('audio-gate').classList.add('live');
+  status('audio running');
+  return ctx;
+}
+
+function stopAll() {
+  if (loopTimer) { clearInterval(loopTimer); loopTimer = null; }
+  $('bench-loop').classList.remove('on');
+  for (const h of liveHandles) { try { h.stop(ctx.currentTime); } catch {} }
+  liveHandles = [];
+}
+
+// Play a builder through the live context. Sustained builders return a stop handle.
+function playBuilder(entry) {
+  ensureCtx();
+  const build = entry.make();
+  if (!build) { status(`no builder for ${entry.label}`); return; }
+  const t0 = ctx.currentTime + 0.03;
+  const result = build(ctx, master, t0);
+  if (result && typeof result.stop === 'function') {
+    liveHandles.push(result);
+    const life = entry.seconds();
+    setTimeout(() => {
+      try { result.stop(ctx.currentTime); } catch {}
+      liveHandles = liveHandles.filter(h => h !== result);
+    }, life * 1000);
+  }
+  return result;
+}
+
+// Render a builder offline. This is the whole point of the analyzer: OfflineAudioContext uses the
+// real browser filters, so the measured level is what the game produces, not an approximation.
+async function renderOffline(entry, seconds) {
+  const rate = 48000;
+  const len = Math.max(1, Math.ceil(seconds * rate));
+  const oc = new OfflineAudioContext(1, len, rate);
+  const build = entry.make();
+  if (!build) return null;
+  const out = oc.createGain();
+  out.gain.value = 1;
+  out.connect(oc.destination);
+  const result = build(oc, out, 0);
+  if (result && typeof result.stop === 'function') result.stop(seconds - 0.08);
+  return await oc.startRendering();
+}
+
+// ---------------------------------------------------------------------------
+// Measurement
+// ---------------------------------------------------------------------------
+const dB = x => 20 * Math.log10(Math.max(x, 1e-9));
+
+function peakRms(data) {
+  let peak = 0, sum = 0;
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    const a = v < 0 ? -v : v;
+    if (a > peak) peak = a;
+    sum += v * v;
+  }
+  return { peak, rms: Math.sqrt(sum / Math.max(1, data.length)) };
+}
+
+// Iterative radix-2 Cooley-Tukey, in place.
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]; re[i] = re[j]; re[j] = tr;
+      const ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const ar = re[i + k], ai = im[i + k];
+        const br = re[i + k + half], bi = im[i + k + half];
+        const vr = br * cr - bi * ci, vi = br * ci + bi * cr;
+        re[i + k] = ar + vr; im[i + k] = ai + vi;
+        re[i + k + half] = ar - vr; im[i + k + half] = ai - vi;
+        const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+}
+
+// Average magnitude spectrum over Hann-windowed frames. Returns power per bin.
+function spectrum(data, rate, size = 2048) {
+  const bins = new Float64Array(size / 2);
+  const hop = size / 2;
+  let frames = 0;
+  const re = new Float64Array(size), im = new Float64Array(size);
+  const win = new Float64Array(size);
+  for (let i = 0; i < size; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (size - 1));
+  for (let off = 0; off + size <= data.length; off += hop) {
+    for (let i = 0; i < size; i++) { re[i] = data[off + i] * win[i]; im[i] = 0; }
+    fft(re, im);
+    for (let k = 0; k < size / 2; k++) bins[k] += re[k] * re[k] + im[k] * im[k];
+    frames++;
+  }
+  if (frames) for (let k = 0; k < bins.length; k++) bins[k] /= frames;
+  return { bins, frames, binHz: rate / size };
+}
+
+// RMS restricted to a frequency band, from the averaged spectrum. Parseval-consistent enough for
+// the only thing it is used for: comparing two signals in the same band.
+function bandRms(spec, loHz, hiHz) {
+  const lo = Math.max(1, Math.floor(loHz / spec.binHz));
+  const hi = Math.min(spec.bins.length - 1, Math.ceil(hiHz / spec.binHz));
+  let sum = 0;
+  for (let k = lo; k <= hi; k++) sum += spec.bins[k];
+  const n = Math.max(1, hi - lo + 1);
+  return Math.sqrt(sum / n);
+}
+
+// WebAudio 'inverse' distance model, exactly as the panners in both viewers apply it.
+function inverseGain(distance, ref, max, rolloff) {
+  const d = Math.min(Math.max(distance, ref), max);
+  return ref / (ref + rolloff * (d - ref));
+}
+
+// ---------------------------------------------------------------------------
+// Parameter UI
+// ---------------------------------------------------------------------------
+// Repaint every visible readout. Used after anything that changes values without touching a
+// slider: RESET, loading a document, an audit fix.
+function refreshAllParams() {
+  for (const el of document.querySelectorAll('.param')) el._refresh?.();
+}
+
+function paramControl(sectionId, key, spec) {
+  const wrap = document.createElement('div');
+  wrap.className = 'param';
+  const live = SOUND_PARAMS[sectionId][key];
+  const isArr = Array.isArray(spec.default);
+  const same = isArr
+    ? live.every((v, i) => v === spec.default[i])
+    : live === spec.default;
+  if (!same) wrap.classList.add('dirty');
+
+  const label = document.createElement('label');
+  label.innerHTML = `<span>${spec.label}</span><span class="val"></span>`;
+  wrap.appendChild(label);
+  const valEl = label.querySelector('.val');
+
+  // Repaint the readout and the dirty flag from the LIVE value. Without this the number is
+  // written once at render time and then lies for the rest of the session.
+  const refresh = () => {
+    const now = SOUND_PARAMS[sectionId][key];
+    const arr = Array.isArray(now);
+    valEl.textContent = (arr ? now.map(v => fmt(v, spec)).join(' / ') : fmt(now, spec))
+      + (spec.unit ? ' ' + spec.unit : '');
+    const clean = arr ? now.every((v, i) => v === spec.default[i]) : now === spec.default;
+    wrap.classList.toggle('dirty', !clean);
+  };
+  refresh();
+  wrap._refresh = refresh;   // on the element, so it dies with the node and needs no bookkeeping
+
+  const mk = (value, onInput) => {
+    const s = document.createElement('input');
+    s.type = 'range';
+    s.min = spec.min; s.max = spec.max; s.step = spec.step; s.value = value;
+    s.addEventListener('input', () => { onInput(Number(s.value)); refresh(); });
+    return s;
+  };
+
+  if (isArr) {
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    live.forEach((v, i) => {
+      const cell = document.createElement('div');
+      const tag = document.createElement('span');
+      tag.textContent = (spec.itemLabels && spec.itemLabels[i]) || `#${i + 1}`;
+      cell.appendChild(tag);
+      cell.appendChild(mk(v, n => {
+        const next = SOUND_PARAMS[sectionId][key].slice();
+        next[i] = n;
+        setParam(sectionId, key, next);
+      }));
+      sub.appendChild(cell);
+    });
+    wrap.appendChild(sub);
+  } else {
+    wrap.appendChild(mk(live, n => setParam(sectionId, key, n)));
+  }
+
+  if (spec.note) {
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = spec.note;
+    wrap.appendChild(note);
+  }
+  return wrap;
+}
+
+function fmt(v, spec) {
+  if (spec.step >= 1) return String(Math.round(v));
+  const places = spec.step >= 0.1 ? 2 : spec.step >= 0.01 ? 2 : 4;
+  return Number(v).toFixed(places);
+}
+
+function renderSection(host, sectionId, { only = null } = {}) {
+  host.innerHTML = '';
+  const section = SOUND_PARAM_SCHEMA[sectionId];
+  if (!section) {
+    host.innerHTML = '<div class="hint">This voice is not parameterized in the registry. It stays playable and measurable here; its constants live in its own module.</div>';
+    return;
+  }
+  // A subset render is one group inside a panel that already has its own heading and explanation,
+  // so repeating the section banner and reset per group would just be noise.
+  if (!only) {
+    const head = document.createElement('div');
+    head.className = 'banner info';
+    head.textContent = section.note || section.label;
+    host.appendChild(head);
+
+    const reset = document.createElement('button');
+    reset.textContent = `RESET ${section.label.toUpperCase()}`;
+    reset.style.marginBottom = '10px';
+    // Re-render rather than refresh: a reset must move the slider handles, not just the numbers.
+    reset.addEventListener('click', () => { resetParams(sectionId); renderSection(host, sectionId, { only }); });
+    host.appendChild(reset);
+  }
+
+  for (const [key, spec] of Object.entries(section.params)) {
+    if (only && !only.includes(key)) continue;
+    host.appendChild(paramControl(sectionId, key, spec));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bench tab
+// ---------------------------------------------------------------------------
+let benchSel = 'vo:contact';
+const benchBotId = () => Number($('lex-bot')?.value) || 7;
+
+function renderBenchList() {
+  const host = $('bench-list');
+  host.innerHTML = '';
+  let group = null;
+  for (const s of SOUNDS) {
+    if (s.group !== group) {
+      group = s.group;
+      const h = document.createElement('h3');
+      h.textContent = group;
+      host.appendChild(h);
+    }
+    const el = document.createElement('div');
+    el.className = 'item' + (s.id === benchSel ? ' sel' : '');
+    el.innerHTML = `<span>${s.label}</span><span class="meta">${s.kind === SUSTAINED ? 'sustained' : ''}</span>`;
+    el.addEventListener('click', () => { benchSel = s.id; renderBench(); analyzeBench(); });
+    host.appendChild(el);
+  }
+}
+
+function renderBench() {
+  renderBenchList();
+  const s = soundById(benchSel);
+  if (!s) return;
+  $('bench-desc').textContent = s.desc;
+  $('bench-seconds').value = Math.min(20, Math.max(0.2, +s.seconds().toFixed(2)));
+  renderSection($('bench-params'), s.section);
+}
+
+let analyzeToken = 0;
+async function analyzeBench() {
+  const s = soundById(benchSel);
+  if (!s) return;
+  const token = ++analyzeToken;
+  const seconds = Number($('bench-seconds').value) || s.seconds();
+  status(`rendering ${s.label} offline...`);
+  let buf;
+  try {
+    buf = await renderOffline(s, seconds);
+  } catch (err) {
+    status(`render failed: ${err.message}`);
+    $('bench-hint').textContent = String(err);
+    return;
+  }
+  if (!buf || token !== analyzeToken) return;
+  const data = buf.getChannelData(0);
+  const { peak, rms } = peakRms(data);
+  const spec = spectrum(data, buf.sampleRate);
+  const speech = bandRms(spec, 300, 3400);
+  const low = bandRms(spec, 20, 300);
+  const high = bandRms(spec, 3400, 12000);
+
+  $('bench-readout').innerHTML = `
+    <div><div class="k">Duration</div><div class="v">${seconds.toFixed(2)} s</div></div>
+    <div><div class="k">Peak</div><div class="v ${peak > 0.999 ? 'bad' : peak > 0.2 ? 'good' : ''}">${dB(peak).toFixed(1)} dBFS</div></div>
+    <div><div class="k">RMS</div><div class="v">${dB(rms).toFixed(1)} dBFS</div></div>
+    <div><div class="k">Low 20-300</div><div class="v">${dB(low).toFixed(1)}</div></div>
+    <div><div class="k">Speech 300-3.4k</div><div class="v">${dB(speech).toFixed(1)}</div></div>
+    <div><div class="k">High 3.4k-12k</div><div class="v">${dB(high).toFixed(1)}</div></div>`;
+
+  drawWave(data);
+  drawSpectrum(spec, buf.sampleRate);
+  $('bench-hint').textContent = peak > 0.999
+    ? 'Peak is at or above full scale, so this voice is clipping before the mix even sees it.'
+    : `Rendered offline at ${buf.sampleRate} Hz with the real browser filters, so these are the levels the game produces.`;
+  status(`analyzed ${s.label}`);
+}
+
+function fitCanvas(c) {
+  const w = c.clientWidth || 600;
+  if (c.width !== w) c.width = w;
+  return c.getContext('2d');
+}
+
+function drawWave(data) {
+  const c = $('bench-wave');
+  const g = fitCanvas(c);
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = '#16162a';
+  g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+  g.strokeStyle = '#0cc';
+  g.beginPath();
+  const step = Math.max(1, Math.floor(data.length / W));
+  for (let x = 0; x < W; x++) {
+    let lo = 1, hi = -1;
+    const start = x * step;
+    for (let i = start; i < start + step && i < data.length; i++) {
+      if (data[i] < lo) lo = data[i];
+      if (data[i] > hi) hi = data[i];
+    }
+    if (lo > hi) { lo = 0; hi = 0; }
+    g.moveTo(x + 0.5, H / 2 - hi * H / 2);
+    g.lineTo(x + 0.5, H / 2 - lo * H / 2);
+  }
+  g.stroke();
+}
+
+function drawSpectrum(spec, rate) {
+  const c = $('bench-spec');
+  const g = fitCanvas(c);
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const fMin = 40, fMax = rate / 2;
+  const xOf = f => W * Math.log(f / fMin) / Math.log(fMax / fMin);
+  const dbMin = -110, dbMax = 0;
+  const yOf = d => H - H * (d - dbMin) / (dbMax - dbMin);
+
+  g.strokeStyle = '#16162a'; g.fillStyle = '#445'; g.font = '9px Courier New';
+  for (const f of [100, 300, 1000, 3400, 10000]) {
+    const x = xOf(f);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x + 2, H - 3);
+  }
+  for (const d of [-20, -40, -60, -80, -100]) {
+    const y = yOf(d);
+    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    g.fillText(`${d}`, 2, y - 2);
+  }
+  // The speech band, because that is where a callout has to survive.
+  g.fillStyle = 'rgba(0,255,136,0.05)';
+  g.fillRect(xOf(300), 0, xOf(3400) - xOf(300), H);
+
+  g.strokeStyle = '#0ff';
+  g.beginPath();
+  let started = false;
+  for (let k = 1; k < spec.bins.length; k++) {
+    const f = k * spec.binHz;
+    if (f < fMin) continue;
+    const x = xOf(f);
+    const y = yOf(dB(Math.sqrt(spec.bins[k])));
+    if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+  }
+  g.stroke();
+}
+
+// ---------------------------------------------------------------------------
+// Lexicon tab
+// ---------------------------------------------------------------------------
+let lexSel = 'contact';
+let lexRadio = true;
+
+function currentLine(id) {
+  // The live view: an override if the studio has edited this line, else the module default.
+  return JSON.parse(JSON.stringify(voiceLine(id)));
+}
+
+// Seed a new line with a plausible rhythm rather than an empty one: one syllable per vowel group
+// in the text, so the phrase already has roughly the right beat count before you touch it.
+const VOWEL_GUESS = { a: 'ah', e: 'eh', i: 'ih', o: 'oh', u: 'uh', y: 'ih' };
+function seedSyllables(text) {
+  const groups = String(text).toLowerCase().match(/[aeiouy]+/g) || ['a'];
+  const n = Math.min(6, groups.length);
+  return groups.slice(0, n).map((g, i) => ({
+    vowel: VOWEL_GUESS[g[0]] || 'ah',
+    durMs: i === n - 1 ? 260 : 150,          // phrases land on their last syllable
+    gapMs: i === n - 1 ? 0 : 45,
+    peak: i === 0 ? 0.85 : 0.7,
+  }));
+}
+
+function addVoiceLine(id, text) {
+  // Collapse runs and trim, so "fall back!" is fall_back rather than fall_back_.
+  const clean = String(id).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!clean) return 'needs an id';
+  if (lineIds().includes(clean)) return `"${clean}" already exists`;
+  const say = String(text).trim() || clean.replace(/_/g, ' ');
+  setMapOverride('voiceLines', clean, {
+    event: `bot_vo_${clean}`, text: say, contour: [1, 0.95], drive: 4,
+    syllables: seedSyllables(say),
+  });
+  lexSel = clean;
+  return null;
+}
+
+function renderLexList() {
+  const host = $('lex-list');
+  host.innerHTML = '';
+  for (const id of lineIds()) {
+    let worst = 1, worstId = null;
+    for (const other of lineIds()) {
+      if (other === id) continue;
+      const d = rhythmDistance(id, other);
+      if (d < worst) { worst = d; worstId = other; }
+    }
+    const el = document.createElement('div');
+    el.className = 'item' + (id === lexSel ? ' sel' : '') + (worst < MIN_RHYTHM_DISTANCE ? ' warn' : '');
+    const edited = !(id in VOICE_LINES) ? '+' : SOUND_PARAMS.voiceLines[id] ? '*' : '';
+    el.innerHTML = `<span>${id}${edited}</span><span class="meta">${worst < MIN_RHYTHM_DISTANCE ? `~${worstId}` : worst.toFixed(2)}</span>`;
+    el.title = worst < MIN_RHYTHM_DISTANCE
+      ? `Too close to "${worstId}" (${worst.toFixed(3)} < ${MIN_RHYTHM_DISTANCE}) -- they will be confusable by ear.`
+      : `Nearest neighbour ${worstId} at ${worst.toFixed(3)}`;
+    el.addEventListener('click', () => { lexSel = id; renderLexicon(); });
+    host.appendChild(el);
+  }
+}
+
+const VOWELS = Object.keys(VOWEL_FORMANTS);
+
+function renderLexEditor() {
+  const host = $('lex-editor');
+  host.innerHTML = '';
+  const line = currentLine(lexSel);
+  if (!line) return;
+
+  const info = document.createElement('div');
+  info.className = 'banner info';
+  const f = line.syllables.map(s => VOWEL_FORMANTS[s.vowel] ? s.vowel : '?');
+  info.innerHTML = `<strong>"${line.text}"</strong> &mdash; ${line.syllables.length} syllables [${f.join(' ')}], `
+    + `${voiceLineDurationS(lexSel, voiceIdentity(benchBotId(), 0)).toFixed(2)} s. `
+    + `Priority ${linePriority(lexSel)}, cooldown ${lineCooldownMs(lexSel)} ms.`;
+  host.appendChild(info);
+
+  const commit = () => {
+    setMapOverride('voiceLines', lexSel, line);
+  };
+
+  const head = document.createElement('div');
+  head.className = 'syl-row';
+  head.innerHTML = '<span class="lbl"></span>'
+    + '<span style="width:62px;font-size:10px;color:#556">vowel</span>'
+    + '<span style="width:58px;font-size:10px;color:#556">dur ms</span>'
+    + '<span style="width:58px;font-size:10px;color:#556">gap ms</span>'
+    + '<span style="width:58px;font-size:10px;color:#556">peak</span>';
+  host.appendChild(head);
+
+  line.syllables.forEach((syl, i) => {
+    const row = document.createElement('div');
+    row.className = 'syl-row';
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl'; lbl.textContent = String(i + 1);
+    row.appendChild(lbl);
+
+    const sel = document.createElement('select');
+    for (const v of VOWELS) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      if (v === syl.vowel) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      syl.vowel = sel.value;
+      syl.formant = VOWEL_FORMANTS[sel.value].slice();
+      commit(); renderLexicon();
+    });
+    row.appendChild(sel);
+
+    for (const [key, min, max, step] of [['durMs', 30, 700, 5], ['gapMs', 0, 400, 5], ['peak', 0.05, 1, 0.01]]) {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = min; inp.max = max; inp.step = step; inp.value = syl[key];
+      inp.addEventListener('change', () => {
+        syl[key] = Math.min(max, Math.max(min, Number(inp.value)));
+        inp.value = syl[key];
+        commit(); renderLexicon();
+      });
+      row.appendChild(inp);
+    }
+
+    const del = document.createElement('button');
+    del.textContent = 'x';
+    del.disabled = line.syllables.length <= 1;
+    del.addEventListener('click', () => {
+      line.syllables.splice(i, 1);
+      line.syllables[line.syllables.length - 1].gapMs = 0;
+      commit(); renderLexicon();
+    });
+    row.appendChild(del);
+    host.appendChild(row);
+  });
+
+  const add = document.createElement('button');
+  add.textContent = '+ SYLLABLE';
+  add.addEventListener('click', () => {
+    const last = line.syllables[line.syllables.length - 1];
+    last.gapMs = last.gapMs || 40;
+    line.syllables.push({ vowel: 'ah', formant: VOWEL_FORMANTS.ah.slice(), durMs: 150, gapMs: 0, peak: 0.7 });
+    commit(); renderLexicon();
+  });
+  host.appendChild(add);
+
+  const extra = document.createElement('div');
+  extra.className = 'row';
+  extra.style.marginTop = '10px';
+  extra.innerHTML = '<span style="color:#556">contour</span>';
+  for (const i of [0, 1]) {
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = 0.02; inp.min = 0.4; inp.max = 2; inp.value = line.contour[i];
+    inp.style.width = '60px';
+    inp.addEventListener('change', () => { line.contour[i] = Number(inp.value); commit(); renderLexicon(); });
+    extra.appendChild(inp);
+  }
+  const dl = document.createElement('span');
+  dl.style.color = '#556'; dl.textContent = 'drive';
+  extra.appendChild(dl);
+  const drive = document.createElement('input');
+  drive.type = 'number'; drive.step = 0.5; drive.min = 1; drive.max = 12; drive.value = line.drive ?? 4;
+  drive.style.width = '60px';
+  drive.addEventListener('change', () => { line.drive = Number(drive.value); commit(); renderLexicon(); });
+  extra.appendChild(drive);
+  const cnote = document.createElement('div');
+  cnote.className = 'hint';
+  cnote.textContent = 'Contour is [start, end] multipliers on the fundamental across the phrase: a falling contour states, a steep fall shouts, a flat contour reports. Drive sets the radio-channel soft clip.';
+  host.appendChild(extra);
+  host.appendChild(cnote);
+}
+
+function renderLexRhythm() {
+  const host = $('lex-rhythm');
+  const rows = lineIds().filter(id => id !== lexSel)
+    .map(id => ({ id, d: rhythmDistance(lexSel, id) }))
+    .sort((a, b) => a.d - b.d);
+  host.innerHTML = '<table><tr><th>Line</th><th>Distance</th><th>Verdict</th></tr>'
+    + rows.map(r => `<tr class="${r.d < MIN_RHYTHM_DISTANCE ? 'bad' : r.d > 0.4 ? 'good' : ''}">`
+      + `<td>${r.id}</td><td>${r.d.toFixed(3)}</td>`
+      + `<td>${r.d < MIN_RHYTHM_DISTANCE ? 'CONFUSABLE' : r.d > 0.4 ? 'clearly distinct' : 'ok'}</td></tr>`).join('')
+    + '</table>';
+}
+
+function renderLexicon() {
+  SOUNDS = registry();
+  renderLexList();
+  renderLexEditor();
+  renderLexRhythm();
+  renderSection($('lex-params'), 'voice');
+}
+
+// ---------------------------------------------------------------------------
+// Mix tab
+// ---------------------------------------------------------------------------
+const RANGE_ROWS = [
+  ['Gunshot', 'gunshotRef', 'gunshotMax', 'gunshotRolloff'],
+  ['Launch', 'launchRef', 'launchMax', 'launchRolloff'],
+  ['Explosion', 'explosionRef', 'explosionMax', 'explosionRolloff'],
+  ['Footstep', 'stepRef', 'stepMax', 'stepRolloff'],
+  ['Whizz', 'whizzRef', 'whizzMax', 'whizzRolloff'],
+  ['Distress', 'distressRef', 'distressMax', 'distressRolloff'],
+  ['Voice', 'voiceRef', 'voiceMax', 'voiceRolloff'],
+  ['Voice (outdoor)', 'voiceOutdoorRef', 'voiceOutdoorMax', 'voiceOutdoorRolloff'],
+  ['Distress (outdoor)', 'distressOutdoorRef', 'distressOutdoorMax', 'distressOutdoorRolloff'],
+];
+
+function renderMixTable() {
+  const d = Number($('mix-dist').value);
+  $('mix-dist-val').textContent = `${d} m`;
+  const r = SOUND_PARAMS.ranges;
+  const voiceG = inverseGain(d, r.voiceRef, r.voiceMax, r.voiceRolloff);
+  const rows = RANGE_ROWS.map(([label, ref, max, roll]) => {
+    const audible = d <= r[max];
+    const g = audible ? inverseGain(d, r[ref], r[max], r[roll]) : 0;
+    const rel = label.startsWith('Voice') ? 0 : dB(g) - dB(voiceG);
+    return `<tr class="${!audible ? 'bad' : ''}">
+      <td>${label}</td><td>${r[ref]}</td><td>${r[max]}</td><td>${r[roll]}</td>
+      <td>${audible ? dB(g).toFixed(1) : 'out of range'}</td>
+      <td>${label.startsWith('Voice') || !audible ? '' : (rel > 0 ? '+' : '') + rel.toFixed(1)}</td></tr>`;
+  }).join('');
+  $('mix-table').innerHTML = `<table>
+    <tr><th>Category</th><th>Ref</th><th>Max</th><th>Rolloff</th><th>Gain @ ${d} m</th><th>vs voice</th></tr>
+    ${rows}</table>
+    <div class="hint">The last column is each category's level relative to a bot callout at the same
+    distance. A large positive number is the sound that will bury the callout.</div>`;
+}
+
+let bedCache = new Map();
+// `sources` first, because that is the key environment-audio.js actually resolves. `events` is
+// tried next but is not trustworthy on its own: it lists assets/rifle_shoot.mp3 where the file on
+// disk is a .wav. Falling through the candidates keeps the studio playing what the game plays.
+async function loadBed(eventId) {
+  if (bedCache.has(eventId)) return bedCache.get(eventId);
+  const map = await (await fetch('./sfx/sound-map.json')).json();
+  const first = v => (Array.isArray(v) ? v[0] : v);
+  const candidates = [
+    first(map.sources?.[eventId]),
+    first(map.events?.[eventId]),
+    `assets/${eventId}.wav`,
+    `assets/${eventId}.mp3`,
+  ].filter(Boolean);
+
+  const tried = [];
+  for (const rel of candidates) {
+    const res = await fetch(`./sfx/${rel}`);
+    if (!res.ok) { tried.push(`${rel} (${res.status})`); continue; }
+    const oc = new OfflineAudioContext(1, 1, 48000);
+    const buf = await oc.decodeAudioData(await res.arrayBuffer());
+    bedCache.set(eventId, buf);
+    return buf;
+  }
+  throw new Error(`no playable sample for ${eventId}; tried ${tried.join(', ')}`);
+}
+
+async function runMasking() {
+  const lineId = $('mix-line').value;
+  const bedId = $('mix-bed').value;
+  const rate = Number($('mix-rate').value) || 4;
+  const d = Number($('mix-dist').value);
+  const r = SOUND_PARAMS.ranges;
+  $('mix-result').innerHTML = '<div class="banner info">measuring...</div>';
+
+  let bed;
+  try {
+    bed = await loadBed(bedId);
+  } catch (err) {
+    $('mix-result').innerHTML = `<div class="banner err">Could not load the gunfire bed: ${err.message}.
+      This page must be served over http (python serve.py), not opened as a file.</div>`;
+    return;
+  }
+
+  const seconds = 3;
+  const entry = {
+    make: () => buildVoiceLine(lineId, voiceIdentity(benchBotId(), 0)),
+    seconds: () => seconds,
+  };
+  const voiceBuf = await renderOffline(entry, seconds);
+
+  // Bed: the real sample retriggered at the chosen rate, rendered offline.
+  const sr = 48000;
+  const oc = new OfflineAudioContext(1, seconds * sr, sr);
+  const out = oc.createGain();
+  out.gain.value = 1;
+  out.connect(oc.destination);
+  for (let t = 0; t < seconds; t += 1 / rate) {
+    const src = oc.createBufferSource();
+    src.buffer = bed;
+    src.connect(out);
+    src.start(t);
+  }
+  const bedBuf = await oc.startRendering();
+
+  const vSpec = spectrum(voiceBuf.getChannelData(0), sr);
+  const bSpec = spectrum(bedBuf.getChannelData(0), sr);
+  const vBand = bandRms(vSpec, 300, 3400);
+  const bBand = bandRms(bSpec, 300, 3400);
+
+  const vAud = d <= r.voiceMax;
+  const gAud = d <= r.gunshotMax;
+  const vGain = vAud ? inverseGain(d, r.voiceRef, r.voiceMax, r.voiceRolloff) : 0;
+  const gGain = gAud ? inverseGain(d, r.gunshotRef, r.gunshotMax, r.gunshotRolloff) : 0;
+  const vAt = dB(vBand * vGain);
+  const bAt = dB(bBand * gGain);
+  const margin = vAt - bAt;
+
+  let verdict, cls;
+  if (!vAud && !gAud) {
+    verdict = `Nothing reaches ${d} m: the voice stops at ${r.voiceMax} m and the gunfire at ${r.gunshotMax} m. This distance is silent either way.`;
+    cls = 'info';
+  } else if (!vAud) {
+    verdict = `The callout is silent at ${d} m while the gunfire still carries to ${r.gunshotMax} m. The listener hears the firefight and nothing said about it -- this is exactly the failure that made the squad seem mute.`;
+    cls = 'err';
+  } else if (margin > 3) { verdict = 'The callout sits clearly above the gunfire in the speech band.'; cls = 'ok'; }
+  else if (margin > -6) { verdict = 'The callout is close to the gunfire. Audible in the gaps, hard to catch under sustained fire.'; cls = 'warn'; }
+  else { verdict = 'The gunfire buries the callout in the speech band at this bed density.'; cls = 'err'; }
+
+  $('mix-result').innerHTML = `
+    <div class="readout">
+      <div><div class="k">Voice band level</div><div class="v">${vAud ? vAt.toFixed(1) : 'silent'}</div></div>
+      <div><div class="k">Bed band level</div><div class="v">${gAud ? bAt.toFixed(1) : 'silent'}</div></div>
+      <div><div class="k">Margin</div><div class="v ${margin > 3 ? 'good' : margin > -6 ? '' : 'bad'}">${vAud && gAud ? (margin > 0 ? '+' : '') + margin.toFixed(1) + ' dB' : '--'}</div></div>
+      <div><div class="k">Voice reach</div><div class="v ${r.voiceMax < r.gunshotMax ? 'bad' : 'good'}">${r.voiceMax} m</div></div>
+      <div><div class="k">Gunshot reach</div><div class="v">${r.gunshotMax} m</div></div>
+      <div><div class="k">Bed density</div><div class="v">${rate}/s</div></div>
+    </div>
+    <div class="banner ${cls}">${verdict}</div>
+    <div class="hint">The two band levels are relative, not dBFS: they come from unnormalised FFT
+    magnitudes, so only the <strong>margin</strong> between them means anything. It is a worst case
+    too, since the bed is ${rate} shots per second of continuous fire while a callout is a single
+    voice. Use it to compare one setting against another, not as an absolute verdict.</div>`;
+
+  drawMaskCompare(vSpec, bSpec, vGain, gGain, sr);
+}
+
+function drawMaskCompare(vSpec, bSpec, vGain, gGain, rate) {
+  const c = $('mix-canvas');
+  const g = fitCanvas(c);
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const fMin = 80, fMax = 12000;
+  const xOf = f => W * Math.log(f / fMin) / Math.log(fMax / fMin);
+  const dbMin = -120, dbMax = 0;
+  const yOf = d => H - H * (d - dbMin) / (dbMax - dbMin);
+
+  g.fillStyle = 'rgba(0,255,136,0.05)';
+  g.fillRect(xOf(300), 0, xOf(3400) - xOf(300), H);
+  g.strokeStyle = '#16162a'; g.fillStyle = '#445'; g.font = '9px Courier New';
+  for (const f of [100, 300, 1000, 3400, 10000]) {
+    const x = xOf(f);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x + 2, H - 3);
+  }
+
+  const plot = (spec, gain, colour) => {
+    g.strokeStyle = colour;
+    g.beginPath();
+    let started = false;
+    for (let k = 1; k < spec.bins.length; k++) {
+      const f = k * spec.binHz;
+      if (f < fMin || f > fMax) continue;
+      const x = xOf(f), y = yOf(dB(Math.sqrt(spec.bins[k]) * gain));
+      if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    }
+    g.stroke();
+  };
+  plot(bSpec, gGain, '#f66');
+  plot(vSpec, vGain, '#0ff');
+  g.fillStyle = '#0ff'; g.fillText('voice', 8, 12);
+  g.fillStyle = '#f66'; g.fillText('gunfire bed', 8, 24);
+}
+
+// ---------------------------------------------------------------------------
+// Triggers tab: the firefight simulation
+// ---------------------------------------------------------------------------
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Weighted so the mix resembles a real firefight rather than a uniform draw over the lexicon.
+const EVENT_MIX = [
+  ['firing', 26], ['moving', 14], ['reloading', 12], ['contact', 10], ['cover', 9],
+  ['overwatch', 8], ['enemy_down', 5], ['man_down', 4], ['grenade_warn', 3],
+  ['grenade_out', 3], ['sidearm', 2], ['no_ammo', 2], ['reviving', 2],
+];
+const MIX_TOTAL = EVENT_MIX.reduce((s, [, w]) => s + w, 0);
+function pickLine(rand) {
+  let r = rand() * MIX_TOTAL;
+  for (const [id, w] of EVENT_MIX) { r -= w; if (r <= 0) return id; }
+  return 'firing';
+}
+
+const REASON_COLOUR = {
+  distance: '#456', botCooldown: '#a70', lineCooldown: '#c50', dedup: '#a05',
+  squadRate: '#639', globalRate: '#36a', busy: '#c33', ambientGated: '#555',
+  chattiness: '#333', unknownLine: '#f0f', disabled: '#333',
+};
+
+let simResult = null;
+
+function runSim() {
+  const nBots = Number($('sim-bots').value) || 24;
+  const nSquads = Number($('sim-squads').value) || 4;
+  const secs = Number($('sim-secs').value) || 60;
+  const rate = Number($('sim-rate').value) || 6;
+  const radius = Number($('sim-radius').value) || 60;
+  const seed = Number($('sim-seed').value) || 1;
+  const rand = mulberry32(seed);
+
+  // A fresh budget and director per run, both reading the live parameters. The cutoff is pinned
+  // to the voice panner range exactly as both viewers do -- with the bare schema default (45 m)
+  // the sim would drop lines the shipping game happily plays.
+  const budget = createAudioBudget();
+  const director = createVoiceDirector({ maxDistance: SOUND_PARAMS.ranges.voiceMax, budget });
+
+  const bots = [];
+  for (let i = 0; i < nBots; i++) {
+    const ang = rand() * Math.PI * 2;
+    const dist = Math.sqrt(rand()) * radius;   // uniform over the disc, not clustered at the centre
+    bots.push({
+      id: `bot-${i}`, squad: `sq-${i % nSquads}`, team: i % 2,
+      distance: dist, x: Math.cos(ang) * dist, z: Math.sin(ang) * dist,
+    });
+  }
+
+  const events = [];
+  const total = Math.max(1, Math.round(secs * rate));
+  for (let i = 0; i < total; i++) {
+    const t = rand() * secs * 1000;
+    const bot = bots[Math.floor(rand() * bots.length)];
+    events.push({ t, bot, lineId: pickLine(rand) });
+  }
+  events.sort((a, b) => a.t - b.t);
+
+  const log = [];
+  for (const ev of events) {
+    const res = director.request({
+      lineId: ev.lineId, botId: ev.bot.id, teamId: ev.bot.team, squadId: ev.bot.squad,
+      eventKey: `${ev.lineId}|${Math.floor(ev.t / 900)}|${ev.bot.team}`,
+      now: ev.t, distance: ev.bot.distance,
+      durationS: voiceLineDurationS(ev.lineId, voiceIdentity(ev.bot.id, ev.bot.team)),
+    });
+    log.push({ ...ev, ok: res.ok, reason: res.reason || null });
+  }
+
+  const stats = director.getStats();
+  const spoken = log.filter(e => e.ok);
+  const gaps = [];
+  for (let i = 1; i < spoken.length; i++) gaps.push(spoken[i].t - spoken[i - 1].t);
+  gaps.sort((a, b) => a - b);
+
+  simResult = { log, spoken, stats, secs, radius, nBots, gaps };
+  renderSimSummary();
+  drawSimTimeline();
+  renderSimReasons();
+}
+
+function renderSimSummary() {
+  const { log, spoken, secs, gaps, nBots } = simResult;
+  const perMin = spoken.length / (secs / 60);
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] / 1000 : 0;
+  const heardBots = new Set(spoken.map(e => e.bot.id)).size;
+  const share = log.length ? (spoken.length / log.length) * 100 : 0;
+  let read, cls;
+  if (perMin < 4) { read = 'Very quiet. A player may not register that the bots talk at all.'; cls = 'warn'; }
+  else if (perMin > 60) { read = 'A wall of chatter. Individual callouts stop carrying information at this density.'; cls = 'warn'; }
+  else { read = 'Chatter density is in a range where individual callouts stay legible.'; cls = 'ok'; }
+
+  $('sim-summary').innerHTML = `
+    <div class="readout">
+      <div><div class="k">Wanted to speak</div><div class="v">${log.length}</div></div>
+      <div><div class="k">Actually spoke</div><div class="v good">${spoken.length}</div></div>
+      <div><div class="k">Share allowed</div><div class="v">${share.toFixed(0)}%</div></div>
+      <div><div class="k">Lines / minute</div><div class="v ${perMin < 4 || perMin > 60 ? 'bad' : 'good'}">${perMin.toFixed(1)}</div></div>
+      <div><div class="k">Median gap</div><div class="v">${medianGap.toFixed(1)} s</div></div>
+      <div><div class="k">Bots ever heard</div><div class="v">${heardBots} / ${nBots}</div></div>
+    </div>
+    <div class="banner ${cls}">${read}</div>`;
+}
+
+function drawSimTimeline() {
+  const { log, secs, radius } = simResult;
+  const c = $('sim-timeline');
+  const g = fitCanvas(c);
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const pad = 26;
+  const xOf = t => pad + (W - pad - 6) * (t / (secs * 1000));
+  const yOf = d => 12 + (H - 34) * (d / radius);
+
+  g.strokeStyle = '#16162a'; g.fillStyle = '#445'; g.font = '9px Courier New';
+  for (let s = 0; s <= secs; s += Math.max(5, Math.round(secs / 8))) {
+    const x = xOf(s * 1000);
+    g.beginPath(); g.moveTo(x, 8); g.lineTo(x, H - 20); g.stroke();
+    g.fillText(`${s}s`, x + 2, H - 8);
+  }
+  // The director cutoff: everything below this line is dropped before a node is ever built.
+  const cut = SOUND_PARAMS.ranges.voiceMax;
+  if (cut < radius) {
+    const y = yOf(cut);
+    g.strokeStyle = '#c50';
+    g.setLineDash([4, 3]);
+    g.beginPath(); g.moveTo(pad, y); g.lineTo(W - 6, y); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = '#c50';
+    g.fillText(`director cutoff ${cut} m`, pad + 4, y - 3);
+  }
+  g.fillStyle = '#445';
+  g.fillText('0 m', 2, yOf(0) + 3);
+  g.fillText(`${radius} m`, 2, yOf(radius) + 3);
+
+  for (const e of log) {
+    const x = xOf(e.t), y = yOf(e.bot.distance);
+    if (e.ok) {
+      g.fillStyle = '#0ff';
+      g.fillRect(x - 1, y - 3, 2, 6);
+    } else {
+      g.fillStyle = REASON_COLOUR[e.reason] || '#444';
+      g.fillRect(x - 0.5, y - 0.5, 1.5, 1.5);
+    }
+  }
+  g.fillStyle = '#0ff';
+  g.fillText('| spoke', W - 120, 14);
+  g.fillStyle = '#666';
+  g.fillText('. refused', W - 60, 14);
+}
+
+function renderSimReasons() {
+  const { log, stats } = simResult;
+  const counts = stats.byReason;
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const max = entries.length ? entries[0][1] : 1;
+  const explain = {
+    distance: 'Beyond the director cutoff. Raise director.maxDistance, or accept that far bots are silent.',
+    botCooldown: 'That bot spoke too recently. This is what stops one bot narrating everything.',
+    lineCooldown: 'That line was said too recently by the same team.',
+    dedup: 'Another bot already reported the same event.',
+    squadRate: 'That squad hit its rate window.',
+    globalRate: 'The whole battlefield hit its rate window. This is the main density control.',
+    busy: 'Every speaker slot was taken and nothing lower-priority could be displaced.',
+    ambientGated: 'Ambient flavour, silenced because chattiness is low.',
+    chattiness: 'Chattiness is zero, so nothing speaks.',
+    unknownLine: 'The line id is not in the lexicon.',
+  };
+  $('sim-reasons').innerHTML = entries.length
+    ? `<table><tr><th>Reason</th><th>Count</th><th></th><th>What it means</th></tr>${entries.map(([r, n]) => `
+      <tr><td><span style="color:${REASON_COLOUR[r] || '#666'}">&#9632;</span> ${r}</td>
+      <td>${n}</td>
+      <td style="width:120px"><div style="background:${REASON_COLOUR[r] || '#666'};height:8px;width:${(n / max) * 100}%"></div></td>
+      <td style="text-align:left;color:#778">${explain[r] || ''}</td></tr>`).join('')}</table>`
+    : '<div class="banner ok">Nothing was refused.</div>';
+}
+
+// ---------------------------------------------------------------------------
+// Export tab
+// ---------------------------------------------------------------------------
+function renderExport() {
+  const doc = exportParams();
+  const hasAny = Object.keys(doc).length > 0;
+  const full = { meta: { note: 'Written by sound-studio.html. Only values that differ from the schema defaults appear here.', editor: 'sound-studio.html', validatedBy: 'test-sound-params.mjs' }, ...doc };
+  $('exp-json').textContent = JSON.stringify(full, null, 2);
+
+  const issues = auditParams();
+  $('exp-audit').innerHTML = issues.length
+    ? `<div class="banner err"><strong>${issues.length} problem${issues.length > 1 ? 's' : ''} the ranges alone cannot catch:</strong><br>${issues.map(i => '&bull; ' + i).join('<br>')}</div>`
+    : `<div class="banner ok">Cross-section audit clean. ${hasAny ? 'These overrides are safe to save.' : 'Nothing overridden yet -- the code defaults still stand.'}</div>`;
+
+  const host = $('exp-sections');
+  host.innerHTML = '';
+  for (const id of [...SECTION_IDS, ...MAP_SECTION_IDS]) {
+    const dirty = SOUND_PARAM_SCHEMA[id] ? sectionIsDirty(id) : Object.keys(SOUND_PARAMS[id] || {}).length > 0;
+    const el = document.createElement('div');
+    el.className = 'item';
+    const label = SOUND_PARAM_SCHEMA[id]?.label || id;
+    el.innerHTML = `<span style="color:${dirty ? '#ff0' : '#667'}">${label}</span>`
+      + `<span class="meta">${dirty ? 'edited' : 'default'}</span>`;
+    if (dirty) {
+      const btn = document.createElement('button');
+      btn.textContent = 'revert';
+      btn.addEventListener('click', () => {
+        if (SOUND_PARAM_SCHEMA[id]) resetParams(id);
+        else { for (const k of Object.keys(SOUND_PARAMS[id])) setMapOverride(id, k, undefined); }
+      });
+      el.appendChild(btn);
+    }
+    host.appendChild(el);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// SOURCES -- A/B the formant synth against baked TTS takes
+// ---------------------------------------------------------------------------
+
+// Bake sets are listed in sfx/voice/manifest.json, which bake-voices.mjs rewrites after every run.
+// Reading it rather than probing a hardcoded list means baking a new voice makes it appear here
+// with no code edit.
+const bakedBuffers = new Map();   // `${set}/${lineId}` -> AudioBuffer
+let loadedSets = [];
+
+async function loadBakedTakes() {
+  ensureCtx();
+  bakedBuffers.clear();
+  loadedSets = [];
+  $('src-status').textContent = 'loading...';
+  let manifest;
+  try {
+    const res = await fetch('./sfx/voice/manifest.json');
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    manifest = await res.json();
+  } catch (err) {
+    $('src-status').textContent = `no manifest (${err.message}). Run: node bake-voices.mjs --manifest`;
+    return;
+  }
+  let hits = 0;
+  for (const s of manifest.sets || []) {
+    let found = 0;
+    for (const lineId of s.lines) {
+      try {
+        const res = await fetch(`./sfx/voice/${s.set}/${lineId}.${s.ext}`);
+        if (!res.ok) continue;
+        bakedBuffers.set(`${s.set}/${lineId}`, await ctx.decodeAudioData(await res.arrayBuffer()));
+        found++; hits++;
+      } catch { /* a take that will not decode simply does not appear */ }
+    }
+    if (found) loadedSets.push([s.set, s.voice, found]);
+  }
+  $('src-status').textContent = loadedSets.length
+    ? `${hits} takes across ${loadedSets.length} sets (baked ${String(manifest.generated || '').slice(0, 16).replace('T', ' ')})`
+    : 'manifest lists no takes. Run: node bake-voices.mjs --engine=eleven --voice=all';
+  renderSources();
+  drawVocoderViews();
+}
+
+function sourceIdentity() {
+  return voiceIdentity(`bot-${Number($('src-bot').value) || 0}`, 0);
+}
+
+// Returns the scheduled duration so a caller can queue the next source after it.
+function playSource(set, lineId, at = null) {
+  ensureCtx();
+  const opts = { radio: $('src-radio').checked, robot: $('src-robot').checked };
+  const identity = sourceIdentity();
+  const build = set === 'synth'
+    ? buildVoiceLine(lineId, identity, { radio: opts.radio })
+    : buildSampleVoiceLine(bakedBuffers.get(`${set}/${lineId}`), identity, opts);
+  if (!build) { status(`no take for ${set}/${lineId}`); return 0; }
+  return build(ctx, master, at ?? ctx.currentTime + 0.03) || 0;
+}
+
+// ---- vocoder explainers ---------------------------------------------------
+// Each canvas answers one question about one group of sliders. They redraw on every param change,
+// so a slider always has a visible consequence.
+
+function bandCenters() {
+  const p = SOUND_PARAMS.vocoder;
+  const n = Math.max(2, Math.round(p.bands));
+  return Array.from({ length: n }, (_, i) => p.loHz * Math.pow(p.hiHz / p.loHz, i / (n - 1)));
+}
+
+// Band layout: one bell per band, width from Q, over the same log axis as the spectrum plots.
+function drawBandView() {
+  const c = $('voc-bands'); if (!c) return;
+  const g = fitCanvas(c); const W = c.width, H = c.height;
+  const p = SOUND_PARAMS.vocoder;
+  g.clearRect(0, 0, W, H);
+  const fMin = 60, fMax = 12000;
+  const xOf = f => W * Math.log(f / fMin) / Math.log(fMax / fMin);
+
+  g.strokeStyle = '#16162a'; g.fillStyle = '#445'; g.font = '9px Courier New';
+  for (const f of [100, 300, 1000, 3400, 10000]) {
+    const x = xOf(f);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - 12); g.stroke();
+    g.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x + 2, H - 2);
+  }
+  // The radio channel throws away everything outside its passband, so show that too -- it is the
+  // reason very high bands are often wasted nodes.
+  const vp = SOUND_PARAMS.voice;
+  g.fillStyle = 'rgba(255,80,80,0.07)';
+  g.fillRect(0, 0, xOf(vp.radioHighpassHz), H - 12);
+  g.fillRect(xOf(vp.radioLowpassHz), 0, W - xOf(vp.radioLowpassHz), H - 12);
+
+  for (const f of bandCenters()) {
+    const bw = f / Math.max(0.5, p.bandQ);         // -3 dB width of a biquad bandpass
+    const x0 = xOf(Math.max(fMin, f - bw / 2)), x1 = xOf(Math.min(fMax, f + bw / 2));
+    const grad = g.createLinearGradient(x0, 0, x1, 0);
+    grad.addColorStop(0, 'rgba(0,204,204,0)');
+    grad.addColorStop(0.5, 'rgba(0,204,204,0.55)');
+    grad.addColorStop(1, 'rgba(0,204,204,0)');
+    g.fillStyle = grad;
+    g.fillRect(x0, 4, Math.max(1, x1 - x0), H - 16);
+    g.strokeStyle = '#0cc';
+    g.beginPath(); g.moveTo(xOf(f), 4); g.lineTo(xOf(f), H - 12); g.stroke();
+  }
+  // Coverage as a ratio, not a yes/no. Adjacent -3 dB edges touching exactly is 1.0; below that
+  // they overlap, above it there is a true hole. Biquad skirts run well past -3 dB, so "just over"
+  // is not the same as broken and should not be reported as though it were.
+  const c2 = bandCenters();
+  let worst = 0;
+  for (let i = 1; i < c2.length; i++) {
+    const lower = c2[i - 1] * (1 + 1 / (2 * p.bandQ));
+    const upper = c2[i] * (1 - 1 / (2 * p.bandQ));
+    worst = Math.max(worst, upper / lower);
+  }
+  const msg = worst > 1.25 ? ['open gaps between bands: sound falls through', '#e86']
+    : worst > 1.0 ? ['bands just meet at their edges', '#dc6']
+    : ['bands overlap: full coverage', '#5a6'];
+  g.fillStyle = 'rgba(8,8,15,0.85)';
+  g.fillRect(0, 0, W, 15);
+  g.fillStyle = msg[1];
+  g.fillText(`${msg[0]}  (edge ratio ${worst.toFixed(2)})`, 4, 11);
+}
+
+// Follower: real per-sample loudness of the take against what the follower's lowpass tracks.
+function drawFollowView() {
+  const c = $('voc-follow'); if (!c) return;
+  const g = fitCanvas(c); const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const buf = currentTakeBuffer();
+  if (!buf) { g.fillStyle = '#445'; g.font = '10px Courier New'; g.fillText('load takes to see the envelope', 6, H / 2); return; }
+  const p = SOUND_PARAMS.vocoder;
+  const d = buf.getChannelData(0), rate = buf.sampleRate;
+  // One-pole smoother at followHz -- the same job the lowpass does in the graph.
+  const a = Math.exp(-2 * Math.PI * p.followHz / rate);
+  const step = Math.max(1, Math.floor(d.length / W));
+  let env = 0; const raw = [], smooth = [];
+  for (let x = 0; x < W; x++) {
+    let peak = 0;
+    for (let i = x * step; i < (x + 1) * step && i < d.length; i++) {
+      const v = Math.abs(d[i]);
+      if (v > peak) peak = v;
+      env = v + a * (env - v);
+    }
+    raw.push(peak); smooth.push(env);
+  }
+  const top = Math.max(0.02, Math.max(...raw));
+  const plot = (arr, color, scale) => {
+    g.strokeStyle = color; g.beginPath();
+    arr.forEach((v, x) => { const y = H - 4 - (H - 10) * Math.min(1, v * scale / top); x ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.stroke();
+  };
+  plot(raw, '#3a3a52', 1);
+  plot(smooth, '#0cc', Math.max(0.1, p.followGain) / 11);
+  g.fillStyle = '#445'; g.font = '9px Courier New';
+  g.fillText(`${p.followHz} Hz follower, makeup x${p.followGain}`, 4, 11);
+}
+
+// Output: the take's spectrum against the vocoded result, both offline-rendered.
+let specJob = 0;
+async function drawSpecView() {
+  const c = $('voc-spec'); if (!c) return;
+  const g = fitCanvas(c); const W = c.width, H = c.height;
+  const buf = currentTakeBuffer();
+  g.clearRect(0, 0, W, H);
+  if (!buf) { g.fillStyle = '#445'; g.font = '10px Courier New'; g.fillText('load takes to compare spectra', 6, H / 2); return; }
+  const job = ++specJob;
+  const rate = 48000;
+  const oc = new OfflineAudioContext(1, Math.ceil((buf.duration + 0.5) * rate), rate);
+  buildSampleVoiceLine(buf, sourceIdentity(), { radio: false, robot: true })(oc, oc.destination, 0);
+  const out = await oc.startRendering();
+  if (job !== specJob) return;                      // a newer drag already superseded this render
+  const dry = spectrum(buf.getChannelData(0), buf.sampleRate);
+  const wet = spectrum(out.getChannelData(0), rate);
+
+  const fMin = 60, fMax = 12000;
+  const xOf = f => W * Math.log(f / fMin) / Math.log(fMax / fMin);
+  g.strokeStyle = '#16162a'; g.fillStyle = '#445'; g.font = '9px Courier New';
+  for (const f of [100, 300, 1000, 3400, 10000]) {
+    const x = xOf(f);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - 12); g.stroke();
+    g.fillText(f >= 1000 ? `${f / 1000}k` : String(f), x + 2, H - 2);
+  }
+  // spectrum() returns {bins, frames, binHz} and its bins are POWER, so the axis comes from binHz
+  // and the level needs a sqrt before dB -- the same conversion drawSpectrum() uses.
+  const curve = (spec, color) => {
+    const peak = Math.sqrt(Math.max(...spec.bins)) || 1;
+    g.strokeStyle = color; g.beginPath();
+    let started = false;
+    for (let i = 1; i < spec.bins.length; i++) {
+      const f = i * spec.binHz;
+      if (f < fMin) continue;
+      if (f > fMax) break;
+      const db = 20 * Math.log10((Math.sqrt(spec.bins[i]) / peak) || 1e-9);
+      const y = Math.max(2, Math.min(H - 13, H - 13 - (H - 20) * (db + 70) / 70));
+      started ? g.lineTo(xOf(f), y) : (g.moveTo(xOf(f), y), started = true);
+    }
+    g.stroke();
+  };
+  curve(dry, '#3a3a52');
+  curve(wet, '#0cc');
+}
+
+function drawVocoderViews() { drawBandView(); drawFollowView(); drawSpecView(); }
+
+// The take the explainers analyse: whatever set is loaded, on a line with plenty of vowels and an
+// "s" -- sibilance is the thing the carrier is worst at.
+function currentTakeBuffer() {
+  for (const [set] of loadedSets) {
+    for (const id of ['contact', 'cover', 'reloading']) {
+      const b = bakedBuffers.get(`${set}/${id}`);
+      if (b) return b;
+    }
+  }
+  return null;
+}
+
+// Which sets are in the comparison. With twenty-odd baked voices a fixed column per set is
+// unreadable, so the table shows only what you pick.
+const pickedSets = new Set();
+
+function renderSetPicker() {
+  const host = $('src-picker');
+  if (!loadedSets.length) { host.innerHTML = ''; return; }
+  if (!pickedSets.size) for (const [set] of loadedSets.slice(0, 3)) pickedSets.add(set);
+  host.innerHTML = '';
+  let engine = null;
+  for (const [set, voice, n] of loadedSets) {
+    const eng = set.split('/')[0];
+    if (eng !== engine) {
+      engine = eng;
+      const tag = document.createElement('span');
+      tag.className = 'dim';
+      tag.textContent = `${eng}:`;
+      host.appendChild(tag);
+    }
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (pickedSets.has(set) ? ' on' : '');
+    chip.textContent = `${voice} (${n})`;
+    chip.addEventListener('click', () => {
+      pickedSets.has(set) ? pickedSets.delete(set) : pickedSets.add(set);
+      renderSources();
+    });
+    host.appendChild(chip);
+  }
+}
+
+function renderSources() {
+  renderSetPicker();
+  const t = $('src-table');
+  const cols = [['synth', 'synth'], ...loadedSets.filter(([s]) => pickedSets.has(s)).map(([s, v]) => [s, v])];
+  const head = `<tr><th>Line</th><th>Text</th>${cols.map(([, l]) => `<th>${l}</th>`).join('')}<th></th></tr>`;
+  const rows = lineIds().map(lineId => {
+    const cells = cols.map(([set]) => {
+      const has = set === 'synth' || bakedBuffers.has(`${set}/${lineId}`);
+      return `<td>${has ? `<button data-set="${set}" data-line="${lineId}">PLAY</button>` : '<span class="dim">--</span>'}</td>`;
+    }).join('');
+    const added = !(lineId in VOICE_LINES);
+    return `<tr><td><code>${lineId}</code>${added ? ' <span class="dim">new</span>' : ''}</td>`
+      + `<td>"${lineText(lineId)}"</td>${cells}`
+      + `<td><button data-all="${lineId}" title="play every picked source in turn">ALL</button></td></tr>`;
+  }).join('');
+  t.innerHTML = head + rows;
+  for (const b of t.querySelectorAll('button[data-set]')) {
+    b.addEventListener('click', () => playSource(b.dataset.set, b.dataset.line));
+  }
+  for (const b of t.querySelectorAll('button[data-all]')) {
+    b.addEventListener('click', () => playAllSources(b.dataset.all, cols.map(([s]) => s)));
+  }
+}
+
+// Walk one line across every picked source, spaced so each is heard on its own.
+function playAllSources(lineId, sets) {
+  ensureCtx();
+  let at = ctx.currentTime + 0.05;
+  for (const set of sets) {
+    const gap = playSource(set, lineId, at);
+    at += (gap || 1.2) + 0.25;
+  }
+  status(`${lineId} across ${sets.length} sources`);
+}
+
+$('src-load').addEventListener('click', loadBakedTakes);
+$('src-stop').addEventListener('click', stopAll);
+
+const TABS = [
+  ['bench', 'BENCH'], ['lexicon', 'LEXICON'], ['mix', 'MIX'],
+  ['triggers', 'TRIGGERS'], ['sources', 'SOURCES'], ['export', 'EXPORT'],
+];
+let activeTab = 'bench';
+
+function showTab(id) {
+  activeTab = id;
+  for (const [t] of TABS) {
+    $(`page-${t}`).classList.toggle('active', t === id);
+  }
+  for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab === id);
+  if (id === 'lexicon') renderLexicon();
+  if (id === 'mix') { renderMixTable(); renderSection($('mix-params'), 'ranges'); }
+  if (id === 'triggers') {
+    renderSection($('trig-params-director'), 'director');
+    renderSection($('trig-params-budget'), 'budget');
+  }
+  if (id === 'sources') {
+    renderSources();
+    renderSection($('voc-p-bands'), 'vocoder', { only: ['bands', 'loHz', 'hiHz', 'bandQ'] });
+    renderSection($('voc-p-follow'), 'vocoder', { only: ['followHz', 'followGain'] });
+    renderSection($('voc-p-carrier'), 'vocoder', { only: ['carrierGain', 'sibilanceLevel', 'sibilanceHz'] });
+    renderSection($('voc-p-out'), 'vocoder', { only: ['outGain'] });
+    drawVocoderViews();
+  }
+  if (id === 'export') renderExport();
+}
+
+for (const [id, label] of TABS) {
+  const b = document.createElement('div');
+  b.className = 'tab';
+  b.dataset.tab = id;
+  b.textContent = label;
+  b.addEventListener('click', () => showTab(id));
+  $('tabs').appendChild(b);
+}
+
+$('audio-gate').addEventListener('click', () => { ensureCtx(); ctx.resume(); });
+
+$('bench-play').addEventListener('click', () => { stopAll(); playBuilder(soundById(benchSel)); });
+$('bench-stop').addEventListener('click', stopAll);
+$('bench-loop').addEventListener('click', () => {
+  if (loopTimer) { stopAll(); return; }
+  ensureCtx();
+  $('bench-loop').classList.add('on');
+  const fire = () => playBuilder(soundById(benchSel));
+  fire();
+  loopTimer = setInterval(fire, Math.max(300, (Number($('bench-seconds').value) || 1) * 1000 + 120));
+});
+$('bench-analyze').addEventListener('click', analyzeBench);
+$('bench-seconds').addEventListener('change', analyzeBench);
+
+$('lex-play').addEventListener('click', () => {
+  ensureCtx();
+  const build = buildVoiceLine(lexSel, voiceIdentity(benchBotId(), Number($('lex-team').value) || 0), { radio: lexRadio });
+  if (build) build(ctx, master, ctx.currentTime + 0.03);
+});
+$('lex-radio').addEventListener('click', () => {
+  lexRadio = !lexRadio;
+  $('lex-radio').classList.toggle('on', lexRadio);
+});
+// Revert means "back to the shipped default". A line with no shipped default has nothing to revert
+// to, so reverting it would silently be a delete -- refuse and point at the button that says so.
+$('lex-revert').addEventListener('click', () => {
+  if (!(lexSel in VOICE_LINES)) { status(`"${lexSel}" was added here and has no code default; use DELETE LINE`); return; }
+  setMapOverride('voiceLines', lexSel, undefined);
+  renderLexicon();
+  status(`"${lexSel}" back to its code default`);
+});
+$('lex-bot').addEventListener('change', renderLexicon);
+
+$('mix-dist').addEventListener('input', renderMixTable);
+$('mix-run').addEventListener('click', runMasking);
+// Rebuilt rather than built once, because a line can be added after boot.
+function renderMixLineOptions() {
+  const sel = $('mix-line');
+  const keep = sel.value || 'contact';
+  sel.innerHTML = '';
+  for (const id of lineIds()) {
+    const o = document.createElement('option');
+    o.value = id; o.textContent = id;
+    if (id === keep) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+renderMixLineOptions();
+
+$('lex-add').addEventListener('click', () => {
+  const err = addVoiceLine($('lex-new-id').value, $('lex-new-text').value);
+  $('lex-add-hint').textContent = err || '';
+  if (err) return;
+  $('lex-new-id').value = ''; $('lex-new-text').value = '';
+  renderLexicon();
+  renderMixLineOptions();
+  // The seed gives a generic rhythm on purpose, so a new line usually lands too close to an
+  // existing one until you retime it. Say so, rather than letting the red flag look like a bug.
+  status(`added "${lexSel}". The seeded rhythm will likely clash until you retime it -- watch the `
+    + `rhythm list. To give it a TTS take: node bake-voices.mjs --engine=eleven --voice=all`);
+});
+
+$('lex-delete').addEventListener('click', () => {
+  if (lexSel in VOICE_LINES) { status(`"${lexSel}" ships with the code; use REVERT LINE instead`); return; }
+  setMapOverride('voiceLines', lexSel, undefined);
+  const gone = lexSel;
+  lexSel = lineIds()[0];
+  renderLexicon();
+  renderMixLineOptions();
+  status(`removed "${gone}"`);
+});
+
+$('sim-run').addEventListener('click', runSim);
+
+$('exp-copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText($('exp-json').textContent);
+  status('copied to clipboard');
+});
+$('exp-download').addEventListener('click', () => {
+  const blob = new Blob([$('exp-json').textContent], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sound-params.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  status('downloaded -- save it over sound-params.json in this directory');
+});
+$('exp-reload').addEventListener('click', async () => {
+  resetParams();
+  const res = await loadSoundParams();
+  status(res.ok ? `reloaded: ${res.applied} values applied${res.warnings.length ? `, ${res.warnings.length} warnings` : ''}` : `reload failed: ${res.reason}`);
+});
+$('exp-reset').addEventListener('click', () => { resetParams(); status('all sections back to code defaults'); });
+
+// Any parameter change repaints the readouts immediately, then re-derives whatever the tab shows.
+// The param sections are deliberately NOT re-rendered here: rebuilding a section mid-drag destroys
+// the slider under the cursor. refreshAllParams() updates the numbers in place instead.
+let rerenderTimer = null;
+onParamsChanged(() => {
+  refreshAllParams();
+  if (rerenderTimer) clearTimeout(rerenderTimer);
+  rerenderTimer = setTimeout(() => {
+    if (activeTab === 'bench') analyzeBench();
+    if (activeTab === 'lexicon') renderLexicon();
+    if (activeTab === 'mix') renderMixTable();
+    if (activeTab === 'sources') drawVocoderViews();
+    if (activeTab === 'export') renderExport();
+  }, 60);
+});
+
+window.addEventListener('resize', () => {
+  if (activeTab === 'bench') analyzeBench();
+  if (activeTab === 'triggers' && simResult) drawSimTimeline();
+});
+
+// Boot: load whatever the JSON says, then draw.
+(async () => {
+  const res = await loadSoundParams();
+  status(res.ok
+    ? `sound-params.json loaded (${res.applied} overrides)`
+    : `sound-params.json not loaded (${res.reason}) -- using code defaults`);
+  renderBench();
+  showTab('bench');
+  analyzeBench();
+})();
+</script>
+</body>
+</html>

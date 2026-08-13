@@ -3,7 +3,28 @@
 // Body descriptors come from sky-field.js generateCelestialBodies(); this file owns the
 // canvas painters and sprite assembly. Canvas textures are flagged for disposal.
 import * as THREE from 'three';
-import { SpriteNodeMaterial } from 'three/webgpu';
+import { SpriteNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
+
+// Fixed-orientation bodies get a 1x1 plane centred on the origin (same footprint as the sprite
+// quad). Each body owns its OWN geometry (not a shared module-level one) so sky.js's disposeTree
+// — which frees non-sprite geometry on a rebuild — can dispose it safely without destroying a
+// buffer that newly-built bodies still draw from.
+const _zAxis = new THREE.Vector3(0, 0, 1);
+const _worldUp = new THREE.Vector3(0, 1, 0);
+const _n = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3(), _basis = new THREE.Matrix4();
+// Orient a mesh so its +Z (the quad's face) points from its position toward the group origin
+// (the camera, since the sky group follows the camera). Frozen at build time — unlike a Sprite
+// it does NOT re-face the camera every frame, so the painted sphere stops appearing to spin as
+// the view yaws. World-up is the reference up (falls back to +Z at the poles) so the baked
+// lighting direction stays upright rather than rolling with the body's azimuth.
+function faceOrigin(obj) {
+  _n.copy(obj.position).multiplyScalar(-1).normalize();
+  const up = Math.abs(_n.y) > 0.99 ? _zAxis : _worldUp;
+  _r.crossVectors(up, _n).normalize();
+  _u.crossVectors(_n, _r).normalize();
+  _basis.makeBasis(_r, _u, _n);
+  obj.quaternion.setFromRotationMatrix(_basis);
+}
 
 function markTex(tex) {
   tex.userData.proceduralSkyTexture = true;
@@ -331,22 +352,40 @@ function paintBodySimple(body, resScale) {
   return markTex(new THREE.CanvasTexture(cv));
 }
 
-export function createCelestialBodies(bodyData, { resScale = 1 } = {}) {
+// faceMode:
+//   'billboard' (default) — each body is a THREE.Sprite that always faces the camera. Used by
+//     stellar-viewer.html, where the camera orbits a single body and should always see its face.
+//   'fixed' — each body is a plane mesh oriented once toward the group origin (the camera). Used
+//     by the environment sky so distant planets don't appear to rotate as the view yaws.
+export function createCelestialBodies(bodyData, { resScale = 1, faceMode = 'billboard' } = {}) {
   const group = new THREE.Group();
+  const fixed = faceMode === 'fixed';
   for (const [index, body] of bodyData.entries()) {
     const tex = body.detail === 'high' ? paintBodyHD(body, resScale) : paintBodySimple(body, resScale);
-    const mat = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
-    mat.fog = false;
-    const spr = new THREE.Sprite(mat);
-    spr.position.set(body.position.x, body.position.y, body.position.z);
+    let obj;
+    if (fixed) {
+      const mat = new MeshBasicNodeMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+      mat.fog = false;
+      obj = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+    } else {
+      const mat = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
+      mat.fog = false;
+      obj = new THREE.Sprite(mat);
+    }
+    obj.position.set(body.position.x, body.position.y, body.position.z);
     const s = body.size * (body.rings ? 5 : body.glow ? 3.6 : 2.9);
-    spr.scale.set(s, s, 1);
-    spr.renderOrder = -996;
+    obj.scale.set(s, s, 1);
+    if (fixed) faceOrigin(obj);
+    obj.renderOrder = -996;
+    // Bodies live far out on the sky shell but their (unset) sprite/mesh bounding sphere can leave
+    // the frustum while the body is still on-screen, popping small moons in and out at the view
+    // edge — disable culling so they stay put.
+    obj.frustumCulled = false;
     // Optional deterministic painter order. Generated companions follow their
     // parent planet in bodyData, so they remain visibly in front instead of
     // swapping layers when camera pitch changes transparent depth sorting.
-    spr.userData.stableRenderOrder = -996 + index * 0.001;
-    group.add(spr);
+    obj.userData.stableRenderOrder = -996 + index * 0.001;
+    group.add(obj);
   }
   group.userData.setStableLayering = (enabled) => {
     for (const spr of group.children) {

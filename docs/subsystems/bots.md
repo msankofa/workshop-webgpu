@@ -1,5 +1,13 @@
 # Combat bots
 
+> **Harness generations (2026-08-08).** `bot-viewer-v3.html` is the live harness and the only one
+> that should be edited from now on. `bot-viewer-v2.html` was copied to make it and is now a frozen,
+> playable snapshot of the 2026-08-07 game state — do not change it. `bot-viewer.html` (v1) remains
+> the older harness. Everything below that says "in `bot-viewer-v2.html`" describes code that v3
+> inherited verbatim at the fork; read those sections as describing v3 unless they are dated after
+> 2026-08-08. Shared modules (`bot-activity.js`, `nav-grid.js`, `effect-renderer.js`, …) reach every
+> generation; anything written inline in v3 reaches v3 only.
+
 Status: **wired into `environment-viewer.html`** (2026-07-14), with four follow-up polish passes
 the same day: (1) facing bug, bot/player collision, a fall-over death pose, a respawn toggle, a
 weapon-type select, behavior sliders, and local A* pathing on non-shoot-house maps; (2) a smooth
@@ -27,7 +35,16 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
   authored map); on open procedural terrain (no `mapKey`, so no `mapCollider` is ever built) it
   falls back to an optional `heightAt(x,z)` flat ground-snap so bots don't fall through the
   world — added for the wiring step, since the harness always has a `mapCollider` and never
-  exercised that path. Browser/THREE only, not Node-tested.
+  exercised that path. A third, separate option, `rescueHeightAt(x,z)`, opts a caller into the
+  below-terrain rescue inside the `mapCollider` branch (see "Below-terrain floor rescue" below).
+  A fourth, `forensics`, opts a caller into the per-bot physics ring recorder (see "Terrain-tunnelling
+  forensic ring" below).
+  Browser/THREE first, but a stub collider makes the physics step Node-testable
+  (`test-bot-entity-rescue.mjs`).
+  **Forensic ring**: `bot-forensics.js` is the pure, THREE-free recorder behind that option —
+  `createBotForensics()` plus the `F_*` field offsets and `FLAG_*` bits, re-exported by
+  `bot-entity.js` the way `bot-separation.js` is so consumers keep one entity-module import.
+  Node-tested in `test-bot-forensics.mjs`.
   **Facing bug (fixed 2026-07-14)**: `bot.yaw` is stored in `bot-activity.js`'s convention
   (`atan2(dx,dz)`, 0 = +Z-forward — the convention `aimAnglesTo`, movement, and fire direction
   all use), but the wire quaternion's convention matches `camera.rotation.y` (0 = -Z-forward, the
@@ -259,16 +276,106 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
     above), the pure selectors rank
     by that `cost`, and **unreachable candidates are dropped** — so a medic never picks (or pins on a
     wall chasing) an ally that's close only in a straight line, and won't tend one through a wall
-    (`MEDIC_TEND` gates on path cost too). Without a nav grid it falls back to straight-line. This **layers on top of the combat FSM** in
+    (`MEDIC_TEND` gates on path cost too). Without a nav grid it falls back to straight-line.
+    The danger-field surcharge rides in a separate `bias` field that `bot-medic.js`'s `preference()`
+    adds **for ranking only** — it must never be folded into `cost`, because `cost` gates
+    `responseRadius`/`reviveRadius` and the tend radius, and a death paints `DANGER_DEATH_WEIGHT` on
+    the corpse's own cell: at `DANGER_PATROL_SCALE` that is a 4 m surcharge against a 1.7 m tend
+    radius, so every corpse read as out of tend range and no revive could ever fire. This **layers on top of the combat FSM** in
     `updateBotSentry`: after `chooseBotState`, a medic that isn't self-preserving (`!botHealRequested`)
     and isn't in a committed `BOT_FLEE`/`BOT_KNIFE` may override its state to `MEDIC_MOVE` (approach a
     wounded/fallen ally) or `MEDIC_TEND` (channel in place). It still aims and **fires while
     moving/tending** (the fire-if-aimed clause mirrors `BOT_FLEE`).
-  - **Heal-ally pose** — `medicHold`: unlike the rifleman heal, the sidearm stays in the **right hand**
-    (weapon visible, aim/fire intact) and `updateMedicHoldOverlay` overrides only the **left-arm**
-    target to cradle the pack (run *after* `updateBotWeaponMount` so it wins the frame). `updateMedicTend`
-    transfers `healAllyPerSecond` HP from the medic's packs into the ally; `stickyHealTend` keeps
-    topping an ally past the (lower) select threshold up to `allyResumeHp01`.
+  - **Heal-ally pose** — **every tend kneels**, and as of the kneel stance that is literal rather than
+    loose language: the `medic-tend` rung in `bot-stance.js` returns `STANCE_KNEEL` (falling back to
+    `STANCE_CROUCH` when `kneelEnabled` is off), while self-`heal` keeps `STANCE_CROUCH`. The split is
+    not cosmetic — a medic works on someone else at arm's length and wants a stable base with both
+    hands forward, while a bot patching itself wants to be able to break and run. Neither rung reads
+    any medic field: treating a casualty
+    means being pinned in the open beside them, so standing to do it is never right, least of all in a
+    firefight. What combat changes is the **weapon**, not the posture — so `actor.tendUnderFire` (a
+    visible enemy, someone shooting the medic, a live cover threat, or an enemy seen within
+    `MEDIC_TEND_COMBAT_MS` = 5 s) picks the pose only:
+    - `medicHold` (**under fire**): the sidearm stays in the **right hand** (weapon visible, aim/fire
+      intact) and `updateMedicHoldOverlay` overrides only the **left-arm** target, working
+      **on the patient** (run *after* `updateBotWeaponMount` so it wins the frame).
+    - `medicAid` (**out of combat**): nothing to answer, so the weapon rig is hidden and
+      `updateMedicAidPose` *replaces* the weapon mount (like `rifleHeal`), putting **both** hands on
+      the casualty.
+
+    **Heal vs revive read differently**, which is the point of `medicWorkPoint`: a heal is a steady
+    press (hand on the contact, ~0.8 Hz settle, plain white-cross pack in hand), a revive is chest
+    compressions — a triangle-eased pump at ~1.7 Hz, both hands stacked on the sternum in `medicAid`,
+    and the cyan fused kit (`buildReviveKitMesh`, matching the HUD's cyan `◆` kit pip) in hand instead
+    of a pack. `showMedicHeldItem` owns the swap; both meshes are hidden on death, on any pose
+    transition (`endBotPose`), and freed in `disposeBotActor`.
+
+    Both reach a real contact point: `medicTendContactPoint` returns a living ally's chest off its
+    **live** capsule (so a crouched patient is met at its own chest) or, for a revive, the death site
+    at ground + 0.3 m. `setArmTargetOnPatient` clamps the target along the shoulder→patient ray to
+    `ARM_REACH_M` (0.62), so a medic still closing reads as reaching rather than as a broken IK solve;
+    the pack mesh is pinned to the **solved** hand afterwards. Note `setArmTarget` stores the position
+    **by reference**, so the two arms must never share a scratch vector.
+
+    **Self-heal is role-blind.** A medic patching itself uses `rifleHeal` and crouches exactly like
+    anyone else — same holstered two-handed pack pose, and `forcedCrouch` now covers any `BOT_HEAL`
+    rather than exempting medics. Only tending *someone else* is medic-specific. (`medicHold` keeps a
+    self-cradle fallback for a patient that vanishes mid-frame, when `medicTendContactPoint` is null.)
+
+    Historical note, since it was twice a live bug: the `medic-tend` rung used to return `STANCE_STAND`
+    for any medic, then briefly for a medic under fire. Nothing in `chooseBotStance` is medic-aware any
+    more — if a future change wants a standing tend back, it needs a new ctx field, not the old ones.
+
+### The kneel stance (`STANCE_KNEEL`)
+
+One knee down, sitting between crouch and prone on the exit-cost ladder and on speed, spread, and
+turn rate. The pose itself lives in `player-procedural-body.js` (`KNEEL_DEFAULTS`, `state.kneel`) and
+had been fully built but driven by nothing until this wiring.
+
+Three rungs take it, and the third is the interesting one:
+
+- **`medic-tend`** — replaces the crouch outright, as above.
+- **Commanded hold** — kneel now, prone once `proneMinHoldMs` (1200 ms) has elapsed *and*
+  `proneEnabled` is on. Prone is opt-in and time-gated, so before kneel existed an overwatching bot
+  simply crouched indefinitely; kneel is the rung it actually reaches.
+- **Long-range `aim`/`fire`** — kneel and crouch **coexist** rather than one replacing the other.
+  Stand up close, crouch past `aimCrouchDistance` (8 m), kneel past `aimKneelDistance` (16 m). Kneel
+  is the committed firing position that earns the longest shots; crouch stays the posture a bot can
+  rise out of quickly. Each band has its own hysteresis, and the kneel band's is wider
+  (`aimKneelHysteresisM` 2.5 m vs 1.5 m) because standing out of a kneel costs more.
+
+Two things worth knowing before tuning it:
+
+- **A kneeling bot is a TALLER target than a crouching one.** This rig's crouch is a deep squat
+  (`crouchCfg.pelvisDrop` 0.62 parks the hip at ~0.40 m) while the kneel hip sits at a full thigh
+  length, ~0.58 m. The derived capsule scales are ~0.74 kneel vs ~0.62 crouch. Kneel earns the
+  long-range rung on **stability**, never on silhouette — the flat `kneelHeightScale` fallback (0.75)
+  is deliberately above `crouchHeightScale` (0.68) so the two paths agree on the ordering.
+- **`kneelEnabled` ships OFF and `bot-viewer-v3.html` opts in.** A viewer that lets the ladder pick
+  kneel without wiring the rig's `kneel` channel and the `kneel01` weight renders a kneeling bot
+  *standing*. `bot-viewer-v2.html` and `environment-viewer-v2.html` are not wired, so the module
+  default has to leave them on exactly the behaviour they had. `blendStanceHeightScale` takes its
+  kneel pair as **trailing optional arguments** for the same reason: their four-argument calls stay
+  correct, not merely non-crashing.
+
+**Kneel has its own authored weapon hold (`kneelHold`), added 2026-08-11.** The first wiring folded
+`kneel01` into the crouch weight on the assumption that a kneeling body puts the gun at roughly the
+crouch hold's height. Measured against the rig, it does not: kneeling shoulders ride 0.26 m *higher*
+than crouching ones, so sharing the hold left a kneeling rifle 0.51 m below its own hands. Because
+the mount is pinned at `feetY + 1.5` and never moves with stance, hold Y is the only thing that can
+express a stance's shoulder drop — every stance therefore needs its own. Derivation, the numbers, and
+the flat −0.09 `crouchHold` that the same shortcut had already baked in are in Contract 6 of
+`docs/subsystems/procedural-body-weapon-contracts.md`.
+  - **Tend contact distance** — the tend radius is the latch threshold for *starting* the channel
+    (loose on purpose, and wider still for a fleeing patient), **not** a working distance. `updateMedicTend`
+    calls `creepToContact`, a straight-line shuffle at `MEDIC_CONTACT_CREEP` (0.45) of move speed that
+    closes to `MEDIC_CONTACT_RADIUS` (0.85 m) and then holds — without it the medic stopped up to 1.7 m
+    short and treated an ally from beyond arm's length. Two 0.3 m capsules bottom out at 0.6 m under
+    the pair pushout, so 0.85 m is always reachable and leaves the arm ~0.25 m to cover. Corpses are
+    not in the living hash, so a revive has no pushout floor at all.
+
+    `updateMedicTend` transfers `healAllyPerSecond` HP from the medic's packs into the ally;
+    `stickyHealTend` keeps topping an ally past the (lower) select threshold up to `allyResumeHp01`.
   - **Heal-hold** — so the medic can actually close on a moving patient, `decideMedicDuty` leases a
     short hold on its heal target once within `healHoldRadius` (or already tending):
     `allyActor.healHoldUntil = now + healHoldLeaseMs` (+`healMedicXZ`). In the ally's own sentry a
@@ -445,6 +552,14 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
     Both modes are switchable at runtime from the same panel (explicit product decision,
     2026-07-14 — the original spec left "hand-placed vs. round-based" as an open question; the
     answer is "both, toggleable").
+  - **Body** (same panel, below Weapon; 2026-08-01): "Armoured bot" or "Human soldier", calling
+    `setBotBodyKind` and then `GhostRenderer.rebuildBotBodies()`. Unlike the Weapon dropdown above
+    it, this DOES apply to bots already on the field — the design is appearance only, so the live
+    rigs are torn down and remade rather than leaving half the squad in the old body until it dies.
+    `?botBody=soldier` sets it at load, applied before the `GhostRenderer` is constructed so the
+    first bodies come out right instead of being built armoured and immediately rebuilt.
+    bot-viewer-v2 has the same control as a cycling **Body:** button in its Body & ragdoll section,
+    backed by `rebuildBotProceduralBodies()` and the same URL parameter.
     **Coincident-spawn fix for squads on open terrain (2026-07-15)**: `botSpawnSlot(index)` falls
     back to a fixed `pose.x + 6, pose.z` point (ignoring `index` entirely) whenever there's no
     authored map to sample `botSpawnPoints` from — true for all open procedural terrain. Since
@@ -567,6 +682,13 @@ draw-call count — that's Phase 4:
   disposing them. Cuts N× lathe tessellations + GPU buffers at spawn, zero visual change. **Materials
   stay per-body** (per-bot color is a design requirement — do not collapse to one shared material;
   true material sharing is deferred to Phase 4's per-instance color attribute).
+  - **Cache lifecycle (NPC-suite prep, P1).** `createProceduralPlayerBody` takes an optional
+    `cache` (default `_sharedBodyGeo`), so a permanently-alive consumer can inject its own pool. Each
+    body records the geometry keys it touches at build (`beginRecord`/`endRecord`) and releases them
+    in `destroy()` — in **both** mesh and instanced mode, before the instanced early-return — so the
+    consumer can `sweep()` only truly-unreferenced geometry instead of the nuclear
+    `clearSharedBodyGeometry()`. Liveness is declared at build, so the LOD twin at `:1112` (minted but
+    never drawn) is retained for free. Node-covered by `test-geometry-cache.mjs`.
 - **Bots-only body LOD** (`multiplayer.js` `GhostRenderer`): constructed with `getCameraPos` +
   `botLod` ({`nearD2,midD2,hideD2`}, set in `environment-viewer.html`'s `BOT_RENDER_LOD` =
   45/100/240 m). `_updateProceduralBodyLod` runs the full procedural solve every frame under 45 m,
@@ -598,6 +720,22 @@ collapses every bot's body parts into a shared `InstancedMesh` pool so N bots co
   Immediate mode: `beginFrame()` zeros counts, each visible bot `add()`s its parts, `endFrame()`
   uploads. Soft-fails past `capacity` (drops instances, counts `stats.dropped`) — the hard-cap
   policy for now. Geometry is never disposed here (owned by the body cache).
+  **`dropBucket(geometry)` / `dropBuckets(geometries)`** (NPC-suite prep, P1b) — evict the bucket(s)
+  for specific geometries on demand instead of after `evictAfter` empty frames. A shell-owned pool
+  that must survive mode switches can't dispose-and-recreate the whole pool the way the two current
+  clear sites do; this lets it drop exactly the buckets whose geometry the cache is sweeping, in the
+  same tick. Pairs with `createGeometryCache().sweep(keep, onDispose)` — pass
+  `geo => batches.dropBucket(geo)` as `onDispose`. Never disposes the geometry (the cache owns that);
+  safe in either order since a geometry's uuid survives its own `dispose()`. Frame-count eviction and
+  this share one internal `evictBucket` helper. Node-covered by `test-body-part-batches-drop.mjs`.
+  **`raycast(raycaster) -> {point, normal, role, distance, instanceId} | null`** (added for
+  `damage-simulator.html`) — closest hit across every bucket, tried each in turn since
+  `Raycaster.intersectObjects` has no way to attribute a hit back to a bucket's role. `role` is the
+  bucket's **material** role (shell/plate/skin/…), not an anatomical part — there is no per-instance
+  body-part label anywhere in this pool (see `player-procedural-body.js`'s `flush()`: `add()` only
+  ever receives `part._role`). `normal` comes back rotated into world space by hand (that instance's
+  `getMatrixAt` composed with the bucket mesh's `matrixWorld`) since `InstancedMesh` raycasts return
+  the hit face's normal in the instance's local geometry space, not pre-transformed.
 - **`player-procedural-body.js`** — new `batches` option turns on instanced mode. Parts become
   transform-only `Object3D` placeholders (carry their shared geometry + a role tag; never rendered);
   `update()`'s IK/pose math is byte-for-byte unchanged. A new `flush(pool, refreshMatrices = true)`
@@ -822,9 +960,14 @@ a bot's FSM state, cover state, or aim. A leaderless squad simply falls through 
 - **Corridor probe**: `squadCorridorClear` samples the nav grid at ±`formationHalfWidth` either side,
   `SQUAD_CORRIDOR_LOOKAHEAD` (1.5 m) ahead. Throttled to `corridorProbeMs` — probing every frame
   makes the formation flap between wedge and column in a doorway.
-- **Chevron**: gold, built by `buildRoleInsignia('chevron')`. `ROLE_SQUAD_LEADER` carries it as its
-  spawn insignia; `setSquadLeaderMark` grows one on a promoted rifleman and removes it on demotion,
-  skipping any role that already has its own insignia (the medic keeps its cross).
+- **Chevron**: gold, built by `buildRoleInsignia('chevron')`. As of 2026-08-07 it's a marker
+  independent of role, stored on `actor.leaderInsignia` (separate from `actor.roleInsignia`, the
+  class marker): `setSquadLeaderMark` grows it on whoever `squad.leaderId` currently is and removes it
+  on demotion, regardless of role — so a promoted rifleman shows its diamond *and* the chevron, and a
+  spawned `ROLE_SQUAD_LEADER` (whose own class insignia is also a chevron) shows both stacked while
+  it's actually leading. `updateRoleInsignia` positions the two independently, stacking the leader
+  chevron above the class marker when both are present; `updateAlertMark`'s height accounts for either
+  or both being on screen.
 - **`applyPushElement` (S11)** now reads the roster's `squadRank` when the bot is squadded, and only
   falls back to the original emergent `squadMembersNear` + sort + `indexOf` when it is not — that
   fallback ran per bot per frame during a push, so rosters are also the cheaper path.
@@ -857,7 +1000,7 @@ walking together, which made the first QA pass unreadable. Three readouts, all o
   shapes new spawns, so without this the only way to try squads was to clear the field first. It tops
   up understrength rosters before partitioning the rest. `formSquad` now also calls
   `setSquadLeaderMark` on the bot it elects: a squad formed this way has no spawned
-  `ROLE_SQUAD_LEADER`, so its leader would otherwise wear no chevron until it died.
+  `ROLE_SQUAD_LEADER`, so its leader would otherwise wear no leader chevron until it died.
 
 ### Consolidation: the reconciler, detachments and succession (2026-07-27)
 
@@ -925,6 +1068,190 @@ into the layout and so needs a rebuild, while the spawn rules alone take effect 
 (`planSquadIntake`), filling (`fillSquadOpenings`) and spawn placement (`planSpawnAnchors`) all read
 it, so they cannot disagree about which squad a given reinforcement is joining.
 
+### Spawn markers and garrisons (2026-08-08, bot-viewer-v3)
+
+Side mode was the only spatial control over spawning, and it is a hard half-and-half split of the
+map. **Spawn markers** replace it as the general mechanism: a marker is a team-owned point that
+team's bots appear at, and *a base is a spawn marker with a compound built around it* — one record,
+one vocabulary, whether the marker was placed by hand or derived from the bounds.
+
+`bot-spawn-markers.js` is the pure half (store CRUD, picking, hit-testing, serialization, compound
+orientation, garrison geometry), Node-tested by `test-bot-spawn-markers.mjs` and written to be
+imported unchanged by the environment viewer. `bot-viewer-v3.html` owns the meshes, the click tool
+and the panel.
+
+**Placing them.** Two armed tools in the squad panel, committed by a left-click on empty ground
+through the same `wheelArmedGoal` path the command wheel uses (so they never collide with select,
+alt-click focus, the right-click menu or the wheel):
+
+- *Place spawn marker* — drops a marker for the tool's team; clicking one of that team's markers
+  removes it. The tool stays armed across clicks, since placing is a repeated gesture. Escape
+  disarms.
+- *Place bot* — spawns one bot of the tool's team exactly where the click landed. It still goes
+  through `findBotSpawnPoint` (`spawnBots(..., { at })`, `SPAWN_TOOL_SPREAD` of slack) so a click on
+  a wall lands on walkable ground beside it rather than inside it.
+
+**Placement cascade.** `findBotSpawnPoint` gained a marker stage between the squad anchor and the
+team side: a team that owns markers spawns at them. It re-picks a marker per pass rather than
+committing to one, so a marker that ended up on unwalkable ground cannot starve the others. Squads
+and individuals both use it — `planSpawnAnchors` seeds each new squad on one marker (the whole squad
+shares it), and with squad mode off the per-bot stage does the same job.
+
+**Side mode markers** are now just markers: `refreshSideModeMarkersFor(bounds)` re-derives one per
+team from `sideModeMarkers()` on every map build, tagged `origin: 'side'` so clearing them never
+touches anything hand-placed. Only `origin: 'placed'` markers are saved into a slot.
+
+**Base build** (`botBaseStructuresEnabled`) now builds a compound at *every* marker, not only at the
+two side-mode home points, and `markerRegion(bounds, marker)` orients each gateway toward the middle
+of the map along whichever axis the marker sits furthest out on. `homeBaseSizeFor` still returns null
+on a map too small to hold one.
+
+Compounds are emitted by the layout generator, so a new marker's walls only exist after an
+`applyLayout` pass. `commitSpawnTool` therefore runs that rebuild itself when base build is on and
+the maze layout is active — placing a marker raises its walls immediately instead of leaving the user
+to find a control that happens to trigger a rebuild. It forces `keepBots: true` regardless of the
+rebuild toggle, because placing a marker is not a change of map and must not clear the roster.
+
+The rebuild is whole-map, and most of it is unnecessary for adding a few boxes: only the cells under
+the compound change walkability, only nearby corners are added, and the visibility field is already
+lazy. Region labelling is the one genuinely global part, since a wall can cut the map in two. If the
+bake time `applyLayout` logs turns out to be too slow to sit behind a click, the fix is an
+incremental path into the nav grid and corner map rather than avoiding the rebuild.
+
+#### Rasterized nav blockers
+
+`buildNavGrid`'s `blockers` option is the fast path and the one every rect-based map should take.
+Without it the bake costs cells × rects, because the caller's predicate scans its own rectangle list
+once per cell: 160,000 cells against 900 walls is 144 million rectangle tests, measured at **224 ms**.
+Handed the rects instead, `rasterizeBlockers` walks each rect's cell range — the shape
+`buildSightGrid` has always used — and the predicate then runs only where no rect claimed the cell.
+**17 ms for a byte-identical grid**, verified in `test-nav-grid.mjs` across 36 random maps at three
+margins and three cell sizes, and benchmarked by `bench-corners.mjs`.
+
+`blockerMargin` grows every rect on all sides, which is how the viewer keeps paths off wall surfaces
+(`WALL_MARGIN`, 0.55 m). Rasterized cells are **hard** blocked and never reach `softBlockedTest`, so
+`connectStrandedRegions` can still carve through steep ground but never through a wall. In
+`bot-viewer-v3.html` this left `navWalkable` with the ground half only — bounds and slope — and
+`pointInWall` was deleted rather than left as an uncalled function implying nav still tests rects
+per cell.
+
+The callback-only form is unchanged, and `environment-viewer.html`'s three call sites still use it.
+
+#### `updateCornerMapInBounds(prev, navGrid, rects, field, dirty, opts)`
+
+Rebuilds only the corner records a change inside `dirty` (world-space bounds) could have altered.
+**1.5 ms against a 65 ms full bake** on a 200 m 900-wall map.
+
+It is **exact for wall records**, not an approximation, because a wall record is locally determined:
+it depends on its own rect, the buried test against overlapping rects, a 2-cell walkable snap, and
+one `canSee` between anchor and peek about a metre apart. Long-range visibility only enters at query
+time, in `coverCornerValid`. `test-nav-corners.mjs` proves it by comparing against a full rebake over
+every single-wall removal, a wall shortened below `SIGHT_BLOCK_HEIGHT`, and a wall split in two —
+the shape a breach takes — with zero divergence, and `bench-corners.mjs` re-checks it at map scale.
+
+Crest records are **not** exact. `buildCrestCorners` claims one block slot per direction in a global
+row-major scan under a hard cap, so which cell represents a slot depends on scan order. The partial
+rescan takes a cell `window` and a pre-seeded `taken` set so survivors keep their slots and stay
+un-re-emitted, and it holds the stride phase of a full bake so it cannot sample cells a full bake
+never visits. It never invents or loses cover, but it can pick a different representative cell inside
+the window. `crestExact` in the return says whether crests were touched at all, so a caller needing a
+byte-identical map knows when to fall back to `buildCornerMap`.
+
+### Wall destruction (`bot-destruction.js`, `test-bot-destruction.mjs`)
+
+Pure and THREE-free. Plan: `docs/wall-destruction-plan.md`.
+
+**Wired into `bot-viewer-v3.html` as far as CRACKED**, behind the *Wall damage* toggle in the
+explosives row (**off** by default). The set is rebuilt per layout from `activeWalls` in
+`applyLayout`, and `destructionSettings.maxState` pins the ladder at `CRACKED`: walls take real
+damage and show it, but never change shape, so nothing downstream can go stale while the geometry
+rebuild is still unwritten. Lifting that one field is what turns crumbling on.
+
+Damage enters at three points. `damageWallAtHit(point, normal, amount)` handles bullets, called from
+`fireBotShot` and the haywire fire path on `hit.kind === 'world'` — that string is the map collider's
+own branch in `resolveHitscan` (`combat.js:211`). `damageWallsInBlast(center, radius, damage)`
+handles explosions from `detonateBlast`, and needs no attribution because it sweeps the rects
+directly; falloff is measured to the rect, not its centre, so a charge against one end of a long wall
+is not shrugged off. A hit that lands on terrain or a slab attributes to no wall and is ignored.
+
+Two known rough edges. Attribution is a linear scan over every wall per world hit, where the plan
+calls for a cell raster; it is deferred so its invalidation is built once, alongside the other local
+updates. And because the rect test is 2D, a hit on a lintel directly above a wall attributes to the
+wall beneath it.
+
+The state ladder, decided with the user:
+
+| state | what is left | what rebakes |
+|---|---|---|
+| `CRACKED` | the original rect, unchanged | nothing — a material or decal swap only |
+| `CRUMBLED` | half of it, on a horizontal, vertical or diagonal cut | geometry, and whatever the cut moved |
+| `CRUSHED` | no solid at all, just rubble | everything in the footprint; the ground opens |
+
+A breach is the same machinery with a different child list and is deliberately not built yet.
+
+`fracture(rect, pattern, opts)` turns one rect into `{solids, rubble}`. The three cuts behave very
+differently for the AI, which is the point of having them:
+
+- **horizontal** — full footprint, height dropped to `stubHeight` (1.4 m). Deliberately *below*
+  `SIGHT_BLOCK_HEIGHT` rather than an exact half of 3 m, because the sight test is `h >= 1.5` and an
+  exact half would still block sight. New firing lines open and the wall's cover anchors vanish,
+  since `buildCornerMap` ignores rects under 1.5 m.
+- **vertical** — half the length at full height. This is the interesting one: the surviving end is a
+  new free corner, so the corner bake *manufactures* cover that was not there before.
+- **diagonal** — a descending staircase of `stairSteps` rects. Nothing downstream reads a slant
+  (`pointInWall`'s successor, `buildSightGrid`, `buildCornerMap` and `boxOnGround` are all
+  axis-aligned rect tests), so the sim reads the staircase while the rendered mesh may be a real cut.
+
+`rubble` output is **descriptive geometry for the renderer only**. Feeding it to the nav blockers or
+the collider would produce a crushed wall that still blocks, which is the one thing the crushed state
+exists to avoid.
+
+Determinism follows the `plants.js` convention: a fixed-length draw vector per builder, taken whether
+or not the branch that uses it fires, and a per-wall stream from `makeWallRng(seed, id)` so wall 37
+breaks the same way regardless of how many walls broke before it. The test asserts that directly.
+
+`applyWallDamage` returns `null` when nothing observable changed and otherwise a transition carrying
+`geometryChanged` and a `dirty` region. `geometryChanged: false` is the common case — a crack — and
+it is what keeps most hits off the rebuild path entirely.
+
+`wallAtPoint(set, point, normal)` exists because the map collider bakes every mesh into one triangle
+soup and its raycast returns only `{distance, point, normal}`, so a bullet hit carries no wall
+identity. Stepping into the surface along the normal is what disambiguates a hit on a face shared by
+two abutting rects; the test covers both sides of exactly that case.
+
+#### `rebuildDerived(dirty, {label})` — the rebuild seam
+
+Everything derived from the wall and cover rects lives in one function behind one flag per stage:
+`geometry` (teardown, floor mesh, the terrain-sunk box lists, the instanced meshes), `flora`,
+`collider`, `nav`, `vis`, `corners`. `applyLayout` calls it with every flag set; a partial rebuild —
+a wall coming down mid-fight — calls it with the subset that changed. It exists so those stages have
+exactly one definition and one place to measure.
+
+The order is fixed by real dependencies: boxes feed both the collider and flora's vine anchors, nav
+feeds the visibility field's `walkIndex`, and the field feeds the corner bake's anchor-to-peek
+cross-check. Region reporting and the nav overlay run whenever nav or corners moved.
+
+`visField` is **rebuilt, never patched**, even when nav did not move. `nav-visibility.js` documents
+its pair memo as needing no invalidation on the grounds that a built field never changes its
+answers, and reconstruction is one O(cells) pass with no traces — so honouring that assumption costs
+less than breaking it.
+
+Each call logs `[rebuild <label>]` with the wall count, walkable-cell count, corner count and a
+per-stage millisecond breakdown, and leaves the same numbers in `lastRebuildTimings`.
+
+**Garrison** (`botGarrisonEnabled`, on by default) is the standing hold a squad gets at the marker it
+spawned from — `squad.garrisonMarkerId`, stamped in `spawnBots` from the anchor's marker id.
+
+- Out of combat, `updateGarrisonMovement` replaces patrol outright (it sits between the manual
+  command and formation rungs and always returns true), walking each member to its
+  `garrisonSlot(marker, rank, liveCount)`: rank 0 on the marker, the rest on a ring at 55% of the
+  radius. An unreachable slot parks the bot where it stands rather than letting it patrol away.
+- It does not gate fighting: every combat state sits above that branch, so intruders are engaged
+  normally. `clampBotGoalToGarrison` only pulls the *pursuit* goal back onto the ring
+  (+`GARRISON_CHASE_SLACK`), which is what stops a chase running off the map.
+- It clears on a manual order only (`releaseGarrison`, called from `commandBotTo`), and it clears for
+  the whole squad — an ordered squad must not walk itself home the moment the order completes.
+
 ### Support roles inside a squad (2026-07-27)
 
 A medic was being treated as just another rifle in three places. Roles gained a `support` flag
@@ -981,6 +1308,118 @@ sectors of fire, objective selection and focus-fire designation; a maneuver elem
 approach bearings off the visibility field while the base element suppresses; then temperament,
 loss-retreat and leader-death morale ported from `squad-activity.js`; then the outpost/ammo/flag
 layers from `docs/superpowers/specs/2026-07-14-squad-outpost-ammo-economy-design.md`.
+
+Exploratory steps toward objective selection, all in `bot-viewer-v2.html`, current control scheme
+as of 2026-08-06:
+
+- **Select**: plain left-click on a bot sets `selectedBotActor` (previously only ctrl-click did this,
+  as a purely-visual trace-viewer marker; it's now also "the bot that right-click commands apply to").
+  Camera-follow/POV on plain/shift-click and the ctrl-click trace-viewer ping are unchanged.
+- **Command**: right-click anywhere on the map raycasts to a ground point (`groundPointAtEvent`) and
+  opens a small floating menu at the cursor (dismissed by clicking away, Escape, or picking an
+  option). The menu has independent toggles, not one flat choice: **Double time** and **Break
+  contact** checkboxes at the top (each sets its flag directly, no point/command issued, and checked
+  state carries over between menu openings), and two goal buttons below them, **Move here** / **Hold
+  here**, that each set `commandTargetId`/`commandGoal`/`commandGoalState` for the selected bot using
+  whatever the two toggles currently are. A color-coded marker (`markerMesh`) drops at the point for
+  feedback: amber = move, orange = move + double time, cyan = hold, violet = hold + double time
+  (break contact isn't separately color-coded yet). `updateCommandMovement` is wired into the
+  out-of-combat dispatch ahead of `updateSquadFormationMovement`/medic cohesion, so an explicit
+  command overrides passive follow/regroup behavior until it resolves.
+- **Arrival behavior (goal state)**: `commandGoalState: 'move'` clears the command on arrival
+  (`COMMAND_ARRIVE_M`) and falls through to whatever the bot would normally do next — the "attack then
+  return to patrol" default, since combat is a separate, higher-priority FSM branch that pre-empts
+  movement entirely (unless break contact is also on — see below) and isn't cleared by arriving, so a
+  fight en route doesn't cancel the order. `commandGoalState: 'hold'` never clears on arrival — the bot
+  parks at that exact point indefinitely (proto-defense: still fights on contact, returns to holding
+  afterward instead of resuming patrol).
+- **Double time (movement style)**: `commandDoubleTime` is orthogonal to goal state — it forces a
+  `STANCE_RUN` for as long as the commanded bot is actively traveling toward `commandGoal`, regardless
+  of whether the goal is move or hold (once a hold-goal bot has arrived and is stationary, the flag is
+  a no-op by construction — nothing reads it while parked). `bot-stance.js`'s `chooseBotStance` has a
+  `doubleTime` ctx flag that only fires while the resolved FSM state is `'patrol'` (so it can never
+  fight the aim/seek crouch table or any higher-priority rung — forcedCrouch/holding/heal/alert all
+  still win). The viewer sets that flag true for the directly commanded bot **and** any live squadmate
+  (`activeBotActor.squadId` matched against the commanded bot's, looked up fresh each frame rather than
+  tracked separately), so double-timing a squad leader speeds up the whole squad through the existing
+  stance→`stanceSpeedFactor`→`currentBotMoveSpeed` pipeline — no new movement code needed.
+- **Break contact (combat override)**: `commandBreakContact`, propagated to squadmates the same way as
+  double time, is read into `c.orderOverride` and passed to `chooseBotStateName` (bot-activity.js).
+  It's a new ladder rung, positioned below every self-preservation rung (flee/heal/knife/committed
+  cover/the close-self-threat spin all still win) but above the entire firefight-reflex tier — pursue,
+  fresh cover entry, aim/fire, the ally-hit cover reaction, the lost-sight chase — landing on
+  `BOT_PATROL` so `updateCommandMovement` takes over that same frame. This is a hard "stop shooting and
+  move now," not a graceful kite-while-retreating: the bot goes silent and pulls out. Node-tested in
+  `test-bot-activity.mjs`.
+
+**Command wheel (experimental alternate to the right-click menu)**: holding the middle mouse button
+(scroll-wheel click) over the map pops a small radial wheel at the cursor instead of right-clicking a
+ground point first — Move/Hold spokes at top/bottom, Double time/Break contact spokes at the sides. It's
+a hold-drag-release gesture, not click-to-open: `pointerdown` (button 1) shows the wheel at the cursor,
+each spoke highlights (a border ring, via its own `refresh(hover)` closure) as the cursor drags over it
+while still held, and the matching `pointerup` resolves whichever spoke is under the cursor at that
+instant via `document.elementFromPoint` and commits it; releasing off every spoke just closes the wheel
+with no effect. A stray `pointerdown` elsewhere while the wheel is still open (a lost pointerup, e.g.
+from releasing outside the window) closes it as a safety net. Q was tried first but fly-cam already uses
+Q for vertical descent, so the trigger moved to the middle button; `controls.mouseButtons.MIDDLE = null`
+(set where `controls` is constructed) permanently frees that button from OrbitControls' default dolly so
+the two never fight over it. The two toggle spokes flip `commandDoubleTime`/`commandBreakContact`
+immediately — same module state the right-click menu's checkboxes read/write, so the two entry points
+can never disagree — and read as persistent toggles because each spoke's fill color is driven by an
+`isActive()` getter re-evaluated on every open (`paintWheelToggles`), not just painted once at creation.
+The two goal spokes have no point yet at the moment they're picked: choosing one sets `wheelArmedGoal`
+('move'/'hold'); the *next* left-click that doesn't land on a bot supplies the ground point
+(`groundPointAtEvent`) and commits through the same `commandBotTo` helper the right-click menu's buttons
+call (`issueCommand` is now a thin wrapper around it). While a goal is armed the cursor switches to a
+crosshair. Escape clears both the wheel and any armed goal; opening either menu hides the other. This is
+a UI experiment, not a replacement — the right-click menu is unchanged and still works exactly as before.
+
+Selecting a squad leader drags the whole squad along for free, since followers track the leader's
+live entity position in `updateSquads`, not this dispatch choice — selecting an individual follower
+instead breaks it out of formation to travel/hold/double-time solo (no squad-wide selection yet). No
+team/order/persistence wiring exists yet. Staged plan going forward: marker (done) → point-directed
+selection (done) → arrive-and-act options, move vs. hold, decoupled from a double-time movement-style
+toggle (done) → team/base assignment with attack/defend orders, leash, and base-biased cover.
+
+Selecting a bot for the command menu never moves the camera by itself (as of 2026-08-07) — the plain
+left-click handler only calls `setSelectedBot`, nothing camera-related. Following a specific bot is a
+separate, explicit action: the Follow/POV buttons and the V/P keybinds now target `selectedBotActor`
+when one exists (`setCameraMode(mode, selectedBotActor)`), falling back to whatever `getCameraFollowActor`
+already resolves to (the auto-follow toggle, or the last bot cycled to with `]`/"Nearest") when nothing
+is selected. This was a deliberate fix for a regression the point-command work introduced: the click
+handler used to unconditionally jump the camera to whatever was clicked, which fought with using the
+same click just to target a command.
+
+That first pass left a gap, fixed the same day: `updateCameraButtons()` disabled the Follow/POV/Frame
+buttons off `hasActor = !!getCameraFollowActor()` alone, which knows nothing about `selectedBotActor` —
+so with auto-follow off and nothing ever followed yet, the buttons stayed greyed out (ignoring clicks)
+even though a bot was selected and the click handlers were already wired to use it. The V/P keybinds
+were unaffected (they call `setCameraMode` directly, not gated on the button's `disabled` state) — only
+the on-screen buttons were stuck. Fixed by widening `hasActor` to `!!(selectedBotActor ||
+getCameraFollowActor())` and having `setSelectedBot` call `updateCameraButtons()` (it's not on the
+per-frame path, so nothing else was repainting the buttons when a click changed the selection).
+`frameCamera`'s default actor (used by the Frame button and the F key) similarly widened from
+`getCameraFollowActor()` alone to `selectedBotActor || getCameraFollowActor()`, so F now frames on your
+selection too instead of only on whatever's currently being followed.
+
+A third fix, same day: Follow mode wasn't tracking the bot **while** the user rotated or zoomed —
+only once they released the mouse. `updateCameraRig`'s `CAMERA_FOLLOW` branch (~line 4072) computes a
+smoothed `cameraFollowAnchor` every frame regardless, but used to bail out (`if
+(cameraRig.userInteracting) return;`) immediately after updating it, before ever writing that anchor
+into `controls.target`/`camera.position` — so mid-drag or mid-scroll the pivot you were orbiting around
+just sat still while the bot kept walking, then the camera snapped to catch up the instant you let go.
+Fixed by hoisting the `cameraRig.translateTarget(cameraFollowDesiredTarget)` call above the
+`userInteracting` check: it always carries the pivot *and* the camera together by the bot's own
+frame-to-frame motion (a pure translation, touching neither the orbit distance nor direction the user
+is actively dragging/scrolling), and only the distance/occlusion resolution below it stays gated on
+release, so it doesn't fight that live input. `controls.update()` (applying the drag/wheel delta) runs
+immediately before `updateCameraRig` each frame (see the call site comment), so this ordering is exactly
+the same "user input first, follow rig writes the final pose after" contract the non-interacting path
+already used — it just no longer skips writing that pose during the gesture. No unit-testable surface
+(live OrbitControls interaction timing); verify by dragging/scrolling while following a moving bot.
+
+The camera system as a whole (follow/POV/orbit/fly modes, framing presets, occlusion guard) is old and
+separately grown; a real overhaul is out of scope here and would be its own pass.
 
 ## Bot Inspector (2026-07-15)
 
@@ -1190,7 +1629,8 @@ zero-velocity test capsule (bot-sized: `BOT_NAV_OBSTACLE_RADIUS` x `BOT_NAV_STAN
 `(x, terrainHeight(x,z), z)` and resolves it against `mapCollider` via the existing, already-tested
 `resolveCapsule` — blocked if it isn't `grounded` or gets pushed sideways more than
 `BOT_NAV_MESH_PUSH_TOLERANCE` (0.05m), meaning solid mesh geometry intrudes on the bot's footprint
-there beyond the ground plane. The result is cached forever (the collision mesh never changes at
+there beyond the ground plane. **The `grounded` half of that rule was wrong and was removed on
+2026-08-08 — see "The `!grounded` term condemned 92% of the terrain zone" below.** The result is cached forever (the collision mesh never changes at
 runtime), so any given world cell is only ever tested against the live BVH once per session —
 deliberately not a live per-tick BVH query, matching the codebase's existing rule (see
 `bot-viewer.html`'s `pointInWall` and shoot-house's `botNavWalkable`) that nav walkability always
@@ -1328,11 +1768,13 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 | `bot-activity.js` | Pure FSM decision math (patrol/seek/aim/fire) — Node-tested, THREE-free. |
 | `squad-activity.js` | Pure squad decision math for the **env-viewer** Phase 1 system (temperament roll, loss-retreat latch, formation geometry) — Node-tested, THREE-free. **v1-only since 2026-07-30**: `environment-viewer-v2.html` uses `bot-squad.js` instead. |
 | `bot-squad.js` | Pure squad math for the **v2 harness**: balanced roster partitioning, leader election + succession shock, formation kinds/slot geometry, corridor fit — Node-tested (`test-bot-squad.mjs`), THREE-free. |
-| `bot-roles.js` | Role registry (`rifleman`/`medic`/`squadleader`/`sniper`/`technical`) + batch assignment + `leadership`-ordered leader pick and the bounding-overwatch split — Node-tested (`test-bot-roles.mjs`), THREE-free. |
-| `nav-grid.js` | Pure walkable-grid + A* pathfinding, used both for shoot-house's static bake and the terrain local-window — Node-tested, THREE-free. |
+| `bot-roles.js` | Role registry (`rifleman`/`medic`/`squadleader`/`sniper`/`technical`/`droneop`) + batch assignment + `leadership`-ordered leader pick and the bounding-overwatch split — Node-tested (`test-bot-roles.mjs`), THREE-free. |
+| `nav-grid.js` | Pure walkable-grid + A* pathfinding, used both for shoot-house's static bake and the terrain local-window — Node-tested, THREE-free. Also carries the optional per-cell surface cost (`setNavTravelCost`, see below). |
 | `bot-state-code.js` | Pure 9-slot discrete state code for FSM trace logging/diffing/mining (encode/decode/legality/core projection/`diffCodes`) — Node-tested (`test-bot-state-code.mjs`), THREE-free. Wired into `bot-viewer-v2.html`; browser QA pending. See [`bot-state-codes.md`](bot-state-codes.md). |
 | `gen-bot-state-table.mjs` | Regenerates `bot-state-table.md`/`.csv` (434 core states) from `bot-state-code.js`. The table is a printout, never hand-edited. |
-| `bot-viewer.html` | Dev harness; not part of the game's module graph, still useful for FSM/nav iteration. |
+| `bot-viewer.html` | Dev harness (v1); not part of the game's module graph, still useful for FSM/nav iteration. |
+| `bot-viewer-v3.html` | **The live harness (forked from v2 on 2026-08-08).** All new bot work goes here. |
+| `bot-viewer-v2.html` | Frozen playable snapshot of the 2026-08-07 state. Do not edit; it shares the `pcw:bv2:*` localStorage slots with v3. |
 | `bot-trace-viewer.html` | Playback tool for saved state traces: animates `bot-states/*.tsv` as a top-down map (position, facing, state, squad links, stall halos) with a scrubber and an activity ribbon. Imports `bot-state-code.js` for decoding. See [`bot-state-codes.md`](bot-state-codes.md). |
 | `environment-viewer.html` | Live wiring: `botPlayers`, nav-grid bake + local windows, `updateBots`, `pushBotsApart`, spawn/behavior panel. |
 | `shoot-house.js` | Adapter exposes `bounds` for the shoot-house static nav-grid bake. |
@@ -1347,11 +1789,119 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 | `bot-viewer-visuals.js` | Renderer half: TSL sky dome, the three map node materials, light rig, fog, IBL, post stack, and its own panel section. Browser/WebGPU only. |
 | `bot-score.js` | Pure per-team session tally (spawns/deaths/revives/frags) behind the v2 HUD scoreboard — Node-tested (`test-bot-score.mjs`), THREE-free. |
 | `bot-projectiles.js` | Pure ballistic aiming + a projectile lifetime manager wrapping `entity-types/combat-projectile.js` (flying rockets/grenades in the v2 harness) — Node-tested (`test-bot-projectiles.mjs`), THREE-free. |
+| `bot-drones.js` | Pure drone-operator aircraft: the bomb drone's release solution and go-around, the loitering munition's orbit and dive, target choice and launch gating — Node-tested (`test-bot-drones.mjs`), THREE-free. |
+| `flight-meshes.js` | The flight sim's three craft as reusable groups (plane/quad/bird), materials supplied by the caller. Shared by `demos/flight-sim.html` and the bot viewer's drones. See `docs/subsystems/flight.md`. |
 | `bot-grenade.js` | Pure grenade-secondary decision math (throw gates/scoring, live-grenade evade urgency) — Node-tested (`test-bot-grenade.mjs`), THREE-free. |
 | `bot-stance.js` | Pure per-bot stance channel: the stand/crouch/prone/run/dash decision table over the resolved FSM state, the stand-up hysteresis latch, and the speed/spread/height/turn-rate multipliers — Node-tested (`test-bot-stance.mjs`), THREE-free and zero-dependency. |
 | `weapon-hold-resolver.js` | Pure resolution of the third-person weapon hold from (stance × locomotion) — continuous stance lerp plus an additive per-class carry delta. Shared by `bot-viewer-v2.html` and `weapon-animation-viewer.html` so the authoring tool cannot drift from the game. Node-tested (`test-weapon-hold-resolver.mjs`). See Contract 6 in `procedural-body-weapon-contracts.md`. |
 | `effect-renderer.js` | Shared layered-explosion / tracer / spark / smoke renderer, also used by `environment-viewer.html`. Stateless: sub-particles regenerate each frame from the wire object + id hash + age. See `docs/subsystems/fx.md`. |
 | `weapon-sfx-synth.js` | Procedural WebAudio voices for weapon events with no loaded sample (`rocket_launch`, `explosion`, `grenade_throw`, `grenade_bounce`) — Node-tested (`test-weapon-sfx-synth.mjs`). See `docs/subsystems/audio.md`. |
+
+## Per-cell surface cost in `nav-grid.js` (2026-08-10)
+
+`setNavTravelCost(grid, costAt)` bakes one multiplier per cell into `grid.travelCost` and applies it
+in both `findPath` and `floodFill`, averaged over each step's two cells so a boundary crossing is
+charged half in and half out. Pass `null` to clear it. A grid built without one carries
+`travelCost === null` and searches exactly as before — every existing caller is unaffected.
+
+**Costs are clamped to ≥ 1 (`NAV_TRAVEL_COST_MAX` = 8 at the top).** The A* heuristic charges one
+unit per cell, so any cost below 1 would make it optimistic and the returned path would no longer be
+the cheapest one. Model a preferred surface as *"everything else is dearer"*, never as *"this is
+cheaper than walking"*. `slopeFactor` is already ≥ 1 for the same reason, uphill and down.
+
+First consumer is the road bias in `bot-viewer-v3.html`: cells near a road cost 1, everything
+else costs the "open ground costs" slider. Covered by `test-roads.mjs`, which asserts the clamp, that
+raising the cost pulls a route onto the road, and that off-road ground stays reachable — the bias is
+a preference, never a wall.
+
+`bot-flora.js` gained a matching optional `clearFn(x, z)` ("true where nothing may grow"), checked by
+both the grass `acceptFn` and the plant-placement filter, defaulting to `null`. Roads use it to keep
+their surface bare. See [`roads.md`](roads.md).
+
+## Level overlay in `nav-grid.js` — decks you fight on *and* under (2026-08-11)
+
+Route B of [`../elevated-structures-plan.md`](../elevated-structures-plan.md). Route C (the `terrace`
+kind) gives high ground by raising the terrain, so nav never learns anything new; it can never give
+you a surface you walk both over and beneath, because a raised pad under C is solid. This is that
+second surface. Node-tested in `test-nav-levels.mjs`.
+
+**The plan's scoping of this was wrong and the correction is the design.** It said the searches run
+"over opaque integer keys". They do not: `findPath`, `floodFill`, `labelRegions` and
+`cheapestSoftLink` each decompose the key with `k % cols` / `(k / cols) | 0` and rebuild neighbours
+from column/row deltas. Key↔(c,r) was inlined in every search, which is exactly what a second level
+breaks. So the change is a **shared neighbour expansion** (`expandNeighbors`, which every search now
+calls) rather than a bolt-on — four copies of the corner rule would have drifted the moment any one
+of them changed.
+
+### The data
+
+`buildNavGrid(..., { decks, levels })`, where a deck is `{x, z, w, d, y}` — centre plus full extents,
+`y` being the walking surface. `attachLevels` rasterizes each onto the columns whose **centre** it
+covers, the same rule `rasterizeBlockers` and `buildSightGrid` use, so a deck edge lands on the same
+cells everywhere. Two decks at one height over one column merge.
+
+| | |
+|---|---|
+| Base keys | `0 .. cols*rows-1`, unchanged, as are `cells`/`heights`/`soft`/`travelCost` |
+| Level keys | allocated **after** that range, one per level cell, chained per column |
+| `grid.levels` | `null` unless decks were passed — a deck-free map is byte-identical |
+| `LEVEL_DEFAULTS.step` | `0.5` m — most a body may climb or drop to change surface |
+| `LEVEL_DEFAULTS.tolerance` | `1.0` m — how far a "which surface am I on" query may miss by |
+
+Helpers: `keyCount`, `keyIsLevel`, `keyBase`, `keyHeight`, `keyWalkable`, `keyToWorld`, `keyAt`,
+`nearestWalkableKey`, `floodPathToKey`. `findPath`/`floodFill`/`reachable` endpoints may now carry
+`y`; omit it and you get the old ground-level answer. Waypoints gain a `y` property on a level grid,
+so a 2D consumer reading `.x`/`.z` is unaffected either way.
+
+### Two rules make it architecture rather than a second ground
+
+- **A step is height-gated only when a level is involved.** Base→base stays the continuous ground it
+  has always been — nav charges slope as *cost*, and the caller's own test rejects cliffs. So adding
+  a deck somewhere cannot change how a bot walks up a hill somewhere else. This is what makes the
+  byte-identical claim hold rather than merely being asserted.
+- **`step` is 0.5 m**, which clears everything nav's own slope gate already allows (`maxSlope` 0.85
+  over a 0.5 m cell = 0.43 m) but not a deck edge. So a platform's side excludes *itself* and the
+  only way up is a chain of rects you deliberately provide. **A ramp is just several thin decks at
+  stepped heights** — nav needs no ramp concept at all.
+
+### The lookup, whose assertion is the refusal
+
+`keyAt(grid, x, z, y, tolerance)` returns the surface nearest `y`, **or `-1`**. With no level inside
+tolerance it returns nothing rather than the nearest one, so a bot beneath a deck can never be
+mistaken for a bot standing on it. `nearestWalkableKey` refuses the same way after its spiral. The
+slab contract's ≥1.8 m headroom is what makes 1.0 m a clean separator. Tested at 3.0 m (deck), 0 m
+(ground) and 1.5 m (neither → `-1`).
+
+### Measured
+
+- **Regression proved against `versions/nav-grid-before-levels-20260811-222855.js`, not against
+  itself.** Two fixtures on purpose: `rolling` is open enough that 120/120 sampled pairs have a
+  route, `broken` is steep enough to produce 177 regions, 151 carved cells and 70 sealed. On
+  `rolling` alone the section passed while carving nothing — it was agreeing about code neither
+  build had run. Cells, heights, soft, regions, region sizes, carve order, sealed list, every A*
+  path, every smoothed path, and floodFill's full dist/parent arrays all match.
+- **Deck behaviour:** 24 m of ramp reaches a 3 m deck; delete the ramp and `findPath` is `null` and
+  `reachable` agrees. From the east the route walks 34.0 m round to the ramp against a 10.0 m
+  straight line — it does not step up the edge. The ground under the deck stays walkable end to end
+  and that route never rises above 0.6 m. `connectStrandedRegions` carves **0** cells for a rampless
+  deck and records it as sealed instead, because levels are never soft.
+- **Cost on maps that have no decks:** pathfinding **+1.7%**, floodFill +3.6%, bake **+21%**
+  (18.8 → 22.7 ms on a 344×344 grid, median of 20). The bake cost is `labelRegions` materialising
+  all eight neighbours before filtering, where the old loop rejected already-labelled ones first.
+  That is ~4 ms once per map rebuild against 1.7% on the search that runs per frame, so it was not
+  worth keeping a second copy of the corner rule to recover.
+
+### What this does NOT do yet
+
+**The visibility field and corner map are still one surface per column.** `nav-visibility.js` sizes
+`walkIndex`, the sight grid and the height grid by `cols*rows` alone, so a level key is out of range
+and `canSee` answers `false`; `nav-corners.js` reads `navGrid.cells` and scans one height per column.
+A bot on a deck therefore gets **no cover records rather than wrong ones**. Both files now say so at
+the top and the built field reports `levelsIgnored`, so this is loud instead of a quietly halved
+cover map. Live LOS in v3 is a raycast, so a deck bot still shoots correctly.
+
+Nothing in `bot-viewer-v3.html` passes `decks` yet — threading `y` through the "where am I" call
+sites is the remaining step, and no structure kind emits decks.
 
 ## Locomotion weapon carries + the dash stance (2026-07-27, `bot-viewer-v2.html`)
 
@@ -1389,6 +1939,35 @@ Two rules the mount now honours:
   `controller.update()` drives both hands to their grips. Only touched on a change, so the medic and
   heal pose overlays that also own the left arm are not fought every frame.
 
+### The shot and the aim were two different decisions (fixed 2026-08-06)
+
+Symptom: sniper bots firing into the sky. The FSM gated the shot on the **entity's** yaw/pitch
+(`aimError <= AIM_TOLERANCE_RAD`, `bot-activity.js:108`) but `fireBotShot` took its direction from
+the **rendered** barrel (`botMountedBarrelRay`), and nothing forced the two to agree at the instant of
+the shot. `updateBotWeaponMount` — the only thing that ever puts pitch on the weapon rig, since the
+rig itself gets `Euler(0, bodyYaw, 0)` — runs *after* `updateBotSentry` in the frame and skips its
+solve in three cases: while carrying, while a reload sequence is playing (`lockAimedPosition`), and on
+a rig-LOD frame (every 2nd past 18 m, every 4th past 45 m). An unsolved m24 hold sits ~6° above
+horizontal, which is a near miss at 20 m and a tracer into the sky at 200 m.
+
+Three fixes, all enforced by `test-bot-fire-aim-sync.mjs` (a source-parsing test — the viewer cannot
+run in Node):
+
+- **`fireBotShot` solves the barrel onto `botAimPoint` before reading it.** One quaternion and one
+  matrix update per round fired. The confirmation and the shot are now the same decision. The solve is
+  idempotent (a relative correction from the current ray) and `updateBotWeaponMount` rebuilds the rig
+  transform from scratch anyway, so nothing accumulates.
+- **Every state that fires is in the mount's `aiming` set** — `BOT_COVER_MOVE`, `BOT_COVER_HOLD`,
+  `MEDIC_MOVE` and `MEDIC_TEND` joined `BOT_AIM`/`BOT_FIRE`/`BOT_FLEE`. The first two fire while
+  running (`bot-stance.js:98` gives them `STANCE_RUN`), so they had been shooting down the rifle walk
+  carry: 67° right and 17° down. Consequence: cover-holders and tending medics now show the aimed pose
+  rather than low-ready.
+- **`botHasAimPoint` is cleared when the target dies or is removed.** It was set true and never set
+  false again, so a bot with no target kept solving its barrel onto a corpse's last eye position.
+
+The debug reticle (`bot-viewer-v2.html:4352`) draws from entity yaw/pitch, so it showed these shots as
+locked on. It cannot surface this bug class; the test is the guard.
+
 ### The mount frame must be stance-invariant (fixed 2026-07-29)
 
 Enabling the crouch/prone holds surfaced a second bug: crouched bots put their **arms through the
@@ -1419,10 +1998,125 @@ yawed it `bodyState.yaw + Math.PI`, while v2 mounts torso-relative at `visualYaw
 identical rig/adjust/frame/view chain — so every hold previewed 180° off from how it rendered in game.
 The viewer now mirrors v2's mount exactly.
 
-**Status.** Node-tested (`test-weapon-hold-resolver.mjs` 57 checks, `test-bot-stance.mjs` 186). The
+**Status.** Node-tested (`test-weapon-hold-resolver.mjs` 79 checks, `test-bot-stance.mjs` 197). The
 carry delta values are first-pass starting points authored to be tuned in the viewer, not final.
+
+**Stance-aware carry deltas (added 2026-08-04).** A carry entry (`walk`/`run`/`dash`, either on
+`CARRY_PRESETS` or a per-weapon `carryHolds` override) is normally one flat `{position, rotation}`
+delta applied unchanged at every stance. The RPG needed more: its length read backwards-looking when
+carried at the generic rifle walk pose while prone, but the pose that fixed prone looked wrong
+standing. `carryDeltaFor` now takes a third argument — the same eased `{crouch01, prone01}` weights
+`resolveWeaponHold` takes — and a carry entry may opt into `{ stand?, crouch?, prone? }` instead of the
+flat shape; missing stances fall back along the chain `crouch -> stand`, `prone -> crouch -> stand`,
+and the map blends with the identical prone-dominates-crouch curve the stance holds themselves use, so
+the carry never disagrees with the hold it stacks on mid-transition. See Contract 6 in
+`procedural-body-weapon-contracts.md` for the full shape. `weapons.js`'s `rpg.carryHolds.walk` is the
+first (and so far only) user: `{ stand: {...}, prone: {...} }`, crouch unauthored and falling back to
+stand. Both `bot-viewer-v2.html` and `environment-viewer-v2.html` now pass the actor's `stanceWeights`
+into `carryDeltaFor` — a caller that forgets silently resolves any stance-aware entry as if standing.
+
+`weapon-animation-viewer.html`'s Carry panel Stance dropdown used to be preview-only (it re-posed the
+body but always edited the same one flat class-level bucket regardless of which stance was selected —
+tuning against a prone preview silently overwrote the standing value too). It now edits a genuinely
+separate bucket per stance (`carryEdits[cls][stance][kind]`, all three seeded identical to the shipped
+preset), and the live preview overlay is always built as the stance-map shape so it blends through the
+production resolver exactly as the game would. `Copy presets`/`Reset entry` operate on the
+currently-selected stance's bucket; the exported `CARRY_PRESETS` block collapses a class back to the
+flat shape when its three stances haven't diverged, so an untouched class exports byte-identical to
+today. The tool still has no export path for a per-weapon `carryHolds` override (class-level
+`CARRY_PRESETS` only) — that stays a hand-edit into `weapons.js`, in the same shape the panel previews.
 `bot-viewer-v2-camera.html` (the forked camera rewrite, pending merge) still carries the old
 hardcoded `thirdPersonHold` mount and the pre-dash stance list.
+
+## Aim coherence (2026-08-12, `bot-aim-blend.js` + `bot-viewer-v3.html`)
+
+Symptom, in the user's words: *"the bots don't really aim, as much as the weapon kinda rotates."*
+
+Diagnosis: that was literally the code. `alignMountedWeaponToPoint` applied its **whole** correction
+every frame, unbounded and unsmoothed, so the gun was on target in frame 1. The body slewed at
+`TURN_RATE_RAD_S` 4.5 rad/s scaled by stance (0.80 crouch, 0.55 kneel, 0.35 prone) and was then spring-
+smoothed again by the rig's `turnCfg` — up to ~1.3 s behind. The spine and the shoulder sockets had no
+aim input at all (only `loco.torsoLean` / `loco.shoulderYaw`), `bot.pitch` reached nothing but the head,
+and the head's yaw was turn *anticipation* (`targetYaw − visualYaw`), which points away from a target it
+has finished turning toward. The hands bridged the gap by stretching. Full trace and the plan:
+`docs/bot-aim-coherence-plan.md`.
+
+**The reframe:** the barrel solve stops being the aiming mechanism and becomes an error-nulling trim.
+
+### `bot-aim-blend.js` (pure, THREE-free, Node-tested via `test-bot-aim-blend.mjs`)
+
+`solveAimBlend(yawResidual, aimPitch, cfg, out)` splits the angle between the body's **rendered**
+facing and the aim point:
+
+| Out | Meaning |
+|---|---|
+| `torsoYaw` | `clamp(residual × torsoYawShare, ±torsoYawMax)` — the spine twist |
+| `torsoPitch` | `clamp(aimPitch × torsoPitchShare, ±torsoPitchMax)` — the spine lean |
+| `headYaw` | `clamp(residual − torsoYaw, ±headYawMax)`, **relative to the twisted spine** |
+| `headPitch` | `aimPitch − torsoPitch`, so the total elevation is unchanged |
+| `barrelYaw` / `barrelPitch` | what the trim still has to cover |
+
+Also `stepAimChannels` (per-bot easing), `barrelTrimFraction` / `releaseTrimFraction` (the rate limit),
+`aimLeadSeconds`, `addRecoil` / `stepRecoil`, and `directionError`. Every function returns the legacy
+value when `cfg.enabled` is false — `test-bot-aim-blend.mjs` pins that as its last block.
+
+### Rig channels (`player-procedural-body.js`)
+
+Four new optional `state` fields, all defaulting to 0, so every other viewer sharing this rig renders
+exactly as before: `aimYaw`, `aimLean`, `lookYaw`, `lookWeight`.
+
+Two constraints found by reading the rig, both of which would have failed silently:
+
+1. **The aim twist is not gated on `_spineLw`.** That locomotion weight is `loco ? (1−pw)(1−kw) : 0`,
+   which collapses to zero when kneeling or prone — exactly the stances with the slowest turn rate and
+   the worst decoupling. `spineOrient` now applies the locomotion terms under `_spineLw` and the aim
+   terms under `frac` alone.
+2. **`_shoulderQ` takes the full aim twist.** The sockets are built from `_orient` (+ the locomotion
+   shoulder yaw), *not* from `_upperQ`. A spine that twisted without them would leave the arms hanging
+   off the old chest facing.
+
+`lookYaw` **blends over** the anticipation term rather than replacing it
+(`anticipate + (lookYaw − anticipate) × lookWeight`), so patrol and idle scanning are untouched at
+weight 0.
+
+### Viewer wiring (`bot-viewer-v3.html`)
+
+- `stepBotAimChannels(dt)` measures the residual against `motion.visualYaw` (what is on screen), not
+  `bot.yaw` (the sim's), and eases each channel per bot. No aim point hands the channels back to zero
+  and the head back to `bot.pitch`, so acquisition and loss are the same code path.
+- The **mount root** is now built the way the rig builds its shoulder line — `Ry(yaw) · Rx(aimLean) ·
+  Ry(aimYaw)` — instead of `Euler(0, yaw + headYaw, 0)`. The gun rode the *head's* anticipation before,
+  which leads a turn and then recentres. The mount stays ground-anchored at `feetY + 1.5`: the aim
+  **rotation** goes on it, never a reparent to the torso (see the stance-invariance section above).
+- `stepBarrelTrim` replaces the direct `alignMountedWeaponToPoint` call. Because the rig is rebuilt
+  from the authored hold every frame, a rate limit needs the correction to **persist** — otherwise each
+  frame restarts from the hold and the gun sits at a fixed fraction of the way there forever. The
+  persistent `actor.aimTrim` quaternion is chased toward the exact solve at `barrelRate` (7 rad/s) and
+  unwound at `releaseRate` (6 rad/s) when the aim point clears.
+- **A2:** `botAimGateOk` gates firing on `botBarrelAimError()` — the angle between the rendered barrel
+  and the line from its muzzle to the aim point — instead of the entity's eye-derived error. This is
+  what stops a rate-limited barrel from firing before it has caught up, and it closes the eye-vs-barrel
+  parallax gap the previous fix could only paper over. It falls back to the entity error when the
+  barrel was not solved within the last 6 frames (a carry or reload pose is not a failed aim), and the
+  FSM's own AIM→FIRE rung reads the same number, so the `fire` state means the *gun* is on target.
+- `fireBotShot` no longer re-solves the barrel at the trigger while the trim is on: the round must
+  leave down the barrel the player can see. The legacy snap survives behind `!trimOn`, and
+  `test-bot-fire-aim-sync.mjs` asserts both arms.
+- **Lead** applies flight time only. Hitscan weapons get none on purpose — an instant round aimed
+  ahead of a runner is a guaranteed miss *ahead*. `leadLatencyS` defaults to 0; the slider exists so
+  tracking-ahead can be tried by eye.
+- **Recoil** adds a torso pitch impulse per shot (`recoilKick` 0.05 rad, decaying at 7/s) on top of the
+  weapon-local recoil the pose controller already plays.
+
+### Panel
+
+`bots ▸ Aim coherence`: a master toggle plus one per track (torso B, head C, trim A1/A3, barrel gate
+A2, lead D, recoil D), then four slider groups (Torso, Head, Barrel trim, Lead & recoil). Saved and
+restored with the rest of the bot slot as `aimBlend`. Master off is a direct A/B against the old
+behaviour.
+
+**Untuned.** Every number above was chosen from the rig's geometry, not from watching a bot use it.
+The authority split in particular is a by-eye setting.
 
 ## Visual system in the v2 harness (2026-07-25, `bot-viewer-v2.html`)
 
@@ -1549,6 +2243,50 @@ toggle, maze + cover pieces, and uneven terrain all render with no console error
 not verified** — the QA tab was backgrounded and Chrome freezes `requestAnimationFrame` in hidden
 tabs, so no trustworthy fps reading was possible. Worth a focused-window check with the Test
 condition (30×30 maze, 200 dummies) before leaning on the heavier themes.
+
+### Cyclic locomotion overlay (2026-08-07)
+
+`naturalLocomotion` is **on** for bots (`bot-viewer-v2.html`, the single
+`createProceduralPlayerBody` call). Four `botMovementSettings` fields drive it through
+`applyBotMovementSettings`, so they reach every per-actor body and ride the save/load slots:
+`locoEnabled`, `locoAmount` (scales every cyclic amplitude off `LOCOMOTION_DEFAULTS` at once, for
+A/B against the old look), `stepOverlap` (0.22) and `spineFalloff`. See
+`docs/subsystems/procedural-body-weapon-contracts.md` for the layer itself.
+
+`locoEnabled` had no control until 2026-08-09 — the only way to dial the layer back was the amount
+slider, and `locoAmount` did not scale `armSpread`, so at 0 the arms still drifted 5 cm outward and
+the A/B was not clean. **v3** now has a `Natural locomotion: On/Off` button above **Cyclic amount**
+in Movement tuning, flipping `cfg.enabled` on every live body through `applyBotMovementSettings`
+(which every body-creation path already calls, so new spawns inherit it), and the amount now scales
+`armSpread` too, so 0 and Off are the same pose. v2 is frozen and keeps the old behaviour.
+
+**Gait model A/B (2026-08-10).** A `Gait model` dropdown above the **Lean into step** slider picks a
+`GAIT_MODELS` entry (`movementTuning.gaitModel`). `Shipped` is today's behaviour; `Tuned (lead)`
+carries the same speed fit with `stepLeadScale` 0.55, which aims each foot at the ground the hips
+cover during its swing instead of straight underneath them. Selecting a model also writes its
+recommended lead into the slider, so the panel keeps one source of truth and the change is visible.
+
+Watch a **running or dashing** bot: at a walk the correction is small, but at a dash it takes the
+planted foot from 0.099 m past leg reach to 0.004 m. The rig cannot bend a leg further than straight
+(`solveTwoBone` clamps at 0.999 of full extension), so that overshoot was the drawn foot sliding
+away from where the simulation had planted it. Both fields ride `botMovementSettings`, so save/load
+slots cover them without change. Measurements and the objective behind the number are in
+`docs/subsystems/procedural-body-weapon-contracts.md`.
+
+Five diagnostic parts were added to the existing **Movement debug** overlay
+(`botMovementDebugParts`), each with its own toggle:
+
+| Part | Draws | Reads correct when |
+|---|---|---|
+| `phase` | Stride-phase dial over the head, ticks at 0 (left) and 0.5 (right) | the marker crosses a tick as that foot lifts; drift = the phase lock slipping |
+| `footfall` | Fading dot at each real lift, coloured by side | flashes line up with the dial's ticks |
+| `twist` | Bars at hips, mid-spine and shoulders | hips and shoulders scissor in **opposite** directions |
+| `trace` | Pelvis trail, last ~3 s | a smooth arc, not a sawtooth (a sawtooth is the old once-per-stride bob) |
+| `support` | Line between the feet, green in double support / red in single | green shrinks as `stepOverlap` rises |
+
+`trace` and `footfall` are sampled **every frame** by `sampleBotLocomotionDebug()`, separately from
+the 15 Hz geometry rebuild — at 15 Hz the bob aliases into a sawtooth and short swings are missed
+entirely, which would make the overlay report the bug it exists to disprove.
 
 ## Bot lighting (2026-07-26, `bot-viewer-visuals.js` + `body-part-batches.js`)
 
@@ -1849,6 +2587,9 @@ Movement tuning · Lost-sight pursuit · Bot readout (starts expanded) · Dummie
 Weapons, body/ragdoll, debug overlays and the state recorder were split out of the single "Bot
 controls" blob; stance moved up next to the spawn buttons.
 
+> **Superseded 2026-08-06.** That flat order, and several of those section names, no longer exist —
+> see "Panel tab refactor" at the end of this doc for the current structure.
+
 `visuals.buildPanel()` gained a `{ heading }` option so it doesn't emit a "Visuals" `.ttl` inside a
 section already titled Visuals. Its remaining `.ttl` headings ("Visual toggles", "Sky detail")
 survive as subheads, which the theme styles like the environment viewer's `.wui-subhead`.
@@ -2018,6 +2759,99 @@ resets the paid acquisition. An incumbent that lost its own LOS is still replace
 Panel: two new *Aim & reaction* sliders (`Reaction floor (ms)`, `Primed reaction ×`); the readout's
 aim row appends `(primed)` while the discount window is live.
 
+**Commit dwell (2026-08-03).** The 30 %-closer margin alone still flickered when two enemies were
+near that ratio and strafing: crossing the line and back every rescan flipped the pick each time,
+visible in a multi-target fight as the bot's aim swinging between targets instead of committing to
+one ("shooter anxiety"). `TARGET_COMMIT_MIN_MS = 1500` adds a flat time floor on top of the margin:
+`activeBotActor.targetCommittedAt` stamps whenever `botTarget` actually changes, and while
+`now - targetCommittedAt < 1500`, a steal is refused outright even if the newcomer clears the margin
+— as long as the incumbent is still a candidate and still has LOS. The dwell only gates that one
+branch: a dead incumbent, a `stale` (unseen > `TARGET_RETAIN_MAX_MS`) incumbent, or an incumbent that
+just lost LOS still hands off immediately, since holding the lock there isn't commitment, it's
+staring at nothing or a corpse. Reset alongside `targetUnseenSince` in `resetActorMapState` so a
+map change doesn't leave a stale dwell timestamp.
+
+**Risk-based pick + pile-on discount (2026-08-05).** `selectBotTarget` no longer sorts candidates by
+raw distance for the pick; it scores each in-cone/in-range candidate by
+`risk = proximity x danger` and reorders `_selCandidates`/`_selCandidateDistSq`/`_selRisk` in place
+(highest risk first) before the raycast-and-pick loop, so the loop's existing "stop at first clear
+LOS" behavior now finds the most dangerous visible enemy instead of the nearest one. The
+nearest-first `perceivedEnemies` HUD snapshot is taken *before* this reorder, so the POV HUD is
+unaffected. `proximity = sightDist / (sightDist + distance)`. `danger` starts at 1 and gets a bonus
+if the candidate's id matches the attacker on the freshest applicable alert report:
+`latestSelfThreat(recentAllyHits, bot, now).attackerId` (this enemy is shooting ME, bonus
+`TARGET_DANGER_SELF_BONUS = 2.5`) or `latestAllyHitNear(bot, now).attackerId` (shooting a teammate
+near me, bonus `TARGET_DANGER_ALLY_BONUS = 1.2`, self takes priority over ally when both match). Each
+bonus ramps down linearly over the report's own `alertWindowMs` (`dangerDecay(age, window) = max(0,
+1 - age/window)`) instead of cliffing to zero at expiry — a shooter who fires once and breaks LOS
+fades out instead of staying maximally dangerous for the full window, and a target whose report
+expires mid-dwell demotes smoothly instead of silently.
+
+The stickiness margin moved with it: it used to require the newcomer to be 30% *closer* than the
+incumbent (`TARGET_STICK_CLOSER_SQ`, a plain distance ratio) to steal the slot. Now that the sort key
+is risk, not distance, that comparison was checking the wrong thing — a farther-but-far-more-dangerous
+shooter could fail a distance margin and get wrongly blocked. `TARGET_STICK_RISK_MARGIN = 1.3`
+replaces it: the newcomer needs >=30% more risk than the incumbent, still gated by the same commit
+dwell and still overridden immediately if the incumbent loses LOS.
+
+**Pile-on discount.** `latestSelfThreat` is self-filtered (each bot only sees reports where it was
+the victim), so it can't cause a dogpile — two bots each being shot by a different enemy correctly
+target their own attacker. `latestAllyHitNear` reads a *shared* report ring: if enemy X shoots bot A,
+every nearby teammate of A sees X as elevated danger at the same time and can converge on X while
+other visible enemies go unanswered. Before applying the ally-threat bonus, `selectBotTarget` counts
+how many `squadMembersNear(bot, SUPPORT_RADIUS)` (reusing the same spatial-hash helper the push-element
+code already calls) currently have `actor.target.id === allyThreat.attackerId`, and discounts the
+bonus by `TARGET_PILE_ON_STEP = 0.25` per already-committed squadmate, floored at
+`TARGET_PILE_ON_FLOOR = 0.4` so someone always still answers the shooter. This only runs when there's
+an ally-hit report to check (`allyThreat.attackerId != null`), so the extra spatial-hash query is
+skipped entirely outside a live gunfight. Self-threat targeting is never discounted.
+
+These constants (`TARGET_DANGER_SELF_BONUS`, `TARGET_DANGER_ALLY_BONUS`, `TARGET_PILE_ON_STEP`,
+`TARGET_PILE_ON_FLOOR`, `TARGET_STICK_RISK_MARGIN`) are a first-pass tuning, same status
+`TARGET_COMMIT_MIN_MS` had before it got retuned from 800 to 1500 off one playtest — expect to revisit
+after watching a real multi-target fight. Not yet done: currently-hidden/remembered enemies still
+score nothing (only this-scan's visible candidates are risk-scored), which needs the persistent
+per-enemy contact memory described in [[multi-threat-contact-model-plan]] in memory.
+
+**Known drift:** `environment-viewer-v2.html` carries an earlier copy of this same target-selection
+code (search `TARGET_STICK_CLOSER_SQ` there) that predates both the commit dwell and this risk pass —
+it still has the old distance-only pick with no danger/pile-on awareness. Not synced as part of this
+change; flagging so a future env-viewer bot-port pass knows this file has fallen further behind
+`bot-viewer-v2.html`, consistent with [[env-viewer-bot-port-plan]] in memory (port not yet started).
+
+**Persistent contact memory (2026-08-07, `bot-contacts.js`, NEW module).** First step of the
+"engaging based on threat, not just this instant's visible set" half of the plan in
+[[multi-threat-contact-model-plan]]: a per-bot, per-enemy memory of the last confirmed sighting,
+separate from the shared squad-report ring (`recordContact`/`latestContactNear` in `bot-alert.js`
+already covers "tell my teammates what I see" — this is one bot's own recollection, not shared).
+Pure, THREE-free, Node-tested in `test-bot-contacts.mjs`, same decay-on-read/bounded-Map style as
+`bot-danger.js`: a record is `{x, z, lastSeenAt, visible}`, `recordContactSighting` upserts and
+re-inserts (Map order = sight recency) so overflow past `CONTACT_MEMORY_MAX_ENTRIES = 12` evicts the
+least-recently-seen, and `contactRecency(rec, now, windowMs)` gives a linear 1→0 confidence instead
+of a cliff, matching the `dangerDecay` shape added in the risk-pick pass above.
+
+Wired into `selectBotTarget`: `activeBotActor.contacts` (created per actor in `createBotActor`,
+cleared in `resetActorMapState` on map rebuild since remembered x/z are meaningless on a new map) is
+updated every `scanDue` frame — every candidate that passed the FOV+range+field-prefilter gate this
+scan gets `recordContactSighting`, and `markContactsUnseen` flips everything else to `visible: false`
+without touching its remembered position. Deliberately reuses the field-prefilter pass rather than a
+fresh raycast per candidate: `USE_FIELD_LOS_PREFILTER`'s own comment says the field "errs toward
+visible", so this is an approximate "roughly saw them" signal, not raycast-confirmed truth — adding a
+raycast per candidate here would reintroduce the "raycast everyone" cost the risk-pick pass
+deliberately avoided (score cheap, raycast only the winner). The raycast in the pick loop remains the
+sole authority on whether `botTarget` can actually be fired at; this memory never overrides that.
+
+**This pass is infrastructure only — it is not yet consumed by anything.** No behavior or HUD change:
+`selectBotTarget`'s pick still only considers this-scan's visible candidates, same as before this
+commit. What it enables, still open: (1) folding remembered-but-currently-hidden contacts into risk
+scoring so a bot weighs "I know a shooter was over there recently" against a new bystander it can
+see — `contactRecency` plus a hidden-visibility penalty is the intended mechanism, mirroring the
+danger-decay shape already in place; (2) feeding cover/flee so a bot routes away from every
+remembered danger position, not just its current target's; (3) a HUD readout (e.g. dim/grey marks
+for `visible: false` contacts) so the memory's behavior is observable, the way `perceivedEnemies`
+already is via the diamond marks. The threat-to-support ratio (engage-or-break) from the same plan is
+unrelated to this memory and still entirely unstarted.
+
 ### Spread
 
 `fireBotShot` deflects the ray before anything consumes it, so combat, tracer, and bullet mesh all
@@ -2122,7 +2956,7 @@ The split is by **what a load costs you**, not by which panel heading the contro
 | `botHealthSettings` (8 keys) | bots | |
 | `botAimSettings` (A10, 15 keys) | bots | saved as `aim`; includes both enable toggles |
 | `botPackSettings`, `botMedicSettings`, `botInvestigationSettings` | bots | saved though they have no sliders yet |
-| `botGrenadeSettings` (all `GRENADE_DEFAULTS` keys) | bots | saved as `grenade`; 10 of the 12 keys have sliders |
+| `botGrenadeSettings` (all `GRENADE_DEFAULTS` keys) | bots | saved as `grenade`; 11 of the 13 keys have sliders |
 | `botGrenadeBlast` (5 keys) | bots | saved as `grenadeBlast`; the live ordnance tuning (fuse, jitter, radius, damage, FX size) |
 | `botGrenadesEnabled`, `botExplosionFxEnabled`, `botSynthSfxEnabled` | bots | saved as `grenadesEnabled` / `explosionFx` / `synthSfx`; carried stock is **not** saved (Restock re-applies `perBotCount`) |
 | `botStance` (crouch/prone/run) | bots | |
@@ -2225,6 +3059,30 @@ re-acquire) or PATROL. A genuine rear blind spot follows: a bot never before awa
 behind it stays blind to it (no last-known → no turn) — the hook a future getting-shot-at alert
 would use to make it wheel around. Vertical (pitch) FOV is not modelled; bots/targets are ~level.
 
+> **Known bug (2026-08-06):** "bots/targets are ~level" is not a safe assumption once cover and
+> terrain are in play, and it is the cause of *bots with their head exposed over cover are never
+> targeted*. Three systems each reduce a bot to one point at chest height: `fieldSaysHidden`
+> (`:6030`) prunes the candidate before any ray because `nav-visibility.js:52` discards each
+> blocker's real height and treats anything ≥ `SIGHT_BLOCK_HEIGHT` (1.5 m) as blocking at every
+> height; the sentry LOS ray samples a single eye-to-eye line at `EYE_LIFT 0.85` = 1.32 m; and the
+> hit capsule tops out at 1.80 m while the rendered head runs 1.786 → 2.020 m (2.053 m with the
+> Mark VII crest), so the head is drawn but not hittable. Plan:
+> `docs/superpowers/plans/2026-08-06-height-aware-los-plan.md`. Audit:
+> `docs/superpowers/reviews/2026-08-06-bot-visibility-hitbox/`.
+
+A **"Hit volume" panel toggle** (`botHitVolumeDebugEnabled`, off by default) exists to verify that
+geometry against a live bot rather than against constants. It draws, per living bot, the hit capsule
+in green wireframe, the **rendered** head's world-space bounds in magenta, and an amber ring on the
+capsule's exact top plane. The capsule comes from `projCapsuleInto` — the scratch twin of the
+`combatCapsuleFor` descriptor `resolveHitscan` is actually handed — and the head is read off
+`body.joints.head`'s own geometry bounds, so neither can drift from the real hit test or the real
+mesh. Groups are allocated lazily per actor (the M6 pattern) and torn down with the rest of the
+actor's debug meshes. Capsule geometry is built per `(radius, shaft)` and cached with the shaft
+quantized to 2 cm, because scaling a unit capsule non-uniformly would deform the hemisphere caps —
+the amber ring is positioned from unquantized numbers so the measurement stays exact regardless.
+Enabling the toggle also logs measured metres-above-feet to the console; `window.reportBotHitVolume()`
+re-runs that report on demand for the focused bot.
+
 A **"FOV wedge" panel toggle** (`botFovWedgeEnabled`, off by default) draws each bot's cone as a
 flat ground-plane sector: `buildFovWedgeGeometry(fovDeg)` builds a unit-radius triangle fan centered
 on local +Z, and `updateBotTacticalVisuals` rotates it to `bot.yaw` and scales it to `sightDistance`
@@ -2245,6 +3103,18 @@ to the min (no linking). The result (`botCombatStandoff`, recomputed per tick) i
 when it keeps missing (see pursue-on-miss). Approx standoffs at defaults: `five_seven` ~5.9 m,
 `m1911` ~9 m, `cz_805_bren` ~10.8 m, `m24` ~20.7 m. `bot-activity.js` is unchanged — this is pure
 viewer-side ctx wiring, so the env-viewer bot code is unaffected until its rewrite.
+
+**Pursue-freeze fix (2026-08-02, env-viewer only).** `updatePursuitMovement`'s goal used to be the
+bare `botCombatStandoff`, but `BOT_PURSUE`'s own exit rung only releases once `targetDistance <=
+pursueDistance - pursueExitBuffer` — so a bot that perfectly reached its goal sat exactly at the one
+distance guaranteed to still fail that check, and froze there (zero velocity, target visible,
+`keepsMissing` latched forever since PURSUE never fires). Confirmed against a live trace: 5 of 6
+sampled bots ended PURSUE with `target_dist` matching their own standoff to within 0.1 m. Fix: the
+goal now targets `botCombatStandoff - pursueExitBuffer` in both `environment-viewer-v2.html`'s and
+`bot-viewer-v2.html`'s `updatePursuitMovement`, so arrival satisfies the exit check instead of
+missing it by the buffer. See `bot-state-codes.md` for the two new trace columns
+(`self_threat`, `sidearm_mag`/`sidearm_reserve`) added alongside this to chase the separate,
+still-unconfirmed dry-bot `aim` freeze.
 
 Live panel sliders (all read every tick): **Standoff / weapon range** (`standoffFactor`), **Kite
 trigger (× standoff)** (`fleeStandoffFraction`, near edge of the fire band), **Pursue after N
@@ -2269,7 +3139,7 @@ raycast per query.
   (upper triangle, symmetric OR — conservatism always errs toward *visible*) into a row-major
   bitset over dense walkable indices. `field.canSee(rawCellA, rawCellB)` (false for unwalkable
   inputs), `field.rowFor(cellIdx)`, `cellIndexAt(navGrid, x, z)`. Maze-sized bake (56×56, ~2.7k
-  walkables) ≈ 0.5 s, logged once per bake (`[cover bake]`).
+  walkables) ≈ 0.5 s, logged once per bake (the viewer's `[rebuild <label>]` line).
   `buildLazyVisibilityField(navGrid, sightGrid, {rowCacheCap})` is the drop-in lazy variant —
   identical `canSee`/`rowFor` answers (Node-verified over all pairs, in both argument orders and
   across repeat passes) but each query is a direct symmetric pair trace (~0.3 µs) behind a
@@ -2947,8 +3817,8 @@ is the honest answer rather than the old silent disagreement with the raycast.
 
 ### 2. Slope costs, in the search and in the legs
 
-`buildNavGrid(walkableTest, bounds, cellSize, { heightAt, slopeCost })` stores a per-cell height
-array and a `slope` config (`SLOPE_COST_DEFAULTS`: `up: 1.8`, `down: 0.6`, `maxFactor: 6`,
+`buildNavGrid(walkableTest, bounds, cellSize, { heightAt, slopeCost, blockers, blockerMargin })`
+stores a per-cell height array and a `slope` config (`SLOPE_COST_DEFAULTS`: `up: 1.8`, `down: 0.6`, `maxFactor: 6`,
 `smoothMaxRise: 0.6`). Every step in `findPath` and `floodFill` is multiplied by
 `1 + weight * |grade|` — never below 1, so the straight-line heuristic stays admissible, and
 uphill is charged harder than downhill. On a height grid `floodFill`'s `dist` is therefore
@@ -2964,11 +3834,19 @@ climb, `SLOPE_SPEED_DESCENT = 0.12` gained descending, clamped to 0.4–1.15).
 
 ### 3. Level pads under spawns, cover and buildings
 
-`createTerrainField(params, flatten)` takes a list of `{x, z, radius, y?}` pads. Inside the radius
-the ground is level at the pad center's **raw** height (resolved once at build time — sampling
+`createTerrainField(params, flatten)` takes a list of `{x, z, radius, y?, falloff?}` pads. Inside the
+radius the ground is level at the pad center's **raw** height (resolved once at build time — sampling
 `heightAt` there would recurse, and order-dependent pads would drift); outside it smoothsteps back
-over `flattenFalloff` metres. Overlapping pads pick the strongest weight outright rather than
-averaging, because a blend between two levels is exactly the tilted ground pads exist to remove.
+over `falloff` metres, defaulting to the global `flattenFalloff`. Overlapping pads pick the strongest
+weight outright rather than averaging, because a blend between two levels is exactly the tilted
+ground pads exist to remove.
+
+**Both optional fields are how a pad stops being a leveller and becomes a landform.** Supply `y` and
+the pad *raises* the ground to it instead of flattening to what is there. Supply `falloff` and the
+pad sets its own rim steepness — which decides walkability outright, since a smoothstep rim peaks at
+`1.5 × rise / falloff` and the nav gate rejects anything past `maxSlope`. Per-pad falloff was added
+2026-08-11 for the `terrace` structure; with only the global value a map could hold a climbable
+hummock or an unclimbable mesa, never both.
 Pads are indexed into 8 m buckets — `heightAt` runs hundreds of thousands of times per rebuild and a
 structure-heavy map carries a hundred pads.
 
@@ -2983,6 +3861,85 @@ the Terrain section; the toggle's tooltip reports the live pad count.
 Wall-less mode (`mazeWallMode: 'open'`) gives you a big terrain field; these two make it a workspace
 you can actually build and inspect in.
 
+### `structure-viewer.html` (standalone tool, checked by `test-structure-viewer.mjs`)
+
+A bench for `bot-structures.js`, served like any other page here (`python serve.py`, then
+`http://127.0.0.1:8080/structure-viewer.html`). It exists because structures could previously only
+be judged inside `bot-viewer-v3.html`, scattered across a combat map at whatever scale the maze
+happened to be — which made it hard to see what one parameter does and impossible to tell whether
+the procedural space contains **families** worth freezing into presets.
+
+It imports `createVisualSystem`, `createPostFX`, `createLightingRig` and `createBotFlora` directly,
+so "the same theming, sky, lighting and UX as v3" is literal rather than approximate — it is the
+same code object, and a theme rolled here is the theme v3 renders.
+
+**Deliberately absent: the nav grid, the lazy visibility field, the cover-corner bake and the BVH
+collider.** All four are bot-AI infrastructure, all four are the expensive part of a v3 rebuild, and
+none of them changes how a structure looks.
+
+Two modes:
+
+- **Field** renders one scattered set over a square map — what v3 renders.
+- **Gallery** puts one `generateOne` specimen per grid cell, each on its own seed, each rerollable
+  by clicking its label in the scene. This is where families become visible, and it is the only
+  genuinely new interaction here.
+
+Cards, in panel order: Mode · Structure · Wall · Building · Pocket · Obstacles · Portal · Terrain ·
+Flora · Visuals (`visuals.buildPanel({heading:false})`) · Presets.
+
+Readouts along the bottom left: placed versus requested (the field sampler drops silently), the
+per-kind breakdown, wall/cover/slab counts, the largest footprint, **minimum slab headroom** flagged
+red under 1.8 m, terrain triangles, and the flora counts with the blade cap called out when it binds.
+
+Things worth knowing before editing it:
+
+- The gallery does **not** reject-sample, so a specimen wider than its cell reaches into its
+  neighbour. `SLOT_MIN` (28 m) clears the widest structure the defaults can build — measured at
+  8.92 m radius over 200 seeds × 4 kinds, so 17.8 m across, plus the canopy overhang. Raising
+  `buildingMax` can still outgrow the cell, so the HUD says when a slot did.
+- Slot seeds are `(base, index, that slot's own reroll counter)`, so rerolling one specimen cannot
+  disturb another. The test proves the strides never collide for up to 16 slots and 32 rerolls.
+- Presets use the slot group **`structures`**. `bot-viewer-slots.js` hardcodes `pcw:bv2:slots:` and
+  namespaces only by group, so reusing `maze`, `bots` or `ui` would overwrite v3's saved slots.
+- `visuals.buildPanel()` includes a Bot lighting block. It is dropped host-side by slicing the
+  returned node list between its heading and the next one, rather than by changing the module, so
+  v2 and v3 are untouched.
+- `createLightingRig` defaults to `ui: true`, which would build a second lighting panel fighting the
+  theme for the same rig. And once `createVisualSystem` owns the rig, `rig.setAzimuth`/`setElevation`
+  recompute from `lights.js`'s own stale state — drive light direction only through the theme.
+
+`test-structure-viewer.mjs` scans the source for each of those wiring traps, because every one of
+them fails silently in a browser, and separately checks the gallery sizing rule against the real
+`generateOne`.
+
+### `map-boxes.js` (Node-tested via `test-map-boxes.mjs`)
+
+The box-mesh glue, lifted out of `bot-viewer-v3.html` on 2026-08-09 so `structure-viewer.html` shares
+it instead of becoming a third copy. **`bot-viewer-v2.html` is frozen and keeps its own copy on
+purpose** — two copies with one frozen beats three live ones.
+
+| Export | What it does |
+|---|---|
+| `UNIT_BOX` | The one `BoxGeometry(1,1,1)` every instanced wall, cover and slab shares. |
+| `instancedBoxes(parent, mat, boxes)` | One `InstancedMesh` per material. A maze is ~950 boxes; one draw call and one shadow caster beats 950. Returns `null` for an empty list. |
+| `boxMesh(parent, mat, x, y, z, w, h, d)` | A single sized box, for the few one-offs (floor slab, terrain catch slab). |
+| `clearBoxes(parent)` | Teardown: disposes geometry a mesh owned, **skips `UNIT_BOX`**, and disposes instance buffers. |
+| `boxOnGround(x, z, w, h, d, range)` | Wall/cover fitting. `range` `null` = flat ground. |
+| `slabOnGround(x, z, w, d, baseY, h, groundMax)` | Elevated-box fitting. |
+
+The transforms take a **resolved height range**, not a terrain field. Sampling stays with the caller
+(`footprintRange` needs `terrainField`, which only the viewer owns), which is also what makes the
+math pure and testable in Node. v3 keeps `boxTransformOnTerrain`/`slabTransformOnTerrain` as
+two-line wrappers that do the sampling and delegate.
+
+Two invariants the test pins, because both fail silently:
+
+- **`clearBoxes` must never dispose `UNIT_BOX`.** Disposing it once breaks every later rebuild, and
+  nothing throws at the point of the mistake.
+- **`slabOnGround` lifts by the ground's `max`, never its `min`.** Slabs are deliberately absent from
+  the nav grid, so a bot walks straight under one; sampling the low point sinks the slab into the
+  rise and turns an overhang into a trap.
+
 ### `bot-structures.js` (pure, Node-tested via `test-bot-structures.mjs`)
 
 The maze carve moved here out of `bot-viewer-v2.html` — `generateMazeCells` (unchanged, now
@@ -2990,19 +3947,134 @@ Node-tested) plus `mazeCellWalls(cells, cols, rows, { cell, originX, originZ, wa
 the wall emission the layout used to do inline. `ringOnly` is the perimeter wall mode.
 
 `generateStructures(bounds, params, avoid)` scatters islands of content over open ground and returns
-viewer-shaped `{ walls, covers, pads, placed }`:
+viewer-shaped `{ walls, covers, slabs, pads, placed }`:
 
 | Kind | What it is |
 |---|---|
-| `building` | Rect shell: four wall runs, one or two doorways (kept off the corners), a 50% internal divider with its own gap, and 0–2 interior cover boxes. Asks for a level `pad`. |
+| `building` | Rect shell: four wall runs, each a doorway, a window or solid; a 50% internal divider with its own gap; 0–2 interior cover boxes; and a 50% cantilevered canopy. Asks for a level `pad`. |
 | `pocket` | A small braided maze block (`pocketCells²` at `pocketCell` m) with 2–4 entrances — a hazard to cross, not a trap to die in. |
 | `obstacles` | A field of boxes at mixed heights: `tallShare` of them at `tallHeight` (≥ `SIGHT_BLOCK_HEIGHT`, so they yield cover corners), the rest shoot-over cover. |
+| `portal` | Two piers carrying a deck at `wallHeight` — the underpass form. The piers are walls, the deck is a slab, so you fight *under* it. |
+| `colonnade` | A grid of tall posts, optionally carrying a soffit. Posts are **covers, not walls**, because only covers carry a per-record height — a post emitted as a wall is forced to the global `WALL_H` and the grid collapses into a maze. At `tallHeight` each post blocks sight and yields cover corners, so the grid is transparent at range and opaque up close. |
+| `slot` | Two parallel walls and nothing else: a firing lane you commit to, with no perpendicular escape. Unlike a `pocket` it does not branch. |
+| `rampart` | One long wall carrying a cantilevered soffit, with a sight-blocking buttress on each face. The wall is a long sight-line blocker, the soffit is deep shade that costs nothing in nav, and the buttresses manufacture the free ends `buildCornerMap` wants. |
+| `corner` | Two perpendicular walls and the nook inside the elbow, furnished with one sight-blocker and one shoot-over cover. The cheapest kind here and the most reliable defensible hold. |
+| `terrace` | **High ground, made of ground.** Emits no geometry at all — only terrain pads. See below. |
+
+#### `terrace`: elevation without layered nav (2026-08-11)
+
+Nav reads one height per cell from the terrain field, and the capsule has no step-up and no jump, so
+a slab is something bots walk *under* and never *onto*. A terrace sidesteps that entirely by raising
+the ground instead of floating geometry above it: the top **is** the walkable surface, so nav, the
+visibility field and the collider all see it without learning anything new.
+
+It emits pads only — `{x, z, radius, y, falloff}`:
+
+- **The top pad** carries a `y` (the rise) and a tight `falloff`. A smoothstep rim peaks at
+  `1.5 × rise / falloff`, so a tight falloff puts the sides past the nav slope gate and **the mesa
+  excludes itself**. That is the whole trick: the sides are unwalkable because of their shape, not
+  because anything was told to block them.
+- **The approach** is a chain of pads stepping down and out, spaced `drop / grade` so the run follows
+  from the rise rather than being guessed. It is the only way up.
+
+`falloff` is per-pad as of the same date (`bot-terrain.js`); it used to be the global
+`flattenFalloff`, which meant one map could hold a walkable hummock or an unclimbable mesa but never
+both. `y` was always supported (`y: f.y ?? baseAt(...)`) and simply had no caller.
+
+**Measured, not assumed** (`test-terrace.mjs` builds the field, bakes a real nav grid over it and
+runs `findPath`):
+
+- 24/24 seeds are reachable up the ramp, and 24/24 keep a rim that is ≥60% blocked.
+- Delete the approach and the summit becomes unreachable — so the reachability above is the ramp
+  doing its job, not a rim that was climbable all along.
+- `connectStrandedRegions` carves **0** cells on a well-formed terrace, and on a rampless mesa it
+  records the summit as *sealed* rather than cutting a staircase into the side. The worry that the
+  connectivity repair would undo the rim is measured as unfounded.
+
+A terrace is by far the widest kind — the ramp roughly doubles its radius — which is why
+`structure-viewer.html`'s `SLOT_MIN` is 36 m rather than 28.
+
+**`padTerrain`: a pad-only kind is invisible without terrain (2026-08-12).** Because a terrace emits
+*only* pads, a caller with terrain off drops them on the floor and the structure renders nothing —
+while still consuming a placement slot and its separation radius. Measured at **10.6%** of
+placements under Mixed (60 seeds × 8 slots), and both viewers default terrain to off, so roughly one
+structure in nine was an invisible hole with no warning.
+
+`STRUCTURE_DEFAULTS.padTerrain` (default `true`, so no existing caller changes) tells the generator
+whether pads will actually be used. When it is `false`, `kindsForMix` drops every kind in
+`PAD_ONLY_KINDS` from **`mixed`** — but never from a mix that *named* one, because an empty map is a
+worse answer than a flat one. The result carries a `dropped` list so a UI can explain itself rather
+than silently shrink the pool. `isPadOnlyKind(kind)` is exported for the same reason.
+
+Both viewers pass it (`terrainSettings.enabled && terrainPadsEnabled` in v3, which also runs through
+`applyTerrainChange` → `rebuildActiveLayout`, so toggling terrain re-rolls the pool). v3's structure
+tooltip appends *"terraces are invisible with terrain off"* when a pad-only kind was placed anyway.
+
+**The mix dropdowns had drifted (fixed 2026-08-12).** Five kinds shipped on 2026-08-10/11 and
+`bot-viewer-v3.html`'s dropdown still listed the original four, so colonnades, slots, ramparts,
+corners and terraces were reachable only by accident under Mixed and could not be isolated.
+`test-bot-structures.mjs` now scans both viewer sources and asserts every kind the generator can
+build has a mix that reaches it — resolved *through* `generateStructures` rather than by guessing
+plurals, since `obstacles` is already plural. Verified to fail against the old five-entry list
+(missing: colonnade, slot, rampart, corner, terrace) before being accepted.
+
+**What this route cannot do:** the space underneath. A raised platform is solid, so nothing built
+this way is an underpass. Decks you fight on *and* under still need the sparse level overlay in
+`docs/elevated-structures-plan.md`.
+
+`slabs` are elevated boxes and are **not** interchangeable with `walls`: see "Elevated geometry"
+below for what they are deliberately absent from.
 
 Placement is rejection sampling with `minSeparation` between footprints and an `avoid` list (the
 two spawns) — **the gaps between structures are the firing lanes**, so spacing is the main tuning
 knob. A structure that can't find room after `attempts` tries is silently dropped rather than
 overlapped, so a crowded map degrades to fewer structures. `mix` picks `mixed`/`buildings`/
 `pockets`/`obstacles`.
+
+**The slot's gap is a hard floor, not a taste setting.** `navWalkable` inflates every wall by
+`WALL_MARGIN` (0.55 m), so a gap under about 1.6 m seals shut and the slot stops being a corridor at
+all — it becomes a solid block that still *looks* like a passage. `slotGapMin` defaults to 2.0 m and
+`test-bot-structures.mjs` asserts the clearance that survives the margin.
+
+`generateOne(kind, params, seed, { x, z })` builds a single specimen of one kind through the same
+builders and the same stream the scatter uses, for galleries and previews. It always returns all
+three geometry lists, so `pocket` and `obstacles` no longer need a caller-side `if (built.slabs)`.
+
+#### Seed stability (2026-08-09)
+
+Changing one parameter must change only what that parameter governs, or "fix a seed, drag one
+slider" shows a different map instead of a variant. Two things used to break that, and both are
+fixed:
+
+- **One RNG stream for the whole scatter**, with the builder called *inside* the rejection loop, so a
+  structure that needed five attempts consumed five builders' worth of draws and shifted everything
+  after it. Now each structure draws from `streamSeed(seed, i, salt)` — a splitmix-style integer mix
+  — with separate salts for kind selection, position, and shape, and **shape gets a fresh stream per
+  attempt** (`SALT_SHAPE + attempt`). A rejected attempt now costs the next one nothing, and raising
+  `count` leaves the structures already placed untouched.
+- **Variable draw counts inside `buildBuilding`**: window rolls were skipped on door sides, opening
+  positions were only drawn when there was an opening, and the canopy and interior-cover draws were
+  all inside their own branches. It now front-loads a fixed 27-slot draw vector and indexes into it,
+  the discipline `plants.js:414` documents for `rollPlantVariation`. The slot map is in a comment
+  above `BUILDING_DRAWS`; **adding a roll means growing that constant, not calling `rng()` again.**
+
+The other three builders were already draw-stable and were left alone: `buildPortal` draws four
+values unconditionally, `buildObstacles` draws five per obstacle with every roll in a ternary
+*condition* (so `tallShare` cannot shift the sequence), and `buildPocket` consumes the rest of its
+stream inside `generateMazeCells` with nothing after it.
+
+**The limit, stated so it is not later mistaken for a bug:** placement is still rejection-sampled
+against already-placed structures, so a change that resizes a *footprint* (`buildingMin/Max`,
+`pocketCells`, `clusterRadius`, `portalMin/Max`, `minSeparation`) can still move later structures.
+The candidate sequence is stable; only accept/reject moves. `test-bot-structures.mjs` asserts this
+case explicitly alongside the stable ones.
+
+The regression tests are fixture-sensitive: on a roomy map with few buildings they pass against the
+*pre-fix* generator too. The chosen fixture (`seed: 3, count: 14`, mixed, 140 m) places four
+buildings across four kinds and does reshuffle before the fix — verified against the snapshot in
+`versions/`. Keep that property if the fixture is ever changed.
+
+Existing structure seeds changed with this work, the same way they did when `portal` was added.
 
 Viewer wiring: `buildMazeLayout` runs the scatter only when `structuresOn && mazeWallMode !== 'maze'`
 (maze mode is already all walls), on its own seed stream (`mazeSeed ^ 0x5bf03635`) so restructuring
@@ -3134,13 +4206,43 @@ Second pass (same day) made it diagnostic rather than just informative:
   actor), `!` the squad-alert threat bearing in the tier colour.
 - **SEEK/COVER markers** — a fading ghost diamond at `lastKnownTarget` (yellowed when
   `[report]`-seeded), cover anchor + peek-seat diamonds with the slide line between them, and the
-  state chip appends the live peek phase (`peek in/out EXPOSED`) during COVER_HOLD. The followed
-  bot's ground FOV wedge is forced on (and `buildFovWedgeGeometry` now uses the *effective* cone —
-  base fovDegrees maxed with the alert-tier widening — for all bots).
+  state chip appends the live peek phase (`peek in/out EXPOSED`) during COVER_HOLD.
+  `buildFovWedgeGeometry` uses the *effective* cone for all bots — base `fovDegrees` maxed with the
+  alert-tier widening.
+- **The FOV wedge is suppressed for the inhabited bot** (`povSelf`, 2026-08-02). An earlier revision
+  force-showed the followed bot's wedge in POV to make the perception cone checkable in-view. That
+  was wrong on geometry: the wedge is a flat ground fan spanning a 150° cone scaled to the full sight
+  distance, and the render camera is 55° vertical (~88° horizontal), so from the wedge's own apex its
+  edges are *always* off-screen. Only the 10%-opacity fill renders — a team-coloured film (Alpha
+  green `0x57d68d`, Bravo red `0xff8a80`) over the entire floor, reported as ground haze. A cone can
+  only be read from outside it. Other bots' wedges still draw in POV, where they are genuinely
+  useful: you can watch an enemy's cone sweep toward you.
 - **Acquisition-churn visibility** — the target plate shows `cand N` (in-cone candidate count,
   stamped by `selectBotTarget`), and the reaction ring flashes grey for 300 ms whenever a paid
   acquisition is torn down (`aimResetAt`, stamped in `primeAimAcquisition`) — retarget re-pays are
   unmistakable.
+- **Target callout** (2026-08-02) — the plate moved off screen centre to the right edge, where it
+  no longer sits on top of the sightline. It tracks the target vertically (clamped to the viewport),
+  scales with proximity between 0.85x and 1.2x, and anchors a leader line to the target's diamond
+  drawn in the gate colour, plus faint stubs to every other live perceived contact — so the plate is
+  the hub of the contact set rather than a floating label. Lines live in an SVG layer appended
+  *before* the plate so they render underneath it. `povScreenPos` returns null for points behind the
+  camera, where `project()` mirrors them to a plausible but wrong position; the plate then parks at
+  30% height and the line hides, since the edge arrow already carries the bearing. The plate rect is
+  read once per frame *before* the style write, so it lags one frame instead of forcing a
+  synchronous layout — imperceptible on a leader line.
+- **Diamond flash** (2026-08-02) — the committed-target diamond grew (0.17 → 0.23) and now flashes,
+  at double rate once the shot is legal and half that while the reaction delay runs; a
+  memory-only contact stops flashing and sits at flat 0.5 opacity, so "still tracking" and "still
+  seeing" are distinguishable at a glance. Perceived marks grew to 0.13 and flash only when LOS is
+  confirmed this frame, each phase-offset by its index so they read as separate contacts instead of
+  one pulsing block. Occluded marks stay steady and faint — motion in the periphery means someone
+  can see you.
+- **Target diamond size** (`povMarkScale`, Camera panel slider, 0.3x–3x, default 1x) scales the
+  committed-target diamond and the perceived marks together — one visual family that keeps its size
+  ratio. It deliberately does *not* touch the nav/goal/ghost/cover marks. Saved in the ui slot as
+  `debug.povMarkScale` and clamped to the slider's own range on load, so a hand-edited slot cannot
+  park the diamonds at 0 or 40x.
 - **Perceived-enemy marks** — `selectBotTarget` now commits candidate *identities*
   (`actor.perceivedEnemies`, up to `PERCEIVED_ENEMY_MAX` = 8 `{entity, distSq}` entries,
   nearest-first, same `.alive`-guarded retention convention as `actor.target`; cleared on map
@@ -3283,6 +4385,17 @@ Adversarially reviewed; review fixes folded in.
   (band-free, like ally reports). Review fix: `finishInvestigation` stamps a 5 s
   `contactSeedBlockUntil` so one teammate's held LOS can't re-arm back-to-back searches (or
   rebuild the frontier per frame on an unreachable anchor).
+- **Report attribution** (2026-08-02): every report now names the enemy responsible, not only the
+  place. `recordAllyHit` and the near-miss path stamp `attackerId` (both already had the attacker
+  entity in hand and were discarding its identity), and `recordContact` takes an optional
+  `threatId` naming who was seen. A near-miss refresh and a contact content-rewrite both
+  re-attribute, so a reporter swinging onto a second enemy does not leave the first one's id
+  attached. Nothing consumes these yet — this is the prerequisite for per-bot contact memory,
+  where "is shooting at me" has to bind to an identity rather than a bearing, since ranking a
+  shooter above a bystander is impossible when both are just coordinates. The accessors
+  (`latestSelfThreat`, `latestAlertNear`) return the record itself, so the ids pass through
+  untouched; `test-bot-alert.mjs` guards that round-trip against a future accessor that rebuilds
+  records field by field.
 - **A4/A5 — patrol scan** (`patrolScanOffset`, ±0.5 rad / 3.6 s, golden-ratio phase per bot;
   `sweepPhaseMs` de-phases the standing sweep per episode): moving out-of-contact bots
   (patrol, pack runs, medic cohesion) finally look around; standing groups no longer share
@@ -3490,6 +4603,326 @@ capsule by one stride of movement. Toggle: **Rig LOD** button or `?riglod=0`. A/
 Test-condition maze at 90 bots (perf-autoprofile-8/-9.csv): sim 5-9.5 ms → 3-5.4 ms (~-40%), avg
 fps 31.7 → 34.5; on the small default arena the camera sits inside 18 m so it barely engages.
 
+**Flush LOD, behind-camera cull, distance hide, rbox far-LOD** (2026-08-03, plan:
+`docs/superpowers/plans/2026-08-03-bot-fps-perf-plan.md`). Measured cause of the post-soldier fps
+drop: draw calls were never the problem (125 `InstancedMesh` buckets cover all five roles at any
+bot count), but a bot went from the default rig's 5,068 triangles to 95,500-105,852 — 19x — with
+no geometric LOD. Two thirds of that lives in the `rbox` armour primitive, 828 triangles a piece
+at the authored `seg=3` against 156 at `seg=1`. Four changes, each independently A/B-able.
+
+**Where the toggles live.** All four are runtime UI controls, not reload-only URL flags. In
+`bot-viewer-v2.html` they are buttons in the bot control panel beside **Rig LOD** (Flush LOD,
+Behind-camera cull, Body hide, Armour LOD — the last two cycle through distance steps, and Armour
+LOD adds a **Global** step after them; see the Phase 3-B section below). In
+`environment-viewer-v2.html` they register on the **Perf A/B** panel via `window.perfAB`, and call
+through to `GhostRenderer.setBotRenderTuning({flushLod, cullBehind, rboxLod, rboxLodDist})`; the
+flags themselves live at module scope in `multiplayer.js` because both viewers share them, and
+`getBotRenderTuning()` seeds the panel so it never disagrees with them. The URL params below still
+work and still set the initial state — the UI reads them at startup rather than replacing them.
+Turning the armour LOD **off** must walk every live body back to full detail, since the per-bot
+swap only runs while the flag is on; both viewers' off-paths do this explicitly.
+
+- **Flush LOD** (`?flushlod=0` disables, default on). `flush()` skipped the IK solve on strided
+  frames but still ran `group.updateMatrixWorld(true)` over ~170 nodes per bot. Measured in Node
+  at 90 bots: 4.5 ms/frame soldier, 9.3 ms/frame armoured, against 0.76/2.0 ms without the walk
+  (armoured costs double — its gear-anchor tree is deeper). The caller's hint is now advisory:
+  `player-procedural-body.js` keeps its own `_poseDirty`, set by `update()`, `setRagdollPose()`
+  and `setVisible()`, and `flush()` walks when EITHER says so. A caller that gets the hint wrong
+  can cost frame time but can never render a stale pose. Pinned by `test-body-flush-lod.mjs`.
+- **Behind-camera cull** (`?botcull=0` disables, default on). A bot strictly behind the camera
+  skips its flush, so it is absent from the immediate-mode pools and never drawn. Strictly behind
+  only, not the frustum sides, so a fast turn cannot outrun it; never inside 8 m at any angle;
+  never the focus/POV bot. Safe because the body buckets are `castShadow=false`. The IK solve
+  still runs on its normal stride, so a spun-round camera never finds a stale pose. In the env
+  viewer this needs `getCameraForward` alongside `getCameraPos` on `GhostRenderer`.
+- **Distance hide for `bot-viewer-v2.html`** (`?bothide=<m>`, `0` disables, default 240). The env
+  viewer has hidden bodies past 240 m for weeks; the harness had no hide at all. No-op in the
+  maze, real in open terrain.
+- **rbox far-LOD** (`?rboxlod=1` per-distance, **default OFF**; `?rboxlodDist=25`). `gearGeometry`
+  takes a `segOverride` that is part of its cache key, so every rbox piece gets a shared `seg=1`
+  twin; `setGearLod(0|1)` swaps the placeholders' geometry references. Measured: soldier rifleman
+  95,916 → 42,828 tris (55% off), armoured medic 106,216 → 38,344 (64% off). Only rbox swaps —
+  lathes, domes and faces keep their authored tessellation. **This changes how bots look** (the
+  chamfer highlights flatten), which is why it defaults off; ±2 m hysteresis stops a bot walking
+  the threshold from swapping every frame. This mode was A/B'd and **lost** (see the fourth
+  measurement below); `?rboxlod=2` (global) is the mode that is expected to pay, and it kept
+  the per-distance mode only as the comparison arm.
+
+Also: pool capacity dropped 8192 → 2048 at both construction sites (the heaviest bucket holds 4
+instances per bot, so this covers 500+ bots and returns ~48 MB; `stats.dropped` is the guard).
+
+### Sim-phase profiling scaffolding (2026-08-04, `bot-viewer-v2.html`)
+
+Temporary instrumentation, added to find the source of the `sim` spikes by bisection rather than by
+guessing. It is diagnostic only and should come out once the cost is fixed.
+
+`?prof=1` now breaks `sim` into `pre` / `sen` / `bot` / `post`, and `sen` (`updateBotSentry`) into
+four phases, each of which then reports its own sub-slices:
+
+- **A** perception — target selection (its `sel` slice is *inside* A), LOS, contact and voice.
+- **B** alert ring reads and the cover-position choice.
+- **C** FSM state resolution and stance.
+- **D** the movement handler for the winning state, printed as `D<total>{tail<n> <top-3 states>}`.
+  The per-state map is keyed by the `BOT_*` state strings (plus `hold`, `gEvade`, `gThrow`,
+  `patrol` for the branches that aren't keyed on `state`); `tail` is the weapon-slot/reload block
+  after the dispatch, which every bot pays regardless of state.
+
+Two things to know before reading the numbers:
+
+- `frameProf.record()` **overwrites** per name rather than accumulating, so a per-bot timer would
+  report only the last bot. These phases sum by hand into module-level `let`s reset at the top of
+  `updateAllBots`, which is also why they are raw last-tick values.
+- The HUD reads `frameProf.snapshot(..., { smooth: true })` at `smoothing: 0.1`, so `sim`, `body`
+  and `rnd` are lagging EMAs while the hand-summed phases are instantaneous. A sub-phase can
+  therefore legitimately read *higher* than its parent on a spike frame — `sen 86.0` under
+  `sim 27.9` is the smoothing, not a bug. Compare phases against each other, not against `sim`.
+
+The phases use boundary timestamps rather than wrapped closures because they share locals
+(`state`, `alertTier`, `visible`); wrapping would put those out of scope downstream. Every early
+`return` inside the function has to close its phase, or that phase silently under-reports — the
+`'reposition'` path at the end of A is the one that does this.
+
+#### The `Y` perf-log recorder (2026-08-04)
+
+`Y` starts a take, `Y` again stops it and puts a TSV on the clipboard. Sampled once per frame from
+the end of the animation loop (after the `render` await, so `rnd` is that frame's own cost) and
+**unsmoothed** — `frameProf.snapshot(PERF_LOG_MAP, {})`, not the HUD's `{ smooth: true }`. An 80 ms
+spike is a single frame; the HUD both averages it away and repaints only at 2 Hz, so reading spikes
+off it previously meant screen-recording the HUD and OCR'ing the frames. It works with or without
+`?prof=1`, since the phase counters always accumulate and `?prof=1` only draws them.
+
+Columns: `t dt cpu gap gpu fps sim pre sen senA sel senB senC senD dTail bot post body wpn fx3d vis
+fx aud pnl uiA uiB uiC ui rnd bots dStates draws tris`. `dt` is the interval since the previous frame, `cpu` is
+this frame's timed JS, and **`gap` is `dt - cpu`** — GPU execute plus the browser's own render steps,
+which nothing inside the loop can observe. `gpu` needs `?prof=1` (it enables `trackTimestamp`, which
+is construction-only and so cannot be an in-game toggle) and trails by a frame or two, since
+`resolveTimestampsAsync` resolves after the frame that issued it. `dStates` is the `state:ms`
+breakdown inside `senD`.
+
+`draws` and `tris` are `renderer.info.render.drawCalls` / `.triangles` — **counts, not milliseconds**,
+and they need no `?prof=1`. They cover the whole chain including post passes. The renderer resets
+these at the top of the animation loop, *before* the frame callback runs, so reading them after the
+render await gives this frame's totals rather than the previous frame's. They exist because `rnd`
+is command encoding and encoding cost tracks draw-call count: a change that cuts `rnd` without
+cutting `draws` did not win on draw count and is doing something else. They are appended at the end
+of the row rather than placed next to `rnd` because `perfLogSummary` indexes rows positionally, so a
+mid-row insert would silently re-point every `line()` call. The summary prints them on their own
+median/p90/max/**min** line — no "share of frame", which would be meaningless for a count — and
+`draws` is added to the worst-5-frames list so a spike can be checked against its draw count.
+
+**`gap` pairs `dt` with the *previous* frame's `cpu`**, and this is not a detail. `dt` is the interval
+that ended when the current frame started, so the work inside it belongs to the frame before. The
+first version subtracted same-row `cpu`, which put a spike's cost in one row and its consequence in
+the next — a 116 ms frame read as `cpu 116.2, dt 16.9` followed by `dt 117.3, gap 101.6`. Negatives
+are left signed rather than clamped: the loop is `async`, so the browser can start a frame before the
+previous frame's awaited tail finishes, and clamping silently inflated the gap total (in the take
+that exposed this, `cpu` and `gap` shares summed to 104.9% instead of 100%). Aggregate *shares*
+survived the bug regardless — summing `dt - cpu` telescopes — but per-row gap values did not.
+
+**`gpu` overlaps `cpu`, it does not add to it.** The GPU executes the previous frame's commands while
+the current frame records, so a frame is roughly `max(cpu, gpu)` plus serialisation, not their sum.
+Reading the two shares as parts of a whole will double-count.
+
+The header also records `devicePixelRatio`, the actual render buffer ratio, MSAA and the shadow
+filter (2026-08-04) — see "Perf remediation phases 0-B and 1-B" at the end of this document. Fill
+cost scales with the square of the pixel ratio, so takes are only comparable at equal values.
+
+`Y` copies a header, a computed **SUMMARY** block and the full per-frame table; **`Shift+Y` copies
+the summary alone**, which is short enough to paste anywhere. The summary carries median/p90/max and
+share-of-frame for `dt cpu gap gpu sim sen senC senD body ui rnd`, the `senD` total per state across
+the whole take, and the five worst frames by `dt`. Rows are stored as arrays rather than pre-joined
+strings precisely so the summary can read the columns back as numbers.
+
+Details that are load-bearing rather than incidental:
+
+- The loop's `dt` is clamped to 50 ms for simulation stability, which would hide exactly the stalls
+  this log exists to catch. The row logs an unclamped `frameMs` captured before the clamp.
+- The recorder uses **its own `AudioContext`** for the start/stop cue rather than `envAudio`, so the
+  cue still fires when the game mixer is muted or its SFX budget is saturated, and never competes
+  for a combat voice slot.
+- The clipboard staging textarea is positioned off-screen, not `display:none` — a hidden textarea
+  cannot be selected, and the selection is the Ctrl/Cmd+C fallback when clipboard permission is
+  denied. On a **successful** copy it is explicitly blurred: the keydown listener ignores keys while
+  a `TEXTAREA` has focus, so leaving it focused would make the next `Y` (and every other hotkey)
+  silently do nothing.
+- Rows cap at `PERF_LOG_MAX` (36000, ~10 min at 60 fps) and the header reports how many were
+  dropped, so a take left running is bounded and says so rather than truncating silently.
+
+The badge lives in `#hud-bottom` beside the fps counter rather than free-floating in the corner, so
+it cannot collide with the right-hand control panel at any panel width. It pulses red while
+recording and turns green with the frame count for 3.5 s after the copy.
+
+**First measurement** (2026-08-04, 90-bot open terrain, 20 samples over 9.5 s of a firefight,
+OCR'd off a screen recording of the HUD): every spike is in **D**. Its quiet baseline is 0.1-0.8 ms
+and it peaks at 80.6 ms — 94% of `sen` on the worst frame — while A stays flat at 0.8-3.3 ms
+throughout. Perception and target selection are therefore *not* the bottleneck. C has a smaller,
+independent spike (6-9 ms on frames where D is calm) worth its own pass afterwards.
+
+**Second measurement, and a reframing** (2026-08-04, 104 frames / 6.3 s at 44-47 bots, from the `Y`
+recorder rather than OCR). Per-frame data says the sim is *not* where the frame goes:
+
+| | median | p90 | max | share of frame |
+|---|---|---|---|---|
+| `dt` (frame interval) | 58.9 | 78.1 | 109.6 | 100% |
+| `cpu` (all timed JS) | 18.6 | 27.6 | 56.9 | **33.8%** |
+| **`gap` (`dt - cpu`)** | **39.2** | 54.1 | 82.2 | **66.2%** |
+| `sim` | 8.6 | 17.3 | 36.0 | 16.9% |
+| `senD` | 1.1 | 10.7 | 29.2 | 6.1% |
+| `rnd` | 7.2 | 9.3 | 16.3 | 12.8% |
+
+`cpu` reconciles exactly with the sum of the phase timers (verified per row: `sim + body + wpn +
+fx3d + vis + fx + aud + pnl + ui + rnd` = `cpu` to 0.1 ms), so the loop is fully accounted for and
+the gap is genuinely outside it — GPU execute, present, and the browser's style/layout/paint steps.
+Correlation between `dt` and `cpu` is only **0.42**, so frame time is mostly driven by something the
+loop cannot see. Eliminating `senD` entirely would buy about 6% of a frame.
+
+This is why the `gpu` and `gap` columns exist.
+
+**Third measurement, with GPU timestamps** (2026-08-04, 377 frames / 11.0 s at 47 bots, `?prof=1`).
+Mean 34.4 fps. Medians: `dt` 26.2, `cpu` 18.9 (**74.7%** of frame time), `gpu` **18.4** (p90 26.9,
+max 41.8), `rnd` 8.6, `sim` 7.1, `senD` 0.6.
+
+**CPU and GPU are both at roughly 18-19 ms against a 26 ms frame.** They pipeline, so neither alone
+sets the frame time, but 60 fps needs *both* under 16.7 ms — there are two independent ceilings here,
+not one. Inside `cpu`, `rnd` (8.6 ms of command encoding) is slightly larger than the entire AI sim
+(7.1 ms), so "the bots are slow" was never the whole story.
+
+This take and the second one disagree sharply (34.4 vs 16.5 fps, `cpu` share 74.7% vs 33.8%) and
+nothing in the logs explains why. Treat the split between them as unresolved rather than assuming
+either is representative.
+
+**`seek` is a hitch generator, not an average-fps cost.** It totals 880 ms (8.0% of all frame time)
+against `patrol`'s 168 ms, but median `senD` is 0.6 ms — the cost is entirely in the tail, with
+single-frame stalls of 100.3, 68.4 and 64.0 ms. Those are visible freezes and worth fixing for
+smoothness, independently of the fps ceilings above.
+
+**Fourth measurement — the armour far-LOD A/B, and it does not work** (2026-08-04, ~46-48 bots,
+three of the four cells: no-LOD fight, LOD no-fight, LOD fight).
+
+| | mean fps | `dt` | `cpu` | `gpu` | `sim` | `body` | `rnd` |
+|---|---|---|---|---|---|---|---|
+| LOD off, fight | 29.4 | 25.5 | 16.2 | **11.3** | 5.6 | 1.2 | 8.1 |
+| LOD **on**, fight | 31.9 | 26.7 | 17.3 | **15.7** | 4.8 | 2.1 | 9.2 |
+| LOD on, no fight | 46.7 | 17.6 | 15.5 | 7.4 | 4.8 | 1.1 | 8.6 |
+
+(medians; fps is the take mean)
+
+Turning the LOD on **raised** the GPU median (11.3 → 15.7) and raised `body` (1.2 → 2.1) and `rnd`
+(8.1 → 9.2). The mechanism is in `body-part-batches.js`: `bucketFor` keys buckets on
+`geometry.uuid` and **buckets are never removed** once created. Swapping an rbox piece to its
+`seg=1` twin therefore *adds* a bucket rather than replacing one — with both variants live (near
+bots full, far bots cheap) the rbox bucket count roughly doubles, `stats.draws = buckets.size` rises
+with it, and `beginFrame`/`endFrame` iterate the larger set every frame. Worse, a bucket created
+once persists for the session even after every bot returns to full detail. **The LOD trades
+triangles for draw calls, and at this bot count the trade loses.** Leave it off (it already
+defaults off). Making it pay would mean reusing one bucket per piece with a swappable geometry, not
+keying on uuid — a redesign, not a tuning change.
+
+**Superseded in part on 2026-08-04.** Bucket eviction landed in `body-part-batches.js`, and the
+diagnosis above was incomplete in one respect: the additive-bucket problem is not only a lifecycle
+bug, it is intrinsic to a *per-distance* LOD. While the population is mixed, near bots fill seg=3
+buckets and far bots fill seg=1 buckets, so both variants are live by design and no lifecycle can
+collapse them. Only a **global** switch replaces one set with the other. That is `?rboxlod=2` — see
+the Phase 3-B section below. The verdict on `?rboxlod=1` stands unchanged.
+
+Caveat: the two fights were separate live scenarios, so camera distance and how much screen the bots
+filled were not controlled. Read this as "no evidence of benefit, plus a concrete mechanism for
+harm", not as a controlled measurement.
+
+**Combat's cost is on the GPU, not in the AI.** The LOD-on pair is clean on the LOD axis, and going
+from no-fight to fight moves `dt` 17.6 → 26.7 ms (+9.1). Of that, `gpu` accounts for +8.3 (7.4 →
+15.7, a 2.1× rise) and `cpu` for only +1.8. **`sim`'s median is identical at 4.8 ms in both.** So
+whatever combat adds to the *render* — muzzle-flash dynamic lights, tracers, impact and blast FX,
+ground pools — is where the combat frame rate goes, and the bot AI is not what drops it. The next
+A/B should be the existing bot-lighting toggles (dynamic lights / flashlights / ground pools)
+measured against `gpu`, not anything in `updateBotSentry`.
+
+**Fifth measurement — bot lights off, and the limit of this A/B method** (2026-08-04, four takes:
+three "lights off, no fight" back to back, plus one "lights off, fight").
+
+The three no-fight takes were recorded under *identical* settings, seconds apart:
+
+| take | mean fps | `dt` | `cpu` | `gap` | `gpu` | `rnd` |
+|---|---|---|---|---|---|---|
+| 1 | 28.9 | 30.9 | 11.8 | 18.9 | 9.3 | 5.3 |
+| 2 | **50.0** | 17.0 | 11.7 | **5.8** | 13.4 | 5.1 |
+| 3 | 29.8 | 32.7 | 12.3 | 19.2 | 23.9 | 5.4 |
+
+**`cpu` is constant (11.7–12.3) while fps ranges 28.9–50.0.** Every bit of the difference is in `gap`
+— 18.9 / 5.8 / 19.2 — which is outside the loop by construction. Run-to-run variance under identical
+settings is therefore larger than any code change measured so far, and A/B by comparing separate
+free-play recordings has hit its resolution limit. `gpu` is also unstable across these (9.3 / 13.4 /
+23.9) because it depends on camera angle and what is on screen, which was not controlled.
+
+Note the `dt` medians: **17.0 in the fast take, 30.9 / 32.7 / 34.1 in the three slow ones**, with
+`cpu` unchanged. That is the shape of frame pacing rather than workload — a frame that occasionally
+misses the display interval getting held to the next one, so the rate sits at either ~60 or ~30 and
+rarely between. Treat that as the leading explanation, not a proven one: the intermediate 24–26 ms
+rows in take 3 do not fit a clean 60 Hz ladder, and nothing here identifies the mechanism.
+
+**What the lights toggle actually bought** (comparing against the lights-on no-fight take): `rnd`
+8.6 → 5.1–5.4 and `cpu` 15.5 → 11.7–12.3, i.e. **about 3.5 ms of CPU per frame, essentially all of
+it in command encoding**. That much is repeatable across all three takes and is a real saving. It
+did *not* reliably raise the frame rate, because the frame rate is currently decided by the
+pacing/gap term above. If the pacing reading is right, though, a 3.5 ms CPU saving is exactly the
+size of margin that decides whether a frame lands inside the interval or misses it — so it may be
+worth more than the fps averages suggest.
+
+**Do not read the lights-off *fight* take as a regression.** It shows 24.8 fps and `gpu` 28.0 against
+the lights-on fight's 31.9 fps and `gpu` 15.7, but it also ran 46 s against 16.8 s, with the roster
+falling from 48 to 38 bots, and it sits inside the same run-to-run spread demonstrated above. There
+is no controlled comparison there.
+
+**Method fix before any further A/B:** use the fixed scenario that already exists —
+`?autoprofile=1&proflayout=maze` builds a seeded maze (`mazeSeed = 1337`) specifically so runs are
+comparable. Free-play takes cannot resolve changes of this size.
+
+**Sixth measurement — smaller maps, and the pacing question settled** (2026-08-04, 697 frames /
+15.6 s, ~25 bots, near-continuous fighting). Mean 44.6 fps. Medians: `dt` 18.7, `cpu` 15.6,
+**`gap` 2.6**, `gpu` 15.1, `rnd` 7.3, `sim` 4.6, `body` 2.5, `senD` 0.3.
+
+**The frame pacing reading from the fifth measurement is now confirmed rather than inferred.** The
+`dt` column clusters hard on two values — long runs of 16.6–16.9 broken by runs of 33.2–33.7 — which
+is a 60 Hz vsync ladder: a frame lands on one refresh interval or slips to two. Mean `dt` is 22.4 ms,
+which for a 16.7/33.3 mix implies roughly **two thirds of frames at 60 and one third at 30**. That
+also explains the fifth measurement retroactively: those three "identical" takes at 28.9 / 50.0 /
+29.8 fps were the same workload sitting on the boundary and landing on different sides of it.
+
+**Consequence for optimisation.** `cpu` median 15.6 ms against a 16.7 ms budget means the CPU is
+sitting *right on the line*. Savings there are worth far more than their size suggests, because each
+frame pushed under the interval jumps from 33.3 ms to 16.7 ms rather than improving smoothly. Inside
+that 15.6 ms: **`rnd` 7.3 (47%)**, `sim` 4.6 (29%), `body` 2.5 (16%). Command encoding is the single
+biggest item and the obvious first target — which is also the mechanism that made the armour far-LOD
+backfire, since it added buckets.
+
+**`gap` collapsed from ~19 ms to 2.6 ms**, so the uncontrolled machine-state variance that made the
+fifth measurement unusable is absent in this configuration. A/B is viable again here.
+
+**Smaller maps all but eliminated the seek stalls.** `senD` max is **14.4 ms against 124.4 ms** in
+the large-map fight, p90 1.3 vs 9.9, and `seek` totals 252 ms (1.6% of frame time) against 3635 ms
+(7.9%). That fits what `seek` is — investigating a lost target — since a small map means short
+searches. The 100 ms hitches documented above are gone in this configuration.
+
+Caveat: the roster also halved (48 → ~25 bots) in the same change, so map size and bot count are
+confounded here. The seek result is very likely map size (path length is what `seek` scales with);
+the `gap` and `cpu` results could be either.
+
+Two other things the same data says:
+
+- **Even idle, the CPU is at the 60 fps limit.** `cpu` median out of combat is 15.5 ms against a
+  16.7 ms budget, and `rnd` (8.6 ms of command encoding) is more than half of it. Draw-call count is
+  the shared lever behind both `rnd` and the LOD result above.
+- **The `seek` stalls are untouched by any of this** — `senD` max is 130.9 ms (LOD on, fight) and
+  114.3 ms (LOD off, fight), and out of combat `senD` never exceeds 1.0 ms. They are a combat-only
+  hitch and still need their own fix.
+
+Within `senD` the spiking states are **`seek`** (max 28.3 ms) and **`patrol`** (max 14.3 ms) — not
+`flee`, which was the earlier suspicion. `senD > 5 ms` on 31% of frames. Both handlers re-plan
+whenever `pathMode` no longer matches, and most branches (AIM, FIRE, COVER_HOLD, hold, alert) clear
+`pathMode = null`, so a state flicker forces a fresh plan; there is no cap on how many bots may plan
+in one tick. `choosePatrolResumeGoal` in particular runs an **unbounded** `floodFill(navGrid, start,
+{})`. That is the shape of the cost, not yet a measured cause.
+
 **Wall instancing.** Walls and covers render as one `InstancedMesh` per material
 (`instancedBoxes`: shared unit `BoxGeometry`, per-instance scale+translate matrices,
 `boxTransformOnTerrain` keeps the hillside-sinking math), replacing one Mesh+BoxGeometry per
@@ -3630,18 +5063,111 @@ and is **not** restored by a reload — the panel's **Restock grenades** button 
   secondary uses, so the rendered model matches the animation.
 - **`updateGrenadeEvade(dt, now)`** runs `grenadeEvade` against the shared threat list (reading the
   bot's own position through the `grenadeBodyInto` out-param, since this runs per bot per frame);
-  anything inside a live grenade's own `blastRadius` gets a `grenadeEvadeGoal`, replanned every
+  anything inside a live grenade's own `blastRadius` is evaded, replanned every
   `GRENADE_EVADE_REPLAN_MS` (400 ms) or when the path empties, and always at run speed. Urgency (0–1)
-  is `0.6 ×` fuse pressure + `0.4 ×` proximity, normalised against a 2.0 s nominal fuse.
-- **`grenadeEvadeGoal(fromP)`** is a **straight-sprint** search, not a path solve: it scans the
-  `GRENADE_EVADE_CELLS` (8) ring for the walkable cell maximising distance-from-blast minus `0.35 ×`
-  straight-line travel, and traces `lineWalkable` **only for a candidate that would actually win**,
-  so the result is a single waypoint on a proven-clear line. It deliberately does **not** call
-  `floodFill` — a Dijkstra per bot per replan while a grenade is airborne is real work even now that
-  the `dist`/`parent` pair is pooled rather than a fresh 469 KB allocation. Measured 19× faster
-  (296 µs → 15 µs per call) for the same chosen cell, at zero allocation. The own cell is skipped so
-  "evade" can never resolve to standing still.
-
+  is `0.6 ×` fuse pressure + `0.4 ×` proximity, normalised against a 2.0 s nominal fuse. The
+  destination comes from `grenadeEvadeGoal` (see below); on arriving at one the blast cannot see, the
+  bot **stops and holds until the grenade detonates**, facing directly away from it.
+- **Evade hysteresis (`evadeExitScale`, default 1.25).** `grenadeEvade` takes a fourth argument, the
+  threat id the caller is already evading; that grenade keeps its hold out to `blastRadius ×
+  evadeExitScale` while every other threat still engages at the plain `blastRadius`. Without it the
+  ring was a hard cutoff, and since the FSM keeps resolving *underneath* the evade override, the frame
+  a bot crossed the edge the combat branch walked it straight back in — a boundary chatter that read
+  as marching in place. Short fuses hid it; a long fuse makes it run for seconds. `urgency` and the
+  reported `radius` still measure against the true damage ring, so the widened band reads as zero
+  proximity rather than negative. A scale of 1 restores the old behaviour; values below 1 are clamped.
+- **`grenadeEvadeGoal(fromP, blastRadius, actor)`** is the whole destination decision — one scored cell
+  scan that replaced both the old distance-only search and a short-lived corner-map cover search.
+  Scoring distance-from-blast alone produced two wrong behaviours, and the corner version could not fix
+  the second one *in principle*: **a corner anchor is a boundary feature by definition**, so "get
+  properly inside cover" was unreachable no matter how the anchors were scored.
+  - *Running into a firing lane.* A cell can be clear of the grenade and sit squarely in the enemy's
+    sights. Cells the bot's current threat can see (seen position if visible, else `lastKnownTarget` —
+    the same memory the rest of the FSM steers on) take `EVADE_EXPOSURE_PENALTY` (7).
+  - *Parking on the edge.* Being merely past the shadow boundary is a bad place to stand: it looks
+    unnatural and re-exposes the bot the moment anything moves. Hidden cells take a flat
+    `EVADE_SHADOW_BONUS` (9) **plus** `EVADE_DEPTH_BONUS` (2.6) per probe direction that is also hidden
+    — four probes at `EVADE_PROBE_CELLS` (3 cells ≈ 1.5 m), so 0–4. `canSee` is fail-closed on
+    unwalkable cells, so a probe landing in a wall counts as shadow, which is what we want: a wall stops
+    a blast as well as a shadow does. The same edge logic applies to the blast ring itself —
+    `EVADE_EDGE_PENALTY` (1.2/m) for any shortfall inside `blastRadius + EVADE_CLEAR_MARGIN` (2.5 m),
+    so bots aim to end up comfortably clear rather than barely.
+  - *Everyone picking the same cell.* `evadeJitter` adds up to `EVADE_NOISE` (1.5), hashed from a
+    per-bot `evadeSeed` and the cell index, so it is **stable across replans** (no frame-to-frame
+    chatter) but differs per bot. At 1.5 it can only shuffle cells of near-equal quality.
+  - Ranking check at the shipped weights: deep shadow 14.95 > deep shadow but exposed 7.95 > shadow
+    edge 4.55 > open ground 1.1 > open and exposed −5.9. Deep shadow beats the boundary by 10.4, far
+    outside jitter's reach. Note blast safety outranks bullet safety while a grenade is live — an
+    exposed deep-shadow cell still beats an unexposed boundary cell, deliberately.
+  - Scans a `±EVADE_SEARCH_CELLS` (12) box at `EVADE_SEARCH_STRIDE` 2, so ~169 candidates at 1 m
+    granularity rather than 625 at 0.5 m. The own cell is skipped so "evade" can never resolve to
+    standing still. Returns `{x, z, hidden}`; `hidden` is what gates the hold and the overlay colour.
+  - Reachability: `lineWalkable` first (one trace, the common case, single waypoint) and
+    `requestPathBudgeted` only when the winner is behind geometry — which is exactly when a path solve
+    is worth paying for. Still no `floodFill`: a Dijkstra per bot per replan while a grenade is airborne
+    is real work even with pooled buffers.
+  - Degrades safely: no `visField` or an off-grid blast cell means no shadow term and no exposure term,
+    leaving the old distance-and-travel behaviour, which is what open terrain gets.
+- **`updateGrenadeDebug(now)`** draws the **Grenade debug** overlay (Debug overlays card, off by default,
+  saved as `debug.grenadeDebug`). Immediate mode: four pools are re-indexed each frame and the leftovers
+  hidden, so nothing is ever hand-released. It runs in the `uiB` pass, after the sim, while
+  `_grenadeThreats` still holds this frame's list. What it shows, and which change each part proves:
+  - **Solid red ring** at `blastRadius` and **dashed amber ring** at `blastRadius × evadeExitScale`,
+    per live grenade. The gap between them is the hysteresis band; the dashed ring is suppressed at a
+    scale of 1. Watching a bot cross the red ring and keep going is the boundary-chatter fix.
+  - **Blue cells** = the blast shadow, the nav cells `visField` says the grenade cannot see, i.e.
+    exactly the set `grenadeEvadeGoal` scores a shadow bonus for. Baked into one `InstancedMesh` (cap 4096) and
+    rebaked only when the grenade changes cell, since a scan of a 15 m ring is thousands of `canSee`
+    calls. Only the first live grenade gets one.
+  - **Green line + ring** from an evading bot to its chosen cover anchor, brightening once it is
+    within `GRENADE_COVER_REACH` and holding. **Amber line + ring** means no corner was found and the
+    bot's chosen cell is in the open instead — which distinguishes "the cover scoring is off" from
+    "there is no cover here", the one thing the behaviour alone cannot tell you. Watching the green
+    ring land well inside the blue rather than on its rim is the shadow-depth term working.
+  - **Bar above a bot** = the post-blast aim settle: grey while the acquisition is torn down, amber and
+    draining while the recognition delay runs, gone once it is shooting again.
+  The fallback waypoint is stashed as `actor.grenadeGoalDbg` purely for this overlay; everything else
+  is read back from live sim state, so the overlay cannot drift from the behaviour it explains.
+- **Blast occlusion (`blastExposure`, panel toggle "Blast blocked by walls", default on).** A blast used
+  to be a pure radius test — geometry did nothing, which among other things made the grenade-evade
+  cover hold pointless: the bot reached its corner and ate the damage anyway. It now casts **three rays
+  from the blast centre to fractions 0.15 / 0.5 / 0.9 up the victim's own capsule** (shins, torso,
+  head) and scales damage by the fraction unblocked, so a low wall is partial cover rather than
+  immunity — a single centre-to-centre ray would make a crouching bot either invulnerable or
+  unprotected, and the head-exposed case is a known bug family here. Exposure 0 drops the victim from
+  the list entirely (no damage, no hit FX, no squad report). Rays stop 5 cm short of the sample so the
+  victim's own surface is never its own cover. Cost is 3 raycasts per victim per blast, and blasts are
+  rare. Applies to bots and WASD dummies alike; `mapCollider` being null (open terrain, pre-layout)
+  degrades to full exposure. Turning it off restores the old damage-through-walls behaviour exactly.
+  - **The veto rings run through the same test** (2026-08-07 — they briefly did not; see below).
+    `chooseGrenadeThrow` takes an optional `input.blastReaches(point, entry)` hook, injected the way
+    `combat-projectile` takes `ctx.raycast`, so `bot-grenade.js` stays THREE-free and Node-testable.
+    `blastReachesBody` in the viewer wires it to **`blastExposure` itself**, not a reimplementation —
+    that identity is the point: the throw decision and the detonation cannot disagree about a wall, and
+    turning the toggle off reverts both together (`blastExposure` returns 1). It is tested against the
+    ground under the aim point, matching `solveGrenadeThrow`, rather than the target's chest, which
+    sits a metre higher and clears low walls the grenade will not.
+    - All three rings use it: sheltered enemies stop counting toward the cluster and the score,
+      sheltered allies stop vetoing, and a sheltered thrower may throw short — the last one is what
+      cooking a grenade around a corner looks like. `minRange` still holds the floor, so occlusion
+      waives the self *ring*, not the range gate.
+    - Consulted only for bodies that already passed the distance test, so ray cost scales with what is
+      inside the ring rather than with the roster. `grenadeCandidate`'s cheap self pre-gate had to
+      become occlusion-aware too, or it would have vetoed every short throw before the real gate saw it
+      and silently undone this.
+    - Omitting the hook restores pure-radius behaviour exactly, which is what every existing caller and
+      test gets. A hook returning a non-boolean reads as unreachable, never as a pass.
+    - **For ~a day this was inconsistent**, and it cut both ways, which is worth remembering as the
+      general shape of the bug: an ally behind a wall falsely vetoed a safe throw (bots passed up
+      grenades), *and* enemies behind a wall falsely counted toward the cluster (bots spent grenades
+      and a 9 s cooldown to hit one target). Any time a decision model approximates a damage model,
+      expect errors in both directions, not just the cautious one.
+- **`settleAfterBlast(center, radius, now)`**, called at the end of `detonateBlast`, tears down the aim
+  acquisition (`aimContactAt`/`aimReadyAt`/`aimTargetId`, stamping `aimResetAt`) of every living bot
+  within `radius × BLAST_SETTLE_SCALE` (1.35 — wide enough to catch bots that just cleared the ring).
+  That routes the "don't resume fire on the frame the smoke appears" delay through the existing A10
+  recognition-delay system and its sliders instead of adding an FSM state. Bots outside that reach are
+  untouched.
 **Dispatch order.** Both hook the FSM chain in `updateBotSentry` ahead of the `holding` branch:
 `updateGrenadeEvade` → `updateGrenadeThrow` → hold → `AIM`/`FIRE`/… A live grenade outranks
 everything (and clears any pending wind-up — mid-throw is not the moment to stand still); a wind-up
@@ -3671,6 +5197,46 @@ regardless of the FX toggle (a real dynamic light is what sells an explosion on 
 (`distance: min(60, shown * 3.2)`), so the puff can be dialled off the ring without the light lying. Parameters and the
 caller rules for `smoke_puff` are in `docs/subsystems/fx.md`; the procedural SFX fallback is in
 `docs/subsystems/audio.md`.
+
+### Hit FX: blood and sparks (2026-08-04)
+
+Every damaging hit now spawns the same four-kind stack `damage-simulator.html` uses, through the
+`effectRenderer` the harness was already running — **no new imports**. `spawnHitBloodFx(point, normal)`
+(next to `spawnBlastFx`) pushes `hit_spark`, `blood_spray` (28 droplets), `blood_stain` at the wound,
+and `blood_splatter` on the ground. `smoke_puff` is deliberately omitted: v2 already spends its
+`EFFECT_LIST_CAP` budget on rocket-trail puffs.
+
+Three things are easy to get wrong here and are handled explicitly:
+
+- **Colour must be passed.** `pushEffect` writes a raw wire object and never runs
+  `EffectEntity.create()`, so `entity-types/effect.js`'s blood-kind colour default never applies and
+  `effect-renderer.js` would fall back to the warm muzzle colour — blood would render orange. The
+  viewer keeps its own `BLOOD_RED = [0.4, 0.02, 0.03]` mirroring that file and passes it on all three
+  blood kinds.
+- **Three damage sites, not one.** `applyBotDamage` (bullets + knife on bots), the dummy-target branch
+  of `applyCombatDamage`, and `detonateBlast`'s victim loop. The last one never calls `applyBotDamage`
+  or `emitBotDamaged`, which is why subscribing to `onBotDamaged` was rejected — it would miss blast
+  and dummy hits entirely.
+- **The spray direction.** `hitNormalFor(target, hitPoint, explicit, sourcePoint)` follows
+  `combat.js`'s own capsule convention: horizontal, outward from the target's axis. Only bullets carry
+  a real normal (threaded through as `source.normal` from `resolveHitscan`). Every other path passes a
+  hit point taken from the **victim's own vertical capsule**, so `dx`/`dz` there are *exactly* zero and
+  the naive form degenerates to `[0,1,0]` — blood spraying straight up on every knife kill. Hence the
+  second reference: the knife's attacker (`source.attacker ?? bot`) or the blast's centre
+  (`source.origin`, added to the blast-on-dummy call).
+
+A **Blood FX** toggle sits under **Body & ragdoll** (not Explosives — it fires on bullets and knives
+too), saved as `bloodFx` in the `bots` slot and restored through `boolOr`, so older slots keep loading.
+
+**The decal cap moved right after this shipped.** It was a hardcoded 160 quads shared by
+`blood_stain` + `blood_splatter`, drawn as 160 separate `Mesh` + `MeshBasicMaterial` pairs — at 11
+decals per hit that saturated around 14 concurrent hits, and because they were `DoubleSide` with no
+`forceSinglePass` a full pool encoded up to 320 transparent draws. That pool is now one instanced
+draw with a `maxBloodDecals` option defaulting to 512 (see `docs/subsystems/fx.md`), so the harness
+uses the wire-default splatter count of 10 and the practical ceiling is ~46 concurrent hits.
+
+This mattered more than a perf tidy-up: bleedout drips and growing blood pools are *persistent*
+decal producers, so a single bot bleeding for 20 s would have blown a 160 cap on its own.
 
 ### Panel + tests
 
@@ -3761,12 +5327,12 @@ and three commitment latches, and folding posture into it would multiply every r
 orthogonal channel computed immediately *after* the ladder resolves — which is also why the whole
 thing can be switched off, or force-overridden from the panel, without touching the ladder at all.
 
-### `bot-stance.js` (new) — pure, THREE-free, zero-dependency, tested in `test-bot-stance.mjs` (130 checks)
+### `bot-stance.js` (new) — pure, THREE-free, zero-dependency, tested in `test-bot-stance.mjs` (197 checks)
 
 | Export | Purpose |
 |---|---|
 | `STANCE_STAND` / `STANCE_CROUCH` / `STANCE_PRONE` / `STANCE_RUN` | the four postures, plain strings |
-| `STANCE_DEFAULTS` | all 17 tunables below, and the source of `botStanceSettings` |
+| `STANCE_DEFAULTS` | the tunables below, and the source of `botStanceSettings` |
 | `chooseBotStance(state, ctx, settings)` | the decision table — resolved FSM state + context → desired stance |
 | `stepStanceTransition(st, desired, now, settings)` | hysteresis latch; returns the **effective** stance |
 | `stanceSpeedFactor` / `stanceSpreadScale` / `stanceHeightScale` / `stanceTurnRateScale` | the four consequence multipliers |
@@ -3791,8 +5357,8 @@ missing/junk posture passed back in.
 | 7 | `cover-hold`, otherwise | CROUCH |
 | 8 | `alert` (or `alertHeld`) | CROUCH |
 | 9 | `pursue` / `flee` / `cover-move` / `medic-move` / `knife` | RUN |
-| 10 | `aim` / `fire` | CROUCH when the target is visible and **beyond** `aimCrouchDistance`, else STAND |
-| 11 | `seek` | CROUCH within `seekCrouchRadius` of the last-known point, else STAND |
+| 10 | `aim` / `fire` | CROUCH when the target is visible and **beyond** `aimCrouchDistance` (`- aimCrouchHysteresisM` if already crouched), else STAND |
+| 11 | `seek` | CROUCH within `seekCrouchRadius` (`+ seekCrouchHysteresisM` if already crouched) of the last-known point, else STAND |
 | — | `patrol` / anything unrecognised | STAND |
 
 Two details that are easy to get backwards. A **missing** last-known point reads as `Infinity`, not 0
@@ -3801,6 +5367,34 @@ searching bot that has no memory to search toward. And the aim rung crouches at 
 gate is `targetDistance >= aimCrouchDistance`): a bot steadies the shot for the far target and stays
 mobile in a close-quarters fight. (The panel tooltip on that slider currently phrases it the other way
 round; the code is the `>=` above.)
+
+### Crouch/stand dead-band hysteresis (2026-08-03)
+
+Rungs 10 and 11 are bare thresholds, and `stepStanceTransition`'s exit cost only damps flicker faster
+than `crouchUpMs` (220 ms) — a bot whose real motion hovers at the boundary for longer than that (a
+very plausible strafe or search-orbit timescale) still visibly toggles crouch/stand, flipping speed
+and spread every cycle. Fixed with dead-band hysteresis, not a longer timer: entering crouch keeps the
+existing threshold; a bot that is **already crouched** only stands back up once it clears a further
+margin (`aimCrouchHysteresisM` = 1.5 m, `seekCrouchHysteresisM` = 1 m). `chooseBotStance` takes a new
+ctx field, `alreadyCrouched` (default `false`, so omitting it reproduces the old single-threshold
+behavior exactly — no existing caller or test needed to change). This is a separate mechanism from the
+transition-latch exit cost above: hysteresis stops the *desired* signal itself from flapping at the
+boundary; the exit cost still separately charges a bot for actually completing a stand-up once its
+desire is genuinely settled.
+
+`chooseBotStance` now has three live call sites — `bot-viewer-v2.html`, `bot-viewer-v2-camera.html`
+(the camera fork), and `environment-viewer-v2.html` (the env-viewer port) — each with its own decision
+seam. All three now set `sc.alreadyCrouched = <actor>.stanceLatch?.stance === STANCE_CROUCH`, reading
+from the **latch**, not the actor's post-override `.stance` field, so a UI force-override can't feed
+back into the auto hysteresis. Sliders (`seekCrouchHysteresisM`, `aimCrouchHysteresisM`) were added to
+the two files with a Stance panel (`bot-viewer-v2.html`, `bot-viewer-v2-camera.html`);
+`environment-viewer-v2.html` has no Stance panel yet, so it gets the module fix with no new UI, same as
+its current auto-only state for every other stance tunable.
+
+Found in passing, not fixed (out of scope for this change): the `crouchUpMs` panel tooltip still
+describes the wrong direction (says "dropping into a crouch"; the cost is actually for *leaving*
+crouch), and `bot-viewer-v2-camera.html`'s decision seam never sets `sc.evading`, so grenade-evade dash
+stance doesn't fire there.
 
 ### Why leaving a low stance costs time
 
@@ -3838,9 +5432,10 @@ doesn't keep a stale clock running.
 | `standUpMs` | `700` | Exit cost leaving prone. |
 | `crouchUpMs` | `220` | Exit cost leaving crouch. |
 | `proneMinHoldMs` | `1200` | Time a bot must ALREADY have been held before prone is justified. |
-| ~~unused~~ | | | A commanded hold must have at least this long left to justify going prone. |
 | `seekCrouchRadius` | `4` | m from the last-known point inside which a searching bot crouches. |
 | `aimCrouchDistance` | `8` | m: **beyond** this a stationary aiming bot crouches to steady the shot. |
+| `seekCrouchHysteresisM` | `1` | m: extra distance beyond `seekCrouchRadius` a crouched bot must clear before standing back up. |
+| `aimCrouchHysteresisM` | `1.5` | m: extra distance short of `aimCrouchDistance` a crouched bot must clear before standing back up. |
 
 RUN does not have its own speed factor — `stanceSpeedFactor` takes the caller's existing
 `botMovementSettings.runMultiplier`, so the run slider that was already in the panel stays the one
@@ -4117,7 +5712,7 @@ escarpment faces and plateau rims — intended, and it does not disconnect the m
 
 That 379 nearly saturated `CREST_DEFAULTS.maxRecords`, which was 400. Raised to 800, and
 `buildCornerMap` now returns **`crestCapped`** so truncation can't pass for "that's all the cover
-there is" — the viewer's `[cover bake]` line prints `[CREST CAP HIT -- terrain cover truncated]`.
+there is" — the viewer's `[rebuild <label>]` line prints `[CREST CAP HIT -- terrain cover truncated]`.
 
 ### Cost, stated plainly
 
@@ -4396,8 +5991,9 @@ that the descriptor gained a loadout/perception block the viewer reads generical
   550 ms later instead of standing through the tube reload → after a 2.5 s lull it re-shoulders the
   RPG and reloads it. Both guns are long, so whichever isn't in hand stows on the back.
 - **`closeRange: 10`** is a safety rule, not a preference: `detonateBlast` damages every bot inside
-  the radius **including the shooter**, and the RPG's blast is 8.2 m while weapon-linked standoff
-  would walk it to 13.5 m. Inside 10 m it fights with the rifle.
+  the radius **including the shooter** (now scaled by `blastExposure`, so a wall between them helps —
+  but at 10 m in the open there is rarely one), and the RPG's blast is 8.2 m while weapon-linked
+  standoff would walk it to 13.5 m. Inside 10 m it fights with the rifle.
 - **`bonusGrenades: 1`** on top of the global carried count, applied at spawn and by **Restock
   grenades** (which now re-reads each actor's role rather than flattening everyone to the slider).
 - Line role: `leadership: 1`, `support: false`. Insignia: orange warhead triangle.
@@ -5243,7 +6839,9 @@ const hold = resolveWeaponHold(mount.def, rec.stanceWeights, rec.carryBlend, _en
 
 Two axes, combined differently, exactly as the resolver documents. **Stance** (`rec.stanceWeights`,
 the eased `{crouch01, prone01}` that `applyStanceHeight` already computes for the rig) lerps the
-authored `thirdPersonHold`/`crouchHold`/`proneHold`. **Locomotion** is an additive delta eased on top
+authored `thirdPersonHold`/`crouchHold`/`proneHold`. The resolver also honours a `kneelHold`, but
+env-viewer-v2 never sets `kneel01`, so its bots stay on the three-stance path. **Locomotion** is an
+additive delta eased on top
 at `CARRY_BLEND_RATE` (9/s, ~180 ms). Two consequences worth knowing:
 
 - Bots now also get the **stance** holds, which environment-viewer-v2 never applied before. This is
@@ -5548,9 +7146,107 @@ inverse-scale anchors, shared-geometry cached, instancing-compatible. Full field
   general look) and `antenna` — composed via `botDesignWith(...)`; neither is wired to a role yet.
   `bot-viewer-v2.html` passes the spec in `createBotProceduralBody`; the dummy and the env-viewer
   bodies are untouched.
-- **`bot-design-studio.html`** — the iteration harness the spec is authored in: a WebGPU page
+  Also owns the **body-kind switch** (2026-08-01): `BOT_BODY_KINDS` / `getBotBodyKind()` /
+  `setBotBodyKind(kind)` pick between `armoured` (the Mark VII mech) and `soldier` (the clothed
+  human of `bot-human-body.js` in a plate carrier, pads and helmet), and `botDesignForRole()`
+  branches on it. It lives behind that one function because both viewers already reach the art
+  through it and nothing else, so they agree by construction. `setBotBodyKind` returns true only on
+  a real change, which is what tells a caller to pay for a rebuild. `SOLDIER_ROLE_DESIGNS` is the
+  soldier-side role table; full contract in `procedural-body-weapon-contracts.md`.
+- **`bot-body-versions.js` + `bot-bodies/`** — body and head as independent axes.
+  `composeBot(bodyKey, headKey, headOpts)` crosses `BOT_BODIES` (the bare rig, four frozen
+  snapshots of the design's history, then the live one) with `BOT_HEAD_KEYS` (`as authored`, the
+  human face, the helmets). The snapshots are copies taken out of `versions/` deliberately, so that
+  directory stays a manual undo history rather than an import path. Node-tested by
+  `test-bot-body-versions.mjs`, which checks all 24 combinations and that `as authored` is a true
+  identity — if it drifts, the frozen versions stop being trustworthy references.
+- **`bot-human-body.js`** — the clothed unarmoured body (`HUMAN_BODY_DESIGN`), registered as the
+  `human` branch of `BOT_BODIES` and headless by design so it must be paired with a head. Carries
+  the kit (`SOLDIER_PADS`, `PLATE_CARRIER`, `SOLDIER_PACK`) and, since 2026-08-01, the human-scale
+  role markers `SOLDIER_MEDIC_MARKS` / `SOLDIER_PACK_CROSS` / `SOLDIER_ANTENNA` / `SOLDIER_TUBES` —
+  `BOT_DESIGN_ADDONS` cannot be reused for these, being authored against the mech's 500 x 360 mm
+  chest block. All four are placed against PACK or CARRIER surfaces, so the composition guards on
+  the role actually carrying one. Trouser
+  and sleeve limb profiles, a matte non-glowing `cloth` uniform role, and belt/collar/cuff/boot-mouth
+  edge pieces. Driven by four rounds of adversarial critique; the wrong reads it shipped on the way
+  (wetsuit, cone, nappy, bobblehead, bracelet) are recorded in
+  `procedural-body-weapon-contracts.md`. Node-tested by `test-bot-body-versions.mjs`.
+- **`bot-face.js`** — a HUMAN head, as an alternative to the Mark VII helmet: skin-coloured skull,
+  sphere eyes with pupils and catchlights, a side-profile nose, lips, ears and a hair cap, plus
+  eight expression presets (neutral / determined / angry / shout / grin / worried / pain / dead)
+  driven by six numbers that generate the brow, lid and mouth outlines. It brings five material
+  roles with it — `skin` and `hair` are per-body tints the team colour never touches,
+  `sclera`/`pupil`/`mouth` are shared. `withHumanHead(design, opts)` and `withHelmet(design, helmet)`
+  swap heads by dropping every `anchor: 'head'` piece, carrying the skull fields along with the
+  gear. Also carries the **head kit** — `SOLDIER_HELMET`, `SUNGLASSES`, `FACE_MASK` and
+  `withHeadKit(design, { helmet, glasses, mask })`. **Wired into both viewers as of 2026-08-01**
+  through the body-kind switch, though the armoured bot is still the default. The kit reaches the
+  field only through `SOLDIER_ROLE_DESIGNS` in `bot-body-design.js` → `buildSoldierDesign` →
+  `botDesignForRole`, which is the single function both viewers call: rifleman and medic get the
+  helmet alone, technical helmet + mask, sniper helmet + glasses, and **squadleader the full kit —
+  helmet + glasses + mask** (2026-08-03), the only role that covers both the eyes and the mouth,
+  which is what makes it findable in a squad at a glance. Its `shout` expression still reads,
+  because expression drives the brows as well as the mouth and the brows sit above the lenses.
+  `test-bot-body-versions.mjs` asserts the per-role kit end to end — checking `bot-face.js` in
+  isolation says nothing about whether a bot on the field gets it.
+
+  Note when iterating: a page loaded before an edit to `SOLDIER_ROLE_DESIGNS` keeps serving the old
+  design, because `botDesignForRole` memoises per `kind|role` AND the browser caches the module. A
+  hard reload or a fresh `?v=` is required; a stale design renders perfectly and silently.
+
+  The helmet shell is a single `type: 'dome'` piece (2026-08-03) — a surface of revolution cut at a
+  per-azimuth height, so the bottom edge is a three-run staircase: flat over the brow at y 0.048, a
+  shelf over the ear at 0.035, and the nape at −0.026, level right through dead-centre. That
+  replaced a `lathe` plus a `helmetSkirt` box faking the rear drop plus a `helmetBrim` torus capping
+  the rim; both are deleted. Retention straps are GENERATED from the skull by `strapOnHead()` rather
+  than authored as boxes, and `strapAnchor` is computed between `headPoint()` and
+  `helmetEdgePoint()` so it tracks the rim table. Exports for that: `headPoint`, `headNormal`,
+  `helmetRimY`, `helmetEdgePoint`.
+
+  `SUNGLASSES` is two 80 × 46 mm plates rotated ±0.62 rad about Y, plus a nose bridge and temple
+  arms. 80 mm is the practical width ceiling: the plate is a flat chord against an elliptical face,
+  so widening it lifts BOTH ends off the head, and past ~90 mm the outer corner runs off the widest
+  part of the skull. Height is unconstrained, so growth goes there. `withHeadKit` DELETES the eye
+  pieces when `glasses` is on (`HIDDEN_BY_SHADES`: eyeballs, pupils, catchlights, lids) — the
+  eyeball stands 2.9 mm proud of the skull and the catchlight 3.5 mm proud of that, so any lens
+  close enough to read as glasses sits behind them. The eyeball is mostly sunk, so removing it
+  leaves skull surface rather than a hole.
+
+  `mask` splits the nose instead of hiding it (`splitNoseForMask`). The ridge runs 16 mm below the
+  gaiter's top hem and stands 4.5 mm proud of the cloth at its tip, so a masked head used to show a
+  skin-coloured nose poking through. The extrusion outline is Sutherland–Hodgman clipped at
+  `MASK_TOP_Y` into `noseTop` (`skin`) and `noseMasked` (`cloth`), overlapping by `NOSE_SEAM` either
+  side of the cut so no gap opens at the join. Pulling the nose back instead is not an option —
+  above the hem it is the face's strongest feature and shortening it flattens the profile.
+
+  Helmet **and** mask together use `SOLDIER_HELMET_MASKED` instead of `SOLDIER_HELMET`. The straps
+  are solved onto the SKULL and the gaiter stands 5–13 mm off the skull, so the whole retention
+  system used to be inside the cloth: chin legs 8 mm in at the inner face, rear legs 5 mm, chin cup
+  21 mm in and completely invisible. The cloth surface is exported as `maskRadius(y)` /
+  `maskDepth(p)` / `maskStandoff(y)` (declared above the strap section, and `FACE_MASK` is built
+  from the same constants so the two cannot drift). `soldierStraps(overMask)` regenerates the whole
+  assembly against it: `standoffAt()` steps each sample out until a plate of that thickness keeps
+  its INNER face clear, then `liftOffsets()` re-tests every chord midpoint and raises both ends of
+  any segment still cutting in — a straight segment between two cleared points still sags into a
+  convex surface — repeating until a pass moves nothing. Straps end up 5–10 mm further out; the top
+  of the front leg, which runs above the hem, does not move. The chin cup is a 32 mm-deep box whose
+  back is buried by design, so it is not lifted by the same test but shifted straight out by
+  `HEAD_Z_SCALE * maskStandoff(y)`, keeping the 3.9 mm of proudness it has against bare skin.
+
+  Node-tested by `test-bot-face.mjs`, whose real job is checking every
+  forward feature clears the skull ELLIPSE (`headSurfaceZ`), not the lathe radius. Authoring traps
+  and the failed first attempts are in `procedural-body-weapon-contracts.md`.
+- **`bot-design-studio.html`** — **how to run a session is in `design-studio.md`**; what follows is
+  the module's place in the system. The iteration harness the spec is authored in: a WebGPU page
   rendering design variants side by side through the same `createVisualSystem` bot materials and
-  themes as bot-viewer-v2, driven from the console or browser automation rather than sliders.
+  themes as bot-viewer-v2, driven either from its own control panel or from the console/browser
+  automation. The panel gives sliders, number entries, dropdowns and colour pickers over every gear
+  descriptor field plus the chassis proportions, with multi-select (list, `role:`/`anchor:`/`type:`/
+  `id:` filter tokens, shift and ctrl ranges), per-field group semantics, undo, and Copy gear JS /
+  Copy diff for pasting the result back into `bot-body-design.js`. A Head section switches between
+  the human head (`bot-face.js`) and the helmets and picks the expression, skin tone and hair
+  colour. Slot 0 is the editable copy and the rest stay on the shipped design as a reference. Details and the three rig constraints the
+  panel is built around are in `procedural-body-weapon-contracts.md`.
   `window.__studio` API: `setSlots` (each slot takes `design`, `style`, `weapon`), `setAnim`
   (idle/walk/run/crouch/prone plus `aim*` variants), `setTheme`, camera presets, `setPaused`,
   `showLabels`, and — the two that make close review possible — `focusPart(name, {dir, side})`,
@@ -5707,3 +7403,2185 @@ false` guard (bot-viewer-v2.html :7970), which the env wrapper was missing.
 
 **Verified:** the extracted module script passes `node --check`; all 29 `test-bot-*.mjs` plus
 `test-nav-grid`, `test-nav-visibility`, `test-nav-corners` and `test-nav-connect` pass (33/33).
+
+## Trace-viewer live bridge (2026-07-31)
+
+`bot-trace-viewer.html` is now shared by both apps: it streams from `bot-viewer-v2.html` (the
+harness) *and* from `environment-viewer-v2.html` (the game) over the same contract, unmodified. Only
+one may be streaming at a time — the channel has no sender id, so two live senders would interleave
+rows from two different arenas into one map.
+
+**Contract** (channel `bot-trace-live`, same-origin `BroadcastChannel`, no server):
+
+| Direction | Message | When |
+|---|---|---|
+| viewer → game | `{type:'hello'}` | the viewer's `○ live` button is switched on |
+| game → viewer | `{type:'snapshot', world, startedAt, hidden, rows, events}` | answer to `hello`; `rows`/`events` replay the last `BOT_LIVE_BACKLOG` (4000) |
+| game → viewer | `{type:'rows', rows}` / `{type:'events', events}` | one batched message per frame, from `botLiveFlush()` |
+| game → viewer | `{type:'world', world}` | the arena was rebuilt under the viewer |
+| game → viewer | `{type:'vis', hidden}` | `visibilitychange` — rAF does not run for a hidden tab, so the sim genuinely pauses |
+| viewer → game | `{type:'select', id}` | trace-viewer's "Go to bot viewer" button (aside, next to "Selected bot") |
+| game → viewer | `{type:'selected', id}` | ctrl-click on a bot in the 3D scene |
+
+Rows are the tracer's own change-triggered + heartbeat samples; `test-trace-viewer-row-parity.mjs`
+pins the field names, and env's `pushBotTraceRow` emits all 22 of them.
+
+**Cross-viewer selection (2026-08-02).** The `select`/`selected` pair syncs a single "selected bot"
+between the two tabs, independent of camera state and simulation binding:
+
+- Trace-viewer "Go to bot viewer" (enabled only while `liveOn && selected`) sends `{type:'select', id}`.
+  `bot-viewer-v2.html`'s `botLiveOpen()` handler looks the id up in `botActorById` and, if found, calls
+  `setSelectedBot(actor)` (visual only) *and* `setCameraMode(CAMERA_FOLLOW, actor)` — the same transition
+  a plain click on that bot already performs.
+- Ctrl-click on a bot in `bot-viewer-v2.html` (`renderer.domElement`'s existing `click` listener, ahead
+  of the plain-click camera branch) calls `setSelectedBot(picked)` and broadcasts `{type:'selected', id}`
+  without moving the camera — plain click already owns camera-follow/POV, ctrl-click is a separate,
+  additive gesture. The trace-viewer's `ingestLive()` mirrors it onto `selected` and redraws, reusing the
+  exact `buildBotList(); renderDetail(); draw();` triad its own click handlers use.
+- The selected bot gets a glowing silver diamond above its head in `bot-viewer-v2.html`
+  (`selectionMark`, `updateSelectionMark()`), built and animated exactly like the existing POV spot
+  marker (`povSpotMark`): billboarded to the camera, stacked above the state orb/insignia/alert mark via
+  `BOT_STATE_ORB_LIFT`, with the same slow sine-pulse opacity/scale. `selectedBotActor` is cleared
+  wherever `botDebugFocusActor` already is (`removeAllBots`, `cullDeadBots`, `clearDeadBotActors`), so it
+  can never point at a disposed actor.
+- **Harness-only for now:** `environment-viewer-v2.html` (the game) only ever sends on this channel — it
+  has no handler for an inbound `select` message, so "Go to" has no effect when the game, not
+  `bot-viewer-v2.html`, is the live sender. Ctrl-click is a `bot-viewer-v2.html`-only gesture; there's no
+  equivalent picker wired up in the game.
+
+**Global hotkeys (`bot-viewer-v2.html`, 2026-08-03).** Bound in the same top-level `keydown` listener
+as camera hotkeys F/O/V/G, guarded by the same "not typing in an input" check:
+
+| Key | Action |
+|---|---|
+| H | `toggleBotStateCapture()` — start an all-bots take; press again to stop and save the TSV |
+| L | `liveStreamBtn.click()` — same toggle as the **Live map** button (also starts recording if it wasn't running) |
+| P | `setCameraMode(CAMERA_POV)` — alias for V |
+| J | `copyRecentBotStateLog(10000)` — copy just the last 10s of the state log to the clipboard |
+| Y | `togglePerfLog()` — start a per-frame perf take; press again to stop and copy the TSV |
+
+`copyRecentBotStateLog` filters `botStateRecordLines` by parsing each line's `[MM:SS.mmm]` elapsed
+stamp back to milliseconds (`parseBotRecordTimestampMs`, the inverse of `formatBotRecordTimestamp` —
+lines only carry the formatted string, not a raw number) and comparing against `performance.now() -
+botStateRecordStartedAt`. It swaps the filtered text into `botStateRecordView` to copy it (same
+temporary-swap idiom as `copyTraceBtn`, since the filtered window differs from what's already
+displayed), then resets `botStateRecordRenderedCount` so the next flush repaints the full live log.
+
+**Env side** (`environment-viewer-v2.html`):
+
+- `ensureBotTracer()` is the single idempotent tracer start. `?botTrace=1` awaits it at startup; the
+  **Live map** button in the Combat Bots panel awaits it on first toggle, so live streaming works
+  without the URL flag. `botTraceOn` (not `BOT_TRACE`) now gates the per-tick tracer calls and the
+  string-building `patrolDebug` stamps that feed `window.botProbe`.
+- `botWorldMeta()` is built from env's own bake, not the harness's globals:
+  - `bounds` from the live `botNavGrid` extent (on terrain the grid **is** the combat zone) with
+    `loadedMap.bounds` as the fallback.
+  - `walls` / `covers` — env keeps one `botSightRects` list where the harness keeps two, so height
+    splits it: top ≥ `BOT_LIVE_WALL_H` (2.0 m, above a standing bot) draws as wall, below as cover.
+  - `heights` from `botNavGrid.heights` (already baked; re-sampling `terrainHeight` would mean tens
+    of thousands of collider raycasts), downsampled to 192 on the long axis. Shoot-house reports
+    `flat: true` because its floors are flat by construction.
+  - `regions` — the harness's byte-per-cell base64 encoding, unchanged, so the viewer's
+    fragmentation readout decodes it directly.
+  - `patrolPoints` from `botPatrolRing`, falling back to `botSpawnPoints`.
+- Events come from `bumpBotCombatCounters` — the one choke point every bullet, knife and blast hit
+  passes through — as `kill` / `damage` rows in the harness's shape. Inert unless the tracer or the
+  live map is on. (The viewer does not draw them yet; it derives deaths from the `D` state slot.)
+- `botLiveFlush()` is called exactly once per frame, at the tail of `updateBots()`;
+  `botLiveAnnounceWorld()` fires from `adoptBotNavGrid()` when a zone rebake swaps the grid.
+
+## Below-terrain floor rescue (2026-08-03, `bot-entity.js` + `bot-viewer-v2.html`)
+
+Fixes the physics half of BB-004 (`docs/bot-bugs-log.md`): a bot whose capsule ends up under the
+ground stays there indefinitely, and because everything that gates combat on distance
+(`selectBotTarget`'s `distanceSq > sightSq`, LOS, alerts) measures **3D** distance off the same
+capsule, that bot silently becomes unkillable and blind while still patrolling normally.
+
+**Why it persisted.** `bot-viewer-v2.html`'s generated terrain (`buildFloorMesh`) is a single thin
+displaced sheet with a flat catch slab under it, so nothing that clips through falls forever. The
+slab is real collision geometry: `mapCollider.resolveCapsule` re-grounds a tunnelled capsule on it
+and reports `grounded: true`. Nothing then moved it back up — the viewer has no `lastSafePos`
+fall-catch (that lives in `environment-viewer-v2.html`, and it only triggers while `!onFloor`
+anyway). The bug is also nearly invisible: `player-procedural-body.js` recomputes the visible body's
+height from `terrainHeight(x,z)` whenever `onFloor` is true, so the rig renders as if standing
+correctly. Only the weapon mount and the per-bot facing indicator — which read
+`bot.capsule.start.y`/the capsule midpoint directly — show the real position.
+
+**The rescue.** `stepBotPhysics` takes a new option, `rescueHeightAt(x, z)`. When supplied, and
+only in the `mapCollider` branch, it compares the capsule's rest height (`start.y`) against
+`rescueHeightAt(x,z) + capsule.radius` immediately after `bot.onFloor = contact.grounded`. If the
+capsule is more than `FLOOR_RESCUE_DEPTH` (0.75 m, exported) under that, both endpoints are lifted
+by the same delta (preserving capsule height), a negative `velocity.y` is zeroed, `onFloor` is
+forced true, `bot.floorRescues` (initialised to 0 by `createBotEntity`) is incremented, and one
+`console.warn` names the bot, the depth and the XZ.
+
+Design points worth not re-deriving:
+
+- **It is a separate option from `heightAt`, deliberately.** `heightAt` is the no-collider ground
+  snap and at least one caller (`environment-viewer-v2.html`) passes a height function that returns
+  the **topmost** surface at (x,z). Reusing the name would have opted that caller in automatically
+  and teleported bots standing legitimately indoors up onto the roof. Callers that pass neither
+  option see byte-for-byte the old behaviour.
+- **Reference height, not a raycast.** `bot-viewer-v2.html` passes `groundHeight` (i.e.
+  `terrainField.heightAt`), the same O(1) baked field the terrain mesh is generated from, so the two
+  agree by construction. `mapCollider.raycastDown` cannot even detect this failure — cast from a
+  capsule already below the sheet it hits the catch slab and reports "ground found."
+- **Threshold.** 0.75 m sits above the worst legitimate deviation (capsule-vs-slope geometry at
+  `slopeLimitY = 0.5` is ~0.15 m and pushes the capsule *up*, not down; the real budget is
+  mesh-vs-field interpolation slack, estimated at well under 0.35 m) and below the ≥ 1.00 m deficit
+  guaranteed by a catch-slab rest. `TERRAIN_CATCH_SLAB_DROP` (1.0 m) and
+  `TERRAIN_CATCH_SLAB_THICKNESS` (0.1 m) in `bot-viewer-v2.html` name what used to be a bare
+  `lowest - 1.05` literal; the drop must stay comfortably above `FLOOR_RESCUE_DEPTH` or a slab rest
+  reads as legitimate slope deviation and becomes undetectable.
+- **Not gated on `onFloor`.** No legitimate state puts a bot's feet 0.75 m under the height field,
+  grounded or falling, and the ungated form also catches a capsule that tunnels the (0.1 m) slab
+  itself and would otherwise free-fall forever — the shape the 072210 trace analysis in
+  `bot-bugs-log.md` reconstructed from `target_dist`.
+
+**Wired at:** both `bot-viewer-v2.html` call sites — the hoisted `_updateBotPhysOpts` for the main
+roster and the dummy-target loop, both passing `rescueHeightAt: groundHeight`.
+
+**Not wired in `environment-viewer-v2.html`, on purpose.** Its `mapCollider` exists only for
+authored maps, where `terrainHeight` is a top-down `mapCollider.raycastDown` returning the highest
+surface — under a roof, lintel or mezzanine deck that is metres above the floor a bot is legitimately
+standing on, so opting in would yank indoor bots onto rooftops. It also has no catch slab (a bot that
+tunnels the authored floor free-falls into empty space) and already recovers that case via
+`rec.lastSafePos` / `BOT_FALL_CATCH_DROP_M`. On procedural terrain it never builds a `mapCollider` at
+all and runs the `heightAt` snap, which re-grounds every frame and cannot tunnel. Wiring it would need
+a true ground-height function that is not `terrainHeight`.
+
+**Not addressed here:** what makes a capsule tunnel the sheet in the first place. That is a separate,
+still-unconfirmed question (swept/continuous collision, step size, push-out interactions); this change
+only guarantees the state is recovered rather than permanent.
+
+**Tests:** `node test-bot-entity-rescue.mjs` (34 checks) — lift/velocity/counter on a grounded
+under-terrain capsule, the 0.74/0.76 m threshold boundary, no-op when `rescueHeightAt` is omitted, the
+`heightAt` fallback path unchanged with and without the new option, the ungrounded free-fall case, a
+settled bot not re-triggering, a NaN reference height being a no-op, and the warn throttle below. It
+stubs `three/addons/math/Capsule.js` through `node:module`'s `registerHooks`, because this repo's local
+`three` install ships empty `examples/jsm` files (the browser loads addons from a CDN importmap).
+
+**Warn throttle + on-screen banner (2026-08-03, later).** Review flagged that the rescue's
+`console.warn` had no throttle: if the still-unidentified tunnelling trigger ever turns out to be a
+*persistent* condition (a bot stuck re-tunnelling the same seam every frame) rather than a rare
+one-off, it would log every frame indefinitely. `bot.floorRescueWarnAt` is a per-bot, dt-banked
+cooldown (`FLOOR_RESCUE_WARN_COOLDOWN_S`, 3 s) that gates only the `console.warn` — the lift itself is
+never throttled, so every rescue still corrects the capsule and increments `floorRescues` immediately,
+whether or not it logs. Banked by `dt` rather than a wall clock so the throttle stays exactly as
+Node-testable as the rescue itself.
+
+Because a throttled warning can no longer be trusted to surface every occurrence, `bot-viewer-v2.html`
+now mirrors `updateNavWarnBanner`'s "stays on screen while load-bearing" pattern for this too: a new
+`#floorwarn` HUD element (same row as `#navwarn`/`#fps`/`#score`, DOM writes only on text change) reads
+`floorRescues`/`floorRescueWarnAt` across `botActors` each frame via `updateFloorRescueBanner()`. It
+shows the count of bots currently within a rescue's cooldown window (i.e. rescued in roughly the last
+`FLOOR_RESCUE_WARN_COOLDOWN_S` seconds) in an urgent orange-red, falling back to a quieter blue
+"N recovered this session" once nothing is actively re-triggering. Scoped to `botActors` only — the
+dummy targets also pass `rescueHeightAt` (so they're rescued and covered by the same warn throttle)
+but are not counted in the banner.
+
+## Terrain-tunnelling forensic ring (2026-08-04, `bot-forensics.js` + `bot-entity.js` + `bot-viewer-v2.html`)
+
+The rescue above makes a below-terrain capsule transient instead of permanent. It does **not** say why
+the capsule crosses the sheet in the first place, and that is still unknown. This is the instrumentation
+for answering it from real data: a fixed-size ring of the physics leading *into* each fall, exportable
+as TSV with one keystroke.
+
+**Schema.** One `ArrayBuffer` with a `Float32Array` and an `Int32Array` over the same memory,
+interleaved, stride 12 fields. `FORENSIC_RING = 1024` samples per slot (~17 s at 60 fps, at least 10 s
+up to ~100 fps), `FORENSIC_MAX_SLOTS = 128`, so 6.29 MB, allocated once at creation and never grown.
+Index of sample `p` of slot `s`, field `f` is `((s * ring + p) * 12) + f`. Per-slot metadata (`ids`,
+`radius`, `writeIdx`, `count`) is written only on assign/release, never per frame.
+
+| Field | View | Meaning |
+|---|---|---|
+| `t` | Int32 | ms, from `setNow(ms)` — one clock read per frame for the whole roster, not `performance.now()` per bot |
+| `dtMs` | f32 | the clamped `dt` actually passed into `stepBotPhysics` |
+| `preY` | f32 | `capsule.start.y` at entry, before gravity/translate |
+| `postY` | f32 | `capsule.start.y` at exit, after collider + rescue |
+| `velY` | f32 | `velocity.y` after the gravity increment — latched **before** the rescue zeroes it |
+| `groundY` | f32 | the `rescueHeightAt`/`heightAt` reading already made this frame; NaN when neither ran |
+| `x`, `z`, `velX`, `velZ` | f32 | post-step position and horizontal velocity |
+| `stateKey` | **Int32** | the packed 9-slot FSM key, stamped every frame regardless of the state recorder (see below); -1 only before a bot's first `commitBotActor` this session |
+| `flags` | Int32 | bit0 `onFloorIn`, bit1 `groundedRaw`, bit2 `onFloorOut`, bit3 `rescued`, bit4 `hasCollider`, bit5 `hasGroundRef` |
+
+**`stateKey` must stay in the Int32 view.** The packed key from `bot-state-code.js` is
+`STATE(13) x TIER(5) x SCORE(10) x ROLE(2) x ELEMENT(3) x AMMO(7) x HEALTH(5) x PACK(10) x LATCH(32)`
+= 43,680,000 combinations, so its real maximum is **43,679,999**. Float32 represents integers exactly
+only up to 2^24 = 16,777,216, so putting the key in the float view would silently corrupt real,
+reachable state combinations — not a theoretical risk. `test-bot-forensics.mjs` case 6 exists purely to
+fail a future refactor that moves it. (`t` as Int32 ms wraps after ~24 days of continuous uptime;
+irrelevant for a real session.)
+
+**`stateKey` is stamped unconditionally, not gated on the state recorder.** The key is packed once per
+actor per frame inside `botStateDescriptor` (`bot-viewer-v2.html`), which is cheap — reused scratch
+objects only, no allocation, no DOM work. It was originally reachable only through
+`botStateRecording`-gated call paths, so a user who saw the `#floorwarn` banner and pressed `Shift+J`
+without having separately turned on state recording got `state_key = -1` on every row, in exactly the
+reactive workflow the feature exists to serve. Two independent reviews of the first cut caught this.
+Fix: `commitBotActor` (the single per-live-bot-per-frame commit point, after every per-frame global has
+landed on the actor) now calls `botStateDescriptor` directly and unconditionally, below the
+`botStateRecording` gate rather than through it; `traceBotStateCode` still runs only when recording is
+on and ends up computing the same key a second time in that case, which is accepted as cheap redundancy
+rather than restructured away. Dummy targets never call `commitBotActor`, so their `state_key` stays -1
+— expected, since they carry no FSM state to encode.
+
+**Derived only at export time**, never stored per sample:
+
+- `gap = ground_y + radius - post_y` — exactly the quantity the rescue thresholds against
+  (`FLOOR_RESCUE_DEPTH`, 0.75 m). The frame where `gap` crosses it is the frame the rescue fired.
+- `ext_dy = pre_y[n] - post_y[n-1]` — **the key forensic column.** Nonzero means something *outside*
+  `stepBotPhysics` moved the capsule between frames (the pair-pushout re-resolve in `updateAllBots`,
+  stance capsule scaling, a teleport). Zero while `post_y` still dives means the integrator itself
+  stepped through the sheet in one frame. Those are different bugs with different fixes.
+- `speed_xz` — `hypot(vel_x, vel_z)`.
+
+Deliberately excluded: `navRegion` (derivable offline from x/z, and already in `botStateTrace` at 1 Hz),
+BVH contact detail beyond `grounded` (`map-collision.js`'s `resolveCapsule` does not expose more), and a
+running `floorRescues` total (reconstructable from the `rescued` bits).
+
+**Why the sample is taken inside `stepBotPhysics`.** That is the only place `preY`, the integrated
+`velY` *before* the rescue zeroes it, the raw `contact.grounded` *before* the rescue forces `onFloor`
+true, and the already-computed ground reference all exist at once. Sampling from the caller would need a
+second ground-height call per bot per frame and would lose the two pre-rescue values outright. The
+function latches those locals where their value still exists and makes exactly one `forensics.sample(...)`
+call at the end; with the option absent, behaviour is unchanged (`test-bot-forensics.mjs` case 3 proves
+it by twin comparison across six branch shapes, and `test-bot-entity-rescue.mjs` still passes 34/34).
+
+**Recording is continuous for every live bot from its first physics step.** Slot assignment is
+lazy-on-first-sample, but recording is *not* gated on "has this bot been rescued before" — that would
+mean a bot's first fall, the one nobody has diagnosed, is the one case with no captured lead-up. Slots
+are released in `disposeBotActor` (the choke point `removeAllBots`, `cullDeadBots` and
+`clearDeadBotActors` all funnel through) and in `removeDummy`; reassignment zeroes the ring counters so
+a recycled slot carries no ghost history, and an `ids[slot] !== bot.id` guard reassigns rather than
+letting one bot write into another's ring after a missed release. Past 128 concurrent entities a bot
+gets `forensicSlot = -1`, `stats.droppedBots` increments once, and sampling for it no-ops — it never
+throws, and the sentinel is sticky so the counter stays a count of bots, not of frames.
+
+**Rescue auto-freeze.** A 17-second ring is useless if the take is overwritten before anyone reaches for
+it. On any sample carrying the `rescued` bit, if no take is already pending, the whole slot ring is
+copied into one preallocated 48 KB snapshot buffer (a single `TypedArray.set`) and marked pending.
+Policy is **first unexported rescue wins**; exporting re-arms it. Later rescues while a take is pending
+still move `lastRescue`, and the live ring keeps recording independently and stays separately
+exportable. That also rate-limits the copy automatically: a bot re-tunnelling every frame costs one
+memcpy total until the pending take is collected.
+
+**Retrieval.** `Shift+J` copies the forensics. Plain `J` is unchanged (last 10 s of the state log) — the
+existing `KeyJ` handler had no `shiftKey` check, so `Shift+J` was free. `KeyY`/`Shift+Y` (perf log) are
+untouched. Scope resolves in priority order:
+
+1. the pending frozen take, if one exists (the normal case — the `#floorwarn` banner appends
+   `forensic take ready: <bot-id> — Shift+J` while one is pending, so the warning says what to press);
+2. else the live ring of the most recently rescued bot;
+3. else the live ring of the focused bot (`botDebugFocusActor ?? selectedBotActor ?? activeBotActor`).
+
+Two buttons in the **State recorder** panel do the same thing — "Copy fall forensics (Shift+J)" (the
+full ladder) and "Copy live ring (focused bot)" (step 3 only, for a bot that never fell). Output is TSV
+staged through `perfLogCopy`, the same off-screen-textarea idiom the perf log uses, so the visible
+state-log textarea is not clobbered; `#`-prefixed header lines carry bot id, slot, radius, capture time,
+sample count and a legend for `gap`/`ext_dy`, matching the existing perf-log/trace export style. A NaN
+`ground_y` renders as a blank cell, never the string `NaN`.
+
+**Reading a take.** Three shapes to look for first, in this order:
+
+1. **A `dt_ms` spike** on or just before the dive — a stall long enough that one gravity step crosses
+   the sheet. Cross-check against the perf log's worst-frames list.
+2. **A nonzero `ext_dy`** on the dive frame — the capsule was moved by something other than the
+   integrator (the pair pushout re-resolving against walls, stance scaling), so the fix is there, not
+   in the physics step.
+3. **`x`/`z` clustering** across several takes — repeated falls at the same coordinates point at a seam
+   or hole in the collision mesh rather than at a timing/velocity condition.
+
+**Perf validation (for the project owner to run — no in-browser number is claimed here).** `?forensics=0`
+disables the recorder entirely: it stays `null`, `_updateBotPhysOpts` never gets a `forensics` property,
+and `stepBotPhysics` runs its exact pre-existing code path. That is the A/B control arm. Protocol:
+
+- Same seeded Test-condition maze in both arms (`mazeSeed = 1337`; the `?autoprofile=1&proflayout=maze`
+  path sets up the same fixed-seed maze if you would rather have it driven).
+- Fixed ~90-bot roster, auto-add **off**, so the roster cannot drift between runs.
+- Three ~60 s takes per arm: `Y` to start the per-frame perf log, `Shift+Y` to stop with the summary.
+- Compare the `sim` row's median and p90 from that summary, arm against arm.
+- **Pass:** sim-phase median delta at most 0.2 ms and no consistent p90 growth above 0.5 ms across all
+  three pairs. **Fail (investigate before relying on it):** a 0.3 ms or larger median regression in all
+  three pairs.
+
+A Node microbenchmark of the write path alone (90 bots x 20,000 frames) measured ~4 us per 90-bot frame
+with zero retained heap growth. That is a sanity check that the write path does not allocate — it is
+**not** a browser measurement and does not answer the question the protocol above answers.
+
+**Not wired in `environment-viewer-v2.html`,** consistent with the floor-rescue section above: it
+deliberately does not pass `rescueHeightAt`, has no catch slab, already has its own `lastSafePos` fall
+recovery, and on procedural terrain never builds a `mapCollider` at all. The `forensics` option is
+available to it for free if that ever changes.
+
+**Tests:** `node test-bot-forensics.mjs` (81 checks) — buffer sizing and shared views, slot
+assign/release/recycle and the stale-slot guard, the six-shape zero-behaviour-change twin comparison,
+per-field sample correctness on both ground branches, the rescue frame plus freeze policy (including
+that `grounded_raw` still separates a catch-slab rest from an uncaught free fall after the rescue has
+forced `onFloor` true), Int32 key
+fidelity at 43,679,999 and 2^25+1, ring wrap ordering, TSV shape and every derived column, slot
+exhaustion, and the `dt = 0` / NaN-ground / no-`setNow` edge cases. Same `registerHooks` Capsule stub as
+`test-bot-entity-rescue.mjs`.
+
+## Perf remediation phases 0-B and 1-B (2026-08-04, `bot-viewer-v2.html`)
+
+Workstream B of the two-agent pass described in
+`docs/superpowers/plans/2026-08-04-bot-viewer-v2-perf-remediation-plan.md`. Evidence lives in
+`docs/superpowers/reviews/2026-08-04-bot-viewer-v2-perf-findings.md`. Nothing here changes a visual
+default; every new knob is opt-in and defaults to the exact pre-existing behaviour.
+
+### Phase 0-B — fix the instrument, install the A/B levers
+
+**`frameProf.beginFrame()` is now the first statement of the animation loop.** It has to precede
+every `frameProf.time(...)` call, otherwise a timer that was already zeroed gets zeroed again after
+recording. Without it, a phase that does not run on a given frame reported the *previous* frame's
+value rather than 0, so conditionally-executed phases carried stale data into every comparison. This
+is paired with a `frame-profiler.js` change that makes `beginFrame()` zero every recorded name
+rather than only the environment viewer's `DEFAULT_NAMES` — **both halves have now landed**, so a
+phase that skips a frame reads 0 here rather than the previous frame's value. Smoothed
+(`{ smooth: true }`) values are deliberately not zeroed, so the HUD keeps its EMA.
+
+Ordering matters as a result. The `?prof=1` HUD reads `snapshot(..., { smooth: true })`, which
+`beginFrame()` never touches, and `perfLogSample` reads unsmoothed *after* the render await, so both
+see real values. Any future unsmoothed `snapshot()` placed before the timed work would read zeros.
+
+`body-part-batches.js` gained a matching lifecycle in the same pass: a bucket is hidden the frame it
+goes empty and evicted after 120 consecutive flushed empty frames, with the shared geometry never
+disposed and the next `add()` rebuilding it. That is what makes a **global** rbox LOD swap
+subtractive instead of additive — the seg=3 buckets actually go away rather than sitting alongside
+the seg=1 ones, which is why the earlier per-distance LOD lost. Note that hiding alone does not move
+the `draws` column: at r0.184 an `InstancedMesh` with `count === 0` already issued no draw call.
+Hiding saves render-list and bind-group work in `rnd`; **eviction** is what fixes the LOD arithmetic.
+
+**Three renderer-construction URL params**, at the `WebGPURenderer` construction site:
+
+| Param | Effect | Default |
+|---|---|---|
+| `?dpr=<n>` | `setPixelRatio(Math.min(devicePixelRatio, n))` | uncapped `devicePixelRatio` |
+| `?msaa=0` | `antialias: false` | `antialias: true` |
+| `?shadowfilter=pcfsoft\|pcf\|basic` | `renderer.shadowMap.type` | `PCFSoftShadowMap` |
+
+These exist because the findings' A/B sequence cannot be run without them: `antialias` is a
+construction option, so it can never be an in-game toggle — the same reason `?prof=1` exists for
+`trackTimestamp`. `BasicShadowMap` is `0`, so the lookup uses `??` rather than `||`; `|| ` would
+silently fall back to PCFSoft for exactly the cheapest arm. Unknown values fall back to the default.
+
+**`devicePixelRatio` is logged.** It goes to the console at boot alongside the msaa/dpr/shadow state,
+and a second header line in `perfLogHeader()` records `devicePixelRatio`, the actual render buffer
+ratio (`renderer.getPixelRatio()`, which differs when `?dpr` caps it), msaa and the shadow filter.
+Fill cost scales with the square of the pixel ratio, so this single unknown moved the size of the
+fill-rate finding by up to 4x and made takes from different machines silently incomparable. No
+`PERF_LOG_COLS` change — this is header text, not a column.
+
+### Phase 1-B — five confirmed structural fixes
+
+1. **`updateNavPathLine` no longer allocates per frame.** It used to `dispose()` the line geometry
+   and build a new one from N fresh `Vector3`s every frame the nav overlay was up. Now a
+   fixed-capacity `Float32Array` position attribute (`NAV_PATH_MAX_POINTS = 256`, `DynamicDrawUsage`)
+   is written in place with `addUpdateRange` + `setDrawRange`. `frustumCulled = false`, matching
+   `navPoints`, because the buffer's extent changes per frame and the bounding sphere is never
+   recomputed. Off at defaults, so it costs nothing in the current takes — the point is that GC
+   pauses tip frames on a 60 Hz vsync ladder, and the perf log's `gap` column is the regression watch.
+2. **FOV wedge geometry is cached and shared.** `fovWedgeGeometry(deg)` memoizes on the *rounded*
+   degree in a module-level `Map`, which is all the segment count resolves anyway. Previously each
+   actor minted its own `BufferGeometry` and every bot disposed-and-rebuilt it on each FOV slider
+   change, so a drag churned 25 geometries per step. `userData.builtDeg` now stores the rounded
+   degree so the comparison matches the cache key. **`disposeBotActor` no longer disposes
+   `fovWedge.geometry`** — it is shared now, and disposing it would pull the geometry out from under
+   every other living bot.
+3. **`botVoiceIdentities` entries are released** in `disposeBotActor`. Safe because
+   `voiceIdentity(entity.id, team)` is deterministic: a revived or respawned bot with the same id
+   re-derives the identical voice. Memory only; the map is never iterated per frame.
+4. **Static map geometry stops recomputing its local matrix.** `matrixAutoUpdate = false` plus one
+   `updateMatrix()` at creation in `box()`, `instancedBoxes()` and the terrain mesh. `applyLayout`
+   tears `mapRoot` down and rebuilds it, so nothing static ever moves after creation; `mapRoot`
+   itself is never transformed either.
+5. **The one unbudgeted nav call is now budgeted.** `choosePatrolResumeGoal` ran
+   `floodFill(navGrid, start, {})` — an unbounded Dijkstra over the whole grid — with no cooldown, no
+   cap and no share of `REPLAN_BUDGET_PER_FRAME`, while every other nav call goes through
+   `requestPathBudgeted`. It now charges `PATROL_RESUME_REPLAN_COST = 4` budget units (a whole-grid
+   flood is worth several A* searches) and respects the same per-entity `nextReplanAt` cooldown.
+
+   **Refusal has to be retried, not swallowed.** `finishInvestigation` is the only caller and is
+   never re-entered, so a dropped re-entry goal would silently downgrade the bot to
+   `patrolPoints[patrolIdx]` — often a waypoint behind it. Refusal therefore sets
+   `activeBotActor.patrolResumePending`, and `updatePatrolMovement` retries the call on its next
+   think tick while no resume goal is held. A *served* call clears the flag whether or not it found a
+   goal, so a genuine "no reachable patrol point" answer terminates instead of re-flooding. The
+   observable cost is a re-entry goal arriving a few hundred ms late — the same throttle every other
+   nav call already lives under.
+
+   `maxRadius` was considered (`nav-grid.js:479` supports it) and **deliberately not used**: the
+   band is an axis-aligned box around the start cell, so any radius small enough to save work can
+   clip a route that legitimately detours outside the box, and a radius large enough to keep every
+   patrol point reachable is the whole grid. It would buy nothing and risk silently dropping distant
+   patrol points in a maze.
+
+   This is insurance against map growth, not a present-tense win. Grid cells are a fixed 0.5 m, so
+   doubling map size quadruples the node count; at the current map size the call is cheap.
+
+**Verification:** the module block parses under Node. There are no Node test targets for these
+in-file paths. Owner QA: nav overlay on (`updateNavPathLine`), FOV slider drag with the wedge on,
+medic revive (voice identity), and a patrol resume after combat ends.
+
+### Phase 3-B — the global rbox LOD mode (`?rboxlod=2`)
+
+`rboxlod` is now a **three-state mode**, not a boolean: `0` off (default), `1` per-distance, `2`
+global. `BOT_RBOX_LOD` holds the mode number, clamped to 0-2 at parse so a typo cannot land in a
+half-state. The panel button (`Armour LOD: …`) cycles `Off → 15 m → 25 m → 40 m → 60 m → Global` and
+tracks its position by index rather than by looking up the current distance, since the global step
+has no distance to look up.
+
+**Why global is a different thing from far.** A per-distance LOD is inherently *additive* while the
+bot population is mixed: near bots keep filling seg=3 buckets while far bots fill seg=1 buckets, so
+both geometries are live at once and the rbox bucket count roughly doubles. Neither hiding nor
+eviction can collapse that, because both sets are genuinely non-empty. A global switch is
+*substitutive*: every bot moves at once, the seg=3 buckets go empty, they are hidden the same frame
+and evicted after 120 flushed empty frames by the `body-part-batches.js` lifecycle. The arithmetic
+that this phase is betting on is therefore **`draws` flat, `tris` down** — roughly 44 K of a bot's
+~57 K triangles is rbox armour at 828 triangles a piece, against 156 at `seg=1`.
+
+**Eviction, not hiding, is what makes that work.** At r0.184 an `InstancedMesh` with `count === 0`
+already issues no draw call and never appears in `renderer.info.render.drawCalls`, so hiding an
+empty bucket does not move `draws` at all — it buys earlier rejection in `_projectObject` (no
+render-list entry, no bind-group refresh), which shows up in `rnd`. Do not read a flat `draws` in the
+first 120 frames after a switch as a failure; that is the eviction window.
+
+**Where the swap is applied.** Global mode runs in `botCullBegin()` — once per frame, before the
+flush loop — rather than in `botFlushSkipped()`, because `botFlushSkipped` returns early for the
+camera-focus and debug-focus actors and those bots must swap too. `setGearLod` early-returns when the
+level is unchanged, so the per-frame walk over `botActors` costs one integer compare a bot.
+Per-distance mode stays exactly where it was, inside `botFlushSkipped`.
+
+Leaving global mode (any button step other than Global) walks every live body back to `setGearLod(0)`
+before applying the new mode, so a focus bot cannot get stranded on the cheap twin.
+
+**The default stays OFF.** The `seg=1` twin visibly flattens the armour's chamfer highlights. That is
+an aesthetic call for the project owner after looking at it, not a perf decision.
+
+`perfLogHeader()` now records the live `rboxlod` state (`off` / `<n>m` / `global`) on the same header
+line as `devicePixelRatio` and msaa, so a take identifies its own arm. It is header text, not a
+column — `PERF_LOG_COLS` is unchanged, and `perfLogSummary` indexes rows positionally, so any future
+column must be appended at the end of both `PERF_LOG_COLS` and the row push.
+
+**A/B the owner runs (STOP/MEASURE M2).** Three firefight takes of comparable length and bot count,
+identical otherwise, reading `tris`, `draws`, `gpu`, `body`, `rnd` and `sub30`:
+
+| Arm | URL |
+|---|---|
+| control | `?prof=1&dpr=1&msaa=0&rboxlod=0` |
+| per-distance | `?prof=1&dpr=1&msaa=0&rboxlod=1&rboxlodDist=25` |
+| global | `?prof=1&dpr=1&msaa=0&rboxlod=2` |
+
+Expected shape if the model is right: arm 3 drops `tris` by roughly 60-75% against arm 1 with `draws`
+flat or slightly down, `gpu` down, and `body` flat or down (fewer vertices to write, same bucket
+count). Arm 2 should reproduce the old backfire — `draws` up, `tris` down less. If arm 3 moves
+`tris` but leaves `gpu` unchanged, the GPU is fill-bound rather than vertex-bound and armour
+triangles are not worth an aesthetic change; that is a real result, not a failed take.
+
+**`sub30` is the criterion, not the mean.** The success bar is "never sits below 30 fps for any
+considerable time", so read the `sub30` summary line — frames over 33.3 ms plus the longest
+consecutive run — before any median. It is a summary line rather than a per-frame column; `tris` and
+`draws` are columns 31 and 32. A mode that leaves the median flat but shortens the worst run is a win.
+
+**Verification:** the module block parses under Node. No Node test target exists for this path (it is
+a render-side policy switch); the numbers come from the owner's takes.
+
+**Not in this pass:** Phase 4 (fill-rate default flips) is gated on the owner's measurements and
+changes visual defaults.
+
+## Conforming blood stains, Phase 1 (2026-08-05, `bot-body-hit.js` + `effect-renderer.js` + `damage-simulator.html`)
+
+"Blood stains don't conform to the bot" turned out to be **four** defects, only one of which is about
+decal technique. Reading the code rather than assuming reordered the whole job:
+
+1. **The stain never moved.** `blood_stain` is a wire object with a fixed world `p`, and nothing in
+   `effect-renderer.js` read a bot transform. A hit bot walked off and left the stain in mid-air.
+2. **The hit point was not on the body.** `combat.js`'s `rayCapsuleHit` returns a point on one
+   capsule for the whole bot — `bot-entity.js`'s `DEFAULT_RADIUS = 0.3`. Real limbs are ~0.10 m
+   across and sit laterally offset from that axis, so a limb hit lands in open air.
+3. **The quad is a fixed 0.15 m and flat.** Deferred: this is what the three decal modes address.
+4. **The mask was rotationally symmetric.** `drawBloodStain` has always computed a per-decal `spin`,
+   but the decal pool sampled `makeSoftTexture`'s centred radial gradient — so spinning it did
+   nothing and every stain was the same soft circle. Fixed in `effect-renderer.js`; see
+   `docs/subsystems/fx.md`.
+
+Defects 1, 2 and 4 are prerequisites of *every* decal mode, so they shipped first and alone.
+
+### `bot-body-hit.js`
+
+```
+resolveBodyHit({ THREE, body, origin, dir, refresh = false })
+  -> { partIndex, part, role, point, normal, localPoint, localNormal, attach } | null
+attachFromPoint({ THREE, body, point, normal = null, refresh = false })   // same shape
+resolveAttachmentMatrix(body, attach) -> Matrix4 | null
+```
+
+`resolveBodyHit` walks `body.parts.all` and does a ray/AABB slab test in each part's own local space.
+Design notes that are not obvious:
+
+- **A local AABB, not a triangle raycast.** In instanced mode a part is a transform-only `Object3D`
+  carrying `.geometry` — there is no `Mesh` for a `Raycaster`. The AABB is GPU-free and Node-testable
+  and runs **once per hit**, not per frame. It *is* an approximation: `limbShape` defaults to
+  `'mannequin'` and nothing in the repo overrides it, so limbs, torso, pelvis and head are all
+  `LatheGeometry`. If the approximation shows (most likely a graze near a limb silhouette landing
+  slightly proud), the fix is a per-role primitive test, not triangles.
+- **The local ray is deliberately not renormalized.** The direction is built as
+  `(origin + dir)·M⁻¹ − origin·M⁻¹`, which keeps world scale in the vector, so `t` stays in world
+  units and hits from differently-scaled parts are directly comparable.
+- **`batches.raycast`'s `instanceId` is unusable** as a handle: `beginFrame()` zeroes every bucket
+  count and instances are re-added each frame, so it is valid only inside the frame that produced it.
+  `attachFromPoint` exists for the case where the *point* came from that accurate raycast and only
+  the stable part handle is missing.
+- **Attachment requires instanced mode.** A mesh-mode body has no `parts.all`; it returns `null`
+  rather than guessing.
+- Matrices come from the last `flush()` — at most one frame stale. `refresh: true` pays for a fresh
+  `updateMatrixWorld(true)` over the whole rig.
+
+The handle it produces (`{ part, role, parts, lp, ln }`) and the resolver that consumes it are
+documented under "Attached stains" in `docs/subsystems/fx.md`. The short version: `part` alone is
+**silent-wrong** on mismatch — a stale index resolves to a valid matrix for the *wrong* part — so
+`role` and the total part count ride along as a guard. They are a guard, not proof: `_role` is a
+material role (`shell`/`plate`/…) that several parts share.
+
+### Why the harness needed fixing before it could judge anything
+
+`damage-simulator.html` could show **neither** of the two defects it was chosen to demonstrate:
+
+- Its bot never moved (`botState.position` was never mutated), so a stain left behind was invisible.
+- Its click-to-fire already used `batches.raycast`, which is *strictly more accurate* than production
+  hitscan — so defect 2 did not reproduce there at all.
+
+Both are now toggles: **`bot → pace`** and **`hit resolution → source`** (`capsule` / `parts` /
+`mesh`), plus **`attach stains`** for a direct before/after. `capsule` is the honest production
+baseline and is the only source that cannot produce an `attach` handle, because at that level no part
+information exists.
+
+### Tests
+
+`test-body-hit.mjs` (Node, no GPU) builds a stand-in rig of plain `Object3D` parts — the exact shape
+instanced mode produces — and covers: a ray onto a known face; misses, a body with no `parts.all`,
+and hidden parts all resolving to `null`; nearest-part selection by **world** distance including a
+`(1,4,1)`-stretched part; under scale *and* rotation, the returned normal checked **perpendicular to
+two in-face directions** rather than against a recomputed normal matrix, so the test cannot pass by
+mirroring the implementation's own arithmetic; `attachFromPoint` picking the nearest part and keeping
+the local point unclamped; and the handle resolving on its own body, declining on role mismatch,
+part-count mismatch, out-of-range index, null handle and null body, and tracking the part after it
+moves. `test-effect-renderer.mjs` block 1c covers the renderer half.
+
+### The thigh flip (2026-08-05, `player-procedural-body.js`)
+
+First bug the attachment surfaced in the browser: a stain on a thigh jumped to the **other side of
+the leg** when the bot turned around. Not an attachment bug — a rig one.
+
+`placeSegment` oriented a limb with `setFromUnitVectors(_up, _dir)`, the **shortest-arc** rotation
+from local +Y to the bone. Shortest-arc carries **no roll**, so for a near-vertical thigh it is
+near-identity no matter which way the bot faces: the segment's local frame was world-locked. A decal
+pinned in it therefore held still in world space while the body rotated around it, landing on the far
+side. Worst on thighs precisely because they are the most vertical segment, where roll is least
+constrained.
+
+Fixed at the source — `placeSegment` now does the identical shortest-arc solve in **body space** and
+rotates the result by the body orientation, which makes the frame rigid with the body while leaving
+the rendered mesh untouched (limb geometry is a lathe about Y with equal X/Z scale, so it is exactly
+symmetric about the axis being rolled). Details and the call-site threading are in
+`docs/subsystems/procedural-body-weapon-contracts.md` under Contract 2; the regression is pinned by
+`test-segment-frame.mjs`, which measured the old behaviour at ~0.12 m of error on a ~0.11 m thigh —
+the exact mirror position.
+
+Worth remembering as a class of bug: **a rig frame that no renderer ever cared about can still be
+wrong**, and stays invisible until something is pinned to it. Every limb segment had this frame for
+as long as the rig has existed.
+
+### Phase 2 Mode A: stains sized from the part they hit (2026-08-05)
+
+`bot-body-hit.js` gained **`partCrossSection(part)`** — the part's narrower cross-axis extent in
+world metres — and every hit now carries it as `crossSection`. `damage-simulator.html`'s **blood
+stain → size mode** switches between `fixed` (one authored number times a coarse head/torso/arm/leg
+factor) and `fitted` (Mode A: `clamp(fit x crossSection, min, max)`).
+
+Measuring the real rig is what made the case. The old fixed 0.15 m stain is **1.6x the width of a
+forearm** (0.094 m) — it did not merely tent, it ran past the limb's silhouette on both sides — while
+covering only 0.6x of the 0.236 m torso. Numbers for both bot variants are tabulated in
+`docs/subsystems/fx.md` under "Stain sizing (Mode A)".
+
+The same measurement turned up a second defect nobody had costed: `pushBlood` lifted **every** decal
+1 cm along its normal to dodge z-fighting. That is invisible on terrain and badly wrong on a body —
+1 cm is more than a tenth of a forearm's width, so the stain hovered near the arm instead of sitting
+on it. `lift` is now a `pushBlood` parameter; ground splatter keeps 1 cm and `blood_stain` scales it
+to `clamp(size x 0.04, 0.8 mm, 1 cm)`.
+
+**What Mode A does not fix:** a flat quad still lifts off where the surface curves away — about 8 mm
+at the edges on a forearm, 19 mm on a torso, at a 0.55x fit. That residual is the number Modes B and
+C have to beat to justify themselves.
+
+**Not in this pass:** defect 3. The three decal modes (flat part-sized quad, CPU-clipped
+`DecalGeometry`, GPU depth-projected) are Phase 2 and are still a bake-off, not a decision.
+
+### Phase 3: both modes wired into `bot-viewer-v2.html` (2026-08-07)
+
+Mode C (`projected-decals.js`, GPU depth-projected boxes) was built alongside Mode A, and both are
+now live in the harness's real combat hit path rather than only in `damage-simulator.html`. Mode B
+(CPU-clipped `DecalGeometry`) was never built and is not planned: it cannot replicate, it reintroduces
+the per-decal `Mesh` cost that forced the old 160-decal cap, and it cannot grow — which conflicts with
+the two remaining blood problems (bleedout drips and growing ground pools).
+
+Two buttons in **Body & ragdoll** keep both refinements optional, because both cost something:
+`Wound hit: Cylinder / Mesh` picks where the wound point comes from, and `Wound stain: Fitted /
+Projected` picks how it is drawn. Full wiring notes, costs and fallbacks are in
+`docs/subsystems/fx.md` under "Wiring in `bot-viewer-v2.html`".
+
+The one thing worth repeating here: `Mesh` re-traces the shot from the shooter through the capsule
+hit point, and the capsule is fatter than the rig, so a graze can pass beside the mesh entirely.
+`refineWoundHit()` returns `null` there and the caller falls back to the capsule point with no
+attachment — the same result `Cylinder` would have given. Nothing is dropped, but a small fraction of
+grazes will keep the old floating behaviour.
+
+## Limb identity (`bot-limb-map.js`, 2026-08-08)
+
+`bot-body-hit.js` answers *which part* a shot hit; it cannot answer *which limb*, because the `_role`
+it returns is a MATERIAL role (shell/plate/trim) shared by parts all over the body. `bot-limb-map.js`
+supplies the anatomy. Pure, no THREE, Node-tested by `test-bot-limb-map.mjs` (39 checks).
+
+```
+buildLimbMap(body)                    -> Map<Object3D, {limb, segment}>
+limbForPart(map, part)                -> {limb, segment} | null
+limbIdForPart(map, part)              -> limb id | null
+isSeverable(limb)                     -> boolean
+partsOfLimb(map, limb, {keepProximal}) -> Object3D[]
+LIMBS, SEVERABLE_LIMBS
+```
+
+Limb ids are `head`, `core`, `leftArm`, `rightArm`, `leftLeg`, `rightLeg`. The map is keyed by object
+reference, so a lookup is O(1) and survives a part being re-indexed or hidden.
+
+Two things it exists to get right:
+
+- **The side mirror.** `parts.arms.left` is the VISUAL left arm and is wired to the INTERNAL
+  `arms.right`; the rig mirrors and `setArmTarget` swaps for the same reason. The map is built only
+  from `body.parts`, which is already visual-side, so the mirror is handled once here instead of at
+  every call site. Reading the internal rig instead removes the wrong arm.
+- **Gear is a hit target.** A helmet, pauldron or boot is its own part in `parts.all` and sits
+  *outside* the limb it covers, so a shot at the head usually strikes the helmet rather than the head
+  part. Gear inherits its host's limb by walking parent links — not by parsing anchor names, because
+  `gearHosts` uses INTERNAL side naming (`handL` is the internal right hand) and name-matching would
+  reintroduce the mirror bug. Gear carries `segment: 'gear'`.
+
+`partsOfLimb` is the sever sweep. By default it keeps the proximal joint (shoulder or hip) and that
+joint's gear, so a stump has a cap rather than a hole.
+
+**Cache it on the body.** Part identity never changes for the life of a rig: `setGearLod` swaps
+geometry in place and a sever only flips `.visible`. `bot-viewer-v3.html`'s `limbMapFor(body)` builds
+it once and hangs it off the body, so a rebuild (revive, body-kind change) naturally gets a new map.
+
+### Wiring in `bot-viewer-v3.html`
+
+`resolveWoundHit(target, point, normal, sourcePoint)` is the one place a landed hit becomes anatomy.
+It calls `refineWoundHit` and then the limb map, returning `{hit, limb, segment}` or null. Null is a
+real outcome, not just an error case: the hit capsule is fatter than the mesh, so a graze can land
+inside the capsule and miss the body entirely.
+
+It is deliberately **not** gated on `botBloodFxEnabled` or `botWoundHitMode`. Those are cosmetic
+switches, and limb identity now feeds gameplay decisions that must not change because someone turned
+blood off. `botWoundHitMode` still selects FX *placement* (mesh point vs capsule point); the trace
+runs either way. Cost is one ray/AABB walk over ~30 parts per **landed hit**, not per shot fired.
+
+`applyBotDamage` passes the result to `spawnHitBloodFx` (so one hit costs one walk, not two) and adds
+`bodyHit`, `limb` and `segment` to the `emitBotDamaged` payload. Nothing consumes those yet.
+
+**Known gap:** `detonateBlast` resolves a wound for its FX but does not call `emitBotDamaged` at all —
+blast damage has always gone straight to `recordBotDamage`/`creditBotHit`. So blast limb identity
+reaches the effects and not the event bus. Routing blasts through the bus would also start firing the
+damage-audio listener for explosions, which is a behaviour change, so it is left for whoever needs it.
+
+## Bleeding (`bot-bleed.js`, 2026-08-11)
+
+Wounds and stumps emit until healed; a corpse pools. Pure module, `test-bot-bleed.mjs`. The caller
+owns the FX and the damage-class gate — this only decides what is due.
+
+```
+createBleedState()
+openBleedSite(state, {limb, segment, attach, local, kind}, now, cfg) -> site | null
+closeBleedSites(state) / closeBleedSitesOn(state, limb)   // a heal seals wounds
+markBleedDead(state, now)
+stepBleed(state, now, cfg) -> { drips: [site], pool: radius }
+bleedRateFor / dropsFor / bleedingSiteCount
+SITE_WOUND = 'wound', SITE_STUMP = 'stump'
+```
+
+- A **stump** replaces every wound on its limb and bleeds ~3.5× as hard.
+- **At most one drip per site per step**, so a stalled tab cannot dump a backlog of decals in a frame.
+- `maxSites` (6) bounds a riddled bot; the oldest wound is dropped.
+- `clotSeconds` defaults to **0** — a wound bleeds until healed rather than sealing itself.
+- The **pool** needs an open wound: a corpse with none never pools. It starts after `poolDelaySeconds`,
+  grows at `poolGrowth` m/s to `poolMax`, and freezes at `bleedoutSeconds`. Draw it as a **projected**
+  decal, not a quad — it has to conform to the ground it spreads over.
+
+## Haywire death (`bot-haywire.js`, 2026-08-11)
+
+A death where control goes with the bot: it thrashes, fires wild, then twitches out. Pure decision and
+schedule, `test-bot-haywire.mjs`; randomness is injected so tests are deterministic. The caller applies
+the ragdoll impulses and resolves the shots.
+
+```
+haywireChance(cause, cfg)   // cause: { headKill, severed }
+rollHaywire(cause, rand, cfg)
+createHaywireState(now, cfg)
+stepHaywire(state, now, rand, cfg) -> { phase, kick, impulse, fire }
+haywireImpulseDir(rand)
+phases: 'thrash' -> 'twitch' -> 'done'
+```
+
+Where the bot was shot is what moves the odds: **headshot 65%**, a death that also took a limb 25%,
+anything else 10%. Firing only happens during the thrash and is capped at `fireCap` (5) rounds. A
+twitching corpse never fires. Wild rounds hit whoever is standing there — scoring them is the
+viewer's job (a bot's own team costs it a point, an enemy earns one).
+
+## Bleeding and haywire in `bot-viewer-v3.html` (2026-08-11)
+
+Two switches in **Body & ragdoll**: `Bleeding` and `Haywire death`, plus `Force haywire` for watching
+the thrash on demand and `Reload damage tuning` for re-reading the file. The numbers behind them are
+tuned in `damage-simulator.html` and arrive through `damage-tuning.json` or, live, through a
+`storage` event — see `docs/subsystems/fx.md`. Live state is per actor: `actor.bleed`,
+`actor.haywire`, `actor.haywireShots`.
+
+- **Wounds** open in `applyBotDamage`, through the same damage-class gate the hit burst uses, so a bot
+  whose armour hid the spray does not then start dripping. **Stumps** open in `severBotLimb` and carry
+  an `anchor` (the shoulder or hip part itself), so the drip follows the joint instead of hanging where
+  the limb came off. A heal seals every site; a revive rebuilds the state.
+- `updateBotBleeding(now)` runs once per frame after the rigs are posed, so a drip leaves the limb's
+  live position. Every Nth drip (`groundEvery`) also leaves ground blood, or one standing bleeder eats
+  the decal budget.
+- **Pools** are drawn by `drawProjectedStains`, which now runs whenever any pool exists even in fitted
+  stain mode — a pool has to conform to the ground.
+- **Haywire** is seeded in `killCombatBot`, in the ragdoll branch only (no ragdoll, no thrash). The
+  cause is read from the corpse's own wound state, so nothing extra is threaded through the death path.
+  `updateBotHaywire` runs in the dead-actor branch of `updateAllBots`, before the ragdoll step; a kick
+  clears `ragdollSettledSince` or the corpse freezes mid-thrash.
+- A wild round is its own hitscan from the corpse's chest (`fireHaywireShot`) rather than
+  `fireBotShot` — the gun is already dropped by then — but it uses the same resolver, damage, FX and
+  `applyCombatDamage`, so it can really kill someone. Cause is `'haywire'`.
+
+## Limb loss (`bot-wound.js`, 2026-08-08)
+
+Damage accumulates **per limb**, and a limb that absorbs enough of it comes off. The head is the
+exception and kills on contact instead — see "The head kills on contact" below. Pure module,
+Node-tested by `test-bot-wound.mjs` (82 checks).
+
+Severing is default **off** (`botLimbLossEnabled`, "Limb loss" in Body & ragdoll), because it changes
+how a fight reads and the thresholds are untuned. Head lethality is default **on** and has its own
+switch.
+
+```
+createWoundState()                        -> per-bot state
+applyLimbDamage(state, limb, amount, cfg) -> {severed, lethal, total, threshold}
+getWoundConfig(damageClassId)             -> merged row
+limbThreshold(limb, cfg)
+killingBlowSever(state, limb, cfg)        -> a fatal hit takes the limb it landed on
+isLethalHit(limb, cfg)                    -> head hits kill on contact
+isSevered / severedLimbs / isDecapitated / canHoldWeapon / canHoldTwoHanded / weaponResponseFor
+TRIGGER_ARM = 'rightArm', SUPPORT_ARM = 'leftArm', LETHAL_LIMBS = {'head'}
+```
+
+**Where hits land**, measured by `test-bot-wound-attribution.mjs` (capsule-gated rays at a real
+instanced rig). 60% of capsule-passing rays find the rig at all; of those: core 73%, each leg 12%,
+head 1.7%, **each arm 0.3%**. Set any per-limb threshold against these, not against health alone — a
+bot absorbs 100 damage total, so one arm expects under half a point of it.
+
+**A killing blow takes the limb it landed on** (`killingBlowSever`, gated by `severOnKillingBlow`,
+default true). This is where limb loss actually comes from: roughly a quarter of deaths, mostly legs.
+The accumulator is the rarer path, for a bot that survives concentrated fire on one limb.
+
+**Every damage source must pass `origin`.** `applyBotDamage` falls back to `attacker.capsule.start`
+(ankle height, 0.3 m), which traces up through the victim from below and names the wrong limb.
+`fireBotShot` passes the muzzle, `fireBotKnife` the attacker's eye, `detonateBlast` the blast centre.
+
+Thresholds still assume flat damage: an arm hit costs the bot as much health as a chest hit, so at the
+default 60 a bot losing an arm is down to 40 health. `limbDamageScale` is the seam for locational
+scaling, defaulting to 1.
+
+Thresholds are keyed by damage class: armour raises them (85/105), robots lower them (45/55), and
+plain humans sit between (60/75). Legs are tougher than arms in every class. There is **no decay and
+no healing** — armour breach already works this way, and a limb shot four times should not be restored
+by a health pack.
+
+### The head kills on contact (2026-08-11)
+
+The head is the one limb the accumulator argument does not apply to. Everything above is an argument
+about limbs a bot is meant to **survive** losing; the head is the opposite case, and a head that
+needed three rounds would just be a slower torso. So `limbThreshold('head')` is **0** and any bullet
+that resolves to it sets `lethal` on the result. `applyBotDamage` reads that and writes health to 0
+regardless of what the weapon actually did, so the weakest pistol in the game is as fatal to a head as
+the rpg.
+
+Two rules on **separate switches**, deliberately:
+
+| Switch | Default | What it does |
+|---|---|---|
+| `botHeadshotKillEnabled` ("Headshots kill") | **on** | The lethality itself. It is a combat rule, not gore, so turning blood or limb loss off must not quietly make bots survive headshots. |
+| `botLimbLossEnabled` ("Limb loss") | off | Whether the head is also *removed* on that hit. Lethality without it means the bot simply drops. |
+
+**Blasts are exempt.** `accrueLimbDamage(..., { lethalHead: false })` from `detonateBlast`: an
+explosion resolves to whichever limb faced the blast normal, which is an artefact of geometry rather
+than a placed shot, and a distant grenade should not instakill because the trace happened to name the
+head. The blast still records head damage.
+
+**How reachable the head actually is: 1.7% of hits, measured.** The capsule bullets test against is
+1.8 m tall (radius 0.3, top plane at 1.80 m above the feet) and the rendered head spans **1.76–2.11 m**
+— so only its bottom 4 cm is inside the hittable shape. That is the head-exposed hit-volume gap, still
+unfixed. Bots aim at `eyePos`, 0.85 up the capsule, which is **1.32 m** — chest height — so they are
+not going for heads deliberately. What connects is a rising shot that clips the crown of the capsule
+and carries on into the head above it, because `refineWoundHit` traces the full shot line and takes
+the first rig part on it, not the capsule surface point. Practical consequence before tuning: shots
+that used to read as harmless top-of-capsule grazes are now the main source of headshot kills. Fixing
+the hit volume would raise 1.7% considerably. `reportBotHitVolume` measures the gap on a live bot and
+`test-bot-wound-attribution.mjs` measures the share.
+
+`emitBotDamaged` gained `headshot` (the hit landed on the head) and `headKill` (that hit is why it
+died); they differ whenever the switch is off or the blast exemption applied.
+
+### Severing
+
+`setAmputated(limb, on)` on the rig (`player-procedural-body.js`, VISUAL limb naming) skips
+`solveArm`/`solveLeg` for that side, which leaves the stump joints frozen instead of chasing a target
+with no endpoint — a cost *reduction*, since it skips a FABRIK solve. Hiding the parts is the caller's
+job via `partsOfLimb`; `flush()` already skips invisible parts, and so does `resolveBodyHit`, so a
+severed limb leaves both rendering and hit-testing for free and cannot be severed twice.
+
+**Body lean is unaffected.** It comes from a midpoint of `gait.feet`, which the gait scheduler keeps
+updating whether or not the leg is solved — so a missing leg does not tilt the torso. (The plan
+predicted trouble here; the rig does not derive pitch from solved feet.)
+
+`severBotLimb(actor, limb)` in `bot-viewer-v3.html` hides the parts, sets the flag, and spawns a stump
+burst anchored at the joint the limb hung from (which is still there and still animating), gated
+through the damage class so a robot sparks instead of bleeding. A head has no proximal segment of its
+own — the neck belongs to the core — so a decapitation marks itself at the head instead, and the event
+is logged as `decapitate` rather than `sever head`. `clearBotLimbLoss(actor)` reverses all of it on
+revive, next to the `armourBreached` reset; the head restores through the same path, since a lethal
+head hit records itself in `state.severed`.
+
+### The weapon
+
+`weaponResponseFor(state)` answers what a lost arm means for the loadout:
+
+| Response | Cause | Handling |
+|---|---|---|
+| `oneHanded` | support arm gone | Nothing to do — the amputated arm's IK is skipped, so it simply never reaches for the gun. |
+| `sidearm` | trigger arm gone | Forced swap to the pistol, and the ammo logic can never re-shoulder the primary. |
+| `disarm` | both arms gone | No swap. Consequences are a later phase. |
+
+The swap is applied in `updateBotWeaponSlot`, **not** at the moment of severing: `swapBotWeaponSlot`
+acts on the bound bot, and the bot being dismembered is the victim, not whoever is bound while its
+attacker shoots. So the victim performs the swap on its own next think.
+
+The weapon rig is never parented to a hand — `updateBotWeaponMount` places it from the body position
+and the authored hold — so losing an arm cannot make the gun fall or drift.
+
+### Consequences
+
+Shaped exactly like `bot-stance.js`: pure functions consulted **at the point of use** and multiplied
+onto what is already there, so wound is an orthogonal channel rather than a new FSM axis. Nothing here
+touches `bot-state-code.js`.
+
+| Function | Effect | Wired at |
+|---|---|---|
+| `woundSpeedFactor` | 0.5 per missing leg, 0.18 for both (a crawl, not 0.25) | `currentBotMoveSpeed` |
+| `woundTurnRateScale` | 0.65 per missing leg | `botTurnRateRadS` |
+| `woundSpreadScale` | ×2.2 per missing arm | all three `stanceSpreadScale` sites |
+| `canHeal` | false once **either** arm is gone | `decideMedicDuty` returns null |
+| `canFight` | false once **both** arms are gone | `fireBotShot` refuses; `beginBotHealthRetreat` |
+
+**Why either arm ends a medic:** the heal pose is two-handed — it holds the pack in one hand and dabs
+with the other — so a one-armed medic has no pose to play. It drops back to being an ordinary
+rifleman rather than becoming a medic that cannot medic.
+
+**Why both arms forces a retreat:** a bot with nothing to hold a gun with cannot shoot back at any
+health, so `beginBotHealthRetreat` bypasses its usual health threshold on capability instead.
+`severBotLimb` calls it the moment the last arm goes. Routing through the existing retreat means a
+disarmed bot uses the same flee goals, cover and pathing as any other wounded bot — no second way to
+run. It still respects the global `retreatEnabled` toggle, so turning retreat off leaves a disarmed
+bot standing, which is the operator's call.
+
+## Damage classes (`bot-damage-class.js`, 2026-08-07)
+
+Four damage-FX features were planned at once (wound-centred blood, limb loss, blood pools, robot
+fire) and all four wanted to know the same thing: what is this bot made of. Without a shared answer
+each would have grown its own `if (bodyKind === 'armoured')` branch. `bot-damage-class.js` is that
+answer — pure data, no THREE, no DOM, modelled on `bot-roles.js`: a `DAMAGE_CLASS_DEFAULTS` object
+merged into named rows, and **no call site anywhere branches on a class id string**. Every consumer
+reads `getDamageClass(id).<field>`; adding a fourth class is one new row.
+
+```
+human          blood: 'always'
+armouredHuman  blood: 'lowHealthOnly' @ 0.35, sparks, smoke: 'lowHealthOnly', hitAudio: 'metal'
+robot          blood: 'never', sparks, smoke: 'always', spasms, haywireOnDeath, all-metal audio
+```
+
+- `classForActor(actor, bodyKind)` resolves an explicit per-actor `damageClass` override first, then
+  falls back to today's global body kind (`soldier → human`, `armoured → armouredHuman`). Nothing
+  sets the override yet; it is the seam a mixed fight arrives through.
+- `shouldShowBlood(cls, hpAfter01, alreadyBreached) -> { show, breached }` is the gate, extracted as
+  a pure function so the decision is testable without the viewer. `breached` is a **one-way latch**,
+  not a hysteresis band: blood gating is decided once per discrete hit rather than per frame, so the
+  usual enter/exit band solves a problem that does not arise. What a plain threshold would get wrong
+  is a healed bot — armour once breached does not un-breach, so a medic topping a bot back up must
+  not make it stop bleeding. The caller stores the returned `breached` on the actor and passes it
+  back in. It is a plain actor field, deliberately not a state-code latch bit: that slot is at 5/5
+  bits and this does not need to be greppable in a trace to do its job.
+- `shouldShowSmoke` reads its own `smoke` field against the same threshold and latch.
+
+Covered by `test-bot-damage-class.mjs` (43 checks), including a mechanical check that no two classes
+have identical fields, since a class that can only be told apart by its id would force call sites
+back to the branching this table exists to prevent.
+
+**Wired into the hit path (2026-08-07).** `spawnHitBloodFx` now resolves a class per hit and gates
+`hit_spark`, the three blood kinds and a new grey `smoke_puff` off its fields; it also scales the
+droplet burst by `bloodIntensityForHealth` from `effect-renderer.js`. Both landed as one change
+because both needed the same signature (`amount` added) and the same three call sites
+(`applyBotDamage`, the dummy branch, the blast loop). Two buttons in **Body & ragdoll** — `Damage
+class` and `Bleed by health` — turn each half off independently, and off means exactly the previous
+behaviour. Details and the exact controls: `docs/subsystems/fx.md`.
+
+The visible consequence worth knowing before flipping it on: the default body kind is `armoured`, so
+with classes on, a healthy bot **stops bleeding** and only starts once it drops below 35%.
+
+**Damage class is not body kind.** Body kind is geometry and is still one global variable
+(`bot-body-design.js`'s `_bodyKind`), so mixed-geometry fights remain impossible. Damage class only
+has to answer per hit, and the hit path already runs per target — so a mixed damage *language* is
+reachable well before mixed geometry is. Two decisions are still open: whether class is assigned per
+bot or per squad, and whether `robot` is a re-skin of the existing Mark VII or new art.
+
+## Panel tab refactor (2026-08-06, `bot-viewer-v2.html`)
+
+The panel had grown to 29 collapsible cards and ~330 controls in one flat scrolling column, ordered
+by when each feature was written. Bot concerns were spread over 11 sections, the six perf/LOD A/B
+toggles sat inside the spawn card, diagnostic overlays lived in four separate places, and the three
+one-click scenario presets were buried at the bottoms of unrelated sections.
+
+Design record: `docs/bot-viewer-v2-ui-inventory.md` (the pre-refactor catalogue) and
+`docs/superpowers/reviews/2026-08-06-ui-refactor/` (three independent proposals plus the approved
+`proposed-structure.md`). Three agents were given the same brief; the consolidations below are the
+ones all three arrived at independently.
+
+### The section plan is the panel's structure
+
+`SECTION_PLAN` near the top of the panel bootstrap is a declarative table of
+`[tabId, title, cluster, collapsedByDefault]`. Every card is created from it up front, in display
+order, under its tab host. `header(title)` then only **re-points `ctrl` at an already-built body**
+instead of creating a section:
+
+```js
+function header(title) {
+  const body = sectionBodies.get(title);
+  if (!body) throw new Error(`header(): no section planned for "${title}"`);
+  ctrl = body;
+}
+```
+
+That inversion is what made the refactor tractable. The ~2900 lines of control-building code below
+keep their original order in the file while the panel renders in a completely different one, so a
+card's contents can be assembled from several places without moving code. It also means the panel
+order is editable by rearranging one table.
+
+Two arrays, `debugOverlayExtras` and `perfLodControls`, park controls whose owning card is built
+later in the file, and are spread in once that card has its own contents — so ordering *inside* a
+card stays intentional rather than depending on where in the file a control happens to be created.
+
+`header()` throwing on an unplanned name is deliberate: a typo is a hard failure at load, not a
+control silently appended to whatever section was last open.
+
+### Structure
+
+Pinned chrome above the tab strip (visible from every tab): search box · ★ jump drawer · the four
+camera mode buttons · Bot readout. Then six tabs:
+
+| Tab | Clusters → cards |
+|---|---|
+| Session | *Save state*: Save / load · *Camera*: Framing & follow, POV & fly |
+| **Bots** (active on load) | *Roster & spawn*: Spawn, Composition, Squads, Deployment, Auto-add & corpses · *Loadout*: Weapons & ammo, Body & ragdoll, Explosives · *AI tuning*: Movement tuning, Stance, Perception & pursuit, Aim & reaction · *Results & test aids*: Scoreboard, Dummies |
+| World | preset strip (Big open field · Test condition · eroded highlands) · *Layout & structure*: Map layout, Scene shuffle · *Terrain generation*: Terrain, Landform, Erosion, Landmarks, Terrain shading |
+| Debug | *Performance*: Perf / LOD · *Overlays*: Debug overlays · *Capture*: State recorder |
+| Visuals | Look & post, Visual toggles, Bot lighting, Sky detail |
+| Audio | Mixer & voices, Music player, Reactive lighting, Music FX |
+
+Clusters are plain non-interactive caption rows, not a second collapse level — a label, not another
+click. 35 tab cards plus the pinned readout, and nine sub-groups nested inside three of them.
+
+### View distance and POV eye offset were never saved (2026-08-08)
+
+`camera.far` (the view distance slider) and `povEyeOffset.y` / `.z` (POV eye up/down and forward)
+were written by the panel and absent from `captureUiState`. Both are now in the `camera` block as
+`viewDistance` and `povEye`.
+
+Restoring the view distance goes through the slider's own `syncViewDist()` rather than assigning
+`camera.far` directly, because that syncer also rescales the sky dome (fixed radius, depth-tested, so
+it hides everything past 75% of far) and hands the distance to the grass. A bare assignment would
+clip correctly and leave both behind. POV offsets are clamped to the slider ranges and pushed back
+into the sliders through a new `cameraSyncers` array.
+
+Each had its own reason for being invisible to `test-bot-viewer-slot-coverage.mjs`, and both are now
+closed:
+
+- **`camera.far`** — the declaration scan recognised `let`, `var` and `const x = {`. `camera` is
+  `const camera = new THREE.PerspectiveCamera(...)`, so it was in no declaration map at all and every
+  write to `camera.*` was skipped as undeclared. The scan now takes any top-level declaration,
+  including `const`, since a const binding still holds mutable state. Narrowing to column-zero
+  declarations at the same time dropped a false positive (`text`, a function-local).
+- **`povEyeOffset.y`** — written only as `povEyeOffset[key] = …`. The write pattern matched `name` and
+  `name.prop` but not `name[key]`, so the object looked unwritten. Computed keys now count.
+- **A third gap the fix exposed**: coverage matched on the object name, so once `camera.fov` was
+  captured, every other `camera.*` field passed silently. There is now a property-level pass that
+  accepts a full path, a `...obj` spread, or the bare property name.
+
+### Bots tab reorganisation (2026-08-08)
+
+Five independent proposals were collected on how to re-cut this tab. Four changes had majority
+support and shipped; the rest (scenario presets, archetype presets, per-slider previews) did not.
+
+- **`Spawn & composition` split into `Spawn` and `Composition`.** The card that opens on load now
+  holds only "put bots on the map": team, spawn, count, add friendly/enemy, remove. The role mix and
+  the three specialist spawn buttons moved to `Composition`, which starts collapsed. `Spawn` is still
+  the only card expanded on load.
+- **`Sides & home bases` renamed to `Deployment`.** Every proposal wanted the spawn-placement tools
+  merged into this card. They were already in it — the name simply never mentioned spawning.
+- **`Lost-sight pursuit` renamed to `Perception & pursuit`.** Sight distance and field of view live
+  in this card, which the old name hid.
+- **Three long cards grew nested groups**, via a new `subheader(title)` next to `header(title)`:
+  - **Stance** → `Crouch`, `Kneel`, `Prone`, `Choosing and leaving a stance`. One posture per group,
+    each asking the same six questions, so a crouch tuned tighter than its kneel is visible.
+  - **Aim & reaction** → `Reaction timing`, `Weapon spread`, `Recoil`. How long before a bot shoots
+    and where the round goes are tuned in separate sessions.
+  - **Explosives** → `Throw decisions`, `Blast physics`. This settles the one point the proposals
+    split on — whether to break Explosives into two cards — without doing so.
+- **The stance override button moved** from the spawn card to `Stance`, beside the settings it
+  overrides.
+
+`subheader()` nests a normal `createSection` inside the current card, so groups inherit collapse,
+search filtering and by-title state restore for free. It tracks `ctrlCard` separately from `ctrl` so
+a second group nests beside the first rather than inside it. Group titles must stay unique panel-wide:
+`readSectionStates` keys on heading text, and a collision would stomp a card's saved state.
+
+**All five proposals said to move the Perf/LOD toggles and the debug overlays out of the Bots tab.
+They were already out.** Those buttons are *constructed* inside the spawn region and parked in
+`perfLodControls` / `debugOverlayExtras`, then appended to the Debug tab's cards. Reading the source
+in order gives the wrong answer about where a control appears — worth knowing before trusting a
+source-order reading of this panel.
+
+### What moved
+
+- **Perf / LOD is a new card.** Think stagger, Rig LOD, Flush LOD, Behind-camera cull, Body hide and
+  Armour LOD left the spawn card. They are frame-budget instruments, not gameplay.
+- **Debug overlays absorbed everything overlay-shaped**: POV debug widgets and markers (from Camera),
+  Squad overlay (from Squads), and the nav overlay button. **"Nav grid (Phase 2)" no longer exists** —
+  a whole collapsible card for one button was the clearest over-sectioning in the panel.
+- **Map layout and Maze structure merged** into one card, ordered coarse to fine: layout, size, then
+  walls, rooms, cover, structures. Scene shuffle split out into its own card in World.
+- **Camera split three ways**: mode buttons to pinned chrome, framing and POV detail to two Session
+  cards, POV debug toggles to Debug overlays.
+- **The Visuals mega-card split into four.** `visuals.buildPanel({ heading: false })` returns one
+  flat list with `.ttl` dividers marking its own subheads; the panel now partitions on those markers
+  and drops the dividers, since the card headings carry those names. An unplanned fifth subhead would
+  land in the last card rather than throwing.
+- **Audio split into three cards** plus the existing Music FX, by inserting `header()` calls
+  mid-block — the audio helpers append to `ctrl` as they build, so a header call redirects them.
+- **The three scenario presets** moved to a bare button strip at the top of the World tab.
+- **Spawn & composition reordered** to team → spawn → counts → role mix → role spawns → stance →
+  remove, and is the one card expanded on load. The Bot readout is pinned but **collapsed**.
+  (Superseded 2026-08-08: this card is now split into `Spawn` and `Composition`, see above.)
+
+### Chrome
+
+- **Search** filters cards on their whole rendered text, so a control label matches even when its
+  card title doesn't. While a query is active every tab host is revealed at once (a control you
+  can't place shouldn't need the right tab first) and cluster captions and the preset strip hide.
+  Collapse states are snapshotted on the first keystroke and restored when the query clears. Escape
+  clears and blurs.
+- **Pinning** never moves DOM. A pinned card becomes a jump chip in the drawer; clicking it switches
+  tab, expands the card and scrolls it into view. Moving cards would have disturbed both the planned
+  order and the by-title collapse-state restore.
+- **Compact** is one class on the panel root tightening existing padding; no new visual language.
+- **Expand/collapse-all scope to the active tab plus the chrome**, via `activeSectionHosts()`. A
+  panel-wide expand would have blown open five tabs nobody is looking at.
+
+### Slot compatibility
+
+`captureUiState` now reads section states from `ctrlRoot` rather than `panelBody`, since the pinned
+readout lives outside the scroller, and the `ui` group gained `activeTab`, `pinned` and `compact`.
+Both directions degrade cleanly: `applySectionStates` only touches sections it finds, so a slot
+saved against the old names restores the cards that still exist and ignores the rest, and
+`panel.pinned` is only applied when it is actually an array — a pre-refactor slot leaves your pins
+alone instead of wiping them.
+
+### Tests
+
+`test-bot-viewer-panel-layout.mjs` (31 checks). The panel can't be executed in Node — it imports
+three.js and needs a GPU — but the plan is a declarative table, so the test parses it out of the
+HTML and asserts the approved tab order, per-tab card order, cluster captions, the load defaults,
+and that every planned card is filled by something while every `header()` names a planned card. It
+also pins the three consolidations the refactor exists for, so a later edit can't quietly scatter
+the perf toggles or the overlays again.
+
+The toggle idiom is unchanged: buttons still carry their state in the label. All three proposals
+independently declined to convert to checkboxes — it would touch nearly every call site for a
+cosmetic gain, and the problems here were ordering and grouping, not the widget.
+
+## Slot capture gaps (2026-08-06, `bot-viewer-v2.html`)
+
+"Not all settings save to the slots" was a real, pre-existing gap, and it had one shape: **the
+capture functions enumerate their fields by hand, so a control added without a matching capture line
+works, tunes the sim, and silently isn't saved.** No error anywhere. An audit of every persistent
+`let` the panel reassigns against the text of all three capture functions found eight such controls,
+now fixed.
+
+- **The entire Perf / LOD card — six of six controls.** Think stagger, Rig LOD, Flush LOD,
+  Behind-camera cull, Body hide, Armour LOD. They began as `?riglod=0`-style URL flags during the
+  perf sweep, so they were never thought of as panel settings; the tab refactor gathering them into
+  one card is what made the gap legible as "a whole section doesn't save". They now round-trip in the
+  `ui` group under `perf`.
+- **Hit volume** (Debug overlays) and **the state recorder's trace tick**, both under `debug`.
+
+Restoring Armour LOD repeats the button's own order — drop every body back to full detail, then
+re-band — because the per-bot swap only runs in mode 1, so a body left cheap by the old mode would
+stay cheap. It also restores `rboxLodStep` so the next click continues the cycle instead of jumping.
+
+Two things the audit ruled out, worth not re-checking: **no captured key is dropped on apply** in any
+of the three groups, and **no settings object is partially captured** (`botSquadSettings` only
+persists `spacing`/`mergeRadius`, but the rest of it has no panel control). Nine names stay
+deliberately transient — live actor references, reload timers, recording-take state, and
+`botLiveEnabled`, which opens a websocket and would auto-connect on load.
+
+`test-bot-viewer-slot-coverage.mjs` guards the general case rather than this instance: it re-derives
+the panel's writes and fails on any that no capture function mentions, so the next control added is
+caught at the test rather than months later. Genuinely transient state goes in its `TRANSIENT`
+allowlist **with a reason**, and the test also flags allowlist entries that have gone stale.
+
+## Body kind was never saved — and why the audits missed it (2026-08-07)
+
+Body kind (Human soldier vs Armoured bot) did not survive a slot load. The fix is small —
+`captureBotState` records `getBotBodyKind()`, `applyBotState` restores it — but **the reason three
+separate audits missed it is the part worth keeping.**
+
+Every scan looked for *assignments*: which variables does the panel write, and does a capture
+function mention them? Body kind is set by `setBotBodyKind()`, **imported from
+`bot-body-design.js`**. The state lives in that module. There is no assignment anywhere in
+`bot-viewer-v2.html` to find, so a scan built on assignments could never have seen it, and a test
+built on that scan passed while the bug was live.
+
+Restoring it goes **after** the procedural-body switch (rebuilding rigs is pointless while bots are
+capsules), is guarded on an actual change the way the weapon and ammo setters are (a rebuild walks
+every live rig), and refreshes the damage-class label, which resolves from body kind.
+
+`test-bot-viewer-slot-coverage.mjs` gained an **imported-setter pass**: any `set*` imported from
+another module and called by the panel must have its getter reach a capture function. Genuine
+actions go in an `ACTIONS` allowlist with a reason (`resetScoreboard` — restoring a score on load
+would be wrong). The general lesson for this panel: *state reachable only through another module's
+setter is invisible to any assignment-based check.*
+
+## Save all, restore, disk mirror (2026-08-07, `bot-viewer-v2.html`)
+
+The slot design had two holes that both read to a user as "my settings didn't save", and neither was
+a missing capture field:
+
+- **Saving was three separate clicks.** maze, bots and ui each had their own row and their own Save
+  button, with no combined one. Saving `ui` and assuming the panel was saved was the easy mistake.
+- **Nothing survived a reload.** `applyMazeState`/`applyBotState`/`applyUiState` were only ever
+  reached from a Load click. Refreshing the page dropped everything back to defaults with the slot
+  still sitting in storage, untouched.
+
+Now, in the Save / load card, top to bottom:
+
+| Control | Behaviour |
+|---|---|
+| **Restore last session** | Applies the rolling autosave. Enabled only when a snapshot exists; its tooltip names the snapshot's time. |
+| **everything** slot row | `captureAllState`/`applyAllState` — all three groups in one slot. |
+| maze / bots / ui rows | Unchanged, for partial work. |
+
+`applyAllState` order is **maze → bots → ui**, and it matters: the maze rebuild clears the roster, so
+bot tuning has to land after it, and ui goes last because it never touches the sim and so cannot be
+undone by either of the others.
+
+The autosave is **debounced by 3 s** off `input`/`click` on the panel root, plus a `pagehide` flush,
+and it is deliberately **offered rather than applied** — an automatic restore would fight anyone who
+reloads specifically to get a clean slate. A failed write (quota, or a capture caught mid-rebuild)
+is swallowed; the next edit tries again.
+
+**Disk mirror.** `createSlotSection` gained an optional `onSaved(group, index, entry)` hook, wired to
+`exportSlotToDisk`, which POSTs to `/api/save-slot-export` and lands the save in `bot-viewer-saves/`
+(gitignored — one file per save click). It is fire-and-forget by design: the slot is already in
+`localStorage` before the fetch runs, and losing a save because the server was down would be worse
+than the problem the mirror solves. `createSlotSection` also swallows a throwing `onSaved` for the
+same reason. Off-server there is simply no disk copy.
+
+The client filename and the server's allowlist are a **cross-language contract with nothing linking
+them but a test** — `bv2-<group>-slot<N>-<YYYYMMDD>-<HHMMSS>.json`, built in `exportSlotToDisk` and
+matched by `_SAFE_SLOT_FILENAME` in `serve.py`. `test-bot-viewer-save-all.mjs` builds names the way
+the client does and runs them against the regex the server actually compiles, so a change to either
+side fails rather than silently 400ing every save. That test also drives `createSlotSection` against
+a stub DOM to prove `onSaved` fires with the right arguments and that a throwing hook still saves.
+
+## Hover text (2026-08-06, `bot-viewer-v2.html`)
+
+Every control in the panel now has a `title`, written for someone who has never seen the app. Before
+this pass **71 of 146 named controls had none**, and the gap was invisible in review: a button with
+no tooltip looks identical in the code to one with a tooltip.
+
+Two of those gaps were structural rather than per-control, and they are the ones worth remembering:
+`createBotMovementSlider` had **no `title` parameter at all**, so all 12 Movement tuning sliders were
+bare by construction, and the `AUDIO_EFFECT_DEFS` loop ignored one, taking the 6 Music FX sliders
+with it. Both now take a tooltip; `AUDIO_EFFECT_DEFS` gained a 7th field. Where a factory builds a
+row rather than a bare control the title goes on the row, so the label and value hover too, not just
+the slider track.
+
+The spec-table cards — aim, stance, explosives, terrain, voices — already had complete coverage, and
+their existing text is the register to match: say what the control does and what changes if you move
+it, and give the measured numbers where they exist.
+
+`test-bot-viewer-tooltips.mjs` keeps it at 100%. It lists every control the panel creates and fails
+on any without a title, checks each of the ten shared factories both **accepts** a tooltip and
+**applies** it (which is what catches a whole card going bare at once), and walks the positional spec
+tables row by row, since a row can silently omit its last argument.
+
+## Closing the harness-to-game gaps (2026-08-08, `environment-viewer-v2.html`)
+
+The bot port (Phases A-E) had left the game running an older version of several harness systems. A
+file-to-file audit found eight; seven are now closed. Every one of them is host-side: guests see the
+results through the wire they already read.
+
+**Report attribution.** `pushAllyReport` payloads carry `attackerId` (casualty and near-miss alike,
+re-attributed when a near-miss refreshes), and `recordContact` now passes `threatId`. Reports were
+bearings before; they are identities now, which is what the risk model below needs.
+
+**Risk-ranked target selection** replaces the distance-only pick. Risk is `proximity x danger`, where
+danger is bonused for a candidate shooting *me* (`TARGET_DANGER_SELF_BONUS` 2.5) or a nearby teammate
+(`TARGET_DANGER_ALLY_BONUS` 1.2), each decaying linearly over the report's own `alertWindowMs` rather
+than cliffing at expiry. Ally-threat rides a shared ring, so `alliesCommittedTo()` discounts it by
+`TARGET_PILE_ON_STEP` per teammate already on that shooter (floor `TARGET_PILE_ON_FLOOR`) and the
+whole side stops converging on one man. Stickiness became a risk ratio (`TARGET_STICK_RISK_MARGIN`
+1.3) behind a `TARGET_COMMIT_MIN_MS` 1500 dwell floor on `rec.targetCommittedAt`.
+
+**Contact memory** (`bot-contacts.js`) records every FOV+range candidate per bot, exactly as the
+harness does. Recorded, not yet consumed.
+
+**Blast geometry.** `blastExposure(cx, cy, cz, p, height)` casts three rays (`BLAST_SAMPLE_T`
+0.15/0.5/0.9 up the victim) through the same `botHasLineOfSight` world bullets use, so trees and rocks
+count, and returns a *fraction* — partial cover is partial damage, and a fully covered body takes
+none. `applyExplosionBlast` multiplies by it, and `blastReachesBody` hands the SAME function to
+`chooseGrenadeThrow`'s `blastReaches` hook, so the throw decision and the detonation can never
+disagree about a wall. `blastOcclusionEnabled` reverts both together.
+
+**Wound-centred hit FX.** `spawnHitBloodFx` hangs off `bumpBotCombatCounters`, the one choke point
+bullets, knives and blasts all pass through, so no fire path needed its own copy. In `mesh` mode
+`refineWoundHit` re-traces the shot against the rig (`resolveBodyHit`) for the surface point, its
+normal, the part's cross-section (which sizes the stain) and an `attach` handle; `capsule` mode uses
+the sim point. Blood/sparks/smoke are gated by `bot-damage-class.js` off the global body kind, with
+`rec.armourBreached` latched one-way so a heal cannot un-breach armour, and spray/splatter counts come
+from `bloodIntensityForHealth`. Every effect is an ordinary replicated effect entity, so guests see
+the same hit. Five panel toggles: blood FX, wound-fitted hits, damage classes, health-scaled blood,
+blast occlusion.
+
+**Cyclic locomotion** is on for bot bodies via a new `botLocomotion` GhostRenderer option (bots only;
+human ghosts are untouched).
+
+**Role insignia** are drawn by GhostRenderer beside the health bar and the alert "!", from the `role`
+already on the wire: diamond rifleman, cross medic, chevron squad leader, ring sniper, triangle
+technical. `INSIGNIA_KINDS`/`INSIGNIA_COLORS` are a local table, not a `bot-roles.js` import, so
+multiplayer.js stays THREE- and bot-module-free. Covered by `test-ghost-renderer.mjs`.
+
+**Scoreboard** (`bot-score.js`): spawns/kills/deaths/revives per side in a top-centre HUD, toggleable.
+One adaptation — rounds only close when **respawn is off**, since endless reinforcements mean there is
+never a last-bot-standing moment to decide; that is the same condition the harness's auto-add gate
+expresses.
+
+### Deliberately not ported
+
+- **`rescueHeightAt`** (the below-terrain floor rescue). `stepBotPhysics` only runs the rescue inside
+  its `mapCollider` branch, and on an authored map this file's `terrainHeight` raycasts DOWN from the
+  top of the map bounds — it returns the *topmost* surface. That is precisely the caller
+  `bot-entity.js` warns must not opt in: bots standing under a mezzanine would be lifted onto it. The
+  game already has two other nets (the `heightAt` flat-snap on open ground, `BOT_FALL_CATCH_DROP_M`).
+- Nothing else. The player command layer landed on 2026-08-08 as well — see the next section.
+
+### The command wheel in the game (2026-08-08)
+
+> **Superseded in part on 2026-08-12.** The gesture and the raycast are unchanged; the single global
+> command slot described below was replaced by the order book in
+> *[Squad orders](#squad-orders-2026-08-12-bot-ordersjs)* at the end of this file. `underCommand`,
+> `commandTargetId`, `commandGoal` and `commandGoalState` no longer exist.
+
+The harness issues orders with a cursor over an orbit camera; this game is pointer-locked
+first-person, where right mouse is ADS and `Q` is cursor-free mode. So the wheel was ported and the
+right-click menu was not — and the wheel is driven the way this file's existing **tool radial** already
+works, not the way the harness's is.
+
+**Gesture.** Hold the middle mouse button in first person, drag toward a spoke, release to commit.
+Releasing near the centre commits nothing. Spokes: *Move here*, *Hold here*, and the two persistent
+toggles *Double time* and *Break contact*.
+
+**Why movement, not position.** Under pointer lock `clientX/Y` is frozen, so `elementFromPoint` (what
+the harness uses) would resolve to the same spoke forever. `updateCommandWheelByMovement` accumulates
+`movementX/Y` and takes the angle, with a 14 px dead zone — the same maths `updateToolRadialByMovement`
+already used for tools. While the wheel is open, `mousemove` is consumed by it and does not turn the
+camera.
+
+**Where the order lands.** `lgRaycastTerrain()` — the ray the pet *go-to* command already used — gives
+the ground point under the crosshair at the moment of release. That is the first-person equivalent of
+clicking the map. The commanded bot is whatever `selectedBotId` holds; `openCommandWheel` calls
+`pickBotAtScreen` at screen centre first, so looking at a bot selects it, and looking at nothing keeps
+the previous selection (select a bot, then look where you want it to go). A marker ring drops either
+way, because seeing where the order *would* have gone is the feedback.
+
+**Sim side**, identical to the harness: `updateCommandMovement` sits in the out-of-combat chain after
+packs and before formation; `commandBreakContact` feeds `c.orderOverride` (the only thing that pulls a
+bot out of a fight for a move order — a close self-threat still outranks it) and `commandDoubleTime`
+feeds `sc.doubleTime` (→ `STANCE_RUN`). Both reach the commanded bot *and* its squad through
+`underCommand()`. A `move` clears on arrival and falls through to formation/patrol; a `hold` parks
+indefinitely. The bot answers with `order_ack`, or `order_ack_squad` if it is a squad leader.
+
+The wheel is closed uncommitted on pointer-lock loss and on leaving first person, since neither
+delivers the matching `mouseup`. `test-env-command-wheel.mjs` parses the viewer for all of the above —
+the failure this guards against is a toggle that the UI sets but nothing reads, which looks identical
+in the code to one that works.
+
+## Two bugs from the 2026-08-08 terrain session
+
+### Bots stood still on spawn until an enemy appeared
+
+Out of combat with no patrol points — which is every open-terrain map, since `botSpawnPoints` is
+shoot-house-only and `botPatrolRing` needs an authored pcw-layout map — the *only* goal source is an
+explore point 80-300 m out along the bot's fixed heading. That goal is usually blocked or off the
+384 m combat zone, so `requestBotPath` fell back to "nearest walkable cell to the goal". On real
+terrain that cell is routinely across a lake or a ridge, in a **different connected region**: A* failed
+a second time, the caller got an empty path, cleared `exploreGoal`, and picked another goal exactly as
+unreachable. Forever. Combat worked throughout because a pursue/cover/seek goal is metres away, in the
+bot's own region.
+
+Two changes, and the reason there are two is that they fix different halves:
+
+- `nearestWalkableInGrid(grid, x, z, region)` takes an optional region, and the zone branch passes the
+  bot's own. A retarget the bot cannot reach is worse than none — it burns the retry.
+- `updatePatrolMovement` routes a failed explore goal through the **same local fallback** a cut-off
+  patrol point already got (`localPatrolFallbackGoal`), for `PATROL_EXPLORE_RESCUE_MS` (8 s), then
+  tries exploring again. That rescue existed but was gated behind `points.length > 0`, so open terrain
+  could never reach it.
+
+`test-explore-retarget.mjs` reproduces the whole thing against the real nav-grid on a map split by an
+impassable channel: it asserts the unconstrained retarget lands on the far bank and fails, and that the
+region-constrained one paths and heads toward the goal.
+
+The two `TEMP diagnostic` console logs from the 2026-07-19 investigation into this are removed. Note
+they had gone stale: `[botpath]` only instrumented the **local-window** branch, while Phase D
+(2026-07-30) made the **zone** branch the live path on terrain, where the bug actually was.
+
+### Switching body kind froze the game
+
+`Cannot read properties of null (reading 'flush')`, repeating as `Uncaught (in promise)` from
+`multiplayer.js`. `rebuildBotBodies()` destroys every rig so the next frame rebuilds it from
+`getDesign()` — but a corpse mid-ragdoll is *posed from that rig every frame*, and the ragdoll branch
+of `_updateProceduralBodyLod` was the one place that dereferenced `ud.bodyProc` without a null check.
+It also leaked a slot from the live-corpse budget, since only `_retireRagdoll` decrements
+`_ragdollAwake`. Fixed on both sides: `rebuildBotBodies` retires a live ragdoll before dropping the
+rig, and the branch is guarded. Covered by `test-ghost-renderer.mjs`.
+
+### The `!grounded` term condemned 92% of the terrain zone (2026-08-08)
+
+The real reason bots stood still on open terrain, found by instrumenting the bake rather than by
+reasoning about it. A per-cause tally printed with the zone bake reported:
+
+```
+[bot zone bake #1] 256x256 @1.5m over 384m, 4354 walkable, 24 carved cells, 89 stranded region(s)
+[bot zone walkability] 65536 cells: walkable 6.6% · rejected by water 0.0% · slope 0.7% · trees 0.0%
+                       · rocks/dressing 0.6% · mesh 92.0% · no height 0.0% (water level -70.0)
+```
+
+`botMeshBlockedAt` stands a probe capsule at the cell and asked `blocked = !grounded || pushedXZ >
+tol`. But the probe is seated at `groundY + radius + 0.02` — its lowest surface point is 2 cm **above**
+the sampled ground — and `map-collision.js`'s `resolveOnce` only reports contact when a triangle comes
+within the capsule radius. On accurately-sampled ground the probe therefore touches nothing,
+`grounded` is false, and the cell is called blocked. The rule was inverted in effect: the 6.6% it
+passed were the cells where the mesh rises INTO the capsule, which are the obstacles.
+
+**Fixed by dropping the `!grounded` term.** Lateral push is the whole signal — standing here, does the
+mesh shove the capsule sideways. A pure vertical push (resting on ground, or on a slope) does not
+count, and no contact at all now means "nothing in the way", which is the right bias: whether the
+ground *exists* is already answered by `terrainHeight` and the water/slope tests, not by this probe.
+
+**A first attempt was falsified by its own test and abandoned:** seating the probe 3 cm *into* the
+ground made contact reliable but leaked vertical penetration into a lateral push on slopes — 0.077 m
+on a 45° face against a 0.05 m tolerance, so steep-but-walkable ground would have become "blocked".
+`test-nav-mesh-probe.mjs` models the capsule/plane geometry (three-mesh-bvh is not installed for Node)
+and checks the shipped rule at the *real* slope limit — `atan(0.9/1.5)` = 31°, since
+`BOT_TERRAIN_SLOPE_TOLERANCE` rejects anything steeper before this probe runs — where the lateral push
+is 0.013 m, about 4× under tolerance. It keeps the falsified 3 cm seat as a negative guard so nobody
+re-seats the probe without re-checking slopes.
+
+Note the earlier region-constrained retarget and explore rescue (previous section) were aimed at a
+contributing cause, not this one. They stand on their own merits; this is what actually stranded the
+bots.
+
+### Bots exiled themselves, and the interim leash (2026-08-08)
+
+Once the walkability fix let bots move, they moved *away*. `rec.exploreHeading` is rolled once at
+spawn and never changes, and every explore goal is 80-300 m along it, so an unleashed bot walks a
+straight line outward forever — six of twenty-one were found 600 m to 1.1 km out, beached on coastline
+outside the 384 m combat zone, while the fight was inside 150 m of the player.
+
+`leashedExploreAim(pos, spawn, heading)` is a pure helper feeding `nextExploreGoal`: inside
+`BOT_LEASH_RADIUS` (140 m of `rec.spawnPos`) the bot keeps its own heading and full range; outside it,
+the heading points home and `maxDist` is clamped to the distance to spawn, so a goal cannot overshoot
+onto the far side and start a fresh outbound leg. A cached goal that leads *further* from spawn is
+invalidated, and a leashed pick ignores `rec.exploreHistory` — the history exists to stop a bot
+re-picking where it has been, which is exactly what going home is.
+
+This is deliberately interim. The intended model is bots that belong to authored map locations and
+only exist while a player is near; the leash is the same mechanism with `spawnPos` standing in for a
+spawn location, so that work changes the anchor rather than the machinery. `BOT_LEASH_RADIUS` is a
+first guess, not a tuned number.
+
+`test-explore-leash.mjs` simulates 40 goal-hops both ways (unleashed ends 3 km+ out, leashed stays
+bounded) and diffs its copy of the helper against the viewer's, since the viewer inlines it.
+
+### Bots walked up to each other and froze (2026-08-08)
+
+Two bots on opposite teams closed to contact and stopped — weapons down, neither firing. The roster
+overlay read `pursue … fail0 … STUCK`, and zero path failures on a bot going nowhere is the
+contradiction that located it. Two causes, both in the pursuit path, both needed:
+
+- **`pursuitStandoffGoal` handed out goals nobody could path to.** It skips any approach bearing
+  another pursuer has claimed, so attackers converge from different sides. When *every* bearing was
+  claimed it fell through to `return direct` — and the direct point is only ever reached when it is
+  unwalkable, because offset 0 is tried first. So in a converging group everyone after the first got
+  an unpathable goal. It now keeps the best walkable-but-claimed bearing in `shared` and returns
+  `shared ?? direct`: crowding on one approach is what separation steering is for, standing still is
+  not.
+- **`updatePursuitMovement` swallowed the failure.** Unlike patrol it never touched `pathFailCount`,
+  so an empty path just zeroed velocity and returned. `BOT_PURSUE` is only left by getting *closer* to
+  the target, so a bot that could not move could never exit it — parked indefinitely, reporting
+  `fail0`. It now returns early when the request was merely `refused` (budget or cooldown, which
+  retries on its own), otherwise retries toward the target's own ground snapped into the bot's own
+  region via `nearestWalkableInGrid`, and counts a genuine failure so the existing
+  `BOT_STUCK_ESCAPE_RETRIES` ladder engages.
+
+## Moss on the ground, and vines that read as ivy (2026-08-09)
+
+Reference-audit items 3 and 5, both first-pass features that were present but not *reading*.
+
+### Moss was only ever on wall caps
+
+`mossWeight` drove the up-facing caps of walls and cover, and on 0.3 m walls that is a strip you
+cannot see from a playing camera. Every reference puts moss on the **ground** — carpeting the floor
+(01, 02), furring every up-facing stone (10), packed into corners (12).
+
+`groundMoss()` now runs in both `floorMat` and `terrainMat`, gated through the same shared
+`mossWeight` law on `normalWorld.y`, so it takes the flats and channels and leaves steep faces bare
+— which is the "moss on horizontals" the audit actually asked for. It is a **single** noise tap
+rather than an fbm, because the ground is most of the screen. Theme fields `mats.floor.mossColor /
+mossGain / mossScale` are optional and read with `??`, same pattern as the concrete block, so the
+other six themes keep a bare floor.
+
+The cap mask also widened from `smoothstep(0.5, 0.9)` to `(0.3, 0.75)` and the wall/cover moss gains
+went up, so the caps that *are* visible now carry it.
+
+### Vine leaves were flat diamonds, several of them black
+
+Two faults with one cause. The cards were 4-point quads with a forced `(0,1,0)` normal, laid
+horizontally. Horizontal is wrong for ivy, and it is also why they went black: a horizontal card
+seen from below gets a downward normal under `DoubleSide` and takes no key light.
+
+Leaves now lie **in the wall plane facing outward**, the way ivy actually grows (reference 12).
+That is more faithful *and* self-fixing: the wall is opaque behind the leaf, so you only ever view
+it from the lit side. Shape is a 5-point fan with mild lobing (`r = size * (1 + 0.2*sin(2a))`) so
+the outline reads round rather than as a regular polygon, scattered across the strand rather than
+threaded on it, at 8 per strand instead of 5.
+
+The ribbon is no longer leaf-coloured: `push(..., stem = true)` routes it to a woody red-brown that
+grades toward the tip colour, which is reference 12's red stems.
+
+Geometry cost per strand went from ~14 triangles to ~52. A dense maze at the default vine density is
+therefore in the low hundreds of thousands of triangles for vines alone — the *distribution* and
+*leafiness* sliders are the dials if that bites.
+
+## Elevated geometry: overhangs and openings (2026-08-09, `bot-structures.js` + `bot-viewer-v3.html`)
+
+The reference set's most-repeated architectural move is the **soffit** — a slab you fight *under* —
+and its second is an **opening** punched through a mass. Every box in the viewer was an upright
+solid, so neither existed. Both are now one new primitive.
+
+### Slabs
+
+A slab is `{x, z, w, d, y, h}` with `y` the **underside** above local ground. `layout.slabs` flows
+into `activeSlabs`, is placed by `slabTransformOnTerrain` (underside above the *highest* ground
+under the footprint, so a slab spanning a dip keeps its headroom), and renders with `wallMat`.
+
+What makes it work is what it is **absent** from:
+
+| List | Slabs in it? | Consequence |
+|---|---|---|
+| `activeWalls` / `pointInWall` | no | bots walk under an overhang instead of pathing round thin air |
+| `sightBlockers` | no | LOS passes underneath, as it does in reality at these heights |
+| `mapRoot` (BVH collider) | **yes** | bullets and capsules still stop against it |
+
+That asymmetry is the whole design. A slab listed as a wall would carve a hole in the nav grid
+where there is nothing but air, and the cover FSM would generate corner records for a shadow.
+
+**The one invariant**: every slab's `y` must clear a standing bot, or it becomes a trap — nav does
+not know it exists, so a bot walks straight in. `test-bot-structures.mjs` asserts this over a
+generated map rather than trusting the generators.
+
+### Openings
+
+`wallRun` now returns `{ walls, covers, slabs }`, because one opening emits three kinds of geometry:
+
+- **Door** — gap in the wall, plus a lintel slab from `doorHeight` to `wallHeight`. Previously a
+  doorway was a full-height slot; now there is concrete over your head as you go through.
+- **Window** — the same, plus a **sill emitted as `cover`**. That is deliberate rather than lazy:
+  a sill's behaviour *is* cover — it blocks movement and you shoot over it — so putting it in the
+  cover list gets the FSM and the nav grid right for free.
+
+`wallHeight` must be passed as the viewer's live `WALL_H`; a stale value leaves a floating lintel or
+a gap over every door, which the test also covers.
+
+### Portals
+
+A new structure kind: two piers carrying a deck at `wallHeight`. This is references 03 and 07
+directly — the underpass — and the only structure you fight *under*. Piers are walls (they block
+sight and movement); the deck is a slab (it blocks neither). Selectable in the structure-mix
+dropdown, and included in `mixed`.
+
+Note `mixed` now rolls from four kinds rather than three, so **existing structure seeds produce
+different maps**.
+
+### Flora
+
+Slabs reach `bot-flora.js` as their own `vineBoxes` list, not folded into `wallBoxes`: vines hang
+off canopy and deck edges (references 09 and 12), but slabs must not become ground keep-outs,
+because grass grows right up under a soffit in references 03 and 07.
+
+## Eco-brutalism: concrete surfaces and growth (2026-08-08, `bot-viewer-v3.html`)
+
+A theme where the map is cast concrete slowly going back to the ground. Reference photographs are in
+`references/eco-brutalism/`. Three parts, each independently switchable: a **theme**, a **concrete
+material treatment**, and a **flora system**.
+
+### The two optional theme blocks
+
+The existing seven themes are a closed shape — `validateTheme` asserts every field of every section,
+and `normalizeTheme` backfills a saved slot from `THEMES[DEFAULT_THEME]`. Rather than widen that shape
+and edit all seven, concrete and flora are **optional blocks**, deliberately absent from
+`THEME_SECTIONS` and `REQUIRED`:
+
+| Block | Lives at | Read via | Default |
+|---|---|---|---|
+| Concrete | `mats.wall.concrete`, `mats.cover.concrete` | `concreteFor(matBlock)` | `CONCRETE_OFF` (gain 0) |
+| Flora | `theme.flora` | `floraFor(theme)` | `FLORA_OFF` (density 0) |
+
+Both merge over their defaults, so every read site gets a complete object and no caller writes `?? 0`
+per field. A theme that omits a block gets zeroes and renders exactly as it did before — which is what
+`test-bot-flora.mjs` asserts for all seven pre-existing themes, one check each. `cloneTheme` is a deep
+JSON clone and `normalizeTheme` only ever *adds* missing keys, so both blocks survive a save/load slot
+round trip with no plumbing in the slot code at all.
+
+### Concrete (`concreteAlbedo` in `bot-viewer-visuals.js`)
+
+`wallMat.colorNode` and `coverMat.colorNode` were bare colour uniforms; they are now a node graph
+over that colour. Walls and cover own **separate uniform sets**, so cover can weather harder — it sits
+at ground level in the wet and is small enough to be swallowed.
+
+Every box in a layout is axis-aligned (unit `BoxGeometry`, scale-and-translate instance transforms
+only), so the local normal names a world axis directly and world XZ/Y serve as the surface's own
+coordinates. No tangent frame is needed or built.
+
+- **Form-panel grid** — a recessed joint wherever two form panels met (`panelW`/`panelH`/`seamWidth`).
+  References 07, 08 and 12 are panel-formed, which is why this is the primary system.
+- **Board-form grain** — a line at each board edge, *plus a per-board tone offset*. The tone offset is
+  what actually sells board forming: every board pours a slightly different shade, and the lines alone
+  read as a decal rather than a construction method. References 04, 05 and 13.
+- **Form-tie holes** on their own coarser grid.
+- **Exposed aggregate** — high-frequency speckle over slow patina blotching (reference 12).
+- **Rain streaking** — noise that varies *only* along the wall run, so it reads as vertical columns
+  rather than blotches, faded down from the top edge over a per-column length.
+- **Growth**, in two terms that are deliberately not one:
+  - `mossWeight()` from `moss-tint.js` — the repo's one moss law, shared with env-viewer's terrain and
+    rocks — drives the **caps only**. Its `upness` gate hard-zeros below normalY 0.45 by design: moss
+    holds on tops, not on cliffs.
+  - The damp green creeping up the **base of a vertical face** (references 01, 10, 12) is a separate,
+    simpler `algae` term. Feeding a fake `upness` into the shared law to make it do something it says
+    it does not would have been the wrong fix.
+
+**Cost, stated plainly.** This evaluates three value-noise taps per fragment on *every* theme, not just
+the ones with `gain > 0` — `gain` is a uniform, so the graph cannot be branched away, and the
+alternative (a second material swapped per theme) means a pipeline recompile on every theme switch,
+which `bot-viewer-visuals.js` exists to avoid. `patina` is shared between the mottle and the moss
+break-up rather than each taking its own fbm, which saves a tap and is if anything more correct. If
+this shows up in a profile, the material swap is the fix, not a cheaper noise.
+
+### Flora (`bot-flora.js` + `bot-flora-place.js`)
+
+Ported from the environment viewer's vegetation subsystem, with one deliberate simplification:
+env-viewer streams chunks around a moving player across an infinite world, and a bot arena is a small
+bounded box fully in view, so this places the whole map in **one pass and never streams**.
+
+| Part | Source | Notes |
+|---|---|---|
+| Grass | `grass.js` (`createGrass`) | One merged field, square mode, positioned at the arena centre |
+| Understory plants | `plants.js` / `plants-placement.js` / `plants-gpu.js` | Lazily imported; one `'arena'` chunk replaces the streaming window |
+| Vines | new, in `bot-flora.js` | No env-viewer counterpart |
+
+`bot-flora-place.js` is the pure half (no three.js), tested by `test-bot-flora.mjs` — the same split as
+`bot-viewer-visuals-style.js` / `bot-viewer-visuals.js`.
+
+**Keep-outs.** Wall and cover boxes widen by `clearance` into rectangles; spawn points contribute pad
+rectangles. A blade landing inside one is *dropped as a gap*, never relocated — the same mechanism
+`grass.js` already used for submerged blades, reached through a new optional `acceptFn(x, z, y)`
+option (backward compatible; env-viewer does not pass it). The clearance is not cosmetic: a blade
+planted flush against a wall pokes through it from the far side, because a blade is a flat card with
+no thickness. Below roughly 0.2 m it starts showing.
+
+**The blocker index.** A maze layout is ~950 wall boxes and a grass field is tens of thousands of
+placement attempts; the linear scan that product implies is tens of millions of rect tests per rebuild.
+`buildBlockerIndex` buckets rects into a uniform grid. The test asserts the index never disagrees with
+the brute-force scan it replaces, over 4000 samples and at two different cell sizes.
+
+**The density subtlety.** `createGrass`'s square mode scatters uniformly over a *square*, and an arena
+is generally a rectangle. Sizing the request to the rectangle's area would thin the field by the
+rectangle's aspect ratio. So `bladeBudget` sizes the request to the bounding square and the overspill
+outside the rectangle is dropped by the same `acceptFn`.
+
+**Plant distribution** (fixed 2026-08-08 after the first browser look). Three things were wrong, and
+the first was a real bug:
+
+1. A chunk is necessarily **square** — `plants-placement.js` scatters over `size` on both axes — and
+   an arena is a rectangle. `floraChunk` originally anchored that square at the padded bounds'
+   *corner*, so the entire overspill landed past **one** edge: on the rooms map, an 18 × 18 square
+   over an 18 × 12 arena put a third of the plants in a 6 m band off the south side. The square is
+   now centred, and — the actual fix — the plant filter tests `inRect(padded, …)` as well as
+   `isBlocked`. `isBlocked` cannot catch this: outside the index it correctly reports nothing
+   blocking, because out there is nothing at all. The grass path already had this test; the plant
+   path did not, and that inconsistency was the bug.
+2. `clumpRadius` defaults to `chunk.size * 0.16`, which is fine when a chunk is one tile of a
+   streamed world and useless when it is the whole arena — 2.88 m on the rooms map, at which a dozen
+   clumps overlap into flat scatter and the clumping silently does nothing. Now set explicitly
+   (`plantClumpRadius`, 1.2 m).
+3. Nothing told the placer that walls matter, so plants scattered evenly and said nothing about the
+   architecture — where every reference photograph has the understory **massed against the
+   concrete**. `wallAffinityMask` feeds `plants-placement.js`'s `densityAt` hook with a quadratic
+   falloff from the nearest keep-out rectangle. Because `densityAt` is a rejection gate it only ever
+   *removes*, so `plantDensity` is now the **near-wall** density and `plantOpenFloor` (0.25) is the
+   fraction surviving in the open — which is why `plantDensity` rose from 0.22 to 0.55 in the same
+   change and is not an increase in the plant count.
+
+`nearestBlockerDist` reuses the blocker index, searching only the cells within the reach, so the mask
+costs the same whether the map has eight walls or nine hundred.
+
+**Per-species controls** (2026-08-09). The Flora card carries a species dropdown plus a height and a
+density slider, writing into the theme's `speciesHeight` / `speciesDensity` maps (absent key = 1x).
+The two cost very different amounts: **height** is baked into the palette geometry, so
+`createPlantPalette` gained a `heightScale` option and changing it tears down and re-bakes the whole
+plants-gpu host (keyed on the map's signature, so a rebuild that didn't touch it reuses what's there);
+**density** only reweights the species table `plants-placement.js` picks from, so it costs a
+re-placement and nothing more. Density is relative, not absolute -- raising one species crowds out the
+rest rather than adding plants. `floraFor()` deep-copies both maps, because a plain spread aliases
+`FLORA_OFF`'s own objects and the panel writes directly into them.
+
+**Vines** hang from wall **top edges**. `vineAnchors` takes the *rendered* boxes — the output of
+`boxTransformOnTerrain`, not the layout rectangles — so a wall sunk into a hillside grows its vines at
+its real top rather than at `WALL_H`. Each of a box's four top edges is walked independently: a wall
+running along X is a long box with a thin depth, so its two long faces collect nearly every strand and
+its 0.3 m end caps collect none, which falls out of the edge length with no special-casing of wall
+orientation. Fractional strand counts are treated as a **probability**, not truncated — a `floor()`
+there would silently strip every short wall segment out of a maze, which is most of a maze.
+
+Three controls shape them: **distribution** (`vineClump`) lerps each strand from its evenly-spaced slot toward one of a few bunch centres on that edge, so 0 is even spacing and 1 is tight bunches with bare stretches between; **leafiness** scales both the card count and card size; **branching** is the chance a strand forks into a shorter, thinner one partway down, one level deep only (branches of branches double the geometry for something nobody can pick out at this size). A strand is a tapering ribbon that leaves the top edge, bellies away from the face and falls back
+against it (one that hung straight down read as a wire, not a plant), with leaf cards along it. Leaf
+normals point up rather than along the card, the same trick `plants.js` uses on its shrub clumps —
+a flat card lit by its own face normal flickers black as the camera orbits. Wind rides on a per-vertex
+weight, squared in the shader, exactly as `grass.js` does it.
+
+### Wiring in `bot-viewer-v3.html`
+
+- Flora owns **its own group under `scene`, not `mapRoot`**. `applyLayout` tears `mapRoot` down by
+  disposing every geometry it finds, which would destroy the plant palette's shared baked geometries —
+  those are built once and reused across every layout.
+- `applyLayout` now keeps `activeWallBoxes` / `activeCoverBoxes` (the terrain-sunk boxes it was
+  previously building inline) because flora reads the same boxes for keep-outs and vine anchors.
+- `createVisualSystem` gained an **`onLookChange`** callback, fired at the end of `applyAll()` and by
+  the flora toggle. A theme switch swaps the `flora` block, and flora is geometry that module does not
+  own, so it reports the change and the host rebuilds. `flora` is declared as a `let` *before*
+  `createVisualSystem` because that constructor applies the theme, which fires the callback once before
+  flora exists — a `const` would be in its temporal dead zone.
+- `flora.update()` is **awaited** in the frame loop: the plant pass is a compute cull whose indirect
+  draw counts this frame's draw reads, and an unawaited compute races the draw. It reports as the
+  `flora` phase in the frame profiler.
+- Panel: a **Flora** card whose sliders edit the *active theme's* flora block in place, the same way the
+  look sliders edit its colours — so they ride along in look slots and save/load slots with no extra
+  plumbing. Wind commits live; everything else rebuilds geometry and so commits on release, for the
+  same reason the terrain sliders do. Two new toggles, *Concrete weathering* and *Flora*, join the
+  Visual toggles card.
+
+### Status
+
+Node-tested (`test-bot-flora.mjs`, 63 checks); the seven existing themes, `test-bot-viewer-visuals.mjs`,
+`test-moss-tint.mjs` and the nine grass/plant suites are unchanged and green. Not yet looked at in a
+browser, so the numbers in the theme's `flora` and `concrete` blocks are first-draft values chosen from
+the reference photographs, not tuned against a render.
+
+## Drone operators (2026-08-10, `bot-drones.js` + `flight-meshes.js` + `bot-viewer-v3.html`)
+
+A sixth role that fights through aircraft instead of through its rifle. The operator is a rear-line
+body: `standoffScale: 1.9` (a new `ROLE_DEFAULTS` field, read by `botWeaponStandoff`) puts it at a
+sniper's distance — ~20 m with the 120 m `cz_805_bren` — without giving it a sniper's gun, and
+`sightScale: 1.35` is what lets it point drones at things the line has not reached yet.
+
+The craft themselves are the flight sim's, not new art: `flight-meshes.js` was split out of
+`demos/flight-sim.html` so both pages build the same quad and the same fixed wing. Materials are a
+caller-supplied `{ standard, basic }` pair, because the sim runs node materials and the bot viewer
+does not. The sim's own render is unchanged — `buildMesh` there is now one call into the module.
+
+### The two aircraft
+
+| | Bomb drone (quad mesh) | Loitering munition (fixed-wing mesh) |
+|---|---|---|
+| Count | **one, reusable**, per operator | expendable, 2 carried by default |
+| Slot | one man flies one aircraft (`aloftMax` 1) | shares that same single slot |
+| Cruise | 14 m, 9 m/s | 20 m, 10 m/s |
+| Cycle | climb → attack → egress → **dock in the operator's hands** → reload (7 s) | climb → orbit a drifting centre → dive |
+| Kill | 46 damage / 5.5 m blast per bomb, 2 bombs a sortie | 62 damage / 5 m blast, spent on impact |
+| Ends when | the operator dies (it falls) | it hits, or endurance (80 s) runs out |
+
+Both fly in `bot-drones.js` — pure array math, no THREE, Node-tested in `test-bot-drones.mjs`. The
+viewer owns the meshes, the projectile, the blast and the sound, exactly like the grenade split.
+
+### Bombing is a solved release, not a proximity check
+
+`bombLead(height, speed, gravity, vy)` returns how far short of the target a bomb has to leave the
+rack: release speed × time of fall, with the drone's own vertical velocity in the fall time. The
+drone drops when it is aligned (≤ 0.3 rad), level (± 3 m of cruise) and exactly that far out.
+
+Two things were wrong on first authoring and both looked fine in isolation:
+
+1. **The second bomb landed 3 m long, every sortie.** Release happens a lead-length *short* of the
+   target, so 1.6 s later the drone is still aligned and still closing — the drop gate passed again
+   from inside its own lead distance. Fixed by flying a real go-around (`reattack`) after every
+   release, plus a `dropWindow`: a pass that arrives late is spoiled, and a spoiled pass goes around
+   rather than dropping long.
+2. **The go-around never came back.** Its turn point was recomputed each frame from the live
+   heading, so the drone chased its own tail in a 7 m circle over the target forever. The turn point
+   is now frozen when the pass ends.
+
+Measured after both fixes: every bomb of a sortie lands within 1 m of a stationary target, from four
+different approach bearings. That is the claim `test-bot-drones.mjs` asserts.
+
+### One man, one aircraft
+
+`aloftMax` (1) caps how many drones an operator has **in the sky**, and "aloft" means *on task*: a
+bomb drone shadowing him or sitting in his hands is not flying a mission and does not hold the slot.
+So a munition can go up while the bomb drone waits, and the viewer sets `standDown` on the bomber
+while one is out, which brings it down to the dock rather than leaving it circling — the slot is
+visible from the ground, not just a number. `bomberReady` is the other half of the decision: whether
+that parked drone could be sent right now, which is what decides if the slot goes to a munition
+instead. A bomb drone that already exists is **re-sent by the module**, never re-spawned by the
+launch path — spawning one that exists is how an operator ends up with two.
+
+### Dead stick
+
+The bomb drone is being *flown* by the operator, so when he dies it does not vanish: `orphanDrone`
+puts it in `deadstick` and whatever is still on the rack goes off where it lands. `detonateBlast` has
+never cared about teams, so a wreck coming down on the operator's own squad hurts them, which is the
+intent rather than a case to filter out. A dry drone just breaks. The loitering munition is
+unaffected by his death: it is fire-and-forget and finishes its errand.
+
+**Being shot down is the same problem, and used to have the opposite answer.** A laden bomb drone
+killed by gunfire simply disposed itself in mid-air, so shooting the aircraft was *safer* for
+everyone underneath than shooting the pilot. `damageDrone` now rolls `deadstickChance` (1 in 3) on a
+lethal hit above 2 m: on the roll it stops being flown instead of coming apart, and a second hit
+while it falls finishes it normally — which is also what stops the roll re-rolling forever.
+
+`crippleDrone(d, { wild, phase })` puts **either** airframe into dead stick, in one of two flavours
+(`deadstickWild` splits them, default half and half):
+
+- **fall** — ballistic, drag, tumbling: straight down from wherever it was hit.
+- **wild** — the rotors still bite but nothing is steering. It flies off on a wandering heading,
+  sinking, until `wildS` (6 s) of power runs out and it drops the rest of the way. The wander is
+  summed sines off a per-drone `phase` rather than per-frame noise, which reads as a stutter rather
+  than as a drone, and the sines are deliberately **slow** (0.55 and 0.23 Hz): a fast oscillation
+  circles one spot like a trapped fly instead of carrying away. A drone hovering when it was hit has
+  no speed to run with, so `crippleDrone` gives it the airframe's own speed along its last heading —
+  without that, a wild dead stick was indistinguishable from a plain fall.
+
+Either way the wreck reports what it was carrying. `out.bombsAboard` scales the crash blast by **every
+bomb on the rack** (it was capped at two, an arbitrary first-draft number, while the slider goes to
+six), and `out.warhead` is what tells the viewer a *munition* has landed: a loitering drone is itself
+the warhead, so it goes off whether or not it was carrying anything.
+
+### Spares are finite
+
+The bomb drone is reusable, which used to also mean free: destroyed, it respawned at full HP with a
+full rack after `bomberCooldownMs` (4 s), forever — so shooting one down bought four seconds, while
+the munitions beside it were a hard, non-replenishing stock. Each loss now counts against
+`bomberReplacements` (**1** by default), and past that the operator has no bomb drone for the rest of
+the match: he fights on with whatever munitions remain and his rifle. Only a drone removed by
+`updateBotDrones` counts — *Ground every drone* on the panel is a debug button and must not spend an
+operator's spares. The **Bot readout** `drones` row shows what is left (`spares 1, munitions 2`),
+because an operator with nothing coming otherwise looks exactly like one with an aircraft on the way.
+
+Worth knowing while tuning: `bomberCooldownMs` paces the *first* launch and any replacement, not
+repeat sorties. Once the aircraft exists, `stepBomber` sends it back out from the rack as soon as it
+has a target and bombs, so an established bomber is paced by flight time plus `reloadS`.
+
+### The bomber is a multirotor, so it can stop
+
+`cruiseTo` renormalises velocity to the airframe's cruise speed every step, which is a fixed wing's
+constraint and was applied to both aircraft. The bomber now has `canHover`, and with it `hoverTo` —
+a commanded velocity straight at the goal that may be zero, first-order because a quad still has
+mass, it just has no turn radius. `advance` keeps the last heading below 0.5 m/s, since a hovering
+drone has no velocity to read a facing off and would otherwise spin on numerical noise.
+
+Two behaviours fall out of that:
+
+- **Hover-drop.** It stops directly over the target at `hoverDropAlt` (11 m) and releases once it is
+  within 0.6 m horizontally and under `hoverDropSettleSpeed` (0.35 m/s). The bomb falls straight
+  down, so there is no lead solution and no go-around: measured miss 0.53 m and 0.03 m for the two
+  bombs of a sortie, against 0.05–0.7 m for the flying pass. The cost is a stationary drone at 11 m,
+  which is exactly what air defence wants. `hoverDropSpeedGate` picks the attack: a target moving
+  slower than 0.6 m/s is bombed from a hover, anything faster gets the flying pass, because a bomb
+  released from a hover lands where the drone is, which is behind anything that moves. A hover drop
+  whose target starts walking switches to a pass mid-attack.
+- **The dock, and the shadow.** Rearming is a man hanging bombs on a rack, so the drone descends to
+  `dockAlt` 1.0 m, `dockOffset` 1.5 m in front of the operator's facing (clear of his shoulders — the
+  airframe is about a metre across), holds a commanded heading rather than drifting on its last one,
+  and the reload clock runs only while it is within `dockRadius` of that point: a drone that never
+  reaches its operator never rearms. Only an **empty** rack is worth that. A loaded drone with
+  nothing to bomb `shadow`s him instead, at 5 m over his shoulder, and follows him as he walks —
+  otherwise an idle operator spends the match servicing a full drone.
+
+### Targeting
+
+- **The operator** only ever points a sortie at what its own FSM can see or has just seen (visible
+  target, else `lastKnownTarget`). Around that point it gathers enemies within `seedRadius` (12 m)
+  and `pickDroneTarget` picks the best cluster, so a drone goes to the pair standing together rather
+  than to whoever happens to be nearest. The pick is passed `minTargetRange` as well as `from`: the
+  launch gate checks the *seed*, and without this the cluster pick could then choose a neighbour up
+  to a `seedRadius` nearer the operator — inside the range his own blast reaches.
+- **An aircraft flies with the numbers that were on the sliders when it launched**, and that now
+  includes damage and blast radius. They were the one exception, read live at the moment of
+  detonation, so nudging the damage slider mid-sortie changed the bomb already falling and could
+  differ between bomb one and bomb two of the same pass. A dropped bomb carries its own numbers on
+  the projectile, since the drone that released it may be long gone by the time it lands.
+- **In the air** the drone re-acquires for itself, every frame: nearest live enemy within
+  `scanRadius` (45 m). It keeps the lock it already has while that one is still in view and makes a
+  rival be `DRONE_LOCK_MARGIN` (25%) closer to steal it — the same anti-flicker idea the ground FSM
+  has, and without it two bots at equal range trade the lock every frame and a bomber loses its run
+  to the flip.
+- **Memory is a direction to go and look, never a reason to drop anything.** With nothing in view the
+  drone flies the operator's last assignment, then its own last sighting, for `DRONE_SEEK_LOST_MS`
+  (6 s) — but the point is flagged `stale`, and stale implies `holdFire`. It arrives, finds nothing,
+  and does not attack. Three compounding bugs made "drones bomb bare ground" the normal case:
+  1. The operator re-stamped each assignment with `now` every think tick, so a sighting from half a
+     minute ago stayed permanently "fresh". Assignments now carry `lastKnownTargetAt` — the age of
+     the **sighting** — and a sighting older than `DRONE_SEED_MAX_AGE_MS` (4 s) does not launch one.
+  2. `stepBotDrone` stored whatever point it was flying as `d.aim`, including a remembered one. So the
+     assignment lapsed, the drone adopted the same stale point as its new last-known, and renewed its
+     own ghost indefinitely. A stale point is now flown toward but never stored.
+  3. Nothing distinguished "I can see it" from "I remember it" at the release gate, so a loiterer
+     would dive into empty ground and a bomber would drop on it.
+- **It has to be able to see it.** `droneSees` raycasts from the aircraft to the candidate before
+  accepting it, budgeted at two rays per drone per frame (the current lock, then the nearest as a
+  fallback) because this runs every frame for every drone. Anything occluded is not a sighting: it
+  drops through to the memory branch above, which is `stale`, which holds fire. That is the whole
+  chain that stops a hover-drop through a roof — no new machinery, just the existing one told the
+  truth. The airframe itself still has no collision, so drones fly *over* walls freely; they simply
+  cannot attack through them any more.
+- **A run it can never release is given up.** `holdGiveUpS` (6 s) counts time spent in an attack
+  state under `holdFire` and egresses past it. Without it a drone held off by a roof or by an ally
+  hovers over the spot for as long as the operator keeps feeding it the same point, which is forever.
+- **Friendly veto**: a drone holds FIRE if any ally sits within 1.1 × its blast of the aim point —
+  the same rule the grenade AI has, but expressed as `holdFire` rather than as a lost target. The
+  bomber flies its pass and simply does not release; a diving loiterer waves off and climbs back.
+- Blasts go through `detonateBlast` with a weapon-shaped literal (`drone_bomb` / `drone_kamikaze`),
+  so falloff, wall occlusion, knockback, squad alert reports and kill credit are the harness's
+  existing ones and not a second implementation.
+
+### Panel
+
+**Bots → Drones**, under Explosives: a sortie on/off toggle, a *Ground every drone* button, the
+**Drones frighten bots** and **Drone threat debug** toggles, and three subsections (bomb drone,
+loitering munition, both) covering altitude, speed, bomb count, reload, damage/radius, endurance,
+stock, cooldowns, camera range, cluster radius, run-rather-than-shoot share, dead-stick chance and
+its wild share, and model scale. Everything rides in the save slots as `drones`, the two toggles
+under `debug`. Composition gains a **drone operator %** input (default 0) and a **Spawn drone
+operator** button.
+
+**Bot readout** gained a `drones` row, because every number above was authored blind — nothing on
+screen said what an aircraft was doing. It lists, per drone the selected bot owns: kind and bombs
+left, state (including `deadstick/wild` vs `deadstick/fall`), height above its own ground, HP, what
+it is locked on or `>memory`, and `HOLD:stale` / `HOLD:friendly` when it is holding fire. Select
+anything that is not an operator and it falls back to a count of everything in the air.
+
+### The squad waits for him (S15)
+
+Servicing is hands-on, so the operator stops: he marks himself **busy** (`markBotBusy`), takes a
+`'service'` hold on the existing bot-to-bot hold channel, and kneels. Without the hold the kneel was
+just a pose over a bot still walking its patrol route — a bot sliding along the ground on its knees.
+
+The rest of his squad holds too, through a seam meant to outlive this one use:
+`squadHaltRequest(members, now, state)` in `bot-squad.js` takes each member's `{ busyReason,
+busyUntil }` and returns who the squad is waiting for. Reasons are **ranked** (`BUSY_ENGAGED` >
+`BUSY_MEDIC_TEND` > `BUSY_DRONE_SERVICE`) so two busy members do not fight over the halt, ties break
+on lowest id so it cannot flap, and the whole wait is capped at `SQUAD_HALT_MAX_MS` (20 s) so one
+stuck bot cannot freeze a squad for the rest of the match — with the clock restarting when a
+different member takes the halt over, because waiting for two people in turn is two waits.
+
+Only the drone operator marks itself busy today. **Medics mid-channel and bots in a firefight are the
+next two**: both already stop on their own, and marking them busy is what turns "this bot stopped"
+into "the squad waited for it". The halt is memoised per squad per frame (`haltComputedAt`), and it
+only bites in `PATROL`/`SEEK`/`PURSUE` — a member with a visible enemy fights rather than waits.
+
+### Air defence — what the ground does about it
+
+A bot with **no visible ground target** engages the nearest drone within `airEngageRange` (35 m,
+slant range, so altitude counts against it) that it has line of sight to, after an `airNoticeMs`
+reaction delay. It is an aim-and-trigger override laid over whatever the FSM already decided about
+movement, so a patrolling bot keeps walking and shoots upward rather than stopping to duel a drone.
+
+A gunfight outranks a drone *cruising* overhead, but no longer one that has **committed** — see the
+threat section below. With a ground target visible, only `droneTerminal` aircraft are considered.
+
+- **The close-range self-splash gate has to see what is actually being shot at.**
+  `updateBotWeaponSlot` takes the distance to the target and swaps to the sidearm inside
+  `role.closeRange` (10 m for a technical, drawn above the RPG's 8.2 m blast). It was fed only the
+  *ground* target's distance, which sits at `Infinity` in exactly the condition air defence runs in —
+  so a technical kept the RPG and rocketed a bomb drone hovering 11 m over its own head. It is now
+  fed `min(ground, air)`.
+
+- The drone is a hit volume in the same `resolveHitscan` call the ground target uses (`bodyRadius`
+  0.55-0.6 m), so one shot path serves both and a bullet can only hit one of them.
+- Hitscan needs no lead, so the aim point is the drone itself; a **projectile** weapon (a technical's
+  RPG) is led with `airLeadPoint` at the projectile's own speed.
+- Airframes have HP (bomber 30, munition 22) — a rifle burst brings one down. A shot-down aircraft
+  either comes apart in the air (a munition detonating where it was, a bomb drone simply breaking)
+  or goes **dead stick** and comes down still loaded — see above.
+- The shooter **keeps** the drone it is already on. `pickAirTarget` takes a `lockId`/`lockMargin`
+  (the drone's own commit dwell, pointed the other way), and a *single* blocked frame no longer drops
+  the lock — it takes `AIR_LOS_GRACE_MS` (600 ms) of continuous occlusion. Both exist for the same
+  reason: swapping or dropping restarts the `airNoticeMs` recognition delay, so a drone bobbing
+  behind a roofline, or two at similar range, left a bot perpetually half a second from firing and
+  never actually shooting. It still cannot shoot through a wall while blocked; it just keeps the
+  target.
+- Blasts reach up: `detonateBlast` now damages drones inside its radius too, so a rocket or grenade
+  under a drone is not wasted. That pass is **occlusion-aware** as of the same change — it was pure
+  distance, so a blast on one side of a wall damaged a drone on the other, while ground victims had
+  gone through `blastExposure` since it was written. One ray per drone, not the three-sample capsule
+  sweep: an airframe is a point at this scale. Victims are snapshotted and the centre read into locals first, because
+  a munition detonating from inside that loop re-enters the same function with the scratch vector.
+  **The drone is marked spent before its warhead goes off** — its own blast comes back through
+  `blastDamageDrones` with it at distance zero, and while it was still marked live that recursed
+  `detonateBlast → blastDamageDrones → damageDrone → detonateBlast` until the stack gave out and took
+  the WebGPU device with it. `test-bot-viewer-drones.mjs` parses that ordering out of the source,
+  since none of this can run in Node.
+- A shot at a drone does not feed the pursue-on-miss streak — that counter is about ground fights.
+- Air defence fires from whatever state the ladder left the bot in, usually patrol, so it sets
+  `airEngaging` and the weapon mount trains on that as well as on the firing states. Without it a bot
+  shoots at a drone out of a cross-body carry, which is the sniper-shooting-the-sky defect again;
+  `test-bot-fire-aim-sync.mjs` covers the air path too.
+
+### A committed drone frightens the bots under it
+
+A drone in its **terminal phase** — a bomber stopped overhead to release (`hoverdrop`), or a munition
+already diving — is a grenade with a longer fuse, so it goes through the grenade threat channel
+rather than a second implementation. `refreshGrenadeThreats` appends one entry per terminal drone
+marked `air: true`, and everything the bots already do about a live grenade follows for free: the
+warning call-out, the run for a nav cell the blast cannot see, the stance, and `reportGrenadeThreat`
+pushing an ally report — which means **being bombed is a bearing on the operator**, since the threat
+carries `throwerId`.
+
+**A bomb already off the rack is a threat too**, and is the most immediate one on the field. The
+projectile filter admitted only grenades, so bots stood still underneath live ordnance for its whole
+fall. It cannot use `sim.life` as a fuse — that is the 8 s flight cap, which would report six seconds
+left on a bomb one second from landing — so the fall is solved ballistically and the ring is drawn
+where the bomb will *land*, carried forward by its own horizontal velocity. It is deliberately not
+flagged `air`: you cannot shoot a falling bomb, so there is no run-or-shoot choice to make about one.
+
+Two details the drone threats could not inherit:
+
+- **The threat point is the impact, not the aircraft.** `droneImpactPoint` puts it where the blast
+  will actually be: straight down under a hover-drop, at the aim point for a dive. A ring drawn
+  around a drone at 14 m is nowhere anyone is about to be hurt, and the blast-shadow cover search
+  scores from that point.
+- **Run and shoot, decided by how close it is.** A grenade can only be run from; a drone can be shot
+  down, so a squad under one does both. Each bot rolls its own nerve once per drone and keeps that
+  number; it breaks when the roll falls under `threatFleeShare × √nearness`, where nearness is 0 at
+  the edge of the blast ring and 1 at the impact point. So at the edge nobody runs and everybody
+  shoots, and the closer the thing gets the more of them break — the share is what runs when it is
+  right on top of them, not a flat split.
+
+  The roll is per **attack run**, not per aircraft. The threat id is `${drone.id}#${runSeq}`, where
+  `runSeq` bumps each time that drone enters a terminal state. Keying on the drone id alone was
+  correct for a munition — spawned per launch, fresh id every time — and quietly wrong for the one
+  reusable bomber, whose id lasts the whole match: the first hover-drop of the game decided every
+  bot's reaction to that airframe permanently, so the proximity gradient stopped applying after one
+  encounter.
+
+  The decision **escalates and never reverses** while the bot is inside the ring: a bot that talks
+  itself back into standing still mid-run reads as broken. Running ends by *leaving* the ring —
+  `grenadeEvade` drops the threat past `blast × evadeExitScale` (1.25), and the next frame's chain
+  finds the bot with nothing to run from and a drone overhead to shoot at. Not running is not
+  passivity: it falls straight through to air defence, which is why committed drones are exempt from
+  the "a gunfight outranks the air" rule.
+
+Both halves are gated on the **Drones frighten bots** toggle, and **Drone threat debug** draws them:
+red ring where the blast will land, orange line up to the drone above it, amber lines for bots
+running (and where to), cyan for bots shooting back. It is the grenade overlay's twin and shows the
+one thing that one cannot — which bots chose which.
+
+### Three more bugs, all visible only on screen
+
+1. **The bomb drone kept flying back at its own operator.** Station keeping cruised *at* the home
+   point at 2.2 m altitude, so it overshot him, turned, and came back through him twice a lap — a
+   fixed wing's flight model on a quadrotor. It hovers at the dock now (above); the wing-only
+   fallback circles with `orbitAround` instead.
+2. **A friendly near the target sent the drone home.** The veto nulled the target, and a null target
+   means egress — with an ally drifting in and out of the ring the drone shuttled home and back.
+   Split into `holdFire` (above), plus a `targetGraceS` of 3 s so a blink in LOS does not end a run.
+3. **The aircraft flew tail first.** `Object3D.lookAt` points **+Z** at the target (only cameras and
+   lights point −Z), and the flight-sim craft are modelled nose-forward −Z. The pose now flips 180°
+   after the lookAt; the bank rolls with it.
+
+### Known gaps
+
+- The drone **airframe** still ignores walls and roofs — it flies over and through geometry freely.
+  Only its targeting and its ordnance are occlusion-aware now (`droneSees`, and the bomb's own
+  raycast). Real avoidance is a steering problem worth much less than the targeting fix was.
+- The state code's role slot still reads `r` for an operator, exactly as it does for snipers and
+  technicals.
+- The operator services its drone with a kneel and nothing else — no arm IK reaching for it.
+- `aloftMax` (default 1) caps one operator's sky, and the bomber now stands down only once munitions
+  *fill* that cap rather than for any munition at all — which is what made the slider above 1 do
+  nothing for it. They still leave one at a time: `decideDroneLaunch` returns a single kind per tick
+  and the cooldowns (4 s / 14 s) space them. Nothing releases two aircraft in the same instant.
+- Nothing caps drones **globally**, only per operator. A high drone-operator percentage puts one
+  aircraft per operator in the air with no ceiling.
+- The operator is effectively fed only by his own eyes, and he stands 1.9× further back than anyone
+  else — so the unit with the widest view in the game is seeded by the bot least likely to have a
+  target. **An earlier version of this doc said `bot-contacts.js` was unconsumed; that was wrong.**
+  `latestContactNear` already feeds every bot's `lastKnownTarget`, the operator included, and that is
+  exactly what seeds a sortie. The real problem is narrower: its radius is measured from the reader
+  to the **reporting ally** (`CONTACT_SHARE_RADIUS`, 18 m), standing in for "close enough to hear the
+  shout" — and a standoff operator is usually outside 18 m of the squadmates actually doing the
+  spotting. The cheap fix is a role field scaling that radius (the `sightScale`/`standoffScale`
+  pattern), or a team-wide variant with no reader-distance check at all, on the grounds that an
+  operator is trusting a radio rather than his own ears.
+- The drone's own sighting goes nowhere but its bomb. `droneTargetPoint` produces a clean
+  LOS-checked contact every frame from the highest vantage on the field and throws it away; pushing
+  it into `recordContact` would make the aircraft a spotter for the whole squad.
+- Numbers are first-draft: tuned in Node against the trajectories, never yet watched in a browser.
+
+## Squad orders (2026-08-12, `bot-orders.js`)
+
+The first piece of adversary mode. A commander who can only hold one thought at a time cannot run a
+battle, and that is literally what the game had: `commandTargetId` was **one module-level variable**,
+so ordering a second squad did not countermand the first order, it overwrote it.
+
+`bot-orders.js` is pure — no THREE, no DOM, no clock of its own — and is covered by
+`test-bot-orders.mjs`. `environment-viewer-v2.html` owns one `orderBook` and writes to it from the
+command wheel.
+
+### What actually changed, and what did not
+
+Movement behaviour is close to unchanged, and that is on purpose. Ordering a squad leader already
+moved the whole squad before this: the leader took the `command` branch of the out-of-combat chain,
+every other member failed the `activeBot.id !== commandTargetId` check, fell through to
+`updateSquadFormationMovement`, and followed the leader. That still happens. The four real deltas:
+
+| | before | now |
+|---|---|---|
+| **Plurality** | one order, game-wide | one order per addressee, any number at once |
+| **Addressing** | a bot id, only from a crosshair | a squad id (or a bot id), from anywhere |
+| **Lifecycle** | cleared only by arriving | pruned when the addressee dies, or by TTL, or by cancel |
+| **Inheritance** | none — squads reshuffle every 700 ms | carried across merge, split and detachment |
+
+### The order
+
+`issueOrder(book, {scope, addressee, kind, goal, teamId, doubleTime, breakContact, issuedAt, ttlMs})`.
+`kind` is `move` or `hold`; anything else is refused rather than stored as a no-op, as is a missing or
+NaN goal. One addressee holds one order — re-issuing replaces. Every order gets a fresh ascending id,
+so a late acknowledgement can be told from a live one, which is what a network or LLM commander needs.
+
+`doubleTime` and `breakContact` are now **per order**, not global toggles. Two squads can advance
+under different rules of engagement at the same time; the wheel's toggles only seed the next order.
+
+### Scope, and who walks
+
+`resolveOrderFor(book, botId, squadId)` returns the bot's own order if it has one, else its squad's.
+A personal order outranks the squad's deliberately: the reconciler absorbs loose bots into squads
+every 700 ms, and it must not be able to undo a player's explicit decision to send one body somewhere.
+`orderMoverId` names the one bot that walks the goal — the leader for a squad order, the bot itself
+for a personal one. Everyone else reaches the goal on their formation slot, exactly as before.
+
+A leaderless squad (mid-succession-shock) has **no** mover; the order sits and the members patrol.
+Picking an arbitrary walker there would have the squad advance under a bot nobody promoted.
+
+### Lifecycle: the dead-commander bug
+
+The old slot cleared only on arrival. A `hold` on a bot that then died stayed live forever, and
+because `underCommand` matched by squad id, that dead bot's entire squad kept break-contacting for the
+rest of the match. `pruneOrders` runs every tick right after `updateSquads`, with predicates rather
+than sets so nothing is allocated per frame:
+
+- a **bot-scoped** order dies with its bot;
+- a **squad-scoped** order outlives its leader, because the squad is what was addressed — succession
+  names a new leader and the order carries;
+- a squad-scoped order dies when the squad is wiped out;
+- `ttlMs` (default 0 = never) expires an order on its own, which is what stops a machine commander
+  leaving stale orders on the field.
+
+Arrival is `completeOrder`: a `move` leaves the book, a `hold` latches `arrived` and stays.
+
+### Inheritance across the reconciler
+
+Squads are not stable objects. Three hooks in `applySquadOp` keep an order attached to the bodies it
+was given to:
+
+- **merge** → `transferOrderOnMerge(into, from)`. The survivor's own order wins; an *unordered* squad
+  that swallows an ordered one adopts the order, so absorbing a squad mid-advance does not halt it.
+- **split / mergeDetachments** → `inheritOrderForNewSquad(newId, parentIds)`, parents sorted
+  oldest-`seq` first, matching the existing rule that older squads keep command. The goal is copied,
+  not shared, and `arrived` resets. Parents keep their own orders — a detachment leaving disarms nobody.
+- **absorb** → nothing. A loose bot joining a squad simply starts resolving that squad's order; its
+  own personal order, if it had one, is untouched and still outranks it.
+
+### Compliance
+
+`describeCompliance(order, {engaged, fleeing, pinned, pathFailed})` returns one of `no-order`,
+`moving`, `holding`, `fighting`, `pinned`, `broken`, `no-path`. Precedence is `broken` → `no-path` →
+`fighting` → `pinned`, because a fleeing bot is immune to orders by design and saying "pinned" about it
+would be a lie.
+
+This exists because an order being obeyed and an order never heard look identical from a distance.
+The wheel's header shows it for the selected bot's order, read off the **mover** — a member sitting in
+its formation slot is not the bot that failed to find a path (`orderPathFailed`, stamped in
+`updateCommandMovement` when `requestPathBudgeted` refuses).
+
+### Wheel changes
+
+Six spokes now: *Move here*, *Double time*, *Hold here*, *Cancel order*, *Break contact*, *This bot
+only*. The selected bot names the **addressee**, and if it is in a squad the order goes to the squad —
+*This bot only* is how you still pull one body out of a formation, which is what ordering a non-leader
+used to do by accident. The header names the squad, its live count, and the compliance of any order
+already in force.
+
+One ring per live order (`updateOrderMarkers`, pooled), because a single shared marker would show only
+the newest order and every other one would be invisible — which is exactly the failure the plurality
+fix is about. A held position dims its ring to 0.4 opacity once reached.
+
+### Not yet done
+
+- **Vocabulary is still two verbs.** `attack`, `capture` and `fall back` are what adversary mode needs
+  and none of them exist yet. `attack` is meant to be a destination plus a weighting inside
+  `selectBotTarget`'s existing risk product — never a target assignment — which is a change to target
+  selection, not to the order book, and is deliberately not bundled here.
+- **No map addressing.** The book accepts a squad id from anywhere, but the only writer is the
+  first-person wheel. The fullscreen `M` map (`world-map.js`) is where squad blips and click-to-order
+  belong.
+- **No network path.** Orders are host-local. The intended shape is one JSON command message over the
+  existing `mp:guest_input` channel, which needs no relay change.
+- **Browser-verified: no.** Node tests pass (`test-bot-orders.mjs`, `test-env-command-wheel.mjs`);
+  nothing here has been watched on screen.

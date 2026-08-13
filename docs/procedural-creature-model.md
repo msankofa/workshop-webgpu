@@ -108,6 +108,43 @@ Every `if (role === …)` you avoid brings "creature = a point in parameter spac
 being literally true. The seams already cut this way — the role registry, rig-derived stance,
 the weapon-hold resolver — are the seams a species system will need.
 
+## The mind view
+
+Click the robot's head in `creature-model.html` to open a 3D view of the mind
+(needs the local server: `python serve.py`). Seven glowing regions sit inside a glass head.
+Each region maps to slots of the 9-character state code from `bot-state-code.js`:
+
+In replay and live modes the trace row's extra columns enrich each region's detail line;
+levels stay code-driven except measured speed.
+
+| Region | Fed by (code slots) | Plus, from rows |
+|---|---|---|
+| perception | alert tier + escalation score (slots 2, 3) | target id + distance (`target_id`, `target_dist`), sight gate (`vis_gate`); a needle on the head points at the target's bearing |
+| intent | the ladder state (slot 1) | distance to the current goal (`goal_dist`) |
+| movement | estimated from state | measured speed, path mode + length (`path_mode`, `path_len`) |
+| weapon skill | ammo slot + aim/fire/knife states (slots 6, 1) | reloads / running dry flash amber |
+| squad sense | role, push element, medic duty (slots 4, 5, 1) | squad id, leadership, leader id (`squad_id`, `squad_rank`, `leader_id`) |
+| body monitor | health band + packs (slots 7, 8) | damage flashes red, recovery green |
+| commitments | the latch bits (slot 9) — the bot's working memory | — |
+
+What no depiction can add: rows are change-plus-heartbeat samples, so single shots or hits
+that stay inside one band never appear; and the threat model is single-slot, so attention is
+always one target. Both are properties of the bot, not the view.
+
+The mapping is **not** anatomy. A state is not a region. A state is a pattern of activation
+across the regions. "Flee" means: perception high, body monitor high, flee latch held,
+weapon skill dark. Every glow traces to a slot value; nothing is invented.
+
+The view has three modes. **Demo** shows one real observed code per ladder state. **Replay**
+loads a `bot-states/bot-state-trace-*.tsv` file and plays one bot's recorded fight through
+the brain, using measured speed for the movement region (interpolated between samples).
+**Live** watches a running game: open `bot-viewer-v2.html` in another tab, turn on its Live
+stream button, then connect and pick a bot. The channel is the same BroadcastChannel the
+trace viewer uses (`bot-trace-live`); the mind keeps only the newest row per bot.
+
+Files: `mind-map.js` (pure slot-to-region mapping, Node-tested by `test-mind-map.mjs`),
+`creature-mind.js` (the Three.js overlay).
+
 ## Where each part lives in the code (bot-viewer-v2)
 
 | Part | Code |

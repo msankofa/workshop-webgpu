@@ -1,0 +1,5904 @@
+{
+  "voiceLexicon": {
+    "eleven/harry": {
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[shouts] frag out",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[laughs] frag out",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[shouts] engaging",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "target spotted",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] contact!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[shouts] GRENADE, LOOK OUT!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[shouts] man down!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/river": {
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[shouts] CONTACT!!!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[shouts] dry!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/adam": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/daniel": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] push, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/callum": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/bill": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/brian": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/charlie": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/sarah": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    },
+    "eleven/alice": {
+      "grenade_warn": {
+        "variants": [
+          {
+            "text": "[whispers] grenade, heads up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] frag inbound",
+            "intensity": 0
+          },
+          {
+            "text": "grenade out there!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] GRENADE, INCOMING!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_out": {
+        "variants": [
+          {
+            "text": "[whispers] frag out",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tossing a frag",
+            "intensity": 0
+          },
+          {
+            "text": "grenade away",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] FRAG OUT!!!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] GRENADE OUT, CLEAR!",
+            "intensity": 1
+          }
+        ]
+      },
+      "man_down": {
+        "variants": [
+          {
+            "text": "[whispers] man down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] we've got a man down",
+            "intensity": 0
+          },
+          {
+            "text": "man's hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MAN DOWN, MEDIC!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] MAN DOWN, NEED A MEDIC NOW!",
+            "intensity": 1
+          }
+        ]
+      },
+      "firing": {
+        "variants": [
+          {
+            "text": "[whispers] engaging",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] opening up",
+            "intensity": 0
+          },
+          {
+            "text": "engaging target",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] opening fire!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] laying it down!",
+            "intensity": 1
+          }
+        ]
+      },
+      "sidearm": {
+        "variants": [
+          {
+            "text": "[whispers] going sidearm",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pulling the pistol",
+            "intensity": 0
+          },
+          {
+            "text": "switching sidearm",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] switching to sidearm!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pistol out, still in it!",
+            "intensity": 1
+          }
+        ]
+      },
+      "moving": {
+        "variants": [
+          {
+            "text": "[whispers] moving up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] pushing forward",
+            "intensity": 0
+          },
+          {
+            "text": "advancing",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] moving, moving!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] pushing up, go go go!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reloading": {
+        "variants": [
+          {
+            "text": "[whispers] reloading",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] swapping mags",
+            "intensity": 0
+          },
+          {
+            "text": "changing mags",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reloading, cover me!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] reloading, watch my back!",
+            "intensity": 1
+          }
+        ]
+      },
+      "reviving": {
+        "variants": [
+          {
+            "text": "[whispers] reviving now",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting you up",
+            "intensity": 0
+          },
+          {
+            "text": "picking you up",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] reviving, hang on!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] stay with me, reviving!",
+            "intensity": 1
+          }
+        ]
+      },
+      "cover": {
+        "variants": [
+          {
+            "text": "[whispers] taking cover",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] getting down",
+            "intensity": 0
+          },
+          {
+            "text": "get to cover",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] taking cover, contact!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] cover, now!",
+            "intensity": 1
+          }
+        ]
+      },
+      "enemy_down": {
+        "variants": [
+          {
+            "text": "[whispers] enemy down",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango's down",
+            "intensity": 0
+          },
+          {
+            "text": "target eliminated",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] enemy down, tango eliminated!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY DOWN, GOOD KILL!",
+            "intensity": 1
+          }
+        ]
+      },
+      "contact": {
+        "variants": [
+          {
+            "text": "[whispers] contact, hold",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] tango spotted",
+            "intensity": 0
+          },
+          {
+            "text": "contact, front",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] CONTACT, CONTACT!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] ENEMY IN SIGHT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "no_ammo": {
+        "variants": [
+          {
+            "text": "[whispers] out of ammo",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] I'm dry",
+            "intensity": 0
+          },
+          {
+            "text": "empty mag",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] I'm dry, out of ammo!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] OUT OF AMMO, RELOADING!",
+            "intensity": 1
+          }
+        ]
+      },
+      "overwatch": {
+        "variants": [
+          {
+            "text": "[whispers] on overwatch",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] holding position",
+            "intensity": 0
+          },
+          {
+            "text": "on overwatch",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] covering fire, go!",
+            "intensity": 0.67
+          },
+          {
+            "text": "[shouts] I'VE GOT OVERWATCH, MOVE!",
+            "intensity": 1
+          }
+        ]
+      },
+      "spawn": {
+        "variants": [
+          {
+            "text": "[whispers] loaded up, good to go",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] set and ready",
+            "intensity": 0
+          },
+          {
+            "text": "ready to go",
+            "intensity": 0.33
+          },
+          {
+            "text": "locked in",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] LOCKED AND LOADED, LET'S MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] UP AND READY, GO GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "hit": {
+        "variants": [
+          {
+            "text": "[hisses] tch--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...ow--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] grazed me",
+            "intensity": 0
+          },
+          {
+            "text": "gah--",
+            "intensity": 0.33
+          },
+          {
+            "text": "unh, took one--",
+            "intensity": 0.33
+          },
+          {
+            "text": "I'm hit",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- I'M HIT!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TAKING FIRE, I'M HIT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "grenade_hit": {
+        "variants": [
+          {
+            "text": "[hisses] ...ngh--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...that hurt--",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] caught some frag",
+            "intensity": 0
+          },
+          {
+            "text": "guh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "agh, that's frag--",
+            "intensity": 0.33
+          },
+          {
+            "text": "frag got me!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] GAH-- BLAST GOT ME!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] TOOK A FRAG, HURT BAD!",
+            "intensity": 1
+          }
+        ]
+      },
+      "near_miss": {
+        "variants": [
+          {
+            "text": "[whispers] shots close",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] missed me",
+            "intensity": 0
+          },
+          {
+            "text": "taking fire!",
+            "intensity": 0.33
+          },
+          {
+            "text": "shots incoming!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] TAKING HEAVY FIRE, PINNED!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] ROUNDS EVERYWHERE, GET DOWN!",
+            "intensity": 1
+          }
+        ]
+      },
+      "ally_hit": {
+        "variants": [
+          {
+            "text": "[whispers] he's alright, still up",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] check on him",
+            "intensity": 0
+          },
+          {
+            "text": "he's hit, keep an eye on him!",
+            "intensity": 0.33
+          },
+          {
+            "text": "watch him, he's bleeding!",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] MEDIC, HE'S HURT BAD!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] EYES ON HIM, HE'S HURT!",
+            "intensity": 1
+          }
+        ]
+      },
+      "death": {
+        "variants": [
+          {
+            "text": "[gasps] ...ah!",
+            "intensity": 0
+          },
+          {
+            "text": "[whispers] ...no--",
+            "intensity": 0
+          },
+          {
+            "text": "unh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "aagh--",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] AAAAAAGH!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] NOOOO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack": {
+        "variants": [
+          {
+            "text": "affirmative",
+            "intensity": 0
+          },
+          {
+            "text": "got it",
+            "intensity": 0
+          },
+          {
+            "text": "right",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0.33
+          },
+          {
+            "text": "on my way",
+            "intensity": 0.33
+          },
+          {
+            "text": "moving out",
+            "intensity": 1
+          },
+          {
+            "text": "oscar mike",
+            "intensity": 1
+          },
+          {
+            "text": "going",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_ack_squad": {
+        "variants": [
+          {
+            "text": "we're on the move",
+            "intensity": 0
+          },
+          {
+            "text": "on the move",
+            "intensity": 0
+          },
+          {
+            "text": "we're moving out",
+            "intensity": 0.33
+          },
+          {
+            "text": "squad's oscar mike",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] WE'RE OSCAR MIKE, MOVE!",
+            "intensity": 1
+          },
+          {
+            "text": "[shouts] SQUAD'S MOVING, GO!",
+            "intensity": 1
+          }
+        ]
+      },
+      "order_follow": {
+        "variants": [
+          {
+            "text": "roger",
+            "intensity": 0
+          },
+          {
+            "text": "yes ma'am",
+            "intensity": 0.33
+          },
+          {
+            "text": "[shouts] HOOAH!",
+            "intensity": 1
+          }
+        ]
+      }
+    }
+  }
+}

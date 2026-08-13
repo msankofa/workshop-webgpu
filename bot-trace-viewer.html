@@ -1,0 +1,3572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot trace viewer</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #262d38; --text: #c9d3df; --muted: #7d8b9c;
+    --accent: #4fc3f7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 12px/1.45 ui-monospace, Consolas, monospace; overflow: hidden; }
+  #app { display: grid; grid-template-columns: 1fr 300px; grid-template-rows: auto 1fr auto; height: 100%; }
+  header { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 7px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  footer { grid-column: 1 / -1; padding: 6px 10px; background: var(--panel);
+    border-top: 1px solid var(--line); }
+  aside { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 10px; }
+  #stage { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  button, select, input[type=file] { background: #1f2632; color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
+  button.on { border-color: var(--accent); color: #fff; }
+  button.stalled { border-color: #ffb74d; color: #ffb74d; }
+  label.chk { display: flex; align-items: center; gap: 5px; cursor: pointer; padding: 2px 0; }
+  h3 { margin: 14px 0 6px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; }
+  h3:first-child { margin-top: 0; }
+  #scrub { width: 100%; margin: 0; accent-color: var(--accent); }
+  #ribbon { display: block; width: 100%; height: 26px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  .row span:last-child { color: #fff; text-align: right; word-break: break-all; }
+  .muted { color: var(--muted); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px;
+    vertical-align: middle; }
+  #drop { position: absolute; inset: 0; display: none; place-items: center; background: #0d1117e0;
+    border: 2px dashed var(--accent); font-size: 15px; }
+  #drop.show { display: grid; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+    color: var(--muted); padding: 30px; line-height: 1.9; }
+  code { color: var(--accent); }
+  #botlist { max-height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
+  #botlist div { padding: 2px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #botlist div:hover { background: #1f2632; }
+  #botlist div.sel { background: #23405a; color: #fff; }
+  #logPanel { position: absolute; left: 10px; bottom: 10px; width: 460px; max-width: calc(100% - 20px);
+    max-height: 60%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px; z-index: 6; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 4px 18px #0009; }
+  #logPanel.hidden { display: none; }
+  #logHead { display: flex; align-items: center; gap: 6px; }
+  #logHead strong { flex: 1; font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; }
+  #logBox { resize: both; min-width: 260px; min-height: 90px; max-width: 100%;
+    background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+    font: 11px/1.45 ui-monospace, Consolas, monospace; padding: 6px; white-space: pre; }
+  #statsPanel { position: fixed; inset: 0; background: #0d1117cc; z-index: 20; display: none; place-items: center; }
+  #statsPanel.show { display: grid; }
+  #statsBox { width: min(96vw, 1400px); height: 86vh; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; display: flex; flex-direction: column; padding: 10px; gap: 8px; box-shadow: 0 8px 30px #000a; }
+  #statsHead { display: flex; align-items: center; gap: 8px; }
+  #statsHead strong { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  #statsTableWrap { flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  #statsTable { border-collapse: collapse; width: 100%; font: 11px/1.4 ui-monospace, Consolas, monospace; white-space: nowrap; }
+  #statsTable th, #statsTable td { padding: 3px 9px; text-align: right; border-bottom: 1px solid #1c222c; }
+  #statsTable.mode-bot th:nth-child(-n+4), #statsTable.mode-bot td:nth-child(-n+4) { text-align: left; }
+  /* Grouped columns drop role/squad -- id/n/team is only 3 leading text columns, column 4 is a
+     number (birth mean) and needs to fall back out of the ungrouped rule above. */
+  #statsTable.mode-grouped th:nth-child(4), #statsTable.mode-grouped td:nth-child(4) { text-align: right; }
+  #statsTable.mode-state th:first-child, #statsTable.mode-state td:first-child { text-align: left; }
+  #statsTable.mode-state th:nth-child(3), #statsTable.mode-state td:nth-child(3) { border-right: 1px solid var(--line); }
+  /* Log tab: every column is text (time/team/bot/role/squad/state/details), unlike the numeric-heavy
+     stat tables above where only the leading id columns are left-aligned. */
+  #statsTable.mode-log th, #statsTable.mode-log td { text-align: left; }
+  /* Frozen first column, every view: a wide table (many bot/group/state columns) scrolls the row's
+     own label out of sight otherwise. A sticky cell must supply its own opaque background -- it does
+     not inherit one from the row it belongs to -- so header and body get their own colors here,
+     matching what the unfrozen versions already look like, plus a z-index so this column paints over
+     (not under) the columns sliding beneath it as the panel scrolls right. */
+  #statsTable th:first-child { position: sticky; left: 0; z-index: 2; background: #1a212c;
+    border-right: 1px solid var(--line); }
+  #statsTable td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel);
+    border-right: 1px solid var(--line); }
+  #statsTable tbody tr:hover td:first-child { background: #1c2430; }
+  #statsTable td.z { color: #3d4756; }
+  #statsTable thead th { position: sticky; top: 0; background: #1a212c; color: var(--text); cursor: pointer;
+    user-select: none; border-bottom: 1px solid var(--line); }
+  #statsTable thead th:hover { color: #fff; }
+  #statsTable thead th.sorted { color: var(--accent); }
+  /* Symptoms tab only: a group-label row above the normal header row, ties each column to its named
+     symptom + BB-### bug (see docs/bot-bugs-log.md). Fixed height so the label row below can offset
+     its own sticky `top` by exactly that amount instead of overlapping it. */
+  #statsTable thead tr.grp-row th { position: sticky; top: 0; height: 16px; line-height: 16px; padding: 0 9px;
+    font: 600 10px/16px ui-monospace, Consolas, monospace; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--muted); background: #161c26; cursor: default; border-left: 1px solid var(--line); }
+  #statsTable thead tr.grp-row th.grp-spacer { background: #1a212c; border-left: none; }
+  #statsTable thead tr.grp-row th .grp-bug { color: #5b6675; font-weight: 400; text-transform: none; margin-left: 4px; }
+  #statsTable thead tr.grp-row + tr th { top: 16px; }
+  #statsTable tbody tr:hover { background: #1c2430; cursor: pointer; }
+  #statsTable tbody tr.dead td:first-child { color: #7d8b9c; }
+  /* The bot selected on the map / sidebar list / bot-viewer-v2's ctrl-click -- kept in sync by
+     reapplySelectedBotHighlight(), not just at render time, so picking a bot elsewhere highlights its
+     row here without forcing a full table rebuild. */
+  #statsTable tbody tr.sel td { background: #2c5a8a55; }
+  #statsTable tbody tr.sel:hover td { background: #2c5a8a88; }
+  body.stamp-mode #statsTable td, body.stamp-mode #statsTable th { cursor: crosshair; }
+  #stampBtn.collecting { border-color: #ffb74d; color: #ffb74d; }
+  #statsTable .stamp-selected, #statsTable tr.stamp-selected td { background: #ffb74d22; }
+  .stamp-flash { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #notesPanel { position: fixed; inset: 0; background: #0d1117cc; z-index: 20; display: none; place-items: center; }
+  #notesPanel.show { display: grid; }
+  #notesBox { width: min(96vw, 900px); height: 80vh; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; display: flex; flex-direction: column; padding: 10px; gap: 8px; box-shadow: 0 8px 30px #000a; }
+  #notesHead { display: flex; align-items: center; gap: 6px; }
+  #notesHead strong { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  #notesEditor { flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px;
+    background: #0d1117; color: var(--text); padding: 10px; font: 12px/1.6 ui-monospace, Consolas, monospace; }
+  #notesEditor:empty::before { content: attr(data-placeholder); color: var(--muted); }
+  #notesEditor ul { margin: 4px 0; padding-left: 22px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <select id="fileSel" title="Takes found in bot-states/"><option value="">— saved takes —</option></select>
+    <input type="file" id="fileIn" accept=".tsv,.txt" title="Or load a .tsv from anywhere">
+    <button id="play" disabled>▶ Play</button>
+    <button id="back" disabled title="Step back one sample">⏴</button>
+    <button id="fwd" disabled title="Step forward one sample">⏵</button>
+    <select id="speed" title="Playback rate">
+      <option>0.25</option><option>0.5</option><option selected>1</option>
+      <option>2</option><option>4</option><option>8</option><option>16</option>
+    </select>
+    <span id="clock" class="muted">—</span>
+    <span style="flex:1"></span>
+    <button id="live" title="Stream live from bot-viewer-v2 in another tab (same browser). Turn on 'Live map' there too.">○ live</button>
+    <button id="follow" style="display:none" title="Keep the view pinned to the newest sample. Scrubbing or stepping drops out of it; click to resume.">follow</button>
+    <button id="logToggle" class="on" title="Show/hide the state-change log panel">Log</button>
+    <button id="fit" disabled title="Fit the map to the data">Fit</button>
+    <button id="png" disabled title="Save the current map view as a PNG, captioned with the take and time">PNG</button>
+    <button id="statsToggle" disabled title="Per-bot statistics table for the whole loaded take, sortable by any column">Statistics</button>
+    <button id="notesToggle" title="Freeform notes for the loaded take, saved to disk under notes/ (persists across reloads)">Notes</button>
+    <span id="stats" class="muted"></span>
+  </header>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="drop">drop a trace .tsv here</div>
+    <div id="empty">
+      <div>
+        <strong>Bot trace viewer</strong><br>
+        Load a <code>bot-state-trace-*.tsv</code> — pick a saved take, choose a file, or drop one here.<br>
+        <span style="font-size:11px">Record one in bot-viewer-v2 with <code>H</code> (needs the motion columns for playback).</span>
+      </div>
+    </div>
+    <div id="logPanel">
+      <div id="logHead">
+        <strong>State-change log</strong>
+        <button id="logCopy" title="Copy the log text to the clipboard">Copy</button>
+        <button id="logClear" title="Clear the log">Clear</button>
+        <button id="logHide" title="Hide this panel">×</button>
+      </div>
+      <textarea id="logBox" readonly wrap="off" placeholder="state-change events appear here while live"></textarea>
+    </div>
+  </div>
+
+  <aside>
+    <h3>Selected bot</h3>
+    <button id="gotoBotViewer" disabled title="Jump to this bot in bot-viewer-v2.html (needs live streaming on both tabs)">Go to bot viewer</button>
+    <div id="detail" class="muted">click a bot on the map</div>
+    <h3>Show</h3>
+    <label class="chk"><input type="checkbox" id="tTrails" checked> movement trails</label>
+    <label class="chk"><input type="checkbox" id="tShots" checked> shot lines</label>
+    <label class="chk"><input type="checkbox" id="tTargets" checked> target links (coloured by sight)</label>
+    <label class="chk"><input type="checkbox" id="tSquads" checked> squad links to leader</label>
+    <label class="chk"><input type="checkbox" id="tFacing" checked> facing</label>
+    <label class="chk"><input type="checkbox" id="tStall" checked> stall halos</label>
+    <label class="chk"><input type="checkbox" id="tPaths" checked> has-path tick</label>
+    <label class="chk"><input type="checkbox" id="tLabels"> always show ids</label>
+    <label class="chk"><input type="checkbox" id="tDead" checked> dead bots</label>
+    <h3>World</h3>
+    <label class="chk"><input type="checkbox" id="tElev" checked> elevation shading</label>
+    <label class="chk"><input type="checkbox" id="tRegions"> nav regions</label>
+    <label class="chk"><input type="checkbox" id="tGrid" checked> grid, axes &amp; ticks</label>
+    <label class="chk"><input type="checkbox" id="tBounds" checked> world bounding box</label>
+    <label class="chk"><input type="checkbox" id="tWalls" checked> walls &amp; cover</label>
+    <label class="chk"><input type="checkbox" id="tPatrol"> patrol points</label>
+    <div id="worldsrc" class="muted" style="font-size:11px;margin:4px 0 0"></div>
+    <div id="regionnote" class="muted" style="font-size:11px;margin:3px 0 0"></div>
+
+    <h3>Heatmap <span class="muted" style="text-transform:none;letter-spacing:0">(whole take, stacked layers)</span></h3>
+    <div id="heatLayerList"></div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <select id="heatAddMode" style="flex:1;min-width:0">
+        <option value="time">time spent</option>
+        <option value="stall">time stalled</option>
+        <option value="deaths">deaths</option>
+      </select>
+      <button id="heatAddBtn" style="flex:0 0 auto">+ layer</button>
+    </div>
+    <div id="heatAddNote" class="muted" style="font-size:11px;margin:4px 0 0"></div>
+    <h3>Filter</h3>
+    <select id="teamSel"><option value="">both teams</option></select>
+    <label class="chk"><input type="checkbox" id="fStall"> only stalled bots</label>
+    <h3>Bots <span id="botcount" class="muted"></span></h3>
+    <label class="chk"><input type="checkbox" id="tFollowBot"> keep view on the selected bot</label>
+    <div id="botlist"></div>
+
+    <h3>Compare takes</h3>
+    <select id="cmpSel" style="width:100%"><option value="">— pick a baseline take —</option></select>
+    <div style="display:flex;gap:6px;margin-top:5px">
+      <button id="cmpRun" disabled style="flex:1">diff vs loaded</button>
+      <button id="cmpClear" style="flex:0 0 auto">clear</button>
+    </div>
+    <div id="cmpout" class="muted" style="font-size:11px;margin-top:6px"></div>
+
+    <h3>Legend</h3>
+    <div id="legend"></div>
+  </aside>
+
+  <footer>
+    <canvas id="ribbon" title="orange = bots firing · red = bots stalled in a locomotion state"></canvas>
+    <input type="range" id="scrub" min="0" max="1000" value="0" step="1" disabled>
+  </footer>
+</div>
+
+<div id="statsPanel">
+  <div id="statsBox">
+    <div id="statsHead">
+      <strong>Statistics</strong>
+      <button id="statsTabBot" class="on" title="One row per bot, whole-take metrics">Per bot</button>
+      <button id="statsTabState" title="One row per state, one column per bot">Per state</button>
+      <button id="statsTabSymptoms" title="One row per bot, raw counts for each named bug symptom from docs/bot-bugs-log.md -- unweighted, sortable per-column, no combined score">Symptoms</button>
+      <button id="statsTabLog" title="Full chronological state-change log for the whole loaded take (or everything seen so far, live), filterable by team/squad/role/selected bot">Log</button>
+      <select id="groupBy" title="Collapse bots into groups -- rows in Per bot, columns in Per state">
+        <option value="bot">bots</option>
+        <option value="role">role</option>
+        <option value="team">team</option>
+      </select>
+      <select id="leaderMode" style="display:none"
+        title="How a bot currently leading its squad (squad_rank 0) is grouped when 'role' is picked -- dedicated squadleader-role bots are always their own group either way">
+        <option value="own">leader as own role</option>
+        <option value="perRole">leader per role</option>
+        <option value="none">leader not separated</option>
+      </select>
+      <select id="stateMetric" style="display:none" title="What each cell in the per-state table counts">
+        <option value="count">entries</option>
+        <option value="duration">duration (s)</option>
+      </select>
+      <label class="chk" id="subModesWrap" style="display:none;margin:0"
+        title="Split each state row by path_mode (cover/seek/flee/knife/patrolLocal/...), discovered from this take rather than a fixed list">
+        <input type="checkbox" id="subModes"> sub-modes</label>
+      <label class="chk" id="maintainSectionsWrap" style="display:none;margin:0"
+        title="When rows are ranked by abundance/diversity, keep each state's rows grouped together (ranking moves whole state sections, not individual rows) instead of a fully flat ranking">
+        <input type="checkbox" id="maintainSections" checked> keep sections</label>
+      <span id="logFiltersWrap" style="display:none;gap:6px;align-items:center">
+        <select id="logTeamSel" title="Filter the log by team"><option value="">any team</option></select>
+        <select id="logSquadSel" title="Filter the log by squad"><option value="">any squad</option></select>
+        <select id="logRoleSel" title="Filter the log by role"><option value="">any role</option></select>
+        <label class="chk" style="margin:0" title="Only show events for the bot currently selected (map, sidebar, table, or bot-viewer)">
+          <input type="checkbox" id="logOnlySelected"> only selected bot</label>
+      </span>
+      <button id="stampBtn"
+        title="Click: stamp mode -- click a cell, a row's label, or a column header to send it to Notes immediately. Double-click: collect mode -- pick several, then click this button once more to stamp them all as one entry.">Stamp</button>
+      <span id="stampCount" class="muted"></span>
+      <span id="statsNote" class="muted"></span>
+      <span style="flex:1"></span>
+      <button id="statsRefresh" title="Recompute (live mode keeps growing)">↻</button>
+      <button id="statsCsv" title="Copy the table as tab-separated text">Copy TSV</button>
+      <button id="statsClose" title="Close">×</button>
+    </div>
+    <div id="statsTableWrap"><table id="statsTable"><thead></thead><tbody></tbody></table></div>
+  </div>
+</div>
+
+<div id="notesPanel">
+  <div id="notesBox">
+    <div id="notesHead">
+      <strong>Notes</strong>
+      <span id="notesScope" class="muted"></span>
+      <button id="notesBold" title="Bold (select text, then click)"><b>B</b></button>
+      <button id="notesUnderline" title="Underline (select text, then click)"><u>U</u></button>
+      <button id="notesListBtn" title="Bulleted list">&bull; list</button>
+      <span style="flex:1"></span>
+      <span id="notesSaveStatus" class="muted"></span>
+      <button id="notesClose" title="Close">×</button>
+    </div>
+    <div id="notesEditor" contenteditable="true" spellcheck="false"
+      data-placeholder="Notes for this take -- type here, or use Stamp in Statistics to pull in a stat."></div>
+  </div>
+</div>
+
+<script type="module">
+import { decodeBotState, describeBotState, STATE_NAMES } from './bot-state-code.js';
+
+// Locomotion states: being stationary in one of these is the pathology this tool exists to show.
+const LOCO = new Set(['P', 'S', 'U', 'E', 'C', 'M']);
+const STILL_SPEED = 0.05;      // m/s below which a bot counts as not moving
+const GAP_HOLD_MS = 3000;      // longer than this between samples and we stop interpolating
+const TRAIL_MS = 4000;
+const FIRE_FLASH_MS = 260;
+const DEATH_FX_MS = 900;       // shockwave lifetime; corpses stay lit for twice this
+
+const TEAM_COLORS = {           // from BOT_TEAM_DEFS in bot-viewer-v2.html
+  alpha: { body: '#2f7d4f', bright: '#57d68d' },
+  bravo: { body: '#a43f47', bright: '#ff8a80' },
+};
+const CLASS_COLORS = {
+  idle: '#8899a6', search: '#4fc3f7', engage: '#ffb74d', survive: '#ef5350',
+  defend: '#ab47bc', support: '#26a69a', terminal: '#4a5260',
+};
+const teamColor = t => TEAM_COLORS[t] || { body: '#78909c', bright: '#b0bec5' };
+
+// ---- state ----------------------------------------------------------------
+let bots = new Map();          // id -> { id, team, rows[], cursor }
+let allRows = [];
+let tMin = 0, tMax = 0, playT = 0;
+let playing = false, lastFrame = 0, liveStatusAt = 0;
+let hasMotion = false;
+let selected = null;
+let takeLabel = '';           // what the PNG caption and the diff call the loaded take
+let bounds = null;
+let worldMeta = null;   // arena geometry from the sibling bot-diag-*.json, null when unavailable
+const view = { cx: 0, cz: 0, scale: 12 };
+const ribbonBuckets = { fire: [], stall: [], n: 0 };
+
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const ribbon = $('ribbon'), rctx = ribbon.getContext('2d');
+
+// ---- parsing --------------------------------------------------------------
+function parseTrace(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) throw new Error('empty file');
+  const head = lines[0].split('\t').map(s => s.trim());
+  const col = {};
+  head.forEach((h, i) => { col[h] = i; });
+  if (col.t_ms == null || col.bot_id == null || col.code == null) {
+    throw new Error('not a bot state trace (need t_ms, bot_id, code)');
+  }
+  hasMotion = col.x != null && col.z != null;
+  const num = v => (v === '' || v == null ? null : Number(v));
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const p = lines[i].split('\t');
+    if (p.length < 4) continue;
+    const code = p[col.code];
+    const d = decodeBotState(code);
+    rows.push({
+      t: Number(p[col.t_ms]), id: p[col.bot_id], team: p[col.team] ?? '', code,
+      changed: p[col.changed_slots] ?? '',
+      x: hasMotion ? num(p[col.x]) : null, z: hasMotion ? num(p[col.z]) : null,
+      yaw: col.yaw_deg != null ? num(p[col.yaw_deg]) : null,
+      speed: col.speed != null ? num(p[col.speed]) : null,
+      moved: col.moved != null ? num(p[col.moved]) : null,
+      goalDist: col.goal_dist != null ? num(p[col.goal_dist]) : null,
+      pathLen: col.path_len != null ? num(p[col.path_len]) : null,
+      pathMode: col.path_mode != null ? (p[col.path_mode] ?? '') : '',
+      squadId: col.squad_id != null ? (p[col.squad_id] ?? '') : '',
+      squadRank: col.squad_rank != null ? num(p[col.squad_rank]) : null,
+      leaderId: col.leader_id != null ? (p[col.leader_id] ?? '') : '',
+      targetId: col.target_id != null ? (p[col.target_id] ?? '') : '',
+      targetDist: col.target_dist != null ? num(p[col.target_dist]) : null,
+      visGate: col.vis_gate != null ? (p[col.vis_gate] ?? '') : '',
+      navRegion: col.nav_region != null ? num(p[col.nav_region]) : null,
+      mag: col.mag != null ? num(p[col.mag]) : null,
+      reserve: col.reserve != null ? num(p[col.reserve]) : null,
+      selfThreat: col.self_threat != null ? num(p[col.self_threat]) : null,
+      sidearmMag: col.sidearm_mag != null ? num(p[col.sidearm_mag]) : null,
+      sidearmReserve: col.sidearm_reserve != null ? num(p[col.sidearm_reserve]) : null,
+      // The real bot-roles.js id (rifleman/medic/squadleader/sniper/technical), where the take has it
+      // -- older takes lack this column, and d.role (the state code's role slot) only ever reads
+      // rifleman/medic, so botRoleInfo() falls back to that when roleId is blank.
+      roleId: col.role_id != null ? (p[col.role_id] ?? '') : '',
+      d,
+      stateChar: d ? d.stateChar : '?',
+    });
+  }
+  if (!rows.length) throw new Error('no data rows');
+  return rows;
+}
+
+// Death status is CURRENT status, not "did this bot ever die": the bot's last known row decides
+// alive/dead, matching what selecting it would show as its live state. If dead, walk back from the
+// end to find when the current (trailing) run of 'D' rows began -- a bot that got revived and is
+// alive again correctly reads alive, and a live session that joined mid-corpse (its view of this bot
+// starts already dead) still reads dead, just with the earliest row we've actually seen as the best
+// available death time rather than a guess at the true one. Shared by load()'s one-time pass below
+// and ingestRow()'s incremental per-row version, which keeps the same invariant without rescanning the
+// whole array on every row.
+function scanDeathState(rows) {
+  const last = rows[rows.length - 1];
+  if (!last || last.stateChar !== 'D') return { deathT: null, deathPos: null };
+  let i = rows.length - 1;
+  while (i > 0 && rows[i - 1].stateChar === 'D') i--;
+  const first = rows[i];
+  return { deathT: first.t, deathPos: { x: first.x, z: first.z } };
+}
+
+function load(text, label) {
+  if (liveOn) setLive(false);   // a file and a stream cannot share one timeline
+  allRows = parseTrace(text);
+  takeLabel = label;
+  clearHeatLayerCaches();        // a new take's history is not the old take's, same layers or not
+  saveNoteNow();                 // flush whatever was being typed for the take being replaced
+  loadNoteFor(label);
+  clearStampSelection();         // row/col identities are about to belong to a different take
+  eventsRows = []; eventsLoaded = false;   // stale until loadEventsMeta resolves for this take
+  _roleInfoCache = new Map();   // bot ids are reused across takes -- last take's role/leader is stale
+  invalidateStatsCaches();
+  bots = new Map();
+  for (const r of allRows) {
+    let b = bots.get(r.id);
+    if (!b) { b = { id: r.id, team: r.team, rows: [], cursor: 0 }; bots.set(r.id, b); }
+    b.rows.push(r);
+  }
+  for (const b of bots.values()) {
+    b.rows.sort((a, c) => a.t - c.t);
+    const death = scanDeathState(b.rows);
+    b.deathT = death.deathT;
+    b.deathPos = death.deathPos;
+  }
+  // Folds, not Math.min(...arr): a long take is well past the argument-count limit.
+  tMin = Infinity; tMax = -Infinity;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, anyPos = false;
+  for (const r of allRows) {
+    if (r.t < tMin) tMin = r.t;
+    if (r.t > tMax) tMax = r.t;
+    if (r.x == null || r.z == null) continue;
+    anyPos = true;
+    if (r.x < x0) x0 = r.x; if (r.x > x1) x1 = r.x;
+    if (r.z < z0) z0 = r.z; if (r.z > z1) z1 = r.z;
+  }
+  playT = tMin;
+  bounds = anyPos ? { x0, x1, z0, z1 } : null;
+
+  fillTeamFilter();
+  buildLogEntries();
+  fillLogFilters();
+
+  buildRibbon();
+  buildBotList();
+  fitView();
+  $('empty').style.display = 'none';
+  for (const id of ['play', 'back', 'fwd', 'fit', 'png', 'statsToggle']) $(id).disabled = false;
+  $('scrub').disabled = false;
+  updateCompareEnabled();
+  renderCompare();   // a held baseline stays held; the B column follows whatever is loaded now
+  renderStats();     // stays hidden if the panel isn't open; no-ops otherwise
+  $('stats').textContent = `${label} · ${allRows.length} rows · ${bots.size} bots · `
+    + `${((tMax - tMin) / 1000).toFixed(1)}s` + (hasMotion ? '' : ' · NO MOTION COLUMNS');
+  if (!hasMotion) {
+    $('empty').style.display = 'grid';
+    $('empty').innerHTML = '<div>This trace has no <code>x</code>/<code>z</code> columns, so there is '
+      + 'nothing to animate.<br>Re-record with a build that has the motion columns.</div>';
+  }
+  draw();
+}
+
+// Rebuilt on load and as live bots appear; keeps the current selection when it still exists.
+function fillTeamFilter() {
+  const teams = [...new Set(allRows.map(r => r.team))].filter(Boolean).sort();
+  const keep = $('teamSel').value;
+  $('teamSel').innerHTML = '<option value="">both teams</option>'
+    + teams.map(t => `<option value="${t}">${t} only</option>`).join('');
+  if (teams.includes(keep)) $('teamSel').value = keep;
+}
+
+// One place decides what the sidebar says the arena came from, so file and live can't disagree.
+function noteWorldSource(kind, stamp) {
+  elevCanvas = null; elevKey = '';   // worldMeta just changed; never reuse the previous arena's relief
+  regionCanvas = null; regionKey = '';
+  const b = worldMeta?.bounds;
+  const size = b ? `${(b.maxX - b.minX).toFixed(1)} x ${(b.maxZ - b.minZ).toFixed(1)} m` : '';
+  const hm = worldMeta?.heights;
+  // Terrain is off by default in the game, so "no relief" is the normal case, not a failure. Say
+  // which it is -- a flat grey map otherwise reads as the shading being broken.
+  const relief = !b ? ''
+    : !hm ? ' · no height data in this take'
+    : hm.flat ? ' · terrain flat (enable it in the game for relief)'
+    : ` · relief ${hm.minY.toFixed(1)} to ${hm.maxY.toFixed(1)} m, ${hm.cols}x${hm.rows}`;
+  $('worldsrc').textContent = (b
+    ? (kind === 'live' ? `arena streamed from the game — ${size}` : `arena from bot-diag-${stamp}.json — ${size}`)
+    : 'no arena metadata for this take; extent below is where bots walked, not the world size') + relief;
+  updateRegionNote();
+}
+
+// The fragmentation headline. "1 region" is the healthy answer; anything else names how much of the
+// map is unreachable, which is the number the nav repair exists to drive to zero.
+function updateRegionNote() {
+  const el = $('regionnote');
+  if (!el) return;
+  const rg = worldMeta?.regions;
+  if (!rg) { el.textContent = 'no region data in this take'; el.style.color = ''; return; }
+  if (rg.tooBig) {
+    el.textContent = `nav grid too large to send (${rg.tooBig} cells)`; el.style.color = '';
+    return;
+  }
+  const sizes = rg.sizes || [];
+  const total = sizes.reduce((a, c) => a + c, 0);
+  const main = sizes[0] || 0;
+  const strayCells = total - main;
+  const parts = [`${sizes.length} region${sizes.length === 1 ? '' : 's'}`];
+  if (sizes.length > 1) {
+    parts.push(`${((strayCells / Math.max(1, total)) * 100).toFixed(1)}% of walkable ground is off the main region`);
+    parts.push(`stray sizes ${sizes.slice(1, 6).join(', ')}${sizes.length > 6 ? ', …' : ''}`);
+  }
+  if (rg.carved) parts.push(`${rg.carved} cell${rg.carved === 1 ? '' : 's'} carved to reconnect`);
+  if (rg.sealed?.length) parts.push(`${rg.sealed.length} SEALED (walled off, not repairable)`);
+  const sw = (color, label) =>
+    `<span class="swatch" style="background:${color}"></span><span class="muted">${label}</span>`;
+  const keys = [sw(regionTint(0), 'main')];
+  for (let i = 1; i < Math.min(sizes.length, 5); i++) keys.push(sw(regionTint(i), `stray ${i}`));
+  if (rg.carved) keys.push(sw(CARVED_TINT, 'carved'));
+  el.innerHTML = `<div>${parts.join(' · ')}</div>`
+    + (sizes.length ? `<div style="margin-top:3px">${keys.join(' ')}</div>` : '');
+  el.style.color = rg.sealed?.length ? '#ff8a65' : sizes.length > 1 ? '#ffb74d' : '#7d8b9c';
+}
+
+// ---- sampling -------------------------------------------------------------
+// Last row at or before t, plus the next one, so position can be interpolated between samples.
+function sampleAt(b, t) {
+  const rows = b.rows;
+  if (!rows.length || t < rows[0].t) return null;
+  let i = b.cursor;
+  if (i >= rows.length || rows[i].t > t) i = 0;
+  while (i + 1 < rows.length && rows[i + 1].t <= t) i++;
+  b.cursor = i;
+  const cur = rows[i], next = rows[i + 1] || null;
+  let x = cur.x, z = cur.z;
+  if (next && cur.x != null && next.x != null) {
+    const span = next.t - cur.t;
+    if (span > 0 && span <= GAP_HOLD_MS) {
+      const f = Math.min(1, Math.max(0, (t - cur.t) / span));
+      x = cur.x + (next.x - cur.x) * f;
+      z = cur.z + (next.z - cur.z) * f;
+    }
+  }
+  return { row: cur, next, x, z, idx: i };
+}
+
+const isStalled = row => LOCO.has(row.stateChar) && (row.speed ?? 0) < STILL_SPEED;
+
+// Most recent FIRE row within the flash window, walking back from the sampled index (never the whole
+// array -- that was O(rows) per bot per frame). Returns the row so the shot line can read its target.
+function recentFire(b, idx, t) {
+  for (let i = idx; i >= 0; i--) {
+    const r = b.rows[i];
+    if (t - r.t > FIRE_FLASH_MS) return null;
+    if (r.stateChar === 'F') return r;
+  }
+  return null;
+}
+
+// ---- view -----------------------------------------------------------------
+function fitView() {
+  if (!bounds) return;
+  // Union of the arena and where bots actually went: fitting to the world alone can crop a bot that
+  // wandered outside it, fitting to the data alone hides the parts of the map nobody reached.
+  const wb = worldMeta?.bounds;
+  const x0 = wb ? Math.min(bounds.x0, wb.minX) : bounds.x0;
+  const x1 = wb ? Math.max(bounds.x1, wb.maxX) : bounds.x1;
+  const z0 = wb ? Math.min(bounds.z0, wb.minZ) : bounds.z0;
+  const z1 = wb ? Math.max(bounds.z1, wb.maxZ) : bounds.z1;
+  const w = cv.width / devicePixelRatio, h = cv.height / devicePixelRatio;
+  const pad = 40;
+  const sx = (w - pad * 2) / Math.max(1e-3, x1 - x0);
+  const sz = (h - pad * 2) / Math.max(1e-3, z1 - z0);
+  view.scale = Math.min(sx, sz);
+  view.cx = (x0 + x1) / 2;
+  view.cz = (z0 + z1) / 2;
+  draw();
+}
+const toSX = x => (x - view.cx) * view.scale + (cv.width / devicePixelRatio) / 2;
+const toSY = z => (z - view.cz) * view.scale + (cv.height / devicePixelRatio) / 2;
+const toWX = sx => (sx - (cv.width / devicePixelRatio) / 2) / view.scale + view.cx;
+const toWZ = sy => (sy - (cv.height / devicePixelRatio) / 2) / view.scale + view.cz;
+
+function resize() {
+  const r = cv.parentElement.getBoundingClientRect();
+  cv.width = Math.max(1, r.width * devicePixelRatio);
+  cv.height = Math.max(1, r.height * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ribbon.width = ribbon.clientWidth * devicePixelRatio;
+  ribbon.height = 26 * devicePixelRatio;
+  rctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  drawRibbon();
+  draw();
+}
+
+// ---- drawing --------------------------------------------------------------
+// Pin the view to the selected bot. Runs before any drawing so the whole frame is consistent, and
+// only moves the camera -- zoom stays the user's.
+function applyBotFollow() {
+  if (!$('tFollowBot').checked || !selected || !bots.has(selected)) return;
+  const s = sampleAt(bots.get(selected), playT);
+  if (!s || s.x == null) return;
+  view.cx = s.x; view.cz = s.z;
+}
+
+function draw() {
+  const w = cv.width / devicePixelRatio, h = cv.height / devicePixelRatio;
+  ctx.clearRect(0, 0, w, h);
+  if (!bots.size || !hasMotion) return;
+  applyBotFollow();
+  if ($('tElev').checked) drawElevation();   // base layer, beneath the grid
+  if ($('tRegions').checked) drawRegions();  // the floor's connectivity, over the relief
+  drawHeatLayers();                          // accumulated history, still under the geometry
+  if ($('tGrid').checked) drawGrid(w, h);
+  drawWorld(w, h);   // under the bots: geometry is context, not a subject
+
+  const teamFilter = $('teamSel').value;
+  const onlyStalled = $('fStall').checked;
+  const showDead = $('tDead').checked;
+
+  // Sample everyone once. `byId` stays UNFILTERED: a shot line needs its target and a squad link
+  // needs its leader even when the filters would hide them, or the link silently vanishes.
+  const live = [];
+  const byId = new Map();
+  for (const b of bots.values()) {
+    const s = sampleAt(b, playT);
+    if (!s || s.x == null) continue;
+    const dead = s.row.stateChar === 'D';
+    const stalled = isStalled(s.row);
+    const o = { b, s, dead, stalled };
+    byId.set(b.id, o);
+    if (teamFilter && b.team !== teamFilter) continue;
+    if (dead && !showDead) continue;
+    if (onlyStalled && !stalled) continue;
+    live.push(o);
+  }
+
+  // Which markers are genuinely visible this frame; the legend explains only these.
+  const marks = {};
+  if ($('tTargets').checked) drawTargetLinks(live, byId, marks);
+  if ($('tSquads').checked) drawSquadLinks(live, byId, marks);
+  if ($('tTrails').checked) for (const o of live) if (!o.dead) drawTrail(o);
+  if ($('tShots').checked) drawShots(live, byId, marks);
+  for (const o of live) {
+    drawBot(o);
+    const g = glyphOf(o);
+    if (g.stalled) marks.stalled = true;
+    if (g.firing) marks.firing = true;
+    if (g.leader && !g.dead) marks.leader = true;
+    if (g.stranded && !g.dead) marks.stranded = true;
+    else if (g.localPatrol && !g.dead) marks.localPatrol = true;
+    if (g.dead) marks[g.freshDeath > 0 ? 'freshDeath' : 'corpse'] = true;
+    if (g.showPath && !g.dead) marks[g.hasPath ? 'hasPath' : 'noPath'] = true;
+  }
+  drawDeaths();
+  drawScaleBar(w, h);
+  drawHeatBar(w, h);
+  updateHeatLayerNotes();
+  updateLegend(live, marks);
+}
+
+// Widest 1/2/5 x 10^n spacing whose on-screen gap is still at least `minPx`. Same ladder the scale
+// bar uses, so the grid and the bar can never disagree about what a metre looks like.
+function niceStep(minPx) {
+  let pow = Math.pow(10, Math.floor(Math.log10(Math.max(1e-6, minPx / view.scale))));
+  for (let i = 0; i < 12; i++) {
+    for (const m of [1, 2, 5]) { const s = m * pow; if (s * view.scale >= minPx) return s; }
+    pow *= 10;
+  }
+  return pow;
+}
+const fmtTick = v => (Math.abs(v) < 1e-9 ? '0' : Number(v.toFixed(3)).toString());
+
+// Minor grid + major grid + the x=0 / z=0 axes + numbered ticks pinned to the viewport edges, so a
+// coordinate stays readable at any pan/zoom (the ticks do not scroll off with the origin).
+function drawGrid(w, h) {
+  const major = niceStep(70);
+  const minor = major / 5;
+  const x0 = toWX(0), x1 = toWX(w), z0 = toWZ(0), z1 = toWZ(h);
+  const line = (step, style) => {
+    if (step * view.scale < 4) return;   // denser than this is just noise
+    ctx.strokeStyle = style; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) {
+      const sx = Math.round(toSX(x)) + .5; ctx.moveTo(sx, 0); ctx.lineTo(sx, h);
+    }
+    for (let z = Math.floor(z0 / step) * step; z <= z1; z += step) {
+      const sy = Math.round(toSY(z)) + .5; ctx.moveTo(0, sy); ctx.lineTo(w, sy);
+    }
+    ctx.stroke();
+  };
+  line(minor, '#141a23');
+  line(major, '#1e2733');
+
+  // Axes: only drawn when the origin is actually on screen, else they would read as ordinary lines.
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  const ax = Math.round(toSX(0)) + .5, az = Math.round(toSY(0)) + .5;
+  if (ax >= 0 && ax <= w) { ctx.moveTo(ax, 0); ctx.lineTo(ax, h); }
+  if (az >= 0 && az <= h) { ctx.moveTo(0, az); ctx.lineTo(w, az); }
+  ctx.strokeStyle = '#3d4b5e';
+  ctx.stroke();
+
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.fillStyle = '#8d9aab';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'center';
+  for (let x = Math.ceil(x0 / major) * major; x <= x1; x += major) {
+    const sx = toSX(x);
+    if (sx < 18 || sx > w - 18) continue;          // don't collide with the vertical ruler
+    ctx.fillText(fmtTick(x), sx, 3);
+    ctx.fillRect(Math.round(sx) + .5, 0, 1, 3);
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (let z = Math.ceil(z0 / major) * major; z <= z1; z += major) {
+    const sy = toSY(z);
+    if (sy < 14 || sy > h - 26) continue;          // clear of the tick row and the scale bar
+    ctx.fillText(fmtTick(z), 4, sy);
+    ctx.fillRect(0, Math.round(sy) + .5, 3, 1);
+  }
+  // Axis names: world is top-down XZ, so the vertical screen axis is Z, not Y.
+  ctx.fillStyle = '#5c6b7f';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('+X →', w - 6, 14);
+  ctx.textAlign = 'left';
+  ctx.fillText('+Z ↓', 4, 14);
+  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+}
+
+// Elevation is rendered once into an offscreen canvas at grid resolution and then scaled, rather
+// than per-pixel per frame. Rebuilt only when the height payload itself changes.
+let elevCanvas = null, elevKey = '';
+function elevationCanvas() {
+  const hm = worldMeta?.heights;
+  if (!hm || hm.flat || !hm.b64) return null;
+  const key = `${hm.cols}x${hm.rows}:${hm.minY}:${hm.maxY}:${hm.b64.length}`;
+  if (elevCanvas && elevKey === key) return elevCanvas;
+  const bin = atob(hm.b64);
+  const data = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+  const { cols, rows } = hm;
+  if (data.length < cols * rows) return null;   // truncated payload: draw nothing rather than garbage
+  const cvs = document.createElement('canvas');
+  cvs.width = cols; cvs.height = rows;
+  const c2 = cvs.getContext('2d');
+  const img = c2.createImageData(cols, rows);
+  const range = Math.max(1e-6, hm.maxY - hm.minY);
+  const b = worldMeta.bounds;
+  // Slope in metres per metre, so shading does not change with grid resolution or arena size.
+  const mx = (b.maxX - b.minX) / Math.max(1, cols - 1);
+  const mz = (b.maxZ - b.minZ) / Math.max(1, rows - 1);
+  const at = (c, r) => data[Math.min(rows - 1, Math.max(0, r)) * cols + Math.min(cols - 1, Math.max(0, c))] / 255 * range;
+  // Light from the upper-left, the cartographic convention: relief reads as raised, not sunken.
+  const LX = -0.5, LY = -0.6, LZ = 0.62;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const t = data[r * cols + c] / 255;
+      const dzdx = (at(c + 1, r) - at(c - 1, r)) / (2 * mx);
+      const dzdy = (at(c, r + 1) - at(c, r - 1)) / (2 * mz);
+      const inv = 1 / Math.hypot(dzdx, dzdy, 1);
+      const shade = Math.max(0.15, Math.min(1, (-dzdx * LX - dzdy * LY + LZ) * inv * 1.35));
+      // Desaturated slate -> tan: the teams own green and red, so the terrain must not compete.
+      const lo = [38, 48, 62], hi = [122, 112, 96];
+      const i4 = (r * cols + c) * 4;
+      for (let k = 0; k < 3; k++) img.data[i4 + k] = Math.round((lo[k] + (hi[k] - lo[k]) * t) * shade);
+      img.data[i4 + 3] = 255;
+    }
+  }
+  c2.putImageData(img, 0, 0);
+  elevCanvas = cvs; elevKey = key;
+  return cvs;
+}
+
+// ---- nav regions ----------------------------------------------------------
+// The overlay that answers "is this map one connected space?". Colour is by region RANK (0 = the
+// biggest, which the game calls main), not by id, so the same pocket keeps its colour across takes.
+// Everything that is not rank 0 is a place a bot can get stuck in, which is why rank 0 is drawn as
+// near-neutral and every other rank is drawn loud.
+const REGION_TINTS = ['#4fc3f7', '#ff7043', '#ab47bc', '#ffd54f', '#26a69a', '#ec407a',
+  '#8d6e63', '#7e57c2', '#66bb6a', '#ff8a65'];
+const regionTint = rank => (rank === 0 ? '#3d5a6c' : REGION_TINTS[(rank - 1) % REGION_TINTS.length]);
+const CARVED_TINT = '#ffffff';
+const OVERFLOW_TINT = '#9aa7b4';   // region rank past what one byte can name
+
+let regionCanvas = null, regionKey = '';
+function regionOverlayCanvas() {
+  const rg = worldMeta?.regions;
+  if (!rg || !rg.b64) return null;
+  const key = `${rg.cols}x${rg.rows}:${rg.b64.length}:${rg.carved}`;
+  if (regionCanvas && regionKey === key) return regionCanvas;
+  const bin = atob(rg.b64);
+  const { cols, rows } = rg;
+  if (bin.length < cols * rows) return null;   // truncated: draw nothing rather than a wrong map
+  const cvs = document.createElement('canvas');
+  cvs.width = cols; cvs.height = rows;
+  const c2 = cvs.getContext('2d');
+  const img = c2.createImageData(cols, rows);
+  const rgbCache = new Map();
+  const rgb = hex => {
+    let v = rgbCache.get(hex);
+    if (!v) { v = [1, 3, 5].map(i => parseInt(hex.substr(i, 2), 16)); rgbCache.set(hex, v); }
+    return v;
+  };
+  for (let k = 0; k < cols * rows; k++) {
+    const b = bin.charCodeAt(k);
+    const i4 = k * 4;
+    if (b === 0) { img.data[i4 + 3] = 0; continue; }   // blocked: let the relief below show through
+    // 255 is "a region past the 252 the byte can name" -- a distinct grey, NOT the carved white, or
+    // an overflowed palette would read as a repair that never happened.
+    const hex = b === 254 ? CARVED_TINT : b === 255 ? OVERFLOW_TINT : regionTint(b - 1);
+    const [r, g, bl] = rgb(hex);
+    img.data[i4] = r; img.data[i4 + 1] = g; img.data[i4 + 2] = bl;
+    // Carved cells are the repair itself, so they are opaque; ordinary region fill stays a wash.
+    img.data[i4 + 3] = b === 254 ? 235 : b === 1 ? 70 : 130;
+  }
+  c2.putImageData(img, 0, 0);
+  regionCanvas = cvs; regionKey = key;
+  return cvs;
+}
+
+// Drawn over the relief but under the world geometry: it describes the floor, not the obstacles.
+function drawRegions() {
+  const rg = worldMeta?.regions;
+  if (!rg) return;
+  const rc = regionOverlayCanvas();
+  if (!rc) return;
+  // Cell centres, matching buildNavGrid: cell (c,r) spans minX + c*cellSize .. +cellSize.
+  const x = toSX(rg.minX), y = toSY(rg.minZ);
+  const bw = rg.cols * rg.cellSize * view.scale, bh = rg.rows * rg.cellSize * view.scale;
+  ctx.save();
+  // Nearest-neighbour: these are discrete cells and a smoothed edge would invent connectivity that
+  // the pathfinder does not have.
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(rc, x, y, bw, bh);
+  ctx.restore();
+}
+
+// ---- heatmaps -------------------------------------------------------------
+// Accumulated over the whole take, not the current instant.
+//
+// Weighting is the thing to get right here. The recorder emits a row on every state change PLUS a
+// ~1 s heartbeat, so rows are NOT evenly spaced in time: a bot thrashing between two states emits
+// several rows without standing still any longer for it. Counting rows per cell would therefore draw
+// "busy state machine" and label it "time spent". Each row is instead weighted by its dwell time --
+// the gap to that bot's next row -- so the units really are seconds.
+//
+// Gaps longer than GAP_HOLD_MS are clamped, the same threshold the position interpolator refuses to
+// bridge: past it we do not know the bot stayed there, so crediting the full gap would invent dwell.
+const HEAT_MAX_CELLS = 200;      // along the longer axis
+const HEAT_REBUILD_MS = 750;     // O(rows), so throttled in live mode rather than run per frame
+const HEAT_LAYER_CAP = 3;        // more than this saturates to mud under normal alpha compositing
+const HEAT_MODES = {
+  time:   { label: 'time spent',   desc: 'seconds spent — dwell-weighted, so it is time and not sample count' },
+  stall:  { label: 'time stalled', desc: 'seconds stalled — dwell time in a locomotion state while stationary' },
+  deaths: { label: 'deaths',       desc: 'deaths per cell — discrete events, not weighted' },
+};
+// Named 5-stop ramps, distinct hues so 2-3 stacked layers stay tellable apart at a glance. Each
+// monotone in lightness, same reason the original single ramp was, so "hotter" reads without a legend.
+const HEAT_RAMPS = {
+  inferno: [[12, 20, 60], [90, 30, 140], [200, 60, 110], [250, 150, 40], [255, 245, 210]],
+  glacier: [[8, 16, 40], [20, 70, 120], [40, 150, 190], [140, 220, 235], [240, 250, 255]],
+  toxic:   [[10, 30, 10], [40, 90, 20], [110, 160, 30], [200, 220, 60], [245, 255, 200]],
+  ember:   [[35, 8, 8], [110, 20, 15], [190, 60, 20], [230, 140, 40], [255, 235, 190]],
+};
+const HEAT_RAMP_KEYS = Object.keys(HEAT_RAMPS);
+
+// A stack of independently toggleable/orderable/recolorable/opacity-controlled heat layers, replacing
+// what used to be a single `heat` global behind one <select>. Array order IS draw order: index 0 draws
+// first (back of the stack), the last index draws last (front). The sidebar list displays the reverse
+// of this array so the front-most layer reads at the top of the panel, Photoshop-style; `swapHeatLayer`
+// only ever swaps adjacent array elements, which is correct under that reversal without needing to know
+// about it. Layers deliberately do NOT carry their own team filter -- they inherit the sidebar's single
+// `teamSel`, the same one that filters bot dots/trails, so the map can never show a heat cell for a team
+// currently hidden everywhere else.
+let heatLayers = [];
+let nextHeatLayerId = 1;
+let heatNoteEls = new Map();   // layer id -> its sidebar note element, updated in place (no rebuild)
+
+function heatGeometry() {
+  const wb = worldMeta?.bounds;
+  const x0 = wb ? wb.minX : bounds?.x0, x1 = wb ? wb.maxX : bounds?.x1;
+  const z0 = wb ? wb.minZ : bounds?.z0, z1 = wb ? wb.maxZ : bounds?.z1;
+  if (x0 == null || x1 == null || !(x1 > x0) || !(z1 > z0)) return null;
+  const cellSize = Math.max(x1 - x0, z1 - z0) / HEAT_MAX_CELLS;
+  return {
+    minX: x0, minZ: z0, cellSize,
+    cols: Math.max(1, Math.ceil((x1 - x0) / cellSize)),
+    rows: Math.max(1, Math.ceil((z1 - z0) / cellSize)),
+  };
+}
+
+// The expensive step: O(total trace rows across all bots). Fills the layer's raw accumulation only --
+// never touches color or opacity -- so reordering, recoloring or retinting a layer never re-runs this.
+function buildHeatLayer(layer, teamFilter) {
+  const geo = heatGeometry();
+  if (!geo) { layer.data = null; return; }
+  const { cols, rows, cellSize, minX, minZ } = geo;
+  const data = new Float64Array(cols * rows);
+  const at = (x, z) => {
+    const c = Math.floor((x - minX) / cellSize), r = Math.floor((z - minZ) / cellSize);
+    if (c < 0 || r < 0 || c >= cols || r >= rows) return -1;
+    return r * cols + c;
+  };
+  // Honours the (shared, global) team filter: "where does alpha stall" is a real question, and quietly
+  // binning both teams while the sidebar says one would be the wrong answer to it.
+  const keep = b => !teamFilter || b.team === teamFilter;
+  let total = 0;
+  if (layer.mode === 'deaths') {
+    for (const b of bots.values()) {
+      if (!keep(b)) continue;
+      if (b.deathT == null || !b.deathPos || b.deathPos.x == null) continue;
+      const k = at(b.deathPos.x, b.deathPos.z);
+      if (k >= 0) { data[k] += 1; total += 1; }
+    }
+  } else {
+    const wantStall = layer.mode === 'stall';
+    for (const b of bots.values()) {
+      if (!keep(b)) continue;
+      const rs = b.rows;
+      for (let i = 0; i < rs.length; i++) {
+        const r = rs[i];
+        if (r.x == null || r.z == null) continue;
+        if (r.stateChar === 'D') continue;              // a corpse is not spending time, it is lying there
+        if (wantStall && !isStalled(r)) continue;
+        const nxt = rs[i + 1];
+        // Last row of a bot has no successor to measure against; credit one heartbeat, not zero, so a
+        // bot that is stalled right now still registers.
+        const gap = nxt ? nxt.t - r.t : 1000;
+        const dwell = Math.min(Math.max(0, gap), GAP_HOLD_MS) / 1000;
+        const k = at(r.x, r.z);
+        if (k >= 0) { data[k] += dwell; total += dwell; }
+      }
+    }
+  }
+  // Normalize to a high percentile, not the max: one spawn cell with 200x everyone else would
+  // otherwise flatten the whole map to black. Cells above the percentile just clamp to full colour.
+  // Per layer, deliberately: a sparse and a dense layer share no scale, so the numeric label in the
+  // sidebar note (not brightness) is what stays comparable across layers -- see layerRangeLabel.
+  const nz = [];
+  for (let i = 0; i < data.length; i++) if (data[i] > 0) nz.push(data[i]);
+  nz.sort((a, c) => a - c);
+  const norm = nz.length ? nz[Math.min(nz.length - 1, Math.floor(nz.length * 0.98))] : 1;
+  Object.assign(layer, { team: teamFilter, cols, rows, cellSize, minX, minZ, data,
+    norm: Math.max(1e-9, norm), total, cells: nz.length });
+  layer.canvas = null; layer.cacheKey = '';
+}
+
+function heatColor(ramp, t) {
+  const stops = HEAT_RAMPS[ramp] || HEAT_RAMPS.inferno;
+  const f = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(f)), k = f - i;
+  const a = stops[i], b = stops[i + 1];
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+}
+
+// The cheap step: O(grid cells, capped ~200x200), never O(trace rows). Cached per layer, keyed on ramp
+// and opacity as well as the accumulation -- so a slider drag repaints a ~200x200 canvas, not a rescan
+// of the whole take.
+function heatLayerCanvas(layer) {
+  if (!layer.data) return null;
+  const key = `${layer.mode}:${layer.cols}x${layer.rows}:${layer.norm}:${layer.total}:${layer.ramp}:${layer.opacity}`;
+  if (layer.canvas && layer.cacheKey === key) return layer.canvas;
+  const { cols, rows, data, norm, ramp } = layer;
+  const opacityScale = Math.max(0, Math.min(100, layer.opacity)) / 100;
+  const cvs = document.createElement('canvas');
+  cvs.width = cols; cvs.height = rows;
+  const c2 = cvs.getContext('2d');
+  const img = c2.createImageData(cols, rows);
+  for (let k = 0; k < cols * rows; k++) {
+    const v = data[k];
+    const i4 = k * 4;
+    if (v <= 0) { img.data[i4 + 3] = 0; continue; }
+    // sqrt: occupancy is heavy-tailed, and a linear ramp shows only the single hottest corner.
+    const t = Math.sqrt(Math.min(1, v / norm));
+    const [r, g, b] = heatColor(ramp, t);
+    img.data[i4] = r; img.data[i4 + 1] = g; img.data[i4 + 2] = b;
+    img.data[i4 + 3] = Math.round((60 + 175 * t) * opacityScale);
+  }
+  c2.putImageData(img, 0, 0);
+  layer.canvas = cvs; layer.cacheKey = key;
+  return cvs;
+}
+
+// Composites every visible layer in stack order (back to front). Each layer rebuilds its own
+// accumulation independently -- on a mode/team change, or on the live-mode throttle -- so layers with
+// different team filters over the same growing row history don't force each other to rebuild.
+function drawHeatLayers() {
+  if (!heatLayers.some(l => l.visible)) return;
+  const team = $('teamSel').value;
+  const now = performance.now();
+  for (const l of heatLayers) {
+    if (!l.visible) continue;
+    if (!l.data || l.team !== team || (liveOn && now - l.builtAt > HEAT_REBUILD_MS)) {
+      l.builtAt = now;
+      buildHeatLayer(l, team);
+    }
+  }
+  for (const l of heatLayers) {
+    if (!l.visible || !l.data) continue;
+    const hc = heatLayerCanvas(l);
+    if (!hc) continue;
+    const x = toSX(l.minX), y = toSY(l.minZ);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(hc, x, y, l.cols * l.cellSize * view.scale, l.rows * l.cellSize * view.scale);
+    ctx.restore();
+  }
+}
+
+function clearHeatLayerCaches() {
+  for (const l of heatLayers) { l.data = null; l.canvas = null; l.cacheKey = ''; l.builtAt = 0; }
+}
+
+// ---- heatmap sidebar panel -------------------------------------------------
+
+function layerRangeLabel(l) {
+  if (!l.data) return 'no positions to bin yet';
+  if (!l.cells) return 'nothing recorded';
+  const unit = l.mode === 'deaths' ? '' : ' s';
+  const norm = l.norm < 10 ? l.norm.toFixed(1) : Math.round(l.norm);
+  return `${l.cells} cells · ${norm}${unit}+ / cell`;
+}
+
+function heatModeOptionsHtml(sel) {
+  return Object.entries(HEAT_MODES).map(([k, v]) =>
+    `<option value="${k}" ${k === sel ? 'selected' : ''}>${v.label}</option>`).join('');
+}
+function heatRampOptionsHtml(sel) {
+  return HEAT_RAMP_KEYS.map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${k}</option>`).join('');
+}
+
+function swapHeatLayer(id, dir) {
+  const idx = heatLayers.findIndex(x => x.id === id);
+  const j = idx + dir;
+  if (idx < 0 || j < 0 || j >= heatLayers.length) return;
+  [heatLayers[idx], heatLayers[j]] = [heatLayers[j], heatLayers[idx]];
+  renderHeatLayers();
+  draw();
+}
+
+// Rebuilds the layer-row DOM. Only called on structural changes (add/remove/reorder) -- NOT on every
+// draw() -- because a slider or select mid-interaction would lose focus/drag state if its row were
+// replaced under it. Per-frame text (cell counts, totals) is instead pushed through updateHeatLayerNotes,
+// which only ever sets textContent on the note elements this function hands out.
+function renderHeatLayers() {
+  const host = $('heatLayerList');
+  host.innerHTML = '';
+  heatNoteEls = new Map();
+  const display = [...heatLayers].reverse();   // front of the stack first, Photoshop-style
+  for (const l of display) {
+    const idx = heatLayers.indexOf(l);
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'padding:4px 0;border-bottom:1px solid var(--line)';
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:4px';
+
+    const visBtn = document.createElement('button');
+    visBtn.textContent = l.visible ? '●' : '○';
+    visBtn.title = 'show / hide this layer';
+    visBtn.style.cssText = 'padding:2px 6px;flex:0 0 auto';
+    visBtn.onclick = () => { l.visible = !l.visible; visBtn.textContent = l.visible ? '●' : '○'; draw(); };
+    row.appendChild(visBtn);
+
+    const modeSel = document.createElement('select');
+    modeSel.style.cssText = 'flex:1 1 auto;min-width:0;padding:2px 3px;font-size:11px';
+    modeSel.innerHTML = heatModeOptionsHtml(l.mode);
+    modeSel.title = 'what this layer bins';
+    modeSel.onchange = () => { l.mode = modeSel.value; l.data = null; draw(); };
+    row.appendChild(modeSel);
+
+    const rampSel = document.createElement('select');
+    rampSel.style.cssText = 'flex:0 0 auto;padding:2px 3px;font-size:11px';
+    rampSel.innerHTML = heatRampOptionsHtml(l.ramp);
+    rampSel.title = 'color ramp';
+    rampSel.onchange = () => { l.ramp = rampSel.value; draw(); };
+    row.appendChild(rampSel);
+
+    const rm = document.createElement('button');
+    rm.textContent = '×';
+    rm.title = 'remove this layer';
+    rm.style.cssText = 'padding:2px 6px;flex:0 0 auto';
+    rm.onclick = () => { heatLayers = heatLayers.filter(x => x.id !== l.id); renderHeatLayers(); draw(); };
+    row.appendChild(rm);
+
+    wrap.appendChild(row);
+
+    const row2 = document.createElement('div');
+    row2.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:2px';
+
+    const front = document.createElement('button');
+    front.textContent = '▲';
+    front.title = 'bring forward';
+    front.disabled = idx === heatLayers.length - 1;
+    front.style.cssText = 'padding:1px 5px;flex:0 0 auto';
+    front.onclick = () => swapHeatLayer(l.id, 1);
+    row2.appendChild(front);
+
+    const back = document.createElement('button');
+    back.textContent = '▼';
+    back.title = 'send backward';
+    back.disabled = idx === 0;
+    back.style.cssText = 'padding:1px 5px;flex:0 0 auto';
+    back.onclick = () => swapHeatLayer(l.id, -1);
+    row2.appendChild(back);
+
+    const op = document.createElement('input');
+    op.type = 'range'; op.min = 10; op.max = 100; op.value = l.opacity;
+    op.title = 'opacity';
+    op.style.cssText = 'flex:1;min-width:30px';
+    op.oninput = () => { l.opacity = Number(op.value); draw(); };
+    row2.appendChild(op);
+
+    wrap.appendChild(row2);
+
+    const note = document.createElement('div');
+    note.className = 'muted';
+    note.style.cssText = 'font-size:10px;margin-top:2px';
+    note.textContent = layerRangeLabel(l);
+    wrap.appendChild(note);
+    heatNoteEls.set(l.id, note);
+
+    host.appendChild(wrap);
+  }
+  $('heatAddBtn').disabled = heatLayers.length >= HEAT_LAYER_CAP;
+  $('heatAddNote').textContent = heatLayers.length >= HEAT_LAYER_CAP
+    ? `max ${HEAT_LAYER_CAP} layers — more saturates to mud under normal compositing` : '';
+}
+
+// Cheap per-frame refresh: only touches textContent on already-built note elements, gated per layer so
+// an unchanged layer costs one string compare, not a DOM write.
+function updateHeatLayerNotes() {
+  for (const l of heatLayers) {
+    const el = heatNoteEls.get(l.id);
+    if (!el) continue;
+    const txt = layerRangeLabel(l);
+    if (l._noteText === txt) continue;
+    l._noteText = txt;
+    el.textContent = txt;
+  }
+}
+
+function addHeatLayer() {
+  if (heatLayers.length >= HEAT_LAYER_CAP) return;
+  const mode = $('heatAddMode').value || 'time';
+  const ramp = HEAT_RAMP_KEYS[heatLayers.length % HEAT_RAMP_KEYS.length];
+  heatLayers.push({ id: nextHeatLayerId++, mode, ramp, opacity: 40, visible: true,
+    data: null, canvas: null, cacheKey: '', norm: 1, total: 0, cells: 0, team: undefined, builtAt: 0 });
+  renderHeatLayers();
+  draw();
+}
+
+// Colour bars with real units, stacked bottom-right, one per visible layer -- so a bright cell in any
+// layer can still be read as a quantity, not just "a lot", without needing a legend row per layer to
+// fit in the 300px sidebar.
+function drawHeatBar(w, h) {
+  const visible = heatLayers.filter(l => l.visible && l.data);
+  if (!visible.length) return;
+  const bw = 110, bh = 7, gap = 15;
+  visible.forEach((l, i) => {
+    const y = h - 22 - i * gap;
+    const x = w - bw - 16;
+    for (let px = 0; px < bw; px++) {
+      const [r, g, b] = heatColor(l.ramp, px / (bw - 1));
+      ctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
+      ctx.fillRect(x + px, y, 1, bh);
+    }
+    ctx.strokeStyle = '#2b3442'; ctx.lineWidth = 1;
+    ctx.strokeRect(x - .5, y - .5, bw + 1, bh + 1);
+    ctx.fillStyle = '#93a3b5'; ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText(HEAT_MODES[l.mode]?.label || l.mode, x, y - 2);
+    ctx.textAlign = 'right';
+    const unit = l.mode === 'deaths' ? '' : 's';
+    ctx.fillText(`${l.norm < 10 ? l.norm.toFixed(1) : Math.round(l.norm)}${unit}+/cell`, x + bw, y - 2);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  });
+}
+
+// Base layer, under the grid: relief is context for everything drawn on top of it.
+function drawElevation() {
+  const bb = worldMeta?.bounds;
+  if (!bb) return;
+  const ec = elevationCanvas();
+  if (!ec) return;
+  const x = toSX(bb.minX), y = toSY(bb.minZ);
+  const bw = (bb.maxX - bb.minX) * view.scale, bh = (bb.maxZ - bb.minZ) * view.scale;
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  ctx.imageSmoothingEnabled = true;   // cells are samples of a field, not tiles
+  ctx.drawImage(ec, x, y, bw, bh);
+  ctx.restore();
+}
+
+// Arena geometry from the take's sibling bot-diag-*.json. Absent for older takes or a dropped file,
+// in which case nothing here draws and the sidebar says where the extent came from.
+function drawWorld(w, h) {
+  if (!worldMeta) return;
+
+  const rect = b => {
+    const sx = toSX(b.x - b.w / 2), sy = toSY(b.z - b.d / 2);
+    return [sx, sy, b.w * view.scale, b.d * view.scale];
+  };
+  if ($('tWalls').checked) {
+    ctx.fillStyle = '#2b3442'; ctx.strokeStyle = '#46566b'; ctx.lineWidth = 1;
+    for (const b of worldMeta.walls || []) { const r = rect(b); ctx.fillRect(...r); ctx.strokeRect(...r); }
+    ctx.fillStyle = '#33403a'; ctx.strokeStyle = '#4f6b5c';
+    for (const b of worldMeta.covers || []) { const r = rect(b); ctx.fillRect(...r); ctx.strokeRect(...r); }
+  }
+  if ($('tPatrol').checked) {
+    ctx.fillStyle = '#c9a227';
+    for (const p of worldMeta.patrolPoints || []) {
+      const sx = toSX(p.x), sy = toSY(p.z);
+      ctx.beginPath(); ctx.moveTo(sx, sy - 4); ctx.lineTo(sx + 4, sy); ctx.lineTo(sx, sy + 4); ctx.lineTo(sx - 4, sy);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  const b = worldMeta.bounds;
+  if ($('tBounds').checked && b) {
+    const x = toSX(b.minX), y = toSY(b.minZ);
+    const bw = (b.maxX - b.minX) * view.scale, bh = (b.maxZ - b.minZ) * view.scale;
+    ctx.strokeStyle = '#6f7d91'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+    ctx.strokeRect(Math.round(x) + .5, Math.round(y) + .5, Math.round(bw), Math.round(bh));
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#6f7d91'; ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText(`world ${(b.maxX - b.minX).toFixed(1)} x ${(b.maxZ - b.minZ).toFixed(1)} m`, x + 3, y - 2);
+    ctx.textBaseline = 'alphabetic';
+  }
+}
+
+function drawSquadLinks(live, byId, marks) {
+  ctx.lineWidth = 1;
+  for (const o of live) {
+    const lid = o.s.row.leaderId;
+    if (!lid || lid === o.b.id || o.dead) continue;
+    const L = byId.get(lid);
+    if (!L) continue;
+    // Red link = follower pinned on its slot; that is the freeze this tool is looking for.
+    marks[o.stalled ? 'squadLinkStalled' : 'squadLink'] = true;
+    ctx.strokeStyle = o.stalled ? '#ef535066' : '#4fc3f733';
+    ctx.beginPath();
+    ctx.moveTo(toSX(o.s.x), toSY(o.s.z));
+    ctx.lineTo(toSX(L.s.x), toSY(L.s.z));
+    ctx.stroke();
+  }
+}
+
+// Why a bot is not shooting the thing it has targeted. These are the vis_gate values the recorder
+// writes; the colour is the answer, so a map full of red links says "everyone is aiming through a
+// wall" without opening the TSV.
+const VIS_GATE = {
+  y: ['#8bc34a', 'visible — clear line of sight, in FOV'],
+  n: ['#ef5350', 'NOT visible — line of sight blocked'],
+  f: ['#ffb74d', 'outside the FOV cone — has not turned to look yet'],
+  r: ['#4fc3f7', 'out of range'],
+  '': ['#78909c', 'no vis_gate in this take'],
+};
+const visGateColor = v => (VIS_GATE[v] || VIS_GATE[''])[0];
+
+// Persistent target links: drawn whenever target_id is set, not only during a fire flash. This is the
+// view that exposed the shared-fallback-target bug -- eight bots all pointing at one enemy is obvious
+// as a fan of lines and invisible as a column of ids.
+function drawTargetLinks(live, byId, marks) {
+  ctx.save();
+  ctx.lineWidth = 1;
+  for (const o of live) {
+    if (o.dead) continue;
+    const row = o.s.row;
+    const T = row.targetId ? byId.get(row.targetId) : null;
+    if (!T || T.s.x == null) continue;
+    const gate = row.visGate || '';
+    marks[`gate_${gate || 'none'}`] = true;
+    ctx.strokeStyle = visGateColor(gate) + '4d';
+    // Dashed unless the target is actually visible: a solid line should mean a live engagement.
+    ctx.setLineDash(gate === 'y' ? [] : [4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(toSX(o.s.x), toSY(o.s.z));
+    ctx.lineTo(toSX(T.s.x), toSY(T.s.z));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Shot lines. A real shooter->target pairing needs target_id; without it (older takes) fall back to a
+// short muzzle ray along yaw, which is honest about showing a direction rather than a victim.
+function drawShots(live, byId, marks) {
+  for (const o of live) {
+    if (o.dead) continue;
+    const f = recentFire(o.b, o.s.idx, playT);
+    if (!f) continue;
+    marks[f.targetId && byId.get(f.targetId) ? 'shotAimed' : 'shotBlind'] = true;
+    const age = (playT - f.t) / FIRE_FLASH_MS;
+    const fade = Math.max(0, 1 - age);
+    const sx = toSX(o.s.x), sy = toSY(o.s.z);
+    const T = f.targetId ? byId.get(f.targetId) : null;
+    let ex, ey;
+    if (T) { ex = toSX(T.s.x); ey = toSY(T.s.z); }
+    else if (f.yaw != null) {
+      const a = f.yaw * Math.PI / 180;
+      ex = sx + Math.sin(a) * 60; ey = sy + Math.cos(a) * 60;
+    } else continue;
+
+    // Glow carries vis_gate; the core stays white so a shot still reads as a shot at a glance. A bot
+    // firing at something it cannot see is the interesting case, and it now looks different.
+    const glow = visGateColor(f.visGate || 'y');
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.28 * fade;
+    ctx.strokeStyle = glow;
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `rgba(255,255,255,${0.95 * fade})`;   // hot core
+    ctx.lineWidth = 1.6;
+    if (!T) ctx.setLineDash([5, 5]);                        // dashed = direction only, target unknown
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.restore();
+    if (T) {   // impact pip on the bot being shot at
+      ctx.fillStyle = `rgba(255,138,128,${0.9 * fade})`;
+      ctx.beginPath(); ctx.arc(ex, ey, 3 + 4 * (1 - fade), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+// Death burst: an expanding shockwave at the moment of death, then a permanent grave mark, so a kill
+// is visible while scrubbing and the map still shows where everyone fell.
+function drawDeaths() {
+  for (const b of bots.values()) {
+    if (!b.deathPos || b.deathPos.x == null) continue;
+    if (b.deathT == null || playT < b.deathT) continue;
+    const px = toSX(b.deathPos.x), py = toSY(b.deathPos.z);
+    ctx.fillStyle = '#ffffff10';
+    ctx.beginPath(); ctx.arc(px, py, 2.5, 0, Math.PI * 2); ctx.fill();
+    const age = playT - b.deathT;
+    if (age > DEATH_FX_MS) continue;
+    const f = age / DEATH_FX_MS;
+    const c = teamColor(b.team);
+    ctx.save();
+    ctx.strokeStyle = c.bright;
+    ctx.globalAlpha = Math.max(0, 1 - f);
+    ctx.lineWidth = 3 * (1 - f) + 0.5;
+    ctx.beginPath(); ctx.arc(px, py, 6 + f * 46, 0, Math.PI * 2); ctx.stroke();   // shockwave
+    ctx.strokeStyle = '#fff';
+    ctx.globalAlpha = Math.max(0, 1 - f * 1.6);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {                                                  // debris spokes
+      const a = (i / 8) * Math.PI * 2;
+      const r0 = 4 + f * 20, r1 = r0 + 10 * (1 - f);
+      ctx.moveTo(px + Math.cos(a) * r0, py + Math.sin(a) * r0);
+      ctx.lineTo(px + Math.cos(a) * r1, py + Math.sin(a) * r1);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawTrail(o) {
+  const rows = o.b.rows;
+  const pts = [];
+  // Walk BACK from the sampled index, never forward from 0: the old scan was O(rows) per bot per
+  // frame, which is invisible when scrubbing a finite take but grows without bound in live follow
+  // mode, where playT sits at the newest sample so the early `break` never fired. Cost is now bounded
+  // by TRAIL_MS instead of by history length. (Same fix recentFire already carries.)
+  for (let i = o.s.idx; i >= 0; i--) {
+    const r = rows[i];
+    if (playT - r.t > TRAIL_MS) break;
+    if (r.x != null) pts.push(r);
+  }
+  if (pts.length < 2) return;
+  pts.reverse();   // collected newest-first; the alpha ramp below wants oldest-first
+  const c = teamColor(o.b.team);
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < pts.length; i++) {
+    const a = (i / pts.length) * 0.5;
+    ctx.strokeStyle = c.bright + Math.round(a * 255).toString(16).padStart(2, '0');
+    ctx.beginPath();
+    ctx.moveTo(toSX(pts[i - 1].x), toSY(pts[i - 1].z));
+    ctx.lineTo(toSX(pts[i].x), toSY(pts[i].z));
+    ctx.stroke();
+  }
+}
+
+// Everything that makes one bot look the way it does, as plain data. The legend builds these by hand
+// to draw its swatches, so a swatch and a real bot can never disagree.
+function glyphOf(o) {
+  const { b, s, dead, stalled } = o;
+  const row = s.row, d = row.d;
+  return {
+    team: b.team,
+    stateChar: row.stateChar,
+    stateClass: d ? d.stateClass : 'idle',
+    health: d ? d.health : 4,
+    dead,
+    freshDeath: dead && b.deathT != null ? Math.max(0, 1 - (playT - b.deathT) / (DEATH_FX_MS * 2)) : 0,
+    stalled: stalled && $('tStall').checked,
+    firing: !dead && !!recentFire(b, s.idx, playT),
+    leader: row.squadRank === 0,
+    hasPath: row.pathLen != null && row.pathLen > 0,
+    // Two different things, and the map must not blur them: 'patrolLocal' = orbiting a pocket we
+    // have not yet tried to leave; 'patrolStranded' = we tried and PROVED there is no way out.
+    localPatrol: row.pathMode === 'patrolLocal',
+    stranded: row.pathMode === 'patrolStranded',
+    showPath: $('tPaths').checked && row.pathLen != null,
+    yaw: $('tFacing').checked ? row.yaw : null,
+  };
+}
+
+// Shared painter: the map calls it per bot, the legend calls it per swatch.
+function paintGlyph(g, px, py, R, o, pulsePhase = playT) {
+  const c = teamColor(o.team);
+  if (o.dead) {
+    g.strokeStyle = o.freshDeath > 0 ? c.bright : '#4a526088';
+    g.lineWidth = 1.5 + o.freshDeath * 2.5;
+    const k = R * (0.7 + o.freshDeath * 0.6);
+    g.beginPath();
+    g.moveTo(px - k, py - k); g.lineTo(px + k, py + k);
+    g.moveTo(px + k, py - k); g.lineTo(px - k, py + k);
+    g.stroke();
+    return;
+  }
+  if (o.stalled) {   // pulses so a frozen bot is findable while scrubbing
+    const pulse = 0.5 + 0.5 * Math.sin(pulsePhase / 160);
+    g.strokeStyle = `rgba(239,83,80,${0.30 + pulse * 0.5})`;
+    g.lineWidth = 2;
+    g.beginPath(); g.arc(px, py, R + 4 + pulse * 3, 0, Math.PI * 2); g.stroke();
+  }
+  // Fallback ring. Deliberately loud: a bot orbiting a sealed pocket is being propped up by a
+  // symptom patch, and that must never look like normal patrol on the map.
+  if (o.stranded || o.localPatrol) {
+    g.strokeStyle = o.stranded ? '#ff7043' : '#e0a53a';
+    g.lineWidth = o.stranded ? 2 : 1.25;
+    g.setLineDash(o.stranded ? [] : [3, 3]);
+    g.beginPath(); g.arc(px, py, R + 6, 0, Math.PI * 2); g.stroke();
+    g.setLineDash([]);
+  }
+  if (o.firing) {
+    g.fillStyle = '#ffd54f55';
+    g.beginPath(); g.arc(px, py, R + 8, 0, Math.PI * 2); g.fill();
+  }
+  if (o.yaw != null) {
+    const a = o.yaw * Math.PI / 180;                 // forward = (sin yaw, cos yaw) in world x/z
+    g.strokeStyle = c.bright; g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(px, py);
+    g.lineTo(px + Math.sin(a) * R * 2.1, py + Math.cos(a) * R * 2.1);
+    g.stroke();
+  }
+  g.fillStyle = c.body;
+  g.beginPath(); g.arc(px, py, R, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = CLASS_COLORS[o.stateClass] || '#888';
+  g.lineWidth = 2;
+  g.stroke();
+  if (o.leader) {   // leaders wear a chevron; every follower's movement is bound to theirs
+    g.strokeStyle = '#ffd54f'; g.lineWidth = 1.5;
+    g.beginPath();
+    g.moveTo(px - R * .7, py - R - 3); g.lineTo(px, py - R - 7); g.lineTo(px + R * .7, py - R - 3);
+    g.stroke();
+  }
+  if (o.showPath && o.hasPath) {   // filled centre dot = live waypoint queue, hollow = nothing to walk to
+    g.fillStyle = '#fff';
+    g.beginPath(); g.arc(px, py, Math.max(1.2, R * .28), 0, Math.PI * 2); g.fill();
+  }
+}
+
+const glyphRadius = health => Math.max(3.2, (3.6 + health * 0.7) * Math.min(2.2, Math.max(0.55, view.scale / 12)));
+
+function drawBot(o) {
+  const { b, s } = o;
+  const row = s.row;
+  const px = toSX(s.x), py = toSY(s.z);
+  const sel = selected === b.id;
+  const g = glyphOf(o);
+  const R = glyphRadius(g.health);
+  paintGlyph(ctx, px, py, R, g);
+  if (sel) ringAt(px, py, R + (g.dead ? 5 : 6), '#fff');
+  if (g.dead) return;
+
+  if (view.scale > 9 && (sel || $('tLabels').checked)) {
+    ctx.fillStyle = sel ? '#fff' : '#93a3b5';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.fillText(`${b.id.replace(/^bot-/, '')} ${row.stateChar}`, px + R + 4, py + 3);
+  }
+}
+
+function ringAt(x, y, r, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+}
+
+function drawScaleBar(w, h) {
+  // Widest 1/2/5 x 10^n that still fits in ~90px.
+  const target = 90;
+  let metres = 0.1;
+  for (const step of [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]) {
+    if (step * view.scale <= target) metres = step;
+  }
+  const px = metres * view.scale;
+  ctx.strokeStyle = '#7d8b9c'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(14, h - 16); ctx.lineTo(14 + px, h - 16); ctx.stroke();
+  ctx.fillStyle = '#7d8b9c'; ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText(`${metres} m`, 14, h - 21);
+}
+
+// ---- ribbon (activity over the whole take) --------------------------------
+function buildRibbon() {
+  const N = 700;
+  ribbonBuckets.n = N;
+  ribbonBuckets.fire = new Array(N).fill(0);
+  ribbonBuckets.stall = new Array(N).fill(0);
+  const span = Math.max(1, tMax - tMin);
+  for (const r of allRows) {
+    const i = Math.min(N - 1, Math.floor(((r.t - tMin) / span) * N));
+    if (r.stateChar === 'F') ribbonBuckets.fire[i]++;
+    if (isStalled(r)) ribbonBuckets.stall[i]++;
+  }
+  drawRibbon();
+}
+
+function drawRibbon() {
+  const w = ribbon.width / devicePixelRatio, h = ribbon.height / devicePixelRatio;
+  rctx.clearRect(0, 0, w, h);
+  if (!ribbonBuckets.n) return;
+  const N = ribbonBuckets.n;
+  const maxF = Math.max(1, ...ribbonBuckets.fire), maxS = Math.max(1, ...ribbonBuckets.stall);
+  const bw = w / N;
+  for (let i = 0; i < N; i++) {
+    const x = i * bw;
+    if (ribbonBuckets.stall[i]) {
+      rctx.fillStyle = '#ef535099';
+      const bh = (ribbonBuckets.stall[i] / maxS) * (h / 2);
+      rctx.fillRect(x, h - bh, Math.max(1, bw), bh);
+    }
+    if (ribbonBuckets.fire[i]) {
+      rctx.fillStyle = '#ffb74d';
+      const bh = (ribbonBuckets.fire[i] / maxF) * (h / 2);
+      rctx.fillRect(x, 0, Math.max(1, bw), bh);
+    }
+  }
+  const f = (playT - tMin) / Math.max(1, tMax - tMin);
+  rctx.strokeStyle = '#fff'; rctx.lineWidth = 1;
+  rctx.beginPath(); rctx.moveTo(f * w, 0); rctx.lineTo(f * w, h); rctx.stroke();
+}
+
+// ---- panels ---------------------------------------------------------------
+function buildBotList() {
+  const ids = [...bots.keys()].sort((a, c) => a.localeCompare(c, undefined, { numeric: true }));
+  $('botcount').textContent = `(${ids.length})`;
+  $('botlist').innerHTML = ids.map(id =>
+    `<div data-id="${id}" class="${id === selected ? 'sel' : ''}">${id} <span class="muted">${bots.get(id).team}</span></div>`).join('');
+}
+
+function renderDetail() {
+  const el = $('detail');
+  if (!selected || !bots.has(selected)) { el.innerHTML = '<span class="muted">click a bot on the map</span>'; updateGoToButton(); return; }
+  const b = bots.get(selected);
+  const s = sampleAt(b, playT);
+  if (!s) { el.innerHTML = `<div class="row"><span>${selected}</span><span>no data yet</span></div>`; updateGoToButton(); return; }
+  const r = s.row, d = r.d;
+  const line = (k, v) => `<div class="row"><span class="muted">${k}</span><span>${v}</span></div>`;
+  el.innerHTML =
+    line('id', r.id) + line('team', r.team) + line('code', r.code)
+    + line('state', d ? `${d.state} (${d.stateClass})` : '?')
+    + line('legal', d ? (d.legal ? 'yes' : `NO — ${d.illegalReason}`) : '?')
+    + line('tier', d ? `${d.tier} (${d.scoreChar})` : '?')
+    + line('role', r.roleId || (d ? d.role : '?')) + line('element', d ? d.element : '?')
+    + line('ammo', d ? d.ammo : '?') + line('health', d ? d.healthRange : '?')
+    + line('latches', d && d.latches.length ? d.latches.join('+') : 'none')
+    + line('pos', `${r.x?.toFixed(2)}, ${r.z?.toFixed(2)}`)
+    + line('yaw', r.yaw != null ? `${r.yaw}°` : '—')
+    + line('speed', r.speed != null ? `${r.speed.toFixed(2)} m/s` : '—')
+    + line('moved', r.moved != null ? `${r.moved.toFixed(2)} m` : '—')
+    + line('goal_dist', r.goalDist != null ? `${r.goalDist.toFixed(2)} m` : '—')
+    + line('path_len', r.pathLen ?? '—') + line('path_mode', r.pathMode || '—')
+    + line('squad', r.squadId || '—') + line('rank', r.squadRank ?? '—')
+    + line('leader', r.leaderId || '—') + line('target', r.targetId || '—')
+    + line('died at', b.deathT != null ? `${(b.deathT / 1000).toFixed(2)}s` : '—')
+    + line('stalled', isStalled(r) ? 'YES' : 'no')
+    + line('row t', `${r.t} ms (${r.changed})`);
+  updateGoToButton();
+}
+
+// Only meaningful while both tabs are live-connected on the same BroadcastChannel -- a static
+// loaded trace has no bot-viewer session on the other end to jump to.
+function updateGoToButton() {
+  $('gotoBotViewer').disabled = !(liveOn && selected);
+}
+
+// Action phrase straight from the module, so the legend can never describe a state differently
+// from the sim: describeBotState on a neutral core code yields "Rifleman <doing>."
+const glossCache = new Map();
+function stateGloss(ch) {
+  if (!glossCache.has(ch)) {
+    const s = describeBotState(`${ch}0r-0`) || '';
+    glossCache.set(ch, s.replace(/^Rifleman\s+/, '').replace(/\.$/, ''));
+  }
+  return glossCache.get(ch);
+}
+
+function swatchCanvas(paint, w = 30, h = 24) {
+  const c = document.createElement('canvas');
+  c.width = w * devicePixelRatio; c.height = h * devicePixelRatio;
+  c.style.cssText = `width:${w}px;height:${h}px;flex:0 0 ${w}px`;
+  const g = c.getContext('2d');
+  g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  paint(g, w / 2, h / 2);
+  return c;
+}
+
+// Marker swatches share the map's own drawing calls where practical.
+const MARKERS = {
+  stalled: ['stationary while in a locomotion state — the freeze to look for',
+    (g, x, y) => paintGlyph(g, x, y, 6, { team: 'alpha', stateChar: 'S', stateClass: 'search', stalled: true }, 250)],
+  firing: ['firing this instant',
+    (g, x, y) => paintGlyph(g, x, y, 6, { team: 'alpha', stateChar: 'F', stateClass: 'engage', firing: true })],
+  stranded: ['STRANDED — no route out of its nav region exists; the local orbit is a fallback, not a fix',
+    (g, x, y) => paintGlyph(g, x, y, 6, { team: 'alpha', stateChar: 'P', stateClass: 'idle', stranded: true })],
+  localPatrol: ['patrolling a local goal — its region holds no patrol ring point (not yet proven stranded)',
+    (g, x, y) => paintGlyph(g, x, y, 6, { team: 'alpha', stateChar: 'P', stateClass: 'idle', localPatrol: true })],
+  leader: ['squad leader — its followers are pinned to its movement',
+    (g, x, y) => paintGlyph(g, x, y, 6, { team: 'alpha', stateChar: 'P', stateClass: 'idle', leader: true })],
+  hasPath: ['white centre dot = has a waypoint queue to walk',
+    (g, x, y) => paintGlyph(g, x, y, 7, { team: 'alpha', stateChar: 'S', stateClass: 'search', showPath: true, hasPath: true })],
+  noPath: ['hollow centre = no waypoint queue, nothing to walk to',
+    (g, x, y) => paintGlyph(g, x, y, 7, { team: 'alpha', stateChar: 'S', stateClass: 'search', showPath: true, hasPath: false })],
+  corpse: ['corpse', (g, x, y) => paintGlyph(g, x, y, 6, { team: 'bravo', dead: true, freshDeath: 0 })],
+  freshDeath: ['just died — expanding shockwave on the map',
+    (g, x, y) => { paintGlyph(g, x, y, 6, { team: 'bravo', dead: true, freshDeath: 1 });
+      g.strokeStyle = '#ff8a80'; g.globalAlpha = .6; g.lineWidth = 1.5;
+      g.beginPath(); g.arc(x, y, 10, 0, Math.PI * 2); g.stroke(); g.globalAlpha = 1; }],
+  shotAimed: ['shot line: shooter → its target',
+    (g, x, y) => { g.strokeStyle = 'rgba(255,224,130,.35)'; g.lineWidth = 5;
+      g.beginPath(); g.moveTo(4, y); g.lineTo(26, y); g.stroke();
+      g.strokeStyle = '#fff'; g.lineWidth = 1.6;
+      g.beginPath(); g.moveTo(4, y); g.lineTo(26, y); g.stroke();
+      g.fillStyle = '#ff8a80'; g.beginPath(); g.arc(26, y, 3, 0, Math.PI * 2); g.fill(); }],
+  shotBlind: ['shot line, dashed: facing only — this take has no target_id',
+    (g, x, y) => { g.strokeStyle = '#fff'; g.lineWidth = 1.6; g.setLineDash([5, 5]);
+      g.beginPath(); g.moveTo(4, y); g.lineTo(26, y); g.stroke(); g.setLineDash([]); }],
+  squadLink: ['link from a follower to its leader',
+    (g, x, y) => { g.strokeStyle = '#4fc3f7aa'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(3, y); g.lineTo(27, y); g.stroke(); }],
+  squadLinkStalled: ['red link: that follower is frozen on its formation slot',
+    (g, x, y) => { g.strokeStyle = '#ef5350'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(3, y); g.lineTo(27, y); g.stroke(); }],
+  // Built from the same VIS_GATE table the map draws with, so a swatch cannot drift from a line.
+  ...Object.fromEntries(Object.entries(VIS_GATE).map(([k, [color, text]]) => [`gate_${k || 'none'}`,
+    [`target link — ${text}`,
+      (g, x, y) => { g.strokeStyle = color; g.lineWidth = 1.5;
+        if (k !== 'y') g.setLineDash([4, 4]);
+        g.beginPath(); g.moveTo(3, y); g.lineTo(27, y); g.stroke(); g.setLineDash([]); }]])),
+};
+
+let legendSig = '';
+// Rebuilt from what is actually on screen right now, so the legend only ever explains visible things.
+function updateLegend(live, marks) {
+  const combos = new Map();
+  for (const o of live) {
+    const g = glyphOf(o);
+    const key = `${g.team}|${g.stateChar}`;
+    const e = combos.get(key);
+    if (e) { e.n++; if (g.leader) e.g.leader = true; }
+    else combos.set(key, { n: 1, g: { ...g, yaw: null, stalled: false, firing: false, freshDeath: 0 } });
+  }
+  const rows = [...combos.entries()].sort((a, c) => c[1].n - a[1].n);
+  const active = Object.keys(MARKERS).filter(k => marks[k]);
+  const sig = rows.map(([k, v]) => `${k}:${v.n}${v.g.leader ? 'L' : ''}`).join(',') + '#' + active.join(',');
+  if (sig === legendSig) return;
+  legendSig = sig;
+
+  const host = $('legend');
+  host.innerHTML = '';
+  if (!rows.length) { host.innerHTML = '<span class="muted">nothing on screen</span>'; return; }
+
+  const line = (canvas, title, sub) => {
+    const d = document.createElement('div');
+    d.style.cssText = 'display:flex;align-items:center;gap:7px;padding:2px 0';
+    d.appendChild(canvas);
+    const t = document.createElement('div');
+    t.style.cssText = 'min-width:0;line-height:1.3';
+    t.innerHTML = `<div style="color:#fff">${title}</div><div class="muted" style="font-size:11px">${sub}</div>`;
+    d.appendChild(t);
+    return d;
+  };
+
+  for (const [key, v] of rows) {
+    const [team, ch] = key.split('|');
+    host.appendChild(line(
+      swatchCanvas((g, x, y) => paintGlyph(g, x, y, 7, { ...v.g, team })),
+      `${STATE_NAMES[ch] || ch} <span class="muted">× ${v.n} ${team}</span>`,
+      stateGloss(ch)));
+  }
+  if (active.length) {
+    const hr = document.createElement('div');
+    hr.style.cssText = 'border-top:1px solid var(--line);margin:7px 0 4px';
+    host.appendChild(hr);
+    for (const k of active) host.appendChild(line(swatchCanvas(MARKERS[k][1]), '', MARKERS[k][0]));
+  }
+  const tip = document.createElement('div');
+  tip.className = 'muted';
+  tip.style.marginTop = '7px';
+  tip.textContent = 'wheel = zoom · drag = pan · space = play/pause · ←/→ = step';
+  host.appendChild(tip);
+}
+
+// ---- live mode ------------------------------------------------------------
+// Same-origin BroadcastChannel from bot-viewer-v2.html. Deliberately NO ring cap on the history:
+// the whole value of this tool is joining a stalled bot to what its leader or target was doing
+// minutes earlier, and a silent cap would delete exactly that evidence at the moment a long session
+// finally reproduces something. ~19 rows/s measured => ~25-35 MB/hour, which a tab holds fine.
+// If it ever does need bounding, it must announce what it dropped rather than drop it quietly.
+let liveChannel = null;
+let liveOn = false;
+let liveFollow = true;        // pin playT to the newest sample; any manual seek drops out of it
+let liveRibbonAt = 0;         // last incremental ribbon rebuild
+let liveStatsAt = 0;          // last statistics-panel rebuild (throttled same as the ribbon)
+let liveBotCount = 0;         // roster size at the last sidebar rebuild
+let liveGameHidden = false;   // the game told us its tab is hidden, so the sim is paused
+let liveHelloAckAt = 0;       // first reply to our hello; 0 = the game never answered
+let liveLastRowAt = 0;        // performance.now of the last rows message
+const LIVE_RIBBON_MS = 500;   // O(rows) but twice a second, unlike the per-frame trail scan
+
+function setLive(on) {
+  liveOn = on;
+  if (on) {
+    liveChannel = new BroadcastChannel('bot-trace-live');
+    liveChannel.onmessage = e => ingestLive(e.data);
+    liveReset();
+    liveChannel.postMessage({ type: 'hello' });   // the game answers with world + backlog
+    liveFollow = true;
+  } else {
+    liveChannel?.close();
+    liveChannel = null;
+  }
+  $('live').classList.toggle('on', liveOn);
+  $('live').textContent = liveOn ? '● live' : '○ live';
+  $('follow').style.display = liveOn ? '' : 'none';
+  updateLiveStatus();
+  updateGoToButton();
+  draw();
+}
+
+function liveReset() {
+  bots = new Map(); allRows = []; selected = null;
+  tMin = Infinity; tMax = -Infinity; playT = 0;
+  bounds = null; hasMotion = true;
+  clearHeatLayerCaches(); takeLabel = 'live';
+  saveNoteNow();
+  loadNoteFor('live');
+  clearStampSelection();
+  // Connect-time default only -- ingestLive's 'snapshot'/'events' branches repopulate these from the
+  // live game's own combat-event stream, if it's broadcasting one (older bot-viewer-v2 builds, or a
+  // recording-only session with live-streaming off, never will -- kills/hits stay '—' for those).
+  eventsRows = []; eventsLoaded = false;
+  _roleInfoCache = new Map();
+  invalidateStatsCaches();
+  ribbonBuckets.fire = []; ribbonBuckets.stall = []; ribbonBuckets.n = 0;
+  liveBotCount = 0; liveGameHidden = false; liveHelloAckAt = 0; liveLastRowAt = performance.now();
+  clearLog();
+  logEntries = [];
+}
+
+// ---- state-change log panel -------------------------------------------------
+// One line per row where a slot actually changed (see ingestRow) -- not the raw ~19 rows/s firehose,
+// so the panel reads as "this bot's life history", not a locomotion telemetry dump. Shared by the
+// floating log panel below (live-only, plain text) and the Log tab in Statistics (file or live,
+// filterable) -- both read the same event definition, they just render it differently.
+const LOG_MAX_LINES = 4000;
+function isLogEvent(r) { return !!(r.changed && r.changed !== 'tick'); }
+function logRowBits(r) {
+  const bits = [];
+  if (r.targetId) bits.push(`target ${r.targetId}${r.targetDist != null ? ` @${r.targetDist.toFixed(1)}m` : ''}`);
+  if (r.squadId) bits.push(`squad ${r.squadId}`);
+  if (r.selfThreat) bits.push('self-threat');
+  return bits;
+}
+let logLines = [];
+let logStartT = null;
+function fmtLogElapsed(ms) {
+  const total = Math.max(0, ms) / 1000;
+  const m = Math.floor(total / 60), s = total - m * 60;
+  return `${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
+}
+function appendLogRow(r) {
+  if (logStartT == null) logStartT = r.t;
+  const gloss = describeBotState(r.code) || r.stateChar;
+  const bits = logRowBits(r);
+  const extra = bits.length ? ` — ${bits.join(', ')}` : '';
+  const line = `${fmtLogElapsed(r.t - logStartT)}  ${r.team ? r.team + ':' : ''}${r.id}  ${gloss}${extra}`;
+  logLines.push(line);
+  const box = $('logBox');
+  if (logLines.length > LOG_MAX_LINES) {
+    logLines.splice(0, logLines.length - LOG_MAX_LINES);
+    if (box) box.value = logLines.join('\n') + '\n';
+  } else if (box) {
+    box.value += line + '\n';
+  }
+  if (box) box.scrollTop = box.scrollHeight;
+}
+function clearLog() {
+  logLines = []; logStartT = null;
+  const box = $('logBox');
+  if (box) box.value = '';
+}
+
+// ---- Log tab (Statistics panel) --------------------------------------------
+// Full chronological event log, structured (not pre-joined text like logLines above) so filters can
+// apply without re-deriving fields from raw rows. buildLogEntries() is a one-time pass for a loaded
+// file -- no LOG_MAX_LINES cap, "full contents of a saved log" means everything, the take is finite.
+// ingestRow() appends incrementally for live and applies the same cap the floating panel uses, since
+// a live session can run indefinitely.
+let logEntries = [];
+function logEntryFor(r) {
+  return {
+    t: r.t, team: r.team, id: r.id,
+    role: r.roleId || (r.d ? r.d.role : ''),
+    squadId: r.squadId || '',
+    gloss: describeBotState(r.code) || r.stateChar,
+    extra: logRowBits(r).join(', '),
+  };
+}
+function buildLogEntries() {
+  logEntries = [...allRows].sort((a, b) => a.t - b.t).filter(isLogEvent).map(logEntryFor);
+}
+// Shared by teamSel/squadSel/roleSel -- "any X" blank option plus whatever values are actually in the
+// data, keeping the current selection if it's still valid (same convention as fillTeamFilter above,
+// just factored since these three all share it verbatim).
+function fillFilterSelect(sel, values, blankLabel) {
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">${blankLabel}</option>` + values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+  if (values.includes(keep)) sel.value = keep;
+}
+function fillLogFilters() {
+  fillFilterSelect($('logTeamSel'), [...new Set(logEntries.map(e => e.team))].filter(Boolean).sort(), 'any team');
+  fillFilterSelect($('logSquadSel'), [...new Set(logEntries.map(e => e.squadId))].filter(Boolean).sort(), 'any squad');
+  fillFilterSelect($('logRoleSel'), [...new Set(logEntries.map(e => e.role))].filter(Boolean).sort(), 'any role');
+}
+function filteredLogEntries() {
+  const team = $('logTeamSel').value, squad = $('logSquadSel').value, role = $('logRoleSel').value;
+  const onlySelected = $('logOnlySelected').checked;
+  return logEntries.filter(e =>
+    (!team || e.team === team) && (!squad || e.squadId === squad) && (!role || e.role === role)
+    && (!onlySelected || e.id === selected));
+}
+function renderLogTab() {
+  const table = $('statsTable');
+  table.className = 'mode-log';
+  const rows = filteredLogEntries();
+  table.querySelector('thead').innerHTML = '<tr>' + ['time', 'team', 'bot', 'role', 'squad', 'state', 'details']
+    .map(h => `<th>${h}</th>`).join('') + '</tr>';
+  table.querySelector('tbody').innerHTML = rows.map(e =>
+    `<tr><td>${fmtLogElapsed(e.t - tMin)}</td><td>${escapeHtml(e.team)}</td><td>${escapeHtml(e.id)}</td>`
+    + `<td>${escapeHtml(e.role || '—')}</td><td>${escapeHtml(e.squadId || '—')}</td><td>${escapeHtml(e.gloss)}</td>`
+    + `<td>${escapeHtml(e.extra || '—')}</td></tr>`).join('');
+  $('statsNote').textContent = `${rows.length} of ${logEntries.length} event${logEntries.length === 1 ? '' : 's'}`
+    + (liveOn ? ` · live (capped at last ${LOG_MAX_LINES})` : '');
+}
+$('logCopy').onclick = async () => {
+  const text = logLines.join('\n');
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const box = $('logBox'); box.focus(); box.select();
+    try { document.execCommand('copy'); } catch {}
+  }
+  const btn = $('logCopy'), orig = btn.textContent;
+  btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = orig; }, 900);
+};
+$('logClear').onclick = clearLog;
+function setLogPanelVisible(visible) {
+  $('logPanel').classList.toggle('hidden', !visible);
+  $('logToggle').classList.toggle('on', visible);
+}
+$('logToggle').onclick = () => setLogPanelVisible($('logPanel').classList.contains('hidden'));
+$('logHide').onclick = () => setLogPanelVisible(false);
+
+// Two different silences, and they need different words. `liveGameHidden` is definitive: the game
+// said so on visibilitychange, and it means the sim is genuinely paused because rAF does not run for
+// a hidden document. The timeout is the fallback for everything else -- tab closed, live toggled off
+// there, crash -- where we only know that nothing has arrived.
+const LIVE_STALL_MS = 2500;
+function liveStallNote() {
+  if (!liveOn) return '';
+  if (liveGameHidden) return ' · GAME TAB HIDDEN — sim paused (browsers freeze hidden tabs; show both windows)';
+  if (!liveHelloAckAt) return ' · waiting for the game (turn on Live map there)';
+  const quiet = performance.now() - liveLastRowAt;
+  if (quiet > LIVE_STALL_MS) return ` · STALLED — no rows for ${(quiet / 1000).toFixed(0)}s`;
+  return '';
+}
+function updateLiveStatus() {
+  $('follow').classList.toggle('on', liveFollow);
+  if (!liveOn) return;
+  const secs = allRows.length ? ((tMax - tMin) / 1000).toFixed(0) : '0';
+  const note = liveStallNote();
+  $('stats').textContent = `live · ${allRows.length} rows · ${bots.size} bots · ${secs}s`
+    + (liveFollow ? ' · following' : ' · paused (Follow to resume)') + note;
+  $('stats').style.color = note ? '#ffb74d' : '';
+  $('live').classList.toggle('stalled', !!note);
+}
+
+// A streamed row -> EXACTLY the shape parseTrace produces, so every draw path is shared with file
+// mode. The game sends the raw recorder row (its own field names), which is not that shape: `d` and
+// `stateChar` have to be derived here, and `visGate` is `raw.visGate` but the TSV column is vis_gate.
+function ingestRow(raw) {
+  const code = raw.code;
+  const d = decodeBotState(code);
+  const num = v => (v == null || v === '' ? null : Number(v));
+  const r = {
+    t: Number(raw.t), id: raw.id, team: raw.team ?? '', code, changed: raw.changed ?? '',
+    x: num(raw.x), z: num(raw.z), yaw: num(raw.yaw), speed: num(raw.speed), moved: num(raw.moved),
+    goalDist: num(raw.goalDist), pathLen: num(raw.pathLen), pathMode: raw.pathMode ?? '',
+    squadId: raw.squadId ?? '', squadRank: num(raw.squadRank), leaderId: raw.leaderId ?? '',
+    targetId: raw.targetId ?? '', targetDist: num(raw.targetDist), visGate: raw.visGate ?? '',
+    navRegion: num(raw.navRegion), mag: num(raw.mag), reserve: num(raw.reserve),
+    selfThreat: num(raw.selfThreat), sidearmMag: num(raw.sidearmMag), sidearmReserve: num(raw.sidearmReserve),
+    roleId: raw.roleId ?? '',
+    d,
+    stateChar: d ? d.stateChar : '?',
+  };
+  let b = bots.get(r.id);
+  if (!b) { b = { id: r.id, team: r.team, rows: [], cursor: 0, deathT: null, deathPos: null }; bots.set(r.id, b); }
+  // Live rows arrive in time order per bot, so append; guard anyway rather than trust it.
+  const rows = b.rows;
+  if (rows.length && r.t < rows[rows.length - 1].t) return;   // out-of-order straggler: drop, don't corrupt the search
+  rows.push(r);
+  allRows.push(r);
+  if (isLogEvent(r)) {   // 'tick' = unchanged heartbeat sample, not a real transition
+    appendLogRow(r);
+    logEntries.push(logEntryFor(r));
+    if (logEntries.length > LOG_MAX_LINES) logEntries.splice(0, logEntries.length - LOG_MAX_LINES);
+  }
+  // Incremental version of scanDeathState()'s invariant: entering 'D' (from any other state, or from
+  // no history at all -- our view may start mid-death if we joined a live session late) starts the
+  // clock; leaving 'D' (a medic revive) clears it, so a revived-and-still-fighting bot reads alive
+  // again instead of "dead" forever.
+  if (r.stateChar === 'D') { if (b.deathT == null) { b.deathT = r.t; b.deathPos = { x: r.x, z: r.z }; } }
+  else if (b.deathT != null) { b.deathT = null; b.deathPos = null; }
+  // Incremental, not a refold over every row: this runs per row.
+  if (r.t < tMin) tMin = r.t;
+  if (r.t > tMax) tMax = r.t;
+  if (r.x != null && r.z != null) {
+    bounds = bounds
+      ? { x0: Math.min(bounds.x0, r.x), x1: Math.max(bounds.x1, r.x),
+          z0: Math.min(bounds.z0, r.z), z1: Math.max(bounds.z1, r.z) }
+      : { x0: r.x, x1: r.x, z0: r.z, z1: r.z };
+  }
+}
+
+function ingestLive(msg) {
+  if (!liveOn || !msg) return;
+  liveHelloAckAt ||= performance.now();
+  if (msg.type === 'vis') { liveGameHidden = !!msg.hidden; updateLiveStatus(); return; }
+  if (msg.type === 'world') { worldMeta = msg.world || null; noteWorldSource('live'); draw(); return; }
+  // Ctrl-click in bot-viewer-v2: mirror its selection onto the map, same as clicking the bot here.
+  if (msg.type === 'selected') { selected = bots.has(msg.id) ? msg.id : null; buildBotList(); renderDetail(); reapplySelectedBotHighlight(); renderStats(); draw(); return; }
+  // bot-viewer-v2 broadcasts kill/damage events on the same channel (botLiveFlush's 'events'
+  // message, plus a backlog on 'snapshot' below) whenever it's recording or live-streaming --
+  // exactly the same botEvents rows the bot-events-<stamp>.tsv sibling is built from, just pushed
+  // live instead of read off disk. No row landed, so this doesn't touch allRows/tMax/etc.
+  if (msg.type === 'events') {
+    if (msg.events?.length) {
+      eventsRows.push(...msg.events);
+      eventsLoaded = true;
+      invalidateStatsCaches();
+      const now = performance.now();
+      if (now - liveStatsAt >= LIVE_RIBBON_MS) { liveStatsAt = now; renderStats(); }
+    }
+    return;
+  }
+  if (msg.type === 'snapshot') {
+    liveReset();
+    liveHelloAckAt = performance.now();
+    liveGameHidden = !!msg.hidden;
+    worldMeta = msg.world || null;
+    noteWorldSource('live');
+    // Populated after liveReset() clears them -- a game broadcasting events makes kills/hits/
+    // deathsCaused/blindDeath real from the first snapshot, even before any bot has actually killed
+    // (0 kills is real data here, same distinction eventsLoaded always drew for file loads).
+    eventsRows = (msg.events || []).slice();
+    eventsLoaded = true;
+    for (const raw of msg.rows || []) ingestRow(raw);
+  } else if (msg.type === 'rows') {
+    for (const raw of msg.rows || []) ingestRow(raw);
+  } else return;
+  invalidateStatsCaches();   // new rows landed either way -- next renderStats() call must re-scan
+  liveLastRowAt = performance.now();
+
+  if (!allRows.length) { updateLiveStatus(); return; }
+  const first = $('scrub').disabled;
+  if (first) {
+    for (const id of ['play', 'back', 'fwd', 'fit', 'png', 'statsToggle']) $(id).disabled = false;
+    $('scrub').disabled = false;
+    $('empty').style.display = 'none';
+    updateCompareEnabled();
+    fitView();
+  }
+  // Roster and team list grow as bots spawn, so refresh them when the count moves, not just once.
+  if (bots.size !== liveBotCount) { liveBotCount = bots.size; buildBotList(); fillTeamFilter(); fillLogFilters(); }
+  if (liveFollow) playT = tMax;
+  const now = performance.now();
+  if (now - liveRibbonAt >= LIVE_RIBBON_MS) { liveRibbonAt = now; buildRibbon(); }
+  if (now - liveStatsAt >= LIVE_RIBBON_MS) { liveStatsAt = now; renderStats(); }   // no-op if the panel's closed
+  $('scrub').value = String(((playT - tMin) / Math.max(1, tMax - tMin)) * 1000);
+  $('clock').textContent = `${((playT - tMin) / 1000).toFixed(2)}s / ${((tMax - tMin) / 1000).toFixed(1)}s`;
+  updateLiveStatus();
+  renderDetail();
+  draw();
+}
+
+// ---- PNG export -----------------------------------------------------------
+// A screenshot of the map is useless a week later if it does not say which take and which instant it
+// came from, so the caption is part of the image rather than something to remember.
+function exportPng() {
+  const w = cv.width, h = cv.height;
+  const capH = Math.round(34 * devicePixelRatio);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h + capH;
+  const g = out.getContext('2d');
+  g.fillStyle = '#0d1117';
+  g.fillRect(0, 0, out.width, out.height);
+  g.drawImage(cv, 0, 0);
+  g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, h);
+  const cw = w / devicePixelRatio;
+  g.fillStyle = '#161b22';
+  g.fillRect(0, 0, cw, capH / devicePixelRatio);
+  g.strokeStyle = '#262d38'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, .5); g.lineTo(cw, .5); g.stroke();
+  g.font = `${12}px ui-monospace, Consolas, monospace`;
+  g.textBaseline = 'middle';
+  g.fillStyle = '#c9d3df';
+  const at = `t = ${((playT - tMin) / 1000).toFixed(2)}s of ${((tMax - tMin) / 1000).toFixed(1)}s`;
+  g.fillText(`${takeLabel || 'bot trace'} · ${at}`, 10, 11);
+  g.fillStyle = '#7d8b9c';
+  const heatOn = heatLayers.filter(l => l.visible).map(l => HEAT_MODES[l.mode]?.label || l.mode);
+  const layers = [
+    heatOn.length ? `heatmap: ${heatOn.join('+')}` : null,
+    $('tRegions').checked ? 'nav regions' : null,
+    $('tElev').checked ? 'elevation' : null,
+    $('teamSel').value ? `${$('teamSel').value} only` : null,
+    $('fStall').checked ? 'stalled only' : null,
+    selected ? `selected ${selected}` : null,
+  ].filter(Boolean);
+  g.fillText(layers.join(' · ') || 'default layers', 10, 25);
+  const stamp = `${takeLabel || 'trace'}-t${Math.round(playT - tMin)}ms`.replace(/[^\w.-]+/g, '_');
+  out.toBlob(blob => {
+    if (!blob) { alert('could not encode the PNG'); return; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${stamp}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, 'image/png');
+}
+
+// ---- two-take diff --------------------------------------------------------
+// Judging a fix by eye across two playbacks does not work -- the interesting differences are rates.
+// Every rate here is dwell-weighted for the same reason the heatmap is (rows are emitted on state
+// change plus a heartbeat, so they are not evenly spaced in time), and durations are reported so a
+// reader can see whether the two takes are even comparable in length.
+function takeMetrics(rows) {
+  const byBot = new Map();
+  for (const r of rows) {
+    let b = byBot.get(r.id);
+    if (!b) { b = []; byBot.set(r.id, b); }
+    b.push(r);
+  }
+  let tLo = Infinity, tHi = -Infinity;
+  for (const r of rows) { if (r.t < tLo) tLo = r.t; if (r.t > tHi) tHi = r.t; }
+
+  let dwellTotal = 0, dwellStall = 0, dwellFire = 0, dwellAim = 0;
+  let deaths = 0, targetRows = 0;
+  const gates = { y: 0, n: 0, f: 0, r: 0, '': 0 };
+  const modes = new Map();
+  const targetHits = new Map();
+  const dists = [];
+  for (const list of byBot.values()) {
+    list.sort((a, c) => a.t - c.t);
+    let died = false;
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      // Deliberately different question from scanDeathState()/b.deathT (current alive/dead status):
+      // this is a historical count of death EVENTS for the compare-baseline panel, so it still only
+      // latches the first one and never resets on revival. Doesn't count if the first row is already
+      // a corpse (recording started after the death). Latching `died` before the i > 0 test matters --
+      // gating the latch on it instead credits the second dead row as a death.
+      if (r.stateChar === 'D') { if (!died) { died = true; if (i > 0) deaths++; } continue; }
+      const nxt = list[i + 1];
+      const dwell = Math.min(Math.max(0, nxt ? nxt.t - r.t : 1000), GAP_HOLD_MS) / 1000;
+      dwellTotal += dwell;
+      if (isStalled(r)) dwellStall += dwell;
+      if (r.stateChar === 'F') dwellFire += dwell;
+      if (r.stateChar === 'A') dwellAim += dwell;
+      if (r.pathMode) modes.set(r.pathMode, (modes.get(r.pathMode) || 0) + dwell);
+      if (r.targetId) {
+        targetRows++;
+        targetHits.set(r.targetId, (targetHits.get(r.targetId) || 0) + 1);
+        // hasOwn, not `in`: `in` is true for inherited keys, so a stray value like "constructor"
+        // would write through to the prototype chain instead of falling into the unknown bucket.
+        gates[Object.hasOwn(gates, r.visGate) ? r.visGate : ''] += 1;
+        if (r.targetDist != null) dists.push(r.targetDist);
+      }
+    }
+  }
+  dists.sort((a, c) => a - c);
+  const median = dists.length ? dists[dists.length >> 1] : null;
+  let topTarget = 0;
+  for (const n of targetHits.values()) if (n > topTarget) topTarget = n;
+  const pct = (a, b) => (b > 0 ? (a / b) * 100 : null);
+  const modeShare = m => pct(modes.get(m) || 0, dwellTotal);
+  return {
+    _dur: (tHi - tLo) / 1000,
+    'rows': rows.length,
+    'bots': byBot.size,
+    'duration s': +((tHi - tLo) / 1000).toFixed(1),
+    'bot-seconds': +dwellTotal.toFixed(0),
+    'stalled %': pct(dwellStall, dwellTotal),
+    'firing %': pct(dwellFire, dwellTotal),
+    'aiming %': pct(dwellAim, dwellTotal),
+    'fire:aim': dwellAim > 0 ? +(dwellFire / dwellAim).toFixed(3) : null,
+    'deaths': deaths,
+    'median target m': median != null ? +median.toFixed(1) : null,
+    // The shared-fallback-target signature: one enemy hoovering up most of the target rows.
+    'top target share %': pct(topTarget, targetRows),
+    'sight clear %': pct(gates.y, targetRows),
+    'sight blocked %': pct(gates.n, targetRows),
+    'outside FOV %': pct(gates.f, targetRows),
+    'patrolLocal %': modeShare('patrolLocal'),
+    'patrolStranded %': modeShare('patrolStranded'),
+    'cover %': modeShare('cover'),
+  };
+}
+
+let cmpBaseline = null;   // { label, metrics }
+async function runCompare() {
+  const name = $('cmpSel').value;
+  const out = $('cmpout');
+  if (!name) return;
+  if (!allRows.length) { out.textContent = 'load a take first, then diff a baseline against it'; return; }
+  out.textContent = `loading ${name}…`;
+  try {
+    const res = await fetch(`bot-states/${encodeURIComponent(name)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // parseTrace sets the module-level hasMotion; the loaded take owns that, so put it back.
+    const keepMotion = hasMotion;
+    let baseRows;
+    try { baseRows = parseTrace(await res.text()); } finally { hasMotion = keepMotion; }
+    cmpBaseline = { label: name, metrics: takeMetrics(baseRows) };
+    renderCompare();
+  } catch (err) {
+    out.textContent = `could not diff ${name}: ${err.message}`;
+    cmpBaseline = null;
+  }
+}
+
+function renderCompare() {
+  const out = $('cmpout');
+  if (!cmpBaseline || !allRows.length) { out.textContent = ''; return; }
+  const A = cmpBaseline.metrics;
+  const B = takeMetrics(allRows);
+  const fmt = v => (v == null ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v));
+  const rows = [];
+  for (const k of Object.keys(B)) {
+    if (k.startsWith('_')) continue;
+    const a = A[k], b = B[k];
+    let delta = '—', color = 'var(--muted)';
+    if (typeof a === 'number' && typeof b === 'number') {
+      const d = b - a;
+      // No good/bad colouring: which direction is an improvement depends on what was changed, and
+      // guessing that here would put a judgement in the tool that the tool cannot actually make.
+      delta = `${d > 0 ? '+' : ''}${Number.isInteger(a) && Number.isInteger(b) ? d : d.toFixed(2)}`;
+      color = Math.abs(d) < 1e-9 ? 'var(--muted)' : d > 0 ? '#ffb74d' : '#4fc3f7';
+    }
+    rows.push(`<div class="row"><span class="muted">${k}</span>`
+      + `<span>${fmt(a)} → ${fmt(b)} <span style="color:${color}">${delta}</span></span></div>`);
+  }
+  const durA = A._dur, durB = B._dur;
+  const ratio = durA > 0 ? durB / durA : 0;
+  const warn = (ratio && (ratio > 1.5 || ratio < 0.67))
+    ? `<div style="color:#ffb74d;margin-bottom:4px">lengths differ ${durA.toFixed(0)}s vs ${durB.toFixed(0)}s — `
+      + 'counts are not comparable, only the % and ratio rows are</div>'
+    : '';
+  out.innerHTML = `<div style="color:#fff;margin-bottom:4px">A ${cmpBaseline.label}<br>B ${takeLabel || 'loaded'} `
+    + '<span class="muted">(Δ = B − A)</span></div>'
+    // Stated because the sidebar right above it has a team filter that does NOT apply here.
+    + '<div class="muted" style="margin-bottom:4px">whole take, both teams — the team filter does not apply</div>'
+    + warn + rows.join('');
+}
+
+// ---- statistics -------------------------------------------------------------
+// One per-bot metric row per bot, for the whole loaded take. `computeBotStats` is the data layer
+// other views (table now; histograms/box plots/line graphs/ordination later) are meant to share --
+// it returns plain numbers/strings, no DOM, so a future chart view can consume the same array the
+// table sorts.
+//
+// The trace alone gives movement/state/target columns; kills and hits need combat-event data from
+// one of two sources: a file load's sibling `bot-events-<stamp>.tsv` (see `loadEventsMeta`), or a
+// live game's own event stream (see `ingestLive`'s 'snapshot'/'events' branches, sourced from
+// bot-viewer-v2's `botEvents`/`_botLiveEventQueue`). When neither is available -- an older take with
+// no sibling, a dropped file with no matching name, or a live session where the sender isn't
+// broadcasting events -- those columns show '--' rather than a misleading 0; eventsLoaded is what
+// distinguishes "zero kills" from "unknown".
+let eventsRows = [];        // combat events from whichever source above resolved; empty when neither did
+let eventsLoaded = false;   // true once we've resolved whether combat-event data exists, success or not
+let statsSort = { key: 'kills', dir: -1 };
+let statsView = 'bot';      // 'bot' = per-bot metrics table, 'state' = state x bot matrix
+let stateMetric = 'count';  // 'count' = entries into the state, 'duration' = dwell seconds
+let subModesOn = false;     // split each state row by path_mode (cover/seek/flee/knife/...)
+let stateSortMode = 'category'; // 'category' = fixed STATE_NAMES order (default), or 'abundance'/'diversity'
+let stateSortDir = -1;      // -1 = highest first, only meaningful for abundance/diversity
+let maintainSections = true; // ranking moves whole state sections rather than flattening every row
+let groupBy = 'bot';        // 'bot' = ungrouped (default), 'role', or 'team' -- collapses bot rows/
+                             // columns in BOTH stats tables, not just the per-state one
+let leaderMode = 'own';     // only read when groupBy === 'role': 'own' = squadleader is its own group
+                             // regardless of base role, 'perRole' = "<role> (leader)" per base role,
+                             // 'none' = leaders folded into their base role, no distinction
+const STATS_STRING_KEYS = new Set(['id', 'team', 'squad', 'role']);
+
+// computeBotStats()/computeSymptomStats() each do a full pass over every row of every bot -- expensive
+// enough that redoing it on a plain sort-direction click (which only needs to reorder already-computed
+// data) would be wasted work, same reasoning buildHeatLayer/heatLayerCanvas already split apart for
+// the heatmap. Cached here and invalidated ONLY where the underlying trace data actually changes: a
+// new file/take loads (load()), a live session resets (liveReset()), new live rows arrive
+// (ingestLive()), or the events sibling resolves after the fact (loadEventsMeta(), since kills/hits/
+// deathsCaused/blindDeath all read eventsRows). Sorting, grouping, and tab switches must NEVER
+// invalidate this -- they change how the data is displayed, not what the data is.
+let _botStatsCache = null;
+let _symptomStatsCache = null;
+function invalidateStatsCaches() { _botStatsCache = null; _symptomStatsCache = null; }
+
+// A bot's role and leader status can drift over a take (medic promoted to squadleader on succession,
+// etc.), so this scans backward for the last known value per id, same technique computeBotStats uses
+// for squad (computeBotStats calls this too, rather than re-scanning). Cached per id for the grouped
+// views' repeated lookups; the cache is cleared on every new trace load since ids are reused across
+// takes (see load()/liveReset()).
+//
+// role prefers `roleId`, the real bot-roles.js id (rifleman/medic/squadleader/sniper/technical),
+// logged on every row since 2026-08-02. Older takes -- and any row from before that change -- don't
+// have it, so this falls back to the state code's role slot (`d.role`), which only ever reads
+// rifleman/medic: squadleader/sniper/technical all collapse to 'r' at the point the code is encoded
+// (see the slot-model comment atop bot-state-code.js), so a role group on an old take can only ever
+// split rifleman vs medic, never surface the specialists.
+let _roleInfoCache = new Map();
+function botRoleInfo(id) {
+  if (_roleInfoCache.has(id)) return _roleInfoCache.get(id);
+  const rows = bots.get(id)?.rows || [];
+  let role = 'rifleman', isLeader = false, roleSet = false, leaderSet = false;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (!roleSet) {
+      if (r.roleId) { role = r.roleId; roleSet = true; }
+      else if (r.d && r.d.role) { role = r.d.role; roleSet = true; }
+    }
+    if (!leaderSet && r.squadRank != null) { isLeader = r.squadRank === 0; leaderSet = true; }
+    if (roleSet && leaderSet) break;
+  }
+  const info = { role, isLeader };
+  _roleInfoCache.set(id, info);
+  return info;
+}
+
+// Shared by both grouped views: role+leader -> group key, per the leaderMode toggle described above.
+// 'squadleader' is already an unambiguous base role (bot-roles.js's ROLE_SQUAD_LEADER, a dedicated
+// spawn role with a leadership edge) -- wrapping it as "squadleader (leader)" under perRole would be
+// redundant, so it always reads as plain 'squadleader' regardless of leaderMode. leaderMode only
+// matters for a bot of some OTHER base role that is currently squadRank 0 (temporary/succession
+// leadership, e.g. a rifleman promoted after the dedicated leader died).
+function roleGroupKey(role, isLeader, mode) {
+  if (role === 'squadleader') return 'squadleader';
+  if (!isLeader) return role;
+  if (mode === 'own') return 'squadleader';
+  if (mode === 'perRole') return `${role} (leader)`;
+  return role; // 'none' -- leaders are indistinguishable from their base role
+}
+function groupKeyFor(id, mode, leaderModeVal) {
+  if (mode === 'team') return bots.get(id)?.team || 'unknown';
+  const { role, isLeader } = botRoleInfo(id);
+  return roleGroupKey(role, isLeader, leaderModeVal);
+}
+
+const STATS_COLUMNS = [
+  { key: 'id', label: 'bot' },
+  { key: 'team', label: 'team' },
+  { key: 'role', label: 'role' },
+  { key: 'squad', label: 'squad' },
+  { key: 'birth', label: 'birth s' },
+  { key: 'life', label: 'life s' },
+  { key: 'death', label: 'death s' },
+  { key: 'kills', label: 'kills' },
+  { key: 'deathsCaused', label: 'deaths caused' },
+  { key: 'hits', label: 'hits' },
+  { key: 'healsGiven', label: 'heals given' },
+  { key: 'revives', label: 'revives' },
+  { key: 'targets', label: 'targets' },
+  { key: 'sights', label: 'sights' },
+  { key: 'avgTargetDist', label: 'avg target dist m' },
+  { key: 'engagements', label: 'engagements' },
+  { key: 'fleeEpisodes', label: 'flee episodes' },
+  { key: 'fleeTime', label: 'flee time s' },
+  { key: 'stallTime', label: 'stall time s' },
+  { key: 'distance', label: 'distance m' },
+  { key: 'rows', label: 'states' },
+  { key: 'stateChanges', label: 'state changes' },
+  { key: 'uniqueStates', label: 'unique states' },
+  { key: 'exclusiveStates', label: 'exclusive states' },
+  { key: 'illegalStates', label: 'illegal states' },
+];
+
+// Column set for the grouped (role/team) per-bot table. birth/life become group means (a single
+// bot's birth/death timestamp doesn't sum meaningfully); death becomes a 'deaths' count paired with
+// 'n' (group size) rather than the ungrouped table's single alive/dead-timestamp column, since a
+// group mixes both. Everything else that's already a per-bot total (kills/deathsCaused/hits/
+// healsGiven/revives/targets/sights/engagements/fleeEpisodes/fleeTime/stallTime/distance/rows/
+// stateChanges/illegalStates) sums -- a group total is the natural extension. squad and role are
+// dropped: role is the grouping key itself when grouped by role, and squad is a finer partition than
+// role/team, rarely uniform within either. exclusiveStates is neither a sum nor a union of the
+// per-bot column -- see computeGroupedBotStats for why it's recomputed against the whole roster.
+// avgTargetDist is a mean of the per-bot means (over members that ever held a target), not a sum --
+// summing an average distance across bots is not a meaningful number.
+const STATS_GROUP_COLUMNS = [
+  { key: 'id', label: 'group' },
+  { key: 'n', label: 'bots' },
+  { key: 'team', label: 'team' },
+  { key: 'birth', label: 'birth s (mean)' },
+  { key: 'life', label: 'life s (mean)' },
+  { key: 'deaths', label: 'deaths' },
+  { key: 'kills', label: 'kills' },
+  { key: 'deathsCaused', label: 'deaths caused' },
+  { key: 'hits', label: 'hits' },
+  { key: 'healsGiven', label: 'heals given' },
+  { key: 'revives', label: 'revives' },
+  { key: 'targets', label: 'targets' },
+  { key: 'sights', label: 'sights' },
+  { key: 'avgTargetDist', label: 'avg target dist m (mean)' },
+  { key: 'engagements', label: 'engagements' },
+  { key: 'fleeEpisodes', label: 'flee episodes' },
+  { key: 'fleeTime', label: 'flee time s' },
+  { key: 'stallTime', label: 'stall time s' },
+  { key: 'distance', label: 'distance m' },
+  { key: 'rows', label: 'states' },
+  { key: 'stateChanges', label: 'state changes' },
+  { key: 'uniqueStates', label: 'unique states (union)' },
+  { key: 'exclusiveStates', label: 'exclusive states (group)' },
+  { key: 'illegalStates', label: 'illegal states' },
+];
+
+// Symptoms tab: one row per bot, raw counts/ratios for each named symptom in docs/bot-bugs-log.md's
+// "Symptoms" reference section -- deliberately NOT combined into a single weighted score. We have no
+// empirical basis for how much any one symptom should count relative to another yet; that's exactly
+// what this tab is for producing the data to determine, via Copy TSV into real correlation analysis,
+// not something to guess at up front. Every column here is a plain count, ratio, or boolean -- sort
+// by any one of them, nothing is pre-combined or pre-filtered out by a severity threshold. A ratio
+// column's sample-size column always sits next to it (highTierRows next to its ratio, etc.) so a
+// thin sample is visible rather than silently indistinguishable from a solid one.
+// group/bug/desc tie each column back to the named symptom and BB-### entry in docs/bot-bugs-log.md
+// that it's evidence for -- see that file's "Symptoms" table, which this data mirrors. Identity
+// columns (id/team/role/squad) carry no group: they aren't evidence for anything, just row labels.
+const SYMPTOMS_COLUMNS = [
+  { key: 'id', label: 'bot' },
+  { key: 'team', label: 'team' },
+  { key: 'role', label: 'role' },
+  { key: 'squad', label: 'squad' },
+  { key: 'kills', label: 'kills', group: 'Blind Combat', bug: 'BB-001',
+    desc: 'Combat evidence: a kill this bot scored. Needs combat-event data (bot-events sibling on file loads, or a live game broadcasting events) -- otherwise —.' },
+  { key: 'deathsCaused', label: 'deaths caused', group: 'Blind Combat', bug: 'BB-001',
+    desc: 'Combat evidence that needs no event data: other bots that died within 3s of last clearly targeting this one (heuristic, can multi-attribute).' },
+  { key: 'engagements', label: 'engagements', group: 'Blind Combat', bug: 'BB-001',
+    desc: 'Combat evidence: fire-state bursts (idle→firing transitions), from the trace alone.' },
+  { key: 'sights', label: 'sights', group: 'Blind Combat', bug: 'BB-001',
+    desc: 'Counter-evidence: how many times any other bot had this one as a clear-LOS target_id. Real combat activity with near-zero sights is the BB-001 shape.' },
+  { key: 'highTierRows', label: 'high-tier rows', group: 'Silent Escalation', bug: 'BB-002',
+    desc: 'Rows where this bot’s decoded tier was ≥ 3 (defensive/push).' },
+  { key: 'highTierNoTargetRows', label: 'high-tier no-target rows', group: 'Silent Escalation', bug: 'BB-002',
+    desc: 'Of the high-tier rows, how many had a blank target_id -- escalated tier with nothing acquired.' },
+  { key: 'highTierNoTargetRatio', label: 'high-tier no-target ratio', group: 'Silent Escalation', bug: 'BB-002',
+    desc: 'highTierNoTargetRows / highTierRows. Computed as soon as highTierRows ≥ 1 -- no minimum-sample gate, so read it beside the row count, not alone.' },
+  { key: 'maxSwitch3s', label: 'max target switches / 3s', group: 'Target Flicker', bug: 'BB-003',
+    desc: 'Densest run of target_id changes within any 3-second window. 0 for a calm bot, rising continuously with severity -- not an episode count gated at a minimum switch total.' },
+  { key: 'pushRows', label: 'push rows', group: 'Directionless Push', bug: 'BB-003',
+    desc: 'Rows where tier was 4 (push) and element was moving -- a coordinated advance.' },
+  { key: 'pushNoTargetRows', label: 'push no-target rows', group: 'Directionless Push', bug: 'BB-003',
+    desc: 'Of the push rows, how many had a blank target_id -- advancing in force, never acquires a visible enemy.' },
+  { key: 'pushNoTargetRatio', label: 'push no-target ratio', group: 'Directionless Push', bug: 'BB-003',
+    desc: 'pushNoTargetRows / pushRows. Same computation as the Silent Escalation ratio, tighter scope.' },
+  { key: 'blindDeathTargeted', label: 'killer ever targeted', group: 'Blind Death', bug: 'BB-003',
+    desc: 'For a bot that died: did the killing event’s attacker ever appear in this bot’s own target_id in the 5s before death? Needs combat-event data to know the real killer -- otherwise —.' },
+  { key: 'blindDeathMaxSelfThreat', label: 'max self-threat before death', group: 'Blind Death', bug: 'BB-003',
+    desc: 'Raw max self_threat value in that same 5s window -- the value itself, not thresholded pass/fail.' },
+];
+
+// Tier index >= HIGH_TIER (3='defensive') feeds "high-tier no-target" (BB-002's "escalates but
+// rarely resolves a target" shape). >= PUSH_TIER (4='push') plus a moving element narrows that to
+// BB-003's specific "coordinated advance, never acquires a visible enemy" shape -- same computation,
+// tighter scope, so the two ratios are meant to be read together, not as unrelated columns.
+const HIGH_TIER = 3;
+const PUSH_TIER = 4;
+const PUSH_ELEMENT = 'm';
+const FLICKER_WINDOW_MS = 3000;          // BB-003's own flicker span was exactly 3s
+const BLIND_DEATH_LOOKBACK_MS = 5000;    // how far back a killer's absence from target_id is checked
+
+// Timestamps where target_id changed to a new non-blank value, for the target-flicker metric.
+function targetSwitchTimes(rows) {
+  const t = []; let last = null;
+  for (const r of rows) if (r.targetId && r.targetId !== last) { t.push(r.t); last = r.targetId; }
+  return t;
+}
+// Densest run of switches within any windowMs span -- a continuous number (0 for a calm bot, rising
+// with severity) rather than a boolean gated on a minimum switch count, so a mild 2-switch case still
+// shows up instead of reading identically to zero.
+function maxSwitchesInWindow(times, windowMs) {
+  let best = 0, i = 0;
+  for (let j = 0; j < times.length; j++) {
+    while (times[j] - times[i] > windowMs) i++;
+    best = Math.max(best, j - i + 1);
+  }
+  return best;
+}
+
+function computeSymptomStats() {
+  if (_symptomStatsCache) return _symptomStatsCache;
+  return (_symptomStatsCache = computeSymptomStatsUncached());
+}
+function computeSymptomStatsUncached() {
+  const base = computeBotStats();   // reuses kills/deathsCaused/engagements/sights/team/role/squad
+  const out = [];
+  for (const row of base) {
+    const b = bots.get(row.id);
+    const rows = b.rows;
+    let highTierRows = 0, highTierNoTargetRows = 0, pushRows = 0, pushNoTargetRows = 0;
+    for (const r of rows) {
+      if (!r.d) continue;
+      const tier = Number(r.d.tierChar);
+      if (tier >= HIGH_TIER) { highTierRows++; if (!r.targetId) highTierNoTargetRows++; }
+      if (tier >= PUSH_TIER && r.d.elementChar === PUSH_ELEMENT) { pushRows++; if (!r.targetId) pushNoTargetRows++; }
+    }
+    let blindDeathTargeted = null, blindDeathMaxSelfThreat = null;
+    if (b.deathT != null && eventsLoaded) {
+      const kill = eventsRows.find(e => e.type === 'kill' && e.victim === row.id);
+      if (kill) {
+        const since = b.deathT - BLIND_DEATH_LOOKBACK_MS;
+        // Bounded above by deathT too: rows keep coming after death (a corpse's heartbeat), and
+        // their frozen/stale target_id and self_threat aren't "before death" evidence.
+        const window = rows.filter(r => r.t >= since && r.t <= b.deathT);
+        blindDeathTargeted = window.some(r => r.targetId === kill.attacker);
+        blindDeathMaxSelfThreat = window.reduce((m, r) => Math.max(m, r.selfThreat ?? 0), 0);
+      }
+    }
+    out.push({
+      id: row.id, team: row.team, role: row.role, squad: row.squad, death: row.death,
+      kills: row.kills, deathsCaused: row.deathsCaused, engagements: row.engagements, sights: row.sights,
+      highTierRows, highTierNoTargetRows,
+      highTierNoTargetRatio: highTierRows ? highTierNoTargetRows / highTierRows : null,
+      maxSwitch3s: maxSwitchesInWindow(targetSwitchTimes(rows), FLICKER_WINDOW_MS),
+      pushRows, pushNoTargetRows,
+      pushNoTargetRatio: pushRows ? pushNoTargetRows / pushRows : null,
+      blindDeathTargeted, blindDeathMaxSelfThreat,
+    });
+  }
+  return out;
+}
+
+function parseEvents(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) return [];
+  const head = lines[0].split('\t').map(s => s.trim());
+  const col = {};
+  head.forEach((h, i) => { col[h] = i; });
+  if (col.type == null || col.attacker == null || col.victim == null) return [];
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const p = lines[i].split('\t');
+    if (p.length < 3) continue;
+    rows.push({
+      type: p[col.type], attacker: p[col.attacker], victim: p[col.victim],
+      amount: col.amount != null ? Number(p[col.amount]) || 0 : 0,
+    });
+  }
+  return rows;
+}
+
+// Sibling to loadWorldMeta, same naming convention check-bot-target-attribution.mjs uses:
+// bot-events-<stamp>.tsv beside bot-state-trace-<stamp>.tsv.
+async function loadEventsMeta(traceName) {
+  eventsRows = []; eventsLoaded = false;
+  const stamp = /bot-state-trace-(\d{8}-\d{6})\.tsv$/.exec(traceName || '')?.[1];
+  if (stamp) {
+    try {
+      const res = await fetch(`bot-states/bot-events-${stamp}.tsv`);
+      if (res.ok) { eventsRows = parseEvents(await res.text()); eventsLoaded = true; }
+    } catch { /* not served, or no sibling: kills/hits stay '--' */ }
+  }
+  invalidateStatsCaches();   // kills/hits/deathsCaused/blindDeath all read eventsRows/eventsLoaded
+  renderStats();
+}
+
+// Binary search: the last row at or before t in a bot's own (time-sorted) row array, or null before
+// its first row. Shared by the deaths-caused attribution below, which needs "what was this bot doing
+// right before some OTHER bot's death" without scanning every row of every bot per death.
+function lastRowAtOrBefore(rows, t) {
+  let lo = 0, hi = rows.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].t <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans >= 0 ? rows[ans] : null;
+}
+
+// How long before a death a stale target lock still counts as "probably the killer". Trace rows are
+// samples, not events, so the true kill instant isn't in the data -- this is a heuristic proxy for
+// the kills/hits columns whenever real combat-event data isn't available (no bot-events sibling on a
+// file load, or a live session whose sender isn't broadcasting events).
+const DEATH_CREDIT_WINDOW_MS = 3000;
+
+function computeBotStats() {
+  if (_botStatsCache) return _botStatsCache;
+  return (_botStatsCache = computeBotStatsUncached());
+}
+function computeBotStatsUncached() {
+  // "sights" comes from the trace itself, not the events file: how many times ANY other bot's row
+  // had this bot as target_id with a clear line of sight. This is the same signal the target-link
+  // map layer and the BB-001/002/003 investigations read by hand -- being killed by something that
+  // never shows up here is exactly the perception-gap pattern those bugs document.
+  const sightsClear = new Map();
+  for (const r of allRows) {
+    if (!r.targetId || r.targetId === r.id) continue;
+    if (r.visGate === 'y') sightsClear.set(r.targetId, (sightsClear.get(r.targetId) || 0) + 1);
+  }
+  const kills = new Map(), hits = new Map();
+  for (const e of eventsRows) {
+    if (e.type !== 'kill' && e.type !== 'damage') continue;
+    hits.set(e.attacker, (hits.get(e.attacker) || 0) + 1);
+    if (e.type === 'kill') kills.set(e.attacker, (kills.get(e.attacker) || 0) + 1);
+  }
+  // "deaths caused": for every bot that died, which OTHER bots had it clearly targeted within
+  // DEATH_CREDIT_WINDOW_MS of the death. Approximate and can multi-attribute (two bots both had it
+  // targeted right before it died); unlike kills/hits this needs no combat-event data at all, so it's
+  // the one combat column that always populates, even when eventsLoaded is false.
+  const deathsCaused = new Map();
+  for (const v of bots.values()) {
+    if (v.deathT == null) continue;
+    for (const u of bots.values()) {
+      if (u.id === v.id) continue;
+      const r = lastRowAtOrBefore(u.rows, v.deathT);
+      if (!r || v.deathT - r.t > DEATH_CREDIT_WINDOW_MS) continue;
+      if (r.targetId === v.id && r.visGate === 'y') deathsCaused.set(u.id, (deathsCaused.get(u.id) || 0) + 1);
+    }
+  }
+  const out = [];
+  for (const b of bots.values()) {
+    const rows = b.rows;
+    if (!rows.length) continue;
+    const birth = rows[0].t;
+    const deathT = b.deathT;
+    const lifeEnd = deathT != null ? deathT : tMax;
+    let dist = 0, prevFire = false, fireBursts = 0, stateChanges = 0, illegalStates = 0;
+    let prevFlee = false, fleeEpisodes = 0, fleeTimeMs = 0, stallTimeMs = 0;
+    let prevTend = false, healsGiven = 0, prevDead = false, revives = 0;
+    let targetDistSum = 0, targetDistCount = 0;
+    const uniqueStates = new Set(), targetsSet = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      // Capped at GAP_HOLD_MS, same as takeMetrics()'s dwell-weighting -- an uncapped gap would let
+      // one long silence (a trimmed stretch, a live-mode hiccup) get misattributed as continuous
+      // flee/stall dwell instead of the bounded amount every other dwell metric in this file uses.
+      const gapMs = Math.min(Math.max(0, (rows[i + 1] ? rows[i + 1].t : lifeEnd) - r.t), GAP_HOLD_MS);
+      if (r.moved != null) dist += r.moved;
+      uniqueStates.add(r.stateChar);
+      if (r.targetId) {
+        targetsSet.add(r.targetId);
+        if (r.targetDist != null) { targetDistSum += r.targetDist; targetDistCount++; }
+      }
+      const firing = r.stateChar === 'F';
+      if (firing && !prevFire) fireBursts++;
+      prevFire = firing;
+      const fleeing = !!(r.d && r.d.latches && r.d.latches.includes('flee'));
+      if (fleeing) fleeTimeMs += gapMs;
+      if (fleeing && !prevFlee) fleeEpisodes++;
+      prevFlee = fleeing;
+      if (isStalled(r)) stallTimeMs += gapMs;   // reuses the existing LOCO/STILL_SPEED predicate, not a new one
+      const tending = r.stateChar === 'T';
+      if (tending && !prevTend) healsGiven++;
+      prevTend = tending;
+      const dead = r.stateChar === 'D';
+      if (!dead && prevDead) revives++;
+      prevDead = dead;
+      // Same predicate ingestRow uses to skip heartbeat rows in the prose log: 'initial' counts as a
+      // change (the bot's birth state), 'tick' doesn't (a heartbeat sample, not a transition).
+      if (r.changed && r.changed !== 'tick') stateChanges++;
+      // r.d is decodeBotState(code): null for an unparseable code, otherwise carries legal/
+      // illegalReason from illegalReason(code) in bot-state-code.js. Both count as "illegal" here --
+      // a code that won't even decode is not a lesser problem than one that decodes but violates a rule.
+      if (!r.d || !r.d.legal) illegalStates++;
+    }
+    // Most-recent non-blank squad, same reasoning botRoleInfo uses for role/leader below: a bot's
+    // final rows can go blank (squad disbanded) after it dies, so "last row" alone isn't reliable.
+    let squad = '';
+    for (let i = rows.length - 1; i >= 0; i--) { if (rows[i].squadId) { squad = rows[i].squadId; break; } }
+    const { role, isLeader } = botRoleInfo(b.id);
+    out.push({
+      id: b.id, team: b.team, role, squad: squad || '—', isLeader,
+      birth: (birth - tMin) / 1000,
+      life: (lifeEnd - birth) / 1000,
+      death: deathT != null ? (deathT - tMin) / 1000 : null,
+      kills: eventsLoaded ? (kills.get(b.id) || 0) : null,
+      deathsCaused: deathsCaused.get(b.id) || 0,
+      targets: targetsSet.size,
+      hits: eventsLoaded ? (hits.get(b.id) || 0) : null,
+      healsGiven, revives,
+      sights: sightsClear.get(b.id) || 0,
+      avgTargetDist: targetDistCount ? targetDistSum / targetDistCount : null,
+      engagements: fireBursts,
+      fleeEpisodes, fleeTime: fleeTimeMs / 1000, stallTime: stallTimeMs / 1000,
+      distance: dist,
+      rows: rows.length,
+      stateChanges,
+      illegalStates,
+      uniqueStates: uniqueStates.size,
+      _uniqueStatesSet: uniqueStates,
+    });
+  }
+  // Second pass: which bots ever showed each state char, across the WHOLE roster. Needs every
+  // bot's uniqueStates set first, so it can't fold into the loop above.
+  const stateOwners = new Map();
+  for (const o of out) for (const s of o._uniqueStatesSet) {
+    let owners = stateOwners.get(s);
+    if (!owners) { owners = new Set(); stateOwners.set(s, owners); }
+    owners.add(o.id);
+  }
+  for (const o of out) {
+    o.exclusiveStates = 0;
+    for (const s of o._uniqueStatesSet) if (stateOwners.get(s).size === 1) o.exclusiveStates++;
+  }
+  return out;
+}
+
+// Collapses computeBotStats()'s one-row-per-bot output into one row per role or team group. See the
+// STATS_GROUP_COLUMNS comment for which columns sum vs mean vs union.
+function computeGroupedBotStats(mode, leaderModeVal) {
+  const flat = computeBotStats();
+  // Which bots ever showed each state char, across the WHOLE roster (not just this group) -- lets
+  // "exclusive states" below ask "did anyone outside this group ever show it", same question the
+  // per-bot column asks about other individual bots.
+  const owners = new Map();
+  for (const m of flat) for (const s of m._uniqueStatesSet) {
+    let set = owners.get(s);
+    if (!set) { set = new Set(); owners.set(s, set); }
+    set.add(m.id);
+  }
+  const groups = new Map();
+  for (const r of flat) {
+    const key = mode === 'team' ? r.team : roleGroupKey(r.role, r.isLeader, leaderModeVal);
+    let g = groups.get(key);
+    if (!g) { g = { key, members: [] }; groups.set(key, g); }
+    g.members.push(r);
+  }
+  const out = [];
+  for (const g of groups.values()) {
+    const members = g.members, n = members.length;
+    const memberIds = new Set(members.map(m => m.id));
+    const teams = new Set(members.map(m => m.team));
+    const sum = k => members.reduce((s, m) => s + (m[k] || 0), 0);
+    const mean = k => n ? sum(k) / n : 0;
+    const union = new Set();
+    for (const m of members) for (const s of m._uniqueStatesSet) union.add(s);
+    let exclusiveStates = 0;
+    for (const s of union) if ([...owners.get(s)].every(id => memberIds.has(id))) exclusiveStates++;
+    out.push({
+      id: g.key, n,
+      team: teams.size === 1 ? [...teams][0] : 'mixed',
+      birth: mean('birth'),
+      life: mean('life'),
+      deaths: members.filter(m => m.death != null).length,
+      kills: eventsLoaded ? sum('kills') : null,
+      deathsCaused: sum('deathsCaused'),
+      targets: sum('targets'),
+      hits: eventsLoaded ? sum('hits') : null,
+      healsGiven: sum('healsGiven'),
+      revives: sum('revives'),
+      sights: sum('sights'),
+      avgTargetDist: (() => {
+        const vals = members.map(m => m.avgTargetDist).filter(v => v != null);
+        return vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null;
+      })(),
+      engagements: sum('engagements'),
+      fleeEpisodes: sum('fleeEpisodes'),
+      fleeTime: sum('fleeTime'),
+      stallTime: sum('stallTime'),
+      distance: sum('distance'),
+      rows: sum('rows'),
+      stateChanges: sum('stateChanges'),
+      illegalStates: sum('illegalStates'),
+      uniqueStates: union.size,
+      exclusiveStates,
+    });
+  }
+  return out;
+}
+
+function sortStats(data) {
+  const { key, dir } = statsSort;
+  data.sort((a, c) => {
+    if (STATS_STRING_KEYS.has(key)) {
+      return dir * String(a[key] ?? '').localeCompare(String(c[key] ?? ''), undefined, { numeric: true });
+    }
+    let av = a[key], cv = c[key];
+    // 'alive' sorts as if death were +Infinity, so descending puts the survivors at the top.
+    if (key === 'death') { av = av == null ? Infinity : av; cv = cv == null ? Infinity : cv; }
+    else { av = av ?? -Infinity; cv = cv ?? -Infinity; }
+    return dir * (av - cv);
+  });
+  return data;
+}
+
+// Whitelist the float columns rather than blacklist the int ones -- id/team/squad are strings too,
+// and calling toFixed on them was the bug (they fell through the old "not an int key" branch).
+const STATS_FLOAT_KEYS = new Set(['birth', 'life', 'death', 'distance', 'fleeTime', 'stallTime', 'avgTargetDist', 'blindDeathMaxSelfThreat']);
+// 0-1 ratios get their own precision -- toFixed(1) rounds two visibly different ratios (0.72 vs 0.78)
+// to the same "0.7"/"0.8", which is too coarse for a column meant to be sorted and compared closely.
+const STATS_RATIO_KEYS = new Set(['highTierNoTargetRatio', 'pushNoTargetRatio']);
+function fmtStatsCell(v, key) {
+  if (v == null) return key === 'death' ? 'alive' : '—';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (STATS_RATIO_KEYS.has(key)) return v.toFixed(2);
+  if (STATS_FLOAT_KEYS.has(key)) return v.toFixed(1);
+  return String(v);
+}
+
+// One row per state (fixed narrative order from STATE_NAMES, 'D' excluded -- see below), one column
+// per bot. `count` = transitions INTO that row's key (same technique renderStats already uses for
+// fire bursts: a run of unchanged heartbeat rows in the same state is not a re-entry). `duration` =
+// summed dwell seconds, same gap-to-next-row weighting the heatmap uses, for the same reason: rows
+// are not evenly spaced in time.
+//
+// 'D' (dead) is left out entirely, not just capped: a corpse keeps emitting heartbeat rows for the
+// rest of the take, so its "duration" would be however long is left in the trace after it died --
+// wildly dominating every other state for an early death, and not a meaningful "state occupancy"
+// number anyway. The per-bot table's `death s` column already answers "when", which is what matters.
+//
+// `subModes` splits each state row by its `path_mode` value (cover/seek/flee/knife/patrolLocal/
+// patrolStranded/...). That vocabulary is not a fixed enum the way STATE_NAMES is -- it's whatever
+// strings the sim happens to assign -- so the sub-rows are discovered from the loaded take rather
+// than hardcoded, and a state that carries no path_mode at all (state chars like F/A are often blank
+// when stationary) still gets one plain row instead of a spurious empty split.
+//
+// Each row also gets `abundance` (sum of the row's values across all bots -- total entries, or total
+// dwell seconds, depending on `metric`) and `diversity` (how many distinct bots ever posted a nonzero
+// value for that row) -- the ecology-style pair the per-bot table can't show, since it's organized the
+// other way around (one row per bot, not per state).
+//
+// `sortMode` re-orders the row list: 'category' is the fixed STATE_NAMES narrative order (default);
+// 'abundance'/'diversity' rank rows by that metric, descending times `sortDir`. `maintainSections`
+// keeps a state's sub-mode rows adjacent under a single ranking key (the section's own aggregate)
+// instead of letting individual sub-rows scatter across the whole table -- ranking moves sections as
+// blocks, not rows piecemeal.
+function computeStateMatrix(metric, subModes, sortMode, sortDir, sections) {
+  const ids = [...bots.keys()].sort((a, c) => a.localeCompare(c, undefined, { numeric: true }));
+  const baseStates = Object.keys(STATE_NAMES).filter(ch => ch !== 'D');
+  const modesByState = new Map();   // state char -> Set of path_mode strings actually seen
+  if (subModes) {
+    for (const b of bots.values()) {
+      for (const r of b.rows) {
+        if (r.stateChar === 'D' || !r.pathMode) continue;
+        let s = modesByState.get(r.stateChar);
+        if (!s) { s = new Set(); modesByState.set(r.stateChar, s); }
+        s.add(r.pathMode);
+      }
+    }
+  }
+  const rowKeyFor = r => (subModes && modesByState.has(r.stateChar))
+    ? `${r.stateChar}|${r.pathMode || ''}` : r.stateChar;
+  const rows = [];   // category (display) order: { key, label, section }
+  for (const ch of baseStates) {
+    const modes = modesByState.get(ch);
+    if (!modes) { rows.push({ key: ch, label: `${STATE_NAMES[ch]} (${ch})`, section: ch }); continue; }
+    for (const m of [...modes].sort()) {
+      rows.push({ key: `${ch}|${m}`, label: `${STATE_NAMES[ch]} (${ch}) · ${m}`, section: ch });
+    }
+    rows.push({ key: `${ch}|`, label: `${STATE_NAMES[ch]} (${ch}) · —`, section: ch });   // no path_mode this instant
+  }
+  const grid = new Map();   // `${rowKey}|${botId}` -> value
+  for (const id of ids) {
+    const brows = bots.get(id).rows;
+    let prevKey = null;
+    for (let i = 0; i < brows.length; i++) {
+      const r = brows[i];
+      if (r.stateChar === 'D') { prevKey = 'D'; continue; }
+      const key = rowKeyFor(r);
+      const k = `${key}|${id}`;
+      if (metric === 'count') {
+        if (key !== prevKey) grid.set(k, (grid.get(k) || 0) + 1);
+      } else {
+        const nxt = brows[i + 1];
+        const dwell = Math.min(Math.max(0, nxt ? nxt.t - r.t : 1000), GAP_HOLD_MS) / 1000;
+        grid.set(k, (grid.get(k) || 0) + dwell);
+      }
+      prevKey = key;
+    }
+  }
+  for (const row of rows) {
+    let abundance = 0;
+    const botSet = new Set();
+    for (const id of ids) {
+      const v = grid.get(`${row.key}|${id}`);
+      if (v) { abundance += v; botSet.add(id); }
+    }
+    row.abundance = abundance;
+    row.diversity = botSet.size;
+    row._botSet = botSet;
+  }
+  const orderedRows = orderStateRows(rows, sortMode, sortDir, sections);
+  return { ids, rows: orderedRows, grid };
+}
+
+function orderStateRows(rows, sortMode, sortDir, sections) {
+  if (sortMode === 'category') return rows;
+  if (!sections) return [...rows].sort((a, c) => sortDir * (c[sortMode] - a[sortMode]));
+  const groups = [];
+  const bySection = new Map();
+  for (const row of rows) {
+    let g = bySection.get(row.section);
+    if (!g) { g = { rows: [], abundance: 0, botSet: new Set() }; bySection.set(row.section, g); groups.push(g); }
+    g.rows.push(row);
+    g.abundance += row.abundance;
+    for (const id of row._botSet) g.botSet.add(id);
+  }
+  for (const g of groups) g.metric = sortMode === 'abundance' ? g.abundance : g.botSet.size;
+  groups.sort((a, c) => sortDir * (c.metric - a.metric));
+  return groups.flatMap(g => g.rows);
+}
+
+// Collapses the bot id list into display columns for either stats table: one column per bot
+// (groupBy 'bot', a no-op wrapper) or one per role/team group (see groupKeyFor/roleGroupKey above).
+// Shared by renderStateMatrix and its CSV export so the table and the copy always match.
+function columnGroupsFor(ids, mode, leaderModeVal) {
+  if (mode === 'bot') {
+    return ids.map(id => ({ key: id, label: id.replace(/^bot-/, ''), ids: [id], color: teamColor(bots.get(id)?.team).bright }));
+  }
+  const groups = new Map();
+  for (const id of ids) {
+    const key = groupKeyFor(id, mode, leaderModeVal);
+    let g = groups.get(key);
+    if (!g) { g = { key, ids: [] }; groups.set(key, g); }
+    g.ids.push(id);
+  }
+  // `key` (the raw group key, e.g. team/role name) is kept alongside `label` (which has a display
+  // "(n)" count suffix) so stamping can address a column by something stable -- see ---- stamping ----.
+  return [...groups.values()].sort((a, c) => a.key.localeCompare(c.key)).map(g => ({
+    key: g.key, label: `${g.key} (${g.ids.length})`, ids: g.ids,
+    color: mode === 'team' ? teamColor(g.key).bright : null,
+  }));
+}
+
+function renderStateMatrix() {
+  const { ids, rows, grid } = computeStateMatrix(stateMetric, subModesOn, stateSortMode, stateSortDir, maintainSections);
+  const cols = columnGroupsFor(ids, groupBy, leaderMode);
+  const table = $('statsTable');
+  table.className = 'mode-state';
+  const sortArrow = key => key === stateSortMode ? (stateSortDir > 0 ? ' ▲' : ' ▼') : '';
+  const sortedCls = key => key === stateSortMode ? 'sorted' : '';
+  table.querySelector('thead').innerHTML = '<tr>'
+    + `<th data-key="category" class="${sortedCls('category')}">state${sortArrow('category')}</th>`
+    + `<th data-key="abundance" class="${sortedCls('abundance')}" title="Total ${stateMetric === 'count' ? 'entries' : 'seconds'} across all bots">abundance${sortArrow('abundance')}</th>`
+    + `<th data-key="diversity" class="${sortedCls('diversity')}" title="Number of distinct bots that ever entered this row">diversity${sortArrow('diversity')}</th>`
+    // data-key lets Stamp mode address a dynamic column; it has no bearing on sorting (only the
+    // three fixed columns above are sortable).
+    + cols.map(c => `<th data-key="${escapeHtml(c.key)}"${c.color ? ` style="color:${c.color}"` : ''}>${c.label}</th>`).join('') + '</tr>';
+  table.querySelector('tbody').innerHTML = rows.map(row => {
+    const cells = cols.map(c => {
+      const v = c.ids.reduce((s, id) => s + (grid.get(`${row.key}|${id}`) || 0), 0);
+      if (!v) return '<td class="z">·</td>';
+      return `<td>${fmtMetric(v, stateMetric)}</td>`;
+    }).join('');
+    // data-row on the <tr> is the stamping identity for this row -- see ---- stamping ----.
+    return `<tr data-row="${escapeHtml(row.key)}"><td>${row.label}</td><td>${fmtMetric(row.abundance, stateMetric)}</td><td>${row.diversity}</td>${cells}</tr>`;
+  }).join('');
+  $('statsNote').textContent = `${rows.length} row${rows.length === 1 ? '' : 's'} × ${ids.length} bots`
+    + (groupBy !== 'bot' ? ` grouped into ${cols.length} ${groupBy} column${cols.length === 1 ? '' : 's'}${groupBy === 'role' ? ` (leader: ${leaderMode})` : ''}` : '')
+    + (stateMetric === 'count' ? ' · entries = transitions into the row' : ' · dwell seconds, dead rows excluded')
+    + (subModesOn ? ' · split by path_mode' : '')
+    + (stateSortMode !== 'category' ? ` · ranked by ${stateSortMode}${maintainSections ? ' (sections kept together)' : ' (flat)'}` : '');
+  reapplyStampSelection();
+}
+const fmtMetric = (v, metric) => (metric === 'count' ? String(v) : v.toFixed(1));
+
+// The <th> that actually carries data-key/sort state for a data column -- shared by the plain
+// single-row head and the symptoms tab's second (label) row below.
+function colHeadCell(c) {
+  const active = c.key === statsSort.key;
+  const title = c.desc ? ` title="${escapeHtml(c.desc)}"` : '';
+  return `<th data-key="${c.key}" class="${active ? 'sorted' : ''}"${title}>${c.label}`
+    + `${active ? (statsSort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+}
+// Symptoms-only: a header row above the normal one, spanning each run of same-`group` columns with
+// its name + BB-### id, so the table teaches the symptom taxonomy instead of requiring
+// docs/bot-bugs-log.md open in another tab. Identity columns (no `group`) get a blank spacer above
+// them -- same column count/order as the label row below, so cellIndex-based lookups elsewhere
+// (stamping) stay aligned regardless of which head row they're read from.
+function buildSymptomsHead(cols) {
+  let groupRow = '';
+  let i = 0;
+  while (i < cols.length) {
+    const c = cols[i];
+    if (!c.group) { groupRow += '<th class="grp-spacer"></th>'; i++; continue; }
+    let j = i + 1;
+    while (j < cols.length && cols[j].group === c.group) j++;
+    groupRow += `<th colspan="${j - i}" class="grp-head">${escapeHtml(c.group)} <span class="grp-bug">${escapeHtml(c.bug)}</span></th>`;
+    i = j;
+  }
+  return `<tr class="grp-row">${groupRow}</tr><tr>${cols.map(colHeadCell).join('')}</tr>`;
+}
+// The header row that actually carries data-key cells for the data columns -- always the LAST thead
+// row, whether that's the only row (every other view) or the label row under the symptoms tab's
+// group-header row.
+function statsHeaderRow(table) { return table.tHead.rows[table.tHead.rows.length - 1]; }
+
+// Rebuilds the whole panel for whichever view is active. Cheap enough to call on every open/sort/
+// refresh for a normal take (a few hundred bots at most); guarded so live-mode's per-row ingest
+// doesn't pay for a hidden panel.
+function renderStats() {
+  if (!$('statsPanel').classList.contains('show')) return;
+  if (statsView === 'state') { renderStateMatrix(); return; }
+  if (statsView === 'log') { renderLogTab(); return; }
+  const symptoms = statsView === 'symptoms';
+  const grouped = !symptoms && groupBy !== 'bot';
+  const cols = symptoms ? SYMPTOMS_COLUMNS : grouped ? STATS_GROUP_COLUMNS : STATS_COLUMNS;
+  const data = symptoms ? sortStats(computeSymptomStats())
+    : grouped ? sortStats(computeGroupedBotStats(groupBy, leaderMode)) : sortStats(computeBotStats());
+  const table = $('statsTable');
+  table.className = grouped ? 'mode-bot mode-grouped' : 'mode-bot';
+  table.querySelector('thead').innerHTML = symptoms
+    ? buildSymptomsHead(cols)
+    : '<tr>' + cols.map(colHeadCell).join('') + '</tr>';
+  // data-row (added regardless of grouped) is the stamping identity -- r.id is a real bot id when
+  // ungrouped, a raw group key when grouped. data-id keeps its narrower, ungrouped-only meaning
+  // ("this row is one selectable bot") so the click delegate's existing bot-select branch below is
+  // untouched. Symptoms is never grouped, so it always gets data-id.
+  table.querySelector('tbody').innerHTML = data.map(r =>
+    `<tr data-row="${escapeHtml(r.id)}"${grouped ? '' : ` data-id="${escapeHtml(r.id)}"`} class="${!grouped && r.death != null ? 'dead' : ''}">`
+    + cols.map(c => `<td>${fmtStatsCell(r[c.key], c.key)}</td>`).join('') + '</tr>').join('');
+  $('statsNote').textContent = symptoms
+      ? `${data.length} bots · unweighted raw counts, no combined score (see docs/bot-bugs-log.md)`
+        + (eventsLoaded ? '' : ' · no combat-event data — killer-ever-targeted/self-threat are —')
+      : (grouped
+          ? `${data.length} group${data.length === 1 ? '' : 's'} (${groupBy}${groupBy === 'role' ? `, leader: ${leaderMode}` : ''})`
+          : `${data.length} bots`)
+        + (eventsLoaded ? '' : ' · no combat-event data — kills/hits are —');
+  reapplySelectedBotHighlight();
+  reapplyStampSelection();
+}
+
+// Centralizes which of the two full-screen (position:fixed;inset:0) modals is open -- Stats and
+// Notes can never both be visible, so every toggle/close routes through here instead of touching
+// classList directly. Leaving the Stats panel always drops out of stamp mode, since a pending
+// collect-mode selection refers to a table the user can no longer see.
+let activePanel = null;   // null | 'stats' | 'notes'
+function setActivePanel(name) {
+  if (activePanel === 'stats' && name !== 'stats' && stampMode !== 'off') setStampMode('off');
+  activePanel = name;
+  $('statsPanel').classList.toggle('show', name === 'stats');
+  $('notesPanel').classList.toggle('show', name === 'notes');
+  if (name === 'stats') renderStats();
+  if (name === 'notes') $('notesEditor').focus();
+}
+$('statsToggle').onclick = () => setActivePanel(activePanel === 'stats' ? null : 'stats');
+$('statsClose').onclick = () => setActivePanel(null);
+$('statsRefresh').onclick = renderStats;
+function setStatsView(v) {
+  statsView = v;
+  $('statsTabBot').classList.toggle('on', v === 'bot');
+  $('statsTabState').classList.toggle('on', v === 'state');
+  $('statsTabSymptoms').classList.toggle('on', v === 'symptoms');
+  $('statsTabLog').classList.toggle('on', v === 'log');
+  $('stateMetric').style.display = v === 'state' ? '' : 'none';
+  $('subModesWrap').style.display = v === 'state' ? 'flex' : 'none';
+  $('maintainSectionsWrap').style.display = v === 'state' ? 'flex' : 'none';
+  // Symptoms and Log are both per-bot/per-event, not groupable the way Per bot/Per state are --
+  // grouping a ratio or a max-in-window metric (Symptoms) or collapsing distinct events (Log) isn't a
+  // sum, mean, or union like the other columns; not worth inventing a convention for until there's a
+  // reason to. groupBy/leaderMode hide there and reappear exactly as they were on the way back out.
+  $('groupBy').style.display = v === 'symptoms' || v === 'log' ? 'none' : '';
+  $('leaderMode').style.display = v !== 'symptoms' && v !== 'log' && groupBy === 'role' ? '' : 'none';
+  $('logFiltersWrap').style.display = v === 'log' ? 'flex' : 'none';
+  // Stamping cites a stat cell/row/column into Notes -- a chronological log line isn't a stat, so the
+  // Log tab doesn't wire into it (its rows carry no data-row/data-key for handleStampClick to find).
+  $('stampBtn').style.display = v === 'log' ? 'none' : '';
+  $('stampCount').style.display = v === 'log' ? 'none' : '';
+  if (v === 'log' && stampMode !== 'off') setStampMode('off');
+  if (v === 'symptoms') statsSort = { key: 'maxSwitch3s', dir: -1 };
+  clearStampSelection();   // table shape just changed; stale row/column keys would stamp the wrong thing
+  renderStats();
+}
+$('statsTabBot').onclick = () => setStatsView('bot');
+$('statsTabState').onclick = () => setStatsView('state');
+$('statsTabSymptoms').onclick = () => setStatsView('symptoms');
+$('statsTabLog').onclick = () => setStatsView('log');
+$('logTeamSel').onchange = renderStats;
+$('logSquadSel').onchange = renderStats;
+$('logRoleSel').onchange = renderStats;
+$('logOnlySelected').onchange = renderStats;
+$('stateMetric').onchange = e => { stateMetric = e.target.value; renderStats(); };
+$('subModes').onchange = e => { subModesOn = e.target.checked; clearStampSelection(); renderStats(); };
+$('maintainSections').onchange = e => { maintainSections = e.target.checked; renderStats(); };
+$('groupBy').onchange = e => {
+  groupBy = e.target.value;
+  $('leaderMode').style.display = groupBy === 'role' ? '' : 'none';
+  statsSort = { key: 'kills', dir: -1 };   // grouped/ungrouped column sets differ; avoid a dead sort key
+  clearStampSelection();
+  renderStats();
+};
+$('leaderMode').onchange = e => { leaderMode = e.target.value; clearStampSelection(); renderStats(); };
+$('statsTable').addEventListener('click', e => {
+  if (stampMode !== 'off') { handleStampClick(e); return; }
+  const th = e.target.closest('th[data-key]');
+  if (th && statsView === 'state') {
+    const key = th.dataset.key;
+    if (key === 'category') { stateSortMode = 'category'; }
+    else if (stateSortMode === key) { stateSortDir *= -1; }
+    else { stateSortMode = key; stateSortDir = -1; }
+    renderStats();
+    return;
+  }
+  if (th) {
+    const key = th.dataset.key;
+    if (statsSort.key === key) statsSort.dir *= -1;
+    else statsSort = { key, dir: STATS_STRING_KEYS.has(key) ? 1 : -1 };
+    renderStats();
+    return;
+  }
+  const tr = e.target.closest('tr[data-id]');
+  if (tr) {
+    selected = tr.dataset.id === selected ? null : tr.dataset.id;
+    buildBotList(); renderDetail(); reapplySelectedBotHighlight(); draw();
+    setActivePanel(null);
+  }
+});
+$('statsCsv').onclick = async () => {
+  let text;
+  if (statsView === 'state') {
+    const { ids, rows, grid } = computeStateMatrix(stateMetric, subModesOn, stateSortMode, stateSortDir, maintainSections);
+    const cols = columnGroupsFor(ids, groupBy, leaderMode);
+    text = ['state', 'abundance', 'diversity', ...cols.map(c => c.label)].join('\t') + '\n'
+      + rows.map(row => [row.label, row.abundance, row.diversity,
+        ...cols.map(c => c.ids.reduce((s, id) => s + (grid.get(`${row.key}|${id}`) || 0), 0))].join('\t')).join('\n');
+  } else if (statsView === 'symptoms') {
+    const data = sortStats(computeSymptomStats());
+    text = SYMPTOMS_COLUMNS.map(c => c.label).join('\t') + '\n'
+      + data.map(r => SYMPTOMS_COLUMNS.map(c => {
+        const v = r[c.key];
+        return v == null ? '' : typeof v === 'boolean' ? (v ? 'yes' : 'no') : v;
+      }).join('\t')).join('\n');
+  } else if (statsView === 'log') {
+    text = ['time', 'team', 'bot', 'role', 'squad', 'state', 'details'].join('\t') + '\n'
+      + filteredLogEntries().map(e =>
+        [fmtLogElapsed(e.t - tMin), e.team, e.id, e.role, e.squadId, e.gloss, e.extra].join('\t')).join('\n');
+  } else {
+    const grouped = groupBy !== 'bot';
+    const cols = grouped ? STATS_GROUP_COLUMNS : STATS_COLUMNS;
+    const data = grouped ? sortStats(computeGroupedBotStats(groupBy, leaderMode)) : sortStats(computeBotStats());
+    text = cols.map(c => c.label).join('\t') + '\n'
+      + data.map(r => cols.map(c => {
+        const v = r[c.key];
+        return v == null ? (c.key === 'death' ? 'alive' : '') : v;
+      }).join('\t')).join('\n');
+  }
+  try { await navigator.clipboard.writeText(text); } catch { /* clipboard unavailable */ }
+  const btn = $('statsCsv'), orig = btn.textContent;
+  btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = orig; }, 900);
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---- notes --------------------------------------------------------------------
+// One freeform note per take, persisted to disk (not localStorage) via serve.py's /api/save-notes,
+// the same save-route family bot-viewer-v2 uses for bot-states -- scoped to `takeLabel` so switching
+// which trace is loaded swaps which note is shown. The client never lists or looks up notes: the
+// filename is derived deterministically from takeLabel, so it just fetches that exact static file
+// under notes/ and tolerates a 404 (no note yet) or a fetch failure (opened over file://, or a plain
+// static server with no serve.py behind it).
+//
+// Formatting is document.execCommand('bold'/'underline'/'insertUnorderedList') on the contenteditable
+// div -- only the clipboard execCommand variants (cut/copy/paste) are actually deprecated; these three
+// formatting commands are not going anywhere.
+const NOTES_SAVE_DEBOUNCE_MS = 1200;
+let noteLabel = '';        // slugified takeLabel this note belongs to
+let noteDirty = false;     // true between an edit and its save landing (fetch or beacon)
+let noteSaveTimer = 0;
+
+// Mirrors serve.py's slugify(): lowercase, non-alnum runs collapsed to '-', trimmed. Must stay in
+// sync with the server's own slugify() and with _SAFE_NOTES_FILENAME's charset.
+function slugifyTakeLabel(label) {
+  const slug = (label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'scratch';
+}
+function notesFilename(label) { return `notes-${slugifyTakeLabel(label)}.html`; }
+
+// execCommand's bold/underline/insertUnorderedList only ever emit this closed tag set with no
+// attributes -- anything else in a loaded note (hand-edited on disk, or a stale file from elsewhere)
+// is unwrapped rather than trusted, since it lands straight in contenteditable's innerHTML.
+const NOTES_ALLOWED_TAGS = new Set(['B', 'U', 'LI', 'UL', 'OL', 'BR', 'DIV']);
+function sanitizeNotesHtml(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  (function walk(node) {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        walk(child);
+        if (!NOTES_ALLOWED_TAGS.has(child.tagName)) {
+          while (child.firstChild) node.insertBefore(child.firstChild, child);
+          node.removeChild(child);
+        } else {
+          for (const attr of [...child.attributes]) child.removeAttribute(attr.name);
+        }
+      } else if (child.nodeType !== Node.TEXT_NODE) {
+        node.removeChild(child);   // comments etc.
+      }
+    }
+  })(tmp);
+  return tmp.innerHTML;
+}
+
+async function loadNoteFor(label) {
+  noteLabel = slugifyTakeLabel(label);
+  $('notesScope').textContent = label || 'scratch';
+  const editor = $('notesEditor');
+  editor.innerHTML = '';
+  try {
+    const res = await fetch(`notes/${notesFilename(label)}`);
+    if (res.ok) editor.innerHTML = sanitizeNotesHtml(await res.text());
+  } catch { /* opened over file://, or no notes/ yet -- an empty note is the correct start state */ }
+  setNoteDirty(false);
+}
+
+function setNoteDirty(v) {
+  noteDirty = v;
+  $('notesSaveStatus').textContent = v ? 'unsaved…' : '';
+}
+
+function scheduleNoteSave() {
+  setNoteDirty(true);
+  clearTimeout(noteSaveTimer);
+  noteSaveTimer = setTimeout(saveNoteNow, NOTES_SAVE_DEBOUNCE_MS);
+}
+
+async function saveNoteNow() {
+  if (!noteDirty || !noteLabel) return;
+  clearTimeout(noteSaveTimer);
+  const html = $('notesEditor').innerHTML;
+  try {
+    const res = await fetch(`/api/save-notes?filename=${encodeURIComponent(notesFilename(noteLabel))}`, {
+      method: 'POST', headers: { 'Content-Type': 'text/html' }, body: html,
+    });
+    if (!res.ok) throw new Error(`save-notes ${res.status}`);
+    setNoteDirty(false);
+  } catch { /* opened over file://, or serve.py isn't running -- edits stay in the editor only */ }
+}
+
+// The unload-safe counterpart of saveNoteNow: a fetch() can be silently aborted mid-flight by the
+// navigation it's racing, sendBeacon is the platform's actual answer to "flush on the way out" (same
+// idiom environment-viewer.html's botStatsLog/perfLog already use for their own autosave).
+function flushNoteBeacon() {
+  if (!noteDirty || !noteLabel || !navigator.sendBeacon) return;
+  const html = $('notesEditor').innerHTML;
+  const ok = navigator.sendBeacon(
+    `/api/save-notes?filename=${encodeURIComponent(notesFilename(noteLabel))}`,
+    new Blob([html], { type: 'text/html' }),
+  );
+  if (ok) setNoteDirty(false);
+}
+window.addEventListener('pagehide', flushNoteBeacon);
+window.addEventListener('beforeunload', flushNoteBeacon);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushNoteBeacon();
+});
+
+// Appends one stamped entry (see ---- stamping ---- below) as a bullet, without disturbing whatever
+// the user is freely typing elsewhere in the note.
+function appendNoteEntry(html) {
+  const editor = $('notesEditor');
+  let list = editor.lastElementChild;
+  if (!list || list.tagName !== 'UL') { list = document.createElement('ul'); editor.appendChild(list); }
+  const li = document.createElement('li');
+  li.innerHTML = html;
+  list.appendChild(li);
+  scheduleNoteSave();
+}
+
+$('notesToggle').onclick = () => setActivePanel(activePanel === 'notes' ? null : 'notes');
+$('notesClose').onclick = () => { saveNoteNow(); setActivePanel(null); };
+$('notesBold').onclick = () => { $('notesEditor').focus(); document.execCommand('bold'); };
+$('notesUnderline').onclick = () => { $('notesEditor').focus(); document.execCommand('underline'); };
+$('notesListBtn').onclick = () => { $('notesEditor').focus(); document.execCommand('insertUnorderedList'); };
+$('notesEditor').addEventListener('input', scheduleNoteSave);
+loadNoteFor('');   // scratch note, usable before any take is loaded
+
+// ---- stamping -----------------------------------------------------------------
+// The Stamp toggle in the Statistics panel: OFF -> (click) -> STAMP (each click on a cell/row/column
+// immediately appends it to the current note) -> (click) -> OFF; (double-click, from OFF or STAMP)
+// -> COLLECT (clicks toggle membership in a pending multi-select instead of stamping) -> (click)
+// -> commits every collected item as one note entry, then OFF.
+//
+// A real double-click always fires a click event before the dblclick event, so entering STAMP from a
+// single click is deferred behind a short pending timer that a following dblclick cancels -- otherwise
+// every double-click would flicker through STAMP on its way to COLLECT.
+//
+// Row/column identity for stamping rides on two attributes the render functions already stamp onto
+// the table: data-row on every <tr> (a real bot id, or the raw group/state key when grouped -- never
+// the display label, which can carry a "(n)" count suffix) and data-key on every <th> (pre-existing
+// for renderStats()'s columns; added to renderStateMatrix()'s dynamic per-bot/group columns above). A
+// clicked cell's column is found via td.cellIndex against the header row, so no per-<td> attribute is
+// needed. Column 0 in both tables is always the row-label column, which is what makes a click there
+// mean "stamp the whole row" instead of "stamp one cell".
+const STAMP_CLICK_DELAY_MS = 250;
+let stampMode = 'off';       // 'off' | 'stamp' | 'collect'
+let stampClickTimer = 0;
+let stampCollected = [];     // [{ kind: 'cell'|'row'|'col', rowKey, colKey }], collect mode only
+
+function headLabel(th) { return (th?.textContent || '').replace(/[▲▼]/g, '').trim(); }
+
+function rowStampText(tr) {
+  const heads = [...statsHeaderRow($('statsTable')).cells];
+  const rowLabel = tr.cells[0].textContent.trim();
+  const parts = [...tr.cells].slice(1).map((c, i) => `${headLabel(heads[i + 1])}: ${c.textContent.trim()}`).join(', ');
+  return `<b>${escapeHtml(rowLabel)}</b> — ${escapeHtml(parts)}`;
+}
+function colStampText(th) {
+  const idx = [...th.parentElement.children].indexOf(th);
+  const rows = [...$('statsTable').tBodies[0].rows];
+  const parts = rows.map(r => `${r.cells[0].textContent.trim()}: ${r.cells[idx]?.textContent.trim() ?? ''}`).join(', ');
+  const rowUnit = statsView === 'state' ? 'state' : statsView === 'symptoms' ? 'bot' : groupBy;
+  return `<b>${escapeHtml(headLabel(th))}</b> (one row per ${rowUnit}) — ${escapeHtml(parts)}`;
+}
+function cellStampText(tr, td, th) {
+  return `<b>${escapeHtml(headLabel(th))}</b> — ${escapeHtml(tr.cells[0].textContent.trim())}: ${escapeHtml(td.textContent.trim())}`;
+}
+
+function flashStamped(els) {
+  for (const el of els) {
+    el.classList.add('stamp-flash');
+    setTimeout(() => el.classList.remove('stamp-flash'), 400);
+  }
+}
+
+function stampNow(kind, tr, td, th) {
+  const html = kind === 'row' ? rowStampText(tr) : kind === 'col' ? colStampText(th) : cellStampText(tr, td, th);
+  appendNoteEntry(html);
+  flashStamped([kind === 'row' ? tr : kind === 'col' ? th : td]);
+}
+
+function stampKeyFor(kind, rowKey, colKey) { return `${kind}:${rowKey ?? ''}:${colKey ?? ''}`; }
+
+function toggleCollected(kind, rowKey, colKey) {
+  const key = stampKeyFor(kind, rowKey, colKey);
+  const idx = stampCollected.findIndex(it => stampKeyFor(it.kind, it.rowKey, it.colKey) === key);
+  if (idx >= 0) stampCollected.splice(idx, 1); else stampCollected.push({ kind, rowKey, colKey });
+  reapplyStampSelection();
+  updateStampCount();
+}
+
+function toggleOrStampRow(tr) {
+  if (stampMode === 'stamp') { stampNow('row', tr, null, null); return; }
+  toggleCollected('row', tr.dataset.row, null);
+}
+function toggleOrStampColumn(th) {
+  const colKey = th.dataset.key;
+  if (!colKey) return;
+  if (stampMode === 'stamp') { stampNow('col', null, null, th); return; }
+  toggleCollected('col', null, colKey);
+}
+function toggleOrStampCell(tr, td) {
+  const th = statsHeaderRow($('statsTable')).cells[td.cellIndex];
+  const colKey = th?.dataset.key;
+  if (!colKey) return;
+  if (stampMode === 'stamp') { stampNow('cell', tr, td, th); return; }
+  toggleCollected('cell', tr.dataset.row, colKey);
+}
+function handleStampClick(e) {
+  const th = e.target.closest('th[data-key]');
+  if (th) { toggleOrStampColumn(th); return; }
+  const td = e.target.closest('td');
+  if (!td) return;
+  const tr = td.closest('tr[data-row]');
+  if (!tr) return;
+  if (td.cellIndex === 0) toggleOrStampRow(tr); else toggleOrStampCell(tr, td);
+}
+
+// Highlights the currently-selected bot's row in the Stats panel, if it has one (grouped/state rows
+// are not single bots, so they have no data-id and this is a no-op there). Called both from
+// renderStats() -- a fresh render needs it too -- and from every other place `selected` changes (map
+// click, sidebar list, bot-viewer-v2's ctrl-click), so the highlight tracks selection made anywhere
+// without forcing a full table rebuild that would lose the panel's scroll position mid-comparison.
+function reapplySelectedBotHighlight() {
+  const table = $('statsTable');
+  const prev = table.querySelector('tbody tr.sel');
+  if (prev) prev.classList.remove('sel');
+  if (!selected) return;
+  table.querySelector(`tbody tr[data-id="${CSS.escape(selected)}"]`)?.classList.add('sel');
+}
+
+// Reapplies .stamp-selected after a table rebuild (sort, refresh, live-mode growth) by matching
+// stampCollected's identity keys against the fresh DOM -- a rebuild replaces every node, so nothing
+// about a previous highlight survives except what these keys can re-find. An item whose key no
+// longer exists (its bot died and got filtered, say) is silently dropped from view, not from
+// stampCollected, so it can reappear if the same key comes back.
+function reapplyStampSelection() {
+  const table = $('statsTable');
+  if (!table.tHead.rows.length) return;   // nothing loaded yet
+  for (const el of table.querySelectorAll('.stamp-selected')) el.classList.remove('stamp-selected');
+  if (stampMode !== 'collect') return;
+  for (const it of stampCollected) {
+    const tr = table.tBodies[0]?.querySelector(`tr[data-row="${CSS.escape(it.rowKey ?? '')}"]`);
+    if (it.kind === 'row') { tr?.classList.add('stamp-selected'); continue; }
+    const th = [...statsHeaderRow(table).cells].find(h => h.dataset.key === it.colKey);
+    if (it.kind === 'col') { th?.classList.add('stamp-selected'); continue; }
+    if (tr && th) {
+      const idx = [...th.parentElement.children].indexOf(th);
+      tr.cells[idx]?.classList.add('stamp-selected');
+    }
+  }
+}
+
+function updateStampCount() {
+  $('stampCount').textContent = stampMode === 'collect'
+    ? (stampCollected.length ? `${stampCollected.length} selected — click Stamp to commit` : 'click cells/rows/columns to collect')
+    : stampMode === 'stamp' ? 'click a cell, row, or column to stamp it' : '';
+}
+
+function updateStampButtonUi() {
+  const btn = $('stampBtn');
+  btn.classList.toggle('on', stampMode === 'stamp');
+  btn.classList.toggle('collecting', stampMode === 'collect');
+  btn.textContent = stampMode === 'collect' ? `Stamp (${stampCollected.length})` : 'Stamp';
+  document.body.classList.toggle('stamp-mode', stampMode !== 'off');
+}
+
+function clearStampSelection() {
+  stampCollected = [];
+  reapplyStampSelection();
+  updateStampCount();
+}
+
+function setStampMode(mode) {
+  if (stampMode === 'collect' && mode !== 'collect') clearStampSelection();
+  stampMode = mode;
+  updateStampButtonUi();
+  reapplyStampSelection();
+  updateStampCount();
+}
+
+// Gathers every collected item's CURRENT value (not a value frozen at selection time -- useful in
+// live mode, where numbers keep moving while you're picking) into one note entry.
+function commitCollected() {
+  if (!stampCollected.length) { setStampMode('off'); return; }
+  const table = $('statsTable');
+  const parts = [];
+  for (const it of stampCollected) {
+    const tr = table.tBodies[0]?.querySelector(`tr[data-row="${CSS.escape(it.rowKey ?? '')}"]`);
+    const th = it.colKey ? [...statsHeaderRow(table).cells].find(h => h.dataset.key === it.colKey) : null;
+    if (it.kind === 'row' && tr) parts.push(rowStampText(tr));
+    else if (it.kind === 'col' && th) parts.push(colStampText(th));
+    else if (it.kind === 'cell' && tr && th) {
+      const idx = [...th.parentElement.children].indexOf(th);
+      const td = tr.cells[idx];
+      if (td) parts.push(cellStampText(tr, td, th));
+    }
+  }
+  if (parts.length) {
+    const when = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    appendNoteEntry(`<b>stamped ${escapeHtml(when)}</b> — ${parts.length} item${parts.length === 1 ? '' : 's'}`);
+    for (const p of parts) appendNoteEntry(p);
+  }
+  setStampMode('off');
+}
+
+$('stampBtn').onclick = () => {
+  if (stampMode === 'collect') { commitCollected(); return; }   // unambiguous while collecting -- no delay needed
+  clearTimeout(stampClickTimer);
+  stampClickTimer = setTimeout(() => setStampMode(stampMode === 'stamp' ? 'off' : 'stamp'), STAMP_CLICK_DELAY_MS);
+};
+$('stampBtn').ondblclick = () => { clearTimeout(stampClickTimer); setStampMode('collect'); };
+
+// ---- playback -------------------------------------------------------------
+function setT(t) {
+  if (liveOn && liveFollow) { liveFollow = false; updateLiveStatus(); }   // a manual seek leaves follow
+  playT = Math.min(tMax, Math.max(tMin, t));
+  $('scrub').value = String(((playT - tMin) / Math.max(1, tMax - tMin)) * 1000);
+  $('clock').textContent = `${((playT - tMin) / 1000).toFixed(2)}s / ${((tMax - tMin) / 1000).toFixed(1)}s`;
+  renderDetail();
+  drawRibbon();
+  draw();
+}
+
+function tick(ts) {
+  requestAnimationFrame(tick);
+  const dt = lastFrame ? ts - lastFrame : 0;
+  lastFrame = ts;
+  // A stall is the ABSENCE of messages, so nothing will call this for us. Repaint the status on a
+  // 500 ms cadence off the frame loop instead.
+  if (liveOn && ts - liveStatusAt > 500) { liveStatusAt = ts; updateLiveStatus(); }
+  if (!playing || !bots.size) return;
+  // Live + follow already advances playT as rows arrive, and setT below clears follow -- letting the
+  // play loop run here would cancel follow on its first frame.
+  if (liveOn && liveFollow) return;
+  const next = playT + dt * Number($('speed').value);
+  if (next >= tMax) { setT(tMax); setPlaying(false); return; }
+  setT(next);
+}
+requestAnimationFrame(tick);
+
+function setPlaying(v) {
+  playing = v && bots.size > 0;
+  $('play').textContent = playing ? '❚❚ Pause' : '▶ Play';
+  $('play').classList.toggle('on', playing);
+}
+
+// Step to the next/previous sample boundary of the selected bot, else any bot.
+function step(dir) {
+  const pool = selected && bots.has(selected) ? bots.get(selected).rows : allRows;
+  let best = null;
+  for (const r of pool) {
+    if (dir > 0 && r.t > playT + 0.5 && (best == null || r.t < best)) best = r.t;
+    if (dir < 0 && r.t < playT - 0.5 && (best == null || r.t > best)) best = r.t;
+  }
+  if (best != null) setT(best);
+}
+
+// ---- input ----------------------------------------------------------------
+$('play').onclick = () => setPlaying(!playing);
+$('fwd').onclick = () => step(1);
+$('back').onclick = () => step(-1);
+$('fit').onclick = fitView;
+$('live').onclick = () => setLive(!liveOn);
+$('gotoBotViewer').onclick = () => { if (liveOn && selected) liveChannel.postMessage({ type: 'select', id: selected }); };
+$('follow').onclick = () => { liveFollow = true; if (allRows.length) { playT = tMax; renderDetail(); drawRibbon(); draw(); } updateLiveStatus(); };
+$('scrub').oninput = e => setT(tMin + (Number(e.target.value) / 1000) * (tMax - tMin));
+$('png').onclick = exportPng;
+$('heatAddBtn').onclick = addHeatLayer;
+renderHeatLayers();   // seeds the (initially empty) layer-stack panel and the add button's cap state
+for (const id of ['tTrails', 'tShots', 'tTargets', 'tSquads', 'tFacing', 'tStall', 'tPaths', 'tLabels',
+  'tDead', 'tElev', 'tRegions', 'tGrid', 'tBounds', 'tWalls', 'tPatrol', 'tFollowBot',
+  'fStall', 'teamSel']) {
+  $(id).onchange = draw;
+}
+function updateCompareEnabled() {
+  $('cmpRun').disabled = !$('cmpSel').value || !allRows.length;
+}
+$('cmpSel').onchange = updateCompareEnabled;
+$('cmpRun').onclick = runCompare;
+$('cmpClear').onclick = () => { cmpBaseline = null; $('cmpout').innerHTML = ''; };
+$('botlist').onclick = e => {
+  const el = e.target.closest('[data-id]');
+  if (!el) return;
+  selected = el.dataset.id === selected ? null : el.dataset.id;
+  buildBotList(); renderDetail(); reapplySelectedBotHighlight(); renderStats(); draw();
+};
+ribbon.onclick = e => {
+  const f = e.offsetX / ribbon.clientWidth;
+  setT(tMin + f * (tMax - tMin));
+};
+
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const wx = toWX(e.offsetX), wz = toWZ(e.offsetY);
+  view.scale = Math.min(200, Math.max(0.6, view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  view.cx += wx - toWX(e.offsetX);
+  view.cz += wz - toWZ(e.offsetY);
+  draw();
+}, { passive: false });
+
+let drag = null;
+cv.addEventListener('pointerdown', e => { drag = { x: e.offsetX, y: e.offsetY, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+  if (Math.hypot(dx, dy) > 3) drag.moved = true;
+  // Panning while the camera is pinned to a bot would just snap back next frame, which reads as the
+  // drag being broken. Let the drag win and release the pin.
+  if (drag.moved && $('tFollowBot').checked) $('tFollowBot').checked = false;
+  view.cx -= dx / view.scale; view.cz -= dy / view.scale;
+  drag.x = e.offsetX; drag.y = e.offsetY;
+  draw();
+});
+cv.addEventListener('pointerup', e => {
+  const wasDrag = drag?.moved;
+  drag = null;
+  if (wasDrag || !bots.size) return;
+  // Click-to-select: nearest bot within a generous radius of the pointer.
+  let best = null, bestD = 18;
+  for (const b of bots.values()) {
+    const s = sampleAt(b, playT);
+    if (!s || s.x == null) continue;
+    const dd = Math.hypot(toSX(s.x) - e.offsetX, toSY(s.z) - e.offsetY);
+    if (dd < bestD) { bestD = dd; best = b.id; }
+  }
+  selected = best;
+  buildBotList(); renderDetail(); reapplySelectedBotHighlight(); renderStats(); draw();
+});
+
+addEventListener('keydown', e => {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '') && e.code !== 'Space') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); step(1); }
+  if (e.code === 'ArrowLeft') { e.preventDefault(); step(-1); }
+});
+
+// ---- file input -----------------------------------------------------------
+$('fileIn').onchange = async e => {
+  const f = e.target.files?.[0];
+  if (f) {
+    try { load(await f.text(), f.name); await loadWorldMeta(f.name); await loadEventsMeta(f.name); }
+    catch (err) { alert(err.message); }
+  }
+};
+// A take's arena lives in the bot-diag json written beside it with the same stamp. Missing for older
+// takes and for a dropped file (no sibling to find), so every caller must tolerate worldMeta = null.
+async function loadWorldMeta(traceName) {
+  worldMeta = null;
+  const stamp = /bot-state-trace-(\d{8}-\d{6})\.tsv$/.exec(traceName || '')?.[1];
+  if (stamp) {
+    try {
+      const res = await fetch(`bot-states/bot-diag-${stamp}.json`);
+      if (res.ok) {
+        const body = await res.json();
+        if (body?.world?.bounds) worldMeta = body.world;
+      }
+    } catch { /* not served, or no sibling: fall through to the data-extent note below */ }
+  }
+  noteWorldSource('file', stamp);
+  draw();
+}
+
+$('fileSel').onchange = async e => {
+  const name = e.target.value;
+  if (!name) return;
+  try {
+    const res = await fetch(`bot-states/${encodeURIComponent(name)}`);
+    load(await res.text(), name);
+    await loadWorldMeta(name);
+    await loadEventsMeta(name);
+  } catch (err) { alert(`could not load ${name}: ${err.message}`); }
+};
+
+const stage = $('stage');
+stage.addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('show'); });
+stage.addEventListener('dragleave', () => $('drop').classList.remove('show'));
+stage.addEventListener('drop', async e => {
+  e.preventDefault();
+  $('drop').classList.remove('show');
+  const f = e.dataTransfer.files?.[0];
+  if (f) {
+    try { load(await f.text(), f.name); await loadWorldMeta(f.name); await loadEventsMeta(f.name); }
+    catch (err) { alert(err.message); }
+  }
+});
+
+// Populate the saved-take dropdown; silently absent when not served by serve.py.
+(async () => {
+  try {
+    const res = await fetch('/api/list-bot-states');
+    const body = await res.json();
+    if (!body?.ok || !body.files?.length) return;
+    const opts = body.files.slice().reverse().map(f => `<option value="${f}">${f}</option>`).join('');
+    $('fileSel').innerHTML = '<option value="">— saved takes —</option>' + opts;
+    $('cmpSel').innerHTML = '<option value="">— pick a baseline take —</option>' + opts;
+    const want = new URLSearchParams(location.search).get('file');
+    if (want) { $('fileSel').value = want; $('fileSel').onchange({ target: { value: want } }); }
+  } catch { /* opened over file:// or a plain static server */ }
+})();
+
+addEventListener('resize', resize);
+$('legend').innerHTML = '<span class="muted">populates from whatever is on screen once a take is loaded</span>';
+resize();
+</script>
+</body>
+</html>

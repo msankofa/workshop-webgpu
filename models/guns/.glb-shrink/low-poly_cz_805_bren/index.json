@@ -1,0 +1,172 @@
+[
+  {
+    "timestamp": "2026-07-20T12:27:02.348Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-20T12-27-02-319Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-20T12:27:34.577Z",
+    "action": "restore",
+    "restoredFrom": "original.glb"
+  },
+  {
+    "timestamp": "2026-07-20T12:40:40.549Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-20T12-40-40-511Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-20T13:17:01.280Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-20T13-17-01-243Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-20T13:53:58.968Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-20T13-53-58-935Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-20T13:54:07.657Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-20T13-54-07-599Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-23T16:51:19.975Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-23T16-51-19-881Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-23T16:51:40.700Z",
+    "action": "compress",
+    "quality": 3,
+    "profile": {
+      "simplifyRatio": 0.00424,
+      "simplifyError": 0.02,
+      "textureEdge": 264
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-23T16-51-40-604Z-q3.glb"
+  },
+  {
+    "timestamp": "2026-07-23T16:51:51.900Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-23T16-51-51-826Z-balanced.glb"
+  },
+  {
+    "timestamp": "2026-07-23T16:51:58.535Z",
+    "action": "compress",
+    "quality": 100,
+    "profile": {
+      "simplifyRatio": 0.035,
+      "simplifyError": 0.01,
+      "textureEdge": 512
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54976,
+    "sourceTris": 10799,
+    "finalTris": 10434,
+    "runFile": "2026-07-23T16-51-58-469Z-sharpest.glb"
+  },
+  {
+    "timestamp": "2026-07-23T16:53:00.155Z",
+    "action": "compress",
+    "quality": 2,
+    "profile": {
+      "simplifyRatio": 0.0041600000000000005,
+      "simplifyError": 0.02,
+      "textureEdge": 261
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-23T16-53-00-072Z-q2.glb"
+  },
+  {
+    "timestamp": "2026-07-23T17:09:30.859Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 1708732,
+    "outputSize": 54952,
+    "sourceTris": 10799,
+    "finalTris": 10425,
+    "runFile": "2026-07-23T17-09-30-788Z-balanced.glb"
+  }
+]

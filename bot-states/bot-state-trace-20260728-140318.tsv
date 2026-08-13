@@ -1,0 +1,1357 @@
+t_ms	bot_id	team	code	changed_slots	x	z	yaw_deg	speed	moved	goal_dist	path_len	path_mode
+0	bot-520	alpha	P00r-4320	initial	-10.00	-21.85	90	0.29		0.60	1	grenade
+0	bot-536	alpha	P00r-3320	initial	-10.67	-20.75	79	0.00			0	
+0	bot-565	alpha	P00r-3310	initial	-13.57	-19.48	64	2.42		1.18	1	squad
+0	bot-629	bravo	D00r--000	initial	14.07	9.05	5	0.00		15.26	0	
+0	bot-656	alpha	P00r-4410	initial	-12.22	-20.94	53	0.00			0	
+0	bot-658	alpha	P00m-4420	initial	-16.74	-20.33	90	0.00			0	
+0	bot-664	bravo	D00r--000	initial	-7.87	23.33	281	0.00		3.65	0	
+0	bot-666	bravo	D00r--000	initial	14.67	9.27	16	0.00		8.49	0	
+0	bot-670	bravo	D00r--000	initial	14.00	3.25	21	0.00		4.35	0	
+0	bot-678	bravo	D00m--0A0	initial	15.55	16.17	12	0.00		5.34	0	
+0	bot-680	bravo	D00r--000	initial	-6.58	8.17	45	0.00		5.31	0	
+0	bot-683	bravo	S32r-3320	initial	1.77	9.89	98	4.73		12.58	3	seek
+0	bot-684	alpha	D00r--000	initial	-17.60	6.79	44	0.00		4.54	0	
+0	bot-685	bravo	H00r-4220	initial	-3.42	0.03	42	0.00		4.92	1	grenade
+0	bot-686	bravo	D00m--000	initial	-11.62	-10.00	344	0.00		6.45	0	
+0	bot-687	alpha	D00r--000	initial	-16.17	-12.49	66	0.00		3.09	0	
+0	bot-688	bravo	G00r-4322	initial	-19.45	-13.95	158	0.00			0	
+0	bot-689	alpha	D00m--000	initial	23.82	23.91	253	0.00			0	
+0	bot-690	bravo	D00r--000	initial	-19.13	-17.71	25	0.00			0	
+0	bot-691	alpha	D00r--000	initial	10.14	-2.40	226	0.00		6.76	0	
+0	bot-692	bravo	D00r--000	initial	-2.57	-11.56	55	0.00		5.86	0	
+0	bot-693	bravo	D00m--000	initial	18.83	-24.07	96	0.00		3.74	0	
+0	bot-694	alpha	D00r--000	initial	23.84	23.32	42	0.00			0	
+0	bot-695	alpha	D00r--000	initial	11.29	-3.56	229	0.00		6.98	0	
+0	bot-696	bravo	S00r-3320	initial	-19.20	4.30	225	4.14		4.60	1	grenade
+0	bot-697	alpha	D00m--000	initial	14.63	-0.54	226	0.00		4.23	0	
+0	bot-698	bravo	S00r-3320	initial	-0.46	3.40	124	3.82		5.56	1	grenade
+0	bot-699	alpha	D00r--000	initial	-21.39	0.83	359	0.00		5.07	0	
+0	bot-700	bravo	E00r-2229	initial	0.69	17.32	60	4.14		5.37	1	grenade
+0	bot-701	alpha	D00r--000	initial	-0.64	-13.76	85	0.00		2.66	0	
+0	bot-702	alpha	D00r--000	initial	-1.11	5.61	126	0.00		6.91	0	
+0	bot-703	alpha	D00m--0A0	initial	-19.78	10.26	142	0.00		2.45	0	
+0	bot-704	alpha	D00r--000	initial	-1.46	4.04	359	0.00		4.95	0	
+0	bot-705	alpha	D00r--000	initial	-24.25	1.32	102	0.00		4.74	0	
+0	bot-706	bravo	T00m-4320	initial	-3.76	-1.00	42	0.00		1.09	1	medic
+0	bot-707	alpha	D00r--000	initial	-1.28	18.13	143	0.00		3.87	0	
+0	bot-708	bravo	S00r-4410	initial	-2.40	0.95	113	3.56		5.55	1	grenade
+0	bot-709	alpha	S00m-3320	initial	9.09	15.42	213	2.30		14.07	5	seek
+0	bot-710	alpha	A00r-4410	initial	5.94	19.91	244	0.00			0	
+0	bot-711	alpha	A00r-4410	initial	13.13	18.28	266	0.00			0	
+1	bot-700	bravo	E00r-2220	latches	0.62	17.25	64	5.46	0.10	6.91	1	flee
+1	bot-711	alpha	A00r-441G	latches	13.13	18.28	266	0.00	0.00		0	
+22	bot-700	bravo	E00r-2229	latches	0.68	17.31	58	4.14	0.09	5.38	1	grenade
+22	bot-711	alpha	A00r-4410	latches	13.13	18.28	266	0.00	0.00		0	
+37	bot-700	bravo	E00r-2220	latches	0.72	17.35	55	4.14	0.06	5.32	1	grenade
+37	bot-710	alpha	F00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+53	bot-683	bravo	S33r-3320	score	1.73	9.90	97	4.75	0.05	10.65	3	seek
+53	bot-685	bravo	H00r-4320	health	-3.42	0.03	47	0.00	0.00	4.92	1	grenade
+53	bot-700	bravo	E00r-2120	health	0.66	17.29	59	4.66	0.08	6.97	1	flee
+53	bot-710	alpha	A00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+70	bot-700	bravo	E00r-2129	latches	0.71	17.34	55	4.14	0.07	5.34	1	grenade
+86	bot-700	bravo	E00r-2120	latches	0.64	17.28	59	5.46	0.09	6.95	1	flee
+103	bot-700	bravo	E00r-2129	latches	0.69	17.33	54	4.14	0.07	5.36	1	grenade
+120	bot-700	bravo	E00r-2120	latches	0.63	17.26	59	5.46	0.09	6.93	1	flee
+120	bot-711	alpha	A00r-441G	latches	13.13	18.29	266	0.00	0.00		0	
+136	bot-700	bravo	E00r-2129	latches	0.68	17.31	54	4.14	0.07	5.38	1	grenade
+136	bot-711	alpha	A00r-4410	latches	13.13	18.29	266	0.00	0.00		0	
+153	bot-700	bravo	E00r-2120	latches	0.73	17.36	50	4.14	0.07	5.31	1	grenade
+153	bot-710	alpha	F00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+170	bot-683	bravo	S44rm3320	tier+score+element	1.75	9.90	98	4.73	0.02	11.12	3	seek
+170	bot-700	bravo	E00r-2020	health	0.67	17.30	55	4.63	0.08	6.98	1	flee
+170	bot-710	alpha	A00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+186	bot-700	bravo	E00r-2029	latches	0.71	17.35	50	4.14	0.07	5.69	1	grenade
+203	bot-700	bravo	E00r-2020	latches	0.65	17.29	55	5.46	0.09	6.96	1	flee
+220	bot-700	bravo	E00r-2029	latches	0.70	17.34	50	4.14	0.07	5.35	1	grenade
+236	bot-700	bravo	E00r-2020	latches	0.63	17.28	54	5.46	0.09	6.94	1	flee
+253	bot-700	bravo	E00r-2029	latches	0.68	17.33	50	4.14	0.07	5.37	1	grenade
+270	bot-700	bravo	E00r-2020	latches	0.73	17.37	46	4.14	0.07	5.30	1	grenade
+270	bot-710	alpha	F00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+270	bot-710	alpha	P00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+270	bot-700	bravo	D00r--000	state+ammo+packs	0.73	17.37	46	0.00	0.00	5.30	1	grenade
+270	bot-711	alpha	P00r-4410	state	13.13	18.29	266	0.00	0.00		0	
+287	bot-683	bravo	S46rm3320	score	1.77	9.89	98	4.73	0.02	9.16	3	seek
+287	bot-710	alpha	S00r-4410	state	5.94	19.91	244	0.00	0.00		0	
+336	bot-710	alpha	A00r-4410	state	5.82	19.91	257	2.36	0.12	5.78	1	seek
+353	bot-710	alpha	A00r-441G	latches	5.83	19.91	254	0.12	0.00		0	
+370	bot-685	bravo	S00r-4324	state+latches	-3.42	0.03	71	0.00	0.00	4.92	1	grenade
+486	bot-698	bravo	S46rm3320	tier+score+element	0.01	4.17	108	3.66	0.90	5.77	1	grenade
+588	bot-710	alpha	S00r-4410	state+latches	5.83	19.91	254	0.00	0.00		0	
+670	bot-698	bravo	P46rm3320	state	0.09	4.31	108	3.42	0.17	5.46	1	grenade
+693	bot-698	bravo	S46rm3320	state	0.14	4.28	112	3.42	0.06	34.43	0	
+704	bot-685	bravo	S00r-4424	health	-3.42	0.03	72	0.00	0.00		0	
+704	bot-698	bravo	P46rm3320	state	0.15	4.39	106	4.86	0.11	14.88	3	seek
+723	bot-698	bravo	S46rm3320	state	0.16	4.45	103	4.86	0.06	28.34	0	
+903	bot-708	bravo	S00r-4420	packs	-0.80	3.50	22	4.85	3.01	16.79	4	seek
+920	bot-708	bravo	S46rm4420	tier+score+element	-0.78	3.58	22	5.01	0.08	16.71	4	seek
+1003	bot-520	alpha	P00r-4320	tick	-9.99	-21.35	19	0.79	0.51	0.47	1	grenade
+1003	bot-536	alpha	P00r-3320	tick	-10.60	-20.07	5	0.09	0.69		0	
+1003	bot-565	alpha	P00r-3310	tick	-13.18	-19.19	55	2.40	0.49	4.09	1	squad
+1003	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+1003	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+1003	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	120	0.00	0.83		0	
+1003	bot-696	bravo	S00r-3320	tick	-20.23	2.83	141	4.07	1.80	32.26	4	seek
+1003	bot-706	bravo	T00m-4320	tick	-3.76	-1.00	328	0.00	0.00	1.09	1	medic
+1003	bot-709	alpha	S00m-3320	tick	6.85	15.24	232	2.08	2.25	12.83	5	seek
+1003	bot-710	alpha	A00r-4410	state	5.14	19.76	242	2.26	0.70	29.47	4	seek
+1020	bot-710	alpha	A00r-441G	latches	5.14	19.76	239	0.07	0.00		0	
+1253	bot-710	alpha	S00r-4410	state+latches	5.14	19.76	239	0.01	0.00		0	
+1270	bot-711	alpha	P00r-4410	tick	11.11	18.21	282	2.28	2.02	4.93	1	squad
+1287	bot-683	bravo	S46rm3320	tick	1.27	12.31	358	2.37	2.47	10.24	2	seek
+1337	bot-683	bravo	P46rm3320	state	1.27	12.39	358	2.37	0.08	10.16	2	seek
+1354	bot-683	bravo	S46rm3320	state	1.27	12.43	358	2.37	0.04	22.90	0	
+1387	bot-706	bravo	S00m-4320	state	-3.76	-1.00	356	0.00	0.00	1.09	1	medic
+1537	bot-696	bravo	A00r-3320	state	-18.86	3.69	57	2.07	1.62	30.64	4	seek
+1554	bot-710	alpha	A00r-4410	state	4.73	19.62	251	2.25	0.44	29.28	4	seek
+1571	bot-696	bravo	A00r-332G	latches	-18.86	3.69	56	0.11	0.00		0	
+1571	bot-710	alpha	A00r-441G	latches	4.73	19.62	248	0.00	0.00		0	
+1604	bot-698	bravo	A46rb3320	state+element	0.53	7.89	6	2.41	3.46	11.56	3	seek
+1621	bot-685	bravo	A00r-4420	state+latches	-3.43	0.03	2	0.00	0.01		0	
+1621	bot-709	alpha	A00m-3320	state	5.51	15.15	199	2.32	1.34	12.26	5	seek
+1638	bot-708	bravo	A46rb4420	state+element	-0.04	5.60	23	2.51	2.15	14.56	4	seek
+1805	bot-696	bravo	S00r-3320	state+latches	-18.86	3.69	56	0.00	0.00		0	
+1805	bot-710	alpha	S00r-4410	state+latches	4.73	19.62	248	0.00	0.00		0	
+2007	bot-520	alpha	P00r-4320	tick	-9.99	-20.33	347	1.13	1.02	1.21	1	grenade
+2007	bot-536	alpha	P00r-3320	tick	-10.55	-19.27	349	0.11	0.80		0	
+2007	bot-565	alpha	P00r-3310	tick	-11.40	-17.58	51	2.40	2.40	2.40	1	squad
+2007	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+2007	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+2007	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	204	0.00	0.83		0	
+2108	bot-696	bravo	A00r-3320	state	-18.49	3.89	61	2.17	0.43	27.85	3	seek
+2108	bot-710	alpha	A00r-4410	state	4.31	19.47	249	2.26	0.44	27.05	3	seek
+2123	bot-710	alpha	A00r-441G	latches	4.31	19.47	246	0.00	0.00		0	
+2140	bot-696	bravo	A00r-332G	latches	-18.49	3.89	56	0.11	0.00		0	
+2274	bot-711	alpha	P00r-4410	tick	8.79	18.15	250	2.25	2.32	2.63	1	squad
+2324	bot-698	bravo	F46rb3320	state	0.53	7.89	34	0.00	0.00		0	
+2324	bot-709	alpha	E00m-3220	state+health	5.51	15.15	214	0.00	0.00		0	
+2324	bot-710	alpha	A21r-441G	tier+score	4.31	19.47	246	0.00	0.00		0	
+2324	bot-711	alpha	P21r-4410	tier+score	8.68	18.15	249	2.29	0.11	2.52	1	squad
+2340	bot-685	bravo	A00r-442G	latches	-3.43	0.03	31	0.00	0.01		0	
+2340	bot-698	bravo	A46rb3320	state	0.53	7.89	34	0.00	0.00		0	
+2340	bot-706	bravo	S46mm4320	tier+score+element	-2.15	0.05	23	2.19	1.93	17.35	4	seek
+2340	bot-708	bravo	A46rm442G	element+latches	-0.04	5.61	30	0.00	0.01		0	
+2340	bot-709	alpha	E21m-3229	tier+score+latches	5.57	15.16	215	1.67	0.06	4.57	1	flee
+2357	bot-683	bravo	S46rm3320	tick	1.17	14.89	42	2.40	2.46	9.59	2	seek
+2374	bot-696	bravo	S00r-3320	state+latches	-18.49	3.89	56	0.00	0.00		0	
+2374	bot-710	alpha	S21r-4410	state+latches	4.31	19.47	246	0.00	0.00		0	
+2407	bot-698	bravo	A46rm332G	element+latches	0.53	7.89	35	0.00	0.00		0	
+2407	bot-709	alpha	E21m-322P	latches	5.68	15.18	215	1.67	0.11	4.46	1	flee
+2575	bot-685	bravo	S00r-4420	state+latches	-3.44	0.03	31	0.00	0.00		0	
+2575	bot-708	bravo	S46rm4424	state+latches	-0.04	5.61	30	0.00	0.00		0	
+2647	bot-683	bravo	S36r-3320	tier+element	1.15	15.59	45	2.42	0.70	9.09	2	seek
+2647	bot-698	bravo	S46rm3324	state+latches	0.53	7.89	35	0.00	0.00		0	
+2647	bot-709	alpha	E21m-3229	latches	6.43	15.33	215	5.14	0.77	3.69	1	flee
+2647	bot-710	alpha	A21r-4410	state	3.97	19.35	241	2.25	0.37	26.69	3	seek
+2664	bot-710	alpha	F21r-4410	state	3.97	19.35	237	0.00	0.00		0	
+2682	bot-696	bravo	S10r-3320	tier	-18.08	4.13	60	2.00	0.48	27.38	3	seek
+2682	bot-710	alpha	A21r-4410	state	3.97	19.35	235	0.06	0.00		0	
+2708	bot-710	alpha	A21r-441G	latches	3.97	19.35	235	0.00	0.00		0	
+2708	bot-712	bravo	P00r-0410	initial	-10.45	13.05	0	0.00			0	
+2725	bot-712	bravo	S37r-4410	state+tier+score+ammo	-10.45	13.05	0	0.00	0.00		0	
+2750	bot-712	bravo	A37r-4410	state	-10.41	13.01	4	2.46	0.05	16.09	4	seek
+2765	bot-710	alpha	A21r-4410	latches	3.97	19.35	239	0.00	0.00		0	
+2779	bot-711	alpha	S21r-4410	state	9.75	18.12	135	2.41	1.07	6.50	5	squad
+2802	bot-683	bravo	S35r-3320	score	1.13	15.97	32	2.44	0.38	8.84	2	seek
+2802	bot-698	bravo	S45rm3324	score	0.53	7.89	47	0.00	0.00		0	
+2802	bot-706	bravo	S45mm4320	score	-1.64	1.01	24	2.42	1.08	16.27	4	seek
+2802	bot-708	bravo	S45rm4424	score	-0.04	5.61	358	0.00	0.00		0	
+2802	bot-712	bravo	A36r-4410	score	-10.42	13.01	20	0.00	0.00		0	
+2837	bot-708	bravo	S45rm4420	latches	-0.03	5.63	359	1.37	0.02	9.91	4	seek
+2909	bot-698	bravo	S45rm3320	latches	0.55	7.91	45	1.32	0.03	7.53	4	seek
+2931	bot-683	bravo	S34r-3320	score	1.12	16.29	359	2.45	0.32	8.63	2	seek
+2931	bot-698	bravo	S44rm3320	score	0.56	7.93	47	1.33	0.03	7.50	4	seek
+2931	bot-706	bravo	S44mm4320	score	-1.51	1.30	24	2.44	0.31	15.95	4	seek
+2931	bot-708	bravo	S44rm4420	score	0.01	5.76	18	1.37	0.13	9.78	4	seek
+2931	bot-712	bravo	A35r-4410	score	-10.42	13.01	47	0.00	0.00		0	
+2975	bot-710	alpha	E21r-4410	state	3.97	19.35	246	0.00	0.00		0	
+2993	bot-710	alpha	E21r-4411	latches	4.00	19.39	239	1.56	0.05	3.68	1	flee
+3008	bot-520	alpha	P00r-4320	tick	-10.10	-19.17	345	1.18	1.17	2.31	1	grenade
+3008	bot-536	alpha	P00r-3320	tick	-10.53	-18.75	2	0.00	0.52		0	
+3008	bot-565	alpha	P00r-3310	tick	-11.31	-17.04	11	0.08	0.56		0	
+3008	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+3008	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+3008	bot-683	bravo	E34r-3320	state	1.12	16.45	358	2.45	0.15	8.53	2	seek
+3008	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	141	0.09	0.00		0	
+3022	bot-683	bravo	E34r-3321	latches	1.04	16.37	5	4.13	0.11	3.40	1	flee
+3022	bot-685	bravo	S44rm4420	tier+score+element	-3.04	0.76	41	2.38	0.83	16.22	5	seek
+3037	bot-683	bravo	E33r-3321	score	0.99	16.33	9	4.13	0.06	3.34	1	flee
+3037	bot-685	bravo	S33r-4420	tier+score+element	-3.02	0.79	41	2.38	0.04	16.19	5	seek
+3037	bot-698	bravo	S33r-3320	tier+score+element	0.65	8.05	47	1.32	0.14	7.36	4	seek
+3037	bot-706	bravo	S33m-4320	tier+score+element	-1.41	1.54	24	2.45	0.26	15.69	4	seek
+3037	bot-708	bravo	S33r-4420	tier+score+element	0.05	5.90	18	1.37	0.15	9.63	4	seek
+3037	bot-712	bravo	A34r-4410	score	-10.42	13.01	66	0.00	0.00		0	
+3154	bot-683	bravo	E32r-3321	score	0.64	16.00	39	4.19	0.48	2.85	1	flee
+3154	bot-685	bravo	S32r-4420	score	-2.89	1.04	41	2.41	0.28	15.91	5	seek
+3154	bot-698	bravo	S32r-3320	score	0.75	8.21	47	2.44	0.19	7.18	4	seek
+3154	bot-706	bravo	S32m-4320	score	-1.29	1.80	24	2.46	0.29	15.40	4	seek
+3154	bot-708	bravo	S32r-4420	score	0.13	6.16	18	2.48	0.27	9.36	4	seek
+3154	bot-712	bravo	A33r-4410	score	-10.42	13.01	66	0.00	0.00		0	
+3220	bot-696	bravo	A10r-3320	state	-17.11	4.70	55	2.18	1.13	26.26	3	seek
+3336	bot-709	alpha	E21m-3220	latches	9.74	15.99	215	0.00	3.38		0	
+3370	bot-710	alpha	P21r-4410	state+latches	4.76	20.19	225	3.90	1.10	2.58	1	muzzleRecovery
+3470	bot-710	alpha	A21r-4410	state	4.39	20.12	250	0.00	0.38	2.90	0	muzzleRecovery
+3570	bot-710	alpha	F21r-4410	state	4.39	20.12	225	0.00	0.00		0	
+3570	bot-710	alpha	F21r-3410	ammo	4.39	20.12	223	0.00	0.00		0	
+3570	bot-712	bravo	A34r-4410	score	-10.42	13.00	64	0.00	0.01		0	
+3586	bot-683	bravo	E33r-3220	score+health+latches	-0.78	14.68	43	4.82	1.93	7.29	1	flee
+3586	bot-685	bravo	S33r-4420	score	-2.38	1.96	42	2.45	1.06	14.88	5	seek
+3586	bot-698	bravo	S33r-3320	score	1.35	9.06	50	2.38	1.04	6.17	4	seek
+3586	bot-706	bravo	M33m-4320	state+score	-0.88	2.74	22	2.45	1.03	14.37	4	seek
+3586	bot-708	bravo	S33r-4420	score	0.44	7.18	18	2.42	1.06	8.30	4	seek
+3586	bot-710	alpha	A21r-3410	state	4.39	20.12	223	0.00	0.00		0	
+3603	bot-683	bravo	E33r-3229	latches	-0.83	14.62	43	4.94	0.08	7.20	1	flee
+3620	bot-709	alpha	E32m-3220	tier+score	9.75	15.99	215	0.03	0.01		0	
+3620	bot-710	alpha	A32r-3310	tier+score+health	4.39	20.12	224	0.00	0.00		0	
+3620	bot-711	alpha	S32r-4410	tier+score	7.80	18.11	257	2.23	1.95	21.15	3	seek
+3620	bot-712	bravo	F34r-4410	state	-10.42	13.00	64	0.00	0.00		0	
+3636	bot-712	bravo	A34r-4410	state	-10.42	13.00	64	0.00	0.00		0	
+3697	bot-710	alpha	F32r-3310	state	4.39	20.12	224	0.00	0.00		0	
+3697	bot-712	bravo	A35r-4410	score	-10.42	13.00	64	0.02	0.01		0	
+3712	bot-683	bravo	E44rm3129	tier+score+element+health	-1.22	14.24	44	5.00	0.54	6.66	1	flee
+3712	bot-685	bravo	S44rm4420	tier+score+element	-2.23	2.24	42	2.50	0.31	14.58	5	seek
+3712	bot-698	bravo	S44rm3320	tier+score+element	1.52	9.30	50	2.37	0.30	5.88	4	seek
+3712	bot-706	bravo	M44mm4320	tier+score+element	-1.15	3.57	345	6.15	0.87	11.11	3	medic
+3712	bot-708	bravo	S44rm4420	tier+score+element	0.56	7.46	18	2.41	0.30	7.99	3	seek
+3712	bot-710	alpha	A32r-3310	state	4.39	20.12	224	0.00	0.00		0	
+3712	bot-712	bravo	A34r-4410	score	-10.42	13.00	64	0.00	0.00		0	
+3725	bot-696	bravo	A10r-332G	latches	-17.12	4.70	54	0.00	0.01		0	
+3760	bot-710	alpha	D00r--000	state+tier+score+ammo+health+packs	4.39	20.12	224	0.00	0.00		0	
+3770	bot-666	bravo	D00r--000	tick	14.67	9.27	16	0.00	0.00	8.49	0	
+3770	bot-683	bravo	E44rm3120	latches	-1.34	14.14	44	5.05	0.16	6.93	2	flee
+3770	bot-696	bravo	S10r-3320	state+latches	-17.12	4.70	54	0.00	0.00		0	
+3770	bot-709	alpha	E36m-3120	score+health	9.75	15.99	215	0.00	0.00		0	
+3770	bot-711	alpha	E36r-4210	state+score+health	7.50	18.12	249	2.23	0.30		0	
+3770	bot-712	bravo	S34r-4410	state	-10.42	13.00	64	0.00	0.00		0	
+3788	bot-683	bravo	E44rm3129	latches	-1.29	14.22	44	5.07	0.09	6.84	2	flee
+3788	bot-696	bravo	P10r-3320	state	-17.10	4.71	55	1.18	0.02	26.53	3	seek
+3788	bot-711	alpha	E36r-4219	latches	7.62	18.23	249	5.21	0.17	6.89	1	flee
+3788	bot-712	bravo	P34r-4410	state	-10.41	13.00	66	0.93	0.01	15.87	2	seek
+3843	bot-709	alpha	H36m-3120	state	9.75	15.99	215	0.00	0.00		0	
+4022	bot-520	alpha	P00r-4320	tick	-10.11	-18.25	336	0.76	0.92	3.22	1	grenade
+4022	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.09		0	
+4022	bot-565	alpha	P00r-3310	tick	-11.60	-16.78	328	0.00	0.40		0	
+4022	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+4022	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+4022	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	137	0.00	0.83		0	
+4180	bot-696	bravo	P00r-3320	tier	-16.45	4.66	76	2.22	0.65	9.95	2	squad
+4180	bot-712	bravo	P34r-0410	ammo	-10.26	12.24	160	2.49	0.77	8.36	2	squad
+4215	bot-712	bravo	S44rm0410	state+tier+element	-10.26	12.24	160	2.49	0.00	8.36	2	squad
+4331	bot-688	bravo	S00r-4320	state+latches	-19.89	-14.65	160	0.00	0.00		0	
+4453	bot-709	alpha	H36m-3220	health	9.75	15.99	283	0.00	0.00		0	
+4490	bot-712	bravo	A44rm0410	state	-9.77	12.55	85	1.88	0.58	16.16	2	seek
+4632	bot-712	bravo	A44rm041G	latches	-9.77	12.55	67	0.00	0.01		0	
+4716	bot-685	bravo	S44rm4420	tick	-1.03	4.41	45	2.61	2.49	12.17	5	seek
+4716	bot-698	bravo	S44rm3320	tick	3.25	10.69	35	2.38	2.21	3.67	2	seek
+4716	bot-706	bravo	M44mm4320	tick	-2.36	9.48	4	5.85	6.03	7.75	1	medic
+4716	bot-708	bravo	S44rm4420	tick	1.78	9.44	64	2.35	2.33	5.76	2	seek
+4732	bot-712	bravo	A44rm441G	ammo	-9.77	12.55	67	0.00	0.00		0	
+4802	bot-683	bravo	E44rm3129	tick	1.66	18.50	71	5.18	5.20	1.97	2	flee
+4802	bot-711	alpha	E36r-4219	tick	11.30	21.83	251	5.21	5.15	1.74	1	flee
+4883	bot-712	bravo	S44rm4410	state+latches	-9.77	12.55	67	0.00	0.00		0	
+4983	bot-712	bravo	S45rm4410	score	-9.66	12.61	55	1.05	0.12	21.90	3	seek
+5003	bot-683	bravo	E45rm3029	score+health	2.54	18.89	69	5.10	0.96	1.02	1	flee
+5003	bot-685	bravo	S45rm4420	score	-0.68	5.03	46	2.47	0.71	11.49	5	seek
+5003	bot-698	bravo	S45rm3320	score	3.64	11.26	53	2.43	0.70	3.00	2	seek
+5003	bot-706	bravo	M45mm4320	score	-1.70	11.03	23	5.98	1.69	7.83	3	medic
+5003	bot-708	bravo	S45rm4420	score	2.39	9.73	20	2.33	0.68	5.36	2	seek
+5036	bot-520	alpha	P00r-4320	tick	-11.01	-17.86	306	0.88	0.98	3.63	1	grenade
+5036	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+5036	bot-565	alpha	P00r-3310	tick	-12.36	-16.35	301	0.00	0.87		0	
+5036	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+5036	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+5103	bot-711	alpha	P36r-4210	state+latches	12.37	22.87	247	0.00	1.48		0	
+5103	bot-683	bravo	D00r--000	state+tier+score+element+ammo+packs+latches	3.05	18.97	67	0.00	0.51	0.51	1	flee
+5103	bot-712	bravo	S47rm4410	score	-9.55	12.69	67	1.86	0.14	21.77	3	seek
+5123	bot-680	bravo	D00r--000	tick	-6.58	8.17	45	0.00	0.00	5.31	0	
+5123	bot-685	bravo	S47rm4420	score	-0.53	5.30	46	2.60	0.30	11.20	5	seek
+5123	bot-698	bravo	S47rm3320	score	3.81	11.50	55	2.49	0.29	2.72	2	seek
+5123	bot-706	bravo	M47mm4320	score	-1.43	11.67	23	4.64	0.69	8.52	2	medic
+5123	bot-708	bravo	S47rm4420	score	2.64	9.85	5	2.35	0.28	5.21	2	seek
+5123	bot-711	alpha	E36r-4210	state	12.37	22.87	247	0.20	0.00		0	
+5140	bot-706	bravo	S47mm4320	state	-1.43	11.67	23	4.64	0.00	8.52	2	medic
+5175	bot-712	bravo	A47rb4410	state+element	-9.46	12.75	67	1.93	0.10	21.67	3	seek
+5190	bot-696	bravo	P00r-3320	tick	-14.34	5.52	38	2.31	2.28	11.13	2	squad
+5206	bot-711	alpha	E36r-421G	latches	12.37	22.87	245	0.00	0.00		0	
+5206	bot-712	bravo	A47rm441G	element+latches	-9.46	12.75	65	0.00	0.00		0	
+5286	bot-712	bravo	A47rm041G	ammo	-9.46	12.74	65	0.00	0.00		0	
+5326	bot-709	alpha	H35m-3220	score	9.75	15.99	215	0.00	0.00		0	
+5326	bot-711	alpha	E35r-421G	score	12.37	22.87	245	0.00	0.00		0	
+5346	bot-688	bravo	S00r-4320	tick	-19.90	-15.10	162	2.39	0.45	3.00	2	seek
+5453	bot-711	alpha	E35r-4210	latches	12.37	22.86	245	0.00	0.00		0	
+5453	bot-712	bravo	S47rm0414	state+latches	-9.46	12.74	65	0.00	0.00		0	
+5504	bot-685	bravo	S47rm1420	ammo	-0.06	6.13	48	2.48	0.96	10.29	5	seek
+5554	bot-688	bravo	C00r-4320	state	-19.91	-15.56	158	2.40	0.46	2.58	2	seek
+5554	bot-709	alpha	H35m-3320	health	9.75	15.99	217	0.00	0.00		0	
+5573	bot-688	bravo	C00r-432I	latches	-19.92	-15.39	149	4.57	0.17	1.51	2	cover
+5637	bot-711	alpha	H35r-4210	state	12.37	22.86	245	0.00	0.00		0	
+5703	bot-712	bravo	S47rm0410	latches	-9.45	12.75	89	0.96	0.01	24.29	3	seek
+5726	bot-706	bravo	M47mm4320	state	-0.19	11.00	119	2.39	1.40	6.60	3	seek
+5820	bot-688	bravo	C00r-4322	latches	-19.94	-14.26	85	4.60	1.13	0.58	2	cover
+5840	bot-712	bravo	S47rm4410	ammo	-9.34	12.83	65	1.04	0.14	24.16	3	seek
+5873	bot-688	bravo	G00r-4322	state	-19.80	-14.17	76	4.54	0.17	0.42	1	cover
+6037	bot-520	alpha	P00r-4320	tick	-11.32	-17.14	346	0.94	0.79		0	
+6037	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+6037	bot-565	alpha	P00r-3310	tick	-13.85	-16.06	288	2.40	1.52	0.90	1	squad
+6037	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+6037	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+6054	bot-685	bravo	S47rmR420	ammo	0.61	7.29	30	2.42	1.34	9.02	5	seek
+6070	bot-712	bravo	A47rb4410	state+element	-9.07	13.01	65	1.87	0.33	23.83	3	seek
+6089	bot-711	alpha	H35r-421G	latches	12.37	22.86	228	0.00	0.00		0	
+6089	bot-712	bravo	A47rm441G	element+latches	-9.07	13.01	65	0.00	0.00		0	
+6128	bot-698	bravo	S47rm3320	tick	4.79	12.48	66	1.45	1.38	1.38	1	seek
+6128	bot-708	bravo	S47rm4420	tick	2.88	12.17	3	1.33	2.33	2.88	1	seek
+6197	bot-696	bravo	P00r-3320	tick	-12.14	6.50	84	2.40	2.41	11.20	2	squad
+6238	bot-709	alpha	M35m-3320	state	9.75	15.99	269	0.00	0.00		0	
+6323	bot-711	alpha	H35r-4210	latches	12.37	22.86	210	0.00	0.00		0	
+6323	bot-712	bravo	S47rm4414	state+latches	-9.07	13.00	65	0.00	0.01		0	
+6405	bot-712	bravo	S47rm0414	ammo	-9.07	13.00	80	0.00	0.00		0	
+6572	bot-685	bravo	S46rmR420	score	0.97	8.47	8	2.41	1.23	8.02	4	seek
+6572	bot-698	bravo	S46rm3320	score	5.35	12.74	66	1.35	0.61	0.77	1	seek
+6572	bot-706	bravo	M46mm4320	score	-3.62	9.39	256	4.62	3.79	8.39	2	medic
+6572	bot-708	bravo	S46rm4420	score	2.92	12.77	3	1.33	0.59	2.29	1	seek
+6572	bot-712	bravo	S46rm0410	score+latches	-9.05	13.01	89	0.95	0.02	23.82	3	seek
+6622	bot-709	alpha	M34m-3320	score	11.58	16.04	262	4.55	1.83	6.87	2	medic
+6622	bot-711	alpha	H34r-4210	score	12.37	22.86	197	0.00	0.00		0	
+6706	bot-685	bravo	S45rmR420	score	1.07	8.75	38	2.40	0.30	7.78	3	seek
+6706	bot-698	bravo	S45rm3320	score	5.51	12.81	66	1.36	0.19	0.59	1	seek
+6706	bot-706	bravo	M45mm4320	score	-4.21	9.24	256	4.58	0.61	7.78	2	medic
+6706	bot-708	bravo	S45rm4420	score	2.93	12.94	3	1.33	0.18	2.11	1	seek
+6706	bot-712	bravo	S45rm0410	score	-8.94	13.09	65	1.04	0.14	23.68	3	seek
+6756	bot-711	alpha	H34r-4310	health	12.37	22.86	208	0.00	0.00		0	
+6774	bot-709	alpha	M32m-3320	score	11.79	16.56	266	4.32	0.56	6.33	1	medic
+6774	bot-711	alpha	H32r-4310	score	12.37	22.86	209	0.00	0.00		0	
+6873	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	143	0.09	0.42		0	
+6873	bot-712	bravo	A45rm0410	state	-8.76	13.20	65	1.89	0.21	23.47	3	seek
+6890	bot-711	alpha	H32r-431G	latches	12.37	22.86	218	0.00	0.00		0	
+6890	bot-712	bravo	A45rm041G	latches	-8.76	13.20	65	0.00	0.00		0	
+6908	bot-696	bravo	P33r-3320	tier+score	-10.73	7.39	69	2.24	1.66	7.40	1	squad
+6940	bot-696	bravo	S45rm3320	state+tier+score+element	-10.73	7.39	69	2.24	0.00	7.40	1	squad
+6964	bot-712	bravo	A45rm441G	ammo	-8.76	13.18	65	0.16	0.02		0	
+7040	bot-520	alpha	P00r-4320	tick	-10.91	-16.22	25	1.09	1.01		0	
+7040	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+7040	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.27		0	
+7040	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+7040	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+7040	bot-709	alpha	S32m-3320	state	11.92	17.66	331	4.51	1.11	5.22	1	medic
+7124	bot-711	alpha	H32r-4310	latches	12.37	22.86	236	0.00	0.00		0	
+7124	bot-712	bravo	S45rm4410	state+latches	-8.76	13.18	65	0.00	0.00		0	
+7193	bot-708	bravo	A45rb4420	state+element	2.96	13.57	3	1.33	0.63	1.48	1	seek
+7193	bot-709	alpha	A32m-3320	state	11.95	17.31	293	2.40	0.36	14.35	4	seek
+7224	bot-696	bravo	S45rm3324	latches	-10.27	7.89	47	0.09	0.69		0	
+7324	bot-685	bravo	S45rm4420	ammo	2.29	9.56	56	2.36	1.46	6.31	3	seek
+7408	bot-712	bravo	A45rm4410	state	-8.47	13.37	65	1.98	0.34	23.14	3	seek
+7426	bot-711	alpha	A32r-4310	state	12.37	22.86	259	0.00	0.00		0	
+7458	bot-711	alpha	A32r-431G	latches	12.37	22.86	248	0.00	0.00		0	
+7458	bot-712	bravo	A45rm441G	latches	-8.47	13.36	65	0.39	0.00		0	
+7516	bot-712	bravo	A45rm041G	ammo	-8.47	13.36	65	0.01	0.00		0	
+7710	bot-698	bravo	S45rm3320	tick	6.12	12.73	153	1.14	0.61	0.60	1	seek
+7710	bot-706	bravo	M45mm4320	tick	-8.75	8.29	262	4.66	4.63	1.67	1	medic
+7710	bot-711	alpha	S32r-4310	state+latches	12.37	22.86	245	0.00	0.00		0	
+7710	bot-712	bravo	S45rm0410	state+latches	-8.47	13.36	65	0.00	0.00		0	
+7710	bot-713	alpha	P00r-0410	initial	16.05	20.05	0	0.00			0	
+7710	bot-714	bravo	P00r-0410	initial	16.05	8.05	0	0.00			0	
+7729	bot-713	alpha	S32r-4410	state+tier+score+ammo	16.05	20.05	0	0.00	0.00		0	
+7729	bot-714	bravo	S00r-4410	state+ammo	16.05	8.05	0	0.00	0.00		0	
+7753	bot-709	alpha	F32m-3320	state	11.95	17.31	247	0.00	0.00		0	
+7770	bot-709	alpha	P32m-3320	state	11.95	17.31	247	1.33	0.00		1	muzzleRecovery
+7793	bot-714	bravo	A00r-4410	state	16.03	8.19	345	2.37	0.14	10.17	4	seek
+7845	bot-706	bravo	T45mm4320	state	-9.30	8.25	268	4.66	0.55	1.13	1	medic
+7880	bot-685	bravo	S45rm1420	ammo	3.13	10.43	42	4.09	1.21	3.88	1	grenade
+7880	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	135	0.00	0.83		0	
+7901	bot-709	alpha	P32m-332G	latches	12.14	17.38	217	1.34	0.20		1	muzzleRecovery
+7916	bot-708	bravo	A45rm442G	element+latches	2.97	13.38	79	3.93	0.19	3.83	1	grenade
+7943	bot-711	alpha	A32r-4310	state	12.56	22.69	230	4.21	0.26	5.40	1	grenade
+7943	bot-712	bravo	A45rm0410	state	-8.23	13.50	57	2.06	0.28	22.87	3	seek
+7994	bot-685	bravo	S44rm1420	score	3.12	9.96	71	4.18	0.47	3.41	1	grenade
+7994	bot-696	bravo	S00r-3324	tier+score+element	-10.28	7.90	69	0.00	0.01		0	
+7994	bot-698	bravo	S44rm3320	score	5.54	12.52	217	3.57	0.62	2.67	1	grenade
+7994	bot-706	bravo	T00m-4320	tier+score+element	-9.31	8.26	310	0.00	0.02	1.13	1	medic
+7994	bot-708	bravo	A44rm442G	score	2.97	13.08	99	3.94	0.30	3.53	1	grenade
+7994	bot-709	alpha	A32m-332G	state	12.23	17.42	201	0.00	0.10		0	muzzleRecovery
+7994	bot-712	bravo	A44rm0410	score	-8.23	13.50	67	0.07	0.00		0	
+8010	bot-696	bravo	S44rm3324	tier+score+element	-10.28	7.90	68	0.00	0.00		0	
+8010	bot-706	bravo	T44mm4320	tier+score+element	-9.31	8.26	315	0.00	0.00	1.13	1	medic
+8044	bot-520	alpha	P00r-4320	tick	-10.23	-15.50	114	0.95	0.99		0	
+8044	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+8044	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+8044	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+8044	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+8083	bot-712	bravo	A44rm4410	ammo	-8.23	13.50	68	0.00	0.00		0	
+8096	bot-712	bravo	A44rm441G	latches	-8.27	13.46	70	4.23	0.05	5.73	1	grenade
+8111	bot-711	alpha	A32r-431G	latches	13.13	22.18	184	4.17	0.76	4.64	1	grenade
+8127	bot-711	alpha	A32r-4310	latches	13.18	22.13	179	4.17	0.07	4.57	1	grenade
+8127	bot-712	bravo	A44rm4410	latches	-8.36	13.37	78	4.25	0.13	5.59	1	grenade
+8144	bot-709	alpha	S32m-3320	state+latches	12.44	16.84	163	4.14	0.62	1.89	1	grenade
+8161	bot-708	bravo	S44rm4424	state+latches	2.99	12.48	138	3.95	0.60	2.94	1	grenade
+8194	bot-711	alpha	A32r-431G	latches	13.38	21.94	162	4.15	0.28	4.29	1	grenade
+8228	bot-712	bravo	A44rm441G	latches	-8.68	13.07	104	4.43	0.44	5.16	1	grenade
+8287	bot-685	bravo	S32r-1420	tier+score+element	3.15	8.77	145	4.11	1.19	3.32	1	grenade
+8287	bot-696	bravo	S00r-3324	tier+score+element	-10.55	7.73	34	4.32	0.32	5.36	1	grenade
+8287	bot-698	bravo	S32r-3320	tier+score+element	4.72	12.16	243	4.13	0.89	3.83	1	grenade
+8287	bot-706	bravo	T00m-4320	tier+score+element	-9.48	7.93	338	3.99	0.37	5.56	1	grenade
+8287	bot-708	bravo	S32r-4424	tier+score+element	3.02	11.92	165	3.94	0.56	4.01	1	grenade
+8287	bot-711	alpha	A32r-4310	latches	13.68	21.80	138	4.15	0.33	4.48	1	grenade
+8287	bot-712	bravo	A00r-441G	tier+score+element	-8.86	12.89	119	4.37	0.26	4.90	1	grenade
+8405	bot-708	bravo	S32r-4420	latches	3.14	11.48	165	3.88	0.46	3.55	1	grenade
+8450	bot-685	bravo	S32r-4420	ammo	3.54	8.22	145	4.10	0.67	2.65	1	grenade
+8470	bot-712	bravo	S00r-4410	state+latches	-9.37	12.40	161	4.60	0.71	4.20	1	grenade
+8646	bot-712	bravo	S00r-0410	ammo	-9.95	11.80	212	4.19	0.83	5.13	1	grenade
+8663	bot-706	bravo	S00m-4320	state	-10.08	6.83	246	2.79	1.26	5.24	1	grenade
+8736	bot-713	alpha	S32r-4410	tick	14.10	18.88	264	4.59	2.27	13.76	3	seek
+8748	bot-714	bravo	A00r-441G	latches	16.16	8.05	349	0.00	0.19		0	
+8798	bot-714	bravo	A00r-4410	latches	16.16	8.05	350	0.00	0.00		0	
+8891	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	204	0.13	0.83		0	
+9014	bot-685	bravo	S32r-1420	ammo	3.95	9.62	49	4.49	1.46	5.35	2	seek
+9047	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.24		0	
+9047	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+9047	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+9047	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+9047	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+9047	bot-711	alpha	F32r-4310	state	13.69	21.80	170	0.05	0.01		0	
+9047	bot-714	bravo	A00r-4310	health	16.16	8.05	350	0.00	0.00		0	
+9064	bot-685	bravo	S33r-1420	score	3.96	9.84	51	4.50	0.22	5.20	2	seek
+9064	bot-698	bravo	S33r-3320	score	6.93	12.66	153	4.35	2.26	0.62	1	seek
+9064	bot-708	bravo	S33r-4420	score	3.68	12.68	53	4.73	1.31	8.33	4	seek
+9064	bot-711	alpha	A32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9163	bot-696	bravo	S00r-3320	latches	-12.42	5.55	185	3.06	2.87	4.92	1	grenade
+9163	bot-709	alpha	S32m-3320	tick	9.65	15.65	257	2.22	3.03	5.45	4	seek
+9163	bot-711	alpha	F32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9163	bot-714	bravo	E00r-4210	state+health	16.16	8.04	350	0.00	0.00		0	
+9187	bot-685	bravo	S44rm1420	tier+score+element	3.98	10.41	56	4.62	0.56	4.85	2	seek
+9187	bot-698	bravo	S44rm3320	tier+score+element	6.97	12.33	169	1.10	0.34	0.50	1	seek
+9187	bot-708	bravo	S44rm4420	tier+score+element	3.77	13.26	21	4.75	0.59	7.90	4	seek
+9187	bot-711	alpha	A32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9187	bot-714	bravo	E00r-4219	latches	16.15	7.97	350	1.67	0.08	4.92	1	flee
+9209	bot-712	bravo	S00r-4410	ammo	-9.86	11.80	144	3.61	0.09	4.71	1	grenade
+9284	bot-711	alpha	F32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9284	bot-714	bravo	E00r-4119	health	16.15	7.81	350	1.65	0.16	4.76	1	flee
+9315	bot-685	bravo	S45rm1420	score	3.99	10.71	59	2.34	0.31	4.68	2	seek
+9315	bot-698	bravo	S45rm3320	score	6.86	12.25	195	1.10	0.14	0.37	1	seek
+9315	bot-708	bravo	S45rm4420	score	3.83	13.62	9	2.55	0.37	7.64	4	seek
+9315	bot-711	alpha	A32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9410	bot-711	alpha	F32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9410	bot-714	bravo	E00r-4019	health	16.14	7.46	350	5.12	0.35	4.41	1	flee
+9424	bot-685	bravo	S46rm1420	score	4.00	10.97	62	2.45	0.26	4.55	2	seek
+9424	bot-698	bravo	S46rm3320	score	6.76	12.22	217	1.02	0.10	0.73	1	seek
+9424	bot-708	bravo	S46rm4420	score	3.88	13.88	8	2.44	0.27	7.45	4	seek
+9424	bot-711	alpha	A32r-4310	state	13.69	21.80	170	0.00	0.00		0	
+9486	bot-709	alpha	A32m-3320	state	8.96	15.57	224	2.28	0.69	4.90	4	seek
+9503	bot-708	bravo	A46rb4420	state+element	3.90	14.03	21	2.52	0.15	7.35	4	seek
+9536	bot-711	alpha	F32r-4310	state	13.69	21.80	171	0.00	0.00		0	
+9536	bot-711	alpha	P32r-4310	state	13.69	21.80	171	0.00	0.00		0	
+9536	bot-714	bravo	D00r--000	state+ammo+packs+latches	16.13	6.90	351	0.00	0.56	3.85	1	flee
+9553	bot-678	bravo	D00m--0A0	tick	15.55	16.17	12	0.00	0.00	5.34	0	
+9553	bot-685	bravo	S48rm1420	score	4.02	11.29	66	2.44	0.32	4.40	2	seek
+9553	bot-698	bravo	S48rm3320	score	6.62	12.19	244	1.11	0.14	0.59	1	seek
+9553	bot-708	bravo	A48rb4420	score	3.90	14.03	38	0.00	0.00		0	
+9553	bot-711	alpha	S32r-4310	state	13.69	21.80	171	0.00	0.00		0	
+9570	bot-685	bravo	S48rm4420	ammo	4.02	11.33	66	2.44	0.04	4.38	2	seek
+9570	bot-711	alpha	P32r-4310	state	13.68	21.78	174	1.25	0.02	15.11	3	seek
+9670	bot-706	bravo	S00m-4320	tick	-7.24	4.60	128	3.66	3.61	4.16	1	grenade
+9742	bot-713	alpha	S32r-4410	tick	11.80	18.75	261	2.18	2.31	11.54	3	seek
+9770	bot-712	bravo	S00r-0410	ammo	-8.51	13.07	46	3.13	1.85	5.68	1	grenade
+9903	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	125	0.00	0.00		0	
+9903	bot-708	bravo	F48rb4420	state	3.90	14.03	73	0.00	0.00		0	
+9919	bot-708	bravo	A48rb4420	state	3.90	14.03	73	0.00	0.00		0	
+9953	bot-709	alpha	F32m-3320	state	8.96	15.57	253	0.00	0.00		0	
+9972	bot-709	alpha	A32m-3320	state	8.96	15.57	253	0.00	0.00		0	
+10064	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+10064	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+10064	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+10064	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+10064	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+10104	bot-709	alpha	F32m-3320	state	8.96	15.57	253	0.00	0.00		0	
+10104	bot-712	bravo	S32r-0410	tier+score	-7.70	13.84	45	3.48	1.11	4.57	1	grenade
+10123	bot-685	bravo	S48rm1420	ammo	4.44	11.85	72	1.34	0.66	3.81	1	seek
+10123	bot-709	alpha	P32m-3320	state	8.96	15.57	253	2.27	0.00		1	muzzleRecovery
+10168	bot-696	bravo	S00r-3320	tick	-10.06	3.18	135	4.08	3.34	4.41	1	grenade
+10185	bot-709	alpha	A32m-3320	state	8.99	15.71	270	0.00	0.15		0	muzzleRecovery
+10244	bot-708	bravo	F48rb4420	state	3.90	14.03	72	0.00	0.00		0	
+10244	bot-708	bravo	F48rb3420	ammo	3.90	14.03	72	0.00	0.00		1	muzzleRecovery
+10263	bot-708	bravo	P48rb3424	state+latches	3.90	14.03	72	2.45	0.00		1	muzzleRecovery
+10263	bot-709	alpha	F32m-3320	state	8.99	15.71	252	0.00	0.00		0	
+10278	bot-709	alpha	A32m-3320	state	8.99	15.71	252	0.00	0.00		0	
+10320	bot-712	bravo	S32r-4410	ammo	-7.12	14.41	45	3.94	0.81	5.17	1	grenade
+10336	bot-708	bravo	A48rb3420	state+latches	3.96	14.21	52	0.00	0.19		0	muzzleRecovery
+10419	bot-709	alpha	F32m-3320	state	8.99	15.71	253	0.00	0.00		0	
+10419	bot-709	alpha	F32m-2320	ammo	8.99	15.71	253	0.00	0.00		0	
+10419	bot-712	bravo	S33r-4410	score	-6.84	14.68	45	3.98	0.40	4.78	1	grenade
+10437	bot-685	bravo	S49rm1420	score	4.82	12.04	56	1.43	0.43	3.38	1	seek
+10437	bot-698	bravo	S49rm3320	score	5.66	12.09	267	1.19	0.96	0.61	1	seek
+10437	bot-708	bravo	A49rb3320	score+health	3.96	14.22	73	0.00	0.00		0	
+10437	bot-709	alpha	A32m-2320	state	8.99	15.71	253	0.00	0.00		0	
+10569	bot-709	alpha	F32m-2320	state	8.99	15.71	253	0.00	0.00		0	
+10569	bot-712	bravo	S34r-4410	score	-6.41	15.11	45	4.08	0.61	5.59	1	grenade
+10587	bot-708	bravo	E49rb3220	state+health	3.96	14.22	73	0.00	0.00		0	
+10587	bot-709	alpha	E33m-2120	state+score+health	8.99	15.71	253	0.00	0.00		0	
+10587	bot-711	alpha	P33r-4310	score	13.62	19.81	199	2.26	1.97	7.96	2	squad
+10587	bot-713	alpha	S33r-4410	score	9.86	18.63	245	2.39	1.94	9.71	3	seek
+10603	bot-708	bravo	E49rb3229	latches	3.93	14.07	73	4.59	0.15	6.65	2	flee
+10603	bot-709	alpha	E33m-2129	latches	9.16	15.73	252	5.12	0.17	6.87	2	flee
+10621	bot-709	alpha	E33m-212P	latches	9.25	15.74	252	5.17	0.09	6.80	2	flee
+10637	bot-708	bravo	E49rm322P	element+latches	3.89	13.91	72	4.63	0.16	6.52	2	flee
+10687	bot-685	bravo	S49rm4420	ammo	5.06	12.29	58	1.36	0.34	3.09	1	seek
+10687	bot-706	bravo	S00m-4320	tick	-4.96	2.64	136	3.36	3.01	5.73	1	grenade
+10854	bot-709	alpha	E33m-2129	latches	10.45	15.87	252	5.17	1.21	5.90	2	flee
+10854	bot-711	alpha	A33r-4310	state	13.12	19.60	253	2.20	0.54	4.48	1	squad
+10854	bot-712	bravo	A34r-4410	state	-5.63	15.88	45	4.13	1.10	4.49	1	grenade
+10870	bot-712	bravo	A34r-0410	ammo	-5.53	15.98	45	4.13	0.14	4.35	1	grenade
+10887	bot-708	bravo	E49rm3229	latches	3.64	12.76	72	4.84	1.18	5.60	2	flee
+10904	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	152	0.00	0.83		0	
+10904	bot-706	bravo	M00m-4320	state	-4.54	2.84	110	4.78	0.46	17.72	3	seek
+10920	bot-713	alpha	A33r-4410	state	9.12	18.59	243	2.34	0.75	9.02	3	seek
+11073	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+11073	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+11073	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+11073	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+11073	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+11073	bot-688	bravo	S00r-4320	state+latches	-19.89	-14.65	164	0.00	0.00		0	
+11172	bot-696	bravo	S00r-3320	tick	-7.52	0.64	135	2.22	3.59	5.06	1	grenade
+11238	bot-685	bravo	S49rm1420	ammo	5.62	12.22	71	1.37	0.57	2.57	1	seek
+11255	bot-706	bravo	M44mm4320	tier+score+element	-2.53	4.37	55	6.90	2.53	8.90	4	medic
+11425	bot-706	bravo	M46mm4320	score	-1.61	5.03	55	6.17	1.13	7.80	4	medic
+11425	bot-712	bravo	A34r-4410	ammo	-5.21	16.29	81	0.00	0.45		0	
+11441	bot-698	bravo	S49rm3320	tick	6.36	12.99	36	1.36	1.14	1.19	1	seek
+11441	bot-706	bravo	M48mm4320	score	-1.53	5.08	55	6.05	0.09	7.71	4	medic
+11456	bot-706	bravo	M49mm4320	score	-1.46	5.13	55	6.02	0.09	7.63	4	medic
+11472	bot-712	bravo	A35r-4410	score	-5.21	16.29	81	0.00	0.00		0	
+11690	bot-713	alpha	F33r-4410	state	9.12	18.59	261	0.00	0.00		0	
+11707	bot-712	bravo	A36r-4310	score+health	-5.21	16.29	81	0.00	0.00		0	
+11707	bot-713	alpha	A33r-4410	state	9.12	18.59	261	0.00	0.00		0	
+11773	bot-709	alpha	E00m-2129	tier+score	13.52	18.86	252	5.14	4.28	1.77	1	flee
+11773	bot-711	alpha	A00r-4310	tier+score	13.12	19.60	260	0.00	0.01		0	
+11773	bot-713	alpha	A00r-4410	tier+score	9.12	18.59	261	0.00	0.00		0	
+11790	bot-685	bravo	S49rm4420	ammo	6.38	12.16	62	1.36	0.76	1.89	1	seek
+11810	bot-711	alpha	F00r-4310	state	13.12	19.60	260	0.00	0.00		0	
+11810	bot-711	alpha	F00r-3310	ammo	13.12	19.60	260	0.00	0.00		0	
+11810	bot-712	bravo	E37r-4210	state+score+health	-5.21	16.29	81	0.00	0.00		0	
+11827	bot-711	alpha	A00r-3310	state	13.12	19.60	260	0.00	0.00		0	
+11827	bot-712	bravo	E37r-4219	latches	-5.25	16.25	81	1.56	0.06	7.35	1	flee
+11847	bot-713	alpha	F00r-4410	state	9.12	18.59	261	0.00	0.00		0	
+11867	bot-713	alpha	A00r-4410	state	9.12	18.59	261	0.00	0.00		0	
+11907	bot-708	bravo	E49rm3229	tick	0.54	9.85	72	5.06	4.25	1.52	1	flee
+11927	bot-711	alpha	F00r-3310	state	13.13	19.60	260	0.00	0.00		0	
+11927	bot-712	bravo	E38r-4119	score+health	-5.36	16.14	80	1.55	0.15	7.20	1	flee
+11949	bot-711	alpha	A00r-3310	state	13.13	19.60	259	0.00	0.00		0	
+11971	bot-713	alpha	A00r-441G	latches	9.12	18.59	260	0.00	0.00		0	
+11987	bot-712	bravo	E38r-011P	ammo+latches	-5.42	16.08	80	1.55	0.09	7.11	1	flee
+12006	bot-712	bravo	E38r-0119	latches	-5.44	16.06	79	1.55	0.03	7.08	1	flee
+12027	bot-706	bravo	T49mm4320	state	0.78	7.33	32	6.08	3.14	2.52	1	medic
+12027	bot-708	bravo	E49rm3329	health	-0.04	9.73	72	4.95	0.60	0.93	1	flee
+12044	bot-711	alpha	F00r-3310	state	13.13	19.60	259	0.00	0.00		0	
+12044	bot-712	bravo	E39r-0019	score+health	-5.52	15.98	79	4.59	0.11	6.97	1	flee
+12065	bot-711	alpha	A00r-3310	state	13.13	19.60	259	0.00	0.00		0	
+12079	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+12079	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+12079	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+12079	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+12079	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+12079	bot-688	bravo	S00r-4320	tick	-19.90	-15.06	162	2.39	0.41	3.04	2	seek
+12079	bot-706	bravo	M49mm4320	state	0.78	7.34	46	0.00	0.00	2.51	1	medic
+12125	bot-711	alpha	A00r-331G	latches	13.13	19.60	259	0.00	0.00		0	
+12141	bot-709	alpha	E00m-2120	latches	14.24	20.31	257	0.00	1.62		0	
+12175	bot-696	bravo	S00r-3320	tick	-5.41	2.42	47	2.40	2.76	21.72	3	seek
+12192	bot-708	bravo	E49rm3320	latches	-0.68	9.61	72	0.01	0.65		0	
+12209	bot-712	bravo	E49rb0019	tier+element	-6.08	15.42	77	4.91	0.79	6.18	1	flee
+12209	bot-713	alpha	S00r-4410	state+latches	9.12	18.59	260	0.00	0.00		0	
+12227	bot-706	bravo	T49mm4320	state	0.71	8.19	9	5.96	0.86	1.66	1	medic
+12227	bot-709	alpha	E00m-212G	latches	14.24	20.31	257	0.00	0.00		0	
+12227	bot-712	bravo	E49rm001P	element+latches	-6.14	15.35	77	4.91	0.09	6.09	1	flee
+12309	bot-688	bravo	C00r-4320	state	-19.91	-15.57	158	2.40	0.51	2.57	2	seek
+12326	bot-688	bravo	C00r-432I	latches	-19.92	-15.42	150	4.57	0.15	1.54	2	cover
+12342	bot-685	bravo	S49rm1420	ammo	7.13	12.29	81	1.36	0.77	1.19	1	seek
+12359	bot-711	alpha	S00r-3310	state+latches	13.13	19.60	259	0.00	0.00		0	
+12409	bot-706	bravo	M49mm4320	state	0.71	8.19	37	0.00	0.00	1.66	1	medic
+12442	bot-698	bravo	S49rm3320	tick	7.54	12.95	177	1.32	1.19	0.90	1	seek
+12460	bot-709	alpha	E00m-2120	latches	14.24	20.31	257	0.00	0.00		0	
+12460	bot-712	bravo	E49rm0019	latches	-6.97	14.52	77	5.06	1.17	4.92	1	flee
+12543	bot-712	bravo	E49rm4019	ammo	-7.27	14.22	77	5.11	0.42	4.49	1	flee
+12559	bot-688	bravo	C00r-4322	latches	-19.94	-14.35	89	4.59	1.07	0.63	2	cover
+12627	bot-688	bravo	G00r-4322	state	-19.81	-14.19	76	4.55	0.20	0.43	1	cover
+12643	bot-709	alpha	H00m-2120	state	14.24	20.31	257	0.00	0.00		0	
+12693	bot-708	bravo	H49rm3320	state	-0.68	9.61	72	0.00	0.00		0	
+12693	bot-709	alpha	H00m-2220	health	14.24	20.31	274	0.00	0.00		0	
+12727	bot-715	bravo	P00m-0420	initial	-16.95	1.05	0	0.00			0	
+12743	bot-715	bravo	S21m-4420	state+tier+score+ammo	-16.95	1.05	0	0.00	0.00		0	
+12777	bot-712	bravo	E00r-4019	tier+score+element	-8.13	13.36	77	5.25	1.22	3.27	1	flee
+12905	bot-685	bravo	S49rm4420	ammo	7.86	12.33	45	1.80	0.73	0.99	1	seek
+12939	bot-696	bravo	S49rm3320	tier+score+element	-4.65	4.14	25	2.46	1.88	19.87	3	seek
+13069	bot-708	bravo	S49rm3320	state	-0.68	9.61	15	0.00	0.00		0	
+13086	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+13086	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+13086	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+13086	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+13086	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+13103	bot-712	bravo	E00r-0019	ammo	-9.35	12.13	77	5.22	1.73	1.54	1	flee
+13119	bot-685	bravo	S48rm4420	score	8.14	12.45	35	1.38	0.30	0.73	1	seek
+13119	bot-696	bravo	S47rm3320	score	-4.46	4.54	25	2.45	0.44	19.44	3	seek
+13119	bot-698	bravo	S48rm3320	score	7.15	13.00	250	1.13	0.40	2.76	1	seek
+13119	bot-706	bravo	M47mm4320	score	-1.58	11.35	285	5.45	3.90	7.81	1	medic
+13186	bot-712	bravo	E47rm0019	tier+score+element	-9.66	11.83	77	5.25	0.44	1.11	1	flee
+13219	bot-713	alpha	S00r-4410	tick	7.01	18.60	263	2.23	2.11	13.55	2	seek
+13369	bot-711	alpha	S00r-3310	tick	11.13	19.45	251	2.23	2.00	19.18	3	seek
+13369	bot-712	bravo	E47rm0010	latches	-10.22	11.28	77	0.00	0.78		0	
+13436	bot-685	bravo	S47rm4420	score	8.42	12.75	20	0.11	0.41		0	
+13436	bot-696	bravo	S46rm3320	score	-4.15	5.24	25	2.44	0.77	18.67	3	seek
+13436	bot-698	bravo	S47rm3320	score	6.80	12.92	249	1.13	0.35	2.41	1	seek
+13436	bot-706	bravo	M46mm4320	score	-3.40	11.51	275	6.03	1.83	5.98	1	medic
+13436	bot-708	bravo	S48rm3320	score	-0.01	9.69	56	2.45	0.67	8.09	3	seek
+13436	bot-712	bravo	E46rm0010	score	-10.22	11.28	77	0.00	0.00		0	
+13469	bot-685	bravo	S47rm1420	ammo	8.38	12.76	13	1.23	0.04	1.36	1	seek
+13586	bot-685	bravo	S46rm1420	score	8.24	12.79	349	1.22	0.14	1.22	1	seek
+13586	bot-696	bravo	S45rm3320	score	-4.00	5.58	51	2.44	0.37	18.31	3	seek
+13586	bot-698	bravo	S46rm3320	score	6.64	12.86	249	1.13	0.17	2.24	1	seek
+13586	bot-706	bravo	M45mm4320	score	-4.31	11.48	266	6.07	0.91	5.91	1	medic
+13586	bot-708	bravo	S47rm3320	score	0.35	9.73	51	2.40	0.36	7.80	3	seek
+13586	bot-712	bravo	E45rm0010	score	-10.22	11.28	77	0.00	0.00		0	
+13636	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	142	0.09	0.43		0	
+13653	bot-712	bravo	E45rm4010	ammo	-10.22	11.28	77	0.00	0.00		0	
+13703	bot-709	alpha	H00m-2220	tick	14.24	20.31	243	0.00	0.00		0	
+13753	bot-715	bravo	S21m-4420	tick	-16.96	0.61	147	2.40	0.44	18.67	4	seek
+13803	bot-709	alpha	H00m-2320	health	14.24	20.31	235	0.00	0.00		0	
+13869	bot-712	bravo	H45rm4010	state	-10.22	11.28	77	0.00	0.00		0	
+14020	bot-685	bravo	S46rm4420	ammo	7.75	12.91	281	1.08	0.51	0.71	1	seek
+14086	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+14086	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+14086	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+14086	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+14086	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+14219	bot-712	bravo	H45rm0010	ammo	-10.22	11.28	106	0.00	0.00		0	
+14219	bot-713	alpha	S00r-4410	tick	4.71	18.59	267	2.36	2.30	11.27	2	seek
+14253	bot-715	bravo	S00m-4420	tier+score	-16.97	-0.60	187	2.43	1.21	17.47	4	seek
+14269	bot-698	bravo	S47rm3320	score	5.93	12.58	249	1.14	0.76	1.48	1	seek
+14369	bot-711	alpha	S00r-3310	tick	8.77	19.31	253	2.36	2.37	16.92	3	seek
+14386	bot-712	bravo	H45rb0010	element	-10.22	11.28	119	0.00	0.00		0	
+14386	bot-713	alpha	A00r-4410	state	4.36	18.59	269	2.36	0.35	10.92	2	seek
+14403	bot-712	bravo	H45rm001G	element+latches	-10.22	11.28	121	0.00	0.00		0	
+14403	bot-713	alpha	A00r-441G	latches	4.36	18.59	266	0.08	0.00		0	
+14469	bot-696	bravo	S44rm3320	score	-3.10	7.55	49	2.41	2.16	16.19	3	seek
+14469	bot-698	bravo	S46rm3320	score	5.72	12.51	249	1.15	0.22	1.26	1	seek
+14469	bot-706	bravo	M44mm4320	score	-8.86	11.16	262	4.62	4.57	1.36	1	medic
+14469	bot-708	bravo	S46rm3320	score	2.39	9.97	83	2.34	2.06	6.26	3	seek
+14469	bot-712	bravo	H44rm001G	score	-10.22	11.28	124	0.00	0.00		0	
+14486	bot-709	alpha	S00m-2320	state	14.24	20.31	221	0.00	0.00		0	
+14503	bot-706	bravo	T44mm4320	state	-8.94	11.15	261	4.72	0.08	1.28	1	medic
+14503	bot-712	bravo	H44rm011G	health	-10.22	11.28	121	0.00	0.00		0	
+14586	bot-685	bravo	P46rm1420	state+ammo	7.26	12.81	246	0.00	0.50		0	
+14602	bot-685	bravo	S46rm1420	state	7.26	12.81	249	0.00	0.00	30.73	0	
+14636	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	135	0.00	0.83		0	
+14636	bot-712	bravo	H44rm0110	latches	-10.22	11.28	111	0.00	0.00		0	
+14636	bot-713	alpha	S00r-4410	state+latches	4.36	18.59	266	0.00	0.00		0	
+14703	bot-685	bravo	S45rm1420	score	7.13	12.83	273	1.16	0.13	11.48	5	seek
+14703	bot-696	bravo	S33r-3320	tier+score+element	-2.87	8.05	28	2.37	0.56	15.65	3	seek
+14703	bot-698	bravo	S45rm3320	score	5.47	12.41	249	1.16	0.27	0.99	1	seek
+14703	bot-706	bravo	T33m-4320	tier+score+element	-8.95	11.15	205	0.00	0.01	1.28	1	medic
+14703	bot-708	bravo	S45rm3320	score	2.79	10.20	62	2.35	0.46	5.84	2	seek
+14703	bot-712	bravo	H33r-0110	tier+score+element	-10.22	11.28	106	0.00	0.00		0	
+14786	bot-712	bravo	H33r-4110	ammo	-10.22	11.28	99	0.00	0.00		0	
+14819	bot-685	bravo	S44rm1420	score	6.99	12.84	298	1.16	0.13	11.58	5	seek
+14819	bot-696	bravo	S32r-3320	score	-2.76	8.31	25	2.38	0.28	15.38	3	seek
+14819	bot-698	bravo	S44rm3320	score	5.34	12.36	249	1.17	0.13	0.85	1	seek
+14819	bot-706	bravo	T32m-4320	score	-8.95	11.15	175	0.00	0.00	1.27	1	medic
+14819	bot-708	bravo	S44rm3320	score	2.86	10.47	32	2.38	0.28	5.58	2	seek
+14819	bot-712	bravo	H32r-4110	score	-10.22	11.28	97	0.00	0.00		0	
+14869	bot-713	alpha	A00r-4410	state	4.07	18.54	258	1.27	0.30	16.82	3	seek
+14919	bot-698	bravo	P44rm3320	state	5.25	12.33	249	1.17	0.10	0.76	1	seek
+14936	bot-685	bravo	S33r-1420	tier+score+element	6.75	12.86	328	2.13	0.25	11.76	5	seek
+14936	bot-696	bravo	S00r-3320	tier+score	-2.64	8.56	25	2.38	0.28	15.11	3	seek
+14936	bot-698	bravo	P33r-3320	tier+score+element	5.22	12.31	251	1.06	0.04	15.07	4	squad
+14936	bot-706	bravo	T00m-4320	tier+score	-8.95	11.15	145	0.00	0.00	1.27	1	medic
+14936	bot-708	bravo	S33r-3320	tier+score+element	2.93	10.74	15	2.41	0.28	5.32	2	seek
+14936	bot-712	bravo	H00r-4110	tier+score	-10.22	11.28	88	0.00	0.00		0	
+15003	bot-712	bravo	H00r-4210	health	-10.22	11.28	82	0.00	0.00		0	
+15053	bot-685	bravo	S32r-1420	score	6.50	12.88	358	2.14	0.25	11.94	5	seek
+15053	bot-698	bravo	P32r-3320	score	5.10	12.24	254	1.17	0.14	14.93	4	squad
+15053	bot-708	bravo	S32r-3320	score	3.00	11.01	15	2.46	0.28	5.06	2	seek
+15086	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+15086	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+15086	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+15086	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+15086	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+15136	bot-685	bravo	S32r-4420	ammo	6.32	12.91	19	2.17	0.18	12.07	5	seek
+15269	bot-715	bravo	S00m-4420	tick	-16.97	-3.10	180	2.45	2.51	14.98	4	seek
+15302	bot-706	bravo	T00m-4310	packs	-8.96	11.15	60	0.00	0.00	1.27	1	medic
+15353	bot-712	bravo	H00r-0210	ammo	-10.22	11.28	48	0.00	0.00		0	
+15369	bot-711	alpha	S00r-3310	tick	6.48	19.16	246	2.22	2.29	14.76	3	seek
+15419	bot-685	bravo	S00r-4420	tier+score	5.72	12.98	56	2.18	0.61	12.52	5	seek
+15419	bot-698	bravo	P00r-3320	tier+score	4.52	11.88	253	2.18	0.69	14.26	4	squad
+15419	bot-708	bravo	S00r-3320	tier+score	3.15	11.88	42	2.42	0.88	4.29	2	seek
+15486	bot-709	alpha	S00m-2320	tick	12.03	19.98	249	2.18	2.24	16.58	3	seek
+15503	bot-712	bravo	H00r-0310	health	-10.22	11.28	36	0.00	0.00		0	
+15652	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	203	0.09	0.83		0	
+15819	bot-712	bravo	S00r-0314	state+latches	-10.22	11.28	13	0.00	0.00		0	
+15869	bot-713	alpha	A00r-4410	tick	4.07	18.54	240	0.00	0.00		0	
+15919	bot-712	bravo	S00r-4314	ammo	-10.22	11.28	14	0.00	0.00		0	
+15936	bot-696	bravo	S00r-3320	tick	-1.71	10.75	40	2.48	2.38	12.81	2	seek
+16036	bot-711	alpha	A00r-3310	state	5.01	19.05	243	2.25	1.48	13.38	2	seek
+16103	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+16103	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+16103	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+16103	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+16103	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+16152	bot-713	alpha	F00r-4410	state	4.07	18.54	240	0.00	0.00		0	
+16169	bot-712	bravo	S00r-4414	health	-10.22	11.28	33	0.00	0.00		0	
+16169	bot-713	alpha	A00r-4410	state	4.07	18.54	240	0.00	0.00		0	
+16269	bot-711	alpha	A00r-331G	latches	5.01	19.05	241	0.00	0.00		0	
+16286	bot-715	bravo	S00m-4420	tick	-16.96	-5.56	189	2.40	2.46	12.54	4	seek
+16302	bot-706	bravo	T00m-4310	tick	-8.97	11.15	60	0.00	0.01	1.26	1	medic
+16302	bot-713	alpha	F00r-4410	state	4.07	18.54	240	0.00	0.00		0	
+16319	bot-713	alpha	A00r-4410	state	4.07	18.54	240	0.00	0.00		0	
+16386	bot-706	bravo	T00m-3310	ammo	-8.97	11.15	60	0.13	0.00	1.26	1	medic
+16436	bot-685	bravo	S00r-4420	tick	4.22	13.99	351	2.42	1.80	13.29	4	seek
+16436	bot-698	bravo	P00r-3320	tick	3.02	10.35	208	2.41	2.15	12.30	2	squad
+16436	bot-708	bravo	S00r-3320	tick	3.35	14.33	29	2.51	2.46	2.80	2	seek
+16453	bot-713	alpha	F00r-4410	state	4.07	18.54	240	0.00	0.00		0	
+16453	bot-713	alpha	F00r-3410	ammo	4.07	18.54	240	0.00	0.00		0	
+16469	bot-712	bravo	S00r-0414	ammo	-10.22	11.28	57	0.00	0.00		0	
+16469	bot-713	alpha	A00r-3410	state	4.07	18.54	240	0.00	0.00		0	
+16502	bot-709	alpha	S00m-2320	tick	9.73	19.63	257	2.41	2.32	14.31	3	seek
+16502	bot-711	alpha	S00r-3310	state+latches	5.01	19.05	241	0.00	0.00		0	
+16552	bot-706	bravo	P00m-3310	state	-8.97	11.15	60	2.32	0.00	1.26	1	muzzleRecovery
+16586	bot-706	bravo	T00m-3310	state	-8.94	11.22	52	0.00	0.08	1.28	0	muzzleRecovery
+16603	bot-713	alpha	F00r-3410	state	4.07	18.54	241	0.00	0.00		0	
+16619	bot-713	alpha	U00r-3410	state	4.07	18.54	241	0.00	0.00		0	
+16652	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	125	0.09	0.00		0	
+16686	bot-713	alpha	U00r-3420	packs	3.97	18.50	241	1.25	0.10	8.97	2	pursue
+16752	bot-711	alpha	A00r-3310	state	4.67	19.06	272	2.36	0.34	18.41	3	seek
+16853	bot-706	bravo	P00m-3310	state	-8.94	11.22	60	2.45	0.00	1.28	1	muzzleRecovery
+16869	bot-711	alpha	A00r-331G	latches	4.67	19.06	248	0.00	0.00		0	
+16936	bot-696	bravo	S00r-3320	tick	-0.85	13.01	21	2.35	2.42	10.56	2	seek
+16936	bot-706	bravo	T00m-3310	state	-9.12	11.12	82	0.00	0.20	1.11	0	muzzleRecovery
+16986	bot-706	bravo	U00m-3310	state	-9.12	11.12	69	0.00	0.00	1.11	0	
+17019	bot-712	bravo	S00r-4414	ammo	-10.22	11.28	99	0.00	0.00		0	
+17103	bot-711	alpha	A00r-3310	latches	4.67	19.06	244	0.00	0.00		0	
+17119	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+17119	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+17119	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+17119	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+17119	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+17286	bot-715	bravo	S00m-4420	tick	-17.43	-7.83	201	2.42	2.32	10.23	3	seek
+17436	bot-712	bravo	A00r-4410	state+latches	-10.22	11.28	105	0.00	0.00		0	
+17453	bot-685	bravo	S00r-4420	tick	5.89	14.86	63	2.43	1.88	11.41	3	seek
+17453	bot-698	bravo	P00r-3320	tick	0.65	10.28	276	2.42	2.37	12.70	3	squad
+17453	bot-708	bravo	S00r-3320	tick	5.21	15.48	117	1.32	2.19	0.94	1	seek
+17486	bot-696	bravo	E00r-3320	state	-0.40	14.19	21	2.46	1.27	9.42	2	seek
+17503	bot-696	bravo	E00r-3321	latches	-0.50	14.08	29	4.47	0.15	3.52	1	flee
+17503	bot-709	alpha	S00m-2320	tick	7.40	19.27	244	2.28	2.36	12.04	3	seek
+17503	bot-711	alpha	F00r-3310	state	4.67	19.06	241	0.00	0.00		0	
+17503	bot-712	bravo	A21r-4410	tier+score	-10.22	11.28	88	0.00	0.00		0	
+17519	bot-696	bravo	E21r-3321	tier+score	-0.55	14.03	33	4.48	0.07	3.45	1	flee
+17519	bot-698	bravo	P33r-3320	tier+score	0.51	10.36	278	2.42	0.16	12.54	3	squad
+17519	bot-706	bravo	E21m-3210	state+tier+score+health	-7.62	12.16	59	3.38	1.83		0	
+17519	bot-711	alpha	A00r-3310	state	4.67	19.06	241	0.00	0.00		0	
+17536	bot-706	bravo	E21m-3219	latches	-7.74	12.04	59	5.24	0.17	6.86	1	flee
+17536	bot-713	alpha	A00r-3420	state	2.55	18.25	239	3.82	1.45	2.57	2	pursue
+17553	bot-698	bravo	P21r-3320	tier+score	0.44	10.40	279	2.42	0.08	12.46	3	squad
+17586	bot-712	bravo	A21r-0410	ammo	-10.22	11.28	71	0.00	0.00		0	
+17619	bot-711	alpha	F00r-3310	state	4.67	19.06	240	0.00	0.00		0	
+17619	bot-712	bravo	A32r-0410	tier+score	-10.22	11.28	64	0.00	0.00		0	
+17636	bot-696	bravo	E32r-3321	tier+score	-0.92	13.65	37	4.59	0.53	2.92	1	flee
+17636	bot-698	bravo	P32r-3320	tier+score	0.26	10.43	272	2.32	0.18	5.13	1	squad
+17636	bot-706	bravo	E32m-3119	tier+score+health	-8.10	11.66	58	5.22	0.52	6.34	1	flee
+17636	bot-711	alpha	A00r-3310	state	4.67	19.06	240	0.00	0.00		0	
+17652	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	152	0.00	0.83		0	
+17669	bot-706	bravo	E32m-2119	ammo	-8.22	11.53	58	5.20	0.17	6.16	1	muzzleRecovery
+17669	bot-713	alpha	A10r-3420	tier	2.55	18.25	217	0.00	0.00		0	
+17686	bot-706	bravo	E32m-2110	latches	-8.28	11.47	58	5.21	0.09	7.14	1	flee
+17703	bot-706	bravo	E32m-2119	latches	-8.35	11.42	58	5.67	0.09	7.05	1	flee
+17736	bot-711	alpha	F00r-3310	state	4.67	19.06	240	0.00	0.00		0	
+17736	bot-712	bravo	A33r-0410	score	-10.22	11.28	61	0.00	0.00		0	
+17752	bot-696	bravo	E33r-3321	score	-1.29	13.27	38	4.55	0.53	2.39	1	flee
+17752	bot-698	bravo	P33r-3320	score	0.01	10.33	242	2.30	0.27	4.86	1	squad
+17752	bot-706	bravo	E33m-2019	score+health	-8.54	11.24	58	5.17	0.26	6.79	1	flee
+17752	bot-711	alpha	A00r-3310	state	4.67	19.06	239	0.00	0.00		0	
+17803	bot-711	alpha	A00r-331G	latches	4.67	19.06	239	0.00	0.00		0	
+17819	bot-688	bravo	S00r-4320	state+latches	-19.89	-14.65	163	0.00	0.00		0	
+17819	bot-709	alpha	S21m-2320	tier+score	6.71	19.16	260	2.11	0.70	11.37	3	seek
+17819	bot-711	alpha	A21r-331G	tier+score	4.67	19.06	239	0.00	0.00		0	
+17819	bot-713	alpha	A21r-3320	tier+score+health	2.55	18.25	218	0.00	0.00		0	
+18052	bot-711	alpha	S21r-3310	state+latches	4.67	19.06	239	0.00	0.00		0	
+18119	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+18119	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+18119	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+18119	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+18119	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+18136	bot-706	bravo	E33m-2010	latches	-9.72	9.72	55	5.11	1.92	7.01	1	flee
+18152	bot-706	bravo	E33m-2019	latches	-9.78	9.66	55	5.09	0.09	6.92	1	flee
+18152	bot-712	bravo	A33r-4410	ammo	-10.22	11.28	61	0.00	0.00		0	
+18252	bot-696	bravo	A33r-3320	state+latches	-2.73	11.78	39	0.00	2.07		0	
+18302	bot-715	bravo	S00m-4420	tick	-18.20	-9.86	185	2.10	2.17	8.13	3	seek
+18319	bot-711	alpha	F21r-3310	state	4.31	18.98	236	2.31	0.37	17.67	3	seek
+18336	bot-711	alpha	A21r-3310	state	4.31	18.98	236	0.00	0.00		0	
+18336	bot-712	bravo	A33r-441G	latches	-10.22	11.28	61	0.00	0.00		0	
+18336	bot-713	alpha	F21r-3320	state	2.55	18.25	219	0.00	0.00		0	
+18352	bot-685	bravo	S34r-4420	tier+score	8.08	15.06	76	2.43	2.20	9.41	3	seek
+18352	bot-696	bravo	E44rb3220	state+tier+score+element+health	-2.73	11.78	39	0.00	0.00		0	
+18352	bot-698	bravo	S44rm3320	state+tier+score+element	-1.22	9.81	251	2.37	1.34	6.88	2	squad
+18352	bot-706	bravo	E44mb2019	tier+score+element	-10.47	8.91	54	4.94	1.02	5.91	1	flee
+18352	bot-708	bravo	S44rm3320	tier+score+element	6.26	15.17	87	1.33	1.10	0.48	1	seek
+18352	bot-711	alpha	A21r-331G	latches	4.31	18.98	236	0.00	0.00		0	
+18352	bot-712	bravo	A44rm441G	tier+score+element	-10.22	11.28	61	0.00	0.00		0	
+18352	bot-713	alpha	A21r-3320	state	2.55	18.25	219	0.19	0.00		0	
+18369	bot-696	bravo	E44rb3229	latches	-2.77	11.74	39	1.65	0.05	7.33	1	flee
+18419	bot-706	bravo	E44mb1019	ammo	-10.70	8.66	54	5.15	0.34	5.57	1	flee
+18419	bot-709	alpha	M32m-2320	state+tier+score	5.46	18.85	249	2.20	1.28	10.13	2	seek
+18419	bot-711	alpha	A32r-331G	tier+score	4.31	18.98	236	0.00	0.00		0	
+18419	bot-713	alpha	E32r-3220	state+tier+score+health	2.55	18.25	219	0.00	0.00		0	
+18436	bot-713	alpha	E32r-3229	latches	2.59	18.29	219	1.67	0.06	6.87	1	flee
+18502	bot-685	bravo	S35r-4420	score	8.43	15.14	76	2.46	0.36	9.06	3	seek
+18502	bot-696	bravo	E45rb3129	score+health	-2.92	11.59	39	1.64	0.22	7.12	1	flee
+18502	bot-698	bravo	S45rm3320	score	-0.82	9.83	208	2.41	0.40	7.32	2	seek
+18502	bot-706	bravo	E45mb1019	score	-10.98	8.35	54	5.10	0.42	5.14	1	flee
+18502	bot-708	bravo	S45rm3320	score	6.31	15.30	59	1.23	0.14	0.36	1	seek
+18502	bot-712	bravo	A45rm441G	score	-10.22	11.28	61	0.00	0.00		0	
+18569	bot-708	bravo	S45rm4320	ammo	6.26	15.33	52	1.22	0.06	0.75	1	seek
+18586	bot-709	alpha	T32m-2320	state	4.80	18.29	240	5.47	0.88	2.25	1	medic
+18586	bot-709	alpha	T32m-2310	packs	4.80	18.29	245	0.00	0.00	2.25	1	medic
+18586	bot-712	bravo	S45rm4410	state+latches	-10.22	11.28	61	0.00	0.00		0	
+18586	bot-713	alpha	E32r-3329	health	2.77	18.47	220	1.67	0.26	6.62	1	flee
+18602	bot-711	alpha	S32r-3310	state+latches	4.31	18.98	236	0.00	0.00		0	
+18652	bot-685	bravo	S36r-4420	score	8.79	15.23	63	2.41	0.36	8.72	3	seek
+18652	bot-696	bravo	E46rb3029	score+health	-3.30	11.21	40	5.09	0.53	6.58	1	flee
+18652	bot-698	bravo	S46rm3320	score	-0.46	9.86	169	2.41	0.36	7.12	2	seek
+18652	bot-706	bravo	E46mb1019	score	-11.50	7.79	53	5.08	0.76	4.38	1	flee
+18652	bot-708	bravo	S46rm4320	score	6.17	15.36	35	1.23	0.10	0.65	1	seek
+18652	bot-712	bravo	S46rm4410	score	-10.14	11.34	62	1.18	0.10	14.36	3	seek
+18702	bot-712	bravo	A46rb0410	state+element+ammo	-10.11	11.36	62	1.20	0.04	14.32	3	seek
+18719	bot-696	bravo	E46rb3020	latches	-3.54	10.97	40	5.10	0.34	6.95	1	flee
+18719	bot-709	alpha	M33m-2310	state+score	4.80	18.29	275	0.00	0.00	2.25	1	medic
+18719	bot-711	alpha	S33r-3310	score	4.14	19.01	234	1.32	0.18	20.35	3	seek
+18719	bot-713	alpha	E33r-3229	score+health	3.06	18.91	220	5.48	0.52	6.11	1	flee
+18736	bot-696	bravo	E46rb3029	latches	-3.60	10.91	40	5.11	0.08	6.87	1	flee
+18786	bot-713	alpha	E33r-2229	ammo	3.17	19.24	219	5.22	0.35	5.81	1	flee
+18805	bot-685	bravo	S35r-4420	score	9.14	15.32	56	2.41	0.37	8.37	3	seek
+18819	bot-688	bravo	S00r-4320	tick	-19.89	-15.05	150	2.39	0.40	9.75	3	seek
+18819	bot-709	alpha	T33m-2310	state	4.32	17.99	248	5.62	0.57	1.79	1	medic
+18886	bot-711	alpha	A33r-3310	state	3.90	18.99	223	2.25	0.24	20.15	3	seek
+18919	bot-709	alpha	M33m-2310	state	4.32	17.99	273	0.22	0.00	1.79	1	medic
+18936	bot-709	alpha	M44mm2310	tier+score+element	4.25	18.18	265	6.02	0.20	1.87	1	medic
+18936	bot-711	alpha	A44rm331G	tier+score+element+latches	3.90	18.99	233	0.00	0.00		0	
+18936	bot-713	alpha	E44rb2129	tier+score+element+health	3.44	19.97	219	5.39	0.79	5.13	1	flee
+18969	bot-712	bravo	A46rm041G	element+latches	-10.11	11.36	58	0.00	0.00		0	
+18986	bot-712	bravo	A46rb0410	element+latches	-10.11	11.36	61	0.00	0.00		0	
+19002	bot-709	alpha	M44mb2310	element	4.20	18.57	248	6.04	0.39	1.51	1	medic
+19019	bot-685	bravo	S34r-4420	score	9.65	15.44	54	2.42	0.52	7.89	3	seek
+19036	bot-706	bravo	E46mb1010	latches	-12.77	6.41	50	4.73	1.88	7.10	1	flee
+19036	bot-709	alpha	T44mb2310	state	4.27	18.62	243	6.08	0.09	1.51	1	medic
+19053	bot-688	bravo	C00r-4320	state	-19.89	-15.57	148	2.40	0.52	9.30	3	seek
+19053	bot-696	bravo	E46rb2029	ammo	-4.76	9.76	39	5.19	1.63	5.23	1	flee
+19053	bot-706	bravo	E46mb1019	latches	-12.83	6.36	50	4.68	0.08	7.02	1	flee
+19069	bot-688	bravo	C00r-432I	latches	-19.90	-15.42	142	4.57	0.15	1.53	2	cover
+19086	bot-709	alpha	M44mb2310	state	4.28	18.62	243	0.00	0.01	1.51	1	medic
+19119	bot-708	bravo	S46rm3320	ammo	5.83	15.33	333	1.39	0.34	1.24	1	seek
+19136	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+19136	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+19136	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+19136	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+19136	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+19152	bot-712	bravo	A46rm041G	element+latches	-10.11	11.36	62	0.00	0.00		0	
+19169	bot-706	bravo	E46mb4019	ammo	-13.23	5.98	50	4.73	0.55	6.47	1	flee
+19169	bot-709	alpha	M44mm231G	element+latches	4.49	19.18	238	6.34	0.60	1.30	1	medic
+19169	bot-711	alpha	S44rm3310	state+latches	3.84	19.06	233	0.00	0.10		0	
+19186	bot-696	bravo	E46rb2020	latches	-5.24	9.27	39	5.14	0.69	6.67	1	flee
+19202	bot-696	bravo	E46rb2029	latches	-5.30	9.21	40	5.22	0.08	6.58	1	flee
+19202	bot-709	alpha	M44mb2310	element+latches	4.48	19.38	233	6.08	0.20	1.20	1	medic
+19219	bot-685	bravo	S33r-4420	score	10.12	15.56	53	2.44	0.49	7.44	3	seek
+19219	bot-709	alpha	T44mb2310	state	4.48	19.38	233	6.08	0.00	1.20	1	medic
+19269	bot-712	bravo	A46rm441G	ammo	-10.11	11.36	62	0.00	0.00		0	
+19303	bot-688	bravo	C00r-4322	latches	-19.94	-14.35	82	4.59	1.07	0.63	2	cover
+19303	bot-715	bravo	S00m-4420	tick	-19.02	-12.03	201	2.45	2.32	5.92	3	seek
+19336	bot-706	bravo	E00m-4019	tier+score+element	-13.82	5.43	53	4.89	0.81	5.67	1	flee
+19369	bot-688	bravo	G00r-4322	state	-19.81	-14.19	69	4.55	0.20	0.43	1	cover
+19386	bot-712	bravo	S46rm4414	state+latches	-10.11	11.36	62	0.00	0.00		0	
+19419	bot-696	bravo	E46rb2020	latches	-6.06	8.46	32	4.11	1.07	5.51	1	grenade
+19419	bot-711	alpha	A44rm3310	state	3.87	19.13	237	4.19	0.07	5.73	1	grenade
+19419	bot-713	alpha	E44rb2120	latches	5.31	21.55	212	4.12	2.44	4.50	1	grenade
+19436	bot-709	alpha	M44mb2310	state	4.59	19.47	241	4.16	0.14	5.68	1	grenade
+19452	bot-709	alpha	M44mb2320	packs	4.70	19.55	250	4.29	0.14	5.55	1	grenade
+19452	bot-712	bravo	A46rb4410	state+element+latches	-10.21	11.27	77	4.16	0.14	5.27	1	grenade
+19652	bot-698	bravo	S46rm3320	tick	1.08	8.91	96	4.06	1.81	2.91	1	grenade
+19670	bot-706	bravo	E00m-4010	latches	-15.00	4.33	60	3.74	1.61	5.47	1	grenade
+19670	bot-708	bravo	S46rm4320	ammo	7.37	15.29	95	4.18	1.54	2.69	1	grenade
+19686	bot-711	alpha	A44rm331G	latches	4.36	20.22	310	4.23	1.20	4.65	1	grenade
+19702	bot-711	alpha	A44rm3310	latches	4.40	20.28	315	4.23	0.07	4.58	1	grenade
+19702	bot-712	bravo	A46rm441G	element+latches	-10.99	10.49	146	4.06	1.10	4.17	1	grenade
+19719	bot-696	bravo	E46rm202G	element+latches	-6.94	7.58	315	4.11	1.24	4.27	1	grenade
+19719	bot-713	alpha	E44rm412G	element+ammo+latches	6.32	22.21	139	4.66	1.21	5.07	1	flee
+19736	bot-711	alpha	A44rm331G	latches	4.47	20.40	323	4.23	0.14	4.45	1	grenade
+19736	bot-713	alpha	E44rm412P	latches	6.40	22.24	139	5.21	0.09	4.99	1	flee
+19752	bot-709	alpha	M44mm232G	element+latches	5.75	20.25	327	4.37	1.26	4.33	1	grenade
+19802	bot-709	alpha	M44mb2320	element+latches	5.98	20.51	314	6.97	0.35	1.83	1	medic
+19819	bot-709	alpha	T44mb2320	state	5.98	20.51	314	6.97	0.00	1.83	1	medic
+19819	bot-712	bravo	A46rm041G	ammo	-11.33	10.16	176	4.03	0.47	3.70	1	grenade
+19852	bot-709	alpha	M44mb2320	state	5.99	20.52	306	0.06	0.01	1.82	1	medic
+19902	bot-713	alpha	E44rb4129	element+latches	7.17	22.54	140	4.99	0.83	4.16	1	flee
+19936	bot-685	bravo	A33r-1420	state+ammo	12.29	16.51	35	4.63	2.37	5.87	2	seek
+19952	bot-696	bravo	E46rm2020	latches	-6.79	6.99	255	3.58	0.61	5.16	1	grenade
+19952	bot-706	bravo	E00m-401G	latches	-15.81	3.55	133	4.05	1.13	4.34	1	grenade
+19952	bot-712	bravo	S46rm0414	state+latches	-11.67	10.49	206	4.07	0.48	5.19	1	grenade
+19969	bot-711	alpha	S44rm3310	state+latches	4.55	20.53	332	0.00	0.15		0	
+20019	bot-709	alpha	T44mb2320	state	6.39	21.59	263	6.81	1.15	0.68	1	medic
+20019	bot-711	alpha	A44rm3310	state	4.36	20.43	319	4.32	0.21	20.88	3	seek
+20069	bot-709	alpha	M44mb2320	state	6.39	21.60	250	0.01	0.00	0.68	1	medic
+20136	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+20136	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+20136	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+20136	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+20136	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+20186	bot-706	bravo	E00m-4010	latches	-16.48	2.86	193	4.12	0.96	5.16	1	grenade
+20186	bot-712	bravo	S46rm0410	latches	-12.39	11.17	270	3.85	0.99	4.20	1	grenade
+20236	bot-708	bravo	S46rm3320	ammo	6.34	16.00	28	4.42	1.25	0.30	1	seek
+20270	bot-713	alpha	E44rb2129	ammo	9.06	23.28	154	5.81	2.03	2.13	1	flee
+20287	bot-685	bravo	A00r-1420	tier+score	12.30	16.51	334	0.00	0.00		0	
+20303	bot-715	bravo	S00m-4420	tick	-20.34	-14.02	161	2.40	2.39	4.16	2	seek
+20337	bot-712	bravo	S36r-0410	tier+element	-12.79	11.55	309	3.56	0.55	5.06	1	grenade
+20370	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	143	0.09	0.43		0	
+20370	bot-712	bravo	S36r-4410	ammo	-12.88	11.62	314	3.49	0.11	4.95	1	grenade
+20421	bot-709	alpha	T44mb2320	state	7.52	22.44	242	5.30	1.41	1.28	1	medic
+20454	bot-709	alpha	M44mb2320	state	7.52	22.44	242	0.00	0.00	1.28	1	medic
+20487	bot-685	bravo	F00r-1420	state	12.30	16.51	342	0.00	0.00		0	
+20487	bot-709	alpha	M45mb2320	score	7.75	22.58	243	5.48	0.27	1.01	1	medic
+20487	bot-711	alpha	A45rm3310	score	4.36	20.44	244	0.00	0.00		0	
+20487	bot-713	alpha	E45rb2029	score+health	10.09	23.68	162	5.07	1.11	1.02	1	flee
+20505	bot-685	bravo	A00r-1420	state	12.30	16.51	342	0.00	0.00		0	
+20505	bot-696	bravo	E45rm2020	score	-5.33	5.67	133	3.54	1.97	4.60	1	grenade
+20505	bot-698	bravo	S45rm3320	score	2.80	10.35	3	4.61	2.24	5.20	1	seek
+20505	bot-708	bravo	S45rm3320	score	5.78	16.03	343	1.29	0.56	0.73	1	seek
+20505	bot-712	bravo	S35r-4410	score	-13.21	11.94	314	3.34	0.45	4.50	1	grenade
+20521	bot-696	bravo	E35r-2020	tier+element	-5.29	5.63	133	3.43	0.05	4.54	1	grenade
+20621	bot-696	bravo	E34r-2020	score	-5.04	5.39	133	3.46	0.35	5.61	1	grenade
+20621	bot-698	bravo	S44rm3320	score	2.82	10.90	3	4.73	0.54	4.66	1	seek
+20621	bot-708	bravo	S44rm3320	score	5.63	16.03	319	1.30	0.15	0.58	1	seek
+20621	bot-709	alpha	T45mb2320	state	8.32	22.92	244	5.87	0.67	0.34	1	medic
+20621	bot-712	bravo	S34r-4410	score	-13.48	12.20	314	3.33	0.38	4.12	1	grenade
+20638	bot-715	bravo	C00m-4420	state	-20.49	-14.76	154	2.36	0.75	3.55	2	seek
+20655	bot-709	alpha	P45mb2324	state+latches	8.32	22.92	244	2.35	0.00	0.34	1	muzzleRecovery
+20655	bot-713	alpha	E45rb2020	latches	10.81	23.88	168	5.14	0.74	5.29	1	flee
+20655	bot-715	bravo	C00m-442I	latches	-20.43	-14.62	146	4.59	0.15	1.63	2	cover
+20671	bot-713	alpha	E45rb2029	latches	10.88	23.85	169	5.15	0.09	5.20	1	flee
+20738	bot-696	bravo	E10r-2020	tier+score	-4.74	5.11	133	3.45	0.40	5.21	1	grenade
+20738	bot-698	bravo	S33r-3320	tier+score+element	2.85	11.45	3	4.69	0.56	4.10	1	seek
+20738	bot-708	bravo	S33r-3320	tier+score+element	5.48	16.04	295	1.31	0.15	0.43	1	seek
+20738	bot-712	bravo	S33r-4410	score	-13.76	12.47	314	3.27	0.39	5.14	1	grenade
+20788	bot-708	bravo	S33r-4320	ammo	5.41	16.04	285	1.31	0.07	0.36	1	seek
+20822	bot-709	alpha	M44mb2320	state+score+latches	8.71	22.99	201	0.00	0.39	0.15	0	muzzleRecovery
+20822	bot-711	alpha	A44rm3310	score	4.36	20.44	247	0.00	0.00		0	
+20822	bot-713	alpha	E44rb1029	score+ammo	11.58	23.50	174	5.17	0.78	4.42	1	flee
+20838	bot-685	bravo	A00r-1320	health	12.30	16.51	354	0.06	0.00		0	
+20838	bot-698	bravo	S34r-3320	score	2.87	11.85	3	2.42	0.40	3.70	1	seek
+20838	bot-708	bravo	S44rm4320	tier+score+element	5.38	16.02	281	1.29	0.04	0.57	1	seek
+20855	bot-711	alpha	F44rm3310	state	4.36	20.44	247	0.00	0.00		0	
+20855	bot-711	alpha	F44rm2310	ammo	4.36	20.44	247	0.16	0.00		1	muzzleRecovery
+20872	bot-711	alpha	P44rm2310	state	4.36	20.44	247	1.33	0.00		1	muzzleRecovery
+20889	bot-696	bravo	E00r-2020	tier	-4.37	4.77	133	3.24	0.51	4.70	1	grenade
+20889	bot-715	bravo	C00m-4422	latches	-19.86	-13.78	85	4.53	1.02	0.93	1	cover
+20922	bot-712	bravo	S33r-0410	ammo	-14.22	12.91	314	3.53	0.63	4.51	1	grenade
+20956	bot-711	alpha	P44rm231G	latches	4.49	20.47	226	1.33	0.13		1	muzzleRecovery
+20989	bot-685	bravo	E00r-1220	state+health	12.30	16.51	359	0.00	0.00		0	
+20989	bot-698	bravo	S35r-3320	score	2.89	12.21	3	2.42	0.36	3.34	1	seek
+20989	bot-708	bravo	S45rm4320	score	5.27	15.86	250	1.30	0.20	0.38	1	seek
+21006	bot-685	bravo	E00r-1229	latches	12.37	16.66	0	4.99	0.17	6.92	3	flee
+21039	bot-715	bravo	G00m-4422	state	-19.28	-13.70	97	4.48	0.59	0.41	1	cover
+21140	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+21140	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+21140	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+21140	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+21140	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+21140	bot-685	bravo	E00r-1129	health	12.67	17.26	4	5.12	0.68	7.20	3	flee
+21140	bot-698	bravo	S36r-3320	score	2.90	12.58	3	2.41	0.36	2.98	1	seek
+21140	bot-708	bravo	S46rm4320	score	5.21	15.70	219	1.30	0.17	0.67	1	seek
+21140	bot-711	alpha	A44rm2310	state+latches	4.71	20.50	192	0.00	0.22		0	muzzleRecovery
+21190	bot-706	bravo	E00m-4010	tick	-19.52	-0.12	226	4.16	4.26	4.07	1	grenade
+21240	bot-712	bravo	S00r-0410	tier+score	-15.07	13.73	314	3.90	1.18	4.74	1	grenade
+21290	bot-685	bravo	E00r-1029	health	13.10	17.82	8	5.14	0.71	7.41	2	flee
+21290	bot-698	bravo	S37r-3320	score	2.92	12.94	3	2.44	0.37	2.61	1	seek
+21290	bot-708	bravo	S47rm4320	score	5.16	15.51	194	1.30	0.19	0.47	1	seek
+21340	bot-698	bravo	S36r-3320	score	2.93	13.06	3	2.42	0.12	2.49	1	seek
+21340	bot-708	bravo	S46rm3320	score+ammo	5.15	15.45	194	1.29	0.06	0.41	1	seek
+21374	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	134	0.00	0.83		0	
+21424	bot-709	alpha	M33m-1320	tier+score+element+ammo	12.29	23.06	163	6.12	3.58	1.36	1	medic
+21424	bot-711	alpha	A33r-2310	tier+score+element	4.71	20.50	130	0.00	0.00		0	
+21424	bot-713	alpha	P33r-1024	state+tier+score+element+latches	14.32	22.16	187	5.01	3.05		0	
+21424	bot-685	bravo	D00r--000	state+ammo+packs+latches	13.79	17.90	8	0.00	0.69	7.14	2	flee
+21441	bot-684	alpha	D00r--000	tick	-17.60	6.79	44	0.00	0.00	4.54	0	
+21441	bot-698	bravo	S38r-3320	score	2.94	13.31	3	2.42	0.24	2.24	1	seek
+21441	bot-708	bravo	S38r-3320	tier+score+element	5.18	15.39	183	1.34	0.07	2.38	1	seek
+21441	bot-709	alpha	M33m-R320	ammo	12.30	23.06	163	0.99	0.01		0	
+21441	bot-711	alpha	S33r-2310	state	4.71	20.50	130	0.00	0.00		0	
+21441	bot-713	alpha	E33r-4020	state+ammo+latches	14.39	22.12	187	5.00	0.08		0	
+21457	bot-713	alpha	E33r-4029	latches	14.55	22.18	187	4.89	0.17	5.34	1	flee
+21474	bot-712	bravo	S00r-4410	ammo	-15.74	14.39	315	4.06	0.94	5.21	1	grenade
+21491	bot-698	bravo	S37r-3320	score	2.95	13.43	3	2.42	0.12	2.12	1	seek
+21491	bot-708	bravo	S37r-3320	score	5.24	15.39	173	1.32	0.07	2.31	1	seek
+21641	bot-698	bravo	S36r-3320	score	2.96	13.80	3	2.42	0.37	1.76	1	seek
+21641	bot-708	bravo	S36r-3320	score	5.44	15.41	142	1.33	0.20	2.11	1	seek
+21725	bot-709	alpha	M32m-R320	score	12.61	23.01	150	6.11	0.31	2.94	1	medic
+21725	bot-711	alpha	S32r-2310	score	5.13	20.37	130	2.28	0.44	8.34	3	seek
+21725	bot-713	alpha	E32r-4029	score	15.74	22.62	187	4.83	1.27	4.07	1	flee
+21892	bot-696	bravo	E00r-2020	tick	-1.85	2.36	134	3.43	3.49	5.45	1	grenade
+21892	bot-708	bravo	S36r-4320	ammo	5.78	15.43	90	1.38	0.33	1.78	1	seek
+21942	bot-709	alpha	M00m-R320	tier+score	13.91	22.81	99	6.02	1.32	1.62	1	medic
+21942	bot-711	alpha	S00r-2310	tier+score	5.60	20.21	131	2.29	0.50	7.88	3	seek
+21942	bot-713	alpha	E00r-4029	tier+score	16.76	23.00	187	5.09	1.09	2.98	1	flee
+22026	bot-712	bravo	S00r-0410	ammo	-17.24	15.87	315	3.28	2.11	5.23	1	grenade
+22043	bot-715	bravo	G00m-4422	tick	-18.95	-13.95	215	0.00	0.41		0	
+22143	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+22143	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+22143	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+22143	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+22143	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+22193	bot-706	bravo	E00m-4010	tick	-22.28	-3.11	213	3.65	4.07	3.98	1	grenade
+22260	bot-713	alpha	E00r-402P	latches	18.29	23.58	252	5.12	1.63	1.35	1	flee
+22377	bot-688	bravo	G00r-4322	tick	-19.45	-13.95	204	0.00	0.83		0	
+22444	bot-708	bravo	S36r-3320	ammo	6.52	15.48	86	1.34	0.75	1.03	1	seek
+22494	bot-713	alpha	E00r-4020	latches	19.25	23.94	252	0.00	1.03		0	
+22578	bot-712	bravo	S00r-R410	ammo	-18.39	17.02	315	3.34	1.63	4.30	1	grenade
+22645	bot-698	bravo	S36r-3320	tick	3.12	15.34	30	1.49	1.56	0.82	1	seek
+22645	bot-709	alpha	T00m-R320	state	17.74	23.61	72	6.14	3.91	1.55	1	medic
+22745	bot-716	bravo	P00r-0410	initial	-24.45	-15.95	0	0.00			0	
+22762	bot-716	bravo	S00r-4410	state+ammo	-24.45	-15.95	0	0.00	0.00		0	
+22779	bot-706	bravo	E00m-4019	latches	-23.11	-4.78	198	3.55	1.86	4.38	1	grenade
+22795	bot-706	bravo	E00m-4010	latches	-23.13	-4.83	198	3.55	0.06	4.32	1	grenade
+22829	bot-706	bravo	E00m-4019	latches	-23.08	-4.81	198	3.11	0.05	4.36	1	grenade
+22846	bot-696	bravo	E00r-2029	latches	0.56	-0.14	134	4.11	3.47	5.52	1	grenade
+22846	bot-706	bravo	E00m-4010	latches	-23.10	-4.86	198	3.53	0.06	4.30	1	grenade
+22862	bot-696	bravo	E00r-2020	latches	0.49	-0.20	134	5.79	0.10	6.85	1	flee
+22879	bot-696	bravo	E00r-2029	latches	0.42	-0.27	134	5.83	0.10	6.76	1	flee
+22879	bot-706	bravo	E00m-4019	latches	-23.06	-4.84	199	3.55	0.05	4.34	1	grenade
+22896	bot-706	bravo	E00m-4010	latches	-23.01	-4.76	199	5.99	0.10	0.98	1	flee
+22896	bot-709	alpha	T00m-4320	ammo	17.74	23.61	3	0.00	0.01	1.54	1	medic
+22896	bot-716	bravo	A00r-4410	state	-24.25	-16.19	34	2.39	0.32	6.79	1	seek
+22913	bot-696	bravo	E00r-2020	latches	0.40	-0.39	135	5.85	0.12	7.01	1	flee
+22913	bot-706	bravo	E00m-4019	latches	-23.03	-4.82	199	3.54	0.06	4.37	1	grenade
+22929	bot-696	bravo	E00r-2029	latches	0.34	-0.46	135	5.85	0.10	6.91	1	flee
+22929	bot-706	bravo	E00m-4010	latches	-23.04	-4.87	199	3.11	0.06	4.32	1	grenade
+22947	bot-711	alpha	S00r-2310	tick	7.87	19.47	109	2.39	2.38	5.75	3	seek
+22963	bot-706	bravo	E00m-4019	latches	-22.98	-4.86	200	3.55	0.07	4.35	1	grenade
+22979	bot-696	bravo	E00r-2020	latches	0.24	-0.65	136	5.89	0.22	6.71	1	flee
+22979	bot-706	bravo	E00m-4010	latches	-23.00	-4.92	200	3.55	0.06	4.29	1	grenade
+22996	bot-696	bravo	E00r-2029	latches	0.17	-0.72	136	5.90	0.10	6.61	1	flee
+22996	bot-708	bravo	S36r-4320	ammo	7.23	15.49	90	1.39	0.71	0.54	1	seek
+22996	bot-713	alpha	H00r-4020	state	19.25	23.94	252	0.00	0.00		0	
+23013	bot-706	bravo	E00m-4019	latches	-22.85	-4.79	200	5.99	0.20	0.52	1	flee
+23013	bot-709	alpha	M00m-4320	state	17.74	23.61	337	0.00	0.00	1.54	1	medic
+23013	bot-712	bravo	S00r-4410	ammo	-19.34	18.17	323	4.73	1.49	23.96	6	seek
+23046	bot-709	alpha	T00m-4320	state	17.88	23.66	345	4.56	0.15	1.39	1	medic
+23046	bot-715	bravo	G00m-4422	tick	-18.95	-13.95	137	0.00	0.00		0	
+23080	bot-706	bravo	E00m-4010	latches	-22.68	-4.64	200	0.06	0.22		0	
+23080	bot-713	alpha	H00r-4120	health	19.25	23.94	231	0.00	0.00		0	
+23146	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+23146	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+23146	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+23146	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+23146	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+23381	bot-688	bravo	G00r-4322	tick	-19.89	-14.65	120	0.00	0.83		0	
+23548	bot-708	bravo	S36r-3320	ammo	7.43	15.73	38	1.21	0.32	2.89	1	seek
+23565	bot-712	bravo	S00r-0410	ammo	-17.04	19.18	89	4.55	2.51	21.61	6	seek
+23581	bot-706	bravo	H00m-4010	state	-22.68	-4.64	200	0.00	0.01		0	
+23581	bot-713	alpha	H00r-4220	health	19.25	23.94	207	0.00	0.00		0	
+23648	bot-698	bravo	S36r-3320	tick	3.42	15.37	111	1.36	0.29	0.93	1	seek
+23833	bot-698	bravo	S35r-3320	score	3.59	15.55	73	1.35	0.25	0.68	1	seek
+23833	bot-708	bravo	S35r-3320	score	7.09	15.77	339	1.21	0.34	2.55	1	seek
+23899	bot-716	bravo	A00r-4410	tick	-24.25	-16.19	112	0.00	0.01		0	
+23950	bot-711	alpha	S00r-2310	tick	9.76	18.84	154	1.28	1.99	4.19	3	seek
+23983	bot-698	bravo	S34r-3320	score	3.72	15.70	43	1.34	0.20	0.48	1	seek
+23983	bot-708	bravo	S34r-3320	score	6.91	15.79	308	1.21	0.18	2.37	1	seek
+24000	bot-696	bravo	E00r-2029	tick	-3.81	-4.80	136	5.20	5.69	0.92	1	flee
+24050	bot-709	alpha	T00m-4320	tick	17.89	23.67	210	0.00	0.01	1.38	1	medic
+24050	bot-715	bravo	G00m-4422	tick	-19.65	-14.42	147	0.00	0.84		0	
+24083	bot-713	alpha	H00r-4320	health	19.25	23.95	268	0.05	0.00		0	
+24100	bot-708	bravo	S34r-4320	ammo	6.76	15.81	284	1.22	0.14	2.23	1	seek
+24117	bot-712	bravo	S00r-4410	ammo	-15.81	19.71	91	2.43	1.34	20.37	6	seek
+24134	bot-698	bravo	S33r-3320	score	3.81	15.75	39	1.25	0.10	3.29	3	seek
+24134	bot-708	bravo	S33r-4320	score	6.72	15.81	277	1.22	0.04	2.19	1	seek
+24150	bot-520	alpha	P00r-4320	tick	-9.99	-15.50	107	0.00	0.00		0	
+24150	bot-536	alpha	P00r-3320	tick	-10.61	-18.70	2	0.00	0.00		0	
+24150	bot-565	alpha	P00r-3310	tick	-14.12	-16.01	284	0.00	0.00		0	
+24150	bot-656	alpha	P00r-4410	tick	-12.22	-20.94	53	0.00	0.00		0	
+24150	bot-658	alpha	P00m-4420	tick	-16.74	-20.33	90	0.00	0.00		0	
+24150	bot-696	bravo	E00r-2020	latches	-4.24	-5.23	136	0.01	0.62		0	
+24284	bot-698	bravo	S32r-3320	score	3.79	15.57	8	1.22	0.18	3.38	3	seek
+24284	bot-708	bravo	S32r-4320	score	6.54	15.83	276	1.23	0.18	2.00	1	seek
+24351	bot-716	bravo	F00r-4410	state	-24.24	-16.19	112	0.00	0.00		0	
+24368	bot-520	alpha	P21r-4320	tier+score	-9.99	-15.50	107	0.00	0.00		0	
+24368	bot-536	alpha	P21r-3320	tier+score	-10.61	-18.70	2	0.00	0.00		0	
+24368	bot-565	alpha	P21r-3310	tier+score	-14.12	-16.01	284	0.00	0.00		0	
+24368	bot-656	alpha	S21r-4310	state+tier+score+health	-12.22	-20.94	53	0.00	0.00		0	
+24368	bot-658	alpha	P21m-4420	tier+score	-16.74	-20.33	90	0.00	0.00		0	
+24368	bot-716	bravo	A00r-4410	state	-24.24	-16.19	112	0.00	0.00		0	
+24384	bot-688	bravo	G00r-4322	tick	-19.94	-14.60	151	0.02	0.07		0	
+24384	bot-713	alpha	S00r-4324	state+latches	19.25	23.95	291	0.00	0.00		0	
+24468	bot-716	bravo	F00r-4410	state	-24.24	-16.19	112	0.00	0.00		0	
+24485	bot-520	alpha	P32r-4320	tier+score	-9.99	-15.50	79	0.00	0.00		0	
+24485	bot-536	alpha	P32r-3320	tier+score	-10.61	-18.70	2	0.00	0.00		0	
+24485	bot-565	alpha	P32r-3310	tier+score	-13.83	-16.00	314	2.43	0.28	1.53	1	squad
+24485	bot-656	alpha	E32r-4210	state+tier+score+health	-12.22	-20.94	23	0.00	0.00		0	
+24485	bot-658	alpha	M32m-4420	state+tier+score	-16.74	-20.33	90	0.00	0.00		0	
+24485	bot-716	bravo	A00r-4410	state	-24.24	-16.19	112	0.00	0.00		0	
+24501	bot-656	alpha	E32r-4219	latches	-12.06	-20.99	23	5.06	0.17	1.67	1	flee
+24535	bot-713	alpha	A00r-4320	state+latches	19.25	23.95	302	0.00	0.00		0	
+24569	bot-688	bravo	S00r-4320	state+latches	-19.54	-13.94	169	0.00	0.77		0	
+24569	bot-712	bravo	A00r-4410	state	-14.86	20.13	65	2.31	1.04	19.41	6	seek
+24585	bot-706	bravo	H00m-4010	tick	-22.67	-4.63	33	0.12	0.01		0	
+24585	bot-716	bravo	F00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24602	bot-520	alpha	P33r-4320	score	-9.99	-15.50	55	0.00	0.00		0	
+24602	bot-536	alpha	P33r-3320	score	-10.61	-18.70	2	0.00	0.00		0	
+24602	bot-565	alpha	P33r-3310	score	-13.55	-15.98	345	2.40	0.28	1.26	1	squad
+24602	bot-656	alpha	E33r-4119	score+health	-11.57	-21.13	23	5.06	0.51	1.16	1	flee
+24602	bot-658	alpha	M33m-4420	score	-16.74	-20.33	125	0.00	0.00		0	
+24602	bot-716	bravo	A00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24619	bot-712	bravo	A00r-441G	latches	-14.86	20.13	76	0.01	0.00		0	
+24635	bot-712	bravo	A00r-4410	latches	-14.86	20.13	79	0.00	0.00		0	
+24653	bot-696	bravo	H00r-2020	state	-4.24	-5.24	136	0.00	0.00		0	
+24669	bot-712	bravo	A00r-0410	ammo	-14.86	20.13	84	0.00	0.00		0	
+24685	bot-706	bravo	H00m-4110	health	-22.67	-4.63	40	0.00	0.00		0	
+24702	bot-716	bravo	F00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24719	bot-520	alpha	S44rm4320	state+tier+score+element	-9.99	-15.50	34	0.00	0.00		0	
+24719	bot-536	alpha	S44rm3320	state+tier+score+element	-10.61	-18.70	2	0.00	0.00		0	
+24719	bot-565	alpha	S44rm3310	state+tier+score+element	-13.47	-15.98	353	0.00	0.08		0	
+24719	bot-656	alpha	E44rm4019	tier+score+element+health	-11.00	-21.29	23	5.06	0.59	0.57	1	flee
+24719	bot-658	alpha	M44mm4420	tier+score+element	-16.45	-20.38	155	5.92	0.30	5.36	1	medic
+24719	bot-716	bravo	A00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24736	bot-713	alpha	A00r-4420	health	19.25	23.95	264	0.00	0.00		0	
+24802	bot-656	alpha	E44rm4010	latches	-10.75	-21.36	23	0.00	0.25		0	
+24819	bot-716	bravo	F00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24819	bot-716	bravo	P00r-4410	state	-24.24	-16.19	111	0.00	0.00		0	
+24819	bot-656	alpha	D00r--000	state+tier+score+element+ammo+packs	-10.75	-21.36	23	0.00	0.00		0	
+24836	bot-687	alpha	D00r--000	tick	-16.17	-12.49	66	0.00	0.00	3.09	0	
+24836	bot-520	alpha	S46rm4320	score	-9.99	-15.50	7	0.00	0.00		0	
+24836	bot-536	alpha	S46rm3320	score	-10.61	-18.70	327	0.00	0.00		0	
+24836	bot-565	alpha	S46rm3310	score	-13.47	-15.98	319	0.00	0.00		0	
+24836	bot-658	alpha	S46mm4420	state+score	-15.87	-20.50	181	5.92	0.59	4.77	1	medic
+24953	bot-711	alpha	S00r-2310	tick	11.01	18.41	109	1.40	1.33	3.40	3	seek
+25053	bot-709	alpha	T00m-4320	tick	17.90	23.67	198	0.00	0.01	1.37	1	medic
+25053	bot-715	bravo	G00m-4422	tick	-19.31	-14.22	195	0.00	0.39		0	
+25070	bot-708	bravo	P32r-4320	state	5.57	15.94	276	1.30	0.97	1.03	1	seek
+25103	bot-536	alpha	A46rm3320	state	-10.61	-18.70	303	0.00	0.00		0	
+25154	bot-536	alpha	A46rm332G	latches	-10.61	-18.70	292	0.00	0.00		0	
+25221	bot-712	bravo	A00r-4410	ammo	-14.87	20.12	84	0.11	0.01		0	
+25288	bot-698	bravo	S32r-3320	tick	3.64	14.44	320	1.18	1.15	4.05	3	seek
+25388	bot-536	alpha	S46rm3320	state+latches	-10.61	-18.70	292	0.00	0.00		0	
+25405	bot-696	bravo	H00r-2120	health	-4.25	-5.24	36	0.00	0.01		0	
+25438	bot-709	alpha	S00m-4320	state	17.90	23.67	227	0.00	0.00	1.37	1	medic
+25572	bot-688	bravo	S00r-4320	tick	-19.88	-13.95	174	2.40	0.34	4.03	3	seek
+25672	bot-536	alpha	A46rm3320	state	-10.61	-18.70	259	0.00	0.00		0	
+25689	bot-706	bravo	H00m-4110	tick	-22.66	-4.62	85	0.00	0.01		0	
+25706	bot-536	alpha	A46rm332G	latches	-10.61	-18.70	265	0.00	0.00		0	
+25723	bot-706	bravo	H00m-0110	ammo	-22.66	-4.62	82	0.00	0.00		0	
+25739	bot-713	alpha	A00r-4420	tick	19.25	23.96	264	0.00	0.01		0	
+25772	bot-712	bravo	A00r-0410	ammo	-14.87	20.12	84	0.00	0.00		0	
+25789	bot-706	bravo	H00m-0210	health	-22.66	-4.62	77	0.00	0.00		0	
+25823	bot-716	bravo	P00r-4410	tick	-24.24	-16.18	111	0.00	0.00		0	
+25840	bot-520	alpha	S46rm4320	tick	-9.99	-15.50	245	0.00	0.00		0	
+25840	bot-565	alpha	S46rm3310	tick	-13.47	-15.98	249	0.00	0.00		0	
+25840	bot-658	alpha	S46mm4420	tick	-15.87	-20.47	303	0.00	0.02		0	
+25940	bot-536	alpha	S46rm3320	state+latches	-10.61	-18.70	265	0.00	0.00		0	
+25956	bot-711	alpha	S00r-2310	tick	11.82	17.60	186	1.34	1.15	2.56	2	seek
+26057	bot-715	bravo	G00m-4422	tick	-18.95	-13.95	120	0.00	0.45		0	
+26074	bot-708	bravo	P32r-4320	tick	3.93	14.72	227	1.99	2.05	32.88	6	squad
+26141	bot-715	bravo	S00m-4420	state+latches	-18.95	-13.95	115	0.00	0.00		0	
+26224	bot-536	alpha	A46rm3320	state	-10.61	-18.70	236	0.00	0.00		0	
+26224	bot-658	alpha	A46mb4420	state+element	-16.50	-19.98	296	2.31	0.80	2.48	1	seek
+26224	bot-688	bravo	C00r-4320	state	-20.13	-15.40	165	2.39	1.47	2.64	2	seek
+26224	bot-716	bravo	S00r-4410	state	-24.24	-16.18	111	0.00	0.00		0	
+26241	bot-658	alpha	A46mm442G	element+latches	-16.50	-19.98	300	0.00	0.00		0	
+26241	bot-688	bravo	C00r-432I	latches	-20.11	-15.25	157	4.58	0.15	1.46	2	cover
+26241	bot-716	bravo	A00r-4410	state	-24.21	-16.21	115	2.40	0.04	6.37	1	seek
+26258	bot-536	alpha	A46rm332G	latches	-10.61	-18.70	243	0.00	0.00		0	
+26258	bot-711	alpha	A00r-2310	state	11.88	17.22	188	1.32	0.38	2.20	2	seek
+26258	bot-716	bravo	A00r-441G	latches	-24.21	-16.21	112	0.04	0.00		0	
+26274	bot-706	bravo	H00m-R210	ammo	-22.66	-4.62	39	0.00	0.01		0	
+26291	bot-698	bravo	S32r-3320	tick	3.38	12.46	235	2.34	1.99	5.60	3	seek
+26324	bot-712	bravo	A00r-4410	ammo	-14.87	20.11	84	0.00	0.01		0	
+26358	bot-565	alpha	A46rb3310	state+element	-13.96	-16.51	222	2.40	0.72	6.68	1	seek
+26358	bot-713	alpha	F00r-4420	state	19.25	23.96	264	0.00	0.00		0	
+26358	bot-713	alpha	F00r-R420	ammo	19.25	23.96	264	0.00	0.00		0	
+26375	bot-713	alpha	A00r-R420	state	19.25	23.96	264	0.00	0.00		0	
+26391	bot-565	alpha	A46rm331G	element+latches	-13.96	-16.51	229	0.00	0.00		0	
+26408	bot-696	bravo	H00r-2120	tick	-4.25	-5.24	330	0.00	0.00		0	
+26425	bot-658	alpha	C46mm442G	state	-16.49	-19.98	300	0.00	0.00		0	
+26441	bot-658	alpha	C46mb442I	element+latches	-16.49	-19.98	300	0.00	0.00		0	
+26441	bot-709	alpha	S00m-4320	tick	17.10	21.47	199	2.31	2.34	6.27	1	seek
+26475	bot-658	alpha	C46mb4422	latches	-16.49	-19.98	300	0.00	0.00		0	
+26475	bot-688	bravo	C00r-4322	latches	-20.16	-14.18	96	4.59	1.07	0.75	2	cover
+26492	bot-536	alpha	S46rm3320	state+latches	-10.61	-18.70	243	0.00	0.00		0	
+26492	bot-716	bravo	S00r-4410	state+latches	-24.21	-16.21	112	0.00	0.00		0	
+26525	bot-696	bravo	H00r-2220	health	-4.25	-5.24	340	0.00	0.00		0	
+26626	bot-565	alpha	S46rm3314	state+latches	-13.96	-16.51	229	0.06	0.01		0	
+26726	bot-711	alpha	A00r-231G	latches	11.88	17.22	247	0.00	0.00		0	
+26793	bot-658	alpha	S46mb4424	state+latches	-16.49	-19.98	300	0.00	0.01		0	
+26810	bot-658	alpha	S46mm4424	element	-16.48	-19.98	293	0.00	0.00		0	
+26826	bot-536	alpha	A46rm3320	state	-10.61	-18.70	283	0.00	0.00		0	
+26843	bot-520	alpha	S46rm4320	tick	-9.99	-15.50	320	0.00	0.00		0	
+26843	bot-536	alpha	A46rm332G	latches	-10.61	-18.70	280	0.00	0.00		0	
+26877	bot-565	alpha	S46rm3310	latches	-13.96	-16.50	284	0.07	0.01		0	
+26877	bot-712	bravo	A00r-0410	ammo	-14.87	20.11	84	0.00	0.01		0	
+26910	bot-706	bravo	H00m-R310	health	-22.66	-4.61	356	0.00	0.01		0	
+26943	bot-536	alpha	A46rm3320	latches	-10.61	-18.70	278	0.00	0.00		0	
+26960	bot-536	alpha	F46rm3320	state	-10.61	-18.70	278	0.00	0.00		0	
+26960	bot-711	alpha	S00r-2310	state+latches	11.88	17.22	247	0.00	0.00		0	
+26977	bot-520	alpha	A46rb4320	state+element	-9.99	-15.50	310	0.00	0.00		0	
+26977	bot-536	alpha	A46rm3320	state	-10.61	-18.70	278	0.00	0.00		0	
+26977	bot-716	bravo	A00r-4410	state	-23.86	-16.80	115	2.36	0.68	15.87	3	seek
+27027	bot-713	alpha	A00r-R42G	latches	19.25	23.96	264	0.00	0.00		0	
+27044	bot-712	bravo	A00r-041G	latches	-14.87	20.11	84	0.01	0.00		0	
+27077	bot-536	alpha	F46rm3320	state	-10.61	-18.70	278	0.00	0.00		0	
+27077	bot-688	bravo	C21r-4322	tier+score	-20.20	-14.19	96	0.00	0.04		0	
+27077	bot-708	bravo	P32r-4320	tick	3.22	12.80	209	2.34	2.04	31.21	5	squad
+27077	bot-715	bravo	S21m-4420	tier+score	-19.71	-15.08	165	2.39	1.36	2.96	2	seek
+27077	bot-716	bravo	A21r-4310	tier+score+health	-23.86	-16.80	98	0.00	0.00		0	
+27094	bot-536	alpha	A46rm3320	state	-10.61	-18.70	278	0.00	0.00		0	
+27194	bot-536	alpha	F46rm3320	state	-10.61	-18.70	278	0.00	0.00		0	
+27194	bot-688	bravo	C32r-4322	tier+score	-19.89	-13.97	75	4.54	0.38	0.44	1	cover
+27194	bot-715	bravo	M32m-4420	state+tier+score	-19.72	-15.32	164	2.35	0.24	2.74	2	seek
+27194	bot-716	bravo	E32r-4210	state+tier+score+health	-23.86	-16.80	98	0.00	0.00		0	
+27211	bot-536	alpha	A46rm332G	state+latches	-10.61	-18.70	278	0.00	0.00		0	
+27211	bot-688	bravo	G32r-4322	state	-19.89	-13.97	75	4.54	0.00	0.44	1	cover
+27211	bot-716	bravo	E32r-4219	latches	-23.85	-16.74	95	1.70	0.06	4.87	1	flee
+27228	bot-520	alpha	A46rm432G	element+latches	-9.99	-15.50	265	0.00	0.00		0	
+27228	bot-658	alpha	C46mm4420	state+latches	-16.48	-19.98	310	0.00	0.01		0	
+27228	bot-706	bravo	H00m-R300	packs	-22.65	-4.61	20	0.00	0.00		0	
+27228	bot-716	bravo	E32r-421P	latches	-23.84	-16.71	95	1.66	0.03	4.85	1	flee
+27250	bot-658	alpha	C46mb4422	element+latches	-16.48	-19.98	310	0.00	0.00		0	
+27250	bot-706	bravo	S00m-R300	state	-22.65	-4.61	20	0.00	0.00		0	
+27273	bot-713	alpha	S00r-R420	state+latches	19.25	23.96	264	0.00	0.00		0	
+27300	bot-698	bravo	S32r-3320	tick	2.88	10.33	345	2.44	2.19	7.45	2	seek
+27300	bot-712	bravo	S00r-0410	state+latches	-14.87	20.10	84	0.00	0.00		0	
+27300	bot-713	alpha	A00r-R420	state	19.22	23.96	265	1.32	0.03	35.29	7	seek
+27318	bot-712	bravo	A00r-0410	state	-14.84	20.12	83	1.25	0.03	34.12	7	seek
+27327	bot-708	bravo	P00r-4320	tier+score	3.18	12.22	207	2.33	0.59	30.86	5	squad
+27339	bot-698	bravo	S00r-3320	tier+score	2.79	10.31	340	2.41	0.09	7.44	2	seek
+27357	bot-520	alpha	A45rm432G	score	-9.99	-15.50	265	0.00	0.00		0	
+27357	bot-536	alpha	A45rm332G	score	-10.61	-18.70	278	0.00	0.00		0	
+27357	bot-565	alpha	S45rm3310	score	-13.96	-16.49	282	0.09	0.01		0	
+27357	bot-658	alpha	C45mb4422	score	-16.48	-19.98	316	0.00	0.00		0	
+27436	bot-712	bravo	A00r-4410	ammo	-14.84	20.12	84	0.00	0.00		0	
+27452	bot-536	alpha	S45rm3320	state+latches	-10.61	-18.70	278	0.00	0.00		0	
+27452	bot-565	alpha	A45rm3310	state	-13.96	-16.49	276	0.00	0.00		0	
+27452	bot-709	alpha	S00m-4320	tick	16.34	19.26	199	2.41	2.34	3.93	1	seek
+27469	bot-520	alpha	S44rm4324	state+score+latches	-9.99	-15.50	265	0.00	0.00		0	
+27469	bot-536	alpha	S44rm3320	score	-10.61	-18.70	285	0.00	0.00		0	
+27469	bot-565	alpha	A44rm331G	score+latches	-13.96	-16.48	273	0.00	0.00		0	
+27469	bot-658	alpha	C44mb4422	score	-16.47	-19.98	311	0.11	0.00		0	
+27469	bot-716	bravo	E32r-4219	latches	-23.73	-16.09	95	5.12	0.63	4.21	1	flee
+27535	bot-696	bravo	H00r-2220	tick	-4.25	-5.24	58	0.00	0.00		0	
+27602	bot-520	alpha	S33r-4324	tier+score+element	-9.99	-15.50	260	0.00	0.00		0	
+27602	bot-536	alpha	S33r-3320	tier+score+element	-10.61	-18.70	313	0.00	0.00		0	
+27602	bot-565	alpha	A33r-331G	tier+score+element	-13.96	-16.48	273	0.00	0.00		0	
+27602	bot-658	alpha	C33m-4422	tier+score+element	-16.47	-19.98	305	0.11	0.00		0	
+27619	bot-715	bravo	T32m-4420	state	-22.02	-16.10	125	5.95	2.43	1.69	1	medic
+27636	bot-696	bravo	H00r-2320	health	-4.25	-5.24	66	0.00	0.00		0	
+27719	bot-520	alpha	S33r-4320	latches	-9.99	-15.50	252	0.00	0.00		0	
+27719	bot-520	alpha	S32r-4320	score	-9.99	-15.50	251	0.00	0.00		0	
+27719	bot-536	alpha	S32r-3320	score	-10.61	-18.70	316	0.00	0.00		0	
+27719	bot-565	alpha	S32r-3310	state+score+latches	-13.96	-16.48	273	0.00	0.00		0	
+27719	bot-658	alpha	C32m-4422	score	-16.47	-19.98	305	0.00	0.00		0	
+27735	bot-706	bravo	S00m-4300	ammo	-21.74	-3.75	50	2.44	1.26	34.47	4	seek
+27752	bot-717	alpha	P00m-0420	initial	-4.95	-14.45	0	0.00			0	
+27769	bot-717	alpha	A32m-4420	state+tier+score+ammo	-4.95	-14.45	0	0.00	0.00		0	
+27785	bot-536	alpha	A32r-3320	state	-10.61	-18.70	312	0.00	0.00		0	
+27802	bot-536	alpha	A32r-332G	latches	-10.61	-18.70	308	0.00	0.00		0	
+27819	bot-706	bravo	A00m-4300	state	-21.62	-3.64	50	2.43	0.16	34.31	4	seek
+27836	bot-658	alpha	A32m-4420	state+latches	-16.47	-19.98	305	0.00	0.00		0	
+27836	bot-717	alpha	A33m-4420	score	-4.95	-14.45	4	0.00	0.00		0	
+27852	bot-520	alpha	S33r-4320	score	-9.99	-15.50	241	0.00	0.00		0	
+27852	bot-536	alpha	A33r-332G	score	-10.61	-18.70	308	0.00	0.00		0	
+27852	bot-565	alpha	S33r-3310	score	-13.96	-16.48	245	0.10	0.00		0	
+27852	bot-658	alpha	A33m-4320	score+health	-16.47	-19.98	305	0.00	0.00		0	
+27869	bot-715	bravo	M32m-4420	state	-22.02	-16.09	125	0.00	0.00	1.69	1	medic
+27902	bot-658	alpha	F33m-4320	state	-16.47	-19.98	305	0.00	0.00		0	
+27902	bot-688	bravo	G33r-4322	score	-19.45	-13.95	151	0.00	0.44		0	
+27902	bot-715	bravo	M33m-4320	score+health	-22.29	-15.97	125	5.97	0.30	1.39	1	medic
+27902	bot-716	bravo	E33r-4219	score	-23.32	-13.92	131	4.89	2.21	2.01	1	flee
+27919	bot-658	alpha	A33m-4320	state	-16.47	-19.98	305	0.11	0.00		0	
+27969	bot-711	alpha	S00r-2310	tick	10.75	16.16	235	2.19	1.56	10.63	3	seek
+28002	bot-712	bravo	A00r-0410	ammo	-14.84	20.11	84	0.00	0.01		0	
+28035	bot-536	alpha	S33r-3320	state+latches	-10.61	-18.70	308	0.00	0.00		0	
+28035	bot-715	bravo	T33m-4320	state	-22.70	-15.48	125	5.88	0.64	1.89	1	medic
+28052	bot-658	alpha	F33m-4320	state	-16.47	-19.98	306	0.11	0.00		0	
+28052	bot-688	bravo	G44rm4322	tier+score+element	-19.45	-13.95	120	0.00	0.00		0	
+28052	bot-706	bravo	A34m-4300	tier+score	-21.62	-3.64	101	0.00	0.00		0	
+28052	bot-715	bravo	E44mb4220	state+tier+score+element+health	-22.70	-15.48	126	0.00	0.00		0	
+28052	bot-716	bravo	E44rm4219	tier+score+element	-23.19	-13.21	135	4.82	0.72	1.28	1	flee
+28069	bot-658	alpha	A33m-4320	state	-16.47	-19.98	306	0.00	0.00		0	
+28069	bot-715	bravo	E44mb4229	latches	-22.58	-15.36	126	5.08	0.17	5.33	1	flee
+28135	bot-713	alpha	A00r-R42G	latches	19.22	23.97	264	0.00	0.01		0	
+28135	bot-717	alpha	A44mb4420	tier+score+element	-4.95	-14.45	4	0.00	0.00		0	
+28152	bot-520	alpha	S44rm4320	tier+score+element	-9.99	-15.50	215	0.00	0.00		0	
+28152	bot-536	alpha	S44rm3320	tier+score+element	-10.61	-18.70	285	0.00	0.00		0	
+28152	bot-565	alpha	S44rm3310	tier+score+element	-13.96	-16.48	220	0.10	0.00		0	
+28152	bot-658	alpha	E44mb4220	state+tier+score+element+health	-16.47	-19.98	309	0.11	0.00		0	
+28152	bot-712	bravo	A00r-041G	latches	-14.84	20.11	84	0.01	0.00		0	
+28152	bot-715	bravo	E44mb4220	latches	-22.30	-15.05	129	4.94	0.42	6.39	1	flee
+28169	bot-658	alpha	E44mb4229	latches	-16.34	-19.87	310	5.06	0.17	5.18	1	flee
+28169	bot-688	bravo	C44rm4322	state	-19.45	-13.95	99	0.00	0.00		0	
+28169	bot-715	bravo	E44mb4229	latches	-22.25	-14.98	129	4.90	0.08	6.31	1	flee
+28285	bot-715	bravo	E44mb3229	ammo	-21.91	-14.53	129	4.83	0.56	5.74	1	flee
+28285	bot-716	bravo	E44rm4210	latches	-23.01	-12.25	115	0.02	0.97		0	
+28285	bot-717	alpha	A45mb4420	score	-4.95	-14.45	4	0.00	0.00		0	
+28302	bot-520	alpha	S45rm4320	score	-9.99	-15.50	217	0.00	0.00		0	
+28302	bot-536	alpha	S45rm3320	score	-10.61	-18.70	273	0.00	0.00		0	
+28302	bot-565	alpha	S45rm3310	score	-14.15	-16.62	243	2.40	0.24	4.67	2	seek
+28302	bot-658	alpha	E45mb4129	score+health	-15.84	-19.42	309	5.06	0.67	4.51	1	flee
+28319	bot-696	bravo	S00r-2320	state	-4.25	-5.24	28	0.00	0.00		0	
+28335	bot-708	bravo	P00r-4320	tick	2.80	9.95	203	2.41	2.30	28.34	5	squad
+28352	bot-658	alpha	E45mm412P	element+latches	-15.65	-19.26	309	5.06	0.25	4.25	1	flee
+28352	bot-698	bravo	S00r-3320	tick	1.34	11.16	357	2.40	1.67	6.40	1	seek
+28352	bot-715	bravo	E44mm322P	element+latches	-21.72	-14.27	129	4.89	0.32	5.42	1	flee
+28369	bot-713	alpha	S00r-4420	state+ammo+latches	19.22	23.97	264	0.00	0.00		0	
+28369	bot-715	bravo	E44mb3229	element+latches	-21.67	-14.21	125	4.90	0.08	5.34	1	flee
+28402	bot-712	bravo	S00r-0410	state+latches	-14.84	20.11	84	0.00	0.00		0	
+28402	bot-713	alpha	A00r-4420	state	19.18	23.97	265	1.32	0.04	35.25	7	seek
+28419	bot-712	bravo	A00r-0410	state	-14.82	20.12	83	1.24	0.02	34.10	7	seek
+28419	bot-713	alpha	F00r-4420	state	19.18	23.97	264	0.00	0.00		0	
+28419	bot-713	alpha	F00r-R420	ammo	19.18	23.97	264	0.04	0.00		1	muzzleRecovery
+28435	bot-713	alpha	P00r-R420	state	19.18	23.97	264	1.32	0.00		1	muzzleRecovery
+28469	bot-709	alpha	S00m-4320	tick	15.86	17.86	199	1.33	1.49	2.45	1	seek
+28535	bot-706	bravo	A44mb4300	tier+element	-21.62	-3.63	123	0.00	0.00		0	
+28552	bot-712	bravo	A00r-4410	ammo	-14.82	20.11	83	0.00	0.00		0	
+28585	bot-658	alpha	E45mm4129	latches	-14.75	-18.50	309	5.06	1.18	3.08	1	flee
+28585	bot-688	bravo	C44rm432I	latches	-19.85	-15.00	93	4.55	1.13	0.65	1	cover
+28652	bot-713	alpha	A00r-R420	state	18.89	24.01	277	0.00	0.29		0	muzzleRecovery
+28685	bot-520	alpha	S45rm4120	health	-9.99	-15.50	247	0.00	0.00		0	
+28688	bot-717	alpha	D00m--000	state+tier+score+element+ammo+health+packs	-4.95	-14.45	4	0.00	0.00		0	
+28702	bot-664	bravo	D00r--000	tick	-7.87	23.33	281	0.00	0.00	3.65	0	
+28702	bot-520	alpha	E49rm4120	state+score	-9.99	-15.50	247	0.00	0.00		0	
+28702	bot-536	alpha	E49rm3220	state+score+health	-10.61	-18.70	243	0.00	0.00		0	
+28702	bot-565	alpha	S49rm3310	score	-14.95	-17.14	249	2.40	0.95	3.74	2	seek
+28702	bot-658	alpha	E49mm4129	score	-14.20	-18.27	309	5.06	0.59	2.53	1	flee
+28702	bot-688	bravo	C44rm4322	latches	-19.89	-15.15	101	0.00	0.15		0	
+28702	bot-706	bravo	S44mm4304	state+element+latches	-21.62	-3.63	123	0.00	0.00		0	
+28702	bot-715	bravo	E44mm3220	element+latches	-20.76	-12.89	95	4.60	1.60	6.17	1	flee
+28719	bot-520	alpha	E49rm4129	latches	-10.03	-15.67	247	5.06	0.17	1.83	1	flee
+28719	bot-536	alpha	E49rm3229	latches	-10.58	-18.54	243	5.06	0.17	0.60	1	flee
+28719	bot-715	bravo	E44mm3229	latches	-20.81	-12.83	95	4.71	0.08	6.09	1	flee
+28785	bot-716	bravo	H44rm4210	state	-23.01	-12.25	97	0.00	0.00		0	
+28802	bot-536	alpha	E49rm3220	latches	-10.52	-18.29	243	0.00	0.25		0	
+28885	bot-688	bravo	S44rm4320	state+latches	-19.89	-15.15	101	0.00	0.00		0	
+28902	bot-716	bravo	H44rm4310	health	-23.01	-12.25	106	0.00	0.00		0	
+28969	bot-711	alpha	S00r-2310	tick	8.58	15.80	233	2.26	2.19	8.70	3	seek
+28985	bot-688	bravo	C44rm4320	state	-19.89	-15.15	127	0.00	0.00		0	
+29002	bot-688	bravo	C44rm4322	latches	-19.89	-15.00	119	4.57	0.15	1.14	2	cover
+29052	bot-520	alpha	E49rm4120	latches	-10.39	-17.14	247	0.04	1.52		0	
+29119	bot-712	bravo	A00r-0410	ammo	-14.82	20.11	83	0.00	0.01		0	
+29185	bot-658	alpha	E49mm4120	latches	-12.63	-16.65	309	0.00	2.26		0	
+29185	bot-706	bravo	S44mm4300	latches	-21.63	-3.65	164	1.12	0.02	20.60	4	seek
+29219	bot-688	bravo	G44rm4322	state	-19.81	-14.16	67	4.54	0.84	0.41	1	cover
+29302	bot-536	alpha	H49rm3220	state	-10.51	-18.29	243	0.08	0.01		0	
+29319	bot-696	bravo	S00r-2320	tick	-4.07	-3.28	20	2.07	1.97	24.87	5	seek
+29336	bot-708	bravo	P00r-4320	tick	0.44	9.72	250	2.40	2.37	26.18	4	squad
+29352	bot-698	bravo	S00r-3320	tick	1.23	13.53	357	2.42	2.37	4.03	1	seek
+29436	bot-688	bravo	S44rm4320	state+latches	-19.45	-13.95	112	0.09	0.41		0	
+29469	bot-709	alpha	S00m-4320	tick	15.43	16.60	200	1.32	1.33	1.12	1	seek
+29552	bot-520	alpha	H49rm4120	state	-10.40	-17.15	247	0.00	0.01		0	
+29586	bot-716	bravo	C44rm4310	state	-23.01	-12.25	72	0.00	0.00		0	
+29603	bot-716	bravo	C44rm4312	latches	-22.96	-12.27	79	1.45	0.05	3.89	1	cover
+29619	bot-536	alpha	H49rm3320	health	-10.51	-18.29	292	0.09	0.01		0	
+29653	bot-713	alpha	A00r-R420	tick	18.90	24.01	263	0.00	0.01		0	
+29670	bot-712	bravo	A00r-4410	ammo	-14.82	20.10	83	0.00	0.01		0	
+29686	bot-658	alpha	H49mm4120	state	-12.63	-16.65	309	0.00	0.00		0	
+29703	bot-565	alpha	S49rm3310	tick	-16.90	-18.29	264	2.36	2.27	1.56	1	seek
+29720	bot-715	bravo	E44mm3229	tick	-23.74	-8.85	95	5.08	4.94	1.15	1	flee
+29786	bot-688	bravo	C44rm4320	state	-19.65	-14.18	170	2.34	0.31	3.83	2	seek
+29803	bot-688	bravo	C44rm4322	latches	-19.51	-14.14	161	4.52	0.15	0.59	1	cover
+29853	bot-688	bravo	G44rm4322	state	-19.37	-14.09	152	4.53	0.15	0.44	1	cover
+29904	bot-658	alpha	H49mm4220	health	-12.63	-16.65	263	0.00	0.00		0	
+29920	bot-715	bravo	E44mm3220	latches	-24.26	-8.18	95	0.00	0.85		0	

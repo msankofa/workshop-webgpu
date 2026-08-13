@@ -140,5 +140,22 @@ function buildBillboardGeoFixed(width, height, centerY) {
   ok(minDot > 0.9, `2b: FIXED billboard winding faces TOWARD the camera for every tested position (min dot=${minDot.toFixed(3)})`);
 }
 
+// ---- 3: option merge keeps THREE.Texture instances intact ----
+// merge() used to recurse into any object, so a Texture on both sides (bark.map in the viewer's
+// 'authored' texture mode) came out as a prototype-less copy of its own properties. It still had
+// isTexture === true, so TSL accepted it and the WebGPU sampler binding then crashed on
+// texture.addEventListener. Class instances must replace wholesale, not merge key-by-key.
+{
+  const tex = new THREE.Texture();
+  const tree = createTree({ seed: 3, levels: 1, bark: { map: tex, normalMap: tex }, leaves: { map: tex } });
+  ok(tree.options.bark.map === tex, '3: bark.map survives merge as the same Texture instance');
+  ok(tree.options.bark.normalMap === tex, '3: bark.normalMap survives merge');
+  ok(tree.options.leaves.map === tex, '3: leaves.map survives merge');
+  tree.regenerate({ bark: { map: tex }, leaves: { map: tex } });
+  ok(tree.options.bark.map === tex, '3: bark.map survives a second merge via regenerate()');
+  ok(typeof tree.options.leaves.map.addEventListener === 'function', '3: merged map is still a real Texture');
+  tree.dispose();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

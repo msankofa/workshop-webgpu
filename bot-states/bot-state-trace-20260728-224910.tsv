@@ -1,0 +1,1473 @@
+t_ms	bot_id	team	code	changed_slots	x	z	yaw_deg	speed	moved	goal_dist	path_len	path_mode	squad_id	squad_rank	leader_id	target_id
+1847	bot-13	alpha	P00r-0410	initial	-24.45	7.05	0	0.00			0			-1		
+1847	bot-13	alpha	P00r-4410	ammo	-24.45	7.05	0	0.00	0.00		0		squad-3	-1	bot-13	
+1847	bot-14	bravo	P00r-0410	initial	1.55	22.55	0	0.00			0			-1		
+1876	bot-14	bravo	P00r-4410	ammo	1.55	22.55	0	0.00	0.00		0		squad-4	0	bot-14	
+2888	bot-13	alpha	P00r-4410	tick	-23.79	5.02	168	2.44	2.13		10	patrol	squad-3	0	bot-13	bot-14
+2888	bot-14	bravo	P00r-4410	tick	0.51	20.42	195	1.05	2.37		7	patrol	squad-4	0	bot-14	bot-13
+3905	bot-13	alpha	P00r-4410	tick	-22.27	2.94	130	2.44	2.58		9	patrol	squad-3	0	bot-13	bot-14
+3905	bot-14	bravo	P00r-4410	tick	-0.27	18.58	227	2.04	2.00		7	patrol	squad-4	0	bot-14	bot-13
+4908	bot-13	alpha	P00r-4410	tick	-20.36	2.19	86	1.92	2.05		9	patrol	squad-3	0	bot-13	bot-14
+4908	bot-14	bravo	P00r-4410	tick	-1.09	16.61	203	2.43	2.13		7	patrol	squad-4	0	bot-14	bot-13
+5918	bot-13	alpha	P00r-4410	tick	-18.47	1.57	108	1.74	1.99		9	patrol	squad-3	0	bot-13	bot-14
+5918	bot-14	bravo	P00r-4410	tick	-1.90	15.28	159	0.33	1.56		7	patrol	squad-4	0	bot-14	bot-13
+6872	bot-15	alpha	P00r-0410	initial	-19.95	1.55	0	0.00			0			-1		
+6872	bot-16	bravo	P00r-0410	initial	-6.45	19.55	0	0.00			0			-1		
+6885	bot-15	alpha	P00r-4410	ammo	-19.95	1.55	0	0.00	0.00		0		squad-3	1	bot-13	
+6885	bot-16	bravo	P00r-4410	ammo	-6.45	19.55	0	0.00	0.00		0		squad-4	1	bot-14	
+6926	bot-13	alpha	P00r-4410	tick	-16.70	1.69	80	1.80	1.78		8	patrol	squad-3	0	bot-13	bot-14
+6926	bot-14	bravo	P00r-4410	tick	-2.45	14.21	243	1.29	1.20		6	patrol	squad-4	0	bot-14	bot-13
+7233	bot-14	bravo	A00r-4410	state	-2.81	13.93	255	1.89	0.46		6	patrol	squad-4	0	bot-14	bot-13
+7233	bot-16	bravo	S00r-4410	state	-6.10	18.79	88	2.29	0.84	8.66	4	squad	squad-4	1	bot-14	bot-13
+7255	bot-13	alpha	A00r-4410	state	-16.11	1.85	70	1.96	0.61		8	patrol	squad-3	0	bot-13	bot-14
+7255	bot-14	bravo	A00r-441G	latches	-2.81	13.92	250	0.29	0.01		0		squad-4	0	bot-14	bot-13
+7255	bot-15	alpha	S00r-4410	state	-20.26	2.06	352	1.25	0.60	1.28	1	squad	squad-3	1	bot-13	bot-14
+7283	bot-13	alpha	A00r-441G	latches	-16.11	1.85	65	0.00	0.00		0		squad-3	0	bot-13	bot-14
+7496	bot-14	bravo	S00r-4410	state+latches	-2.81	13.92	250	0.00	0.00		0		squad-4	0	bot-14	bot-13
+7528	bot-13	alpha	S00r-4410	state+latches	-16.12	1.84	65	0.00	0.01		0		squad-3	0	bot-13	bot-14
+7798	bot-14	bravo	A00r-4410	state	-3.16	13.85	236	2.09	0.36	16.63	6	seek	squad-4	0	bot-14	bot-13
+7816	bot-13	alpha	A00r-4410	state	-15.75	1.97	55	2.08	0.39	18.60	4	seek	squad-3	0	bot-13	bot-14
+7839	bot-14	bravo	A00r-441G	latches	-3.16	13.85	228	0.00	0.00		0		squad-4	0	bot-14	bot-13
+7865	bot-13	alpha	A00r-441G	latches	-15.75	1.97	47	0.06	0.00		0		squad-3	0	bot-13	bot-14
+8075	bot-14	bravo	S00r-4410	state+latches	-3.15	13.82	228	0.00	0.03		0		squad-4	0	bot-14	bot-13
+8107	bot-13	alpha	S00r-4410	state+latches	-15.75	1.97	47	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8242	bot-16	bravo	S00r-4410	tick	-6.06	16.46	214	2.54	2.34	17.48	3	seek	squad-4	1	bot-14	bot-13
+8258	bot-14	bravo	A00r-4410	state	-3.37	13.77	236	1.34	0.23	15.72	6	seek	squad-4	0	bot-14	bot-13
+8258	bot-15	alpha	S00r-4410	tick	-18.53	1.67	57	1.62	1.77	17.34	3	seek	squad-3	1	bot-13	bot-14
+8280	bot-13	alpha	A00r-4410	state	-15.54	2.04	56	1.28	0.22	18.10	4	seek	squad-3	0	bot-13	bot-14
+8443	bot-13	alpha	F00r-4410	state	-15.54	2.04	46	0.02	0.01		0		squad-3	0	bot-13	bot-14
+8443	bot-14	bravo	A00r-4310	health	-3.37	13.77	226	0.00	0.01		0		squad-4	0	bot-14	bot-13
+8443	bot-16	bravo	S21r-4410	tier+score	-6.05	15.93	211	2.63	0.53	17.05	3	seek	squad-4	1	bot-14	bot-13
+8466	bot-13	alpha	A00r-4410	state	-15.54	2.04	46	0.01	0.00		0		squad-3	0	bot-13	bot-14
+8466	bot-14	bravo	A21r-4310	tier+score	-3.37	13.77	226	0.00	0.00		0		squad-4	0	bot-14	bot-13
+8558	bot-13	alpha	F00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8558	bot-14	bravo	E32r-4210	state+tier+score+health	-3.37	13.77	226	0.00	0.00		0		squad-4	0	bot-14	bot-13
+8558	bot-16	bravo	S32r-4410	tier+score	-6.04	15.61	181	2.71	0.32	16.80	3	seek	squad-4	1	bot-14	bot-13
+8585	bot-13	alpha	A00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8585	bot-14	bravo	E32r-4219	latches	-3.32	13.78	226	1.21	0.05	6.14	2	flee	squad-4	0	bot-14	bot-13
+8680	bot-13	alpha	F00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8680	bot-14	bravo	E33r-4119	score+health	-3.21	13.84	226	1.39	0.12	6.03	2	flee	squad-4	0	bot-14	bot-13
+8680	bot-16	bravo	S33r-4410	score	-6.03	15.26	179	3.51	0.35	16.52	3	seek	squad-4	1	bot-14	bot-13
+8712	bot-13	alpha	A00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8806	bot-13	alpha	F00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8806	bot-14	bravo	E34r-4019	score+health	-2.94	13.98	226	5.11	0.31	5.74	2	flee	squad-4	0	bot-14	bot-13
+8806	bot-16	bravo	S34r-4410	score	-6.01	14.90	179	2.76	0.36	16.24	3	seek	squad-4	1	bot-14	bot-13
+8828	bot-13	alpha	A00r-4410	state	-15.54	2.04	46	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8929	bot-13	alpha	F00r-4410	state	-15.54	2.04	47	0.00	0.00		0		squad-3	0	bot-13	bot-14
+8929	bot-13	alpha	P00r-4410	state	-15.54	2.04	47	0.00	0.00		0		squad-3	0	bot-13	
+8929	bot-14	bravo	D00r--000	state+tier+score+ammo+packs+latches	-2.44	14.27	227	0.00	0.57	5.22	2	flee	squad-4	0	bot-14	bot-13
+8929	bot-16	bravo	S36r-4410	score	-6.00	14.54	179	2.76	0.36	15.97	3	seek	squad-4	1	bot-14	bot-13
+8956	bot-15	alpha	P00r-4410	state	-17.50	1.58	80	1.61	1.03	15.72	3	seek	squad-3	1	bot-13	
+8985	bot-16	bravo	C36r-4410	state	-6.00	14.46	179	2.81	0.08	15.91	3	seek	squad-4	0		bot-13
+9018	bot-16	bravo	C36r-4412	latches	-5.72	14.34	163	5.49	0.31	4.60	3	cover	squad-4	0		bot-13
+9213	bot-13	alpha	A00r-4410	state	-15.17	2.16	75	2.43	0.39		7	patrol	squad-3	0	bot-13	bot-16
+9291	bot-16	bravo	S36r-4410	state+latches	-4.67	14.18	97	3.99	1.06	3.73	3	cover	squad-4	0		bot-13
+9474	bot-16	bravo	A36r-4410	state	-4.97	13.77	145	2.72	0.51	16.77	3	seek	squad-4	0		bot-13
+9508	bot-13	alpha	A00r-441G	latches	-15.17	2.15	41	0.00	0.01		0		squad-3	0	bot-13	bot-16
+9508	bot-16	bravo	A36r-441G	latches	-4.97	13.77	152	0.00	0.00		0		squad-4	0		bot-13
+9746	bot-13	alpha	S00r-4410	state+latches	-15.17	2.15	41	0.00	0.00		0		squad-3	0	bot-13	bot-16
+9746	bot-16	bravo	S36r-4410	state+latches	-5.00	13.64	152	0.01	0.13		0		squad-4	0		bot-13
+9797	bot-16	bravo	C36r-4410	state	-5.02	13.61	156	1.49	0.03	15.24	3	seek	squad-4	0		bot-13
+9817	bot-13	alpha	A00r-4410	state	-15.08	2.19	56	1.34	0.10	15.32	3	seek	squad-3	0	bot-13	bot-16
+9817	bot-16	bravo	C36r-4412	latches	-4.94	13.58	171	1.19	0.08	4.28	3	cover	squad-4	0		bot-13
+9972	bot-15	alpha	P00r-4410	tick	-16.55	1.70	93	1.84	0.96	2.69	9	squad	squad-3	1	bot-13	bot-16
+10258	bot-15	alpha	A00r-4410	state	-16.01	1.77	106	2.17	0.55	2.59	9	squad	squad-3	1	bot-13	bot-16
+10291	bot-15	alpha	A00r-441G	latches	-16.01	1.77	99	0.00	0.00		0		squad-3	1	bot-13	bot-16
+10482	bot-16	bravo	P36r-4410	state+latches	-3.08	13.76	226	4.48	1.87	2.81	1	muzzleRecovery	squad-4	0		bot-13
+10541	bot-15	alpha	S00r-4410	state+latches	-16.01	1.75	99	0.00	0.02		0		squad-3	1	bot-13	bot-16
+10595	bot-15	alpha	A00r-4410	state	-15.97	1.76	91	1.05	0.04	14.42	2	seek	squad-3	1	bot-13	bot-16
+10595	bot-16	bravo	U36r-4410	state	-2.99	13.30	199	0.00	0.47	3.15	0	muzzleRecovery	squad-4	0		bot-13
+10669	bot-15	alpha	A00r-441G	latches	-15.98	1.75	76	0.20	0.01		0		squad-3	1	bot-13	bot-16
+10797	bot-13	alpha	F00r-4410	state	-15.07	2.18	47	0.00	0.01		0		squad-3	0	bot-13	bot-16
+10797	bot-16	bravo	U37r-4310	score+health	-3.75	12.59	227	4.46	1.04	4.58	1	pursue	squad-4	0	bot-16	bot-13
+10822	bot-13	alpha	A00r-4410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+10887	bot-15	alpha	S00r-4410	state+latches	-15.98	1.74	76	0.00	0.00		0		squad-3	1	bot-13	bot-16
+10912	bot-13	alpha	F00r-4410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+10912	bot-16	bravo	E38r-4210	state+score+health	-4.06	12.30	227	4.36	0.42		0		squad-4	0	bot-16	bot-13
+10934	bot-13	alpha	A00r-4410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+10934	bot-16	bravo	E38r-4219	latches	-3.96	12.42	227	3.41	0.16	5.53	2	flee	squad-4	0	bot-16	bot-13
+11024	bot-13	alpha	F00r-4410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11024	bot-13	alpha	F00r-3410	ammo	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11024	bot-16	bravo	E39r-4119	score+health	-3.78	12.61	227	3.04	0.27	5.26	2	flee	squad-4	0	bot-16	bot-13
+11055	bot-13	alpha	A10r-3410	state+tier	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11055	bot-15	alpha	S10r-4410	tier	-15.77	1.81	48	1.18	0.22	14.30	2	seek	squad-3	1	bot-13	bot-16
+11085	bot-15	alpha	A10r-4410	state	-15.77	1.81	48	1.18	0.00	14.30	2	seek	squad-3	1	bot-13	bot-16
+11141	bot-13	alpha	F10r-3410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11141	bot-16	bravo	E39r-4019	health	-3.56	12.84	227	2.34	0.31	4.96	2	flee	squad-4	0	bot-16	bot-13
+11161	bot-13	alpha	A10r-3410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11253	bot-13	alpha	F10r-3410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	bot-16
+11253	bot-13	alpha	P10r-3410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	
+11253	bot-16	bravo	D00r--000	state+tier+score+ammo+packs+latches	-3.41	13.00	227	0.00	0.22	4.74	2	flee	squad-4	0	bot-16	bot-13
+11253	bot-15	alpha	P10r-4410	state	-15.77	1.80	48	0.00	0.02		0		squad-3	1	bot-13	
+11283	bot-13	alpha	S10r-3410	state	-15.07	2.18	47	0.00	0.00		0		squad-3	0	bot-13	
+11874	bot-17	bravo	P00r-0410	initial	0.05	9.55	0	0.00			0			-1		
+11874	bot-18	alpha	P00r-0410	initial	-9.45	7.05	0	0.00			0			-1		
+11891	bot-17	bravo	C38r-4410	state+tier+score+ammo	0.05	9.55	0	0.00	0.00		0		squad-4	0		
+11891	bot-18	alpha	S00r-4410	state+ammo	-9.45	7.05	0	0.00	0.00		0		squad-3	2	bot-13	
+11914	bot-13	alpha	C10r-3410	state	-13.85	2.68	45	2.62	1.33	15.94	4	seek	squad-3	0	bot-13	
+11914	bot-17	bravo	C38r-4412	latches	-0.17	9.46	350	4.79	0.24	6.71	4	cover	squad-4	0		bot-13
+11914	bot-18	alpha	A00r-4410	state	-9.33	7.02	4	2.49	0.12	7.13	1	seek	squad-3	2	bot-13	bot-17
+11935	bot-13	alpha	C10r-3412	latches	-13.93	2.58	57	2.77	0.13	6.69	2	cover	squad-3	0	bot-13	bot-17
+11955	bot-15	alpha	A10r-4410	state	-15.30	1.99	45	2.42	0.50	2.72	8	squad	squad-3	1	bot-13	
+12658	bot-13	alpha	C00r-3412	tier	-15.84	0.83	52	3.51	2.59	4.61	2	cover	squad-3	0	bot-13	bot-17
+12658	bot-15	alpha	A00r-4410	tier	-15.29	1.98	54	0.00	0.01		0		squad-3	1	bot-13	bot-17
+12677	bot-13	alpha	A00r-3410	state+latches	-15.84	0.83	52	3.51	0.00	4.61	2	cover	squad-3	0	bot-13	bot-17
+12811	bot-17	bravo	P38r-4410	state+latches	-2.96	11.73	234	3.69	3.59	4.58	1	muzzleRecovery	squad-4	0		bot-18
+12843	bot-18	alpha	F00r-4410	state	-9.32	7.02	54	0.00	0.01		0		squad-3	2	bot-13	bot-17
+12862	bot-17	bravo	P38r-4310	health	-3.01	11.50	217	3.44	0.23	4.81	1	muzzleRecovery	squad-4	0		bot-18
+12862	bot-18	alpha	A00r-4410	state	-9.32	7.02	54	0.00	0.00		0		squad-3	2	bot-13	bot-17
+12919	bot-17	bravo	C39r-4310	state+score	-3.04	11.36	206	0.00	0.14	4.95	0	muzzleRecovery	squad-4	0		bot-18
+12943	bot-17	bravo	C39r-4312	latches	-3.05	11.53	215	4.60	0.16	4.80	3	cover	squad-4	0		bot-18
+12967	bot-13	alpha	F00r-3410	state	-15.84	0.82	50	0.00	0.01		0		squad-3	0	bot-13	bot-17
+12967	bot-17	bravo	E39r-4210	state+health+latches	-3.05	11.53	215	4.60	0.00		0		squad-4	0		bot-18
+12967	bot-18	alpha	F00r-4410	state	-9.32	7.02	54	0.00	0.00		0		squad-3	2	bot-13	bot-17
+12986	bot-13	alpha	A00r-3410	state	-15.84	0.82	50	0.00	0.00		0		squad-3	0	bot-13	bot-17
+12986	bot-17	bravo	E39r-4119	health+latches	-3.07	11.75	226	5.10	0.22	5.07	3	flee	squad-4	0		bot-18
+12986	bot-18	alpha	A00r-4410	state	-9.32	7.02	53	0.00	0.00		0		squad-3	2	bot-13	bot-17
+13021	bot-18	alpha	A10r-4410	tier	-9.32	7.02	52	0.00	0.00		0		squad-3	2	bot-13	bot-17
+13091	bot-13	alpha	F00r-3410	state	-15.84	0.82	48	0.00	0.00		0		squad-3	0	bot-13	bot-17
+13091	bot-17	bravo	E39r-4019	health	-3.10	12.28	230	4.89	0.53	4.58	3	flee	squad-4	0		bot-18
+13091	bot-18	alpha	F10r-4410	state	-9.32	7.02	50	0.00	0.00		0		squad-3	2	bot-13	bot-17
+13091	bot-18	alpha	P10r-4410	state	-9.32	7.02	50	0.00	0.00		0		squad-3	2	bot-13	
+13091	bot-17	bravo	D00r--000	state+tier+score+ammo+packs+latches	-3.10	12.28	230	0.00	0.00	4.58	3	flee	squad-4	0		bot-18
+13111	bot-13	alpha	S00r-3410	state	-15.84	0.82	48	0.00	0.00		0		squad-3	0	bot-13	
+13111	bot-15	alpha	P00r-4410	state	-15.29	1.97	50	0.00	0.01		0		squad-3	1	bot-13	
+13111	bot-18	alpha	S10r-4410	state	-9.32	7.02	50	0.00	0.00		0		squad-3	2	bot-13	
+13958	bot-15	alpha	S00r-4410	state	-15.66	1.44	257	1.86	0.64	1.28	1	squad	squad-3	1	bot-13	
+14124	bot-13	alpha	S00r-3410	tick	-13.61	1.22	58	2.46	2.26	15.58	3	seek	squad-3	0	bot-13	
+14124	bot-18	alpha	S10r-4410	tick	-7.35	7.93	48	2.12	2.17	4.89	1	seek	squad-3	2	bot-13	
+14526	bot-18	alpha	S00r-4410	tier	-6.55	8.32	48	2.21	0.89	4.00	1	seek	squad-3	2	bot-13	
+14962	bot-15	alpha	S00r-4410	tick	-13.44	2.73	53	2.54	2.56	11.29	2	seek	squad-3	1	bot-13	
+15150	bot-13	alpha	S00r-3410	tick	-11.66	2.73	57	2.35	2.47	13.12	3	seek	squad-3	0	bot-13	
+15535	bot-18	alpha	S00r-4410	tick	-4.93	9.10	64	0.94	1.80	2.19	1	seek	squad-3	2	bot-13	
+15974	bot-15	alpha	S00r-4410	tick	-11.38	4.30	53	2.41	2.59	8.70	2	seek	squad-3	1	bot-13	
+16161	bot-13	alpha	S00r-3410	tick	-9.65	4.12	59	2.40	2.44	10.68	3	seek	squad-3	0	bot-13	
+16541	bot-18	alpha	S00r-4410	tick	-3.95	9.58	65	1.11	1.09	1.11	1	seek	squad-3	2	bot-13	
+16891	bot-19	bravo	P00m-0420	initial	20.05	22.05	0	0.00			0			-1		
+16891	bot-20	alpha	P00m-0420	initial	-13.95	7.55	0	0.00			0			-1		
+16907	bot-13	alpha	P00r-3410	state	-8.36	5.36	62	2.36	1.79	8.95	3	seek	squad-3	0	bot-13	
+16907	bot-19	bravo	P00m-4420	ammo	20.05	22.05	0	0.00	0.00		0		squad-4	0		
+16907	bot-20	alpha	S00m-4420	state+ammo	-13.95	7.55	0	0.00	0.00		0		squad-3	3	bot-13	
+16939	bot-20	alpha	P00m-4420	state	-13.97	7.59	4	2.35	0.04	8.94	5	seek	squad-3	3	bot-13	
+16964	bot-15	alpha	P00r-4410	state	-9.42	5.51	51	2.40	2.30	6.41	2	seek	squad-3	1	bot-13	
+16997	bot-18	alpha	P00r-4410	state	-3.57	9.78	66	0.70	0.43	0.68	1	seek	squad-3	2	bot-13	
+17724	bot-18	alpha	P00r-4420	packs	-3.24	10.89	41	1.43	1.16	5.34	1	squad	squad-3	2	bot-13	bot-19
+17907	bot-13	alpha	P00r-3410	tick	-9.11	7.37	333	1.19	2.15	19.57	5	patrolReentry	squad-3	0	bot-13	bot-19
+17907	bot-19	bravo	P00m-4420	tick	17.89	20.96	246	2.35	2.42		12	patrol	squad-4	0		bot-13
+17941	bot-20	alpha	P00m-4420	tick	-14.96	9.79	320	2.30	2.42	9.95	7	squad	squad-3	3	bot-13	bot-19
+17974	bot-15	alpha	P00r-4410	tick	-9.43	5.14	176	0.00	0.36		0		squad-3	1	bot-13	bot-19
+18741	bot-18	alpha	P00r-4420	tick	-4.19	9.36	205	2.48	1.79	3.05	1	squad	squad-3	2	bot-13	bot-19
+18908	bot-13	alpha	P00r-3410	tick	-9.56	8.22	304	0.96	0.96	18.64	5	patrolReentry	squad-3	0	bot-13	bot-19
+18908	bot-19	bravo	P00m-4420	tick	15.92	19.97	267	2.41	2.20		12	patrol	squad-4	0	bot-19	bot-13
+18944	bot-20	alpha	P00m-4420	tick	-15.91	11.98	331	2.44	2.39	11.34	6	squad	squad-3	3	bot-13	bot-19
+18974	bot-15	alpha	P00r-4410	tick	-9.43	5.14	176	0.00	0.00		0		squad-3	1	bot-13	bot-19
+19757	bot-18	alpha	P00r-4420	tick	-5.58	7.95	226	0.00	1.98		0		squad-3	2	bot-13	bot-19
+19924	bot-13	alpha	P00r-3410	tick	-10.31	9.59	336	2.57	1.57	17.11	5	patrolReentry	squad-3	0	bot-13	bot-19
+19924	bot-19	bravo	P00m-4420	tick	13.69	18.88	234	2.42	2.48		12	patrol	squad-4	0	bot-19	bot-13
+19957	bot-20	alpha	P00m-4420	tick	-14.99	14.09	114	2.64	2.30	12.04	4	squad	squad-3	3	bot-13	bot-19
+19974	bot-15	alpha	P00r-4410	tick	-10.07	5.52	256	2.40	0.75	0.96	1	squad	squad-3	1	bot-13	bot-19
+20758	bot-18	alpha	P00r-4420	tick	-7.17	8.88	316	2.14	1.84	2.44	1	squad	squad-3	2	bot-13	bot-19
+20924	bot-13	alpha	P00r-3410	tick	-11.39	11.61	350	1.90	2.28	14.92	5	patrolReentry	squad-3	0	bot-13	bot-19
+20924	bot-19	bravo	P00m-4420	tick	11.67	18.20	253	2.24	2.13		11	patrol	squad-4	0	bot-19	bot-13
+20974	bot-20	alpha	P00m-4420	tick	-12.65	13.16	137	2.55	2.52	9.12	2	squad	squad-3	3	bot-13	bot-19
+20991	bot-15	alpha	P00r-4410	tick	-10.57	6.76	37	1.63	1.34	2.38	1	squad	squad-3	1	bot-13	bot-19
+21759	bot-18	alpha	P00r-4420	tick	-8.09	8.40	326	1.88	1.04	3.20	1	squad	squad-3	2	bot-13	bot-19
+21895	bot-21	bravo	P00r-0410	initial	15.55	19.55	0	0.00			0			-1		
+21895	bot-22	alpha	P00r-0410	initial	-18.45	10.05	0	0.00			0			-1		
+21911	bot-21	bravo	P00r-4410	ammo	15.55	19.55	0	0.00	0.00		0		squad-4	1	bot-19	
+21911	bot-22	alpha	P00r-4410	ammo	-18.45	10.05	0	0.00	0.00		0		squad-3	3	bot-13	
+21932	bot-13	alpha	P00r-3410	tick	-12.27	12.63	299	1.62	1.35	13.58	4	patrolReentry	squad-3	0	bot-13	bot-19
+21932	bot-19	bravo	P00m-4420	tick	9.75	17.90	287	1.69	1.95		11	patrol	squad-4	0	bot-19	bot-13
+21992	bot-15	alpha	P00r-4410	tick	-10.37	8.29	11	2.09	1.55	3.33	1	squad	squad-3	1	bot-13	bot-19
+21992	bot-20	alpha	P00m-4420	tick	-10.38	12.25	98	2.58	2.44	5.60	1	squad	squad-3	4	bot-13	bot-19
+22775	bot-18	alpha	P00r-4420	tick	-8.28	9.38	312	0.94	1.00	5.32	2	squad	squad-3	2	bot-13	bot-19
+22918	bot-21	bravo	P00r-4410	tick	13.49	18.29	259	1.89	2.41	4.44	3	squad	squad-4	1	bot-19	bot-13
+22918	bot-22	alpha	P00r-4410	tick	-17.22	12.21	16	2.59	2.48	10.35	4	squad	squad-3	3	bot-13	bot-19
+22946	bot-13	alpha	P00r-3410	tick	-13.49	13.87	279	1.60	1.74	11.84	4	patrolReentry	squad-3	0	bot-13	bot-19
+22946	bot-19	bravo	P00m-4420	tick	7.62	17.93	281	2.41	2.13		11	patrol	squad-4	0	bot-19	bot-13
+22996	bot-15	alpha	P00r-4410	tick	-10.95	10.45	318	2.45	2.23	2.20	1	squad	squad-3	1	bot-13	bot-19
+22996	bot-20	alpha	P00m-4420	tick	-8.48	12.13	69	2.53	1.90	4.26	1	squad	squad-3	4	bot-13	bot-19
+23791	bot-18	alpha	P00r-4420	tick	-8.88	10.57	333	2.26	1.33	6.68	2	squad	squad-3	2	bot-13	bot-19
+23930	bot-21	bravo	P00r-4410	tick	12.37	17.06	253	2.32	1.67	4.35	2	squad	squad-4	1	bot-19	bot-13
+23930	bot-22	alpha	P00r-4410	tick	-15.12	14.04	129	2.58	2.79	7.34	2	squad	squad-3	3	bot-13	bot-19
+23957	bot-13	alpha	P00r-3410	tick	-14.52	14.42	315	2.43	1.16	10.72	3	patrolReentry	squad-3	0	bot-13	bot-19
+23957	bot-19	bravo	P00m-4420	tick	5.26	18.00	249	2.46	2.36		11	patrol	squad-4	0	bot-19	bot-13
+24008	bot-15	alpha	P00r-4410	tick	-11.34	11.67	305	1.62	1.28	1.06	1	squad	squad-3	1	bot-13	bot-19
+24008	bot-20	alpha	P00m-4420	tick	-6.30	12.61	103	2.31	2.24	3.38	1	packseek	squad-3	4	bot-13	bot-19
+24792	bot-18	alpha	P00r-4420	tick	-10.02	12.62	333	1.56	2.35	6.10	2	squad	squad-3	2	bot-13	bot-19
+24940	bot-21	bravo	P00r-4410	tick	10.48	17.84	252	2.09	2.05	4.48	1	squad	squad-4	1	bot-19	bot-13
+24940	bot-22	alpha	P00r-4410	tick	-12.65	13.46	139	2.50	2.53	3.76	1	squad	squad-3	3	bot-13	bot-19
+24974	bot-13	alpha	P00r-3410	tick	-15.73	14.76	265	0.93	1.26	9.65	3	patrolReentry	squad-3	0	bot-13	bot-19
+24974	bot-19	bravo	P00m-4420	tick	2.90	18.06	268	2.15	2.36		10	patrol	squad-4	0	bot-19	bot-13
+25017	bot-15	alpha	P00r-4410	tick	-11.88	12.25	316	1.41	0.78	1.11	1	squad	squad-3	1	bot-13	bot-19
+25017	bot-20	alpha	P00m-4420	tick	-5.33	12.71	88	0.00	0.98		0		squad-3	4	bot-13	bot-19
+25807	bot-18	alpha	P00r-4420	tick	-10.96	13.46	315	1.21	1.26	5.30	2	squad	squad-3	2	bot-13	bot-19
+25941	bot-21	bravo	P00r-4410	tick	8.58	17.87	283	2.10	1.90	4.63	1	squad	squad-4	1	bot-19	bot-13
+25941	bot-22	alpha	P00r-4410	tick	-11.10	11.76	148	2.56	2.30	1.03	1	squad	squad-3	3	bot-13	bot-19
+25978	bot-13	alpha	P00r-3410	tick	-17.02	14.48	234	1.37	1.31	9.09	3	patrolReentry	squad-3	0	bot-13	bot-19
+25978	bot-19	bravo	P00m-4420	tick	0.88	17.53	251	2.13	2.09		9	patrol	squad-4	0	bot-19	bot-13
+26024	bot-15	alpha	P00r-4410	tick	-12.61	12.96	299	1.61	1.03	1.22	5	squad	squad-3	1	bot-13	bot-19
+26024	bot-20	alpha	P00m-4420	tick	-5.33	12.70	88	0.00	0.01		0		squad-3	4	bot-13	bot-19
+26824	bot-18	alpha	P00r-4420	tick	-12.06	14.52	308	2.15	1.53	4.33	1	squad	squad-3	2	bot-13	bot-19
+26907	bot-23	bravo	P00r-0410	initial	-0.95	19.05	0	0.00			0			-1		
+26907	bot-24	alpha	P00r-0410	initial	-16.45	8.05	0	0.00			0			-1		
+26924	bot-23	bravo	P00r-4410	ammo	-0.95	19.05	0	0.00	0.00		0		squad-4	2	bot-19	
+26924	bot-24	alpha	A00r-4410	state+ammo	-16.45	8.05	0	0.00	0.00		0		squad-3	4	bot-13	
+26946	bot-13	alpha	S00r-3410	state	-17.96	14.26	261	0.12	0.97	8.80	3	patrolReentry	squad-3	0	bot-13	bot-19
+26946	bot-15	alpha	S00r-4410	state	-13.27	13.64	252	0.80	0.94	1.94	4	squad	squad-3	1	bot-13	bot-19
+26946	bot-18	alpha	S00r-4420	state	-12.21	14.69	305	2.53	0.23	4.10	1	squad	squad-3	2	bot-13	bot-19
+26946	bot-19	bravo	A00m-4420	state	-0.57	16.31	225	1.95	1.89	2.65	2	packseek	squad-4	0	bot-19	bot-13
+26946	bot-20	alpha	S00m-4420	state	-5.36	12.67	93	2.53	0.04	6.35	1	squad	squad-3	5	bot-13	bot-19
+26946	bot-21	bravo	S00r-4410	state	6.41	18.15	290	2.25	2.19	4.53	1	squad	squad-4	1	bot-19	bot-13
+26946	bot-22	alpha	S00r-4410	state	-11.22	10.94	208	0.83	0.82	1.03	1	squad	squad-3	3	bot-13	bot-19
+26946	bot-23	bravo	S00r-4410	state	-0.94	19.08	4	1.98	0.03	3.99	1	squad	squad-4	2	bot-19	
+26977	bot-24	alpha	A00r-441G	latches	-16.45	8.05	8	0.00	0.00		0		squad-3	4	bot-13	bot-19
+26998	bot-19	bravo	A00m-442G	latches	-0.58	16.33	236	0.67	0.02		0		squad-4	0	bot-19	bot-24
+27197	bot-24	alpha	S00r-4410	state+latches	-16.45	8.05	8	0.00	0.00		0		squad-3	4	bot-13	bot-19
+27233	bot-19	bravo	S00m-4420	state+latches	-0.59	16.35	236	0.00	0.01		0		squad-4	0	bot-19	bot-24
+27960	bot-13	alpha	S00r-3410	tick	-15.26	14.19	89	2.58	2.70	18.31	4	seek	squad-3	0	bot-13	bot-19
+27960	bot-15	alpha	S00r-4410	tick	-10.79	12.65	81	2.51	2.67	8.45	3	seek	squad-3	1	bot-13	bot-19
+27960	bot-18	alpha	S00r-4420	tick	-10.29	13.39	86	3.10	2.32	9.86	4	seek	squad-3	2	bot-13	bot-19
+27960	bot-20	alpha	S00m-4420	tick	-4.68	13.66	33	0.93	1.21	2.25	1	seek	squad-3	5	bot-13	bot-19
+27960	bot-21	bravo	S00r-4410	tick	3.89	18.10	237	2.40	2.52	21.25	7	seek	squad-4	1	bot-19	bot-13
+27960	bot-22	alpha	S00r-4410	tick	-8.97	11.75	46	2.63	2.39	10.49	4	seek	squad-3	3	bot-13	bot-19
+27960	bot-23	bravo	S00r-4410	tick	-1.40	17.16	235	2.32	1.97	20.22	6	seek	squad-4	2	bot-19	bot-13
+28020	bot-24	alpha	A00r-4410	state	-16.45	9.78	67	2.41	1.73	17.37	5	seek	squad-3	4	bot-13	bot-19
+28092	bot-21	bravo	A00r-4410	state	3.61	18.10	237	2.32	0.28	21.02	7	seek	squad-4	1	bot-19	bot-13
+28174	bot-24	alpha	A00r-441G	latches	-16.45	9.78	67	0.00	0.00		0		squad-3	4	bot-13	bot-21
+28201	bot-21	bravo	A00r-441G	latches	3.61	18.10	247	0.00	0.00		0		squad-4	1	bot-19	bot-24
+28241	bot-19	bravo	S00m-4420	tick	-1.91	15.39	248	0.67	1.63	14.10	7	seek	squad-4	0	bot-19	bot-24
+28374	bot-20	alpha	C00m-4420	state	-4.47	13.98	33	0.95	0.37	1.88	1	seek	squad-3	5	bot-13	bot-19
+28394	bot-20	alpha	C00m-4422	latches	-4.40	13.82	42	5.06	0.17	5.19	2	cover	squad-3	5	bot-13	bot-19
+28415	bot-19	bravo	C00m-4420	state	-1.94	15.17	248	1.37	0.22	13.98	7	seek	squad-4	0	bot-19	bot-24
+28415	bot-24	alpha	S00r-4410	state+latches	-16.45	9.78	67	0.00	0.00		0		squad-3	4	bot-13	bot-21
+28437	bot-19	bravo	C00m-4422	latches	-1.81	15.34	238	4.92	0.21	0.80	1	cover	squad-4	0	bot-19	bot-20
+28437	bot-21	bravo	S00r-4410	state+latches	3.61	18.10	247	0.00	0.00		0		squad-4	1	bot-19	bot-24
+28491	bot-23	bravo	E00r-4410	state	-1.61	16.05	199	1.85	1.14	19.42	6	seek	squad-4	2	bot-19	bot-13
+28511	bot-23	bravo	E00r-4411	latches	-1.58	16.21	208	4.77	0.17	2.42	1	flee	squad-4	2	bot-19	bot-20
+28690	bot-23	bravo	E00r-441H	latches	-1.37	17.01	209	4.58	0.83	1.59	1	flee	squad-4	2	bot-19	bot-20
+28741	bot-23	bravo	E00r-4411	latches	-1.31	17.24	206	4.58	0.23	1.36	1	flee	squad-4	2	bot-19	bot-20
+28840	bot-19	bravo	G00m-4422	state	-1.68	15.71	207	4.92	0.39	0.42	1	cover	squad-4	0	bot-19	bot-20
+28862	bot-19	bravo	A00m-4420	state+latches	-1.62	15.80	205	0.00	0.11		0		squad-4	0	bot-19	bot-20
+28969	bot-13	alpha	S00r-3410	tick	-12.68	13.92	88	2.27	2.59	15.74	3	seek	squad-3	0	bot-13	bot-19
+28969	bot-15	alpha	S00r-4410	tick	-8.60	11.84	75	2.71	2.33	6.53	3	seek	squad-3	1	bot-13	bot-19
+28969	bot-18	alpha	S00r-4420	tick	-8.94	12.62	75	3.02	1.55	8.61	4	seek	squad-3	2	bot-13	bot-19
+28969	bot-22	alpha	S00r-4410	tick	-6.50	12.54	67	2.33	2.60	8.24	4	seek	squad-3	3	bot-13	bot-19
+28998	bot-23	bravo	C00r-4410	state+latches	-1.04	18.26	199	0.60	1.06		0		squad-4	2	bot-19	bot-20
+29019	bot-23	bravo	C00r-4412	latches	-1.07	18.14	198	3.44	0.12	4.46	4	cover	squad-4	2	bot-19	bot-20
+29207	bot-19	bravo	F00m-4420	state	-1.64	15.85	198	0.00	0.05		0		squad-4	0	bot-19	bot-20
+29229	bot-19	bravo	C00m-4420	state	-1.64	15.85	198	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29251	bot-19	bravo	C00m-4422	latches	-1.71	15.77	197	2.66	0.11	6.70	5	cover	squad-4	0	bot-19	bot-20
+29376	bot-19	bravo	P00m-4420	state+latches	-1.82	15.50	195	4.29	0.29	6.60	1	muzzleRecovery	squad-4	0	bot-19	bot-20
+29399	bot-20	alpha	P00m-4420	state+latches	-3.01	10.74	14	4.00	3.38	1.97	1	muzzleRecovery	squad-3	5	bot-13	bot-19
+29420	bot-24	alpha	S00r-4410	tick	-16.45	11.99	55	2.46	2.21	20.90	6	seek	squad-3	4	bot-13	bot-21
+29435	bot-19	bravo	A00m-4420	state	-1.94	15.72	212	0.00	0.25	6.83	0	muzzleRecovery	squad-4	0	bot-19	bot-20
+29462	bot-21	bravo	S00r-4410	tick	1.54	18.06	237	2.42	2.07	18.45	7	seek	squad-4	1	bot-19	bot-24
+29496	bot-20	alpha	C00m-4420	state	-2.98	10.35	39	0.00	0.40	1.72	0	muzzleRecovery	squad-3	5	bot-13	bot-19
+29496	bot-23	bravo	C00r-441I	latches	-1.39	16.16	190	3.29	2.01	5.97	4	cover	squad-4	2	bot-19	bot-20
+29522	bot-19	bravo	F00m-4420	state	-1.93	15.72	192	0.05	0.01		0		squad-4	0	bot-19	bot-20
+29522	bot-20	alpha	C00m-4322	health+latches	-2.95	10.32	28	0.57	0.04	1.68	1	cover	squad-3	5	bot-13	bot-19
+29522	bot-22	alpha	S21r-4410	tier+score	-5.43	12.88	33	1.82	1.12	7.35	4	seek	squad-3	3	bot-13	bot-19
+29544	bot-13	alpha	S21r-3410	tier+score	-11.28	13.36	110	2.54	1.51	14.38	3	seek	squad-3	0	bot-13	bot-19
+29544	bot-15	alpha	S21r-4410	tier+score	-7.16	12.23	97	2.60	1.49	5.05	2	seek	squad-3	1	bot-13	bot-19
+29544	bot-18	alpha	S21r-4420	tier+score	-7.55	12.82	75	1.98	1.41	7.21	4	seek	squad-3	2	bot-13	bot-19
+29544	bot-19	bravo	A00m-4420	state	-1.93	15.72	191	0.02	0.00		0		squad-4	0	bot-19	bot-20
+29544	bot-20	alpha	C21m-4322	tier+score	-2.94	10.30	22	0.64	0.02	1.67	1	cover	squad-3	5	bot-13	bot-19
+29544	bot-24	alpha	S21r-4410	tier+score	-16.45	12.31	74	2.58	0.32	20.81	6	seek	squad-3	4	bot-13	bot-21
+29665	bot-19	bravo	F00m-4420	state	-1.93	15.72	190	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29665	bot-20	alpha	E32m-4220	state+tier+score+health+latches	-2.85	10.21	10	0.97	0.13		0		squad-3	5	bot-13	bot-19
+29665	bot-22	alpha	C32r-4410	state+tier+score	-5.22	12.94	32	1.72	0.22	7.18	4	seek	squad-3	3	bot-13	bot-19
+29665	bot-24	alpha	S32r-4410	tier+score	-16.45	12.65	75	2.93	0.34	20.72	6	seek	squad-3	4	bot-13	bot-21
+29689	bot-13	alpha	S32r-3410	tier+score	-10.94	13.17	110	2.98	0.39	14.06	3	seek	squad-3	0	bot-13	bot-19
+29689	bot-15	alpha	S32r-4410	tier+score	-6.81	12.19	99	2.21	0.35	4.75	2	seek	squad-3	1	bot-13	bot-19
+29689	bot-18	alpha	S32r-4420	tier+score	-7.27	12.82	83	1.79	0.28	6.93	4	seek	squad-3	2	bot-13	bot-19
+29689	bot-19	bravo	A00m-4420	state	-1.93	15.72	189	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29689	bot-20	alpha	E32m-4229	latches	-2.80	10.08	9	3.63	0.14	1.09	1	flee	squad-3	5	bot-13	bot-19
+29689	bot-22	alpha	C32r-4412	latches	-5.09	12.82	42	4.69	0.18	4.89	1	cover	squad-3	3	bot-13	bot-19
+29729	bot-23	bravo	C00r-4412	latches	-1.25	15.72	165	1.09	0.46	6.42	4	cover	squad-4	2	bot-19	bot-20
+29752	bot-23	bravo	C10r-4412	tier	-1.31	15.66	171	3.72	0.09	6.46	4	cover	squad-4	2	bot-19	bot-20
+29775	bot-19	bravo	A10m-4420	tier	-1.93	15.72	188	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29775	bot-20	alpha	E32m-4220	latches	-2.71	9.79	8	3.44	0.30	0.79	1	flee	squad-3	5	bot-13	bot-19
+29809	bot-19	bravo	F10m-4420	state	-1.93	15.72	188	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29809	bot-19	bravo	F10m-3420	ammo	-1.93	15.72	187	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29809	bot-20	alpha	E33m-4129	score+health+latches	-2.67	9.68	7	3.41	0.12	0.67	1	flee	squad-3	5	bot-13	bot-19
+29809	bot-22	alpha	C33r-4412	score	-4.67	12.44	73	4.73	0.56	4.33	1	cover	squad-3	3	bot-13	bot-19
+29809	bot-24	alpha	S33r-4410	score	-16.45	13.06	76	3.76	0.41	20.62	6	seek	squad-3	4	bot-13	bot-21
+29833	bot-13	alpha	S33r-3410	score	-10.59	13.04	88	2.68	0.37	13.72	3	seek	squad-3	0	bot-13	bot-19
+29833	bot-15	alpha	S33r-4410	score	-6.48	12.15	76	2.39	0.33	4.46	2	seek	squad-3	1	bot-13	bot-19
+29833	bot-18	alpha	S33r-4420	score	-7.00	12.82	79	1.96	0.27	6.66	4	seek	squad-3	2	bot-13	bot-19
+29833	bot-19	bravo	A10m-3420	state	-1.93	15.72	187	0.00	0.00		0		squad-4	0	bot-19	bot-20
+29908	bot-20	alpha	E33m-3129	ammo	-2.57	9.36	6	3.54	0.34	0.33	1	flee	squad-3	5	bot-13	bot-19
+29908	bot-21	bravo	S21r-4410	tier+score	0.80	17.46	237	2.11	0.96	17.50	6	seek	squad-4	1	bot-19	bot-24
+29908	bot-23	bravo	C21r-4412	tier+score	-1.38	15.53	211	0.26	0.15	6.55	4	cover	squad-4	2	bot-19	bot-22
+29908	bot-24	alpha	S00r-4410	tier+score	-16.36	13.31	77	3.43	0.27	20.46	5	seek	squad-3	4	bot-13	bot-21
+29932	bot-19	bravo	A21m-3320	tier+score+health	-1.93	15.74	186	0.02	0.02		0		squad-4	0	bot-19	bot-20
+29959	bot-19	bravo	F21m-3320	state	-1.93	15.74	186	0.05	0.00		0		squad-4	0	bot-19	bot-20
+29959	bot-20	alpha	E33m-3120	latches	-2.59	9.22	6	5.09	0.14	4.75	1	flee	squad-3	5	bot-13	bot-19
+29983	bot-19	bravo	A21m-3320	state	-1.92	15.75	186	0.43	0.01		0		squad-4	0	bot-19	bot-20
+29983	bot-20	alpha	E33m-3129	latches	-2.62	9.10	6	5.06	0.12	4.63	1	flee	squad-3	5	bot-13	bot-19
+30009	bot-21	bravo	C21r-4410	state	0.69	17.34	238	2.10	0.16	17.34	6	seek	squad-4	1	bot-19	bot-24
+30031	bot-19	bravo	A21m-332G	latches	-1.92	15.76	186	0.05	0.01		0		squad-4	0	bot-19	bot-20
+30031	bot-20	alpha	E33m-312P	latches	-2.66	8.87	6	4.97	0.24	4.39	1	flee	squad-3	5	bot-13	bot-19
+30031	bot-21	bravo	C21r-4412	latches	0.71	17.57	225	4.72	0.22	4.00	1	cover	squad-4	1	bot-19	bot-22
+30031	bot-24	alpha	S33r-4410	tier+score	-16.00	13.57	77	4.77	0.44	20.06	5	seek	squad-3	4	bot-13	bot-21
+30091	bot-21	bravo	C21r-441I	latches	0.74	17.85	223	5.08	0.29	3.71	1	cover	squad-4	1	bot-19	bot-22
+30123	bot-19	bravo	C21m-3320	state+latches	-1.92	15.77	186	0.27	0.01		0		squad-4	0	bot-19	bot-20
+30123	bot-24	alpha	S00r-4410	tier+score	-15.77	13.70	77	3.08	0.27	19.80	5	seek	squad-3	4	bot-13	bot-21
+30156	bot-19	bravo	C21m-3322	latches	-1.85	16.07	203	4.87	0.31	7.98	2	cover	squad-4	0	bot-19	bot-22
+30213	bot-15	alpha	C33r-4410	state	-5.60	12.15	59	2.34	0.88	3.68	2	seek	squad-3	1	bot-13	bot-19
+30236	bot-15	alpha	C33r-4412	latches	-5.46	12.06	69	4.46	0.17	9.56	3	cover	squad-3	1	bot-13	bot-19
+30259	bot-20	alpha	E33m-3129	latches	-2.92	7.73	6	5.41	1.17	3.22	1	flee	squad-3	5	bot-13	bot-19
+30325	bot-21	bravo	C21r-4412	latches	0.83	18.96	283	4.91	1.12	2.60	1	cover	squad-4	1	bot-19	bot-22
+30424	bot-18	alpha	E33r-4420	state	-5.73	12.51	74	2.33	1.30	5.50	4	seek	squad-3	2	bot-13	bot-19
+30424	bot-21	bravo	S21r-4410	state+latches	0.86	19.35	304	4.74	0.39	2.21	1	cover	squad-4	1	bot-19	bot-22
+30448	bot-18	alpha	E33r-4421	latches	-5.92	12.53	63	4.64	0.19	2.53	1	flee	squad-3	2	bot-13	bot-23
+30499	bot-18	alpha	E33r-442H	latches	-6.16	12.53	60	4.58	0.23	2.29	1	flee	squad-3	2	bot-13	bot-23
+30615	bot-15	alpha	E33r-4410	state+latches	-4.19	11.33	31	3.66	1.47	8.41	3	cover	squad-3	1	bot-13	bot-23
+30637	bot-15	alpha	E33r-4411	latches	-4.13	11.15	29	4.11	0.18	2.70	1	flee	squad-3	1	bot-13	bot-23
+30668	bot-13	alpha	A33r-3410	state	-8.63	12.35	79	2.46	2.08	11.88	3	seek	squad-3	0	bot-13	bot-19
+30668	bot-18	alpha	E33r-4421	latches	-6.93	12.54	64	4.63	0.78	1.52	1	flee	squad-3	2	bot-13	bot-23
+30668	bot-19	bravo	C21m-332I	latches	-0.05	17.30	205	4.65	2.18	5.87	2	cover	squad-4	0	bot-19	bot-15
+30690	bot-24	alpha	C33r-4410	state+tier+score	-14.33	14.03	100	2.59	1.47	18.33	4	seek	squad-3	4	bot-13	bot-21
+30713	bot-23	bravo	P21r-4410	state+latches	-2.35	14.72	190	4.51	1.27	7.01	1	muzzleRecovery	squad-4	2	bot-19	bot-22
+30713	bot-24	alpha	C33r-4412	latches	-14.18	14.21	89	5.26	0.24	1.12	1	cover	squad-3	4	bot-13	bot-23
+30735	bot-13	alpha	C33r-3410	state	-8.61	12.38	69	0.20	0.03		0		squad-3	0	bot-13	bot-23
+30735	bot-19	bravo	C32m-332I	tier+score	0.23	17.43	199	4.61	0.31	5.56	2	cover	squad-4	0	bot-19	bot-15
+30735	bot-21	bravo	S32r-4410	tier+score	0.52	18.81	220	2.10	0.64	8.98	3	seek	squad-4	1	bot-19	bot-22
+30735	bot-23	bravo	E32r-4310	state+tier+score+health	-2.26	14.68	184	0.00	0.10	7.07	0	muzzleRecovery	squad-4	2	bot-19	bot-22
+30762	bot-13	alpha	C33r-3412	latches	-8.79	12.45	70	3.75	0.19	4.66	2	cover	squad-3	0	bot-13	bot-23
+30762	bot-23	bravo	E32r-4311	latches	-2.09	14.86	191	5.01	0.25	3.06	1	flee	squad-4	2	bot-19	bot-22
+30762	bot-24	alpha	C33r-441I	latches	-14.01	14.40	80	5.24	0.26	0.86	1	cover	squad-3	4	bot-13	bot-23
+30820	bot-21	bravo	C32r-4410	state	0.41	18.71	229	2.17	0.14	8.86	3	seek	squad-4	1	bot-19	bot-22
+30820	bot-22	alpha	P33r-4410	state+latches	-2.94	10.74	13	2.61	2.43	1.91	1	muzzleRecovery	squad-3	3	bot-13	bot-23
+30841	bot-18	alpha	E33r-442H	latches	-7.68	12.58	67	4.06	0.75	0.77	1	flee	squad-3	2	bot-13	bot-23
+30841	bot-21	bravo	C32r-4412	latches	0.29	18.62	231	4.18	0.15	5.16	4	cover	squad-4	1	bot-19	bot-22
+30869	bot-13	alpha	C33r-341I	latches	-9.16	12.57	63	3.64	0.40	4.27	2	cover	squad-3	0	bot-13	bot-23
+30869	bot-19	bravo	M33m-332G	state+score+latches	0.71	17.48	202	4.59	0.48	5.09	2	cover	squad-4	0	bot-19	bot-15
+30869	bot-21	bravo	C33r-4412	score	0.20	18.55	229	4.12	0.12	5.13	4	cover	squad-4	1	bot-19	bot-22
+30869	bot-23	bravo	E33r-4210	score+health+latches	-1.71	15.24	193	5.32	0.53	5.36	1	flee	squad-4	2	bot-19	bot-22
+30869	bot-24	alpha	G33r-441I	state	-13.74	14.71	60	5.19	0.41	0.45	1	cover	squad-3	4	bot-13	bot-23
+30894	bot-19	bravo	M33m-3320	latches	0.58	17.26	202	5.12	0.26	3.20	1	medic	squad-4	0	bot-19	bot-15
+30894	bot-20	alpha	E33m-312G	latches	-3.41	4.84	9	0.00	2.93		0		squad-3	5	bot-13	bot-23
+30894	bot-23	bravo	E33r-4219	latches	-1.62	15.33	194	5.25	0.13	5.22	1	flee	squad-4	2	bot-19	bot-22
+30924	bot-24	alpha	G44rb441I	tier+score+element	-13.45	15.05	59	0.00	0.45		0		squad-3	4	bot-13	bot-23
+30951	bot-13	alpha	C44rb341I	tier+score+element	-9.38	12.65	42	2.69	0.23	4.05	2	cover	squad-3	0	bot-13	bot-23
+30951	bot-15	alpha	E44rm4411	tier+score+element	-3.76	9.94	23	3.84	1.27	1.58	1	flee	squad-3	1	bot-13	bot-23
+30951	bot-18	alpha	E44rm442H	tier+score+element	-8.08	12.55	67	3.42	0.40	0.37	1	flee	squad-3	2	bot-13	bot-23
+30951	bot-20	alpha	E44mm312G	tier+score+element	-3.40	4.84	9	0.35	0.00		0		squad-3	5	bot-13	bot-23
+30951	bot-22	alpha	P33r-4310	health	-2.83	10.33	51	3.48	0.43	1.58	1	muzzleRecovery	squad-3	3	bot-13	bot-23
+30980	bot-19	bravo	M44mm3320	tier+score+element	0.36	16.95	202	4.39	0.38	2.83	1	medic	squad-4	0	bot-19	bot-15
+30980	bot-21	bravo	C44rm4412	tier+score+element	-0.13	18.23	225	4.03	0.45	5.06	4	cover	squad-4	1	bot-19	bot-22
+30980	bot-22	alpha	C44rm4310	state+tier+score+element	-2.83	10.33	51	0.00	0.00	1.58	0	muzzleRecovery	squad-3	3	bot-13	bot-23
+30980	bot-23	bravo	E44rb4119	tier+score+element+health	-1.30	15.65	202	5.19	0.45	4.77	1	flee	squad-4	2	bot-19	bot-15
+31018	bot-22	alpha	C44rm4312	latches	-2.77	10.29	34	1.09	0.07	1.52	1	cover	squad-3	3	bot-13	bot-23
+31018	bot-24	alpha	G44rb4412	latches	-13.42	15.13	67	1.11	0.08		0		squad-3	4	bot-13	bot-23
+31044	bot-15	alpha	E44rm441H	latches	-3.61	9.64	22	3.36	0.33	1.30	1	flee	squad-3	1	bot-13	bot-23
+31044	bot-18	alpha	A44rm442G	state+latches	-8.17	12.57	67	0.00	0.09		0		squad-3	2	bot-13	bot-23
+31044	bot-22	alpha	C44rm431I	latches	-2.74	10.28	40	1.27	0.03	1.48	1	cover	squad-3	3	bot-13	bot-23
+31044	bot-23	bravo	E44rm411P	element+latches	-1.11	15.93	202	6.59	0.34	4.44	1	flee	squad-4	2	bot-19	bot-15
+31084	bot-18	alpha	S44rm4420	state+latches	-8.17	12.57	67	0.46	0.00		0		squad-3	2	bot-13	bot-23
+31112	bot-13	alpha	C44rb3412	latches	-9.73	12.77	0	1.96	0.38	3.67	2	cover	squad-3	0	bot-13	bot-23
+31112	bot-19	bravo	T44mm3320	state	0.11	16.60	201	3.25	0.42	2.43	1	medic	squad-4	0	bot-19	bot-15
+31142	bot-13	alpha	S44rb3414	state+latches	-9.73	12.77	0	1.96	0.00	3.67	2	cover	squad-3	0	bot-13	bot-23
+31142	bot-20	alpha	E44mm3120	latches	-3.40	4.84	9	0.00	0.00		0		squad-3	5	bot-13	bot-23
+31170	bot-13	alpha	S44rm3414	element	-9.73	12.77	12	0.00	0.00		0		squad-3	0	bot-13	bot-23
+31280	bot-15	alpha	E44rm4411	latches	-3.22	9.22	22	1.74	0.57	0.79	1	flee	squad-3	1	bot-13	bot-23
+31280	bot-22	alpha	C44rm4312	latches	-2.38	10.19	101	1.83	0.37	1.13	1	cover	squad-3	3	bot-13	bot-23
+31280	bot-23	bravo	E44rm4119	latches	-0.43	16.92	202	5.19	1.20	3.27	1	flee	squad-4	2	bot-19	bot-15
+31411	bot-20	alpha	H44mm3120	state	-3.40	4.84	9	0.00	0.00		0		squad-3	5	bot-13	bot-23
+31411	bot-20	alpha	H44mm3220	health	-3.40	4.84	13	0.00	0.00		0		squad-3	5	bot-13	bot-23
+31581	bot-15	alpha	C44rm4410	state+latches	-2.79	9.01	22	0.00	0.49		0		squad-3	1	bot-13	bot-23
+31611	bot-15	alpha	C44rm4412	latches	-2.91	8.83	11	4.83	0.22	7.89	1	cover	squad-3	1	bot-13	bot-23
+31639	bot-22	alpha	G44rm4312	state	-1.65	9.81	128	4.78	0.82	0.33	1	cover	squad-3	3	bot-13	bot-23
+31639	bot-23	bravo	E44rm4219	health	0.78	18.31	202	5.14	1.84	1.47	1	flee	squad-4	2	bot-19	bot-15
+31662	bot-13	alpha	S44rm3410	latches	-9.73	12.75	109	0.00	0.03		0		squad-3	0	bot-13	bot-23
+31693	bot-19	bravo	M44mm3320	state	0.09	16.67	187	0.01	0.07	2.45	1	medic	squad-4	0	bot-19	bot-15
+31743	bot-19	bravo	T44mm3320	state	0.29	17.06	201	6.22	0.43	1.44	1	medic	squad-4	0	bot-19	bot-15
+31840	bot-24	alpha	C44rb4412	state	-12.73	15.26	130	0.09	0.70		0		squad-3	4	bot-13	bot-23
+31874	bot-19	bravo	M44mm3320	state	0.28	17.08	172	2.20	0.03	1.42	1	medic	squad-4	0	bot-19	bot-15
+31914	bot-25	bravo	P00r-0410	initial	-0.45	11.05	0	0.00			0			-1		
+31914	bot-26	alpha	P00r-0410	initial	-11.95	14.05	0	0.00			0			-1		
+31946	bot-13	alpha	A44rb3410	state+element	-9.29	12.62	85	2.60	0.45	9.88	3	seek	squad-3	0	bot-13	bot-23
+31946	bot-19	bravo	T44mm3320	state	0.49	17.50	191	6.20	0.46	0.95	1	medic	squad-4	0	bot-19	bot-15
+31946	bot-23	bravo	E44rm4210	latches	1.82	18.92	202	0.01	1.21		0		squad-4	2	bot-19	bot-15
+31946	bot-25	bravo	C44rm4410	state+tier+score+element+ammo	-0.45	11.05	0	0.00	0.00		0		squad-4	3	bot-19	
+31946	bot-26	alpha	S44rm4410	state+tier+score+element+ammo	-11.95	14.05	0	0.00	0.00		0		squad-3	6	bot-13	
+31983	bot-18	alpha	A44rb4420	state+element	-6.24	12.91	80	2.09	1.96	3.84	1	seek	squad-3	2	bot-13	bot-23
+31983	bot-20	alpha	E44mb3220	state+element	-3.40	4.84	356	0.00	0.00		0		squad-3	5	bot-13	bot-23
+31983	bot-21	bravo	C44rm4412	tick	-1.90	15.29	185	1.28	3.44	6.59	4	cover	squad-4	1	bot-19	bot-22
+31983	bot-25	bravo	C44rb4412	element+latches	-0.16	10.89	18	4.64	0.33	3.22	3	cover	squad-4	3	bot-19	
+31983	bot-26	alpha	P44rm4410	state	-11.91	13.98	8	2.33	0.08	11.00	4	seek	squad-3	6	bot-13	
+32012	bot-20	alpha	E44mb3229	latches	-3.65	4.67	14	4.65	0.30	6.01	1	flee	squad-3	5	bot-13	bot-25
+32012	bot-26	alpha	S44rm4410	state	-11.84	13.91	18	2.33	0.09	34.86	0		squad-3	6	bot-13	bot-19
+32045	bot-24	alpha	G44rb4412	state	-13.07	15.21	169	1.77	0.34	0.42	1	cover	squad-3	4	bot-13	bot-23
+32045	bot-26	alpha	A44rb4410	state+element	-11.78	13.89	25	2.51	0.07	10.83	5	seek	squad-3	6	bot-13	bot-19
+32173	bot-13	alpha	C44rb3410	state	-9.26	12.63	101	0.01	0.03		0		squad-3	0	bot-13	bot-25
+32201	bot-13	alpha	C44rb3412	latches	-9.13	12.65	102	1.59	0.12	6.95	3	cover	squad-3	0	bot-13	bot-25
+32306	bot-15	alpha	S44rm4410	state+latches	-4.45	6.42	217	4.14	2.86	5.04	1	cover	squad-3	1	bot-13	bot-23
+32306	bot-22	alpha	C44rm4312	state	-1.45	9.55	5	0.00	0.33		0		squad-3	3	bot-13	bot-25
+32306	bot-24	alpha	A44rb4410	state+latches	-13.45	15.06	129	0.02	0.41		0		squad-3	4	bot-13	bot-25
+32355	bot-21	bravo	C44rm4422	packs	-2.16	14.65	196	0.84	0.70	3.24	5	cover	squad-4	1	bot-19	bot-15
+32383	bot-15	alpha	C44rm4410	state	-4.41	6.58	234	2.52	0.16	6.76	2	seek	squad-3	1	bot-13	bot-23
+32411	bot-15	alpha	C44rm4412	latches	-4.53	6.37	219	4.29	0.24	4.95	1	cover	squad-3	1	bot-13	bot-23
+32454	bot-18	alpha	A44rm442G	element+latches	-6.25	12.90	110	0.00	0.02		0		squad-3	2	bot-13	bot-25
+32454	bot-23	bravo	H44rm4210	state	1.82	18.92	202	0.00	0.00		0		squad-4	2	bot-19	bot-15
+32484	bot-19	bravo	M44mm3320	state	0.49	17.50	184	0.00	0.01	0.95	1	medic	squad-4	0	bot-19	bot-15
+32524	bot-13	alpha	C33r-3412	tier+score+element	-8.13	12.82	105	5.13	1.02	5.93	3	cover	squad-3	0	bot-13	bot-25
+32524	bot-15	alpha	C33r-4412	tier+score+element	-4.78	5.94	209	4.45	0.50	4.46	1	cover	squad-3	1	bot-13	bot-23
+32524	bot-18	alpha	A33r-442G	tier+score+element	-6.25	12.90	110	0.00	0.00		0		squad-3	2	bot-13	bot-25
+32524	bot-20	alpha	E33m-3229	tier+score+element	-5.41	3.38	45	5.08	2.18	3.83	1	flee	squad-3	5	bot-13	bot-25
+32524	bot-22	alpha	C33r-4312	tier+score+element	-1.71	9.71	54	1.33	0.31	9.42	7	cover	squad-3	3	bot-13	bot-25
+32524	bot-24	alpha	A33r-4410	tier+score+element	-13.44	15.06	108	0.00	0.00		0		squad-3	4	bot-13	bot-25
+32524	bot-26	alpha	A33r-4410	tier+score+element	-11.79	13.82	105	0.00	0.06		0		squad-3	6	bot-13	bot-25
+32603	bot-19	bravo	T44mm3320	state	0.91	17.92	202	4.72	0.59	1.36	1	medic	squad-4	0	bot-19	bot-15
+32663	bot-13	alpha	A33r-341G	state+latches	-7.57	12.83	106	3.46	0.56	5.40	3	cover	squad-3	0	bot-13	bot-25
+32663	bot-18	alpha	S33r-4424	state+latches	-6.25	12.90	110	0.00	0.00		0		squad-3	2	bot-13	bot-25
+32663	bot-21	bravo	E44rm4420	state+latches	-2.20	14.54	197	0.04	0.11	3.29	5	cover	squad-4	1	bot-19	bot-15
+32690	bot-13	alpha	A32r-341G	score	-7.57	12.83	106	0.34	0.01		0		squad-3	0	bot-13	bot-25
+32690	bot-15	alpha	C32r-4412	score	-5.15	5.29	209	4.53	0.75	3.71	1	cover	squad-3	1	bot-13	bot-23
+32690	bot-18	alpha	S32r-4424	score	-6.25	12.90	102	0.00	0.00		0		squad-3	2	bot-13	bot-25
+32690	bot-20	alpha	E32m-3229	score	-6.10	2.85	49	5.40	0.88	2.96	1	flee	squad-3	5	bot-13	bot-25
+32690	bot-21	bravo	E44rm4421	latches	-2.17	14.60	189	1.66	0.07	3.30	1	flee	squad-4	1	bot-19	bot-22
+32690	bot-22	alpha	C32r-4312	score	-2.35	10.13	90	5.03	0.77	9.73	7	cover	squad-3	3	bot-13	bot-25
+32690	bot-23	bravo	H44rm4310	health	1.82	18.94	256	0.00	0.02		0		squad-4	2	bot-19	bot-15
+32690	bot-24	alpha	A32r-4410	score	-13.44	15.06	108	0.00	0.00		0		squad-3	4	bot-13	bot-25
+32690	bot-26	alpha	A32r-4410	score	-11.79	13.82	105	0.00	0.00		0		squad-3	6	bot-13	bot-25
+32723	bot-18	alpha	C32r-4420	state+latches	-6.25	12.90	102	0.00	0.00		0		squad-3	2	bot-13	bot-25
+32751	bot-18	alpha	C32r-4422	latches	-6.17	12.90	89	1.22	0.07	4.07	2	cover	squad-3	2	bot-13	bot-25
+32751	bot-26	alpha	F32r-4410	state	-11.79	13.82	105	0.00	0.00		0		squad-3	6	bot-13	bot-25
+32776	bot-15	alpha	S32r-4410	state+latches	-5.29	5.05	209	4.43	0.28	3.43	1	cover	squad-3	1	bot-13	bot-23
+32776	bot-19	bravo	T45mm3320	score	0.92	17.93	160	0.00	0.01	1.36	1	medic	squad-4	0	bot-19	bot-15
+32776	bot-21	bravo	E45rm4421	score	-2.12	14.73	186	1.50	0.14	3.18	1	flee	squad-4	1	bot-19	bot-22
+32776	bot-23	bravo	H45rm4310	score	1.82	18.94	249	0.00	0.00		0		squad-4	2	bot-19	bot-15
+32776	bot-25	bravo	C45rb4312	score+health	2.72	10.06	150	4.59	3.00	1.04	2	cover	squad-4	3	bot-19	bot-13
+32776	bot-26	alpha	A32r-4410	state	-11.79	13.82	105	0.00	0.00		0		squad-3	6	bot-13	bot-25
+32819	bot-13	alpha	A00r-341G	tier+score	-7.57	12.78	106	0.00	0.05		0		squad-3	0	bot-13	bot-25
+32819	bot-15	alpha	S00r-4410	tier+score	-5.24	5.21	227	2.50	0.17	8.79	2	seek	squad-3	1	bot-13	bot-23
+32819	bot-18	alpha	C00r-4422	tier+score	-6.09	12.92	80	1.24	0.08	3.99	2	cover	squad-3	2	bot-13	bot-25
+32819	bot-20	alpha	E00m-3229	tier+score	-6.68	2.43	51	5.37	0.71	2.24	1	flee	squad-3	5	bot-13	bot-25
+32819	bot-22	alpha	P32r-4310	state+latches	-2.73	10.51	93	4.69	0.54	9.88	1	muzzleRecovery	squad-3	3	bot-13	bot-25
+32819	bot-24	alpha	A00r-4410	tier+score	-13.44	15.06	107	0.00	0.00		0		squad-3	4	bot-13	bot-25
+32819	bot-25	bravo	A45rb4310	state+latches	2.76	10.18	157	4.55	0.12	0.92	1	cover	squad-4	3	bot-19	bot-13
+32819	bot-26	alpha	A21r-4410	tier+score	-11.79	13.82	104	0.00	0.00		0		squad-3	6	bot-13	bot-25
+32930	bot-13	alpha	S00r-3414	state+latches	-7.57	12.77	106	0.00	0.00		0		squad-3	0	bot-13	bot-25
+32930	bot-19	bravo	T44mm3320	score	0.92	17.93	178	0.00	0.00	1.36	1	medic	squad-4	0	bot-19	bot-15
+32930	bot-21	bravo	E44rm4421	score	-1.96	14.92	195	1.59	0.24	2.93	1	flee	squad-4	1	bot-19	bot-22
+32930	bot-22	alpha	A00r-4310	state+tier+score	-3.17	10.54	118	0.00	0.44	10.27	0	muzzleRecovery	squad-3	3	bot-13	bot-25
+32930	bot-23	bravo	H44rm4310	score	1.82	18.94	237	0.00	0.00		0		squad-4	2	bot-19	bot-15
+32930	bot-24	alpha	F00r-4410	state	-13.44	15.06	107	0.00	0.00		0		squad-3	4	bot-13	bot-25
+32930	bot-25	bravo	E45rb4210	state+health	2.76	10.18	176	0.00	0.00		0		squad-4	3	bot-19	bot-15
+32973	bot-19	bravo	T45mm3320	score	0.92	17.93	189	0.00	0.00	1.36	1	medic	squad-4	0	bot-19	bot-15
+32973	bot-21	bravo	E45rm4421	score	-1.93	14.98	195	1.58	0.07	2.87	1	flee	squad-4	1	bot-19	bot-22
+32973	bot-22	alpha	A00r-431G	latches	-3.39	10.47	110	4.71	0.22		0		squad-3	3	bot-13	bot-25
+32973	bot-23	bravo	H45rm4310	score	1.82	18.94	234	0.00	0.00		0		squad-4	2	bot-19	bot-15
+32973	bot-24	alpha	A00r-4410	state	-13.44	15.06	107	0.00	0.00		0		squad-3	4	bot-13	bot-25
+32973	bot-25	bravo	E45rb4219	latches	2.80	10.31	192	1.85	0.13	4.43	1	flee	squad-4	3	bot-19	bot-15
+32999	bot-13	alpha	S00r-3410	latches	-7.56	12.77	116	0.00	0.00		0		squad-3	0	bot-13	bot-25
+32999	bot-23	bravo	C45rm4310	state	1.82	18.94	234	0.00	0.00		0		squad-4	2	bot-19	bot-15
+33031	bot-23	bravo	C45rb4312	element+latches	1.77	18.88	222	1.38	0.08	6.31	4	cover	squad-4	2	bot-19	bot-15
+33031	bot-24	alpha	A00r-441G	latches	-13.44	15.06	106	0.00	0.00		0		squad-3	4	bot-13	bot-25
+33112	bot-26	alpha	F21r-4410	state	-11.79	13.82	103	0.00	0.00		0		squad-3	6	bot-13	bot-25
+33112	bot-26	alpha	F21r-3410	ammo	-11.79	13.82	103	0.00	0.00		0		squad-3	6	bot-13	bot-25
+33160	bot-19	bravo	T46mm3320	score	0.92	17.93	204	0.00	0.00	1.36	1	medic	squad-4	0	bot-19	bot-15
+33160	bot-21	bravo	E46rm4421	score	-1.50	15.55	201	5.01	0.72	2.15	1	flee	squad-4	1	bot-19	bot-22
+33160	bot-23	bravo	C46rb4312	score	1.65	18.75	212	1.37	0.17	6.26	4	cover	squad-4	2	bot-19	bot-15
+33160	bot-25	bravo	E46rb4019	score+health	2.93	10.75	233	5.06	0.47	3.96	1	flee	squad-4	3	bot-19	bot-15
+33160	bot-26	alpha	A21r-3410	state	-11.79	13.82	103	0.00	0.00		0		squad-3	6	bot-13	bot-25
+33194	bot-20	alpha	E00m-2229	ammo	-8.20	1.28	50	4.74	1.90	0.34	1	flee	squad-3	5	bot-13	bot-25
+33194	bot-22	alpha	S00r-4310	state+latches	-3.54	10.41	110	0.06	0.17		0		squad-3	3	bot-13	bot-25
+33194	bot-26	alpha	A21r-341G	latches	-11.79	13.82	102	0.00	0.00		0		squad-3	6	bot-13	bot-25
+33234	bot-21	bravo	E46rm442H	latches	-1.29	15.84	202	4.76	0.35	1.81	1	flee	squad-4	1	bot-19	bot-22
+33268	bot-20	alpha	E00m-2220	latches	-8.21	1.30	49	0.59	0.02		0		squad-3	5	bot-13	bot-25
+33268	bot-24	alpha	S00r-4410	state+latches	-13.44	15.06	106	0.00	0.00		0		squad-3	4	bot-13	bot-25
+33312	bot-15	alpha	C00r-4410	state	-4.93	6.34	349	2.43	1.17	7.63	2	seek	squad-3	1	bot-13	bot-23
+33364	bot-15	alpha	C00r-4412	latches	-4.99	6.65	7	4.86	0.32	5.97	1	cover	squad-3	1	bot-13	bot-25
+33364	bot-20	alpha	P00m-2220	state	-8.21	1.30	48	0.00	0.00		0		squad-3	5	bot-13	
+33364	bot-25	bravo	D00r--000	state+tier+score+element+ammo+packs+latches	3.15	11.49	238	0.00	0.76	3.19	1	flee	squad-4	3	bot-19	bot-15
+33364	bot-21	bravo	E48rm442H	score	-0.96	16.25	202	3.88	0.53	1.29	1	flee	squad-4	1	bot-19	bot-22
+33364	bot-23	bravo	C48rb4412	score+health	1.25	18.15	211	4.01	0.72	6.21	4	cover	squad-4	2	bot-19	bot-15
+33364	bot-26	alpha	P21r-4410	state+ammo+latches	-11.79	13.82	102	0.00	0.00		0		squad-3	6	bot-13	
+33404	bot-19	bravo	T48mm3320	score	0.83	17.89	223	0.57	0.09	1.44	1	medic	squad-4	0	bot-19	bot-15
+33404	bot-20	alpha	E00m-2220	state	-8.21	1.30	48	0.01	0.00		0		squad-3	5	bot-13	
+33434	bot-24	alpha	P00r-4410	state	-13.34	14.95	102	0.88	0.15	16.74	5	seek	squad-3	4	bot-13	
+33509	bot-19	bravo	M48mb3320	state+element	0.70	17.84	225	0.06	0.14	1.57	1	medic	squad-4	0	bot-19	bot-15
+33509	bot-21	bravo	E48rb4421	element+latches	-0.56	16.60	215	4.58	0.53	0.75	1	flee	squad-4	1	bot-19	bot-18
+33509	bot-23	bravo	C48rm4412	element	1.25	17.86	225	3.33	0.30	6.38	4	cover	squad-4	2	bot-19	bot-18
+33509	bot-26	alpha	P00r-4410	tier+score	-11.79	13.82	102	0.00	0.00		0		squad-3	6	bot-13	bot-19
+33544	bot-19	bravo	T48mb3320	state	0.51	17.97	227	4.56	0.23	0.58	1	medic	squad-4	0	bot-19	bot-18
+33656	bot-21	bravo	E48rb4420	latches	-0.28	16.91	227	4.65	0.41	1.32	1	flee	squad-4	1	bot-19	bot-18
+33709	bot-21	bravo	E48rb4421	latches	-0.46	17.07	225	4.43	0.24	1.10	1	flee	squad-4	1	bot-19	bot-18
+33757	bot-19	bravo	T47mb3320	score	0.51	17.97	222	0.00	0.00	0.58	1	medic	squad-4	0	bot-19	bot-18
+33757	bot-21	bravo	E47rb4421	score	-0.63	17.22	221	4.63	0.23	0.89	1	flee	squad-4	1	bot-19	bot-18
+33757	bot-23	bravo	C47rm4412	score	1.00	17.07	232	2.31	0.82	6.67	5	cover	squad-4	2	bot-19	bot-18
+33788	bot-20	alpha	H00m-2220	state	-8.21	1.30	48	0.00	0.00		0		squad-3	5	bot-13	bot-19
+33788	bot-22	alpha	C00r-4310	state	-3.49	11.39	25	2.42	0.98	7.18	2	seek	squad-3	3	bot-13	bot-19
+33829	bot-18	alpha	C00r-4422	tick	-3.26	13.52	35	3.88	2.89	9.44	6	cover	squad-3	2	bot-13	bot-21
+33829	bot-22	alpha	C00r-4312	latches	-3.44	11.23	23	2.35	0.18	2.60	2	cover	squad-3	3	bot-13	bot-21
+33878	bot-19	bravo	T46mb3320	score	0.51	17.97	220	0.00	0.00	0.58	1	medic	squad-4	0	bot-19	bot-18
+33878	bot-21	bravo	E46rb4421	score	-0.95	17.68	209	4.69	0.56	0.37	1	flee	squad-4	1	bot-19	bot-18
+33878	bot-23	bravo	C46rm4412	score	0.80	16.81	231	2.85	0.33	6.71	5	cover	squad-4	2	bot-19	bot-18
+33920	bot-26	alpha	P00r-3410	ammo	-11.48	12.96	185	2.49	0.92	7.34	1	squad	squad-3	6	bot-13	bot-19
+33973	bot-21	bravo	E46rb4420	latches	-0.94	17.95	205	4.58	0.28	3.60	1	flee	squad-4	1	bot-19	bot-18
+34008	bot-13	alpha	S00r-3410	tick	-5.76	12.09	100	2.32	1.93	11.49	3	seek	squad-3	0	bot-13	bot-19
+34008	bot-19	bravo	T45mb3320	score	0.51	17.97	220	0.00	0.00	0.58	1	medic	squad-4	0	bot-19	bot-18
+34008	bot-21	bravo	E45rb4421	score+latches	-0.87	18.10	205	4.68	0.16	3.45	1	flee	squad-4	1	bot-19	bot-18
+34008	bot-23	bravo	C45rm4412	score	0.55	16.61	231	2.57	0.31	6.68	5	cover	squad-4	2	bot-19	bot-18
+34041	bot-18	alpha	C10r-4422	tier	-2.74	14.03	34	4.62	0.73	8.85	5	cover	squad-3	2	bot-13	bot-23
+34092	bot-22	alpha	C21r-4312	tier+score	-3.11	10.74	17	1.80	0.58	2.04	2	cover	squad-3	3	bot-13	bot-21
+34092	bot-24	alpha	P21r-4410	tier+score	-12.73	14.13	143	1.84	1.02	8.13	1	squad	squad-3	4	bot-13	bot-19
+34092	bot-26	alpha	P21r-3410	tier+score	-11.33	12.61	184	2.43	0.38	7.58	1	squad	squad-3	6	bot-13	bot-19
+34120	bot-13	alpha	S21r-3410	tier+score	-5.45	11.97	100	2.40	0.33	11.17	3	seek	squad-3	0	bot-13	bot-19
+34120	bot-15	alpha	C21r-4412	tier+score	-5.27	8.36	351	4.60	1.73	4.24	1	cover	squad-3	1	bot-13	bot-19
+34120	bot-18	alpha	C21r-4322	tier+score+health	-2.48	14.30	52	4.89	0.38	8.56	5	cover	squad-3	2	bot-13	bot-23
+34148	bot-19	bravo	C45mb3320	state	0.51	17.97	219	0.00	0.00	0.58	1	medic	squad-4	0	bot-19	bot-18
+34197	bot-19	bravo	C45mb3322	latches	0.85	17.93	220	4.44	0.34	4.70	1	cover	squad-4	0	bot-19	bot-18
+34233	bot-13	alpha	C21r-3410	state	-5.26	11.92	100	2.53	0.19	10.97	3	seek	squad-3	0	bot-13	bot-19
+34233	bot-22	alpha	C21r-431I	latches	-3.09	10.51	27	1.65	0.23	1.90	2	cover	squad-3	3	bot-13	bot-21
+34269	bot-13	alpha	C21r-3412	latches	-5.11	12.22	81	4.62	0.34	0.37	1	cover	squad-3	0	bot-13	bot-23
+34299	bot-13	alpha	G21r-3412	state	-5.11	12.22	81	4.62	0.00	0.37	1	cover	squad-3	0	bot-13	bot-23
+34299	bot-22	alpha	C32r-431I	tier+score	-3.08	10.40	44	1.52	0.11	1.84	2	cover	squad-3	3	bot-13	bot-21
+34299	bot-24	alpha	P32r-4410	tier+score	-12.73	14.13	97	0.00	0.00		0		squad-3	4	bot-13	bot-19
+34299	bot-26	alpha	P32r-3410	tier+score	-11.32	12.61	138	0.00	0.00		0		squad-3	6	bot-13	bot-19
+34336	bot-13	alpha	G32r-341I	tier+score+latches	-4.95	12.52	67	0.00	0.34		0		squad-3	0	bot-13	bot-23
+34336	bot-15	alpha	C32r-4412	tier+score	-5.34	9.16	350	4.30	0.81	3.44	1	cover	squad-3	1	bot-13	bot-19
+34336	bot-18	alpha	E32r-4220	state+tier+score+health+latches	-1.97	15.08	55	5.27	0.93		0		squad-3	2	bot-13	bot-23
+34336	bot-20	alpha	H00m-2320	health	-8.21	1.30	69	0.00	0.00		0		squad-3	5	bot-13	bot-19
+34377	bot-18	alpha	E32r-4229	latches	-2.10	14.94	56	1.76	0.19	6.89	2	flee	squad-3	2	bot-13	bot-23
+34377	bot-23	bravo	P45rm4414	state+latches	-0.48	16.09	237	4.38	1.16	6.47	1	muzzleRecovery	squad-4	2	bot-19	bot-18
+34413	bot-22	alpha	C33r-431I	score	-2.98	10.27	74	1.49	0.16	1.69	2	cover	squad-3	3	bot-13	bot-21
+34413	bot-23	bravo	E45rm4410	state+latches	-0.66	16.08	248	0.00	0.18	6.38	0	muzzleRecovery	squad-4	2	bot-19	bot-18
+34413	bot-24	alpha	P33r-4410	score	-12.73	14.13	73	0.00	0.00		0		squad-3	4	bot-13	bot-19
+34413	bot-26	alpha	P33r-3410	score	-11.32	12.61	114	0.00	0.00		0		squad-3	6	bot-13	bot-19
+34449	bot-13	alpha	G33r-341I	score	-4.95	12.54	71	0.41	0.01		0		squad-3	0	bot-13	bot-23
+34449	bot-15	alpha	C33r-4412	score	-5.43	9.69	8	4.65	0.53	2.91	1	cover	squad-3	1	bot-13	bot-23
+34449	bot-18	alpha	E33r-4129	score+health	-2.12	14.79	49	2.34	0.16	6.77	2	flee	squad-3	2	bot-13	bot-23
+34449	bot-22	alpha	C33r-4312	latches	-2.94	10.23	83	1.26	0.06	1.64	2	cover	squad-3	3	bot-13	bot-21
+34449	bot-23	bravo	E45rm4411	latches	-0.44	16.33	229	4.73	0.34	3.34	2	flee	squad-4	2	bot-19	bot-18
+34533	bot-19	bravo	P45mb3324	state+latches	2.19	17.97	231	3.74	1.34	3.36	1	muzzleRecovery	squad-4	0	bot-19	bot-18
+34533	bot-22	alpha	C44rm4312	tier+score+element	-2.84	10.15	104	1.73	0.13	1.51	2	cover	squad-3	3	bot-13	bot-21
+34533	bot-24	alpha	S44rm4410	state+tier+score+element	-12.73	14.13	63	0.00	0.00		0		squad-3	4	bot-13	bot-19
+34533	bot-26	alpha	S44rm3410	state+tier+score+element	-11.32	12.61	97	0.00	0.00		0		squad-3	6	bot-13	bot-19
+34572	bot-13	alpha	G44rb3412	tier+score+element+latches	-4.95	12.55	81	0.01	0.01		0		squad-3	0	bot-13	bot-23
+34572	bot-15	alpha	C44rm4412	tier+score+element	-5.53	10.23	39	4.63	0.55	2.35	1	cover	squad-3	1	bot-13	bot-23
+34572	bot-18	alpha	E44rb4029	tier+score+element+health	-2.23	14.51	44	2.39	0.30	6.49	2	flee	squad-3	2	bot-13	bot-23
+34604	bot-15	alpha	C44rm441I	latches	-5.56	10.38	31	4.56	0.15	2.21	1	cover	squad-3	1	bot-13	bot-23
+34657	bot-13	alpha	S44rb3414	state+latches	-4.95	12.55	83	0.00	0.00		0		squad-3	0	bot-13	bot-23
+34657	bot-19	bravo	A45mb3320	state+latches	1.81	18.02	257	0.00	0.39	3.74	0	muzzleRecovery	squad-4	0	bot-19	bot-18
+34657	bot-21	bravo	P45rb4424	state+latches	1.02	20.11	210	4.67	2.76		0		squad-4	1	bot-19	
+34657	bot-18	alpha	D00r--000	state+tier+score+element+ammo+packs+latches	-2.38	14.30	42	0.00	0.26	6.24	2	flee	squad-3	2	bot-13	bot-23
+34657	bot-22	alpha	C46rm4312	score	-2.68	10.02	124	1.40	0.20	1.32	2	cover	squad-3	3	bot-13	bot-21
+34657	bot-23	bravo	S45rm4410	state+latches	0.00	16.93	223	4.77	0.75		0		squad-4	2	bot-19	
+34657	bot-24	alpha	S46rm4410	score	-12.58	14.08	68	1.15	0.16	14.22	5	seek	squad-3	4	bot-13	bot-19
+34657	bot-26	alpha	S46rm3410	score	-11.11	12.63	68	1.38	0.21	13.12	4	seek	squad-3	6	bot-13	bot-19
+34722	bot-13	alpha	S46rm3414	score+element	-4.95	12.55	93	0.00	0.00		0		squad-3	0	bot-13	bot-23
+34722	bot-15	alpha	C46rm441I	score	-5.14	10.36	56	4.22	0.42	9.57	3	cover	squad-3	1	bot-13	bot-23
+34722	bot-19	bravo	S45mm3324	state+element+latches	1.81	18.03	244	0.10	0.00		0		squad-4	0	bot-19	
+34722	bot-21	bravo	C45rm4420	state+element+latches	1.20	20.26	210	4.67	0.23		0		squad-4	1	bot-19	
+34722	bot-22	alpha	C46rb4312	element	-2.62	9.97	123	1.53	0.08	1.25	2	cover	squad-3	2	bot-13	bot-21
+34758	bot-21	bravo	S45rb4424	state+element+latches	1.39	20.22	197	3.75	0.20	6.96	4	cover	squad-4	1	bot-19	
+34796	bot-21	bravo	S45rm4424	element	1.39	20.22	205	0.00	0.00		0		squad-4	1	bot-19	bot-13
+34848	bot-15	alpha	C46rm4412	latches	-4.66	10.34	62	3.77	0.48	9.12	3	cover	squad-3	1	bot-13	bot-23
+34892	bot-15	alpha	C46rm441I	latches	-4.50	10.33	74	3.43	0.16	8.97	3	cover	squad-3	1	bot-13	bot-23
+35045	bot-20	alpha	S00m-2320	state	-8.22	1.32	15	0.00	0.02		0		squad-3	4	bot-13	bot-19
+35120	bot-15	alpha	C46rm4412	latches	-3.72	10.31	92	3.05	0.78	8.24	3	cover	squad-3	1	bot-13	bot-23
+35120	bot-22	alpha	G46rb4312	state	-1.89	9.63	100	3.41	0.81	0.44	1	cover	squad-3	2	bot-13	bot-21
+35177	bot-13	alpha	S46rm3410	latches	-4.95	12.55	90	0.00	0.00		0		squad-3	0	bot-13	bot-23
+35177	bot-19	bravo	S45mm3320	latches	1.74	18.03	190	1.33	0.07	16.63	4	seek	squad-4	0	bot-19	bot-13
+35291	bot-21	bravo	S45rm4420	latches	1.36	20.20	232	1.12	0.04	21.75	3	seek	squad-4	1	bot-19	bot-13
+35449	bot-23	bravo	C45rm4410	state	-1.14	15.85	219	2.20	1.57	19.19	4	seek	squad-4	2	bot-19	bot-13
+35488	bot-23	bravo	C45rm4412	latches	-1.01	16.05	203	3.98	0.24	7.13	5	cover	squad-4	2	bot-19	bot-13
+35604	bot-13	alpha	C46rb3410	state+element	-4.35	12.00	75	1.82	0.81	7.68	3	seek	squad-3	0	bot-13	bot-23
+35642	bot-13	alpha	C46rb341I	latches	-4.36	12.27	59	4.39	0.27	9.29	2	cover	squad-3	0	bot-13	bot-23
+35642	bot-23	bravo	C45rm441I	latches	-0.51	16.50	185	4.60	0.68	6.71	5	cover	squad-4	2	bot-19	bot-13
+35688	bot-24	alpha	S46rm4410	tick	-10.30	13.05	59	2.06	2.50	12.65	5	seek	squad-3	3	bot-13	bot-19
+35688	bot-26	alpha	S46rm3410	tick	-8.47	12.80	64	3.12	2.64	10.64	4	seek	squad-3	5	bot-13	bot-19
+35765	bot-19	bravo	S44mm3320	score	0.85	17.48	208	2.08	1.04	15.73	3	seek	squad-4	0	bot-19	bot-13
+35765	bot-21	bravo	S44rm4420	score	0.95	19.54	198	2.06	0.78	20.99	3	seek	squad-4	1	bot-19	bot-13
+35765	bot-23	bravo	C44rm441I	score	-0.06	16.87	153	5.06	0.58	6.37	5	cover	squad-4	2	bot-19	bot-13
+35862	bot-13	alpha	C46rb3412	latches	-4.39	12.90	2	1.94	0.63	8.66	2	cover	squad-3	0	bot-13	bot-23
+35862	bot-23	bravo	C44rm4412	latches	0.20	17.24	128	4.77	0.45	6.24	5	cover	squad-4	2	bot-19	bot-13
+35902	bot-19	bravo	C44mb3320	state+element	0.79	17.30	208	2.01	0.19	15.54	3	seek	squad-4	0	bot-19	bot-13
+35937	bot-19	bravo	C33m-3322	tier+score+element+latches	1.07	17.51	227	4.71	0.35	4.51	2	cover	squad-4	0	bot-19	bot-13
+35937	bot-21	bravo	S33r-4420	tier+score+element	0.77	19.25	198	2.03	0.35	20.66	3	seek	squad-4	1	bot-19	bot-13
+35937	bot-23	bravo	S33r-4410	state+tier+score+element+latches	0.29	17.41	118	4.97	0.19	6.22	5	cover	squad-4	2	bot-19	bot-13
+35971	bot-20	alpha	S46mm2320	tier+score+element	-6.98	3.14	42	2.17	2.20	10.58	2	seek	squad-3	4	bot-13	bot-19
+36024	bot-13	alpha	C46rb341I	latches	-4.40	13.26	21	2.15	0.36	8.30	2	cover	squad-3	0	bot-13	bot-19
+36024	bot-19	bravo	C33m-332I	latches	1.26	17.81	226	4.41	0.36	4.30	1	cover	squad-4	0	bot-19	bot-13
+36076	bot-13	alpha	C46rb3412	latches	-4.40	13.37	17	2.09	0.11	8.19	2	cover	squad-3	0	bot-13	bot-19
+36076	bot-19	bravo	C33m-3322	latches	1.48	17.83	223	4.36	0.22	4.07	1	cover	squad-4	0	bot-19	bot-13
+36128	bot-15	alpha	C46rm4412	tick	-2.18	10.35	69	0.64	1.54	6.79	3	cover	squad-3	1	bot-13	bot-23
+36128	bot-19	bravo	C32m-3322	score	1.70	17.84	233	4.30	0.22	3.85	1	cover	squad-4	0	bot-19	bot-13
+36128	bot-21	bravo	S32r-4420	score	0.53	18.96	197	2.05	0.37	20.31	3	seek	squad-4	1	bot-19	bot-13
+36128	bot-22	alpha	G46rb4312	tick	-1.45	9.55	357	0.00	0.44		0		squad-3	2	bot-13	bot-21
+36128	bot-23	bravo	S32r-4410	score	-0.06	17.08	176	2.07	0.48	9.56	1	seek	squad-4	2	bot-19	bot-13
+36256	bot-23	bravo	C32r-4410	state	-0.18	16.96	202	1.99	0.17	9.39	1	seek	squad-4	2	bot-19	bot-13
+36294	bot-13	alpha	A46rb3410	state+latches	-4.41	13.66	57	1.82	0.29	7.90	2	cover	squad-3	0	bot-13	bot-19
+36294	bot-23	bravo	C32r-4412	latches	-0.38	16.82	218	3.98	0.24	1.31	1	cover	squad-4	2	bot-19	bot-13
+36371	bot-19	bravo	C32m-332I	latches	2.83	17.90	234	4.65	1.13	2.72	1	cover	squad-4	0	bot-19	bot-13
+36406	bot-13	alpha	C46rb3410	state	-4.41	13.66	59	0.00	0.00		0		squad-3	0	bot-13	bot-19
+36438	bot-13	alpha	C46rb341I	latches	-4.36	13.57	66	1.62	0.11	9.11	2	cover	squad-3	0	bot-13	bot-19
+36513	bot-23	bravo	G32r-4412	state	-1.11	16.31	232	4.71	0.88	0.43	1	cover	squad-4	2	bot-19	bot-13
+36616	bot-19	bravo	C32m-3322	latches	3.96	17.98	171	4.58	1.13	1.59	1	cover	squad-4	0	bot-19	bot-13
+36655	bot-19	bravo	S32m-3320	state+latches	3.96	17.98	171	4.58	0.00	1.59	1	cover	squad-4	0	bot-19	bot-13
+36691	bot-13	alpha	C46rb3412	latches	-4.06	12.92	122	4.93	0.72	8.60	2	cover	squad-3	0	bot-13	bot-19
+36691	bot-24	alpha	S46rm4410	tick	-7.62	12.79	51	2.07	2.69	10.60	4	seek	squad-3	3	bot-13	bot-19
+36691	bot-26	alpha	S46rm3410	tick	-6.29	12.97	58	1.98	2.19	8.66	3	seek	squad-3	5	bot-13	bot-19
+36821	bot-21	bravo	C32r-4420	state	-0.18	17.82	210	1.91	1.35	19.01	3	seek	squad-4	1	bot-19	bot-13
+36854	bot-21	bravo	C32r-4422	latches	-0.10	18.07	212	4.71	0.27	3.66	1	cover	squad-4	1	bot-19	bot-13
+36907	bot-23	bravo	S32r-4410	state+latches	-1.45	16.05	249	0.00	0.43		0		squad-4	2	bot-19	bot-13
+36939	bot-27	bravo	P00m-0420	initial	0.05	22.05	0	0.00			0			-1		
+36939	bot-28	alpha	P00m-0420	initial	-4.45	16.55	0	0.00			0			-1		
+36957	bot-19	bravo	A32m-3320	state	3.23	18.01	255	2.01	0.73	6.96	4	seek	squad-4	0	bot-19	bot-13
+36957	bot-27	bravo	S32m-4420	state+tier+score+ammo	0.05	22.05	0	0.00	0.00		0		squad-4	3	bot-19	
+36957	bot-28	alpha	S46mm4420	state+tier+score+element+ammo	-4.45	16.55	0	0.00	0.00		0		squad-3	6	bot-13	
+37011	bot-20	alpha	S46mm2320	tick	-5.82	4.89	36	2.23	2.10	8.51	2	seek	squad-3	4	bot-13	bot-19
+37011	bot-23	bravo	E32r-4410	state	-1.50	15.99	235	1.11	0.08	7.42	2	seek	squad-4	2	bot-19	bot-13
+37011	bot-28	alpha	A46mb4420	state+element	-4.43	16.51	4	2.55	0.05	4.63	4	seek	squad-3	6	bot-13	
+37047	bot-22	alpha	G46rm4312	element	-1.45	9.55	53	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37047	bot-23	bravo	E32r-4411	latches	-1.44	16.02	217	0.94	0.07	0.99	1	flee	squad-4	2	bot-19	bot-13
+37085	bot-13	alpha	C46rm3412	element	-3.38	11.56	149	2.67	1.51	7.59	2	cover	squad-3	0	bot-13	bot-19
+37085	bot-15	alpha	C46rb4412	element	-2.14	10.27	64	0.60	0.09	6.79	3	cover	squad-3	1	bot-13	bot-23
+37116	bot-13	alpha	C45rm3412	score	-3.34	11.48	148	2.77	0.09	7.53	2	cover	squad-3	0	bot-13	bot-19
+37116	bot-15	alpha	C45rb4412	score	-2.12	10.27	64	0.58	0.02	6.77	3	cover	squad-3	1	bot-13	bot-23
+37116	bot-20	alpha	S45mm2320	score	-5.68	5.10	44	2.30	0.25	8.27	2	seek	squad-3	4	bot-13	bot-19
+37116	bot-22	alpha	G45rm4312	score	-1.45	9.55	48	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37116	bot-24	alpha	S45rm4410	score	-6.84	12.95	48	2.01	0.79	9.91	4	seek	squad-3	3	bot-13	bot-19
+37116	bot-26	alpha	S45rm3410	score	-5.50	13.08	56	1.85	0.80	7.93	3	seek	squad-3	5	bot-13	bot-19
+37116	bot-28	alpha	A45mb4420	score	-4.43	16.50	45	0.00	0.00		0		squad-3	6	bot-13	bot-21
+37251	bot-21	bravo	A32r-4420	state+latches	0.45	19.75	237	4.75	1.77	1.90	1	cover	squad-4	1	bot-19	bot-28
+37304	bot-13	alpha	C44rm3412	score	-3.17	11.02	154	2.40	0.49	7.29	2	cover	squad-3	0	bot-13	bot-19
+37304	bot-15	alpha	C44rb4412	score	-2.08	10.23	82	0.42	0.06	6.75	3	cover	squad-3	1	bot-13	bot-23
+37304	bot-20	alpha	S44mm2320	score	-5.43	5.45	44	2.35	0.44	7.83	2	seek	squad-3	4	bot-13	bot-19
+37304	bot-22	alpha	G44rm4312	score	-1.45	9.55	33	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37304	bot-24	alpha	S44rm4410	score	-6.45	13.03	47	2.00	0.40	9.57	3	seek	squad-3	3	bot-13	bot-19
+37304	bot-26	alpha	S44rm3410	score	-5.16	13.12	55	1.82	0.34	7.63	3	seek	squad-3	5	bot-13	bot-19
+37304	bot-27	bravo	A32m-4420	state	-0.14	21.34	273	1.83	0.73	3.96	4	seek	squad-4	3	bot-19	bot-13
+37304	bot-28	alpha	A44mb4420	score	-4.43	16.50	82	0.00	0.00		0		squad-3	6	bot-13	bot-23
+37380	bot-23	bravo	E32r-4410	latches	-0.82	16.14	243	5.20	0.63	1.11	1	flee	squad-4	2	bot-19	bot-28
+37425	bot-13	alpha	C33r-3412	tier+score+element	-3.06	10.71	151	2.91	0.34	7.14	2	cover	squad-3	0	bot-13	bot-19
+37425	bot-15	alpha	C33r-4412	tier+score+element	-2.04	10.18	80	0.57	0.06	6.73	3	cover	squad-3	1	bot-13	bot-23
+37425	bot-20	alpha	S33m-2320	tier+score+element	-5.26	5.68	45	2.36	0.28	7.55	2	seek	squad-3	4	bot-13	bot-19
+37425	bot-22	alpha	G33r-4312	tier+score+element	-1.45	9.55	24	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37425	bot-23	bravo	E32r-4411	latches	-0.95	16.33	254	5.08	0.23	0.88	1	flee	squad-4	2	bot-19	bot-28
+37425	bot-24	alpha	S33r-4410	tier+score+element	-6.22	13.05	47	1.78	0.23	9.39	3	seek	squad-3	3	bot-13	bot-19
+37425	bot-26	alpha	S33r-3410	tier+score+element	-4.95	13.15	54	1.78	0.21	7.44	3	seek	squad-3	5	bot-13	bot-19
+37425	bot-28	alpha	A33m-4420	tier+score+element	-4.43	16.50	93	0.00	0.00		0		squad-3	6	bot-13	bot-23
+37468	bot-28	alpha	C33m-4420	state	-4.43	16.50	93	0.00	0.00		0		squad-3	6	bot-13	bot-23
+37502	bot-28	alpha	C33m-442I	latches	-4.41	16.74	81	3.51	0.24	4.83	1	cover	squad-3	6	bot-13	bot-23
+37533	bot-21	bravo	F32r-4420	state	0.45	19.76	237	0.00	0.01		0		squad-4	1	bot-19	bot-28
+37533	bot-27	bravo	A32m-442G	latches	-0.14	21.34	227	0.00	0.00		0		squad-4	3	bot-19	bot-13
+37533	bot-28	alpha	C33m-4422	latches	-4.40	16.85	73	3.51	0.11	4.72	1	cover	squad-3	6	bot-13	bot-21
+37567	bot-13	alpha	C32r-3412	score	-3.00	10.37	139	1.54	0.34	7.05	2	cover	squad-3	0	bot-13	bot-19
+37567	bot-15	alpha	C32r-4412	score	-1.92	10.15	71	1.44	0.13	6.64	3	cover	squad-3	1	bot-13	bot-23
+37567	bot-20	alpha	S32m-2320	score	-5.08	5.96	45	2.36	0.33	7.22	2	seek	squad-3	4	bot-13	bot-19
+37567	bot-21	bravo	A32r-4420	state	0.45	19.76	238	0.00	0.00		0		squad-4	1	bot-19	bot-28
+37567	bot-22	alpha	G32r-4312	score	-1.45	9.55	13	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37567	bot-24	alpha	S32r-4410	score	-5.96	13.09	45	1.86	0.26	9.17	3	seek	squad-3	3	bot-13	bot-19
+37567	bot-26	alpha	S32r-3410	score	-4.70	13.18	53	1.80	0.26	7.22	3	seek	squad-3	5	bot-13	bot-19
+37567	bot-28	alpha	C32m-4422	score	-4.38	16.98	64	3.93	0.14	4.59	1	cover	squad-3	6	bot-13	bot-21
+37606	bot-19	bravo	F32m-3320	state	3.24	18.03	261	0.00	0.02		0		squad-4	0	bot-19	bot-28
+37606	bot-19	bravo	F32m-2320	ammo	3.24	18.03	262	0.00	0.00		0		squad-4	0	bot-19	bot-28
+37606	bot-20	alpha	A33m-2320	state+score	-5.08	5.96	45	2.36	0.00	7.22	2	seek	squad-3	4	bot-13	bot-19
+37606	bot-22	alpha	G33r-4312	score	-1.45	9.55	10	0.00	0.00		0		squad-3	2	bot-13	bot-21
+37606	bot-24	alpha	S33r-4410	score	-5.89	13.10	45	1.85	0.07	9.11	3	seek	squad-3	3	bot-13	bot-19
+37606	bot-26	alpha	S33r-3410	score	-4.63	13.20	53	1.81	0.07	7.16	3	seek	squad-3	5	bot-13	bot-19
+37606	bot-28	alpha	C33m-4322	score+health	-4.37	17.14	60	4.13	0.16	4.43	1	cover	squad-3	6	bot-13	bot-21
+37655	bot-13	alpha	C33r-3412	score	-2.93	10.26	131	1.02	0.13	6.98	2	cover	squad-3	0	bot-13	bot-19
+37655	bot-15	alpha	C33r-4412	score	-1.79	10.19	65	1.24	0.14	6.50	3	cover	squad-3	1	bot-13	bot-23
+37655	bot-19	bravo	A32m-2320	state	3.24	18.03	262	0.00	0.00		0		squad-4	0	bot-19	bot-28
+37655	bot-20	alpha	A33m-232G	latches	-5.09	5.99	37	0.88	0.03		0		squad-3	4	bot-13	bot-23
+37655	bot-21	bravo	F32r-4420	state	0.45	19.76	240	0.00	0.00		0		squad-4	1	bot-19	bot-28
+37655	bot-21	bravo	F32r-3420	ammo	0.45	19.76	241	0.00	0.00		0		squad-4	1	bot-19	bot-28
+37655	bot-23	bravo	C32r-4410	state+latches	-1.35	16.89	253	2.19	0.69		0		squad-4	2	bot-19	bot-13
+37697	bot-21	bravo	A32r-3420	state	0.45	19.76	241	0.00	0.00		0		squad-4	1	bot-19	bot-28
+37697	bot-23	bravo	C32r-4412	latches	-1.47	16.49	230	4.49	0.41	2.47	6	cover	squad-4	2	bot-19	bot-13
+37737	bot-23	bravo	C32r-441I	latches	-1.51	16.33	219	4.33	0.17	2.36	6	cover	squad-4	2	bot-19	bot-13
+37768	bot-19	bravo	F32m-2320	state	3.24	18.03	266	0.00	0.00		0		squad-4	0	bot-19	bot-28
+37768	bot-20	alpha	A44mm232G	tier+score+element	-5.09	5.99	37	0.00	0.00		0		squad-3	4	bot-13	bot-23
+37768	bot-22	alpha	C44rb4312	state+tier+score+element	-1.72	9.73	1	0.00	0.33		0		squad-3	2	bot-13	bot-21
+37768	bot-24	alpha	S44rm4410	tier+score+element	-5.61	13.13	52	1.73	0.28	8.90	3	seek	squad-3	3	bot-13	bot-19
+37768	bot-26	alpha	S44rm3410	tier+score+element	-4.35	13.22	60	1.73	0.28	6.93	3	seek	squad-3	5	bot-13	bot-19
+37768	bot-27	bravo	S32m-4420	state+latches	-0.14	21.34	227	0.00	0.00		0		squad-4	3	bot-19	bot-13
+37768	bot-28	alpha	E44mb4220	state+tier+score+element+health+latches	-4.32	17.74	65	4.61	0.60		0		squad-3	6	bot-13	bot-21
+37823	bot-13	alpha	C44rb3412	tier+score+element	-2.76	10.12	125	0.95	0.22	6.81	1	cover	squad-3	0	bot-13	bot-19
+37823	bot-15	alpha	C44rm4412	tier+score+element	-1.71	10.29	59	0.67	0.12	6.39	3	cover	squad-3	1	bot-13	bot-23
+37823	bot-19	bravo	A32m-2320	state	3.24	18.03	268	0.00	0.00		0		squad-4	0	bot-19	bot-28
+37823	bot-21	bravo	A32r-342G	latches	0.45	19.76	247	0.00	0.00		0		squad-4	1	bot-19	bot-28
+37823	bot-22	alpha	G44rb4312	state	-1.72	9.71	1	0.00	0.02		0		squad-3	2	bot-13	bot-21
+37823	bot-28	alpha	E44mm422P	element+latches	-4.63	18.02	67	5.28	0.42	6.61	1	flee	squad-3	6	bot-13	bot-21
+37862	bot-20	alpha	S44mm2320	state+latches	-5.09	5.99	37	0.00	0.00		0		squad-3	4	bot-13	bot-23
+37862	bot-28	alpha	E44mb4229	element+latches	-4.78	18.16	77	5.20	0.20	6.41	1	flee	squad-3	6	bot-13	bot-19
+37915	bot-19	bravo	F32m-2320	state	3.24	18.03	271	0.00	0.00		0		squad-4	0	bot-19	bot-28
+37915	bot-20	alpha	S45mm2320	score	-5.08	6.11	18	1.34	0.13	10.46	2	seek	squad-3	4	bot-13	bot-23
+37915	bot-22	alpha	G45rb4312	score	-1.47	9.50	346	1.24	0.33		0		squad-3	2	bot-13	bot-21
+37915	bot-23	bravo	C32r-4412	latches	-1.69	15.79	190	2.31	0.56	2.14	6	cover	squad-4	2	bot-19	bot-13
+37915	bot-24	alpha	S45rm4410	score	-5.37	13.18	78	1.74	0.25	8.70	3	seek	squad-3	3	bot-13	bot-19
+37915	bot-26	alpha	S45rm3410	score	-4.11	13.25	79	1.71	0.24	6.72	3	seek	squad-3	5	bot-13	bot-19
+37915	bot-28	alpha	E45mb4129	score+health	-4.98	18.35	91	5.22	0.28	6.13	1	flee	squad-3	6	bot-13	bot-19
+37955	bot-13	alpha	C45rb3412	score	-2.60	10.22	91	1.67	0.18	6.65	1	cover	squad-3	0	bot-13	bot-19
+37955	bot-15	alpha	C45rm4412	score	-1.63	10.21	66	0.88	0.11	6.35	3	cover	squad-3	1	bot-13	bot-23
+37955	bot-19	bravo	A32m-232G	state+latches	3.24	18.03	272	0.20	0.00		0		squad-4	0	bot-19	bot-28
+37955	bot-28	alpha	E45mm412P	element+latches	-5.14	18.50	91	5.53	0.21	5.92	1	flee	squad-3	6	bot-13	bot-19
+37987	bot-26	alpha	E45rb3410	state+element	-4.04	13.26	79	1.72	0.07	6.66	3	seek	squad-3	5	bot-13	bot-19
+38026	bot-19	bravo	C32m-232G	state	3.25	18.03	272	0.00	0.00		0		squad-4	0	bot-19	bot-28
+38026	bot-21	bravo	S32r-3420	state+latches	0.45	19.78	247	0.00	0.01		0		squad-4	1	bot-19	bot-28
+38026	bot-26	alpha	E45rb3411	latches	-4.15	12.91	61	5.11	0.36	3.30	1	flee	squad-3	5	bot-13	bot-23
+38065	bot-19	bravo	C32m-232I	latches	3.19	18.14	288	1.68	0.12	4.03	1	cover	squad-4	0	bot-19	bot-28
+38065	bot-23	bravo	E32r-4410	state+latches	-1.77	15.51	199	1.53	0.30	2.05	6	cover	squad-4	2	bot-19	bot-26
+38098	bot-23	bravo	E32r-4411	latches	-1.64	15.84	217	4.94	0.36	1.84	1	flee	squad-4	2	bot-19	bot-26
+38131	bot-20	alpha	A45mb2320	state+element	-5.04	6.40	3	2.44	0.29	10.16	2	seek	squad-3	4	bot-13	bot-23
+38131	bot-27	bravo	A32m-4420	state	-0.26	20.89	188	1.78	0.47	8.42	5	seek	squad-4	3	bot-19	bot-13
+38184	bot-19	bravo	C32m-2322	latches	3.10	18.29	312	1.49	0.17	3.85	1	cover	squad-4	0	bot-19	bot-28
+38184	bot-20	alpha	A45mm232G	element+latches	-5.05	6.41	10	0.02	0.01		0		squad-3	4	bot-13	bot-23
+38184	bot-28	alpha	E45mm4129	latches	-5.94	19.32	91	3.92	1.15	4.77	1	flee	squad-3	6	bot-13	bot-19
+38219	bot-26	alpha	E45rm341H	element+latches	-4.51	12.05	37	4.75	0.93	2.45	1	flee	squad-3	5	bot-13	bot-23
+38255	bot-27	bravo	F32m-4420	state	-0.26	20.90	193	0.03	0.01		0		squad-4	3	bot-19	bot-13
+38291	bot-27	bravo	A32m-4420	state	-0.26	20.90	193	0.00	0.00		0		squad-4	3	bot-19	bot-13
+38377	bot-27	bravo	A32m-442G	latches	-0.26	20.90	193	0.00	0.00		0		squad-4	3	bot-19	bot-13
+38418	bot-20	alpha	S45mm2324	state+latches	-5.05	6.41	10	0.00	0.00		0		squad-3	4	bot-13	bot-23
+38453	bot-26	alpha	E45rm3411	latches	-5.23	11.44	37	4.31	0.95	1.51	1	flee	squad-3	5	bot-13	bot-23
+38511	bot-23	bravo	C32r-4410	state+latches	-1.08	17.31	192	0.30	1.57		0		squad-4	2	bot-19	bot-13
+38560	bot-23	bravo	C32r-4412	latches	-1.20	17.02	192	4.61	0.32	2.99	6	cover	squad-4	2	bot-19	bot-13
+38560	bot-24	alpha	C45rm4410	state	-4.47	13.38	84	1.79	0.92	7.95	3	seek	squad-3	3	bot-13	bot-19
+38603	bot-24	alpha	C45rm4412	latches	-4.23	13.00	107	4.93	0.45	8.79	2	cover	squad-3	3	bot-13	bot-19
+38641	bot-20	alpha	S45mm2320	latches	-5.04	6.46	28	1.34	0.05	9.11	2	seek	squad-3	4	bot-13	bot-23
+38641	bot-27	bravo	S32m-4420	state+latches	-0.26	20.90	193	0.00	0.00		0		squad-4	3	bot-19	bot-13
+38729	bot-28	alpha	E35m-4129	tier+element	-7.46	20.78	91	3.93	2.10	2.67	1	flee	squad-3	6	bot-13	bot-19
+38772	bot-13	alpha	P45rb3414	state+latches	-2.48	10.30	9	4.69	0.15	3.28	1	muzzleRecovery	squad-3	0	bot-13	bot-23
+38772	bot-26	alpha	C45rm3410	state+latches	-6.18	10.75	37	0.00	1.17		0		squad-3	5	bot-13	bot-23
+38772	bot-27	bravo	A32m-4420	state	-0.29	20.77	195	1.10	0.14	8.24	5	seek	squad-4	3	bot-19	bot-13
+38814	bot-13	alpha	A45rb3410	state+latches	-2.65	10.40	358	0.00	0.20	3.48	0	muzzleRecovery	squad-3	0	bot-13	bot-23
+38814	bot-24	alpha	C45rm441I	latches	-3.78	12.18	75	1.78	0.93	8.11	2	cover	squad-3	3	bot-13	bot-19
+38814	bot-26	alpha	C45rb3412	element+latches	-6.21	10.35	59	4.61	0.39	8.34	2	cover	squad-3	5	bot-13	bot-23
+38850	bot-13	alpha	F45rb3410	state	-2.65	10.40	9	0.00	0.00		0		squad-3	0	bot-13	bot-23
+38850	bot-13	alpha	F45rb2410	ammo	-2.65	10.40	10	0.00	0.00		0		squad-3	0	bot-13	bot-23
+38850	bot-27	bravo	A32m-442G	latches	-0.29	20.77	193	0.03	0.01		0		squad-4	3	bot-19	bot-13
+38885	bot-13	alpha	A45rb2410	state	-2.65	10.40	10	0.00	0.00		0		squad-3	0	bot-13	bot-23
+38885	bot-24	alpha	C45rm4412	latches	-3.65	11.95	75	3.57	0.26	7.93	2	cover	squad-3	3	bot-13	bot-19
+38923	bot-22	alpha	G45rb4312	tick	-1.45	9.55	357	0.00	0.05		0		squad-3	2	bot-13	bot-21
+38955	bot-15	alpha	C45rm4412	tick	-0.60	9.96	79	1.83	1.07	5.58	3	cover	squad-3	1	bot-13	bot-23
+38955	bot-21	bravo	A32r-3420	state	-0.47	18.31	213	1.09	1.73	2.70	1	seek	squad-4	1	bot-19	bot-28
+39003	bot-13	alpha	F45rb2410	state	-2.73	10.39	10	0.83	0.08		0		squad-3	0	bot-13	bot-23
+39003	bot-19	bravo	G33m-2322	state+score	1.22	21.29	327	4.73	3.54	0.31	1	cover	squad-4	0	bot-19	bot-28
+39003	bot-20	alpha	A45mb2320	state+element	-5.03	7.03	4	2.45	0.56	8.54	2	seek	squad-3	4	bot-13	bot-23
+39003	bot-21	bravo	C33r-3420	state+score	-0.47	18.31	207	0.00	0.00		0		squad-4	1	bot-19	bot-24
+39003	bot-23	bravo	C33r-4312	score+health	-1.83	15.55	204	2.87	1.60	2.92	6	cover	squad-4	2	bot-19	bot-24
+39003	bot-27	bravo	A33m-442G	score	-0.29	20.77	193	0.00	0.00		0		squad-4	3	bot-19	bot-13
+39044	bot-13	alpha	A45rb2410	state	-2.76	10.39	10	0.61	0.03		0		squad-3	0	bot-13	bot-23
+39044	bot-21	bravo	C33r-3422	latches	-0.50	18.24	204	1.14	0.08	4.79	4	cover	squad-4	1	bot-19	bot-24
+39044	bot-27	bravo	A33m-4420	latches	-0.29	20.77	199	0.00	0.00		0		squad-4	3	bot-19	bot-24
+39086	bot-13	alpha	E45rb2410	state	-2.78	10.38	10	0.45	0.02		0		squad-3	0	bot-13	bot-23
+39136	bot-13	alpha	E45rb2411	latches	-2.74	10.02	9	4.17	0.37	0.55	1	flee	squad-3	0	bot-13	bot-23
+39136	bot-19	bravo	M44mb2320	state+tier+score+element+latches	1.05	21.55	300	0.00	0.31		0		squad-4	0	bot-19	bot-28
+39136	bot-21	bravo	C44rm3422	tier+score+element	-0.53	18.14	203	1.02	0.10	4.83	4	cover	squad-4	1	bot-19	bot-24
+39136	bot-23	bravo	E44rb4210	state+tier+score+element+health+latches	-1.92	15.36	201	1.50	0.20		0		squad-4	2	bot-19	bot-24
+39136	bot-27	bravo	A44mb4420	tier+score+element	-0.29	20.77	197	0.00	0.00		0		squad-4	3	bot-19	bot-24
+39175	bot-19	bravo	M44mm2320	element	1.01	21.45	282	1.79	0.11	6.75	1	medic	squad-4	0	bot-19	bot-28
+39175	bot-22	alpha	C45rb4312	state	-1.97	10.15	15	0.00	0.79		0		squad-3	2	bot-13	bot-21
+39175	bot-23	bravo	E44rb4219	latches	-1.59	15.71	200	5.38	0.48	6.70	1	flee	squad-4	2	bot-19	bot-24
+39220	bot-13	alpha	E45rm241H	element+latches	-2.73	9.68	10	3.37	0.33	0.31	1	flee	squad-3	0	bot-13	bot-23
+39220	bot-19	bravo	M44mb2320	element	0.99	21.37	272	1.69	0.08	6.68	1	medic	squad-4	0	bot-19	bot-24
+39220	bot-20	alpha	A45mm232G	element+latches	-5.04	7.04	21	0.00	0.01		0		squad-3	4	bot-13	bot-23
+39280	bot-13	alpha	A45rm241G	state+latches	-2.73	9.68	10	0.00	0.00		0		squad-3	0	bot-13	bot-23
+39280	bot-19	bravo	M44mm232G	element+latches	0.97	21.27	260	1.68	0.10	6.58	1	medic	squad-4	0	bot-19	bot-24
+39280	bot-24	alpha	A45rm4410	state+latches	-3.17	11.05	21	1.57	1.02	7.29	2	cover	squad-3	3	bot-13	bot-23
+39322	bot-23	bravo	E44rb3219	ammo	-1.12	16.30	201	4.56	0.75	5.95	1	muzzleRecovery	squad-4	2	bot-19	bot-24
+39322	bot-28	alpha	E35m-4120	latches	-9.30	22.42	91	0.00	2.47		0		squad-3	6	bot-13	bot-19
+39391	bot-23	bravo	E44rb3210	latches	-0.97	16.41	201	3.68	0.18	6.14	1	flee	squad-4	2	bot-19	bot-24
+39391	bot-24	alpha	C45rm4410	state	-3.18	11.05	20	0.36	0.01		0		squad-3	3	bot-13	bot-21
+39434	bot-13	alpha	S45rm2414	state+latches	-2.76	9.68	10	0.15	0.03		0		squad-3	0	bot-13	bot-23
+39434	bot-20	alpha	S45mm2324	state+latches	-5.04	7.04	21	0.00	0.00		0		squad-3	4	bot-13	bot-23
+39434	bot-23	bravo	E44rb3219	latches	-0.80	16.45	202	4.04	0.17	6.00	1	flee	squad-4	2	bot-19	bot-24
+39434	bot-24	alpha	C45rm4412	latches	-3.19	10.96	20	1.06	0.09	8.50	3	cover	squad-3	3	bot-13	bot-21
+39474	bot-22	alpha	G45rb4312	state	-1.61	9.89	75	4.34	0.44	0.37	1	cover	squad-3	2	bot-13	bot-21
+39520	bot-19	bravo	M44mm2320	latches	0.91	20.35	205	4.49	0.93	4.16	1	medic	squad-4	0	bot-19	bot-24
+39591	bot-23	bravo	E44rm321P	element+latches	-0.13	16.76	213	5.21	0.74	5.34	1	flee	squad-4	2	bot-19	bot-26
+39694	bot-13	alpha	S45rm2410	latches	-2.76	9.68	36	0.00	0.00		0		squad-3	0	bot-13	bot-23
+39694	bot-20	alpha	S45mm2320	latches	-5.03	7.06	29	1.35	0.03	8.01	1	seek	squad-3	4	bot-13	bot-23
+39694	bot-21	bravo	P44rm3420	state+latches	-1.62	16.45	193	4.19	2.01	5.60	1	muzzleRecovery	squad-4	1	bot-19	bot-24
+39758	bot-27	bravo	F44mb4420	state	-0.29	20.77	194	0.00	0.00		0		squad-4	3	bot-19	bot-24
+39809	bot-19	bravo	T44mm2320	state	0.67	19.26	202	4.95	1.12	3.07	1	medic	squad-4	0	bot-19	bot-24
+39809	bot-21	bravo	C44rm3420	state	-1.53	16.80	172	0.00	0.36	5.33	0	muzzleRecovery	squad-4	1	bot-19	bot-24
+39809	bot-23	bravo	E44rm3219	latches	0.57	17.66	213	5.31	1.14	4.20	1	flee	squad-4	2	bot-19	bot-26
+39809	bot-24	alpha	A45rm4410	state+latches	-2.87	10.62	12	1.29	0.47	8.28	3	cover	squad-3	3	bot-13	bot-21
+39809	bot-27	bravo	P44mb4424	state+latches	-0.29	20.77	194	1.25	0.00		1	muzzleRecovery	squad-4	3	bot-19	bot-24
+39855	bot-21	bravo	C44rm3422	latches	-1.63	16.42	192	3.75	0.39	3.00	6	cover	squad-4	1	bot-19	bot-24
+39855	bot-26	alpha	C45rb3412	tick	-6.71	5.88	184	4.13	4.50	3.84	2	cover	squad-3	5	bot-13	bot-23
+39855	bot-28	alpha	H35m-4120	state	-9.30	22.43	91	0.00	0.00		0		squad-3	6	bot-13	bot-19
+39855	bot-28	alpha	H35m-4220	health	-9.30	22.43	103	0.00	0.00		0		squad-3	6	bot-13	bot-19
+39894	bot-24	alpha	F45rm4410	state	-2.87	10.62	12	0.00	0.00		0		squad-3	3	bot-13	bot-21
+39934	bot-24	alpha	A45rm4410	state	-2.87	10.62	12	0.00	0.00		0		squad-3	3	bot-13	bot-21
+39979	bot-15	alpha	C45rm4412	tick	0.82	9.66	77	1.83	1.45	4.68	3	cover	squad-3	1	bot-13	bot-23
+39979	bot-20	alpha	C45mm2320	state	-5.01	7.44	4	2.46	0.38	7.63	1	seek	squad-3	4	bot-13	bot-23
+40018	bot-20	alpha	C45mb2322	element+latches	-5.01	7.14	26	4.09	0.30	7.59	1	cover	squad-3	4	bot-13	bot-23
+40018	bot-24	alpha	F45rm4410	state	-2.92	10.62	12	1.25	0.06		0		squad-3	3	bot-13	bot-21
+40066	bot-19	bravo	T45mm2320	score	0.68	19.27	169	0.00	0.01	3.08	1	medic	squad-4	0	bot-19	bot-24
+40066	bot-21	bravo	P44rm3320	state+health+latches	-1.73	15.87	193	4.24	0.56	2.90	1	muzzleRecovery	squad-4	1	bot-19	bot-24
+40066	bot-23	bravo	E45rm3219	score	1.60	18.47	213	5.09	1.31	2.95	1	flee	squad-4	2	bot-19	bot-26
+40066	bot-24	alpha	A45rm4410	state	-2.98	10.62	13	1.43	0.05		0		squad-3	3	bot-13	bot-21
+40109	bot-20	alpha	A45mb2320	state+latches	-5.02	6.93	38	3.97	0.20	7.39	1	cover	squad-3	4	bot-13	bot-23
+40109	bot-27	bravo	A45mb4420	state+score+latches	-0.66	20.66	249	0.00	0.39		0	muzzleRecovery	squad-4	3	bot-19	bot-24
+40148	bot-13	alpha	A45rb2410	state+element	-2.49	9.75	40	0.96	0.28	5.57	2	seek	squad-3	0	bot-13	bot-23
+40148	bot-21	bravo	A45rm3320	state+score	-1.83	16.23	216	0.00	0.37	3.11	0	muzzleRecovery	squad-4	1	bot-19	bot-24
+40221	bot-24	alpha	F45rm4410	state	-3.31	10.59	14	2.57	0.33		0		squad-3	3	bot-13	bot-21
+40221	bot-27	bravo	M46mb4420	state+score	-0.66	20.66	224	0.00	0.00		0		squad-4	3	bot-19	bot-24
+40265	bot-19	bravo	T46mm2320	score	0.68	19.27	185	0.00	0.00	3.08	1	medic	squad-4	0	bot-19	bot-24
+40265	bot-21	bravo	E46rm3220	state+score+health	-1.83	16.23	195	0.00	0.00		0		squad-4	1	bot-19	bot-24
+40265	bot-23	bravo	E46rm3219	score	2.28	19.23	213	5.20	1.01	1.98	1	flee	squad-4	2	bot-19	bot-26
+40265	bot-24	alpha	A45rm4410	state	-3.38	10.57	15	1.83	0.07		0		squad-3	3	bot-13	bot-21
+40309	bot-13	alpha	A45rm241G	element+latches	-2.57	9.75	6	0.72	0.08		0		squad-3	0	bot-13	bot-21
+40309	bot-21	bravo	E46rm3229	latches	-1.46	16.54	197	5.30	0.48	4.63	1	flee	squad-4	1	bot-19	bot-24
+40309	bot-22	alpha	G45rm4312	element	-1.45	9.55	343	0.00	0.37		0		squad-3	2	bot-13	bot-21
+40309	bot-24	alpha	A45rb4410	element	-3.46	10.56	18	0.78	0.09		0		squad-3	3	bot-13	bot-21
+40309	bot-27	bravo	M46mm442G	element+latches	-0.70	20.49	198	1.60	0.18	4.41	2	medic	squad-4	3	bot-19	bot-24
+40350	bot-15	alpha	C45rb4412	element	1.49	9.79	77	2.47	0.68	4.14	3	cover	squad-3	1	bot-13	bot-23
+40350	bot-20	alpha	A45mm232G	element+latches	-5.03	6.93	20	0.00	0.01		0		squad-3	4	bot-13	bot-21
+40350	bot-23	bravo	E46rm3319	health	2.45	19.64	213	5.23	0.45	1.53	1	flee	squad-4	2	bot-19	bot-26
+40350	bot-24	alpha	F45rb4410	state	-3.46	10.56	18	0.78	0.00		0		squad-3	3	bot-13	bot-21
+40397	bot-24	alpha	A45rb4410	state	-3.48	10.56	19	0.49	0.02		0		squad-3	3	bot-13	bot-21
+40442	bot-21	bravo	E46rm3220	latches	-1.08	16.96	200	4.16	0.57	6.25	1	flee	squad-4	1	bot-19	bot-24
+40490	bot-21	bravo	E46rm3229	latches	-0.95	17.14	201	4.51	0.22	6.03	1	flee	squad-4	1	bot-19	bot-24
+40490	bot-24	alpha	C45rb4410	state	-3.51	10.56	21	0.20	0.02		0		squad-3	3	bot-13	bot-21
+40490	bot-26	alpha	C45rb4412	ammo	-6.95	2.99	180	4.41	2.90	0.94	2	cover	squad-3	5	bot-13	bot-23
+40490	bot-27	bravo	M47mb4420	score+element+latches	-0.87	19.93	195	4.77	0.58	3.83	2	medic	squad-4	3	bot-19	bot-24
+40535	bot-13	alpha	S45rm2414	state+latches	-2.62	9.75	6	0.11	0.04		0		squad-3	0	bot-13	bot-21
+40535	bot-19	bravo	M47mm2320	state+score	0.68	19.27	202	0.00	0.00	3.08	1	medic	squad-4	0	bot-19	bot-24
+40535	bot-21	bravo	E47rm2129	score+ammo+health	-0.82	17.32	201	4.91	0.22	5.81	1	flee	squad-4	1	bot-19	bot-24
+40535	bot-22	alpha	G46rm4312	score	-1.45	9.55	1	0.00	0.00		0		squad-3	2	bot-13	bot-21
+40535	bot-23	bravo	E47rm3319	score	2.83	20.55	213	5.19	0.98	0.55	1	flee	squad-4	2	bot-19	bot-26
+40535	bot-24	alpha	C46rb4312	score+health+latches	-3.43	10.59	21	0.60	0.07	8.84	2	cover	squad-3	3	bot-13	bot-21
+40535	bot-26	alpha	C46rb4412	score	-6.95	2.79	180	4.42	0.20	0.74	2	cover	squad-3	5	bot-13	bot-23
+40535	bot-28	alpha	H36m-4220	score	-9.29	22.43	99	0.00	0.01		0		squad-3	6	bot-13	bot-19
+40584	bot-13	alpha	S46rm2414	score	-2.62	9.75	18	0.04	0.00		0		squad-3	0	bot-13	bot-21
+40584	bot-15	alpha	C46rb4412	score	2.37	10.00	76	4.46	0.90	3.48	3	cover	squad-3	1	bot-13	bot-23
+40584	bot-20	alpha	S46mm2324	state+score+latches	-5.03	6.93	20	0.00	0.00		0		squad-3	4	bot-13	bot-21
+40584	bot-24	alpha	C46rb431I	latches	-3.37	10.61	21	0.95	0.06	8.77	2	cover	squad-3	3	bot-13	bot-21
+40650	bot-13	alpha	S45rm2414	score	-2.62	9.75	23	0.03	0.00		0		squad-3	0	bot-13	bot-21
+40650	bot-15	alpha	C45rb4412	score	2.59	10.02	86	4.57	0.23	3.36	2	cover	squad-3	1	bot-13	bot-23
+40650	bot-20	alpha	S45mm2324	score	-5.03	6.93	40	0.00	0.00		0		squad-3	4	bot-13	bot-21
+40650	bot-21	bravo	E47rm212P	latches	-0.52	17.77	201	5.20	0.55	5.26	1	flee	squad-4	1	bot-19	bot-24
+40650	bot-22	alpha	G45rm4312	score	-1.45	9.55	10	0.00	0.00		0		squad-3	2	bot-13	bot-21
+40650	bot-24	alpha	C45rb4312	score+latches	-3.30	10.64	15	0.82	0.08	8.69	2	cover	squad-3	3	bot-13	bot-27
+40650	bot-26	alpha	C45rb4412	score	-6.99	2.38	180	2.73	0.41	0.34	1	cover	squad-3	5	bot-13	bot-23
+40650	bot-28	alpha	H35m-4220	score	-9.29	22.43	90	0.00	0.00		0		squad-3	6	bot-13	bot-19
+40714	bot-15	alpha	C45rb4410	latches	2.39	10.02	73	1.96	0.21	6.22	7	cover	squad-3	1	bot-13	bot-23
+40714	bot-26	alpha	G45rb4412	state	-6.99	2.38	180	2.73	0.00	0.34	1	cover	squad-3	5	bot-13	bot-23
+40762	bot-15	alpha	C45rb4412	latches	2.17	10.04	61	4.52	0.22	6.33	7	cover	squad-3	1	bot-13	bot-23
+40762	bot-27	bravo	P47mb4424	state+latches	-0.90	19.01	195	4.18	0.93	1.29	1	muzzleRecovery	squad-4	3	bot-19	bot-24
+40808	bot-13	alpha	S45rm2410	latches	-2.62	9.75	32	0.01	0.00		0		squad-3	0	bot-13	bot-21
+40808	bot-13	alpha	S44rm2410	score	-2.62	9.76	33	0.41	0.02	5.74	3	seek	squad-3	0	bot-13	bot-21
+40808	bot-15	alpha	C44rb4412	score	1.96	10.06	49	4.57	0.21	6.45	7	cover	squad-3	1	bot-13	bot-23
+40808	bot-20	alpha	S44mm2324	score	-5.04	6.92	33	0.00	0.02		0		squad-3	4	bot-13	bot-21
+40808	bot-22	alpha	G44rm4312	score	-1.45	9.55	22	0.00	0.00		0		squad-3	2	bot-13	bot-21
+40808	bot-23	bravo	E47rm3310	latches	3.00	20.81	213	0.00	0.31		0		squad-4	2	bot-19	bot-26
+40808	bot-24	alpha	C44rb4312	score	-3.17	10.72	14	0.68	0.15	8.54	2	cover	squad-3	3	bot-13	bot-27
+40808	bot-26	alpha	G44rb4412	score	-6.95	2.05	150	0.00	0.34		0		squad-3	5	bot-13	bot-23
+40808	bot-28	alpha	H34m-4220	score	-9.29	22.43	78	0.00	0.00		0		squad-3	6	bot-13	bot-19
+40851	bot-19	bravo	T47mm2320	state	2.09	20.26	128	5.97	1.73	0.65	1	medic	squad-4	0	bot-19	bot-24
+40851	bot-20	alpha	S44mm2320	latches	-5.04	6.98	24	1.35	0.06	9.09	2	seek	squad-3	4	bot-13	bot-21
+40851	bot-21	bravo	E47rm2129	latches	0.13	18.47	201	5.20	0.95	4.32	1	flee	squad-4	1	bot-19	bot-24
+40851	bot-27	bravo	M47mb4420	state+latches	-1.27	19.09	219	0.00	0.38	1.52	0	muzzleRecovery	squad-4	3	bot-19	bot-24
+40922	bot-13	alpha	S33r-2410	tier+score+element	-2.58	9.82	34	0.60	0.06	5.67	3	seek	squad-3	0	bot-13	bot-21
+40922	bot-15	alpha	C33r-4412	tier+score+element	1.44	10.10	20	4.67	0.52	6.76	7	cover	squad-3	1	bot-13	bot-23
+40922	bot-20	alpha	S33m-2320	tier+score+element	-5.04	7.09	9	1.36	0.11	8.98	2	seek	squad-3	4	bot-13	bot-21
+40922	bot-22	alpha	C33r-4312	state+tier+score+element	-1.79	9.88	31	0.00	0.47		0		squad-3	2	bot-13	bot-21
+40922	bot-24	alpha	C33r-4312	tier+score+element	-3.17	10.78	13	0.48	0.06	8.52	2	cover	squad-3	3	bot-13	bot-27
+40922	bot-26	alpha	G33r-4412	tier+score+element	-6.96	2.05	127	0.13	0.01		0		squad-3	5	bot-13	bot-23
+40922	bot-28	alpha	H33m-4220	score	-9.27	22.42	65	0.00	0.02		0		squad-3	6	bot-13	bot-19
+40962	bot-22	alpha	G33r-4312	state	-1.76	9.87	36	1.34	0.03	0.44	1	cover	squad-3	2	bot-13	bot-21
+40962	bot-27	bravo	M47mb3420	ammo	-1.20	19.11	193	0.05	0.08	1.50	0		squad-4	3	bot-19	bot-24
+40962	bot-28	alpha	H33m-4320	health	-9.27	22.42	59	0.00	0.00		0		squad-3	6	bot-13	bot-19
+41020	bot-24	alpha	A33r-4310	state+latches	-3.18	10.82	13	0.47	0.04	8.52	2	cover	squad-3	3	bot-13	bot-27
+41139	bot-27	bravo	P47mb3424	state+latches	-0.69	19.27	196	4.11	0.53	1.28	1	muzzleRecovery	squad-4	3	bot-19	bot-24
+41192	bot-27	bravo	M47mm342G	state+element+latches	-0.64	19.33	191	0.00	0.09	1.21	0	muzzleRecovery	squad-4	3	bot-19	bot-24
+41243	bot-23	bravo	S47rm3314	state+latches	3.00	20.73	213	0.05	0.08		0		squad-4	2	bot-19	bot-26
+41243	bot-24	alpha	A33r-431G	latches	-3.32	10.81	17	0.31	0.14		0		squad-3	3	bot-13	bot-27
+41306	bot-24	alpha	C33r-431G	state	-3.33	10.80	17	0.21	0.01		0		squad-3	3	bot-13	bot-27
+41355	bot-24	alpha	C33r-431I	latches	-3.31	10.79	21	0.30	0.02	4.24	3	cover	squad-3	3	bot-13	bot-27
+41391	bot-19	bravo	T45mm2320	score	2.09	20.27	196	0.00	0.01	0.66	1	medic	squad-4	0	bot-19	bot-24
+41391	bot-21	bravo	E45rm2129	score	1.26	21.02	201	5.36	2.79	1.65	1	flee	squad-4	1	bot-19	bot-24
+41391	bot-23	bravo	S45rm3314	score	3.00	20.73	254	0.01	0.00		0		squad-4	2	bot-19	bot-26
+41391	bot-27	bravo	M45mm3420	score+latches	-0.68	19.34	145	0.08	0.04	1.25	0		squad-4	3	bot-19	bot-24
+41450	bot-24	alpha	C33r-4312	latches	-3.27	10.78	20	0.50	0.04	4.20	3	cover	squad-3	3	bot-13	bot-27
+41497	bot-20	alpha	C33m-2320	state	-4.95	8.29	4	1.62	1.21	7.78	2	seek	squad-3	4	bot-13	bot-21
+41537	bot-20	alpha	C33m-2322	latches	-4.95	8.05	26	1.87	0.25	8.50	2	cover	squad-3	4	bot-13	bot-21
+41576	bot-23	bravo	S45rm3414	health	3.00	20.73	245	0.00	0.00		0		squad-4	2	bot-19	bot-26
+41678	bot-28	alpha	S33m-4320	state	-9.27	22.42	90	0.00	0.01		0		squad-3	6	bot-13	bot-19
+41717	bot-20	alpha	S33m-2320	state+latches	-4.95	7.59	63	3.08	0.46	8.04	2	cover	squad-3	4	bot-13	bot-21
+41863	bot-22	alpha	C33r-4312	state	-1.71	9.85	349	0.00	0.05		0		squad-3	2	bot-13	bot-21
+41898	bot-22	alpha	G33r-4312	state	-1.70	9.83	353	1.58	0.03	0.37	1	cover	squad-3	2	bot-13	bot-21
+41937	bot-13	alpha	S33r-2410	tick	-2.21	10.31	33	0.56	0.61	5.06	3	seek	squad-3	0	bot-13	bot-21
+41937	bot-15	alpha	C33r-4412	tick	-1.41	10.74	325	3.39	2.93	8.62	7	cover	squad-3	1	bot-13	bot-23
+41937	bot-26	alpha	G33r-4412	tick	-6.95	2.05	20	0.00	0.01		0		squad-3	5	bot-13	bot-23
+41937	bot-29	bravo	P00r-0410	initial	-10.45	-8.95	0	0.00			0			-1		
+41937	bot-30	alpha	P00r-0410	initial	-6.95	8.05	0	0.00			0			-1		
+41965	bot-29	bravo	P00r-4410	ammo	-10.45	-8.95	0	0.00	0.00		0		squad-5	0	bot-29	
+41965	bot-30	alpha	C33r-4410	state+tier+score+ammo	-6.95	8.05	0	0.00	0.00		0		squad-6	0	bot-30	
+42006	bot-19	bravo	T44mm2320	score	2.08	20.31	244	0.00	0.04	0.66	1	medic	squad-4	0	bot-19	bot-24
+42006	bot-21	bravo	E44rm2129	score	2.18	21.93	201	1.11	1.29	0.39	1	flee	squad-4	1	bot-19	bot-24
+42006	bot-23	bravo	S44rm3414	score	3.00	20.73	212	0.00	0.00		0		squad-4	2	bot-19	bot-26
+42006	bot-27	bravo	M44mm3420	score	1.45	21.83	210	2.98	3.27	0.55	1	medic	squad-4	3	bot-19	bot-24
+42006	bot-28	alpha	A33m-4320	state	-8.84	21.77	108	2.38	0.78	12.45	5	seek	squad-3	6	bot-13	bot-19
+42006	bot-30	alpha	C33r-4412	latches	-6.91	7.76	18	4.26	0.30	8.26	2	cover	squad-6	0	bot-30	bot-19
+42049	bot-19	bravo	T44mm2310	packs	2.08	20.31	247	0.00	0.00	0.66	1	medic	squad-4	0	bot-19	bot-24
+42049	bot-29	bravo	A00r-4410	state	-10.40	-8.94	18	0.79	0.05		7	patrol	squad-5	0	bot-29	
+42095	bot-29	bravo	A00r-441G	latches	-10.40	-8.95	21	0.43	0.01		0		squad-5	0	bot-29	bot-24
+42182	bot-19	bravo	T33m-2310	tier+score+element	2.08	20.33	257	0.09	0.03	0.66	1	medic	squad-4	0	bot-19	bot-24
+42182	bot-21	bravo	E33r-2120	tier+score+element+latches	2.23	21.89	201	0.69	0.06		0		squad-4	1	bot-19	bot-24
+42182	bot-23	bravo	S33r-3414	tier+score+element	3.00	20.73	202	0.00	0.00		0		squad-4	2	bot-19	bot-26
+42182	bot-27	bravo	M33m-3420	tier+score+element	1.55	21.92	199	0.00	0.14		0		squad-4	3	bot-19	bot-24
+42225	bot-29	bravo	A00r-4410	latches	-10.40	-8.96	23	0.02	0.01		0		squad-5	0	bot-29	bot-13
+42225	bot-30	alpha	C33r-441I	latches	-6.80	6.81	48	4.56	0.96	7.31	2	cover	squad-6	0	bot-30	bot-21
+42641	bot-20	alpha	C33m-2320	state	-4.81	8.82	7	1.67	1.24	7.78	2	seek	squad-3	4	bot-13	bot-21
+42641	bot-22	alpha	C33r-4310	state+latches	-1.46	9.52	320	0.10	0.39		0		squad-3	2	bot-13	bot-21
+42641	bot-24	alpha	C33r-4310	latches	-2.98	9.48	122	1.19	1.33	3.56	2	cover	squad-3	3	bot-13	bot-27
+42641	bot-30	alpha	S33r-4410	state+latches	-6.80	6.81	48	4.56	0.00	7.31	2	cover	squad-3	-1	bot-13	bot-21
+42691	bot-13	alpha	S00r-2410	tier+score	-2.11	10.19	54	0.56	0.15	5.11	3	seek	squad-3	0	bot-13	bot-21
+42691	bot-15	alpha	A00r-4410	state+tier+score+latches	-3.05	10.85	268	5.26	1.64	10.03	7	cover	squad-3	1	bot-13	bot-23
+42691	bot-19	bravo	S33m-2310	state	2.08	20.33	248	0.00	0.00	0.66	1	medic	squad-4	0	bot-19	bot-24
+42691	bot-20	alpha	C00m-2322	tier+score+latches	-4.82	8.34	33	4.74	0.48	8.79	2	cover	squad-3	5	bot-13	bot-21
+42691	bot-21	bravo	H33r-2120	state	2.14	21.81	211	1.67	0.12		0		squad-4	1	bot-19	bot-30
+42691	bot-22	alpha	G00r-4312	state+tier+score+latches	-1.46	9.52	320	0.04	0.00		0		squad-3	2	bot-13	bot-21
+42691	bot-24	alpha	C00r-4312	tier+score+latches	-2.93	9.42	109	1.58	0.08	3.50	2	cover	squad-3	3	bot-13	bot-27
+42691	bot-26	alpha	G00r-4412	tier+score	-6.98	2.06	337	0.31	0.03		0		squad-3	6	bot-13	bot-23
+42691	bot-28	alpha	A00m-4320	tier+score	-8.82	21.78	182	0.00	0.02		0		squad-3	7	bot-13	bot-29
+42691	bot-30	alpha	S21r-4410	tier+score	-6.68	7.01	24	2.32	0.23	18.71	3	seek	squad-3	4	bot-13	bot-21
+42729	bot-15	alpha	A00r-441G	latches	-3.19	10.84	258	5.61	0.13		0		squad-3	1	bot-13	bot-29
+42935	bot-28	alpha	F00m-4320	state	-8.81	21.78	183	0.44	0.01		0		squad-3	7	bot-13	bot-29
+42935	bot-29	bravo	A00r-4310	health	-10.40	-8.96	23	0.00	0.00		0		squad-5	0	bot-29	bot-13
+42977	bot-15	alpha	S00r-4410	state+latches	-3.53	10.81	258	0.04	0.34		0		squad-3	1	bot-13	bot-29
+42977	bot-28	alpha	A00m-4320	state	-8.81	21.78	183	0.03	0.00		0		squad-3	7	bot-13	bot-29
+43040	bot-19	bravo	S32m-2310	score	1.54	19.72	203	2.14	0.81	7.77	4	seek	squad-4	0	bot-19	bot-24
+43040	bot-21	bravo	H32r-2120	score	1.94	21.63	229	0.34	0.27		0		squad-4	1	bot-19	bot-30
+43040	bot-23	bravo	S32r-3414	score	3.00	20.73	181	0.00	0.00		0		squad-4	2	bot-19	bot-26
+43040	bot-27	bravo	M32m-3420	score	1.36	21.85	199	0.13	0.20		0		squad-4	3	bot-19	bot-24
+43076	bot-20	alpha	S00m-2320	state+latches	-4.81	7.48	120	3.20	0.86	7.93	2	cover	squad-3	5	bot-13	bot-21
+43076	bot-22	alpha	S00r-4310	state+latches	-1.45	9.55	7	0.00	0.03		0		squad-3	2	bot-13	bot-21
+43076	bot-24	alpha	S00r-4310	state+latches	-2.40	9.31	23	2.54	0.54	2.96	3	cover	squad-3	3	bot-13	bot-27
+43076	bot-28	alpha	F00m-4320	state	-8.81	21.78	183	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43076	bot-29	bravo	E00r-4210	state+health	-10.40	-8.96	23	0.00	0.00		0		squad-5	0	bot-29	bot-13
+43126	bot-28	alpha	A00m-4320	state	-8.81	21.78	183	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43126	bot-29	bravo	E00r-4219	latches	-10.52	-8.95	23	1.46	0.13	5.03	2	flee	squad-5	0	bot-29	bot-13
+43164	bot-23	bravo	S32r-3410	latches	2.98	20.67	196	1.44	0.05	19.48	3	seek	squad-4	2	bot-19	bot-26
+43226	bot-19	bravo	S00m-2310	tier+score	1.31	19.41	202	2.15	0.39	7.39	4	seek	squad-4	0	bot-19	bot-24
+43226	bot-21	bravo	H00r-2120	tier+score	1.92	21.62	243	0.06	0.02		0		squad-4	1	bot-19	bot-30
+43226	bot-23	bravo	S00r-3410	tier+score	2.95	20.59	209	1.40	0.09	19.40	3	seek	squad-4	2	bot-19	bot-26
+43226	bot-27	bravo	M00m-3420	tier+score	1.36	21.85	199	0.00	0.00		0		squad-4	3	bot-19	bot-24
+43226	bot-28	alpha	F00m-4320	state	-8.81	21.78	183	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43226	bot-29	bravo	E00r-4119	health	-10.67	-8.95	24	1.51	0.15	4.88	2	flee	squad-5	0	bot-29	bot-13
+43288	bot-28	alpha	A00m-4320	state	-8.81	21.78	183	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43353	bot-21	bravo	H00r-2220	health	1.92	21.62	253	0.02	0.00		0		squad-4	1	bot-19	bot-30
+43400	bot-28	alpha	F00m-4320	state	-8.81	21.78	184	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43400	bot-29	bravo	E10r-4119	tier	-11.23	-8.95	27	3.25	0.56	4.34	2	flee	squad-5	0	bot-29	bot-22
+43454	bot-28	alpha	A00m-4320	state	-8.81	21.78	184	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43491	bot-30	alpha	S00r-4410	tier+score	-5.87	8.63	24	2.42	1.81	16.90	3	seek	squad-3	4	bot-13	bot-21
+43556	bot-28	alpha	F00m-4320	state	-8.77	21.80	185	0.00	0.04		0		squad-3	7	bot-13	bot-29
+43556	bot-28	alpha	F00m-3320	ammo	-8.77	21.80	186	0.00	0.00		1	muzzleRecovery	squad-3	7	bot-13	bot-29
+43595	bot-28	alpha	P00m-3320	state	-8.77	21.80	186	1.37	0.00		1	muzzleRecovery	squad-3	7	bot-13	bot-29
+43670	bot-28	alpha	A00m-3320	state	-8.67	21.89	168	0.00	0.13		0	muzzleRecovery	squad-3	7	bot-13	bot-29
+43715	bot-13	alpha	S00r-2410	tick	-2.27	10.36	34	0.09	0.23	5.05	3	seek	squad-3	0	bot-13	bot-21
+43715	bot-26	alpha	S00r-4410	state+latches	-6.95	2.05	48	0.00	0.03		0		squad-3	6	bot-13	bot-23
+43793	bot-28	alpha	F00m-3320	state	-8.67	21.89	188	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43836	bot-28	alpha	A00m-332G	state+latches	-8.67	21.89	188	0.00	0.00		0		squad-3	7	bot-13	bot-29
+43879	bot-29	bravo	E10r-411P	latches	-13.64	-8.67	30	5.67	2.43	1.95	2	flee	squad-5	0	bot-29	bot-22
+43940	bot-24	alpha	C00r-4310	state	-3.48	11.14	12	2.03	2.13	8.94	4	seek	squad-3	3	bot-13	bot-27
+43988	bot-15	alpha	S00r-4410	tick	-3.93	9.13	205	2.06	1.73	21.56	4	seek	squad-3	1	bot-13	bot-29
+43988	bot-24	alpha	C00r-4312	latches	-3.40	11.11	24	1.13	0.08	2.50	1	cover	squad-3	3	bot-13	bot-27
+44064	bot-28	alpha	S00m-3320	state+latches	-8.67	21.89	188	0.00	0.00		0		squad-3	7	bot-13	bot-29
+44112	bot-20	alpha	S00m-2320	tick	-4.64	9.21	5	2.05	1.74	6.87	2	seek	squad-3	5	bot-13	bot-21
+44112	bot-22	alpha	S00r-4310	tick	-3.12	10.30	10	2.68	1.83	11.45	3	seek	squad-3	2	bot-13	bot-21
+44112	bot-29	bravo	E10r-4119	latches	-14.98	-8.51	30	5.82	1.35	0.73	2	flee	squad-5	0	bot-29	bot-22
+44151	bot-27	bravo	T00m-3420	state	1.35	21.84	203	0.00	0.02		0		squad-4	3	bot-19	bot-24
+44273	bot-19	bravo	S00m-2310	tick	0.16	17.75	213	2.16	2.02	5.44	4	seek	squad-4	0	bot-19	bot-24
+44273	bot-23	bravo	S00r-3410	tick	1.63	19.07	213	2.22	2.02	17.39	3	seek	squad-4	2	bot-19	bot-26
+44273	bot-29	bravo	E10r-4110	latches	-15.69	-8.03	30	4.84	0.86		0		squad-5	0	bot-29	bot-22
+44321	bot-21	bravo	H00r-2320	health	1.91	21.62	198	0.00	0.00		0		squad-4	1	bot-19	bot-30
+44361	bot-24	alpha	A00r-4310	state+latches	-3.17	11.25	23	0.29	0.27	2.42	1	cover	squad-3	3	bot-13	bot-27
+44415	bot-27	bravo	T00m-342G	latches	1.35	21.84	200	0.00	0.00		0		squad-4	3	bot-19	bot-24
+44458	bot-24	alpha	A00r-431G	latches	-3.29	11.26	23	1.14	0.13		0		squad-3	3	bot-13	bot-27
+44499	bot-30	alpha	S00r-4410	tick	-5.21	10.91	16	2.19	2.37	14.56	3	seek	squad-3	4	bot-13	bot-21
+44629	bot-21	bravo	S00r-2324	state+latches	1.91	21.62	177	0.00	0.00		0		squad-4	1	bot-19	bot-30
+44629	bot-27	bravo	T00m-3420	latches	1.35	21.84	183	0.00	0.00		0		squad-4	3	bot-19	bot-24
+44690	bot-24	alpha	S00r-4310	state+latches	-3.30	11.35	23	0.16	0.09		0		squad-3	3	bot-13	bot-27
+44730	bot-13	alpha	S00r-2410	tick	-2.11	10.20	62	0.22	0.23	5.10	3	seek	squad-3	0	bot-13	bot-21
+44730	bot-19	bravo	C00m-2310	state	-0.29	17.10	213	1.10	0.79	4.69	4	seek	squad-4	0	bot-19	bot-24
+44730	bot-26	alpha	S00r-4410	tick	-6.57	4.13	24	2.19	2.11	11.40	3	seek	squad-3	6	bot-13	bot-23
+44768	bot-19	bravo	C00m-2312	latches	-0.45	16.86	212	3.92	0.29	5.85	4	cover	squad-4	0	bot-19	bot-22
+44768	bot-22	alpha	C00r-4310	state	-3.88	11.48	7	2.46	1.40	10.49	3	seek	squad-3	2	bot-13	bot-21
+44812	bot-22	alpha	C00r-4312	latches	-3.71	11.47	28	2.72	0.17	2.97	1	cover	squad-3	2	bot-13	bot-19
+44812	bot-29	bravo	H10r-4110	state	-16.01	-7.63	30	0.04	0.51		0		squad-5	0	bot-29	bot-22
+44812	bot-29	bravo	H10r-4210	health	-16.01	-7.63	21	0.02	0.00		0		squad-5	0	bot-29	bot-22
+44863	bot-20	alpha	C00m-2320	state	-4.50	10.65	21	1.97	1.44	5.43	2	seek	squad-3	5	bot-13	bot-21
+44902	bot-20	alpha	C00m-2322	latches	-4.29	10.39	31	3.70	0.33	8.75	2	cover	squad-3	5	bot-13	bot-19
+44902	bot-27	bravo	M00m-3420	state	1.31	21.83	165	0.03	0.04		0		squad-4	3	bot-19	bot-24
+44971	bot-27	bravo	M00m-342G	latches	1.30	21.37	178	4.02	0.46	0.81	1	medic	squad-4	3	bot-19	bot-22
+45022	bot-15	alpha	S00r-4410	tick	-4.06	7.01	194	2.21	2.12	19.59	4	seek	squad-3	1	bot-13	bot-29
+45022	bot-24	alpha	E00r-4310	state	-3.21	11.60	24	1.48	0.27	11.48	3	seek	squad-3	3	bot-13	bot-27
+45022	bot-27	bravo	T00m-342G	state	1.30	21.37	178	4.02	0.00	0.81	1	medic	squad-4	3	bot-19	bot-22
+45063	bot-20	alpha	C00m-232I	latches	-3.81	10.03	38	3.86	0.61	8.42	2	cover	squad-3	5	bot-13	bot-19
+45063	bot-24	alpha	E00r-4311	latches	-3.53	11.36	26	5.14	0.40	0.92	1	flee	squad-3	3	bot-13	bot-19
+45063	bot-27	bravo	M00m-3420	state+latches	1.30	21.37	165	0.00	0.00	0.81	1	medic	squad-4	3	bot-19	bot-22
+45106	bot-26	alpha	C00r-3410	state+ammo	-6.41	4.85	16	2.32	0.74	10.68	3	seek	squad-3	6	bot-13	bot-23
+45106	bot-28	alpha	S00m-3320	tick	-7.85	19.83	190	2.46	2.22	29.22	5	seek	squad-3	7	bot-13	bot-29
+45147	bot-21	bravo	C00r-2320	state+latches	1.91	21.62	176	0.00	0.00		0		squad-4	1	bot-19	bot-30
+45147	bot-26	alpha	C00r-3412	latches	-6.49	4.47	24	4.64	0.39	2.46	1	cover	squad-3	6	bot-13	bot-19
+45202	bot-21	bravo	C00r-2322	latches	1.95	21.59	195	0.52	0.04	4.41	2	cover	squad-4	1	bot-19	bot-24
+45246	bot-21	bravo	C00r-232I	latches	1.97	21.58	186	0.58	0.03	4.38	2	cover	squad-4	1	bot-19	bot-24
+45246	bot-27	bravo	M00m-342G	latches	1.35	21.25	207	0.04	0.13		0		squad-4	3	bot-19	bot-24
+45291	bot-20	alpha	S00m-2320	state+latches	-3.49	9.62	84	2.47	0.52	8.28	2	cover	squad-3	5	bot-13	bot-19
+45291	bot-23	bravo	S00r-3410	tick	0.26	17.48	212	2.20	2.09	15.31	3	seek	squad-4	2	bot-19	bot-26
+45340	bot-19	bravo	C00m-231I	latches	-1.73	15.51	196	1.10	1.86	6.44	4	cover	squad-4	0	bot-19	bot-24
+45340	bot-20	alpha	A00m-2320	state	-3.52	9.73	72	2.52	0.11	5.84	1	seek	squad-3	5	bot-13	bot-19
+45340	bot-29	bravo	H00r-4210	tier	-16.02	-7.63	38	0.00	0.00		0		squad-5	0	bot-29	bot-22
+45412	bot-19	bravo	C00m-2312	latches	-1.82	15.44	195	1.97	0.11	6.47	4	cover	squad-4	0	bot-19	bot-22
+45458	bot-21	bravo	C00r-2322	latches	2.05	21.37	136	1.68	0.22	4.20	2	cover	squad-4	1	bot-19	bot-24
+45458	bot-27	bravo	M00m-3420	latches	1.88	20.71	153	3.72	0.76	0.75	1	medic	squad-4	3	bot-19	bot-24
+45516	bot-13	alpha	A00r-2410	state	-2.09	10.17	31	0.60	0.04	5.11	3	seek	squad-3	0	bot-13	bot-21
+45516	bot-19	bravo	A00m-2310	state+latches	-1.87	15.36	195	1.25	0.10	6.53	4	cover	squad-4	0	bot-19	bot-22
+45516	bot-27	bravo	T00m-3420	state	1.88	20.71	153	3.72	0.00	0.75	1	medic	squad-4	3	bot-19	bot-24
+45516	bot-30	alpha	S00r-4410	tick	-4.28	12.59	25	1.25	1.92	12.64	3	seek	squad-3	4	bot-13	bot-21
+45564	bot-19	bravo	C00m-2310	state	-1.87	15.36	194	0.00	0.00		0		squad-4	0	bot-19	bot-22
+45564	bot-21	bravo	S00r-2424	state+health+latches	2.13	21.34	123	1.57	0.09	4.12	2	cover	squad-4	1	bot-19	bot-24
+45620	bot-19	bravo	C00m-2312	latches	-1.93	15.13	206	2.09	0.24	2.98	6	cover	squad-4	0	bot-19	bot-30
+45666	bot-26	alpha	G00r-3412	state	-6.93	2.43	22	4.43	2.09	0.38	1	cover	squad-3	6	bot-13	bot-19
+45666	bot-30	alpha	E00r-4410	state	-4.17	12.66	25	1.45	0.14	12.52	3	seek	squad-3	4	bot-13	bot-21
+45713	bot-13	alpha	E00r-2410	state	-2.15	10.15	2	0.24	0.06		0		squad-3	0	bot-13	bot-19
+45713	bot-26	alpha	A00r-3410	state+latches	-6.98	2.07	31	0.05	0.36		0		squad-3	6	bot-13	bot-19
+45713	bot-30	alpha	E00r-4411	latches	-4.51	12.85	48	3.96	0.39	2.28	1	flee	squad-3	4	bot-13	bot-19
+45765	bot-13	alpha	E00r-2411	latches	-2.04	9.70	1	4.77	0.45	2.34	1	flee	squad-3	0	bot-13	bot-19
+45765	bot-22	alpha	P00r-4310	state+latches	-2.83	10.31	11	3.36	1.46	1.57	1	muzzleRecovery	squad-3	2	bot-13	bot-19
+45765	bot-24	alpha	A00r-4310	state+latches	-4.15	10.70	27	0.00	0.91		0		squad-3	3	bot-13	bot-19
+45809	bot-13	alpha	E00r-241H	latches	-2.13	9.50	1	4.94	0.22	2.12	1	flee	squad-3	0	bot-13	bot-19
+45809	bot-20	alpha	F00m-2320	state	-3.61	9.77	18	0.01	0.11		0		squad-3	5	bot-13	bot-19
+45809	bot-21	bravo	S21r-2424	tier+score	2.08	21.30	182	0.20	0.06		0		squad-4	1	bot-19	bot-24
+45809	bot-23	bravo	S21r-3410	tier+score	-0.38	16.75	212	2.01	0.97	14.36	3	seek	squad-4	2	bot-19	bot-26
+45809	bot-27	bravo	T21m-3420	tier+score	1.89	20.74	161	0.00	0.03	0.73	1	medic	squad-4	3	bot-19	bot-24
+45859	bot-13	alpha	E00r-2411	latches	-2.22	9.28	1	4.79	0.24	1.88	1	flee	squad-3	0	bot-13	bot-19
+45859	bot-19	bravo	E21m-2220	state+tier+score+health+packs+latches	-2.02	14.70	236	2.84	0.44		0		squad-4	0	bot-19	bot-30
+45859	bot-20	alpha	A00m-2320	state	-3.61	9.77	18	0.00	0.00		0		squad-3	5	bot-13	bot-19
+45859	bot-24	alpha	C00r-4310	state	-4.15	10.70	28	0.00	0.00		0		squad-3	3	bot-13	bot-19
+45901	bot-13	alpha	E00r-241H	latches	-2.23	9.09	1	4.60	0.19	1.70	1	flee	squad-3	0	bot-13	bot-19
+45901	bot-19	bravo	E21m-2229	latches	-1.91	14.81	242	1.73	0.16	6.86	2	flee	squad-4	0	bot-19	bot-30
+45901	bot-22	alpha	E00r-4310	state	-2.81	10.77	8	0.00	0.46	1.83	0	muzzleRecovery	squad-3	2	bot-13	bot-19
+45901	bot-24	alpha	C00r-4312	latches	-4.04	10.70	28	1.17	0.11	2.84	1	cover	squad-3	3	bot-13	bot-19
+45960	bot-22	alpha	E00r-4311	latches	-2.77	10.66	13	1.37	0.11	1.16	1	flee	squad-3	2	bot-13	bot-19
+45960	bot-29	bravo	H00r-4310	health	-16.08	-7.57	50	0.01	0.09		0		squad-5	0	bot-29	bot-22
+45960	bot-30	alpha	E00r-441H	latches	-5.32	13.33	62	4.06	0.95	1.34	1	flee	squad-3	4	bot-13	bot-19
+46005	bot-19	bravo	E21m-222P	latches	-1.83	14.96	244	2.01	0.17	6.70	2	flee	squad-4	0	bot-19	bot-30
+46005	bot-20	alpha	F00m-2320	state	-3.61	9.77	19	0.00	0.00		0		squad-3	5	bot-13	bot-19
+46005	bot-21	bravo	C32r-2420	state+tier+score+latches	2.07	21.30	211	0.07	0.01		0		squad-4	1	bot-19	bot-24
+46005	bot-23	bravo	C32r-3410	state+tier+score	-0.57	16.55	212	2.08	0.28	14.08	3	seek	squad-4	2	bot-19	bot-26
+46005	bot-27	bravo	T32m-3420	tier+score	1.89	20.73	177	0.00	0.01	0.74	1	medic	squad-4	3	bot-19	bot-24
+46050	bot-15	alpha	S00r-4410	tick	-4.26	4.93	209	2.14	2.09	17.66	4	seek	squad-3	1	bot-13	bot-29
+46050	bot-19	bravo	E32m-2129	tier+score+health+latches	-1.83	15.05	235	2.08	0.09	6.64	2	flee	squad-4	0	bot-19	bot-22
+46050	bot-20	alpha	A00m-232G	state+latches	-3.61	9.77	19	0.00	0.00		0		squad-3	5	bot-13	bot-19
+46050	bot-21	bravo	C32r-2422	latches	1.93	21.29	230	1.61	0.14	5.89	4	cover	squad-4	1	bot-19	bot-24
+46050	bot-23	bravo	C32r-3412	latches	-0.44	16.95	200	4.71	0.42	4.83	1	cover	squad-4	2	bot-19	bot-26
+46050	bot-26	alpha	A00r-341G	latches	-6.98	2.08	22	0.00	0.00		0		squad-3	6	bot-13	bot-19
+46100	bot-24	alpha	C00r-3312	ammo	-3.72	10.79	26	3.49	0.33	2.59	1	muzzleRecovery	squad-3	3	bot-13	bot-19
+46144	bot-13	alpha	E00r-2411	latches	-2.72	8.09	1	4.78	1.12	0.58	1	flee	squad-3	0	bot-13	bot-19
+46144	bot-22	alpha	E00r-3311	ammo	-2.70	10.44	11	1.11	0.23	0.93	1	flee	squad-3	2	bot-13	bot-19
+46144	bot-23	bravo	C33r-3412	score	-0.25	17.43	200	5.75	0.52	4.32	1	cover	squad-4	2	bot-19	bot-26
+46144	bot-24	alpha	P00r-3310	state+latches	-3.72	10.79	26	4.32	0.00	2.59	1	muzzleRecovery	squad-3	3	bot-13	bot-19
+46144	bot-27	bravo	T33m-3420	score	1.88	20.70	185	0.00	0.03	0.75	1	medic	squad-4	3	bot-19	bot-24
+46144	bot-28	alpha	S00m-3320	tick	-6.94	17.38	181	2.42	2.61	27.01	5	seek	squad-3	7	bot-13	bot-29
+46197	bot-19	bravo	E33m-2029	score+health	-1.78	15.34	205	2.30	0.30	6.41	2	flee	squad-4	0	bot-19	bot-22
+46197	bot-21	bravo	C33r-2422	score	1.67	21.28	260	1.56	0.26	5.63	4	cover	squad-4	1	bot-19	bot-24
+46197	bot-30	alpha	E00r-4411	latches	-6.08	13.80	62	3.58	0.89	0.44	1	flee	squad-3	4	bot-13	bot-19
+46239	bot-22	alpha	E00r-331H	latches	-2.60	10.33	11	1.67	0.15	0.79	1	flee	squad-3	2	bot-13	bot-19
+46239	bot-27	bravo	S33m-3420	state	1.88	20.70	189	0.00	0.00	0.75	1	medic	squad-4	3	bot-19	bot-24
+46281	bot-13	alpha	S00r-2410	state+latches	-2.84	7.87	1	1.38	0.25		0		squad-3	0	bot-13	bot-19
+46281	bot-19	bravo	E33m-202P	latches	-1.71	15.52	196	2.42	0.20	6.24	2	flee	squad-4	0	bot-19	bot-22
+46281	bot-20	alpha	S00m-2320	state+latches	-3.61	9.77	19	0.00	0.00		0		squad-3	5	bot-13	bot-19
+46281	bot-26	alpha	S00r-3410	state+latches	-6.98	2.08	22	0.00	0.00		0		squad-3	6	bot-13	bot-19
+46344	bot-24	alpha	A00r-3310	state	-4.15	10.31	1	0.00	0.64	2.80	0	muzzleRecovery	squad-3	3	bot-13	bot-19
+46344	bot-30	alpha	S00r-4410	state+latches	-6.20	13.88	62	0.00	0.14		0		squad-3	4	bot-13	bot-19
+46471	bot-22	alpha	E00r-3311	latches	-2.39	9.81	11	0.00	0.56		0		squad-3	2	bot-13	bot-19
+46534	bot-19	bravo	E33m-2029	latches	-1.54	16.00	196	1.52	0.50	5.80	2	flee	squad-4	0	bot-19	bot-22
+46534	bot-22	alpha	S00r-3310	state+latches	-2.39	9.81	11	0.00	0.00		0		squad-3	2	bot-13	bot-19
+46534	bot-24	alpha	F00r-3310	state	-4.25	10.37	26	0.00	0.12		0		squad-3	3	bot-13	bot-19
+46582	bot-24	alpha	A00r-3310	state	-4.25	10.37	26	0.00	0.00		0		squad-3	3	bot-13	bot-19
+46654	bot-24	alpha	F00r-3310	state	-4.26	10.37	27	0.00	0.00		0		squad-3	3	bot-13	bot-19
+46654	bot-29	bravo	S00r-4310	state	-16.11	-7.55	22	0.06	0.04		0		squad-5	0	bot-29	bot-22
+46709	bot-24	alpha	C00r-3310	state	-4.26	10.37	27	0.00	0.00		0		squad-3	3	bot-13	bot-19
+46764	bot-24	alpha	C00r-3312	latches	-4.19	10.26	28	1.31	0.13	2.83	1	cover	squad-3	3	bot-13	bot-19
+46835	bot-20	alpha	A00m-2320	state	-3.73	11.00	349	2.45	1.23	3.76	1	seek	squad-3	5	bot-13	bot-19
+46835	bot-21	bravo	C33r-242I	latches	-0.35	19.94	216	3.76	2.43	3.94	4	cover	squad-4	1	bot-19	bot-20
+46835	bot-24	alpha	P00r-3310	state+latches	-4.15	10.21	28	1.36	0.06	2.78	1	muzzleRecovery	squad-3	3	bot-13	bot-19
+46881	bot-20	alpha	A00m-232G	latches	-3.74	11.00	354	0.16	0.01		0		squad-3	5	bot-13	bot-21
+46881	bot-21	bravo	C33r-2422	latches	-0.45	19.79	204	3.84	0.18	3.92	4	cover	squad-4	1	bot-19	bot-22
+46954	bot-24	alpha	A00r-3310	state	-4.30	10.26	4	0.00	0.16	2.94	0	muzzleRecovery	squad-3	3	bot-13	bot-21
+46954	bot-31	bravo	P00r-0410	initial	-20.95	-6.45	0	0.00			0			-1		
+47002	bot-31	bravo	S00r-4410	state+ammo	-20.95	-6.45	0	0.00	0.00		0		squad-5	1	bot-29	
+47046	bot-23	bravo	G33r-3412	state	0.93	21.17	339	4.77	3.92	0.40	1	cover	squad-4	2	bot-19	bot-26
+47046	bot-31	bravo	A00r-4410	state	-20.85	-6.36	12	2.71	0.13	22.28	4	seek	squad-5	1	bot-29	
+47096	bot-15	alpha	S00r-4410	tick	-4.56	2.92	199	2.12	2.02	15.79	3	seek	squad-3	1	bot-13	bot-29
+47096	bot-20	alpha	S00m-2320	state+latches	-3.75	11.00	354	0.00	0.00		0		squad-3	5	bot-13	bot-21
+47096	bot-22	alpha	C00r-3310	state	-2.99	11.04	360	2.99	1.37	7.51	2	seek	squad-3	2	bot-13	bot-19
+47152	bot-22	alpha	C00r-3312	latches	-3.07	10.98	17	0.33	0.10	2.16	2	cover	squad-3	2	bot-13	bot-21
+47152	bot-23	bravo	C33r-3410	state+latches	1.09	21.58	320	1.66	0.44		0		squad-4	2	bot-19	bot-26
+47152	bot-28	alpha	S00m-3320	tick	-6.10	14.96	196	2.79	2.56	24.88	5	seek	squad-3	7	bot-13	bot-29
+47152	bot-31	bravo	A00r-441G	latches	-20.85	-6.35	32	0.00	0.01		0		squad-5	1	bot-29	bot-22
+47199	bot-23	bravo	G33r-3412	state+latches	1.09	21.58	309	0.00	0.00		0		squad-4	2	bot-19	bot-26
+47245	bot-27	bravo	S33m-3420	tick	1.07	18.99	211	2.38	1.89	6.90	2	seek	squad-4	3	bot-19	bot-24
+47306	bot-13	alpha	S00r-2410	tick	-2.28	9.52	39	1.57	1.74	4.52	2	seek	squad-3	0	bot-13	bot-19
+47306	bot-26	alpha	S00r-3410	tick	-6.16	3.70	28	1.94	1.82	11.14	3	seek	squad-3	6	bot-13	bot-19
+47365	bot-30	alpha	S00r-4410	tick	-4.92	13.77	36	1.05	1.29	5.90	3	seek	squad-3	4	bot-13	bot-19
+47365	bot-31	bravo	S00r-4410	state+latches	-20.85	-6.35	32	0.00	0.00		0		squad-5	1	bot-29	bot-22
+47424	bot-26	alpha	A00r-3410	state	-6.11	3.80	28	1.98	0.11	11.03	3	seek	squad-3	6	bot-13	bot-19
+47468	bot-26	alpha	A00r-341G	latches	-6.12	3.81	20	0.52	0.02		0		squad-3	6	bot-13	bot-21
+47512	bot-24	alpha	C00r-3310	state	-4.30	10.26	23	0.00	0.00		0		squad-3	3	bot-13	bot-21
+47570	bot-19	bravo	E33m-2029	tick	2.35	19.05	196	5.27	4.94	0.86	2	flee	squad-4	0	bot-19	bot-22
+47570	bot-23	bravo	S33r-3410	state+latches	1.05	21.55	237	0.00	0.05		0		squad-4	2	bot-19	bot-26
+47570	bot-24	alpha	C00r-3312	latches	-4.19	10.24	23	1.25	0.12	9.66	2	cover	squad-3	3	bot-13	bot-21
+47637	bot-27	bravo	C33m-3420	state	0.50	18.54	213	1.82	0.72	6.24	2	seek	squad-4	3	bot-19	bot-24
+47685	bot-26	alpha	S00r-3410	state+latches	-6.14	3.82	20	0.01	0.02		0		squad-3	6	bot-13	bot-21
+47685	bot-27	bravo	C33m-3422	latches	0.35	18.31	212	3.99	0.28	5.39	4	cover	squad-4	3	bot-19	bot-24
+47685	bot-29	bravo	S00r-4310	tick	-16.59	-5.54	43	2.10	2.07	20.68	5	seek	squad-5	0	bot-29	bot-22
+47787	bot-19	bravo	E33m-2020	latches	2.77	19.43	196	1.17	0.57		0		squad-4	0	bot-19	bot-22
+47787	bot-31	bravo	A00r-4410	state	-20.33	-5.88	48	2.44	0.71	21.45	4	seek	squad-5	1	bot-29	bot-22
+47835	bot-21	bravo	P33r-2420	state+latches	-1.54	16.44	191	4.15	3.53	2.94	1	muzzleRecovery	squad-4	1	bot-19	bot-22
+47835	bot-31	bravo	A00r-441G	latches	-20.33	-5.87	47	0.00	0.00		0		squad-5	1	bot-29	bot-22
+47880	bot-20	alpha	A00m-2320	state	-3.90	12.50	4	1.44	1.50	7.07	2	seek	squad-3	5	bot-13	bot-21
+47950	bot-21	bravo	A33r-2420	state	-1.49	16.82	215	0.00	0.39	3.09	0	muzzleRecovery	squad-4	1	bot-19	bot-22
+47950	bot-24	alpha	A00r-3310	state+latches	-3.42	10.12	17	2.81	0.78	8.96	2	cover	squad-3	3	bot-13	bot-21
+48035	bot-23	bravo	C33r-3410	state	0.81	21.04	207	0.58	0.57	19.11	3	seek	squad-4	2	bot-19	bot-26
+48091	bot-21	bravo	F33r-2420	state	-1.50	16.82	189	0.27	0.01		0		squad-4	1	bot-19	bot-22
+48091	bot-23	bravo	G33r-3412	state+latches	0.91	21.25	220	4.71	0.24	0.33	1	cover	squad-4	2	bot-19	bot-26
+48091	bot-31	bravo	S00r-4410	state+latches	-20.33	-5.87	47	0.00	0.00		0		squad-5	1	bot-29	bot-22
+48143	bot-15	alpha	S00r-4410	tick	-5.20	0.91	214	2.45	2.11	13.75	3	seek	squad-3	1	bot-13	bot-29
+48143	bot-20	alpha	C00m-2320	state	-3.92	12.47	37	0.17	0.03		0		squad-3	5	bot-13	bot-27
+48143	bot-21	bravo	A33r-242G	state+latches	-1.50	16.82	188	0.01	0.00		0		squad-4	1	bot-19	bot-22
+48143	bot-22	alpha	C00r-331I	latches	-2.30	9.97	21	2.96	1.27	0.94	2	cover	squad-3	2	bot-13	bot-21
+48205	bot-20	alpha	C00m-2322	latches	-3.75	12.08	37	3.19	0.43	7.86	3	cover	squad-3	5	bot-13	bot-27
+48205	bot-28	alpha	S00m-3320	tick	-6.23	12.18	185	2.10	2.79	22.17	4	seek	squad-3	7	bot-13	bot-29
+48251	bot-19	bravo	E33m-202G	latches	2.78	19.44	223	0.00	0.01		0		squad-4	0	bot-19	bot-20
+48301	bot-19	bravo	H33m-202G	state	2.78	19.44	223	0.00	0.00		0		squad-4	0	bot-19	bot-20
+48301	bot-21	bravo	A33r-2420	latches	-1.50	16.82	201	0.00	0.00		0		squad-4	1	bot-19	bot-20
+48347	bot-13	alpha	S00r-2410	tick	-1.43	9.99	45	0.71	0.97	3.64	1	seek	squad-3	0	bot-13	bot-19
+48347	bot-22	alpha	C00r-3312	latches	-1.87	9.49	70	3.04	0.64	0.42	1	cover	squad-3	2	bot-13	bot-21
+48347	bot-24	alpha	C00r-3310	state	-3.42	10.12	16	0.00	0.00		0		squad-3	3	bot-13	bot-21
+48406	bot-22	alpha	G00r-3312	state	-1.87	9.49	70	3.04	0.00	0.42	1	cover	squad-3	2	bot-13	bot-21
+48406	bot-24	alpha	C00r-3312	latches	-3.35	10.09	16	0.77	0.08	4.04	2	cover	squad-3	3	bot-13	bot-21
+48406	bot-30	alpha	S00r-4410	tick	-4.18	13.79	41	0.75	0.74	5.49	3	seek	squad-3	4	bot-13	bot-19
+48464	bot-19	bravo	H33m-2020	latches	2.78	19.44	172	0.00	0.00		0		squad-4	0	bot-19	bot-20
+48464	bot-21	bravo	C33r-2420	state	-1.50	16.82	200	0.00	0.00		0		squad-4	1	bot-19	bot-20
+48509	bot-19	bravo	H33m-2120	health	2.78	19.44	172	0.00	0.00		0		squad-4	0	bot-19	bot-20
+48509	bot-21	bravo	C33r-2422	latches	-1.65	16.49	197	3.38	0.36	3.06	6	cover	squad-4	1	bot-19	bot-20
+48560	bot-20	alpha	A00m-2320	state+latches	-3.29	11.28	18	2.55	0.92	7.55	3	cover	squad-3	5	bot-13	bot-21
+48603	bot-23	bravo	A33r-3410	state+latches	1.05	21.55	228	0.00	0.33		0		squad-4	2	bot-19	bot-20
+48603	bot-24	alpha	P00r-3310	state+latches	-3.26	10.04	15	1.43	0.10	3.94	1	muzzleRecovery	squad-3	3	bot-13	bot-21
+48663	bot-30	alpha	E00r-4410	state	-4.02	13.82	78	0.89	0.16	5.38	3	seek	squad-3	4	bot-13	bot-19
+48708	bot-23	bravo	A33r-341G	latches	1.05	21.55	209	0.00	0.00		0		squad-4	2	bot-19	bot-20
+48708	bot-26	alpha	A00r-3410	state	-5.52	5.65	25	2.41	1.93	10.91	4	seek	squad-3	6	bot-13	bot-21
+48708	bot-27	bravo	C33m-3422	tick	-0.86	15.79	238	1.59	2.80	6.54	4	cover	squad-4	3	bot-19	bot-30
+48708	bot-29	bravo	S00r-4310	tick	-16.80	-3.58	23	2.07	1.97	19.45	5	seek	squad-5	0	bot-29	bot-22
+48708	bot-30	alpha	E00r-4411	latches	-4.15	13.73	58	1.65	0.16	2.85	1	flee	squad-3	4	bot-13	bot-27
+48792	bot-24	alpha	A00r-3310	state	-3.39	10.27	336	0.00	0.27	4.13	0	muzzleRecovery	squad-3	3	bot-13	bot-21
+48841	bot-19	bravo	H32m-2120	score	2.78	19.44	198	0.00	0.00		0		squad-4	0	bot-19	bot-20
+48841	bot-21	bravo	C32r-2422	score	-1.86	15.75	199	1.38	0.77	3.00	6	cover	squad-4	1	bot-19	bot-20
+48841	bot-23	bravo	A32r-341G	score	1.07	21.57	209	0.00	0.03		0		squad-4	2	bot-19	bot-20
+48841	bot-27	bravo	C32m-3422	score	-1.09	15.62	238	3.44	0.29	6.58	4	cover	squad-4	3	bot-19	bot-30
+48887	bot-30	alpha	E00r-441H	latches	-4.51	13.46	58	5.07	0.45	2.40	1	flee	squad-3	4	bot-13	bot-27
+48940	bot-23	bravo	S32r-3410	state+latches	1.07	21.57	209	0.00	0.00		0		squad-4	2	bot-19	bot-20
+48940	bot-30	alpha	E00r-4411	latches	-4.71	13.31	57	5.04	0.25	2.14	1	flee	squad-3	4	bot-13	bot-27
+48986	bot-26	alpha	C00r-3410	state	-5.53	5.65	20	0.00	0.00		0		squad-3	6	bot-13	bot-21
+49035	bot-19	bravo	H00m-2120	tier+score	2.78	19.44	213	0.00	0.00		0		squad-4	0	bot-19	bot-20
+49035	bot-21	bravo	C00r-2422	tier+score	-2.01	15.16	199	3.68	0.62	3.06	6	cover	squad-4	1	bot-19	bot-20
+49035	bot-23	bravo	S00r-3410	tier+score	1.00	21.42	203	0.84	0.16	13.98	3	seek	squad-4	2	bot-19	bot-20
+49035	bot-24	alpha	F00r-3310	state	-3.39	10.27	16	0.00	0.00		0		squad-3	3	bot-13	bot-21
+49035	bot-26	alpha	C00r-3412	latches	-5.52	5.52	20	1.35	0.13	6.00	1	cover	squad-3	6	bot-13	bot-21
+49035	bot-27	bravo	C00m-3422	tier+score	-1.44	15.37	205	0.94	0.43	6.67	4	cover	squad-4	3	bot-19	bot-20
+49079	bot-24	alpha	A00r-3310	state	-3.39	10.27	16	0.00	0.00		0		squad-3	3	bot-13	bot-21
+49079	bot-30	alpha	E00r-441H	latches	-5.27	12.85	58	4.52	0.72	1.43	1	flee	squad-3	4	bot-13	bot-27
+49143	bot-31	bravo	S00r-4410	tick	-18.78	-4.62	51	0.98	1.99	19.18	4	seek	squad-5	1	bot-29	bot-22
+49170	bot-15	alpha	S00r-4410	tick	-5.50	-0.59	210	0.93	1.54	12.36	3	seek	squad-3	1	bot-13	bot-29
+49170	bot-24	alpha	F00r-3310	state	-3.39	10.27	16	0.00	0.00		0		squad-3	3	bot-13	bot-21
+49170	bot-24	alpha	F00r-2310	ammo	-3.39	10.27	16	0.00	0.00		1	muzzleRecovery	squad-3	3	bot-13	bot-21
+49170	bot-30	alpha	E00r-4411	latches	-5.58	12.64	58	4.80	0.38	1.05	1	flee	squad-3	4	bot-13	bot-27
+49219	bot-20	alpha	F00m-2320	state	-3.38	11.27	19	0.01	0.10		0		squad-3	5	bot-13	bot-21
+49219	bot-21	bravo	C00r-2322	health	-2.12	14.75	199	2.82	0.42	3.19	6	cover	squad-4	1	bot-19	bot-20
+49219	bot-23	bravo	A21r-3410	state+tier+score	0.93	21.27	203	2.08	0.17	13.81	3	seek	squad-4	2	bot-19	bot-20
+49219	bot-24	alpha	P00r-2310	state	-3.39	10.27	16	1.38	0.00		1	muzzleRecovery	squad-3	3	bot-13	bot-21
+49219	bot-27	bravo	C21m-3422	tier+score	-1.59	15.12	206	3.16	0.29	6.85	4	cover	squad-4	3	bot-19	bot-20
+49219	bot-28	alpha	S00m-3320	tick	-6.10	9.94	200	1.44	2.24	20.09	4	seek	squad-3	7	bot-13	bot-29
+49271	bot-19	bravo	H21m-2120	tier+score	2.78	19.44	236	0.00	0.00		0		squad-4	0	bot-19	bot-20
+49271	bot-20	alpha	A00m-2320	state	-3.38	11.27	19	0.01	0.00		0		squad-3	5	bot-13	bot-21
+49271	bot-21	bravo	C21r-2322	tier+score	-2.18	14.63	200	2.55	0.13	3.26	5	cover	squad-4	1	bot-19	bot-20
+49271	bot-23	bravo	A21r-341G	latches	0.93	21.27	203	0.25	0.01		0		squad-4	2	bot-19	bot-20
+49381	bot-13	alpha	S00r-2410	tick	-1.30	10.08	32	0.08	0.16	3.50	1	seek	squad-3	0	bot-13	bot-19
+49381	bot-20	alpha	F00m-2320	state	-3.38	11.27	20	0.00	0.00		0		squad-3	5	bot-13	bot-21
+49381	bot-20	alpha	F00m-1320	ammo	-3.38	11.27	19	0.00	0.00		0		squad-3	5	bot-13	bot-21
+49381	bot-21	bravo	E32r-2220	state+tier+score+health+latches	-2.24	14.52	200	0.00	0.13		0		squad-4	1	bot-19	bot-20
+49381	bot-23	bravo	A32r-341G	tier+score	0.93	21.28	203	0.00	0.00		0		squad-4	2	bot-19	bot-20
+49381	bot-27	bravo	P21m-3420	state+latches	-1.79	14.90	204	4.39	0.30	6.99	1	muzzleRecovery	squad-4	3	bot-19	bot-20
+49434	bot-19	bravo	H32m-2120	tier+score	2.78	19.44	249	0.00	0.00		0		squad-4	0	bot-19	bot-20
+49434	bot-20	alpha	A00m-1320	state	-3.38	11.27	19	0.00	0.00		0		squad-3	5	bot-13	bot-21
+49434	bot-21	bravo	E32r-1229	ammo+latches	-2.19	14.97	199	5.47	0.46	6.59	1	flee	squad-4	1	bot-19	bot-20
+49434	bot-22	alpha	G00r-3312	tick	-1.45	9.55	352	0.00	0.42		0		squad-3	2	bot-13	bot-21
+49434	bot-26	alpha	A00r-3410	state+latches	-5.45	4.54	18	3.78	0.98	5.02	1	cover	squad-3	6	bot-13	bot-21
+49434	bot-30	alpha	E00r-441G	latches	-6.37	12.12	58	2.80	0.95	2.79	1	flee	squad-3	4	bot-13	bot-21
+49479	bot-23	bravo	C32r-3410	state+latches	0.93	21.28	203	0.00	0.00		0		squad-4	2	bot-19	bot-20
+49479	bot-27	bravo	M32m-3420	state+tier+score	-1.60	15.23	182	0.00	0.38	6.74	0	muzzleRecovery	squad-4	3	bot-19	bot-20
+49479	bot-30	alpha	E00r-441H	latches	-6.55	12.04	58	4.23	0.19	2.60	1	flee	squad-3	4	bot-13	bot-21
+49551	bot-20	alpha	F00m-1320	state	-3.38	11.27	18	0.00	0.00		0		squad-3	5	bot-13	bot-21
+49551	bot-21	bravo	E33r-1129	score+health	-1.95	15.40	197	5.72	0.49	6.12	1	muzzleRecovery	squad-4	1	bot-19	bot-20
+49551	bot-23	bravo	C33r-3412	score+latches	0.88	21.17	203	1.29	0.12	4.85	4	cover	squad-4	2	bot-19	bot-20
+49551	bot-27	bravo	M33m-3420	score	-1.63	15.41	204	2.17	0.19		0		squad-4	3	bot-19	bot-20
+49611	bot-15	alpha	S10r-4410	tier	-5.35	-0.70	217	0.61	0.18	12.36	2	seek	squad-3	1	bot-13	bot-29
+49611	bot-19	bravo	H33m-2120	score	2.78	19.44	263	0.00	0.00		0		squad-4	0	bot-19	bot-20
+49611	bot-20	alpha	A10m-1320	state+tier	-3.38	11.27	17	0.00	0.00		0		squad-3	5	bot-13	bot-21
+49611	bot-21	bravo	E33r-1120	latches	-1.89	15.60	197	5.70	0.21	7.00	1	flee	squad-4	1	bot-19	bot-20
+49660	bot-21	bravo	E33r-1129	latches	-1.94	15.84	197	5.72	0.25	6.86	1	flee	squad-4	1	bot-19	bot-20
+49660	bot-24	alpha	P00r-231G	latches	-3.72	9.75	282	1.35	0.62		1	muzzleRecovery	squad-3	3	bot-13	bot-21
+49660	bot-29	bravo	C00r-4310	state	-16.42	-2.09	50	1.49	1.54	18.18	4	seek	squad-5	0	bot-29	bot-22
+49660	bot-30	alpha	E00r-4411	latches	-7.03	11.90	58	3.31	0.50	2.10	1	flee	squad-3	4	bot-13	bot-21
+49715	bot-19	bravo	H33m-2220	health	2.78	19.44	271	0.00	0.00		0		squad-4	0	bot-19	bot-20
+49715	bot-24	alpha	A00r-2310	state+latches	-3.72	9.75	282	0.00	0.00		0	muzzleRecovery	squad-3	3	bot-13	bot-21
+49715	bot-29	bravo	C00r-4312	latches	-16.26	-1.92	51	2.25	0.24	5.14	4	cover	squad-5	0	bot-29	bot-13
+49761	bot-22	alpha	G21r-3312	tier+score	-1.45	9.55	17	0.00	0.00		0		squad-3	2	bot-13	bot-21
+49761	bot-24	alpha	A21r-2310	tier+score	-3.72	9.75	263	0.00	0.00		0		squad-3	3	bot-13	bot-29
+49761	bot-26	alpha	A21r-3410	tier+score	-5.46	4.56	17	0.00	0.02		0		squad-3	6	bot-13	bot-21
+49761	bot-28	alpha	S21m-3320	tier+score	-6.04	8.84	201	2.18	1.10	19.09	4	seek	squad-3	7	bot-13	bot-29
+49761	bot-30	alpha	E21r-4411	tier+score	-7.27	11.79	58	2.49	0.26	1.83	1	flee	squad-3	4	bot-13	bot-21
+49815	bot-13	alpha	S21r-2410	tier+score	-1.30	10.04	32	0.29	0.04	3.53	1	seek	squad-3	0	bot-13	bot-19
+49815	bot-15	alpha	S21r-4410	tier+score	-5.30	-0.70	243	0.29	0.05	12.39	3	seek	squad-3	1	bot-13	bot-29
+49815	bot-20	alpha	E21m-1220	state+tier+score+health	-3.38	11.27	22	0.00	0.00		0		squad-3	5	bot-13	bot-27
+49815	bot-26	alpha	C21r-3410	state	-5.46	4.56	17	0.00	0.00		0		squad-3	6	bot-13	bot-21
+49815	bot-27	bravo	M33m-2420	ammo	-1.64	15.80	203	0.81	0.38		0		squad-4	3	bot-19	bot-20
+49862	bot-20	alpha	E21m-1229	latches	-3.80	10.95	22	5.47	0.53	5.34	1	flee	squad-3	5	bot-13	bot-27
+49862	bot-23	bravo	P33r-3410	state+latches	0.61	20.58	204	4.07	0.64	4.66	1	muzzleRecovery	squad-4	2	bot-19	bot-20
+49862	bot-26	alpha	C21r-341I	latches	-5.53	4.43	8	1.47	0.14	2.77	1	cover	squad-3	6	bot-13	bot-21
+49923	bot-28	alpha	A21m-3320	state	-6.04	8.62	201	2.18	0.22	18.88	4	seek	squad-3	7	bot-13	bot-29
+49975	bot-21	bravo	E33r-R12P	ammo+latches	-1.11	17.86	203	0.84	2.18	4.96	1	flee	squad-4	1	bot-19	bot-20
+49975	bot-22	alpha	C21r-3312	state	-1.82	9.88	32	0.00	0.49		0		squad-3	2	bot-13	bot-21
+49975	bot-23	bravo	A33r-341G	state+latches	0.21	20.56	229	0.00	0.40	4.28	0	muzzleRecovery	squad-4	2	bot-19	bot-20
+50025	bot-22	alpha	G21r-3312	state	-1.82	9.80	42	1.63	0.08	0.45	1	cover	squad-3	2	bot-13	bot-21
+50081	bot-26	alpha	C21r-3412	latches	-5.79	4.06	324	4.59	0.45	2.32	1	cover	squad-3	6	bot-13	bot-21
+50159	bot-21	bravo	E33r-R129	latches	-1.06	17.70	198	4.27	0.17	5.00	1	flee	squad-4	1	bot-19	bot-24
+50159	bot-31	bravo	S00r-4410	tick	-17.46	-3.29	51	1.94	1.87	17.32	4	seek	squad-5	1	bot-29	bot-22
+50205	bot-23	bravo	S33r-3410	state+latches	0.21	20.58	229	0.00	0.02		0		squad-4	2	bot-19	bot-20
+50270	bot-29	bravo	A00r-4310	state+latches	-15.82	-1.43	44	0.32	0.65	5.25	4	cover	squad-5	0	bot-29	bot-28
+50334	bot-23	bravo	C33r-3410	state	0.17	20.49	209	1.11	0.10	13.65	3	seek	squad-4	2	bot-19	bot-20
+50385	bot-23	bravo	C33r-3412	latches	0.13	20.37	200	1.23	0.12	4.25	4	cover	squad-4	2	bot-19	bot-20
+50385	bot-28	alpha	A21m-332G	latches	-6.04	8.63	224	0.00	0.01		0		squad-3	7	bot-13	bot-29
+50385	bot-29	bravo	A00r-431G	latches	-15.83	-1.43	44	0.10	0.01		0		squad-5	0	bot-29	bot-28
+50441	bot-26	alpha	S21r-3410	state+latches	-6.45	2.95	253	4.72	1.29	1.03	1	cover	squad-3	6	bot-13	bot-21
+50554	bot-20	alpha	E21m-R22P	ammo+latches	-6.41	9.24	35	5.18	3.11	2.43	1	flee	squad-3	5	bot-13	bot-27
+50554	bot-27	bravo	M33m-242G	latches	-0.58	17.04	203	0.12	1.63	1.02	0		squad-4	3	bot-19	bot-20
+50554	bot-30	alpha	S21r-4410	state+latches	-8.73	11.18	58	0.00	1.58		0		squad-3	4	bot-13	bot-21
+50602	bot-28	alpha	S21m-3320	state+latches	-6.04	8.63	224	0.00	0.00		0		squad-3	7	bot-13	bot-29
+50602	bot-29	bravo	S00r-4310	state+latches	-15.84	-1.44	44	0.00	0.00		0		squad-5	0	bot-29	bot-28
+50667	bot-26	alpha	S21r-4410	ammo	-6.47	3.57	317	2.33	0.62	12.53	4	seek	squad-3	6	bot-13	bot-21
+50719	bot-19	bravo	H33m-2220	tick	2.78	19.44	194	0.00	0.00		0		squad-4	0	bot-19	bot-20
+50746	bot-21	bravo	E33r-R12P	latches	1.19	18.99	214	5.15	2.60	2.43	1	flee	squad-4	1	bot-19	bot-28
+50811	bot-20	alpha	E21m-R229	latches	-7.23	8.65	35	4.82	1.02	1.61	1	flee	squad-3	5	bot-13	bot-27
+50811	bot-24	alpha	A21r-2310	tick	-3.72	9.75	227	0.00	0.00		0		squad-3	3	bot-13	bot-29
+50811	bot-27	bravo	M33m-2420	latches	0.08	17.92	207	6.35	1.10	1.17	1	medic	squad-4	3	bot-19	bot-20
+50868	bot-13	alpha	S21r-2410	tick	-1.12	10.06	31	0.69	0.18	3.43	1	seek	squad-3	0	bot-13	bot-19
+50868	bot-15	alpha	S21r-4410	tick	-5.36	-0.69	11	0.59	0.06	12.37	3	seek	squad-3	1	bot-13	bot-29
+50901	bot-29	bravo	C00r-4310	state	-15.82	-1.41	80	0.19	0.03	14.99	4	seek	squad-5	0	bot-29	bot-28
+50953	bot-19	bravo	H33m-2320	health	2.78	19.44	176	0.00	0.00		0		squad-4	0	bot-19	bot-20
+50953	bot-28	alpha	A21m-3320	state	-6.19	8.19	204	2.31	0.47	16.30	3	seek	squad-3	7	bot-13	bot-29
+50953	bot-29	bravo	C00r-4312	latches	-15.77	-1.40	59	0.71	0.05	5.28	4	cover	squad-5	0	bot-29	bot-13
+51009	bot-21	bravo	E33r-R129	latches	1.90	19.95	214	5.19	1.19	1.30	1	flee	squad-4	1	bot-19	bot-28
+51077	bot-22	alpha	G21r-3312	tick	-1.45	9.55	354	0.00	0.45		0		squad-3	2	bot-13	bot-21
+51077	bot-23	bravo	S33r-3410	state+latches	-0.84	18.57	204	2.34	2.05	4.31	4	cover	squad-4	2	bot-19	bot-20
+51077	bot-28	alpha	F21m-3320	state	-6.19	8.19	225	0.15	0.01		0		squad-3	7	bot-13	bot-29
+51077	bot-29	bravo	E00r-4210	state+health+latches	-15.78	-1.37	52	0.54	0.03		0		squad-5	0	bot-29	bot-13
+51077	bot-31	bravo	S21r-4410	tier+score	-16.46	-2.37	52	1.27	1.37	15.96	4	seek	squad-5	1	bot-29	bot-22
+51134	bot-23	bravo	C33r-3410	state	-0.87	18.48	206	1.91	0.10	11.60	3	seek	squad-4	2	bot-19	bot-20
+51134	bot-28	alpha	A21m-3320	state	-6.19	8.19	225	0.00	0.00		0		squad-3	7	bot-13	bot-29
+51134	bot-29	bravo	E21r-4219	tier+score+latches	-16.18	-1.77	43	5.61	0.57	6.01	1	flee	squad-5	0	bot-29	bot-20
+51191	bot-23	bravo	C33r-3412	latches	-0.90	18.23	196	3.34	0.25	3.73	6	cover	squad-4	2	bot-19	bot-20
+51290	bot-20	alpha	E21m-R220	latches	-7.57	7.37	35	0.00	1.32		0		squad-3	5	bot-13	bot-27
+51290	bot-22	alpha	C00r-3312	state+tier+score	-1.45	9.55	2	0.00	0.00		0		squad-3	2	bot-13	bot-21
+51290	bot-24	alpha	A00r-2310	tier+score	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-29
+51290	bot-26	alpha	S00r-4410	tier+score	-6.29	4.72	25	2.31	1.17	11.41	4	seek	squad-3	6	bot-13	bot-21
+51290	bot-28	alpha	F00m-3320	state+tier+score	-6.19	8.19	225	0.00	0.00		0		squad-3	7	bot-13	bot-29
+51290	bot-29	bravo	E32r-4119	tier+score+health	-16.72	-1.78	44	5.29	0.54	5.67	1	flee	squad-5	0	bot-29	bot-20
+51290	bot-30	alpha	S00r-4410	tier+score	-7.53	12.60	37	2.61	1.85	6.81	2	seek	squad-3	4	bot-13	bot-21
+51290	bot-31	bravo	S32r-4410	tier+score	-16.37	-2.38	44	0.45	0.09	15.90	4	seek	squad-5	1	bot-29	bot-22
+51354	bot-13	alpha	S00r-2410	tier+score	-1.00	9.99	27	0.15	0.14	3.43	1	seek	squad-3	0	bot-13	bot-19
+51354	bot-15	alpha	S00r-4410	tier+score	-5.37	-0.69	307	0.30	0.01	12.36	3	seek	squad-3	1	bot-13	bot-29
+51354	bot-20	alpha	E00m-R220	tier+score	-7.57	7.37	35	0.00	0.00		0		squad-3	5	bot-13	bot-27
+51354	bot-28	alpha	A00m-332G	state+latches	-6.19	8.19	226	0.00	0.00		0		squad-3	7	bot-13	bot-29
+51354	bot-29	bravo	E32r-411P	latches	-16.97	-1.84	44	5.13	0.26	5.49	1	flee	squad-5	0	bot-29	bot-20
+51448	bot-27	bravo	T33m-2420	state	1.71	19.92	146	6.07	2.58	0.37	1	medic	squad-4	3	bot-19	bot-20
+51448	bot-29	bravo	E32r-4119	latches	-17.21	-1.94	54	5.19	0.26	5.27	1	flee	squad-5	0	bot-29	bot-22
+51511	bot-21	bravo	E33r-R120	latches	2.82	20.73	214	0.00	1.21		0		squad-4	1	bot-19	bot-28
+51511	bot-24	alpha	F00r-2310	state	-3.72	9.75	229	0.00	0.00		0		squad-3	3	bot-13	bot-29
+51511	bot-29	bravo	E32r-411P	latches	-17.45	-2.04	54	5.22	0.26	5.07	1	flee	squad-5	0	bot-29	bot-22
+51587	bot-24	alpha	A00r-2310	state	-3.72	9.75	229	0.00	0.00		0		squad-3	3	bot-13	bot-29
+51587	bot-28	alpha	S00m-3320	state+latches	-6.19	8.19	226	0.00	0.00		0		squad-3	7	bot-13	bot-29
+51653	bot-23	bravo	C33r-341I	latches	-1.26	17.04	196	4.43	1.25	3.05	6	cover	squad-4	2	bot-19	bot-26
+51653	bot-24	alpha	F00r-2310	state	-3.72	9.75	229	0.00	0.00		0		squad-3	3	bot-13	bot-29
+51738	bot-24	alpha	A00r-2310	state	-3.72	9.75	229	0.00	0.00		0		squad-3	3	bot-13	bot-29
+51738	bot-29	bravo	E32r-4119	latches	-17.96	-2.65	54	5.66	0.79	4.29	1	flee	squad-5	0	bot-29	bot-22
+51820	bot-20	alpha	H00m-R220	state	-7.63	7.39	35	0.00	0.07		0		squad-3	5	bot-13	bot-27
+51820	bot-21	bravo	E33r-R220	health	2.82	20.73	214	0.00	0.00		0		squad-4	1	bot-19	bot-28
+51894	bot-21	bravo	E33r-4220	ammo	2.82	20.73	214	0.00	0.00		0		squad-4	1	bot-19	bot-28
+51894	bot-23	bravo	C33r-3412	latches	-1.46	16.38	195	4.49	0.69	2.84	6	cover	squad-4	2	bot-19	bot-26
+51945	bot-19	bravo	S33m-2320	state	2.78	19.44	223	0.00	0.00		0		squad-4	0	bot-19	bot-20
+51945	bot-32	bravo	P00r-0410	initial	-22.95	-2.45	0	0.00			0			-1		
+52014	bot-20	alpha	H00m-4220	ammo	-7.63	7.39	48	0.00	0.00		0		squad-3	5	bot-13	bot-27
+52014	bot-21	bravo	H33r-4220	state	2.82	20.73	214	0.00	0.00		0		squad-4	1	bot-19	bot-28
+52014	bot-22	alpha	S00r-3310	state+latches	-0.21	9.31	76	1.75	1.26	0.80	2	cover	squad-3	2	bot-13	bot-21
+52014	bot-27	bravo	M33m-2420	state	1.68	19.97	181	0.00	0.06	0.38	1	medic	squad-4	3	bot-19	bot-20
+52014	bot-29	bravo	E32r-411P	latches	-18.42	-3.60	53	5.23	1.06	3.23	1	flee	squad-5	0	bot-29	bot-13
+52014	bot-32	bravo	S32r-4410	state+tier+score+ammo	-22.95	-2.45	0	0.00	0.00		0		squad-5	2	bot-29	
+52083	bot-32	bravo	P32r-4410	state	-22.80	-2.42	13	2.76	0.15	24.48	4	seek	squad-5	2	bot-29	
+52186	bot-26	alpha	C00r-3410	state+ammo	-6.01	6.15	27	2.44	1.46	10.00	4	seek	squad-3	6	bot-13	bot-21
+52186	bot-27	bravo	T33m-2420	state	2.13	20.48	142	3.75	0.68	0.74	1	medic	squad-4	3	bot-19	bot-20
+52259	bot-19	bravo	S32m-2320	score	2.56	18.95	229	2.04	0.53	6.67	1	seek	squad-4	0	bot-19	bot-20
+52259	bot-21	bravo	H32r-4220	score	2.82	20.73	228	0.00	0.00		0		squad-4	1	bot-19	bot-28
+52259	bot-23	bravo	C32r-3412	score	-1.75	15.48	204	1.56	0.94	2.83	6	cover	squad-4	2	bot-19	bot-26
+52259	bot-26	alpha	C00r-3412	latches	-5.96	5.80	24	4.02	0.36	6.33	1	cover	squad-3	6	bot-13	bot-23
+52259	bot-27	bravo	T32m-2420	score	2.13	20.48	165	0.00	0.00	0.74	1	medic	squad-4	3	bot-19	bot-20
+52259	bot-29	bravo	E32r-4119	latches	-18.90	-4.52	53	5.36	1.04	2.20	1	flee	squad-5	0	bot-29	bot-13
+52317	bot-30	alpha	S00r-4410	tick	-6.65	13.37	38	1.39	1.17	5.67	2	seek	squad-3	4	bot-13	bot-21
+52317	bot-31	bravo	A32r-4410	state	-16.21	-1.69	46	0.85	0.72	15.35	4	seek	squad-5	1	bot-29	bot-22
+52375	bot-13	alpha	S00r-2410	tick	-0.97	10.01	27	0.31	0.03	3.40	1	seek	squad-3	0	bot-13	bot-19
+52375	bot-15	alpha	S00r-4410	tick	-5.36	-0.69	218	0.16	0.01	12.36	3	seek	squad-3	1	bot-13	bot-29
+52423	bot-19	bravo	S00m-2320	tier+score	2.33	18.75	229	1.66	0.31	6.37	1	seek	squad-4	0	bot-19	bot-20
+52423	bot-21	bravo	H00r-4220	tier+score	2.82	20.73	240	0.00	0.00		0		squad-4	1	bot-19	bot-28
+52423	bot-23	bravo	C00r-3412	tier+score	-1.90	15.22	211	2.05	0.30	2.96	6	cover	squad-4	2	bot-19	bot-28
+52423	bot-27	bravo	T00m-2420	tier+score	2.11	20.49	167	0.22	0.02	0.75	1	medic	squad-4	3	bot-19	bot-20
+52423	bot-31	bravo	A32r-441G	latches	-16.21	-1.69	53	0.00	0.00		0		squad-5	1	bot-29	bot-13
+52494	bot-15	alpha	S21r-4410	tier+score	-5.36	-0.69	218	0.16	0.01	12.37	3	seek	squad-3	1	bot-13	bot-29
+52619	bot-20	alpha	H00m-4320	health	-7.63	7.39	1	0.00	0.00		0		squad-3	5	bot-13	bot-23
+52619	bot-21	bravo	H00r-4320	health	2.82	20.73	258	0.00	0.00		0		squad-4	1	bot-19	bot-28
+52619	bot-28	alpha	S00m-3320	tick	-6.96	6.57	234	2.36	1.80	15.40	3	seek	squad-3	7	bot-13	bot-29
+52669	bot-31	bravo	S32r-4410	state+latches	-16.30	-1.71	53	0.64	0.10		0		squad-5	1	bot-29	bot-13
+52767	bot-15	alpha	S00r-4410	tier+score	-5.37	-0.69	218	0.21	0.01	12.36	3	seek	squad-3	1	bot-13	bot-29
+52767	bot-24	alpha	A00r-2310	tick	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+52833	bot-26	alpha	A00r-3410	state+latches	-5.72	4.15	19	3.79	1.66	4.67	1	cover	squad-3	6	bot-13	bot-23
+52884	bot-30	alpha	E00r-4410	state	-6.38	13.56	33	0.33	0.33	5.36	2	seek	squad-3	4	bot-13	bot-21
+52963	bot-30	alpha	E00r-4411	latches	-6.77	13.25	59	4.96	0.50	2.76	1	flee	squad-3	4	bot-13	bot-23
+53016	bot-21	bravo	S00r-4324	state+latches	2.82	20.73	256	0.00	0.00		0		squad-4	1	bot-19	bot-28
+53016	bot-22	alpha	S00r-3310	tick	-2.23	9.60	355	2.52	2.04	9.97	3	seek	squad-3	2	bot-13	bot-21
+53016	bot-26	alpha	C00r-3410	state	-5.72	4.15	19	0.00	0.00		0		squad-3	6	bot-13	bot-23
+53069	bot-23	bravo	C00r-3422	packs	-2.32	14.20	207	0.91	1.10	7.67	5	cover	squad-4	2	bot-19	bot-22
+53069	bot-26	alpha	C00r-3412	latches	-5.62	4.20	19	1.16	0.11	7.85	2	cover	squad-3	6	bot-13	bot-23
+53069	bot-29	bravo	E32r-4110	latches	-19.77	-6.23	53	0.83	1.92		0		squad-5	0	bot-29	bot-13
+53069	bot-31	bravo	A32r-4410	state	-16.12	-1.63	75	1.40	0.20	16.47	4	seek	squad-5	1	bot-29	bot-13
+53132	bot-22	alpha	E00r-3310	state	-2.35	9.69	356	2.80	0.15	9.88	3	seek	squad-3	2	bot-13	bot-21
+53132	bot-32	bravo	P32r-4410	tick	-22.61	-2.40	86	0.00	0.20		0		squad-5	2	bot-29	bot-13
+53195	bot-22	alpha	E00r-3311	latches	-2.17	9.63	359	2.22	0.19	1.22	1	flee	squad-3	2	bot-13	bot-23
+53195	bot-31	bravo	A32r-441G	latches	-16.12	-1.63	54	0.00	0.00		0		squad-5	1	bot-29	bot-13
+53295	bot-22	alpha	E00r-331H	latches	-1.88	9.55	356	3.54	0.31	0.93	1	flee	squad-3	2	bot-13	bot-23
+53400	bot-13	alpha	S00r-2410	tick	-0.82	9.96	24	0.33	0.16	3.38	1	seek	squad-3	0	bot-13	bot-19
+53400	bot-20	alpha	E00m-4320	state	-7.63	7.39	20	0.00	0.00		0		squad-3	5	bot-13	bot-23
+53400	bot-21	bravo	S00r-4424	health	2.82	20.73	222	0.00	0.00		0		squad-4	1	bot-19	bot-28
+53400	bot-31	bravo	S32r-4410	state+latches	-16.25	-1.66	54	0.53	0.13		0		squad-5	1	bot-29	bot-13
+53457	bot-19	bravo	S00m-2320	tick	0.90	17.59	228	1.55	1.85	4.52	1	seek	squad-4	0	bot-19	bot-20
+53457	bot-20	alpha	E00m-4329	latches	-7.93	7.10	39	5.20	0.41	6.42	1	flee	squad-3	5	bot-13	bot-23
+53457	bot-24	alpha	F00r-2310	state	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53457	bot-27	bravo	T00m-2420	tick	2.10	20.52	247	0.00	0.03	0.76	1	medic	squad-4	3	bot-19	bot-20
+53552	bot-22	alpha	E00r-3311	latches	-1.13	9.33	356	4.51	0.77	0.29	1	flee	squad-3	2	bot-13	bot-23
+53552	bot-23	bravo	A00r-3420	state+latches	-2.45	13.95	214	0.73	0.28	7.74	5	cover	squad-4	2	bot-19	bot-30
+53552	bot-24	alpha	A00r-2310	state	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53641	bot-24	alpha	F00r-2310	state	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53641	bot-28	alpha	S00m-3320	tick	-8.28	5.13	236	2.41	1.95	13.50	3	seek	squad-3	7	bot-13	bot-29
+53641	bot-29	bravo	H32r-4110	state	-19.77	-6.23	53	0.00	0.00		0		squad-5	0	bot-29	bot-13
+53704	bot-21	bravo	S21r-4424	tier+score	2.82	20.73	201	0.00	0.00		0		squad-4	1	bot-19	bot-28
+53704	bot-22	alpha	S00r-3310	state+latches	-1.14	9.32	356	0.15	0.01		0		squad-3	2	bot-13	bot-23
+53704	bot-23	bravo	A00r-3320	health	-2.46	13.96	245	0.00	0.01		0		squad-4	2	bot-19	bot-30
+53704	bot-24	alpha	A00r-2310	state	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53704	bot-27	bravo	T21m-2420	tier+score	2.10	20.52	267	0.00	0.00	0.76	1	medic	squad-4	3	bot-19	bot-20
+53796	bot-15	alpha	S00r-4410	tick	-5.36	-0.69	246	0.17	0.00	12.36	3	seek	squad-3	1	bot-13	bot-29
+53796	bot-19	bravo	S21m-2320	tier+score	0.59	17.32	228	2.07	0.41	4.11	1	seek	squad-4	0	bot-19	bot-20
+53796	bot-23	bravo	A21r-3320	tier+score	-2.46	13.96	254	0.00	0.00		0		squad-4	2	bot-19	bot-30
+53796	bot-24	alpha	F00r-2310	state	-3.72	9.75	228	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53796	bot-26	alpha	C00r-2412	ammo	-3.86	4.90	10	4.20	1.89	6.06	1	muzzleRecovery	squad-3	6	bot-13	bot-23
+53913	bot-23	bravo	C21r-3320	state	-2.46	13.96	254	0.00	0.00		0		squad-4	2	bot-19	bot-30
+53913	bot-26	alpha	P00r-2410	state+latches	-3.86	4.90	10	4.04	0.00	6.06	1	muzzleRecovery	squad-3	6	bot-13	bot-23
+53913	bot-31	bravo	A32r-4410	state	-16.14	-1.64	56	1.20	0.11	16.49	4	seek	squad-5	1	bot-29	bot-13
+53990	bot-23	bravo	C21r-3322	latches	-2.25	14.39	251	4.90	0.49	1.84	1	cover	squad-4	2	bot-19	bot-30
+53990	bot-24	alpha	A00r-2310	state	-3.72	9.75	227	0.00	0.00		0		squad-3	3	bot-13	bot-31
+53990	bot-26	alpha	C00r-2410	state	-3.67	4.97	23	0.00	0.20	5.87	0	muzzleRecovery	squad-3	6	bot-13	bot-23
+53990	bot-30	alpha	E00r-4411	tick	-8.42	12.07	70	1.12	2.03	0.74	1	flee	squad-3	4	bot-13	bot-23
+54046	bot-24	alpha	F00r-2310	state	-3.72	9.75	227	0.00	0.00		0		squad-3	3	bot-13	bot-31
+54046	bot-26	alpha	C00r-2412	latches	-3.22	5.17	8	4.47	0.49	5.41	2	cover	squad-3	6	bot-13	bot-23
+54046	bot-31	bravo	A32r-441G	latches	-16.14	-1.64	53	0.73	0.00		0		squad-5	1	bot-29	bot-13
+54098	bot-24	alpha	U00r-2310	state	-3.72	9.75	227	0.00	0.00		0		squad-3	3	bot-13	bot-31
+54098	bot-26	alpha	C00r-241I	latches	-3.00	5.25	21	4.64	0.23	5.20	2	cover	squad-3	6	bot-13	bot-23
+54098	bot-29	bravo	H00r-4110	tier+score	-19.77	-6.23	62	0.00	0.00		0		squad-5	0	bot-29	bot-13
+54098	bot-31	bravo	A00r-441G	tier+score	-16.16	-1.64	53	0.45	0.02		0		squad-5	1	bot-29	bot-13
+54098	bot-32	bravo	P00r-4410	tier+score	-22.61	-2.40	66	0.00	0.00		0		squad-5	2	bot-29	bot-13
+54197	bot-20	alpha	E00m-4320	latches	-9.68	5.68	40	4.35	2.26	6.65	1	flee	squad-3	5	bot-13	bot-23
+54197	bot-30	alpha	E00r-441H	latches	-8.65	11.86	66	2.26	0.31	0.43	1	flee	squad-3	4	bot-13	bot-23
+54258	bot-20	alpha	E00m-4329	latches	-9.86	5.51	39	4.94	0.25	6.40	1	flee	squad-3	5	bot-13	bot-23
+54258	bot-29	bravo	H00r-4210	health	-19.77	-6.23	74	0.00	0.00		0		squad-5	0	bot-29	bot-13
+54258	bot-31	bravo	S00r-4410	state+latches	-16.18	-1.64	53	0.30	0.02		0		squad-5	1	bot-29	bot-13
+54331	bot-26	alpha	C00r-2412	latches	-2.37	5.49	59	3.75	0.68	4.60	2	cover	squad-3	6	bot-13	bot-23
+54427	bot-13	alpha	S00r-2410	tick	-0.63	10.01	22	0.42	0.20	3.26	1	seek	squad-3	0	bot-13	bot-19
+54427	bot-19	bravo	A21m-2320	state	0.04	16.88	227	1.90	0.70	3.41	1	seek	squad-4	0	bot-19	bot-20
+54427	bot-20	alpha	E00m-432P	latches	-10.20	5.20	41	3.98	0.46	5.94	1	flee	squad-3	5	bot-13	bot-19
+54427	bot-23	bravo	C21r-332I	latches	-1.61	15.77	233	4.93	1.51	0.33	1	cover	squad-4	2	bot-19	bot-20
+54427	bot-26	alpha	S00r-2410	state+latches	-2.37	5.49	59	3.75	0.00	4.60	2	cover	squad-3	6	bot-13	bot-23
+54427	bot-30	alpha	S00r-4410	state+latches	-8.73	11.77	66	0.00	0.12		0		squad-3	4	bot-13	bot-23
+54486	bot-19	bravo	A21m-232G	latches	0.04	16.88	221	0.00	0.00		0		squad-4	0	bot-19	bot-20
+54486	bot-23	bravo	G21r-332I	state	-1.61	15.77	233	4.93	0.00	0.33	1	cover	squad-4	2	bot-19	bot-20
+54486	bot-27	bravo	S21m-2420	state	2.09	20.53	220	0.00	0.01	0.76	1	medic	squad-4	3	bot-19	bot-20
+54579	bot-31	bravo	A00r-4410	state	-16.03	-1.58	55	1.29	0.16	16.65	4	seek	squad-5	1	bot-29	bot-13
+54637	bot-20	alpha	E00m-4329	latches	-10.82	4.58	41	3.88	0.87	5.07	1	flee	squad-3	5	bot-13	bot-19
+54637	bot-23	bravo	G21r-3322	latches	-1.49	16.07	269	0.30	0.32		0		squad-4	2	bot-19	bot-20
+54702	bot-19	bravo	S21m-2320	state+latches	0.02	16.94	221	0.23	0.07		0		squad-4	0	bot-19	bot-20
+54702	bot-28	alpha	S00m-3320	tick	-9.45	3.94	237	1.96	1.67	11.87	3	seek	squad-3	7	bot-13	bot-29
+54702	bot-31	bravo	A00r-441G	latches	-16.04	-1.57	53	0.14	0.01		0		squad-5	1	bot-29	bot-13
+54774	bot-21	bravo	S21r-4424	tick	2.82	20.73	211	0.00	0.00		0		squad-4	1	bot-19	bot-28
+54774	bot-22	alpha	S00r-3310	tick	-2.75	10.21	353	2.26	1.84	6.38	2	seek	squad-3	2	bot-13	bot-23
+54817	bot-15	alpha	S00r-4410	tick	-5.37	-0.68	218	0.19	0.01	12.37	3	seek	squad-3	1	bot-13	bot-29
+54916	bot-23	bravo	S21r-3320	state+latches	-1.46	16.05	250	0.02	0.04		0		squad-4	2	bot-19	bot-20
+54916	bot-31	bravo	S00r-4410	state+latches	-16.04	-1.57	53	0.01	0.01		0		squad-5	1	bot-29	bot-13
+54985	bot-15	alpha	P00r-4410	state	-5.37	-0.68	218	0.28	0.00	12.36	3	seek	squad-3	1	bot-13	bot-29
+54985	bot-21	bravo	S21r-4420	latches	2.78	20.68	211	1.41	0.07	14.98	2	seek	squad-4	1	bot-19	bot-28
+55137	bot-24	alpha	U00r-2310	tick	-5.96	7.77	227	4.06	2.99	3.07	1	pursue	squad-3	3	bot-13	bot-31
+55137	bot-32	bravo	P00r-4410	tick	-22.02	-3.60	158	0.27	1.34		0		squad-5	2	bot-29	bot-13
+55178	bot-19	bravo	A21m-2320	state	-0.36	16.53	222	1.73	0.56	12.09	2	seek	squad-4	0	bot-19	bot-20
+55255	bot-20	alpha	E00m-432P	latches	-12.54	2.85	42	4.06	2.44	2.63	1	flee	squad-3	5	bot-13	bot-19
+55255	bot-21	bravo	S00r-4420	tier+score	2.55	20.40	204	2.40	0.36	14.64	2	seek	squad-4	1	bot-19	bot-28
+55255	bot-27	bravo	S00m-2420	tier+score	1.14	19.40	215	1.33	1.47	9.64	2	seek	squad-4	3	bot-19	bot-20
+55255	bot-31	bravo	C00r-4410	state	-15.93	-1.52	81	0.42	0.12	16.25	4	seek	squad-5	1	bot-29	bot-13
+55322	bot-19	bravo	A00m-232G	tier+score+latches	-0.36	16.54	222	0.77	0.01		0		squad-4	0	bot-19	bot-20
+55322	bot-23	bravo	S10r-3320	tier+score	-1.77	15.70	218	1.25	0.48	16.33	3	seek	squad-4	2	bot-19	bot-20
+55322	bot-29	bravo	H00r-4210	tick	-19.77	-6.23	44	0.00	0.00		0		squad-5	0	bot-29	bot-13
+55322	bot-31	bravo	C00r-4412	latches	-15.86	-1.47	55	1.07	0.08	5.24	4	cover	squad-5	1	bot-29	bot-20
+55468	bot-13	alpha	S00r-2410	tick	-0.55	10.00	20	0.23	0.09	3.24	1	seek	squad-3	0	bot-13	bot-19
+55468	bot-20	alpha	E00m-4329	latches	-12.95	2.43	42	3.98	0.59	2.04	1	flee	squad-3	5	bot-13	bot-19
+55468	bot-26	alpha	S00r-2410	tick	-2.51	6.82	10	1.44	1.34	5.82	3	seek	squad-3	6	bot-13	bot-23
+55468	bot-28	alpha	C00m-3320	state	-10.52	3.13	233	1.69	1.34	10.53	3	seek	squad-3	7	bot-13	bot-29
+55468	bot-30	alpha	S00r-4410	tick	-7.09	13.03	36	1.72	2.06	6.20	2	seek	squad-3	4	bot-13	bot-23
+55528	bot-19	bravo	S00m-2320	state+latches	-0.37	16.57	222	0.23	0.03		0		squad-4	0	bot-19	bot-20
+55528	bot-28	alpha	C00m-3322	latches	-10.40	2.69	231	4.57	0.46	1.70	1	cover	squad-3	7	bot-13	bot-31
+55586	bot-22	alpha	E00r-3310	state	-3.53	10.85	1	1.31	1.01	5.70	1	seek	squad-3	2	bot-13	bot-23
+55648	bot-22	alpha	E00r-3311	latches	-3.63	10.97	20	1.57	0.16	1.35	1	flee	squad-3	2	bot-13	bot-23
+55648	bot-29	bravo	H00r-4310	health	-19.77	-6.23	7	0.00	0.00		0		squad-5	0	bot-29	bot-20
+55748	bot-15	alpha	C00r-4410	state	-4.97	0.74	354	2.36	1.47	10.30	2	squad	squad-3	1	bot-13	bot-19
+55748	bot-23	bravo	E10r-3320	state	-1.94	15.33	219	1.21	0.41	15.93	3	seek	squad-4	2	bot-19	bot-20
+55748	bot-28	alpha	C00m-332I	latches	-10.18	1.89	228	4.57	0.83	0.87	1	cover	squad-3	7	bot-13	bot-31
+55806	bot-15	alpha	C00r-441I	latches	-4.97	0.35	15	4.43	0.38	0.80	1	cover	squad-3	1	bot-13	bot-23
+55806	bot-23	bravo	E00r-3321	tier+latches	-1.68	15.65	205	4.94	0.42	3.27	1	flee	squad-4	2	bot-19	bot-22
+55883	bot-19	bravo	A00m-2320	state	-0.64	16.33	220	1.60	0.37	15.28	3	seek	squad-4	0	bot-19	bot-20
+55883	bot-22	alpha	E00r-331H	latches	-3.95	11.35	24	4.78	0.50	0.86	1	flee	squad-3	2	bot-13	bot-23
+55944	bot-20	alpha	E00m-432P	latches	-14.12	1.29	42	3.88	1.63	0.41	1	flee	squad-3	5	bot-13	bot-19
+55944	bot-22	alpha	E00r-3311	latches	-4.09	11.55	28	5.05	0.24	0.62	1	flee	squad-3	2	bot-13	bot-23
+55944	bot-28	alpha	G00m-332I	state	-10.05	1.45	203	4.49	0.46	0.41	1	cover	squad-3	7	bot-13	bot-31
+56002	bot-15	alpha	G00r-4412	state+latches	-4.95	-0.09	41	4.22	0.44	0.36	1	cover	squad-3	1	bot-13	bot-23
+56002	bot-19	bravo	A00m-232G	latches	-0.65	16.34	222	0.20	0.02		0		squad-4	0	bot-19	bot-20
+56002	bot-22	alpha	E00r-331H	latches	-4.23	11.74	28	4.84	0.24	0.38	1	flee	squad-3	2	bot-13	bot-23
+56002	bot-23	bravo	E00r-332H	latches	-1.42	16.34	211	5.36	0.74	2.61	1	flee	squad-4	2	bot-19	bot-22
+56002	bot-28	alpha	G00m-3322	latches	-9.94	1.09	223	0.08	0.38		0		squad-3	7	bot-13	bot-31
+56132	bot-20	alpha	E00m-432G	latches	-14.26	1.16	42	0.00	0.19		0		squad-3	5	bot-13	bot-19
+56195	bot-19	bravo	S00m-2320	state+latches	-0.65	16.35	222	0.04	0.01		0		squad-4	0	bot-19	bot-20
+56195	bot-20	alpha	E00m-4320	latches	-14.25	1.15	42	0.80	0.02		0		squad-3	5	bot-13	bot-19
+56195	bot-22	alpha	S00r-3310	state+latches	-4.38	11.95	28	0.94	0.25		0		squad-3	2	bot-13	bot-23
+56195	bot-23	bravo	E00r-3321	latches	-1.30	17.01	211	4.44	0.68	2.12	1	flee	squad-4	2	bot-19	bot-22
+56195	bot-24	alpha	U00r-2310	tick	-7.23	6.32	228	0.00	1.93		0		squad-3	3	bot-13	bot-31
+56195	bot-32	bravo	P00r-4410	tick	-22.03	-3.60	158	0.00	0.01		0		squad-5	2	bot-29	bot-13
+56267	bot-21	bravo	S00r-4420	tick	1.50	19.09	219	2.21	1.68	13.01	2	seek	squad-4	1	bot-19	bot-28
+56267	bot-27	bravo	S00m-2420	tick	0.26	18.14	218	2.16	1.54	8.10	2	seek	squad-4	3	bot-19	bot-20
+56340	bot-31	bravo	C00r-4412	tick	-15.56	-1.20	30	0.09	0.41	5.38	3	cover	squad-5	1	bot-29	bot-20
+56420	bot-20	alpha	E00m-3320	ammo	-14.19	1.11	42	0.15	0.07		1	muzzleRecovery	squad-3	5	bot-13	bot-19

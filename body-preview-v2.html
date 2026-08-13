@@ -286,6 +286,7 @@ import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
 import { createProceduralPlayerBody, createGaitScheduler, GAIT_DEFAULTS } from './player-procedural-body.js?v=23';
 import { createWeaponPoseController } from './weapon-pose-controller.js?v=5';
 import { WEAPONS } from './weapons.js';
@@ -414,7 +415,7 @@ weaponFrame.rotation.y = Math.PI;
 weaponAdjust.add(weaponFrame);
 const weaponView = new THREE.Group();
 weaponFrame.add(weaponView);
-const gltfLoader = new GLTFLoader();
+const gltfLoader = attachDracoLoader(new GLTFLoader());
 
 // Copy of environment-viewer.html's normalizeObject: axis-align the longest dim, scale so the
 // longest dim == target (m1911 uses 0.62), then recenter. Returns the applied local matrix so we

@@ -1,5 +1,5 @@
 {
-  "_comment": "Weapon anchor sidecar — Contract 4 (docs/subsystems/procedural-body-weapon-contracts.md). p = weapon-local position (meters), q = orientation quaternion [x,y,z,w]. Authored/edited with weapon-anchor-editor.html; consumed by weapons.js at runtime.",
+  "_comment": "Weapon anchor sidecar — Contract 4 (docs/subsystems/procedural-body-weapon-contracts.md). p = weapon-local position (meters), q = orientation quaternion [x,y,z,w]. Authored/edited with weapon-anchor-editor.html; consumed by weapons.js at runtime. gripFrame: \"palm-v1\" on a weapon entry marks grips authored against the editor hand proxies (+Y fingers, +Z out of palm into weapon, right thumb +X, p = palm contact point) — consumers may trust q directly.",
   "m1911": {
     "ikAnchors": {
       "rightGrip": {
@@ -241,28 +241,28 @@
     "ikAnchors": {
       "rightGrip": {
         "p": [
-          0.001969519809569719,
-          0.00877322891668455,
-          0.0034010563992071833
+          0.017237512029728043,
+          0.004122033458075521,
+          0.040920193803213496
         ],
         "q": [
-          0,
-          -0.7071067811865475,
-          0,
-          0.7071067811865475
+          -0.4911976443595542,
+          -0.5086500507968378,
+          0.491197644359554,
+          0.5086500507968377
         ]
       },
       "leftGrip": {
         "p": [
-          -0.009671766541784251,
-          0.00890887613508708,
-          0.03323801194929604
+          -0.011079564003595898,
+          0.004204958936733009,
+          0.0403063621214804
         ],
         "q": [
-          0,
-          0.7071067811865475,
-          0,
-          0.7071067811865475
+          -0.5000000000000001,
+          0.5000000000000003,
+          -0.5000000000000001,
+          0.5000000000000003
         ]
       },
       "magwell": {
@@ -304,6 +304,7 @@
           0.7071067735228234
         ]
       }
-    }
+    },
+    "gripFrame": "palm-v1"
   }
 }

@@ -96,29 +96,9 @@ export const PLANT_PRESETS = {
     },
     flower: { enabled: true, shape: 'pouch', petals: 1, frequency: 0.4, color: 0xe8922e, throatColor: 0xfcd9a0 },
   },
-  // ---- shrubs: sprigClump geometry (SeedThree scrub.js shrubGeometry), reusing the same
-  // stem/leaf schema so they're placed/tuned exactly like the herbs above -- one clump per
-  // stem node instead of a flat leaf card. Starter content only; species/variant TYPES are
-  // fully data-driven -- add more shrubs here with zero code changes.
-  juniperMound: {
-    stem: { nodes: [5, 7], nodeSpacing: [10, 16], branchProb: 0, sprawl: 0.05 },
-    leaf: {
-      style: 'sprigClump', sprigQuads: 9,
-      size: [18, 26], color: 0x3a5a34, veinColor: null,
-      variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 },
-    },
-    flower: { enabled: false },
-  },
-  pinkflowerBush: {
-    stem: { nodes: [5, 7], nodeSpacing: [10, 16], branchProb: 0, sprawl: 0.05 },
-    leaf: {
-      style: 'sprigClump', sprigQuads: 8,
-      size: [16, 24], color: 0x3d6b30, veinColor: null,
-      variegation: { enabled: false, pattern: 'edge', color: 0xffffff, amount: 0 },
-      blossom: { r: 0.58, g: 0.16, b: 0.24, frac: 0.35 },
-    },
-    flower: { enabled: false },
-  },
+  // The two sprigClump shrubs (juniperMound, pinkflowerBush) were cut 2026-08-08: the crossed-quad
+  // technique needs an alpha-cutout foliage texture that was never made, so they rendered as bare
+  // opaque rectangles. buildSprigClumpLocal is kept for whoever draws that texture.
 };
 
 // Placement metadata: biomes empty array = matches every biome (a generalist, like
@@ -130,8 +110,6 @@ export const PLANT_BIOME_TAGS = {
   cleavers:       { biomes: [], density: 0.6, hueVar: 0.12 },
   mint:           { biomes: ['plains', 'swamp', 'forest'], density: 1, hueVar: 0.15 },
   jewelweed:      { biomes: ['swamp', 'forest'], density: 0.8, hueVar: 0.15 },
-  juniperMound:   { biomes: ['taiga', 'snowy_taiga', 'windswept_hills', 'forest'], density: 0.5, hueVar: 0.1 },
-  pinkflowerBush: { biomes: ['meadow', 'forest', 'plains'], density: 0.4, hueVar: 0.14 },
 };
 
 // ---- seeded RNG (mulberry32) -- same convention as grass.js/forest-placement.js ----
@@ -146,12 +124,25 @@ function makeRNG(seed) {
 }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-function hexToRgb01(hex) { return [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255]; }
+// Colours here are authored as sRGB; vertex colours are consumed as linear. false = the old
+// undecoded behaviour, byte for byte. Inverse: 1.055*v**(1/2.4)-0.055 (v>0.0031308 else v*12.92).
+export const PLANT_COLOR_SRGB = true;
 
-// "mockup px"-equivalent -> world units, so PLANT_DEFAULTS' numeric ranges (matching the
-// canvas mockup's pixel scale, ~6-60) map to plant sizes comparable to grass blades (~0.2-1.5
-// world units) and smaller than trees.
-const UNIT = 1 / 30;
+function srgbToLinear(v) {
+  return v < 0.04045 ? v * 0.0773993808 : Math.pow(v * 0.9478672986 + 0.0521327014, 2.4);
+}
+
+function decode(rgb) {
+  return PLANT_COLOR_SRGB ? [srgbToLinear(rgb[0]), srgbToLinear(rgb[1]), srgbToLinear(rgb[2])] : rgb;
+}
+
+function hexToRgb01(hex) {
+  return decode([((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255]);
+}
+
+// "mockup px"-equivalent -> world units. Was 1/30, which sized a single LEAF right but let stem
+// height accumulate over 5-8 nodes into 3-4 m plants; 1/100 puts whole plants in the 0.2-1.5 range.
+const UNIT = 1 / 100;
 
 // push one flat-shaded triangle (a,b,c are [x,y,z]) with a single vertex color.
 function pushTri(positions, normals, colors, a, b, c, color) {
@@ -291,7 +282,7 @@ function buildStemPath(stemOpts, rng) {
 // thin quad ribbon connecting consecutive stem nodes (double-sided material handles visibility
 // from any angle, matching grass's flat-blade convention rather than a full cylinder).
 function buildStemQuads(dst, nodes, width) {
-  const color = [0.30, 0.42, 0.20];
+  const color = decode([0.30, 0.42, 0.20]);
   for (let i = 1; i < nodes.length; i++) {
     const a = nodes[i - 1].pos, b = nodes[i].pos;
     const dx = b[0] - a[0], dz = b[2] - a[2];
@@ -483,16 +474,29 @@ function attachFlowers(dst, nodes, flowerOpts, rng) {
 // Bake variantsPerSpecies fixed geometries per PLANT_PRESETS species, once, at startup --
 // mirrors forest-palette.js's role but with no separate color-bake step: buildPlantGeometry
 // already writes final vertex colors, so palette baking is just "call the generator N times".
-export function createPlantPalette({ variantsPerSpecies = 4, masterSeed = 1 } = {}) {
+// Scales a preset's stem run and leaf cards together, so a species grows without changing shape.
+function scalePreset(p, k) {
+  const r = (v) => (Array.isArray(v) ? v.map((x) => x * k) : v * k);
+  return {
+    ...p,
+    stem: { ...p.stem, nodeSpacing: r(p.stem.nodeSpacing) },
+    leaf: { ...p.leaf, size: r(p.leaf.size) },
+  };
+}
+
+// heightScale: optional { [presetKey]: multiplier }, baked in - changing it needs a re-bake.
+export function createPlantPalette({ variantsPerSpecies = 4, masterSeed = 1, heightScale = null } = {}) {
   const keys = Object.keys(PLANT_PRESETS);
   const variants = [];
   const speciesTags = [];
   for (let s = 0; s < keys.length; s++) {
     const key = keys[s];
     speciesTags.push({ key, tag: PLANT_BIOME_TAGS[key] });
+    const k = heightScale && heightScale[key];
+    const preset = k > 0 && k !== 1 ? scalePreset(PLANT_PRESETS[key], k) : PLANT_PRESETS[key];
     for (let v = 0; v < variantsPerSpecies; v++) {
       const seed = masterSeed + s * 977 + v * 131;
-      variants.push(buildPlantGeometry({ ...PLANT_PRESETS[key], seed }));
+      variants.push(buildPlantGeometry({ ...preset, seed }));
     }
   }
   return { variants, variantsPerSpecies, speciesCount: keys.length, speciesTags };

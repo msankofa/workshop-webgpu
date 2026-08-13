@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Volumetric explosions (bounded raymarch)</title>
+<!--
+  DEMO 1 of 2 — raymarched volumetric explosions inside bounded volumes.
+
+  ORIGINAL TECHNIQUE / CREDIT
+  --------------------------
+  Prompted by a three.js demo posted by Drin (@DrinLajci) on 2026-08-06:
+  "This alien has no geometry. No model, no textures, no vertices. The scene is one fullscreen
+  quad and every pixel is solved in the fragment shader by raymarching a signed distance field."
+  Profile: https://x.com/DrinLajci
+  Drin wrote that demo, not us. `demos/sdf-creature.html` is the direct descendant of it.
+  THIS file takes the same idea — solve the picture per pixel by marching a ray — and applies it
+  to a density volume instead of a distance field, which is the form that fits this project.
+
+  WHAT THIS IS BEING COMPARED AGAINST
+  -----------------------------------
+  Two existing explosion implementations, reviewed before this was written:
+
+  1. `effect-renderer.js` in this repo (the bot viewers). Its own header says it is a port of
+     html-game-v2's explosion look into a stateless replication model. Per blast: a billboard
+     fireball core, 5 warm body puffs, a 26-segment line ring, 14 radial shell rays, 22 ember
+     points, 12 shrapnel streaks, and TEN smoke billboards out of a 260-slot shared pool.
+
+  2. `G:\My Drive\Scripts\html game\html-game-v2` (src/game/main.js). Solid sphere fireball plus a
+     real pooled dynamic light, a ground ring mesh AND a wireframe shell sphere, 900 instanced
+     tetrahedra of shrapnel with a second 900-slot glow pool and per-fragment smoke trails, 80
+     instanced spark cylinders, and smoke as a 2600-slot pool of LOW-POLY SPHERES with a custom
+     solid-colour shader — not billboards.
+
+  Both are approximating a volume: one with soft sprites, one with opaque spheres. The volume is
+  the thing they are both approximating, which is the whole argument for this file.
+
+  WHAT WAS TAKEN FROM EACH
+  ------------------------
+  From html-game-v2, the TIER SYSTEM (`reserveExplosionVisualTier`). It is the better degradation
+  model of the two by a clear margin: a 320 ms window admits two blasts at full quality, three more
+  at medium, and everything after that at lite. `effect-renderer.js` instead lets pooled
+  sub-particles overflow and drop silently, so a volley does not degrade later blasts — it removes
+  random pieces from ALL of them at once. Ported here verbatim, and wired to the one knob a
+  raymarch actually has: step count. Full marches at full resolution, medium at half with the light
+  march switched off, lite falls back to billboards entirely.
+
+  From `effect-renderer.js`, the instanced-pool shape. Every live blast is one instance in ONE draw
+  call, with its centre, radius, phase and tier as instanced attributes, exactly the way that file's
+  glow/smoke/decal pools are built. That is also what makes this fit the replication model: a blast
+  is ~8 floats, against ten hashed smoke puffs.
+
+  WHAT IS DELIBERATELY NOT VOLUMETRIC
+  -----------------------------------
+  Shrapnel, sparks, embers and the shockwave ring. They are thin, fast, high-contrast and close to
+  sub-pixel; instanced geometry is the right answer and html-game-v2's version of them is the
+  stronger of the two. Marching them would be absurd. This demo does not draw them at all.
+
+  DEPTH RECONSTRUCTION
+  --------------------
+  `getViewPositionSafe` and the `viewportDepthTexture` read are lifted from `projected-decals.js`
+  (lines 80-83, 188-193), the one place in this codebase already proven to sample scene depth in a
+  TSL graph. That file's header flags one untested case: antialias:true + PostProcessing. This demo
+  runs antialias:false with no post stack, so it does not settle that question — but note that
+  `bot-viewer-v3.html` already ships `projected-decals.js` AND exposes `?msaa=0`, so v3 is where the
+  question gets answered for real. Turn on "depth debug" here to see the reconstruction directly.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/volumetric-smoke.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { display: block; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12); --text: #d8dee9; --muted: #8d97a8; --accent: #77c8a1;
+    --warn: #ffc857; --bad: #ff7b7b;
+    position: fixed; top: 10px; right: 10px; width: 326px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 46px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(119,200,161,0.16); color: var(--accent); border-color: rgba(119,200,161,0.45); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .btn { width: 100%; padding: 7px; margin-top: 6px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .btn:hover { border-color: rgba(119,200,161,0.45); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--text); font-weight: 600; }
+  #stats .full { color: var(--accent); } #stats .medium { color: var(--warn); } #stats .lite { color: var(--bad); }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #8a93a3; font-size: 11px;
+    pointer-events: none; user-select: none; }
+  #note { color: #ffc857; font-size: 10px; margin-top: 6px; display: none; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Volumetric explosions</h1>
+  <p class="sub">Marched density volumes versus the billboard pool the bot viewer ships today.</p>
+
+  <h2>Technique</h2>
+  <div class="seg" id="modeSeg">
+    <button data-mode="volume" class="on">Volume</button>
+    <button data-mode="billboard">Billboards</button>
+    <button data-mode="both">Both</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="depthDebug"> depth debug (scene distance)</label>
+
+  <h2>Fire</h2>
+  <button class="btn" id="fireOne">Single blast</button>
+  <button class="btn" id="fireVolley">Volley of 6 — watch the tiers drop</button>
+  <button class="btn" id="fireGround">Ground-hugging blast</button>
+  <label class="chk"><input type="checkbox" id="autoLoop" checked> keep one looping</label>
+
+  <h2>Cost tiering (from html-game-v2)</h2>
+  <label class="chk"><input type="checkbox" id="tiering" checked> degrade blasts under load</label>
+  <div id="tierRows"></div>
+
+  <h2>Fireball</h2>
+  <div id="fireRows"></div>
+
+  <h2>Smoke</h2>
+  <div id="smokeRows"></div>
+
+  <h2>March quality</h2>
+  <div id="qualityRows"></div>
+  <div id="note">Changing the step ceiling rebuilds the shader graph.</div>
+
+  <div id="stats"></div>
+  <div id="credit">
+    Marching technique after a three.js demo by
+    <a href="https://x.com/DrinLajci" target="_blank" rel="noopener">Drin (@DrinLajci)</a>, posted
+    2026-08-06 — a fullscreen quad with every pixel solved by raymarching a signed distance field.
+    That demo is reproduced in <code>sdf-creature.html</code>. The tier system is ported from
+    html-game-v2's <code>reserveExplosionVisualTier</code>; the instanced-pool shape and the
+    billboard comparison are from this repo's <code>effect-renderer.js</code>.
+  </div>
+</div>
+
+<div id="hint">Drag to orbit, scroll to zoom. Get low and look along the ground — that is where the two techniques differ most.</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
+import {
+  Fn, Loop, Break, If, uniform, attribute, positionGeometry,
+  vec2, vec3, vec4, float,
+  positionWorld, cameraPosition, cameraProjectionMatrixInverse, cameraWorldMatrix,
+  screenUV, viewportDepthTexture, normalize, dot, max, min, length, exp, smoothstep,
+  mix, clamp, sqrt, abs, fract, texture, mx_fractal_noise_float,
+} from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+// The one thing this demo imports from outside itself, for the reason `spsa-gait-tuning.html`
+// imports `../spsa.js`: the demo exists partly to argue for shipping that module, and a private
+// copy of it would be arguing for nothing. `explosion-tier.js` is a pure leaf with no imports.
+import { createExplosionBudget } from '../explosion-tier.js';
+
+// ---------------------------------------------------------------------------
+// Scene
+// ---------------------------------------------------------------------------
+
+// antialias:false is deliberate — viewportDepthTexture against a MULTISAMPLED depth target is the
+// one case projected-decals.js flags as unverified, and this demo exists to show the technique, not
+// to litigate that. No post stack for the same reason.
+const renderer = new WebGPURenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#171b22');
+scene.fog = new THREE.Fog('#171b22', 34, 90);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 260);
+camera.position.set(9.5, 2.4, 12.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.6, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 2;
+controls.maxDistance = 60;
+
+scene.add(new THREE.HemisphereLight('#9fb4d4', '#2b2620', 0.55));
+const SUN_DIR = new THREE.Vector3(-5, 7, 4).normalize();
+const sun = new THREE.DirectionalLight('#ffe9c9', 2.1);
+sun.position.copy(SUN_DIR).multiplyScalar(10);
+scene.add(sun);
+
+// Ground with a shader-drawn grid, so occlusion is readable without loading a texture.
+const groundMat = new MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+groundMat.colorNode = Fn(() => {
+  const g = positionWorld.xz;
+  const cell = abs(fract(g).sub(0.5));
+  const grid = smoothstep(float(0.0), float(0.03), min(cell.x, cell.y));
+  const major = abs(fract(g.mul(0.2)).sub(0.5));
+  const majorLine = smoothstep(float(0.0), float(0.008), min(major.x, major.y));
+  return mix(vec3(0.20, 0.21, 0.24), vec3(0.115, 0.125, 0.145), grid.mul(majorLine));
+})();
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), groundMat);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// Pillars: something for a blast to sit behind, in front of, and against.
+const pillarMat = new MeshStandardNodeMaterial({ color: '#3a4150', roughness: 0.8 });
+for (const [x, z, h] of [[-4.2, -2.0, 5.0], [4.6, -3.0, 3.4], [2.2, 4.4, 2.4], [-3.0, 3.6, 1.6], [7.5, 1.0, 4.2]]) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.8, h, 0.8), pillarMat);
+  m.position.set(x, h / 2, z);
+  scene.add(m);
+}
+
+// ---------------------------------------------------------------------------
+// Blast life cycle — one source of truth, driven into both techniques so the
+// comparison is about the rendering and nothing else.
+// ---------------------------------------------------------------------------
+
+const MAX_BLASTS = 10;
+// These three are fixed, and the persistence slider deliberately does not touch them: how long the
+// fire burns and how fast the ball opens are properties of the charge, not of how long the smoke
+// hangs afterwards. Their values are the ones the old single LIFE = 2.6 constant implied.
+const GROWTH_TIME = 2.6;       // s, time to reach full radius
+const HEAT_TIME = 0.52;        // s, fireball window
+const FADE_IN = 0.13;          // s, opacity ramp at birth
+let smokeLife = 2.6;           // s, slider-driven — the whole envelope, birth to gone
+const LOOP_PERIOD = 2.99;      // s, auto-loop cadence, fixed so long-lived blasts visibly stack
+const blasts = [];
+let blastSerial = 0;
+
+// html-game-v2's temporal quality budget, extracted to ../explosion-tier.js and Node-tested there.
+// Chosen over effect-renderer.js's silent pool overflow because it degrades whole LATER blasts
+// instead of quietly removing random sub-particles from every blast at once, which is what a shared
+// pool does when a volley saturates it.
+let tieringEnabled = true;
+let tierBudget = createExplosionBudget();
+
+// The two sliders change admission counts, and the module fixes its limits at construction, so a
+// slider move rebuilds the budget. Cheap: it is three fields and a closure.
+function retuneBudget(full, medium) {
+  tierBudget = createExplosionBudget({
+    limits: {
+      primary: { full, medium },
+      secondary: { full: Math.max(0, full - 1), medium: Math.max(full, medium - 1) },
+    },
+  });
+}
+let tierFullLimit = 2;
+let tierMediumLimit = 5;
+
+function reserveTier(priority = 'primary') {
+  return tieringEnabled ? tierBudget.reserve(priority) : 'full';
+}
+
+function spawnBlast(x, y, z, radius, priority = 'primary') {
+  if (blasts.length >= MAX_BLASTS) blasts.shift();
+  blasts.push({
+    id: blastSerial++,
+    age: 0,
+    x, y, z,
+    r0: radius,
+    life: smokeLife,           // snapshotted, so dragging the slider never retimes a blast in flight
+    tier: reserveTier(priority),
+    seed: (blastSerial * 37.13) % 100,
+  });
+}
+
+// Shape of a blast at a given age. The fireball and the smoke are two phases of the same volume,
+// not two systems: `heat` is what makes the early frames a fireball and its decay is what turns the
+// same density field into smoke.
+function blastState(b) {
+  const g = Math.min(b.age / GROWTH_TIME, 1);                // growth phase, on absolute time
+  const drift = Math.max(0, b.age - GROWTH_TIME);            // a long-lived cloud must not sit still
+  // Tail phase. FADE_IN is absolute so a short life is still born cleanly rather than snapping in.
+  const tail = Math.min(1, Math.max(0, (b.age - FADE_IN) / Math.max(0.05, b.life - FADE_IN)));
+  const groundGap = Math.max(0, b.y - b.r0 * 0.35);          // how much air is under it
+  return {
+    radius: b.r0 * (0.55 + 1.75 * Math.pow(g, 0.5) + 0.05 * drift),
+    cy: b.y + b.r0 * (1.15 * Math.pow(g, 0.9) + 0.09 * drift),   // buoyant rise, then a slow creep
+    heat: Math.max(0, 1 - b.age / HEAT_TIME),                // white-hot, gone by HEAT_TIME
+    fade: Math.min(1, b.age / FADE_IN) * Math.pow(1 - tail, 1.3),
+    // 1 when the blast is sitting on the deck, 0 when it is a clean airburst. Drives the pancake.
+    ground: 1 - Math.min(1, groundGap / (b.r0 * 1.2)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Technique A — the volume. One instanced draw for every live blast.
+//
+// Per-instance attributes rather than per-blast materials, which is the same shape
+// effect-renderer.js's glow/smoke/decal pools take, and the reason this could ship: a blast on the
+// wire is a centre, a radius, an age and a tier, against ten separately-hashed smoke puffs.
+// ---------------------------------------------------------------------------
+
+const uDensity    = uniform(2.6);
+const uSoftness   = uniform(0.28);   // where the edge starts feathering, in radius units
+const uThreshold  = uniform(0.34);   // noise cutoff — higher carves more holes into the cloud
+const uNoiseScale = uniform(1.05);
+const uChurn      = uniform(0.26);
+const uAbsorb     = uniform(2.8);
+const uLightAbs   = uniform(2.4);
+const uPancake    = uniform(1.5);    // vertical squash when a blast sits on the ground
+const uCap        = uniform(0.45);   // mushroom cap: the rim lags behind the rising core
+const uHeatGain   = uniform(3.4);
+const uTime       = uniform(0);
+const uSunDir     = uniform(SUN_DIR.clone());
+const uSmokeDark  = uniform(new THREE.Color('#1b1917'));
+const uSmokeLit   = uniform(new THREE.Color('#cfc6bb'));
+const uDebug      = uniform(0);
+
+// Lifted verbatim from projected-decals.js:188-193. Importing TSL's own getViewPosition by name
+// pulls in a symbol whose presence varies by build entry point; these four lines do not.
+function getViewPositionSafe(uvNode, depth) {
+  const clip = vec4(vec3(vec2(uvNode.x, uvNode.y.oneMinus()).mul(2.0).sub(1.0), depth), 1.0);
+  const view = cameraProjectionMatrixInverse.mul(clip);
+  return view.xyz.div(view.w);
+}
+
+let STEP_CEILING = 48;   // compile-time maximum; per-instance `instSteps` is the live count
+let volumeMat = null;
+let volumeMesh = null;
+let volumeGeo = null;
+
+// Per-instance buffers, sized once. instanceCount is what varies per frame.
+const instCenter = new Float32Array(MAX_BLASTS * 3);
+const instMisc   = new Float32Array(MAX_BLASTS * 4);   // radius, heat, fade, ground
+const instShape  = new Float32Array(MAX_BLASTS * 4);   // seed, steps, lightSteps, spare
+
+function buildVolume() {
+  if (volumeMesh) { scene.remove(volumeMesh); volumeGeo.dispose(); volumeMat.dispose(); }
+
+  // A sphere only to generate fragments. The real bounds are the analytic centre/radius below, so
+  // the silhouette never depends on tessellation; 1.03 oversize keeps it from being clipped.
+  const base = new THREE.SphereGeometry(1.03, 14, 10);
+  volumeGeo = new THREE.InstancedBufferGeometry();
+  volumeGeo.setIndex(base.index);
+  volumeGeo.setAttribute('position', base.attributes.position);
+  volumeGeo.setAttribute('instCenter', new THREE.InstancedBufferAttribute(instCenter, 3));
+  volumeGeo.setAttribute('instMisc', new THREE.InstancedBufferAttribute(instMisc, 4));
+  volumeGeo.setAttribute('instShape', new THREE.InstancedBufferAttribute(instShape, 4));
+  volumeGeo.instanceCount = 0;
+  volumeGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+
+  const aCenter = attribute('instCenter', 'vec3');
+  const aMisc = attribute('instMisc', 'vec4');
+  const aShape = attribute('instShape', 'vec4');
+
+  volumeMat = new MeshBasicNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    // depthTest MUST be off. With BackSide the exit face sits below the floor whenever a blast
+    // touches the ground, so hardware depth would reject the whole puff there. Occlusion is
+    // resolved inside the march instead, which is also what makes the intersection soft.
+    depthTest: false,
+    side: THREE.BackSide,
+    forceSinglePass: true,
+    blending: THREE.NormalBlending,
+  });
+  // Same trick projected-decals.js uses: the instance is placed by positionNode, not instanceMatrix,
+  // so the mesh matrix stays identity and every attribute below is already world space.
+  volumeMat.positionNode = aCenter.add(positionGeometry.mul(aMisc.x));
+
+  // Density at a world point. `q` is that point in the blast's own deformed, radius-normalised space.
+  const densityAt = Fn(([p, center, radius, ground, seed]) => {
+    const rel = p.sub(center).div(radius);
+
+    // Ground pancake. A charge going off on the deck cannot expand downward, so it spreads sideways
+    // and flattens — squashing the sampling space vertically is the cheap way to say that, and it
+    // costs nothing per step. `ground` is 0 for a clean airburst.
+    const squash = float(1).add(uPancake.mul(ground));
+    // Mushroom cap: the rim lags the rising core, so the cloud rolls under at its edges.
+    const rh = length(vec2(rel.x, rel.z));
+    const qy = rel.y.mul(squash).add(uCap.mul(rh).mul(rh));
+    const q = vec3(rel.x, qy, rel.z);
+
+    const shell = smoothstep(float(1.0), uSoftness, length(q));
+    const drift = vec3(uTime.mul(uChurn).mul(0.4), uTime.mul(uChurn).negate(), uTime.mul(uChurn).mul(0.3));
+    const n = mx_fractal_noise_float(p.mul(uNoiseScale).add(drift).add(seed), 3, 2.0, 0.5, 1.0);
+    return max(shell.mul(n.mul(0.5).add(0.5).sub(uThreshold)).mul(uDensity), float(0));
+  });
+
+  const marched = Fn(() => {
+    const center = aCenter;
+    const radius = aMisc.x, heat = aMisc.y, fade = aMisc.z, ground = aMisc.w;
+    const seed = aShape.x, steps = aShape.y, lightSteps = aShape.z;
+
+    const ro = cameraPosition;
+    const rd = normalize(positionWorld.sub(ro));
+
+    // Ray versus the bounding sphere, analytically.
+    const oc = ro.sub(center);
+    const b = dot(oc, rd);
+    const c = dot(oc, oc).sub(radius.mul(radius));
+    const h = sqrt(max(b.mul(b).sub(c), float(0)));   // grazing rays degenerate to a zero-length span
+    const tNear = max(b.negate().sub(h), float(0));
+    const tFar = b.negate().add(h);
+
+    // Stop at whatever solid geometry already wrote depth. This one line is what a billboard cannot
+    // do: the fireball meets the floor and the pillars along a curve, not a straight cut. It is also
+    // what makes the ground pancake honest — html-game-v2 has to gate its ground splash on a height
+    // test and lay a flat quad; here the shape simply cannot reach through the deck.
+    const sceneWorld = cameraWorldMatrix.mul(vec4(getViewPositionSafe(screenUV, viewportDepthTexture().r), 1.0)).xyz;
+    const sceneDist = length(sceneWorld.sub(ro));
+    const tEnd = min(tFar, sceneDist);
+
+    const span = max(tEnd.sub(tNear), float(0));
+    const dt = span.div(max(steps, float(1)));
+
+    const col = vec3(0).toVar();
+    const trans = float(1).toVar();
+    const t = tNear.add(dt.mul(0.5)).toVar();
+
+    Loop(STEP_CEILING, ({ i }) => {
+      // The tier's step count is a runtime bound inside a compile-time loop. Fragments of a
+      // half-resolution blast really do exit early; the saving is smaller than proportional because
+      // neighbouring fragments in a warp can belong to different blasts, but it is real, and it is
+      // the only quality knob a march has.
+      If(float(i).greaterThanEqual(steps), () => { Break(); });
+
+      const p = ro.add(rd.mul(t));
+      const dens = densityAt(p, center, radius, ground, seed);
+
+      If(dens.greaterThan(0.001), () => {
+        // Light transmittance: a short march toward the sun. This self-shadowing is what gives a
+        // cloud a lit top and a dark underside, and it is the thing a flat sprite has no way to
+        // fake. Skipped entirely at the medium tier via `lightSteps`.
+        const shadow = float(0).toVar();
+        // The whole light march is elided from the graph when the ceiling is 0, rather than emitted
+        // as a zero-trip loop — a slider at 0 should cost nothing, not cost a loop header.
+        if (LIGHT_CEILING > 0) {
+          If(lightSteps.greaterThan(0.5), () => {
+            const ls = radius.mul(1.6).div(lightSteps);
+            const lt = ls.mul(0.5).toVar();
+            Loop(LIGHT_CEILING, ({ i: j }) => {
+              If(float(j).greaterThanEqual(lightSteps), () => { Break(); });
+              const lp = p.add(uSunDir.mul(lt));
+              shadow.addAssign(densityAt(lp, center, radius, ground, seed).mul(ls));
+              lt.addAssign(ls);
+            });
+          });
+        }
+        const lit = exp(shadow.mul(uLightAbs).negate());
+        const base = mix(uSmokeDark, uSmokeLit, lit);
+
+        // ---- the fireball ----
+        // Two phases of ONE volume, not two systems. `heat` decays over the first fifth of the
+        // life, and while it lasts the interior is emissive on a blackbody-ish ramp: deep red at
+        // the fringes and out at the end, through orange, to near-white in the core early on.
+        // Because it is inside the same density field, the fire is occluded by its own smoke —
+        // which is exactly what an additive billboard core cannot do.
+        const q = length(p.sub(center).div(radius));
+        const hot = smoothstep(float(0.85), float(0.0), q).mul(heat);
+        const ramp = clamp(hot.mul(1.4), 0, 1);
+        const fire = mix(
+          mix(vec3(0.55, 0.06, 0.01), vec3(1.0, 0.42, 0.06), smoothstep(float(0.0), float(0.5), ramp)),
+          vec3(1.0, 0.92, 0.70),
+          smoothstep(float(0.55), float(1.0), ramp),
+        );
+        const sample = base.add(fire.mul(hot.mul(uHeatGain)));
+
+        const a = float(1).sub(exp(dens.mul(dt).mul(uAbsorb).negate()));
+        col.addAssign(trans.mul(a).mul(sample));
+        trans.mulAssign(float(1).sub(a));
+      });
+
+      If(trans.lessThan(0.02), () => { Break(); });
+      t.addAssign(dt);
+    });
+
+    const alpha = float(1).sub(trans).mul(fade);
+    // Un-premultiply so plain NormalBlending is correct; `col` was accumulated premultiplied.
+    const rgb = col.div(max(float(1).sub(trans), float(1e-4)));
+
+    const dbg = vec3(fract(sceneDist.mul(0.5)));
+    return vec4(mix(rgb, dbg, uDebug), mix(alpha, float(0.9), uDebug));
+  })();
+
+  volumeMat.colorNode = marched.xyz;
+  volumeMat.opacityNode = marched.w;
+
+  volumeMesh = new THREE.Mesh(volumeGeo, volumeMat);
+  volumeMesh.frustumCulled = false;
+  volumeMesh.matrixAutoUpdate = false;
+  volumeMesh.updateMatrix();
+  volumeMesh.renderOrder = 10;
+  scene.add(volumeMesh);
+}
+
+let LIGHT_CEILING = 6;
+buildVolume();
+
+// Tier → march budget. This is the whole point of porting the tier system: a raymarch has exactly
+// one meaningful quality dial and it is step count, so the tiers map onto it directly instead of
+// onto "how many sprites do we drop".
+function marchBudget(tier) {
+  if (tier === 'full') return { steps: STEP_CEILING, light: LIGHT_CEILING };
+  if (tier === 'medium') return { steps: Math.max(8, Math.round(STEP_CEILING * 0.5)), light: 0 };
+  return null;   // lite renders as billboards instead
+}
+
+// ---------------------------------------------------------------------------
+// Technique B — the billboard pool, i.e. what effect-renderer.js does today.
+//
+// Instanced the same way that file instances its own pools, so the A/B is about the technique and
+// not about draw-call count. Per blast: one glow core plus PUFFS_PER_BLAST smoke sprites, matching
+// the shape of `drawExplosion`'s layers 1 and 7.
+// ---------------------------------------------------------------------------
+
+function makeSoftTexture() {
+  // effect-renderer.js:57-71, copied so the comparison uses the game's actual sprite.
+  const S = 64;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const g = cv.getContext('2d');
+  const grad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, S, S);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const PUFFS_PER_BLAST = 10;    // effect-renderer.js's SMK constant, exactly
+const GLOWS_PER_BLAST = 6;     // its fireball core + 5 body puffs
+
+function makeSpritePool(cap, additive, tex) {
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(
+    [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
+  // The quad needs its own uv: the soft mask is sampled explicitly below, and without this the
+  // sprite renders as a hard square instead of a feathered puff.
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+  const pos = new Float32Array(cap * 3);
+  const col = new Float32Array(cap * 3);
+  const size = new Float32Array(cap);
+  const alpha = new Float32Array(cap);
+  geo.setAttribute('instPos', new THREE.InstancedBufferAttribute(pos, 3));
+  geo.setAttribute('instColor', new THREE.InstancedBufferAttribute(col, 3));
+  geo.setAttribute('instSize', new THREE.InstancedBufferAttribute(size, 1));
+  geo.setAttribute('instAlpha', new THREE.InstancedBufferAttribute(alpha, 1));
+  geo.instanceCount = 0;
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+
+  // SpriteNodeMaterial builds its vertex from positionNode, never positionLocal, so instanceMatrix
+  // has no effect — the per-instance data is wired through the material instead. Same reason and
+  // same layout as effect-renderer.js's makePool.
+  const mat = new SpriteNodeMaterial({
+    transparent: true, depthWrite: false,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    fog: !additive,
+  });
+  mat.positionNode = attribute('instPos', 'vec3');
+  mat.scaleNode = attribute('instSize', 'float');
+  mat.colorNode = attribute('instColor', 'vec3');
+  // The mask supplies the feathering and nothing else; per-instance alpha scales it. Setting
+  // opacityNode without this term would throw the soft edge away and leave a hard quad.
+  mat.opacityNode = attribute('instAlpha', 'float').mul(texture(tex).a);
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.matrixAutoUpdate = false;
+  mesh.updateMatrix();
+  mesh.renderOrder = additive ? 11 : 12;
+  scene.add(mesh);
+  return { geo, mat, mesh, pos, col, size, alpha, cap, n: 0 };
+}
+
+const softTex = makeSoftTexture();
+const glowPool = makeSpritePool(MAX_BLASTS * GLOWS_PER_BLAST, true, softTex);
+const smokePool = makeSpritePool(MAX_BLASTS * PUFFS_PER_BLAST, false, softTex);
+
+function poolBegin(p) { p.n = 0; }
+function poolPush(p, x, y, z, s, r, g, bl, a) {
+  if (p.n >= p.cap || a <= 0 || s <= 0) return;
+  const i = p.n++;
+  p.pos[i * 3] = x; p.pos[i * 3 + 1] = y; p.pos[i * 3 + 2] = z;
+  p.col[i * 3] = r; p.col[i * 3 + 1] = g; p.col[i * 3 + 2] = bl;
+  p.size[i] = s; p.alpha[i] = a;
+}
+function poolEnd(p, visible) {
+  p.geo.instanceCount = p.n;
+  p.mesh.visible = visible && p.n > 0;
+  for (const name of ['instPos', 'instColor', 'instSize', 'instAlpha']) p.geo.attributes[name].needsUpdate = true;
+}
+
+// Deterministic scatter, mirroring effect-renderer's id-hash approach rather than Math.random.
+function hash01(a, b) {
+  const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function drawBillboardBlast(b, st) {
+  // Layer 1+2 of drawExplosion: the additive fireball core and its warm body puffs.
+  if (st.heat > 0) {
+    poolPush(glowPool, b.x, st.cy, b.z, st.radius * 1.1,
+      1, 0.55 + st.heat * 0.4, 0.25 + st.heat * 0.6, 0.9 * st.heat * st.fade);
+    for (let k = 0; k < GLOWS_PER_BLAST - 1; k++) {
+      const ang = hash01(b.id, k * 7 + 2) * Math.PI * 2;
+      const rad = st.radius * 0.55 * (0.5 + hash01(b.id, k * 7 + 3));
+      poolPush(glowPool, b.x + Math.cos(ang) * rad, st.cy + (hash01(b.id, k * 7 + 4) - 0.3) * st.radius * 0.5,
+        b.z + Math.sin(ang) * rad, st.radius * 0.7, 1, 0.5, 0.18, 0.6 * st.heat * st.fade);
+    }
+  }
+  // Layer 7: the lingering smoke. Normalised against this blast's own life, so persistence stretches
+  // the sprite puffs too and the A/B stays about technique.
+  const t = Math.min(b.age / b.life, 1);
+  for (let k = 0; k < PUFFS_PER_BLAST; k++) {
+    const born = hash01(b.id, k * 6 + 41) * 0.12;
+    const dur = 0.72 + hash01(b.id, k * 6 + 42) * 0.2;
+    const lt = (t - born) / dur;
+    if (lt <= 0 || lt >= 1) continue;
+    const ang = hash01(b.id, k * 6 + 43) * Math.PI * 2;
+    const rad = st.radius * 0.55 * (0.4 + hash01(b.id, k * 6 + 44));
+    const shade = 0.34 - lt * 0.16;
+    poolPush(smokePool,
+      b.x + Math.cos(ang) * rad, st.cy + st.radius * 0.2, b.z + Math.sin(ang) * rad,
+      st.radius * (0.6 + lt * 0.8),
+      shade + 0.06, shade, shade * 0.92,
+      Math.min(1, lt * 4) * (1 - lt) * 0.5 * st.fade);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+
+function slider(host, label, get, set, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  out.textContent = fmt(+inp.value);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp);
+  host.append(row);
+}
+const uni = (u) => [() => u.value, (v) => { u.value = v; }];
+
+const fireRows = document.getElementById('fireRows');
+slider(fireRows, 'Heat gain', ...uni(uHeatGain), 0, 8, 0.05);
+slider(fireRows, 'Ground pancake', ...uni(uPancake), 0, 4, 0.05);
+slider(fireRows, 'Mushroom cap', ...uni(uCap), 0, 1.5, 0.02);
+
+const smokeRows = document.getElementById('smokeRows');
+// Applies to the next blast, not to the ones already in the air. The auto loop refires every three
+// seconds, so a change shows up almost immediately without retiming anything mid-flight.
+slider(smokeRows, 'Smoke persistence', () => smokeLife, (v) => { smokeLife = v; },
+  0.6, 14, 0.1, (v) => `${v.toFixed(1)} s`);
+slider(smokeRows, 'Density', ...uni(uDensity), 0.2, 6, 0.05);
+slider(smokeRows, 'Noise scale', ...uni(uNoiseScale), 0.2, 3, 0.02);
+slider(smokeRows, 'Hole threshold', ...uni(uThreshold), 0, 0.7, 0.01);
+slider(smokeRows, 'Edge softness', ...uni(uSoftness), 0.02, 0.9, 0.01);
+slider(smokeRows, 'Churn speed', ...uni(uChurn), 0, 1.2, 0.01);
+slider(smokeRows, 'Absorption', ...uni(uAbsorb), 0.2, 8, 0.05);
+slider(smokeRows, 'Light absorption', ...uni(uLightAbs), 0, 8, 0.05);
+
+const tierRows = document.getElementById('tierRows');
+slider(tierRows, 'Full-quality blasts per 320 ms', () => tierFullLimit,
+  (v) => { tierFullLimit = v | 0; retuneBudget(tierFullLimit, tierMediumLimit); }, 0, 6, 1, (v) => String(v | 0));
+slider(tierRows, 'Medium cut-off', () => tierMediumLimit,
+  (v) => { tierMediumLimit = v | 0; retuneBudget(tierFullLimit, tierMediumLimit); }, 1, 10, 1, (v) => String(v | 0));
+
+const qualityRows = document.getElementById('qualityRows');
+const note = document.getElementById('note');
+let rebuildTimer = 0;
+function scheduleRebuild() {
+  note.style.display = 'block';
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(() => { buildVolume(); note.style.display = 'none'; }, 260);
+}
+slider(qualityRows, 'Step ceiling (full tier)', () => STEP_CEILING, (v) => { STEP_CEILING = v | 0; scheduleRebuild(); },
+  8, 96, 1, (v) => String(v | 0));
+slider(qualityRows, 'Light steps', () => LIGHT_CEILING, (v) => { LIGHT_CEILING = v | 0; scheduleRebuild(); },
+  0, 12, 1, (v) => String(v | 0));
+
+let mode = 'volume';
+for (const btn of document.querySelectorAll('#modeSeg button')) {
+  btn.addEventListener('click', () => {
+    mode = btn.dataset.mode;
+    for (const b of document.querySelectorAll('#modeSeg button')) b.classList.toggle('on', b === btn);
+  });
+}
+document.getElementById('depthDebug').addEventListener('change', (e) => { uDebug.value = e.target.checked ? 1 : 0; });
+document.getElementById('tiering').addEventListener('change', (e) => { tieringEnabled = e.target.checked; });
+
+let autoLoop = true;
+document.getElementById('autoLoop').addEventListener('change', (e) => { autoLoop = e.target.checked; });
+document.getElementById('fireOne').addEventListener('click', () => spawnBlast(0, 1.6, 0, 1.5));
+document.getElementById('fireGround').addEventListener('click', () => spawnBlast(0, 0.35, 0, 1.9));
+document.getElementById('fireVolley').addEventListener('click', () => {
+  // All six inside one tier window, so the first two land full, the next three medium, the rest
+  // lite. Firing them at slightly different places and heights keeps the tiers tellable apart.
+  for (let k = 0; k < 6; k++) {
+    const ang = (k / 6) * Math.PI * 2;
+    spawnBlast(Math.cos(ang) * 4.5, 0.4 + (k % 3) * 1.1, Math.sin(ang) * 4.5, 1.1 + (k % 2) * 0.5);
+  }
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+const statsEl = document.getElementById('stats');
+const clock = new THREE.Clock();
+let frames = 0, acc = 0, msAcc = 0, loopTimer = 0;
+let lastCounts = { full: 0, medium: 0, lite: 0 };
+
+renderer.setAnimationLoop(async () => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t0 = performance.now();
+  uTime.value += dt;
+
+  if (autoLoop) {
+    loopTimer -= dt;
+    if (loopTimer <= 0) { spawnBlast(0, 1.6, 0, 1.5); loopTimer = LOOP_PERIOD; }
+  }
+
+  for (let i = blasts.length - 1; i >= 0; i--) {
+    blasts[i].age += dt;
+    if (blasts[i].age > blasts[i].life) blasts.splice(i, 1);
+  }
+
+  const showVolume = mode === 'volume' || mode === 'both';
+  const showBillboards = mode === 'billboard' || mode === 'both';
+
+  let vn = 0;
+  const counts = { full: 0, medium: 0, lite: 0 };
+  poolBegin(glowPool); poolBegin(smokePool);
+
+  for (const b of blasts) {
+    const st = blastState(b);
+    counts[b.tier]++;
+    const budget = marchBudget(b.tier);
+
+    // A lite blast never reaches the volume, whichever mode is selected — that IS the lite tier.
+    if (showVolume && budget) {
+      instCenter[vn * 3] = b.x; instCenter[vn * 3 + 1] = st.cy; instCenter[vn * 3 + 2] = b.z;
+      instMisc[vn * 4] = st.radius; instMisc[vn * 4 + 1] = st.heat;
+      instMisc[vn * 4 + 2] = st.fade; instMisc[vn * 4 + 3] = st.ground;
+      instShape[vn * 4] = b.seed; instShape[vn * 4 + 1] = budget.steps;
+      instShape[vn * 4 + 2] = budget.light; instShape[vn * 4 + 3] = 0;
+      vn++;
+    }
+    if (showBillboards || (showVolume && !budget)) drawBillboardBlast(b, st);
+  }
+
+  volumeGeo.instanceCount = vn;
+  volumeMesh.visible = vn > 0;
+  if (vn > 0) {
+    for (const name of ['instCenter', 'instMisc', 'instShape']) volumeGeo.attributes[name].needsUpdate = true;
+  }
+  poolEnd(glowPool, true);
+  poolEnd(smokePool, true);
+
+  controls.update();
+  await renderer.renderAsync(scene, camera);
+
+  msAcc += performance.now() - t0;
+  frames++; acc += dt;
+  if (acc >= 0.5) {
+    lastCounts = counts;
+    const fps = frames / acc, ms = msAcc / frames;
+    const marched = blasts.reduce((s, b) => s + (marchBudget(b.tier)?.steps || 0), 0);
+    statsEl.innerHTML =
+      `<b>${fps.toFixed(0)}</b> fps &nbsp; <b>${ms.toFixed(2)}</b> ms cpu-side<br>` +
+      `<b>${blasts.length}</b> live blast${blasts.length === 1 ? '' : 's'} — ` +
+      `<span class="full">${lastCounts.full} full</span>, ` +
+      `<span class="medium">${lastCounts.medium} medium</span>, ` +
+      `<span class="lite">${lastCounts.lite} lite</span><br>` +
+      `volume: <b>${vn}</b> instance${vn === 1 ? '' : 's'} in <b>1</b> draw, ` +
+      `<b>${marched}</b> steps summed over them<br>` +
+      `billboards: <b>${glowPool.n + smokePool.n}</b> sprites in <b>2</b> draws`;
+    frames = 0; acc = 0; msAcc = 0;
+  }
+});
+</script>
+</body>
+</html>

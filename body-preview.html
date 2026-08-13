@@ -47,6 +47,7 @@
     <select id="stance">
       <option value="stand">stand</option>
       <option value="crouch">crouch</option>
+      <option value="kneel">kneel</option>
       <option value="prone">prone</option>
     </select>
   </div>
@@ -103,9 +104,50 @@
 
   <div class="sec">Gait</div>
   <div class="row"><label for="gp">Pelvis height</label><input type="range" id="gp" min="0.3" max="0.85" step="0.01" value="0.58" /><span class="val" id="gp_v"></span></div>
-  <div class="row"><label for="gstride">Stride</label><input type="range" id="gstride" min="0.15" max="1.6" step="0.01" value="1.35" /><span class="val" id="gstride_v"></span></div>
+  <div class="row"><label for="gstride">Stride</label><input type="range" id="gstride" min="0.15" max="3.2" step="0.01" value="1.35" /><span class="val" id="gstride_v"></span></div>
   <div class="row"><label for="glift">Step lift</label><input type="range" id="glift" min="0.02" max="0.6" step="0.005" value="0.45" /><span class="val" id="glift_v"></span></div>
   <div class="row"><label for="gdur">Step duration</label><input type="range" id="gdur" min="0.1" max="0.45" step="0.01" value="0.31" /><span class="val" id="gdur_v"></span></div>
+  <div class="row"><label for="goverlap">Step overlap</label><input type="range" id="goverlap" min="0" max="0.5" step="0.01" value="0.22" /><span class="val" id="goverlap_v"></span></div>
+  <div class="row"><label for="greach">Leg reach</label><input type="range" id="greach" min="0.5" max="3" step="0.05" value="1.00" /><span class="val" id="greach_v"></span></div>
+  <div class="note">Stride is capped by the leg workspace (0.62 m forward / 0.46 m back from the hip at reach 1), so raising Stride past ~1.1 does nothing until Leg reach goes up too.</div>
+
+  <div class="sec">Natural locomotion</div>
+  <div class="row"><label for="loco">Cyclic pose layer</label><input type="checkbox" id="loco" checked /></div>
+  <div class="row"><label for="dyn">Movement dynamics</label><input type="checkbox" id="dyn" checked /></div>
+  <div class="note">The foot scheduler only decides where feet land. This layer derives a stride phase from those footfalls and drives everything above the ankles from it. <b>Movement dynamics</b> is what bots run with (turn lag, head turn, bob/sway) &mdash; leave it on to match them.</div>
+  <div class="row"><label for="larm">Arm swing</label><input type="range" id="larm" min="0" max="1.4" step="0.02" value="0.62" /><span class="val" id="larm_v"></span></div>
+  <div class="row"><label for="lasym">Arm back/fwd</label><input type="range" id="lasym" min="0.2" max="1" step="0.02" value="0.80" /><span class="val" id="lasym_v"></span></div>
+  <div class="row"><label for="lroll">Pelvis roll</label><input type="range" id="lroll" min="0" max="0.3" step="0.005" value="0.085" /><span class="val" id="lroll_v"></span></div>
+  <div class="row"><label for="lyaw">Pelvis yaw</label><input type="range" id="lyaw" min="0" max="0.35" step="0.005" value="0.10" /><span class="val" id="lyaw_v"></span></div>
+  <div class="row"><label for="lcounter">Shoulder counter</label><input type="range" id="lcounter" min="0" max="1.5" step="0.02" value="0.75" /><span class="val" id="lcounter_v"></span></div>
+  <div class="row"><label for="llean">Torso lean/speed</label><input type="range" id="llean" min="0" max="0.09" step="0.002" value="0.030" /><span class="val" id="llean_v"></span></div>
+  <div class="row"><label for="lbob">Bob</label><input type="range" id="lbob" min="0" max="0.12" step="0.002" value="0.034" /><span class="val" id="lbob_v"></span></div>
+  <div class="row"><label for="lsway">Sway</label><input type="range" id="lsway" min="0" max="0.2" step="0.005" value="0.055" /><span class="val" id="lsway_v"></span></div>
+  <div class="row"><label for="lheel">Heel strike</label><input type="range" id="lheel" min="0" max="0.8" step="0.01" value="0.30" /><span class="val" id="lheel_v"></span></div>
+  <div class="row"><label for="ltoe">Toe off</label><input type="range" id="ltoe" min="0" max="0.9" step="0.01" value="0.42" /><span class="val" id="ltoe_v"></span></div>
+  <div class="row"><label for="lspeedref">Full-amp speed</label><input type="range" id="lspeedref" min="1" max="6" step="0.1" value="3.0" /><span class="val" id="lspeedref_v"></span></div>
+  <div class="row"><label for="lspine">Spine falloff</label><input type="range" id="lspine" min="0.3" max="3" step="0.05" value="1.00" /><span class="val" id="lspine_v"></span></div>
+  <div class="note">Spine falloff spreads the twist/lean up the body: 1 is linear by height, above 1 keeps it in the chest, below 1 pushes it down into the waist.</div>
+  <div class="note" id="locoinfo" style="color:#8fd0a8"></div>
+
+  <div class="sec">Kneel pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = kneel)</span></div>
+  <div class="note">Kneeling on one knee. Offsets are multiples of thigh/shin length, not metres, so the chain closes on any body — the readout below shows how far each bone is from true length.</div>
+  <div class="row"><label for="kside">Knee down</label><select id="kside"><option value="1">right</option><option value="-1">left</option></select></div>
+  <div class="row"><label for="khip">Hip height</label><input type="range" id="khip" min="0.5" max="1.3" step="0.01" value="1.00" /><span class="val" id="khip_v"></span></div>
+  <div class="row"><label for="kyaw">Hip yaw</label><input type="range" id="kyaw" min="-0.8" max="0.8" step="0.01" value="0.28" /><span class="val" id="kyaw_v"></span></div>
+  <div class="row"><label for="klean">Lean</label><input type="range" id="klean" min="-0.3" max="0.7" step="0.01" value="0.12" /><span class="val" id="klean_v"></span></div>
+  <div class="row"><label for="kfwd">Shift fwd</label><input type="range" id="kfwd" min="-0.2" max="0.4" step="0.01" value="0.05" /><span class="val" id="kfwd_v"></span></div>
+  <div class="row"><label for="krkspread">Rear knee out</label><input type="range" id="krkspread" min="0" max="0.8" step="0.01" value="0.24" /><span class="val" id="krkspread_v"></span></div>
+  <div class="row"><label for="krkheight">Rear knee up</label><input type="range" id="krkheight" min="0" max="0.4" step="0.01" value="0.00" /><span class="val" id="krkheight_v"></span></div>
+  <div class="row"><label for="krfback">Rear foot back</label><input type="range" id="krfback" min="0.4" max="1.3" step="0.01" value="1.00" /><span class="val" id="krfback_v"></span></div>
+  <div class="row"><label for="krfheight">Rear foot up</label><input type="range" id="krfheight" min="0" max="0.5" step="0.01" value="0.12" /><span class="val" id="krfheight_v"></span></div>
+  <div class="row"><label for="krankle">Rear ankle</label><input type="range" id="krankle" min="-0.5" max="1.8" step="0.02" value="0.90" /><span class="val" id="krankle_v"></span></div>
+  <div class="row"><label for="kfkfwd">Front knee fwd</label><input type="range" id="kfkfwd" min="0.3" max="1.4" step="0.01" value="0.99" /><span class="val" id="kfkfwd_v"></span></div>
+  <div class="row"><label for="kfkheight">Front knee up</label><input type="range" id="kfkheight" min="0.5" max="1.4" step="0.01" value="1.00" /><span class="val" id="kfkheight_v"></span></div>
+  <div class="row"><label for="kffspread">Front foot out</label><input type="range" id="kffspread" min="0" max="0.9" step="0.01" value="0.34" /><span class="val" id="kffspread_v"></span></div>
+  <div class="row"><label for="kffheight">Front foot up</label><input type="range" id="kffheight" min="0" max="0.4" step="0.01" value="0.08" /><span class="val" id="kffheight_v"></span></div>
+  <div class="row"><label for="kfankle">Front ankle</label><input type="range" id="kfankle" min="-1.0" max="1.0" step="0.02" value="0.00" /><span class="val" id="kfankle_v"></span></div>
+  <div class="note" id="kneelinfo" style="color:#8fd0a8"></div>
 
   <div class="sec">Prone pose <span style="color:#6b7d92;text-transform:none;letter-spacing:0">(Stance = prone)</span></div>
   <div class="row"><label for="ppitch">Pitch</label><input type="range" id="ppitch" min="0" max="1.7" step="0.02" value="1.46" /><span class="val" id="ppitch_v"></span></div>
@@ -146,6 +188,13 @@
   <div class="btns"><button id="kneeFlip">Flip knees</button><button id="elbowFlip">Flip elbows</button></div>
   <div class="btns"><button id="copyTune">Copy tuning → log</button></div>
 
+  <div class="sec">Save / load tuning</div>
+  <div class="row"><label for="tuneLabel">Label</label><input type="text" id="tuneLabel" placeholder="optional" style="width:130px;background:#1d2735;color:#dfe6ef;border:1px solid #33455c;border-radius:6px;padding:4px 6px;font:inherit" /></div>
+  <div class="btns"><button id="saveTune">Save to disk</button></div>
+  <div class="row"><label for="tuneFile">Saved</label><select id="tuneFile" style="width:150px"></select></div>
+  <div class="btns"><button id="loadTune">Load</button><button id="refreshTune">Refresh</button></div>
+  <div class="note">Writes <code>body-tuning/body-tuning-[label-]&lt;stamp&gt;.json</code> via <code>serve.py</code>. Every save is a new file, so you can go back to the one that looked right. Load restores every slider and both checkboxes in this panel.</div>
+
   <div class="note">Weapon is a placeholder box; anchors are authored in real-GLB space so exact hand contact needs the GLB. This harness previews gait, weapon-pose blending, recoil, and the reload arm/event sequence driving <code>setArmTarget</code>.</div>
 
   <div id="log"></div>
@@ -166,6 +215,7 @@ import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
 import { createProceduralPlayerBody } from './player-procedural-body.js?v=23';
 import { createWeaponPoseController } from './weapon-pose-controller.js?v=5';
 import { WEAPONS } from './weapons.js';
@@ -294,7 +344,7 @@ weaponFrame.rotation.y = Math.PI;
 weaponAdjust.add(weaponFrame);
 const weaponView = new THREE.Group();
 weaponFrame.add(weaponView);
-const gltfLoader = new GLTFLoader();
+const gltfLoader = attachDracoLoader(new GLTFLoader());
 
 // Copy of environment-viewer.html's normalizeObject: axis-align the longest dim, scale so the
 // longest dim == target (m1911 uses 0.62), then recenter. Returns the applied local matrix so we
@@ -332,7 +382,14 @@ function rebuildBody(mode) {
   deselectJoint();
   if (controller) controller = null;
   if (body) body.destroy();
-  body = createProceduralPlayerBody({ THREE, scene, terrainHeight, mode, style: { kneeSign, elbowSign } });
+  // movementDynamics matches how bots build their bodies (bot-viewer-v2.html) — without it the
+  // turn lag, head turn and bob/sway are all disabled, so this harness would be tuning a body
+  // the game never renders. naturalLocomotion turns on the cyclic pose layer under test.
+  body = createProceduralPlayerBody({
+    THREE, scene, terrainHeight, mode, style: { kneeSign, elbowSign },
+    movementDynamics: true,   // the checkbox flips turnCfg/headTurnCfg live in frame()
+    naturalLocomotion: true,
+  });
   if (savedIkCfg) Object.assign(body.ikCfg, savedIkCfg);
   controller = createWeaponPoseController({
     THREE, body, weaponView, getWeaponDef,
@@ -455,18 +512,29 @@ canvas.addEventListener('pointerup', (e) => {
 const ui = {
   mode: $('mode'), stance: $('stance'), weapon: $('weapon'), walk: $('walk'), run: $('run'), autopace: $('autopace'), speed: $('speed'), aim: $('aim'),
   wx: $('wx'), wy: $('wy'), wz: $('wz'), wyaw: $('wyaw'), wpitch: $('wpitch'), wroll: $('wroll'), wscale: $('wscale'),
-  gp: $('gp'), gstride: $('gstride'), glift: $('glift'), gdur: $('gdur'),
+  gp: $('gp'), gstride: $('gstride'), glift: $('glift'), gdur: $('gdur'), goverlap: $('goverlap'), greach: $('greach'),
+  loco: $('loco'), dyn: $('dyn'), larm: $('larm'), lasym: $('lasym'), lroll: $('lroll'), lyaw: $('lyaw'),
+  lcounter: $('lcounter'), llean: $('llean'), lbob: $('lbob'), lsway: $('lsway'), lheel: $('lheel'),
+  ltoe: $('ltoe'), lspeedref: $('lspeedref'), lspine: $('lspine'), locoinfo: $('locoinfo'),
+  tuneLabel: $('tuneLabel'), tuneFile: $('tuneFile'),
+  kside: $('kside'), khip: $('khip'), kyaw: $('kyaw'), klean: $('klean'), kfwd: $('kfwd'),
+  krkspread: $('krkspread'), krkheight: $('krkheight'), krfback: $('krfback'), krfheight: $('krfheight'),
+  krankle: $('krankle'), kfkfwd: $('kfkfwd'), kfkheight: $('kfkheight'), kffspread: $('kffspread'),
+  kffheight: $('kffheight'), kfankle: $('kfankle'), kneelinfo: $('kneelinfo'),
   ppitch: $('ppitch'), phip: $('phip'), ptorso: $('ptorso'), phead: $('phead'), pheadp: $('pheadp'), pfootb: $('pfootb'), pfoots: $('pfoots'), pshf: $('pshf'),
   cpdrop: $('cpdrop'), ctdrop: $('ctdrop'), chdrop: $('chdrop'), csdrop: $('csdrop'), clean: $('clean'), cfwd: $('cfwd'),
   ewidth: $('ewidth'), elength: $('elength'), edepth: $('edepth'), ex: $('ex'), ey: $('ey'), ez: $('ez'), espace: $('espace'),
 };
-const VAL_SLIDERS = ['wx', 'wy', 'wz', 'wyaw', 'wpitch', 'wroll', 'wscale', 'gp', 'gstride', 'glift', 'gdur',
+const VAL_SLIDERS = ['wx', 'wy', 'wz', 'wyaw', 'wpitch', 'wroll', 'wscale', 'gp', 'gstride', 'glift', 'gdur', 'goverlap', 'greach',
+  'larm', 'lasym', 'lroll', 'lyaw', 'lcounter', 'llean', 'lbob', 'lsway', 'lheel', 'ltoe', 'lspeedref', 'lspine',
+  'khip', 'kyaw', 'klean', 'kfwd', 'krkspread', 'krkheight', 'krfback', 'krfheight', 'krankle',
+  'kfkfwd', 'kfkheight', 'kffspread', 'kffheight', 'kfankle',
   'ppitch', 'phip', 'ptorso', 'phead', 'pheadp', 'pfootb', 'pfoots', 'pshf',
   'cpdrop', 'ctdrop', 'chdrop', 'csdrop', 'clean', 'cfwd',
   'ewidth', 'elength', 'edepth', 'ex', 'ey', 'ez', 'espace'];
 function refreshVals() {
   for (const k of VAL_SLIDERS) {
-    const precision = k[0] === 'e' ? 3 : 2;
+    const precision = (k[0] === 'e' || k[0] === 'l') ? 3 : 2;   // eye + locomotion values are small
     $(k + '_v').textContent = parseFloat(ui[k].value).toFixed(precision);
   }
 }
@@ -598,7 +666,13 @@ const WEAPON_HOLDS = {};
 for (const id of Object.keys(WEAPONS)) {
   const w = WEAPONS[id];
   if (!w.thirdPersonHold || !w.proneHold) continue; // skip weapons without a body-hold (melee etc)
-  WEAPON_HOLDS[id] = { stand: holdFromDef(w.thirdPersonHold), crouch: holdFromDef(w.crouchHold || w.thirdPersonHold), prone: holdFromDef(w.proneHold) };
+  // Keys match the stance <select> values verbatim, so loadWeaponHold indexes straight into this.
+  WEAPON_HOLDS[id] = {
+    stand: holdFromDef(w.thirdPersonHold),
+    crouch: holdFromDef(w.crouchHold || w.thirdPersonHold),
+    kneel: holdFromDef(w.kneelHold || w.crouchHold || w.thirdPersonHold),
+    prone: holdFromDef(w.proneHold),
+  };
 }
 let prevStance = ui.stance.value;
 let prevWeapon = ui.weapon.value;
@@ -629,7 +703,35 @@ $('fire').addEventListener('click', () => { controller.play('fire'); controller.
 $('reload').addEventListener('click', () => { controller.play('reload'); log('action: reload'); });
 $('kneeFlip').addEventListener('click', () => { kneeSign *= -1; rebuildBody(ui.mode.value); log('kneeSign=' + kneeSign); });
 $('elbowFlip').addEventListener('click', () => { elbowSign *= -1; rebuildBody(ui.mode.value); log('elbowSign=' + elbowSign); });
-$('copyTune').addEventListener('click', () => {
+// Exact panel state, so a load is a byte-for-byte restore rather than a re-derivation from the
+// semantic cfg blocks below (which exist for pasting into source, and do not cover every slider).
+function snapshotUi() {
+  const sliders = {};
+  for (const k of VAL_SLIDERS) sliders[k] = parseFloat(ui[k].value);
+  return {
+    sliders,
+    checks: { loco: ui.loco.checked, dyn: ui.dyn.checked, model: ui.model.checked },
+    selects: { kside: ui.kside.value },   // dropdowns are tuning too (which knee goes down)
+  };
+}
+function applyUiSnapshot(snap) {
+  if (!snap) return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(snap.sliders || {})) {
+    if (!ui[k] || !Number.isFinite(v)) continue;      // a slider added since the file was written
+    ui[k].value = String(v); n++;
+  }
+  if (snap.checks) {
+    if ('loco' in snap.checks) ui.loco.checked = !!snap.checks.loco;
+    if ('dyn' in snap.checks) ui.dyn.checked = !!snap.checks.dyn;
+    if ('model' in snap.checks) ui.model.checked = !!snap.checks.model;
+  }
+  if (snap.selects && snap.selects.kside) ui.kside.value = snap.selects.kside;
+  refreshVals();
+  return n;
+}
+
+function buildTuning() {
   storeActiveProfile(); // capture any live edits into the active profile first
   saveWeaponHold(prevWeapon, prevStance); // snapshot live slider edits back into the active hold
   const holdToObj = (h) => ({
@@ -642,10 +744,17 @@ $('copyTune').addEventListener('click', () => {
     weaponHolds: {
       thirdPersonHold: holdToObj(activeHolds.stand), // paste into weapons.js
       crouchHold: holdToObj(activeHolds.crouch),
+      kneelHold: holdToObj(activeHolds.kneel),
       proneHold: holdToObj(activeHolds.prone),
     },
     loco: { active: activeLoco, walk: LOCO_PROFILES.walk, run: LOCO_PROFILES.run },
+    // Paste over LOCOMOTION_DEFAULTS in body-locomotion.js; stepOverlap belongs to GAIT_DEFAULTS.
+    locomotionCfg: body ? { ...body.locomotion.cfg } : null,
+    stepOverlap: body ? body.gait.cfg.stepOverlap : null,
+    movementTuning: body ? { ...body.movementTuning } : null,
+    spineCfg: body ? { ...body.spineCfg } : null,
     proneCfg: body ? { ...body.proneCfg } : null,
+    kneelCfg: body ? { ...body.kneelCfg } : null,   // paste over KNEEL_DEFAULTS
     crouchCfg: body ? { ...body.crouchCfg } : null,
     eyeCfg: body ? { ...body.eyeCfg } : null,
     ikCfg: body ? { ...body.ikCfg } : null,
@@ -659,8 +768,73 @@ $('copyTune').addEventListener('click', () => {
       },
     },
     kneeSign, elbowSign,
+    ui: snapshotUi(),
   };
-  log('TUNING ' + JSON.stringify(t));
+  return t;
+}
+
+$('copyTune').addEventListener('click', () => { log('TUNING ' + JSON.stringify(buildTuning())); });
+
+// --- save / load to disk (serve.py /api/save-body-tuning + /api/list-body-tuning) -------------
+const slugifyTuneLabel = (v) => (v || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '').slice(0, 40);
+function buildTuningFilename(label) {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
+                `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  const slug = slugifyTuneLabel(label);
+  return `body-tuning-${slug ? slug + '-' : ''}${stamp}.json`;
+}
+
+async function refreshTuningList(selectNewest = false) {
+  try {
+    const res = await fetch('/api/list-body-tuning');
+    const data = await res.json();
+    const files = (data && data.files) || [];
+    ui.tuneFile.innerHTML = '';
+    for (const f of files) ui.tuneFile.append(Object.assign(document.createElement('option'), { value: f, textContent: f.replace(/^body-tuning-|\.json$/g, '') }));
+    if (selectNewest && files.length) ui.tuneFile.value = files[0];
+    return files.length;
+  } catch (e) {
+    log('tuning list failed (is serve.py running?): ' + ((e && e.message) || e));
+    return 0;
+  }
+}
+
+$('saveTune').addEventListener('click', async () => {
+  const name = buildTuningFilename(ui.tuneLabel.value);
+  try {
+    const res = await fetch('/api/save-body-tuning?filename=' + encodeURIComponent(name), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildTuning(), null, 2),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'save rejected');
+    log('saved ' + data.path);
+    await refreshTuningList(true);
+  } catch (e) {
+    log('save failed: ' + ((e && e.message) || e));
+  }
+});
+
+$('refreshTune').addEventListener('click', () => refreshTuningList());
+
+$('loadTune').addEventListener('click', async () => {
+  const file = ui.tuneFile.value;
+  if (!file) { log('no saved tuning selected'); return; }
+  try {
+    const res = await fetch('body-tuning/' + encodeURIComponent(file));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const t = await res.json();
+    const n = applyUiSnapshot(t.ui);
+    // The frame loop pushes every slider into the live rig, so restoring the panel restores the
+    // body. Only the values with no slider behind them need writing straight onto the rig.
+    if (body && t.ikCfg) Object.assign(body.ikCfg, t.ikCfg);
+    log(`loaded ${file} (${n} sliders)` + (t.ikCfg ? ' + ikCfg' : ''));
+  } catch (e) {
+    log('load failed: ' + ((e && e.message) || e));
+  }
 });
 
 // --- loop ------------------------------------------------------------------
@@ -706,6 +880,7 @@ function frame() {
   // Stance drives the body's crouch (squash) / prone (lie-down) weights.
   const stance = ui.stance.value;
   bodyState.crouch = stance === 'crouch' ? 0.7 : 0;
+  bodyState.kneel = stance === 'kneel' ? 1 : 0;
   bodyState.prone = stance === 'prone' ? 1 : 0;
 
   if (body && body.eyeCfg) {
@@ -740,6 +915,35 @@ function frame() {
     c.maxStepDistance = parseFloat(ui.gstride.value);
     c.stepLift = parseFloat(ui.glift.value);
     c.stepDuration = parseFloat(ui.gdur.value);
+    c.stepOverlap = parseFloat(ui.goverlap.value);
+    body.movementTuning.workspaceForwardScale = parseFloat(ui.greach.value);
+  }
+  if (body && body.locomotion) {
+    const l = body.locomotion.cfg;
+    l.enabled = ui.loco.checked;
+    l.armSwing = parseFloat(ui.larm.value);
+    l.armAsym = parseFloat(ui.lasym.value);
+    l.pelvisRoll = parseFloat(ui.lroll.value);
+    l.pelvisYaw = parseFloat(ui.lyaw.value);
+    l.shoulderCounter = parseFloat(ui.lcounter.value);
+    l.torsoLean = parseFloat(ui.llean.value);
+    l.bob = parseFloat(ui.lbob.value);
+    l.sway = parseFloat(ui.lsway.value);
+    l.heelStrike = parseFloat(ui.lheel.value);
+    l.toeOff = parseFloat(ui.ltoe.value);
+    l.speedRef = parseFloat(ui.lspeedref.value);
+    if (body.spineCfg) body.spineCfg.falloff = parseFloat(ui.lspine.value);
+    // Live readout: cadence and phase are derived, not dialled, so they need to be visible while
+    // tuning — a stride period that will not settle means the phase lock is fighting the feet.
+    const p = body.locomotion.pose;
+    ui.locoinfo.textContent = l.enabled
+      ? `phase ${p.phase.toFixed(2)}  stride ${p.stridePeriod.toFixed(2)}s  ` +
+        `(${(60 / Math.max(0.05, p.stridePeriod)).toFixed(0)} strides/min)  swing ${(p.swingFrac * 100).toFixed(0)}%  amp ${p.weight.toFixed(2)}`
+      : 'off — reactive foot scheduler only';
+  }
+  if (body && body.turnCfg) {
+    body.turnCfg.enabled = ui.dyn.checked;
+    body.headTurnCfg.enabled = ui.dyn.checked;
   }
   if (body && body.proneCfg) {
     const p = body.proneCfg;
@@ -751,6 +955,41 @@ function frame() {
     p.footBack = parseFloat(ui.pfootb.value);
     p.footSpread = parseFloat(ui.pfoots.value);
     p.shoulderFwd = parseFloat(ui.pshf.value);
+  }
+  if (body && body.kneelCfg) {
+    const k = body.kneelCfg;
+    k.side = Number(ui.kside.value);
+    k.hipHeight = parseFloat(ui.khip.value);
+    k.hipYaw = parseFloat(ui.kyaw.value);
+    k.lean = parseFloat(ui.klean.value);
+    k.fwd = parseFloat(ui.kfwd.value);
+    k.rearKneeSpread = parseFloat(ui.krkspread.value);
+    k.rearKneeHeight = parseFloat(ui.krkheight.value);
+    k.rearFootBack = parseFloat(ui.krfback.value);
+    k.rearFootHeight = parseFloat(ui.krfheight.value);
+    k.rearAnklePitch = parseFloat(ui.krankle.value);
+    k.frontKneeFwd = parseFloat(ui.kfkfwd.value);
+    k.frontKneeHeight = parseFloat(ui.kfkheight.value);
+    k.frontFootSpread = parseFloat(ui.kffspread.value);
+    k.frontFootHeight = parseFloat(ui.kffheight.value);
+    k.frontAnklePitch = parseFloat(ui.kfankle.value);
+    // Live bone-length error. These sliders can trivially author a chain that does not close, and
+    // placeSegment hides that by stretch-fitting — so the number has to be on screen while tuning.
+    if (stance === 'kneel' && body.limbLengths) {
+      const { thighLen, shinLen } = body.limbLengths;
+      const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      const rk = [thighLen * k.rearKneeSpread, thighLen * k.rearKneeHeight, 0];
+      const rf = [rk[0], rk[1] + shinLen * k.rearFootHeight, rk[2] - shinLen * k.rearFootBack];
+      const fk = [shinLen * k.frontFootSpread, thighLen * k.frontKneeHeight, thighLen * k.frontKneeFwd];
+      const ff = [fk[0], shinLen * k.frontFootHeight, fk[2]];
+      const hipY = thighLen * k.hipHeight;
+      const pc = (got, want) => ((got - want) / want * 100).toFixed(1).padStart(5) + '%';
+      ui.kneelinfo.textContent =
+        `rear thigh ${pc(d([rk[0], hipY, 0], rk), thighLen)}  shin ${pc(d(rk, rf), shinLen)}   ` +
+        `front thigh ${pc(d([fk[0], hipY, 0], fk), thighLen)}  shin ${pc(d(fk, ff), shinLen)}`;
+    } else if (stance !== 'kneel') {
+      ui.kneelinfo.textContent = 'set Stance = kneel to tune';
+    }
   }
   if (body && body.crouchCfg) {
     const c = body.crouchCfg;
@@ -789,6 +1028,7 @@ addEventListener('resize', () => {
     await switchWeaponModel(ui.weapon.value);
     rebuildBody(ui.mode.value);
     renderer.setAnimationLoop(frame);
+    refreshTuningList(true);
     log('ready');
   } catch (e) {
     showError((e && e.message) || String(e));

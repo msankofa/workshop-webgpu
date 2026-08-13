@@ -9,6 +9,8 @@ const _normal = new THREE.Vector3();
 const _push = new THREE.Vector3();
 const _delta = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
+_raycaster.firstHitOnly = true; // honored by three-mesh-bvh's acceleratedRaycast (BVH returns closest hit only)
+const _occRay = new THREE.Ray();
 
 function collectWorldTriangles(root, maxTriangles) {
   root.updateMatrixWorld(true);
@@ -16,7 +18,8 @@ function collectWorldTriangles(root, maxTriangles) {
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
     const geometry = obj.geometry;
-    totalTriangles += geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+    const triCount = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+    totalTriangles += triCount * (obj.isInstancedMesh ? obj.count : 1);
   });
   if (totalTriangles > maxTriangles) {
     throw new Error(`authored map collision mesh has ${Math.round(totalTriangles).toLocaleString()} triangles; cap is ${maxTriangles.toLocaleString()}`);
@@ -24,25 +27,34 @@ function collectWorldTriangles(root, maxTriangles) {
 
   const positions = [];
   const v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const instanceWorld = new THREE.Matrix4();
 
   root.traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
     const geometry = obj.geometry;
     const pos = geometry.attributes.position;
     const index = geometry.index;
-    const mat = obj.matrixWorld;
     const triCount = index ? index.count / 3 : pos.count / 3;
+    // InstancedMesh bakes each instance separately: world = matrixWorld * instanceMatrix.
+    const instances = obj.isInstancedMesh ? obj.count : 1;
 
-    for (let tri = 0; tri < triCount; tri++) {
-      for (let corner = 0; corner < 3; corner++) {
-        const srcIndex = index ? index.getX(tri * 3 + corner) : tri * 3 + corner;
-        v[corner].fromBufferAttribute(pos, srcIndex).applyMatrix4(mat);
+    for (let inst = 0; inst < instances; inst++) {
+      let mat = obj.matrixWorld;
+      if (obj.isInstancedMesh) {
+        obj.getMatrixAt(inst, instanceWorld);
+        mat = instanceWorld.premultiply(obj.matrixWorld);
       }
-      positions.push(
-        v[0].x, v[0].y, v[0].z,
-        v[1].x, v[1].y, v[1].z,
-        v[2].x, v[2].y, v[2].z,
-      );
+      for (let tri = 0; tri < triCount; tri++) {
+        for (let corner = 0; corner < 3; corner++) {
+          const srcIndex = index ? index.getX(tri * 3 + corner) : tri * 3 + corner;
+          v[corner].fromBufferAttribute(pos, srcIndex).applyMatrix4(mat);
+        }
+        positions.push(
+          v[0].x, v[0].y, v[0].z,
+          v[1].x, v[1].y, v[1].z,
+          v[2].x, v[2].y, v[2].z,
+        );
+      }
     }
   });
 
@@ -135,12 +147,27 @@ export function createMapCollider(root, { maxTriangles = 250000 } = {}) {
     return { distance: hit.distance, point: [hit.point.x, hit.point.y, hit.point.z], normal: n };
   }
 
+  // Allocation-free LOS test: true if anything solid blocks origin->dir within maxDistance.
+  function isOccluded(origin, dir, maxDistance = 200) {
+    if (geometry.boundsTree) {
+      _occRay.origin.set(origin[0], origin[1], origin[2]);
+      _occRay.direction.set(dir[0], dir[1], dir[2]).normalize();
+      return !!geometry.boundsTree.raycastFirst(_occRay, colliderMesh.material.side, 0, maxDistance);
+    }
+    _raycaster.ray.origin.set(origin[0], origin[1], origin[2]);
+    _raycaster.ray.direction.set(dir[0], dir[1], dir[2]).normalize();
+    _raycaster.near = 0;
+    _raycaster.far = maxDistance;
+    return !!_raycaster.intersectObject(colliderMesh, false)[0];
+  }
+
   return {
     geometry,
     triangleCount,
     resolveCapsule,
     raycastDown,
     raycast,
+    isOccluded,
     dispose() {
       geometry.boundsTree = null;
       geometry.dispose();

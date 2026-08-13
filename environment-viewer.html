@@ -39,6 +39,7 @@ import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
 import { Fn, attribute, float, vec2, sin, floor, fract, dot, mix, uniform } from 'three/tsl';
 import { Capsule } from 'three/addons/math/Capsule.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { createLightingRig } from './lights.js';
 import { createTerrainSystem, terrainNormalAt } from './terrain-system.js';
@@ -72,6 +73,7 @@ import { ExplosionEntity, blastDamageAt } from './entity-types/explosion.js';
 import { EffectEntity } from './entity-types/effect.js';
 import { createLightEntityRenderer } from './light-entity-renderer.js';
 import { createEffectRenderer } from './effect-renderer.js';
+import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 import { CMD_FOLLOW, CMD_STAY, CMD_GOTO } from './creature-interaction.js';
 import { createBotEntity, stepBotPhysics, toWirePose as botToWirePose } from './bot-entity.js';
@@ -80,7 +82,10 @@ import {
   chooseBotState, aimAnglesTo, aimError as botAimError, slewAngle, trackStuck as botTrackStuck,
 } from './bot-activity.js';
 import { buildNavGrid, isWalkableCell as botIsWalkableCell, cellToWorld as botCellToWorld, findPath as botFindPath, smoothPath as botSmoothPath } from './nav-grid.js';
-import { rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset } from './squad-activity.js';
+import {
+  rollTemperament, tickSquadLossDecision, formationAngleFor, formationOffset,
+  columnOffset, chooseFormationKind, pickExploreGoal,
+} from './squad-activity.js';
 import { sunPosition, moonPosition } from './solar-position.js';
 import { lerpHex } from './sky-field.js';
 
@@ -259,6 +264,7 @@ let lastAutoFireMs = -Infinity;
 let selectedRadialTool = null;
 let viewHands = null;
 let localWeaponView = null;
+let showMuzzleAnchorDot = false;
 let updateCombatHud = () => {};
 let updateReticle = () => {};
 let portCreatures = null;
@@ -580,9 +586,16 @@ function getState() {
   return { creatures, players, entities: entityRegistry.snapshot(), worldMode: mpWorldMode, mobs };
 }
 
+// Contract: anything that changes bot/guest ghost state mid-frame (spawn, despawn, a resolved
+// shot) sets this instead of calling updateHostPlayerGhosts -- the O(N) ghost+body-IK pass runs
+// exactly once per frame, flushed at the end of updateBots (same mpRole !== 'guest' gate this
+// function has, so the flag can never strand). See perf review 2026-07-27, finding 21.
+let hostGhostsDirty = false;
+
 // Host and solo both render bots this way (bots are host/solo-only sim, never on a guest);
-// host additionally folds in guest players. Called every bot tick plus on guest state receipt.
+// host additionally folds in guest players. Called once per frame from updateBots.
 function updateHostPlayerGhosts() {
+  hostGhostsDirty = false;
   if (mpRole === 'guest' || !mpGhostRenderer) return;
   // `alive` drives GhostRenderer's fall-over death pose -- botToWirePose doesn't know about HP
   // (that lives in playerCombat), so it's merged in here rather than threaded through the wire shape.
@@ -595,7 +608,7 @@ function updateHostPlayerGhosts() {
 
 function syncMultiplayerPlayer(now) {
   if (mpRole === 'host') {
-    updateHostPlayerGhosts();
+    hostGhostsDirty = true; // flushed later this frame in updateBots, still before the draw
     // Shared config/settings are change-detected here at ~1 Hz (not per 20 Hz
     // broadcast) and sent as their own reliable messages, only when they differ.
     if (now - mpLastSharedSyncCheck >= 1000) {
@@ -625,15 +638,19 @@ window.addEventListener('mp:joined', e => {
   if (e.detail.worldMode) mpSharedWorldSettings = e.detail.worldMode === 'shared';
 });
 
+// Bots-only render LOD tiers (squared XZ distance from camera): <45m full detail, <100m every 2nd
+// frame, <240m every 4th, beyond 240m hidden. Passed to GhostRenderer; humans/local are exempt.
+const BOT_RENDER_LOD = { nearD2: 45 * 45, midD2: 100 * 100, hideD2: 240 * 240 };
+// Phase 4 instanced bot bodies; toggle off with ?instanceBots=0 to A/B against the per-mesh path.
+const BOT_INSTANCED = new URLSearchParams(location.search).get('instanceBots') !== '0';
 if (mpRole === 'host') {
-  // NOTE: remote procedural bodies (useProceduralBody) are deferred � they need proper
-  // per-frame sync + real weapon model + perf work (Wave 2 increment 2). Capsule ghosts for now.
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
+  // Remote/bot bodies render as full procedural bodies (useProceduralBody). Perf/instancing work
+  // is tracked in docs/superpowers/reviews/2026-07-19-bot-port/PLAN-fable-review.md (Phases 2-4).
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
   mpSession = createHostSession(roomCode, mapKey, getState, { worldMode: mpWorldMode });
 } else if (mpRole === 'guest') {
-  // NOTE: remote procedural bodies (useProceduralBody) are deferred � they need proper
-  // per-frame sync + real weapon model + perf work (Wave 2 increment 2). Capsule ghosts for now.
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
+  // Remote/bot bodies render as full procedural bodies (useProceduralBody); see PLAN-fable-review.md.
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
   mpSession = createGuestSession(roomCode, state => {
     mpLatestState = state;
     if (state.worldMode) mpSharedWorldSettings = state.worldMode === 'shared';
@@ -673,7 +690,7 @@ if (mpRole === 'host') {
 } else if (mpRole === 'solo') {
   // No session, but bots are host/solo-only sim (never a guest) and need somewhere to render —
   // updateHostPlayerGhosts() feeds this the same way it feeds the host's guest-ghost renderer.
-  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: false });
+  mpGhostRenderer = new GhostRenderer(scene, THREE, { terrainHeight, useProceduralBody: true, getCameraPos: () => camera.position, botLod: BOT_RENDER_LOD, instanceBots: BOT_INSTANCED });
 }
 
 // Guest: shared config/settings arrive as their own messages (out of sim_state), so a
@@ -690,7 +707,7 @@ window.addEventListener('mp:guest_input', e => {
     const merged = mergePlayerCombatFields(player);
     mpGuestPlayers.set(msg.clientId, player);
     rememberPlayerPose(merged);
-    updateHostPlayerGhosts();
+    hostGhostsDirty = true;
   } else if (msg.type === 'guest_joined' && msg.clientId) {
     playerCombat.ensurePlayer(msg.clientId);
     setPlayerWeapon(msg.clientId, DEFAULT_GUN_ID);
@@ -708,7 +725,7 @@ window.addEventListener('mp:guest_input', e => {
     playerWeapons.delete(msg.clientId);
     playerTools.delete(msg.clientId);
     for (const key of [...playerAmmo.keys()]) if (key.startsWith(`${msg.clientId}:`)) playerAmmo.delete(key);
-    updateHostPlayerGhosts();
+    hostGhostsDirty = true;
   } else if (msg.type === 'set_target') {
     portCreatures?.system?.setTargetPoint(new THREE.Vector3(msg.pos[0], msg.pos[1], msg.pos[2]));
   } else if (msg.type === 'set_behavior') {
@@ -750,6 +767,8 @@ function createMultiplayerFinder() {
       align-items: flex-start;
       font: 11px/1.35 system-ui, sans-serif;
     }
+    #mp-dock.big-map-open { z-index: 95; }
+    #mp-dock.big-map-open #mp-finder, #mp-dock.big-map-open #mp-look-angle { display: none !important; }
     body.gui-hidden #mp-dock { display: none !important; }
     body.cursor-free, body.cursor-free canvas { cursor: auto !important; }
     #mp-finder {
@@ -765,6 +784,12 @@ function createMultiplayerFinder() {
     #mp-finder .mp-map-wrap { position: relative; }
     #mp-finder canvas { display: block; width: 240px; height: 232px; background: rgba(0,0,0,0.16); }
     #mp-finder .mp-zoom { position: absolute; right: 7px; bottom: 7px; display: flex; flex-direction: column; gap: 4px; }
+    #mp-look-angle {
+      display: block; width: 38px; height: 232px;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+      background: rgba(18,22,28,0.86); box-shadow: 0 8px 24px rgba(0,0,0,0.32);
+      backdrop-filter: blur(8px);
+    }
     #mp-finder .mp-zoom button {
       width: 22px; height: 22px; padding: 0; line-height: 1; font-size: 15px;
       border: 1px solid rgba(255,255,255,0.18); border-radius: 5px;
@@ -780,9 +805,10 @@ function createMultiplayerFinder() {
       border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
       background: rgba(18,22,28,0.86); color: #b3bdca; cursor: pointer;
       writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 1px;
-      backdrop-filter: blur(8px);
+      opacity: 0.26; backdrop-filter: blur(8px); transition: opacity 0.18s ease, color 0.18s ease, border-color 0.18s ease;
     }
     #mp-map-nub:hover { color: #e8edf3; border-color: rgba(255,255,255,0.28); }
+    #mp-map-nub:hover, #mp-map-nub:focus-visible, #mp-map-nub.active { opacity: 1; color: #e8edf3; }
     #mp-map-menu {
       width: 0; overflow: hidden; align-self: flex-start;
       transition: width 0.14s ease, margin-left 0.14s ease;
@@ -840,6 +866,10 @@ function createMultiplayerFinder() {
   const dock = document.createElement('div');
   dock.id = 'mp-dock';
   const nub = document.createElement('button');
+  const lookAngleCanvas = document.createElement('canvas');
+  lookAngleCanvas.id = 'mp-look-angle';
+  lookAngleCanvas.width = 38;
+  lookAngleCanvas.height = canvas.height;
   nub.id = 'mp-map-nub';
   nub.type = 'button';
   nub.title = 'Minimap layers';
@@ -870,8 +900,11 @@ function createMultiplayerFinder() {
     return { id: o.id, el: b };
   });
   menu.append(menuTitle, menuList);
-  nub.addEventListener('click', () => menu.classList.toggle('open'));
-  dock.append(root, nub, menu);
+  nub.addEventListener('click', () => {
+    const isOpen = menu.classList.toggle('open');
+    nub.classList.toggle('active', isOpen);
+  });
+  dock.append(lookAngleCanvas, root, nub, menu);
   document.body.appendChild(dock);
 
   let trackedId = null;
@@ -895,6 +928,8 @@ function createMultiplayerFinder() {
     menu.style.display = hasMap ? '' : 'none';
     if (!hasMap) menu.classList.remove('open');
     const ctx = canvas.getContext('2d');
+    const pitch = fpsMode ? look.pitch : camera.rotation.x;
+    drawLookAngleCompass(lookAngleCanvas.getContext('2d'), lookAngleCanvas.width, lookAngleCanvas.height, pitch);
     const w = canvas.width, h = canvas.height;
     const heading = playerViewHeading();
     ctx.clearRect(0, 0, w, h);
@@ -932,6 +967,7 @@ function createMultiplayerFinder() {
       ctx.imageSmoothingEnabled = true;
       ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
       ctx.drawImage(worldMapBake.canvas, 0, 0);
+      ctx.drawImage(worldMapBake.terrainDetailCanvas, 0, 0);
       ctx.restore();
       // Mute a touch so the rings/arrows read over bright biomes (snow/desert).
       ctx.fillStyle = 'rgba(9,12,16,0.22)';
@@ -940,9 +976,14 @@ function createMultiplayerFinder() {
 
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
+    ctx.font = '9px ui-monospace, SFMono-Regular, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
     for (let i = 1; i <= 3; i++) {
       const r = (R * i) / 3;
       ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = 'rgba(220,229,238,0.72)';
+      ctx.fillText(`${Math.round(view * i / 3)}m`, cx + 4, cy - r + 10);
     }
     ctx.strokeStyle = 'rgba(255,255,255,0.10)';
     ctx.beginPath();
@@ -988,7 +1029,14 @@ function createMultiplayerFinder() {
     label.textContent = `${tracked.id} ${Math.round(dist)}m ${relDeg > 0 ? '+' : ''}${Math.round(relDeg)}°`;
   }
 
-  return { update };
+  return {
+    update,
+    setBigMapOpen(open) {
+      dock.classList.toggle('big-map-open', open);
+      menu.classList.toggle('open', open);
+      nub.classList.toggle('active', open);
+    },
+  };
 }
 
 function drawCompassStrip(ctx, width, heading, friendBearing) {
@@ -1030,6 +1078,39 @@ function drawCompassStrip(ctx, width, heading, friendBearing) {
   ctx.beginPath(); ctx.moveTo(center, h - 3); ctx.lineTo(center - 5, h - 11); ctx.lineTo(center + 5, h - 11); ctx.closePath(); ctx.fill();
 }
 
+function drawLookAngleCompass(ctx, width, height, pitch) {
+  const pitchDeg = THREE.MathUtils.radToDeg(clampLookPitch(pitch));
+  const center = height * 0.5;
+  const pxPerDeg = 1.2;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(255,255,255,0.035)';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.beginPath(); ctx.moveTo(width - 7.5, 8); ctx.lineTo(width - 7.5, height - 8); ctx.stroke();
+  ctx.font = '9px ui-monospace, SFMono-Regular, Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let deg = -90; deg <= 90; deg += 15) {
+    const y = center + (pitchDeg - deg) * pxPerDeg;
+    if (y < 10 || y > height - 10) continue;
+    const major = deg % 30 === 0;
+    ctx.strokeStyle = major ? 'rgba(255,255,255,0.48)' : 'rgba(255,255,255,0.24)';
+    ctx.beginPath(); ctx.moveTo(width - 7, y); ctx.lineTo(width - (major ? 17 : 13), y); ctx.stroke();
+    if (major) { ctx.fillStyle = deg === 0 ? '#d8dee9' : '#9fa9b7'; ctx.fillText(deg > 0 ? `+${deg}` : String(deg), width - 19, y); }
+  }
+  ctx.fillStyle = '#77c8a1';
+  ctx.beginPath();
+  ctx.moveTo(width - 3, center); ctx.lineTo(width - 11, center - 5); ctx.lineTo(width - 11, center + 5);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#d8dee9';
+  ctx.font = '10px ui-monospace, SFMono-Regular, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`${Math.round(pitchDeg)}deg`, width * 0.5, 5);
+  ctx.fillStyle = '#8a93a3';
+  ctx.font = '8px system-ui, sans-serif';
+  ctx.fillText(pitchDeg > 1 ? 'LOOK UP' : pitchDeg < -1 ? 'LOOK DN' : 'LEVEL', width * 0.5, height - 14);
+}
 function drawArrow(ctx, x, y, angle, size, color) {
   ctx.save();
   ctx.translate(x, y);
@@ -1117,7 +1198,6 @@ const worldMapOverlay = createWorldMapOverlay({
   getRemotes: () => multiplayerRemotePlayers(),
   getHeading: () => playerViewHeading(),
   getFacing: (player) => playerForwardBearing(player),
-  getOverlayLabel: () => mapOverlayLabel(),
 });
 function updateMultiplayerFinder() {
   const local = multiplayerLocalPlayer();
@@ -1587,8 +1667,19 @@ let botSeekTenacitySec = 6; // slider; how long (seconds) a bot keeps pursuing a
 let botSquadModeEnabled = false; // panel toggle; spawn/round-mode groups bots into squads of SQUAD_MIN_SIZE+ instead of independent bots
 let botTemperamentMin = 0.15, botTemperamentMax = 0.85; // sliders
 const SQUAD_MIN_SIZE = 5;
-const SQUAD_FORMATION_RADIUS = 5; // metres, loose ring around the squad leader
+const SQUAD_FORMATION_RADIUS = 8; // metres, loose ring around the squad leader
+const SQUAD_COLUMN_SPACING = 3; // metres between consecutive bots in the single-file formation
 const BOT_RETREAT_SPEED_MULT = 1.45;
+// Directional exploration (2026-07-19): replaces the old "random point within a leash radius of
+// spawn" wander for unsquadded bots and squad leaders on open/authored terrain (shoot-house keeps
+// its fixed round-robin spawn-point patrol, see nextPatrolTarget). Each bot gets one random
+// heading at spawn and keeps it for its lifetime; goals hop far along that heading, chained from
+// wherever the bot currently is so it actually travels rather than orbiting one point.
+const BOT_EXPLORE_MIN_DIST = 80, BOT_EXPLORE_MAX_DIST = 300; // metres per goal hop
+const BOT_EXPLORE_CONE_JITTER = Math.PI / 6; // +/-30 degrees off the fixed heading per hop
+const BOT_EXPLORE_EXCLUSION_RADIUS = 50; // metres; a new goal within this of a remembered one is rejected and re-rolled
+const BOT_EXPLORE_HISTORY_SIZE = 6; // remembered past goals used for the exclusion check above
+const BOT_EXPLORE_ARRIVE_DIST = 5; // metres; close enough to a far explore goal to count as "arrived" and roll the next one
 const squads = new Map(); // squadId -> Squad record
 let squadIdSeq = 0;
 let botNoticeTimeSec = 0.6; // slider; reaction delay from first spotting a target to being allowed to fire at it -- resets if line of sight breaks
@@ -1622,7 +1713,45 @@ const BOT_LOCAL_NAV_CELL = 1.5;
 const BOT_TERRAIN_SLOPE_TOLERANCE = 0.9; // metres of rise between adjacent local-grid cells before a cell counts as too steep to walk
 const BOT_NAV_OBSTACLE_RADIUS = 0.3; // matches bot-entity.js's DEFAULT_RADIUS -- used to test tree/rock clearance for nav + LOS
 const BOT_PATH_RETRY_MS = 500; // throttle re-requesting a path after a "no walkable route to goal" result, so a stuck bot doesn't rebuild the local nav grid every single frame
-const BOT_STUCK_ESCAPE_RETRIES = 6; // ~3s of throttled retries (BOT_PATH_RETRY_MS apart) with zero progress before giving up on pathfinding and steering straight for the bot's own spawn point as a guaranteed escape -- covers the case where the bot's *own* position, not just the goal, has fallen outside walkable reach (e.g. pushed there by pushBotsApart), where every retry fails identically no matter what goal is tried
+const BOT_STUCK_ESCAPE_RETRIES = 6; // ~3s of throttled retries (BOT_PATH_RETRY_MS apart) with zero progress before giving up on pathfinding and steering straight for the nearest walkable cell to the bot's own position as a guaranteed escape -- covers the case where the bot's *own* position, not just the goal, has fallen outside walkable reach (e.g. pushed there by pushBotsApart), where every retry fails identically no matter what goal is tried. Was targeted at rec.lastSafePos until 2026-07-18: lastSafePos tracks the bot's *last grounded* position, which for a grounded-but-wedged bot (the common case) IS its current position, so the escape instantly "arrived" without moving at all -- see docs/superpowers/reviews/2026-07-18-bot-stuck-systemic-review.md Finding 1.
+const BOT_ESCAPE_TIMEOUT_MS = 4000; // if steering toward the recovered nearest-walkable cell itself makes no progress this long (still blocked some other way), teleport onto it as a last resort rather than statue forever
+const BOT_FALL_CATCH_DROP_M = 12; // metres below rec.lastSafePos.y that counts as "fell through a gap in the collision mesh" (see botTickOne) rather than a normal step/ledge drop -- with no floor anywhere below the playable area, an uncaught fall is unbounded (observed to -70,000+ in botStatsLog)
+const BOT_STUCK_FORCE_REPLAN_MS = 3000; // ms of zero physical progress on an otherwise "valid" path (pathFailCount never increments on its own here) before forcing a repath -- catches bots wedged against geometry/squadmates the nav grid doesn't model
+const BOT_NAV_STAND_HEIGHT = 1.8; // matches bot-entity.js's player-default stand height
+const BOT_NAV_MESH_PUSH_TOLERANCE = 0.05; // metres of lateral push-out from a stationary test capsule before a cell counts as mesh-blocked (vs. resting flush on the ground)
+
+// Bake-once cache for botMeshBlockedAt (2026-07-18): rejecting nav cells that are graph-walkable
+// (per terrainHeight/trunkIndex/dressingIndexRef below) but physically blocked by other static
+// collision-mesh geometry -- cliff faces, rock formations, structures -- that botTerrainWalkable
+// never checked before. terrainHeight() itself is mesh-derived for authored maps (via
+// mapCollider.raycastDown, see :1352) but is sampled through a coarsened cpuHeightField bake, so
+// smaller mesh features can be aliased away; a stationary capsule test against the live BVH is the
+// only accurate check. Doing that live per query would repeat the perf mistake the LOS raycast
+// throttle already fixed once (see docs/subsystems/bots.md's "code-review pass" note) -- instead
+// every unique world cell is tested against the mesh at most once per session and cached forever,
+// since the collision mesh never changes at runtime.
+const botMeshBlockedCache = new Map();
+const _botNavTestCapsule = new Capsule(new THREE.Vector3(), new THREE.Vector3(), BOT_NAV_OBSTACLE_RADIUS);
+const _botNavTestVelocity = new THREE.Vector3();
+function botMeshBlockedAt(x, z) {
+  if (!mapCollider) return false;
+  const key = `${Math.round(x / BOT_LOCAL_NAV_CELL)},${Math.round(z / BOT_LOCAL_NAV_CELL)}`;
+  let blocked = botMeshBlockedCache.get(key);
+  if (blocked !== undefined) return blocked;
+  const groundY = terrainHeight(x, z);
+  blocked = true;
+  if (Number.isFinite(groundY)) {
+    _botNavTestCapsule.start.set(x, groundY + BOT_NAV_OBSTACLE_RADIUS + 0.02, z);
+    _botNavTestCapsule.end.set(x, groundY + BOT_NAV_STAND_HEIGHT - BOT_NAV_OBSTACLE_RADIUS, z);
+    _botNavTestCapsule.radius = BOT_NAV_OBSTACLE_RADIUS;
+    _botNavTestVelocity.set(0, 0, 0);
+    const { grounded } = mapCollider.resolveCapsule(_botNavTestCapsule, _botNavTestVelocity, { slopeLimitY: PLAYER_SLOPE_LIMIT_Y });
+    const pushedXZ = Math.hypot(_botNavTestCapsule.start.x - x, _botNavTestCapsule.start.z - z);
+    blocked = !grounded || pushedXZ > BOT_NAV_MESH_PUSH_TOLERANCE;
+  }
+  botMeshBlockedCache.set(key, blocked);
+  return blocked;
+}
 
 // Generic per-cell walkability test: whatever surface is directly above (x,z) must be close to
 // the map's floor baseline (0 on shoot-house, see shoot-house.js#heightAt) -- a wall/pillar/cover
@@ -1633,10 +1762,13 @@ function botNavWalkable(x, z) {
   return mapCollider ? Math.abs(terrainHeight(x, z)) < BOT_NAV_FLOOR_TOLERANCE : false;
 }
 // Walkability test for open/authored terrain: flat-ish (small height delta to its neighbors, so
-// gentle rolling ground passes but a cliff or wall face doesn't), not underwater, and clear of
-// tree trunks/rocks (trunkIndex/dressingIndexRef -- the same spatial indices the player's own
-// collision uses, see resolveTrunks below). Used only by requestBotPath's on-demand local window,
-// never baked into a static grid (see BOT_LOCAL_NAV_RADIUS).
+// gentle rolling ground passes but a cliff or wall face doesn't), not underwater, clear of tree
+// trunks/rocks (trunkIndex/dressingIndexRef -- the same spatial indices the player's own collision
+// uses, see resolveTrunks below), and not blocked by other static collision-mesh geometry
+// (botMeshBlockedAt -- cliff faces, rock formations, structures that aren't in either index and
+// can be aliased out of the height-delta check above by cpuHeightField's coarser bake resolution).
+// Used only by requestBotPath's on-demand local window, never baked into a static grid (see
+// BOT_LOCAL_NAV_RADIUS).
 function botTerrainWalkable(x, z) {
   const h = terrainHeight(x, z);
   if (!Number.isFinite(h)) return false;
@@ -1649,6 +1781,7 @@ function botTerrainWalkable(x, z) {
   if (Math.max(dhx, dhz) >= BOT_TERRAIN_SLOPE_TOLERANCE) return false;
   if (trunkIndex.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
   if (dressingIndexRef && dressingIndexRef.resolve(x, z, BOT_NAV_OBSTACLE_RADIUS).pushed) return false;
+  if (botMeshBlockedAt(x, z)) return false;
   return true;
 }
 function sampleBotSpawnPoints(grid, count) {
@@ -1689,8 +1822,16 @@ function spawnBotAt(pos) {
     pathMode: null, currentPath: [], patrolIdx: 0, spawnPos: { x: pos.x, z: pos.z },
     deadSince: null, wanderTarget: null, weaponId, reloadUntil: null, targetAcquiredAt: null,
     lastVisibleAt: -Infinity, losTargetId: null, losVisible: false, nextLosCheckAt: 0,
-    squadId: null, isLeader: false, temperament: rollTemperament(botTemperamentMin, botTemperamentMax), formationAngle: 0,
-    pathRetryAt: 0, pathFailCount: 0,
+    squadId: null, isLeader: false, temperament: rollTemperament(botTemperamentMin, botTemperamentMax), formationAngle: 0, memberIndex: 0,
+    // Fixed-for-lifetime exploration heading (see BOT_EXPLORE_* above); exploreGoal/exploreHistory
+    // are populated lazily by nextExploreGoal the first time this bot needs a wander target.
+    exploreHeading: Math.random() * Math.PI * 2, exploreGoal: null, exploreHistory: [],
+    pathRetryAt: 0, pathFailCount: 0, stuckReplanCount: 0, stuckReplanAt: 0,
+    escapeTarget: null, escapeStartedAt: null,
+    // Last position the bot was actually standing on solid ground (see BOT_FALL_CATCH_DROP_M) --
+    // the mid-air fall-catch recovery target ONLY (see BOT_STUCK_ESCAPE_RETRIES for why the
+    // grounded-stall escape hatch no longer uses this).
+    lastSafePos: { x: pos.x, y: terrainHeight(pos.x, pos.z), z: pos.z },
     // Lifetime combat/movement stats, exposed by the bot inspector and botStatsLog (below).
     // shotsFired/hitsLanded/kills/deaths persist across this bot's own respawns; distanceTraveled
     // does too (lastPos is re-anchored on respawn so the teleport-to-spawn jump isn't counted).
@@ -1700,7 +1841,7 @@ function spawnBotAt(pos) {
   playerCombat.ensurePlayer(id, { maxHp: botMaxHp, hp: botMaxHp });
   setPlayerWeapon(id, weaponId);
   setPlayerTool(id, weaponId);
-  updateHostPlayerGhosts();
+  hostGhostsDirty = true;
   return id;
 }
 function spawnBotAtSlot(index) { return spawnBotAt(botSpawnSlot(index)); }
@@ -1711,7 +1852,8 @@ function formSquad(botIds) {
   const id = `squad-${++squadIdSeq}`;
   const leaderId = botIds[0];
   const squad = { id, outpostId: null, teamId: 'bots', leaderId, memberIds: new Set(botIds),
-    initialSize: botIds.length, order: 'hold', orderTarget: null, lossRetreatDecided: false };
+    initialSize: botIds.length, order: 'hold', orderTarget: null, lossRetreatDecided: false,
+    formationMode: 'auto' }; // 'auto' | 'ring' | 'column' -- manual override from the squad panel, see chooseFormationKind
   const leaderRec = botPlayers.get(leaderId);
   squad.spawnPos = leaderRec ? botMidXZ(leaderRec.bot) : { x: 0, z: 0 };
   squads.set(id, squad);
@@ -1720,6 +1862,7 @@ function formSquad(botIds) {
     rec.squadId = id;
     rec.isLeader = bid === leaderId;
     rec.formationAngle = formationAngleFor(i, botIds.length);
+    rec.memberIndex = i; // column-formation rank; leader is 0, only non-leader members use this
   });
   return squad;
 }
@@ -1732,6 +1875,7 @@ function spawnSquadAtSlot(startIndex) {
 }
 function despawnBot(id) {
   if (!botPlayers.has(id)) return;
+  destroyEnvironmentBotWeaponMount(id);
   botPlayers.delete(id);
   playerCombat.removePlayer(id);
   playerPoseHistory.delete(id);
@@ -1739,7 +1883,7 @@ function despawnBot(id) {
   playerWeapons.delete(id);
   playerTools.delete(id);
   for (const key of [...playerAmmo.keys()]) if (key.startsWith(`${id}:`)) playerAmmo.delete(key);
-  updateHostPlayerGhosts();
+  hostGhostsDirty = true;
 }
 function despawnAllBots() {
   for (const id of [...botPlayers.keys()]) despawnBot(id);
@@ -1815,13 +1959,17 @@ function botFire(id, rec, nowMs) {
   const cp = Math.cos(firePitch);
   const dir = [Math.sin(fireYaw) * cp, Math.sin(firePitch), Math.cos(fireYaw) * cp];
   const eye = bot.capsule.end;
+  const tracerOrigin = environmentBotWeaponMuzzle(id);
   const intent = {
     type: 'combat_intent', action: 'gun.fire', weapon: weaponId,
     shotSeq: (playerShotState.get(id)?.shotSeq ?? 0) + 1,
-    origin: [eye.x, eye.y, eye.z], dir, clientTime: nowMs,
+    origin: [eye.x, eye.y, eye.z], dir, tracerOrigin, clientTime: nowMs,
   };
   const result = applyCombatIntent(intent, id);
-  if (result?.ok) { rec.lastFireAt = nowMs; rec.shotsFired++; }
+  if (result?.ok) {
+    rec.lastFireAt = nowMs; rec.shotsFired++;
+    botVisualWeaponMounts.get(id)?.controller.play('fire');
+  }
 }
 
 // --- Bot threat awareness: getting shot (or shot at) hands a bot a "last known" position to
@@ -1929,11 +2077,20 @@ function followBotPath(bot, path) {
 // into that window, and path within it. The FSM re-requests a path once the current one is
 // consumed or invalidated, so the window "follows" the bot toward a far-off goal over several
 // replans rather than pathing the whole map at once.
+let _botPathDebugCount = 0; // TEMP diagnostic (2026-07-19): remove once explore-movement bug is found
 function requestBotPath(bot, toXZ) {
   if (botNavGrid) {
-    const raw = botFindPath(botNavGrid, botMidXZ(bot), toXZ);
-    if (!raw) return [];
-    return botSmoothPath(botNavGrid, raw).slice(1);
+    const center = botMidXZ(bot);
+    const raw = botFindPath(botNavGrid, center, toXZ);
+    if (raw) return botSmoothPath(botNavGrid, raw).slice(1);
+    // No route on the static bake either -- same nearest-walkable-goal retry the local-window
+    // branch below already had (this branch used to have none at all).
+    const nearGoal = nearestWalkableInGrid(botNavGrid, toXZ.x, toXZ.z);
+    if (nearGoal) {
+      const retry = botFindPath(botNavGrid, center, nearGoal);
+      if (retry) return botSmoothPath(botNavGrid, retry).slice(1);
+    }
+    return [];
   }
   const center = botMidXZ(bot);
   const bounds = {
@@ -1946,7 +2103,11 @@ function requestBotPath(bot, toXZ) {
     z: Math.min(bounds.maxZ - BOT_LOCAL_NAV_CELL, Math.max(bounds.minZ + BOT_LOCAL_NAV_CELL, toXZ.z)),
   };
   const raw = botFindPath(grid, center, goal);
-  if (raw) return botSmoothPath(grid, raw).slice(1);
+  if (raw) {
+    const path = botSmoothPath(grid, raw).slice(1);
+    if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath]', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal, 'pathLen', path.length, 'lastWp', path[path.length - 1]); }
+    return path;
+  }
   // No walkable route to the goal (steep slope, water, or an obstacle in the way) -- retarget to
   // the nearest walkable cell to the goal instead of ever beelining straight through unwalkable
   // ground (the old behavior here literally pathed bots down slopes/into depressions they couldn't
@@ -1955,8 +2116,13 @@ function requestBotPath(bot, toXZ) {
   const nearGoal = nearestWalkableInGrid(grid, goal.x, goal.z);
   if (nearGoal) {
     const retry = botFindPath(grid, center, nearGoal);
-    if (retry) return botSmoothPath(grid, retry).slice(1);
+    if (retry) {
+      const path = botSmoothPath(grid, retry).slice(1);
+      if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath] FALLBACK', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal, 'nearGoal', nearGoal, 'pathLen', path.length); }
+      return path;
+    }
   }
+  if (_botPathDebugCount < 60) { _botPathDebugCount++; console.log('[botpath] EMPTY (no route at all)', bot.id, 'center', center, 'trueGoal', toXZ, 'clampedGoal', goal); }
   return [];
 }
 // Brute-force nearest-walkable-cell scan over a local nav grid (at most ~24x24 cells at the
@@ -1974,27 +2140,78 @@ function nearestWalkableInGrid(grid, x, z) {
   }
   return best;
 }
-// Cycles the baked spawn points as patrol stops when a static nav grid exists (shoot-house);
-// otherwise wanders to fresh random points around the bot's own spawn -- requestBotPath still
-// routes the walk there through a local A* window, so this only needs to pick a destination, not
-// a walkable one.
+// Nearest walkable cell to the bot's OWN position -- the stuck-escape recovery target (see
+// BOT_STUCK_ESCAPE_RETRIES). Deliberately not lastSafePos/spawnPos: this is "somewhere the nav
+// grid agrees is reachable and close by", which is what a stall (nav-valid path never found from
+// here, or physically blocked despite one) actually needs to get moving again.
+function botNearestWalkableToBot(bot) {
+  if (botNavGrid) return nearestWalkableInGrid(botNavGrid, bot.capsule.start.x, bot.capsule.start.z);
+  const center = botMidXZ(bot);
+  const bounds = {
+    minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
+    minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
+  };
+  const grid = buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL);
+  return nearestWalkableInGrid(grid, center.x, center.z);
+}
+// Far exploration goal along the bot's fixed exploreHeading (see BOT_EXPLORE_* above). Keeps the
+// current goal until arrival, then chains a new one from the bot's current position via
+// pickExploreGoal, whose result is handed as-is to requestBotPath -- that already retargets an
+// unreachable goal (water, off-map, a slope) to the nearest walkable cell within its search
+// window, so no map-bounds/water clamping is needed here (see requestBotPath's "no walkable
+// route" fallback).
+function nextExploreGoal(rec) {
+  const pos = { x: rec.bot.capsule.start.x, z: rec.bot.capsule.start.z };
+  if (rec.exploreGoal && Math.hypot(rec.exploreGoal.x - pos.x, rec.exploreGoal.z - pos.z) >= BOT_EXPLORE_ARRIVE_DIST) {
+    return rec.exploreGoal;
+  }
+  const goal = pickExploreGoal({
+    pos, heading: rec.exploreHeading, coneJitterRad: BOT_EXPLORE_CONE_JITTER,
+    minDist: BOT_EXPLORE_MIN_DIST, maxDist: BOT_EXPLORE_MAX_DIST,
+    history: rec.exploreHistory, exclusionRadius: BOT_EXPLORE_EXCLUSION_RADIUS,
+  });
+  rec.exploreHistory.push(goal);
+  if (rec.exploreHistory.length > BOT_EXPLORE_HISTORY_SIZE) rec.exploreHistory.shift();
+  rec.exploreGoal = goal;
+  console.log('[explore-goal]', rec.bot.id, 'from', pos, 'heading', rec.exploreHeading.toFixed(2), 'goal', goal); // TEMP diagnostic
+  return goal;
+}
+// Cycles the baked spawn points as patrol stops when a static nav grid exists (shoot-house's
+// bounded interior); otherwise explores far along the bot's fixed heading (see nextExploreGoal) --
+// requestBotPath still routes the walk there through a local A* window one hop at a time, so this
+// only needs to pick a destination, not a walkable one.
 function nextPatrolTarget(rec) {
   if (botSpawnPoints.length) return botSpawnPoints[rec.patrolIdx % botSpawnPoints.length];
-  if (!rec.wanderTarget || Math.hypot(rec.wanderTarget.x - rec.bot.capsule.start.x, rec.wanderTarget.z - rec.bot.capsule.start.z) < BOT_WAYPOINT_REACH) {
-    const ang = Math.random() * Math.PI * 2, rad = 6 + Math.random() * 10;
-    rec.wanderTarget = { x: rec.spawnPos.x + Math.cos(ang) * rad, z: rec.spawnPos.z + Math.sin(ang) * rad };
-  }
-  return rec.wanderTarget;
+  return nextExploreGoal(rec);
 }
-// Movement goal for a squadded non-leader bot: a fixed point on a loose ring around the current
-// leader position. Returns null (caller falls back to nextPatrolTarget) when unsquadded, leading,
-// or the leader can't be resolved (dead, no successor promoted yet this tick).
+// True when there's walkable ground on both sides of the leader, perpendicular to its heading, at
+// the ring formation's radius -- used to auto-switch a squad into single-file when the ring
+// wouldn't physically fit (a corridor, a narrow ledge). Reuses whichever walkability test already
+// backs the active map's nav (see requestBotPath) rather than adding a new one.
+function squadCorridorClear(leaderPos, headingRad) {
+  const walkable = botNavGrid ? botNavWalkable : botTerrainWalkable;
+  const perp = headingRad + Math.PI / 2;
+  const cos = Math.cos(perp), sin = Math.sin(perp);
+  return walkable(leaderPos.x + cos * SQUAD_FORMATION_RADIUS, leaderPos.z + sin * SQUAD_FORMATION_RADIUS)
+    && walkable(leaderPos.x - cos * SQUAD_FORMATION_RADIUS, leaderPos.z - sin * SQUAD_FORMATION_RADIUS);
+}
+// Movement goal for a squadded non-leader bot: a point in the squad's current formation (ring or
+// column, see chooseFormationKind) around the live leader position. Returns null (caller falls
+// back to nextPatrolTarget) when unsquadded, leading, or the leader can't be resolved (dead, no
+// successor promoted yet this tick).
 function squadMemberGoal(rec) {
   if (!rec.squadId || rec.isLeader) return null;
   const squad = squads.get(rec.squadId);
   const leader = squad && botPlayers.get(squad.leaderId);
   if (!leader) return null;
-  return formationOffset(botMidXZ(leader.bot), rec.formationAngle, SQUAD_FORMATION_RADIUS);
+  const leaderPos = botMidXZ(leader.bot);
+  const kind = chooseFormationKind({
+    manual: squad.formationMode, engaged: leader.fsmState !== BOT_PATROL,
+    corridorClear: squadCorridorClear(leaderPos, leader.bot.yaw),
+  });
+  return kind === 'column'
+    ? columnOffset(leaderPos, leader.bot.yaw, rec.memberIndex, SQUAD_COLUMN_SPACING)
+    : formationOffset(leaderPos, rec.formationAngle, SQUAD_FORMATION_RADIUS);
 }
 function botFaceMovement(bot, dt) {
   const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
@@ -2027,44 +2244,71 @@ function botTickMovement(rec, dt, nowMs) {
     if (rec.lastKnownTarget) botFaceTarget(bot, rec.lastKnownTarget, dt);
     else botFaceMovement(bot, dt);
   } else {
-    // pathRetryAt throttles re-requesting a path right after a "no walkable route" result (empty
-    // currentPath from requestBotPath, see there) -- without this, a bot whose goal keeps landing
-    // on unreachable ground (e.g. a squad follower's formation point on the far side of a slope)
-    // would rebuild the local nav grid every single tick forever instead of just standing still
-    // for a beat and trying again.
-    const canRetry = nowMs >= (rec.pathRetryAt ?? 0);
-    if ((rec.pathMode !== 'patrol' || rec.currentPath.length === 0) && canRetry) {
-      // Retreat overrides formation/patrol for every member -- head for the squad's spawn spot.
-      const squad = rec.squadId && squads.get(rec.squadId);
-      // A squadded non-leader with no target of its own heads for its formation slot around the
-      // leader instead of wandering off on its own patrol; unsquadded/leaderless bots fall through.
-      const goal = (squad && squad.order === 'retreat' && squad.spawnPos)
-        ? (rec.isLeader ? squad.spawnPos : formationOffset(squad.spawnPos, rec.formationAngle, SQUAD_FORMATION_RADIUS)) // ring offset, not the literal point -- avoids collapsing the squad onto one coordinate
-        : (squadMemberGoal(rec) ?? nextPatrolTarget(rec));
-      rec.currentPath = requestBotPath(bot, goal);
-      rec.pathMode = 'patrol';
-      if (rec.currentPath.length === 0) {
-        rec.patrolIdx++;
-        rec.pathRetryAt = nowMs + BOT_PATH_RETRY_MS; // no walkable route right now -- stop trying every tick
-        rec.pathFailCount = (rec.pathFailCount ?? 0) + 1;
-      } else {
-        rec.pathFailCount = 0;
+    // Checked BEFORE the normal retry/follow logic below, not just when currentPath is empty --
+    // stuckReplanCount (see botTickOne) reaches BOT_STUCK_ESCAPE_RETRIES precisely in the case
+    // where requestBotPath keeps *succeeding* against a physically-blocked goal, so currentPath is
+    // never empty for that bot. Gating this on `rec.currentPath.length === 0` (the original,
+    // 2026-07-18-morning shape) made stuckReplanCount's target branch unreachable -- see
+    // docs/superpowers/reviews/2026-07-18-bot-stuck-systemic-review.md Finding 2.
+    // `rec.escapeTarget` alone also keeps an episode already in progress alive: botTickOne clears
+    // stuckReplanCount the instant real displacement resumes (moving toward the escape target
+    // itself counts!), which would otherwise drop the trigger condition to false one tick into the
+    // walk and abandon it before arrival -- a fresh, fable-caught instance of the exact
+    // recovery-defeats-recovery bug this whole section exists to stop happening a third time.
+    if (rec.escapeTarget || (rec.pathFailCount ?? 0) >= BOT_STUCK_ESCAPE_RETRIES || (rec.stuckReplanCount ?? 0) >= BOT_STUCK_ESCAPE_RETRIES) {
+      if (!rec.escapeTarget) {
+        // Nearest walkable cell to the bot's OWN position, not lastSafePos (see
+        // BOT_STUCK_ESCAPE_RETRIES for why that was a no-op) -- fall back to lastSafePos only if
+        // the grid genuinely finds nothing walkable nearby at all.
+        rec.escapeTarget = botNearestWalkableToBot(bot) ?? rec.lastSafePos;
+        rec.escapeStartedAt = nowMs;
       }
-    }
-    if (rec.currentPath.length && followBotPath(bot, rec.currentPath)) { rec.patrolIdx++; rec.pathMode = null; }
-    else if (rec.currentPath.length === 0) {
-      if ((rec.pathFailCount ?? 0) >= BOT_STUCK_ESCAPE_RETRIES) {
-        // Every goal has failed identically for a while -- the bot's own position, not just the
-        // goal, must be the problem (see BOT_STUCK_ESCAPE_RETRIES). Bypass the nav grid entirely
-        // and steer straight for its own spawn point, which is independently trusted walkable
-        // ground (either a validated botSpawnPoints entry or near the player's original spot) --
-        // a deliberate one-off escape, not a general substitute for real pathfinding.
-        const sp = rec.spawnPos;
-        const dx = sp.x - bot.capsule.start.x, dz = sp.z - bot.capsule.start.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist > 0.3) { bot.velocity.x = (dx / dist) * botMoveSpeed; bot.velocity.z = (dz / dist) * botMoveSpeed; }
-        else { bot.velocity.x = 0; bot.velocity.z = 0; rec.pathFailCount = 0; } // reached spawn -- let normal pathing retry fresh from here
+      const sp = rec.escapeTarget;
+      const dx = sp.x - bot.capsule.start.x, dz = sp.z - bot.capsule.start.z;
+      const dist = Math.hypot(dx, dz);
+      const timedOut = nowMs - (rec.escapeStartedAt ?? nowMs) > BOT_ESCAPE_TIMEOUT_MS;
+      if (dist > 0.3 && !timedOut) {
+        bot.velocity.x = (dx / dist) * botMoveSpeed; bot.velocity.z = (dz / dist) * botMoveSpeed;
       } else {
+        if (dist > 0.3) {
+          // Steering itself stalled too (blocked some other way en route) -- last-resort teleport
+          // onto the recovered cell rather than a permanent statue.
+          bot.capsule.start.x += dx; bot.capsule.start.z += dz;
+          bot.capsule.end.x += dx; bot.capsule.end.z += dz;
+        }
+        bot.velocity.x = 0; bot.velocity.z = 0;
+        rec.pathFailCount = 0; rec.stuckReplanCount = 0; rec.escapeTarget = null; rec.escapeStartedAt = null;
+        rec.currentPath = []; rec.pathMode = null; // fresh start -- let normal pathing retry from here
+        rec.exploreGoal = null; // drop whatever explore goal got the bot stuck -- nextExploreGoal rolls a fresh one
+      }
+    } else {
+      rec.escapeTarget = null;
+      // pathRetryAt throttles re-requesting a path right after a "no walkable route" result (empty
+      // currentPath from requestBotPath, see there) -- without this, a bot whose goal keeps landing
+      // on unreachable ground (e.g. a squad follower's formation point on the far side of a slope)
+      // would rebuild the local nav grid every single tick forever instead of just standing still
+      // for a beat and trying again.
+      const canRetry = nowMs >= (rec.pathRetryAt ?? 0);
+      if ((rec.pathMode !== 'patrol' || rec.currentPath.length === 0) && canRetry) {
+        // Retreat overrides formation/patrol for every member -- head for the squad's spawn spot.
+        const squad = rec.squadId && squads.get(rec.squadId);
+        // A squadded non-leader with no target of its own heads for its formation slot around the
+        // leader instead of wandering off on its own patrol; unsquadded/leaderless bots fall through.
+        const goal = (squad && squad.order === 'retreat' && squad.spawnPos)
+          ? (rec.isLeader ? squad.spawnPos : formationOffset(squad.spawnPos, rec.formationAngle, SQUAD_FORMATION_RADIUS)) // ring offset, not the literal point -- avoids collapsing the squad onto one coordinate
+          : (squadMemberGoal(rec) ?? nextPatrolTarget(rec));
+        rec.currentPath = requestBotPath(bot, goal);
+        rec.pathMode = 'patrol';
+        if (rec.currentPath.length === 0) {
+          rec.patrolIdx++;
+          rec.pathRetryAt = nowMs + BOT_PATH_RETRY_MS; // no walkable route right now -- stop trying every tick
+          rec.pathFailCount = (rec.pathFailCount ?? 0) + 1;
+        } else {
+          rec.pathFailCount = 0;
+        }
+      }
+      if (rec.currentPath.length && followBotPath(bot, rec.currentPath)) { rec.patrolIdx++; rec.pathMode = null; }
+      else if (rec.currentPath.length === 0) {
         bot.velocity.x = 0; bot.velocity.z = 0; // hold position instead of drifting on stale velocity
       }
     }
@@ -2078,6 +2322,7 @@ function botTickOne(id, rec, dt, nowMs) {
   const target = pickBotTarget(eye, rec, nowMs);
   const targetVisible = !!target;
   let aimYaw = bot.yaw, aimPitch = bot.pitch, err = Infinity;
+  rec.weaponAimPoint = null;
   if (targetVisible) {
     if (rec.targetAcquiredAt == null) rec.targetAcquiredAt = nowMs; // "notice time" starts counting from first spotting, see below
     rec.lastVisibleAt = nowMs;
@@ -2087,6 +2332,7 @@ function botTickOne(id, rec, dt, nowMs) {
     // have their own line of sight on the target yet (reinforcements converge on gunfire).
     propagateBotAlert(rec, rec.lastKnownTarget, nowMs);
     const aimPoint = { x: target.p[0], y: target.p[1] + (target.h ?? 1.6) * 0.3, z: target.p[2] };
+    rec.weaponAimPoint = [aimPoint.x, aimPoint.y, aimPoint.z];
     const angles = aimAnglesTo(eye, aimPoint);
     aimYaw = angles.yaw; aimPitch = angles.pitch;
     err = botAimError(bot.yaw, bot.pitch, aimYaw, aimPitch);
@@ -2102,10 +2348,10 @@ function botTickOne(id, rec, dt, nowMs) {
   // elapses, at which point the mag is actually refilled.
   const ammo = ensureAmmo(id, rec.weaponId);
   if (ammo.mag <= 0) {
-    if (rec.reloadUntil == null) rec.reloadUntil = nowMs + BOT_RELOAD_MS;
-    else if (nowMs >= rec.reloadUntil) { reloadAmmo(id, rec.weaponId); rec.reloadUntil = null; }
+    if (rec.reloadUntil == null) { rec.reloadUntil = nowMs + BOT_RELOAD_MS; rec.reloadStartedAt = nowMs; }
+    else if (nowMs >= rec.reloadUntil) { reloadAmmo(id, rec.weaponId); rec.reloadUntil = null; rec.reloadStartedAt = null; }
   } else {
-    rec.reloadUntil = null;
+    rec.reloadUntil = null; rec.reloadStartedAt = null;
   }
   // "Notice time" (panel-tunable): a freshly-spotted target isn't fired on immediately, even at
   // point-blank/zero aim error -- gives the player a beat to react instead of an instant snap-shot.
@@ -2133,13 +2379,51 @@ function botTickOne(id, rec, dt, nowMs) {
     botTickMovement(rec, dt, nowMs);
   }
   stepBotPhysics(bot, dt, { mapCollider, heightAt: terrainHeight });
+  if (bot.onFloor) {
+    rec.lastSafePos = { x: bot.capsule.start.x, y: bot.capsule.start.y, z: bot.capsule.start.z };
+  } else if (bot.capsule.start.y < rec.lastSafePos.y - BOT_FALL_CATCH_DROP_M) {
+    // Fell through a gap in the collision mesh with nothing below to catch it (see
+    // BOT_FALL_CATCH_DROP_M) -- recover to the last position it was actually standing on solid
+    // ground rather than let it free-fall forever (observed to y=-70,000+ in botStatsLog).
+    const safe = rec.lastSafePos;
+    const ddx = safe.x - bot.capsule.start.x, ddy = safe.y - bot.capsule.start.y, ddz = safe.z - bot.capsule.start.z;
+    bot.capsule.start.x += ddx; bot.capsule.start.y += ddy; bot.capsule.start.z += ddz;
+    bot.capsule.end.x += ddx; bot.capsule.end.y += ddy; bot.capsule.end.z += ddz;
+    bot.velocity.set(0, 0, 0);
+    bot.onFloor = true;
+    rec.currentPath = []; rec.pathMode = null; rec.pathFailCount = 0; rec.stuckReplanCount = 0; rec.escapeTarget = null; rec.escapeStartedAt = null; // fresh start from recovered ground
+  }
 
   const p = bot.capsule.start;
-  rec.distanceTraveled += Math.hypot(p.x - rec.lastPos.x, p.z - rec.lastPos.z);
+  const movedDist = Math.hypot(p.x - rec.lastPos.x, p.z - rec.lastPos.z);
+  rec.distanceTraveled += movedDist;
   rec.lastPos = { x: p.x, z: p.z };
   const moving = state === BOT_PATROL || state === BOT_SEEK;
-  const stuck = botTrackStuck({ speed: Math.hypot(bot.velocity.x, bot.velocity.z), moving, stuckSince: rec.stuckSince, nowMs });
+  // Fed actual displacement/dt (movedDist, already tracked for distanceTraveled above), not
+  // bot.velocity -- commanded velocity stays at full speed while a bot is shoved back by another
+  // bot's pushBotsApart correction (that only corrects position, never velocity, and runs once
+  // per updateBots tick after every bot's own FSM step), so velocity-based detection was blind to
+  // bot-vs-bot blocking entirely. See docs/superpowers/reviews/2026-07-18-bot-stuck-systemic-review.md
+  // Finding 5. resolveCapsule already zeroes the into-wall velocity component, so wall-wedging was
+  // (and still is) correctly detected either way; this only widens what counts as "not moving".
+  const stuck = botTrackStuck({ speed: dt > 0 ? movedDist / dt : 0, moving, stuckSince: rec.stuckSince, nowMs });
   rec.stuckSince = stuck.stuckSince;
+  if (stuck.stuckMs > BOT_STUCK_FORCE_REPLAN_MS && (rec.pathMode === 'patrol' || rec.pathMode === 'seek')) {
+    // A "valid" path that produces zero physical progress (wedged against geometry/squadmates the
+    // nav grid doesn't model) never fails on its own, so a plain pathFailCount bump gets wiped the
+    // very next tick when the forced replan "succeeds" again (same dead-end goal, still physically
+    // blocked) -- see botTickMovement's `rec.pathFailCount = 0` on any successful requestBotPath.
+    // stuckReplanCount is a separate counter nothing but recovery/actually-unstuck ever clears, so
+    // repeated forced replans still accumulate toward BOT_STUCK_ESCAPE_RETRIES. Throttled the same
+    // ~500ms as normal path retries so it doesn't spam requestBotPath every single frame.
+    if (nowMs >= (rec.stuckReplanAt ?? 0)) {
+      rec.currentPath = []; rec.pathMode = null;
+      rec.stuckReplanCount = (rec.stuckReplanCount ?? 0) + 1;
+      rec.stuckReplanAt = nowMs + BOT_PATH_RETRY_MS;
+    }
+  } else if (stuck.stuckSince == null) {
+    rec.stuckReplanCount = 0; // actually moving again -- forget any past forced-replan streak
+  }
 }
 
 // Per-squad bookkeeping, once per updateBots tick: loss-triggered retreat decision (leader
@@ -2372,9 +2656,11 @@ function updateBots(dt) {
         rec.deadSince = null; rec.fsmState = BOT_PATROL; rec.lastKnownTarget = null; rec.pathMode = null; rec.currentPath = [];
         rec.reloadUntil = null; rec.targetAcquiredAt = null; rec.lastVisibleAt = -Infinity;
         rec.losTargetId = null; rec.losVisible = false; rec.nextLosCheckAt = 0; rec.pathRetryAt = 0; rec.pathFailCount = 0;
+        rec.stuckReplanCount = 0; rec.stuckReplanAt = 0; rec.escapeTarget = null; rec.escapeStartedAt = null;
         // Re-anchor state-entry/position tracking at the new spot so the teleport-to-spawn jump
         // doesn't get counted as traveled distance; shotsFired/hitsLanded/kills/deaths carry over.
         rec.stateEnteredAt = nowMs; rec.lastPos = { x: sp.x, z: sp.z }; rec.stuckSince = null;
+        rec.lastSafePos = { x: sp.x, y: terrainHeight(sp.x, sp.z), z: sp.z };
       }
       continue;
     }
@@ -2383,7 +2669,11 @@ function updateBots(dt) {
   }
   updateSquads();
   pushBotsApart();
-  updateHostPlayerGhosts();
+  // The one ghost flush per frame (clears hostGhostsDirty): last bot mutation is above, and the
+  // weapon mounts below read the bodies it drives. Live bots move every tick, so their presence
+  // alone dirties the pass; with none and nothing flagged there is nothing to re-push.
+  if (hostGhostsDirty || botPlayers.size > 0) updateHostPlayerGhosts();
+  syncEnvironmentBotWeaponMounts(dt);
   updateBotInspector(nowMs);
   botStatsLog.maybeSample(nowMs);
   if (botStatusEl) botStatusEl.textContent = `${botPlayers.size} bot${botPlayers.size === 1 ? '' : 's'} active`;
@@ -3004,9 +3294,14 @@ function targetTerrainChunkCount() {
 
 function updateSunShadowFocus(center) {
   const half = Math.max(45, (terrainSystem.params.renderRadius + 1) * terrainSystem.params.chunkSize);
+  // Depth must track the sides: at a low sun the light axis is near-horizontal, so a fixed far
+  // plane stands vertical in the world and cuts a hard line across the terrain you are looking at.
+  const depth = half + 120;
   const cam = rig.dirLight.shadow.camera;
-  if (cam.left !== -half || cam.right !== half || cam.top !== half || cam.bottom !== -half) {
+  if (cam.left !== -half || cam.right !== half || cam.top !== half || cam.bottom !== -half
+    || cam.far !== depth * 2) {
     cam.left = -half; cam.right = half; cam.top = half; cam.bottom = -half;
+    cam.near = 1; cam.far = depth * 2;
     cam.updateProjectionMatrix();
   }
   const a = rig.azimuth * Math.PI / 180;
@@ -3014,7 +3309,7 @@ function updateSunShadowFocus(center) {
   const dir = new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
   shadowFocus.set(center.x, terrainHeight(center.x, center.z), center.z);
   rig.dirLight.target.position.copy(shadowFocus);
-  rig.dirLight.position.copy(shadowFocus).addScaledVector(dir, 120);
+  rig.dirLight.position.copy(shadowFocus).addScaledVector(dir, depth);
   rig.dirLight.target.updateMatrixWorld();
   rig.dirLight.updateMatrixWorld();
 }
@@ -4768,9 +5063,20 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         retreatBtn.addEventListener('click', () => { squad.order = 'retreat'; squad.orderTarget = squad.spawnPos; refreshSquadPanel(); });
         const attackBtn = document.createElement('button');
         attackBtn.textContent = 'Attack';
-        attackBtn.style.cssText = 'padding:2px 6px;background:#2c3a2c;color:#c4e0c4;border:1px solid #3a4f3a;border-radius:3px;cursor:pointer;font-size:10px';
+        attackBtn.style.cssText = 'padding:2px 6px;margin-right:3px;background:#2c3a2c;color:#c4e0c4;border:1px solid #3a4f3a;border-radius:3px;cursor:pointer;font-size:10px';
         attackBtn.addEventListener('click', () => { squad.order = 'attack'; squad.orderTarget = null; refreshSquadPanel(); });
-        btnWrap.appendChild(retreatBtn); btnWrap.appendChild(attackBtn);
+        // Manual Ring/Column/Auto formation override, for testing the auto-switch heuristic
+        // (squadCorridorClear/chooseFormationKind) against a forced formation.
+        const formationSel = document.createElement('select');
+        formationSel.style.cssText = 'padding:1px 2px;background:#22262e;color:#c4ccd6;border:1px solid #3a424d;border-radius:3px;font-size:10px';
+        for (const mode of ['auto', 'ring', 'column']) {
+          const opt = document.createElement('option');
+          opt.value = mode; opt.textContent = mode[0].toUpperCase() + mode.slice(1);
+          if (squad.formationMode === mode) opt.selected = true;
+          formationSel.appendChild(opt);
+        }
+        formationSel.addEventListener('change', () => { squad.formationMode = formationSel.value; });
+        btnWrap.appendChild(retreatBtn); btnWrap.appendChild(attackBtn); btnWrap.appendChild(formationSel);
         row.appendChild(btnWrap);
         squadListEl.appendChild(row);
       }
@@ -4866,7 +5172,15 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
           `pathMode: ${rec.pathMode ?? 'none'}  waypoints: ${rec.currentPath.length}  failCount: ${rec.pathFailCount ?? 0}\n` +
           `squad: ${squad ? `${squad.id} (${rec.isLeader ? 'leader' : 'member'}, ${squad.order})` : 'none'}\n` +
           `target: ${rec.lastKnownTarget ? `tracking (${dist.toFixed(1)}m)` : 'none'}  ammo: ${ammo.mag}/${ammo.reserve}${rec.reloadUntil != null ? ' (reloading)' : ''}\n` +
-          `shots: ${rec.shotsFired}  hits: ${rec.hitsLanded}  kills: ${rec.kills}  deaths: ${rec.deaths}  distance traveled: ${rec.distanceTraveled.toFixed(1)}m`;
+          `shots: ${rec.shotsFired}  hits: ${rec.hitsLanded}  kills: ${rec.kills}  deaths: ${rec.deaths}  distance traveled: ${rec.distanceTraveled.toFixed(1)}m\n` +
+          (() => {
+            const mount = botVisualWeaponMounts.get(selectedBotId);
+            const retryIn = Math.max(0, (botVisualWeaponMountRetryAfter.get(selectedBotId) ?? 0) - nowMs) / 1000;
+            const state = mount ? 'ready' : botVisualWeaponMountRequests.has(selectedBotId) ? 'building' : retryIn > 0 ? `retry ${retryIn.toFixed(1)}s` : 'none';
+            const rigY = mount ? mount.weaponRig.position.y.toFixed(1) : '?';
+            const muzzleY = environmentBotWeaponMuzzle(selectedBotId)?.[1];
+            return `mount: ${state}  rigY: ${rigY}  muzzleY: ${muzzleY != null ? muzzleY.toFixed(1) : '?'}  terrainY: ${terrainHeight(p.x, p.z).toFixed(1)}`;
+          })();
       }
       tableEl.innerHTML = '';
       for (const [id, memberRec] of botPlayers) {
@@ -5795,7 +6109,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     Object.assign(params, {
       cloudHeight: 120, cloudExtent: 8000,
       cloudCover: 0.4, cloudOpacity: 0.9, cloudSpeed: 1.0,
-      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.01,
+      cloudPuff: 1.0, cloudSoftness: 0.3, cloudFade: 0.5,
       cloudsVisible: true, cloudDepthWrite: true,
     });
     cloudsRef = new Clouds();
@@ -5828,13 +6142,13 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('cloudPuff', 'Puff size', 0.3, 3, 0.01, f2, () => cloudsRef.setPuff(params.cloudPuff));
     slider('cloudSoftness', 'Softness', 0.05, 0.5, 0.01, f2, () => cloudsRef.setSoftness(params.cloudSoftness));
     slider('cloudOpacity', 'Opacity', 0, 1, 0.01, f2, () => cloudsRef.setOpacity(params.cloudOpacity));
-    slider('cloudFade', 'Horizon fade', 0.002, 0.05, 0.001, v => v.toFixed(3), () => cloudsRef.setFade(params.cloudFade));
+    slider('cloudFade', 'Horizon fade', 0, 1, 0.02, v => v.toFixed(2), () => cloudsRef.setFade(params.cloudFade));
     slider('cloudSpeed', 'Drift speed', 0, 4, 0.01, f2, () => cloudsRef.setSpeed(params.cloudSpeed));
 
     Object.assign(params, {
       cloud2Height: 280, cloud2Extent: 16000,
       cloud2Cover: 0.3, cloud2Opacity: 0.5, cloud2Speed: 0.6,
-      cloud2Puff: 3.0, cloud2Softness: 0.3, cloud2Fade: 0.01,
+      cloud2Puff: 3.0, cloud2Softness: 0.3, cloud2Fade: 0.5,
     });
     clouds2Ref = new Clouds();
     clouds2Ref.rotation.x = -Math.PI / 2;
@@ -6062,7 +6376,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     // Celestial opacity follows time of day (stars/Milky Way/bodies fade in at night).
     params.celestialFollowTime = false;
     toggle('celestialFollowTime', 'Celestial opacity follows time', () => skyRef.setCelestialOpacityMode(params.celestialFollowTime));
-    params.stableCelestialLayering = false;
+    params.stableCelestialLayering = true;   // on by default (sky.js applies it in build()); keeps
+                                             // companion moons from swapping layers as camera pitch changes
     toggle('stableCelestialLayering', 'Stable body layering', () => skyRef.setStableCelestialLayering(params.stableCelestialLayering));
 
     const applyBtn = document.createElement('button');
@@ -6477,6 +6792,16 @@ let lgChargeStart = null;
     inp.addEventListener('change', () => setWeaponFineMode(inp.checked));
     row.appendChild(inp);
   }
+  {
+    const row = weaponControlRow('Show muzzle anchor');
+    const inp = document.createElement('input');
+    inp.type = 'checkbox'; inp.checked = showMuzzleAnchorDot; inp.style.width = 'auto';
+    inp.addEventListener('change', () => {
+      showMuzzleAnchorDot = inp.checked;
+      localWeaponView?.setMuzzleAnchorDotVisible?.(showMuzzleAnchorDot);
+    });
+    row.appendChild(inp);
+  }
   const getArr = (w, key, i, fallback = 0) => Array.isArray(w?.[key]) ? (w[key][i] ?? fallback) : fallback;
   const setArr = (w, key, i, v) => { if (!Array.isArray(w[key])) w[key] = [0, 0, 0]; w[key][i] = v; };
   const deg = r => r * 180 / Math.PI;
@@ -6523,6 +6848,20 @@ let lgChargeStart = null;
   weaponControlSlider('Smoke duration', w => getMuzzle(w, 'smokeDuration', 0.42), (w, v) => setMuzzle(w, 'smokeDuration', v), 0.01, 2, 0.01, f2);
   weaponControlSlider('Smoke opacity', w => getMuzzle(w, 'smokeOpacity', 0.22), (w, v) => setMuzzle(w, 'smokeOpacity', v), 0, 1, 0.01, f2);
   weaponControlSlider('Smoke wisps', w => getMuzzle(w, 'smokeCount', 2), (w, v) => setMuzzle(w, 'smokeCount', Math.round(v)), 0, 12, 1, fi);
+
+  fpHeader('Tracer FX');
+  const tracerProfile = (w) => {
+    if (!w.tracerFx) w.tracerFx = {};
+    return w.tracerFx;
+  };
+  const getTracer = (w, key, fallback) => tracerProfile(w)[key] ?? fallback;
+  const setTracer = (w, key, value) => { tracerProfile(w)[key] = value; };
+  weaponControlSlider('Travel speed', w => getTracer(w, 'speed', 750), (w, v) => setTracer(w, 'speed', v), 50, 2000, 10, fi);
+  weaponControlSlider('Streak length', w => getTracer(w, 'length', 1.2), (w, v) => setTracer(w, 'length', v), 0.05, 5, 0.05, f2);
+  weaponControlSlider('Glow width', w => getTracer(w, 'width', 0.04), (w, v) => setTracer(w, 'width', v), 0.005, 0.25, 0.005, f3);
+  weaponControlSlider('Core opacity', w => getTracer(w, 'opacity', 0.85), (w, v) => setTracer(w, 'opacity', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Glow strength', w => getTracer(w, 'glow', 0.35), (w, v) => setTracer(w, 'glow', v), 0, 2, 0.01, f2);
+  weaponControlSlider('Minimum distance', w => getTracer(w, 'minVisibleDistance', 3), (w, v) => setTracer(w, 'minVisibleDistance', v), 0, 30, 0.25, f2);
 
   fpHeader('Aim / optics');
   weaponControlSlider('Aim X', w => getArr(w, 'aimOffset', 0), (w, v) => setArr(w, 'aimOffset', 0, v), -1.5, 1.5, 0.01, f2);
@@ -6576,6 +6915,9 @@ let lgChargeStart = null;
     if (Array.isArray(w.muzzleFx?.offset)) for (let i = 0; i < 3; i++) entries.push({ name: `weapon.${w.id}.muzzleFx.offset.${i}`, obj: w.muzzleFx.offset, key: i });
     for (const key of ['flashForward', 'flashSize', 'flashGrowth', 'flashDuration', 'flashOpacity', 'smokeForward', 'smokeTravel', 'smokeSpread', 'smokeRise', 'smokeSize', 'smokeGrowth', 'smokeDuration', 'smokeOpacity', 'smokeCount']) {
       if (typeof w.muzzleFx?.[key] === 'number') entries.push({ name: `weapon.${w.id}.muzzleFx.${key}`, obj: w.muzzleFx, key });
+    }
+    for (const key of ['speed', 'length', 'width', 'opacity', 'glow', 'minVisibleDistance']) {
+      if (typeof w.tracerFx?.[key] === 'number') entries.push({ name: `weapon.${w.id}.tracerFx.${key}`, obj: w.tracerFx, key });
     }
     for (const key of ['viewScale', 'recoil', 'fireIntervalMs', 'damage', 'range', 'magazineSize', 'reserveAmmo', 'spreadRad', 'aimEyeForward', 'magnification', 'scopeBlur', 'scopeRadius']) {
       if (typeof w[key] === 'number') entries.push({ name: `weapon.${w.id}.${key}`, obj: w, key });
@@ -6767,6 +7109,7 @@ function localHudState() {
 }
 
 const combatHud = document.createElement('div');
+combatHud.id = 'combat-hud';
 combatHud.className = 'walk-ui';
 combatHud.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:42;min-width:190px;color:#d7dde7;font:12px/1.35 system-ui,sans-serif;pointer-events:none;display:none';
 combatHud.innerHTML = '<div style="height:6px;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.18);margin-bottom:7px"><div id="combat-hp-fill" style="height:100%;width:100%;background:#61d394"></div></div><div id="combat-hp" style="font-weight:600"></div><div id="combat-weapon" style="color:#aeb7c4;margin-top:2px"></div><div id="combat-ammo" style="font:18px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;margin-top:4px"></div>';
@@ -6965,7 +7308,7 @@ worldModels = createWorldModelPanel({
 });
 
 function createLocalWeaponViewModel(camera) {
-  const loader = new GLTFLoader();
+  const loader = attachDracoLoader(new GLTFLoader());
   const group = new THREE.Group();
   group.visible = false;
   camera.add(group);
@@ -6979,8 +7322,16 @@ function createLocalWeaponViewModel(camera) {
   // GLB anchor through currentObject.matrix, avoiding the old double-normalization caused by
   // parenting an already-baked point beneath the normalized root.
   let muzzleMarker = null;
+  let muzzleAnchorDot = null;
   const muzzlePoint = new THREE.Vector3();
   const muzzleQuat = new THREE.Quaternion();
+  const muzzleDotGeometry = new THREE.SphereGeometry(0.018, 12, 8);
+  const muzzleDotMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff2bd6,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  });
   let recoilT = 0;
   let reloadT = 0;
   let reloadDur = 1.2; // fallback duration for weapons with no reloadSequence entry
@@ -7064,6 +7415,7 @@ function createLocalWeaponViewModel(camera) {
     if (muzzleMarker) group.remove(muzzleMarker);
     currentObject = null;
     muzzleMarker = null;
+    muzzleAnchorDot = null;
   }
   function refreshMuzzleMarker() {
     if (!currentObject || !muzzleMarker) return;
@@ -7088,6 +7440,11 @@ function createLocalWeaponViewModel(camera) {
   function attachMuzzleMarker() {
     if (!currentObject) return;
     muzzleMarker = new THREE.Object3D();
+    muzzleAnchorDot = new THREE.Mesh(muzzleDotGeometry, muzzleDotMaterial);
+    muzzleAnchorDot.visible = showMuzzleAnchorDot;
+    muzzleAnchorDot.frustumCulled = false;
+    muzzleAnchorDot.renderOrder = 20000;
+    muzzleMarker.add(muzzleAnchorDot);
     group.add(muzzleMarker);
     refreshMuzzleMarker();
   }
@@ -7296,14 +7653,25 @@ function createLocalWeaponViewModel(camera) {
       refreshMuzzleMarker();
       camera.updateMatrixWorld(true);
       muzzleMarker.getWorldPosition(outPosition);
-      muzzleMarker.getWorldQuaternion(muzzleQuat);
-      outDirection.set(0, 0, 1).applyQuaternion(muzzleQuat).normalize();
+      // Authored muzzle quaternions do not share a reliable forward-axis convention across
+      // the weapon GLBs. Position still comes from the authored anchor, while effect travel
+      // follows the actual camera firing direction so smoke can never blow back at the player.
+      camera.getWorldDirection(outDirection).normalize();
       return outPosition;
+    },
+    setMuzzleAnchorDotVisible(on) {
+      showMuzzleAnchorDot = !!on;
+      if (muzzleAnchorDot) muzzleAnchorDot.visible = showMuzzleAnchorDot;
     },
     getReloadHandTargets() { return reloadHandTargets; },
     getViewBob() { return viewBob; },
     getBakedAnchors(weaponId) { return bakedAnchors.get(weaponId) || null; },
-    destroy() { clearCurrent(); camera.remove(group); },
+    destroy() {
+      clearCurrent();
+      camera.remove(group);
+      muzzleDotGeometry.dispose();
+      muzzleDotMaterial.dispose();
+    },
   };
 }
 
@@ -7351,9 +7719,7 @@ function teardownLocalWeaponMount() {
   lbWeaponMountRequestedId = null;
   if (lbWeaponMount) {
     scene.remove(lbWeaponMount.weaponRig);
-    lbWeaponMount.weaponRig.traverse((o) => {
-      if (o.isMesh) { o.geometry?.dispose?.(); }
-    });
+    // Geometry/materials belong to the shared lbWeaponModelCache template (also cloned per bot) — never disposed here.
     lbWeaponMount = null;
   }
 }
@@ -7437,7 +7803,7 @@ async function buildLocalWeaponMount(weaponId, bodyRef, token) {
   let template = lbWeaponModelCache.get(weaponId);
   if (!template) {
     try {
-      const gltf = await new GLTFLoader().loadAsync(def.model);
+      const gltf = await attachDracoLoader(new GLTFLoader()).loadAsync(def.model);
       if (token !== lbWeaponMountToken || localBody !== bodyRef || !localBodyThird) return false;
       template = gltf.scene;
       normalizeWeaponModel(template, 0.62); // 0.62 = body-preview.html's normalization target
@@ -7477,6 +7843,236 @@ let createWeaponPoseController = null; // resolved by the lazy import below
 function ensureWeaponPoseController() { // lazy-loads weapon-pose-controller.js once
   return createWeaponPoseController ? Promise.resolve() : import('./weapon-pose-controller.js').then((m) => { createWeaponPoseController = m.createWeaponPoseController; });
 }
+
+// Environment bots deliberately use the same per-body mount as bot-viewer.html.
+// This is not a GhostRenderer feature: each mount belongs to a live bot body and is
+// created, updated, and destroyed from the bot lifecycle below.
+const botVisualWeaponMounts = new Map();
+const botVisualWeaponMountTokens = new Map();
+const botVisualWeaponMountRequests = new Map();
+const botVisualWeaponMountRetryAfter = new Map(); // id -> perf.now() gate after a failed mount build (mirrors lbWeaponMountRetryAfter)
+let botWeaponLodFrame = 0; // incremented per weapon-mount sync; strides the far-bot mount update
+function botLodPhase(id) { let h = 0; const s = String(id); for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i)) | 0; return ((h % 4) + 4) % 4; }
+
+function environmentBotBody(id) {
+  return mpGhostRenderer?.playerGroups().get(id)?.userData?.bodyProc ?? null;
+}
+
+function destroyEnvironmentBotWeaponMount(id) {
+  botVisualWeaponMountTokens.set(id, (botVisualWeaponMountTokens.get(id) ?? 0) + 1);
+  botVisualWeaponMountRequests.delete(id);
+  botVisualWeaponMountRetryAfter.delete(id);
+  const mount = botVisualWeaponMounts.get(id);
+  if (!mount) return;
+  scene.remove(mount.weaponRig);
+  // Geometry/materials belong to the shared cached template (lbWeaponModelCache) — never disposed here.
+  botVisualWeaponMounts.delete(id);
+}
+
+async function createEnvironmentBotWeaponMount(id, bodyRef, weaponId) {
+  const def = getWeapon(weaponId);
+  if (!weaponId || !def?.model || !def.thirdPersonHold || !bodyRef) return false;
+  const token = (botVisualWeaponMountTokens.get(id) ?? 0) + 1;
+  botVisualWeaponMountTokens.set(id, token);
+  try {
+    await ensureWeaponPoseController();
+    const [anchorData, poseData] = await loadLocalWeaponMountData();
+    const rawAnchors = anchorData?.[weaponId]?.ikAnchors;
+    if (!rawAnchors || token !== botVisualWeaponMountTokens.get(id) || bodyRef !== environmentBotBody(id)) return false;
+    const reloadSequence = poseData?.reloadSequence?.[weaponId] ||
+      (rawAnchors.magwell && rawAnchors.chargingHandle ? {
+        duration: 1.45,
+        commitAmmoAt: 1.05,
+        poses: { aimed: poseData?.weaponPoses?.aimed, reloadRaise: poseData?.weaponPoses?.reloadRaise },
+        keys: [
+          { t: 0, weaponPose: 'aimed', right: 'rightGrip', left: 'leftGrip' },
+          { t: 0.18, weaponPose: 'reloadRaise', right: 'rightGrip', left: 'magwell' },
+          { t: 0.35, left: { body: [0.12, -0.3, 0.26] }, event: 'detachMagazine' },
+          { t: 0.68, left: 'beltMagazine', event: 'spawnFreshMagazine' },
+          { t: 0.95, left: 'magwell', event: 'insertMagazine' },
+          { t: 1.15, left: 'chargingHandle', event: 'grabChargingHandle' },
+          { t: 1.28, left: { weaponAnchor: 'chargingHandle', offset: [0, 0, -0.12] }, event: 'pullChargingHandle' },
+          { t: 1.38, left: 'leftGrip', weaponPose: 'aimed', event: 'releaseChargingHandle' },
+        ],
+      } : null);
+
+    let template = lbWeaponModelCache.get(weaponId);
+    if (!template) {
+      const gltf = await attachDracoLoader(new GLTFLoader()).loadAsync(def.model);
+      if (token !== botVisualWeaponMountTokens.get(id) || bodyRef !== environmentBotBody(id)) return false;
+      template = gltf.scene;
+      normalizeWeaponModel(template, 0.62); // shared with the local player mount; normalized once, cloned per mount
+      lbWeaponModelCache.set(weaponId, template);
+    }
+    const model = skeletonClone(template); // SkeletonUtils.clone: skinned-mesh-safe, shares geometry/materials
+    model.updateMatrixWorld(true);
+    const normalizedMatrix = model.matrixWorld.clone();
+    const bakedAnchors = bakeWeaponAnchors(rawAnchors, normalizedMatrix);
+    model.traverse((obj) => {
+      if (!obj.isMesh) return;
+      obj.castShadow = true;
+      obj.frustumCulled = false;
+    });
+
+    const weaponRig = new THREE.Group();
+    const weaponAdjust = new THREE.Group();
+    const weaponFrame = new THREE.Group();
+    const weaponView = new THREE.Group();
+    weaponFrame.rotation.y = Math.PI;
+    weaponRig.add(weaponAdjust);
+    weaponAdjust.add(weaponFrame);
+    weaponFrame.add(weaponView);
+    weaponView.add(model);
+    const muzzleAnchor = bakedAnchors.muzzle?.p;
+    const barrelReferenceAnchor = bakedAnchors.rightGrip?.p || bakedAnchors.leftGrip?.p;
+    const muzzleMarker = muzzleAnchor ? new THREE.Object3D() : null;
+    const barrelReferenceMarker = barrelReferenceAnchor ? new THREE.Object3D() : null;
+    if (muzzleMarker) { muzzleMarker.position.fromArray(muzzleAnchor); weaponView.add(muzzleMarker); }
+    if (barrelReferenceMarker) { barrelReferenceMarker.position.fromArray(barrelReferenceAnchor); weaponView.add(barrelReferenceMarker); }
+    scene.add(weaponRig);
+
+    const controller = createWeaponPoseController({
+      THREE,
+      body: bodyRef,
+      weaponView,
+      getWeaponDef: (requestedId) => requestedId === weaponId ? {
+        id: requestedId,
+        recoil: def.recoil ?? 0.6,
+        ikAnchors: bakedAnchors,
+        weaponPoses: poseData?.weaponPoses || {},
+        reloadSequence,
+      } : {},
+    });
+    controller.setWeapon(weaponId);
+    botVisualWeaponMounts.set(id, {
+      id, bodyRef, weaponRig, weaponAdjust, controller, def, weaponId, reloadSequence,
+      muzzleMarker, barrelReferenceMarker, reloadStartedAt: null,
+    });
+    return true;
+  } catch (error) {
+    if (token === botVisualWeaponMountTokens.get(id)) {
+      console.warn('[environment-bot] failed to load direct weapon mount', id, weaponId, error);
+    }
+    return false;
+  }
+}
+
+function requestEnvironmentBotWeaponMount(id, bodyRef, weaponId) {
+  if (performance.now() < (botVisualWeaponMountRetryAfter.get(id) ?? 0)) return; // throttle after a failed build
+  const pending = botVisualWeaponMountRequests.get(id);
+  if (pending?.bodyRef === bodyRef && pending.weaponId === weaponId) return;
+  const request = { bodyRef, weaponId };
+  botVisualWeaponMountRequests.set(id, request);
+  createEnvironmentBotWeaponMount(id, bodyRef, weaponId).then((built) => {
+    if (built) botVisualWeaponMountRetryAfter.delete(id);
+    // Arm the throttle only if a superseding request hasn't replaced this one (a late stale bail must not re-arm after a newer success).
+    else if (botVisualWeaponMountRequests.get(id) === request) botVisualWeaponMountRetryAfter.set(id, performance.now() + 800);
+  }).finally(() => {
+    if (botVisualWeaponMountRequests.get(id) === request) botVisualWeaponMountRequests.delete(id);
+  });
+}
+
+
+function environmentBotMountedBarrelRay(mount) {
+  const rearMarker = mount?.barrelReferenceMarker;
+  const muzzleMarker = mount?.muzzleMarker;
+  if (!rearMarker?.parent || !muzzleMarker?.parent) return null;
+  rearMarker.updateWorldMatrix(true, false);
+  muzzleMarker.updateWorldMatrix(true, false);
+  const rear = rearMarker.getWorldPosition(new THREE.Vector3());
+  const origin = muzzleMarker.getWorldPosition(new THREE.Vector3());
+  const direction = origin.clone().sub(rear);
+  if (direction.lengthSq() < 1e-8) return null;
+  return { rear, origin, direction: direction.normalize() };
+}
+
+function alignEnvironmentBotWeaponToPoint(mount, targetPoint) {
+  const barrel = environmentBotMountedBarrelRay(mount);
+  if (!barrel || !targetPoint) return false;
+  const wantedDirection = new THREE.Vector3(...targetPoint).sub(barrel.origin);
+  if (wantedDirection.lengthSq() < 1e-8) return false;
+  const correction = new THREE.Quaternion().setFromUnitVectors(barrel.direction, wantedDirection.normalize());
+  if (!Number.isFinite(correction.x + correction.y + correction.z + correction.w)) return false;
+  // Preserve the rear grip while correcting the actual barrel vector.
+  mount.weaponRig.position.sub(barrel.rear).applyQuaternion(correction).add(barrel.rear);
+  mount.weaponRig.quaternion.premultiply(correction).normalize();
+  mount.weaponRig.updateMatrixWorld(true);
+  return true;
+}
+
+function environmentBotWeaponMuzzle(id) {
+  const marker = botVisualWeaponMounts.get(id)?.muzzleMarker;
+  if (!marker?.parent) return null;
+  marker.updateWorldMatrix(true, false);
+  const p = marker.getWorldPosition(new THREE.Vector3());
+  return [p.x, p.y, p.z];
+}
+
+function updateEnvironmentBotWeaponMount(id, rec, dt) {
+  const body = environmentBotBody(id);
+  const bot = rec.bot;
+  const alive = playerCombat.getSnapshot(id).alive;
+  let mount = botVisualWeaponMounts.get(id);
+  if (!body || !alive) {
+    if (mount) mount.weaponRig.visible = false;
+    return;
+  }
+  if (!mount || mount.bodyRef !== body || mount.weaponId !== rec.weaponId) {
+    if (mount) destroyEnvironmentBotWeaponMount(id);
+    requestEnvironmentBotWeaponMount(id, body, rec.weaponId);
+    return;
+  }
+  // Held-weapon LOD: hide past the body's hide distance, and stride the (expensive) mount update on
+  // the same distance tiers so the gun freezes/hides in step with the strided body. dt is accumulated
+  // across skipped frames so the reload animation still plays at the right wall-clock rate.
+  const camPos = camera.position;
+  const ldx = bot.capsule.start.x - camPos.x, ldz = bot.capsule.start.z - camPos.z;
+  const ld2 = ldx * ldx + ldz * ldz;
+  if (ld2 > BOT_RENDER_LOD.hideD2) { mount.weaponRig.visible = false; return; }
+  const stride = ld2 < BOT_RENDER_LOD.nearD2 ? 1 : ld2 < BOT_RENDER_LOD.midD2 ? 2 : 4;
+  if (rec.lodPhase == null) rec.lodPhase = botLodPhase(id);
+  mount.lodDtAccum = (mount.lodDtAccum ?? 0) + dt;
+  if (stride > 1 && ((botWeaponLodFrame + rec.lodPhase) % stride) !== 0) return; // off-stride: hold last pose
+  dt = mount.lodDtAccum;
+  mount.lodDtAccum = 0;
+  const torso = body.joints?.torso;
+  const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
+  const weaponX = torso?.position.x ?? mid.x;
+  const weaponZ = torso?.position.z ?? mid.z;
+  // Rig at terrain+1.5 like the local player mount (:9190); thirdPersonHold carries the vertical drop.
+  const weaponY = terrainHeight(weaponX, weaponZ) + 1.5;
+  const headYaw = body.motion?.headYaw ?? 0;
+  const bodyYaw = (body.motion?.visualYaw ?? bot.yaw) + headYaw;
+  mount.weaponRig.visible = true;
+  mount.weaponRig.position.set(weaponX, weaponY, weaponZ);
+  mount.weaponRig.quaternion.setFromEuler(new THREE.Euler(0, bodyYaw, 0, 'YXZ'));
+  mount.weaponAdjust.position.fromArray(mount.def.thirdPersonHold.position);
+  mount.weaponAdjust.quaternion.setFromEuler(new THREE.Euler(...mount.def.thirdPersonHold.rotation));
+  mount.weaponAdjust.scale.setScalar(mount.def.thirdPersonHold.scale ?? 1);
+  mount.weaponRig.updateMatrixWorld(true);
+
+  const aiming = rec.fsmState === BOT_AIM || rec.fsmState === BOT_FIRE;
+  const reloading = rec.reloadUntil != null;
+  mount.controller.setAiming(aiming ? 1 : 0);
+  if (reloading && mount.reloadStartedAt !== rec.reloadStartedAt) {
+    mount.controller.play('reload');
+    mount.reloadStartedAt = rec.reloadStartedAt;
+  } else if (!reloading) {
+    mount.reloadStartedAt = null;
+  }
+  const lockAimedPosition = aiming && !reloading;
+  mount.controller.update(dt, lockAimedPosition ? { lockPosePosition: 'lowReady' } : {});
+  if (lockAimedPosition && rec.weaponAimPoint && alignEnvironmentBotWeaponToPoint(mount, rec.weaponAimPoint)) {
+    // The gun moved after the IK solve; resolve the hands against its corrected transform.
+    mount.controller.update(0, { lockPosePosition: 'lowReady' });
+  }
+}
+
+function syncEnvironmentBotWeaponMounts(dt) {
+  botWeaponLodFrame++;
+  for (const [id, rec] of botPlayers) updateEnvironmentBotWeaponMount(id, rec, dt);
+}
+
 function setLocalBodyMode(m) {
   localBodyMode = m;
   localBodyThird = (m === 'third-person');
@@ -7647,6 +8243,7 @@ window.addEventListener('keydown', e => {
   if (e.repeat && ['KeyF', 'KeyQ', 'KeyH', 'KeyR', 'KeyE', 'KeyC', 'KeyZ', 'KeyM', 'KeyT', 'KeyG', 'KeyY', 'KeyK', 'KeyJ'].includes(e.code)) return;
   if (e.code === 'KeyM' && !pauseMenuOpen) {
     worldMapOverlay.toggle();
+    mpFinder.setBigMapOpen(worldMapOverlay.isOpen());
     // Freeze the first-person view and free the cursor while the map is open; closing resumes.
     if (worldMapOverlay.isOpen()) { envAudio.play('map_menu_open'); if (fpsMode) enterCursorFree(); }
     else { envAudio.play('map_menu_close'); if (fpsCursorFree) resumeFromCursorFree(); }
@@ -7655,6 +8252,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Escape') {
     if (worldMapOverlay.isOpen()) {
       worldMapOverlay.close();
+      mpFinder.setBigMapOpen(false);
       if (fpsCursorFree) resumeFromCursorFree();
       e.preventDefault();
     } else if (pauseMenuOpen) {
@@ -7908,10 +8506,15 @@ function tracerEffectStart(origin, end, capturedMuzzle) {
 function spawnShotEffects(origin, hit, weapon, ownerId, capturedMuzzle = null) {
   if (!hit || !Array.isArray(hit.point)) return;
   const now = performance.now() / 1000;
-  entityRegistry.create('effect', {
-    kind: 'gun_tracer', p0: tracerEffectStart(origin, hit.point, capturedMuzzle), p1: hit.point,
-    color: weapon.tracerColor || [1, 0.85, 0.45], ownerId,
-  }, { now });
+  const p0 = tracerEffectStart(origin, hit.point, capturedMuzzle);
+  const tracerFx = normalizeTracerFx(weapon.tracerFx);
+  const tracerLife = tracerLifetime(p0, hit.point, tracerFx);
+  if (tracerLife > 0) {
+    entityRegistry.create('effect', {
+      kind: 'gun_tracer', p0, p1: hit.point,
+      color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx, life: tracerLife, ownerId,
+    }, { now });
+  }
   if (hit.kind === 'none') return;
   entityRegistry.create('effect', {
     kind: 'hit_spark', p: hit.point, normal: hit.normal || [0, 1, 0],
@@ -7931,10 +8534,14 @@ function spawnLocalPredictedTracer(origin, dir, weapon, capturedMuzzle = null) {
     const x = origin[0] + dir[0] * t, y = origin[1] + dir[1] * t, z = origin[2] + dir[2] * t;
     if (y <= terrainHeight(x, z)) { end = [x, y, z]; break; }
   }
+  const p0 = tracerEffectStart(origin, end, capturedMuzzle);
+  const tracerFx = normalizeTracerFx(weapon.tracerFx);
+  const life = tracerLifetime(p0, end, tracerFx);
+  if (!(life > 0)) return;
   localShotEffects.push({
     id: `local-tracer-${++localTracerSeq}`, type: 'effect', kind: 'gun_tracer',
-    p: tracerEffectStart(origin, end, capturedMuzzle), p1: end, color: weapon.tracerColor || [1, 0.85, 0.45],
-    life: 0.09, bornMs: performance.now(),
+    p: p0, p1: end, color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx,
+    life, bornMs: performance.now(),
   });
 }
 let localTracerSeq = 0;
@@ -7947,7 +8554,9 @@ function spawnLocalMuzzleFlash(fallbackDir, weapon) {
   const mw = localWeaponView?.getMuzzleWorldPose?.(_muzzleTmp, _muzzleDirTmp);
   if (!mw) return;
   const profile = weapon?.muzzleFx || {};
-  const dir = _muzzleDirTmp.lengthSq() > 1e-8 ? _muzzleDirTmp : new THREE.Vector3(...fallbackDir);
+  // Use the authoritative shot direction at emission. Subsequent live updates use the
+  // camera's current forward direction via getMuzzleWorldPose().
+  const dir = new THREE.Vector3(...fallbackDir).normalize();
   const life = Math.max(profile.flashDuration ?? 0.08, profile.smokeDuration ?? 0.42);
   localShotEffects.push({
     id: `local-muzzle-${++localTracerSeq}`, type: 'effect', kind: 'muzzle_flash',
@@ -8132,7 +8741,7 @@ function applyCombatIntent(intent, ownerId) {
   if (mode === 'projectile') {
     // Rockets/grenades fly as a replicated entity; damage is dealt on detonation, not here.
     spawnCombatProjectile(shotIntent.origin, shotIntent.dir, weapon, ownerId);
-    updateHostPlayerGhosts();
+    hostGhostsDirty = true;
     return { ok: true, projectile: true };
   }
 
@@ -8149,7 +8758,7 @@ function applyCombatIntent(intent, ownerId) {
   applyHitDamage(hit, weapon, weaponId, ownerId);
   if (mode === 'melee') spawnMeleeImpact(hit, weapon, ownerId);
   else spawnShotEffects(shotIntent.origin, hit, weapon, ownerId, shotIntent.tracerOrigin);
-  updateHostPlayerGhosts();
+  hostGhostsDirty = true;
   return { ok: true, hit };
 }
 
@@ -8714,8 +9323,11 @@ async function animate() {
           // must match that facing or the hold offset points 180deg behind the body.
           weaponRig.rotation.set(0, look.yaw + Math.PI, 0);
           const stand = def.thirdPersonHold, crouchH = def.crouchHold || stand, prone = def.proneHold || stand;
-          // lbCrouchW eases to 0.7 (the preview's crouch body weight); normalize so the crouch hold applies fully.
-          const cw = Math.min(1, lbCrouchW / 0.7), pw = lbProneW;
+          // Track the body's OWN crouch weight, un-normalized. crouchHold is authored at crouch = 1,
+          // and both the rig's shoulder height and the hold lerp are linear in that weight, so a
+          // partial crouch lands at the right shoulder-relative height for free. The old /0.7 was
+          // compensating for a crouchHold that was a fixed -0.09 rather than the real shoulder drop.
+          const cw = Math.min(1, lbCrouchW), pw = lbProneW;
           const holdLerp = (a, b, c, i) => { const s = a[i] + (b[i] - a[i]) * cw; return s + (c[i] - s) * pw; };
           weaponAdjust.position.set(
             holdLerp(stand.position, crouchH.position, prone.position, 0),

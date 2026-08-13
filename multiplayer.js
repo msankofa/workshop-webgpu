@@ -2,6 +2,37 @@
 const params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 export const RELAY_URL = params.get('relay') || 'wss://workshop-webgpu.onrender.com';
 
+// A/B: ?flushlod=0 restores the old always-refresh flush. On, a bot whose IK solve was strided
+// this frame skips the ~170-node matrix walk and re-emits the pose it already holds.
+let FLUSH_LOD = params.get('flushlod') !== '0';
+
+// A/B: ?botcull=0 disables. A bot strictly behind the camera skips its flush, so it is absent from
+// the immediate-mode pools and never drawn. Only STRICTLY behind (not the frustum sides) so a fast
+// turn cannot outrun it, and never within BOT_CULL_NEAR2 whatever the angle. The IK solve still
+// runs on its normal stride — this buys the triangles and the matrix walk, not the simulation, and
+// keeps a spun-round camera from finding a stale pose.
+let BOT_CULL_BEHIND = params.get('botcull') !== '0';
+const BOT_CULL_NEAR2 = 8 * 8;
+
+// A/B: ?rboxlod=1 enables (default OFF), ?rboxlodDist=<metres> moves the threshold. Past it a bot
+// swaps its rbox armour to a seg=1 twin, ~96 K -> ~44 K triangles. This CHANGES HOW BOTS LOOK --
+// chamfer highlights flatten -- so it stays off until the appearance is signed off. The 2 m band
+// is hysteresis: without it a bot walking the threshold swaps every frame.
+let RBOX_LOD = params.get('rboxlod') === '1';
+let RBOX_LOD_D = Number(params.get('rboxlodDist') ?? 25);
+let RBOX_LOD_IN2 = 0, RBOX_LOD_OUT2 = 0;
+// The 2 m gap between in and out is the hysteresis band.
+function refreshRboxBands() {
+  RBOX_LOD_IN2 = (RBOX_LOD_D + 2) ** 2;
+  RBOX_LOD_OUT2 = Math.max(0, RBOX_LOD_D - 2) ** 2;
+}
+refreshRboxBands();
+
+/** Live values for a UI that labels its own buttons. */
+export function getBotRenderTuning() {
+  return { flushLod: FLUSH_LOD, cullBehind: BOT_CULL_BEHIND, rboxLod: RBOX_LOD, rboxLodDist: RBOX_LOD_D };
+}
+
 // Wave 2/B1: optional remote procedural walking body (see docs/subsystems/
 // procedural-body-weapon-contracts.md, Contract 2). Static import is safe under
 // plain Node (this module never touches THREE/DOM at import time; THREE is
@@ -16,9 +47,13 @@ import { ragdollFromBody, applyDeathImpulse } from './ragdoll-body.js';
 
 // Team identity for bot bodies, mirroring bot-viewer-v2's BOT_TEAM_DEFS so a bot reads the same
 // side in both viewers (alpha = green family, bravo = red family).
+// `accent` is carried explicitly: it does NOT fall back to trim. mergeStyle fills it from
+// DEFAULT_STYLE first, so `palette.accent ?? palette.trim` never fires and every accent piece —
+// mast light, helmet patch, warhead cones — rendered the same pale grey on both sides here while
+// bot-viewer-v2 showed them in team colour.
 export const BOT_TEAM_STYLES = {
-  alpha: { shell: 0x1f5b3a, plate: 0x101410, trim: 0x57d68d },
-  bravo: { shell: 0x64252a, plate: 0x171012, trim: 0xff8a80 },
+  alpha: { shell: 0x1f5b3a, plate: 0x101410, trim: 0x57d68d, accent: 0x53d68d },
+  bravo: { shell: 0x64252a, plate: 0x171012, trim: 0xff8a80, accent: 0xff7b72 },
 };
 
 // Scale a packed hex color's channels (subtle per-bot brightness variation inside a team family).
@@ -36,13 +71,15 @@ function botBodyStyle(THREE, id, team) {
   const def = BOT_TEAM_STYLES[team];
   if (def) {
     const f = 0.86 + (_hashId(id) % 29) / 100; // 0.86 .. 1.14
-    return { shell: _shadeHex(def.shell, f), plate: _shadeHex(def.plate, f), trim: _shadeHex(def.trim, f) };
+    return { shell: _shadeHex(def.shell, f), plate: _shadeHex(def.plate, f),
+      trim: _shadeHex(def.trim, f), accent: _shadeHex(def.accent, f) };
   }
   const hue = (_hashId(id) % 360) / 360;
   const shell = new THREE.Color().setHSL(hue, 0.55, 0.44).getHex();
   const plate = new THREE.Color().setHSL(hue, 0.50, 0.15).getHex();
   const trim  = new THREE.Color().setHSL(hue, 0.42, 0.62).getHex();
-  return { shell, plate, trim };
+  // Teamless fallback: accent tracks the hue too, or the mast light is grey on a coloured bot.
+  return { shell, plate, trim, accent: trim };
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +460,10 @@ const OVERLAY_HIDE_D2 = 60 * 60;    // squared XZ distance past which bars/marks
 const OVERLAY_LIFT = 0.40;          // metres above the capsule crown
 const HP_BAR_W = 0.78, HP_FILL_W = 0.70;
 const ALERT_MARK_COLORS = { seen: 0xff5252, heard: 0xffd93d, push: 0x66ff66, base: 0xffffff, near: 0x4fc3f7 };
+// Overhead role markers. Kept as a plain table rather than an import so this module stays free of
+// bot-roles.js; the ids and shapes match its `insignia` field, and an unlisted role simply gets none.
+const INSIGNIA_KINDS = { rifleman: 'diamond', medic: 'cross', squadleader: 'chevron', sniper: 'ring', technical: 'triangle' };
+const INSIGNIA_COLORS = { diamond: 0xb0bec5, cross: 0xff5a5a, chevron: 0xffd54f, ring: 0x6fe3ff, triangle: 0xff8a3d };
 
 // Deterministic light-pastel tint for a player id, shared by the remote ghost body/
 // orbs and the local first-person viewmodel so your hands match your own ghost.
@@ -447,10 +488,19 @@ export class GhostRenderer {
     this._THREE    = THREE;
     this._terrainHeight = options.terrainHeight || (() => 0);
     this._useProceduralBody = options.useProceduralBody === true;
+    // getDesign(item) -> design object | null. Lets the host pick a per-bot appearance spec (role
+    // kit) without this module importing bot-body-design.js — multiplayer.js stays THREE-free and
+    // Node-testable, and the bot art stays owned by the caller.
+    this._getDesign = typeof options.getDesign === 'function' ? options.getDesign : null;
+    // Opt-in cyclic locomotion layer (body-locomotion.js) for BOT bodies only. Off by default so
+    // every existing caller is unchanged; human ghosts keep the plain gait either way.
+    this._botLocomotion = options.botLocomotion === true;
     // Bots-only render LOD: camera-distance accessor + squared-distance tiers. When set, distant
     // bot bodies run their procedural solve on a stride and hide entirely past hideD2. Humans/local
     // are exempt (few of them; popping on real players is more noticeable).
     this._getCameraPos = options.getCameraPos || null;
+    // Optional sibling of getCameraPos. Without it the behind-camera cull simply never fires.
+    this._getCameraFwd = options.getCameraForward || null;
     this._botLod = options.botLod || null; // { nearD2, midD2, hideD2 }
     this._lodFrame = 0;
     this._camPos = null;
@@ -509,6 +559,19 @@ export class GhostRenderer {
   // id -> Group, for external raycasting/picking (bot inspector click-to-select).
   playerGroups() { return this._players; }
 
+  /** Runtime A/B for the render-cost toggles. Pass only the fields you are changing. */
+  setBotRenderTuning({ flushLod, cullBehind, rboxLod, rboxLodDist } = {}) {
+    if (flushLod !== undefined) FLUSH_LOD = !!flushLod;
+    if (cullBehind !== undefined) BOT_CULL_BEHIND = !!cullBehind;
+    if (rboxLodDist !== undefined) { RBOX_LOD_D = rboxLodDist; refreshRboxBands(); }
+    if (rboxLod !== undefined) {
+      RBOX_LOD = !!rboxLod;
+      // Turning it off has to walk every live body back to full detail: the per-bot swap only
+      // runs while the flag is on, so a body left cheap would stay cheap forever.
+      if (!RBOX_LOD) for (const g of this._players.values()) g.userData.bodyProc?.setGearLod?.(0);
+    }
+  }
+
   _updateSet(items, map, geo, mat, getId, getP, getQ, getScale) {
     const THREE = this._THREE;
     const seen = new Set();
@@ -547,6 +610,7 @@ export class GhostRenderer {
     const seen = new Set();
     this._lodFrame++;
     this._camPos = this._getCameraPos ? this._getCameraPos() : null;
+    this._camFwd = this._getCameraFwd ? this._getCameraFwd() : null;
     // One shared clock for every corpse this frame (update() is per-frame on host, per-rAF on guest).
     const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     this._ragdollDt = this._ragdollLastT != null
@@ -629,12 +693,25 @@ export class GhostRenderer {
   // Bots-only distance LOD gate around _updateProceduralBody. Alive bots past hideD2 are hidden and
   // skipped; nearer ones run the full solve on a per-bot-staggered stride (near=every frame,
   // mid=every 2nd, far=every 4th). Humans/local and dead actors always take the full path.
+  // Strictly behind the camera, in XZ to match the LOD distance convention below. Bots only —
+  // the local player's own body must never vanish from a mirror/reflection pass.
+  _behindCamera(px, pz) {
+    const f = this._camFwd, c = this._camPos;
+    if (!BOT_CULL_BEHIND || !f || !c) return false;
+    const dx = px - c.x, dz = pz - c.z;
+    if (dx * dx + dz * dz < BOT_CULL_NEAR2) return false;
+    return dx * f.x + dz * f.z < 0;
+  }
+
   _updateProceduralBodyLod(g, item) {
     const ud = g.userData;
     const lod = this._botLod, camPos = this._camPos;
     // A ragdolling corpse is posed from the solver, never from the gait/IK solve. It still obeys the
     // body's hide distance and still flushes every frame (the batch is zeroed each beginFrame).
-    if (ud.ragdoll) {
+    // bodyProc can be null here even with a live ragdoll: rebuildBotBodies() throws every body away
+    // mid-flight. It retires the ragdoll too, but this branch is also reached from update() paths that
+    // run before the next rebuild completes, so it must not assume a rig exists.
+    if (ud.ragdoll && ud.bodyProc) {
       if (lod && camPos) {
         const dx = item.p[0] - camPos.x, dz = item.p[2] - camPos.z;
         if (dx * dx + dz * dz > lod.hideD2) {
@@ -645,6 +722,7 @@ export class GhostRenderer {
       if (ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
       // Asleep: the pose is frozen, so skip the re-pose and let flush reuse last frame's matrices.
       if (!ud.ragdollAsleep) ud.bodyProc.setRagdollPose(ud.ragdollPose);
+      if (item.isBot && this._behindCamera(item.p[0], item.p[2])) return;
       if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches, !ud.ragdollAsleep);
       return;
     }
@@ -663,12 +741,16 @@ export class GhostRenderer {
     }
     if (ud.bodyHidden) { ud.bodyProc.setVisible(true); ud.bodyHidden = false; }
     const stride = d2 < lod.nearD2 ? 1 : d2 < lod.midD2 ? 2 : 4;
-    if (stride === 1 || ((this._lodFrame + (ud.lodPhase || 0)) % stride) === 0) {
-      this._updateProceduralBody(g, item);
+    const solved = stride === 1 || ((this._lodFrame + (ud.lodPhase || 0)) % stride) === 0;
+    if (solved) this._updateProceduralBody(g, item);
+    if (RBOX_LOD && ud.bodyProc.setGearLod) {
+      if (d2 > RBOX_LOD_IN2) ud.bodyProc.setGearLod(1);
+      else if (d2 < RBOX_LOD_OUT2) ud.bodyProc.setGearLod(0);
     }
+    if (this._behindCamera(px, pz)) return;   // solved above, simply not drawn this frame
     // Flush every frame even when the IK solve was strided, so the held pose persists in the batch
-    // (beginFrame zeroed it). Cheap: a matrix compose + setMatrixAt per part.
-    if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches);
+    // (beginFrame zeroed it). Strided frames skip the matrix walk -- nothing moved.
+    if (ud.bodyProc.flush) ud.bodyProc.flush(this._bodyBatches, solved || !FLUSH_LOD);
   }
 
   // Alive -> dead edge for a bot: seed a Verlet ragdoll from the rig's live joint world positions
@@ -735,12 +817,18 @@ export class GhostRenderer {
     if (!ud.bodyProc) {
       const instanceThis = this._instanceBots && item.isBot;
       if (instanceThis && !this._bodyBatches) {
-        this._bodyBatches = createBodyPartBatches({ THREE, scene: this._scene });
+        // See bot-viewer-v2: 4 instances/bot in the heaviest bucket, so 2048 covers 500+ bots.
+        this._bodyBatches = createBodyPartBatches({ THREE, scene: this._scene, capacity: 2048 });
       }
       ud.bodyProc = createProceduralPlayerBody({ THREE, scene: this._scene, terrainHeight: this._terrainHeight,
         mode: 'remote', adaptGaitToSpeed: true, movementDynamics: true,
         // Team colors (both the instanced and mesh bot paths); humans keep the tinted default style.
         style: item.isBot ? botBodyStyle(THREE, item.id, item.team) : {},
+        // Appearance spec (armour + role kit). Null keeps the bare default rig, which is what every
+        // caller got before this hook existed — so a caller that does not pass getDesign is
+        // unchanged. Humans are never given a bot design.
+        design: (item.isBot && this._getDesign) ? this._getDesign(item) : null,
+        naturalLocomotion: this._botLocomotion && item.isBot,
         batches: instanceThis ? this._bodyBatches : null,
       });
       if (!item.isBot) {
@@ -933,8 +1021,40 @@ export class GhostRenderer {
       bgMat: flat(0x161a20, { transparent: true, opacity: 0.9 }),
       hpMats: [flat(0x63e6a4), flat(0xffd166), flat(0xff6b6b)], // healthy / hurt / critical
       alertMats: Object.fromEntries(Object.entries(ALERT_MARK_COLORS).map(([m, c]) => [m, flat(c)])),
+      // Role insignia. Box geometry throughout (not plane/ring/circle) so the Node ghost tests'
+      // minimal THREE stub can still build these; the shapes read the same at overhead size.
+      insBarGeo: new THREE.BoxGeometry(0.22, 0.07, 0.02),
+      insCrossHGeo: new THREE.BoxGeometry(0.26, 0.08, 0.02),
+      insCrossVGeo: new THREE.BoxGeometry(0.08, 0.26, 0.02),
+      insBlockGeo: new THREE.BoxGeometry(0.16, 0.16, 0.02),
+      insMats: Object.fromEntries(Object.entries(INSIGNIA_COLORS).map(([k, c]) => [k, flat(c)])),
     };
     return this._ov;
+  }
+
+  // The overhead role marker for a role id, or null for a role with none. Shapes mirror the
+  // harness's: diamond rifleman, cross medic, chevron squad leader, ring sniper, triangle technical.
+  _makeInsignia(role) {
+    const kind = INSIGNIA_KINDS[role];
+    if (!kind) return null;
+    const THREE = this._THREE, ov = this._overlayAssets();
+    const group = new THREE.Group();
+    const mat = ov.insMats[kind] || ov.insMats.diamond;
+    if (kind === 'cross') {
+      group.add(new THREE.Mesh(ov.insCrossHGeo, mat), new THREE.Mesh(ov.insCrossVGeo, mat));
+    } else if (kind === 'chevron') {
+      const left = new THREE.Mesh(ov.insBarGeo, mat);
+      left.position.x = -0.075; left.rotation.z = 0.85;
+      const right = new THREE.Mesh(ov.insBarGeo, mat);
+      right.position.x = 0.075; right.rotation.z = -0.85;
+      group.add(left, right);
+    } else {   // diamond / ring / triangle: one block, rolled so each reads differently
+      const m = new THREE.Mesh(ov.insBlockGeo, mat);
+      m.rotation.z = kind === 'diamond' ? Math.PI / 4 : kind === 'triangle' ? Math.PI : 0;
+      group.add(m);
+    }
+    group.renderOrder = 6;
+    return group;
   }
 
   // One indicator group per bot, parented to its ghost container so it lives and dies with it.
@@ -956,7 +1076,8 @@ export class GhostRenderer {
     group.add(bar); group.add(mark);
     group.renderOrder = 6; // harness parity: overlays draw last so they don't z-fight the body
     g.add(group);
-    const o = { group, bar, fill, mark, exBar, exDot, hpTier: -1, alertMode: null };
+    const o = { group, bar, fill, mark, exBar, exDot, hpTier: -1, alertMode: null,
+      insignia: null, insigniaRole: undefined };
     g.userData.overlay = o;
     return o;
   }
@@ -977,11 +1098,20 @@ export class GhostRenderer {
       const dx = item.p[0] - camPos.x, dz = item.p[2] - camPos.z;
       inRange = dx * dx + dz * dz <= this._overlayD2;
     }
-    if (!inRange || (!showHp && !mode)) { if (ud.overlay) ud.overlay.group.visible = false; return; }
+    const showRole = alive && !!INSIGNIA_KINDS[item.role];
+    if (!inRange || (!showHp && !mode && !showRole)) { if (ud.overlay) ud.overlay.group.visible = false; return; }
     const o = ud.overlay || this._makeOverlay(g);
     o.group.visible = true;
     o.bar.visible = showHp;
     o.mark.visible = !!mode;
+    // Role insignia sits above the "!" so the two never overlap. Rebuilt only when the role changes.
+    if (o.insigniaRole !== item.role) {
+      if (o.insignia) { o.group.remove(o.insignia); o.insignia = null; }
+      o.insigniaRole = item.role ?? null;
+      o.insignia = this._makeInsignia(item.role);
+      if (o.insignia) { o.insignia.position.set(0, 0.62, 0); o.group.add(o.insignia); }
+    }
+    if (o.insignia) o.insignia.visible = showRole;
     o.group.position.set(0, h * 0.5 + r + OVERLAY_LIFT, 0);
     if (showHp) {
       o.fill.scale.x = hp01;
@@ -1057,6 +1187,42 @@ export class GhostRenderer {
     }
   }
 
+  /**
+   * The procedural body currently attached to a ghost id, or null. Lets the host resolve a hit
+   * against the rig the viewer is actually drawing (bot-body-hit.js) instead of the sim capsule, and
+   * keep a wound stain riding the part it was left on. Read-only: nothing here mutates the body.
+   *
+   * Note it does not distinguish a live rig from one being posed by a ragdoll — a killing blow can
+   * therefore attach its stain to a corpse's rig, which is where that wound belongs anyway.
+   */
+  bodyFor(id) { return this._players.get(id)?.userData?.bodyProc ?? null; }
+
+  /**
+   * Throw away every procedural body so the next update() rebuilds it from getDesign(). Needed
+   * because a body reads its design ONCE at construction: changing what getDesign returns (the
+   * armoured/soldier switch) leaves live bots wearing the old one forever otherwise.
+   *
+   * Not filtered to bots. There is no isBot flag on the ghost — it only exists on the wire item —
+   * and rebuilding a human ghost is harmless: it gets design null either way, which is what it had.
+   */
+  rebuildBotBodies() {
+    for (const g of this._players.values()) {
+      const ud = g.userData;
+      if (!ud.bodyProc) continue;
+      // A corpse mid-ragdoll is posed FROM this rig every frame. Dropping the rig without retiring
+      // the ragdoll left `ud.ragdoll` set with `bodyProc` null, which threw on the next frame's
+      // setRagdollPose/flush -- and leaked a slot from the live-corpse budget, since only
+      // _retireRagdoll decrements it. That is the "switched body kind and it froze" crash.
+      if (ud.ragdoll) this._retireRagdoll(ud);
+      ud.bodyProc.destroy();
+      ud.bodyProc = null;
+      // Same reason as the ragdoll revive path: without this the rebuilt body's first frame gets a
+      // dt spanning the whole gap since the last solve, and a nonsense velocity derived from it.
+      ud.bodyLastT = null;
+      ud.bodyLastPos = null;
+    }
+  }
+
   destroy() {
     for (const m of this._creatures.values()) this._scene.remove(m);
     for (const g of this._players.values())   {
@@ -1079,10 +1245,12 @@ export class GhostRenderer {
     this._lightToolMat.dispose();
     if (this._ov) {
       const ov = this._ov;
-      for (const gGeo of [ov.barGeo, ov.fillGeo, ov.exBarGeo, ov.exDotGeo]) gGeo.dispose();
+      for (const gGeo of [ov.barGeo, ov.fillGeo, ov.exBarGeo, ov.exDotGeo,
+        ov.insBarGeo, ov.insCrossHGeo, ov.insCrossVGeo, ov.insBlockGeo]) gGeo.dispose();
       ov.bgMat.dispose();
       for (const m of ov.hpMats) m.dispose();
       for (const m of Object.values(ov.alertMats)) m.dispose();
+      for (const m of Object.values(ov.insMats)) m.dispose();
       this._ov = null;
     }
   }

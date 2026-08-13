@@ -22,6 +22,7 @@ host at the same 20 Hz cadence after the spawn capsule is initialized.
 |---|---|---|
 | `multiplayer.js` | Client-side networking: `RELAY_URL`, `InterpolationBuffer` (now interpolates `entities` via `_lerpEntities`, incl. `spawnedFrom`), `createHostSession` (has `broadcast`, plus the `hostBroadcastTick`/`shouldSendSnapshot`/`HOST_MAX_BUFFERED_BYTES` backpressure guard), `createGuestSession`, `GhostRenderer` | ~737 |
 | `entity-registry.js`, `entity-types/light.js`, `entity-types/projectile.js`, `entity-types/effect.js`, `entity-types/combat-projectile.js`, `entity-types/explosion.js`, `light-entity-renderer.js`, `effect-renderer.js` | Replicated entity registry + light/projectile/effect/combat-projectile/explosion adapters + clustered-light slot binder + combat-effect (tracer/spark/fireball) renderer (see §9, §5b) | — |
+| `body-part-batches.js` | Instanced pool for procedural bodies, one `InstancedMesh` bucket per shared `BufferGeometry` (`createBodyPartBatches`, `beginFrame`/`add`/`endFrame`/`raycast`/`dispose`/`stats`). Used by `GhostRenderer`'s `instanceBots` path and by the bot viewers. See "Bucket lifecycle and geometry lookup". Node-tested (`test-body-part-batches.mjs`). | 191 |
 | `player-hands.js` | First-person orb-hand viewmodel: `createViewHands(camera, THREE)` — your own two floating hands, camera-attached, shown only in FPS mode | 55 |
 | `start-screen.js` | Pre-game modal UI: Solo/Host/Join role picker (with a "Load preset" slider-state dropdown), map picker, loading screen; resolves `{ mapKey, mpRole, roomCode, mpWorldMode, presetName }` before the sim boots. `showStartScreen(resumeConfig, { mazeLayouts })` opt-in adds a Maze Layouts card (harness-exported pcw-layout worlds from `maze layouts/`, listed via serve.py) that resolves `layout:<path>` mapKeys — only `environment-viewer-v2.html` decodes those, so v1 keeps the flag off | 305 |
 | `server/server.js` | Relay backend (Node, `ws` library + built-in `http`): room registry, host↔guest message forwarding (with per-guest send backpressure via `server/backpressure.js`), room presence queries, plus an `/api/publish-map` HTTP endpoint (`server/publish-map.js`) that commits hosted map exports to GitHub | 106 |
@@ -113,7 +114,26 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
     `_updatePlayers` wraps its loop in `beginFrame()`/`endFrame()`; each visible bot flushes every
     frame (even on IK-strided frames — the held pose persists) and hidden bots are simply not flushed.
     Per-bot color comes from `botBodyStyle(THREE, id, team)` (see "Bot team colors"). **Bots only** —
-    humans/local keep the per-mesh path. See `docs/subsystems/bots.md` "Phase 4 perf".
+    humans/local keep the per-mesh path. See `docs/subsystems/bots.md` "Phase 4 perf" and
+    "Bucket lifecycle" below.
+  - `getDesign` (2026-08-01) — default `null`. `getDesign(item)` returns the `design` object handed
+    to `createProceduralPlayerBody` for that ghost, letting the host pick a per-bot appearance spec.
+    Until this existed `GhostRenderer` passed no `design` at all, so env-viewer-v2's bots rendered as
+    the bare default mannequin while bot-viewer-v2 showed the full armoured design — the two viewers
+    disagreed about what a bot looks like. `environment-viewer-v2.html` passes
+    `(item) => botDesignForRole(item.role)`, which is memoised per role in `bot-body-design.js`, so N
+    bots of a role share one design object and therefore one set of cached geometry. Kept as a
+    callback rather than an import so `multiplayer.js` stays THREE-free and Node-testable.
+    The matching `role` field on the wire pose is emitted by `toWirePose` (`bot-entity.js`),
+    conditionally like `team`/`alertTier`, so a guest's ghosts get the same role kit the host renders.
+  - `rebuildBotBodies()` (2026-08-01) — a METHOD, not an option. Destroys every ghost's procedural
+    body so the next `update()` rebuilds it from `getDesign`. Needed because a body reads its design
+    once at construction: `setBotBodyKind('soldier')` changes what `getDesign` returns but leaves
+    live bots in the old body forever without this. Not filtered to bots — there is no `isBot` flag
+    on the ghost, only on the wire item, and rebuilding a human ghost is a no-op in effect since it
+    gets `design: null` either way. It clears `bodyLastT`/`bodyLastPos` for the same reason the
+    ragdoll revive path does: otherwise the rebuilt body's first frame sees a `dt` spanning the whole
+    gap and derives a nonsense velocity from it.
   - `ragdollDeaths` / `maxLiveRagdolls` (2026-07-30) — default `true` / `12`. See "Bot death
     ragdolls" below.
   - `overlayHideD2` (2026-07-30) — squared XZ distance past which overhead health bars / alert marks
@@ -190,6 +210,32 @@ actual gate). Required env vars on the Render service: `EXPORT_SECRET`, `GITHUB_
   player id. Used by `GhostRenderer` for the body + orbs and by the local FPS viewmodel
   (`player-hands.js`) so your own hands match your own ghost.
 - `export const BOT_TEAM_STYLES` — see "Bot team colors" below.
+
+#### Bucket lifecycle and geometry lookup (`body-part-batches.js`, 2026-08-04)
+
+`createBodyPartBatches({ THREE, scene, capacity, materials, evictAfter = 120 })`. One `InstancedMesh`
+bucket per distinct shared `BufferGeometry`; `beginFrame()` zeroes every bucket's count, `add()`
+appends one instance, `endFrame()` uploads `[0, count)`. Two properties were added for the
+2026-08-04 perf pass, with no signature change:
+
+- **Geometry-object lookup.** `bucketFor` resolves through a `WeakMap<BufferGeometry, bucket>` first
+  and only falls back to the `Map<geometry.uuid, bucket>`. The uuid map is still the bookkeeping
+  index (`dispose()`, `stats.draws`, eviction); the WeakMap just removes ~3,150 string-keyed
+  `Map.get` calls per frame from the rig flush at 25 bots. Both maps always hold the same bucket. A
+  retired bucket carries an `evicted` flag so that a WeakMap entry which somehow outlived it (or
+  survived `dispose()`) misses instead of resurrecting a mesh that is no longer in the scene.
+- **Empty-bucket hide + eviction.** `endFrame()` sets `mesh.visible = (count > 0)`, and a bucket that
+  is empty for `evictAfter` consecutive `endFrame()`s is removed from the scene and from **both**
+  maps (`mesh.dispose()` releases its instance buffers). The **shared geometry is never disposed** —
+  `player-procedural-body.js`'s `_sharedBodyGeo` cache owns it, and other bots may still be using it.
+  A later `add()` with the same geometry transparently rebuilds the bucket, so callers need no new
+  call. This is what makes a body-LOD swap (seg3 → seg1 armour geometry) subtractive instead of
+  additive: the abandoned variant's buckets stop drawing at once and disappear a couple of seconds
+  later, instead of doubling the bucket count forever.
+
+Eviction counts *frames in which `endFrame()` actually ran*, never `beginFrame()`s or wall time. A
+guest that only calls `GhostRenderer.update()` on network events therefore keeps its buckets and its
+last-flushed frame on screen through an arbitrarily long gap between packets.
 
 #### Bot team colors (2026-07-30, Phase E)
 
@@ -1040,3 +1086,34 @@ Client input
 ```
 
 In that model, the browser host can still be used as a temporary simulation worker for expensive creature AI, but it should no longer be the only place where shared world truth exists.
+
+## GhostRenderer additions for the 2026-08-08 bot-port gap pass
+
+Three host-side options/accessors, all default-off or bots-only, so existing callers are unchanged:
+
+- **`bodyFor(id)`** — the live procedural body for a ghost, or null. Lets the host resolve a shot
+  against the rig actually being drawn (`bot-body-hit.js`) and keep a wound stain attached to the part
+  it landed on. Read-only; nothing in the renderer mutates through it.
+- **`botLocomotion: true`** — passes `naturalLocomotion` to bot bodies only, turning on the cyclic
+  locomotion layer (`body-locomotion.js`). Human ghosts keep the plain gait either way.
+- **Role insignia** in the overhead overlay, beside the health bar and the alert "!": diamond
+  rifleman, cross medic, chevron squad leader, ring sniper, triangle technical, driven by the `role`
+  already on the wire. The shape/colour table is local to this module rather than imported from
+  `bot-roles.js`, keeping multiplayer.js free of both THREE and the bot modules. An unlisted role
+  simply gets no marker, and a dead bot hides it. Covered by `test-ghost-renderer.mjs`.
+
+### Bots reached guests with no role at all (found 2026-08-08 by review)
+
+`toWirePose` emits `role` from **`bot.role`** — the entity field — but `environment-viewer-v2.html`
+only ever set `rec.role` on the wrapper record. `updateHostPlayerGhosts` patches `pose.role = rec.role`
+for the host's own rendering, so the host looked correct; `getState()` sends
+`botToWirePose(rec.bot)` unpatched, so **every guest received bots with no role**. Two visible
+consequences there: the per-role kit never applied (`getDesign: item => botDesignForRole(item.role)`
+resolved to the bare default rig — the exact bug that hook was added to fix), and the new role
+insignia drew nothing.
+
+Fixed by setting `bot.role` at spawn alongside `bot.team`/`bot.sidearm`; role is fixed for a bot's
+lifetime, so spawn is the only place it needs setting. `test-ghost-renderer.mjs` now asserts the wire
+contract directly: `toWirePose` must emit every field the overhead overlay reads, and must omit `role`
+rather than send null when a bot has none. Nothing covered the wire producer before, which is why a
+host-only feature looked complete.

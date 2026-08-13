@@ -25,3 +25,9 @@ Thumbs.db
 
 # Brainstorming visual-companion scratch
 .superpowers/
+
+# Local TTS credential -- never commit
+.eleven-key
+
+# Panel save mirrors: one file per save click, so they would flood git status.
+bot-viewer-saves/

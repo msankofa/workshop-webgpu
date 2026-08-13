@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2026-07-21T12:03:38.361Z",
+    "action": "compress",
+    "quality": 46,
+    "profile": {
+      "simplifyRatio": 0.00768,
+      "simplifyError": 0.02,
+      "textureEdge": 374
+    },
+    "sourceSize": 70188,
+    "outputSize": 13656,
+    "sourceTris": 1596,
+    "finalTris": 641,
+    "runFile": "2026-07-21T12-03-38-304Z-q46.glb"
+  },
+  {
+    "timestamp": "2026-07-23T17:09:31.933Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 70188,
+    "outputSize": 13656,
+    "sourceTris": 1596,
+    "finalTris": 641,
+    "runFile": "2026-07-23T17-09-31-843Z-balanced.glb"
+  }
+]

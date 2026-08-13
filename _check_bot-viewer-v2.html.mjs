@@ -1,0 +1,15309 @@
+
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { attachDracoLoader } from './draco-loader.js';
+import { createWeaponPoseController } from './weapon-pose-controller.js';
+import { createLightingRig } from './lights.js';
+import { createMapCollider } from './map-collision.js';
+import { createPostFX } from './post-fx.js';
+import { createVisualSystem } from './bot-viewer-visuals.js';
+import { createSlotSection, assignKnown } from './bot-viewer-slots.js';
+import { botDesignForRole, setBotBodyKind, getBotBodyKind, BOT_BODY_KINDS } from './bot-body-design.js';
+// What bots are made of: 'armoured' (the Mark VII mech) or 'soldier' (the clothed human in a plate
+// carrier and helmet). Set from the URL before any body is built so the first spawn is already
+// right; the Body & ragdoll panel switches it live afterwards.
+setBotBodyKind(new URLSearchParams(location.search).get('botBody') || 'armoured');
+import { createLayout } from './layout-interchange.js';
+import { installPanelTheme, createSection, setAllSectionsCollapsed, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
+import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
+import { createEffectRenderer, makeStainTexture, bloodIntensityForHealth } from './effect-renderer.js';
+import { createProjectedDecals } from './projected-decals.js';
+import { resolveBodyHit, resolveAttachmentMatrix } from './bot-body-hit.js';
+import { getDamageClass, classForActor, shouldShowBlood, shouldShowSmoke } from './bot-damage-class.js';
+import { synthVoice } from './weapon-sfx-synth.js';
+import {
+  buildVoiceLine, buildSampleVoiceLine, voiceIdentity, voiceEventId, voiceLineDurationS,
+  lineVariants, voiceLexiconVariants, peekVariantIndex, commitVariantIndex, REFLEX_LINES,
+} from './bot-voice.js';
+import { createVoiceDirector } from './bot-voice-director.js';
+import { createVoiceBank } from './bot-voice-bank.js';
+import { resolveVoiceIntensity } from './bot-voice-intensity.js';
+import {
+  evaluateWhizz, pickImpactVoice, createWhizzVoice, createProjectileWhizzTracker,
+  synthVoice as ballisticSynthVoice, PROJECTILE_WHIZZ_RADIUS,
+} from './ballistic-audio.js';
+import { botDamageVoice, createBotDamageAudio } from './bot-damage-audio.js';
+import { createAudioBudget } from './combat-audio-budget.js';
+import { loadSoundParams, SOUND_PARAMS } from './sound-params.js';
+import { createProjectileManager, solveBallisticArc, sampleArcPoints } from './bot-projectiles.js';
+import { GRENADE_DEFAULTS, chooseGrenadeThrow, grenadeEvade, throwCountFor } from './bot-grenade.js';
+import { chooseOcclusionCandidate, dampAlpha, dampAngle, stepOcclusionMemory, stepPovRecenter } from './bot-camera-control.js';
+import { createFrameProfiler } from './frame-profiler.js';
+
+// Authored sound values from sound-studio.html. Awaited before anything reads SOUND_PARAMS, so
+// every panner profile and synth voice below is built from the overridden numbers. A missing or
+// unreadable file is not fatal: loadSoundParams reports it and the code defaults stand.
+{
+  const res = await loadSoundParams();
+  if (!res.ok) console.info('sound-params.json not applied:', res.reason);
+  else if (res.warnings.length) console.warn('sound-params.json:', res.warnings);
+}
+
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+// ?prof=1 also turns on GPU timestamp queries. trackTimestamp is construction-only, so it cannot be
+// an in-game toggle -- and without it there is no way to tell GPU execute time apart from the
+// browser's own per-frame overhead, which is where two thirds of a frame currently goes.
+const PROF_HUD = new URLSearchParams(location.search).get('prof') === '1';
+// Fill-rate A/B levers. All three default to exactly the pre-existing behaviour; antialias is
+// construction-only, so it cannot be a runtime toggle. ?dpr=<n> ?msaa=0 ?shadowfilter=pcf|basic
+const RENDER_QS = new URLSearchParams(location.search);
+const DPR_CAP = Number.parseFloat(RENDER_QS.get('dpr'));
+const MSAA_ON = RENDER_QS.get('msaa') !== '0';
+const SHADOW_FILTERS = { pcfsoft: THREE.PCFSoftShadowMap, pcf: THREE.PCFShadowMap, basic: THREE.BasicShadowMap };
+const DEVICE_PIXEL_RATIO = window.devicePixelRatio;
+console.info(`[render] devicePixelRatio ${DEVICE_PIXEL_RATIO} · msaa ${MSAA_ON ? 'on' : 'off'}`
+  + ` · dpr cap ${Number.isFinite(DPR_CAP) ? DPR_CAP : 'none'} · shadow ${RENDER_QS.get('shadowfilter') || 'pcfsoft'}`);
+const renderer = new WebGPURenderer({ antialias: MSAA_ON, trackTimestamp: PROF_HUD });
+renderer.setPixelRatio(Number.isFinite(DPR_CAP) ? Math.min(DEVICE_PIXEL_RATIO, DPR_CAP) : DEVICE_PIXEL_RATIO);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = SHADOW_FILTERS[RENDER_QS.get('shadowfilter')] ?? THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(8, 9, 8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(3, 1, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.rotateSpeed = 0.72;
+controls.zoomSpeed = 1.25;
+controls.panSpeed = 0.78;
+controls.minDistance = 0.8;
+controls.maxDistance = 90;
+controls.minPolarAngle = 0.08;
+controls.maxPolarAngle = Math.PI * 0.485;
+controls.screenSpacePanning = true;
+controls.autoRotate = false;
+controls.autoRotateSpeed = 0.8;
+controls.update();
+
+// ===================== audio =====================
+// Same controller the environment viewer uses (docs/subsystems/audio.md). There is no local
+// player here, so the listener is whatever the camera is doing (orbit or bot POV) and every
+// combat sound is positional. isGameplayActive is constant, so nothing auto-starts music.
+const envAudio = createEnvironmentAudio({
+  THREE,
+  scene,
+  camera,
+  getPlayerPosition: () => camera.position,
+  isGameplayActive: () => true,
+  autoplayOnGesture: false,   // clicking the viewport must not start music; ▶ / a track row does
+  shuffle: true,              // long harness sessions: shuffled by default, 🔀 turns it off
+  workletUrl: './music-pitch-processor.js?v=1',
+});
+const WEAPON_FIRE_EVENTS = {
+  m24: 'sniper_shoot', cz_805_bren: 'rifle_shoot', rpg: 'rocket_launch',
+  grenade: 'grenade_throw', knife: 'knife_swing',
+};
+const weaponFireEvent = weaponId => WEAPON_FIRE_EVENTS[weaponId] || 'pistol_shoot';
+// Arena-scaled panner profiles. The shared positionalSfxProfiles are tuned for the 1km outdoor
+// map (gunshot refDistance 25), which in a 40m shoot house means every shot plays at full volume.
+// The numbers come from SOUND_PARAMS.ranges (already overridden by sound-params.json above), so
+// this viewer and environment-viewer-v2.html read ONE table -- voices carrying 55 m here while
+// gunfire carried 90 m is exactly the divergence two hand-kept copies produce.
+const panner = (ref, max, roll) => ({
+  distanceModel: 'inverse',
+  refDistance: SOUND_PARAMS.ranges[ref],
+  maxDistance: SOUND_PARAMS.ranges[max],
+  rolloffFactor: SOUND_PARAMS.ranges[roll],
+});
+const BOT_SFX = {
+  gunshot: panner('gunshotRef', 'gunshotMax', 'gunshotRolloff'),
+  launch: panner('launchRef', 'launchMax', 'launchRolloff'),
+  explosion: panner('explosionRef', 'explosionMax', 'explosionRolloff'),
+  impact: positionalSfxProfiles.short,
+  step: panner('stepRef', 'stepMax', 'stepRolloff'),
+  // A distress siren has to carry further than the clang that caused it.
+  distress: panner('distressRef', 'distressMax', 'distressRolloff'),
+};
+let botAudioEnabled = true;
+const AUDIO_CULL_DIST = 70; // beyond this a voice is inaudible anyway -- skip the node graph entirely
+// Voice budget: 30 bots on full auto can request hundreds of shots a second. Cap how many of the
+// same event may start per window so the graph doesn't clip into mush or stall the audio thread.
+const sfxWindows = new Map();
+// A ricochet REPLACES an impact, so it draws from the impact's window instead of opening a
+// second one -- otherwise the impact class would quietly get twice the budget it had.
+// Aliased ids share one burst window: a ricochet replaces an impact, and the five hit tiers are
+// one "bot was struck" class -- five private windows would let them burst 5x the intended rate.
+const SFX_BUDGET_ALIAS = {
+  bullet_ricochet: 'bullet_impact',
+  bot_hit_heavy: 'bot_hit_light', bot_hit_critical: 'bot_hit_light',
+  bot_hit_ricochet: 'bot_hit_light', bot_hit_blast: 'bot_hit_light',
+};
+function sfxBudgetOk(eventId, maxPerWindow, windowMs = 100) {
+  eventId = SFX_BUDGET_ALIAS[eventId] || eventId;
+  const now = performance.now();
+  let w = sfxWindows.get(eventId);
+  if (!w || now - w.start > windowMs) { w = { start: now, count: 0 }; sfxWindows.set(eventId, w); }
+  if (w.count >= maxPerWindow) return false;
+  w.count++;
+  return true;
+}
+// Procedural fallback: a loaded sample always wins; weapon-sfx-synth.js covers events the sfx
+// folder has no file for (rocket_launch/explosion/grenade_*), so explosives are never silent.
+let botSynthSfxEnabled = true;
+// `synthBuild` is an optional per-call builder (a whizz shaped by THIS round's miss distance and
+// arrival delay); a loaded sample still wins, and ballistic-audio.js supplies the generic fallback.
+function playAtCulled(eventId, position, profile, maxPerWindow = 6, maxDist = AUDIO_CULL_DIST, synthBuild = null) {
+  if (!botAudioEnabled || !position) return;
+  const dx = position.x - camera.position.x, dy = position.y - camera.position.y, dz = position.z - camera.position.z;
+  if (dx * dx + dy * dy + dz * dz > maxDist * maxDist) return;
+  if (!sfxBudgetOk(eventId, maxPerWindow)) return;
+  if (envAudio.hasSfxEvent(eventId)) { envAudio.playAt(eventId, position, undefined, profile); return; }
+  if (!botSynthSfxEnabled) return;
+  const voice = synthBuild || synthVoice(eventId) || ballisticSynthVoice(eventId) || botDamageVoice(eventId);
+  if (voice) envAudio.playSynthAt(voice, position, { profile });
+}
+// Sustained sibling of playAtCulled: a siren/damage bed ends on an event, not after a duration,
+// so it goes through playSynthLoop and returns a controller handle (or false).
+function playLoopCulled(build, position, { profile = BOT_SFX.distress, volume = 0.75, isAlive, getPosition } = {}) {
+  if (!botAudioEnabled || !botSynthSfxEnabled || !position) return false;
+  return envAudio.playSynthLoop(build, position, {
+    profile, volume, cullDistance: profile.maxDistance * 1.2, isAlive, getPosition,
+  });
+}
+// Incoming rounds. The harness listener is the camera (orbit or bot POV), so the whizz is judged
+// against camera.position; a camera welded to a bot must not hear that bot's own rounds.
+const BOT_SFX_WHIZZ = panner('whizzRef', 'whizzMax', 'whizzRolloff');
+const WHIZZ_PER_WINDOW = 6;   // cap per 100ms sfxBudgetOk window
+function playBallisticWhizz(origin, dir, travelled, shooterId, weapon) {
+  const ev = evaluateWhizz({
+    origin, dir, travelled, listenerPos: camera.position,
+    shooterId, listenerId: cameraFollowActor?.entity?.id ?? null, weapon,
+  });
+  if (!ev) return;
+  playAtCulled('bullet_whizz', ev.point, BOT_SFX_WHIZZ, WHIZZ_PER_WINDOW, BOT_SFX_WHIZZ.maxDistance,
+    createWhizzVoice(ev));
+}
+const projectileWhizz = createProjectileWhizzTracker({ radius: PROJECTILE_WHIZZ_RADIUS });
+const _projWhizzLive = new Set();
+
+// ---- squad chatter (bot-voice.js lexicon, bot-voice-director.js arbitration) ----
+// Every callout rides an FSM edge the brain already publishes; the director decides which of the
+// bots with something to say actually gets to say it. There is no player fiction in this harness
+// (the camera is an observer, not a squadmate), so every line is positional.
+// A callout has to carry about as far as the gunfire it is about (gunshot maxDistance 90). At 55
+// the orbit/fly camera sat outside voice range while still hearing everything else, so the squad
+// read as silent.
+const BOT_SFX_VOICE = panner('voiceRef', 'voiceMax', 'voiceRolloff');
+let botChatterEnabled = true;
+let botChatterVolume = 0.85;
+let botChatterRadio = true;
+// null = the synthesized robot voice; otherwise an engine name from sfx/voice/manifest.json.
+let botChatterSource = null;
+let botChatterVocode = false;   // run a baked human take through the vocoder (machine bots, real timing)
+let botDeathBeacon = false;     // the downed-bot beeping, off by default
+// Reflex lines (pain grunts, death cries -- REFLEX_LINES in bot-voice.js) are a body sound, not a
+// radio call: they need to read as close and intimate, not broadcast across the map like ordinary
+// chatter. Kept as its own mutable profile rather than routed through SOUND_PARAMS.ranges/panner()
+// so the two sliders below can retune it live in-session, the same way chatter vol/chattiness do.
+let botReflexRange = 12;   // meters; hard cull follows environment-audio's maxDistance*1.5 convention
+let botReflexVolume = 0.6;
+const REFLEX_SFX_VOICE = { distanceModel: 'inverse', refDistance: 2.5, maxDistance: botReflexRange, rolloffFactor: 2.5 };
+function setReflexRange(v) {
+  botReflexRange = v;
+  REFLEX_SFX_VOICE.maxDistance = v;
+  REFLEX_SFX_VOICE.refDistance = Math.min(2.5, v / 3);
+}
+const botVoiceBank = createVoiceBank({
+  decode: (ab) => envAudio.decodeAudio(ab),
+  canDecode: () => envAudio.getState().ready,
+});
+botVoiceBank.init();
+// One concurrency ceiling shared by the voice and damage tracks: without this each module builds
+// its own private budget and the documented cross-track preemption never happens.
+const combatAudioBudget = createAudioBudget();
+const botVoiceDirector = createVoiceDirector({ maxDistance: BOT_SFX_VOICE.maxDistance, budget: combatAudioBudget });
+const botVoiceIdentities = new Map();
+function botVoiceIdentity(entity) {
+  let identity = botVoiceIdentities.get(entity.id);
+  if (!identity) { identity = voiceIdentity(entity.id, entity.team ?? 0); botVoiceIdentities.set(entity.id, identity); }
+  return identity;
+}
+// A callout comes out of the bot's head, not its feet.
+const _voiceAt = new THREE.Vector3();
+function botVoicePos(entity) { return _voiceAt.copy(entity.capsule.end); }
+// The six lines below fire from bullet/projectile/death handling that runs after updateAllBots()
+// has already stamped this tick's alertScore/alertTierLast -- so reading the cached tier would be
+// blind to the very event that just triggered the line (a bot dying, taking a hit, going empty).
+// Every other line fires from inside updateBotVoiceState, which runs in the same sentry tick that
+// just computed the cached tier, so it is already fresh there. See the plan doc's Chapter 2 Part 2
+// finding and Chapter 4's direct line-by-line verification of which lines actually need this.
+const VOICE_INTENSITY_FRESH_LINES = new Set([
+  'contact', 'man_down', 'enemy_down', 'grenade_out', 'sidearm', 'reloading',
+  // All six fire from event handlers (damage/death/spawn), never from inside updateBotSentry's own
+  // tick, so none of them can read the sentry-cadence lines' cached alertTierLast -- same reasoning
+  // as the original six above.
+  'spawn', 'hit', 'grenade_hit', 'near_miss', 'ally_hit', 'death',
+]);
+const _voiceEscMe = { x: 0, z: 0, team: 0 };
+function botAlertTierFor(entity, actor, lineId, now) {
+  if (!VOICE_INTENSITY_FRESH_LINES.has(lineId)) return actor?.alertTierLast ?? null;
+  const pos = entity.capsule.start;
+  _voiceEscMe.x = pos.x; _voiceEscMe.z = pos.z; _voiceEscMe.team = entity.team ?? 0;
+  return tierForScore(alertEscalation(recentAllyHits, _voiceEscMe, now, ESCALATION_RADIUS).score);
+}
+// False when nothing actually started (suspended context, muted bus, culled) so the caller can
+// hand the director's slot straight back instead of holding it for a silent line.
+// A baked take wins over the sample-pack event, because the bank is the deliberate choice and
+// hasSfxEvent only reports that some folder happened to contain a matching filename. Variant choice
+// (which wording/intensity band) is resolved independently for whichever path actually ends up
+// playing, since the synth's shared lexicon and a voice's own lexicon are different pools with
+// different lengths -- there is no single index that means the same thing in both.
+// Reflex lines (pain/death) are a body sound, not a radio call -- they always play clean, even
+// with the radio toggle on.
+function lineRadioOn(lineId) { return !REFLEX_LINES.has(lineId) && botChatterRadio; }
+function playBotVoice(entity, lineId, identity, alertTier) {
+  const pos = botVoicePos(entity);
+  const target = resolveVoiceIntensity({ lineId, alertTier });
+  const voiceId = botChatterSource ? botVoiceBank.setFor(entity.id) : null;
+  const radio = lineRadioOn(lineId);
+  const reflex = REFLEX_LINES.has(lineId);
+  const profile = reflex ? REFLEX_SFX_VOICE : BOT_SFX_VOICE;
+  const volume = reflex ? botReflexVolume : botChatterVolume;
+  let take = null;
+  if (voiceId) {
+    const key = `tts|${voiceId}|${lineId}`;
+    const idx = peekVariantIndex(voiceLexiconVariants(voiceId, lineId), target, key);
+    take = botVoiceBank.take(entity.id, lineId, idx);
+    if (take) commitVariantIndex(key, idx);
+  }
+  if (take) {
+    const build = buildSampleVoiceLine(take, identity, { radio, robot: botChatterVocode });
+    if (build) return envAudio.playSynthAt(build, pos, { profile, volume }) !== false;
+  }
+  const eventId = voiceEventId(lineId);
+  if (envAudio.hasSfxEvent(eventId)) return envAudio.playAt(eventId, pos, volume, profile) !== false;
+  const synthKey = `synth|${entity.team ?? 0}|${lineId}`;
+  const synthIdx = peekVariantIndex(lineVariants(lineId), target, synthKey);
+  const played = envAudio.playSynthAt(buildVoiceLine(lineId, identity, { radio, variantIndex: synthIdx }), pos,
+    { profile, volume }) !== false;
+  if (played) commitVariantIndex(synthKey, synthIdx);
+  return played;
+}
+// The director holds a speaker slot for the length of the line, so a baked take has to report its
+// own length: TTS lines run well past the synth estimate and the cap would free up too early. Peeks
+// the same variant playBotVoice will resolve (without committing the rotation -- the request may
+// still be dropped), so the estimate and the eventual playback agree on which variant is speaking.
+function botVoiceDurationS(entity, lineId, identity, alertTier) {
+  const target = resolveVoiceIntensity({ lineId, alertTier });
+  const voiceId = botChatterSource ? botVoiceBank.setFor(entity.id) : null;
+  if (voiceId) {
+    const idx = peekVariantIndex(voiceLexiconVariants(voiceId, lineId), target, `tts|${voiceId}|${lineId}`);
+    const take = botVoiceBank.take(entity.id, lineId, idx);
+    if (take) return take.duration / Math.max(0.92, Math.min(1.08, identity?.rate || 1)) + 0.15;
+  }
+  const synthIdx = peekVariantIndex(lineVariants(lineId), target, `synth|${entity.team ?? 0}|${lineId}`);
+  return voiceLineDurationS(lineId, identity, { radio: lineRadioOn(lineId), variantIndex: synthIdx });
+}
+// One FSM edge -> one director request. Returns true only when the bot actually spoke.
+function sayBotLine(entity, actor, lineId, now, eventKey = null) {
+  if (!botChatterEnabled || !botAudioEnabled || !entity || entity.alive === false) return false;
+  const distance = botVoicePos(entity).distanceTo(camera.position);
+  // A reflex line is inaudible past a much shorter leash than radio chatter -- bail before the
+  // director spends a cooldown/dedup stamp on a bark nobody was close enough to hear.
+  if (REFLEX_LINES.has(lineId) && distance > botReflexRange) return false;
+  const identity = botVoiceIdentity(entity);
+  const alertTier = botAlertTierFor(entity, actor, lineId, now);
+  const decision = botVoiceDirector.request({
+    lineId, botId: entity.id, teamId: entity.team ?? 0, squadId: actor?.squadId ?? null, eventKey, now,
+    distance,
+    durationS: botVoiceDurationS(entity, lineId, identity, alertTier),
+  });
+  if (!decision.ok) return false;
+  if (playBotVoice(entity, lineId, identity, alertTier)) return true;
+  botVoiceDirector.release(decision.token);
+  return false;
+}
+// Several bots may witness the same event; the one nearest the listener is the one that speaks.
+function sayBestBotLine(candidates, lineId, now, eventKey) {
+  if (!botChatterEnabled || !botAudioEnabled || !candidates.length) return false;
+  // Same short-leash pre-filter as sayBotLine: a reflex witness outside reflex range never reaches
+  // the director, so a far-off ally_hit-style scan doesn't burn the reflex line's cooldown for
+  // nothing when nobody nearby could hear it.
+  const inRange = REFLEX_LINES.has(lineId)
+    ? candidates.filter(c => botVoicePos(c.entity).distanceTo(camera.position) <= botReflexRange)
+    : candidates;
+  if (!inRange.length) return false;
+  const decision = botVoiceDirector.requestBest(inRange.map(({ entity, actor }) => ({
+    lineId, botId: entity.id, teamId: entity.team ?? 0, squadId: actor?.squadId ?? null, eventKey, now,
+    distance: botVoicePos(entity).distanceTo(camera.position),
+    durationS: botVoiceDurationS(entity, lineId, botVoiceIdentity(entity), botAlertTierFor(entity, actor, lineId, now)),
+  })));
+  if (!decision.ok) return false;
+  const chosen = inRange.find(c => c.entity.id === decision.botId);
+  if (chosen && playBotVoice(chosen.entity, lineId, botVoiceIdentity(chosen.entity), botAlertTierFor(chosen.entity, chosen.actor, lineId, now))) return true;
+  botVoiceDirector.release(decision.token);
+  return false;
+}
+// Audible response to a player-issued move order (right-click "Move here" in the command menu
+// below): the commanded bot confirms it heard -- or, if it IS a squad leader with squadmates still
+// alive, confirms for the whole squad and one squadmate echoes back a beat later, like a real call
+// and response. Not wired for 'hold' orders -- no acknowledgment vocabulary was authored for that.
+// These are ordinary radio chatter (not REFLEX_LINES), so the normal chattiness/radio/range rules
+// apply exactly like every other bark. Intensity reads the bot's cached alertTierLast rather than
+// forcing a fresh recompute (unlike VOICE_INTENSITY_FRESH_LINES): a player's click doesn't change
+// the bot's combat situation, so there is nothing about THIS event the last sentry tick would have
+// missed -- a shouted "GOT IT!" under fire vs. a calm "affirmative" on a quiet patrol falls out of
+// that cached tier for free.
+const ORDER_FOLLOW_DELAY_MS = [350, 650];   // wall-clock stagger for the reply; WebAudio has no
+                                             // "start later" on this path, so a real timer is it
+function announceOrder(actor) {
+  if (!botChatterEnabled || !botAudioEnabled || !actor || actor.entity.alive === false) return;
+  const now = performance.now();
+  const squad = actor.squadId ? squads.get(actor.squadId) : null;
+  const isSquadLeader = !!squad && squad.leaderId === actor.id;
+  const squadmates = isSquadLeader
+    ? [...squad.memberIds].map(id => botActorById.get(id)).filter(m => m && m.id !== actor.id && m.entity.alive !== false)
+    : [];
+  if (!isSquadLeader || !squadmates.length) {
+    sayBotLine(actor.entity, actor, 'order_ack', now);
+    return;
+  }
+  sayBotLine(actor.entity, actor, 'order_ack_squad', now);
+  const delay = ORDER_FOLLOW_DELAY_MS[0] + Math.random() * (ORDER_FOLLOW_DELAY_MS[1] - ORDER_FOLLOW_DELAY_MS[0]);
+  setTimeout(() => {
+    if (!botChatterEnabled || !botAudioEnabled) return;
+    // Re-check against the live roster: a scene reset or a squad wipe during the delay must not
+    // reply with a stale actor object from a torn-down bot.
+    const alive = squadmates.filter(m => botActorById.get(m.id) === m && m.entity.alive !== false);
+    if (!alive.length) return;
+    sayBestBotLine(alive.map(m => ({ entity: m.entity, actor: m })), 'order_follow', performance.now());
+  }, delay);
+}
+// Rising edges only, called once per bot per sentry frame just before the state stamp: a state
+// that persists says its line once, and "firing" is a FIRE entry rather than a per-shot bark.
+function updateBotVoiceState(actor, entity, prevState, state, outOfAmmo, now) {
+  if (!botChatterEnabled || !actor) return;
+  if (state !== prevState) {
+    if (state === BOT_FIRE) sayBotLine(entity, actor, 'firing', now);
+    else if (state === BOT_COVER_MOVE) sayBotLine(entity, actor, 'cover', now);
+    else if (state === BOT_PURSUE) sayBotLine(entity, actor, 'moving', now);
+  }
+  const holdReason = actor.holdUntil > now ? actor.holdReason : null;
+  if (holdReason === 'overwatch' && actor.voiceHoldReason !== 'overwatch') sayBotLine(entity, actor, 'overwatch', now);
+  actor.voiceHoldReason = holdReason;
+  const tendId = state === MEDIC_TEND ? (actor.medicTendTargetId ?? actor.medicAction?.targetId ?? null) : null;
+  if (tendId && actor.voiceTendId !== tendId) sayBotLine(entity, actor, 'reviving', now, `reviving:${tendId}`);
+  actor.voiceTendId = tendId;
+  if (outOfAmmo && !actor.voiceDry) sayBotLine(entity, actor, 'no_ammo', now);
+  actor.voiceDry = !!outOfAmmo;
+}
+// Rides the squad's own contact report (bot-alert.js recordContact): the bot that publishes the
+// sighting is the one that calls it; teammates read the report back and stay quiet.
+function sayBotContact(actor, entity, targetId, now) {
+  if (!actor || actor.voiceContactId === targetId) return;
+  actor.voiceContactId = targetId;
+  sayBotLine(entity, actor, 'contact', now, `contact:${targetId}`);
+}
+
+// First gesture unlocks the Web Audio context; capture so a bot-focus pointerdown still counts.
+for (const type of ['pointerdown', 'keydown']) {
+  addEventListener(type, () => envAudio.noteGesture(), { capture: true });
+}
+
+const botFocusRaycaster = new THREE.Raycaster();
+const botFocusPointer = new THREE.Vector2();
+const botFocusRayPoint = new THREE.Vector3();
+const botFocusSegmentPoint = new THREE.Vector3();
+let botPickStart = null;
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (event.button === 0 && !event.altKey) botPickStart = { x: event.clientX, y: event.clientY };
+}, { capture: true });
+function pickBotAtEvent(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  botFocusPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  botFocusPointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  botFocusRaycaster.setFromCamera(botFocusPointer, camera);
+  let picked = null;
+  let closest = Infinity;
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) continue;
+    const entity = actor.entity;
+    const distanceSq = botFocusRaycaster.ray.distanceSqToSegment(entity.capsule.start, entity.capsule.end, botFocusRayPoint, botFocusSegmentPoint);
+    const radius = entity.capsule.radius + 0.16;
+    if (distanceSq > radius * radius) continue;
+    const alongRay = botFocusRayPoint.distanceToSquared(botFocusRaycaster.ray.origin);
+    if (alongRay < closest) { closest = alongRay; picked = actor; }
+  }
+  return picked;
+}
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (!event.altKey || event.button !== 0) return;
+  const picked = pickBotAtEvent(event);
+  if (!picked) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  setBotDebugFocus(picked);
+}, { capture: true });
+renderer.domElement.addEventListener('click', (event) => {
+  const moved = botPickStart && Math.hypot(event.clientX - botPickStart.x, event.clientY - botPickStart.y) > 6;
+  botPickStart = null;
+  if (event.button !== 0 || event.altKey || moved) return;
+  const picked = pickBotAtEvent(event);
+  if (!picked) return;
+  event.preventDefault();
+  // Selecting a bot (for the right-click command menu, or the trace viewer's cross-tab marker) never
+  // moves the camera on its own -- only the Follow/POV buttons, the auto-follow toggle, or an explicit
+  // "go to" request from another tab do that. See docs/subsystems/bots.md for the camera-overhaul note.
+  setSelectedBot(picked);
+  if (event.ctrlKey) botLiveChannel?.postMessage({ type: 'selected', id: picked.id });
+});
+
+// ---- right-click command menu: Move Here / Hold Here for the selected bot ----
+const markerRaycaster = new THREE.Raycaster();
+const markerPointer = new THREE.Vector2();
+const markerGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const markerHit = new THREE.Vector3();
+function groundPointAtEvent(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  markerPointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  markerPointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  markerRaycaster.setFromCamera(markerPointer, camera);
+  if (!markerRaycaster.ray.intersectPlane(markerGroundPlane, markerHit)) return null;
+  return { x: markerHit.x, y: groundHeight(markerHit.x, markerHit.z), z: markerHit.z };
+}
+// Marker color encodes both axes: hue = goal (amber move / cyan hold), brighter = double time.
+const MARKER_MOVE_COLOR = 0xffd54f, MARKER_MOVE_RUN_COLOR = 0xff8a4c;
+const MARKER_HOLD_COLOR = 0x4fc3f7, MARKER_HOLD_RUN_COLOR = 0xb388ff;
+const markerMesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.35, 0),
+  new THREE.MeshBasicMaterial({ color: MARKER_MOVE_COLOR, toneMapped: false }));
+markerMesh.visible = false;
+scene.add(markerMesh);
+
+const commandMenuEl = document.createElement('div');
+commandMenuEl.style.cssText = 'position:fixed;z-index:50;display:none;background:#1b222c;border:1px solid #3a4656;'
+  + 'border-radius:4px;padding:3px;font:12px system-ui;box-shadow:0 4px 14px rgba(0,0,0,0.45);';
+document.body.append(commandMenuEl);
+function commandMenuButton(label, onClick) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.style.cssText = 'display:block;width:100%;text-align:left;padding:5px 12px;background:none;border:0;'
+    + 'color:#dce4f0;cursor:pointer;white-space:nowrap;';
+  b.addEventListener('mouseenter', () => { b.style.background = '#2c3a4d'; });
+  b.addEventListener('mouseleave', () => { b.style.background = 'none'; });
+  b.addEventListener('click', onClick);
+  commandMenuEl.append(b);
+  return b;
+}
+// A movement-style toggle, independent of the goal-state buttons below: it sets commandDoubleTime
+// directly (no point/command issued) and its checked state carries over between menu openings.
+function commandMenuCheckbox(label, onChange) {
+  const row = document.createElement('label');
+  row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:5px 12px;color:#dce4f0;'
+    + 'cursor:pointer;white-space:nowrap;border-bottom:1px solid #3a4656;margin-bottom:2px;';
+  row.addEventListener('mouseenter', () => { row.style.background = '#2c3a4d'; });
+  row.addEventListener('mouseleave', () => { row.style.background = 'none'; });
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.addEventListener('change', () => onChange(input.checked));
+  row.append(input, document.createTextNode(label));
+  commandMenuEl.append(row);
+  return input;
+}
+let commandMenuPoint = null;
+let commandDoubleTime = false;   // movement style toggle, orthogonal to the move/hold goal buttons
+// Break contact: while set, this bot (and its squad) ignores the firefight-reflex tier -- pursue,
+// fresh cover entry, aim/fire, the ally-hit cover reaction, the lost-sight chase -- and just executes
+// the active move/hold command instead. Self-preservation (flee/heal/knife/committed cover/the
+// close-self-threat spin) still wins; see the orderOverride rung in bot-activity.js.
+let commandBreakContact = false;
+const doubleTimeCheckbox = commandMenuCheckbox('Double time', (checked) => { commandDoubleTime = checked; });
+const breakContactCheckbox = commandMenuCheckbox('Break contact', (checked) => { commandBreakContact = checked; });
+function hideCommandMenu() { commandMenuEl.style.display = 'none'; commandMenuPoint = null; }
+function showCommandMenu(clientX, clientY, point) {
+  commandMenuPoint = point;
+  doubleTimeCheckbox.checked = commandDoubleTime;
+  breakContactCheckbox.checked = commandBreakContact;
+  commandMenuEl.style.left = `${clientX}px`;
+  commandMenuEl.style.top = `${clientY}px`;
+  commandMenuEl.style.display = 'block';
+}
+function issueCommand(goal) {
+  const point = commandMenuPoint;
+  hideCommandMenu();
+  if (!point) return;
+  markerMesh.position.set(point.x, point.y + 0.6, point.z);
+  markerMesh.material.color.set(goal === 'hold'
+    ? (commandDoubleTime ? MARKER_HOLD_RUN_COLOR : MARKER_HOLD_COLOR)
+    : (commandDoubleTime ? MARKER_MOVE_RUN_COLOR : MARKER_MOVE_COLOR));
+  markerMesh.visible = true;
+  if (!selectedBotActor || selectedBotActor.entity.alive === false) return;   // marker still drops for feedback
+  commandTargetId = selectedBotActor.id;
+  commandGoal = { x: point.x, z: point.z };
+  commandGoalState = goal;
+  if (goal === 'move') announceOrder(selectedBotActor);
+}
+commandMenuButton('Move here', () => issueCommand('move'));
+commandMenuButton('Hold here', () => issueCommand('hold'));
+renderer.domElement.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  const point = groundPointAtEvent(event);
+  if (point) showCommandMenu(event.clientX, event.clientY, point); else hideCommandMenu();
+});
+addEventListener('pointerdown', (event) => {
+  if (commandMenuEl.style.display !== 'none' && !commandMenuEl.contains(event.target)) hideCommandMenu();
+}, { capture: true });
+addEventListener('keydown', (event) => { if (event.key === 'Escape') hideCommandMenu(); });
+// ===================== lighting =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+// The shadow frustum (and the light's own position) is fitted to the live map by
+// visuals.setBounds -> fitKeyLight, so nothing is hardcoded here; a fixed box misses most of a
+// 30x30 maze. Texel size is 2*radius/2048 -- ~2 cm on the largest layout.
+
+// A soft overhead point source makes the mannequin and its weapon read against the dark map.
+const overheadLight = new THREE.PointLight(0xffffff, 28, 22, 2);
+overheadLight.name = 'botViewerOverheadPointLight';
+overheadLight.position.set(3, 8, 0);
+// castShadow intentionally omitted: a point-light shadow renders 6 cube-face passes/frame; not worth it for fill light.
+scene.add(overheadLight);
+
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'full', tone: 'none', bloomStrength: 0.10, bloomRadius: 0.7, bloomThreshold: 0.0 } });
+
+// ===================== visuals (themes / sky / materials / grade) =====================
+// bot-viewer-visuals.js owns the whole look: the procedural sky dome, the three map materials
+// (which is why wallMat/floorMat/coverMat below just alias its materials), the light rig values,
+// fog, IBL and the post stack. It never touches simulation state -- see docs/subsystems/bots.md.
+const visuals = createVisualSystem({
+  THREE, renderer, scene, camera, postFX, rig, overheadLight,
+  // Music spectrum -> accent lights + bloom, behind the visuals panel's own toggle (default off).
+  getAudioLevels: () => envAudio.getAudioLevels(),
+});
+
+// ===================== test map scaffolding =====================
+// Swappable layouts (rooms / maze, see "map layouts" section below) share this scaffolding:
+// a mapRoot group rebuilt per layout, and mutable mapCollider/activeWalls/activeBounds that
+// applyLayout() replaces wholesale rather than the map being fixed at load time.
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+
+// Theme-driven node materials; retinted in place on a theme switch, never rebuilt.
+const wallMat = visuals.materials.wall;
+const floorMat = visuals.materials.floor;
+const terrainMat = visuals.materials.terrain;   // floor colour x baked per-vertex terrain shading
+const coverMat = visuals.materials.cover;
+
+function box(mat, x, y, z, w, h, d) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  m.matrixAutoUpdate = false; m.updateMatrix();   // static: applyLayout rebuilds rather than moves
+  mapRoot.add(m);
+  return m;
+}
+
+// Walls/covers render as one InstancedMesh per material (a maze is ~950 boxes -- one draw call
+// and one shadow caster each beats ~950). Shared unit geometry; applyLayout's teardown must not
+// dispose it. Collision is unaffected: createMapCollider expands instances into world triangles.
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+function instancedBoxes(mat, boxes) {
+  if (!boxes.length) return null;
+  const mesh = new THREE.InstancedMesh(UNIT_BOX, mat, boxes.length);
+  const t = new THREE.Matrix4();
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    t.makeScale(b.w, b.h, b.d).setPosition(b.x, b.y, b.z);
+    mesh.setMatrixAt(i, t);
+  }
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.computeBoundingSphere();
+  mesh.matrixAutoUpdate = false; mesh.updateMatrix();   // static: applyLayout rebuilds rather than moves
+  mapRoot.add(mesh);
+  return mesh;
+}
+
+// ===================== terrain =====================
+// Optional uneven ground under every layout. The displaced floor mesh joins mapRoot, so the BVH
+// map collider picks up slopes with no physics changes -- bots walk hills via resolveCapsule.
+import { BOT_TERRAIN_DEFAULTS, createTerrainField, footprintRange, buildTerrainMeshArrays } from './bot-terrain.js';
+
+const terrainSettings = { ...BOT_TERRAIN_DEFAULTS };
+// Level pads under spawns, cover and building slabs (see terrainPadsForLayout). Rebuilt per layout.
+let terrainPads = [];
+let terrainPadsEnabled = true;
+const SPAWN_PAD_RADIUS = 2.2;   // m of level ground a spawn point gets
+let terrainField = createTerrainField(terrainSettings, terrainPads);
+// Bake the field onto a grid over the active layout: the nav slope gate and the mesh normals each
+// want 4 central-difference samples per point, and against a baked grid those stop being noise
+// evaluations. ~4x off the terrain half of a rebuild, and heightAt gets cheap enough to call freely
+// per frame. Falls back to analytic before the first layout, when bounds are still degenerate.
+function rebuildTerrainField() {
+  terrainField = createTerrainField(terrainSettings, terrainPads,
+    activeBounds.maxX > activeBounds.minX ? { bounds: activeBounds } : {});
+}
+// The one ground-height accessor the whole viewer reads: 0 while terrain is off.
+function groundHeight(x, z) { return terrainField.heightAt(x, z); }
+// Ground decals (nav dots, rings, markers) lift by this so hills don't swallow them.
+function decalY(x, z, lift) { return groundHeight(x, z) + lift; }
+
+// A wall/cover box sunk into the hillside: base at the lowest ground under its footprint, top
+// `h` above the highest, so it never floats over a dip nor loses height on a rise.
+function boxTransformOnTerrain(x, z, w, h, d) {
+  if (!terrainSettings.enabled) return { x, y: h / 2, z, w, h, d };
+  const { min, max } = footprintRange(terrainField, x, z, w, d, 4);
+  const base = min - 0.05;
+  const top = max + h;
+  return { x, y: (base + top) / 2, z, w, h: top - base, d };
+}
+
+// Where a layout needs level ground: both spawns, every cover footprint, plus whatever slabs the
+// generator asked for (building interiors). Without this a spawn can land on a 40-deg face and a
+// cover box has to sink so deep its top no longer reads as cover.
+function terrainPadsForLayout(layout) {
+  if (!terrainSettings.enabled || !terrainPadsEnabled) return [];
+  const pads = [
+    { x: layout.botSpawn.x, z: layout.botSpawn.z, radius: SPAWN_PAD_RADIUS },
+    { x: layout.dummySpawn.x, z: layout.dummySpawn.z, radius: SPAWN_PAD_RADIUS },
+  ];
+  for (const cv of layout.covers || []) pads.push({ x: cv.x, z: cv.z, radius: Math.hypot(cv.w, cv.d) / 2 + 0.3 });
+  for (const pad of layout.pads || []) pads.push(pad);
+  return pads;
+}
+
+const TERRAIN_FLOOR_PAD = 2.5; // m the ground extends past the layout bounds, so edges aren't cliffs
+// Catch slab under the terrain sheet: its TOP sits this far below the lowest terrain vertex.
+// Must stay comfortably above bot-entity's FLOOR_RESCUE_DEPTH (0.75) or a slab rest reads as
+// legitimate slope deviation and the rescue can never detect it.
+const TERRAIN_CATCH_SLAB_DROP = 1.0;
+const TERRAIN_CATCH_SLAB_THICKNESS = 0.1;
+let terrainTriangleCount = 0;
+
+// Layout floor: a flat slab when terrain is off, otherwise a displaced grid plus a catch slab
+// well below it so nothing that clips through the thin surface falls forever.
+function buildFloorMesh(floorW, floorD) {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2;
+  const cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  if (!terrainSettings.enabled) {
+    terrainTriangleCount = 0;
+    box(floorMat, cx, -0.05, cz, floorW, 0.1, floorD);
+    return;
+  }
+  const padded = {
+    minX: activeBounds.minX - TERRAIN_FLOOR_PAD, maxX: activeBounds.maxX + TERRAIN_FLOOR_PAD,
+    minZ: activeBounds.minZ - TERRAIN_FLOOR_PAD, maxZ: activeBounds.maxZ + TERRAIN_FLOOR_PAD,
+  };
+  const m = buildTerrainMeshArrays(padded, terrainField);
+  terrainTriangleCount = m.triangleCount;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(m.colors, 3));
+  geom.setIndex(new THREE.BufferAttribute(m.indices, 1));
+  geom.computeBoundingSphere();
+  const mesh = new THREE.Mesh(geom, terrainMat);
+  mesh.receiveShadow = true;
+  mesh.matrixAutoUpdate = false; mesh.updateMatrix();   // static: applyLayout rebuilds rather than moves
+  mapRoot.add(mesh);
+
+  let lowest = Infinity;
+  for (let i = 1; i < m.positions.length; i += 3) if (m.positions[i] < lowest) lowest = m.positions[i];
+  box(floorMat, cx, lowest - TERRAIN_CATCH_SLAB_DROP - TERRAIN_CATCH_SLAB_THICKNESS / 2, cz,
+    floorW + TERRAIN_FLOOR_PAD * 2, TERRAIN_CATCH_SLAB_THICKNESS, floorD + TERRAIN_FLOOR_PAD * 2);
+}
+
+let WALL_H = 3, WALL_T = 0.3;
+let mapCollider = null;
+let activeWalls = [];
+let activeCovers = [];
+let activeBounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== stub bot =====================
+import { createBotEntity, stepBotPhysics, toWirePose, resolveBotPairsHashed, separationXZHashed, blendSeparationDir, waypointContestedHashed, createGoalClaims, createBotForensics } from './bot-entity.js';
+import { createBotSpatialHash } from './bot-spatial-hash.js';
+import { createProceduralPlayerBody } from './player-procedural-body.js';
+import { LOCOMOTION_DEFAULTS } from './body-locomotion.js';
+import { createBodyPartBatches } from './body-part-batches.js';
+import { createWeaponPartBatches, bakeSkinnedGeometry } from './weapon-part-batches.js';
+import { stepRagdoll, kineticEnergy } from './ragdoll.js';
+import { ragdollFromBody, applyDeathImpulse, applyBlastImpulse, weaponKnockback } from './ragdoll-body.js';
+import { makePack, drawFromPacks, hasHealResource, canHold, addPack, packsTotalHp, hasReviveMaterials, consumeRevivePacks, packClaimIntent, packRunSafe } from './bot-health-packs.js';
+import { ROLE_MEDIC, ROLE_SQUAD_LEADER, ROLE_SNIPER, ROLE_TECHNICAL, DEFAULT_ROLE, getRole,
+  assignRolesToBatch, pickSquadLeader, squadRanks, boundingRole } from './bot-roles.js';
+import { SQUAD_MAX_SIZE, SQUAD_MIN_SIZE, SQUAD_DEFAULTS, FORMATION_KINDS, partitionSquadSizes, squadRoleTemplate,
+  electSquadLeader, stepSquadSuccession, chooseFormationKind, squadMemberGoal, squadSlotWorld,
+  dealSquadChunks, planSquadReconcile, SQUAD_MERGE_RADIUS, formationRanks, formationHalfWidth } from './bot-squad.js';
+import { MEDIC_MOVE, MEDIC_TEND, MEDIC_DEFAULTS, decideMedicAction, cohesionTarget, teamCentroid,
+  medicChaseSpeedFactor, medicTendRadiusFor } from './bot-medic.js';
+import { createScoreboard, resetScoreboard, recordSpawn, recordKill, recordRevive, finishRound,
+  decideRoundOutcome, formatTeamScore, formatBreakdownLines, formatRoundHeader, formatRoundLine } from './bot-score.js';
+import { resolveWeaponHold, carryDeltaFor, locomotionFor, isCarryLocomotion, isOneHanded,
+  hasCarryVocabulary, stepCarryBlend, snapCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
+import { STANCE_PRONE, STANCE_CROUCH, STANCE_STAND, STANCE_RUN, STANCE_DASH, STANCE_DEFAULTS, chooseBotStance, stepStanceTransition,
+  stanceSpeedFactor, stanceSpreadScale, stanceHeightScale, stanceCapsuleHeightScale,
+  stanceTurnRateScale, resolveStanceOverride, stepStanceWeights, blendStanceHeightScale } from './bot-stance.js';
+import { encodeBotState, changedSlots, describeBotState, healthBand, ammoSlot, packSlot, latchBits, tierSlot,
+  STATE_NAMES, STATE_CHARS, TIER_CHARS, SCORE_CHARS, ROLE_CHARS, ELEMENT_CHARS, AMMO_CHARS, HEALTH_CHARS,
+  PACK_CHARS, LATCH_CHARS, LATCH_FLEE, LATCH_COVER, LATCH_HEAL_FLEE, illegalReason } from './bot-state-code.js';
+
+let botSpawnPoint = { x: 0, y: 0, z: 0 };  // set per-layout by applyLayout()
+const botMat = new THREE.MeshStandardMaterial({ color: 0xff7043, roughness: 0.6 });
+
+let bot = null;
+// Armour shells are DESATURATED (grey-olive / grey-maroon): the reference look is ~80% gunmetal
+// with colour as an accent, and a saturated shell made the bots read as toys. Team identification
+// moves to `accent`, which stays vivid and is applied to a few small marker pieces.
+const BOT_TEAM_DEFS = {
+  alpha: { label: 'Alpha', shell: 0x46554c, plate: 0x1b201d, accent: 0x53d68d, capsule: 0x2f7d4f, facing: 0x57d68d },
+  bravo: { label: 'Bravo', shell: 0x584744, plate: 0x211a19, accent: 0xff7b72, capsule: 0xa43f47, facing: 0xff8a80 },
+};
+const BOT_TEAMS = Object.keys(BOT_TEAM_DEFS);   // spawn-side order: index 0 takes the low end of the map
+let botTeam = 'alpha';
+// Session tally per side (spawns/deaths/revives/frags); the HUD row is redrawn only when dirty.
+const botScore = createScoreboard(Object.keys(BOT_TEAM_DEFS));
+let botScoreDirty = true;
+let botScoreVisible = true;
+const scoreEl = document.getElementById('score');
+const scoreRoundEl = document.createElement('div');
+scoreRoundEl.className = 'sc-round';
+scoreEl?.append(scoreRoundEl);
+const scoreRows = new Map();   // team -> the <span> holding that side's numbers
+for (const [team, def] of Object.entries(BOT_TEAM_DEFS)) {
+  const row = document.createElement('div');
+  const label = Object.assign(document.createElement('span'), { className: 'sc-team', textContent: def.label });
+  label.style.color = `#${def.facing.toString(16).padStart(6, '0')}`;
+  const stats = document.createElement('span');
+  row.append(label, stats);
+  scoreEl?.append(row);
+  scoreRows.set(team, stats);
+}
+// Reused across flushes: team -> living count. Null-prototype so an odd team name can't collide
+// with Object.prototype, and the key list is kept alongside so zeroing allocates nothing.
+const _aliveByTeam = Object.create(null);
+const _aliveKeys = [];
+let _aliveStamp = -1;
+for (const team of scoreRows.keys()) { _aliveByTeam[team] = 0; _aliveKeys.push(team); }
+// O(roster). Memoized for one frame: the outcome check and the flush right after it both want this,
+// and nothing between them can change who is alive. checkRoundOutcome invalidates on entry, so the
+// memo can never outlive its frame even if two frames report the same performance.now().
+function countLivingByTeam(stamp = -1) {
+  if (stamp >= 0 && stamp === _aliveStamp) return _aliveByTeam;
+  _aliveStamp = stamp;
+  for (let i = 0; i < _aliveKeys.length; i++) _aliveByTeam[_aliveKeys[i]] = 0;
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) continue;
+    const team = actor.entity.team;
+    if (_aliveByTeam[team] === undefined) { _aliveByTeam[team] = 0; _aliveKeys.push(team); }
+    _aliveByTeam[team] += 1;
+  }
+  return _aliveByTeam;
+}
+// A round ends when one side is wiped, so the tally can be archived and compared across runs.
+// Only worth testing right after a spawn/kill/revive (the dirty flag), and never while auto-add is
+// feeding the fight -- endless waves have no round to decide.
+function checkRoundOutcome(now) {
+  _aliveStamp = -1;   // top of the frame: drop last frame's living-count memo
+  if (!botScoreDirty || botAutoAddEnabled || botScore.round.endedAt != null || botScore.round.startedAt == null) return;
+  const outcome = decideRoundOutcome(botScore, countLivingByTeam(now));
+  if (outcome && finishRound(botScore, { now, winner: outcome.winner, reason: outcome.reason })) botScoreDirty = true;
+}
+// One DOM write per changed frame: spawn/kill/revive/reset flip the dirty flag, corpse culls don't
+// (a culled corpse was already counted dead). The clock ticks on its own, so a live round also
+// refreshes on a slow timer rather than every frame.
+let botScoreClockAt = 0;
+function flushBotScore(now = performance.now()) {
+  if (botScore.round.startedAt != null && botScore.round.endedAt == null && now - botScoreClockAt >= 1000
+      && (botScoreVisible || scorePanelOpen())) {   // nothing on screen to tick: stay clean, do nothing
+    botScoreClockAt = now;
+    botScoreDirty = true;
+  }
+  if (!botScoreDirty || !scoreEl) return;
+  botScoreDirty = false;
+  scoreEl.classList.toggle('show', botScoreVisible);
+  const alive = countLivingByTeam(now);
+  if (botScoreVisible) {
+    scoreRoundEl.textContent = formatRoundHeader(botScore, now, BOT_TEAM_DEFS);
+    for (const [team, stats] of scoreRows) stats.textContent = formatTeamScore(botScore, team, alive[team] ?? 0);
+  }
+  renderScorePanel(alive, now);
+}
+// Sim sub-phase timers, summed by hand inside updateAllBots (see the note there) and printed by
+// the ?prof=1 HUD as pre/sen/bot/post.
+let simPreMs = 0, simSentryMs = 0, simBotMs = 0, simPostMs = 0, simSelMs = 0;
+// updateBotSentry split four ways: A perception, B alerts+cover, C state resolution, D movement.
+// Boundary timestamps rather than wrapped closures -- the phases share locals, so wrapping them
+// would put `state`/`alertTier`/`visible` out of scope for everything downstream.
+let senAMs = 0, senBMs = 0, senCMs = 0, senDMs = 0;
+// D splits again by which state handler ran, plus the weapon/reload tail every bot pays regardless.
+const senDByState = new Map();
+let senDTailMs = 0;
+const botActors = [];
+// Frame-rebuilt XZ neighbor index over the living roster; every O(N) bot-bot scan queries it (F2).
+const botHash = createBotSpatialHash(2);
+const _hashLiving = [];              // reused rebuild input, never re-allocated
+const botActorById = new Map();      // entity/actor id -> actor, replaces the linear .find scans (M7)
+const deadBotActors = new Set();     // corpses (not in botHash) for the medic revive scan
+// Persistent squad rosters, keyed by squad id. A squad is assigned at spawn and survives separation
+// and casualties; membership is the truth, proximity only decides who is close enough to act on it.
+const squads = new Map();
+let squadIdSeq = 0;
+let botSquadModeEnabled = false;     // spawn batches into squads instead of independent bots
+let botSquadSize = SQUAD_MAX_SIZE;   // desired roster size; never above SQUAD_MAX_SIZE
+let botSquadFormation = 'auto';      // 'auto' | one of FORMATION_KINDS, applied to every squad
+const botSquadSettings = { ...SQUAD_DEFAULTS, slotRepath: 1.0, corridorProbeMs: 300, mergeRadius: SQUAD_MERGE_RADIUS };
+// Side mode: each team owns half the map and comes from a home at its own end, instead of every bot
+// materialising wherever the nav grid had a free cell. The compound is a separate toggle because the
+// spawn rules are useful on a bare map too -- and building it needs a map rebuild, while they don't.
+let botSideModeEnabled = false;
+let botBaseStructuresEnabled = true;
+let botSpawnNearSquad = true;         // reinforcements appear beside the squad they are joining
+const BOT_SPAWN_SQUAD_SPREAD = 7;     // m around the squad leader a reinforcement may land
+const BOT_SPAWN_HOME_SPREAD = 6;      // m around the home point a new squad forms up in
+let teamHomeCache = null, teamHomeCacheBounds = null;
+
+// A compound has to fit the map it is on: shrink it toward the bounds and give up entirely when even
+// the shrunk version would swallow the playable space.
+function homeBaseSizeFor(bounds, region) {
+  const alongSpan = region.axis === 'z' ? bounds.maxZ - bounds.minZ : bounds.maxX - bounds.minX;
+  const crossSpan = region.axis === 'z' ? bounds.maxX - bounds.minX : bounds.maxZ - bounds.minZ;
+  const width = Math.min(HOME_BASE_DEFAULTS.width, crossSpan * 0.55);
+  const depth = Math.min(HOME_BASE_DEFAULTS.depth, alongSpan * 0.18);
+  if (width < HOME_BASE_DEFAULTS.doorWidth + 3 || depth < 3) return null;
+  return { width, depth };
+}
+
+// Which half of the map a team spawns in, recomputed only when the bounds actually change. Derived
+// from the live bounds rather than baked into the layout, so toggling side mode needs no rebuild.
+function teamHomeRegion(team) {
+  if (!botSideModeEnabled || !(activeBounds.maxX > activeBounds.minX)) return null;
+  if (teamHomeCacheBounds !== activeBounds) {
+    teamHomeCache = teamSideRegions(activeBounds, BOT_TEAMS);
+    teamHomeCacheBounds = activeBounds;
+  }
+  return teamHomeCache.get(team) || null;
+}
+
+// True when (x, z) is on `region`'s half of the map.
+function insideTeamSide(region, x, z) {
+  if (!region) return true;
+  const along = region.axis === 'z' ? z : x;
+  return along >= region.min && along <= region.max;
+}
+let nextBotId = 1;
+let activeBotActor = null;
+let botDebugFocusActor = null; // Alt-click selection; affects diagnostics/recording, never simulation.
+let selectedBotActor = null;   // Plain/ctrl-click (or a trace-viewer "Go to"): the right-click command target,
+// a visual marker, and cross-viewer sync -- never touches the camera on its own (see the click handler).
+// Stance is per-bot and FSM-derived (actor.stance); this is only the UI force-override on top of it.
+const BOT_STANCE_OVERRIDES = ['auto', STANCE_STAND, STANCE_CROUCH, STANCE_PRONE, STANCE_RUN, STANCE_DASH];
+let botStanceOverride = 'auto';
+let botMesh = null;
+let botProceduralBody = null;
+let botProceduralBodyEnabled = true;
+// Ragdoll death (step B): when a bot with a procedural body dies, drive its rig from ragdoll.js
+// instead of destroying it + tipping the capsule. Toggle + a knockback multiplier are panel-controlled;
+// the base knockback is per-weapon (weaponKnockback) and the reaction is concentrated at the hit point.
+let ragdollDeathEnabled = true;
+let ragdollDeathImpulse = 1;   // multiplier on the per-weapon knockback
+const RAGDOLL_DEATH_STEP = { gravity: 25, groundHeight: (x, z) => groundHeight(x, z) }; // corpses settle onto the hillside
+// Corpse retirement (F8): a ragdoll whose kinetic energy stays under this for RAGDOLL_SLEEP_MS
+// stops stepping/re-posing entirely. Threshold matches test-ragdoll.mjs's "came to rest" bar.
+const RAGDOLL_SLEEP_ENERGY = 1e-4;
+const RAGDOLL_SLEEP_MS = 500;
+// Corpse cull: cap on simultaneous corpses, oldest death culled first (see cullDeadBots).
+let botCorpseCullEnabled = true;
+let botCorpseCap = 24;
+// Shared instanced-render pool for every bot's procedural body (Phase 4 body-part-batches).
+// Lazily created on first createBotProceduralBody() call, mirroring multiplayer.js's
+// _bodyBatches, so the tool costs nothing extra when procedural bodies are never enabled.
+let botBodyBatches = null;
+// Shared instanced pool for every bot's held-weapon GLB (weapon-part-batches). Lazily created
+// on first createBotWeaponMount(); flushed each frame in the animate loop like the body pool.
+let botWeaponBatches = null;
+const _weaponPartMatrix = new THREE.Matrix4();
+function flushWeaponMount(mount) {
+  if (!mount?.instanceParts || !mount.placed || !mount.weaponRig.visible) return;
+  // The only per-frame walk of the (never scene-added) rig; static nodes skip recompose (M10).
+  mount.weaponRig.updateMatrixWorld(true);
+  const view = mount.weaponView.matrixWorld;
+  for (const part of mount.instanceParts) {
+    _weaponPartMatrix.multiplyMatrices(view, part.localMatrix);
+    botWeaponBatches.add(part.geometry, part.material, _weaponPartMatrix);
+  }
+}
+// Facing cones (F9): one InstancedMesh for the whole roster instead of a lit Mesh + unique
+// material per bot. Immediate mode like the batch pools -- the count resets at the top of
+// updateAllBots, each living bot adds one instance, dead bots simply don't add.
+const BOT_FACING_CAPACITY = 1024;
+const botFacingGeometry = new THREE.ConeGeometry(0.08, 0.3, 8);
+const botFacingMesh = new THREE.InstancedMesh(botFacingGeometry, new THREE.MeshStandardMaterial({ color: 0xffffff }), BOT_FACING_CAPACITY);
+botFacingMesh.name = 'BotFacingBatch';
+botFacingMesh.count = 0;
+botFacingMesh.frustumCulled = false;   // instances span the whole map
+botFacingMesh.castShadow = false;
+botFacingMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(botFacingMesh);
+let botFacingCount = 0;
+const _facingMatrix = new THREE.Matrix4();
+const _facingEuler = new THREE.Euler();   // (PI/2, 0, -yaw) XYZ == the old cone's rotation.x + rotation.z
+const _facingDir = new THREE.Vector3();
+const _facingPos = new THREE.Vector3();
+const _facingColor = new THREE.Color();
+// Bounds an attribute's GPU upload to [0, count); mirrors body-part-batches.js's setUpdateRange.
+function setInstancedUpdateRange(attr, count) {
+  if (attr.clearUpdateRanges) {
+    attr.clearUpdateRanges();
+    attr.addUpdateRange(0, count);
+  } else if (attr.updateRange) {
+    attr.updateRange.offset = 0;
+    attr.updateRange.count = count;
+  }
+}
+function addBotFacingInstance(mid, yaw, radius, colorHex) {
+  if (botFacingCount >= BOT_FACING_CAPACITY) return;
+  _facingPos.copy(mid).addScaledVector(_facingDir.set(Math.sin(yaw), 0, Math.cos(yaw)), radius + 0.2);
+  _facingMatrix.makeRotationFromEuler(_facingEuler.set(Math.PI / 2, 0, -yaw));
+  _facingMatrix.setPosition(_facingPos);
+  botFacingMesh.setMatrixAt(botFacingCount, _facingMatrix);
+  botFacingMesh.setColorAt(botFacingCount, _facingColor.setHex(colorHex));
+  botFacingCount++;
+}
+function flushBotFacing() {
+  botFacingMesh.count = botFacingCount;
+  if (botFacingCount === 0) return;
+  setInstancedUpdateRange(botFacingMesh.instanceMatrix, botFacingCount * 16);
+  botFacingMesh.instanceMatrix.needsUpdate = true;
+  if (botFacingMesh.instanceColor) {
+    setInstancedUpdateRange(botFacingMesh.instanceColor, botFacingCount * 3);
+    botFacingMesh.instanceColor.needsUpdate = true;
+  }
+}
+let botStateOrbsEnabled = false;
+let botTacticalVisualsEnabled = false;
+let botFovWedgeEnabled = false;
+const botStateOrbGeometry = new THREE.SphereGeometry(0.12, 12, 8);
+const BOT_STATE_ORB_LIFT = 0.32;
+// Byte-identical across every bot, so they're built once here instead of per spawn (M6).
+// Materials stay per-bot: the capsule tints on death and the health fill tints with HP.
+const botSightRingGeometry = new THREE.RingGeometry(0.975, 1, 64);
+const botKnifeRingGeometry = new THREE.RingGeometry(0.985, 1, 64);
+const botHealthBarBgGeometry = new THREE.PlaneGeometry(0.78, 0.10);
+const botHealthBarFillGeometry = new THREE.PlaneGeometry(0.70, 0.058);
+// Every bot entity is created with the same radius/stand height, so one capsule geometry serves
+// all of them; built from the first entity rather than hard-coding bot-entity.js's defaults.
+let botCapsuleGeometry = null;
+function botCapsuleGeometryFor(entity) {
+  if (!botCapsuleGeometry) {
+    botCapsuleGeometry = new THREE.CapsuleGeometry(entity.capsule.radius, entity.capsule.end.y - entity.capsule.start.y, 4, 8);
+  }
+  return botCapsuleGeometry;
+}
+const CAMERA_ORBIT = 'orbit';
+const CAMERA_FOLLOW = 'follow';
+const CAMERA_POV = 'pov';
+// Free-look WASD camera. Orbiting is unusable for crossing a 200 m field, so this is how you
+// actually traverse and inspect a large map. Needs no actor -- it is the one mode that works on
+// an empty map.
+const CAMERA_FLY = 'fly';
+const flyCam = {
+  yaw: 0, pitch: -0.35,
+  speed: 14,          // m/s, wheel-adjustable in flight
+  boost: 3,           // Shift multiplier
+  walk: false,        // clamp to eye height over the terrain instead of free flight
+  eye: 1.7,
+  dragging: false, pointerId: null, lastX: 0, lastY: 0,
+};
+const _flyForward = new THREE.Vector3();
+const _flyRight = new THREE.Vector3();
+const _flyMove = new THREE.Vector3();
+const _flyLook = new THREE.Vector3();
+const CAMERA_FRAMING_PRESETS = {
+  close: { label: 'Close action', distance: 3.2, focusLift: 0.12, fov: 62 },
+  tactical: { label: 'Tactical', distance: 7.5, focusLift: 0, fov: 55 },
+  wide: { label: 'Wide observer', distance: 14, focusLift: 0.55, fov: 50 },
+  cinematic: { label: 'Cinematic', distance: 9, focusLift: 0.32, fov: 42 },
+};
+const CAMERA_POV_COMFORT_PRESETS = {
+  off: { label: 'Off', headBlend: 1, positionRateXZ: Infinity, positionRateY: Infinity, rotationRate: Infinity, deadZone: 0, maxLag: Infinity },
+  // headBlend 1 on every preset: the camera anchors at the animated head's eye bridge, and comfort
+  // only damps it over time. Blending toward the capsule axis put the camera inside the head.
+  light: { label: 'Light', headBlend: 1, positionRateXZ: 8.5, positionRateY: 4.5, rotationRate: 8, deadZone: 0.006, maxLag: 0.28 },
+  strong: { label: 'Strong', headBlend: 1, positionRateXZ: 5.5, positionRateY: 3.2, rotationRate: 5.5, deadZone: 0.012, maxLag: 0.20 },
+};
+let cameraMode = CAMERA_ORBIT;
+let cameraFollowActor = null;
+let cameraAutoFollowEnabled = false;
+let cameraAutoRotateEnabled = false;
+let cameraFollowOcclusionEnabled = false;
+let cameraFramingPreset = 'tactical';
+let cameraPresetSelect = null;
+let autoSceneShuffleEnabled = false;
+let autoSceneShuffleIntervalMs = 20000;
+let shuffleLookEnabled = false;   // a scene shuffle also rolls a fresh procedural theme
+let autoSceneShuffleNextAt = 0;
+const cameraFollowPoint = new THREE.Vector3();
+const cameraFollowTargetPoint = new THREE.Vector3();
+const cameraFollowAnchor = new THREE.Vector3();
+const cameraFollowDesiredTarget = new THREE.Vector3();
+const cameraFollowDelta = new THREE.Vector3();
+const cameraFollowOffset = new THREE.Vector3();
+const cameraFollowUserFocusOffset = new THREE.Vector3();
+const cameraFollowUserDirection = new THREE.Vector3(0.56, 0.42, 0.71).normalize();
+const cameraFollowResolvedDirection = cameraFollowUserDirection.clone();
+const cameraFollowDesiredDirection = cameraFollowUserDirection.clone();
+const cameraFollowProbeDirection = new THREE.Vector3();
+const cameraRayOriginArray = [0, 0, 0];
+const cameraRayDirectionArray = [0, 0, 0];
+const CAMERA_OCCLUSION_CANDIDATES = [
+  { yaw: 0, lift: 0, penalty: 0 },
+  { yaw: 0.22, lift: 0.04, penalty: 0.20 },
+  { yaw: -0.22, lift: 0.04, penalty: 0.20 },
+  { yaw: 0.42, lift: 0.12, penalty: 0.48 },
+  { yaw: -0.42, lift: 0.12, penalty: 0.48 },
+  { yaw: 0, lift: 0.24, penalty: 0.34 },
+];
+const cameraOcclusionClearances = new Float32Array(CAMERA_OCCLUSION_CANDIDATES.length);
+const cameraOcclusionPenalties = new Float32Array(CAMERA_OCCLUSION_CANDIDATES.map(candidate => candidate.penalty));
+let cameraFollowAnchorReady = false;
+let cameraFollowBoundActor = null;
+let cameraFollowTargetId = null;
+let cameraFollowUserDistance = 7.5;
+let cameraFollowDynamicDistance = 7.5;
+let cameraFollowCollisionDistance = 7.5;
+let cameraFollowObstructed = false;
+let cameraFollowOcclusionHoldUntil = 0;
+let cameraFollowInputStartDistance = 7.5;
+let cameraFollowOcclusionCandidateIndex = 0;
+let cameraFollowNextOcclusionProbeAt = 0;
+const CAMERA_FOLLOW_MIN_DISTANCE = 0.8;
+const CAMERA_FOLLOW_MAX_DISTANCE = 90;
+const CAMERA_FOLLOW_OCCLUSION_MIN_DISTANCE = 0.72;
+const CAMERA_FOLLOW_OCCLUSION_CLEARANCE = 0.34;
+const CAMERA_FOLLOW_OCCLUSION_HOLD_MS = 700;
+const CAMERA_FOLLOW_OCCLUSION_RECOVERY_RATE = 1.15;
+const CAMERA_FOLLOW_OCCLUSION_PROBE_MS = 80;
+const CAMERA_FOLLOW_DEATH_HOLD_MS = 1250;
+let cameraFollowDeathHoldUntil = 0;
+const cameraRig = {
+  posePosition: new THREE.Vector3(),
+  poseTarget: new THREE.Vector3(),
+  userInteracting: false,
+  inputActive: false,
+  inputChanged: false,
+  inputMomentumUntil: 0,
+  pov: {
+    yawOffset: 0,
+    pitchOffset: 0,
+    dragging: false,
+    pointerId: null,
+    lastX: 0,
+    lastY: 0,
+    lastInputAt: -Infinity,
+    recenterEnabled: true,
+    recenterDelayMs: 900,
+    comfort: 'light',
+    actorId: null,
+    position: new THREE.Vector3(),
+    positionReady: false,
+    baseYaw: 0,
+    basePitch: 0,
+    rotationReady: false,
+  },
+  commit(position, target) {
+    camera.position.copy(position);
+    controls.target.copy(target);
+    camera.lookAt(target);
+  },
+  translateTarget(target) {
+    cameraFollowDelta.copy(target).sub(controls.target);
+    this.posePosition.copy(camera.position).add(cameraFollowDelta);
+    this.commit(this.posePosition, target);
+  },
+  commitRelative(target, direction, distance) {
+    this.posePosition.copy(direction).multiplyScalar(distance).add(target);
+    this.commit(this.posePosition, target);
+  },
+};
+function cameraFollowMaxDistance() {
+  return Math.min(CAMERA_FOLLOW_MAX_DISTANCE, controls.maxDistance);
+}
+function setCameraPresetCustom() {
+  cameraFramingPreset = 'custom';
+  if (cameraPresetSelect) cameraPresetSelect.value = 'custom';
+}
+function captureFollowUserFraming({ allowDistanceChange = true } = {}) {
+  if (cameraMode !== CAMERA_FOLLOW) return;
+  cameraFollowOffset.copy(camera.position).sub(controls.target);
+  const distance = cameraFollowOffset.length();
+  if (allowDistanceChange && Number.isFinite(distance) && distance > 0.001
+      && Math.abs(distance - cameraFollowInputStartDistance) > 0.002) {
+    cameraFollowUserDistance = THREE.MathUtils.clamp(distance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+    cameraFollowDynamicDistance = cameraFollowUserDistance;
+    cameraFollowCollisionDistance = cameraFollowUserDistance;
+    cameraFollowOcclusionHoldUntil = 0;
+  }
+  if (distance > 0.001) {
+    cameraFollowUserDirection.copy(cameraFollowOffset).multiplyScalar(1 / distance);
+    cameraFollowResolvedDirection.copy(cameraFollowUserDirection);
+    cameraFollowDesiredDirection.copy(cameraFollowUserDirection);
+    cameraFollowOcclusionCandidateIndex = 0;
+    cameraFollowNextOcclusionProbeAt = 0;
+  }
+  if (cameraFollowAnchorReady) cameraFollowUserFocusOffset.copy(controls.target).sub(cameraFollowAnchor);
+}
+controls.addEventListener('start', () => {
+  if (cameraMode === CAMERA_POV) return;
+  cameraRig.inputActive = true;
+  cameraRig.inputChanged = false;
+  if (cameraMode !== CAMERA_FOLLOW) return;
+  cameraFollowInputStartDistance = camera.position.distanceTo(controls.target);
+  cameraRig.userInteracting = true;
+});
+controls.addEventListener('change', () => {
+  const acceptingMomentum = cameraMode === CAMERA_FOLLOW && performance.now() < cameraRig.inputMomentumUntil;
+  if (!controls.enabled || (!cameraRig.inputActive && !acceptingMomentum)) return;
+  if (cameraRig.inputActive) cameraRig.inputChanged = true;
+  setCameraPresetCustom();
+  if (cameraMode === CAMERA_FOLLOW) {
+    captureFollowUserFraming({ allowDistanceChange: cameraRig.inputActive });
+  }
+});
+controls.addEventListener('end', () => {
+  if (cameraMode === CAMERA_FOLLOW && cameraRig.inputChanged) captureFollowUserFraming();
+  cameraRig.userInteracting = false;
+  cameraRig.inputMomentumUntil = cameraMode === CAMERA_FOLLOW ? performance.now() + 450 : 0;
+  cameraRig.inputActive = false;
+  cameraRig.inputChanged = false;
+});
+
+function resetPovLook() {
+  cameraRig.pov.yawOffset = 0;
+  cameraRig.pov.pitchOffset = 0;
+  cameraRig.pov.lastInputAt = -Infinity;
+  cameraRig.pov.actorId = null;
+  cameraRig.pov.positionReady = false;
+  cameraRig.pov.rotationReady = false;
+}
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (cameraMode !== CAMERA_POV || event.button !== 0 || event.altKey) return;
+  const pov = cameraRig.pov;
+  pov.dragging = true;
+  pov.pointerId = event.pointerId;
+  pov.lastX = event.clientX;
+  pov.lastY = event.clientY;
+  pov.lastInputAt = performance.now();
+  renderer.domElement.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+renderer.domElement.addEventListener('pointermove', (event) => {
+  const pov = cameraRig.pov;
+  if (!pov.dragging || pov.pointerId !== event.pointerId) return;
+  const dx = event.clientX - pov.lastX;
+  const dy = event.clientY - pov.lastY;
+  pov.lastX = event.clientX;
+  pov.lastY = event.clientY;
+  pov.yawOffset = THREE.MathUtils.euclideanModulo(pov.yawOffset - dx * 0.004 + Math.PI, Math.PI * 2) - Math.PI;
+  pov.pitchOffset = THREE.MathUtils.clamp(pov.pitchOffset - dy * 0.0035, -1.25, 1.25);
+  pov.lastInputAt = performance.now();
+  event.preventDefault();
+});
+function endPovLook(event) {
+  const pov = cameraRig.pov;
+  if (!pov.dragging || pov.pointerId !== event.pointerId) return;
+  pov.dragging = false;
+  pov.pointerId = null;
+  pov.lastInputAt = performance.now();
+  if (renderer.domElement.hasPointerCapture?.(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+}
+renderer.domElement.addEventListener('pointerup', endPovLook);
+renderer.domElement.addEventListener('pointercancel', endPovLook);
+
+// Fly look: same drag-to-aim contract as POV, but the yaw/pitch ARE the camera (no bot to lag).
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (cameraMode !== CAMERA_FLY || event.button !== 0 || event.altKey) return;
+  flyCam.dragging = true;
+  flyCam.pointerId = event.pointerId;
+  flyCam.lastX = event.clientX;
+  flyCam.lastY = event.clientY;
+  renderer.domElement.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+renderer.domElement.addEventListener('pointermove', (event) => {
+  if (!flyCam.dragging || flyCam.pointerId !== event.pointerId) return;
+  flyCam.yaw -= (event.clientX - flyCam.lastX) * 0.004;
+  flyCam.pitch = THREE.MathUtils.clamp(flyCam.pitch - (event.clientY - flyCam.lastY) * 0.0035, -1.45, 1.45);
+  flyCam.lastX = event.clientX;
+  flyCam.lastY = event.clientY;
+  event.preventDefault();
+});
+function endFlyLook(event) {
+  if (!flyCam.dragging || flyCam.pointerId !== event.pointerId) return;
+  flyCam.dragging = false;
+  flyCam.pointerId = null;
+  if (renderer.domElement.hasPointerCapture?.(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+}
+renderer.domElement.addEventListener('pointerup', endFlyLook);
+renderer.domElement.addEventListener('pointercancel', endFlyLook);
+// OrbitControls owns the wheel in every other mode, so in flight it is free to trim speed.
+renderer.domElement.addEventListener('wheel', (event) => {
+  if (cameraMode !== CAMERA_FLY) return;
+  flyCam.speed = THREE.MathUtils.clamp(flyCam.speed * (event.deltaY < 0 ? 1.15 : 1 / 1.15), 1, 120);
+  updateCameraButtons();
+  event.preventDefault();
+}, { passive: false });
+let botPovEnabled = false;
+let botStateRecording = false;
+let botStateRecordAllBots = false;  // recorder scope: focused bot (default, as before) vs every bot
+let botStateRecordStartedAt = 0;
+let botStateRecordFrameNow = 0;
+const botStateRecordLines = [];
+const botStateTrace = [];           // {t, id, team, code, changed} rows behind the TSV export
+const BOT_STATE_TRACE_CAP = 20000;  // ring cap: a long session must not grow the heap without bound
+const BOT_STATE_RECORD_CAP = 4000;  // same for the textarea log, which 'All bots' scope fills quickly
+// Both caps trim a block at a time: a 1-row splice at the cap memmoves the whole array on every push,
+// and each log trim also forces a full textarea repaint, so amortize both over SLACK rows.
+const BOT_STATE_TRACE_SLACK = 2048;
+// Heartbeat for the motion columns: emit a `tick` row per bot this often even when its code is
+// unchanged. 0 disables (change-triggered rows only, the pre-2026-07-28 behaviour). At 1 Hz a
+// 40-bot roster fills the 20k ring in ~8 minutes.
+let botStateTraceTickMs = 1000;
+const BOT_STATE_TICK_OPTIONS = [0, 250, 500, 1000, 2000];
+let _traceCountRefreshAt = -Infinity;   // throttles the row-count repaint on the TSV buttons
+const BOT_STATE_RECORD_SLACK = 512;
+let botStateRecordLog = null;
+let botStateRecordDirty = false;
+let botStateRecordRenderedCount = 0; // lines already in the textarea; enables append-only flushes
+let botShotUiDirty = false; // per-shot DOM (ammo buttons + shot log line) flushes once per frame
+let botWeaponUiDirty = false; // per-bot reload start/finish events coalesce to one button rebuild per frame (M8)
+let lastShotSummary = null;
+const botPovForward = new THREE.Vector3();
+const botPovLookAt = new THREE.Vector3();
+const botPovEyeLocal = new THREE.Vector3();
+const botPovStableEye = new THREE.Vector3();
+const botPovDesiredEye = new THREE.Vector3();
+const botPovEyeDelta = new THREE.Vector3();
+const BOT_VIEWER_WEAPON_IDS = ['m1911', 'five_seven', 'm24', 'cz_805_bren', 'rpg'];
+let botWeaponId = 'cz_805_bren';
+const BOT_RELOAD_FALLBACK_MS = 1800;
+let botReloadUntil = null;
+let botReloadWeaponId = null;
+let botAutoRefillOnReload = false;
+let botNoAmmoEnabled = false;
+let botKnifeSecondaryEnabled = true;
+let botSidearmEnabled = true; // every bot carries a pistol behind its primary (bot-sidearm.js)
+const botMovementSettings = {
+  turnStiffness: 30,
+  turnDamping: 10,
+  maxForwardLead: 0.32,
+  workspaceWidthScale: 1,
+  workspaceForwardScale: 1,
+  bobScale: 1,
+  swayScale: 1,
+  bodyFollowRate: 11,
+  runMultiplier: 1.7,
+  // Cyclic locomotion layer (body-locomotion.js): stride phase locked to real footfalls drives
+  // arm swing, hip roll/yaw, counter-rotating shoulders, ankle roll-through and a continuous bob.
+  locoEnabled: 1,
+  locoAmount: 1,        // scales every cyclic amplitude at once, for A/B against the old look
+  stepOverlap: 0.22,    // how much of a swing may overlap the next foot's lift; 0 = strict alternation
+  spineFalloff: 1,      // how the twist spreads up the spine: >1 keeps it in the chest
+};
+// Live-tunable stance model (speed/spread/turn/height factors + the transition timings).
+const botStanceSettings = { ...STANCE_DEFAULTS };
+// Diagnostic-only geometry for the procedural movement model. It deliberately lives beside
+// the bot rather than inside the rig so it can be turned on/off without affecting simulation.
+const botMovementDebug = new THREE.Group();
+botMovementDebug.name = 'botMovementDebug';
+scene.add(botMovementDebug);
+const botMovementDebugParts = { feet: true, limits: true, turn: true, body: true, phase: true, footfall: true, twist: true, trace: true, support: true };
+let botMovementDebugEnabled = false;
+const botMovementDebugArrow = new THREE.ConeGeometry(0.055, 0.15, 6);
+let botMovementDebugLastUpdate = -Infinity;
+const botMovementDebugSphere = new THREE.SphereGeometry(0.045, 8, 6);
+const botMovementDebugMaterials = {
+  left: new THREE.LineBasicMaterial({ color: 0x4fc3f7 }),
+  right: new THREE.LineBasicMaterial({ color: 0xff80ab }),
+  limits: new THREE.LineBasicMaterial({ color: 0x9ccc65 }),
+  plane: new THREE.LineBasicMaterial({ color: 0x78909c }),
+  targetYaw: new THREE.LineBasicMaterial({ color: 0xffb74d }),
+  visualYaw: new THREE.LineBasicMaterial({ color: 0x80deea }),
+  body: new THREE.LineBasicMaterial({ color: 0xfff176 }),
+  headYaw: new THREE.LineBasicMaterial({ color: 0xe1bee7 }),
+  headMarker: new THREE.MeshBasicMaterial({ color: 0xe1bee7 }),
+  leftMarker: new THREE.MeshBasicMaterial({ color: 0x4fc3f7 }),
+  rightMarker: new THREE.MeshBasicMaterial({ color: 0xff80ab }),
+  bodyMarker: new THREE.MeshBasicMaterial({ color: 0xfff176 }),
+  phaseRing: new THREE.LineBasicMaterial({ color: 0x9575cd }),
+  phaseMarker: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+  twistHip: new THREE.LineBasicMaterial({ color: 0xff8a65 }),
+  twistMid: new THREE.LineBasicMaterial({ color: 0xffd54f }),
+  twistShoulder: new THREE.LineBasicMaterial({ color: 0x4dd0e1 }),
+  trace: new THREE.LineBasicMaterial({ color: 0xaed581 }),
+  supportDouble: new THREE.LineBasicMaterial({ color: 0x66bb6a }),
+  supportSingle: new THREE.LineBasicMaterial({ color: 0xef5350 }),
+  supportDoubleMarker: new THREE.MeshBasicMaterial({ color: 0x66bb6a }),
+  supportSingleMarker: new THREE.MeshBasicMaterial({ color: 0xef5350 }),
+};
+
+// The pelvis trace and the footfall flashes have to be sampled EVERY frame: the draw pass below
+// rebuilds at 15 Hz, which would alias the bob into a sawtooth and miss short swings entirely.
+const BOT_LOCO_TRACE_MAX = 180;     // ~3 s of history at 60 Hz
+const BOT_LOCO_LIFT_MS = 900;       // how long a footfall flash lingers
+const botLocoTrace = [];
+const botLocoLifts = [];
+const botLocoPrevStepping = { left: false, right: false };
+function sampleBotLocomotionDebug(now) {
+  const body = botProceduralBody;
+  if (!botMovementDebugEnabled || !body) {
+    if (botLocoTrace.length) botLocoTrace.length = 0;
+    if (botLocoLifts.length) botLocoLifts.length = 0;
+    return;
+  }
+  const p = body.joints.pelvis.position;
+  const last = botLocoTrace[botLocoTrace.length - 1];
+  if (last && last.distanceToSquared(p) > 4) botLocoTrace.length = 0;   // teleport or a bot switch
+  botLocoTrace.push(p.clone());
+  if (botLocoTrace.length > BOT_LOCO_TRACE_MAX) botLocoTrace.shift();
+  for (const side of ['left', 'right']) {
+    const stepping = body.gait.feet[side].stepping;
+    if (stepping && !botLocoPrevStepping[side]) {
+      const f = body.gait.feet[side].current;
+      botLocoLifts.push({ x: f.x, y: f.y, z: f.z, side, t: now });
+    }
+    botLocoPrevStepping[side] = stepping;
+  }
+  while (botLocoLifts.length && now - botLocoLifts[0].t > BOT_LOCO_LIFT_MS) botLocoLifts.shift();
+}
+
+function clearBotMovementDebug() {
+  for (const object of [...botMovementDebug.children]) {
+    botMovementDebug.remove(object);
+    object.traverse((child) => {
+      if (child.geometry && child.geometry !== botMovementDebugSphere && child.geometry !== botMovementDebugArrow) child.geometry.dispose();
+    });
+  }
+}
+
+function addBotMovementDebugLine(points, material, closed = false) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = closed ? new THREE.LineLoop(geometry, material) : new THREE.Line(geometry, material);
+  botMovementDebug.add(line);
+  return line;
+}
+
+function addBotMovementDebugMarker(point, material, size = 1) {
+  const marker = new THREE.Mesh(botMovementDebugSphere, material);
+  marker.position.copy(point);
+  marker.scale.setScalar(size);
+  botMovementDebug.add(marker);
+  return marker;
+}
+
+function addBotMovementDebugArrow(origin, yaw) {
+  const direction = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+  const tip = origin.clone().addScaledVector(direction, 0.42);
+  addBotMovementDebugLine([origin, tip], botMovementDebugMaterials.headYaw);
+  const cone = new THREE.Mesh(botMovementDebugArrow, botMovementDebugMaterials.headMarker);
+  cone.position.copy(tip);
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  botMovementDebug.add(cone);
+  return cone;
+}
+
+function updateBotMovementDebug(now) {
+  const body = botProceduralBody;
+  const shouldDraw = botMovementDebugEnabled && body;
+  botMovementDebug.visible = !!shouldDraw;
+  if (!shouldDraw) {
+    clearBotMovementDebug();
+    return;
+  }
+  // Debug geometry is static between samples; 15 Hz is ample and avoids turning diagnostics
+  // themselves into the expensive part of the viewer.
+  if (now - botMovementDebugLastUpdate < 66) return;
+  botMovementDebugLastUpdate = now;
+  clearBotMovementDebug();
+
+  const pelvis = body.joints.pelvis.position;
+  const { gait, motion } = body;
+  if (botMovementDebugParts.feet) {
+    for (const [key, material, marker] of [
+      ['left', botMovementDebugMaterials.left, botMovementDebugMaterials.leftMarker],
+      ['right', botMovementDebugMaterials.right, botMovementDebugMaterials.rightMarker],
+    ]) {
+      const foot = gait.feet[key];
+      const current = new THREE.Vector3(foot.current.x, foot.current.y + 0.025, foot.current.z);
+      const target = new THREE.Vector3(foot.target.x, foot.target.y + 0.025, foot.target.z);
+      addBotMovementDebugLine([current, target], material);
+      addBotMovementDebugMarker(current, marker, 0.85);
+      addBotMovementDebugMarker(target, marker, 1.3);
+    }
+  }
+  const framePoint = (lx, lz, y = pelvis.y + 0.025) => new THREE.Vector3(
+    pelvis.x + lx * Math.cos(motion.visualYaw) + lz * Math.sin(motion.visualYaw),
+    y,
+    pelvis.z - lx * Math.sin(motion.visualYaw) + lz * Math.cos(motion.visualYaw),
+  );
+  if (botMovementDebugParts.limits) {
+    const ws = motion.workspace;
+    for (const side of [-1, 1]) {
+      const inner = side * ws.minLateral, outer = side * ws.maxLateral;
+      addBotMovementDebugLine([
+        framePoint(inner, -ws.backward), framePoint(outer, -ws.backward),
+        framePoint(outer, ws.forward), framePoint(inner, ws.forward),
+      ], botMovementDebugMaterials.limits, true);
+    }
+    addBotMovementDebugLine([framePoint(0, -ws.backward), framePoint(0, ws.forward)], botMovementDebugMaterials.plane);
+  }
+  if (botMovementDebugParts.turn) {
+    const heading = (yaw) => new THREE.Vector3(
+      pelvis.x + Math.sin(yaw) * 0.65, pelvis.y + 0.18, pelvis.z + Math.cos(yaw) * 0.65,
+    );
+    const origin = new THREE.Vector3(pelvis.x, pelvis.y + 0.18, pelvis.z);
+    addBotMovementDebugLine([origin, heading(motion.targetYaw)], botMovementDebugMaterials.targetYaw);
+    addBotMovementDebugLine([origin, heading(motion.visualYaw)], botMovementDebugMaterials.visualYaw);
+    const headOrigin = body.joints.head.position.clone().add(new THREE.Vector3(0, 0.03, 0));
+    addBotMovementDebugArrow(headOrigin, motion.visualYaw + motion.headYaw);
+  }
+  if (botMovementDebugParts.body) {
+    const support = new THREE.Vector3(motion.supportPosition.x, motion.supportPosition.y + 0.04, motion.supportPosition.z);
+    const visualBody = new THREE.Vector3(motion.bodyPosition.x, motion.bodyPosition.y, motion.bodyPosition.z);
+    addBotMovementDebugLine([support, visualBody], botMovementDebugMaterials.body);
+    addBotMovementDebugMarker(support, botMovementDebugMaterials.bodyMarker, 0.8);
+    addBotMovementDebugMarker(visualBody, botMovementDebugMaterials.bodyMarker, 1.15);
+    addBotMovementDebugMarker(pelvis, botMovementDebugMaterials.bodyMarker, 0.55);
+  }
+
+  // ---- cyclic locomotion layer (body-locomotion.js) ----------------------------------------
+  const M = botMovementDebugMaterials;
+  const pose = body.locomotion && body.locomotion.cfg.enabled ? body.locomotion.pose : null;
+  const TAU = Math.PI * 2;
+
+  // Phase dial: the marker must cross a coloured tick at the exact moment that foot lifts. Drift
+  // between the two is the phase lock slipping, which no other view makes visible.
+  if (botMovementDebugParts.phase && pose) {
+    const y = body.joints.head.position.y + 0.5;
+    const r = 0.30;
+    const at = (ph, rr) => new THREE.Vector3(pelvis.x + Math.sin(ph * TAU) * rr, y, pelvis.z + Math.cos(ph * TAU) * rr);
+    const ring = [];
+    for (let i = 0; i < 36; i++) ring.push(at(i / 36, r));
+    addBotMovementDebugLine(ring, M.phaseRing, true);
+    addBotMovementDebugLine([at(0, r * 0.7), at(0, r * 1.2)], M.left);
+    addBotMovementDebugLine([at(0.5, r * 0.7), at(0.5, r * 1.2)], M.right);
+    addBotMovementDebugLine([new THREE.Vector3(pelvis.x, y, pelvis.z), at(pose.phase, r)], M.phaseRing);
+    addBotMovementDebugMarker(at(pose.phase, r), M.phaseMarker, 1.15 * Math.max(0.25, pose.weight));
+  }
+
+  // Footfall flashes: a dot at each real lift, shrinking as it ages. Read against the dial.
+  if (botMovementDebugParts.footfall) {
+    for (const e of botLocoLifts) {
+      const life = 1 - (now - e.t) / BOT_LOCO_LIFT_MS;
+      if (life <= 0) continue;
+      addBotMovementDebugMarker(new THREE.Vector3(e.x, e.y + 0.03, e.z),
+        e.side === 'left' ? M.leftMarker : M.rightMarker, 2.4 * life);
+    }
+  }
+
+  // Twist bars: hips, mid-spine and shoulders. The hip and shoulder bars must scissor in OPPOSITE
+  // directions; the mid bar shows where the spine falloff slider puts the transition.
+  if (botMovementDebugParts.twist && pose) {
+    const base = motion.visualYaw;
+    const bar = (y, yaw, material, half) => addBotMovementDebugLine([
+      new THREE.Vector3(pelvis.x + Math.cos(yaw) * half, y, pelvis.z - Math.sin(yaw) * half),
+      new THREE.Vector3(pelvis.x - Math.cos(yaw) * half, y, pelvis.z + Math.sin(yaw) * half),
+    ], material);
+    const shoulderY = (body.joints.leftShoulder.position.y + body.joints.rightShoulder.position.y) * 0.5;
+    const midFrac = body.spineCfg ? body.spineCfg.frac.torso : 0.65;
+    bar(pelvis.y + 0.02, base + pose.pelvisYaw, M.twistHip, 0.24);
+    bar(body.joints.torso.position.y, base + pose.shoulderYaw * midFrac, M.twistMid, 0.24);
+    bar(shoulderY, base + pose.shoulderYaw, M.twistShoulder, 0.30);
+  }
+
+  // Pelvis trace: sampled per frame, so a smooth arc means a continuous bob and a sawtooth means
+  // the old once-per-stride tick. This is the clearest before/after of the whole change.
+  if (botMovementDebugParts.trace && botLocoTrace.length > 1) {
+    addBotMovementDebugLine(botLocoTrace, M.trace);
+  }
+
+  // Support line: green while both feet are planted, red during single support. Raising the step
+  // overlap slider should visibly shrink the green.
+  if (botMovementDebugParts.support) {
+    const both = !gait.feet.left.stepping && !gait.feet.right.stepping;
+    const a = new THREE.Vector3(gait.feet.left.current.x, gait.feet.left.current.y + 0.012, gait.feet.left.current.z);
+    const b = new THREE.Vector3(gait.feet.right.current.x, gait.feet.right.current.y + 0.012, gait.feet.right.current.z);
+    addBotMovementDebugLine([a, b], both ? M.supportDouble : M.supportSingle);
+    addBotMovementDebugMarker(a.clone().lerp(b, 0.5), both ? M.supportDoubleMarker : M.supportSingleMarker, 0.7);
+  }
+}
+
+function currentBotWeapon() {
+  return getWeapon(bot?.weapon || botWeaponId) || getWeapon('cz_805_bren');
+}
+
+// Preferred fighting distance for a weapon: longer-range guns want more standoff. Bullet ranges
+// (~65-230m for bot weapons) are mapped down by standoffFactor and clamped inside sight range so
+// the bot can still perceive its target from standoff. standoffFactor 0 collapses all weapons to
+// the min (no weapon linking).
+function botWeaponStandoff(weapon) {
+  const range = weapon?.range ?? 100;
+  const maxStandoff = Math.max(4, botSightDistance() - 4);
+  return Math.min(maxStandoff, Math.max(4, range * botBehaviorSettings.standoffFactor));
+}
+
+// How far this bot can see. The slider is the line's number; a role scales it (sniper 1.5x), so
+// perception, the standoff clamp and the tactical rings all move together for that bot.
+function botSightDistanceFor(actor) {
+  return botBehaviorSettings.sightDistance * getRole(actor?.role).sightScale;
+}
+function botSightDistance() { return botSightDistanceFor(activeBotActor); }
+
+function setBotEquippedWeapon(weaponId) {
+  if (!bot || !activeBotActor || activeBotActor.equippedWeapon === weaponId) return;
+  activeBotActor.equippedWeapon = weaponId;
+  bot.tool = weaponId;
+  destroyBotWeaponMount();
+  syncBotStowMounts(activeBotActor);   // what left the hands goes on the back/hip
+  if (botProceduralBody) void createBotWeaponMount(botProceduralBody, activeBotActor);
+}
+function setBotWeapon(id) {
+  if (!BOT_VIEWER_WEAPON_IDS.includes(id)) return;
+  botWeaponId = id;
+  if (!bot) return;
+  for (const actor of botActors) assignActorWeapon(actor, id);
+  updateBotWeaponButtons();
+}
+
+function assignActorWeapon(actor, id) {
+  if (!BOT_VIEWER_WEAPON_IDS.includes(id)) return;
+  withBotActor(actor, () => {
+    // bot.weapon is the weapon IN HAND (it swaps at runtime); primaryWeapon/sidearm are the loadout.
+    bot.primaryWeapon = id;
+    bot.sidearm = sidearmForRole(actor.role, id, actor.spreadSeed ??= botSeedFromId(actor.id));
+    bot.weapon = id;
+    bot.tool = id;
+    activeBotActor.equippedWeapon = id;
+    activeBotActor.swapUntil = 0;
+    syncBotStowMounts(activeBotActor);
+    bot.ammoByWeapon = new Map([[id, defaultBotAmmoFor(getWeapon(id))]]);
+    if (bot.sidearm) bot.ammoByWeapon.set(bot.sidearm, defaultBotAmmoFor(getWeapon(bot.sidearm)));
+    botReloadUntil = null;
+    botReloadWeaponId = null;
+    destroyBotWeaponMount();
+    if (botProceduralBody) void createBotWeaponMount(botProceduralBody, activeBotActor);
+  });
+}
+
+// The backup a role brings. Most roles carry a pistol picked per bot; a role may name its own gun
+// (the technical's rifle behind the rocket), and falls back to a pistol if that IS its primary.
+function sidearmForRole(roleId, primaryId, seed) {
+  const named = getRole(roleId).sidearm;
+  if (named && named !== primaryId) return named;
+  return pickSidearmId(primaryId, seed);
+}
+
+// Slot helpers. The sidearm is data on the entity but only *used* while the toggle is on, so
+// flipping it off mid-round holsters every drawn pistol through the normal swap path.
+function botHasSidearm() { return botSidearmEnabled && !!bot?.sidearm; }
+function botOnSidearm() { return !!bot?.sidearm && bot.weapon === bot.sidearm; }
+function botSwapping(now) { return (activeBotActor?.swapUntil ?? 0) > now; }
+
+// Put `slot` in hand: the draw costs SIDEARM_DRAW_MS of no-fire time and abandons any reload in
+// progress -- swapping is what a bot does *because* it has no time to reload.
+function swapBotWeaponSlot(slot, now) {
+  const id = slot === 'sidearm' ? bot?.sidearm : bot?.primaryWeapon;
+  if (!id || !bot || bot.weapon === id) return false;
+  bot.weapon = id;
+  botReloadUntil = null;
+  botReloadWeaponId = null;
+  activeBotActor.swapUntil = now + SIDEARM_DRAW_MS;
+  botWeaponUiDirty = true;
+  recordBotEvent(activeBotActor, `swap to ${slot} (${id})`, now);
+  if (slot === 'sidearm') sayBotLine(bot, activeBotActor, 'sidearm', now);
+  return true;
+}
+
+// One reused ctx (M1): every field is overwritten per bot per frame.
+const _slotCtx = { active: 'primary', hasSidearm: false, swapping: false, inGunfight: false, quietMs: Infinity,
+  primary: null, sidearm: null, swapOnDryMag: true, closeRange: 0, targetDist: Infinity };
+const _ammoFlags = { autoRefill: false, noAmmo: false };
+// Decide and perform the swap for the bound bot. `inGunfight` = someone to shoot or someone
+// shooting at us; the lull clock is what sends a pistol-carrying bot back to its primary.
+// `targetDist` is only read by roles with a closeRange (the sniper drawing on a rusher).
+function updateBotWeaponSlot(now, inGunfight, targetDist = Infinity) {
+  if (!bot) return;
+  if (inGunfight) activeBotActor.lastGunfightAt = now;
+  if (!bot.sidearm) return;
+  const role = getRole(activeBotActor.role);
+  _slotCtx.active = botOnSidearm() ? 'sidearm' : 'primary';
+  _slotCtx.hasSidearm = botHasSidearm();
+  _slotCtx.swapping = botSwapping(now);
+  _slotCtx.inGunfight = inGunfight;
+  _slotCtx.quietMs = now - (activeBotActor.lastGunfightAt ?? -Infinity);
+  _slotCtx.primary = ensureBotAmmo(bot.primaryWeapon ?? bot.weapon);
+  _slotCtx.sidearm = ensureBotAmmo(bot.sidearm);
+  _slotCtx.swapOnDryMag = role.swapOnDryMag;
+  _slotCtx.closeRange = role.closeRange;
+  _slotCtx.targetDist = targetDist;
+  const want = chooseWeaponSlot(_slotCtx);
+  if (want) swapBotWeaponSlot(want, now);
+}
+
+// Ladder input: a bot is only out of the fight when the gun in hand AND the one on its belt are dry.
+function botOutOfAllAmmo() {
+  _ammoFlags.autoRefill = botAutoRefillOnReload;
+  _ammoFlags.noAmmo = botNoAmmoEnabled;
+  const onSidearm = botOnSidearm();
+  return outOfAllAmmo({
+    active: ensureBotAmmo(bot.weapon),
+    other: ensureBotAmmo(onSidearm ? (bot.primaryWeapon ?? bot.weapon) : (bot.sidearm ?? bot.weapon)),
+    hasSidearm: botHasSidearm(),
+  }, _ammoFlags);
+}
+
+function randomizeBotWeapons() {
+  if (!botActors.length) return;
+  for (const actor of botActors) assignActorWeapon(actor, BOT_VIEWER_WEAPON_IDS[Math.floor(Math.random() * BOT_VIEWER_WEAPON_IDS.length)]);
+  botWeaponId = activeBotActor?.entity.weapon || botWeaponId;
+  updateBotWeaponButtons();
+}
+
+function defaultBotAmmoFor(weapon = currentBotWeapon()) {
+  const magazineSize = Math.max(0, Math.round(weapon?.magazineSize ?? 0));
+  return botNoAmmoEnabled ? { mag: 0, reserve: 0, magazineSize } : { mag: magazineSize, reserve: Math.max(0, Math.round(weapon?.reserveAmmo ?? 0)), magazineSize };
+}
+function ensureBotAmmo(weaponId = bot?.weapon || botWeaponId) {
+  if (!bot) return defaultBotAmmoFor(getWeapon(weaponId));
+  bot.ammoByWeapon ??= new Map();
+  let ammo = bot.ammoByWeapon.get(weaponId);
+  if (!ammo) {
+    ammo = defaultBotAmmoFor(getWeapon(weaponId));
+    bot.ammoByWeapon.set(weaponId, ammo);
+  }
+  return ammo;
+}
+function reloadBotWeapon(now = performance.now()) {
+  // Knife no longer blocks a reload: it was one half of a deadlock -- knife is entered only when dry,
+  // and a dry bot could never refill while holding it, so the state was permanent. bot.weapon is still
+  // the gun slot (the knife is only what's equipped), so this reloads the firearm as normal.
+  if (!bot || botReloadUntil != null || botNoAmmoEnabled) return false;
+  if (botState === BOT_KNIFE) botDiag.knifeReloadUnblocked++;
+  if (botSwapping(now)) return false; // hands are busy drawing the other gun
+  const ammo = ensureBotAmmo();
+  if (ammo.mag >= ammo.magazineSize || (!botAutoRefillOnReload && ammo.reserve <= 0)) return false;
+  const sequence = botWeaponMount?.weaponId === bot.weapon ? botWeaponMount.reloadSequence : null;
+  const durationMs = Math.max(1, Math.round((sequence?.duration ?? BOT_RELOAD_FALLBACK_MS / 1000) * 1000));
+  botReloadUntil = now + durationMs;
+  botReloadWeaponId = bot.weapon;
+  if (sequence) botWeaponMount.controller.play('reload');
+  botWeaponUiDirty = true;
+  sayBotLine(bot, activeBotActor, 'reloading', now);
+  return true;
+}
+function updateBotReload(now, suppressStart = false) {
+  if (!bot) return;
+  if (botReloadUntil != null && now >= botReloadUntil) {
+    const ammo = ensureBotAmmo(botReloadWeaponId);
+    if (botAutoRefillOnReload) {
+      ammo.mag = ammo.magazineSize;
+    } else {
+      const moved = Math.min(ammo.magazineSize - ammo.mag, ammo.reserve);
+      ammo.mag += moved;
+      ammo.reserve -= moved;
+    }
+    botReloadUntil = null;
+    botReloadWeaponId = null;
+    botWeaponUiDirty = true;
+  }
+  if (!suppressStart && botReloadUntil == null) {
+    const ammo = ensureBotAmmo();
+    if (ammo.mag <= 0 && (botAutoRefillOnReload || ammo.reserve > 0)) reloadBotWeapon(now);
+  }
+}
+
+function applyBotMovementSettings() {
+  const apply = (body) => {
+    if (!body) return;
+    body.turnCfg.stiffness = botMovementSettings.turnStiffness;
+    body.turnCfg.damping = botMovementSettings.turnDamping;
+    Object.assign(body.movementTuning, {
+    maxForwardLead: botMovementSettings.maxForwardLead,
+    workspaceWidthScale: botMovementSettings.workspaceWidthScale,
+    workspaceForwardScale: botMovementSettings.workspaceForwardScale,
+    bobScale: botMovementSettings.bobScale, swayScale: botMovementSettings.swayScale, bodyFollowRate: botMovementSettings.bodyFollowRate,
+    });
+    body.gait.cfg.stepOverlap = botMovementSettings.stepOverlap;
+    if (body.spineCfg) body.spineCfg.falloff = botMovementSettings.spineFalloff;
+    if (body.locomotion) {
+      const l = body.locomotion.cfg, a = botMovementSettings.locoAmount;
+      l.enabled = !!botMovementSettings.locoEnabled;
+      // One amount slider scales every amplitude off the module defaults, so the whole layer can be
+      // dialled back to nothing without losing the individually tuned ratios between the channels.
+      l.armSwing = LOCOMOTION_DEFAULTS.armSwing * a;
+      l.pelvisRoll = LOCOMOTION_DEFAULTS.pelvisRoll * a;
+      l.pelvisYaw = LOCOMOTION_DEFAULTS.pelvisYaw * a;
+      l.torsoLean = LOCOMOTION_DEFAULTS.torsoLean * a;
+      l.bob = LOCOMOTION_DEFAULTS.bob * a;
+      l.sway = LOCOMOTION_DEFAULTS.sway * a;
+      l.heelStrike = LOCOMOTION_DEFAULTS.heelStrike * a;
+      l.toeOff = LOCOMOTION_DEFAULTS.toeOff * a;
+    }
+  };
+  apply(botProceduralBody);
+  for (const actor of botActors) apply(actor.body);
+}
+
+
+
+let botWeaponMount = null;
+let botWeaponMountToken = 0;
+let botWeaponDataPromise = null;
+// weaponId -> Promise<{ template, bakedAnchors }>; owns the shared geometries/materials
+// for the app's lifetime so every bot holding the same weapon clones (not reloads) it.
+const botWeaponTemplateCache = new Map();
+
+function destroyBotWeaponMount(actor = activeBotActor) {
+  const mount = actor?.weaponMount ?? botWeaponMount;
+  const token = (actor?.weaponMountToken ?? botWeaponMountToken) + 1;
+  if (actor) actor.weaponMountToken = token;
+  botWeaponMountToken = token;
+  if (!mount) return;
+  // Rig was never scene-added (M10) and its geometry/materials are owned by
+  // botWeaponTemplateCache (shared across mounts), so there is nothing to detach or dispose.
+  if (actor) actor.weaponMount = null;
+  botWeaponMount = null;
+}
+
+function loadBotWeaponMountData() {
+  if (!botWeaponDataPromise) {
+    botWeaponDataPromise = Promise.all([
+      fetch('./weapon-anchors.json', { cache: 'no-store' }).then((response) => response.json()),
+      fetch('./weapon-poses.json', { cache: 'no-store' }).then((response) => response.json()),
+    ]).catch((error) => { botWeaponDataPromise = null; throw error; });
+  }
+  return botWeaponDataPromise;
+}
+
+function normalizeBotWeaponModel(model, targetSize) {
+  const box = new THREE.Box3(), size = new THREE.Vector3();
+  model.updateMatrixWorld(true);
+  box.setFromObject(model); box.getSize(size);
+  if (size.x >= size.y && size.x >= size.z) model.rotation.y = Math.PI * 0.5;
+  else if (size.y >= size.x && size.y >= size.z) model.rotation.x = Math.PI * 0.5;
+  model.updateMatrixWorld(true);
+  box.setFromObject(model); box.getSize(size);
+  model.scale.multiplyScalar(targetSize / Math.max(size.x, size.y, size.z, 1e-6));
+  model.updateMatrixWorld(true);
+  box.setFromObject(model);
+  model.position.sub(box.getCenter(new THREE.Vector3()));
+  model.updateMatrixWorld(true);
+  return model.matrixWorld.clone();
+}
+
+function bakeBotWeaponAnchors(rawAnchors, matrix) {
+  const rotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(matrix));
+  const anchors = {};
+  for (const key in rawAnchors) {
+    const raw = rawAnchors[key];
+    const position = new THREE.Vector3(...raw.p).applyMatrix4(matrix);
+    const quaternion = rotation.clone().multiply(new THREE.Quaternion(...(raw.q || [0, 0, 0, 1])));
+    anchors[key] = { p: [position.x, position.y, position.z], q: [quaternion.x, quaternion.y, quaternion.z, quaternion.w] };
+  }
+  return anchors;
+}
+
+function loadBotWeaponTemplate(weaponId, def, rawAnchors) {
+  if (!botWeaponTemplateCache.has(weaponId)) {
+    const promise = attachDracoLoader(new GLTFLoader()).loadAsync(def.model).then((gltf) => {
+      const template = gltf.scene;
+      const normalizedMatrix = normalizeBotWeaponModel(template, 0.62);
+      const bakedAnchors = bakeBotWeaponAnchors(rawAnchors, normalizedMatrix);
+      // Instanced rendering (weapon-part-batches): bake each sub-mesh's template-root-relative
+      // matrix once; mounts emit weaponView.matrixWorld × localMatrix per frame. Skinned meshes
+      // (m1911, cz_805_bren, mk2_grenade) get their never-animated bone pose frozen into static
+      // geometry — their authored node pose is not the skinned pose, so raw geometry renders
+      // guns rotated out of the hands.
+      template.updateMatrixWorld(true);
+      const instanceParts = [];
+      template.traverse((obj) => {
+        if (!obj.isMesh) return;
+        const geometry = obj.isSkinnedMesh ? bakeSkinnedGeometry(THREE, obj) : obj.geometry;
+        instanceParts.push({ geometry, material: obj.material, localMatrix: obj.matrixWorld.clone() });
+      });
+      return { template, bakedAnchors, instanceParts };
+    }).catch((error) => {
+      botWeaponTemplateCache.delete(weaponId);
+      throw error;
+    });
+    botWeaponTemplateCache.set(weaponId, promise);
+  }
+  return botWeaponTemplateCache.get(weaponId);
+}
+
+async function createBotWeaponMount(bodyRef, actor = activeBotActor) {
+  const entity = actor?.entity ?? bot;
+  const weaponId = actor?.equippedWeapon ?? entity?.weapon;
+  const def = getWeapon(weaponId);
+  if (actor) actor.carryLocomotion = null;   // snap the new weapon's carry instead of gliding the old one's
+  if (!weaponId || !def?.model || !def.thirdPersonHold) return;
+  const token = (actor?.weaponMountToken ?? botWeaponMountToken) + 1;
+  if (actor) actor.weaponMountToken = token;
+  botWeaponMountToken = token;
+  try {
+    const [anchorData, poseData] = await loadBotWeaponMountData();
+    const rawAnchors = anchorData?.[weaponId]?.ikAnchors || {};
+    if (token !== actor?.weaponMountToken || bodyRef !== actor?.body) return;
+    const reloadSequence = poseData?.reloadSequence?.[weaponId] ||
+      (rawAnchors.magwell && rawAnchors.chargingHandle ? {
+        duration: 1.45,
+        commitAmmoAt: 1.05,
+        poses: { aimed: poseData?.weaponPoses?.aimed, reloadRaise: poseData?.weaponPoses?.reloadRaise },
+        keys: [
+          { t: 0, weaponPose: 'aimed', right: 'rightGrip', left: 'leftGrip' },
+          { t: 0.18, weaponPose: 'reloadRaise', right: 'rightGrip', left: 'magwell' },
+          { t: 0.35, left: { body: [0.12, -0.3, 0.26] }, event: 'detachMagazine' },
+          { t: 0.68, left: 'beltMagazine', event: 'spawnFreshMagazine' },
+          { t: 0.95, left: 'magwell', event: 'insertMagazine' },
+          { t: 1.15, left: 'chargingHandle', event: 'grabChargingHandle' },
+          { t: 1.28, left: { weaponAnchor: 'chargingHandle', offset: [0, 0, -0.12] }, event: 'pullChargingHandle' },
+          { t: 1.38, left: 'leftGrip', weaponPose: 'aimed', event: 'releaseChargingHandle' },
+        ],
+      } : null);
+
+    const { bakedAnchors, instanceParts } = await loadBotWeaponTemplate(weaponId, def, rawAnchors);
+    if (token !== actor?.weaponMountToken || bodyRef !== actor?.body) return;
+    // castShadow off (M5): held guns fall outside the shadow box, so the shadow pass is pure cost.
+    if (!botWeaponBatches) botWeaponBatches = createWeaponPartBatches({ THREE, scene, castShadow: false });
+
+    // No per-bot model clone: the rig is a transform-only hierarchy (plus anchor markers) and
+    // the gun renders from the shared instancing pool via flushWeaponMounts().
+    const weaponRig = new THREE.Group();
+    const weaponAdjust = new THREE.Group();
+    const weaponFrame = new THREE.Group();
+    const weaponView = new THREE.Group();
+    weaponFrame.rotation.y = Math.PI;
+    weaponRig.add(weaponAdjust);
+    weaponAdjust.add(weaponFrame);
+    weaponFrame.add(weaponView);
+    const muzzleAnchor = bakedAnchors.muzzle?.p;
+    const barrelReferenceAnchor = bakedAnchors.rightGrip?.p || bakedAnchors.leftGrip?.p;
+    const muzzleMarker = muzzleAnchor ? new THREE.Object3D() : null;
+    const barrelReferenceMarker = barrelReferenceAnchor ? new THREE.Object3D() : null;
+    if (muzzleMarker) { muzzleMarker.position.fromArray(muzzleAnchor); weaponView.add(muzzleMarker); }
+    if (barrelReferenceMarker) { barrelReferenceMarker.position.fromArray(barrelReferenceAnchor); weaponView.add(barrelReferenceMarker); }
+    // Static locals frozen once (M10): weaponFrame + markers never move after setup.
+    for (const node of [weaponFrame, muzzleMarker, barrelReferenceMarker]) {
+      if (node) { node.matrixAutoUpdate = false; node.updateMatrix(); }
+    }
+    // Rig is never scene-added (M10): nothing renders from it, so the renderer's scene walk would only duplicate flushWeaponMount's walk.
+
+    const controller = createWeaponPoseController({
+      THREE,
+      body: bodyRef,
+      weaponView,
+      getWeaponDef: (id) => id === weaponId ? {
+        id,
+        recoil: def.recoil ?? 0.6,
+        ikAnchors: bakedAnchors,
+        weaponPoses: poseData?.weaponPoses || {},
+        reloadSequence,
+      } : {},
+    });
+    controller.setWeapon(weaponId);
+    // placed: the rig is built at identity and only positioned by updateBotWeaponMount. The mount
+    // can be assigned mid-frame (async load), so flushing before that draws a full-size gun at the
+    // world origin for a frame -- flushWeaponMount waits for this flag.
+    const mount = { weaponRig, weaponAdjust, weaponView, controller, def, weaponId, reloadSequence, muzzleMarker, barrelReferenceMarker, instanceParts, placed: false };
+    if (actor) actor.weaponMount = mount;
+    if (activeBotActor === actor) botWeaponMount = mount;
+    if (activeBotActor === actor) updateBotWeaponButtons();
+  } catch (error) {
+    if (token === actor?.weaponMountToken) console.warn('[bot-viewer] failed to load weapon mount', error);
+  }
+}
+
+// Per-frame mount scratch (M1): quats/eulers/opts reused across bots, fully consumed per call.
+const _mountRootEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _mountRootQuat = new THREE.Quaternion();
+const _mountHoldEuler = new THREE.Euler();
+const _mountHoldQuat = new THREE.Quaternion();
+const _mountLockOpts = { lockPosePosition: 'lowReady' };
+const _mountNoOpts = {};
+// Resolved (stance x locomotion) hold + the scratch the one-handed dash tuck is built in.
+const _mountHold = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+const _mountLoco = { stance: STANCE_STAND, aiming: false, moving: false };
+const _dashRight = new THREE.Vector3(), _dashFwd = new THREE.Vector3(), _dashHand = new THREE.Vector3();
+const CARRY_MOVING_SPEED = 0.35;   // m/s above which a standing bot shows the walk carry, not idle
+// Where the freed support hand goes on a dash: tucked in front of the chest, elbow turned outward.
+const DASH_HAND_FWD = 0.16, DASH_HAND_SIDE = 0.14, DASH_HAND_UP = -0.04;
+function updateBotWeaponMount(dt, mid) {
+  if (!botWeaponMount || botWeaponMount.weaponId !== (activeBotActor?.equippedWeapon ?? bot?.weapon)) return;
+  const { weaponRig, weaponAdjust, controller, def, muzzleMarker, barrelReferenceMarker } = botWeaponMount;
+  const actor = activeBotActor;
+  // Carry resolve. locomotionFor is the SINGLE source of truth for "is this bot aiming": deriving
+  // isAiming back out of it is what keeps the pose, the barrel solve and the off hand from disagreeing.
+  _mountLoco.stance = actor?.stance ?? STANCE_STAND;
+  // Every state that FIRES trains the weapon, or it shoots down a cross-body carry. Enforced against
+  // the FSM's actual fireBotShot call sites by test-bot-fire-aim-sync.mjs.
+  _mountLoco.aiming = botState === BOT_AIM || botState === BOT_FIRE || botState === BOT_FLEE ||
+    botState === BOT_COVER_MOVE || botState === BOT_COVER_HOLD ||
+    botState === MEDIC_MOVE || botState === MEDIC_TEND;
+  _mountLoco.moving = Math.hypot(bot.velocity.x, bot.velocity.z) > CARRY_MOVING_SPEED;
+  const locomotion = locomotionFor(_mountLoco);
+  const carrying = isCarryLocomotion(locomotion) && hasCarryVocabulary(def);
+  const carryTarget = carryDeltaFor(def, locomotion, actor?.stanceWeights);
+  if (actor) {
+    // Snap on the first frame (or straight after a weapon swap) so the gun never glides in from a
+    // stale carry; ease every frame after, at the same rate the rig blends its stance weights.
+    actor.carryBlend = actor.carryLocomotion == null
+      ? snapCarryBlend(actor.carryBlend, carryTarget)
+      : stepCarryBlend(actor.carryBlend, carryTarget, dt);
+  }
+  const hold = resolveWeaponHold(def, actor?.stanceWeights, actor?.carryBlend, _mountHold);
+  const visualBody = botProceduralBody;
+  const visualTorso = visualBody?.joints.torso;
+  const motion = visualBody?.motion;
+  // The authored holds (thirdPersonHold/crouchHold/proneHold) live in the GROUND-ANCHORED, stance-
+  // INVARIANT frame they were authored and are rendered in everywhere else: `terrain + 1.5` at the
+  // body's smoothed XZ (body-preview-v3.html:3925, environment-viewer.html). Mounting to the torso
+  // joint instead double-counts every stance -- the torso itself already drops ~0.75 m into a crouch
+  // (pelvisDrop 0.62 + torsoDrop 0.25), and crouchHold then drops it ~1.0 m more, which put the gun
+  // under the floor with the IK hands chasing it down. Prone double-counted the same way via
+  // proneCfg's torso offsets.
+  //
+  // Bob and sway are therefore re-added EXPLICITLY rather than inherited through the torso, which
+  // cannot supply them without also dragging the stance pose in. 1.5 m is above the bot's OWN feet,
+  // not world zero, or the gun hangs at a fixed height while the bot walks over terrain.
+  const feetY = bot.capsule.start.y - bot.capsule.radius;
+  const yawOnly = motion?.visualYaw ?? bot.yaw;
+  const gaitW = 1 - (actor?.stanceWeights?.prone01 ?? 0);   // a prone body neither bobs nor sways
+  const sway = (motion?.sway ?? 0) * gaitW;
+  const weaponX = (motion?.bodyPosition.x ?? mid.x) + Math.cos(yawOnly) * sway;   // body right = (cos, -sin)
+  const weaponZ = (motion?.bodyPosition.z ?? mid.z) - Math.sin(yawOnly) * sway;
+  const weaponY = feetY + 1.5 + (motion?.bob ?? 0) * gaitW;
+  const headYaw = motion?.headYaw ?? 0;
+  const bodyYaw = yawOnly + headYaw;
+  const rootRotation = _mountRootQuat.setFromEuler(_mountRootEuler.set(0, bodyYaw, 0, 'YXZ'));
+  const holdRotation = _mountHoldQuat.setFromEuler(_mountHoldEuler.set(hold.rotation[0], hold.rotation[1], hold.rotation[2], 'XYZ'));
+  weaponRig.position.set(weaponX, weaponY, weaponZ);
+  weaponRig.quaternion.copy(rootRotation);
+  weaponAdjust.position.fromArray(hold.position);
+  weaponAdjust.quaternion.copy(holdRotation);
+  weaponAdjust.scale.setScalar(hold.scale ?? 1);
+  botWeaponMount.placed = true;   // rig now holds a real transform; safe to instance it
+  // No forced full-subtree matrixWorld walk here: controller.update() below reads weaponView's
+  // world transform via updateWorldMatrix(true, false), which walks this ancestor chain (and
+  // only this chain) itself; the renderer updates the remaining (unread) mesh subtree per-frame.
+  const isAiming = locomotion === LOCOMOTION_AIM;
+  controller.setAiming(isAiming ? 1 : 0);
+  // Reload poses deliberately translate the rifle to expose the magazine and
+  // charging handle, so preserve those authored offsets.
+  const lockAimedPosition = isAiming && controller.getAction() !== 'reload';
+  // The third-person hold already places the CZ (and every other bot weapon) in
+  // the hands. While aiming, keep that local placement and rotate around it;
+  // do not also apply the aimed pose's authored translation under weaponAdjust.
+  controller.update(dt, lockAimedPosition ? _mountLockOpts : _mountNoOpts);
+  // A carry deliberately points the weapon away from the target, so it must never be barrel-solved
+  // onto the aim point -- that would undo the entire muzzle-down/up pose.
+  if (!carrying && lockAimedPosition && botHasAimPoint && alignMountedWeaponToPoint(botAimPoint)) {
+    // The controller resolves the arm targets from weaponView. Refresh them after
+    // the barrel solve so both hands follow the corrected held-gun transform.
+    controller.update(0, _mountLockOpts);
+  }
+  // One-handed dash: take the support hand off the weapon and tuck it at the chest, elbow outward.
+  // Written AFTER controller.update, which drives both hands to their grips. Only touched on a
+  // change, so the medic/heal overlays that also own the left arm are not fought every frame.
+  const oneHanded = carrying && isOneHanded(locomotion);
+  if (actor && visualTorso && (oneHanded || isOneHanded(actor.carryLocomotion))) {
+    if (oneHanded) {
+      _dashRight.set(1, 0, 0).applyQuaternion(visualTorso.quaternion);  // body right, as the rig derives it
+      _dashFwd.set(0, 0, 1).applyQuaternion(visualTorso.quaternion);
+      _dashHand.copy(visualTorso.position)
+        .addScaledVector(_dashFwd, DASH_HAND_FWD)
+        .addScaledVector(_dashRight, -DASH_HAND_SIDE);
+      _dashHand.y += DASH_HAND_UP;
+      visualBody?.setArmTarget('left', { position: _dashHand, weight: 1 });
+    } else if (actor.poseMode === 'none') {
+      visualBody?.setArmTarget('left', null);   // release only if no pose overlay owns the arm
+    }
+  }
+  if (actor) actor.carryLocomotion = locomotion;
+}
+
+// ---- stowed weapons: whatever the bot is NOT holding rides its body (long guns slung across the
+// back, pistols on the right hip). Cheap by construction: no rig, no pose controller, no anchors --
+// just a per-frame matrix into the SAME instancing pool as the held gun, using a reduced part list
+// (the biggest sub-meshes only), since a stowed gun is read as a silhouette.
+const STOW_LOD_COVERAGE = 0.9;   // keep the largest sub-meshes covering this share of the vertices
+const STOW_LOD_MAX_PARTS = 2;
+// Torso-local (metres), applied after the body yaw; +X is the bot's right, +Z its facing.
+// Templates are normalized with their long axis on +Z, so the X rotation stands the gun up, Y sets
+// the diagonal, and Z rolls it about its own barrel. `scale` multiplies the weapon's authored
+// thirdPersonHold scale -- rifles are 2x and pistols 0.68x, so a flat number would render a slung
+// rifle at half size.
+const STOW_PLACEMENTS = {
+  back: { position: [0.02, -0.06, -0.20], rotation: [-Math.PI / 2, 0.61, 0], scale: 0.95 },
+  hip: { position: [0.22, -0.32, 0.02], rotation: [Math.PI / 2, 0.25, 0], scale: 0.95 },
+};
+const stowPartsCache = new Map();   // weaponId -> Promise<parts[] | null>
+
+function buildStowParts(instanceParts) {
+  const scored = instanceParts
+    .map((part) => ({ part, verts: part.geometry?.attributes?.position?.count ?? 0 }))
+    .sort((a, b) => b.verts - a.verts);
+  const total = scored.reduce((sum, s) => sum + s.verts, 0) || 1;
+  const kept = [];
+  let covered = 0;
+  for (const s of scored) {
+    if (kept.length >= STOW_LOD_MAX_PARTS || covered / total >= STOW_LOD_COVERAGE) break;
+    kept.push(s.part);
+    covered += s.verts;
+  }
+  return kept.length ? kept : instanceParts;
+}
+
+function stowPlacementFor(weaponId) {
+  return PISTOL_IDS.includes(weaponId) ? STOW_PLACEMENTS.hip : STOW_PLACEMENTS.back;
+}
+
+// Shares the held gun's template cache (same geometries/materials => same instancing buckets), so
+// the real anchors must be passed through: a template first loaded from here would otherwise bake
+// empty anchors for the held path.
+function loadStowParts(weaponId) {
+  if (!stowPartsCache.has(weaponId)) {
+    const def = getWeapon(weaponId);
+    if (!def?.model) return Promise.resolve(null);
+    stowPartsCache.set(weaponId, loadBotWeaponMountData()
+      .then(([anchorData]) => loadBotWeaponTemplate(weaponId, def, anchorData?.[weaponId]?.ikAnchors || {}))
+      .then(({ instanceParts }) => buildStowParts(instanceParts))
+      .catch((error) => { console.warn('[bot-viewer] failed to load stowed weapon', error); return null; }));
+  }
+  return stowPartsCache.get(weaponId);
+}
+
+// The loadout minus what's in hand: '' when nothing is stowed. Knife/grenade in hand stows BOTH guns.
+function stowKeyFor(actor) {
+  const entity = actor?.entity;
+  if (!entity) return '';
+  const held = actor.equippedWeapon;
+  const ids = [entity.primaryWeapon, botSidearmEnabled ? entity.sidearm : null];
+  return ids.filter((id) => id && id !== held).join('|');
+}
+
+// Rebuilt only when the stowed set actually changes (weapon assignment, a sidearm swap, the toggle).
+function syncBotStowMounts(actor) {
+  const key = stowKeyFor(actor);
+  if (actor.stowKey === key) return;
+  actor.stowKey = key;
+  actor.stowMounts = [];
+  const token = (actor.stowToken ?? 0) + 1;
+  actor.stowToken = token;
+  for (const weaponId of key ? key.split('|') : []) {
+    void Promise.resolve(loadStowParts(weaponId)).then((parts) => {
+      if (actor.stowToken !== token || !parts) return;
+      const placement = stowPlacementFor(weaponId);
+      const scale = placement.scale * (getWeapon(weaponId)?.thirdPersonHold?.scale ?? 1);
+      actor.stowMounts.push({ weaponId, parts, placement, scale });
+    });
+  }
+}
+
+const _stowWorld = new THREE.Matrix4();
+const _stowPartMatrix = new THREE.Matrix4();
+const _stowPos = new THREE.Vector3();
+const _stowOffset = new THREE.Vector3();
+const _stowQuat = new THREE.Quaternion();
+const _stowLocalQuat = new THREE.Quaternion();
+const _stowYawQuat = new THREE.Quaternion();
+const _stowEuler = new THREE.Euler();
+const _stowScale = new THREE.Vector3();
+// Rides the torso joint (procedural body only -- a capsule bot has nothing to hang a gun on).
+function flushStowedWeapons(actor) {
+  if (!botWeaponBatches || !actor.stowMounts?.length) return;
+  const torso = actor.body?.joints?.torso;
+  if (!torso) return;
+  const yaw = actor.body?.motion?.visualYaw ?? actor.entity?.yaw ?? 0;
+  _stowYawQuat.setFromEuler(_stowEuler.set(0, yaw, 0, 'YXZ'));
+  for (const stow of actor.stowMounts) {
+    const { position, rotation } = stow.placement;
+    _stowOffset.set(position[0], position[1], position[2]).applyQuaternion(_stowYawQuat);
+    _stowPos.copy(torso.position).add(_stowOffset);
+    _stowLocalQuat.setFromEuler(_stowEuler.set(rotation[0], rotation[1], rotation[2], 'XYZ'));
+    _stowQuat.copy(_stowYawQuat).multiply(_stowLocalQuat);
+    _stowWorld.compose(_stowPos, _stowQuat, _stowScale.setScalar(stow.scale));
+    for (const part of stow.parts) {
+      _stowPartMatrix.multiplyMatrices(_stowWorld, part.localMatrix);
+      botWeaponBatches.add(part.geometry, part.material, _stowPartMatrix);
+    }
+  }
+}
+
+function destroyBotProceduralBody() {
+  destroyBotWeaponMount();
+  clearBotMovementDebug();
+  botMovementDebug.visible = false;
+  botMovementDebugLastUpdate = -Infinity;
+  if (!botProceduralBody) return;
+  botProceduralBody.destroy();
+  botProceduralBody = null;
+}
+
+function createBotProceduralBody() {
+  if (!botProceduralBodyEnabled || !bot || botProceduralBody) return;
+  const style = BOT_TEAM_DEFS[bot.team];
+  // The visual system owns the role materials: bots are self-lit (emissive team colour + fresnel
+  // rim) so they stay readable on the dim themes, where the map emits and they would not.
+  // 2048 not the 8192 default: the heaviest bucket holds 4 instances per bot, so this covers 500+
+  // bots and hands back ~48 MB of instance-matrix buffers. stats.dropped catches it if that's wrong.
+  if (!botBodyBatches) botBodyBatches = createBodyPartBatches({ THREE, scene, materials: visuals.botMaterials, capacity: 2048 });
+  botProceduralBody = createProceduralPlayerBody({
+    THREE, scene, terrainHeight: groundHeight, mode: 'remote',
+    style: { shell: style.shell, plate: style.plate, trim: 0x0a0d0a, accent: style.accent },
+    // Role kit: packs, medic crosses, launcher tubes, the sniper's helmet. Memoised per role in
+    // bot-body-design.js, so every bot of a role shares one design object and therefore one set of
+    // cached geometry — N bots of a role cost the same geometry as one.
+    design: botDesignForRole(activeBotActor?.role),
+    adaptGaitToSpeed: true, movementDynamics: true, naturalLocomotion: true,
+    batches: botBodyBatches,
+  });
+  if (activeBotActor) activeBotActor.body = botProceduralBody;
+  applyBotMovementSettings();
+  void createBotWeaponMount(botProceduralBody, activeBotActor);
+}
+
+function syncBotVisualMode() {
+  for (const actor of botActors) withBotActor(actor, () => {
+    if (botProceduralBodyEnabled) createBotProceduralBody();
+    else destroyBotProceduralBody();
+    botMesh.visible = !botProceduralBodyEnabled;
+  });
+}
+
+/**
+ * Tear down and remake every rig. Needed after a body-kind switch: createBotProceduralBody() reads
+ * botDesignForRole ONCE at construction and then returns early while a body exists, so calling
+ * syncBotVisualMode() alone would leave every live bot in the old body.
+ */
+function rebuildBotProceduralBodies() {
+  if (!botProceduralBodyEnabled) return;
+  for (const actor of botActors) withBotActor(actor, () => {
+    destroyBotProceduralBody();
+    createBotProceduralBody();
+  });
+}
+
+// Spawn placement, most specific first: beside the squad this bot is joining, then anywhere on its
+// team's own side of the map, then anywhere walkable. Each stage falls through to the next rather
+// than failing, so a crowded squad or a tiny side can never leave a bot with nowhere to appear.
+const _spawnCell = { c: 0, r: 0 };
+function findBotSpawnPoint({ near = null, spread = BOT_SPAWN_SQUAD_SPREAD, region = null } = {}) {
+  if (!navGrid) return { ...botSpawnPoint };
+  const occupied = botActors.map((actor) => botXZ(actor.entity));
+  const clear = (x, z) => occupied.every((other) => Math.hypot(x - other.x, z - other.z) > 1.2);
+  if (near) {
+    for (let attempt = 0; attempt < 48; attempt++) {
+      // sqrt keeps the sample area-uniform instead of clumping everyone onto the anchor.
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.sqrt(Math.random()) * spread;
+      const x = near.x + Math.cos(angle) * radius, z = near.z + Math.sin(angle) * radius;
+      worldToCellInto(navGrid, x, z, _spawnCell);
+      if (!isWalkableCell(navGrid, _spawnCell.c, _spawnCell.r)) continue;
+      const point = cellToWorld(navGrid, _spawnCell.c, _spawnCell.r);
+      if (clear(point.x, point.z)) return { x: point.x, y: groundHeight(point.x, point.z), z: point.z };
+    }
+  }
+  // "Anywhere walkable" has to mean anywhere walkable the rest of the map can be reached from.
+  // Terrain can fence off ground that passes the slope gate; a bot spawned in there has no route
+  // to any goal it will ever pick, so it stands where it landed.
+  for (const sided of region ? [true, false] : [false]) {
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const c = Math.floor(Math.random() * navGrid.cols);
+      const r = Math.floor(Math.random() * navGrid.rows);
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      if (navGrid.regions && navGrid.regions[r * navGrid.cols + c] !== navGrid.mainRegion) continue;
+      const point = cellToWorld(navGrid, c, r);
+      if (sided && !insideTeamSide(region, point.x, point.z)) continue;
+      if (clear(point.x, point.z)) return { x: point.x, y: groundHeight(point.x, point.z), z: point.z };
+    }
+  }
+  return { ...botSpawnPoint };
+}
+
+// Where each bot of a batch should try to appear, index-aligned with the role layout. Reinforcements
+// land beside the squad they are about to join -- walking a replacement in from a random corner of
+// the map was the single biggest source of lone bots wandering the field. A genuinely new squad
+// forms up together: at its team's home in side mode, otherwise around one shared random point.
+function planSpawnAnchors(team, total, intake) {
+  const anchors = new Array(total).fill(null);
+  if (!intake) return anchors;
+  const home = teamHomeRegion(team);
+  if (botSpawnNearSquad) {
+    const targets = squadOpeningTargets(team, intake.joining);
+    for (let i = 0; i < targets.length && i < total; i++) {
+      const squad = targets[i];
+      if (squad.hasLeaderPos) anchors[i] = { point: { x: squad.leaderPos.x, z: squad.leaderPos.z }, spread: BOT_SPAWN_SQUAD_SPREAD };
+    }
+  }
+  let at = intake.joining;
+  for (const size of intake.sizes) {
+    // One anchor for the whole squad, so a new squad arrives as a group rather than a scatter.
+    const seed = home ? { x: home.x, z: home.z } : findBotSpawnPoint({ region: home });
+    for (let i = 0; i < size && at < total; i++) anchors[at++] = { point: seed, spread: BOT_SPAWN_HOME_SPREAD };
+  }
+  return anchors;
+}
+
+function spawnBots(team, count = 1, { medicPercent = botMedicPercent, mix = botRoleMix, roles = null } = {}) {
+  const total = Math.max(1, Math.floor(Number(count) || 1));
+  // Squad mode decides the roster shape first and derives roles from it: bots topping up an existing
+  // squad spawn as riflemen/medics, and only a genuinely new squad gets a leader at slot 0. A caller
+  // that brought its own roles (auto-add waves, a scene shuffle replaying a captured roster) still
+  // gets rosters -- it just keeps its roles, and formSquad elects a leader out of whoever it got.
+  const intake = botSquadModeEnabled ? planSquadIntake(team, total) : null;
+  const roleIds = roles || (intake
+    ? [...assignRolesToBatch(intake.joining, { medicPercent, mix }),
+      ...intake.sizes.flatMap((size) => squadRoleTemplate(size, { medicPercent, mix }))]
+    : assignRolesToBatch(total, { medicPercent, mix }));
+  const anchors = planSpawnAnchors(team, total, intake);
+  const region = teamHomeRegion(team);
+  const spawned = [];
+  for (let index = 0; index < total; index++) {
+    const roleId = roleIds[index] ?? DEFAULT_ROLE;
+    const role = getRole(roleId);
+    const weaponId = role.weapon ?? botWeaponId;   // a role may bring its own loadout (medic -> sidearm)
+    const anchor = anchors[index];
+    const spawnPoint = findBotSpawnPoint({
+      near: anchor?.point ?? null, spread: anchor?.spread ?? BOT_SPAWN_SQUAD_SPREAD, region,
+    });
+    const entity = createBotEntity(`bot-${nextBotId++}`, spawnPoint, { standHeight: 1.8 });
+    entity.team = team;
+    entity.weapon = weaponId;      // in hand; swaps to entity.sidearm mid-fight (bot-sidearm.js)
+    entity.primaryWeapon = weaponId;
+    entity.sidearm = sidearmForRole(roleId, weaponId, botSeedFromId(entity.id));
+    entity.tool = weaponId;
+    entity.health = DUMMY_MAX_HEALTH;
+    entity.alive = true;
+    const style = BOT_TEAM_DEFS[team];
+    const material = new THREE.MeshStandardMaterial({ color: style.capsule, roughness: 0.6 });
+    const mesh = new THREE.Mesh(botCapsuleGeometryFor(entity), material);
+    mesh.castShadow = true;
+    const stateOrb = new THREE.Mesh(botStateOrbGeometry, new THREE.MeshBasicMaterial({ color: 0x5c6673, toneMapped: false }));
+    stateOrb.visible = botStateOrbsEnabled;
+    stateOrb.renderOrder = 5;
+    const tacticalVisuals = createBotTacticalVisuals(team);
+    scene.add(mesh, stateOrb, tacticalVisuals.fovWedge, tacticalVisuals.sightRange, tacticalVisuals.knifeRange, tacticalVisuals.healthBar);
+    entity.mesh = mesh;
+    entity.material = material;
+    const actor = createBotActor(entity, mesh, roleId);
+    syncBotStowMounts(actor);   // the pistol rides the hip from spawn, before any swap
+    actor.stateOrb = stateOrb;
+    if (role.insignia) { actor.roleInsignia = buildRoleInsignia(role.insignia); scene.add(actor.roleInsignia); }
+    actor.alertMark = buildAlertMark(); scene.add(actor.alertMark);
+    botActors.push(actor);
+    botActorById.set(actor.id, actor);
+    spawned.push(actor);
+    sayBotLine(entity, actor, 'spawn', performance.now());
+    actor.fovWedge = tacticalVisuals.fovWedge;
+    actor.sightRange = tacticalVisuals.sightRange;
+    actor.knifeRange = tacticalVisuals.knifeRange;
+    actor.healthBar = tacticalVisuals.healthBar;
+    actor.healthFill = tacticalVisuals.healthFill;
+    actor.healthFillMaterial = tacticalVisuals.healthFillMaterial;
+    if (!activeBotActor) bindBotActor(actor);
+    // goalDebug / investigationDebug are built lazily -- only the focused/diagnostic bot ever shows them.
+    withBotActor(actor, () => {
+      if (botProceduralBodyEnabled) createBotProceduralBody();
+      botMesh.visible = !botProceduralBodyEnabled;
+    });
+  }
+  // Bind the batch into rosters in the same order the roles were laid out: the first `joining` bots
+  // top up existing squads, then each remaining run of `sizes` becomes one new squad led by slot 0.
+  if (intake) {
+    fillSquadOpenings(spawned.slice(0, intake.joining), team);
+    const chunks = dealSquadChunks(spawned.slice(intake.joining), intake.sizes, (a) => a.role === ROLE_SQUAD_LEADER);
+    for (const chunk of chunks) formSquad(chunk, team);
+  }
+  recordSpawn(botScore, team, total, performance.now());   // opens the next round if one just ended
+  botScoreDirty = true;
+  if (!activeBotActor) bindBotActor(botActors[0] ?? null);
+  if (cameraAutoFollowEnabled && cameraMode === CAMERA_ORBIT) setCameraMode(CAMERA_FOLLOW, activeBotActor);
+  updateBotWeaponButtons();
+}
+
+// Full per-actor teardown: scene removal + every per-bot GPU object. Shared geometries/materials
+// are module-owned and never disposed here. Callers own list/map/claim bookkeeping.
+function disposeBotActor(actor) {
+  withBotActor(actor, () => {
+    // The one teardown choke point every removal path funnels through (removeAllBots, cullDeadBots,
+    // clearDeadBotActors), so the forensic slot is returned here rather than at three call sites.
+    // A pending frozen take is a copy and survives this -- a bot that dies right after a fall
+    // still has its forensics.
+    if (actor.entity) {
+      botForensics?.release(actor.entity);
+      botVoiceIdentities.delete(actor.entity.id);   // voiceIdentity is deterministic: a revive re-derives the same voice
+      actor.entity.botActor = null;
+    }
+    destroyBotProceduralBody();
+    scene.remove(botMesh, actor.stateOrb, actor.fovWedge, actor.sightRange, actor.knifeRange, actor.healthBar, actor.goalDebug?.group, actor.investigationDebug?.group, actor.hitVolumeDebug?.group);
+    botMesh.material.dispose();                 // geometry is module-shared -- never disposed here
+    actor.stateOrb?.material.dispose();
+    actor.fovWedge?.material.dispose();         // wedge geometry is cache-shared -- never disposed here
+    actor.sightRange?.material.dispose();
+    actor.knifeRange?.material.dispose();
+    actor.healthBar?.children.forEach((child) => { child.material?.dispose(); });
+    actor.goalDebug?.line.geometry.dispose();
+    actor.goalDebug?.line.material.dispose();
+    actor.goalDebug?.marker.geometry.dispose();
+    actor.goalDebug?.marker.material.dispose();
+    actor.investigationDebug?.lastSeen.geometry.dispose();
+    actor.investigationDebug?.lastSeen.material.dispose();
+    actor.investigationDebug?.region.geometry.dispose();
+    actor.investigationDebug?.region.material.dispose();
+    actor.investigationDebug?.motion.geometry.dispose();
+    actor.investigationDebug?.motion.material.dispose();
+    actor.investigationDebug?.cells.geometry.dispose();
+    actor.investigationDebug?.cells.material.dispose();
+    actor.investigationDebug?.label.material.dispose();
+    actor.investigationDebug?.texture.dispose();
+    actor.hitVolumeDebug?.head.geometry.dispose();   // capsule/ring geometry + all three materials are module-shared
+    actor.hitVolumeDebug = null;
+    if (actor.heldPackMesh) { scene.remove(actor.heldPackMesh); actor.heldPackMesh = null; }
+    if (actor.roleInsignia) { scene.remove(actor.roleInsignia); actor.roleInsignia = null; } // shared geo/mat, no dispose
+    if (actor.leaderInsignia) { scene.remove(actor.leaderInsignia); actor.leaderInsignia = null; }
+    if (actor.alertMark) { scene.remove(actor.alertMark); actor.alertMark = null; } // shared geo/mat, no dispose
+  });
+}
+
+function removeAllBots() {
+  // The roster is going away, so bank the round rather than dropping it; the next spawn opens the
+  // next one. Only "Reset scoreboard" wipes the history.
+  finishRound(botScore, { now: performance.now(), reason: 'cleared' });
+  botScoreDirty = true;
+  cameraFollowActor = null;
+  if (cameraMode !== CAMERA_ORBIT) setCameraMode(CAMERA_ORBIT);
+  botActorById.clear();
+  deadBotActors.clear();
+  for (const squad of squads.values()) disposeSquadDebug(squad);
+  squads.clear();
+  botHash.rebuild(null);
+  _hashLiving.length = 0;
+  for (const actor of botActors.splice(0)) disposeBotActor(actor);
+  clearWorldHealthPacks();
+  goalClaims.clear();
+  clearDangerField(botDangerField);
+  botDebugFocusActor = null;
+  selectedBotActor = null;
+  bindBotActor(null);
+  updateBotDebugFocusButton();
+  updateCameraButtons(); // selection just cleared -- Follow/POV/Frame may need to grey out again
+  clearBotMovementDebug();
+  botDamageAudio.stopAll();   // scene teardown: hard cut, no power-down flourish
+}
+function combatCapsuleFor(entity) {
+  const mid = entity.capsule.start.clone().add(entity.capsule.end).multiplyScalar(0.5);
+  return { id: entity.id, p: [mid.x, mid.y, mid.z], r: entity.capsule.radius,
+    h: entity.capsule.end.y - entity.capsule.start.y, alive: entity.alive !== false };
+}
+
+function combatEntityById(id) {
+  const dummyTarget = dummyTargets.find((target) => target.id === id);
+  return dummyTarget || botActorById.get(id)?.entity || null;
+}
+
+function formatBotRecordTimestamp(now) {
+  const elapsed = Math.max(0, now - botStateRecordStartedAt);
+  const minutes = Math.floor(elapsed / 60000);
+  const seconds = Math.floor(elapsed / 1000) % 60;
+  const milliseconds = Math.floor(elapsed % 1000);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
+}
+
+// Inverse of formatBotRecordTimestamp -- lines only carry the formatted elapsed stamp, not a raw number.
+function parseBotRecordTimestampMs(line) {
+  const m = /^\[(\d+):(\d+)\.(\d+)\]/.exec(line);
+  return m ? (Number(m[1]) * 60000 + Number(m[2]) * 1000 + Number(m[3])) : null;
+}
+
+// Events only mark the log dirty; flushBotStateRecord applies the DOM write at most once per
+// frame, appending just the new lines (a full join per event was quadratic over a session).
+function renderBotStateRecord() {
+  // Capped here rather than at each push site: 'All bots' scope fills the log far faster than focus mode.
+  // Trimmed a block at a time because a trim costs a whole-array memmove plus a full textarea repaint:
+  // holding the length at exactly the cap also stalls the append-only flush, which then paints nothing.
+  if (botStateRecordLines.length > BOT_STATE_RECORD_CAP + BOT_STATE_RECORD_SLACK) {
+    botStateRecordLines.splice(0, botStateRecordLines.length - BOT_STATE_RECORD_CAP);
+    botStateRecordRenderedCount = 0;
+  }
+  botStateRecordDirty = true;
+}
+
+function flushBotStateRecord() {
+  if (!botStateRecordDirty || !botStateRecordLog) return;
+  botStateRecordDirty = false;
+  if (botStateRecordLines.length === 0 || botStateRecordLines.length < botStateRecordRenderedCount || botStateRecordRenderedCount === 0) {
+    botStateRecordLog.value = botStateRecordLines.length ? botStateRecordLines.join('\n') : 'No recorded state changes.';
+  } else if (botStateRecordLines.length > botStateRecordRenderedCount) {
+    botStateRecordLog.value += '\n' + botStateRecordLines.slice(botStateRecordRenderedCount).join('\n');
+  }
+  botStateRecordRenderedCount = botStateRecordLines.length;
+  botStateRecordLog.scrollTop = botStateRecordLog.scrollHeight;
+  updateRecordButton();
+}
+
+function emitsFocusedBotDiagnostics(actor) {
+  return !botDebugFocusActor || actor === botDebugFocusActor;
+}
+// Recorder scope is its own gate: the 3D overlays stay tied to the debug focus either way.
+function recordsBotDiagnostics(actor) {
+  return botStateRecordAllBots || emitsFocusedBotDiagnostics(actor);
+}
+function recordBotStateChange(actor, nextState, now = performance.now()) {
+  if (!botStateRecording || !recordsBotDiagnostics(actor) || actor.recordedState === nextState) return;
+  const previousState = actor.recordedState;
+  actor.recordedState = nextState;
+  const transition = previousState == null ? `initial: ${nextState}` : `${previousState} -> ${nextState}`;
+  const teamTag = actor.entity.team === 'alpha' ? 'T:A' : 'T:B';
+  const hp = Math.max(0, Math.ceil(actor.entity.health ?? DUMMY_MAX_HEALTH));
+  const line = `[${formatBotRecordTimestamp(now)}] ${actor.id}  ${teamTag}  HP:${hp}/${DUMMY_MAX_HEALTH}  ${transition}${botStateCodeSuffix(actor, now)}`;
+  botStateRecordLines.push(line);
+  renderBotStateRecord();
+}
+
+function recordBotEvent(actor, description, now = performance.now()) {
+  if (!botStateRecording || !actor || !recordsBotDiagnostics(actor)) return;
+  const teamTag = actor.entity.team === 'alpha' ? 'T:A' : 'T:B';
+  const hp = Math.max(0, Math.ceil(actor.entity.health ?? DUMMY_MAX_HEALTH));
+  botStateRecordLines.push(`[${formatBotRecordTimestamp(now)}] ${actor.id}  ${teamTag}  HP:${hp}/${DUMMY_MAX_HEALTH}  ${description}`);
+  renderBotStateRecord();
+}
+
+function recordBotDamage(target, amount, attacker, now = performance.now()) {
+  if (!botStateRecording || !target?.botActor) return;
+  const victim = target.botActor;
+  if (!botStateRecordAllBots && botDebugFocusActor && victim !== botDebugFocusActor && attacker?.botActor !== botDebugFocusActor) return;
+  const victimTeam = target.team === 'alpha' ? 'T:A' : 'T:B';
+  const attackerName = attacker?.botActor ? `${attacker.id} ${attacker.team === 'alpha' ? 'T:A' : 'T:B'}` : attacker?.id || 'world';
+  const hp = Math.max(0, Math.ceil(target.health ?? DUMMY_MAX_HEALTH));
+  botStateRecordLines.push(`[${formatBotRecordTimestamp(now)}] ${victim.id}  ${victimTeam}  damage: -${Number(amount).toFixed(1)}  HP:${hp}/${DUMMY_MAX_HEALTH}  from ${attackerName}`);
+  renderBotStateRecord();
+}
+
+function setBotStateRecording(enabled, now = performance.now()) {
+  botStateRecording = !!enabled;
+  if (botStateRecording) {
+    botStateRecordStartedAt = now;
+    botStateRecordLines.length = 0;
+    botStateTrace.length = 0;
+    botEvents.length = 0;
+    botDiagReset();   // counters describe this take only, so they zero with the trace
+    for (const actor of botActors) {
+      actor.recordedState = null;
+      actor.stateCode = null; actor.stateCodeKey = -1;   // every bot re-emits an `initial` row
+      actor.traceLastPos = null; actor.traceTickAt = null;   // `moved` must not span two takes
+      if (recordsBotDiagnostics(actor)) recordBotStateChange(actor, actor.entity.alive === false ? 'dead' : actor.state, now);
+    }
+  }
+  renderBotStateRecord();
+}
+
+// ---- 9-slot state codes (bot-state-code.js) ----------------------------------------------------
+// Gated on botStateRecording and scratch-object based: one boolean test per bot per frame when off.
+const BOT_STATE_SLOT = {};   // viewer state name -> slot-1 char, built from the module's own table
+for (const ch of STATE_CHARS) BOT_STATE_SLOT[STATE_NAMES[ch]] = ch;
+BOT_STATE_SLOT.alert = 'P';  // the alert hold is a pinned patrol; the code model has no slot for it
+BOT_STATE_SLOT.reposition = 'P'; // muzzle-recovery walk, previously hitting the silent ?? 'P' fallback
+const BOT_ELEMENT_SLOT = { base: 'b', move: 'm' };
+const _stateAmmoQ = { mag: 0, magazineSize: 0, reloading: false, hasWeapon: true };
+const _stateLatchQ = { flee: false, cover: false, hold: false, healFlee: false, sightGrace: false };
+const _stateDesc = { state: 'P', tier: '0', score: 0, role: 'r', element: '-', ammo: '-', health: '0', packs: '0', latches: 0 };
+let _stateDescKey = -1;      // the same nine slots packed positionally into one integer
+const _stateIllegalSeen = new Set();   // one warning per rule id: an illegal code means the adapter or the rule is wrong
+
+// Discretize an actor into the reused _stateDesc; the bound actor reads the live globals instead.
+function botStateDescriptor(actor, now) {
+  const e = actor.entity;
+  const bound = actor === activeBotActor;
+  const dead = e.alive === false;
+  const d = _stateDesc;
+  const ammo = e.ammoByWeapon?.get(e.weapon) ?? null;
+  _stateAmmoQ.mag = ammo?.mag ?? 0;
+  _stateAmmoQ.magazineSize = ammo?.magazineSize ?? 0;
+  _stateAmmoQ.reloading = (bound ? botReloadUntil : actor.reloadUntil) != null;
+  _stateAmmoQ.hasWeapon = !dead && !!e.weapon;
+  d.state = dead ? 'D' : (BOT_STATE_SLOT[bound ? botState : actor.state] ?? 'P');
+  // commitBits is stamped against the ENTERING state, so mask each against the resolved slot: a
+  // latch means a commitment in force, and a transition frame must not carry the old one across.
+  _stateLatchQ.flee = !!(actor.commitBits & LATCH_FLEE) && d.state === 'E';
+  _stateLatchQ.cover = !!(actor.commitBits & LATCH_COVER) && 'CG'.includes(d.state);
+  _stateLatchQ.healFlee = !!(actor.commitBits & LATCH_HEAL_FLEE) && 'EH'.includes(d.state);
+  // Locomotion pinned, not merely leased: mirrors updateBotSentry's `holding`, off the state slot above.
+  _stateLatchQ.hold = actor.holdUntil > now && 'PSU'.includes(d.state);
+  _stateLatchQ.sightGrace = !dead && actor.visDebounce?.lastTrueAt != null && !(bound ? botTargetVisible : actor.targetVisible);
+  d.tier = dead ? '0' : tierSlot(actor.alertTierLast, actor.alertMarkMode === 'near');
+  d.score = dead ? 0 : Math.min(9, Math.max(0, Math.round(actor.alertScore ?? 0)));
+  d.role = actor.role === ROLE_MEDIC ? 'm' : 'r';
+  d.element = dead ? '-' : (BOT_ELEMENT_SLOT[actor.pushElement] ?? '-');
+  d.ammo = ammoSlot(_stateAmmoQ);
+  d.health = dead ? '0' : healthBand(e.health, DUMMY_MAX_HEALTH);
+  d.packs = packSlot(actor.healthPacks?.length ?? 0, (actor.reviveKits ?? 0) > 0);
+  d.latches = latchBits(_stateLatchQ);
+  _stateDescKey = (((((((STATE_CHARS.indexOf(d.state)
+    * TIER_CHARS.length + TIER_CHARS.indexOf(d.tier))
+    * SCORE_CHARS.length + d.score)
+    * ROLE_CHARS.length + ROLE_CHARS.indexOf(d.role))
+    * ELEMENT_CHARS.length + ELEMENT_CHARS.indexOf(d.element))
+    * AMMO_CHARS.length + AMMO_CHARS.indexOf(d.ammo))
+    * HEALTH_CHARS.length + HEALTH_CHARS.indexOf(d.health))
+    * PACK_CHARS.length + PACK_CHARS.indexOf(d.packs))
+    * LATCH_CHARS.length + d.latches;
+  // Free ride for the forensic ring's state column: the key is already packed here, and this is the
+  // only place it exists per actor. commitBotActor calls this unconditionally every frame (below the
+  // botStateRecording gate, not through it), so the column stays live with the state recorder off --
+  // this function only writes reused scratch objects, no allocation or DOM work, so that's cheap.
+  e.forensicStateKey = _stateDescKey;
+  return d;
+}
+
+// Previous code ('' on first sight) when the state moved, else null; the key compare is the early-out.
+function advanceBotStateCode(actor, now) {
+  const desc = botStateDescriptor(actor, now);
+  if (_stateDescKey === actor.stateCodeKey) return null;
+  const previous = actor.stateCode;
+  actor.stateCodeKey = _stateDescKey;
+  actor.stateCode = encodeBotState(desc);
+  const why = illegalReason(actor.stateCode);
+  if (why && !_stateIllegalSeen.has(why)) {
+    _stateIllegalSeen.add(why);
+    console.warn(`bot-state-code: ${actor.id} emitted illegal ${actor.stateCode} (${why}) -- adapter or rule is wrong`);
+  }
+  return previous ?? '';
+}
+
+// Motion columns. The state code says what a bot DECIDED; these say whether it actually went
+// anywhere -- a bot stuck in a locomotion state reads identically in the code either way.
+// Every field is read off the actor/entity, so this is valid for any bot, bound or not (the one
+// caller runs at the tail of commitBotActor, after every per-frame global has landed).
+function fillBotStateTraceMotion(actor, row) {
+  const e = actor.entity;
+  const x = e.capsule.start.x, z = e.capsule.start.z;
+  const last = actor.traceLastPos;
+  row.x = x; row.z = z;
+  row.yaw = Math.round(((e.yaw ?? 0) * 180 / Math.PI % 360 + 360) % 360);
+  row.speed = Math.hypot(e.velocity?.x ?? 0, e.velocity?.z ?? 0);
+  row.moved = last ? Math.hypot(x - last.x, z - last.z) : null;   // since this bot's previous row
+  const goal = actor.combatMoveGoal;
+  row.goalDist = goal ? Math.hypot(goal.x - x, goal.z - z) : null;
+  row.pathLen = actor.path?.length ?? 0;
+  row.pathMode = actor.pathMode ?? '';
+  // Squad identity: a follower pinned on its formation slot never patrols (updateSquadFormationMovement),
+  // so a stalled bot is only readable next to what its leader was doing at the same timestamp.
+  row.squadId = actor.squadId ?? '';
+  row.squadRank = actor.squadRank ?? -1;
+  row.leaderId = (actor.squadId ? squads.get(actor.squadId)?.leaderId : null) ?? '';
+  row.targetId = actor.target?.id ?? '';   // who this bot is engaging, so a trace can draw the pairing
+  // Sight, straight from the sentry: the 3D eye-to-eye distance the ladder branches on (trace x/z
+  // are 2D capsule centres, so they cannot be differenced to get it) plus which gate resolved it.
+  row.targetDist = Number.isFinite(actor.targetDistance) ? actor.targetDistance : null;
+  row.visGate = actor.targetVisGate ?? '-';
+  // Which connected component of the nav grid this bot is standing in. Stranding was previously only
+  // inferable by joining positions to patrolNoRoute; with this it is a groupby. -1 = off-grid.
+  row.navRegion = navGrid ? regionAt(navGrid, x, z) : -1;
+  // Raw magazine + reserve. The code's ammo slot is a 4-band quantization that cannot distinguish a
+  // genuinely dry gun from a descriptor reading 0 off a weapon with no magazine (which is what made
+  // bot-240's "is it really out of ammo" question take several passes to answer).
+  const ammo = e.ammoByWeapon?.get(e.weapon);
+  row.mag = ammo?.mag ?? null;
+  row.reserve = ammo?.reserve ?? null;
+  // H6a spin latch + the OTHER slot's ammo: the two unconfirmed leads on the aim-freeze investigation
+  // (does the latch actually clear, and is a swap-eligible sidearm sitting there unused).
+  row.selfThreat = actor.spinLatched ? 1 : 0;
+  const sidearmAmmo = e.sidearm ? e.ammoByWeapon?.get(e.sidearm) : null;
+  row.sidearmMag = sidearmAmmo?.mag ?? null;
+  row.sidearmReserve = sidearmAmmo?.reserve ?? null;
+  if (last) { last.x = x; last.z = z; } else actor.traceLastPos = { x, z };
+}
+
+// One trace row per code change; returns the suffix the recorder appends to its line.
+// ---- combat event stream --------------------------------------------------
+// Kills and damage, recorded beside the state trace. Uncapped for the same reason the viewer's
+// history is: these are rare (a few per second at most) and the old ones are the evidence.
+const botEvents = [];
+const BOT_EVENT_CAP = 40000;
+function pushBotEvent(type, victim, amount, source, now) {
+  if (!botStateRecording && !botLiveEnabled) return;
+  const a = bot, v = victim;
+  const ax = a?.capsule?.start?.x ?? null, az = a?.capsule?.start?.z ?? null;
+  const vx = v?.capsule?.start?.x ?? null, vz = v?.capsule?.start?.z ?? null;
+  const row = {
+    t: Math.round(Math.max(0, now - botStateRecordStartedAt)),
+    type,
+    attacker: a?.id ?? '', attackerTeam: a?.team ?? '',
+    victim: v?.id ?? '', victimTeam: v?.team ?? '',
+    weapon: source?.weaponId ?? a?.weapon ?? '', cause: source?.cause ?? 'bullet',
+    amount: Math.max(0, amount ?? 0),
+    victimHealth: Math.max(0, v?.health ?? 0),
+    ax, az, vx, vz,
+    dist: ax != null && vx != null ? Math.hypot(vx - ax, vz - az) : null,   // 2D, matching the x/z columns
+  };
+  botEvents.push(row);
+  if (botEvents.length > BOT_EVENT_CAP) botEvents.splice(0, botEvents.length - BOT_EVENT_CAP);
+  if (botLiveEnabled) _botLiveEventQueue.push(row);
+}
+function botEventsTsv() {
+  let out = 't_ms\ttype\tattacker\tattacker_team\tvictim\tvictim_team\tweapon\tcause\tamount'
+    + '\tvictim_health\tax\taz\tvx\tvz\tdist';
+  const n2 = v => (v == null ? '' : v.toFixed(2));
+  for (const e of botEvents) {
+    out += `\n${e.t}\t${e.type}\t${e.attacker}\t${e.attackerTeam}\t${e.victim}\t${e.victimTeam}`
+      + `\t${e.weapon}\t${e.cause}\t${n2(e.amount)}\t${n2(e.victimHealth)}`
+      + `\t${n2(e.ax)}\t${n2(e.az)}\t${n2(e.vx)}\t${n2(e.vz)}\t${n2(e.dist)}`;
+  }
+  return out;
+}
+
+// ---- live stream to bot-trace-viewer.html ---------------------------------
+// BroadcastChannel, not a socket: both pages are same-origin under serve.py, so this needs no server
+// and cannot block one. Cost is cross-tab only -- a live map on another machine would need the ws
+// relay in server/ instead. Rows are the recorder's own change-triggered + heartbeat samples
+// (~19/s at 112 bots in the 07-29 takes), batched one message per frame rather than one per row.
+const BOT_LIVE_CHANNEL = 'bot-trace-live';
+const BOT_LIVE_BACKLOG = 4000;   // rows replayed to a viewer that connects mid-session
+let botLiveEnabled = false;
+let botLiveChannel = null;
+let botLivePeers = 0;            // viewers that have said hello; shown on the button
+const _botLiveQueue = [];
+const _botLiveEventQueue = [];
+
+function botLiveOpen() {
+  if (botLiveChannel) return;
+  botLiveChannel = new BroadcastChannel(BOT_LIVE_CHANNEL);
+  // A viewer usually opens after the game, so it asks and we answer; nothing is pushed blind.
+  botLiveChannel.onmessage = e => {
+    if (e.data?.type === 'select') {
+      const actor = botActorById.get(e.data.id);
+      if (actor) { setSelectedBot(actor); setCameraMode(CAMERA_FOLLOW, actor); }
+      return;
+    }
+    if (e.data?.type !== 'hello') return;
+    botLivePeers++;
+    botLiveSendSnapshot();
+    updateRecordButton(); // owns the live button's peer-count label
+  };
+}
+function botLiveClose() {
+  botLiveChannel?.close();
+  botLiveChannel = null;
+  botLivePeers = 0;
+  _botLiveQueue.length = 0;
+}
+function botLiveSendSnapshot() {
+  botLiveChannel?.postMessage({
+    type: 'snapshot',
+    world: botWorldMeta(),
+    startedAt: botStateRecordStartedAt,
+    hidden: document.hidden,
+    rows: botStateTrace.slice(-BOT_LIVE_BACKLOG),
+    events: botEvents.slice(-BOT_LIVE_BACKLOG),
+  });
+}
+// Called once per frame from updateAllBots, so a busy frame sends one message instead of dozens.
+function botLiveFlush() {
+  if (!botLiveChannel) return;
+  if (_botLiveQueue.length) {
+    botLiveChannel.postMessage({ type: 'rows', rows: _botLiveQueue.slice() });
+    _botLiveQueue.length = 0;
+  }
+  if (_botLiveEventQueue.length) {
+    botLiveChannel.postMessage({ type: 'events', events: _botLiveEventQueue.slice() });
+    _botLiveEventQueue.length = 0;
+  }
+}
+// Layout rebuilds change the arena under the viewer's feet; re-announce so its map stays honest.
+function botLiveAnnounceWorld() {
+  botLiveChannel?.postMessage({ type: 'world', world: botWorldMeta() });
+}
+// The sim runs on renderer.setAnimationLoop, i.e. requestAnimationFrame, which does not fire for a
+// hidden document -- so backgrounding this tab pauses the bots entirely. Say so explicitly rather
+// than let the viewer show a frozen map that reads as a sim bug.
+function botLiveAnnounceVisibility() {
+  botLiveChannel?.postMessage({ type: 'vis', hidden: document.hidden });
+}
+document.addEventListener('visibilitychange', botLiveAnnounceVisibility);
+
+function pushBotStateTraceRow(actor, previous, now, changedOverride = null) {
+  const code = actor.stateCode;
+  // changedSlots, not diffCodes: this runs per code change and only the slot keys reach the row.
+  const changed = changedOverride ?? (previous ? changedSlots(previous, code) : 'initial');
+  const row = { t: Math.round(Math.max(0, now - botStateRecordStartedAt)), id: actor.id,
+    team: actor.entity.team, code, changed,
+    // The state code's role slot only has room for rifleman/medic (d.role = actor.role === ROLE_MEDIC
+    // ? 'm' : 'r' in botStateDescriptor) -- squadleader/sniper/technical all collapse to 'r' there.
+    // This carries the real bot-roles.js id through so a trace reader can tell them apart.
+    roleId: actor.role || 'rifleman' };
+  fillBotStateTraceMotion(actor, row);
+  actor.traceTickAt = now;   // any row is a sample, so the heartbeat re-times off it
+  botStateTrace.push(row);
+  if (botLiveEnabled) _botLiveQueue.push(row);   // postMessage clones, so sharing the object is safe
+  if (botStateTrace.length > BOT_STATE_TRACE_CAP + BOT_STATE_TRACE_SLACK) {
+    botStateTrace.splice(0, botStateTrace.length - BOT_STATE_TRACE_CAP);
+  }
+  return `  ${code} [${changed}]`;
+}
+
+// Appended to a prose transition line so the recorded line carries the code and its slot diff.
+// The two can disagree for 'grenade': it is logged as a transition but never stamped into botState.
+function botStateCodeSuffix(actor, now) {
+  const previous = advanceBotStateCode(actor, now);
+  return previous === null ? `  ${actor.stateCode}` : pushBotStateTraceRow(actor, previous, now);
+}
+
+// Change detection at the commit choke point: catches every slot the prose recorder never watched.
+function traceBotStateCode(actor, now) {
+  if (!recordsBotDiagnostics(actor)) return;
+  const previous = advanceBotStateCode(actor, now);
+  if (previous === null) {
+    // No code change. Sample motion anyway on a fixed heartbeat, so a bot that decides nothing for
+    // a minute still leaves a position trail -- change-triggered rows alone cannot tell "walking a
+    // patrol ring" from "standing still in the patrol state". TSV only: at this rate across a full
+    // roster it would drown the prose log, which exists to be read.
+    if (botStateTraceTickMs > 0 && now - (actor.traceTickAt ?? -Infinity) >= botStateTraceTickMs) {
+      pushBotStateTraceRow(actor, null, now, 'tick');
+      // The TSV buttons carry a row count; throttled so a whole roster ticking can't spam the DOM.
+      if (now - _traceCountRefreshAt >= 500) { _traceCountRefreshAt = now; updateRecordButton(); }
+    }
+    return;
+  }
+  const teamTag = actor.entity.team === 'alpha' ? 'T:A' : 'T:B';
+  botStateRecordLines.push(`[${formatBotRecordTimestamp(now)}] ${actor.id}  ${teamTag}${pushBotStateTraceRow(actor, previous, now)}`);
+  renderBotStateRecord();
+}
+
+function botStateTraceTsv() {
+  let out = 't_ms\tbot_id\tteam\tcode\tchanged_slots\tx\tz\tyaw_deg\tspeed\tmoved\tgoal_dist\tpath_len\tpath_mode'
+    + '\tsquad_id\tsquad_rank\tleader_id\ttarget_id\ttarget_dist\tvis_gate\tnav_region\tmag\treserve'
+    + '\tself_threat\tsidearm_mag\tsidearm_reserve\trole_id';
+  const n2 = v => (v == null ? '' : v.toFixed(2));
+  for (const row of botStateTrace) {
+    out += `\n${row.t}\t${row.id}\t${row.team}\t${row.code}\t${row.changed}`
+      + `\t${n2(row.x)}\t${n2(row.z)}\t${row.yaw ?? ''}\t${n2(row.speed)}\t${n2(row.moved)}`
+      + `\t${n2(row.goalDist)}\t${row.pathLen ?? ''}\t${row.pathMode ?? ''}`
+      + `\t${row.squadId ?? ''}\t${row.squadRank ?? ''}\t${row.leaderId ?? ''}\t${row.targetId ?? ''}`
+      + `\t${n2(row.targetDist)}\t${row.visGate ?? ''}`
+      + `\t${row.navRegion ?? ''}\t${row.mag ?? ''}\t${row.reserve ?? ''}`
+      + `\t${row.selfThreat ?? ''}\t${row.sidearmMag ?? ''}\t${row.sidearmReserve ?? ''}\t${row.roleId ?? ''}`;
+  }
+  return out;
+}
+
+// Local-time YYYYMMDD-HHMMSS, matching the versions/ snapshot convention.
+function botStateFileStamp(date = new Date()) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+    + `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function downloadTraceFile(filename, text, mime = 'text/tab-separated-values') {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// Dump the trace to a timestamped .tsv; returns where it landed, or null when nothing is recorded.
+// serve.py writes it straight into bot-states/ (no dialog); anything else falls back to a download.
+async function saveBotStateTrace() {
+  if (!botStateTrace.length) return null;
+  const stamp = botStateFileStamp();
+  const filename = `bot-state-trace-${stamp}.tsv`;
+  const text = botStateTraceTsv();
+  const diag = botDiagJson();   // built here so the counters match the trace text exactly
+  console.log('[bot diag]', { ...botDiag });
+  let saved = null;
+  try {
+    const response = await fetch(`/api/save-bot-state?filename=${encodeURIComponent(filename)}`,
+      { method: 'POST', headers: { 'Content-Type': 'text/tab-separated-values' }, body: text });
+    const result = await response.json();
+    if (result?.ok && result.path) saved = result.path;
+  } catch {
+    // Opened over file:// or served by something without the endpoint: the download below still works.
+  }
+  // Counters ride in a sibling .json, never in the TSV -- extra rows or comment lines there would
+  // break every consumer that reads the file by column index.
+  const diagName = `bot-diag-${stamp}.json`;
+  try {
+    await fetch(`/api/save-bot-state?filename=${encodeURIComponent(diagName)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: diag });
+  } catch { /* same fallback story as the trace above */ }
+  // Events are their own file: they are per-incident, not per-sample, so folding them into the state
+  // TSV would mean a row shape that is half empty on every line.
+  const eventsName = `bot-events-${stamp}.tsv`;
+  const eventsText = botEvents.length ? botEventsTsv() : null;
+  if (eventsText) {
+    try {
+      await fetch(`/api/save-bot-state?filename=${encodeURIComponent(eventsName)}`,
+        { method: 'POST', headers: { 'Content-Type': 'text/tab-separated-values' }, body: eventsText });
+    } catch { /* same fallback story */ }
+  }
+  if (saved) return saved;
+  downloadTraceFile(filename, text);
+  downloadTraceFile(diagName, diag);
+  if (eventsText) downloadTraceFile(eventsName, eventsText);
+  return filename;
+}
+
+// Slow spin + gentle bob so dropped packs read as pickups, not scenery.
+function updateWorldHealthPacks(now) {
+  if (!worldHealthPacks.length) return;
+  despawnStaleHealthPacks(now);
+  const t = now * 0.001;
+  for (const record of worldHealthPacks) {
+    record.group.rotation.y = t * 1.1;
+    record.group.position.y = decalY(record.x, record.z, 0.11 + Math.sin(t * 2 + record.x) * 0.03);
+  }
+}
+
+// Frame-scoped living-enemy candidate lists, keyed by team (parallel arrays, no Map iterator
+// garbage). Ordering matches the old per-bot rebuild: living dummies first, then cross-team bots.
+const _frameEnemyTeams = [];
+const _frameEnemyArrays = [];
+const _emptyEnemyList = [];
+let botFrameCounter = 0; // drives the staggered target re-scan in selectBotTarget
+// Think stagger: with a big roster each bot's full decision pass (updateBotSentry) runs every Nth
+// frame in spawn-order cohorts (reusing scanPhase), banking dt between turns so rate-based slews
+// and timers integrate the same total time. Physics/movement/rig (updateBot) stay per-frame, and
+// the focused/POV bot always thinks, so the camera subject never chops.
+let botThinkStaggerMode = 'auto'; // 'auto' | 1 | 2 | 3; ?stagger=auto|1|2|3 overrides (A/B runs)
+{
+  const q = new URLSearchParams(location.search).get('stagger');
+  if (q) botThinkStaggerMode = q === 'auto' ? 'auto' : Math.max(1, Math.min(3, parseInt(q, 10) || 1));
+}
+// Rig LOD: distant bots re-solve their procedural body + weapon pose every 2nd/4th frame (banked
+// dt, spawn-order cohorts); physics/capsule/markers stay per-frame, so only the visual pose and
+// the muzzle transform quantize. The followed/POV/debug-focus bot always solves at full rate.
+// Skipped frames re-flush the frozen pose, so the worst case is the body trailing its capsule by
+// one stride of movement — at the distances below that is sub-pixel. ?riglod=0 disables (A/B).
+let botRigLodEnabled = new URLSearchParams(location.search).get('riglod') !== '0';
+const RIG_LOD_MID2 = 18 * 18;   // beyond 18 m: every 2nd frame (30 Hz pose — invisible at that size)
+const RIG_LOD_FAR2 = 45 * 45;   // beyond 45 m: every 4th frame
+// A/B: ?flushlod=0 restores the old always-refresh flush. On, a strided bot also skips the
+// ~170-node matrix walk in flush(), not just the solve — the pose it re-emits is unchanged.
+let BOT_FLUSH_LOD = new URLSearchParams(location.search).get('flushlod') !== '0';
+// A/B: ?botcull=0 disables. The pools are immediate-mode, so a body that never flushes simply is
+// not drawn. Only STRICTLY behind the camera is culled (not the frustum sides) so a fast turn
+// cannot outrun it, and never within CULL_NEAR2 whatever the angle. Safe because the body buckets
+// are castShadow=false — an unflushed bot cannot pop a shadow.
+let BOT_CULL_BEHIND = new URLSearchParams(location.search).get('botcull') !== '0';
+const BOT_CULL_NEAR2 = 8 * 8;
+// A/B: ?bothide=<metres> (0 disables). The env viewer has hidden bodies past 240 m for weeks; the
+// harness had no hide at all, so an open-terrain bot lost in fog still submitted its full ~96 K
+// triangles. 240 m is larger than the maze, so this is a no-op there.
+let BOT_HIDE_M = Number(new URLSearchParams(location.search).get('bothide') ?? 240);
+let BOT_HIDE_D2 = BOT_HIDE_M > 0 ? BOT_HIDE_M * BOT_HIDE_M : Infinity;
+// A/B: ?rboxlod=0 off (default), =1 per-distance (?rboxlodDist=<metres>), =2 global. The seg=1 rbox
+// twin is 156 triangles against 828, ~44 K of a bot's ~57 K. CHANGES HOW BOTS LOOK (flatter chamfer
+// highlights), so it stays off pending sign-off. The 2 m band stops threshold-walking bots flicking.
+// Mode 1 keeps BOTH seg variants live while the population is mixed, so it adds rbox buckets; only
+// mode 2 empties the seg3 buckets, letting body-part-batches hide then evict them (draws stay flat).
+let BOT_RBOX_LOD = Math.max(0, Math.min(2, Number(new URLSearchParams(location.search).get('rboxlod') ?? 0) | 0));
+let BOT_RBOX_LOD_D = Number(new URLSearchParams(location.search).get('rboxlodDist') ?? 25);
+let BOT_RBOX_IN2 = 0, BOT_RBOX_OUT2 = 0;
+// Recomputed on any distance change; the 2 m gap between in/out is the hysteresis band.
+function refreshRboxLodBands() {
+  BOT_RBOX_IN2 = (BOT_RBOX_LOD_D + 2) ** 2;
+  BOT_RBOX_OUT2 = Math.max(0, BOT_RBOX_LOD_D - 2) ** 2;
+}
+refreshRboxLodBands();
+const _cullFwd = new THREE.Vector3();
+// Refreshed once per frame in the flush loop, not per bot.
+function botCullBegin() {
+  if (BOT_CULL_BEHIND) camera.getWorldDirection(_cullFwd);
+  // Global mode covers every actor, including the focus ones botFlushSkipped returns early for.
+  if (BOT_RBOX_LOD === 2) for (const a of botActors) a.body?.setGearLod?.(1);
+}
+// True when this bot should not reach the pools at all this frame.
+function botFlushSkipped(actor) {
+  if (actor === botRigFocusActor || actor === botDebugFocusActor) return false;
+  const p = actor.entity?.mesh?.position;
+  if (!p) return false;
+  const dx = p.x - camera.position.x, dy = p.y - camera.position.y, dz = p.z - camera.position.z;
+  const d2 = dx * dx + dy * dy + dz * dz;
+  if (BOT_RBOX_LOD === 1 && actor.body?.setGearLod) {
+    if (d2 > BOT_RBOX_IN2) actor.body.setGearLod(1);
+    else if (d2 < BOT_RBOX_OUT2) actor.body.setGearLod(0);
+  }
+  if (d2 > BOT_HIDE_D2) return true;
+  if (!BOT_CULL_BEHIND || d2 < BOT_CULL_NEAR2) return false;
+  return dx * _cullFwd.x + dy * _cullFwd.y + dz * _cullFwd.z < 0;
+}
+let botRigFocusActor = null;    // set per frame in updateAllBots: the camera subject, always full rate
+function botThinkStride(livingCount) {
+  if (botThinkStaggerMode !== 'auto') return botThinkStaggerMode;
+  return livingCount > 80 ? 3 : livingCount > 40 ? 2 : 1;
+}
+// Diagnostic tallies for the three stall bugs found in the 2026-07-28/29 traces. Each problem has a
+// counter that fires when the old behaviour would have, plus one that fires when the fix engages, so
+// a single take shows both that the bug is gone and that the replacement is doing the work.
+const botDiag = {
+  targetPickBest: 0,               // acquired an enemy it can actually see
+  targetPickRetained: 0,           // kept an occluded but living target (intended)
+  targetPickFallbackSuppressed: 0, // P1: old code handed out the shared array-order enemy here
+  targetPickNone: 0,               // P1 fixed: holds nothing, re-scans next frame
+  patrolNoRoute: 0,                // P2: no patrol point shares this bot's nav region
+  patrolLocalFallback: 0,          // P2 fixed: walked to an in-region goal instead of freezing
+  patrolIsolated: 0,               // P2 residue: no in-region goal either, genuinely sealed in
+  patrolEscaped: 0,                // escape hatch found a real route out of the pocket
+  patrolStranded: 0,               // ...and how many bots it PROVED cannot leave (symptom, not fix)
+  squadHoldBroken: 0,              // followers that gave up holding a slot behind a motionless leader
+  targetRetentionExpired: 0,       // living-but-long-unseen targets dropped so the bot can re-acquire
+  knifeOutOfReach: 0,              // P3: knife committed with the target far beyond blade range
+  knifeReloadUnblocked: 0,         // P3 fixed: reloaded while holding the knife (was impossible)
+  knifeTimeout: 0,                 // P3 fixed: knife commit abandoned after the cap
+};
+function botDiagReset() { for (const k in botDiag) botDiag[k] = 0; }
+// World geometry rides along with the counters so the 2D trace viewer can draw the real arena --
+// bounds, walls, cover -- instead of inferring extent from wherever the bots happened to walk. Walls
+// and covers are axis-aligned {x,z,w,d} boxes, which is why the map can render them as plain rects.
+// (These globals are declared further down; botDiagJson only ever runs long after module init.)
+const _diagBox = b => ({ x: +b.x.toFixed(3), z: +b.z.toFixed(3), w: +b.w.toFixed(3), d: +b.d.toFixed(3) });
+const _diagBoxOk = b => b && [b.x, b.z, b.w, b.d].every(Number.isFinite);
+// Height grid for the 2D map's elevation shading. Quantized to a byte per cell against the sampled
+// min/max and base64'd -- a plain number array for the same grid is ~3x the JSON. Sampled through
+// groundHeight, so it already includes pads and whatever landform is live; with terrain disabled
+// (the default) every sample is 0, which `flat` reports rather than leaving the viewer to shade noise.
+const WORLD_HEIGHT_MAX_SAMPLES = 192;   // along the longer axis; the shorter one keeps the aspect
+function botWorldHeights() {
+  const b = activeBounds;
+  if (!b || b.maxX <= b.minX || b.maxZ <= b.minZ) return null;
+  const spanX = b.maxX - b.minX, spanZ = b.maxZ - b.minZ;
+  const long = Math.max(spanX, spanZ);
+  const cols = Math.max(2, Math.round(WORLD_HEIGHT_MAX_SAMPLES * (spanX / long)));
+  const rows = Math.max(2, Math.round(WORLD_HEIGHT_MAX_SAMPLES * (spanZ / long)));
+  const raw = new Float32Array(cols * rows);
+  let minY = Infinity, maxY = -Infinity;
+  for (let r = 0; r < rows; r++) {
+    const z = b.minZ + (spanZ * r) / (rows - 1);
+    for (let c = 0; c < cols; c++) {
+      const y = groundHeight(b.minX + (spanX * c) / (cols - 1), z);
+      raw[r * cols + c] = y;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  const range = maxY - minY;
+  const bytes = new Uint8Array(raw.length);
+  if (range > 1e-6) for (let i = 0; i < raw.length; i++) bytes[i] = Math.round(((raw[i] - minY) / range) * 255);
+  // Chunked: String.fromCharCode(...bytes) on 18k samples blows the argument limit.
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return { cols, rows, minY: +minY.toFixed(3), maxY: +maxY.toFixed(3), flat: range <= 1e-6, b64: btoa(bin) };
+}
+
+// Per-cell region map for the 2D map's nav overlay. One byte per cell, base64'd like the heights:
+// 0 = blocked, 1 = the main region, 2..253 = other regions ranked biggest-first, 254 = a carved cell,
+// 255 = a region past the 252 the byte can name. Full nav resolution deliberately -- downsampling
+// would erase exactly the one-cell corridors that decide whether a pocket is connected.
+const WORLD_REGION_MAX_CELLS = 262144;   // ~256 KB raw; a 120 m arena at 0.5 m is 57.6k, well under
+function botWorldRegions() {
+  const g = navGrid;
+  if (!g?.regions) return null;
+  const n = g.cols * g.rows;
+  if (n > WORLD_REGION_MAX_CELLS) return { cols: g.cols, rows: g.rows, tooBig: n, b64: null };
+  // Rank ids by size so the palette is stable across takes: rank 0 is always the main region.
+  const order = g.regionSizes.map((size, id) => ({ id, size }))
+    .sort((a, b) => b.size - a.size || a.id - b.id);
+  const rank = new Map(order.map((e, i) => [e.id, i]));
+  const carved = new Set(g.carved || []);
+  const bytes = new Uint8Array(n);
+  for (let k = 0; k < n; k++) {
+    const id = g.regions[k];
+    if (id < 0) { bytes[k] = 0; continue; }
+    if (carved.has(k)) { bytes[k] = 254; continue; }
+    const rk = rank.get(id) ?? 0;
+    bytes[k] = rk === 0 ? 1 : rk < 252 ? rk + 1 : 255;
+  }
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  // Sizes in rank order, so the viewer can label "region 3" with its cell count without the id map.
+  return {
+    cols: g.cols, rows: g.rows, cellSize: g.cellSize, minX: g.minX, minZ: g.minZ,
+    sizes: order.map(e => e.size), carved: (g.carved || []).length,
+    sealed: (g.sealedRegions || []).map(s => ({ cells: s.cells, cell: s.cell ?? -1 })),
+    b64: btoa(bin),
+  };
+}
+
+function botWorldMeta() {
+  return {
+    bounds: activeBounds ? { ...activeBounds } : null,
+    heights: botWorldHeights(),
+    regions: botWorldRegions(),
+    navCellSize: navGrid?.cellSize ?? null,
+    navCols: navGrid?.cols ?? null,
+    navRows: navGrid?.rows ?? null,
+    // Regions are what strands a bot: a pocket with no patrol point is why P2 fires.
+    navRegionSizes: navGrid?.regionSizes ? Array.from(navGrid.regionSizes) : null,
+    patrolPoints: (patrolPoints || []).filter(p => Number.isFinite(p?.x) && Number.isFinite(p?.z))
+      .map(p => ({ x: +p.x.toFixed(3), z: +p.z.toFixed(3) })),
+    walls: (activeWalls || []).filter(_diagBoxOk).map(_diagBox),
+    covers: (activeCovers || []).filter(_diagBoxOk).map(_diagBox),
+  };
+}
+function botDiagJson() {
+  return JSON.stringify({
+    savedAt: new Date().toISOString(), frames: botFrameCounter,
+    world: botWorldMeta(), counters: { ...botDiag },
+  }, null, 2);
+}
+window.botDiag = botDiag; // console-inspectable mid-run without stopping the recorder
+function frameEnemyList(team) {
+  for (let i = 0; i < _frameEnemyTeams.length; i++) if (_frameEnemyTeams[i] === team) return _frameEnemyArrays[i];
+  return _emptyEnemyList;
+}
+function rebuildFrameEnemyLists() {
+  for (let i = 0; i < _frameEnemyArrays.length; i++) _frameEnemyArrays[i].length = 0;
+  for (const actor of botActors) {
+    // Seed from every actor (dead ones too) so a revived bot's team bucket always exists.
+    if (frameEnemyList(actor.entity.team) === _emptyEnemyList) { _frameEnemyTeams.push(actor.entity.team); _frameEnemyArrays.push([]); }
+  }
+  for (let i = 0; i < _frameEnemyArrays.length; i++) {
+    for (const target of dummyTargets) if (target.alive) _frameEnemyArrays[i].push(target);
+  }
+  for (const actor of botActors) {
+    const entity = actor.entity;
+    if (entity.alive === false) continue;
+    for (let i = 0; i < _frameEnemyArrays.length; i++) if (_frameEnemyTeams[i] !== entity.team) _frameEnemyArrays[i].push(entity);
+  }
+}
+
+// Re-index botHash over the living, non-ragdolled roster. Returns the (reused) entity array.
+function rebuildBotHash() {
+  _hashLiving.length = 0;
+  for (const actor of botActors) {
+    if (actor.entity.alive === false || actor.ragdoll) continue;
+    _hashLiving.push(actor.entity);
+  }
+  botHash.rebuild(_hashLiving);
+  return _hashLiving;
+}
+
+// True once the corpse has held below RAGDOLL_SLEEP_ENERGY long enough to stop simulating.
+function botRagdollAsleep(actor, now) {
+  return actor.ragdollSettledSince != null && now - actor.ragdollSettledSince >= RAGDOLL_SLEEP_MS;
+}
+
+// Corpse cull: bodies otherwise accumulate for the whole session (every corpse keeps its meshes,
+// its slot in the batch pools, and a body-flush every frame). Oldest death goes first; corpses
+// still inside the medic revive window are spared so a cull can't steal a revive in progress.
+const _cullBatch = [];
+function cullDeadBots(now) {
+  if (!botCorpseCullEnabled || deadBotActors.size <= botCorpseCap) return;
+  _cullBatch.length = 0;
+  for (const actor of deadBotActors) {
+    if (actor.diedAt != null && now - actor.diedAt <= MEDIC_DEFAULTS.reviveWindowMs) continue;
+    _cullBatch.push(actor);
+  }
+  if (!_cullBatch.length) return;
+  _cullBatch.sort((a, b) => (a.diedAt ?? 0) - (b.diedAt ?? 0));
+  const excess = Math.min(_cullBatch.length, deadBotActors.size - botCorpseCap);
+  for (let i = 0; i < excess; i++) {
+    const actor = _cullBatch[i];
+    const at = botActors.indexOf(actor);
+    if (at !== -1) botActors.splice(at, 1);
+    botActorById.delete(actor.id);
+    deadBotActors.delete(actor);
+    goalClaims.release(actor.id);
+    if (botDebugFocusActor === actor) { botDebugFocusActor = null; updateBotDebugFocusButton(); }
+    if (selectedBotActor === actor) selectedBotActor = null;
+    if (activeBotActor === actor) bindBotActor(botActors[0] ?? null);
+    disposeBotActor(actor);
+  }
+  _cullBatch.length = 0;
+  botWeaponUiDirty = true;      // roster shrank: refresh the count/ammo readouts once this frame
+  updateBotCountControls();
+}
+
+// Bot footsteps: the same distance-cadence stride the environment viewer uses for the player,
+// but per bot and culled to the panner's own audible radius so only nearby bots are heard.
+const FOOTSTEP_STRIDE = 1.7;
+function updateBotFootstep(actor) {
+  if (!botAudioEnabled) return;
+  const foot = actor.entity.capsule.start;
+  if (!actor.stepPrev) { actor.stepPrev = { x: foot.x, z: foot.z }; actor.stepDist = 0; return; }
+  const dx = foot.x - actor.stepPrev.x, dz = foot.z - actor.stepPrev.z;
+  actor.stepPrev.x = foot.x; actor.stepPrev.z = foot.z;
+  actor.stepDist += Math.sqrt(dx * dx + dz * dz);   // not hypot: this is per bot per frame
+  if (actor.stepDist < FOOTSTEP_STRIDE) return;
+  actor.stepDist = 0;
+  playAtCulled('footstep', foot, BOT_SFX.step, 4, BOT_SFX.step.maxDistance);
+}
+
+function updateAllBots(dt, now) {
+  // frameProf.record OVERWRITES per name, so a per-bot timer would report only the last bot.
+  // These accumulate by hand; only read when the ?prof=1 HUD is up.
+  simPreMs = simSentryMs = simBotMs = simPostMs = simSelMs = 0;
+  senAMs = senBMs = senCMs = senDMs = 0;
+  senDByState.clear(); senDTailMs = 0;
+  const _t0 = performance.now();
+  botStateRecordFrameNow = now;
+  botFrameCounter++;
+  cullDeadBots(now);            // before the frame lists/hash so culled corpses never enter them
+  replanBudgetLeft = REPLAN_BUDGET_PER_FRAME;
+  rebuildFrameEnemyLists();
+  const thinkStride = botThinkStride(rebuildBotHash().length);
+  refreshGrenadeThreats();      // one scan of the live projectiles, read by every bot's evade check
+  updateWorldHealthPacks(now);
+  updateSquads(now);    // rosters/leaders/formations settle before any member reads them
+  simPreMs = performance.now() - _t0;
+  botFacingCount = 0;   // immediate-mode facing cones: refilled by the living actors below
+  const focus = activeBotActor;
+  botRigFocusActor = botDebugFocusActor || focus; // camera subject: exempt from rig LOD
+  if (focus) commitBotActor(focus); // flush the outer binding once, not once per bot (M9)
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) {
+      // Dead bots don't run the FSM, but a ragdolling corpse still needs stepping + re-posing --
+      // until it settles: past that the pools' immediate-mode flush keeps rendering the held pose.
+      if (actor.ragdoll && actor.body && !botRagdollAsleep(actor, now)) {
+        stepRagdoll(actor.ragdoll, dt, RAGDOLL_DEATH_STEP);
+        actor.body.setRagdollPose(actor.ragdollPose);
+        if (kineticEnergy(actor.ragdoll) < RAGDOLL_SLEEP_ENERGY) actor.ragdollSettledSince ??= now;
+        else actor.ragdollSettledSince = null;
+      }
+      continue;
+    }
+    // Single bind+commit per bot (M9); foreign-actor touches inside still nest via withBotActor.
+    bindBotActor(actor);
+    actor.thinkDtAcc = (actor.thinkDtAcc ?? 0) + dt;
+    if (thinkStride === 1 || actor === focus ||
+        (botFrameCounter + (actor.scanPhase ?? 0)) % thinkStride === 0) {
+      const _s = performance.now();
+      updateBotSentry(actor.thinkDtAcc, now);
+      simSentryMs += performance.now() - _s;
+      actor.thinkDtAcc = 0;
+    }
+    const _b = performance.now();
+    updateBot(dt);
+    simBotMs += performance.now() - _b;
+    commitBotActor(actor);
+    updateBotFootstep(actor);
+  }
+  flushBotFacing();
+  const _p = performance.now();
+  // Bot-bot pushout, then re-resolve moved bots against walls so a doorway squeeze can't shove anyone through.
+  const living = rebuildBotHash(); // re-index: the FSM ticks above moved everyone
+  for (const entity of resolveBotPairsHashed(living, botHash)) {
+    if (mapCollider) mapCollider.resolveCapsule(entity.capsule, entity.velocity, {});
+  }
+  simPostMs = performance.now() - _p;
+  bindBotActor(botActors.includes(focus) ? focus : (botActors[0] ?? null));
+  botLiveFlush();   // one batched message per frame, after every actor has committed
+  updateNavWarnBanner();
+  updateFloorRescueBanner();
+}
+
+// A console.warn scrolls away; a bot orbiting a sealed pocket does not. This stays on screen for as
+// long as the fallback is load-bearing, so "the map is broken and we are papering over it" can never
+// quietly become "the map is fine".
+let _navWarnText = '';
+function updateNavWarnBanner() {
+  const el = document.getElementById('navwarn');
+  if (!el) return;
+  let stranded = 0;
+  for (const a of botActors) if (a.patrolStranded && a.entity.alive !== false) stranded++;
+  const sealed = navGrid?.sealedRegions?.length ?? 0;
+  const carved = navGrid?.carved?.length ?? 0;
+  let text = '';
+  if (stranded) {
+    text = `⚠ ${stranded} bot${stranded === 1 ? '' : 's'} STRANDED — orbiting a sealed pocket (fallback, not a fix)`;
+    if (sealed) text += ` · ${sealed} walled-off region${sealed === 1 ? '' : 's'}`;
+  } else if (sealed) {
+    text = `⚠ ${sealed} walled-off nav region${sealed === 1 ? '' : 's'} in this layout`;
+  } else if (carved) {
+    text = `nav repaired: ${carved} steep cell${carved === 1 ? '' : 's'} opened to reconnect the map`;
+  }
+  if (text === _navWarnText) return;   // DOM writes only on change, not every frame
+  _navWarnText = text;
+  el.textContent = text;
+  el.style.display = text ? '' : 'none';
+  el.style.background = stranded ? '#e0a53a' : sealed ? '#d98a3a' : '#3a6ea0';
+  el.style.color = stranded || sealed ? '#12161c' : '#eaf2ff';
+}
+
+// BB-004 forensic ring: records every live bot's physics from its FIRST step, so the frames leading
+// into a fall are already captured when one happens (the trigger is still unknown -- see
+// docs/bot-bugs-log.md). ?forensics=0 disables it entirely, which is the A/B arm for measuring its
+// cost: with it null, _updateBotPhysOpts never carries a `forensics` property and stepBotPhysics
+// runs its exact pre-existing path. ~6.3 MB, allocated once, nothing per frame.
+const botForensics = new URLSearchParams(location.search).get('forensics') === '0'
+  ? null : createBotForensics();
+
+// Same "stays on screen while load-bearing" reasoning as updateNavWarnBanner: bot-entity.js's
+// rescue console.warn is now throttled per bot (see FLOOR_RESCUE_WARN_COOLDOWN_S), so this is the
+// only thing that reliably shows a bot is still falling through the terrain and being papered over.
+let _floorWarnText = '';
+function updateFloorRescueBanner() {
+  const el = document.getElementById('floorwarn');
+  if (!el) return;
+  let active = 0, total = 0;
+  for (const a of botActors) {
+    if (a.entity.alive === false) continue;
+    if (a.entity.floorRescues) total++;
+    if ((a.entity.floorRescueWarnAt ?? 0) > 0) active++;
+  }
+  let text = '';
+  if (active) {
+    text = `⚠ ${active} bot${active === 1 ? '' : 's'} pulled back up from under the terrain (fallback, not a fix)`;
+    if (total > active) text += ` · ${total} total this session`;
+  } else if (total) {
+    text = `${total} bot${total === 1 ? '' : 's'} recovered from a terrain fall-through this session`;
+  }
+  // A frozen take is only useful if the user knows it exists and what to press for it. Part of
+  // `text`, so the existing write-on-change guard below covers it too.
+  const pendingTake = botForensics?.pendingId();
+  if (pendingTake) text += `${text ? ' · ' : ''}forensic take ready: ${pendingTake} — Shift+J`;
+  if (text === _floorWarnText) return;   // DOM writes only on change, not every frame
+  _floorWarnText = text;
+  el.textContent = text;
+  el.style.display = text ? '' : 'none';
+  el.style.background = active ? '#d9673a' : '#3a6ea0';
+  el.style.color = active ? '#12161c' : '#eaf2ff';
+}
+function spawnBot() {
+  spawnBots(botTeam, 1);
+  updateBotWeaponButtons();
+  updateBotCountControls();
+}
+function removeBot() {
+  removeAllBots();
+  updateBotWeaponButtons();
+  updateBotCountControls();
+}
+
+// Fires a wave when the interval elapses; called every frame from the animation loop.
+function updateBotAutoAdd(now) {
+  if (!botAutoAddEnabled || now < botAutoAddNextAt) return;
+  botAutoAddNextAt = now + Math.max(0.1, botAutoAddInterval) * 1000;
+  const count = Math.max(1, Math.floor(botAutoAddCount));
+  const teams = botAutoAddTeams === 'both' ? ['alpha', 'bravo'] : [botAutoAddTeams];
+  // Caps count living bots only -- corpses have their own cull budget. When both teams are targeted
+  // the emptier one is filled first, so a tight total cap can't starve one side wave after wave.
+  const living = countLivingByTeam();
+  let totalRoom = Math.max(0, botAutoAddTotalCap - Object.values(living).reduce((a, b) => a + b, 0));
+  if (teams.length > 1) teams.sort((a, b) => (living[a] ?? 0) - (living[b] ?? 0));
+  let spawnedAny = false;
+  for (const team of teams) {
+    const room = Math.min(count, botAutoAddTeamCap - (living[team] ?? 0), totalRoom);
+    if (room <= 0) continue;
+    totalRoom -= room;
+    spawnedAny = true;
+    // Carry fractional specialists forward so each role's % holds even when a wave rounds to 0.
+    const roles = new Array(room).fill(DEFAULT_ROLE);
+    let filled = 0;
+    for (const [roleId, percent] of [[ROLE_MEDIC, botMedicPercent], ...Object.entries(botRoleMix)]) {
+      const debt = botAutoAddRoleAccum[team];
+      debt[roleId] = (debt[roleId] ?? 0) + (room * Math.max(0, Math.min(100, percent))) / 100;
+      const take = Math.min(room - filled, Math.floor(debt[roleId]));
+      debt[roleId] -= take;
+      for (let i = 0; i < take; i++) roles[filled++] = roleId;
+    }
+    spawnBots(team, room, { roles });
+  }
+  if (botAutoAddCapped !== !spawnedAny) { botAutoAddCapped = !spawnedAny; updateBotAutoAddButtons(); }
+  if (!spawnedAny) return;
+  updateBotWeaponButtons();
+  updateBotCountControls();
+}
+
+function botStateColor(state) {
+  return state === BOT_FIRE ? 0xff5252 :
+    state === MEDIC_TEND ? 0x2ee6c0 :
+    state === MEDIC_MOVE ? 0x66ffd9 :
+    state === BOT_HEAL ? 0x5ee7a4 :
+    state === BOT_KNIFE ? 0xffca28 :
+    state === BOT_AIM ? 0xffe0b2 :
+    state === BOT_PURSUE ? 0x4fc3f7 :
+    state === BOT_FLEE ? 0xab47bc :
+    state === BOT_COVER_MOVE ? 0x7986cb :
+    state === BOT_COVER_HOLD ? 0x3f51b5 :
+    state === BOT_SEEK ? 0xffa726 :
+    state === 'reposition' ? 0xff9800 :
+    state === 'alert' ? 0xffee58 :
+    0x5c6673;
+}
+
+function updateBotStateOrb(mid, color) {
+  const orb = activeBotActor?.stateOrb;
+  if (!orb) return;
+  orb.visible = botStateOrbsEnabled && emitsFocusedBotDiagnostics(activeBotActor) && bot.alive !== false;
+  if (!orb.visible) return;
+  const head = botProceduralBody?.joints.head;
+  if (head) {
+    orb.position.copy(head.position);
+    orb.position.y += BOT_STATE_ORB_LIFT;
+  } else {
+    orb.position.set(mid.x, bot.capsule.end.y + bot.capsule.radius + BOT_STATE_ORB_LIFT, mid.z);
+  }
+  orb.material.color.setHex(color);
+}
+// Flat triangle-fan sector in the XZ plane, unit radius, centered on +Z (local forward). Rotated by
+// bot.yaw at draw time so it points where the bot faces; 360deg degenerates to a full disc.
+// Shared across every actor and never disposed: a slider drag used to mint (and bin) one geometry
+// per bot per changed degree. Keyed on the rounded degree, which is all the segment count resolves.
+const fovWedgeGeometryCache = new Map();
+function fovWedgeGeometry(fovDeg) {
+  const deg = Math.round(fovDeg);
+  let geo = fovWedgeGeometryCache.get(deg);
+  if (!geo) { geo = buildFovWedgeGeometry(deg); fovWedgeGeometryCache.set(deg, geo); }
+  return geo;
+}
+function buildFovWedgeGeometry(fovDeg) {
+  const half = THREE.MathUtils.degToRad(Math.min(360, Math.max(1, fovDeg))) * 0.5;
+  const segs = Math.max(2, Math.ceil(fovDeg / 4));
+  const positions = [0, 0, 0];
+  for (let i = 0; i <= segs; i++) {
+    const a = -half + (2 * half) * (i / segs);
+    positions.push(Math.sin(a), 0, Math.cos(a));
+  }
+  const index = [];
+  for (let i = 1; i <= segs; i++) index.push(0, i, i + 1);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(index);
+  return geo;
+}
+function createBotTacticalVisuals(team) {
+  const color = BOT_TEAM_DEFS[team]?.facing ?? 0x7fd6ff;
+  const fovWedge = new THREE.Mesh(
+    fovWedgeGeometry(botBehaviorSettings.fovDegrees),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.10, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  fovWedge.renderOrder = 2; // beneath the sight ring
+  fovWedge.userData.builtDeg = Math.round(botBehaviorSettings.fovDegrees);
+  const sightRange = new THREE.Mesh(
+    botSightRingGeometry,
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  sightRange.rotation.x = -Math.PI / 2;
+  sightRange.renderOrder = 3;
+  const knifeRange = new THREE.Mesh(
+    botKnifeRingGeometry,
+    new THREE.MeshBasicMaterial({ color: 0xffca28, transparent: true, opacity: 0.78, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  knifeRange.rotation.x = -Math.PI / 2;
+  knifeRange.renderOrder = 4;
+  const healthBar = new THREE.Group();
+  const background = new THREE.Mesh(
+    botHealthBarBgGeometry,
+    new THREE.MeshBasicMaterial({ color: 0x161a20, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  const healthFillMaterial = new THREE.MeshBasicMaterial({ color: 0x63e6a4, side: THREE.DoubleSide, depthWrite: false });
+  const healthFill = new THREE.Mesh(botHealthBarFillGeometry, healthFillMaterial);
+  healthFill.position.z = 0.002;
+  background.matrixAutoUpdate = false; background.updateMatrix(); // static local; fill stays dynamic (M10)
+  healthBar.add(background, healthFill);
+  healthBar.renderOrder = 6;
+  return { fovWedge, sightRange, knifeRange, healthBar, healthFill, healthFillMaterial };
+}
+
+function updateBotTacticalVisuals(mid) {
+  const actor = activeBotActor;
+  if (!actor?.sightRange || !actor.knifeRange || !actor.healthBar) return;
+  const tacticalVisible = botTacticalVisualsEnabled && emitsFocusedBotDiagnostics(actor) && bot.alive !== false;
+  const knifeVisible = botBehaviorDebugEnabled && (botDebugFocusActor || activeBotActor) === actor && bot.alive !== false;
+  // The wedge is a top-down read. From its own apex the 150-degree cone is wider than the 55-degree
+  // camera, so the edges never reach the screen and only the fill shows: a coloured film over the
+  // whole floor. The inhabited bot hides its own cone; other bots' cones stay readable from POV.
+  const povSelf = cameraMode === CAMERA_POV && cameraFollowActor === actor;
+  const fovVisible = botFovWedgeEnabled && emitsFocusedBotDiagnostics(actor) && !povSelf && bot.alive !== false;
+  actor.sightRange.visible = tacticalVisible;
+  actor.healthBar.visible = tacticalVisible;
+  actor.knifeRange.visible = knifeVisible;
+  if (actor.fovWedge) {
+    actor.fovWedge.visible = fovVisible;
+    if (fovVisible) {
+      // Effective cone, not the base slider: withinBotFov takes the max with the alert-tier widening.
+      const effDeg = Math.round(Math.max(botBehaviorSettings.fovDegrees, actor.tierPerception?.fovDegrees ?? 0));
+      if (actor.fovWedge.userData.builtDeg !== effDeg) {
+        actor.fovWedge.geometry = fovWedgeGeometry(effDeg);   // cached and shared: never dispose here
+        actor.fovWedge.userData.builtDeg = effDeg;
+      }
+      actor.fovWedge.position.set(mid.x, decalY(mid.x, mid.z, 0.012), mid.z);
+      actor.fovWedge.rotation.y = bot.yaw;
+      const sight = botSightDistanceFor(actor);
+      actor.fovWedge.scale.set(sight, 1, sight);
+    }
+  }
+  if (!tacticalVisible && !knifeVisible) return;
+  if (tacticalVisible) {
+    actor.sightRange.position.set(mid.x, decalY(mid.x, mid.z, 0.014), mid.z);
+    const sight = botSightDistanceFor(actor);
+    actor.sightRange.scale.set(sight, sight, 1);
+  }
+  if (knifeVisible) {
+    actor.knifeRange.position.set(mid.x, decalY(mid.x, mid.z, 0.018), mid.z);
+    actor.knifeRange.scale.set(botBehaviorSettings.knifeEngagementDistance, botBehaviorSettings.knifeEngagementDistance, 1);
+  }
+  if (!tacticalVisible) return;
+  const head = botProceduralBody?.joints.head;
+  if (head) actor.healthBar.position.copy(head.position);
+  else actor.healthBar.position.set(mid.x, bot.capsule.end.y + bot.capsule.radius, mid.z);
+  actor.healthBar.position.y += 0.42;
+  actor.healthBar.quaternion.copy(camera.quaternion);
+  const hp01 = THREE.MathUtils.clamp((bot.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH, 0, 1);
+  actor.healthFill.scale.x = hp01;
+  actor.healthFill.position.x = -0.35 * (1 - hp01);
+  actor.healthFillMaterial.color.setHex(hp01 > 0.55 ? 0x63e6a4 : hp01 > 0.30 ? 0xffd166 : 0xff6b6b);
+}
+
+// Medic pose while healing: weapon holstered (hidden), the pack held in the LEFT hand resting on the
+// left knee, and the RIGHT hand dabbing back and forth between the pack and the chest. Arm targets
+// are world-space and read one frame later by the body's IK; the bot is stationary so the lag is
+// invisible. Called instead of the weapon mount for the duration of BOT_HEAL.
+const _healScratch = { leftHand: new THREE.Vector3(), rightHand: new THREE.Vector3(), chest: new THREE.Vector3(), fwd: new THREE.Vector3() };
+function updateHealPose(dt, mid) {
+  const actor = activeBotActor;
+  const body = botProceduralBody;
+  if (!actor || !body) return;
+  if (botWeaponMount?.weaponRig) botWeaponMount.weaponRig.visible = false; // holster the gun
+  const J = body.joints;
+  const fwd = _healScratch.fwd.set(Math.sin(bot.yaw), 0, Math.cos(bot.yaw));
+  // Left hand parks the pack on top of the left knee.
+  const knee = J.leftKnee.position;
+  const leftHand = _healScratch.leftHand.set(knee.x, knee.y + 0.10, knee.z).addScaledVector(fwd, 0.05);
+  body.setArmTarget('left', { position: leftHand, weight: 1 });
+  // Right hand oscillates between the pack (on the knee) and the chest.
+  const chest = J.torso.position;
+  const chestPos = _healScratch.chest.set(chest.x, chest.y + 0.04, chest.z).addScaledVector(fwd, bot.capsule.radius * 0.55);
+  const phase = 0.5 - 0.5 * Math.cos(botStateRecordFrameNow * 0.005); // ~0.8 Hz smooth dab, 0..1
+  const rightHand = _healScratch.rightHand.lerpVectors(leftHand, chestPos, phase);
+  body.setArmTarget('right', { position: rightHand, weight: 1 });
+  // The pack sits in the left hand, plus-side up — pinned to the actually-solved hand (from last
+  // frame's IK) so it stays in-grip even if the arm can't quite reach the knee.
+  if (!actor.heldPackMesh) { actor.heldPackMesh = buildHealthPackMesh(0.8); scene.add(actor.heldPackMesh); }
+  const held = actor.heldPackMesh;
+  held.visible = true;
+  held.position.copy(J.leftHand.position);
+  held.rotation.y = -bot.yaw;
+}
+
+// Medic hold overlay: keep the sidearm in the right hand (weapon stays visible, aim/fire intact) and
+// cradle the pack in the left. Runs AFTER updateBotWeaponMount, so it overrides just the left-arm
+// target the controller set this frame; body.update() consumes it next frame. Fire-while-tend.
+function updateMedicHoldOverlay(dt, mid) {
+  const actor = activeBotActor;
+  const body = botProceduralBody;
+  if (!actor || !body) return;
+  const J = body.joints;
+  const torso = J.torso.position;
+  const fwd = _healScratch.fwd.set(Math.sin(bot.yaw), 0, Math.cos(bot.yaw));
+  const r = bot.capsule.radius;
+  // Cradle it at the left of the chest, a little forward -- clear of the sidearm in the right hand.
+  const hold = _healScratch.leftHand.set(torso.x, torso.y + 0.02, torso.z)
+    .addScaledVector(fwd, r * 0.4).addScaledVector(_healScratch.chest.set(Math.cos(bot.yaw), 0, -Math.sin(bot.yaw)), r * 0.7);
+  body.setArmTarget('left', { position: hold, weight: 1 });
+  if (!actor.heldPackMesh) { actor.heldPackMesh = buildHealthPackMesh(0.8); scene.add(actor.heldPackMesh); }
+  const held = actor.heldPackMesh;
+  held.visible = true;
+  held.position.copy(J.leftHand.position); // pin to the solved hand so it stays in-grip under IK clamp
+  held.rotation.y = -bot.yaw;
+}
+
+// Restore from any pose overlay: hide the in-hand pack, release the arm overrides so the weapon
+// controller / idle pose reclaims the hands, and un-holster (a no-op for medicHold, which never
+// holstered). Used on every poseMode transition.
+function endBotPose(actor) {
+  if (actor?.heldPackMesh) actor.heldPackMesh.visible = false;
+  botProceduralBody?.setArmTarget('left', null);
+  botProceduralBody?.setArmTarget('right', null);
+  if (botWeaponMount?.weaponRig) botWeaponMount.weaponRig.visible = true;
+}
+
+const _updateBotMid = new THREE.Vector3();      // per-bot scratch: consumed within this frame's tick
+// rescueHeightAt: the baked ground field is the truth here, so a capsule that tunnels the thin
+// terrain sheet gets lifted back up instead of resting on the catch slab (or falling) forever.
+// Two shapes rather than a post-hoc property add, so the ?forensics=0 arm is literally the object
+// this call site used before the ring existed.
+const _updateBotPhysOpts = botForensics
+  ? { mapCollider: null, rescueHeightAt: groundHeight, forensics: botForensics }
+  : { mapCollider: null, rescueHeightAt: groundHeight };
+const _updateBotBodyState = {
+  position: null, velocity: null, onFloor: false, crouch: 0, prone: 0,
+  height: 0, radius: 0, yaw: 0, aimPitch: 0, weapon: null, tool: null, alive: true,
+};
+function updateBot(dt) {
+  if (!bot || bot.alive === false) return;
+  _updateBotPhysOpts.mapCollider = mapCollider;
+  stepBotPhysics(bot, dt, _updateBotPhysOpts);
+  // One eased weight pair drives both the rig pose and the capsule, so they cannot disagree mid-blend.
+  if (activeBotActor) {
+    activeBotActor.stanceWeights = stepStanceWeights(
+      activeBotActor.stanceWeights ??= { crouch01: 0, prone01: 0 },
+      poseStanceFor(activeBotActor), dt, botStanceSettings);
+  }
+  applyStanceHeight(activeBotActor);   // no-op on height until heightEnabled is set
+  const mid = _updateBotMid.copy(bot.capsule.start).add(bot.capsule.end).multiplyScalar(0.5);
+  botMesh.position.copy(mid);
+  const medicRole = activeBotActor?.role === ROLE_MEDIC;
+  // Rig LOD: distant off-stride bots skip the body + weapon-pose solve below and re-flush their
+  // frozen pose; dt banks so gait phase/pose chases integrate the same total time on their turn.
+  let rigDue = true, rigDt = dt;
+  if (activeBotActor) {
+    activeBotActor.rigDtAcc = (activeBotActor.rigDtAcc ?? 0) + dt;
+    rigDt = activeBotActor.rigDtAcc;
+    if (botRigLodEnabled && activeBotActor !== botRigFocusActor) {
+      const dxc = mid.x - camera.position.x, dyc = mid.y - camera.position.y, dzc = mid.z - camera.position.z;
+      const d2 = dxc * dxc + dyc * dyc + dzc * dzc;
+      const stride = d2 > RIG_LOD_FAR2 ? 4 : d2 > RIG_LOD_MID2 ? 2 : 1;
+      rigDue = stride === 1 || (botFrameCounter + (activeBotActor.scanPhase ?? 0)) % stride === 0;
+    }
+    if (rigDue) activeBotActor.rigDtAcc = 0;
+    activeBotActor.rigDue = rigDue;   // read by the flush loop to skip the matrix walk
+  }
+  if (rigDue) {
+  if (botProceduralBody) {
+    const st = _updateBotBodyState; // reused per bot; body.update copies what it keeps
+    st.position = mid;
+    st.velocity = bot.velocity;
+    st.onFloor = bot.onFloor;
+    // Continuous eased weights (same pair the capsule scales by), not a 0/1 snap.
+    const w = activeBotActor?.stanceWeights;
+    st.crouch = w?.crouch01 ?? 0;
+    st.prone = w?.prone01 ?? 0;
+    // Capsule endpoints span only the straight middle; include both round caps. Read the STANDING
+    // height so a stance-shrunk capsule doesn't double up on the rig's own crouch channel.
+    st.height = (activeBotActor?.standHeight ?? (bot.capsule.end.y - bot.capsule.start.y)) + bot.capsule.radius * 2;
+    st.radius = bot.capsule.radius;
+    // Bot movement/aim treats +Z as forward; the player body takes wire/camera yaw.
+    st.yaw = bot.yaw + Math.PI;
+    st.aimPitch = bot.pitch;
+    st.weapon = bot.weapon;
+    st.tool = bot.tool;
+    st.alive = true;
+    botProceduralBody.update(rigDt, st);
+  }
+  // Pose selection: a medic tending (its own heal OR an ally heal/revive) keeps the sidearm out and
+  // cradles the pack (fire-capable); a rifleman self-healing holsters into the two-handed pack pose.
+  const alive = bot.alive !== false;
+  let desiredPose = 'none';
+  if (alive) {
+    if (medicRole && (botState === MEDIC_TEND || botState === BOT_HEAL)) desiredPose = 'medicHold';
+    else if (botState === BOT_HEAL) desiredPose = 'rifleHeal';
+  }
+  if (activeBotActor && activeBotActor.poseMode !== desiredPose) {
+    endBotPose(activeBotActor);            // clean up the outgoing overlay on any transition
+    activeBotActor.poseMode = desiredPose;
+  }
+  if (desiredPose === 'rifleHeal') {
+    updateHealPose(rigDt, mid);            // weapon holstered, both hands on the pack
+  } else {
+    updateBotWeaponMount(rigDt, mid);      // normal weapon posing/aim for everyone incl. tending medics
+    if (desiredPose === 'medicHold') updateMedicHoldOverlay(rigDt, mid);
+  }
+  } // end rig LOD gate
+  const _mdNow = performance.now();
+  sampleBotLocomotionDebug(_mdNow);
+  updateBotMovementDebug(_mdNow);
+  const stateColor = botStateColor(botState);
+  addBotFacingInstance(mid, bot.yaw, bot.capsule.radius, stateColor);
+  updateBotStateOrb(mid, stateColor);
+  updateRoleInsignia(mid);
+  updateAlertMark(mid);
+  updateBotTacticalVisuals(mid);
+}
+// Overhead "!": visible exactly while an alert cue is live — red saw-it, yellow heard-it, green
+// push, cyan near miss — with the escalation score as a digit beside it. Above the insignia.
+function updateAlertMark(mid) {
+  const mark = activeBotActor?.alertMark;
+  if (!mark) return;
+  const mode = bot.alive !== false ? activeBotActor.alertMarkMode : null;
+  mark.visible = !!mode;
+  if (!mark.visible) return;
+  const mat = ALERT_MARK_MATS[mode];
+  for (const m of mark.userData.exclaim) m.material = mat;
+  mark.userData.digit.visible = mode !== 'near'; // a near miss has no casualty score to show
+  mark.userData.digit.material = alertDigitMat(activeBotActor.alertScore ?? 1, mode);
+  const head = botProceduralBody?.joints.head;
+  const stack = (activeBotActor.roleInsignia ? 0.30 : 0) + (activeBotActor.leaderInsignia ? 0.30 : 0);
+  const y = (head ? head.position.y : bot.capsule.end.y + bot.capsule.radius) + BOT_STATE_ORB_LIFT + 0.28 + stack;
+  mark.position.set(head ? head.position.x : mid.x, y, head ? head.position.z : mid.z);
+  mark.quaternion.copy(camera.quaternion);
+}
+// Float the role/leader markers above the head, billboarded to the camera, both above the state orb.
+// The two are independent (see setSquadLeaderMark): a promoted specialist shows its class insignia
+// AND the leader chevron stacked above it, rather than one replacing the other.
+function updateRoleInsignia(mid) {
+  const actor = activeBotActor;
+  const insignia = actor?.roleInsignia;
+  const leaderMark = actor?.leaderInsignia;
+  if (!insignia && !leaderMark) return;
+  const alive = bot.alive !== false;
+  if (insignia) insignia.visible = alive;
+  if (leaderMark) leaderMark.visible = alive;
+  if (!alive) return;
+  const head = botProceduralBody?.joints.head;
+  const x = head ? head.position.x : mid.x, z = head ? head.position.z : mid.z;
+  const baseY = (head ? head.position.y : bot.capsule.end.y + bot.capsule.radius) + BOT_STATE_ORB_LIFT + 0.28;
+  if (insignia) { insignia.position.set(x, baseY, z); insignia.quaternion.copy(camera.quaternion); }
+  if (leaderMark) {
+    leaderMark.position.set(x, baseY + (insignia ? 0.30 : 0), z);
+    leaderMark.quaternion.copy(camera.quaternion);
+  }
+}
+function nearestLivingFollowActor(origin = cameraFollowAnchor, exclude = null) {
+  let nearest = null;
+  let nearestDistanceSq = Infinity;
+  for (const actor of botActors) {
+    if (actor === exclude || actor.entity.alive === false) continue;
+    const point = actor.entity.capsule.start;
+    const dx = point.x - origin.x, dy = point.y - origin.y, dz = point.z - origin.z;
+    const distanceSq = dx * dx + dy * dy + dz * dz;
+    if (distanceSq < nearestDistanceSq) { nearestDistanceSq = distanceSq; nearest = actor; }
+  }
+  return nearest;
+}
+function getCameraFollowActor() {
+  const now = performance.now();
+  if (cameraFollowActor && botActors.includes(cameraFollowActor)) {
+    if (cameraFollowActor.entity.alive !== false) { cameraFollowDeathHoldUntil = 0; return cameraFollowActor; }
+    if (!cameraFollowDeathHoldUntil) cameraFollowDeathHoldUntil = now + CAMERA_FOLLOW_DEATH_HOLD_MS;
+    if (now < cameraFollowDeathHoldUntil) return cameraFollowActor;
+  }
+  cameraFollowDeathHoldUntil = 0;
+  cameraFollowActor = cameraAutoFollowEnabled ? nearestLivingFollowActor(cameraFollowAnchorReady ? cameraFollowAnchor : controls.target) : null;
+  return cameraFollowActor;
+}
+function cycleCameraFollow() {
+  const origin = cameraFollowAnchorReady ? cameraFollowAnchor : controls.target;
+  const next = nearestLivingFollowActor(origin, cameraFollowActor?.entity.alive !== false ? cameraFollowActor : null);
+  if (!next) return;
+  setCameraMode(cameraMode === CAMERA_POV ? CAMERA_POV : CAMERA_FOLLOW, next);
+}function cameraEntityPoint(entity, out) {
+  out.copy(entity.capsule.start).lerp(entity.capsule.end, 0.62);
+  out.y += entity.capsule.radius * 0.28;
+  return out;
+}
+function cameraFocusPoint(actor, out = cameraFollowPoint) {
+  const entity = actor.entity;
+  cameraEntityPoint(entity, out);
+  const target = actor.target;
+  if (!target?.alive) return out;
+  cameraEntityPoint(target, cameraFollowTargetPoint);
+  const range = out.distanceTo(cameraFollowTargetPoint);
+  // Wider engagements keep both the shooter and their target legible without yanking the look point.
+  const blend = THREE.MathUtils.clamp((range - 3) * 0.012, 0, 0.22);
+  if (blend > 0) out.lerp(cameraFollowTargetPoint, blend);
+  return out;
+}
+function cameraFollowDistanceFor() {
+  // Follow proposes a focus point, but the user's orbit zoom is the authoritative distance.
+  return THREE.MathUtils.clamp(cameraFollowUserDistance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+}
+function cameraOcclusionDirection(base, candidate, out) {
+  const cos = Math.cos(candidate.yaw);
+  const sin = Math.sin(candidate.yaw);
+  const x = base.x * cos - base.z * sin;
+  const z = base.x * sin + base.z * cos;
+  return out.set(x, base.y + candidate.lift, z).normalize();
+}
+function cameraClearDistance(target, direction, maxDistance) {
+  if (!cameraFollowOcclusionEnabled || !mapCollider || maxDistance <= CAMERA_FOLLOW_OCCLUSION_MIN_DISTANCE) return maxDistance;
+  cameraRayOriginArray[0] = target.x;
+  cameraRayOriginArray[1] = target.y;
+  cameraRayOriginArray[2] = target.z;
+  cameraRayDirectionArray[0] = direction.x;
+  cameraRayDirectionArray[1] = direction.y;
+  cameraRayDirectionArray[2] = direction.z;
+  const hit = mapCollider.raycast(cameraRayOriginArray, cameraRayDirectionArray, maxDistance);
+  if (!hit || hit.distance >= maxDistance) return maxDistance;
+  const minimumSafeDistance = Math.min(CAMERA_FOLLOW_OCCLUSION_MIN_DISTANCE, Math.max(0.04, hit.distance * 0.5));
+  return Math.max(minimumSafeDistance, hit.distance - CAMERA_FOLLOW_OCCLUSION_CLEARANCE);
+}
+function solveCameraOcclusionDirection(now, dt, target, maxDistance) {
+  if (!cameraFollowOcclusionEnabled || !mapCollider) {
+    cameraFollowOcclusionCandidateIndex = 0;
+    cameraFollowDesiredDirection.copy(cameraFollowUserDirection);
+  } else if (now >= cameraFollowNextOcclusionProbeAt) {
+    for (let i = 0; i < CAMERA_OCCLUSION_CANDIDATES.length; i++) {
+      cameraOcclusionDirection(cameraFollowUserDirection, CAMERA_OCCLUSION_CANDIDATES[i], cameraFollowProbeDirection);
+      cameraOcclusionClearances[i] = cameraClearDistance(target, cameraFollowProbeDirection, maxDistance);
+    }
+    cameraFollowOcclusionCandidateIndex = cameraOcclusionClearances[0] >= maxDistance - 0.02
+      ? 0
+      : chooseOcclusionCandidate(
+        cameraOcclusionClearances,
+        cameraOcclusionPenalties,
+        cameraFollowOcclusionCandidateIndex,
+        0.35,
+      );
+    cameraOcclusionDirection(
+      cameraFollowUserDirection,
+      CAMERA_OCCLUSION_CANDIDATES[cameraFollowOcclusionCandidateIndex],
+      cameraFollowDesiredDirection,
+    );
+    cameraFollowNextOcclusionProbeAt = now + CAMERA_FOLLOW_OCCLUSION_PROBE_MS;
+  }
+  cameraFollowResolvedDirection.lerp(cameraFollowDesiredDirection, dampAlpha(dt, 5.5)).normalize();
+  return cameraClearDistance(target, cameraFollowResolvedDirection, maxDistance);
+}
+function resetFollowFraming(actor) {
+  cameraFollowBoundActor = actor || null;
+  cameraFollowTargetId = actor?.target?.id ?? null;
+  cameraFocusPoint(actor, cameraFollowAnchor);
+  cameraFollowAnchorReady = !!actor;
+  cameraFollowOffset.copy(camera.position).sub(controls.target);
+  const distance = cameraFollowOffset.length();
+  cameraFollowUserDistance = THREE.MathUtils.clamp(distance || cameraFollowUserDistance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+  cameraFollowDynamicDistance = cameraFollowUserDistance;
+  cameraFollowCollisionDistance = cameraFollowUserDistance;
+  cameraFollowObstructed = false;
+  cameraFollowOcclusionHoldUntil = 0;
+  if (distance > 0.001) cameraFollowUserDirection.copy(cameraFollowOffset).multiplyScalar(1 / distance);
+  cameraFollowResolvedDirection.copy(cameraFollowUserDirection);
+  cameraFollowDesiredDirection.copy(cameraFollowUserDirection);
+  cameraFollowOcclusionCandidateIndex = 0;
+  cameraFollowNextOcclusionProbeAt = 0;
+}
+// Adopt whatever the camera is currently looking at as the fly heading, so entering the mode
+// never snaps the view.
+function enterFlyCam() {
+  _flyLook.copy(controls.target).sub(camera.position);
+  if (_flyLook.lengthSq() < 1e-6) _flyLook.set(0, 0, -1);
+  _flyLook.normalize();
+  flyCam.yaw = Math.atan2(_flyLook.x, _flyLook.z);
+  flyCam.pitch = THREE.MathUtils.clamp(Math.asin(_flyLook.y), -1.45, 1.45);
+}
+// Held keys -> a world-space move for this frame. Reuses the global key map that drives the dummy;
+// updateDummy yields WASD while flying so the two never fight over the same keys.
+function stepFlyCam(dt) {
+  const cos = Math.cos(flyCam.pitch);
+  _flyForward.set(Math.sin(flyCam.yaw) * cos, Math.sin(flyCam.pitch), Math.cos(flyCam.yaw) * cos);
+  _flyRight.set(Math.cos(flyCam.yaw), 0, -Math.sin(flyCam.yaw));
+  _flyMove.set(0, 0, 0);
+  if (dummyKeys['KeyW']) _flyMove.add(_flyForward);
+  if (dummyKeys['KeyS']) _flyMove.sub(_flyForward);
+  if (dummyKeys['KeyD']) _flyMove.add(_flyRight);
+  if (dummyKeys['KeyA']) _flyMove.sub(_flyRight);
+  if (dummyKeys['Space'] || dummyKeys['KeyE']) _flyMove.y += 1;
+  if (dummyKeys['KeyQ']) _flyMove.y -= 1;
+  if (_flyMove.lengthSq() > 1e-8) {
+    const boost = dummyKeys['ShiftLeft'] || dummyKeys['ShiftRight'] ? flyCam.boost
+      : dummyKeys['ControlLeft'] || dummyKeys['ControlRight'] ? 0.25 : 1;
+    _flyMove.normalize().multiplyScalar(flyCam.speed * boost * dt);
+    camera.position.add(_flyMove);
+  }
+  // Walk mode rides the generated ground, which is the honest way to judge slopes and sight lines.
+  if (flyCam.walk) camera.position.y = groundHeight(camera.position.x, camera.position.z) + flyCam.eye;
+  _flyLook.copy(camera.position).add(_flyForward);
+  cameraRig.commit(camera.position, _flyLook);
+}
+
+function setCameraMode(mode, actor = null) {
+  const previousMode = cameraMode;
+  if (actor?.entity?.alive !== false) cameraFollowActor = actor;
+  const followActor = getCameraFollowActor();
+  cameraMode = mode === CAMERA_FLY ? CAMERA_FLY
+    : mode === CAMERA_POV && followActor ? CAMERA_POV
+      : mode === CAMERA_FOLLOW && followActor ? CAMERA_FOLLOW : CAMERA_ORBIT;
+  botPovEnabled = cameraMode === CAMERA_POV;
+  controls.enabled = cameraMode !== CAMERA_POV && cameraMode !== CAMERA_FLY;
+  if (cameraMode === CAMERA_FLY && previousMode !== CAMERA_FLY) enterFlyCam();
+  if (cameraMode !== CAMERA_FLY) { flyCam.dragging = false; flyCam.pointerId = null; }
+  // Rotation is intentionally manual-orbit only. Follow manages its own target and distance.
+  controls.autoRotate = cameraAutoRotateEnabled && cameraMode === CAMERA_ORBIT;
+  cameraFollowAnchorReady = false;
+  cameraFollowBoundActor = null;
+  cameraFollowDeathHoldUntil = 0;
+  cameraRig.userInteracting = false;
+  cameraRig.inputActive = false;
+  cameraRig.inputChanged = false;
+  cameraRig.inputMomentumUntil = 0;
+  if (cameraMode === CAMERA_POV && previousMode !== CAMERA_POV) resetPovLook();
+  if (cameraMode !== CAMERA_POV) {
+    cameraRig.pov.dragging = false;
+    cameraRig.pov.pointerId = null;
+  }
+  if (cameraMode !== CAMERA_ORBIT && followActor) resetFollowFraming(followActor);
+  updatePovHudVisibility();
+  updateCameraButtons();
+  updateBotPovButton();
+}
+function frameCamera(actor = selectedBotActor || getCameraFollowActor()) {
+  if (actor && cameraMode === CAMERA_POV) setCameraMode(CAMERA_FOLLOW, actor);
+  const point = actor ? cameraFocusPoint(actor) : controls.target;
+  const dist = actor ? 7.5 : 14;
+  cameraFollowUserFocusOffset.set(0, 0, 0);
+  cameraFramingPreset = actor ? 'tactical' : 'custom';
+  if (cameraPresetSelect) cameraPresetSelect.value = cameraFramingPreset;
+  if (actor) {
+    camera.fov = CAMERA_FRAMING_PRESETS.tactical.fov;
+    camera.updateProjectionMatrix();
+  }
+  cameraRig.posePosition.set(0.78, 0.54, 1).normalize().multiplyScalar(dist).add(point);
+  cameraRig.commit(cameraRig.posePosition, point);
+  if (actor) resetFollowFraming(actor);
+  controls.update();
+}
+function applyCameraFramingPreset(name) {
+  const preset = CAMERA_FRAMING_PRESETS[name];
+  if (!preset) return;
+  cameraFramingPreset = name;
+  cameraFollowUserDistance = THREE.MathUtils.clamp(preset.distance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+  cameraFollowDynamicDistance = cameraFollowUserDistance;
+  cameraFollowCollisionDistance = cameraFollowUserDistance;
+  cameraFollowUserFocusOffset.set(0, preset.focusLift, 0);
+  cameraFollowOcclusionHoldUntil = 0;
+  cameraFollowNextOcclusionProbeAt = 0;
+  camera.fov = preset.fov;
+  camera.updateProjectionMatrix();
+  if (cameraMode === CAMERA_FOLLOW && cameraFollowAnchorReady) {
+    cameraFollowDesiredTarget.copy(cameraFollowAnchor).add(cameraFollowUserFocusOffset);
+    cameraRig.commitRelative(cameraFollowDesiredTarget, cameraFollowUserDirection, cameraFollowUserDistance);
+  } else if (cameraMode === CAMERA_ORBIT) {
+    cameraFollowOffset.copy(camera.position).sub(controls.target);
+    if (cameraFollowOffset.lengthSq() < 1e-6) cameraFollowOffset.copy(cameraFollowUserDirection);
+    cameraFollowOffset.normalize();
+    cameraRig.commitRelative(controls.target, cameraFollowOffset, cameraFollowUserDistance);
+  }
+  if (cameraPresetSelect) cameraPresetSelect.value = name;
+}
+function captureCameraFramingState() {
+  cameraFollowOffset.copy(camera.position).sub(controls.target);
+  const distance = cameraFollowOffset.length();
+  if (distance > 0.001) cameraFollowOffset.multiplyScalar(1 / distance);
+  else cameraFollowOffset.copy(cameraFollowUserDirection);
+  const trackedMode = cameraMode === CAMERA_FOLLOW || cameraMode === CAMERA_POV;
+  return {
+    distance: trackedMode ? cameraFollowUserDistance : distance,
+    direction: (trackedMode ? cameraFollowUserDirection : cameraFollowOffset).toArray(),
+    focusOffset: cameraFollowUserFocusOffset.toArray(),
+    preset: cameraFramingPreset,
+    fov: camera.fov,
+  };
+}
+function restoreCameraFramingState(state) {
+  cameraFollowUserDistance = THREE.MathUtils.clamp(state.distance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+  cameraFollowDynamicDistance = cameraFollowUserDistance;
+  cameraFollowCollisionDistance = cameraFollowUserDistance;
+  cameraFollowUserDirection.fromArray(state.direction).normalize();
+  cameraFollowResolvedDirection.copy(cameraFollowUserDirection);
+  cameraFollowDesiredDirection.copy(cameraFollowUserDirection);
+  cameraFollowUserFocusOffset.fromArray(state.focusOffset);
+  cameraFollowOcclusionHoldUntil = 0;
+  cameraFollowNextOcclusionProbeAt = 0;
+  cameraFramingPreset = state.preset;
+  camera.fov = state.fov;
+  camera.updateProjectionMatrix();
+  if (cameraMode === CAMERA_FOLLOW && cameraFollowAnchorReady) {
+    cameraFollowDesiredTarget.copy(cameraFollowAnchor).add(cameraFollowUserFocusOffset);
+    cameraRig.commitRelative(cameraFollowDesiredTarget, cameraFollowUserDirection, cameraFollowUserDistance);
+  } else if (cameraMode === CAMERA_ORBIT) {
+    cameraRig.commitRelative(controls.target, cameraFollowUserDirection, cameraFollowUserDistance);
+  }
+  if (cameraPresetSelect) cameraPresetSelect.value = cameraFramingPreset;
+}
+// User-tunable offset on the POV eye anchor, in head-local metres (y up, z out through the face).
+// Panel sliders drive it; defaults keep the authored eye-bridge point.
+const povEyeOffset = { y: 0, z: 0 };
+function botPovAnimatedEyePoint(actor, out) {
+  const body = actor?.body;
+  const head = body?.joints?.head;
+  if (!head) {
+    // Capsule fallback has no head frame: y is world up, z pushes along the bot's facing.
+    eyePosInto(actor.entity, out);
+    const yaw = actor.entity.yaw ?? 0;
+    out.x += Math.sin(yaw) * povEyeOffset.z;
+    out.y += povEyeOffset.y;
+    out.z += Math.cos(yaw) * povEyeOffset.z;
+    return out;
+  }
+  const eye = body.eyeCfg;
+  out.set(
+    eye?.x ?? 0,
+    (eye?.y ?? actor.entity.capsule.radius * 0.15) + povEyeOffset.y,
+    (eye?.z ?? actor.entity.capsule.radius * 0.29) + (eye?.depth ?? 0.03) * 0.6 + povEyeOffset.z,
+  );
+  return head.localToWorld(out);
+}
+function smoothBotPovEye(actor, dt) {
+  const pov = cameraRig.pov;
+  const settings = CAMERA_POV_COMFORT_PRESETS[pov.comfort] || CAMERA_POV_COMFORT_PRESETS.light;
+  if (pov.actorId !== actor.entity.id) {
+    pov.actorId = actor.entity.id;
+    pov.positionReady = false;
+    pov.rotationReady = false;
+  }
+  const entity = actor.entity;
+  const animated = botPovAnimatedEyePoint(actor, botPovEyeLocal);
+  botPovStableEye.copy(entity.capsule.start).lerp(entity.capsule.end, 0.96);
+  botPovStableEye.y += entity.capsule.radius * 0.22;
+  botPovDesiredEye.copy(botPovStableEye).lerp(animated, settings.headBlend);
+
+  if (pov.comfort === 'off' || !pov.positionReady
+      || pov.position.distanceToSquared(botPovDesiredEye) > 4) {
+    pov.position.copy(botPovDesiredEye);
+    pov.positionReady = true;
+    return pov.position;
+  }
+
+  const dx = botPovDesiredEye.x - pov.position.x;
+  const dy = botPovDesiredEye.y - pov.position.y;
+  const dz = botPovDesiredEye.z - pov.position.z;
+  if (Math.hypot(dx, dz) > settings.deadZone) {
+    const alphaXZ = dampAlpha(dt, settings.positionRateXZ);
+    pov.position.x += dx * alphaXZ;
+    pov.position.z += dz * alphaXZ;
+  }
+  if (Math.abs(dy) > settings.deadZone) {
+    pov.position.y += dy * dampAlpha(dt, settings.positionRateY);
+  }
+  botPovEyeDelta.copy(botPovDesiredEye).sub(pov.position);
+  const lag = botPovEyeDelta.length();
+  if (lag > settings.maxLag) pov.position.addScaledVector(botPovEyeDelta, (lag - settings.maxLag) / lag);
+  return pov.position;
+}
+function smoothBotPovAngles(entity, dt) {
+  const pov = cameraRig.pov;
+  const settings = CAMERA_POV_COMFORT_PRESETS[pov.comfort] || CAMERA_POV_COMFORT_PRESETS.light;
+  if (pov.comfort === 'off' || !pov.rotationReady) {
+    pov.baseYaw = entity.yaw;
+    pov.basePitch = entity.pitch;
+    pov.rotationReady = true;
+    return;
+  }
+  pov.baseYaw = dampAngle(pov.baseYaw, entity.yaw, dt, settings.rotationRate);
+  pov.basePitch += (entity.pitch - pov.basePitch) * dampAlpha(dt, settings.rotationRate);
+}
+function updateCameraRig(dt) {
+  const now = performance.now();
+  if (cameraMode === CAMERA_FLY) { stepFlyCam(dt); return; }
+  const actor = getCameraFollowActor();
+  if ((cameraMode === CAMERA_FOLLOW || cameraMode === CAMERA_POV) && !actor) { setCameraMode(CAMERA_ORBIT); return; }
+  if (cameraMode === CAMERA_POV) {
+    const entity = actor.entity;
+    const eye = smoothBotPovEye(actor, dt);
+    const pov = cameraRig.pov;
+    smoothBotPovAngles(entity, dt);
+    const recentered = stepPovRecenter({
+      yaw: pov.yawOffset,
+      pitch: pov.pitchOffset,
+      enabled: pov.recenterEnabled,
+      dragging: pov.dragging,
+      now,
+      lastInputAt: pov.lastInputAt,
+      delayMs: pov.recenterDelayMs,
+      dt,
+    });
+    pov.yawOffset = recentered.yaw;
+    pov.pitchOffset = recentered.pitch;
+    const yaw = pov.baseYaw + pov.yawOffset;
+    const pitch = THREE.MathUtils.clamp(pov.basePitch + pov.pitchOffset, -1.45, 1.45);
+    const horizontal = Math.cos(pitch);
+    botPovForward.set(Math.sin(yaw) * horizontal, Math.sin(pitch), Math.cos(yaw) * horizontal);
+    botPovLookAt.copy(eye).add(botPovForward);
+    cameraRig.commit(eye, botPovLookAt);
+    return;
+  }
+  if (cameraMode !== CAMERA_FOLLOW) return;
+  if (cameraFollowBoundActor !== actor) {
+    cameraFollowBoundActor = actor;
+    cameraFollowTargetId = null;
+    if (!cameraFollowAnchorReady) resetFollowFraming(actor);
+  }
+  const targetChanged = cameraFollowTargetId !== (actor.target?.id ?? null);
+  cameraFollowTargetId = actor.target?.id ?? null;
+  const desiredFocus = cameraFocusPoint(actor);
+  if (!cameraFollowAnchorReady) { cameraFollowAnchor.copy(desiredFocus); cameraFollowAnchorReady = true; }
+  const focusAlpha = 1 - Math.exp(-Math.max(0, dt) * (targetChanged ? 10 : 7));
+  cameraFollowAnchor.lerp(desiredFocus, focusAlpha);
+  cameraFollowDesiredTarget.copy(cameraFollowAnchor).add(cameraFollowUserFocusOffset);
+  // OrbitControls (already updated this frame, see the call site) owns rotate/zoom/pan mid-gesture --
+  // translateTarget only carries the pivot and camera together by the bot's own motion since last
+  // frame, so the orbit stays centred on it without touching the distance/direction the drag or wheel
+  // is actively changing. Distance/occlusion resolution stays paused until release, so it doesn't
+  // fight that live input; captureFollowUserFraming reads the settled offset back out on 'change'/'end'.
+  cameraRig.translateTarget(cameraFollowDesiredTarget);
+  if (cameraRig.userInteracting) return;
+  const desiredDistance = cameraFollowDistanceFor();
+  const distanceAlpha = 1 - Math.exp(-Math.max(0, dt) * 7);
+  cameraFollowDynamicDistance = THREE.MathUtils.lerp(cameraFollowDynamicDistance, desiredDistance, distanceAlpha);
+  const clearDistance = solveCameraOcclusionDirection(now, dt, controls.target, cameraFollowDynamicDistance);
+  cameraFollowObstructed = clearDistance < cameraFollowDynamicDistance - 0.02;
+  const memory = stepOcclusionMemory({
+    distance: cameraFollowCollisionDistance,
+    clearDistance,
+    obstructed: cameraFollowObstructed,
+    now,
+    holdUntil: cameraFollowOcclusionHoldUntil,
+    dt,
+    holdMs: CAMERA_FOLLOW_OCCLUSION_HOLD_MS,
+    recoveryRate: CAMERA_FOLLOW_OCCLUSION_RECOVERY_RATE,
+  });
+  cameraFollowCollisionDistance = memory.distance;
+  cameraFollowOcclusionHoldUntil = memory.holdUntil;
+  cameraRig.commitRelative(controls.target, cameraFollowResolvedDirection, cameraFollowCollisionDistance);
+}
+function setBotPovEnabled(enabled) {
+  setCameraMode(enabled ? CAMERA_POV : CAMERA_FOLLOW, cameraFollowActor || activeBotActor);
+}
+
+// ===================== POV HUD: crosshair, hitmarker, spotted marker =====================
+// DOM overlay shown only in POV mode. The crosshair marks screen centre; the hitmarker is the
+// classic X that pops when the followed bot's shot connects (red when the hit was fatal).
+const povHudStyle = document.createElement('style');
+povHudStyle.textContent = `
+  #povHud { position: fixed; inset: 0; pointer-events: none; display: none; z-index: 30; }
+  #povHud .ch-bar { position: absolute; background: rgba(255,255,255,0.88); box-shadow: 0 0 2px rgba(0,0,0,0.8); }
+  #povHud .hud-card { background: rgba(8, 14, 20, 0.62); border: 1px solid rgba(120, 190, 255, 0.25);
+    border-radius: 6px; color: #dff3ff; text-shadow: 0 1px 2px #000;
+    font: 12px/1.5 Consolas, ui-monospace, monospace; }
+  #povLeft { position: absolute; left: 12px; top: 54px; display: flex; flex-direction: column;
+    gap: 8px; align-items: flex-start; }
+  #povDebug { max-width: 46ch; white-space: pre; padding: 8px 10px; }
+  #povSquad { padding: 5px 10px 7px; display: none; }
+  #povSquad .sq-row { display: flex; align-items: center; gap: 7px; }
+  #povSquad .sq-row.sq-dead { opacity: 0.4; }
+  #povSquad .sq-hp { width: 46px; height: 5px; background: rgba(255,255,255,0.14); border-radius: 2px; overflow: hidden; }
+  #povSquad .sq-hp i { display: block; height: 100%; background: #4caf50; }
+  #povRing { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px;
+    transform: translate(-50%,-50%); border-radius: 50%; display: none;
+    -webkit-mask: radial-gradient(closest-side, transparent 70%, #000 73%);
+    mask: radial-gradient(closest-side, transparent 70%, #000 73%); }
+  #povState { position: absolute; left: 50%; top: calc(50% + 46px); transform: translateX(-50%);
+    display: none; gap: 8px; align-items: center;
+    font: 12px/1.3 Consolas, ui-monospace, monospace; color: #eef6ff; text-shadow: 0 1px 2px #000; }
+  #povState .st-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 6px rgba(0,0,0,0.6); }
+  #povState .st-alert { padding: 1px 7px; border-radius: 3px; font-weight: 700; color: #10151c; display: none; }
+  /* Right-anchored callout: top and scale are written per frame to track the target on screen. */
+  #povTarget { position: absolute; right: 34px; top: 30%; transform-origin: right center;
+    display: none; flex-direction: column; align-items: flex-start; gap: 3px; padding: 4px 10px 6px;
+    border-radius: 6px; background: rgba(20, 8, 8, 0.5); border: 1px solid rgba(255, 80, 80, 0.55);
+    font: 12px/1.3 Consolas, ui-monospace, monospace; color: #ffe9e2; text-shadow: 0 1px 2px #000; }
+  #povLinks { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  #povTarget .tg-hp { width: 130px; height: 4px; background: rgba(255,255,255,0.16); border-radius: 2px; overflow: hidden; }
+  #povTarget .tg-hp i { display: block; height: 100%; background: #ff5252; }
+  #povVitals { position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
+    display: none; flex-direction: column; gap: 5px; align-items: center;
+    font: 12px/1.3 Consolas, ui-monospace, monospace; color: #dff3ff; text-shadow: 0 1px 2px #000; }
+  #povVitals .vt-name { opacity: 0.85; }
+  #povVitals .vt-hp { width: 240px; height: 9px; background: rgba(255,255,255,0.13);
+    border: 1px solid rgba(255,255,255,0.28); border-radius: 3px; overflow: hidden; }
+  #povVitals .vt-hp i { display: block; height: 100%; }
+  #povVitals .vt-ammo { display: flex; align-items: center; gap: 8px; }
+  #povVitals .vt-mag { position: relative; width: 150px; height: 7px; background: rgba(255,255,255,0.13);
+    border: 1px solid rgba(255,255,255,0.28); border-radius: 3px; overflow: hidden; }
+  #povVitals .vt-mag i { display: block; height: 100%; background: #e8c35a; }
+  #povVitals .vt-mag b { position: absolute; inset: 0; width: 0; background: rgba(110,190,255,0.55); }
+  #povVitals .vt-pips span { margin-right: 4px; }
+  #povHud .pov-ch-dot { position: absolute; left: calc(50% - 2px); top: calc(50% - 2px); width: 4px;
+    height: 4px; border-radius: 50%; background: rgba(255,70,70,0.95);
+    box-shadow: 0 0 3px rgba(0,0,0,0.9); display: none; }
+  #povHud .pov-edge { position: absolute; left: 50%; top: 50%; font: 16px/1 system-ui, sans-serif;
+    font-weight: 700; text-shadow: 0 0 4px #000; display: none; }
+  .pov-hitmarker { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px;
+    transform: translate(-50%,-50%); opacity: 0; }
+  .pov-hitmarker span { position: absolute; width: 3px; height: 11px; background: #fff;
+    box-shadow: 0 0 3px rgba(0,0,0,0.9); border-radius: 1px; }
+  .pov-hitmarker.pov-hit-kill span { background: #ff4040; }
+  .pov-hit-pop { animation: povHitPop 0.28s ease-out; }
+  .pov-hitmarker.pov-hit-kill.pov-hit-pop { animation-duration: 0.45s; }
+  @keyframes povHitPop { 0% { opacity: 1; transform: translate(-50%,-50%) scale(1.35); }
+    70% { opacity: 0.9; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(0.9); } }
+`;
+document.head.appendChild(povHudStyle);
+const povHud = document.createElement('div');
+povHud.id = 'povHud';
+// Crosshair: four bars whose gap tracks the live spread cone and whose colour tracks the aim gate.
+const POV_CH_BASE_GAP = 6;
+const povChBars = [];
+for (const dir of ['up', 'down', 'left', 'right']) {
+  const bar = document.createElement('div');
+  bar.className = 'ch-bar';
+  const vertical = dir === 'up' || dir === 'down';
+  bar.style.width = vertical ? '2px' : '8px';
+  bar.style.height = vertical ? '8px' : '2px';
+  povHud.appendChild(bar);
+  povChBars.push({ el: bar, dir });
+}
+let povChLastGap = -1, povChLastColor = '';
+function layoutPovCrosshair(gapPx, color) {
+  const g = Math.round(gapPx);
+  if (g === povChLastGap && color === povChLastColor) return;
+  povChLastGap = g; povChLastColor = color;
+  for (const { el, dir } of povChBars) {
+    el.style.background = color;
+    if (dir === 'up') { el.style.left = 'calc(50% - 1px)'; el.style.top = `calc(50% - ${g + 8}px)`; }
+    else if (dir === 'down') { el.style.left = 'calc(50% - 1px)'; el.style.top = `calc(50% + ${g}px)`; }
+    else if (dir === 'left') { el.style.left = `calc(50% - ${g + 8}px)`; el.style.top = 'calc(50% - 1px)'; }
+    else { el.style.left = `calc(50% + ${g}px)`; el.style.top = 'calc(50% - 1px)'; }
+  }
+}
+layoutPovCrosshair(POV_CH_BASE_GAP, 'rgba(255,255,255,0.88)');
+// Centre dot: appears only when the shot is legal -- a shape cue, so ready/pending never rides on hue alone.
+const povChDot = document.createElement('div');
+povChDot.className = 'pov-ch-dot';
+povHud.appendChild(povChDot);
+const povHitmarkerEl = document.createElement('div');
+povHitmarkerEl.className = 'pov-hitmarker';
+// Four diagonal strokes forming an X with a centre gap.
+for (const [x, y, deg] of [[3, 3, 45], [16, 3, -45], [3, 16, -45], [16, 16, 45]]) {
+  const s = document.createElement('span');
+  s.style.cssText = `left:${x}px;top:${y}px;transform:rotate(${deg}deg)`;
+  povHitmarkerEl.appendChild(s);
+}
+povHud.appendChild(povHitmarkerEl);
+document.body.appendChild(povHud);
+function updatePovHudVisibility() {
+  povHud.style.display = cameraMode === CAMERA_POV ? 'block' : 'none';
+}
+// Central hit hook: every damage path credits through here. Fatal reads post-decrement health.
+function povHitmarkerFor(attackerEntity, victim) {
+  if (cameraMode !== CAMERA_POV || !attackerEntity) return;
+  if (cameraFollowActor?.entity !== attackerEntity) return;
+  const fatal = !!victim && ((victim.health ?? 1) <= 0 || victim.alive === false);
+  povHitmarkerEl.classList.remove('pov-hit-pop', 'pov-hit-kill');
+  void povHitmarkerEl.offsetWidth; // restart the CSS animation on rapid consecutive hits
+  if (fatal) povHitmarkerEl.classList.add('pov-hit-kill');
+  povHitmarkerEl.classList.add('pov-hit-pop');
+}
+// Spotted marker: a red diamond above the head of the enemy the followed bot currently sees.
+// The threat model is single-slot, so there is at most one; it lingers briefly after sight loss.
+const POV_SPOT_LINGER_MS = 1200;
+const POV_SPOT_MAT = new THREE.MeshBasicMaterial({
+  color: 0xff4545, transparent: true, opacity: 0.95, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+});
+const povSpotMark = new THREE.Group();
+{
+  const diamond = new THREE.Mesh(new THREE.PlaneGeometry(0.23, 0.23), POV_SPOT_MAT);
+  diamond.rotation.z = Math.PI / 4;
+  const tip = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.09), POV_SPOT_MAT);
+  tip.rotation.z = Math.PI / 4;
+  tip.position.y = -0.23;
+  for (const m of [diamond, tip]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  povSpotMark.add(diamond, tip);
+  povSpotMark.renderOrder = 6;
+  povSpotMark.visible = false;
+  scene.add(povSpotMark);
+}
+let povSpotEntity = null;
+let povSpotLastSeenAt = -Infinity;
+function updatePovSpotMarker(now) {
+  const followed = cameraMode === CAMERA_POV ? cameraFollowActor : null;
+  if (followed && followed.target?.alive && followed.targetVisible) {
+    povSpotEntity = followed.target;
+    povSpotLastSeenAt = now;
+  }
+  if (!followed || povSpotEntity?.alive === false || now - povSpotLastSeenAt > POV_SPOT_LINGER_MS) {
+    povSpotEntity = null;
+  }
+  povSpotMark.visible = !!povSpotEntity;
+  if (!povSpotEntity) return;
+  // Above everything else that stacks on a head (state orb, insignia, alert mark).
+  const head = povSpotEntity.botActor?.body?.joints?.head;
+  const x = head ? head.position.x : povSpotEntity.capsule.start.x;
+  const z = head ? head.position.z : povSpotEntity.capsule.start.z;
+  const y = (head ? head.position.y : povSpotEntity.capsule.end.y + povSpotEntity.capsule.radius)
+    + BOT_STATE_ORB_LIFT + 0.95;
+  povSpotMark.position.set(x, y, z);
+  povSpotMark.quaternion.copy(camera.quaternion);
+  // Colour = the followed bot's fire decision on this target: grey = memory (sight lost, lingering),
+  // orange = seen but still inside the reaction delay, red = the shot is legal.
+  const liveSight = followed?.target === povSpotEntity && followed.targetVisible;
+  const aimReady = !botAimSettings.reactionEnabled ||
+    (followed?.aimContactAt != null && now >= followed.aimReadyAt);
+  POV_SPOT_MAT.color.setHex(!liveSight ? 0x9a9a9a : aimReady ? 0xff3030 : 0xffb040);
+  // Flash rate carries the gate a second way: fast once the shot is legal, half that while the
+  // reaction delay runs, steady (no flash) once the contact is only memory.
+  POV_SPOT_MAT.opacity = !liveSight ? 0.5
+    : 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(now * (aimReady ? 0.020 : 0.010)));
+  // Slow pulse so it reads as a live ping rather than a static prop.
+  const s = povMarkScale * (1 + 0.12 * Math.sin(now * 0.006));
+  povSpotMark.scale.set(s, s, 1);
+}
+
+// Selection marker: a glowing silver diamond above whichever bot was ctrl-clicked here or "Go to"'d
+// from bot-trace-viewer.html. Purely visual -- never drives camera or sim state (see selectedBotActor).
+const SELECTION_MARK_MAT = new THREE.MeshBasicMaterial({
+  color: 0xdce4f0, transparent: true, opacity: 0.95, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+});
+const selectionMark = new THREE.Group();
+{
+  const diamond = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.26), SELECTION_MARK_MAT);
+  diamond.rotation.z = Math.PI / 4;
+  const tip = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.1), SELECTION_MARK_MAT);
+  tip.rotation.z = Math.PI / 4;
+  tip.position.y = -0.26;
+  for (const m of [diamond, tip]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  selectionMark.add(diamond, tip);
+  selectionMark.renderOrder = 6;
+  selectionMark.visible = false;
+  scene.add(selectionMark);
+}
+function setSelectedBot(actor) {
+  selectedBotActor = actor;
+  updateCameraButtons(); // Follow/POV/Frame enable off the selection too (see updateCameraButtons)
+}
+function updateSelectionMark(now) {
+  selectionMark.visible = !!selectedBotActor && selectedBotActor.entity.alive !== false;
+  if (!selectionMark.visible) return;
+  const entity = selectedBotActor.entity;
+  const head = selectedBotActor.body?.joints?.head;
+  const x = head ? head.position.x : entity.capsule.start.x;
+  const z = head ? head.position.z : entity.capsule.start.z;
+  // Above everything else that stacks on a head (state orb, insignia, alert mark).
+  const y = (head ? head.position.y : entity.capsule.end.y + entity.capsule.radius) + BOT_STATE_ORB_LIFT + 1.15;
+  selectionMark.position.set(x, y, z);
+  selectionMark.quaternion.copy(camera.quaternion);
+  // Slow glow pulse, same idiom as the POV spot marker.
+  SELECTION_MARK_MAT.opacity = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(now * 0.004));
+  const s = 1 + 0.15 * Math.sin(now * 0.004);
+  selectionMark.scale.set(s, s, 1);
+}
+
+// ===================== POV debug readout: what the bot actually perceives =====================
+// Everything on this panel comes off the followed ACTOR (committed each think tick), so it shows
+// the bot's real perception/decision state, not what the camera happens to render -- comparing the
+// two is the point. The cyan line/diamond are the live waypoint queue and its terminal goal.
+let povDebugScreenEnabled = true;  // DOM widgets: panel, plates, bars, ring, arrows, dynamic crosshair
+let povDebugWorldEnabled = true;   // world markers: reticle, path/goal, ghost, cover
+let povMarkScale = 1;              // contact-diamond size multiplier, driven by the Camera panel slider
+let povMarkScaleInput = null;      // the slider element, so a loaded slot can write back to the UI
+// Left column sits under #info, clear of the bottom-left fps/navwarn/score row. Measured, not
+// hard-coded: #info wraps to two lines on narrow windows.
+const povLeft = document.createElement('div');
+povLeft.id = 'povLeft';
+povHud.appendChild(povLeft);
+const povInfoEl = document.getElementById('info');
+function positionPovLeft() {
+  povLeft.style.top = `${Math.ceil((povInfoEl?.getBoundingClientRect().bottom ?? 44) + 10)}px`;
+}
+window.addEventListener('resize', positionPovLeft);
+positionPovLeft();
+const povDebugEl = document.createElement('div');
+povDebugEl.id = 'povDebug';
+povDebugEl.className = 'hud-card';
+povLeft.appendChild(povDebugEl);
+// Squad widget: one row per member with a live health bar; leader starred, followed bot arrowed.
+const povSquadEl = document.createElement('div');
+povSquadEl.id = 'povSquad';
+povSquadEl.className = 'hud-card';
+povLeft.appendChild(povSquadEl);
+let povSquadHead = null;
+const povSquadRows = [];
+function rebuildPovSquad(a, sq) {
+  povSquadRows.length = 0;
+  povSquadEl.textContent = '';
+  povSquadHead = document.createElement('div');
+  povSquadEl.appendChild(povSquadHead);
+  for (const id of sq.memberIds) {
+    const row = document.createElement('div');
+    row.className = 'sq-row';
+    const tag = document.createElement('span');
+    tag.textContent = `${sq.leaderId === id ? '★' : '·'}${id === a.id ? '▶' : ' '}${id}`;
+    const hpBar = document.createElement('span');
+    hpBar.className = 'sq-hp';
+    const fill = document.createElement('i');
+    hpBar.appendChild(fill);
+    row.append(tag, hpBar);
+    povSquadEl.appendChild(row);
+    povSquadRows.push({ id, row, fill });
+  }
+}
+// Reaction ring: conic countdown around the crosshair while the recognition delay runs.
+const povRingEl = document.createElement('div');
+povRingEl.id = 'povRing';
+povHud.appendChild(povRingEl);
+// State chip: state-orb colour + name + time-in-state, alert tier as a badge beside it.
+const POV_ALERT_BADGE = {
+  seen: ['#ff5252', 'SEEN'], heard: ['#ffee58', 'HEARD'], push: ['#66ff8a', 'PUSH'],
+  base: ['#66ff8a', 'BASE'], near: ['#35d5ff', 'NEAR'],
+};
+const povStateEl = document.createElement('div');
+povStateEl.id = 'povState';
+const povStateDot = document.createElement('span'); povStateDot.className = 'st-dot';
+const povStateTxt = document.createElement('span');
+const povAlertBadge = document.createElement('span'); povAlertBadge.className = 'st-alert';
+povStateEl.append(povStateDot, povStateTxt, povAlertBadge);
+povHud.appendChild(povStateEl);
+// Leader lines, in an SVG layer appended BEFORE the plate so it renders underneath. The bright line
+// ties the plate to the committed target's diamond; faint stubs tie it to every other live contact,
+// so the plate reads as the hub of the contact set instead of a floating label.
+const POV_SVG_NS = 'http://www.w3.org/2000/svg';
+const povLinkSvg = document.createElementNS(POV_SVG_NS, 'svg');
+povLinkSvg.id = 'povLinks';
+povHud.appendChild(povLinkSvg);
+function makePovLink(width, opacity) {
+  const ln = document.createElementNS(POV_SVG_NS, 'line');
+  ln.setAttribute('stroke-width', width);
+  ln.setAttribute('stroke-opacity', opacity);
+  ln.setAttribute('stroke-linecap', 'round');
+  ln.style.display = 'none';
+  povLinkSvg.appendChild(ln);
+  return ln;
+}
+const povLinkMain = makePovLink(1.6, 0.85);
+// Target plate: who the bot has, its health, and why the shot is/isn't legal yet.
+const povTargetEl = document.createElement('div');
+povTargetEl.id = 'povTarget';
+const povTargetTxt = document.createElement('span');
+const povTargetHp = document.createElement('span'); povTargetHp.className = 'tg-hp';
+const povTargetHpFill = document.createElement('i'); povTargetHp.appendChild(povTargetHpFill);
+const povTargetAim = document.createElement('span');
+povTargetEl.append(povTargetTxt, povTargetHp, povTargetAim);
+povHud.appendChild(povTargetEl);
+// Vitals: name line, health bar, mag bar with reload sweep, grenade/pack/kit pips.
+const povVitalsEl = document.createElement('div');
+povVitalsEl.id = 'povVitals';
+const povVitName = document.createElement('span'); povVitName.className = 'vt-name';
+const povVitHp = document.createElement('span'); povVitHp.className = 'vt-hp';
+const povVitHpFill = document.createElement('i'); povVitHp.appendChild(povVitHpFill);
+const povVitAmmoRow = document.createElement('span'); povVitAmmoRow.className = 'vt-ammo';
+const povVitMag = document.createElement('span'); povVitMag.className = 'vt-mag';
+const povVitMagFill = document.createElement('i');
+const povVitReload = document.createElement('b');
+povVitMag.append(povVitMagFill, povVitReload);
+const povVitAmmoTxt = document.createElement('span');
+povVitAmmoRow.append(povVitMag, povVitAmmoTxt);
+const povVitPips = document.createElement('span'); povVitPips.className = 'vt-pips';
+povVitalsEl.append(povVitName, povVitHp, povVitAmmoRow, povVitPips);
+povHud.appendChild(povVitalsEl);
+const POV_PATH_MAX = 64;
+const povPathGeom = new THREE.BufferGeometry();
+povPathGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(POV_PATH_MAX * 3), 3));
+const povPathLine = new THREE.Line(povPathGeom, new THREE.LineBasicMaterial({
+  color: 0x35d5ff, transparent: true, opacity: 0.9, depthTest: false, toneMapped: false,
+}));
+povPathLine.renderOrder = 7;
+povPathLine.frustumCulled = false;
+povPathLine.visible = false;
+scene.add(povPathLine);
+const POV_GOAL_MAT = new THREE.MeshBasicMaterial({
+  color: 0x35d5ff, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false, toneMapped: false, side: THREE.DoubleSide,
+});
+const povGoalMark = new THREE.Group();
+{
+  const diamond = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.17), POV_GOAL_MAT);
+  diamond.rotation.z = Math.PI / 4;
+  const tip = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 0.07), POV_GOAL_MAT);
+  tip.rotation.z = Math.PI / 4;
+  tip.position.y = -0.17;
+  for (const m of [diamond, tip]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  povGoalMark.add(diamond, tip);
+  povGoalMark.renderOrder = 7;
+  povGoalMark.visible = false;
+  scene.add(povGoalMark);
+}
+// Direction arrows on a ring around the crosshair: angle = horizontal bearing relative to the
+// camera heading (12 o'clock = ahead), so they stay meaningful even for points behind the camera.
+const povEdgeArrows = {
+  target: '▲',  // current target while it is outside the camera's horizontal FOV
+  damage: '‼',  // whoever shot at this bot, while the self-threat cue is fresh
+  alert: '!',   // squad-alert threat bearing while an alert tier is live
+};
+for (const key of Object.keys(povEdgeArrows)) {
+  const el = document.createElement('div');
+  el.className = 'pov-edge';
+  el.textContent = povEdgeArrows[key];
+  povHud.appendChild(el);
+  povEdgeArrows[key] = el;
+}
+function setPovEdgeArrow(el, relAngle, color, rotate) {
+  const r = Math.max(110, Math.min(window.innerWidth, window.innerHeight) * 0.5 - 90);
+  const x = Math.sin(relAngle) * r, y = -Math.cos(relAngle) * r;
+  el.style.display = 'block';
+  el.style.color = color;
+  el.style.transform = `translate(calc(-50% + ${x.toFixed(0)}px), calc(-50% + ${y.toFixed(0)}px))`
+    + (rotate ? ` rotate(${(relAngle * 180 / Math.PI).toFixed(0)}deg)` : '');
+}
+// Shared diamond factory for the remaining world-space marks.
+function makePovDiamond(color, size) {
+  const mat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const group = new THREE.Group();
+  const diamond = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+  diamond.rotation.z = Math.PI / 4;
+  const tip = new THREE.Mesh(new THREE.PlaneGeometry(size * 0.4, size * 0.4), mat);
+  tip.rotation.z = Math.PI / 4;
+  tip.position.y = -size;
+  for (const m of [diamond, tip]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  group.add(diamond, tip);
+  group.renderOrder = 7;
+  group.visible = false;
+  scene.add(group);
+  return { group, mat };
+}
+const povGhostMark = makePovDiamond(0x8fa8c8, 0.15);       // last-known contact, fades with age
+const povCoverAnchorMark = makePovDiamond(0x7986cb, 0.14); // committed cover anchor
+const povCoverPeekMark = makePovDiamond(0xaab6ff, 0.09);   // its peek seat
+const povCoverLineGeom = new THREE.BufferGeometry();
+povCoverLineGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+const povCoverLine = new THREE.Line(povCoverLineGeom, new THREE.LineBasicMaterial({
+  color: 0x7986cb, transparent: true, opacity: 0.8, depthTest: false, toneMapped: false,
+}));
+povCoverLine.renderOrder = 7;
+povCoverLine.frustumCulled = false;
+povCoverLine.visible = false;
+scene.add(povCoverLine);
+// Aim reticle: where the bot's muzzle ACTUALLY points (entity yaw/pitch, not the camera), with
+// radius = the spread cone at that distance. The camera free-looks; the bot does not.
+const povReticleMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false, toneMapped: false, side: THREE.DoubleSide,
+});
+const povReticle = new THREE.Mesh(new THREE.RingGeometry(0.88, 1, 40), povReticleMat);
+povReticle.renderOrder = 8;
+povReticle.frustumCulled = false;
+povReticle.visible = false;
+scene.add(povReticle);
+const _povEye = new THREE.Vector3();
+const _povCamFwd = new THREE.Vector3();
+// Perceived-enemy marks: one small diamond per scan candidate (the enemies the bot NOTICED, of
+// which the single-slot model keeps only one). LOS is re-verified here per frame -- HUD-only rays,
+// followed bot only -- so solid = confirmed visible, faint = in cone but occluded.
+// Declared here, not beside selectBotTarget: this init block runs first at module load.
+const PERCEIVED_ENEMY_MAX = 8; // in-cone candidates whose identities survive the scan
+const povPerceivedMarks = Array.from({ length: PERCEIVED_ENEMY_MAX }, () => makePovDiamond(0xffffff, 0.13));
+const povLinkStubs = Array.from({ length: PERCEIVED_ENEMY_MAX }, () => makePovLink(1, 0.34));
+let povPerceivedVisCount = 0;
+const _povPerEye = new THREE.Vector3();
+const POV_VIS_GATE_WORDS = { y: 'CLEAR', w: 'wall', f: 'fov', r: 'range', '-': '—' };
+// World point -> screen px. Null when the point is behind the camera, where project() mirrors it to
+// a plausible-looking but wrong position. The shared out-object must be consumed before the next call.
+const _povScrV = new THREE.Vector3();
+const _povRelV = new THREE.Vector3();
+const _povScrOut = { x: 0, y: 0 };
+function povScreenPos(pos) {
+  _povRelV.subVectors(pos, camera.position);
+  if (_povRelV.dot(_povCamFwd) <= 0) return null;
+  _povScrV.copy(pos).project(camera);
+  _povScrOut.x = (_povScrV.x * 0.5 + 0.5) * window.innerWidth;
+  _povScrOut.y = (-_povScrV.y * 0.5 + 0.5) * window.innerHeight;
+  return _povScrOut;
+}
+// Where a contact's diamond floats, matching updatePovSpotMarker's stacking so the leader line
+// lands on the marker and not on the bot's feet.
+const _povMarkWorld = new THREE.Vector3();
+function enemyMarkWorldPos(entity, lift) {
+  const head = entity.botActor?.body?.joints?.head;
+  _povMarkWorld.set(
+    head ? head.position.x : entity.capsule.start.x,
+    (head ? head.position.y : entity.capsule.end.y + entity.capsule.radius) + BOT_STATE_ORB_LIFT + lift,
+    head ? head.position.z : entity.capsule.start.z,
+  );
+  return _povMarkWorld;
+}
+function describeActorAim(actor, now) {
+  const primed = now < (actor.aimPrimedUntil ?? 0) ? ' (primed)' : '';
+  if (!botAimSettings.reactionEnabled) return 'instant';
+  if (actor.aimContactAt == null) return `no contact${primed}`;
+  if (now < actor.aimReadyAt) return `+${Math.round(actor.aimReadyAt - now)}ms${primed}`;
+  return 'READY';
+}
+let povDbgStateKey = '', povDbgStateSince = 0, povDbgLastText = '';
+let povDbgStateText = '', povDbgTargetText = '', povDbgAimText = '', povDbgVitName = '';
+let povDbgAmmoText = '', povDbgPipsKey = '', povSquadKey = '';
+let povChNeutral = true;
+function hidePovDebugWidgets() {
+  povDebugEl.style.display = povSquadEl.style.display = povRingEl.style.display = 'none';
+  povStateEl.style.display = povTargetEl.style.display = povVitalsEl.style.display = 'none';
+  povChDot.style.display = 'none';
+  povLinkMain.style.display = 'none';
+  for (const ln of povLinkStubs) ln.style.display = 'none';
+  for (const key of Object.keys(povEdgeArrows)) povEdgeArrows[key].style.display = 'none';
+  if (!povChNeutral) { layoutPovCrosshair(POV_CH_BASE_GAP, 'rgba(255,255,255,0.88)'); povChNeutral = true; }
+}
+function updatePovDebugHud(now) {
+  const followed = cameraMode === CAMERA_POV ? cameraFollowActor : null;
+  updatePovWorldMarkers(povDebugWorldEnabled ? followed : null, now);
+  const a = povDebugScreenEnabled ? followed : null;
+  if (!a) { povDbgStateKey = ''; povSquadKey = ''; hidePovDebugWidgets(); return; }
+  povChNeutral = false;
+  const e = a.entity;
+  const stateKey = `${a.id}|${a.state}`;
+  if (stateKey !== povDbgStateKey) { povDbgStateKey = stateKey; povDbgStateSince = now; }
+  const hp = Math.max(0, Math.ceil(e.health ?? DUMMY_MAX_HEALTH));
+  const hp01 = Math.max(0, Math.min(1, hp / DUMMY_MAX_HEALTH));
+  const ammo = e.ammoByWeapon?.get(e.weapon) ?? defaultBotAmmoFor(getWeapon(e.weapon));
+  const aimPending = botAimSettings.reactionEnabled && a.aimContactAt != null && now < a.aimReadyAt;
+  const aimReady = !botAimSettings.reactionEnabled || (a.aimContactAt != null && now >= a.aimReadyAt);
+  const heldMs = a.aimContactAt != null ? now - a.aimContactAt : Infinity;
+  const speedCap = BOT_MOVE_SPEED * botMovementSettings.runMultiplier;
+  const spreadRad = spreadHalfAngleRad({
+    moveSpeed01: Math.min(1, Math.hypot(e.velocity.x, e.velocity.z) / Math.max(0.1, speedCap)),
+    heldMs, bloomDeg: a.spreadBloomDeg,
+  }, botAimSettings) * stanceSpreadScale(a.stance, botStanceSettings);
+  const hasLiveTarget = !!a.target?.alive;
+  const seesTarget = hasLiveTarget && a.targetVisible;
+  const firing = a.state === BOT_FIRE || now - a.lastShotAt < 200;
+
+  // Crosshair: gap = the live spread cone at screen scale; colour = the fire decision.
+  const pxPerRad = (window.innerHeight * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5);
+  layoutPovCrosshair(POV_CH_BASE_GAP + spreadRad * pxPerRad,
+    !seesTarget ? 'rgba(255,255,255,0.88)' : aimReady ? 'rgba(255,70,70,0.95)' : 'rgba(255,176,64,0.95)');
+  povChDot.style.display = seesTarget && aimReady ? 'block' : 'none';
+
+  // Reaction ring: fills while the recognition delay runs; flashes grey when an acquisition is torn down.
+  if (now - (a.aimResetAt ?? -Infinity) < 300) {
+    povRingEl.style.display = 'block';
+    povRingEl.style.background = 'conic-gradient(rgba(170,170,170,0.85) 100%, rgba(170,170,170,0.85) 100%)';
+  } else if (seesTarget && aimPending && a.aimReadyAt > a.aimContactAt) {
+    const p = Math.max(0, Math.min(1, (now - a.aimContactAt) / (a.aimReadyAt - a.aimContactAt))) * 100;
+    povRingEl.style.display = 'block';
+    povRingEl.style.background = `conic-gradient(rgba(255,176,64,0.95) ${p}%, rgba(255,255,255,0.15) ${p}% 100%)`;
+  } else povRingEl.style.display = 'none';
+
+  // Direction arrows: target while outside the camera's horizontal FOV; shooter + alert bearings always.
+  camera.getWorldDirection(_povCamFwd);
+  const camYaw = Math.atan2(_povCamFwd.x, _povCamFwd.z);
+  const relBearing = (x, z) => {
+    const b = Math.atan2(x - camera.position.x, z - camera.position.z) - camYaw;
+    return Math.atan2(Math.sin(b), Math.cos(b));
+  };
+  const hHalfFov = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5) * camera.aspect);
+  let targetArrow = false;
+  if (hasLiveTarget) {
+    const rel = relBearing(a.target.capsule.start.x, a.target.capsule.start.z);
+    if (Math.abs(rel) > hHalfFov + 0.08) {
+      setPovEdgeArrow(povEdgeArrows.target, rel, aimReady ? '#ff4646' : '#ffb040', true);
+      targetArrow = true;
+    }
+  }
+  if (!targetArrow) povEdgeArrows.target.style.display = 'none';
+  if (now - (a.lastSelfThreatAt ?? -Infinity) < 2500 && a.lastSelfThreatXZ) {
+    setPovEdgeArrow(povEdgeArrows.damage, relBearing(a.lastSelfThreatXZ.x, a.lastSelfThreatXZ.z), '#ff3030', false);
+  } else povEdgeArrows.damage.style.display = 'none';
+  if (a.alertMarkMode && a.alertReport?.threat) {
+    setPovEdgeArrow(povEdgeArrows.alert, relBearing(a.alertReport.threat.x, a.alertReport.threat.z),
+      POV_ALERT_BADGE[a.alertMarkMode]?.[0] ?? '#ffee58', false);
+  } else povEdgeArrows.alert.style.display = 'none';
+
+  // State chip + alert badge.
+  povStateEl.style.display = 'flex';
+  povStateDot.style.background = `#${botStateColor(a.state).toString(16).padStart(6, '0')}`;
+  const holdPeek = a.state === BOT_COVER_HOLD ? a.peek : null;
+  const stateText = `${a.state} ${((now - povDbgStateSince) / 1000).toFixed(1)}s`
+    + (holdPeek ? ` · peek ${holdPeek.phase}${peekExposed(holdPeek) ? ' EXPOSED' : ''}` : '')
+    + `${e.alive === false ? ' · DEAD' : ''}`;
+  if (stateText !== povDbgStateText) { povDbgStateText = stateText; povStateTxt.textContent = stateText; }
+  const badge = POV_ALERT_BADGE[a.alertMarkMode];
+  povAlertBadge.style.display = badge ? 'inline-block' : 'none';
+  if (badge) { povAlertBadge.style.background = badge[0]; povAlertBadge.textContent = badge[1]; }
+
+  // Target plate.
+  if (hasLiveTarget) {
+    povTargetEl.style.display = 'flex';
+    const tHp01 = Math.max(0, Math.min(1, (a.target.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH));
+    const line = `${a.target.id} · ${a.targetDistance.toFixed(1)}m · ${POV_VIS_GATE_WORDS[a.targetVisGate] ?? a.targetVisGate}`
+      + `${(a.enemyCandidates ?? 0) > 1
+        ? ` · cand ${a.enemyCandidates}${povDebugWorldEnabled ? ` (${povPerceivedVisCount} vis)` : ''}` : ''}`;
+    if (line !== povDbgTargetText) { povDbgTargetText = line; povTargetTxt.textContent = line; }
+    povTargetHpFill.style.width = `${(tHp01 * 100).toFixed(0)}%`;
+    // err = the actual AIM->FIRE gate (aim error vs AIM_TOLERANCE_RAD), only meaningful while seen.
+    const errDeg = seesTarget ? aimError(e.yaw, e.pitch, a.aimTarget.yaw, a.aimTarget.pitch) * 180 / Math.PI : null;
+    const aimLine = firing ? 'FIRING'
+      : `aim ${describeActorAim(a, now)}${errDeg != null ? ` · err ${errDeg.toFixed(1)}°` : ''} · ±${(spreadRad * 180 / Math.PI).toFixed(2)}°`;
+    if (aimLine !== povDbgAimText) { povDbgAimText = aimLine; povTargetAim.textContent = aimLine; }
+    povTargetAim.style.color = firing || aimReady ? '#ff9090' : '#ffd9a0';
+    povTargetEl.style.borderColor = !seesTarget ? 'rgba(160,160,160,0.55)'
+      : aimReady ? 'rgba(255,70,70,0.7)' : 'rgba(255,176,64,0.7)';
+
+    // Track the target vertically and scale with proximity, so the plate reads as attached to a
+    // thing in the world. Rect is read before the write below, so it lags one frame rather than
+    // forcing a synchronous layout every frame -- imperceptible on a leader line.
+    const plateRect = povTargetEl.getBoundingClientRect();
+    const anchor = povScreenPos(enemyMarkWorldPos(a.target, 0.95));
+    const vh = window.innerHeight;
+    const plateTop = anchor ? Math.max(96, Math.min(vh - 150, anchor.y)) : vh * 0.3;
+    povTargetEl.style.top = `${plateTop.toFixed(0)}px`;
+    povTargetEl.style.transform =
+      `translateY(-50%) scale(${Math.max(0.85, Math.min(1.2, 1.2 - a.targetDistance / 55)).toFixed(3)})`;
+    const linkColor = !seesTarget ? '#a0a0a0' : aimReady ? '#ff4646' : '#ffb040';
+    const hubX = plateRect.left, hubY = plateRect.top + plateRect.height * 0.5;
+    if (anchor && plateRect.width > 0) {
+      povLinkMain.style.display = 'block';
+      povLinkMain.setAttribute('stroke', linkColor);
+      povLinkMain.setAttribute('x1', hubX.toFixed(0)); povLinkMain.setAttribute('y1', hubY.toFixed(0));
+      povLinkMain.setAttribute('x2', anchor.x.toFixed(0)); povLinkMain.setAttribute('y2', anchor.y.toFixed(0));
+    } else povLinkMain.style.display = 'none';
+    // Stubs to the other perceived contacts. Only while the world marks are actually drawn --
+    // otherwise the lines would point at diamonds that are not there.
+    let stub = 0;
+    if (povDebugWorldEnabled && plateRect.width > 0) {
+      for (const mark of povPerceivedMarks) {
+        if (!mark.group.visible || stub >= povLinkStubs.length) continue;
+        const p = povScreenPos(mark.group.position);
+        if (!p) continue;
+        const ln = povLinkStubs[stub++];
+        ln.style.display = 'block';
+        ln.setAttribute('stroke', '#9fd0ff');
+        ln.setAttribute('x1', hubX.toFixed(0)); ln.setAttribute('y1', hubY.toFixed(0));
+        ln.setAttribute('x2', p.x.toFixed(0)); ln.setAttribute('y2', p.y.toFixed(0));
+      }
+    }
+    for (let i = stub; i < povLinkStubs.length; i++) povLinkStubs[i].style.display = 'none';
+  } else {
+    povTargetEl.style.display = 'none';
+    povLinkMain.style.display = 'none';
+    for (const ln of povLinkStubs) ln.style.display = 'none';
+  }
+
+  // Vitals.
+  povVitalsEl.style.display = 'flex';
+  const nameLine = `${a.id} · ${e.team} · ${a.role} · ${a.stance}`
+    + ` · ${a.aliveSince != null ? ((now - a.aliveSince) / 1000).toFixed(0) : '?'}s · k${a.kills}/d${a.deaths}`;
+  if (nameLine !== povDbgVitName) { povDbgVitName = nameLine; povVitName.textContent = nameLine; }
+  povVitHpFill.style.width = `${(hp01 * 100).toFixed(0)}%`;
+  povVitHpFill.style.background = `hsl(${Math.round(hp01 * 115)}, 70%, 46%)`;
+  const mag01 = ammo.magazineSize > 0 ? Math.max(0, Math.min(1, ammo.mag / ammo.magazineSize)) : 0;
+  povVitMagFill.style.width = `${(mag01 * 100).toFixed(0)}%`;
+  const reloading = a.reloadUntil != null;
+  povVitReload.style.width = reloading ? '100%' : '0';
+  if (reloading) povVitReload.style.opacity = String(0.35 + 0.25 * Math.sin(now * 0.02));
+  const ammoText = ammo.magazineSize > 0
+    ? `${ammo.mag}/${ammo.magazineSize} +${ammo.reserve} ${e.weapon}`
+      + `${a.equippedWeapon !== e.weapon ? ` (held ${a.equippedWeapon})` : ''}`
+      + `${reloading ? ` · RELOAD ${Math.max(0, (a.reloadUntil - now) / 1000).toFixed(1)}s` : a.swapUntil > now ? ' · DRAWING' : ''}`
+    : `${e.weapon}`;
+  if (ammoText !== povDbgAmmoText) { povDbgAmmoText = ammoText; povVitAmmoTxt.textContent = ammoText; }
+  const pipsKey = `${a.grenades}|${a.healthPacks.length}|${a.reviveKits}`;
+  if (pipsKey !== povDbgPipsKey) {
+    povDbgPipsKey = pipsKey;
+    povVitPips.textContent = '';
+    const addPips = (n, glyph, color) => {
+      for (let i = 0; i < Math.min(8, n); i++) {
+        const s = document.createElement('span');
+        s.textContent = glyph;
+        s.style.color = color;
+        povVitPips.appendChild(s);
+      }
+    };
+    addPips(a.grenades, '●', '#b8d06a');
+    addPips(a.healthPacks.length, '✚', '#5ee7a4');
+    addPips(a.reviveKits, '◆', '#2ee6c0');
+  }
+
+  // Squad widget: rebuild rows only when membership/leader changes; bars update every frame.
+  const sq = a.squadId ? squads.get(a.squadId) : null;
+  if (sq) {
+    // Allocation-free change key; the stale sweep catches same-size roster swaps the key can't.
+    const stale = povSquadRows.some((r) => !sq.memberIds.has(r.id));
+    const key = `${sq.id}|${sq.memberIds.size}|${sq.leaderId}|${a.id}`;
+    if (stale || key !== povSquadKey) { povSquadKey = key; rebuildPovSquad(a, sq); }
+    povSquadEl.style.display = 'block';
+    povSquadHead.textContent = `${sq.id} · ${sq.kind}${sq.engaged ? ' · engaged' : ''}${a.pushElement ? ` · push:${a.pushElement}` : ''}`;
+    for (const row of povSquadRows) {
+      const m = botActorById.get(row.id);
+      const dead = !m || m.entity.alive === false;
+      row.row.classList.toggle('sq-dead', dead);
+      const mHp01 = dead ? 0 : Math.max(0, Math.min(1, (m.entity.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH));
+      row.fill.style.width = `${(mHp01 * 100).toFixed(0)}%`;
+      row.fill.style.background = `hsl(${Math.round(mHp01 * 115)}, 70%, 46%)`;
+    }
+  } else { povSquadEl.style.display = 'none'; povSquadKey = ''; }
+
+  // Text panel: the exact numbers behind the widgets, as ground truth.
+  povDebugEl.style.display = 'block';
+  const lines = [
+    `state ${a.state} ${((now - povDbgStateSince) / 1000).toFixed(1)}s${a.alertMarkMode ? ` · alert ${a.alertMarkMode}` : ''}`,
+    `shots ${a.shotsFired} hits ${a.hitsLanded}`,
+  ];
+  if (hasLiveTarget) {
+    lines.push(`tgt ${a.target.id} ${a.targetDistance.toFixed(1)}m · vis ${POV_VIS_GATE_WORDS[a.targetVisGate] ?? a.targetVisGate}`
+      + ` · aim ${describeActorAim(a, now)}${firing ? ' · FIRING' : ''}`);
+  } else {
+    lines.push('tgt none');
+  }
+  if (a.lastKnownTarget) {
+    const age = a.lastKnownTargetAt != null ? `${((now - a.lastKnownTargetAt) / 1000).toFixed(1)}s ago` : '?';
+    lines.push(`seen ${age} @ (${a.lastKnownTarget.x.toFixed(1)}, ${a.lastKnownTarget.z.toFixed(1)})${a.lastKnownTarget.fromReport ? ' [report]' : ''}`);
+  }
+  const path = a.path;
+  const goal = path?.length ? path[path.length - 1]
+    : a.combatMoveGoal || a.packSeekGoal || a.coverCorner?.anchorPos || null;
+  const goalKind = a.pathMode ?? (a.packSeekGoal ? 'pack' : a.coverCorner ? 'cover' : a.combatMoveGoal ? 'move' : null);
+  lines.push(goal
+    ? `nav ${goalKind ?? '-'} ${path?.length ?? 0}wp → (${goal.x.toFixed(1)}, ${goal.z.toFixed(1)})`
+    : 'nav idle');
+  const text = lines.join('\n');
+  if (text !== povDbgLastText) { povDebugEl.textContent = text; povDbgLastText = text; }
+}
+
+// World-space markers, drawn depthTest-false through walls on purpose -- they describe intent and
+// memory, not sight. Split from the screen widgets so the two toggles are independent.
+function updatePovWorldMarkers(a, now) {
+  povPathLine.visible = povGoalMark.visible = false;
+  povGhostMark.group.visible = povCoverAnchorMark.group.visible = povCoverPeekMark.group.visible = false;
+  povCoverLine.visible = false;
+  povReticle.visible = false;
+  for (const mark of povPerceivedMarks) mark.group.visible = false;
+  povPerceivedVisCount = 0;
+  if (!a || a.entity.alive === false) return;
+  const e = a.entity;
+  const seesTarget = !!a.target?.alive && a.targetVisible;
+  if (seesTarget) povPerceivedVisCount++; // the committed target counts toward "N vis"
+  // Perceived enemies: every candidate the last scan noticed, minus the committed target (it has
+  // the big pulsing diamond already).
+  const botEye = eyePosInto(e, _povEye);
+  const perceived = a.perceivedEnemies ?? [];
+  for (let i = 0; i < perceived.length; i++) {
+    const enemy = perceived[i].entity;
+    const mark = povPerceivedMarks[i];
+    if (!enemy || enemy.alive === false || enemy === a.target) continue;
+    const enemyEye = eyePosInto(enemy, _povPerEye);
+    const dist = botEye.distanceTo(enemyEye);
+    let clear = false;
+    if (dist > 1e-4) {
+      const inv = 1 / dist;
+      clear = !mapCollider.raycast([botEye.x, botEye.y, botEye.z],
+        [(enemyEye.x - botEye.x) * inv, (enemyEye.y - botEye.y) * inv, (enemyEye.z - botEye.z) * inv], dist - 0.05);
+    }
+    if (clear) povPerceivedVisCount++;
+    mark.group.visible = true;
+    mark.mat.color.setHex(clear ? 0xffffff : 0x8a93a3);
+    // Visible contacts flash, occluded ones sit steady, so movement in the corner of the eye means
+    // "someone can see me". The per-index phase offset stops them pulsing as one block.
+    mark.mat.opacity = clear ? 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(now * 0.009 + i)) : 0.35;
+    const head = enemy.botActor?.body?.joints?.head;
+    mark.group.position.set(
+      head ? head.position.x : enemy.capsule.start.x,
+      (head ? head.position.y : enemy.capsule.end.y + enemy.capsule.radius) + BOT_STATE_ORB_LIFT + 0.7,
+      head ? head.position.z : enemy.capsule.start.z,
+    );
+    mark.group.quaternion.copy(camera.quaternion);
+    mark.group.scale.setScalar(povMarkScale);
+  }
+  const path = a.path;
+  if (path?.length) {
+    const pos = povPathGeom.attributes.position;
+    pos.setXYZ(0, e.capsule.start.x, groundHeight(e.capsule.start.x, e.capsule.start.z) + 0.12, e.capsule.start.z);
+    let n = 1;
+    for (let i = 0; i < path.length && n < POV_PATH_MAX; i++, n++) {
+      pos.setXYZ(n, path[i].x, groundHeight(path[i].x, path[i].z) + 0.12, path[i].z);
+    }
+    povPathGeom.setDrawRange(0, n);
+    pos.needsUpdate = true;
+    povPathLine.visible = true;
+  }
+  const goal = path?.length ? path[path.length - 1]
+    : a.combatMoveGoal || a.packSeekGoal || a.coverCorner?.anchorPos || null;
+  if (goal) {
+    povGoalMark.visible = true;
+    povGoalMark.position.set(goal.x, groundHeight(goal.x, goal.z) + 1.4, goal.z);
+    povGoalMark.quaternion.copy(camera.quaternion);
+  }
+  // Last-known ghost: what SEEK is actually hunting. Yellowed when it came from a squad report.
+  if (a.lastKnownTarget && !seesTarget) {
+    const ageMs = a.lastKnownTargetAt != null ? now - a.lastKnownTargetAt : 0;
+    povGhostMark.group.visible = true;
+    povGhostMark.mat.color.setHex(a.lastKnownTarget.fromReport ? 0xe0c05a : 0x8fa8c8);
+    povGhostMark.mat.opacity = Math.max(0.18, 0.65 - (ageMs / 20000) * 0.45);
+    povGhostMark.group.position.set(a.lastKnownTarget.x,
+      groundHeight(a.lastKnownTarget.x, a.lastKnownTarget.z) + 1.5, a.lastKnownTarget.z);
+    povGhostMark.group.quaternion.copy(camera.quaternion);
+  }
+  // Committed cover corner: anchor, peek seat, and the slide line between them.
+  const corner = a.coverCorner;
+  if (corner?.anchorPos) {
+    const anchorY = groundHeight(corner.anchorPos.x, corner.anchorPos.z);
+    povCoverAnchorMark.group.visible = true;
+    povCoverAnchorMark.group.position.set(corner.anchorPos.x, anchorY + 1.1, corner.anchorPos.z);
+    povCoverAnchorMark.group.quaternion.copy(camera.quaternion);
+    if (corner.peekPos) {
+      const peekY = groundHeight(corner.peekPos.x, corner.peekPos.z);
+      povCoverPeekMark.group.visible = true;
+      povCoverPeekMark.group.position.set(corner.peekPos.x, peekY + 1.1, corner.peekPos.z);
+      povCoverPeekMark.group.quaternion.copy(camera.quaternion);
+      const pos = povCoverLineGeom.attributes.position;
+      pos.setXYZ(0, corner.anchorPos.x, anchorY + 1.0, corner.anchorPos.z);
+      pos.setXYZ(1, corner.peekPos.x, peekY + 1.0, corner.peekPos.z);
+      pos.needsUpdate = true;
+      povCoverLine.visible = true;
+    }
+  }
+  // Aim reticle: the muzzle bearing (entity yaw/pitch, not the free-look camera), with radius =
+  // the spread cone at that distance -- the circle rounds can actually land in.
+  const heldMs = a.aimContactAt != null ? now - a.aimContactAt : Infinity;
+  const speedCap = BOT_MOVE_SPEED * botMovementSettings.runMultiplier;
+  const spreadRad = spreadHalfAngleRad({
+    moveSpeed01: Math.min(1, Math.hypot(e.velocity.x, e.velocity.z) / Math.max(0.1, speedCap)),
+    heldMs, bloomDeg: a.spreadBloomDeg,
+  }, botAimSettings) * stanceSpreadScale(a.stance, botStanceSettings);
+  const aimReady = !botAimSettings.reactionEnabled || (a.aimContactAt != null && now >= a.aimReadyAt);
+  const dist = Math.max(2, Math.min(40, seesTarget ? a.targetDistance : 12));
+  eyePosInto(e, _povEye);
+  const pitch = e.pitch ?? 0;
+  const cosPitch = Math.cos(pitch);
+  povReticle.visible = true;
+  povReticle.position.set(
+    _povEye.x + Math.sin(e.yaw) * cosPitch * dist,
+    _povEye.y + Math.sin(pitch) * dist,
+    _povEye.z + Math.cos(e.yaw) * cosPitch * dist,
+  );
+  povReticle.quaternion.copy(camera.quaternion);
+  const reticleScale = Math.max(0.06, Math.tan(spreadRad) * dist);
+  povReticle.scale.set(reticleScale, reticleScale, 1);
+  povReticleMat.color.setHex(!seesTarget ? 0xdddddd : aimReady ? 0xff3030 : 0xffb040);
+}
+
+// ===================== dummy player capsule (WASD-controlled target) =====================
+let dummySpawnPoint = { x: 0, y: 0, z: 0 };  // set per-layout by applyLayout()
+const dummyTargets = [];
+let nextDummyId = 1;
+// `dummy` is the bot's current target. The first placed dummy stays under WASD control,
+// even when the bot switches its attention to another visible target.
+let dummy = null;
+let controlledDummy = null;
+let dummyImmortal = false;
+let dummyRoamEnabled = false;
+const DUMMY_ROAM_SPEED = 2.15;
+const DUMMY_ROAM_PLAN_BUDGET = 4;
+let dummyRoamPlansThisFrame = 0;
+const DUMMY_MAX_HEALTH = 100;
+const DUMMY_HIT_FLASH_MS = 120;
+const dummyHitImpacts = [];
+const dummyHitImpactGeometry = new THREE.SphereGeometry(0.075, 10, 8);
+const dummyAliveColor = 0x42a5f5;
+const dummyDeadColor = 0x37474f;
+const dummyKeys = {};
+addEventListener('keydown', e => { dummyKeys[e.code] = true; });
+addEventListener('keyup', e => { dummyKeys[e.code] = false; });
+
+function spawnDummy() {
+  if (dummyTargets.length) return;
+  const target = createDummyTarget(dummySpawnPoint);
+  dummy = target;
+  controlledDummy = target;
+  lastKnownTargetMotion = null;
+}
+function createDummyTarget(spawnPoint) {
+  const target = createBotEntity(`dummy-${nextDummyId++}`, spawnPoint);
+  target.health = DUMMY_MAX_HEALTH;
+  target.alive = true;
+  target.hitFlashUntil = 0;
+  const geom = new THREE.CapsuleGeometry(target.capsule.radius, target.capsule.end.y - target.capsule.start.y, 4, 8);
+  const mat = new THREE.MeshStandardMaterial({ color: dummyAliveColor, roughness: 0.6 });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  target.mesh = mesh;
+  target.material = mat;
+  mesh.position.copy(target.capsule.start.clone().add(target.capsule.end).multiplyScalar(0.5));
+  scene.add(mesh);
+  dummyTargets.push(target);
+  return target;
+}
+function removeDummy() {
+  clearMuzzleRecoveryEpisode();
+  clearDummyHitImpacts();
+  lastKnownTarget = null; lastKnownTargetMotion = null; botInvestigation = null;
+  for (const target of dummyTargets.splice(0)) {
+    botForensics?.release(target);   // same teardown contract as disposeBotActor's
+    scene.remove(target.mesh);
+    target.mesh.geometry.dispose();
+    target.material.dispose();
+  }
+  dummy = null;
+  controlledDummy = null;
+}
+
+function releaseDummyHitImpact(impact) {
+  impact.mesh.visible = false;
+  dummyHitImpactPool.push(impact.mesh);
+}
+
+function clearDummyHitImpacts() {
+  for (const impact of dummyHitImpacts.splice(0)) releaseDummyHitImpact(impact);
+}
+
+// Pooled: opacity animates per impact, so each pooled mesh owns one material made once.
+const dummyHitImpactPool = [];
+function spawnDummyHitImpact(position) {
+  let mesh = dummyHitImpactPool.pop();
+  if (!mesh) {
+    mesh = new THREE.Mesh(dummyHitImpactGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xff7043, transparent: true, opacity: 0.95 }));
+    mesh.renderOrder = 3;
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+  }
+  mesh.position.copy(position);
+  mesh.scale.setScalar(1);
+  mesh.material.opacity = 0.95;
+  mesh.visible = true;
+  dummyHitImpacts.push({ mesh, startedAt: performance.now(), durationMs: 180 });
+}
+
+function invalidateTargetMemoryAfterDeath(target, now) {
+  if (!target) return;
+  for (const observer of botActors) {
+    const isActiveObserver = observer === activeBotActor && botTarget?.id === target.id;
+    if (observer.entity.alive === false || (!isActiveObserver && observer.target?.id !== target.id)) continue;
+    observer.target = null;
+    observer.lastKnownTarget = null;
+    observer.lastKnownTargetMotion = null;
+    observer.lastKnownTargetAt = null;
+    observer.investigation = null;
+    goalClaims.release(observer.id, 'seek'); // unbound observers never reach finishInvestigation
+    observer.path = [];
+    observer.pathMode = null;
+    observer.combatMoveGoal = null;
+    recordBotEvent(observer, `target eliminated: ${target.id}`, now);
+    if (observer !== activeBotActor) continue;
+    botTarget = null;
+    lastKnownTarget = null;
+    lastKnownTargetMotion = null;
+    lastKnownTargetAt = null;
+    botInvestigation = null;
+    currentPath = [];
+    pathMode = null;
+    botCombatMoveGoal = null;
+    botState = BOT_PATROL;
+    recordBotStateChange(observer, botState, now);
+  }
+}
+// `credit` = {killer, weaponId, cause}: who gets the frag and what did it, for the scoreboard.
+function killCombatBot(target, now = botStateRecordFrameNow || performance.now(), death = null, credit = null) {
+  target.alive = false;
+  // Scoreboard first: it must tally even for a bot with no actor (nothing below runs for those).
+  const killer = credit?.killer ?? null;
+  recordKill(botScore, target.team, killer?.team ?? null, {
+    selfKill: !!killer && killer.id === target.id,
+    weapon: credit?.weaponId ?? null,
+    cause: credit?.cause ?? null,
+    killerRole: killer?.botActor?.role ?? null,
+    victimRole: target.botActor?.role ?? null,
+  });
+  if (target.botActor) target.botActor.deaths += 1;
+  if (killer?.botActor && killer.id !== target.id && killer.team !== target.team) killer.botActor.kills += 1;
+  botScoreDirty = true;
+  goalClaims.release(target.id);
+  invalidateTargetMemoryAfterDeath(target, now);
+  target.velocity.set(0, 0, 0);
+  const actor = target.botActor;
+  if (!actor) return;
+  deadBotActors.add(actor); // corpses leave botHash, so the medic revive scan reads them from here
+  actor.healRequested = false;
+  const diedCoverCorner = actor.coverCorner; // captured for the danger paint below the teardown
+  actor.coverCorner = null; actor.coverThreat = null; actor.coverStartedAt = null; actor.coverMoveSince = null; actor.coverBlacklist.clear(); actor.peek = null;
+  actor.coverGate = { invalidSince: null, switchedAt: null }; actor.peekMissStreak = 0; actor.coverHoldSince = null;
+  actor.coverPeekOffsetS = 0;
+  // Scatter whatever packs the bot was still carrying so other bots can loot them.
+  const deathXZ = botXZ(target);
+  dropActorHealthPacks(actor, deathXZ.x, deathXZ.z);
+  if (actor.heldPackMesh) actor.heldPackMesh.visible = false;
+  if (actor.roleInsignia) actor.roleInsignia.visible = false; // dead bots skip updateBot, so hide it here
+  if (actor.leaderInsignia) actor.leaderInsignia.visible = false;
+  if (actor.alertMark) actor.alertMark.visible = false;
+  actor.alertReport = null; actor.alertMarkMode = null; actor.alertWarySince = null; actor.alertScore = 0;
+  actor.attention = null;
+  actor.patrolScan = null;
+  actor.tierPerception = null;
+  actor.packSeekGoal = null;
+  actor.medicAction = null;
+  actor.medicTendTargetId = null;
+  actor.poseMode = 'none';
+  actor.diedAt = now;                 // opens the medic revive window
+  actor.deathXZ = { x: deathXZ.x, z: deathXZ.z }; // where a medic must go to revive it
+  emitBotDied({ target, actor, now, killer, death, cause: credit?.cause ?? null, revivable: true });
+  // H3: paint the death cell (full weight, veto ~8 s, 25 s decay half-life) + spread to neighbours;
+  // a bot that died in cover also paints its corner's anchor/peek cells, or the next bot re-takes it.
+  if (navGrid) {
+    const deathCell = cellIndexAt(navGrid, deathXZ.x, deathXZ.z);
+    if (deathCell >= 0) {
+      const n = cellNeighbors8(deathCell, navGrid.cols, navGrid.rows, _dangerNb);
+      recordDanger(botDangerField, target.team, deathCell, DANGER_DEATH_WEIGHT, now, _dangerNb, n);
+    }
+    if (diedCoverCorner) {
+      recordDanger(botDangerField, target.team, diedCoverCorner.anchorCell, DANGER_DEATH_WEIGHT, now);
+      if (diedCoverCorner.peekCell != null) recordDanger(botDangerField, target.team, diedCoverCorner.peekCell, DANGER_DEATH_WEIGHT, now);
+    }
+  }
+  withBotActor(actor, () => {
+    if (ragdollDeathEnabled && botProceduralBodyEnabled && botProceduralBody) {
+      // Ragdoll death: seed from the live rig, keep the body, drop the gun, drive it via setRagdollPose.
+      const mid = bot.capsule.start.clone().add(bot.capsule.end).multiplyScalar(0.5);
+      actor.ragdollGroundY = groundHeight(mid.x, mid.z);
+      const { rd, pose } = ragdollFromBody(THREE, botProceduralBody, { origin: { x: mid.x, y: actor.ragdollGroundY, z: mid.z }, yaw: bot.yaw });
+      if (death?.blastFrom) {
+        applyBlastImpulse(rd, death.blastFrom, (death.knockback ?? 12) * ragdollDeathImpulse);   // radial launch
+      } else {
+        applyDeathImpulse(rd, {
+          dir: death?.dir || { x: 0, y: 0, z: -1 },
+          strength: (death?.knockback ?? 6) * ragdollDeathImpulse,   // per-weapon base × panel multiplier
+          hitPoint: death?.hitPoint || null,                          // concentrates the reaction at the wound
+        });
+      }
+      actor.ragdoll = rd;
+      actor.ragdollPose = pose;
+      actor.ragdollSettledSince = null;   // fresh impulse (incl. blast knockback): must re-settle
+      destroyBotWeaponMount();
+      botMesh.visible = false;
+    } else {
+      destroyBotProceduralBody();
+      botMesh.visible = true;
+      botMesh.rotation.z = Math.PI * 0.48;
+      botMesh.material.color.setHex(dummyDeadColor);
+    }
+    if (activeBotActor?.stateOrb) activeBotActor.stateOrb.visible = false;
+    recordBotStateChange(activeBotActor, 'dead', now);
+    botState = BOT_PATROL;
+    pathMode = null;
+    currentPath = [];
+  });
+}
+
+function beginBotHealthRetreat(target, threatId, now) {
+  const actor = target?.botActor;
+  // The bound actor's truth lives in the globals; its actor fields are stale until commit.
+  const alreadyRequested = actor === activeBotActor ? botHealRequested : actor?.healRequested;
+  if (!actor || alreadyRequested || !botHealthSettings.retreatEnabled) return;
+  const hp01 = (target.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH;
+  if (hp01 > botHealthSettings.threshold01) return;
+  // The currently-bound actor must be written through the globals, or commitBotActor
+  // clobbers these fields with stale values at tick end (self-blast damage resolves in-tick).
+  if (actor === activeBotActor) {
+    botHealRequested = true;
+    botHealArrived = false;
+    botHealSafetySince = null;
+    botHealThreatId = threatId || null;
+    botHealStartedAt = now;
+    botMuzzleRecoveryTarget = null;
+    botRecoveryIssueActive = false;
+    currentPath = [];
+    pathMode = null;
+    botCombatMoveGoal = null;
+    return;
+  }
+  actor.healRequested = true;
+  actor.healArrived = false;
+  actor.healSafetySince = null;
+  actor.healThreatId = threatId || null;
+  actor.healStartedAt = now;
+  // Shot recovery only improves a firing position. A wounded bot must give its health
+  // retreat priority, so discard any pending recovery route.
+  actor.muzzleRecoveryTarget = null;
+  actor.recoveryIssueActive = false;
+  actor.path = [];
+  actor.pathMode = null;
+  actor.combatMoveGoal = null;
+}
+
+function clearBotHealthRetreat() {
+  botHealRequested = false;
+  botHealArrived = false;
+  botHealSafetySince = null;
+  botHealThreatId = null;
+  botHealStartedAt = null;
+}
+
+// ===================== health packs (world pickups + in-hand visual) =====================
+// Bots carry up to 2 consumable packs (bot-health-packs.js owns the charge math). Packs render as a
+// small black box stamped with a white plus, dropped on death and collected off the ground.
+const worldHealthPacks = []; // { group, x, z, pack:{charge01}, seq, droppedAt, capsule }
+// Pack list hygiene (F10): ground packs age out, the list is hard-capped, and lookups go through a
+// spatial hash rebuilt only when the list changes (packs never move once dropped).
+const PACK_DESPAWN_MS = 60000;
+const PACK_CAP = 64;
+const packHash = createBotSpatialHash(8);
+let packHashDirty = true;
+let packSeq = 0; // spawn-order stamp: pickup ordering + oldest-first eviction
+function packHashEnsure() {
+  if (!packHashDirty) return;
+  packHashDirty = false;
+  packHash.rebuild(worldHealthPacks);
+}
+// True when any living bot has a movement-goal claim on the pack's nav cell (a seeker en route).
+const _packEvictCell = { c: 0, r: 0 };
+function packClaimed(record) {
+  if (!navGrid) return false;
+  const cell = worldToCellInto(navGrid, record.x, record.z, _packEvictCell);
+  return goalClaims.isClaimedByOther(cellIdxOf(cell.c, cell.r), undefined);
+}
+// Age out stale unclaimed packs; past the hard cap evict oldest unclaimed first, then oldest outright.
+function despawnStaleHealthPacks(now) {
+  for (let i = worldHealthPacks.length - 1; i >= 0; i--) {
+    const record = worldHealthPacks[i];
+    if (now - record.droppedAt >= PACK_DESPAWN_MS && !packClaimed(record)) removeWorldHealthPack(record);
+  }
+  if (worldHealthPacks.length <= PACK_CAP) return;
+  for (let i = 0; i < worldHealthPacks.length && worldHealthPacks.length > PACK_CAP; ) {
+    if (!packClaimed(worldHealthPacks[i])) removeWorldHealthPack(worldHealthPacks[i]);
+    else i++;
+  }
+  while (worldHealthPacks.length > PACK_CAP) removeWorldHealthPack(worldHealthPacks[0]);
+}
+const PACK_BOX = new THREE.BoxGeometry(0.24, 0.14, 0.30);
+const PACK_BOX_MAT = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.55, metalness: 0.1 });
+const PACK_PLUS_MAT = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, emissive: 0x222222 });
+const PACK_PLUS_BAR_H = new THREE.BoxGeometry(0.17, 0.03, 0.05);
+const PACK_PLUS_BAR_V = new THREE.BoxGeometry(0.05, 0.03, 0.17);
+
+function buildHealthPackMesh(scale = 1) {
+  const group = new THREE.Group();
+  const box = new THREE.Mesh(PACK_BOX, PACK_BOX_MAT);
+  const barH = new THREE.Mesh(PACK_PLUS_BAR_H, PACK_PLUS_MAT);
+  const barV = new THREE.Mesh(PACK_PLUS_BAR_V, PACK_PLUS_MAT);
+  barH.position.y = barV.position.y = 0.075; // sit the plus on the top face
+  for (const m of [box, barH, barV]) { m.matrixAutoUpdate = false; m.updateMatrix(); } // static locals (M10)
+  group.add(box, barH, barV);
+  group.scale.setScalar(scale);
+  return group;
+}
+
+// Overhead role marker so a role reads at a glance: rifleman diamond, medic cross, leader chevron,
+// sniper scope ring, technical warhead triangle. Emissive so they stay legible without scene lighting.
+// The leader chevron is layered independently of the class marker (setSquadLeaderMark) so a promoted
+// bot shows both at once instead of one replacing the other.
+const INSIGNIA_DIAMOND_MAT = new THREE.MeshBasicMaterial({ color: 0xb0bec5, toneMapped: false, side: THREE.DoubleSide });
+const INSIGNIA_DIAMOND = new THREE.PlaneGeometry(0.18, 0.18);
+const INSIGNIA_CROSS_MAT = new THREE.MeshBasicMaterial({ color: 0xff5a5a, toneMapped: false });
+const INSIGNIA_CROSS_H = new THREE.BoxGeometry(0.26, 0.08, 0.02);
+const INSIGNIA_CROSS_V = new THREE.BoxGeometry(0.08, 0.26, 0.02);
+// Squad-leader chevron: gold, so command reads apart from the medic's red cross at a glance.
+const INSIGNIA_CHEVRON_MAT = new THREE.MeshBasicMaterial({ color: 0xffd54f, toneMapped: false });
+const INSIGNIA_CHEVRON_BAR = new THREE.BoxGeometry(0.22, 0.07, 0.02);
+const INSIGNIA_RING_MAT = new THREE.MeshBasicMaterial({ color: 0x6fe3ff, toneMapped: false, side: THREE.DoubleSide });
+const INSIGNIA_RING = new THREE.RingGeometry(0.09, 0.13, 18);
+const INSIGNIA_RING_DOT = new THREE.BoxGeometry(0.05, 0.05, 0.02);
+const INSIGNIA_TRIANGLE_MAT = new THREE.MeshBasicMaterial({ color: 0xff8a3d, toneMapped: false, side: THREE.DoubleSide });
+const INSIGNIA_TRIANGLE = new THREE.CircleGeometry(0.15, 3);
+// Overhead "!" shown while a bot's squad alert is actionable (latestAllyHitNear non-null) --
+// the visual truth signal for QA-ing alert triggers. Shared geo/mat, one group per bot.
+// `base` is the push tier's base-of-fire element (S11) -- white, so a bounding pair reads at a
+// glance: white bots are shooting, green ones are moving, and they trade every PUSH_BOUND_MS.
+const ALERT_MARK_COLORS = { seen: 0xff5252, heard: 0xffd93d, push: 0x66ff66, base: 0xffffff, near: 0x4fc3f7 };
+const ALERT_MARK_MATS = Object.fromEntries(Object.entries(ALERT_MARK_COLORS).map(
+  ([mode, color]) => [mode, new THREE.MeshBasicMaterial({ color, toneMapped: false })]));
+const ALERT_MARK_BAR = new THREE.BoxGeometry(0.07, 0.24, 0.02);
+const ALERT_MARK_DOT = new THREE.BoxGeometry(0.07, 0.07, 0.02);
+const ALERT_DIGIT_GEO = new THREE.PlaneGeometry(0.2, 0.2);
+const ALERT_DIGIT_MATS = new Map(); // '<mode><digit>' -> shared canvas-texture material
+function alertDigitMat(score, mode) {
+  const n = Math.min(Math.max(score, 1), 9);
+  const key = mode + n;
+  let mat = ALERT_DIGIT_MATS.get(key);
+  if (mat) return mat;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.font = 'bold 54px monospace';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#ffffff';
+  g.fillText(String(n), 32, 36);
+  mat = new THREE.MeshBasicMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, toneMapped: false,
+    color: ALERT_MARK_COLORS[mode] ?? ALERT_MARK_COLORS.semi, side: THREE.DoubleSide,
+  });
+  ALERT_DIGIT_MATS.set(key, mat);
+  return mat;
+}
+function buildAlertMark() {
+  const group = new THREE.Group();
+  const bar = new THREE.Mesh(ALERT_MARK_BAR, ALERT_MARK_MATS.seen);
+  bar.position.y = 0.11;
+  const dot = new THREE.Mesh(ALERT_MARK_DOT, ALERT_MARK_MATS.seen);
+  dot.position.y = -0.09;
+  const digit = new THREE.Mesh(ALERT_DIGIT_GEO, alertDigitMat(1, 'seen'));
+  digit.position.set(0.18, 0.04, 0);
+  digit.renderOrder = 6;
+  // Children never move locally; only the group is repositioned per frame (M10).
+  for (const m of [bar, dot, digit]) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+  group.add(bar, dot, digit);
+  group.userData.exclaim = [bar, dot];
+  group.userData.digit = digit;
+  group.renderOrder = 6;
+  group.visible = false;
+  return group;
+}
+function buildRoleInsignia(kind) {
+  const group = new THREE.Group();
+  if (kind === 'diamond') {
+    const m = new THREE.Mesh(INSIGNIA_DIAMOND, INSIGNIA_DIAMOND_MAT);
+    m.rotation.z = Math.PI / 4;
+    group.add(m);
+  } else if (kind === 'cross') {
+    group.add(new THREE.Mesh(INSIGNIA_CROSS_H, INSIGNIA_CROSS_MAT), new THREE.Mesh(INSIGNIA_CROSS_V, INSIGNIA_CROSS_MAT));
+  } else if (kind === 'chevron') {
+    const left = new THREE.Mesh(INSIGNIA_CHEVRON_BAR, INSIGNIA_CHEVRON_MAT);
+    left.position.x = -0.075; left.rotation.z = 0.85;
+    const right = new THREE.Mesh(INSIGNIA_CHEVRON_BAR, INSIGNIA_CHEVRON_MAT);
+    right.position.x = 0.075; right.rotation.z = -0.85;
+    group.add(left, right);
+  } else if (kind === 'ring') {
+    group.add(new THREE.Mesh(INSIGNIA_RING, INSIGNIA_RING_MAT), new THREE.Mesh(INSIGNIA_RING_DOT, INSIGNIA_RING_MAT));
+  } else if (kind === 'triangle') {
+    group.add(new THREE.Mesh(INSIGNIA_TRIANGLE, INSIGNIA_TRIANGLE_MAT));
+  }
+  for (const m of group.children) { m.matrixAutoUpdate = false; m.updateMatrix(); } // static locals (M10)
+  group.renderOrder = 6;
+  return group;
+}
+
+// Nudge a would-be pack position onto the nearest walkable nav cell so a pack never lands inside a
+// wall. Otherwise a seeker paths to the closest reachable cell and then presses into the wall trying
+// to close the last metre it can never stand on (the pickup radius is unreachable).
+function snapToWalkable(x, z) {
+  if (!navGrid) return { x, z };
+  const walkable = nearestWalkableNavCell(worldToCell(navGrid, x, z));
+  if (!walkable) return { x, z };
+  const p = cellToWorld(navGrid, walkable.c, walkable.r);
+  return { x: p.x, z: p.z };
+}
+
+function spawnWorldHealthPack(x, z, pack) {
+  if (!pack || pack.charge01 <= 1e-4) return null;
+  ({ x, z } = snapToWalkable(x, z)); // keep packs on standable ground so seekers can actually reach them
+  const group = buildHealthPackMesh(1);
+  group.position.set(x, decalY(x, z, 0.09), z);
+  scene.add(group);
+  // capsule.start satisfies the spatial hash's rebuild() contract (it reads capsule.start.x/z).
+  const record = { group, x, z, pack, seq: packSeq++, droppedAt: performance.now(), capsule: { start: { x, z } } };
+  worldHealthPacks.push(record);
+  packHashDirty = true;
+  return record;
+}
+
+function removeWorldHealthPack(record) {
+  const idx = worldHealthPacks.indexOf(record);
+  if (idx >= 0) worldHealthPacks.splice(idx, 1);
+  scene.remove(record.group);
+  packHashDirty = true;
+}
+
+function clearWorldHealthPacks() {
+  for (const record of worldHealthPacks.splice(0)) scene.remove(record.group);
+  packHashDirty = true;
+}
+
+// Drop every pack a dying bot still holds, scattered a little so they don't z-fight.
+function dropActorHealthPacks(actor, x, z) {
+  const packs = actor?.healthPacks;
+  if (!packs?.length) return;
+  const scatter = botPackSettings.dropScatter;
+  for (let i = 0; i < packs.length; i++) {
+    const angle = (i / packs.length) * Math.PI * 2;
+    spawnWorldHealthPack(x + Math.cos(angle) * scatter, z + Math.sin(angle) * scatter, packs[i]);
+  }
+  packs.length = 0;
+}
+
+// Line-of-sight + range test from a bot's eye to a ground pack (bots run 360deg FOV, so no cone gate).
+const _packEye = new THREE.Vector3();
+function botCanSeePack(bot, record) {
+  const eye = eyePosInto(bot, _packEye);
+  const dx = record.x - eye.x, dz = record.z - eye.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist > botSightDistanceFor(bot.botActor)) return { visible: false, dist };
+  if (dist < 1e-4) return { visible: true, dist };
+  if (USE_FIELD_LOS_PREFILTER && fieldSaysHidden(eye.x, eye.z, record.x, record.z)) return { visible: false, dist };
+  const target = { x: record.x, y: decalY(record.x, record.z, 0.15), z: record.z };
+  const dir = { x: (target.x - eye.x), y: (target.y - eye.y), z: (target.z - eye.z) };
+  const len = Math.hypot(dir.x, dir.y, dir.z);
+  const blocked = mapCollider?.raycast([eye.x, eye.y, eye.z], [dir.x / len, dir.y / len, dir.z / len], len - 0.05);
+  return { visible: !blocked, dist };
+}
+
+// The nearest pack this bot would collect: it must have room, be able to see it, and either be
+// wounded (distance-agnostic) or have the pack within short proximity. Returns { record, dist } or null.
+const _packSeekCell = { c: 0, r: 0 };
+let _psBot = null, _psHurt = false, _psBest = null; // hash-visit scratch, consumed per call
+let _psNow = 0, _psTeam = null, _psDanger = false;  // H3 danger read: hoisted per call, not per pack
+function _psVisit(record) {
+  const cell = worldToCellInto(navGrid, record.x, record.z, _packSeekCell);
+  const cellIdx = cellIdxOf(cell.c, cell.r);
+  if (goalClaims.isClaimedByOther(cellIdx, _psBot.id)) return;
+  const seen = botCanSeePack(_psBot, record);
+  if (!seen.visible) return;
+  if (!_psHurt && seen.dist > botPackSettings.shortProximity) return;
+  // Selection runs on danger-inflated distance; `dist` stays the raw metres callers expect.
+  const cmp = _psDanger ? seen.dist + dangerPenalty(botDangerField, _psTeam, cellIdx, _psNow, DANGER_PACK_SCALE) : seen.dist;
+  // Strict < plus lowest-seq tiebreak replicates the old array-order first-wins scan exactly.
+  if (!_psBest || cmp < _psBest.cmp || (cmp === _psBest.cmp && record.seq < _psBest.record.seq)) _psBest = { record, dist: seen.dist, cmp };
+}
+function nearestSeekablePack(bot, actor, hurt) {
+  if (!worldHealthPacks.length || !canHold(actor?.healthPacks, actor?.maxPacks)) return null;
+  packHashEnsure();
+  _psBot = bot; _psHurt = hurt; _psBest = null;
+  _psTeam = bot.team; _psNow = botStateRecordFrameNow || performance.now();
+  _psDanger = hasDanger(botDangerField, _psTeam);
+  // sightDistance bounds visibility inside botCanSeePack, so the hash query covers the old full scan.
+  packHash.forEachNear(bot.capsule.start.x, bot.capsule.start.z, botSightDistanceFor(actor), _psVisit);
+  const best = _psBest;
+  _psBot = null; _psBest = null;
+  return best;
+}
+
+// Collect any packs within pickupRadius (regardless of intent -- if you step on it, you grab it),
+// respecting the 2-pack cap. Returns true if anything was picked up.
+const _puNear = []; // in-radius candidates, drained per call
+let _puX = 0, _puZ = 0;
+function _puVisit(record) {
+  if (Math.hypot(record.x - _puX, record.z - _puZ) <= botPackSettings.pickupRadius) _puNear.push(record);
+}
+function collectPacksUnderfoot(bot, actor, now) {
+  const packs = actor?.healthPacks;
+  if (!packs || !worldHealthPacks.length) return false;
+  packHashEnsure();
+  _puX = bot.capsule.start.x; _puZ = bot.capsule.start.z;
+  _puNear.length = 0;
+  packHash.forEachNear(_puX, _puZ, botPackSettings.pickupRadius, _puVisit);
+  if (_puNear.length > 1) _puNear.sort((a, b) => b.seq - a.seq); // match the old tail-first scan order
+  let collected = false;
+  for (const record of _puNear) {
+    if (!canHold(packs, actor?.maxPacks)) break;
+    if (addPack(packs, record.pack, actor?.maxPacks)) {
+      removeWorldHealthPack(record);
+      collected = true;
+      actor.packPickupCrouchUntil = now + botPackSettings.pickupCrouchMs; // brief crouch to grab it
+      recordBotEvent(actor, `picked up pack (${Math.round(record.pack.charge01 * 100)}%) -> holding ${packs.length}`, now);
+    }
+  }
+  _puNear.length = 0;
+  return collected;
+}
+
+// Recent damage reports on bots, so nearby squadmates can break for cover against the attacker.
+const recentAllyHits = []; // { victimId, team, x, z, threat:{x,z}, at, lethal, kind? }
+function pushAllyReport(rep) {
+  recentAllyHits.push(rep);
+  if (recentAllyHits.length > 64) recentAllyHits.shift();
+}
+function recordAllyHit(victim, attacker, now) {
+  if (!attacker?.alive) return;
+  const v = botXZ(victim), a = botXZ(attacker);
+  // H3: weaker evidence than a death and no neighbour spread — one cell only.
+  if (navGrid) recordDanger(botDangerField, victim.team, cellIndexAt(navGrid, v.x, v.z), DANGER_HIT_WEIGHT, now);
+  // Caller decrements health before reporting, so a killing blow reads as lethal here.
+  // attackerId turns the report from a bearing into an attribution: contact memory needs to know
+  // WHO shot, not just from where, to rank a shooter above a bystander.
+  pushAllyReport({ victimId: victim.id, team: victim.team, x: v.x, z: v.z, attackerId: attacker.id,
+    threat: { x: a.x, z: a.z }, at: now, lethal: (victim.health ?? 1) <= 0 });
+}
+// Near miss: an enemy round that passed within NEAR_MISS_RADIUS of a living bot without hitting it.
+// Firsthand-only evidence (see latestNearMiss) — one refreshed report per victim keeps the ring small.
+const _nmMid = new THREE.Vector3();  // scratch capsule midpoint, reused per candidate
+let _nmOrigin = null, _nmDir = null, _nmTravelled = 0, _nmHitId = null, _nmAttacker = null;
+let _nmNow = 0, _nmAx = 0, _nmAz = 0;
+function _nmVisit(e) {
+  if (e === _nmAttacker || e.alive === false || e.team === _nmAttacker.team || e.id === _nmHitId) return;
+  _nmMid.copy(e.capsule.start).add(e.capsule.end).multiplyScalar(0.5);
+  if (shotMissDistance(_nmOrigin, _nmDir, _nmTravelled, _nmMid) > NEAR_MISS_RADIUS) return;
+  const vx = e.capsule.start.x, vz = e.capsule.start.z;
+  const prior = recentAllyHits.find(r => r.kind === NEAR_MISS_KIND && r.victimId === e.id && _nmNow - r.at <= NEAR_MISS_WINDOW_MS);
+  // Refresh re-attributes: the same victim being missed again may well be a different shooter.
+  if (prior) {
+    prior.at = _nmNow; prior.x = vx; prior.z = vz;
+    prior.threat.x = _nmAx; prior.threat.z = _nmAz; prior.attackerId = _nmAttacker.id;
+    return;
+  }
+  pushAllyReport({ victimId: e.id, team: e.team, x: vx, z: vz, attackerId: _nmAttacker.id,
+    threat: { x: _nmAx, z: _nmAz }, at: _nmNow, lethal: false, kind: NEAR_MISS_KIND });
+  // Only on a fresh report, not the refresh branch above -- otherwise sustained fire near one bot
+  // would re-trigger every single round, and the director's own cooldown would just be fighting it.
+  if (botChatterEnabled && e.botActor) sayBotLine(e, e.botActor, 'near_miss', _nmNow);
+}
+function recordNearMisses(origin, dir, travelled, hitId, attacker, now) {
+  if (!attacker?.alive) return;
+  const a = botXZ(attacker);
+  _nmOrigin = origin; _nmDir = dir; _nmTravelled = travelled; _nmHitId = hitId;
+  _nmAttacker = attacker; _nmNow = now; _nmAx = a.x; _nmAz = a.z;
+  // XZ-projected distance is never greater than the 3D distance, so the padded XZ AABB of the shot
+  // segment is a conservative prefilter -- the exact 3D shotMissDistance test still runs per candidate.
+  botHash.forEachSegment(origin.x, origin.z, origin.x + dir.x * travelled, origin.z + dir.z * travelled,
+    NEAR_MISS_RADIUS + 0.5, _nmVisit);
+  _nmOrigin = null; _nmDir = null; _nmAttacker = null;
+}
+// Freshest actionable hit on a same-team OTHER bot within ALLY_ALERT_RADIUS of `me`, or null.
+// Windowing (deaths stay actionable longer than grazes) lives pure in bot-alert.js.
+const _alertMe = { id: null, team: null, x: 0, z: 0 }; // scratch: latestAlertNear reads it synchronously
+function latestAllyHitNear(me, now) {
+  _alertMe.id = me.id; _alertMe.team = me.team;
+  _alertMe.x = me.capsule.start.x; _alertMe.z = me.capsule.start.z;
+  return latestAlertNear(recentAllyHits, _alertMe, now, ALLY_ALERT_RADIUS);
+}
+// Freshest actionable FIRSTHAND report carried by an alerted teammate in contact range — how a
+// semi-alert spreads. One hop only: semi-alerted bots don't relay (actor.alertReport is firsthand).
+let _saMe = null, _saNow = 0, _saPx = 0, _saPz = 0, _saBest = null;
+function _saVisit(other) {
+  if (other === _saMe || other.alive === false || other.team !== _saMe.team) return;
+  const rep = other.botActor?.alertReport;
+  if (!rep || _saNow - rep.at > alertWindowMs(rep)) return;
+  if (Math.hypot(other.capsule.start.x - _saPx, other.capsule.start.z - _saPz) > SEMI_ALERT_SHARE_RADIUS) return;
+  if (!_saBest || rep.at > _saBest.at) _saBest = rep;
+}
+function sharedAllyAlertNear(me, now) {
+  _saMe = me; _saNow = now; _saPx = me.capsule.start.x; _saPz = me.capsule.start.z; _saBest = null;
+  botHash.forEachNear(_saPx, _saPz, SEMI_ALERT_SHARE_RADIUS, _saVisit);
+  _saMe = null;
+  const best = _saBest;
+  _saBest = null;
+  return best;
+}
+let _ltMe = null, _ltRadius = 0, _ltPx = 0, _ltPz = 0, _ltCount = 0;
+function _ltVisit(other) {
+  if (other.alive === false || other.team !== _ltMe.team) return;
+  if (Math.hypot(other.capsule.start.x - _ltPx, other.capsule.start.z - _ltPz) <= _ltRadius) _ltCount++;
+}
+function livingTeammatesNear(me, radius) {
+  _ltMe = me; _ltRadius = radius; _ltPx = me.capsule.start.x; _ltPz = me.capsule.start.z; _ltCount = 0;
+  botHash.forEachNear(_ltPx, _ltPz, radius, _ltVisit); // includes self (me is in the living hash)
+  _ltMe = null;
+  return _ltCount;
+}
+
+// The same sweep, collecting the actors instead of counting them (S11 needs their roles and ids).
+// The array is reused: squad membership is consumed in the frame that builds it, never retained.
+const _sqMembers = [];
+function _sqVisit(other) {
+  if (other.alive === false || other.team !== _ltMe.team) return;
+  if (Math.hypot(other.capsule.start.x - _ltPx, other.capsule.start.z - _ltPz) > _ltRadius) return;
+  const actor = botActorById.get(other.id);
+  if (actor) _sqMembers.push(actor);
+}
+function squadMembersNear(me, radius) {
+  _ltMe = me; _ltRadius = radius; _ltPx = me.capsule.start.x; _ltPz = me.capsule.start.z;
+  _sqMembers.length = 0;
+  botHash.forEachNear(_ltPx, _ltPz, radius, _sqVisit);
+  _ltMe = null;
+  return _sqMembers;
+}
+
+// S11: a push used to be N bots independently charging one anchor. Split the squad instead --
+// half hold and shoot while half advance, trading jobs every PUSH_BOUND_MS. Every member derives
+// the same split from the same stable ranking, so this needs no messaging.
+//
+// The base element is expressed as a short self-issued hold (S13), re-armed each frame the tier is
+// live: drop the tier and it expires within the lease, so a base-of-fire bot can never freeze. And
+// a bot with no way to shoot the threat never holds -- standing still blind is the failure mode the
+// earlier anti-lemming waves fought.
+const PUSH_HOLD_LEASE_MS = 500;
+function applyPushElement(now, threatXZ, canSeeThreat) {
+  // A rostered bot already has a rank from this frame's squad tick; an unsquadded one falls back to
+  // the original emergent group (a hash sweep + sort, per bot per frame -- the reason rosters are cheaper).
+  const roster = activeBotActor.squadId ? squads.get(activeBotActor.squadId) : null;
+  let rank;
+  if (roster?.leaderId) {
+    rank = activeBotActor.squadRank;
+    activeBotActor.squadLeaderId = roster.leaderId;
+  } else {
+    const near = squadMembersNear(bot, SUPPORT_RADIUS);
+    const leader = pickSquadLeader(near);
+    rank = squadRanks(near, leader?.id).indexOf(String(bot.id));
+    activeBotActor.squadLeaderId = leader?.id ?? null;
+  }
+  activeBotActor.pushStartedAt ??= now;
+  // Support never draws the maneuver element: a medic taking its turn to bound forward is a medic
+  // leading the assault. It stays with the base element (and follows when it has no firing position,
+  // via the canOverwatch downgrade below) instead of alternating like a rifle.
+  const element = getRole(activeBotActor.role).support
+    ? 'base' : boundingRole(rank, now - activeBotActor.pushStartedAt);
+  const canOverwatch = canSeeThreat || !!activeBotActor.coverCorner;
+  activeBotActor.pushElement = element === 'base' && canOverwatch ? 'base' : 'move';
+  if (activeBotActor.pushElement === 'base') {
+    commandBotHold(activeBotActor, now + PUSH_HOLD_LEASE_MS, 'overwatch', threatXZ);
+  }
+}
+
+// S13: the bot->bot hold channel. A heal hold outranks an overwatch one -- a medic mid-channel must
+// not have its patient walked off by the squad -- but any caller may extend a hold of its own kind.
+function commandBotHold(actor, until, reason, facingXZ) {
+  if (!actor) return false;
+  const now = performance.now();
+  if (actor.holdUntil > now && actor.holdReason === 'heal' && reason !== 'heal') return false;
+  // Leases are re-granted every frame, so a lapsed hold restarts the clock: elapsed-held time is the
+  // only signal that distinguishes a sustained pin from a one-frame stop (the prone gate reads it).
+  if (!(actor.holdUntil > now)) actor.holdSince = now;
+  actor.holdUntil = until;
+  actor.holdReason = reason;
+  actor.holdFacingXZ = facingXZ || null;
+  return true;
+}
+
+// ===================== squads (bot-squad.js owns the pure roster/formation math) =====================
+
+// Bind a set of freshly-spawned actors into one persistent squad. The roster is the truth from here
+// on: it survives separation, casualties and map rebuilds, and only teardown removes a member.
+function formSquad(actors, team, { leaderId = null } = {}) {
+  if (!actors.length) return null;
+  const id = `squad-${++squadIdSeq}`;
+  // Elect here rather than leaving it to the first tick: an unresolved leader reads as a dead one,
+  // and the squad would open its life inside a succession shock. A caller that already knows who
+  // commands (a detachment splitting off under the officer who led it) says so instead.
+  const named = leaderId && botActorById.get(leaderId)?.entity.alive !== false ? { id: leaderId } : null;
+  const leader = named || electSquadLeader(actors.map((a) => ({ id: a.id, role: a.role, alive: a.entity.alive !== false })));
+  const squad = {
+    id, team,
+    seq: squadIdSeq,            // stable index behind the debug overlay's colour; ascending = younger
+    memberIds: new Set(actors.map((a) => a.id)),
+    detachIds: new Set(),       // subset of memberIds: attached, not yet its own squad
+    detachLeaderId: null,
+    detachSeq: 0,               // age of the current detachment, for detachment-merge seniority
+    heirIds: [],                // named line of succession; leaders of squads that merged in
+    leaderId: leader?.id ?? null,
+    successionShockUntil: 0,    // leaderless window after a leader dies
+    shocked: false,
+    liveCount: actors.length,
+    kind: 'wedge',              // formation resolved per tick
+    engaged: false,
+    leaderPos: { x: 0, z: 0 },  // reused, never re-allocated per frame
+    leaderYaw: 0,
+    hasLeaderPos: false,
+    corridorClear: true,
+    corridorAt: 0,
+    debug: null,                // lazily built by the squad overlay, torn down with the squad
+  };
+  squads.set(id, squad);
+  for (const a of actors) { a.squadId = id; a.squadRank = -1; }
+  // Mark the elected leader now: a squad formed from bots already on the field has no spawned
+  // ROLE_SQUAD_LEADER, so without this its leader would wear no chevron until it died.
+  setSquadLeaderMark(botActorById.get(squad.leaderId), true);
+  return squad;
+}
+
+// Retro-fit rosters onto whoever is already fighting. `fillExisting` off keeps it to forming new
+// squads among the independents: the reconciler has already offered them every squad within reach,
+// so anything still loose is deliberately far from one and shouldn't be teleported onto its roster.
+function formSquadsFromExisting({ fillExisting = true } = {}) {
+  const byTeam = new Map();
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) continue;
+    if (actor.squadId && squads.has(actor.squadId)) continue;
+    if (!byTeam.has(actor.entity.team)) byTeam.set(actor.entity.team, []);
+    byTeam.get(actor.entity.team).push(actor);
+  }
+  let formed = 0;
+  for (const [team, actors] of byTeam) {
+    const remaining = fillExisting ? actors.slice(fillSquadOpenings(actors, team)) : actors;
+    let at = 0;
+    for (const size of partitionSquadSizes(remaining.length, botSquadSize)) {
+      const chunk = remaining.slice(at, at + size); at += size;
+      if (chunk.length >= SQUAD_MIN_SIZE && formSquad(chunk, team)) formed++;
+    }
+  }
+  return formed;
+}
+
+// ---- reconciler: keeps the field in sensibly-sized squads without anyone having to respawn ----
+// Squad membership used to be decided only at spawn, which meant squad mode did nothing to bots
+// already fighting and attrition left a team as a scatter of two-man remnants forever. This runs the
+// same consolidation continuously. Merging is pure bookkeeping -- it never moves anyone, and
+// formation movement is out-of-combat-only, so it is safe to run mid-firefight.
+const SQUAD_RECONCILE_MS = 700;
+let squadReconcileAt = 0;
+const _reconcileSquads = [], _reconcileLoose = [], _looseXZ = { x: 0, z: 0 };
+
+function applySquadOp(op) {
+  if (op.op === 'split' || op.op === 'mergeDetachments') {
+    const parentIds = op.op === 'split' ? [op.squadId] : op.squadIds;
+    const actors = op.memberIds.map((id) => botActorById.get(id)).filter((a) => a && a.entity.alive !== false);
+    for (const parentId of parentIds) {
+      const parent = squads.get(parentId);
+      if (!parent) continue;
+      for (const id of op.memberIds) { parent.memberIds.delete(id); parent.detachIds.delete(id); }
+      parent.detachLeaderId = null; parent.detachSeq = 0;
+      parent.heirIds = parent.heirIds.filter((id) => parent.memberIds.has(id));
+    }
+    if (actors.length >= SQUAD_MIN_SIZE) formSquad(actors, actors[0].entity.team, { leaderId: op.leaderId });
+    return;
+  }
+  if (op.op === 'merge') {
+    const into = squads.get(op.intoId), from = squads.get(op.fromId);
+    if (!into || !from) return;
+    for (const id of from.memberIds) {
+      into.memberIds.add(id);
+      const actor = botActorById.get(id);
+      if (actor) { actor.squadId = into.id; actor.squadRank = -1; }
+    }
+    into.detachIds = new Set(op.detachIds.filter((id) => into.memberIds.has(id)));
+    into.detachLeaderId = into.detachIds.size ? op.detachLeaderId : null;
+    into.detachSeq = into.detachIds.size ? (into.detachSeq || ++squadIdSeq) : 0;
+    // The relieved leader keeps its claim on command, ahead of any later merge's leader.
+    if (op.heirId) into.heirIds.push(op.heirId);
+    if (from.leaderId !== into.detachLeaderId) setSquadLeaderMark(botActorById.get(from.leaderId), false);
+    disposeSquadDebug(from);
+    squads.delete(from.id);
+    return;
+  }
+  if (op.op === 'absorb') {
+    const squad = squads.get(op.squadId);
+    const actor = botActorById.get(op.memberId);
+    if (!squad || !actor) return;
+    squad.memberIds.add(op.memberId);
+    if (op.toDetachment) {
+      squad.detachIds.add(op.memberId);
+      if (!squad.detachSeq) squad.detachSeq = ++squadIdSeq;
+      if (!squad.detachLeaderId) squad.detachLeaderId = op.memberId;
+    }
+    actor.squadId = squad.id;
+    actor.squadRank = -1;
+  }
+}
+
+function reconcileSquads(now) {
+  if (!botSquadModeEnabled || now - squadReconcileAt < SQUAD_RECONCILE_MS) return;
+  squadReconcileAt = now;
+  _reconcileSquads.length = 0; _reconcileLoose.length = 0;
+  for (const squad of squads.values()) {
+    const core = [], detach = [];
+    for (const id of squad.memberIds) {
+      // Strength is counted in living bodies: corpses must not hold a squad above its merge threshold.
+      if (botActorById.get(id)?.entity.alive === false) continue;
+      (squad.detachIds.has(id) ? detach : core).push(id);
+    }
+    if (!core.length && !detach.length) continue;
+    _reconcileSquads.push({
+      id: squad.id, team: squad.team, seq: squad.seq, detachSeq: squad.detachSeq,
+      leaderId: squad.leaderId, hasLeader: squad.hasLeaderPos,
+      x: squad.leaderPos.x, z: squad.leaderPos.z, core, detach, detachLeaderId: squad.detachLeaderId,
+    });
+  }
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) continue;
+    if (actor.squadId && squads.has(actor.squadId)) continue;
+    botXZInto(actor.entity, _looseXZ);
+    _reconcileLoose.push({ id: actor.id, team: actor.entity.team, x: _looseXZ.x, z: _looseXZ.z });
+  }
+  if (_reconcileSquads.length) {
+    for (const op of planSquadReconcile({
+      squads: _reconcileSquads, loose: _reconcileLoose,
+      radius: botSquadSettings.mergeRadius, coreMax: botSquadSize,
+    })) applySquadOp(op);
+  }
+  // Whoever the plan could not place is out of reach of every squad; they form up among themselves.
+  if (_reconcileLoose.length) formSquadsFromExisting({ fillExisting: false });
+  _reconcileSquads.length = 0; _reconcileLoose.length = 0;
+}
+
+// One entry per free slot in the team's squads, oldest squad first -- the order reinforcements fill
+// them in. Counting, filling and spawn placement all read this, so they cannot disagree about which
+// squad a given reinforcement is joining.
+function squadOpeningTargets(team, limit = Infinity) {
+  const targets = [];
+  for (const squad of squads.values()) {
+    if (squad.team !== team) continue;
+    let room = botSquadSize - squad.memberIds.size;
+    while (room-- > 0 && targets.length < limit) targets.push(squad);
+  }
+  return targets;
+}
+
+// Reinforcements top up understrength same-team squads before any new squad forms, so a drip of
+// auto-add waves doesn't shatter a team into two-bot squads. Returns how many join and the new sizes.
+function planSquadIntake(team, total) {
+  const joining = Math.min(squadOpeningTargets(team, total).length, total);
+  return { joining, sizes: partitionSquadSizes(total - joining, botSquadSize) };
+}
+
+// Slot `actors` into whichever same-team squads still have room, oldest squad first.
+function fillSquadOpenings(actors, team) {
+  const targets = squadOpeningTargets(team, actors.length);
+  const placed = Math.min(targets.length, actors.length);
+  for (let at = 0; at < placed; at++) {
+    const actor = actors[at], squad = targets[at];
+    squad.memberIds.add(actor.id);
+    actor.squadId = squad.id;
+    actor.squadRank = -1;
+  }
+  return placed;
+}
+
+// The formation's width has to fit the ground it is about to walk over: probe both flanks a little
+// ahead of the leader and collapse to a column when either lands off the walkable grid.
+const _corridorCell = { c: 0, r: 0 };
+function squadCorridorClear(pos, yaw, halfWidth) {
+  if (!navGrid || !(halfWidth > 0)) return true;
+  const fx = Math.sin(yaw), fz = Math.cos(yaw);
+  const rx = -fz, rz = fx;
+  for (const side of [-1, 1]) {
+    const x = pos.x + rx * side * halfWidth + fx * SQUAD_CORRIDOR_LOOKAHEAD;
+    const z = pos.z + rz * side * halfWidth + fz * SQUAD_CORRIDOR_LOOKAHEAD;
+    worldToCellInto(navGrid, x, z, _corridorCell);
+    if (!isWalkableCell(navGrid, _corridorCell.c, _corridorCell.r)) return false;
+  }
+  return true;
+}
+const SQUAD_CORRIDOR_LOOKAHEAD = 1.5;   // metres ahead of the leader the flank probes are taken
+
+// The leader chevron follows command, not class, and is a SEPARATE marker from actor.roleInsignia: a
+// promoted rifleman grows one alongside its diamond, a demoted bot loses it, and a spawned squad
+// leader shows its own chevron class-insignia plus this one while it's actually leading.
+function setSquadLeaderMark(actor, on) {
+  if (!actor) return;
+  if (on === !!actor.leaderInsignia) return;
+  if (on) { actor.leaderInsignia = buildRoleInsignia('chevron'); scene.add(actor.leaderInsignia); }
+  else { scene.remove(actor.leaderInsignia); actor.leaderInsignia = null; }
+}
+
+// One pass over the rosters, before any bot runs its FSM: prune, run succession, rank the living and
+// resolve each squad's formation. Members read the result; nothing here touches a bot's own state
+// machine, so a squad can only ever bias movement that was already idle.
+const _squadMembers = [];   // scratch: drained per squad, never retained
+function updateSquads(now) {
+  if (!squads.size) return;
+  for (const [id, squad] of squads) {
+    for (const memberId of squad.memberIds) {
+      if (botActorById.has(memberId)) continue;
+      squad.memberIds.delete(memberId);
+      squad.detachIds.delete(memberId);
+    }
+    if (!squad.memberIds.size) { disposeSquadDebug(squad); squads.delete(id); continue; }
+    if (squad.heirIds.length) squad.heirIds = squad.heirIds.filter((heirId) => squad.memberIds.has(heirId));
+    if (squad.detachLeaderId && !squad.detachIds.has(squad.detachLeaderId)) {
+      squad.detachLeaderId = squad.detachIds.values().next().value ?? null;
+    }
+    if (!squad.detachIds.size) { squad.detachSeq = 0; squad.detachLeaderId = null; }
+    _squadMembers.length = 0;
+    for (const memberId of squad.memberIds) {
+      const actor = botActorById.get(memberId);
+      _squadMembers.push({ id: actor.id, role: actor.role, alive: actor.entity.alive !== false });
+    }
+    const previousLeader = squad.leaderId;
+    const step = stepSquadSuccession({ leaderId: previousLeader, members: _squadMembers, now,
+      shockUntil: squad.successionShockUntil, heirIds: squad.heirIds });
+    squad.leaderId = step.leaderId;
+    squad.successionShockUntil = step.shockUntil;
+    squad.shocked = step.shocked;
+    if (step.changed && previousLeader !== squad.leaderId) {
+      setSquadLeaderMark(botActorById.get(previousLeader), false);
+      setSquadLeaderMark(botActorById.get(squad.leaderId), true);
+      squad.heirIds = squad.heirIds.filter((heirId) => heirId !== squad.leaderId);   // the heir has taken it
+    }
+    // Rank the living only, so a formation closes up over its casualties instead of leaving holes.
+    const living = _squadMembers.filter((m) => m.alive);
+    squad.liveCount = living.length;
+    const ranks = formationRanks(living, squad.leaderId);   // support falls in at the back, not on point
+    for (const m of _squadMembers) { const a = botActorById.get(m.id); if (a) a.squadRank = -1; }
+    for (let i = 0; i < ranks.length; i++) { const a = botActorById.get(ranks[i]); if (a) a.squadRank = i; }
+    squad.engaged = living.some((m) => botActorById.get(m.id)?.state !== BOT_PATROL);
+    const leader = squad.leaderId ? botActorById.get(squad.leaderId) : null;
+    squad.hasLeaderPos = !!leader && leader.entity.alive !== false;
+    if (!squad.hasLeaderPos) continue;   // leaderless (or mid-shock): members fall back to patrolling
+    botXZInto(leader.entity, squad.leaderPos);
+    // Travel heading, not aim yaw: the leader's gun sweeps every time it scans (A4), and hanging the
+    // formation off that would slide the whole squad sideways on every glance.
+    const heading = leader.patrolTravelHeading;
+    squad.leaderYaw = heading && Math.hypot(heading.x, heading.z) > 1e-4
+      ? Math.atan2(heading.x, heading.z) : (leader.entity.yaw ?? 0);
+    // Throttled: re-probing every frame makes the formation flap between wedge and column in a doorway.
+    if (now - squad.corridorAt >= botSquadSettings.corridorProbeMs) {
+      squad.corridorAt = now;
+      const wide = chooseFormationKind({ manual: botSquadFormation, engaged: squad.engaged, corridorClear: true });
+      squad.corridorClear = squadCorridorClear(squad.leaderPos, squad.leaderYaw,
+        formationHalfWidth(wide, squad.liveCount, botSquadSettings.spacing));
+    }
+    squad.kind = chooseFormationKind({ manual: botSquadFormation, engaged: squad.engaged, corridorClear: squad.corridorClear });
+  }
+  // Last, on the leader positions this pass just refreshed: consolidation lands next tick, which
+  // keeps it from rewriting the rosters the loop above is still reading.
+  reconcileSquads(now);
+}
+
+// A landed hit on someone else's bot. Lifetime counters live on the actor (same field names the
+// environment viewer's botPlayers records use), so they survive bind/commit untouched.
+function creditBotHit(attacker, victim) {
+  if (!attacker?.botActor || !victim || attacker.id === victim.id) return;
+  attacker.botActor.hitsLanded += 1;
+  povHitmarkerFor(attacker, victim); // health is already decremented, so fatal reads correctly
+}
+
+// `source` = {weaponId, cause}: what actually did the damage. The equipped weapon is not enough --
+// a knife hit lands while the rifle is still the equipped weapon.
+// Damage/death listeners. Several audio tracks want a "bot was hit" / "bot died" signal; they
+// subscribe here rather than each editing applyBotDamage, which is what keeps this the single
+// place that knows attacker, victim, weapon and fatality.
+const botDamageListeners = new Set();
+const botDeathListeners = new Set();
+const botReviveListeners = new Set();
+function onBotDamaged(fn) { botDamageListeners.add(fn); return () => botDamageListeners.delete(fn); }
+function onBotDied(fn) { botDeathListeners.add(fn); return () => botDeathListeners.delete(fn); }
+function onBotRevived(fn) { botReviveListeners.add(fn); return () => botReviveListeners.delete(fn); }
+function emitTo(set, label, evt) {
+  for (const fn of set) { try { fn(evt); } catch (err) { console.warn(`${label} listener`, err); } }
+}
+function emitBotDamaged(evt) { emitTo(botDamageListeners, 'botDamaged', evt); }
+function emitBotDied(evt) { emitTo(botDeathListeners, 'botDied', evt); }
+function emitBotRevived(evt) { emitTo(botReviveListeners, 'botRevived', evt); }
+
+// Mechanical damage/death audio. Every world query is an id lookup so bot-damage-audio.js stays
+// viewer-agnostic; the siren's life is the medic revive window, NOT how long the corpse survives
+// (cullDeadBots deliberately spares corpses that are still revivable, so the corpse outlives it).
+const botDamageEntity = id => botActorById.get(id)?.entity ?? null;
+const botDamageAudio = createBotDamageAudio({
+  enabled: () => botAudioEnabled,
+  sirenEnabled: () => botDeathBeacon,
+  playOneShot: (eventId, pos) => playAtCulled(eventId, pos, BOT_SFX.impact, 6),
+  // A kill is rare and high-value: gate it on concurrent death voices, not the 100ms rate window.
+  playPriorityOneShot: (eventId, pos) => playAtCulled(eventId, pos, BOT_SFX.distress, Infinity, BOT_SFX.distress.maxDistance * 1.2),
+  playLoop: (build, pos, opts) => playLoopCulled(build, pos, { profile: BOT_SFX.distress, ...opts }),
+  getPosition: id => botDamageEntity(id)?.capsule.start ?? null,
+  getHp01: (id) => {
+    const e = botDamageEntity(id);
+    return e ? Math.max(0, Math.min(1, e.health / (e.maxHealth ?? DUMMY_MAX_HEALTH))) : null;
+  },
+  isAlive: id => botDamageEntity(id)?.alive === true,
+  exists: id => botActorById.has(id),
+  getListenerPosition: () => camera.position,
+  getThreshold01: () => botHealthSettings.threshold01,
+  getReviveWindowMs: () => MEDIC_DEFAULTS.reviveWindowMs,
+  maxHp: DUMMY_MAX_HEALTH,
+  budget: combatAudioBudget,
+});
+onBotDamaged(evt => botDamageAudio.onDamaged({
+  id: evt.target?.id, position: evt.hitPoint, amount: evt.amount,
+  hpBefore01: evt.hpBefore01, hpAfter01: evt.hpAfter01, cause: evt.cause, fatal: evt.fatal,
+}));
+onBotDied(evt => botDamageAudio.onDied({
+  id: evt.target?.id, position: evt.target?.capsule?.start ?? null,
+  diedAt: evt.now, revivable: evt.revivable !== false,
+}));
+onBotRevived(evt => botDamageAudio.onRevived({ id: evt.target?.id }));
+
+// Casualty call-outs ride the death event, not the damage function. The victim's squad reports it
+// (nearest living teammate inside the call-out radius); the killer claims the kill on its own net.
+onBotDied((evt) => {
+  const target = evt?.target;
+  if (!botChatterEnabled || !target) return;
+  const now = evt.now ?? performance.now();
+  const witnesses = [];
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (!e || e.alive === false || e.id === target.id || e.team !== target.team) continue;
+    if (Math.hypot(e.capsule.start.x - target.capsule.start.x, e.capsule.start.z - target.capsule.start.z) > CONTACT_SHARE_RADIUS) continue;
+    witnesses.push({ entity: e, actor });
+  }
+  sayBestBotLine(witnesses, 'man_down', now, `man_down:${target.id}`);
+  const killer = evt.killer;
+  if (killer?.botActor && killer.alive !== false && killer.team !== target.team) {
+    sayBotLine(killer, killer.botActor, 'enemy_down', now, `enemy_down:${target.id}`);
+  }
+  // The victim's own reflex cry -- independent of witnesses/killer, always fires alongside them.
+  if (target.botActor) sayBotLine(target, target.botActor, 'death', now, `death:${target.id}`);
+});
+
+// Non-fatal damage: the victim's own reaction, plus the nearest witnessing teammate's callout.
+// Fatal hits are excluded here -- death is voiced entirely from onBotDied above, not this path.
+onBotDamaged((evt) => {
+  const target = evt?.target;
+  if (!botChatterEnabled || evt.fatal || !target?.botActor) return;
+  const now = evt.now ?? performance.now();
+  sayBotLine(target, target.botActor, evt.cause === 'blast' ? 'grenade_hit' : 'hit', now);
+  const witnesses = [];
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (!e || e.alive === false || e.id === target.id || e.team !== target.team) continue;
+    if (Math.hypot(e.capsule.start.x - target.capsule.start.x, e.capsule.start.z - target.capsule.start.z) > CONTACT_SHARE_RADIUS) continue;
+    witnesses.push({ entity: e, actor });
+  }
+  sayBestBotLine(witnesses, 'ally_hit', now, `ally_hit:${target.id}`);
+});
+
+function applyBotDamage(amount, hitPoint, target, now, source = null) {
+  if (!target?.alive) return;
+  spawnDummyHitImpact(hitPoint);
+  const woundFrom = source?.origin ?? (source?.attacker ?? bot)?.capsule?.start;
+  spawnHitBloodFx(hitPoint, hitNormalFor(target, hitPoint, source?.normal, woundFrom), target, woundFrom, amount);
+  const maxHp = target.maxHealth ?? DUMMY_MAX_HEALTH;
+  const hpBefore01 = Math.max(0, Math.min(1, (target.health ?? maxHp) / maxHp));
+  target.health = Math.max(0, (target.health ?? DUMMY_MAX_HEALTH) - Math.max(0, amount));
+  creditBotHit(bot, target);
+  recordBotDamage(target, amount, bot, now);
+  recordAllyHit(target, bot, now);
+  // The state trace is a sampled series of conditions; who shot whom is an instantaneous fact it
+  // structurally cannot hold. This is the one place that knows attacker, victim, weapon and whether
+  // the hit was fatal, so the event stream is written here rather than reconstructed later.
+  pushBotEvent(target.health <= 0 ? 'kill' : 'damage', target, amount, source, now);
+  emitBotDamaged({
+    target, amount, hitPoint, source, now, attacker: bot,
+    hpBefore01, hpAfter01: Math.max(0, Math.min(1, target.health / maxHp)),
+    cause: source?.cause ?? 'bullet',
+    fatal: target.health <= 0,
+  });
+  if (target.health > 0) beginBotHealthRetreat(target, bot?.id, now);
+  if (target.health <= 0) {
+    // Death knockback from the killing shot: direction = bullet travel (shooter eye → hit point),
+    // magnitude = the shooter's weapon knockback, reaction concentrated at the hit point. `bot` = shooter.
+    let death = null;
+    if (bot && hitPoint) {
+      const eye = eyePos(bot);
+      death = {
+        dir: { x: hitPoint.x - eye.x, y: hitPoint.y - eye.y, z: hitPoint.z - eye.z },
+        hitPoint: { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z },
+        knockback: weaponKnockback(getWeapon(bot.weapon)),
+      };
+    }
+    // `bot` = shooter: the frag lands on its team, attributed to what fired it.
+    killCombatBot(target, now, death, { killer: bot, weaponId: source?.weaponId ?? bot?.weapon ?? null, cause: source?.cause ?? 'bullet' });
+  }
+}
+
+function applyCombatDamage(amount, hitPoint, target = botTarget ?? dummy, now = botStateRecordFrameNow || performance.now(), source = null) {
+  if (!target?.alive) return;
+  // Combat bots are robots: onBotDamaged gives them a struck-metal tier instead of this flesh sample.
+  if (!target.botActor) playAtCulled('enemy_hit', hitPoint, BOT_SFX.impact, 8);
+  if (target.botActor) {
+    applyBotDamage(amount, hitPoint, target, now, source);
+    if (target.alive) return;
+  } else {
+    spawnDummyHitImpact(hitPoint);
+    const dummyFrom = source?.origin ?? (source?.attacker ?? bot)?.capsule?.start;
+    spawnHitBloodFx(hitPoint, hitNormalFor(target, hitPoint, source?.normal, dummyFrom), target, dummyFrom, amount);
+    target.hitFlashUntil = performance.now() + DUMMY_HIT_FLASH_MS;
+    if (dummyImmortal) { povHitmarkerFor(source?.attacker ?? bot, target); return; }
+    target.health = Math.max(0, target.health - Math.max(0, amount));
+    povHitmarkerFor(source?.attacker ?? bot, target);
+    if (target.health > 0) return;
+    target.alive = false;
+    invalidateTargetMemoryAfterDeath(target, now);
+    target.velocity.set(0, 0, 0);
+    target.mesh.rotation.z = Math.PI * 0.48;
+    target.material.color.setHex(dummyDeadColor);
+    target.material.emissive.setHex(0x000000);
+  }
+  if (target === botTarget) {
+    lastKnownTarget = null; lastKnownTargetMotion = null;
+    currentPath = [];
+    pathMode = null;
+    botState = BOT_PATROL;
+    recordBotStateChange(activeBotActor, botState, now);
+    clearMuzzleRecoveryEpisode();
+  }
+}
+
+function resetDummy() {
+  removeDummy();
+  spawnDummy();
+}
+
+function updateDummyHitImpacts(now) {
+  for (let i = dummyHitImpacts.length - 1; i >= 0; i--) {
+    const impact = dummyHitImpacts[i];
+    const progress = Math.min(1, (now - impact.startedAt) / impact.durationMs);
+    impact.mesh.scale.setScalar(1 + progress * 3.5);
+    impact.mesh.material.opacity = 1 - progress;
+    if (progress >= 1) {
+      releaseDummyHitImpact(impact);
+      dummyHitImpacts.splice(i, 1);
+    }
+  }
+}
+
+function updateDummyCombatVisual(now) {
+  for (const target of dummyTargets) {
+    if (!target.alive) {
+      target.material.color.setHex(dummyDeadColor);
+      target.material.emissive.setHex(0x000000);
+      continue;
+    }
+    target.material.color.setHex(dummyAliveColor);
+    target.material.emissive.setHex(now < target.hitFlashUntil ? 0x5b1b00 : 0x000000);
+  }
+}
+
+const DUMMY_SPEED = 3.5;
+const _dummyForward = new THREE.Vector3();
+const _dummySide = new THREE.Vector3();
+// WASD basis lifted from applyFPSControls's camera-forward/side extraction
+// (environment-viewer.html) -- not the function itself; the dummy owns its own capsule/
+// velocity via bot-entity.js, no fpsKeys/playerCollider globals involved.
+function planDummyRoamPath(target) {
+  if (!navGrid) return [];
+  const source = botXZ(target);
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const c = Math.floor(Math.random() * navGrid.cols);
+    const r = Math.floor(Math.random() * navGrid.rows);
+    if (!isWalkableCell(navGrid, c, r)) continue;
+    const goal = cellToWorld(navGrid, c, r);
+    if (Math.hypot(goal.x - source.x, goal.z - source.z) < navGrid.cellSize * 1.5) continue;
+    const path = requestPath(target, goal);
+    if (path.length) return path;
+  }
+  return [];
+}
+
+function updateDummyRoam(target, now) {
+  target.roamPath ??= [];
+  if (target.roamPath.length === 0) {
+    if ((target.roamRetryAt ?? 0) > now) {
+      target.velocity.x = 0; target.velocity.z = 0;
+      return;
+    }
+    if (dummyRoamPlansThisFrame >= DUMMY_ROAM_PLAN_BUDGET) {
+      target.velocity.x = 0; target.velocity.z = 0;
+      return;
+    }
+    dummyRoamPlansThisFrame++;
+    target.roamPath = planDummyRoamPath(target);
+    target.roamRetryAt = target.roamPath.length ? 0 : now + 350;
+  }
+  followPath(target, target.roamPath, DUMMY_ROAM_SPEED);
+}
+
+function updateDummy(dt, now = performance.now()) {
+  dummyRoamPlansThisFrame = 0;
+  camera.updateMatrixWorld();
+  _dummyForward.setFromMatrixColumn(camera.matrixWorld, 0);
+  _dummyForward.crossVectors(camera.up, _dummyForward).normalize();
+  _dummySide.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  let mx = 0, mz = 0;
+  // The fly camera owns WASD while it is active, so driving the view never walks the dummy too.
+  const driving = cameraMode !== CAMERA_FLY;
+  if (driving && dummyKeys['KeyW']) { mx += _dummyForward.x; mz += _dummyForward.z; }
+  if (driving && dummyKeys['KeyS']) { mx -= _dummyForward.x; mz -= _dummyForward.z; }
+  if (driving && dummyKeys['KeyA']) { mx -= _dummySide.x;    mz -= _dummySide.z; }
+  if (driving && dummyKeys['KeyD']) { mx += _dummySide.x;    mz += _dummySide.z; }
+  const len = Math.hypot(mx, mz);
+  for (const target of dummyTargets) {
+    if (!target.alive) continue;
+    const manuallyControlled = target === controlledDummy && len > 0;
+    if (manuallyControlled) {
+      target.roamPath = [];
+      target.velocity.x = (mx / len) * DUMMY_SPEED;
+      target.velocity.z = (mz / len) * DUMMY_SPEED;
+    } else if (dummyRoamEnabled) {
+      updateDummyRoam(target, now);
+    } else {
+      target.velocity.x = 0; target.velocity.z = 0;
+    }
+    // forensics rides along so dummy tunnelling is captured too; null under ?forensics=0, which
+    // stepBotPhysics treats exactly like the option never being passed.
+    stepBotPhysics(target, dt, { mapCollider, rescueHeightAt: groundHeight, forensics: botForensics });
+    target.mesh.position.copy(target.capsule.start.clone().add(target.capsule.end).multiplyScalar(0.5));
+  }
+}
+
+// Horizontal vision cone: is `toPos` within the bot's FOV, centered on `yaw` (0 = +Z)? 360 = no blind spot.
+function withinBotFov(yaw, fromPos, toPos) {
+  // A6: an alert tier may only WIDEN the cone (max), never narrow the slider; lags the tier by one frame.
+  const deg = Math.max(botBehaviorSettings.fovDegrees, activeBotActor?.tierPerception?.fovDegrees ?? 0);
+  if (deg >= 360) return true;
+  const dx = toPos.x - fromPos.x, dz = toPos.z - fromPos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return true;
+  const cosToTarget = (Math.sin(yaw) * dx + Math.cos(yaw) * dz) / len;
+  return cosToTarget >= Math.cos(THREE.MathUtils.degToRad(deg) * 0.5);
+}
+
+const _selOrigin = new THREE.Vector3();
+const _selTargetEye = new THREE.Vector3();
+const _selCandidates = [];  // reusable candidate buffer (parallel arrays) -- nearest-first until the
+const _selCandidateDistSq = [];  // risk sort below reorders it in place for the raycast-and-pick loop
+const _selRisk = [];
+const TARGET_SCAN_STRIDE = 4; // frames between full candidate re-scans per bot
+const TARGET_STICK_RISK_MARGIN = 1.3; // newcomer needs >=30% more risk to steal a visible target
+// Risk-ratio stickiness alone still lets two similarly-dangerous enemies flip the pick back and forth
+// as their scores cross that 30% line. This floor blocks a steal outright for a beat after acquisition,
+// same as a human staying on the guy they already have sighted instead of flinching to the next one.
+const TARGET_COMMIT_MIN_MS = 1500;
+// Risk = proximity x danger. Danger bonuses ramp down linearly over the report's own alertWindowMs
+// instead of cliffing to zero at expiry (a shooter who fires once and hides shouldn't stay maximally
+// dangerous for the full window, and a target locked mid-commit-dwell shouldn't silently demote).
+const TARGET_DANGER_SELF_BONUS = 2.5;  // this candidate is shooting ME (latestSelfThreat.attackerId)
+const TARGET_DANGER_ALLY_BONUS = 1.2;  // this candidate is shooting a teammate near me (latestAllyHitNear)
+// Ally-threat is read off a SHARED report ring, so every nearby teammate sees the same shooter as
+// dangerous at once and can converge on it while other visible enemies go unanswered. Self-threat
+// doesn't need this: latestSelfThreat is already self-filtered, so it can't cause a dogpile.
+const TARGET_PILE_ON_STEP = 0.25;   // ally-danger discount per squadmate already committed to that attacker
+const TARGET_PILE_ON_FLOOR = 0.4;   // never discount below this -- someone still has to answer the shooter
+function dangerDecay(ageMs, windowMs) { return Math.max(0, 1 - ageMs / windowMs); }
+
+function selectBotTarget() {
+  const live = frameEnemyList(bot?.team);
+  if (!live.length) { botTarget = null; return; }
+  if (!bot || bot.alive === false) {
+    botTarget = botTarget?.alive ? botTarget : null; // a revived bot re-acquires, it doesn't inherit
+    return;
+  }
+  // Staggered acquisition: full re-scan every 4th frame per bot (the confirm ray below still runs
+  // every frame for the current target); a dead target forces a scan now so nobody stares at a corpse.
+  // A6: an alert tier may only SHORTEN the stride (min), so an alerted bot re-acquires faster.
+  const scanDue = ((botFrameCounter + (activeBotActor?.scanPhase ?? 0)) %
+    Math.min(TARGET_SCAN_STRIDE, activeBotActor?.tierPerception?.scanStride ?? TARGET_SCAN_STRIDE)) === 0;
+  if (!scanDue && botTarget?.alive) return; // no target now counts as "scan now", same as a dead one
+  const origin = eyePosInto(bot, _selOrigin);
+  const sightSq = botSightDistance() ** 2;
+  let count = 0;
+  let firstLive = null;
+  for (const target of live) {
+    if (target.alive === false) continue; // died earlier this frame; the list is frame-scoped
+    if (!firstLive) firstLive = target;
+    const targetEye = eyePosInto(target, _selTargetEye);
+    const dx = targetEye.x - origin.x, dy = targetEye.y - origin.y, dz = targetEye.z - origin.z;
+    const distanceSq = dx * dx + dy * dy + dz * dz;
+    if (distanceSq < 1e-8 || distanceSq > sightSq) continue;
+    // Blind spot: an enemy outside the FOV cone can't be freshly acquired (parallels the LOS gate below).
+    if (!withinBotFov(bot.yaw, origin, targetEye)) continue;
+    if (USE_FIELD_LOS_PREFILTER && fieldSaysHidden(origin.x, origin.z, targetEye.x, targetEye.z)) continue;
+    _selCandidates[count] = target; _selCandidateDistSq[count] = distanceSq; count++;
+  }
+  if (activeBotActor) activeBotActor.enemyCandidates = count; // in-cone/in-range enemies this scan, for the POV HUD
+  // Insertion-sort nearest-first so the ray loop can stop at the first clear line of sight.
+  for (let i = 1; i < count; i++) {
+    const target = _selCandidates[i], distanceSq = _selCandidateDistSq[i];
+    let j = i - 1;
+    while (j >= 0 && _selCandidateDistSq[j] > distanceSq) { _selCandidateDistSq[j + 1] = _selCandidateDistSq[j]; _selCandidates[j + 1] = _selCandidates[j]; j--; }
+    _selCandidateDistSq[j + 1] = distanceSq; _selCandidates[j + 1] = target;
+  }
+  // Candidate identities survive the scan (nearest-first, entity refs guarded by .alive at read
+  // time -- same retention convention as actor.target). The single-slot pick below still discards
+  // all but one; this list is what the POV HUD marks, and what a future contact memory feeds on.
+  if (activeBotActor) {
+    const perceived = activeBotActor.perceivedEnemies ??= [];
+    const kept = Math.min(count, PERCEIVED_ENEMY_MAX);
+    for (let i = 0; i < kept; i++) {
+      const entry = perceived[i] ??= { entity: null, distSq: 0 };
+      entry.entity = _selCandidates[i];
+      entry.distSq = _selCandidateDistSq[i];
+    }
+    perceived.length = kept;
+  }
+  const now = botStateRecordFrameNow || performance.now();
+  // Score every candidate by risk (proximity x danger) and reorder the shared buffers in place,
+  // highest risk first, so the raycast-and-pick loop below finds the most dangerous VISIBLE enemy
+  // instead of the nearest one. Order no longer matters to anything above this point -- the
+  // nearest-first perceivedEnemies snapshot was already taken.
+  const selfThreat = latestSelfThreat(recentAllyHits, bot, now);
+  const allyThreat = latestAllyHitNear(bot, now);
+  let allyPileOn = 0;
+  if (allyThreat && allyThreat.attackerId != null) {
+    for (const ally of squadMembersNear(bot, SUPPORT_RADIUS)) {
+      if (ally.id !== bot.id && ally.target?.id === allyThreat.attackerId) allyPileOn++;
+    }
+  }
+  const sightDist = Math.sqrt(sightSq);
+  for (let i = 0; i < count; i++) {
+    const id = _selCandidates[i].id;
+    const proximity = sightDist / (sightDist + Math.sqrt(_selCandidateDistSq[i]));
+    let danger = 1;
+    if (selfThreat && id === selfThreat.attackerId) {
+      danger += TARGET_DANGER_SELF_BONUS * dangerDecay(now - selfThreat.at, alertWindowMs(selfThreat));
+    } else if (allyThreat && id === allyThreat.attackerId) {
+      const pileOnFactor = Math.max(TARGET_PILE_ON_FLOOR, 1 - allyPileOn * TARGET_PILE_ON_STEP);
+      danger += TARGET_DANGER_ALLY_BONUS * dangerDecay(now - allyThreat.at, alertWindowMs(allyThreat)) * pileOnFactor;
+    }
+    _selRisk[i] = proximity * danger;
+  }
+  for (let i = 1; i < count; i++) {
+    const target = _selCandidates[i], distanceSq = _selCandidateDistSq[i], risk = _selRisk[i];
+    let j = i - 1;
+    while (j >= 0 && _selRisk[j] < risk) {
+      _selCandidates[j + 1] = _selCandidates[j]; _selCandidateDistSq[j + 1] = _selCandidateDistSq[j]; _selRisk[j + 1] = _selRisk[j]; j--;
+    }
+    _selCandidates[j + 1] = target; _selCandidateDistSq[j + 1] = distanceSq; _selRisk[j + 1] = risk;
+  }
+  let best = null, bestRisk = -Infinity;
+  for (let i = 0; i < count; i++) {
+    const target = _selCandidates[i];
+    const targetEye = eyePosInto(target, _selTargetEye);
+    const distance = Math.sqrt(_selCandidateDistSq[i]);
+    const dirX = (targetEye.x - origin.x) / distance, dirY = (targetEye.y - origin.y) / distance, dirZ = (targetEye.z - origin.z) / distance;
+    if (mapCollider.raycast([origin.x, origin.y, origin.z], [dirX, dirY, dirZ], distance - 0.02)) continue;
+    best = target;
+    bestRisk = _selRisk[i];
+    break;
+  }
+  // Stickiness: stealing the slot resets the paid A10 acquisition, so a marginally riskier enemy
+  // must not take it every scan. Keep the incumbent unless it lost its own line of sight or the
+  // newcomer is decisively (>=30%) riskier AND the commit dwell on the incumbent has expired.
+  if (best && best !== botTarget && botTarget?.alive) {
+    const committedAt = activeBotActor?.targetCommittedAt;
+    const dwellHolding = committedAt != null && now - committedAt < TARGET_COMMIT_MIN_MS;
+    for (let i = 0; i < count; i++) {
+      if (_selCandidates[i] !== botTarget) continue;
+      if (!dwellHolding && bestRisk > TARGET_STICK_RISK_MARGIN * _selRisk[i]) break;
+      const targetEye = eyePosInto(botTarget, _selTargetEye);
+      const distance = Math.sqrt(_selCandidateDistSq[i]);
+      const dirX = (targetEye.x - origin.x) / distance, dirY = (targetEye.y - origin.y) / distance, dirZ = (targetEye.z - origin.z) / distance;
+      if (!mapCollider.raycast([origin.x, origin.y, origin.z], [dirX, dirY, dirZ], distance - 0.02)) best = botTarget;
+      break;
+    }
+  }
+  for (let i = 0; i < count; i++) _selCandidates[i] = null; // drop entity refs between frames
+  // Keep an occluded target so the existing investigate/chase path can use its last position, but
+  // never invent one. The old `: firstLive` tail handed every bot that failed acquisition the same
+  // array-order enemy (lowest spawn id), so a whole team converged on one bot ~46 m away and sat in
+  // SEEK while enemies stood beside them. No target is the honest answer; the ladder already maps it
+  // to last-known/patrol, and the !scanDue early-out below now lets a targetless bot re-scan at once.
+  // Retention is bounded. Keeping an occluded target lets investigate/chase use its last position,
+  // but only the DEAD case was covered before: a bot could hold a living target it had not seen for
+  // minutes and never look at the enemy beside it (30.6% of target switches in the 07-29 trace were
+  // onto an unseen target whose predecessor was still alive). Dropping it does NOT end the search --
+  // `lastKnownTarget` is separate and still drives SEEK -- it only frees the bot to acquire someone
+  // it can actually see.
+  const unseen = activeBotActor?.targetUnseenSince;
+  const stale = unseen != null && now - unseen > TARGET_RETAIN_MAX_MS;
+  if (best) botDiag.targetPickBest++;
+  else if (botTarget?.alive && !stale) botDiag.targetPickRetained++;
+  else if (botTarget?.alive && stale) botDiag.targetRetentionExpired++;
+  else if (firstLive) botDiag.targetPickFallbackSuppressed++; // where the old bug used to fire
+  else botDiag.targetPickNone++;
+  const keep = botTarget?.alive && !stale ? botTarget : null;
+  const next = best || keep;
+  if (next !== botTarget && activeBotActor) {
+    activeBotActor.targetUnseenSince = null;  // new target, fresh clock
+    activeBotActor.targetCommittedAt = now; // starts this target's dwell
+  }
+  botTarget = next;
+}
+
+function randomDummySpawnPoints(count) {
+  if (!navGrid) return [];
+  const candidates = [];
+  for (let r = 0; r < navGrid.rows; r++) for (let c = 0; c < navGrid.cols; c++) {
+    if (isWalkableCell(navGrid, c, r)) candidates.push(cellToWorld(navGrid, c, r));
+  }
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  const positions = [];
+  const minSeparationSq = 0.95 * 0.95;
+  const botPosition = bot ? botXZ(bot) : botSpawnPoint;
+  for (const point of candidates) {
+    if ((point.x - botPosition.x) ** 2 + (point.z - botPosition.z) ** 2 < minSeparationSq) continue;
+    if (positions.every(other => (point.x - other.x) ** 2 + (point.z - other.z) ** 2 >= minSeparationSq)) positions.push(point);
+    if (positions.length >= count) break;
+  }
+  return positions;
+}
+
+function spawnRandomDummies(count) {
+  removeDummy();
+  const positions = randomDummySpawnPoints(count);
+  for (const point of positions) createDummyTarget({ x: point.x, y: groundHeight(point.x, point.z), z: point.z });
+  controlledDummy = dummyTargets[0] || null;
+  dummy = controlledDummy;
+  return positions.length;
+}
+
+// ===================== bot FSM: patrol/seek movement (Phase 2) + aim/fire (Phase 1) =====================
+import {
+  BOT_PATROL, BOT_SEEK, BOT_PURSUE, BOT_FLEE, BOT_HEAL, BOT_KNIFE, BOT_AIM, BOT_FIRE, BOT_COVER_MOVE, BOT_COVER_HOLD, SENSE_RANGE, AIM_TOLERANCE_RAD, TURN_RATE_RAD_S,
+  chooseBotStateName, aimAnglesTo, aimError, slewAngle,
+  stepVisibleDebounce, resetVisibleDebounce, healUnsafeBand,
+  spreadAnchor, spreadAnchorRadius, botSeedFromId, SEEK_SPREAD_RING_M, pursueBreakThreshold,
+  CLOSE_THREAT_RADIUS, shouldTopOffReload,
+} from './bot-activity.js';
+import { SIDEARM_DRAW_MS, SIDEARM_LULL_MS, PISTOL_IDS, pickSidearmId, chooseWeaponSlot, outOfAllAmmo } from './bot-sidearm.js';
+import { resolveHitscan, rayCapsuleHit } from './combat.js';
+import { getWeapon } from './weapons.js';
+import { buildNavGrid, findPath, smoothPath, lineWalkable, advancePath, floodFill, floodPath, isWalkableCell, worldToCell, cellToWorld, worldToCellInto, cellToWorldInto, regionAt } from './nav-grid.js';
+import { investigationRadius, interceptPoint, pincerOffsets, standoffPoint } from './bot-pursuit.js';
+import {
+  AIM_DEFAULTS, reactionDelayMs, spreadHalfAngleRad, bloomAfterShot, decayBloomDeg, dispersedDirection,
+} from './bot-aim.js';
+import { buildSightGrid, buildLazyVisibilityField, cellIndexAt } from './nav-visibility.js';
+import { buildCornerMap } from './nav-corners.js';
+import {
+  createPeekCycle, stepPeekCycle, peekPosition, peekAiming, peekExposed, approachXZ, PEEK_APPROACH_SPEED, peekPhaseOffsetS,
+  coverCornerValid as coverCornerValidPure, pickCoverCorner,
+  stepCoverGate, noteCoverSwitch, coverSwitchAllowed, coverInBand, COVER_PEEK_MISS_LIMIT,
+  coverHoldExitReason,
+  coverSeatBand, coverCommitTimedOut, createCoverBlacklist, blacklistCover, coverBlacklisted,
+  fleePathExposureFromParents, fleeCandidateScore,
+} from './bot-cover.js';
+import {
+  createDangerField, clearDangerField, recordDanger, dangerPenalty, dangerBlocksCover, hasDanger, cellNeighbors8,
+  DANGER_DEATH_WEIGHT, DANGER_HIT_WEIGHT, DANGER_FLEE_SCALE, DANGER_PATROL_SCALE, DANGER_PACK_SCALE,
+} from './bot-danger.js';
+import {
+  latestAlertNear, stepAlertHold, alertWindowMs, alertEscalation, tierForScore, exposedToThreat,
+  latestNearMiss, latestSelfThreat, shotMissDistance, NEAR_MISS_RADIUS, NEAR_MISS_WINDOW_MS, NEAR_MISS_KIND, alertTierChannels,
+  SEMI_ALERT_SHARE_RADIUS, ESCALATION_RADIUS, SEMI_ALERT_WARY_MS,
+  ALERT_DEFENSIVE_SCORE, ALERT_PUSH_SCORE, SUPPORT_GROUP_MIN, SUPPORT_RADIUS,
+  stepAttention, attentionSweep,
+  recordContact, latestContactNear, CONTACT_SHARE_RADIUS,
+  patrolScanOffset, sweepPhaseMs, perceptionForTier,
+} from './bot-alert.js';
+
+// currentBotWeapon() follows the selected bot loadout.
+const EYE_LIFT = 0.85; // fraction up the capsule used as eye/muzzle height, both bot and dummy
+let botState = BOT_PATROL;
+let botTargetVisible = false;
+let botTargetDistance = Infinity; // 3D eye-to-eye distance the ladder actually branches on
+let botTargetVisGate = '-';       // which gate resolved sight: y=visible w=wall f=outside FOV r=beyond sight -=no target
+let lastShotAt = -Infinity;
+let shotSeq = 0;
+let botAimTarget = { yaw: 0, pitch: 0 };
+let botAimPoint = new THREE.Vector3();
+let botHasAimPoint = false;
+const tracers = []; // { line, expireAt }
+let botAimIntegrationTest = null;
+const bullets = []; // visible shot meshes that travel along the already-resolved hitscan path
+const botBulletGeometry = new THREE.SphereGeometry(0.055, 8, 6);
+const botBulletMaterial = new THREE.MeshBasicMaterial({ color: 0xffc247 });
+const botHitBulletMaterial = new THREE.MeshBasicMaterial({ color: 0xff5252 });
+const BOT_BULLET_SPEED = 55;
+const BOT_BLOCKED_SHOT_THRESHOLD = 2;
+const BOT_RECOVERY_CELL_RADIUS = 2;
+const MUZZLE_RECOVERY_CONFIRM_CAP = 3; // max confirming raycasts on field-picked recovery cells before giving up
+const USE_FIELD_LOS_PREFILTER = true; // skip LOS raycasts when the baked field says hidden; pure prune (the field errs toward visible)
+const INVESTIGATE_LOS_BONUS = 0.25; // frontier-ordering bump for cells that can see the last-known cell
+
+// Trustworthy "hidden" verdict from the baked field: false unless both points quantize to
+// walkable cells (the field errs toward visible; unwalkable rows would fake occlusion).
+function fieldSaysHidden(ax, az, bx, bz) {
+  if (!visField || !navGrid) return false;
+  const a = cellIndexAt(navGrid, ax, az), b = cellIndexAt(navGrid, bx, bz);
+  if (a === -1 || b === -1 || navGrid.cells[a] !== 1 || navGrid.cells[b] !== 1) return false;
+  return !visField.canSee(a, b);
+}
+let botBlockedShotStreak = 0;
+let botMissStreak = 0; // consecutive fired shots that didn't hit the target; drives pursue-on-miss
+const MISS_STREAK_SIGHT_RESET_MS = 1500; // sight lost this long: the streak is about an engagement that ended
+const KNIFE_COMMIT_MAX_MS = 8000;        // longest a knife charge may run before it is abandoned
+const KNIFE_COMMIT_COOLDOWN_MS = 5000;   // and how long before the same bot may commit again
+const SQUAD_HOLD_MAX_MS = 12000;         // longest a follower holds a slot before doing its own thing
+const TARGET_RETAIN_MAX_MS = 6000;       // longest an unseen but living target is held before re-acquiring
+let botCombatStandoff = 5.0; // per-tick weapon-derived preferred fighting distance (see botWeaponStandoff)
+let botMuzzleRecoveryTarget = null;
+let botRecoveryIssueActive = false;
+let botMuzzleRecoveryVisitedCells = new Set();
+let botRecoveryDebugEnabled = true;
+const botRecoveryDebug = new THREE.Group();
+botRecoveryDebug.name = 'botRecoveryDebug';
+const botRecoveryPathGeometry = new THREE.BufferGeometry();
+const botRecoveryMuzzleGeometry = new THREE.BufferGeometry();
+const botRecoveryVisitedGeometry = new THREE.BufferGeometry();
+const botRecoveryPathLine = new THREE.Line(botRecoveryPathGeometry, new THREE.LineBasicMaterial({ color: 0xff9800 }));
+const botRecoveryMuzzleLine = new THREE.Line(botRecoveryMuzzleGeometry, new THREE.LineBasicMaterial({ color: 0xff4081 }));
+const botRecoveryMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.13, 0.21, 16),
+  new THREE.MeshBasicMaterial({ color: 0xff9800, side: THREE.DoubleSide }),
+);
+botRecoveryMarker.rotation.x = -Math.PI / 2;
+const botRecoveryVisitedPoints = new THREE.Points(botRecoveryVisitedGeometry, new THREE.PointsMaterial({ color: 0xff7043, size: 0.16, transparent: true, opacity: 0.8 }));
+botRecoveryPathLine.visible = false;
+botRecoveryMuzzleLine.visible = false;
+botRecoveryMarker.visible = false;
+botRecoveryVisitedPoints.visible = false;
+botRecoveryDebug.add(botRecoveryPathLine, botRecoveryMuzzleLine, botRecoveryMarker, botRecoveryVisitedPoints);
+scene.add(botRecoveryDebug);
+
+let botBehaviorDebugEnabled = false;
+const botBehaviorDebug = new THREE.Group();
+const botBehaviorGoalGeometry = new THREE.BufferGeometry();
+const botBehaviorGoalLine = new THREE.Line(botBehaviorGoalGeometry, new THREE.LineBasicMaterial({ color: 0x4fc3f7 }));
+const botBehaviorGoalMarker = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.24, 16), new THREE.MeshBasicMaterial({ color: 0x4fc3f7, side: THREE.DoubleSide }));
+botBehaviorGoalMarker.rotation.x = -Math.PI / 2;
+botBehaviorDebug.add(botBehaviorGoalLine, botBehaviorGoalMarker);
+botBehaviorDebug.visible = false;
+scene.add(botBehaviorDebug);
+function createBotGoalDebug() {
+  const group = new THREE.Group();
+  const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x4fc3f7, transparent: true, opacity: 0.95, depthTest: false }));
+  const marker = new THREE.Mesh(new THREE.RingGeometry(0.15, 0.25, 20), new THREE.MeshBasicMaterial({ color: 0x4fc3f7, side: THREE.DoubleSide, depthTest: false }));
+  marker.rotation.x = -Math.PI / 2;
+  group.add(line, marker);
+  group.visible = false;
+  group.renderOrder = 7;
+  return { group, line, marker };
+}
+// Built on first display (M6): only the Alt-click focus / diagnostic bot ever shows these.
+function ensureBotGoalDebug(actor) {
+  if (!actor.goalDebug) { actor.goalDebug = createBotGoalDebug(); scene.add(actor.goalDebug.group); }
+  return actor.goalDebug;
+}
+
+function botGoalDebugColor(actor) {
+  if (actor.healRequested) return 0x5ee7a4; // health retreat
+  if (actor.state === BOT_FLEE) return 0xab47bc;
+  if (actor.state === BOT_SEEK) return 0xffa726;
+  if (actor.pathMode === 'patrolReentry') return 0x90a4ae;
+  return 0x4fc3f7; // pursue
+}
+
+function updateAllBotGoalDebug() {
+  // The legacy helper only represented the currently bound bot. Per-actor geometry lets a
+  // chase be inspected as a system: every moving bot shows its own current goal and path.
+  botBehaviorDebug.visible = false;
+  const diagnosticActor = botDebugFocusActor || activeBotActor;
+  for (const actor of botActors) {
+    const goal = actor.combatMoveGoal;
+    const active = botBehaviorDebugEnabled && actor === diagnosticActor && actor.entity.alive !== false && !!goal &&
+      (actor.state === BOT_PURSUE || actor.state === BOT_FLEE || actor.state === BOT_SEEK || actor.pathMode === 'patrolReentry');
+    const debug = active ? ensureBotGoalDebug(actor) : actor.goalDebug;
+    if (!debug) continue;
+    debug.group.visible = active;
+    if (!active) continue;
+    const color = botGoalDebugColor(actor);
+    debug.line.material.color.setHex(color);
+    debug.marker.material.color.setHex(color);
+    const start = botXZ(actor.entity);
+    const points = [new THREE.Vector3(start.x, 0.075, start.z), ...(actor.path || []).map((p) => new THREE.Vector3(p.x, 0.075, p.z))];
+    const last = points[points.length - 1];
+    if (!last || Math.hypot(last.x - goal.x, last.z - goal.z) > 1e-4) points.push(new THREE.Vector3(goal.x, 0.075, goal.z));
+    debug.line.geometry.setFromPoints(points);
+    debug.marker.position.set(goal.x, decalY(goal.x, goal.z, 0.085), goal.z);
+  }
+}
+
+// Hit-volume overlay: draws what a bullet can actually hit against what is actually drawn.
+// Built from combatCapsuleFor and the live rig head, never from constants, so it cannot drift from
+// the real hit test. Green = hittable volume, magenta = rendered head, amber = capsule top plane.
+let botHitVolumeDebugEnabled = false;
+const _hitDbgCap = { p: [0, 0, 0], r: 0, h: 0 };
+const _hitDbgBox = new THREE.Box3();
+const _hitDbgSize = new THREE.Vector3();
+const botHitVolumeCapMat = new THREE.MeshBasicMaterial({ color: 0x30d158, wireframe: true, transparent: true, opacity: 0.55, depthTest: false });
+const botHitVolumeHeadMat = new THREE.MeshBasicMaterial({ color: 0xff4fd8, wireframe: true, transparent: true, opacity: 0.95, depthTest: false });
+const botHitVolumeTopMat = new THREE.MeshBasicMaterial({ color: 0xffb020, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthTest: false });
+const botHitVolumeTopGeometry = new THREE.RingGeometry(0.02, 0.34, 24);
+
+// Capsule geometry cannot be produced by scaling a unit capsule: non-uniform scale turns the
+// hemisphere caps into ellipsoids, and the cap is the exact thing this overlay exists to measure.
+// Built per (radius, shaft) instead and shared — stance quantizes to 2 cm, so bots in the same
+// posture reuse one geometry and the cache stays a handful of entries.
+const botHitVolumeGeoCache = new Map();
+function hitVolumeCapsuleGeometry(r, h) {
+  const key = `${r.toFixed(3)}|${(Math.round(h / 0.02) * 0.02).toFixed(2)}`;
+  let geo = botHitVolumeGeoCache.get(key);
+  if (!geo) { geo = new THREE.CapsuleGeometry(r, Math.round(h / 0.02) * 0.02, 6, 16); botHitVolumeGeoCache.set(key, geo); }
+  return geo;
+}
+
+function createBotHitVolumeDebug() {
+  const group = new THREE.Group();
+  const capsule = new THREE.Mesh(hitVolumeCapsuleGeometry(0.3, 1.2), botHitVolumeCapMat);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), botHitVolumeHeadMat);   // a box DOES scale correctly
+  const top = new THREE.Mesh(botHitVolumeTopGeometry, botHitVolumeTopMat);
+  top.rotation.x = -Math.PI / 2;
+  group.add(capsule, head, top);
+  group.visible = false;
+  group.renderOrder = 9;
+  return { group, capsule, head, top };
+}
+// Lazy like ensureBotGoalDebug (M6): only bots actually being inspected allocate.
+function ensureBotHitVolumeDebug(actor) {
+  if (!actor.hitVolumeDebug) { actor.hitVolumeDebug = createBotHitVolumeDebug(); scene.add(actor.hitVolumeDebug.group); }
+  return actor.hitVolumeDebug;
+}
+
+function updateAllBotHitVolumeDebug() {
+  for (const actor of botActors) {
+    const active = botHitVolumeDebugEnabled && actor.entity.alive !== false;
+    const debug = active ? ensureBotHitVolumeDebug(actor) : actor.hitVolumeDebug;
+    if (!debug) continue;
+    debug.group.visible = active;
+    if (!active) continue;
+    // Same descriptor resolveHitscan is handed, so the overlay is the hit volume by construction.
+    projCapsuleInto(actor.entity, _hitDbgCap);   // scratch twin of combatCapsuleFor (:10441)
+    const r = _hitDbgCap.r, h = _hitDbgCap.h;
+    debug.capsule.position.set(_hitDbgCap.p[0], _hitDbgCap.p[1], _hitDbgCap.p[2]);
+    debug.capsule.geometry = hitVolumeCapsuleGeometry(r, h);   // shared + cached; never disposed here
+    // The ring marks the TRUE top plane from unquantized numbers, so the measurement stays exact
+    // even where the wireframe shaft is rounded to the 2 cm geometry bucket.
+    debug.top.position.set(_hitDbgCap.p[0], _hitDbgCap.p[1] + h * 0.5 + r, _hitDbgCap.p[2]);
+    // Rendered head, read off the rig rather than recomputed: its own geometry bounds in world space.
+    const headPart = actor.body?.joints?.head;
+    debug.head.visible = !!headPart;
+    if (!headPart) continue;
+    if (!headPart.geometry.boundingBox) headPart.geometry.computeBoundingBox();
+    headPart.updateWorldMatrix(true, false);
+    _hitDbgBox.copy(headPart.geometry.boundingBox).applyMatrix4(headPart.matrixWorld);
+    _hitDbgBox.getSize(_hitDbgSize);
+    _hitDbgBox.getCenter(debug.head.position);
+    debug.head.scale.copy(_hitDbgSize);
+  }
+}
+
+// One-shot console report: the numbers the plan's geometry table asserts, measured off a live bot.
+function reportBotHitVolume(actor = botDebugFocusActor || activeBotActor) {
+  if (!actor) { console.warn('[hit volume] no bot selected'); return null; }
+  projCapsuleInto(actor.entity, _hitDbgCap);
+  const feetY = actor.entity.capsule.start.y - actor.entity.capsule.radius;
+  const capTop = _hitDbgCap.p[1] + _hitDbgCap.h * 0.5 + _hitDbgCap.r;
+  const headPart = actor.body?.joints?.head;
+  let headBottom = null, headTop = null, headAnchor = null;
+  if (headPart) {
+    if (!headPart.geometry.boundingBox) headPart.geometry.computeBoundingBox();
+    headPart.updateWorldMatrix(true, false);
+    _hitDbgBox.copy(headPart.geometry.boundingBox).applyMatrix4(headPart.matrixWorld);
+    headBottom = _hitDbgBox.min.y - feetY;
+    headTop = _hitDbgBox.max.y - feetY;
+    headAnchor = headPart.position.y - feetY;
+  }
+  const report = {
+    bot: actor.id,
+    hitCapsuleTop: +(capTop - feetY).toFixed(3),
+    hitCapsuleRadius: +_hitDbgCap.r.toFixed(3),
+    eye: +(eyePos(actor.entity).y - feetY).toFixed(3),
+    headAnchor: headAnchor == null ? null : +headAnchor.toFixed(3),
+    headBottom: headBottom == null ? null : +headBottom.toFixed(3),
+    headTop: headTop == null ? null : +headTop.toFixed(3),
+    headAboveHitVolume: headTop == null ? null : +(headTop - (capTop - feetY)).toFixed(3),
+  };
+  console.log('[hit volume] metres above feet:', report);
+  return report;
+}
+window.reportBotHitVolume = reportBotHitVolume;
+
+
+function createBotInvestigationDebug() {
+  const group = new THREE.Group();
+  const lastSeen = new THREE.Mesh(
+    new THREE.RingGeometry(0.12, 0.22, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffee58, side: THREE.DoubleSide, depthTest: false }),
+  );
+  lastSeen.rotation.x = -Math.PI / 2;
+  const region = new THREE.Mesh(
+    new THREE.RingGeometry(0.985, 1, 64),
+    new THREE.MeshBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthTest: false }),
+  );
+  region.rotation.x = -Math.PI / 2;
+  const motion = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffee58, depthTest: false }));
+  const cells = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0xce93d8, size: 0.075, transparent: true, opacity: 0.9, depthTest: false }));
+  const canvas = document.createElement('canvas');
+  canvas.width = 320; canvas.height = 80;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+  label.scale.set(2.6, 0.65, 1);
+  group.add(region, cells, lastSeen, motion, label);
+  group.visible = false;
+  group.renderOrder = 8;
+  return { group, lastSeen, region, motion, cells, label, canvas, texture, cellRadiusBucket: -1 };
+}
+// Lazy like ensureBotGoalDebug -- this one also allocates a 320x80 canvas + CanvasTexture (M6).
+function ensureBotInvestigationDebug(actor) {
+  if (!actor.investigationDebug) { actor.investigationDebug = createBotInvestigationDebug(); scene.add(actor.investigationDebug.group); }
+  return actor.investigationDebug;
+}
+
+function writeInvestigationLabel(debug, text) {
+  const context = debug.canvas.getContext('2d');
+  context.clearRect(0, 0, debug.canvas.width, debug.canvas.height);
+  context.fillStyle = 'rgba(11, 17, 24, 0.88)';
+  context.fillRect(0, 8, debug.canvas.width, 64);
+  context.strokeStyle = '#40c4ff';
+  context.lineWidth = 2;
+  context.strokeRect(1, 9, debug.canvas.width - 2, 62);
+  context.fillStyle = '#e3f2fd';
+  context.font = 'bold 23px system-ui';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(text, debug.canvas.width / 2, 40);
+  debug.texture.needsUpdate = true;
+}
+
+function updateInvestigationDebug(now) {
+  const diagnosticActor = botDebugFocusActor || activeBotActor;
+  for (const actor of botActors) {
+    const investigation = actor.investigation;
+    const active = botBehaviorDebugEnabled && actor === diagnosticActor && actor.entity.alive !== false && !!investigation;
+    const debug = active ? ensureBotInvestigationDebug(actor) : actor.investigationDebug;
+    if (!debug) continue;
+    debug.group.visible = active;
+    if (!active) continue;
+    const anchor = investigation.anchor;
+    const radius = investigationSearchRadius(investigation, now);
+    const secondsLeft = Math.max(0, (investigation.expiresAt - now) / 1000);
+    debug.lastSeen.position.set(anchor.x, decalY(anchor.x, anchor.z, 0.05), anchor.z);
+    debug.region.position.set(anchor.x, decalY(anchor.x, anchor.z, 0.025), anchor.z);
+    debug.region.scale.set(radius, radius, 1);
+    const motion = investigation.motion || investigation.preferredDirection;
+    const directionLength = Math.min(Math.max(0.75, radius * 0.45), 2.2);
+    const end = motion ? new THREE.Vector3(anchor.x + motion.x * directionLength, 0.075, anchor.z + motion.z * directionLength) : new THREE.Vector3(anchor.x, 0.075, anchor.z);
+    debug.motion.geometry.setFromPoints([new THREE.Vector3(anchor.x, 0.075, anchor.z), end]);
+    debug.motion.visible = !!motion;
+    const bucket = Math.floor(radius / Math.max(NAV_CELL * 0.25, 0.05));
+    if (bucket !== debug.cellRadiusBucket) {
+      const points = [];
+      for (const cell of investigation.cells) {
+        if (!investigationCellIsWithinRegion(investigation, cell, now)) continue;
+        const point = cellToWorld(navGrid, cell.c, cell.r);
+        points.push(new THREE.Vector3(point.x, 0.045, point.z));
+      }
+      debug.cells.geometry.setFromPoints(points);
+      debug.cellRadiusBucket = bucket;
+    }
+    debug.label.position.set(anchor.x, decalY(anchor.x, anchor.z, 0.48), anchor.z);
+    writeInvestigationLabel(debug, `SEARCH  ${secondsLeft.toFixed(1)}s  r ${radius.toFixed(1)}m`);
+  }
+}
+
+// ===================== squad debug overlay =====================
+// Squad membership is otherwise invisible: bots in one roster look exactly like bots that merely
+// happen to be walking together. This draws the roster itself -- who belongs to whom, who leads,
+// and where each member's formation slot is -- so a formation can be read at a glance.
+let squadDebugEnabled = false;
+const SQUAD_DEBUG_MEMBER_RING = new THREE.RingGeometry(0.34, 0.46, 24);
+const SQUAD_DEBUG_SLOT_RING = new THREE.RingGeometry(0.14, 0.20, 16);
+const _squadDebugColor = new THREE.Color();
+// Golden-angle hues: adjacent squads never land on near-identical colours.
+function squadDebugHex(seq) { return _squadDebugColor.setHSL((((seq || 1) - 1) * 0.618034) % 1, 0.85, 0.62).getHex(); }
+
+function createSquadDebug(colorHex) {
+  const group = new THREE.Group();
+  group.renderOrder = 9;
+  const memberMat = new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide, transparent: true, opacity: 0.95, depthTest: false });
+  const slotMat = new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide, transparent: true, opacity: 0.4, depthTest: false });
+  const tether = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: 0.5, depthTest: false }));
+  tether.frustumCulled = false;   // the bounding sphere is never recomputed as the squad walks
+  const canvas = document.createElement('canvas');
+  canvas.width = 360; canvas.height = 80;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+  label.scale.set(3.0, 0.66, 1);
+  group.add(tether, label);
+  scene.add(group);
+  return { group, memberMat, slotMat, tether, label, canvas, texture, colorHex, labelText: '', rings: [], slots: [], tetherArray: null };
+}
+
+// Tether vertices are written straight into a persistent buffer -- setFromPoints would allocate two
+// Vector3s per member per frame.
+function squadDebugTetherArray(debug, maxSegments) {
+  const need = Math.max(1, maxSegments) * 6;
+  if (!debug.tetherArray || debug.tetherArray.length < need) {
+    debug.tetherArray = new Float32Array(need);
+    debug.tether.geometry.setAttribute('position', new THREE.BufferAttribute(debug.tetherArray, 3));
+  }
+  return debug.tetherArray;
+}
+
+function disposeSquadDebug(squad) {
+  const debug = squad?.debug;
+  if (!debug) return;
+  scene.remove(debug.group);
+  debug.tether.geometry.dispose();
+  debug.texture.dispose();
+  squad.debug = null;
+}
+
+// Ring pools grow to the largest roster seen and are then reused; extras are hidden, not destroyed.
+function squadDebugRing(debug, index) {
+  let ring = debug.rings[index];
+  if (!ring) {
+    ring = new THREE.Mesh(SQUAD_DEBUG_MEMBER_RING, debug.memberMat);
+    ring.rotation.x = -Math.PI / 2;
+    debug.rings[index] = ring;
+    debug.group.add(ring);
+  }
+  return ring;
+}
+function squadDebugSlot(debug, index) {
+  let slot = debug.slots[index];
+  if (!slot) {
+    slot = new THREE.Mesh(SQUAD_DEBUG_SLOT_RING, debug.slotMat);
+    slot.rotation.x = -Math.PI / 2;
+    debug.slots[index] = slot;
+    debug.group.add(slot);
+  }
+  return slot;
+}
+
+function writeSquadLabel(debug, text, alarm) {
+  if (debug.labelText === text) return;   // canvas repaint + texture upload only when the text moves
+  debug.labelText = text;
+  const context = debug.canvas.getContext('2d');
+  context.clearRect(0, 0, debug.canvas.width, debug.canvas.height);
+  context.fillStyle = 'rgba(11, 17, 24, 0.88)';
+  context.fillRect(0, 8, debug.canvas.width, 64);
+  context.strokeStyle = alarm ? '#ff5252' : `#${debug.colorHex.toString(16).padStart(6, '0')}`;
+  context.lineWidth = 2;
+  context.strokeRect(1, 9, debug.canvas.width - 2, 62);
+  context.fillStyle = '#eceff1';
+  context.font = 'bold 23px system-ui';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(text, debug.canvas.width / 2, 40);
+  debug.texture.needsUpdate = true;
+}
+
+const _squadDebugSelf = { x: 0, z: 0 };
+function updateSquadDebug(now) {
+  for (const squad of squads.values()) {
+    if (!squadDebugEnabled) { if (squad.debug) squad.debug.group.visible = false; continue; }
+    const debug = squad.debug || (squad.debug = createSquadDebug(squadDebugHex(squad.seq)));
+    debug.group.visible = true;
+    const tether = squadDebugTetherArray(debug, squad.memberIds.size);
+    let drawn = 0, slotsDrawn = 0, live = 0, written = 0, detachedDrawn = 0;
+    let labelX = 0, labelZ = 0;
+    for (const memberId of squad.memberIds) {
+      const actor = botActorById.get(memberId);
+      if (!actor || actor.entity.alive === false) continue;
+      live++;
+      botXZInto(actor.entity, _squadDebugSelf);
+      const isLeader = squad.leaderId === actor.id;
+      const detached = squad.detachIds.has(actor.id);
+      if (detached) detachedDrawn++;
+      const ring = squadDebugRing(debug, drawn++);
+      ring.visible = true;
+      // Ring size is rank: leader biggest, then the detachment's own commander, then core, then the
+      // rest of the detachment -- so a sub-unit forming up inside a squad is visible before it splits.
+      ring.scale.setScalar(isLeader ? 1.5 : (squad.detachLeaderId === actor.id ? 1.15 : (detached ? 0.7 : 1)));
+      ring.position.set(_squadDebugSelf.x, decalY(_squadDebugSelf.x, _squadDebugSelf.z, 0.03), _squadDebugSelf.z);
+      if (isLeader) { labelX = _squadDebugSelf.x; labelZ = _squadDebugSelf.z; }
+      // Slot markers + tethers only exist while there is a leader to hang the formation off.
+      if (!squad.hasLeaderPos || !(actor.squadRank > 0)) continue;
+      const slotPos = squadSlotWorld({
+        kind: squad.kind, leaderPos: squad.leaderPos, headingRad: squad.leaderYaw,
+        rank: actor.squadRank, count: squad.liveCount, spacing: botSquadSettings.spacing,
+      });
+      if (!slotPos) continue;
+      const marker = squadDebugSlot(debug, slotsDrawn++);
+      marker.visible = true;
+      marker.position.set(slotPos.x, decalY(slotPos.x, slotPos.z, 0.03), slotPos.z);
+      tether[written++] = _squadDebugSelf.x;
+      tether[written++] = decalY(_squadDebugSelf.x, _squadDebugSelf.z, 0.09);
+      tether[written++] = _squadDebugSelf.z;
+      tether[written++] = slotPos.x;
+      tether[written++] = decalY(slotPos.x, slotPos.z, 0.09);
+      tether[written++] = slotPos.z;
+    }
+    for (let i = drawn; i < debug.rings.length; i++) debug.rings[i].visible = false;
+    for (let i = slotsDrawn; i < debug.slots.length; i++) debug.slots[i].visible = false;
+    debug.tether.geometry.attributes.position.needsUpdate = true;
+    debug.tether.geometry.setDrawRange(0, written / 3);
+    debug.tether.visible = written > 0;
+    if (!live) { debug.group.visible = false; continue; }
+    // A leaderless squad has no anchor to label, so the label rides the last known leader spot.
+    if (!squad.hasLeaderPos) { labelX = squad.leaderPos.x; labelZ = squad.leaderPos.z; }
+    debug.label.position.set(labelX, decalY(labelX, labelZ, 2.35), labelZ);
+    const shock = squad.shocked ? `  LEADERLESS ${Math.max(0, (squad.successionShockUntil - now) / 1000).toFixed(1)}s` : '';
+    const det = detachedDrawn ? `  +${detachedDrawn} det` : '';
+    writeSquadLabel(debug, `${squad.id}  ${squad.kind}  ${live - detachedDrawn}${det}${shock}`, squad.shocked);
+  }
+}
+
+function eyePos(entity) {
+  return entity.capsule.start.clone().lerp(entity.capsule.end, EYE_LIFT);
+}
+// Allocation-free variant for hot loops; writes into `out` and returns it.
+function eyePosInto(entity, out) {
+  return out.copy(entity.capsule.start).lerp(entity.capsule.end, EYE_LIFT);
+}
+function botXZ(entity) {
+  return { x: entity.capsule.start.x, z: entity.capsule.start.z };
+}
+// Out-param twin for per-bot per-frame callers (M1); scratch owners must consume before the next call.
+function botXZInto(entity, out) {
+  out.x = entity.capsule.start.x; out.z = entity.capsule.start.z;
+  return out;
+}
+// Shared per-frame scratch (M1). Each is fully consumed before its next fill.
+const _xzScratchA = { x: 0, z: 0 };
+const _sentryEye = new THREE.Vector3();
+const _sentryTargetEye = new THREE.Vector3();
+const _sentryDir = new THREE.Vector3();
+const _fireEye = new THREE.Vector3();
+const _aimAngles = { yaw: 0, pitch: 0 };
+const _packCell = { c: 0, r: 0 };
+const _escMe = { x: 0, z: 0, team: null };
+const _coverThreatXZ = { x: 0, z: 0 };
+const _botHereXZ = { x: 0, z: 0 };
+const _holdSeatXZ = { x: 0, z: 0 };
+const _alertBake = { field: null, navGrid: null }; // reused wrapper for exposedToThreat's bake argument
+const _tierChannels = { coverAlert: null, holdAlert: null }; // reused out-param for alertTierChannels
+const _contactMe = { id: null, team: null, x: 0, z: 0 }; // scratch reporter/reader for recordContact + latestContactNear
+const _spinAt = new THREE.Vector3();  // H6a scratch aim point for the close-self-threat spin
+const _topOff = { magFrac: 0, targetVisible: false, concealed: false }; // A9 shouldTopOffReload argument
+const _secondaryXZ = { x: 0, z: 0 };  // H6b second-shooter position handed to the cover veto
+const _hideRC = { c: 0, r: 0 };       // S12 concealment ring-scan centre cell
+const _hideXZ = { x: 0, z: 0 };       // S12 concealment goal, consumed by updateMedicMoveMovement
+const _fsmCtx = {};
+const _stanceCtx = {};                // chooseBotStance argument, refilled per bot per frame
+const _dangerNb = new Int32Array(8); // cellNeighbors8 out-param, consumed inside one recordDanger call
+const _fleeScore = { threatDistance: 0, pathDist: 0, covered: false, exposure01: 0, centroidDistance: null, coverScore: 0 };
+const _fleeSquad = []; // living teammates near the flee source, drained per findFleeGoal call
+let _fsqTeam = null, _fsqId = null, _fsqX = 0, _fsqZ = 0; // _fleeSquad hash-visit scratch
+// Horizontal capsule placement for the cover peek slide (position-driven, not velocity-steered).
+function placeBotXZ(entity, p) {
+  const dx = p.x - entity.capsule.start.x, dz = p.z - entity.capsule.start.z;
+  entity.capsule.start.x += dx; entity.capsule.start.z += dz;
+  entity.capsule.end.x += dx; entity.capsule.end.z += dz;
+}
+
+// Nav grid bake: point-in-rect test against the active layout's wall data (not a BVH query --
+// for these hand-built test maps the rectangles are already known, matching the
+// "authoring-time data" shortcut the real shoot-house map would use too). WALL_MARGIN keeps
+// the walkable area off the wall surfaces so paths don't hug them.
+const NAV_CELL = 0.5;
+// The capsule radius is 0.3 m. Add half a nav cell so path smoothing cannot join two valid
+// samples with a diagonal that grazes a wall corner between them.
+const WALL_MARGIN = 0.55;
+function pointInWall(x, z) {
+  for (const w of activeWalls) {
+    if (Math.abs(x - w.x) <= w.w / 2 + WALL_MARGIN && Math.abs(z - w.z) <= w.d / 2 + WALL_MARGIN) return true;
+  }
+  for (const cv of activeCovers) {
+    if (Math.abs(x - cv.x) <= cv.w / 2 + WALL_MARGIN && Math.abs(z - cv.z) <= cv.d / 2 + WALL_MARGIN) return true;
+  }
+  return false;
+}
+// One line per layout when the walkable ground is not a single piece, silent when it is.
+const NAV_REGION_REPORT_MIN = 12;   // cells; below this a stranding is a ledge, not somewhere a bot goes
+function reportNavRegions() {
+  if (!navGrid || !navGrid.regionSizes) return;
+  const sizes = navGrid.regionSizes;
+  let stranded = 0, cells = 0, biggest = 0;
+  for (let i = 0; i < sizes.length; i++) {
+    if (i === navGrid.mainRegion || sizes[i] < NAV_REGION_REPORT_MIN) continue;
+    stranded++; cells += sizes[i];
+    if (sizes[i] > biggest) biggest = sizes[i];
+  }
+  const area = (n) => (n * NAV_CELL * NAV_CELL).toFixed(0);
+  // Repairs are reported even when nothing is left stranded: a silently fixed map hides how fragmented
+  // the generator actually is, and that is the number worth watching.
+  if (navGrid.carved?.length) {
+    console.info(`[nav regions] reconnected stranded ground by opening ${navGrid.carved.length} steep cell(s)`
+      + ` (${area(navGrid.carved.length)} m2) -- these are traversable but above the slope limit`);
+  }
+  if (navGrid.sealedRegions?.length) {
+    console.warn(`[nav regions] ${navGrid.sealedRegions.length} pocket(s) are walled off, not merely steep, `
+      + `so they were left sealed -- that is a layout problem, not a nav one`);
+  }
+  if (stranded === 0) return;
+  const passes = terrainField?.connectivity;
+  const note = passes ? ` (terrain carved ${passes.carved} pass${passes.carved === 1 ? '' : 'es'})` : '';
+  console.warn(`[nav regions] ${stranded} walkable area(s) cut off from the map: ${area(cells)} m2 total, `
+    + `largest ${area(biggest)} m2 -- bots there can reach nothing outside${note}`);
+}
+
+function navWalkable(x, z) {
+  if (x < activeBounds.minX || x > activeBounds.maxX || z < activeBounds.minZ || z > activeBounds.maxZ) return false;
+  if (pointInWall(x, z)) return false;
+  // Too-steep ground is unwalkable: paths that cross it stall the capsule against the slope limit.
+  if (terrainSettings.enabled && terrainField.slopeAt(x, z, NAV_CELL * 0.5) > terrainSettings.maxSlope) return false;
+  return true;
+}
+// Blocked by slope alone, i.e. continuous ground the capsule can still stand on. connectStrandedRegions
+// may open these to reconnect a pocket; walls and out-of-bounds are never openable.
+function navSoftBlocked(x, z) {
+  if (x < activeBounds.minX || x > activeBounds.maxX || z < activeBounds.minZ || z > activeBounds.maxZ) return false;
+  if (pointInWall(x, z)) return false;
+  return terrainSettings.enabled && terrainField.slopeAt(x, z, NAV_CELL * 0.5) > terrainSettings.maxSlope;
+}
+let navGrid = null;
+let visField = null;   // baked pairwise cell<->cell LOS field (nav-visibility.js), rebaked per layout
+let cornerMap = null;  // baked cover-corner records (nav-corners.js), rebaked per layout
+// Movement-goal deconfliction: committed flee/recovery/pack/cover goals claim their destination cell.
+const goalClaims = createGoalClaims((id) => { const a = botActorById.get(id); return !!a && a.entity.alive !== false; });
+// Team-scoped memory of where allies died/were hit (H3); read by flee/patrol/pack/cover scoring.
+const botDangerField = createDangerField();
+function cellIdxOf(c, r) { return r * navGrid.cols + c; }
+
+// ===================== map layouts =====================
+// Two swappable layouts, both producing { walls, bounds, botSpawn, dummySpawn, patrolPoints,
+// cameraTarget }: the original hand-built two-room map, and a procedurally generated maze for
+// stress-testing pathfinding (long winding corridors, dead ends, many more turns than the
+// rooms map's single doorway).
+function buildRoomsLayout() {
+  return {
+    walls: [
+      { x: 0, z: -3, w: 6 + WALL_T, d: WALL_T },      // room A north
+      { x: 0, z: 3, w: 6 + WALL_T, d: WALL_T },        // room A south
+      { x: -3, z: 0, w: WALL_T, d: 6 + WALL_T },       // room A west
+      { x: 3, z: -1.75, w: WALL_T, d: 2.5 },           // room A east, north segment (doorway gap below)
+      { x: 3, z: 2.375, w: WALL_T, d: 1.25 },          // room A east, south segment
+      { x: 6, z: -3, w: 6 + WALL_T, d: WALL_T },       // room B north
+      { x: 6, z: 3, w: 6 + WALL_T, d: WALL_T },        // room B south
+      { x: 9, z: 0, w: WALL_T, d: 6 + WALL_T },        // room B east
+    ],
+    bounds: { minX: -3, maxX: 9, minZ: -3, maxZ: 3 },
+    botSpawn: { x: 6, y: 0, z: 0 },
+    dummySpawn: { x: 0, y: 0, z: 0 },
+    patrolPoints: [{ x: 7, z: -1.5 }, { x: 7, z: 1.5 }, { x: 0, z: 1.5 }, { x: 0, z: -1.5 }],
+    cameraTarget: { x: 3, y: 1, z: 0 },
+  };
+}
+
+let mazeCellSize = 3.5;    // corridor cell spacing; clear hall width = mazeCellSize - WALL_T
+let mazeCols = 8;          // maze grid width in cells
+let mazeRows = 8;          // maze grid height in cells (decoupled from cols -> rectangular mazes)
+let mazeLoopChance = 0;    // 0 = perfect maze (one path), ->1 = open, room-like sprawl
+let mazeStraightness = 0;  // 0 = uniform DFS (twisty), ->1 = prefer straight runs (fewer turns)
+let mazeBraid = 0;         // 0 = keep dead ends, ->1 = fraction of dead ends opened up
+let mazeSeed = 1;          // fixed seed -> reproducible maze; "new" button rerolls it
+let mazeRoomsOn = false;    // inject open arenas into the maze
+let mazeRoomCount = 2;      // how many arenas
+let mazeRoomSize = 3;       // arena side in cells (N x N block of merged cells)
+let mazeCoverOn = false;    // scatter partial-height cover pieces inside cells
+let mazeCoverDensity = 0.15;// fraction of cells that get a cover piece
+let mazeCoverHeight = 1.1;  // cover height (m); below eye height -> shoot/see over it
+let mazeEntrances = 0;      // gaps punched in the outer boundary (0 = fully enclosed)
+let mazeStartGoal = 'corners'; // bot/dummy spawn placement: corners | center | random
+// Wall vocabulary of the generated layout: full maze | boundary ring only | bare ground (terrain
+// + optional cover only). The grid still sizes the map and places spawns in every mode.
+let mazeWallMode = 'maze';  // maze | perimeter | open
+let activeLayoutKind = 'rooms';
+
+// The carve, the wall emission and the scattered-structure generator all live in the (Node-tested)
+// module; this file only decides which of them a given layout asks for.
+import { makeRng, generateMazeCells, mazeCellWalls, generateStructures, STRUCTURE_DEFAULTS,
+  teamSideRegions, generateHomeBase, HOME_BASE_DEFAULTS } from './bot-structures.js';
+
+// Islands of content for wall-less maps: buildings, maze pockets and obstacle fields scattered
+// over open ground. Off in 'maze' mode, where the map is already all walls.
+const structureSettings = { ...STRUCTURE_DEFAULTS, count: 8 };
+let structuresOn = true;
+
+function buildMazeLayout() {
+  const cols = mazeCols, rows = mazeRows;
+  const cell = mazeCellSize;
+  const originX = -(cols * cell) / 2, originZ = -(rows * cell) / 2;
+  const cells = generateMazeCells(cols, rows, {
+    loopChance: mazeLoopChance, straightness: mazeStraightness, braid: mazeBraid,
+    rooms: { count: mazeRoomsOn ? mazeRoomCount : 0, size: mazeRoomSize },
+    entrances: mazeEntrances, rng: makeRng(mazeSeed),
+  });
+  const cellCenter = (c, r) => ({ x: originX + c * cell + cell / 2, z: originZ + r * cell + cell / 2 });
+  // 'perimeter' keeps only the boundary ring (still carrying the entrance gaps); 'open' emits none.
+  const walls = mazeWallMode === 'open' ? []
+    : mazeCellWalls(cells, cols, rows, { cell, originX, originZ, wallT: WALL_T, ringOnly: mazeWallMode === 'perimeter' });
+
+  // Placement uses its own RNG stream (seed offset) so toggling start/goal never alters the maze.
+  const placeRng = makeRng((mazeSeed ^ 0x9e3779b9) >>> 0);
+  const randCell = () => ({ c: Math.floor(placeRng() * cols), r: Math.floor(placeRng() * rows) });
+  let startCell, goalCell;
+  if (mazeStartGoal === 'random') {
+    startCell = randCell();
+    const minSep = (cols + rows) / 3;
+    let tries = 0;
+    do { goalCell = randCell(); } while (Math.abs(goalCell.c - startCell.c) + Math.abs(goalCell.r - startCell.r) < minSep && ++tries < 50);
+  } else if (mazeStartGoal === 'center') {
+    startCell = { c: (cols - 1) >> 1, r: (rows - 1) >> 1 };
+    goalCell = { c: cols - 1, r: rows - 1 };
+  } else {
+    startCell = { c: 0, r: 0 };
+    goalCell = { c: cols - 1, r: rows - 1 };
+  }
+  const start = cellCenter(startCell.c, startCell.r), end = cellCenter(goalCell.c, goalCell.r);
+
+  // Cover pass: scatter partial-height boxes offset into a cell quadrant (leaves a gap so the
+  // corridor stays passable). Rendered short -> the LOS/shot raycast passes over them (real cover).
+  const covers = [];
+  if (mazeCoverOn && mazeCoverDensity > 0) {
+    const s = Math.max(0.5, Math.min(cell * 0.3, 1.2));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if ((c === startCell.c && r === startCell.r) || (c === goalCell.c && r === goalCell.r)) continue;
+        if (placeRng() >= mazeCoverDensity) continue;
+        const { x: cx, z: cz } = cellCenter(c, r);
+        // Wall-less maps have no corridor to keep clear, so cover scatters freely inside the cell.
+        const off = (v) => (mazeWallMode === 'maze' ? (v < 0.5 ? -1 : 1) * cell * 0.22 : (v * 2 - 1) * cell * 0.34);
+        covers.push({ x: cx + off(placeRng()), z: cz + off(placeRng()), w: s, d: s, h: mazeCoverHeight });
+      }
+    }
+  }
+
+  // Entrances open the outer wall onto a one-cell walkable apron so bots can flank around outside.
+  const apron = mazeEntrances > 0 && mazeWallMode !== 'open' ? cell : 0;
+  const bounds = { minX: originX - apron, maxX: originX + cols * cell + apron, minZ: originZ - apron, maxZ: originZ + rows * cell + apron };
+
+  // Structure pass: only for wall-less maps, where the open ground otherwise has nothing to fight
+  // over. Its own seed stream, so restructuring never reshuffles the maze or the cover scatter.
+  const pads = [];
+  if (structuresOn && mazeWallMode !== 'maze') {
+    const avoid = [{ x: start.x, z: start.z, radius: 4 }, { x: end.x, z: end.z, radius: 4 }];
+    const built = generateStructures(bounds, { ...structureSettings, seed: (mazeSeed ^ 0x5bf03635) >>> 0, wallT: WALL_T }, avoid);
+    walls.push(...built.walls);
+    covers.push(...built.covers);
+    pads.push(...built.pads);
+    lastStructurePlacements = built.placed;
+  } else {
+    lastStructurePlacements = [];
+  }
+
+  // Home compounds, one per team, at opposite ends of the map's long axis. Same wall/cover vocabulary
+  // as everything else, so they land in the collider and the nav bake without special-casing.
+  if (botSideModeEnabled && botBaseStructuresEnabled) {
+    for (const region of teamSideRegions(bounds, BOT_TEAMS).values()) {
+      const size = homeBaseSizeFor(bounds, region);
+      if (!size) continue;   // map too small to hold a compound; the side spawn rules still apply
+      const base = generateHomeBase(region, { ...size, wallT: WALL_T });
+      walls.push(...base.walls);
+      covers.push(...base.covers);
+      if (base.pad) pads.push(base.pad);
+    }
+  }
+
+  return {
+    walls,
+    covers,
+    pads,
+    bounds,
+    botSpawn: { x: start.x, y: 0, z: start.z },
+    dummySpawn: { x: end.x, y: 0, z: end.z },
+    patrolPoints: [cellCenter(0, 0), cellCenter(cols - 1, 0), cellCenter(cols - 1, rows - 1), cellCenter(0, rows - 1)],
+    cameraTarget: { x: 0, y: 1, z: 0 },
+  };
+}
+let lastStructurePlacements = [];   // what the last build actually placed, for the panel readout
+
+// When on, a rebuild keeps the roster instead of clearing it (see relocateActorsForLayout).
+let botKeepOnRebuild = true;
+
+// Put a body back on legal ground in the new map: keep it where it stands if that cell is still
+// walkable, else push it to the nearest cell that is, and re-seat it on the (possibly new) terrain.
+function placeEntityOnWalkableGround(entity) {
+  const at = botXZ(entity);
+  let x = at.x, z = at.z;
+  const cell = navGrid ? worldToCell(navGrid, x, z) : null;
+  if (cell && !isWalkableCell(navGrid, cell.c, cell.r)) {
+    const walkable = nearestWalkableNavCell(cell);
+    const spot = walkable ? cellToWorld(navGrid, walkable.c, walkable.r) : findBotSpawnPoint();
+    x = spot.x; z = spot.z;
+  }
+  const y = groundHeight(x, z);
+  const height = entity.capsule.end.y - entity.capsule.start.y;   // preserved: stance owns it
+  entity.capsule.start.set(x, y + entity.capsule.radius, z);
+  entity.capsule.end.set(x, y + entity.capsule.radius + height, z);
+  entity.velocity.set(0, 0, 0);
+  entity.onFloor = false;
+}
+
+// Everything a bot remembers that was expressed in the old map: paths and goals in old cells, a
+// cover corner that may no longer be a corner, cell-keyed blacklists/visited sets, cached floods.
+function resetActorMapState(actor) {
+  actor.path = []; actor.pathMode = null;
+  actor.state = BOT_PATROL;
+  actor.target = null; actor.targetVisible = false; actor.targetDistance = Infinity; actor.targetVisGate = '-'; actor.lastTargetId = null; actor.lastTargetSeenAt = null;
+  actor.targetUnseenSince = null;
+  actor.targetCommittedAt = null;
+  if (actor.perceivedEnemies) actor.perceivedEnemies.length = 0; // entity refs died with the old map
+  actor.lastKnownTarget = null; actor.lastKnownTargetMotion = null; actor.lastKnownTargetAt = null;
+  actor.combatMoveGoal = null; actor.patrolResumeGoal = null; actor.investigation = null;
+  actor.fleeGoalHistory.length = 0;
+  actor.coverCorner = null; actor.coverThreat = null; actor.coverStartedAt = null; actor.coverMoveSince = null;
+  actor.coverBlacklist = createCoverBlacklist(); actor.peek = null;
+  actor.coverGate = { invalidSince: null, switchedAt: null }; actor.coverHoldSince = null; actor.peekMissStreak = 0;
+  actor.muzzleRecoveryTarget = null; actor.recoveryIssueActive = false; actor.muzzleRecoveryVisitedCells = new Set();
+  actor.attention = null; actor.patrolScan = null;
+  actor.stance = STANCE_STAND; actor.stanceLatch = null; actor.stanceForcedCrouch = false; actor.stanceWeights = null;
+  resetAimAcquisition(actor); actor.aimPrimedUntil = 0; actor.lastSelfThreatAt = null;
+  actor.spreadBloomDeg = 0; actor.alertTierLast = null;
+  actor.commitBits = 0; actor.stateCode = null; actor.stateCodeKey = -1;   // commits died with the old map
+  actor.holdUntil = 0; actor.holdReason = null; actor.holdSince = null; actor.holdFacingXZ = null;   // a hold aimed at the old map
+  actor.pushStartedAt = null; actor.pushElement = null; actor.squadLeaderId = null;
+  actor.packSeekGoal = null; actor.medicAction = null; actor.medicFlood = null; actor.medicFloodAt = 0;
+  actor.patrolIndex = patrolPoints.length ? actor.patrolIndex % patrolPoints.length : 0;
+}
+
+// Corpses settled on geometry that no longer exists, and a ragdoll can't be re-seated the way a
+// standing capsule can -- so a kept-roster rebuild keeps the living and clears the dead. Same
+// teardown as cullDeadBots.
+function clearDeadBotActors() {
+  for (const actor of [...deadBotActors]) {
+    const at = botActors.indexOf(actor);
+    if (at !== -1) botActors.splice(at, 1);
+    botActorById.delete(actor.id);
+    deadBotActors.delete(actor);
+    goalClaims.release(actor.id);
+    if (botDebugFocusActor === actor) { botDebugFocusActor = null; updateBotDebugFocusButton(); }
+    if (selectedBotActor === actor) selectedBotActor = null;
+    if (activeBotActor === actor) bindBotActor(botActors[0] ?? null);
+    disposeBotActor(actor);
+  }
+  botWeaponUiDirty = true;
+  updateBotCountControls();
+}
+
+// The keep-bots path: survivors stay, but nothing they knew about the old map does.
+function relocateActorsForLayout() {
+  clearWorldHealthPacks();   // dropped packs are lying on geometry that no longer exists
+  clearDummyHitImpacts();
+  clearDeadBotActors();
+  goalClaims.clear();
+  for (const actor of botActors) {
+    if (actor.entity.alive !== false) placeEntityOnWalkableGround(actor.entity);
+    resetActorMapState(actor);
+  }
+  for (const target of dummyTargets) {
+    if (target.alive === false) continue;
+    placeEntityOnWalkableGround(target);
+    target.roamPath = [];
+  }
+  // The bound actor's live globals still hold its pre-reset state; re-read the clean actor so the
+  // next commitBotActor can't write the old paths back.
+  bindBotActor(activeBotActor);
+}
+
+// Tears down the previous layout's geometry/collider/grid and rebuilds everything from
+// `layout`. With `keepBots` off, bot/dummy are removed rather than repositioned -- their old
+// coordinates are meaningless in a differently-shaped map.
+// `resetCamera` only for a genuinely different map (initial build, layout switch, shuffle):
+// a slider tweak rebuilds the same map and must leave the user's viewpoint alone.
+function applyLayout(layout, { resetCamera = true, keepBots = botKeepOnRebuild } = {}) {
+  for (const m of [...mapRoot.children]) {
+    mapRoot.remove(m);
+    if (m.geometry !== UNIT_BOX) m.geometry.dispose();
+    if (m.isInstancedMesh) m.dispose();   // frees the per-instance matrix buffer
+  }
+  if (mapCollider) mapCollider.dispose();
+
+  activeWalls = layout.walls;
+  activeCovers = layout.covers || [];
+  activeBounds = layout.bounds;
+  visuals.setBounds(activeBounds);   // recenters the floor grid/scan ring and the accent lights
+  // Pads first: every height read below (spawns, wall sinking, the mesh, the nav grid) must see
+  // the same post-flatten field.
+  terrainPads = terrainPadsForLayout(layout);
+  rebuildTerrainField();
+  // Layouts author spawns at y=0; drop them onto the ground so nothing spawns inside a hill.
+  botSpawnPoint = { ...layout.botSpawn, y: groundHeight(layout.botSpawn.x, layout.botSpawn.z) };
+  dummySpawnPoint = { ...layout.dummySpawn, y: groundHeight(layout.dummySpawn.x, layout.dummySpawn.z) };
+  patrolPoints = layout.patrolPoints;
+  botLiveAnnounceWorld();   // the arena just changed under any live map; no-op with none connected
+
+  const floorW = activeBounds.maxX - activeBounds.minX;
+  const floorD = activeBounds.maxZ - activeBounds.minZ;
+  buildFloorMesh(floorW, floorD);
+  instancedBoxes(wallMat, activeWalls.map(w => boxTransformOnTerrain(w.x, w.z, w.w, WALL_H, w.d)));
+  instancedBoxes(coverMat, activeCovers.map(cv => boxTransformOnTerrain(cv.x, cv.z, cv.w, cv.h, cv.d)));
+
+  mapCollider = createMapCollider(mapRoot);
+  // heightAt makes every search slope-costed and gives the vis/corner bakes their height grid.
+  navGrid = buildNavGrid(navWalkable, activeBounds, NAV_CELL,
+    terrainSettings.enabled ? { heightAt: groundHeight, softBlockedTest: navSoftBlocked } : {});
+  goalClaims.clear();
+  clearDangerField(botDangerField); // cell indices are grid-relative: a rebuilt grid invalidates them
+  recentAllyHits.length = 0;
+  // Lazy visibility field (per-query DDA traces) — the eager all-pairs bake is O(walkable^2)
+  // and takes minutes on Test-condition-sized mazes. Corner map still bakes per layout.
+  const bakeStart = performance.now();
+  const sightBlockers = [...activeWalls, ...activeCovers];
+  // Terrain occludes sight and yields crest cover, so hills stop being invisible to the cover FSM.
+  // buildNavGrid already sampled the cell-center heights the field wants -- reuse that array.
+  const navHeights = navGrid.heights;
+  visField = buildLazyVisibilityField(navGrid, buildSightGrid(navGrid, sightBlockers),
+    navHeights ? { terrain: { heights: navHeights } } : {});
+  // Crest params are authored in metres, then converted: the module counts cells, and NAV_CELL is
+  // half a metre. Stride 2 on very large grids keeps the scan off the frame budget.
+  const perM = 1 / NAV_CELL;
+  cornerMap = buildCornerMap(navGrid, sightBlockers, visField, {
+    heights: navHeights,
+    crest: {
+      minRise: 0.6, maxSpan: Math.round(2 * perM), farCells: Math.round(12 * perM),
+      spacingCells: Math.round(4 * perM), stride: navGrid.cols > 220 ? 2 : 1,
+    },
+  });
+  const crests = cornerMap.corners.reduce((n, rec) => n + (rec.kind === 'crest' ? 1 : 0), 0);
+  const capped = cornerMap.crestCapped ? ' [CREST CAP HIT -- terrain cover truncated]' : '';
+  console.log(`[cover bake] ${visField.walkableCount} walkable cells, ${cornerMap.corners.length} corners (${crests} crest) in ${(performance.now() - bakeStart).toFixed(1)} ms${capped}`);
+  // Walkable ground the rest of the map cannot reach: a bot that starts or is pushed into one has
+  // no route to any goal and will stand there. Terrain passes are carved to prevent it, but walls
+  // and cover can fence a region off too, so the finished grid is what gets reported.
+  reportNavRegions();
+  rebuildNavOverlay();
+
+  if (keepBots) relocateActorsForLayout();
+  else { removeBot(); removeDummy(); }
+  patrolIdx = 0; pathMode = null; currentPath = []; lastKnownTarget = null; lastKnownTargetMotion = null; botState = BOT_PATROL; clearMuzzleRecoveryEpisode();
+  botInvestigation = null; botPatrolResumeGoal = null; botCombatMoveGoal = null;
+
+  const diag = Math.hypot(floorW, floorD);
+  controls.maxDistance = Math.max(24, diag * 1.55);   // always: a smaller map must re-clamp the zoom
+  if (resetCamera) {
+    cameraRig.posePosition.set(layout.cameraTarget.x + diag * 0.6, diag * 0.55, layout.cameraTarget.z + diag * 0.6);
+    cameraRig.poseTarget.set(layout.cameraTarget.x, layout.cameraTarget.y, layout.cameraTarget.z);
+    cameraRig.commit(cameraRig.posePosition, cameraRig.poseTarget);
+  }
+  controls.update();
+}
+
+function shuffleScene(now = performance.now()) {
+  const roster = new Map();
+  for (const actor of botActors) {
+    if (actor.entity.alive === false) continue;
+    const roles = roster.get(actor.entity.team) || [];
+    roles.push(actor.role || DEFAULT_ROLE);
+    roster.set(actor.entity.team, roles);
+  }
+  const dummyCount = dummyTargets.length;
+  const restoreMode = cameraMode;
+  const restoreFraming = captureCameraFramingState();
+  if (shuffleLookEnabled) visuals.rollRandomTheme();
+  activeLayoutKind = activeLayoutKind === 'rooms' ? 'maze' : 'rooms';
+  if (activeLayoutKind === 'maze') rollMazeSeed();
+  syncMazeControls();
+  // Never keeps bots: the roster is captured above and respawned below, so surviving bodies would double it.
+  applyLayout(activeLayoutKind === 'maze' ? buildMazeLayout() : buildRoomsLayout(), { keepBots: false });
+  for (const [team, roles] of roster) spawnBots(team, roles.length, { roles });
+  for (let i = 0; i < dummyCount; i++) createDummyTarget(dummySpawnPoint);
+  dummy = dummyTargets[0] || null;
+  controlledDummy = dummy;
+  if (restoreMode !== CAMERA_ORBIT && botActors.length) setCameraMode(restoreMode, botActors[0]);
+  else if (restoreMode === CAMERA_ORBIT) setCameraMode(CAMERA_ORBIT);
+  restoreCameraFramingState(restoreFraming);
+  autoSceneShuffleNextAt = now + autoSceneShuffleIntervalMs;
+  updateCameraButtons();
+}
+function updateAutoSceneShuffle(now) {
+  if (!autoSceneShuffleEnabled || now < autoSceneShuffleNextAt) return;
+  shuffleScene(now);
+}
+const BOT_MOVE_SPEED = 2.4;
+const WAYPOINT_REACH = 0.35;
+const SEPARATION_RADIUS = 1.5; // m, neighbors inside this repel during path-following
+const SEPARATION_WEIGHT = 0.5; // blend factor of the separation force into the move direction
+const SEPARATION_PROBE_M = 0.45;    // m, look-ahead for the separation walkability gate
+const WAYPOINT_CONTEST_RANGE = 0.75; // m, neighbor distance that counts as blocking the waypoint
+const WAYPOINT_CONTEST_RELAX = 0.45; // m, extra reach allowed when the waypoint is crowd-blocked
+const NAV_REPATH_COOLDOWN_MS = 350;  // throttle for followPath's off-line recovery re-path
+const SMOOTH_LOOKAHEAD = 16;         // waypoint cap on smoothPath's string-pull, bounds its O(k^2) DDA retraces (M3)
+const PATROL_STALL_DIST_M = 0.35;    // net progress below this counts as stalled
+const PATROL_STALL_GIVEUP_MS = 2500; // stalled this long -> abandon the leg for the next goal
+const COVER_SEARCH_RADIUS = 10;    // m, corner candidate radius around the bot
+const ALLY_ALERT_RADIUS = 12;      // m, an ally hit within this recently triggers a cover break / alert hold
+// Alert windows (hit vs death) + hold cap/cooldown live pure in bot-alert.js.
+// commit-timeout constant lives in bot-cover.js (coverCommitTimedOut)  // max time stuck in COVER_MOVE before abandoning the corner
+// seat arrive/leave thresholds now live in bot-cover.js (coverSeatBand: 0.45 in / 0.9 out)
+// Peek-cycle timing (PEEK_OUT_S / PEEK_IN_* jitter / PEEK_SLIDE_S) lives pure in bot-cover.js.
+// Every movement path funnels through here, so stance owns locomotion everywhere in one edit.
+function currentBotMoveSpeed() {
+  return BOT_MOVE_SPEED * stanceSpeedFactor(activeBotActor?.stance ?? STANCE_STAND, botStanceSettings, botMovementSettings.runMultiplier);
+}
+// Prone/crouch swing the muzzle slower; STAND scales to 1 so the disabled path is untouched.
+function botTurnRateRadS() {
+  return TURN_RATE_RAD_S * stanceTurnRateScale(activeBotActor?.stance ?? STANCE_STAND, botStanceSettings);
+}
+// Scale only the capsule's straight section, feet fixed, always from the stored standing height so a
+// return to STAND restores exactly. stanceHeightScale returns 1 while heightEnabled is off -> no write.
+// Which stance the BODY shows: the resolved stance, or -- with the decider off -- the legacy
+// heal/pack-pickup dip that used to be an inline OR-chain in the render path.
+function poseStanceFor(actor) {
+  if (!botStanceSettings.enabled) return actor?.stanceForcedCrouch ? STANCE_CROUCH : STANCE_STAND;
+  return actor?.stance ?? STANCE_STAND;
+}
+// Rig config handed to stanceCapsuleHeightScale, refilled per bot per frame (M1).
+const _stanceRig = { pelvisHeightRatio: 0, pelvisDrop: 0, headDrop: 0, hipHeight: 0, headUp: 0 };
+// Scale from the rig's OWN pose math (live pelvisHeightRatio is speed-adaptive) so the collision/LOS
+// capsule shrinks by the same fraction the visible body does. Falls back to the flat *HeightScale
+// settings only when there is no procedural body to read. Feet stay put; scale is on total height.
+function stanceHeightScaleFor(actor, stance) {
+  const body = actor?.body;
+  const cfg = body?.crouchCfg, pcfg = body?.proneCfg, ratio = body?.gait?.cfg?.pelvisHeightRatio;
+  if (!cfg || !pcfg || !(ratio > 0)) return stanceHeightScale(stance, botStanceSettings);
+  const r = _stanceRig;
+  r.pelvisHeightRatio = ratio; r.pelvisDrop = cfg.pelvisDrop; r.headDrop = cfg.headDrop;
+  r.hipHeight = pcfg.hipHeight; r.headUp = pcfg.headUp;
+  const radius = actor.entity.capsule.radius;
+  return stanceCapsuleHeightScale(stance, r, actor.standHeight + radius * 2, botStanceSettings);
+}
+function applyStanceHeight(actor) {
+  if (!actor?.standHeight) return;
+  const cap = actor.entity.capsule;
+  const caps = cap.radius * 2;
+  const standTotal = actor.standHeight + caps;
+  const w = actor.stanceWeights;
+  const cw = w?.crouch01 ?? 0, pw = w?.prone01 ?? 0;
+  // Fully upright is the common case: skip both derived scales rather than blending toward 1.
+  const scale = (cw > 1e-4 || pw > 1e-4)
+    ? blendStanceHeightScale(stanceHeightScaleFor(actor, STANCE_CROUCH), stanceHeightScaleFor(actor, STANCE_PRONE), cw, pw)
+    : 1;
+  // A vertical capsule cannot be shorter than its own two caps, so a prone target below 2*radius
+  // floors here rather than inverting -- prone bottoms out at 2*radius total, not the rig's 0.41 m.
+  const want = Math.max(0, standTotal * scale - caps);
+  if (Math.abs((cap.end.y - cap.start.y) - want) > 1e-6) cap.end.y = cap.start.y + want;
+  // Debug capsule mesh shares one memoized geometry across the roster, so match it by scale.
+  if (actor.mesh) actor.mesh.scale.y = (want + caps) / standTotal;
+}
+const botBehaviorSettings = {
+  pursueDistance: 7.0,
+  pursueExitBuffer: 0.6,
+  pursueMissStreak: 3, // fire this many non-hitting shots in a row before deciding to close distance
+  pursueHealthThreshold01: 0.60, // only pursue (close distance / chase lost target) while above this HP fraction
+  preferredCombatDistance: 5.0, // fallback standoff; live value is weapon-derived (see botWeaponStandoff)
+  standoffFactor: 0.09, // preferred standoff = weapon.range * this, clamped to sight range; 0 = no weapon linking
+  fleeStandoffFraction: 0.5, // kite/back-off trigger = standoff * this (near edge of the fire band)
+  fleeDistance: 2.2, // floor for the weapon-derived kite/back-off trigger
+  fleeExitBuffer: 0.6,
+  knifeEngagementDistance: 8.0,
+  sightDistance: 50,
+  fovDegrees: 150, // horizontal vision cone centered on bot.yaw; 360 = omnidirectional (no blind spot)
+  fleeSearchRadius: 5,
+  fleeGoalMemory: 3,
+};
+// A10: how fast a bot reacts to a fresh contact and how tight its rounds land. Both halves are
+// toggleable -- off restores the old instant, pinpoint behaviour.
+// Module defaults (260ms + 12ms/m, cap 900): the old 700/40/2000 override read as bots refusing to shoot.
+const botAimSettings = { ...AIM_DEFAULTS };
+const botHealthSettings = {
+  retreatEnabled: true,
+  threshold01: 0.60,
+  resume01: 0.72,
+  healPerSecond: 18,
+  safeDistance: 8.5,
+  safeHoldMs: 500,
+  retreatSearchRadius: 10,
+  coverScore: 12,
+};
+const botPackSettings = {
+  pickupRadius: 0.7,      // walk within this of a dropped pack to auto-collect it
+  shortProximity: 4.0,    // a healthy bot only detours for a pack this close; a hurt bot ignores this
+  dropScatter: 0.45,      // horizontal spread of packs dropped by a dying bot
+  pickupCrouchMs: 450,    // brief crouch dip when a bot bends down to grab a pack
+};
+// Medic role tuning (bot-medic.js owns the pure defaults; these are the viewer-side channel rates).
+let botMedicPercent = 25;               // share of each spawned batch that are medics (0..100)
+// Shares of each batch that spawn as the other specialists. One reused object: it IS the live
+// setting, so a slider edit is picked up by the next spawn without rebuilding anything.
+const botRoleMix = { [ROLE_SNIPER]: 10, [ROLE_TECHNICAL]: 10 };
+// Auto-adder: periodically spawn waves of bots while enabled. Fires from the animation loop.
+let botAutoAddEnabled = false;
+let botAutoAddTeams = 'both';           // 'alpha' | 'bravo' | 'both'
+let botAutoAddCount = 1;                // bots per wave, per targeted team
+let botAutoAddInterval = 5;             // seconds between waves
+let botAutoAddNextAt = 0;               // performance.now() ms timestamp of the next wave
+let botAutoAddTeamCap = 30;             // max living bots one team may hold; waves stop filling it there
+let botAutoAddTotalCap = 50;            // max living bots overall, across both teams
+let botAutoAddCapped = false;           // last wave spawned nothing because a cap was already full
+// Per-team fractional specialist debt, keyed by role: honors each role's % across small waves where
+// per-batch rounding would otherwise drop every one (e.g. 1 bot/wave at 25% rounds to 0 every time).
+const botAutoAddRoleAccum = { alpha: {}, bravo: {} };
+const botMedicSettings = {
+  healAllyPerSecond: 22,   // HP/s a medic transfers from its packs into a wounded ally
+  reviveChannelMs: 2500,   // how long the medic must tend a corpse before it stands back up
+  reviveHp: 50,            // HP a revived ally comes back with
+  healHoldRadius: 6.0,     // once a medic is this close, its heal target holds position so it can close/channel
+  healHoldLeaseMs: 500,    // how long a heal-hold lasts without refresh (so the ally resumes when the medic leaves)
+  medicClaimLeaseMs: 700,  // how long a medic's claim on a patient lasts without refresh (spreads medics out)
+};
+const botInvestigationSettings = {
+  durationMs: 12000,
+  initialRadius: 1.25,
+  // A7: was 0.55 m/s against a 3.5-4 m/s target -- the bubble was cleared long after the target had
+  // left it. maxRadius keeps the fast bubble from swallowing the map (and the seeding BFS with it).
+  expansionMetresPerSecond: 2.5,
+  maxRadius: 12,
+};
+let botCombatMoveGoal = null;
+let botFleeGoalHistory = [];
+
+function trimFleeGoalHistory() {
+  const keep = Math.max(0, Math.floor(botBehaviorSettings.fleeGoalMemory));
+  botFleeGoalHistory.splice(keep);
+}
+function clearFleeGoalHistory() {
+  botFleeGoalHistory.length = 0;
+}
+function rememberFleeGoal(goal) {
+  if (!goal || !navGrid || botBehaviorSettings.fleeGoalMemory <= 0) return;
+  const cell = worldToCell(navGrid, goal.x, goal.z);
+  const key = navCellKey(cell.c, cell.r);
+  const existing = botFleeGoalHistory.findIndex((entry) => entry.key === key);
+  if (existing >= 0) botFleeGoalHistory.splice(existing, 1);
+  botFleeGoalHistory.unshift({ key, x: goal.x, z: goal.z });
+  trimFleeGoalHistory();
+}
+function isRecentFleeGoal(c, r) {
+  if (botBehaviorSettings.fleeGoalMemory <= 0) return false;
+  return botFleeGoalHistory.some((entry) => entry.key === navCellKey(c, r));
+}
+
+// A persistent, per-target exploration frontier. A target is only abandoned after every
+// nav cell reachable from the bot at the time of loss has been attempted, or it is reacquired.
+// `preferredDirection` orders cells within an equal-distance shell; it never limits the search.
+let botInvestigation = null;
+
+let patrolPoints = [];
+let patrolIdx = 0;
+let currentPath = [];      // waypoint queue for whichever movement mode is active
+let pathMode = null;       // 'patrol' | 'seek' | null
+let lastKnownTarget = null; // {x,z} last position the target was seen at, or null
+let lastKnownTargetMotion = null; // normalized XZ direction while last visible
+let lastKnownTargetAt = null; // animation timestamp of that observation
+let botPatrolResumeGoal = null; // {x,z,index}, selected when combat investigation ends
+let botHealRequested = false;
+let botHealArrived = false;
+let botHealSafetySince = null;
+let botHealThreatId = null;
+let botHealStartedAt = null;
+let botPatrolTravelHeading = { x: 0, z: 1 };
+let botTarget = null;
+let lastKnifeAt = -Infinity;
+
+function createBotActor(entity, mesh, roleId = DEFAULT_ROLE) {
+  const role = getRole(roleId);
+  const actor = {
+    id: entity.id,
+    scanPhase: nextBotId & 3, // stable spawn-order offset so target re-scans stagger across bots
+    role: role.id, maxPacks: role.maxPacks,
+    entity, mesh, body: null, weaponMount: null, weaponMountToken: 0, equippedWeapon: entity.weapon,
+    reloadUntil: null, reloadWeaponId: null,
+    stowMounts: [], stowKey: null, stowToken: 0,   // low-part copies of the guns not in hand (back/hip)
+    swapUntil: 0,               // sidearm draw timer: no firing or reloading until it expires
+    lastGunfightAt: null,       // last frame with contact; the lull past it re-holsters the pistol
+    lastSelfThreatAt: null,     // last frame someone shot at us, read by the "in a gunfight" test
+    shotsFired: 0, hitsLanded: 0, kills: 0, deaths: 0,   // lifetime, actor-direct (no global mirror)
+    aliveSince: performance.now(), // re-stamped on revive; drives the POV debug readout's life clock
+    state: BOT_PATROL, targetVisible: false, targetDistance: Infinity, targetVisGate: '-', lastShotAt: -Infinity, lastKnifeAt: -Infinity,
+    knifeSince: null, knifeBlockUntil: null, patrolLocalGoal: null, // knife commit cap + in-region patrol fallback
+    patrolLocalSince: null, patrolEscapeNextAt: 0, patrolStranded: false,  // escape-hatch bookkeeping
+    squadHoldSince: null, squadHoldBroken: false,   // bounded formation hold
+    targetUnseenSince: null,   // when the current target was last visible; drives retention expiry
+    targetCommittedAt: null,   // when the current target was locked in; drives the anti-flicker dwell
+    perceivedEnemies: [],      // last scan's in-cone candidates ({entity,distSq}, nearest-first)
+    aimTarget: { yaw: 0, pitch: 0 }, aimPoint: new THREE.Vector3(), hasAimPoint: false,
+    blockedShotStreak: 0, missStreak: 0, muzzleRecoveryTarget: null, recoveryIssueActive: false, muzzleRecoveryVisitedCells: new Set(),
+    lastTargetId: null, lastTargetSeenAt: null, // actor-direct (no global mirror): miss-streak reset bookkeeping
+    combatMoveGoal: null, fleeGoalHistory: [], investigation: null,
+    coverCorner: null, coverThreat: null, coverStartedAt: null, coverMoveSince: null, coverBlacklist: createCoverBlacklist(), peek: null,
+    visDebounce: { lastTrueAt: null }, healUnsafePrev: false,
+    coverGate: { invalidSince: null, switchedAt: null }, peekMissStreak: 0, coverHoldSince: null,
+    coverPeekOffsetS: 0,        // S10 one-shot peek stagger, consumed when the hold builds its cycle
+    attention: null,            // split-attention dwell/sweep state (threat bearing vs travel heading)
+    patrolScan: null,           // A4 walking-scan sweep state, separate from `attention` (nulled while moving)
+    tierPerception: null,       // A6 tier-scaled {fovDegrees, scanStride}; null fields = keep the defaults
+    patrolIndex: patrolPoints.length ? nextBotId % patrolPoints.length : 0, // stagger the shared ring (L7)
+    path: [], pathMode: null, lastKnownTarget: null, lastKnownTargetMotion: null, lastKnownTargetAt: null,
+    patrolResumeGoal: null, patrolTravelHeading: { x: 0, z: 1 }, target: null,
+    healRequested: false, healArrived: false, healSafetySince: null, healThreatId: null, healStartedAt: null,
+    healthPacks: Array.from({ length: role.startingPacks }, () => makePack(1)), // dropped (w/ remaining charge) on death
+    reviveKits: 0,              // medics fuse 3 packs into one; spends it to revive a fallen ally
+    grenades: throwCountFor(botGrenadeSettings) + role.bonusGrenades, // stock, independent of the primary's ammo
+    lastGrenadeAt: null, grenadeThrow: null, grenadeEvadeAt: null, grenadeCheckAt: null,
+    grenadeEvadeId: null, grenadeGoal: null, evadeSeed: null,  // threat being evaded + the cell picked to sit out its blast
+    evadingUntil: 0,            // self-expiring dash-pose stamp; outlives the threat by the linger
+    carryBlend: null,           // eased {position,rotation} walk/run/dash delta on the stance hold
+    carryLocomotion: null,      // last resolved carry name, so a switch can free/reclaim the off hand
+    heldPackMesh: null,         // lazily-built in-hand pack visual, shown only while healing/tending
+    packSeekGoal: null,         // {x,z} of a dropped pack this bot is walking to collect
+    packPickupCrouchUntil: 0,   // timestamp until which the bot dips into a crouch to grab a pack
+    // Stance. Actor-direct, no register mirror: only this bot's own seams read it, so nothing leaks
+    // between bots through the bind/commit globals.
+    stance: STANCE_STAND,       // effective stance this frame, resolved once in updateBotSentry
+    stanceLatch: null,          // {stance,changedAt,blockedUntil} hysteresis state for stepStanceTransition
+    stanceWeights: null,        // {crouch01,prone01} eased pose weights shared by the rig and the capsule
+    stanceForcedCrouch: false,  // raw heal/pack-dip predicate, kept so the pose survives a disabled decider
+    standHeight: entity.capsule.end.y - entity.capsule.start.y, // straight section at spawn; stance scales from this
+    poseMode: 'none',           // 'none' | 'rifleHeal' | 'medicHold' -- drives which arm override is active
+    medicAction: null,          // current medic duty {state,kind,targetId,x,z} or null (medics only)
+    medicTendTargetId: null,    // id being channelled + when the channel started (revive timing)
+    medicTendStartedAt: 0,
+    // S13: the one bot->bot command channel. Was heal-only; now any caller can pin a bot briefly
+    // (medic servicing it, or its own squad's base-of-fire element). Actor-direct, no register mirror.
+    // A10 aim state. Actor-direct, no register mirror: only this bot's own fire path reads it.
+    aimContactAt: null,         // when the current unbroken sight of the target began
+    aimReadyAt: 0,              // ...and when the recognition delay expires and it may shoot
+    aimLostAt: null,            // when sight broke, for the re-acquire grace
+    aimTargetId: null,          // which target the acquisition above describes
+    aimPrimedUntil: 0,          // A10b: fresh contacts before this pay the attention-shift discount
+    spreadBloomDeg: 0,          // recoil climb from sustained fire, decays while not shooting
+    holdUntil: 0,               // hold position until here
+    holdSince: null,            // when the current unbroken hold started; the prone gate reads elapsed
+    holdReason: null,           // 'heal' | 'overwatch' -- heal outranks, a channel must not be cut
+    holdFacingXZ: null,         // where to look while held, when there's no visible enemy
+    pushStartedAt: null,        // S11: when this bot's current push tier began (drives the bound clock)
+    pushElement: null,          // 'base' | 'move' this bound, or null outside a push
+    squadLeaderId: null,        // whoever pickSquadLeader returned for the nearby group, for debug readouts
+    squadId: null,              // persistent roster this bot belongs to, or null when independent
+    squadRank: -1,              // rank among the squad's LIVING members (0 = leader); restamped each tick
+    medicClaimBy: null,         // (as a patient) id of the medic that has committed to us, with a lease
+    medicClaimUntil: 0,         // so other medics spread across the wounded instead of piling on one
+    medicFlood: null,           // cached nav flood-fill (path distances) for wall-aware ally selection
+    medicFloodAt: 0,            // when the cached flood was computed (throttled recompute)
+    medicFloodBuf: null,        // this medic's own flood buffers (the shared pool can't survive frames)
+    roleInsignia: null,         // lazily-built overhead class marker (e.g. medic cross), built at spawn
+    leaderInsignia: null,       // separate overhead chevron, independent of class -- see setSquadLeaderMark
+    alertMark: null,            // overhead "!" shown while the squad alert is actionable
+    alertReport: null,          // this bot's FIRSTHAND alert report (what semi-alerts inherit)
+    alertMarkMode: null,        // 'full' | 'semi' | 'wary' | 'push' | 'near' | null, stamped per sentry frame
+    alertScore: 0,              // local escalation score shown as the digit beside the "!"
+    alertTierLast: null,        // last frame's tier, read by the A10 reaction delay
+    commitBits: 0,              // flee/cover/heal-flee FSM commits, stamped for the state code only
+    stateCode: null, stateCodeKey: -1,  // last 9-slot code and its packed integer, for change detection
+    traceLastPos: null, traceTickAt: null,  // trace motion columns: last sampled XZ and heartbeat stamp
+    alertWarySince: null,       // when the current alert episode began (wary flinch timer)
+    diedAt: null,               // timestamp of death, for the medic revive window
+    goalDebug: null,            // both debug overlays are built lazily, on first display
+    investigationDebug: null,
+    ragdoll: null, ragdollPose: null,
+    ragdollSettledSince: null,  // when the corpse first fell under RAGDOLL_SLEEP_ENERGY (null = awake)
+  };
+  entity.botActor = actor;
+  return actor;
+}
+
+function bindBotActor(actor) {
+  activeBotActor = actor;
+  bot = actor?.entity ?? null;
+  botMesh = actor?.mesh ?? null;
+  botProceduralBody = actor?.body ?? null;
+  botWeaponMount = actor?.weaponMount ?? null;
+  botWeaponMountToken = actor?.weaponMountToken ?? 0;
+  botReloadUntil = actor?.reloadUntil ?? null;
+  botReloadWeaponId = actor?.reloadWeaponId ?? null;
+  botState = actor?.state ?? BOT_PATROL;
+  botTargetVisible = actor?.targetVisible ?? false;
+  botTargetDistance = actor?.targetDistance ?? Infinity;
+  botTargetVisGate = actor?.targetVisGate ?? '-';
+  lastShotAt = actor?.lastShotAt ?? -Infinity;
+  lastKnifeAt = actor?.lastKnifeAt ?? -Infinity;
+  botAimTarget = actor?.aimTarget ?? { yaw: 0, pitch: 0 };
+  botAimPoint = actor?.aimPoint ?? new THREE.Vector3();
+  botHasAimPoint = actor?.hasAimPoint ?? false;
+  botBlockedShotStreak = actor?.blockedShotStreak ?? 0;
+  botMissStreak = actor?.missStreak ?? 0;
+  botMuzzleRecoveryTarget = actor?.muzzleRecoveryTarget ?? null;
+  botRecoveryIssueActive = actor?.recoveryIssueActive ?? false;
+  botMuzzleRecoveryVisitedCells = actor?.muzzleRecoveryVisitedCells ?? new Set();
+  botCombatMoveGoal = actor?.combatMoveGoal ?? null;
+  botFleeGoalHistory = actor?.fleeGoalHistory ?? [];
+  botInvestigation = actor?.investigation ?? null;
+  patrolIdx = actor?.patrolIndex ?? 0;
+  currentPath = actor?.path ?? [];
+  pathMode = actor?.pathMode ?? null;
+  lastKnownTarget = actor?.lastKnownTarget ?? null;
+  lastKnownTargetMotion = actor?.lastKnownTargetMotion ?? null;
+  lastKnownTargetAt = actor?.lastKnownTargetAt ?? null;
+  botPatrolResumeGoal = actor?.patrolResumeGoal ?? null;
+  botPatrolTravelHeading = actor?.patrolTravelHeading ?? { x: 0, z: 1 };
+  botHealRequested = actor?.healRequested ?? false;
+  botHealArrived = actor?.healArrived ?? false;
+  botHealSafetySince = actor?.healSafetySince ?? null;
+  botHealThreatId = actor?.healThreatId ?? null;
+  botHealStartedAt = actor?.healStartedAt ?? null;
+  botTarget = actor?.target ?? null;
+}
+
+function commitBotActor(actor = activeBotActor) {
+  if (!actor) return;
+  actor.body = botProceduralBody;
+  actor.weaponMount = botWeaponMount;
+  actor.weaponMountToken = botWeaponMountToken;
+  actor.reloadUntil = botReloadUntil;
+  actor.reloadWeaponId = botReloadWeaponId;
+  actor.state = botState;
+  actor.targetVisible = botTargetVisible;
+  actor.targetDistance = botTargetDistance;
+  actor.targetVisGate = botTargetVisGate;
+  actor.lastShotAt = lastShotAt;
+  actor.lastKnifeAt = lastKnifeAt;
+  actor.aimTarget = botAimTarget;
+  actor.aimPoint = botAimPoint;
+  actor.hasAimPoint = botHasAimPoint;
+  actor.blockedShotStreak = botBlockedShotStreak;
+  actor.missStreak = botMissStreak;
+  actor.muzzleRecoveryTarget = botMuzzleRecoveryTarget;
+  actor.recoveryIssueActive = botRecoveryIssueActive;
+  actor.muzzleRecoveryVisitedCells = botMuzzleRecoveryVisitedCells;
+  actor.combatMoveGoal = botCombatMoveGoal;
+  actor.fleeGoalHistory = botFleeGoalHistory;
+  actor.investigation = botInvestigation;
+  actor.patrolIndex = patrolIdx;
+  actor.path = currentPath;
+  actor.pathMode = pathMode;
+  actor.lastKnownTarget = lastKnownTarget;
+  actor.lastKnownTargetMotion = lastKnownTargetMotion;
+  actor.lastKnownTargetAt = lastKnownTargetAt;
+  actor.patrolResumeGoal = botPatrolResumeGoal;
+  actor.patrolTravelHeading = botPatrolTravelHeading;
+  actor.target = botTarget;
+  actor.healRequested = botHealRequested;
+  actor.healArrived = botHealArrived;
+  actor.healSafetySince = botHealSafetySince;
+  actor.healThreatId = botHealThreatId;
+  actor.healStartedAt = botHealStartedAt;
+  // Every per-frame global has landed on the actor, so this is where the state code is exact.
+  const commitNow = botStateRecordFrameNow || performance.now();
+  botStateDescriptor(actor, commitNow);   // unconditional: forensicStateKey must stay live with the recorder off (BB-004 review)
+  if (botStateRecording) traceBotStateCode(actor, commitNow);
+}
+
+function withBotActor(actor, fn) {
+  const previous = activeBotActor;
+  if (previous) commitBotActor(previous);
+  bindBotActor(actor);
+  try { return fn(); }
+  finally {
+    commitBotActor(actor);
+    bindBotActor(previous);
+  }
+}
+
+// Pops waypoints as they're reached, steering entity.velocity toward the next one. Returns
+// true once the path is fully consumed (arrived), zeroing velocity either way when empty.
+const _fpXZ = { x: 0, z: 0 };       // followPath scratch: consumed within one followPath call
+const _fpOwnCell = { c: 0, r: 0 };
+const _navAheadCell = { c: 0, r: 0 };
+// Bound-once closures so the shared advancePath contract costs no per-frame allocation.
+let _fpEntity = null, _fpLegNext = null, _fpLegOk = false;
+const _fpContested = (wp, dist) => waypointContestedHashed(_fpEntity, botHash, wp, dist, WAYPOINT_CONTEST_RANGE);
+// Lazy cache of lineWalkable(p, next); p is fixed per followPath call, so key it on the waypoint.
+const _fpNextLeg = (from, next) => {
+  if (_fpLegNext !== next) { _fpLegNext = next; _fpLegOk = lineWalkable(navGrid, from, next); }
+  return _fpLegOk;
+};
+// A neighbor parked closer to the waypoint would starve the reach test forever -- hence the relax.
+const _fpOpts = { relaxRadius: WAYPOINT_CONTEST_RELAX, contested: _fpContested, canSkipTo: null };
+function followPath(entity, path, speed) {
+  const p = botXZInto(entity, _fpXZ);
+  _fpEntity = entity; _fpLegNext = null;
+  _fpOpts.canSkipTo = navGrid ? _fpNextLeg : null;
+  while (path.length > 0) {
+    const target = advancePath(p, path, WAYPOINT_REACH, _fpOpts);
+    if (!target) break;
+    const dx = target.x - p.x, dz = target.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    // Own cell nav-blocked (shoved into the wall margin): recovery mode. lineWalkable from a
+    // blocked start cell is false by construction, so legality checks/re-paths only thrash --
+    // steer straight for the waypoint (post-re-path it's the snapped walkable cell center).
+    const ownCell = navGrid ? worldToCellInto(navGrid, p.x, p.z, _fpOwnCell) : null;
+    const ownBlocked = !!ownCell && !isWalkableCell(navGrid, ownCell.c, ownCell.r);
+    // Pushout can strand a bot off the path line where bot->waypoint clips a wall: skip or re-path.
+    if (navGrid && !ownBlocked && !lineWalkable(navGrid, p, target)) {
+      if (path.length > 1 && _fpNextLeg(p, path[1])) { path.shift(); continue; }
+      const nowMs = performance.now();
+      if (!(entity.navRepathAt > nowMs)) {
+        entity.navRepathAt = nowMs + NAV_REPATH_COOLDOWN_MS;
+        const fresh = requestPath(entity, path[path.length - 1]);
+        if (fresh.length > 0) { path.length = 0; path.push(...fresh); continue; }
+      }
+    }
+    let mx = dx / dist, mz = dz / dist;
+    // Soft separation: steer away from living neighbors so bots don't grind on the hard pushout.
+    const sep = separationXZHashed(entity, botHash, SEPARATION_RADIUS);
+    if (sep) {
+      // Walkability gate: crowds may deflect the heading along the hall, never into a wall.
+      const m = blendSeparationDir(mx, mz, sep, SEPARATION_WEIGHT,
+        (bx, bz) => navBlockedAhead(p, bx, bz));
+      mx = m.x; mz = m.z;
+    }
+    // Crowd-spike reversal stays allowed (it is what dissolves corner jams) but damped: backing
+    // away from the waypoint is a shuffle, not a full-speed sprint (kills the jam oscillation).
+    const spd = ((mx * (dx / dist) + mz * (dz / dist)) < 0 ? speed * 0.4 : speed) * terrainSpeedFactor(p, mx, mz);
+    entity.velocity.x = mx * spd;
+    entity.velocity.z = mz * spd;
+    if (entity === bot) { botPatrolTravelHeading.x = dx / dist; botPatrolTravelHeading.z = dz / dist; }
+    return false;
+  }
+  entity.velocity.x = 0; entity.velocity.z = 0;
+  return true;
+}
+// Slope drag on the movement itself, so what the slope-costed nav grid charges is also what the
+// bot pays: a climb is slow, a descent marginally quicker. Flat maps get exactly 1.
+const SLOPE_SPEED_CLIMB = 0.55;   // fraction of speed lost per unit of uphill grade
+const SLOPE_SPEED_DESCENT = 0.12; // ... gained per unit of downhill grade
+function terrainSpeedFactor(p, mx, mz) {
+  if (!terrainSettings.enabled) return 1;
+  const g = terrainField.gradientAt(p.x, p.z, 0.35);
+  const grade = g.dx * mx + g.dz * mz;   // positive = heading uphill
+  const f = grade >= 0 ? 1 - SLOPE_SPEED_CLIMB * grade : 1 + SLOPE_SPEED_DESCENT * -grade;
+  return f < 0.4 ? 0.4 : f > 1.15 ? 1.15 : f;
+}
+
+// True if the nav cell ~half a metre along (mx,mz) from p is blocked (or there is no grid).
+function navBlockedAhead(p, mx, mz) {
+  if (!navGrid) return false;
+  const cell = worldToCellInto(navGrid, p.x + mx * SEPARATION_PROBE_M, p.z + mz * SEPARATION_PROBE_M, _navAheadCell);
+  return !isWalkableCell(navGrid, cell.c, cell.r);
+}
+function requestPath(entity, toXZ) {
+  const from = botXZ(entity);
+  const raw = findPath(navGrid, from, toXZ);
+  if (!raw) return [];
+  const smoothed = smoothPath(navGrid, raw, SMOOTH_LOOKAHEAD);
+  // Pushed into the wall margin (own cell nav-blocked): keep the snapped start waypoint so the
+  // bot steps back onto the grid first; otherwise drop the waypoint at its own current cell.
+  const cell = worldToCell(navGrid, from.x, from.z);
+  return isWalkableCell(navGrid, cell.c, cell.r) ? smoothed.slice(1) : smoothed;
+}
+// Replan hygiene (F4): goal handlers used to re-run a full A* every frame their path list was
+// empty, so one unreachable goal burned one search per bot per frame.
+const REPLAN_COOLDOWN_MS = 300;      // per-entity floor between goal re-paths
+const REPLAN_BUDGET_PER_FRAME = 8;   // global A* searches served per frame (reset in updateAllBots)
+const FLEE_SEARCH_BACKOFF_MS = 400;  // latch after a failed non-heal findFleeGoal (it has no arrival latch)
+const FLEE_SQUAD_RADIUS = 16;        // m; living teammates inside this define the S9 centroid pull
+const COVER_PROBE_BACKOFF_MS = 250;  // latch after a cover-corner probe finds nothing (M2)
+let replanBudgetLeft = REPLAN_BUDGET_PER_FRAME;
+// Stable per-entity phase from the spawn-order id, so a spawn wave doesn't replan in lockstep.
+function replanJitterMs(entity) {
+  return (entity.replanJitter ??= ((parseInt(String(entity.id).replace(/\D/g, ''), 10) || 0) % 8) * 25);
+}
+// Throttled requestPath. Returns null when REFUSED (cooldown not elapsed, or the frame budget is
+// spent) -- callers must then leave their path/goal state untouched. A served request returns the
+// path array, which may be empty when the goal is genuinely unreachable.
+function requestPathBudgeted(entity, toXZ, now = botStateRecordFrameNow || performance.now()) {
+  if (!entity || !navGrid) return null;
+  if (now < (entity.nextReplanAt ?? -Infinity)) return null;
+  if (replanBudgetLeft <= 0) return null;
+  replanBudgetLeft--;
+  entity.nextReplanAt = now + REPLAN_COOLDOWN_MS + replanJitterMs(entity);
+  return requestPath(entity, toXZ);
+}
+function navCellKey(c, r) { return `${c},${r}`; }
+
+function normalizeXZ(vector) {
+  if (!vector) return null;
+  const length = Math.hypot(vector.x, vector.z);
+  return length > 1e-4 ? { x: vector.x / length, z: vector.z / length } : null;
+}
+
+function nearestWalkableNavCell(cell) {
+  if (!navGrid) return null;
+  if (isWalkableCell(navGrid, cell.c, cell.r)) return cell;
+  for (let radius = 1; radius <= 4; radius++) {
+    for (let dr = -radius; dr <= radius; dr++) for (let dc = -radius; dc <= radius; dc++) {
+      if (Math.max(Math.abs(dc), Math.abs(dr)) !== radius) continue;
+      const candidate = { c: cell.c + dc, r: cell.r + dr };
+      if (isWalkableCell(navGrid, candidate.c, candidate.r)) return candidate;
+    }
+  }
+  return null;
+}
+
+// Match nav-grid.js: eight-connected movement but never through a blocked diagonal corner.
+const INVEST_NB_DC = [1, -1, 0, 0, 1, 1, -1, -1];
+const INVEST_NB_DR = [0, 0, 1, -1, 1, -1, 1, -1];
+// Largest radius investigationCellIsWithinRegion can ever admit: the search window expires at
+// startedAt + durationMs, so investigationSearchRadius tops out at that elapsed time.
+function investigationRegionCeiling() {
+  // + 2 * ring: the H5 spread widens the admission gate, so the BFS must collect that far too.
+  return investigationRadius(botInvestigationSettings.durationMs / 1000, botInvestigationSettings) +
+    NAV_CELL + 2 * SEEK_SPREAD_RING_M;
+}
+
+function reachableInvestigationCells(start, anchor = start) {
+  const startCell = nearestWalkableNavCell(worldToCell(navGrid, start.x, start.z));
+  if (!startCell) return [];
+  const ceiling = investigationRegionCeiling();
+  // The region gate measures from the anchor, not from the bot: walk a start-centred envelope
+  // wide enough to contain the whole anchor region, and collect only what the gate can admit.
+  const travelLimit = Math.hypot(anchor.x - start.x, anchor.z - start.z) + ceiling;
+  const cells = [];
+  const visited = new Set([cellIdxOf(startCell.c, startCell.r)]);
+  const queue = [startCell];
+  for (let index = 0; index < queue.length; index++) {
+    const current = queue[index];
+    const here = cellToWorld(navGrid, current.c, current.r);
+    if (Math.hypot(here.x - anchor.x, here.z - anchor.z) <= ceiling) cells.push(current);
+    for (let k = 0; k < 8; k++) {
+      const dc = INVEST_NB_DC[k], dr = INVEST_NB_DR[k];
+      const c = current.c + dc, r = current.r + dr;
+      if (!isWalkableCell(navGrid, c, r)) continue; // bounds-checks first, so the key below is unique
+      if (visited.has(cellIdxOf(c, r))) continue;
+      if (dc !== 0 && dr !== 0 &&
+          (!isWalkableCell(navGrid, current.c + dc, current.r) || !isWalkableCell(navGrid, current.c, current.r + dr))) continue;
+      const point = cellToWorld(navGrid, c, r);
+      if (Math.hypot(point.x - start.x, point.z - start.z) > travelLimit) continue;
+      visited.add(cellIdxOf(c, r));
+      queue.push({ c, r });
+    }
+  }
+  return cells;
+}
+
+function clearMuzzleRecoveryEpisode() {
+  botMuzzleRecoveryTarget = null;
+  if (bot) goalClaims.release(bot.id, 'recover');
+  botRecoveryIssueActive = false;
+  botMuzzleRecoveryVisitedCells.clear();
+  botBlockedShotStreak = 0;
+}
+
+function candidateMuzzleOrigin(candidate) {
+  const botEye = eyePos(bot);
+  const currentMuzzle = botMountedBarrelRay()?.origin || botEye;
+  return new THREE.Vector3(
+    candidate.x + currentMuzzle.x - botEye.x,
+    currentMuzzle.y,
+    candidate.z + currentMuzzle.z - botEye.z,
+  );
+}
+
+function hasClearMuzzleShot(origin, target) {
+  const toTarget = target.clone().sub(origin);
+  const distance = toTarget.length();
+  if (distance < 1e-4) return false;
+  toTarget.multiplyScalar(1 / distance);
+  return !mapCollider.raycast([origin.x, origin.y, origin.z], [toTarget.x, toTarget.y, toTarget.z], distance - 0.04);
+}
+
+// Waypoints to a flood cell, using requestPath's own start-waypoint convention.
+function floodWaypointsTo(flood, from, c, r) {
+  const raw = floodPath(navGrid, flood, c, r);
+  if (!raw) return null;
+  const smoothed = smoothPath(navGrid, raw, SMOOTH_LOOKAHEAD);
+  const cell = worldToCell(navGrid, from.x, from.z);
+  return isWalkableCell(navGrid, cell.c, cell.r) ? smoothed.slice(1) : smoothed;
+}
+
+function findMuzzleRecoveryCell() {
+  if (!bot || !botTarget?.alive || !navGrid) return null;
+  const startCell = worldToCell(navGrid, bot.capsule.start.x, bot.capsule.start.z);
+  const targetEye = eyePos(botTarget);
+  const start = botXZ(bot);
+  // Field filter needs the target on a walkable cell; otherwise fall back to per-cell raycasts.
+  const targetCell = visField ? cellIndexAt(navGrid, targetEye.x, targetEye.z) : -1;
+  const useField = targetCell !== -1 && navGrid.cells[targetCell] === 1;
+  let confirmsLeft = MUZZLE_RECOVERY_CONFIRM_CAP;
+  // One bounded Dijkstra replaces the old A*-per-ring-candidate scan (up to 24 searches per call).
+  const flood = floodFill(navGrid, start, { maxRadius: BOT_RECOVERY_CELL_RADIUS + 1 });
+  if (!flood) return null;
+
+  for (let radius = 1; radius <= BOT_RECOVERY_CELL_RADIUS; radius++) {
+    const ring = []; // Favor the nearest ring: this is a short firing adjustment, not a flank.
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dc), Math.abs(dr)) !== radius) continue;
+        const c = startCell.c + dc, r = startCell.r + dr;
+        if (!isWalkableCell(navGrid, c, r)) continue;
+        const key = navCellKey(c, r);
+        if (botMuzzleRecoveryVisitedCells.has(key)) continue;
+        if (goalClaims.isClaimedByOther(cellIdxOf(c, r), bot.id)) continue;
+        const candidate = cellToWorld(navGrid, c, r);
+        if (Math.hypot(candidate.x - start.x, candidate.z - start.z) < WAYPOINT_REACH) continue;
+        const muzzle = candidateMuzzleOrigin(candidate);
+        if (useField ? !visField.canSee(cellIdxOf(c, r), targetCell) : !hasClearMuzzleShot(muzzle, targetEye)) continue;
+        if (flood.dist[cellIdxOf(c, r)] === Infinity) continue; // unreachable: was the empty-path skip
+        ring.push({ ...candidate, c, r, key, score: flood.dist[cellIdxOf(c, r)], muzzle });
+      }
+    }
+    ring.sort((a, b) => a.score - b.score);
+    for (const cand of ring) {
+      if (!useField) {
+        const path = floodWaypointsTo(flood, start, cand.c, cand.r);
+        if (path?.length) { cand.path = path; return cand; }
+        continue;
+      }
+      // The field is 2D at eye height: one confirming raycast on the chosen cell catches 3D oddities.
+      if (confirmsLeft-- <= 0) return null;
+      if (!hasClearMuzzleShot(cand.muzzle, targetEye)) continue;
+      const path = floodWaypointsTo(flood, start, cand.c, cand.r);
+      if (path?.length) { cand.path = path; return cand; }
+    }
+  }
+  return null;
+}
+
+function beginMuzzleRecovery() {
+  if (botMuzzleRecoveryTarget || !botTarget?.alive) return false;
+  if (!botRecoveryIssueActive) {
+    botRecoveryIssueActive = true;
+    botMuzzleRecoveryVisitedCells.clear();
+    const currentCell = worldToCell(navGrid, bot.capsule.start.x, bot.capsule.start.z);
+    botMuzzleRecoveryVisitedCells.add(navCellKey(currentCell.c, currentCell.r));
+  }
+  const candidate = findMuzzleRecoveryCell();
+  if (!candidate) return false;
+  botMuzzleRecoveryTarget = candidate;
+  goalClaims.claim(bot.id, 'recover', cellIdxOf(candidate.c, candidate.r));
+  botMuzzleRecoveryVisitedCells.add(candidate.key);
+  currentPath = candidate.path;
+  pathMode = 'muzzleRecovery';
+  return true;
+}
+
+function updateMuzzleRecoveryMovement() {
+  if (!botMuzzleRecoveryTarget) return false;
+  let refused = false;
+  if (pathMode !== 'muzzleRecovery') {
+    const fresh = requestPathBudgeted(bot, botMuzzleRecoveryTarget);
+    if (fresh) { currentPath = fresh; pathMode = 'muzzleRecovery'; }
+    else refused = true; // throttled: hold the episode open, retry when due
+  }
+  if (refused && currentPath.length === 0) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+  if (currentPath.length === 0 || followPath(bot, currentPath, currentBotMoveSpeed())) {
+    botMuzzleRecoveryTarget = null;
+    goalClaims.release(bot.id, 'recover');
+    pathMode = null;
+    botBlockedShotStreak = 0;
+    return false;
+  }
+  return true;
+}
+
+function recordBotShotResult(hit) {
+  if (hit.kind === 'player') {
+    if (activeBotActor) activeBotActor.peekMissStreak = 0;
+    clearMuzzleRecoveryEpisode();
+    return;
+  }
+  // Clean flyby misses never feed the blocked-streak: a whiffing peek is a dead angle too.
+  if (botState === BOT_COVER_HOLD && botTarget?.alive && activeBotActor?.coverCorner) {
+    // L6: same per-bot jitter on the peek-abandon threshold as on the pursue break.
+    if (++activeBotActor.peekMissStreak >= pursueBreakThreshold(COVER_PEEK_MISS_LIMIT, (activeBotActor.spreadSeed ??= botSeedFromId(activeBotActor.id)))) {
+      blacklistCover(activeBotActor.coverBlacklist, activeBotActor.coverCorner.anchorCell, botStateRecordFrameNow || performance.now());
+      releaseCoverCorner();
+    }
+  }
+  if (hit.kind !== 'world' && hit.kind !== 'terrain') {
+    botBlockedShotStreak = 0;
+    return;
+  }
+  botBlockedShotStreak++;
+  if (botBlockedShotStreak < BOT_BLOCKED_SHOT_THRESHOLD) return;
+  // Blocked shots from a peek mean the peek can't actually hit: blacklist this corner for the
+  // engagement and re-pick via the invalid-cover path instead of muzzle-recovery wander.
+  if (botState === BOT_COVER_HOLD && activeBotActor?.coverCorner) {
+    blacklistCover(activeBotActor.coverBlacklist, activeBotActor.coverCorner.anchorCell, botStateRecordFrameNow || performance.now());
+    releaseCoverCorner();
+    botBlockedShotStreak = 0;
+    return;
+  }
+  if (beginMuzzleRecovery()) botBlockedShotStreak = 0;
+}
+
+function updateBotRecoveryDebug() {
+  const active = botRecoveryDebugEnabled && !!bot && botRecoveryIssueActive;
+  botRecoveryDebug.visible = active;
+  if (!active) return;
+  const visitedPoints = [];
+  for (const key of botMuzzleRecoveryVisitedCells) {
+    const [c, r] = key.split(',').map(Number);
+    const point = cellToWorld(navGrid, c, r);
+    visitedPoints.push(new THREE.Vector3(point.x, 0.075, point.z));
+  }
+  botRecoveryVisitedGeometry.setFromPoints(visitedPoints);
+  botRecoveryVisitedPoints.visible = visitedPoints.length > 0;
+  if (!botMuzzleRecoveryTarget) {
+    botRecoveryPathLine.visible = false;
+    botRecoveryMarker.visible = false;
+    botRecoveryMuzzleLine.visible = false;
+    return;
+  }
+  const start = botXZ(bot);
+  const points = [new THREE.Vector3(start.x, 0.06, start.z)];
+  for (const waypoint of currentPath) points.push(new THREE.Vector3(waypoint.x, 0.06, waypoint.z));
+  points.push(new THREE.Vector3(botMuzzleRecoveryTarget.x, 0.06, botMuzzleRecoveryTarget.z));
+  botRecoveryPathGeometry.setFromPoints(points);
+  botRecoveryPathLine.visible = true;
+  botRecoveryMarker.position.set(botMuzzleRecoveryTarget.x, decalY(botMuzzleRecoveryTarget.x, botMuzzleRecoveryTarget.z, 0.07), botMuzzleRecoveryTarget.z);
+  botRecoveryMarker.visible = true;
+  if (botTarget?.alive) {
+    const muzzle = botMountedBarrelRay()?.origin || eyePos(bot);
+    botRecoveryMuzzleGeometry.setFromPoints([muzzle, eyePos(botTarget)]);
+    botRecoveryMuzzleLine.visible = true;
+  } else {
+    botRecoveryMuzzleLine.visible = false;
+  }
+}
+
+function updateBotBehaviorDebug() {
+  updateAllBotGoalDebug();
+  updateAllBotHitVolumeDebug();
+}
+
+// Skip patrol points this bot could never walk to. Advancing one index per failed search meant a
+// bot cut off from the patrol route stood still between re-plans forever; the region labels make
+// "can I get there at all" a lookup, so it can just take the next one it can actually reach.
+function advanceToReachablePatrolPoint() {
+  if (!navGrid || !navGrid.regions || patrolPoints.length === 0) return true;
+  const here = botXZInto(bot, _xzScratchA);
+  const mine = regionAt(navGrid, here.x, here.z);
+  if (mine < 0) return true;   // off-grid: let the search decide, as before
+  for (let i = 0; i < patrolPoints.length; i++) {
+    const p = patrolPoints[patrolIdx];
+    if (regionAt(navGrid, p.x, p.z) === mine) return true;
+    patrolIdx = (patrolIdx + 1) % patrolPoints.length;
+  }
+  return false;   // none of them are reachable from here
+}
+
+// No patrol point shares this bot's nav region (spawned in a pocket the ring never enters). Pick the
+// furthest walkable cell that IS in its region so it still walks a beat, instead of the old bare
+// `return` that left it standing on its spawn for the rest of the session. Cached until reached; the
+// per-bot scan offset keeps a whole pocket of bots from claiming the same cell.
+const PATROL_LOCAL_MIN_M = 4;   // far enough that the fallback is a real leg, not a shuffle
+const _patrolLocalProbe = { x: 0, z: 0 };   // scratch for the in-region cell sweep
+function localPatrolFallbackGoal() {
+  if (!navGrid || !navGrid.regions) return null;
+  const here = botXZInto(bot, _xzScratchA);
+  const mine = regionAt(navGrid, here.x, here.z);
+  if (mine < 0) return null;
+  const cached = activeBotActor.patrolLocalGoal;
+  if (cached && Math.hypot(cached.x - here.x, cached.z - here.z) > WAYPOINT_REACH) return cached;
+  const total = navGrid.rows * navGrid.cols;
+  const start = botSeedFromId(activeBotActor.id) % total;
+  let bestC = -1, bestR = -1, bestDist = 0;
+  for (let i = 0; i < total; i++) {
+    const idx = (start + i) % total;
+    const r = (idx / navGrid.cols) | 0, c = idx % navGrid.cols;
+    if (!isWalkableCell(navGrid, c, r)) continue;
+    const p = cellToWorldInto(navGrid, c, r, _patrolLocalProbe);   // scratch: the scan can touch many cells
+    if (regionAt(navGrid, p.x, p.z) !== mine) continue;
+    const d = Math.hypot(p.x - here.x, p.z - here.z);
+    if (d > bestDist) { bestC = c; bestR = r; bestDist = d; }
+    if (bestDist >= PATROL_LOCAL_MIN_M) break; // good enough; don't sweep the whole grid
+  }
+  const best = bestC < 0 ? null : cellToWorld(navGrid, bestC, bestR);   // one allocation, kept on the actor
+  activeBotActor.patrolLocalGoal = best;
+  return best;
+}
+
+// Escape hatch for a bot orbiting its own pocket: after PATROL_ESCAPE_MS, try once (then periodically)
+// to path to the nearest patrol point outside its region.
+//
+// This is a SYMPTOM PATCH and is deliberately built so it cannot be mistaken for the fix. The real
+// repair is connectStrandedRegions in nav-grid.js; this only runs when that could not help, i.e. the
+// pocket is walled off rather than merely steep. In that case findPath returns null by construction
+// (regions differ), so the attempt normally FAILS -- and the failure is the point: it proves the bot
+// is stranded rather than merely un-attempted, and flips pathMode to 'patrolStranded' so the trace,
+// the map and the HUD all say so out loud.
+const PATROL_ESCAPE_MS = 6000;      // orbiting this long without a target before trying to leave
+const PATROL_ESCAPE_RETRY_MS = 8000; // and how often to re-try after a failure
+function tryPatrolEscape(now) {
+  const a = activeBotActor;
+  if (now < (a.patrolEscapeNextAt ?? 0)) return a.patrolStranded ? 'stranded' : null;
+  a.patrolEscapeNextAt = now + PATROL_ESCAPE_RETRY_MS;
+  const here = botXZInto(bot, _xzScratchA);
+  const mine = regionAt(navGrid, here.x, here.z);
+  for (let i = 0; i < patrolPoints.length; i++) {
+    const p = patrolPoints[i];
+    if (regionAt(navGrid, p.x, p.z) === mine) continue;   // same region: not what we are escaping
+    const fresh = requestPathBudgeted(bot, p);
+    if (fresh && fresh.length) {
+      currentPath = fresh; pathMode = 'patrolEscape'; botCombatMoveGoal = p; patrolIdx = i;
+      a.patrolStranded = false;
+      botDiag.patrolEscaped++;
+      return 'escaped';
+    }
+  }
+  if (!a.patrolStranded) {
+    a.patrolStranded = true;
+    botDiag.patrolStranded++;
+    console.warn(`[nav] ${a.id} is stranded: its nav region holds no patrol point and no route leaves it. `
+      + 'It is orbiting a local goal, which is a fallback, NOT a fix -- the layout has a sealed pocket.');
+  }
+  return 'stranded';
+}
+
+function updatePatrolMovement() {
+  if (patrolPoints.length === 0) return;
+  const now = botStateRecordFrameNow || performance.now();
+  // Re-entry goal the budget refused at finishInvestigation time: ask again now that we are patrolling.
+  if (activeBotActor?.patrolResumePending && !botPatrolResumeGoal) {
+    const retry = choosePatrolResumeGoal(now);
+    if (retry) { botPatrolResumeGoal = retry; botCombatMoveGoal = { x: retry.x, z: retry.z }; }
+  }
+  const reentering = !!botPatrolResumeGoal;
+  let localGoal = null;
+  if (!reentering && !advanceToReachablePatrolPoint()) {
+    botDiag.patrolNoRoute++;
+    // Time spent with no reachable ring point is what triggers the escape attempt.
+    activeBotActor.patrolLocalSince ??= now;
+    if (now - activeBotActor.patrolLocalSince > PATROL_ESCAPE_MS && tryPatrolEscape(now) === 'escaped') {
+      return;   // a real route out exists; walk it instead of orbiting
+    }
+    localGoal = localPatrolFallbackGoal();
+    if (!localGoal) { botDiag.patrolIsolated++; bot.velocity.x = 0; bot.velocity.z = 0; return; }
+    botDiag.patrolLocalFallback++;
+  } else {
+    activeBotActor.patrolLocalSince = null;
+    activeBotActor.patrolStranded = false;
+  }
+  const goal = localGoal ?? (reentering ? botPatrolResumeGoal : patrolPoints[patrolIdx]);
+  // 'patrolStranded' vs 'patrolLocal' is the whole point of the escape attempt: the first means we
+  // PROVED no route out exists, the second only that we have not asked yet.
+  const mode = localGoal ? (activeBotActor.patrolStranded ? 'patrolStranded' : 'patrolLocal')
+    : reentering ? 'patrolReentry' : 'patrol';
+  let refused = false;
+  if (pathMode !== mode || currentPath.length === 0) {
+    const fresh = requestPathBudgeted(bot, goal);
+    if (!fresh) refused = true; // throttled: keep walking the stale path, retry when due
+    else {
+      currentPath = fresh;
+      pathMode = mode;
+      if (currentPath.length === 0) {
+        if (localGoal) activeBotActor.patrolLocalGoal = null; // unreachable after all: pick another
+        else if (reentering) { botPatrolResumeGoal = null; botCombatMoveGoal = null; }
+        else patrolIdx = (patrolIdx + 1) % patrolPoints.length;
+        return;
+      }
+    }
+  }
+  if (refused && currentPath.length === 0) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+  // Anti-stall give-up: a leg with no net progress (e.g. queued behind a corner-holding
+  // teammate in a one-lane hall) is abandoned for the next patrol goal instead of grinding.
+  const here = botXZInto(bot, _xzScratchA);
+  const stall = activeBotActor.patrolStall ??= { x: here.x, z: here.z, at: performance.now() };
+  const nowMs = performance.now();
+  if (Math.hypot(here.x - stall.x, here.z - stall.z) > PATROL_STALL_DIST_M) {
+    stall.x = here.x; stall.z = here.z; stall.at = nowMs;
+  } else if (nowMs - stall.at > PATROL_STALL_GIVEUP_MS) {
+    stall.x = here.x; stall.z = here.z; stall.at = nowMs;
+    if (localGoal) activeBotActor.patrolLocalGoal = null;
+    else if (reentering) { botPatrolResumeGoal = null; botCombatMoveGoal = null; }
+    else patrolIdx = (patrolIdx + 1) % patrolPoints.length;
+    currentPath = []; pathMode = null;
+    return;
+  }
+  const arrived = followPath(bot, currentPath, currentBotMoveSpeed());
+  if (!arrived) {
+    const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
+    if (speed > 1e-4) { botPatrolTravelHeading.x = bot.velocity.x / speed; botPatrolTravelHeading.z = bot.velocity.z / speed; }
+    return;
+  }
+  if (localGoal) {
+    activeBotActor.patrolLocalGoal = null; // reached it: next call picks a fresh in-region leg
+  } else if (reentering) {
+    patrolIdx = (botPatrolResumeGoal.index + 1) % patrolPoints.length;
+    botPatrolResumeGoal = null;
+    botCombatMoveGoal = null;
+  } else {
+    patrolIdx = (patrolIdx + 1) % patrolPoints.length;
+  }
+  pathMode = null;
+}
+// An unbounded flood is worth several A* searches, so it charges the frame budget accordingly.
+const PATROL_RESUME_REPLAN_COST = 4;
+function choosePatrolResumeGoal(now = botStateRecordFrameNow || performance.now()) {
+  if (!bot || !navGrid || patrolPoints.length === 0) return null;
+  // Budgeted like every other nav call. A refusal parks the request on the actor; updatePatrolMovement
+  // retries it next think tick, so the bot re-enters at the right waypoint a few hundred ms later.
+  if (now < (bot.nextReplanAt ?? -Infinity) || replanBudgetLeft < PATROL_RESUME_REPLAN_COST) {
+    if (activeBotActor) activeBotActor.patrolResumePending = true;
+    return null;
+  }
+  replanBudgetLeft -= PATROL_RESUME_REPLAN_COST;
+  bot.nextReplanAt = now + REPLAN_COOLDOWN_MS + replanJitterMs(bot);
+  if (activeBotActor) activeBotActor.patrolResumePending = false;
+  const start = botXZ(bot);
+  // One unbounded Dijkstra replaces the old A*-per-patrol-point scan; paths come out of its parents.
+  const flood = floodFill(navGrid, start, {});
+  if (!flood) return null;
+  let bestForward = null;
+  let bestFallback = null;
+  const dangerNow = botStateRecordFrameNow || performance.now();
+  const dangerLive = hasDanger(botDangerField, bot.team); // hoisted: skip the lookup for a clean team
+  for (let index = 0; index < patrolPoints.length; index++) {
+    const goal = patrolPoints[index];
+    const dx = goal.x - start.x, dz = goal.z - start.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < WAYPOINT_REACH) continue;
+    // findPath snaps an off-grid goal to the nearest walkable cell; mirror that here.
+    const cell = nearestWalkableNavCell(worldToCell(navGrid, goal.x, goal.z));
+    if (!cell || flood.dist[cellIdxOf(cell.c, cell.r)] === Infinity) continue;
+    const path = floodWaypointsTo(flood, start, cell.c, cell.r);
+    if (!path || path.length === 0) continue;
+    const first = path[0];
+    const firstDx = first.x - start.x, firstDz = first.z - start.z;
+    const firstDistance = Math.hypot(firstDx, firstDz);
+    const alignment = firstDistance > 1e-4 ? (firstDx * botPatrolTravelHeading.x + firstDz * botPatrolTravelHeading.z) / firstDistance : -1;
+    let score = flood.dist[cellIdxOf(cell.c, cell.r)] - alignment * 0.5;
+    // Minimized score: danger ADDS here (a waypoint the team keeps dying at reads as farther).
+    if (dangerLive) score += dangerPenalty(botDangerField, bot.team, cellIdxOf(cell.c, cell.r), dangerNow, DANGER_PATROL_SCALE);
+    const candidate = { x: goal.x, z: goal.z, index, score };
+    if (alignment >= -0.1) {
+      if (!bestForward || score < bestForward.score) bestForward = candidate;
+    } else if (!bestFallback || score < bestFallback.score) {
+      bestFallback = candidate;
+    }
+  }
+  // Reverse only when every reachable patrol route reverses.
+  return bestForward || bestFallback;
+}
+
+function finishInvestigation(now = botStateRecordFrameNow || performance.now()) {
+  // A teammate's live contact must not re-arm the search the frame it ends (or per-frame on
+  // an unreachable anchor) -- rest before accepting another secondhand seed.
+  if (activeBotActor) activeBotActor.contactSeedBlockUntil = now + 5000;
+  const investigatedTargetId = botInvestigation?.targetId ?? null;
+  const reentry = choosePatrolResumeGoal(now);
+  botPatrolResumeGoal = reentry;
+  botCombatMoveGoal = reentry ? { x: reentry.x, z: reentry.z } : null;
+  lastKnownTarget = null;
+  lastKnownTargetMotion = null;
+  lastKnownTargetAt = null;
+  // An investigation owns an occluded-target lock only for its own lifetime. Once it
+  // completes or expires, do not let that old unseen target recreate the same search.
+  if (investigatedTargetId && botTarget?.id === investigatedTargetId) botTarget = null;
+  currentPath = [];
+  pathMode = null;
+  botInvestigation = null;
+  if (bot) goalClaims.release(bot.id, 'seek');
+  if (botState === BOT_SEEK) {
+    botState = BOT_PATROL;
+    recordBotStateChange(activeBotActor, botState, now);
+  }
+}
+
+function investigationSearchRadius(investigation, now) {
+  return investigationRadius((now - investigation.startedAt) / 1000, botInvestigationSettings);
+}
+
+function investigationCellIsWithinRegion(investigation, cell, now) {
+  const point = cellToWorld(navGrid, cell.c, cell.r);
+  // Widened by this bot's H5 displacement: without it a high-seed bot stalls waiting for its own ring-0 cell.
+  return Math.hypot(point.x - investigation.anchor.x, point.z - investigation.anchor.z) <=
+    investigationSearchRadius(investigation, now) + (investigation.spreadRadius ?? 0) + NAV_CELL * 0.5;
+}
+
+function investigationHasUnattemptedCells(investigation) {
+  const pending = investigation.pending;
+  for (let i = investigation.pendingIndex; i < pending.length; i++) {
+    if (!investigation.attempted.has(pending[i].key)) return true;
+  }
+  return false;
+}
+function beginInvestigation(now) {
+  if (botInvestigation || !bot || !lastKnownTarget || !navGrid) return;
+  // H5: every bot gets the same last-known point, so each searches its own offset of it instead.
+  // Solo searchers take the true anchor; groups use the 8 spiral slots (slot 0 = ring 0 covered).
+  const spreadSeed = activeBotActor ? (activeBotActor.spreadSeed ??= botSeedFromId(activeBotActor.id)) : botSeedFromId(bot.id);
+  const effSeed = livingTeammatesNear(bot, SUPPORT_RADIUS) <= 1 ? 0 : (spreadSeed & 7);
+  const spread = spreadAnchor(lastKnownTarget, effSeed, SEEK_SPREAD_RING_M);
+  const anchorCell = worldToCell(navGrid, spread.x, spread.z);
+  const directFromBot = normalizeXZ({
+    x: lastKnownTarget.x - bot.capsule.start.x,
+    z: lastKnownTarget.z - bot.capsule.start.z,
+  });
+  botInvestigation = {
+    targetId: botTarget?.id ?? null,
+    startedAt: now,
+    expiresAt: now + botInvestigationSettings.durationMs,
+    lastSeenAt: lastKnownTargetAt ?? now,
+    motion: normalizeXZ(lastKnownTargetMotion),
+    anchor: { ...lastKnownTarget },
+    spread,                                            // per-bot offset point the frontier sorts around
+    spreadRadius: spreadAnchorRadius(effSeed, SEEK_SPREAD_RING_M),
+    anchorCell,
+    cells: reachableInvestigationCells(botXZ(bot), lastKnownTarget),
+    attempted: new Set(),
+    preferredDirection: normalizeXZ(lastKnownTargetMotion) || directFromBot,
+    pending: [],
+    pendingIndex: 0,
+    flankSign: 1,
+    lastSeekGoal: null,
+  };
+  orderInvestigationFrontier(botInvestigation);
+}
+
+function findClosestReachableGoal(target) {
+  if (!bot || !target || !navGrid) return null;
+  const rawPath = findPath(navGrid, botXZ(bot), target);
+  if (!rawPath?.length) return null;
+  const goal = rawPath[rawPath.length - 1];
+  return { x: goal.x, z: goal.z, path: smoothPath(navGrid, rawPath, SMOOTH_LOOKAHEAD).slice(1) };
+}
+
+function orderInvestigationFrontier(investigation) {
+  const pending = [];
+  // Small additive preference for cells that can actually see the last-known cell (baked field);
+  // an unwalkable anchor cell just disables the bonus (canSee is false everywhere).
+  const anchorIdx = visField && investigation.anchor ? cellIndexAt(navGrid, investigation.anchor.x, investigation.anchor.z) : -1;
+  // Distance/alignment measure from the per-bot spread point; the LOS bonus below stays on the
+  // true last-known anchor (that's what a bot actually wants eyes on).
+  const centre = investigation.spread ?? investigation.anchor;
+  for (const cell of investigation.cells) {
+    const key = cellIdxOf(cell.c, cell.r); // integer cell key; `attempted` is keyed the same way
+    if (investigation.attempted.has(key)) continue;
+    const dc = cell.c - investigation.anchorCell.c;
+    const dr = cell.r - investigation.anchorCell.r;
+    const ring = Math.max(Math.abs(dc), Math.abs(dr));
+    const point = cellToWorld(navGrid, cell.c, cell.r);
+    const dx = point.x - centre.x;
+    const dz = point.z - centre.z;
+    const distanceSq = dx * dx + dz * dz;
+    const distance = Math.sqrt(distanceSq);
+    let alignment = investigation.preferredDirection && distance > 1e-4
+      ? (dx * investigation.preferredDirection.x + dz * investigation.preferredDirection.z) / distance
+      : 0;
+    if (anchorIdx !== -1 && visField.canSee(cellIdxOf(cell.c, cell.r), anchorIdx)) alignment += INVESTIGATE_LOS_BONUS;
+    pending.push({ ...cell, key, ring, alignment, distanceSq });
+  }
+  pending.sort((a, b) =>
+    a.ring - b.ring ||
+    b.alignment - a.alignment ||
+    a.distanceSq - b.distanceSq ||
+    a.r - b.r || a.c - b.c,
+  );
+  investigation.pending = pending;
+  investigation.pendingIndex = 0;
+}
+
+function chooseNextInvestigationCell(investigation, now) {
+  while (investigation.pendingIndex < investigation.pending.length) {
+    const cell = investigation.pending[investigation.pendingIndex];
+    if (investigation.attempted.has(cell.key)) { investigation.pendingIndex++; continue; }
+    // Pending cells remain queued until the expanding uncertainty region reaches them.
+    if (!investigationCellIsWithinRegion(investigation, cell, now)) return null;
+    investigation.pendingIndex++;
+    return cell;
+  }
+  return null;
+}
+
+function planNextInvestigationGoal(investigation, now) {
+  // Each cell is marked before planning. If A* rejects one, it cannot be selected again.
+  for (;;) {
+    const cell = chooseNextInvestigationCell(investigation, now);
+    if (!cell) return null;
+    // Another bot is already headed here: skip without marking attempted (recovered only if the frontier reorders).
+    if (goalClaims.isClaimedByOther(cell.key, bot.id)) continue;
+    investigation.attempted.add(cell.key);
+    const goal = cellToWorld(navGrid, cell.c, cell.r);
+    const plan = findClosestReachableGoal(goal);
+    if (plan) return { ...plan, cell };
+  }
+}
+
+function updateInvestigationPreferenceAfterFlee(fleeGoal) {
+  const investigation = botInvestigation;
+  if (!investigation?.lastSeekGoal || !fleeGoal) return;
+  const retreat = normalizeXZ({
+    x: fleeGoal.x - investigation.lastSeekGoal.x,
+    z: fleeGoal.z - investigation.lastSeekGoal.z,
+  });
+  if (!retreat) return;
+  // The seek->flee vector identifies the blocked approach. Its alternating perpendiculars rank
+  // the next shell's flank cells first; they never suppress other reachable cells.
+  investigation.preferredDirection = {
+    x: -retreat.z * investigation.flankSign,
+    z: retreat.x * investigation.flankSign,
+  };
+  investigation.flankSign *= -1;
+  orderInvestigationFrontier(investigation);
+}
+
+function updateSeekMovement(now) {
+  if (!lastKnownTarget) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+  if (botInvestigation && botInvestigation.targetId !== (botTarget?.id ?? null)) {
+    // The remembered point belongs to the previous target. Never reuse it as the
+    // anchor for a newly selected but still unseen target.
+    finishInvestigation(now);
+    return;
+  }
+  beginInvestigation(now);
+  const investigation = botInvestigation;
+  if (!investigation) { finishInvestigation(now); return; }
+  if (now >= investigation.expiresAt) {
+    recordBotEvent(activeBotActor, 'search window expired', now);
+    finishInvestigation(now);
+    return;
+  }
+
+  if (pathMode !== 'seek') {
+    const plan = planNextInvestigationGoal(investigation, now);
+    if (!plan) {
+      if (!investigationHasUnattemptedCells(investigation)) {
+        recordBotEvent(activeBotActor, 'search region exhausted', now);
+        finishInvestigation(now);
+      } else {
+        // The next cells are outside the current uncertainty radius; wait for it to expand.
+        bot.velocity.x = 0; bot.velocity.z = 0;
+        pathMode = null; currentPath = []; botCombatMoveGoal = null;
+      }
+      return;
+    }
+    currentPath = plan.path;
+    pathMode = 'seek';
+    botCombatMoveGoal = { x: plan.x, z: plan.z };
+    investigation.lastSeekGoal = { x: plan.x, z: plan.z };
+    goalClaims.claim(bot.id, 'seek', plan.cell.key);
+  }
+  const arrived = currentPath.length === 0 || followPath(bot, currentPath, currentBotMoveSpeed());
+  if (!arrived) return;
+  currentPath = [];
+  pathMode = null;
+  botCombatMoveGoal = null;
+}
+// Turns the bot to face its direction of travel while patrolling/seeking (aim/fire drives
+// yaw/pitch itself, this only runs for the movement states).
+function standoffGoalFromTarget(target, range) {
+  let dx = bot.capsule.start.x - target.x, dz = bot.capsule.start.z - target.z;
+  let distance = Math.hypot(dx, dz);
+  if (distance < 1e-4) {
+    dx = -Math.sin(bot.yaw); dz = -Math.cos(bot.yaw); distance = 1;
+  }
+  return { x: target.x + dx / distance * range, z: target.z + dz / distance * range };
+}
+
+function goalChanged(goal, threshold = 0.65) {
+  return !botCombatMoveGoal || Math.hypot(goal.x - botCombatMoveGoal.x, goal.z - botCombatMoveGoal.z) > threshold;
+}
+
+const _pursuitTargetXZ = { x: 0, z: 0 };
+const _pursuitSelfXZ = { x: 0, z: 0 };
+const PINCER_OFFSETS = pincerOffsets();
+
+// S14: take an approach bearing no other pursuer has claimed, so a squad converges from several
+// sides instead of queueing down one corridor behind the leader. Offsets alternate outward from the
+// direct line; if every one is taken or off-grid, take the direct line anyway -- a contested goal
+// beats no goal, and separation resolves the overlap.
+function pursuitStandoffGoal(target, range) {
+  const self = botXZInto(bot, _pursuitSelfXZ);
+  const direct = standoffPoint(target, self, range, 0, bot.yaw);
+  if (!navGrid) return direct;
+  for (const offset of PINCER_OFFSETS) {
+    const candidate = offset === 0 ? direct : standoffPoint(target, self, range, offset, bot.yaw);
+    const cell = worldToCell(navGrid, candidate.x, candidate.z);
+    if (!isWalkableCell(navGrid, cell.c, cell.r)) continue;
+    const idx = cellIdxOf(cell.c, cell.r);
+    if (goalClaims.isClaimedByOther(idx, bot.id)) continue;
+    goalClaims.claim(bot.id, 'pursue', idx);
+    return candidate;
+  }
+  return direct;
+}
+
+function updatePursuitMovement() {
+  if (!botTarget?.alive) return;
+  const targetXZ = botXZInto(botTarget, _pursuitTargetXZ);
+  // A7: chase where the target is going. Aim and fire stay on the present position (hitscan), so
+  // this only moves the feet -- it's the difference between intercepting and trailing forever.
+  const lead = interceptPoint(targetXZ, botTarget.velocity, botXZInto(bot, _pursuitSelfXZ),
+    { speed: currentBotMoveSpeed(), closeDistance: botCombatStandoff });
+  // Only lead into space the target could actually run through: a prediction that clips a corner
+  // sends the chaser at the wall the target is about to disappear behind.
+  const chaseAt = lead.leadSeconds > 0 && (!navGrid || lineWalkable(navGrid, targetXZ, lead)) ? lead : targetXZ;
+  // Aim inside the ladder's exit buffer -- the bare standoff distance never satisfies the exit
+  // check (targetDistance <= pursueDistance - buffer), so a bot that reaches it freezes in PURSUE.
+  const goal = pursuitStandoffGoal(chaseAt, Math.max(0, botCombatStandoff - botBehaviorSettings.pursueExitBuffer));
+  let refused = false;
+  if (pathMode !== 'pursue' || goalChanged(goal) || currentPath.length === 0) {
+    const fresh = requestPathBudgeted(bot, goal);
+    if (fresh) { currentPath = fresh; pathMode = 'pursue'; botCombatMoveGoal = goal; }
+    else refused = true; // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+    pathMode = null;
+    botCombatMoveGoal = null;
+    return;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) {
+    pathMode = null;
+    botCombatMoveGoal = null;
+  }
+}
+
+function updateKnifeMovement(targetDistance) {
+  const knife = getWeapon('knife');
+  if (!botTarget?.alive || !knife) return;
+  if (targetDistance <= knife.range) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    return;
+  }
+  const goal = standoffGoalFromTarget(botXZInto(botTarget, _xzScratchA), Math.max(0.25, knife.range * 0.72));
+  let refused = false;
+  if (pathMode !== 'knife' || goalChanged(goal, 0.35) || currentPath.length === 0) {
+    const fresh = requestPathBudgeted(bot, goal);
+    if (fresh) { currentPath = fresh; pathMode = 'knife'; botCombatMoveGoal = goal; }
+    else refused = true; // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+    pathMode = null;
+    botCombatMoveGoal = null;
+    return;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) {
+    pathMode = null;
+    botCombatMoveGoal = null;
+  }
+}
+function currentFleeThreat() {
+  const remembered = botHealRequested && botHealThreatId ? combatEntityById(botHealThreatId) : null;
+  return remembered?.alive ? remembered : botTarget?.alive ? botTarget : null;
+}
+
+// S9: the local squad's XZ centroid (self excluded), or null when nobody living is near.
+function _fsqVisit(other) {
+  if (other.alive === false || other.team !== _fsqTeam || other.id === _fsqId) return;
+  if (Math.hypot(other.capsule.start.x - _fsqX, other.capsule.start.z - _fsqZ) > FLEE_SQUAD_RADIUS) return;
+  _fleeSquad.push({ x: other.capsule.start.x, z: other.capsule.start.z });
+}
+function findFleeGoal() {
+  const threatTarget = currentFleeThreat();
+  if (!bot || !threatTarget || !navGrid) return null;
+  const source = botXZ(bot);
+  const threat = botXZ(threatTarget);
+  const maxSearchRadius = botHealRequested ? Math.max(botBehaviorSettings.fleeSearchRadius, botHealthSettings.retreatSearchRadius) : botBehaviorSettings.fleeSearchRadius;
+  // One bounded Dijkstra scores every reachable cell; the old shape ran a full A* per cell.
+  const flood = floodFill(navGrid, source, { maxRadius: maxSearchRadius });
+  if (!flood) return null;
+  const startCell = flood.start;
+  // Baked-field cover bonus for every candidate; disabled if the threat quantizes to an
+  // unwalkable/off-grid cell (canSee would report "hidden" everywhere — a false all-covered).
+  const threatCell = visField ? cellIndexAt(navGrid, threat.x, threat.z) : -1;
+  const coverEligible = threatCell !== -1 && navGrid.cells[threatCell] === 1;
+  const now = botStateRecordFrameNow || performance.now();
+  const dangerLive = hasDanger(botDangerField, bot.team); // hoisted: skip the lookup for a clean team
+  // Squad centroid once per call (findFleeGoal is backoff-rate-limited, so this never runs per frame).
+  _fleeSquad.length = 0;
+  _fsqTeam = bot.team; _fsqId = bot.id; _fsqX = source.x; _fsqZ = source.z;
+  botHash.forEachNear(source.x, source.z, FLEE_SQUAD_RADIUS, _fsqVisit);
+  const squad = teamCentroid(_fleeSquad);
+  _fleeSquad.length = 0; _fsqTeam = null; _fsqId = null;
+  const candidates = [];
+  for (let dr = -maxSearchRadius; dr <= maxSearchRadius; dr++) {
+    for (let dc = -maxSearchRadius; dc <= maxSearchRadius; dc++) {
+      if (dc === 0 && dr === 0) continue;
+      const c = startCell.c + dc, r = startCell.r + dr;
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      const key = r * navGrid.cols + c;
+      if (flood.dist[key] === Infinity) continue;
+      if (goalClaims.isClaimedByOther(key, bot.id)) continue;
+      const goal = cellToWorld(navGrid, c, r);
+      const covered = coverEligible && !visField.canSee(threatCell, key);
+      // Reused scratch skips fleeCandidateScore's destructuring defaults: set every field.
+      _fleeScore.threatDistance = Math.hypot(goal.x - threat.x, goal.z - threat.z);
+      _fleeScore.pathDist = flood.dist[key];
+      _fleeScore.covered = covered;
+      _fleeScore.exposure01 = coverEligible
+        ? fleePathExposureFromParents(visField, navGrid, threatCell, flood.parent, flood.startKey, key) : 0;
+      _fleeScore.centroidDistance = squad ? Math.hypot(goal.x - squad.x, goal.z - squad.z) : null;
+      _fleeScore.coverScore = botHealthSettings.coverScore;
+      let score = fleeCandidateScore(_fleeScore);
+      if (dangerLive) score -= dangerPenalty(botDangerField, bot.team, key, now, DANGER_FLEE_SCALE);
+      candidates.push({ ...goal, c, r, score, covered });
+    }
+  }
+  if (candidates.length === 0) return null;
+  let best = null;
+  let recentFallback = null;
+  for (const candidate of candidates) {
+    if (isRecentFleeGoal(candidate.c, candidate.r)) {
+      if (!recentFallback || candidate.score > recentFallback.score) recentFallback = candidate;
+    } else if (!best || candidate.score > best.score) {
+      best = candidate;
+    }
+  }
+  // Avoid recently completed retreat cells unless every local candidate is remembered.
+  const chosen = best || recentFallback;
+  if (!chosen) return null;
+  const raw = floodPath(navGrid, flood, chosen.c, chosen.r);
+  if (!raw) return null;
+  chosen.path = smoothPath(navGrid, raw, SMOOTH_LOOKAHEAD).slice(1);
+  return chosen;
+}
+
+// Path the bot to its chosen dropped-pack goal; collection happens in collectPacksUnderfoot on
+// arrival. Returns true when it owns movement this frame. Shared by the healthy-detour (patrol) and
+// wounded-packless (flee) cases.
+function updatePackSeekMovement(now, speed = currentBotMoveSpeed()) {
+  const goal = activeBotActor?.packSeekGoal;
+  if (!goal) return false;
+  const stale = pathMode !== 'packseek' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 0.5;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, now);
+    if (fresh) {
+      currentPath = fresh;
+      pathMode = 'packseek';
+      botCombatMoveGoal = { x: goal.x, z: goal.z };
+      recordBotEvent(activeBotActor, `seeking pack at (${goal.x.toFixed(2)}, ${goal.z.toFixed(2)})`, now);
+    } else refused = true; // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; } // hold, don't drop the errand
+    pathMode = null; botCombatMoveGoal = null; return false;
+  }
+  if (followPath(bot, currentPath, speed)) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+function updateFleeMovement(now) {
+  // A wounded bot with no pack routes to the nearest visible dropped pack instead of generic cover.
+  if (botHealRequested && !hasHealResource(activeBotActor?.healthPacks) && activeBotActor?.packSeekGoal) {
+    if (updatePackSeekMovement(now, currentBotMoveSpeed() * 1.24)) return;
+  }
+  if (botHealRequested && botHealArrived) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    return;
+  }
+  if (pathMode !== 'flee' || !botCombatMoveGoal || currentPath.length === 0) {
+    // Kite-flee has no arrival latch, so a failing search re-ran the flood every frame: back it off.
+    const blocked = !botHealRequested && now < (activeBotActor.fleeSearchBlockedUntil ?? -Infinity);
+    const plan = blocked ? null : findFleeGoal();
+    if (!plan) {
+      if (botHealRequested) recordBotEvent(activeBotActor, 'heal-flee: no reachable retreat goal', now);
+      goalClaims.release(bot.id, 'flee');
+      bot.velocity.x = 0; bot.velocity.z = 0;
+      if (botHealRequested) { botHealArrived = true; botHealSafetySince = null; }
+      else if (!blocked) activeBotActor.fleeSearchBlockedUntil = now + FLEE_SEARCH_BACKOFF_MS;
+      return;
+    }
+    currentPath = plan.path;
+    if (botHealRequested) recordBotEvent(activeBotActor, `heal-flee goal: (${plan.x.toFixed(2)}, ${plan.z.toFixed(2)})  covered:${plan.covered ? 'yes' : 'no'}`, now);
+    pathMode = 'flee';
+    botCombatMoveGoal = { x: plan.x, z: plan.z };
+    goalClaims.claim(bot.id, 'flee', cellIdxOf(plan.c, plan.r));
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed() * (botHealRequested ? 1.24 : 1.12))) {
+    goalClaims.release(bot.id, 'flee');
+    const completedGoal = { x: botCombatMoveGoal.x, z: botCombatMoveGoal.z };
+    if (botHealRequested) recordBotEvent(activeBotActor, `heal-flee arrived: (${completedGoal.x.toFixed(2)}, ${completedGoal.z.toFixed(2)})`, now);
+    updateInvestigationPreferenceAfterFlee(completedGoal);
+    rememberFleeGoal(completedGoal);
+    pathMode = null;
+    botCombatMoveGoal = null;
+    // A health retreat reached its selected safe node. Hold position long enough to
+    // evaluate actual local danger; only updateBotSentry's unsafe branch may release
+    // this latch and select another retreat goal.
+    if (botHealRequested) { botHealArrived = true; botHealSafetySince = null; }
+  }
+}
+
+// ===================== grenade secondary (throw decision + live-grenade evade) =====================
+// bot-grenade.js owns the pure decision (range/cluster/friendly-fire/cooldowns); this binds it to the
+// live roster, solves and clearance-checks the arc, and drives the wind-up -> release swap.
+let botGrenadesEnabled = true;
+const botGrenadeSettings = { ...GRENADE_DEFAULTS };
+// Live ordnance tuning for the THROWN grenade, seeded from its authored weapons.js spec. These are
+// what the throw, the blast and its FX actually read, so the whole chain (self/friendly veto rings,
+// evade radius, damage falloff) follows a slider without touching the shared weapon def. The RPG
+// keeps its authored numbers -- one tunable explosive is enough to tune against.
+const botGrenadeBlast = {
+  fuseS: getWeapon('grenade')?.projectile?.fuse ?? 2,
+  fuseJitterS: 0,          // +/- spread on the fuse, rolled per throw; 0 = every grenade cooks alike
+  blastRadius: getWeapon('grenade')?.projectile?.blastRadius ?? 15,
+  damage: getWeapon('grenade')?.damage ?? 95,
+  fxScale: 1,              // visual only: the blast puff/light size, not the damage ring
+};
+const GRENADE_FUSE_TAIL_S = 0.5;   // life past the fuse, so `life` expiry never pre-empts the cook
+function isTunedGrenade(weapon) { return weapon?.id === 'grenade'; }
+// One rolled fuse per throw. Clamped off zero so a wide jitter can't detonate in the thrower's hand.
+function rolledGrenadeFuse() {
+  const jitter = (Math.random() * 2 - 1) * botGrenadeBlast.fuseJitterS;
+  return Math.max(0.15, botGrenadeBlast.fuseS + jitter);
+}
+const GRENADE_WINDUP_MS = 420;          // wind-up before release; the bot is frozen and facing the throw
+const GRENADE_DECIDE_INTERVAL_MS = 500; // per-bot throttle on the (roster-scanning) throw decision
+const GRENADE_EVADE_REPLAN_MS = 400;
+const teamLastGrenadeAt = new Map();     // team -> ms, feeds the squad-wide volley cooldown
+const _grenadeEnemies = [], _grenadeAllies = [], _grenadeThreats = [];
+const _grenadeOrigin = new THREE.Vector3();
+const _grenadeFrom = [0, 0, 0];
+function grenadeSpec() { return getWeapon('grenade')?.projectile || null; }
+function grenadeBody(e) {
+  const mid = e.capsule.start.y + (e.capsule.end.y - e.capsule.start.y) * 0.5;
+  return { id: e.id, p: [e.capsule.start.x, mid, e.capsule.start.z], cap: e.capsule };
+}
+// bot-grenade's occlusion hook, wired to the SAME blastExposure the damage model runs. That identity
+// is the point: the throw decision and the detonation can no longer disagree about what a wall does,
+// and switching "Blast blocked by walls" off reverts both together (blastExposure returns 1).
+// Tested against where the grenade will actually go off -- ground under the aim point, matching
+// solveGrenadeThrow -- not the target's chest, which sits a metre higher and clears low walls.
+const _grenadeAimPoint = new THREE.Vector3();
+const _grenadeRoughAimArr = [0, 0, 0];
+function _grenadeRoughAim(x, z) { _grenadeRoughAimArr[0] = x; _grenadeRoughAimArr[2] = z; return _grenadeRoughAimArr; }
+function blastReachesBody(aimPoint, entry) {
+  if (!entry?.cap) return true;   // no capsule to test: fall back to the plain radius ring
+  _grenadeAimPoint.set(aimPoint[0], groundHeight(aimPoint[0], aimPoint[2]) + 0.15, aimPoint[2]);
+  return blastExposure(_grenadeAimPoint, entry.cap) > 0;
+}
+// Out-param twin for the per-frame evade check, which must not allocate.
+function grenadeBodyInto(e, out) {
+  out[0] = e.capsule.start.x;
+  out[1] = e.capsule.start.y + (e.capsule.end.y - e.capsule.start.y) * 0.5;
+  out[2] = e.capsule.start.z;
+  return out;
+}
+// Live grenades in flight, rebuilt once per frame and read by every bot's evade check.
+function refreshGrenadeThreats() {
+  _grenadeThreats.length = 0;
+  for (const proj of botProjectiles.list) {
+    if (proj.weaponId !== 'grenade' && proj.state.bounces !== true) continue;
+    const fuse = proj.sim.fuse;
+    _grenadeThreats.push({
+      id: proj.id,   // so a warning call-out can be deduped per grenade, not per bot
+      p: proj.transform.p,
+      blastRadius: proj.state.blastRadius,
+      fuseRemainingS: Number.isFinite(fuse) ? Math.max(0, fuse - proj.sim.age) : Math.max(0, proj.sim.life),
+    });
+  }
+}
+// Solve the lob to `aimPoint` and reject it if the arc clips geometry before the last leg.
+// Semi-implicit Euler falls slightly short of the analytic parabola, so the aim is lifted by the
+// integrator's own error term rather than letting every throw land metres short.
+function solveGrenadeThrow(fromVec, aimPoint) {
+  const spec = grenadeSpec();
+  if (!spec) return null;
+  _grenadeFrom[0] = fromVec.x; _grenadeFrom[1] = fromVec.y; _grenadeFrom[2] = fromVec.z;
+  // Aim at the ground under the target, not its chest: a lob solved to chest height passes through
+  // and lands many metres long. bot-grenade carries the body Y through, so the drop happens here.
+  const grounded = [aimPoint[0], groundHeight(aimPoint[0], aimPoint[2]) + 0.15, aimPoint[2]];
+  const flat = Math.hypot(grounded[0] - fromVec.x, grounded[2] - fromVec.z);
+  let vel = solveBallisticArc(_grenadeFrom, grounded, spec.speed, spec.gravity);
+  if (!vel) return null;
+  const flightS = flat / Math.max(0.1, Math.hypot(vel.vx, vel.vz));
+  if (spec.gravity > 0) {
+    const lifted = [grounded[0], grounded[1] + 0.5 * spec.gravity * (1 / 60) * flightS, grounded[2]];
+    vel = solveBallisticArc(_grenadeFrom, lifted, spec.speed, spec.gravity) || vel;
+  }
+  const pts = sampleArcPoints(_grenadeFrom, vel, spec.gravity, 6, flightS);
+  for (let i = 0; i < pts.length - 2; i++) {   // last leg may legitimately end in a wall/floor
+    const a = pts[i], b = pts[i + 1];
+    let dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-4) continue;
+    if (mapCollider.raycast([a[0], a[1], a[2]], [dx / len, dy / len, dz / len], len)) return null;
+  }
+  return { vel, flightS };
+}
+// Cheap gates first: the roster scan only runs once cooldowns and stock actually allow a throw.
+function grenadeCandidate(now) {
+  const actor = activeBotActor;
+  if (!botGrenadesEnabled || !actor || !botTarget || (actor.grenades ?? 0) <= 0) return null;
+  // A veto (friendly in the ring, wrong range) leaves the cooldown untouched, so without this the
+  // roster scan below would re-run every frame for every bot that will never throw.
+  if (actor.grenadeCheckAt != null && now - actor.grenadeCheckAt < GRENADE_DECIDE_INTERVAL_MS) return null;
+  actor.grenadeCheckAt = now;
+  if (actor.lastGrenadeAt != null && now - actor.lastGrenadeAt < botGrenadeSettings.cooldownMs) return null;
+  const teamAt = teamLastGrenadeAt.get(bot.team);
+  if (teamAt != null && now - teamAt < botGrenadeSettings.teamCooldownMs) return null;
+  // Conservative range/staleness pre-gate so the roster scan below is skipped in the common case.
+  // Slack covers the aim lead, so this can only reject throws chooseGrenadeThrow would also reject.
+  const blastR = blastRadiusFor(getWeapon('grenade'));   // live tuning: the veto rings follow the slider
+  const aimX = botTargetVisible ? botTarget.capsule.start.x : lastKnownTarget?.x;
+  const aimZ = botTargetVisible ? botTarget.capsule.start.z : lastKnownTarget?.z;
+  if (aimX == null || aimZ == null) return null;
+  if (!botTargetVisible && !(now - lastKnownTargetAt <= botGrenadeSettings.blindThrowMaxAgeMs)) return null;
+  const slack = botGrenadeSettings.aimLeadS * BOT_MOVE_SPEED * botMovementSettings.runMultiplier;
+  const roughDist = Math.hypot(aimX - bot.capsule.start.x, aimZ - bot.capsule.start.z);
+  if (roughDist > botGrenadeSettings.maxRange + slack) return null;
+  // Self pre-gate, now occlusion-aware so it keeps the "can only reject what chooseGrenadeThrow would
+  // also reject" invariant. Without the reach test this would veto every short throw before the real
+  // gate ever saw it, silently undoing the corner-cook the self veto now allows.
+  if (roughDist + slack <= blastR * botGrenadeSettings.selfRadiusScale
+    && blastReachesBody(_grenadeRoughAim(aimX, aimZ), { cap: bot.capsule })) return null;
+  _grenadeEnemies.length = 0; _grenadeAllies.length = 0;
+  for (const other of botActors) {
+    const e = other.entity;
+    if (e.alive === false || !e.capsule) continue;
+    if (e.team === bot.team) { if (e.id !== bot.id) _grenadeAllies.push(grenadeBody(e)); }
+    else _grenadeEnemies.push(grenadeBody(e));
+  }
+  for (const t of dummyTargets) if (t.alive !== false && t.capsule) _grenadeEnemies.push(grenadeBody(t));
+  const lastKnownP = lastKnownTarget
+    ? [lastKnownTarget.x, groundHeight(lastKnownTarget.x, lastKnownTarget.z) + 1, lastKnownTarget.z] : null;
+  const selfBody = grenadeBody(bot);
+  return chooseGrenadeThrow({
+    self: { id: bot.id, team: bot.team, p: selfBody.p, cap: selfBody.cap },
+    target: {
+      id: botTarget.id, p: grenadeBody(botTarget).p, visible: botTargetVisible,
+      lastKnownP, lastKnownAt: lastKnownTargetAt,
+      velocity: botTarget.velocity ? { x: botTarget.velocity.x, z: botTarget.velocity.z } : null,
+    },
+    enemies: _grenadeEnemies, allies: _grenadeAllies,
+    blastRadius: blastR,
+    grenadesLeft: actor.grenades, lastThrowAt: actor.lastGrenadeAt,
+    lastTeamThrowAt: teamAt ?? null, now,
+    blastReaches: blastReachesBody,   // same occlusion the blast itself will use
+  }, botGrenadeSettings);
+}
+function releaseGrenade(actor, pending, now) {
+  const weapon = getWeapon('grenade');
+  if (!weapon) return;
+  // Re-solve from the hand at release: the decision was made from the body centre.
+  const origin = botBulletOrigin(eyePosInto(bot, _grenadeOrigin));
+  const solved = solveGrenadeThrow(origin, pending.aimPoint);
+  launchBotProjectile(weapon, origin, null, bot.id, solved?.vel || pending.vel);
+  actor.grenades -= 1;
+  actor.lastGrenadeAt = now;
+  teamLastGrenadeAt.set(bot.team, now);
+  playAtCulled('grenade_throw', origin, BOT_SFX.impact, 4);
+  sayBotLine(bot, actor, 'grenade_out', now);
+  recordBotEvent(actor, `grenade (${pending.reason}) at ${pending.targetId}`, now);
+}
+// Owns the bot's movement for the whole wind-up; returns true while it does.
+function updateGrenadeThrow(dt, now) {
+  const actor = activeBotActor;
+  if (!actor) return false;
+  let pending = actor.grenadeThrow;
+  if (!pending && botState !== BOT_FLEE && botState !== BOT_HEAL) {
+    const choice = grenadeCandidate(now);
+    if (choice) {
+      const solved = solveGrenadeThrow(eyePosInto(bot, _grenadeOrigin), choice.aimPoint);
+      if (solved) {
+        pending = actor.grenadeThrow = { ...choice, vel: solved.vel, releaseAt: now + GRENADE_WINDUP_MS };
+        recordBotStateChange(actor, 'grenade', now);
+      }
+    }
+  }
+  if (!pending) return false;
+  bot.velocity.x = 0; bot.velocity.z = 0;
+  pathMode = null; currentPath = []; botCombatMoveGoal = null;
+  faceTargetXZ({ x: pending.aimPoint[0], z: pending.aimPoint[2] }, dt);
+  if (now >= pending.releaseAt) {
+    releaseGrenade(actor, pending, now);
+    actor.grenadeThrow = null;
+  }
+  return true;
+}
+// Where to run. Distance from the blast is necessary and nowhere near sufficient, and scoring on it
+// alone produced two wrong behaviours:
+//   1. A cell can be clear of the grenade and sit squarely in an enemy's firing lane. Diving out of a
+//      blast into someone's sights is not an escape.
+//   2. A cell that is merely PAST the shadow boundary is a bad place to stand. Picking the nearest
+//      cover anchor parked bots exactly one step inside cover -- which is the boundary by
+//      construction, looks unnatural, and re-exposes them the moment anything moves.
+// So: blast-hidden cells take a flat bonus PLUS a depth bonus for how far the shadow keeps going
+// around them, cells the bot's own threat can see are penalised, cells hugging the outside of the
+// blast ring are penalised, and a per-bot deterministic jitter stops a squad converging on one cell.
+// This replaced a separate corner-map cover search: corner anchors are boundary features by
+// definition, so they could never answer "get properly inside" no matter how they were scored.
+const EVADE_SHADOW_BONUS = 9;        // cell is out of the blast's line at all
+const EVADE_DEPTH_BONUS = 2.6;       // per probe direction that is ALSO hidden (0..4)
+const EVADE_EXPOSURE_PENALTY = 7;    // cell is visible to the threat this bot is fighting
+const EVADE_TRAVEL_WEIGHT = 0.35;    // straight-line cost of getting there
+const EVADE_EDGE_PENALTY = 1.2;      // per metre of shortfall inside the clearance margin
+const EVADE_CLEAR_MARGIN = 2.5;      // m past the blast ring that counts as properly clear
+const EVADE_NOISE = 1.5;             // jitter amplitude, deterministic per bot + cell
+const EVADE_SEARCH_CELLS = 12;       // half-width of the scan box (6 m at a 0.5 m cell)
+const EVADE_SEARCH_STRIDE = 2;       // sample every Nth cell: 1 m granularity is plenty to hide in
+const EVADE_PROBE_CELLS = 3;         // how far the shadow-depth probes reach (1.5 m)
+const EVADE_PROBE_DIRS = [[EVADE_PROBE_CELLS, 0], [-EVADE_PROBE_CELLS, 0], [0, EVADE_PROBE_CELLS], [0, -EVADE_PROBE_CELLS]];
+const _evadeFrom = { x: 0, z: 0 }, _evadeCand = { x: 0, z: 0 }, _evadeStart = { c: 0, r: 0 };
+function navCellIdx(c, r) {
+  if (c < 0 || r < 0 || c >= navGrid.cols || r >= navGrid.rows) return -1;
+  return r * navGrid.cols + c;
+}
+// How far the blast shadow extends around a hidden cell, 0..4. A cell whose neighbours are all lit is
+// sitting on the boundary; one whose neighbours are all dark is properly inside. canSee is fail-closed
+// on unwalkable cells, so a probe that lands in a wall counts as shadow — which is what we want: a
+// wall stops the blast exactly as well as a shadow does, and a nook should score as good cover.
+function evadeShadowDepth(blastCell, c, r) {
+  let n = 0;
+  for (const [dc, dr] of EVADE_PROBE_DIRS) {
+    const idx = navCellIdx(c + dc, r + dr);
+    if (idx >= 0 && !visField.canSee(blastCell, idx)) n++;
+  }
+  return n;
+}
+// Stable per bot + cell, so the choice does not re-roll every replan and chatter.
+function evadeJitter(seed, cellIdx) {
+  let h = (seed * 374761393 + cellIdx * 668265263) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+function grenadeEvadeGoal(fromP, blastRadius, actor) {
+  if (!navGrid) return null;
+  _evadeFrom.x = bot.capsule.start.x; _evadeFrom.z = bot.capsule.start.z;
+  const start = worldToCellInto(navGrid, _evadeFrom.x, _evadeFrom.z, _evadeStart);
+  const blastCell = visField ? cellIndexAt(navGrid, fromP[0], fromP[2]) : -1;
+  // The shooter this bot is actually dealing with. Seen position if it can see it, else its last known
+  // point -- the same memory the rest of the FSM steers on.
+  const threatXZ = botTargetVisible && botTarget?.capsule
+    ? { x: botTarget.capsule.start.x, z: botTarget.capsule.start.z } : lastKnownTarget;
+  const enemyCell = visField && threatXZ ? cellIndexAt(navGrid, threatXZ.x, threatXZ.z) : -1;
+  const seed = actor.evadeSeed ??= (Math.random() * 1e9) | 0;
+  let bestX = 0, bestZ = 0, bestScore = -Infinity, bestHidden = false;
+  for (let dr = -EVADE_SEARCH_CELLS; dr <= EVADE_SEARCH_CELLS; dr += EVADE_SEARCH_STRIDE) {
+    for (let dc = -EVADE_SEARCH_CELLS; dc <= EVADE_SEARCH_CELLS; dc += EVADE_SEARCH_STRIDE) {
+      if (dc === 0 && dr === 0) continue;   // "evade" must never resolve to standing still
+      const c = start.c + dc, r = start.r + dr;
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      const idx = navCellIdx(c, r);
+      const w = cellToWorldInto(navGrid, c, r, _evadeCand);
+      const fromBlast = Math.hypot(w.x - fromP[0], w.z - fromP[2]);
+      let score = fromBlast
+        - Math.hypot(w.x - _evadeFrom.x, w.z - _evadeFrom.z) * EVADE_TRAVEL_WEIGHT
+        + evadeJitter(seed, idx) * EVADE_NOISE;
+      // Don't park just outside the ring: that is an edge to be pushed off, same as the shadow edge.
+      const clear = blastRadius + EVADE_CLEAR_MARGIN;
+      if (fromBlast < clear) score -= (clear - fromBlast) * EVADE_EDGE_PENALTY;
+      const hidden = blastCell >= 0 && idx >= 0 && !visField.canSee(blastCell, idx);
+      if (hidden) score += EVADE_SHADOW_BONUS + EVADE_DEPTH_BONUS * evadeShadowDepth(blastCell, c, r);
+      if (enemyCell >= 0 && idx >= 0 && visField.canSee(enemyCell, idx)) score -= EVADE_EXPOSURE_PENALTY;
+      if (score <= bestScore) continue;
+      bestScore = score; bestX = w.x; bestZ = w.z; bestHidden = hidden;
+    }
+  }
+  return bestScore === -Infinity ? null : { x: bestX, z: bestZ, hidden: bestHidden };
+}
+// Sprint clear of a live grenade. Outranks every other movement handler while it is in flight.
+// The dash POSE outlives the threat by this much, so a bot that just cleared a blast does not snap
+// back to a walking carry on the same frame the grenade detonates.
+const GRENADE_EVADE_POSE_LINGER_MS = 600;
+const GRENADE_GOAL_REACH = 0.8;   // m from the chosen cell that counts as arrived
+const _grenadeSelf = [0, 0, 0];
+function clearGrenadeEvade(actor) {
+  actor.grenadeEvadeAt = null; actor.voiceEvadeId = null;
+  actor.grenadeEvadeId = null; actor.grenadeGoal = null;
+}
+function updateGrenadeEvade(dt, now) {
+  const actor = activeBotActor;
+  if (!actor) return false;
+  if (!botGrenadesEnabled || _grenadeThreats.length === 0) { clearGrenadeEvade(actor); return false; }
+  const self = grenadeBodyInto(bot, _grenadeSelf);
+  const evade = grenadeEvade(self, _grenadeThreats, botGrenadeSettings, actor.grenadeEvadeId);
+  if (!evade) { clearGrenadeEvade(actor); return false; }
+  const threatId = evade.id ?? 'blast';
+  // A different grenade is a fresh problem: the spot picked against the old one may face the wrong way.
+  if (actor.grenadeEvadeId !== threatId) {
+    actor.grenadeEvadeId = threatId;
+    actor.grenadeGoal = null;
+    actor.grenadeEvadeAt = null;
+  }
+  if (actor.voiceEvadeId !== threatId) {
+    actor.voiceEvadeId = threatId;
+    sayBotLine(bot, actor, 'grenade_warn', now, `grenade_warn:${threatId}`);
+  }
+  actor.evadingUntil = now + GRENADE_EVADE_POSE_LINGER_MS;  // read by next frame's stance resolve
+  actor.grenadeThrow = null;   // drop a wind-up: not the moment to be standing still
+  const goal = actor.grenadeGoal;
+  // Arrived at a spot the blast cannot see: sit it out rather than shuffling back into the open.
+  if (goal?.hidden && Math.hypot(goal.x - bot.capsule.start.x, goal.z - bot.capsule.start.z) <= GRENADE_GOAL_REACH) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    faceTargetXZ({ x: bot.capsule.start.x * 2 - evade.from[0], z: bot.capsule.start.z * 2 - evade.from[2] }, dt);
+    return true;
+  }
+  if (!actor.grenadeEvadeAt || now - actor.grenadeEvadeAt > GRENADE_EVADE_REPLAN_MS || currentPath.length === 0) {
+    const pick = grenadeEvadeGoal(evade.from, evade.radius, actor);
+    if (pick) {
+      // Straight sprint when the line is clear (the common case, and it costs one trace); a real path
+      // solve only when the winner is behind geometry, which is exactly when it is worth paying for.
+      _evadeCand.x = pick.x; _evadeCand.z = pick.z;
+      if (lineWalkable(navGrid, _evadeFrom, _evadeCand)) {
+        currentPath = [{ x: pick.x, z: pick.z }];
+        pathMode = 'grenade';
+        botCombatMoveGoal = { x: pick.x, z: pick.z };
+        actor.grenadeGoal = pick;
+        actor.grenadeEvadeAt = now;
+      } else {
+        const fresh = requestPathBudgeted(bot, { x: pick.x, z: pick.z }, now);
+        if (fresh) {
+          currentPath = fresh;
+          pathMode = 'grenade';
+          botCombatMoveGoal = { x: pick.x, z: pick.z };
+          actor.grenadeGoal = pick;
+          actor.grenadeEvadeAt = now;
+        }
+      }
+    }
+  }
+  followPath(bot, currentPath, BOT_MOVE_SPEED * botMovementSettings.runMultiplier); // always a sprint
+  faceMovement(dt);
+  return true;
+}
+
+// ===================== grenade debug overlay =====================
+// Draws the four things the evade rewrite changed and nothing else: the hysteresis band, where each
+// evading bot is headed and why, the blast shadow the corner picker chooses from, and the post-blast
+// aim settle. Every value is read back from the live sim state, never recomputed from constants, so
+// the overlay cannot drift from the behaviour it is there to explain. Immediate mode: pools are
+// re-indexed each frame and the leftovers hidden, so nothing is ever hand-released.
+let grenadeDebugEnabled = false;
+const GRENADE_DBG_Y = 0.06;               // draw height above ground, clear of z-fighting
+const GRENADE_DBG_SETTLE_SHOW_MS = 2500;  // how long a settled bot keeps its pip after the blast
+const GRENADE_DBG_SHADOW_CAP = 4096;      // instanced quads for the blast shadow
+const grenadeDbgGroup = new THREE.Group();
+grenadeDbgGroup.renderOrder = 10;
+grenadeDbgGroup.visible = false;
+scene.add(grenadeDbgGroup);
+const grenadeDbgMat = {
+  engage: new THREE.LineBasicMaterial({ color: 0xff4d4d, transparent: true, opacity: 0.9, depthTest: false }),
+  release: new THREE.LineBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.75, depthTest: false }),
+  cover: new THREE.LineBasicMaterial({ color: 0x30d158, transparent: true, opacity: 0.95, depthTest: false }),
+  held: new THREE.LineBasicMaterial({ color: 0x40ffa0, transparent: true, opacity: 1, depthTest: false }),
+  open: new THREE.LineBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.95, depthTest: false }),
+  shadow: new THREE.MeshBasicMaterial({ color: 0x4090ff, transparent: true, opacity: 0.16, depthTest: false, side: THREE.DoubleSide }),
+  settleWait: new THREE.MeshBasicMaterial({ color: 0x9a9a9a, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }),
+  settleArming: new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.95, depthTest: false, side: THREE.DoubleSide }),
+};
+// Unit circle on the XZ plane; rings are scaled to the radius they represent.
+function grenadeDbgCircleGeometry(segments, dashed) {
+  const pts = [];
+  for (let i = 0; i < segments; i++) {
+    const a0 = (i / segments) * Math.PI * 2;
+    const a1 = ((i + (dashed ? 0.5 : 1)) / segments) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a0), 0, Math.sin(a0)), new THREE.Vector3(Math.cos(a1), 0, Math.sin(a1)));
+  }
+  return new THREE.BufferGeometry().setFromPoints(pts);
+}
+const grenadeDbgRingGeom = grenadeDbgCircleGeometry(72, false);
+const grenadeDbgDashGeom = grenadeDbgCircleGeometry(40, true);   // dashed = the release ring
+const grenadeDbgMarkGeom = grenadeDbgCircleGeometry(16, false);
+const grenadeDbgQuadGeom = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+const grenadeDbgPipGeom = new THREE.PlaneGeometry(0.09, 0.5);
+const _gDbgRings = [], _gDbgLines = [], _gDbgMarks = [], _gDbgPips = [];
+const _gDbgMat4 = new THREE.Matrix4();
+const _gDbgCell = { x: 0, z: 0 };
+let grenadeDbgShadow = null;      // InstancedMesh, built on first use
+let grenadeDbgShadowKey = '';     // blast cell + radius the current shadow was baked for
+function grenadeDbgPooled(pool, geom, mat, factory) {
+  for (const item of pool) if (!item.userData.used) { item.userData.used = true; item.visible = true; item.material = mat; return item; }
+  const made = factory(geom, mat);
+  made.frustumCulled = false;
+  made.userData.used = true;
+  grenadeDbgGroup.add(made);
+  pool.push(made);
+  return made;
+}
+const grenadeDbgSegments = (pool, geom, mat) => grenadeDbgPooled(pool, geom, mat, (g, m) => new THREE.LineSegments(g, m));
+const grenadeDbgQuad = (pool, geom, mat) => grenadeDbgPooled(pool, geom, mat, (g, m) => new THREE.Mesh(g, m));
+// The set of nav cells the grenade cannot see -- i.e. the cells grenadeEvadeGoal scores a shadow bonus.
+// Rebaked only when the blast changes cell, since a scan of the ring is thousands of canSee calls.
+function grenadeDbgBakeShadow(fromP, radius) {
+  if (!visField || !navGrid) { if (grenadeDbgShadow) grenadeDbgShadow.count = 0; return; }
+  const blastCell = cellIndexAt(navGrid, fromP[0], fromP[2]);
+  const key = `${blastCell}|${radius.toFixed(1)}`;
+  if (key === grenadeDbgShadowKey) return;
+  grenadeDbgShadowKey = key;
+  if (!grenadeDbgShadow) {
+    grenadeDbgShadow = new THREE.InstancedMesh(grenadeDbgQuadGeom, grenadeDbgMat.shadow, GRENADE_DBG_SHADOW_CAP);
+    grenadeDbgShadow.frustumCulled = false;
+    grenadeDbgShadow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    grenadeDbgGroup.add(grenadeDbgShadow);
+  }
+  if (blastCell < 0) { grenadeDbgShadow.count = 0; return; }
+  const span = Math.ceil(radius / navGrid.cellSize);
+  const start = worldToCellInto(navGrid, fromP[0], fromP[2], _evadeStart);
+  const cell = navGrid.cellSize;
+  let n = 0;
+  for (let dr = -span; dr <= span && n < GRENADE_DBG_SHADOW_CAP; dr++) {
+    for (let dc = -span; dc <= span && n < GRENADE_DBG_SHADOW_CAP; dc++) {
+      const c = start.c + dc, r = start.r + dr;
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      const w = cellToWorldInto(navGrid, c, r, _gDbgCell);
+      if (Math.hypot(w.x - fromP[0], w.z - fromP[2]) > radius) continue;
+      if (visField.canSee(blastCell, r * navGrid.cols + c)) continue;   // lit by the blast: not shadow
+      _gDbgMat4.makeScale(cell * 0.9, 1, cell * 0.9);
+      _gDbgMat4.setPosition(w.x, GRENADE_DBG_Y - 0.02, w.z);
+      grenadeDbgShadow.setMatrixAt(n++, _gDbgMat4);
+    }
+  }
+  grenadeDbgShadow.count = n;
+  grenadeDbgShadow.instanceMatrix.needsUpdate = true;
+}
+function updateGrenadeDebug(now) {
+  grenadeDbgGroup.visible = grenadeDebugEnabled;
+  if (!grenadeDebugEnabled) { grenadeDbgShadowKey = ''; return; }
+  for (const pool of [_gDbgRings, _gDbgLines, _gDbgMarks, _gDbgPips]) {
+    for (const item of pool) { item.userData.used = false; item.visible = false; }
+  }
+  // 1 + 4: the hysteresis band per live grenade, and the blast shadow for the first one.
+  const exitScale = Math.max(1, botGrenadeSettings.evadeExitScale ?? 1);
+  for (let i = 0; i < _grenadeThreats.length; i++) {
+    const g = _grenadeThreats[i];
+    const engage = grenadeDbgSegments(_gDbgRings, grenadeDbgRingGeom, grenadeDbgMat.engage);
+    engage.geometry = grenadeDbgRingGeom;
+    engage.position.set(g.p[0], GRENADE_DBG_Y, g.p[2]);
+    engage.scale.setScalar(g.blastRadius);
+    if (exitScale > 1) {
+      const release = grenadeDbgSegments(_gDbgRings, grenadeDbgDashGeom, grenadeDbgMat.release);
+      release.geometry = grenadeDbgDashGeom;
+      release.position.set(g.p[0], GRENADE_DBG_Y, g.p[2]);
+      release.scale.setScalar(g.blastRadius * exitScale);
+    }
+    if (i === 0) grenadeDbgBakeShadow(g.p, g.blastRadius);
+  }
+  if (_grenadeThreats.length === 0) {
+    grenadeDbgShadowKey = '';
+    if (grenadeDbgShadow) grenadeDbgShadow.count = 0;
+  }
+  // 2 + 3: where each evading bot is going. Green = a spot out of the blast's line, amber = open ground.
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (e.alive === false || !e.capsule) continue;
+    if (actor.grenadeEvadeId == null) continue;
+    const dest = actor.grenadeGoal;
+    if (!dest) continue;
+    const held = dest.hidden && Math.hypot(dest.x - e.capsule.start.x, dest.z - e.capsule.start.z) <= GRENADE_GOAL_REACH;
+    const mat = !dest.hidden ? grenadeDbgMat.open : held ? grenadeDbgMat.held : grenadeDbgMat.cover;
+    const line = grenadeDbgPooled(_gDbgLines, null, mat, (_g, m) => {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+      return new THREE.Line(geom, m);
+    });
+    const pos = line.geometry.getAttribute('position');
+    pos.setXYZ(0, e.capsule.start.x, GRENADE_DBG_Y, e.capsule.start.z);
+    pos.setXYZ(1, dest.x, GRENADE_DBG_Y, dest.z);
+    pos.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
+    const mark = grenadeDbgSegments(_gDbgMarks, grenadeDbgMarkGeom, mat);
+    mark.geometry = grenadeDbgMarkGeom;
+    mark.position.set(dest.x, GRENADE_DBG_Y, dest.z);
+    mark.scale.setScalar(held ? 0.55 : 0.35);
+  }
+  // 5: the post-blast aim settle. Grey = acquisition torn down, amber = recognition delay running.
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (e.alive === false || !e.capsule) continue;
+    if (actor.aimResetAt == null || now - actor.aimResetAt > GRENADE_DBG_SETTLE_SHOW_MS) continue;
+    const arming = actor.aimContactAt != null && now < actor.aimReadyAt;
+    if (!arming && actor.aimContactAt != null) continue;   // already shooting again: nothing to show
+    const pip = grenadeDbgQuad(_gDbgPips, grenadeDbgPipGeom, arming ? grenadeDbgMat.settleArming : grenadeDbgMat.settleWait);
+    pip.geometry = grenadeDbgPipGeom;
+    pip.position.set(e.capsule.start.x, e.capsule.end.y + 0.55, e.capsule.start.z);
+    pip.quaternion.copy(camera.quaternion);   // billboard
+    // Height reads as remaining delay once a contact re-arms; full bar while there is no contact yet.
+    const frac = arming ? 1 - Math.min(1, (now - actor.aimContactAt) / Math.max(1, actor.aimReadyAt - actor.aimContactAt)) : 1;
+    pip.scale.set(1, Math.max(0.08, frac), 1);
+  }
+}
+
+// ===================== cover corners (baked field query + COVER_MOVE/HOLD handlers) =====================
+// Validity + pick scoring live pure in bot-cover.js; these wrappers bind the live bake + claims.
+// secondaryThreat (H6b) is a pure veto: a corner that hides the bot from the primary but leaves its
+// anchor open to a second shooter is rejected.
+function coverCornerValid(rec, threatPos, secondaryThreat = null) {
+  if (!visField || !navGrid) return false;
+  return coverCornerValidPure({ field: visField, navGrid }, rec, threatPos, secondaryThreat);
+}
+
+// Best unclaimed corner record within COVER_SEARCH_RADIUS that hides the bot from threatPos, or
+// null. Zero raycasts. Claims live in goalClaims under kind 'cover' (record.claimedBy stays null).
+function findCoverCorner(bot, threatPos, secondaryThreat = null) {
+  if (!bot || !threatPos || !visField || !cornerMap || !navGrid) return null;
+  const nowMs = botStateRecordFrameNow || performance.now();
+  // Danger is a hard veto here, not a penalty: a scarce corner must not win on distance alone.
+  const skip = (rec) => coverBlacklisted(activeBotActor?.coverBlacklist, rec.anchorCell, nowMs) ||
+    goalClaims.isClaimedByOther(rec.anchorCell, bot.id) ||
+    dangerBlocksCover(botDangerField, bot.team, rec.anchorCell, nowMs, 0.35); // 0.35: neighbour spread (0.4) vetoes too
+  return pickCoverCorner({ corners: cornerMap.corners, field: visField, navGrid, searchRadius: COVER_SEARCH_RADIUS, skip },
+    botXZInto(bot, _xzScratchA), threatPos, secondaryThreat);
+}
+
+// H6b second shooter: the nearest enemy this bot could acquire (sight range + cone + baked-field
+// prefilter -- the same gate selectBotTarget uses, minus its confirming raycast) that is NOT the
+// primary threat. Falls back to a squadmate's contact report describing someone clearly elsewhere.
+// Used only as a cover-corner veto, so the cheap perception test erring shy just means fewer vetoes.
+const SECONDARY_THREAT_MIN_SEPARATION = 3; // m from the primary before a second contact is a second shooter
+const _secEye = new THREE.Vector3();
+const _secTargetEye = new THREE.Vector3();
+function secondVisibleThreat(primaryXZ, contact = null) {
+  if (!bot || !primaryXZ) return null;
+  const eye = eyePosInto(bot, _secEye);
+  const sightSq = botSightDistance() ** 2;
+  const sepSq = SECONDARY_THREAT_MIN_SEPARATION * SECONDARY_THREAT_MIN_SEPARATION;
+  let bestX = 0, bestZ = 0, bestSq = Infinity;
+  for (const e of frameEnemyList(bot.team)) {
+    if (e.alive === false || e === botTarget || !e.capsule) continue;
+    const px = e.capsule.start.x, pz = e.capsule.start.z;
+    if ((px - primaryXZ.x) ** 2 + (pz - primaryXZ.z) ** 2 <= sepSq) continue; // same shooter, different label
+    const targetEye = eyePosInto(e, _secTargetEye);
+    const dSq = targetEye.distanceToSquared(eye);
+    if (dSq > sightSq || dSq >= bestSq) continue;
+    if (!withinBotFov(bot.yaw, eye, targetEye)) continue;
+    if (USE_FIELD_LOS_PREFILTER && fieldSaysHidden(eye.x, eye.z, targetEye.x, targetEye.z)) continue;
+    bestSq = dSq; bestX = px; bestZ = pz;
+  }
+  if (bestSq === Infinity) {
+    if (!contact || (contact.threat.x - primaryXZ.x) ** 2 + (contact.threat.z - primaryXZ.z) ** 2 <= sepSq) return null;
+    bestX = contact.threat.x; bestZ = contact.threat.z;
+  }
+  _secondaryXZ.x = bestX; _secondaryXZ.z = bestZ;
+  return _secondaryXZ;
+}
+
+// S10 peek phasing: how many same-team bots are already holding a corner against ~this same threat
+// nearby. The i-th claimant hides one extra PEEK_OUT_S so the group's exposure windows tile.
+const COVER_GROUP_RADIUS = 8;       // m between holders that still counts as one cover group
+const COVER_GROUP_THREAT_EPS = 3;   // m of threat-position slop that still counts as the same shooter
+let _giActor = null, _giTeam = null, _giX = 0, _giZ = 0, _giTx = 0, _giTz = 0, _giCount = 0;
+function _giVisit(e) {
+  const other = e.botActor;
+  if (!other || other === _giActor || e.team !== _giTeam || !other.coverCorner) return;
+  if (Math.hypot(e.capsule.start.x - _giX, e.capsule.start.z - _giZ) > COVER_GROUP_RADIUS) return;
+  const t = other.coverThreat;
+  if (!t || Math.hypot(t.x - _giTx, t.z - _giTz) > COVER_GROUP_THREAT_EPS) return;
+  _giCount++;
+}
+function coverGroupIndex(actor, threatPos) {
+  if (!threatPos || !bot) return 0;
+  _giActor = actor; _giTeam = bot.team; _giX = bot.capsule.start.x; _giZ = bot.capsule.start.z;
+  _giTx = threatPos.x; _giTz = threatPos.z; _giCount = 0;
+  botHash.forEachNear(_giX, _giZ, COVER_GROUP_RADIUS, _giVisit);
+  _giActor = null; _giTeam = null;
+  return _giCount;
+}
+
+function commitCoverCorner(rec, threatPos, now) {
+  const actor = activeBotActor;
+  if (!actor || !rec) return;
+  if (actor.coverCorner !== rec && pathMode === 'cover') { currentPath = []; pathMode = null; botCombatMoveGoal = null; }
+  // A different corner restarts the peek cycle/miss streak/drought clock/travel timer and stamps the cooldown.
+  if (actor.coverCorner !== rec) {
+    actor.peek = null; actor.peekMissStreak = 0; actor.coverHoldSince = null; actor.coverMoveSince = now; noteCoverSwitch(actor.coverGate, now);
+    actor.coverPeekOffsetS = peekPhaseOffsetS(coverGroupIndex(actor, threatPos)); // S10: stagger against the group already here
+  }
+  actor.coverCorner = rec;
+  actor.coverThreat = { x: threatPos.x, z: threatPos.z };
+  actor.coverStartedAt = now;
+  goalClaims.claim(bot.id, 'cover', rec.anchorCell);
+}
+
+function releaseCoverCorner() {
+  const actor = activeBotActor;
+  if (!actor) return;
+  goalClaims.release(bot.id, 'cover');
+  actor.coverCorner = null;
+  actor.coverThreat = null;
+  actor.coverStartedAt = null;
+  actor.peek = null;
+  actor.peekMissStreak = 0;
+  actor.coverHoldSince = null;
+  actor.coverPeekOffsetS = 0; // the stagger described a group this bot has now left
+  actor.coverGate.invalidSince = null; // switchedAt survives: it rate-limits the next entry too
+  if (pathMode === 'cover') { currentPath = []; pathMode = null; botCombatMoveGoal = null; }
+}
+
+// COVER_MOVE: path to the committed anchor; arrival hands off to the COVER_HOLD peek cycle.
+function updateCoverMoveMovement() {
+  const rec = activeBotActor?.coverCorner;
+  if (activeBotActor) { activeBotActor.peek = null; activeBotActor.coverHoldSince = null; } // re-pathing restarts cycle + drought clock
+  if (!rec) { bot.velocity.x = 0; bot.velocity.z = 0; return; }
+  const stale = pathMode !== 'cover' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - rec.anchorPos.x, botCombatMoveGoal.z - rec.anchorPos.z) > 0.1;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, rec.anchorPos);
+    if (fresh) { currentPath = fresh; pathMode = 'cover'; botCombatMoveGoal = { x: rec.anchorPos.x, z: rec.anchorPos.z }; }
+    else refused = true; // throttled: keep the current cover approach, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) { bot.velocity.x = 0; bot.velocity.z = 0; if (!refused) { pathMode = null; botCombatMoveGoal = null; } return; }
+  if (followPath(bot, currentPath, currentBotMoveSpeed() * 1.12)) { pathMode = null; botCombatMoveGoal = null; }
+}
+
+// Tactical movement should keep the threat in view rather than snapping the torso/weapon toward
+// each travel waypoint. This is the small, map-independent part of environment-viewer's seek
+// behavior; path recovery stays harness-local because its nav contract is different here.
+function faceAimDirection(targetYaw, targetPitch, dt) {
+  const maxDelta = botTurnRateRadS() * dt;
+  bot.yaw = slewAngle(bot.yaw, targetYaw, maxDelta);
+  bot.pitch = slewAngle(bot.pitch, targetPitch, maxDelta);
+}
+
+// Bearing from the bot to an XZ point, or null when degenerate/absent.
+function bearingToXZ(target) {
+  if (!target) return null;
+  const dx = target.x - bot.capsule.start.x, dz = target.z - bot.capsule.start.z;
+  return Math.hypot(dx, dz) < 1e-4 ? null : Math.atan2(dx, dz);
+}
+
+function faceTargetXZ(target, dt) {
+  const yaw = bearingToXZ(target);
+  if (yaw != null) faceAimDirection(yaw, 0, dt);
+}
+
+// Split attention: hold the threat bearing, but glance down the travel heading on a cycle so an
+// alerted bot still sees what it walks into; standing still, sweep around the threat instead.
+function faceThreatAndAhead(threat, dt, now) {
+  const att = activeBotActor.attention ??= { phase: null, until: 0, sweepSince: null };
+  const moving = Math.hypot(bot.velocity.x, bot.velocity.z) >= 0.05;
+  if (moving) att.sweepSince = null; // restart the standing sweep centred next time
+  // A5/S7: seed the standing sweep at a per-bot phase so co-located bots never share one blind bearing.
+  else att.sweepSince ??= now - sweepPhaseMs(activeBotActor.spreadSeed ??= botSeedFromId(activeBotActor.id));
+  const threatYaw = bearingToXZ(threat);
+  if (threatYaw == null) { faceMovement(dt); return; }
+  if (stepAttention(att, moving, now) === 'ahead') faceAimDirection(Math.atan2(bot.velocity.x, bot.velocity.z), 0, dt);
+  else faceAimDirection(threatYaw + (moving ? 0 : attentionSweep(att, now)), 0, dt);
+}
+
+function faceMovement(dt) {
+  const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
+  if (speed < 0.05) return;
+  const targetYaw = Math.atan2(bot.velocity.x, bot.velocity.z);
+  const maxDelta = botTurnRateRadS() * dt;
+  bot.yaw = slewAngle(bot.yaw, targetYaw, maxDelta);
+  bot.pitch = slewAngle(bot.pitch, 0, maxDelta);
+}
+
+// A4: out-of-combat variant of faceMovement -- the travel heading plus a slow, per-bot-phased scan
+// offset, so a patroller's cone stops being welded to its velocity (no permanent blind arc behind it).
+function faceMovementScanning(dt, now) {
+  const speed = Math.hypot(bot.velocity.x, bot.velocity.z);
+  if (speed < 0.05) return;
+  const st = activeBotActor.patrolScan ??= { sweepSince: null };
+  const seed = activeBotActor.spreadSeed ??= botSeedFromId(activeBotActor.id);
+  const targetYaw = Math.atan2(bot.velocity.x, bot.velocity.z) + patrolScanOffset(st, seed, now);
+  const maxDelta = botTurnRateRadS() * dt;
+  bot.yaw = slewAngle(bot.yaw, targetYaw, maxDelta);
+  bot.pitch = slewAngle(bot.pitch, 0, maxDelta);
+}
+
+const losMat = new THREE.LineBasicMaterial({ color: 0x30a46c, transparent: true, opacity: 0.5 });
+const losGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const losLine = new THREE.Line(losGeom, losMat);
+losLine.visible = false;
+scene.add(losLine);
+
+function updateHealSafety(now, visible, targetDistance) {
+  if (!botHealRequested || !botHealArrived) {
+    botHealSafetySince = null;
+    if (activeBotActor) activeBotActor.healUnsafePrev = false;
+    return { ready: false, unsafe: false };
+  }
+  // Banded verdict: a target hovering at safeDistance can no longer pump HEAL<->FLEE each tick.
+  const unsafe = visible && healUnsafeBand(targetDistance, !!activeBotActor?.healUnsafePrev, botHealthSettings.safeDistance);
+  if (activeBotActor) activeBotActor.healUnsafePrev = unsafe;
+  if (unsafe) {
+    botHealSafetySince = null;
+    return { ready: false, unsafe: true };
+  }
+  if (botHealSafetySince == null) {
+    botHealSafetySince = now;
+    recordBotEvent(activeBotActor, `heal-safe hold started: ${botTarget?.id ?? 'no target'} ${Number.isFinite(targetDistance) ? `${targetDistance.toFixed(2)}m` : ''}`.trim(), now);
+  }
+  return { ready: now - botHealSafetySince >= botHealthSettings.safeHoldMs, unsafe: false };
+}
+
+function updateBotHealing(dt) {
+  bot.velocity.x = 0;
+  bot.velocity.z = 0;
+  const packs = activeBotActor?.healthPacks;
+  if (!hasHealResource(packs)) { clearBotHealthRetreat(); return; } // no pack -> can't heal, drop the retreat
+  const wanted = Math.min(botHealthSettings.healPerSecond * dt, Math.max(0, DUMMY_MAX_HEALTH - (bot.health ?? DUMMY_MAX_HEALTH)));
+  const applied = drawFromPacks(packs, wanted); // spends pack charge; a partial heal leaves a partial pack
+  bot.health = Math.min(DUMMY_MAX_HEALTH, (bot.health ?? DUMMY_MAX_HEALTH) + applied);
+  if (packs.length === 0) recordBotEvent(activeBotActor, 'last pack depleted mid-heal', botStateRecordFrameNow);
+  // Stop at the resume threshold (packs are rarely fully spent) or when the inventory runs dry.
+  if (bot.health / DUMMY_MAX_HEALTH >= botHealthSettings.resume01 || !hasHealResource(packs)) {
+    clearBotHealthRetreat();
+  }
+}
+
+// ===================== medic role (bot-medic.js owns the pure decisions) =====================
+// A medic's cached bounded flood-fill of nav path distances from its own cell. Recomputed at most
+// every MEDIC_NAV_FLOOD_MS (path distances to slowly-moving allies tolerate mild staleness, so we
+// don't want it every frame). Radius is exactly enough to reach any cell within the response/revive
+// range: a path of cost <= R spans <= R/cellSize rings.
+// The result is held across frames, so it must NOT use nav-grid's shared flood pool (another bot's
+// flood would overwrite it): each medic owns a `medicFloodBuf` buffer pair, allocated on first use.
+const MEDIC_NAV_FLOOD_MS = 200;
+function medicNavFlood(actor, selfXZ, now) {
+  if (!navGrid) return null;
+  if (actor.medicFlood && now - actor.medicFloodAt < MEDIC_NAV_FLOOD_MS) return actor.medicFlood;
+  const reach = Math.max(MEDIC_DEFAULTS.responseRadius, MEDIC_DEFAULTS.reviveRadius);
+  if (!actor.medicFloodBuf) actor.medicFloodBuf = {};
+  actor.medicFlood = floodFill(navGrid, selfXZ, { maxRadius: Math.ceil(reach / navGrid.cellSize) + 1, out: actor.medicFloodBuf });
+  actor.medicFloodAt = now;
+  return actor.medicFlood;
+}
+// Path distance from the flood to a world point (via its nearest walkable cell), or Infinity if the
+// point is unreachable / off the flooded region.
+function medicNavCost(flood, x, z) {
+  const cell = nearestWalkableNavCell(worldToCell(navGrid, x, z));
+  if (!cell) return Infinity;
+  const d = flood.dist[cell.r * navGrid.cols + cell.c];
+  return Number.isFinite(d) ? d : Infinity;
+}
+// Tag each candidate with its nav path cost and drop the unreachable ones (in place). No-op without a
+// nav grid, so the pure selectors fall back to straight-line distance.
+function attachMedicNavCost(actor, selfXZ, now, allies, corpses) {
+  if (!allies.length && !corpses.length) return;
+  const flood = medicNavFlood(actor, selfXZ, now);
+  if (!flood) return;
+  for (const list of [allies, corpses]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = medicNavCost(flood, list[i].x, list[i].z);
+      if (!Number.isFinite(c)) { list.splice(i, 1); continue; } // unreachable -> not a candidate
+      list[i].cost = c + (navGrid ? dangerPenalty(botDangerField, actor.entity.team, cellIndexAt(navGrid, list[i].x, list[i].z), now, DANGER_PATROL_SCALE) : 0);
+    }
+  }
+}
+
+// Snapshot the active medic's living/fallen teammates and decide its duty for this frame. Returns a
+// { state:MEDIC_MOVE|MEDIC_TEND, kind, targetId, x, z, dist } action, or null. Also opportunistically
+// fuses packs into a revive kit and stores the action on the actor for the movement handlers.
+let _mdActor = null, _mdNow = 0, _mdSx = 0, _mdSz = 0, _mdRespSq = 0, _mdTeam = null, _mdAllies = null;
+let _mdSquadId = null;   // the medic's own roster, so its squad's casualties outrank a stranger's
+// undefined (not false) when the medic is unsquadded: bot-medic only applies the preference to an
+// explicit `squadmate: false`, so an unrostered medic keeps the plain nearest-first behaviour.
+function _mdSquadmate(other) { return _mdSquadId ? other.squadId === _mdSquadId : undefined; }
+function _mdAllyVisit(e) {
+  const other = e.botActor;
+  if (!other || other === _mdActor || e.team !== _mdTeam) return;
+  // Never tend fellow medics: support units self-heal from their own packs, and medic-on-medic
+  // healing makes them converge (and can deadlock two into a mutual heal) -- that's the clustering.
+  if (other.role === ROLE_MEDIC) return;
+  // Skip a patient another living medic has already committed to (claim lease), so medics spread
+  // across the wounded instead of stacking on one. Our own claim never excludes us.
+  if (other.medicClaimUntil > _mdNow && other.medicClaimBy != null && other.medicClaimBy !== _mdActor.id) return;
+  const hp01 = (e.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH;
+  if (hp01 > MEDIC_DEFAULTS.healAllyThreshold01) return;
+  const x = e.capsule.start.x, z = e.capsule.start.z;
+  // MED-2: a patient in FLEE outruns the default chase, so the tend band + chase speed widen for it.
+  if ((x - _mdSx) ** 2 + (z - _mdSz) ** 2 <= _mdRespSq) {
+    _mdAllies.push({ id: e.id, x, z, hp01, fleeing: other.state === BOT_FLEE, squadmate: _mdSquadmate(other) });
+  }
+}
+// `threatXZ` (S12) is the shooter this medic must not channel in front of: the sentry's live cover
+// threat, else whoever is shooting the medic itself. null = no exposure verdict, original decision.
+function decideMedicDuty(now, threatXZ = null) {
+  const actor = activeBotActor;
+  const selfXZ = botXZ(bot);
+  const allies = [];
+  const corpses = [];
+  // Euclidean is a valid superset prefilter (path distance >= straight-line), keeping the candidate
+  // set -- and the flood-fill below -- small; the wall-aware path cost then tightens the range.
+  const revSq = MEDIC_DEFAULTS.reviveRadius * MEDIC_DEFAULTS.reviveRadius;
+  _mdActor = actor; _mdNow = now; _mdSx = selfXZ.x; _mdSz = selfXZ.z; _mdTeam = bot.team;
+  _mdRespSq = MEDIC_DEFAULTS.responseRadius * MEDIC_DEFAULTS.responseRadius;
+  _mdAllies = allies;
+  _mdSquadId = actor.squadId && squads.has(actor.squadId) ? actor.squadId : null;
+  botHash.forEachNear(selfXZ.x, selfXZ.z, MEDIC_DEFAULTS.responseRadius, _mdAllyVisit);
+  _mdActor = null; _mdAllies = null;
+  // Corpses aren't in the hash (it holds the living roster), so they come from the death-site set.
+  for (const other of deadBotActors) {
+    if (other === actor || other.entity.team !== bot.team || other.diedAt == null) continue;
+    if (other.medicClaimUntil > now && other.medicClaimBy != null && other.medicClaimBy !== actor.id) continue;
+    const e = other.entity;
+    const x = other.deathXZ?.x ?? e.capsule.start.x, z = other.deathXZ?.z ?? e.capsule.start.z;
+    if ((x - selfXZ.x) ** 2 + (z - selfXZ.z) ** 2 <= revSq) {
+      corpses.push({ id: e.id, x, z, diedAt: other.diedAt, squadmate: _mdSquadmate(other) });
+    }
+  }
+  // Wall-aware ranking: attach a nav path cost to each candidate and drop the unreachable ones, so a
+  // medic never picks (or pins against a wall trying to reach) an ally that's close only in a straight
+  // line. One bounded flood-fill from the medic covers every candidate; throttled + only when needed.
+  attachMedicNavCost(actor, selfXZ, now, allies, corpses);
+  maybeBuildReviveKit(now, corpses, selfXZ);
+  // TEND is only ever chosen inside tendRadius, so the medic's own cell IS the prospective tend spot.
+  // Only report exposure when somewhere better actually exists nearby: otherwise the downgrade would
+  // strand the medic standing beside an untended patient with nowhere to re-route to.
+  let exposed = false;
+  if (threatXZ && visField && navGrid) {
+    _alertBake.field = visField; _alertBake.navGrid = navGrid;
+    exposed = exposedToThreat(_alertBake, selfXZ, threatXZ);
+  }
+  let action = decideMedicAction({
+    self: selfXZ, allies, corpses,
+    hasKit: actor.reviveKits > 0, hasCharge: hasHealResource(actor.healthPacks),
+    now, cfg: MEDIC_DEFAULTS,
+  });
+  if (!action) action = stickyHealTend(actor, selfXZ); // finish topping up an ally past the select threshold
+  // S12, post-decision so gate and route share ONE centre (the patient): an exposed tend converts
+  // to a move onto a concealed cell in tend range; no such cell -> tend anyway (never freeze).
+  if (action && action.state === MEDIC_TEND && exposed && threatXZ) {
+    const hide = nearestConcealedCellNear(action.x, action.z, threatXZ.x, threatXZ.z, medicTendRadiusFor(!!action.fleeing, MEDIC_DEFAULTS));
+    if (hide) { action.state = MEDIC_MOVE; action.seekConcealment = true; action.hideX = hide.x; action.hideZ = hide.z; }
+  }
+  if (action) {
+    const targetActor = botActorById.get(action.targetId);
+    if (targetActor) {
+      // Claim the patient so other medics look elsewhere this frame (sequential actor updates make it stick).
+      targetActor.medicClaimBy = actor.id;
+      targetActor.medicClaimUntil = now + botMedicSettings.medicClaimLeaseMs;
+      // Ask a heal target to hold once we're close by PATH (or already tending) so we can reach it.
+      if (action.kind === 'heal' &&
+          (action.state === MEDIC_TEND || (action.dist ?? Infinity) <= botMedicSettings.healHoldRadius)) {
+        commandBotHold(targetActor, now + botMedicSettings.healHoldLeaseMs, 'heal', { x: selfXZ.x, z: selfXZ.z });
+      }
+    }
+  }
+  actor.medicAction = action;
+  if (!action) actor.medicTendTargetId = null;
+  return action;
+}
+
+// Keep tending an ally we're already healing until it reaches the resume line, even after it climbs
+// past the (lower) selection threshold -- avoids leaving allies at exactly 65% and re-triggering.
+function stickyHealTend(actor, selfXZ) {
+  if (!actor.medicTendTargetId || !hasHealResource(actor.healthPacks)) return null;
+  const cur = botActorById.get(actor.medicTendTargetId);
+  if (!cur || cur.entity.alive === false) return null;
+  const p = botXZ(cur.entity);
+  const hp01 = (cur.entity.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH;
+  if (hp01 >= MEDIC_DEFAULTS.allyResumeHp01) return null;
+  const fleeing = cur.state === BOT_FLEE; // MED-2: same widened band the select path uses
+  if (Math.hypot(p.x - selfXZ.x, p.z - selfXZ.z) > medicTendRadiusFor(fleeing, MEDIC_DEFAULTS)) return null;
+  return { state: MEDIC_TEND, kind: 'heal', targetId: cur.entity.id, x: p.x, z: p.z, fleeing };
+}
+
+// A medic fuses 3 packs into one revive kit when it's carrying a full load (free the capacity, stay
+// revive-ready) or when a still-revivable ally is down within reach.
+function maybeBuildReviveKit(now, corpses, selfXZ) {
+  const actor = activeBotActor;
+  if (actor.reviveKits > 0 || !hasReviveMaterials(actor.healthPacks)) return;
+  const corpseNear = corpses.some((c) => now - c.diedAt <= MEDIC_DEFAULTS.reviveWindowMs &&
+    Math.hypot(c.x - selfXZ.x, c.z - selfXZ.z) <= MEDIC_DEFAULTS.reviveRadius);
+  if (actor.healthPacks.length >= actor.maxPacks || corpseNear) {
+    if (consumeRevivePacks(actor.healthPacks)) { actor.reviveKits += 1; recordBotEvent(actor, 'fused 3 packs into a revive kit', now); }
+  }
+}
+
+// S12: nearest walkable cell within `radius` of (px,pz) that the threat at (tx,tz) cannot see, or
+// null. Bounded square scan (radius is a tend radius, so <= ~3 cells a side); one alloc-free result.
+function nearestConcealedCellNear(px, pz, tx, tz, radius) {
+  if (!navGrid || !visField) return null;
+  const threatCell = cellIndexAt(navGrid, tx, tz);
+  if (threatCell < 0) return null;
+  const centre = worldToCellInto(navGrid, px, pz, _hideRC);
+  const span = Math.max(1, Math.min(6, Math.round(radius / navGrid.cellSize)));
+  const spanSq = span * span;
+  let bestC = -1, bestR = -1, bestSq = Infinity;
+  for (let dr = -span; dr <= span; dr++) {
+    for (let dc = -span; dc <= span; dc++) {
+      const d2 = dc * dc + dr * dr;
+      if (d2 > spanSq || d2 >= bestSq) continue; // cell-space distance: cellSize is uniform
+      const c = centre.c + dc, r = centre.r + dr;
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      if (visField.canSee(threatCell, cellIdxOf(c, r))) continue;
+      bestSq = d2; bestC = c; bestR = r;
+    }
+  }
+  return bestC < 0 ? null : cellToWorldInto(navGrid, bestC, bestR, _hideXZ);
+}
+
+// Path to the current medic-duty target (wounded ally or corpse). Movement only -- firing is layered
+// on by the caller, exactly as the flee branch does.
+function updateMedicMoveMovement(now, speed = currentBotMoveSpeed() * medicChaseSpeedFactor(activeBotActor?.medicAction?.fleeing)) {
+  const action = activeBotActor?.medicAction;
+  if (!action) return false;
+  // S12: the hide cell was chosen at decision time (same centre as the gate); just route to it.
+  const goal = action.seekConcealment && action.hideX != null
+    ? { x: action.hideX, z: action.hideZ } : { x: action.x, z: action.z };
+  const stale = pathMode !== 'medic' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 0.5;
+  // A refused (throttled) request leaves the stale path/goal alone; the empty-path case below already holds.
+  if (stale) { const fresh = requestPathBudgeted(bot, goal, now); if (fresh) { currentPath = fresh; pathMode = 'medic'; botCombatMoveGoal = goal; } }
+  if (currentPath.length === 0) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+  if (followPath(bot, currentPath, speed)) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+// Channel a heal (transfer pack charge into a wounded ally) or a revive (after reviveChannelMs) on
+// the current medic-duty target. Stationary; the caller adds fire-while-tend.
+function updateMedicTend(dt, now) {
+  bot.velocity.x = 0; bot.velocity.z = 0;
+  const actor = activeBotActor;
+  const action = actor?.medicAction;
+  if (!action) return;
+  const targetActor = botActorById.get(action.targetId);
+  if (!targetActor) { actor.medicTendTargetId = null; return; }
+  if (action.kind === 'revive') {
+    if (actor.medicTendTargetId !== action.targetId) { actor.medicTendTargetId = action.targetId; actor.medicTendStartedAt = now; }
+    if (now - actor.medicTendStartedAt >= botMedicSettings.reviveChannelMs) {
+      reviveCombatBot(targetActor, now);
+      actor.medicTendTargetId = null;
+      actor.medicAction = null;
+    }
+    return;
+  }
+  // heal: draw from the medic's own packs into the ally
+  actor.medicTendTargetId = action.targetId;
+  const ally = targetActor.entity;
+  const wanted = Math.min(botMedicSettings.healAllyPerSecond * dt, Math.max(0, DUMMY_MAX_HEALTH - (ally.health ?? DUMMY_MAX_HEALTH)));
+  const applied = drawFromPacks(actor.healthPacks, wanted);
+  ally.health = Math.min(DUMMY_MAX_HEALTH, (ally.health ?? DUMMY_MAX_HEALTH) + applied);
+  // Topped back up by the medic: drop the ally's own heal-retreat latch so it doesn't flee once released.
+  if ((ally.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH >= botHealthSettings.resume01 && targetActor.healRequested) {
+    targetActor.healRequested = false; targetActor.healArrived = false; targetActor.healSafetySince = null;
+    targetActor.healThreatId = null; targetActor.healStartedAt = null;
+  }
+  if (!hasHealResource(actor.healthPacks)) recordBotEvent(actor, `out of charge tending ${ally.id}`, now);
+}
+
+let _mcActor = null, _mcTeam = null, _mcOut = null;
+function _mcVisit(e) {
+  const other = e.botActor;
+  if (!other || other === _mcActor || e.team !== _mcTeam || other.role === ROLE_MEDIC) return;
+  _mcOut.push({ x: e.capsule.start.x, z: e.capsule.start.z });
+}
+// Walk a squadded follower onto its formation slot behind the leader. Only ever called from the
+// out-of-combat branch, so this biases movement that was already idle and never pre-empts the FSM:
+// a leaderless squad (dead leader, mid-succession-shock) simply falls through to patrolling.
+const _squadSelfXZ = { x: 0, z: 0 };
+function updateSquadFormationMovement(now) {
+  const actor = activeBotActor;
+  const squad = actor.squadId ? squads.get(actor.squadId) : null;
+  if (!squad?.hasLeaderPos || !(actor.squadRank > 0)) return false;
+  const goal = squadMemberGoal({
+    kind: squad.kind, leaderPos: squad.leaderPos, headingRad: squad.leaderYaw,
+    rank: actor.squadRank, count: squad.liveCount, spacing: botSquadSettings.spacing,
+    selfPos: botXZInto(bot, _squadSelfXZ), arriveRadius: botSquadSettings.slotArrive,
+    leash: botSquadSettings.leash,
+  });
+  if (!goal) return false;
+  if (goal.arrived) {
+    // Holding the slot is correct while the squad is doing something. It is not correct forever: a
+    // follower's movement is entirely parasitic on its leader, so a leader that stops moving used to
+    // freeze its whole squad for the rest of the session with no timeout anywhere (bot-52 in the
+    // 07-29 take inherited a 4.5 m box this way from a leader stuck on patrolLocal). Past the cap the
+    // follower stops holding and falls through to its own patrol, and the squad re-forms the moment
+    // the leader moves again.
+    const held = (actor.squadHoldSince ??= now);
+    if (now - held > SQUAD_HOLD_MAX_MS) {
+      if (!actor.squadHoldBroken) { actor.squadHoldBroken = true; botDiag.squadHoldBroken++; }
+      if (pathMode === 'squad') { pathMode = null; currentPath = []; botCombatMoveGoal = null; }
+      return false;   // let updatePatrolMovement give this bot something of its own to do
+    }
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    if (pathMode === 'squad') { pathMode = null; currentPath = []; botCombatMoveGoal = null; }
+    return true;   // in place: hold the slot rather than falling through to a patrol goal
+  }
+  actor.squadHoldSince = null;   // moving to a slot is not holding one
+  actor.squadHoldBroken = false;
+  const stale = pathMode !== 'squad' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > botSquadSettings.slotRepath;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, now);
+    if (fresh) { currentPath = fresh; pathMode = 'squad'; botCombatMoveGoal = { x: goal.x, z: goal.z }; }
+    else refused = true;   // throttled: keep the stale path, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+    pathMode = null; botCombatMoveGoal = null; return false;   // slot unreachable: patrol instead
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+// Loose keep-together: regroup toward the living team centroid when the medic drifts too far. Not a
+// follow-the-leader tail -- it stops short of the centroid (bot-medic cohesionTarget).
+function updateMedicCohesionMovement(now) {
+  const actor = activeBotActor;
+  const selfXZ = botXZ(bot);
+  // Anchor on the fighting line, not on other support: exclude fellow medics so two medics don't
+  // pair-bond and drift off together. An all-medic team simply has no cohesion pull.
+  const teammates = [];
+  // cohesionTarget only counts teammates inside cohesionNeighborRadius, so that's the covering query.
+  _mcActor = actor; _mcTeam = bot.team; _mcOut = teammates;
+  botHash.forEachNear(selfXZ.x, selfXZ.z, MEDIC_DEFAULTS.cohesionNeighborRadius, _mcVisit);
+  _mcActor = null; _mcOut = null;
+  const goal = cohesionTarget(selfXZ, teammates, MEDIC_DEFAULTS);
+  if (!goal) { if (pathMode === 'cohesion') { pathMode = null; currentPath = []; botCombatMoveGoal = null; } return false; }
+  const stale = pathMode !== 'cohesion' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - goal.x, botCombatMoveGoal.z - goal.z) > 1.0;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, goal, now);
+    if (fresh) { currentPath = fresh; pathMode = 'cohesion'; botCombatMoveGoal = { x: goal.x, z: goal.z }; }
+    else refused = true; // throttled: keep the stale path/goal, retry when the cooldown clears
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; } // hold, don't drop the regroup
+    pathMode = null; botCombatMoveGoal = null; return false;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+// Manual point command from the right-click menu (test harness for squad/bot direction, see plan
+// file). commandTargetId picks which live bot this applies to. Goal state and movement style are
+// independent toggles (see the menu wiring above): commandGoalState is 'move'/'hold', commandDoubleTime
+// is a plain style flag, and any combination is valid.
+// 'move' clears on arrival and falls through to whatever the bot would normally do next --
+// formation-follow, medic cohesion, or patrol (this is the "attack then return to patrol" default:
+// combat pre-empts movement entirely, elsewhere, and isn't cleared by arriving, so a fight en route
+// or right at the goal doesn't cancel the order). 'hold' never clears on arrival -- the bot parks
+// there until a new command overwrites it, which is the proto-defense behavior: fight if engaged,
+// otherwise hold the spot. commandDoubleTime forces STANCE_RUN (see the doubleTime stance ctx below)
+// for the commanded bot and its whole squad while traveling, regardless of which goal is set.
+const COMMAND_ARRIVE_M = 1.0;
+let commandTargetId = null;
+let commandGoal = null;
+let commandGoalState = 'move';   // 'move' | 'hold'
+function updateCommandMovement(now) {
+  const actor = activeBotActor;
+  if (!commandGoal || actor.id !== commandTargetId) return false;
+  const here = botXZ(bot);
+  if (Math.hypot(here.x - commandGoal.x, here.z - commandGoal.z) <= COMMAND_ARRIVE_M) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    if (pathMode === 'command') { pathMode = null; currentPath = []; botCombatMoveGoal = null; }
+    if (commandGoalState === 'hold') return true;   // parked: keep holding this exact spot indefinitely
+    commandGoal = null; commandTargetId = null;
+    return false;   // arrived: fall through to formation/patrol this same frame
+  }
+  const stale = pathMode !== 'command' || !botCombatMoveGoal || currentPath.length === 0 ||
+    Math.hypot(botCombatMoveGoal.x - commandGoal.x, botCombatMoveGoal.z - commandGoal.z) > 1.0;
+  let refused = false;
+  if (stale) {
+    const fresh = requestPathBudgeted(bot, commandGoal, now);
+    if (fresh) { currentPath = fresh; pathMode = 'command'; botCombatMoveGoal = { x: commandGoal.x, z: commandGoal.z }; }
+    else refused = true;
+  }
+  if (currentPath.length === 0) {
+    if (refused) { bot.velocity.x = 0; bot.velocity.z = 0; return true; }
+    pathMode = null; botCombatMoveGoal = null; return false;
+  }
+  if (followPath(bot, currentPath, currentBotMoveSpeed())) { pathMode = null; botCombatMoveGoal = null; }
+  return true;
+}
+
+// Bring a fallen ally back: reverse killCombatBot's teardown (rebuild body/weapon, restore visuals)
+// and stand it up at reviveHp. Runs in the target's actor context; spends the medic's kit.
+function reviveCombatBot(targetActor, now) {
+  withBotActor(targetActor, () => {
+    const e = bot;
+    e.alive = true;
+    recordRevive(botScore, e.team);   // the death stays on the books; lost = deaths - revives
+    botScoreDirty = true;
+    deadBotActors.delete(targetActor);
+    emitBotRevived({ target: e, actor: targetActor, now });
+    e.health = botMedicSettings.reviveHp;
+    e.velocity.set(0, 0, 0);
+    targetActor.diedAt = null;
+    targetActor.deathXZ = null;
+    targetActor.poseMode = 'none';
+    targetActor.armourBreached = false;   // the only thing that clears the one-way blood latch
+    // Drop any corpse ragdoll (and its sleep stamp) unconditionally, so a revived bot never
+    // stays frozen or stays excluded from the spatial hash.
+    targetActor.ragdoll = null;
+    targetActor.ragdollPose = null;
+    targetActor.ragdollSettledSince = null;
+    if (botProceduralBodyEnabled) {
+      if (botProceduralBody) {
+        // ragdoll death kept the body -- re-mount the dropped weapon
+        if (!botWeaponMount) void createBotWeaponMount(botProceduralBody, targetActor);
+      } else {
+        createBotProceduralBody(); // non-ragdoll death destroyed it; rebuild (also mounts the weapon)
+      }
+      botMesh.visible = false;
+    } else {
+      botMesh.visible = true;
+      botMesh.rotation.z = 0;
+      botMesh.material.color.setHex(BOT_TEAM_DEFS[e.team].capsule);
+    }
+    if (targetActor.stateOrb) targetActor.stateOrb.visible = botStateOrbsEnabled;
+    if (targetActor.roleInsignia) targetActor.roleInsignia.visible = true;
+    if (targetActor.leaderInsignia) targetActor.leaderInsignia.visible = true;
+    botState = BOT_PATROL;
+    pathMode = null; currentPath = [];
+    clearBotHealthRetreat();
+    targetActor.aliveSince = now;
+    recordBotStateChange(targetActor, botState, now);
+  });
+  activeBotActor.reviveKits = Math.max(0, activeBotActor.reviveKits - 1);
+  recordBotEvent(activeBotActor, `revived ${targetActor.id} (${botMedicSettings.reviveHp} HP)`, now);
+}
+
+// A10 recognition delay: a bot may not fire until it has held unbroken sight of a target for its
+// reaction time. A blink of occlusion inside the grace keeps the acquisition it already paid for.
+function resetAimAcquisition(actor) {
+  if (!actor) return;
+  actor.aimContactAt = null;
+  actor.aimReadyAt = 0;
+  actor.aimLostAt = null;
+  actor.aimTargetId = null;
+}
+
+// A10b: tearing down a live contact (retarget, occlusion past the grace) leaves the bot primed --
+// the next acquisition inside the window is an attention shift, not fresh recognition. Without
+// this, two visible enemies trading the "nearest" slot re-paid the full delay forever.
+const AIM_PRIMED_WINDOW_MS = 4000;
+const AIM_UNDER_FIRE_MS = 4000;
+function primeAimAcquisition(actor, now) {
+  if (actor?.aimContactAt != null) {
+    actor.aimPrimedUntil = now + AIM_PRIMED_WINDOW_MS;
+    actor.aimResetAt = now; // POV HUD flashes the ring grey so a torn-down acquisition is visible
+  }
+}
+
+function updateAimAcquisition(now, dt, visible, distance) {
+  const actor = activeBotActor;
+  if (!actor) return;
+  actor.spreadBloomDeg = decayBloomDeg(actor.spreadBloomDeg, dt, botAimSettings);
+  const targetId = botTarget?.id ?? null;
+  if (!visible) {
+    if (actor.aimContactAt == null) return;
+    actor.aimLostAt ??= now;
+    if (now - actor.aimLostAt > botAimSettings.reacquireGraceMs) {
+      primeAimAcquisition(actor, now);
+      resetAimAcquisition(actor);
+    }
+    return;
+  }
+  actor.aimLostAt = null;
+  if (actor.aimContactAt != null && actor.aimTargetId === targetId) return;
+  // Fresh contact: pay the delay once. The alert tier is a frame old (same convention as A6);
+  // taking fire personally counts as alerted even before any squad report scores a tier.
+  actor.aimTargetId = targetId;
+  actor.aimContactAt = now;
+  actor.aimReadyAt = now + reactionDelayMs(distance, {
+    alerted: !!actor.alertTierLast || now - (actor.lastSelfThreatAt ?? -Infinity) < AIM_UNDER_FIRE_MS,
+    primed: now < (actor.aimPrimedUntil ?? 0),
+    jitter01: Math.random(),
+  }, botAimSettings);
+}
+
+// How long this bot has held its current contact -- drives the first-shot spread decay.
+function aimHeldMs(now) {
+  return activeBotActor?.aimContactAt == null ? 0 : now - activeBotActor.aimContactAt;
+}
+
+function botAimReady(now) {
+  if (!botAimSettings.reactionEnabled || !activeBotActor) return true;
+  return activeBotActor.aimContactAt != null && now >= activeBotActor.aimReadyAt;
+}
+
+// Single source for the accuracy cone -- the readout and the live fire path must never disagree.
+// Normalizes against the run CEILING, not currentBotMoveSpeed(): that denominator already carried the
+// run multiplier, so a sprinting bot read 1.0 exactly like a walking one and running cost no accuracy.
+const _spreadIn = { moveSpeed01: 0, heldMs: 0, bloomDeg: 0 }; // reused per bot per frame (M1)
+function botShotSpreadRad(now) {
+  const cap = botStanceSettings.enabled
+    ? BOT_MOVE_SPEED * botMovementSettings.runMultiplier
+    : currentBotMoveSpeed();   // disabled stance keeps the legacy denominator, bug and all
+  _spreadIn.moveSpeed01 = bot ? Math.min(1, Math.hypot(bot.velocity.x, bot.velocity.z) / Math.max(0.1, cap)) : 0;
+  _spreadIn.heldMs = aimHeldMs(now);
+  _spreadIn.bloomDeg = activeBotActor?.spreadBloomDeg ?? 0;
+  return spreadHalfAngleRad(_spreadIn, botAimSettings) *
+    stanceSpreadScale(activeBotActor?.stance ?? STANCE_STAND, botStanceSettings);
+}
+
+// Readout: what currently stands between this bot and a round on target.
+function describeBotAim(now) {
+  const actor = activeBotActor;
+  if (!actor) return '-';
+  const spreadDeg = botShotSpreadRad(now) * 180 / Math.PI;
+  const primed = now < (actor.aimPrimedUntil ?? 0) ? ' (primed)' : '';
+  const gate = !botAimSettings.reactionEnabled ? 'instant'
+    : actor.aimContactAt == null ? `no contact${primed}`
+    : now < actor.aimReadyAt ? `+${Math.round(actor.aimReadyAt - now)}ms${primed}`
+    : 'ready';
+  return `${gate} · ${spreadDeg.toFixed(2)}° · ${actor.stance ?? STANCE_STAND}`;
+}
+
+// Every active bot runs this same established sentry/behavior state machine. Team is only
+// target-selection metadata; shots, reloads, damage, and mounts are shared by all bots.
+function updateBotSentry(dt, now) {
+  if (!bot || bot.alive === false) {
+    botState = BOT_PATROL; botTargetVisible = false; botTargetDistance = Infinity; botTargetVisGate = '-'; losLine.visible = false;
+    pathMode = null; currentPath = []; lastKnownTarget = null; lastKnownTargetMotion = null; lastKnownTargetAt = null; clearMuzzleRecoveryEpisode();
+    botInvestigation = null; botPatrolResumeGoal = null; botCombatMoveGoal = null;
+    // Drop a half-thrown grenade so a revived bot doesn't resume it against a stale aim point.
+    if (activeBotActor) { activeBotActor.grenadeThrow = null; clearGrenadeEvade(activeBotActor); }
+    return;
+  }
+  const _sp0 = performance.now();
+  const _st = _sp0;
+  selectBotTarget();
+  simSelMs += performance.now() - _st;
+  // A miss streak is evidence about ONE opponent: a new target starts clean.
+  const sentryTargetId = botTarget?.id ?? null;
+  if (activeBotActor.lastTargetId !== sentryTargetId) {
+    activeBotActor.lastTargetId = sentryTargetId;
+    activeBotActor.lastTargetSeenAt = null;
+    botMissStreak = 0;
+    activeBotActor.voiceContactId = null;             // a new opponent is a new call-out
+    resetVisibleDebounce(activeBotActor.visDebounce); // occlusion grace describes one opponent only
+    primeAimAcquisition(activeBotActor, now);         // a retarget is an attention shift, not a fresh fight
+    resetAimAcquisition(activeBotActor);              // ...but the paid-for acquisition still describes one opponent
+  }
+  let visible = false, err = Infinity, targetYaw = bot.yaw, targetPitch = bot.pitch, targetDistance = Infinity;
+  botTargetVisGate = '-'; // no live target this frame unless the block below runs
+  updateBotReload(now, true);
+  if (botTarget?.alive) {
+    const botEye = eyePosInto(bot, _sentryEye);
+    const targetEye = eyePosInto(botTarget, _sentryTargetEye);
+    losLine.visible = true;
+    const posAttr = losGeom.attributes.position;
+    posAttr.setXYZ(0, botEye.x, botEye.y, botEye.z);
+    posAttr.setXYZ(1, targetEye.x, targetEye.y, targetEye.z);
+    posAttr.needsUpdate = true;
+
+    const dist = botEye.distanceTo(targetEye);
+    targetDistance = dist;
+    botTargetVisGate = 'r'; // beyond sight range unless the tests below resolve it
+    if (dist <= botSightDistance() && dist > 1e-4) {
+      const dir = _sentryDir.copy(targetEye).sub(botEye).multiplyScalar(1 / dist);
+      const blocked = mapCollider.raycast([botEye.x, botEye.y, botEye.z], [dir.x, dir.y, dir.z], dist - 0.05);
+      const inFov = withinBotFov(bot.yaw, botEye, targetEye);
+      visible = !blocked && inFov;
+      botTargetVisGate = visible ? 'y' : blocked ? 'w' : 'f'; // wall beats FOV when both reject
+    }
+    losLine.material.color.setHex(visible ? 0x30a46c : 0x8a3a3a);
+    if (visible) {
+      botInvestigation = null;
+      botPatrolResumeGoal = null;
+      lastKnownTarget = botXZ(botTarget);
+      lastKnownTargetAt = now;
+      // S2: call the contact out to the squad on RAW acquisition (recordContact rate-limits the ring).
+      _contactMe.id = bot.id; _contactMe.team = bot.team;
+      _contactMe.x = bot.capsule.start.x; _contactMe.z = bot.capsule.start.z;
+      recordContact(recentAllyHits, _contactMe, lastKnownTarget, now, pushAllyReport, botTarget.id);
+      sayBotContact(activeBotActor, bot, botTarget.id, now);
+      const targetSpeed = Math.hypot(botTarget.velocity.x, botTarget.velocity.z);
+      if (targetSpeed > 0.05) {
+        lastKnownTargetMotion = { x: botTarget.velocity.x / targetSpeed, z: botTarget.velocity.z / targetSpeed };
+      }
+      const angles = aimAnglesTo(botEye, targetEye, _aimAngles);
+      targetYaw = angles.yaw; targetPitch = angles.pitch;
+      botAimTarget.yaw = targetYaw;
+      botAimTarget.pitch = targetPitch;
+      botAimPoint.copy(targetEye);
+      botHasAimPoint = true;
+      err = aimError(bot.yaw, bot.pitch, targetYaw, targetPitch);
+    }
+  } else {
+    losLine.visible = false;
+    botHasAimPoint = false;   // never solve the barrel onto a dead/removed target's last position
+    // No live target remains. This is not a failed navigation: discard the stale frontier rather
+    // than having a bot investigate the last position of a dead/removed dummy. A report-seeded
+    // anchor survives (it never described an entity); finishInvestigation retires it instead.
+    if (!lastKnownTarget?.fromReport) {
+      lastKnownTarget = null;
+      lastKnownTargetMotion = null;
+      lastKnownTargetAt = null;
+      botInvestigation = null;
+    }
+    botMissStreak = 0; // fresh engagement starts with a clean slate
+    resetVisibleDebounce(activeBotActor.visDebounce); // grace never outlives its target
+  }
+  botTargetVisible = visible;
+  botTargetDistance = targetDistance;
+  // Ladder-only debounce: a sub-250ms occlusion flicker must not tear down AIM into SEEK (and a
+  // frontier rebuild); aiming/firing keep using raw `visible` -- you cannot shoot the occluded.
+  const visibleSettled = stepVisibleDebounce(activeBotActor.visDebounce ??= { lastTrueAt: null }, visible, now);
+  // Sight lost long enough that the shots which built the streak no longer describe this fight.
+  if (visible) activeBotActor.targetUnseenSince = null;
+  else if (botTarget?.alive) activeBotActor.targetUnseenSince ??= now;
+  if (visible) activeBotActor.lastTargetSeenAt = now;
+  else if (activeBotActor.lastTargetSeenAt != null && now - activeBotActor.lastTargetSeenAt > MISS_STREAK_SIGHT_RESET_MS) {
+    activeBotActor.lastTargetSeenAt = null;
+    botMissStreak = 0;
+  }
+  // A brief occlusion (cover, a teammate stepping into the sightline, the target ducking) is not
+  // "lost the enemy" -- it happens constantly mid-fight, and MISS_STREAK_SIGHT_RESET_MS (1.5s) is
+  // tuned for the miss streak, not for whether a re-sighting is actually news. Re-arming the
+  // callout on that same short timer meant "contact!" repeated every few seconds for the length of
+  // an entire firefight against one enemy who was never actually lost. Use the same bar target
+  // SELECTION already uses for "has this target gone stale" (TARGET_RETAIN_MAX_MS) instead, so the
+  // voice line and the AI agree on what counts as a genuine re-acquire.
+  if (!visible && activeBotActor.voiceContactId != null && activeBotActor.targetUnseenSince != null
+      && now - activeBotActor.targetUnseenSince > TARGET_RETAIN_MAX_MS) {
+    activeBotActor.voiceContactId = null;
+  }
+  // A10: age the recognition timer and let recoil bloom recover. Raw `visible`, not the debounced
+  // ladder value -- you cannot acquire what you cannot see.
+  updateAimAcquisition(now, dt, visible, targetDistance);
+  // --- health packs: collect anything underfoot, then decide whether to go seek a dropped pack ---
+  collectPacksUnderfoot(bot, activeBotActor, now);
+  const hp01 = (bot.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH;
+  const wantsHeal = botHealRequested || hp01 <= botHealthSettings.threshold01; // "hurt" -> ignores proximity limit
+  const hasPack = hasHealResource(activeBotActor?.healthPacks);
+  // Go get a pack when either wounded-and-empty (survival, at any visible range) or healthy-with-room
+  // (opportunistic top-up, only when close). A wounded bot that already holds a pack heals instead.
+  const wantsPack = wantsHeal ? !hasPack : canHold(activeBotActor?.healthPacks, activeBotActor?.maxPacks);
+  // Claim only from a state that will actually walk to the pack (last tick's state: one-tick lag
+  // beats phantom claims from FIRE/COVER that starve wounded bots), and never via a run that
+  // closes on the live threat (the commonest pack source is a corpse at the enemy's feet).
+  const packThreat = botTarget?.alive ? botTarget.capsule.start : lastKnownTarget;
+  let seekable = (wantsPack && packClaimIntent(botState, wantsHeal, hasPack))
+    ? nearestSeekablePack(bot, activeBotActor, wantsHeal) : null;
+  if (seekable && !packRunSafe(bot.capsule.start, seekable.record, packThreat)) seekable = null;
+  activeBotActor.packSeekGoal = seekable ? { x: seekable.record.x, z: seekable.record.z } : null;
+  if (seekable) {
+    const packCell = worldToCellInto(navGrid, seekable.record.x, seekable.record.z, _packCell);
+    goalClaims.claim(bot.id, 'pack', cellIdxOf(packCell.c, packCell.r));
+  } else {
+    goalClaims.release(bot.id, 'pack');
+  }
+  const healStatus = updateHealSafety(now, visible, targetDistance);
+  // A wounded, packless bot that reached safety with no pack in sight gives up on healing and
+  // rejoins the fight (a later hit re-triggers the retreat). Avoids a permanent packless flee-lock.
+  if (botHealRequested && !hasPack && !seekable && healStatus.ready) {
+    recordBotEvent(activeBotActor, 'heal abandoned: safe but no pack available', now);
+    clearBotHealthRetreat();
+  }
+  if (botHealRequested && botHealArrived && healStatus.unsafe) {
+    // The first retreat cell did not actually break danger. Keep the health intent, but
+    // release that arrival latch so FLEE selects the next (preferably covered) nav goal.
+    recordBotEvent(activeBotActor, `heal-flee retry: visible ${botTarget?.id ?? 'target'} at ${targetDistance.toFixed(2)}m`, now);
+    botHealArrived = false;
+    botHealSafetySince = null;
+    currentPath = [];
+    pathMode = null;
+    botCombatMoveGoal = null;
+  }
+  if (botHealRequested && botMuzzleRecoveryTarget) clearMuzzleRecoveryEpisode();
+  if (botMuzzleRecoveryTarget) {
+    if (updateMuzzleRecoveryMovement()) {
+      // Repositioning abandons the previous errand: free its claims so others can use them,
+      // and let a dry mag reload during the walk (the early return skips the tail call).
+      goalClaims.release(bot.id, 'flee');
+      goalClaims.release(bot.id, 'seek');
+      if (activeBotActor.coverCorner) releaseCoverCorner();
+      botState = 'reposition';
+      recordBotStateChange(activeBotActor, botState, now);
+      faceMovement(dt);
+      updateBotReload(now);
+      senAMs += performance.now() - _sp0;   // early exit still closes its phase
+      return;
+    }
+  }
+
+  // Sidearm slot, decided before anything reads the weapon: a dry mag with someone shooting means
+  // draw the pistol, not stand there reloading. "In a gunfight" outlives line of sight by the lull
+  // window -- an enemy that just ducked behind a corner is still an enemy.
+  const contactAgeMs = lastKnownTargetAt != null ? now - lastKnownTargetAt : Infinity;
+  const inGunfight = visible || contactAgeMs < SIDEARM_LULL_MS ||
+    now - (activeBotActor.lastSelfThreatAt ?? -Infinity) < SIDEARM_LULL_MS;
+  updateBotWeaponSlot(now, inGunfight, targetDistance);
+  const swapping = botSwapping(now);
+
+  const ammo = ensureBotAmmo();
+  // botAimReady is the A10 recognition gate: seeing a target is no longer the same as being able
+  // to shoot it. The FSM still reads `visible`, so a bot mid-delay still turns, closes, and takes cover.
+  const readyToFire = visible && botAimReady(now) && botReloadUntil == null && !swapping && ammo.mag > 0 &&
+    (now - lastShotAt >= currentBotWeapon().fireIntervalMs);
+  // Out of ammo means BOTH guns: a dry rifle with a loaded pistol is still a fighting bot.
+  const attackerOutOfAmmo = botOutOfAllAmmo();
+  // No distance gate: a dry bot with a knife charges (updateKnifeMovement closes the gap); the old gate left far bots camping AIM.
+  // Backstop: the knife rung outranks nearly the whole ladder, so a charge that never lands must expire.
+  // One bot held it 652 s against a target a median 43 m away, 0% of samples ever inside blade range.
+  if (botState !== BOT_KNIFE) { activeBotActor.knifeSince = null; }
+  else {
+    activeBotActor.knifeSince ??= now;
+    const knife = getWeapon('knife');
+    if (knife && targetDistance > knife.range * 3) botDiag.knifeOutOfReach++;
+    if (now - activeBotActor.knifeSince > KNIFE_COMMIT_MAX_MS) {
+      activeBotActor.knifeBlockUntil = now + KNIFE_COMMIT_COOLDOWN_MS; // else it re-enters next frame
+      activeBotActor.knifeSince = null;
+      botDiag.knifeTimeout++;
+    }
+  }
+  const knifeBlocked = now < (activeBotActor.knifeBlockUntil ?? -Infinity);
+  const knifeRequested = botKnifeSecondaryEnabled && visible && !botHealRequested && botReloadUntil == null && attackerOutOfAmmo && !knifeBlocked;
+  // A selected flee path is an active action. Keep it intact until followPath reaches its
+  // terminal waypoint; transient LOS loss may change perception, but not the committed route.
+  const fleeCommitted = botState === BOT_FLEE && pathMode === 'flee' &&
+    currentPath.length > 0 && !!botCombatMoveGoal;
+  const previousState = botState;
+  const pursueHealthOk = (bot.health ?? DUMMY_MAX_HEALTH) / DUMMY_MAX_HEALTH > botBehaviorSettings.pursueHealthThreshold01;
+  const spreadSeed = (activeBotActor.spreadSeed ??= botSeedFromId(activeBotActor.id));
+  // L6: per-bot break threshold so a squad whiffing on one target doesn't all charge on one tick.
+  const keepsMissing = botMissStreak >= pursueBreakThreshold(botBehaviorSettings.pursueMissStreak, spreadSeed);
+  // Weapon-linked engagement band: a longer-range gun holds a farther standoff. The standoff is
+  // both where pursue stops (start firing) and the movement goal; the bot kites back (flee) once
+  // an enemy crosses inside half of it.
+  botCombatStandoff = botWeaponStandoff(currentBotWeapon());
+  const weaponFleeDistance = Math.max(botBehaviorSettings.fleeDistance, botCombatStandoff * botBehaviorSettings.fleeStandoffFraction);
+  // --- cover: validate/repair the committed corner, then probe for a fresh one (entry) ---
+  // Threat = the engaged target (last-known while occluded), else a nearby ally's attacker.
+  // A casualty report arrives firsthand (seen within ALLY_ALERT_RADIUS) or secondhand (relayed
+  // by an alerted teammate in contact range); the response is source-blind, tiered purely by
+  // the escalation score: wary flinch / defensive hold+cover / group-backed push on the threat.
+  const firsthand = latestAllyHitNear(bot, now);
+  activeBotActor.alertReport = firsthand; // firsthand only: semi-alerts propagate one hop
+  const report = firsthand || sharedAllyAlertNear(bot, now);
+  _escMe.x = bot.capsule.start.x; _escMe.z = bot.capsule.start.z; _escMe.team = bot.team;
+  const esc = alertEscalation(recentAllyHits, _escMe, now, ESCALATION_RADIUS);
+  senAMs += performance.now() - _sp0;   // phase boundary: perception done
+  const _sp1 = performance.now();
+  let alertTier = null;
+  if (report) {
+    activeBotActor.alertWarySince ??= now;
+    if (esc.score >= ALERT_PUSH_SCORE && livingTeammatesNear(bot, SUPPORT_RADIUS) >= SUPPORT_GROUP_MIN) {
+      alertTier = 'push';
+      if (!lastKnownTarget) {
+        lastKnownTarget = { x: report.threat.x, z: report.threat.z, fromReport: true };
+        lastKnownTargetAt = report.at;
+        lastKnownTargetMotion = null;
+      }
+      applyPushElement(now, report.threat, visible);
+    } else if (esc.score >= ALERT_DEFENSIVE_SCORE) {
+      alertTier = 'defensive';
+    } else if (now - activeBotActor.alertWarySince < SEMI_ALERT_WARY_MS) {
+      alertTier = 'wary';
+    }
+  } else {
+    activeBotActor.alertWarySince = null;
+  }
+  if (alertTier !== 'push') { activeBotActor.pushStartedAt = null; activeBotActor.pushElement = null; }
+  // Weakest cue, only when nothing stronger is live: a round that whistled past this bot itself.
+  // Firsthand but not a casualty — it drives the alert hold only (no cover break, no propagation).
+  const nearMiss = alertTier ? null : latestNearMiss(recentAllyHits, bot, now);
+  // Being shot AT or HIT myself: the one cue no tier may suppress and no state may ignore. Drives
+  // facing everywhere (see threatFacing), so a bot mid-heal still turns on whoever is shooting it.
+  const selfThreat = latestSelfThreat(recentAllyHits, bot, now);
+  if (selfThreat) {
+    activeBotActor.lastSelfThreatAt = now; // read next frame by the sidearm "in a gunfight" test
+    (activeBotActor.lastSelfThreatXZ ??= { x: 0, z: 0 }).x = selfThreat.threat.x; // copied: the report record is pooled
+    activeBotActor.lastSelfThreatXZ.z = selfThreat.threat.z;
+  }
+  // H6a: shot from inside CLOSE_THREAT_RADIUS but outside the cone -- spin onto it, preempting a
+  // committed aim. Latched until nearly aimed (not merely in-cone), or yaw parks at the cone edge.
+  const closeThreatNear = !!selfThreat?.threat &&
+    Math.hypot(selfThreat.threat.x - bot.capsule.start.x, selfThreat.threat.z - bot.capsule.start.z) <= CLOSE_THREAT_RADIUS;
+  let closeSelfThreat = false;
+  if (closeThreatNear) {
+    const threatYaw = Math.atan2(selfThreat.threat.x - bot.capsule.start.x, selfThreat.threat.z - bot.capsule.start.z);
+    if (!withinBotFov(bot.yaw, bot.capsule.start, selfThreat.threat)) activeBotActor.spinLatched = true;
+    if (activeBotActor.spinLatched) closeSelfThreat = aimError(bot.yaw, 0, threatYaw, 0) > 0.4;
+    if (!closeSelfThreat) activeBotActor.spinLatched = false;
+  } else {
+    activeBotActor.spinLatched = false;
+  }
+  activeBotActor.alertMarkMode = alertTier === 'push' ? (activeBotActor.pushElement === 'base' ? 'base' : 'push')
+    : alertTier ? (firsthand ? 'seen' : 'heard') : nearMiss ? 'near' : null;
+  activeBotActor.alertScore = alertTier ? esc.score : 0;
+  activeBotActor.alertTierLast = alertTier; // A10 reads it next frame: an alerted bot reacts faster
+  // A6: the perceptual half of the tier (wider cone, shorter scan stride); read next frame by
+  // withinBotFov/selectBotTarget, so a fresh tier widens perception one frame late.
+  perceptionForTier(alertTier, activeBotActor.tierPerception ??= { fovDegrees: null, scanStride: null });
+  const { coverAlert, holdAlert } = alertTierChannels(alertTier, report, _tierChannels);
+  // Shot from an unseen bearing: seed the search anchor so the SEEK machinery, not patrol, runs next.
+  // Near misses stay facing-only cues; an anchor at the bot's own feet (own blast splash) is noise.
+  if (selfThreat && selfThreat.kind !== NEAR_MISS_KIND && !visible && !lastKnownTarget
+      && Math.hypot(selfThreat.threat.x - bot.capsule.start.x, selfThreat.threat.z - bot.capsule.start.z) > 1.5) {
+    lastKnownTarget = { x: selfThreat.threat.x, z: selfThreat.threat.z, fromReport: true };
+    lastKnownTargetAt = selfThreat.at;
+    lastKnownTargetMotion = null;
+  }
+  // S2: a squadmate's sighting is the weakest lead -- it only fills a slot nothing firsthand holds.
+  _contactMe.id = bot.id; _contactMe.team = bot.team;
+  _contactMe.x = bot.capsule.start.x; _contactMe.z = bot.capsule.start.z;
+  const contact = latestContactNear(recentAllyHits, _contactMe, now, CONTACT_SHARE_RADIUS);
+  if (!lastKnownTarget && contact && now >= (activeBotActor.contactSeedBlockUntil ?? 0)) {
+    lastKnownTarget = { x: contact.threat.x, z: contact.threat.z, fromReport: true };
+    lastKnownTargetAt = contact.at;
+    lastKnownTargetMotion = null;
+  }
+  let coverThreat = botTarget?.alive ? (visible ? botXZInto(botTarget, _coverThreatXZ) : lastKnownTarget) : null;
+  // An ally-reported shooter is out of the bot's own engagement: skip the weapon band gates for
+  // it (a distant hallway shooter must still drive nearby squadmates to corners, not past them).
+  const threatIsAllyReport = !coverThreat && (!!coverAlert || !!contact);
+  if (!coverThreat && coverAlert) coverThreat = coverAlert.threat;
+  if (!coverThreat && contact) coverThreat = contact.threat;
+  // H6b: the corner veto's second shooter -- nearest other acquirable enemy, else a contact report
+  // describing someone clearly elsewhere. Only computed when a cover query can actually use it.
+  const secondaryThreat = coverThreat ? secondVisibleThreat(coverThreat, contact) : null;
+  let coverCommitted = (botState === BOT_COVER_MOVE || botState === BOT_COVER_HOLD) && !!activeBotActor.coverCorner;
+  let coverValid = false;
+  const botHere = botXZInto(bot, _botHereXZ);
+  const coverThreatDist = coverThreat ? Math.hypot(coverThreat.x - botHere.x, coverThreat.z - botHere.z) : Infinity;
+  const coverGate = activeBotActor.coverGate;
+  if (coverCommitted) {
+    // Timeout measures time TRAVELING to the anchor (coverMoveSince), not time since commit --
+    // a long-held corner nudged by ally pushout must not read as an instantly-expired commit.
+    const timedOut = botState === BOT_COVER_MOVE && coverCommitTimedOut(activeBotActor.coverMoveSince, now);
+    // Out-of-band threat: fall through the ladder so pursue can close the gap (no re-pick).
+    const inBand = threatIsAllyReport || coverInBand(coverThreatDist, botCombatStandoff, true, botBehaviorSettings.pursueExitBuffer);
+    // Wall-clock exits: 'stale' = live threat unseen too long (go investigate), 'drought' = held without a shot (blacklist).
+    const lastSeenMs = Math.max(lastKnownTargetAt ?? -Infinity, report?.at ?? -Infinity);
+    const holdExit = coverHoldExitReason({ nowMs: now,
+      holdSinceMs: botState === BOT_COVER_HOLD ? activeBotActor.coverHoldSince : null,
+      lastShotAtMs: lastShotAt, lastSeenAtMs: Number.isFinite(lastSeenMs) ? lastSeenMs : null,
+      targetVisible: visible, targetAlive: !!botTarget?.alive,
+      // S8: a squadmate dying from a materially different bearing means this corner faces the wrong
+      // way. Edge-triggered: each lethal report breaks a hold at most once, or a 2 s-fresh report
+      // re-fires every frame, thrashing cover and resetting the drought clock forever.
+      allyDownAt: report?.lethal && report.at > (activeBotActor.allyDownHandledAt ?? -Infinity) ? report.at : null,
+      allyDownFrom: report?.threat ?? null,
+      heldThreat: activeBotActor.coverThreat, holderPos: botHere });
+    if (timedOut || !inBand || holdExit) {
+      // Report-only threats exempt from the drought blacklist: no shots fired at a rumour is not a bad corner.
+      if (timedOut || (holdExit === 'drought' && !threatIsAllyReport)) blacklistCover(activeBotActor.coverBlacklist, activeBotActor.coverCorner.anchorCell, now);
+      if (holdExit === 'allyDown') {
+        activeBotActor.allyDownHandledAt = report.at;
+        coverThreat = report.threat; // the re-pick this frame hides from the bearing that broke the hold
+      }
+      releaseCoverCorner();
+      coverCommitted = false;
+    } else {
+      // Debounced validity: sustained invalidity earns one cooldown-gated re-pick, then falls through.
+      const g = stepCoverGate(coverGate, coverCornerValid(activeBotActor.coverCorner, coverThreat, secondaryThreat), now);
+      coverValid = g.holdValid;
+      if (coverValid && coverThreat) activeBotActor.coverThreat = { x: coverThreat.x, z: coverThreat.z };
+      if (!coverValid && coverThreat && g.maySwitch) {
+        const next = findCoverCorner(bot, coverThreat, secondaryThreat);
+        if (next && next !== activeBotActor.coverCorner) { commitCoverCorner(next, coverThreat, now); coverValid = true; }
+      }
+      if (!coverValid) {
+        releaseCoverCorner();
+        coverCommitted = false;
+      }
+    }
+  }
+  // Entry needs an in-band threat and a clear switch cooldown (no instant re-entry after a thrash).
+  // A probe that finds nothing also latches: noteCoverSwitch only stamps on a successful commit (M2).
+  const coverEntryOk = !!coverThreat && (threatIsAllyReport || coverInBand(coverThreatDist, botCombatStandoff, false)) &&
+    (visible || !!coverAlert || botReloadUntil != null) && // only probe when a ladder rung could consume it
+    coverSwitchAllowed(coverGate, now) &&
+    now - (activeBotActor.coverProbeFailedAt ?? -Infinity) >= COVER_PROBE_BACKOFF_MS;
+  const coverProbe = !coverCommitted && coverEntryOk ? findCoverCorner(bot, coverThreat, secondaryThreat) : null;
+  if (!coverCommitted && coverEntryOk && !coverProbe) activeBotActor.coverProbeFailedAt = now;
+  const coverAvailable = coverCommitted || !!coverProbe;
+  // An active peek slides the bot ~1.1m off the anchor; "at anchor" tracks the slide's expected
+  // seat on the anchor->peek line so a mid-peek bot doesn't read as off-station and re-path.
+  const coverSeat = activeBotActor.peek && activeBotActor.coverCorner
+    ? peekPosition(activeBotActor.peek, activeBotActor.coverCorner.anchorPos, activeBotActor.coverCorner.peekPos)
+    : activeBotActor.coverCorner?.anchorPos;
+  // Banded seat test: enter at REACH, leave past LEAVE, so ally pushout can't flap HOLD<->MOVE.
+  const atCoverAnchor = coverCommitted && !!coverSeat &&
+    coverSeatBand(Math.hypot(coverSeat.x - botHere.x, coverSeat.z - botHere.z), botState === BOT_COVER_HOLD);
+  // One reused ctx object per frame across all bots (M1): every field is overwritten below.
+  const c = _fsmCtx;
+  c.targetVisible = visibleSettled; c.aimError = err; c.readyToFire = readyToFire; c.hasLastKnown = !!lastKnownTarget;
+  c.targetDistance = targetDistance; c.pursueDistance = botCombatStandoff;
+  c.pursueExitBuffer = botBehaviorSettings.pursueExitBuffer;
+  c.keepsMissing = keepsMissing; c.pursueHealthOk = pursueHealthOk;
+  c.fleeDistance = weaponFleeDistance;
+  c.fleeExitBuffer = botBehaviorSettings.fleeExitBuffer; c.fleeCommitted = fleeCommitted; c.knifeRequested = knifeRequested;
+  c.healRequested = botHealRequested;
+  c.healFleeCommitted = botHealRequested && botState === BOT_FLEE && pathMode === 'flee' && currentPath.length > 0;
+  c.healReady = healStatus.ready; c.healUnsafe = healStatus.unsafe; c.hasHealResource = hasPack;
+  c.coverAvailable = coverAvailable; c.atCoverAnchor = atCoverAnchor; c.coverValid = coverValid;
+  c.allyHitNearby = !!coverAlert; c.coverCommitted = coverCommitted;
+  // Break contact: this bot personally under the toggle, or squadmate of whichever bot is (mirrors
+  // the doubleTime propagation below). See the orderOverride rung in bot-activity.js.
+  c.orderOverride = commandBreakContact && !!commandGoal && (activeBotActor.id === commandTargetId ||
+    (activeBotActor.squadId != null && activeBotActor.squadId === botActorById.get(commandTargetId)?.squadId));
+  // The commit latches live only in this ctx; stash them so the state code can read them at commit time.
+  activeBotActor.commitBits = (fleeCommitted ? LATCH_FLEE : 0) | (coverCommitted ? LATCH_COVER : 0)
+    | (c.healFleeCommitted ? LATCH_HEAL_FLEE : 0);
+  c.fireCapable = !attackerOutOfAmmo; c.knifeCapable = botKnifeSecondaryEnabled;
+  c.closeSelfThreat = closeSelfThreat; c.reloading = botReloadUntil != null;
+  // A9 top-off input (not a rung): nothing can shoot back while the target is unseen or we're tucked in.
+  const concealedFromTarget = !visible || activeBotActor.peek?.phase === 'in';
+  let state = chooseBotStateName(botState, c);
+  senBMs += performance.now() - _sp1;   // phase boundary: alerts + cover choice done
+  const _sp2 = performance.now();
+  // H6a: that AIM is a spin onto whoever just shot us from behind, not onto botTarget.
+  if (state === BOT_AIM && closeSelfThreat) {
+    const eye = eyePosInto(bot, _sentryEye);
+    _spinAt.set(selfThreat.threat.x, eye.y, selfThreat.threat.z);
+    aimAnglesTo(eye, _spinAt, _aimAngles);
+    targetYaw = _aimAngles.yaw; targetPitch = _aimAngles.pitch;
+  }
+  // Medic duty layers on top of the combat FSM: a medic breaks toward a wounded/fallen ally (and
+  // still fires while moving/tending). Own-survival (flee/self-heal) and a committed kite-flee/knife
+  // outrank it; cohesion is handled in the patrol branch below.
+  if (activeBotActor.role === ROLE_MEDIC && !botHealRequested && state !== BOT_FLEE && state !== BOT_KNIFE) {
+    const duty = decideMedicDuty(now, coverThreat || selfThreat?.threat || null);
+    if (duty) state = duty.state;
+  } else if (activeBotActor.role === ROLE_MEDIC) {
+    activeBotActor.medicAction = null;
+    activeBotActor.medicTendTargetId = null;
+  }
+  // Cover lifecycle before botState stamps: the invariant "cover state => committed corner" self-heals to an actionable state.
+  if (state === BOT_COVER_MOVE || state === BOT_COVER_HOLD) {
+    if (!activeBotActor.coverCorner && coverProbe) commitCoverCorner(coverProbe, coverThreat, now);
+    if (!activeBotActor.coverCorner) state = visible ? BOT_AIM : (lastKnownTarget ? BOT_SEEK : BOT_PATROL);
+  } else if (activeBotActor.coverCorner) {
+    releaseCoverCorner();
+  }
+  // Squad alert (movement-level stamp like muzzle 'reposition'): a patroller with a fresh
+  // ally-hit report holds where it stands, gun trained on the reported threat, until the alert
+  // expires -- never walk blind into a live kill zone. Capped + cooled down in bot-alert.js as
+  // a freeze backstop; cover/combat rungs above always outrank the hold.
+  const alertSt = activeBotActor.alertHold ??= { holdSince: null, cooldownUntil: null };
+  const alertThreat = holdAlert || nearMiss || selfThreat; // these orient, but never took a cover rung
+  // Facing priority for every non-aiming state: whoever is shooting me outranks the errand I am on.
+  const threatFacing = (fallback) => selfThreat?.threat || fallback || alertThreat?.threat || lastKnownTarget;
+  // PATROL despite a live alert means the ladder found no better action (no corner, or dry gun).
+  // Only hold where the reported threat cannot see us; standing exposed keeps whatever the ladder chose.
+  let alertExposed = false;
+  if (state === BOT_PATROL && !visible && alertThreat && visField && navGrid) {
+    _alertBake.field = visField; _alertBake.navGrid = navGrid;
+    alertExposed = exposedToThreat(_alertBake, botHere, alertThreat.threat);
+  }
+  const wantAlertHold = state === BOT_PATROL && !visible && !!alertThreat && !alertExposed;
+  if (stepAlertHold(alertSt, wantAlertHold, now)) state = 'alert';
+  // S13 hold, hoisted above the stance resolve (consumed again for locomotion below): a pinned bot
+  // is stationary, which is exactly what the stance decider wants to know.
+  const holding = activeBotActor.holdUntil > now &&
+    (state === BOT_PATROL || state === BOT_SEEK || state === BOT_PURSUE);
+  // Stance resolve: the one point where the final state is known and nothing has consumed it yet.
+  // auto pick -> hysteresis latch -> UI force-override, then stamped on the actor for every seam.
+  const forcedCrouch = (state === BOT_HEAL && activeBotActor.role !== ROLE_MEDIC) ||
+    activeBotActor.packPickupCrouchUntil > now;   // rifleman self-heal + the brief pack-pickup dip
+  activeBotActor.stanceForcedCrouch = forcedCrouch;
+  let autoStance = STANCE_STAND;
+  if (botStanceSettings.enabled) {
+    const sc = _stanceCtx;  // one reused ctx across all bots (M1): every field is overwritten here
+    sc.forcedCrouch = forcedCrouch;
+    sc.holding = holding;
+    sc.holdElapsedMs = holding && activeBotActor.holdSince != null ? now - activeBotActor.holdSince : 0;
+    sc.peekPhase = activeBotActor.peek?.phase ?? null;
+    sc.peekExposed = activeBotActor.peek ? peekExposed(activeBotActor.peek) : false;
+    sc.targetVisible = visibleSettled;
+    sc.targetDistance = targetDistance;
+    sc.distanceToLastKnown = lastKnownTarget                       // no last-known point reads as "far"
+      ? Math.hypot(lastKnownTarget.x - bot.capsule.start.x, lastKnownTarget.z - bot.capsule.start.z) : Infinity;
+    sc.alertHeld = state === 'alert';
+    sc.medicTend = activeBotActor.role === ROLE_MEDIC;
+    // Set by LAST frame's updateGrenadeEvade, which runs below this resolve. A self-expiring stamp
+    // rather than a boolean: the evade handler early-returns once the threat list empties, so a flag
+    // it owned would latch the dash on forever.
+    sc.evading = activeBotActor.evadingUntil > now;
+    // Read the LATCH's stance, not activeBotActor.stance (that's last frame's post-override value,
+    // a few lines below) -- the hysteresis belongs to the auto decision, not a UI force-override.
+    sc.alreadyCrouched = activeBotActor.stanceLatch?.stance === STANCE_CROUCH;
+    // Double time: this bot personally under the movement-style toggle, or squadmate of whichever bot is.
+    sc.doubleTime = commandDoubleTime && !!commandGoal && (activeBotActor.id === commandTargetId ||
+      (activeBotActor.squadId != null && activeBotActor.squadId === botActorById.get(commandTargetId)?.squadId));
+    const desired = chooseBotStance(state, sc, botStanceSettings);
+    const latch = activeBotActor.stanceLatch ??= { stance: STANCE_STAND, changedAt: now, blockedUntil: 0 };
+    autoStance = stepStanceTransition(latch, desired, now, botStanceSettings);
+  } else activeBotActor.stanceLatch = null;   // a disabled system carries no latch into a re-enable
+  activeBotActor.stance = resolveStanceOverride(botStanceOverride, autoStance);
+  // Travel timer for the cover commit-timeout: stamped on every entry into COVER_MOVE.
+  if (state === BOT_COVER_MOVE && botState !== BOT_COVER_MOVE) activeBotActor.coverMoveSince = now;
+  else if (state !== BOT_COVER_MOVE) activeBotActor.coverMoveSince = null;
+  updateBotVoiceState(activeBotActor, bot, botState, state, attackerOutOfAmmo, now); // before the stamp: needs both states
+  botState = state;
+  recordBotStateChange(activeBotActor, botState, now);
+  if (state !== BOT_FLEE) goalClaims.release(bot.id, 'flee'); // any flee exit path frees the claimed cell
+  if (state !== BOT_SEEK) goalClaims.release(bot.id, 'seek'); // same for a search cell the bot left
+  if (state !== BOT_PURSUE) goalClaims.release(bot.id, 'pursue'); // S14: free the approach bearing
+
+  // S13: a commanded hold -- a medic servicing this bot, or its own squad's base-of-fire element.
+  // Only pure locomotion yields: AIM/FIRE/KNIFE and COVER_HOLD are already stationary, COVER_MOVE
+  // resolves to a hold on its own, and the bot's own self-heal keeps priority. FLEE never yields --
+  // a retreat under fire must not freeze the bot in the shooter's lane (the medic re-plans instead).
+  // (`holding` is computed above the stance resolve, which reads it.)
+  senCMs += performance.now() - _sp2;   // phase boundary: state resolution done
+  const _sp3 = performance.now();
+  let _dLabel = state;   // the branches below that aren't keyed on `state` relabel themselves
+  // A live grenade outranks every other consideration; a wind-up outranks everything but that.
+  if (updateGrenadeEvade(dt, now)) { _dLabel = 'gEvade'; }
+  else if (updateGrenadeThrow(dt, now)) { _dLabel = 'gThrow'; }
+  else if (holding) {
+    _dLabel = 'hold';
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    if (visible) {
+      faceAimDirection(targetYaw, targetPitch, dt); // still defend while held -- overwatch IS this
+      if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now;
+    } else {
+      faceThreatAndAhead(threatFacing(null) || activeBotActor.holdFacingXZ, dt, now); // shooter first, else the caller's point
+    }
+  } else if (state === BOT_AIM || state === BOT_FIRE) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    faceAimDirection(targetYaw, targetPitch, dt);
+    if (state === BOT_FIRE && fireBotShot(eyePosInto(bot, _fireEye), now)) {
+      lastShotAt = now;
+    }
+  } else if (state === BOT_KNIFE) {
+    updateKnifeMovement(targetDistance);
+    faceAimDirection(targetYaw, targetPitch, dt);
+    fireBotKnife(targetDistance, now);  } else if (state === BOT_PURSUE) {
+    updatePursuitMovement();
+    faceAimDirection(targetYaw, targetPitch, dt);
+  } else if (state === BOT_FLEE) {
+    updateFleeMovement(now);
+    faceAimDirection(targetYaw, targetPitch, dt);
+    if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now;
+  } else if (state === BOT_HEAL) {
+    updateBotHealing(dt);
+    faceThreatAndAhead(threatFacing(null) || botCombatMoveGoal, dt, now);
+  } else if (state === MEDIC_MOVE) {
+    // Approach a wounded/fallen ally; still aim and fire at any visible enemy en route (like flee).
+    updateMedicMoveMovement(now);
+    if (visible) { faceAimDirection(targetYaw, targetPitch, dt); if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now; }
+    else faceThreatAndAhead(selfThreat?.threat, dt, now); // null threat falls through to plain face-movement
+  } else if (state === MEDIC_TEND) {
+    // Channel a heal/revive on the ally; fire-while-tend (pack in the off hand, sidearm in the other).
+    updateMedicTend(dt, now);
+    if (visible) { faceAimDirection(targetYaw, targetPitch, dt); if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now; }
+    else faceThreatAndAhead(threatFacing(null) || activeBotActor?.medicAction, dt, now); // shooter first, else the patient
+  } else if (state === BOT_COVER_MOVE) {
+    // Run for the anchor; keep firing on a visible threat en route (like flee).
+    updateCoverMoveMovement();
+    if (visible) { faceAimDirection(targetYaw, targetPitch, dt); if (readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now; }
+    else faceThreatAndAhead(selfThreat?.threat, dt, now); // null threat falls through to plain face-movement
+  } else if (state === BOT_COVER_HOLD) {
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    const rec = activeBotActor.coverCorner;
+    activeBotActor.coverHoldSince ??= now; // drought clock starts when the hold does
+    // S10: the group stagger is a one-shot on the FIRST hold of this corner; the phase then persists.
+    if (!activeBotActor.peek) {
+      activeBotActor.peek = createPeekCycle(Math.random, activeBotActor.coverPeekOffsetS ?? 0);
+      activeBotActor.coverPeekOffsetS = 0;
+    }
+    const peek = activeBotActor.peek;
+    stepPeekCycle(peek, dt);
+    // Position-driven slide along the baked anchor->peek line; re-seats after any pushout shove
+    // (deliberately no separation blend here, so a passing ally can't drag the holder off line).
+    if (rec) placeBotXZ(bot, approachXZ(botXZInto(bot, _holdSeatXZ), peekPosition(peek, rec.anchorPos, rec.peekPos), PEEK_APPROACH_SPEED * dt));
+    if (peekAiming(peek) && visible && !closeSelfThreat) {
+      faceAimDirection(targetYaw, targetPitch, dt);
+      // Fire only fully exposed, through the same aim/cooldown gate AIM->FIRE uses.
+      if (peekExposed(peek) && readyToFire && err <= AIM_TOLERANCE_RAD && fireBotShot(eyePosInto(bot, _fireEye), now)) lastShotAt = now;
+    } else {
+      // A knife-range attacker behind us outranks the far target: threatFacing turns on it while we hold.
+      faceThreatAndAhead(threatFacing(activeBotActor?.coverThreat), dt, now);
+    }
+  } else if (state === BOT_SEEK) {
+    updateSeekMovement(now);
+    faceThreatAndAhead(threatFacing(botCombatMoveGoal), dt, now);
+  } else if (state === 'alert') {
+    // Hold the concealed spot, weapon trained on the reported threat direction (swept, not pinned).
+    bot.velocity.x = 0; bot.velocity.z = 0;
+    pathMode = null; currentPath = []; botCombatMoveGoal = null;
+    faceThreatAndAhead(threatFacing(null), dt, now);
+  } else {
+    // Out of combat: grab a nearby pack, else (medics) regroup toward the team, else patrol.
+    if (updatePackSeekMovement(now)) { /* seeking a pack */ }
+    else if (updateCommandMovement(now)) { /* under a manual point command */ }
+    else if (updateSquadFormationMovement(now)) { /* holding a formation slot */ }
+    else if (activeBotActor.role === ROLE_MEDIC && updateMedicCohesionMovement(now)) { /* regrouping */ }
+    else updatePatrolMovement();
+    faceMovementScanning(dt, now); // A4: glance off-axis while walking instead of staring down the heading
+    _dLabel = 'patrol';
+  }
+  const _sp4 = performance.now();
+  senDByState.set(_dLabel, (senDByState.get(_dLabel) || 0) + (_sp4 - _sp3));
+  // Knife is a true last resort: it only comes out once the primary AND the pistol are spent.
+  // bot.weapon is already the swapped-to slot, so the mount follows the pistol on its own.
+  setBotEquippedWeapon(activeBotActor.grenadeThrow ? 'grenade'
+    : botKnifeSecondaryEnabled && attackerOutOfAmmo ? 'knife' : bot.weapon);
+  // Re-decide the slot on this frame's post-fire ammo: the shot that emptied the mag swaps the
+  // pistol in now, instead of starting a reload the next frame would immediately cancel.
+  // Reload/slot re-decide now runs on the knife too: skipping it was the other half of the deadlock.
+  updateBotWeaponSlot(now, inGunfight, targetDistance); updateBotReload(now);
+  // A9: top off a partial mag during a lull. reloadBotWeapon already no-ops while reloading, on a
+  // full mag, with no reserve, or on the knife -- this only supplies the "mag < 30%" trigger.
+  const heldAmmo = ensureBotAmmo(); // re-read: the tail swap above may have changed what's in hand
+  if (state !== BOT_KNIFE && botReloadUntil == null && heldAmmo.magazineSize > 0) {
+    _topOff.magFrac = heldAmmo.mag / heldAmmo.magazineSize;
+    _topOff.targetVisible = visible;
+    _topOff.concealed = concealedFromTarget;
+    // A peeking holder only tops off when the remaining concealed hold covers the reload; the
+    // hold is then extended to match, or the cycle slides the bot out mid-reload, unable to fire.
+    let peekReloadOk = true;
+    const holdPeek = botState === BOT_COVER_HOLD ? activeBotActor.peek : null;
+    if (holdPeek) {
+      const seq = botWeaponMount?.weaponId === bot.weapon ? botWeaponMount.reloadSequence : null;
+      const reloadS = (seq?.duration ?? BOT_RELOAD_FALLBACK_MS / 1000) + 0.15;
+      peekReloadOk = holdPeek.phase === 'in';
+      if (peekReloadOk && shouldTopOffReload(_topOff) && reloadBotWeapon(now)) {
+        holdPeek.inHoldS = Math.max(holdPeek.inHoldS, holdPeek.t + reloadS);
+      }
+    } else if (shouldTopOffReload(_topOff)) reloadBotWeapon(now);
+  }
+  const _dEnd = performance.now();
+  senDTailMs += _dEnd - _sp4;
+  senDMs += _dEnd - _sp3;
+}
+// Scratch barrel ray (M1): every caller consumes it before the next botMountedBarrelRay call.
+const _barrelRay = { rear: new THREE.Vector3(), origin: new THREE.Vector3(), direction: new THREE.Vector3() };
+function botMountedBarrelRay() {
+  const rearMarker = botWeaponMount?.barrelReferenceMarker;
+  const muzzleMarker = botWeaponMount?.muzzleMarker;
+  if (!rearMarker?.parent || !muzzleMarker?.parent) return null;
+  rearMarker.updateWorldMatrix(true, false);
+  muzzleMarker.updateWorldMatrix(true, false);
+  const rear = rearMarker.getWorldPosition(_barrelRay.rear);
+  const muzzle = muzzleMarker.getWorldPosition(_barrelRay.origin);
+  const direction = _barrelRay.direction.copy(muzzle).sub(rear);
+  if (direction.lengthSq() < 1e-8) return null;
+  direction.normalize();
+  return _barrelRay;
+}
+
+const _alignWantedDir = new THREE.Vector3();
+const _alignCorrection = new THREE.Quaternion();
+function alignMountedWeaponToPoint(targetPoint) {
+  const mount = botWeaponMount;
+  const barrel = botMountedBarrelRay();
+  if (!mount || !barrel || !targetPoint) return false;
+  const wantedDirection = _alignWantedDir.copy(targetPoint).sub(barrel.origin);
+  if (wantedDirection.lengthSq() < 1e-8) return false;
+  wantedDirection.normalize();
+  const correction = _alignCorrection.setFromUnitVectors(barrel.direction, wantedDirection);
+  if (!Number.isFinite(correction.x + correction.y + correction.z + correction.w)) return false;
+
+  // Preserve the rear-grip point while rotating the complete weapon hierarchy.
+  // This is the actual held-gun pivot: the barrel moves, but the primary hand does not.
+  const rig = mount.weaponRig;
+  rig.position.sub(barrel.rear).applyQuaternion(correction).add(barrel.rear);
+  rig.quaternion.premultiply(correction).normalize();
+  // Ancestors+self only (rig has no ancestors below scene, so this is just rig's own matrix) —
+  // the caller's second controller.update() reads weaponView's world transform via its own
+  // updateWorldMatrix(true, false) walk, so the model subtree never needs a forced update here.
+  rig.updateWorldMatrix(true, false);
+  return true;
+}
+
+function botBulletOrigin(fallback) {
+  const marker = botWeaponMount?.muzzleMarker;
+  if (!marker?.parent) return fallback.clone();
+  marker.updateWorldMatrix(true, false);
+  return marker.getWorldPosition(new THREE.Vector3());
+}
+function fireBotKnife(targetDistance, now) {
+  const knife = getWeapon('knife');
+  const victim = botTarget; // local capture: a killing blow nulls the global mid-call
+  if (!knife || !victim?.alive || targetDistance > knife.range || now - lastKnifeAt < knife.fireIntervalMs) return false;
+  lastKnifeAt = now;
+  playAtCulled('knife_swing', eyePos(victim), BOT_SFX.impact, 4);
+  applyCombatDamage(knife.damage, eyePos(victim), victim, now, { weaponId: 'knife', cause: 'knife' });
+  recordBotEvent(activeBotActor, `knife hit: ${victim.id}`, now);
+  return true;
+}
+// Minimal harness explosion: an explosive weapon detonates at its impact point, dealing radial
+// falloff damage to every alive actor in range; blast-killed bots ragdoll outward (applyBlastImpulse).
+const BOT_BLAST_RADIUS = 6;   // fallback only; real radii come from weapons.js projectile specs
+// Blast radius for a weapon: the live grenade tuning, else the authored spec (rpg 8.2 m).
+// Deliberately NOT arena-scaled.
+function blastRadiusFor(weapon) {
+  if (isTunedGrenade(weapon)) return botGrenadeBlast.blastRadius;
+  const r = weapon?.projectile?.blastRadius;
+  return Number.isFinite(r) && r > 0 ? r : BOT_BLAST_RADIUS;
+}
+function blastDamageFor(weapon) {
+  return isTunedGrenade(weapon) ? botGrenadeBlast.damage : (weapon?.damage ?? 0);
+}
+// Post-blast settle: anyone the blast reached (or who was hugging its edge) tears down its aim
+// acquisition, so the A10 recognition delay runs again instead of the bot resuming fire on the frame
+// the smoke appears. Reuses the existing reaction-delay sliders rather than adding a new state.
+const BLAST_SETTLE_SCALE = 1.35;   // x blast radius: covers bots that just cleared the ring
+function settleAfterBlast(center, radius, now) {
+  const reach = radius * BLAST_SETTLE_SCALE;
+  const reachSq = reach * reach;
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (e.alive === false || !e.capsule) continue;
+    const mx = (e.capsule.start.x + e.capsule.end.x) * 0.5 - center.x;
+    const my = (e.capsule.start.y + e.capsule.end.y) * 0.5 - center.y;
+    const mz = (e.capsule.start.z + e.capsule.end.z) * 0.5 - center.z;
+    if (mx * mx + my * my + mz * mz > reachSq) continue;
+    actor.aimContactAt = null;
+    actor.aimReadyAt = 0;
+    actor.aimTargetId = null;
+    actor.aimResetAt = now;
+  }
+}
+// Blast occlusion. Without this a blast was a pure radius test and walls did nothing, which made the
+// grenade-evade cover hold pointless — the bot reached the corner and ate the damage anyway.
+// Deliberately NOT a single centre-to-centre ray: a bot crouched behind a low wall has its head in
+// the open, and an all-or-nothing test on the capsule midpoint either makes it immune or makes the
+// wall useless. Three samples up the victim's own capsule, damage scaled by the fraction unblocked,
+// so partial cover is partial protection. Cost is 3 raycasts per victim per blast, and blasts are rare.
+let blastOcclusionEnabled = true;
+const BLAST_SAMPLE_T = [0.15, 0.5, 0.9];   // fractions up the capsule: shins, torso, head
+const _blastFrom = [0, 0, 0], _blastDir = [0, 0, 0];
+function blastExposure(center, capsule) {
+  if (!blastOcclusionEnabled || !mapCollider) return 1;
+  _blastFrom[0] = center.x; _blastFrom[1] = center.y; _blastFrom[2] = center.z;
+  let open = 0;
+  for (const t of BLAST_SAMPLE_T) {
+    const px = capsule.start.x + (capsule.end.x - capsule.start.x) * t;
+    const py = capsule.start.y + (capsule.end.y - capsule.start.y) * t;
+    const pz = capsule.start.z + (capsule.end.z - capsule.start.z) * t;
+    let dx = px - center.x, dy = py - center.y, dz = pz - center.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-4) { open++; continue; }   // standing on it: nothing can be in the way
+    _blastDir[0] = dx / len; _blastDir[1] = dy / len; _blastDir[2] = dz / len;
+    // Stop a hair short of the body so the victim's own surface never counts as its own cover.
+    if (!mapCollider.raycast(_blastFrom, _blastDir, Math.max(0, len - 0.05))) open++;
+  }
+  return open / BLAST_SAMPLE_T.length;
+}
+function detonateBlast(center, weapon, now, attacker = bot) {
+  const R = blastRadiusFor(weapon);
+  spawnBlastFx(center, R, isTunedGrenade(weapon) ? botGrenadeBlast.fxScale : 1);
+  playAtCulled('explosion', center, BOT_SFX.explosion, 3);
+  const baseKb = weaponKnockback(weapon);
+  const dmg = blastDamageFor(weapon);
+  // Snapshot bot victims first — killCombatBot mutates lists/globals mid-loop.
+  const victims = [];
+  for (const actor of botActors) {
+    const e = actor.entity;
+    if (e.alive === false) continue;
+    const c = e.capsule.start.clone().add(e.capsule.end).multiplyScalar(0.5);
+    const d = c.distanceTo(center);
+    if (d > R) continue;
+    const exposure = blastExposure(center, e.capsule);
+    if (exposure <= 0) continue;   // fully behind cover: the blast never reaches it
+    victims.push({ e, c, falloff: (1 - d / R) * exposure });
+  }
+  // Damage + squad-alert reports first, kills second: a thrower caught in its own blast still
+  // reports for everyone else (recordAllyHit drops reports once the attacker is dead).
+  for (const { e, c, falloff } of victims) {
+    spawnDummyHitImpact(c);
+    spawnHitBloodFx(c, hitNormalFor(e, c, null, center), e, center, dmg * falloff);   // c is the victim's own axis, so center is what gives direction
+    e.health = Math.max(0, (e.health ?? DUMMY_MAX_HEALTH) - dmg * falloff);
+    creditBotHit(attacker, e);
+    recordBotDamage(e, dmg * falloff, attacker, now);
+    recordAllyHit(e, attacker, now); // health already decremented, so a fatal blast reads as lethal
+    if (e.health > 0) beginBotHealthRetreat(e, attacker?.id, now); // blast wounds trigger retreat like bullets
+  }
+  for (const { e, falloff } of victims) {
+    if (e.health <= 0 && e.alive !== false) {
+      killCombatBot(e, now, { blastFrom: { x: center.x, y: center.y, z: center.z }, knockback: baseKb * (0.4 + 0.6 * falloff) },
+        { killer: attacker, weaponId: weapon.id, cause: 'blast' });
+    }
+  }
+  // WASD dummy targets take damage too (no procedural body → normal death path, no ragdoll).
+  for (const t of dummyTargets) {
+    if (t.alive === false || !t.capsule) continue;
+    const c = t.capsule.start.clone().add(t.capsule.end).multiplyScalar(0.5);
+    const d = c.distanceTo(center);
+    if (d > R) continue;
+    const exposure = blastExposure(center, t.capsule);
+    if (exposure <= 0) continue;
+    applyCombatDamage(dmg * (1 - d / R) * exposure, c, t, now, { weaponId: weapon.id, cause: 'blast', attacker, origin: center });
+  }
+  settleAfterBlast(center, R, now);
+}
+function fireBotShot(origin, now, aim = botAimTarget) {
+  const ammo = ensureBotAmmo();
+  if (botReloadUntil != null || botSwapping(now) || ammo.mag <= 0) return false;
+  ammo.mag -= 1;
+  if (activeBotActor) activeBotActor.shotsFired += 1;
+  const weapon = currentBotWeapon();
+  // When the visual mount is ready, combat and the tracer use the same final
+  // muzzle ray as the rendered rifle. The angle fallback only covers the brief
+  // interval before the GLB and its anchors have loaded.
+  //
+  // Solve the barrel onto the aim point HERE, not just in the render pass. The FSM confirms the shot
+  // on the entity's yaw/pitch, but the round leaves down the RENDERED barrel, and updateBotWeaponMount
+  // (which runs after this, and skips its solve while carrying, mid-reload, or on a rig-LOD frame) is
+  // the only thing that ever puts pitch on the weapon rig. Without this the round flies down whatever
+  // pose the gun was last left in -- ~6 deg high on an unsolved rifle hold, which is a near miss at
+  // 20 m and a tracer into the sky at 200.
+  if (botHasAimPoint && botWeaponMount?.placed) alignMountedWeaponToPoint(botAimPoint);
+  const mountedBarrel = botWeaponMount?.placed ? botMountedBarrelRay() : null;
+  const fireOrigin = mountedBarrel?.origin || botBulletOrigin(origin);
+  const dir = mountedBarrel?.direction.clone() || new THREE.Vector3(
+    Math.sin(aim.yaw) * Math.cos(aim.pitch),
+    Math.sin(aim.pitch),
+    Math.cos(aim.yaw) * Math.cos(aim.pitch),
+  );
+  // A10: deflect inside the accuracy cone before anything consumes the ray, so combat, tracer and
+  // bullet all follow the same (imperfect) line.
+  const shotSpread = botShotSpreadRad(now);
+  if (shotSpread > 0) dispersedDirection(dir, shotSpread, Math.random(), Math.random(), dir);
+  if (activeBotActor) activeBotActor.spreadBloomDeg = bloomAfterShot(activeBotActor.spreadBloomDeg, botAimSettings);
+  // Explosives leave the barrel as a real projectile: no hitscan, no tracer, and the blast lands
+  // when it arrives. detonateBlast still does the damage, driven by the projectile's own hit.
+  if (weapon.mode === 'projectile' && weapon.projectile) {
+    launchBotProjectile(weapon, fireOrigin, dir, bot.id);
+    botWeaponMount?.controller.play('fire');
+    playAtCulled(weaponFireEvent(weapon.id), fireOrigin, BOT_SFX.launch, 4);
+    shotSeq++;
+    lastShotSummary = `#${shotSeq} ${weapon.id} launched`;
+    botShotUiDirty = true;
+    return true;
+  }
+  const hit = resolveHitscan({
+    shooterId: bot.id,
+    origin: [fireOrigin.x, fireOrigin.y, fireOrigin.z],
+    dir: [dir.x, dir.y, dir.z],
+    range: weapon.range,
+    players: botTarget?.alive ? [combatCapsuleFor(botTarget)] : [],
+    heightAt: () => -1e6, normalAt: () => [0, 1, 0],
+    occluder: (o, d, range) => mapCollider.raycast(o, d, range),
+  });
+  botWeaponMount?.controller.play('fire');
+  playAtCulled(weaponFireEvent(weapon.id), fireOrigin, weapon.mode === 'projectile' ? BOT_SFX.launch : BOT_SFX.gunshot, 8);
+  // Bullets that whistled past: alert whoever the shot nearly hit (hit.distance = range when it hit nothing).
+  recordNearMisses(fireOrigin, dir, hit.distance, hit.kind === 'player' ? hit.id : null, bot, now);
+  playBallisticWhizz(fireOrigin, dir, hit.distance, bot.id, weapon);
+  const hitPoint = new THREE.Vector3(hit.point[0], hit.point[1], hit.point[2]);
+  spawnTracer(fireOrigin, hitPoint, hit.kind === 'player');
+  spawnBullet(fireOrigin, hitPoint, hit.kind === 'player');
+  // Impact report: flesh hits are sounded by applyCombatDamage, so this covers world surfaces only.
+  // A grazing hit on hard geometry sings off instead; the ricochet REPLACES the impact voice.
+  if (weapon.mode !== 'projectile' && hit.kind !== 'player' && hit.kind !== 'none') {
+    const voice = pickImpactVoice(hit, dir);
+    if (voice) playAtCulled(voice, hitPoint, BOT_SFX.impact, 8);
+  }
+  if (weapon.mode === 'projectile') {
+    detonateBlast(hitPoint, weapon, now, bot);   // explosive weapon: blast at the impact, not a single-target hit
+    if (hit.kind === 'player') botMissStreak = 0;
+  } else if (hit.kind === 'player') {
+    botMissStreak = 0;
+    const target = combatEntityById(hit.id);
+    if (target) applyCombatDamage(weapon.damage ?? 0, hitPoint, target, now, { weaponId: weapon.id, cause: 'bullet', normal: hit.normal });
+  } else if (botTarget?.alive) {
+    botMissStreak++; // aimed at a live target but didn't connect -- feeds pursue-on-miss
+  }
+  recordBotShotResult(hit);
+  shotSeq++;
+  lastShotSummary = `#${shotSeq} ${hit.kind}${hit.kind === 'player' ? ' HIT' : ''} @ ${hit.distance.toFixed(1)}m`;
+  botShotUiDirty = true; // ammo buttons + shot log flush once per frame, not per bullet
+  return true;
+}
+
+function flushShotUi() {
+  if (botShotUiDirty && shotLogEl && lastShotSummary) shotLogEl.textContent = lastShotSummary;
+  if (botShotUiDirty || botWeaponUiDirty) updateBotWeaponButtons();
+  botShotUiDirty = botWeaponUiDirty = false;
+}
+
+// Pooled shot FX: lines/meshes live in the scene permanently and toggle visible, so per-shot
+// work is a position write -- no geometry/material construction, no scene add/remove churn.
+const tracerHitMaterial = new THREE.LineBasicMaterial({ color: 0xff5252, transparent: true, opacity: 0.9 });
+const tracerMissMaterial = new THREE.LineBasicMaterial({ color: 0xffca28, transparent: true, opacity: 0.9 });
+
+// ---- shared layered FX (effect-renderer.js): fireball, shockwave, embers, shrapnel, smoke ----
+// Same renderer the environment viewer uses. It is stateless: every sub-particle is regenerated
+// each frame from the wire object + its id hash + age, so the harness just keeps a plain list.
+const EFFECT_LIST_CAP = 900;        // trail puffs dominate; oldest are dropped past this
+const EXPLOSION_LIFE_S = 1.8;       // outer envelope (smoke lingers well past the flash)
+const botEffects = [];
+let botEffectSeq = 0;
+// resolveAttachment is what lets a wound stain ride the bot it was left on instead of hanging in
+// the air where the shot landed. The renderer stores nothing: it calls this every frame and reads
+// the part's live matrix, so the wire object stays a plain replicable snapshot.
+function attachMatrixFor(ownerId, attach) {
+  const body = botActorById.get(ownerId)?.body;
+  return body ? resolveAttachmentMatrix(body, attach) : null;
+}
+// How many blood decals may exist at once, across both stain pools. 512 was an unmeasured guess, so
+// it is a slider with a live usage readout rather than a constant: the readout is what says whether
+// a cap is too small (decals being dropped) or wastefully large (peak far below it).
+let botDecalBudget = 512;
+const effectRenderer = createEffectRenderer({
+  THREE, scene, terrainHeight: groundHeight, resolveAttachment: attachMatrixFor,
+  maxBloodDecals: botDecalBudget,
+});
+let botExplosionFxEnabled = true;
+let botBloodFxEnabled = true;
+// Where a wound mark comes from, and how it is drawn. Both are per-frame cost dials.
+//   wound 'cylinder' — the point combat already produced from the bot's one 0.3 m capsule. Free,
+//                      but it sits centimetres off the limb in open air and cannot ride the body.
+//   wound 'mesh'     — bot-body-hit.js walks the rig's parts for the real surface point, its normal,
+//                      the part's width, and a handle to pin the stain to. One AABB walk per hit.
+//   stain 'fitted'   — a quad sized from that width so it can never overhang the limb.
+//   stain 'projected'— a GPU box that paints whatever the depth buffer says is behind it, so it
+//                      wraps the limb instead of floating. One extra draw call, no geometry.
+let botWoundHitMode = 'mesh';
+let botStainRender = 'fitted';
+// Damage classes (bot-damage-class.js): humans bleed, armour sparks and only bleeds once breached,
+// robots never bleed. Off restores the old behaviour — everything bleeds and sparks on every hit —
+// which is the A/B, since the default body kind is armoured and therefore stops bleeding above 35%.
+let botDamageClassesEnabled = true;
+// Health-driven intensity: a graze trickles, a near-fatal hit sprays. Off pins every hit to the
+// lethal-end tuning, which is exactly what shipped before.
+let botBloodIntensityEnabled = true;
+const STAIN_FIXED = 0.15;      // authored size, used whenever no part width is available
+const STAIN_FIT = 0.55;        // fraction of the hit part's cross-section
+const STAIN_FIT_MIN = 0.03, STAIN_FIT_MAX = 0.16;
+const STAIN_PROJ_DEPTH = 0.025;  // box reach along the normal, each way; keep under half a limb
+const BLOOD_RED = [0.4, 0.02, 0.03];   // mirrors entity-types/effect.js; pushEffect skips its defaults
+// p accepts a Vector3 or an [x,y,z]; expireAt is local bookkeeping the renderer ignores.
+function pushEffect(kind, p, life, extra = null) {
+  const e = {
+    id: `fx${++botEffectSeq}`, type: 'effect', kind, life,
+    p: Array.isArray(p) ? [p[0], p[1], p[2]] : [p.x, p.y, p.z],
+    expireAt: performance.now() + life * 1000,
+  };
+  if (extra) Object.assign(e, extra);
+  botEffects.push(e);
+  // Trim in blocks, not one at a time: a front splice moves the whole array, and at the cap that
+  // would run on every single push. Dropping an eighth amortizes it to nothing.
+  if (botEffects.length > EFFECT_LIST_CAP) {
+    botEffects.splice(0, botEffects.length - (EFFECT_LIST_CAP - (EFFECT_LIST_CAP >> 3)));
+  }
+  return e;
+}
+// Single-pass compaction. Expired effects cluster at the FRONT (oldest first), so per-item
+// splicing degraded to O(n) shifts each, once per expiry, over a list of up to EFFECT_LIST_CAP.
+function updateEffects(now) {
+  let w = 0;
+  for (let i = 0; i < botEffects.length; i++) {
+    const e = botEffects[i];
+    if (now < e.expireAt) botEffects[w++] = e;
+  }
+  botEffects.length = w;
+  // Mode exclusivity at the call site: whichever technique owns wound stains this frame, the other
+  // must not also draw them. sync()'s signature is shared with four other callers, so the filter
+  // lives here rather than inside the renderer.
+  const projecting = botStainRender === 'projected';
+  let list = botEffects;
+  if (projecting) {
+    _wireNoStains.length = 0;   // reused, not rebuilt: this runs every frame over up to 900 effects
+    for (const e of botEffects) if (e.kind !== 'blood_stain') _wireNoStains.push(e);
+    list = _wireNoStains;
+  }
+  effectRenderer.sync(list, now);
+  if (projecting) drawProjectedStains(now);
+  else if (projectedStains) { projectedStains.begin(); projectedStains.end(); }
+}
+const _wireNoStains = [];
+
+// ---- wound stains, Mode C: GPU depth-projected boxes (projected-decals.js) ----
+// Built on first use so the pool costs nothing while the mode is off.
+let stainTexture = null;
+let projectedStains = null;
+function ensureProjectedStains() {
+  // A cap is a buffer size, so a budget change is a rebuild, not a write — same constraint as
+  // effect-renderer's setBloodDecalCap. Rebuilding here means the slider needs no separate hook.
+  if (projectedStains && projectedStains.cap === botDecalBudget) return projectedStains;
+  if (projectedStains) projectedStains.dispose();
+  if (!stainTexture) stainTexture = makeStainTexture(THREE);
+  projectedStains = createProjectedDecals({
+    THREE, scene, decalTexture: stainTexture, cap: botDecalBudget,
+  });
+  return projectedStains;
+}
+// Applies the budget to both pools. Called from the slider's change event, never per frame.
+function applyDecalBudget() {
+  effectRenderer.setBloodDecalCap(botDecalBudget);
+  if (projectedStains && projectedStains.cap !== botDecalBudget) ensureProjectedStains();
+  effectRenderer.resetStats();
+}
+// Live usage, whichever pool is actually drawing stains this frame.
+function decalUsage() {
+  const s = effectRenderer.stats();
+  if (botStainRender === 'projected' && projectedStains) {
+    return { cap: projectedStains.cap, used: projectedStains.count,
+      peak: projectedStains.peak, dropped: projectedStains.droppedPeak };
+  }
+  return { cap: s.bloodCap, used: s.bloodUsed, peak: s.bloodPeak, dropped: s.bloodDroppedPeak };
+}
+const smooth01 = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+const _psP = new THREE.Vector3(), _psN = new THREE.Vector3(), _psM = new THREE.Matrix3();
+// Mirrors effect-renderer.js's drawBloodStain fade envelope and attach resolution, so switching
+// modes changes the decal technique and nothing else.
+function drawProjectedStains(now) {
+  const pool = ensureProjectedStains();
+  pool.begin();
+  for (const e of botEffects) {
+    if (e.kind !== 'blood_stain') continue;
+    const life = e.life || 6;
+    const lt = 1 - Math.max(0, (e.expireAt - now) / 1000) / life;
+    if (lt >= 1 || lt < 0) continue;
+    const a = smooth01(Math.min(1, lt * 12)) * (1 - smooth01(Math.max(0, (lt - 0.7) / 0.3))) * (e.opacity ?? 0.9);
+    if (a <= 0.003) continue;
+    const n = e.normal || [0, 1, 0];
+    _psP.set(e.p[0], e.p[1], e.p[2]);
+    _psN.set(n[0], n[1], n[2]);
+    const m = e.attach ? attachMatrixFor(e.ownerId, e.attach) : null;
+    if (m) {
+      _psP.set(e.attach.lp[0], e.attach.lp[1], e.attach.lp[2]).applyMatrix4(m);
+      _psM.getNormalMatrix(m);
+      _psN.set(e.attach.ln[0], e.attach.ln[1], e.attach.ln[2]).applyMatrix3(_psM).normalize();
+    }
+    const c = e.color || BLOOD_RED;
+    pool.push(_psP.x, _psP.y, _psP.z, _psN, e.size || STAIN_FIXED, STAIN_PROJ_DEPTH,
+      c[0], c[1], c[2], a, e.spin || 0);
+  }
+  pool.end();
+}
+// `radius` is the damage ring; `fxScale` sizes the visual off it, so the puff can be dialled bigger
+// or smaller than what actually hurts (the grenade's "effect size" slider).
+function spawnBlastFx(center, radius = BOT_BLAST_RADIUS, fxScale = 1) {
+  const shown = Math.max(0.1, radius * fxScale);
+  // A blast borrows a real dynamic light regardless of the effect list state — the light is what
+  // actually sells it on the dark themes. Reach scales with the drawn blast, not the damage ring.
+  visuals.flash(center, { intensity: 140, distance: Math.min(60, shown * 3.2), life: 0.28, color: 0xffb066 });
+  if (!botExplosionFxEnabled) return;
+  pushEffect('explosion', center, EXPLOSION_LIFE_S, { color: [1, 0.62, 0.26], radius: shown });
+}
+
+// Spray/decal direction: horizontal, outward from the target's axis -- combat.js's own capsule-normal
+// convention. Only bullets carry a real surface normal. Every other path passes a hit point taken from
+// the victim's own (vertical) capsule, so dx/dz are exactly zero there and it falls through to the
+// second reference instead: the knife's attacker, the blast's center.
+function hitNormalFor(target, hitPoint, explicit = null, sourcePoint = null) {
+  if (explicit && Number.isFinite(explicit[0])) return explicit;
+  const c = target?.capsule?.start;
+  if (c) {
+    for (const ref of [hitPoint, sourcePoint]) {
+      if (!ref) continue;
+      const dx = ref.x - c.x, dz = ref.z - c.z;
+      const l = Math.hypot(dx, dz);
+      if (l > 1e-4) return [dx / l, 0, dz / l];
+    }
+  }
+  return [0, 1, 0];
+}
+// Flesh/armour hit stack, same wire kinds damage-simulator.html spawns: sparks off the plate, a
+// gravity-arced droplet burst, a stain at the wound, ground splatter where those droplets land.
+// Colours are passed explicitly -- pushEffect writes a raw wire object and never runs
+// EffectEntity.create(), so the blood-kind colour default would not apply and blood would render orange.
+const _whO = new THREE.Vector3(), _whD = new THREE.Vector3(), _whP = new THREE.Vector3();
+// Re-trace a capsule hit against the victim's actual rig, for the surface point, its normal, the
+// hit part's width, and a handle the stain can ride. Returns null when the bot has no rig or the
+// ray misses it — the capsule is fatter than the body, so a graze can land in open air.
+function refineWoundHit(target, point, normal, sourcePoint) {
+  const body = target?.botActor?.body;
+  if (!body?.parts?.all?.length) return null;
+  _whP.set(point.x ?? point[0], point.y ?? point[1], point.z ?? point[2]);
+  let traced = false;
+  if (sourcePoint) {
+    _whD.set(_whP.x - sourcePoint.x, _whP.y - sourcePoint.y, _whP.z - sourcePoint.z);
+    if (_whD.lengthSq() > 1e-6) { _whD.normalize(); _whO.copy(sourcePoint); traced = true; }
+  }
+  if (!traced) {
+    // Nothing to trace from (a blast at the victim's own axis): come in along the outward normal.
+    _whD.set(-normal[0], -normal[1], -normal[2]);
+    if (_whD.lengthSq() < 1e-6) _whD.set(0, 0, 1);
+    _whD.normalize();
+    _whO.copy(_whP).addScaledVector(_whD, -1);
+  }
+  return resolveBodyHit({ THREE, body, origin: _whO, dir: _whD, refresh: true });
+}
+// Health AFTER this hit, as a fraction. The three call sites all spawn FX BEFORE decrementing
+// health — deliberately, so the FX lead the state change — so the post-hit value has to be
+// predicted here rather than read. An immortal dummy never actually loses health, so it is pinned
+// to the lethal end instead of forever reading as untouched.
+function hpAfterHit(target, amount) {
+  if (!target) return 0;
+  if (!target.botActor && dummyImmortal) return 0;
+  const maxHp = target.maxHealth ?? DUMMY_MAX_HEALTH;
+  if (!(maxHp > 0)) return 0;
+  const after = (target.health ?? maxHp) - Math.max(0, Number.isFinite(amount) ? amount : 0);
+  return Math.max(0, Math.min(1, after / maxHp));
+}
+const ROBOT_SMOKE = [0.32, 0.31, 0.3];
+
+function spawnHitBloodFx(point, normal, target = null, sourcePoint = null, amount = null) {
+  if (!botBloodFxEnabled || !point) return;
+  let p = point, n = normal || [0, 1, 0], attach = null, cross = 0;
+  if (botWoundHitMode === 'mesh') {
+    const hit = refineWoundHit(target, point, n, sourcePoint);
+    if (hit) {
+      p = [hit.point.x, hit.point.y, hit.point.z];
+      n = [hit.normal.x, hit.normal.y, hit.normal.z];
+      attach = hit.attach || null;
+      cross = hit.crossSection || 0;
+    }
+  }
+  // What this target is made of decides which of these effects fire at all. With classes off every
+  // branch resolves the way it did before the table existed: blood and sparks on every hit.
+  const actor = target?.botActor ?? null;
+  const cls = getDamageClass(classForActor(actor, getBotBodyKind()));
+  const hp01 = hpAfterHit(target, amount);
+  let blood = true, sparks = true, smoke = false;
+  if (botDamageClassesEnabled) {
+    const gate = shouldShowBlood(cls, hp01, actor?.armourBreached === true);
+    blood = gate.show;
+    if (actor && gate.breached) actor.armourBreached = true;   // one-way; a heal must not undo it
+    sparks = cls.sparks;
+    smoke = shouldShowSmoke(cls, hp01, actor?.armourBreached === true);
+  }
+  // At the lethal end this is exactly the tuning that shipped before, so the change is additive at
+  // the healthy end rather than a regression at the one that already looked right.
+  const I = botBloodIntensityEnabled
+    ? bloodIntensityForHealth(hp01)
+    : bloodIntensityForHealth(0);
+
+  // Unchanged from before the class table: no colour passed, so the spark keeps the look it had.
+  if (sparks) pushEffect('hit_spark', p, 0.6, { normal: n, surface: null });
+  if (smoke) {
+    pushEffect('smoke_puff', p, 0.7,
+      { color: ROBOT_SMOKE, size: 0.1, growth: 0.35, rise: 0.5, opacity: 0.22 });
+  }
+  if (!blood) return;
+
+  if (I.sprayCount > 0) {
+    pushEffect('blood_spray', p, 0.6,
+      { normal: n, color: BLOOD_RED, count: I.sprayCount, size: 0.03,
+        speed: I.spraySpeed, spread: I.spraySpread, gravity: 9.8 });
+  }
+  // Fitted sizing needs a part width, so it only exists once the hit knows what it struck.
+  const size = cross > 0
+    ? Math.min(STAIN_FIT_MAX, Math.max(STAIN_FIT_MIN, STAIN_FIT * cross))
+    : STAIN_FIXED;
+  const stain = pushEffect('blood_stain', p, 6.0,
+    { normal: n, color: BLOOD_RED, size, opacity: 0.92, attach, ownerId: target?.id ?? null });
+  stain.spin = (botEffectSeq * 2.399963) % (Math.PI * 2);   // golden angle; only the projected pool reads it
+  if (I.splatterCount > 0) {
+    pushEffect('blood_splatter', p, 8.0,
+      { normal: n, color: BLOOD_RED, count: I.splatterCount, size: 0.12, opacity: I.splatterOpacity,
+        speed: I.spraySpeed, spread: I.spraySpread, gravity: 9.8 });
+  }
+}
+
+// ---- flying explosives (bot-projectiles.js over entity-types/combat-projectile.js) ----
+// Rockets and thrown grenades are real projectiles with travel time, not hitscan: they fly, trail
+// smoke, bounce, and detonate through the same detonateBlast the old instant path used.
+const _projFrom = [0, 0, 0], _projDirArr = [0, 0, 0];
+const _projPoint = new THREE.Vector3();
+const _projTargets = [];
+const _projCap = { id: null, p: [0, 0, 0], r: 0, h: 0, alive: true };
+// Live blast-damageable entities. Rebuilt ONCE per frame by updateProjectiles, not per raycast —
+// projectileRaycast runs per projectile per frame and only ever reads it.
+function refreshProjectileTargets() {
+  _projTargets.length = 0;
+  for (const actor of botActors) if (actor.entity.alive !== false) _projTargets.push(actor.entity);
+  for (const t of dummyTargets) if (t.alive !== false && t.capsule) _projTargets.push(t);
+  return _projTargets;
+}
+// Scratch-filling twin of combatCapsuleFor: no Vector3 clone, no object per target per frame.
+function projCapsuleInto(entity, out) {
+  const s = entity.capsule.start, e = entity.capsule.end;
+  out.id = entity.id;
+  out.p[0] = (s.x + e.x) * 0.5; out.p[1] = (s.y + e.y) * 0.5; out.p[2] = (s.z + e.z) * 0.5;
+  out.r = entity.capsule.radius; out.h = e.y - s.y; out.alive = entity.alive !== false;
+  return out;
+}
+// Swept segment vs map + bodies. Returns the nearest hit as {point, kind, id} or null.
+function projectileRaycast(from, to, radius, ownerId) {
+  _projFrom[0] = from[0]; _projFrom[1] = from[1]; _projFrom[2] = from[2];
+  let dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+  const span = Math.hypot(dx, dy, dz);
+  if (span < 1e-6) return null;
+  dx /= span; dy /= span; dz /= span;
+  _projDirArr[0] = dx; _projDirArr[1] = dy; _projDirArr[2] = dz;
+  const range = span + radius;
+  let best = null;
+  const wall = mapCollider.raycast(_projFrom, _projDirArr, range);
+  if (wall) best = { point: wall.point, kind: 'obstacle', id: null, distance: wall.distance };
+  for (const target of _projTargets) {
+    if (target.id === ownerId) continue;
+    const cap = projCapsuleInto(target, _projCap);
+    // Broadphase: a swept step is ~1 m, so most of the roster is nowhere near it. Every point on
+    // the capsule lies within r + h/2 of its centre, so this reject can never drop a real hit.
+    const reach = range + cap.r + cap.h * 0.5;
+    const cx = cap.p[0] - _projFrom[0], cy = cap.p[1] - _projFrom[1], cz = cap.p[2] - _projFrom[2];
+    if (cx * cx + cy * cy + cz * cz > reach * reach) continue;
+    const hit = rayCapsuleHit(_projFrom, _projDirArr, range, cap);
+    if (hit.hit && (!best || hit.distance < best.distance)) {
+      best = { point: hit.point, kind: 'player', id: target.id, distance: hit.distance };
+    }
+  }
+  return best;
+}
+const botProjectiles = createProjectileManager({
+  raycast: projectileRaycast,
+  terrainHeight: groundHeight,
+  trailIntervalS: 0.035,
+  onDetonate: (point, proj) => {
+    _projPoint.set(point[0], point[1], point[2]);
+    const weapon = getWeapon(proj.weaponId) || currentBotWeapon();
+    detonateBlast(_projPoint, weapon, performance.now(), combatEntityById(proj.throwerActorId));
+  },
+  onTrail: (proj, point) => {
+    if (!botExplosionFxEnabled) return;
+    const rocket = proj.weaponId === 'rpg';
+    pushEffect('smoke_puff', point, rocket ? 1.2 : 0.55, {
+      color: [0.62, 0.6, 0.58],
+      size: rocket ? 0.3 : 0.14, growth: rocket ? 0.95 : 0.35,
+      rise: 0.3, opacity: rocket ? 0.34 : 0.16,
+    });
+  },
+});
+// Immediate-mode projectile bodies: one pooled mesh per live projectile, leftovers hidden. A
+// fizzling rocket destroys itself without a detonation callback, so meshes are never hand-released.
+const projectileMeshes = [];
+const projectileGeom = new THREE.SphereGeometry(0.17, 10, 8);
+const rocketMat = new THREE.MeshBasicMaterial({ color: 0xffc08a, toneMapped: false });
+const grenadeMat = new THREE.MeshStandardMaterial({ color: 0x39432f, roughness: 0.75, metalness: 0.1 });
+function projectileMeshAt(index) {
+  let mesh = projectileMeshes[index];
+  if (!mesh) {
+    mesh = new THREE.Mesh(projectileGeom, rocketMat);
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    projectileMeshes[index] = mesh;
+  }
+  return mesh;
+}
+// Launch along an explicit velocity (a solved grenade arc) or straight down `dir` at spec speed.
+function launchBotProjectile(weapon, origin, dir, attackerId, velocity = null) {
+  const spec = weapon.projectile || {};
+  const vx = velocity ? velocity.vx : dir.x * (spec.speed ?? 60);
+  const vy = velocity ? velocity.vy : dir.y * (spec.speed ?? 60);
+  const vz = velocity ? velocity.vz : dir.z * (spec.speed ?? 60);
+  const speed = Math.hypot(vx, vy, vz) || 1;
+  visuals.flash(origin, { intensity: 70, distance: 12, life: 0.16, color: 0xffb066 });
+  // A tuned grenade carries its rolled fuse, and `life` is stretched past it -- life expiry also
+  // detonates, so a fuse longer than the authored 2.15 s life would otherwise never be reached.
+  const fuse = isTunedGrenade(weapon) ? rolledGrenadeFuse() : spec.fuse;
+  const life = isTunedGrenade(weapon) ? Math.max(spec.life ?? 0, fuse + GRENADE_FUSE_TAIL_S) : spec.life;
+  // arc is zeroed and gravity passed explicitly: create() adds `arc` on top of dir*speed and
+  // defaults gravity to 0, so the spec's loft/gravity must not be applied twice or dropped.
+  return botProjectiles.spawn({
+    origin: [origin.x, origin.y, origin.z],
+    dir: [vx / speed, vy / speed, vz / speed],
+    speed,
+    arc: [0, 0, 0],
+    gravity: spec.gravity ?? 0,
+    life, fuse,
+    bounces: spec.bounces === true,
+    fizzleOnExpire: spec.fizzleOnExpire === true,
+    cooks: isTunedGrenade(weapon),   // contact stops it; the fuse is what sets it off
+    radius: spec.radius, blastRadius: blastRadiusFor(weapon),
+    damage: blastDamageFor(weapon),
+    color: weapon.tracerColor,
+    ownerId: attackerId, throwerActorId: attackerId, weaponId: weapon.id,
+  });
+}
+function updateProjectiles(dt) {
+  if (botProjectiles.list.length === 0) { projectileWhizz.clear(); return; }  // nothing in the air: no roster scan, no sweep
+  refreshProjectileTargets();
+  botProjectiles.update(dt);
+  let n = 0;
+  _projWhizzLive.clear();
+  for (const proj of botProjectiles.list) {
+    const mesh = projectileMeshAt(n++);
+    const p = proj.transform.p;
+    mesh.position.set(p[0], p[1], p[2]);
+    const mat = proj.weaponId === 'rpg' ? rocketMat : grenadeMat;
+    if (mesh.material !== mat) mesh.material = mat;   // a swap rebuilds the WebGPU pipeline
+    mesh.visible = true;
+    // Rockets/grenades fly curved, bouncing paths, so a straight-ray closest approach is wrong
+    // for them -- sample proximity per tick and fire once, as it starts receding.
+    _projWhizzLive.add(proj.id);
+    const pass = projectileWhizz.step(proj.id, mesh.position, camera.position);
+    if (pass) playAtCulled('bullet_whizz', pass.point, BOT_SFX_WHIZZ, WHIZZ_PER_WINDOW,
+      BOT_SFX_WHIZZ.maxDistance, createWhizzVoice(pass));
+  }
+  projectileWhizz.retain(_projWhizzLive);
+  for (let i = n; i < projectileMeshes.length; i++) projectileMeshes[i].visible = false;
+}
+const tracerPool = [];
+function acquireTracerLine() {
+  if (tracerPool.length) return tracerPool.pop();
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+  const line = new THREE.Line(geom, tracerMissMaterial);
+  line.frustumCulled = false;
+  scene.add(line);
+  return line;
+}
+function spawnTracer(from, to, isHit) {
+  visuals.flash(from);   // muzzle flash: borrows a slot from the shared dynamic-light budget
+  const line = acquireTracerLine();
+  const pos = line.geometry.attributes.position;
+  pos.setXYZ(0, from.x, from.y, from.z);
+  pos.setXYZ(1, to.x, to.y, to.z);
+  pos.needsUpdate = true;
+  line.material = isHit ? tracerHitMaterial : tracerMissMaterial;
+  line.visible = true;
+  tracers.push({ line, expireAt: performance.now() + 150 });
+}
+const bulletPool = [];
+function acquireBulletMesh() {
+  if (bulletPool.length) return bulletPool.pop();
+  const mesh = new THREE.Mesh(botBulletGeometry, botBulletMaterial);
+  mesh.renderOrder = 2;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+function spawnBullet(from, to, isHit) {
+  const direction = to.clone().sub(from);
+  const distance = direction.length();
+  if (distance < 1e-4) return;
+  direction.multiplyScalar(1 / distance);
+  const mesh = acquireBulletMesh();
+  mesh.material = isHit ? botHitBulletMaterial : botBulletMaterial;
+  mesh.position.copy(from);
+  mesh.visible = true;
+  bullets.push({ mesh, from: from.clone(), direction, distance, travel: 0 });
+}
+
+function updateBullets(dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const bullet = bullets[i];
+    bullet.travel += BOT_BULLET_SPEED * dt;
+    const travelled = Math.min(bullet.travel, bullet.distance);
+    bullet.mesh.position.copy(bullet.from).addScaledVector(bullet.direction, travelled);
+    if (bullet.travel >= bullet.distance) {
+      bullet.mesh.visible = false;
+      bulletPool.push(bullet.mesh);
+      bullets.splice(i, 1);
+    }
+  }
+}
+function updateTracers(now) {
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    if (now >= tracers[i].expireAt) {
+      tracers[i].line.visible = false;
+      tracerPool.push(tracers[i].line);
+      tracers.splice(i, 1);
+    }
+  }
+}
+
+// ===================== nav grid debug overlay =====================
+// Per the spec: "the single highest-leverage thing the harness buys" -- path bugs are nearly
+// invisible without seeing both the baked walkable cells and the live path together. Rebuilt
+// by applyLayout() each time the map (and so the grid) changes.
+const navPointsGeom = new THREE.BufferGeometry();
+const navPointsMat = new THREE.PointsMaterial({ color: 0x4fc3f7, size: 0.06, transparent: true, opacity: 0.55 });
+const navPoints = new THREE.Points(navPointsGeom, navPointsMat);
+navPoints.visible = false;
+navPoints.frustumCulled = false; // point count/extent changes per layout; skip stale-bounds culling
+scene.add(navPoints);
+
+function rebuildNavOverlay() {
+  const pts = [];
+  for (let r = 0; r < navGrid.rows; r++) {
+    for (let c = 0; c < navGrid.cols; c++) {
+      if (!isWalkableCell(navGrid, c, r)) continue;
+      const w = cellToWorld(navGrid, c, r);
+      pts.push(w.x, decalY(w.x, w.z, 0.03), w.z);
+    }
+  }
+  navPointsGeom.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  navPathLine.visible = false;
+}
+
+const navPathMat = new THREE.LineBasicMaterial({ color: 0xffee58 });
+// Fixed-capacity position buffer written in place: this runs every frame the overlay is up, and
+// the old dispose/rebuild fed the GC hard enough to tip frames on the vsync ladder.
+const NAV_PATH_MAX_POINTS = 256;
+const navPathGeom = new THREE.BufferGeometry();
+const navPathPositions = new THREE.BufferAttribute(new Float32Array(NAV_PATH_MAX_POINTS * 3), 3);
+navPathPositions.setUsage(THREE.DynamicDrawUsage);
+navPathGeom.setAttribute('position', navPathPositions);
+navPathGeom.setDrawRange(0, 0);
+const navPathLine = new THREE.Line(navPathGeom, navPathMat);
+navPathLine.frustumCulled = false;   // the buffer's bounds change per frame; skip stale-bounds culling
+navPathLine.visible = false;
+scene.add(navPathLine);
+
+function updateNavPathLine() {
+  if (!navPoints.visible || !bot || currentPath.length === 0) { navPathLine.visible = false; return; }
+  const p = botXZ(bot);
+  const array = navPathPositions.array;
+  const count = Math.min(NAV_PATH_MAX_POINTS, currentPath.length + 1);
+  array[0] = p.x; array[1] = decalY(p.x, p.z, 0.05); array[2] = p.z;
+  for (let i = 1; i < count; i++) {
+    const w = currentPath[i - 1];
+    array[i * 3] = w.x; array[i * 3 + 1] = decalY(w.x, w.z, 0.05); array[i * 3 + 2] = w.z;
+  }
+  navPathPositions.addUpdateRange(0, count * 3);   // backend clears the range list after upload
+  navPathPositions.needsUpdate = true;
+  navPathGeom.setDrawRange(0, count);
+  navPathLine.visible = true;
+}
+
+// ===================== control panel =====================
+// Same look as the environment viewer's inspector: workshop-panel-theme.js re-scopes those rules
+// to this panel and picks up the palette saved by that viewer's Theme tab.
+installPanelTheme('#ctrl');
+
+const ctrlRoot = document.createElement('div'); ctrlRoot.id = 'ctrl'; document.body.appendChild(ctrlRoot);
+const panelHead = document.createElement('div'); panelHead.className = 'panel-head';
+const panelHeadLeft = document.createElement('div'); panelHeadLeft.className = 'head-left';
+panelHeadLeft.append(
+  Object.assign(document.createElement('span'), { textContent: 'Bot viewer' }),
+  Object.assign(document.createElement('span'), { className: 'hint', textContent: 'v2' }),
+);
+const panelHeadBtns = document.createElement('div'); panelHeadBtns.className = 'head-btns';
+const headBtn = (text, title, className) => Object.assign(document.createElement('button'), { textContent: text, title, className: className || '' });
+const expandAllBtn = headBtn('⌄', 'Expand every section', 'sec-toggle');
+const collapseAllBtn = headBtn('⌃', 'Collapse every section', 'sec-toggle');
+const panelToggleBtn = headBtn('–', 'Hide the panel (header bar stays)');
+panelHeadBtns.append(expandAllBtn, collapseAllBtn, panelToggleBtn);
+panelHead.append(panelHeadLeft, panelHeadBtns);
+const panelBody = document.createElement('div'); panelBody.className = 'panel-body';
+
+// Pinned chrome. Search, the camera mode strip, the ★ jump drawer and the bot readout sit above the
+// tab strip, because all four are referenced no matter which tab is open.
+const panelChrome = document.createElement('div'); panelChrome.className = 'panel-chrome';
+const searchInput = document.createElement('input');
+searchInput.type = 'search'; searchInput.className = 'panel-search';
+searchInput.placeholder = 'Search controls…';
+searchInput.title = 'Filters cards across every tab. Clear to go back to the active tab.';
+const pinDrawer = document.createElement('div'); pinDrawer.className = 'pin-drawer';
+const chromeCameraRow = document.createElement('div'); chromeCameraRow.className = 'chrome-camera';
+const chromeReadoutHost = document.createElement('div');   // the Bot readout .sec is built into this
+panelChrome.append(searchInput, pinDrawer, chromeCameraRow, chromeReadoutHost);
+
+const panelTabs = document.createElement('div'); panelTabs.className = 'panel-tabs';
+ctrlRoot.append(panelHead, panelChrome, panelTabs, panelBody);
+
+// ── tabs ──────────────────────────────────────────────────────────────────────
+// Each tab is a plain host div inside the scroller; only the active one is displayed. createSection
+// already takes an arbitrary host, so a tab body is just a different host -- no theme changes.
+const TAB_DEFS = [
+  ['session', 'Session'], ['bots', 'Bots'], ['world', 'World'],
+  ['debug', 'Debug'], ['visuals', 'Visuals'], ['audio', 'Audio'],
+];
+const tabHosts = new Map();
+const tabButtons = new Map();
+let activeTabId = 'bots';
+for (const [id, label] of TAB_DEFS) {
+  const host = document.createElement('div'); host.className = 'tab-host'; host.dataset.tab = id;
+  panelBody.appendChild(host);
+  tabHosts.set(id, host);
+  const btn = document.createElement('button'); btn.className = 'tab-btn'; btn.textContent = label;
+  btn.addEventListener('click', () => setActiveTab(id));
+  panelTabs.appendChild(btn);
+  tabButtons.set(id, btn);
+}
+function setActiveTab(id, { scroll = true } = {}) {
+  if (!tabHosts.has(id)) return;
+  activeTabId = id;
+  for (const [key, host] of tabHosts) host.classList.toggle('active', key === id);
+  for (const [key, btn] of tabButtons) btn.classList.toggle('primary', key === id);
+  if (scroll) panelBody.scrollTop = 0;
+  botScoreDirty = true;   // the scoreboard readout is skipped while its tab is hidden
+}
+
+let panelCollapsed = false;
+function setPanelCollapsed(collapsed) {
+  panelCollapsed = !!collapsed;
+  ctrlRoot.classList.toggle('collapsed', panelCollapsed);
+  panelToggleBtn.textContent = panelCollapsed ? '+' : '–';
+  panelToggleBtn.title = panelCollapsed ? 'Show the panel' : 'Hide the panel (header bar stays)';
+  if (!panelCollapsed) botScoreDirty = true;   // the score readout skips its work while hidden
+}
+// Scoped to the active tab: a panel-wide expand would blow open five tabs nobody is looking at.
+function activeSectionHosts() { return [panelChrome, tabHosts.get(activeTabId)].filter(Boolean); }
+expandAllBtn.addEventListener('click', () => {
+  for (const host of activeSectionHosts()) setAllSectionsCollapsed(host, false);
+  botScoreDirty = true;
+});
+collapseAllBtn.addEventListener('click', () => {
+  for (const host of activeSectionHosts()) setAllSectionsCollapsed(host, true);
+});
+panelToggleBtn.addEventListener('click', () => setPanelCollapsed(!panelCollapsed));
+
+// ── section plan ──────────────────────────────────────────────────────────────
+// Every card is created up front, in the approved order, under its tab. header() then only
+// re-points `ctrl` at an already-built body -- so the ~2900 lines of control-building code below
+// keep their original order on the page while the panel renders in a completely different one.
+// A card's contents can therefore be assembled from several places in the file without moving code.
+// Plan rows: [tabId, title, cluster|null, collapsedByDefault].
+const SECTION_PLAN = [
+  ['session', 'Save / load', 'Save state', true],
+  ['session', 'Framing & follow', 'Camera', true],
+  ['session', 'POV & fly', null, true],
+
+  ['bots', 'Spawn & composition', 'Roster & spawn', false],
+  ['bots', 'Squads', null, true],
+  ['bots', 'Sides & home bases', null, true],
+  ['bots', 'Auto-add & corpses', null, true],
+  ['bots', 'Weapons & ammo', 'Loadout', true],
+  ['bots', 'Body & ragdoll', null, true],
+  ['bots', 'Explosives', null, true],
+  ['bots', 'Movement tuning', 'AI tuning', true],
+  ['bots', 'Stance', null, true],
+  ['bots', 'Lost-sight pursuit', null, true],
+  ['bots', 'Aim & reaction', null, true],
+  ['bots', 'Scoreboard', 'Results & test aids', true],
+  ['bots', 'Dummies (WASD moves first)', null, true],
+
+  ['world', 'Map layout', 'Layout & structure', true],
+  ['world', 'Scene shuffle', null, true],
+  ['world', 'Terrain', 'Terrain generation', true],
+  ['world', 'Landform', null, true],
+  ['world', 'Erosion', null, true],
+  ['world', 'Landmarks', null, true],
+  ['world', 'Terrain shading', null, true],
+
+  ['debug', 'Perf / LOD', 'Performance', true],
+  ['debug', 'Debug overlays', 'Overlays', true],
+  ['debug', 'State recorder', 'Capture', true],
+
+  ['visuals', 'Look & post', null, true],
+  ['visuals', 'Visual toggles', null, true],
+  ['visuals', 'Bot lighting', null, true],
+  ['visuals', 'Sky detail', null, true],
+
+  ['audio', 'Mixer & voices', null, true],
+  ['audio', 'Music player', null, true],
+  ['audio', 'Reactive lighting', null, true],
+  ['audio', 'Music FX', null, true],
+];
+
+// World's one-click scenarios were buried at the bottom of two unrelated sections; they are the
+// fastest path to a working test map, so they get a bare button row at the top of the tab.
+const worldPresetRow = document.createElement('div'); worldPresetRow.className = 'preset-strip';
+tabHosts.get('world').appendChild(worldPresetRow);
+
+const sectionBodies = new Map();
+const sectionTabById = new Map();
+for (const [tabId, title, cluster, collapsed] of SECTION_PLAN) {
+  const host = tabHosts.get(tabId);
+  if (cluster) {
+    const label = document.createElement('div');
+    label.className = 'cluster'; label.textContent = cluster;
+    host.appendChild(label);
+  }
+  sectionBodies.set(title, createSection(host, title, { collapsed }));
+  sectionTabById.set(title, tabId);
+}
+// The bot readout is pinned rather than tabbed: it is per-frame status you read while editing
+// anything else. Collapsed on load, like every other card.
+sectionBodies.set('Bot readout', createSection(chromeReadoutHost, 'Bot readout', { collapsed: true }));
+
+// ── panel chrome behaviour: tab/pin/search/compact CSS, then the three widgets ────────────────
+const panelChromeStyle = document.createElement('style');
+panelChromeStyle.textContent = `
+#ctrl .panel-chrome{ flex:0 0 auto; padding:8px 10px 6px; border-bottom:1px solid var(--wui-line);
+  display:flex; flex-direction:column; gap:6px; }
+#ctrl.collapsed .panel-chrome, #ctrl.collapsed .panel-tabs{ display:none; }
+#ctrl .panel-search{ width:100%; }
+#ctrl .chrome-camera > div{ margin:0; }
+#ctrl .panel-tabs{ flex:0 0 auto; display:flex; flex-wrap:wrap; gap:4px; padding:7px 10px;
+  border-bottom:1px solid var(--wui-line); }
+#ctrl .panel-tabs button.tab-btn{ width:auto; flex:1 1 auto; min-height:26px; margin:0;
+  padding:3px 8px; font-size:11px; }
+#ctrl .tab-host{ display:none; }
+#ctrl .tab-host.active{ display:block; }
+/* Cluster captions: the .ttl look, minus the card chrome -- a label, not another collapse level. */
+#ctrl .cluster{ margin:12px 0 6px; color:var(--wui-muted); font-size:10px; font-weight:700;
+  letter-spacing:.10em; text-transform:uppercase; }
+#ctrl .tab-host > .cluster:first-child{ margin-top:2px; }
+#ctrl .preset-strip{ display:flex; flex-wrap:wrap; gap:4px; margin:0 0 4px; }
+#ctrl .preset-strip button{ width:auto; flex:1 1 auto; margin:0; padding:4px 8px; font-size:11px; }
+#ctrl .pin-drawer{ display:flex; flex-wrap:wrap; gap:4px; }
+#ctrl .pin-drawer.empty{ display:none; }
+#ctrl .pin-drawer button.pin-chip{ width:auto; min-height:22px; margin:0; padding:2px 7px;
+  font-size:10px; color:var(--wui-accent); border-color:var(--wui-accent); }
+#ctrl .sec-head .pin-star{ margin-left:auto; padding:0 7px; color:var(--wui-muted); font-size:12px; }
+#ctrl .sec-head .pin-star:hover{ color:var(--wui-accent); }
+#ctrl .sec-head .pin-star.on{ color:var(--wui-accent); }
+/* Search reveals every tab at once: a control you can't place shouldn't need the right tab first. */
+#ctrl.searching .tab-host{ display:block; }
+#ctrl.searching .cluster, #ctrl.searching .preset-strip{ display:none; }
+#ctrl .sec.no-match{ display:none; }
+/* Compact: tighter rows for a denser panel, same styling otherwise. */
+#ctrl.compact .sec{ margin-bottom:4px; }
+#ctrl.compact .sec-head{ min-height:28px; padding:4px 9px; }
+#ctrl.compact .sec-body{ padding:5px 9px 7px; }
+#ctrl.compact .row{ margin:3px 0; }
+#ctrl.compact button{ min-height:24px; margin:2px 0; }
+`;
+document.head.appendChild(panelChromeStyle);
+
+// Pin drawer: pinned cards become jump chips rather than moving in the DOM, so pinning never
+// disturbs the planned order or the saved collapse states.
+const pinnedTitles = new Set();
+const pinStars = new Map();
+function revealSection(title) {
+  const body = sectionBodies.get(title);
+  if (!body) return;
+  const tabId = sectionTabById.get(title);
+  if (tabId) setActiveTab(tabId, { scroll: false });
+  body.parentElement.classList.remove('collapsed');
+  body.parentElement.scrollIntoView({ block: 'nearest' });
+  botScoreDirty = true;
+}
+function renderPinDrawer() {
+  pinDrawer.textContent = '';
+  pinDrawer.classList.toggle('empty', pinnedTitles.size === 0);
+  for (const title of pinnedTitles) {
+    const chip = document.createElement('button');
+    chip.className = 'pin-chip'; chip.textContent = title; chip.title = `Jump to ${title}`;
+    chip.addEventListener('click', () => revealSection(title));
+    pinDrawer.appendChild(chip);
+  }
+}
+function syncPinStars() {
+  for (const [title, star] of pinStars) {
+    const on = pinnedTitles.has(title);
+    star.textContent = on ? '★' : '☆';
+    star.classList.toggle('on', on);
+  }
+  renderPinDrawer();
+}
+function setPinnedTitles(titles) {
+  pinnedTitles.clear();
+  if (Array.isArray(titles)) for (const t of titles) if (sectionBodies.has(t)) pinnedTitles.add(t);
+  syncPinStars();
+}
+for (const [title, body] of sectionBodies) {
+  const head = body.parentElement.querySelector('.sec-head');
+  const star = document.createElement('span');
+  star.className = 'pin-star'; star.textContent = '☆';
+  star.title = 'Pin this card to the jump drawer';
+  star.addEventListener('click', (event) => {
+    event.stopPropagation();   // the head itself toggles collapse
+    if (pinnedTitles.has(title)) pinnedTitles.delete(title); else pinnedTitles.add(title);
+    syncPinStars();
+  });
+  head.insertBefore(star, head.querySelector('.caret'));
+  pinStars.set(title, star);
+}
+renderPinDrawer();
+
+// Search filters cards by their whole rendered text, so a control label matches even when its card
+// title doesn't. Collapse states are snapshotted on the first keystroke and restored when cleared.
+let searchPrevCollapsed = null;
+function applyPanelSearch() {
+  const query = searchInput.value.trim().toLowerCase();
+  const searching = query.length > 0;
+  const cards = ctrlRoot.querySelectorAll('.sec');
+  if (searching && !searchPrevCollapsed) {
+    searchPrevCollapsed = new Map();
+    for (const card of cards) searchPrevCollapsed.set(card, card.classList.contains('collapsed'));
+  }
+  ctrlRoot.classList.toggle('searching', searching);
+  if (!searching) {
+    for (const card of cards) {
+      card.classList.remove('no-match');
+      if (searchPrevCollapsed?.has(card)) card.classList.toggle('collapsed', searchPrevCollapsed.get(card));
+    }
+    searchPrevCollapsed = null;
+    return;
+  }
+  for (const card of cards) {
+    const hit = card.textContent.toLowerCase().includes(query);
+    card.classList.toggle('no-match', !hit);
+    card.classList.toggle('collapsed', !hit);
+  }
+  botScoreDirty = true;
+}
+searchInput.addEventListener('input', applyPanelSearch);
+searchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { searchInput.value = ''; applyPanelSearch(); searchInput.blur(); }
+});
+
+const compactBtn = headBtn('▤', 'Compact rows', 'sec-toggle');
+compactBtn.addEventListener('click', () => {
+  const on = ctrlRoot.classList.toggle('compact');
+  compactBtn.classList.toggle('primary', on);
+});
+panelHeadBtns.insertBefore(compactBtn, panelToggleBtn);
+
+setActiveTab(activeTabId, { scroll: false });
+
+// Section cursor, same idiom as environment-viewer.html's header(): opening a section re-points
+// `ctrl`, so every existing ctrl.append*() below lands inside the named section.
+let ctrl = panelBody;
+function header(title) {
+  const body = sectionBodies.get(title);
+  if (!body) throw new Error(`header(): no section planned for "${title}"`);
+  ctrl = body;
+}
+
+// Controls whose owning card is built elsewhere in the file are parked here and flushed once the
+// section that owns them has its own contents in place, so ordering inside the card stays intentional.
+const debugOverlayExtras = [];
+const perfLodControls = [];
+
+header('Framing & follow');
+const cameraOrbitBtn = document.createElement('button');
+cameraOrbitBtn.title = 'Free orbit around the map. Drag to turn, wheel to zoom. The only mode that never needs a bot.';
+const cameraFollowBtn = document.createElement('button');
+cameraFollowBtn.title = 'Chase camera behind the selected bot. Disabled while no bot is alive.';
+const cameraPovBtn = document.createElement('button');
+cameraPovBtn.title = 'See through the selected bot\'s eyes. Disabled while no bot is alive.';
+const cameraFrameBtn = document.createElement('button'); cameraFrameBtn.textContent = 'Frame followed bot';
+cameraFrameBtn.title = 'Pull the camera back to a clean view of the bot being followed';
+const cameraNearestBtn = document.createElement('button'); cameraNearestBtn.textContent = 'Follow nearest bot';
+cameraNearestBtn.title = 'Switch the follow target to the next bot, nearest first. Click again to keep cycling.';
+const cameraAutoRotateBtn = document.createElement('button');
+cameraAutoRotateBtn.title = 'Drift the orbit camera slowly around the map on its own. Orbit mode only.';
+const cameraAutoFollowBtn = document.createElement('button');
+cameraAutoFollowBtn.title = 'Pick a new bot to follow automatically when the current one dies, so the camera is never left on a corpse';
+const cameraOcclusionBtn = document.createElement('button');
+cameraOcclusionBtn.title = 'Pull the follow camera in when a wall comes between it and the bot, instead of letting the view be blocked';
+const cameraFlyBtn = document.createElement('button');
+cameraFlyBtn.title = 'WASD fly-through (G). W/A/S/D move, Q/E or Space down/up, Shift boost, Ctrl crawl, '
+  + 'drag to look, wheel trims speed. The only mode that needs no bot.';
+const cameraModeRow = document.createElement('div');
+cameraModeRow.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px';
+for (const button of [cameraOrbitBtn, cameraFollowBtn, cameraPovBtn, cameraFlyBtn]) button.style.width = 'auto';
+cameraModeRow.append(cameraOrbitBtn, cameraFollowBtn, cameraPovBtn, cameraFlyBtn);
+const flyWalkBtn = document.createElement('button');
+flyWalkBtn.title = 'Ride the generated ground at eye height instead of free flight';
+flyWalkBtn.addEventListener('click', () => { flyCam.walk = !flyCam.walk; updateCameraButtons(); });
+const flySpeedRow = document.createElement('div'); flySpeedRow.className = 'row'; flySpeedRow.style.display = 'block';
+const flySpeedValue = document.createElement('span'); flySpeedValue.className = 'v'; flySpeedValue.style.cssFloat = 'right';
+const flySpeedInput = document.createElement('input');
+flySpeedInput.title = 'How fast the fly camera travels. Shift boosts and Ctrl crawls from whatever you set here, and the wheel trims it live.';
+flySpeedInput.type = 'range'; flySpeedInput.min = '1'; flySpeedInput.max = '120'; flySpeedInput.step = '1';
+flySpeedInput.value = String(flyCam.speed); flySpeedInput.style.width = '100%';
+flySpeedInput.addEventListener('input', () => { flyCam.speed = Number(flySpeedInput.value); updateCameraButtons(); });
+flySpeedRow.append(Object.assign(document.createElement('span'), { textContent: 'fly speed (m/s)' }), flySpeedValue, flySpeedInput);
+const viewDistRow = document.createElement('div'); viewDistRow.className = 'row'; viewDistRow.style.display = 'block';
+const viewDistValue = document.createElement('span'); viewDistValue.className = 'v'; viewDistValue.style.cssFloat = 'right';
+const viewDistInput = document.createElement('input');
+viewDistInput.title = 'How far the camera can see before geometry is clipped away. The sky dome follows it, so raising this costs draw distance rather than hiding the horizon.';
+viewDistInput.type = 'range'; viewDistInput.min = '200'; viewDistInput.max = '2000'; viewDistInput.step = '10';
+viewDistInput.value = String(camera.far); viewDistInput.style.width = '100%';
+const syncViewDist = () => {
+  camera.far = Number(viewDistInput.value);
+  camera.updateProjectionMatrix();
+  // The sky dome sits at a fixed radius with depthTest on: keep it at 75% of far or it hides everything beyond it.
+  visuals.skyMesh.scale.setScalar(camera.far / 200);
+  viewDistValue.textContent = camera.far.toFixed(0);
+};
+viewDistInput.addEventListener('input', syncViewDist);
+syncViewDist();
+viewDistRow.append(Object.assign(document.createElement('span'), { textContent: 'view distance (m)' }), viewDistValue, viewDistInput);
+const cameraActionRow = document.createElement('div');
+cameraActionRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px';
+for (const button of [cameraFrameBtn, cameraNearestBtn]) button.style.width = 'auto';
+cameraActionRow.append(cameraFrameBtn, cameraNearestBtn);
+const cameraPresetRow = document.createElement('div'); cameraPresetRow.className = 'row';
+cameraPresetSelect = document.createElement('select');
+cameraPresetSelect.style.cssText = 'flex:1;margin-left:6px';
+for (const [value, preset] of Object.entries(CAMERA_FRAMING_PRESETS)) {
+  cameraPresetSelect.append(Object.assign(document.createElement('option'), { value, textContent: preset.label }));
+}
+cameraPresetSelect.append(Object.assign(document.createElement('option'), { value: 'custom', textContent: 'Custom' }));
+cameraPresetSelect.value = cameraFramingPreset;
+cameraPresetRow.append(Object.assign(document.createElement('span'), { textContent: 'framing' }), cameraPresetSelect);
+const cameraPovComfortRow = document.createElement('div'); cameraPovComfortRow.className = 'row';
+const cameraPovComfortSelect = document.createElement('select');
+cameraPovComfortSelect.title = 'How much of the bot\'s head motion the POV camera passes through. Steadier settings damp the bob and sway that make first-person footage hard to watch.';
+cameraPovComfortSelect.style.cssText = 'flex:1;margin-left:6px';
+for (const [value, preset] of Object.entries(CAMERA_POV_COMFORT_PRESETS)) {
+  cameraPovComfortSelect.append(Object.assign(document.createElement('option'), { value, textContent: preset.label }));
+}
+cameraPovComfortSelect.value = cameraRig.pov.comfort;
+cameraPovComfortRow.append(Object.assign(document.createElement('span'), { textContent: 'POV comfort' }), cameraPovComfortSelect);
+function makePovEyeOffsetRow(label, key, min, max) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = '0.01';
+  input.value = String(povEyeOffset[key]); input.style.width = '100%';
+  const sync = () => { povEyeOffset[key] = Number(input.value); valueEl.textContent = povEyeOffset[key].toFixed(2); };
+  input.addEventListener('input', sync);
+  sync();
+  row.append(Object.assign(document.createElement('span'), { textContent: label }), valueEl, input);
+  return row;
+}
+const povEyeYRow = makePovEyeOffsetRow('POV eye up/down (m)', 'y', -0.5, 0.5);
+const povEyeZRow = makePovEyeOffsetRow('POV eye forward (m)', 'z', -0.5, 1);
+// Scales the contact diamonds only (committed target + perceived marks), not the nav/cover marks:
+// they are one visual family and keep their size ratio to each other.
+const povMarkScaleRow = document.createElement('div'); povMarkScaleRow.className = 'row';
+povMarkScaleRow.style.display = 'block';
+{
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = '0.3'; input.max = '3'; input.step = '0.05';
+  input.value = String(povMarkScale); input.style.width = '100%';
+  const sync = () => { povMarkScale = Number(input.value); valueEl.textContent = `${povMarkScale.toFixed(2)}x`; };
+  input.addEventListener('input', sync);
+  sync();
+  povMarkScaleRow.append(
+    Object.assign(document.createElement('span'), { textContent: 'Target diamond size' }), valueEl, input);
+  povMarkScaleInput = input;
+}
+const cameraPovRecenterBtn = document.createElement('button');
+cameraPovRecenterBtn.title = 'Ease the POV view back to straight ahead after you stop looking around, instead of leaving it where you left it';
+const cameraPovResetBtn = document.createElement('button'); cameraPovResetBtn.textContent = 'Recenter POV now';
+cameraPovResetBtn.title = 'Snap the POV view back to straight ahead immediately';
+const cameraPovDelayRow = document.createElement('div'); cameraPovDelayRow.className = 'row';
+const cameraPovDelayInput = document.createElement('input');
+cameraPovDelayInput.title = 'How long the POV view waits after you stop looking around before it eases back to centre';
+cameraPovDelayInput.type = 'number'; cameraPovDelayInput.min = '0'; cameraPovDelayInput.max = '10'; cameraPovDelayInput.step = '0.1';
+cameraPovDelayInput.value = String(cameraRig.pov.recenterDelayMs / 1000); cameraPovDelayInput.style.width = '52px';
+cameraPovDelayRow.append(Object.assign(document.createElement('span'), { textContent: 'POV recenter delay (s)' }), cameraPovDelayInput);
+const sceneShuffleBtn = document.createElement('button');
+sceneShuffleBtn.title = 'Rebuild the map on a timer and respawn the fight, so the viewer cycles through scenes unattended';
+const shuffleLookBtn = document.createElement('button');
+shuffleLookBtn.title = 'A scene shuffle also rolls a new procedural look (theme, sky, lighting, post)';
+const sceneShuffleNowBtn = document.createElement('button'); sceneShuffleNowBtn.textContent = 'Shuffle scene now';
+sceneShuffleNowBtn.title = 'Rebuild the map and respawn the fight right now, without waiting for the timer';
+const sceneShuffleEveryRow = document.createElement('div'); sceneShuffleEveryRow.className = 'row';
+const sceneShuffleEveryInput = document.createElement('input');
+sceneShuffleEveryInput.title = 'Seconds between automatic scene shuffles';
+sceneShuffleEveryInput.type = 'number'; sceneShuffleEveryInput.min = '5'; sceneShuffleEveryInput.max = '300'; sceneShuffleEveryInput.step = '5'; sceneShuffleEveryInput.value = String(autoSceneShuffleIntervalMs / 1000); sceneShuffleEveryInput.style.width = '52px';
+sceneShuffleEveryRow.append(Object.assign(document.createElement('span'), { textContent: 'shuffle every (s)' }), sceneShuffleEveryInput);
+function updateCameraButtons() {
+  // Enabled by either a live follow target (auto-follow, or a prior Follow/POV/cycle) or a plain
+  // selection -- Follow/POV/Frame all accept the current selection as their actor (see their click
+  // handlers and frameCamera's default), so the buttons must not stay disabled just because nothing
+  // has been followed yet.
+  const hasActor = !!(selectedBotActor || getCameraFollowActor());
+  cameraOrbitBtn.textContent = 'Orbit';
+  cameraFollowBtn.textContent = 'Follow';
+  cameraPovBtn.textContent = 'POV';
+  cameraFlyBtn.textContent = 'Fly';
+  cameraOrbitBtn.classList.toggle('primary', cameraMode === CAMERA_ORBIT);
+  cameraFollowBtn.classList.toggle('primary', cameraMode === CAMERA_FOLLOW);
+  cameraPovBtn.classList.toggle('primary', cameraMode === CAMERA_POV);
+  cameraFlyBtn.classList.toggle('primary', cameraMode === CAMERA_FLY);
+  flyWalkBtn.textContent = `fly mode: ${flyCam.walk ? 'Walk ground' : 'Free flight'}`;
+  flySpeedInput.value = String(flyCam.speed);
+  flySpeedValue.textContent = flyCam.speed.toFixed(0);
+  cameraFrameBtn.disabled = !hasActor;
+  cameraNearestBtn.disabled = botActors.filter(actor => actor.entity.alive !== false).length === 0;
+  cameraFollowBtn.disabled = !hasActor;
+  cameraPovBtn.disabled = !hasActor;
+  cameraAutoRotateBtn.textContent = `Auto rotate (orbit): ${cameraAutoRotateEnabled ? 'On' : 'Off'}`;
+  cameraAutoFollowBtn.textContent = `Auto follow bots: ${cameraAutoFollowEnabled ? 'On' : 'Off'}`;
+  cameraOcclusionBtn.textContent = `Occlusion guard (follow): ${cameraFollowOcclusionEnabled ? 'On' : 'Off'}`;
+  cameraPovRecenterBtn.textContent = `POV recenter: ${cameraRig.pov.recenterEnabled ? 'On' : 'Off'}`;
+  cameraPovComfortSelect.value = cameraRig.pov.comfort;
+  cameraPresetSelect.value = cameraFramingPreset;
+  sceneShuffleBtn.textContent = `Auto scene shuffle: ${autoSceneShuffleEnabled ? 'On' : 'Off'}`;
+  shuffleLookBtn.textContent = `Shuffle look too: ${shuffleLookEnabled ? 'On' : 'Off'}`;
+}
+// Follow/POV target the current selection when there is one -- an explicit button press or keybind,
+// not the selecting click itself, is what's allowed to move the camera (see the click handler above).
+cameraOrbitBtn.addEventListener('click', () => setCameraMode(CAMERA_ORBIT));
+cameraFollowBtn.addEventListener('click', () => setCameraMode(CAMERA_FOLLOW, selectedBotActor));
+cameraPovBtn.addEventListener('click', () => setCameraMode(CAMERA_POV, selectedBotActor));
+cameraFlyBtn.addEventListener('click', () => setCameraMode(cameraMode === CAMERA_FLY ? CAMERA_ORBIT : CAMERA_FLY));
+cameraFrameBtn.addEventListener('click', () => frameCamera());
+cameraNearestBtn.addEventListener('click', cycleCameraFollow);
+addEventListener('keydown', (event) => {
+  if (event.repeat || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  if (event.code === 'KeyF') { event.preventDefault(); frameCamera(); }
+  if (event.code === 'KeyO') { event.preventDefault(); setCameraMode(CAMERA_ORBIT); }
+  if (event.code === 'KeyV') { event.preventDefault(); setCameraMode(CAMERA_POV, selectedBotActor); }
+  if (event.code === 'KeyG') { event.preventDefault(); setCameraMode(cameraMode === CAMERA_FLY ? CAMERA_ORBIT : CAMERA_FLY); }
+  if (event.code === 'Escape' && cameraMode === CAMERA_FLY) { event.preventDefault(); setCameraMode(CAMERA_ORBIT); }
+  if (event.code === 'BracketRight') { event.preventDefault(); cycleCameraFollow(); }
+  // H: start an all-bots take, press again to stop it and write the TSV to bot-states/.
+  if (event.code === 'KeyH') { event.preventDefault(); void toggleBotStateCapture(); }
+  // L: same toggle as the Live map button -- starts recording too if it wasn't already running.
+  if (event.code === 'KeyL') { event.preventDefault(); liveStreamBtn.click(); }
+  // P: alias for V -- jump straight into POV on the current selection (or the currently followed/nearest bot).
+  if (event.code === 'KeyP') { event.preventDefault(); setCameraMode(CAMERA_POV, selectedBotActor); }
+  // J: copy just the last 10s of the state log, for a quick check without grabbing the whole take.
+  // Shift+J: copy the BB-004 fall forensics instead (frozen take, else a live ring).
+  if (event.code === 'KeyJ') {
+    event.preventDefault();
+    if (event.shiftKey) void copyFloorForensics();
+    else void copyRecentBotStateLog(10000);
+  }
+  // Y: start/stop the per-frame perf log. Shift+Y stops with the summary only, no per-frame table.
+  if (event.code === 'KeyY') { event.preventDefault(); void togglePerfLog(event.shiftKey); }
+});
+cameraAutoRotateBtn.addEventListener('click', () => { cameraAutoRotateEnabled = !cameraAutoRotateEnabled; controls.autoRotate = cameraAutoRotateEnabled && cameraMode === CAMERA_ORBIT; updateCameraButtons(); });
+cameraAutoFollowBtn.addEventListener('click', () => { cameraAutoFollowEnabled = !cameraAutoFollowEnabled; if (cameraAutoFollowEnabled && cameraMode !== CAMERA_ORBIT) getCameraFollowActor(); updateCameraButtons(); });
+cameraOcclusionBtn.addEventListener('click', () => { cameraFollowOcclusionEnabled = !cameraFollowOcclusionEnabled; if (!cameraFollowOcclusionEnabled) { cameraFollowObstructed = false; cameraFollowOcclusionHoldUntil = 0; } updateCameraButtons(); });
+cameraPresetSelect.addEventListener('change', () => {
+  if (cameraPresetSelect.value === 'custom') setCameraPresetCustom();
+  else applyCameraFramingPreset(cameraPresetSelect.value);
+});
+cameraPovRecenterBtn.addEventListener('click', () => { cameraRig.pov.recenterEnabled = !cameraRig.pov.recenterEnabled; updateCameraButtons(); });
+cameraPovResetBtn.addEventListener('click', resetPovLook);
+cameraPovComfortSelect.addEventListener('change', () => {
+  cameraRig.pov.comfort = CAMERA_POV_COMFORT_PRESETS[cameraPovComfortSelect.value] ? cameraPovComfortSelect.value : 'light';
+  cameraRig.pov.positionReady = false;
+  cameraRig.pov.rotationReady = false;
+});
+cameraPovDelayInput.addEventListener('input', () => {
+  cameraRig.pov.recenterDelayMs = Math.max(0, Math.min(10, Number(cameraPovDelayInput.value) || 0)) * 1000;
+});
+sceneShuffleBtn.addEventListener('click', () => { autoSceneShuffleEnabled = !autoSceneShuffleEnabled; autoSceneShuffleNextAt = performance.now() + autoSceneShuffleIntervalMs; updateCameraButtons(); });
+shuffleLookBtn.addEventListener('click', () => { shuffleLookEnabled = !shuffleLookEnabled; updateCameraButtons(); });
+sceneShuffleNowBtn.addEventListener('click', () => shuffleScene());
+sceneShuffleEveryInput.addEventListener('input', () => { autoSceneShuffleIntervalMs = Math.max(5, Math.min(300, Number(sceneShuffleEveryInput.value) || 20)) * 1000; autoSceneShuffleNextAt = performance.now() + autoSceneShuffleIntervalMs; });
+const povDebugScreenBtn = document.createElement('button');
+povDebugScreenBtn.title = 'POV-only screen widgets: dynamic crosshair, reaction ring, target plate, state chip, vitals, squad bars, direction arrows, text panel.';
+const povDebugWorldBtn = document.createElement('button');
+povDebugWorldBtn.title = 'POV-only world markers: aim reticle, nav path + goal, last-known ghost, cover anchor/peek. Drawn through walls -- they describe intent, not sight.';
+function updatePovDebugButtons() {
+  povDebugScreenBtn.textContent = `POV debug widgets: ${povDebugScreenEnabled ? 'On' : 'Off'}`;
+  povDebugScreenBtn.classList.toggle('primary', povDebugScreenEnabled);
+  povDebugWorldBtn.textContent = `POV debug markers: ${povDebugWorldEnabled ? 'On' : 'Off'}`;
+  povDebugWorldBtn.classList.toggle('primary', povDebugWorldEnabled);
+}
+povDebugScreenBtn.addEventListener('click', () => { povDebugScreenEnabled = !povDebugScreenEnabled; updatePovDebugButtons(); });
+povDebugWorldBtn.addEventListener('click', () => { povDebugWorldEnabled = !povDebugWorldEnabled; updatePovDebugButtons(); });
+updatePovDebugButtons();
+// Camera splits three ways: the mode buttons are pinned chrome (a per-second question), framing and
+// POV detail are two Session cards (per-session setup), and the two POV debug toggles are overlays.
+chromeCameraRow.append(cameraModeRow);
+ctrl.append(cameraPresetRow, viewDistRow, cameraActionRow,
+  cameraAutoRotateBtn, cameraAutoFollowBtn, cameraOcclusionBtn);
+header('POV & fly');
+ctrl.append(cameraPovComfortRow, povEyeYRow, povEyeZRow, povMarkScaleRow,
+  cameraPovRecenterBtn, cameraPovDelayRow, cameraPovResetBtn, flyWalkBtn, flySpeedRow);
+debugOverlayExtras.push(povDebugScreenBtn, povDebugWorldBtn);
+updateCameraButtons();
+header('Map layout');
+const roomsBtn = document.createElement('button'); roomsBtn.textContent = 'Rooms layout';
+roomsBtn.title = 'Build a map of connected rooms and corridors. The room and cover sliders below apply to this layout.';
+const mazeBtn = document.createElement('button'); mazeBtn.textContent = 'Maze layout (new)';
+mazeBtn.title = 'Build a maze from the size, seed and shape controls below. Every setting under this card feeds it.';
+
+const keepBotsBtn = document.createElement('button');
+keepBotsBtn.title = 'On: a map edit keeps the roster, nudging anyone caught in new geometry onto walkable ground. '
+  + 'Off: every bot and dummy is cleared, as a rebuilt map invalidates their positions. '
+  + 'Either way the bots forget the old map (paths, cover, claims). Scene shuffle and Test condition always clear.';
+function updateKeepBotsButton() {
+  keepBotsBtn.textContent = `keep bots on rebuild: ${botKeepOnRebuild ? 'On' : 'Off'}`;
+  keepBotsBtn.classList.toggle('primary', botKeepOnRebuild);
+}
+keepBotsBtn.addEventListener('click', () => { botKeepOnRebuild = !botKeepOnRebuild; updateKeepBotsButton(); });
+updateKeepBotsButton();
+
+// Small labelled integer field used for the cols/rows/seed inputs.
+function mazeIntInput(value, width, title) {
+  const el = document.createElement('input');
+  el.type = 'number'; el.min = '1'; el.step = '1'; el.value = String(value); el.title = title; el.style.width = width;
+  return el;
+}
+const labelSpan = (t) => Object.assign(document.createElement('span'), { textContent: t });
+
+const mazeDimsRow = document.createElement('div'); mazeDimsRow.className = 'row';
+const mazeColsInput = mazeIntInput(mazeCols, '44px', 'Maze width in cells');
+const mazeRowsInput = mazeIntInput(mazeRows, '44px', 'Maze height in cells');
+mazeDimsRow.append(labelSpan('cols × rows'), mazeColsInput, labelSpan('×'), mazeRowsInput);
+
+const seedRow = document.createElement('div'); seedRow.className = 'row';
+const seedInput = mazeIntInput(mazeSeed, '72px', 'Maze seed -- same seed + params regenerate the identical maze');
+seedInput.min = '0';
+const seedNewBtn = document.createElement('button');
+seedNewBtn.textContent = '🎲'; seedNewBtn.title = 'New random seed';
+seedNewBtn.style.cssText = 'width:auto;margin:0 0 0 6px;padding:2px 8px';
+seedRow.append(labelSpan('seed'), seedInput, seedNewBtn);
+
+const hallWidthRow = document.createElement('div'); hallWidthRow.className = 'row'; hallWidthRow.style.display = 'block';
+const hallWidthValue = document.createElement('span'); hallWidthValue.className = 'v'; hallWidthValue.style.cssFloat = 'right';
+const hallWidthInput = document.createElement('input');
+hallWidthInput.type = 'range'; hallWidthInput.min = '1.5'; hallWidthInput.max = '6'; hallWidthInput.step = '0.1';
+hallWidthInput.style.width = '100%';
+hallWidthInput.title = 'Clear corridor width between maze walls (m)';
+hallWidthRow.append(labelSpan('hall width (m)'), hallWidthValue, hallWidthInput);
+
+const testConditionBtn = document.createElement('button');
+testConditionBtn.title = 'Load a fixed 30x30 maze on seed 1337 that is identical every run, for comparing performance or behaviour changes fairly';
+testConditionBtn.textContent = 'Test condition';
+
+// One click to the large-terrain workspace: a 160 m wall-less field with real relief, scattered
+// structures and the fly camera already on. Deliberately not a "condition" -- it rolls a seed.
+const openFieldBtn = document.createElement('button');
+openFieldBtn.textContent = 'Big open field';
+openFieldBtn.title = 'Large open terrain map: no maze, scattered structures, uneven ground, fly camera on (G)';
+
+// Both are re-runs of the *current* map after a parameter edit -- camera stays where the user put it.
+function rebuildMazeIfActive() {
+  if (activeLayoutKind === 'maze') applyLayout(buildMazeLayout(), { resetCamera: false });
+}
+function rebuildActiveLayout() {
+  applyLayout(activeLayoutKind === 'maze' ? buildMazeLayout() : buildRoomsLayout(), { resetCamera: false });
+}
+function rollMazeSeed() { mazeSeed = (Math.random() * 0xffffffff) >>> 0; }
+
+// Generic maze range slider; registers a syncer so external state changes (seed reroll,
+// Test condition) refresh the displayed value. `rebuild` picks maze-only vs. whole-layout scope.
+const mazeSyncers = [];
+function makeMazeSlider(label, min, max, step, decimals, get, set, rebuild) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+  const show = (v) => { valueEl.textContent = Number(v).toFixed(decimals); };
+  input.addEventListener('input', () => { set(Number(input.value)); show(input.value); rebuild(); });
+  mazeSyncers.push(() => { input.value = String(get()); show(get()); });
+  row.append(labelSpan(label), valueEl, input);
+  return row;
+}
+
+// Wall thickness preserves the current clear hall width by growing/shrinking the cell pitch.
+const wallThickRow = makeMazeSlider('wall thickness (m)', 0.1, 1.0, 0.05, 2,
+  () => WALL_T,
+  (v) => { WALL_T = v; mazeCellSize = Number(hallWidthInput.value) + WALL_T; },
+  rebuildActiveLayout);
+const wallHeightRow = makeMazeSlider('wall height (m)', 1, 6, 0.5, 1,
+  () => WALL_H, (v) => { WALL_H = v; }, rebuildActiveLayout);
+const loopRow = makeMazeSlider('loop chance', 0, 1, 0.01, 2,
+  () => mazeLoopChance, (v) => { mazeLoopChance = v; }, rebuildMazeIfActive);
+const straightRow = makeMazeSlider('straightness', 0, 1, 0.01, 2,
+  () => mazeStraightness, (v) => { mazeStraightness = v; }, rebuildMazeIfActive);
+const braidRow = makeMazeSlider('braid (kill dead-ends)', 0, 1, 0.01, 2,
+  () => mazeBraid, (v) => { mazeBraid = v; }, rebuildMazeIfActive);
+
+// On/off toggle button that registers a syncer so its label tracks external state changes.
+function makeMazeToggle(label, get, set) {
+  const btn = document.createElement('button');
+  const sync = () => { btn.textContent = `${label}: ${get() ? 'On' : 'Off'}`; };
+  btn.addEventListener('click', () => { set(!get()); sync(); rebuildMazeIfActive(); });
+  mazeSyncers.push(sync);
+  return btn;
+}
+
+// Wall mode: full maze, boundary ring only, or bare ground (terrain + cover as the only structure).
+const wallModeRow = document.createElement('div'); wallModeRow.className = 'row';
+const wallModeSelect = document.createElement('select');
+wallModeSelect.style.cssText = 'flex:1;margin-left:6px';
+wallModeSelect.title = 'Maze: carved corridors. Perimeter only: open arena inside a boundary ring. '
+  + 'None: no walls at all -- terrain and cover pieces are the whole map.';
+for (const [v, t] of [['maze', 'Maze corridors'], ['perimeter', 'Perimeter only'], ['open', 'None (open ground)']]) {
+  wallModeSelect.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
+}
+// Carve-only controls go inert in the wall-less modes rather than silently doing nothing, and
+// the structure controls do the same in maze mode (where the map is already all walls).
+const carveOnlyRows = [];
+const openOnlyRows = [];
+wallModeSelect.addEventListener('change', () => {
+  mazeWallMode = wallModeSelect.value;
+  syncMazeControls();
+  rebuildMazeIfActive();
+});
+mazeSyncers.push(() => {
+  wallModeSelect.value = mazeWallMode;
+  mazeBtn.textContent = mazeWallMode === 'open' ? 'Open layout (new)' : 'Maze layout (new)';
+  const setInert = (row, off) => {
+    row.style.opacity = off ? '0.4' : '';
+    row.style.pointerEvents = off ? 'none' : '';
+  };
+  for (const row of carveOnlyRows) setInert(row, mazeWallMode !== 'maze');
+  for (const row of openOnlyRows) setInert(row, mazeWallMode === 'maze');
+  setInert(entrancesRow, mazeWallMode === 'open');   // no boundary ring left to punch
+});
+wallModeRow.append(labelSpan('walls'), wallModeSelect);
+
+// Scattered structures: what makes a big empty field worth fighting over.
+const structureToggle = makeMazeToggle('structures', () => structuresOn, (v) => { structuresOn = v; });
+const structureCountRow = makeMazeSlider('structure count', 0, 24, 1, 0,
+  () => structureSettings.count, (v) => { structureSettings.count = v; }, rebuildMazeIfActive);
+const structureGapRow = makeMazeSlider('structure spacing (m)', 2, 24, 0.5, 1,
+  () => structureSettings.minSeparation, (v) => { structureSettings.minSeparation = v; }, rebuildMazeIfActive);
+const structureMixRow = document.createElement('div'); structureMixRow.className = 'row';
+const structureMixSelect = document.createElement('select');
+structureMixSelect.style.cssText = 'flex:1;margin-left:6px';
+structureMixSelect.title = 'Buildings are wall shells with doorways; pockets are small carved mazes; '
+  + 'obstacle fields are boxes of mixed height (tall ones break sight, low ones you shoot over).';
+for (const [v, t] of [['mixed', 'Mixed'], ['buildings', 'Buildings'], ['pockets', 'Maze pockets'], ['obstacles', 'Obstacle fields']]) {
+  structureMixSelect.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
+}
+structureMixSelect.addEventListener('change', () => { structureSettings.mix = structureMixSelect.value; rebuildMazeIfActive(); });
+structureMixRow.append(labelSpan('structure mix'), structureMixSelect);
+mazeSyncers.push(() => {
+  structureMixSelect.value = structureSettings.mix;
+  const tally = lastStructurePlacements.reduce((m, s) => (m[s.kind] = (m[s.kind] || 0) + 1, m), {});
+  structureToggle.title = lastStructurePlacements.length
+    ? `Built: ${Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ')}`
+    : 'Buildings, maze pockets and obstacle fields scattered over open ground (wall-less modes only)';
+});
+openOnlyRows.push(structureToggle, structureCountRow, structureGapRow, structureMixRow);
+
+// Start/goal placement dropdown.
+const startGoalRow = document.createElement('div'); startGoalRow.className = 'row';
+const startGoalSelect = document.createElement('select');
+startGoalSelect.title = 'Where the two sides start relative to each other: opposite corners, both near the centre, or random each rebuild';
+startGoalSelect.style.cssText = 'flex:1;margin-left:6px';
+for (const [v, t] of [['corners', 'Opposite corners'], ['center', 'Center → corner'], ['random', 'Random cells']]) {
+  startGoalSelect.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
+}
+startGoalSelect.addEventListener('change', () => { mazeStartGoal = startGoalSelect.value; rebuildMazeIfActive(); });
+mazeSyncers.push(() => { startGoalSelect.value = mazeStartGoal; });
+startGoalRow.append(labelSpan('start/goal'), startGoalSelect);
+
+const entrancesRow = makeMazeSlider('perimeter entrances', 0, 8, 1, 0,
+  () => mazeEntrances, (v) => { mazeEntrances = v; }, rebuildMazeIfActive);
+
+// Open-room injection: toggle + count/size sliders (sliders stay live even while the toggle is off).
+const roomsToggle = makeMazeToggle('open rooms', () => mazeRoomsOn, (v) => { mazeRoomsOn = v; });
+const roomCountRow = makeMazeSlider('room count', 1, 8, 1, 0,
+  () => mazeRoomCount, (v) => { mazeRoomCount = v; }, rebuildMazeIfActive);
+const roomSizeRow = makeMazeSlider('room size (cells)', 2, 6, 1, 0,
+  () => mazeRoomSize, (v) => { mazeRoomSize = v; }, rebuildMazeIfActive);
+
+// Cover / obstacles: toggle + density + partial height.
+const coverToggle = makeMazeToggle('cover pieces', () => mazeCoverOn, (v) => { mazeCoverOn = v; });
+const coverDensityRow = makeMazeSlider('cover density', 0, 1, 0.01, 2,
+  () => mazeCoverDensity, (v) => { mazeCoverDensity = v; }, rebuildMazeIfActive);
+const coverHeightRow = makeMazeSlider('cover height (m)', 0.4, 2.5, 0.1, 1,
+  () => mazeCoverHeight, (v) => { mazeCoverHeight = v; }, rebuildMazeIfActive);
+
+carveOnlyRows.push(loopRow, straightRow, braidRow, roomsToggle, roomCountRow, roomSizeRow);
+
+function syncMazeControls() {
+  mazeColsInput.value = String(mazeCols);
+  mazeRowsInput.value = String(mazeRows);
+  seedInput.value = String(mazeSeed);
+  hallWidthInput.value = String(mazeCellSize - WALL_T);
+  hallWidthValue.textContent = (mazeCellSize - WALL_T).toFixed(1);
+  for (const s of mazeSyncers) s();
+}
+
+roomsBtn.addEventListener('click', () => { activeLayoutKind = 'rooms'; applyLayout(buildRoomsLayout()); });
+mazeBtn.addEventListener('click', () => { activeLayoutKind = 'maze'; rollMazeSeed(); syncMazeControls(); applyLayout(buildMazeLayout()); });
+
+// Commit an integer field back to its var (clamped to >=1, seed >=0), else revert to the last good value.
+function bindMazeIntInput(input, get, set, min) {
+  input.addEventListener('change', () => {
+    const next = Math.floor(Number(input.value));
+    if (!Number.isFinite(next) || next < min) { input.value = String(get()); return; }
+    set(next); syncMazeControls(); rebuildMazeIfActive();
+  });
+}
+bindMazeIntInput(mazeColsInput, () => mazeCols, (v) => { mazeCols = v; }, 1);
+bindMazeIntInput(mazeRowsInput, () => mazeRows, (v) => { mazeRows = v; }, 1);
+bindMazeIntInput(seedInput, () => mazeSeed, (v) => { mazeSeed = v; }, 0);
+seedNewBtn.addEventListener('click', () => { rollMazeSeed(); syncMazeControls(); rebuildMazeIfActive(); });
+
+hallWidthInput.addEventListener('input', () => {
+  mazeCellSize = Number(hallWidthInput.value) + WALL_T;
+  hallWidthValue.textContent = Number(hallWidthInput.value).toFixed(1);
+  rebuildMazeIfActive();
+});
+
+const tacticalVisualsBtn = document.createElement('button');
+tacticalVisualsBtn.title = 'Draw each bot\'s sight range and a health bar above it';
+const fovWedgeBtn = document.createElement('button');
+fovWedgeBtn.title = 'Draw the cone each bot can actually see within. Anything outside it is invisible to that bot however close it is.';
+testConditionBtn.addEventListener('click', () => {
+  // Reproducible heavy-ish harness setup for validating bot behavior and visual cost.
+  mazeCols = 30; mazeRows = 30;
+  mazeLoopChance = 0.18; mazeStraightness = 0; mazeBraid = 0;
+  mazeRoomsOn = false; mazeCoverOn = false; mazeEntrances = 0; mazeStartGoal = 'corners';
+  mazeWallMode = 'maze';
+  mazeSeed = 1337; // fixed -> the Test condition maze is identical every run
+  activeLayoutKind = 'maze';
+  syncMazeControls();
+  applyLayout(buildMazeLayout(), { keepBots: false });   // reproducible setup: starts from an empty map
+
+  botStanceOverride = 'auto';   // FSM-driven stance is the condition under test
+  botProceduralBodyEnabled = true;
+  botAutoRefillOnReload = true;
+  randomDummyCount.value = '200';
+  spawnBot();
+  spawnRandomDummies(200);
+
+  updateBotStanceButtons();
+  updateProceduralBodyButton();
+  updateBodyKindButton();
+  updateBotWeaponButtons();
+  updateDummyControls();
+});
+openFieldBtn.addEventListener('click', () => {
+  mazeCols = 40; mazeRows = 40; mazeCellSize = 4 + WALL_T;
+  mazeWallMode = 'open'; mazeStartGoal = 'corners';
+  mazeRoomsOn = false; mazeEntrances = 0;
+  mazeCoverOn = true; mazeCoverDensity = 0.05; mazeCoverHeight = 1.1;
+  structuresOn = true; structureSettings.count = 14; structureSettings.minSeparation = 8; structureSettings.mix = 'mixed';
+  rollMazeSeed();
+  // Relief a standing bot can actually hide behind -- under ~4 m of range the crest bake
+  // (correctly) finds no terrain cover at all.
+  Object.assign(terrainSettings, { enabled: true, hillAmp: 3.5, hillScale: 18, hillOctaves: 3, rippleAmp: 0.15, meshCell: 0.5 });
+  terrainPadsEnabled = true;
+  activeLayoutKind = 'maze';
+  syncMazeControls();
+  applyLayout(buildMazeLayout(), { keepBots: false });   // rebuilds the field itself, once
+  for (const s of terrainSyncers) s();
+  setCameraMode(CAMERA_FLY);
+});
+
+syncMazeControls();
+// Map layout and Maze structure described one thing -- the map skeleton -- split across two cards.
+// Merged, ordered coarse to fine: pick a layout, size it, then walls, rooms, cover, structures.
+ctrl.append(roomsBtn, mazeBtn, keepBotsBtn,
+  mazeDimsRow, seedRow, hallWidthRow, wallThickRow, wallHeightRow,
+  wallModeRow, startGoalRow, entrancesRow, loopRow, straightRow, braidRow,
+  roomsToggle, roomCountRow, roomSizeRow, coverToggle, coverDensityRow, coverHeightRow,
+  structureToggle, structureCountRow, structureGapRow, structureMixRow);
+header('Scene shuffle');
+ctrl.append(sceneShuffleBtn, shuffleLookBtn, sceneShuffleEveryRow, sceneShuffleNowBtn);
+worldPresetRow.append(openFieldBtn, testConditionBtn);
+
+// ===================== terrain controls =====================
+// Every change rebuilds the field then the whole layout: the floor mesh, wall sink depths, the
+// BVH collider and the nav grid's slope gate all derive from it.
+header('Terrain');
+const terrainSyncers = [];
+function applyTerrainChange() {
+  // No rebuildTerrainField() here: applyLayout does it once the layout's pads are known, and the
+  // bake is expensive enough that doing it twice per slider release is worth avoiding.
+  rebuildActiveLayout();
+  for (const s of terrainSyncers) s();
+}
+const terrainToggle = document.createElement('button');
+terrainToggle.addEventListener('click', () => { terrainSettings.enabled = !terrainSettings.enabled; applyTerrainChange(); });
+terrainSyncers.push(() => {
+  terrainToggle.textContent = `uneven ground: ${terrainSettings.enabled ? 'On' : 'Off'}`;
+  const tris = terrainSettings.enabled ? ` (${terrainTriangleCount.toLocaleString()} tris)` : '';
+  terrainToggle.title = `Displaced floor mesh feeding the map collider${tris}`;
+});
+
+const terrainPadsToggle = document.createElement('button');
+terrainPadsToggle.addEventListener('click', () => { terrainPadsEnabled = !terrainPadsEnabled; applyTerrainChange(); });
+terrainSyncers.push(() => {
+  terrainPadsToggle.textContent = `level pads: ${terrainPadsEnabled ? 'On' : 'Off'}`;
+  terrainPadsToggle.title = `Flatten the ground under spawns, cover and building slabs (${terrainPads.length} pads on this layout)`;
+});
+
+const terrainSeedRow = document.createElement('div'); terrainSeedRow.className = 'row';
+const terrainSeedInput = mazeIntInput(terrainSettings.seed, '72px', 'Terrain seed -- same seed + params regenerate the identical ground');
+terrainSeedInput.min = '0';
+const terrainSeedBtn = document.createElement('button');
+terrainSeedBtn.textContent = '🎲'; terrainSeedBtn.title = 'New terrain seed';
+terrainSeedBtn.style.cssText = 'width:auto;margin:0 0 0 6px;padding:2px 8px';
+terrainSeedBtn.addEventListener('click', () => {
+  terrainSettings.seed = (Math.random() * 0xffffffff) >>> 0;
+  if (!terrainSettings.enabled) terrainSettings.enabled = true;
+  applyTerrainChange();
+});
+terrainSeedInput.addEventListener('change', () => {
+  const next = Math.floor(Number(terrainSeedInput.value));
+  if (!Number.isFinite(next) || next < 0) { terrainSeedInput.value = String(terrainSettings.seed); return; }
+  terrainSettings.seed = next; applyTerrainChange();
+});
+terrainSeedRow.append(labelSpan('seed'), terrainSeedInput, terrainSeedBtn);
+terrainSyncers.push(() => { terrainSeedInput.value = String(terrainSettings.seed); });
+
+function makeTerrainSlider(label, key, min, max, step, decimals, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+  if (title) input.title = title;
+  // Rebuilding the collider + nav bake on every drag tick is far too slow: commit on release.
+  input.addEventListener('input', () => { terrainSettings[key] = Number(input.value); valueEl.textContent = Number(input.value).toFixed(decimals); });
+  input.addEventListener('change', applyTerrainChange);
+  terrainSyncers.push(() => { input.value = String(terrainSettings[key]); valueEl.textContent = Number(terrainSettings[key]).toFixed(decimals); });
+  row.append(labelSpan(label), valueEl, input);
+  return row;
+}
+const terrainRows = [
+  makeTerrainSlider('hill height (m)', 'hillAmp', 0, 4, 0.05, 2, 'Peak height of the broad hill/depression band'),
+  makeTerrainSlider('hill scale (m)', 'hillScale', 4, 60, 1, 0, 'Wavelength of the broad band -- larger = gentler, wider hills'),
+  makeTerrainSlider('hill detail', 'hillOctaves', 1, 5, 1, 0, 'fBm octaves layered onto the broad band'),
+  makeTerrainSlider('ripple height (m)', 'rippleAmp', 0, 0.6, 0.01, 2, 'Mid-frequency corrugation on top of the hills'),
+  makeTerrainSlider('ripple scale (m)', 'rippleScale', 1, 12, 0.25, 2, 'Ripple wavelength'),
+  makeTerrainSlider('grain (m)', 'noiseAmp', 0, 0.3, 0.005, 3, 'Fine per-step surface noise'),
+  makeTerrainSlider('mesh cell (m)', 'meshCell', 0.2, 1.5, 0.05, 2, 'Terrain triangle pitch -- smaller resolves ripples but costs collider triangles'),
+  makeTerrainSlider('max walk slope', 'maxSlope', 0.2, 2, 0.05, 2, 'Rise/run above which nav cells stop being walkable'),
+  makeTerrainSlider('pad blend (m)', 'flattenFalloff', 0.5, 6, 0.1, 1, 'How far a level pad takes to rejoin the surrounding terrain'),
+];
+ctrl.append(terrainToggle, terrainPadsToggle, terrainSeedRow, ...terrainRows);
+
+function makeTerrainSelect(label, key, choices, title) {
+  const row = document.createElement('div'); row.className = 'row';
+  const sel = document.createElement('select');
+  sel.style.cssText = 'flex:1;margin-left:6px';
+  if (title) sel.title = title;
+  for (const [v, t] of choices) sel.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
+  sel.addEventListener('change', () => { terrainSettings[key] = sel.value; applyTerrainChange(); });
+  terrainSyncers.push(() => { sel.value = terrainSettings[key]; });
+  row.append(labelSpan(label), sel);
+  return row;
+}
+function makeTerrainToggle(read, write, text, title) {
+  const btn = document.createElement('button');
+  btn.title = title;
+  btn.addEventListener('click', () => { write(!read()); applyTerrainChange(); });
+  terrainSyncers.push(() => { btn.textContent = `${text}: ${read() ? 'On' : 'Off'}`; });
+  return btn;
+}
+
+// Shape of the ground, as opposed to how much of it there is.
+header('Landform');
+ctrl.append(
+  makeTerrainSelect('landform', 'landform', [
+    ['rolling', 'Rolling (dunes and hollows)'],
+    ['ridged', 'Ridged (crests and valleys)'],
+    ['billowy', 'Billowy (domes over basins)'],
+  ], 'How the broad band is shaped. Ridged and billowy fold it about zero, adding sharp creases.'),
+  makeTerrainSlider('warp (m)', 'warpAmp', 0, 15, 0.5, 1,
+    'Push the sample point sideways before reading the hills -- turns round blobs into sinuous ridges and hooked valleys'),
+  makeTerrainSlider('warp scale (m)', 'warpScale', 5, 80, 1, 0, 'Wavelength of that push'),
+  makeTerrainSlider('terrace steps', 'terraceSteps', 0, 10, 1, 0,
+    'Carve the hills into benches (0 = off) -- mesas and flat ground to fight on, with defined edges'),
+  makeTerrainSlider('terrace sharpness', 'terraceSharpness', 0, 1, 0.05, 2, '0 = untouched ramp, 1 = hard tread'),
+  makeTerrainSelect('ripple mode', 'rippleMode', [
+    ['isotropic', 'Isotropic (no grain direction)'],
+    ['dunes', 'Dunes (seeded direction)'],
+  ], 'The old band summed sines on fixed axes, stamping the same diagonal corduroy on every map. '
+    + 'Isotropic has no preferred direction; dunes keeps one, drawn from the seed.'),
+);
+
+// Drainage. Off by default: it is the most expensive stage of a rebuild, ~11 ms on a 172 m map.
+header('Erosion');
+ctrl.append(
+  makeTerrainSlider('channel depth (m)', 'erosionAmp', 0, 3, 0.05, 2,
+    'How deep a full-grown drainage channel cuts below unchannelled ground (0 = no erosion)'),
+  makeTerrainSlider('channel area', 'erosionArea', 50, 1200, 25, 0,
+    'Grid cells a channel must drain before it reaches full depth -- larger = fewer, bigger valleys'),
+  makeTerrainSlider('channel width', 'erosionSmooth', 0, 1, 0.05, 2,
+    'Widens a cut from a one-cell V into a valley floor a bot can actually walk'),
+  makeTerrainToggle(() => terrainSettings.erosionFillPits, (v) => { terrainSettings.erosionFillPits = v; },
+    'fill depressions', 'Route drainage over filled basins so gullies join into routes that cross the map. '
+    + 'Off, the first pit swallows the flow and channels fragment into stubs.'),
+);
+
+// Deliberate landmarks, as opposed to noise.
+header('Landmarks');
+ctrl.append(
+  makeTerrainSlider('landmarks', 'featureCount', 0, 16, 1, 0,
+    'Placed landforms stamped into the ground before erosion (0 = off)'),
+  makeTerrainSelect('landmark kind', 'featureMix', [
+    ['mixed', 'Mixed'],
+    ['plateau', 'Plateaus (flat high ground)'],
+    ['ravine', 'Ravines (sunken routes)'],
+    ['escarpment', 'Escarpments (walls with flanks)'],
+  ], 'Plateaus give high ground with a defined approach, ravines give sunken routes and barriers, '
+    + 'escarpments give a wall you cannot climb with ends you can go round.'),
+  makeTerrainSlider('landmark height (m)', 'featureHeight', 0, 6, 0.1, 1,
+    'The rise or depth a landmark is built around. Overlapping landmarks are capped at 1.5x this.'),
+);
+
+// Vertex colours multiplied into the theme's floor colour, so the palette stays the theme's.
+header('Terrain shading');
+ctrl.append(
+  makeTerrainSlider('rock on slopes', 'shadeRock', 0, 0.8, 0.02, 2, 'Lighten steep faces so they read as exposed rock'),
+  makeTerrainSlider('channel sediment', 'shadeChannel', 0, 0.8, 0.02, 2, 'Darken drainage channels so routes read from a distance'),
+  makeTerrainSlider('altitude spread', 'shadeAltitude', 0, 0.8, 0.02, 2, 'Tonal spread between the lowest and highest ground'),
+);
+
+// One click for a map that shows what all of the above actually does.
+const highlandsBtn = document.createElement('button');
+highlandsBtn.textContent = 'Preset: eroded highlands';
+highlandsBtn.title = 'Warped ridges, terraced benches, placed landmarks and a full drainage network on open ground';
+highlandsBtn.addEventListener('click', () => {
+  Object.assign(terrainSettings, {
+    enabled: true, hillAmp: 3.5, hillScale: 20, hillOctaves: 3, landform: 'ridged',
+    warpAmp: 6, warpScale: 35, terraceSteps: 4, terraceSharpness: 0.45,
+    rippleAmp: 0.12, rippleMode: 'isotropic', meshCell: 0.5,
+    erosionAmp: 1.1, erosionArea: 300, erosionSmooth: 0.55, erosionFillPits: true,
+    featureCount: 6, featureMix: 'mixed', featureHeight: 2.5,
+    shadeRock: 0.3, shadeChannel: 0.4, shadeAltitude: 0.28,
+  });
+  terrainSettings.seed = (Math.random() * 0xffffffff) >>> 0;
+  terrainPadsEnabled = true;
+  applyTerrainChange();
+});
+worldPresetRow.append(highlandsBtn);
+for (const s of terrainSyncers) s();
+
+// Theme picker, master look sliders, per-feature toggles and sky detail — all built by
+// bot-viewer-visuals.js in this panel's own idiom. Its own .ttl headings survive as subheads.
+// buildPanel returns one flat list with .ttl dividers marking its own subheads. Split on those so
+// the ~55 look controls become four real cards instead of one card larger than eight others
+// combined. The dividers themselves are dropped -- the card headings now carry those names.
+{
+  const lookCards = ['Look & post', 'Visual toggles', 'Bot lighting', 'Sky detail'];
+  let cardIndex = 0;
+  header(lookCards[0]);
+  for (const node of visuals.buildPanel({ heading: false })) {
+    if (node.classList?.contains('ttl')) {
+      cardIndex++;
+      if (lookCards[cardIndex]) header(lookCards[cardIndex]);   // an unplanned subhead stays put
+      continue;
+    }
+    ctrl.appendChild(node);
+  }
+}
+header('Spawn & composition');
+// Slider syncers, so a loaded save slot can push the settings objects back into the widgets.
+const botTuneSyncers = [];
+const botStanceToggleSyncers = [];   // stance checkboxes, refreshed alongside the override button
+const spawnBtn = document.createElement('button'); spawnBtn.textContent = 'Spawn bot';
+spawnBtn.title = 'Add bots to the team shown above, as many as the bot count says';
+const removeBtn = document.createElement('button'); removeBtn.textContent = 'Remove bot';
+removeBtn.title = 'Remove the most recently spawned bot';
+const thinkStaggerBtn = document.createElement('button');
+thinkStaggerBtn.title = 'Big rosters run each bot\'s decision pass every Nth frame (movement/rig stay per-frame). Auto: off <=40 living, /2 <=80, /3 above.';
+function updateThinkStaggerButton() {
+  const label = botThinkStaggerMode === 'auto' ? 'Auto' : botThinkStaggerMode === 1 ? 'Off' : `1/${botThinkStaggerMode} frames`;
+  thinkStaggerBtn.textContent = `Think stagger: ${label}`;
+}
+thinkStaggerBtn.addEventListener('click', () => {
+  botThinkStaggerMode = botThinkStaggerMode === 'auto' ? 1 : botThinkStaggerMode === 1 ? 2 : botThinkStaggerMode === 2 ? 3 : 'auto';
+  updateThinkStaggerButton();
+});
+updateThinkStaggerButton();
+const rigLodBtn = document.createElement('button');
+rigLodBtn.title = 'Bots beyond 18m re-solve their body/weapon pose every 2nd frame, beyond 45m every 4th (camera subject always full rate). Physics and hitboxes are unaffected.';
+function updateRigLodButton() { rigLodBtn.textContent = `Rig LOD: ${botRigLodEnabled ? 'On' : 'Off'}`; }
+rigLodBtn.addEventListener('click', () => { botRigLodEnabled = !botRigLodEnabled; updateRigLodButton(); });
+updateRigLodButton();
+
+// --- render-cost toggles (2026-08-03 fps plan). Each is an A/B: flip it and watch bodyFlush. ---
+const flushLodBtn = document.createElement('button');
+flushLodBtn.title = 'A bot whose pose solve was strided this frame also skips the ~170-node matrix walk in flush(). The pose it re-emits is identical, so there is nothing visual to lose.';
+function updateFlushLodButton() { flushLodBtn.textContent = `Flush LOD: ${BOT_FLUSH_LOD ? 'On' : 'Off'}`; }
+flushLodBtn.addEventListener('click', () => { BOT_FLUSH_LOD = !BOT_FLUSH_LOD; updateFlushLodButton(); });
+updateFlushLodButton();
+
+const botCullBtn = document.createElement('button');
+botCullBtn.title = 'Bots strictly behind the camera skip their flush entirely, so they are never drawn. Never applies within 8m or to the camera subject.';
+function updateBotCullButton() { botCullBtn.textContent = `Behind-camera cull: ${BOT_CULL_BEHIND ? 'On' : 'Off'}`; }
+botCullBtn.addEventListener('click', () => { BOT_CULL_BEHIND = !BOT_CULL_BEHIND; updateBotCullButton(); });
+updateBotCullButton();
+
+const botHideBtn = document.createElement('button');
+botHideBtn.title = 'Distance past which a bot body stops being drawn at all. No effect in the maze, which is smaller than any of these.';
+const BOT_HIDE_STEPS = [0, 120, 240, 480];
+function updateBotHideButton() { botHideBtn.textContent = `Body hide: ${BOT_HIDE_M > 0 ? `${BOT_HIDE_M} m` : 'Off'}`; }
+botHideBtn.addEventListener('click', () => {
+  const i = BOT_HIDE_STEPS.indexOf(BOT_HIDE_M);
+  BOT_HIDE_M = BOT_HIDE_STEPS[(i + 1) % BOT_HIDE_STEPS.length];
+  BOT_HIDE_D2 = BOT_HIDE_M > 0 ? BOT_HIDE_M * BOT_HIDE_M : Infinity;
+  updateBotHideButton();
+});
+updateBotHideButton();
+
+// The only one of these that changes how bots LOOK, so it cycles distance bands and a global step as
+// well as off, and starts off. Any step that is not global must walk every live body back to full
+// detail first -- the per-bot swap only runs in mode 1, so a stale cheap body would stay cheap.
+const rboxLodBtn = document.createElement('button');
+rboxLodBtn.title = 'Swaps rbox armour to a cheaper seg=1 twin (828 -> 156 triangles a piece, ~44k of a bot\'s ~57k). Distance steps swap only far bots and so keep BOTH variants drawing; the global step swaps every bot, which is the only one that cuts triangles without adding buckets. Chamfer highlights flatten either way, so this one is a look change.';
+const RBOX_LOD_STEPS = [0, 15, 25, 40, 60, 'global'];
+let rboxLodStep = BOT_RBOX_LOD === 2 ? RBOX_LOD_STEPS.length - 1
+  : BOT_RBOX_LOD === 1 ? Math.max(1, RBOX_LOD_STEPS.indexOf(BOT_RBOX_LOD_D)) : 0;
+function updateRboxLodButton() {
+  const label = BOT_RBOX_LOD === 2 ? 'Global (all bots)' : BOT_RBOX_LOD === 1 ? `${BOT_RBOX_LOD_D} m` : 'Off';
+  rboxLodBtn.textContent = `Armour LOD: ${label}`;
+}
+rboxLodBtn.addEventListener('click', () => {
+  rboxLodStep = (rboxLodStep + 1) % RBOX_LOD_STEPS.length;
+  const next = RBOX_LOD_STEPS[rboxLodStep];
+  BOT_RBOX_LOD = next === 'global' ? 2 : next > 0 ? 1 : 0;
+  if (BOT_RBOX_LOD !== 2) for (const a of botActors) a.body?.setGearLod?.(0);
+  if (BOT_RBOX_LOD === 1) { BOT_RBOX_LOD_D = next; refreshRboxLodBands(); }
+  updateRboxLodButton();
+});
+updateRboxLodButton();
+function updateTacticalVisualsButton() {
+  tacticalVisualsBtn.textContent = `Sight + health visuals: ${botTacticalVisualsEnabled ? 'On' : 'Off'}`;
+}
+function updateFovWedgeButton() {
+  fovWedgeBtn.textContent = `FOV wedge: ${botFovWedgeEnabled ? 'On' : 'Off'}`;
+}
+
+const botPovBtn = document.createElement('button');
+botPovBtn.title = 'Show a small inset of what the selected bot can see, so you can check perception against what it does';
+const proceduralBodyBtn = document.createElement('button');
+proceduralBodyBtn.title = 'Use the full procedural body rig instead of the cheap placeholder. Ragdoll deaths need this on.';
+const bodyKindBtn = document.createElement('button');
+const ragdollDeathBtn = document.createElement('button');
+ragdollDeathBtn.title = 'Bots collapse under physics when killed instead of playing a fixed death pose. Needs the procedural body on.';
+const bloodFxBtn = document.createElement('button');
+const woundHitBtn = document.createElement('button');
+const stainRenderBtn = document.createElement('button');
+const damageClassBtn = document.createElement('button');
+const bloodIntensityBtn = document.createElement('button');
+const stateOrbBtn = document.createElement('button');
+stateOrbBtn.title = 'Float a coloured marker over each bot showing what its AI is currently doing, so you can read the whole fight at a glance';
+const hitVolumeBtn = document.createElement('button');
+hitVolumeBtn.title = 'Draw the shapes bullets actually test against, which are not the same as the visible body. Also prints their measured sizes to the console.';
+const grenadeDebugBtn = document.createElement('button');
+const recordBtn = document.createElement('button');
+const copyRecordBtn = document.createElement('button');
+copyRecordBtn.title = 'Copy the captured rows to the clipboard as tab-separated text, ready to paste into a spreadsheet';
+const recordScopeBtn = document.createElement('button');
+const copyTraceBtn = document.createElement('button');
+const dumpTraceBtn = document.createElement('button');
+const forensicsCopyBtn = document.createElement('button');
+const forensicsLiveBtn = document.createElement('button');
+const traceTickBtn = document.createElement('button');
+const liveStreamBtn = document.createElement('button');
+const botWeaponBtn = document.createElement('button');
+botWeaponBtn.title = 'Cycle the weapon every bot carries. Changing it rebuilds each bot\'s weapon model, so expect a brief pause on a large roster.';
+const randomizeWeaponsBtn = document.createElement('button');
+randomizeWeaponsBtn.title = 'Give each living bot a different random weapon, instead of arming the whole roster alike';
+const reloadBtn = document.createElement('button');
+reloadBtn.title = 'Reload the selected bot now. Greyed out when it is already full, already reloading, or out of reserve ammo.';
+const autoRefillBtn = document.createElement('button');
+autoRefillBtn.title = 'Refill reserve ammo on every reload, so a long fight never runs a bot dry';
+const noAmmoBtn = document.createElement('button');
+noAmmoBtn.title = 'Remove ammo limits entirely: no magazines, no reloads, no dry pauses. Useful for watching movement and aim without the fight stopping.';
+const knifeSecondaryBtn = document.createElement('button');
+knifeSecondaryBtn.title = 'Let bots switch to a knife at close range instead of firing';
+const sidearmBtn = document.createElement('button');
+sidearmBtn.title = 'Every bot carries a pistol behind its primary and draws it under fire rather than reloading, which is faster';
+const botStateRecordView = document.createElement('textarea');
+botStateRecordView.title = 'Rows captured by the state recorder, newest last. Read-only — use Copy to take them out.';
+botStateRecordView.readOnly = true;
+botStateRecordView.rows = 7;
+botStateRecordView.spellcheck = false;
+botStateRecordView.style.cssText = 'box-sizing:border-box;width:100%;margin:4px 0;resize:vertical;user-select:text;padding:5px;font:10px/1.35 ui-monospace,Consolas,monospace';
+botStateRecordLog = botStateRecordView;
+const movementDebugBtn = document.createElement('button');
+movementDebugBtn.title = 'Draw the locomotion model on the selected bot. The buttons below pick which parts of it are shown.';
+const movementDebugFeetBtn = document.createElement('button');
+movementDebugFeetBtn.title = 'Show where each foot is planted and where it is stepping to';
+const movementDebugLimitsBtn = document.createElement('button');
+movementDebugLimitsBtn.title = 'Show the box each foot may be planted within, as set by the foot width and reach sliders';
+const movementDebugTurnBtn = document.createElement('button');
+movementDebugTurnBtn.title = 'Show the heading the bot wants against the one it currently has, which is what the turn sliders act on';
+const movementDebugBodyBtn = document.createElement('button');
+movementDebugBodyBtn.title = 'Show the chest lean and body twist relative to the hips';
+const movementDebugPhaseBtn = document.createElement('button');
+movementDebugPhaseBtn.title = 'Stride phase dial over the head. The marker should cross the blue tick as the left foot lifts and the pink tick as the right does — drift between them is the phase lock slipping';
+const movementDebugFootfallBtn = document.createElement('button');
+movementDebugFootfallBtn.title = 'Flash a fading dot wherever a foot actually lifts off, coloured by side. Read it against the phase dial';
+const movementDebugTwistBtn = document.createElement('button');
+movementDebugTwistBtn.title = 'Bars at the hips, mid-spine and shoulders. Hips and shoulders should scissor in opposite directions; the mid bar shows where the spine falloff puts the transition';
+const movementDebugTraceBtn = document.createElement('button');
+movementDebugTraceBtn.title = 'Trail of the pelvis over the last 3 seconds, sampled every frame. A smooth arc is a continuous bob; a sawtooth is the old once-per-stride tick';
+const movementDebugSupportBtn = document.createElement('button');
+movementDebugSupportBtn.title = 'Line between the feet: green while both are planted, red during single support. Raising step overlap should shrink the green';
+const botRecoveryDebugBtn = document.createElement('button');
+botRecoveryDebugBtn.title = 'Log when a bot has to be rescued from a stuck or fallen state, so you can see recovery firing rather than guess at it';
+const botBehaviorDebugBtn = document.createElement('button');
+const botDebugFocusBtn = document.createElement('button');
+const stanceOverrideBtn = document.createElement('button');   // cycles Auto -> Stand -> Crouch -> Prone -> Run
+const botTeamBtn = document.createElement('button');
+botTeamBtn.title = 'Which side the Spawn bot button adds to';
+const teamBotCountRow = document.createElement('div'); teamBotCountRow.className = 'row';
+const teamBotCountInput = document.createElement('input');
+teamBotCountInput.title = 'How many bots each spawn adds at once';
+teamBotCountInput.type = 'number'; teamBotCountInput.min = '1'; teamBotCountInput.step = '1'; teamBotCountInput.value = '1'; teamBotCountInput.style.width = '52px';
+teamBotCountRow.append(Object.assign(document.createElement('span'), { textContent: 'bot count' }), teamBotCountInput);
+const medicPercentRow = document.createElement('div'); medicPercentRow.className = 'row';
+const medicPercentInput = document.createElement('input');
+medicPercentInput.type = 'number'; medicPercentInput.min = '0'; medicPercentInput.max = '100'; medicPercentInput.step = '5'; medicPercentInput.value = String(botMedicPercent); medicPercentInput.style.width = '52px';
+medicPercentInput.title = 'Share of each spawned batch that spawns as medics';
+medicPercentInput.addEventListener('input', () => { botMedicPercent = Math.max(0, Math.min(100, Number(medicPercentInput.value) || 0)); });
+medicPercentRow.append(Object.assign(document.createElement('span'), { textContent: 'medic %' }), medicPercentInput);
+// The other specialists share one accessor: the input writes straight into the live mix object.
+function createRoleMixRow(label, roleId) {
+  const row = document.createElement('div'); row.className = 'row';
+  const input = document.createElement('input');
+  input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '5';
+  input.value = String(botRoleMix[roleId]); input.style.width = '52px';
+  input.title = `Share of each spawned batch that spawns as ${label}s`;
+  input.addEventListener('input', () => { botRoleMix[roleId] = Math.max(0, Math.min(100, Number(input.value) || 0)); });
+  row.append(Object.assign(document.createElement('span'), { textContent: `${label} %` }), input);
+  return { row, input };
+}
+const sniperPercent = createRoleMixRow('sniper', ROLE_SNIPER);
+const technicalPercent = createRoleMixRow('technical', ROLE_TECHNICAL);
+// Squad controls. Squad mode only affects bots spawned while it is on -- existing bots keep whatever
+// roster (or none) they already had, so it can be toggled mid-fight without reshuffling the field.
+const squadModeBtn = document.createElement('button');
+squadModeBtn.title = 'Spawn batches as persistent squads with a leader, instead of independent bots';
+squadModeBtn.addEventListener('click', () => { botSquadModeEnabled = !botSquadModeEnabled; updateSquadButtons(); });
+const squadSizeRow = document.createElement('div'); squadSizeRow.className = 'row';
+const squadSizeInput = document.createElement('input');
+squadSizeInput.type = 'number'; squadSizeInput.min = '2'; squadSizeInput.max = String(SQUAD_MAX_SIZE); squadSizeInput.step = '1';
+squadSizeInput.value = String(botSquadSize); squadSizeInput.style.width = '52px';
+squadSizeInput.title = `Roster size a squad fills to before a new one forms (max ${SQUAD_MAX_SIZE})`;
+squadSizeInput.addEventListener('input', () => {
+  botSquadSize = Math.max(2, Math.min(SQUAD_MAX_SIZE, Math.floor(Number(squadSizeInput.value) || SQUAD_MAX_SIZE)));
+});
+squadSizeRow.append(Object.assign(document.createElement('span'), { textContent: 'squad size' }), squadSizeInput);
+const squadFormationRow = document.createElement('div'); squadFormationRow.className = 'row';
+const squadFormationSelect = document.createElement('select');
+for (const kind of ['auto', ...FORMATION_KINDS]) {
+  squadFormationSelect.append(Object.assign(document.createElement('option'), { value: kind, textContent: kind }));
+}
+squadFormationSelect.value = botSquadFormation;
+squadFormationSelect.title = 'auto: wedge in the open, column in a tight corridor, line on contact';
+squadFormationSelect.addEventListener('change', () => { botSquadFormation = squadFormationSelect.value; });
+squadFormationRow.append(Object.assign(document.createElement('span'), { textContent: 'formation' }), squadFormationSelect);
+const squadSpacingRow = document.createElement('div'); squadSpacingRow.className = 'row';
+const squadSpacingInput = document.createElement('input');
+squadSpacingInput.type = 'number'; squadSpacingInput.min = '1'; squadSpacingInput.max = '8'; squadSpacingInput.step = '0.2';
+squadSpacingInput.value = String(botSquadSettings.spacing); squadSpacingInput.style.width = '52px';
+squadSpacingInput.title = 'Metres between adjacent formation slots';
+squadSpacingInput.addEventListener('input', () => {
+  botSquadSettings.spacing = Math.max(1, Math.min(8, Number(squadSpacingInput.value) || SQUAD_DEFAULTS.spacing));
+});
+squadSpacingRow.append(Object.assign(document.createElement('span'), { textContent: 'spacing (m)' }), squadSpacingInput);
+const squadDebugBtn = document.createElement('button');
+squadDebugBtn.title = 'Colour-coded rings on every squad member, tethers to their formation slots, and a label over the leader';
+squadDebugBtn.addEventListener('click', () => { squadDebugEnabled = !squadDebugEnabled; updateSquadButtons(); });
+const squadFormNowBtn = document.createElement('button');
+squadFormNowBtn.textContent = 'Form squads from existing bots';
+squadFormNowBtn.title = 'Squad mode only shapes new spawns; this puts bots already on the field into rosters';
+squadFormNowBtn.addEventListener('click', () => {
+  const formed = formSquadsFromExisting();
+  squadFormNowBtn.textContent = formed ? `Formed ${formed} squad${formed === 1 ? '' : 's'}` : 'Nobody left to squad up';
+  setTimeout(() => { squadFormNowBtn.textContent = 'Form squads from existing bots'; }, 1500);
+  renderSquadRoster();
+});
+// Live roster list: the plainest possible answer to "did squads actually form?", readable with the
+// camera nowhere near the bots. Row colours match each squad's rings in the 3D overlay.
+const squadRosterView = document.createElement('div');
+squadRosterView.style.cssText = 'margin:4px 0;padding:4px 5px;background:rgba(0,0,0,0.25);border-radius:3px;font:10px/1.5 ui-monospace,Consolas,monospace;user-select:text';
+let lastSquadRosterPoll = -Infinity;
+let lastDecalUsagePoll = -Infinity;
+function renderSquadRoster() {
+  squadRosterView.textContent = '';
+  if (!squads.size) {
+    squadRosterView.style.color = '#90a4ae';
+    squadRosterView.textContent = botSquadModeEnabled
+      ? 'no squads — spawn bots, or form them from existing ones'
+      : 'squad mode off — turn it on, then spawn';
+    return;
+  }
+  for (const squad of squads.values()) {
+    let core = 0, detached = 0;
+    for (const memberId of squad.memberIds) {
+      if (botActorById.get(memberId)?.entity.alive === false) continue;
+      if (squad.detachIds.has(memberId)) detached++; else core++;
+    }
+    const leader = squad.leaderId ? botActorById.get(squad.leaderId) : null;
+    const lead = squad.shocked ? 'LEADERLESS' : (leader ? `lead ${leader.id}` : 'no leader');
+    const heirs = squad.heirIds.length ? `  heir ${squad.heirIds[0]}` : '';
+    const row = document.createElement('div');
+    row.style.color = `#${squadDebugHex(squad.seq).toString(16).padStart(6, '0')}`;
+    row.textContent = `${squad.id}  ${squad.team}  ${core}${detached ? `+${detached}` : ''}  ${squad.kind}  ${lead}${heirs}`;
+    squadRosterView.append(row);
+  }
+}
+// Side mode is a spawn rule; the compound is scenery built into the layout, so it needs a rebuild
+// while the rule alone takes effect on the next spawn.
+const sideModeBtn = document.createElement('button');
+sideModeBtn.title = 'Each team owns half the map and spawns at its own end instead of anywhere walkable';
+sideModeBtn.addEventListener('click', () => { botSideModeEnabled = !botSideModeEnabled; updateSquadButtons(); rebuildMazeIfActive(); });
+const homeBaseBtn = document.createElement('button');
+homeBaseBtn.title = 'Build a walled compound with a gateway at each home point (needs a map rebuild)';
+homeBaseBtn.addEventListener('click', () => { botBaseStructuresEnabled = !botBaseStructuresEnabled; updateSquadButtons(); rebuildMazeIfActive(); });
+const spawnNearSquadBtn = document.createElement('button');
+spawnNearSquadBtn.title = 'Reinforcements appear beside the squad they are joining, rather than at a random walkable cell';
+spawnNearSquadBtn.addEventListener('click', () => { botSpawnNearSquad = !botSpawnNearSquad; updateSquadButtons(); });
+
+function updateSquadButtons() {
+  squadModeBtn.textContent = `Squads: ${botSquadModeEnabled ? 'On' : 'Off'}`;
+  squadModeBtn.classList.toggle('on', botSquadModeEnabled);
+  sideModeBtn.textContent = `Side mode: ${botSideModeEnabled ? 'On' : 'Off'}`;
+  sideModeBtn.classList.toggle('on', botSideModeEnabled);
+  homeBaseBtn.textContent = `Home base build: ${botBaseStructuresEnabled ? 'On' : 'Off'}`;
+  homeBaseBtn.classList.toggle('on', botBaseStructuresEnabled);
+  homeBaseBtn.disabled = !botSideModeEnabled;
+  spawnNearSquadBtn.textContent = `Spawn near squad: ${botSpawnNearSquad ? 'On' : 'Off'}`;
+  spawnNearSquadBtn.classList.toggle('on', botSpawnNearSquad);
+  squadDebugBtn.textContent = `Squad overlay: ${squadDebugEnabled ? 'On' : 'Off'}`;
+  squadDebugBtn.classList.toggle('on', squadDebugEnabled);
+  renderSquadRoster();
+}
+updateSquadButtons();
+
+function createSpawnRoleButton(label, roleId) {
+  const btn = document.createElement('button');
+  btn.textContent = `Spawn ${label}`;
+  btn.addEventListener('click', () => { spawnBots(botTeam, 1, { roles: [roleId] }); updateBotWeaponButtons(); updateBotCountControls(); });
+  return btn;
+}
+const spawnMedicBtn = createSpawnRoleButton('medic', ROLE_MEDIC);
+const spawnSniperBtn = createSpawnRoleButton('sniper', ROLE_SNIPER);
+const spawnTechnicalBtn = createSpawnRoleButton('technical', ROLE_TECHNICAL);
+spawnSniperBtn.title = `M24 + pistol, ${getRole(ROLE_SNIPER).sightScale}x sight range; draws the pistol on anyone inside ${getRole(ROLE_SNIPER).closeRange}m`;
+spawnTechnicalBtn.title = `RPG backed by a rifle (swaps rather than standing through the rocket reload, and inside ${getRole(ROLE_TECHNICAL).closeRange}m where the blast would catch it), plus a spare grenade`;
+const addFriendlyBtn = document.createElement('button');
+addFriendlyBtn.title = 'Add one bot to your own side';
+const addEnemyBtn = document.createElement('button');
+addEnemyBtn.title = 'Add one bot to the opposing side';
+const scoreboardBtn = document.createElement('button');
+scoreboardBtn.title = 'Show the running kill and death tally for both sides on screen';
+const scoreResetBtn = document.createElement('button');
+scoreResetBtn.textContent = 'Reset scoreboard';
+scoreResetBtn.title = 'Wipe the live round and the round history. Clearing the roster (Remove all bots, scene shuffle, map rebuild without keep-bots) banks the round instead of dropping it.';
+let scoreSectionEl = null;   // the .sec card holding the readout; collapsed => renderScorePanel no-ops
+const scoreDetailView = document.createElement('textarea');
+scoreDetailView.title = 'Per-bot breakdown of the scoreboard: kills, deaths and shooting accuracy. Read-only.';
+scoreDetailView.readOnly = true;
+scoreDetailView.rows = 12;
+scoreDetailView.spellcheck = false;
+scoreDetailView.style.cssText = 'box-sizing:border-box;width:100%;margin:4px 0;resize:vertical;user-select:text;padding:5px;font:10px/1.35 ui-monospace,Consolas,monospace';
+function updateScoreboardButton() {
+  scoreboardBtn.textContent = `Scoreboard HUD: ${botScoreVisible ? 'On' : 'Off'}`;
+}
+scoreboardBtn.addEventListener('click', () => { botScoreVisible = !botScoreVisible; botScoreDirty = true; updateScoreboardButton(); });
+scoreResetBtn.addEventListener('click', () => { resetScoreboard(botScore); botScoreDirty = true; });
+
+// Per-bot counters are roster-scoped, not round-scoped: corpses keep theirs until they're culled
+// and survivors carry theirs into the next round, so this block is labelled separately below.
+function rosterLineFor(team) {
+  let shots = 0, hits = 0, top = null;
+  for (const actor of botActors) {
+    if (actor.entity.team !== team) continue;
+    shots += actor.shotsFired; hits += actor.hitsLanded;
+    if (!top || actor.kills > top.kills || (actor.kills === top.kills && actor.hitsLanded > top.hitsLanded)) top = actor;
+  }
+  if (!shots && !hits && !top) return null;
+  const accuracy = shots ? ` (${Math.round((hits / shots) * 100)}%)` : '';
+  const best = top && (top.kills || top.hitsLanded) ? ` · top ${top.id} ${top.kills}-${top.deaths}` : '';
+  return `shots ${shots} · hits ${hits}${accuracy}${best}`;
+}
+
+// Full readout: live round with attribution, roster totals, then the banked rounds. Sorting the
+// breakdown maps and scanning the roster is the expensive half of the flush, so it's skipped
+// outright while the section is collapsed or the panel is hidden (the default on load) -- expanding
+// either one flips botScoreDirty, which repaints this on the next frame.
+function scorePanelOpen() {
+  // offsetParent also catches "its tab isn't the active one", which collapsed alone would miss.
+  return !!scoreDetailView && !panelCollapsed && !scoreSectionEl?.classList.contains('collapsed')
+    && scoreSectionEl?.offsetParent !== null;
+}
+function renderScorePanel(alive, now) {
+  if (!scorePanelOpen()) return;
+  const lines = [formatRoundHeader(botScore, now, BOT_TEAM_DEFS)];
+  for (const team of scoreRows.keys()) {
+    lines.push(`${BOT_TEAM_DEFS[team].label}  ${formatTeamScore(botScore, team, alive[team] ?? 0)}`);
+    for (const line of formatBreakdownLines(botScore, team)) lines.push(`  ${line}`);
+  }
+  const roster = [...scoreRows.keys()].map((team) => [team, rosterLineFor(team)]).filter(([, line]) => line);
+  if (roster.length) {
+    lines.push('', 'Roster (current bots, all rounds)');
+    for (const [team, line] of roster) lines.push(`${BOT_TEAM_DEFS[team].label}  ${line}`);
+  }
+  if (botScore.rounds.length) {
+    lines.push('', 'Past rounds');
+    for (const round of botScore.rounds) lines.push(formatRoundLine(round, BOT_TEAM_DEFS));
+  }
+  const text = lines.join('\n');
+  if (scoreDetailView.value !== text) scoreDetailView.value = text;   // an identical write still resets scroll/selection
+}
+function updateBotWeaponButtons() {
+  const weapon = currentBotWeapon();
+  const ammo = ensureBotAmmo(bot?.weapon || botWeaponId);
+  const held = bot && bot.sidearm && bot.weapon === bot.sidearm ? ' (drawn)' : '';
+  botWeaponBtn.textContent = `Weapon: ${getWeapon(bot?.primaryWeapon || botWeaponId)?.displayName ?? weapon.displayName}`;
+  randomizeWeaponsBtn.textContent = 'Randomize weapons';
+  randomizeWeaponsBtn.disabled = botActors.length === 0;
+  const reserve = botAutoRefillOnReload ? 'infinite' : ammo.reserve;
+  reloadBtn.textContent = `${botReloadUntil != null ? 'Reloading' : 'Reload'} ${weapon.displayName} (${ammo.mag}/${reserve})`;
+  reloadBtn.disabled = botNoAmmoEnabled || !bot || botReloadUntil != null || ammo.mag >= ammo.magazineSize || (!botAutoRefillOnReload && ammo.reserve <= 0);
+  autoRefillBtn.textContent = `Auto refill on reload: ${botAutoRefillOnReload ? 'On' : 'Off'}`;
+  noAmmoBtn.textContent = `No ammo: ${botNoAmmoEnabled ? 'On' : 'Off'}`;
+  knifeSecondaryBtn.textContent = `Knife secondary: ${botKnifeSecondaryEnabled ? 'On' : 'Off'}`;
+  if (!botSidearmEnabled) sidearmBtn.textContent = 'Sidearm: Off';
+  else if (!bot?.sidearm) sidearmBtn.textContent = 'Sidearm: On';
+  else {
+    const pistol = ensureBotAmmo(bot.sidearm);
+    const pistolReserve = botAutoRefillOnReload ? '∞' : pistol.reserve;
+    sidearmBtn.textContent = `Sidearm: ${getWeapon(bot.sidearm).displayName} (${pistol.mag}/${pistolReserve})${held}`;
+  }
+}
+
+function updateProceduralBodyButton() {
+  proceduralBodyBtn.textContent = `Procedural body: ${botProceduralBodyEnabled ? 'On' : 'Off'}`;
+}
+
+function updateBodyKindButton() {
+  bodyKindBtn.textContent = `Body: ${getBotBodyKind() === 'soldier' ? 'Human soldier' : 'Armoured bot'}`;
+  bodyKindBtn.title = 'Swaps every bot between the Mark VII mech and the clothed human soldier (plate carrier, pads, helmet). Applies to bots already on the field.';
+  bodyKindBtn.disabled = !botProceduralBodyEnabled;   // the capsule fallback has no design at all
+}
+
+function updateRagdollDeathButton() {
+  ragdollDeathBtn.textContent = `Ragdoll death: ${ragdollDeathEnabled ? 'On' : 'Off'}`;
+  ragdollDeathBtn.disabled = !botProceduralBodyEnabled;   // needs a procedural body to ragdoll
+}
+
+function updateBloodFxBtn() {
+  bloodFxBtn.textContent = `Blood FX: ${botBloodFxEnabled ? 'On' : 'Off'}`;
+  updateWoundHitBtn();
+  updateStainRenderBtn();
+  updateDamageClassBtn();
+  updateBloodIntensityBtn();
+}
+
+function updateWoundHitBtn() {
+  woundHitBtn.textContent = `Wound hit: ${botWoundHitMode === 'mesh' ? 'Mesh' : 'Cylinder'}`;
+  woundHitBtn.disabled = !botBloodFxEnabled;
+}
+
+function updateStainRenderBtn() {
+  stainRenderBtn.textContent = `Wound stain: ${botStainRender === 'projected' ? 'Projected' : 'Fitted'}`;
+  stainRenderBtn.disabled = !botBloodFxEnabled;
+}
+
+function updateDamageClassBtn() {
+  // Name the class in force so it's obvious what the current body kind resolves to.
+  const id = botDamageClassesEnabled ? classForActor(null, getBotBodyKind()) : 'off';
+  damageClassBtn.textContent = `Damage class: ${botDamageClassesEnabled ? id : 'Off'}`;
+  damageClassBtn.disabled = !botBloodFxEnabled;
+}
+
+function updateBloodIntensityBtn() {
+  bloodIntensityBtn.textContent = `Bleed by health: ${botBloodIntensityEnabled ? 'On' : 'Off'}`;
+  bloodIntensityBtn.disabled = !botBloodFxEnabled;
+}
+
+function updateStateOrbButton() {
+  stateOrbBtn.textContent = `State orbs: ${botStateOrbsEnabled ? 'On' : 'Off'}`;
+}
+function updateGrenadeDebugButton() {
+  grenadeDebugBtn.textContent = `Grenade debug: ${grenadeDebugEnabled ? 'On' : 'Off'}`;
+}
+function updateHitVolumeButton() {
+  hitVolumeBtn.textContent = `Hit volume: ${botHitVolumeDebugEnabled ? 'On' : 'Off'}`;
+}
+
+function updateRecordButton() {
+  recordBtn.textContent = `Record states: ${botStateRecording ? 'On' : 'Off'}  [H]`;
+  recordBtn.title = 'H toggles a capture from anywhere: start forces All-bots scope, pressing it again stops and saves the TSV to bot-states/.';
+  copyRecordBtn.textContent = 'Copy state log';
+  copyRecordBtn.disabled = botStateRecordLines.length === 0;
+  recordScopeBtn.textContent = `Record scope: ${botStateRecordAllBots ? 'All bots' : 'Focused bot'}`;
+  recordScopeBtn.title = 'Focused bot logs only the debug-focused bot (as before). All bots records every living bot -- verbose, but the only way to diff a whole firefight.';
+  copyTraceBtn.textContent = `Copy state-code TSV (${botStateTrace.length})`;
+  copyTraceBtn.title = 'Columns: t_ms, bot_id, team, code, changed_slots. One row per 9-slot state-code change (see bot-state-code.js).';
+  copyTraceBtn.disabled = botStateTrace.length === 0;
+  dumpTraceBtn.textContent = `Save state-code TSV (${botStateTrace.length})`;
+  dumpTraceBtn.title = 'Write the same TSV to bot-states/bot-state-trace-<YYYYMMDD-HHMMSS>.tsv via serve.py; falls back to a browser download.';
+  dumpTraceBtn.disabled = botStateTrace.length === 0;
+  liveStreamBtn.textContent = `Live map: ${botLiveEnabled ? (botLivePeers ? `On (${botLivePeers})` : 'On') : 'Off'}`;
+  liveStreamBtn.title = 'Stream state rows to bot-trace-viewer.html in another tab (same browser, via BroadcastChannel). Turning it on also starts recording, because the rows it streams come from the recorder. Turning it off leaves recording running.';
+  liveStreamBtn.classList.toggle('on', botLiveEnabled);
+  traceTickBtn.textContent = `Motion heartbeat: ${botStateTraceTickMs ? `${botStateTraceTickMs} ms` : 'Off'}`;
+  traceTickBtn.title = 'Sample x/z/yaw/speed/moved/goal_dist/path_len into the TSV this often even when the state code is unchanged -- the only way to tell a bot walking its patrol ring from one standing still in the patrol state. Off = change-triggered rows only.';
+}
+
+function updateBotPovButton() {
+  setText(botPovBtn, `Bot POV: ${botPovEnabled ? 'On' : 'Off'}`);
+  setDis(botPovBtn, !bot);
+  setText(cameraPovBtn, 'POV');
+  cameraPovBtn.classList.toggle('primary', cameraMode === CAMERA_POV);
+}
+
+function updateMovementDebugButtons() {
+  movementDebugBtn.textContent = `Movement debug: ${botMovementDebugEnabled ? 'On' : 'Off'}`;
+  const labels = [
+    ['feet', movementDebugFeetBtn, 'Feet'],
+    ['limits', movementDebugLimitsBtn, 'Limits'],
+    ['turn', movementDebugTurnBtn, 'Turn'],
+    ['body', movementDebugBodyBtn, 'Body motion'],
+    ['phase', movementDebugPhaseBtn, 'Stride phase'],
+    ['footfall', movementDebugFootfallBtn, 'Footfalls'],
+    ['twist', movementDebugTwistBtn, 'Twist bars'],
+    ['trace', movementDebugTraceBtn, 'Pelvis trace'],
+    ['support', movementDebugSupportBtn, 'Support line'],
+  ];
+  for (const [key, button, label] of labels) button.textContent = `${label}: ${botMovementDebugParts[key] ? 'On' : 'Off'}`;
+}
+
+updateBotPovButton();
+function updateBotRecoveryDebugButton() {
+  botRecoveryDebugBtn.textContent = `Muzzle recovery debug: ${botRecoveryDebugEnabled ? 'On' : 'Off'}`;
+}
+function updateBotDebugFocusButton() {
+  const actor = botDebugFocusActor;
+  botDebugFocusBtn.textContent = actor ? `Debug focus: ${actor.id} (Alt-click it to clear)` : 'Debug focus: active bot (Alt-click a bot)';
+  botDebugFocusBtn.title = 'Alt-click any living bot to show and log only that bot. Alt-click the focused bot again to clear the explicit focus.';
+}
+
+function setBotDebugFocus(actor) {
+  botDebugFocusActor = botDebugFocusActor === actor ? null : actor;
+  const focus = botDebugFocusActor || activeBotActor || botActors[0] || null;
+  if (focus) bindBotActor(focus);
+  if (botStateRecording) setBotStateRecording(true, performance.now());
+  updateBotDebugFocusButton();
+}
+function updateBotBehaviorDebugButton() {
+  botBehaviorDebugBtn.textContent = `Tactical nav debug (focused bot): ${botBehaviorDebugEnabled ? 'On' : 'Off'}`;
+  botBehaviorDebugBtn.title = 'Cyan = pursue, purple = proximity flee, mint = health retreat, orange = seek, yellow ring = knife engage range.';
+}
+
+function updateBotStanceButtons() {
+  const label = botStanceOverride === 'auto' ? 'Auto (FSM)' : botStanceOverride[0].toUpperCase() + botStanceOverride.slice(1);
+  stanceOverrideBtn.textContent = `Stance: ${label}`;
+  stanceOverrideBtn.title = 'Force every bot into one stance. Auto lets the FSM pick per bot (see the bot readout for the live value).';
+  for (const s of botStanceToggleSyncers) s();
+}
+function updateBotCountControls() {
+  const selected = BOT_TEAM_DEFS[botTeam];
+  const otherTeam = botTeam === 'alpha' ? 'bravo' : 'alpha';
+  const other = BOT_TEAM_DEFS[otherTeam];
+  botTeamBtn.textContent = `Spawn team: ${selected.label}`;
+  spawnBtn.textContent = `Spawn ${selected.label} bot`;
+  addFriendlyBtn.textContent = `Add ${selected.label} bots`;
+  addEnemyBtn.textContent = `Add ${other.label} bots`;
+  removeBtn.textContent = `Remove all bots (${botActors.length})`;
+  removeBtn.disabled = botActors.length === 0;
+}
+spawnBtn.addEventListener('click', spawnBot);
+removeBtn.addEventListener('click', removeBot);
+botPovBtn.addEventListener('click', () => { setBotPovEnabled(!botPovEnabled); });
+botTeamBtn.addEventListener('click', () => {
+  botTeam = botTeam === 'alpha' ? 'bravo' : 'alpha';
+  updateBotCountControls();
+});
+addFriendlyBtn.addEventListener('click', () => {
+  spawnBots(botTeam, teamBotCountInput.value);
+  updateBotCountControls();
+});
+addEnemyBtn.addEventListener('click', () => {
+  spawnBots(botTeam === 'alpha' ? 'bravo' : 'alpha', teamBotCountInput.value);
+  updateBotCountControls();
+});
+
+// --- Auto-adder: spawn N bots per targeted team every X seconds while enabled ---
+const autoAddBtn = document.createElement('button');
+autoAddBtn.title = 'Keep feeding new bots into the fight on a timer, so it never runs out. The caps below stop it filling the map.';
+const autoAddTeamBtn = document.createElement('button');
+autoAddTeamBtn.title = 'Which side auto-add reinforces: one team only, or both';
+const autoAddCountRow = document.createElement('div'); autoAddCountRow.className = 'row';
+const autoAddCountInput = document.createElement('input');
+autoAddCountInput.type = 'number'; autoAddCountInput.min = '1'; autoAddCountInput.step = '1'; autoAddCountInput.value = String(botAutoAddCount); autoAddCountInput.style.width = '52px';
+autoAddCountInput.title = 'Bots spawned per wave, for each targeted team';
+autoAddCountInput.addEventListener('input', () => { botAutoAddCount = Math.max(1, Math.floor(Number(autoAddCountInput.value) || 1)); });
+autoAddCountRow.append(Object.assign(document.createElement('span'), { textContent: 'bots / wave' }), autoAddCountInput);
+const autoAddIntervalRow = document.createElement('div'); autoAddIntervalRow.className = 'row';
+const autoAddIntervalInput = document.createElement('input');
+autoAddIntervalInput.type = 'number'; autoAddIntervalInput.min = '0.1'; autoAddIntervalInput.step = '0.5'; autoAddIntervalInput.value = String(botAutoAddInterval); autoAddIntervalInput.style.width = '52px';
+autoAddIntervalInput.title = 'Seconds between waves';
+autoAddIntervalInput.addEventListener('input', () => { botAutoAddInterval = Math.max(0.1, Number(autoAddIntervalInput.value) || 0.1); });
+autoAddIntervalRow.append(Object.assign(document.createElement('span'), { textContent: 'every (s)' }), autoAddIntervalInput);
+const autoAddTeamCapRow = document.createElement('div'); autoAddTeamCapRow.className = 'row';
+const autoAddTeamCapInput = document.createElement('input');
+autoAddTeamCapInput.type = 'number'; autoAddTeamCapInput.min = '0'; autoAddTeamCapInput.step = '1'; autoAddTeamCapInput.value = String(botAutoAddTeamCap); autoAddTeamCapInput.style.width = '52px';
+autoAddTeamCapInput.title = 'Auto-add stops filling a team once it holds this many living bots';
+autoAddTeamCapInput.addEventListener('input', () => { botAutoAddTeamCap = Math.max(0, Math.floor(Number(autoAddTeamCapInput.value) || 0)); });
+autoAddTeamCapRow.append(Object.assign(document.createElement('span'), { textContent: 'max / team' }), autoAddTeamCapInput);
+const autoAddTotalCapRow = document.createElement('div'); autoAddTotalCapRow.className = 'row';
+const autoAddTotalCapInput = document.createElement('input');
+autoAddTotalCapInput.type = 'number'; autoAddTotalCapInput.min = '0'; autoAddTotalCapInput.step = '1'; autoAddTotalCapInput.value = String(botAutoAddTotalCap); autoAddTotalCapInput.style.width = '52px';
+autoAddTotalCapInput.title = 'Auto-add stops entirely once this many living bots are on the map (both teams)';
+autoAddTotalCapInput.addEventListener('input', () => { botAutoAddTotalCap = Math.max(0, Math.floor(Number(autoAddTotalCapInput.value) || 0)); });
+autoAddTotalCapRow.append(Object.assign(document.createElement('span'), { textContent: 'max total' }), autoAddTotalCapInput);
+const corpseCullBtn = document.createElement('button');
+corpseCullBtn.title = 'Remove the oldest bodies once there are more than the limit below, so a long fight does not slow down under corpses';
+const corpseCapRow = document.createElement('div'); corpseCapRow.className = 'row';
+const corpseCapInput = document.createElement('input');
+corpseCapInput.type = 'number'; corpseCapInput.min = '0'; corpseCapInput.step = '1'; corpseCapInput.value = String(botCorpseCap); corpseCapInput.style.width = '52px';
+corpseCapInput.title = 'Max corpses kept on the map; oldest death is removed first (revivable corpses are spared)';
+corpseCapInput.addEventListener('input', () => { botCorpseCap = Math.max(0, Math.floor(Number(corpseCapInput.value) || 0)); });
+corpseCapRow.append(Object.assign(document.createElement('span'), { textContent: 'max corpses' }), corpseCapInput);
+function updateCorpseCullButton() {
+  corpseCullBtn.textContent = `Cull bodies: ${botCorpseCullEnabled ? 'On' : 'Off'}`;
+  corpseCapInput.disabled = !botCorpseCullEnabled;
+  corpseCapRow.style.opacity = botCorpseCullEnabled ? '1' : '0.45';
+}
+corpseCullBtn.addEventListener('click', () => { botCorpseCullEnabled = !botCorpseCullEnabled; updateCorpseCullButton(); });
+updateCorpseCullButton();
+const AUTO_ADD_TEAM_LABELS = { alpha: BOT_TEAM_DEFS.alpha.label, bravo: BOT_TEAM_DEFS.bravo.label, both: 'Both' };
+function updateBotAutoAddButtons() {
+  autoAddBtn.textContent = `Auto-add: ${botAutoAddEnabled ? (botAutoAddCapped ? 'On (at cap)' : 'On') : 'Off'}`;
+  autoAddTeamBtn.textContent = `Target: ${AUTO_ADD_TEAM_LABELS[botAutoAddTeams]}`;
+}
+autoAddBtn.addEventListener('click', () => {
+  botAutoAddEnabled = !botAutoAddEnabled;
+  botAutoAddNextAt = 0;   // fire the first wave immediately on enable
+  botAutoAddCapped = false;
+  if (botAutoAddEnabled) { botAutoAddRoleAccum.alpha = {}; botAutoAddRoleAccum.bravo = {}; }
+  updateBotAutoAddButtons();
+});
+autoAddTeamBtn.addEventListener('click', () => {
+  const order = ['both', 'alpha', 'bravo'];
+  botAutoAddTeams = order[(order.indexOf(botAutoAddTeams) + 1) % order.length];
+  updateBotAutoAddButtons();
+});
+updateBotAutoAddButtons();
+botWeaponBtn.addEventListener('click', () => {
+  const next = (BOT_VIEWER_WEAPON_IDS.indexOf(botWeaponId) + 1) % BOT_VIEWER_WEAPON_IDS.length;
+  setBotWeapon(BOT_VIEWER_WEAPON_IDS[next]);
+  updateBotWeaponButtons();
+});
+randomizeWeaponsBtn.addEventListener('click', randomizeBotWeapons);
+function setBotNoAmmoEnabled(enabled) {
+  botNoAmmoEnabled = !!enabled;
+  for (const actor of botActors) withBotActor(actor, () => {
+    // Both slots: a "no ammo" roster that still had a full pistol would never reach the knife.
+    for (const id of [bot.weapon, bot.primaryWeapon, bot.sidearm]) {
+      if (!id) continue;
+      const ammo = ensureBotAmmo(id);
+      if (botNoAmmoEnabled) { ammo.mag = 0; ammo.reserve = 0; }
+      else bot.ammoByWeapon.set(id, defaultBotAmmoFor(getWeapon(id)));
+    }
+    if (botNoAmmoEnabled) { botReloadUntil = null; botReloadWeaponId = null; }
+  });
+  updateBotWeaponButtons();
+}
+autoRefillBtn.addEventListener('click', () => {
+  botAutoRefillOnReload = !botAutoRefillOnReload;
+  updateBotWeaponButtons();
+});
+noAmmoBtn.addEventListener('click', () => setBotNoAmmoEnabled(!botNoAmmoEnabled));
+knifeSecondaryBtn.addEventListener('click', () => {
+  botKnifeSecondaryEnabled = !botKnifeSecondaryEnabled;
+  updateBotWeaponButtons();
+});
+sidearmBtn.addEventListener('click', () => {
+  botSidearmEnabled = !botSidearmEnabled;
+  // Turning it off holsters any drawn pistol immediately rather than waiting for the next lull.
+  if (!botSidearmEnabled) {
+    const now = performance.now();
+    for (const actor of botActors) withBotActor(actor, () => { if (botOnSidearm()) swapBotWeaponSlot('primary', now); });
+  }
+  for (const actor of botActors) syncBotStowMounts(actor);   // the holstered pistol appears/disappears
+  updateBotWeaponButtons();
+});
+reloadBtn.addEventListener('click', () => { reloadBotWeapon(); });
+proceduralBodyBtn.addEventListener('click', () => {
+  botProceduralBodyEnabled = !botProceduralBodyEnabled;
+  syncBotVisualMode();
+  updateProceduralBodyButton();
+  updateBodyKindButton();
+  updateRagdollDeathButton();
+});
+bodyKindBtn.addEventListener('click', () => {
+  const kinds = BOT_BODY_KINDS;
+  const next = kinds[(kinds.indexOf(getBotBodyKind()) + 1) % kinds.length];
+  // Only rebuild when the kind really moved; setBotBodyKind returns false on a no-op.
+  if (setBotBodyKind(next)) rebuildBotProceduralBodies();
+  updateBodyKindButton();
+  updateDamageClassBtn();   // body kind is what the class resolves from, so the label moves with it
+});
+ragdollDeathBtn.addEventListener('click', () => {
+  ragdollDeathEnabled = !ragdollDeathEnabled;
+  updateRagdollDeathButton();
+});
+bloodFxBtn.title = 'Sparks, droplet spray, wound stain and ground splatter on every bullet, knife and blast hit (effect-renderer.js)';
+bloodFxBtn.addEventListener('click', () => { botBloodFxEnabled = !botBloodFxEnabled; updateBloodFxBtn(); });
+woundHitBtn.title = 'Cylinder uses the hit point combat already computed from the bot\'s single collision capsule — free, but it floats off the limb and cannot stick to a moving body. '
+  + 'Mesh re-traces the shot against the rig itself (bot-body-hit.js) for the true surface point, its normal, and a handle the stain rides. Costs one AABB walk per hit.';
+woundHitBtn.addEventListener('click', () => {
+  botWoundHitMode = botWoundHitMode === 'mesh' ? 'cylinder' : 'mesh';
+  updateWoundHitBtn();
+});
+stainRenderBtn.title = 'Fitted draws a flat quad sized from the hit part, so it never overhangs the limb but still lifts off a curved surface at its edges. '
+  + 'Projected draws a box and paints whatever the depth buffer says is inside it, so it wraps the limb — one extra draw call for every stain on screen (projected-decals.js).';
+stainRenderBtn.addEventListener('click', () => {
+  botStainRender = botStainRender === 'fitted' ? 'projected' : 'fitted';
+  updateStainRenderBtn();
+  updateDecalBudgetReadout();   // the two pools keep separate peaks
+});
+damageClassBtn.title = 'Off is the old behaviour: every bot bleeds and sparks on every hit. '
+  + 'On routes each hit through bot-damage-class.js — a human bleeds from full health, an armoured human sparks from the start but only bleeds once its plate is breached below 35% (and once breached it keeps bleeding even if a medic heals it), a robot never bleeds and smokes instead. '
+  + 'The default body kind is armoured, so turning this on stops healthy bots bleeding.';
+damageClassBtn.addEventListener('click', () => {
+  botDamageClassesEnabled = !botDamageClassesEnabled;
+  updateDamageClassBtn();
+});
+bloodIntensityBtn.title = 'On scales the droplet burst and the ground splatter by how hurt the target is after the hit: a graze on a healthy bot trickles, a near-fatal hit sprays. '
+  + 'Off pins every hit to the near-death tuning, which is what shipped before — so On only ever removes blood from light hits, it never adds more to heavy ones.';
+bloodIntensityBtn.addEventListener('click', () => {
+  botBloodIntensityEnabled = !botBloodIntensityEnabled;
+  updateBloodIntensityBtn();
+});
+updateBloodFxBtn();
+// Decal budget. A cap change reallocates buffers, so it fires on `change` (pointer release), not on
+// `input` — dragging across the range would otherwise rebuild the pool on every pixel of travel.
+const decalBudgetRow = document.createElement('div'); decalBudgetRow.className = 'row'; decalBudgetRow.style.display = 'block';
+const decalBudgetLabel = document.createElement('span'); decalBudgetLabel.textContent = 'Decal budget';
+const decalBudgetVal = document.createElement('span'); decalBudgetVal.className = 'v'; decalBudgetVal.style.cssFloat = 'right';
+const decalBudgetInput = document.createElement('input');
+decalBudgetInput.type = 'range'; decalBudgetInput.min = '32'; decalBudgetInput.max = '4096'; decalBudgetInput.step = '32';
+decalBudgetInput.value = String(botDecalBudget); decalBudgetInput.style.width = '100%';
+decalBudgetRow.title = 'Maximum blood stains and ground splatter alive at once, for whichever stain pool is drawing. '
+  + 'The readout is cap, then the live count, then the high-water mark since the last change — and "N dropped" if the cap ever refused a decal. '
+  + 'A peak far below the cap means it can come down; any drops at all mean it is too low for this fight.';
+function updateDecalBudgetReadout() {
+  const u = decalUsage();
+  const drops = u.dropped > 0 ? `, ${u.dropped} dropped` : '';
+  decalBudgetVal.textContent = `${u.cap} — ${u.used} now, ${u.peak} peak${drops}`;
+}
+decalBudgetInput.addEventListener('input', () => {
+  // Show the number being dragged to immediately; the pool itself waits for release.
+  decalBudgetVal.textContent = `${Number(decalBudgetInput.value)} — release to apply`;
+});
+decalBudgetInput.addEventListener('change', () => {
+  botDecalBudget = Number(decalBudgetInput.value);
+  applyDecalBudget();
+  updateDecalBudgetReadout();
+});
+botTuneSyncers.push(() => { decalBudgetInput.value = String(botDecalBudget); updateDecalBudgetReadout(); });
+decalBudgetRow.append(decalBudgetLabel, decalBudgetVal, decalBudgetInput);
+updateDecalBudgetReadout();
+// Death-impulse slider (knockback strength; direction comes from the killing shot).
+const ragdollImpulseRow = document.createElement('div'); ragdollImpulseRow.className = 'row'; ragdollImpulseRow.style.display = 'block';
+const ragdollImpulseLabel = document.createElement('span'); ragdollImpulseLabel.textContent = 'Death impulse ×';
+const ragdollImpulseVal = document.createElement('span'); ragdollImpulseVal.className = 'v'; ragdollImpulseVal.style.cssFloat = 'right';
+const ragdollImpulseInput = document.createElement('input');
+ragdollImpulseInput.title = 'How hard a killing shot throws the body. Low is a slump where the bot stood, high sends it flying.';
+ragdollImpulseInput.type = 'range'; ragdollImpulseInput.min = '0'; ragdollImpulseInput.max = '3'; ragdollImpulseInput.step = '0.1';
+ragdollImpulseInput.value = String(ragdollDeathImpulse); ragdollImpulseInput.style.width = '100%';
+const syncRagdollImpulse = () => { ragdollDeathImpulse = Number(ragdollImpulseInput.value); ragdollImpulseVal.textContent = `${ragdollDeathImpulse.toFixed(1)}×`; };
+ragdollImpulseInput.addEventListener('input', syncRagdollImpulse); syncRagdollImpulse();
+botTuneSyncers.push(() => { ragdollImpulseInput.value = String(ragdollDeathImpulse); ragdollImpulseVal.textContent = `${ragdollDeathImpulse.toFixed(1)}×`; });
+ragdollImpulseRow.append(ragdollImpulseLabel, ragdollImpulseVal, ragdollImpulseInput);
+updateRagdollDeathButton();
+stateOrbBtn.addEventListener('click', () => {
+  botStateOrbsEnabled = !botStateOrbsEnabled;
+  for (const actor of botActors) if (actor.stateOrb) actor.stateOrb.visible = botStateOrbsEnabled && actor.entity.alive !== false;
+  updateStateOrbButton();
+});
+updateTacticalVisualsButton();
+tacticalVisualsBtn.addEventListener('click', () => {
+  botTacticalVisualsEnabled = !botTacticalVisualsEnabled;
+  for (const actor of botActors) {
+    if (actor.sightRange) actor.sightRange.visible = botTacticalVisualsEnabled && actor.entity.alive !== false;
+    if (actor.healthBar) actor.healthBar.visible = botTacticalVisualsEnabled && actor.entity.alive !== false;
+  }
+  updateTacticalVisualsButton();
+});
+updateFovWedgeButton();
+fovWedgeBtn.addEventListener('click', () => {
+  botFovWedgeEnabled = !botFovWedgeEnabled;
+  for (const actor of botActors) if (actor.fovWedge) actor.fovWedge.visible = botFovWedgeEnabled && actor.entity.alive !== false;
+  updateFovWedgeButton();
+});
+grenadeDebugBtn.title = 'Live-grenade overlay: solid red = blast radius (evade engages), dashed amber = release ring '
+  + '(blast x evade release scale), blue cells = blast shadow the cover picker searches, green line = running to a cover '
+  + 'corner (bright once holding it), amber line = no cover found, running for open ground, bar over a bot = post-blast aim settle.';
+updateGrenadeDebugButton();
+grenadeDebugBtn.addEventListener('click', () => {
+  grenadeDebugEnabled = !grenadeDebugEnabled;
+  updateGrenadeDebugButton();
+});
+updateHitVolumeButton();
+hitVolumeBtn.addEventListener('click', () => {
+  botHitVolumeDebugEnabled = !botHitVolumeDebugEnabled;
+  updateHitVolumeButton();
+  if (botHitVolumeDebugEnabled) reportBotHitVolume();   // measured numbers to the console on enable
+});
+recordBtn.addEventListener('click', () => {
+  setBotStateRecording(!botStateRecording);
+  updateRecordButton();
+});
+// H-key capture toggle. Start forces All-bots scope: the whole point of a hotkey take is catching
+// something you could not select in the first place. Stop writes the take out in one step.
+async function toggleBotStateCapture() {
+  if (!botStateRecording) {
+    botStateRecordAllBots = true;   // must precede the start: recordsBotDiagnostics reads it
+    setBotStateRecording(true);
+    updateRecordButton();
+    return null;
+  }
+  setBotStateRecording(false);      // stop first; only starting a take clears the trace
+  updateRecordButton();
+  const target = await saveBotStateTrace();
+  if (target) {
+    dumpTraceBtn.textContent = `Saved ${target}`;
+    setTimeout(updateRecordButton, 2500);
+  }
+  return target;
+}
+copyRecordBtn.addEventListener('click', async () => {
+  const text = botStateRecordLines.join('\n');
+  if (!text) return;
+  botStateRecordView.focus();
+  botStateRecordView.select();
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else document.execCommand('copy');
+  } catch {
+    // The selected readonly textarea remains available for Ctrl/Cmd+C when clipboard permission is denied.
+  }
+});
+// J-key quick copy. The filtered window differs from what's already on screen (the full live log),
+// so this swaps the textarea's value the same way copyTraceBtn does, rather than copyRecordBtn's
+// copy-what's-already-shown path.
+async function copyRecentBotStateLog(windowMs) {
+  if (!botStateRecordLines.length) return;
+  const cutoff = (performance.now() - botStateRecordStartedAt) - windowMs;
+  const recent = botStateRecordLines.filter(line => {
+    const at = parseBotRecordTimestampMs(line);
+    return at == null || at >= cutoff;
+  });
+  if (!recent.length) return;
+  const text = recent.join('\n');
+  botStateRecordView.value = text;
+  botStateRecordView.focus();
+  botStateRecordView.select();
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else document.execCommand('copy');
+  } catch {
+    // Permission denied: the filtered text stays selected in the textarea until the next flush repaints it.
+  }
+  botStateRecordRenderedCount = 0;   // force a full repaint back to the live log, same as the TSV copy
+  renderBotStateRecord();
+}
+
+// BB-004 fall forensics. Scope resolves in priority order: the frozen take from the most recent
+// unexported rescue (the normal case -- the #floorwarn banner says one is ready), else the live ring
+// of whichever bot was rescued last, else the focused bot's live ring. `focusedOnly` skips straight
+// to the last of those. Staged through perfLogCopy -- the same off-screen textarea idiom the perf
+// log already uses -- rather than the visible state-log textarea, which this must not clobber.
+const FORENSICS_COPY_LABEL = 'Copy fall forensics (Shift+J)';
+const FORENSICS_LIVE_LABEL = 'Copy live ring (focused bot)';
+async function copyFloorForensics(focusedOnly = false) {
+  const button = focusedOnly ? forensicsLiveBtn : forensicsCopyBtn;
+  const base = focusedOnly ? FORENSICS_LIVE_LABEL : FORENSICS_COPY_LABEL;
+  const note = (message) => {
+    button.textContent = message;   // the write itself is silent; confirm on the button (dumpTraceBtn's idiom)
+    setTimeout(() => { button.textContent = base; }, 2500);
+  };
+  if (!botForensics) { note('Forensics disabled (?forensics=0)'); return false; }
+  let text = null, scope = '';
+  if (!focusedOnly) {
+    text = botForensics.exportSnapshot();          // also re-arms the freeze for the next rescue
+    if (text) scope = `frozen take · ${botForensics.snapshot.id}`;
+    if (!text && botForensics.lastRescue.id) {
+      text = botForensics.exportLiveById(botForensics.lastRescue.id);
+      if (text) scope = `live ring · ${botForensics.lastRescue.id} (last rescued)`;
+    }
+  }
+  if (!text) {
+    const entity = (botDebugFocusActor ?? selectedBotActor ?? activeBotActor)?.entity;
+    text = entity ? botForensics.exportLive(entity) : null;
+    if (text) scope = `live ring · ${entity.id}`;
+  }
+  if (!text) { note('No samples recorded yet'); return false; }
+  const copied = await perfLogCopy(text);
+  note(copied ? `Copied ${scope}` : `${scope} ready · Ctrl+C`);
+  return copied;
+}
+
+recordScopeBtn.addEventListener('click', () => {
+  botStateRecordAllBots = !botStateRecordAllBots;
+  if (botStateRecording) setBotStateRecording(true, performance.now());   // a scope change restarts the take
+  updateRecordButton();
+});
+copyTraceBtn.addEventListener('click', async () => {
+  const text = botStateTraceTsv();
+  if (botStateTrace.length === 0) return;
+  // Same clipboard idiom as the state log, staged through the textarea so Ctrl/Cmd+C still works.
+  botStateRecordView.value = text;
+  botStateRecordView.focus();
+  botStateRecordView.select();
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else document.execCommand('copy');
+  } catch {
+    // Permission denied: the TSV stays selected in the textarea until the next flush repaints it.
+  }
+  botStateRecordRenderedCount = 0;   // force a full repaint: the append-only path can't undo this
+  renderBotStateRecord();
+});
+liveStreamBtn.addEventListener('click', () => {
+  botLiveEnabled = !botLiveEnabled;
+  if (botLiveEnabled) {
+    botLiveOpen();
+    // Rows only exist while the recorder runs, so a live toggle with recording off would stream
+    // nothing; start it rather than silently showing an empty map.
+    if (!botStateRecording) { botStateRecordAllBots = true; setBotStateRecording(true); }
+    botLiveSendSnapshot();
+  } else botLiveClose();
+  updateRecordButton();
+});
+traceTickBtn.addEventListener('click', () => {
+  const at = BOT_STATE_TICK_OPTIONS.indexOf(botStateTraceTickMs);
+  botStateTraceTickMs = BOT_STATE_TICK_OPTIONS[(at + 1) % BOT_STATE_TICK_OPTIONS.length];
+  updateRecordButton();
+});
+dumpTraceBtn.addEventListener('click', async () => {
+  dumpTraceBtn.disabled = true;
+  const target = await saveBotStateTrace();
+  if (!target) { updateRecordButton(); return; }
+  dumpTraceBtn.textContent = `Saved ${target}`;   // the write itself is silent; confirm on the button
+  setTimeout(updateRecordButton, 2500);
+});
+forensicsCopyBtn.textContent = FORENSICS_COPY_LABEL;
+forensicsCopyBtn.title = 'BB-004: copy the physics ring around a below-terrain fall as TSV — the frozen take'
+  + ' from the last unexported rescue, else the last-rescued bot\'s live ring, else the focused bot\'s.'
+  + ' Columns include gap (what the rescue thresholds against) and ext_dy (capsule movement from'
+  + ' OUTSIDE stepBotPhysics). Disabled by ?forensics=0.';
+forensicsLiveBtn.textContent = FORENSICS_LIVE_LABEL;
+forensicsLiveBtn.title = 'Copy the last ~17 s of physics for the focused/selected bot, whether or not it ever fell.';
+forensicsCopyBtn.addEventListener('click', () => { void copyFloorForensics(); });
+forensicsLiveBtn.addEventListener('click', () => { void copyFloorForensics(true); });
+stanceOverrideBtn.addEventListener('click', () => {
+  const at = BOT_STANCE_OVERRIDES.indexOf(botStanceOverride);
+  botStanceOverride = BOT_STANCE_OVERRIDES[(at + 1) % BOT_STANCE_OVERRIDES.length];
+  updateBotStanceButtons();
+});
+
+movementDebugBtn.addEventListener('click', () => {
+  botMovementDebugEnabled = !botMovementDebugEnabled;
+  botMovementDebugLastUpdate = -Infinity;
+  if (!botMovementDebugEnabled) clearBotMovementDebug();
+  updateMovementDebugButtons();
+});
+botRecoveryDebugBtn.addEventListener('click', () => {
+  botRecoveryDebugEnabled = !botRecoveryDebugEnabled;
+  updateBotRecoveryDebugButton();
+});
+botDebugFocusBtn.addEventListener('click', () => setBotDebugFocus(botDebugFocusActor));
+botBehaviorDebugBtn.addEventListener('click', () => {
+  botBehaviorDebugEnabled = !botBehaviorDebugEnabled;
+  updateBotBehaviorDebugButton();
+});
+for (const [key, button] of [
+  ['feet', movementDebugFeetBtn], ['limits', movementDebugLimitsBtn],
+  ['turn', movementDebugTurnBtn], ['body', movementDebugBodyBtn],
+  ['phase', movementDebugPhaseBtn], ['footfall', movementDebugFootfallBtn],
+  ['twist', movementDebugTwistBtn], ['trace', movementDebugTraceBtn],
+  ['support', movementDebugSupportBtn],
+]) button.addEventListener('click', () => {
+  botMovementDebugParts[key] = !botMovementDebugParts[key];
+  botMovementDebugLastUpdate = -Infinity;
+  updateMovementDebugButtons();
+});
+updateProceduralBodyButton();
+updateBodyKindButton();
+updateMovementDebugButtons();
+updateBotRecoveryDebugButton();
+updateBotBehaviorDebugButton();
+updateBotDebugFocusButton();
+updateBotWeaponButtons();
+updateBotCountControls();
+updateScoreboardButton();
+updateStateOrbButton();
+updateRecordButton();
+renderBotStateRecord();
+// The six LOD/stagger toggles are frame-budget A/B instruments, not gameplay: they move to the
+// Perf / LOD card in the Debug tab rather than competing with the spawn buttons for attention.
+perfLodControls.push(thinkStaggerBtn, rigLodBtn, flushLodBtn, botCullBtn, botHideBtn, rboxLodBtn);
+ctrl.append(botTeamBtn, spawnBtn, teamBotCountRow, addFriendlyBtn, addEnemyBtn,
+  medicPercentRow, sniperPercent.row, technicalPercent.row,
+  spawnMedicBtn, spawnSniperBtn, spawnTechnicalBtn,
+  stanceOverrideBtn, removeBtn);
+header('Scoreboard');
+ctrl.append(scoreboardBtn, scoreResetBtn, scoreDetailView);
+scoreSectionEl = ctrl.parentElement;
+// Expanding the section repaints it on the next frame; while collapsed the readout isn't built.
+scoreSectionEl?.querySelector('.sec-head')?.addEventListener('click', () => { botScoreDirty = true; });
+header('Squads');
+// Squad overlay is a visibility toggle, not a squad-tuning control -- it joins the other overlays.
+debugOverlayExtras.push(squadDebugBtn);
+ctrl.append(squadModeBtn, squadSizeRow, squadFormationRow, squadSpacingRow, squadFormNowBtn, squadRosterView);
+header('Sides & home bases');
+ctrl.append(sideModeBtn, homeBaseBtn, spawnNearSquadBtn);
+header('Auto-add & corpses');
+ctrl.append(autoAddBtn, autoAddTeamBtn, autoAddCountRow, autoAddIntervalRow, autoAddTeamCapRow, autoAddTotalCapRow, corpseCullBtn, corpseCapRow);
+header('Weapons & ammo');
+ctrl.append(botWeaponBtn, randomizeWeaponsBtn, reloadBtn, autoRefillBtn, noAmmoBtn, sidearmBtn, knifeSecondaryBtn);
+header('Body & ragdoll');
+ctrl.append(proceduralBodyBtn, bodyKindBtn, ragdollDeathBtn, bloodFxBtn, damageClassBtn, bloodIntensityBtn,
+  woundHitBtn, stainRenderBtn, decalBudgetRow, ragdollImpulseRow);
+header('Perf / LOD');
+ctrl.append(...perfLodControls);
+header('Debug overlays');
+ctrl.append(botPovBtn, stateOrbBtn, hitVolumeBtn, grenadeDebugBtn, tacticalVisualsBtn, fovWedgeBtn, movementDebugBtn, movementDebugFeetBtn,
+  movementDebugLimitsBtn, movementDebugTurnBtn, movementDebugBodyBtn,
+  movementDebugPhaseBtn, movementDebugFootfallBtn, movementDebugTwistBtn, movementDebugTraceBtn, movementDebugSupportBtn,
+  botRecoveryDebugBtn, botBehaviorDebugBtn, botDebugFocusBtn);
+// Overlays that used to live in Camera, Squads and a section of their own. One card is now the whole
+// answer to "what can I turn on to see this".
+ctrl.append(...debugOverlayExtras);
+header('State recorder');
+ctrl.append(recordBtn, recordScopeBtn, liveStreamBtn, traceTickBtn, copyRecordBtn, copyTraceBtn, dumpTraceBtn,
+  forensicsCopyBtn, forensicsLiveBtn, botStateRecordView);
+updateBotStanceButtons();
+
+header('Movement tuning');
+function createBotMovementSlider(label, key, min, max, step, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const labelEl = document.createElement('span'); labelEl.textContent = label;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = botMovementSettings[key]; input.style.width = '100%';
+  const sync = () => { botMovementSettings[key] = Number(input.value); valueEl.textContent = Number(input.value).toFixed(step < 0.1 ? 2 : 1); applyBotMovementSettings(); botMovementDebugLastUpdate = -Infinity; };
+  input.addEventListener('input', sync);
+  sync();
+  botTuneSyncers.push(() => { input.value = String(botMovementSettings[key]); valueEl.textContent = Number(botMovementSettings[key]).toFixed(step < 0.1 ? 2 : 1); });
+  row.append(labelEl, valueEl, input);
+  return row;
+}
+
+const botMovementSliderSpecs = [
+  ['Turn follow', 'turnStiffness', 8, 60, 1,
+    'How hard a bot turns towards the way it wants to face. Higher snaps round corners, lower drifts through them.'],
+  ['Turn drag', 'turnDamping', 2, 24, 1,
+    'Resistance on that turn. Raise it if bots overshoot their heading and wobble; lower it if they feel sluggish.'],
+  ['Chest lead (m)', 'maxForwardLead', 0.10, 0.80, 0.01,
+    'How far the chest is allowed to lean ahead of the hips while moving, in metres. This is the forward lean that reads as intent.'],
+  ['Chest follow', 'bodyFollowRate', 2, 20, 1,
+    'How quickly the chest catches up to that lean. Higher is stiffer and more military, lower is looser and more organic.'],
+  ['Run speed ×', 'runMultiplier', 1.00, 3.50, 0.05,
+    'Top speed when running, as a multiple of the walk. Also the ceiling aim penalties are measured against, so raising it makes running fire worse.'],
+  ['Foot width', 'workspaceWidthScale', 0.75, 1.50, 0.01,
+    'How far to the side a bot may plant its feet. Higher is a wider, heavier stance.'],
+  ['Foot reach', 'workspaceForwardScale', 0.75, 1.50, 0.01,
+    'How far forward and back a bot may plant its feet, which sets its stride length.'],
+  ['Body bob', 'bobScale', 0, 2, 0.05,
+    'Vertical bounce of the body through each step. 0 glides, 1 is the authored amount.'],
+  ['Body sway', 'swayScale', 0, 2, 0.05,
+    'Side-to-side roll of the body through each step. 0 is rigid, 1 is the authored amount.'],
+  ['Cyclic amount', 'locoAmount', 0, 2, 0.05,
+    'Scales the whole walk cycle at once — arm swing, hip roll, shoulder counter-rotation and ankle roll. 0 turns the gait layer off entirely.'],
+  ['Step overlap', 'stepOverlap', 0, 0.50, 0.01,
+    'How much of one step may overlap the next foot lifting. 0 is strict alternation with a visible pause; higher flows the walk together.'],
+  ['Spine falloff', 'spineFalloff', 0.30, 3.00, 0.05,
+    'How far up the spine the body twist spreads. Above 1 keeps the twist in the chest; below 1 carries it into the head.'],
+];
+for (const spec of botMovementSliderSpecs) {
+  ctrl.appendChild(createBotMovementSlider(...spec));
+}
+
+header('Stance');
+function createBotStanceToggle(label, key, title) {
+  const button = document.createElement('button');
+  button.title = title;
+  const show = () => { button.textContent = `${label}: ${botStanceSettings[key] ? 'On' : 'Off'}`; };
+  button.addEventListener('click', () => { botStanceSettings[key] = !botStanceSettings[key]; show(); });
+  show();
+  botStanceToggleSyncers.push(show);
+  return button;
+}
+ctrl.append(
+  createBotStanceToggle('Stance system', 'enabled', 'Off reproduces the legacy always-stand baseline'),
+  createBotStanceToggle('Allow prone', 'proneEnabled', 'Lets the decider pick prone at all'),
+  createBotStanceToggle('Stance height', 'heightEnabled', 'Shrinks the capsule too, so stance changes LOS and hit profile'),
+);
+function createBotStanceSlider(label, key, min, max, step, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const labelEl = document.createElement('span'); labelEl.textContent = label;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step;
+  input.value = String(botStanceSettings[key]); input.style.width = '100%';
+  const decimals = (String(step).split('.')[1] || '').length;
+  const show = () => { valueEl.textContent = Number(botStanceSettings[key]).toFixed(decimals); };
+  input.addEventListener('input', () => { botStanceSettings[key] = Number(input.value); show(); });
+  show();
+  botTuneSyncers.push(() => { input.value = String(botStanceSettings[key]); show(); });
+  row.append(labelEl, valueEl, input);
+  return row;
+}
+for (const spec of [
+  ['Crouch speed x', 'crouchSpeedFactor', 0.1, 1, 0.05, 'Move speed while crouched, as a fraction of walking'],
+  ['Prone speed x', 'proneSpeedFactor', 0.05, 1, 0.05, 'Move speed while prone'],
+  ['Crouch spread x', 'crouchSpreadScale', 0.25, 1.5, 0.05, 'Accuracy cone multiplier while crouched'],
+  ['Prone spread x', 'proneSpreadScale', 0.1, 1.5, 0.05, 'Accuracy cone multiplier while prone'],
+  ['Run spread x', 'runSpreadScale', 1, 3, 0.05, 'Accuracy penalty for sprinting'],
+  ['Crouch height x', 'crouchHeightScale', 0.3, 1, 0.01, 'Fallback capsule height while crouched; unused when a procedural body is present (the rig pose is measured instead)'],
+  ['Prone height x', 'proneHeightScale', 0.15, 1, 0.01, 'Fallback capsule height while prone; unused when a procedural body is present'],
+  ['Crouch blend (1/s)', 'crouchBlendRate', 1, 25, 0.5, 'How fast the body eases into a crouch; the capsule follows the same weight'],
+  ['Prone blend (1/s)', 'proneBlendRate', 1, 25, 0.5, 'How fast the body eases into prone; the capsule follows the same weight'],
+  ['Crouch turn x', 'crouchTurnRateScale', 0.2, 1, 0.05, 'Turn-rate multiplier while crouched'],
+  ['Prone turn x', 'proneTurnRateScale', 0.1, 1, 0.05, 'Turn-rate multiplier while prone'],
+  ['Stand-up (ms)', 'standUpMs', 0, 2000, 50, 'Time committed before a bot can leave a low stance'],
+  ['Crouch-down (ms)', 'crouchUpMs', 0, 1000, 20, 'Time committed when dropping into a crouch'],
+  ['Prone min hold (ms)', 'proneMinHoldMs', 0, 4000, 100, 'Minimum time a bot stays prone once it commits'],
+  ['Seek crouch radius (m)', 'seekCrouchRadius', 0, 15, 0.5, 'Crouch when this close to the last known position'],
+  ['Aim crouch range (m)', 'aimCrouchDistance', 0, 30, 0.5, 'Crouch to steady the shot when the target is beyond this range'],
+  ['Seek crouch hysteresis (m)', 'seekCrouchHysteresisM', 0, 5, 0.25, 'Extra distance beyond the seek radius required to stand back up once crouched; 0 = no dead band'],
+  ['Aim crouch hysteresis (m)', 'aimCrouchHysteresisM', 0, 5, 0.25, 'Extra distance short of the aim range required to stand back up once crouched; 0 = no dead band'],
+]) ctrl.appendChild(createBotStanceSlider(...spec));
+
+header('Lost-sight pursuit');
+function createBotBehaviorSlider(label, key, min, max, step) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const labelEl = document.createElement('span'); labelEl.textContent = label;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = botBehaviorSettings[key]; input.style.width = '100%';
+  const decimals = (String(step).split('.')[1] || '').length; // show as many decimals as the step needs
+  const sync = () => {
+    botBehaviorSettings[key] = Number(input.value);
+    if (key === 'fleeGoalMemory') trimFleeGoalHistory();
+    valueEl.textContent = Number(input.value).toFixed(decimals);
+  };
+  input.addEventListener('input', sync);
+  sync();
+  botTuneSyncers.push(() => { input.value = String(botBehaviorSettings[key]); valueEl.textContent = Number(botBehaviorSettings[key]).toFixed(decimals); });
+  row.append(labelEl, valueEl, input);
+  return row;
+}
+
+const posRow = document.createElement('div'); posRow.className = 'row';
+ctrl.appendChild(createBotBehaviorSlider('Sight distance', 'sightDistance', 4, 50, 0.5));
+ctrl.appendChild(createBotBehaviorSlider('Field of view (deg)', 'fovDegrees', 1, 360, 1));
+ctrl.appendChild(createBotBehaviorSlider('Knife engage range', 'knifeEngagementDistance', 1.5, 15, 0.5));
+ctrl.appendChild(createBotBehaviorSlider('Standoff / weapon range', 'standoffFactor', 0, 0.20, 0.005));
+ctrl.appendChild(createBotBehaviorSlider('Kite trigger (x standoff)', 'fleeStandoffFraction', 0.20, 0.90, 0.05));
+ctrl.appendChild(createBotBehaviorSlider('Pursue after N misses', 'pursueMissStreak', 1, 10, 1));
+ctrl.appendChild(createBotBehaviorSlider('Pursue health floor', 'pursueHealthThreshold01', 0, 1, 0.05));
+ctrl.appendChild(createBotBehaviorSlider('Flee goal memory', 'fleeGoalMemory', 0, 8, 1));
+const healThresholdRow = document.createElement('div'); healThresholdRow.className = 'row'; healThresholdRow.style.display = 'block';
+const healThresholdLabel = document.createElement('span'); healThresholdLabel.textContent = 'Heal threshold';
+const healThresholdValue = document.createElement('span'); healThresholdValue.className = 'v'; healThresholdValue.style.cssFloat = 'right';
+const healThresholdInput = document.createElement('input');
+healThresholdInput.title = 'Health fraction below which a bot goes looking for a heal pack instead of fighting';
+healThresholdInput.type = 'range'; healThresholdInput.min = '0.05'; healThresholdInput.max = '0.70'; healThresholdInput.step = '0.01'; healThresholdInput.value = String(botHealthSettings.threshold01); healThresholdInput.style.width = '100%';
+function syncHealThreshold() {
+  botHealthSettings.threshold01 = Math.min(0.70, Math.max(0.05, Number(healThresholdInput.value)));
+  healThresholdInput.value = String(botHealthSettings.threshold01);
+  healThresholdValue.textContent = `${Math.round(botHealthSettings.threshold01 * 100)}%`;
+}
+healThresholdInput.addEventListener('input', syncHealThreshold);
+syncHealThreshold();
+botTuneSyncers.push(() => { healThresholdInput.value = String(botHealthSettings.threshold01); syncHealThreshold(); });
+healThresholdRow.append(healThresholdLabel, healThresholdValue, healThresholdInput);
+ctrl.appendChild(healThresholdRow);
+// QA: drop a full pack just ahead of the focused bot to exercise pickup/heal without waiting for a kill.
+const dropPackBtn = document.createElement('button');
+dropPackBtn.title = 'Drop a heal pack in front of the selected bot, to test the seek-and-pick-up behaviour without waiting for a death';
+dropPackBtn.textContent = 'Drop test pack ahead of bot';
+dropPackBtn.style.cssText = 'width:100%;margin:4px 0;';
+dropPackBtn.addEventListener('click', () => {
+  if (!bot) return;
+  const here = botXZ(bot);
+  spawnWorldHealthPack(here.x + Math.sin(bot.yaw) * 1.2, here.z + Math.cos(bot.yaw) * 1.2, makePack(1));
+});
+ctrl.appendChild(dropPackBtn);
+
+header('Aim & reaction');
+// Both toggles off = the pre-A10 bot: fires the frame it sees you, never misses.
+const aimReactionBtn = document.createElement('button');
+aimReactionBtn.title = 'Off: a bot can shoot the instant a target enters its cone';
+const aimSpreadBtn = document.createElement('button');
+aimSpreadBtn.title = 'Off: every round travels the exact muzzle ray';
+function updateBotAimButtons() {
+  aimReactionBtn.textContent = `Reaction delay: ${botAimSettings.reactionEnabled ? 'On' : 'Off'}`;
+  aimSpreadBtn.textContent = `Weapon spread: ${botAimSettings.spreadEnabled ? 'On' : 'Off'}`;
+}
+aimReactionBtn.addEventListener('click', () => {
+  botAimSettings.reactionEnabled = !botAimSettings.reactionEnabled;
+  updateBotAimButtons();
+});
+aimSpreadBtn.addEventListener('click', () => {
+  botAimSettings.spreadEnabled = !botAimSettings.spreadEnabled;
+  updateBotAimButtons();
+});
+updateBotAimButtons();
+botTuneSyncers.push(updateBotAimButtons);
+ctrl.append(aimReactionBtn, aimSpreadBtn);
+
+function createBotAimSlider(label, key, min, max, step, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const labelEl = document.createElement('span'); labelEl.textContent = label;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step;
+  input.value = String(botAimSettings[key]); input.style.width = '100%';
+  const decimals = (String(step).split('.')[1] || '').length;
+  const show = () => { valueEl.textContent = Number(botAimSettings[key]).toFixed(decimals); };
+  input.addEventListener('input', () => { botAimSettings[key] = Number(input.value); show(); });
+  show();
+  botTuneSyncers.push(() => { input.value = String(botAimSettings[key]); show(); });
+  row.append(labelEl, valueEl, input);
+  return row;
+}
+
+for (const spec of [
+  ['Reaction (ms)', 'reactionMs', 0, 1200, 10, 'Recognition delay on a fresh contact at point-blank range'],
+  ['Reaction per metre (ms)', 'reactionPerMetreMs', 0, 40, 1, 'Added to the delay for every metre of range'],
+  ['Reaction cap (ms)', 'reactionMaxMs', 100, 2500, 50, 'Ceiling on the total delay, however far the target'],
+  ['Reaction floor (ms)', 'reactionMinMs', 0, 400, 10, 'Minimum delay once the alert and primed multipliers stack'],
+  ['Alerted reaction ×', 'alertReactionScale', 0.1, 1, 0.05, 'Multiplier while the bot is already on a squad alert tier (or taking fire itself)'],
+  ['Primed reaction ×', 'primedReactionScale', 0.1, 1, 0.05, 'Multiplier within 4s of a torn-down contact: retargets and re-sights are attention shifts, not fresh recognition'],
+  ['Reaction jitter ±', 'reactionJitter01', 0, 0.8, 0.05, 'Per-contact random spread, so a squad does not open fire in unison'],
+  ['Re-acquire grace (ms)', 'reacquireGraceMs', 0, 2000, 50, 'A sight break shorter than this keeps the acquisition already paid for'],
+  ['Base spread (deg)', 'baseSpreadDeg', 0, 4, 0.05, 'Cone for a settled, stationary bot'],
+  ['Moving spread (deg)', 'moveSpreadDeg', 0, 10, 0.1, 'Added at full run speed'],
+  ['First-shot spread (deg)', 'firstShotSpreadDeg', 0, 10, 0.1, 'Added the instant a contact is acquired, decays over the settle time'],
+  ['Aim settle (ms)', 'settleMs', 0, 3000, 50, 'How long holding the same target takes to earn the tight cone'],
+  ['Recoil per shot (deg)', 'bloomPerShotDeg', 0, 2, 0.05, 'Cone growth per round fired'],
+  ['Recoil cap (deg)', 'bloomMaxDeg', 0, 12, 0.25, 'Widest the cone gets from sustained fire'],
+  ['Recoil recovery (deg/s)', 'bloomDecayDegPerSecond', 0, 12, 0.25, 'How fast the cone tightens once the bot stops shooting'],
+]) ctrl.appendChild(createBotAimSlider(...spec));
+
+posRow.innerHTML = '<span>pos</span><span class="v" id="bot-pos">-</span>';
+const floorRow = document.createElement('div'); floorRow.className = 'row';
+floorRow.innerHTML = '<span>onFloor</span><span class="v" id="bot-floor">-</span>';
+const stateRow = document.createElement('div'); stateRow.className = 'row';
+const healthRow = document.createElement('div'); healthRow.className = 'row';
+stateRow.innerHTML = '<span>state</span><span class="v" id="bot-state">-</span>';
+healthRow.innerHTML = '<span>health</span><span class="v" id="bot-health">-</span>';
+const visRow = document.createElement('div'); visRow.className = 'row';
+visRow.innerHTML = '<span>visible</span><span class="v" id="bot-vis">-</span>';
+const shotRow = document.createElement('div'); shotRow.className = 'row';
+shotRow.innerHTML = '<span>last shot</span><span class="v" id="bot-shot">-</span>';
+const aimRow = document.createElement('div'); aimRow.className = 'row';
+aimRow.title = 'A10: time left on the recognition delay, then the half-angle the next round is drawn from';
+aimRow.innerHTML = '<span>aim</span><span class="v" id="bot-aim">-</span>';
+header('Explosives');
+// Blast radii stay exactly as authored in weapons.js (grenade 15 m, rpg 8.2 m). The AI's veto rings
+// are what's tunable here: at a 15 m blast the self ring is 18.75 m, so throws under that never fire.
+const grenadeEnableBtn = document.createElement('button');
+grenadeEnableBtn.title = 'Bots carry grenades as a secondary and throw them at clustered or covered enemies';
+const explosionFxBtn = document.createElement('button');
+explosionFxBtn.title = 'Layered fireball/shockwave/ember/smoke blast + rocket smoke trails (effect-renderer.js)';
+const synthSfxBtn = document.createElement('button');
+synthSfxBtn.title = 'Procedural WebAudio voices for events with no loaded sample (rocket, explosion, grenade)';
+const blastOcclusionBtn = document.createElement('button');
+blastOcclusionBtn.title = 'Walls block blast damage. Three rays per victim (shins/torso/head) from the blast centre, '
+  + 'damage scaled by the fraction unblocked — so a low wall is partial cover, not immunity. Off restores the old '
+  + 'pure-radius blast that damaged straight through geometry.';
+function updateExplosiveButtons() {
+  grenadeEnableBtn.textContent = `Grenades: ${botGrenadesEnabled ? 'On' : 'Off'}`;
+  explosionFxBtn.textContent = `Blast FX: ${botExplosionFxEnabled ? 'On' : 'Off'}`;
+  synthSfxBtn.textContent = `Synth SFX fallback: ${botSynthSfxEnabled ? 'On' : 'Off'}`;
+  blastOcclusionBtn.textContent = `Blast blocked by walls: ${blastOcclusionEnabled ? 'On' : 'Off'}`;
+}
+grenadeEnableBtn.addEventListener('click', () => { botGrenadesEnabled = !botGrenadesEnabled; updateExplosiveButtons(); });
+explosionFxBtn.addEventListener('click', () => { botExplosionFxEnabled = !botExplosionFxEnabled; updateExplosiveButtons(); });
+synthSfxBtn.addEventListener('click', () => { botSynthSfxEnabled = !botSynthSfxEnabled; updateExplosiveButtons(); });
+blastOcclusionBtn.addEventListener('click', () => { blastOcclusionEnabled = !blastOcclusionEnabled; updateExplosiveButtons(); });
+updateExplosiveButtons();
+ctrl.append(grenadeEnableBtn, explosionFxBtn, synthSfxBtn, blastOcclusionBtn);
+const grenadeRestockBtn = document.createElement('button');
+grenadeRestockBtn.textContent = 'Restock grenades';
+grenadeRestockBtn.title = 'Refill every living bot to the carried count and clear its throw cooldown';
+grenadeRestockBtn.addEventListener('click', () => {
+  for (const actor of botActors) {
+    actor.grenades = throwCountFor(botGrenadeSettings) + getRole(actor.role).bonusGrenades;
+    actor.lastGrenadeAt = null;
+  }
+  teamLastGrenadeAt.clear();
+});
+ctrl.appendChild(grenadeRestockBtn);
+// `settings` is the object the slider writes into: the throw decision by default, the ordnance
+// tuning (fuse/radius/damage/FX) for the blast group below.
+function createGrenadeSlider(label, key, min, max, step, title, settings = botGrenadeSettings) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const labelEl = document.createElement('span'); labelEl.textContent = label;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step;
+  input.value = String(settings[key]); input.style.width = '100%';
+  const decimals = (String(step).split('.')[1] || '').length;
+  const show = () => { valueEl.textContent = Number(settings[key]).toFixed(decimals); };
+  input.addEventListener('input', () => { settings[key] = Number(input.value); show(); });
+  show();
+  botTuneSyncers.push(() => { input.value = String(settings[key]); show(); });
+  row.append(labelEl, valueEl, input);
+  return row;
+}
+for (const spec of [
+  ['Carried per bot', 'perBotCount', 0, 6, 1, 'Restock to apply a change to bots already alive'],
+  ['Throw cooldown (ms)', 'cooldownMs', 0, 30000, 250, 'Per-bot wait between throws'],
+  ['Squad cooldown (ms)', 'teamCooldownMs', 0, 10000, 100, 'Stops a whole squad volleying at once'],
+  ['Min range (m)', 'minRange', 0, 40, 0.5, 'Below this the bot shoots instead of throwing'],
+  ['Max range (m)', 'maxRange', 5, 60, 0.5, 'Beyond this the throw is out of reach'],
+  ['Friendly veto ×blast', 'friendlyRadiusScale', 0, 2, 0.05, 'Teammate inside blast×this vetoes the throw. 0 disables the check'],
+  ['Self veto ×blast', 'selfRadiusScale', 0, 2, 0.05, 'Thrower inside blast×this vetoes the throw; at blast 15 m this sets the real minimum range'],
+  ['Cluster weight', 'clusterWeight', 0, 3, 0.1, 'Score bonus per extra enemy inside the blast'],
+  ['Blind throw max age (ms)', 'blindThrowMaxAgeMs', 0, 12000, 250, 'Throw at a remembered position seen this recently'],
+  ['Min enemies (visible)', 'minEnemiesForVisibleThrow', 1, 5, 1, 'A visible target alone is not worth a grenade below this'],
+  ['Evade release ×blast', 'evadeExitScale', 1, 2, 0.05, 'A bot already running keeps running until blast×this. Above 1 it stops rebounding across the edge of the ring'],
+]) ctrl.appendChild(createGrenadeSlider(...spec));
+// The ordnance itself. Applies to grenades thrown from here on; grenades already in the air keep the
+// fuse and radius they were launched with. The RPG is unaffected -- it keeps its authored spec.
+for (const spec of [
+  ['Explode delay (s)', 'fuseS', 0.2, 6, 0.1, 'Cook time from release to detonation. The bot still runs from it -- a long fuse gives everyone time to clear the ring'],
+  ['Delay randomness (± s)', 'fuseJitterS', 0, 2, 0.05, 'Per-throw spread on the fuse, so a volley does not detonate in unison. Never cooks shorter than 0.15 s'],
+  ['Area of impact (m)', 'blastRadius', 1, 30, 0.5, 'Damage ring. Also sets the self/friendly veto rings, so a bigger blast makes bots throw from further out'],
+  ['Damage (centre)', 'damage', 0, 250, 5, 'Damage at the centre of the blast, falling off linearly to 0 at the edge'],
+  ['Explosion effect size (×)', 'fxScale', 0.2, 3, 0.05, 'Visual only: scales the blast puff and its light against the damage ring'],
+]) ctrl.appendChild(createGrenadeSlider(...spec, botGrenadeBlast));
+
+header('Bot readout');
+ctrl.append(posRow, floorRow, stateRow, healthRow, visRow, shotRow, aimRow);
+const posEl = document.getElementById('bot-pos');
+const floorEl = document.getElementById('bot-floor');
+const stateEl = document.getElementById('bot-state');
+const healthEl = document.getElementById('bot-health');
+const visEl = document.getElementById('bot-vis');
+const shotLogEl = document.getElementById('bot-shot');
+const aimEl = document.getElementById('bot-aim');
+
+header('Dummies (WASD moves first)');
+const dummySpawnBtn = document.createElement('button'); dummySpawnBtn.textContent = 'Spawn dummy';
+dummySpawnBtn.title = 'Place one practice target. Dummies do not fight back — they exist to shoot at and to give bots something to react to.';
+const dummyRemoveBtn = document.createElement('button'); dummyRemoveBtn.textContent = 'Remove dummy';
+dummyRemoveBtn.title = 'Remove the most recently placed dummy';
+const dummyResetBtn = document.createElement('button');
+dummyResetBtn.title = 'Return every dummy to full health and its starting position';
+const dummyImmortalBtn = document.createElement('button');
+dummyImmortalBtn.title = 'Dummies take hits and react but never die, so a shooting test runs indefinitely';
+const dummyRoamBtn = document.createElement('button');
+dummyRoamBtn.title = 'Dummies wander the map instead of standing still, giving bots a moving target';
+const randomDummyRow = document.createElement('div'); randomDummyRow.className = 'row';
+const randomDummyCount = document.createElement('input');
+randomDummyCount.type = 'number';
+randomDummyCount.min = '1';
+randomDummyCount.step = '1';
+randomDummyCount.value = '4';
+randomDummyCount.title = 'Number of dummies to place at random walkable maze cells';
+randomDummyCount.style.width = '52px';
+randomDummyRow.append(Object.assign(document.createElement('span'), { textContent: 'random count' }), randomDummyCount);
+const randomDummyBtn = document.createElement('button'); randomDummyBtn.textContent = 'Place random dummies';
+randomDummyBtn.title = 'Scatter the number of dummies set beside this button across the map';
+const dummyHealthRow = document.createElement('div'); dummyHealthRow.className = 'row';
+const dummyHealthValue = document.createElement('span'); dummyHealthValue.className = 'v';
+dummyHealthRow.append(Object.assign(document.createElement('span'), { textContent: 'health' }), dummyHealthValue);
+// Every per-frame panel write goes through these. Assigning textContent/disabled dirties layout
+// for the panel subtree even when the value is identical, and the frame loop rewrites ~18 of them
+// unconditionally -- free while the panel is hidden, not free while it is open. Comparing against
+// the live DOM value (a cheap read that forces no layout) rather than a cached copy means a write
+// from anywhere else can never leave these stale.
+function setText(el, v) { if (el && el.textContent !== v) el.textContent = v; }
+function setDis(el, v) { if (el && el.disabled !== v) el.disabled = v; }
+function setTitle(el, v) { if (el && el.title !== v) el.title = v; }
+
+function updateDummyControls() {
+  setDis(dummySpawnBtn, dummyTargets.length > 0);
+  setDis(dummyRemoveBtn, dummyTargets.length === 0);
+  setDis(dummyResetBtn, dummyTargets.length === 0);
+  setText(dummyResetBtn, 'Reset dummy');
+  setText(dummyImmortalBtn, `Immortality: ${dummyImmortal ? 'On' : 'Off'}`);
+  setText(dummyRoamBtn, `Roam dummies: ${dummyRoamEnabled ? 'On' : 'Off'}`);
+  setDis(dummyRoamBtn, dummyTargets.length === 0);
+  setText(dummyHealthValue, !dummy ? `${dummyTargets.length} placed` : `${dummyTargets.length} placed / ${dummy.alive ? `${Math.ceil(dummy.health)} / ${DUMMY_MAX_HEALTH}` : 'Dead'}`);
+  const hc = dummy?.alive === false ? '#ff8a80' : dummyImmortal ? '#b9f6ca' : '';
+  if (dummyHealthValue.style.color !== hc) dummyHealthValue.style.color = hc;
+}
+dummySpawnBtn.addEventListener('click', () => { spawnDummy(); updateDummyControls(); });
+dummyRemoveBtn.addEventListener('click', () => { removeDummy(); updateDummyControls(); });
+dummyResetBtn.addEventListener('click', () => { resetDummy(); updateDummyControls(); });
+dummyImmortalBtn.addEventListener('click', () => { dummyImmortal = !dummyImmortal; updateDummyControls(); });
+dummyRoamBtn.addEventListener('click', () => {
+  dummyRoamEnabled = !dummyRoamEnabled;
+  for (const target of dummyTargets) target.roamPath = [];
+  updateDummyControls();
+});
+randomDummyBtn.addEventListener('click', () => {
+  const count = Math.max(1, Math.floor(Number(randomDummyCount.value) || 1));
+  randomDummyCount.value = String(count);
+  spawnRandomDummies(count);
+  updateDummyControls();
+});
+ctrl.appendChild(dummySpawnBtn);
+ctrl.appendChild(dummyRemoveBtn);
+ctrl.appendChild(dummyResetBtn);
+ctrl.appendChild(dummyImmortalBtn);
+ctrl.appendChild(dummyRoamBtn);
+ctrl.appendChild(randomDummyRow);
+ctrl.appendChild(randomDummyBtn);
+ctrl.appendChild(dummyHealthRow);
+updateDummyControls();
+
+// Nav grid was a whole collapsible card holding a single button; it is one more row in Debug overlays.
+const navToggleBtn = document.createElement('button'); navToggleBtn.textContent = 'Nav grid overlay';
+navToggleBtn.title = 'Draw the grid bots path along. Gaps in it are ground they cannot route through, which is usually why a bot appears stuck.';
+navToggleBtn.addEventListener('click', () => { navPoints.visible = !navPoints.visible; });
+sectionBodies.get('Debug overlays').appendChild(navToggleBtn);
+
+// ===================== audio panel =====================
+// Harness version of the environment viewer's Audio tab, split across the Audio tab's four cards:
+// mixer + voices here, then the mp3-player card, the music-reactive lighting routing, and the bus
+// effects in 'Music FX'.
+header('Mixer & voices');
+
+function audioVolumeRow(kind, label) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const value = document.createElement('span'); value.className = 'v'; value.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = '0'; input.max = '1'; input.step = '0.01'; input.style.width = '100%';
+  input.addEventListener('input', () => { envAudio.noteGesture(); envAudio.setVolume(kind, Number(input.value)); });
+  row.append(labelSpan(label), value, input);
+  ctrl.appendChild(row);
+  return { input, value };
+}
+const masterVolUi = audioVolumeRow('master', 'master');
+const musicVolUi = audioVolumeRow('music', 'music');
+const sfxVolUi = audioVolumeRow('sfx', 'sfx');
+
+const audioMuteBtn = document.createElement('button');
+audioMuteBtn.title = 'Mute everything at once, music and effects together';
+audioMuteBtn.addEventListener('click', () => {
+  envAudio.noteGesture();
+  envAudio.setMuted('master', !envAudio.getState().masterMuted);
+});
+ctrl.appendChild(audioMuteBtn);
+
+const botSfxBtn = document.createElement('button');
+botSfxBtn.title = 'Gunfire, impacts and bot voices. Turning this off leaves the music playing.';
+botSfxBtn.addEventListener('click', () => { botAudioEnabled = !botAudioEnabled; syncAudioPanel(); });
+ctrl.appendChild(botSfxBtn);
+
+// Squad chatter. Density drives the director's rate limits, so it is the one control that decides
+// whether a 90-bot firefight sounds like a squad or like a crowd.
+const botChatterBtn = document.createElement('button');
+botChatterBtn.title = 'Robotic call-outs driven by the bots’ own FSM state (contact, cover, reloading, grenade…).';
+botChatterBtn.addEventListener('click', () => { botChatterEnabled = !botChatterEnabled; syncAudioPanel(); });
+ctrl.appendChild(botChatterBtn);
+
+const botChatterRadioBtn = document.createElement('button');
+botChatterRadioBtn.title = 'Radio treatment (comms bandwidth, soft-clip drive, squelch clicks) vs. a clean voice.';
+botChatterRadioBtn.addEventListener('click', () => { botChatterRadio = !botChatterRadio; syncAudioPanel(); });
+ctrl.appendChild(botChatterRadioBtn);
+
+// Where the words come from. Cycles synth -> whatever engines are baked into sfx/voice.
+const botChatterSourceBtn = document.createElement('button');
+botChatterSourceBtn.title = 'Robot = the synthesized formant voice. The other options are baked TTS takes from sfx/voice; bots are spread across that engine’s speakers so a firefight is many voices.';
+botChatterSourceBtn.addEventListener('click', () => {
+  const options = [null, ...botVoiceBank.engines()];
+  const next = options[(options.indexOf(botChatterSource) + 1) % options.length];
+  botChatterSource = next;
+  botVoiceBank.setEngine(next);
+  syncAudioPanel();
+  // The label carries a loaded/total counter while the bank warms; nothing else repaints the panel.
+  clearInterval(botChatterSourceBtn._poll);
+  if (next) botChatterSourceBtn._poll = setInterval(() => {
+    const p = botVoiceBank.progress();
+    syncAudioPanel();
+    if (p.total && p.loaded >= p.total) clearInterval(botChatterSourceBtn._poll);
+  }, 400);
+});
+ctrl.appendChild(botChatterSourceBtn);
+
+// Only meaningful for a baked take: gate a glottal carrier with the recording's own envelope, so a
+// real performance comes out of a machine. The synth voice is already a machine.
+const botChatterVocodeBtn = document.createElement('button');
+botChatterVocodeBtn.title = 'Runs baked speech through the robot vocoder: human timing, machine timbre. No effect on the synth voice.';
+botChatterVocodeBtn.addEventListener('click', () => { botChatterVocode = !botChatterVocode; syncAudioPanel(); });
+ctrl.appendChild(botChatterVocodeBtn);
+
+const botBeaconBtn = document.createElement('button');
+botBeaconBtn.title = 'The downed-bot distress beeping. Off by default: with several bodies down it dominates the mix.';
+botBeaconBtn.addEventListener('click', () => { botDeathBeacon = !botDeathBeacon; syncAudioPanel(); });
+ctrl.appendChild(botBeaconBtn);
+
+function chatterSliderRow(label, min, max, step, initial, title, onInput) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  const value = document.createElement('span'); value.className = 'v'; value.style.cssFloat = 'right';
+  value.textContent = initial.toFixed(2);
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  input.value = String(initial); input.style.width = '100%'; input.title = title;
+  input.addEventListener('input', () => {
+    const v = Number(input.value);
+    value.textContent = v.toFixed(2);
+    onInput(v);
+  });
+  row.append(labelSpan(label), value, input);
+  ctrl.appendChild(row);
+  return { input, sync(v) { if (document.activeElement !== input) input.value = String(v); value.textContent = v.toFixed(2); } };
+}
+const chatterVolUi = chatterSliderRow('chatter vol', 0, 1.5, 0.05, botChatterVolume,
+  'Level of the call-outs relative to the rest of the SFX bus.', v => { botChatterVolume = v; });
+const chattinessUi = chatterSliderRow('chattiness', 0, 2, 0.05, botVoiceDirector.getChattiness(),
+  'How much the squad talks: scales the rate limits and shortens the cooldowns. 0 silences chatter, below 0.35 drops ambient flavour lines.',
+  v => botVoiceDirector.setChattiness(v));
+// Reflex lines (pain grunts, death cries) ignore chattiness and radio entirely -- distance and
+// volume are the only two dials that control how audible they are, so they get their own sliders.
+const reflexRangeUi = chatterSliderRow('reflex range', 3, 40, 1, botReflexRange,
+  'How close the listener has to be to hear a reflex line (pain grunts, death cries) at all. Always positional, never radio -- this is the only thing that controls their reach.',
+  v => setReflexRange(v));
+const reflexVolUi = chatterSliderRow('reflex vol', 0, 1.5, 0.05, botReflexVolume,
+  'Level of reflex lines (pain/death) once in range, independent of the general chatter volume.',
+  v => { botReflexVolume = v; });
+
+// Music-reactive lighting. The effect itself lives in bot-viewer-visuals.js (five routed groups:
+// lights, bloom, map neon, bot glow, sky); it is driven by music, so its controls belong here
+// rather than in the look panel.
+header('Reactive lighting');
+const reactiveLightsBtn = document.createElement('button');
+reactiveLightsBtn.title = 'Pulses the scene with the music — each group on its own frequency band. Needs a track playing.';
+reactiveLightsBtn.addEventListener('click', () => {
+  visuals.setAudioReactive(!visuals.audioReactive);
+  syncReactiveLightsUi();
+});
+ctrl.appendChild(reactiveLightsBtn);
+
+const reactiveDriveRow = document.createElement('div'); reactiveDriveRow.className = 'row';
+reactiveDriveRow.style.display = 'block';
+const reactiveDriveValue = document.createElement('span');
+reactiveDriveValue.className = 'v'; reactiveDriveValue.style.cssFloat = 'right';
+const reactiveDriveInput = document.createElement('input');
+reactiveDriveInput.type = 'range';
+reactiveDriveInput.min = '0'; reactiveDriveInput.max = '2.5'; reactiveDriveInput.step = '0.01';
+reactiveDriveInput.style.width = '100%';
+reactiveDriveInput.title = 'How hard the music pushes every enabled group';
+reactiveDriveInput.addEventListener('input', () => {
+  visuals.setAudioDrive(Number(reactiveDriveInput.value));
+  syncReactiveLightsUi();
+});
+reactiveDriveRow.append(labelSpan('reactive drive'), reactiveDriveValue, reactiveDriveInput);
+ctrl.appendChild(reactiveDriveRow);
+
+// One chip per routed group, built from the visuals module's own routing table so the labels and
+// the update loop can't drift apart. Each shows which bands drive it, because "why is this one
+// not moving" is almost always "that band isn't in this track".
+const reactiveTargetsRow = document.createElement('div');
+reactiveTargetsRow.className = 'react-targets';
+const BAND_KEYS = ['bass', 'mid', 'treble', 'level', 'beat'];
+const reactiveTargetBtns = Object.entries(visuals.reactiveTargets).map(([key, def]) => {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = def.label || key;
+  const bands = BAND_KEYS.filter(b => (def[b] || 0) > 0).join(' + ');
+  btn.title = `${def.hint || key}\nDriven by: ${bands || 'nothing'}`;
+  btn.addEventListener('click', () => {
+    visuals.setAudioTarget(key, !visuals.audioTargets[key]);
+    syncReactiveLightsUi();
+  });
+  reactiveTargetsRow.appendChild(btn);
+  return { key, btn };
+});
+ctrl.appendChild(reactiveTargetsRow);
+
+const reactiveStyle = document.createElement('style');
+reactiveStyle.textContent = `
+#ctrl .react-targets{ display:flex; flex-wrap:wrap; gap:4px; margin:4px 0 8px; }
+#ctrl .react-targets button{ flex:1 1 auto; width:auto; margin:0; padding:3px 7px; font-size:10px;
+  letter-spacing:.04em; text-transform:uppercase; opacity:.45; }
+#ctrl .react-targets button.on{ opacity:1; }
+#ctrl .react-targets.idle button{ opacity:.25; }
+`;
+document.head.appendChild(reactiveStyle);
+
+// Also called after a UI slot load, which restores all three values inside the visuals look state.
+function syncReactiveLightsUi() {
+  reactiveLightsBtn.textContent = `Reactive lights: ${visuals.audioReactive ? 'on' : 'off'}`;
+  reactiveLightsBtn.classList.toggle('primary', visuals.audioReactive);
+  if (document.activeElement !== reactiveDriveInput) reactiveDriveInput.value = String(visuals.audioDrive);
+  reactiveDriveValue.textContent = visuals.audioDrive.toFixed(2);
+  const on = visuals.audioTargets;
+  for (const t of reactiveTargetBtns) {
+    t.btn.classList.toggle('on', !!on[t.key]);
+    t.btn.classList.toggle('primary', !!on[t.key] && visuals.audioReactive);
+  }
+  // Dimmed as a group while the master switch is off — the chips still read as enabled/disabled,
+  // they just aren't doing anything yet.
+  reactiveTargetsRow.classList.toggle('idle', !visuals.audioReactive);
+}
+syncReactiveLightsUi();
+
+// --- Player card: what's playing, where it is in the track, and the transport. The panel used
+// to show only prev/play/next, which never said what was actually on.
+// An amber VFD-style screen sunk into the light panel: everything inside .mp3 is "lit", the
+// transport below it is a row of console keys. --lit tracks the music level, so the whole display
+// breathes with what is playing.
+const playerStyle = document.createElement('style');
+playerStyle.textContent = `
+#ctrl .mp3{ --lit:0; --amber:#ffb44d; --amber-dim:#8a5a1e;
+  position:relative; border-radius:8px; padding:9px 10px 8px; margin:6px 0;
+  background:radial-gradient(120% 140% at 50% 0%, #1d1a15 0%, #0d0c0a 70%, #080807 100%);
+  border:1px solid #2c2620;
+  box-shadow:inset 0 1px 0 rgba(255,180,77,.10), inset 0 0 22px rgba(255,150,40,calc(.05 + var(--lit)*.16)),
+    0 0 0 1px rgba(0,0,0,.35), 0 2px 10px rgba(0,0,0,.28);
+  font-family:ui-monospace, Consolas, monospace; overflow:hidden; }
+/* scanlines + a soft bloom wash over the whole screen */
+#ctrl .mp3::after{ content:''; position:absolute; inset:0; pointer-events:none; border-radius:8px;
+  background:repeating-linear-gradient(180deg, rgba(255,255,255,.035) 0 1px, transparent 1px 3px);
+  opacity:.7; }
+#ctrl .mp3::before{ content:''; position:absolute; inset:-40% -10% auto -10%; height:70%;
+  pointer-events:none;
+  background:radial-gradient(60% 100% at 50% 100%, rgba(255,168,60,calc(.06 + var(--lit)*.20)), transparent 70%); }
+
+#ctrl .scr-top{ display:flex; align-items:center; gap:6px; font-size:9px; letter-spacing:.12em; }
+#ctrl .seg{ padding:1px 5px; border-radius:3px; border:1px solid rgba(255,180,77,.20);
+  color:#5c4626; background:rgba(255,180,77,.04); transition:color .2s, box-shadow .2s, background .2s; }
+#ctrl .seg.on{ color:#ffce8a; background:rgba(255,180,77,.14); border-color:rgba(255,180,77,.5);
+  box-shadow:0 0 8px rgba(255,168,60,.45), inset 0 0 6px rgba(255,168,60,.25); }
+#ctrl .scr-src{ margin-left:auto; color:var(--amber-dim); letter-spacing:.06em; }
+
+#ctrl .mp3-title{ overflow:hidden; white-space:nowrap; margin:6px 0 2px; }
+#ctrl .mp3-title span{ display:inline-block; font-size:12px; font-weight:650; color:var(--amber);
+  text-shadow:0 0 6px rgba(255,150,40,.55), 0 0 18px rgba(255,120,20,calc(.15 + var(--lit)*.35)); }
+#ctrl .mp3-title.scroll span{ animation:mp3-marquee 14s linear infinite; }
+@keyframes mp3-marquee{ 0%,8%{ transform:translateX(0); } 92%,100%{ transform:translateX(var(--mp3-shift,0)); } }
+
+#ctrl .scr-spectrum{ display:block; width:100%; height:34px; margin:3px 0 1px; }
+
+#ctrl .mp3-seek{ height:9px; margin:4px 0 3px; cursor:pointer; position:relative; overflow:hidden;
+  border-radius:2px; background:#151310; border:1px solid #2c2620;
+  /* the strip is a row of LED segments, so the fill lights them rather than sliding a bar */
+  background-image:repeating-linear-gradient(90deg, rgba(255,180,77,.07) 0 4px, transparent 4px 6px); }
+#ctrl .mp3-seek-fill{ height:100%; width:0; transition:width .18s linear;
+  background:linear-gradient(90deg, #b56a15, #ffb44d);
+  box-shadow:0 0 10px rgba(255,168,60,.6); }
+#ctrl .mp3-seek::after{ content:''; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(90deg, transparent 0 4px, #0d0c0a 4px 6px); }
+#ctrl .mp3-seek:hover{ border-color:rgba(255,180,77,.45); }
+
+#ctrl .mp3-times{ display:flex; justify-content:space-between; font-size:10px;
+  color:var(--amber-dim); font-variant-numeric:tabular-nums; cursor:pointer; user-select:none; }
+#ctrl .mp3-times span{ text-shadow:0 0 6px rgba(255,140,30,.35); }
+#ctrl .mp3-times .lit{ color:#ffce8a; }
+
+#ctrl .mp3-transport{ display:flex; gap:5px; margin:0 0 6px; }
+#ctrl .mp3-transport button{ margin:0; flex:1; padding:6px 0; font-size:12px;
+  color:#c9a67a; background:linear-gradient(#1b1814, #121110); border:1px solid #2f2822;
+  border-radius:5px; text-shadow:0 0 6px rgba(255,140,30,.25); }
+#ctrl .mp3-transport button:hover{ color:#ffce8a; border-color:rgba(255,180,77,.5);
+  background:linear-gradient(#241f18, #16130f); box-shadow:0 0 10px rgba(255,150,40,.25); }
+#ctrl .mp3-transport button:active{ box-shadow:inset 0 2px 6px rgba(0,0,0,.6); }
+#ctrl .mp3-transport button.wide{ flex:1.5; }
+#ctrl .mp3-transport button.lit{ color:#ffce8a; border-color:rgba(255,180,77,.6);
+  box-shadow:0 0 12px rgba(255,150,40,.35), inset 0 0 8px rgba(255,150,40,.18); }
+
+#ctrl .mp3-list{ max-height:132px; overflow-y:auto; margin:0 0 6px; border-radius:6px;
+  background:#0d0c0a; border:1px solid #2c2620; font-family:ui-monospace, Consolas, monospace;
+  font-size:11px; }
+#ctrl .mp3-row{ display:flex; align-items:center; gap:7px; padding:4px 7px; cursor:pointer;
+  color:#a08b6d; border-bottom:1px solid rgba(255,180,77,.06); }
+#ctrl .mp3-row:last-child{ border-bottom:0; }
+#ctrl .mp3-row:hover{ color:#ffce8a; background:rgba(255,180,77,.07); }
+#ctrl .mp3-row.active{ color:#ffb44d; background:rgba(255,180,77,.12);
+  text-shadow:0 0 8px rgba(255,150,40,.5); }
+#ctrl .mp3-num{ flex:0 0 16px; text-align:center; font-size:10px; color:#6c563a;
+  font-variant-numeric:tabular-nums; }
+#ctrl .mp3-row.active .mp3-num{ color:#ffb44d; }
+#ctrl .mp3-label{ flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+#ctrl .mp3-empty{ padding:6px 7px; color:#6c563a; font-size:11px; }
+`;
+document.head.appendChild(playerStyle);
+
+header('Music player');
+const playerCard = document.createElement('div'); playerCard.className = 'mp3';
+
+// Status strip: lit segments, like a deck's indicator row.
+const scrTop = document.createElement('div'); scrTop.className = 'scr-top';
+const segPlay = document.createElement('span'); segPlay.className = 'seg'; segPlay.textContent = 'PLAY';
+const segShuffle = document.createElement('span'); segShuffle.className = 'seg'; segShuffle.textContent = 'SHUF';
+segShuffle.title = 'Shuffle playback order';
+segShuffle.style.cursor = 'pointer';
+segShuffle.addEventListener('click', () => envAudio.setShuffle(!envAudio.getState().shuffle));
+const npIndex = document.createElement('span'); npIndex.className = 'seg';
+const npSource = document.createElement('span'); npSource.className = 'scr-src';
+scrTop.append(segPlay, segShuffle, npIndex, npSource);
+
+const npTitleWrap = document.createElement('div'); npTitleWrap.className = 'mp3-title';
+const npTitle = document.createElement('span');
+npTitleWrap.appendChild(npTitle);
+
+// Live spectrum: log-spaced bars with falling peak caps, drawn from the music analyser.
+const SPECTRUM_BARS = 28;
+const spectrumCanvas = document.createElement('canvas');
+spectrumCanvas.className = 'scr-spectrum';
+const spectrumCtx = spectrumCanvas.getContext('2d');
+const spectrumData = new Float32Array(SPECTRUM_BARS);
+const spectrumPeaks = new Float32Array(SPECTRUM_BARS);
+
+const seekBar = document.createElement('div'); seekBar.className = 'mp3-seek';
+const seekFill = document.createElement('div'); seekFill.className = 'mp3-seek-fill';
+seekBar.appendChild(seekFill);
+seekBar.title = 'Click or drag to scrub';
+// Pointer capture so a drag that leaves the strip keeps scrubbing until release.
+const seekTo = (clientX) => {
+  const rect = seekBar.getBoundingClientRect();
+  envAudio.seekMusic((clientX - rect.left) / Math.max(1, rect.width));
+  updateNowPlaying(true);
+};
+seekBar.addEventListener('pointerdown', (event) => {
+  envAudio.noteGesture();
+  seekBar.setPointerCapture(event.pointerId);
+  seekTo(event.clientX);
+});
+seekBar.addEventListener('pointermove', (event) => {
+  if (seekBar.hasPointerCapture(event.pointerId)) seekTo(event.clientX);
+});
+seekBar.addEventListener('pointerup', (event) => seekBar.releasePointerCapture(event.pointerId));
+
+const npTimes = document.createElement('div'); npTimes.className = 'mp3-times';
+const npElapsed = document.createElement('span'); npElapsed.className = 'lit'; npElapsed.textContent = '0:00';
+const npDuration = document.createElement('span'); npDuration.textContent = '0:00';
+npTimes.append(npElapsed, npDuration);
+// Classic deck behaviour: tap the clock to swap total for time remaining.
+let showRemaining = false;
+npTimes.title = 'Click to toggle remaining time';
+npTimes.addEventListener('click', () => { showRemaining = !showRemaining; updateNowPlaying(true); });
+
+const musicTransport = document.createElement('div'); musicTransport.className = 'mp3-transport';
+const musicPlayBtn = document.createElement('button'); musicPlayBtn.className = 'wide';
+musicPlayBtn.title = 'Play or pause the current track';
+const musicShuffleBtn = document.createElement('button');
+const [musicPrevBtn, musicNextBtn] = [document.createElement('button'), document.createElement('button')];
+musicPrevBtn.textContent = '⏮'; musicNextBtn.textContent = '⏭'; musicShuffleBtn.textContent = '🔀';
+musicPrevBtn.title = 'Previous track'; musicNextBtn.title = 'Next track';
+musicShuffleBtn.title = 'Shuffle playback order';
+for (const btn of [musicPrevBtn, musicPlayBtn, musicNextBtn, musicShuffleBtn]) musicTransport.appendChild(btn);
+musicPrevBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.prevTrack(); });
+musicNextBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.nextTrack(); });
+musicPlayBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.togglePlayback(); });
+musicShuffleBtn.addEventListener('click', () => envAudio.setShuffle(!envAudio.getState().shuffle));
+
+playerCard.append(scrTop, npTitleWrap, spectrumCanvas, seekBar, npTimes);
+ctrl.append(playerCard, musicTransport);   // keys sit under the screen, not inside it
+
+const musicSourceRow = document.createElement('div'); musicSourceRow.className = 'row';
+const musicSourceSel = document.createElement('select');
+musicSourceSel.title = 'Where music comes from: the tracks served with the app, a folder you pick from your own machine, or the in-game event sounds';
+musicSourceSel.style.cssText = 'flex:1;margin-left:6px';
+const MUSIC_SOURCE_LABELS = { http: 'sfx/music/', folder: 'picked folder', game: 'sound-map events' };
+for (const [value, text] of Object.entries(MUSIC_SOURCE_LABELS)) {
+  musicSourceSel.append(Object.assign(document.createElement('option'), { value, textContent: text }));
+}
+musicSourceSel.addEventListener('change', () => { envAudio.noteGesture(); envAudio.setMusicSource(musicSourceSel.value); });
+musicSourceRow.append(labelSpan('music src'), musicSourceSel);
+// Above the screen: source picker, then display, keys, playlist -- the two dark blocks stay adjacent.
+ctrl.insertBefore(musicSourceRow, playerCard);
+
+const clockText = (seconds) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const total = Math.floor(seconds);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+};
+
+// Marquee only when the title actually overflows; the shift distance is the overflow itself.
+// A collapsed section measures 0 wide, so the width is remembered and re-measured when it changes.
+function fitNowPlayingTitle() {
+  lastTitleWidth = npTitleWrap.clientWidth;
+  const overflow = npTitle.scrollWidth - lastTitleWidth;
+  const scrolls = lastTitleWidth > 0 && overflow > 4;
+  npTitleWrap.classList.toggle('scroll', scrolls);
+  npTitleWrap.style.setProperty('--mp3-shift', scrolls ? `${-overflow - 4}px` : '0px');
+}
+
+// --- Now-playing toast: slides in beside the fps counter whenever a new song starts, then fades.
+const nowPlayingEl = document.getElementById('nowplaying');
+const nowPlayingLabelEl = document.getElementById('nowplaying-label');
+const NOW_PLAYING_TOAST_MS = 5200;
+let announcedTrackPath = null;   // null until the first state arrives, so a resumed track announces once
+let nowPlayingHideTimer = 0;
+function announceNowPlaying(state) {
+  if (state.currentTrackPath === announcedTrackPath) return;
+  announcedTrackPath = state.currentTrackPath;
+  if (!state.currentTrackPath) { nowPlayingEl.classList.remove('show'); return; }
+  nowPlayingLabelEl.textContent = state.currentTrackLabel || '';
+  nowPlayingEl.classList.add('show');
+  clearTimeout(nowPlayingHideTimer);
+  nowPlayingHideTimer = setTimeout(() => nowPlayingEl.classList.remove('show'), NOW_PLAYING_TOAST_MS);
+}
+
+// Transport position is polled (the controller only notifies on state changes, not per second).
+let lastNowPlayingTitle = '';
+let lastNowPlayingPoll = 0;
+let lastTitleWidth = 0;
+const pad2 = n => String(n).padStart(2, '0');
+function updateNowPlaying(force = false) {
+  measureSpectrum();   // the display's layout reads, batched with this one's
+  const progress = envAudio.getMusicProgress();
+  const state = envAudio.getState();
+  if (force || progress.label !== lastNowPlayingTitle) {
+    lastNowPlayingTitle = progress.label;
+    npTitle.textContent = progress.label || 'NO TRACK LOADED';
+    npTitle.style.opacity = progress.label ? '' : '0.45';
+    fitNowPlayingTitle();
+  } else if (npTitleWrap.clientWidth !== lastTitleWidth) {
+    fitNowPlayingTitle();   // section was collapsed when the title was measured, or the panel resized
+  }
+  const index = state.playlist.findIndex(track => track.path === state.currentTrackPath);
+  npSource.textContent = (MUSIC_SOURCE_LABELS[state.musicSource] || state.musicSource).toUpperCase();
+  npIndex.textContent = state.playlist.length
+    ? `${pad2(index >= 0 ? index + 1 : 0)}/${pad2(state.playlist.length)}`
+    : '--/--';
+  npIndex.classList.toggle('on', index >= 0);
+  segPlay.textContent = state.musicPlaying ? 'PLAY' : (state.currentTrackPath ? 'PAUSE' : 'STOP');
+  segPlay.classList.toggle('on', !!state.currentTrackPath);
+  segShuffle.classList.toggle('on', !!state.shuffle);
+
+  const fraction = progress.duration > 0 ? progress.currentTime / progress.duration : 0;
+  seekFill.style.width = `${Math.min(100, fraction * 100).toFixed(1)}%`;
+  npElapsed.textContent = clockText(progress.currentTime);
+  npDuration.textContent = showRemaining && progress.duration > 0
+    ? `-${clockText(progress.duration - progress.currentTime)}`
+    : clockText(progress.duration);
+}
+
+// Spectrum + screen glow. Runs every frame while the display is actually on screen; the analyser
+// read itself no-ops when nothing is playing, and the bars fall away rather than snapping flat.
+//
+// Everything layout-touching is kept OUT of this function. `offsetParent` and `clientWidth` are
+// forced-layout reads, and writing --lit dirties style, so doing both here made every frame flush
+// the panel's layout synchronously. The measurements now ride the 4 Hz poll (measureSpectrum),
+// which is plenty for "did the panel get resized or collapsed".
+let spectrumWidth = 0;
+let spectrumOnScreen = false;
+let spectrumGrad = null;
+let spectrumLit = -1;
+let spectrumSettled = false;   // bars are at rest AND that rest frame has already been painted
+
+function measureSpectrum() {
+  spectrumOnScreen = !!spectrumCtx && playerCard.offsetParent !== null;
+  if (!spectrumOnScreen) return;
+  const width = spectrumCanvas.clientWidth;
+  if (!width || width === spectrumWidth) return;
+  spectrumWidth = width;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  spectrumCanvas.width = Math.round(width * dpr);
+  spectrumCanvas.height = Math.round(spectrumCanvas.clientHeight * dpr);
+  // One gradient for the whole display instead of one per bar per frame: the ramp is absolute
+  // (hot at the top of the screen), which is how a real analyser reads anyway.
+  spectrumGrad = spectrumCtx.createLinearGradient(0, spectrumCanvas.height, 0, 0);
+  spectrumGrad.addColorStop(0, '#7a4310');
+  spectrumGrad.addColorStop(0.55, '#ff9c2b');
+  spectrumGrad.addColorStop(1, '#fff0cf');
+  spectrumSettled = false;
+}
+
+function drawSpectrum() {
+  if (!spectrumOnScreen || !spectrumGrad) return;
+  envAudio.getSpectrum(spectrumData);
+  let sum = 0, loudest = 0;
+  for (let i = 0; i < SPECTRUM_BARS; i++) {
+    const v = spectrumData[i] > 1 ? 1 : spectrumData[i];
+    spectrumData[i] = v;
+    sum += v;
+    // Peak caps fall slowly, the classic analyser read.
+    const p = spectrumPeaks[i] = Math.max(v, spectrumPeaks[i] - 0.012);
+    if (p > loudest) loudest = p;
+  }
+  // Nothing playing and the caps have fallen: the canvas already shows this exact frame. An idle
+  // harness with the Audio section open should not repaint 60 times a second.
+  if (loudest < 0.002) {
+    if (spectrumSettled) return;
+    spectrumSettled = true;
+  } else spectrumSettled = false;
+
+  const w = spectrumCanvas.width, h = spectrumCanvas.height;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const gap = Math.max(1, Math.round(dpr));
+  const barW = (w - gap * (SPECTRUM_BARS - 1)) / SPECTRUM_BARS;
+  const step = barW + gap;
+  const capH = Math.max(1, dpr);
+  spectrumCtx.clearRect(0, 0, w, h);
+  // Batched by fill style: 3 state changes for the whole display rather than 3 per bar.
+  spectrumCtx.fillStyle = 'rgba(255,180,77,0.06)';   // unlit remainder — reads as a segmented panel
+  for (let i = 0; i < SPECTRUM_BARS; i++) {
+    const barH = Math.max(dpr, spectrumData[i] * h);
+    spectrumCtx.fillRect(i * step, 0, barW, h - barH);
+  }
+  spectrumCtx.fillStyle = spectrumGrad;
+  for (let i = 0; i < SPECTRUM_BARS; i++) {
+    const barH = Math.max(dpr, spectrumData[i] * h);
+    spectrumCtx.fillRect(i * step, h - barH, barW, barH);
+  }
+  spectrumCtx.fillStyle = 'rgba(255,224,170,0.85)';
+  for (let i = 0; i < SPECTRUM_BARS; i++) {
+    spectrumCtx.fillRect(i * step, h - Math.max(dpr, spectrumPeaks[i] * h), barW, capH);
+  }
+  // Feeds the CSS glow. Quantised to 2% steps: this is a custom property the screen's box-shadows
+  // read, so every distinct value costs a style recalc of the card.
+  const lit = Math.round((sum / SPECTRUM_BARS) * 50) / 50;
+  if (lit !== spectrumLit) {
+    spectrumLit = lit;
+    playerCard.style.setProperty('--lit', lit.toFixed(2));
+  }
+}
+
+// --- Music processing: the controller's six effect params, in the units it actually wants
+// (0-100 percent for echo/reverb/attenuation, 50-200 for tempo, dB for bass, semitones for pitch).
+const AUDIO_EFFECT_DEFS = [
+  ['bass', 'bass', 0, 18, 0.5, v => `${v.toFixed(1)} dB`, 'Boost the low end of the music'],
+  ['echo', 'echo', 0, 100, 1, v => `${Math.round(v)}%`, 'Repeat the music back on a delay'],
+  ['reverb', 'reverb', 0, 100, 1, v => `${Math.round(v)}%`, 'Put the music in a room, from dry and close to a large hall'],
+  ['attenuation', 'attenuation', 0, 200, 1, v => `${Math.round(v)}%`,
+    'How fast world-positioned music fades with distance. Only has an effect when output is set to speaker.'],
+  ['tempo', 'tempo', 50, 200, 1, v => `${(v / 100).toFixed(2)}x`, 'Play the music faster or slower without changing its pitch'],
+  ['pitch', 'pitch', -12, 12, 1, v => `${v > 0 ? '+' : ''}${v} st`, 'Shift the music up or down in semitones without changing its speed'],
+];
+// Playlist: rows are rebuilt only when the playlist identity changes, so the active-row marker
+// can refresh on every subscribe() tick without DOM churn (same trick as the Audio tab).
+const trackListEl = document.createElement('div'); trackListEl.className = 'mp3-list';
+ctrl.appendChild(trackListEl);
+let lastPlaylistKey = null;   // null, not '' -- an initially empty playlist must still render once
+function rebuildTrackList(state) {
+  const key = state.playlist.map(t => `${t.eventId}|${t.path}`).join('\n');
+  if (key !== lastPlaylistKey) {
+    lastPlaylistKey = key;
+    trackListEl.textContent = '';
+    state.playlist.forEach((entry, index) => {
+      const row = document.createElement('div'); row.className = 'mp3-row';
+      const marker = document.createElement('span'); marker.className = 'mp3-num';
+      marker.textContent = String(index + 1);
+      const label = document.createElement('span'); label.className = 'mp3-label';
+      label.textContent = entry.label;
+      label.title = entry.label;
+      row.dataset.path = entry.path;
+      row.append(marker, label);
+      row.addEventListener('click', () => { envAudio.noteGesture(); envAudio.playTrack(entry); });
+      trackListEl.appendChild(row);
+    });
+    if (!state.playlist.length) {
+      const empty = document.createElement('div'); empty.className = 'mp3-empty';
+      empty.textContent = 'no tracks';
+      trackListEl.appendChild(empty);
+    }
+  }
+  let index = 0;
+  for (const row of trackListEl.children) {
+    if (!row.dataset.path) continue;
+    index++;
+    const active = row.dataset.path === state.currentTrackPath;
+    row.classList.toggle('active', active);
+    // The row number becomes a play/pause glyph on whatever is loaded.
+    row.firstChild.textContent = active ? (state.musicPlaying ? '▶' : '⏸') : String(index);
+  }
+}
+
+const audioStatusRow = document.createElement('div'); audioStatusRow.className = 'row';
+audioStatusRow.style.cssText = 'display:block;color:var(--wui-muted);font-size:11px';
+ctrl.appendChild(audioStatusRow);
+
+const sfxFolderBtn = document.createElement('button');
+sfxFolderBtn.textContent = 'Choose SFX folder…';
+sfxFolderBtn.title = 'Optional: enables live sfx-browser.html edits. SFX already load over http.';
+sfxFolderBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.pickSfxFolder(); });
+const musicFolderBtn = document.createElement('button');
+musicFolderBtn.title = 'Pick a folder of your own audio files to play instead of the tracks served with the app';
+musicFolderBtn.textContent = 'Choose music folder…';
+musicFolderBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.pickMusicFolder(); });
+ctrl.append(sfxFolderBtn, musicFolderBtn);
+
+// --- Music FX: its own collapsible section so the player above stays uncluttered.
+header('Music FX');
+const effectSliders = new Map();
+for (const [key, label, min, max, step, format, title] of AUDIO_EFFECT_DEFS) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  row.title = title;
+  const value = document.createElement('span'); value.className = 'v'; value.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  input.style.width = '100%';
+  input.addEventListener('input', () => { envAudio.noteGesture(); envAudio.setMusicEffect(key, Number(input.value)); });
+  row.append(labelSpan(label), value, input);
+  ctrl.appendChild(row);
+  effectSliders.set(key, { input, value, format });
+}
+
+// Attenuation and the speaker behaviors only bite in 'speaker' output, where music is panned from
+// a world position instead of played flat into the master bus.
+const musicOutputRow = document.createElement('div'); musicOutputRow.className = 'row';
+const selStyle = 'flex:1;margin-left:6px';
+const musicOutputSel = document.createElement('select');
+musicOutputSel.title = 'Play music flat as a soundtrack, or position it in the world so it fades with distance';
+musicOutputSel.style.cssText = selStyle;
+for (const [value, text] of [['global', 'global'], ['speaker', 'speaker (spatial)']]) {
+  musicOutputSel.append(Object.assign(document.createElement('option'), { value, textContent: text }));
+}
+musicOutputSel.addEventListener('change', () => envAudio.setMusicOutput(musicOutputSel.value));
+musicOutputRow.append(labelSpan('music out'), musicOutputSel);
+ctrl.appendChild(musicOutputRow);
+
+const speakerRow = document.createElement('div'); speakerRow.className = 'row';
+const speakerSel = document.createElement('select');
+speakerSel.title = 'Where a world-positioned track plays from';
+speakerSel.style.cssText = selStyle;
+for (const value of ['front', 'behind', 'orbit', 'above']) {
+  speakerSel.append(Object.assign(document.createElement('option'), { value, textContent: value }));
+}
+speakerSel.addEventListener('change', () => envAudio.setMusicSpeakerBehavior(speakerSel.value));
+speakerRow.append(labelSpan('speaker'), speakerSel);
+ctrl.appendChild(speakerRow);
+
+function syncAudioPanel(state = envAudio.getState()) {
+  masterVolUi.input.value = String(state.masterVolume);
+  masterVolUi.value.textContent = Math.round(state.masterVolume * 100) + '%';
+  musicVolUi.input.value = String(state.musicVolume);
+  musicVolUi.value.textContent = Math.round(state.musicVolume * 100) + '%';
+  sfxVolUi.input.value = String(state.sfxVolume);
+  sfxVolUi.value.textContent = Math.round(state.sfxVolume * 100) + '%';
+  audioMuteBtn.textContent = state.masterMuted ? 'Unmute all' : 'Mute all';
+  botSfxBtn.textContent = `Bot SFX: ${botAudioEnabled ? 'on' : 'off'}`;
+  botChatterBtn.textContent = `Squad chatter: ${botChatterEnabled ? 'on' : 'off'}`;
+  botChatterRadioBtn.textContent = `Chatter voice: ${botChatterRadio ? 'radio' : 'clean'}`;
+  const bankProgress = botVoiceBank.progress();
+  const loading = botChatterSource && bankProgress.loaded < bankProgress.total
+    ? ` (${bankProgress.loaded}/${bankProgress.total})` : '';
+  botChatterSourceBtn.textContent = `Voice source: ${botChatterSource || 'robot'}${loading}`;
+  botChatterVocodeBtn.textContent = `Vocode speech: ${botChatterVocode ? 'on' : 'off'}`;
+  botChatterVocodeBtn.disabled = !botChatterSource;
+  botBeaconBtn.textContent = `Death beacon: ${botDeathBeacon ? 'on' : 'off'}`;
+  chatterVolUi.sync(botChatterVolume);
+  chattinessUi.sync(botVoiceDirector.getChattiness());
+  reflexRangeUi.sync(botReflexRange);
+  reflexVolUi.sync(botReflexVolume);
+  if (musicSourceSel.value !== state.musicSource) musicSourceSel.value = state.musicSource;
+  musicPlayBtn.textContent = state.musicPlaying ? '⏸' : '▶';
+  musicPlayBtn.classList.toggle('lit', !!state.musicPlaying);
+  musicShuffleBtn.classList.toggle('lit', !!state.shuffle);
+  musicShuffleBtn.title = `Shuffle playback order (${state.shuffle ? 'on' : 'off'})`;
+  if (musicOutputSel.value !== state.musicOutput) musicOutputSel.value = state.musicOutput;
+  if (speakerSel.value !== state.speakerBehavior) speakerSel.value = state.speakerBehavior;
+  for (const [key, slider] of effectSliders) {
+    if (!(key in (state.effects || {}))) continue;
+    const value = Number(state.effects[key]);
+    if (document.activeElement !== slider.input) slider.input.value = String(value);
+    slider.value.textContent = slider.format(value);
+  }
+  audioStatusRow.textContent = state.sfxFolderStatus || '';
+  rebuildTrackList(state);
+  updateNowPlaying();
+  announceNowPlaying(state);
+}
+envAudio.subscribe(syncAudioPanel);   // fires immediately -- everything it touches exists by here
+
+// SFX come from sfx/sound-map.json over http (no folder pick needed); music from the served
+// sfx/music/ listing. A previously picked folder still wins if its permission survived. Nothing
+// autoplays -- 'http' just becomes the selected source, so ▶ / a track row starts it.
+envAudio.restoreSfxFolder()
+  .then(() => envAudio.restoreMusicFolder())
+  .then(() => envAudio.loadMusicHttp({ select: envAudio.getState().musicSource !== 'folder' }))
+  .catch(() => {});
+
+// ===================== save / load slots =====================
+// Three independent slot sets, split by what a snapshot costs you to restore:
+//   maze -- map geometry + terrain. Loading rebuilds the layout, which clears bots and dummies.
+//   bots -- every AI tuning value. Loading retunes the live roster in place.
+//   ui   -- camera, debug overlays, look/theme, audio. Loading never touches the sim.
+// Built here (every capture/apply target must already exist) but prepended, so it renders on top.
+
+// Slot payloads are untrusted JSON (hand-edited, or written by an older build), so every read is
+// a guarded coerce. numOr deliberately rejects null/''/[] , all of which Number() turns into 0.
+const numOr = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const boolOr = (v, fallback) => (typeof v === 'boolean' ? v : fallback);
+const clampOr = (v, fallback, min, max) => Math.min(max, Math.max(min, numOr(v, fallback)));
+const MAZE_MAX_CELLS = 200;   // safety ceiling on a loaded slot; the cols/rows inputs have no max
+
+function captureMazeState() {
+  return {
+    activeLayoutKind, mazeCols, mazeRows, mazeCellSize, mazeSeed,
+    mazeLoopChance, mazeStraightness, mazeBraid,
+    mazeRoomsOn, mazeRoomCount, mazeRoomSize,
+    mazeCoverOn, mazeCoverDensity, mazeCoverHeight,
+    mazeEntrances, mazeStartGoal, mazeWallMode,
+    structuresOn, structures: { ...structureSettings },
+    wallHeight: WALL_H, wallThickness: WALL_T,
+    terrain: { ...terrainSettings }, terrainPads: terrainPadsEnabled,
+  };
+}
+
+function applyMazeState(data) {
+  if (!data) return;
+  activeLayoutKind = data.activeLayoutKind === 'maze' ? 'maze' : 'rooms';
+  // Dimensions are clamped, not just floored: a slot claiming 5000 cols would hang the tab in
+  // buildMazeLayout plus the nav/visibility/corner bakes.
+  mazeCols = Math.floor(clampOr(data.mazeCols, mazeCols, 1, MAZE_MAX_CELLS));
+  mazeRows = Math.floor(clampOr(data.mazeRows, mazeRows, 1, MAZE_MAX_CELLS));
+  mazeCellSize = clampOr(data.mazeCellSize, mazeCellSize, 0.5, 12);
+  mazeSeed = Math.max(0, Math.floor(numOr(data.mazeSeed, mazeSeed)));
+  mazeLoopChance = clampOr(data.mazeLoopChance, mazeLoopChance, 0, 1);
+  mazeStraightness = clampOr(data.mazeStraightness, mazeStraightness, 0, 1);
+  mazeBraid = clampOr(data.mazeBraid, mazeBraid, 0, 1);
+  mazeRoomsOn = boolOr(data.mazeRoomsOn, mazeRoomsOn);
+  mazeRoomCount = clampOr(data.mazeRoomCount, mazeRoomCount, 1, 8);
+  mazeRoomSize = clampOr(data.mazeRoomSize, mazeRoomSize, 2, 6);
+  mazeCoverOn = boolOr(data.mazeCoverOn, mazeCoverOn);
+  mazeCoverDensity = clampOr(data.mazeCoverDensity, mazeCoverDensity, 0, 1);
+  mazeCoverHeight = clampOr(data.mazeCoverHeight, mazeCoverHeight, 0.4, 2.5);
+  mazeEntrances = clampOr(data.mazeEntrances, mazeEntrances, 0, 8);
+  if (['corners', 'center', 'random'].includes(data.mazeStartGoal)) mazeStartGoal = data.mazeStartGoal;
+  if (['maze', 'perimeter', 'open'].includes(data.mazeWallMode)) mazeWallMode = data.mazeWallMode;
+  structuresOn = boolOr(data.structuresOn, structuresOn);
+  if (data.structures) {
+    assignKnown(structureSettings, data.structures, Object.keys(structureSettings));
+    structureSettings.count = Math.floor(clampOr(structureSettings.count, 8, 0, 24));
+    structureSettings.minSeparation = clampOr(structureSettings.minSeparation, 5, 2, 24);
+    if (!['mixed', 'buildings', 'pockets', 'obstacles'].includes(structureSettings.mix)) structureSettings.mix = 'mixed';
+  }
+  WALL_H = clampOr(data.wallHeight, WALL_H, 1, 6);
+  WALL_T = clampOr(data.wallThickness, WALL_T, 0.1, 1);
+  // Key list from the live object: a stale key off an old slot must not reach createTerrainField.
+  if (data.terrain) assignKnown(terrainSettings, data.terrain, Object.keys(terrainSettings));
+  terrainPadsEnabled = boolOr(data.terrainPads, terrainPadsEnabled);
+  // One rebuild for the lot: rebuildActiveLayout bakes the field (walls sink into it) then builds
+  // the layout on top. Syncers run last -- the terrain toggle's tooltip reads terrainTriangleCount,
+  // which only the layout rebuild writes.
+  syncMazeControls();
+  rebuildActiveLayout();
+  for (const s of terrainSyncers) s();
+}
+
+function captureBotState() {
+  return {
+    movement: { ...botMovementSettings },
+    behavior: { ...botBehaviorSettings },
+    aim: { ...botAimSettings },
+    health: { ...botHealthSettings },
+    packs: { ...botPackSettings },
+    medic: { ...botMedicSettings },
+    investigation: { ...botInvestigationSettings },
+    grenade: { ...botGrenadeSettings },
+    grenadeBlast: { ...botGrenadeBlast },
+    grenadesEnabled: botGrenadesEnabled,
+    blastOcclusion: blastOcclusionEnabled,
+    explosionFx: botExplosionFxEnabled,
+    bloodFx: botBloodFxEnabled,
+    woundHit: botWoundHitMode,
+    stainRender: botStainRender,
+    decalBudget: botDecalBudget,
+    damageClasses: botDamageClassesEnabled,
+    bloodIntensity: botBloodIntensityEnabled,
+    synthSfx: botSynthSfxEnabled,
+    stance: { ...botStanceSettings },
+    stanceOverride: botStanceOverride,
+    weaponId: botWeaponId,
+    autoRefillOnReload: botAutoRefillOnReload,
+    noAmmo: botNoAmmoEnabled,
+    knifeSecondary: botKnifeSecondaryEnabled,
+    sidearm: botSidearmEnabled,
+    proceduralBody: botProceduralBodyEnabled,
+    ragdollDeath: ragdollDeathEnabled,
+    ragdollImpulse: ragdollDeathImpulse,
+    team: botTeam,
+    spawnCount: teamBotCountInput.value,
+    medicPercent: botMedicPercent,
+    roleMix: { ...botRoleMix },
+    squad: { enabled: botSquadModeEnabled, size: botSquadSize, formation: botSquadFormation, spacing: botSquadSettings.spacing,
+      mergeRadius: botSquadSettings.mergeRadius, sideMode: botSideModeEnabled, homeBases: botBaseStructuresEnabled,
+      spawnNearSquad: botSpawnNearSquad },
+    autoAdd: { enabled: botAutoAddEnabled, teams: botAutoAddTeams, count: botAutoAddCount, interval: botAutoAddInterval,
+      teamCap: botAutoAddTeamCap, totalCap: botAutoAddTotalCap },
+    corpse: { cull: botCorpseCullEnabled, cap: botCorpseCap },
+    dummy: { immortal: dummyImmortal, roam: dummyRoamEnabled, randomCount: randomDummyCount.value },
+  };
+}
+
+function applyBotState(data) {
+  if (!data) return;
+  // Key lists come from the live objects, so a stale key off an older slot is dropped rather than
+  // injected into a settings object the sim reads.
+  for (const [live, saved] of [
+    [botMovementSettings, data.movement], [botBehaviorSettings, data.behavior], [botAimSettings, data.aim],
+    [botHealthSettings, data.health], [botPackSettings, data.packs],
+    [botMedicSettings, data.medic], [botInvestigationSettings, data.investigation],
+    [botGrenadeSettings, data.grenade], [botGrenadeBlast, data.grenadeBlast], [botStanceSettings, data.stance],
+  ]) assignKnown(live, saved, Object.keys(live));
+  // A legacy slot's stance was {crouch,prone,run} booleans: assignKnown drops those keys, and an
+  // absent/unknown override degrades to Auto rather than wedging the roster in one stance.
+  botStanceOverride = BOT_STANCE_OVERRIDES.includes(data.stanceOverride) ? data.stanceOverride : 'auto';
+  botAutoRefillOnReload = boolOr(data.autoRefillOnReload, botAutoRefillOnReload);
+  botKnifeSecondaryEnabled = boolOr(data.knifeSecondary, botKnifeSecondaryEnabled);
+  botSidearmEnabled = boolOr(data.sidearm, botSidearmEnabled);
+  botGrenadesEnabled = boolOr(data.grenadesEnabled, botGrenadesEnabled);
+  blastOcclusionEnabled = boolOr(data.blastOcclusion, blastOcclusionEnabled);
+  botExplosionFxEnabled = boolOr(data.explosionFx, botExplosionFxEnabled);
+  botBloodFxEnabled = boolOr(data.bloodFx, botBloodFxEnabled);
+  if (data.woundHit === 'mesh' || data.woundHit === 'cylinder') botWoundHitMode = data.woundHit;
+  if (data.stainRender === 'fitted' || data.stainRender === 'projected') botStainRender = data.stainRender;
+  botDamageClassesEnabled = boolOr(data.damageClasses, botDamageClassesEnabled);
+  botBloodIntensityEnabled = boolOr(data.bloodIntensity, botBloodIntensityEnabled);
+  if (Number.isFinite(data.decalBudget)) {
+    botDecalBudget = Math.max(32, Math.min(4096, Math.round(data.decalBudget)));
+    decalBudgetInput.value = String(botDecalBudget);
+    applyDecalBudget();
+    updateDecalBudgetReadout();
+  }
+  botSynthSfxEnabled = boolOr(data.synthSfx, botSynthSfxEnabled);
+  updateExplosiveButtons();
+  updateBloodFxBtn();
+  ragdollDeathEnabled = boolOr(data.ragdollDeath, ragdollDeathEnabled);
+  ragdollDeathImpulse = numOr(data.ragdollImpulse, ragdollDeathImpulse);
+  botMedicPercent = numOr(data.medicPercent, botMedicPercent);
+  medicPercentInput.value = String(botMedicPercent);
+  botRoleMix[ROLE_SNIPER] = Math.max(0, Math.min(100, numOr(data.roleMix?.[ROLE_SNIPER], botRoleMix[ROLE_SNIPER])));
+  botRoleMix[ROLE_TECHNICAL] = Math.max(0, Math.min(100, numOr(data.roleMix?.[ROLE_TECHNICAL], botRoleMix[ROLE_TECHNICAL])));
+  sniperPercent.input.value = String(botRoleMix[ROLE_SNIPER]);
+  technicalPercent.input.value = String(botRoleMix[ROLE_TECHNICAL]);
+  const squad = data.squad || {};
+  botSquadModeEnabled = boolOr(squad.enabled, botSquadModeEnabled);
+  botSquadSize = Math.max(2, Math.min(SQUAD_MAX_SIZE, Math.floor(numOr(squad.size, botSquadSize))));
+  if (squad.formation === 'auto' || FORMATION_KINDS.includes(squad.formation)) botSquadFormation = squad.formation;
+  botSquadSettings.spacing = Math.max(1, Math.min(8, numOr(squad.spacing, botSquadSettings.spacing)));
+  botSquadSettings.mergeRadius = Math.max(0, Math.min(80, numOr(squad.mergeRadius, botSquadSettings.mergeRadius)));
+  botSideModeEnabled = boolOr(squad.sideMode, botSideModeEnabled);
+  botBaseStructuresEnabled = boolOr(squad.homeBases, botBaseStructuresEnabled);
+  botSpawnNearSquad = boolOr(squad.spawnNearSquad, botSpawnNearSquad);
+  squadSizeInput.value = String(botSquadSize);
+  squadFormationSelect.value = botSquadFormation;
+  squadSpacingInput.value = String(botSquadSettings.spacing);
+  updateSquadButtons();
+  if (data.team === 'alpha' || data.team === 'bravo') botTeam = data.team;
+  if (data.spawnCount) teamBotCountInput.value = String(data.spawnCount);
+  const auto = data.autoAdd || {};
+  botAutoAddEnabled = boolOr(auto.enabled, botAutoAddEnabled);
+  if (['alpha', 'bravo', 'both'].includes(auto.teams)) botAutoAddTeams = auto.teams;
+  botAutoAddCount = Math.max(1, Math.floor(numOr(auto.count, botAutoAddCount)));
+  botAutoAddInterval = Math.max(0.1, numOr(auto.interval, botAutoAddInterval));
+  botAutoAddTeamCap = Math.max(0, Math.floor(numOr(auto.teamCap, botAutoAddTeamCap)));
+  botAutoAddTotalCap = Math.max(0, Math.floor(numOr(auto.totalCap, botAutoAddTotalCap)));
+  autoAddCountInput.value = String(botAutoAddCount);
+  autoAddIntervalInput.value = String(botAutoAddInterval);
+  autoAddTeamCapInput.value = String(botAutoAddTeamCap);
+  autoAddTotalCapInput.value = String(botAutoAddTotalCap);
+  botAutoAddNextAt = 0;   // a restored wave timer fires immediately rather than mid-period
+  botAutoAddCapped = false;
+  // Mirrors the auto-add button: a fresh enable starts the medic quota from zero, not mid-fraction.
+  if (botAutoAddEnabled) { botAutoAddRoleAccum.alpha = {}; botAutoAddRoleAccum.bravo = {}; }
+  const corpse = data.corpse || {};
+  botCorpseCullEnabled = boolOr(corpse.cull, botCorpseCullEnabled);
+  botCorpseCap = Math.max(0, Math.floor(numOr(corpse.cap, botCorpseCap)));
+  corpseCapInput.value = String(botCorpseCap);
+  const dummyCfg = data.dummy || {};
+  dummyImmortal = boolOr(dummyCfg.immortal, dummyImmortal);
+  if (typeof dummyCfg.roam === 'boolean' && dummyCfg.roam !== dummyRoamEnabled) {
+    dummyRoamEnabled = dummyCfg.roam;
+    for (const target of dummyTargets) target.roamPath = [];
+  }
+  if (dummyCfg.randomCount) randomDummyCount.value = String(dummyCfg.randomCount);
+  // Weapon, ammo and body mode go through their setters -- each walks every live actor, so all
+  // three are guarded on an actual change. setBotWeapon rebuilds every GLB mount; setBotNoAmmoEnabled
+  // rewrites every ammo map, which would silently refill the whole roster mid-firefight.
+  if (data.weaponId && data.weaponId !== botWeaponId && BOT_VIEWER_WEAPON_IDS.includes(data.weaponId)) setBotWeapon(data.weaponId);
+  if (typeof data.noAmmo === 'boolean' && data.noAmmo !== botNoAmmoEnabled) setBotNoAmmoEnabled(data.noAmmo);
+  if (typeof data.proceduralBody === 'boolean' && data.proceduralBody !== botProceduralBodyEnabled) {
+    botProceduralBodyEnabled = data.proceduralBody;
+    syncBotVisualMode();
+  }
+  applyBotMovementSettings();
+  botMovementDebugLastUpdate = -Infinity;
+  trimFleeGoalHistory();
+  for (const s of botTuneSyncers) s();
+  updateBotStanceButtons(); updateProceduralBodyButton(); updateBodyKindButton(); updateRagdollDeathButton();
+  updateBotWeaponButtons(); updateBotCountControls(); updateBotAutoAddButtons();
+  updateCorpseCullButton(); updateDummyControls();
+}
+
+function captureUiState() {
+  const audio = envAudio.getState();
+  return {
+    // ctrlRoot, not panelBody: the pinned Bot readout card lives in the chrome, outside the scroller.
+    panel: {
+      collapsed: panelCollapsed, sections: readSectionStates(ctrlRoot),
+      activeTab: activeTabId, pinned: [...pinnedTitles], compact: ctrlRoot.classList.contains('compact'),
+    },
+    rebuild: { keepBots: botKeepOnRebuild },
+    camera: {
+      mode: cameraMode,
+      autoFollow: cameraAutoFollowEnabled,
+      autoRotate: cameraAutoRotateEnabled,
+      occlusion: cameraFollowOcclusionEnabled,
+      followDistance: cameraFollowUserDistance,
+      followFocusOffset: cameraFollowUserFocusOffset.toArray(),
+      followDirection: cameraFollowUserDirection.toArray(),
+      framingPreset: cameraFramingPreset,
+      fov: camera.fov,
+      povRecenter: cameraRig.pov.recenterEnabled,
+      povRecenterDelayMs: cameraRig.pov.recenterDelayMs,
+      povComfort: cameraRig.pov.comfort,
+      shuffleEnabled: autoSceneShuffleEnabled,
+      shuffleIntervalMs: autoSceneShuffleIntervalMs,
+      shuffleLook: shuffleLookEnabled,
+      flySpeed: flyCam.speed,
+      flyWalk: flyCam.walk,
+    },
+    debug: {
+      stateOrbs: botStateOrbsEnabled,
+      tacticalVisuals: botTacticalVisualsEnabled,
+      fovWedge: botFovWedgeEnabled,
+      movement: botMovementDebugEnabled,
+      movementParts: { ...botMovementDebugParts },
+      recovery: botRecoveryDebugEnabled,
+      behavior: botBehaviorDebugEnabled,
+      squadOverlay: squadDebugEnabled,
+      navOverlay: navPoints.visible,
+      scoreboard: botScoreVisible,
+      povScreen: povDebugScreenEnabled,
+      povWorld: povDebugWorldEnabled,
+      povMarkScale,
+      hitVolume: botHitVolumeDebugEnabled,
+      grenadeDebug: grenadeDebugEnabled,
+      traceTickMs: botStateTraceTickMs,
+    },
+    // Started as ?riglod=0-style URL flags, so none of them were ever slot fields.
+    perf: {
+      thinkStagger: botThinkStaggerMode,
+      rigLod: botRigLodEnabled,
+      flushLod: BOT_FLUSH_LOD,
+      cullBehind: BOT_CULL_BEHIND,
+      hideDistance: BOT_HIDE_M,
+      rboxLod: BOT_RBOX_LOD,
+      rboxLodDistance: BOT_RBOX_LOD_D,
+    },
+    visuals: visuals.getLookState(),
+    audio: {
+      masterVolume: audio.masterVolume, musicVolume: audio.musicVolume, sfxVolume: audio.sfxVolume,
+      masterMuted: audio.masterMuted, musicSource: audio.musicSource, musicOutput: audio.musicOutput,
+      speakerBehavior: audio.speakerBehavior, shuffle: audio.shuffle,
+      effects: { ...(audio.effects || {}) },
+      botSfx: botAudioEnabled,
+      chatter: botChatterEnabled, chatterVolume: botChatterVolume, chatterRadio: botChatterRadio,
+      chatterSource: botChatterSource, chatterVocode: botChatterVocode,
+      chattiness: botVoiceDirector.getChattiness(), deathBeacon: botDeathBeacon,
+      reflexRange: botReflexRange, reflexVolume: botReflexVolume,
+    },
+  };
+}
+
+function applyUiState(data) {
+  if (!data) return;
+  const panel = data.panel || {};
+  if (typeof panel.collapsed === 'boolean') setPanelCollapsed(panel.collapsed);
+  applySectionStates(ctrlRoot, panel.sections);
+  if (typeof panel.activeTab === 'string' && tabHosts.has(panel.activeTab)) setActiveTab(panel.activeTab);
+  if (Array.isArray(panel.pinned)) setPinnedTitles(panel.pinned);   // a pre-tabs slot keeps your pins
+  if (typeof panel.compact === 'boolean') {
+    ctrlRoot.classList.toggle('compact', panel.compact);
+    compactBtn.classList.toggle('primary', panel.compact);
+  }
+  botKeepOnRebuild = boolOr((data.rebuild || {}).keepBots, botKeepOnRebuild);
+  updateKeepBotsButton();
+
+  const cam = data.camera || {};
+  cameraAutoFollowEnabled = boolOr(cam.autoFollow, cameraAutoFollowEnabled);
+  cameraAutoRotateEnabled = boolOr(cam.autoRotate, cameraAutoRotateEnabled);
+  if (typeof cam.occlusion === 'boolean') {
+    cameraFollowOcclusionEnabled = cam.occlusion;
+    if (!cam.occlusion) { cameraFollowObstructed = false; cameraFollowOcclusionHoldUntil = 0; }
+  }
+  cameraRig.pov.recenterEnabled = boolOr(cam.povRecenter, cameraRig.pov.recenterEnabled);
+  cameraRig.pov.recenterDelayMs = clampOr(cam.povRecenterDelayMs, cameraRig.pov.recenterDelayMs, 0, 10000);
+  cameraRig.pov.comfort = CAMERA_POV_COMFORT_PRESETS[cam.povComfort] ? cam.povComfort : cameraRig.pov.comfort;
+  cameraRig.pov.positionReady = false;
+  cameraRig.pov.rotationReady = false;
+  cameraPovDelayInput.value = String(cameraRig.pov.recenterDelayMs / 1000);
+  cameraPovComfortSelect.value = cameraRig.pov.comfort;
+  cameraFramingPreset = cam.framingPreset === 'custom' || CAMERA_FRAMING_PRESETS[cam.framingPreset]
+    ? cam.framingPreset
+    : cameraFramingPreset;
+  camera.fov = clampOr(cam.fov, camera.fov, 30, 90);
+  camera.updateProjectionMatrix();
+  shuffleLookEnabled = boolOr(cam.shuffleLook, shuffleLookEnabled);
+  autoSceneShuffleIntervalMs = numOr(cam.shuffleIntervalMs, autoSceneShuffleIntervalMs);
+  sceneShuffleEveryInput.value = String(Math.round(autoSceneShuffleIntervalMs / 1000));
+  autoSceneShuffleEnabled = boolOr(cam.shuffleEnabled, autoSceneShuffleEnabled);
+  autoSceneShuffleNextAt = performance.now() + autoSceneShuffleIntervalMs;
+  flyCam.speed = clampOr(cam.flySpeed, flyCam.speed, 1, 120);
+  flyCam.walk = boolOr(cam.flyWalk, flyCam.walk);
+  // Follow/POV with nothing alive to follow would strand the camera -- fall back to orbit.
+  if (cam.mode === CAMERA_FOLLOW || cam.mode === CAMERA_POV) setCameraMode(getCameraFollowActor() ? cam.mode : CAMERA_ORBIT);
+  else if (cam.mode === CAMERA_FLY) setCameraMode(CAMERA_FLY);
+  else if (cam.mode === CAMERA_ORBIT) setCameraMode(CAMERA_ORBIT);
+  // After setCameraMode, not before: resetFollowFraming re-derives the distance from the live
+  // camera offset and would overwrite a restored value. The dynamic/collision pair has to move
+  // with it, or the next occlusion pull springs back to the old framing.
+  cameraFollowUserDistance = clampOr(cam.followDistance, cameraFollowUserDistance, CAMERA_FOLLOW_MIN_DISTANCE, cameraFollowMaxDistance());
+  cameraFollowDynamicDistance = cameraFollowUserDistance;
+  cameraFollowCollisionDistance = cameraFollowUserDistance;
+  if (Array.isArray(cam.followFocusOffset) && cam.followFocusOffset.length >= 3) {
+    cameraFollowUserFocusOffset.fromArray(cam.followFocusOffset);
+  }
+  if (Array.isArray(cam.followDirection) && cam.followDirection.length >= 3) {
+    cameraFollowUserDirection.fromArray(cam.followDirection);
+    if (cameraFollowUserDirection.lengthSq() > 1e-6) cameraFollowUserDirection.normalize();
+    else cameraFollowUserDirection.set(0.56, 0.42, 0.71).normalize();
+    cameraFollowResolvedDirection.copy(cameraFollowUserDirection);
+    cameraFollowDesiredDirection.copy(cameraFollowUserDirection);
+  }
+  cameraPresetSelect.value = cameraFramingPreset;
+  controls.autoRotate = cameraAutoRotateEnabled && cameraMode === CAMERA_ORBIT;
+
+  const dbg = data.debug || {};
+  botStateOrbsEnabled = boolOr(dbg.stateOrbs, botStateOrbsEnabled);
+  botTacticalVisualsEnabled = boolOr(dbg.tacticalVisuals, botTacticalVisualsEnabled);
+  botFovWedgeEnabled = boolOr(dbg.fovWedge, botFovWedgeEnabled);
+  botRecoveryDebugEnabled = boolOr(dbg.recovery, botRecoveryDebugEnabled);
+  botBehaviorDebugEnabled = boolOr(dbg.behavior, botBehaviorDebugEnabled);
+  squadDebugEnabled = boolOr(dbg.squadOverlay, squadDebugEnabled);
+  botScoreVisible = boolOr(dbg.scoreboard, botScoreVisible);
+  povDebugScreenEnabled = boolOr(dbg.povScreen, povDebugScreenEnabled);
+  povDebugWorldEnabled = boolOr(dbg.povWorld, povDebugWorldEnabled);
+  botHitVolumeDebugEnabled = boolOr(dbg.hitVolume, botHitVolumeDebugEnabled);
+  updateHitVolumeButton();
+  grenadeDebugEnabled = boolOr(dbg.grenadeDebug, grenadeDebugEnabled);
+  updateGrenadeDebugButton();
+  if (BOT_STATE_TICK_OPTIONS.includes(dbg.traceTickMs)) botStateTraceTickMs = dbg.traceTickMs;
+  // Clamped to the slider's own range, so a hand-edited slot can't park the diamonds at 0 or 40x.
+  povMarkScale = Math.max(0.3, Math.min(3, numOr(dbg.povMarkScale, povMarkScale)));
+  if (povMarkScaleInput) {
+    povMarkScaleInput.value = String(povMarkScale);
+    povMarkScaleInput.dispatchEvent(new Event('input'));
+  }
+  updatePovDebugButtons();
+  botScoreDirty = true;
+  if (typeof dbg.navOverlay === 'boolean') navPoints.visible = dbg.navOverlay;
+  assignKnown(botMovementDebugParts, dbg.movementParts);
+  if (typeof dbg.movement === 'boolean') {
+    botMovementDebugEnabled = dbg.movement;
+    if (!botMovementDebugEnabled) clearBotMovementDebug();
+  }
+  botMovementDebugLastUpdate = -Infinity;
+  for (const actor of botActors) {
+    const alive = actor.entity.alive !== false;
+    if (actor.stateOrb) actor.stateOrb.visible = botStateOrbsEnabled && alive;
+    if (actor.sightRange) actor.sightRange.visible = botTacticalVisualsEnabled && alive;
+    if (actor.healthBar) actor.healthBar.visible = botTacticalVisualsEnabled && alive;
+    if (actor.fovWedge) actor.fovWedge.visible = botFovWedgeEnabled && alive;
+  }
+
+  const perf = data.perf || {};
+  if (perf.thinkStagger === 'auto' || [1, 2, 3].includes(perf.thinkStagger)) botThinkStaggerMode = perf.thinkStagger;
+  botRigLodEnabled = boolOr(perf.rigLod, botRigLodEnabled);
+  BOT_FLUSH_LOD = boolOr(perf.flushLod, BOT_FLUSH_LOD);
+  BOT_CULL_BEHIND = boolOr(perf.cullBehind, BOT_CULL_BEHIND);
+  if (BOT_HIDE_STEPS.includes(perf.hideDistance)) {
+    BOT_HIDE_M = perf.hideDistance;
+    BOT_HIDE_D2 = BOT_HIDE_M > 0 ? BOT_HIDE_M * BOT_HIDE_M : Infinity;
+  }
+  // Same order the button uses: drop every body back to full detail before re-banding, or a bot
+  // left cheap by the old mode stays cheap (the per-bot swap only runs in mode 1).
+  if ([0, 1, 2].includes(perf.rboxLod)) {
+    BOT_RBOX_LOD = perf.rboxLod;
+    if (BOT_RBOX_LOD !== 2) for (const a of botActors) a.body?.setGearLod?.(0);
+    if (BOT_RBOX_LOD === 1 && RBOX_LOD_STEPS.includes(perf.rboxLodDistance)) {
+      BOT_RBOX_LOD_D = perf.rboxLodDistance;
+      refreshRboxLodBands();
+    }
+    rboxLodStep = BOT_RBOX_LOD === 2 ? RBOX_LOD_STEPS.length - 1
+      : BOT_RBOX_LOD === 1 ? Math.max(1, RBOX_LOD_STEPS.indexOf(BOT_RBOX_LOD_D)) : 0;
+  }
+  updateThinkStaggerButton(); updateRigLodButton(); updateFlushLodButton();
+  updateBotCullButton(); updateBotHideButton(); updateRboxLodButton(); updateRecordButton();
+
+  visuals.applyLookState(data.visuals);
+  syncReactiveLightsUi();   // the reactive-lights controls live in the Audio section, not buildPanel
+
+  // Audio is the one group that can throw on restore -- musicSource 'folder' with no folder
+  // permission, say. Contained so a half-applied mixer can't skip the widget resync below and
+  // leave the panel disagreeing with the sim. Note envAudio also persists the mixer to its own
+  // localStorage, so a ui slot overwrites those *global* prefs, not just this harness's view.
+  const audio = data.audio || {};
+  try {
+    envAudio.noteGesture();
+    for (const [kind, value] of [['master', audio.masterVolume], ['music', audio.musicVolume], ['sfx', audio.sfxVolume]]) {
+      if (Number.isFinite(value)) envAudio.setVolume(kind, value);
+    }
+    if (typeof audio.masterMuted === 'boolean') envAudio.setMuted('master', audio.masterMuted);
+    if (audio.musicSource) envAudio.setMusicSource(audio.musicSource);
+    if (audio.musicOutput) envAudio.setMusicOutput(audio.musicOutput);
+    if (audio.speakerBehavior) envAudio.setMusicSpeakerBehavior(audio.speakerBehavior);
+    if (typeof audio.shuffle === 'boolean') envAudio.setShuffle(audio.shuffle);
+    for (const [key, value] of Object.entries(audio.effects || {})) if (Number.isFinite(value)) envAudio.setMusicEffect(key, value);
+  } catch (err) {
+    showError(`audio slot partly applied: ${err.message}`);
+  }
+  botAudioEnabled = boolOr(audio.botSfx, botAudioEnabled);
+  botChatterEnabled = boolOr(audio.chatter, botChatterEnabled);
+  botChatterRadio = boolOr(audio.chatterRadio, botChatterRadio);
+  botChatterVocode = boolOr(audio.chatterVocode, botChatterVocode);
+  botDeathBeacon = boolOr(audio.deathBeacon, botDeathBeacon);
+  if (Number.isFinite(audio.chatterVolume)) botChatterVolume = audio.chatterVolume;
+  if (Number.isFinite(audio.chattiness)) botVoiceDirector.setChattiness(audio.chattiness);
+  if (audio.chatterSource !== undefined) {
+    botChatterSource = audio.chatterSource || null;
+    botVoiceBank.setEngine(botChatterSource);
+  }
+  if (Number.isFinite(audio.reflexRange)) setReflexRange(audio.reflexRange);
+  if (Number.isFinite(audio.reflexVolume)) botReflexVolume = audio.reflexVolume;
+
+  updateCameraButtons(); updateStateOrbButton(); updateTacticalVisualsButton(); updateFovWedgeButton(); updateScoreboardButton();
+  updateMovementDebugButtons(); updateBotRecoveryDebugButton(); updateBotBehaviorDebugButton();
+  syncAudioPanel();
+}
+
+// Everything at once. The three groups below still exist for partial work, but saving one of them
+// and assuming the panel was saved is the easy mistake, so this is the row that comes first.
+function captureAllState() {
+  return { version: 1, maze: captureMazeState(), bots: captureBotState(), ui: captureUiState() };
+}
+
+// Maze first: it rebuilds the layout, which clears the roster. Bots second, so tuning lands on
+// whatever the rebuild left. UI last, since it never touches the sim and so cannot be undone by
+// either of the others.
+function applyAllState(data) {
+  if (!data) return;
+  applyMazeState(data.maze);
+  applyBotState(data.bots);
+  applyUiState(data.ui);
+}
+
+// Mirror every save to disk under bot-viewer-saves/. Fire-and-forget: the slot is already written
+// to localStorage by the time this runs, so a missing endpoint (file://, plain static server) must
+// not read as a failed save. Off-server there is simply no disk copy.
+function exportSlotToDisk(group, index, entry) {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const filename = `bv2-${group}-slot${index}-${stamp.slice(0, 8)}-${stamp.slice(8)}.json`;
+  const body = JSON.stringify({ group, slot: Number(index), ...entry }, null, 2);
+  fetch(`/api/save-slot-export?filename=${encodeURIComponent(filename)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    .catch(() => {});
+}
+
+const allSlots = createSlotSection({
+  group: 'all', label: 'everything', capture: captureAllState, apply: applyAllState,
+  onSaved: exportSlotToDisk,
+});
+const mazeSlots = createSlotSection({ group: 'maze', label: 'maze', capture: captureMazeState, apply: applyMazeState, onSaved: exportSlotToDisk });
+const botSlots = createSlotSection({ group: 'bots', label: 'bots', capture: captureBotState, apply: applyBotState, onSaved: exportSlotToDisk });
+const uiSlots = createSlotSection({ group: 'ui', label: 'ui', capture: captureUiState, apply: applyUiState, onSaved: exportSlotToDisk });
+
+// The maze slots save generator *parameters*; this saves the world those parameters produced, in
+// the app-neutral pcw-layout schema the shoot-house loader reads back (layout-interchange.js).
+function captureInterchangeLayout() {
+  return createLayout({
+    name: activeLayoutKind,
+    walls: activeWalls, covers: activeCovers, bounds: activeBounds, wallHeight: WALL_H,
+    botSpawn: botSpawnPoint, dummySpawn: dummySpawnPoint, patrolPoints,
+  });
+}
+const exportLayoutRow = document.createElement('div');
+exportLayoutRow.style.cssText = 'display:flex;gap:4px;margin:0 0 6px';
+const exportLayoutBtn = document.createElement('button');
+exportLayoutBtn.textContent = 'Export layout JSON';
+exportLayoutBtn.title = 'Save the live walls/cover/bounds/spawns as a pcw-layout file into "maze layouts/" (falls back to a download off-server)';
+exportLayoutBtn.style.cssText = 'margin:0;flex:1';
+exportLayoutBtn.addEventListener('click', async () => {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const filename = `layout-${activeLayoutKind}-${stamp}.json`;
+  const text = JSON.stringify(captureInterchangeLayout(), null, 2);
+  try {
+    const r = await fetch(`/api/save-maze-layout?filename=${encodeURIComponent(filename)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+    const result = await r.json();
+    if (result?.ok) {
+      exportLayoutBtn.textContent = `Saved ${result.path}`;
+      setTimeout(() => { exportLayoutBtn.textContent = 'Export layout JSON'; }, 2500);
+      return;
+    }
+  } catch { /* no endpoint (file:// or plain static server): the download below still works */ }
+  downloadTraceFile(filename, text, 'application/json');
+});
+exportLayoutRow.append(exportLayoutBtn);
+
+// Nothing used to survive a page reload: the slots only ever restored on a Load click, so a refresh
+// dropped every setting back to defaults. This keeps a rolling snapshot of the whole panel and
+// offers it back, rather than restoring it silently -- an automatic restore would fight anyone who
+// reloads deliberately to get a clean slate.
+const AUTOSAVE_KEY = 'pcw:bv2:autosave';
+function writeAutosave() {
+  try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt: new Date().toISOString(), data: captureAllState() })); }
+  catch { /* quota or a capture mid-rebuild: the next tick tries again */ }
+}
+function readAutosave() {
+  try { return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { return null; }
+}
+const restoreRow = document.createElement('div');
+restoreRow.style.cssText = 'display:flex;gap:4px;margin:0 0 6px';
+const restoreBtn = document.createElement('button');
+restoreBtn.style.cssText = 'margin:0;flex:1';
+const restoreStatus = document.createElement('div');
+restoreStatus.style.cssText = 'color:var(--wui-muted);font-size:11px;margin:-3px 0 8px;min-height:14px';
+function updateRestoreButton() {
+  const saved = readAutosave();
+  restoreBtn.disabled = !saved?.data;
+  restoreBtn.textContent = 'Restore last session';
+  restoreBtn.title = saved?.savedAt
+    ? `Put back every panel setting as it stood at ${String(saved.savedAt).slice(11, 16)}, from the snapshot taken automatically while you worked. Rebuilds the map, which clears the roster.`
+    : 'Nothing has been snapshotted yet. The panel is saved automatically a few seconds after you change anything.';
+}
+restoreBtn.addEventListener('click', () => {
+  const saved = readAutosave();
+  if (!saved?.data) { restoreStatus.textContent = 'no snapshot yet'; return; }
+  try { applyAllState(saved.data); restoreStatus.textContent = `restored from ${String(saved.savedAt).slice(11, 16)}`; }
+  catch (err) { restoreStatus.textContent = `restore failed: ${err.message}`; }
+});
+restoreRow.append(restoreBtn);
+updateRestoreButton();
+// Debounced, so dragging a slider writes one snapshot at the end rather than one per frame.
+let autosaveTimer = 0;
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => { writeAutosave(); updateRestoreButton(); }, 3000);
+}
+ctrlRoot.addEventListener('input', scheduleAutosave);
+ctrlRoot.addEventListener('click', scheduleAutosave);
+addEventListener('pagehide', writeAutosave);
+
+// Built last -- every capture/apply target must already exist -- but its card was planned first,
+// at the top of the Session tab.
+const slotsBody = sectionBodies.get('Save / load');
+slotsBody.append(restoreRow, restoreStatus,
+  ...allSlots.nodes, ...mazeSlots.nodes, ...botSlots.nodes, ...uiSlots.nodes, exportLayoutRow);
+
+applyLayout(buildRoomsLayout()); // initial map -- everything above must be defined before this runs
+
+let lastT = performance.now();
+const fpsEl = document.getElementById('fps');
+let fpsFrameCount = 0, fpsWindowStart = performance.now(), fpsShown = -1;
+// Per-phase CPU timings, read via window.__botProf.snapshot({}, {smooth:true}) or ?prof=1 HUD text.
+const frameProf = createFrameProfiler({ smoothing: 0.1 });
+window.__botProf = frameProf;
+// GPU pass durations, polled after each frame's submits. resolveTimestampsAsync resolves a frame or
+// two late, so a row's gpu value trails its cpu value slightly -- fine for aggregates, not for
+// matching a single spike frame to a single GPU stall.
+let gpuRenderMs = 0, gpuComputeMs = 0;
+function pollGpuTimestamps() {
+  if (!PROF_HUD || typeof renderer.resolveTimestampsAsync !== 'function') return;
+  // try/catch as well as .catch(): a device without timestamp-query support can throw synchronously,
+  // which a rejection handler alone would not contain, and this runs inside the frame loop.
+  try {
+    renderer.resolveTimestampsAsync(THREE.TimestampQuery?.RENDER || 'render')
+      .then(ms => { if (Number.isFinite(ms)) gpuRenderMs = ms; }).catch(() => {});
+    renderer.resolveTimestampsAsync(THREE.TimestampQuery?.COMPUTE || 'compute')
+      .then(ms => { if (Number.isFinite(ms)) gpuComputeMs = ms; }).catch(() => {});
+  } catch { /* unsupported: the gpu column stays 0 and the gap column still tells the story */ }
+}
+
+// ===================== perf log recorder (Y) =====================
+// Y starts a take, Y again stops it and puts a TSV on the clipboard. One row per frame and
+// unsmoothed, unlike the HUD text: an 80 ms spike is a single frame, and the HUD both averages it
+// away and only repaints at 2 Hz, so reading spikes off the HUD meant screen-recording plus OCR.
+// Works with or without ?prof=1 -- the phase counters always accumulate, ?prof=1 only draws them.
+// draws/tris are appended rather than slotted next to rnd on purpose: the summary indexes rows by
+// position, so inserting mid-row would silently re-point every line() call.
+const PERF_LOG_COLS = ['t', 'dt', 'cpu', 'gap', 'gpu', 'fps', 'sim', 'pre', 'sen', 'senA', 'sel',
+  'senB', 'senC', 'senD', 'dTail', 'bot', 'post', 'body', 'wpn', 'fx3d', 'vis', 'fx', 'aud', 'pnl',
+  'uiA', 'uiB', 'uiC', 'ui', 'rnd', 'bots', 'dStates', 'draws', 'tris'];
+const PERF_LOG_MAP = { sim: 'sim', bodyFlush: 'body', weaponFlush: 'wpn', botFx: 'fx3d', visuals: 'vis',
+  fx: 'fx', audio: 'aud', panelFx: 'pnl', uiA: 'uiA', uiB: 'uiB', uiC: 'uiC', ui: 'ui', render: 'rnd' };
+const PERF_LOG_MAX = 36000;   // ~10 min at 60 fps, so a take left running can't grow without bound
+const perfLog = { on: false, rows: [], t0: 0, dropped: 0, shownSec: -1, prevCpu: 0 };
+const perfRecEl = document.getElementById('perfrec');
+const perfRecTxt = document.getElementById('perfrec-txt');
+// Off-screen rather than display:none: a hidden textarea can't be selected, and the selection is
+// what keeps Ctrl/Cmd+C working when clipboard permission is denied.
+const perfLogStage = document.createElement('textarea');
+perfLogStage.readOnly = true;
+perfLogStage.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+document.body.appendChild(perfLogStage);
+
+// Its own AudioContext, not envAudio: the cue has to fire while the game mixer is muted or its SFX
+// budget is saturated, and a UI confirmation should not be competing for a combat voice slot.
+let perfCueCtx = null;
+function perfCue(starting) {
+  try {
+    perfCueCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (perfCueCtx.state === 'suspended') perfCueCtx.resume();
+    const t = perfCueCtx.currentTime;
+    const osc = perfCueCtx.createOscillator(), gain = perfCueCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(starting ? 620 : 900, t);
+    osc.frequency.exponentialRampToValueAtTime(starting ? 990 : 480, t + 0.13);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.22, t + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
+    osc.connect(gain).connect(perfCueCtx.destination);
+    osc.start(t); osc.stop(t + 0.21);
+  } catch { /* no audio device or blocked autoplay: the badge is still the confirmation */ }
+}
+
+function perfLogSample(now, frameMs, cpuMs) {
+  if (perfLog.rows.length >= PERF_LOG_MAX) { perfLog.dropped++; return; }
+  const s = frameProf.snapshot(PERF_LOG_MAP, {});   // unsmoothed: this frame, not a trailing average
+  let alive = 0;
+  for (const a of botActors) if (a.entity?.alive !== false) alive++;
+  let states = '';
+  for (const [k, v] of senDByState) states += (states ? '|' : '') + k + ':' + v.toFixed(2);
+  const f = v => v.toFixed(2);
+  // gap pairs dt with the PREVIOUS frame's cpu, not this one's: dt is the interval that ended when
+  // this frame started, so the work inside it belongs to the frame before. Pairing them the obvious
+  // way put a spike's cost in one row and its consequence in the next. Negatives are left signed
+  // rather than clamped -- the loop is async, so the browser can start a frame before the previous
+  // frame's awaited tail has finished, and clamping would quietly inflate the gap total.
+  perfLog.rows.push([
+    Math.round(now - perfLog.t0), f(frameMs), f(cpuMs), f(frameMs - perfLog.prevCpu),
+    f(gpuRenderMs + gpuComputeMs), (frameMs > 0 ? 1000 / frameMs : 0).toFixed(1),
+    f(s.sim), f(simPreMs), f(simSentryMs), f(senAMs), f(simSelMs), f(senBMs), f(senCMs),
+    f(senDMs), f(senDTailMs), f(simBotMs), f(simPostMs),
+    f(s.body), f(s.wpn), f(s.fx3d), f(s.vis), f(s.fx), f(s.aud), f(s.pnl),
+    f(s.uiA), f(s.uiB), f(s.uiC), f(s.ui), f(s.rnd), alive, states,
+    // Renderer counters reset at the top of the animation loop, before this callback, so reading
+    // them here (after the render await) gives this frame's totals and includes the post chain.
+    renderer.info.render.drawCalls, renderer.info.render.triangles,
+  ]);   // kept as an array, not joined: the summary needs the columns back as numbers
+  perfLog.prevCpu = cpuMs;
+  const secs = Math.floor((now - perfLog.t0) / 1000);
+  if (secs !== perfLog.shownSec) {
+    perfLog.shownSec = secs;
+    setText(perfRecTxt, `REC ${secs}s · ${perfLog.rows.length}f`);
+  }
+}
+
+// Aggregates the take so a diagnosis doesn't need the whole table pasted anywhere. Shift+Y copies
+// only this part.
+function perfLogSummary() {
+  const rows = perfLog.rows;
+  if (!rows.length) return '# no frames captured';
+  const at = i => rows.map(r => +r[i]);
+  const sum = a => a.reduce((x, y) => x + y, 0);
+  const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+  const total = sum(at(1)) || 1;
+  const line = (name, i) => {
+    const a = at(i);
+    return `# ${name.padEnd(5)} med ${q(a, .5).toFixed(1).padStart(6)}  p90 ${q(a, .9).toFixed(1).padStart(6)}`
+      + `  max ${Math.max(...a).toFixed(1).padStart(6)}  share ${(100 * sum(a) / total).toFixed(1).padStart(5)}%`;
+  };
+  const states = new Map();
+  for (const r of rows) for (const pair of String(r[30]).split('|')) {
+    const c = pair.lastIndexOf(':');
+    if (c < 0) continue;
+    const v = +pair.slice(c + 1);
+    if (Number.isFinite(v)) states.set(pair.slice(0, c), (states.get(pair.slice(0, c)) || 0) + v);
+  }
+  const byState = [...states.entries()].sort((a, b) => b[1] - a[1]).filter(([, v]) => v >= 0.05)
+    .map(([k, v]) => `${k} ${v.toFixed(1)}ms (${(100 * v / total).toFixed(1)}%)`).join(', ') || 'none';
+  // The goal is not mean fps but "does it sit below 30". On a 60Hz ladder that means dt over
+  // 33.3ms, and the longest RUN matters more than the count: scattered singles are invisible,
+  // a held stretch is what actually reads as a stall.
+  function stallLine() {
+    const a = at(1);
+    let over = 0, run = 0, runMs = 0, worst = 0, worstMs = 0;
+    for (const v of a) {
+      if (v > 33.34) {
+        over++; run++; runMs += v;
+        if (run > worst) { worst = run; worstMs = runMs; }
+      } else { run = 0; runMs = 0; }
+    }
+    return `# sub30 ${over}/${a.length} frames over 33.3ms (${(100 * over / a.length).toFixed(1)}%)`
+      + `  longest run ${worst} frames (${worstMs.toFixed(0)}ms)`;
+  }
+  // Counts, not milliseconds: median/p90/max only, since a "share of frame" would be meaningless.
+  const count = (name, i) => {
+    const a = at(i);
+    return `# ${name.padEnd(5)} med ${q(a, .5).toFixed(0).padStart(6)}  p90 ${q(a, .9).toFixed(0).padStart(6)}`
+      + `  max ${Math.max(...a).toFixed(0).padStart(6)}  min ${Math.min(...a).toFixed(0).padStart(6)}`;
+  };
+  const worst = [...rows].sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(r => `t${r[0]} dt${r[1]} cpu${r[2]} gap${r[3]} gpu${r[4]} sim${r[6]} senD${r[13]} rnd${r[28]} draws${r[31]}`);
+  return [
+    `# SUMMARY ${rows.length} frames · ${(total / 1000).toFixed(1)}s · mean ${(1000 * rows.length / total).toFixed(1)} fps · ${rows[rows.length - 1][29]} bots`,
+    `#       median     p90     max   share of frame`,
+    line('dt', 1), line('cpu', 2), line('gap', 3), line('gpu', 4), line('sim', 6), line('sen', 8),
+    line('senC', 12), line('senD', 13), line('body', 17), line('ui', 27), line('rnd', 28),
+    `#       median     p90     max     min   (counts, not ms)`,
+    count('draws', 31), count('tris', 32),
+    stallLine(),
+    `# senD by state: ${byState}`,
+    `# worst 5 frames by dt:`, ...worst.map(w => `#   ${w}`),
+  ].join('\n');
+}
+
+function perfLogHeader() {
+  const dur = (performance.now() - perfLog.t0) / 1000;
+  return `# bot-viewer-v2 perf log · ${new Date().toISOString()} · ${perfLog.rows.length} frames · ${dur.toFixed(1)}s`
+    + (perfLog.dropped ? ` · ${perfLog.dropped} frames dropped at the ${PERF_LOG_MAX}-row cap` : '')
+    + `\n# devicePixelRatio ${DEVICE_PIXEL_RATIO} (render buffer ${renderer.getPixelRatio()}x) · msaa`
+    + ` ${MSAA_ON ? 'on' : 'off'} · shadowfilter ${RENDER_QS.get('shadowfilter') || 'pcfsoft'} · rboxlod`
+    + ` ${BOT_RBOX_LOD === 2 ? 'global' : BOT_RBOX_LOD === 1 ? `${BOT_RBOX_LOD_D}m` : 'off'} (at export) --`
+    + ` fill cost scales with the square of the pixel ratio, so takes are only comparable at equal values.`
+    + `\n# ms, unsmoothed, one row per frame. dt is the interval since the previous frame; cpu is this`
+    + ` frame's timed JS; gap is dt minus the PREVIOUS frame's cpu (dt is the interval that ended when`
+    + ` this frame started, so the work in it belongs to the frame before), and may go negative because`
+    + ` the loop is async. gpu is real GPU execute time, needs ?prof=1, trails by a frame or two, and`
+    + ` OVERLAPS cpu rather than adding to it -- the GPU runs the previous frame's commands while this`
+    + ` frame records. sel is inside senA; dTail and dStates (state:ms) are inside senD.`
+    + `\n# draws and tris are renderer.info counts for this frame (the whole chain, post passes`
+    + ` included), not ms. They need no ?prof=1. draws is what rnd is encoding, so the two should`
+    + ` move together -- a change that cuts rnd without cutting draws was not a draw-count win.`;
+}
+
+function perfLogText(summaryOnly) {
+  const head = `${perfLogHeader()}\n${perfLogSummary()}`;
+  return summaryOnly ? head : `${head}\n${PERF_LOG_COLS.join('\t')}\n${perfLog.rows.map(r => r.join('\t')).join('\n')}`;
+}
+
+async function perfLogCopy(text) {
+  perfLogStage.value = text;
+  perfLogStage.focus();
+  perfLogStage.select();
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); copied = true; }
+    else copied = document.execCommand('copy');
+  } catch { /* denied: fall through and leave the selection for Ctrl/Cmd+C */ }
+  // Release focus on success. The keydown handler ignores keys while a TEXTAREA has focus, so
+  // leaving it focused would make the next Y (and every other hotkey) silently do nothing.
+  if (copied) perfLogStage.blur();
+  return copied;
+}
+
+async function togglePerfLog(summaryOnly = false) {
+  if (!perfLog.on) {
+    perfLog.rows.length = 0;
+    perfLog.dropped = 0;
+    perfLog.shownSec = -1;
+    perfLog.prevCpu = 0;
+    perfLog.t0 = performance.now();
+    perfLog.on = true;
+    perfRecEl.classList.remove('done');
+    perfRecEl.style.display = 'flex';
+    setText(perfRecTxt, 'REC 0s · 0f');
+    perfCue(true);
+    return;
+  }
+  perfLog.on = false;
+  perfCue(false);
+  const copied = perfLog.rows.length ? await perfLogCopy(perfLogText(summaryOnly)) : false;
+  perfRecEl.classList.add('done');
+  setText(perfRecTxt, perfLog.rows.length
+    ? `${perfLog.rows.length} frames ${summaryOnly ? 'summary ' : ''}${copied ? 'copied' : 'ready · Ctrl+C'}`
+    : 'no frames captured');
+  setTimeout(() => { if (!perfLog.on) perfRecEl.style.display = 'none'; }, 3500);
+}
+
+renderer.setAnimationLoop(async () => {
+  frameProf.beginFrame();   // must precede every frameProf.time() so skipped phases read 0, not stale
+  const now = performance.now();
+  const frameMs = now - lastT;   // unclamped: dt below caps at 50 ms, which would hide the stalls
+  const dt = Math.min(0.05, frameMs / 1000);
+  lastT = now;
+  // Rolling window avoids the jitter of instantaneous 1/dt.
+  fpsFrameCount++;
+  const fpsElapsed = now - fpsWindowStart;
+  if (fpsElapsed >= 500) {
+    const fpsValue = Math.round(fpsFrameCount * 1000 / fpsElapsed);
+    if (PROF_HUD) {
+      const s = frameProf.snapshot({ sim: 'sim', bodyFlush: 'body', weaponFlush: 'wpn', botFx: 'fx3d', visuals: 'vis', fx: 'fx', audio: 'aud', panelFx: 'pnl', uiA: 'uiA', uiB: 'uiB', uiC: 'uiC', ui: 'ui', render: 'rnd' }, { smooth: true });
+      fpsShown = -1; // always refresh while profiling
+      const dTop = [...senDByState.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([k, v]) => `${k}${v.toFixed(1)}`).join(' ');
+      fpsEl.textContent = `${fpsValue} fps · sim ${s.sim.toFixed(1)} (pre${simPreMs.toFixed(1)} sen${simSentryMs.toFixed(1)}[A${senAMs.toFixed(1)}/sel${simSelMs.toFixed(1)} B${senBMs.toFixed(1)} C${senCMs.toFixed(1)} D${senDMs.toFixed(1)}{tail${senDTailMs.toFixed(1)} ${dTop}}] bot${simBotMs.toFixed(1)} post${simPostMs.toFixed(1)}) body ${s.body.toFixed(1)} wpn ${s.wpn.toFixed(1)} fx3d ${s.fx3d.toFixed(1)} vis ${s.vis.toFixed(1)} fx ${s.fx.toFixed(1)} aud ${s.aud.toFixed(1)} pnl ${s.pnl.toFixed(1)} ui ${s.ui.toFixed(1)} (A${s.uiA.toFixed(1)} B${s.uiB.toFixed(1)} C${s.uiC.toFixed(1)}) rnd ${s.rnd.toFixed(1)}`;
+    } else if (fpsValue !== fpsShown) { fpsShown = fpsValue; fpsEl.textContent = fpsValue + ' fps'; }
+    fpsFrameCount = 0;
+    fpsWindowStart = now;
+  }
+  // One clock read per frame for the whole forensic ring, before anything steps physics: every
+  // sample this frame shares it, instead of each bot paying its own performance.now().
+  botForensics?.setNow(now);
+  updateDummy(dt, now);
+  updateBotAutoAdd(now);
+  // Immediate-mode instancing: zero the shared pool, every living bot's body re-adds its
+  // parts via flush() below (even on a frame where its update() ran through a strided/no-op
+  // path elsewhere), then upload once. A body that is not flushed after beginFrame simply
+  // disappears this frame, so the flush loop must cover every actor with a body -- focused
+  // or not (updateAllBots already drives update() for every living actor via withBotActor,
+  // not just the focused one) -- regardless of weapon-mount load state (the body exists
+  // synchronously before the async weapon mount attaches).
+  if (botBodyBatches) botBodyBatches.beginFrame();
+  frameProf.time('sim', () => updateAllBots(dt, now));
+  // Settled corpses skip the rig matrix walk: their pose (and matrixWorlds) froze at sleep (M10).
+  frameProf.time('bodyFlush', () => {
+    botCullBegin();
+    for (const actor of botActors) {
+      actor.flushSkipped = botFlushSkipped(actor);   // reused by the weapon pool below
+      if (actor.flushSkipped) continue;
+      const asleep = actor.entity.alive === false && botRagdollAsleep(actor, now);
+      const strided = BOT_FLUSH_LOD && actor.rigDue === false;
+      actor.body?.flush(botBodyBatches, !asleep && !strided);
+    }
+    if (botBodyBatches) botBodyBatches.endFrame();
+  });
+  // Weapon pool mirrors the body pool: dead-but-undestroyed mounts keep flushing their last
+  // pose (a fallen bot's gun stays where it froze), destroyed/holstered mounts simply skip.
+  frameProf.time('weaponFlush', () => {
+    if (botWeaponBatches) {
+      botWeaponBatches.beginFrame();
+      for (const actor of botActors) {
+        if (actor.flushSkipped) continue;   // a gun with no bot behind it would float
+        flushWeaponMount(actor.weaponMount); flushStowedWeapons(actor);
+      }
+      botWeaponBatches.endFrame();
+    }
+  });
+  // Bot FX pass: ground contact pools + flashlight cones, one instanced draw each for the whole
+  // roster. Corpses are skipped — a ragdoll keeps its emissive body but stops casting light.
+  frameProf.time('botFx', () => {
+    visuals.beginBotFx();
+    const fxFocusActor = botDebugFocusActor || activeBotActor;
+    for (const actor of botActors) {
+      const e = actor.entity;
+      if (!e || e.alive === false || !e.capsule) continue;
+      const feet = e.capsule.start;
+      const height = Math.max(0.3, e.capsule.end.y - feet.y);
+      const tint = BOT_TEAM_DEFS[e.team]?.capsule ?? 0x8ea2b8;
+      visuals.addBotFx(feet.x, feet.y, feet.z, height, e.yaw || 0, e.pitch || 0, tint, actor === fxFocusActor);
+    }
+    visuals.endBotFx();
+  });
+  controls.update();    // user input first; Follow/POV writes the final camera pose afterward
+  updateCameraRig(dt);
+  frameProf.time('visuals', () => visuals.update(dt));   // sky dome follows the final camera, accent lights breathe, flash lights age out
+  updateAutoSceneShuffle(now);
+  frameProf.time('fx', () => {
+    updateDummyCombatVisual(now);
+    updateDummyHitImpacts(now);
+    updateTracers(now);
+    updateBullets(dt);
+    updateProjectiles(dt);
+    updateEffects(now);
+  });
+  frameProf.time('audio', () => { envAudio.update(now); botDamageAudio.update(now); });   // listener follows the active camera (orbit or bot POV) + music orb
+  // Transport readout is polled, not notified: 4 Hz is enough for a seek bar and a mm:ss clock.
+  if (now - lastNowPlayingPoll >= 250) { lastNowPlayingPoll = now; updateNowPlaying(); }
+  // Own timer, not folded into 'ui': this is the one panel widget that runs at frame rate, and it
+  // repaints a canvas plus (via --lit) two blurred box-shadows and a gradient on the player card.
+  frameProf.time('panelFx', drawSpectrum);
+  frameProf.time('ui', () => {
+  // Split three ways so the HUD names the offender instead of blaming "ui": uiA is the dirty-gated
+  // log/score flushes, uiB the 3D debug overlays, uiC the panel text readouts.
+  frameProf.time('uiA', () => {
+  flushShotUi();
+  checkRoundOutcome(now);
+  flushBotScore(now);
+  flushBotStateRecord();
+  });
+  frameProf.time('uiB', () => {
+  updateNavPathLine();
+  updateBotRecoveryDebug();
+  updateBotBehaviorDebug();
+  updateGrenadeDebug(now);
+  updateInvestigationDebug(now);
+  updateSquadDebug(now);
+  updatePovSpotMarker(now);
+  updateSelectionMark(now);
+  updatePovDebugHud(now);
+  });
+  frameProf.time('uiC', () => {
+  // Roster readout is polled like the transport clock: 4 Hz is plenty for a membership list.
+  if (now - lastSquadRosterPoll >= 250) { lastSquadRosterPoll = now; renderSquadRoster(); }
+  if (now - lastDecalUsagePoll >= 250) { lastDecalUsagePoll = now; updateDecalBudgetReadout(); }
+  if (bot) {
+    const p = toWirePose(bot).p;
+    setText(posEl, p.map(v => v.toFixed(2)).join(', '));
+    setText(floorEl, String(bot.onFloor));
+    // The 9-slot code only exists while the recorder is running; hovering reads it back in English.
+    const stateCode = activeBotActor?.stateCode;
+    setText(stateEl, `${botState} · ${activeBotActor?.stance ?? STANCE_STAND}${stateCode ? ` · ${stateCode}` : ''}`);
+    setTitle(stateEl, stateCode ? describeBotState(stateCode) : '');
+    const packs = activeBotActor?.healthPacks ?? [];
+    const packTag = ` · packs:${packs.length}${packs.length ? ` (${Math.round(packsTotalHp(packs))}hp)` : ''}`;
+    const kits = activeBotActor?.reviveKits ?? 0;
+    const roleTag = activeBotActor && activeBotActor.role !== DEFAULT_ROLE
+      ? ` · ${getRole(activeBotActor.role).label.toLowerCase()}${kits ? ` · kits:${kits}` : ''}` : '';
+    // Squad readout is the QA signal for rosters: which squad, this bot's rank, and whether it leads.
+    const squadRec = activeBotActor?.squadId ? squads.get(activeBotActor.squadId) : null;
+    const squadTag = squadRec
+      ? ` · ${squadRec.id}${squadRec.leaderId === activeBotActor.id ? ' (leader)' : `#${activeBotActor.squadRank}`}` +
+        `${squadRec.shocked ? ' leaderless' : ''} · ${squadRec.kind}`
+      : '';
+    setText(healthEl, `${Math.ceil(bot.health ?? DUMMY_MAX_HEALTH)} / ${DUMMY_MAX_HEALTH}${botHealRequested ? ' (retreat)' : ''}${packTag}${roleTag}${squadTag}`);
+    setText(visEl, botTarget ? String(botTargetVisible) : '-');
+    setText(aimEl, describeBotAim(now));
+  } else {
+    setText(posEl, '-'); setText(floorEl, '-'); setText(stateEl, '-'); setText(healthEl, '-'); setText(visEl, '-');
+    setText(aimEl, '-');
+  }
+  updateDummyControls();
+  updateBotPovButton();
+  }); // end 'uiC'
+  }); // end 'ui' phase
+  await frameProf.timeAsync('render', () => postFX.renderAsync());
+  pollGpuTimestamps();   // fire and forget: resolves after this frame, read by a later row
+  if (perfLog.on) perfLogSample(now, frameMs, performance.now() - now);   // after render, so rnd is this frame's
+});
+
+// --- Auto-profile (?autoprofile=1[&profbots=45]): spawns a fight, samples per-phase timings and a
+// JS self-profile through the round, then POSTs the aggregate to serve.py's /api/save-stats as
+// perf-autoprofile.csv (JSON body; -N suffix on collision). Needs the Document-Policy: js-profiling
+// header serve.py now sends for the stack trace half; phase timings work regardless.
+if (new URLSearchParams(location.search).get('autoprofile') === '1') {
+  const PER_TEAM = Math.min(60, parseInt(new URLSearchParams(location.search).get('profbots') || '45', 10) || 45);
+  setTimeout(async () => {
+    const byText = t => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === t);
+    if (new URLSearchParams(location.search).get('proflayout') === 'maze') {
+      // The Test-condition maze (fixed seed) minus its dummy swarm: reproducible walls for A/B runs.
+      mazeCols = 30; mazeRows = 30;
+      mazeLoopChance = 0.18; mazeStraightness = 0; mazeBraid = 0;
+      mazeRoomsOn = false; mazeCoverOn = false; mazeEntrances = 0; mazeStartGoal = 'corners';
+      mazeWallMode = 'maze'; mazeSeed = 1337; activeLayoutKind = 'maze';
+      syncMazeControls();
+      applyLayout(buildMazeLayout(), { keepBots: false });
+      await new Promise(r => setTimeout(r, 500));
+    }
+    for (let i = 0; i < PER_TEAM; i++) { byText('Add Alpha bots')?.click(); byText('Add Bravo bots')?.click(); }
+    let jsProf = null;
+    try { jsProf = new Profiler({ sampleInterval: 5, maxBufferSize: 400000 }); } catch (e) { console.warn('[autoprofile] no Profiler API:', e); }
+    const t0 = performance.now();
+    const phases = [];
+    let lastT = 0, frames = 0;
+    const scoreEl = document.getElementById('score');
+    await new Promise(resolve => {
+      const tick = () => {
+        const t = performance.now();
+        frames++;
+        if (lastT) phases.push({ dt: t - lastT, ...frameProf.snapshot({ sim: 'sim', bodyFlush: 'body', weaponFlush: 'wpn', botFx: 'fx3d', visuals: 'vis', fx: 'fx', audio: 'aud', panelFx: 'pnl', ui: 'ui', render: 'render' }, {}) });
+        lastT = t;
+        if (frames >= 3000 || t - t0 > 120000 || (frames > 300 && /wins/.test(scoreEl?.textContent || ''))) resolve();
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const trace = jsProf ? await jsProf.stop() : null;
+    const deciles = [];
+    for (let d = 0; d < 10; d++) {
+      const seg = phases.slice(Math.floor(d * phases.length / 10), Math.floor((d + 1) * phases.length / 10)).filter(s => s.dt < 500);
+      const avg = k => +(seg.reduce((x, s) => x + (s[k] || 0), 0) / Math.max(1, seg.length)).toFixed(2);
+      deciles.push({ n: seg.length, dt: avg('dt'), sim: avg('sim'), body: avg('body'), wpn: avg('wpn'), fx3d: avg('fx3d'), vis: avg('vis'), fx: avg('fx'), aud: avg('aud'), pnl: avg('pnl'), ui: avg('ui'), render: avg('render') });
+    }
+    let buckets = null, simLeaves = null, renderLeaves = null, stackSamples = 0;
+    if (trace) {
+      const fname = id => { const f = trace.frames[id]; return (f.name || '(anon)') + '|' + (f.resourceId != null ? (trace.resources[f.resourceId] || '').split('/').pop().split('?')[0] : ''); };
+      const names = sid => { const out = []; let s = sid; while (s != null) { out.push(fname(trace.stacks[s].frameId)); s = trace.stacks[s].parentId; } return out; };
+      const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
+      const b = new Map(), sl = new Map(), rl = new Map();
+      for (const smp of trace.samples) {
+        if (smp.stackId == null) continue;
+        stackSamples++;
+        const ns = names(smp.stackId);
+        const has = p => ns.some(n => n.includes(p));
+        if (has('updateAllBots|')) {
+          bump(sl, ns[0]);
+          if (has('bot-alert.js')) bump(b, 'sim:alert');
+          else if (has('findFleeGoal|') || has('updateFleeMovement|') || has('floodFill|')) bump(b, 'sim:flee');
+          else if (has('bot-cover.js')) bump(b, 'sim:cover');
+          else if (has('decideMedicDuty|') || has('bot-medic.js')) bump(b, 'sim:medic');
+          else if (has('bot-separation.js') || has('resolveBotPairs')) bump(b, 'sim:separation');
+          else if (has('findPath|') || has('nav-grid.js')) bump(b, 'sim:navAstar');
+          else if (has('stepBotPhysics|')) bump(b, 'sim:physics');
+          else if (has('shapecast') || has('raycast') || has('closestPoint')) bump(b, 'sim:raycast');
+          else if (has('player-procedural-body.js') || has('weapon-pose-controller') || has('weapon-sequence')) bump(b, 'sim:rig+pose');
+          else if (has('bot-stance') || has('bot-aim')) bump(b, 'sim:stance/aim');
+          else if (has('nav-visibility')) bump(b, 'sim:visibility');
+          else if (has('bot-terrain')) bump(b, 'sim:terrain');
+          else bump(b, 'sim:other');
+        } else if (has('player-procedural-body.js')) bump(b, 'rig:outside-sim');
+        else if (has('three.webgpu.js') || has('renderAsync|')) { bump(b, 'render:webgpu'); bump(rl, ns[0]); }
+        else bump(b, 'other');
+      }
+      const top = (m, n, tot) => [...m.entries()].sort((x, y) => y[1] - x[1]).slice(0, n).map(([k, v]) => `${(100 * v / tot).toFixed(1)}% ${k}`);
+      buckets = top(b, 20, stackSamples);
+      simLeaves = top(sl, 20, [...sl.values()].reduce((a, v) => a + v, 0) || 1);
+      renderLeaves = top(rl, 15, [...rl.values()].reduce((a, v) => a + v, 0) || 1);
+    }
+    const payload = { when: new Date().toISOString(), perTeam: PER_TEAM, frames, wallMs: Math.round(performance.now() - t0), stackSamples,
+      mapTris: mapCollider?.triangleCount ?? 0, mapWalls: activeWalls.length, mapCovers: activeCovers.length,
+      deciles, buckets, simLeaves, renderLeaves };
+    try {
+      await fetch('/api/save-stats?filename=perf-autoprofile.csv', { method: 'POST', body: JSON.stringify(payload, null, 1) });
+      console.log('[autoprofile] saved to research/stats/');
+      fpsEl.textContent += ' · autoprofile saved';
+      // Direct-URL tabs have no history entry, so close() is allowed; keeps A/B batches from piling up.
+      if (new URLSearchParams(location.search).get('profclose') === '1') setTimeout(() => window.close(), 800);
+    } catch (e) { console.warn('[autoprofile] save failed:', e); }
+  }, 3000);
+}

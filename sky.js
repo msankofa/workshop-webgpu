@@ -4,7 +4,7 @@
 // composed star field + Milky Way + extra celestial bodies. Pure math is in sky-field.js;
 // this file builds node materials + canvas textures and manages the lifecycle.
 import * as THREE from 'three';
-import { MeshBasicNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { Fn, float, vec3, mix, smoothstep, positionLocal, normalize, pow, max, abs, dot, uniform } from 'three/tsl';
 import { makePalette, skyRadius, isMoonBody, sunSpritePlacement, makeRng,
   generateStars, generateMilkyWay, generateCelestialBodies,
@@ -14,6 +14,22 @@ import { createCelestialBodies } from './celestial-bodies.js?v=sp7-hdplanets';
 
 const _c = hex => new THREE.Color(hex);
 const v3 = c => vec3(c.r, c.g, c.b);
+
+// Orient helper for the sun/moon discs (plane meshes, not sprites, so the moon's baked maria
+// don't appear to spin as the view yaws). Each disc owns its own 1x1 plane geometry (built in
+// makeDisc) so disposeTree can free it on a rebuild without hitting a shared buffer. The disc
+// faces the group origin (camera) at its placed position; re-oriented on reposition, not per frame.
+const _zAxis = new THREE.Vector3(0, 0, 1);
+const _worldUp = new THREE.Vector3(0, 1, 0);
+const _fn = new THREE.Vector3(), _fr = new THREE.Vector3(), _fu = new THREE.Vector3(), _fbasis = new THREE.Matrix4();
+function faceOrigin(obj) {
+  _fn.copy(obj.position).multiplyScalar(-1).normalize();
+  const up = Math.abs(_fn.y) > 0.99 ? _zAxis : _worldUp;
+  _fr.crossVectors(up, _fn).normalize();
+  _fu.crossVectors(_fn, _fr).normalize();
+  _fbasis.makeBasis(_fr, _fu, _fn);
+  obj.quaternion.setFromRotationMatrix(_fbasis);
+}
 
 // Gradient dome: bottom->horizon->top by view-direction Y, plus a directional horizon glow.
 // All colors + transition params + sun direction are UNIFORMS so the per-frame time-of-day
@@ -112,7 +128,8 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   domeU.sunDir.value.copy(dir);
   let _nightness = nightnessAtElevation(elevFromDir(), thresholds);
   let celestialFollowTime = false;
-  let stableCelestialLayering = false;
+  let stableCelestialLayering = true;   // on by default: keeps companion moons from swapping in
+                                        // front of / behind their planet as camera pitch changes
 
   function elevFromDir() { return Math.asin(Math.max(-1, Math.min(1, dir.y))) * 180 / Math.PI; }
 
@@ -130,7 +147,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     const f = celestialFollowTime ? _nightness : 1;
     if (starsPoints && starsPoints.material._uOpacity) starsPoints.material._uOpacity.value = (palette.starOpacity ?? 1) * f;
     if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = (palette.milkyWayIntensity ?? 0.7) * f;
-    if (bodiesGroup) bodiesGroup.traverse(o => { if (o.isSprite && o.material) o.material.opacity = f; });
+    if (bodiesGroup) bodiesGroup.traverse(o => { if (o.material) o.material.opacity = f; });
   }
 
   function build() {
@@ -171,7 +188,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     bodiesGroup = null;
     if (parts.bodies !== false && palette.milkyWay) {
       bodiesGroup = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng((seed ^ 0xc0de) >>> 0)),
-        { resScale: palette.bodyResolution ?? 1 });
+        { resScale: palette.bodyResolution ?? 1, faceMode: 'fixed' });
       bodiesGroup.userData.setStableLayering?.(stableCelestialLayering);
       group.add(bodiesGroup);
     }
@@ -181,10 +198,11 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 
   function makeDisc(color, moon) {
     const tex = makeSkySunTexture(color, { moon });
-    const m = new SpriteNodeMaterial({ map: tex, transparent: true, depthWrite: false });
+    const m = new MeshBasicNodeMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
     m.fog = false;
-    const spr = new THREE.Sprite(m);
-    spr.renderOrder = -996;
+    const spr = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), m);
+    spr.renderOrder = -995;   // frontmost sky layer: in front of stars (-997) and bodies (-996)
+    spr.frustumCulled = false; // large scale + far position can false-cull the disc at the view edge
     spr.userData.moon = moon;
     return spr;
   }
@@ -199,6 +217,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     const p = sunSpritePlacement([d.x, d.y, d.z], radius, { ...palette, celestialType: spr.userData.moon ? 'moon' : 'sun' });
     spr.position.set(p.position.x, p.position.y, p.position.z);
     spr.scale.set(p.scale, p.scale, 1);
+    faceOrigin(spr);   // discs are meshes now; orient toward the camera at the new position
   }
   function placeSun() { if (sunSprite) placeDisc(sunSprite, dir); if (moonSprite) placeDisc(moonSprite, moonDir || dir); }
   function placeMoon() { if (moonSprite) placeDisc(moonSprite, moonDir); }
@@ -223,11 +242,11 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   const _pending = [];
   function disposeTree(root) {
     root.traverse(o => {
-      // THREE.Sprite instances share ONE module-level geometry (a QuadGeometry). Disposing a
-      // sprite's geometry here destroys the buffer EVERY other live sprite (the sun/moon discs
-      // and celestial bodies) still draws from — the "buffer used in submit while destroyed"
-      // freeze that appears the moment the camera faces the sky sprites. Only free geometry we
-      // actually own (dome mesh, star/Milky-Way points); leave shared sprite geometry alone.
+      // Defensive: THREE.Sprite instances share ONE module-level QuadGeometry, so disposing a
+      // sprite's geometry destroys the buffer other live sprites still draw from ("buffer used in
+      // submit while destroyed"). This sky builds no sprites — the discs and celestial bodies are
+      // plane meshes, each owning its OWN PlaneGeometry — so all our geometry (dome, discs, bodies,
+      // star/Milky-Way points) is safe to free here; the guard only matters if a sprite ever slips in.
       if (o.geometry && !o.isSprite) o.geometry.dispose();
       const mat = o.material;
       if (mat) {

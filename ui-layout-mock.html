@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workshop UI — Layout Mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #070b16;
+      --canvas: #0c1425;
+      --panel: rgba(17, 28, 49, .72);
+      --panel-solid: #141f35;
+      --panel-strong: #1a2945;
+      --line: rgba(166, 192, 255, .14);
+      --line-hot: rgba(109, 226, 255, .45);
+      --text: #edf3ff;
+      --muted: #91a1bd;
+      --cyan: #62ddff;
+      --violet: #9d8cff;
+      --lime: #c5f86b;
+      --amber: #ffc76a;
+      --coral: #ff896f;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .32);
+      --ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--ink); }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 75% 10%, rgba(87, 98, 255, .2), transparent 27rem),
+        radial-gradient(circle at 22% 82%, rgba(60, 221, 193, .1), transparent 30rem),
+        var(--ink);
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+    .app {
+      width: min(1480px, calc(100vw - 32px));
+      min-height: min(900px, calc(100vh - 32px));
+      margin: 16px auto;
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      overflow: hidden;
+      background: rgba(8, 14, 27, .7);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(24px);
+    }
+
+    .rail {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      padding: 18px 12px;
+      border-right: 1px solid var(--line);
+      background: rgba(10, 18, 34, .84);
+    }
+    .brand {
+      width: 45px;
+      height: 45px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 14px;
+      border: 1px solid rgba(138, 228, 255, .45);
+      border-radius: 14px;
+      color: var(--cyan);
+      font-weight: 850;
+      font-size: 17px;
+      background: linear-gradient(145deg, rgba(98, 221, 255, .2), rgba(157, 140, 255, .1));
+      box-shadow: 0 0 25px rgba(98, 221, 255, .15);
+    }
+    .tab {
+      position: relative;
+      display: grid;
+      place-items: center;
+      gap: 3px;
+      min-height: 64px;
+      border: 0;
+      border-radius: 14px;
+      cursor: pointer;
+      color: var(--muted);
+      background: transparent;
+      transition: color 180ms var(--ease), background 180ms var(--ease), transform 180ms var(--ease);
+    }
+    .tab:hover { color: var(--text); background: rgba(146, 171, 228, .09); transform: translateY(-1px); }
+    .tab.active { color: var(--ink); background: linear-gradient(150deg, var(--cyan), #b5efff); box-shadow: 0 8px 22px rgba(98, 221, 255, .22); }
+    .tab.active::before { content: ""; position: absolute; right: -12px; width: 3px; height: 32px; border-radius: 99px; background: var(--lime); box-shadow: 0 0 13px var(--lime); }
+    .tab-icon { font-size: 19px; line-height: 1; }
+    .tab-label { font-size: 10px; font-weight: 750; letter-spacing: .01em; }
+    .rail-spacer { flex: 1; }
+    .profile { width: 42px; height: 42px; margin: 4px auto 0; display: grid; place-items: center; border-radius: 50%; color: var(--lime); border: 1px solid rgba(197, 248, 107, .4); background: rgba(197, 248, 107, .08); }
+
+    .workspace { position: relative; min-width: 0; padding: 26px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+    .eyebrow { margin: 0 0 3px; color: var(--cyan); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(25px, 3vw, 35px); letter-spacing: -.045em; line-height: 1.05; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .chip, .icon-button, .primary-button { border: 1px solid var(--line); border-radius: 11px; background: rgba(145, 166, 211, .08); }
+    .chip { padding: 7px 10px; color: var(--lime); font-size: 11px; font-weight: 800; letter-spacing: .06em; }
+    .icon-button { width: 37px; height: 37px; cursor: pointer; color: var(--muted); transition: transform 180ms var(--ease), border-color 180ms var(--ease), color 180ms var(--ease); }
+    .icon-button:hover { color: var(--cyan); border-color: var(--line-hot); transform: translateY(-2px); }
+    .primary-button { padding: 10px 14px; cursor: pointer; border-color: rgba(98, 221, 255, .5); color: #062132; font-weight: 800; background: linear-gradient(145deg, var(--cyan), #9df2e0); box-shadow: 0 9px 19px rgba(98, 221, 255, .14); transition: transform 180ms var(--ease), box-shadow 180ms var(--ease); }
+    .primary-button:hover { transform: translateY(-2px); box-shadow: 0 13px 28px rgba(98, 221, 255, .22); }
+
+    .panel { display: none; animation: panel-in 360ms var(--ease) both; }
+    .panel.active { display: block; }
+    @keyframes panel-in { from { opacity: 0; transform: translateX(14px) scale(.992); } to { opacity: 1; transform: none; } }
+
+    .hero {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 22px;
+      margin-bottom: 18px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      background: linear-gradient(120deg, rgba(77, 115, 199, .16), rgba(17, 30, 53, .7) 45%, rgba(99, 216, 190, .08));
+    }
+    .hero p { max-width: 650px; margin: 7px 0 0; color: var(--muted); }
+    .hero-stat { min-width: 164px; padding: 11px 14px; border-radius: 14px; background: rgba(5, 11, 23, .35); }
+    .hero-stat span { display: block; color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .09em; }
+    .hero-stat strong { font-size: 23px; letter-spacing: -.04em; }
+
+    .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; }
+    .card { grid-column: span 4; min-width: 0; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(135deg, rgba(24, 38, 65, .8), rgba(15, 24, 43, .68)); box-shadow: 0 12px 28px rgba(0, 0, 0, .1); }
+    .card.wide { grid-column: span 8; }
+    .card.full { grid-column: 1 / -1; }
+    .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 16px 12px; }
+    .card-title { margin: 0; font-size: 14px; letter-spacing: -.02em; }
+    .card-note { color: var(--muted); font-size: 11px; }
+    .card-body { padding: 0 16px 16px; }
+
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+    .metric { min-width: 0; padding: 12px; border: 1px solid rgba(166, 192, 255, .09); border-radius: 13px; background: rgba(3, 8, 18, .2); transition: transform 200ms var(--ease), background 200ms var(--ease); }
+    .metric:hover { transform: translateY(-3px); background: rgba(82, 117, 182, .13); }
+    .metric span { display: block; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    .metric strong { display: block; margin-top: 3px; font-size: 20px; letter-spacing: -.04em; }
+    .metric em { color: var(--lime); font-size: 10px; font-style: normal; font-weight: 700; }
+
+    .section-list { display: grid; gap: 8px; }
+    .accordion { overflow: hidden; border: 1px solid rgba(166, 192, 255, .1); border-radius: 13px; background: rgba(4, 10, 20, .17); transition: border-color 220ms var(--ease), background 220ms var(--ease); }
+    .accordion[open] { border-color: rgba(98, 221, 255, .28); background: rgba(40, 75, 121, .12); }
+    summary { display: flex; align-items: center; gap: 10px; padding: 12px; cursor: pointer; list-style: none; font-weight: 720; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; margin-left: auto; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 7px; color: var(--cyan); background: rgba(98, 221, 255, .09); transition: transform 240ms var(--ease), background 240ms var(--ease); }
+    details[open] summary::after { transform: rotate(45deg); background: rgba(98, 221, 255, .18); }
+    .section-icon { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; color: var(--cyan); background: rgba(98, 221, 255, .1); }
+    .section-meta { margin-left: auto; margin-right: 4px; color: var(--muted); font-size: 10px; font-weight: 650; }
+    .accordion-body { display: grid; gap: 9px; padding: 0 12px 13px; animation: expand-in 260ms var(--ease) both; }
+    @keyframes expand-in { from { opacity: 0; transform: translateY(-7px); } to { opacity: 1; transform: none; } }
+
+    .subsection { padding: 11px; border-radius: 11px; border: 1px solid rgba(166, 192, 255, .08); background: rgba(11, 20, 36, .58); }
+    .subsection-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; font-size: 12px; font-weight: 760; }
+    .subsection-head small { color: var(--muted); font-weight: 650; }
+    .mini-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; color: var(--muted); font-size: 12px; border-top: 1px solid rgba(166, 192, 255, .07); }
+    .mini-row:first-of-type { border-top: 0; }
+    .mini-value { color: var(--text); font-variant-numeric: tabular-nums; }
+
+    .control { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-top: 11px; }
+    .control label { color: var(--muted); font-size: 11px; font-weight: 700; }
+    output { color: var(--cyan); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    input[type="range"] { grid-column: 1 / -1; width: 100%; height: 5px; appearance: none; border-radius: 99px; background: linear-gradient(90deg, var(--cyan) 0 58%, rgba(146, 171, 228, .18) 58%); cursor: pointer; }
+    input[type="range"]::-webkit-slider-thumb { width: 17px; height: 17px; appearance: none; border: 3px solid #e9fbff; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 5px rgba(98, 221, 255, .13), 0 3px 8px rgba(0, 0, 0, .4); transition: transform 160ms var(--ease); }
+    input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
+    .toggle { width: 37px; height: 21px; position: relative; display: inline-block; border-radius: 99px; background: rgba(146, 171, 228, .2); cursor: pointer; transition: background 220ms var(--ease); }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle::before { content: ""; position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: #dce8ff; box-shadow: 0 2px 5px rgba(0, 0, 0, .3); transition: transform 240ms var(--ease), background 240ms var(--ease); }
+    .toggle:has(input:checked) { background: rgba(197, 248, 107, .55); }
+    .toggle:has(input:checked)::before { transform: translateX(16px); background: var(--lime); }
+
+    .entity-layout { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(0, 1.2fr); gap: 14px; }
+    .creature-card { padding: 14px; border: 1px solid rgba(98, 221, 255, .3); border-radius: 16px; background: linear-gradient(135deg, rgba(62, 117, 163, .2), rgba(24, 31, 64, .44)); box-shadow: inset 0 1px rgba(207, 247, 255, .08); }
+    .creature-card h3 { margin: 0; font-size: 16px; }
+    .creature-card > p { margin: 4px 0 13px; color: var(--muted); font-size: 12px; }
+    .tree { display: grid; gap: 7px; }
+    .tree-item { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; color: #c7d5ec; background: rgba(6, 15, 28, .23); transition: transform 180ms var(--ease), background 180ms var(--ease); }
+    .tree-item:hover { transform: translateX(3px); background: rgba(98, 221, 255, .1); }
+    .tree-item::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px rgba(98, 221, 255, .8); }
+    .tree-item span { margin-left: auto; color: var(--muted); font-size: 10px; }
+    .entity-stream { display: grid; gap: 10px; }
+    .entity-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid rgba(166, 192, 255, .1); border-radius: 13px; background: rgba(6, 13, 25, .23); transition: transform 180ms var(--ease), border-color 180ms var(--ease); }
+    .entity-row:hover { transform: translateX(3px); border-color: rgba(157, 140, 255, .4); }
+    .entity-avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; background: rgba(157, 140, 255, .16); color: #c7bfff; }
+    .entity-row strong { display: block; font-size: 12px; }
+    .entity-row small { color: var(--muted); }
+    .status { padding: 4px 7px; border-radius: 99px; color: var(--lime); font-size: 9px; font-weight: 800; letter-spacing: .08em; background: rgba(197, 248, 107, .1); }
+    .status.warn { color: var(--amber); background: rgba(255, 199, 106, .11); }
+
+    .empty-panel { padding: 28px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 18px; background: rgba(20, 32, 55, .25); }
+    .toast { position: fixed; right: 28px; bottom: 28px; z-index: 10; display: flex; align-items: center; gap: 9px; padding: 12px 15px; border: 1px solid rgba(197, 248, 107, .35); border-radius: 13px; color: var(--text); background: rgba(16, 31, 35, .93); box-shadow: var(--shadow); transform: translateY(120px); opacity: 0; transition: transform 300ms var(--ease), opacity 300ms var(--ease); }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast b { color: var(--lime); }
+
+    @media (max-width: 850px) {
+      .app { width: 100%; min-height: 100vh; margin: 0; grid-template-columns: 1fr; border: 0; border-radius: 0; }
+      .rail { order: 2; flex-direction: row; gap: 5px; overflow-x: auto; padding: 10px; border-top: 1px solid var(--line); border-right: 0; }
+      .brand, .profile { display: none; }
+      .tab { min-width: 65px; min-height: 54px; }
+      .tab.active::before { top: auto; right: 17px; bottom: -10px; width: 30px; height: 3px; }
+      .workspace { padding: 18px; }
+      .topbar { align-items: flex-start; }
+      .top-actions .chip, .top-actions .icon-button { display: none; }
+      .hero { align-items: flex-start; flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .card, .card.wide { grid-column: auto; }
+      .entity-layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 520px) { .metrics { grid-template-columns: repeat(2, 1fr); } .topbar h1 { font-size: 26px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <nav class="rail" aria-label="Workshop areas">
+      <div class="brand" aria-label="Workshop">W</div>
+      <button class="tab active" data-panel="world"><span class="tab-icon">◒</span><span class="tab-label">World</span></button>
+      <button class="tab" data-panel="entities"><span class="tab-icon">◈</span><span class="tab-label">Entities</span></button>
+      <button class="tab" data-panel="player"><span class="tab-icon">⌁</span><span class="tab-label">Player</span></button>
+      <button class="tab" data-panel="assets"><span class="tab-icon">◇</span><span class="tab-label">Assets</span></button>
+      <button class="tab" data-panel="audio"><span class="tab-icon">◖</span><span class="tab-label">Audio</span></button>
+      <button class="tab" data-panel="tools"><span class="tab-icon">⊹</span><span class="tab-label">Tools</span></button>
+      <div class="rail-spacer"></div>
+      <div class="profile" title="Creator mode">✦</div>
+    </nav>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div><p class="eyebrow">Workshop / creator mode</p><h1 id="page-title">World</h1></div>
+        <div class="top-actions"><span class="chip">● LIVE</span><button class="icon-button" aria-label="Search">⌕</button><button class="primary-button" id="save-button">Save state</button></div>
+      </header>
+
+      <section class="panel active" id="world">
+        <div class="hero"><div><p class="eyebrow">Scene authoring</p><h2>Shape the complete world.</h2><p>Terrain, water, vegetation, atmosphere, and image effects stay together so you can build a cohesive scene without jumping between tabs.</p></div><div class="hero-stat"><span>Active preset</span><strong>Bluehour Grove</strong></div></div>
+        <div class="grid">
+          <article class="card wide"><div class="card-header"><h3 class="card-title">Scene pulse</h3><span class="card-note">Updated live</span></div><div class="card-body"><div class="metrics"><div class="metric"><span>Terrain chunks</span><strong>121</strong><em>all resident</em></div><div class="metric"><span>Water surface</span><strong>4.8ms</strong><em>healthy</em></div><div class="metric"><span>Forest instances</span><strong>18.2k</strong><em>3 LOD bands</em></div><div class="metric"><span>World seed</span><strong>18492</strong><em>deterministic</em></div></div></div></article>
+          <article class="card"><div class="card-header"><h3 class="card-title">Quick atmosphere</h3><span class="status">LIVE</span></div><div class="card-body"><div class="control"><label for="daylight">Daylight</label><output>6:42 PM</output><input id="daylight" type="range" min="0" max="100" value="72"></div><div class="mini-row"><span>Cloud cover</span><span class="mini-value">42%</span></div><div class="mini-row"><span>Moon lighting</span><label class="toggle"><input checked type="checkbox" aria-label="Moon lighting"></label></div></div></article>
+          <article class="card full"><div class="card-header"><h3 class="card-title">World systems</h3><span class="card-note">Open a section to tune its layer</span></div><div class="card-body section-list">
+            <details class="accordion" open><summary><span class="section-icon">▱</span>Terrain &amp; Map <span class="section-meta">distance · fog · map</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Terrain window <small>GPU streamed</small></div><div class="control"><label for="distance">Draw distance</label><output>8 chunks</output><input id="distance" type="range" min="1" max="12" value="8"></div><div class="mini-row"><span>Atmospheric fog</span><label class="toggle"><input type="checkbox" aria-label="Atmospheric fog"></label></div></div></div></details>
+            <details class="accordion"><summary><span class="section-icon">◌</span>Biomes &amp; Materials <span class="section-meta">layers · texture source</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Canopy floor <small>library/Grass008</small></div><div class="mini-row"><span>Texture tile</span><span class="mini-value">4.0m</span></div><div class="mini-row"><span>Moss amount</span><span class="mini-value">0.62</span></div></div></div></details>
+            <details class="accordion"><summary><span class="section-icon">≈</span>Water <span class="section-meta">surface · reflection · LOD</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Reflection <small>0.5× resolution</small></div><div class="mini-row"><span>Enabled</span><label class="toggle"><input checked type="checkbox" aria-label="Water reflection"></label></div><div class="mini-row"><span>Update rate</span><span class="mini-value">every frame</span></div></div></div></details>
+            <details class="accordion"><summary><span class="section-icon">♧</span>Vegetation <span class="section-meta">forest · grass · plants</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Forest <small>tree LOD ready</small></div><div class="mini-row"><span>Population</span><span class="mini-value">4,500 trees</span></div><div class="mini-row"><span>Species diversity</span><span class="mini-value">6 types</span></div></div></div></details>
+            <details class="accordion"><summary><span class="section-icon">◫</span>Landscape Details <span class="section-meta">rocks · deadfall · mushrooms</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Rock material <small>live uniforms</small></div><div class="mini-row"><span>Boulder density</span><span class="mini-value">0.008</span></div><div class="mini-row"><span>Lichen amount</span><span class="mini-value">0.55</span></div></div></div></details>
+            <details class="accordion"><summary><span class="section-icon">☼</span>Atmosphere &amp; Image FX <span class="section-meta">time · sky · post · particles</span></summary><div class="accordion-body"><div class="subsection"><div class="subsection-head">Sky <small>blue hour</small></div><div class="mini-row"><span>Cloud layer 1</span><span class="mini-value">active</span></div><div class="mini-row"><span>Post processing</span><span class="mini-value">AgX + Bloom</span></div></div></div></details>
+          </div></div></article>
+        </div>
+      </section>
+
+      <section class="panel" id="entities">
+        <div class="hero"><div><p class="eyebrow">Living systems</p><h2>Entities, without system blur.</h2><p>Procedural creatures are one complete nested workflow. ClaudeCraft mobs and combat bots remain separate, first-class systems.</p></div><div class="hero-stat"><span>Entities active</span><strong>28</strong></div></div>
+        <div class="entity-layout">
+          <article class="creature-card"><p class="eyebrow">Procedural Creatures</p><h3>One expandable creator workflow</h3><p>Everything used to author, inspect, tune, and analyze procedural creatures lives under one parent section.</p><div class="tree"><div class="tree-item">Population <span>6 active</span></div><div class="tree-item">Selected creature <span>#04</span></div><div class="tree-item">Locomotion <span>gait</span></div><div class="tree-item">Form &amp; Terrain <span>model</span></div><div class="tree-item">Configuration <span>JSON</span></div><div class="tree-item">Analytics <span>live</span></div></div></article>
+          <section class="entity-stream"><article class="entity-row"><div class="entity-avatar">◈</div><div><strong>ClaudeCraft Mobs</strong><small>Spawn, behavior, scale, and seeded camp population</small></div><span class="status">12 ACTIVE</span></article><article class="entity-row"><div class="entity-avatar">◉</div><div><strong>Combat Bots</strong><small>Spawn rules, combat behavior, weapons, and difficulty</small></div><span class="status warn">8 ACTIVE</span></article><article class="entity-row"><div class="entity-avatar">⌁</div><div><strong>Squads &amp; Outposts</strong><small>Orders, temperament, retreat decisions, and formation state</small></div><span class="status">2 SQUADS</span></article><article class="entity-row"><div class="entity-avatar">⌕</div><div><strong>Bot Inspector</strong><small>Selected-agent state, recording, teleports, and live roster</small></div><span class="status">READY</span></article></section>
+        </div>
+      </section>
+
+      <section class="panel" id="player"><div class="hero"><div><p class="eyebrow">First-person tuning</p><h2>Player movement and feel.</h2><p>Locomotion, view feel, weapon presentation, and utility tools are separated by what you are trying to tune.</p></div><div class="hero-stat"><span>Current tool</span><strong>M1911</strong></div></div><div class="grid"><article class="card"><div class="card-header"><h3 class="card-title">Locomotion</h3></div><div class="card-body"><div class="mini-row"><span>Movement</span><span class="mini-value">Run × 1.7</span></div><div class="mini-row"><span>Physics</span><span class="mini-value">Gravity 28</span></div><div class="mini-row"><span>Stance heights</span><span class="mini-value">3 states</span></div></div></article><article class="card"><div class="card-header"><h3 class="card-title">View feel</h3></div><div class="card-body"><div class="control"><label for="bob">Weapon bob</label><output>0.04</output><input id="bob" type="range" min="0" max="100" value="44"></div></div></article><article class="card"><div class="card-header"><h3 class="card-title">Weapons</h3></div><div class="card-body"><div class="mini-row"><span>Pose &amp; recoil</span><span class="mini-value">tunable</span></div><div class="mini-row"><span>Muzzle / tracer FX</span><span class="mini-value">active</span></div><div class="mini-row"><span>Aim / optics</span><span class="mini-value">iron sight</span></div></div></article></div></section>
+      <section class="panel" id="assets"><div class="hero"><div><p class="eyebrow">Scene content</p><h2>Models and placement.</h2><p>Connect a library, preview an asset at aim, then position selected placed models with live transform controls.</p></div></div><div class="empty-panel">Model Library · Placement Transform · Placed Models</div></section>
+      <section class="panel" id="audio"><div class="hero"><div><p class="eyebrow">Soundscape</p><h2>Audio, routed with intent.</h2><p>Source folders, mixing, output behavior, processing, and track playback belong in one calm space.</p></div></div><div class="empty-panel">SFX &amp; Music Sources · Mix &amp; Output · Processing · Playlist</div></section>
+      <section class="panel" id="tools"><div class="hero"><div><p class="eyebrow">Diagnostics</p><h2>Performance and state tools.</h2><p>Live performance figures, profiler experiments, capture/export, debug streams, and saved slider states.</p></div><div class="hero-stat"><span>Frame time</span><strong>12.4 ms</strong></div></div><div class="grid"><article class="card wide"><div class="card-header"><h3 class="card-title">Performance</h3><span class="status">SMOOTH</span></div><div class="card-body"><div class="metrics"><div class="metric"><span>FPS</span><strong>80</strong><em>+4.2%</em></div><div class="metric"><span>CPU</span><strong>3.9ms</strong><em>good</em></div><div class="metric"><span>GPU</span><strong>7.1ms</strong><em>good</em></div><div class="metric"><span>Draws</span><strong>284</strong><em>stable</em></div></div></div></article><article class="card"><div class="card-header"><h3 class="card-title">Saved states</h3></div><div class="card-body"><div class="mini-row"><span>Bluehour Grove</span><span class="mini-value">current</span></div><div class="mini-row"><span>Winter Test</span><span class="mini-value">yesterday</span></div></div></article></div></section>
+    </section>
+  </main>
+  <div class="toast" id="toast"><b>✓</b><span>State saved to the workshop.</span></div>
+  <script>
+    const tabs = [...document.querySelectorAll('.tab')];
+    const panels = [...document.querySelectorAll('.panel')];
+    const title = document.getElementById('page-title');
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      const id = tab.dataset.panel;
+      tabs.forEach(item => item.classList.toggle('active', item === tab));
+      panels.forEach(panel => panel.classList.toggle('active', panel.id === id));
+      title.textContent = tab.querySelector('.tab-label').textContent;
+    }));
+    document.querySelectorAll('input[type="range"]').forEach(input => input.addEventListener('input', () => {
+      const pct = ((input.value - input.min) / (input.max - input.min)) * 100;
+      input.style.background = `linear-gradient(90deg, var(--cyan) 0 ${pct}%, rgba(146, 171, 228, .18) ${pct}% 100%)`;
+    }));
+    const toast = document.getElementById('toast');
+    document.getElementById('save-button').addEventListener('click', () => {
+      toast.classList.add('show');
+      clearTimeout(window.toastTimer);
+      window.toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+    });
+  </script>
+</body>
+</html>

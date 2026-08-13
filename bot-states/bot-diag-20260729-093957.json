@@ -1,0 +1,14 @@
+{
+  "savedAt": "2026-07-29T13:39:57.888Z",
+  "frames": 141511,
+  "targetPickBest": 669,
+  "targetPickRetained": 2400,
+  "targetPickFallbackSuppressed": 5550,
+  "targetPickNone": 0,
+  "patrolNoRoute": 981,
+  "patrolLocalFallback": 981,
+  "patrolIsolated": 0,
+  "knifeOutOfReach": 0,
+  "knifeReloadUnblocked": 0,
+  "knifeTimeout": 0
+}

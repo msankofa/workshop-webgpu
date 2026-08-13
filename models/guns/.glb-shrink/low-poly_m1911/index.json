@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "2026-07-23T17:09:31.081Z",
+    "action": "compress",
+    "quality": 50,
+    "profile": {
+      "simplifyRatio": 0.008,
+      "simplifyError": 0.02,
+      "textureEdge": 384
+    },
+    "sourceSize": 406028,
+    "outputSize": 26508,
+    "sourceTris": 2822,
+    "finalTris": 2749,
+    "runFile": "2026-07-23T17-09-31-040Z-balanced.glb"
+  }
+]

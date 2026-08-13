@@ -16,6 +16,7 @@ import { SOUND_EVENTS } from './sound-events.js';
 import { getFileByKey, extensionOf } from './asset-paths.js';
 import { createHandleStore } from './file-handles.js';
 import { subscribeLiveUpdates, rememberLiveMessage } from './live-updates.js';
+import { loopVoiceCap } from './combat-audio-budget.js';
 
 // [ADAPTATION] Local constants replacing imports from the source config.js
 // (src/game/config.js:722-734).
@@ -46,6 +47,55 @@ export const positionalSfxProfiles = {
 
 const positionalSfxVolumeScale = 2.0;
 
+// Band split for audio-reactive visuals, kept pure and exported so it is testable in Node without
+// a Web Audio graph (same reasoning as the CPU/GPU math twins documented in CLAUDE.md).
+// `bins` is AnalyserNode.getByteFrequencyData output (0-255 per bin, bin i covers
+// i * sampleRate / fftSize Hz). Writes into `out` rather than allocating -- this runs per frame.
+export const SPECTRUM_BANDS = { bass: [20, 160], mid: [160, 2000], treble: [2000, 8000] };
+
+export function spectrumBands(bins, sampleRate, fftSize, out = { bass: 0, mid: 0, treble: 0, level: 0 }) {
+  const binHz = sampleRate / fftSize;
+  if (!bins?.length || !Number.isFinite(binHz) || binHz <= 0) {
+    out.bass = out.mid = out.treble = out.level = 0;
+    return out;
+  }
+  for (const band of ['bass', 'mid', 'treble']) {
+    const [fromHz, toHz] = SPECTRUM_BANDS[band];
+    const from = Math.max(0, Math.floor(fromHz / binHz));
+    const to = Math.min(bins.length - 1, Math.ceil(toHz / binHz));
+    let sum = 0;
+    for (let i = from; i <= to; i++) sum += bins[i];
+    out[band] = to >= from ? sum / ((to - from + 1) * 255) : 0;
+  }
+  out.level = (out.bass + out.mid + out.treble) / 3;
+  return out;
+}
+
+// Log-spaced band magnitudes for a spectrum-analyser display: `out.length` bars spanning
+// [fromHz, toHz], each 0-1. Log spacing is what makes it look like a stereo's analyser rather
+// than one fat bass bar and 15 empty ones. Pure + fills `out` in place; Node-tested.
+export function spectrumBars(bins, sampleRate, fftSize, out, { fromHz = 40, toHz = 12000 } = {}) {
+  if (!out?.length) return out;
+  const binHz = sampleRate / fftSize;
+  if (!bins?.length || !Number.isFinite(binHz) || binHz <= 0 || toHz <= fromHz) {
+    for (let i = 0; i < out.length; i++) out[i] = 0;
+    return out;
+  }
+  const ratio = toHz / fromHz;
+  const nyquistBin = bins.length - 1;
+  for (let i = 0; i < out.length; i++) {
+    const lo = fromHz * Math.pow(ratio, i / out.length);
+    const hi = fromHz * Math.pow(ratio, (i + 1) / out.length);
+    const from = Math.min(nyquistBin, Math.max(0, Math.floor(lo / binHz)));
+    // Narrow low bars can round to an empty range; widen to at least one bin so they still read.
+    const to = Math.min(nyquistBin, Math.max(from, Math.ceil(hi / binHz) - 1));
+    let sum = 0;
+    for (let b = from; b <= to; b++) sum += bins[b];
+    out[i] = sum / ((to - from + 1) * 255);
+  }
+  return out;
+}
+
 export function createEnvironmentAudio(options = {}) {
   const THREE = options.THREE;
   if (!THREE) throw new Error('createEnvironmentAudio requires options.THREE');
@@ -63,6 +113,10 @@ export function createEnvironmentAudio(options = {}) {
     ? options.getSpeakerTargets
     : null;
   const workletUrl = options.workletUrl || './music-pitch-processor.js?v=1';
+  // When false, the first user gesture only resumes music that was already playing or blocked --
+  // it never starts a track on its own. Viewers with an always-populated playlist want this off.
+  const autoplayOnGesture = options.autoplayOnGesture !== false;
+  const startShuffled = options.shuffle === true;
 
   const perfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const clamp01 = v => Math.max(0, Math.min(1, Number(v) || 0));
@@ -103,6 +157,20 @@ export function createEnvironmentAudio(options = {}) {
   let musicSpeakerBehavior = 'front';
   let musicFolderHandle = null;
   let musicFolderPaths = [];
+  // 'http' music source: a served track listing, no File System Access handle needed.
+  let musicHttpBase = '';
+  let musicHttpPaths = [];
+  // Spectrum tap for audio-reactive visuals. Music only: the SFX bus is a separate chain, and
+  // gunfire driving the room lights would swamp anything the music is doing.
+  let musicAnalyser = null;
+  let analyserBins = null;
+  const audioLevels = { bass: 0, mid: 0, treble: 0, level: 0, beat: 0, playing: false };
+  let bassBaseline = 0;
+  let lastBeatAt = 0;
+  let lastLevelsAt = 0;
+  let musicShuffle = startShuffled;
+  let shuffleOrder = [];    // playlist paths in shuffled order
+  let shuffleKey = '';      // playlist identity shuffleOrder was built for
   let lastGameplayActive = null;
   const musicEffectSettings = {
     bass: 0,
@@ -120,6 +188,10 @@ export function createEnvironmentAudio(options = {}) {
   const liveSfxSeen = new Set();
   let liveSfxChannel = null;
   let disposed = false;
+
+  // Live sustained voices (sirens, damage beds) -- swept every frame, capped hard.
+  const activeLoops = new Set();
+  let nextLoopId = 1;
 
   // ---- Subscription / status ----
   const listeners = new Set();
@@ -139,6 +211,7 @@ export function createEnvironmentAudio(options = {}) {
       sfxMuted: audioSettings.sfxMuted,
       musicOutput: musicOutputMode,
       musicSource: musicSourceMode,
+      shuffle: musicShuffle,
       speakerBehavior: musicSpeakerBehavior,
       effects: { ...musicEffectSettings },
       sfxFolderStatus: statusText,
@@ -146,12 +219,14 @@ export function createEnvironmentAudio(options = {}) {
         ? `${musicFolderHandle.name} - ${musicFolderPaths.length} track${musicFolderPaths.length === 1 ? '' : 's'}`
         : 'No music folder loaded.',
       currentTrackLabel: currentMusic?.label || '',
+      currentTrackPath: currentMusicPlaylistPath(),
       musicPlaying: isMusicPlaying(),
       // Extra fields retained for internal/diagnostic use.
       ready: !!audioCtx,
       sfxFolderName: sfxDirHandle?.name || '',
       musicFolderName: musicFolderHandle?.name || '',
       musicFolderTrackCount: musicFolderPaths.length,
+      musicHttpTrackCount: musicHttpPaths.length,
       loadedEvents: Object.keys(sfxBuffers).length,
       loadedMusicEvents: Object.keys(musicPaths).length,
       playlist: activeMusicPlaylist(),
@@ -428,6 +503,181 @@ export function createEnvironmentAudio(options = {}) {
     return true;
   }
 
+  // Decode into THIS context. An AudioBuffer belongs to the context that created it, so callers
+  // that want to schedule their own sources (baked voice takes) cannot decode on a private context.
+  async function decodeAudio(arrayBuffer) {
+    if (disposed || !audioCtx || !arrayBuffer) return null;
+    try { return await audioCtx.decodeAudioData(arrayBuffer); } catch { return null; }
+  }
+
+  // True when a decoded buffer is loaded for this event id. Never loads, never throws pre-init.
+  function hasSfxEvent(eventId) {
+    const entry = sfxBuffers[eventId];
+    if (!entry) return false;
+    if (!entry.buffers) return true;
+    return entry.buffers.length > 0;
+  }
+
+  // Procedural fallback voice: builds the same panner+gain chain a positional sample gets, then
+  // hands the chain input to `build(ctx, destination, startTime)` to schedule its own nodes.
+  // Returns true only when a voice actually started.
+  function playSynthAt(build, position, opts = {}) {
+    if (typeof build !== 'function') return false;
+    if (disposed || !audioCtx || !sfxGain) return false;
+    // Gesture-unlock rule: play into an already-running context only, never force a resume.
+    if (audioCtx.state !== 'running') return false;
+    if (effectiveMasterVol() <= 0 || effectiveSfxVol() <= 0) return false;
+
+    const profile = opts.profile || {};
+    const volume = normalizeSfxVolume(opts.volume === undefined ? 0.75 : opts.volume);
+    const positional = isAudioPosition(position);
+
+    let sourcePosition = null;
+    if (positional) {
+      sourcePosition = position.clone?.() || new THREE.Vector3(position.x, position.y, position.z);
+      const maxDistance = profile.maxDistance ?? positionalSfxProfiles.default.maxDistance;
+      const cullDistance = opts.cullDistance ?? maxDistance * 1.5;
+      if (camera && sourcePosition.distanceTo(camera.position) > cullDistance) return false;
+    }
+
+    const gain = audioCtx.createGain();
+    gain.gain.value = volume * (positional ? (opts.volumeScale ?? positionalSfxVolumeScale) : 1);
+    const spatial = positional ? connectSpatialOutput(gain, sourcePosition, profile) : null;
+    if (!positional) gain.connect(sfxGain);
+
+    const teardown = () => {
+      try { gain.disconnect(); } catch { /* already torn down */ }
+      try { spatial?.panner?.disconnect(); } catch { /* already torn down */ }
+      try { spatial?.stereo?.disconnect(); } catch { /* already torn down */ }
+    };
+
+    let duration = 0;
+    try {
+      duration = Number(build(audioCtx, gain, audioCtx.currentTime));
+    } catch {
+      duration = 0;
+    }
+
+    // A builder that scheduled nothing usable must not leave a live chain behind.
+    if (!Number.isFinite(duration) || duration <= 0) {
+      teardown();
+      return false;
+    }
+
+    // Small tail margin covers filter/panner ring-out past the builder's last scheduled stop.
+    setTimeout(teardown, (duration + 0.25) * 1000);
+    return true;
+  }
+
+  // Sustained sibling of playSynthAt. A siren ends on an event (revived / bled out / culled),
+  // not after a known duration, so the builder returns a stop handle instead of a length.
+  // Builder contract: `build(ctx, destination, t0) => { stop(atCtxTime) }`.
+  // Returns a controller handle, or false when nothing started.
+  function playSynthLoop(build, position, opts = {}) {
+    if (typeof build !== 'function') return false;
+    if (disposed || !audioCtx || !sfxGain) return false;
+    if (audioCtx.state !== 'running') return false;
+    if (effectiveMasterVol() <= 0 || effectiveSfxVol() <= 0) return false;
+    if (activeLoops.size >= loopVoiceCap()) return false;
+
+    const profile = opts.profile || {};
+    const volume = normalizeSfxVolume(opts.volume === undefined ? 0.75 : opts.volume);
+    const positional = isAudioPosition(position);
+    const maxDistance = profile.maxDistance ?? positionalSfxProfiles.default.maxDistance;
+    const cullDistance = opts.cullDistance ?? maxDistance * 1.5;
+
+    let sourcePosition = null;
+    if (positional) {
+      sourcePosition = position.clone?.() || new THREE.Vector3(position.x, position.y, position.z);
+      if (camera && sourcePosition.distanceTo(camera.position) > cullDistance) return false;
+    }
+
+    const baseScale = positional ? (opts.volumeScale ?? positionalSfxVolumeScale) : 1;
+    const gain = audioCtx.createGain();
+    gain.gain.value = volume * baseScale;
+    const spatial = positional ? connectSpatialOutput(gain, sourcePosition, profile) : null;
+    if (!positional) gain.connect(sfxGain);
+
+    let inner = null;
+    try {
+      inner = build(audioCtx, gain, audioCtx.currentTime);
+    } catch {
+      inner = null;
+    }
+
+    if (!inner || typeof inner.stop !== 'function') {
+      try { gain.disconnect(); } catch { /* already torn down */ }
+      try { spatial?.panner?.disconnect(); } catch { /* already torn down */ }
+      try { spatial?.stereo?.disconnect(); } catch { /* already torn down */ }
+      return false;
+    }
+
+    let stopped = false;
+    const handle = {
+      id: nextLoopId++,
+      isAlive: opts.isAlive || null,
+      getPosition: opts.getPosition || null,
+      cullDistance,
+      // Ramps the shared gain down, lets the voice stop itself, then drops the chain.
+      stop(fadeOutS = 0.15) {
+        if (stopped) return;
+        stopped = true;
+        activeLoops.delete(handle);
+        const fade = Math.max(0, Number(fadeOutS) || 0);
+        const now = audioCtx.currentTime;
+        try {
+          gain.gain.cancelScheduledValues?.(now);
+          gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), now);
+          if (fade > 0) gain.gain.linearRampToValueAtTime(0.0001, now + fade);
+          else gain.gain.setValueAtTime(0.0001, now);
+        } catch { /* param automation unavailable */ }
+        try { inner.stop(now + fade); } catch { /* voice already stopped */ }
+        setTimeout(() => {
+          try { gain.disconnect(); } catch { /* already torn down */ }
+          try { spatial?.panner?.disconnect(); } catch { /* already torn down */ }
+          try { spatial?.stereo?.disconnect(); } catch { /* already torn down */ }
+        }, (fade + 0.25) * 1000);
+      },
+      // Callers duck a pile-up of sirens through this rather than rebuilding the voice.
+      setTargetVolume(v, rampS = 0.2) {
+        if (stopped) return;
+        const target = Math.max(0.0001, normalizeSfxVolume(v) * baseScale);
+        const now = audioCtx.currentTime;
+        try {
+          gain.gain.cancelScheduledValues?.(now);
+          gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), now);
+          gain.gain.linearRampToValueAtTime(target, now + Math.max(0.01, rampS));
+        } catch { /* param automation unavailable */ }
+      },
+      updatePosition(pos) {
+        if (stopped || !spatial?.panner || !isAudioPosition(pos)) return;
+        setPannerPosition(spatial.panner, pos);
+      },
+      get stopped() { return stopped; },
+    };
+
+    activeLoops.add(handle);
+    return handle;
+  }
+
+  // Backstop for the unclean paths: corpse culled mid-siren, scene reset, owner GC'd out from
+  // under a stale closure. The owning module still stops its own loops on the paths it controls,
+  // because only it knows whether the ending deserves a fade or a power-down.
+  function sweepActiveLoops() {
+    if (!activeLoops.size) return;
+    for (const handle of [...activeLoops]) {
+      if (handle.isAlive && !handle.isAlive()) { handle.stop(0); continue; }
+      if (!handle.getPosition || !camera) continue;
+      const pos = handle.getPosition();
+      if (!isAudioPosition(pos)) continue;
+      const dx = pos.x - camera.position.x;
+      const dy = pos.y - camera.position.y;
+      const dz = pos.z - camera.position.z;
+      if (dx * dx + dy * dy + dz * dz > handle.cullDistance * handle.cullDistance) handle.stop(0.1);
+      else handle.updatePosition(pos);
+    }
+  }
+
   function musicEntryPaths(entry) {
     if (!entry) return [];
     if (typeof entry === 'string') return [entry];
@@ -694,6 +944,10 @@ export function createEnvironmentAudio(options = {}) {
       effectMix.connect(effectLimiter);
       effectLimiter.connect(globalGain);
       globalGain.connect(audioCtx.destination);
+      // Spectrum tap: post-effects, pre-output, so what the visuals see is what you hear.
+      // releaseMusicTrack's effectLimiter.disconnect() drops this along with everything else.
+      const analyser = ensureMusicAnalyser();
+      if (analyser) effectLimiter.connect(analyser);
       effectLimiter.connect(speakerGain);
       speakerGain.connect(spatialLimiter);
       spatialLimiter.connect(spatialPanner);
@@ -1064,8 +1318,16 @@ export function createEnvironmentAudio(options = {}) {
     if (musicSourceMode === 'folder') {
       const currentPath = currentMusic?.eventId === 'music_folder' && musicFolderPaths.includes(currentMusic.path)
         ? currentMusic.path
-        : musicFolderPaths[0];
+        : initialTrackPath(activeMusicPlaylist());
       if (currentPath) playFolderMusicPath(currentPath, fadeDuration);
+      else stopMusic(fadeDuration);
+      return;
+    }
+    if (musicSourceMode === 'http') {
+      const currentPath = currentMusic?.eventId === 'music_http' && musicHttpPaths.includes(currentMusic.path)
+        ? currentMusic.path
+        : initialTrackPath(activeMusicPlaylist());
+      if (currentPath) playHttpMusicPath(currentPath, fadeDuration);
       else stopMusic(fadeDuration);
       return;
     }
@@ -1075,6 +1337,7 @@ export function createEnvironmentAudio(options = {}) {
   function syncMusicAfterGesture() {
     initAudio();
     if (musicUserPaused) return;
+    if (!autoplayOnGesture && !currentMusic && !pendingMusicRetry) return;
     if (pendingMusicRetry || !currentMusic || currentMusic.audio.paused) {
       syncMusicForState(0.2);
     }
@@ -1094,12 +1357,106 @@ export function createEnvironmentAudio(options = {}) {
     if (musicSourceMode === 'folder') {
       return musicFolderPaths.map(path => ({ eventId: 'music_folder', path, label: musicTrackLabel(path) }));
     }
+    if (musicSourceMode === 'http') {
+      return musicHttpPaths.map(path => ({ eventId: 'music_http', path, label: musicTrackLabel(path) }));
+    }
     const eventId = desiredMusicEvent();
     return musicEntryPaths(musicPaths[eventId]).map(path => ({ eventId, path, label: musicTrackLabel(path) }));
   }
 
   function currentMusicPlaylistPath() {
     return currentMusic?.path || '';
+  }
+
+  // Transport position for a progress bar. Polled per-frame by a UI, so it stays out of
+  // getState()/notify() -- those only fire on real state changes.
+  function getMusicProgress() {
+    const audio = currentMusic?.audio;
+    const duration = Number(audio?.duration);
+    return {
+      label: currentMusic?.label || '',
+      path: currentMusicPlaylistPath(),
+      currentTime: Number(audio?.currentTime) || 0,
+      duration: Number.isFinite(duration) ? duration : 0,
+      playing: isMusicPlaying(),
+    };
+  }
+
+  function ensureMusicAnalyser() {
+    if (musicAnalyser || !audioCtx) return musicAnalyser;
+    musicAnalyser = audioCtx.createAnalyser();
+    musicAnalyser.fftSize = 2048;              // ~23 Hz bins at 48 kHz -- enough to isolate bass
+    musicAnalyser.smoothingTimeConstant = 0.72;
+    analyserBins = new Uint8Array(musicAnalyser.frequencyBinCount);
+    return musicAnalyser;
+  }
+
+  // getByteFrequencyData rebuilds the magnitude spectrum on every call, and a viewer typically
+  // wants it twice in the same frame (getAudioLevels for the lights, getSpectrum for the display).
+  // One read per 4 ms serves every caller: above 250 fps two callers may share a frame's bins,
+  // which for a VU meter is invisible.
+  let binsReadAt = -Infinity;
+  function refreshAnalyserBins() {
+    const now = perfNow();
+    if (now - binsReadAt < 4) return;
+    binsReadAt = now;
+    musicAnalyser.getByteFrequencyData(analyserBins);
+  }
+
+  // Per-frame spectrum for visuals. Returns a REUSED object (never allocates) with 0..1 bands, an
+  // overall `level`, and `beat`: a decaying envelope kicked when bass jumps above its own running
+  // baseline. Everything reads 0 when no music is audible.
+  function getAudioLevels() {
+    const now = perfNow();
+    const dt = Math.min(0.25, Math.max(0, (now - lastLevelsAt) / 1000)) || 0.016;
+    lastLevelsAt = now;
+    audioLevels.playing = isMusicPlaying();
+    if (!musicAnalyser || !analyserBins || !audioCtx || !audioLevels.playing) {
+      // Decay rather than snap, so pausing fades the lights out instead of dropping them.
+      const decay = Math.exp(-dt * 6);
+      audioLevels.bass *= decay; audioLevels.mid *= decay; audioLevels.treble *= decay;
+      audioLevels.level *= decay; audioLevels.beat *= decay;
+      return audioLevels;
+    }
+    refreshAnalyserBins();
+    spectrumBands(analyserBins, audioCtx.sampleRate, musicAnalyser.fftSize, audioLevels);
+    // Slow baseline + a refractory window: a kick reads as one beat, not one per frame it decays over.
+    bassBaseline += (audioLevels.bass - bassBaseline) * Math.min(1, dt * 1.6);
+    const isTransient = audioLevels.bass > bassBaseline * 1.25 + 0.02 && audioLevels.bass > 0.12;
+    if (isTransient && now - lastBeatAt > 120) { lastBeatAt = now; audioLevels.beat = 1; }
+    else audioLevels.beat *= Math.exp(-dt * 7);
+    return audioLevels;
+  }
+
+  // Fills `out` (any array-like) with log-spaced band magnitudes for a spectrum display. When
+  // nothing is audible the bars fall away instead of snapping flat.
+  function getSpectrum(out) {
+    if (!out?.length) return out;
+    if (!musicAnalyser || !analyserBins || !audioCtx || !isMusicPlaying()) {
+      for (let i = 0; i < out.length; i++) out[i] *= 0.82;
+      return out;
+    }
+    refreshAnalyserBins();
+    return spectrumBars(analyserBins, audioCtx.sampleRate, musicAnalyser.fftSize, out);
+  }
+
+  // fraction is 0..1 of the track's duration; a no-op until the browser knows the duration.
+  function seekMusic(fraction) {
+    const audio = currentMusic?.audio;
+    const duration = Number(audio?.duration);
+    if (!audio || !Number.isFinite(duration) || duration <= 0) return false;
+    audio.currentTime = THREE.MathUtils.clamp(Number(fraction) || 0, 0, 1) * duration;
+    return true;
+  }
+
+  // Which track a from-scratch start plays: the top of the list, or a shuffled pick.
+  function initialTrackPath(tracks) {
+    if (!tracks.length) return '';
+    if (musicShuffle && tracks.length > 1) {
+      ensureShuffleOrder(tracks);
+      return shuffleOrder[0];
+    }
+    return tracks[0].path;
   }
 
   function playGameMusicPath(eventId, relPath, fadeDuration = 0.35) {
@@ -1159,17 +1516,85 @@ export function createEnvironmentAudio(options = {}) {
     return true;
   }
 
+  // Served track: the URL is the file itself, so there is nothing to cache or revoke.
+  function playHttpMusicPath(relPath, fadeDuration = 0.35) {
+    if (!relPath || !musicHttpPaths.includes(relPath)) return false;
+    desiredMusicEventId = 'music_http';
+    desiredMusicPath = relPath;
+    const requestId = ++musicRequestId;
+    if (currentMusic?.eventId === 'music_http' && currentMusic.path === relPath) {
+      startMusicTrack(currentMusic, fadeDuration);
+      notify();
+      return true;
+    }
+    const url = musicHttpBase + relPath.split('/').map(encodeURIComponent).join('/');
+    activateMusicTrack(requestId, 'music_http', relPath, { url }, fadeDuration, {
+      sourcePath: relPath,
+      label: musicTrackLabel(relPath),
+    });
+    return true;
+  }
+
   function playMusicPlaylistEntry(entry, fadeDuration = 0.35) {
     if (!entry) return false;
     musicUserPaused = false;
     if (entry.eventId === 'music_folder') return playFolderMusicPath(entry.path, fadeDuration);
+    if (entry.eventId === 'music_http') return playHttpMusicPath(entry.path, fadeDuration);
     return playGameMusicPath(entry.eventId, entry.path, fadeDuration);
+  }
+
+  function playlistIdentity(tracks) {
+    return tracks.map(track => `${track.eventId}|${track.path}`).join('\n');
+  }
+
+  // Fisher-Yates over the playlist's paths. `avoidFirst` keeps a fresh pass from repeating the
+  // track that just played as its opening pick.
+  function buildShuffleOrder(tracks, avoidFirst = '') {
+    const order = tracks.map(track => track.path);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    if (order.length > 1 && avoidFirst && order[0] === avoidFirst) {
+      [order[0], order[1]] = [order[1], order[0]];
+    }
+    shuffleOrder = order;
+    shuffleKey = playlistIdentity(tracks);
+  }
+
+  // Rebuilds only when the playlist itself changed, so the order survives track changes.
+  function ensureShuffleOrder(tracks) {
+    if (shuffleKey !== playlistIdentity(tracks) || shuffleOrder.length !== tracks.length) {
+      buildShuffleOrder(tracks, currentMusicPlaylistPath());
+    }
+  }
+
+  function setShuffle(enabled) {
+    const next = !!enabled;
+    if (next === musicShuffle) return;
+    musicShuffle = next;
+    shuffleKey = '';   // a fresh order next time we step, seeded off whatever is playing now
+    notify();
   }
 
   function stepMusicTrack(direction, fadeDuration = 0.35) {
     const tracks = activeMusicPlaylist();
     if (!tracks.length) return false;
     const currentPath = currentMusicPlaylistPath();
+    if (musicShuffle && tracks.length > 1) {
+      ensureShuffleOrder(tracks);
+      const index = shuffleOrder.indexOf(currentPath);
+      const target = index + direction;
+      // Running off the end starts a fresh pass rather than replaying the same permutation.
+      // Stepping back off the start does not reshuffle -- within a pass, prev must undo next.
+      const reshuffle = index < 0 || target >= shuffleOrder.length;
+      if (reshuffle) buildShuffleOrder(tracks, currentPath);
+      const nextPath = reshuffle
+        ? shuffleOrder[direction < 0 ? shuffleOrder.length - 1 : 0]
+        : shuffleOrder[(target + shuffleOrder.length) % shuffleOrder.length];
+      const entry = tracks.find(track => track.path === nextPath);
+      if (entry) return playMusicPlaylistEntry(entry, fadeDuration);
+    }
     const currentIndex = Math.max(0, tracks.findIndex(track => track.path === currentPath));
     const nextIndex = (currentIndex + direction + tracks.length) % tracks.length;
     return playMusicPlaylistEntry(tracks[nextIndex], fadeDuration);
@@ -1181,7 +1606,9 @@ export function createEnvironmentAudio(options = {}) {
 
   function togglePlayback() {
     if (!currentMusic?.audio) {
-      const first = activeMusicPlaylist()[0];
+      const tracks = activeMusicPlaylist();
+      const startPath = initialTrackPath(tracks);
+      const first = tracks.find(track => track.path === startPath);
       if (first) playMusicPlaylistEntry(first, 0.2);
       notify();
       return;
@@ -1239,9 +1666,13 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   function setMusicSource(mode) {
-    if (mode !== 'game' && mode !== 'folder') return;
+    if (!['game', 'folder', 'http'].includes(mode)) return;
     if (mode === 'folder' && !musicFolderPaths.length) {
       showSfxStatus('Choose a music folder first');
+      return;
+    }
+    if (mode === 'http' && !musicHttpPaths.length) {
+      showSfxStatus('No served music tracks');
       return;
     }
     if (musicSourceMode === mode) return;
@@ -1249,6 +1680,41 @@ export function createEnvironmentAudio(options = {}) {
     musicUserPaused = false;
     syncMusicForState(0.35);
     notify();
+  }
+
+  // ---- Served music listing (no File System Access) ----
+  // serve.py's GET /api/list-music lists sfx/music/, so a viewer gets a full playlist with no
+  // folder pick and no sound-map assignment. Unlike the 'game' source this needs no sfxDirHandle.
+  // `select` makes 'http' the active source without starting playback (autoplay stays opt-in,
+  // same policy as the SFX loaders); `activate` also starts the first track.
+  async function loadMusicHttp({ listUrl = '/api/list-music', baseUrl = './sfx/music/', activate = false, select = false } = {}) {
+    let files = [];
+    try {
+      const res = await fetch(listUrl, { cache: 'no-store' });
+      if (!res.ok) throw new Error('listing unavailable');
+      const data = await res.json();
+      files = Array.isArray(data?.files) ? data.files.filter(Boolean) : [];
+    } catch {
+      showSfxStatus('Served music listing unavailable');
+      notify();
+      return false;
+    }
+    files = files.filter(name => musicFileExtensions.has(extensionOf(name)));
+    if (!files.length) {
+      if (musicSourceMode === 'http') stopMusic(0.25);
+      musicHttpPaths = [];
+      notify();
+      return false;
+    }
+    musicHttpBase = baseUrl;
+    musicHttpPaths = files;
+    if (activate || select) {
+      musicSourceMode = 'http';
+      musicUserPaused = false;
+      if (activate) syncMusicForState(0.25);
+    }
+    notify();
+    return true;
   }
 
   // ---- Specific music folder loading ----
@@ -1393,8 +1859,6 @@ export function createEnvironmentAudio(options = {}) {
         normalizeSfxVolume(volumes[eventId]),
       ]);
 
-    // ensureMusicEntriesReady no-ops for every entry here (isMusicEvent is false for all ids
-    // in this project's sound-map.json) -- kept for parity with loadSfxSounds in case that changes.
     let loadedEvents = 0;
     let loadedSounds = 0;
     let failed = (await ensureMusicEntriesReady(entries)).failed;
@@ -1419,7 +1883,9 @@ export function createEnvironmentAudio(options = {}) {
 
     const failedText = failed ? `, ${failed} missing` : '';
     showPersistentSfxStatus(`SFX ${loadedEvents} event${loadedEvents !== 1 ? 's' : ''}, ${loadedSounds} sound${loadedSounds !== 1 ? 's' : ''} loaded from ${baseUrl}${failedText}`);
-    syncMusicForState();
+    // No syncMusicForState() here -- loading buffers must not itself start playback. Menu
+    // autoplay is start-screen.js's job (its own <audio> from sfx/music/); envAudio only plays
+    // music in response to an explicit user action (Audio tab) or a real gameplay-state change.
     notify();
     return loadedEvents > 0;
   }
@@ -1517,7 +1983,7 @@ export function createEnvironmentAudio(options = {}) {
     await sfxHandleStore.save(sfxRootHandleKey, dirHandle);
     const failedText = failed ? `, ${failed} missing` : '';
     showPersistentSfxStatus(`SFX ${loadedEvents} event${loadedEvents !== 1 ? 's' : ''}, ${loadedSounds} sound${loadedSounds !== 1 ? 's' : ''}, ${loadedMusic} music track${loadedMusic !== 1 ? 's' : ''} loaded${failedText}`);
-    syncMusicForState();
+    // No syncMusicForState() here either -- see loadSfxHttp's comment above.
     notify();
   }
 
@@ -1672,6 +2138,7 @@ export function createEnvironmentAudio(options = {}) {
       syncMusicForState(0.4);
     }
     updateMusicSpeakerOrb(timestampMs);
+    sweepActiveLoops();
   }
 
   function setVolume(kind, value) {
@@ -1689,6 +2156,8 @@ export function createEnvironmentAudio(options = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const handle of [...activeLoops]) handle.stop(0);
+    activeLoops.clear();
     resetMusicPlayback();
     clearMusicUrlCache();
 
@@ -1729,11 +2198,22 @@ export function createEnvironmentAudio(options = {}) {
     pickSfxFolder,
     restoreSfxFolder,
     loadMusicFolder,
+    loadMusicHttp,
     pickMusicFolder,
     restoreMusicFolder,
     setMusicSource,
+    setShuffle,
+    getMusicProgress,
+    getAudioLevels,
+    getSpectrum,
+    seekMusic,
     play: playSfxEvent,
     playAt: playSfxEventAt,
+    hasSfxEvent,
+    decodeAudio,
+    playSynthAt,
+    playSynthLoop,
+    activeLoopCount: () => activeLoops.size,
     setVolume,
     setMuted,
     setMusicOutput,
@@ -1745,5 +2225,6 @@ export function createEnvironmentAudio(options = {}) {
     prevTrack,
     togglePlayback,
     nextTrack,
+    playTrack: playMusicPlaylistEntry,
   };
 }

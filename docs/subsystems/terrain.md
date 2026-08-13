@@ -26,7 +26,7 @@ collision meshes (BVH-accelerated).
 | `cdlod-terrain.js` (262 lines) | GPU-driven CDLOD terrain (SP3): TSL compute pipeline that selects quadtree nodes per frame and indirect-draws a reusable patch grid, displaced/shaded by an analytic TSL height field transcribed from `terrain-field.js`. |
 | `cdlod-select.js` (116 lines) | Pure-JS CDLOD node-selection math: Morton encoding, distance-band level selection, morph factor — the CPU source of truth the TSL compute mirrors, and what `cdlod-terrain.js` calls for its CPU-side survivor-count HUD stat. |
 | `collision.js` (101 lines) | Pure capsule-vs-analytic-field collision math (no Three.js): ground contact, velocity sliding, tree-trunk circle push-out, chunk-bucketed trunk index. |
-| `map-collision.js` (147 lines) | `createMapCollider`: builds a `MeshBVH` (three-mesh-bvh) over an authored map's world-space triangles for capsule resolution, downward raycasts, and arbitrary-direction shot raycasts. |
+| `map-collision.js` (~160 lines) | `createMapCollider`: builds a `MeshBVH` (three-mesh-bvh) over an authored map's world-space triangles for capsule resolution, downward raycasts, and arbitrary-direction shot raycasts. `InstancedMesh` children are expanded per instance (`matrixWorld × instanceMatrix`) — bot-viewer-v2's instanced walls depend on this. |
 
 ## Public API
 
@@ -83,7 +83,7 @@ collision meshes (BVH-accelerated).
 - `export function createTrunkIndex(chunkSize)` → `{ setTrunks(key, trunks), clearTrunks(key), nearby(px, pz, out?), resolve(px, pz, radius) }`. `nearby` takes an optional reusable `out` array (cleared and filled in place) to avoid a per-call allocation; omitting it preserves the old fresh-array return. The creature steering path (`nearbyTrunks`) passes a shared scratch buffer.
 
 `map-collision.js`
-- `export function createMapCollider(root, { maxTriangles = 250000 } = {})` → `{ geometry, triangleCount, resolveCapsule(capsule, velocity, { slopeLimitY, iterations }), raycastDown(origin, maxDistance), raycast(origin, dir, maxDistance), dispose() }`. Throws if the authored map exceeds `maxTriangles` or has zero collision triangles. `raycast` returns the nearest world hit as `{ distance, point:[x,y,z], normal:[x,y,z] }` or `null` — used as the exact bullet occluder in `resolveWorldShot` (walls stop shots on their real faces instead of the heightfield's inflated wall-top ramps).
+- `export function createMapCollider(root, { maxTriangles = 250000 } = {})` → `{ geometry, triangleCount, resolveCapsule(capsule, velocity, { slopeLimitY, iterations }), raycastDown(origin, maxDistance), raycast(origin, dir, maxDistance), isOccluded(origin, dir, maxDistance), dispose() }`. Throws if the authored map exceeds `maxTriangles` or has zero collision triangles. `raycast` returns the nearest world hit as `{ distance, point:[x,y,z], normal:[x,y,z] }` or `null` — used as the exact bullet occluder in `resolveWorldShot` (walls stop shots on their real faces instead of the heightfield's inflated wall-top ramps). `isOccluded(origin, dir, maxDistance)` is a boolean-only, allocation-minimized LOS check (`boundsTree.raycastFirst` + reusable `Ray` scratch) for callers that only need "blocked or not", e.g. bot line-of-sight; the shared `_raycaster` also sets `firstHitOnly = true` so `raycast`/`raycastDown` short-circuit to the BVH's closest hit instead of collecting and sorting all hits.
 
 ## Wiring
 

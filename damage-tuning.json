@@ -1,0 +1,63 @@
+{
+  "blood": {
+    "amount": 1,
+    "force": 1,
+    "sprayLife": 0.6,
+    "decalLife": 6,
+    "stainSize": 1
+  },
+  "base": {
+    "spraySize": 0.03,
+    "gravity": 9.8,
+    "stainFixed": 0.15,
+    "stainFit": 0.55,
+    "stainFitMin": 0.03,
+    "stainFitMax": 0.16,
+    "stainOpacity": 0.92,
+    "stainProjDepth": 0.025,
+    "splatterSize": 0.12,
+    "splatterLifeScale": 1.33,
+    "stumpSprayCount": 34,
+    "stumpSpraySize": 0.035,
+    "stumpSplatterCount": 12,
+    "stumpSplatterSize": 0.14,
+    "stumpSplatterOpacity": 0.85,
+    "stumpSpeed": 3.4,
+    "stumpSpread": 1.1
+  },
+  "bleed": {
+    "on": true,
+    "woundRate": 1.3,
+    "stumpRate": 4.5,
+    "woundDrops": 3,
+    "stumpDrops": 9,
+    "clotSeconds": 0,
+    "poolGrowth": 0.09,
+    "poolMax": 0.55,
+    "bleedoutSeconds": 30,
+    "dripSpeed": 0.9,
+    "groundEvery": 3
+  },
+  "haywire": {
+    "on": true,
+    "force": true,
+    "headChance": 0.65,
+    "baseChance": 0.1,
+    "thrashMs": 1300,
+    "twitchMs": 2400,
+    "thrashImpulse": 1,
+    "fireChance": 0.22
+  },
+  "limb": {
+    "on": true,
+    "damage": 24,
+    "armThreshold": 60,
+    "legThreshold": 75,
+    "headshotKill": true
+  },
+  "wound": {
+    "inner": 0.06,
+    "outer": 0.28,
+    "darken": 0.25
+  }
+}

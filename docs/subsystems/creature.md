@@ -17,8 +17,122 @@ standalone WebGL page.
 | File | Responsibility | Lines |
 |---|---|---|
 | `port-creature-bridge.js` | Wires the creature system into `environment-viewer.html`: builds/injects the floating toolbar + panel DOM/CSS, derives an arena size from the terrain system, forwards terrain/trunk callbacks into the simulation, handles pointer click/dblclick raycasting (select creature / set target point), and exposes a thin `update`/`reset`/`stats` wrapper (including an "off" mode that zeroes stats and hides creatures without simulating). | 524 |
-| `port-creature-system.js` | The ported simulation itself: body plans, gaits, styles, seeded randomization, `KinematicChain` (FABRIK IK), `Creature` class (steering, physics, leg stepping, combat, foraging, wild-activity FSM, rendering), `Grabbable` objects, spatial-grid collision/separation, LOD tiers, and an instanced-mesh batching layer for WebGPU rendering. | 5369 |
+| `port-creature-system.js` | The ported simulation itself: body plans, gaits, styles, seeded randomization, `KinematicChain` (FABRIK IK), `Creature` class (steering, physics, leg stepping, combat, foraging, wild-activity FSM, rendering), `Grabbable` objects, spatial-grid collision/separation, LOD tiers, and an instanced-mesh batching layer for WebGPU rendering. The walk cycle itself now lives in `creature-locomotion.js`. | 4818 |
 | `creature-activity.js` | Pure, THREE-free decision math for the wild-creature activity FSM (Phase 2): activity constants, sense ranges, `chooseActivity`, `activitySteer`. Node-tested (`test-creature-activity.mjs`). | 110 |
+| `creature-locomotion.js` | The walk cycle, lifted out of `port-creature-system.js`: FABRIK `KinematicChain` plus an analytic `solveTwoBone`/`clampLegTarget` pair for legs that must not bend backwards, the gait tables, the foot-target scan, step scheduling, the step arc, the support polygon the body balances on, and pitch/roll from the feet. The ground function and the foot clearance are parameters, so it drives a sphere as readily as a heightfield. Node-tested (`test-creature-locomotion.mjs`). | 716 |
+| `creature-plan.js` | The skeleton vocabulary, lifted out of `port-creature-system.js`: `segment`/`pair`/`finalizePlan`, the four stock plans, `clonePlan`, `generateBodyPlan`, `serializePlan`/`deserializePlan`, `editPlanWithSettings`, plus the new `anchorsForPlan`. No DOM, no scene, no sim. Node-tested (`test-creature-plan.mjs`). | 250 |
+
+### The body plan is now its own module
+
+`createCreaturePlans({ THREE })` returns the whole plan vocabulary; `port-creature-system.js` binds
+its names off that factory and is otherwise unchanged. THREE is injected rather than imported
+because the plan's vectors are real `Vector3`s the sim mutates in place.
+
+Two things stayed behind on purpose. `installGeneratedPlan` reaches into
+`document.getElementById('preset')` to add the "Generated" option, so it is DOM code, not plan code.
+And the counts are still drawn in the sim — `LEG_PAIRS_PARAM.sampleCount(rng)` and
+`SEGMENTS_PARAM.sampleCount(rng)` come from editable panel min/max, so `generateBodyPlan(rng, {
+pairCount, segmentCount })` takes them as arguments. **They must stay the first two draws off that
+rng**, or a seed stops reproducing its creature.
+
+The extraction was verified numerically against the pre-edit snapshot rather than by review: all
+four stock plans and 200 seeded generated plans serialise identically.
+
+**`anchorsForPlan(plan)` is new**, and it is why this extraction happened when it did. It returns
+`body`, `head` when the plan has one, then per leg `<name>.hip`, one `<name>.j{i}` per interior
+joint, and `<name>.foot`, where `<name>` is `leg{row}{L|R}`. A quadbot derives 18 anchors and an
+eight-pair six-segment creature derives 114. That varying list is what the model studio's `creature`
+target consumes, and it is the only thing in the codebase that can prove the model spec has no fixed
+anchor list buried in it — see `model-studio.md`.
+
+### The walk cycle is now its own module
+
+`creature-locomotion.js` holds everything that decides where a creature's feet go. Same pattern as the
+plan extraction above: `createCreatureLocomotion({ THREE })` returns the names, `port-creature-system.js`
+binds them off that factory, and the `Creature` methods that used to hold this code
+(`updateLegTarget`, `scheduleSteps`, `startStep`, `canWalkLegMove`, `canGallopLegMove`,
+`legBy`/`adjacentPartners`/`diagonalPartners`, `isGrounded`, `updateBodyOrientation`) are now one-line
+delegations, kept because the rest of the sim calls them.
+
+### Two solvers, and why FABRIK is not enough for a walk
+
+`solveTwoBone(root, target, pole, l1, l2, outKnee, outFoot, { maxExtension })` was added alongside
+`KinematicChain`, not instead of it. Two segments plus a target admit a whole **circle** of valid knee
+positions, and FABRIK picks one by resuming from wherever the chain already is. That is stable for a
+standing creature and wrong for a walking one — measured on `demos/sdf-bug-v2`, the knee sat *below* the
+hip-to-foot chord for **63% of a 60 s walk** (84% on the front legs), with the femur pointing down at a
+median −28° where the drawn pose has it up at +24°. The leg reads as bending backwards. Iterating more
+would not have helped: every one of those poses satisfies the constraints FABRIK is solving.
+
+The analytic solve takes a `pole` — a direction across the leg saying which way the knee bends — and
+places the knee on that side by construction. Bone lengths come out exact rather than iterated to a
+tolerance, and it is one shot instead of up to twelve passes. An unreachable target leaves the leg **bent
+at the extension limit** rather than snapping into a straight line, which was the second half of the same
+defect.
+
+`clampLegTarget(hip, target, restDir, span, { maxSwing, maxRise, maxReach })` bounds a foot target by
+angle rather than by distance, in a frame whose +y is the body's up. Applied in the order swing, rise,
+reach, so a target pulled in by the reach bound cannot be pushed back out by the swing rotation.
+
+**Neither is used by the sim.** `port-creature-system.js` still solves with `KinematicChain`; only
+`demos/bug-rig.js` opts into the new one. One shared change does touch the sim's path: the re-step veto in
+`canWalkLegMove` compared against a hardcoded 0.1 m, which is a length and therefore has to scale with the
+creature. It is now `gait.restepEpsilon ?? 0.1`, reproducing the old number exactly when unset.
+
+### Scaling a creature is not scaling its model
+
+`demos/bug-rig.js` exports `scaleBugGait(gait, s)`, and it exists because this module's own header records
+that scale is the part which does not port — "a gait scaled in space but not in time reads as a shrunken
+elephant". The same trap applies *within* one species. Gravity does not scale with the creature, so Froude
+similarity is what holds:
+
+    v²/(gL) constant  ->  lengths ∝ s, speeds ∝ √s, times ∝ √s, angular rates ∝ 1/√s
+
+So `stepLift`, the trigger boxes, `comfort`, the scan extents and `restepEpsilon` go as `s`; `maxSpeed`,
+`stepDuration` and the cooldowns as `√s`; `turnSpeed` as `1/√s`. The dimensionless ones must not move at all,
+and that list is where the mistakes are: `stationaryHeight`/`movingHeight` are fractions of the leg,
+`lookAhead` multiplies a distance that is already scaled, `maxConcurrentFraction` and
+`uncomfortableSpeedMultiplier` are ratios, and the rotation lerps are per-frame blend factors rather than
+rates. `createBugRig({ scale })` applies it itself so a caller cannot resize a bug and forget its gait, and
+`setScale` re-derives from the unscaled table rather than from the current gait — scaling by `√s` twice is
+not the same as scaling once.
+
+What moved: `KinematicChain`, `GAITS`/`cloneGait`, the physics constants (now `LOCOMOTION`), the
+`convexHull`/`pointInPoly`/`nearestOnPoly` support-polygon geometry, `easeInOut`/`lerp`/`clamp`/
+`rotateXZ`/`averageVec`/`horizontalDistance`/`orientFromUpForward`, and the two pieces that were inline
+in `physicsStep` — the per-leg step arc (now `advanceLeg`) and the support-polygon block (now
+`bodySupport`).
+
+**Two things the sim assumed that are now parameters**, because `demos/sdf-bug-v2` breaks both:
+
+- `terrainHeight` is any single-valued height function. The scan only ever samples it as a scalar — a
+  3×3 grid of calls, no raycasts and no meshes — so a closed form works as well as a heightfield.
+  `createLegSolver({ terrainHeight, footGround })` binds one per world.
+- `footGround` was the constant `0.06`. That is six times the radius of the demo bug's whole foot.
+
+**Scale is still the caller's problem**, and it is the part most likely to disappoint. Every gait number
+is tuned in metres for a creature whose femur is 0.58; the bug's entire femur is 0.206, and `stepLift`
+alone is 1.2× that. Geometry scales freely, but `stepDuration`/`stepLift`/`maxSpeed` and the trigger
+thresholds do not come along. The test records those ratios rather than asserting anything about them.
+
+`createCreatureLocomotion` is **memoised on the `THREE` instance**. Without that the factory mints a
+fresh `KinematicChain` class per call, `instanceof` fails between the sim and any other caller, and
+"there is one copy of the walk cycle" would be true of the source but not of the running program.
+
+The extraction was verified by stepping the pre-edit snapshot and the refactored sim in lockstep: 32
+configurations (four body plans × two gaits × uniform/varied × rolling/cliff terrain), 400 frames each,
+comparing positions, velocities, yaw/pitch/roll, every leg's target, state flags and FABRIK joint
+positions, plus the smoothed metrics — 378,880 numbers, bit-identical. Two harness bugs had to be found
+first, both of which produced a confident wrong answer: configuring through `applySharedNpcConfig`
+silently applied nothing (it forces varied mode and bails unless `creatures` is an array), so sixteen
+rows reported "identical" for the same default scenario; and the stub DOM cached elements by id, so a
+second system registered its change listeners alongside the first's and one `_fire()` reset the
+creatures twice, which showed up as a ~0.002 drift at step 0 and looked exactly like a broken refactor.
+Running the new module against *itself* is what separated the two.
+
+One deliberate difference: `bodySupport` clamps its pooled buffer at `LOCOMOTION.MAX_LEGS` (16) instead
+of indexing past the end. Leg pairs are hard-capped at 8, so 16 legs exactly fills the buffer and the
+guard never fires in the sim — it only matters for a caller that picks its own leg count.
 
 ## Public API
 
@@ -667,8 +781,18 @@ reach, since the weapon-only `weapon-anchor-editor.html` has no body to judge pe
 `creature-activity.js` (`chooseActivity`/`activitySteer`): eligibility gating, threat-interrupt,
 hp-weighted sleep, duration bounds, determinism. `node test-combat.mjs`
 covers the unrelated player-vs-player/creature hitscan gun math in `combat.js` (not the IK melee
-pipeline). No other dedicated test file exists for `port-creature-bridge.js` / `port-creature-system.js`
-itself (body plans, IK, steering, the melee state machine) — those remain verified manually in-browser.
+pipeline). `node test-creature-locomotion.mjs` covers `creature-locomotion.js` — the FABRIK invariants (segment
+lengths preserved, unreachable targets straighten, monotone re-solve), the foot scan on flat/sphere/rough/
+chasm ground including that `footGround` is honoured and that the look-ahead leads the direction of
+travel, the scheduler's safety properties (never more than `maxConcurrentFraction` airborne, never all
+feet at once, no leg steps unbidden) across 1–8 leg pairs and both gaits, the step arc's landing and
+single footfall, the support polygon, and pitch/roll clamping. Its last section boots the **real sim**
+in Node behind a stub DOM and walks it 600 frames, then asserts the sim's chains are that module's
+`KinematicChain` and that the sim no longer defines its own copy of anything that moved — a module can
+pass its own unit tests while the sim quietly keeps a private copy, and that check is what rules it out.
+No dedicated test file exists for `port-creature-bridge.js` or for the rest of
+`port-creature-system.js` (steering, the melee state machine, foraging) — those remain verified manually
+in-browser.
 The weapon-mount pieces are covered indirectly by `node test-weapon-pose-controller.mjs` and
 `node test-player-body-gait.mjs`, which exercise the controller/body modules the mount wires together
 (no browser-only mount code itself is unit-tested).

@@ -32,6 +32,9 @@ for (const w of enabled) {
       'smokeDuration', 'smokeOpacity', 'smokeCount']) {
       check(Number.isFinite(w.muzzleFx?.[key]), `${w.id}.muzzleFx.${key} should be finite`);
     }
+    for (const key of ['speed', 'length', 'width', 'opacity', 'glow', 'minVisibleDistance']) {
+      check(Number.isFinite(w.tracerFx?.[key]), `${w.id}.tracerFx.${key} should be finite`);
+    }
   }
   // Projectile weapons need a projectile sub-spec (speed + blastRadius drive the flight/blast).
   if (w.mode === 'projectile') {
@@ -52,6 +55,8 @@ for (const id of ['five_seven', 'cz_805_bren', 'knife', 'grenade', 'rpg']) {
 }
 // cz_805_bren is the full-auto weapon.
 check(getWeapon('cz_805_bren') && getWeapon('cz_805_bren').automatic === true, 'cz_805_bren should be automatic:true');
+check(getWeapon('knife')?.damage === 50, 'knife should be a two-hit kill against 100 HP');
+check(getWeapon('knife')?.fireIntervalMs === 1500, 'knife should use the 1.5-second attack interval');
 
 // All weapon model paths must be strings under models/guns/.
 for (const w of Object.values(WEAPONS)) {

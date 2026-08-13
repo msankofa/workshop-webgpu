@@ -242,6 +242,204 @@
           "event": "boltHome"
         }
       ]
+    },
+    "cz_805_bren": {
+      "duration": 1.9,
+      "commitAmmoAt": 1.02,
+      "poses": {
+        "aimed": {
+          "p": [
+            0.3,
+            -0.42,
+            -0.65
+          ],
+          "r": [
+            -0.02,
+            -0.04,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "reloadRaise": {
+          "p": [
+            0.3,
+            -0.42,
+            -0.68
+          ],
+          "r": [
+            0.25,
+            -0.12,
+            0.2
+          ],
+          "scale": 1
+        },
+        "aimed_key1": {
+          "p": [
+            0.3,
+            -0.42,
+            -0.68
+          ],
+          "r": [
+            -0.02,
+            -0.04,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "pose3": {
+          "p": [
+            0.24,
+            -0.42,
+            -0.62
+          ],
+          "r": [
+            -0.08,
+            -0.04,
+            -0.02
+          ],
+          "scale": 1
+        },
+        "pose4": {
+          "p": [
+            0.24,
+            -0.42,
+            -0.62
+          ],
+          "r": [
+            -0.08,
+            -0.04,
+            -0.02
+          ],
+          "scale": 1
+        },
+        "reloadRaise_key1": {
+          "p": [
+            0.3,
+            -0.48,
+            -0.68
+          ],
+          "r": [
+            0.24,
+            -0.12,
+            -0.26
+          ],
+          "scale": 1
+        },
+        "aimed_key2": {
+          "p": [
+            0.3,
+            -0.52,
+            -0.45
+          ],
+          "r": [
+            -0.69,
+            0.22,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "aimed_key2_key1": {
+          "p": [
+            0.3,
+            -0.52,
+            -0.45
+          ],
+          "r": [
+            -0.69,
+            0.22,
+            -0.03
+          ],
+          "scale": 1
+        },
+        "aimed_key2_key1_key1": {
+          "p": [
+            0.3,
+            -0.52,
+            -0.45
+          ],
+          "r": [
+            -0.69,
+            0.22,
+            -0.03
+          ],
+          "scale": 1
+        }
+      },
+      "keys": [
+        {
+          "t": 0,
+          "weaponPose": "aimed_key1",
+          "right": "rightGrip",
+          "left": "leftGrip"
+        },
+        {
+          "t": 0.1744547819940669,
+          "weaponPose": "reloadRaise",
+          "right": "rightGrip",
+          "left": "magwell"
+        },
+        {
+          "t": 0.3098962257230001,
+          "weaponPose": "reloadRaise_key1",
+          "right": "rightGrip",
+          "left": "magwell"
+        },
+        {
+          "t": 0.5438933899377507,
+          "left": {
+            "body": [
+              0.16,
+              -0.3,
+              0.22
+            ]
+          },
+          "event": "removeMagazine",
+          "weaponPose": "pose3"
+        },
+        {
+          "t": 0.7621533722576561,
+          "left": "magwell",
+          "event": "insertMagazine",
+          "weaponPose": "pose4"
+        },
+        {
+          "t": 1.0328791186134612,
+          "weaponPose": "aimed_key2",
+          "right": "rightGrip",
+          "left": "chargingHandle"
+        },
+        {
+          "t": 1.3229548513292064,
+          "weaponPose": "aimed_key2_key1",
+          "right": "rightGrip",
+          "left": {
+            "body": [
+              -0.29,
+              0.08,
+              0.34
+            ]
+          }
+        },
+        {
+          "t": 1.480425774865946,
+          "weaponPose": "aimed_key2_key1_key1",
+          "right": "rightGrip",
+          "left": {
+            "body": [
+              -0.29,
+              0.08,
+              0.24
+            ]
+          }
+        },
+        {
+          "t": 1.7041985465538971,
+          "weaponPose": "aimed",
+          "right": "rightGrip",
+          "left": "leftGrip",
+          "event": "reloadComplete"
+        }
+      ]
     }
   }
 }

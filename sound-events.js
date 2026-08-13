@@ -23,6 +23,40 @@ export const SOUND_EVENT_DEFS = [
   { id: 'bullet_impact',  label: 'Weapon - Bullet Impact (world)' }, // bullet strikes terrain/rock/tree
   { id: 'player_damage',  label: 'Player - Take Damage' },
 
+  // -- Ballistics (incoming rounds) --------------------------------------------
+  // Synth-only by default: a whizz varies per shot with miss distance and bullet speed, which
+  // one static sample cannot do. Listed here anyway so a real recording can take over later.
+  { id: 'bullet_whizz',   label: 'Ballistic - Round Passes Close' },
+  { id: 'bullet_ricochet',label: 'Ballistic - Ricochet' },
+
+  // -- Bot damage / death (robots, so mechanical rather than flesh) -------------
+  { id: 'bot_hit_light',    label: 'Bot - Hit (Light)' },
+  { id: 'bot_hit_heavy',    label: 'Bot - Hit (Heavy)' },
+  { id: 'bot_hit_critical', label: 'Bot - Hit (Critical)' },
+  { id: 'bot_hit_ricochet', label: 'Bot - Hit (Deflected)' },
+  { id: 'bot_hit_blast',    label: 'Bot - Hit (Explosive)' },
+  { id: 'bot_damage_spark', label: 'Bot - Damage Tell (one-shot)' },
+  { id: 'bot_damage_loop',  label: 'Bot - Damage Tell (sustained)' },   // sustained: synth only
+  { id: 'bot_death_sting',  label: 'Bot - Death (killing blow)' },
+  { id: 'bot_death_siren',  label: 'Bot - Death (distress siren)' },    // sustained: synth only
+  { id: 'bot_death_powerdown', label: 'Bot - Death (bled out)' },
+  { id: 'bot_revived',      label: 'Bot - Revived' },
+
+  // -- Bot voice callouts (robot squad chatter; all synthesized) ---------------
+  { id: 'bot_vo_contact',    label: 'Bot Voice - Target Spotted' },
+  { id: 'bot_vo_reloading',  label: 'Bot Voice - Reloading' },
+  { id: 'bot_vo_cover',      label: 'Bot Voice - Taking Cover' },
+  { id: 'bot_vo_firing',     label: 'Bot Voice - Firing' },
+  { id: 'bot_vo_moving',     label: 'Bot Voice - Moving Up' },
+  { id: 'bot_vo_overwatch',  label: 'Bot Voice - Covering Fire' },
+  { id: 'bot_vo_grenade_out',label: 'Bot Voice - Frag Out' },
+  { id: 'bot_vo_grenade_warn', label: 'Bot Voice - Grenade! (warning)' },
+  { id: 'bot_vo_man_down',   label: 'Bot Voice - Man Down' },
+  { id: 'bot_vo_reviving',   label: 'Bot Voice - Reviving' },
+  { id: 'bot_vo_sidearm',    label: 'Bot Voice - Switching To Sidearm' },
+  { id: 'bot_vo_no_ammo',    label: 'Bot Voice - Out Of Ammo' },
+  { id: 'bot_vo_enemy_down', label: 'Bot Voice - Enemy Down' },
+
   // -- Movement ----------------------------------------------------------------
   { id: 'footstep',       label: 'Footstep' },
   { id: 'jump',           label: 'Jump' },

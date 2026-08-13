@@ -1,0 +1,2948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Flight sim (one core, three airframes)</title>
+<!--
+  DEMO — sim-based arcade-leaning flight, three airframes on one rigid-body core.
+
+  WHAT THIS IS FOR
+  ----------------
+  docs/flight-harness-plan.md argues that drones, birdlikes and planes are three different
+  physics rather than one model retuned, and that the shared part is a rigid body with pluggable
+  force generators. This page exists to find out whether that is true before anything is written
+  into environment-viewer-v2.html or bot-viewer-v3.html. Fly all three back to back: if they feel
+  like three vehicles, the split is right; if they feel like one vehicle with different numbers,
+  the plan is wrong and cheaper to fix here.
+
+  It also answers the plan's Phase 0 questions early, which is the other reason it exists:
+    - does terrain hold together at 250 m/s and 3 km up (clipmap rings, analytic height)
+    - is a cloud deck at a real altitude something you can climb through and look down on
+    - what are the actual UNITS -- everything here is SI, which the html-game-v2 source is not
+
+  SELF-CONTAINED, per demos/README.md. Nothing from the workspace is imported. The terrain, sky,
+  HUD and physics are all in this file, and none of it is the code that would ship -- the shipping
+  version reuses terrain-field.js, cdlod-terrain.js, sky.js and entity-registry.js instead.
+
+  THE MODEL
+  ---------
+  Forces (lift, drag, thrust, gravity) are integrated onto velocity; attitude is a quaternion
+  driven by commanded BODY RATES with first-order lag, not by torque integration. That is the
+  "arcade-leaning" half: real energy management and a real stall, without an inertia tensor.
+
+  Lift is 0.5*rho*V^2*S*Cl and drag carries an induced term in Cl^2, so speed and altitude trade
+  against each other and a hard turn costs energy for free -- no scripting. Control authority on
+  the plane and bird scales with dynamic pressure, which is what makes a stall feel like a stall
+  rather than a speed cap. The drone deliberately has none of that: its props work at any airspeed.
+
+  CPU/GPU TWIN: heightAt() (JS, used by physics) and tslHeight() (TSL, used by the vertex stage)
+  are the same function written twice and must be edited together. Same hazard as forest-cull.js /
+  light-cluster.js / post-grade.js in the workspace proper.
+
+  RUN: served over http, e.g. `python serve.py` then
+       http://127.0.0.1:8080/demos/flight-sim.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1116;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { display: block; }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+
+  #panel {
+    --line: rgba(255,255,255,0.12);
+    --text: #d8dee9;
+    --muted: #8d97a8;
+    --accent: #6fb6ff;
+    position: fixed; top: 10px; right: 10px; width: 318px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(16,20,26,0.92); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel { transition: transform 0.18s ease; }
+  #panel.away { transform: translateX(calc(100% + 16px)); }
+  #panelTab { position: fixed; top: 10px; right: 10px; z-index: 11; padding: 6px 10px;
+    font: inherit; font-size: 11px; cursor: pointer; background: rgba(16,20,26,0.92);
+    color: var(--muted); border: 1px solid var(--line); border-radius: 6px; }
+  #panelTab:hover { color: var(--accent); }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; letter-spacing: 0.02em; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 54px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(111,182,255,0.16); color: var(--accent); border-color: rgba(111,182,255,0.45); }
+  .rost { display: flex; align-items: center; gap: 5px; margin: 4px 0; font-size: 11px; }
+  .rost span { flex: 1; color: var(--muted); }
+  .rost span.dis { opacity: 0.45; }
+  .rost em { font-style: normal; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: #ffbe5a; border: 1px solid rgba(255,190,90,0.4); border-radius: 3px; padding: 0 3px; }
+  .rost button { width: 22px; padding: 3px 0; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; }
+  .rost output { width: 16px; text-align: center; color: var(--text);
+    font-variant-numeric: tabular-nums; }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .btn { width: 100%; padding: 7px; margin-top: 8px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--text); font-weight: 600; }
+  #keys { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.6; }
+  #keys b { color: var(--text); font-weight: 600; }
+  #banner { position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
+    color: #ffc857; font-size: 12px; letter-spacing: 0.08em; z-index: 6;
+    pointer-events: none; user-select: none; text-shadow: 0 1px 3px #000; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Flight sim</h1>
+  <p class="sub">One rigid-body core, three airframes. Fly them back to back and see whether they
+    feel like three vehicles.</p>
+
+  <h2>Airframe</h2>
+  <div class="seg" id="afSeg">
+    <button data-af="plane" class="on">Plane</button>
+    <button data-af="drone">Drone</button>
+    <button data-af="bird">Bird</button>
+  </div>
+  <p class="sub" id="afNote" style="margin:8px 0 0"></p>
+
+  <h2>Camera</h2>
+  <div class="seg" id="camSeg">
+    <button data-cam="chase" class="on">Chase</button>
+    <button data-cam="cockpit">Cockpit</button>
+    <button data-cam="orbit">Orbit</button>
+  </div>
+
+  <h2>Airframe tuning</h2>
+  <div id="tuneRows"></div>
+  <button class="btn" id="resetTune">Reset this airframe</button>
+
+  <h2>Terrain view</h2>
+  <div class="seg" id="viewSeg">
+    <button data-view="0" class="on">Lit</button>
+    <button data-view="1">Flat</button>
+    <button data-view="2">Normals</button>
+    <button data-view="3">Lattice</button>
+  </div>
+  <p class="sub" style="margin:6px 0 0">Flat is unlit: any pattern still visible there is geometry
+    or depth, not shading. Lattice paints one square per terrain cell.</p>
+
+  <h2>Scene</h2>
+  <label class="chk"><input type="checkbox" id="hudOn" checked> HUD</label>
+  <label class="chk"><input type="checkbox" id="cloudsOn" checked> cloud deck</label>
+  <h2>Opponents</h2>
+  <div class="seg" id="presetSeg">
+    <button data-preset="solo">Solo</button>
+    <button data-preset="training">Training</button>
+    <button data-preset="mixed">Mixed</button>
+    <button data-preset="combat" class="on">Combat</button>
+  </div>
+  <div id="roster"></div>
+  <p class="sub" style="margin:6px 0 0">Unarmed aircraft are painted orange, drawn dashed on the
+    HUD, and never shoot, lock or hunt. Nothing else attacks them either, so they stay yours to
+    practise on. Solo and Training also switch the ground sites off.</p>
+
+  <label class="chk"><input type="checkbox" id="aiOn" checked> opponents in the sky</label>
+  <label class="chk"><input type="checkbox" id="aiEngage" checked> enemies hunt you</label>
+  <label class="chk"><input type="checkbox" id="enemyRespawn" checked> enemy respawn</label>
+  <label class="chk"><input type="checkbox" id="groundOn" checked> ground sites (radar, SAM, AA, base)</label>
+  <label class="chk"><input type="checkbox" id="podsOn" checked> resupply pods</label>
+  <div class="row">
+    <label>gun aim assist</label><output id="aimAssistOut">0.35</output>
+    <input type="range" id="aimAssist" min="0" max="1" step="0.05" value="0.35">
+  </div>
+  <p class="sub" style="margin:2px 0 0">Assist bends your rounds toward the lead solution for
+    whatever is nearest your boresight, and falls off with angle, so it helps a near miss and does
+    nothing for a wild one. 0 is pure iron sights.</p>
+  <label class="chk"><input type="checkbox" id="volFx" checked> volumetric explosions</label>
+  <label class="chk"><input type="checkbox" id="muteOn"> mute</label>
+  <label class="chk"><input type="checkbox" id="assistOn" checked> stability assist (weathervaning)</label>
+  <button class="btn" id="respawn">Respawn (R)</button>
+
+  <div id="stats"></div>
+  <div id="keys"></div>
+</div>
+
+<button id="panelTab" title="H">panel</button>
+<div id="banner"></div>
+<canvas id="hud"></canvas>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
+import {
+  Fn, If, Loop, Break, uniform, varying, attribute, select, vec2, vec3, vec4, float,
+  positionLocal, positionWorld, cameraPosition, sin, cos, abs, max, min, clamp, mix, smoothstep,
+  floor, normalize, cross, dot, length, pow, sqrt, exp, oneMinus, time, mx_fractal_noise_float,
+} from 'three/tsl';
+
+// The flight harness proper. Everything below this line is the VIEWER — meshes, materials, HUD,
+// audio, input. The model, the terrain field, the AI and the combat maths live in modules at the
+// repo root so they can be tested in Node and reused by environment-viewer-v2 and bot-viewer-v3.
+// This demo is the exception to the "demos import nothing" rule for the same reason
+// spsa-gait-tuning.html is: the whole point of it is to argue for shipping those modules, and a
+// private copy would be arguing for nothing.
+import {
+  TS, RIDGE_AMP, BASE_OFFSET, RING_N, RING_BASE, RING_LEVELS, CELL0, CELL_MAX,
+  WAVES, heightAt, agl,
+} from '../flight-terrain.js';
+import { AIRFRAMES, TUNE_RANGE, DEFAULTS, G } from '../flight-airframes.js';
+import {
+  UP, makeFlyer, stepFlyer, resetFlyer, startWreck, stepWreck, killMakesWreck,
+} from '../flight-model.js';
+import {
+  SQUAD, PRESETS, makeAi, offsetCircuit, driveAi, aiShoot,
+} from '../flight-ai.js';
+import {
+  COMBAT, GROUND, SHELL_GRAVITY,
+  pointSegmentDistSq, leadPoint, lockCandidate, applyAimAssist,
+  createThreatWarning, threatCadence, resetThreatWarning, evadedThisFrame, pickThreat, stepMissile,
+} from '../flight-combat.js';
+import {
+  DRONE, DRONE_KINDS, stepDrone, canRelease, giveDrones, impactDamage,
+} from '../flight-drones.js';
+import { buildCraftMesh } from '../flight-meshes.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer and scene
+// ---------------------------------------------------------------------------
+
+// REVERSED DEPTH BUFFER — this is what stops the water plane fighting the terrain at range.
+//
+// The default is a 24-bit unorm depth buffer with the standard 1/z mapping, and at near 0.5 / far
+// 30000 that resolves 0.7 m at 2.5 km, 3.0 m at 5 km and 11.9 m at 10 km. The water sits at y=0
+// and the low ground is pushed to straddle it (BASE_OFFSET), so over most of the map the two
+// surfaces are within centimetres of each other — far inside one depth quantum, and they flicker.
+//
+// Setting this flag does two things in three r0.184's WebGPU backend, and it is the pair that
+// matters, not either alone: it reverses the depth mapping AND it switches the default depth
+// attachment from `depth24plus` to `depth32float` (verified in the shipped build, and `stencil`
+// defaults to false so it does not need the depth32float-stencil8 device feature). Float precision
+// concentrated where 1/z is flattest gives roughly 2^-24 * z*(f-z)/f, which is 0.25 mm at 5 km and
+// 0.4 mm at 10 km — about four orders of magnitude better, and no longer dependent on the near
+// plane, so near 0.5 costs nothing.
+//
+// The WebGL2 fallback path needs EXT_clip_control and silently drops back if it is missing, which
+// is why the stats readout below reports what we actually got rather than what we asked for.
+const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2('#9db6cf', 0.000048);
+
+// near 0.5 so the drone (0.6 m across) survives cockpit view; far 30 km for the outer clipmap ring.
+// With reversed depth the near plane no longer drives distant precision, so this stays tight.
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.5, 30000);
+camera.position.set(0, 900, 0);
+
+const SUN_DIR = new THREE.Vector3(0.44, 0.58, 0.68).normalize();
+const sun = new THREE.DirectionalLight('#fff2dc', 2.5);
+sun.position.copy(SUN_DIR).multiplyScalar(1000);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight('#b9d4f0', '#3a3227', 0.85));
+
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.enableDamping = true;
+orbit.enabled = false;
+
+const uCamXZ = uniform(new THREE.Vector2());   // drives terrain band-limiting and the cloud fade
+
+// ---------------------------------------------------------------------------
+// Terrain height — CPU/GPU twin. Edit both or physics and picture disagree.
+// ---------------------------------------------------------------------------
+
+// Same function, built as a node graph. The WAVES table is shared, so only the SHAPE is written
+// twice — but that is still enough to drift, so edit the two together.
+const tslHeight = Fn(([p, spacing]) => {
+  const x = p.x, z = p.y;
+  const wx = sin(z.mul(TS * 0.31).add(1.7)).mul(620)
+    .add(cos(x.mul(TS * 0.23).sub(0.4)).mul(380))
+    .add(sin(z.mul(TS * 2.90).sub(0.6)).mul(105))
+    .add(cos(x.mul(TS * 3.30).add(2.2)).mul(85));
+  const wz = cos(x.mul(TS * 0.27).sub(2.1)).mul(640)
+    .add(sin(z.mul(TS * 0.19).add(1.1)).mul(350))
+    .add(cos(x.mul(TS * 3.10).add(0.9)).mul(100))
+    .add(sin(z.mul(TS * 2.70).sub(1.4)).mul(90));
+  const px = x.add(wx).mul(TS);
+  const pz = z.add(wz).mul(TS);
+  let h = float(0);
+  for (const w of WAVES) {
+    // same fade as waveWeight(): full at 8 samples per wavelength, gone by 4
+    const keep = oneMinus(smoothstep(w.lambda / 8, w.lambda / 4, spacing));
+    h = h.add(sin(px.mul(w.kx).add(pz.mul(w.kz)).add(w.ph)).mul(w.amp).mul(keep));
+  }
+  const r = float(1).sub(abs(sin(px.mul(0.55).sub(pz.mul(0.36)).add(0.6))));
+  return h.add(r.mul(r).mul(RIDGE_AMP)).add(BASE_OFFSET);
+});
+
+// distance -> lattice spacing, matching the clipmap: ring k reaches S_k with cells of S_k/48
+const tslSpacing = Fn(([xz]) => clamp(length(xz.sub(uCamXZ)).div(RING_N / 2), CELL0, CELL_MAX));
+
+// ---------------------------------------------------------------------------
+// Terrain rendering — clipmap rings, displaced in the vertex stage
+// ---------------------------------------------------------------------------
+
+// unit grid over [-1,1]; holed rings drop the middle half, which the finer ring covers
+function buildRingGeometry(N, holed) {
+  const g = N + 1, pos = new Float32Array(g * g * 3);
+  for (let j = 0, k = 0; j <= N; j++) for (let i = 0; i <= N; i++, k += 3) {
+    pos[k] = (i / N) * 2 - 1; pos[k + 1] = 0; pos[k + 2] = (j / N) * 2 - 1;
+  }
+  // hole is 2 cells smaller than the inner ring's extent, so levels always overlap and never gap:
+  // adjacent levels snap to different grids and can misalign by up to one of the coarser cells
+  const q = N / 4 + 2, idx = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    if (holed && i >= q && i < N - q && j >= q && j < N - q) continue;
+    const a = i + g * j, b = i + g * (j + 1), c = i + 1 + g * (j + 1), d = i + 1 + g * j;
+    idx.push(a, b, d, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+const fullGeo = buildRingGeometry(RING_N, false);
+const ringGeo = buildRingGeometry(RING_N, true);
+
+// Read the RAW vertex attribute, never `positionLocal`. Setting `material.positionNode` makes
+// three assign that value INTO positionLocal during vertex setup, so every later read of
+// positionLocal — including anything pulled into the fragment stage by normalNode or colorNode —
+// gets the displaced world position instead of the [-1,1] grid coordinate. Multiplying that by
+// uHalf again produces arguments in the millions and the surface shades as noise while the
+// landforms stay correct, which is exactly the symptom this cost an afternoon to find.
+const aPos = attribute('position', 'vec3');
+
+const uView = uniform(0);   // 0 lit, 1 flat unlit, 2 normals, 3 lattice checker
+
+const rings = [];
+for (let lv = 0; lv < RING_LEVELS; lv++) {
+  const half = RING_BASE * Math.pow(2, lv);
+  const cellSize = (2 * half) / RING_N;
+  const uHalf = uniform(half);
+  const uCenter = uniform(new THREE.Vector2());
+
+  const worldPos = Fn(() => {
+    const xz = aPos.xz.mul(uHalf).add(uCenter);
+    return vec3(xz.x, tslHeight(xz, tslSpacing(xz)), xz.y);
+  })();
+
+  // analytic normal by central difference; eps tracks cell size so far rings stay smooth. All four
+  // taps use the spacing at the VERTEX, not at each tap, so the difference measures the surface
+  // rather than the band limit changing under it.
+  const eps = Math.max(4, cellSize * 0.5);
+  const normal = Fn(() => {
+    const xz = aPos.xz.mul(uHalf).add(uCenter);
+    const sp = tslSpacing(xz);
+    const hL = tslHeight(xz.add(vec2(-eps, 0)), sp), hR = tslHeight(xz.add(vec2(eps, 0)), sp);
+    const hD = tslHeight(xz.add(vec2(0, -eps)), sp), hU = tslHeight(xz.add(vec2(0, eps)), sp);
+    return normalize(vec3(hL.sub(hR), float(2 * eps), hD.sub(hU)));
+  })();
+
+  const mat = new MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+  mat.positionNode = worldPos;
+  mat.normalNode = normal;
+
+  const vWorld = varying(worldPos, `vWorld${lv}`);
+  const vNormal = varying(normal, `vNormal${lv}`);
+
+  const terrainColor = Fn(() => {
+    const h = vWorld.y;
+    const slope = oneMinus(clamp(vNormal.y, 0, 1));
+    const sand = vec3(0.60, 0.55, 0.40);
+    const grass = vec3(0.24, 0.34, 0.19);
+    const rock = vec3(0.34, 0.33, 0.31);
+    const snow = vec3(0.86, 0.88, 0.92);
+    let c = mix(sand, grass, smoothstep(4, 55, h));
+    c = mix(c, rock, smoothstep(0.30, 0.62, slope));
+    c = mix(c, snow, smoothstep(380, 520, h).mul(oneMinus(smoothstep(0.34, 0.62, slope))));
+    return c;
+  })();
+
+  // debug views, so an artifact can be pinned to a layer instead of guessed at
+  const debugColor = Fn(() => {
+    const nrm = vNormal.mul(0.5).add(0.5);
+    const cx = floor(vWorld.x.div(cellSize)), cz = floor(vWorld.z.div(cellSize));
+    const checker = mix(vec3(0.16, 0.17, 0.20), vec3(0.62, 0.63, 0.66),
+      cx.add(cz).mod(2.0).abs());
+    return select(uView.lessThan(1.5), vec3(0.42, 0.44, 0.40),
+      select(uView.lessThan(2.5), nrm, checker));
+  })();
+
+  const lit = uView.lessThan(0.5);
+  mat.colorNode = select(lit, terrainColor, vec3(0, 0, 0));
+  mat.emissiveNode = select(lit, vec3(0, 0, 0), debugColor);
+
+  const mesh = new THREE.Mesh(lv === 0 ? fullGeo : ringGeo, mat);
+  mesh.frustumCulled = false;     // geometry sits at the origin; the uniform moves it
+  mesh.renderOrder = -10 + lv;
+  scene.add(mesh);
+  rings.push({ mesh, uCenter, half, cell: (2 * half) / RING_N });
+}
+
+function updateRings(cx, cz) {
+  for (const r of rings) {
+    const snap = r.cell * 2;    // snap to two cells so the grid never swims under the camera
+    r.uCenter.value.set(Math.round(cx / snap) * snap, Math.round(cz / snap) * snap);
+  }
+}
+
+// water plane at y=0, which is what makes the sub-zero ground read as lakes
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(40000, 40000),
+  new MeshStandardNodeMaterial({ color: '#26405a', roughness: 0.18, metalness: 0.5,
+    transparent: true, opacity: 0.9 })
+);
+water.rotation.x = -Math.PI / 2;
+water.frustumCulled = false;
+scene.add(water);
+
+// ---------------------------------------------------------------------------
+// Sky and cloud deck
+// ---------------------------------------------------------------------------
+
+const skyMat = new MeshBasicNodeMaterial({ side: THREE.BackSide, fog: false, depthWrite: false });
+skyMat.colorNode = Fn(() => {
+  const dir = normalize(positionLocal);
+  const up = clamp(dir.y, -1, 1);
+  const horizon = vec3(0.72, 0.80, 0.88);
+  const zenith = vec3(0.16, 0.36, 0.68);
+  const ground = vec3(0.30, 0.30, 0.32);
+  let c = mix(horizon, zenith, pow(clamp(up, 0, 1), 0.62));
+  c = mix(ground, c, smoothstep(-0.12, 0.02, up));
+  const sd = dot(dir, vec3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z));
+  c = c.add(vec3(1.0, 0.86, 0.62).mul(pow(clamp(sd, 0, 1), 220).mul(6)));       // disc
+  c = c.add(vec3(1.0, 0.80, 0.52).mul(pow(clamp(sd, 0, 1), 7).mul(0.16)));      // glow
+  return c;
+})();
+const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), skyMat);
+sky.scale.setScalar(24000);
+sky.frustumCulled = false;
+scene.add(sky);
+
+// a real altitude you can climb through and look down on, not a camera-locked dome
+const CLOUD_Y = 1400;
+const cloudMat = new MeshBasicNodeMaterial({
+  side: THREE.DoubleSide, transparent: true, depthWrite: false, fog: false,
+});
+const uCloudCover = uniform(0.46);
+cloudMat.colorNode = vec3(0.97, 0.98, 1.0);
+cloudMat.opacityNode = Fn(() => {
+  const p = positionWorld.xz.mul(0.00042).add(vec2(time.mul(0.004), time.mul(0.0016)));
+  const n = mx_fractal_noise_float(vec3(p.x, p.y, 0.0), 4, 2.0, 0.5, 1.0).mul(0.5).add(0.5);
+  const dist = length(positionWorld.xz.sub(uCamXZ));
+  const fade = oneMinus(smoothstep(9000, 15000, dist));
+  return smoothstep(uCloudCover, uCloudCover.add(0.22), n).mul(0.88).mul(fade);
+})();
+const clouds = new THREE.Mesh(new THREE.PlaneGeometry(34000, 34000), cloudMat);
+clouds.rotation.x = -Math.PI / 2;
+clouds.position.y = CLOUD_Y;
+clouds.frustumCulled = false;
+clouds.renderOrder = 5;
+scene.add(clouds);
+
+// ---------------------------------------------------------------------------
+// Craft meshes
+// ---------------------------------------------------------------------------
+
+function mat(color, emissive = 0x000000) {
+  return new MeshStandardNodeMaterial({ color, emissive, roughness: 0.55, metalness: 0.25 });
+}
+
+// Geometry is shared with the bot viewer's drone operators (flight-meshes.js); the materials stay
+// here because this page runs node materials.
+const CRAFT_MATERIALS = {
+  standard: (color, emissive = 0x000000) => mat(color, emissive),
+  basic: (color, opacity = 1) => new MeshBasicNodeMaterial({ color, transparent: opacity < 1, opacity }),
+};
+
+function buildMesh(afKey, tint) {
+  return buildCraftMesh(afKey, tint, CRAFT_MATERIALS);
+}
+
+function poseMesh(f, dt) {
+  const g = f.mesh;
+  if (!g) return;
+  g.position.copy(f.p);
+  g.quaternion.copy(f.q);
+  // This line used to run unconditionally, which quietly undid the mesh hide in killFlyer — a
+  // downed aircraft stayed on screen, frozen, until it respawned. Now only a live aircraft or a
+  // falling wreck draws, and a wreck ignores the cockpit hide because the camera leaves the
+  // cockpit when you die.
+  g.visible = (!f.dead || f.wreck) && !(f === player && camMode === 'cockpit' && !f.wreck);
+  if (f.afKey === 'plane') {
+    const fl = g.userData.flame;
+    const on = f.throttle > 0.05 && !f.crashed;
+    fl.visible = on;
+    if (on) fl.scale.set(0.7 + f.throttle * 0.6, 1, 0.5 + f.throttle * 1.5);
+  } else if (f.afKey === 'drone') {
+    const spin = (f.crashed ? 0 : 40 + f.throttle * 140) * dt;
+    for (let i = 0; i < g.userData.rotors.length; i++) {
+      g.userData.rotors[i].rotation.y += spin * (i % 2 ? -1 : 1);
+    }
+  } else if (f.afKey === 'bird') {
+    const flap = Math.sin(f.flapPhase) * (f.throttle > 0 ? 0.85 : 0.16);
+    const fold = f.sweep * 1.05;
+    for (const wpart of g.userData.wings) {
+      wpart.pivot.rotation.z = -wpart.side * (flap - 0.06);
+      wpart.pivot.rotation.y = wpart.side * fold;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// World population
+// ---------------------------------------------------------------------------
+
+let player = null;
+const flyers = [];
+let aiOn = true, assistOn = true, hudOn = true, camMode = 'chase', aiEngage = true;
+let groundOn = true, volumetricFx = true, enemyRespawn = true, podsOn = true;
+let aimAssist = 0.35;
+let bannerTimer = 0;
+let shake = 0;
+function addShake(amount) { shake = Math.min(2.5, shake + amount); }
+
+// Hostiles come back only while the toggle is on. Allies always come back, so turning respawn off
+// gives you a sky you can actually clear rather than a war of attrition you slowly lose.
+function mayRespawn(f) { return f === player || f.team !== 1 || enemyRespawn; }
+
+function respawnFlyer(f) {
+  resetFlyer(f);
+  if (f.mesh) f.mesh.visible = true;
+}
+
+function setPlayerAirframe(key) {
+  const keep = player ? { x: player.p.x, z: player.p.z, y: player.p.y } : null;
+  if (player) { scene.remove(player.mesh); flyers.splice(flyers.indexOf(player), 1); }
+  player = makeFlyer(key, { x: keep ? keep.x : 0, z: keep ? keep.z : 0 });
+  world.player = player;
+  if (keep) player.p.y = Math.max(keep.y, heightAt(player.p.x, player.p.z) + player.af.spawn.alt * 0.5);
+  player.mesh = buildMesh(key, 0xc9d4e2);
+  scene.add(player.mesh);
+  flyers.push(player);
+  document.getElementById('afNote').textContent = player.af.note;
+  buildTuneRows();
+  for (const b of afSeg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.af === key);
+}
+
+const aiFlyers = [];
+const TEAM_COLOR = [0x7fd6ff, 0xff8a6a];          // 0 friendly, 1 hostile
+const TEAM_HUD = ['rgba(126,200,255,', 'rgba(255,130,110,'];
+const TRAIN_COLOR = 0xffb03a;                     // high-vis orange, like a real target drone
+const TRAIN_HUD = 'rgba(255,190,90,';
+
+// how many of each SQUAD class are in the sky; PRESETS names the interesting combinations
+const roster = { ally: 2, bandit: 2, hunter: 1, raptor: 1, trainer: 0, target: 0 };
+
+// What flight-ai.js is allowed to see. Passed rather than imported, so the AI module holds no
+// hidden state and the same functions can drive a different world (a bot viewer, a replay).
+const world = { flyers, player: null, aiEngage: true };
+
+function buildAi() {
+  for (const f of aiFlyers) scene.remove(f.mesh);
+  aiFlyers.length = 0;
+  for (let i = flyers.length - 1; i >= 0; i--) if (flyers[i] !== player) flyers.splice(i, 1);
+  if (!aiOn) return;
+  // circuits are centred on the player so the fight is where you are, not where you started
+  const cx = player ? player.p.x : 0, cz = player ? player.p.z : 0;
+  let i = 0;
+  for (const [cls, def] of Object.entries(SQUAD)) {
+    for (let n = 0; n < roster[cls]; n++, i++) {
+      const spread = def.r * (0.8 + 0.35 * n);
+      const ox = cx + Math.cos(i * 1.4) * spread;
+      const oz = cz + Math.sin(i * 1.4) * spread;
+      const f = makeAi(makeFlyer(def.key, { x: ox, z: oz, heading: i, team: def.team }),
+        i + 1, def.over);
+      f.armed = def.armed;
+      f.ai.name = roster[cls] > 1 ? `${def.label} ${n + 1}` : def.label;
+      // A tight circuit is centred on the unit's OWN spawn point, not the player's. Four target
+      // drones sharing one 90 m ring would stack up on top of each other; four bandits sharing a
+      // 2.6 km ring are simply in the same fight, which is the point.
+      const own = f.ai.radius < 600;
+      const hx = own ? ox : cx, hz = own ? oz : cz;
+      f.ai.home.set(hx, 0, hz);
+      offsetCircuit(f, hx, hz);
+      f.mesh = buildMesh(def.key, def.armed ? TEAM_COLOR[def.team] : TRAIN_COLOR);
+      scene.add(f.mesh);
+      aiFlyers.push(f); flyers.push(f);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ground targets — radar, SAM, AA
+// ---------------------------------------------------------------------------
+
+const groundTargets = [];
+
+function buildSite(kind, x, z, team = 1) {
+  const g = new THREE.Group();
+  const base = new MeshStandardNodeMaterial({ color: 0x4a5058, roughness: 0.8, metalness: 0.2 });
+  const dark = new MeshStandardNodeMaterial({ color: 0x2c3138, roughness: 0.7 });
+  const warn = new MeshStandardNodeMaterial({ color: 0xd8b24a, roughness: 0.6, emissive: 0x2a2008 });
+
+  const wide = GROUND[kind].passive;
+  const pad = wide
+    ? new THREE.Mesh(new THREE.BoxGeometry(26, 0.8, 22), dark)
+    : new THREE.Mesh(new THREE.CylinderGeometry(7, 8, 1.2, 12), dark);
+  pad.position.y = wide ? 0.4 : 0.6; g.add(pad);
+  let spin = null;
+
+  if (kind === 'hq') {
+    const block = new THREE.Mesh(new THREE.BoxGeometry(17, 7, 11), base);
+    block.position.y = 4.2; g.add(block);
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(9, 4, 7), base);
+    upper.position.set(-2, 9.6, 0); g.add(upper);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 12, 6), dark);
+    mast.position.set(5.5, 13.5, 0); g.add(mast);
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.6, 8, 6), warn);
+    lamp.position.set(5.5, 19.6, 0); g.add(lamp);
+  } else if (kind === 'depot') {
+    for (let i = 0; i < 3; i++) {
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.4, 7, 14), warn);
+      tank.position.set(-7 + i * 7, 4.4, i % 2 ? 3 : -3); g.add(tank);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(3.5, 3.5, 0.5, 14), dark);
+      cap.position.set(tank.position.x, 8.1, tank.position.z); g.add(cap);
+    }
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 20, 8), dark);
+    pipe.rotation.z = Math.PI / 2; pipe.position.y = 1.8; g.add(pipe);
+  } else if (kind === 'hangar') {
+    // an open half-cylinder arch: the shape reads as a hangar from the air, which is the only
+    // angle anybody will ever see it from
+    // an open shell needs both faces drawn or it vanishes when you look through the doorway
+    const shell = new MeshStandardNodeMaterial({
+      color: 0x4a5058, roughness: 0.8, metalness: 0.2, side: THREE.DoubleSide });
+    const arch = new THREE.Mesh(
+      new THREE.CylinderGeometry(9, 9, 22, 18, 1, true, 0, Math.PI), shell);
+    arch.rotation.z = Math.PI / 2; arch.position.y = 0.8; g.add(arch);
+    const backWall = new THREE.Mesh(new THREE.CircleGeometry(9, 18, 0, Math.PI), dark);
+    backWall.position.set(-11, 0.8, 0); backWall.rotation.y = -Math.PI / 2; g.add(backWall);
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(2, 0.4, 18), warn);
+    strip.position.set(13, 0.9, 0); g.add(strip);
+  } else if (kind === 'radar') {
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, 9, 8), base);
+    mast.position.y = 5.4; g.add(mast);
+    const dish = new THREE.Group();
+    const face = new THREE.Mesh(new THREE.BoxGeometry(11, 6.5, 0.4), warn);
+    face.rotation.x = -0.35;
+    dish.add(face);
+    dish.position.y = 10.5;
+    g.add(dish);
+    spin = dish;
+  } else if (kind === 'sam') {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(6, 3, 8), base);
+    box.position.y = 2.6; g.add(box);
+    const rack = new THREE.Group();
+    for (let i = 0; i < 4; i++) {
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 6.5, 8), dark);
+      tube.rotation.x = -0.55;
+      tube.position.set(-2.1 + (i % 2) * 4.2, 1.2 + Math.floor(i / 2) * 1.3, 0);
+      rack.add(tube);
+    }
+    rack.position.y = 4.2;
+    g.add(rack);
+    spin = rack;
+  } else {
+    const turret = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.2, 2.4, 10), base);
+    turret.position.y = 2.4; g.add(turret);
+    const barrels = new THREE.Group();
+    for (const side of [-0.7, 0.7]) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 5.5, 6), dark);
+      bar.rotation.x = Math.PI / 2;
+      bar.position.set(side, 0, -2);
+      barrels.add(bar);
+    }
+    barrels.position.y = 3.6;
+    g.add(barrels);
+    spin = barrels;
+  }
+
+  const y = heightAt(x, z);
+  g.position.set(x, y, z);
+  g.traverse((o) => { o.frustumCulled = false; });
+  scene.add(g);
+
+  const site = {
+    kind, team, mesh: g, spin,
+    p: new THREE.Vector3(x, y + (wide ? 5 : 4), z),
+    hp: GROUND[kind].hp, maxHp: GROUND[kind].hp,
+    dead: false, cool: Math.random() * 4, aim: new THREE.Vector3(0, 0, -1),
+    rebuild: 0,
+    hitRadius: kind === 'hangar' ? 14 : kind === 'hq' ? 12 : wide ? 9 : 9,
+  };
+  groundTargets.push(site);
+  return site;
+}
+
+// One base cluster: a radar that sees for the whole site, two SAMs and three AA guns around it.
+function buildGroundSites(cx, cz) {
+  for (const s of groundTargets) scene.remove(s.mesh);
+  groundTargets.length = 0;
+  if (!groundOn) return;
+  const bx = cx + 2600, bz = cz - 1800;
+  buildSite('radar', bx, bz);
+  buildSite('sam', bx + 260, bz + 120);
+  buildSite('sam', bx - 300, bz - 90);
+  buildSite('aa', bx + 120, bz - 240);
+  buildSite('aa', bx - 150, bz + 250);
+  buildSite('aa', bx + 340, bz - 330);
+
+  // A second, UNDEFENDED base on the far side of you. Nothing here shoots, so it is where you go
+  // to practise a ground attack run, and where the fuel depot pays out the biggest blast in the
+  // demo. It is deliberately out of the SAM ring so you can reach it without fighting through.
+  const ux = cx - 3200, uz = cz + 2400;
+  buildSite('hq', ux, uz);
+  buildSite('hangar', ux + 420, uz - 60);
+  buildSite('hangar', ux + 420, uz + 90);
+  buildSite('depot', ux - 240, uz + 200);
+  buildSite('depot', ux - 190, uz + 320);
+}
+
+function radarAlive() {
+  for (const s of groundTargets) if (s.kind === 'radar' && !s.dead) return true;
+  return false;
+}
+
+const _gto = new THREE.Vector3();
+const _gaim = new THREE.Vector3();
+function updateGround(dt) {
+  const seeing = radarAlive();
+  for (const s of groundTargets) {
+    if (s.dead) {
+      // a rubbled site comes back on the same toggle as the aircraft, so "enemy respawn" off
+      // means the map really does stay cleared
+      if (!enemyRespawn) continue;
+      s.rebuild -= dt;
+      if (s.rebuild <= 0) {
+        s.dead = false; s.hp = s.maxHp; s.mesh.visible = true; s.cool = 3;
+      }
+      continue;
+    }
+    const def = GROUND[s.kind];
+
+    // pick the nearest hostile aircraft in range
+    let foe = null, best = Infinity;
+    s.foe = null;
+    for (const f of flyers) {
+      if (f.dead || f.team === s.team) continue;
+      const d = f.p.distanceTo(s.p);
+      // without the radar, sites only see what is close enough to spot by eye
+      const reach = s.kind === 'radar' ? 0 : def.range * (seeing ? 1 : 0.45);
+      if (d < reach && d < best) { best = d; foe = f; }
+    }
+
+    s.foe = foe;
+    if (!def.range) {                       // radar and every base structure: nothing to shoot with
+      if (s.spin) s.spin.rotation.y += dt * 0.9;
+      continue;
+    }
+    if (foe) {
+      _gto.copy(foe.p).sub(s.p);
+      s.spin.rotation.y = Math.atan2(-_gto.x, -_gto.z);
+      const pitch = Math.atan2(_gto.y, Math.hypot(_gto.x, _gto.z));
+      s.spin.rotation.x = -THREE.MathUtils.clamp(pitch, -0.2, 1.2);
+    }
+
+    s.cool -= dt;
+    if (!foe || s.cool > 0) continue;
+
+    if (s.kind === 'sam') {
+      if (best < def.minRange) continue;
+      const m = freeSlot(missiles);
+      if (!m) continue;
+      s.cool = def.reload;
+      m.live = true; m.age = 0; m.trail = 0;
+      m.target = foe; m.owner = s;
+      m.p.copy(s.p).add(new THREE.Vector3(0, 6, 0));
+      m.v.set(0, 120, 0).addScaledVector(_gto.normalize(), 60);
+      m.lastLos.copy(foe.p).sub(m.p).normalize();
+      m.mesh.visible = true;
+      playSfx('mslLaunch', m.p);
+    } else {
+      s.cool = 1 / def.rps;
+      const b = bullets.find((x) => !x.live);
+      if (!b) continue;
+      leadPoint(_gaim, s.p, foe.p, foe.v, def.muzzle);
+      _gto.copy(_gaim).sub(s.p).normalize();
+      b.live = true; b.owner = -1; b.team = s.team;
+      b.life = def.range / def.muzzle;
+      b.p.copy(s.p).addScaledVector(_gto, 6);
+      b.v.copy(_gto).multiplyScalar(def.muzzle);
+      b.v.x += (Math.random() - 0.5) * 26;
+      b.v.y += (Math.random() - 0.5) * 26;
+      b.v.z += (Math.random() - 0.5) * 26;
+      if (Math.random() < 0.34) playSfx('gun', s.p, 0.5);
+    }
+  }
+}
+
+function damageSite(s, amount, at) {
+  if (s.dead) return;
+  s.hp -= amount;
+  if (at) explosion(at, 2.2, 'hit');
+  if (s.hp <= 0) {
+    s.dead = true;
+    s.mesh.visible = false;
+    s.rebuild = 30;
+    const def = GROUND[s.kind];
+    explosion(s.p, def.blast, 'craft');
+    playSfx('explosion', s.p, 1.2);
+    // a fuel depot goes up in stages rather than all at once — the secondaries are what make it
+    // feel like fuel instead of a crate
+    if (s.kind === 'depot') {
+      for (const [dx, dz, at] of [[7, -4, 0.25], [-6, 5, 0.5], [2, 6, 0.85]]) {
+        const where = new THREE.Vector3(s.p.x + dx, s.p.y + 2, s.p.z + dz);
+        setTimeout(() => {
+          if (!s.dead) return;                   // it was rebuilt before the fire finished
+          explosion(where, def.blast * 0.55, 'craft');
+          playSfx('explosion2', where, 0.9);
+        }, at * 1000);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resupply pods
+//
+// You start with 4 missiles and no way to get more, which turns every fight after the first into a
+// gun fight whether you wanted one or not. Pods are the fix: fly through one and rearm.
+//
+// They are YOURS — the AI ignores them completely. Partly that is the same rule practice targets
+// follow, and partly it is that a bandit hoovering up the pod you were lining up on is the least
+// interesting way to lose a resupply.
+// ---------------------------------------------------------------------------
+
+const POD_KINDS = {
+  msl:   { label: 'MSL', color: 0xff9a4a, hud: 'rgba(255,170,90,', give: (f) => { f.missiles = Math.min(COMBAT.missileMax, f.missiles + 2); }, weight: 3 },
+  gun:   { label: 'AMMO', color: 0x7ef0a0, hud: 'rgba(126,240,160,', give: (f) => { f.ammo = Math.min(COMBAT.ammoMax, f.ammo + 300); }, weight: 2 },
+  flare: { label: 'FLARE', color: 0x9ad6ff, hud: 'rgba(154,214,255,', give: (f) => { f.flares = Math.min(COMBAT.flareMax, f.flares + 8); }, weight: 1 },
+  drone: { label: 'DRONE', color: 0xc79aff, hud: 'rgba(199,154,255,', give: (f) => giveDrones(f, 1), weight: 2 },
+};
+const POD_COUNT = 7;
+const POD_DROPS = 6;          // spare slots for what shot-down aircraft leave behind
+const POD_PICKUP = 55;        // generous, because you arrive at 120 m/s
+const POD_RESPAWN = 22;
+const POD_DROP_LIFE = 34;
+const POD_SINK = 7;           // m/s: a dropped canister hangs long enough to be worth turning for
+
+// One array holds both kinds. A FIXED pod is scenery that respawns on a timer; a DROPPED one is
+// what falls out of an aircraft you just shot down, and it sinks, expires and does not come back.
+// They pick up, draw and radar identically, which is the reason for the shared list.
+const pods = [];
+const podBag = [];
+function makePod(kind) {
+  const def = POD_KINDS[kind];
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(9, 1.1, 8, 24),
+    new MeshStandardNodeMaterial({ color: def.color, emissive: def.color,
+      emissiveIntensity: 1.4, roughness: 0.4 }));
+  g.add(ring);
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(3.2, 0),
+    new MeshStandardNodeMaterial({ color: 0xe8eef6, emissive: def.color,
+      emissiveIntensity: 0.6, roughness: 0.3, metalness: 0.4 }));
+  g.add(core);
+  g.frustumCulled = false;
+  scene.add(g);
+  return { kind, def, mesh: g, ring, core, cool: 0, fixed: true, ttl: 0, live: true,
+    p: new THREE.Vector3(), v: new THREE.Vector3() };
+}
+
+function setPodKind(pod, kind) {
+  pod.kind = kind;
+  pod.def = POD_KINDS[kind];
+  for (const m of [pod.ring.material, pod.core.material]) m.emissive.setHex(pod.def.color);
+  pod.ring.material.color.setHex(pod.def.color);
+}
+
+function buildPods(cx, cz) {
+  for (const pod of pods) scene.remove(pod.mesh);
+  pods.length = 0;
+  podBag.length = 0;
+  // weighted draw, so most of what you find is missiles — that is the shortage
+  for (const [k, d] of Object.entries(POD_KINDS)) for (let i = 0; i < d.weight; i++) podBag.push(k);
+  if (!podsOn) return;
+  for (let i = 0; i < POD_COUNT; i++) {
+    const pod = makePod(podBag[i % podBag.length]);
+    const a = (i / POD_COUNT) * Math.PI * 2 + 0.6;
+    const r = 1800 + (i % 3) * 900;
+    const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+    pod.p.set(x, Math.max(heightAt(x, z) + 260, 620 + (i % 4) * 190), z);
+    pod.mesh.position.copy(pod.p);
+    pods.push(pod);
+  }
+  // the drop slots start dead and are claimed by kills
+  for (let i = 0; i < POD_DROPS; i++) {
+    const pod = makePod('msl');
+    pod.fixed = false; pod.live = false; pod.mesh.visible = false;
+    pods.push(pod);
+  }
+}
+
+// Something died up here and its stores went with it. Only armed aircraft leave anything: a target
+// drone is not carrying missiles, and farming the practice range for ammunition would make the
+// whole scarcity pointless.
+function dropPod(at, vel) {
+  if (!podsOn || !podBag.length) return;
+  const pod = pods.find((p) => !p.fixed && !p.live);
+  if (!pod) return;
+  setPodKind(pod, podBag[Math.floor(Math.random() * podBag.length)]);
+  pod.live = true; pod.cool = 0; pod.ttl = POD_DROP_LIFE;
+  pod.p.copy(at);
+  pod.v.copy(vel).multiplyScalar(0.25);
+  pod.v.y = -POD_SINK;
+  pod.mesh.position.copy(pod.p);
+  pod.mesh.visible = true;
+}
+
+function collectPod(pod) {
+  pod.def.give(player);
+  pod.mesh.visible = false;
+  playSfx('pickup', pod.mesh.position, 0.9);
+  banner.textContent = `${pod.def.label} RESUPPLY`;
+  bannerTimer = 1.4;
+  for (let i = 0; i < 8; i++) {
+    _ev.set((Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40);
+    emit(fxFire, pod.mesh.position, _ev, 0.5, 1.4, 5, pod.def.color, 1.4);
+  }
+  if (pod.fixed) pod.cool = POD_RESPAWN;
+  else pod.live = false;
+}
+
+function updatePods(dt) {
+  for (const pod of pods) {
+    if (!pod.live) continue;
+    if (pod.cool > 0) {
+      pod.cool -= dt;
+      if (pod.cool <= 0) pod.mesh.visible = true;
+      continue;
+    }
+    // a stationary object at altitude reads as scenery; a spinning one reads as a pickup
+    pod.ring.rotation.y += dt * 1.4;
+    pod.ring.rotation.x = Math.sin(performance.now() * 0.0006) * 0.5;
+    pod.core.rotation.y -= dt * 2.1;
+
+    if (pod.fixed) {
+      pod.mesh.position.y = pod.p.y + Math.sin(performance.now() * 0.0011) * 3.5;
+    } else {
+      pod.v.multiplyScalar(1 - 0.8 * dt);
+      pod.v.y = -POD_SINK;
+      pod.p.addScaledVector(pod.v, dt);
+      pod.mesh.position.copy(pod.p);
+      pod.ttl -= dt;
+      if (pod.ttl <= 0 || pod.p.y < heightAt(pod.p.x, pod.p.z) + 4) {
+        pod.live = false; pod.mesh.visible = false;
+        continue;
+      }
+    }
+
+    if (player.dead) continue;
+    if (player.p.distanceToSquared(pod.mesh.position) > POD_PICKUP * POD_PICKUP) continue;
+    collectPod(pod);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Volumetric explosions
+//
+// The bounded raymarch from demos/volumetric-smoke.html, adapted. A fireball is one bounding
+// sphere; every covered pixel marches a density field through it, with a short secondary march
+// toward the sun for self-shadowing — which is what gives a puff a lit top and a dark underside,
+// the thing a camera-facing sprite has no way to fake.
+//
+// ONE DELIBERATE CHANGE FROM THE SOURCE DEMO. That demo clamps the march at whatever solid geometry
+// already wrote depth, by reading `viewportDepthTexture`, and its own header flags the case it never
+// tested: a MULTISAMPLED depth target, which is exactly what this page has because it runs
+// `antialias: true`. Rather than gamble on it, the march is clamped against an analytic GROUND
+// PLANE instead — the terrain height under the puff's centre, solved for in closed form. Blasts are
+// tens of metres across against terrain features hundreds of metres wide, so locally flat is a good
+// approximation, and it costs one height evaluation per fragment instead of a depth read.
+//
+// KNOWN LIMITATION of dropping the depth read: with depthTest off (needed so a puff resting on the
+// ground is not rejected by its own back face) a fireball behind a ridge draws over the ridge.
+// Explosions live about two seconds, so this is rarely on screen — but it is the honest cost, and
+// the sprite path is still there behind the "volumetric explosions" toggle to compare against.
+// ---------------------------------------------------------------------------
+
+const VOL_MARCH = 22;
+const VOL_LIGHT = 3;
+const VOL_POOL = 5;
+
+const volPuffs = [];
+for (let i = 0; i < VOL_POOL; i++) {
+  const uCenter = uniform(new THREE.Vector3());
+  const uRadius = uniform(1);
+  const uCore = uniform(1);       // emissive fireball core, gone long before the smoke is
+  const uFade = uniform(0);
+  const uGroundY = uniform(0);
+  const uSeed = uniform(0);
+
+  const mat = new MeshBasicNodeMaterial({
+    transparent: true, depthWrite: false, depthTest: false,
+    side: THREE.BackSide, forceSinglePass: true, fog: false,
+    blending: THREE.NormalBlending,
+  });
+
+  const densityAt = Fn(([wp, q]) => {
+    const shell = smoothstep(float(1.0), float(0.35), length(q));
+    const drift = vec3(time.mul(0.35), time.mul(-0.5), uSeed);
+    const n = mx_fractal_noise_float(wp.mul(0.055).add(drift), 3, 2.0, 0.5, 1.0);
+    return max(shell.mul(n.mul(0.5).add(0.5).sub(0.28)).mul(3.4), float(0));
+  });
+
+  const marched = Fn(() => {
+    const ro = cameraPosition;
+    const rd = normalize(positionWorld.sub(ro));
+
+    // ray versus the bounding sphere, analytically — the shape never depends on tessellation
+    const oc = ro.sub(uCenter);
+    const b = dot(oc, rd);
+    const c = dot(oc, oc).sub(uRadius.mul(uRadius));
+    const hh = sqrt(max(b.mul(b).sub(c), float(0)));
+    const tNear = max(b.negate().sub(hh), float(0));
+    const tFar = b.negate().add(hh);
+
+    // ground plane clamp, in place of the source demo's depth read
+    const denom = min(rd.y, float(-1e-4));
+    const tG = uGroundY.sub(ro.y).div(denom);
+    const tGround = select(rd.y.lessThan(-1e-4), max(tG, float(0)), float(1e9));
+    const tEnd = min(tFar, tGround);
+
+    const span = max(tEnd.sub(tNear), float(0));
+    const dtM = span.div(float(VOL_MARCH));
+
+    const col = vec3(0).toVar();
+    const trans = float(1).toVar();
+    const t = tNear.add(dtM.mul(0.5)).toVar();
+
+    Loop(VOL_MARCH, () => {
+      const wp = ro.add(rd.mul(t));
+      const q = wp.sub(uCenter).div(uRadius);
+      const dens = densityAt(wp, q);
+
+      If(dens.greaterThan(0.001), () => {
+        const shadow = float(0).toVar();
+        const ls = uRadius.mul(1.5).div(float(VOL_LIGHT));
+        const lt = ls.mul(0.5).toVar();
+        Loop(VOL_LIGHT, () => {
+          const lp = wp.add(vec3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z).mul(lt));
+          shadow.addAssign(densityAt(lp, lp.sub(uCenter).div(uRadius)).mul(ls));
+          lt.addAssign(ls);
+        });
+        const lit = exp(shadow.mul(0.10).negate());
+        const base = mix(vec3(0.10, 0.09, 0.09), vec3(0.80, 0.77, 0.72), lit);
+        const hot = smoothstep(float(0.66), float(0.0), length(q)).mul(uCore);
+        const sample = base.add(vec3(1.0, 0.62, 0.22).mul(hot.mul(4.0)));
+
+        const a = float(1).sub(exp(dens.mul(dtM).mul(0.10).negate()));
+        col.addAssign(trans.mul(a).mul(sample));
+        trans.mulAssign(float(1).sub(a));
+      });
+
+      If(trans.lessThan(0.02), () => { Break(); });
+      t.addAssign(dtM);
+    });
+
+    const alpha = float(1).sub(trans).mul(uFade);
+    // col was accumulated premultiplied; un-premultiply so plain NormalBlending is right
+    const rgb = col.div(max(float(1).sub(trans), float(1e-4)));
+    return vec4(rgb, alpha);
+  })();
+
+  mat.colorNode = marched.xyz;
+  mat.opacityNode = marched.w;
+
+  // 1.03 oversize so the analytic silhouette is never clipped by the mesh's own tessellation
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1.03, 16, 12), mat);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 12;
+  scene.add(mesh);
+
+  volPuffs.push({
+    mesh, uCenter, uRadius, uCore, uFade, uGroundY, uSeed,
+    life: 0, maxLife: 1, r0: 1, r1: 1,
+  });
+}
+
+let volNext = 0;
+function spawnVolumePuff(pos, radius, life = 2.4) {
+  if (!volumetricFx) return false;
+  const v = volPuffs[volNext];
+  volNext = (volNext + 1) % volPuffs.length;
+  v.life = life; v.maxLife = life;
+  // The march costs up to 22 steps x 3 shadow steps of fractal noise PER COVERED PIXEL, so the
+  // radius is a fill-rate budget, not an art choice. A fuel depot asks for a bigger fireball than
+  // that budget allows; it gets the capped volume and makes up the difference in sprites, which
+  // cost nothing per pixel.
+  const r = Math.min(radius, 24);
+  v.r0 = r * 0.45; v.r1 = r * 2.1;
+  v.uCenter.value.copy(pos);
+  v.uGroundY.value = heightAt(pos.x, pos.z);
+  v.uSeed.value = Math.random() * 40;
+  v.mesh.visible = true;
+  return true;
+}
+
+function updateVolumePuffs(dt) {
+  for (const v of volPuffs) {
+    if (v.life <= 0) continue;
+    v.life -= dt;
+    if (v.life <= 0) { v.mesh.visible = false; continue; }
+    const t = 1 - v.life / v.maxLife;
+    const r = v.r0 + (v.r1 - v.r0) * Math.pow(t, 0.55);
+    v.uRadius.value = r;
+    v.uCore.value = Math.max(0, 1 - t * 4.5);          // the fire is gone in the first fifth
+    v.uFade.value = Math.min(1, (1 - t) * 2.2);
+    v.uCenter.value.y += dt * 5 * t;                    // the column rises as it cools
+    v.mesh.position.copy(v.uCenter.value);
+    v.mesh.scale.setScalar(r);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio
+//
+// BORROWED SOUNDS — every file listed in BORROWED_SFX below is taken from this workspace's own
+// `sfx/` library, which was assembled for the game and NOT authored for this demo. `sfx/README.md`
+// records no licence or provenance for any of them, so treat them as unlicensed placeholders:
+// fine for a local demo, not fine to ship or redistribute until each one is traced to a source.
+// Everything else you hear is ours, generated further down: the lock tone, the threat siren and
+// beep, the evade chime, the engine and the wind are live oscillators, and the flare dispenser and
+// the dry click are synthesised into buffers at startup so they can be positional.
+//
+// This is also the one place the demo reaches outside its own file. It is an ASSET fetch, not a
+// module import, so the "a demo cannot break the game" rule in demos/README.md still holds. Move
+// this file away from the workspace and the sim runs silently rather than failing.
+// ---------------------------------------------------------------------------
+
+const BORROWED_SFX = {
+  gun: '../sfx/gun-shots/rifle-1.mp3',
+  explosion: '../sfx/explosions/explosion-1.mp3',
+  explosion2: '../sfx/explosions/explosion-2.mp3',
+  mslLaunch: '../sfx/gun-shots/rocket-launch.mp3',
+  impact: '../sfx/bullet-impact/impact-1.wav',
+  hit: '../sfx/assets/enemy_hit.wav',
+  hurt: '../sfx/assets/player_damage.wav',
+};
+
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const sfxBuffers = {};
+const sfxCool = {};
+const voicePool = [];
+const VOICES = 18;
+let audioReady = false, audioMuted = false, audioMissing = 0;
+
+// Browsers refuse to start an AudioContext until the user has interacted, so everything waits.
+// GENERATED SOUNDS, rendered into buffers so they can go through the POSITIONAL voice pool.
+//
+// The engine, lock tone and threat warning are oscillators wired straight to the listener, which is
+// right for cockpit sounds — they have no position, they are simply yours. Flares are different: a
+// bandit defending itself two kilometres away has to sound like it is two kilometres away. Baking
+// them into an AudioBuffer at startup lets them reuse `playSfx`, which already handles positioning,
+// voice stealing and pitch variation, and costs one render instead of a live filter graph per shot.
+//
+// A state-variable filter, because the burst needs a band rather than a slope. `f` is the tuning
+// coefficient and `q` the inverse of resonance; the bandpass output is the one we want.
+function svfBandpass(data, sr, freq, resonance) {
+  const f = 2 * Math.sin(Math.PI * Math.min(0.45, freq / sr));
+  const q = 1 / resonance;
+  let low = 0, band = 0;
+  for (let i = 0; i < data.length; i++) {
+    const high = data[i] - low - q * band;
+    band += f * high;
+    low += f * band;
+    data[i] = band;
+  }
+}
+
+// A flare leaving the dispenser is two events a few milliseconds apart: the cartridge being kicked
+// out (a low thump you feel more than hear) and the composition lighting (a bright hiss that decays
+// into the burn). Layering them is what stops it sounding like a gunshot.
+function makeFlareBuffer(ctx) {
+  const sr = ctx.sampleRate;
+  const n = Math.floor(sr * 0.55);
+  const buf = ctx.createBuffer(1, n, sr);
+  const out = buf.getChannelData(0);
+
+  const noise = new Float32Array(n);
+  for (let i = 0; i < n; i++) noise[i] = Math.random() * 2 - 1;
+  const bright = noise.slice();
+  svfBandpass(bright, sr, 2100, 1.4);       // the crack of the cartridge leaving the tube
+  const burn = noise.slice();
+  svfBandpass(burn, sr, 520, 0.9);          // the composition catching, and staying caught
+
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    const crack = Math.exp(-t * 42) * bright[i] * 0.85;
+    const tail = Math.exp(-t * 5.5) * burn[i] * 0.30;
+    // the thump drops in pitch as it decays, which is what makes it read as a launch and not a hit
+    const thump = Math.exp(-t * 30) * Math.sin(2 * Math.PI * (118 - t * 140) * t) * 0.42;
+    out[i] = Math.max(-1, Math.min(1, crack + tail + thump));
+  }
+  return buf;
+}
+
+// Resupply. Rising where the evade chime falls, because one is "you got away with it" and the other
+// is "you have something you did not have before" — a fall reads as resolved, a rise as gained.
+function makePickupBuffer(ctx) {
+  const sr = ctx.sampleRate;
+  const n = Math.floor(sr * 0.5);
+  const buf = ctx.createBuffer(1, n, sr);
+  const out = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    let v = 0;
+    for (const [hz, at, dur] of [[523.25, 0, 0.16], [659.25, 0.07, 0.16], [880, 0.14, 0.30]]) {
+      if (t < at) continue;
+      const u = t - at;
+      const env = Math.exp(-u / (dur * 0.42)) * (1 - Math.exp(-u * 400));
+      v += Math.sin(2 * Math.PI * hz * u) * env * 0.33;
+      v += Math.sin(2 * Math.PI * hz * 2 * u) * env * 0.09;
+    }
+    out[i] = Math.max(-1, Math.min(1, v));
+  }
+  return buf;
+}
+
+// Nothing happened, and you should be told why. A dispenser with an empty bay is a solenoid and no
+// cartridge: a dry click with none of the hiss.
+function makeDryClickBuffer(ctx) {
+  const sr = ctx.sampleRate;
+  const n = Math.floor(sr * 0.08);
+  const buf = ctx.createBuffer(1, n, sr);
+  const out = buf.getChannelData(0);
+  const noise = new Float32Array(n);
+  for (let i = 0; i < n; i++) noise[i] = Math.random() * 2 - 1;
+  svfBandpass(noise, sr, 3200, 0.7);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    out[i] = Math.exp(-t * 130) * noise[i] * 0.6;
+  }
+  return buf;
+}
+
+function initAudio() {
+  if (audioReady) return;
+  audioReady = true;
+  const ctx = listener.context;
+  if (ctx.state === 'suspended') ctx.resume();
+
+  for (let i = 0; i < VOICES; i++) {
+    const holder = new THREE.Object3D();
+    const snd = new THREE.PositionalAudio(listener);
+    snd.setRefDistance(140);
+    snd.setRolloffFactor(1.1);
+    snd.setDistanceModel('exponential');
+    holder.add(snd);
+    scene.add(holder);
+    voicePool.push({ holder, snd });
+  }
+
+  // ours, not borrowed — see the note above BORROWED_SFX
+  sfxBuffers.flare = makeFlareBuffer(ctx);
+  sfxBuffers.dryClick = makeDryClickBuffer(ctx);
+  sfxBuffers.pickup = makePickupBuffer(ctx);
+
+  const loader = new THREE.AudioLoader();
+  for (const [name, url] of Object.entries(BORROWED_SFX)) {
+    loader.load(url, (buf) => { sfxBuffers[name] = buf; }, undefined, () => { audioMissing++; });
+  }
+  startEngineTone();
+}
+addEventListener('pointerdown', initAudio, { once: true });
+addEventListener('keydown', initAudio, { once: true });
+
+let voiceNext = 0;
+function playSfx(name, pos, vol = 1, minGap = 0) {
+  if (!audioReady || audioMuted) return;
+  const buf = sfxBuffers[name];
+  if (!buf) return;
+  if (minGap > 0) {
+    const now = listener.context.currentTime;
+    if (sfxCool[name] && now - sfxCool[name] < minGap) return;
+    sfxCool[name] = now;
+  }
+  const v = voicePool[voiceNext];
+  voiceNext = (voiceNext + 1) % voicePool.length;
+  try {
+    if (v.snd.isPlaying) v.snd.stop();
+    v.holder.position.copy(pos);
+    v.snd.setBuffer(buf);
+    v.snd.setVolume(vol);
+    v.snd.setPlaybackRate(0.92 + Math.random() * 0.16);
+    v.snd.play();
+  } catch (e) { /* a voice that will not play is not worth a crash */ }
+}
+
+// ---- generated tones below: ours, not borrowed ----
+let engineOsc = null, engineGain = null, engineNoiseGain = null;
+let lockOsc = null, lockGain = null, lockTimer = 0, lockState = false;
+let flareNoiseGain = null;
+let rwrOsc = null, rwrGain = null;
+let beepTimer = 0, beepInterval = 0.6, beepOn = false;
+const rwrState = createThreatWarning();
+let evadeSuppress = false;
+
+// The two-note cabin chime an airliner plays for an alert — a struck "ding-dong", a fifth apart
+// and falling. It is deliberately NOT a warning sound: it is the all-clear, so it is soft sines
+// rather than the square-wave beep, and the fall in pitch is what makes it read as resolved rather
+// than as one more thing going wrong.
+function playEvadeChime() {
+  if (!audioReady || audioMuted) return;
+  const ctx = listener.context;
+  const t0 = ctx.currentTime + 0.01;
+  for (const [hz, at] of [[784.0, 0], [523.25, 0.28]]) {     // G5 then C5
+    const g = ctx.createGain();
+    g.connect(listener.getInput());
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = hz;
+    o.connect(g);
+    // a quiet octave on top: a bare sine sounds like a test tone, this sounds struck
+    const o2 = ctx.createOscillator();
+    o2.type = 'sine';
+    o2.frequency.value = hz * 2;
+    const g2 = ctx.createGain();
+    g2.gain.value = 0.3;
+    o2.connect(g2).connect(g);
+
+    const st = t0 + at;
+    g.gain.setValueAtTime(0.0001, st);
+    // 0.22 against the missile beep's 0.06: the chime has to cut through an engine, wind and a
+    // fireball, and it is the one sound in the demo that is genuinely good news.
+    g.gain.linearRampToValueAtTime(0.22, st + 0.010);        // fast attack, like a chime bar
+    g.gain.exponentialRampToValueAtTime(0.0005, st + 0.85);  // long ring-out
+    o.start(st); o2.start(st);
+    o.stop(st + 0.95); o2.stop(st + 0.95);
+  }
+}
+
+function startEngineTone() {
+  const ctx = listener.context;
+  engineGain = ctx.createGain();
+  engineGain.gain.value = 0;
+  engineGain.connect(listener.getInput());
+  engineOsc = ctx.createOscillator();
+  engineOsc.type = 'sawtooth';
+  engineOsc.frequency.value = 70;
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 420;
+  engineOsc.connect(lp).connect(engineGain);
+  engineOsc.start();
+
+  // wind: white noise through a bandpass, opened by dynamic pressure
+  const len = ctx.sampleRate * 2;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = buf;
+  noise.loop = true;
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 900;
+  bp.Q.value = 0.7;
+  engineNoiseGain = ctx.createGain();
+  engineNoiseGain.gain.value = 0;
+  noise.connect(bp).connect(engineNoiseGain).connect(listener.getInput());
+  noise.start();
+
+  // Burning flares, as ONE hiss rather than one source per flare. A full salvo is 24 cartridges and
+  // 24 positional sources would cost more than everything else in the mix put together — but they
+  // are all within a few hundred metres of you by definition, since you are the one who dropped
+  // them, so a single un-positioned bed keyed to how many are alight nearby is honest enough.
+  const fnoise = ctx.createBufferSource();
+  fnoise.buffer = buf;
+  fnoise.loop = true;
+  const fbp = ctx.createBiquadFilter();
+  fbp.type = 'bandpass';
+  fbp.frequency.value = 1450;
+  fbp.Q.value = 0.9;
+  flareNoiseGain = ctx.createGain();
+  flareNoiseGain.gain.value = 0;
+  fnoise.connect(fbp).connect(flareNoiseGain).connect(listener.getInput());
+  fnoise.start();
+}
+
+function updateAudio(f, dt) {
+  if (!audioReady) return;
+  const ctx = listener.context;
+  const t = ctx.currentTime;
+
+  if (engineGain) {
+    const thr = f.dead ? 0 : f.throttle;
+    const base = f.afKey === 'drone' ? 190 : f.afKey === 'bird' ? 0 : 62;
+    engineOsc.frequency.setTargetAtTime(base * (1 + thr * 1.5 + f.ab * 0.6), t, 0.15);
+    engineGain.gain.setTargetAtTime(audioMuted || base === 0 ? 0 : 0.035 + thr * 0.05, t, 0.2);
+    const q = 0.5 * 1.225 * f.airspeed * f.airspeed;
+    engineNoiseGain.gain.setTargetAtTime(audioMuted ? 0 : Math.min(0.09, q / 90000), t, 0.25);
+  }
+
+  if (flareNoiseGain) {
+    let burning = 0;
+    for (const fl of flares) {
+      if (!fl.live) continue;
+      if (fl.p.distanceToSquared(camera.position) < 400 * 400) burning++;
+    }
+    // saturating, not linear: the difference between one flare and three should be audible, the
+    // difference between eight and twelve should not
+    const want = audioMuted ? 0 : Math.min(0.075, 0.075 * (1 - Math.exp(-burning * 0.45)));
+    flareNoiseGain.gain.setTargetAtTime(want, t, 0.12);
+  }
+
+  // Lock tone: a slow chirp while acquiring, solid when locked. This is the cue that tells you when
+  // to shoot without looking away from the target, and it is the largest thing silence was costing.
+  const want = !f.dead && f.lockTarget ? (f.lockProgress >= 1 ? 2 : 1) : 0;
+  if (want && !lockOsc) {
+    lockGain = ctx.createGain();
+    lockGain.gain.value = 0;
+    lockGain.connect(listener.getInput());
+    lockOsc = ctx.createOscillator();
+    lockOsc.type = 'square';
+    lockOsc.frequency.value = 880;
+    lockOsc.connect(lockGain);
+    lockOsc.start();
+  }
+  if (lockOsc) {
+    lockTimer -= dt;
+    if (lockTimer <= 0) {
+      lockTimer = want === 2 ? 0.06 : 0.30;
+      lockState = want === 2 ? true : !lockState;
+    }
+    lockOsc.frequency.setTargetAtTime(want === 2 ? 1180 : 780, t, 0.02);
+    lockGain.gain.setTargetAtTime(!audioMuted && want && lockState ? 0.03 : 0, t, 0.01);
+  }
+
+  // THREAT WARNING, in two stages.
+  //
+  // Stage one, something is holding a lock on you: a low siren that sweeps slowly. It is meant to
+  // be unpleasant but not urgent — you have seconds, and the right answer is to break the lock.
+  //
+  // Stage two, a missile is in the air: the siren stops and a beep takes over, and the beep gets
+  // faster as the missile closes. Rate carries the time to impact, so you can hear how long you
+  // have without reading anything. It goes solid in the last moment before impact.
+  const locked = !f.dead && f.lockedBy && !f.threat;
+  const inbound = !f.dead && f.threat && f.threat.live ? f.threat : null;
+
+  if ((locked || inbound) && !rwrOsc) {
+    rwrGain = ctx.createGain();
+    rwrGain.gain.value = 0;
+    rwrGain.connect(listener.getInput());
+    rwrOsc = ctx.createOscillator();
+    rwrOsc.type = 'sawtooth';
+    rwrOsc.connect(rwrGain);
+    rwrOsc.start();
+  }
+
+  if (rwrOsc) {
+    if (inbound) {
+      // range and closure came from pickThreat, so the beep and the HUD number cannot disagree
+      const info = f.threatInfo;
+      const cad = threatCadence(rwrState, f.threat, info.dist, info.closing, dt);
+      beepInterval = cad.interval;
+      beepTimer -= dt;
+      if (beepTimer <= 0) { beepTimer = beepInterval; beepOn = true; }
+      // the pulse is a fixed slice of the gap, so the gaps close up as the rate rises
+      if (beepTimer < beepInterval * 0.55) beepOn = false;
+      const solid = cad.solid;
+      rwrOsc.type = 'square';
+      rwrOsc.frequency.setTargetAtTime(solid ? 1500 : 900, t, 0.004);
+      rwrGain.gain.setTargetAtTime(!audioMuted && (beepOn || solid) ? 0.06 : 0, t, 0.006);
+    } else if (locked) {
+      // slow sweep between two low notes: a siren, not a beep
+      const sweep = Math.sin(t * Math.PI * 0.8) * 0.5 + 0.5;
+      rwrOsc.type = 'sawtooth';
+      rwrOsc.frequency.setTargetAtTime(150 + sweep * 90, t, 0.05);
+      rwrGain.gain.setTargetAtTime(audioMuted ? 0 : 0.05, t, 0.08);
+      beepTimer = 0; beepOn = false; resetThreatWarning(rwrState);
+    } else {
+      rwrGain.gain.setTargetAtTime(0, t, 0.05);
+      beepTimer = 0; beepOn = false; resetThreatWarning(rwrState);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Combat — guns, missiles, flares, and the FX for all of it
+// ---------------------------------------------------------------------------
+
+// one soft radial blob, reused by every fire, smoke and flare particle
+function makeSoftTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d').createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.72)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  const ctx2 = c.getContext('2d');
+  ctx2.fillStyle = g;
+  ctx2.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const softTex = makeSoftTexture();
+
+// Particle pool. Each entry owns its mesh and material so colour and opacity can vary per particle
+// without an instanced-colour path; the pool is small and most of it is invisible most of the time.
+function makeParticlePool(n, additive) {
+  const geo = new THREE.PlaneGeometry(1, 1);
+  const list = [];
+  for (let i = 0; i < n; i++) {
+    const mat = new MeshBasicNodeMaterial({
+      map: softTex, transparent: true, depthWrite: false, fog: false,
+      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.visible = false;
+    mesh.frustumCulled = false;
+    mesh.renderOrder = additive ? 8 : 7;
+    scene.add(mesh);
+    list.push({ mesh, mat, life: 0, maxLife: 1, s0: 1, s1: 1, v: new THREE.Vector3(), drag: 1 });
+  }
+  return { list, next: 0 };
+}
+const fxFire = makeParticlePool(72, true);
+const fxSmoke = makeParticlePool(96, false);
+
+function emit(pool, pos, vel, life, s0, s1, col, drag = 0.6) {
+  const p = pool.list[pool.next];
+  pool.next = (pool.next + 1) % pool.list.length;
+  p.life = life; p.maxLife = life; p.s0 = s0; p.s1 = s1; p.drag = drag;
+  p.v.copy(vel);
+  p.mesh.position.copy(pos);
+  p.mesh.visible = true;
+  p.mat.color.setHex(col);
+  return p;
+}
+
+function updateParticles(pool, dt, fade) {
+  for (const p of pool.list) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    if (p.life <= 0) { p.mesh.visible = false; continue; }
+    p.v.multiplyScalar(Math.max(0, 1 - dt * p.drag));
+    p.mesh.position.addScaledVector(p.v, dt);
+    const t = 1 - p.life / p.maxLife;
+    const s = p.s0 + (p.s1 - p.s0) * t;
+    p.mesh.scale.set(s, s, s);
+    p.mesh.quaternion.copy(camera.quaternion);
+    p.mat.opacity = fade(t);
+  }
+}
+const fadeFire = (t) => Math.max(0, 1 - t * t) * 0.95;
+const fadeSmoke = (t) => Math.max(0, Math.sin(Math.min(1, t * 1.6) * Math.PI * 0.85)) * 0.42;
+
+const _ev = new THREE.Vector3();
+function explosion(pos, scale, kind = 'craft') {
+  const volumetric = kind === 'craft' && spawnVolumePuff(pos, scale);
+  // With a real volume carrying the body of the blast, the sprites are only debris and edge flecks
+  // — but only if the volume is big enough to BE the body. Past the radius cap above it is not, so
+  // a fuel depot goes back to the full sprite count to fill out what the volume no longer covers.
+  const covered = volumetric && scale <= 24;
+  const fires = kind === 'craft' ? (covered ? 6 : 14) : 4;
+  for (let i = 0; i < fires; i++) {
+    _ev.set(Math.random() - 0.5, Math.random() - 0.35, Math.random() - 0.5)
+      .multiplyScalar(scale * (kind === 'craft' ? 2.6 : 1.4));
+    emit(fxFire, pos, _ev, 0.30 + Math.random() * 0.45, scale * 0.5, scale * 2.4,
+      [0xfff0c0, 0xffb040, 0xff6a20][i % 3], 2.2);
+  }
+  const smokes = kind === 'craft' ? (covered ? 4 : 12) : 3;
+  for (let i = 0; i < smokes; i++) {
+    _ev.set(Math.random() - 0.5, Math.random() * 0.6, Math.random() - 0.5)
+      .multiplyScalar(scale * 1.5);
+    emit(fxSmoke, pos, _ev, 1.6 + Math.random() * 2.2, scale * 1.2, scale * 4.5,
+      [0x262626, 0x3a3a3a, 0x555555][i % 3], 0.7);
+  }
+}
+
+// ---- bullets: one LineSegments for the whole pool, two vertices per tracer ----
+const MAX_BULLETS = 320;
+const bullets = [];
+for (let i = 0; i < MAX_BULLETS; i++) {
+  bullets.push({ live: false, p: new THREE.Vector3(), v: new THREE.Vector3(), life: 0, owner: 0, team: 0 });
+}
+const bulletGeo = new THREE.BufferGeometry();
+const bulletPos = new Float32Array(MAX_BULLETS * 6);
+bulletGeo.setAttribute('position', new THREE.BufferAttribute(bulletPos, 3));
+bulletGeo.setDrawRange(0, 0);
+const bulletMesh = new THREE.LineSegments(bulletGeo, new THREE.LineBasicMaterial({
+  color: 0xffd070, transparent: true, opacity: 0.95, depthWrite: false, fog: false,
+}));
+bulletMesh.frustumCulled = false;
+scene.add(bulletMesh);
+
+// ---- missiles and flares: small pools of real meshes ----
+const MAX_MISSILES = 12;
+const missiles = [];
+for (let i = 0; i < MAX_MISSILES; i++) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 2.4, 8),
+    new MeshStandardNodeMaterial({ color: 0xd8dde2, roughness: 0.5 }));
+  body.rotation.x = Math.PI / 2;
+  g.add(body);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.03, 0.35),
+    new MeshStandardNodeMaterial({ color: 0xb0b6bc }));
+  fin.position.z = 1.0;
+  g.add(fin);
+  g.visible = false;
+  g.frustumCulled = false;
+  scene.add(g);
+  missiles.push({
+    live: false, mesh: g, p: new THREE.Vector3(), v: new THREE.Vector3(),
+    target: null, owner: null, age: 0, trail: 0, lastLos: new THREE.Vector3(),
+  });
+}
+
+const MAX_FLARES = 60;
+const flares = [];
+{
+  const geo = new THREE.SphereGeometry(0.6, 6, 5);
+  for (let i = 0; i < MAX_FLARES; i++) {
+    const m = new THREE.Mesh(geo, new MeshBasicNodeMaterial({ color: 0xfff2c0, fog: false }));
+    m.visible = false; m.frustumCulled = false;
+    scene.add(m);
+    flares.push({ live: false, mesh: m, p: new THREE.Vector3(), v: new THREE.Vector3(), life: 0 });
+  }
+}
+
+function freeSlot(arr) { for (const a of arr) if (!a.live) return a; return null; }
+
+// ---- mini drones ----
+//
+// Three small airframes you release rather than fire. The steering and target choice are in
+// flight-drones.js; the pool, the meshes and the noise are here. Only the player carries them:
+// giving bandits interceptors would mean nothing you launch ever arrives, which is a worse game
+// than the one where missiles are hard to dodge.
+const DRONE_LOOK = {
+  decoy:       { color: 0x9ad6ff, hud: 'rgba(154,214,255,' },
+  kamikaze:    { color: 0xff7a3c, hud: 'rgba(255,138,80,' },
+  interceptor: { color: 0x7ef0a0, hud: 'rgba(126,240,160,' },
+};
+const MAX_DRONES = 14;
+const drones = [];
+{
+  const bodyGeo = new THREE.CylinderGeometry(0.22, 0.14, 1.9, 6);
+  const wingGeo = new THREE.BoxGeometry(2.3, 0.06, 0.5);
+  for (let i = 0; i < MAX_DRONES; i++) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(bodyGeo, new MeshStandardNodeMaterial({ color: 0xd8dde2, roughness: 0.5 }));
+    body.rotation.x = Math.PI / 2;
+    g.add(body);
+    const wing = new THREE.Mesh(wingGeo, new MeshStandardNodeMaterial({ color: 0xffffff, emissiveIntensity: 1.6 }));
+    g.add(wing);
+    g.visible = false; g.frustumCulled = false;
+    scene.add(g);
+    drones.push({
+      live: false, kind: 'decoy', def: DRONE.decoy, mesh: g, wing,
+      p: new THREE.Vector3(), v: new THREE.Vector3(), lastLos: new THREE.Vector3(),
+      age: 0, slot: 1, target: null, owner: null, flareTimer: 0, flaresLeft: 0, trail: 0,
+    });
+  }
+}
+
+let droneSide = 1;
+function releaseDrone(f, kind) {
+  if (!canRelease(f, kind)) {
+    if (f === player && !f.dead) { f.droneCool[kind] = 0.3; playSfx('dryClick', f.p, 0.5); }
+    return;
+  }
+  const d = freeSlot(drones);
+  if (!d) return;
+  const def = DRONE[kind];
+  f.drones[kind]--;
+  f.droneCool[kind] = def.cool;
+  droneSide = -droneSide;
+  d.live = true; d.kind = kind; d.def = def; d.owner = f;
+  d.age = 0; d.target = null; d.slot = droneSide; d.trail = 0;
+  d.flaresLeft = def.flares || 0; d.flareTimer = 0;
+  // released off alternating wingtips and slightly below, so a salvo fans out instead of stacking
+  d.p.copy(f.p).addScaledVector(f.right, droneSide * f.af.hitRadius * 0.8)
+    .addScaledVector(f.up, -f.af.hitRadius * 0.35);
+  d.v.copy(f.v).addScaledVector(f.right, droneSide * 12).addScaledVector(f.up, -6);
+  if (kind === 'kamikaze') d.v.setLength(Math.max(def.speed, d.v.length()));
+  // A decoy that flies your heading only ever puts itself between you and the missile. Crank it 26°
+  // off to the side at release: at 470 m/s that is a kilometre of lateral separation in five
+  // seconds, which is the difference between a seeker following the flares and following you.
+  if (kind === 'decoy') d.v.applyAxisAngle(UP, droneSide * 0.45);
+  d.wing.material.color.setHex(DRONE_LOOK[kind].color);
+  d.wing.material.emissive.setHex(DRONE_LOOK[kind].color);
+  d.mesh.visible = true;
+  playSfx(kind === 'decoy' ? 'flare' : 'mslLaunch', f.p, kind === 'decoy' ? 0.6 : 0.5);
+  if (f === player) { banner.textContent = `${def.label} AWAY`; bannerTimer = 1.1; }
+}
+
+const _dLook = new THREE.Vector3();
+function updateDrones(dt) {
+  for (const k of DRONE_KINDS) if (player.droneCool[k] > 0) player.droneCool[k] -= dt;
+  for (const d of drones) {
+    if (!d.live) continue;
+    const ev = stepDrone(d, dt, { groundTargets, missiles });
+
+    if (ev.flare) spawnFlare(d.p, d.v);
+    if (ev.killed) { detonateMissile(ev.killed); }
+    if (ev.hitSite) damageSite(ev.hitSite, impactDamage(d), d.p);
+
+    const ground = heightAt(d.p.x, d.p.z);
+    const grounded = d.p.y <= ground + 1;
+    if (ev.detonate || grounded || ev.expired) {
+      // a kamikaze is a warhead and goes off; the other two are just airframes and fall apart
+      if (d.kind === 'kamikaze' && (ev.detonate || grounded)) {
+        explosion(d.p, 9, 'craft');
+        playSfx('explosion', d.p, 0.9);
+      } else if (ev.detonate) {
+        explosion(d.p, 5, 'hit');
+      }
+      d.live = false; d.mesh.visible = false;
+      continue;
+    }
+
+    d.mesh.position.copy(d.p);
+    d.mesh.lookAt(_dLook.copy(d.p).add(d.v));
+    d.trail -= dt;
+    if (d.trail <= 0) {
+      d.trail = d.kind === 'kamikaze' ? 0.06 : 0.12;
+      emit(fxSmoke, d.p, _ev.set(0, 1.2, 0), 1.1, 0.7, 4, 0xb4b4b4, 0.3);
+    }
+  }
+}
+
+// ---- firing ----
+const _aim = new THREE.Vector3();
+function fireGun(f) {
+  if (f.dead || f.ammo <= 0) return;
+  // the per-frame decrement is in the flyer loop; doing it here too ran the gun at 44 rps, not 22
+  if (f.gunCool > 0) return;
+  f.gunCool = 1 / COMBAT.gunRps;
+  const b = bullets.find((x) => !x.live);
+  if (!b) return;
+  f.ammo--;
+  b.live = true;
+  b.owner = f.id;
+  b.team = f.team;
+  b.life = COMBAT.gunRange / COMBAT.gunSpeed;
+  b.p.copy(f.p).addScaledVector(f.fwd, f.af.hitRadius * 0.9);
+  _aim.copy(f.fwd);
+  if (f === player) applyAimAssist(_aim, f, flyers, aimAssist);
+  _aim
+    .addScaledVector(f.right, (Math.random() - 0.5) * COMBAT.gunSpread * 2)
+    .addScaledVector(f.up, (Math.random() - 0.5) * COMBAT.gunSpread * 2)
+    .normalize();
+  b.v.copy(_aim).multiplyScalar(COMBAT.gunSpeed).add(f.v);
+  playSfx('gun', f.p, f === player ? 0.55 : 0.4, 0.07);
+  if (f === player) addShake(0.5);
+}
+
+function fireMissile(f) {
+  if (f.dead || f.missiles <= 0 || f.mslCool > 0 || !f.lockTarget || f.lockProgress < 1) return;
+  const m = freeSlot(missiles);
+  if (!m) return;
+  f.missiles--;
+  f.mslCool = 1.1;
+  m.live = true; m.age = 0; m.trail = 0;
+  m.target = f.lockTarget; m.owner = f;
+  m.p.copy(f.p).addScaledVector(f.up, -f.af.hitRadius * 0.4).addScaledVector(f.right, 1.4);
+  m.v.copy(f.v).addScaledVector(f.fwd, 40);
+  m.lastLos.copy(m.target.p).sub(m.p).normalize();
+  m.mesh.visible = true;
+  playSfx('mslLaunch', f.p, 0.8);
+}
+
+// The warhead going off, wherever it happens to be — a fuse, an interceptor killing it, or a rock.
+function detonateMissile(m) {
+  explosion(m.p, 7, 'craft');
+  for (const o of flyers) {
+    if (o.dead || (m.owner && o.team === m.owner.team)) continue;
+    const d = o.p.distanceTo(m.p);
+    if (d >= COMBAT.msl.blast) continue;
+    damage(o, COMBAT.msl.damage * (1 - d / COMBAT.msl.blast), null);
+    if (o === player) evadeSuppress = true;    // that was a hit, not an evasion
+  }
+  for (const g of groundTargets) {
+    if (g.dead || (m.owner && g.team === m.owner.team)) continue;
+    const d = g.p.distanceTo(m.p);
+    if (d < 60) damageSite(g, COMBAT.msl.damage * (1 - d / 60), null);
+  }
+  m.live = false; m.mesh.visible = false;
+}
+
+// One cartridge into the pool. A decoy drone drops these too, which is the whole trick behind it:
+// the seeker code has no idea a drone exists, it only ever searches this list.
+function spawnFlare(pos, vel) {
+  const fl = freeSlot(flares);
+  if (!fl) return null;
+  fl.live = true; fl.life = COMBAT.flare.life;
+  fl.p.copy(pos);
+  fl.v.copy(vel).multiplyScalar(0.6);
+  fl.v.x += (Math.random() - 0.5) * 26;
+  fl.v.y += -8 - Math.random() * 10;
+  fl.v.z += (Math.random() - 0.5) * 26;
+  fl.mesh.visible = true;
+  return fl;
+}
+
+function dropFlares(f) {
+  if (f.dead || f.flareCool > 0) return;
+  if (f.flares <= 0) {
+    // only for you: an empty dispenser on somebody else's aircraft is not your problem, and it
+    // would be a click a second from every bandit in a running fight
+    if (f === player) { f.flareCool = 0.35; playSfx('dryClick', f.p, 0.5); }
+    return;
+  }
+  f.flareCool = 0.55;
+  let fired = 0;
+  for (let i = 0; i < 3 && f.flares > 0; i++) {
+    if (!spawnFlare(f.p, f.v)) break;
+    f.flares--;
+    fired++;
+  }
+  // one bark per cartridge, staggered, because a salvo is a rattle and not a bang. setTimeout is
+  // fine here: these are 40 ms apart and nothing downstream depends on the exact frame.
+  for (let i = 0; i < fired; i++) {
+    const where = f.p.clone();
+    if (i === 0) playSfx('flare', where, 0.75);
+    else setTimeout(() => playSfx('flare', where, 0.75), i * 42);
+  }
+}
+
+// ---- damage ----
+function damage(f, amount, at) {
+  if (f.dead) return;
+  f.hp -= amount;
+  if (at) {
+    explosion(at, f.af.hitRadius * 0.35, 'hit');
+    playSfx(f === player ? 'hurt' : 'hit', at, 0.6, 0.06);
+  }
+  if (f.hp <= 0) killFlyer(f, 'shot');
+}
+
+function killFlyer(f, reason) {
+  if (f.dead) return;
+  f.dead = true;
+  f.deadTimer = 0;
+  f.crashed = true;
+  explosion(f.p, f.af.hitRadius * 1.6, 'craft');
+  playSfx(Math.random() < 0.5 ? 'explosion' : 'explosion2', f.p, 1.3);
+  for (const m of missiles) if (m.live && m.target === f) m.target = null;
+  for (const d of drones) if (d.live && d.owner === f) d.owner = null;
+  // an armed aircraft was carrying stores, and they do not burn up with it
+  if (f.armed && f !== player && reason === 'shot') dropPod(f.p, f.v);
+  if (f === player) banner.textContent = reason === 'shot' ? 'SHOT DOWN — press R' : 'CRASHED — press R';
+
+  // Killed in the air: there is a fall to watch. Killed AT the ground — which is what a crash is —
+  // it is already there, so it just goes up.
+  if (f.mesh && killMakesWreck(f)) { startWreck(f); f.mesh.visible = true; }
+  else { if (f.mesh) f.mesh.visible = false; wreckImpact(f); }
+}
+
+function wreckImpact(f) {
+  const r = f.af.hitRadius;
+  // bigger than the air burst: this is what is left of the fuel arriving all at once
+  explosion(f.p, r * 3.0, 'craft');
+  playSfx('explosion', f.p, 1.5);
+  const near = player ? f.p.distanceTo(player.p) : 1e9;
+  addShake(f === player ? 1.8 : Math.max(0, 1.4 - near / 700));
+  // a fire that sits in the crater and a column that keeps rising out of it
+  for (let i = 0; i < 5; i++) {
+    _ev.set((Math.random() - 0.5) * r * 3, Math.random() * r * 1.5, (Math.random() - 0.5) * r * 3);
+    emit(fxFire, f.p, _ev, 0.8 + Math.random() * 0.9, r * 0.9, r * 2.2, 0xff8a2c, 1.1);
+    _ev.set((Math.random() - 0.5) * r * 2, r * 1.4 + Math.random() * r, (Math.random() - 0.5) * r * 2);
+    emit(fxSmoke, f.p, _ev, 3.4 + Math.random() * 2.4, r * 1.4, r * 7, 0x1c1c1c, 0.45);
+  }
+}
+
+// The fall, the tumble and the timers are flight-model.js; what is left here is the FX those
+// timers ask for, which is the only part that needs a scene.
+function updateWrecks(dt) {
+  for (const f of flyers) {
+    if (!f.wreck) continue;
+    const ev = stepWreck(f, dt);
+    if (f.mesh) { f.mesh.position.copy(f.p); f.mesh.quaternion.copy(f.q); }
+    const r = f.af.hitRadius;
+    if (ev.fire) {
+      _ev.set((Math.random() - 0.5) * 6, 2 + Math.random() * 4, (Math.random() - 0.5) * 6);
+      emit(fxFire, f.p, _ev, 0.32, r * 0.55, r * 1.6,
+        [0xffe2a8, 0xff9a30, 0xff5a1c][(Math.random() * 3) | 0], 1.6);
+    }
+    if (ev.smoke) {
+      _ev.set((Math.random() - 0.5) * 4, 3, (Math.random() - 0.5) * 4);
+      emit(fxSmoke, f.p, _ev, 2.4 + Math.random() * 1.0, r * 0.8, r * 5.5, 0x1e1e1e, 0.5);
+    }
+    if (ev.pop) {
+      explosion(f.p, r * 0.8, 'hit');       // 'hit' so the pops stay sprites and skip the raymarch
+      playSfx('impact', f.p, 0.45, 0.2);
+    }
+    if (ev.landed) {
+      if (f.mesh) f.mesh.visible = false;
+      wreckImpact(f);
+    }
+  }
+}
+
+// ---- lock-on ----
+function updateLock(f, dt) {
+  // a seeker does not care whether the return is an aircraft or a SAM site
+  const best = lockCandidate(f, flyers, groundTargets);
+  if (best !== f.lockTarget) { f.lockTarget = best; f.lockProgress = 0; }
+  if (best) f.lockProgress = Math.min(1, f.lockProgress + dt / COMBAT.lockTime);
+  else f.lockProgress = 0;
+}
+
+// ---- per-frame simulation ----
+const _seg = new THREE.Vector3();
+const _los = new THREE.Vector3();
+
+function updateCombat(dt) {
+  // bullets: swept against every craft, so a 940 m/s round cannot tunnel through a 6 m target
+  let vi = 0;
+  for (const b of bullets) {
+    if (!b.live) continue;
+    const ax = b.p.x, ay = b.p.y, az = b.p.z;
+    b.v.y -= G * dt * SHELL_GRAVITY;
+    b.p.addScaledVector(b.v, dt);
+    b.life -= dt;
+    let hit = false;
+    for (const o of flyers) {
+      if (o.dead || o.id === b.owner || o.team === b.team) continue;   // no friendly fire
+      const rr = o.af.hitRadius;
+      if (pointSegmentDistSq(o.p.x, o.p.y, o.p.z, ax, ay, az, b.p.x, b.p.y, b.p.z) < rr * rr) {
+        damage(o, COMBAT.gunDamage, b.p);
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      for (const g of groundTargets) {
+        if (g.dead || g.team === b.team) continue;
+        if (pointSegmentDistSq(g.p.x, g.p.y, g.p.z, ax, ay, az, b.p.x, b.p.y, b.p.z)
+          < g.hitRadius * g.hitRadius) {
+          damageSite(g, COMBAT.gunDamage, b.p);
+          hit = true;
+          break;
+        }
+      }
+    }
+    if (!hit && b.p.y < heightAt(b.p.x, b.p.z)) {
+      explosion(b.p, 1.6, 'hit');
+      playSfx('impact', b.p, 0.5, 0.08);
+      hit = true;
+    }
+    if (hit || b.life <= 0) { b.live = false; continue; }
+    bulletPos[vi++] = ax; bulletPos[vi++] = ay; bulletPos[vi++] = az;
+    bulletPos[vi++] = b.p.x; bulletPos[vi++] = b.p.y; bulletPos[vi++] = b.p.z;
+  }
+  bulletGeo.attributes.position.needsUpdate = true;
+  bulletGeo.setDrawRange(0, vi / 3);
+
+  // flares
+  for (const fl of flares) {
+    if (!fl.live) continue;
+    fl.life -= dt;
+    fl.v.y -= G * dt * 0.5;
+    fl.v.multiplyScalar(Math.max(0, 1 - dt * 0.9));
+    fl.p.addScaledVector(fl.v, dt);
+    fl.mesh.position.copy(fl.p);
+    const s = 0.7 + Math.random() * 0.5;
+    fl.mesh.scale.set(s, s, s);
+    if (Math.random() < dt * 30) {
+      emit(fxFire, fl.p, _ev.set(0, 0, 0), 0.35, 2.2, 0.4, 0xffdd90, 1.5);
+      emit(fxSmoke, fl.p, _ev.set(0, 1, 0), 1.4, 1.5, 6, 0x606060, 0.5);
+    }
+    if (fl.life <= 0 || fl.p.y < heightAt(fl.p.x, fl.p.z)) { fl.live = false; fl.mesh.visible = false; }
+  }
+
+  // missiles: guidance and flight are in flight-combat.js so they can be flown against the real
+  // aircraft model in Node. What stays here is the seduction check, the blast and the FX.
+  for (const m of missiles) {
+    if (!m.live) continue;
+
+    if (m.target && m.target.dead) m.target = null;
+    // a flare inside the seeker cone can steal the lock
+    if (m.target) {
+      for (const fl of flares) {
+        if (!fl.live) continue;
+        _los.copy(fl.p).sub(m.p);
+        const r = _los.length();
+        if (r > COMBAT.flare.seekRange) continue;
+        const vlen = m.v.length() || 1;
+        if (_los.dot(m.v) / (r * vlen) < Math.cos(COMBAT.flare.seekCone)) continue;
+        if (Math.random() < COMBAT.flare.decoy * dt * 4) { m.target = fl; break; }
+      }
+    }
+
+    const st = stepMissile(m, dt);
+    if (st.fused) { detonateMissile(m); continue; }
+
+    const burning = st.burning;
+    m.mesh.position.copy(m.p);
+    m.mesh.lookAt(_seg.copy(m.p).add(m.v));
+
+    m.trail -= dt;
+    if (m.trail <= 0) {
+      m.trail = 0.02;
+      emit(fxSmoke, m.p, _ev.set(0, 1.5, 0), 2.4, 1.2, 9, 0x9a9a9a, 0.5);
+      if (burning) emit(fxFire, m.p, _ev.set(0, 0, 0), 0.12, 2.6, 0.6, 0xffc070, 2);
+    }
+
+    if (m.age > COMBAT.msl.life || m.p.y < heightAt(m.p.x, m.p.z)) {
+      explosion(m.p, 5, 'craft');
+      m.live = false; m.mesh.visible = false;
+    }
+  }
+
+  // damaged aircraft trail smoke; it is the only health cue you get on someone else's plane
+  for (const f of flyers) {
+    if (f.dead) continue;
+    f.gunCool -= dt; f.mslCool -= dt; f.flareCool -= dt;
+    const hurt = 1 - f.hp / f.af.hp;
+    if (hurt > 0.45) {
+      f.smokeTimer -= dt;
+      if (f.smokeTimer <= 0) {
+        f.smokeTimer = 0.055;
+        emit(fxSmoke, f.p, _ev.set(0, 1.2, 0), 2.6, f.af.hitRadius * 0.5, f.af.hitRadius * 5,
+          hurt > 0.75 ? 0x2a2a2a : 0x6b6b6b, 0.5);
+      }
+    }
+  }
+
+  // Two separate states, because they mean different things to the pilot: somebody is HOLDING A
+  // LOCK on you (bad, but you have time), versus a missile is already in the air (act now).
+  const hadThreat = player.threat;
+  for (const f of flyers) { f.threat = null; f.threatInfo = null; f.lockedBy = null; }
+  for (const o of flyers) {
+    if (o.dead || !o.lockTarget || o.lockProgress < 1) continue;
+    if (o.lockTarget.af) o.lockTarget.lockedBy = o;      // .af means it is an aircraft, not a site
+  }
+  for (const g of groundTargets) {
+    if (g.dead || g.kind === 'radar' || !g.foe || g.foe.dead) continue;
+    g.foe.lockedBy = g;
+  }
+  // Soonest arrival wins, and a missile aimed at somebody else still counts if its blast reaches you.
+  for (const f of flyers) {
+    if (f.dead) continue;
+    const t = pickThreat(missiles, f);
+    if (t) { f.threat = t.missile; f.threatInfo = t; }
+  }
+
+  // EVADED. The threat cleared and you are still flying: the missile ran out of fuel, hit the
+  // ground, went for a flare, or fused far enough away to do nothing. Any of those is a miss, and
+  // a miss deserves its own sound — otherwise the beeping just stops and you are left wondering
+  // whether it lost you or whether you simply stopped being able to hear it.
+  if (evadedThisFrame(hadThreat, player.threat, player.dead, evadeSuppress)) playEvadeChime();
+  evadeSuppress = false;
+
+  updateWrecks(dt);
+  updateParticles(fxFire, dt, fadeFire);
+  updateParticles(fxSmoke, dt, fadeSmoke);
+  updateVolumePuffs(dt);
+}
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+
+const keys = new Set();
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  keys.add(e.code);
+  if (e.code === 'KeyR') respawnFlyer(player);
+  if (e.code === 'KeyH') setPanel(!panelOpen);
+  if (e.code === 'Digit1') setCam('chase');
+  if (e.code === 'Digit2') setCam('cockpit');
+  if (e.code === 'Digit3') setCam('orbit');
+  // Space scrolls and a bare Alt hands focus to the browser menu bar; both would eat the keypress
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'AltLeft', 'AltRight']
+    .includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+const mouse = new Set();
+addEventListener('mousedown', (e) => { if (e.target === renderer.domElement) mouse.add(e.button); });
+addEventListener('mouseup', (e) => mouse.delete(e.button));
+addEventListener('contextmenu', (e) => { if (e.target === renderer.domElement) e.preventDefault(); });
+addEventListener('blur', () => mouse.clear());
+
+function readInput(f) {
+  const i = f.input;
+  i.pitch = (keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0);
+  i.roll = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
+  i.yaw = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+  i.throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+  i.flap = keys.has('KeyQ');
+  i.sweep = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  i.fire = mouse.has(0) || keys.has('Space');
+  i.deploy = mouse.has(2) || keys.has('KeyC');
+}
+
+// TWO TRIGGERS, TWO SELECTORS.
+//
+// Space fires whatever is on the offensive selector and C deploys whatever is on the defensive one,
+// which keeps both hands where they were: you never let go of the stick to reach a weapon. The alt
+// keys pick, and they sit under the thumbs of the hands already holding the two triggers.
+//
+// Selection is the PLAYER's only. The AI still calls fireGun/fireMissile directly, because "which
+// weapon is selected" is a UI question and an AI that had to answer it would be modelling a menu.
+const OFFENSIVE = [
+  { key: 'gun', label: 'GUN', count: (f) => f.ammo },
+  { key: 'missile', label: 'MSL', count: (f) => f.missiles },
+  { key: 'kamikaze', label: 'KAM', count: (f) => f.drones.kamikaze },
+];
+const DEFENSIVE = [
+  { key: 'flare', label: 'FLR', count: (f) => f.flares },
+  { key: 'decoy', label: 'DEC', count: (f) => f.drones.decoy },
+  { key: 'interceptor', label: 'INT', count: (f) => f.drones.interceptor },
+];
+let offSel = 0, defSel = 0;
+
+function fireSelected(f) {
+  const w = OFFENSIVE[offSel].key;
+  if (w === 'gun') fireGun(f);
+  else if (w === 'missile') fireMissile(f);
+  else releaseDrone(f, w);
+}
+
+function deploySelected(f) {
+  const w = DEFENSIVE[defSel].key;
+  if (w === 'flare') dropFlares(f);
+  else releaseDrone(f, w);
+}
+
+function cycleWeapon(list, which) {
+  const sel = which === 'off' ? (offSel = (offSel + 1) % list.length)
+    : (defSel = (defSel + 1) % list.length);
+  banner.textContent = `${list[sel].label} ${list[sel].count(player)}`;
+  bannerTimer = 0.9;
+  playSfx('dryClick', player.p, 0.35);
+}
+
+addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  if (e.code === 'AltLeft') cycleWeapon(OFFENSIVE, 'off');
+  if (e.code === 'AltRight') cycleWeapon(DEFENSIVE, 'def');
+});
+
+// ---------------------------------------------------------------------------
+// Camera
+// ---------------------------------------------------------------------------
+
+const camPos = new THREE.Vector3();
+const camAim = new THREE.Vector3();
+const _desired = new THREE.Vector3();
+let camReady = false;
+
+function setCam(mode) {
+  camMode = mode;
+  orbit.enabled = mode === 'orbit';
+  camReady = false;
+  if (mode !== 'chase') camera.up.set(0, 1, 0);   // chase rolls camera.up; orbit needs it upright
+  for (const b of camSeg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.cam === mode);
+}
+
+function updateCamera(dt) {
+  const f = player, af = f.af;
+  if (camMode === 'orbit') {
+    orbit.target.copy(f.p);
+    orbit.update();
+    return;
+  }
+  // A wreck tumbles at up to 3.6 rad/s. A camera bolted to that frame is unwatchable, and the
+  // cockpit view is inside a burning aircraft, so a downed player gets the chase view on a
+  // level frame instead: heading frozen at the moment of the kill, world up.
+  if (f.wreck) {
+    const back = af.chaseDist * 1.9;
+    _desired.copy(f.p).addScaledVector(f.wreckFwd, -back).addScaledVector(UP, af.chaseDist * 0.9);
+    if (!camReady) { camPos.copy(_desired); camAim.copy(f.p); camReady = true; }
+    const wlag = 1 - Math.exp(-dt * 3.0);
+    camPos.lerp(_desired, wlag);
+    camAim.lerp(f.p, wlag * 2.2);
+    camera.position.copy(camPos);
+    if (shake > 0.001) {
+      camera.position.x += (Math.random() - 0.5) * shake;
+      camera.position.y += (Math.random() - 0.5) * shake;
+      camera.position.z += (Math.random() - 0.5) * shake;
+    }
+    camera.up.set(0, 1, 0);
+    camera.lookAt(camAim);
+    camera.fov = 62;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  if (camMode === 'cockpit') {
+    _desired.copy(f.p)
+      .addScaledVector(f.up, af.size * 6.5 + 0.35)
+      .addScaledVector(f.fwd, af.size * 8 + 0.4);
+    camera.position.copy(_desired);
+    camera.quaternion.copy(f.q);
+    camera.fov = 72;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  const back = af.chaseDist * (1 + Math.min(0.5, f.airspeed / 400));
+  _desired.copy(f.p).addScaledVector(f.fwd, -back).addScaledVector(f.up, af.chaseDist * 0.26);
+  if (!camReady) { camPos.copy(_desired); camAim.copy(f.p); camReady = true; }
+  const lag = 1 - Math.exp(-dt * 6.5);
+  camPos.lerp(_desired, lag);
+  camAim.lerp(_desired.copy(f.p).addScaledVector(f.fwd, af.chaseDist * 1.6), lag * 1.4);
+  camera.position.copy(camPos);
+  if (shake > 0.001) {
+    camera.position.x += (Math.random() - 0.5) * shake;
+    camera.position.y += (Math.random() - 0.5) * shake;
+    camera.position.z += (Math.random() - 0.5) * shake;
+  }
+  camera.up.copy(f.up);
+  camera.lookAt(camAim);
+  camera.fov = 58 + Math.min(14, f.airspeed / (af.spawn.speed + 20) * 6) + f.ab * 4;
+  camera.updateProjectionMatrix();
+}
+
+// ---------------------------------------------------------------------------
+// HUD
+// ---------------------------------------------------------------------------
+
+// THE PANEL WAS SITTING ON TOP OF THE HUD.
+//
+// The radar, the weapon state and the altitude tape are all anchored to the right edge of the
+// screen, and so is a 318 px tuning panel — so on any window narrower than about 1500 px the panel
+// simply covered them, and there was no way to tell they existed.
+//
+// Two fixes rather than one, because they solve different halves. The panel hides (H, or the tab in
+// the corner), which gets you the whole screen back; and while it is open the right-anchored HUD
+// furniture is pushed inboard by its width, so nothing is ever hidden even with it up. The pitch
+// ladder is deliberately NOT inset — it hangs off the projected boresight, and moving it would
+// decouple it from where the nose actually points, which is the one thing it is for.
+const panelEl = document.getElementById('panel');
+let panelOpen = true;
+let hudInset = 0;
+function setPanel(open) {
+  panelOpen = open;
+  panelEl.classList.toggle('away', !open);
+  hudInset = open ? panelEl.offsetWidth + 22 : 0;
+}
+document.getElementById('panelTab').onclick = () => setPanel(!panelOpen);
+
+const hudCanvas = document.getElementById('hud');
+const ctx = hudCanvas.getContext('2d');
+const _proj = new THREE.Vector3();
+const _camFwd = new THREE.Vector3();
+const _camRel = new THREE.Vector3();
+
+// Behind the camera, clip w goes negative and the divide MIRRORS x/y — an enemy on your six lands
+// at a plausible spot in front of you. Test it in view space: NDC z means different things under
+// different depth conventions, "in front of the lens" does not.
+function projectPoint(v, w, h) {
+  const e = camera.matrixWorld.elements;
+  _camFwd.set(-e[8], -e[9], -e[10]);            // three cameras look down their local -Z
+  _camRel.set(v.x - e[12], v.y - e[13], v.z - e[14]);
+  const behind = _camRel.dot(_camFwd) <= 0;
+  _proj.copy(v).project(camera);
+  return { x: (_proj.x * 0.5 + 0.5) * w, y: (-_proj.y * 0.5 + 0.5) * h, behind };
+}
+
+function drawHud(w, h) {
+  ctx.clearRect(0, 0, w, h);
+  if (!hudOn) return;
+  const f = player;
+  const green = f.crashed ? 'rgba(255,110,110,0.92)' : 'rgba(126,240,160,0.92)';
+  ctx.save();
+  ctx.strokeStyle = green; ctx.fillStyle = green; ctx.lineWidth = 1.4;
+  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textBaseline = 'middle';
+
+  // boresight and screen-space roll, taken from the live camera so it is right in any view
+  const far = _desired.copy(f.p).addScaledVector(f.fwd, 9000);
+  const bs = projectPoint(far, w, h);
+  const upRef = projectPoint(far.addScaledVector(f.up, 900), w, h);
+  const phi = Math.atan2(upRef.x - bs.x, -(upRef.y - bs.y));
+  const uHat = { x: Math.sin(phi), y: -Math.cos(phi) };
+  const rHat = { x: Math.cos(phi), y: Math.sin(phi) };
+  const pxPerRad = (h * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5);
+  const pitch = Math.asin(THREE.MathUtils.clamp(f.fwd.y, -1, 1));
+
+  // pitch ladder — anchored to the boresight, so it mirrors when the orbit camera gets ahead of the nose
+  ctx.globalAlpha = 0.9;
+  for (let deg = -90; !bs.behind && deg <= 90; deg += 5) {
+    const off = (pitch - THREE.MathUtils.degToRad(deg)) * pxPerRad;
+    if (Math.abs(off) > h * 0.62) continue;
+    const cx = bs.x + uHat.x * off, cy = bs.y + uHat.y * off;
+    if (cx < -w || cx > 2 * w) continue;
+    const wide = deg === 0 ? 190 : 74;
+    const gap = deg === 0 ? 26 : 20;
+    ctx.setLineDash(deg < 0 ? [7, 6] : []);
+    ctx.beginPath();
+    ctx.moveTo(cx - rHat.x * wide, cy - rHat.y * wide);
+    ctx.lineTo(cx - rHat.x * gap, cy - rHat.y * gap);
+    ctx.moveTo(cx + rHat.x * gap, cy + rHat.y * gap);
+    ctx.lineTo(cx + rHat.x * wide, cy + rHat.y * wide);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (deg !== 0 && deg % 10 === 0) {
+      ctx.save();
+      ctx.translate(cx + rHat.x * (wide + 12), cy + rHat.y * (wide + 12));
+      ctx.rotate(phi);
+      ctx.fillText(String(deg), -6, 0);
+      ctx.restore();
+    }
+  }
+
+  // flight path marker — where the aircraft is actually going, which is the point of the HUD
+  if (f.airspeed > 1) {
+    const fpmWorld = _desired.copy(f.p).addScaledVector(f.v, 9000 / f.airspeed);
+    const fpm = projectPoint(fpmWorld, w, h);
+    if (!fpm.behind) {
+      ctx.beginPath();
+      ctx.arc(fpm.x, fpm.y, 7, 0, Math.PI * 2);
+      ctx.moveTo(fpm.x - 7, fpm.y); ctx.lineTo(fpm.x - 17, fpm.y);
+      ctx.moveTo(fpm.x + 7, fpm.y); ctx.lineTo(fpm.x + 17, fpm.y);
+      ctx.moveTo(fpm.x, fpm.y - 7); ctx.lineTo(fpm.x, fpm.y - 14);
+      ctx.stroke();
+    }
+  }
+
+  // gun cross at boresight
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.moveTo(w / 2 - 9, h / 2); ctx.lineTo(w / 2 + 9, h / 2);
+  ctx.moveTo(w / 2, h / 2 - 9); ctx.lineTo(w / 2, h / 2 + 9);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // tapes
+  const cy = h / 2;
+  tape(ctx, 74, cy, f.airspeed, 'M/S', 'right');
+  tape(ctx, w - hudInset - 74, cy, f.p.y, 'ALT M', 'left');
+  ctx.textAlign = 'left';
+  ctx.fillText(`AGL ${Math.round(agl(f.p))}`, w - 116, cy + 44);
+  ctx.fillText(`VS ${f.v.y >= 0 ? '+' : ''}${f.v.y.toFixed(1)}`, w - 116, cy + 60);
+  ctx.fillText(`${(f.airspeed * 3.6).toFixed(0)} KM/H`, 34, cy + 44);
+  ctx.fillText(`E ${(f.p.y + (f.airspeed * f.airspeed) / (2 * G)).toFixed(0)}`, 34, cy + 60);
+
+  // heading tape
+  const hdg = (THREE.MathUtils.radToDeg(Math.atan2(-f.fwd.x, -f.fwd.z)) + 360) % 360;
+  ctx.textAlign = 'center';
+  ctx.strokeRect(w / 2 - 32, 22, 64, 18);
+  ctx.fillText(hdg.toFixed(0).padStart(3, '0'), w / 2, 31);
+  for (let d = -60; d <= 60; d += 10) {
+    const t = ((hdg + d) % 360 + 360) % 360;
+    const x = w / 2 + d * 2.6;
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 48); ctx.lineTo(x, 54); ctx.stroke();
+    if (t % 30 < 0.01 || d % 30 === 0) ctx.fillText(t.toFixed(0), x, 63);
+    ctx.globalAlpha = 1;
+  }
+
+  // bottom block
+  ctx.textAlign = 'left';
+  const bx = 34, by = h - 96;
+  ctx.fillText(`THR ${(f.throttle * 100).toFixed(0)}%${f.ab > 0.5 ? '  AB' : ''}`, bx, by);
+  ctx.strokeRect(bx, by + 10, 110, 8);
+  ctx.fillRect(bx, by + 10, 110 * f.throttle, 8);
+  ctx.fillText(`AOA ${THREE.MathUtils.radToDeg(f.alpha).toFixed(1)}°`, bx, by + 34);
+  ctx.fillText(`G ${f.gLoad.toFixed(1)}`, bx, by + 50);
+  if (f.af.thrust === 'flap') {
+    ctx.fillText('STAM', bx, by + 66);
+    ctx.strokeRect(bx + 40, by + 61, 70, 8);
+    ctx.fillRect(bx + 40, by + 61, 70 * f.stamina, 8);
+  }
+
+  drawCombatHud(w, h, f, bs, uHat, rHat);
+
+  // warnings
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 15px ui-monospace, monospace';
+  const blink = (performance.now() / 260 | 0) % 2 === 0;
+  if (f.stallFrac > 0.28 && blink) {
+    ctx.fillStyle = 'rgba(255,196,88,0.95)';
+    ctx.fillText('STALL', w / 2, h * 0.34);
+  }
+  if (agl(f.p) < 260 && f.v.y < -6 && blink) {
+    ctx.fillStyle = 'rgba(255,110,110,0.95)';
+    ctx.fillText('PULL UP', w / 2, h * 0.66);
+  }
+  if (f.threat && f.threat.live && f.threatInfo) {
+    const tti = f.threatInfo.tti;
+    if (blink || tti < 0.8) {
+      ctx.fillStyle = 'rgba(255,90,90,0.98)';
+      // "passing" is a missile chasing someone else whose blast will still reach you
+      const what = f.threatInfo.aimed ? 'MISSILE — BREAK' : 'MISSILE PASSING';
+      ctx.fillText(`${what}  ${tti.toFixed(1)}s`, w / 2, h * 0.24);
+    }
+  } else if (f.lockedBy && blink) {
+    ctx.fillStyle = 'rgba(255,196,88,0.95)';
+    ctx.fillText(f.lockedBy.kind ? 'SAM LOCK' : 'LOCKED', w / 2, h * 0.24);
+  }
+  ctx.restore();
+}
+
+const _mark = new THREE.Vector3();
+
+// Target boxes, lock reticle, weapon state and a radar. This is the layer that turns three dots in
+// the sky into something you can actually fight.
+function drawCombatHud(w, h, f, bs, uHat, rHat) {
+  ctx.save();
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+
+  for (const o of flyers) {
+    if (o === f || o.dead) continue;
+    const range = f.p.distanceTo(o.p);
+    if (range > 9000) continue;
+    const s = projectPoint(o.p, w, h);
+    const hostile = o.team !== f.team;
+    const locked = f.lockTarget === o;
+    const full = locked && f.lockProgress >= 1;
+    ctx.strokeStyle = full ? 'rgba(255,120,120,0.95)'
+      : locked ? 'rgba(255,214,110,0.95)'
+        : (!o.armed ? TRAIN_HUD : hostile ? TEAM_HUD[1] : TEAM_HUD[0]) + '0.8)';
+    ctx.fillStyle = ctx.strokeStyle;
+
+    if (s.behind || s.x < 0 || s.x > w || s.y < 0 || s.y > h) {
+      // off screen: an arrow on the edge pointing the way round
+      const dx = s.x - w / 2, dy = s.y - h / 2;
+      const k = s.behind ? -1 : 1;
+      const ang = Math.atan2(dy * k, dx * k);
+      const rx = Math.min(w / 2 + Math.cos(ang) * (w * 0.42), w - hudInset - 16);
+      const ry = h / 2 + Math.sin(ang) * (h * 0.42);
+      ctx.save();
+      ctx.translate(rx, ry);
+      ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(10, 0); ctx.lineTo(-6, 5); ctx.lineTo(-6, -5); ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+
+    // box scales with apparent size so it hugs the target as you close
+    const px = Math.max(9, Math.min(70, (o.af.hitRadius * 640) / Math.max(60, range)));
+    ctx.lineWidth = full ? 2 : 1.3;
+    // same rule as the ground sites: dashed means it cannot hurt you
+    if (!o.armed) ctx.setLineDash([5, 4]);
+    if (hostile) {
+      ctx.strokeRect(s.x - px, s.y - px, px * 2, px * 2);
+    } else {
+      ctx.beginPath(); ctx.arc(s.x, s.y, px, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.textAlign = 'left';
+    const name = o.ai ? o.ai.name : 'YOU';
+    ctx.fillText(`${name}`, s.x + px + 5, s.y - 4);
+    ctx.fillText(`${(range / 1000).toFixed(1)}km`, s.x + px + 5, s.y + 8);
+    const hp = o.hp / o.af.hp;
+    if (hp < 1) {
+      ctx.globalAlpha = 0.85;
+      ctx.strokeRect(s.x - px, s.y + px + 4, px * 2, 3);
+      ctx.fillRect(s.x - px, s.y + px + 4, px * 2 * Math.max(0, hp), 3);
+      ctx.globalAlpha = 1;
+    }
+    if (locked && !full) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, px + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * f.lockProgress);
+      ctx.stroke();
+    }
+    if (full) {
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y - px - 9); ctx.lineTo(s.x + px + 9, s.y);
+      ctx.lineTo(s.x, s.y + px + 9); ctx.lineTo(s.x - px - 9, s.y);
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+
+  // Ground sites, each with its own glyph: a dish arc for radar, an upward triangle for a SAM,
+  // a chevron pair for AA. Shape carries the type at a glance; the ring underneath carries range.
+  for (const g of groundTargets) {
+    if (g.dead) continue;
+    const range = f.p.distanceTo(g.p);
+    if (range > 9000) continue;
+    const sp = projectPoint(g.p, w, h);
+    if (sp.behind || sp.x < -40 || sp.x > w + 40 || sp.y < -40 || sp.y > h + 40) continue;
+    const locked = f.lockTarget === g;
+    const full = locked && f.lockProgress >= 1;
+    ctx.strokeStyle = full ? 'rgba(255,120,120,0.95)'
+      : locked ? 'rgba(255,214,110,0.95)' : TEAM_HUD[g.team === f.team ? 0 : 1] + '0.85)';
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = full ? 2 : 1.3;
+    const r = 11;
+    ctx.beginPath();
+    if (g.kind === 'radar') {
+      ctx.arc(sp.x, sp.y, r, Math.PI * 0.15, Math.PI * 0.85);
+      ctx.moveTo(sp.x, sp.y + r * 0.2); ctx.lineTo(sp.x, sp.y - r);
+    } else if (g.kind === 'sam') {
+      ctx.moveTo(sp.x, sp.y - r); ctx.lineTo(sp.x + r, sp.y + r * 0.8);
+      ctx.lineTo(sp.x - r, sp.y + r * 0.8); ctx.closePath();
+    } else if (g.kind === 'aa') {
+      ctx.moveTo(sp.x - r, sp.y + r * 0.5); ctx.lineTo(sp.x, sp.y - r * 0.5);
+      ctx.lineTo(sp.x + r, sp.y + r * 0.5);
+      ctx.moveTo(sp.x - r, sp.y + r); ctx.lineTo(sp.x, sp.y);
+      ctx.lineTo(sp.x + r, sp.y + r);
+    } else if (g.kind === 'depot') {
+      ctx.arc(sp.x, sp.y, r * 0.85, 0, Math.PI * 2);
+      ctx.moveTo(sp.x - r * 0.85, sp.y); ctx.lineTo(sp.x + r * 0.85, sp.y);
+    } else if (g.kind === 'hangar') {
+      ctx.arc(sp.x, sp.y + r * 0.4, r, Math.PI, 0);
+      ctx.moveTo(sp.x - r, sp.y + r * 0.4); ctx.lineTo(sp.x + r, sp.y + r * 0.4);
+    } else {
+      ctx.rect(sp.x - r * 0.8, sp.y - r * 0.6, r * 1.6, r * 1.2);
+      ctx.moveTo(sp.x, sp.y - r * 0.6); ctx.lineTo(sp.x, sp.y - r * 1.3);
+    }
+    // dashed outline = it cannot hurt you, so you know which shapes to worry about
+    if (GROUND[g.kind].passive) ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.textAlign = 'left';
+    ctx.fillText(`${GROUND[g.kind].label} ${(range / 1000).toFixed(1)}km`, sp.x + r + 5, sp.y);
+    if (g.hp < g.maxHp) {
+      ctx.globalAlpha = 0.85;
+      ctx.strokeRect(sp.x - r, sp.y + r + 4, r * 2, 3);
+      ctx.fillRect(sp.x - r, sp.y + r + 4, r * 2 * Math.max(0, g.hp / g.maxHp), 3);
+      ctx.globalAlpha = 1;
+    }
+    if (locked && !full) {
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, r + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * f.lockProgress);
+      ctx.stroke();
+    }
+  }
+
+  // Resupply pods: a broken ring, so the shape says "fly through this" rather than "shoot this".
+  for (const pod of pods) {
+    if (!pod.live || pod.cool > 0) continue;
+    const range = f.p.distanceTo(pod.mesh.position);
+    if (range > 9000) continue;
+    const sp = projectPoint(pod.mesh.position, w, h);
+    if (sp.behind || sp.x < 0 || sp.x > w - hudInset || sp.y < 0 || sp.y > h) continue;
+    const r = Math.max(8, Math.min(46, 900 / Math.max(60, range)));
+    ctx.strokeStyle = ctx.fillStyle = pod.def.hud + '0.85)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (const a0 of [0.2, 2.3, 4.4]) ctx.arc(sp.x, sp.y, r, a0, a0 + 1.5);
+    ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillText(`${pod.def.label} ${(range / 1000).toFixed(1)}km`, sp.x + r + 5, sp.y);
+  }
+
+  // gun funnel: where the rounds will be at one second, so you can lead by eye. Only with the gun
+  // selected — it is a sight, and a sight for a weapon you are not about to fire is clutter.
+  if (f.ammo > 0 && OFFENSIVE[offSel].key === 'gun') {
+    ctx.strokeStyle = 'rgba(126,240,160,0.5)';
+    ctx.lineWidth = 1;
+    for (const t of [0.4, 0.8, 1.2]) {
+      _mark.copy(f.p).addScaledVector(f.fwd, COMBAT.gunSpeed * t)
+        .addScaledVector(f.v, t);
+      _mark.y -= 0.5 * G * SHELL_GRAVITY * t * t;
+      const s = projectPoint(_mark, w, h);
+      if (s.behind) continue;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  // weapon state
+  ctx.strokeStyle = ctx.fillStyle = 'rgba(126,240,160,0.92)';
+  ctx.lineWidth = 1.4;
+  ctx.textAlign = 'right';
+  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  // Two stacks, matching the two triggers. Everything you carry is listed whether it is selected or
+  // not, because "what else have I got" is the question you ask right after something runs dry.
+  const wx = w - hudInset - 34;
+  let wy = h - 190;
+  const drawRack = (list, sel) => {
+    for (let i = 0; i < list.length; i++) {
+      const n = list[i].count(f);
+      const on = i === sel;
+      ctx.fillStyle = !n ? 'rgba(255,124,112,0.75)'
+        : on ? 'rgba(126,240,160,0.98)' : 'rgba(150,166,176,0.55)';
+      ctx.fillText(`${on ? '▸ ' : ''}${list[i].label} ${n}`, wx, wy);
+      wy += 16;
+    }
+    wy += 7;
+  };
+  drawRack(OFFENSIVE, offSel);
+  drawRack(DEFENSIVE, defSel);
+  ctx.fillStyle = 'rgba(126,240,160,0.92)';
+  ctx.fillText(`HP  ${Math.max(0, Math.round(f.hp))}`, wx, wy);
+  wy += 16;
+  // Armed and unarmed are counted separately, because "3 left" means two different things
+  // depending on whether they are shooting back.
+  let armedLeft = 0, dummies = 0;
+  for (const o of flyers) {
+    if (o.dead || o.team === f.team) continue;
+    if (o.armed) armedLeft++; else dummies++;
+  }
+  let ry = wy;
+  if (!enemyRespawn) {
+    ctx.fillStyle = armedLeft ? 'rgba(255,180,120,0.92)' : 'rgba(126,240,160,0.92)';
+    ctx.fillText(armedLeft ? `BANDITS ${armedLeft}` : 'SKY CLEAR', wx, ry);
+    ry += 16;
+  }
+  if (dummies) {
+    ctx.fillStyle = TRAIN_HUD + '0.92)';
+    ctx.fillText(`TARGETS ${dummies}`, wx, ry);
+  }
+
+  // radar: heading up, contacts as dots, ring at 3 km
+  // sits above the weapon stack, which grew by two rows when the racks became selectable
+  const rr = 62, rcx = w - hudInset - 34 - rr, rcy = h - 210 - rr;
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath(); ctx.arc(rcx, rcy, rr, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(rcx, rcy, rr * 0.5, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(rcx, rcy - 4); ctx.lineTo(rcx - 3, rcy + 4); ctx.lineTo(rcx + 3, rcy + 4);
+  ctx.closePath(); ctx.stroke();
+  ctx.globalAlpha = 1;
+  const RADAR_RANGE = 6000;
+  const hdg = Math.atan2(-f.fwd.x, -f.fwd.z);
+  for (const g of groundTargets) {
+    if (g.dead) continue;
+    const dx = g.p.x - f.p.x, dz = g.p.z - f.p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > RADAR_RANGE) continue;
+    const a = Math.atan2(-dx, -dz) - hdg;
+    ctx.fillStyle = TEAM_HUD[g.team === f.team ? 0 : 1] + '0.7)';
+    ctx.fillRect(rcx + Math.sin(a) * (d / RADAR_RANGE) * rr - 2,
+      rcy - Math.cos(a) * (d / RADAR_RANGE) * rr - 2, 4, 4);
+  }
+  for (const o of flyers) {
+    if (o === f || o.dead) continue;
+    const dx = o.p.x - f.p.x, dz = o.p.z - f.p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > RADAR_RANGE) continue;
+    const a = Math.atan2(-dx, -dz) - hdg;
+    const rx = rcx + Math.sin(a) * (d / RADAR_RANGE) * rr;
+    const ry = rcy - Math.cos(a) * (d / RADAR_RANGE) * rr;
+    ctx.fillStyle = f.lockTarget === o ? 'rgba(255,120,120,0.95)'
+      : TEAM_HUD[o.team === f.team ? 0 : 1] + '0.9)';
+    ctx.beginPath(); ctx.arc(rx, ry, 3, 0, Math.PI * 2); ctx.fill();
+    if (o.p.y > f.p.y + 60) { ctx.fillRect(rx - 3, ry - 7, 6, 1); }
+    else if (o.p.y < f.p.y - 60) { ctx.fillRect(rx - 3, ry + 6, 6, 1); }
+  }
+  // your own drones, as small squares so they never read as a contact
+  for (const dr of drones) {
+    if (!dr.live) continue;
+    const dx = dr.p.x - f.p.x, dz = dr.p.z - f.p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > RADAR_RANGE) continue;
+    const a = Math.atan2(-dx, -dz) - hdg;
+    ctx.fillStyle = DRONE_LOOK[dr.kind].hud + '0.9)';
+    ctx.fillRect(rcx + Math.sin(a) * (d / RADAR_RANGE) * rr - 1.5,
+      rcy - Math.cos(a) * (d / RADAR_RANGE) * rr - 1.5, 3, 3);
+  }
+  for (const pod of pods) {
+    if (!pod.live || pod.cool > 0) continue;
+    const dx = pod.mesh.position.x - f.p.x, dz = pod.mesh.position.z - f.p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > RADAR_RANGE) continue;
+    const a = Math.atan2(-dx, -dz) - hdg;
+    ctx.strokeStyle = pod.def.hud + '0.85)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(rcx + Math.sin(a) * (d / RADAR_RANGE) * rr,
+      rcy - Math.cos(a) * (d / RADAR_RANGE) * rr, 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (const m of missiles) {
+    if (!m.live) continue;
+    const dx = m.p.x - f.p.x, dz = m.p.z - f.p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > RADAR_RANGE) continue;
+    const a = Math.atan2(-dx, -dz) - hdg;
+    ctx.fillStyle = m.target === f ? 'rgba(255,80,80,0.95)' : 'rgba(255,210,140,0.8)';
+    ctx.fillRect(rcx + Math.sin(a) * (d / RADAR_RANGE) * rr - 1,
+      rcy - Math.cos(a) * (d / RADAR_RANGE) * rr - 1, 2.5, 2.5);
+  }
+  ctx.restore();
+}
+
+function tape(c, x, y, value, label, side) {
+  c.save();
+  c.strokeRect(x - 42, y - 11, 84, 22);
+  c.textAlign = 'center';
+  c.fillText(value.toFixed(value > 999 ? 0 : 1), x, y);
+  c.globalAlpha = 0.6;
+  c.fillText(label, x, y - 22);
+  c.globalAlpha = 1;
+  c.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Panel
+// ---------------------------------------------------------------------------
+
+const afSeg = document.getElementById('afSeg');
+const camSeg = document.getElementById('camSeg');
+const tuneRows = document.getElementById('tuneRows');
+const statsEl = document.getElementById('stats');
+
+afSeg.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  setPlayerAirframe(b.dataset.af);
+});
+camSeg.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  setCam(b.dataset.cam);
+});
+const viewSeg = document.getElementById('viewSeg');
+viewSeg.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  uView.value = parseFloat(b.dataset.view);
+  for (const x of viewSeg.querySelectorAll('button')) x.classList.toggle('on', x === b);
+});
+document.getElementById('respawn').onclick = () => respawnFlyer(player);
+document.getElementById('resetTune').onclick = () => {
+  Object.assign(AIRFRAMES[player.afKey], JSON.parse(JSON.stringify(DEFAULTS[player.afKey])));
+  player.af = AIRFRAMES[player.afKey];
+  buildTuneRows();
+};
+document.getElementById('hudOn').onchange = (e) => { hudOn = e.target.checked; };
+document.getElementById('cloudsOn').onchange = (e) => { clouds.visible = e.target.checked; };
+document.getElementById('assistOn').onchange = (e) => { assistOn = e.target.checked; };
+document.getElementById('aiOn').onchange = (e) => { aiOn = e.target.checked; buildAi();
+buildPods(player.p.x, player.p.z); };
+document.getElementById('aiEngage').onchange = (e) => {
+  aiEngage = e.target.checked; world.aiEngage = aiEngage;
+};
+document.getElementById('groundOn').onchange = (e) => {
+  groundOn = e.target.checked;
+  buildGroundSites(player.p.x, player.p.z);
+};
+document.getElementById('volFx').onchange = (e) => { volumetricFx = e.target.checked; };
+
+// ---- roster panel ----
+const rosterBox = document.getElementById('roster');
+function buildRosterRows() {
+  rosterBox.innerHTML = '';
+  for (const [key, def] of Object.entries(SQUAD)) {
+    const row = document.createElement('div');
+    row.className = 'rost';
+    row.innerHTML = `<span>${def.label}${def.armed ? '' : ' <em>unarmed</em>'}</span>` +
+      `<button data-k="${key}" data-d="-1">-</button><output id="rc-${key}">${roster[key]}</output>` +
+      `<button data-k="${key}" data-d="1">+</button>`;
+    rosterBox.appendChild(row);
+  }
+  rosterBox.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const k = b.dataset.k;
+    roster[k] = THREE.MathUtils.clamp(roster[k] + Number(b.dataset.d), 0, SQUAD[k].max);
+    syncRoster();
+    buildAi();
+  };
+  syncRoster();
+}
+function syncRoster() {
+  for (const key of Object.keys(SQUAD)) {
+    document.getElementById(`rc-${key}`).textContent = roster[key];
+  }
+  // a preset button lights up only while the roster still matches it exactly
+  let match = '';
+  for (const [name, pre] of Object.entries(PRESETS)) {
+    if (Object.keys(SQUAD).every((k) => roster[k] === pre[k])) { match = name; break; }
+  }
+  for (const b of presetSeg.querySelectorAll('button')) {
+    b.classList.toggle('on', b.dataset.preset === match);
+  }
+}
+const presetSeg = document.getElementById('presetSeg');
+presetSeg.onclick = (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const pre = PRESETS[b.dataset.preset];
+  for (const k of Object.keys(SQUAD)) roster[k] = pre[k];
+  // Solo and Training mean "let me fly": a SAM site turns either of them back into a fight.
+  groundOn = pre.ground;
+  document.getElementById('groundOn').checked = groundOn;
+  buildGroundSites(player ? player.p.x : 0, player ? player.p.z : 0);
+  syncRoster();
+  buildAi();
+};
+buildRosterRows();
+document.getElementById('enemyRespawn').onchange = (e) => { enemyRespawn = e.target.checked; };
+document.getElementById('podsOn').onchange = (e) => {
+  podsOn = e.target.checked;
+  buildPods(player ? player.p.x : 0, player ? player.p.z : 0);
+};
+const aimSlider = document.getElementById('aimAssist');
+aimSlider.oninput = () => {
+  aimAssist = Number(aimSlider.value);
+  document.getElementById('aimAssistOut').textContent = aimAssist.toFixed(2);
+};
+document.getElementById('muteOn').onchange = (e) => { audioMuted = e.target.checked; };
+
+function buildTuneRows() {
+  const af = AIRFRAMES[player.afKey];
+  tuneRows.innerHTML = '';
+  for (const key of af.tunables) {
+    const range = TUNE_RANGE[key];
+    if (!range) continue;
+    const [min, max, step] = range;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const dec = step < 0.01 ? 3 : step < 1 ? 2 : 0;
+    row.innerHTML = `<label>${key}</label><output>${Number(af[key]).toFixed(dec)}</output>`;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = af[key];
+    input.oninput = () => {
+      af[key] = parseFloat(input.value);
+      row.querySelector('output').textContent = af[key].toFixed(dec);
+    };
+    row.appendChild(input);
+    tuneRows.appendChild(row);
+  }
+}
+
+document.getElementById('keys').innerHTML = `
+  <b>Arrows</b> pitch and roll — down is nose up, as a stick is<br>
+  <b>A / D</b> rudder &nbsp; <b>W / S</b> throttle &nbsp; <b>Q</b> flap (bird)<br>
+  <b>Shift</b> afterburner (plane) / fold wings (bird)<br>
+  <b>Space</b> or <b>Mouse 1</b> attack &nbsp; <b>Left Alt</b> selects gun, missile, kamikaze<br>
+  <b>C</b> or <b>Mouse 2</b> countermeasure &nbsp; <b>Right Alt</b> selects flare, decoy, interceptor<br>
+  <b>1 / 2 / 3</b> chase, cockpit, orbit &nbsp; <b>R</b> respawn &nbsp; <b>H</b> hide panel<br>
+  Hold a target inside the boresight to lock, then fire. Locked targets show a diamond.`;
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+setPanel(true);
+setPlayerAirframe('plane');
+buildAi();
+buildGroundSites(0, 0);
+setCam('chase');
+
+const banner = document.getElementById('banner');
+let acc = 0, fps = 60, statTimer = 0;
+const FIXED = 1 / 120;
+const clock = new THREE.Clock();
+
+function frame() {
+  const dt = Math.min(0.1, clock.getDelta());
+  fps += (1 / Math.max(1e-4, dt) - fps) * 0.08;
+
+  readInput(player);
+  for (const f of aiFlyers) {
+    driveAi(f, dt, world);
+    // the AI asks; the viewer is what actually spawns anything
+    if (f.wantFlares) dropFlares(f);
+    if (f.crashed && !f.wreck && f.crashTimer > 2.5 && mayRespawn(f)) respawnFlyer(f);
+  }
+
+  acc += dt;
+  let steps = 0;
+  while (acc >= FIXED && steps < 12) {
+    for (const f of flyers) stepFlyer(f, FIXED, assistOn);
+    acc -= FIXED; steps++;
+  }
+  if (steps >= 12) acc = 0;
+
+  // flying into the ground is a kill like any other, so it goes through the same path
+  for (const f of flyers) if (f.crashed && !f.dead) killFlyer(f, 'crash');
+
+  for (const f of flyers) updateLock(f, dt);
+  if (!player.dead) {
+    if (player.input.fire) fireSelected(player);
+    if (player.input.deploy) deploySelected(player);
+  }
+  for (const f of aiFlyers) {
+    const want = aiShoot(f, world);
+    if (want.gun) fireGun(f);
+    if (want.missile) fireMissile(f);
+  }
+  updateGround(dt);
+  updatePods(dt);
+  updateDrones(dt);
+  updateCombat(dt);
+  updateAudio(player, dt);
+  shake = Math.max(0, shake - dt * 6);
+
+  for (const f of aiFlyers) {
+    if (!f.dead) continue;
+    f.deadTimer += dt;
+    if (f.deadTimer > 4 && !f.wreck && mayRespawn(f)) {
+      const sc = Math.min(3000, f.ai.radius * 2.2);
+      f.p.set(f.ai.home.x + (Math.random() - 0.5) * sc, 0,
+        f.ai.home.z + (Math.random() - 0.5) * sc);
+      respawnFlyer(f);
+    }
+  }
+
+  for (const f of flyers) poseMesh(f, dt);
+
+  updateCamera(dt);
+  updateRings(camera.position.x, camera.position.z);
+  sky.position.copy(camera.position);
+  water.position.set(camera.position.x, 0, camera.position.z);
+  clouds.position.set(camera.position.x, CLOUD_Y, camera.position.z);
+  uCamXZ.value.set(camera.position.x, camera.position.z);
+
+  const w = innerWidth, h = innerHeight;
+  drawHud(w, h);
+
+  if (bannerTimer > 0) bannerTimer -= dt;
+  if (!player.dead && bannerTimer <= 0) banner.textContent = '';
+
+  statTimer += dt;
+  if (statTimer > 0.2) {
+    statTimer = 0;
+    const f = player;
+    statsEl.innerHTML =
+      `fps <b>${fps.toFixed(0)}</b> &nbsp; airframe <b>${f.af.label}</b><br>` +
+      `speed <b>${f.airspeed.toFixed(1)}</b> m/s &nbsp; alt <b>${f.p.y.toFixed(0)}</b> m ` +
+      `(AGL <b>${agl(f.p).toFixed(0)}</b>)<br>` +
+      `AoA <b>${THREE.MathUtils.radToDeg(f.alpha).toFixed(1)}°</b> &nbsp; ` +
+      `slip <b>${THREE.MathUtils.radToDeg(f.beta).toFixed(1)}°</b> &nbsp; ` +
+      `stall <b>${(f.stallFrac * 100).toFixed(0)}%</b><br>` +
+      `g <b>${f.gLoad.toFixed(2)}</b> &nbsp; throttle <b>${(f.throttle * 100).toFixed(0)}%</b><br>` +
+      `energy <b>${(f.p.y + f.airspeed * f.airspeed / (2 * G)).toFixed(0)}</b> m ` +
+      `<span style="opacity:.7">(height + speed as height)</span><br>` +
+      `depth <b>${renderer.reversedDepthBuffer ? 'reversed / float32' : 'DEFAULT — fell back'}</b>`;
+  }
+
+  renderer.render(scene, camera);
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  const dpr = Math.min(devicePixelRatio, 2);
+  hudCanvas.width = w * dpr; hudCanvas.height = h * dpr;
+  hudCanvas.style.width = w + 'px'; hudCanvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  setPanel(panelOpen);          // the inset is measured from the panel, so re-measure it
+}
+addEventListener('resize', resize);
+resize();
+
+await renderer.init();
+renderer.setAnimationLoop(frame);
+</script>
+</body>
+</html>

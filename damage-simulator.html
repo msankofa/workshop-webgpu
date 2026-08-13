@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Damage Simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; }
+  #hud { position: fixed; top: 10px; left: 12px; color: #8a93a3; z-index: 5;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; user-select: none; pointer-events: none; }
+  #crosshair { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 14px; height: 14px; z-index: 4; pointer-events: none; }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(219,228,240,.45); }
+  #crosshair::before { left: 6px; top: 0; width: 2px; height: 14px; }
+  #crosshair::after { top: 6px; left: 0; height: 2px; width: 14px; }
+
+  /* ---- control panel — same shape as bot-design-studio.html's, trimmed down ---- */
+  #panel { position: fixed; top: 0; right: 0; width: 340px; height: 100%; z-index: 6;
+    background: rgba(17,20,25,.94); border-left: 1px solid #2b323d; color: #c7d0dd;
+    font: 12px/1.45 ui-monospace, Consolas, monospace; overflow-y: auto; overflow-x: hidden; }
+  #panel.hidden { transform: translateX(100%); }
+  #panelToggle { position: fixed; top: 10px; right: 10px; z-index: 7; }
+  #panel h3 { margin: 0; padding: 7px 10px; background: #1b2028; border-top: 1px solid #2b323d;
+    border-bottom: 1px solid #2b323d; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8fa0b6; cursor: pointer; user-select: none; }
+  #panel h3::before { content: '▾ '; }
+  #panel h3.collapsed::before { content: '▸ '; }
+  #panel h3.collapsed + .body { display: none; }
+  #panel .body { padding: 8px 10px 12px; }
+  #panel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #panel .row > label { flex: 0 0 82px; color: #8a93a3; overflow: hidden; text-overflow: ellipsis; }
+  #panel input[type=range] { flex: 1 1 auto; min-width: 100px; height: 16px; accent-color: #53d68d; }
+  #panel input[type=number] { flex: 0 0 58px; background: #0f1216; color: #dbe4f0;
+    border: 1px solid #333a45; border-radius: 3px; padding: 2px 4px; font: 11px ui-monospace, Consolas, monospace; }
+  #panel select { flex: 1 1 auto; min-width: 0; background: #0f1216; color: #dbe4f0;
+    border: 1px solid #333a45; border-radius: 3px; padding: 3px 4px; font: 11px ui-monospace, Consolas, monospace; }
+  #panel button { background: #232a34; color: #cfd8e5; border: 1px solid #39424f; border-radius: 3px;
+    padding: 4px 8px; font: 11px ui-monospace, Consolas, monospace; cursor: pointer; }
+  #panel button:hover { background: #2d3542; }
+  #panel button.on { background: #2f6b4c; border-color: #53d68d; color: #eafff2; }
+  #panel .btns { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+  #panel .note { color: #6c7787; font-size: 10.5px; margin: 4px 0 6px; }
+</style>
+</head>
+<body>
+<div id="hud">damage simulator</div>
+<div id="crosshair"></div>
+<button id="panelToggle">controls</button>
+<div id="panel"></div>
+
+<!-- three@0.184.0: same CDN pins as bot-design-studio.html / bot-viewer-v2.html. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createPostFX } from './post-fx.js';
+import { createVisualSystem } from './bot-viewer-visuals.js';
+import { createBodyPartBatches } from './body-part-batches.js';
+import { createProceduralPlayerBody, clearSharedBodyGeometry } from './player-procedural-body.js';
+import { composeBot } from './bot-body-versions.js';
+import { withPads, withCarrier, withPack } from './bot-human-body.js';
+import { createEffectRenderer, makeStainTexture, bloodIntensityForHealth } from './effect-renderer.js';
+import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams, stumpParams } from './blood-tuning.js';
+import { getDamageClass, shouldShowBlood, shouldShowSmoke } from './bot-damage-class.js';
+import { buildLimbMap, limbForPart, partsOfLimb, SEVERABLE_LIMBS } from './bot-limb-map.js';
+import { createWoundState, applyLimbDamage, getWoundConfig, weaponResponseFor, severedLimbs, limbThreshold, isDecapitated } from './bot-wound.js';
+import {
+  BLEED_DEFAULTS, SITE_WOUND, SITE_STUMP, createBleedState, openBleedSite, closeBleedSites,
+  markBleedDead, stepBleed, dropsFor, bleedingSiteCount,
+} from './bot-bleed.js';
+import {
+  HAYWIRE_DEFAULTS, HAYWIRE_DONE, haywireChance, rollHaywire, createHaywireState, stepHaywire,
+  haywireImpulseDir,
+} from './bot-haywire.js';
+import { ragdollFromBody } from './ragdoll-body.js';
+import { stepRagdoll, applyImpulseAll, jointPos } from './ragdoll.js';
+import { WOUND_DEFAULTS } from './wound-mask.js';
+import { EffectEntity } from './entity-types/effect.js';
+import { createProjectedDecals } from './projected-decals.js';
+import { resolveBodyHit, attachFromPoint, resolveAttachmentMatrix } from './bot-body-hit.js';
+import { rayCapsuleHit } from './combat.js';
+
+window.__ready = false;
+window.__errors = [];
+const hud = document.getElementById('hud');
+function noteError(msg) {
+  window.__errors.push(String(msg));
+  hud.textContent = '⚠ ' + msg;
+  hud.style.color = '#ffb3b3';
+}
+addEventListener('error', e => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(0, 1.5, 3.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.0, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.minDistance = 0.6;
+controls.maxDistance = 20;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.update();
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ===================== lighting / visuals =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+
+const overheadLight = new THREE.PointLight(0xffffff, 24, 18, 2);
+overheadLight.position.set(0, 6, 2);
+scene.add(overheadLight);
+
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'full', tone: 'none', bloomStrength: 0.10, bloomRadius: 0.7, bloomThreshold: 0.0 } });
+const visuals = createVisualSystem({ THREE, renderer, scene, camera, postFX, rig, overheadLight });
+
+const floor = new THREE.Mesh(new THREE.BoxGeometry(10, 0.1, 10), visuals.materials.floor);
+floor.position.set(0, -0.05, 0);
+floor.castShadow = true; floor.receiveShadow = true;
+scene.add(floor);
+visuals.setBounds({ minX: -5, maxX: 5, minZ: -5, maxZ: 5 });
+
+// ===================== bot =====================
+// Matches the in-game alpha team style (bot-design-studio.html's DEFAULT_STYLE).
+const DEFAULT_STYLE = { shell: 0x46554c, plate: 0x1b201d, trim: 0x0a0d0a, accent: 0x53d68d };
+const VARIANTS = {
+  og:      { label: 'og bot (v1 blockout)', design: () => composeBot('v1', 'as authored') },
+  armored: { label: 'armored bot (v5 current)', design: () => composeBot('current', 'as authored') },
+  // Same construction bot-design-studio.html's own default scene uses for its clothed human —
+  // composeBot's bare 'human' body plus the pack/carrier/pads kit from bot-human-body.js.
+  soldier: { label: 'human soldier', design: () => withPack(withCarrier(withPads(composeBot('human', 'human', { expression: 'determined' })))) },
+};
+
+// Rebuilt on every variant switch, same order buildSlots() in bot-design-studio.html uses: destroy
+// the old body, drop the InstancedMesh buckets, THEN clear the shared geometry cache (a bucket
+// still references a geometry the cache is about to drop), then make a fresh batch pool.
+let batches = createBodyPartBatches({ THREE, scene, materials: visuals.botMaterials, capacity: 512 });
+let body = null;
+let currentVariant = 'og';
+const botState = {
+  position: new THREE.Vector3(0, 0.9, 0),
+  velocity: new THREE.Vector3(0, 0, 0),
+  yaw: 0, crouch: 0, prone: 0, alive: true, onFloor: true,
+};
+
+function buildBot(variantKey) {
+  currentVariant = variantKey;
+  if (body) body.destroy();
+  batches.dispose();
+  clearSharedBodyGeometry();
+  batches = createBodyPartBatches({ THREE, scene, materials: visuals.botMaterials, capacity: 512 });
+  const design = VARIANTS[variantKey].design();
+  body = createProceduralPlayerBody({
+    THREE, scene, terrainHeight: () => 0, mode: 'remote', style: DEFAULT_STYLE,
+    design, adaptGaitToSpeed: true, movementDynamics: true, batches,
+  });
+  // New rig, new parts: the old limb map keys objects that no longer exist.
+  limbMap = null;
+  wound = createWoundState();
+  updateLimbReadout?.();
+  reviveBot?.();
+  clearEffects();
+}
+
+// ===================== effects =====================
+// Real entity lifecycle, not a mockup: spawnEffect() creates an EffectEntity exactly like a host
+// would on a hit, drawFrame() ages it via EffectEntity.update() every tick and drops it once
+// expired, and effect-renderer.js's fx.sync() draws the serialized wire list — the same three
+// functions live combat would call once something spawns hit_spark/blood_spray/blood_splatter.
+// resolveAttachment is what lets a blood_stain ride the bot instead of hanging where it was hit.
+// One bot here, so ownerId is ignored — in a multi-bot host it looks the bot up by id first.
+const fx = createEffectRenderer({
+  THREE, scene, terrainHeight: () => 0,
+  resolveAttachment: (_ownerId, attach) => resolveAttachmentMatrix(body, attach),
+});
+let effects = [];
+let fxIdCounter = 0;
+function clearEffects() { effects = []; }
+
+// ---- Mode C: GPU depth-projected stains -------------------------------------------------
+// Built lazily and rebuilt on the debug toggle, because `debug` is baked into the TSL graph.
+const stainTex = makeStainTexture(THREE);
+let projected = null;
+function ensureProjected() {
+  if (projected && projected.debugOn === settings.stain.projDebug) return projected;
+  if (projected) projected.dispose();
+  projected = createProjectedDecals({ THREE, scene, decalTexture: stainTex, cap: 256, debug: settings.stain.projDebug });
+  projected.debugOn = settings.stain.projDebug;
+  projected.setWoundStyle(settings.wound);   // a rebuilt pool starts at the module defaults
+  return projected;
+}
+// Both decal materials carry their own copy of the wound uniforms, so both have to be written.
+function applyWoundStyle() {
+  fx.setWoundStyle(settings.wound);
+  if (projected) projected.setWoundStyle(settings.wound);
+}
+const smooth01 = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+const _pp = new THREE.Vector3(), _pn = new THREE.Vector3(), _pm = new THREE.Matrix3();
+
+// Draws every live blood_stain as a projection box. Mirrors drawBloodStain's fade envelope and its
+// attach resolution exactly, so the only thing being compared against Mode A is the decal technique.
+// The corpse pool is always projected, whatever mode the wound stains are in: it has to conform to
+// the ground it spreads over, which is the one thing a flat quad cannot do.
+function drawProjectedStains(includeStains = true) {
+  const pool = ensureProjected();
+  pool.begin();
+  if (bleed.pool > 0) {
+    _pp.set(deathPoint.x, 0, deathPoint.z);
+    _pn.set(0, 1, 0);
+    // Depth well over the radius so the box still catches ground that is not perfectly flat.
+    pool.push(_pp.x, _pp.y, _pp.z, _pn, bleed.pool, Math.max(0.25, bleed.pool),
+      0.28, 0.012, 0.02, 0.88, 0);
+  }
+  for (const e of includeStains ? effects : []) {
+    const s = e.state;
+    if (s.kind !== 'blood_stain') continue;
+    const lt = e.sim.age / (s.life || 6);
+    if (lt >= 1) continue;
+    const a = smooth01(Math.min(1, lt * 12)) * (1 - smooth01(Math.max(0, (lt - 0.7) / 0.3))) * s.opacity;
+    if (a <= 0.003) continue;
+    _pp.set(e.transform.p[0], e.transform.p[1], e.transform.p[2]);
+    _pn.set(s.normal[0], s.normal[1], s.normal[2]);
+    const m = s.attach ? resolveAttachmentMatrix(body, s.attach) : null;
+    if (m) {
+      _pp.set(s.attach.lp[0], s.attach.lp[1], s.attach.lp[2]).applyMatrix4(m);
+      _pm.getNormalMatrix(m);
+      _pn.set(s.attach.ln[0], s.attach.ln[1], s.attach.ln[2]).applyMatrix3(_pm).normalize();
+    }
+    const spin = ((parseInt(e.id.replace(/\D/g, ''), 10) || 0) * 2.399963) % (Math.PI * 2);
+    pool.push(_pp.x, _pp.y, _pp.z, _pn, s.size, settings.base.stainProjDepth,
+      s.color[0], s.color[1], s.color[2], a, spin);
+  }
+  pool.end();
+}
+function spawnEffect(kind, params) {
+  const entity = EffectEntity.create({ kind, ...params });
+  entity.id = 'fx' + (fxIdCounter++);
+  effects.push(entity);
+}
+
+// ===================== hit detection + firing =====================
+const raycaster = new THREE.Raycaster();
+const settings = {
+  fireMode: 'click',
+  // Where the impact point comes from. This harness has always used the triangle-accurate mesh
+  // raycast, which is STRICTLY better than what live combat gives it — combat hitscan tests one
+  // 0.3 m capsule for the whole bot, so a limb hit lands centimetres off the mesh in open air. That
+  // made the harness unable to show the defect it is supposed to be judging.
+  //   capsule — mimic production: ray vs one 0.3 m / 1.8 m vertical capsule (bot-entity.js defaults)
+  //   parts   — bot-body-hit.js's per-part AABB walk, the proposed production fix
+  //   mesh    — batches.raycast against the real triangles; the best-case reference
+  hitSource: 'parts',
+  attach: true,   // pin stains to the part they hit
+  motion: false,  // pace the bot, so a stain left behind is visible as a stain left behind
+  // Damage class + synthetic health. There is no combat here, so `health` is a slider standing in
+  // for what bot-viewer-v2 computes from the real hit; both feed the same shared functions.
+  damageClass: 'off',      // 'off' | any bot-damage-class.js id
+  health: 0.5,             // victim's health fraction AFTER the hit
+  breached: false,         // the one-way armour latch, so a healed-but-breached bot is testable
+  bloodIntensity: true,    // scale spray/splatter by health
+  // Limb loss (bot-wound.js). `damage` is what one click puts into whichever limb it lands on —
+  // there is no weapon here, so it stands in for weapon damage. The real numbers it is standing in
+  // for: five_seven 20, cz_805_bren 24, m1911 33, knife 50, m24 95, rpg 110, against 100 health.
+  limb: { on: false, damage: 24, armThreshold: 60, legThreshold: 75, headshotKill: true },
+  // Ongoing bleeding (bot-bleed.js). Wounds and stumps emit until healed; a corpse pools.
+  bleed: {
+    on: true, woundRate: BLEED_DEFAULTS.woundRate, stumpRate: BLEED_DEFAULTS.stumpRate,
+    woundDrops: BLEED_DEFAULTS.woundDrops, stumpDrops: BLEED_DEFAULTS.stumpDrops,
+    clotSeconds: BLEED_DEFAULTS.clotSeconds, poolGrowth: BLEED_DEFAULTS.poolGrowth,
+    poolMax: BLEED_DEFAULTS.poolMax, bleedoutSeconds: BLEED_DEFAULTS.bleedoutSeconds,
+    dripSpeed: 0.9, groundEvery: 3,
+  },
+  // Haywire death (bot-haywire.js). `force` overrides the roll so the thrash can be watched on demand.
+  haywire: {
+    on: true, force: false, headChance: HAYWIRE_DEFAULTS.headChance, baseChance: HAYWIRE_DEFAULTS.baseChance,
+    thrashMs: HAYWIRE_DEFAULTS.thrashMs, twitchMs: HAYWIRE_DEFAULTS.twitchMs,
+    thrashImpulse: HAYWIRE_DEFAULTS.thrashImpulse, fireChance: HAYWIRE_DEFAULTS.fireChance,
+  },
+  // The five multipliers bot-viewer-v3 exposes, over the absolute shape in `base`. Both come from
+  // blood-tuning.js, so what is tuned here is what the game uses.
+  blood: { ...BLOOD_TUNING },
+  base: { ...BLOOD_BASE },
+  spray: { on: true },
+  // stain: the mark AT the wound — small and high-opacity so it reads as a stain, not a blob.
+  //   fixed  — one authored size for every hit, scaled by a coarse head/torso/arm/leg factor
+  //   fitted — Mode A: sized from the hit part's own cross-section, so it can't overhang the limb
+  //   projected — Mode C: a GPU box that paints whatever solid surface the depth buffer says is
+  //                behind it, so it wraps instead of floating.
+  stain: { on: true, mode: 'fitted', projDebug: false },
+  // Wound centre. Distances are in decal half-widths (the quad spans +/-0.5), so they hold their
+  // meaning across every stain size. darken: 1 turns the effect off without touching the shader.
+  wound: { ...WOUND_DEFAULTS },
+  // splatter: where the spray's own droplets land on the GROUND nearby (not on the body).
+  splatter: { on: true },
+  smoke: { on: true, size: 0.28 },
+  sparks: { on: true },
+};
+
+// Two places tuning lives. damage-tuning.json on disk is the shared, committable default that
+// bot-viewer-v3 also reads; localStorage is this browser's scratch copy and wins over it.
+const TUNING_KEY = 'pcw:damageTuning';
+const TUNING_FILE = './damage-tuning.json';
+const TUNING_GROUPS = ['blood', 'base', 'bleed', 'haywire', 'limb', 'wound'];
+function captureTuning() {
+  const out = {};
+  for (const g of TUNING_GROUPS) out[g] = { ...settings[g] };
+  return out;
+}
+function saveTuning() {
+  try { localStorage.setItem(TUNING_KEY, JSON.stringify(captureTuning())); } catch { /* private mode */ }
+}
+// Every control autosaves, debounced past the end of a drag: the write is what bot-viewer-v3's
+// `storage` listener wakes on, so a slider here moves a live fight in the other tab.
+let tuningSaveTimer = null;
+function queueTuningSave() {
+  if (tuningSaveTimer != null) clearTimeout(tuningSaveTimer);
+  tuningSaveTimer = setTimeout(() => { tuningSaveTimer = null; saveTuning(); }, 250);
+}
+// Key-by-key and type-matched, so a stale blob from an older shape cannot inject a bad value.
+function applyTuning(saved) {
+  if (!saved || typeof saved !== 'object') return false;
+  for (const g of TUNING_GROUPS) {
+    if (!saved[g] || !settings[g]) continue;
+    for (const k in settings[g]) {
+      if (k in saved[g] && typeof saved[g][k] === typeof settings[g][k]) settings[g][k] = saved[g][k];
+    }
+  }
+  return true;
+}
+function loadTuning() {
+  try { return applyTuning(JSON.parse(localStorage.getItem(TUNING_KEY) || 'null')); } catch { return false; }
+}
+async function saveTuningToDisk() {
+  const res = await fetch('/api/save-damage-tuning', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(captureTuning(), null, 2),
+  });
+  const text = await res.text();
+  // A server started before this endpoint existed answers with its HTML 404 page, which reads as a
+  // JSON parse error unless it is named for what it is.
+  if (!text.trim().startsWith('{')) throw new Error(`endpoint missing (HTTP ${res.status}) — restart serve.py`);
+  const out = JSON.parse(text);
+  if (!out.ok) throw new Error(out.error || 'save failed');
+  return out.path;
+}
+// Awaited before the panel builds, so the sliders show what was loaded rather than the defaults.
+try {
+  const res = await fetch(TUNING_FILE, { cache: 'no-store' });
+  if (res.ok) applyTuning(await res.json());
+} catch { /* no server, or no file yet */ }
+loadTuning();
+addEventListener('beforeunload', saveTuning);
+
+// World AABB over a set of instanced-mode placeholders — they are plain Object3D, not Mesh, so
+// Box3.setFromObject() sees nothing for them (same helper/comment as bot-design-studio.html).
+const _wb = new THREE.Box3(), _wbg = new THREE.Box3();
+function worldBounds(nodes) {
+  _wb.makeEmpty();
+  for (const n of nodes || []) {
+    if (!n.geometry) continue;
+    n.updateWorldMatrix(true, false);
+    if (!n.geometry.boundingBox) n.geometry.computeBoundingBox();
+    _wbg.copy(n.geometry.boundingBox).applyMatrix4(n.matrixWorld);
+    _wb.union(_wbg);
+  }
+  return _wb;
+}
+
+// Coarse head/torso/arm/leg attribution from the bot's own live bounding box. body-part-batches.js's
+// raycast() only carries a MATERIAL role per hit (shell/plate/skin/...), not an anatomical one — see
+// its module comment — so this buckets by height fraction / lateral offset within the current pose's
+// bounding box instead of threading per-instance anatomical labels through the instancing pool.
+function bodyPartAt(point) {
+  if (!body) return 'torso';
+  const _partBox = worldBounds(body.parts.all);
+  if (_partBox.isEmpty()) return 'torso';
+  const h = Math.max(0.01, _partBox.max.y - _partBox.min.y);
+  const cx = (_partBox.min.x + _partBox.max.x) / 2, cz = (_partBox.min.z + _partBox.max.z) / 2;
+  const halfW = Math.max(0.05, (_partBox.max.x - _partBox.min.x) / 2);
+  const yFrac = (point.y - _partBox.min.y) / h;
+  if (yFrac >= 0.85) return 'head';
+  if (yFrac < 0.42) return 'leg';
+  const lateral = Math.hypot(point.x - cx, point.z - cz);
+  if (lateral > halfW * 0.55) return 'arm';
+  return 'torso';
+}
+const PART_SCALE = { head: 1.5, torso: 1.15, arm: 0.85, leg: 0.85 };
+
+// Resolve one shot ray to an impact point, a normal, and (where the source can supply one) a part
+// attachment handle. The three sources differ only in accuracy, which is the whole comparison.
+function resolveShot(origin, dir) {
+  if (!body) return null;
+  if (settings.hitSource === 'capsule') {
+    // bot-entity.js's own defaults: r 0.3, stand height 1.8, so the segment runs 0.3..1.5.
+    const p = botState.position;
+    const r = rayCapsuleHit([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], 200,
+      { p: [p.x, 0.9, p.z], r: 0.3, h: 1.2 });
+    if (!r.hit) return null;
+    const point = new THREE.Vector3(r.point[0], r.point[1], r.point[2]);
+    // Capsules are strictly vertical, so the outward normal is horizontal by construction — the
+    // same convention combat.js uses, and the reason a capsule hit can never carry a body normal.
+    const nx = point.x - p.x, nz = point.z - p.z;
+    const l = Math.hypot(nx, nz);
+    const normal = l > 1e-4 ? new THREE.Vector3(nx / l, 0, nz / l) : new THREE.Vector3(0, 1, 0);
+    return { point, normal, attach: null };   // no part information exists at this level
+  }
+  if (settings.hitSource === 'parts') {
+    return resolveBodyHit({ THREE, body, origin, dir });
+  }
+  raycaster.set(origin, dir);
+  const hit = batches.raycast(raycaster);
+  if (!hit) return null;
+  const normal = hit.normal || new THREE.Vector3(0, 1, 0);
+  // The point is already exact; all that's missing is the stable part handle to pin it to.
+  const att = attachFromPoint({ THREE, body, point: hit.point, normal });
+  return { point: hit.point, normal, attach: att?.attach || null, crossSection: att?.crossSection || 0,
+    part: att?.part || null };
+}
+
+// ===================== limb loss =====================
+// Same two modules bot-viewer-v3.html uses, driven by clicks instead of by combat, so a threshold
+// can be tried here before it reaches a firefight. `capsule` hit source resolves no part at all, so
+// limb loss is unavailable there — which is the honest reading: production had the same gap.
+let limbMap = null;
+let wound = createWoundState();
+// Declared up here, assigned when the panel is built: buildBot() and setDamageClass() both run
+// before that and would otherwise hit the temporal dead zone of a `const` further down.
+let limbReadout = null, armThreshSlider = null, legThreshSlider = null;
+function limbMapNow() {
+  if (!limbMap && body?.parts) limbMap = buildLimbMap(body);
+  return limbMap;
+}
+function limbConfig() {
+  // The class row supplies the shape; the sliders override the two numbers so they can be tried
+  // without editing the table.
+  const base = getWoundConfig(settings.damageClass === 'off' ? 'human' : settings.damageClass);
+  return { ...base, armThreshold: settings.limb.armThreshold, legThreshold: settings.limb.legThreshold,
+    headLethal: settings.limb.headshotKill };
+}
+const _stumpV = new THREE.Vector3();
+function severLimb(limb) {
+  const map = limbMapNow();
+  if (!map) return;
+  const gone = partsOfLimb(map, limb);
+  if (!gone.length) return;
+  for (const p of gone) p.visible = false;
+  body.setAmputated?.(limb, true);
+  wound.severed[limb] = true;
+  // Stump burst at the joint the limb hung from, gated by the same class rules a hit is.
+  let anchor = null;
+  // A head hangs off the neck, which belongs to the core, so it marks itself instead.
+  const proximal = limb.endsWith('Arm') ? 'shoulder' : limb.endsWith('Leg') ? 'hip' : 'head';
+  for (const [p, e] of map) if (e.limb === limb && e.segment === proximal) { anchor = p; break; }
+  if (anchor) {
+    anchor.updateWorldMatrix(true, false);
+    _stumpV.setFromMatrixPosition(anchor.matrixWorld);
+    const p = [_stumpV.x, _stumpV.y, _stumpV.z];
+    const classOn = settings.damageClass !== 'off';
+    const cls = getDamageClass(classOn ? settings.damageClass : 'human');
+    if (!classOn || cls.sparks) spawnEffect('hit_spark', { p, normal: [0, 1, 0], surface: null });
+    if (!classOn || cls.blood !== 'never') {
+      const burst = stumpParams(settings.blood, settings.base);
+      spawnEffect('blood_spray', { p, normal: [0, -0.2, 0], ...burst.spray });
+      spawnEffect('blood_splatter', { p, normal: [0, -0.2, 0], ...burst.splatter });
+    }
+    // The stump keeps bleeding from that joint until healed. `anchor` is the joint part itself, so
+    // the drip follows the shoulder or hip as the bot moves rather than hanging where it was cut.
+    const site = openBleedSite(bleed, { limb, segment: proximal, kind: SITE_STUMP },
+      performance.now(), bleedConfig());
+    if (site) site.anchor = anchor;
+  }
+  updateLimbReadout();
+  updateBleedReadout?.();
+}
+function restoreLimbs() {
+  closeBleedSites(bleed);   // putting a limb back is a heal, and a heal seals every wound
+  updateBleedReadout?.();
+  const map = limbMapNow();
+  if (map) {
+    for (const limb of severedLimbs(wound)) {
+      for (const p of partsOfLimb(map, limb)) p.visible = true;
+      body.setAmputated?.(limb, false);
+    }
+  }
+  wound = createWoundState();
+  updateLimbReadout();
+}
+// One click's worth of damage into whichever limb was hit.
+function accrueLimb(hitPart) {
+  if (!settings.limb.on || !hitPart) return;
+  const entry = limbForPart(limbMapNow(), hitPart);
+  if (!entry) return;
+  const res = applyLimbDamage(wound, entry.limb, settings.limb.damage, limbConfig());
+  if (res.severed) severLimb(res.severed);
+  updateLimbReadout();
+}
+
+// ===================== bleeding, death, haywire =====================
+// bot-bleed.js decides what is due; everything here is the FX and the corpse.
+let bleed = createBleedState();
+let bleedReadout = null;   // assigned when the panel is built; buildBot runs before that
+let dead = false, ragdoll = null, ragdollPose = null, haywire = null;
+let haywireShots = 0, haywireRolled = null;
+const deathPoint = new THREE.Vector3();
+const _bleedM = new THREE.Matrix4(), _bleedP = new THREE.Vector3();
+let dripSeq = 0;
+
+function bleedConfig() {
+  return { ...BLEED_DEFAULTS, ...settings.bleed };
+}
+function haywireConfig() {
+  return { ...HAYWIRE_DEFAULTS, ...settings.haywire };
+}
+// A bleeding site rides its body part, so the drip comes from wherever the limb is now.
+function bleedSiteWorld(site, out) {
+  if (site.anchor) {
+    site.anchor.updateWorldMatrix(true, false);
+    return out.setFromMatrixPosition(site.anchor.matrixWorld);
+  }
+  const m = site.attach ? resolveAttachmentMatrix(body, site.attach) : null;
+  if (m && site.attach.lp) {
+    return out.set(site.attach.lp[0], site.attach.lp[1], site.attach.lp[2]).applyMatrix4(m);
+  }
+  if (site.local) return out.set(site.local[0], site.local[1], site.local[2]);
+  return null;
+}
+function openWound(hit, limb, kind = SITE_WOUND) {
+  if (!settings.bleed.on) return;
+  openBleedSite(bleed, {
+    limb: limb ?? 'core',
+    segment: hit?.segment ?? null,
+    attach: hit?.attach ?? null,
+    local: hit ? [hit.point.x, hit.point.y, hit.point.z] : null,
+    kind,
+  }, performance.now(), bleedConfig());
+  updateBleedReadout?.();
+}
+function stepBleeding(dt) {
+  if (!settings.bleed.on) return;   // off also freezes the pool, so nothing keeps growing unseen
+  const cfg = bleedConfig();
+  const res = stepBleed(bleed, performance.now(), cfg);
+  for (const site of res.drips) {
+    const p = bleedSiteWorld(site, _bleedP);
+    if (!p) continue;
+    const stump = site.kind === SITE_STUMP;
+    // A drip is a slow, tight, downward spray: the same effect kind, tuned to fall rather than burst.
+    spawnEffect('blood_spray', {
+      p: [p.x, p.y, p.z], normal: [0, -1, 0],
+      count: Math.max(1, Math.round(dropsFor(site, cfg))),
+      size: stump ? 0.032 : 0.024,
+      speed: settings.bleed.dripSpeed * (stump ? 1.6 : 1),
+      spread: stump ? 0.55 : 0.28, gravity: 9.8, life: 0.9,
+    });
+    // Only every Nth drip leaves ground blood, or a standing bleeder eats the whole decal budget.
+    if (settings.bleed.groundEvery > 0 && dripSeq++ % settings.bleed.groundEvery === 0) {
+      spawnEffect('blood_splatter', {
+        p: [p.x, p.y, p.z], normal: [0, -1, 0], count: stump ? 4 : 2,
+        size: 0.09, opacity: 0.6, speed: settings.bleed.dripSpeed, spread: 0.3, gravity: 9.8,
+      });
+    }
+  }
+}
+// Kill the bot: seed a ragdoll from the live rig, start the bleedout, and roll for haywire.
+function killBot() {
+  if (dead || !body) return;
+  dead = true;
+  markBleedDead(bleed, performance.now());
+  deathPoint.set(botState.position.x, 0, botState.position.z);
+  const seeded = ragdollFromBody(THREE, body, { origin: { x: botState.position.x, y: 0, z: botState.position.z }, yaw: botState.yaw });
+  ragdoll = seeded.rd; ragdollPose = seeded.pose;
+  haywireShots = 0;
+  const cfg = haywireConfig();
+  const cause = { headKill: isDecapitated(wound), severed: severedLimbs(wound).find((l) => l !== 'head') ?? null };
+  haywireRolled = settings.haywire.on && (settings.haywire.force || rollHaywire(cause, Math.random, cfg));
+  haywire = haywireRolled ? createHaywireState(performance.now(), cfg) : null;
+  updateBleedReadout?.();
+}
+function reviveBot() {
+  dead = false; ragdoll = null; ragdollPose = null; haywire = null; haywireRolled = null; haywireShots = 0;
+  bleed = createBleedState();
+  updateBleedReadout?.();
+}
+function stepCorpse(dt) {
+  if (!dead || !ragdoll || !body) return;
+  const cfg = haywireConfig();
+  if (haywire) {
+    const h = stepHaywire(haywire, performance.now(), Math.random, cfg);
+    if (h.kick) {
+      const d = haywireImpulseDir();
+      applyImpulseAll(ragdoll, { x: d.x * h.impulse, y: d.y * h.impulse, z: d.z * h.impulse });
+    }
+    // No weapon in this harness, so a wild round is a muzzle flash off the head and a counter.
+    if (h.fire) {
+      haywireShots++;
+      const p = jointPos(ragdoll, 'head') || jointPos(ragdoll, 'chest');
+      if (p) spawnEffect('hit_spark', { p: [p.x, p.y, p.z], normal: [0, 1, 0], surface: null });
+      updateBleedReadout?.();
+    }
+    if (h.phase === HAYWIRE_DONE) { haywire = null; updateBleedReadout?.(); }
+  }
+  // pose holds live particle refs that stepRagdoll mutates in place, so there is nothing to copy.
+  stepRagdoll(ragdoll, dt, { gravity: 25, groundHeight: () => 0 });
+  body.setRagdollPose(ragdollPose);
+}
+
+function fireHit(hit) {
+  if (!hit) return;
+  accrueLimb(hit.part);
+  // A hit leaves a wound that keeps bleeding. Not gated on the limb-loss toggle: a torso wound
+  // bleeds too, and limb loss is about severing, not about whether blood keeps coming.
+  openWound(hit, limbForPart(limbMapNow(), hit.part)?.limb ?? null);
+  const part = bodyPartAt(hit.point);
+  const scale = PART_SCALE[part] || 1;
+  const p = [hit.point.x, hit.point.y, hit.point.z];
+  const n = hit.normal ? [hit.normal.x, hit.normal.y, hit.normal.z] : [0, 1, 0];
+
+  // Same two decisions bot-viewer-v2 makes per hit, driven by the sliders instead of by combat.
+  const classOn = settings.damageClass !== 'off';
+  const cls = getDamageClass(classOn ? settings.damageClass : 'human');
+  const blood = classOn ? shouldShowBlood(cls, settings.health, settings.breached).show : true;
+  const sparks = classOn ? cls.sparks : true;
+  const smoke = classOn ? shouldShowSmoke(cls, settings.health, settings.breached) : false;
+  const I = settings.bloodIntensity ? bloodIntensityForHealth(settings.health) : bloodIntensityForHealth(0);
+
+  if (settings.sparks.on && sparks) {
+    spawnEffect('hit_spark', { p, normal: n, surface: null });
+  }
+  if (smoke) {
+    spawnEffect('smoke_puff', {
+      p, color: [0.32, 0.31, 0.3], size: 0.1, growth: 0.35, rise: 0.5, opacity: 0.22, life: 0.7,
+    });
+  }
+  if (!blood) return;
+  // Identical to bot-viewer-v3's burst: same functions, same numbers, no harness-only fudge.
+  const spray = settings.spray.on ? sprayParams(I, settings.blood, settings.base) : null;
+  if (spray) {
+    spawnEffect('blood_spray', {
+      p, normal: n, bodyPart: part, count: spray.count, size: spray.size,
+      speed: spray.speed, spread: spray.spread, gravity: spray.gravity, life: spray.life,
+    });
+  }
+  if (settings.stain.on) {
+    // `crossSection` is 0 for a capsule hit — no part was identified — so that source always falls
+    // back to the fixed size. Fitted sizing only exists once the hit knows what it struck.
+    const fitted = settings.stain.mode === 'fitted' ? hit.crossSection : 0;
+    const st = stainParams(fitted, settings.blood, settings.base);
+    spawnEffect('blood_stain', {
+      p, normal: n, bodyPart: part, size: fitted > 0 ? st.size : st.size * scale, opacity: st.opacity,
+      life: st.life, attach: settings.attach ? (hit.attach || null) : null,
+    });
+  }
+  const sp = settings.splatter.on ? splatterParams(I, settings.blood, settings.base) : null;
+  if (sp) {
+    spawnEffect('blood_splatter', {
+      p, normal: n, bodyPart: part, count: sp.count, size: sp.size, opacity: sp.opacity,
+      speed: sp.speed, spread: sp.spread, gravity: sp.gravity, life: sp.life,
+    });
+  }
+  if (settings.smoke.on) {
+    spawnEffect('smoke_puff', {
+      p, size: settings.smoke.size * scale, growth: 0.3, rise: 0.15, opacity: 0.22, life: 0.5,
+      color: [0.45, 0.42, 0.4],
+    });
+  }
+}
+
+function raycastFromCamera(clientX, clientY) {
+  const ndc = new THREE.Vector2(
+    (clientX / window.innerWidth) * 2 - 1,
+    -(clientY / window.innerHeight) * 2 + 1,
+  );
+  raycaster.setFromCamera(ndc, camera);
+  return resolveShot(raycaster.ray.origin.clone(), raycaster.ray.direction.clone());
+}
+
+// Click-to-fire has to tell a click apart from an OrbitControls drag — both start as a pointerdown
+// on the same canvas — so this only fires if pointerup lands within a few pixels of pointerdown.
+let _downPos = null;
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0) return;
+  _downPos = { x: ev.clientX, y: ev.clientY };
+});
+renderer.domElement.addEventListener('pointerup', (ev) => {
+  const down = _downPos; _downPos = null;
+  if (settings.fireMode !== 'click' || ev.button !== 0 || !down) return;
+  if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 4) return; // was a camera drag
+  fireHit(raycastFromCamera(ev.clientX, ev.clientY));
+});
+
+// Random shot: a random point jittered around the bot's bounding-box center, hit from a uniformly
+// random direction (standard sphere-point sampling: z = cosPhi uniform in [-1,1], theta uniform in
+// [0,2pi)) — the actual impact point/normal still comes from the real raycast against the bot, this
+// just randomizes where the shot is aimed from and roughly at.
+function fireRandomShot() {
+  if (!body) return;
+  const partBox = worldBounds(body.parts.all);
+  if (partBox.isEmpty()) return;
+  const center = new THREE.Vector3();
+  partBox.getCenter(center);
+  const size = new THREE.Vector3();
+  partBox.getSize(size);
+  const aim = center.clone().add(new THREE.Vector3(
+    (Math.random() * 2 - 1) * size.x * 0.35,
+    (Math.random() * 2 - 1) * size.y * 0.4,
+    (Math.random() * 2 - 1) * size.z * 0.35,
+  ));
+  const theta = Math.random() * Math.PI * 2;
+  const cosPhi = Math.random() * 2 - 1;
+  const sinPhi = Math.sqrt(1 - cosPhi * cosPhi);
+  const dirIn = new THREE.Vector3(sinPhi * Math.cos(theta), cosPhi, sinPhi * Math.sin(theta));
+  const back = Math.max(4, size.length() * 2);
+  const origin = aim.clone().addScaledVector(dirIn, back);
+  const dir = aim.clone().sub(origin).normalize();
+  fireHit(resolveShot(origin, dir));
+}
+
+// ===================== control panel =====================
+function el(tag, cls, parent) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function section(panel, title) {
+  const h3 = el('h3', null, panel); h3.textContent = title;
+  const b = el('div', 'body', panel);
+  h3.addEventListener('click', () => h3.classList.toggle('collapsed'));
+  return b;
+}
+function row(parent, labelText) {
+  const r = el('div', 'row', parent);
+  const l = el('label', null, r); l.textContent = labelText;
+  return r;
+}
+function slider(parent, labelText, min, max, step, value, onInput) {
+  const r = row(parent, labelText);
+  const input = el('input', null, r);
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = value;
+  const out = el('input', null, r);
+  out.type = 'number'; out.min = min; out.max = max; out.step = step; out.value = value;
+  input.addEventListener('input', () => { out.value = input.value; onInput(parseFloat(input.value)); queueTuningSave(); });
+  out.addEventListener('change', () => { input.value = out.value; onInput(parseFloat(out.value)); queueTuningSave(); });
+  // Returned so a caller can push a value in programmatically (the class buttons do, to show what
+  // each damage class's own thresholds are).
+  return { set(v) { input.value = v; out.value = v; onInput(parseFloat(v)); queueTuningSave(); } };
+}
+function toggle(parent, labelText, checked, onChange) {
+  const r = row(parent, labelText);
+  const btn = el('button', checked ? 'on' : '', r);
+  btn.textContent = checked ? 'on' : 'off';
+  btn.addEventListener('click', () => {
+    checked = !checked;
+    btn.classList.toggle('on', checked);
+    btn.textContent = checked ? 'on' : 'off';
+    onChange(checked);
+    queueTuningSave();
+  });
+}
+
+const panel = document.getElementById('panel');
+
+const varBody = section(panel, 'bot');
+const varRow = row(varBody, 'variant');
+const varSelect = el('select', null, varRow);
+for (const key in VARIANTS) {
+  const opt = el('option', null, varSelect);
+  opt.value = key; opt.textContent = VARIANTS[key].label;
+}
+varSelect.value = currentVariant;
+varSelect.addEventListener('change', () => buildBot(varSelect.value));
+toggle(varBody, 'pace', settings.motion, v => {
+  settings.motion = v;
+  if (!v) { botState.position.x = 0; botState.yaw = 0; }
+});
+
+const hitBody = section(panel, 'hit resolution');
+const srcRow = row(hitBody, 'source');
+const srcBtns = { capsule: null, parts: null, mesh: null };
+function setHitSource(mode) {
+  settings.hitSource = mode;
+  for (const k in srcBtns) srcBtns[k].classList.toggle('on', k === mode);
+}
+for (const k in srcBtns) {
+  const b = el('button', null, srcRow); b.textContent = k;
+  b.addEventListener('click', () => setHitSource(k));
+  srcBtns[k] = b;
+}
+setHitSource(settings.hitSource);
+toggle(hitBody, 'attach stains', settings.attach, v => settings.attach = v);
+const hitNote = el('div', 'note', hitBody);
+hitNote.textContent = 'capsule = what combat gives the FX. parts = the fix. mesh = accurate reference.';
+
+const classBody = section(panel, 'damage class');
+const clsRow = row(classBody, 'class');
+const clsBtns = { off: null, human: null, armouredHuman: null, robot: null };
+function setDamageClass(id) {
+  settings.damageClass = id;
+  for (const k in clsBtns) clsBtns[k].classList.toggle('on', k === id);
+  // Load that class's own sever thresholds, so switching class shows how much more armour absorbs
+  // and how readily a robot sheds a limb. Overriding a slider afterwards still wins.
+  const cfg = getWoundConfig(id === 'off' ? 'human' : id);
+  armThreshSlider?.set(cfg.armThreshold);
+  legThreshSlider?.set(cfg.legThreshold);
+}
+for (const k in clsBtns) {
+  const b = el('button', null, clsRow); b.textContent = k === 'armouredHuman' ? 'armoured' : k;
+  b.addEventListener('click', () => setDamageClass(k));
+  clsBtns[k] = b;
+}
+setDamageClass(settings.damageClass);
+// The harness has no combat and therefore no health, so the health this drives is synthetic — but
+// it is the same number bot-viewer-v2 computes from the real hit, fed to the same two functions.
+slider(classBody, 'health after hit', 0, 1, 0.01, settings.health, v => settings.health = v);
+toggle(classBody, 'bleed by health', settings.bloodIntensity, v => settings.bloodIntensity = v);
+toggle(classBody, 'armour breached', settings.breached, v => settings.breached = v);
+const clsNote = el('div', 'note', classBody);
+clsNote.textContent = 'armoured bleeds only below 35% health or once breached. robot never bleeds.';
+
+// ---- limb loss --------------------------------------------------------------------------
+// Damage accumulates PER LIMB and a limb that absorbs enough comes off. The reason it is an
+// accumulator and not a per-hit threshold is arithmetic: against 100 health, no weapon in weapons.js
+// can do 55 in one hit without also being at or near lethal, so a one-hit rule could only ever
+// sever corpses. Set `damage per hit` to a real weapon's number and count the clicks.
+const limbBody = section(panel, 'limb loss');
+toggle(limbBody, 'enabled', settings.limb.on, v => { settings.limb.on = v; updateLimbReadout(); });
+slider(limbBody, 'damage per hit', 1, 120, 1, settings.limb.damage, v => settings.limb.damage = v);
+armThreshSlider = slider(limbBody, 'arm threshold', 10, 200, 5, settings.limb.armThreshold,
+  v => { settings.limb.armThreshold = v; updateLimbReadout(); });
+legThreshSlider = slider(limbBody, 'leg threshold', 10, 200, 5, settings.limb.legThreshold,
+  v => { settings.limb.legThreshold = v; updateLimbReadout(); });
+toggle(limbBody, 'headshots kill', settings.limb.headshotKill, v => { settings.limb.headshotKill = v; updateLimbReadout(); });
+const limbBtnRow = el('div', 'btns', limbBody);
+for (const limb of [...SEVERABLE_LIMBS, 'head']) {
+  const b = el('button', null, limbBtnRow);
+  b.textContent = limb.replace('Arm', ' arm').replace('Leg', ' leg');
+  b.addEventListener('click', () => severLimb(limb));
+}
+const limbRestoreRow = el('div', 'btns', limbBody);
+const restoreBtn = el('button', null, limbRestoreRow); restoreBtn.textContent = 'restore limbs';
+restoreBtn.addEventListener('click', restoreLimbs);
+limbReadout = el('div', 'note', limbBody);
+function updateLimbReadout() {
+  if (!limbReadout) return;
+  const cfg = limbConfig();
+  const rows = [];
+  for (const limb of SEVERABLE_LIMBS) {
+    const total = wound.damage[limb] || 0;
+    const t = limbThreshold(limb, cfg);
+    const label = limb.replace('Arm', ' arm').replace('Leg', ' leg');
+    rows.push(wound.severed[limb] ? `${label}: SEVERED` : `${label}: ${Math.round(total)}/${t}`);
+  }
+  // The head has no bar to fill: it is reported as taken or not, plus what it has absorbed so far
+  // in case headshot kills are switched off and you want to see the hits land anyway.
+  const headTaken = Math.round(wound.damage.head || 0);
+  rows.push(isDecapitated(wound) ? 'head: KILLED' : `head: ${headTaken} taken${settings.limb.headshotKill ? ', next one is lethal' : ', not lethal'}`);
+  const resp = weaponResponseFor(wound);
+  rows.push(`weapon: ${resp === null ? 'both hands' : resp}`);
+  if (settings.hitSource === 'capsule') rows.push('(capsule source resolves no part, so hits cannot accrue)');
+  limbReadout.textContent = rows.join(' · ');
+}
+updateLimbReadout();
+const limbNote = el('div', 'note', limbBody);
+limbNote.textContent = 'In a fight, limbs are mostly lost to the killing blow. The head never accumulates.';
+
+// Bleeding, bleed-out, and the haywire death. The rules are bot-bleed.js / bot-haywire.js; these
+// sliders are the whole reason those modules take a config object.
+const bleedBody = section(panel, 'bleeding & death');
+toggle(bleedBody, 'bleeding', settings.bleed.on, v => { settings.bleed.on = v; updateBleedReadout(); });
+slider(bleedBody, 'wound rate /s', 0, 8, 0.1, settings.bleed.woundRate, v => settings.bleed.woundRate = v);
+slider(bleedBody, 'stump rate /s', 0, 20, 0.5, settings.bleed.stumpRate, v => settings.bleed.stumpRate = v);
+slider(bleedBody, 'wound drops', 1, 20, 1, settings.bleed.woundDrops, v => settings.bleed.woundDrops = v);
+slider(bleedBody, 'stump drops', 1, 40, 1, settings.bleed.stumpDrops, v => settings.bleed.stumpDrops = v);
+slider(bleedBody, 'drip speed', 0.1, 4, 0.1, settings.bleed.dripSpeed, v => settings.bleed.dripSpeed = v);
+slider(bleedBody, 'ground every', 0, 12, 1, settings.bleed.groundEvery, v => settings.bleed.groundEvery = v);
+slider(bleedBody, 'clot after s', 0, 60, 1, settings.bleed.clotSeconds, v => { settings.bleed.clotSeconds = v; updateBleedReadout(); });
+slider(bleedBody, 'pool growth', 0, 0.5, 0.01, settings.bleed.poolGrowth, v => settings.bleed.poolGrowth = v);
+slider(bleedBody, 'pool max r', 0.1, 2, 0.05, settings.bleed.poolMax, v => settings.bleed.poolMax = v);
+slider(bleedBody, 'bleedout s', 1, 120, 1, settings.bleed.bleedoutSeconds, v => settings.bleed.bleedoutSeconds = v);
+const deathBtnRow = el('div', 'btns', bleedBody);
+const killBtn = el('button', null, deathBtnRow); killBtn.textContent = 'kill bot';
+killBtn.addEventListener('click', () => killBot());
+const reviveBtn = el('button', null, deathBtnRow); reviveBtn.textContent = 'revive';
+reviveBtn.addEventListener('click', () => { reviveBot(); buildBot(currentVariant); });
+const healBtn = el('button', null, deathBtnRow); healBtn.textContent = 'heal (seal wounds)';
+healBtn.addEventListener('click', () => { closeBleedSites(bleed); updateBleedReadout(); });
+toggle(bleedBody, 'haywire', settings.haywire.on, v => { settings.haywire.on = v; updateBleedReadout(); });
+toggle(bleedBody, 'force haywire', settings.haywire.force, v => { settings.haywire.force = v; updateBleedReadout(); });
+slider(bleedBody, 'headshot odds', 0, 1, 0.05, settings.haywire.headChance, v => { settings.haywire.headChance = v; updateBleedReadout(); });
+slider(bleedBody, 'base odds', 0, 1, 0.05, settings.haywire.baseChance, v => { settings.haywire.baseChance = v; updateBleedReadout(); });
+slider(bleedBody, 'thrash ms', 0, 5000, 100, settings.haywire.thrashMs, v => settings.haywire.thrashMs = v);
+slider(bleedBody, 'twitch ms', 0, 8000, 100, settings.haywire.twitchMs, v => settings.haywire.twitchMs = v);
+slider(bleedBody, 'thrash force', 0, 20, 0.5, settings.haywire.thrashImpulse, v => settings.haywire.thrashImpulse = v);
+slider(bleedBody, 'fire chance', 0, 1, 0.02, settings.haywire.fireChance, v => settings.haywire.fireChance = v);
+bleedReadout = el('div', 'note', bleedBody);
+function updateBleedReadout() {
+  if (!bleedReadout) return;
+  const sites = bleed.sites.map(s => `${s.limb}${s.kind === SITE_STUMP ? ' (stump)' : ''}`);
+  const rows = [`bleeding from ${bleedingSiteCount(bleed)}: ${sites.join(', ') || 'nothing'}`];
+  if (dead) {
+    rows.push(`dead · pool r ${bleed.pool.toFixed(2)} m`);
+    rows.push(haywireRolled ? `HAYWIRE${haywire ? ` (${haywire.phase})` : ' (over)'} · ${haywireShots} wild shots` : 'died normally');
+  } else {
+    const cause = { headKill: isDecapitated(wound), severed: severedLimbs(wound).find(l => l !== 'head') ?? null };
+    const pct = Math.round(haywireChance(cause, haywireConfig()) * 100);
+    rows.push(`alive · haywire odds if it died now: ${settings.haywire.force ? 'forced' : `${pct}%`}`);
+  }
+  bleedReadout.textContent = rows.join(' · ');
+}
+updateBleedReadout();
+
+const tuneBody = section(panel, 'tuning');
+const tuneBtnRow = el('div', 'btns', tuneBody);
+const tuneStatus = el('div', 'note', tuneBody);
+const saveTuneBtn = el('button', null, tuneBtnRow); saveTuneBtn.textContent = 'save';
+saveTuneBtn.addEventListener('click', () => { saveTuning(); tuneStatus.textContent = 'saved to localStorage'; });
+const diskTuneBtn = el('button', null, tuneBtnRow); diskTuneBtn.textContent = 'save to disk';
+diskTuneBtn.addEventListener('click', async () => {
+  saveTuning();
+  try { tuneStatus.textContent = `wrote ${await saveTuningToDisk()}`; }
+  catch (err) { tuneStatus.textContent = `disk save failed: ${err.message}`; }
+});
+const copyTuneBtn = el('button', null, tuneBtnRow); copyTuneBtn.textContent = 'copy JSON';
+copyTuneBtn.addEventListener('click', async () => {
+  const text = JSON.stringify(captureTuning(), null, 2);
+  saveTuning();
+  try { await navigator.clipboard.writeText(text); tuneStatus.textContent = 'copied'; }
+  catch { console.log(text); tuneStatus.textContent = 'clipboard denied — dumped to console'; }
+});
+const resetTuneBtn = el('button', null, tuneBtnRow); resetTuneBtn.textContent = 'clear saved';
+resetTuneBtn.addEventListener('click', () => {
+  try { localStorage.removeItem(TUNING_KEY); } catch { /* private mode */ }
+  tuneStatus.textContent = 'cleared — reload for defaults';
+});
+tuneStatus.textContent = `${TUNING_FILE} on load, then ${TUNING_KEY} · autosaves on every change, `
+  + 'which an open bot-viewer-v3 picks up live';
+
+const fireBody = section(panel, 'fire');
+const modeRow = row(fireBody, 'mode');
+const clickBtn = el('button', 'on', modeRow); clickBtn.textContent = 'click';
+const randBtn = el('button', null, modeRow); randBtn.textContent = 'random target';
+function setFireMode(mode) {
+  settings.fireMode = mode;
+  clickBtn.classList.toggle('on', mode === 'click');
+  randBtn.classList.toggle('on', mode === 'random');
+}
+clickBtn.addEventListener('click', () => setFireMode('click'));
+randBtn.addEventListener('click', () => setFireMode('random'));
+const fireBtnsRow = el('div', 'btns', fireBody);
+const randShotBtn = el('button', null, fireBtnsRow); randShotBtn.textContent = 'fire random shot';
+randShotBtn.addEventListener('click', fireRandomShot);
+const clearBtn = el('button', null, fireBtnsRow); clearBtn.textContent = 'clear effects';
+clearBtn.addEventListener('click', clearEffects);
+
+// The five multipliers, in the same order and ranges as bot-viewer-v3's Body & ragdoll group.
+const bloodBody = section(panel, 'blood (multipliers)');
+slider(bloodBody, 'blood amount ×', 0, 4, 0.1, settings.blood.amount, v => settings.blood.amount = v);
+slider(bloodBody, 'blood force ×', 0.1, 4, 0.1, settings.blood.force, v => settings.blood.force = v);
+slider(bloodBody, 'spray life', 0.1, 4, 0.1, settings.blood.sprayLife, v => settings.blood.sprayLife = v);
+slider(bloodBody, 'decal life', 1, 60, 1, settings.blood.decalLife, v => settings.blood.decalLife = v);
+slider(bloodBody, 'stain size ×', 0.25, 4, 0.05, settings.blood.stainSize, v => settings.blood.stainSize = v);
+const bloodNote = el('div', 'note', bloodBody);
+bloodNote.textContent = 'These five exist in bot-viewer-v3. Absolute shape is in the sections below.';
+
+const sprayBody = section(panel, 'blood spray');
+toggle(sprayBody, 'enabled', settings.spray.on, v => settings.spray.on = v);
+slider(sprayBody, 'droplet size', 0.01, 0.2, 0.005, settings.base.spraySize, v => settings.base.spraySize = v);
+slider(sprayBody, 'gravity', 0, 20, 0.5, settings.base.gravity, v => settings.base.gravity = v);
+const sprayNote = el('div', 'note', sprayBody);
+sprayNote.textContent = 'Count, speed and spread come from health × the multipliers above.';
+
+const stainBody = section(panel, 'blood stain');
+toggle(stainBody, 'enabled', settings.stain.on, v => settings.stain.on = v);
+const stainModeRow = row(stainBody, 'size mode');
+const stainModeBtns = { fixed: null, fitted: null, projected: null };
+function setStainMode(mode) {
+  settings.stain.mode = mode;
+  for (const k in stainModeBtns) stainModeBtns[k].classList.toggle('on', k === mode);
+}
+for (const k in stainModeBtns) {
+  const b = el('button', null, stainModeRow); b.textContent = k;
+  b.addEventListener('click', () => setStainMode(k));
+  stainModeBtns[k] = b;
+}
+setStainMode(settings.stain.mode);
+slider(stainBody, 'size (fixed)', 0.02, 0.6, 0.01, settings.base.stainFixed, v => settings.base.stainFixed = v);
+slider(stainBody, 'fit × width', 0.1, 1.5, 0.05, settings.base.stainFit, v => settings.base.stainFit = v);
+slider(stainBody, 'fit min', 0.01, 0.2, 0.005, settings.base.stainFitMin, v => settings.base.stainFitMin = v);
+slider(stainBody, 'fit max', 0.04, 0.5, 0.01, settings.base.stainFitMax, v => settings.base.stainFitMax = v);
+slider(stainBody, 'opacity', 0.05, 1, 0.01, settings.base.stainOpacity, v => settings.base.stainOpacity = v);
+slider(stainBody, 'project depth', 0.005, 0.12, 0.005, settings.base.stainProjDepth, v => settings.base.stainProjDepth = v);
+toggle(stainBody, 'project debug', settings.stain.projDebug, v => settings.stain.projDebug = v);
+slider(stainBody, 'wound inner', 0, 0.4, 0.005, settings.wound.inner,
+  v => { settings.wound.inner = v; applyWoundStyle(); });
+slider(stainBody, 'wound outer', 0.02, 0.7, 0.005, settings.wound.outer,
+  v => { settings.wound.outer = v; applyWoundStyle(); });
+slider(stainBody, 'wound darken', 0.05, 1, 0.05, settings.wound.darken,
+  v => { settings.wound.darken = v; applyWoundStyle(); });
+const woundNote = el('div', 'note', stainBody);
+woundNote.textContent = 'Darkens each decal centre so a stain reads as a puncture. darken 1 turns it off.';
+const stainNote = el('div', 'note', stainBody);
+stainNote.textContent = 'fitted sizes to the part hit. projected wraps via the depth buffer; blank = unsupported.';
+
+const splatterBody = section(panel, 'blood splatter (ground)');
+toggle(splatterBody, 'enabled', settings.splatter.on, v => settings.splatter.on = v);
+slider(splatterBody, 'size', 0.02, 0.5, 0.01, settings.base.splatterSize, v => settings.base.splatterSize = v);
+slider(splatterBody, 'life ×', 1, 3, 0.05, settings.base.splatterLifeScale, v => settings.base.splatterLifeScale = v);
+const splatNote = el('div', 'note', splatterBody);
+splatNote.textContent = 'Life is a multiple of decal life, so ground blood outlasts the body stain.';
+
+const smokeBody = section(panel, 'smoke puff');
+toggle(smokeBody, 'enabled', settings.smoke.on, v => settings.smoke.on = v);
+slider(smokeBody, 'size', 0.05, 0.8, 0.01, settings.smoke.size, v => settings.smoke.size = v);
+
+const sparkBody = section(panel, 'sparks');
+toggle(sparkBody, 'enabled', settings.sparks.on, v => settings.sparks.on = v);
+
+document.getElementById('panelToggle').addEventListener('click', () => panel.classList.toggle('hidden'));
+
+// ===================== bot motion =====================
+// A stain that stays where the bot WAS only reads as a bug once the bot leaves. Without this the
+// harness is a statue and the single biggest visual defect is invisible in it. Paces along X and
+// faces the way it is walking; the camera deliberately stays put so a decal left behind is obvious.
+const PACE_HALF = 1.2, PACE_SPEED = 1.1;
+let paceDir = 1;
+function stepBotMotion(dt) {
+  if (!settings.motion) {
+    botState.velocity.set(0, 0, 0);
+    return;
+  }
+  botState.position.x += paceDir * PACE_SPEED * dt;
+  if (botState.position.x > PACE_HALF) { botState.position.x = PACE_HALF; paceDir = -1; }
+  if (botState.position.x < -PACE_HALF) { botState.position.x = -PACE_HALF; paceDir = 1; }
+  botState.velocity.set(paceDir * PACE_SPEED, 0, 0);
+  // The rig takes camera-style yaw; bot movement code is +Z-forward, hence the +PI (bot-viewer-v2:3422).
+  botState.yaw = Math.atan2(botState.velocity.x, botState.velocity.z) + Math.PI;
+}
+
+// ===================== frame loop =====================
+function updateHud() {
+  if (window.__errors.length) return;
+  hud.textContent = `damage simulator · ${VARIANTS[currentVariant].label} · ${effects.length} fx`;
+}
+
+let lastT = performance.now();
+let framesSinceBuild = 0;
+async function drawFrame(dt) {
+  if (!dead) stepBotMotion(dt);
+  batches.beginFrame();
+  // A corpse is posed by the ragdoll instead of the gait, so update() is skipped while dead.
+  if (body && !dead) body.update(dt, botState);
+  stepCorpse(dt);
+  stepBleeding(dt);
+  if (body) body.flush(batches);
+  batches.endFrame();
+
+  effects = effects.filter(e => !EffectEntity.update(e, dt));
+  // Mode exclusivity: fx.sync draws every blood_stain it is handed, so when Mode C owns them they
+  // are withheld here rather than filtered inside the renderer — that keeps sync(list, nowMs)
+  // unchanged for its other four callers.
+  const projecting = settings.stain.mode === 'projected';
+  const wire = effects.map(e => EffectEntity.serialize(e));
+  fx.sync(projecting ? wire.filter(w => w.kind !== 'blood_stain') : wire, performance.now());
+  if (projecting || bleed.pool > 0) drawProjectedStains(projecting);
+  else if (projected) { projected.begin(); projected.end(); }   // hide the box pool
+
+  controls.update();
+  visuals.update(dt);
+  await postFX.renderAsync();
+  updateHud();
+
+  if (!window.__ready && ++framesSinceBuild > 2) window.__ready = true;
+}
+async function loopTick() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  await drawFrame(dt);
+}
+renderer.setAnimationLoop(loopTick);
+
+buildBot(currentVariant);
+</script>
+</body>
+</html>

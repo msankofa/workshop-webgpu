@@ -134,6 +134,7 @@ function fmtUptime(seconds) {
 function serverUrl(id, port) {
   if (id === "static") return `http://127.0.0.1:${port}/environment-viewer.html`;
   if (id === "relay") return `ws://localhost:${port}`;
+  if (id === "compress") return `http://127.0.0.1:${port}/api/health`;
   return "";
 }
 
@@ -192,9 +193,9 @@ function detailText(id, st) {
   if (st.running) return `Listening check: ${st.portOpen ? "open" : "not open yet"}; uptime ${fmtUptime(st.uptime)}.`;
   if (st.lastExit !== null && st.lastExit !== undefined) return `Last exit code: ${st.lastExit}.`;
   if (st.portOpen) return "The port answers, but it was not started by this tool.";
-  return id === "relay"
-    ? "Requires Node and server/node_modules/ws. If it exits immediately, run npm install in server/."
-    : "Serves browser entry points such as environment-viewer.html, tree-viewer.html, and biome-explainer.html.";
+  if (id === "relay") return "Requires Node and server/node_modules/ws. If it exits immediately, run npm install in server/.";
+  if (id === "compress") return "Requires Node and glb-shrink-server/node_modules. If it exits immediately, run npm install in glb-shrink-server/.";
+  return "Serves browser entry points such as environment-viewer.html, tree-viewer.html, and biome-explainer.html.";
 }
 
 function renderLinks(card, id, st) {

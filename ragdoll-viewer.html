@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ragdoll Viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; }
+  #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
+    font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
+    max-width: calc(100vw - 300px); z-index: 5; }
+  #panel { position: fixed; top: 10px; right: 10px; width: 264px; z-index: 6;
+    background: rgba(20,24,30,0.92); border: 1px solid #2a3038; border-radius: 8px;
+    padding: 12px; color: #c3cad6; font: 12px/1.4 system-ui, sans-serif;
+    max-height: calc(100vh - 20px); overflow-y: auto; }
+  #panel h3 { margin: 0 0 8px; font-size: 13px; color: #e6ebf2; }
+  #panel .grp { border-top: 1px solid #262c34; margin-top: 10px; padding-top: 8px; }
+  #panel label { display: block; margin: 6px 0 2px; color: #97a1b0; }
+  #panel .row { display: flex; align-items: center; gap: 6px; }
+  #panel input[type=range] { flex: 1; }
+  #panel .val { width: 40px; text-align: right; color: #dfe6ef; font-variant-numeric: tabular-nums; }
+  #panel button { background: #2b3440; color: #dfe6ef; border: 1px solid #3a4552;
+    border-radius: 5px; padding: 6px 8px; cursor: pointer; font-size: 12px; margin: 3px 3px 0 0; }
+  #panel button:hover { background: #35404e; }
+  #panel .hint { color: #6d7684; font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &middot; <b>shift+click</b>&nbsp;a&nbsp;joint&nbsp;to&nbsp;punch&nbsp;it &mdash; standalone ragdoll-solver tuning tool</div>
+
+<div id="panel">
+  <h3>Ragdoll Viewer</h3>
+  <div>
+    <button id="btnDrop">Drop ragdoll</button>
+    <button id="btnRow">Drop a row (6)</button>
+  </div>
+  <div>
+    <button id="btnExplode">Blast up ⭡</button>
+    <button id="btnReset">Reset</button>
+    <button id="btnClear">Clear</button>
+  </div>
+
+  <div class="grp">
+    <label>Spawn height <span class="val" id="vSpawn"></span></label>
+    <div class="row"><input type="range" id="sSpawn" min="0" max="6" step="0.1"></div>
+    <label>Time scale <span class="val" id="vTime"></span></label>
+    <div class="row"><input type="range" id="sTime" min="0.1" max="1.5" step="0.05"></div>
+  </div>
+
+  <div class="grp">
+    <label>Gravity <span class="val" id="vGrav"></span></label>
+    <div class="row"><input type="range" id="sGrav" min="0" max="60" step="1"></div>
+    <label>Iterations <span class="val" id="vIter"></span></label>
+    <div class="row"><input type="range" id="sIter" min="2" max="30" step="1"></div>
+    <label>Air drag <span class="val" id="vDrag"></span></label>
+    <div class="row"><input type="range" id="sDrag" min="0" max="0.1" step="0.005"></div>
+    <label>Ground bounce <span class="val" id="vRest"></span></label>
+    <div class="row"><input type="range" id="sRest" min="0" max="0.8" step="0.02"></div>
+    <label>Ground friction <span class="val" id="vFric"></span></label>
+    <div class="row"><input type="range" id="sFric" min="0" max="0.9" step="0.02"></div>
+    <label>Torso stiffness (rebuild) <span class="val" id="vBrace"></span></label>
+    <div class="row"><input type="range" id="sBrace" min="0.1" max="1" step="0.05"></div>
+  </div>
+
+  <div class="grp">
+    <h3 style="font-size:12px;margin:0 0 4px;">Real bot body (mannequin)</h3>
+    <div>
+      <button id="btnBody">Spawn body</button>
+      <button id="btnKill">Kill (flop)</button>
+      <button id="btnBodyReset">Reset body</button>
+    </div>
+    <label>Death impulse <span class="val" id="vHit"></span></label>
+    <div class="row"><input type="range" id="sHit" min="0" max="20" step="0.5"></div>
+    <div class="hint">Spawn a real <code>createProceduralPlayerBody</code>, then Kill to flop it via the ragdoll (drives the same rig through <code>setRagdollPose</code>).</div>
+  </div>
+
+  <div class="grp">
+    <label><input type="checkbox" id="cLimits" checked> joint limits (cone)</label>
+    <label><input type="checkbox" id="cJoints"> show joints (stand-ins)</label>
+    <label><input type="checkbox" id="cBones" checked> show bones (stand-ins)</label>
+  </div>
+  <div class="hint" id="stats"></div>
+</div>
+
+<!-- three@0.184.0: same CDN pins as environment-viewer.html/bot-viewer.html -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createRagdoll, stepRagdoll, applyImpulse, applyImpulseAll, jointPos, kineticEnergy, RAGDOLL_PROPORTIONS } from './ragdoll.js';
+import { createProceduralPlayerBody } from './player-procedural-body.js';
+import { ragdollFromBody, applyDeathImpulse } from './ragdoll-body.js';
+
+const infoEl = document.getElementById('info');
+function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
+addEventListener('error', e => showError(e.message || 'script error'));
+addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== renderer / scene / camera =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+scene.fog = new THREE.Fog(0x14171c, 24, 60);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(6, 5, 7);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+// ===================== lighting + ground =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 55, azimuth: 30 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 0.1; rig.dirLight.shadow.camera.far = 60;
+rig.dirLight.shadow.camera.left = -20; rig.dirLight.shadow.camera.right = 20;
+rig.dirLight.shadow.camera.top = 20; rig.dirLight.shadow.camera.bottom = -20;
+
+const GROUND_Y = 0;
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.MeshStandardMaterial({ color: 0x2a2f37, roughness: 0.95, metalness: 0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = GROUND_Y;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(80, 80, 0x3a4653, 0x252b32);
+grid.position.y = GROUND_Y + 0.002;
+scene.add(grid);
+
+// ===================== ragdoll render actors =====================
+const { limbThickness } = RAGDOLL_PROPORTIONS;
+const actors = [];   // { rd, group, boneMeshes[], jointMeshes[], opts snapshot via global sim }
+let hueSeed = 0;
+
+// One shared cylinder (unit height along Y, r=0.5) scaled per bone, like placeSegment.
+const boneGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const jointGeo = new THREE.SphereGeometry(1, 10, 8);
+const headGeo = new THREE.SphereGeometry(RAGDOLL_PROPORTIONS.R * 0.34, 16, 12);
+
+function roleColors(hue) {
+  return {
+    shell: new THREE.Color().setHSL(hue, 0.45, 0.55),
+    plate: new THREE.Color().setHSL(hue, 0.40, 0.42),
+    trim:  new THREE.Color().setHSL(hue, 0.55, 0.65),
+  };
+}
+
+function spawnRagdoll(origin, yaw = Math.random() * Math.PI * 2) {
+  const rd = createRagdoll({ origin, yaw, braceStiffness: sim.brace });
+  const group = new THREE.Group();
+  const hue = (hueSeed = (hueSeed + 0.17) % 1);
+  const cols = roleColors(hue);
+
+  const boneMeshes = rd.bones.map((b) => {
+    const mat = new THREE.MeshStandardMaterial({ color: cols[b.role] || cols.shell, roughness: 0.6, metalness: 0.08 });
+    const m = new THREE.Mesh(boneGeo, mat);
+    m.castShadow = true; m.receiveShadow = true;
+    m.userData.bone = b;
+    group.add(m);
+    return m;
+  });
+
+  const jointMeshes = rd.particles.map((p) => {
+    const mat = new THREE.MeshStandardMaterial({ color: cols.trim, roughness: 0.5 });
+    const m = new THREE.Mesh(jointGeo, mat);
+    m.scale.setScalar(p.radius);
+    m.visible = ui.cJoints.checked;
+    m.userData.jointName = p.name;      // for shift+click impulse picking
+    group.add(m);
+    return m;
+  });
+
+  // Head cap (distinct sphere on the head joint so a corpse reads as humanoid).
+  const head = new THREE.Mesh(headGeo, new THREE.MeshStandardMaterial({ color: cols.trim, roughness: 0.55 }));
+  head.castShadow = true;
+  group.add(head);
+
+  scene.add(group);
+  const actor = { rd, group, boneMeshes, jointMeshes, head };
+  actors.push(actor);
+  updateActorMeshes(actor);
+  return actor;
+}
+
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _mid = new THREE.Vector3(), _dir = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+function updateActorMeshes(actor) {
+  const P = actor.rd.particles;
+  for (const m of actor.boneMeshes) {
+    const bone = m.userData.bone;
+    _a.copy(P[bone.a].pos); _b.copy(P[bone.b].pos);
+    _mid.addVectors(_a, _b).multiplyScalar(0.5);
+    const len = Math.max(0.001, _a.distanceTo(_b));
+    _dir.subVectors(_b, _a).normalize();
+    m.position.copy(_mid);
+    m.quaternion.setFromUnitVectors(_up, _dir);
+    m.scale.set(bone.thickness, len, bone.thickness);
+    m.visible = ui.cBones.checked;
+  }
+  for (let i = 0; i < actor.jointMeshes.length; i++) {
+    const m = actor.jointMeshes[i];
+    m.position.copy(P[i].pos);
+    m.visible = ui.cJoints.checked;
+  }
+  actor.head.position.copy(jointPos(actor.rd, 'head'));
+}
+
+function clearActors() {
+  for (const a of actors) {
+    scene.remove(a.group);
+    for (const m of a.boneMeshes) m.material.dispose();
+    for (const m of a.jointMeshes) m.material.dispose();
+    a.head.material.dispose();
+  }
+  actors.length = 0;
+}
+
+// ===================== sim state + panel =====================
+const sim = { spawn: 3, time: 1, gravity: 25, iterations: 14, drag: 0.01, restitution: 0.0, friction: 0.35, brace: 0.7, hit: 8 };
+const ui = {};
+['btnDrop','btnRow','btnExplode','btnReset','btnClear','sSpawn','sTime','sGrav','sIter','sDrag','sRest','sFric','sBrace','cJoints','cBones','stats',
+ 'btnBody','btnKill','btnBodyReset','sHit','vHit','cLimits',
+ 'vSpawn','vTime','vGrav','vIter','vDrag','vRest','vFric','vBrace'].forEach(id => ui[id] = document.getElementById(id));
+
+function bindSlider(slider, valEl, key, fmt = (x) => x) {
+  slider.value = sim[key];
+  valEl.textContent = fmt(sim[key]);
+  slider.addEventListener('input', () => { sim[key] = parseFloat(slider.value); valEl.textContent = fmt(sim[key]); });
+}
+bindSlider(ui.sSpawn, ui.vSpawn, 'spawn', x => x.toFixed(1) + 'm');
+bindSlider(ui.sTime, ui.vTime, 'time', x => x.toFixed(2) + '×');
+bindSlider(ui.sGrav, ui.vGrav, 'gravity', x => x.toFixed(0));
+bindSlider(ui.sIter, ui.vIter, 'iterations', x => x.toFixed(0));
+bindSlider(ui.sDrag, ui.vDrag, 'drag', x => x.toFixed(3));
+bindSlider(ui.sRest, ui.vRest, 'restitution', x => x.toFixed(2));
+bindSlider(ui.sFric, ui.vFric, 'friction', x => x.toFixed(2));
+bindSlider(ui.sBrace, ui.vBrace, 'brace', x => x.toFixed(2));
+bindSlider(ui.sHit, ui.vHit, 'hit', x => x.toFixed(1));
+
+const spawnOrigin = (i = 0) => ({ x: (i % 6) * 1.4 - 3.5, y: GROUND_Y + sim.spawn, z: Math.floor(i / 6) * 1.4 });
+ui.btnDrop.onclick = () => spawnRagdoll(spawnOrigin(actors.length));
+ui.btnRow.onclick = () => { const base = actors.length; for (let i = 0; i < 6; i++) spawnRagdoll(spawnOrigin(base + i)); };
+ui.btnExplode.onclick = () => { for (const a of actors) applyImpulseAll(a.rd, { x: (Math.random() - 0.5) * 4, y: 8 + Math.random() * 4, z: (Math.random() - 0.5) * 4 }); };
+ui.btnReset.onclick = () => { clearActors(); spawnRagdoll(spawnOrigin(0)); };
+ui.btnClear.onclick = () => clearActors();
+
+// ===================== shift+click to punch a joint =====================
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!e.shiftKey || e.button !== 0) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  ray.setFromCamera(ndc, camera);
+  // Test against joint spheres of every actor (temporarily unhidden for the hit test).
+  const targets = [];
+  for (const a of actors) for (const m of a.jointMeshes) targets.push(m);
+  const wasVisible = targets.map(m => m.visible);
+  targets.forEach(m => (m.visible = true));
+  const hit = ray.intersectObjects(targets, false)[0];
+  targets.forEach((m, i) => (m.visible = wasVisible[i]));
+  if (!hit) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const actor = actors.find(a => a.jointMeshes.includes(hit.object));
+  const name = hit.object.userData.jointName;
+  const dir = ray.ray.direction.clone().normalize().multiplyScalar(14);   // punch along the view ray
+  dir.y += 3;
+  applyImpulse(actor.rd, name, { x: dir.x, y: dir.y, z: dir.z });
+}, { capture: true });
+
+// ===================== real bot body demo (validates setRagdollPose) =====================
+// Spawn an actual createProceduralPlayerBody (mesh mode → its own meshes in the scene), pose it
+// standing, then on Kill seed a ragdoll from its live joint positions and drive the SAME rig via
+// setRagdollPose each frame. This is the render path the death-pose wiring (step B) will reuse.
+const bodyGround = () => GROUND_Y;
+const bodies = [];   // { body, rd, mode:'stand'|'ragdoll', pos, yaw, pose }
+let bodyHue = 0.58;
+const _wp = new THREE.Vector3();
+
+function spawnBody() {
+  const i = bodies.length;
+  const pos = { x: (i % 4) * 1.6 - 2.4, y: GROUND_Y, z: 2.5 };
+  const hue = (bodyHue = (bodyHue + 0.19) % 1);
+  const body = createProceduralPlayerBody({
+    THREE, scene, terrainHeight: bodyGround, mode: 'remote',
+    style: { shell: new THREE.Color().setHSL(hue, 0.4, 0.5).getHex(), limbShape: 'mannequin' },
+  });
+  const rec = { body, rd: null, mode: 'stand', pos, yaw: Math.random() * Math.PI * 2, pose: null };
+  bodies.push(rec);
+  return rec;
+}
+
+function killBody(rec) {
+  if (rec.mode !== 'stand') return;
+  const { rd, pose } = ragdollFromBody(THREE, rec.body, {
+    origin: { x: rec.pos.x, y: GROUND_Y, z: rec.pos.z }, yaw: rec.yaw, braceStiffness: sim.brace,
+  });
+  // No shooter here — kick backward relative to the body's own facing (no hit point → upper-body spread).
+  const fwd = { x: Math.sin(rec.yaw), y: 0, z: Math.cos(rec.yaw) };
+  applyDeathImpulse(rd, { dir: { x: -fwd.x, y: 0, z: -fwd.z }, strength: sim.hit });
+  rec.rd = rd;
+  rec.pose = pose;
+  rec.mode = 'ragdoll';
+}
+
+function clearBodies() {
+  for (const b of bodies) b.body.destroy();
+  bodies.length = 0;
+}
+
+ui.btnBody.onclick = () => spawnBody();
+ui.btnKill.onclick = () => { for (const b of bodies) killBody(b); };
+ui.btnBodyReset.onclick = () => { clearBodies(); spawnBody(); };
+
+function updateBodies(dt) {
+  const opts = { gravity: sim.gravity, groundHeight: GROUND_Y, iterations: sim.iterations,
+                 drag: sim.drag, restitution: sim.restitution, friction: sim.friction };
+  for (const rec of bodies) {
+    if (rec.mode === 'stand') {
+      rec.body.update(dt, { position: { x: rec.pos.x, y: GROUND_Y, z: rec.pos.z }, yaw: rec.yaw, alive: true, onFloor: true });
+    } else {
+      rec.rd.limits.enabled = ui.cLimits.checked;
+      stepRagdoll(rec.rd, dt * sim.time, opts);
+      rec.body.setRagdollPose(rec.pose);
+    }
+  }
+}
+
+// ===================== loop =====================
+let last = performance.now();
+let fpsAvg = 60;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  fpsAvg += ((1 / Math.max(1e-3, dt)) - fpsAvg) * 0.1;
+
+  const opts = { gravity: sim.gravity, groundHeight: GROUND_Y, iterations: sim.iterations,
+                 drag: sim.drag, restitution: sim.restitution, friction: sim.friction };
+  const limitsOn = ui.cLimits.checked;
+  let ke = 0;
+  for (const a of actors) {
+    a.rd.limits.enabled = limitsOn;
+    stepRagdoll(a.rd, dt * sim.time, opts);
+    updateActorMeshes(a);
+    ke += kineticEnergy(a.rd);
+  }
+  updateBodies(dt);
+
+  rig.dirLight.target.position.copy(controls.target);
+  controls.update();
+  renderer.render(scene, camera);
+
+  const flopped = bodies.filter(b => b.mode === 'ragdoll').length;
+  let headDbg = '';
+  const f = bodies.find(b => b.mode === 'ragdoll');
+  if (f && f.body.joints.head) {
+    f.body.joints.head.getWorldPosition(_wp);
+    const nan = !Number.isFinite(_wp.x) || !Number.isFinite(_wp.y) || !Number.isFinite(_wp.z);
+    headDbg = ` · head y=${_wp.y.toFixed(2)}${nan ? ' NaN!' : ''} vis=${f.body.joints.head.visible}`;
+  }
+  ui.stats.textContent = `${actors.length} stand-in · ${bodies.length} body (${flopped} flopped) · ${fpsAvg.toFixed(0)} fps · ΣKE ${ke.toExponential(1)}${headDbg}`;
+  requestAnimationFrame(frame);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+spawnRagdoll(spawnOrigin(0));
+spawnBody();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

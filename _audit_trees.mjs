@@ -81,7 +81,8 @@ console.log('\n[atlas-pinned cell=5]');
 {
   const t = createTree({ seed: 7, levels: 3, leaves: { atlas: { cols: 4, rows: 2, cell: 5 } } });
   const uv = t.leavesMesh.geometry.getAttribute('uv');
-  const du = 1 / 4, dv = 1 / 2, cx = 5 % 4, cy = Math.floor(5 / 4);
+  // Cells number row-major from the atlas image's TOP-left, so the row mirrors into v-up space.
+  const du = 1 / 4, dv = 1 / 2, cx = 5 % 4, cy = 2 - 1 - Math.floor(5 / 4);
   let bad = 0;
   for (let i = 0; i < uv.count; i++) {
     const u = uv.getX(i), v = uv.getY(i);

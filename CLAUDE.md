@@ -49,13 +49,20 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Water | `water.md` | `water.js` |
 | Sky / atmosphere | `sky.md` | `sky.js`, `sky-field.js`, `clouds.js`, `stars.js`, `celestial-bodies.js` |
 | Lighting | `lighting.md` | `lights.js`, `clustered-lights.js` |
-| Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js` |
-| Creature sim | `creature.md` | `port-creature-bridge.js`, `port-creature-system.js` |
+| Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js`, `effect-renderer.js`, `projected-decals.js`, `wound-mask.js`, `blood-tuning.js`, `entity-types/effect.js`, `damage-simulator.html` (standalone single-bot harness for tuning hit effects) |
+| Creature sim | `creature.md` | `port-creature-bridge.js`, `port-creature-system.js`, `creature-plan.js`, `creature-locomotion.js` |
+| Model studio (spec + gates) | `model-studio.md` | `model-primitives.js`, `model-modifiers.js`, `model-csg.js`, `model-spec.js`, `model-targets/` |
+| Roads | `roads.md` | `roads.js`, `road-network.js`, `road-index.js`, `road-mesh.js`, `road-path.js` (wired into `bot-viewer-v3.html`) |
 | Shoot house map | `shoot-house.md` | `shoot-house.js`, `shoot-house-layout.js` |
-| Combat bots (wired) | `bots.md` | `bot-entity.js`, `bot-activity.js`, `nav-grid.js`, `bot-viewer.html` (standalone harness, still used for iteration) |
+| Combat bots (wired) | `bots.md` | `bot-entity.js`, `bot-forensics.js`, `bot-activity.js`, `bot-aim-blend.js`, `nav-grid.js`, `bot-body-design.js`, `bot-body-hit.js`, `bot-limb-map.js`, `bot-wound.js`, `bot-bleed.js`, `bot-haywire.js`, `bot-damage-class.js`, `bot-face.js`, `bot-body-versions.js`, `bot-drones.js`, `bot-destruction.js` (pure; not wired yet), `bot-viewer-v3.html` (the live standalone harness — all new bot work goes here; `bot-viewer-v2.html` is a frozen snapshot as of 2026-08-08 and `bot-viewer.html` is the older v1) |
+| Bot design studio (workflow) | `design-studio.md` | `bot-design-studio.html` |
 | Multiplayer | `multiplayer.md` | `multiplayer.js`, `start-screen.js`, `server/server.js` |
 | Audio / SFX | `audio.md` | `environment-audio.js`, `sound-events.js`, `sfx-browser.html`, `sfx/` |
+| Procedural audio + sound params | `audio.md` | `bot-voice.js`, `bot-voice-intensity.js`, `bot-voice-director.js`, `bot-voice-bank.js`, `bot-damage-audio.js`, `ballistic-audio.js`, `combat-audio-budget.js`, `synth-utils.js`, `sound-params.js`, `sound-params.json`, `sound-studio.html`, `voice-line-studio.html`, `bake-voices.mjs`, `voice-bake-server.mjs` |
+| Materials (TSL demos) | `materials.md` | `materials/index.js`, `materials/material-demo-api.js`, `materials/dissolve.js`, `materials/hologram-visor.js`, `materials/damage-overheat.js`, `materials/foliage-sss.js`, `material-viewer.html` |
 | Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js`, `world-map.js` |
+| Weapon GLB compression | `weapon-compression.md` | `glb-shrink-server/index.mjs`, `glb-shrink-presets.mjs`, `weapon-viewer-v2.html` |
+| Flight | `flight.md` | `flight-model.js`, `flight-airframes.js`, `flight-terrain.js`, `flight-ai.js`, `flight-combat.js`, `flight-drones.js`, `flight-meshes.js`, `demos/flight-sim.html` |
 | Legacy app | `legacy.md` | `creature-viewer.html`, `creature.js` |
 
 ## Keeping docs and the activity log current
