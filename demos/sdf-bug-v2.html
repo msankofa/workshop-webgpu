@@ -674,6 +674,30 @@ const bugJoints = uniformArray(
 // The body's inverse rotation is passed as three ROWS rather than a mat3. Three dot products cost the same as
 // a matrix multiply, and it leaves three spare `w` channels that scalars are now living in.
 
+// AN UNUSED SLOT HAS TO BE INERT, not merely unvisited.
+//
+// Left at `new Vector4()` it is the worst possible content: the rotation rows are ZERO, so every point in
+// space maps to the body pivot and the field becomes a CONSTANT taken from inside the shell — a solid ball
+// wherever the bound admits it — and `w` defaults to 1, so the bound is a unit sphere at the origin, right
+// where the camera is pointed. That is how a one-line indexing mistake in the march came out as a black ball
+// filling the frame instead of as nothing at all. An identity rotation and a zero-radius bound ten kilometres
+// under the leaf cannot draw anything wherever it is read from.
+const INERT_Y = -1e4;
+
+function clearSlot(i) {
+  const base = i * BUG_STRIDE;
+  for (let k = 0; k < BUG_STRIDE; k++) bugData.array[base + k].set(0, 0, 0, 0);
+  bugData.array[base + F.POS].set(0, INERT_Y, 0, 1);      // w is the scale, and 1 divides safely
+  bugData.array[base + F.ROW0].set(1, 0, 0, 1);
+  bugData.array[base + F.ROW1].set(0, 1, 0, 1);
+  bugData.array[base + F.ROW2].set(0, 0, 1, 1);
+  bugData.array[base + F.BOUND].set(0, INERT_Y, 0, 0);
+  const jbase = i * JOINTS_PER_BUG;
+  for (let j = 0; j < JOINTS_PER_BUG; j++) bugJoints.array[jbase + j].set(0, INERT_Y, 0);
+}
+
+for (let i = 0; i < MAX_BUGS; i++) clearSlot(i);
+
 /** The bounding sphere alone, for the two places that reject a bug before evaluating its field. */
 function bugBound(idx) {
   const v = bugData.element(idx.mul(BUG_STRIDE).add(F.BOUND));
@@ -1075,10 +1099,13 @@ const sceneMap = Fn(([p]) => {
   // its field can be skipped exactly rather than approximately. Shading taps are local, so most bugs are
   // rejected by one subtract.
   Loop(u.bugCount, ({ i }) => {
-    const bb = bugBound(i);
+    // Copied into a var for the same reason as the march — see the note there. Nothing shadows `i` in this
+    // body today, but a nested `Loop` added later would, silently, and the failure looks like a lighting bug.
+    const bi = i.toVar('bugIndex');
+    const bb = bugBound(bi);
     const near = length(p.sub(bb.at)).sub(bb.r);
     If(near.lessThan(d), () => {
-      const b = bugMap(p, i);
+      const b = bugMap(p, bi);
       If(b.x.lessThan(d), () => { d.assign(b.x); id.assign(b.y); });
     });
   });
@@ -1249,7 +1276,19 @@ const scenePass = Fn(() => {
   const bugId = float(-1).toVar();
   const bugHit = float(0).toVar();     // which bug won, as a float so it can live in a var
   Loop(u.bugCount, ({ i }) => {
-    const b = bugBound(i);
+    // THE INDEX IS COPIED INTO A VAR OF ITS OWN, and that is not a stylistic choice.
+    //
+    // A dynamic `Loop`'s index is a WGSL variable named literally `i` — every single-parameter Loop in this
+    // build names it that, which is asserted in `test-demo-sdf-bug-multi.mjs` against the shipped three. So
+    // the march loop below declares a SECOND `var i` that shadows this one for the whole of its body, and
+    // `bugMap(p, i)` inside it was reading the march's step counter as the bug index: step 0 evaluated bug
+    // 0, step 1 evaluated slot 1, and an unused slot's field is a constant (its rotation rows are zero, so
+    // every point maps to the body pivot, which is inside the shell) — so the ray hit on its second step and
+    // the whole bounding sphere rendered as a black ball. WGSL allows the shadowing, so nothing errored.
+    //
+    // `toVar` names the variable itself, so the inner loop cannot shadow it whatever it calls its counter.
+    const bi = i.toVar('bugIndex');
+    const b = bugBound(bi);
     const bound = sphereSpan(ro, rd, b.at, b.r);
     If(bound.x.greaterThan(0.0).and(bound.z.greaterThan(0.0)), () => {
       const t = max(bound.y, float(0.001)).toVar();
@@ -1257,11 +1296,11 @@ const scenePass = Fn(() => {
       const tEnd = min(min(bound.z, float(MAX_T)), near);
       Loop(MARCH_STEPS, () => {
         If(t.greaterThan(tEnd), () => { Break(); });
-        const r = bugMap(ro.add(rd.mul(t)), i);
+        const r = bugMap(ro.add(rd.mul(t)), bi);
         If(r.x.lessThan(float(HIT_EPS).mul(t)), () => {
           tBug.assign(t);
           bugId.assign(r.y);
-          bugHit.assign(i.toFloat());
+          bugHit.assign(bi.toFloat());
           Break();
         });
         t.addAssign(r.x.mul(STEP_FACTOR));
@@ -1877,8 +1916,8 @@ el('bugSpawnDraft').addEventListener('click', () => {
 el('bugRemove').addEventListener('click', () => {
   if (bugs.length <= 1) { setBugHint('The draft cannot be removed — it is the bug the panel edits.'); return; }
   bugs.pop();
-  // The slot's uniforms are left as they were; `u.bugCount` is what stops the shader reading them.
-  pushPose();
+  clearSlot(bugs.length);   // inert rather than stale, so the count is not the only thing standing between
+  pushPose();               // a slot and the picture
   describeBugs();
 });
 

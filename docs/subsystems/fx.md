@@ -824,6 +824,16 @@ full write-up are in `demos/README.md`.
 (`demos/sdf-bug-v2.html` is that page with a walk cycle; the FX notes below apply to both, and the
 locomotion side of v2 is `docs/subsystems/creature.md`'s business, not this file's.)
 
+**A TSL trap worth carrying to any page here that nests a `Loop`.** `Loop(count, ({ i }) => …)` hands the
+callback an expression carrying the bare *name* `i`, resolved by WGSL scope where it is used — and every
+single-parameter `Loop` in this build names its index `i`, whatever you destructure it to in JavaScript. So an
+inner `Loop` declares a second `var i` that shadows the outer one for its whole body, and any reference to the
+outer index in there silently reads the inner counter. It is legal WGSL, so there is no error and no warning;
+in v2 it made the per-bug march evaluate its step number as the bug index and rendered a black ball. Capture
+the index in a variable of its own (`i.toVar('name')`) before entering a nested loop. Checked at the time of
+writing: `demos/volumetric-smoke.html` nests two marches and `clustered-lights.js` has two loops, but none of
+them reads an outer index inside an inner loop, so v2 was the only live case.
+
 v2 also carries **twelve eye appearances on eight mounts** in `demos/bug-eyes.js` — 96 combinations. The
 twelve are shading only and cost no extra distance evaluations: compound facets, a refracted iris with real
 parallax, iridescent film, a pseudopupil, an emissive sensor that the depth-of-field pass blooms for free.

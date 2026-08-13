@@ -20,7 +20,7 @@
 // importable. `_check_sdf-bug-v2.html.mjs` reads it as text; the picture itself is the browser's job.
 import * as THREE from 'three';
 import {
-  Fn, If, Loop, Break, float, int, vec2, vec3, uniform, uniformArray, select,
+  Fn, If, Loop, Break, float, int, vec2, vec3, uniform, uniformArray, select, expression,
   min, max, abs, length, dot, stack, setCurrentStack,
 } from 'three/tsl';
 import { BUG_LEGS, BODY_PIVOT, createBugRig, scaleBugGait, BUG_GAIT } from './demos/bug-rig.js';
@@ -424,6 +424,45 @@ section('5. the flat leaf changes the ground and nothing else');
   dome.setGround({ shape: 'flat' });
   near(dome.worstFootError(), 0, 1e-12, 'switching shape restands the legs on the new surface');
   ok(dome.state.roamRadius === flat.state.roamRadius, 'and re-derives the roaming radius');
+}
+
+// ============================================================ 6. nested Loops collide on their index name
+section('6. a dynamic Loop index is a name, and a nested Loop shadows it');
+
+// THIS SECTION EXISTS BECAUSE OF A BLACK BALL. Converting the per-bug march from a JS-unrolled loop to
+// `Loop(u.bugCount, ...)` made the bug index a WGSL variable instead of a literal — and the march loop
+// nested inside it declares a variable of its own with THE SAME NAME, which shadows it for the whole of its
+// body. So `bugMap(point, i)` in there was evaluating the march's step number as the bug index: step 0 read
+// bug 0, step 1 read an unused slot, and an unused slot's field was a constant from inside the shell, so
+// the ray hit on its second step and the bounding sphere rendered as a solid black ball across the frame.
+//
+// It is legal WGSL, so nothing errored, and no static check can see the scoping. What CAN be pinned down is
+// the fact underneath: the names collide. If a later three makes loop variables unique, these fail and the
+// captures in the page become unnecessary rather than load-bearing — which is worth being told about.
+{
+  const outer = Loop(uniform(3, 'int'), ({ i }) => i);
+  const inner = Loop(40, () => {});
+  const on = outer.node ?? outer, inn = inner.node ?? inner;
+  ok(typeof on.getVarName === 'function', 'a Loop names its index through getVarName',
+    'if this has been renamed the rest of this section is checking nothing');
+  ok(on.getVarName(0) === 'i', "the outer loop's index is named 'i'", on.getVarName(0));
+  ok(inn.getVarName(0) === 'i', "and so is a nested numeric loop's counter", inn.getVarName(0));
+  ok(on.getVarName(0) === inn.getVarName(0),
+    'the names COLLIDE — nothing makes them unique per loop',
+    'which is why the bug index has to be captured before entering a nested loop');
+  // The index reaches the callback as an EXPRESSION carrying that bare name, which is what makes the
+  // collision matter: it is resolved by WGSL scope at the point of use, not bound when the callback ran.
+  const idx = expression('i', 'int');
+  ok((idx.snippet ?? idx.node?.snippet) === 'i', 'and it is passed as a bare name, resolved where it is used');
+  // The fix, and that it really does carry its own name.
+  const captured = idx.toVar('bugIndex');
+  ok((captured.isVarNode ?? captured.node?.isVarNode) === true, 'toVar turns it into a variable of its own');
+  ok((captured.name ?? captured.node?.name) === 'bugIndex', 'under a name a nested loop will not reuse',
+    String(captured.name ?? captured.node?.name));
+  // What this cannot check: that WGSL resolves the inner declaration rather than the outer, that the page's
+  // two loops are the ones carrying captures, or that the shading reads the captured slot. Those are text
+  // rules in `_check_sdf-bug-v2.html.mjs`, canaried by reintroducing each defect.
+  ok(true, 'recorded: the scoping itself is the browser\'s to prove, and the picture is how it showed');
 }
 
 // ============================================================ summary

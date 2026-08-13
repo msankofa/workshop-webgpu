@@ -551,6 +551,24 @@ compare per slot inside `sceneMap` — the function every shadow, occlusion and 
 count was a real cost and it was set to a cautious six. `Loop(u.bugCount, ...)` emits a real dynamic loop, so
 the shader's size no longer depends on the cap and an empty slot is not visited at all.
 
+**And going dynamic cost a black ball, because a TSL loop index is a name.** `Loop(u.bugCount, ({ i }) => …)`
+hands the callback an expression carrying the bare name `i`, resolved by WGSL scope wherever it is used — and
+*every* single-parameter `Loop` in this build names its index `i` (asserted in `test-demo-sdf-bug-multi.mjs`,
+because if a later three makes them unique this stops being load-bearing). The march loop nested inside
+therefore declares a second `var i` that shadows the bug index for the whole of its body, so `bugMap(point, i)`
+in there was evaluating the *step number* as the bug index. Legal WGSL, no error, and the picture was a smooth
+black ball the size of the bounding sphere: step 0 read bug 0, step 1 read an unused slot, and an unused slot's
+rotation rows were zero — which maps all of space onto the body pivot, inside the shell — so the ray hit
+immediately and got shaded from that slot's colours, which were black. The fix is `i.toVar('bugIndex')` before
+entering any nested loop, in both per-bug loops.
+
+The second half of that failure is worth keeping separately: **an unused slot must be inert, not merely
+unvisited.** At `new Vector4()` it is the worst content available — zero rotation rows make the field a
+constant from inside the shell, and `w` defaults to `1`, so the bound is a unit sphere at the origin, exactly
+where the camera looks. `clearSlot` now gives every slot an identity rotation and a zero-radius bound ten
+kilometres under the leaf, and vacating a slot clears it, so the live count is no longer the only thing
+standing between a slot and the picture.
+
 **What actually bounds the cap, measured rather than guessed:**
 
 | | |

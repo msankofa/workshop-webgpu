@@ -162,11 +162,15 @@ ok(/sin\(p\.x\.mul\(1\.7\)/.test(leafAlbedo), "the leaf's albedo stays in world 
 ok(!leafAlbedo.includes('pA.'), 'the leaf is not dragged into the body\'s frame');
 
 // ---- the bounding sphere follows the bug --------------------------------------------------------
-ok(/Loop\(u\.bugCount, \(\{ i \}\) => \{[\s\S]{0,120}const bound = sphereSpan\(ro, rd, b\.at, b\.r\)/.test(js),
+ok(/Loop\(u\.bugCount, \(\{ i \}\) => \{[\s\S]{0,1400}const bound = sphereSpan\(ro, rd, b\.at, b\.r\)/.test(js),
   'each bug is marched inside its own bound, over the LIVE count');
 // An unrolled loop over the slots is what kept the cap at six: it emitted a march per slot whether or not
 // that slot held a bug, and one gate compare per slot inside every shading tap.
-ok(!/for \(let i = 0; i < MAX_BUGS; i\+\+\)/.test(js), 'and not once per slot',
+// Matched on the GATE rather than on the `for` itself, because a plain loop over the slots is exactly what
+// CPU-side slot initialisation wants — `clearSlot` runs one — and only the gated, shader-emitting form is
+// the thing being forbidden.
+ok(!/for \(let i = 0; i < MAX_BUGS; i\+\+\) \{[\s\S]{0,80}If\(float\(i\)\.lessThan\(u\.bugCount\)/.test(js),
+  'and not once per slot',
   'unrolling makes the shader grow with the cap and charges for empty slots');
 ok(!/sphereSpan\(ro, rd, vec3\(\.\.\.BUG_BOUND_AT\)/.test(js), 'and not the old constant');
 ok(/bound\.w = far \* settings\.scale;/.test(js),
@@ -296,9 +300,16 @@ ok(js.includes('LEG_COUNT'), 'the leg count is derived rather than typed');
   // A balanced-paren scan rather than a regex: the arguments contain nested calls two deep
   // (`bugMap(ro.add(rd.mul(t)), int(i))`), and the regex written first matched none of them and reported
   // "0 call sites found" as a pass-shaped result. Counting commas at depth zero is what the check needs.
+  // Commented lines are skipped, because the notes in the page quote the broken call on purpose and a scan
+  // that reads prose as code is a scan that reports whichever of the two the author wrote most recently.
+  const lineIsComment = (at) => {
+    const from = js.lastIndexOf('\n', at) + 1;
+    return js.slice(from, at).trimStart().startsWith('//');
+  };
   const callArgs = [];
   for (let at = js.indexOf('bugMap('); at !== -1; at = js.indexOf('bugMap(', at + 1)) {
     if (/[.\w]/.test(js[at - 1] ?? '')) continue;              // bugMap.setLayout, or a longer name
+    if (lineIsComment(at)) continue;
     let depth = 0, commas = 0, end = at + 7;
     for (; end < js.length; end++) {
       const c = js[end];
@@ -313,6 +324,20 @@ ok(js.includes('LEG_COUNT'), 'the leg count is derived rather than typed');
   ok(wrongArity.length === 0, 'every bugMap call says which bug to evaluate',
     wrongArity.map((c) => c.text.slice(0, 60)).join(' | '));
 
+  // THE BUG INDEX MAY NOT BE THE RAW LOOP VARIABLE, and this is the rule that would have caught the black
+  // ball. A dynamic `Loop`'s index is a WGSL variable named literally `i` — `test-demo-sdf-bug-multi.mjs`
+  // asserts that against the shipped three — so the march's own `Loop`, which names its counter `i` as well,
+  // shadows it for the whole of its body. `bugMap(p, i)` in there evaluated the STEP NUMBER as the bug index,
+  // which is legal WGSL and rendered as a black ball the size of the bounding sphere. Nothing in Node can see
+  // the scoping, so the rule is: pass a var that carries its own name.
+  const rawIndex = callArgs.filter((c) => /,\s*(int\()?i\)?\s*\)$/.test(c.text.replace(/\s+/g, ' ')));
+  ok(rawIndex.length === 0, 'no bugMap call passes a loop variable that a nested loop could shadow',
+    rawIndex.map((c) => c.text.replace(/\s+/g, ' ').slice(0, 70)).join(' | '));
+  const captures = (js.match(/const bi = i\.toVar\('bugIndex'\)/g) ?? []).length;
+  ok(captures === 2, 'both per-bug loops capture their index in a var of its own', `${captures} of 2`);
+  ok(!/bugHit\.assign\(i\.toFloat\(\)\)/.test(js), 'and the hit slot is recorded from the capture too',
+    'recording the raw index inside the march loop records the step number, and the bug is shaded from it');
+
   // The stride has to be the SAME expression on both sides, or one bug reads another's legs. The Node test
   // checks the mapping is a bijection; this checks the page uses one stride and not two.
   ok(/bugJoints\.element\(idx\.mul\(JOINTS_PER_BUG\)\.add\(j\)\)/.test(js),
@@ -324,7 +349,7 @@ ok(js.includes('LEG_COUNT'), 'the leg count is derived rather than typed');
   // Appearance must come from the HIT bug, not from slot 0. Reading the draft's colours for every bug is
   // the failure that would make six different bugs look identical while the geometry differed.
   ok(/const H = bugFields\(int\(bugHit\)\);/.test(js), 'the shading resolves the bug that was hit');
-  ok(/bugHit\.assign\(i\.toFloat\(\)\)/.test(js), 'which the march records when it hits',
+  ok(/bugHit\.assign\(bi\.toFloat\(\)\)/.test(js), 'which the march records when it hits',
     'the loop index is an int now, so it is converted rather than wrapped');
 
   // Settings are the save format, so they must be plain data. A THREE.Color or a node in there would
@@ -350,6 +375,19 @@ ok(js.includes('LEG_COUNT'), 'the leg count is derived rather than typed');
   ok(/bugCount: uniform\(1, 'int'\)/.test(js), 'which is an int uniform, since it is a loop bound',
     'a float bound leaves a conversion in the hot path of every shading tap');
   ok(/const MAX_BUGS = \d+;/.test(js), 'the slot count is a named constant');
+
+  // AN UNUSED SLOT MUST BE INERT, not merely unvisited. At `new Vector4()` its rotation rows are zero, so
+  // every point in space maps to the body pivot and the field is a CONSTANT taken from inside the shell,
+  // and `w` defaults to 1, so its bound is a unit sphere at the origin — exactly where the camera looks.
+  // That is what turned one shadowed loop variable into a black ball across the frame rather than nothing.
+  ok(/function clearSlot\(i\) \{/.test(js), 'unused slots are initialised rather than left at their defaults');
+  ok(/for \(let i = 0; i < MAX_BUGS; i\+\+\) clearSlot\(i\);/.test(js), 'every slot, at startup');
+  ok(/bugData\.array\[base \+ F\.ROW0\]\.set\(1, 0, 0, 1\)/.test(js), 'with an identity rotation',
+    'zero rows collapse all of space onto the body pivot, which is inside the shell');
+  ok(/bugData\.array\[base \+ F\.BOUND\]\.set\(0, INERT_Y, 0, 0\)/.test(js),
+    'and a zero-radius bound far under the leaf, so it cannot draw wherever it is read from');
+  ok(/clearSlot\(bugs\.length\)/.test(js), 'and removing a bug clears the slot it vacated',
+    'leaving stale data makes the count the only thing between a dead bug and the picture');
   // The cap is a buffer-size choice now, so it has to stay inside the binding WebGPU guarantees. 544 bytes
   // per bug: 16 vec4s of packed fields plus 18 joints, which pad to vec4 as well.
   const cap = Number(js.match(/const MAX_BUGS = (\d+);/)[1]);
