@@ -10,9 +10,9 @@
 // combat, and it points one way.
 
 import * as THREE from 'three';
-import { AIRFRAMES, RHO, G } from './flight-airframes.js';
+import { getAirframe, validateAirframe, RHO, G } from './flight-airframes.js';
 import { heightAt, agl } from './flight-terrain.js';
-import { COMBAT } from './flight-combat.js';
+import { COMBAT, fullBombLoad, gunFor, makeMounts, resetMounts } from './flight-combat.js';
 import { fullDroneLoad, DRONE_KINDS } from './flight-drones.js';
 
 export const FWD = new THREE.Vector3(0, 0, -1);
@@ -22,7 +22,12 @@ export const RIGHT = new THREE.Vector3(1, 0, 0);
 let nextFlyerId = 1;
 
 export function makeFlyer(afKey, opts = {}) {
-  const af = AIRFRAMES[afKey];
+  const af = getAirframe(afKey);
+  // Checked at construction, never in the step loop: an airframe missing a field its own force
+  // generators read produces NaN a frame later, and a NaN position is a much worse error message
+  // than this one.
+  const bad = validateAirframe(afKey, af);
+  if (bad.length) throw new Error(`airframe '${afKey}' is not flyable:\n  ${bad.join('\n  ')}`);
   const f = {
     afKey, af,
     p: new THREE.Vector3(opts.x || 0, 0, opts.z || 0),
@@ -31,7 +36,7 @@ export function makeFlyer(afKey, opts = {}) {
     rates: { pitch: 0, yaw: 0, roll: 0 },
     input: { pitch: 0, roll: 0, yaw: 0, throttle: 0, flap: false, sweep: false },
     fwd: new THREE.Vector3(), up: new THREE.Vector3(), right: new THREE.Vector3(),
-    throttle: afKey === 'plane' ? 0.7 : afKey === 'drone' ? 0.5 : 0,
+    throttle: af.idleThrottle,
     alpha: 0, beta: 0, gLoad: 1, airspeed: 0, stallFrac: 0,
     sweep: 0, flapPhase: 0, stamina: 1,
     crashed: false, crashTimer: 0,
@@ -42,8 +47,14 @@ export function makeFlyer(afKey, opts = {}) {
     // combat
     id: nextFlyerId++, team: opts.team ?? 0, hp: af.hp, dead: false, deadTimer: 0, ab: 0,
     armed: true,
-    ammo: COMBAT.ammoMax, missiles: COMBAT.missileMax, flares: COMBAT.flareMax,
+    // Resolved once and carried, so nothing downstream has to look a gun up or fall back to a
+    // default. An unknown gun key throws here, at construction, like an unknown airframe.
+    gun: gunFor(af.gun),
+    ammo: gunFor(af.gun)?.ammo ?? 0, missiles: COMBAT.missileMax, flares: COMBAT.flareMax,
+    // side/turret guns, each with its own cooldown and magazine; empty for anything without them
+    mounts: makeMounts(af),
     drones: fullDroneLoad(), droneCool: Object.fromEntries(DRONE_KINDS.map((k) => [k, 0])),
+    bombs: fullBombLoad(), bombCool: 0,
     gunCool: 0, mslCool: 0, flareCool: 0, smokeTimer: 0,
     lockTarget: null, lockProgress: 0, threat: null, lockedBy: null, foe: null,
   };
@@ -158,6 +169,9 @@ export function stepFlyer(f, dt, assist = true) {
     _tmp.copy(f.up).multiplyScalar(0.30).addScaledVector(f.fwd, 0.95).normalize();
     _force.addScaledVector(_tmp, af.flapPower * beat * (1 - f.sweep * 0.8));
   }
+  // `thrust: 'none'` is a glider and falls through here deliberately. Any OTHER value would too,
+  // which is why `validateAirframe` rejects it at construction — an engine that silently produces
+  // no force reads as a physics bug, not as a typo.
 
   // g-load as felt: everything except gravity, along body up
   f.gLoad = (_force.dot(f.up) + G * af.mass * f.up.y) / (af.mass * G);
@@ -231,8 +245,10 @@ export function resetFlyer(f) {
   const af = f.af;
   f.crashed = false; f.crashTimer = 0;
   f.dead = false; f.deadTimer = 0; f.hp = af.hp;
-  f.ammo = COMBAT.ammoMax; f.missiles = COMBAT.missileMax; f.flares = COMBAT.flareMax;
+  f.ammo = f.gun?.ammo ?? 0; f.missiles = COMBAT.missileMax; f.flares = COMBAT.flareMax;
+  resetMounts(f);
   f.drones = fullDroneLoad();
+  f.bombs = fullBombLoad(); f.bombCool = 0;
   for (const k of DRONE_KINDS) f.droneCool[k] = 0;
   f.lockTarget = null; f.lockProgress = 0; f.threat = null; f.ab = 0;
   f.wreck = false; f.wreckAge = 0;
@@ -240,7 +256,7 @@ export function resetFlyer(f) {
   f.q.identity(); syncAxes(f);
   f.v.copy(f.fwd).multiplyScalar(af.spawn.speed);
   f.rates.pitch = f.rates.yaw = f.rates.roll = 0;
-  f.throttle = f.afKey === 'plane' ? 0.7 : f.afKey === 'drone' ? 0.5 : 0;
+  f.throttle = af.idleThrottle;
   f.stamina = 1; f.sweep = 0;
 }
 

@@ -56,6 +56,9 @@ import { bakeMapCanvas, createWorldMapOverlay, minimapImageAffine, MAP_OVERLAYS 
 import { getTerrainTextureLayerNames, getTerrainTextureLayerSettings, updateTerrainTextureLayer, updateTerrainSplatGlobals } from './terrain-textures.js';
 import { showStartScreen } from './start-screen.js';
 import { createMapCollider } from './map-collision.js';
+import { createSurfaceQuery, surfaceDecks } from './map-surfaces.js';
+import { generateStructures, STRUCTURE_DEFAULTS } from './bot-structures.js';
+import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createHostSession, createGuestSession, GhostRenderer, playerTintHSL, getBotRenderTuning } from './multiplayer.js';
 import { createViewHands } from './player-hands.js';
 import { createProceduralPlayerBody } from './player-procedural-body.js';
@@ -1356,6 +1359,28 @@ function updateMultiplayerFinder() {
 
 let loadedMap = null;
 let mapCollider = null;
+let mapSurfaces = null;      // createSurfaceQuery over the collider; null until a map is loaded
+let mapStructures = null;    // last generateStructures result, for the panel readout
+let structureRoot = null;
+let structureReport = '';
+let syncStructureReadout = null;   // set when the panel's Map structures section is built
+// Headroom a surface must clear to count as standable. A bot's standing capsule plus a little, so
+// a crawlspace under an overhang is never offered as somewhere to walk or build.
+const MAP_SURFACE_HEADROOM = 2.1;
+const _mapUrl = new URLSearchParams(location.search);
+// Live panel state (Map structures section). URL flags set the STARTING value and the sliders move
+// live on top, the same rule the water/terrain-texture controls follow. `count` 0 is off, which is
+// the default: the geometry joins the collision mesh, so every change costs a BVH rebuild.
+const structures = {
+  count: Math.max(0, Number(_mapUrl.get('structures')) || 0),
+  seed: Number(_mapUrl.get('structureSeed')) || 1,
+  mix: _mapUrl.get('structureMix') || STRUCTURE_DEFAULTS.mix,
+  headroom: 4.0,          // a structure needs its own height of clearance, not just a bot's
+  maxDeviation: 1.5,      // m of ground variation a site may have before it is refused
+  // 'auto' follows the map's own kind: a heightfield export has one surface per column, so the
+  // extra rays would find nothing. 'on'/'off' force it.
+  levelNav: _mapUrl.get('levelNav') === '1' ? 'on' : _mapUrl.get('levelNav') === '0' ? 'off' : 'auto',
+};
 if (mapKey) {
   // 'shoot-house' (legacy) => house; 'shoot-house-<type>' => that variant (demo | house | …).
   // 'layout:<path>' => a pcw-layout pick from the start screen's Maze Layouts card.
@@ -1398,7 +1423,146 @@ if (mapKey) {
     mapCollider = null;
     showError(`map loaded, collision disabled: ${err.message || err}`);
   }
+  rebuildMapSurfaces();
+  await buildMapStructures();
   rebakeWorldMap();
+}
+
+// ---- multi-surface queries over the authored map (map-surfaces.js) ----------------------------
+// heightAt and raycastDown both answer with the TOP surface, and on a volumetric map (terrain-
+// generator-v4's marching-cubes export, terrainKind: 'volumetric') that is the roof of a cave and
+// nothing beneath it. This asks the collision mesh for every floor in a column instead. Rebuilt
+// whenever the collider is, since it borrows its BVH.
+function rebuildMapSurfaces() {
+  if (!mapCollider || !loadedMap) { mapSurfaces = null; return; }
+  const box = mapCollider.geometry.boundingBox;
+  mapSurfaces = createSurfaceQuery({
+    raycastAll: mapCollider.raycastAll,
+    worldYMax: box?.max.y ?? loadedMap.worldYMax ?? 64,
+    worldYMin: box?.min.y ?? loadedMap.worldYMin ?? -64,
+  }, { minHeadroom: MAP_SURFACE_HEADROOM });
+}
+
+// Bounds of an authored terrain map. loadTerrainMap reports extents, not a rect, and the map is
+// centred on the origin (see its makeChunks, which spans +/-worldX*0.5).
+function loadedMapBounds() {
+  if (loadedMap?.bounds) return loadedMap.bounds;
+  if (!loadedMap?.worldX) return null;
+  return {
+    minX: -loadedMap.worldX / 2, maxX: loadedMap.worldX / 2,
+    minZ: -loadedMap.worldZ / 2, maxZ: loadedMap.worldZ / 2,
+  };
+}
+
+// Seeded cover scattered over whatever map was imported. The structures CONFORM: bot-structures'
+// `site` hook resolves each candidate against the real surface, refuses ground that is too uneven,
+// too cramped or over a void, and reports a skirt depth the foundation carries down to grade --
+// flattening a pad into a landscape someone else authored is not ours to do.
+// Off unless ?structures=N: the geometry joins the collision mesh, which means a second BVH build.
+async function buildMapStructures() {
+  clearMapStructures();
+  if (!structures.count || !mapSurfaces || !mapCollider) return;
+  const bounds = loadedMapBounds();
+  if (!bounds) return;
+  setStatus?.(`scattering ${structures.count} structures...`);
+  await nextPaint();
+  const t0 = performance.now();
+  const built = generateStructures(bounds, {
+    seed: structures.seed,
+    count: structures.count,
+    mix: structures.mix,
+    wallHeight: 3,
+    site: (cx, cz, w, d) => {
+      const fit = mapSurfaces.footprintAt(cx, cz, w, d, null, {
+        needHeadroom: structures.headroom,
+        maxDeviation: structures.maxDeviation,
+      });
+      return fit.ok ? fit : null;
+    },
+  }, []);
+
+  // Rect y is the BASE; instancedBoxes wants the centre.
+  const toBox = (r) => ({ x: r.x, y: (r.y || 0) + r.h / 2, z: r.z, w: r.w, h: r.h, d: r.d });
+  structureRoot = new THREE.Group();
+  structureRoot.name = 'mapStructures';
+  scene.add(structureRoot);
+  instancedBoxes(structureRoot, structureWallMaterial(), [...built.walls, ...built.covers].map(toBox));
+  instancedBoxes(structureRoot, structureSlabMaterial(), built.slabs.map(toBox));
+  instancedBoxes(structureRoot, structureFoundationMaterial(), built.foundations.map(toBox));
+  mapStructures = built;
+
+  // The collider was baked before these existed, so bots and bullets would pass straight through.
+  // Rebuild it over the map AND the structures; the surface query follows, since it borrows the BVH
+  // and must now see structure roofs as standable floors.
+  try {
+    const previous = mapCollider;
+    mapCollider = createMapCollider(loadedMap.root, { extraRoots: [structureRoot] });
+    previous?.dispose();
+  } catch (err) {
+    showError(`structures placed, collision not rebuilt: ${err.message || err}`);
+  }
+  rebuildMapSurfaces();
+  const refused = structures.count - built.placed.length;
+  structureReport = `${built.placed.length}/${structures.count} placed`
+    + `${refused ? `, ${refused} refused` : ''}`;
+  console.log(`[map structures] ${structureReport}, ${built.foundations.length} foundations`
+    + ` in ${(performance.now() - t0).toFixed(1)} ms`);
+  syncStructureReadout?.();
+}
+
+// Teardown so a slider change rebuilds rather than stacking a second scatter on the first. The
+// collider goes back to the map alone; buildMapStructures re-adds whatever it places next.
+function clearMapStructures() {
+  if (!structureRoot) { structureReport = ''; return; }
+  clearBoxes(structureRoot);   // disposes what it owns, skips the shared unit geometry
+  scene.remove(structureRoot);
+  structureRoot = null;
+  mapStructures = null;
+  structureReport = '';
+  if (loadedMap) {
+    try {
+      const previous = mapCollider;
+      mapCollider = createMapCollider(loadedMap.root);
+      previous?.dispose();
+      rebuildMapSurfaces();
+    } catch (_) { /* the map alone already baked once; keep the collider we have */ }
+  }
+}
+
+// Debounced: every structure change re-bakes the collision BVH over the whole map, which is the
+// expensive half. Longer than the forest's 200 ms for that reason.
+let _structTimer = null;
+function scheduleStructureRebuild() {
+  clearTimeout(_structTimer);
+  _structTimer = setTimeout(() => { buildMapStructures(); }, 400);
+}
+
+// Materials are made lazily so a viewer that never scatters structures never builds them.
+let _structMats = null;
+function structureMats() {
+  if (!_structMats) {
+    const make = (color, roughness, metalness) =>
+      new MeshStandardNodeMaterial({ color: new THREE.Color(color), roughness, metalness });
+    _structMats = {
+      wall: make(0x8d8f8a, 0.85, 0.05),
+      slab: make(0x76786f, 0.9, 0.04),
+      // Foundations read darker: they are the part that meets the ground, and a matching tone makes
+      // a building on a slope look like it is sinking rather than sitting on a plinth.
+      foundation: make(0x55564f, 0.95, 0.02),
+    };
+  }
+  return _structMats;
+}
+const structureWallMaterial = () => structureMats().wall;
+const structureSlabMaterial = () => structureMats().slab;
+const structureFoundationMaterial = () => structureMats().foundation;
+
+// True when a column on this map can hold more than one floor. A heightfield export has exactly one
+// surface per column, so the extra rays would find nothing and the bake is skipped.
+function mapHasMultipleLevels() {
+  if (structures.levelNav === 'on') return true;
+  if (structures.levelNav === 'off') return false;
+  return loadedMap?.terrainKind === 'volumetric' || !!mapStructures?.placed?.length;
 }
 const NO_ENVIRONMENT = loadedMap?.kind === 'shoot-house';
 
@@ -3364,8 +3528,29 @@ function buildLocalNavWindow(center) {
     minX: center.x - BOT_LOCAL_NAV_RADIUS, maxX: center.x + BOT_LOCAL_NAV_RADIUS,
     minZ: center.z - BOT_LOCAL_NAV_RADIUS, maxZ: center.z + BOT_LOCAL_NAV_RADIUS,
   };
-  return buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL, { heightAt: terrainHeight });
+  // Volumetric maps and scattered structures both put more than one floor over a column, and
+  // terrainHeight only ever names the top one. surfaceDecks hands nav the rest, so a bot can path
+  // THROUGH a cave or under a portal deck instead of over it. One downward ray per cell of a
+  // bounded window -- 24x24 at the shipped radius and pitch -- rebuilt with the window itself.
+  let decks = null;
+  if (mapSurfaces && mapHasMultipleLevels()) {
+    const found = surfaceDecks(mapSurfaces, bounds, BOT_LOCAL_NAV_CELL, {
+      baseHeightAt: terrainHeight,
+      needHeadroom: MAP_SURFACE_HEADROOM,
+      maxDecks: LOCAL_NAV_MAX_DECKS,
+    });
+    if (found.truncated && !_deckCapWarned) {
+      _deckCapWarned = true;   // once: this fires per window rebuild and would flood the console
+      console.warn(`[nav] local window hit the ${LOCAL_NAV_MAX_DECKS}-deck cap; interiors may be unreachable`);
+    }
+    decks = found.decks;
+  }
+  return buildNavGrid(botTerrainWalkable, bounds, BOT_LOCAL_NAV_CELL, { heightAt: terrainHeight, decks });
 }
+// A local window is 24x24 cells at the shipped radius/pitch, so a healthy multi-level map wants a
+// few hundred decks at most. The cap is a runaway guard, and hitting it is reported, never silent.
+const LOCAL_NAV_MAX_DECKS = 2000;
+let _deckCapWarned = false;
 // Nearest walkable cell to (x,z). Scans a bounded window of cells around the query first: a hit
 // inside the window's inscribed radius IS the global nearest, so this is exact, and only a miss
 // pays for the full sweep. The full sweep was fine on a ~24x24 local window and is 65k cells on
@@ -9486,6 +9671,74 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   slider('waterLevel', 'Water level', -3, 1, 0.05, f2, worldRebuild, terrain, 'terrain');
   params.fog = false;
   toggle('fog', 'Fog', () => setFog(params.fog));   // far plane = max(View distance, render-radius span)
+
+  // Only offered on an imported map: the scatter seats every structure against the real surface
+  // via map-surfaces, and the procedural chunked ground has no collider to query.
+  if (loadedMap && mapCollider) {
+    header('Map structures');
+    const structRow = document.createElement('div');
+    structRow.className = 'row';
+    structRow.style.color = '#8fa0b4';
+    current.appendChild(structRow);
+    // Refusals are the interesting number: they say the ground rejected a site, which is the whole
+    // point of seating against the surface rather than flattening a pad under it.
+    syncStructureReadout = () => {
+      structRow.textContent = structures.count
+        ? (structureReport || 'building...')
+        : 'off — raise Count to scatter cover';
+    };
+    syncStructureReadout();
+
+    const si = (v) => String(Math.round(v));
+    const s2 = (v) => v.toFixed(1);
+    slider('count', 'Count', 0, 40, 1, si, scheduleStructureRebuild, structures, 'structures');
+    slider('seed', 'Seed', 1, 200, 1, si, scheduleStructureRebuild, structures, 'structures');
+    // Same mixes bot-structures offers its own scatter; 'mixed' draws from all of them.
+    const structMixes = ['mixed', 'buildings', 'pockets', 'obstacles', 'portals', 'colonnades',
+      'slots', 'ramparts', 'corners', 'terraces'];
+    const mixRow = document.createElement('div');
+    mixRow.className = 'row';
+    mixRow.innerHTML = '<span style="color:#c4ccd6">Mix</span>';
+    current.appendChild(mixRow);
+    const mixSel = document.createElement('select');
+    for (const o of structMixes) {
+      const op = document.createElement('option');
+      op.value = o; op.textContent = o; if (o === structures.mix) op.selected = true;
+      mixSel.appendChild(op);
+    }
+    mixSel.addEventListener('change', () => { structures.mix = mixSel.value; scheduleStructureRebuild(); });
+    current.appendChild(mixSel);
+    controlRegistry.push({
+      name: 'structures.mix', obj: structures, key: 'mix', onChange: scheduleStructureRebuild,
+      sync: () => { mixSel.value = structures.mix; },
+    });
+
+    // Raising either of these REFUSES more sites: headroom is the clearance a structure needs, and
+    // deviation is how much ground slope it will tolerate before it declines to build there.
+    slider('headroom', 'Min headroom', 2, 12, 0.5, s2, scheduleStructureRebuild, structures, 'structures');
+    slider('maxDeviation', 'Max ground slope', 0.2, 5, 0.1, s2, scheduleStructureRebuild, structures, 'structures');
+
+    // Multi-level nav is separate from the scatter: a volumetric map wants it with no structures at
+    // all, and it costs one downward ray per cell of each local nav window rebuild.
+    const navRow = document.createElement('div');
+    navRow.className = 'row';
+    navRow.innerHTML = '<span style="color:#c4ccd6">Multi-level nav</span>';
+    current.appendChild(navRow);
+    const navSel = document.createElement('select');
+    for (const o of ['auto', 'on', 'off']) {
+      const op = document.createElement('option');
+      op.value = o; op.textContent = o; if (o === structures.levelNav) op.selected = true;
+      navSel.appendChild(op);
+    }
+    navSel.title = 'auto: on for volumetric maps or once structures exist. '
+      + 'Lets bots path through caves and under decks instead of over them.';
+    navSel.addEventListener('change', () => { structures.levelNav = navSel.value; });
+    current.appendChild(navSel);
+    controlRegistry.push({
+      name: 'structures.levelNav', obj: structures, key: 'levelNav', onChange: () => {},
+      sync: () => { navSel.value = structures.levelNav; },
+    });
+  }
 
   header('Biomes');
   if (loadedMap?.root?.userData?.terrainTextureMaterials) {

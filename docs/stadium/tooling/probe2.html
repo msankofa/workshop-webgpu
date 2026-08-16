@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8">
+<style>body{margin:0;background:#222;display:flex;gap:2px}img{width:276px;height:330px}</style>
+<script src="node_modules/three/build/three.min.js"></script>
+<script src="node_modules/three/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+<script>
+"use strict";
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(276, 330);
+renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161c);
+const camera = new THREE.PerspectiveCamera(35, 276/330, 0.05, 500);
+scene.add(new THREE.HemisphereLight(0xdde4ff, 0x2a2418, 0.9));
+const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(3,6,4); scene.add(key);
+
+new THREE.GLTFLoader().load('glb/025_pikachu.glb', (gltf) => {
+  const model = gltf.scene;
+  scene.add(model);
+  const mixer = new THREE.AnimationMixer(model);
+  mixer.clipAction(gltf.animations[0]).play();
+  mixer.update(0);
+  model.updateMatrixWorld(true);
+  const box = new THREE.Box3(); const v = new THREE.Vector3();
+  model.traverse(o => { if (o.isBone) box.expandByPoint(o.getWorldPosition(v)); });
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(v).length();
+  camera.position.set(c.x + r*0.8, c.y + r*0.3, c.z + r*0.95);
+  camera.lookAt(c);
+
+  const mats = [];
+  model.traverse(o => { if (o.isMesh || o.isSkinnedMesh)
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => mats.push(m)); });
+
+  function shot() {
+    renderer.render(scene, camera);
+    const img = document.createElement('img');
+    img.src = renderer.domElement.toDataURL();
+    document.body.appendChild(img);
+  }
+  // 1: as-is (lit, culled)
+  shot();
+  // 2: unlit — same textures on MeshBasicMaterial clones
+  const saved = mats.map(m => m.userData._orig = null);
+  const basics = new Map();
+  model.traverse(o => { if (o.isMesh || o.isSkinnedMesh) {
+    o.userData.orig = o.material;
+    const conv = (m) => {
+      if (!basics.has(m)) {
+        const b = new THREE.MeshBasicMaterial({ map: m.map, alphaTest: 0.5, side: m.side, skinning: true });
+        basics.set(m, b);
+      }
+      return basics.get(m);
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(conv) : conv(o.material);
+  }});
+  shot();
+  // 3: lit again but DoubleSide
+  model.traverse(o => { if (o.userData.orig) o.material = o.userData.orig; });
+  mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+  shot();
+  document.title = 'done';
+});
+</script>
+</body>
+</html>

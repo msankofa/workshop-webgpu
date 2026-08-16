@@ -23,11 +23,13 @@ import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
   uniform, attribute, positionLocal, positionWorld, cameraPosition, modelWorldMatrix,
-  Fn, vec2, vec3, vec4, float,
-  sin, mix, clamp, distance, step, floor, fract, dot, max,
+  vec2, vec3, vec4, float,
+  sin, mix, clamp, distance, step, max,
 } from 'three/tsl';
 import { createGrassStyleAtlas, FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
 import { texture } from 'three/tsl';
+import { createGrassLook, buildGrassNoiseFns } from './grass-look.js';
+export { buildGrassNoiseFns };
 
 // Lazy singleton: baked once, on first use (not at import time, so importing this module in
 // a Node test — which has no DOM — doesn't crash on document.createElement).
@@ -77,6 +79,7 @@ const DEFAULTS = {
   fadeStart: 1e6,          // world distance from camera where blades start shrinking
   fadeEnd: 1e6 + 1,        // world distance where blades are fully collapsed
   heightFn: null,          // optional (x, z) => y to conform blade bases to terrain
+  look: null,              // optional grass-look.js overrides (windDir/curl/translucency/rootShade/coverage), all off by default
   // Optional (x, z, y) => boolean placement gate, applied after the water test. Returning false
   // drops that blade as a gap, exactly the way a submerged base is dropped -- so a host with
   // solid geometry standing in the field (bot-viewer's walls and cover) can keep grass from
@@ -98,6 +101,8 @@ function merge(base, over) {
 // per-blade vertex layout: [BL, BR, TR, TL, TC]
 //   BL/BR = base corners, TR/TL = mid corners, TC = tip
 const WIND_WEIGHT = [0.0, 0.0, 0.5, 0.5, 1.0]; // 0 base, 0.5 mid, 1 tip
+// [BL, BR, TR, TL, TC] local UV for the fiber-texture atlas: u across width, v base->tip.
+const BLADE_UV_TABLE = [0, 0, 1, 0, 0.75, 0.85, 0.25, 0.85, 0.5, 1];
 const BLADE_INDICES = [0, 1, 2, 2, 4, 3, 3, 0, 2];
 
 // ---- GLSL reference shaders (behavioral spec; kept for parity documentation) ----
@@ -244,6 +249,9 @@ function buildGeometry(o) {
   const uvs = new Float32Array(n * 5 * 2);
   const winds = new Float32Array(n * 5);
   const heights = new Float32Array(n * 5);   // per-vertex height above blade base, for distance fade
+  const ts = new Float32Array(n * 5);        // per-vertex 0..1 up the blade (curl/shade/translucency)
+  const faces = new Float32Array(n * 5 * 2); // per-blade unit horizontal facing (curl direction + randoms)
+  const bladeUvs = new Float32Array(n * 5 * 2); // fiber-atlas UV per vertex (was missing: the CPU field sampled (0,0))
   const indices = new Uint32Array(n * 9);
 
   // Fixed number of placement attempts (= the target count), NOT a refill-to-n
@@ -279,6 +287,7 @@ function buildGeometry(o) {
     const ox = [dx * -halfW, dx * halfW, dx * midW, dx * -midW, tdx * o.tipOffset];
     const oz = [dz * -halfW, dz * halfW, dz * midW, dz * -midW, tdz * o.tipOffset];
     const oy = [0, 0, h * 0.5, h * 0.5, h];
+    const ot = [0, 0, 0.5, 0.5, 1];
 
     const vBase = m * 5;
     for (let k = 0; k < 5; k++) {
@@ -288,8 +297,11 @@ function buildGeometry(o) {
       positions[p + 2] = bz + oz[k];
       const q = (vBase + k) * 2;
       uvs[q] = u; uvs[q + 1] = vv;
+      faces[q] = -dz; faces[q + 1] = dx;   // perpendicular to the width axis
+      bladeUvs[q] = BLADE_UV_TABLE[k * 2]; bladeUvs[q + 1] = BLADE_UV_TABLE[k * 2 + 1];
       winds[vBase + k] = WIND_WEIGHT[k];
       heights[vBase + k] = oy[k];
+      ts[vBase + k] = ot[k];
     }
     const iBase = m * 9;
     for (let k = 0; k < 9; k++) indices[iBase + k] = vBase + BLADE_INDICES[k];
@@ -301,6 +313,9 @@ function buildGeometry(o) {
   const uv  = (m === n) ? uvs       : uvs.subarray(0, m * 5 * 2);
   const wnd = (m === n) ? winds     : winds.subarray(0, m * 5);
   const hgt = (m === n) ? heights   : heights.subarray(0, m * 5);
+  const tsA = (m === n) ? ts        : ts.subarray(0, m * 5);
+  const fcA = (m === n) ? faces     : faces.subarray(0, m * 5 * 2);
+  const buA = (m === n) ? bladeUvs  : bladeUvs.subarray(0, m * 5 * 2);
   const idx = (m === n) ? indices   : indices.subarray(0, m * 9);
 
   const geom = new THREE.BufferGeometry();
@@ -308,6 +323,9 @@ function buildGeometry(o) {
   geom.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   geom.setAttribute('aWind', new THREE.BufferAttribute(wnd, 1));
   geom.setAttribute('aHeight', new THREE.BufferAttribute(hgt, 1));
+  geom.setAttribute('aT', new THREE.BufferAttribute(tsA, 1));
+  geom.setAttribute('aFace', new THREE.BufferAttribute(fcA, 2));
+  geom.setAttribute('aBladeUV', new THREE.BufferAttribute(buA, 2));
   geom.setIndex(new THREE.BufferAttribute(idx, 1));
   geom.computeBoundingSphere();
   return geom;
@@ -325,8 +343,7 @@ export function buildBladeGeometry(opts = {}) {
   const halfW = bladeWidth * 0.5, midW = bladeWidth * 0.25, h = bladeHeight;
   const ox = [-halfW, halfW, midW, -midW, tipOffset];
   const oy = [0, 0, h * 0.5, h * 0.5, h];
-  // [BL, BR, TR, TL, TC] local UV for the fiber-texture atlas: u across width, v base->tip.
-  const bladeUvTable = [0, 0, 1, 0, 0.75, 0.85, 0.25, 0.85, 0.5, 1];
+  const bladeUvTable = BLADE_UV_TABLE;
   const pos = new Float32Array(5 * 3);
   const wnd = new Float32Array(5);
   const hgt = new Float32Array(5);
@@ -345,26 +362,7 @@ export function buildBladeGeometry(opts = {}) {
   return geom;
 }
 
-// Value-noise TSL Fns (hash2D + bilinear noise2D), exported so grass-compute.js builds
-// the same cloud-shadow term. Matches the GLSL noise(p) referenced in FRAG_SHADER.
-export function buildGrassNoiseFns() {
-  const hash2D = Fn(([p]) => {
-    const q = fract(p.mul(vec2(123.34, 456.21)));
-    const r = q.add(dot(q, q.add(float(45.32))));
-    return fract(r.x.mul(r.y));
-  });
-  const noise2D = Fn(([p]) => {
-    const i = floor(p);
-    const f = fract(p);
-    const a = hash2D(i);
-    const b = hash2D(i.add(vec2(1.0, 0.0)));
-    const c = hash2D(i.add(vec2(0.0, 1.0)));
-    const d = hash2D(i.add(vec2(1.0, 1.0)));
-    const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0)));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  });
-  return { hash2D, noise2D };
-}
+// buildGrassNoiseFns now lives in grass-look.js (re-exported above).
 
 // ---- TSL node material ----
 //
@@ -423,7 +421,11 @@ function buildMaterial(o) {
   const aWind   = attribute('aWind',   'float');
   const aHeight = attribute('aHeight', 'float');
   const aBladeUV = attribute('aBladeUV', 'vec2');
+  const aT      = attribute('aT', 'float');
+  const aFace   = attribute('aFace', 'vec2');
   const uBladeStyle = uniform(Math.max(0, STYLE_KEYS.indexOf(o.bladeStyle)), 'float');
+  const look = createGrassLook(o.look || {});
+  const rnd = look.nodes.bladeRandoms(aFace);
 
   // ---- positionNode: wind sway + distance fade ----
   // Compute world position from the ORIGINAL local position (before any displacement)
@@ -443,21 +445,27 @@ function buildMaterial(o) {
   const isMidOrTip = step(float(0.001), aWind);   // 1 for mid+tip, 0 for base
   const isTip      = step(float(0.601), aWind);   // 1 for tip only
   const swayAmt    = isMidOrTip.mul(mix(uCenterDist, uTipDist, isTip));
-  const windX      = wave.mul(swayAmt);
+  const swayXZ     = look.nodes.sway({
+    worldXZ: worldPos.xz, legacy: wave, amp: swayAmt, time: uTime, speed: uWindSpeed,
+    freq: uWaveSize.mul(uInvExtent), phase: rnd.phase,
+  });
 
   // Distance fade: collapse each blade toward its base as it recedes from camera
   const camDist   = distance(worldPos.xz, cameraPosition.xz);
   const fadeRange = max(float(0.001), uFadeEnd.sub(uFadeStart));
   const keep      = float(1.0).sub(
     clamp(camDist.sub(uFadeStart).div(fadeRange), 0.0, 1.0)
-  );
+  ).mul(look.nodes.coverage(worldPos.xz));   // coverage mask collapses blades the same way
   const fadeY = aHeight.mul(float(1.0).sub(keep));
+
+  // Optional resting curl (grass-look.js): arc displacement of the kept height, plus its normal.
+  const curl = look.nodes.curl({ y: aHeight.sub(fadeY), t: aT, face: aFace, curlVar: rnd.curlVar });
 
   // Displaced local position
   const posNode = vec3(
-    positionLocal.x.add(windX),
-    positionLocal.y.sub(fadeY),
-    positionLocal.z
+    positionLocal.x.add(swayXZ.x).add(curl.dxz.x),
+    positionLocal.y.sub(fadeY).add(curl.dy),
+    positionLocal.z.add(swayXZ.y).add(curl.dxz.y)
   );
 
   // ---- colorNode: base→tip gradient × flat light × cloud shadow ----
@@ -486,7 +494,7 @@ function buildMaterial(o) {
   // Blade color: base→tip gradient x fiber texture, scaled by flat ambient+key, darkened by cloud shadow
   const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
   const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
-  const colorNode  = grassColor.mul(uAmbient.add(uKey)).mul(cloud);
+  const colorNode  = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(aT));
 
   // ---- Assemble material ----
   const mat = new MeshStandardNodeMaterial({
@@ -500,7 +508,10 @@ function buildMaterial(o) {
   // MeshStandard derives a per-face normal and each blade/side lights differently
   // (alternating dark/light). A constant up normal matches the original GLSL's
   // flat "constant up-ish normal" so every blade is lit uniformly (shadows still apply).
-  mat.normalNode   = vec3(0, 1, 0);
+  // With curl on, curl.normal blends toward the arc normal; off, it IS vec3(0,1,0).
+  mat.normalNode   = curl.normal;
+  mat.emissiveNode = look.nodes.translucency({ t: aT, worldPos: positionWorld, tipColor: uTipColor });
+  mat._look = look;
 
   // Store uniform handles on the material so Grass methods can update them live
   mat._uTime        = uTime;
@@ -535,6 +546,12 @@ export class Grass extends THREE.Mesh {
 
   setAmbient(v) { this.material._uAmbient.value = v; }
   setKey(v)     { this.material._uKey.value = v; }
+
+  // grass-look.js toggles/amounts (windDir, curl, translucency, rootShade, coverage...); live, no rebuild
+  setLook(partial) { this.options.look = { ...(this.options.look || {}), ...partial }; this.material._look.set(partial); }
+  getLook()        { return this.material._look.get(); }
+  // world-space direction TOWARD the sun, for the translucency backlight
+  setSunDir(v)     { this.material._look.setSunDir(v); }
 
   setBladeStyle(key) {
     const idx = STYLE_KEYS.indexOf(key);

@@ -45,6 +45,7 @@ export function createBotFlora({
   parent.add(root);
 
   let grass = null;
+  let sunDir = null;   // world direction toward the sun, kept across rebuilds for the translucency toggle
   let vineMesh = null;
   let plants = null;                 // the plants-gpu host, lazily imported on first use
   let plantsPending = null;          // in-flight import, so two fast rebuilds don't double-load
@@ -282,6 +283,7 @@ export function createBotFlora({
         seed, count, size: extent,
         bladeHeight: flora.grassHeight, heightVariation: flora.grassHeightVar,
         baseColor: flora.grassBase, tipColor: flora.grassTip, bladeStyle: flora.grassStyle,
+        look: flora.grassLook || null,
         heightFn: (x, z) => groundHeight(x + cx, z + cz),
         acceptFn: (x, z) => {
           const wx = x + cx, wz = z + cz;
@@ -293,6 +295,7 @@ export function createBotFlora({
       });
       grass.position.set(cx, 0, cz);
       if (fadeEnd > 0) grass.setFade(fadeEnd * 0.65, fadeEnd);
+      if (sunDir) grass.setSunDir(sunDir);
       root.add(grass);
       // buildGeometry trims its arrays to the blades actually placed, so this is the count that
       // survived the blockers, not the count that was asked for.
@@ -374,6 +377,9 @@ export function createBotFlora({
     stats,
     rebuild,
     setWind,
+    // grass-look.js toggles (windDir/curl/translucency/rootShade/coverage); live, no rebuild.
+    setLook(partial) { if (grass) grass.setLook(partial); },
+    setSunDir(v) { sunDir = v; if (grass) grass.setSunDir(v); },
 
     setEnabled(on) {
       enabled = !!on;

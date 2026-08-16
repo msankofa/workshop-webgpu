@@ -4592,6 +4592,28 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     if (loadedMap.root.userData.terrainTextureMode === 'splat') {
       slider('terrainMacroStrength', 'Global noise/static', 0, 2, 0.01, f2, syncTerrainSplatGlobals);
       slider('terrainMossStrength', 'Global moss amount', 0, 2, 0.01, f2, syncTerrainSplatGlobals);
+      // soil-shade.js dressing (damp patches / dry cracks), live uniform toggles on the splat material
+      const soilNow = terrainSplatGlobals.soil || {};
+      const SOIL_UI = [
+        ['moisture', 'toggle', 'Damp patches'], ['moistureAmount', 0, 1, 0.05, f2, 'Damp darkening'],
+        ['moistureGloss', 0, 1, 0.05, f2, 'Damp gloss'], ['moistureCoverage', 0, 1, 0.01, f2, 'Damp coverage'],
+        ['moistureScale', 0.02, 0.4, 0.01, f2, 'Damp patch size (freq/m)'],
+        ['cracks', 'toggle', 'Dry cracks'], ['crackAmount', 0, 1, 0.05, f2, 'Crack amount'],
+        ['crackScale', 0.2, 3, 0.05, f2, 'Crack scale (plates/m)'], ['crackWidth', 0.02, 0.4, 0.01, f2, 'Crack width'],
+        ['crackDepth', 0, 1.5, 0.05, f2, 'Crack depth'], ['crackWarp', 0, 1, 0.05, f2, 'Crack warp'],
+        ['seedX', 0, 100, 0.1, f2, 'Soil seed'],
+      ];
+      const soilKey = (k) => 'terrainSoil' + k[0].toUpperCase() + k.slice(1);
+      const syncSoil = () => {
+        const soil = {};
+        for (const row of SOIL_UI) soil[row[0]] = params[soilKey(row[0])];
+        updateTerrainSplatGlobals(loadedMap.root, { soil });
+      };
+      for (const row of SOIL_UI) {
+        if (params[soilKey(row[0])] === undefined) params[soilKey(row[0])] = soilNow[row[0]];
+        if (row[1] === 'toggle') toggle(soilKey(row[0]), row[2], syncSoil);
+        else slider(soilKey(row[0]), row[5], row[1], row[2], row[3], row[4], syncSoil);
+      }
     }
     const resetBtn = document.createElement('button');
     resetBtn.textContent = 'Reset layer';
@@ -5209,6 +5231,32 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   }
 
   // ---- grass: GPU compute (default) or legacy per-chunk CPU meshes (?grass=cpu) ----
+  // grass-look.js optional blade features (both grass paths). params.grassLook* keys map 1:1 onto
+  // GRASS_LOOK_DEFAULTS; grassLookPartial() turns them back into a look overrides object.
+  const GRASS_LOOK_UI = [
+    ['windDir', 'toggle', 'Directional wind'], ['windAngle', 0, 360, 1, fi, 'Wind heading (deg)'], ['windFlutter', 0, 1, 0.05, f2, 'Flutter'],
+    ['curl', 'toggle', 'Curled blades'], ['curlAmount', 0, 2, 0.05, f2, 'Curl amount (rad)'], ['curlNormal', 0, 1, 0.05, f2, 'Curl lighting'],
+    ['translucency', 'toggle', 'Backlight glow'], ['translucencyAmount', 0, 2, 0.05, f2, 'Glow amount'],
+    ['rootShade', 'toggle', 'Dark roots'], ['rootShadeAmount', 0, 1, 0.05, f2, 'Root darkness'],
+    ['coverage', 'toggle', 'Patchy coverage'], ['coverageAmount', 0, 1, 0.01, f2, 'Coverage'],
+    ['coverageScale', 0.02, 0.6, 0.01, f2, 'Patch size (freq/m)'], ['coverageEdge', 0.02, 0.5, 0.01, f2, 'Patch edge'],
+    ['coverageSeedX', 0, 100, 0.1, f2, 'Patch seed'],
+  ];
+  const lookKey = (k) => 'grassLook' + k[0].toUpperCase() + k.slice(1);
+  function grassLookPartial() {
+    const out = {};
+    for (const row of GRASS_LOOK_UI) { const v = params[lookKey(row[0])]; if (v !== undefined) out[row[0]] = v; }
+    return out;
+  }
+  async function grassLookControls(apply) {
+    const { GRASS_LOOK_DEFAULTS } = await import('./grass-look.js');
+    for (const row of GRASS_LOOK_UI) if (params[lookKey(row[0])] === undefined) params[lookKey(row[0])] = GRASS_LOOK_DEFAULTS[row[0]];
+    for (const row of GRASS_LOOK_UI) {
+      if (row[1] === 'toggle') toggle(lookKey(row[0]), row[2], apply);
+      else slider(lookKey(row[0]), row[5], row[1], row[2], row[3], row[4], apply);
+    }
+  }
+  const grassSunDir = new THREE.Vector3();
   if (NO_ENVIRONMENT) { /* no grass in the shoot house */ }
   else if (GRASS_MODE === 'cpu') _grassPromise = import('./grass.js?v=density-fix-4').then(({ createGrass }) => {
     Object.assign(params, { grassCount: 40000, grassDistanceCull: 0, wind: 1.0 });
@@ -5307,6 +5355,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
           size: chunk.size,
           waterLevel: terrain.waterLevel,
           count,
+          look: grassLookPartial(),
         });
         grass.position.set(chunk.centerX, 0, chunk.centerZ);
         grass.frustumCulled = true;
@@ -5349,6 +5398,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
         regenerate: () => sync(true),
         setWind: strength => { for (const grass of chunks.values()) grass.setWind(strength); },
         setBladeStyle: key => { params.grassBladeStyle = key; for (const grass of chunks.values()) grass.setBladeStyle(key); },
+        setLook: partial => { for (const grass of chunks.values()) grass.setLook(partial); },
+        setSunDir: v => { for (const grass of chunks.values()) grass.setSunDir(v); },
         applyFade,
       };
     }
@@ -5362,6 +5413,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => grassRef.setWind(params.wind));
     params.grassBladeStyle = 'streaks';
     select('grassBladeStyle', 'Blade texture', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'], () => grassRef.setBladeStyle(params.grassBladeStyle));
+    return grassLookControls(() => grassRef.setLook(grassLookPartial()));
   }).catch(() => { /* grass is optional */ });
   else _grassPromise = import('./grass-compute.js?v=mesh-anchors-1').then(({ createComputeGrass }) => {
     Object.assign(params, {
@@ -5407,6 +5459,8 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
       setWind: (st) => cg.setWind(st),
       setTerrain: (p) => cg.setTerrain(p),
       setWaterLevel: (wl) => cg.setWaterLevel(wl),
+      setLook: (p) => cg.setLook(p),
+      setSunDir: (v) => cg.setSunDir(v),
     };
     header('Grass');
     slider('grassRadius', 'Radius', 8, 600, 1, fi, () => cg.setRadius(params.grassRadius));
@@ -5419,6 +5473,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     slider('wind', 'Wind strength', 0, 2.5, 0.01, f2, () => cg.setWind(params.wind));
     params.grassBladeStyle = 'streaks';
     select('grassBladeStyle', 'Blade texture', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'], () => cg.setBladeStyle(params.grassBladeStyle));
+    return grassLookControls(() => cg.setLook(grassLookPartial()));
   }).catch(err => { showError('grass-compute.js could not load (' + err.message + ')'); });
 
   // ---- plants: single-LOD GPU-instanced understory (chickweed/cleavers/mint/jewelweed) ----
@@ -9398,7 +9453,10 @@ async function animate() {
   frameProfiler.time('hud', () => updateTerrainDebug(now));
   // Grass last, after the camera is positioned: its compute pass (camera-centered
   // generate+cull) is awaited so survivors are written before this frame's draw.
-  if (grassRef) await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
+  if (grassRef) {
+    if (grassRef.setSunDir) grassRef.setSunDir(grassSunDir.subVectors(rig.dirLight.position, rig.dirLight.target.position));
+    await frameProfiler.timeAsync('grassGpu', () => grassRef.update(now / 1000));
+  }
   // SP6: GPU forest cull→indirect compute, awaited before draw (like grass/cdlod).
   if (forestGPURef) await frameProfiler.timeAsync('forestGpu', () => forestGPURef.update());
   if (plantsGPURef) await frameProfiler.timeAsync('plantsGpu', () => plantsGPURef.update());

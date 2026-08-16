@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC Design Suite</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; }
+  #hud { position: fixed; top: 10px; left: 12px; color: #8a93a3; z-index: 5;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; user-select: none; pointer-events: none; }
+
+  #panel { position: fixed; top: 0; right: 0; width: 392px; height: 100%; z-index: 6;
+    background: rgba(17,20,25,.94); border-left: 1px solid #2b323d; color: #c7d0dd;
+    font: 12px/1.45 ui-monospace, Consolas, monospace; overflow-y: auto; overflow-x: hidden; }
+  #panel h3 { margin: 0; padding: 7px 10px; background: #1b2028; border-top: 1px solid #2b323d;
+    border-bottom: 1px solid #2b323d; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: #8fa0b6; cursor: pointer; user-select: none; }
+  #panel h3::before { content: '▾ '; }
+  #panel h3.collapsed::before { content: '▸ '; }
+  #panel h3.collapsed + .body { display: none; }
+  #panel .body { padding: 8px 10px 12px; }
+  #panel .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  #panel .row > label { flex: 0 0 72px; color: #8a93a3; overflow: hidden; text-overflow: ellipsis; }
+  #panel input[type=range] { flex: 1 1 auto; min-width: 120px; height: 16px; accent-color: #53d68d; }
+  #panel input[type=number], #panel input[type=text], #panel select {
+    background: #0f1216; color: #dbe4f0; border: 1px solid #333a45; border-radius: 3px;
+    padding: 2px 4px; font: 11px ui-monospace, Consolas, monospace; }
+  #panel input[type=number] { flex: 0 0 62px; }
+  #panel input[type=text], #panel select { flex: 1 1 auto; min-width: 0; }
+  #panel button { background: #232a34; color: #cfd8e5; border: 1px solid #39424f; border-radius: 3px;
+    padding: 3px 7px; font: 11px ui-monospace, Consolas, monospace; cursor: pointer; }
+  #panel button:hover { background: #2d3542; }
+  #panel button:disabled { opacity: .4; cursor: default; }
+  #panel button.on { background: #2f6b4c; border-color: #53d68d; color: #eafff2; }
+  #panel .btns { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+  #panel .note { color: #6c7787; font-size: 10.5px; margin: 4px 0 0; }
+
+  /* tab bar: one row of mode buttons at the top of the panel */
+  .tabbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px;
+    background: #12151a; border-bottom: 1px solid #2b323d; min-height: 20px; }
+  .tabbar button { flex: 0 0 auto; text-transform: lowercase; }
+  .tabbar:empty::before { content: 'no modes registered yet'; color: #4d5560; font-size: 10.5px; }
+</style>
+</head>
+<body>
+<div id="hud">npc suite</div>
+<div id="panel"></div>
+
+<!-- three@0.184.0: same CDN pins as bot-design-studio.html (minified webgpu build). -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
+} }
+</script>
+
+<script type="module" src="./npc-suite-shell.js"></script>
+</body>
+</html>

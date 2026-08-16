@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aircraft studio</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d10; color: #dfe6ee; overflow: hidden;
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  canvas { display: block; }
+
+  /* The panel's box, colours and scrolling all come from workshop-panel-theme.js, which is why the
+     markup below uses ITS structure: `#panel` is a fixed flex column with `overflow: hidden`, and
+     the scrolling region is the `.panel-body` child. Giving `#panel` its own `overflow-y: auto`
+     does nothing, because the theme's stylesheet is injected into head at runtime and lands after
+     this one. Everything here is either a var of the theme's or something it does not style. */
+  /* `srow`, not `row`: the theme styles `#panel .row` as a space-between flex, which the save-slot
+     widget wants and a three-column slider does not. */
+  #panel .srow { display: grid; grid-template-columns: 92px 1fr 52px; gap: 6px; align-items: center;
+    margin: 3px 0; }
+  #panel .srow label { color: var(--wui-text); font-size: 11px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  #panel .srow output { text-align: right; font: 11px ui-monospace, Menlo, monospace;
+    color: var(--wui-accent); font-variant-numeric: tabular-nums; }
+  #panel .btns { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+  /* The theme gives every button `width: 100%`, which in a wrapping flex row puts each one on its
+     own line. Its own header opts out the same way. */
+  #panel .btns button { width: auto; flex: 0 1 auto; margin: 0; min-height: 26px; }
+  #panel .btns select { flex: 1 1 120px; }
+  #panel table.perf { width: 100%; border-collapse: collapse;
+    font: 11px ui-monospace, Menlo, monospace; }
+  #panel table.perf td { padding: 2px 0; border-bottom: 1px solid var(--wui-line);
+    color: var(--wui-muted); }
+  #panel table.perf td:last-child { text-align: right; color: var(--wui-text);
+    font-variant-numeric: tabular-nums; }
+  #panel table.perf td.warn:last-child { color: #c0392b; font-weight: 600; }
+  #panel .note { color: var(--wui-muted); font-size: 10.5px; margin: 5px 0 0; }
+  #panel .valid { font: 11px ui-monospace, Menlo, monospace; margin: 0 0 6px; }
+  #err { position: fixed; left: 10px; bottom: 10px; background: #40161a; color: #ffb8b8;
+    border: 1px solid #7a2a30; border-radius: 6px; padding: 7px 10px; font-size: 12px; display: none;
+    max-width: 60vw; }
+  #hint { position: fixed; left: 12px; top: 10px; color: #7d8b99; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit · scroll to zoom</div>
+<!-- `.panel-head` + `.panel-body` is workshop-panel-theme.js's structure, not decoration: it makes
+     #panel a flex column with the body as the only scrolling child. Without the body wrapper the
+     panel is `overflow: hidden` and everything past the fold is simply unreachable. -->
+<div id="panel">
+  <div class="panel-head">
+    <div class="head-left">Aircraft studio</div>
+    <span class="hint">measured, not authored</span>
+  </div>
+  <div class="panel-body"><div id="sections"></div></div>
+</div>
+<div id="err"></div>
+
+<!-- three@0.184.0: same CDN pins as bot-viewer-v3.html / structure-viewer.html. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+// aircraft-studio.html — iterative aircraft design, in the shape of the bot design studio's loop:
+// change one thing, look at it closely, read what it did, paste it back.
+//
+// What makes this an AIRCRAFT studio rather than two panels sharing a page is that the performance
+// table is not authored. Every number in it is measured off the shape in the viewport, so dragging
+// the wing moves the stall speed while you are dragging it. Nothing in this repo could do that
+// before: `wingArea` was typed into `flight-airframes.js` by hand and the wing was a hard-coded box
+// in `flight-meshes.js`, and the two disagreed by a factor of 1.87 with nothing to notice.
+//
+// Rebuilds are live rather than on pointer-release, which is the opposite of the bot design studio's
+// rule. It can afford it: a whole aircraft is ~460 triangles and nine meshes, against the bot
+// studio's 126 geometries and 2,100 placeholders per rebuild.
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import {
+  deriveGeometry, anchorsOf, hardpointsOf, volumesOf,
+  boundsOf, geometricRadiusOf, airframeFromLayout,
+  stallSpeedOf, authoritySpeedOf, aspectRatioOf, levelTopSpeedOf, G,
+} from './aircraft-layout.js';
+import { buildAircraftMesh, partsNamed } from './aircraft-meshes.js';
+import { LIBRARY } from './aircraft-library.js';
+import { validateAirframe, AIRFRAMES, registerAirframe } from './flight-airframes.js';
+import { makeFlyer, stepFlyer } from './flight-model.js';
+import { installPanelTheme, createSection, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
+import { createSlotSection } from './bot-viewer-slots.js';
+
+const errEl = document.getElementById('err');
+function noteError(msg) { errEl.textContent = '⚠ ' + msg; errEl.style.display = 'block'; }
+addEventListener('error', (e) => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== engine =====================
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 4000);
+camera.position.set(14, 7, 18);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+scene.add(new THREE.HemisphereLight(0x9fc4e8, 0x20242a, 1.5));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.6);
+key.position.set(-8, 12, 6);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x6fa8d0, 0.9);
+fill.position.set(9, 3, -7);
+scene.add(fill);
+
+const grid = new THREE.GridHelper(40, 40, 0x2a3540, 0x181f27);
+grid.material.transparent = true; grid.material.opacity = 0.5;
+scene.add(grid);
+
+const MATS = {
+  standard: (color, emissive = 0x000000) =>
+    new THREE.MeshStandardMaterial({ color, emissive, roughness: 0.55, metalness: 0.15 }),
+  basic: (color, opacity = 1) =>
+    new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity }),
+};
+
+// ===================== state =====================
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+let baseKey = 'plane';
+let design = clone(LIBRARY.plane.layout);
+let tuning = clone(LIBRARY.plane.tuning);
+let showHardpoints = true;
+let showAnchors = false;
+let wireframe = false;
+let explode = 0;
+let referenceOn = true;
+
+const root = new THREE.Group();
+scene.add(root);
+let craft = null;
+let reference = null;
+const anchorDots = new THREE.Group();
+root.add(anchorDots);
+
+const undoStack = [];
+const redoStack = [];
+function snapshot() {
+  undoStack.push(clone(design));
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack.length = 0;
+}
+
+// ===================== build =====================
+
+const explodeDir = new THREE.Vector3();
+
+function rebuild() {
+  if (craft) { root.remove(craft); disposeTree(craft); }
+  craft = buildAircraftMesh(design, 0xc9d4e2, MATS, { showHardpoints });
+  craft.traverse((o) => { if (o.isMesh && o.material) o.material.wireframe = wireframe; });
+  root.add(craft);
+  applyExplode();
+  rebuildAnchorDots();
+  rebuildReference();
+  refreshReadout();
+}
+
+function disposeTree(g) {
+  g.traverse((o) => {
+    if (o.isMesh) { o.geometry?.dispose(); if (o.material?.dispose) o.material.dispose(); }
+  });
+}
+
+// Peels each part outward along its own offset from the centreline. The bot studio's `groups` mode
+// explodes by body region — head, torso, limbs — which has no aircraft analogue at all, so this is
+// the `gear` mode's idea instead: every piece moves along where it already is.
+function applyExplode() {
+  if (!craft) return;
+  for (const child of craft.children) {
+    if (!child.userData.home) child.userData.home = child.position.clone();
+    explodeDir.copy(child.userData.home);
+    if (explodeDir.lengthSq() < 1e-9) continue;
+    child.position.copy(child.userData.home).addScaledVector(explodeDir.normalize(), explode);
+  }
+}
+
+function rebuildAnchorDots() {
+  anchorDots.clear();
+  if (!showAnchors) return;
+  const r = Math.max(0.02, geometricRadiusOf(design) * 0.018);
+  const geo = new THREE.SphereGeometry(r, 8, 6);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffc46e });
+  const world = new THREE.Vector3();
+  for (const name of anchorsOf(design)) {
+    for (const part of partsNamed(craft, name)) {
+      part.getWorldPosition(world);
+      const dot = new THREE.Mesh(geo, mat);
+      dot.position.copy(world);
+      anchorDots.add(dot);
+    }
+  }
+}
+
+// The shipped craft, ghosted, at the same origin. Slot 0 editable and the rest as shipped reference
+// is the bot studio's arrangement, and losing track of which one you are editing is the most common
+// way to waste a round trip — so the reference is deliberately translucent rather than side by side.
+function rebuildReference() {
+  if (reference) { root.remove(reference); disposeTree(reference); reference = null; }
+  if (!referenceOn) return;
+  const ghostMats = {
+    standard: () => new THREE.MeshBasicMaterial({ color: 0x4d7fa0, wireframe: true, transparent: true, opacity: 0.22 }),
+    basic: () => new THREE.MeshBasicMaterial({ color: 0x4d7fa0, wireframe: true, transparent: true, opacity: 0.14 }),
+  };
+  reference = buildAircraftMesh(LIBRARY[baseKey].layout, 0x4d7fa0, ghostMats, {});
+  root.add(reference);
+}
+
+// ===================== derived performance =====================
+//
+// The centrepiece. Everything here is measured off the shape in the viewport, except the tuning
+// fields it is combined with, and the table says plainly which is which.
+
+function perfRows() {
+  const g = deriveGeometry(design);
+  const af = airframeFromLayout(design, tuning);
+  const rows = [];
+  const add = (k, v, warn) => rows.push([k, v, !!warn]);
+
+  add('mass', `${g.mass.toFixed(1)} kg`);
+  if (af.lift === 'wing') {
+    add('wing area', `${g.wingArea.toFixed(2)} m²`);
+    const loading = g.wingArea > 0 ? g.mass / g.wingArea : Infinity;
+    add('wing loading', `${loading.toFixed(1)} kg/m²`, !Number.isFinite(loading));
+    const vs = stallSpeedOf(af);
+    add('stall speed', vs ? `${vs.toFixed(1)} m/s` : '—',
+      !!vs && !!af.trimSpeed && vs > af.trimSpeed * 0.85);
+    // The speed the CONTROLS give up at, which for the shipped plane is 47.8 m/s against a 27.0 m/s
+    // aerodynamic stall — so the real slow-end limit is authority, not the wing, and a panel showing
+    // only the stall speed would report the wrong limit by nearly a factor of two.
+    const va = authoritySpeedOf(af);
+    if (va) add('authority speed', `${va.toFixed(1)} m/s`, !!vs && va > vs * 2.2);
+    // Under about 1.15 the aircraft is trimmed to fly just above whichever of those limits bites.
+    const limit = Math.max(vs || 0, va || 0);
+    if (limit > 0 && af.trimSpeed) {
+      add('trim margin', `${(af.trimSpeed / limit).toFixed(2)}×`, af.trimSpeed / limit < 1.15);
+    }
+    add('aspect ratio', aspectRatioOf(design).toFixed(2));
+    const vMax = levelTopSpeedOf(af);
+    add('level top speed', vMax ? `${vMax.toFixed(0)} m/s · ${(vMax * 3.6).toFixed(0)} km/h` : '—',
+      !vMax);
+  } else {
+    add('frontal area', `${g.frontalArea.toFixed(3)} m²`);
+  }
+  const staticThrust = af.thrust === 'flap' ? af.flapPower * 0.5 : (af.thrustMax || 0);
+  const twr = staticThrust / (g.mass * G);
+  add('thrust / weight', twr.toFixed(2), af.thrust === 'body-up' && twr < 1.2);
+  add('hit radius', `${g.hitRadius.toFixed(2)} m`);
+  add('geometric radius', `${g.geometricRadius.toFixed(2)} m`);
+  add('chase distance', `${g.chaseDist.toFixed(1)} m`);
+  add('span × length', `${boundsOf(design).size[0].toFixed(2)} × ${boundsOf(design).size[2].toFixed(2)} m`);
+  const v = volumesOf(design);
+  add('volume', `${v.total.toFixed(3)} m³`);
+  return { rows, af };
+}
+
+
+let readoutBody = null, validEl = null;
+function refreshReadout() {
+  if (!readoutBody) return;
+  const { rows, af } = perfRows();
+  readoutBody.innerHTML = rows.map(([k, v, warn]) =>
+    `<tr><td>${k}</td><td class="${warn ? 'warn' : ''}">${v}</td></tr>`).join('');
+  const errs = validateAirframe(design.id, af);
+  validEl.textContent = errs.length ? `⚠ ${errs.length} problem${errs.length > 1 ? 's' : ''}: ${errs[0]}` : 'flyable';
+  validEl.style.color = errs.length ? '#c0392b' : 'var(--wui-accent)';
+}
+
+// ===================== the bench =====================
+//
+// The complement to flight-sim: the same model, flown headlessly, so a design can be COMPARED rather
+// than felt. A number from here and a number from a flight are the same number — `stepFlyer` is the
+// only integrator either of them uses.
+
+const BENCH_KEY = 'benchprobe';
+
+function withProbe(fn) {
+  const af = airframeFromLayout(design, tuning);
+  const errs = validateAirframe(BENCH_KEY, af);
+  if (errs.length) return null;
+  af.label = 'Bench probe';
+  registerAirframe(BENCH_KEY, af);
+  try { return fn(); } finally { delete AIRFRAMES[BENCH_KEY]; }
+}
+
+function runBench() {
+  return withProbe(() => {
+    const DT = 1 / 60;
+    const out = [];
+
+    // Level acceleration, altitude PINNED. Letting it climb makes this meaningless: the aircraft
+    // rides up to the model's 6 km clamp and then spends its whole excess thrust on speed, so the
+    // number keeps rising with the length of the run. The top speed itself is solved analytically
+    // in the panel above rather than flown, for the same reason.
+    {
+      const f = makeFlyer(BENCH_KEY, {});
+      const hold = f.p.y;
+      const v0 = f.airspeed;
+      for (let i = 0; i < 60 * 30; i++) {
+        f.input.throttle = 1;
+        f.input.flap = true;
+        stepFlyer(f, DT, true);
+        f.p.y = hold; f.v.y = 0;
+      }
+      out.push(['level accel 30 s', `${v0.toFixed(0)} → ${f.airspeed.toFixed(0)} m/s`]);
+    }
+
+    // hands off: the trim behaviour, which is what makes an aircraft pleasant or not
+    {
+      const f = makeFlyer(BENCH_KEY, {});
+      const y0 = f.p.y;
+      let worstStall = 0;
+      for (let i = 0; i < 60 * 40; i++) {
+        f.input.flap = true;
+        stepFlyer(f, DT, true);
+        worstStall = Math.max(worstStall, f.stallFrac);
+        if (f.crashed) break;
+      }
+      out.push(['hands-off 40 s', `${(f.p.y - y0) >= 0 ? '+' : ''}${(f.p.y - y0).toFixed(0)} m`]);
+      out.push(['worst stall', worstStall.toFixed(2)]);
+    }
+
+    // Time to swing the nose 90°, on CUMULATIVE heading change rather than distance from the start
+    // heading. The obvious version asks whether the heading has reached 180° away, and a fixed-wing
+    // aircraft under full stick never quite lands on it — measured, the shipped plane peaks at 173°
+    // and reported "never" forever, which reads as an aircraft that cannot turn.
+    {
+      const f = makeFlyer(BENCH_KEY, {});
+      f.p.y = Math.max(f.p.y, 1500);
+      const attitude = tuning.control === 'attitude';
+      let prev = Math.atan2(-f.fwd.x, -f.fwd.z), total = 0, t = null;
+      for (let i = 0; i < 60 * 90; i++) {
+        // a multirotor turns on yaw; rolling it just tilts it sideways and it flies off
+        if (attitude) f.input.yaw = 1;
+        else { f.input.roll = 1; f.input.pitch = 1; }
+        f.input.throttle = 1; f.input.flap = true;
+        stepFlyer(f, DT, true);
+        const h = Math.atan2(-f.fwd.x, -f.fwd.z);
+        total += Math.abs(Math.atan2(Math.sin(h - prev), Math.cos(h - prev)));
+        prev = h;
+        if (i > 30 && total >= Math.PI / 2) { t = i * DT; break; }
+        if (f.crashed) break;
+      }
+      out.push(['90° turn', t == null ? 'never' : `${t.toFixed(1)} s`]);
+    }
+
+    // sink at a slow speed: the honest measure of how much wing it has
+    {
+      const f = makeFlyer(BENCH_KEY, {});
+      f.p.y = 3000;
+      const slow = Math.max(4, (tuning.trimSpeed || 20) * 0.6);
+      f.v.copy(f.fwd).multiplyScalar(slow);
+      const y0 = f.p.y;
+      for (let i = 0; i < 60 * 10; i++) { f.throttle = 0.3; f.input.flap = true; stepFlyer(f, DT, true); }
+      out.push([`sink at ${slow.toFixed(0)} m/s`, `${(y0 - f.p.y).toFixed(0)} m in 10 s`]);
+    }
+    return out;
+  });
+}
+
+// ===================== panel =====================
+
+const sections = document.getElementById('sections');
+// a SELECTOR, not an element: the stylesheet it injects is scoped to this string
+installPanelTheme('#panel', { storage: localStorage });
+
+function slider(host, label, obj, key, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div');
+  row.className = 'srow';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step;
+  input.value = obj[key] ?? 0;
+  const out = document.createElement('output'); out.textContent = fmt(Number(input.value));
+  let dragging = false;
+  input.addEventListener('pointerdown', () => { if (!dragging) { dragging = true; snapshot(); } });
+  input.addEventListener('pointerup', () => { dragging = false; });
+  input.oninput = () => {
+    obj[key] = parseFloat(input.value);
+    out.textContent = fmt(obj[key]);
+    // live, every frame of the drag: an aircraft is nine meshes, so there is nothing to defer
+    rebuild();
+  };
+  row.append(lab, input, out);
+  host.appendChild(row);
+  return () => { input.value = obj[key] ?? 0; out.textContent = fmt(Number(input.value)); };
+}
+
+const resyncers = [];
+function buildPanel() {
+  sections.innerHTML = '';
+  resyncers.length = 0;
+
+  // ---- design ----
+  {
+    const s = createSection(sections, 'Design', { collapsed: false });
+    const pick = document.createElement('select');
+    for (const k of Object.keys(LIBRARY)) {
+      const o = document.createElement('option'); o.value = k; o.textContent = LIBRARY[k].layout.label;
+      pick.appendChild(o);
+    }
+    pick.value = baseKey;
+    pick.onchange = () => { baseKey = pick.value; loadBase(baseKey); };
+    const row = document.createElement('div'); row.className = 'btns';
+    row.appendChild(pick);
+    s.appendChild(row);
+
+    const btns = document.createElement('div'); btns.className = 'btns';
+    btns.append(
+      button('Reset to shipped', () => { snapshot(); loadBase(baseKey); }),
+      button('Undo', () => {
+        if (!undoStack.length) return;
+        redoStack.push(clone(design)); design = undoStack.pop(); buildPanel(); rebuild();
+      }),
+      button('Redo', () => {
+        if (!redoStack.length) return;
+        undoStack.push(clone(design)); design = redoStack.pop(); buildPanel(); rebuild();
+      }),
+      button('Copy layout JS', () => copyOut(layoutSource(design))),
+      button('Fly it', sendToSim));
+    s.appendChild(btns);
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Copy pastes into aircraft-library.js. Fly it hands the design to flight-sim.';
+    s.appendChild(note);
+  }
+
+  // ---- performance: first, because it is what you are steering by ----
+  {
+    const s = createSection(sections, 'Performance', { collapsed: false });
+    validEl = document.createElement('div');
+    validEl.className = 'valid';
+    s.appendChild(validEl);
+    const table = document.createElement('table'); table.className = 'perf';
+    readoutBody = document.createElement('tbody');
+    table.appendChild(readoutBody);
+    s.appendChild(table);
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Every row is measured off the shape, not authored. Amber means a value worth looking at.';
+    s.appendChild(note);
+  }
+
+  // ---- bench ----
+  {
+    const s = createSection(sections, 'Bench', { collapsed: true });
+    const out = document.createElement('table'); out.className = 'perf';
+    const body = document.createElement('tbody');
+    out.appendChild(body);
+    const btns = document.createElement('div'); btns.className = 'btns';
+    btns.appendChild(button('Fly the tests', () => {
+      body.innerHTML = '<tr><td>flying…</td><td></td></tr>';
+      setTimeout(() => {
+        const rows = runBench();
+        body.innerHTML = rows
+          ? rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')
+          : '<tr><td>design is not flyable</td><td>—</td></tr>';
+      }, 16);
+    }));
+    s.append(btns, out);
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Same integrator the sim flies, run headless. Takes a second or two.';
+    s.appendChild(note);
+  }
+
+  // ---- fuselage ----
+  if (design.fuselage) {
+    const s = createSection(sections, 'Fuselage', { collapsed: true });
+    const f = design.fuselage;
+    resyncers.push(slider(s, 'length', f, 'length', 0.05, 20, 0.01));
+    resyncers.push(slider(s, 'radius', f, 'radius', 0.01, 3, 0.005, (v) => v.toFixed(3)));
+    if (f.shape === 'ellipsoid') resyncers.push(slider(s, 'height', f, 'height', 0.01, 3, 0.005, (v) => v.toFixed(3)));
+    if (f.noseLength !== undefined) resyncers.push(slider(s, 'nose length', f, 'noseLength', 0, 6, 0.01));
+  }
+
+  // ---- wings ----
+  for (const w of design.wings || []) {
+    const s = createSection(sections, `Wing: ${w.id}${w.lifting === false ? ' (no lift)' : ''}`, { collapsed: true });
+    resyncers.push(slider(s, 'span (tip-tip)', w, 'span', 0.05, 30, 0.01));
+    resyncers.push(slider(s, 'root chord', w, 'rootChord', 0.02, 8, 0.005, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'tip chord', w, 'tipChord', 0.01, 8, 0.005, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'thickness', w, 'thickness', 0.004, 1, 0.002, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'sweep', w, 'sweep', -0.9, 1.2, 0.01));
+    resyncers.push(slider(s, 'dihedral', w, 'dihedral', -0.5, 0.6, 0.01));
+    resyncers.push(slider(s, 'x', w, 'x', -6, 6, 0.01));
+    resyncers.push(slider(s, 'y', w, 'y', -3, 3, 0.01));
+    resyncers.push(slider(s, 'z', w, 'z', -8, 8, 0.01));
+  }
+
+  // ---- fins ----
+  for (const fin of design.fins || []) {
+    const s = createSection(sections, `Fin: ${fin.id}`, { collapsed: true });
+    resyncers.push(slider(s, 'height', fin, 'height', 0.02, 8, 0.01));
+    resyncers.push(slider(s, 'root chord', fin, 'rootChord', 0.02, 6, 0.005, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'tip chord', fin, 'tipChord', 0.01, 6, 0.005, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'thickness', fin, 'thickness', 0.004, 0.6, 0.002, (v) => v.toFixed(3)));
+    resyncers.push(slider(s, 'y', fin, 'y', -3, 3, 0.01));
+    resyncers.push(slider(s, 'z', fin, 'z', -8, 8, 0.01));
+  }
+
+  // ---- pods ----
+  if ((design.pods || []).length) {
+    const s = createSection(sections, 'Pods', { collapsed: true });
+    for (const p of design.pods) {
+      resyncers.push(slider(s, `${p.id} len`, p, 'length', 0.01, 8, 0.005, (v) => v.toFixed(3)));
+      resyncers.push(slider(s, `${p.id} rad`, p, 'radius', 0.004, 2, 0.002, (v) => v.toFixed(3)));
+    }
+  }
+
+  // ---- rotors ----
+  if ((design.rotors || []).length) {
+    const s = createSection(sections, 'Rotors', { collapsed: true });
+    for (const r of design.rotors) {
+      resyncers.push(slider(s, `${r.id} radius`, r, 'radius', 0.01, 3, 0.005, (v) => v.toFixed(3)));
+    }
+  }
+
+  // ---- hardpoints ----
+  {
+    const s = createSection(sections, 'Hardpoints', { collapsed: true });
+    for (const hp of design.hardpoints || []) {
+      resyncers.push(slider(s, `${hp.id} station`, hp, 'station', 0, 1, 0.01));
+      resyncers.push(slider(s, `${hp.id} drop`, hp, 'drop', 0, 1, 0.01));
+    }
+    const btns = document.createElement('div'); btns.className = 'btns';
+    btns.append(
+      toggle('Show pylons', () => showHardpoints, (v) => { showHardpoints = v; rebuild(); }),
+      button('Add station', () => {
+        const wing = (design.wings || []).find((w) => w.lifting !== false);
+        if (!wing) return;
+        snapshot();
+        design.hardpoints = design.hardpoints || [];
+        design.hardpoints.push({ id: `hp${design.hardpoints.length + 1}`, wing: wing.id, station: 0.5, drop: 0.14 });
+        buildPanel(); rebuild();
+      }),
+      button('Remove last', () => {
+        if (!design.hardpoints?.length) return;
+        snapshot(); design.hardpoints.pop(); buildPanel(); rebuild();
+      }));
+    s.appendChild(btns);
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Station is a fraction of the half span: 0 is the root, 1 the tip.';
+    s.appendChild(note);
+  }
+
+  // ---- mass ----
+  {
+    const s = createSection(sections, 'Mass', { collapsed: true });
+    design.density = typeof design.density === 'number'
+      ? { body: design.density, panel: design.density, pod: design.density }
+      : design.density;
+    resyncers.push(slider(s, 'body density', design.density, 'body', 20, 2000, 1, (v) => v.toFixed(0)));
+    resyncers.push(slider(s, 'panel density', design.density, 'panel', 20, 2000, 1, (v) => v.toFixed(0)));
+    resyncers.push(slider(s, 'pod density', design.density, 'pod', 20, 2000, 1, (v) => v.toFixed(0)));
+    resyncers.push(slider(s, 'hit scale', design, 'hitScale', 0.5, 6, 0.01));
+    resyncers.push(slider(s, 'chase scale', design, 'chaseScale', 1, 14, 0.1, (v) => v.toFixed(1)));
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Hit scale inflates the hitbox past the aircraft on purpose — a 0.6 m target cannot be hit.';
+    s.appendChild(note);
+  }
+
+  // ---- view ----
+  {
+    const s = createSection(sections, 'View', { collapsed: true });
+    const focus = document.createElement('select');
+    const blank = document.createElement('option'); blank.value = ''; blank.textContent = 'frame the whole aircraft';
+    focus.appendChild(blank);
+    for (const name of anchorsOf(design)) {
+      const o = document.createElement('option'); o.value = name; o.textContent = name;
+      focus.appendChild(o);
+    }
+    focus.onchange = () => focusPart(focus.value);
+    const r = document.createElement('div'); r.className = 'btns'; r.appendChild(focus);
+    s.appendChild(r);
+
+    const btns = document.createElement('div'); btns.className = 'btns';
+    btns.append(
+      toggle('Reference ghost', () => referenceOn, (v) => { referenceOn = v; rebuild(); }),
+      toggle('Anchors', () => showAnchors, (v) => { showAnchors = v; rebuild(); }),
+      toggle('Wireframe', () => wireframe, (v) => { wireframe = v; rebuild(); }),
+      button('Front', () => setView('front')), button('Side', () => setView('side')),
+      button('Top', () => setView('top')), button('Three-quarter', () => setView('three')));
+    s.appendChild(btns);
+    // Explode is view state rather than design state, so it drives `applyExplode` directly instead
+    // of going through `rebuild` — moving parts apart must not re-derive anything.
+    const exRow = document.createElement('div'); exRow.className = 'srow';
+    const exLab = document.createElement('label'); exLab.textContent = 'explode';
+    const exIn = document.createElement('input');
+    exIn.type = 'range'; exIn.min = 0; exIn.max = 4; exIn.step = 0.01; exIn.value = explode;
+    const exOut = document.createElement('output'); exOut.textContent = explode.toFixed(2);
+    exIn.oninput = () => {
+      explode = parseFloat(exIn.value);
+      exOut.textContent = explode.toFixed(2);
+      applyExplode();
+    };
+    exRow.append(exLab, exIn, exOut);
+    s.appendChild(exRow);
+  }
+
+  // ---- slots ----
+  {
+    const s = createSection(sections, 'Save / load', { collapsed: true });
+    // Its own `group`, deliberately. The slot store is keyed `pcw:bv2:slots:<group>` and is shared
+    // across every tool in the repo, so borrowing 'maze' or 'ui' would overwrite bot-viewer's slots.
+    const { nodes } = createSlotSection({
+      group: 'aircraft',
+      label: 'Design',
+      storage: localStorage,
+      capture: () => ({ baseKey, design: clone(design), tuning: clone(tuning) }),
+      apply: (data) => {
+        if (!data?.design) return;
+        baseKey = data.baseKey || baseKey;
+        design = clone(data.design);
+        if (data.tuning) tuning = clone(data.tuning);
+        buildPanel(); rebuild();
+      },
+    });
+    s.append(...nodes);
+  }
+
+  refreshReadout();
+}
+
+function button(label, onclick) {
+  const b = document.createElement('button');
+  b.textContent = label; b.onclick = onclick;
+  return b;
+}
+
+// `primary` is the theme's highlighted-button class. A private `.on` class would have to pick its
+// own colours, and the panel's palette is whatever the user set in the environment viewer.
+function toggle(label, get, set) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.classList.toggle('primary', get());
+  b.onclick = () => { set(!get()); b.classList.toggle('primary', get()); };
+  return b;
+}
+
+// ===================== camera =====================
+
+const _box = new THREE.Box3();
+const _c = new THREE.Vector3();
+const _s = new THREE.Vector3();
+
+function frameBox(box, dir) {
+  box.getCenter(_c); box.getSize(_s);
+  const radius = Math.max(0.05, 0.5 * _s.length());
+  const dist = radius / Math.tan((camera.fov * Math.PI) / 360) * 1.5;
+  camera.position.copy(_c).addScaledVector(dir, dist);
+  controls.target.copy(_c);
+  camera.near = Math.max(0.005, dist * 0.005);
+  camera.far = dist * 40;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+const VIEWS = {
+  front: new THREE.Vector3(0, 0.12, -1),
+  side: new THREE.Vector3(1, 0.1, 0),
+  top: new THREE.Vector3(0, 1, 0.001),
+  three: new THREE.Vector3(0.7, 0.45, 0.75),
+};
+
+let lastDir = VIEWS.three.clone().normalize();
+function setView(name) {
+  lastDir = VIEWS[name].clone().normalize();
+  frameBox(_box.setFromObject(craft), lastDir);
+}
+
+// The one tool the bot studio has that mattered most, and the reason it could not be reused: its
+// version resolves a name through `slot.body.joints`, a humanoid joint dictionary. This resolves
+// through the anchors the layout itself declares, so it works on anything this module can build.
+function focusPart(name) {
+  if (!craft) return;
+  if (!name) { frameBox(_box.setFromObject(craft), lastDir); return; }
+  const parts = partsNamed(craft, name);
+  if (!parts.length) return;
+  _box.makeEmpty();
+  const p = new THREE.Vector3();
+  for (const part of parts) {
+    if (part.isMesh) _box.expandByObject(part);
+    else { part.getWorldPosition(p); _box.expandByPoint(p); }
+  }
+  if (_box.isEmpty()) return;
+  // an empty anchor has no size, so give it enough of one to be worth looking at
+  const size = _box.getSize(new THREE.Vector3()).length();
+  if (size < 1e-4) _box.expandByScalar(geometricRadiusOf(design) * 0.08);
+  frameBox(_box, lastDir);
+}
+
+// ===================== output =====================
+
+function num(v) {
+  if (typeof v !== 'number') return JSON.stringify(v);
+  return Number.isInteger(v) ? String(v) : String(Number(v.toFixed(4)));
+}
+
+function objSource(o, indent) {
+  const pad = ' '.repeat(indent);
+  const inner = Object.entries(o)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => {
+      if (Array.isArray(v)) {
+        if (!v.length) return `${k}: []`;
+        return `${k}: [\n${v.map((e) => `${pad}  ${objSource(e, indent + 2)}`).join(',\n')},\n${pad}]`;
+      }
+      if (v && typeof v === 'object') return `${k}: ${objSource(v, indent + 2)}`;
+      return `${k}: ${num(v)}`;
+    })
+    .join(', ');
+  return `{ ${inner} }`;
+}
+
+function layoutSource(l) {
+  return `export const ${l.id.toUpperCase()}_LAYOUT = ${objSource(l, 2)};\n`;
+}
+
+function copyOut(text) {
+  navigator.clipboard.writeText(text)
+    .then(() => flash('copied'))
+    .catch(() => { console.log(text); flash('clipboard blocked — logged to console'); });
+}
+
+let flashTimer = 0;
+function flash(msg) {
+  errEl.textContent = msg;
+  errEl.style.display = 'block';
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { errEl.style.display = 'none'; }, 1800);
+}
+
+// Hands the design to the sim. The sim reads this key on load, registers the airframe AND its mesh,
+// and adds a button for it, so the studio and the test environment are one round trip apart.
+const SIM_KEY = 'pcw:aircraft:testbed';
+function sendToSim() {
+  const af = airframeFromLayout(design, tuning);
+  const errs = validateAirframe(design.id, af);
+  if (errs.length) { flash(`not flyable: ${errs[0]}`); return; }
+  localStorage.setItem(SIM_KEY, JSON.stringify({ layout: design, tuning }));
+  flash('sent — open demos/flight-sim.html and pick "Studio"');
+}
+
+// ===================== boot =====================
+
+function loadBase(k) {
+  design = clone(LIBRARY[k].layout);
+  tuning = clone(LIBRARY[k].tuning);
+  buildPanel();
+  rebuild();
+  setView('three');
+}
+
+buildPanel();
+rebuild();
+setView('three');
+
+// restore whatever was open last time
+try { applySectionStates(document.body, JSON.parse(localStorage.getItem('pcw:aircraft:sections') || '{}')); } catch {}
+addEventListener('beforeunload', () => {
+  try { localStorage.setItem('pcw:aircraft:sections', JSON.stringify(readSectionStates(document.body))); } catch {}
+});
+
+window.__studio = {
+  THREE, scene, camera, controls,
+  get design() { return design; },
+  get tuning() { return tuning; },
+  get craft() { return craft; },
+  rebuild, focusPart, setView, runBench, perfRows, layoutSource,
+  anchors: () => anchorsOf(design),
+  hardpoints: () => hardpointsOf(design),
+  derive: () => deriveGeometry(design),
+};
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+window.__ready = true;
+</script>
+</body>
+</html>

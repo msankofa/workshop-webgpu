@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Terrain generator v5 — workshop-webgpu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --paper: #faf6ef; --ink: #2b2620; --accent: #b5502f; --accent-soft: #e7c9ba;
+    --card: #ffffff; --border: #e4dccb; --ok: #3d7a45; --warn: #a3671e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 15px; line-height: 1.45; }
+  h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; margin: 0 0 8px; }
+  header.hero { padding: 22px 24px 12px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+  header.hero h1 { font-size: 1.7em; color: var(--accent); margin: 0; }
+  header.hero p { margin: 0; opacity: 0.75; flex: 1 1 320px; font-size: 0.9em; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar .status { font-size: 0.85em; opacity: 0.75; min-width: 180px; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px 26px; box-shadow: 0 2px 10px rgba(43,38,32,0.05); }
+  .panel h2 { font-size: 1.35em; }
+  .lede { opacity: 0.75; margin: 4px 0 14px; font-size: 0.92em; }
+  .swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.15); vertical-align: middle; margin-right: 6px; }
+  .gen-layout { display: flex; gap: 22px; flex-wrap: wrap; }
+  .canvas-frame { position: relative; flex: 0 0 auto; }
+  canvas { border-radius: 8px; border: 1px solid var(--border); image-rendering: pixelated; cursor: crosshair; }
+  .controls { flex: 1 1 260px; display: flex; flex-direction: column; gap: 8px; }
+  .control-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.88em; }
+  .control-row label { display: flex; justify-content: space-between; opacity: 0.85; }
+  .control-row .control-desc { font-size: 0.8em; opacity: 0.6; margin: 0 0 2px; }
+  .control-row select, .control-row input[type=text], .control-row input[type=number] { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); }
+  .row-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tooltip { position: absolute; pointer-events: none; background: var(--ink); color: var(--paper); padding: 8px 10px; border-radius: 6px; font-size: 0.8em; line-height: 1.4; white-space: pre; z-index: 10; transform: translate(12px, 12px); }
+  .tooltip.hidden, .hidden { display: none; }
+  button.action { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 7px 12px; cursor: pointer; font-size: 0.88em; }
+  button.action.secondary { background: #e9e1d2; color: var(--ink); }
+  button.action:disabled { opacity: 0.45; cursor: default; }
+  button.small { padding: 3px 8px; font-size: 0.8em; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); cursor: pointer; }
+  button.small.on { background: var(--accent-soft); border-color: var(--accent); }
+  table.ref-table { border-collapse: collapse; width: 100%; font-size: 0.88em; }
+  table.ref-table th, table.ref-table td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--border); }
+  table.ref-table tr.active { background: var(--accent-soft); }
+  .rule-list { display: flex; flex-direction: column; gap: 4px; font-size: 0.86em; }
+  .rule-row { display: flex; gap: 10px; align-items: center; padding: 5px 8px; border-radius: 6px; }
+  .rule-row.active { background: var(--accent-soft); }
+  .rule-row .rule-idx { opacity: 0.5; width: 2.2em; flex: none; }
+  .callout { background: #f1e9dc; border-left: 3px solid var(--accent); padding: 9px 13px; border-radius: 6px; font-size: 0.86em; margin-top: 8px; }
+  #canvas-viewport { position: relative; width: 100%; height: calc(100vh - 92px); overflow: hidden; background: var(--paper); cursor: grab; }
+  #canvas-viewport.panning { cursor: grabbing; }
+  #canvas-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+  #connector-svg { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  #canvas-world .panel { position: absolute; width: 820px; margin: 0; }
+  #canvas-world .panel.wide { width: 1000px; }
+  #canvas-world .panel h2 { cursor: grab; user-select: none; }
+  #canvas-world .panel h2:active { cursor: grabbing; }
+  .layer-list { display: flex; flex-direction: column; gap: 6px; }
+  .layer { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--paper); }
+  .layer.disabled { opacity: 0.55; }
+  .layer-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 0.88em; }
+  .layer-head .name { font-weight: 600; flex: 1 1 120px; }
+  .layer-body { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
+  .layer-body .control-row { font-size: 0.82em; }
+  .layer-body .mask { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.82em; margin-top: 4px; }
+  .layer-body .mask input[type=number] { width: 70px; }
+  .tools { display: flex; gap: 6px; flex-wrap: wrap; }
+  .kbd { font-family: ui-monospace, Consolas, monospace; font-size: 0.85em; background: #efe8da; padding: 1px 5px; border-radius: 4px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header class="hero">
+  <h1>Terrain generator v5</h1>
+  <p>v4's pipeline with a layered noise stack in front of erosion, paint layers on top, undo, heightmap import and heightfield export. One shared grid runs in a worker; every panel reads it.</p>
+  <div class="toolbar">
+    <button class="action secondary" id="undo-btn" title="Ctrl+Z">Undo</button>
+    <button class="action secondary" id="redo-btn" title="Ctrl+Y">Redo</button>
+    <span class="status" id="gen-status">Starting…</span>
+    <button class="action secondary" id="reset-layout-btn">Reset layout</button>
+  </div>
+</header>
+<main>
+  <div id="canvas-viewport">
+    <div id="canvas-world">
+      <svg id="connector-svg"></svg>
+
+  <section class="panel" id="section-world-noise">
+    <h2>World &amp; noise fields</h2>
+    <p class="callout hidden" id="resolution-warning">Resolution is above 256 — regeneration takes a moment; the worker keeps the page responsive.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="world-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="world-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="world-panel-select">Panel</label>
+          <select id="world-panel-select">
+            <option value="continentalness">continentalness</option>
+            <option value="erosion">erosion</option>
+            <option value="weirdness">weirdness</option>
+            <option value="temperature">temperature</option>
+            <option value="humidity">humidity</option>
+          </select>
+        </div>
+        <div id="world-controls"></div>
+        <button class="action" id="world-randomize">Randomize seed</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-height">
+    <h2>Height composer (classic)</h2>
+    <p class="lede">v4's continentalness × erosion × weirdness composer. It feeds the stack below as the <em>classic</em> layer.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="height-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="height-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="height-controls"></div>
+    </div>
+  </section>
+
+  <section class="panel wide" id="section-stack">
+    <h2>Layer stack</h2>
+    <p class="lede">Ordered layers folded top to bottom into the pre-erosion height. Sources add noise, imports or constants with a blend mode, opacity and an optional height-band mask; modifiers warp the coordinates or terrace the running height.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="stack-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="stack-tooltip" class="tooltip hidden"></div>
+        <div class="row-inline" style="margin-top:8px;">
+          <select id="stack-preset-select"></select>
+          <button class="action secondary" id="stack-preset-btn">Load preset</button>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="row-inline">
+          <select id="stack-add-type"></select>
+          <button class="action" id="stack-add-btn">Add layer</button>
+        </div>
+        <div class="layer-list" id="layer-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-erosion">
+    <h2>Erosion &amp; hydrology</h2>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="erosion-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="erosion-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="erosion-panel-select">Panel</label>
+          <select id="erosion-panel-select">
+            <option value="erosionDelta">erosion delta</option>
+            <option value="flowNorm">flow accumulation</option>
+            <option value="lakeMask">lake mask</option>
+            <option value="height">final height</option>
+          </select>
+        </div>
+        <div id="erosion-controls"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-derived">
+    <h2>Derived masks</h2>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="derived-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="derived-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="derived-panel-select">Panel</label>
+          <select id="derived-panel-select">
+            <option value="slope">slope</option>
+            <option value="seaMask">sea mask</option>
+            <option value="beachMask">beach mask</option>
+            <option value="mountainMask">mountain mask</option>
+          </select>
+        </div>
+        <div id="derived-controls"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-biome">
+    <h2>Biome classification</h2>
+    <p class="lede">17 ordered rules run top to bottom over every cell; whichever one matches last wins. Painted biomes show as rule −2.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="biome-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="biome-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="rule-list"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-material">
+    <h2>Material masks</h2>
+    <p class="lede">Blended surface material from biome id, slope, and height.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="material-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="material-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls" id="material-legend"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-paint">
+    <h2>Paint</h2>
+    <p class="lede">Turn on <strong>Paint in viewport</strong>, then drag on the 3D ground. Height paint is a delta added after erosion; biome paint overrides the classifier per cell. A whole stroke is one undo step.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <canvas id="paint-canvas" width="128" height="128" style="width:400px;height:400px;"></canvas>
+        <div id="paint-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="row-inline"><button class="action" id="paint-toggle">Paint in viewport: off</button><button class="action secondary" id="paint-clear">Clear paint</button></div>
+        <div class="control-row"><label>Tool</label><div class="tools" id="paint-tools"></div></div>
+        <div class="control-row" id="paint-biome-row"><label for="paint-biome">Biome to paint</label><select id="paint-biome"></select></div>
+        <div id="brush-controls"></div>
+        <p class="lede" id="paint-stats"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-import">
+    <h2>Import heightmap</h2>
+    <p class="lede">A grayscale image or a real-world patch becomes an <em>import</em> layer in the stack, so it blends and masks like any other source.</p>
+    <div class="controls">
+      <div class="control-row"><label for="import-file">Image file (PNG/JPG, grayscale read as height)</label><input type="file" id="import-file" accept="image/*"></div>
+      <h3 style="font-size:0.95em;margin-top:8px;">Real-world elevation (AWS Terrain Tiles, no key)</h3>
+      <div class="control-row"><label for="import-location">Location</label><select id="import-location"></select></div>
+      <div class="row-inline">
+        <div class="control-row"><label for="import-lat">lat</label><input type="number" id="import-lat" step="0.001" value="45.976" style="width:110px;"></div>
+        <div class="control-row"><label for="import-lon">lon</label><input type="number" id="import-lon" step="0.001" value="7.658" style="width:110px;"></div>
+        <div class="control-row"><label for="import-km">size (km)</label><input type="number" id="import-km" step="1" min="2" max="120" value="20" style="width:90px;"></div>
+        <button class="action" id="import-fetch">Fetch</button>
+      </div>
+      <p class="lede" id="import-status"></p>
+    </div>
+  </section>
+
+  <section class="panel wide" id="section-viewport">
+    <h2>3D preview</h2>
+    <p class="lede">The shared grid as a heightfield mesh (or the volumetric preview from the export panel). Orbit to look, or paint when paint mode is on.</p>
+    <div class="gen-layout">
+      <div class="canvas-frame">
+        <div id="hf-viewport" style="width:600px;height:520px;border-radius:8px;border:1px solid var(--border);overflow:hidden;"></div>
+        <div id="hf-tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="control-row">
+          <label for="hf-mode-select">Display mode</label>
+          <select id="hf-mode-select">
+            <option value="material">material</option>
+            <option value="biome">biome</option>
+            <option value="height">height</option>
+            <option value="paint">paint delta</option>
+            <option value="slope">slope</option>
+            <option value="seaMask">sea mask</option>
+            <option value="beachMask">beach mask</option>
+            <option value="mountainMask">mountain mask</option>
+            <option value="rockMask">rock mask</option>
+            <option value="snowMask">snow mask</option>
+            <option value="continentalness">continentalness</option>
+            <option value="temperature">temperature</option>
+            <option value="humidity">humidity</option>
+            <option value="flowNorm">flow accumulation</option>
+          </select>
+        </div>
+        <div class="control-row"><label><input type="checkbox" id="hf-wireframe"> wireframe</label></div>
+        <div class="control-row"><label><input type="checkbox" id="hf-water" checked> show sea level plane</label></div>
+        <div class="row-inline"><button class="action secondary" id="hf-reset-view">Reset view</button><button class="action secondary hidden" id="hf-back-heightfield">Back to heightfield</button></div>
+        <p class="lede" id="hf-stats"></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-export">
+    <h2>Export &amp; project</h2>
+    <div class="controls">
+      <div class="control-row">
+        <label for="export-mode">Map kind</label>
+        <select id="export-mode"><option value="heightfield">heightfield (mesh from the grid, exact heights)</option><option value="volumetric">volumetric (caves, marching cubes)</option></select>
+      </div>
+      <div id="density-controls" class="hidden"></div>
+      <div class="row-inline"><button class="action secondary" id="volume-preview-btn">Preview volume in 3D</button></div>
+      <div class="control-row"><label for="export-folder">Folder</label><input type="text" id="export-folder" value="workshop"></div>
+      <div class="control-row"><label for="export-name">Name</label><input type="text" id="export-name" value="terrain-v5-export"></div>
+      <div class="row-inline"><button class="action" id="export-btn">Export to maps/</button><button class="action" id="publish-btn">Publish to game</button></div>
+      <p class="lede" id="export-status"></p>
+      <h3 style="font-size:0.95em;">Downloads</h3>
+      <div class="row-inline">
+        <button class="action secondary" id="dl-png">Heightmap PNG (8-bit)</button>
+        <button class="action secondary" id="dl-raw16">Heightmap RAW16</button>
+        <button class="action secondary" id="dl-project">Project JSON</button>
+        <label class="small" style="cursor:pointer;">Load project JSON <input type="file" id="load-project" accept="application/json" style="display:none;"></label>
+      </div>
+      <p class="lede" id="project-status"></p>
+    </div>
+  </section>
+
+  <section class="panel" id="section-consumption">
+    <h2>A real exported map</h2>
+    <div class="control-row" style="max-width:360px;"><label for="map-select">Map</label><select id="map-select"></select></div>
+    <p class="lede" id="consumption-caption">Loading…</p>
+    <div class="gen-layout" id="consumption-layout" style="display:none;">
+      <div class="canvas-frame"><canvas id="map-canvas"></canvas><div id="map-tooltip" class="tooltip hidden"></div></div>
+      <div class="controls" id="map-legend"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="section-tables">
+    <h2>Reference tables</h2>
+    <p class="lede">The two lookup tables workshop-webgpu uses at runtime.</p>
+    <div class="gen-layout">
+      <div style="flex:1 1 320px;"><h3>Ground texture fallback</h3><table class="ref-table" id="table-material"></table></div>
+      <div style="flex:1 1 260px;"><h3>Tree density</h3><table class="ref-table" id="table-density"></table></div>
+    </div>
+  </section>
+
+    </div>
+  </div>
+</main>
+<script type="module">
+  import {
+    BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription,
+    buildHeightfieldMesh, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
+    DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
+  } from './terrain-generator-js.js';
+  import { LAYER_TYPES, LAYER_TYPE_ORDER, BLEND_MODES, makeLayer, defaultStack, normalizeStack, STACK_PRESETS, MAX_LAYERS } from './terrain-stack.js';
+  import { PaintLayers, PAINT_TOOLS, BRUSH_SHAPES, DEFAULT_BRUSH, NO_OVERRIDE, bytesToBase64, base64ToBytes } from './terrain-paint.js';
+  import { History } from './terrain-history.js';
+  import { imageFileToGrid, fetchTerrariumGrid, quantizeHeights, packRaw16, heightsToPngBlob, CURATED_LOCATIONS } from './terrain-heightmap-io.js';
+  import * as THREE from 'three';
+  import { WebGPURenderer } from 'three/webgpu';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+  // ---- shared state ----
+  const genConfig = { ...DEFAULT_CONFIG, preview_resolution: 160 };
+  const WARN_RESOLUTION = 256;
+  let stack = defaultStack();
+  let paint = new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
+  const imports = {};            // layerId -> { data: Float32Array, resolution, source }
+  const densityConfig = { ...DENSITY_DEFAULT_CONFIG };
+  let lastGrid = null;           // latest worker result (+ grassDensity, paintUsed)
+  const REDRAW_CALLBACKS = [];
+  const statusEl = document.getElementById('gen-status');
+
+  // ---- worker plumbing: one job at a time, coalesce requests, keep the newest ----
+  const worker = new Worker('./terrain-gen-worker.js', { type: 'module' });
+  let jobSeq = 0, inFlight = null, pending = null, regenTimer = null;
+  const volumeWaiters = new Map();
+
+  function requestGrid(kind = 'grid', extra = {}) {
+    // A pending volume request must not be downgraded by a later plain grid request.
+    if (pending && pending.kind === 'volume') kind = 'volume';
+    pending = { kind, extra };
+    if (!inFlight) pumpWorker();
+  }
+  function scheduleRegenerate(delay = 120) {
+    clearTimeout(regenTimer);
+    regenTimer = setTimeout(() => requestGrid('grid'), delay);
+  }
+  function pumpWorker() {
+    if (!pending) return;
+    const job = pending; pending = null;
+    const id = ++jobSeq;
+    const res = genConfig.preview_resolution;
+    if (paint.resolution !== res) paint.resize(res, genConfig.world_x, genConfig.world_z);
+    paint.worldX = genConfig.world_x; paint.worldZ = genConfig.world_z;
+    const paintUsed = Float32Array.from(paint.heightDelta);
+    const msg = {
+      id, kind: job.kind, cfg: { ...genConfig }, resolution: res, stack: JSON.parse(JSON.stringify(stack)),
+      paintHeight: paintUsed, biomeOverride: Uint8Array.from(paint.biomeOverride),
+      imports: Object.fromEntries(Object.entries(imports).map(([k, v]) => [k, { data: v.data, resolution: v.resolution }])),
+      densityCfg: job.kind === 'volume' ? { ...densityConfig } : null,
+    };
+    inFlight = { id, kind: job.kind, paintUsed, t0: performance.now() };
+    statusEl.textContent = job.kind === 'volume' ? 'Building volume…' : `Generating ${res}×${res}…`;
+    worker.postMessage(msg);
+  }
+  worker.onmessage = (ev) => {
+    const r = ev.data;
+    if (!inFlight || r.id !== inFlight.id) { inFlight = null; pumpWorker(); return; }
+    const job = inFlight; inFlight = null;
+    if (r.error) {
+      statusEl.textContent = 'Generation failed (see console).'; console.error(r.error);
+    } else if (r.kind === 'volume') {
+      r.grid.grassDensity = r.grassDensity;
+      statusEl.textContent = `Volume ${r.grid.resolution}³ in ${r.ms.toFixed(0)} ms (worker)`;
+      for (const fn of volumeWaiters.values()) fn(r.volume, r.grid);
+      volumeWaiters.clear();
+    } else {
+      r.grid.grassDensity = r.grassDensity;
+      r.grid.paintUsed = job.paintUsed;
+      lastGrid = r.grid;
+      statusEl.textContent = `Grid ${r.grid.resolution}×${r.grid.resolution} in ${r.ms.toFixed(0)} ms (worker)`;
+      for (const cb of REDRAW_CALLBACKS) cb(lastGrid);
+    }
+    pumpWorker();
+  };
+  worker.onerror = (ev) => { statusEl.textContent = 'Worker failed: ' + ev.message; console.error(ev); };
+
+  // ---- history ----
+  const history = new History({
+    limit: 40,
+    getState: () => ({ cfg: { ...genConfig }, stack: JSON.parse(JSON.stringify(stack)), paint: paint.serialize(), density: { ...densityConfig } }),
+    restoreState: (s) => {
+      Object.assign(genConfig, s.cfg);
+      stack = normalizeStack(s.stack);
+      Object.assign(densityConfig, s.density || {});
+      const p = s.paint ? PaintLayers.deserialize(s.paint, genConfig.world_x, genConfig.world_z) : null;
+      paint = p || new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
+      rebuildAllControls();
+      requestGrid('grid');
+    },
+  });
+  const undoBtn = document.getElementById('undo-btn'), redoBtn = document.getElementById('redo-btn');
+  history.onChange(() => {
+    undoBtn.disabled = !history.canUndo(); redoBtn.disabled = !history.canRedo();
+    const cur = history.entries[history.cursor];
+    undoBtn.title = history.canUndo() ? `Undo "${cur.label}" (Ctrl+Z)` : 'Nothing to undo';
+  });
+  undoBtn.addEventListener('click', () => history.undo());
+  redoBtn.addEventListener('click', () => history.redo());
+  window.addEventListener('keydown', (ev) => {
+    if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName) && ev.target.type !== 'range') return;
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z' && !ev.shiftKey) { ev.preventDefault(); history.undo(); }
+    else if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === 'y' || (ev.key.toLowerCase() === 'z' && ev.shiftKey))) { ev.preventDefault(); history.redo(); }
+  });
+
+  // ---- node-graph canvas ----
+  const LAYOUT_STORAGE_KEY = 'terrain-generator-v5-layout';
+  const DEFAULT_LAYOUT = {
+    'section-world-noise': { x: 0, y: 0 }, 'section-height': { x: 900, y: 0 }, 'section-stack': { x: 1800, y: 0 },
+    'section-erosion': { x: 0, y: 1150 }, 'section-derived': { x: 900, y: 1150 }, 'section-biome': { x: 1800, y: 1150 }, 'section-material': { x: 2700, y: 1150 },
+    'section-paint': { x: 0, y: 2300 }, 'section-import': { x: 900, y: 2300 }, 'section-viewport': { x: 1800, y: 2300 }, 'section-export': { x: 2900, y: 2300 },
+    'section-consumption': { x: 3700, y: 0 }, 'section-tables': { x: 3700, y: 1150 },
+  };
+  const CONNECTOR_EDGES = [
+    ['section-world-noise', 'section-height'], ['section-height', 'section-stack'], ['section-stack', 'section-erosion'],
+    ['section-erosion', 'section-derived'], ['section-derived', 'section-biome'], ['section-biome', 'section-material'],
+    ['section-material', 'section-paint'], ['section-paint', 'section-import'], ['section-import', 'section-viewport'], ['section-viewport', 'section-export'],
+  ];
+  const canvasViewport = document.getElementById('canvas-viewport');
+  const canvasWorld = document.getElementById('canvas-world');
+  const connectorSvg = document.getElementById('connector-svg');
+  let panX = 0, panY = 0, zoom = 1;
+  const panelPositions = {};
+  function loadLayout() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LAYOUT_STORAGE_KEY));
+      if (!parsed) throw new Error('none');
+      panX = +parsed.panX || 0; panY = +parsed.panY || 0; zoom = +parsed.zoom || 1;
+      for (const id of Object.keys(DEFAULT_LAYOUT)) {
+        const s = parsed.positions?.[id];
+        panelPositions[id] = (s && Number.isFinite(s.x) && Number.isFinite(s.y)) ? { x: s.x, y: s.y } : { ...DEFAULT_LAYOUT[id] };
+      }
+    } catch {
+      panX = 0; panY = 0; zoom = 0.7;
+      for (const id of Object.keys(DEFAULT_LAYOUT)) panelPositions[id] = { ...DEFAULT_LAYOUT[id] };
+    }
+  }
+  function saveLayout() { localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ panX, panY, zoom, positions: panelPositions })); }
+  function applyWorldTransform() { canvasWorld.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`; }
+  function applyPanelPosition(id) { const el = document.getElementById(id); const p = panelPositions[id]; el.style.left = `${p.x}px`; el.style.top = `${p.y}px`; }
+  function panelRect(id) { const p = panelPositions[id]; const el = document.getElementById(id); return { x: p.x, y: p.y, width: el.offsetWidth, height: el.offsetHeight }; }
+  function edgePath(fromId, toId) {
+    const a = panelRect(fromId), b = panelRect(toId);
+    if (a.y === b.y) return `M ${a.x + a.width} ${a.y + a.height / 2} L ${b.x} ${b.y + b.height / 2}`;
+    const x1 = a.x + a.width / 2, y1 = a.y + a.height, x2 = b.x + b.width / 2, y2 = b.y, midY = (y1 + y2) / 2;
+    return `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
+  }
+  function renderConnectors() {
+    if (!Object.keys(panelPositions).length) return;
+    const defs = '<defs><marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="var(--accent)"></path></marker></defs>';
+    connectorSvg.innerHTML = defs + CONNECTOR_EDGES.map(([f, t]) => `<path d="${edgePath(f, t)}" stroke="var(--accent)" stroke-width="2" fill="none" marker-end="url(#arrowhead)"></path>`).join('');
+  }
+
+  // ---- generic slider builder (v4's, with a `commit` hook for history) ----
+  function buildGroupControls(container, groupNames, cfg = genConfig, fieldGroups = FIELD_GROUPS, fieldRanges = FIELD_RANGES,
+    labelFn = fieldLabel, descFn = fieldDescription, onChange = () => scheduleRegenerate(), label = 'setting') {
+    container.innerHTML = '';
+    for (const group of fieldGroups) {
+      if (!groupNames.includes(group.name)) continue;
+      const heading = document.createElement('h3'); heading.textContent = group.name; heading.style.fontSize = '0.95em';
+      container.appendChild(heading);
+      for (const name of group.fields) {
+        const [min, max, step] = fieldRanges[name];
+        const row = document.createElement('div'); row.className = 'control-row';
+        const desc = document.createElement('p'); desc.className = 'control-desc'; desc.textContent = descFn(name);
+        const lab = document.createElement('label'); const valueSpan = document.createElement('span'); valueSpan.textContent = cfg[name];
+        lab.textContent = labelFn(name) + ' '; lab.appendChild(valueSpan);
+        const input = document.createElement('input'); input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = cfg[name];
+        input.addEventListener('input', () => { cfg[name] = Number(input.value); valueSpan.textContent = input.value; onChange(name); });
+        input.addEventListener('change', () => history.record(`${label}: ${labelFn(name)}`));
+        row.append(desc, lab, input); container.appendChild(row);
+      }
+    }
+  }
+
+  function drawScalarPanel(canvas, tooltipEl, grid, field, colorFn, extraLabel, values = grid[field]) {
+    const res = grid.resolution;
+    canvas.width = res; canvas.height = res;
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(res, res);
+    for (let i = 0; i < values.length; i++) {
+      const [r, g, b] = colorFn(values[i]);
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    canvas.onmousemove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(res - 1, Math.floor((ev.clientX - rect.left) / rect.width * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor((ev.clientY - rect.top) / rect.height * res)));
+      tooltipEl.classList.remove('hidden'); tooltipEl.style.left = ev.offsetX + 'px'; tooltipEl.style.top = ev.offsetY + 'px';
+      tooltipEl.textContent = (extraLabel ?? field) + ': ' + values[iz * res + ix].toFixed(3);
+    };
+    canvas.onmouseleave = () => tooltipEl.classList.add('hidden');
+  }
+
+  // ---- world & noise fields ----
+  const worldPanelSelect = document.getElementById('world-panel-select');
+  function onWorldChange(name) {
+    document.getElementById('resolution-warning').classList.toggle('hidden', genConfig.preview_resolution <= WARN_RESOLUTION);
+    scheduleRegenerate(name === 'preview_resolution' ? 300 : 120);
+  }
+  function buildWorldControls() { buildGroupControls(document.getElementById('world-controls'), ['World', 'Noise Fields'], genConfig, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, onWorldChange, 'world'); }
+  document.getElementById('world-randomize').addEventListener('click', () => {
+    genConfig.seed = Math.floor(Math.random() * 100000); buildWorldControls(); requestGrid('grid'); history.record('randomize seed');
+  });
+  worldPanelSelect.addEventListener('change', () => { if (lastGrid) drawWorldPanel(lastGrid); });
+  function drawWorldPanel(grid) { drawScalarPanel(document.getElementById('world-canvas'), document.getElementById('world-tooltip'), grid, worldPanelSelect.value, divergingColor); }
+  REDRAW_CALLBACKS.push(drawWorldPanel);
+
+  // ---- height composer ----
+  function buildHeightControls() { buildGroupControls(document.getElementById('height-controls'), ['Height Composer'], genConfig, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, () => scheduleRegenerate(), 'composer'); }
+  REDRAW_CALLBACKS.push((grid) => drawScalarPanel(document.getElementById('height-canvas'), document.getElementById('height-tooltip'), grid, 'classicHeight', (v) => heightColor(v, genConfig.sea_level), 'classic height'));
+
+  // ---- layer stack editor ----
+  const layerListEl = document.getElementById('layer-list');
+  const expanded = new Set(['classic']);
+  const addTypeSel = document.getElementById('stack-add-type');
+  addTypeSel.innerHTML = LAYER_TYPE_ORDER.filter((t) => t !== 'import').map((t) => `<option value="${t}">${LAYER_TYPES[t].label}</option>`).join('');
+  addTypeSel.value = 'fbm';
+  document.getElementById('stack-add-btn').addEventListener('click', () => {
+    if (stack.layers.length >= MAX_LAYERS) { statusEl.textContent = `At most ${MAX_LAYERS} layers.`; return; }
+    const layer = makeLayer(addTypeSel.value);
+    stack.layers.push(layer); expanded.add(layer.id);
+    buildLayerList(); requestGrid('grid'); history.record(`add ${layer.name}`);
+  });
+  const presetSel = document.getElementById('stack-preset-select');
+  presetSel.innerHTML = Object.keys(STACK_PRESETS).map((k) => `<option>${k}</option>`).join('');
+  document.getElementById('stack-preset-btn').addEventListener('click', () => {
+    stack = normalizeStack(STACK_PRESETS[presetSel.value]());
+    buildLayerList(); requestGrid('grid'); history.record(`preset ${presetSel.value}`);
+  });
+
+  function sliderRow(parent, label, desc, value, min, max, step, onInput, onCommit) {
+    const row = document.createElement('div'); row.className = 'control-row';
+    if (desc) { const d = document.createElement('p'); d.className = 'control-desc'; d.textContent = desc; row.appendChild(d); }
+    const lab = document.createElement('label'); const span = document.createElement('span'); span.textContent = value; lab.textContent = label + ' '; lab.appendChild(span);
+    const input = document.createElement('input'); input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = value;
+    input.addEventListener('input', () => { span.textContent = input.value; onInput(Number(input.value)); });
+    input.addEventListener('change', () => onCommit?.());
+    row.append(lab, input); parent.appendChild(row);
+    return input;
+  }
+
+  function buildLayerList() {
+    layerListEl.innerHTML = '';
+    stack.layers.forEach((layer, i) => {
+      const def = LAYER_TYPES[layer.type];
+      const el = document.createElement('div'); el.className = 'layer' + (layer.enabled ? '' : ' disabled');
+      const head = document.createElement('div'); head.className = 'layer-head';
+      const en = document.createElement('input'); en.type = 'checkbox'; en.checked = layer.enabled; en.title = 'enabled';
+      en.addEventListener('change', () => { layer.enabled = en.checked; el.classList.toggle('disabled', !layer.enabled); requestGrid('grid'); history.record(`${layer.enabled ? 'enable' : 'disable'} ${layer.name}`); });
+      const name = document.createElement('span'); name.className = 'name'; name.textContent = `${i + 1}. ${layer.name}`; name.title = def.desc;
+      if (layer.type === 'import' && imports[layer.id]) name.textContent += ` (${imports[layer.id].source})`;
+      head.append(en, name);
+      if (def.kind === 'source' && layer.type !== 'classic') {
+        const blend = document.createElement('select');
+        blend.innerHTML = BLEND_MODES.map((m) => `<option ${m === layer.blendMode ? 'selected' : ''}>${m}</option>`).join('');
+        blend.title = 'blend mode';
+        blend.addEventListener('change', () => { layer.blendMode = blend.value; requestGrid('grid'); history.record(`${layer.name} blend ${blend.value}`); });
+        head.appendChild(blend);
+      }
+      const mk = (txt, title, fn) => { const b = document.createElement('button'); b.className = 'small'; b.textContent = txt; b.title = title; b.addEventListener('click', fn); head.appendChild(b); return b; };
+      mk('▲', 'move up', () => { if (i > 0) { [stack.layers[i - 1], stack.layers[i]] = [stack.layers[i], stack.layers[i - 1]]; buildLayerList(); requestGrid('grid'); history.record(`move ${layer.name} up`); } });
+      mk('▼', 'move down', () => { if (i < stack.layers.length - 1) { [stack.layers[i + 1], stack.layers[i]] = [stack.layers[i], stack.layers[i + 1]]; buildLayerList(); requestGrid('grid'); history.record(`move ${layer.name} down`); } });
+      const tog = mk(expanded.has(layer.id) ? '−' : '+', 'show controls', () => { if (expanded.has(layer.id)) expanded.delete(layer.id); else expanded.add(layer.id); buildLayerList(); });
+      mk('✕', 'remove layer', () => { stack.layers.splice(i, 1); delete imports[layer.id]; buildLayerList(); requestGrid('grid'); history.record(`remove ${layer.name}`); });
+      el.appendChild(head);
+      if (expanded.has(layer.id)) {
+        const body = document.createElement('div'); body.className = 'layer-body';
+        for (const [k, p] of Object.entries(def.params)) {
+          sliderRow(body, p.label, p.desc, layer.params[k], p.min, p.max, p.step,
+            (v) => { layer.params[k] = v; scheduleRegenerate(); },
+            () => history.record(`${layer.name}: ${p.label}`));
+        }
+        if (def.kind === 'source') {
+          const mask = document.createElement('div'); mask.className = 'mask';
+          mask.innerHTML = `<label><input type="checkbox" ${layer.mask.enabled ? 'checked' : ''}> height mask</label>
+            <label>from <input type="number" step="1" value="${layer.mask.lo}"></label>
+            <label>to <input type="number" step="1" value="${layer.mask.hi}"></label>
+            <label>feather <input type="number" step="1" min="0" value="${layer.mask.feather}"></label>
+            <span class="control-desc">Only applies where the running height is inside the band (world units).</span>`;
+          const [cb, lo, hi, fe] = mask.querySelectorAll('input');
+          const upd = () => { layer.mask = { enabled: cb.checked, lo: Number(lo.value), hi: Number(hi.value), feather: Math.max(0, Number(fe.value)) }; requestGrid('grid'); history.record(`${layer.name} mask`); };
+          for (const inp of [cb, lo, hi, fe]) inp.addEventListener('change', upd);
+          body.appendChild(mask);
+        }
+        el.appendChild(body);
+      }
+      layerListEl.appendChild(el);
+    });
+    renderConnectors();
+  }
+  REDRAW_CALLBACKS.push((grid) => drawScalarPanel(document.getElementById('stack-canvas'), document.getElementById('stack-tooltip'), grid, 'targetHeight', (v) => heightColor(v, genConfig.sea_level), 'stack height'));
+
+  // ---- erosion, derived, biome, material panels ----
+  const erosionPanelSelect = document.getElementById('erosion-panel-select');
+  function buildErosionControls() { buildGroupControls(document.getElementById('erosion-controls'), ['Erosion Simulation', 'Hydrology'], genConfig, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, () => scheduleRegenerate(), 'erosion'); }
+  erosionPanelSelect.addEventListener('change', () => { if (lastGrid) drawErosionPanel(lastGrid); });
+  function drawErosionPanel(grid) {
+    const field = erosionPanelSelect.value;
+    let colorFn;
+    if (field === 'flowNorm') colorFn = flowColor;
+    else if (field === 'lakeMask') colorFn = (v) => maskColor(v, [58, 150, 190]);
+    else if (field === 'height') colorFn = (v) => heightColor(v, genConfig.sea_level);
+    else { let maxAbs = 1; for (const d of grid.erosionDelta) if (Math.abs(d) > maxAbs) maxAbs = Math.abs(d); colorFn = (v) => signedColor(v, maxAbs); }
+    drawScalarPanel(document.getElementById('erosion-canvas'), document.getElementById('erosion-tooltip'), grid, field, colorFn);
+  }
+  REDRAW_CALLBACKS.push(drawErosionPanel);
+
+  const derivedPanelSelect = document.getElementById('derived-panel-select');
+  function buildDerivedControls() { buildGroupControls(document.getElementById('derived-controls'), ['Derived Masks'], genConfig, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, () => scheduleRegenerate(), 'masks'); }
+  derivedPanelSelect.addEventListener('change', () => { if (lastGrid) drawDerivedPanel(lastGrid); });
+  const DERIVED_MASK_COLORS = { seaMask: [60, 130, 220], beachMask: [224, 205, 130], mountainMask: [214, 160, 82] };
+  function drawDerivedPanel(grid) {
+    const field = derivedPanelSelect.value;
+    let maxSlope = 1.2; for (const s of grid.slope) if (s > maxSlope) maxSlope = s;
+    const colorFn = field === 'slope' ? (v) => slopeColor(v, maxSlope) : (v) => maskColor(v, DERIVED_MASK_COLORS[field]);
+    drawScalarPanel(document.getElementById('derived-canvas'), document.getElementById('derived-tooltip'), grid, field, colorFn);
+  }
+  REDRAW_CALLBACKS.push(drawDerivedPanel);
+
+  const RULES = [
+    { index: -2, biome: 'plains', text: 'Painted override (any biome).' },
+    { index: -1, biome: 'plains', text: 'Default. No rule below matched.' },
+    { index: 0, biome: 'deep_ocean', text: 'height &lt; sea level &minus; 14' },
+    { index: 1, biome: 'ocean', text: 'sea level &minus; 14 &le; height &le; sea level' },
+    { index: 2, biome: 'beach', text: 'beach mask &gt; 0.35 (overrides ocean/deep_ocean too)' },
+    { index: 3, biome: 'desert', text: 'land &amp; hot &amp; dry' },
+    { index: 4, biome: 'badlands', text: 'land &amp; hot &amp; dry &amp; weirdness &gt; 0.38 (overrides desert)' },
+    { index: 5, biome: 'savanna', text: 'land &amp; hot &amp; not dry &amp; not very wet' },
+    { index: 6, biome: 'jungle', text: 'land &amp; very wet &amp; hot' },
+    { index: 7, biome: 'swamp', text: 'land &amp; very wet &amp; not hot' },
+    { index: 8, biome: 'forest', text: 'land &amp; wet &amp; not cold &amp; not very wet' },
+    { index: 9, biome: 'dark_forest', text: 'land &amp; wet &amp; humidity &gt; 0.25 &amp; not hot &amp; not cold (overrides forest, and swamp)' },
+    { index: 10, biome: 'taiga', text: 'land &amp; cold &amp; wet' },
+    { index: 11, biome: 'snowy_taiga', text: 'land &amp; cold &amp; wet &amp; high (overrides taiga)' },
+    { index: 12, biome: 'snowy_plains', text: 'land &amp; cold &amp; not wet' },
+    { index: 13, biome: 'meadow', text: 'land &amp; not hot &amp; not cold &amp; humidity &gt; &minus;0.05 &amp; weirdness &gt; 0.28' },
+    { index: 14, biome: 'windswept_hills', text: 'land &amp; steep (overrides almost everything land-based)' },
+    { index: 15, biome: 'stony_peaks', text: 'land &amp; high &amp; steep (overrides windswept_hills)' },
+    { index: 16, biome: 'snowy_peaks', text: 'height &gt; snow height full &amp; slope &lt; 0.80 (overrides stony_peaks)' },
+  ];
+  function swatchLabel(name) { const [r, g, b] = BIOME_COLORS[name]; return `<span class="swatch" style="background:rgb(${r},${g},${b})"></span>${name}`; }
+  (function buildRuleList() {
+    const wrap = document.getElementById('rule-list'); wrap.innerHTML = '';
+    for (const rule of RULES) {
+      const row = document.createElement('div'); row.className = 'rule-row'; row.dataset.ruleIndex = String(rule.index);
+      row.innerHTML = `<span class="rule-idx">${rule.index}</span>${swatchLabel(rule.biome)} <span class="rule-text">${rule.text}</span>`;
+      wrap.appendChild(row);
+    }
+  })();
+  function highlightRule(ruleIndex) { document.querySelectorAll('#rule-list .rule-row').forEach((row) => row.classList.toggle('active', Number(row.dataset.ruleIndex) === ruleIndex)); }
+  function drawBiomePanel(grid) {
+    const canvas = document.getElementById('biome-canvas'), tooltip = document.getElementById('biome-tooltip');
+    const res = grid.resolution; canvas.width = res; canvas.height = res;
+    const ctx = canvas.getContext('2d'); const img = ctx.createImageData(res, res);
+    for (let i = 0; i < grid.biomeId.length; i++) {
+      const [r, g, b] = BIOME_COLORS[BIOMES[grid.biomeId[i]]];
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    canvas.onmousemove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(res - 1, Math.floor((ev.clientX - rect.left) / rect.width * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor((ev.clientY - rect.top) / rect.height * res)));
+      const idx = iz * res + ix;
+      tooltip.classList.remove('hidden'); tooltip.style.left = ev.offsetX + 'px'; tooltip.style.top = ev.offsetY + 'px';
+      tooltip.textContent = BIOMES[grid.biomeId[idx]] + '\nrule ' + grid.ruleIndex[idx];
+      highlightRule(grid.ruleIndex[idx]);
+    };
+    canvas.onmouseleave = () => { tooltip.classList.add('hidden'); highlightRule(-99); };
+  }
+  REDRAW_CALLBACKS.push(drawBiomePanel);
+
+  const MATERIAL_LEGEND_COLORS = { grass: [92, 156, 72], forest: [50, 104, 54], dirt: [128, 94, 62], sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246], water: [28, 66, 130] };
+  function drawMaterialPanel(grid) {
+    const canvas = document.getElementById('material-canvas'), tooltip = document.getElementById('material-tooltip');
+    const res = grid.resolution; canvas.width = res; canvas.height = res;
+    const ctx = canvas.getContext('2d'); const img = ctx.createImageData(res, res); img.data.set(grid.materialRgba); ctx.putImageData(img, 0, 0);
+    canvas.onmousemove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(res - 1, Math.floor((ev.clientX - rect.left) / rect.width * res)));
+      const iz = Math.max(0, Math.min(res - 1, Math.floor((ev.clientY - rect.top) / rect.height * res)));
+      const idx = iz * res + ix;
+      tooltip.classList.remove('hidden'); tooltip.style.left = ev.offsetX + 'px'; tooltip.style.top = ev.offsetY + 'px';
+      tooltip.textContent = Object.entries(grid.materialMasks).map(([k, arr]) => `${k}: ${arr[idx].toFixed(2)}`).join('\n');
+    };
+    canvas.onmouseleave = () => tooltip.classList.add('hidden');
+  }
+  REDRAW_CALLBACKS.push(drawMaterialPanel);
+  document.getElementById('material-legend').innerHTML = Object.entries(MATERIAL_LEGEND_COLORS).map(([n, [r, g, b]]) => `<p><span class="swatch" style="background:rgb(${r},${g},${b})"></span>${n}</p>`).join('');
+
+  // ---- paint panel ----
+  const brush = { ...DEFAULT_BRUSH };
+  let paintTool = 'raise';
+  let paintMode = false;
+  const paintToggle = document.getElementById('paint-toggle');
+  paintToggle.addEventListener('click', () => { paintMode = !paintMode; paintToggle.textContent = `Paint in viewport: ${paintMode ? 'on' : 'off'}`; paintToggle.classList.toggle('secondary', !paintMode); if (hfControls) hfControls.enabled = !paintMode; });
+  document.getElementById('paint-clear').addEventListener('click', () => { paint.clear(); requestGrid('grid'); history.record('clear paint'); });
+  const toolsEl = document.getElementById('paint-tools');
+  function buildToolButtons() {
+    toolsEl.innerHTML = '';
+    for (const t of PAINT_TOOLS) {
+      const b = document.createElement('button'); b.className = 'small' + (t === paintTool ? ' on' : ''); b.textContent = t;
+      b.addEventListener('click', () => { paintTool = t; buildToolButtons(); document.getElementById('paint-biome-row').classList.toggle('hidden', t !== 'biome'); });
+      toolsEl.appendChild(b);
+    }
+  }
+  buildToolButtons();
+  document.getElementById('paint-biome-row').classList.add('hidden');
+  const paintBiomeSel = document.getElementById('paint-biome');
+  paintBiomeSel.innerHTML = BIOMES.map((b, i) => `<option value="${i}">${b}</option>`).join('');
+  paintBiomeSel.value = String(BIOMES.indexOf('forest'));
+  (function buildBrushControls() {
+    const host = document.getElementById('brush-controls'); host.innerHTML = '';
+    sliderRow(host, 'radius (m)', 'Brush radius in world metres.', brush.radius, 4, 300, 1, (v) => { brush.radius = v; });
+    sliderRow(host, 'strength', 'How hard each stamp pushes.', brush.strength, 0.02, 1, 0.01, (v) => { brush.strength = v; });
+    sliderRow(host, 'falloff', '0 is a hard edge, 1 feathers all the way to the centre.', brush.falloff, 0, 1, 0.01, (v) => { brush.falloff = v; });
+    sliderRow(host, 'angle', 'Rotation for ellipse and ribbon shapes.', brush.angle, 0, 180, 1, (v) => { brush.angle = v; });
+    const row = document.createElement('div'); row.className = 'control-row';
+    row.innerHTML = `<label for="brush-shape">shape</label><select id="brush-shape">${BRUSH_SHAPES.map((s) => `<option ${s === brush.shape ? 'selected' : ''}>${s}</option>`).join('')}</select>`;
+    row.querySelector('select').addEventListener('change', (ev) => { brush.shape = ev.target.value; });
+    host.appendChild(row);
+  })();
+  REDRAW_CALLBACKS.push((grid) => {
+    let maxAbs = 1; for (const d of paint.heightDelta) if (Math.abs(d) > maxAbs) maxAbs = Math.abs(d);
+    drawScalarPanel(document.getElementById('paint-canvas'), document.getElementById('paint-tooltip'), grid, 'paintDelta', (v) => signedColor(v, maxAbs), 'paint delta', paint.heightDelta);
+    let painted = 0, over = 0;
+    for (let i = 0; i < paint.heightDelta.length; i++) { if (paint.heightDelta[i] !== 0) painted++; if (paint.biomeOverride[i] !== NO_OVERRIDE) over++; }
+    document.getElementById('paint-stats').textContent = `${painted} cells with height paint, ${over} with a biome override, max |delta| ${maxAbs.toFixed(1)} m.`;
+  });
+
+  // ---- import panel ----
+  const importStatus = document.getElementById('import-status');
+  function addImportLayer(grid, label) {
+    const layer = makeLayer('import', { name: `Import: ${label}` });
+    imports[layer.id] = { data: grid.data, resolution: grid.resolution, source: label };
+    stack.layers.push(layer); expanded.add(layer.id);
+    buildLayerList(); requestGrid('grid'); history.record(`import ${label}`);
+  }
+  document.getElementById('import-file').addEventListener('change', async (ev) => {
+    const file = ev.target.files?.[0]; if (!file) return;
+    importStatus.textContent = 'Decoding image…';
+    try { const g = await imageFileToGrid(file); addImportLayer(g, file.name); importStatus.textContent = `Imported ${file.name} as a ${g.resolution}² grid; tune amplitude on its layer.`; }
+    catch (err) { importStatus.textContent = 'Import failed: ' + err.message; }
+    ev.target.value = '';
+  });
+  const locSel = document.getElementById('import-location');
+  locSel.innerHTML = CURATED_LOCATIONS.map((l, i) => `<option value="${i}">${l.name}</option>`).join('') + '<option value="custom">custom (lat/lon below)</option>';
+  locSel.addEventListener('change', () => {
+    const l = CURATED_LOCATIONS[Number(locSel.value)]; if (!l) return;
+    document.getElementById('import-lat').value = l.lat; document.getElementById('import-lon').value = l.lon; document.getElementById('import-km').value = l.sizeKm;
+  });
+  document.getElementById('import-fetch').addEventListener('click', async () => {
+    const lat = Number(document.getElementById('import-lat').value), lon = Number(document.getElementById('import-lon').value), km = Number(document.getElementById('import-km').value);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !(km > 0)) { importStatus.textContent = 'Enter a valid lat, lon and size.'; return; }
+    importStatus.textContent = 'Fetching tiles…';
+    try {
+      const g = await fetchTerrariumGrid(lat, lon, km, { onProgress: (d, t) => { importStatus.textContent = `Fetching tiles… ${d}/${t}`; } });
+      const label = locSel.value === 'custom' ? `${lat.toFixed(2)},${lon.toFixed(2)}` : CURATED_LOCATIONS[Number(locSel.value)].name;
+      addImportLayer(g, label);
+      const range = g.maxM - g.minM;
+      const layer = stack.layers[stack.layers.length - 1];
+      layer.params.amplitude = Math.min(300, Math.round(range * (genConfig.world_x / (km * 1000))));
+      buildLayerList(); requestGrid('grid');
+      importStatus.textContent = `Fetched ${g.tiles} tiles at zoom ${g.zoom}; real relief ${range.toFixed(0)} m, scaled to the ${genConfig.world_x} m world (${layer.params.amplitude} m amplitude, adjustable on the layer).`;
+    } catch (err) { importStatus.textContent = 'Fetch failed: ' + err.message; }
+  });
+
+  // ---- 3D viewport ----
+  let hfControls = null;
+  const hfState = { renderer: null, scene: null, camera: null, mesh: null, geometry: null, material: null, water: null, mode: 'heightfield', volumeMesh: null };
+  const hfModeSelect = document.getElementById('hf-mode-select');
+  const HF_MASK_COLORS = { seaMask: [60, 130, 220], beachMask: [224, 205, 130], mountainMask: [214, 160, 82], rockMask: [164, 164, 170], snowMask: [240, 246, 255] };
+
+  async function initViewport() {
+    const host = document.getElementById('hf-viewport');
+    const renderer = new WebGPURenderer({ antialias: true });
+    renderer.setSize(600, 520);
+    host.appendChild(renderer.domElement);
+    await renderer.init();
+    const scene = new THREE.Scene(); scene.background = new THREE.Color(0xfaf6ef);
+    const camera = new THREE.PerspectiveCamera(45, 600 / 520, 0.1, 8000);
+    const CAM0 = new THREE.Vector3(750, 520, 750);
+    camera.position.copy(CAM0);
+    hfControls = new OrbitControls(camera, renderer.domElement);
+    hfControls.enableDamping = true; hfControls.dampingFactor = 0.08; hfControls.enabled = !paintMode; hfControls.update();
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(400, 600, 200); scene.add(sun);
+    const geometry = new THREE.BufferGeometry();
+    const material = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geometry, material); scene.add(mesh);
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0x3f7fc8, transparent: true, opacity: 0.45, side: THREE.DoubleSide }));
+    water.rotation.x = -Math.PI / 2; scene.add(water);
+    Object.assign(hfState, { renderer, scene, camera, mesh, geometry, material, water });
+    document.getElementById('hf-reset-view').addEventListener('click', () => { camera.position.copy(CAM0); hfControls.target.set(0, 0, 0); hfControls.update(); });
+    document.getElementById('hf-wireframe').addEventListener('change', (ev) => { material.wireframe = ev.target.checked; });
+    document.getElementById('hf-water').addEventListener('change', (ev) => { water.visible = ev.target.checked; });
+    hfModeSelect.addEventListener('change', () => { if (lastGrid && hfState.mode === 'heightfield') applyHeightfieldColors(lastGrid); });
+    document.getElementById('hf-back-heightfield').addEventListener('click', () => { hfState.mode = 'heightfield'; document.getElementById('hf-back-heightfield').classList.add('hidden'); if (lastGrid) rebuildHeightfieldMesh(lastGrid); });
+    renderer.setAnimationLoop(() => { hfControls.update(); renderer.render(scene, camera); });
+    wirePainting(renderer.domElement, camera, mesh);
+    if (lastGrid) rebuildHeightfieldMesh(lastGrid);
+  }
+
+  function rebuildHeightfieldMesh(grid) {
+    if (!hfState.geometry) return;
+    const res = grid.resolution;
+    const { positions, normals, indices } = buildHeightfieldMesh(grid.height, res, genConfig.world_x, genConfig.world_z);
+    hfState.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    hfState.geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    hfState.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    applyHeightfieldColors(grid);
+    hfState.geometry.computeBoundingSphere();
+    hfState.water.scale.set(genConfig.world_x, genConfig.world_z, 1); hfState.water.position.y = genConfig.sea_level;
+    let heightMin = Infinity, heightMax = -Infinity; for (const h of grid.height) { if (h < heightMin) heightMin = h; if (h > heightMax) heightMax = h; }
+    document.getElementById('hf-stats').textContent = `${res * res} vertices, ${(res - 1) * (res - 1) * 2} triangles — height ${heightMin.toFixed(1)} to ${heightMax.toFixed(1)} — cell ${(genConfig.world_x / (res - 1)).toFixed(1)} m`;
+  }
+  function applyHeightfieldColors(grid) {
+    const mode = hfModeSelect.value; const n = grid.resolution * grid.resolution; const colors = new Float32Array(n * 3);
+    const put = (i, rgb) => { colors[i * 3] = rgb[0] / 255; colors[i * 3 + 1] = rgb[1] / 255; colors[i * 3 + 2] = rgb[2] / 255; };
+    if (mode === 'material') for (let i = 0; i < n; i++) put(i, [grid.materialRgba[i * 4], grid.materialRgba[i * 4 + 1], grid.materialRgba[i * 4 + 2]]);
+    else if (mode === 'biome') for (let i = 0; i < n; i++) put(i, BIOME_COLORS[BIOMES[grid.biomeId[i]]]);
+    else if (mode === 'height') for (let i = 0; i < n; i++) put(i, heightColor(grid.height[i], genConfig.sea_level));
+    else if (mode === 'paint') { let m = 1; for (const d of paint.heightDelta) if (Math.abs(d) > m) m = Math.abs(d); for (let i = 0; i < n; i++) put(i, signedColor(paint.heightDelta[i] || 0, m)); }
+    else if (mode === 'slope') { let ms = 1.2; for (const s of grid.slope) if (s > ms) ms = s; for (let i = 0; i < n; i++) put(i, slopeColor(grid.slope[i], ms)); }
+    else if (mode in HF_MASK_COLORS) for (let i = 0; i < n; i++) put(i, maskColor(grid[mode][i], HF_MASK_COLORS[mode]));
+    else if (mode === 'flowNorm') for (let i = 0; i < n; i++) put(i, flowColor(grid.flowNorm[i]));
+    else if (grid[mode]) for (let i = 0; i < n; i++) put(i, divergingColor(grid[mode][i]));
+    hfState.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  REDRAW_CALLBACKS.push((grid) => { if (hfState.mode === 'heightfield') rebuildHeightfieldMesh(grid); });
+
+  // Volumetric preview: swap the mesh for the marching-cubes result until "Back to heightfield".
+  function showVolume(volume, grid) {
+    hfState.mode = 'volume';
+    document.getElementById('hf-back-heightfield').classList.remove('hidden');
+    const g = hfState.geometry;
+    g.deleteAttribute('normal');
+    g.setAttribute('position', new THREE.BufferAttribute(volume.positions, 3));
+    g.setIndex(new THREE.BufferAttribute(volume.indices, 1));
+    const res = grid.resolution, vc = volume.positions.length / 3, colors = new Float32Array(vc * 3);
+    for (let i = 0; i < vc; i++) {
+      const ix = Math.max(0, Math.min(res - 1, Math.round((volume.positions[i * 3] / genConfig.world_x + 0.5) * (res - 1))));
+      const iz = Math.max(0, Math.min(res - 1, Math.round((volume.positions[i * 3 + 2] / genConfig.world_z + 0.5) * (res - 1))));
+      const idx = iz * res + ix;
+      colors[i * 3] = grid.materialRgba[idx * 4] / 255; colors[i * 3 + 1] = grid.materialRgba[idx * 4 + 1] / 255; colors[i * 3 + 2] = grid.materialRgba[idx * 4 + 2] / 255;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    g.computeVertexNormals(); g.computeBoundingSphere();
+    document.getElementById('hf-stats').textContent = `volume: ${vc} vertices, ${volume.indices.length / 3} triangles`;
+  }
+  function requestVolume() {
+    return new Promise((resolve) => { volumeWaiters.set(Symbol(), (v, g) => resolve({ volume: v, grid: g })); requestGrid('volume'); });
+  }
+  document.getElementById('volume-preview-btn').addEventListener('click', async () => { const { volume, grid } = await requestVolume(); showVolume(volume, grid); });
+
+  // Painting: raycast the heightfield, stamp, live-preview by rewriting vertex Y, then regenerate.
+  function wirePainting(dom, camera, mesh) {
+    const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
+    const tooltip = document.getElementById('hf-tooltip');
+    let stroking = false, strokeSnap = null, lastStampX = 0, lastStampZ = 0, strokeTouched = false;
+    const hit = (ev) => {
+      const rect = dom.getBoundingClientRect();
+      ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1; ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      ray.setFromCamera(ndc, camera);
+      const hits = ray.intersectObject(mesh); return hits.length ? hits[0].point : null;
+    };
+    const livePreview = () => {
+      if (!lastGrid || hfState.mode !== 'heightfield') return;
+      const pos = hfState.geometry.getAttribute('position'); if (!pos) return;
+      const used = lastGrid.paintUsed, h = lastGrid.height, d = paint.heightDelta;
+      if (d.length !== pos.count || h.length !== pos.count) return;
+      for (let i = 0; i < d.length; i++) pos.setY(i, h[i] - (used ? used[i] : 0) + d[i]);
+      pos.needsUpdate = true;
+      hfState.geometry.computeVertexNormals();
+    };
+    const stampAt = (p) => {
+      const ctx = { baseHeight: lastGrid ? subtractArrays(lastGrid.height, lastGrid.paintUsed) : null, biomeId: Number(paintBiomeSel.value) };
+      if (paint.stamp(paintTool, p.x, p.z, brush, ctx) > 0) strokeTouched = true;
+    };
+    dom.addEventListener('pointerdown', (ev) => {
+      if (!paintMode || ev.button !== 0) return;
+      const p = hit(ev); if (!p) return;
+      stroking = true; strokeTouched = false; strokeSnap = paint.snapshot(); dom.setPointerCapture(ev.pointerId);
+      lastStampX = p.x; lastStampZ = p.z; stampAt(p); livePreview();
+    });
+    dom.addEventListener('pointermove', (ev) => {
+      if (!lastGrid) return;
+      const p = hit(ev);
+      if (stroking && p) {
+        const spacing = Math.max(brush.radius * 0.25, 2);
+        if (Math.hypot(p.x - lastStampX, p.z - lastStampZ) >= spacing) { lastStampX = p.x; lastStampZ = p.z; stampAt(p); livePreview(); }
+      }
+      if (!p) { tooltip.classList.add('hidden'); return; }
+      const rect = dom.getBoundingClientRect(); const res = lastGrid.resolution;
+      const ix = Math.max(0, Math.min(res - 1, Math.round((p.x / genConfig.world_x + 0.5) * (res - 1))));
+      const iz = Math.max(0, Math.min(res - 1, Math.round((p.z / genConfig.world_z + 0.5) * (res - 1))));
+      const idx = iz * res + ix; const mode = hfModeSelect.value;
+      tooltip.classList.remove('hidden'); tooltip.style.left = (ev.clientX - rect.left) + 'px'; tooltip.style.top = (ev.clientY - rect.top) + 'px';
+      tooltip.textContent = `x ${p.x.toFixed(1)}  z ${p.z.toFixed(1)}\nheight ${lastGrid.height[idx].toFixed(2)}\n${BIOMES[lastGrid.biomeId[idx]]}` + (mode in lastGrid && ArrayBuffer.isView(lastGrid[mode]) ? `\n${mode}: ${lastGrid[mode][idx].toFixed(3)}` : '');
+    });
+    const end = (ev) => {
+      if (!stroking) return;
+      stroking = false; try { dom.releasePointerCapture(ev.pointerId); } catch {}
+      if (strokeTouched) { requestGrid('grid'); history.record(`paint ${paintTool}`); }
+      else if (strokeSnap) paint.restore(strokeSnap);
+      strokeSnap = null;
+    };
+    dom.addEventListener('pointerup', end); dom.addEventListener('pointercancel', end);
+    dom.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
+  }
+  function subtractArrays(a, b) { if (!b) return a; const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] - b[i]; return o; }
+
+  initViewport().catch((err) => {
+    console.error('Viewport failed to initialize:', err);
+    document.getElementById('hf-viewport').textContent = 'Viewport unavailable (WebGPU init failed: ' + err.message + ').';
+  });
+
+  // ---- export & project ----
+  const exportMode = document.getElementById('export-mode');
+  const densityHost = document.getElementById('density-controls');
+  function buildDensityControls() { buildGroupControls(densityHost, ['Grid', 'Warp', 'Caves', 'Floor'], densityConfig, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription, () => {}, 'caves'); }
+  exportMode.addEventListener('change', () => densityHost.classList.toggle('hidden', exportMode.value !== 'volumetric'));
+
+  function validateMapSegment(v) { return /^[A-Za-z0-9 _-]+$/.test(v.trim()) && v.trim().length > 0; }
+  function arrayBufferToBase64(buffer) { return bytesToBase64(new Uint8Array(buffer)); }
+  function downloadBlob(filename, blob) {
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+  function mapDataFromGrid(grid, kind) {
+    let heightMin = Infinity, heightMax = -Infinity; for (const h of grid.height) { if (h < heightMin) heightMin = h; if (h > heightMax) heightMax = h; }
+    const water = grid.materialMasks.water;
+    const data = {
+      terrainKind: kind, worldX: genConfig.world_x, worldZ: genConfig.world_z,
+      worldYMin: kind === 'volumetric' ? densityConfig.y_min : Math.floor(heightMin - 1),
+      worldYMax: kind === 'volumetric' ? densityConfig.y_max : Math.ceil(heightMax + 1),
+      seaLevel: genConfig.sea_level, resolution: grid.resolution, heightMin, heightMax,
+      heights: Array.from(grid.height),
+      biomeNames: BIOMES, biomeIds: Array.from(grid.biomeId),
+      grassDensity: Array.from(grid.grassDensity), lakeMask: Array.from(grid.lakeMask),
+      materialMasks: Object.fromEntries(['grass', 'forest', 'dirt', 'sand', 'rock', 'snow', 'water'].map((k) => [k, Array.from(grid.materialMasks[k])])),
+      generator: { tool: 'terrain-generator-v5', seed: genConfig.seed, layers: stack.layers.filter((l) => l.enabled).map((l) => l.type), painted: !paint.isEmpty() },
+    };
+    if (kind === 'volumetric') data.density = { resolution: grid.resolution, isoLevel: densityConfig.iso_level, caveStrength: densityConfig.cave_strength, caveThreshold: densityConfig.cave_threshold };
+    return data;
+  }
+  async function buildExportPayload() {
+    if (!lastGrid) throw new Error('nothing generated yet');
+    const { GLTFExporter } = await import('three/addons/exporters/GLTFExporter.js');
+    const kind = exportMode.value;
+    let mesh, grid = lastGrid;
+    if (kind === 'volumetric') {
+      const r = await requestVolume(); grid = r.grid;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(r.volume.positions, 3)); g.setIndex(new THREE.BufferAttribute(r.volume.indices, 1)); g.computeVertexNormals();
+      mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: false }));
+    } else {
+      const { positions, normals, indices } = buildHeightfieldMesh(grid.height, grid.resolution, genConfig.world_x, genConfig.world_z);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(positions, 3)); g.setAttribute('normal', new THREE.BufferAttribute(normals, 3)); g.setIndex(new THREE.BufferAttribute(indices, 1));
+      const n = grid.resolution * grid.resolution, colors = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { colors[i * 3] = grid.materialRgba[i * 4] / 255; colors[i * 3 + 1] = grid.materialRgba[i * 4 + 1] / 255; colors[i * 3 + 2] = grid.materialRgba[i * 4 + 2] / 255; }
+      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true }));
+    }
+    mesh.name = 'terrain';
+    const glbBuffer = await new Promise((resolve, reject) => new GLTFExporter().parse(mesh, resolve, reject, { binary: true }));
+    return { glbBuffer, mapData: mapDataFromGrid(grid, kind) };
+  }
+  const exportStatus = document.getElementById('export-status');
+  function exportNames() {
+    const folder = document.getElementById('export-folder').value, name = document.getElementById('export-name').value;
+    if (!validateMapSegment(folder) || !validateMapSegment(name)) { exportStatus.textContent = 'Folder and name must be non-empty and use only letters, digits, spaces, underscores, or hyphens.'; return null; }
+    return { folder: folder.trim(), name: name.trim() };
+  }
+  document.getElementById('export-btn').addEventListener('click', async () => {
+    const names = exportNames(); if (!names) return;
+    exportStatus.textContent = 'Exporting…';
+    try {
+      const { glbBuffer, mapData } = await buildExportPayload();
+      try {
+        const response = await fetch('/api/save-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData }) });
+        const body = await response.json();
+        if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        exportStatus.textContent = `Exported to maps/${body.mapKey} (${body.bytes} bytes). Open environment-viewer.html?map=${encodeURIComponent(body.mapKey)} to play it.`;
+        loadMapList();
+      } catch (err) {
+        downloadBlob(`${names.name}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
+        downloadBlob(`${names.name}-data.json`, new Blob([JSON.stringify(mapData)], { type: 'application/json' }));
+        exportStatus.textContent = `Server export unavailable (${err.message}) — downloaded ${names.name}.glb and ${names.name}-data.json instead.`;
+      }
+    } catch (err) { exportStatus.textContent = 'Export failed: ' + err.message; }
+  });
+  const PUBLISH_URL = 'https://workshop-webgpu.onrender.com/api/publish-map';
+  function getPublishKey() {
+    const stored = localStorage.getItem('terrainGenPublishKey'); if (stored) return stored;
+    const entered = prompt('Enter the publish key for the hosted relay:'); if (!entered) return null;
+    localStorage.setItem('terrainGenPublishKey', entered); return entered;
+  }
+  document.getElementById('publish-btn').addEventListener('click', async () => {
+    const names = exportNames(); if (!names) return;
+    const key = getPublishKey(); if (!key) { exportStatus.textContent = 'Publish cancelled — no key entered.'; return; }
+    exportStatus.textContent = 'Publishing…';
+    try {
+      const { glbBuffer, mapData } = await buildExportPayload();
+      try {
+        const response = await fetch(PUBLISH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Export-Key': key }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData }) });
+        const body = await response.json();
+        if (response.status === 401) { localStorage.removeItem('terrainGenPublishKey'); throw new Error('publish key rejected'); }
+        if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        exportStatus.textContent = `Published maps/${body.mapKey} (commit ${body.commitSha.slice(0, 7)}) — live on the hosted game once GitHub Pages rebuilds.`;
+      } catch (err) {
+        downloadBlob(`${names.name}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
+        downloadBlob(`${names.name}-data.json`, new Blob([JSON.stringify(mapData)], { type: 'application/json' }));
+        exportStatus.textContent = `Publish failed (${err.message}) — downloaded the files instead.`;
+      }
+    } catch (err) { exportStatus.textContent = 'Publish failed: ' + err.message; }
+  });
+
+  document.getElementById('dl-png').addEventListener('click', async () => {
+    if (!lastGrid) return; const q = quantizeHeights(lastGrid.height);
+    downloadBlob(`${document.getElementById('export-name').value.trim() || 'terrain'}-height.png`, await heightsToPngBlob(q.u8, lastGrid.resolution));
+    document.getElementById('project-status').textContent = `Heightmap PNG: 0 = ${q.min.toFixed(1)} m, 255 = ${q.max.toFixed(1)} m.`;
+  });
+  document.getElementById('dl-raw16').addEventListener('click', () => {
+    if (!lastGrid) return; const q = quantizeHeights(lastGrid.height);
+    downloadBlob(`${document.getElementById('export-name').value.trim() || 'terrain'}-height-${lastGrid.resolution}.r16`, new Blob([packRaw16(q.u16)], { type: 'application/octet-stream' }));
+    document.getElementById('project-status').textContent = `RAW16 (little-endian, ${lastGrid.resolution}²): 0 = ${q.min.toFixed(1)} m, 65535 = ${q.max.toFixed(1)} m.`;
+  });
+  function projectJson() {
+    return {
+      app: 'terrain-generator-v5', version: 1, savedAt: new Date().toISOString(),
+      cfg: { ...genConfig }, density: { ...densityConfig }, stack, paint: paint.serialize(),
+      imports: Object.fromEntries(Object.entries(imports).map(([k, v]) => [k, { resolution: v.resolution, source: v.source, data: bytesToBase64(new Uint8Array(v.data.buffer)) }])),
+    };
+  }
+  document.getElementById('dl-project').addEventListener('click', () => {
+    downloadBlob(`${document.getElementById('export-name').value.trim() || 'terrain'}-project.json`, new Blob([JSON.stringify(projectJson())], { type: 'application/json' }));
+    document.getElementById('project-status').textContent = 'Project JSON downloaded (config, stack, paint, imports).';
+  });
+  document.getElementById('load-project').addEventListener('change', async (ev) => {
+    const file = ev.target.files?.[0]; if (!file) return;
+    try {
+      const p = JSON.parse(await file.text());
+      if (p.app !== 'terrain-generator-v5') throw new Error('not a terrain-generator-v5 project');
+      for (const k of Object.keys(DEFAULT_CONFIG)) if (typeof p.cfg?.[k] === typeof DEFAULT_CONFIG[k]) genConfig[k] = p.cfg[k];
+      for (const k of Object.keys(DENSITY_DEFAULT_CONFIG)) if (typeof p.density?.[k] === typeof DENSITY_DEFAULT_CONFIG[k]) densityConfig[k] = p.density[k];
+      stack = normalizeStack(p.stack);
+      for (const k of Object.keys(imports)) delete imports[k];
+      for (const [k, v] of Object.entries(p.imports || {})) if (v && v.data && v.resolution) imports[k] = { resolution: v.resolution, source: v.source || 'import', data: new Float32Array(base64ToBytes(v.data).buffer) };
+      paint = (p.paint && PaintLayers.deserialize(p.paint, genConfig.world_x, genConfig.world_z)) || new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
+      rebuildAllControls(); requestGrid('grid'); history.record(`load ${file.name}`);
+      document.getElementById('project-status').textContent = `Loaded ${file.name}.`;
+    } catch (err) { document.getElementById('project-status').textContent = 'Load failed: ' + err.message; }
+    ev.target.value = '';
+  });
+
+  // ---- real exported map + reference tables ----
+  const TREE_DENSITY = { deep_ocean: 0, ocean: 0, beach: 0.03, desert: 0, badlands: 0.04, savanna: 0.2, plains: 0.1, forest: 0.85, dark_forest: 0.95, jungle: 0.9, swamp: 0.45, taiga: 0.7, snowy_taiga: 0.55, snowy_plains: 0.05, stony_peaks: 0.03, snowy_peaks: 0, windswept_hills: 0.18, meadow: 0.16 };
+  const BIOME_MATERIAL = { deep_ocean: 'sand', ocean: 'sand', beach: 'beach', desert: 'desert', badlands: 'dirt', savanna: 'savanna', plains: 'grass', forest: 'forest', dark_forest: 'forest', jungle: 'forest', swamp: 'swamp', taiga: 'taiga', snowy_taiga: 'snow', snowy_plains: 'snow', stony_peaks: 'rock', snowy_peaks: 'snow', windswept_hills: 'gravel', meadow: 'meadow' };
+  const FALLBACK_COLORS = { grass: 0x6f8f45, forest: 0x4f6d38, meadow: 0x82a84f, taiga: 0x536b48, dirt: 0x7b5a3a, savanna: 0x9b8a4a, swamp: 0x4b5435, sand: 0xd8be7c, beach: 0xd7c18a, desert: 0xcfae68, gravel: 0x808080, rock: 0x6f6c64, snow: 0xdde2df };
+  const FALLBACK_MAP_FILES = ['workshop/test_export-data.json', 'workshop/cave-world-1-data.json', 'terrain-generator-export-1-data.json'];
+  const mapSelect = document.getElementById('map-select');
+  async function loadMapList() {
+    let files = FALLBACK_MAP_FILES;
+    try { const r = await fetch('/api/list-maps'); const b = await r.json(); if (b.ok && b.files.length) files = b.files; } catch {}
+    const cur = mapSelect.value;
+    mapSelect.innerHTML = files.map((f) => `<option value="${f}">${f.replace(/-data\.json$/, '')}</option>`).join('');
+    if (files.includes(cur)) mapSelect.value = cur; else loadRealMap(mapSelect.value);
+  }
+  mapSelect.addEventListener('change', () => loadRealMap(mapSelect.value));
+  async function loadRealMap(file) {
+    const caption = document.getElementById('consumption-caption'), layout = document.getElementById('consumption-layout');
+    caption.textContent = `Loading maps/${file}…`; layout.style.display = 'none';
+    try {
+      const res = await fetch(`maps/${file.split('/').map(encodeURIComponent).join('/')}`);
+      if (!res.ok) throw new Error(`fetch failed (${res.status})`);
+      const mapData = await res.json();
+      caption.textContent = `maps/${file} — ${mapData.resolution}×${mapData.resolution} grid, ${mapData.worldX}×${mapData.worldZ} m, ${mapData.terrainKind || 'heightfield'}${mapData.heights ? ', exact heights' : ', no heights array (roof scan fallback)'}.`;
+      layout.style.display = ''; renderRealMap(mapData); renderMapLegend(mapData);
+    } catch (err) { caption.textContent = `Couldn't load maps/${file} (${err.message}). Run "python serve.py" and open this page via http://.`; }
+  }
+  function renderRealMap(mapData) {
+    const oldCanvas = document.getElementById('map-canvas'); const canvas = oldCanvas.cloneNode(false); oldCanvas.replaceWith(canvas);
+    const res = mapData.resolution; canvas.width = res; canvas.height = res;
+    canvas.style.width = '440px'; canvas.style.height = Math.round(440 * mapData.worldZ / mapData.worldX) + 'px';
+    const ctx = canvas.getContext('2d'); const img = ctx.createImageData(res, res);
+    for (let i = 0; i < mapData.biomeIds.length; i++) {
+      const [r, g, b] = BIOME_COLORS[mapData.biomeNames[mapData.biomeIds[i]]] || BIOME_COLORS.plains;
+      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const tooltip = document.getElementById('map-tooltip');
+    canvas.addEventListener('mousemove', (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(res - 1, Math.round((ev.clientX - rect.left) / rect.width * (res - 1))));
+      const iz = Math.max(0, Math.min(res - 1, Math.round((ev.clientY - rect.top) / rect.height * (res - 1))));
+      const idx = iz * res + ix; const biomeName = mapData.biomeNames[mapData.biomeIds[idx]] || 'plains';
+      tooltip.classList.remove('hidden'); tooltip.style.left = ev.offsetX + 'px'; tooltip.style.top = ev.offsetY + 'px';
+      tooltip.textContent = `${biomeName}\ntexture (fallback): ${BIOME_MATERIAL[biomeName] ?? 'grass'}\ntree density: ${(TREE_DENSITY[biomeName] ?? 0).toFixed(2)}` +
+        (mapData.grassDensity ? `\ngrass density: ${(+mapData.grassDensity[idx]).toFixed(2)}` : '') + (mapData.heights ? `\nheight: ${(+mapData.heights[idx]).toFixed(1)}` : '');
+      document.querySelectorAll('#table-material tr[data-biome], #table-density tr[data-biome]').forEach((row) => row.classList.toggle('active', row.dataset.biome === biomeName));
+    });
+    canvas.addEventListener('mouseleave', () => { tooltip.classList.add('hidden'); document.querySelectorAll('.ref-table tr.active').forEach((r) => r.classList.remove('active')); });
+  }
+  function renderMapLegend(mapData) {
+    const present = new Set(); for (const id of mapData.biomeIds) present.add(mapData.biomeNames[id]);
+    const unused = BIOMES.filter((n) => !present.has(n));
+    document.getElementById('map-legend').innerHTML = `<p><strong>Present (${present.size}/18):</strong><br>` + Array.from(present).map(swatchLabel).join(' ') + `</p><p><strong>Unused (${unused.length}/18):</strong><br>` + unused.map(swatchLabel).join(' ') + '</p>';
+  }
+  document.getElementById('table-material').innerHTML = '<tr><th>Biome</th><th>Texture layer</th></tr>' + BIOMES.map((n) => { const layer = BIOME_MATERIAL[n] ?? 'grass'; const hex = (FALLBACK_COLORS[layer] ?? 0x808080).toString(16).padStart(6, '0'); return `<tr data-biome="${n}"><td>${swatchLabel(n)}</td><td><span class="swatch" style="background:#${hex}"></span>${layer}</td></tr>`; }).join('');
+  document.getElementById('table-density').innerHTML = '<tr><th>Biome</th><th>Tree density</th></tr>' + BIOMES.map((n) => `<tr data-biome="${n}"><td>${swatchLabel(n)}</td><td>${(TREE_DENSITY[n] ?? 0).toFixed(2)}</td></tr>`).join('');
+
+  // ---- boot ----
+  function rebuildAllControls() { buildWorldControls(); buildHeightControls(); buildErosionControls(); buildDerivedControls(); buildDensityControls(); buildLayerList(); document.getElementById('resolution-warning').classList.toggle('hidden', genConfig.preview_resolution <= WARN_RESOLUTION); }
+  rebuildAllControls();
+  loadMapList();
+  requestGrid('grid');
+  history.record('start');
+
+  // ---- canvas pan / zoom / drag ----
+  let isPanning = false, panStartX = 0, panStartY = 0, panOriginX = 0, panOriginY = 0;
+  let draggingPanelId = null, dragStartX = 0, dragStartY = 0, dragOriginX = 0, dragOriginY = 0;
+  canvasViewport.addEventListener('mousedown', (ev) => {
+    if (ev.target.closest('.panel')) return;
+    isPanning = true; canvasViewport.classList.add('panning'); panStartX = ev.clientX; panStartY = ev.clientY; panOriginX = panX; panOriginY = panY; ev.preventDefault();
+  });
+  window.addEventListener('mousemove', (ev) => {
+    if (isPanning) { panX = panOriginX + (ev.clientX - panStartX); panY = panOriginY + (ev.clientY - panStartY); applyWorldTransform(); }
+    else if (draggingPanelId) { panelPositions[draggingPanelId] = { x: dragOriginX + (ev.clientX - dragStartX) / zoom, y: dragOriginY + (ev.clientY - dragStartY) / zoom }; applyPanelPosition(draggingPanelId); renderConnectors(); }
+  });
+  window.addEventListener('mouseup', () => {
+    if (isPanning) { isPanning = false; canvasViewport.classList.remove('panning'); saveLayout(); }
+    if (draggingPanelId) { draggingPanelId = null; saveLayout(); }
+  });
+  canvasViewport.addEventListener('wheel', (ev) => {
+    if (ev.target.closest('#hf-viewport')) return;
+    ev.preventDefault();
+    const rect = canvasViewport.getBoundingClientRect(); const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+    const wx = (cx - panX) / zoom, wy = (cy - panY) / zoom;
+    const zn = Math.min(3, Math.max(0.2, zoom * Math.exp(-ev.deltaY * 0.001)));
+    panX = cx - wx * zn; panY = cy - wy * zn; zoom = zn; applyWorldTransform();
+  }, { passive: false });
+  for (const id of Object.keys(DEFAULT_LAYOUT)) {
+    const header = document.getElementById(id)?.querySelector('h2'); if (!header) continue;
+    header.addEventListener('mousedown', (ev) => { draggingPanelId = id; dragStartX = ev.clientX; dragStartY = ev.clientY; dragOriginX = panelPositions[id].x; dragOriginY = panelPositions[id].y; ev.preventDefault(); ev.stopPropagation(); });
+  }
+  document.getElementById('reset-layout-btn').addEventListener('click', () => {
+    localStorage.removeItem(LAYOUT_STORAGE_KEY); panX = 0; panY = 0; zoom = 0.7;
+    for (const id of Object.keys(DEFAULT_LAYOUT)) { panelPositions[id] = { ...DEFAULT_LAYOUT[id] }; applyPanelPosition(id); }
+    applyWorldTransform(); renderConnectors();
+  });
+  loadLayout();
+  for (const id of Object.keys(DEFAULT_LAYOUT)) applyPanelPosition(id);
+  applyWorldTransform(); renderConnectors();
+  setTimeout(renderConnectors, 300);
+</script>
+</body>
+</html>

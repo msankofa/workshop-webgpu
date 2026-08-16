@@ -12,10 +12,11 @@ const _raycaster = new THREE.Raycaster();
 _raycaster.firstHitOnly = true; // honored by three-mesh-bvh's acceleratedRaycast (BVH returns closest hit only)
 const _occRay = new THREE.Ray();
 
-function collectWorldTriangles(root, maxTriangles) {
-  root.updateMatrixWorld(true);
+function collectWorldTriangles(roots, maxTriangles) {
+  for (const root of roots) root.updateMatrixWorld(true);
   let totalTriangles = 0;
-  root.traverse((obj) => {
+  const traverse = (fn) => { for (const root of roots) root.traverse(fn); };
+  traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
     const geometry = obj.geometry;
     const triCount = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
@@ -29,7 +30,7 @@ function collectWorldTriangles(root, maxTriangles) {
   const v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
   const instanceWorld = new THREE.Matrix4();
 
-  root.traverse((obj) => {
+  traverse((obj) => {
     if (!obj.isMesh || !obj.geometry?.attributes?.position) return;
     const geometry = obj.geometry;
     const pos = geometry.attributes.position;
@@ -66,11 +67,19 @@ function collectWorldTriangles(root, maxTriangles) {
   return { geometry, triangleCount: totalTriangles };
 }
 
-export function createMapCollider(root, { maxTriangles = 250000 } = {}) {
-  const { geometry, triangleCount } = collectWorldTriangles(root, maxTriangles);
+// `extraRoots` bakes further scene graphs into the same BVH -- procedurally scattered structures
+// are added after the map loads, and a collider that predates them lets bots and bullets through.
+export function createMapCollider(root, { maxTriangles = 250000, extraRoots = null } = {}) {
+  const roots = extraRoots?.length ? [root, ...extraRoots] : [root];
+  const { geometry, triangleCount } = collectWorldTriangles(roots, maxTriangles);
   geometry.boundsTree = new MeshBVH(geometry, { lazyGeneration: false });
   const colliderMesh = new THREE.Mesh(geometry);
   colliderMesh.raycast = acceleratedRaycast;
+  // Second view of the SAME geometry and BVH, differing only in material side. raycastAll needs
+  // back faces (a cave ceiling's normal points down into the cavity, so a downward ray hits it
+  // from behind and FrontSide would cull it); every existing path keeps the default culling.
+  const twoSidedMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  twoSidedMesh.raycast = acceleratedRaycast;
 
   function resolveOnce(capsule, velocity, slopeLimitY) {
     let hit = false;
@@ -147,6 +156,27 @@ export function createMapCollider(root, { maxTriangles = 250000 } = {}) {
     return { distance: hit.distance, point: [hit.point.x, hit.point.y, hit.point.z], normal: n };
   }
 
+  // EVERY solid hit along a ray, near to far -- what raycast() returns only the first of. Used to
+  // enumerate the floors in a column on volumetric maps, where one height per XZ is a lie.
+  // Bake-time cost, not a per-frame one: `out` is reused so a placement loop need not allocate.
+  function raycastAll(origin, dir, maxDistance = 200, out = []) {
+    out.length = 0;
+    _raycaster.ray.origin.set(origin[0], origin[1], origin[2]);
+    _raycaster.ray.direction.set(dir[0], dir[1], dir[2]).normalize();
+    _raycaster.near = 0;
+    _raycaster.far = maxDistance;
+    // firstHitOnly lives on the shared raycaster, so it is restored even if intersectObject throws.
+    _raycaster.firstHitOnly = false;
+    let hits;
+    try { hits = _raycaster.intersectObject(twoSidedMesh, false); }
+    finally { _raycaster.firstHitOnly = true; }
+    for (const hit of hits) {
+      const n = hit.face ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z] : [0, 1, 0];
+      out.push({ distance: hit.distance, point: [hit.point.x, hit.point.y, hit.point.z], normal: n });
+    }
+    return out;
+  }
+
   // Allocation-free LOS test: true if anything solid blocks origin->dir within maxDistance.
   function isOccluded(origin, dir, maxDistance = 200) {
     if (geometry.boundsTree) {
@@ -167,9 +197,11 @@ export function createMapCollider(root, { maxTriangles = 250000 } = {}) {
     resolveCapsule,
     raycastDown,
     raycast,
+    raycastAll,
     isOccluded,
     dispose() {
       geometry.boundsTree = null;
+      twoSidedMesh.material.dispose();
       geometry.dispose();
     },
   };

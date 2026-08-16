@@ -164,6 +164,7 @@ export const STRUCTURE_DEFAULTS = {
   coverHeight: 1.1,    // shoot-over cover
   tallHeight: 2.4,     // sight-blocking obstacle (>= SIGHT_BLOCK_HEIGHT, so it yields cover corners)
   tallShare: 0.35,     // fraction of obstacles built tall
+  foundationBury: 0.3, // m a seated structure's foundation sinks past its lowest sample
   // ---- elevated geometry (slabs): lintels, roofs, portal decks ----
   // Slabs are {x,z,w,d,y,h} with y = the slab's UNDERSIDE above local ground. They render and
   // stop bullets but are deliberately absent from the nav and sight lists, so a bot walks under
@@ -606,13 +607,56 @@ export function generateOne(kind, params = {}, seed = 1, { x = 0, z = 0 } = {}) 
   return buildAt(kind, x, z, p, streamSeed(seed, 0, SALT_SHAPE));
 }
 
+// Lifts a structure's rects onto its seated floor. Rect `y` is the base, so the whole shape rides
+// up together and its own heights are untouched.
+function liftRects(list, dy) {
+  if (!dy) return list;
+  for (const r of list) r.y = (r.y || 0) + dy;
+  return list;
+}
+
+// XZ bounding box of everything a structure emitted. Exact, unlike the `radius` circle, so a long
+// thin colonnade does not get a square foundation the size of its diagonal.
+function footprintBox(built) {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const list of [built.walls, built.covers, built.slabs]) {
+    for (const r of list) {
+      if (r.x - r.w / 2 < minX) minX = r.x - r.w / 2;
+      if (r.x + r.w / 2 > maxX) maxX = r.x + r.w / 2;
+      if (r.z - r.d / 2 < minZ) minZ = r.z - r.d / 2;
+      if (r.z + r.d / 2 > maxZ) maxZ = r.z + r.d / 2;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { x: (minX + maxX) / 2, z: (minZ + maxZ) / 2, w: maxX - minX, d: maxZ - minZ };
+}
+
+// The block that carries a seated structure down to grade. footprintAt seats the floor at the
+// HIGHEST sample so no ground pokes up through it, which leaves the low side hanging by exactly
+// skirtDepth -- without this a building on any slope floats visibly on its downhill corner.
+// `bury` sinks it a little further so ground curving between samples cannot show a gap.
+function foundationFor(built, floorY, skirtDepth, bury) {
+  const box = footprintBox(built);
+  if (!box) return null;
+  const h = Math.max(0, skirtDepth) + bury;
+  if (h <= 0) return null;
+  return { x: box.x, z: box.z, w: box.w, d: box.d, y: floorY - h, h };
+}
+
 export function generateStructures(bounds, params = {}, avoid = []) {
   const p = { ...STRUCTURE_DEFAULTS, ...params };
+  // `site(cx, cz, w, d)` -> { floorY, skirtDepth } | null. Supplied when the ground is IMPORTED
+  // rather than generated (map-surfaces.js#footprintAt over a terrain-generator-v4 GLB): the
+  // structure conforms to whatever is there instead of flattening a pad into it, and a site that
+  // is too uneven, too cramped or over a void simply refuses and the scatter tries elsewhere.
+  // With `site` on, pads are suppressed -- an authored landscape is not ours to flatten.
+  const site = typeof p.site === 'function' ? p.site : null;
+  if (site) p.padTerrain = false;
   const { kinds, dropped } = kindsForMix(p);
   const minX = bounds.minX + p.edgeMargin, maxX = bounds.maxX - p.edgeMargin;
   const minZ = bounds.minZ + p.edgeMargin, maxZ = bounds.maxZ - p.edgeMargin;
-  const walls = [], covers = [], slabs = [], pads = [], placed = [];
-  if (maxX <= minX || maxZ <= minZ) return { walls, covers, slabs, pads, placed, dropped };
+  const walls = [], covers = [], slabs = [], pads = [], placed = [], foundations = [];
+  if (maxX <= minX || maxZ <= minZ) return { walls, covers, slabs, pads, placed, foundations, dropped };
 
   for (let i = 0; i < p.count; i++) {
     const kind = kinds[Math.floor(makeRng(streamSeed(p.seed, i, SALT_KIND))() * kinds.length)];
@@ -628,15 +672,35 @@ export function generateStructures(bounds, params = {}, avoid = []) {
         Math.hypot(cx - o.x, cz - o.z) < candidate.radius + o.radius + p.minSeparation);
       const outside = cx - candidate.radius < bounds.minX || cx + candidate.radius > bounds.maxX
         || cz - candidate.radius < bounds.minZ || cz + candidate.radius > bounds.maxZ;
-      if (!clash && !outside) { built = candidate; break; }
+      if (clash || outside) continue;
+      if (site) {
+        // Square the footprint radius: conservative against the real shape, and the corners are
+        // exactly where a building overhangs a ledge or drops into a hole.
+        const span = candidate.radius * 2;
+        const seat = site(cx, cz, span, span);
+        if (!seat) continue;   // unbuildable ground: same outcome as a clash, try another spot
+        candidate.seat = seat;
+      }
+      built = candidate; break;
     }
     if (!built) continue;   // crowded map: silently place fewer, never overlapping
-    walls.push(...built.walls);
-    covers.push(...built.covers);
-    slabs.push(...built.slabs);
-    if (built.pad) pads.push(built.pad);
-    if (built.pads.length) pads.push(...built.pads);
-    placed.push({ kind, x: cx, z: cz, radius: built.radius });
+    const floorY = built.seat?.floorY || 0;
+    // Before the lift: the box is XZ-only, but reading it first keeps it independent of ordering.
+    if (built.seat) {
+      const f = foundationFor(built, floorY, built.seat.skirtDepth ?? 0, p.foundationBury);
+      if (f) foundations.push(f);
+    }
+    walls.push(...liftRects(built.walls, floorY));
+    covers.push(...liftRects(built.covers, floorY));
+    slabs.push(...liftRects(built.slabs, floorY));
+    if (!site) {
+      if (built.pad) pads.push(built.pad);
+      if (built.pads.length) pads.push(...built.pads);
+    }
+    placed.push({
+      kind, x: cx, z: cz, radius: built.radius,
+      ...(built.seat ? { floorY, skirtDepth: built.seat.skirtDepth ?? 0, openSky: built.seat.openSky } : {}),
+    });
   }
-  return { walls, covers, slabs, pads, placed, dropped };
+  return { walls, covers, slabs, pads, placed, foundations, dropped };
 }

@@ -117,6 +117,8 @@ const _lnormal = new THREE.Vector3();
 const _lp = new THREE.Vector3();
 const _loff = new THREE.Vector3();
 const _lface = new THREE.Vector3();
+const _capN = new THREE.Vector3();
+const TIP_RADIUS = 0.001; // pinched-shut branch tip; ends wider than this get a cap fan
 const LEAF_CORNERS = [[-1, 0], [1, 0], [1, 1], [-1, 1]];
 const LEAF_SHAPE = [
   [0, 0],
@@ -233,6 +235,8 @@ export class Tree extends THREE.Group {
     const o = this.options;
     const segs = branch.segmentCount;
     const vertsPerRing = segs + 1; // +1 duplicated seam vertex for clean UV wrap
+    // terminal = bears leaves instead of children; needed up here because its tip pinches shut
+    const terminal = branch.level >= o.levels || at(o.children, branch.level) <= 0;
     const indexOffset = leavesOnly ? 0 : this.branch.verts.length / 3;
 
     const orientation = branch.orientation.clone();
@@ -249,7 +253,9 @@ export class Tree extends THREE.Group {
       // evergreens ignore the taper table and always narrow to a point (ez-tree TreeType.Evergreen)
       const taper = o.evergreen ? 1 : at(o.taper, branch.level);
       let radius = branch.radius * (1 - taper * (i / branch.sectionCount));
-      if (i === branch.sectionCount && branch.level === o.levels) radius = 0.001;
+      // Every terminal branch pinches shut, not just those at the depth limit: a twig that ended
+      // early because its level spawns no children used to stop as an open pipe.
+      if (i === branch.sectionCount && terminal) radius = TIP_RADIUS;
 
       _q.setFromEuler(orientation);
       const vCoord = i * sectionLength * (o.bark.vScale || 0.4);
@@ -306,11 +312,13 @@ export class Tree extends THREE.Group {
           this.branch.indices.push(a, c, b, b, c, d);
         }
       }
+      // An open tube end reads as a cut pipe through the FrontSide bark. Terminal tips already
+      // pinch shut above, so what is left is the trunk/intermediate tips and the trunk's base.
+      const tip = sections[sections.length - 1];
+      if (tip.radius > TIP_RADIUS * 2) this._capRing(tip, segs, 1);
+      if (branch.level === 0) this._capRing(sections[0], segs, -1);
     }
 
-    // A branch is terminal (grows leaves) at the depth limit or when it has
-    // no children of its own; otherwise it spawns children.
-    const terminal = branch.level >= o.levels || at(o.children, branch.level) <= 0;
     const leafMinLevel = Math.max(1, Math.floor(o.levels * (1 - (o.leaves.spread || 0))));
     const leafBearing = o.leaves.enabled && (terminal || branch.level >= leafMinLevel);
     if (!terminal) {
@@ -318,6 +326,32 @@ export class Tree extends THREE.Group {
       if (leafBearing) this._spawnLeaves(branch, sections);
     } else if (leafBearing) {
       this._spawnLeaves(branch, sections);
+    }
+  }
+
+  // Close one end of a tube with a triangle fan. `outward` is +1 for the growth-direction end
+  // and -1 for the base, and only sets the winding and the flat normal. Uses its own ring of
+  // vertices rather than the wall's so the cap shades as a disc instead of as more bark.
+  _capRing(section, segs, outward) {
+    const base = this.branch.verts.length / 3;
+    _q.setFromEuler(section.orientation);
+    _capN.set(0, outward, 0).applyQuaternion(_q);
+    for (let j = 0; j < segs; j++) {
+      const a = (2 * Math.PI * j) / segs;
+      _dir.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(_q);
+      _v.copy(_dir).multiplyScalar(section.radius).add(section.origin);
+      this.branch.verts.push(_v.x, _v.y, _v.z);
+      this.branch.normals.push(_capN.x, _capN.y, _capN.z);
+      this.branch.uvs.push(0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5);
+    }
+    this.branch.verts.push(section.origin.x, section.origin.y, section.origin.z);
+    this.branch.normals.push(_capN.x, _capN.y, _capN.z);
+    this.branch.uvs.push(0.5, 0.5);
+    const centre = base + segs;
+    for (let j = 0; j < segs; j++) {
+      const a = base + j, b = base + ((j + 1) % segs);
+      if (outward > 0) this.branch.indices.push(a, centre, b);
+      else this.branch.indices.push(a, b, centre);
     }
   }
 

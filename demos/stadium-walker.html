@@ -1,0 +1,2986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — a Pokemon Stadium model walking a gait that was never in the ROM</title>
+<!--
+  DEMO — ROM models, procedural locomotion.
+
+  WHAT THIS PROVES
+  ----------------
+  Pokemon Stadium's 151 battle models have no walk cycle. The ROM only ever needed idle, attacks,
+  faint and entrance, because a Pokemon in Stadium stands on a battle platform and never travels.
+  Anything that wants these models to move through a world — a follower Pokemon, an ambient wild
+  mob — has to invent the locomotion. This page does that, live, from three repo modules:
+
+    ../stadium-glb.js       reads the .glb without a loader, so the mapper can also run in Node
+    ../stadium-rig-map.js   works out which of the unnamed `boneNN` bones are legs
+    ../stadium-walker.js    drives those legs from ../creature-locomotion.js and writes the pose back
+
+  Nothing about the gait is new. It is the same walk cycle the creature sim and `sdf-bug-v2` use;
+  what is new is landing it on a skeleton nobody labelled.
+
+  WHY EVERY NUMBER IS A SLIDER
+  ----------------------------
+  Most of the walker's numbers are DERIVED from the model's own rest pose rather than authored, and
+  they interact: raising "stand extension" shrinks the stride envelope, which lowers the top speed,
+  which changes how far a planted foot drifts before its leg has to be rescued. A chain like that is
+  not readable from source — you have to drag one end and watch the other move. The readouts panel
+  shows the derived values live so you can see them respond.
+
+  The panel is split by what a knob does:
+    - MODEL      rebuilds the walker (scale changes the rig).
+    - GAIT/LEGS  re-derive in place through `walker.retune()`; the creature never stops walking.
+    - GROUND     swaps the height function under it, mid-stride.
+    - VIEW       draws only.
+
+  WHY THIS PAGE IMPORTS REPO MODULES INSTEAD OF COPYING THEM
+  ---------------------------------------------------------
+  Same exception `pose-retarget.html` and `spsa-gait-tuning.html` take: the point IS the repo
+  modules. A private copy of the mapper would prove that a copy works.
+
+  RUN IT
+  ------
+  Needs a local server — it fetches ../models/stadium/*.glb, which file:// will not do:
+
+      python serve.py        then open http://127.0.0.1:8080/demos/stadium-walker.html
+
+  KEYS
+  ----
+  space pause/resume, . single-step one frame, r reset the creature to the origin,
+  o overlay, [ / ] cycle species.
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0d1014; color: #cfd6dd;
+               font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+
+  #panel { position: fixed; top: 10px; left: 10px; width: 292px; padding: 0 0 8px;
+           background: rgba(16,20,26,.93); border: 1px solid #2a323c; border-radius: 8px;
+           backdrop-filter: blur(6px); max-height: calc(100vh - 20px); overflow-y: auto; }
+  #panel header { padding: 11px 13px 9px; border-bottom: 1px solid #2a323c; }
+  #panel h1 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
+  #panel p.sub { margin: 0; color: #7d8794; font-size: 11px; }
+
+  details { border-bottom: 1px solid #222932; }
+  details[open] { padding-bottom: 8px; }
+  summary { padding: 7px 13px; cursor: pointer; color: #9aa4b0; font-size: 11px;
+            text-transform: uppercase; letter-spacing: .07em; user-select: none; }
+  summary:hover { color: #cfd6dd; }
+  .body { padding: 2px 13px 0; }
+
+  .ctl { margin: 7px 0 9px; }
+  .ctl > label { display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+                 color: #9aa4b0; font-size: 11px; margin-bottom: 2px; }
+  .ctl > label b { color: #cfd6dd; font-weight: 500; font-family: ui-monospace, monospace; font-size: 11px; }
+  .ctl.derived > label b { color: #6fbf8f; }
+  input[type=range] { width: 100%; margin: 0; accent-color: #5fd08a; }
+  select, button { background: #171d25; color: #cfd6dd; border: 1px solid #2f3742;
+                   border-radius: 4px; padding: 4px 6px; font: inherit; font-size: 12px; }
+  select { width: 100%; }
+  button { cursor: pointer; }
+  button:hover { border-color: #4a5766; }
+  .row { display: flex; align-items: center; gap: 7px; margin: 5px 0; }
+  .row.wrap { flex-wrap: wrap; }
+  .row input[type=checkbox] { margin: 0; accent-color: #5fd08a; }
+  .row span { font-size: 12px; }
+  .buttons { display: flex; gap: 6px; margin: 8px 0 2px; }
+  .buttons button { flex: 1; }
+
+  .stagerow { display: flex; justify-content: space-between; gap: 8px; padding: 3px 6px; cursor: pointer;
+              border-radius: 4px; font: 11px ui-monospace, monospace; color: #8b95a2; }
+  .stagerow:hover { background: #1c232c; color: #cfd6dd; }
+  .stagerow.sel { background: #223a2c; color: #cfd6dd; }
+  .stagerow b { font-weight: 500; color: #6fbf8f; }
+  .stagerow.sel b { color: #9fe0b8; }
+  #group { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
+  .pickrow { color: #cfd6dd; cursor: pointer; text-decoration: underline dotted #4a5766; }
+  .pickrow:hover { color: #6fbf8f; }
+
+  #facts, #stats { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
+  #warn { color: #d8a657; font-size: 11px; margin-top: 6px; white-space: pre-wrap; }
+  .hint { color: #6b7480; font-size: 10.5px; margin: -3px 0 8px; }
+
+  /* --- the coach panel -------------------------------------------------------------------------
+     Deliberately on the opposite side from the sliders. The left panel is where you change things and
+     the right panel is where you find out what changed, and putting them in one column would mean the
+     readout you are watching scrolls off while you drag the slider you are watching it respond to. */
+  #coach { position: fixed; top: 10px; right: 10px; width: 330px; padding: 0 0 10px;
+           background: rgba(16,20,26,.93); border: 1px solid #2a323c; border-radius: 8px;
+           backdrop-filter: blur(6px); max-height: calc(100vh - 20px); overflow-y: auto; }
+  #coach header { padding: 11px 13px 9px; border-bottom: 1px solid #2a323c; }
+  #coach h2 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
+  #coach .cbody { padding: 9px 13px 0; }
+  #coach h3 { margin: 12px 0 5px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+              color: #7d8794; font-weight: 600; }
+
+  .gauge { margin: 0 0 9px; }
+  .gauge .top { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; }
+  .gauge .top b { font-family: ui-monospace, monospace; font-weight: 500; }
+  .gauge .bar { height: 7px; border-radius: 4px; background: #222932; overflow: hidden; margin: 3px 0 4px; }
+  .gauge .fill { height: 100%; width: 0; border-radius: 4px; transition: width .18s linear, background .18s linear; }
+  .terms { font: 10.5px/1.5 ui-monospace, monospace; color: #6b7480; }
+  .terms div { display: flex; justify-content: space-between; gap: 8px; }
+  .terms div.hot { color: #e5807a; }
+  .terms div.ok b { color: #6fbf8f; }
+  .terms b { font-weight: 500; color: #9aa4b0; }
+
+  .card { border: 1px solid #2f3742; border-left: 3px solid #d8a657; border-radius: 5px;
+          padding: 7px 9px 8px; margin: 0 0 7px; background: #141a21; }
+  .card.sev3 { border-left-color: #e5807a; }
+  .card.sev1 { border-left-color: #6fbf8f; }
+  .card .sym { color: #cfd6dd; font-size: 12px; margin-bottom: 2px; }
+  .card .ev { color: #8b95a2; font-size: 11px; font-family: ui-monospace, monospace; }
+  .card .why { color: #7d8794; font-size: 10.5px; margin: 4px 0 6px; }
+  .card .act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .card .act button { font-size: 11px; padding: 3px 8px; }
+  .card .act .to { font: 11px ui-monospace, monospace; color: #6fbf8f; }
+  .card .alt { background: none; border: none; color: #7d8794; text-decoration: underline;
+               padding: 3px 0; font-size: 10.5px; }
+  .card .alt:hover { color: #cfd6dd; }
+
+  #delta { font: 11px/1.55 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
+  #delta .better { color: #6fbf8f; }
+  #delta .worse { color: #e5807a; }
+  #measured { font: 11px/1.55 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
+  #disagree { color: #d8a657; font-size: 10.5px; margin-top: 5px; }
+  #coach .legend { font-size: 10.5px; color: #7d8794; }
+  #coach .legend p { margin: 4px 0; }
+  #coach .legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+                       margin-right: 5px; vertical-align: -1px; }
+  .flash { animation: flash 1s ease-out; }
+  @keyframes flash { from { background: #2f4a38; } to { background: transparent; } }
+
+  /* Screen-space callouts pinned to a foot. Only drawn for a leg that is actually failing, so the
+     creature stays readable when nothing is wrong. */
+  #faultlabels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .faultlabel { position: absolute; transform: translate(-50%, -100%); padding: 1px 5px;
+                border-radius: 3px; font: 10px/1.4 ui-monospace, monospace; white-space: nowrap;
+                background: rgba(20,12,12,.82); border: 1px solid currentColor; }
+  /* Bone names sit beside their joint rather than above it, so a label never covers the dot it names. */
+  .bonelabel { position: absolute; transform: translate(6px, -50%); padding: 0 3px;
+               font: 9px/1.35 ui-monospace, monospace; white-space: nowrap;
+               background: rgba(10,12,16,.72); border-radius: 2px; }
+
+  #status { position: fixed; bottom: 10px; left: 10px; color: #7d8794; font-size: 11px; }
+  #error { position: fixed; inset: auto 352px 12px 320px; padding: 10px 12px; display: none;
+           background: #2a1416; border: 1px solid #6b2b30; border-radius: 6px; color: #f0b8bb;
+           font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <header>
+    <h1>Stadium walker</h1>
+    <p class="sub">A ROM model walking a gait the ROM never had.</p>
+  </header>
+
+  <details open>
+    <summary>Stage</summary>
+    <div class="body">
+      <div class="ctl">
+        <label for="species">species</label>
+        <select id="species"></select>
+      </div>
+      <div class="buttons">
+        <button id="addOne">add one</button>
+        <button id="addFive">add 5</button>
+        <button id="removeSel">remove</button>
+        <button id="clearAll">clear</button>
+      </div>
+      <div class="ctl">
+        <label for="scope">sliders apply to <b id="scopeCount"></b></label>
+        <select id="scope">
+          <option value="one">the selected creature</option>
+          <option value="species">every one of its species</option>
+          <option value="all">everything on the stage</option>
+        </select>
+      </div>
+      <p class="hint">Click a creature to select it. Each one keeps its own slider values, so selecting
+        pulls its settings back into the panel — that is what makes two side by side worth anything.</p>
+      <div id="stageList"></div>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Model</summary>
+    <div class="body">
+      <div id="mount-model"></div>
+      <div class="row"><input type="checkbox" id="walking" checked><span>walking</span></div>
+      <div class="row"><input type="checkbox" id="idleClip" checked><span>ROM idle clip on spine</span></div>
+      <p class="hint">The idle plays on every bone the walker does not drive. Legs stay procedural.</p>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Search</summary>
+    <div class="body">
+      <div class="buttons">
+        <button id="btnReset">reset</button>
+        <button id="btnTune" class="primary">tune</button>
+        <button id="btnRandom">randomise</button>
+      </div>
+      <div id="mount-search"></div>
+      <div class="row wrap">
+        <input type="checkbox" id="skipRisky"><span>skip candidates the detectors reject</span>
+      </div>
+      <p class="hint">Off by default. The prediction cries wolf on about a quarter of what it flags, and
+        those sit on the boundary you are trying to find — so rejected candidates are marked, not hidden.
+        Rejects are logged either way, so a better rule can re-score them later.</p>
+      <div id="proposal" class="hint"></div>
+      <div class="buttons">
+        <button id="voteWorse">worse</button>
+        <button id="voteNeutral">same</button>
+        <button id="voteBetter">better</button>
+      </div>
+      <div id="voteState" class="hint"></div>
+      <div class="ctl">
+        <label for="setpoint">setpoint <b id="setpointCount"></b></label>
+        <select id="setpoint"></select>
+      </div>
+      <div class="buttons">
+        <button id="spSave">save current</button>
+        <button id="spLoad">apply</button>
+        <button id="spDelete">delete</button>
+      </div>
+      <p class="hint">Setpoints are per species and can be applied to another. The knobs authored in
+        metres, and the count of feet that must stay down, are dropped on the way across and named when
+        they are.</p>
+      <div class="buttons">
+        <button id="trialsCsv">export CSV</button>
+        <button id="trialsJson">export JSON</button>
+        <button id="trialsClear">clear log</button>
+      </div>
+      <div id="trialSummary" class="hint"></div>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Gait</summary>
+    <div class="body">
+      <div class="ctl">
+        <label for="baseGait">base gait</label>
+        <select id="baseGait">
+          <option value="walk">walk — one foot up at a time</option>
+          <option value="gallop">gallop — a whole row at once</option>
+        </select>
+      </div>
+      <div id="mount-gait"></div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Legs and balance</summary>
+    <div class="body">
+      <div id="mount-legs"></div>
+      <div class="ctl">
+        <label for="strayMode">strayed foot</label>
+        <select id="strayMode">
+          <option value="off">measure only</option>
+          <option value="slow">slow the body down</option>
+          <option value="restep">pick the foot up again</option>
+          <option value="accept">move the target to the foot</option>
+        </select>
+      </div>
+      <div id="mount-stray"></div>
+      <p class="hint">A planted foot that ends up further than this from where the gait believes it is has
+        strayed. The threshold decides both what the sim acts on and what the readout counts, so the two
+        can never disagree.</p>
+      <p class="hint">Measured across four species: at these defaults nothing strays, so the mode changes
+        nothing. Break the gait — double the top speed — and only <b>slow</b> improves the sliding it is
+        aimed at (Pikachu 48% to 30%, Ponyta 71% to 58%). <b>Re-step</b> and <b>move the target</b> both
+        drive the stray count to nothing and make the sliding worse, because a foot parked at the reach
+        limit gets dragged from there. See <code>docs/subsystems/stadium.md</code>.</p>
+      <div id="strayReadout" class="hint"></div>
+    </div>
+  </details>
+
+  <details>
+    <summary>Ground</summary>
+    <div class="body">
+      <div class="ctl">
+        <label for="groundShape">shape</label>
+        <select id="groundShape">
+          <option value="flat">flat</option>
+          <option value="rolling">rolling hills</option>
+          <option value="ridges">ridges</option>
+          <option value="bowl">bowl</option>
+        </select>
+      </div>
+      <div id="mount-ground"></div>
+      <p class="hint">The gait's foot scan takes any single-valued height function, so this swaps under a
+        walking creature without rebuilding anything.</p>
+    </div>
+  </details>
+
+  <details open>
+    <summary>View</summary>
+    <div class="body">
+      <div class="ctl">
+        <label for="modelMode">model</label>
+        <select id="modelMode">
+          <option value="solid">solid</option>
+          <option value="wire">wireframe</option>
+          <option value="hidden">hidden</option>
+        </select>
+      </div>
+      <p class="hint">Applies to every creature, because clones share their materials — that sharing is
+        what makes a second individual nearly free.</p>
+      <div class="ctl">
+        <label for="skelMode">skeleton</label>
+        <select id="skelMode">
+          <option value="off">off</option>
+          <option value="legs">legs, spine, head and tail</option>
+          <option value="all">every bone</option>
+        </select>
+      </div>
+      <div class="ctl">
+        <label for="boneLabels">bone names</label>
+        <select id="boneLabels">
+          <option value="none">none</option>
+          <option value="legs">leg bones only</option>
+          <option value="all">every bone</option>
+        </select>
+      </div>
+      <p class="hint">Green is a leg segment, <b style="color:#9fe870">pale green the foot</b>,
+        <b style="color:#46c2b0">teal the knee</b>, amber the bone the limb hangs off, and
+        <b style="color:#e5807a">red means the bone is in more than one leg at once</b> — which is the
+        mapper mistaking one limb with two toes for two limbs. Click a bone for its details.</p>
+      <div id="boneInfo" class="hint"></div>
+      <div class="row wrap" style="margin-top:6px">
+        <button id="roleOpen">edit bone roles</button>
+      </div>
+      <div class="row wrap">
+        <input type="checkbox" id="faults" checked><span>fault markers</span>
+      </div>
+      <p class="hint">Rings under the feet, a stick from where the gait thinks a foot is to where it was
+        drawn, and skid marks left behind by a foot that slid. Independent of the rig overlay.</p>
+      <div class="row wrap"><input type="checkbox" id="skids" checked><span>skid marks</span></div>
+      <div class="row wrap">
+        <input type="checkbox" id="overlay"><span>rig overlay</span>
+      </div>
+      <div class="row wrap"><input type="checkbox" id="showTargets" checked><span>foot targets</span></div>
+      <div class="row wrap"><input type="checkbox" id="showSupport"><span>support polygon</span></div>
+      <div class="row wrap"><input type="checkbox" id="showTrails"><span>foot trails</span></div>
+      <div class="row wrap"><input type="checkbox" id="drawAll"><span>markers on every creature</span></div>
+      <p class="hint">Off by default. Each creature's overlay and fault markers are several objects per leg
+        with culling disabled, so they are drawn whether or not they are on screen — this is the largest
+        avoidable cost once there are more than a few.</p>
+      <div class="ctl">
+        <label for="sceneTheme">lighting</label>
+        <select id="sceneTheme">
+          <option value="night">night — dark room</option>
+          <option value="day">day — white cyclorama</option>
+        </select>
+      </div>
+      <p class="hint">A pale ground shows a dark model's silhouette; a dark one shows the coloured fault
+        markers and the skid trails. Which reads better depends on the species in front of you.</p>
+      <div class="row wrap"><input type="checkbox" id="lightPanels"><span>workshop panel theme</span></div>
+      <p class="hint">The panel look the environment viewer and bot-viewer-v3 share, reading the same
+        saved colours instead of a private palette.</p>
+      <div class="ctl">
+        <label for="camMode">camera</label>
+        <select id="camMode">
+          <option value="follow">follows the selected creature</option>
+          <option value="group">frames the whole stage</option>
+          <option value="free">stays where you put it</option>
+        </select>
+      </div>
+      <div id="mount-view"></div>
+      <div class="buttons">
+        <button id="pause">pause</button>
+        <button id="stepOnce">step</button>
+        <button id="resetPos">recentre</button>
+      </div>
+    </div>
+  </details>
+
+  <details id="roleSection">
+    <summary>Bone roles</summary>
+    <div class="body">
+      <p class="hint">The mapper guesses which bones are legs from geometry, and on some species it guesses
+        wrong. Click a bone in the viewport with the skeleton shown, then give it a role. Roles are saved
+        per species and applied whenever that species is spawned.</p>
+      <div id="roleStatus" class="hint"></div>
+      <div class="ctl">
+        <label for="roleLeg">assign to</label>
+        <select id="roleLeg"></select>
+      </div>
+      <div class="buttons">
+        <button id="roleAsLeg">leg</button>
+        <button id="roleAsKnee">knee</button>
+        <button id="roleAsFoot">foot</button>
+        <button id="roleAsAttach">attach</button>
+        <button id="roleClear">not a leg</button>
+      </div>
+      <p class="hint"><b>leg</b> is an ordinary segment, <b>knee</b> is the one joint the two-bone solve
+        bends at, <b>foot</b> is the sole and may be several bones, and <b>attach</b> is the body bone the
+        limb hangs off rather than part of the limb.</p>
+      <div id="roleWarn" class="hint"></div>
+      <div class="buttons">
+        <button id="roleApply">apply and respawn</button>
+        <button id="roleRevert">back to the mapper</button>
+      </div>
+      <div class="buttons">
+        <button id="roleExport">export</button>
+        <button id="roleImport">import</button>
+      </div>
+      <textarea id="roleJson" rows="4" spellcheck="false"
+        style="width:100%;font:11px ui-monospace,monospace;display:none"></textarea>
+    </div>
+  </details>
+
+  <details id="poseSection">
+    <summary>Poses</summary>
+    <div class="body">
+      <p class="hint">Capture what the selected creature looks like right now, then blend between saved
+        poses. This is the keyframing end of the same retarget the walk uses — a pose is local position,
+        rotation and scale per bone, which is what a glTF animation channel targets.</p>
+      <div class="row wrap">
+        <input type="text" id="poseName" placeholder="pose name" style="flex:1;min-width:90px">
+        <button id="poseCapture">capture</button>
+      </div>
+      <div class="ctl">
+        <label for="poseA">from</label>
+        <select id="poseA"></select>
+      </div>
+      <div class="ctl">
+        <label for="poseB">to</label>
+        <select id="poseB"></select>
+      </div>
+      <div id="mount-pose"></div>
+      <div class="row wrap">
+        <input type="checkbox" id="poseHold"><span>hold the blended pose</span>
+      </div>
+      <p class="hint">Held poses are written after the walker and the idle clip, so they win over both.
+        Leave walking on and the creature will wander while holding it, which is how you check a pose from
+        every angle without fighting the camera.</p>
+      <div id="poseStatus" class="hint"></div>
+      <div class="buttons">
+        <button id="poseDelete">delete</button>
+        <button id="poseRest">capture rest pose</button>
+      </div>
+      <div class="buttons">
+        <button id="poseExport">export</button>
+        <button id="poseImport">import</button>
+      </div>
+      <textarea id="poseJson" rows="4" spellcheck="false"
+        style="width:100%;font:11px ui-monospace,monospace;display:none"></textarea>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Derived from the rig</summary>
+    <div class="body">
+      <div id="facts"></div>
+      <div id="warn"></div>
+      <div class="buttons"><button id="resetTuning">reset the tuning</button></div>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Live</summary>
+    <div class="body"><div id="stats"></div></div>
+  </details>
+</div>
+
+<div id="coach">
+  <header>
+    <h2>Why the feet are wrong</h2>
+    <p class="sub">What is failing, which slider owns it, and whether moving it helped.</p>
+  </header>
+  <div class="cbody">
+    <h3>The stage <span style="color:#4a5766">— everyone at once</span></h3>
+    <div id="group">nothing spawned yet</div>
+
+    <h3>Predicted from the settings <span style="color:#4a5766">— instant</span></h3>
+    <div id="gauges"></div>
+
+    <h3>Measured from the walk <span style="color:#4a5766">— last 4 s</span></h3>
+    <div id="measured">measuring…</div>
+    <div id="disagree"></div>
+
+    <h3>What to change</h3>
+    <div id="advice"></div>
+
+    <h3>Since your last change</h3>
+    <div id="delta">move a slider and this fills in</div>
+
+    <details>
+      <summary style="padding:7px 0">How to read this</summary>
+      <div class="legend">
+        <p><b>Dragging</b> is a planted foot whose drawn position slides along the ground while the gait
+          believes it is standing still. You see it as a foot skating, or as a leg that visibly cannot
+          reach where its foot is supposed to be.</p>
+        <p><b>Tapping</b> covers two different faults that look alike. One is a leg that lands, decides it
+          wants to move again and lifts, cycling with nothing to show for it — that one has never been
+          reproduced on these models, because a foot that just landed sits at zero error by construction
+          and the trigger cannot re-fire. The other is a step that is simply <em>over before it can be
+          drawn</em>. The foot is lerped along its arc with a half-sine lift, so a step lasting three
+          frames is two interior samples, and the foot trail comes out as a triangular spike instead of an
+          arc. That one is real and it is what you are usually seeing. Turn on foot trails and drop
+          <em>shortest step</em> to watch it appear.</p>
+        <p><span class="sw" style="background:#6fbf8f"></span>planted and clean &nbsp;
+           <span class="sw" style="background:#4a86c8"></span>swinging &nbsp;
+           <span class="sw" style="background:#d8a657"></span>starting to slide &nbsp;
+           <span class="sw" style="background:#e5807a"></span>dragging &nbsp;
+           <span class="sw" style="background:#d85fb0"></span>past the reach the leg has</p>
+        <p>The pink stick is the gap between where the gait believes a foot is and where the solver could
+          actually draw it. A stick you can see is the gait lying to itself.</p>
+        <p>The prediction is arithmetic on the tuning, so it answers the moment you move a slider. The
+          measurement counts what the feet did. Checked against the shipped models it catches 83% of real
+          dragging and cries wolf on 24% of what it flags, so read them together — a disagreement is
+          called out above.</p>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div id="faultlabels"></div>
+<div id="status">starting…</div>
+<div id="error"></div>
+
+<script>
+// Anything thrown before or inside the module lands on screen. A silent failure on someone else's
+// machine is undebuggable, and this page has three separate things that can fail to load.
+window.addEventListener('error', (e) => showError(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => showError(e.reason));
+function showError(err) {
+  const el = document.getElementById('error');
+  el.style.display = 'block';
+  el.textContent = (el.textContent ? el.textContent + '\n\n' : '') + (err && err.stack ? err.stack : String(err));
+}
+</script>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// SkeletonUtils.clone, not Object3D.clone(true): the plain clone shares the skeleton, so every individual
+// of a species would be posed by whichever walker ran last. Same reason environment-viewer.js uses it.
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
+import { parseGLB, nodeWorldMatrices } from '../stadium-glb.js';
+import { mapStadiumRig, pivotTree } from '../stadium-rig-map.js';
+import {
+  legKey, parseLegKey, rolesFromMap, assignBone, setAttach, legKeys, compileRoles, rolesEqual,
+} from '../stadium-rig-roles.js';
+import { trs, emptyPose, blendPoses, validatePose, poseDistance } from '../stadium-pose.js';
+import { createStadiumWalker } from '../stadium-walker.js';
+import { createGaitMonitor, createLegWatch, gaitHeadroom, diagnoseGait, GAIT_LIMITS } from '../gait-diagnostics.js';
+import { resolveScope, spawnLayout, pickCapsule, aggregateReports } from '../stage-roster.js';
+// The panel look the environment viewer and bot-viewer-v3 share, rather than a fourth private palette.
+// It reads the same `pcw:uiTheme` colours, so a theme picked in the env viewer carries across.
+import { installPanelTheme } from '../workshop-panel-theme.js';
+import { perturb, optimise, searchCost, transferValues, tuningDistance, changedKeys } from '../gait-search.js';
+import { createTrialLog, flattenMetrics, toCSV, verdictSeries } from '../trial-log.js';
+import { pearson } from '../stats-math.js';
+import { GAITS } from '../creature-locomotion.js';
+
+const setStatus = (t) => { document.getElementById('status').textContent = t; };
+
+// The models checked into ../models/stadium. Grouped by what the mapper makes of them, because that is
+// the interesting axis here: four legs is the case the walker was built for, two is the case where the
+// support polygon does not exist, and six is the alternating tripod falling out of the same scheduler.
+const SPECIES = [
+  ['four legs', ['019_rattata', '058_growlithe', '077_ponyta', '128_tauros', '033_nidorino',
+                 '079_slowpoke', '002_ivysaur', '028_sandslash', '086_seel']],
+  ['two legs',  ['025_pikachu', '006_charizard', '066_machop', '027_sandshrew']],
+  ['six legs',  ['046_paras']],
+];
+const PRETTY = (id) => `#${id.slice(0, 3)} ${id.slice(4).replace(/^./, c => c.toUpperCase())}`;
+
+// --- scene ------------------------------------------------------------------------------------
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1014);
+scene.fog = new THREE.Fog(0x0d1014, 10, 40);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.02, 200);
+camera.position.set(1.5, 0.9, 1.9);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.2, 0);
+controls.enableDamping = true;
+
+const hemi = new THREE.HemisphereLight(0x9fc4ff, 0x2a2620, 1.6);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
+sun.position.set(3, 6, 2);
+scene.add(sun);
+
+// --- ground -------------------------------------------------------------------------------------
+// One height function, used by both the mesh and the gait's foot scan. Keeping them the same object is
+// the point: a creature that walks through its own scenery is the failure this avoids.
+const GROUND_SIZE = 60, GROUND_SEGS = 200;
+const groundOpts = { shape: 'flat', amplitude: 0.12, wavelength: 3.0 };
+function makeHeight() {
+  const { shape, amplitude: a, wavelength: w } = groundOpts;
+  const k = (2 * Math.PI) / Math.max(0.2, w);
+  if (shape === 'rolling') return (x, z) => a * (Math.sin(x * k) * Math.cos(z * k * 0.8) + 0.4 * Math.sin(z * k * 1.7));
+  if (shape === 'ridges') return (x, z) => a * Math.sin(x * k);
+  if (shape === 'bowl') return (x, z) => a * 0.6 * (x * x + z * z) / Math.max(0.2, w);
+  return () => 0;
+}
+let terrainHeight = makeHeight();
+
+const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, GROUND_SEGS, GROUND_SEGS);
+groundGeo.rotateX(-Math.PI / 2);
+const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
+  color: 0x1b2129, roughness: 0.95, metalness: 0, wireframe: false,
+}));
+scene.add(ground);
+const groundWire = new THREE.Mesh(groundGeo, new THREE.MeshBasicMaterial({
+  color: 0x2f3945, wireframe: true, transparent: true, opacity: 0.35,
+}));
+groundWire.position.y = 0.002;
+scene.add(groundWire);
+
+// --- day and night --------------------------------------------------------------------------------
+//
+// Two palettes for the space the creature stands in. Not decoration: a pale ground shows a dark model's
+// silhouette and its shadow-side detail, and a dark ground shows the coloured fault markers and the skid
+// trails. Which one reads better depends entirely on the species in front of you, so it is a toggle.
+//
+// Every value here is one the scene already had; nothing new is introduced, so switching cannot change
+// what the gait does — only what you can see of it.
+const SCENE_THEMES = {
+  night: {
+    bg: 0x0d1014, fog: [10, 40], ground: 0x1b2129, wire: 0x2f3945, wireOpacity: 0.35,
+    sky: 0x9fc4ff, floor: 0x2a2620, hemi: 1.6, sun: 0xfff2dd, sunPower: 2.2,
+  },
+  day: {
+    bg: 0xeef1f5, fog: [16, 70], ground: 0xd9dee5, wire: 0xb6bec9, wireOpacity: 0.5,
+    // A cooler sky and a warm bounce off a pale floor, which is what a white cyclorama actually does.
+    sky: 0xffffff, floor: 0xd6cec2, hemi: 2.1, sun: 0xfffaf0, sunPower: 2.6,
+  },
+};
+function applySceneTheme(name) {
+  const t = SCENE_THEMES[name] || SCENE_THEMES.night;
+  scene.background = new THREE.Color(t.bg);
+  scene.fog = new THREE.Fog(t.bg, t.fog[0], t.fog[1]);
+  ground.material.color.setHex(t.ground);
+  groundWire.material.color.setHex(t.wire);
+  groundWire.material.opacity = t.wireOpacity;
+  hemi.color.setHex(t.sky);
+  hemi.groundColor.setHex(t.floor);
+  hemi.intensity = t.hemi;
+  sun.color.setHex(t.sun);
+  sun.intensity = t.sunPower;
+  // The skid marks are drawn by dimming toward black, which is invisible on a pale ground. Against day
+  // they have to darken instead — same trail, opposite direction.
+  skidOnLight = name === 'day';
+}
+let skidOnLight = false;
+
+function refreshGround() {
+  terrainHeight = makeHeight();
+  const pos = groundGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+  pos.needsUpdate = true;
+  groundGeo.computeVertexNormals();
+  // Every creature, not just the selected one — they all stand on the same ground.
+  for (const e of stage.values()) e.walker.retune({ terrainHeight });
+}
+
+// --- controls -----------------------------------------------------------------------------------
+// A tiny slider factory rather than 20 hand-written blocks. Every entry says where its value goes, so
+// the panel and the module cannot drift: `apply` is the only place a control touches the walker.
+const CONTROLS = [];
+function addSlider(mount, spec) {
+  const el = document.createElement('div');
+  el.className = 'ctl';
+  const label = document.createElement('label');
+  const text = document.createElement('span');
+  text.textContent = spec.label;
+  const val = document.createElement('b');
+  label.append(text, val);
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = spec.min; input.max = spec.max; input.step = spec.step;
+  input.value = spec.value;
+  el.append(label, input);
+  if (spec.hint) {
+    const h = document.createElement('p');
+    h.className = 'hint';
+    h.textContent = spec.hint;
+    el.append(h);
+  }
+  document.getElementById(mount).append(el);
+  const show = () => { val.textContent = (spec.fmt ?? ((v) => v.toFixed(2)))(Number(input.value)); };
+  const entry = { spec, input, show, last: Number(spec.value), el,
+                  reset: () => { input.value = spec.value; show(); entry.last = Number(spec.value); spec.apply(spec.value); } };
+  // `noteChange` runs BEFORE `apply`, because applying resets the rolling window and the "before" half of
+  // the comparison has to be taken while the old numbers are still there.
+  input.addEventListener('input', () => {
+    const to = Number(input.value);
+    show();
+    noteChange(entry, to);
+    spec.apply(to);
+    savePrefs();
+    entry.last = to;
+  });
+  show();
+  CONTROLS.push(entry);
+  if (!spec.scope) throw new Error(`control ${spec.key} has no scope`);
+  return input;
+}
+const controlByKey = (key) => CONTROLS.find(c => c.spec.key === key);
+const fmtOf = (c) => c.spec.fmt ?? ((v) => v.toFixed(2));
+
+// --- the stage ------------------------------------------------------------------------------------
+//
+// Several creatures at once, each owning what used to be a module-level singleton: its own walker, its
+// own measuring window, its own overlay and fault markers, AND ITS OWN SLIDER VALUES. That last one is
+// the part that makes side-by-side comparison worth anything — two creatures tuned identically tell you
+// nothing you could not get from one.
+//
+// `current` still exists and still means "the selected creature", so every readout that was written
+// against one creature keeps working unchanged. What changed is that it is now a pointer into the stage
+// rather than the only thing there.
+const stage = new Map();
+let selectedId = null;
+let current = null;
+let nextId = 1;
+
+const roster = () => [...stage.values()].map(e => ({ id: e.id, species: e.name }));
+// Read from the DOM rather than captured, so this is safe to call from anywhere in module setup order.
+const scopeValue = () => document.getElementById('scope')?.value || 'one';
+const scopedEntries = () => resolveScope(roster(), scopeValue(), selectedId)
+  .map(id => stage.get(id)).filter(Boolean);
+
+// Applies to whatever the scope selector says, not to whatever happens to be selected. The two are
+// different questions — "make this one slower" and "make them all slower" — and inferring the second from
+// the first is how you retune the whole stage by accident and only notice three trials later.
+//
+// The patch is also written into each creature's OWN vector. Without that, a creature keeps its live
+// tuning but forgets it the moment something rebuilds it, and selecting away and back would silently
+// revert it to whatever the panel last showed.
+function retune(patch) {
+  for (const e of scopedEntries()) {
+    e.walker.retune(patch);
+    for (const [k, v] of Object.entries(patch)) if (typeof v === 'number') e.values[k] = v;
+    resetMonitor(e);
+  }
+  refreshFacts();
+}
+
+// --- live gait scoring ---------------------------------------------------------------------------
+// A rolling window rather than a running total, because the point is to answer "did THAT slider make it
+// worse", and a total accumulated since page load takes minutes to forget a setting you have already
+// moved on from. `shown` holds the last completed window so the readout does not blink empty every reset.
+//
+// `windowId` is the honest bit. A report is only ever attached to the configuration it was measured
+// under: retuning bumps the id, and a report that arrives carrying a stale one is discarded rather than
+// shown. Without it the panel keeps displaying the PREVIOUS settings' numbers under the new settings'
+// name, which is worse than showing nothing because the numbers look entirely plausible.
+// One slider drives both the walker's gate and the report's stray count, or the panel counts against a
+// threshold the sim is not enforcing. Guarded: the detectors are built before the sliders exist.
+const strayLimitNow = () => {
+  const c = controlByKey('strayLimit');
+  return c ? Number(c.input.value) : GAIT_LIMITS.strayFraction;
+};
+const limitsNow = () => ({ ...GAIT_LIMITS, strayFraction: strayLimitNow() });
+
+// Every creature, ignoring the scope selector: a stage where each one counted strays differently could
+// not be compared, which is the only reason to have a stage.
+function applyStray() {
+  const mode = document.getElementById('strayMode')?.value || 'off';
+  const strayLimit = strayLimitNow();
+  for (const e of stage.values()) {
+    e.walker.retune({ strayLimit, strayMode: mode });
+    e.legWatch = createLegWatch(limitsNow());
+    resetMonitor(e);
+  }
+  legWatch = createLegWatch(limitsNow());
+  syncSelected();
+  refreshFacts();
+}
+
+let monitorWindow = 4.0;
+function resetMonitor(e) {
+  if (!e) return;
+  e.monitor = createGaitMonitor(limitsNow());
+  e.monitorAge = 0;
+  e.shown = null;
+  e.windowId = (e.windowId || 0) + 1;
+  if (e === current && measuredEl) { measuredEl.textContent = 'measuring…'; disagreeEl.textContent = ''; }
+}
+function sampleMonitor(e, dt) {
+  // One frame, three consumers. `diagnosticFrame` is a delta since the last pose, so it must be read once
+  // per frame and shared — reading it twice reports zero movement the second time.
+  const frame = e.walker.diagnosticFrame();
+  e.monitor.sample(frame);
+  e.legWatch.sample(frame);
+  e.headroom = gaitHeadroom(frame);
+  e.monitorAge += dt;
+  if (e.monitorAge >= monitorWindow) {
+    const report = e.monitor.report();
+    if (report) { report.windowId = e.windowId; e.shown = report; attachMetrics(e, report); }
+    e.monitor = createGaitMonitor(limitsNow());
+    e.monitorAge = 0;
+    if (e === current) settleChange();
+  }
+}
+// A VIEW onto the selected creature, under the names every readout on this page already uses. Mirrored
+// rather than replaced by accessors so that the solo panel — the coach, the stats, the delta comparison —
+// carries on reading exactly what it read when there was only ever one creature. `syncSelected()` is the
+// single place the mirror is refreshed, so it cannot drift.
+let shown = null, headroom = null, legWatch = createLegWatch(limitsNow());
+function syncSelected() {
+  current = selectedId ? stage.get(selectedId) || null : null;
+  shown = current ? current.shown : null;
+  headroom = current ? current.headroom : null;
+  legWatch = current ? current.legWatch : legWatch;
+}
+
+// --- did that slider help? ------------------------------------------------------------------------
+//
+// The question a tuning page exists to answer, and the one it is worst at: you drag something, the
+// creature looks different, and you cannot tell whether the number you care about moved. So a change is
+// recorded with a snapshot of the metrics as they stood, and the comparison is filled in when the next
+// full window completes. Held open for a beat, because dragging a slider fires a change per pixel and the
+// useful "before" is the value at the start of the drag, not the previous frame of it.
+const CHANGE_HOLD = 1.2;
+let change = null;
+function metricsNow() {
+  return {
+    dragRisk: headroom ? headroom.dragRisk : null,
+    skate: shown ? shown.dragging.worstLegFraction : null,
+    clamp: shown ? shown.dragging.clampedFraction : null,
+    speed: shown ? shown.speedVsMax : null,
+  };
+}
+function noteChange(entry, to) {
+  if (entry.spec.scope !== 'walker' && entry.spec.scope !== 'rebuild') return;
+  const now = performance.now() / 1000;
+  if (change && change.key === entry.spec.key && now - change.at < CHANGE_HOLD + 0.6) {
+    change.to = to; change.at = now; change.after = null;
+  } else {
+    change = { key: entry.spec.key, label: entry.spec.label, fmt: entry.spec.fmt ?? ((v) => v.toFixed(2)),
+               from: entry.last, to, before: metricsNow(), at: now, after: null };
+  }
+  renderDelta();
+}
+function settleChange() {
+  if (!change || change.after) return;
+  if (performance.now() / 1000 - change.at < CHANGE_HOLD) return;
+  change.after = metricsNow();
+  renderDelta();
+}
+const deg = (v) => `${(v * 180 / Math.PI).toFixed(0)}°`;
+const pct = (v) => `${(v * 100).toFixed(0)}%`;
+const x = (v) => `${v.toFixed(2)}×`;
+
+addSlider('mount-model', {
+  key: 'worldHeight', scope: 'rebuild', label: 'stands this tall', min: 0.15, max: 3, step: 0.05, value: 0.5,
+  fmt: (v) => `${v.toFixed(2)} m`,
+  hint: 'Rebuilds the rig: the unit scale is baked into the leg lengths.',
+  apply: (v) => { pending.worldHeight = v; scheduleRebuild(); },
+});
+
+addSlider('mount-search', {
+  key: 'randomPct', scope: 'view', label: 'randomise by', min: 1, max: 100, step: 1, value: 15,
+  fmt: (v) => `${v.toFixed(0)}%`,
+  hint: 'A share of each slider\'s own range, except the multipliers, which move in log space so the same nudge means the same thing at 0.3x and 3x.',
+  apply: () => {},
+});
+
+addSlider('mount-gait', {
+  key: 'speedScale', scope: 'walker', label: 'top speed', min: 0.2, max: 3, step: 0.05, value: 1, fmt: x,
+  hint: 'Multiplies the speed the stride can actually support. Past 1 the feet begin to drag — that is the point of exposing it.',
+  apply: (v) => retune({ speedScale: v }),
+});
+addSlider('mount-gait', {
+  key: 'stepDurationScale', scope: 'walker', label: 'step duration', min: 0.3, max: 3, step: 0.05, value: 1, fmt: x,
+  apply: (v) => retune({ stepDurationScale: v }),
+});
+addSlider('mount-gait', {
+  key: 'minStepSeconds', scope: 'walker', label: 'shortest step', min: 0, max: 0.3, step: 0.005, value: 0.10,
+  fmt: (v) => `${(v * 1000).toFixed(0)} ms = ${(v * 60).toFixed(1)} frames`,
+  hint: 'A floor under the step duration that does not scale, because the eye does not. Drop it and watch the foot trail turn from an arc into a spike: at three frames the whole swing is two interior samples.',
+  apply: (v) => retune({ minStepSeconds: v }),
+});
+addSlider('mount-gait', {
+  key: 'strideNumberMax', scope: 'walker', label: 'fastest leg cycle', min: 0, max: 2, step: 0.05, value: 0.5,
+  fmt: (v) => (v > 0 ? v.toFixed(2) : 'off'),
+  hint: 'Stride frequency times the square root of leg span over gravity. A leg is a pendulum, so this is what makes rates comparable across sizes; real animals run 0.2 to 0.4 walking and about 0.6 at a gallop.',
+  apply: (v) => retune({ strideNumberMax: v }),
+});
+addSlider('mount-gait', {
+  key: 'supportPolygonFloor', scope: 'walker', label: 'feet that must stay down', min: 0, max: 4, step: 1, value: 3,
+  fmt: (v) => (v > 0 ? v.toFixed(0) : 'off'),
+  hint: 'Two grounded feet are a line, not a polygon, and the body drops through it. Gallop asks for half the legs airborne, which on a quadruped is two — this is what stops it. Bipeds are exempt and lean on the upright assumption instead.',
+  apply: (v) => retune({ supportPolygonFloor: v }),
+});
+addSlider('mount-gait', {
+  key: 'stepLiftScale', scope: 'walker', label: 'foot lift', min: 0.1, max: 4, step: 0.05, value: 1, fmt: x,
+  apply: (v) => retune({ stepLiftScale: v }),
+});
+addSlider('mount-gait', {
+  key: 'strideScale', scope: 'walker', label: 'stride envelope', min: 0.3, max: 2.5, step: 0.05, value: 1, fmt: x,
+  hint: 'Scales the envelope the rest pose implies, which the trigger, the look-ahead and the top speed are all sized from.',
+  apply: (v) => retune({ strideScale: v }),
+});
+addSlider('mount-gait', {
+  key: 'roamRadius', scope: 'walker', label: 'roams within', min: 1, max: 25, step: 1, value: 6,
+  fmt: (v) => `${v.toFixed(0)} m`,
+  apply: (v) => retune({ roamRadius: v }),
+});
+
+addSlider('mount-legs', {
+  key: 'standExtension', scope: 'walker', label: 'stand extension', min: 0.6, max: 1, step: 0.01, value: 0.9, fmt: pct,
+  hint: 'How straight the tightest leg may be standing still. Lower settles the body and buys stride; raise it to full and a straight-legged model cannot swing at all.',
+  apply: (v) => retune({ standExtension: v }),
+});
+addSlider('mount-legs', {
+  key: 'maxExtension', scope: 'walker', label: 'max extension', min: 0.7, max: 1, step: 0.01, value: 0.99, fmt: pct,
+  hint: 'How straight a leg may get while reaching. Past this it stops reading as having a knee.',
+  apply: (v) => retune({ maxExtension: v }),
+});
+addSlider('mount-legs', {
+  key: 'swingLimit', scope: 'walker', label: 'swing limit', min: 0.1, max: 1.4, step: 0.02, value: Math.PI / 5, fmt: deg,
+  hint: 'Fore and aft rotation a leg may take from the direction it was drawn along.',
+  apply: (v) => retune({ swingLimit: v }),
+});
+addSlider('mount-legs', {
+  key: 'placeMargin', scope: 'walker', label: 'swing placement margin', min: 0.3, max: 1, step: 0.02, value: 0.7, fmt: pct,
+  apply: (v) => retune({ placeMargin: v }),
+});
+addSlider('mount-legs', {
+  key: 'reachMargin', scope: 'walker', label: 'reach placement margin', min: 0.5, max: 1, step: 0.01, value: 0.70, fmt: pct,
+  hint: 'Footholds land inside the reach limit so the foot has somewhere to go as the body walks over it. Keep it below the ask-to-step threshold, or every fresh foothold is born already overextended.',
+  apply: (v) => retune({ reachMargin: v }),
+});
+addSlider('mount-legs', {
+  key: 'restepFraction', scope: 'walker', label: 're-step guard', min: 0.05, max: 3, step: 0.05, value: 1.2,
+  fmt: (v) => `${v.toFixed(2)} envelopes`,
+  hint: 'How far a foot must be from its target before the leg may step. Under one stride envelope the foot is re-placed before the body has walked it back through the envelope, so it lives at the front edge where the leg is longest — and drags there.',
+  apply: (v) => retune({ restepFraction: v }),
+});
+addSlider('mount-legs', {
+  key: 'supportPushLimit', scope: 'walker', label: 'balance push limit', min: 0.1, max: 4, step: 0.05, value: 0.5, fmt: x,
+  hint: 'The support normal leans the body toward its feet. Past this multiple of the top speed the sideways part fades, so balance cannot become a motor and outrun the legs.',
+  apply: (v) => retune({ supportPushLimit: v }),
+});
+addSlider('mount-legs', {
+  key: 'reachStress', scope: 'walker', label: 'ask-to-step at', min: 0.5, max: 1, step: 0.01, value: 0.9, fmt: pct,
+  hint: 'How much of its reach a PLANTED foot may use before it asks for a step.',
+  apply: (v) => retune({ reachStress: v }),
+});
+addSlider('mount-legs', {
+  key: 'uprightSupport', scope: 'walker', label: 'upright assumption', min: 0, max: 1, step: 0.05, value: 0.5, fmt: pct,
+  hint: '0 lets the body topple whenever its mass leaves the support polygon, as the sim does. 1 assumes it can always hold itself up — which is the only way two legs stand at all.',
+  apply: (v) => retune({ uprightSupport: v }),
+});
+addSlider('mount-legs', {
+  key: 'footGround', scope: 'walker', label: 'foot clearance', min: -0.02, max: 0.06, step: 0.002, value: 0,
+  fmt: (v) => `${(v * 1000).toFixed(0)} mm`,
+  apply: (v) => retune({ footGround: v }),
+});
+
+// Scope `gate`, not `walker`, which keeps it out of `knobSpecs`: a threshold the search may move is one
+// it will move, and raising it makes every creature read clean.
+addSlider('mount-stray', {
+  key: 'strayLimit', scope: 'gate', label: 'strayed foot at', min: 0.01, max: 0.3, step: 0.005, value: 0.05,
+  fmt: (v) => `${(v * 100).toFixed(1)}% of a leg`,
+  apply: () => applyStray(),
+});
+
+// Scope `pose`, so the search never treats a blend position as a gait knob.
+addSlider('mount-pose', {
+  key: 'poseBlend', scope: 'pose', label: 'blend', min: 0, max: 1, step: 0.01, value: 0,
+  fmt: pct,
+  apply: () => refreshPosePanel(),
+});
+
+addSlider('mount-ground', {
+  key: 'amplitude', scope: 'ground', label: 'height', min: 0, max: 0.6, step: 0.01, value: 0.12,
+  fmt: (v) => `${(v * 100).toFixed(0)} cm`,
+  apply: (v) => { groundOpts.amplitude = v; refreshGround(); },
+});
+addSlider('mount-ground', {
+  key: 'wavelength', scope: 'ground', label: 'wavelength', min: 0.5, max: 12, step: 0.1, value: 3,
+  fmt: (v) => `${v.toFixed(1)} m`,
+  apply: (v) => { groundOpts.wavelength = v; refreshGround(); },
+});
+
+addSlider('mount-view', {
+  key: 'timeScale', scope: 'view', label: 'time', min: 0.05, max: 2, step: 0.05, value: 1, fmt: x,
+  apply: (v) => { view.timeScale = v; },
+});
+addSlider('mount-view', {
+  key: 'monitorWindow', scope: 'view', label: 'measuring window', min: 0.5, max: 20, step: 0.5, value: 4,
+  fmt: (v) => `${v.toFixed(1)} s`,
+  hint: 'How long a creature walks before its measured verdict updates. Short reacts fast and is noisy; long is trustworthy and slow to tell you anything. The predicted gauges do not use it — they answer instantly.',
+  apply: (v) => { monitorWindow = v; for (const e of stage.values()) resetMonitor(e); },
+});
+
+const view = { timeScale: 1, paused: false, stepOnce: false };
+
+// --- the model ----------------------------------------------------------------------------------
+const loader = new GLTFLoader();
+// species -> { bytes, map, template }. `template` is the PARSED scene, kept so that spawning a second
+// individual clones instead of re-parsing. `GLTFLoader.parseAsync` is the one clearly non-linear cost in
+// spawning, and it is pure waste on a species already on the stage.
+const cache = new Map();
+const pending = { worldHeight: 0.5 };
+let rebuildTimer = 0;
+function scheduleRebuild() {
+  clearTimeout(rebuildTimer);
+  // A rebuild rebuilds whatever the scope covers, since `worldHeight` is baked into the leg lengths and
+  // cannot be retuned in place.
+  rebuildTimer = setTimeout(() => respawnScoped().catch(showError), 120);
+}
+
+// --- hand-assigned bone roles ------------------------------------------------------------------
+//
+// Saved per species, not per creature: which bones are the legs is a fact about the rig, so two Rattatas
+// cannot disagree about it. Everything here is a thin shell over `stadium-rig-roles.js`, which is where
+// the rules live and where they are tested.
+const ROLE_KEY = 'pcw:stadiumRoles';
+let roleDocs = {};
+try { roleDocs = JSON.parse(localStorage.getItem(ROLE_KEY) || '{}') || {}; } catch { roleDocs = {}; }
+const saveRoles = () => { try { localStorage.setItem(ROLE_KEY, JSON.stringify(roleDocs)); } catch {} };
+
+/** Map a species, honouring its role document if it has one that compiles. */
+function mapWithRoles(name, json, bin, parent) {
+  const doc = roleDocs[name];
+  if (!doc) return mapStadiumRig(json, bin, { source: name });
+  // Bone names are only used to word warnings, and the warnings that matter are the ones the panel
+  // produces with names of its own — so this compile skips them rather than mapping the species twice.
+  const roles = compileRoles(doc, { parent });
+  // A document that compiles to nothing usable falls back rather than leaving a creature with no legs.
+  if (!roles.legs.length) return mapStadiumRig(json, bin, { source: name });
+  return mapStadiumRig(json, bin, { source: name, roles });
+}
+
+/** The document being edited for the selected creature's species, seeded from the mapper on first touch. */
+function roleDocFor(name) {
+  if (!roleDocs[name]) {
+    const entry = cache.get(name);
+    roleDocs[name] = entry ? rolesFromMap(entry.map, name) : { species: name, bones: {}, attach: {} };
+  }
+  return roleDocs[name];
+}
+
+/** Bone id for the name the picker stored, since the skeleton view works in names and roles in ids. */
+function selectedBoneId() {
+  if (!current || !selectedBone) return null;
+  const hit = Object.entries(current.map.names).find(([, n]) => n === selectedBone);
+  return hit ? Number(hit[0]) : null;
+}
+
+async function speciesAssets(name) {
+  let entry = cache.get(name);
+  if (!entry) {
+    const bytes = new Uint8Array(await (await fetch(`../models/stadium/${name}.glb`)).arrayBuffer());
+    // The same bytes go two ways: through GLTFLoader for something to draw, and through this repo's own
+    // reader for the mapper. The mapper deliberately does not depend on THREE, so that
+    // `test-stadium-rig.mjs` can assert on it in Node.
+    const { json, bin } = parseGLB(bytes);
+    // The parent table is kept because `compileRoles` needs it to order a hand-assigned chain, and it is
+    // the one thing the finished map does not carry.
+    const tree = pivotTree(json, nodeWorldMatrices(json));
+    const parent = {};
+    for (const p of tree.pivots) parent[p] = tree.parent.get(p) ?? -1;
+    const map = mapWithRoles(name, json, bin, parent);
+    if (!map.legs.length) throw new Error(`${name}: the rig mapper found no legs — ${map.warnings.join(' | ')}`);
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const template = await loader.parseAsync(buf, '');
+    // Two facts from `docs/stadium/HANDOFF.md`, both of which show up immediately if ignored: vertices are
+    // authored 10x in bone-local space so bounding volumes are garbage and parts vanish with camera angle;
+    // and some face-decal triangles are wound backwards because the game renders with culling off.
+    template.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      o.frustumCulled = false;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) m.side = THREE.DoubleSide;
+    });
+    entry = { bytes, map, template, json, bin, parent };
+    cache.set(name, entry);
+  }
+  return entry;
+}
+
+/**
+ * Put one creature on the stage.
+ *
+ * `values` is the slider vector it starts with. Passing it in rather than reading the sliders is what
+ * lets two individuals of the same species be tuned differently, which is the entire reason for spawning
+ * more than one.
+ */
+async function spawn(name, { values = readSliders(), at = null, select = false } = {}) {
+  const assets = await speciesAssets(name);
+  const map = assets.map;
+  // `SkeletonUtils.clone` rather than `Object3D.clone(true)`: the plain clone shares the skeleton between
+  // copies, so every individual of a species would be posed by whichever walker ran last. It shares
+  // geometry and materials, so the second individual costs bone objects and nothing else.
+  const root = skeletonClone(assets.template.scene);
+
+  const walker = createStadiumWalker({
+    THREE, scene: root, map, terrainHeight,
+    worldHeight: values.worldHeight ?? pending.worldHeight,
+    gait: GAITS[baseGaitInput.value] ?? GAITS.walk,
+  });
+  scene.add(walker.object);
+
+  const id = `c${nextId++}`;
+  const e = {
+    id, name, map, walker, root,
+    label: `${PRETTY(name)} #${id.slice(1)}`,
+    values: { ...values },
+    monitor: createGaitMonitor(limitsNow()), shown: null, monitorAge: 0, windowId: 0,
+    legWatch: createLegWatch(limitsNow()), headroom: null,
+    overlayGroup: null, faultGroup: null, faultParts: [], labelEls: [],
+    mixer: null, action: null, clips: (assets.template.animations || []).map(c => c.name),
+  };
+
+  // Every knob that belongs to the WALKER, applied from this creature's own vector rather than from the
+  // sliders — a spawn during a rebuild must not inherit whatever the panel happens to be showing.
+  const patch = {};
+  for (const c of CONTROLS) if (c.spec.scope === 'walker' && values[c.spec.key] !== undefined) patch[c.spec.key] = values[c.spec.key];
+  // The stray gate is stage-wide, so it comes off the panel rather than out of `values`.
+  patch.strayLimit = strayLimitNow();
+  patch.strayMode = document.getElementById('strayMode')?.value || 'off';
+  walker.retune(patch);
+
+  const place = at || spawnLayout(stage.size, Math.max(1, stage.size + 1), spawnSpacing(map, walker));
+  walker.placeAt(place.x, place.z, place.yaw);
+
+  // The ROM's idle clip, with every track that targets a leg bone removed. The walker owns the legs and
+  // overwrites them after the mixer runs; dropping the tracks rather than fighting over them keeps the
+  // mixer from spending work it cannot keep, and makes the split explicit.
+  const legBones = new Set(map.legs.flatMap(l => l.bones).map(b => map.names[b]));
+  const idle = (assets.template.animations || []).find(c => /idle/i.test(c.name)) || assets.template.animations?.[0] || null;
+  if (idle) {
+    const clip = idle.clone();
+    clip.tracks = clip.tracks.filter(t => !legBones.has(t.name.split('.')[0]));
+    e.mixer = new THREE.AnimationMixer(root);
+    e.action = e.mixer.clipAction(clip);
+    e.action.play();
+  }
+
+  stage.set(id, e);
+  buildOverlay(e);
+  buildFaults(e);
+  buildSkeleton(e);
+  applyModelMode();
+  e.headroom = gaitHeadroom(walker.diagnosticFrame());
+  if (select || !selectedId) selectCreature(id);
+  syncSelected();
+  refreshFacts();
+  setStatus(`${stage.size} on stage — ${name}, ${map.legs.length} legs from ${Object.keys(map.names).length} unnamed bones`);
+  return e;
+}
+
+/** How much room a creature of this size needs on the ring. Its own leg span, since sizes differ 4x. */
+function spawnSpacing(map, walker) {
+  const span = Math.max(...map.legs.map(l => l.span)) * walker.unitScale;
+  return Math.max(0.4, span * 4);
+}
+
+function despawn(id) {
+  const e = stage.get(id);
+  if (!e) return;
+  scene.remove(e.walker.object);
+  if (e.overlayGroup) scene.remove(e.overlayGroup);
+  if (e.faultGroup) scene.remove(e.faultGroup);
+  if (e.skel) { scene.remove(e.skel.group); for (const el of e.skel.labels) el.remove(); }
+  for (const el of e.labelEls) el.remove();
+  stage.delete(id);
+  if (selectedId === id) selectCreature(stage.size ? [...stage.keys()][0] : null);
+  syncSelected();
+}
+
+function clearStage() {
+  for (const id of [...stage.keys()]) despawn(id);
+  nextId = 1;
+  // The marks are a shared pool with no owner, so they outlive the creature that laid them unless the
+  // pool is emptied here — skid trails left by a creature that is no longer on stage read as a live fault.
+  clearSkids();
+}
+
+/** Re-lay the ring after the population changes, so nobody is left standing inside somebody else. */
+function relayout() {
+  clearSkids();
+  const all = [...stage.values()];
+  const spacing = Math.max(...all.map(e => spawnSpacing(e.map, e.walker)), 0.4);
+  all.forEach((e, i) => {
+    const p = spawnLayout(i, all.length, spacing);
+    e.walker.placeAt(p.x, p.z, p.yaw);
+  });
+}
+
+/** The slider vector as it stands. One place, so the trial log and a spawn cannot disagree about it. */
+function readSliders() {
+  const v = {};
+  for (const c of CONTROLS) if (c.spec.scope === 'walker' || c.spec.scope === 'rebuild') v[c.spec.key] = Number(c.input.value);
+  return v;
+}
+
+/** Push a creature's own vector back into the panel, so selecting it shows what it is actually running. */
+function showSliders(values) {
+  for (const c of CONTROLS) {
+    if (values[c.spec.key] === undefined) continue;
+    c.input.value = values[c.spec.key];
+    c.show();
+    c.last = Number(c.input.value);
+  }
+}
+
+function selectCreature(id) {
+  selectedId = id;
+  selectedBone = null;
+  syncSelected();
+  if (current) showSliders(current.values);
+  refreshFacts();
+  refreshRolePanel();
+  refreshPosePanel();
+}
+
+/** Rebuild everything the scope covers, keeping each creature's own vector and place. */
+async function respawnScoped() {
+  const targets = scopedEntries();
+  if (!targets.length) return;
+  const keepSelected = selectedId;
+  for (const e of targets) {
+    const values = { ...e.values, worldHeight: pending.worldHeight };
+    const at = { x: e.walker.body.pos.x, z: e.walker.body.pos.z, yaw: e.walker.body.yaw };
+    const name = e.name;
+    despawn(e.id);
+    const fresh = await spawn(name, { values, at });
+    if (keepSelected === e.id) selectCreature(fresh.id);
+  }
+  syncSelected();
+}
+
+// --- poses ---------------------------------------------------------------------------------------
+//
+// Capture and blending live in `stadium-pose.js`; everything here is the scene-graph half. Poses are
+// saved per species, like roles, because a pose is a statement about a rig rather than about one
+// individual — and because that makes it portable to the next Rattata you spawn.
+const POSE_KEY = 'pcw:stadiumPoses';
+let poseSets = {};
+try { poseSets = JSON.parse(localStorage.getItem(POSE_KEY) || '{}') || {}; } catch { poseSets = {}; }
+const savePoses = () => { try { localStorage.setItem(POSE_KEY, JSON.stringify(poseSets)); } catch {} };
+const posesFor = (name) => (poseSets[name] ||= {});
+
+/**
+ * Every animatable object of a creature, by name.
+ *
+ * Pivots AND the `_scale` leaves under them. Measured on Rattata's own clips, the ROM animates 104
+ * translation and 192 rotation channels on pivots and 6 scale channels on leaves — so a pose built from
+ * `map.names` alone, which holds pivots only, would silently drop every scale the file carries.
+ *
+ * Cached per creature: it traverses the whole rig and runs on capture and on every held frame. A respawn
+ * builds a fresh entry, so the cache cannot outlive its scene graph.
+ */
+function poseBones(e) {
+  if (e.poseBones) return e.poseBones;
+  const entry = cache.get(e.name);
+  const wanted = new Set(Object.values(e.map.names));
+  for (const skin of entry?.json?.skins || []) {
+    for (const j of skin.joints) { const n = entry.json.nodes[j]?.name; if (n) wanted.add(n); }
+  }
+  const out = new Map();
+  e.root.traverse((o) => { if (wanted.has(o.name) && !out.has(o.name)) out.set(o.name, o); });
+  e.poseBones = out;
+  return out;
+}
+
+/** Snapshot the creature exactly as it is drawn right now. */
+function capturePoseFrom(e, name) {
+  const pose = emptyPose(name, e.name);
+  for (const [bone, o] of poseBones(e)) {
+    pose.bones[bone] = trs(o.position.toArray(), o.quaternion.toArray(), o.scale.toArray());
+  }
+  return pose;
+}
+
+/** Write a pose onto a creature. Runs after the walker and the mixer, so it is the last word. */
+function applyPoseTo(e, pose) {
+  if (!pose) return;
+  const bones = poseBones(e);
+  for (const [bone, t] of Object.entries(pose.bones)) {
+    const o = bones.get(bone);
+    if (!o) continue;
+    o.position.set(t.p[0], t.p[1], t.p[2]);
+    o.quaternion.set(t.q[0], t.q[1], t.q[2], t.q[3]);
+    o.scale.set(t.s[0], t.s[1], t.s[2]);
+  }
+  e.root.updateMatrixWorld(true);
+}
+
+/** The blend the panel currently describes, or null when there is nothing to hold. */
+function blendedPose(e) {
+  if (!e) return null;
+  const set = posesFor(e.name);
+  const a = set[poseAInput.value] || null;
+  const b = set[poseBInput.value] || null;
+  if (!a && !b) return null;
+  const t = Number(controlByKey('poseBlend')?.input.value ?? 0);
+  return blendPoses(a, b, t, { name: 'held' });
+}
+
+/** Re-map one species from its role document and respawn every creature of it, in place. */
+async function remapSpecies(name) {
+  const entry = cache.get(name);
+  if (!entry) return;
+  entry.map = mapWithRoles(name, entry.json, entry.bin, entry.parent);
+  const keepSelected = selectedId;
+  for (const e of [...stage.values()].filter(x => x.name === name)) {
+    const values = { ...e.values };
+    const at = { x: e.walker.body.pos.x, z: e.walker.body.pos.z, yaw: e.walker.body.yaw };
+    despawn(e.id);
+    const fresh = await spawn(name, { values, at });
+    if (keepSelected === e.id) selectCreature(fresh.id);
+  }
+  syncSelected();
+  refreshFacts();
+  refreshRolePanel();
+}
+
+// --- overlay ------------------------------------------------------------------------------------
+//
+// Draws what the mapper decided and what the sim is balancing on. Both are read back from the walker
+// rather than recomputed, because an overlay that can disagree with what it is drawing is worse than
+// no overlay.
+// ONE GROUP PER CREATURE, and drawn only for the selected one unless you ask otherwise. Each creature's
+// overlay is six objects per leg with `frustumCulled` off, so every one of them is transformed and
+// submitted every frame whether or not it is on screen — at a dozen creatures that is the single largest
+// avoidable cost on the stage.
+const TRAIL_LEN = 90;
+function buildOverlay(e) {
+  const { map, walker } = e;
+  if (e.overlayGroup) { scene.remove(e.overlayGroup); e.overlayGroup = null; }
+  const overlayGroup = new THREE.Group();
+  e.overlayGroup = overlayGroup;
+  overlayGroup.visible = false;
+
+  const legMat = new THREE.LineBasicMaterial({ color: 0x5fd08a });
+  const jointMat = new THREE.MeshBasicMaterial({ color: 0x5fd08a });
+  const targetMat = new THREE.MeshBasicMaterial({ color: 0xd85fb0 });
+  const trailMat = new THREE.LineBasicMaterial({ color: 0x4a86c8, transparent: true, opacity: 0.6 });
+  const r = Math.max(0.004, map.units.height * walker.unitScale * 0.012);
+
+  const parts = walker.legs.map(() => {
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+      [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]), legMat);
+    const joints = [0, 1, 2].map(() => new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), jointMat));
+    const target = new THREE.Mesh(new THREE.SphereGeometry(r * 0.9, 8, 6), targetMat);
+    const trail = new THREE.Line(new THREE.BufferGeometry().setAttribute(
+      'position', new THREE.BufferAttribute(new Float32Array(TRAIL_LEN * 3), 3)), trailMat);
+    trail.userData.buf = [];
+    for (const o of [line, target, trail, ...joints]) { o.frustumCulled = false; overlayGroup.add(o); }
+    return { line, joints, target, trail };
+  });
+
+  const support = new THREE.LineLoop(
+    new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(8 * 3), 3)),
+    new THREE.LineBasicMaterial({ color: 0xffca28, transparent: true, opacity: 0.8 }));
+  support.frustumCulled = false;
+  overlayGroup.add(support);
+
+  overlayGroup.userData = { parts, support };
+  scene.add(overlayGroup);
+}
+
+function updateOverlay(e, drawn) {
+  const overlayGroup = e.overlayGroup;
+  if (!overlayGroup) return;
+  overlayGroup.visible = overlayInput.checked && drawn;
+  if (!overlayGroup.visible) return;
+  const { parts, support } = overlayGroup.userData;
+
+  e.walker.legs.forEach((leg, i) => {
+    const part = parts[i];
+    part.line.geometry.setFromPoints([leg.hipWorld, leg.kneeWorld, leg.end]);
+    part.joints.forEach((m, k) => m.position.copy([leg.hipWorld, leg.kneeWorld, leg.end][k]));
+    part.target.visible = showTargetsInput.checked;
+    part.target.position.copy(leg.target);
+
+    part.trail.visible = showTrailsInput.checked;
+    if (showTrailsInput.checked) {
+      const buf = part.trail.userData.buf;
+      buf.push(leg.end.x, leg.end.y + 0.002, leg.end.z);
+      while (buf.length > TRAIL_LEN * 3) buf.shift();
+      const arr = part.trail.geometry.attributes.position.array;
+      for (let k = 0; k < arr.length; k++) arr[k] = buf[Math.min(k, buf.length - 1)] ?? 0;
+      part.trail.geometry.attributes.position.needsUpdate = true;
+    } else {
+      part.trail.userData.buf.length = 0;
+    }
+  });
+
+  // The polygon the sim actually balanced on, taken straight off the last step.
+  const sup = e.walker.state.support;
+  support.visible = showSupportInput.checked && !!sup && sup.poly.length >= 3;
+  if (support.visible) {
+    const arr = support.geometry.attributes.position.array;
+    const n = Math.min(sup.poly.length, 8);
+    for (let i = 0; i < 8; i++) {
+      const p = sup.poly[Math.min(i, n - 1)];
+      arr[i * 3] = p.x; arr[i * 3 + 1] = p.y + 0.003; arr[i * 3 + 2] = p.z;
+    }
+    support.geometry.attributes.position.needsUpdate = true;
+  }
+}
+
+// --- fault markers --------------------------------------------------------------------------------
+//
+// Separate from the rig overlay on purpose. The overlay answers "what did the mapper decide", which you
+// look at once; this answers "which foot is failing right now", which you want on screen the whole time
+// you are dragging a slider. Everything here is read off `createLegWatch`, the same scoring the coach
+// panel and the Node sweep use, so a red foot and the word DRAGGING can never mean different things.
+const labelHost = document.getElementById('faultlabels');
+
+// Skid marks are the most legible of the three signals, because dragging is a thing that happens over a
+// stance and a per-frame marker can only ever show an instant of it. A trail of red on the ground is the
+// whole stance at once, and it stays there after the foot has moved on.
+const SKID_MAX = 900, SKID_LIFE = 2.6;
+const skidPos = new Float32Array(SKID_MAX * 6), skidCol = new Float32Array(SKID_MAX * 6);
+const skidAge = new Float32Array(SKID_MAX).fill(Infinity);
+let skidNext = 0;
+const skidGeo = new THREE.BufferGeometry();
+skidGeo.setAttribute('position', new THREE.BufferAttribute(skidPos, 3));
+skidGeo.setAttribute('color', new THREE.BufferAttribute(skidCol, 3));
+const skidMesh = new THREE.LineSegments(skidGeo, new THREE.LineBasicMaterial({ vertexColors: true }));
+skidMesh.frustumCulled = false;
+skidMesh.renderOrder = 3;
+scene.add(skidMesh);
+function clearSkids() { skidAge.fill(Infinity); skidCol.fill(0); skidGeo.attributes.color.needsUpdate = true; }
+
+const C_CLEAN = new THREE.Color(0x6fbf8f), C_SWING = new THREE.Color(0x4a86c8);
+const C_WARN = new THREE.Color(0xd8a657), C_BAD = new THREE.Color(0xe5807a), C_REACH = new THREE.Color(0xd85fb0);
+const tmpColor = new THREE.Color();
+
+function buildFaults(e) {
+  const walker = e.walker;
+  if (e.faultGroup) { scene.remove(e.faultGroup); e.faultGroup = null; }
+  for (const el of e.labelEls) el.remove();
+  e.labelEls = [];
+  // A fresh watch per creature. Two of the same species would otherwise inherit each other's smoothed
+  // scores, and the new one would look bad for its first second on screen.
+  e.legWatch = createLegWatch(limitsNow());
+  const faultGroup = new THREE.Group();
+  e.faultGroup = faultGroup;
+
+  const span = walker.legs.reduce((m, l) => Math.max(m, l.l1 + l.l2), 0.1);
+  const ringGeo = new THREE.RingGeometry(0.6, 1.0, 28);
+  ringGeo.rotateX(-Math.PI / 2);
+
+  e.faultParts = walker.legs.map((leg) => {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x6fbf8f, transparent: true, opacity: 0.85, depthWrite: false });
+    const ring = new THREE.Mesh(ringGeo, mat);
+    // A second ring that only ever expands and fades, so a tap reads as an event rather than a state.
+    const burstMat = new THREE.MeshBasicMaterial({ color: 0xffca28, transparent: true, opacity: 0, depthWrite: false });
+    const burst = new THREE.Mesh(ringGeo, burstMat);
+    // The gap the solver could not close, drawn as the line it literally is.
+    const stick = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0xd85fb0 }));
+    for (const o of [ring, burst, stick]) { o.frustumCulled = false; o.renderOrder = 4; faultGroup.add(o); }
+
+    const el = document.createElement('div');
+    el.className = 'faultlabel';
+    el.style.display = 'none';
+    labelHost.append(el);
+    e.labelEls.push(el);
+    return { ring, mat, burst, burstMat, stick, base: span * 0.16, skid: null, label: el };
+  });
+  scene.add(faultGroup);
+}
+
+const projected = new THREE.Vector3();
+function updateFaults(e, dt, drawn) {
+  const faultGroup = e.faultGroup;
+  if (!faultGroup) return;
+  const on = faultsInput.checked && drawn;
+  faultGroup.visible = on;
+  const walker = e.walker;
+  const legs = e.legWatch.legs;
+  const faultParts = e.faultParts;
+
+  for (let i = 0; i < faultParts.length; i++) {
+    const p = faultParts[i], leg = walker.legs[i], w = legs?.[i];
+    if (!leg) continue;
+    const foot = leg.drawnFoot;
+    const groundY = terrainHeight(foot.x, foot.z) + 0.004;
+
+    if (on) {
+      const drag = w ? w.drag : 0;
+      // Pink when running out of leg is what is driving the score, amber-to-red when it is sliding. Two
+      // different repairs, so they get two different colours rather than one severity ramp.
+      const clampedLead = w && w.clamped / GAIT_LIMITS.clampedFrameLimit > w.skateFrames / GAIT_LIMITS.dragFrameLimit
+        && w.clamped > GAIT_LIMITS.clampedFrameLimit;
+      if (leg.stepping) tmpColor.copy(C_SWING);
+      else if (clampedLead) tmpColor.copy(C_REACH);
+      else if (drag <= 1) tmpColor.copy(C_CLEAN).lerp(C_WARN, drag);
+      else tmpColor.copy(C_WARN).lerp(C_BAD, Math.min(1, drag - 1));
+      p.mat.color.copy(tmpColor);
+      p.mat.opacity = leg.stepping ? 0.35 : 0.5 + 0.45 * Math.min(1, drag);
+      // Size carries severity as well as colour, so the marker survives being small on screen and does
+      // not rely on someone distinguishing amber from green at 40 pixels.
+      const r = p.base * (1 + 0.7 * Math.min(1.5, drag)) * (leg.stepping ? 0.6 : 1);
+      p.ring.scale.set(r, r, r);
+      p.ring.position.set(foot.x, groundY, foot.z);
+
+      const tap = w ? w.tap : 0;
+      p.burst.visible = tap > 0.02;
+      if (p.burst.visible) {
+        const s = p.base * (1.2 + 2.6 * (1 - tap));
+        p.burst.scale.set(s, s, s);
+        p.burst.position.set(foot.x, groundY + 0.002, foot.z);
+        p.burstMat.opacity = tap * 0.9;
+      }
+
+      // Only drawn once the gap is worth looking at. A permanently visible stick would be noise, and the
+      // solver is always a fraction of a millimetre behind.
+      const gapSpan = w ? w.gapSpan : 0;
+      p.stick.visible = gapSpan > 0.02;
+      if (p.stick.visible) p.stick.geometry.setFromPoints([leg.end, foot]);
+    }
+
+    // Skid marks are recorded whether or not the markers are shown — turning the overlay on should not
+    // start the history from nothing.
+    const sliding = w && !leg.stepping && leg.targetGrounded && w.slideNow > 0.25;
+    if (sliding && skidsInput.checked) {
+      if (!p.skid) p.skid = new THREE.Vector3(foot.x, groundY, foot.z);
+      else if (p.skid.distanceTo(foot) > p.base * 0.05) {
+        const k = skidNext * 6;
+        skidPos[k] = p.skid.x; skidPos[k + 1] = p.skid.y; skidPos[k + 2] = p.skid.z;
+        skidPos[k + 3] = foot.x; skidPos[k + 4] = groundY; skidPos[k + 5] = foot.z;
+        skidAge[skidNext] = 0;
+        skidNext = (skidNext + 1) % SKID_MAX;
+        p.skid.set(foot.x, groundY, foot.z);
+        skidGeo.attributes.position.needsUpdate = true;
+      }
+    } else {
+      p.skid = null;
+    }
+
+    // A callout only for a leg that is actually failing. Labelling all fourteen feet at once would make
+    // the creature unreadable, which is the failure mode of every debug overlay ever written.
+    const el = p.label;
+    const bad = w && !leg.stepping && (w.drag > 0.7 || w.tap > 0.3);
+    if (!on || !bad) { el.style.display = 'none'; continue; }
+    projected.copy(foot).project(camera);
+    if (projected.z > 1) { el.style.display = 'none'; continue; }
+    el.style.display = 'block';
+    el.style.left = `${(projected.x * 0.5 + 0.5) * innerWidth}px`;
+    el.style.top = `${(-projected.y * 0.5 + 0.5) * innerHeight - 10}px`;
+    const tag = `${leg.row}${leg.side < 0 ? 'L' : 'R'}`;
+    if (w.tap > 0.3) { el.textContent = `${tag} TAP`; el.style.color = '#ffca28'; }
+    else if (w.clamped > 0.3) { el.textContent = `${tag} PAST REACH ${(w.clamped * 100).toFixed(0)}%`; el.style.color = '#d85fb0'; }
+    else { el.textContent = `${tag} DRAG ${(w.skate * 100).toFixed(0)}%`; el.style.color = w.drag > 1 ? '#e5807a' : '#d8a657'; }
+  }
+
+}
+
+// ONCE PER FRAME, not once per creature — the marks are a single shared pool, so ageing them inside
+// `updateFaults` would age them N times as fast on a stage of N and the trails would vanish quicker the
+// more creatures you added.
+function fadeSkids(dt) {
+  // Fade by dimming toward the background rather than by alpha: line materials do not carry per-vertex
+  // opacity, and against a near-black scene the two are indistinguishable.
+  let dirty = false;
+  for (let i = 0; i < SKID_MAX; i++) {
+    if (skidAge[i] === Infinity) continue;
+    skidAge[i] += dt;
+    const k = i * 6;
+    if (skidAge[i] >= SKID_LIFE) {
+      skidAge[i] = Infinity;
+      // Collapsed to zero length rather than coloured out. Fading a retired mark to black is invisible on
+      // the night palette and a black line on the day one, so the only theme-proof way to retire it is to
+      // make it a segment with no length.
+      for (let j = 0; j < 3; j++) skidPos[k + 3 + j] = skidPos[k + j];
+      for (let j = 0; j < 6; j++) skidCol[k + j] = 0;
+      skidGeo.attributes.position.needsUpdate = true;
+      dirty = true;
+      continue;
+    }
+    const f = 1 - skidAge[i] / SKID_LIFE;
+    // Fading toward black is invisible on a pale ground, so on the day palette the mark fades toward
+    // white instead — the same trail, run the other way.
+    for (const o of [0, 3]) {
+      if (skidOnLight) {
+        skidCol[k + o] = 1 - 0.35 * f; skidCol[k + o + 1] = 1 - 0.78 * f; skidCol[k + o + 2] = 1 - 0.80 * f;
+      } else {
+        skidCol[k + o] = 0.9 * f; skidCol[k + o + 1] = 0.32 * f; skidCol[k + o + 2] = 0.29 * f;
+      }
+    }
+    dirty = true;
+  }
+  skidMesh.visible = skidsInput.checked;
+  if (dirty) skidGeo.attributes.color.needsUpdate = true;
+}
+
+// --- skeleton view --------------------------------------------------------------------------------
+//
+// The tool the mapping audit needed. `audit-stadium-rig.mjs` can say that two of Sandslash's four legs
+// share three bones, but a list of `boneNN` names is not something a person can check against a creature
+// — you have to see which part of the animal each name is on. So: every bone drawn as a segment from
+// itself to each of its children, coloured by what the mapper decided it is, and nameable.
+//
+// The colour that earns its place is red: a bone claimed by MORE THAN ONE leg. Nothing else on screen
+// shows that, and it is the exact signature of the mapper walking one limb out to two toes and calling
+// the result two legs.
+const BONE_COLOURS = {
+  legShared: new THREE.Color(0xe5807a),
+  leg: new THREE.Color(0x6fbf8f),
+  foot: new THREE.Color(0x9fe870),
+  knee: new THREE.Color(0x46c2b0),
+  attach: new THREE.Color(0xffca28),
+  spine: new THREE.Color(0xd8a657),
+  head: new THREE.Color(0xd85fb0),
+  tail: new THREE.Color(0x4a86c8),
+  other: new THREE.Color(0x5a6570),
+};
+
+/** What the mapper decided each bone is, keyed by the object name the scene graph uses. */
+function boneRoles(map) {
+  const byName = new Map();
+  const put = (idx, kind, leg = null) => {
+    const name = map.names[idx];
+    if (name === undefined) return;
+    const cur = byName.get(name) || { name, index: idx, kind, legs: [] };
+    // Leg membership wins over everything else, and is COUNTED rather than overwritten — the count is the
+    // whole point.
+    if (kind === 'leg') { cur.kind = 'leg'; cur.legs.push(leg); }
+    else if (cur.kind !== 'leg') cur.kind = kind;
+    byName.set(name, cur);
+  };
+  map.legs.forEach((l, i) => {
+    for (const b of l.bones) put(b, 'leg', `${l.row}${l.side < 0 ? 'L' : 'R'}`);
+    // Marked after the leg pass so the flags survive it, and kept as flags rather than kinds so a foot
+    // bone in two legs still shows up as shared.
+    for (const b of l.footBones || []) { const r = byName.get(map.names[b]); if (r) r.foot = true; }
+    const kneeBone = l.bones[l.kneeIndex];
+    if (kneeBone !== undefined) { const r = byName.get(map.names[kneeBone]); if (r) r.knee = true; }
+    if (l.attach !== undefined) put(l.attach, 'attach');
+    if (l.tipMarker !== undefined) put(l.tipMarker, 'leg', `${l.row}${l.side < 0 ? 'L' : 'R'}`);
+  });
+  for (const b of map.spine || []) put(b, 'spine');
+  for (const b of map.head?.bones || []) put(b, 'head');
+  for (const b of map.tail?.bones || []) put(b, 'tail');
+  for (const [idx, name] of Object.entries(map.names)) if (!byName.has(name)) put(Number(idx), 'other');
+  return byName;
+}
+
+function buildSkeleton(e) {
+  if (e.skel) { scene.remove(e.skel.group); for (const el of e.skel.labels) el.remove(); }
+  const roles = boneRoles(e.map);
+  const objs = [];
+  e.root.traverse((o) => { if (roles.has(o.name)) objs.push(o); });
+
+  // One segment per bone-to-child link, plus a stub for a leaf so a tip is still visible.
+  const links = [];
+  for (const o of objs) {
+    const kids = o.children.filter(c => roles.has(c.name));
+    if (kids.length) for (const k of kids) links.push({ from: o, to: k, role: roles.get(o.name) });
+    else links.push({ from: o, to: null, role: roles.get(o.name) });
+  }
+
+  const pos = new Float32Array(links.length * 6);
+  const col = new Float32Array(links.length * 6);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }));
+  lines.frustumCulled = false;
+  lines.renderOrder = 6;
+
+  const jointGeo = new THREE.BufferGeometry();
+  jointGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(objs.length * 3), 3));
+  jointGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(objs.length * 3), 3));
+  const joints = new THREE.Points(jointGeo, new THREE.PointsMaterial({
+    size: 5, sizeAttenuation: false, vertexColors: true, depthTest: false,
+  }));
+  joints.frustumCulled = false;
+  joints.renderOrder = 7;
+
+  const group = new THREE.Group();
+  group.add(lines, joints);
+  group.visible = false;
+  scene.add(group);
+
+  const labels = objs.map(() => {
+    const el = document.createElement('div');
+    el.className = 'bonelabel';
+    el.style.display = 'none';
+    labelHost.append(el);
+    return el;
+  });
+
+  e.skel = { group, lines, joints, links, objs, roles, labels, pos, col };
+}
+
+const _bw = new THREE.Vector3(), _bw2 = new THREE.Vector3();
+function colourFor(role) {
+  if (!role) return BONE_COLOURS.other;
+  if (role.kind === 'leg') {
+    if (role.legs.length > 1) return BONE_COLOURS.legShared;
+    if (role.foot) return BONE_COLOURS.foot;
+    if (role.knee) return BONE_COLOURS.knee;
+    return BONE_COLOURS.leg;
+  }
+  return BONE_COLOURS[role.kind] || BONE_COLOURS.other;
+}
+function isLegish(role) {
+  return role && (role.kind === 'leg' || role.kind === 'attach' || role.kind === 'spine'
+    || role.kind === 'head' || role.kind === 'tail');
+}
+
+function updateSkeleton(e, drawn) {
+  const s = e.skel;
+  if (!s) return;
+  const mode = skelModeInput.value;
+  const on = mode !== 'off' && drawn;
+  s.group.visible = on;
+  const labelMode = boneLabelsInput.value;
+  if (!on) { for (const el of s.labels) el.style.display = 'none'; return; }
+
+  const showAll = mode === 'all';
+  s.links.forEach((link, n) => {
+    const k = n * 6;
+    // A hidden link, and a leaf with nothing to point at, both collapse to a zero-length segment. That
+    // draws nothing on either palette, where colouring it out would leave a stray line on one of them.
+    if ((!showAll && !isLegish(link.role)) || !link.to) {
+      link.from.getWorldPosition(_bw);
+      for (let j = 0; j < 3; j++) { s.pos[k + j] = _bw.getComponent(j); s.pos[k + 3 + j] = _bw.getComponent(j); }
+      for (let j = 0; j < 6; j++) s.col[k + j] = 0;
+      return;
+    }
+    link.from.getWorldPosition(_bw);
+    link.to.getWorldPosition(_bw2);
+    const c = colourFor(link.role);
+    s.pos[k] = _bw.x; s.pos[k + 1] = _bw.y; s.pos[k + 2] = _bw.z;
+    s.pos[k + 3] = _bw2.x; s.pos[k + 4] = _bw2.y; s.pos[k + 5] = _bw2.z;
+    for (const o of [0, 3]) { s.col[k + o] = c.r; s.col[k + o + 1] = c.g; s.col[k + o + 2] = c.b; }
+  });
+  s.lines.geometry.attributes.position.needsUpdate = true;
+  s.lines.geometry.attributes.color.needsUpdate = true;
+
+  const jp = s.joints.geometry.attributes.position.array;
+  const jc = s.joints.geometry.attributes.color.array;
+  s.objs.forEach((o, i) => {
+    const role = s.roles.get(o.name);
+    const el = s.labels[i];
+    const visible = showAll || isLegish(role);
+    if (!visible) {
+      jp[i * 3] = 0; jp[i * 3 + 1] = -9999; jp[i * 3 + 2] = 0;
+      jc[i * 3] = jc[i * 3 + 1] = jc[i * 3 + 2] = 0;
+      el.style.display = 'none';
+      return;
+    }
+    o.getWorldPosition(_bw);
+    jp[i * 3] = _bw.x; jp[i * 3 + 1] = _bw.y; jp[i * 3 + 2] = _bw.z;
+    const c = colourFor(role);
+    const lit = o.name === selectedBone;
+    jc[i * 3] = lit ? 1 : c.r; jc[i * 3 + 1] = lit ? 1 : c.g; jc[i * 3 + 2] = lit ? 1 : c.b;
+
+    const wantLabel = labelMode === 'all' || (labelMode === 'legs' && role?.kind === 'leg') || lit;
+    if (!wantLabel) { el.style.display = 'none'; return; }
+    projected.copy(_bw).project(camera);
+    if (projected.z > 1) { el.style.display = 'none'; return; }
+    el.style.display = 'block';
+    el.style.left = `${(projected.x * 0.5 + 0.5) * innerWidth}px`;
+    el.style.top = `${(-projected.y * 0.5 + 0.5) * innerHeight}px`;
+    el.textContent = o.name + (role?.legs?.length > 1 ? ` (${role.legs.join('+')})` : '');
+    el.style.color = lit ? '#ffffff' : `#${colourFor(role).getHexString()}`;
+  });
+  s.joints.geometry.attributes.position.needsUpdate = true;
+  s.joints.geometry.attributes.color.needsUpdate = true;
+}
+
+let selectedBone = null;
+function describeBone(e, name) {
+  const role = e.skel?.roles.get(name);
+  const obj = e.skel?.objs.find(o => o.name === name);
+  if (!role || !obj) { boneInfoEl.textContent = ''; return; }
+  obj.getWorldPosition(_bw);
+  const kids = obj.children.filter(c => e.skel.roles.has(c.name)).map(c => c.name);
+  const parent = obj.parent && e.skel.roles.has(obj.parent.name) ? obj.parent.name : '—';
+  const lines = [
+    `${name}  node ${role.index}`,
+    `role      ${role.kind}${role.legs.length ? ` in ${role.legs.join(', ')}` : ''}`,
+    `parent    ${parent}`,
+    `children  ${kids.join(', ') || '—'}`,
+    `world     ${_bw.x.toFixed(3)}, ${_bw.y.toFixed(3)}, ${_bw.z.toFixed(3)}`,
+  ];
+  if (role.legs.length > 1) {
+    lines.push('', `IN ${role.legs.length} LEGS AT ONCE — the mapper has split one limb into ${role.legs.length}.`);
+  }
+  boneInfoEl.textContent = lines.join('\n');
+}
+
+/** Bone segments as capsules, so the same tested picker handles bones and creatures alike. */
+function boneCapsules(e) {
+  if (!e.skel || skelModeInput.value === 'off') return [];
+  const showAll = skelModeInput.value === 'all';
+  const span = Math.max(...e.map.legs.map(l => l.span)) * e.walker.unitScale;
+  const out = [];
+  for (const link of e.skel.links) {
+    if (!link.to) continue;
+    if (!showAll && !isLegish(link.role)) continue;
+    link.from.getWorldPosition(_bw);
+    link.to.getWorldPosition(_bw2);
+    out.push({ id: link.from.name, ax: _bw.x, ay: _bw.y, az: _bw.z, bx: _bw2.x, by: _bw2.y, bz: _bw2.z, radius: span * 0.06 });
+  }
+  return out;
+}
+
+// --- panel wiring -------------------------------------------------------------------------------
+const speciesInput = document.getElementById('species');
+for (const [group, names] of SPECIES) {
+  const g = document.createElement('optgroup');
+  g.label = group;
+  for (const n of names) {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = PRETTY(n);
+    g.append(o);
+  }
+  speciesInput.append(g);
+}
+speciesInput.value = '019_rattata';
+
+const baseGaitInput = document.getElementById('baseGait');
+const walkingInput = document.getElementById('walking');
+const idleInput = document.getElementById('idleClip');
+const overlayInput = document.getElementById('overlay');
+const faultsInput = document.getElementById('faults');
+const skidsInput = document.getElementById('skids');
+const showTargetsInput = document.getElementById('showTargets');
+const showSupportInput = document.getElementById('showSupport');
+const showTrailsInput = document.getElementById('showTrails');
+// --- the workshop panel theme -----------------------------------------------------------------------
+//
+// `installPanelTheme` writes a stylesheet that also OWNS THE PANEL'S POSITION — it docks to the right
+// edge, which is right for the viewers it was built for and wrong for a page with a panel on each side.
+// So it is installed for both panels and then a small override puts them back where they belong, and
+// bridges this page's `<details>` markup onto the `.sec` card look the theme styles.
+let themeStyles = null;
+function setPanelTheme(on) {
+  if (on && !themeStyles) {
+    installPanelTheme('#panel', { styleId: 'wpt-left' });
+    installPanelTheme('#coach', { styleId: 'wpt-right' });
+    const fix = document.createElement('style');
+    fix.id = 'wpt-fix';
+    fix.textContent = `
+      /* THE ONE THAT ACTUALLY MATTERS. The theme makes its root a flex column, which is right for a panel
+         built from a fixed head plus one scrolling body — and wrong here, where the sections ARE the
+         children. As flex items they shrink to share the height, so every section gets squashed to a few
+         pixels and its contents vanish: the species dropdown disappeared entirely. This page's panel is a
+         plain scrolling column, so it says so. */
+      #panel, #coach { display: block; }
+      /* The theme's .row pushes its label to the far edge, which reads as a heading rather than as the
+         caption of the checkbox beside it. */
+      #panel .row, #coach .row { justify-content: flex-start; }
+      #panel { left: 10px; right: auto; top: 10px; bottom: auto; width: 300px;
+               max-height: calc(100vh - 20px); overflow-y: auto; border-right: 1px solid var(--wui-line);
+               border-radius: 8px; box-shadow: 0 10px 28px rgba(0,0,0,.10); }
+      #coach { left: auto; right: 10px; top: 10px; bottom: auto; width: 340px;
+               max-height: calc(100vh - 20px); overflow-y: auto; border-right: 1px solid var(--wui-line);
+               border-radius: 8px; }
+      #panel header, #coach header { border-bottom: 1px solid var(--wui-line); padding: 11px 13px 9px; }
+      #panel h1, #coach h2 { color: var(--wui-text); font-weight: 750; }
+      #panel p.sub, #coach p.sub { color: var(--wui-muted); }
+      #panel details, #coach details { margin: 0 10px 7px; border: 1px solid var(--wui-line);
+                                       border-radius: 7px; background: var(--wui-surface); overflow: hidden; }
+      #panel summary, #coach summary { padding: 9px 10px; background: #fbfbfb; font-size: 12px;
+                                       font-weight: 650; text-transform: none; letter-spacing: 0;
+                                       color: var(--wui-text); border-bottom: 1px solid #ededed; }
+      #panel summary:hover, #coach summary:hover { color: var(--wui-hover-text); background: var(--wui-hover); }
+      #panel details:not([open]) summary { border-bottom: 0; }
+      #panel .body { padding: 8px 10px 10px; }
+      #coach .cbody { padding: 8px 10px 10px; }
+      #coach h3 { color: var(--wui-muted); }
+      .ctl > label { color: var(--wui-muted); }
+      .ctl > label b { color: var(--wui-accent); }
+      .hint { color: var(--wui-muted); }
+      #facts, #stats, #group, #measured, #delta, .terms { color: var(--wui-text); }
+      .terms b { color: var(--wui-muted); }
+      .gauge .bar { background: #e8e8e8; }
+      .card { background: var(--wui-surface); border-color: var(--wui-line); }
+      .card .sym { color: var(--wui-text); }
+      .card .ev, .card .why { color: var(--wui-muted); }
+      .stagerow { color: var(--wui-muted); }
+      .stagerow:hover { background: var(--wui-hover); color: var(--wui-hover-text); }
+      .stagerow.sel { background: #fff2e9; color: #a94305; }
+      .stagerow.sel b, .stagerow b { color: var(--wui-accent); }
+      .pickrow { color: var(--wui-text); }
+      #status { color: var(--wui-muted); }
+    `;
+    document.head.appendChild(fix);
+    themeStyles = ['wpt-left', 'wpt-right', 'wpt-fix'].map(id => document.getElementById(id));
+  }
+  for (const s of themeStyles || []) if (s) s.disabled = !on;
+}
+
+const drawAllInput = document.getElementById('drawAll');
+const sceneThemeInput = document.getElementById('sceneTheme');
+const lightPanelsInput = document.getElementById('lightPanels');
+const modelModeInput = document.getElementById('modelMode');
+const skelModeInput = document.getElementById('skelMode');
+const boneLabelsInput = document.getElementById('boneLabels');
+const boneInfoEl = document.getElementById('boneInfo');
+const poseSection = document.getElementById('poseSection');
+const poseNameInput = document.getElementById('poseName');
+const poseAInput = document.getElementById('poseA');
+const poseBInput = document.getElementById('poseB');
+const poseHoldInput = document.getElementById('poseHold');
+const poseStatusEl = document.getElementById('poseStatus');
+const poseJsonEl = document.getElementById('poseJson');
+const roleSection = document.getElementById('roleSection');
+const roleLegInput = document.getElementById('roleLeg');
+const roleStatusEl = document.getElementById('roleStatus');
+const roleWarnEl = document.getElementById('roleWarn');
+const roleJsonEl = document.getElementById('roleJson');
+const strayModeInput = document.getElementById('strayMode');
+const strayReadoutEl = document.getElementById('strayReadout');
+const skipRiskyInput = document.getElementById('skipRisky');
+const proposalEl = document.getElementById('proposal');
+const voteStateEl = document.getElementById('voteState');
+const trialSummaryEl = document.getElementById('trialSummary');
+const setpointInput = document.getElementById('setpoint');
+const setpointCountEl = document.getElementById('setpointCount');
+const camModeInput = document.getElementById('camMode');
+const scopeSelect = document.getElementById('scope');
+const scopeCountEl = document.getElementById('scopeCount');
+const stageListEl = document.getElementById('stageList');
+const groupEl = document.getElementById('group');
+const groundShapeInput = document.getElementById('groundShape');
+const facts = document.getElementById('facts');
+const warn = document.getElementById('warn');
+const statsEl = document.getElementById('stats');
+
+// Changing the dropdown no longer swaps the creature — it chooses what "add one" will add. Swapping was
+// the only thing it could mean when the stage held exactly one.
+speciesInput.addEventListener('change', savePrefs);
+document.getElementById('addOne').addEventListener('click', () => addCreature(1));
+document.getElementById('addFive').addEventListener('click', () => addCreature(5));
+document.getElementById('removeSel').addEventListener('click', () => { if (selectedId) { despawn(selectedId); relayout(); refreshStage(); } });
+document.getElementById('clearAll').addEventListener('click', () => { clearStage(); refreshStage(); });
+scopeSelect.addEventListener('change', () => { refreshStage(); savePrefs(); });
+camModeInput.addEventListener('change', savePrefs);
+sceneThemeInput.addEventListener('change', () => { applySceneTheme(sceneThemeInput.value); savePrefs(); });
+modelModeInput.addEventListener('change', () => { applyModelMode(); savePrefs(); });
+for (const el of [skelModeInput, boneLabelsInput]) el.addEventListener('change', savePrefs);
+strayModeInput.addEventListener('change', () => { applyStray(); savePrefs(); });
+
+// --- the pose scrubber ----------------------------------------------------------------------------
+
+function refreshPosePanel() {
+  if (!poseStatusEl) return;
+  if (!current) { poseStatusEl.textContent = 'No creature selected.'; return; }
+  const set = posesFor(current.name);
+  const names = Object.keys(set).sort();
+  for (const sel of [poseAInput, poseBInput]) {
+    const keep = sel.value;
+    sel.innerHTML = ['<option value="">—</option>', ...names.map(n => `<option value="${n}">${n}</option>`)].join('');
+    if (names.includes(keep)) sel.value = keep;
+  }
+  const a = set[poseAInput.value], b = set[poseBInput.value];
+  const apart = a && b ? poseDistance(a, b) * 180 / Math.PI : null;
+  poseStatusEl.textContent = [
+    `${names.length} pose(s) saved for ${PRETTY(current.name)}`,
+    a ? `${Object.keys(a.bones).length} bones captured` : null,
+    // The number that says whether a blend is worth looking at: two poses a degree apart cannot show you
+    // anything, and the slider will feel broken rather than subtle.
+    apart != null ? `the two are ${apart.toFixed(0)}° apart at their widest bone` : null,
+    // Said plainly, because dragging a slider that changes nothing on screen reads as a broken slider
+    // rather than as a switch you have not turned on.
+    (a || b) && !poseHoldInput.checked ? 'hold is off, so the blend is not being drawn' : null,
+  ].filter(Boolean).join(' · ');
+}
+
+document.getElementById('poseCapture').addEventListener('click', () => {
+  if (!current) return;
+  const name = (poseNameInput.value || '').trim() || `pose ${Object.keys(posesFor(current.name)).length + 1}`;
+  const pose = capturePoseFrom(current, name);
+  const v = validatePose(pose);
+  if (!v.ok) { showError(new Error(`cannot capture: ${v.problems.join('; ')}`)); return; }
+  posesFor(current.name)[name] = pose;
+  savePoses();
+  poseNameInput.value = '';
+  // Newly captured is what you want to look at, so aim the blend's far end at it.
+  poseBInput.value = name;
+  refreshPosePanel();
+  if (!poseAInput.value) { poseAInput.value = name; refreshPosePanel(); }
+});
+
+document.getElementById('poseRest').addEventListener('click', () => {
+  // Worth having as a named key: the authored pose is the only one these files carry that is not part of
+  // a clip, and it is what every other pose reads as a departure from.
+  if (!current) return;
+  const pose = restPoseFrom(current);
+  if (!pose) { showError(new Error('could not read the rest pose from the glTF nodes')); return; }
+  posesFor(current.name).rest = pose;
+  savePoses();
+  poseAInput.value = 'rest';
+  refreshPosePanel();
+});
+
+/** The rig's authored pose, read from the glTF nodes rather than from whatever is on screen. */
+function restPoseFrom(e) {
+  const entry = cache.get(e.name);
+  if (!entry) return null;
+  const pose = emptyPose('rest', e.name);
+  // Indexed over every glTF node, not just the pivots, so the `_scale` leaves resolve too.
+  const byName = new Map();
+  entry.json.nodes.forEach((n, i) => { if (n.name && !byName.has(n.name)) byName.set(n.name, i); });
+  for (const [bone] of poseBones(e)) {
+    const node = entry.json.nodes[byName.get(bone)];
+    if (!node) continue;
+    pose.bones[bone] = trs(node.translation || [0, 0, 0], node.rotation || [0, 0, 0, 1], node.scale || [1, 1, 1]);
+  }
+  return Object.keys(pose.bones).length ? pose : null;
+}
+
+document.getElementById('poseDelete').addEventListener('click', () => {
+  if (!current) return;
+  const name = poseBInput.value || poseAInput.value;
+  if (!name) return;
+  delete posesFor(current.name)[name];
+  savePoses();
+  refreshPosePanel();
+});
+
+document.getElementById('poseExport').addEventListener('click', () => {
+  if (!current) return;
+  poseJsonEl.style.display = 'block';
+  poseJsonEl.value = JSON.stringify(posesFor(current.name), null, 1);
+  poseJsonEl.select();
+});
+
+document.getElementById('poseImport').addEventListener('click', () => {
+  if (!current) return;
+  if (poseJsonEl.style.display === 'none' || !poseJsonEl.value.trim()) {
+    poseJsonEl.style.display = 'block';
+    poseStatusEl.textContent = 'Paste poses here, then press import again.';
+    return;
+  }
+  let data = null;
+  try { data = JSON.parse(poseJsonEl.value); } catch (e) { showError(new Error(`pose JSON: ${e.message}`)); return; }
+  const kept = {};
+  const bad = [];
+  for (const [name, pose] of Object.entries(data || {})) {
+    const v = validatePose(pose);
+    if (v.ok) kept[name] = { ...pose, name, species: current.name };
+    else bad.push(`${name}: ${v.problems.join(', ')}`);
+  }
+  poseSets[current.name] = { ...posesFor(current.name), ...kept };
+  savePoses();
+  refreshPosePanel();
+  if (bad.length) showError(new Error(`skipped ${bad.length}: ${bad.slice(0, 2).join(' | ')}`));
+});
+
+for (const el of [poseAInput, poseBInput]) el.addEventListener('change', refreshPosePanel);
+poseHoldInput.addEventListener('change', () => {
+  // Coming off a hold, the walker has kept simulating underneath and its own pose is one frame away.
+  if (!poseHoldInput.checked && current) current.walker.applyPose();
+  refreshPosePanel();
+  savePrefs();
+});
+
+// --- the bone role editor ------------------------------------------------------------------------
+
+/** Redraw the panel from the document being edited. Cheap, so it runs after every assignment. */
+function refreshRolePanel() {
+  if (!roleStatusEl) return;
+  if (!current) { roleStatusEl.textContent = 'No creature selected.'; roleWarnEl.textContent = ''; return; }
+  const name = current.name;
+  const doc = roleDocs[name] || null;
+  const entry = cache.get(name);
+  const compiled = doc && entry ? compileRoles(doc, { parent: entry.parent, names: current.map.names }) : null;
+
+  const bone = selectedBoneId();
+  const held = bone != null && doc?.bones[bone];
+  roleStatusEl.innerHTML = [
+    `<b>${PRETTY(name)}</b> — ${doc ? 'edited roles' : 'mapper defaults'}`,
+    bone == null
+      ? 'No bone picked. Turn the skeleton on and click one.'
+      : `picked <b>${current.map.names[bone]}</b>${held ? ` — ${held.role} of leg ${held.leg}` : ' — unassigned'}`,
+    compiled ? `${compiled.legs.length} leg(s) compile` : '',
+  ].filter(Boolean).join('<br>');
+
+  // Leg choices: whatever the document already names, plus a fresh row so a limb can be added.
+  const keys = doc ? legKeys(doc) : [];
+  const rows = keys.map(k => parseLegKey(k).row);
+  const nextRow = rows.length ? Math.max(...rows) + 1 : 0;
+  const options = [...keys, legKey(nextRow, -1), legKey(nextRow, 1)];
+  const keep = roleLegInput.value;
+  roleLegInput.innerHTML = options.map(k => `<option value="${k}">${k}</option>`).join('');
+  if (options.includes(keep)) roleLegInput.value = keep;
+
+  roleWarnEl.innerHTML = compiled && compiled.warnings.length
+    ? `<span style="color:#e5a05a">${compiled.warnings.join('<br>')}</span>`
+    : '';
+}
+
+/** Give the picked bone a role. Nothing is applied to the creature until "apply and respawn". */
+function assignPickedBone(role) {
+  if (!current) return;
+  const bone = selectedBoneId();
+  if (bone == null) { roleStatusEl.textContent = 'Pick a bone first — turn the skeleton on and click one.'; return; }
+  const name = current.name;
+  const key = roleLegInput.value || legKey(0, -1);
+  let doc = roleDocFor(name);
+  if (role === 'attach') doc = setAttach(doc, key, bone);
+  else if (role === null) doc = assignBone(doc, bone, { leg: null, role: null });
+  else doc = assignBone(doc, bone, { leg: key, role });
+  roleDocs[name] = doc;
+  saveRoles();
+  refreshRolePanel();
+}
+
+for (const [id, role] of [['roleAsLeg', 'leg'], ['roleAsKnee', 'knee'], ['roleAsFoot', 'foot'],
+                          ['roleAsAttach', 'attach'], ['roleClear', null]]) {
+  document.getElementById(id).addEventListener('click', () => assignPickedBone(role));
+}
+
+document.getElementById('roleOpen').addEventListener('click', () => {
+  roleSection.open = true;
+  roleSection.scrollIntoView({ block: 'nearest' });
+  refreshRolePanel();
+});
+
+document.getElementById('roleApply').addEventListener('click', () => {
+  if (!current) return;
+  remapSpecies(current.name).catch(showError);
+});
+
+document.getElementById('roleRevert').addEventListener('click', () => {
+  if (!current) return;
+  delete roleDocs[current.name];
+  saveRoles();
+  remapSpecies(current.name).catch(showError);
+});
+
+document.getElementById('roleExport').addEventListener('click', () => {
+  if (!current) return;
+  roleJsonEl.style.display = 'block';
+  roleJsonEl.value = JSON.stringify(roleDocs[current.name] ?? rolesFromMap(current.map, current.name), null, 1);
+  roleJsonEl.select();
+});
+
+document.getElementById('roleImport').addEventListener('click', () => {
+  if (!current) return;
+  if (roleJsonEl.style.display === 'none' || !roleJsonEl.value.trim()) {
+    roleJsonEl.style.display = 'block';
+    roleStatusEl.textContent = 'Paste a role document here, then press import again.';
+    return;
+  }
+  let doc = null;
+  try { doc = JSON.parse(roleJsonEl.value); } catch (e) { showError(new Error(`role JSON: ${e.message}`)); return; }
+  if (!doc || typeof doc.bones !== 'object') { showError(new Error('that is not a role document')); return; }
+  roleDocs[current.name] = { species: current.name, bones: doc.bones, attach: doc.attach || {} };
+  saveRoles();
+  remapSpecies(current.name).catch(showError);
+});
+
+/**
+ * Solid, wireframe or hidden — for every creature at once.
+ *
+ * Not per creature, because `SkeletonUtils.clone` shares materials between individuals of a species, and
+ * that sharing is exactly what makes the second one nearly free. Setting `wireframe` on one would set it
+ * on all of them anyway; saying so is better than pretending otherwise and confusing someone later.
+ */
+function applyModelMode() {
+  const mode = modelModeInput.value;
+  for (const e of stage.values()) {
+    e.root.visible = mode !== 'hidden';
+    e.root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (m && 'wireframe' in m) m.wireframe = mode === 'wire';
+      }
+    });
+  }
+}
+lightPanelsInput.addEventListener('change', () => { setPanelTheme(lightPanelsInput.checked); savePrefs(); });
+baseGaitInput.addEventListener('change', () => retune({ base: GAITS[baseGaitInput.value] ?? GAITS.walk }));
+groundShapeInput.addEventListener('change', () => { groundOpts.shape = groundShapeInput.value; refreshGround(); savePrefs(); });
+document.getElementById('pause').addEventListener('click', () => togglePause());
+document.getElementById('stepOnce').addEventListener('click', () => { view.paused = true; view.stepOnce = true; syncPauseLabel(); });
+document.getElementById('resetPos').addEventListener('click', () => recentre());
+document.getElementById('resetTuning').addEventListener('click', () => resetTuning());
+document.getElementById('btnReset').addEventListener('click', () => resetTuning());
+document.getElementById('btnTune').addEventListener('click', () => tuneScoped());
+document.getElementById('btnRandom').addEventListener('click', () => randomiseScoped());
+document.getElementById('voteBetter').addEventListener('click', () => vote('better'));
+document.getElementById('voteWorse').addEventListener('click', () => vote('worse'));
+document.getElementById('voteNeutral').addEventListener('click', () => vote('neutral'));
+skipRiskyInput.addEventListener('change', savePrefs);
+
+function resetTuning() {
+  const specs = knobSpecs();
+  const defaults = {};
+  for (const c of CONTROLS) if (c.spec.scope === 'walker') defaults[c.spec.key] = c.spec.value;
+  // The one case where every creature legitimately gets the same vector: the defaults are the same
+  // numbers for everyone, and what they DERIVE from them still differs per rig.
+  for (const e of scopedEntries()) {
+    const before = { ...e.values };
+    applyToEntry(e, defaults);
+    logTrial(e, { how: 'reset', from: before, to: defaults, specs });
+  }
+  if (current) showSliders(current.values);
+  proposalEl.textContent = 'back to the shipped defaults';
+  savePrefs();
+}
+
+// Setpoints: a named vector plus the species it came from, so applying it elsewhere can say what it had
+// to drop. Stored under their own key rather than with the live sliders — one is history, the other is
+// what is on screen now.
+document.getElementById('spSave').addEventListener('click', () => {
+  if (!current) return;
+  const name = prompt('name this setpoint', `${current.name.slice(4)} ${Object.keys(setpoints).length + 1}`);
+  if (!name) return;
+  setpoints[name] = { species: current.name, at: new Date().toISOString(), values: { ...current.values } };
+  saveSetpoints();
+  refreshSetpoints();
+  setpointInput.value = name;
+});
+document.getElementById('spLoad').addEventListener('click', () => {
+  const sp = setpoints[setpointInput.value];
+  if (!sp) return;
+  const specs = knobSpecs();
+  const notes = new Set();
+  // Transfer is decided PER CREATURE: applying one setpoint across a mixed stage keeps everything on the
+  // creatures of its own species and drops the absolute knobs only on the others.
+  for (const e of scopedEntries()) {
+    const { values, dropped } = transferValues(sp.values, { sameSpecies: sp.species === e.name });
+    const before = { ...e.values };
+    applyToEntry(e, values);
+    for (const d of dropped) notes.add(`${d.key} (${d.why})`);
+    logTrial(e, { how: 'setpoint', from: before, to: values, specs });
+  }
+  if (current) showSliders(current.values);
+  proposalEl.textContent = `applied "${setpointInput.value}"`
+    + (notes.size ? `\ndropped ${[...notes].join('; ')}` : '');
+  savePrefs();
+});
+document.getElementById('spDelete').addEventListener('click', () => {
+  if (!setpointInput.value) return;
+  delete setpoints[setpointInput.value];
+  saveSetpoints();
+  refreshSetpoints();
+});
+
+const download = (name, text, type) => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+document.getElementById('trialsCsv').addEventListener('click', () => download('stadium-trials.csv', toCSV(trials.rows), 'text/csv'));
+document.getElementById('trialsJson').addEventListener('click', () => download('stadium-trials.json', JSON.stringify(trials.rows, null, 2), 'application/json'));
+document.getElementById('trialsClear').addEventListener('click', () => {
+  if (!confirm(`Delete all ${trials.rows.length} logged trials? Export first if you want to keep them.`)) return;
+  trials.clear(); lastTrialId = null; refreshTrialSummary(); refreshVoteState();
+});
+for (const el of [walkingInput, idleInput, overlayInput, faultsInput, skidsInput, drawAllInput,
+                  showTargetsInput, showSupportInput, showTrailsInput]) {
+  el.addEventListener('change', savePrefs);
+}
+
+async function addCreature(n) {
+  const name = speciesInput.value;
+  for (let i = 0; i < n; i++) await spawn(name, { select: i === 0 && !selectedId });
+  relayout();
+  refreshStage();
+}
+
+function togglePause() { view.paused = !view.paused; syncPauseLabel(); }
+function syncPauseLabel() { document.getElementById('pause').textContent = view.paused ? 'resume' : 'pause'; }
+function recentre() { relayout(); }
+
+// --- selection ------------------------------------------------------------------------------------
+//
+// Picking is done against a capsule per creature, never against the meshes. These models put their
+// vertices at 10x in bone-local space, so their bounding volumes are wrong — which is why the viewer
+// disables frustum culling everywhere — and a mesh raycast would be both slow and wrong at the broad
+// phase. `pickCapsule` is pure and tested in Node; here we only build the capsules.
+const pickRay = new THREE.Raycaster();
+const pickNdc = new THREE.Vector2();
+function capsulesNow() {
+  return [...stage.values()].map(e => {
+    const p = e.walker.body.pos;
+    const h = e.map.rideHeight * e.walker.unitScale;
+    const span = Math.max(...e.map.legs.map(l => l.span)) * e.walker.unitScale;
+    // From the foot plane to a little over the back, and about a leg wide. Generous on purpose: an
+    // over-tight capsule reads as the click being ignored, which is worse than picking a near neighbour.
+    return { id: e.id, ax: p.x, ay: p.y - h, az: p.z, bx: p.x, by: p.y + h * 0.6, bz: p.z, radius: span * 0.7 };
+  });
+}
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0) return;
+  pickNdc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+  pickRay.setFromCamera(pickNdc, camera);
+  // Bones first when the skeleton is up, and only on the selected creature — clicking a bone means "tell
+  // me about this bone", clicking anywhere else still means "select that creature". Both go through the
+  // same tested picker; a bone segment is a capsule like any other.
+  if (current && skelModeInput.value !== 'off') {
+    const bone = pickCapsule(pickRay.ray.origin, pickRay.ray.direction, boneCapsules(current));
+    if (bone) { selectedBone = bone; describeBone(current, bone); refreshRolePanel(); return; }
+  }
+  const hit = pickCapsule(pickRay.ray.origin, pickRay.ray.direction, capsulesNow());
+  if (hit) {
+    selectedBone = null; boneInfoEl.textContent = '';
+    selectCreature(hit); refreshStage(); refreshRolePanel();
+  }
+});
+
+/** The roster list, the scope count, and the selection highlight. */
+function refreshStage() {
+  const all = [...stage.values()];
+  const reached = scopedEntries().length;
+  scopeCountEl.textContent = all.length ? `${reached} of ${all.length}` : '';
+  stageListEl.innerHTML = all.length
+    ? all.map(e => `<div class="stagerow${e.id === selectedId ? ' sel' : ''}" data-id="${e.id}">`
+        + `<span>${e.label}</span><b>${e.shown ? (e.shown.verdict.dragging ? 'drag' : 'ok') : '…'}</b></div>`).join('')
+    : '<p class="hint">Nothing on stage. Pick a species and press add.</p>';
+  syncSelected();
+}
+stageListEl.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.stagerow');
+  if (row) { selectCreature(row.dataset.id); refreshStage(); }
+});
+
+// --- the search loop ------------------------------------------------------------------------------
+//
+// Reset, tune and randomise, scoped like every other control. The interesting one is TUNE: because
+// `gaitHeadroom` scores a candidate from arithmetic with no simulation, hundreds of candidates can be
+// tried in the time it takes to draw one frame. So tune is a real optimisation against the tap and drag
+// detectors, not a lookup of hand-picked values — and its objective is "the fastest settings the
+// detectors do not complain about", because minimising risk alone has a trivial answer: crawl.
+const trials = createTrialLog(typeof localStorage !== 'undefined' ? localStorage : null);
+trials.load();
+let setpoints = {};
+try { setpoints = JSON.parse(localStorage.getItem('pcw:stadiumSetpoints') || '{}') || {}; } catch {}
+const saveSetpoints = () => { try { localStorage.setItem('pcw:stadiumSetpoints', JSON.stringify(setpoints)); } catch {} };
+
+let lastTrialId = null;        // the row the verdict buttons will mark
+let lastTrialWindow = null;    // the window it must have been measured under
+let lastTrialCreature = null;  // ...on the creature it was actually run on
+
+/** The slider bounds, keyed by knob, as the search modules want them. */
+function knobSpecs() {
+  const out = {};
+  for (const c of CONTROLS) {
+    if (c.spec.scope !== 'walker') continue;
+    out[c.spec.key] = { min: Number(c.input.min), max: Number(c.input.max), step: Number(c.input.step), value: c.spec.value };
+  }
+  return out;
+}
+
+/**
+ * Score a candidate without simulating it.
+ *
+ * Retunes the walker, reads one diagnostic frame, and puts the old tuning back. `deriveTuning` is the
+ * only work that happens, which is why hundreds of these fit in a frame.
+ */
+function scoreCandidate(walker, before, values) {
+  walker.retune(values);
+  const h = gaitHeadroom(walker.diagnosticFrame());
+  walker.retune(before);
+  return h;
+}
+
+// EACH CREATURE GETS ITS OWN, and that is the whole point of a scope wider than one. The first version
+// drew a single vector and applied it to everything, which meant a stage of eight ran eight copies of one
+// setting — all the cost of a stage and none of the comparison. Now one press is one trial per creature,
+// each drawn from that creature's own values, and each logged separately.
+function tuneScoped() {
+  const targets = scopedEntries();
+  if (!targets.length) return;
+  const specs = knobSpecs();
+  const t0 = performance.now();
+  let evaluations = 0;
+  const moved = new Set();
+  for (const e of targets) {
+    const before = { ...e.values };
+    // Optimised against ITS OWN geometry. The stride envelope and leg span differ per species, so the
+    // best settings for a Rattata are not the best settings for a Paras and copying one onto the other
+    // would be the same mistake in a different place.
+    const res = optimise(before, specs, (v) => searchCost(scoreCandidate(e.walker, before, v)), { rounds: 7 });
+    evaluations += res.evaluations;
+    applyToEntry(e, res.values);
+    for (const k of changedKeys(before, res.values, specs)) moved.add(k);
+    logTrial(e, { how: 'tune', from: before, to: res.values, specs });
+  }
+  if (current) showSliders(current.values);
+  proposalEl.textContent = `tuned ${targets.length} creature${targets.length === 1 ? '' : 's'}`
+    + ` in ${(performance.now() - t0).toFixed(0)} ms over ${evaluations} candidates`
+    + `\nmoved ${moved.size ? [...moved].join(', ') : 'nothing — already at a local best'}`;
+  savePrefs();
+}
+
+function randomiseScoped() {
+  const targets = scopedEntries();
+  if (!targets.length) return;
+  const specs = knobSpecs();
+  const pct = Number(controlByKey('randomPct').input.value) / 100;
+  let worstSeen = 0, totalTries = 0, movedTotal = 0;
+  for (const e of targets) {
+    const base = { ...e.values };
+    let values = null, risk = null, tries = 0;
+    // Rejection is a toggle, and even switched on it only resamples a bounded number of times before
+    // showing what it has. A search that silently refuses to propose anything is worse than one that
+    // proposes something questionable and says so.
+    do {
+      values = perturb(base, specs, pct);
+      risk = scoreCandidate(e.walker, base, values);
+      tries++;
+    } while (skipRiskyInput.checked && Math.max(risk.dragRisk, risk.tapRisk) > 0.85 && tries < 20);
+    applyToEntry(e, values);
+    movedTotal += changedKeys(base, values, specs).length;
+    totalTries += tries;
+    worstSeen = Math.max(worstSeen, Math.max(risk.dragRisk, risk.tapRisk));
+    logTrial(e, { how: 'random', from: base, to: values, specs, pct });
+  }
+  if (current) showSliders(current.values);
+  proposalEl.innerHTML = `${targets.length} creature${targets.length === 1 ? '' : 's'}, each drawn separately`
+    + ` — ${(movedTotal / targets.length).toFixed(1)} knobs each by up to ${(pct * 100).toFixed(0)}%`
+    + `, ${totalTries} draw${totalTries === 1 ? '' : 's'}`
+    + `\nworst predicted risk ${(worstSeen * 100).toFixed(0)}%`
+    + (worstSeen > 0.5 ? ' <span style="color:#e5807a">— the detectors expect at least one to fail</span>' : '');
+  savePrefs();
+}
+
+/** One creature's vector, applied to that creature only. */
+function applyToEntry(e, values) {
+  const patch = {};
+  // `walker` scope only, so a setpoint carrying the stage-wide stray threshold cannot make it per creature.
+  for (const [k, v] of Object.entries(values)) if (controlByKey(k)?.spec.scope === 'walker') patch[k] = v;
+  e.walker.retune(patch);
+  for (const [k, v] of Object.entries(patch)) if (typeof v === 'number') e.values[k] = v;
+  resetMonitor(e);
+}
+
+/**
+ * Open a trial row now, with the settings, and fill the metrics in when a window closes under them.
+ *
+ * The row is written immediately and deliberately without metrics: an unmeasured row is a state, not a
+ * corrupt one, and every reader filters for it. What must never happen is the row picking up the numbers
+ * currently on screen, which were measured under the PREVIOUS settings and would look entirely
+ * plausible — so the row remembers which window it is waiting for.
+ */
+function logTrial(e, { how, from, to, specs, pct = null }) {
+  if (!e) return;
+  const { row } = trials.add({
+    species: e.name, gait: baseGaitInput.value, creature: e.id,
+    how, pct, setpoint: setpointInput.value || null,
+    values: { ...to }, changed: changedKeys(from, to, specs),
+    distance: tuningDistance(from, to, specs),
+    metrics: null, windowId: e.windowId,
+  });
+  // Every creature's trial is logged, but the verdict buttons can only mean one thing, so they mark the
+  // SELECTED creature's. Rating the others is a matter of selecting them — their rows are already open.
+  if (e === current) {
+    lastTrialId = row.id;
+    lastTrialWindow = e.windowId;
+    lastTrialCreature = e.id;
+  }
+  refreshTrialSummary();
+  refreshVoteState();
+}
+
+/** Called when a window closes: attach its numbers to the trial that was waiting for exactly it. */
+function attachMetrics(e, report) {
+  // Matched on the CREATURE the trial was run on, not on whichever one happens to be selected now.
+  // Selecting away while a window fills is the normal way to use a stage, and the measurement is no less
+  // valid for it.
+  if (!lastTrialId || e.id !== lastTrialCreature) return;
+  if (report.windowId !== lastTrialWindow) return;
+  trials.update(lastTrialId, { metrics: flattenMetrics(report, e.headroom) });
+  refreshTrialSummary();
+  refreshVoteState();
+}
+
+function vote(verdict) {
+  if (!lastTrialId) return;
+  trials.update(lastTrialId, { verdict });
+  refreshTrialSummary();
+  refreshVoteState();
+}
+
+function refreshVoteState() {
+  const row = lastTrialId ? trials.rows.find(r => r.id === lastTrialId) : null;
+  if (!row) { voteStateEl.textContent = 'randomise or tune to open a trial'; return; }
+  const measured = row.metrics ? 'measured' : 'still measuring';
+  voteStateEl.textContent = `trial ${row.id} — ${row.how}, ${measured}`
+    + (row.verdict ? `, you said ${row.verdict}` : ', unrated');
+}
+
+function refreshTrialSummary() {
+  const mine = trials.list({ species: current ? current.name : undefined });
+  const rated = mine.filter(r => r.verdict).length;
+  const agree = verdictSeries(trials.rows, 'skate');
+  trialSummaryEl.textContent = `${trials.rows.length} trials logged`
+    + `${trials.pruned ? ` (${trials.pruned} dropped past the cap)` : ''}`
+    + `, ${mine.length} on this species, ${rated} rated`
+    + (agree.n >= 6 ? `\neye vs machine over ${agree.n} rated trials: r = ${pearson(agree.x, agree.y).toFixed(2)}` : '');
+}
+
+function refreshSetpoints() {
+  const names = Object.keys(setpoints).sort();
+  setpointInput.innerHTML = '<option value="">—</option>'
+    + names.map(n => `<option value="${n}">${n}${setpoints[n].species ? ` · ${PRETTY(setpoints[n].species)}` : ''}</option>`).join('');
+  setpointCountEl.textContent = names.length ? `${names.length} saved` : '';
+}
+
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+  else if (e.key === '.') { view.paused = true; view.stepOnce = true; syncPauseLabel(); }
+  else if (e.key === 'r') recentre();
+  else if (e.key === 'o') { overlayInput.checked = !overlayInput.checked; savePrefs(); }
+  else if (e.key === 'a') addCreature(1);
+  else if (e.key === 'x') { if (selectedId) { despawn(selectedId); relayout(); refreshStage(); } }
+  else if (e.key === 'Tab') {
+    // Cycle the selection rather than the species dropdown — with a stage, stepping between the
+    // creatures on it is the thing you do constantly.
+    e.preventDefault();
+    const ids = [...stage.keys()];
+    if (ids.length) {
+      const i = ids.indexOf(selectedId);
+      selectCreature(ids[(i + (e.shiftKey ? ids.length - 1 : 1)) % ids.length]);
+      refreshStage();
+    }
+  }
+  else if (e.key === '[' || e.key === ']') {
+    const all = SPECIES.flatMap(([, n]) => n);
+    const i = all.indexOf(speciesInput.value);
+    speciesInput.value = all[(i + (e.key === ']' ? 1 : all.length - 1)) % all.length];
+    savePrefs();
+  }
+});
+
+// --- readouts -----------------------------------------------------------------------------------
+function refreshFacts() {
+  if (!current) return;
+  const { map, walker } = current;
+  const n = (i) => map.names[i];
+  const s = walker.state;
+  facts.textContent = [
+    `legs      ${map.legs.length} in ${new Set(map.legs.map(l => l.row)).size} rows`,
+    ...map.legs.map(l => `  ${l.row}${l.side < 0 ? 'L' : 'R'}      ${l.bones.map(n).join('>')}`),
+    `spine     ${map.spine.map(n).join('>')}`,
+    `head      ${map.head ? map.head.bones.map(n).join('>') : '—'}`,
+    `tail      ${map.tail ? map.tail.bones.map(n).join('>') : '—'}`,
+    `clips     ${current.clips.join(', ') || '—'}`,
+    '',
+    `ride      ${(map.rideHeight * walker.unitScale * 100).toFixed(1)} cm, settles to ${(s.heightScale * 100).toFixed(0)}%`,
+    `stride    ±${(s.strideEnvelope * 100).toFixed(1)} cm`,
+    `top speed ${s.gait.maxSpeed.toFixed(2)} m/s`,
+    `step      ${(s.gait.stepDuration * 1000).toFixed(0)} ms = ${(s.gait.stepDuration * 60).toFixed(1)} frames`
+      + `, lift ${(s.gait.stepLift * 100).toFixed(1)} cm`,
+    `airborne  ${Math.max(1, Math.floor(walker.legs.length * s.gait.maxConcurrentFraction))} of ${walker.legs.length} legs at once`,
+    `trigger   ${(s.gait.movingTrigger.h * 100).toFixed(1)} cm, look-ahead ${s.gait.lookAhead.toFixed(2)}`,
+  ].join('\n');
+  warn.textContent = map.warnings.length ? map.warnings.join('\n') : '';
+}
+
+/**
+ * What the whole stage adds up to.
+ *
+ * Counts and a ranking, never a mean — see the note at the top of `stage-roster.js`. Every metric is
+ * normalised against the creature it came from, which is exactly what makes averaging one across a Paras
+ * and a Rattata meaningless. "Three of eight are dragging" is a fact; "the stage drags 14%" is not.
+ */
+function renderGroup() {
+  const all = [...stage.values()];
+  if (!all.length) { groupEl.textContent = 'nothing spawned yet'; return; }
+  const g = aggregateReports(all.map(e => ({
+    id: e.id, species: e.name, label: e.label, report: e.shown, headroom: e.headroom,
+  })));
+  const lines = [
+    `${g.count} on stage — ${g.clean} clean, ${g.dragging} dragging`
+      + `${g.tapping ? `, ${g.tapping} tapping` : ''}${g.measuring ? `, ${g.measuring} measuring` : ''}`,
+  ];
+  if (g.bySpecies.length > 1) {
+    lines.push(...g.bySpecies.map(s => `  ${PRETTY(s.species).padEnd(16)} ${s.count} — ${s.dragging} dragging`));
+  }
+  if (g.worst.length) {
+    lines.push('', 'worst measured:');
+    lines.push(...g.worst.slice(0, 4).map(w =>
+      `  <span class="pickrow" data-id="${w.id}">${w.label}</span>  slide ${(w.skate * 100).toFixed(0)}%`
+      + `  reach ${(w.clamped * 100).toFixed(0)}%`));
+  }
+  if (g.riskiest.length && g.riskiest[0].dragRisk > 0.3) {
+    lines.push('', 'highest predicted risk:');
+    lines.push(...g.riskiest.slice(0, 3).map(r =>
+      `  <span class="pickrow" data-id="${r.id}">${r.label}</span>  ${(Math.max(r.dragRisk, r.tapRisk) * 100).toFixed(0)}%`
+      + `  ${r.cause ?? ''}`));
+  }
+  groupEl.innerHTML = lines.join('\n');
+}
+groupEl.addEventListener('click', (ev) => {
+  const row = ev.target.closest('.pickrow');
+  if (row) { selectCreature(row.dataset.id); refreshStage(); }
+});
+
+let fpsAccum = 0, fpsFrames = 0, fps = 0, statAccum = 0;
+let stepCount = 0, wasStepping = [];
+/** What the gate has seen and done on the selected creature. Frames over the limit, then actions taken. */
+function renderStray(w) {
+  if (!strayReadoutEl) return;
+  const s = w.state;
+  const acted = s.strayForced + s.strayAccepted + s.strayThrottled;
+  const parts = [`${s.strayFrames} planted frames past ${(strayLimitNow() * 100).toFixed(1)}% of a leg`];
+  if (s.tuning.strayMode !== 'off' || acted) {
+    parts.push(`${s.strayForced} re-stepped`, `${s.strayAccepted} moved`, `${s.strayThrottled} throttled`);
+  }
+  strayReadoutEl.textContent = parts.join(' · ')
+    + (s.strayFrames === 0 ? ' — nothing has strayed, so the mode is doing nothing.' : '');
+}
+
+function refreshStats(dt) {
+  fpsAccum += dt; fpsFrames++;
+  if (fpsAccum > 0.5) { fps = fpsFrames / fpsAccum; fpsAccum = 0; fpsFrames = 0; }
+  statAccum += dt;
+  if (statAccum < 0.15 || !current) return;
+  statAccum = 0;
+
+  const w = current.walker;
+  const speed = Math.hypot(w.body.vel.x, w.body.vel.z);
+  const airborne = w.legs.filter(l => l.stepping).length;
+  const contact = w.footContactError().filter(f => !f.stepping);
+  const worst = contact.reduce((m, f) => Math.max(m, Math.abs(f.error)), 0);
+  // The two failure modes, scored over a rolling window so a bad slider combination shows up while the
+  // slider is still being dragged. `gait-diagnostics.js` is the same module the Node sweep uses, so the
+  // numbers here and the numbers in `sweep-gait.mjs` mean the same thing.
+  const g = shown;
+  const dragLine = g
+    ? `drag      ${(g.dragging.worstLegFraction * 100).toFixed(0)}% of planted frames skating`
+      + `, ${(g.dragging.clampedFraction * 100).toFixed(0)}% past reach`
+      + `${g.verdict.dragging ? '   <- DRAGGING' : ''}`
+    : 'drag      measuring...';
+  const tapLine = g
+    ? `tap       ${g.tapping.worstLegRate.toFixed(2)}/s`
+      + `  stride ${(g.tapping.medianTravel * 100).toFixed(0)}% of a leg`
+      + `  stance ${g.tapping.medianStance.toFixed(1)}x step`
+      + `${g.verdict.tapping ? '   <- TAPPING' : ''}`
+    : 'tap       measuring...';
+
+  statsEl.textContent = [
+    `fps       ${fps.toFixed(0)}`,
+    `speed     ${speed.toFixed(3)} / ${w.state.gait.maxSpeed.toFixed(3)} m/s`
+      + (g && g.speedVsMax > 1.1 ? `   <- ${(g.speedVsMax * 100).toFixed(0)}% of top speed, balance is pushing` : ''),
+    `body      ${(w.body.pos.y * 100).toFixed(1)} cm  pitch ${(w.body.pitch * 180 / Math.PI).toFixed(1)}°  roll ${(w.body.roll * 180 / Math.PI).toFixed(1)}°`,
+    `feet      ${w.legs.length - airborne} down, ${airborne} up`,
+    `contact   worst planted foot ${(worst * 1000).toFixed(2)} mm off the ground`,
+    `steps/s   ${(stepCount / Math.max(0.001, performance.now() / 1000 - statsStart)).toFixed(1)}`,
+    dragLine,
+    tapLine,
+    '',
+    // Per-leg drag, so the text agrees with the colour of the ring under that same foot. Both come from
+    // `legWatch`, so they cannot disagree.
+    ...w.legs.map((l, i) => {
+      const s = legWatch.legs?.[i];
+      return `  ${l.row}${l.side < 0 ? 'L' : 'R'}  ${l.stepping ? 'STEP' : 'down'}` +
+        `  reach ${(100 * Math.hypot(l.end.x - l.hipWorld.x, l.end.y - l.hipWorld.y, l.end.z - l.hipWorld.z) / (l.l1 + l.l2)).toFixed(0)}%` +
+        (s ? `  slide ${(s.skate * 100).toFixed(0).padStart(3)}%` : '') +
+        `${l.uncomfortable ? '  strained' : ''}${l.wants ? '  wants' : ''}` +
+        `${s && s.drag > 1 ? '  DRAG' : ''}`;
+    }),
+  ].join('\n');
+  renderStray(w);
+  renderCoach();
+  renderGroup();
+  // Cheap and only every 150 ms, and it is the only thing that keeps the roster's per-creature verdict
+  // column honest as windows close.
+  refreshStage();
+}
+let statsStart = performance.now() / 1000;
+
+// --- the coach ------------------------------------------------------------------------------------
+//
+// Three questions in order, because that is the order someone tuning actually asks them: what do these
+// settings imply, what did the feet really do, and which single slider do I move. The last one is the
+// point. A panel that lists eight correlated numbers tells you something is wrong and leaves you to guess
+// which knob owns it, which is the state this page was already in — so `diagnoseGait` is required to name
+// exactly one knob and one direction per entry, and the button next to it moves that knob.
+const gaugesEl = document.getElementById('gauges');
+const measuredEl = document.getElementById('measured');
+const disagreeEl = document.getElementById('disagree');
+const adviceEl = document.getElementById('advice');
+const deltaEl = document.getElementById('delta');
+
+function makeGauge(title) {
+  const wrap = document.createElement('div');
+  wrap.className = 'gauge';
+  wrap.innerHTML = `<div class="top"><span>${title}</span><b></b></div>`
+    + `<div class="bar"><div class="fill"></div></div><div class="terms"></div>`;
+  gaugesEl.append(wrap);
+  return { value: wrap.querySelector('b'), fill: wrap.querySelector('.fill'), terms: wrap.querySelector('.terms') };
+}
+const gaugeDrag = makeGauge('drag potential');
+const gaugeTap = makeGauge('tap potential');
+const riskColor = (v) => (v > 0.66 ? '#e5807a' : v > 0.33 ? '#d8a657' : '#6fbf8f');
+
+function setGauge(g, risk, rows) {
+  g.value.textContent = `${(risk * 100).toFixed(0)}%`;
+  g.value.style.color = riskColor(risk);
+  g.fill.style.width = `${Math.min(100, risk * 100)}%`;
+  g.fill.style.background = riskColor(risk);
+  g.terms.innerHTML = rows.map(r =>
+    `<div class="${r.risk > 0.33 ? 'hot' : 'ok'}"><span>${r.text}</span><b>${r.shown}</b></div>`).join('');
+}
+
+let adviceSig = '';
+function renderCoach() {
+  if (headroom) {
+    setGauge(gaugeDrag, headroom.dragRisk, [
+      { ...headroom.terms[0], shown: `${headroom.speedOverrun.toFixed(2)}x` },
+      { ...headroom.terms[1], shown: `${headroom.restepEnvelopes.toFixed(2)} env` },
+      { ...headroom.terms[2], shown: headroom.marginGap.toFixed(2) },
+    ]);
+    setGauge(gaugeTap, headroom.tapRisk, [
+      { ...headroom.tapTerms[0], shown: `${headroom.stepFrames.toFixed(1)}` },
+      { ...headroom.tapTerms[1], shown: `${headroom.strideNumber.toFixed(2)}` },
+      { ...headroom.tapTerms[2], risk: headroom.hysteresisRisk, shown: `${headroom.restepEnvelopes.toFixed(2)} env` },
+      { ...headroom.tapTerms[3], risk: headroom.hysteresisRisk, shown: `${headroom.triggerEnvelopes.toFixed(2)} env` },
+    ]);
+  }
+
+  if (shown) {
+    const d = shown.dragging;
+    measuredEl.textContent = [
+      `worst foot slides on ${(d.worstLegFraction * 100).toFixed(0)}% of its planted frames`,
+      `${(d.clampedFraction * 100).toFixed(0)}% of planted frames past full reach`,
+      `body at ${(shown.speedVsMax * 100).toFixed(0)}% of its top speed`,
+      `${shown.verdict.dragging ? 'DRAGGING' : 'feet are clean'}`
+        + `${shown.verdict.tapping ? ' and TAPPING' : ''}`,
+    ].join('\n');
+    // The disagreement is the interesting case and it is easy to miss, so it gets said out loud rather
+    // than left for someone to notice by comparing two numbers in different boxes.
+    const predicted = headroom && headroom.dragRisk > 0.5;
+    if (predicted && !shown.verdict.dragging) {
+      disagreeEl.textContent = 'The settings predict dragging and the feet are clean. This creature has more headroom than the arithmetic assumes — trust the measurement.';
+    } else if (!predicted && shown.verdict.dragging) {
+      disagreeEl.textContent = 'The feet are dragging and nothing in the tuning explains it. That is the balance model pushing the body, not the gait — see the advice below.';
+    } else {
+      disagreeEl.textContent = '';
+    }
+  }
+
+  const advice = diagnoseGait({ report: shown, headroom, limits: limitsNow() });
+  const sig = advice.map(a => `${a.id}:${Math.round(a.severity * 8)}`).join('|');
+  if (sig === adviceSig) return;
+  adviceSig = sig;
+
+  if (!advice.length) {
+    adviceEl.innerHTML = '<div class="ev" style="color:#6fbf8f">Nothing to fix. Push top speed past 1× or drop the re-step guard under one envelope to break it on purpose.</div>';
+    return;
+  }
+  adviceEl.innerHTML = advice.slice(0, 4).map((a, i) => {
+    const c = controlByKey(a.knob);
+    if (!c) return '';
+    const next = nudged(c, a.dir);
+    const sev = a.severity > 0.6 ? 3 : a.severity > 0.3 ? 2 : 1;
+    const alt = a.alt && controlByKey(a.alt.knob)
+      ? `<button class="alt" data-knob="${a.alt.knob}" data-dir="${a.alt.dir}">or ${controlByKey(a.alt.knob).spec.label} ${a.alt.dir > 0 ? 'up' : 'down'}</button>` : '';
+    return `<div class="card sev${sev}">
+      <div class="sym">${i + 1}. ${a.symptom}</div>
+      <div class="ev">${a.evidence}</div>
+      <div class="why">${a.why}</div>
+      <div class="act">
+        <button data-knob="${a.knob}" data-dir="${a.dir}">${c.spec.label} ${a.dir > 0 ? 'up' : 'down'}</button>
+        <span class="to">${fmtOf(c)(c.last)} → ${fmtOf(c)(next)}</span>
+        ${alt}
+      </div></div>`;
+  }).join('');
+}
+
+// One step is a real step, not a pixel: 8% of the slider's range, snapped to its own granularity. Small
+// enough to stay inside the regime you are exploring, big enough that the next window can tell.
+function nudged(c, dir) {
+  const min = Number(c.input.min), max = Number(c.input.max), step = Number(c.input.step);
+  const raw = c.last + dir * Math.max(step, (max - min) * 0.08);
+  return Math.min(max, Math.max(min, Math.round(raw / step) * step));
+}
+adviceEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-knob]');
+  if (!btn) return;
+  const c = controlByKey(btn.dataset.knob);
+  if (!c) return;
+  const to = nudged(c, Number(btn.dataset.dir));
+  c.input.value = to;
+  // Dispatched rather than called directly so the click goes down exactly the path a drag does — the
+  // change record, the retune and the preference save all hang off this event.
+  c.input.dispatchEvent(new Event('input', { bubbles: true }));
+  // Half these knobs live in a section that is collapsed by default, and scrolling to something inside a
+  // closed <details> lands nowhere.
+  c.el.closest('details')?.setAttribute('open', '');
+  c.el.scrollIntoView({ block: 'nearest' });
+  c.el.classList.remove('flash');
+  void c.el.offsetWidth;
+  c.el.classList.add('flash');
+});
+
+function renderDelta() {
+  if (!change) return;
+  const head = `${change.label}  ${change.fmt(change.from)} → ${change.fmt(change.to)}`;
+  if (!change.after) { deltaEl.textContent = `${head}\nwaiting for the next window…`; return; }
+  const rows = [
+    ['drag potential', change.before.dragRisk, change.after.dragRisk, true],
+    ['feet sliding', change.before.skate, change.after.skate, true],
+    ['past full reach', change.before.clamp, change.after.clamp, true],
+    // No verdict on this one. Under 100% is the gait driving and over 100% is balance pushing, so neither
+    // direction is good on its own and calling a rise "worse" would be wrong half the time.
+    ['speed vs top', change.before.speed, change.after.speed, null],
+  ];
+  deltaEl.innerHTML = head + '\n' + rows.map(([name, a, b, lowerIsBetter]) => {
+    if (a == null || b == null) return `  ${name.padEnd(15)} —`;
+    const d = b - a;
+    const cls = lowerIsBetter == null || Math.abs(d) < 0.005 ? '' : (lowerIsBetter === (d < 0)) ? 'better' : 'worse';
+    const word = cls === 'better' ? 'better' : cls === 'worse' ? 'worse' : lowerIsBetter == null ? '' : 'same';
+    return `  ${name.padEnd(15)} ${(a * 100).toFixed(0).padStart(4)}% → ${(b * 100).toFixed(0).padStart(4)}%  <span class="${cls}">${word}</span>`;
+  }).join('\n');
+}
+
+// --- preferences --------------------------------------------------------------------------------
+// Kept because this page is for dragging things, and losing a set of values to a refresh is the fastest
+// way to stop dragging them.
+const PREF_KEY = 'pcw:stadiumWalker';
+let savedStage = null;
+function savePrefs() {
+  const data = { species: speciesInput.value, gait: baseGaitInput.value, ground: groundOpts.shape,
+                 scope: scopeSelect.value, camMode: camModeInput.value, sceneTheme: sceneThemeInput.value,
+                 modelMode: modelModeInput.value, skelMode: skelModeInput.value, boneLabels: boneLabelsInput.value,
+                 strayMode: strayModeInput.value,
+                 // The stage composition, so a refresh brings back what you had spawned rather than one
+                 // creature. Values are per creature, since that is the whole point of a stage.
+                 stage: [...stage.values()].map(e => ({ name: e.name, values: e.values })) };
+  for (const c of CONTROLS) data[c.spec.key] = Number(c.input.value);
+  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold']) {
+    data[id] = document.getElementById(id).checked;
+  }
+  try { localStorage.setItem(PREF_KEY, JSON.stringify(data)); } catch {}
+}
+function loadPrefs() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(PREF_KEY) || 'null'); } catch {}
+  if (!data) return;
+  if (data.species) speciesInput.value = data.species;
+  if (data.gait) baseGaitInput.value = data.gait;
+  if (data.ground) { groundOpts.shape = data.ground; groundShapeInput.value = data.ground; }
+  if (data.scope) scopeSelect.value = data.scope;
+  if (data.camMode) camModeInput.value = data.camMode;
+  if (data.sceneTheme) sceneThemeInput.value = data.sceneTheme;
+  if (data.modelMode) modelModeInput.value = data.modelMode;
+  if (data.skelMode) skelModeInput.value = data.skelMode;
+  if (data.boneLabels) boneLabelsInput.value = data.boneLabels;
+  if (data.strayMode) strayModeInput.value = data.strayMode;
+  savedStage = Array.isArray(data.stage) ? data.stage : null;
+  for (const c of CONTROLS) {
+    if (typeof data[c.spec.key] === 'number') { c.input.value = data[c.spec.key]; c.show(); c.last = Number(c.input.value); }
+  }
+  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold']) {
+    if (typeof data[id] === 'boolean') document.getElementById(id).checked = data[id];
+  }
+  pending.worldHeight = Number(CONTROLS.find(c => c.spec.key === 'worldHeight').input.value);
+  groundOpts.amplitude = Number(CONTROLS.find(c => c.spec.key === 'amplitude').input.value);
+  groundOpts.wavelength = Number(CONTROLS.find(c => c.spec.key === 'wavelength').input.value);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// --- loop ---------------------------------------------------------------------------------------
+loadPrefs();
+applySceneTheme(sceneThemeInput.value);
+setPanelTheme(lightPanelsInput.checked);
+refreshGround();
+syncPauseLabel();
+// Bring back whatever was on the stage, each creature with its own vector. One of the saved species is
+// enough to make the page useful on a first visit; an empty stage would just look broken.
+if (savedStage && savedStage.length) {
+  for (const s of savedStage) await spawn(s.name, { values: s.values }).catch(showError);
+} else {
+  await spawn(speciesInput.value);
+}
+relayout();
+refreshStage();
+refreshSetpoints();
+refreshTrialSummary();
+refreshVoteState();
+
+const clock = new THREE.Clock();
+const camTarget = new THREE.Vector3();
+const groupBox = new THREE.Box3();
+const groupCentre = new THREE.Vector3();
+renderer.setAnimationLoop(() => {
+  const raw = Math.min(clock.getDelta(), 0.05);
+  const dt = raw * view.timeScale;
+  const stepping = !view.paused || view.stepOnce;
+  const step = view.stepOnce ? 1 / 60 : dt;
+  view.stepOnce = false;
+
+  for (const e of stage.values()) {
+    if (stepping) {
+      // The mixer runs FIRST and the walker second: the walker writes leg bones last, so whatever the clip
+      // does to the spine is carried into the hips the legs hang off, rather than fighting it.
+      if (e.mixer && idleInput.checked) e.mixer.update(step);
+      const before = e.walker.legs.map(l => l.stepping);
+      e.walker.update(step, { walk: walkingInput.checked });
+      if (e === current) e.walker.legs.forEach((l, i) => { if (l.stepping && !before[i]) stepCount++; });
+      // Scored for EVERY creature, not just the selected one — the stage exists so several settings can
+      // be judged at once, and a creature nobody is looking at still has to arrive at a verdict.
+      if (walkingInput.checked) sampleMonitor(e, step);
+    } else {
+      e.walker.applyPose();
+    }
+    // A held pose is written LAST, after the walker and after the mixer, so it wins over both without
+    // either having to know it exists. The body keeps moving underneath — the pose is bone locals and the
+    // creature's position is the container's transform, so it walks around holding it.
+    if (poseHoldInput.checked && e === current) applyPoseTo(e, blendedPose(e));
+    // ...but only DRAWN for the selected one unless asked. Markers are the largest avoidable cost here.
+    const drawn = drawAllInput.checked || e === current;
+    updateOverlay(e, drawn);
+    updateFaults(e, raw, drawn);
+    updateSkeleton(e, drawn);
+  }
+  fadeSkids(raw);
+  syncSelected();
+
+  const mode = camModeInput.value;
+  if (mode === 'follow' && current) {
+    camTarget.copy(current.walker.body.pos);
+    controls.target.lerp(camTarget, 0.06);
+  } else if (mode === 'group' && stage.size) {
+    groupBox.makeEmpty();
+    for (const e of stage.values()) groupBox.expandByPoint(e.walker.body.pos);
+    groupBox.getCenter(groupCentre);
+    controls.target.lerp(groupCentre, 0.06);
+  }
+
+  refreshStats(raw);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

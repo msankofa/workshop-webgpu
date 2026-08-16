@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8">
+<style>body{margin:0;background:#222;display:grid;grid-template-columns:repeat(8,150px);gap:2px}
+div.c{position:relative}div.c span{position:absolute;top:2px;left:4px;color:#fff;font:10px sans-serif;z-index:2}
+img{width:150px;height:150px;display:block}</style>
+<script src="node_modules/three/build/three.min.js"></script>
+<script src="GLTFLoader.patched.js"></script>
+</head>
+<body>
+<script>
+"use strict";
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(300, 300);
+renderer.outputEncoding = THREE.sRGBEncoding;
+
+async function shoot(file, label) {
+  return new Promise((resolve) => {
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x14161c);
+    scene.add(new THREE.HemisphereLight(0xdde4ff, 0x2a2418, 0.9));
+    const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(3,6,4); scene.add(key);
+    new THREE.GLTFLoader().load('glb/' + file, (gltf) => {
+      try {
+        const model = gltf.scene;
+        scene.add(model);
+        model.traverse((o) => {
+          if (o.isMesh || o.isSkinnedMesh) {
+            o.frustumCulled = false;
+            (Array.isArray(o.material) ? o.material : [o.material])
+              .forEach((m) => { m.side = THREE.DoubleSide; });
+          }
+        });
+        if (gltf.animations.length) {
+          const mixer = new THREE.AnimationMixer(model);
+          mixer.clipAction(gltf.animations[0]).play();
+          mixer.update(0);
+        }
+        model.updateMatrixWorld(true);
+        const box = new THREE.Box3();
+        const v = new THREE.Vector3();
+        let bones = 0;
+        model.traverse((o) => { if (o.isBone) { bones++; box.expandByPoint(o.getWorldPosition(v)); } });
+        if (bones < 2 || box.getSize(v).length() < 1e-6) {
+          // static prop or single-bone: fall back to mesh bounds via skeleton root scale
+          box.makeEmpty();
+          box.setFromObject(model);
+        }
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const radius = Math.max(size.x, size.y, size.z, 1e-3) * 1.15;
+        const camera = new THREE.PerspectiveCamera(35, 1, radius/100, radius*30);
+        camera.position.set(center.x + radius*1.2, center.y + radius*0.55, center.z + radius*1.5);
+        camera.lookAt(center);
+        renderer.render(scene, camera);
+        const wrap = document.createElement('div'); wrap.className = 'c';
+        const s = document.createElement('span'); s.textContent = label;
+        const img = document.createElement('img'); img.src = renderer.domElement.toDataURL();
+        wrap.appendChild(s); wrap.appendChild(img);
+        document.body.appendChild(wrap);
+      } catch (e) { console.error(label, e.message); }
+      resolve();
+    }, undefined, (e) => { console.error(label, 'load failed'); resolve(); });
+  });
+}
+
+(async () => {
+  const files = window.__FILES__;
+  for (const [file, label] of files) await shoot(file, label);
+  document.title = 'done';
+})();
+</script>
+<script>
+window.__FILES__ = /*FILES*/;
+</script>
+</body>
+</html>

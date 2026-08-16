@@ -6,14 +6,16 @@
 // caller must render exactly what it rendered before this module existed. Every default below is
 // chosen so that holds.
 
+// Every track ships OFF (2026-08-16): the feature is opt-in, so an unconfigured viewer renders the
+// pre-2026-08-12 aim. The numbers below are still the tuned ones a track uses once switched on.
 export const AIM_BLEND_DEFAULTS = {
-  enabled: true,
-  torsoEnabled: true,       // track B: twist the spine toward the aim point
-  headEnabled: true,        // track C: the head looks at the target instead of only anticipating turns
-  trimEnabled: true,        // track A1/A3: rate-limit the barrel solve and unwind it on sight loss
-  barrelGate: true,         // track A2: fire on the rendered barrel's error, not the entity's
-  leadEnabled: true,        // track D: aim where the target will be
-  recoilEnabled: true,      // track D: a shot kicks the torso, not just the weapon
+  enabled: false,
+  torsoEnabled: false,      // track B: twist the spine toward the aim point
+  headEnabled: false,       // track C: the head looks at the target instead of only anticipating turns
+  trimEnabled: false,       // track A1/A3: rate-limit the barrel solve and unwind it on sight loss
+  barrelGate: false,        // track A2: fire on the rendered barrel's error, not the entity's
+  leadEnabled: false,       // track D: aim where the target will be
+  recoilEnabled: false,     // track D: a shot kicks the torso, not just the weapon
 
   torsoYawMax: 0.61,        // rad, ~35 deg of twist
   torsoPitchMax: 0.44,      // rad, ~25 deg of lean

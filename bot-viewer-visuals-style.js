@@ -142,6 +142,7 @@ export const FLORA_OFF = {
   vineClump: 0.35,                          // 0 = evenly spaced along an edge, 1 = tight bunches
   vineLeafiness: 1, vineBranch: 0.3,        // leaf cards per strand; chance a strand forks
   clearance: 0.35,                          // m of bare ground kept around walls and cover
+  grassLook: {},                            // grass-look.js overrides (windDir/curl/translucency/rootShade/coverage); absent = off
 };
 
 export const THEMES = {
@@ -655,6 +656,7 @@ export function floraFor(t) {
   // Copied, not shared: a spread aliases FLORA_OFF's own maps, and the panel writes into these.
   f.speciesHeight = { ...f.speciesHeight };
   f.speciesDensity = { ...f.speciesDensity };
+  f.grassLook = { ...f.grassLook };
   return f;
 }
 

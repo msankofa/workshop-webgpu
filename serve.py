@@ -244,7 +244,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/list-body-tuning':
             self._handle_list_body_tuning()
             return
+        if path == '/api/list-maps':
+            self._handle_list_maps()
+            return
         super().do_GET()
+
+    # GET /api/list-maps -- terrain-generator-v5.html's "real exported map" picker enumerates
+    # every maps/**/<name>-data.json so it can see its own tool's newest exports.
+    def _handle_list_maps(self):
+        try:
+            files = []
+            base = os.path.abspath(MAPS_DIR)
+            for dirpath, _dirs, names in os.walk(base):
+                for entry in names:
+                    if entry.lower().endswith('-data.json'):
+                        rel = os.path.relpath(os.path.join(dirpath, entry), base).replace(os.sep, '/')
+                        files.append(rel)
+            files.sort()
+            self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
     # GET /api/list-maze-layouts -- start-screen.js builds its Maze Layouts map card from this.
     # Filenames come off disk, so there is nothing to sanitize; the client fetches

@@ -79,6 +79,15 @@ reach, so a target pulled in by the reach bound cannot be pushed back out by the
 `canWalkLegMove` compared against a hardcoded 0.1 m, which is a length and therefore has to scale with the
 creature. It is now `gait.restepEpsilon ?? 0.1`, reproducing the old number exactly when unset.
 
+**That fallback is a trap for any new caller, and it caught one.** `stadium-walker.js` did not set
+`restepEpsilon`, so every Stadium model inherited the flat 0.1 m — five times Rattata's entire stride
+envelope, which meant no leg could step until the body had dragged it 100 mm. The symptom was that eight
+of fourteen models had a median step travel of 100–104 mm regardless of their size. The veto is also the
+scheduler's main hysteresis, so it cannot simply be made small: below about one stride envelope the foot
+is re-placed before the body has walked it back through the envelope, so it lives at the front edge where
+the leg is longest and drags there. `docs/subsystems/stadium.md` has the swept numbers. If you write a new
+caller, set `restepEpsilon` from the creature's own stride rather than accepting the default.
+
 ### Scaling a creature is not scaling its model
 
 `demos/bug-rig.js` exports `scaleBugGait(gait, s)`, and it exists because this module's own header records

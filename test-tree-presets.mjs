@@ -82,11 +82,11 @@ const trunkOnly = {
   angle: [0, 90], gnarliness: [0, 0], twist: [0, 0],
   force: { direction: [0, 1, 0], strength: 0 }, leaves: { enabled: false },
 };
-// Rings are emitted base-to-tip. Vertices per ring is derived, not assumed: the tube duplicates
-// its seam vertex, so it is segments+1, not segments.
-function ringRadius(geo, ring, rings) {
+// Rings are emitted base-to-tip, segments+1 vertices each (the tube duplicates its seam vertex).
+// perRing is passed in rather than divided out of the buffer length: cap fans are appended after
+// the wall, so total/rings stopped being a whole number once open ends started getting closed.
+function ringRadius(geo, ring, perRing) {
   const p = geo.getAttribute('position').array;
-  const perRing = (p.length / 3) / rings;
   let max = 0;
   for (let j = 0; j < perRing; j++) {
     const i = (ring * perRing + j) * 3;
@@ -96,13 +96,21 @@ function ringRadius(geo, ring, rings) {
 }
 {
   // 4a: taper. Deciduous keeps taper[level]; evergreen ignores it and narrows to a point.
+  // Measured mid-trunk, not at the tip: `trunkOnly` spawns no children, so the trunk is terminal
+  // and its tip now pinches shut in BOTH modes (that is what stops it rendering as a cut pipe).
+  // Ring 3 of 4 is the last ring the taper table alone decides.
+  const PER = 6 + 1;
   const dec = createTree({ ...trunkOnly, evergreen: false });
   const eve = createTree({ ...trunkOnly, evergreen: true });
-  const decTip = ringRadius(dec.branchesMesh.geometry, 4, 5);
-  const eveTip = ringRadius(eve.branchesMesh.geometry, 4, 5);
-  ok(Math.abs(decTip - 0.5) < 1e-6, `4a: deciduous trunk tip keeps 1 - taper of its radius (got ${decTip.toFixed(4)})`);
-  ok(eveTip < 1e-6, `4a: evergreen trunk tip narrows to a point (got ${eveTip.toFixed(4)})`);
-  ok(Math.abs(ringRadius(dec.branchesMesh.geometry, 0, 5) - ringRadius(eve.branchesMesh.geometry, 0, 5)) < 1e-6,
+  const decMid = ringRadius(dec.branchesMesh.geometry, 3, PER);
+  const eveMid = ringRadius(eve.branchesMesh.geometry, 3, PER);
+  ok(Math.abs(decMid - 0.625) < 1e-6, `4a: deciduous trunk keeps 1 - taper*t of its radius (got ${decMid.toFixed(4)})`);
+  ok(Math.abs(eveMid - 0.25) < 1e-6, `4a: evergreen trunk ignores the taper table and narrows harder (got ${eveMid.toFixed(4)})`);
+  const decTip = ringRadius(dec.branchesMesh.geometry, 4, PER);
+  const eveTip = ringRadius(eve.branchesMesh.geometry, 4, PER);
+  ok(decTip < 1e-2, `4a: a terminal deciduous tip pinches shut (got ${decTip.toFixed(4)})`);
+  ok(eveTip < 1e-2, `4a: a terminal evergreen tip pinches shut (got ${eveTip.toFixed(4)})`);
+  ok(Math.abs(ringRadius(dec.branchesMesh.geometry, 0, PER) - ringRadius(eve.branchesMesh.geometry, 0, PER)) < 1e-6,
     '4a: both modes start from the same trunk base radius');
   dec.dispose(); eve.dispose();
 }
@@ -157,7 +165,11 @@ function ringRadius(geo, ring, rings) {
     force: { direction: [0, 1, 0], strength: 0 }, leaves: { enabled: false },
   });
   const p = tree.branchesMesh.geometry.getAttribute('position').array;
-  const trunkVerts = (SEC0 + 1) * (SEG0 + 1);
+  // The trunk's wall is followed by its two cap fans (tip and base, SEG+1 vertices each: the ring
+  // plus a centre), and only then by the children. The trunk has children so its tip stays wide
+  // and gets capped; the children are terminal, so they pinch shut and are capped by neither.
+  const capVerts = SEG0 + 1;
+  const trunkVerts = (SEC0 + 1) * (SEG0 + 1) + 2 * capVerts;
   const childVerts = (SEC1 + 1) * (SEG1 + 1);
   // If this fails the vertex layout changed and every index below is meaningless — so assert it.
   ok(p.length / 3 === trunkVerts + COUNT * childVerts,

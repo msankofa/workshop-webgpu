@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Water: water.js lake vs. WaterThreeJS ocean, and hybrids</title>
+<!--
+  One water shader with every technique from both systems behind a switch, so the same page can be
+  made to look like the lake water `../water.js` ships, like the achrefelouafi/WaterThreeJS ocean, or
+  like any mix of the two. Two bodies of water live in the scene at once: an ocean at sea level and a
+  lake in a bowl on the island above it. Each body has its own profile, so a calm lake and a rolling
+  ocean can coexist and be tuned separately.
+
+  What is switchable, per body:
+    waves        3-sine ripples (water.js) or a Gerstner spectrum with dispersion (WaterThreeJS)
+    reflection   analytic sky, planar mirror (water.js), or screen-space ray march (WaterThreeJS)
+    refraction   live framebuffer + per-vertex depth (water.js) or a pre-water pass + depth buffer
+    colour       linear shallow/deep mix (water.js) or Beer-Lambert absorption (WaterThreeJS)
+    highlight    Phong (water.js) or GGX with distance roughness (WaterThreeJS)
+    foam         shore band, crest whitecaps, fold foam, contact rings around floating bodies
+    caustics     off, fbm shimmer (WaterThreeJS), or refracted-ray area ratio (water.js)
+    buoyancy     floating boxes ride the surface through the CPU twin in ./water-waves.js
+
+  Faithful to the sources: the water.js paths reuse its constants (3 sines, Fresnel power 3, Phong 80,
+  ripple epsilon 0.15, area-ratio caustics). The WaterThreeJS paths follow src/Ocean.js (26 waves,
+  x1.19 frequency and x0.82 amplitude per octave, sqrt(g k) dispersion, 32-step SSR with x1.06 step
+  growth, exp(-absorb/clarity * thickness), Schlick f0 0.02, GGX glint, three foam channels).
+
+  Not faithful: water.js's caustics are rendered in a separate top-down pass and projected onto the
+  terrain; here the same area-ratio maths is evaluated directly in the terrain fragment shader with
+  screen derivatives, which needs no extra pass. The camera is not handled underwater. Their sky,
+  clouds, god-rays and post stack are out of scope; the sky here is a small analytic gradient.
+
+  Comparison that motivated this page: ../docs/water-vs-waterthreejs-comparison.md
+-->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { display: block; }
+  #panel {
+    --line: rgba(255,255,255,0.12); --text: #d8dee9; --muted: #8d97a8; --accent: #77c8a1;
+    --warn: #ffc857; --bad: #ff7b7b;
+    position: fixed; top: 10px; right: 10px; width: 340px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  #panel h2 small { text-transform: none; letter-spacing: 0; font-weight: normal; margin-left: 6px; }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .seg { display: flex; gap: 4px; margin: 6px 0 2px; }
+  .seg button { flex: 1; padding: 6px 4px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px; }
+  .seg button.on { background: rgba(119,200,161,0.16); color: var(--accent); border-color: rgba(119,200,161,0.45); }
+  .seg button.lake.on { background: rgba(255,200,87,0.16); color: var(--warn); border-color: rgba(255,200,87,0.45); }
+  .segLabel { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--text); font-weight: 600; }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #8a93a3; font-size: 11px;
+    pointer-events: none; user-select: none; }
+  #err { position: fixed; left: 12px; top: 12px; color: #ff7b7b; font-size: 12px; max-width: 60vw; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Water: lake, ocean, or hybrid</h1>
+  <p class="sub">Every technique from <code>water.js</code> and WaterThreeJS in one shader, per body of water.</p>
+
+  <h2>Presets <small>apply to the body being edited</small></h2>
+  <div class="seg" id="presetSeg">
+    <button data-preset="waterjs">water.js lake</button>
+    <button data-preset="ocean">WaterThreeJS ocean</button>
+    <button data-preset="hybrid">Hybrid</button>
+  </div>
+  <div class="segLabel">Editing</div>
+  <div class="seg" id="bodySeg">
+    <button data-body="ocean" class="on">Ocean (sea level)</button>
+    <button data-body="lake" class="lake">Lake (on the island)</button>
+  </div>
+
+  <h2>Waves</h2>
+  <div class="seg" id="waveSeg">
+    <button data-v="0">3-sine ripples (water.js)</button>
+    <button data-v="1">Gerstner spectrum</button>
+  </div>
+  <div id="waveRows"></div>
+
+  <h2>Reflection</h2>
+  <div class="seg" id="reflSeg">
+    <button data-v="0">Sky only</button>
+    <button data-v="1">Planar (water.js)</button>
+    <button data-v="2">SSR (WaterThreeJS)</button>
+  </div>
+  <div id="reflRows"></div>
+
+  <h2>Refraction and colour</h2>
+  <div class="segLabel">Refraction source</div>
+  <div class="seg" id="refrSeg">
+    <button data-v="0">Framebuffer + vertex depth</button>
+    <button data-v="1">Pre-pass + depth buffer</button>
+  </div>
+  <div class="segLabel">Depth colour law</div>
+  <div class="seg" id="colorSeg">
+    <button data-v="0">Linear mix (water.js)</button>
+    <button data-v="1">Beer-Lambert</button>
+  </div>
+  <div id="colorRows"></div>
+
+  <h2>Sun highlight and Fresnel</h2>
+  <div class="seg" id="specSeg">
+    <button data-v="0">Phong (water.js)</button>
+    <button data-v="1">GGX (WaterThreeJS)</button>
+  </div>
+  <div id="specRows"></div>
+
+  <h2>Foam</h2>
+  <div id="foamRows"></div>
+
+  <h2>Caustics on the bed</h2>
+  <div class="seg" id="causticSeg">
+    <button data-v="0">Off</button>
+    <button data-v="1">fbm shimmer</button>
+    <button data-v="2">Refracted rays (water.js)</button>
+  </div>
+  <div id="causticRows"></div>
+
+  <h2>Scene <small>shared by both bodies</small></h2>
+  <label class="chk"><input type="checkbox" id="buoyancy" checked> floating boxes ride the waves (CPU twin)</label>
+  <label class="chk"><input type="checkbox" id="showLake" checked> show the lake</label>
+  <div id="sceneRows"></div>
+
+  <div id="stats"></div>
+  <div id="credit">
+    Ocean techniques after <a href="https://github.com/achrefelouafi/WaterThreeJS" target="_blank">achrefelouafi/WaterThreeJS</a>.
+    Lake techniques are the ones <code>../water.js</code> ships in the environment viewer.
+  </div>
+</div>
+<div id="hint">Drag to orbit, wheel to zoom, right-drag to pan. Sliders edit the body chosen under "Editing".</div>
+<div id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
+import {
+  Fn, uniform, uniformArray, attribute, float, int, vec2, vec3, vec4,
+  positionLocal, positionGeometry, positionWorld, positionView, cameraPosition, cameraViewMatrix,
+  cameraProjectionMatrix, cameraNear, cameraFar, screenUV,
+  texture, viewportSharedTexture, reflector, perspectiveDepthToViewZ, getScreenPosition,
+  Loop, Break, If, select, varying,
+  sin, cos, exp, pow, sqrt, abs, fract, floor, max, min, clamp, mix, smoothstep, saturate,
+  normalize, dot, cross, length, reflect, refract, dFdx, dFdy, mx_fractal_noise_float, oneMinus,
+} from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { buildWaveTable, surfaceAt, WAVE_DEFAULTS } from './water-waves.js';
+
+const errBox = document.getElementById('err');
+const fail = (m) => { errBox.textContent += m + '\n'; console.error(m); };
+window.addEventListener('error', (e) => fail(e.message));
+window.addEventListener('unhandledrejection', (e) => fail(String(e.reason?.stack || e.reason)));
+
+// ---------------------------------------------------------------------------
+// Terrain: an island with a lake bowl on top, analytic so both CPU and shaders agree.
+// ---------------------------------------------------------------------------
+const SEA_LEVEL = 0, LAKE_LEVEL = 11, LAKE_CX = 18, LAKE_CZ = -6, LAKE_R = 20;
+const smooth01 = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function islandHeight(x, z) {
+  const r = Math.hypot(x, z);
+  const dl = Math.hypot(x - LAKE_CX, z - LAKE_CZ);
+  return -6 - 0.02 * r
+    + 30 * Math.exp(-(r * r) / (2 * 70 * 70))
+    + 2.2 * Math.sin(x * 0.08) * Math.cos(z * 0.06)
+    + 1.1 * Math.sin(x * 0.19 + z * 0.13)
+    + 0.5 * Math.sin(x * 0.51 - z * 0.37)
+    - 18 * (1 - smooth01(LAKE_R * 0.45, LAKE_R, dl));   // flat-bottomed lake bowl
+}
+
+// ---------------------------------------------------------------------------
+// Renderer, scene, camera
+// ---------------------------------------------------------------------------
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 4000);
+camera.position.set(-140, 45, 170);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(10, 8, 0);
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+// Sun and sky ---------------------------------------------------------------
+const sunState = { azimuth: 215, elevation: 32 };
+const uSunDir = uniform(new THREE.Vector3(0, 1, 0));
+const uSunColor = uniform(new THREE.Color(1, 0.95, 0.85));
+const uTime = uniform(0);
+const uWind = uniform(new THREE.Vector2(1, 0));
+const sunLight = new THREE.DirectionalLight(0xfff2dd, 2.4);
+scene.add(sunLight, new THREE.HemisphereLight(0x9fc4ff, 0x4a4238, 0.9));
+
+const skyColor = Fn(([dir]) => {
+  const y = dir.y;
+  const sunH = saturate(uSunDir.y.mul(2.5).add(0.15));
+  const zenith = mix(vec3(0.42, 0.28, 0.35), vec3(0.16, 0.36, 0.72), sunH);
+  const horizon = mix(vec3(0.95, 0.55, 0.32), vec3(0.72, 0.82, 0.92), sunH);
+  const up = pow(saturate(y), 0.45);
+  const sky = mix(horizon, zenith, up);
+  const below = mix(vec3(0.30, 0.30, 0.32), horizon, saturate(y.mul(4).add(1)));
+  const base = select(y.lessThan(0.0), below, sky);
+  const sd = saturate(dot(dir, uSunDir));
+  const disc = pow(sd, 1800).mul(18).add(pow(sd, 12).mul(0.35)).add(pow(sd, 3).mul(0.08));
+  return base.add(uSunColor.mul(disc));
+});
+const skyMat = new MeshBasicNodeMaterial({ side: THREE.BackSide, depthWrite: false });
+skyMat.colorNode = skyColor(normalize(positionWorld.sub(cameraPosition)));
+const skyMesh = new THREE.Mesh(new THREE.SphereGeometry(1800, 32, 16), skyMat);
+skyMesh.renderOrder = -10;
+scene.add(skyMesh);
+
+function updateSun() {
+  const az = THREE.MathUtils.degToRad(sunState.azimuth), el = THREE.MathUtils.degToRad(sunState.elevation);
+  const d = new THREE.Vector3(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
+  uSunDir.value.copy(d);
+  sunLight.position.copy(d).multiplyScalar(400);
+  const warm = THREE.MathUtils.clamp(1 - Math.max(0, d.y) * 1.6, 0, 1);
+  uSunColor.value.setRGB(1, 0.95 - warm * 0.35, 0.85 - warm * 0.55);
+  sunLight.color.copy(uSunColor.value);
+  sunLight.intensity = 0.4 + 2.2 * Math.pow(Math.max(0, d.y), 0.5);
+}
+updateSun();
+
+// ---------------------------------------------------------------------------
+// Pre-water pass targets (scene colour + depth without the water) for SSR and depth refraction
+// ---------------------------------------------------------------------------
+const preDepth = new THREE.DepthTexture(); preDepth.type = THREE.FloatType;
+const preTarget = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType });
+preTarget.depthTexture = preDepth;
+function sizePreTarget() {
+  const dpr = renderer.getPixelRatio();
+  preTarget.setSize(Math.floor(innerWidth * dpr), Math.floor(innerHeight * dpr));
+}
+sizePreTarget();
+const preColorTex = texture(preTarget.texture);
+const preDepthTex = texture(preDepth);
+// Depth texture nodes are float-typed in TSL, so no .r swizzle here.
+const sceneViewZAt = Fn(([uv]) => perspectiveDepthToViewZ(preDepthTex.sample(uv), cameraNear, cameraFar));
+
+// Floating bodies shared by foam (contact rings) and buoyancy ---------------
+const MAX_BODIES = 8;
+const bodyTable = Array.from({ length: MAX_BODIES }, () => new THREE.Vector4(0, 0, 0, 0)); // x, z, radius, on
+const uBodies = uniformArray(bodyTable);
+
+// ---------------------------------------------------------------------------
+// Water material: one shader, every switch a uniform, built once per body of water
+// ---------------------------------------------------------------------------
+const ETA = 1.0 / 1.333;
+
+function makeProfile(name) {
+  const p = {
+    name,
+    waveModel: uniform(1, 'int'), count: uniform(26, 'int'), disp: uniform(1),
+    normalStr: uniform(1),
+    waveA: uniformArray(Array.from({ length: 40 }, () => new THREE.Vector4())),
+    waveB: uniformArray(Array.from({ length: 40 }, () => new THREE.Vector4())),
+    reflMode: uniform(1, 'int'), reflRipple: uniform(0.08), reflBright: uniform(1), reflMix: uniform(1),
+    ssrSteps: uniform(32, 'int'), ssrThickness: uniform(6), ssrStep: uniform(1.5),
+    refrMode: uniform(0, 'int'), refrRipple: uniform(0.12),
+    colorLaw: uniform(0, 'int'), shallow: uniform(new THREE.Color(0x3f6f78)), deep: uniform(new THREE.Color(0x10333f)),
+    depthScale: uniform(6), clarity: uniform(1), absorb: uniform(new THREE.Vector3(0.45, 0.12, 0.06)),
+    fresnelPow: uniform(3), specModel: uniform(0, 'int'), specPow: uniform(80), rough: uniform(0.08), distRough: uniform(0.25),
+    foamShoreDepth: uniform(0), foamShoreStr: uniform(0), foamCrestH: uniform(1.4), foamCrestStr: uniform(0),
+    foamFoldT: uniform(0.35), foamFoldStr: uniform(0), foamContactStr: uniform(0), foamScale: uniform(1),
+    foamColor: uniform(new THREE.Color(0.95, 0.97, 1.0)),
+    causticMode: uniform(2, 'int'), causticStr: uniform(1), causticSpread: uniform(3),
+    // CPU-side settings that build the wave table
+    wave: { ...WAVE_DEFAULTS },
+    table: null,
+  };
+  rebuildTable(p);
+  return p;
+}
+function rebuildTable(p) {
+  p.table = buildWaveTable(p.wave);
+  p.count.value = p.table.count;
+  for (let i = 0; i < 40; i++) {
+    const A = p.waveA.array[i], B = p.waveB.array[i];
+    if (i < p.table.count) {
+      A.set(p.table.a[i * 4], p.table.a[i * 4 + 1], p.table.a[i * 4 + 2], p.table.a[i * 4 + 3]);
+      B.set(p.table.b[i * 4], p.table.b[i * 4 + 1], p.table.b[i * 4 + 2], p.table.b[i * 4 + 3]);
+    } else { A.set(0, 0, 0, 0); B.set(0, 0, 0, 0); }
+  }
+}
+
+// waveDisp(p) -> vec3 displacement at rest position p; waveNormalFold(p) -> vec4(normal, fold).
+function makeWaveFns(P) {
+  const waveDisp = Fn(([p]) => {
+    const d = vec3(0).toVar();
+    If(P.waveModel.equal(int(1)), () => {
+      Loop({ start: int(0), end: P.count, type: 'int', condition: '<' }, ({ i }) => {
+        const a = P.waveA.element(i), b = P.waveB.element(i);
+        const th = a.z.mul(a.x.mul(p.x).add(a.y.mul(p.y))).add(b.x.mul(uTime)).add(b.y);
+        const s = sin(th), c = cos(th);
+        const QA = b.z.mul(a.w);
+        d.addAssign(vec3(QA.mul(a.x).mul(c), a.w.mul(s), QA.mul(a.y).mul(c)));
+      });
+    });
+    return d.mul(P.disp);
+  });
+  const sineH = Fn(([p]) => sin(p.x.mul(0.8).add(uTime.mul(1.3))).mul(0.05)
+    .add(sin(p.y.mul(0.7).sub(uTime.mul(1.1))).mul(0.05))
+    .add(sin(p.x.add(p.y).mul(1.3).add(uTime.mul(1.7))).mul(0.03)));
+  const waveNormalFold = Fn(([p]) => {
+    const out = vec4(0, 1, 0, 0).toVar();
+    If(P.waveModel.equal(int(1)), () => {
+      const nx = float(0).toVar(), ny = float(0).toVar(), nz = float(0).toVar();
+      const jxx = float(0).toVar(), jzz = float(0).toVar(), jxz = float(0).toVar();
+      Loop({ start: int(0), end: P.count, type: 'int', condition: '<' }, ({ i }) => {
+        const a = P.waveA.element(i), b = P.waveB.element(i);
+        const th = a.z.mul(a.x.mul(p.x).add(a.y.mul(p.y))).add(b.x.mul(uTime)).add(b.y);
+        const s = sin(th), c = cos(th);
+        const kA = a.z.mul(a.w), QkA = b.z.mul(kA);
+        nx.addAssign(a.x.mul(kA).mul(c)); nz.addAssign(a.y.mul(kA).mul(c)); ny.addAssign(QkA.mul(s));
+        jxx.addAssign(QkA.mul(a.x).mul(a.x).mul(s)); jzz.addAssign(QkA.mul(a.y).mul(a.y).mul(s));
+        jxz.addAssign(QkA.mul(a.x).mul(a.y).mul(s));
+      });
+      const sc = P.disp.mul(P.normalStr);
+      const n = normalize(vec3(nx.negate().mul(sc), float(1).sub(ny.mul(sc)), nz.negate().mul(sc)));
+      const Jxx = float(1).sub(jxx.mul(P.disp)), Jzz = float(1).sub(jzz.mul(P.disp)), Jxz = jxz.negate().mul(P.disp);
+      out.assign(vec4(n, float(1).sub(Jxx.mul(Jzz).sub(Jxz.mul(Jxz)))));
+    }).Else(() => {
+      const e = float(0.15);
+      const hx = sineH(p.add(vec2(0.15, 0))).sub(sineH(p.sub(vec2(0.15, 0))));
+      const hz = sineH(p.add(vec2(0, 0.15))).sub(sineH(p.sub(vec2(0, 0.15))));
+      out.assign(vec4(normalize(vec3(hx.negate().mul(P.normalStr), e.mul(2), hz.negate().mul(P.normalStr))), 0));
+    });
+    return out;
+  });
+  return { waveDisp, waveNormalFold };
+}
+
+// Layered foam pattern in the style of Ocean.js: three fbm scales, threshold dissolve.
+const foamPattern = Fn(([p, energy, scale]) => {
+  const drift = uWind.mul(uTime.mul(0.35));
+  const n1 = mx_fractal_noise_float(p.mul(0.12).mul(scale).add(drift.mul(0.12)), 3, 2, 0.5, 1).mul(0.5).add(0.5);
+  const n2 = mx_fractal_noise_float(p.mul(0.8).mul(scale).add(drift.mul(0.5)), 3, 2, 0.5, 1).mul(0.5).add(0.5);
+  const n3 = mx_fractal_noise_float(p.mul(2.6).mul(scale).sub(drift.mul(0.9)), 2, 2, 0.5, 1).mul(0.5).add(0.5);
+  const n = n1.mul(0.5).add(n2.mul(0.35)).add(n3.mul(0.15));
+  const cut = oneMinus(energy);
+  const body = smoothstep(cut, cut.add(0.28), n);
+  const bubbles = smoothstep(0.55, 0.9, n3).mul(0.4);
+  return saturate(body.add(bubbles.mul(body))).mul(saturate(energy.mul(1.6)));
+});
+
+function makeWaterBody({ name, level, geometry, profile: P }) {
+  const { waveDisp, waveNormalFold } = makeWaveFns(P);
+  const mat = new MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+
+  // Vertex: rest position is the undisplaced local xz (mesh sits at world xz origin).
+  const disp = waveDisp(positionGeometry.xz);
+  mat.positionNode = positionLocal.add(disp);
+  const vHeight = varying(disp.y);
+  const rest = varying(positionGeometry.xz);   // undisplaced xz, for wave lookups in the fragment
+  const aDepth = attribute('aDepth', 'float');   // vertical water depth under the rest vertex
+
+  // Fragment
+  const nf = waveNormalFold(rest).toVar();
+  const N = nf.xyz, fold = nf.w;
+  const viewDir = normalize(cameraPosition.sub(positionWorld));
+  const NdotV = clamp(dot(N, viewDir), 0.0, 1.0);
+  const fres = float(0.02).add(float(0.98).mul(pow(oneMinus(NdotV), P.fresnelPow)));
+
+  // Refraction: bed colour and thickness
+  const uvOff = N.xz.mul(P.refrRipple);
+  const uvR = screenUV.add(uvOff);
+  const bedFB = viewportSharedTexture(uvR).rgb;
+  const bedPass = preColorTex.sample(uvR).rgb;
+  const thickBuf = max(positionView.z.sub(sceneViewZAt(uvR)), 0.0);
+  const usePass = P.refrMode.equal(int(1));
+  const bed = select(usePass, bedPass, bedFB);
+  const thick = select(usePass, thickBuf, aDepth);
+  const dt = saturate(thick.div(P.depthScale));
+  const tint = mix(P.shallow, P.deep, dt);
+  const refrLinear = mix(bed, tint, mix(float(0.2), float(0.85), dt));
+  const T = exp(P.absorb.div(P.clarity).mul(thick).negate());
+  const refrBeer = mix(tint, bed, T);
+  const refr = select(P.colorLaw.equal(int(1)), refrBeer, refrLinear);
+
+  // Reflection: sky, planar, or SSR
+  const R = reflect(viewDir.negate(), N);
+  const skyRefl = skyColor(R);
+  const planar = reflector({ resolutionScale: 0.5 });
+  planar.target.rotation.x = -Math.PI / 2;
+  planar.uvNode = planar.uvNode.add(N.xz.mul(P.reflRipple));
+  const base = planar.reflector;
+  const renderPlanar = base.updateBefore.bind(base);
+  base.updateBefore = (frame) => { if (P.reflMode.value === 1) return renderPlanar(frame); };
+  const refl = Fn(() => {
+  const refl = skyRefl.toVar();
+  If(P.reflMode.equal(int(1)), () => {
+    refl.assign(planar.rgb);
+  }).ElseIf(P.reflMode.equal(int(2)), () => {
+    // Screen-space march along R in view space against the pre-water depth buffer.
+    const Rv = cameraViewMatrix.mul(vec4(R, 0.0)).xyz;
+    const p0 = positionView.xyz;
+    const stepLen = P.ssrStep.toVar();
+    const dist = float(0).toVar();
+    const hitUV = vec2(-1).toVar();
+    const hit = float(0).toVar();
+    Loop({ start: int(0), end: P.ssrSteps, type: 'int', condition: '<' }, () => {
+      dist.addAssign(stepLen);
+      stepLen.mulAssign(1.06);
+      const p = p0.add(Rv.mul(dist));
+      const uv = getScreenPosition(p, cameraProjectionMatrix);
+      If(uv.x.lessThan(0.0).or(uv.x.greaterThan(1.0)).or(uv.y.lessThan(0.0)).or(uv.y.greaterThan(1.0)), () => { Break(); });
+      const sceneZ = sceneViewZAt(uv);
+      const diff = sceneZ.sub(p.z);   // positive when the ray point is behind the scene surface
+      If(diff.greaterThan(0.0).and(diff.lessThan(P.ssrThickness)), () => {
+        hitUV.assign(uv); hit.assign(1.0); Break();
+      });
+    });
+    const edge = smoothstep(0.0, 0.14, hitUV.x).mul(smoothstep(0.0, 0.14, oneMinus(hitUV.x)))
+      .mul(smoothstep(0.0, 0.14, hitUV.y)).mul(smoothstep(0.0, 0.14, oneMinus(hitUV.y)));
+    const ssrCol = preColorTex.sample(saturate(hitUV.add(N.xz.mul(P.reflRipple)))).rgb;
+    refl.assign(mix(skyRefl, ssrCol, hit.mul(edge)));
+  });
+  return refl;
+  })();
+  const reflC = refl.mul(P.reflBright);
+  const reflectAmount = saturate(fres.mul(P.reflMix));
+  const colBase = mix(refr, reflC, reflectAmount);
+
+  // Sun highlight
+  const L = uSunDir;
+  const NdotL = saturate(dot(N, L));
+  const phong = pow(max(dot(reflect(L.negate(), N), viewDir), 0.0), P.specPow);
+  const H = normalize(viewDir.add(L));
+  const NoH = saturate(dot(N, H));
+  const camDist = length(cameraPosition.sub(positionWorld));
+  const a = P.rough.add(P.distRough.mul(saturate(camDist.div(600)))).toVar();
+  const a2 = a.mul(a);
+  const dd = NoH.mul(a2).sub(NoH).mul(NoH).add(1.0);
+  const ggx = a2.div(float(3.14159265).mul(dd).mul(dd)).mul(0.25).mul(NdotL);
+  const spec = select(P.specModel.equal(int(1)), ggx, phong);
+  const colLit = colBase.add(uSunColor.mul(spec));
+
+  // Foam
+  const shore = oneMinus(smoothstep(0.0, max(P.foamShoreDepth, 0.01), thick)).mul(P.foamShoreStr);
+  const crest = smoothstep(P.foamCrestH, P.foamCrestH.add(0.6), vHeight).mul(P.foamCrestStr);
+  const foldF = smoothstep(P.foamFoldT, P.foamFoldT.add(0.4), fold).mul(P.foamFoldStr);
+  const contact = Fn(() => {
+    const c = float(0).toVar();
+    Loop({ start: int(0), end: int(MAX_BODIES), type: 'int', condition: '<' }, ({ i }) => {
+      const b = uBodies.element(i);
+      const d = length(positionWorld.xz.sub(b.xy));
+      c.addAssign(oneMinus(smoothstep(b.z.mul(0.9), b.z.add(1.8), d)).mul(b.w));
+    });
+    return c;
+  })();
+  const energy = saturate(shore.add(crest).add(foldF).add(contact.mul(P.foamContactStr)));
+  const foam = foamPattern(rest, energy, P.foamScale);
+  const foamLit = P.foamColor.mul(float(0.55).add(NdotL.mul(0.6)));
+  mat.colorNode = mix(colLit, foamLit, foam);
+  mat.opacityNode = clamp(float(0.5).add(thick), 0.6, 0.98).mul(smoothstep(0.0, 0.1, thick));
+
+  const mesh = new THREE.Mesh(geometry, mat);
+  mesh.position.y = level;
+  mesh.renderOrder = 1;
+  mesh.add(planar.target);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { name, level, mesh, mat, profile: P, waveNormalFold, planar };
+}
+
+// Water geometry: plane meshed only where the terrain is below the level, with per-vertex depth.
+function makeWaterGeometry(size, cell, level, cx = 0, cz = 0) {
+  const n = Math.round(size / cell);
+  const pos = [], dep = [], idx = [];
+  const rows = n + 1;
+  const h = new Float32Array(rows * rows);
+  for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+    const x = cx - size / 2 + i * cell, z = cz - size / 2 + j * cell;
+    h[j * rows + i] = islandHeight(x, z);
+    pos.push(x, 0, z);
+    dep.push(Math.max(0, level - h[j * rows + i]));
+  }
+  let wet = 0;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const a = j * rows + i, b = a + 1, c = a + rows, d = c + 1;
+    // Keep any cell with at least one wet corner so the shoreline is not jagged.
+    if (Math.min(h[a], h[b], h[c], h[d]) < level + 0.3) { idx.push(a, c, b, b, c, d); wet++; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aDepth', new THREE.Float32BufferAttribute(dep, 1));
+  g.setIndex(idx);
+  g.computeBoundingSphere();
+  return { geometry: g, wetCells: wet, cells: n * n };
+}
+
+const oceanProfile = makeProfile('ocean');
+const lakeProfile = makeProfile('lake');
+const oceanGeo = makeWaterGeometry(1400, 2.0, SEA_LEVEL);
+const lakeGeo = makeWaterGeometry(2 * LAKE_R + 10, 0.5, LAKE_LEVEL, LAKE_CX, LAKE_CZ);
+const ocean = makeWaterBody({ name: 'ocean', level: SEA_LEVEL, geometry: oceanGeo.geometry, profile: oceanProfile });
+const lake = makeWaterBody({ name: 'lake', level: LAKE_LEVEL, geometry: lakeGeo.geometry, profile: lakeProfile });
+const bodies = { ocean, lake };
+console.log('water cells', { ocean: oceanGeo, lake: lakeGeo });
+
+// ---------------------------------------------------------------------------
+// Terrain mesh with caustics in its emissive
+// ---------------------------------------------------------------------------
+function makeTerrain(size, seg) {
+  const g = new THREE.PlaneGeometry(size, size, seg, seg);
+  g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, islandHeight(p.getX(i), p.getZ(i)));
+  g.computeVertexNormals();
+  return g;
+}
+const terrainMat = new MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0 });
+{
+  const y = positionWorld.y;
+  const sand = vec3(0.76, 0.70, 0.52), grass = vec3(0.30, 0.46, 0.22), rock = vec3(0.42, 0.40, 0.38);
+  const bed = vec3(0.55, 0.52, 0.40);
+  const t1 = smoothstep(-2.0, 1.5, y), t2 = smoothstep(2.5, 6.0, y);
+  const wetSand = mix(bed, sand, t1);
+  const c = mix(mix(wetSand, grass, t2), rock, smoothstep(14.0, 20.0, y));
+  const ripple = mx_fractal_noise_float(positionWorld.xz.mul(0.35), 3, 2, 0.5, 1).mul(0.06);
+  terrainMat.colorNode = c.add(ripple);
+
+  // Caustics: for each body, if this fragment is under its level, trace the sun back to the surface.
+  const causticFor = (body) => Fn(() => {
+    const P = body.profile;
+    const out = float(0).toVar();
+    const depth = float(body.level).sub(positionWorld.y);
+    If(depth.greaterThan(0.0).and(P.causticMode.greaterThan(int(0))), () => {
+      const fade = saturate(depth.mul(0.6));
+      If(P.causticMode.equal(int(1)), () => {
+        const drift = uWind.mul(uTime.mul(0.5));
+        const sh = mx_fractal_noise_float(positionWorld.xz.mul(0.5).add(drift), 4, 2, 0.5, 1).mul(0.5).add(0.5);
+        out.assign(pow(sh, 3.0).mul(1.6).mul(fade));
+      }).Else(() => {
+        const r0 = refract(uSunDir.negate(), vec3(0, 1, 0), ETA);
+        const t0 = depth.div(r0.y.negate());
+        const S = positionWorld.sub(r0.mul(t0));           // where the flat-surface ray entered
+        const N = body.waveNormalFold(S.xz).xyz;
+        const r1 = refract(uSunDir.negate(), N, ETA);
+        const spread = P.causticSpread;
+        const Pn = S.add(r1.mul(depth.mul(spread).div(max(r1.y.negate(), 0.05))));
+        const Po = S.add(r0.mul(depth.mul(spread).div(max(r0.y.negate(), 0.05))));
+        const oldArea = length(dFdx(Po)).mul(length(dFdy(Po)));
+        const newArea = length(dFdx(Pn)).mul(length(dFdy(Pn)));
+        out.assign(clamp(oldArea.div(max(newArea, 1e-5)).mul(0.2), 0.0, 1.5).mul(fade));
+      });
+    });
+    return out.mul(P.causticStr);
+  })();
+  const inLake = length(positionWorld.xz.sub(vec2(LAKE_CX, LAKE_CZ))).lessThan(LAKE_R + 5);
+  const caus = select(inLake, causticFor(lake), causticFor(ocean));
+  terrainMat.emissiveNode = uSunColor.mul(caus).mul(vec3(0.6, 0.85, 1.0)).mul(saturate(uSunDir.y.mul(4)));
+}
+const terrain = new THREE.Mesh(makeTerrain(1400, 560), terrainMat);
+terrain.receiveShadow = false;
+scene.add(terrain);
+
+// ---------------------------------------------------------------------------
+// Floating boxes (buoyancy through the CPU twin)
+// ---------------------------------------------------------------------------
+const boxGeo = new THREE.BoxGeometry(3, 1.6, 3);
+const boxMat = new MeshStandardNodeMaterial({ color: 0xd8482a, roughness: 0.6 });
+const floaters = [];
+const floaterSpecs = [
+  { body: 'ocean', x: -60, z: 40 }, { body: 'ocean', x: -30, z: 90 }, { body: 'ocean', x: 40, z: 110 },
+  { body: 'ocean', x: 100, z: -30 }, { body: 'ocean', x: -110, z: -20 }, { body: 'ocean', x: 10, z: -120 },
+  { body: 'lake', x: LAKE_CX + 4, z: LAKE_CZ - 3 }, { body: 'lake', x: LAKE_CX - 6, z: LAKE_CZ + 5 },
+];
+for (const s of floaterSpecs) {
+  const m = new THREE.Mesh(boxGeo, boxMat);
+  m.position.set(s.x, bodies[s.body].level, s.z);
+  scene.add(m);
+  floaters.push({ ...s, mesh: m });
+}
+const _s = {}, _n = new THREE.Vector3(), _q = new THREE.Quaternion(), _up = new THREE.Vector3(0, 1, 0);
+function updateFloaters(t, buoyancy) {
+  floaters.forEach((f, i) => {
+    const b = bodies[f.body], P = b.profile;
+    let y = b.level, nx = 0, ny = 1, nz = 0;
+    if (buoyancy) {
+      if (P.waveModel.value === 1) {
+        surfaceAt(P.table, f.x, f.z, t, P.disp.value, 4, _s);
+        y += _s.y; nx = _s.nx; ny = _s.ny; nz = _s.nz;
+      }
+      // water.js ripples do not displace the surface, so 3-sine bodies stay at their level.
+    }
+    f.mesh.position.set(f.x, y + 0.2, f.z);
+    _n.set(nx, ny, nz).normalize();
+    _q.setFromUnitVectors(_up, _n);
+    f.mesh.quaternion.slerp(_q, 0.25);
+    const row = bodyTable[i];
+    row.set(f.x, f.z, 2.4, f.body === 'lake' && !lake.mesh.visible ? 0 : 1);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+let editing = 'ocean';
+const P = () => bodies[editing].profile;
+const rowHosts = {};
+const sliderDefs = [];   // rebound to the active profile on body switch
+
+function slider(hostId, label, get, set, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const host = rowHosts[hostId] || (rowHosts[hostId] = document.getElementById(hostId));
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
+  const refresh = () => { inp.value = get(); out.textContent = fmt(+inp.value); };
+  refresh();
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp);
+  host.append(row);
+  sliderDefs.push(refresh);
+}
+const uni = (key) => [() => P()[key].value, (v) => { P()[key].value = v; }];
+const wav = (key) => [() => P().wave[key], (v) => { P().wave[key] = v; rebuildTable(P()); }];
+const segs = [];
+function seg(id, get, set) {
+  const el = document.getElementById(id);
+  const btns = [...el.querySelectorAll('button')];
+  const refresh = () => btns.forEach((b) => b.classList.toggle('on', +b.dataset.v === get()));
+  btns.forEach((b) => b.addEventListener('click', () => { set(+b.dataset.v); refresh(); }));
+  refresh();
+  segs.push(refresh);
+}
+const useg = (id, key) => seg(id, () => P()[key].value, (v) => { P()[key].value = v; });
+
+useg('waveSeg', 'waveModel');
+slider('waveRows', 'Wave count', ...wav('count'), 1, 40, 1, (v) => String(v | 0));
+slider('waveRows', 'Longest wavelength (m)', ...wav('baseLength'), 4, 300, 1, (v) => v.toFixed(0));
+slider('waveRows', 'Wavelength falloff per octave', ...wav('lengthMul'), 0.5, 0.97, 0.01);
+slider('waveRows', 'Longest amplitude (m)', ...wav('baseAmp'), 0, 4, 0.02);
+slider('waveRows', 'Amplitude falloff per octave', ...wav('ampMul'), 0.5, 0.97, 0.01);
+slider('waveRows', 'Choppiness', ...wav('chop'), 0, 1.2, 0.01);
+slider('waveRows', 'Wind heading (deg)', ...wav('windDeg'), 0, 360, 1, (v) => v.toFixed(0));
+slider('waveRows', 'Directional spread (deg)', ...wav('spreadDeg'), 0, 180, 1, (v) => v.toFixed(0));
+slider('waveRows', 'Dispersion (1 = sqrt(g k), 0 = fixed speed)', () => P().wave.dispersion ? 1 : 0,
+  (v) => { P().wave.dispersion = v > 0.5; rebuildTable(P()); }, 0, 1, 1, (v) => (v ? 'on' : 'off'));
+slider('waveRows', 'Fixed speed (m/s)', ...wav('speed'), 0, 20, 0.1, (v) => v.toFixed(1));
+slider('waveRows', 'Displacement (0 = flat, normals only)', ...uni('disp'), 0, 1.5, 0.01);
+slider('waveRows', 'Normal strength', ...uni('normalStr'), 0, 3, 0.02);
+
+useg('reflSeg', 'reflMode');
+slider('reflRows', 'Reflect amount', ...uni('reflMix'), 0, 1.5, 0.01);
+slider('reflRows', 'Reflect brightness', ...uni('reflBright'), 0, 2, 0.01);
+slider('reflRows', 'Reflect ripple distortion', ...uni('reflRipple'), 0, 0.3, 0.005, (v) => v.toFixed(3));
+slider('reflRows', 'SSR steps', ...uni('ssrSteps'), 4, 64, 1, (v) => String(v | 0));
+slider('reflRows', 'SSR first step (m)', ...uni('ssrStep'), 0.2, 6, 0.1, (v) => v.toFixed(1));
+slider('reflRows', 'SSR hit thickness (m)', ...uni('ssrThickness'), 0.5, 20, 0.5, (v) => v.toFixed(1));
+
+useg('refrSeg', 'refrMode');
+useg('colorSeg', 'colorLaw');
+slider('colorRows', 'Refract ripple distortion', ...uni('refrRipple'), 0, 0.3, 0.005, (v) => v.toFixed(3));
+slider('colorRows', 'Depth tint scale (m)', ...uni('depthScale'), 0.5, 40, 0.5, (v) => v.toFixed(1));
+slider('colorRows', 'Clarity (Beer-Lambert)', ...uni('clarity'), 0.1, 6, 0.05);
+slider('colorRows', 'Absorb red', () => P().absorb.value.x, (v) => { P().absorb.value.x = v; }, 0, 1.5, 0.01);
+slider('colorRows', 'Absorb green', () => P().absorb.value.y, (v) => { P().absorb.value.y = v; }, 0, 1.5, 0.01);
+slider('colorRows', 'Absorb blue', () => P().absorb.value.z, (v) => { P().absorb.value.z = v; }, 0, 1.5, 0.01);
+const colorSlider = (label, key) => {
+  slider('colorRows', label + ' hue', () => { const h = {}; P()[key].value.getHSL(h); return h.h; },
+    (v) => { const h = {}; P()[key].value.getHSL(h); P()[key].value.setHSL(v, h.s, h.l); }, 0, 1, 0.005);
+  slider('colorRows', label + ' lightness', () => { const h = {}; P()[key].value.getHSL(h); return h.l; },
+    (v) => { const h = {}; P()[key].value.getHSL(h); P()[key].value.setHSL(h.h, h.s, v); }, 0, 1, 0.005);
+};
+colorSlider('Shallow colour', 'shallow');
+colorSlider('Deep colour', 'deep');
+
+useg('specSeg', 'specModel');
+slider('specRows', 'Fresnel power (3 water.js, 5 Schlick)', ...uni('fresnelPow'), 1, 8, 0.5, (v) => v.toFixed(1));
+slider('specRows', 'Phong power', ...uni('specPow'), 4, 400, 1, (v) => v.toFixed(0));
+slider('specRows', 'GGX roughness', ...uni('rough'), 0.01, 0.6, 0.005, (v) => v.toFixed(3));
+slider('specRows', 'GGX roughness added at 600 m', ...uni('distRough'), 0, 1, 0.01);
+
+slider('foamRows', 'Shore band depth (m)', ...uni('foamShoreDepth'), 0, 8, 0.1, (v) => v.toFixed(1));
+slider('foamRows', 'Shore foam strength', ...uni('foamShoreStr'), 0, 1.5, 0.01);
+slider('foamRows', 'Whitecap crest height (m)', ...uni('foamCrestH'), 0, 4, 0.05);
+slider('foamRows', 'Whitecap strength', ...uni('foamCrestStr'), 0, 1.5, 0.01);
+slider('foamRows', 'Fold threshold (Jacobian)', ...uni('foamFoldT'), 0, 1.2, 0.01);
+slider('foamRows', 'Fold foam strength', ...uni('foamFoldStr'), 0, 1.5, 0.01);
+slider('foamRows', 'Contact foam around bodies', ...uni('foamContactStr'), 0, 1.5, 0.01);
+slider('foamRows', 'Foam pattern scale', ...uni('foamScale'), 0.2, 4, 0.05);
+
+useg('causticSeg', 'causticMode');
+slider('causticRows', 'Caustic strength', ...uni('causticStr'), 0, 4, 0.05);
+slider('causticRows', 'Ray spread (bed distance multiplier)', ...uni('causticSpread'), 0.5, 8, 0.1, (v) => v.toFixed(1));
+
+slider('sceneRows', 'Sun azimuth (deg)', () => sunState.azimuth, (v) => { sunState.azimuth = v; updateSun(); }, 0, 360, 1, (v) => v.toFixed(0));
+slider('sceneRows', 'Sun elevation (deg)', () => sunState.elevation, (v) => { sunState.elevation = v; updateSun(); }, 2, 89, 1, (v) => v.toFixed(0));
+slider('sceneRows', 'Exposure', () => renderer.toneMappingExposure, (v) => { renderer.toneMappingExposure = v; }, 0.3, 2.5, 0.05);
+
+const buoyancyChk = document.getElementById('buoyancy');
+const showLakeChk = document.getElementById('showLake');
+showLakeChk.addEventListener('change', () => { lake.mesh.visible = showLakeChk.checked; });
+
+// Body switch: rebind every slider and seg to the other profile.
+const bodyBtns = [...document.querySelectorAll('#bodySeg button')];
+function refreshAll() { sliderDefs.forEach((f) => f()); segs.forEach((f) => f()); }
+bodyBtns.forEach((b) => b.addEventListener('click', () => {
+  editing = b.dataset.body;
+  bodyBtns.forEach((x) => x.classList.toggle('on', x === b));
+  refreshAll();
+}));
+
+// Presets --------------------------------------------------------------------
+const PRESETS = {
+  waterjs: {
+    wave: { count: 3, baseAmp: 0, chop: 0 },
+    u: { waveModel: 0, disp: 0, normalStr: 1, reflMode: 1, reflMix: 1, reflBright: 1, reflRipple: 0.08,
+      refrMode: 0, refrRipple: 0.12, colorLaw: 0, depthScale: 6, fresnelPow: 3, specModel: 0, specPow: 80,
+      foamShoreStr: 0, foamCrestStr: 0, foamFoldStr: 0, foamContactStr: 0, causticMode: 2, causticStr: 1 },
+    colors: { shallow: 0x3f6f78, deep: 0x10333f },
+  },
+  ocean: {
+    wave: { count: 26, baseLength: 150, lengthMul: 0.84, baseAmp: 0.9, ampMul: 0.82, chop: 0.55, spreadDeg: 70, dispersion: true },
+    u: { waveModel: 1, disp: 1, normalStr: 1, reflMode: 2, reflMix: 1, reflBright: 1, reflRipple: 0.04,
+      ssrSteps: 32, refrMode: 1, refrRipple: 0.06, colorLaw: 1, depthScale: 22, clarity: 1, fresnelPow: 5,
+      specModel: 1, rough: 0.08, distRough: 0.25,
+      foamShoreDepth: 3.4, foamShoreStr: 0.8, foamCrestH: 1.4, foamCrestStr: 0.7, foamFoldT: 0.35, foamFoldStr: 0.9,
+      foamContactStr: 0.8, causticMode: 1, causticStr: 0.8 },
+    colors: { shallow: 0x2fa3a8, deep: 0x06284a },
+  },
+  hybrid: {
+    wave: { count: 20, baseLength: 110, lengthMul: 0.84, baseAmp: 0.6, ampMul: 0.82, chop: 0.45, spreadDeg: 60, dispersion: true },
+    u: { waveModel: 1, disp: 1, normalStr: 1, reflMode: 1, reflMix: 1, reflBright: 1, reflRipple: 0.05,
+      refrMode: 1, refrRipple: 0.08, colorLaw: 1, depthScale: 16, clarity: 1.2, fresnelPow: 5,
+      specModel: 1, rough: 0.07, distRough: 0.25,
+      foamShoreDepth: 2.5, foamShoreStr: 0.7, foamCrestH: 1.0, foamCrestStr: 0.5, foamFoldT: 0.4, foamFoldStr: 0.7,
+      foamContactStr: 0.6, causticMode: 2, causticStr: 1 },
+    colors: { shallow: 0x3a8f96, deep: 0x0b2f45 },
+  },
+};
+function applyPreset(name, prof = P()) {
+  const pr = PRESETS[name];
+  Object.assign(prof.wave, WAVE_DEFAULTS, pr.wave);
+  rebuildTable(prof);
+  for (const [k, v] of Object.entries(pr.u)) prof[k].value = v;
+  for (const [k, v] of Object.entries(pr.colors)) prof[k].value.setHex(v);
+  refreshAll();
+}
+[...document.querySelectorAll('#presetSeg button')].forEach((b) => b.addEventListener('click', () => applyPreset(b.dataset.preset)));
+applyPreset('ocean', oceanProfile);
+applyPreset('waterjs', lakeProfile);
+refreshAll();
+
+// ---------------------------------------------------------------------------
+// Frame loop
+// ---------------------------------------------------------------------------
+const stats = document.getElementById('stats');
+let frames = 0, fpsT = performance.now(), fps = 0, preMs = 0;
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); sizePreTarget();
+});
+
+const t0 = performance.now();
+renderer.setAnimationLoop(() => {
+  const t = (performance.now() - t0) / 1000;
+  uTime.value = t;
+  const w = THREE.MathUtils.degToRad(P().wave.windDeg);
+  uWind.value.set(Math.cos(w), Math.sin(w));
+  skyMesh.position.copy(camera.position);
+  updateFloaters(t, buoyancyChk.checked);
+
+  // Pre-water pass only when some visible body reads it (SSR or depth-buffer refraction).
+  const needsPre = [ocean, lake].some((b) => b.mesh.visible && (b.profile.reflMode.value === 2 || b.profile.refrMode.value === 1));
+  if (needsPre) {
+    const s = performance.now();
+    ocean.mesh.visible = false; const lakeWas = lake.mesh.visible; lake.mesh.visible = false;
+    renderer.setRenderTarget(preTarget);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    ocean.mesh.visible = true; lake.mesh.visible = lakeWas;
+    preMs = preMs * 0.9 + (performance.now() - s) * 0.1;
+  }
+  renderer.render(scene, camera);
+
+  frames++;
+  const now = performance.now();
+  if (now - fpsT > 500) {
+    fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now;
+    const o = oceanProfile, l = lakeProfile;
+    const modeName = (p) => `${['3-sine', 'Gerstner ' + p.count.value][p.waveModel.value]}, ${['sky', 'planar', 'SSR'][p.reflMode.value]}, ${['linear', 'Beer'][p.colorLaw.value]}`;
+    stats.innerHTML = `<b>${fps} fps</b> · pre-pass ${needsPre ? preMs.toFixed(1) + ' ms (CPU submit)' : 'off'}<br>` +
+      `ocean: ${modeName(o)} · ${oceanGeo.wetCells.toLocaleString()} cells<br>` +
+      `lake: ${modeName(l)} · ${lakeGeo.wetCells.toLocaleString()} cells<br>` +
+      `camera height above sea ${camera.position.y.toFixed(1)} m`;
+  }
+});
+</script>
+</body>
+</html>

@@ -84,6 +84,7 @@ import { createWeaponPoseController } from './weapon-pose-controller.js';
 import { createLightingRig } from './lights.js';
 import { createMapCollider } from './map-collision.js';
 import { createPostFX } from './post-fx.js';
+import { createRainSystem, applyWetSurface, bakeOccluderMap, createLightningBolt, createRainBed, playThunder } from './rain.js';
 import { createVisualSystem } from './bot-viewer-visuals.js';
 import { createSlotSection, assignKnown, readSlots } from './bot-viewer-slots.js';
 import { botDesignForRole, setBotBodyKind, getBotBodyKind, BOT_BODY_KINDS } from './bot-body-design.js';
@@ -95,6 +96,13 @@ import { createLayout } from './layout-interchange.js';
 import { installPanelTheme, createSection, setAllSectionsCollapsed, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
 import { createEnvironmentAudio, positionalSfxProfiles } from './environment-audio.js';
 import { createEffectRenderer, makeStainTexture, bloodIntensityForHealth } from './effect-renderer.js';
+// Persistent blast debris (html-game-v2 port): a pure sim of shrapnel / rubble / sparks / dust that
+// bounce and smoulder for twenty seconds, plus its WebGPU instanced renderer. effect-renderer.js is
+// stateless by design and cannot hold this layer, so it sits beside it. explosion-tier.js is their
+// 320 ms admission budget; here it only scales debris (medium halves shrapnel, lite spawns none).
+import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
+import { createDebrisRenderer } from './blast-debris.js';
+import { createExplosionBudget } from './explosion-tier.js';
 import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams, stumpParams } from './blood-tuning.js';
 import { createProjectedDecals } from './projected-decals.js';
 import { resolveBodyHit, resolveAttachmentMatrix } from './bot-body-hit.js';
@@ -816,6 +824,92 @@ const floorMat = visuals.materials.floor;
 const terrainMat = visuals.materials.terrain;   // floor colour x baked per-vertex terrain shading
 const coverMat = visuals.materials.cover;
 
+// ===================== weather (rain.js) =====================
+// One slider fans out to drops, wet ground, a cloud lid on the sky, dimmer lights, thicker fog and
+// storms. Roofs and canopies shadow the rain through an occluder map baked top-down over mapRoot and
+// the trees, redone after any rebuild while it rains. See docs/subsystems/fx.md §Rain.
+const RAIN_OCC_LAYER = 3;
+const rain = createRainSystem({ maxDrops: 40000, maxSplashes: 5000, density: 0, uniforms: { wetness: 0, splashRadius: 16 } });
+rain.group.visible = false;
+scene.add(rain.group);
+// Wrap the themed ground graphs (colour darkens, puddles go glossy, ripples bend the soil normal)
+// rather than replace them; wetness 0 leaves the look exactly as authored.
+for (const [mat, d] of [[floorMat, visuals.groundNodes.floor], [terrainMat, visuals.groundNodes.terrain]]) {
+  applyWetSurface(mat, rain.uniforms, { baseRoughness: d.rough, baseNormal: d.normalWorld, rippleScale: 2.6, puddleScale: 0.12 });
+}
+const lightningBolt = createLightningBolt(scene);
+const weather = { rain: 0, lightning: true, occluders: true, puddles: 0.45, wind: 2, lid: 1 };
+let rainOcc = null, rainOccDirty = true, nextBoltAt = 5, thunderAt = -1, thunderDist = 0;
+let rainBedHandle = null, rainBed = null;
+let syncWeatherControls = () => {};
+
+// Top-down height bake of everything solid: walls, cover, terrain and tree canopies. The layer is
+// enabled on the meshes for the bake only, so nothing else ever sees it.
+function bakeRainOccluders() {
+  if (activeBounds.maxX <= activeBounds.minX) return;
+  const roots = [mapRoot, botTrees?.root].filter(Boolean);
+  const marked = [];
+  for (const r of roots) r.traverse((o) => { if (o.isMesh) { o.layers.enable(RAIN_OCC_LAYER); marked.push(o); } });
+  const w = activeBounds.maxX - activeBounds.minX, d = activeBounds.maxZ - activeBounds.minZ;
+  rainOcc?.dispose();
+  rainOcc = bakeOccluderMap(renderer, scene, rain.uniforms, {
+    center: [(activeBounds.minX + activeBounds.maxX) / 2, (activeBounds.minZ + activeBounds.maxZ) / 2],
+    extent: Math.max(w, d) + 16, size: 1024, layer: RAIN_OCC_LAYER, top: 60,
+  });
+  for (const o of marked) o.layers.disable(RAIN_OCC_LAYER);
+  rain.uniforms.uOccOn.value = weather.occluders ? 1 : 0;
+  rainOccDirty = false;
+}
+
+function setRainAmount(v) {
+  weather.rain = v;
+  rain.setDensity(v);
+  rain.group.visible = v > 0;
+  rain.uniforms.uWetness.value = Math.min(1, v * 1.4);
+  rain.uniforms.uPuddle.value = weather.puddles;
+  rain.uniforms.uOpacity.value = 0.45 + 0.25 * v;
+  visuals.setWeather({ overcast: Math.min(1, v * 1.25) * weather.lid, dim: v, fogBoost: 1 + 4 * v });
+  syncWeatherControls();
+}
+
+function strikeLightning() {
+  // From above the map to the ground 20-70 m off; the shared flash brightens drops, key light and
+  // the cloud lid, and thunder follows at 340 m/s.
+  const ang = Math.random() * Math.PI * 2, r = 20 + Math.random() * 50;
+  const hx = camera.position.x + Math.cos(ang) * r, hz = camera.position.z + Math.sin(ang) * r;
+  const hit = new THREE.Vector3(hx, roadGround.heightAt(hx, hz), hz);
+  const top = new THREE.Vector3(hx + (Math.random() - 0.5) * 20, 55 + Math.random() * 15, hz + (Math.random() - 0.5) * 20);
+  lightningBolt.strike(top, hit);
+  rain.flash(0.7 + Math.random() * 0.6, 3.5);
+  thunderDist = hit.distanceTo(camera.position);
+  thunderAt = thunderDist / 340;
+}
+
+function updateWeather(dt) {
+  const lit = rain.uniforms.uLightning.value;
+  if (weather.rain <= 0 && lit <= 0.002 && !rainBedHandle) return;   // dry: nothing to do
+  if (rainOccDirty && weather.rain > 0 && weather.occluders) bakeRainOccluders();
+  rain.update(dt, camera);
+  lightningBolt.update(dt);
+  visuals.setLightning(lit > 0.002 ? lit : 0);
+  if (weather.rain > 0.3 && weather.lightning) {
+    nextBoltAt -= dt;
+    if (nextBoltAt <= 0) { strikeLightning(); nextBoltAt = 5 + Math.random() * 14 * (1.3 - weather.rain); }
+  }
+  if (thunderAt >= 0) {
+    thunderAt -= dt;
+    if (thunderAt < 0) envAudio.playSynthAt((ctx, dest) => playThunder(ctx, dest, { distance: thunderDist, volume: 0.9 }), null, { volume: 0.9 });
+  }
+  // The rain bed rides the shared sfx bus so the mixer and mute apply; it starts once the context runs.
+  if (weather.rain > 0 && !rainBedHandle) {
+    rainBedHandle = envAudio.playSynthLoop((ctx, dest) => { rainBed = createRainBed(ctx, dest); return { stop: (at) => rainBed.stop(at) }; }, null, { volume: 0.7 }) || null;
+  }
+  if (rainBedHandle) {
+    if (weather.rain <= 0 || rainBedHandle.stopped) { rainBedHandle.stop(0.4); rainBedHandle = null; rainBed = null; }
+    else rainBed.set(weather.rain);
+  }
+}
+
 // The box glue (shared unit geometry, instanced emission, teardown, ground fitting) lives in
 // map-boxes.js so structure-viewer.html shares it rather than copying it.
 import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
@@ -1063,6 +1157,7 @@ import { floraFor } from './bot-viewer-visuals-style.js';
 
 flora = createBotFlora({ THREE, renderer, camera, parent: scene, seed: 1, onStats: () => syncFloraCounts(),
   clearFn: roadClearsFlora });
+const floraSunDir = new THREE.Vector3();
 
 // Called on every layout rebuild AND on every theme switch (via visuals' onLookChange).
 function rebuildFlora() {
@@ -1091,6 +1186,93 @@ function rebuildFlora() {
     flora: floraFor(visuals.theme),
   });
   syncFloraCounts();
+}
+
+// Trees, ported from the environment viewer's forest modules. Species come from the families
+// authored in tree-viewer.html: both pages are served from one origin by serve.py, so they already
+// share a localStorage bucket and no export step is involved.
+import { createBotTrees, TREE_DEFAULTS } from './bot-trees.js';
+import { densityForCount } from './bot-trees-place.js';
+import { loadFamilies, speciesTableFor, familyOptions } from './tree-families-store.js';
+import { EZ_TREE_FAMILIES } from './tree-presets.js';
+import { createTree } from './trees.js';
+import { createTextureSource } from './tree-textures.js';
+
+let botTrees = null;
+let treeSettings = { ...TREE_DEFAULTS, texMode: 'authored' };
+let treeFamilies = [];
+let treeSpeciesTable = [];
+let treeStats = { total: 0, auto: 0, placed: 0, draws: 0, colliderTriangles: 0, species: 0 };
+// The click brush. radius 0 plants one tree at the click; larger stamps a clump of `count`.
+let treeBrush = { count: 5, radius: 4, falloff: 0.35, minSeparation: 1.2, speciesId: null };
+// Assigned when the Trees panel section is built, which happens long after the first rebuild, so
+// every caller reaches it as syncTreeCounts?.().
+let syncTreeCounts = null;
+
+botTrees = createBotTrees({
+  THREE, parent: scene, createTree, clearFn: roadClearsFlora,
+  onStats: (s) => { treeStats = { ...treeStats, ...s }; syncTreeCounts?.(); rainOccDirty = true; },
+});
+
+// Authored bark and leaf textures. The four leaf PNGs decode into a 2x2 atlas canvas, so this is
+// asynchronous: until it lands the palette bakes 'simple' silhouette leaves, and when it lands the
+// palette key changes and the next rebuild re-bakes them as atlas cards.
+function setTreeTextureMode(mode) {
+  treeSettings.texMode = mode;
+  botTrees.setTextureSource(createTextureSource(mode, {
+    onReady: () => {
+      // Only rebuild once the layout exists; the initial build does it anyway.
+      if (activeBounds.maxX > activeBounds.minX) {
+        rebuildDerived({ trees: true, collider: true, nav: true, vis: true, corners: true }, { label: 'tree-textures' });
+      }
+      syncTreeCounts?.();
+    },
+  }));
+}
+setTreeTextureMode('authored');
+
+// Re-read from tree-viewer's storage on demand rather than once at boot, so authoring a family in
+// the other tab and coming back here picks it up without a reload.
+function reloadTreeFamilies() {
+  // Falls back to the stock ez-tree presets when tree-viewer has never been opened on this browser,
+  // so trees work out of the box rather than silently placing nothing.
+  const stored = loadFamilies();
+  treeFamilies = stored.length ? stored : EZ_TREE_FAMILIES;
+  treeSpeciesTable = speciesTableFor(treeFamilies, treeSettings.familyIds);
+  // A saved slot can name a family this browser no longer has; fall back to all of them rather
+  // than leaving the forest empty with no clue why.
+  if (!treeSpeciesTable.length && treeSettings.familyIds) {
+    treeSettings.familyIds = null;
+    treeSpeciesTable = speciesTableFor(treeFamilies, null);
+  }
+  return treeFamilies;
+}
+
+// Called from rebuildDerived's `trees` stage, which runs after geometry (it needs the wall boxes)
+// and before collider (the trunk proxies have to exist when the BVH bakes).
+function rebuildTrees() {
+  if (!botTrees) return;
+  if (activeBounds.maxX <= activeBounds.minX) return;   // no layout yet
+  if (!treeSpeciesTable.length) reloadTreeFamilies();
+  // Theme gating is optional, unlike flora's. The default theme is internetcore and only
+  // ecobrutal ships a flora block, so gating trees on the theme unconditionally would leave them
+  // invisible on eight of nine themes.
+  const themeFlora = floraFor(visuals.theme);
+  const themeGrows = !!(themeFlora && ((themeFlora.plantDensity > 0) || (themeFlora.grassDensity > 0)));
+  const enabled = treeSettings.enabled && (!treeSettings.followTheme || themeGrows);
+  const pads = [botSpawnPoint, dummySpawnPoint]
+    .filter(Boolean)
+    .map((p) => ({ x: p.x, z: p.z, radius: SPAWN_PAD_RADIUS }));
+  treeStats = botTrees.rebuild({
+    bounds: activeBounds,
+    wallBoxes: activeWallBoxes,
+    coverBoxes: activeCoverBoxes,
+    pads,
+    groundHeight,
+    speciesTable: treeSpeciesTable,
+    settings: { ...treeSettings, enabled },
+  });
+  syncTreeCounts?.();
 }
 
 window.addEventListener('resize', () => {
@@ -1267,7 +1449,7 @@ const SPAWN_TOOL_SPREAD = 2;          // m of slack a click-placed bot may be nu
 // build runs long before the panel is assembled and already needs to draw markers.
 // 'road' and 'road-erase' ride the same armed-tool slot as the spawn tools, so arming one disarms
 // the others and Escape already clears whichever is live.
-let spawnToolMode = null;     // null | 'marker' | 'bot' | 'road' | 'road-erase'
+let spawnToolMode = null;     // null | 'marker' | 'bot' | 'road' | 'road-erase' | 'tree' | 'tree-erase'
 let spawnToolTeam = 'alpha';
 let spawnToolButtonsReady = false;
 const spawnMarkerGroup = new THREE.Group();
@@ -1294,6 +1476,26 @@ function commitSpawnTool(point) {
     roadSystem.deleteAt(point.x, point.z, 0.6);
     rebuildDerived({ nav: true, flora: true });
     updateRoadControls?.();
+    return;
+  }
+  // A tree brush with radius 0 plants exactly one; anything larger stamps a jittered clump. Both
+  // refuse ground the auto scatter would have refused, so a painted tree can never sit in a wall.
+  if (spawnToolMode === 'tree') {
+    const n = botTrees.plantAt(point.x, point.z, {
+      count: treeBrush.count, radius: treeBrush.radius,
+      falloff: treeBrush.falloff, minSeparation: treeBrush.minSeparation,
+      speciesId: treeBrush.speciesId,
+    });
+    // Only the grids need redoing: the tree module rebuilt its own meshes and proxies already.
+    if (n) rebuildDerived({ collider: true, nav: true, vis: true, corners: true }, { label: 'tree-plant' });
+    syncTreeCounts?.();
+    return;
+  }
+  if (spawnToolMode === 'tree-erase') {
+    if (botTrees.eraseAt(point.x, point.z, Math.max(1.5, treeBrush.radius))) {
+      rebuildDerived({ collider: true, nav: true, vis: true, corners: true }, { label: 'tree-erase' });
+    }
+    syncTreeCounts?.();
     return;
   }
   if (spawnToolMode === 'bot') {
@@ -7933,7 +8135,7 @@ function relocateActorsForLayout() {
 // pair memo and row cache are documented as needing no invalidation on the grounds that a built
 // field never changes its answers. Reconstruction is one O(cells) pass with no traces, so honouring
 // that assumption is cheaper than breaking it.
-const REBUILD_ALL = { geometry: true, collider: true, nav: true, vis: true, corners: true, flora: true };
+const REBUILD_ALL = { geometry: true, collider: true, nav: true, vis: true, corners: true, flora: true, trees: true };
 let lastRebuildTimings = null;   // ms per stage from the most recent call; shown by ?prof=1
 function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
   const t = {};
@@ -7959,9 +8161,16 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
     roadSystem.rebuild();
   });
   if (dirty.flora) mark('flora', () => rebuildFlora());
+  // Before the collider, because trunk proxies must exist when the BVH bakes, and before nav,
+  // which takes their footprints as blockers. The palette is cached across layout rebuilds -- it
+  // costs ~430 ms for all six families, so it must not ride on every wall move.
+  if (dirty.trees) mark('trees', () => rebuildTrees());
   if (dirty.collider) mark('collider', () => {
     if (mapCollider) mapCollider.dispose();
-    mapCollider = createMapCollider(mapRoot);
+    // Trunks go in as a detached extraRoot: they are ~16-triangle cylinder proxies, not the
+    // rendered geometry. A rendered tree is 1,112-13,674 triangles and the cap throws at 250k,
+    // so real tree meshes in the BVH would cap the forest near 27 trees.
+    mapCollider = createMapCollider(mapRoot, { extraRoots: [botTrees.colliderRoot] });
   });
   if (dirty.nav) mark('nav', () => {
     // heightAt makes every search slope-costed and gives the vis/corner bakes their height grid.
@@ -7969,8 +8178,14 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
     // a 200 m 900-wall map for a byte-identical grid (bench-corners.mjs). navWalkable is left with
     // the ground half only. Nav blocks every rect; the sight bake filters the short ones out itself,
     // so a cover box you can shoot over still stops you walking through it.
+    // Trunk footprints join the nav blockers so bots route around trees. They are deliberately
+    // NOT added to sightBlockers below: a thin trunk rect occludes nothing at a 0.5 m cell pitch
+    // while still emitting up to 8 corner records each (docs/subsystems/bots.md). Bullets and the
+    // camera ray still stop on trunks, because that comes from the collider proxy, not the field.
     navGrid = buildNavGrid(navWalkable, activeBounds, NAV_CELL, {
-      blockers: [...activeWalls, ...activeCovers], blockerMargin: WALL_MARGIN,
+      // navRects takes 0 here: buildNavGrid already widens every blocker by blockerMargin, so
+      // asking for the capsule radius as well would fence trees off twice.
+      blockers: [...activeWalls, ...activeCovers, ...botTrees.navRects(0)], blockerMargin: WALL_MARGIN,
       ...(terrainSettings.enabled ? { heightAt: groundHeight, softBlockedTest: navSoftBlocked } : {}),
     });
     // Road preference is charged as a surcharge on open ground, never as a discount on road: a
@@ -8009,6 +8224,7 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
     rebuildNavOverlay();
   });
 
+  rainOccDirty = true;   // roofs/canopies moved; rebaked on the next rainy frame
   t.total = Object.values(t).reduce((a, b) => a + b, 0);
   lastRebuildTimings = { label, ...t };
   const crests = cornerMap ? cornerMap.corners.reduce((n, rec) => n + (rec.kind === 'crest' ? 1 : 0), 0) : 0;
@@ -12054,6 +12270,42 @@ const effectRenderer = createEffectRenderer({
 });
 let botExplosionFxEnabled = true;
 let botBloodFxEnabled = true;
+// Debris rides its own switch under Blast FX. The sim only knows the ground (groundHeight), so pieces
+// pass through walls; the map collider is the obvious next step. Two resident point lights, not the
+// original's eight: bot-viewer-visuals.js caps real dynamic lights at two for a reason (each one is a
+// per-pixel tax on this forward path even at intensity 0), so the count is fixed at build time.
+const debrisSim = createDebrisSim({ groundAt: groundHeight });
+const debrisRenderer = createDebrisRenderer({ THREE, scene, sim: debrisSim, lightCount: 2 });
+const debrisTierBudget = createExplosionBudget();
+const botDebrisSettings = {
+  enabled: true,
+  radiusScale: 0.5,      // damage ring (m) -> html-game-v2 blastRadius; their grenade is ~5 m, ours 15
+  rubbleSize: 2.4,       // spawnRubble size argument: count and piece size both grow with it
+  rubbleOnGround: true,  // rubble only when the blast is within 0.6 R of the ground (airbursts throw none)
+  slabs: false, slabScale: 0.22,   // the bomb-scale drop-pod slabs, off: they are drone-strike sized
+  tiering: true,         // explosion-tier admission budget scales the debris of a volley
+};
+function spawnBlastDebris(center, shown) {
+  if (!botDebrisSettings.enabled) return;
+  const tier = botDebrisSettings.tiering ? debrisTierBudget.reserve('primary') : 'full';
+  const scale = TIER_DEBRIS_SCALE[tier] || TIER_DEBRIS_SCALE.full;
+  if (scale.shrapnel <= 0 && scale.rubble <= 0) return;
+  const blastRadius = shown * botDebrisSettings.radiusScale;
+  const color = [1, 0.62, 0.26];
+  const onGround = center.y - groundHeight(center.x, center.z) < shown * 0.6;
+  if (scale.shrapnel > 0) {
+    debrisSim.spawnBlastShrapnel(center.x, center.y, center.z, blastRadius, color,
+      { countScale: scale.shrapnel, verticalBoost: onGround ? 0.25 : 0 });
+  }
+  if (scale.rubble > 0 && onGround && botDebrisSettings.rubbleOnGround) {
+    const ang = Math.random() * Math.PI * 2;   // no kill vector for an area blast: pick a heading
+    debrisSim.spawnRubble(center.x, center.y, center.z, botDebrisSettings.rubbleSize, [Math.cos(ang), Math.sin(ang)],
+      { countScale: scale.rubble });
+    if (botDebrisSettings.slabs) {
+      debrisSim.spawnImpactSlabs(center.x, center.y, center.z, { scale: botDebrisSettings.slabScale, countScale: scale.rubble, color });
+    }
+  }
+}
 // Where a wound mark comes from, and how it is drawn. Both are per-frame cost dials.
 //   wound 'cylinder' — the point combat already produced from the bot's one 0.3 m capsule. Free,
 //                      but it sits centimetres off the limb in open air and cannot ride the body.
@@ -12209,6 +12461,7 @@ function spawnBlastFx(center, radius = BOT_BLAST_RADIUS, fxScale = 1) {
   visuals.flash(center, { intensity: 140, distance: Math.min(60, shown * 3.2), life: 0.28, color: 0xffb066 });
   if (!botExplosionFxEnabled) return;
   pushEffect('explosion', center, EXPLOSION_LIFE_S, { color: [1, 0.62, 0.26], radius: shown });
+  spawnBlastDebris(center, shown);
 }
 
 // Spray/decal direction: horizontal, outward from the target's axis -- combat.js's own capsule-normal
@@ -13557,6 +13810,8 @@ const SECTION_PLAN = [
   ['world', 'Landmarks', null, true],
   ['world', 'Terrain shading', null, true],
   ['world', 'Roads', null, true],
+  ['world', 'Trees', null, true],
+  ['world', 'Weather', null, true],
 
   ['debug', 'Perf / LOD', 'Performance', true],
   ['debug', 'Debug overlays', 'Overlays', true],
@@ -14527,6 +14782,287 @@ ctrl.append(
 );
 updateRoadControls();
 
+// Trees. Under World rather than Visuals because placement is map content: a painted forest is
+// saved with the maze, the way roads are, not with the theme the way grass is.
+header('Trees');
+const treeSyncers = [];
+function updateTreeControls() { for (const s of treeSyncers) s(); }
+// Named so the module-level onStats callback can reach it; it fires before the panel is built.
+syncTreeCounts = () => { for (const s of treeSyncers) s(); };
+
+function makeTreeSlider(label, min, max, step, decimals, get, set, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+  const show = (v) => { valueEl.textContent = Number(v).toFixed(decimals); };
+  input.addEventListener('input', () => { set(Number(input.value)); show(input.value); });
+  treeSyncers.push(() => { input.value = String(get()); show(get()); });
+  row.append(labelSpan(label), valueEl, input);
+  return row;
+}
+// Anything that changes what grows has to redo the collider and the grids too, since trunks are
+// solid and block nav. Debounced onto `change` rather than `input` so dragging a slider does not
+// rebuild the BVH on every pixel.
+function treeEditApplied() {
+  rebuildDerived({ trees: true, collider: true, nav: true, vis: true, corners: true }, { label: 'trees' });
+  updateTreeControls();
+}
+function makeTreeCommitSlider(label, min, max, step, decimals, get, set, title) {
+  const row = makeTreeSlider(label, min, max, step, decimals, get, set, title);
+  row.querySelector('input').addEventListener('change', treeEditApplied);
+  return row;
+}
+
+const treeOnBtn = document.createElement('button');
+treeOnBtn.addEventListener('click', () => { treeSettings.enabled = !treeSettings.enabled; treeEditApplied(); });
+treeSyncers.push(() => {
+  treeOnBtn.textContent = `trees: ${treeSettings.enabled ? 'On' : 'Off'}`;
+  treeOnBtn.classList.toggle('primary', treeSettings.enabled);
+  treeOnBtn.title = 'Off by default, so an existing map does not sprout a forest when you load it';
+});
+
+// Which families supply species. Empty selection means every family, which is the random-across-
+// everything mode; picking one is the family-specific mode.
+const treeFamilySelect = document.createElement('select');
+treeFamilySelect.style.cssText = 'width:100%;margin:2px 0';
+treeFamilySelect.addEventListener('change', () => {
+  treeSettings.familyIds = treeFamilySelect.value === '*' ? null : [treeFamilySelect.value];
+  reloadTreeFamilies();
+  treeBrush.speciesId = null;   // a pinned species from the old family no longer exists
+  treeEditApplied();
+});
+treeSyncers.push(() => {
+  const opts = familyOptions(treeFamilies);
+  const want = treeSettings.familyIds?.[0] ?? '*';
+  const sig = '*' + opts.map(o => o.id).join('|') + '#' + want;
+  if (treeFamilySelect.dataset.sig === sig) return;
+  treeFamilySelect.dataset.sig = sig;
+  treeFamilySelect.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '*';
+  all.textContent = opts.length ? `all families (${opts.length})` : 'all families — none found';
+  treeFamilySelect.append(all);
+  for (const o of opts) {
+    const el = document.createElement('option');
+    el.value = o.id; el.textContent = `${o.name} (${o.count})`;
+    treeFamilySelect.append(el);
+  }
+  treeFamilySelect.value = want;
+});
+
+const treeReloadBtn = document.createElement('button');
+treeReloadBtn.textContent = 'reload families from tree viewer';
+treeReloadBtn.title = 'Re-read the families you authored in tree-viewer.html. Both pages share one'
+  + ' localStorage, so a family saved there shows up here without a reload.';
+treeReloadBtn.addEventListener('click', () => { reloadTreeFamilies(); treeEditApplied(); });
+
+const treePlantBtn = document.createElement('button');
+treePlantBtn.addEventListener('click', () => setSpawnTool('tree'));
+const treeEraseBtn = document.createElement('button');
+treeEraseBtn.addEventListener('click', () => setSpawnTool('tree-erase'));
+treeSyncers.push(() => {
+  const planting = spawnToolMode === 'tree';
+  const what = treeBrush.speciesId ? ` ${treeBrush.speciesId.split('/').pop().replace('ez-', '')}` : '';
+  treePlantBtn.textContent = planting
+    ? (treeBrush.radius > 0 ? `planting ${treeBrush.count}${what} — click the ground` : `planting${what} — click the ground`)
+    : 'plant trees';
+  treePlantBtn.classList.toggle('primary', planting);
+  treePlantBtn.title = 'Click the ground to plant. Brush radius 0 places a single tree; larger stamps'
+    + ' a clump. Walls, cover, spawn pads and roads are refused, same as the automatic scatter.';
+  treeEraseBtn.textContent = spawnToolMode === 'tree-erase' ? 'erasing — click a tree' : 'erase planted tree';
+  treeEraseBtn.classList.toggle('primary', spawnToolMode === 'tree-erase');
+  treeEraseBtn.title = 'Removes a tree you planted. Scattered trees are a function of the seed, so'
+    + ' they would come straight back — change the seed or the count instead.';
+});
+
+// Which species the brush plants. `plantAt` has always taken a speciesId and rolled a random
+// species per tree when given none; nothing set it, so the brush could only ever be random within
+// the selected family. This is the per-tree rung under the family dropdown.
+const treeSpeciesSelect = document.createElement('select');
+treeSpeciesSelect.style.cssText = 'width:100%;margin:2px 0';
+treeSpeciesSelect.title = 'Species the planting brush uses. Only the brush — the automatic scatter'
+  + ' always mixes every species in the selected family.';
+treeSpeciesSelect.addEventListener('change', () => {
+  treeBrush.speciesId = treeSpeciesSelect.value === '*' ? null : treeSpeciesSelect.value;
+  updateTreeControls();
+});
+treeSyncers.push(() => {
+  const ids = treeSpeciesTable.map(s => s._tag.id);
+  const want = treeBrush.speciesId ?? '*';
+  const sig = ids.join('|') + '#' + want;
+  if (treeSpeciesSelect.dataset.sig === sig) return;
+  treeSpeciesSelect.dataset.sig = sig;
+  treeSpeciesSelect.innerHTML = '';
+  const any = document.createElement('option');
+  any.value = '*';
+  any.textContent = `any of the ${ids.length} species`;
+  treeSpeciesSelect.append(any);
+  for (const id of ids) {
+    const el = document.createElement('option');
+    el.value = id;
+    el.textContent = id.replace('ez-family-', '').replace('/ez-', ' · ');
+    treeSpeciesSelect.append(el);
+  }
+  // A species from a family you have since switched away from is gone, so fall back to random
+  // rather than leaving the select showing a value it cannot honour.
+  if (treeBrush.speciesId && !ids.includes(treeBrush.speciesId)) treeBrush.speciesId = null;
+  treeSpeciesSelect.value = treeBrush.speciesId ?? '*';
+});
+
+const treeClearBtn = document.createElement('button');
+treeClearBtn.textContent = 'clear planted trees';
+treeClearBtn.title = 'Remove every tree you planted by hand, leaving the automatic scatter alone';
+treeClearBtn.addEventListener('click', () => { if (botTrees.clearPlaced()) treeEditApplied(); });
+
+const treeThemeBtn = document.createElement('button');
+treeThemeBtn.addEventListener('click', () => { treeSettings.followTheme = !treeSettings.followTheme; treeEditApplied(); });
+treeSyncers.push(() => {
+  treeThemeBtn.textContent = `follow theme: ${treeSettings.followTheme ? 'On' : 'Off'}`;
+  treeThemeBtn.title = 'On, trees only grow on a theme that grows anything else — which today is'
+    + ' eco-brutalism alone. Off, they grow on every theme, like roads and structures do.';
+});
+
+const treeCollideBtn = document.createElement('button');
+treeCollideBtn.addEventListener('click', () => { treeSettings.collide = !treeSettings.collide; treeEditApplied(); });
+treeSyncers.push(() => {
+  treeCollideBtn.textContent = `trunks solid: ${treeSettings.collide ? 'On' : 'Off'}`;
+  treeCollideBtn.title = 'Trunks stop bullets, the camera ray and bot capsules. Canopies never do —'
+    + ' leaf geometry in the collider would cap the forest at about 27 trees.';
+});
+
+const treeNavBtn = document.createElement('button');
+treeNavBtn.addEventListener('click', () => { treeSettings.blockNav = !treeSettings.blockNav; treeEditApplied(); });
+treeSyncers.push(() => {
+  treeNavBtn.textContent = `trunks block paths: ${treeSettings.blockNav ? 'On' : 'Off'}`;
+  treeNavBtn.title = 'Bots route around trunks. Trees never block line of sight either way: a thin'
+    + ' trunk hides nobody at half-metre cells and would flood the corner map.';
+});
+
+const treeTexBtn = document.createElement('button');
+treeTexBtn.addEventListener('click', () => {
+  setTreeTextureMode(treeSettings.texMode === 'authored' ? 'procedural' : 'authored');
+  treeEditApplied();
+});
+treeSyncers.push(() => {
+  const authored = treeSettings.texMode === 'authored';
+  const live = botTrees.textureMode === 'authored';
+  treeTexBtn.textContent = `leaf textures: ${authored ? (live ? 'authored' : 'authored (loading)') : 'procedural'}`;
+  treeTexBtn.classList.toggle('primary', authored);
+  treeTexBtn.title = 'Authored uses the bark photos and the four-species leaf atlas, with leaves as'
+    + ' alpha-cut cards. Procedural draws untextured silhouette polygons instead — no image loads,'
+    + ' which is the fallback if the texture files are missing. Switching re-bakes the palette,'
+    + ' because it changes leaf geometry rather than just the material.';
+});
+
+// How the scatter distributes trees. Every mode here is already in forest-placement.js; the viewer
+// simply pinned 'clustered' and never offered the others.
+const TREE_PATTERNS = [
+  ['clustered', 'clumped — stands with gaps between them'],
+  ['scattered', 'even — a jittered grid, no two trees close'],
+  ['random', 'random — uniform, so it clumps by accident'],
+  ['ring', 'ring — a band around the arena centre'],
+];
+const treeClumpRows = [];   // clump controls, shown only while the clumped pattern is selected
+const treePatternSelect = document.createElement('select');
+treePatternSelect.style.cssText = 'width:100%;margin:2px 0';
+treePatternSelect.title = 'How the automatic scatter spreads trees over the arena';
+for (const [value, label] of TREE_PATTERNS) {
+  const el = document.createElement('option');
+  el.value = value; el.textContent = label;
+  treePatternSelect.append(el);
+}
+treePatternSelect.addEventListener('change', () => {
+  treeSettings.placement = treePatternSelect.value;
+  treeEditApplied();
+});
+treeSyncers.push(() => {
+  treePatternSelect.value = treeSettings.placement;
+  const clumped = treeSettings.placement === 'clustered';
+  for (const row of treeClumpRows) row.style.display = clumped ? '' : 'none';
+});
+
+const treeReadout = document.createElement('div');
+treeReadout.className = 'row';
+treeReadout.style.cssText = 'color:#8a93a3;font-size:11px';
+treeSyncers.push(() => {
+  const s = treeStats;
+  // Report asked-for alongside planted. They differ by design — placement covers a square over a
+  // rectangular arena, and walls and roads take their share — so a density that "does nothing"
+  // above a point is legible here instead of looking broken.
+  const scatter = s.asked ? `${s.auto} of ${s.asked} scattered${s.capped ? ' (at the cap)' : ''}` : `${s.auto} scattered`;
+  treeReadout.textContent = `${s.total} trees (${scatter}, ${s.placed} planted), `
+    + `${s.draws} draws, ${s.colliderTriangles.toLocaleString()} collider tris, ${s.species} species`
+    + (s.bakeMs ? ` · last bake ${s.bakeMs} ms` : '');
+});
+
+treeClumpRows.push(
+  makeTreeCommitSlider('trees per clump', 2, 20, 1, 0, () => treeSettings.clusterSize,
+    (v) => { treeSettings.clusterSize = v; },
+    'The scatter divides the density into clumps of this many. Smaller means more, smaller stands.'),
+  makeTreeCommitSlider('clump spread', 0.02, 0.4, 0.01, 2, () => treeSettings.clusterSpread,
+    (v) => { treeSettings.clusterSpread = v; },
+    'How wide a clump is, as a fraction of the arena. Low values make tight copses with open ground'
+    + ' between them; high values blur the clumps back into an even scatter.'),
+);
+
+ctrl.append(
+  treeOnBtn, treeFamilySelect, treeReloadBtn,
+  makeTreeCommitSlider('tree density (per 100 m²)', 0, 8, 0.1, 1, () => treeSettings.density,
+    (v) => { treeSettings.density = v; },
+    'Trees per 100 m² of arena, not an absolute count, so the same number gives the same-looking'
+    + ' forest on any map size. About 1 is parkland, 3 is woodland, 6 and up is thick. Hand-planted'
+    + ' trees are counted separately and are never removed by this.'),
+  treePatternSelect,
+  makeTreeCommitSlider('scatter seed', 1, 200, 1, 0, () => treeSettings.seed,
+    (v) => { treeSettings.seed = v; },
+    'Same seed, same forest. The scatter is stored as this number rather than as a list of trees.'),
+  ...treeClumpRows,
+  makeTreeCommitSlider('tree height (m)', 2, 30, 0.5, 1, () => treeSettings.height,
+    (v) => { treeSettings.height = v; },
+    'Real metres. Each species is measured at bake time and scaled to hit this, because the stock'
+    + ' presets range from 20 to 96 units tall and one multiplier cannot serve both. A bot is 1.8 m,'
+    + ' so 7 is a tree about four times bot height.'),
+  makeTreeCommitSlider('size variation', 0, 1, 0.05, 2, () => treeSettings.sizeVar,
+    (v) => { treeSettings.sizeVar = v; }, 'How much individual trees differ from that height'),
+  makeTreeCommitSlider('baked variants', 1, 4, 1, 0, () => treeSettings.variants,
+    (v) => { treeSettings.variants = v; },
+    'Distinct baked shapes per species. Every extra one is two more draw calls per species and'
+    + ' another ~9 ms of bake time, so it buys variety at a real cost.'),
+  makeTreeCommitSlider('leaf density', 0.2, 2.5, 0.05, 2, () => treeSettings.leafDensity,
+    (v) => { treeSettings.leafDensity = v; },
+    'A multiplier on the leaf count each species authored, never an absolute. An absolute would'
+    + ' flatten every species to one number, and pine\'s dense needles versus ash\'s sparse sprays'
+    + ' is much of what makes them read as different trees.'),
+  makeTreeCommitSlider('leaf size', 0.3, 2.5, 0.05, 2, () => treeSettings.leafSize,
+    (v) => { treeSettings.leafSize = v; }, 'A multiplier on each species\' own leaf size'),
+  makeTreeSlider('canopy sway', 0, 1.5, 0.05, 2, () => treeSettings.wind,
+    (v) => { treeSettings.wind = v; botTrees.setWind(v); }, 'Wind on the leaves. Live, no rebuild.'),
+  treeTexBtn,
+);
+// subheader() repoints `ctrl` at a new collapsible group rather than returning a node, so each
+// group has to be appended in its own statement after the call.
+subheader('Planting brush');
+ctrl.append(
+  treePlantBtn, treeEraseBtn, treeSpeciesSelect,
+  makeTreeSlider('brush radius (m)', 0, 20, 0.5, 1, () => treeBrush.radius,
+    (v) => { treeBrush.radius = v; updateTreeControls(); },
+    'Zero plants a single tree exactly where you click. Larger scatters a clump inside the radius.'),
+  makeTreeSlider('trees per click', 1, 40, 1, 0, () => treeBrush.count,
+    (v) => { treeBrush.count = v; updateTreeControls(); }, 'Only used when the brush radius is above zero'),
+  makeTreeSlider('clump tightness', 0, 1, 0.05, 2, () => treeBrush.falloff,
+    (v) => { treeBrush.falloff = v; },
+    'Zero spreads evenly across the brush; one pulls the trees in toward the middle'),
+  makeTreeSlider('min spacing (m)', 0, 6, 0.1, 1, () => treeBrush.minSeparation,
+    (v) => { treeBrush.minSeparation = v; },
+    'Trees closer than this are rejected, so a clump thins out rather than stacking'),
+  treeClearBtn,
+);
+subheader('Behaviour');
+ctrl.append(treeThemeBtn, treeCollideBtn, treeNavBtn, treeReadout);
+updateTreeControls();
+
 // Theme picker, master look sliders, per-feature toggles and sky detail — all built by
 // bot-viewer-visuals.js in this panel's own idiom. Its own .ttl headings survive as subheads.
 // buildPanel returns one flat list with .ttl dividers marking its own subheads. Split on those so
@@ -14545,6 +15081,55 @@ updateRoadControls();
     ctrl.appendChild(node);
   }
 }
+// ── weather ────────────────────────────────────────────────────────────────────────────────────
+header('Weather');
+const weatherSyncers = [];
+syncWeatherControls = () => { for (const s of weatherSyncers) s(); };
+function makeWeatherSlider(label, min, max, step, decimals, get, set, title) {
+  const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+  if (title) row.title = title;
+  const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+  const show = (v) => { valueEl.textContent = Number(v).toFixed(decimals); };
+  input.addEventListener('input', () => { set(Number(input.value)); show(input.value); });
+  weatherSyncers.push(() => { input.value = String(get()); show(get()); });
+  row.append(labelSpan(label), valueEl, input);
+  return row;
+}
+function makeWeatherToggle(text, get, set, title) {
+  const btn = document.createElement('button');
+  btn.title = title;
+  btn.addEventListener('click', () => { set(!get()); syncWeatherControls(); });
+  weatherSyncers.push(() => { btn.textContent = `${text}: ${get() ? 'On' : 'Off'}`; btn.classList.toggle('primary', get()); });
+  return btn;
+}
+const rainRebakeBtn = document.createElement('button');
+rainRebakeBtn.textContent = 'Rebake rain shadow';
+rainRebakeBtn.title = 'Redo the top-down height map that keeps rain off roofs and out from under trees; automatic after a rebuild';
+rainRebakeBtn.addEventListener('click', () => { rainOccDirty = true; });
+const stormPresetBtn = document.createElement('button');
+stormPresetBtn.textContent = 'Preset: storm';
+stormPresetBtn.title = 'Heavy rain, lightning on, puddles up';
+stormPresetBtn.addEventListener('click', () => { weather.lightning = true; weather.puddles = 0.7; setRainAmount(0.85); });
+ctrl.append(
+  makeWeatherSlider('rain', 0, 1, 0.05, 2, () => weather.rain, setRainAmount,
+    'Zero is dry. Rain also wets the ground, lids the sky, dims the lights and thickens the fog; above 0.3 it storms.'),
+  makeWeatherSlider('wind', 0, 8, 0.25, 2, () => weather.wind, (v) => { weather.wind = v; rain.setWind(v, v * 0.25); rain.setGust(v * 1.5); },
+    'Steady wind speed in m/s, with gusts riding on it; drops lean into it'),
+  makeWeatherSlider('puddles', 0, 1, 0.05, 2, () => weather.puddles, (v) => { weather.puddles = v; rain.uniforms.uPuddle.value = v; },
+    'How much of the wet ground turns to standing water'),
+  makeWeatherSlider('sky lid', 0, 1, 0.05, 2, () => weather.lid, (v) => { weather.lid = v; setRainAmount(weather.rain); },
+    'How far the rain covers the theme sky with cloud; 0 keeps the sky as authored'),
+  makeWeatherToggle('Lightning', () => weather.lightning, (v) => { weather.lightning = v; },
+    'Bolts and thunder while it storms'),
+  makeWeatherToggle('Rain shadow under roofs', () => weather.occluders, (v) => { weather.occluders = v; rain.uniforms.uOccOn.value = v && rainOcc ? 1 : 0; if (v) rainOccDirty = true; },
+    'Bake a height map of the map and trees so drops stop on roofs and canopies'),
+  rainRebakeBtn,
+);
+worldPresetRow.append(stormPresetBtn);
+syncWeatherControls();
+
 // Growth over the map. These edit the ACTIVE theme's flora block in place, exactly the way the
 // look sliders edit its colours -- so they ride along in look slots and in the save/load slots
 // with no extra plumbing, and switching theme replaces them wholesale.
@@ -14635,6 +15220,101 @@ function syncFloraCountsImpl() {
     ? `${blades} blades - built at ${st.builtDensity.toFixed(1)}/m2, not ${st.askedDensity.toFixed(0)}: blade ceiling reached. Raise it above, at roughly 100 ms rebuild per 720k.`
     : `${blades} blades at ${st.builtDensity.toFixed(1)}/m2 - ${st.plants} plants, ${st.vines} vine strands`;
   floraCountEl.style.color = st.capped ? 'var(--wui-warn, #d8a13a)' : '';
+}
+
+// Optional blade-look features from grass-look.js. Each is a live uniform toggle (no rebuild);
+// values live in the theme's flora.grassLook block so they ride along in look/save slots.
+subheader('Grass look');
+{
+  const { GRASS_LOOK_DEFAULTS } = await import('./grass-look.js');
+  const lookBlock = () => { const f = floraBlock(); if (!f.grassLook) f.grassLook = {}; return f.grassLook; };
+  const lookVal = (key) => { const v = (floraFor(visuals.theme).grassLook || {})[key]; return v === undefined ? GRASS_LOOK_DEFAULTS[key] : v; };
+  function makeLookToggle(label, key, title) {
+    const row = document.createElement('div'); row.className = 'row';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.title = title;
+    input.addEventListener('change', () => { lookBlock()[key] = input.checked; flora.setLook({ [key]: input.checked }); });
+    floraSyncers.push(() => { input.checked = !!lookVal(key); });
+    row.append(labelSpan(label), input);
+    return row;
+  }
+  function makeLookSlider(label, key, min, max, step, decimals, title) {
+    const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+    const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+    input.title = title;
+    input.addEventListener('input', () => {
+      const v = Number(input.value);
+      lookBlock()[key] = v; valueEl.textContent = v.toFixed(decimals);
+      flora.setLook({ [key]: v });
+    });
+    floraSyncers.push(() => { const v = Number(lookVal(key)); input.value = String(v); valueEl.textContent = v.toFixed(decimals); });
+    row.append(labelSpan(label), valueEl, input);
+    return row;
+  }
+  ctrl.append(
+    makeLookToggle('directional wind', 'windDir', 'Blades lean along one wind heading with travelling gusts and a fine flutter, instead of the plain side-to-side wave'),
+    makeLookSlider('wind heading (deg)', 'windAngle', 0, 360, 1, 0, 'Compass heading the wind blows toward, in the arena XZ plane'),
+    makeLookSlider('flutter', 'windFlutter', 0, 1, 0.05, 2, 'Fast per-blade jitter added on top of the gusts'),
+    makeLookToggle('curled blades', 'curl', 'Each blade rests on a circular arc instead of standing straight, and is lit by the arc normal'),
+    makeLookSlider('curl amount', 'curlAmount', 0, 2, 0.05, 2, 'Total bend angle at the tip, in radians, before per-blade variation'),
+    makeLookSlider('curl lighting', 'curlNormal', 0, 1, 0.05, 2, '0 keeps the flat uniform lighting; 1 lights each blade by its own arc normal'),
+    makeLookToggle('backlight glow', 'translucency', 'Tips glow with the tip colour when you look toward the sun through the grass'),
+    makeLookSlider('glow amount', 'translucencyAmount', 0, 2, 0.05, 2, 'Strength of the backlight glow'),
+    makeLookToggle('dark roots', 'rootShade', 'Darkens the bottom third of every blade, so the field reads as having depth'),
+    makeLookSlider('root darkness', 'rootShadeAmount', 0, 1, 0.05, 2, 'How dark the blade root goes; 0.5 is half brightness'),
+    makeLookToggle('patchy coverage', 'coverage', 'A noise mask decides where grass grows, so the field comes in patches instead of an even carpet'),
+    makeLookSlider('coverage', 'coverageAmount', 0, 1, 0.01, 2, '0 bare, 1 fully grassed'),
+    makeLookSlider('patch size', 'coverageScale', 0.02, 0.6, 0.01, 2, 'Patch noise frequency per metre; smaller values make bigger patches'),
+    makeLookSlider('patch edge', 'coverageEdge', 0.02, 0.5, 0.01, 2, 'Softness of the patch edges'),
+    makeLookSlider('patch seed', 'coverageSeedX', 0, 100, 0.1, 1, 'Pans the patch field to a fresh layout'),
+  );
+}
+
+// Ground-surface dressing from soil-shade.js (damp patches, dry cracks) over the floor and the
+// uneven terrain. Live uniform toggles; values live in the theme's mats.floor.soil block.
+subheader('Soil surface');
+{
+  const { SOIL_SHADE_DEFAULTS } = await import('./soil-shade.js');
+  const soilBlock = () => { const f = visuals.theme.mats.floor; if (!f.soil) f.soil = {}; return f.soil; };
+  const soilVal = (key) => { const v = (visuals.theme.mats.floor.soil || {})[key]; return v === undefined ? SOIL_SHADE_DEFAULTS[key] : v; };
+  function makeSoilToggle(label, key, title) {
+    const row = document.createElement('div'); row.className = 'row';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.title = title;
+    input.addEventListener('change', () => { soilBlock()[key] = input.checked; visuals.soil.set({ [key]: input.checked }); });
+    floraSyncers.push(() => { input.checked = !!soilVal(key); });
+    row.append(labelSpan(label), input);
+    return row;
+  }
+  function makeSoilSlider(label, key, min, max, step, decimals, title) {
+    const row = document.createElement('div'); row.className = 'row'; row.style.display = 'block';
+    const valueEl = document.createElement('span'); valueEl.className = 'v'; valueEl.style.cssFloat = 'right';
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = min; input.max = max; input.step = step; input.style.width = '100%';
+    input.title = title;
+    input.addEventListener('input', () => {
+      const v = Number(input.value);
+      soilBlock()[key] = v; valueEl.textContent = v.toFixed(decimals);
+      visuals.soil.set({ [key]: v });
+    });
+    floraSyncers.push(() => { const v = Number(soilVal(key)); input.value = String(v); valueEl.textContent = v.toFixed(decimals); });
+    row.append(labelSpan(label), valueEl, input);
+    return row;
+  }
+  ctrl.append(
+    makeSoilToggle('damp patches', 'moisture', 'Noise patches of damp ground: darker and glossier than the dry soil around them'),
+    makeSoilSlider('damp darkening', 'moistureAmount', 0, 1, 0.05, 2, 'How much darker a damp patch reads'),
+    makeSoilSlider('damp gloss', 'moistureGloss', 0, 1, 0.05, 2, 'How far the roughness drops inside a damp patch'),
+    makeSoilSlider('damp coverage', 'moistureCoverage', 0, 1, 0.01, 2, 'Fraction of the ground that is damp'),
+    makeSoilSlider('damp patch size', 'moistureScale', 0.02, 0.4, 0.01, 2, 'Patch noise frequency per metre; smaller values make bigger patches'),
+    makeSoilToggle('dry cracks', 'cracks', 'A warped cellular plate network of recessed fissures, grooved into the lit normal'),
+    makeSoilSlider('crack amount', 'crackAmount', 0, 1, 0.05, 2, 'Darkness of the crack channels'),
+    makeSoilSlider('crack scale', 'crackScale', 0.2, 3, 0.05, 2, 'Plates per metre; higher values make smaller plates'),
+    makeSoilSlider('crack width', 'crackWidth', 0.02, 0.4, 0.01, 2, 'Channel width as a fraction of a plate'),
+    makeSoilSlider('crack depth', 'crackDepth', 0, 1.5, 0.05, 2, 'How strongly the channels groove the lighting'),
+    makeSoilSlider('crack warp', 'crackWarp', 0, 1, 0.05, 2, 'Bends the plate network so it stops reading as a tidy grid'),
+    makeSoilSlider('soil seed', 'seedX', 0, 100, 0.1, 1, 'Pans both fields to a fresh layout'),
+  );
 }
 
 // Per-species overrides. One dropdown picks the species; the two sliders below edit that
@@ -16289,6 +16969,56 @@ for (const spec of [
   ['Explosion effect size (×)', 'fxScale', 0.2, 3, 0.05, 'Visual only: scales the blast puff and its light against the damage ring'],
 ]) ctrl.appendChild(createGrenadeSlider(...spec, botGrenadeBlast));
 
+subheader('Blast debris (html-game-v2)');
+const debrisEnableBtn = document.createElement('button');
+debrisEnableBtn.title = 'Shrapnel that bounces and flickers, rubble thrown along a heading that tumbles and smoulders, ember sparks, '
+  + 'dust trails and two point lights on the hottest pieces. Persistent for about twenty seconds; instanced, six draws. '
+  + 'Needs Blast FX on. Pieces ignore walls for now.';
+const debrisClearBtn = document.createElement('button');
+debrisClearBtn.textContent = 'Clear debris';
+debrisClearBtn.addEventListener('click', () => debrisSim.clear());
+function updateDebrisButtons() {
+  debrisEnableBtn.textContent = `Blast debris: ${botDebrisSettings.enabled ? 'On' : 'Off'}`;
+  debrisEnableBtn.classList.toggle('on', botDebrisSettings.enabled);
+}
+debrisEnableBtn.addEventListener('click', () => { botDebrisSettings.enabled = !botDebrisSettings.enabled; updateDebrisButtons(); });
+updateDebrisButtons();
+ctrl.append(debrisEnableBtn, debrisClearBtn);
+const debrisChecks = document.createElement('div');
+function debrisCheck(label, get, set, title) {
+  const lab = document.createElement('label'); lab.style.display = 'block'; if (title) lab.title = title;
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  inp.addEventListener('change', () => set(inp.checked));
+  botTuneSyncers.push(() => { inp.checked = get(); });
+  lab.append(inp, document.createTextNode(' ' + label));
+  debrisChecks.append(lab);
+}
+for (const [key, label] of [['shrapnel', 'shrapnel'], ['rubble', 'rubble'], ['glow', 'glow shells on hot pieces'],
+  ['lights', 'point lights on the hottest rubble (2)'], ['sparks', 'ember sparks'], ['smoke', 'debris dust']]) {
+  debrisCheck(label, () => debrisRenderer.show[key], (v) => { debrisRenderer.show[key] = v; });
+}
+debrisCheck('rubble only on ground blasts', () => botDebrisSettings.rubbleOnGround, (v) => { botDebrisSettings.rubbleOnGround = v; });
+debrisCheck('ground slabs (bomb-scale)', () => botDebrisSettings.slabs, (v) => { botDebrisSettings.slabs = v; },
+  'The drop-pod preset: metre-wide smouldering slabs that shed secondary shrapnel while they fly');
+debrisCheck('tier budget scales a volley', () => botDebrisSettings.tiering, (v) => { botDebrisSettings.tiering = v; },
+  'explosion-tier.js: within 320 ms the 3rd blast onward gets half the shrapnel and 38% of the rubble, the 6th onward none');
+ctrl.appendChild(debrisChecks);
+for (const spec of [
+  ['Blast radius = damage ring ×', 'radiusScale', 0.1, 2, 0.05, 'Maps our damage ring onto html-game-v2 blast radius, which sets shrapnel count, size and speed. Their grenade is about 5 m; ours is 15'],
+  ['Rubble size', 'rubbleSize', 0.5, 8, 0.1, 'Count (8 to 34 pieces) and piece size both grow with it'],
+  ['Slab scale', 'slabScale', 0.1, 1, 0.02, 'Size of the ground slabs when they are on'],
+]) ctrl.appendChild(createGrenadeSlider(...spec, botDebrisSettings));
+for (const spec of [
+  ['Shrapnel count ×', 'shrapnelCountScale', 0, 3, 0.05], ['Shrapnel speed ×', 'shrapnelSpeedScale', 0, 3, 0.05],
+  ['Shrapnel gravity ×', 'shrapnelGravityScale', 0, 3, 0.05], ['Shrapnel life ×', 'shrapnelLifeScale', 0.05, 2, 0.05],
+  ['Shrapnel smoke ×', 'shrapnelSmokeScale', 0, 3, 0.05], ['Shrapnel glow chance', 'shrapnelGlowChance', 0, 1, 0.02],
+  ['Shrapnel glow ×', 'shrapnelGlowScale', 0, 3, 0.05],
+  ['Rubble count ×', 'rubbleCountScale', 0, 3, 0.05], ['Rubble speed ×', 'rubbleSpeedScale', 0, 3, 0.05],
+  ['Rubble gravity ×', 'rubbleGravityScale', 0, 3, 0.05], ['Rubble life ×', 'rubbleLifeScale', 0.05, 2, 0.05],
+  ['Rubble smoke ×', 'rubbleSmokeScale', 0, 3, 0.05], ['Rubble smoulder chance', 'rubbleSmolderChance', 0, 1, 0.02],
+  ['Rubble glow ×', 'rubbleGlowScale', 0, 3, 0.05], ['Rubble light ×', 'rubbleLightScale', 0, 3, 0.05],
+]) ctrl.appendChild(createGrenadeSlider(...spec, '', debrisSim.settings));
+
 header('Drones');
 const droneEnableBtn = document.createElement('button');
 droneEnableBtn.title = 'Drone operators stop launching when this is off. Aircraft already in the air finish what they are doing.';
@@ -17155,6 +17885,11 @@ function captureMazeState() {
     roads: roadSystem.snapshot(),
     roadWidth, roadClearMargin, roadOffRoadCost, roadNavBiasReach,
     roadsVisible: roadSystem.group.visible,
+    // Trees ride here for the same reason roads do. Split by origin: the scattered forest is a
+    // function of its seed and rebuilds itself, so only hand-planted trees are written out, and
+    // they carry no y — they re-drape onto whatever ground the slot restores.
+    trees: { ...treeSettings },
+    treesPlanted: botTrees.serialize(),
   };
 }
 
@@ -17200,6 +17935,27 @@ function applyMazeState(data) {
   // at this point. rebuildActiveLayout below re-drapes them once the new field is baked, so this
   // only has to get the graph in place.
   roadSystem.restore(data.roads || null);
+  // Key list from the live object, like terrain above: a stale key off an old slot must not reach
+  // the tree module. familyIds is restored separately because it is an array, not a scalar.
+  if (data.trees) assignKnown(treeSettings, data.trees, Object.keys(treeSettings));
+  // Slots saved before the density slider carry an absolute `count`. assignKnown drops it (it is no
+  // longer a key of treeSettings), so convert rather than silently resizing an old forest. Uses the
+  // bounds still on screen, because the slot's own layout has not been built yet — so a slot that
+  // also changes the map size lands approximately, which is one slider nudge away.
+  if (data.trees && data.trees.density === undefined && Number.isFinite(data.trees.count) && activeBounds) {
+    const pad = 3;   // FIELD_PAD in bot-trees.js
+    treeSettings.density = densityForCount({
+      minX: activeBounds.minX - pad, maxX: activeBounds.maxX + pad,
+      minZ: activeBounds.minZ - pad, maxZ: activeBounds.maxZ + pad,
+    }, data.trees.count);
+  }
+  if (!['clustered', 'scattered', 'random', 'ring'].includes(treeSettings.placement)) treeSettings.placement = 'clustered';
+  treeSettings.clusterSize = Math.round(clampOr(treeSettings.clusterSize, 5, 2, 20));
+  treeSettings.clusterSpread = clampOr(treeSettings.clusterSpread, 0.14, 0.02, 0.4);
+  treeSettings.density = clampOr(treeSettings.density, 1.2, 0, 8);
+  treeSettings.familyIds = Array.isArray(data.trees?.familyIds) ? data.trees.familyIds.slice() : null;
+  reloadTreeFamilies();
+  botTrees.restore(Array.isArray(data.treesPlanted) ? data.treesPlanted : []);
   // One rebuild for the lot: rebuildActiveLayout bakes the field (walls sink into it) then builds
   // the layout on top. Syncers run last -- the terrain toggle's tooltip reads terrainTriangleCount,
   // which only the layout rebuild writes.
@@ -17207,6 +17963,7 @@ function applyMazeState(data) {
   rebuildActiveLayout();
   for (const s of terrainSyncers) s();
   updateRoadControls();
+  syncTreeCounts?.();
 }
 
 function captureBotState() {
@@ -17226,6 +17983,9 @@ function captureBotState() {
     wallDestruction: botDestructionEnabled,
     blastOcclusion: blastOcclusionEnabled,
     explosionFx: botExplosionFxEnabled,
+    debris: { ...botDebrisSettings },
+    debrisTuning: { ...debrisSim.settings },
+    debrisShow: { ...debrisRenderer.show },
     bloodFx: botBloodFxEnabled,
     woundHit: botWoundHitMode,
     stainRender: botStainRender,
@@ -17279,7 +18039,9 @@ function applyBotState(data) {
     [botGrenadeSettings, data.grenade], [botGrenadeBlast, data.grenadeBlast], [botStanceSettings, data.stance],
     [botDroneSettings, data.drones], [botBloodTuning, data.blood], [botBloodBase, data.bloodBase],
     [botBleedTuning, data.bleed], [botHaywireTuning, data.haywire], [botWoundStyle, data.woundStyle],
+    [botDebrisSettings, data.debris], [debrisSim.settings, data.debrisTuning], [debrisRenderer.show, data.debrisShow],
   ]) assignKnown(live, saved, Object.keys(live));
+  updateDebrisButtons();
   refreshDamageTuning();   // a slot carries wound-style numbers the decal materials already copied
   updateDroneEnableButton();
   // A legacy slot's stance was {crouch,prone,run} booleans: assignKnown drops those keys, and an
@@ -18095,9 +18857,11 @@ renderer.setAnimationLoop(async () => {
   controls.update();    // user input first; Follow/POV writes the final camera pose afterward
   updateCameraRig(dt);
   frameProf.time('visuals', () => visuals.update(dt));   // sky dome follows the final camera, accent lights breathe, flash lights age out
+  updateWeather(dt);   // rain follows the final camera too; a no-op when dry
   // Awaited, not fired and forgotten: the plant pass is a compute cull whose indirect draw counts
   // THIS frame's draw reads, and an unawaited compute races the draw (env-viewer's terrain hit
   // exactly that and flickered). Grass and vines are pure uniform writes and cost nothing here.
+  flora.setSunDir(floraSunDir.subVectors(rig.dirLight.position, rig.dirLight.target.position));
   await frameProf.timeAsync('flora', () => flora.update(dt, now / 1000));
   updateAutoSceneShuffle(now);
   frameProf.time('fx', () => {
@@ -18108,6 +18872,8 @@ renderer.setAnimationLoop(async () => {
     updateProjectiles(dt);
     updateBotDrones(dt, now);
     updateEffects(now);
+    debrisSim.step(dt);
+    debrisRenderer.sync();
   });
   frameProf.time('audio', () => { envAudio.update(now); botDamageAudio.update(now); });   // listener follows the active camera (orbit or bot POV) + music orb
   // Transport readout is polled, not notified: 4 Hz is enough for a seek bar and a mm:ss clock.

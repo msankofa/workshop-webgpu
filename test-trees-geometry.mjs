@@ -157,5 +157,122 @@ function buildBillboardGeoFixed(width, height, centerY) {
   tree.dispose();
 }
 
+// ---- 4: branch tubes are closed at every end that can be seen ----
+// The tube used to be skinned with side quads only, and only a branch at the exact depth limit
+// pinched its tip shut. Everything else -- the trunk above all, at ~30% of its base radius under
+// the families' usual taper -- ended as an open pipe, and the bark material is FrontSide, so you
+// looked straight through it into nothing. Two independent closures fix that: every TERMINAL
+// branch pinches to a point, and whatever is left wide (trunk and intermediate tips, plus the
+// trunk's base) gets a cap fan.
+const SEG0 = 8, SEG1 = 6, SEC0 = 4, SEC1 = 3;
+const STRAIGHT = {
+  seed: 5, length: [10, 4], radius: [1, 0.3], taper: [0.5, 0.5],
+  sections: [SEC0, SEC1], segments: [SEG0, SEG1], branchStart: [0, 0], angle: [0, 60],
+  gnarliness: [0, 0], twist: [0, 0], force: { direction: [0, 1, 0], strength: 0 },
+  leaves: { enabled: false },
+};
+
+// Boundary edges = used by exactly one triangle, keyed by POSITION so the tube's duplicated
+// UV-seam vertices merge instead of reading as holes. Returns each hole edge's length too,
+// which is what separates a real opening from the pinch point at a tapered-to-nothing tip.
+function openEdges(geo) {
+  const pos = geo.getAttribute('position'), idx = geo.getIndex().array;
+  const key = i => `${pos.getX(i).toFixed(4)},${pos.getY(i).toFixed(4)},${pos.getZ(i).toFixed(4)}`;
+  const ids = new Map(), vid = [];
+  for (let i = 0; i < pos.count; i++) {
+    const k = key(i);
+    if (!ids.has(k)) ids.set(k, ids.size);
+    vid.push(ids.get(k));
+  }
+  const seen = new Map();
+  for (let t = 0; t < idx.length; t += 3) {
+    const tri = [vid[idx[t]], vid[idx[t + 1]], vid[idx[t + 2]]];
+    const raw = [idx[t], idx[t + 1], idx[t + 2]];
+    for (let e = 0; e < 3; e++) {
+      const p = tri[e], q = tri[(e + 1) % 3];
+      if (p === q) continue; // a pinched tip collapses its ring into degenerate edges
+      const k = p < q ? `${p}|${q}` : `${q}|${p}`;
+      const rec = seen.get(k);
+      if (rec) rec.n++;
+      else {
+        const a = raw[e], b = raw[(e + 1) % 3];
+        seen.set(k, {
+          n: 1,
+          len: Math.hypot(pos.getX(a) - pos.getX(b), pos.getY(a) - pos.getY(b), pos.getZ(a) - pos.getZ(b)),
+        });
+      }
+    }
+  }
+  const out = [];
+  for (const rec of seen.values()) if (rec.n === 1) out.push(rec.len);
+  return out;
+}
+
+{
+  // 4a: a lone terminal branch. Its base is capped and its tip pinches, so the only opening left
+  // is the pinch itself -- one ring of edges too short to see rather than a hole 30% as wide as
+  // the trunk. `children: [0]` makes the trunk terminal WITHOUT being at the depth limit, which
+  // is precisely the case the old `level === levels` test missed.
+  const tree = createTree({ ...STRAIGHT, levels: 2, children: [0, 0] });
+  const holes = openEdges(tree.branchesMesh.geometry);
+  const widest = holes.length ? Math.max(...holes) : 0;
+  ok(holes.length === SEG0, `4a: a terminal branch leaves only its pinch ring open (${holes.length} edges, want ${SEG0})`);
+  ok(widest < 0.01, `4a: and that ring is a point, not a hole (widest opening ${widest.toFixed(5)} vs a 0.5 trunk tip before)`);
+  tree.dispose();
+}
+
+{
+  // 4b: trunk with children, so the trunk itself is NOT terminal and keeps a wide tip. Both its
+  // ends are capped, so every remaining opening belongs to a child: its pinched tip, and its base
+  // ring, which is always buried inside the parent (child radius is capped at 0.85 of the
+  // parent's at the attachment point, and it is centred on the parent's axis).
+  const COUNT = 4;
+  const tree = createTree({ ...STRAIGHT, levels: 1, children: [COUNT] });
+  const holes = openEdges(tree.branchesMesh.geometry);
+  ok(holes.length === COUNT * 2 * SEG1,
+    `4b: the trunk contributes no opening; only the ${COUNT} children's pinch and buried base rings remain (${holes.length}, want ${COUNT * 2 * SEG1})`);
+  tree.dispose();
+}
+
+{
+  // 4c: cap fans wind with their normals, same claim as section 1b but for the branch mesh. Run on
+  // a tree with no gnarliness: a wandering tube makes its own quads non-planar, and those would
+  // mask whether the caps themselves are right.
+  const tree = createTree({ ...STRAIGHT, levels: 1, children: [4] });
+  const geo = tree.branchesMesh.geometry;
+  const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal'), idx = geo.getIndex().array;
+  let checked = 0, consistent = 0;
+  for (let t = 0; t < idx.length; t += 3) {
+    const [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]];
+    const pa = [pos.getX(a), pos.getY(a), pos.getZ(a)];
+    const pb = [pos.getX(b), pos.getY(b), pos.getZ(b)];
+    const pc = [pos.getX(c), pos.getY(c), pos.getZ(c)];
+    const raw = cross(sub(pb, pa), sub(pc, pa));
+    if (Math.hypot(raw[0], raw[1], raw[2]) < 1e-9) continue; // degenerate at a pinched tip
+    checked++;
+    // Same hemisphere, not the near-exact match section 1b can demand of a flat leaf card: a
+    // tapered tube's face normal tilts toward the axis by the taper angle while the baked vertex
+    // normal stays radial, which on these steep test children is already a 31 degree gap.
+    if (dot(norm(raw), norm([nrm.getX(a), nrm.getY(a), nrm.getZ(a)])) > 0) consistent++;
+  }
+  ok(checked > 0, '4c: sampled branch triangles from a real generated tree');
+  ok(consistent === checked, `4c: every branch triangle, cap fans included, winds with its baked normal (${consistent}/${checked})`);
+  tree.dispose();
+}
+
+{
+  // 4d: a cap costs one ring of vertices plus a centre, and one triangle per side. Asserted
+  // because the vertex layout is load-bearing for test-tree-presets.mjs section 5.
+  const bare = createTree({ ...STRAIGHT, levels: 2, children: [0, 0] });   // terminal: base cap only
+  const kids = createTree({ ...STRAIGHT, levels: 1, children: [1] });      // non-terminal: both ends
+  const vOf = t => t.branchesMesh.geometry.getAttribute('position').count;
+  const tOf = t => t.branchesMesh.geometry.getIndex().count / 3;
+  const wall0 = (SEC0 + 1) * (SEG0 + 1), wall1 = (SEC1 + 1) * (SEG1 + 1);
+  ok(vOf(bare) === wall0 + (SEG0 + 1), `4d: one cap adds ${SEG0 + 1} vertices (got ${vOf(bare) - wall0})`);
+  ok(tOf(bare) === SEC0 * SEG0 * 2 + SEG0, `4d: one cap adds ${SEG0} triangles (got ${tOf(bare) - SEC0 * SEG0 * 2})`);
+  ok(vOf(kids) === wall0 + 2 * (SEG0 + 1) + wall1, '4d: a non-terminal trunk carries two caps, its children none');
+  bare.dispose(); kids.dispose();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

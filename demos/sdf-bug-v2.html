@@ -209,7 +209,7 @@
 
   <h2>Depth of field</h2>
   <div>
-    <label class="chk"><input type="checkbox" id="autoFocus" checked> focus on whatever is at frame centre</label>
+    <label class="chk"><input type="checkbox" id="autoFocus"> focus on whatever is at frame centre</label>
     <div id="dofRows"></div>
   </div>
 
@@ -1625,7 +1625,10 @@ const rt = new THREE.RenderTarget(2, 2, {
 });
 
 const resolution = uniform(new THREE.Vector2(2, 2));
-const focusAuto = uniform(1);
+// OFF by default, so the focus is a distance the panel owns rather than something the picture decides. The
+// two agree at the opening view — 2.37 is the centre ray's distance there, per the Node test — so turning it
+// off changes nothing until the camera moves, and then the focus stays where it was put.
+const focusAuto = uniform(0);
 const focusManual = uniform(2.37);   // the centre ray's distance at the default view, per the Node test
 const aperture = uniform(2.6);
 const maxRadius = uniform(28);

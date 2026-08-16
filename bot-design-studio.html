@@ -75,6 +75,11 @@
 </script>
 
 <script type="module">
+// FROZEN 2026-08-15 (NPC-suite step 1, plan A7). The suite shell (npc-suite-shell.js) has harvested
+// this file's renderer/scene/camera/lights/post-fx/floor/batches setup. Its design/gait/material
+// editing becomes the suite's "design" mode (plan step 5). Do NOT add features here — they would
+// drift from the shell and turn that step from a move into a merge. Fix bugs here only if the same
+// fix lands in the shell.
 import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';

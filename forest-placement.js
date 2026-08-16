@@ -154,8 +154,11 @@ function placementsForChunk(chunk, count, params, heightAt) {
       if (keepDry({ x: chunk.centerX + Math.cos(a) * r, z: chunk.centerZ + Math.sin(a) * r }, placed)) placed++;
     }
   } else if (params.placement === 'clustered') {
-    const nc = Math.max(1, Math.round(count / 5)), centers = [];
-    const spread = chunk.size * 0.14, margin = spread * 2;
+    // clusterSize/clusterSpread default to the constants this always used, so a caller that
+    // passes neither (environment-viewer.html) gets byte-identical placement.
+    const per = Math.max(1, params.clusterSize ?? 5);
+    const nc = Math.max(1, Math.round(count / per)), centers = [];
+    const spread = chunk.size * Math.max(0.01, params.clusterSpread ?? 0.14), margin = spread * 2;
     for (let c = 0; c < nc; c++) centers.push({
       x: crng.range(chunk.xMin + margin, chunk.xMin + chunk.size - margin),
       z: crng.range(chunk.zMin + margin, chunk.zMin + chunk.size - margin),

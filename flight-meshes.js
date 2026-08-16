@@ -4,6 +4,11 @@
 // Poseable parts are hung on `userData` (flame / rotors / wings) for whoever animates them.
 import * as THREE from 'three';
 
+// Filled in at the bottom of this file. A lookup rather than a ternary chain because the chain
+// ended on `buildBird` with no error, so any kind it did not know about silently rendered as a bird.
+const BUILDERS = {};
+
+export function registerCraftMesh(kind, build) { BUILDERS[kind] = build; return build; }
 export const CRAFT_KINDS = ['plane', 'drone', 'bird'];
 
 export function buildPlane(tint, m) {
@@ -77,10 +82,15 @@ export function buildBird(tint, m) {
   return g;
 }
 
-// One entry point for the three: nothing downstream should branch on the airframe key itself.
+registerCraftMesh('plane', buildPlane);
+registerCraftMesh('drone', buildDrone);
+registerCraftMesh('bird', buildBird);
+
+// One entry point: nothing downstream should branch on the airframe key itself.
 export function buildCraftMesh(kind, tint, materials) {
-  const g = kind === 'plane' ? buildPlane(tint, materials)
-    : kind === 'drone' ? buildDrone(tint, materials) : buildBird(tint, materials);
+  const build = BUILDERS[kind];
+  if (!build) throw new Error(`no craft mesh for '${kind}'. Registered: ${Object.keys(BUILDERS).join(', ')}`);
+  const g = build(tint, materials);
   g.traverse((o) => { o.frustumCulled = false; });
   return g;
 }

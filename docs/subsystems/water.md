@@ -12,6 +12,12 @@ not faked) but adapted to lakes carved from a terrain heightfield instead of a
 walled pool — no raytraced walls or ping-pong height simulation, just analytic
 ripples and a reference bed plane.
 
+## See also
+
+- `docs/water-vs-waterthreejs-comparison.md` compares this subsystem with achrefelouafi/WaterThreeJS
+  (ocean water), and `demos/water-demo.html` puts both sets of techniques behind switches per body of
+  water. Nothing in this subsystem imports the demo.
+
 ## Files
 
 - `water.js` (1117 lines) — the entire subsystem: geometry generation (clipmap

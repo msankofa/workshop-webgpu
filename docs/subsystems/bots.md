@@ -116,6 +116,25 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
   `generateStructures` — buildings, maze pockets and obstacle fields scattered over open ground, so
   the wall-less layout mode has something to fight over. Node-tested (`test-bot-structures.mjs`).
   Full section: "Large open maps: structures + the fly camera".
+  `generateStructures` also accepts an optional **`site(cx, cz, w, d)` → `{ floorY, skirtDepth }` |
+  `null`** param, for scattering onto ground that was IMPORTED rather than generated (wire it to
+  `map-surfaces.js#footprintAt` over a terrain-generator-v4 GLB). A refusal is handled exactly like
+  a footprint clash — the scatter retries elsewhere — so unbuildable ground places fewer structures
+  instead of dropping them into a void. Accepted sites lift the structure's rects onto `floorY`
+  (rect `y` is the base, so shapes ride up intact) and record `floorY`/`skirtDepth`/`openSky` on the
+  `placed` entry. **With `site` on, pads are suppressed and `padTerrain` is forced false**: pads
+  flatten the ground, which is fine when we generated it and wrong when someone authored it.
+  Structures conform via the skirt instead. A seated structure also emits one entry in the new
+  **`foundations`** return array — `{x, z, w, d, y, h}` sized from the structure's real XZ bounding
+  box, spanning `skirtDepth + foundationBury` (0.3 m) up to the seated floor. `footprintAt` seats
+  the floor at the HIGHEST sample so no ground pokes through it, which leaves the downhill side
+  hanging by exactly the skirt; without the foundation a building on any slope visibly floats.
+  Foundations are their own list rather than extra `slabs` so existing consumers are untouched and
+  a caller can material them separately. **Note:** a structure's declared `radius` under-reports its
+  true XZ extent for several kinds (buildings 5.46 vs 5.24, obstacles 6.54 vs 6.00, colonnades 5.22
+  vs 3.84) because roof canopies and scattered cover push past the core shape it was measured from.
+  The default `minSeparation` of 5 m absorbs it and `test-bot-structures.mjs` pins the invariant that
+  actually matters — foundations never overlap — but lowering `minSeparation` would expose it.
 - `bot-roles.js` — pure, THREE-free **role registry** (added 2026-07-23), the substrate the squad
   system builds on. `ROLES` maps a role id to a descriptor (`maxPacks`, `startingPacks`, `weapon`,
   `insignia`, `canRevive`, `leadership`, `support`, plus the loadout/perception block `sidearm` /
@@ -1795,6 +1814,7 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 | `bot-stance.js` | Pure per-bot stance channel: the stand/crouch/prone/run/dash decision table over the resolved FSM state, the stand-up hysteresis latch, and the speed/spread/height/turn-rate multipliers — Node-tested (`test-bot-stance.mjs`), THREE-free and zero-dependency. |
 | `weapon-hold-resolver.js` | Pure resolution of the third-person weapon hold from (stance × locomotion) — continuous stance lerp plus an additive per-class carry delta. Shared by `bot-viewer-v2.html` and `weapon-animation-viewer.html` so the authoring tool cannot drift from the game. Node-tested (`test-weapon-hold-resolver.mjs`). See Contract 6 in `procedural-body-weapon-contracts.md`. |
 | `effect-renderer.js` | Shared layered-explosion / tracer / spark / smoke renderer, also used by `environment-viewer.html`. Stateless: sub-particles regenerate each frame from the wire object + id hash + age. See `docs/subsystems/fx.md`. |
+| `blast-debris-sim.js` + `blast-debris.js` + `explosion-tier.js` | Persistent blast debris (html-game-v2 port): shrapnel that bounces and flickers, rubble that tumbles and smoulders, ember sparks, dust, two point lights on the hottest pieces; the tier budget scales a volley. `spawnBlastFx` → `spawnBlastDebris`; stepped/synced in the `fx` frame slot; Explosives → "Blast debris" panel; saved in the bots slot. Pieces ignore walls for now. See `docs/subsystems/fx.md`. |
 | `weapon-sfx-synth.js` | Procedural WebAudio voices for weapon events with no loaded sample (`rocket_launch`, `explosion`, `grenade_throw`, `grenade_bounce`) — Node-tested (`test-weapon-sfx-synth.mjs`). See `docs/subsystems/audio.md`. |
 
 ## Per-cell surface cost in `nav-grid.js` (2026-08-10)
@@ -2114,6 +2134,13 @@ weight 0.
 A2, lead D, recoil D), then four slider groups (Torso, Head, Barrel trim, Lead & recoil). Saved and
 restored with the rest of the bot slot as `aimBlend`. Master off is a direct A/B against the old
 behaviour.
+
+**Every track ships off (2026-08-16).** All seven flags in `AIM_BLEND_DEFAULTS` are `false`, and the
+`everything 1` preset carries the same, so both an unconfigured viewer and a first-time visitor get the
+pre-2026-08-12 aim and the panel reads Off on every button. Only the switches changed — the tuned
+numbers (shares, clamps, rates, recoil) are still there for whatever you turn on. Because the defaults
+are now the legacy config, `test-bot-aim-blend.mjs` exercises the maths against an explicit all-on
+`ON` object and pins the shipped flags as off separately.
 
 **Untuned.** Every number above was chosen from the rig's geometry, not from watching a bot use it.
 The authority split in particular is a by-eye setting.
@@ -9608,6 +9635,12 @@ refresh a preset: click Save in the viewer while served by `serve.py`, then copy
 `bot-viewer-saves/bv2-all-slot<N>-*.json`'s `data` into the matching preset. `test-bot-viewer-slots.mjs`
 validates the file — unique ids, exactly one `isDefault`, every `all` preset carrying maze/bots/ui.
 
+`everything 1` (the default preset) ships with every `bots.aimBlend` flag false as of 2026-08-16,
+matching `AIM_BLEND_DEFAULTS`, so a first-time visitor gets the pre-2026-08-12 aim and the panel reads
+Off on every aim-coherence button. The sliders keep their tuned values, so turning a track back on in
+the panel needs no re-tuning. A returning user with a seeded preset keeps whatever state they had —
+`?preset=1` reapplies the shipped one.
+
 ### They coexist with local slots, they do not replace them
 
 Presets appear in the same dropdown as the numbered slots, under their own value namespace
@@ -9642,3 +9675,79 @@ would make the whole boot wait on the network.
 **Browser-verified: no.** Node tests pass (`test-bot-viewer-slots.mjs`, `test-bot-viewer-save-all.mjs`,
 `test-bot-viewer-slot-coverage.mjs`, `test-bot-viewer-panel-layout.mjs`); the dropdown and the
 first-visit seed have not been watched on screen.
+
+## Trees in v3 (2026-08-15, `bot-trees.js` + `bot-trees-place.js` + `tree-families-store.js`)
+
+Full reference lives in [vegetation.md](vegetation.md) under "Trees in bot-viewer-v3", alongside the
+forest machinery it builds on. What matters from the bot side:
+
+- **Trunks are solid, canopies are not.** Trunks stop bullets, the camera ray and bot capsules, via
+  16-triangle cylinder proxies on a detached `colliderRoot` passed to `createMapCollider` as an
+  `extraRoot`. Rendered tree geometry is 1,112–13,674 triangles a tree (measured) against a 250k
+  cap that *throws* rather than degrades, so real tree meshes would cap the forest near 27 trees.
+- **Trunks block paths but never sight.** Their footprints join `buildNavGrid`'s `blockers`, so bots
+  route around them. They are deliberately kept out of `sightBlockers`: a thin trunk rect occludes
+  nobody at v3's 0.5 m cell pitch while still emitting up to 8 corner records each. Bullets still
+  stop on trunks because that comes from the collider, not the tactical field. Both are togglable.
+- **The `trees` rebuild stage sits between `flora` and `collider`** — after `geometry` because it
+  needs the wall boxes for keep-outs, before `collider` because the proxies must exist when the BVH
+  bakes, and before `nav` because their footprints are blockers.
+- **Size is a height in metres**, not a multiplier: each species is measured at bake time and
+  scaled to hit it, because the presets are 19.7-96.2 units tall naturally. 7 m is roughly four
+  times bot height. Planted and scattered trees share that normalization and identical size math,
+  so the same species is the same size however it got there.
+- **Leaves default to the authored bark/leaf textures** (atlas cards, alpha-cut), with a panel
+  toggle back to untextured procedural silhouettes. Switching re-bakes the palette, because it
+  changes leaf geometry rather than just the material. Leaf density and leaf size are multipliers
+  on what each species authored, never absolutes — flattening them is what stops a pine reading
+  as a pine.
+- **Panel**: World > Trees. Species come from the families authored in `tree-viewer.html`, read
+  straight out of its localStorage (both pages are same-origin under `serve.py`), with a fallback to
+  the stock ez-tree presets when that browser has never opened the tree viewer. The family dropdown
+  is the random-versus-family-specific switch: "all families" draws across everything, picking one
+  restricts to it.
+- **Planting brush**: arm `plant trees`, then click the ground. Brush radius 0 places one tree;
+  larger stamps a clump using `stampCluster` (count, falloff, minimum spacing). Erase removes only
+  hand-planted trees — a scattered one is a function of the seed and would come straight back.
+- **Persistence** rides the maze slot: the scatter saves as its params and seed, hand-planted trees
+  as an explicit list filtered on `origin === 'placed'` carrying no `y`, so they re-drape onto
+  whatever ground the slot restores.
+- **Cost**: the palette bake is the expensive step (~432 ms for all six families, ~9–14 ms per
+  species-variant) and is cached across layout rebuilds, keyed on the species set and leaf params.
+  Each baked variant costs two draw calls per species, which is what the "baked variants" slider is
+  really buying.
+
+## Grass look + soil surface toggles (2026-08-16)
+
+Two optional, default-off dressing layers reached the v3 Flora panel, both live uniform toggles
+(no rebuild):
+
+- **Grass look** (`grass-look.js`, via `bot-flora.js` `setLook`): directional gust wind + flutter,
+  curled blades lit by the arc normal, sun backlight glow, dark roots, patchy coverage. Values live
+  in `theme.flora.grassLook` (`FLORA_OFF.grassLook = {}`, copied by `floraFor`), so they ride in
+  look/save slots like every other flora field. `bot-viewer-v3.html` feeds `flora.setSunDir()` from
+  `rig.dirLight` every frame for the glow. Side effect worth knowing: the merged grass field now
+  carries `aBladeUV`, so the blade-texture choice actually shows (it was sampling the atlas at (0,0)).
+- **Soil surface** (`soil-shade.js`, `visuals.soil`): damp patches (darker, glossier) and dry cracks
+  (Worley channels grooved into the normal) over BOTH `floorMat` and `terrainMat` -- one instance,
+  so the flat floor and the uneven terrain read the same fields. Values live in
+  `theme.mats.floor.soil` and are applied by `applyMaterials()` through `soilFor()`. Both ground
+  materials now set `roughnessNode`/`normalNode` explicitly (identity when the toggles are off).
+
+Numbers are untuned and neither layer has been seen in a browser; the material graphs build headless
+(`test-grass-look.mjs`).
+
+## Weather in v3 (2026-08-16, `rain.js` + `bot-viewer-visuals.js`)
+
+The World tab gained a **Weather** card after Trees: `rain` (0..1), `wind`, `puddles`, `sky lid`,
+Lightning, Rain shadow under roofs, Rebake rain shadow, and a "Preset: storm" button in the World
+preset strip. The rain itself is the shared `rain.js` module (see `fx.md` §Rain for the wiring
+detail); what belongs to this subsystem is the visuals seam. `bot-viewer-visuals.js` gained a
+weather overlay outside the theme — `setWeather({overcast, dim, fogBoost})` (sky lid mixed into
+the sky graph via `u.overcast`, key/ambient dim in `applyLights`, fog density and colour in
+`applyFog`) and a per-frame `setLightning(level)` (key light +3·level, lid brightens) — plus
+`groundNodes: {floor, terrain}` exposing the soil-dressed `{col, rough, normalWorld}` graphs so
+`applyWetSurface` can wrap the themed ground instead of replacing it. Rain shadow bakes the map
+and trees top-down (layer 3, bake-only) after every rebuild while it rains, so drops stop on
+walls and canopies and splash rings sit on the terrain. Weather is not part of the save/load
+slots. Nothing has been seen in a browser yet.

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Pokémon Stadium — all 151 models</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161c; }
+  #app { position: fixed; inset: 0; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; right: 10px; display: flex; gap: 6px;
+    align-items: center; font: 13px/1.4 system-ui, sans-serif; color: #cfd3dc; flex-wrap: wrap;
+  }
+  select, button {
+    background: #232733; color: #e8eaf0; border: 1px solid #3a4050; border-radius: 6px;
+    padding: 8px 10px; font: inherit; cursor: pointer; max-width: 44vw;
+  }
+  #err {
+    position: fixed; top: 25%; left: 10px; right: 10px; display: none; z-index: 10;
+    background: #3a1518; color: #ffd7d7; border: 1px solid #7c2a2f; border-radius: 8px;
+    padding: 12px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all;
+  }
+  #status { position: fixed; top: 50%; left: 0; right: 0; text-align: center;
+    color: #7d8494; font: 14px system-ui, sans-serif; }
+  #note { position: fixed; bottom: 8px; left: 10px; right: 10px;
+    font: 11px/1.5 system-ui, sans-serif; color: #7d8494; pointer-events: none; }
+</style>
+<script>
+window.__fail = function (msg) {
+  var e = document.getElementById('err');
+  if (e) { e.style.display = 'block'; e.textContent += msg + '\n'; }
+};
+window.onerror = function (msg, src, line) {
+  window.__fail(msg + ' @ ' + (src || '').split('/').pop() + ':' + line);
+};
+window.addEventListener('unhandledrejection', function (ev) {
+  window.__fail('promise: ' + (ev.reason && ev.reason.message || ev.reason));
+});
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud">
+  <button id="prev">◀</button>
+  <select id="mon" aria-label="Pokémon"></select>
+  <button id="next">▶</button>
+  <select id="anim" aria-label="Animation"></select>
+  <button id="play">Pause</button>
+</div>
+<div id="err"></div>
+<div id="status">loading…</div>
+<div id="note">Pokémon Stadium (US 1.0) battle models, extracted from your own ROM by DramaticShapeVoxelMod's pipeline · 30 fps · drag to orbit, pinch or wheel to zoom · models decompress on selection</div>
+<script>/*THREE_JS*/</script>
+<script>/*GLTF_LOADER*/</script>
+<script>/*ORBIT_CONTROLS*/</script>
+<script>/*FFLATE*/</script>
+<script>
+"use strict";
+try {
+  if (typeof THREE === "undefined") throw new Error("three.js failed to initialize");
+  if (typeof fflate === "undefined") throw new Error("fflate failed to initialize");
+
+  // PAYLOADS: { "025": { name, tris, bones, corrupt, clips:[...], z:"base64(zlib(glb))" }, ... }
+  const PAYLOADS = /*PAYLOADS*/;
+
+  const ORDER = Object.keys(PAYLOADS).sort();
+  const app = document.getElementById("app");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  app.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14161c);
+  const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.05, 500);
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.HemisphereLight(0xdde4ff, 0x2a2418, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(3, 6, 4); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x88aaff, 0.35);
+  rim.position.set(-4, 2, -3); scene.add(rim);
+
+  const monSel = document.getElementById("mon");
+  ORDER.forEach((dex) => {
+    const opt = document.createElement("option");
+    opt.value = dex;
+    opt.textContent = "#" + dex + " " + PAYLOADS[dex].name;
+    monSel.appendChild(opt);
+  });
+
+  let current = null;   // { model, mixer, actions, ground }
+  let playing = true, activeClip = -1;
+  const clock = new THREE.Clock();
+  const loader = new THREE.GLTFLoader();
+
+  function disposeCurrent() {
+    if (!current) return;
+    scene.remove(current.model);
+    scene.remove(current.ground);
+    current.model.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => {
+        if (m.map) m.map.dispose();
+        m.dispose();
+      });
+    });
+    current.ground.geometry.dispose();
+    current.ground.material.dispose();
+    current = null;
+  }
+
+  function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function show(dex) {
+    const entry = PAYLOADS[dex];
+    const status = document.createElement("div");
+    document.getElementById("status")?.remove();
+    status.id = "status";
+    status.textContent = "decompressing " + entry.name + "…";
+    document.body.appendChild(status);
+
+    // yield a frame so the status paints before the synchronous work
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try {
+        const glb = fflate.unzlibSync(b64ToBytes(entry.z));
+        loader.parse(glb.buffer, "", (gltf) => {
+          try {
+            disposeCurrent();
+            const model = gltf.scene;
+            scene.add(model);
+            model.traverse((o) => {
+              if (o.isMesh || o.isSkinnedMesh) {
+                o.frustumCulled = false;   // bounds are authored 10x in bone-local space
+                (Array.isArray(o.material) ? o.material : [o.material])
+                  .forEach((m) => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+              }
+            });
+
+            const mixer = new THREE.AnimationMixer(model);
+            mixer.clipAction(gltf.animations[0]).play();
+            mixer.update(0);
+            model.updateMatrixWorld(true);
+            const box = new THREE.Box3();
+            const v = new THREE.Vector3();
+            model.traverse((o) => { if (o.isBone) box.expandByPoint(o.getWorldPosition(v)); });
+            box.expandByScalar(box.getSize(v).length() * 0.15);
+
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            const radius = Math.max(size.x, size.y, size.z);
+            controls.target.copy(center);
+            camera.position.set(center.x + radius * 1.6, center.y + radius * 0.6, center.z + radius * 1.9);
+            camera.near = radius / 100; camera.far = radius * 20;
+            camera.updateProjectionMatrix();
+
+            const ground = new THREE.Mesh(
+              new THREE.CircleGeometry(radius * 1.1, 48),
+              new THREE.MeshBasicMaterial({ color: 0x1d212b })
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = box.min.y - 0.001;
+            scene.add(ground);
+
+            mixer.stopAllAction();
+            const actions = [];
+            const animSel = document.getElementById("anim");
+            animSel.innerHTML = "";
+            gltf.animations.forEach((clip, i) => {
+              const meta = entry.clips[i] || { label: clip.name, loop: true };
+              const a = mixer.clipAction(clip);
+              a.loop = meta.loop ? THREE.LoopRepeat : THREE.LoopOnce;
+              a.clampWhenFinished = !meta.loop;
+              actions.push(a);
+              const opt = document.createElement("option");
+              opt.value = i;
+              opt.textContent = meta.label;
+              animSel.appendChild(opt);
+            });
+
+            current = { model, mixer, actions, ground };
+            activeClip = -1;
+            setClip(0);
+            document.getElementById("status")?.remove();
+            const note = document.getElementById("note");
+            note.textContent = "#" + dex + " " + entry.name + " · " + entry.tris +
+              " triangles, " + entry.bones + " bones, 30 fps · drag to orbit, pinch or wheel to zoom" +
+              (entry.corrupt ? " · NOTE: corrupt standby loop at source" : "");
+          } catch (e) { window.__fail("setup: " + e.message); }
+        }, (e) => window.__fail("glTF parse failed: " + (e && e.message || e)));
+      } catch (e) { window.__fail("decompress: " + e.message); }
+    }));
+  }
+
+  function setClip(i) {
+    if (!current) return;
+    if (activeClip >= 0) current.actions[activeClip].stop();
+    activeClip = i;
+    current.actions[i].reset().play();
+    document.getElementById("anim").value = i;
+  }
+
+  monSel.addEventListener("change", () => show(monSel.value));
+  document.getElementById("anim").addEventListener("change", (e) => setClip(+e.target.value));
+  document.getElementById("prev").addEventListener("click", () => {
+    const i = (ORDER.indexOf(monSel.value) + ORDER.length - 1) % ORDER.length;
+    monSel.value = ORDER[i]; show(ORDER[i]);
+  });
+  document.getElementById("next").addEventListener("click", () => {
+    const i = (ORDER.indexOf(monSel.value) + 1) % ORDER.length;
+    monSel.value = ORDER[i]; show(ORDER[i]);
+  });
+  document.getElementById("play").addEventListener("click", (e) => {
+    playing = !playing;
+    e.target.textContent = playing ? "Pause" : "Play";
+  });
+
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  (function tick() {
+    requestAnimationFrame(tick);
+    const dt = clock.getDelta();
+    if (current && playing) current.mixer.update(dt);
+    controls.update();
+    renderer.render(scene, camera);
+  })();
+
+  monSel.value = "025";
+  show("025");
+} catch (e) {
+  window.__fail(e.message);
+}
+</script>
+</body>
+</html>

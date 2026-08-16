@@ -5,7 +5,7 @@ here is imported by `environment-viewer.html`, the bot viewers, or any module in
 dependency only ever points inward, never out.
 
 Most demos are one HTML page each with their own `<script type="module">`, their own importmap, and no
-dependency on the rest of the workspace at all. **Three demos import upward**, and for the same reason:
+dependency on the rest of the workspace at all. **Four demos import upward**, and for the same reason:
 the whole point of each is to argue for shipping a module, and a demo carrying its own private copy
 would be arguing for nothing.
 
@@ -15,9 +15,17 @@ would be arguing for nothing.
   two hand-synced copies of it. This is the inward-pointing rule at its strictest: the demo needed the
   code, so the code moved rather than being copied.
 - `flight-sim.html` imports `../flight-model.js`, `../flight-airframes.js`, `../flight-terrain.js`,
-  `../flight-ai.js` and `../flight-combat.js` — the flight harness, extracted out of this page once
+  `../flight-ai.js`, `../flight-combat.js` and, since 2026-08-16, `../rain.js` for weather — the flight harness, extracted out of this page once
   it had proved itself and now covered by `test-flight-*.mjs` at the repo root. See
   `docs/subsystems/flight.md`.
+- `rain.html` imports `../rain.js` — GPU rain (streaks, splash rings, occluder-map rain shadow, wet
+  ground) written as TSL for the bot viewer; `../rain-math.js` is its Node-tested CPU twin. See
+  `docs/subsystems/fx.md` §Rain.
+
+`city-builder.html` is a small city simulator (grid roads, lane traffic with lights, pedestrians that
+walk to buildings, growth over time, procedural buildings and trees, save/load) built around a tiny ECS
+with a live World Inspector, after Dan Greenheck's city-simulator
+posts (2026-08-13). It imports nothing from the workspace; all assets are procedural.
 
 **Two CPU twins live here as separate modules**, `creature-collision.js` and `bug-sdf.js`. Each mirrors
 a distance field that otherwise exists only inside a fragment shader, split out for exactly the reason
@@ -28,6 +36,13 @@ cursor blob, whereas `sdf-bug.html` imports nothing at all and `bug-sdf.js` is r
 
 The isolation that rule protects — a demo cannot break the game — still holds either way: nothing in
 the game imports a demo, and the modules are leaves plus three.
+
+`water-demo.html` is a third case of the same pattern: `water-waves.js` next to it is the CPU twin of
+the Gerstner and 3-sine wave maths inside the page's TSL shader (the GPU reads the very table this
+module builds), used at runtime for buoyancy and read by `test-demo-water-waves.mjs`. The page puts
+every technique from `../water.js` and from achrefelouafi/WaterThreeJS behind switches, per body of
+water, so it can be made to look like either or a mix; the comparison that motivated it is
+`../docs/water-vs-waterthreejs-comparison.md`.
 
 Serve them over http (the importmap and CDN fetches do not work over `file://`):
 
@@ -1362,6 +1377,56 @@ pucks. The feet had the same problem with no orientation at all, where `solveLeg
 passes exactly after each `setRagdollPose` call.
 **Still open.** Root motion is discarded — the pose is planted every frame, so `Walking_A` walks on
 the spot. Consuming that travel is what a real port has to add. Nothing here is wired into the game.
+
+---
+
+## `mocap-webcam.html` — video mocap driving the real soldier
+
+Asks whether browser pose estimation is good enough, at bot fidelity, to author bot animation by
+performing it at a webcam (or from any video file). Prompted by a look at
+`bakhtiyorjondadajonov/fall-detection-vison`, which runs YOLO11-Pose for 2D keypoints and then a
+fall classifier — the classifier is irrelevant here and 2D keypoints alone cannot pose a 3D rig, so
+this uses **MediaPipe PoseLandmarker** (`@mediapipe/tasks-vision`, WebGL delegate, off jsdelivr)
+instead, because it gives 33 landmarks with metric 3D **world** coordinates straight in the browser.
+
+**It reuses `pose-retarget.html`'s seam and method unchanged.** World landmarks (metres, hip origin,
+y down, z small = near) become three's frame by `(x, -y, -z)`; sixteen canonical joints are built
+from them (chest, neck and skull top are synthesised, since MediaPipe has none of those); then only
+the joint DIRECTIONS are taken and OUR bone lengths (`body.limbLengths`) stepped along them, the
+lower foot dropped to y=0, and the result fed to `body.setRagdollPose(P)` plus the same
+`jointFrame` pass that keeps feet and armour plates oriented. So a MediaPipe frame and a KayKit clip
+arrive at the rig as the same sixteen positions — the capture source is swappable behind the
+retarget, and that layer is what would ship.
+
+Trunk proportions have no rest pose to measure once, so they are a running mean of the live
+estimate (converges in ~30 frames). Each landmark axis goes through a **One-Euro filter** (heavy
+when still, light when fast; two sliders), gated by visibility.
+
+**View modes, because "mirror" is not one thing.** Ragdoll key `L` is the visual RIGHT limb and the
+rig faces `cross(shoulderR − shoulderL, up)` in pose keys, so a proper soldier needs performer-left →
+key `R`. Three views, all proper people, none a reflection: *facing* (faces you, true limbs, like a
+video call), *mirror* (positions reflected in x, then performer-left → key `L`: faces you and raises
+the hand on your same screen side), *follow* (facing, yawed 180°: you watch its back copy you). The
+first version's "mirror" negated x AND swapped landmark indices, which on a symmetric pose is the
+identity; the Node test caught it and the modes replaced it.
+
+**What `setRagdollPose` does not carry, added on top:** head turn (face = nose − ear midpoint, neck
+axis as up; the neck takes half), foot yaw (heel → toe), both through one `facingBasis` (face on local
+−Z, so `right = F × U`, `forward = −F` — measured against the rig's own basis in the test), and an
+approximate **root motion** from the image-space hips and apparent shoulder scale (60° FOV assumed,
+scale slider), off by default.
+
+Record / play / scrub / import / export: raw landmark clips (post-filter, so view/yaw/root can still
+change on playback) and a 16-joint `setRagdollPose` clip in the soldier's own proportions with per-
+frame facing hints, re-derived from the recording under the current settings — the shape a bot
+animation player would consume. Models: lite / full / heavy. Webcam and dropped video files both go
+through `detectForVideo` with a monotonic timestamp.
+
+`test-demo-mocap-webcam.mjs` copies the landmark→pose maths and pushes synthetic poses in
+MediaPipe's frame through the real body: 28 checks (axis flips, our bone lengths, planted foot, head
+near design height, sidedness against `joints.rightHand`, One-Euro attenuation and step response,
+facing-basis handedness, and all three views on an asymmetric pose). No weapon mount yet; add it the
+way `pose-retarget.html` does if the answer to the demo's question is yes.
 
 ---
 

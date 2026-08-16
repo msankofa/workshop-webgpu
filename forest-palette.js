@@ -32,7 +32,15 @@ function leafOptsFor(sp, params, texSet, spIdx) {
   if (useAtlas) {
     const cells = texSet.leafAtlas.cols * texSet.leafAtlas.rows;
     leafOpts.shape = 'quad';
-    leafOpts.atlas = { cols: texSet.leafAtlas.cols, rows: texSet.leafAtlas.rows, cell: spIdx % cells };
+    // An AUTHORED species names its own cell (the ez families pin oak 0 / aspen 1 / ash 2 / pine 3,
+    // matching tree-textures.js's LEAF_FILES), and that is real data, not a default to be improved
+    // on. `spIdx % cells` is only right for buildSpecies()' procedural species, which carry no
+    // atlas at all — applied to a family table it hands two of the three pines broadleaves.
+    const authored = sp.leaves?.atlas?.cell;
+    const cell = Number.isInteger(authored) && authored >= 0 && authored < cells
+      ? authored
+      : spIdx % cells;
+    leafOpts.atlas = { cols: texSet.leafAtlas.cols, rows: texSet.leafAtlas.rows, cell };
   } else {
     leafOpts.shape = 'simple';
   }

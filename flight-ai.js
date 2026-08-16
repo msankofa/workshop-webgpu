@@ -66,9 +66,9 @@ export const OWN_CIRCUIT_BELOW = 600;
 // the target at radius*rate metres a second, which for every class was faster than the aircraft
 // could fly: all three chased a fleeing point, saturated their controls and flew into the ground.
 export function makeAi(f, seed, over) {
-  const cfg = f.afKey === 'plane' ? { speed: 120, alt: 1100, radius: 2600, capture: 750 }
-    : f.afKey === 'drone' ? { speed: 11, alt: 90, radius: 220, capture: 28 }
-      : { speed: 21, alt: 340, radius: 820, capture: 110 };
+  // From the airframe, not from a ternary on its key. The ternary's final branch was the bird's
+  // circuit, so an unrecognised craft patrolled an 820 m ring at 21 m/s whatever it actually was.
+  const cfg = { ...f.af.circuit };
   if (over) Object.assign(cfg, over);
   const pts = [];
   const N = 6;
@@ -173,23 +173,34 @@ export function aiGoal(f, dt, world) {
 // Returns intent — the caller fires. Nothing here consumes ammo or spawns a projectile.
 export function aiShoot(f, world) {
   const out = { gun: false, missile: false };
-  if (f.dead || !f.armed) return out;
-  if (f.afKey === 'bird') return out;          // birds have no weapons, they just menace
+  // Two separate questions, and they were two separate mechanisms: `f.armed` is what the ROSTER
+  // decided for this individual (a trainer is an unarmed plane), `af.armable` is whether the
+  // airframe can carry weapons at all.
+  if (f.dead || !f.armed || !f.af.armable) return out;
   const foe = f.foe;
   if (!foe || foe.dead || foe.team === f.team) return out;
   _lead.copy(foe.p).sub(f.p);
   const range = _lead.length();
   const ang = Math.acos(THREE.MathUtils.clamp(_lead.dot(f.fwd) / Math.max(1, range), -1, 1));
-  if (range < COMBAT.aiGunRange && ang < 0.05) out.gun = true;
+  // the shooter's own gun decides its reach: a cannon that carries 3,600 m should not hold fire
+  // at 900 because that is where the light gun gave up
+  if (range < (f.gun ? f.gun.aiRange : COMBAT.aiGunRange) && ang < 0.05) out.gun = true;
   if (range < COMBAT.aiMslRange && range > 700 && f.lockTarget === foe
     && f.lockProgress >= 1 && f.mslCool <= 0) out.missile = true;
   return out;
 }
 
 export function driveAi(f, dt, world) {
-  const ai = f.ai;
   f.wantFlares = false;
   const wp = aiGoal(f, dt, world);
+  steerToward(f, wp, f.ai.speed, f.ai);
+}
+
+// The one steering law: fly toward a point at a speed, whatever the airframe. `driveAi` feeds it
+// waypoints and the autopilot feeds it a ring; both write `f.input` exactly as the keyboard would,
+// which is the seam that lets a player hand over and take back without the model noticing.
+// `state` only has to hold `rest` for a bird's stamina hysteresis.
+export function steerToward(f, wp, speed, state) {
   _toWp.copy(wp).sub(f.p);
   const flat = Math.hypot(_toWp.x, _toWp.z);
 
@@ -202,7 +213,7 @@ export function driveAi(f, dt, world) {
   if (f.af.control === 'attitude') {
     // tilt commands SPEED, not distance: the drone has to be able to brake as it arrives
     const horiz = Math.hypot(f.v.x, f.v.z);
-    const wantSpeed = Math.min(ai.speed, flat * 0.35);
+    const wantSpeed = Math.min(speed, flat * 0.35);
     f.input.pitch = THREE.MathUtils.clamp(-(wantSpeed - horiz) * 0.25, -1, 1);
     f.input.roll = 0;
     f.input.yaw = THREE.MathUtils.clamp(-dh * 1.2, -1, 1);   // +dh means turn LEFT; see below
@@ -237,12 +248,12 @@ export function driveAi(f, dt, world) {
     if (f.af.thrust === 'flap') {
       // stamina hysteresis: flapping flat out drains the bird in seconds, and a grounded bird
       // cannot take off again — flap thrust alone is well under its weight
-      if (f.stamina < 0.12) ai.rest = true;
-      if (f.stamina > 0.55) ai.rest = false;
-      f.input.flap = !ai.rest && (f.airspeed < ai.speed * 0.9 || f.p.y < wp.y - 10);
+      if (f.stamina < 0.12) state.rest = true;
+      if (f.stamina > 0.55) state.rest = false;
+      f.input.flap = !state.rest && (f.airspeed < speed * 0.9 || f.p.y < wp.y - 10);
       f.input.sweep = dAlt < -180 && f.airspeed < 45;
     } else {
-      f.input.throttle = f.airspeed < ai.speed ? 1 : -1;
+      f.input.throttle = f.airspeed < speed ? 1 : -1;
     }
   }
 }

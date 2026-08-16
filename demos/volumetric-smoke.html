@@ -54,7 +54,10 @@
   -----------------------------------
   Shrapnel, sparks, embers and the shockwave ring. They are thin, fast, high-contrast and close to
   sub-pixel; instanced geometry is the right answer and html-game-v2's version of them is the
-  stronger of the two. Marching them would be absurd. This demo does not draw them at all.
+  stronger of the two. Marching them would be absurd. Since 2026-08-16 they ARE drawn here, by ../blast-debris.js over
+  ../blast-debris-sim.js — a stateful port of html-game-v2's pools (tetrahedra that bounce and
+  flicker, dodecahedra that tumble along the blast and smoulder, ember sparks, eight pooled point
+  lights on the hottest pieces, dust trails). Panel section "Debris".
 
   DEPTH RECONSTRUCTION
   --------------------
@@ -136,6 +139,11 @@
   <label class="chk"><input type="checkbox" id="tiering" checked> degrade blasts under load</label>
   <div id="tierRows"></div>
 
+  <h2>Debris (from html-game-v2)</h2>
+  <div id="debrisChecks"></div>
+  <div id="debrisRows"></div>
+  <button class="btn" id="clearDebris">Clear debris</button>
+
   <h2>Fireball</h2>
   <div id="fireRows"></div>
 
@@ -183,6 +191,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // imports `../spsa.js`: the demo exists partly to argue for shipping that module, and a private
 // copy of it would be arguing for nothing. `explosion-tier.js` is a pure leaf with no imports.
 import { createExplosionBudget } from '../explosion-tier.js';
+// The persistent debris layer: html-game-v2's shrapnel / rubble / spark / smoke pools as a pure sim
+// (Node-tested in ../test-blast-debris-sim.mjs) plus the WebGPU instanced renderer for its arrays.
+// This is the half the header above says should be instanced geometry rather than marched.
+import { createDebrisSim, TIER_DEBRIS_SCALE } from '../blast-debris-sim.js';
+import { createDebrisRenderer } from '../blast-debris.js';
 
 // ---------------------------------------------------------------------------
 // Scene
@@ -292,6 +305,33 @@ function spawnBlast(x, y, z, radius, priority = 'primary') {
     tier: reserveTier(priority),
     seed: (blastSerial * 37.13) % 100,
   });
+  spawnDebrisFor(blasts[blasts.length - 1]);
+}
+
+// ---- debris (html-game-v2's persistent layer) ----
+const debrisSim = createDebrisSim({ groundAt: () => 0 });
+const debrisOpts = {
+  radiusScale: 3.2,   // fireball radius -> html-game-v2 blastRadius; a 1.5 m fireball is a ~5 m grenade there
+  rubbleOnGround: true, rubbleSize: 2.4, slabs: false, slabScale: 0.28,
+};
+let debrisRenderer = null;   // built after the soft texture exists, below
+function spawnDebrisFor(b) {
+  const scale = TIER_DEBRIS_SCALE[b.tier] || TIER_DEBRIS_SCALE.full;
+  if (scale.shrapnel <= 0 && scale.rubble <= 0) return;   // lite: no debris, as in the original
+  const blastRadius = b.r0 * debrisOpts.radiusScale;
+  const color = [1, 0.62, 0.26];
+  const onGround = b.y < b.r0 * 0.6;
+  if (scale.shrapnel > 0) {
+    debrisSim.spawnBlastShrapnel(b.x, b.y, b.z, blastRadius, color, {
+      countScale: scale.shrapnel, verticalBoost: onGround ? 0.25 : 0,
+    });
+  }
+  if (scale.rubble > 0 && onGround && debrisOpts.rubbleOnGround) {
+    const ang = b.seed * 0.7;
+    debrisSim.spawnRubble(b.x, b.y, b.z, debrisOpts.rubbleSize * (b.r0 / 1.5), [Math.cos(ang), Math.sin(ang)],
+      { countScale: scale.rubble });
+    if (debrisOpts.slabs) debrisSim.spawnImpactSlabs(b.x, b.y, b.z, { scale: debrisOpts.slabScale, countScale: scale.rubble, color });
+  }
 }
 
 // Shape of a blast at a given age. The fireball and the smoke are two phases of the same volume,
@@ -598,6 +638,7 @@ function makeSpritePool(cap, additive, tex) {
 }
 
 const softTex = makeSoftTexture();
+debrisRenderer = createDebrisRenderer({ THREE, scene, sim: debrisSim, softTexture: softTex });
 const glowPool = makeSpritePool(MAX_BLASTS * GLOWS_PER_BLAST, true, softTex);
 const smokePool = makeSpritePool(MAX_BLASTS * PUFFS_PER_BLAST, false, softTex);
 
@@ -692,6 +733,46 @@ slider(tierRows, 'Full-quality blasts per 320 ms', () => tierFullLimit,
   (v) => { tierFullLimit = v | 0; retuneBudget(tierFullLimit, tierMediumLimit); }, 0, 6, 1, (v) => String(v | 0));
 slider(tierRows, 'Medium cut-off', () => tierMediumLimit,
   (v) => { tierMediumLimit = v | 0; retuneBudget(tierFullLimit, tierMediumLimit); }, 1, 10, 1, (v) => String(v | 0));
+
+// Debris panel: the same tuning surface html-game-v2 exposes (particleEffectDefaultSettings), plus
+// the visibility toggles and the two knobs that map this demo's fireball onto their blast radius.
+const debrisChecks = document.getElementById('debrisChecks');
+function check(host, label, get, set) {
+  const lab = document.createElement('label'); lab.className = 'chk';
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  inp.addEventListener('change', () => set(inp.checked));
+  lab.append(inp, document.createTextNode(' ' + label));
+  host.append(lab);
+}
+for (const [key, label] of [['shrapnel', 'shrapnel (tetrahedra, bounce + flicker)'], ['rubble', 'rubble (dodecahedra along the blast)'],
+  ['glow', 'glow shells on hot pieces'], ['lights', 'point lights on the hottest rubble (8)'],
+  ['sparks', 'ember sparks'], ['smoke', 'debris smoke and dust']]) {
+  check(debrisChecks, label, () => debrisRenderer.show[key], (v) => { debrisRenderer.show[key] = v; });
+}
+check(debrisChecks, 'rubble only on ground blasts', () => debrisOpts.rubbleOnGround, (v) => { debrisOpts.rubbleOnGround = v; });
+check(debrisChecks, 'ground slabs (bomb-scale, drop-pod preset)', () => debrisOpts.slabs, (v) => { debrisOpts.slabs = v; });
+const debrisRows = document.getElementById('debrisRows');
+const ds = debrisSim.settings;
+const dset = (k) => [() => ds[k], (v) => { ds[k] = v; }];
+slider(debrisRows, 'Blast radius = fireball ×', () => debrisOpts.radiusScale, (v) => { debrisOpts.radiusScale = v; }, 1, 8, 0.1);
+slider(debrisRows, 'Rubble size (m)', () => debrisOpts.rubbleSize, (v) => { debrisOpts.rubbleSize = v; }, 0.5, 8, 0.1);
+slider(debrisRows, 'Slab scale', () => debrisOpts.slabScale, (v) => { debrisOpts.slabScale = v; }, 0.1, 1, 0.02);
+slider(debrisRows, 'Shrapnel count ×', ...dset('shrapnelCountScale'), 0, 3, 0.05);
+slider(debrisRows, 'Shrapnel speed ×', ...dset('shrapnelSpeedScale'), 0, 3, 0.05);
+slider(debrisRows, 'Shrapnel gravity ×', ...dset('shrapnelGravityScale'), 0, 3, 0.05);
+slider(debrisRows, 'Shrapnel life ×', ...dset('shrapnelLifeScale'), 0.05, 2, 0.05);
+slider(debrisRows, 'Shrapnel smoke ×', ...dset('shrapnelSmokeScale'), 0, 3, 0.05);
+slider(debrisRows, 'Shrapnel glow chance', ...dset('shrapnelGlowChance'), 0, 1, 0.02);
+slider(debrisRows, 'Shrapnel glow ×', ...dset('shrapnelGlowScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble count ×', ...dset('rubbleCountScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble speed ×', ...dset('rubbleSpeedScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble gravity ×', ...dset('rubbleGravityScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble life ×', ...dset('rubbleLifeScale'), 0.05, 2, 0.05);
+slider(debrisRows, 'Rubble smoke ×', ...dset('rubbleSmokeScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble smoulder chance', ...dset('rubbleSmolderChance'), 0, 1, 0.02);
+slider(debrisRows, 'Rubble glow ×', ...dset('rubbleGlowScale'), 0, 3, 0.05);
+slider(debrisRows, 'Rubble light ×', ...dset('rubbleLightScale'), 0, 3, 0.05);
+document.getElementById('clearDebris').addEventListener('click', () => debrisSim.clear());
 
 const qualityRows = document.getElementById('qualityRows');
 const note = document.getElementById('note');
@@ -791,6 +872,9 @@ renderer.setAnimationLoop(async () => {
   poolEnd(glowPool, true);
   poolEnd(smokePool, true);
 
+  debrisSim.step(dt);
+  debrisRenderer.sync();
+
   controls.update();
   await renderer.renderAsync(scene, camera);
 
@@ -800,6 +884,7 @@ renderer.setAnimationLoop(async () => {
     lastCounts = counts;
     const fps = frames / acc, ms = msAcc / frames;
     const marched = blasts.reduce((s, b) => s + (marchBudget(b.tier)?.steps || 0), 0);
+    const dsn = debrisRenderer.stats;
     statsEl.innerHTML =
       `<b>${fps.toFixed(0)}</b> fps &nbsp; <b>${ms.toFixed(2)}</b> ms cpu-side<br>` +
       `<b>${blasts.length}</b> live blast${blasts.length === 1 ? '' : 's'} — ` +
@@ -808,7 +893,9 @@ renderer.setAnimationLoop(async () => {
       `<span class="lite">${lastCounts.lite} lite</span><br>` +
       `volume: <b>${vn}</b> instance${vn === 1 ? '' : 's'} in <b>1</b> draw, ` +
       `<b>${marched}</b> steps summed over them<br>` +
-      `billboards: <b>${glowPool.n + smokePool.n}</b> sprites in <b>2</b> draws`;
+      `billboards: <b>${glowPool.n + smokePool.n}</b> sprites in <b>2</b> draws<br>` +
+      `debris: <b>${dsn.shrapnel}</b> shrapnel, <b>${dsn.rubble}</b> rubble, <b>${dsn.sparks}</b> sparks, ` +
+      `<b>${dsn.smoke}</b> smoke, <b>${dsn.lights}</b> lights — <b>6</b> draws`;
     frames = 0; acc = 0; msAcc = 0;
   }
 });

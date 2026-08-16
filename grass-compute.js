@@ -22,10 +22,11 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
-  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal,
+  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal, positionWorld,
   atomicAdd, atomicStore, atomicLoad, texture,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
+import { createGrassLook } from './grass-look.js';
 import { FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
 import { maxInstances, perCellCount } from './grass-cells.js';
 import {
@@ -358,8 +359,22 @@ export function createComputeGrass(opts) {
   const wave = sin(uTime.mul(uWindSpeed).add(worldX.mul(uWindFreq)));
   const isMidTip = clamp(aWind.mul(2), 0, 1);
   const isTip = clamp(aWind.sub(0.6).mul(10), 0, 1);
-  const sway = wave.mul(isMidTip.mul(mix(uCenterDist, uTipDist, isTip)));
-  const posNode = vec3(worldX.add(sway), base.y.add(uVerticalOffset).add(ly), base.z.add(rz));
+  const swayAmp = isMidTip.mul(mix(uCenterDist, uTipDist, isTip));
+  // grass-look.js optional features (all default-off; off = the legacy graph exactly)
+  const look = createGrassLook(opts.look || {});
+  const bladeT = positionLocal.y.div(0.8);            // 0..1 up the base blade (0.8 = its authored height)
+  const face = vec2(sy.negate(), cy);                 // horizontal facing, perpendicular to the width axis
+  const rnd = look.nodes.bladeRandoms(vec2(yaw.mul(0.31), yaw.mul(0.77).add(base.x.mul(0.013))));
+  const swayXZ = look.nodes.sway({
+    worldXZ: vec2(base.x, base.z), legacy: wave, amp: swayAmp, time: uTime, speed: uWindSpeed,
+    freq: uWindFreq, phase: rnd.phase,
+  });
+  const lyKept = ly.mul(look.nodes.coverage(vec2(base.x, base.z)));
+  const curl = look.nodes.curl({ y: lyKept, t: bladeT, face, curlVar: rnd.curlVar });
+  const posNode = vec3(
+    worldX.add(swayXZ.x).add(curl.dxz.x),
+    base.y.add(uVerticalOffset).add(lyKept).add(curl.dy),
+    base.z.add(rz).add(swayXZ.y).add(curl.dxz.y));
 
   const { noise2D } = buildGrassNoiseFns();
   const uBaseColor = uniform(new THREE.Color(0x16240e));
@@ -377,16 +392,17 @@ export function createComputeGrass(opts) {
   const dryColor = vec3(120 / 255, 96 / 255, 40 / 255);
   const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
   const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
-  const colorNode = grassColor.mul(uAmbient.add(uKey)).mul(cloud);
+  const colorNode = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
 
   const mat = new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
   mat.positionNode = posNode;
   mat.colorNode = colorNode;
-  mat.normalNode = vec3(0, 1, 0);
+  mat.normalNode = curl.normal;                       // vec3(0,1,0) unless curl is on
   // SP4a: optional additive clustered point-light term. Sample at the blade's ground-planted
   // BASE (not the swaying elevated tip) so grass lighting stays locked to the terrain pool
   // directly beneath it — avoids height-parallax desync as lights move.
-  if (opts.addEmissive) mat.emissiveNode = opts.addEmissive(base, vec3(0, 1, 0));
+  const backlight = look.nodes.translucency({ t: bladeT, worldPos: positionWorld, tipColor: uTipColor });
+  mat.emissiveNode = opts.addEmissive ? opts.addEmissive(base, vec3(0, 1, 0)).add(backlight) : backlight;
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.frustumCulled = false;
@@ -534,6 +550,10 @@ export function createComputeGrass(opts) {
     },
     maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
+    // grass-look.js toggles/amounts; live, no recull. setSunDir takes the world direction TOWARD the sun.
+    setLook(partial) { look.set(partial); },
+    getLook() { return look.get(); },
+    setSunDir(v) { look.setSunDir(v); },
     setBladeStyle(key) {
       const idx = STYLE_KEYS.indexOf(key);
       if (idx < 0) return;

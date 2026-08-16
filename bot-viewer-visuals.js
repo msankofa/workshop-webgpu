@@ -29,6 +29,7 @@ import {
 // The one moss law in the repo: env-viewer's terrain, rocks and deadwood all read the same Fn,
 // so concrete that grows over follows the same rules those surfaces do.
 import { mossWeight } from './moss-tint.js';
+import { createSoilShade, soilFor } from './soil-shade.js';
 
 const DEG = Math.PI / 180;
 const SKY_RADIUS = 150;   // < camera.far (200); the dome is re-centred on the camera each frame
@@ -210,6 +211,10 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
   let toggles = togglesFor(theme);
   function resolveToggles() { toggles = { ...togglesFor(theme), ...toggleOverrides }; }
   const master = { brightness: 1.0, saturation: 1.0, bloom: 1.0, fogScale: 1.0, neon: 1.0 };
+  // Weather overlay, outside the theme so a theme switch keeps the storm: dim 0..1 darkens key and
+  // ambient, fogBoost multiplies the theme fog, overcast lids the sky.
+  const weather = { overcast: 0, dim: 0, fogBoost: 1 };
+  let keyBase = 0, lightningLevel = 0;
   let bounds = { minX: -10, maxX: 10, minZ: -10, maxZ: 10 };
   let randomSeed = 1;
   let elapsed = 0;
@@ -228,6 +233,8 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     planetColor: uniform(C(0)), planetAtmo: uniform(C(0)), planetDir: uniform(new THREE.Vector3(1, 0, 0)),
     planetCos: uniform(0.99), planetSin: uniform(0.14), planetBands: uniform(0.5), planetHaloCos: uniform(0.98),
     planetOn: uniform(0), skyDrift: uniform(0),
+    // weather (set by setWeather / setLightning from the page's rain wiring)
+    overcast: uniform(0), lightning: uniform(0),
     // floor
     floorColor: uniform(C(0)), floorVig: uniform(0.3),
     floorMossColor: uniform(C(0x4a6b32)), floorMossGain: uniform(0), floorMossScale: uniform(0.55),
@@ -338,6 +345,11 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     const halo = smoothstep(u.planetHaloCos, u.planetCos, cd).mul(pdisc.oneMinus()).mul(u.planetOn);
     col = col.add(u.planetAtmo.mul(halo.mul(halo)).mul(0.5));
 
+    // Overcast: a low cloud lid, tinted by the theme's own horizon so it still belongs to the look,
+    // covering stars/nebula/sun alike; lightning brightens the lid from inside.
+    const lid = mix(vec3(0.20, 0.22, 0.26), u.horizon, 0.35).mul(float(1).add(u.lightning.mul(2.5)));
+    col = mix(col, lid, u.overcast);
+
     return col;
   })();
 
@@ -364,22 +376,44 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     return mix(base, u.floorMossColor, clamp(w.mul(u.floorMossGain), 0, 1));
   }
 
+  // Optional soil dressing (soil-shade.js: damp patches, dry cracks) over both ground materials.
+  // One instance, so the flat floor and the uneven terrain read the same fields; default-off.
+  const soil = createSoilShade();
+  function dressGround(col) {
+    const d = soil.nodes.apply({ col, rough: float(1), worldXZ: positionWorld.xz, normalWorld });
+    return d;
+  }
+  // The dressed {col, rough, normalWorld} graphs, so a wrapper (rain's applyWetSurface) can build
+  // on them instead of replacing the soil/moss/vignette work.
+  const groundNodes = { floor: null, terrain: null };
   const floorMat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
-  floorMat.colorNode = Fn(() => {
-    const r = length(positionWorld.xz.sub(u.arenaCenter));
-    const vig = float(1).sub(u.floorVig.mul(clamp(r.div(u.arenaRadius.max(1)), 0, 1)));
-    return groundMoss(u.floorColor.mul(vig));
-  })();
+  {
+    const d = dressGround(Fn(() => {
+      const r = length(positionWorld.xz.sub(u.arenaCenter));
+      const vig = float(1).sub(u.floorVig.mul(clamp(r.div(u.arenaRadius.max(1)), 0, 1)));
+      return groundMoss(u.floorColor.mul(vig));
+    })());
+    floorMat.colorNode = d.col;
+    floorMat.roughnessNode = d.rough;
+    floorMat.normalNode = TSL.transformNormalToView(d.normalWorld);
+    groundNodes.floor = d;
+  }
   // Uneven ground gets its own material: same themed colour and vignette, multiplied by the
   // per-vertex terrain shading bot-terrain.js bakes (rock on steep faces, sediment in channels,
   // altitude spread). A separate material rather than a flag on floorMat because the flat slab
   // and the catch slab carry no colour attribute and must keep rendering exactly as they do now.
   const terrainMat = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 });
-  terrainMat.colorNode = Fn(() => {
-    const r = length(positionWorld.xz.sub(u.arenaCenter));
-    const vig = float(1).sub(u.floorVig.mul(clamp(r.div(u.arenaRadius.max(1)), 0, 1)));
-    return groundMoss(u.floorColor.mul(vig).mul(attribute('color', 'vec3')));
-  })();
+  {
+    const d = dressGround(Fn(() => {
+      const r = length(positionWorld.xz.sub(u.arenaCenter));
+      const vig = float(1).sub(u.floorVig.mul(clamp(r.div(u.arenaRadius.max(1)), 0, 1)));
+      return groundMoss(u.floorColor.mul(vig).mul(attribute('color', 'vec3')));
+    })());
+    terrainMat.colorNode = d.col;
+    terrainMat.roughnessNode = d.rough;
+    terrainMat.normalNode = TSL.transformNormalToView(d.normalWorld);
+    groundNodes.terrain = d;
+  }
 
   floorMat.emissiveNode = Fn(() => {
     // world-space grid: distance to the nearest cell line, widened in world metres
@@ -811,6 +845,7 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     u.floorMossColor.value.set(f.mossColor ?? 0x4a6b32);
     u.floorMossGain.value = toggles.concrete ? (f.mossGain ?? 0) : 0;
     u.floorMossScale.value = f.mossScale ?? 0.55;
+    soil.set(soilFor(f.soil));   // theme.mats.floor.soil: optional soil-shade block, absent = off
     u.gridColor.value.set(f.gridColor);
     u.gridPitch.value = f.gridPitch; u.gridWidth.value = f.gridWidth; u.gridFade.value = f.gridFade;
     u.gridGain.value = toggles.grid ? f.gridGain * neon : 0;
@@ -895,11 +930,12 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
   function applyLights() {
     const L = theme.lights, b = master.brightness;
     rig.dirLight.color.set(L.key.color);
-    rig.dirLight.intensity = L.key.intensity * b;
+    keyBase = L.key.intensity * b * (1 - 0.65 * weather.dim);
+    rig.dirLight.intensity = keyBase + lightningLevel * 3;
     fitKeyLight();
     rig.dirLight.castShadow = toggles.shadows;
     rig.ambLight.color.set(L.ambient.color);
-    rig.ambLight.intensity = L.ambient.intensity * b;
+    rig.ambLight.intensity = L.ambient.intensity * b * (1 - 0.3 * weather.dim);
 
     overheadLight.color.set(L.overhead.color);
     overheadLight.intensity = L.overhead.intensity * b;
@@ -938,15 +974,27 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     }
   }
 
+  const RAIN_FOG = C(0x59616b);
   function applyFog() {
     if (!toggles.fog || theme.fog.density <= 0) { scene.fog = null; return; }
-    const d = theme.fog.density * master.fogScale;
-    if (scene.fog instanceof THREE.FogExp2) {
-      scene.fog.color.set(theme.fog.color);
-      scene.fog.density = d;
-    } else {
-      scene.fog = new THREE.FogExp2(theme.fog.color, d);
-    }
+    const d = theme.fog.density * master.fogScale * weather.fogBoost;
+    if (!(scene.fog instanceof THREE.FogExp2)) scene.fog = new THREE.FogExp2(theme.fog.color, d);
+    scene.fog.color.set(theme.fog.color).lerp(RAIN_FOG, weather.dim * 0.6);
+    scene.fog.density = d;
+  }
+  // Rain wiring calls this with what it fans out of one slider; each field is optional.
+  function setWeather({ overcast, dim, fogBoost } = {}) {
+    if (Number.isFinite(overcast)) weather.overcast = overcast;
+    if (Number.isFinite(dim)) weather.dim = dim;
+    if (Number.isFinite(fogBoost)) weather.fogBoost = fogBoost;
+    u.overcast.value = weather.overcast;
+    applyLights(); applyFog();
+  }
+  // Per-frame lightning level 0..1+: key light jumps and the cloud lid brightens; no re-apply.
+  function setLightning(v) {
+    lightningLevel = Math.max(0, v || 0);
+    u.lightning.value = lightningLevel;
+    rig.dirLight.intensity = keyBase + lightningLevel * 3;
   }
 
   let appliedTone = null;
@@ -1423,6 +1471,10 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
 
   return {
     materials: { floor: floorMat, terrain: terrainMat, wall: wallMat, cover: coverMat },
+    groundNodes,
+    setWeather, setLightning,
+    // soil-shade.js instance behind floor/terrain; live set(), values persist in theme.mats.floor.soil
+    soil,
     // Handed to createBodyPartBatches so the instanced bots get the emissive/rim treatment.
     botMaterials,
     flash,

@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — City builder (ECS, traffic, inspector)</title>
+<!--
+  DEMO — a small city simulator on the WebGPU/TSL stack, built around an ECS with a live World
+  Inspector, after Dan Greenheck's city-simulator posts (@dangreenheck, 2026-08-13).
+
+  WHAT IS HERE
+  ------------
+  - A tiny archetype-free ECS (`World`): entities are ids, components live in one Map per type,
+    systems are plain functions run in order each tick and timed for the Details panel.
+  - Grid city: road tiles auto-shape from their neighbours; lots next to roads grow buildings; the
+    rest becomes parks with trees. Everything renders through five InstancedMeshes, so the whole
+    city is a handful of draw calls regardless of size.
+  - Traffic: cars follow per-cell lane paths (quadratic bezier from entry lane to exit lane, right-
+    hand traffic), keep a gap to the car ahead, and obey the traffic light at 3- and 4-way
+    intersections. Lights cycle NS / EW with a yellow and an all-red beat.
+  - Buildings light their windows at night with a TSL emissive node keyed off positionWorld, so
+    window rows scale with floors instead of stretching with the instance.
+  - Inspector: left panel lists live entities filtered by component; click one (or click a car or a
+    building in the viewport with the Inspect tool) to see its components; the Details panel shows
+    entity/component counts and per-system milliseconds.
+  - Build tools: paint roads, buildings, trees, or bulldoze; the road graph and traffic recover.
+  - Growth: lots with road access add floors over time (rate follows how freely traffic moves) and
+    empty cells beside roads develop into new lots. Lot/park data is persistent per cell, so a paint
+    or a growth rebuild never reshuffles the rest of the city.
+  - Pedestrians: each picks a building, BFS-routes over the road graph, walks the sidewalk on one
+    side (same bezier lane paths as cars with a ±SIDE offset), waits for the walk signal (parallel
+    traffic green) before entering an intersection, goes indoors for a while, then picks another.
+  - Car trips: cars pick a destination building (weighted by occupants, so growth creates traffic),
+    BFS a route, park beside it (hidden for a while, Building.trips++), then leave when the lane is
+    clear. Cars with no reachable destination wander as before.
+  - Adaptive traffic lights lengthen a green with the longer queue and cut an empty one short.
+    Congestion overlay tints road tiles by how often cars were queued there.
+  - Save / Load keep the grid + per-cell lot and park data in localStorage. Zone lot places a
+    one-floor lot that grows.
+  - Inspector numbers are live-editable (Vehicle, Building, TrafficLight); Building floors/cap
+    write straight back to the instance. Camera can follow the selected entity. Cars show head and
+    tail lights at night; a day/night cycle toggle drives the Night slider.
+
+  All assets are procedural — the tweet swaps in Kenney/rgs_dev/mehrasaur packs, this page argues
+  the layout + ECS + traffic side, not the art.
+
+  RUN: served over http, e.g. `python serve.py` then http://127.0.0.1:8080/demos/city-builder.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #d8dee9; }
+  canvas { display: block; }
+  .panel {
+    --line: rgba(255,255,255,0.12); --text: #d8dee9; --muted: #8d97a8; --accent: #77c8a1; --warn: #ffc857;
+    position: fixed; top: 10px; max-height: calc(100vh - 20px); overflow-y: auto; padding: 12px 14px;
+    box-sizing: border-box; background: rgba(18,22,28,0.92); border: 1px solid var(--line);
+    border-radius: 8px; box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #left { left: 10px; width: 300px; }
+  #right { right: 10px; width: 300px; }
+  .panel h1 { font-size: 13px; margin: 0 0 2px; }
+  .panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  .panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .btn { padding: 6px 8px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+  .btn:hover { border-color: rgba(119,200,161,0.45); }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
+  .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .tools .btn { width: 100%; }
+  select, input[type=text] { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; padding: 5px 6px;
+    background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+  #entities { max-height: 38vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 5px; margin-top: 6px; }
+  .ent { padding: 3px 7px; cursor: pointer; display: flex; justify-content: space-between; font-size: 11px;
+    border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .ent:hover { background: rgba(255,255,255,0.05); }
+  .ent.sel { background: rgba(119,200,161,0.16); color: var(--accent); }
+  .ent .id { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .comp { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; }
+  .comp b { color: var(--accent); font-weight: 600; font-size: 11px; }
+  .comp .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; margin-top: 3px; font-size: 11px;
+    font-variant-numeric: tabular-nums; }
+  .comp .kv span:first-child { color: var(--muted); }
+  .comp .kv input { width: 72px; font: inherit; font-size: 11px; padding: 1px 4px; text-align: right; background: rgba(255,255,255,0.05);
+    color: var(--text); border: 1px solid var(--line); border-radius: 3px; }
+  table.stats { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+  table.stats td { padding: 2px 0; }
+  table.stats td:last-child { text-align: right; }
+  table.stats td:first-child { color: var(--muted); }
+  #big { font-size: 22px; font-weight: 600; margin: 4px 0 0; }
+  #big small { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #hint { position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; color: #8a93a3; font-size: 11px;
+    pointer-events: none; text-align: center; }
+  #err { position: fixed; left: 320px; top: 12px; color: #ff7b7b; font-size: 12px; white-space: pre-wrap; max-width: 50vw; }
+</style>
+</head>
+<body>
+
+<div id="left" class="panel">
+  <h1>World Inspector</h1>
+  <p class="sub">Every live entity, filtered by component. Click one to inspect it.</p>
+  <select id="filter"><option value="">All components</option></select>
+  <input type="text" id="search" placeholder="Search names…" style="margin-top:6px">
+  <div id="entities"></div>
+  <div id="more" class="sub" style="margin-top:4px"></div>
+
+  <h2>Selected entity</h2>
+  <div id="selected" class="sub">Nothing selected.</div>
+</div>
+
+<div id="right" class="panel">
+  <h1>City Simulator</h1>
+  <p class="sub">Grid roads, lane traffic with lights, procedural buildings and trees. Paint the city with the tools below.</p>
+  <div id="big">0<small>live entities</small></div>
+
+  <h2>Tools</h2>
+  <div class="tools" id="tools">
+    <button class="btn on" data-tool="inspect">Inspect</button>
+    <button class="btn" data-tool="road">Road</button>
+    <button class="btn" data-tool="building">Zone lot</button>
+    <button class="btn" data-tool="tree">Tree</button>
+    <button class="btn" data-tool="bulldoze">Bulldoze</button>
+    <button class="btn" id="regen">Regenerate</button>
+    <button class="btn" id="save">Save city</button>
+    <button class="btn" id="load">Load city</button>
+  </div>
+
+  <h2>Simulation</h2>
+  <div id="simRows"></div>
+  <label class="chk"><input type="checkbox" id="pause"> pause simulation</label>
+  <label class="chk"><input type="checkbox" id="showLanes"> show lane paths of the selected car</label>
+  <label class="chk"><input type="checkbox" id="follow"> camera follows the selected entity</label>
+  <label class="chk"><input type="checkbox" id="growth" checked> city grows over time (floors, new lots)</label>
+  <label class="chk"><input type="checkbox" id="cycle"> day / night cycle</label>
+  <label class="chk"><input type="checkbox" id="adaptive" checked> adaptive traffic lights (queue-length green)</label>
+  <label class="chk"><input type="checkbox" id="congestion"> congestion overlay on roads</label>
+
+  <h2>Components</h2>
+  <table class="stats" id="compTable"></table>
+
+  <h2>Systems (ms per tick)</h2>
+  <table class="stats" id="sysTable"></table>
+
+  <h2>Traffic</h2>
+  <table class="stats" id="trafficTable"></table>
+</div>
+
+<div id="hint">Left-drag orbits, right-drag pans, wheel zooms. With a build tool active, click or drag on the ground to paint.</div>
+<div id="err"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
+import { positionWorld, positionLocal, normalWorld, fract, floor, mix, smoothstep, uniform, vec3, float, abs, hash, instanceIndex, step } from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const err = document.getElementById('err');
+window.addEventListener('error', e => { err.textContent += e.message + '\n'; });
+window.addEventListener('unhandledrejection', e => { err.textContent += (e.reason?.stack || e.reason) + '\n'; });
+
+// ---------------------------------------------------------------- ECS
+class World {
+  constructor() { this.nextId = 1; this.entities = new Set(); this.stores = new Map(); }
+  create(name) { const id = this.nextId++; this.entities.add(id); this.add(id, 'Name', { name }); return id; }
+  store(type) { let s = this.stores.get(type); if (!s) { s = new Map(); this.stores.set(type, s); } return s; }
+  add(id, type, data) { this.store(type).set(id, data); return data; }
+  get(id, type) { return this.stores.get(type)?.get(id); }
+  has(id, type) { return this.stores.get(type)?.has(id) === true; }
+  destroy(id) { for (const s of this.stores.values()) s.delete(id); this.entities.delete(id); }
+  *query(...types) {
+    let smallest = null;
+    for (const t of types) { const s = this.store(t); if (!smallest || s.size < smallest.size) smallest = s; }
+    for (const id of smallest.keys()) { let ok = true; for (const t of types) if (!this.has(id, t)) { ok = false; break; } if (ok) yield id; }
+  }
+  components(id) { const out = []; for (const [t, s] of this.stores) if (s.has(id)) out.push([t, s.get(id)]); return out; }
+}
+const world = new World();
+const systems = []; // { name, fn, ms }
+const addSystem = (name, fn) => systems.push({ name, fn, ms: 0 });
+
+// ---------------------------------------------------------------- grid + world layout
+const W = 26, H = 26, CELL = 8, ROADW = CELL * 0.78, LANE = ROADW * 0.25, SIDE = ROADW * 0.5 + 0.55;
+const T_EMPTY = 0, T_ROAD = 1, T_LOT = 2, T_PARK = 3;
+const grid = new Uint8Array(W * H);
+const cellEntity = new Int32Array(W * H).fill(0);   // building / tree / road entity in that cell
+const roadMask = new Uint8Array(W * H);             // bit0 N, bit1 E, bit2 S, bit3 W
+const lightAt = new Int32Array(W * H).fill(0);      // traffic light entity id per intersection cell
+const lots = new Array(W * H).fill(null);           // persistent building data per lot cell (survives rebuilds)
+const parks = new Array(W * H).fill(null);          // persistent tree layout per park cell
+const lotInstance = new Int32Array(W * H).fill(-1); // building instance index per lot cell
+const kindOf = floors => floors >= 7 ? 'office' : floors >= 3 ? 'residential' : 'shop';
+function makeLot(i, j, floors) {
+  seed = (i * 7919 + j * 104729 + 17) >>> 0;
+  const dc = Math.hypot(i - W / 2, j - H / 2) / (W / 2);
+  const cap = Math.max(2, Math.round((1 - dc) * 12 * (0.6 + rnd() * 0.8)));
+  const f = floors ?? Math.max(1, Math.round(cap * (0.3 + rnd() * 0.5)));
+  return { floors: Math.min(f, cap), cap, fx: CELL * (0.55 + rnd() * 0.25), fz: CELL * (0.55 + rnd() * 0.25),
+    tint: [(rnd() - 0.5) * 0.15, (rnd() - 0.5) * 0.15, (rnd() - 0.5) * 0.15], roofH: 0.5 + rnd() * 1.5, age: 0 };
+}
+function makePark(i, j) {
+  seed = (i * 6151 + j * 49157 + 5) >>> 0;
+  const n = 1 + Math.floor(rnd() * 3), trees = [];
+  for (let q = 0; q < n; q++) trees.push({ dx: (rnd() - 0.5) * CELL * 0.7, dz: (rnd() - 0.5) * CELL * 0.7, th: 2 + rnd() * 3, cr: 1.2 + rnd() * 1.4, hue: 0.27 + rnd() * 0.08, light: 0.28 + rnd() * 0.12, species: rnd() < 0.3 ? 'conifer' : 'broadleaf' });
+  return trees;
+}
+const PAL = { office: [0.62, 0.66, 0.72], residential: [0.78, 0.66, 0.55], shop: [0.72, 0.6, 0.62] };
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];    // N E S W (N is -z); right(d) = (d+1)&3
+const idx = (i, j) => i + j * W;
+const inb = (i, j) => i >= 0 && j >= 0 && i < W && j < H;
+const cx = i => (i - W / 2 + 0.5) * CELL;
+const cz = j => (j - H / 2 + 0.5) * CELL;
+let seed = 1;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+
+function generateCity() {
+  grid.fill(T_EMPTY); lots.fill(null); parks.fill(null);
+  // main streets every 5 cells with a couple of random cross streets, plus one ring left open at the edge
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const onX = (i - 1) % 5 === 0, onZ = (j - 1) % 5 === 0;
+    if ((onX || onZ) && i >= 1 && j >= 1 && i <= W - 2 && j <= H - 2) grid[idx(i, j)] = T_ROAD;
+  }
+  // knock out a few street segments so it is not a perfect lattice
+  for (let n = 0; n < 6; n++) {
+    const i = 1 + 5 * Math.floor(rnd() * 5), j = 1 + 5 * Math.floor(rnd() * 5);
+    const horiz = rnd() < 0.5;
+    for (let k = 1; k < 5; k++) { const ii = horiz ? i + k : i, jj = horiz ? j : j + k; if (inb(ii, jj)) grid[idx(ii, jj)] = T_EMPTY; }
+  }
+  fillLots();
+}
+function fillLots() {
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const k = idx(i, j); if (grid[k] === T_ROAD) continue;
+    if (grid[k] !== T_EMPTY) continue;
+    const nearRoad = DIRS.some(([dx, dz]) => inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD);
+    if (nearRoad) grid[k] = rnd() < 0.78 ? T_LOT : T_PARK;
+    else grid[k] = rnd() < 0.5 ? T_PARK : T_EMPTY;
+  }
+}
+
+// ---------------------------------------------------------------- renderer + scene
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fc3e8);
+scene.fog = new THREE.Fog(0x9fc3e8, 260, 520);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 1200);
+camera.position.set(90, 110, 120);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0); controls.maxPolarAngle = Math.PI * 0.49; controls.enableDamping = true;
+
+const hemi = new THREE.HemisphereLight(0xdfeeff, 0x6b7a55, 0.9); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff2dc, 2.2);
+sun.position.set(-90, 140, 60); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const sc = sun.shadow.camera; sc.left = sc.bottom = -130; sc.right = sc.top = 130; sc.near = 20; sc.far = 400;
+sun.shadow.bias = -0.0008;
+scene.add(sun);
+const nightU = uniform(0);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(W * CELL + 400, H * CELL + 400), new MeshStandardNodeMaterial({ color: 0x6f9d5a, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+// instanced pools: static ones rebuilt on every edit, cars every frame
+const MAX_CARS = 600, MAX_STATIC = W * H;
+function pool(geo, mat, count, shadow = true) {
+  const m = new THREE.InstancedMesh(geo, mat, count);
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.castShadow = shadow; m.receiveShadow = true; m.count = 0; m.frustumCulled = false;
+  scene.add(m); return m;
+}
+const flat = new THREE.PlaneGeometry(1, 1); flat.rotateX(-Math.PI / 2);
+const roadMesh = pool(flat, new MeshStandardNodeMaterial({ color: 0x3a3d43, roughness: 0.95 }), MAX_STATIC * 2, false);
+const pavementMesh = pool(flat, new MeshStandardNodeMaterial({ color: 0xb9b6ad, roughness: 1 }), MAX_STATIC * 2, false);
+const dashMesh = pool(flat, new MeshStandardNodeMaterial({ color: 0xe6dfa8, roughness: 0.9 }), MAX_STATIC * 3, false);
+const stopMesh = pool(flat, new MeshStandardNodeMaterial({ color: 0xf0f0f0, roughness: 0.9 }), MAX_STATIC * 12, false);
+
+const boxUp = new THREE.BoxGeometry(1, 1, 1); boxUp.translate(0, 0.5, 0);
+const bldMat = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.05 });
+{
+  // window grid keyed off world position so rows follow floors, masked to the four walls
+  const FLOOR = 3.0, BAY = 2.2;
+  const wall = float(1).sub(abs(normalWorld.y));
+  const u = mix(positionWorld.x, positionWorld.z, abs(normalWorld.x));
+  const fy = fract(positionWorld.y.div(FLOOR)), fu = fract(u.div(BAY));
+  const win = smoothstep(0.30, 0.34, fy).mul(smoothstep(0.86, 0.82, fy)).mul(smoothstep(0.22, 0.26, fu)).mul(smoothstep(0.78, 0.74, fu)).mul(wall);
+  const cellId = floor(positionWorld.y.div(FLOOR)).mul(97).add(floor(u.div(BAY)).mul(13)).add(float(instanceIndex).mul(0.37)).add(9000);
+  const lit = step(0.45, hash(cellId));
+  bldMat.colorNode = mix(vec3(1), vec3(0.28, 0.34, 0.42), win.mul(0.85));
+  bldMat.emissiveNode = vec3(1.0, 0.82, 0.55).mul(win).mul(lit).mul(nightU).mul(1.6);
+  bldMat.roughnessNode = mix(float(0.75), float(0.25), win);
+}
+const bldMesh = pool(boxUp, bldMat, MAX_STATIC);
+const roofMesh = pool(boxUp, new MeshStandardNodeMaterial({ color: 0x8b8f96, roughness: 0.9 }), MAX_STATIC);
+const trunkMesh = pool(new THREE.CylinderGeometry(0.18, 0.28, 1, 6).translate(0, 0.5, 0), new MeshStandardNodeMaterial({ color: 0x5c4630, roughness: 1 }), MAX_STATIC * 3);
+const canopyMesh = pool(new THREE.IcosahedronGeometry(1, 1), new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true }), MAX_STATIC * 3);
+const carBody = new THREE.BoxGeometry(1.8, 0.7, 4.0); carBody.translate(0, 0.55, 0);
+const carCab = new THREE.BoxGeometry(1.6, 0.6, 2.0); carCab.translate(0, 1.15, -0.2);
+const carMat = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.3 });
+{ // head + tail lights carved out of the body box in local space, lit at night
+  const p = positionLocal;
+  const lampX = smoothstep(0.35, 0.4, abs(p.x)).mul(smoothstep(0.85, 0.8, abs(p.x)));
+  const lampY = smoothstep(0.5, 0.55, p.y).mul(smoothstep(0.75, 0.7, p.y));
+  const front = step(1.95, p.z), back = step(1.95, p.z.negate());
+  const head = lampX.mul(lampY).mul(front), tail = lampX.mul(lampY).mul(back);
+  carMat.emissiveNode = vec3(1.0, 0.95, 0.8).mul(head).mul(nightU).mul(2.5).add(vec3(1.0, 0.1, 0.05).mul(tail).mul(nightU.mul(0.7).add(0.3)));
+  carMat.colorNode = mix(vec3(1), vec3(0.9, 0.9, 0.85), head).mul(mix(vec3(1), vec3(0.6, 0.05, 0.05), tail));
+}
+const carMesh = pool(carBody, carMat, MAX_CARS);
+const cabMesh = pool(carCab, new MeshStandardNodeMaterial({ color: 0x1c2430, roughness: 0.2, metalness: 0.4 }), MAX_CARS);
+const pedGeo = new THREE.CapsuleGeometry(0.22, 0.95, 3, 8); pedGeo.translate(0, 0.7, 0);
+const pedMesh = pool(pedGeo, new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.8 }), 800);
+const lampMesh = pool(new THREE.SphereGeometry(0.35, 8, 6), new MeshBasicNodeMaterial({ color: 0xffffff }), MAX_STATIC * 4, false);
+const poleMesh = pool(new THREE.CylinderGeometry(0.1, 0.1, 1, 6).translate(0, 0.5, 0), new MeshStandardNodeMaterial({ color: 0x333, roughness: 0.8 }), MAX_STATIC * 4, false);
+const carColors = [0xd94b3b, 0xe8e6df, 0x2c3e66, 0x2f2f33, 0xd6a53a, 0x4d8b5a, 0x8ab7d8, 0x9c5db0, 0xf0f0f0, 0x666a70];
+
+const selBox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0x77c8a1, wireframe: true }));
+selBox.visible = false; scene.add(selBox);
+const laneLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 12 }, () => new THREE.Vector3())), new THREE.LineBasicMaterial({ color: 0xffc857 }));
+laneLine.visible = false; scene.add(laneLine);
+
+// ---------------------------------------------------------------- static city build (roads, lots, parks -> entities + instances)
+const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), S = new THREE.Vector3(), C = new THREE.Color();
+const YUP = new THREE.Vector3(0, 1, 0);
+const bldByInstance = [], carByInstance = [], pedByInstance = [];
+
+function computeRoadGraph() {
+  roadMask.fill(0);
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    if (grid[idx(i, j)] !== T_ROAD) continue;
+    let m = 0;
+    DIRS.forEach(([dx, dz], d) => { if (inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD) m |= 1 << d; });
+    roadMask[idx(i, j)] = m;
+  }
+}
+const popcount = m => ((m & 1) + (m >> 1 & 1) + (m >> 2 & 1) + (m >> 3 & 1));
+
+function rebuildStatic() {
+  // drop every static entity, then recreate from the grid
+  for (const type of ['RoadTile', 'Building', 'Tree', 'TrafficLight', 'Park']) for (const id of [...world.store(type).keys()]) world.destroy(id);
+  cellEntity.fill(0); lightAt.fill(0); lotInstance.fill(-1); roadInstances.fill(-1); lampSlots.length = 0; lotWeightsDirty = true;
+  computeRoadGraph();
+  roadCells = []; for (let k = 0; k < W * H; k++) if (grid[k] === T_ROAD && roadMask[k]) roadCells.push(k);
+  let nRoad = 0, nPave = 0, nDash = 0, nStop = 0, nBld = 0, nTree = 0, nLamp = 0;
+  bldByInstance.length = 0;
+  const lightPhase = [];
+  seed = 7;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const k = idx(i, j), t = grid[k], x = cx(i), z = cz(j);
+    if (t === T_ROAD) {
+      const m = roadMask[k], links = popcount(m);
+      const id = world.create(`Road ${i},${j}`);
+      world.add(id, 'Transform', { x, y: 0, z, yaw: 0 });
+      world.add(id, 'RoadTile', { i, j, links, north: !!(m & 1), east: !!(m & 2), south: !!(m & 4), west: !!(m & 8), intersection: links >= 3 });
+      cellEntity[k] = id;
+      M.compose(V.set(x, 0.015, z), Q.identity(), S.set(CELL, 1, CELL)); pavementMesh.setMatrixAt(nPave++, M);
+      // asphalt: a strip per axis so the pavement shows on the corners of bends and the sides of straights
+      roadInstances[k] = nRoad;
+      if (m & 5 || !m) { M.compose(V.set(x, 0.02, z), Q.identity(), S.set(ROADW, 1, (m & 1 ? CELL / 2 : ROADW / 2) + (m & 4 ? CELL / 2 : ROADW / 2))); M.elements[14] = z + ((m & 4 ? CELL / 2 : ROADW / 2) - (m & 1 ? CELL / 2 : ROADW / 2)) / 2; roadMesh.setMatrixAt(nRoad++, M); }
+      if (m & 10) { M.compose(V.set(x, 0.02, z), Q.identity(), S.set((m & 8 ? CELL / 2 : ROADW / 2) + (m & 2 ? CELL / 2 : ROADW / 2), 1, ROADW)); M.elements[12] = x + ((m & 2 ? CELL / 2 : ROADW / 2) - (m & 8 ? CELL / 2 : ROADW / 2)) / 2; roadMesh.setMatrixAt(nRoad++, M); }
+      // centre dashes on straight runs, one stop line per approach into an intersection
+      const ns = (m & 5) === 5 && !(m & 10), ew = (m & 10) === 10 && !(m & 5);
+      if (ns || ew) for (let d = -1; d <= 1; d++) {
+        const px = ew ? x + d * CELL / 3 : x, pz = ns ? z + d * CELL / 3 : z;
+        M.compose(V.set(px, 0.03, pz), Q.identity(), S.set(ew ? 1.4 : 0.18, 1, ns ? 1.4 : 0.18)); dashMesh.setMatrixAt(nDash++, M);
+      }
+      if (links >= 3) {
+        const lid = world.create(`Light ${i},${j}`);
+        world.add(lid, 'Transform', { x, y: 0, z, yaw: 0 });
+        world.add(lid, 'TrafficLight', { cell: k, phase: 0, timer: rnd() * 6, nsGreen: true, ewGreen: false });
+        lightAt[k] = lid; lightPhase.push(lid);
+        DIRS.forEach(([dx, dz], d) => {
+          if (!(m & (1 << d))) return;
+          // stop line on the neighbour cell's edge for traffic heading INTO this cell (that traffic drives on its right lane)
+          const r = DIRS[(d + 1) & 3];
+          const px = x + dx * CELL * 0.5 + dx * 0.6 - r[0] * LANE, pz = z + dz * CELL * 0.5 + dz * 0.6 - r[1] * LANE;
+          M.compose(V.set(px, 0.03, pz), Q.identity(), S.set(dx ? 0.35 : ROADW * 0.48, 1, dz ? 0.35 : ROADW * 0.48)); stopMesh.setMatrixAt(nStop++, M);
+          // zebra crossing just inside the intersection on that side
+          for (let b = -3; b <= 3; b++) {
+            const wx = x + dx * SIDE + r[0] * b * 0.85, wz = z + dz * SIDE + r[1] * b * 0.85;
+            M.compose(V.set(wx, 0.03, wz), Q.identity(), S.set(dx ? 0.8 : 0.45, 1, dz ? 0.8 : 0.45)); stopMesh.setMatrixAt(nStop++, M);
+          }
+          // lamp on the near-right corner for that approach
+          const lx = x + dx * CELL * 0.46 - r[0] * CELL * 0.46, lz = z + dz * CELL * 0.46 - r[1] * CELL * 0.46;
+          M.compose(V.set(lx, 0, lz), Q.identity(), S.set(1, 4.2, 1)); poleMesh.setMatrixAt(nLamp, M);
+          M.compose(V.set(lx, 4.4, lz), Q.identity(), S.set(1, 1, 1)); lampMesh.setMatrixAt(nLamp, M);
+          lampMesh.setColorAt(nLamp, C.set(0x444444));
+          lampSlots.push({ id: lid, axis: d & 1, slot: nLamp }); nLamp++;
+        });
+      }
+    } else if (t === T_LOT) {
+      if (!lots[k]) lots[k] = makeLot(i, j);
+      const L = lots[k];
+      M.compose(V.set(x, 0.015, z), Q.identity(), S.set(CELL, 1, CELL)); pavementMesh.setMatrixAt(nPave++, M);
+      const id = world.create('');
+      world.add(id, 'Transform', { x, y: 0, z, yaw: 0 });
+      world.add(id, 'Building', { kind: '', floors: 0, cap: L.cap, height: 0, footprint: `${L.fx.toFixed(1)}×${L.fz.toFixed(1)}`, occupants: 0, roadAccess: false, age: 0 });
+      world.add(id, 'Renderable', { mesh: 'buildings', instance: nBld });
+      cellEntity[k] = id; lotInstance[k] = nBld; bldByInstance[nBld] = id; nBld++;
+      writeBuilding(k);
+    } else if (t === T_PARK) {
+      if (!parks[k]) parks[k] = makePark(i, j);
+      const id = world.create(`Park ${i},${j}`);
+      world.add(id, 'Transform', { x, y: 0, z, yaw: 0 });
+      world.add(id, 'Park', { trees: parks[k].length });
+      cellEntity[k] = id;
+      parks[k].forEach((tr, q) => {
+        const tx = x + tr.dx, tz = z + tr.dz;
+        const tid = world.create(`Tree ${i},${j}${parks[k].length > 1 ? String.fromCharCode(97 + q) : ''}`);
+        world.add(tid, 'Transform', { x: tx, y: 0, z: tz, yaw: 0 });
+        world.add(tid, 'Tree', { height: +(tr.th + tr.cr).toFixed(1), canopy: +tr.cr.toFixed(1), species: tr.species });
+        M.compose(V.set(tx, 0, tz), Q.identity(), S.set(1, tr.th, 1)); trunkMesh.setMatrixAt(nTree, M);
+        M.compose(V.set(tx, tr.th + tr.cr * 0.6, tz), Q.identity(), S.set(tr.cr, tr.cr * 1.1, tr.cr)); canopyMesh.setMatrixAt(nTree, M);
+        canopyMesh.setColorAt(nTree, C.setHSL(tr.hue, 0.5, tr.light)); nTree++;
+      });
+    }
+  }
+  roadMesh.count = nRoad; pavementMesh.count = nPave; dashMesh.count = nDash; stopMesh.count = nStop;
+  bldMesh.count = nBld; roofMesh.count = nBld; trunkMesh.count = nTree; canopyMesh.count = nTree; lampMesh.count = nLamp; poleMesh.count = nLamp;
+  for (const m of [roadMesh, pavementMesh, dashMesh, stopMesh, bldMesh, roofMesh, trunkMesh, canopyMesh, lampMesh, poleMesh]) {
+    m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  }
+  // cars standing on removed road are recycled
+  for (const id of [...world.query('Vehicle')]) { const v = world.get(id, 'Vehicle'); if (grid[v.cell] !== T_ROAD || !roadMask[v.cell] || (v.next >= 0 && grid[v.next] !== T_ROAD)) respawnCar(id); }
+  refreshFilterOptions();
+}
+let lampSlots = [];
+let roadCells = [];
+// push one lot's persistent data into its entity + instance (used by rebuild, growth, and inspector edits)
+function writeBuilding(k) {
+  const L = lots[k], id = cellEntity[k], inst = lotInstance[k]; if (!L || !id || inst < 0) return;
+  const i = k % W, j = (k / W) | 0, x = cx(i), z = cz(j);
+  L.floors = Math.max(1, Math.min(L.cap, Math.round(L.floors)));
+  const kind = kindOf(L.floors), h = L.floors * 3;
+  const nearRoad = DIRS.some(([dx, dz]) => inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD);
+  world.get(id, 'Name').name = `${kind[0].toUpperCase() + kind.slice(1)} ${i},${j}`;
+  Object.assign(world.get(id, 'Building'), { kind, floors: L.floors, cap: L.cap, height: h, occupants: L.floors * (kind === 'office' ? 24 : kind === 'residential' ? 6 : 3), roadAccess: nearRoad, age: Math.round(L.age) });
+  const pal = PAL[kind];
+  C.setRGB(pal[0] + L.tint[0], pal[1] + L.tint[1], pal[2] + L.tint[2]);
+  M.compose(V.set(x, 0, z), Q.identity(), S.set(L.fx, h, L.fz)); bldMesh.setMatrixAt(inst, M); bldMesh.setColorAt(inst, C);
+  M.compose(V.set(x, h, z), Q.identity(), S.set(L.fx * 0.9, L.roofH, L.fz * 0.9)); roofMesh.setMatrixAt(inst, M);
+  bldMesh.instanceMatrix.needsUpdate = roofMesh.instanceMatrix.needsUpdate = true; if (bldMesh.instanceColor) bldMesh.instanceColor.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- traffic
+const P0 = new THREE.Vector2(), P1 = new THREE.Vector2(), P2 = new THREE.Vector2();
+function lanePath(cellK, d, e, out, off = LANE) {
+  // entry: middle of the edge behind us on our right-hand lane; exit: the edge ahead on the exit lane
+  const i = cellK % W, j = (cellK / W) | 0, x = cx(i), z = cz(j), h = CELL / 2;
+  const D = DIRS[d], E = DIRS[e], R = DIRS[(d + 1) & 3], RE = DIRS[(e + 1) & 3];
+  out.p0.set(x - D[0] * h + R[0] * off, z - D[1] * h + R[1] * off);
+  out.p2.set(x + E[0] * h + RE[0] * off, z + E[1] * h + RE[1] * off);
+  if (d === e) out.p1.set(x + R[0] * off, z + R[1] * off);
+  else out.p1.set(x + R[0] * off + RE[0] * off, z + R[1] * off + RE[1] * off);
+  // arc length by sampling
+  let len = 0; P0.copy(out.p0);
+  for (let s = 1; s <= 8; s++) { bez(out, s / 8, P1); len += P1.distanceTo(P0); P0.copy(P1); }
+  out.len = len;
+}
+function bez(p, t, o) {
+  const a = (1 - t) * (1 - t), b = 2 * (1 - t) * t, c = t * t;
+  o.set(a * p.p0.x + b * p.p1.x + c * p.p2.x, a * p.p0.y + b * p.p1.y + c * p.p2.y); return o;
+}
+function chooseExit(cellK, d) {
+  const m = roadMask[cellK], opts = [];
+  for (let e = 0; e < 4; e++) if (m & (1 << e) && e !== ((d + 2) & 3)) opts.push(e);
+  if (!opts.length) return (d + 2) & 3;                       // dead end: U-turn
+  if (opts.includes(d) && rnd() < 0.55) return d;             // prefer straight
+  return opts[Math.floor(rnd() * opts.length)];
+}
+function placeCar(id, cellK) {
+  const v = world.get(id, 'Vehicle');
+  const m = roadMask[cellK]; const dirs = []; for (let d = 0; d < 4; d++) if (m & (1 << d)) dirs.push(d);
+  const d = dirs[Math.floor(rnd() * dirs.length)];
+  v.cell = cellK; v.dir = d; v.exit = chooseExit(cellK, d); v.t = rnd() * 0.6; v.speed = 0;
+  const [dx, dz] = DIRS[v.exit]; const i = cellK % W, j = (cellK / W) | 0;
+  v.next = inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD ? idx(i + dx, j + dz) : -1;
+  lanePath(cellK, v.dir, v.exit, v.path);
+}
+function respawnCar(id) { if (roadCells.length) { placeCar(id, roadCells[Math.floor(rnd() * roadCells.length)]); const v = world.get(id, 'Vehicle'); v.state = 'driving'; v.route = null; v.arriving = false; if (v.next >= 0) planTrip(id, v.next, v.cell); } }
+// pick a destination building (weighted by occupants) and BFS a route to the road cell beside it
+let lotWeights = [], lotWeightTotal = 0, lotWeightsDirty = true;
+function refreshLotWeights() {
+  lotWeights = []; lotWeightTotal = 0;
+  for (let k = 0; k < W * H; k++) if (lots[k] && cellEntity[k] && roadBeside(k) >= 0) { const w = 1 + (world.get(cellEntity[k], 'Building')?.occupants || 0) / 10; lotWeightTotal += w; lotWeights.push([k, lotWeightTotal]); }
+  lotWeightsDirty = false;
+}
+function pickLot() {
+  if (lotWeightsDirty) refreshLotWeights();
+  if (!lotWeights.length) return -1;
+  const r = rnd() * lotWeightTotal; let lo = 0, hi = lotWeights.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (lotWeights[mid][1] < r) lo = mid + 1; else hi = mid; }
+  return lotWeights[lo][0];
+}
+function planTrip(id, fromCell, block = -1) {
+  const v = world.get(id, 'Vehicle');
+  for (let tries = 0; tries < 6; tries++) {
+    const dest = pickLot(); if (dest < 0) break;
+    const goal = roadBeside(dest); if (goal === fromCell) continue;
+    const route = bfsPath(fromCell, goal, block) || bfsPath(fromCell, goal); if (!route || route.length < 2) continue;
+    v.route = route; v.step = fromCell === v.cell ? 0 : -1; v.dest = dest; v.destName = world.get(cellEntity[dest], 'Name').name; return true;
+  }
+  v.route = null; v.dest = -1; v.destName = ''; return false;
+}
+function spawnCar() {
+  const id = world.create(`Car #${id_counter++}`);
+  world.add(id, 'Transform', { x: 0, y: 0, z: 0, yaw: 0 });
+  world.add(id, 'Vehicle', { cell: 0, next: -1, dir: 0, exit: 0, t: 0, speed: 0, maxSpeed: 7 + rnd() * 5, state: 'driving', dest: -1, destName: '', trips: 0, parkedFor: 0, arriving: false, waited: 0, route: null, step: 0, path: { p0: new THREE.Vector2(), p1: new THREE.Vector2(), p2: new THREE.Vector2(), len: CELL } });
+  world.add(id, 'Renderable', { mesh: 'cars', instance: -1 });
+  world.add(id, 'Color', { hex: '#' + carColors[Math.floor(rnd() * carColors.length)].toString(16).padStart(6, '0') });
+  respawnCar(id); return id;
+}
+let id_counter = 1;
+function setCarCount(n) {
+  const cars = [...world.query('Vehicle')];
+  while (cars.length < n && roadCells.length) cars.push(spawnCar());
+  while (cars.length > n) world.destroy(cars.pop());
+}
+
+// ---------------------------------------------------------------- pedestrians
+const MAX_PEDS = 800;
+const pedColors = [0xe0b090, 0x8ab7d8, 0xd94b3b, 0x4d8b5a, 0xf0e6c8, 0x9c5db0, 0x2c3e66, 0xffc857];
+function bfsPath(from, to, block = -1) {
+  if (from === to) return [from];
+  const prev = new Int32Array(W * H).fill(-1); prev[from] = from; if (block >= 0 && block !== to) prev[block] = block;
+  const q = [from]; let qi = 0;
+  while (qi < q.length) {
+    const c = q[qi++], i = c % W, j = (c / W) | 0, m = roadMask[c];
+    for (let d = 0; d < 4; d++) {
+      if (!(m & (1 << d))) continue;
+      const n = idx(i + DIRS[d][0], j + DIRS[d][1]); if (prev[n] >= 0) continue;
+      prev[n] = c; if (n === to) { const path = [to]; let x = to; while (x !== from) { x = prev[x]; path.push(x); } return path.reverse(); }
+      q.push(n);
+    }
+  }
+  return null;
+}
+function roadBeside(k) { const i = k % W, j = (k / W) | 0; for (const [dx, dz] of DIRS) if (inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD && roadMask[idx(i + dx, j + dz)]) return idx(i + dx, j + dz); return -1; }
+function pickDest(id, fromCell) {
+  const P = world.get(id, 'Pedestrian');
+  const lotsWithRoad = []; for (let k = 0; k < W * H; k++) if (lots[k] && cellEntity[k] && roadBeside(k) >= 0) lotsWithRoad.push(k);
+  for (let tries = 0; tries < 8 && lotsWithRoad.length; tries++) {
+    const dest = lotsWithRoad[Math.floor(rnd() * lotsWithRoad.length)], goal = roadBeside(dest);
+    const path = bfsPath(fromCell, goal); if (!path || path.length < 2) continue;
+    P.dest = dest; P.destName = world.get(cellEntity[dest], 'Name').name; P.path = path; P.step = 0; P.cell = path[0]; P.t = 0; P.speed = 0; P.state = 'walking';
+    P.dir = dirBetween(path[0], path[1]); P.exit = P.dir; P.next = path[1];
+    lanePath(P.cell, P.dir, P.exit, P.pathSeg, P.side * SIDE);
+    return true;
+  }
+  P.state = 'idle'; return false;
+}
+function dirBetween(a, b) { const dx = (b % W) - (a % W), dz = ((b / W) | 0) - ((a / W) | 0); return DIRS.findIndex(([x, z]) => x === dx && z === dz); }
+function spawnPed() {
+  const id = world.create(`Ped #${ped_counter++}`);
+  world.add(id, 'Transform', { x: 0, y: 0, z: 0, yaw: 0 });
+  world.add(id, 'Pedestrian', { state: 'idle', dest: -1, destName: '', cell: 0, next: -1, dir: 0, exit: 0, t: 0, speed: 0, maxSpeed: 1.1 + rnd() * 0.8, side: rnd() < 0.5 ? 1 : -1, visits: 0, waited: 0, insideFor: 0, path: null, step: 0, pathSeg: { p0: new THREE.Vector2(), p1: new THREE.Vector2(), p2: new THREE.Vector2(), len: CELL }, phase: rnd() * 6.28 });
+  world.add(id, 'Color', { hex: '#' + pedColors[Math.floor(rnd() * pedColors.length)].toString(16).padStart(6, '0') });
+  world.add(id, 'Renderable', { mesh: 'pedestrians', instance: -1 });
+  if (roadCells.length) pickDest(id, roadCells[Math.floor(rnd() * roadCells.length)]);
+  return id;
+}
+let ped_counter = 1;
+function setPedCount(n) {
+  const peds = [...world.query('Pedestrian')];
+  while (peds.length < n && roadCells.length) peds.push(spawnPed());
+  while (peds.length > n) world.destroy(peds.pop());
+}
+addSystem('Pedestrians', dt => {
+  stats.pedWalking = stats.pedInside = stats.pedWaiting = 0;
+  for (const id of world.query('Pedestrian')) {
+    const P = world.get(id, 'Pedestrian');
+    if (P.state === 'inside') { stats.pedInside++; P.insideFor -= dt; if (P.insideFor <= 0) { P.side = rnd() < 0.5 ? 1 : -1; pickDest(id, P.cell); } continue; }
+    if (P.state === 'idle') { if (roadCells.length) pickDest(id, roadCells[Math.floor(rnd() * roadCells.length)]); continue; }
+    // stale path after an edit: replan from here
+    if (grid[P.cell] !== T_ROAD || !roadMask[P.cell] || (P.next >= 0 && !(roadMask[P.cell] & (1 << P.exit)))) { P.state = 'idle'; continue; }
+    const last = P.step >= P.path.length - 1;
+    let target = P.maxSpeed, waiting = false;
+    if (!last && lightAt[P.next] && P.t < 0.9) {
+      // walk signal: pedestrians move with the parallel traffic
+      const L = world.get(lightAt[P.next], 'TrafficLight');
+      const green = (P.exit & 1) === 0 ? L.nsGreen : L.ewGreen;
+      if (!green) { target = Math.min(target, Math.sqrt(2 * 2 * Math.max(0, (0.9 - P.t) * P.pathSeg.len))); waiting = target < 0.2; }
+    }
+    if (last) target = Math.min(target, Math.sqrt(2 * 2 * Math.max(0, (0.5 - P.t) * P.pathSeg.len)));
+    P.speed += THREE.MathUtils.clamp(target - P.speed, -6 * dt, 3 * dt);
+    P.t += P.speed * dt / P.pathSeg.len;
+    if (waiting) stats.pedWaiting++; else stats.pedWalking++;
+    if (last && P.t >= 0.49) {
+      P.state = 'inside'; P.insideFor = 5 + rnd() * 20; P.visits++;
+      const B = world.get(cellEntity[P.dest], 'Building'); if (B) B.visitors = (B.visitors || 0) + 1;
+      continue;
+    }
+    if (!last && P.t >= 1) {
+      const over = (P.t - 1) * P.pathSeg.len;
+      P.step++; P.cell = P.path[P.step]; P.dir = P.exit;
+      const nextLast = P.step >= P.path.length - 1;
+      P.next = nextLast ? -1 : P.path[P.step + 1];
+      P.exit = nextLast ? P.dir : dirBetween(P.cell, P.next);
+      lanePath(P.cell, P.dir, P.exit, P.pathSeg, P.side * SIDE);
+      P.t = over / P.pathSeg.len;
+    }
+    const tr = world.get(id, 'Transform');
+    bez(P.pathSeg, P.t, P0); bez(P.pathSeg, Math.min(1, P.t + 0.02), P1);
+    tr.x = P0.x; tr.z = P0.y; tr.y = 0.02 + Math.abs(Math.sin(P.phase + performance.now() * 0.012 * Math.min(1, P.speed))) * 0.05; tr.yaw = Math.atan2(P1.x - P0.x, P1.y - P0.y);
+  }
+});
+
+const cellCars = Array.from({ length: W * H }, () => []);
+const stats = { moving: 0, stopped: 0, waitingLight: 0, parked: 0, tripsDone: 0, pedWalking: 0, pedInside: 0, pedWaiting: 0 };
+const congestion = new Float32Array(W * H);
+const roadInstances = new Int32Array(W * H).fill(-1);
+function paintCongestion() {
+  const on = congestionEl.checked;
+  for (let k = 0; k < W * H; k++) {
+    const a = roadInstances[k]; if (a < 0) continue;
+    const c = on ? congestion[k] : 0;
+    C.setRGB(1 + c * 1.2, 1 - c * 0.7, 1 - c * 0.85);
+    roadMesh.setColorAt(a, C); if (a + 1 < roadMesh.count && (roadMask[k] & 5 || !roadMask[k]) && roadMask[k] & 10) roadMesh.setColorAt(a + 1, C);
+  }
+  if (roadMesh.instanceColor) roadMesh.instanceColor.needsUpdate = true;
+}
+const growth = { timer: 0, newLot: 0, floorsAdded: 0, lotsAdded: 0 };
+addSystem('TrafficLights', dt => {
+  for (const id of world.query('TrafficLight')) {
+    const L = world.get(id, 'TrafficLight');
+    L.timer += dt;
+    // 0 NS green 7s, 1 NS yellow 2s, 2 all red 1s, 3 EW green 7s, 4 EW yellow 2s, 5 all red 1s
+    // adaptive: an empty green with a cross queue ends at 3s, a busier green holds up to 14s
+    const g = (mine, other) => !adaptiveEl.checked ? 7 : (mine === 0 && other > 0) ? 3 : mine > other ? 14 : 7;
+    const dur = [g(L.queueNS | 0, L.queueEW | 0), 2, 1, g(L.queueEW | 0, L.queueNS | 0), 2, 1];
+    L.mode = adaptiveEl.checked ? 'adaptive' : 'fixed';
+    while (L.timer >= dur[L.phase]) { L.timer -= dur[L.phase]; L.phase = (L.phase + 1) % 6; }
+    L.nsGreen = L.phase === 0; L.ewGreen = L.phase === 3;
+    L.nsYellow = L.phase === 1; L.ewYellow = L.phase === 4;
+  }
+});
+addSystem('Vehicles', dt => {
+  for (const c of cellCars) c.length = 0;
+  for (const id of world.query('Vehicle')) { const v = world.get(id, 'Vehicle'); if (v.state !== 'parked') cellCars[v.cell].push(v); }
+  for (const id of world.query('TrafficLight')) { const L = world.get(id, 'TrafficLight'); L.queueNS = 0; L.queueEW = 0; }
+  stats.moving = stats.stopped = stats.waitingLight = stats.parked = 0;
+  for (let k = 0; k < W * H; k++) congestion[k] *= 1 - 0.02 * dt * 60;
+  for (const id of world.query('Vehicle')) {
+    const v = world.get(id, 'Vehicle');
+    if (v.state === 'parked') {
+      // leave again once the lane beside the building is clear
+      stats.parked++; v.parkedFor -= dt; if (v.parkedFor > 0) continue;
+      if (!planTrip(id, v.cell)) { v.parkedFor = 3; continue; }
+      const dir = dirBetween(v.cell, v.route[1]);
+      let clear = true; for (const o of cellCars[v.cell]) if (o.dir === dir && Math.abs(o.t - 0.5) * o.path.len < 7) clear = false;
+      if (!clear) { v.parkedFor = 0.5; continue; }
+      v.state = 'driving'; v.dir = v.exit = dir; v.t = 0.5; v.speed = 0; v.arriving = false;
+      const [dx, dz] = DIRS[dir]; const i = v.cell % W, j = (v.cell / W) | 0; v.next = idx(i + dx, j + dz);
+      lanePath(v.cell, v.dir, v.exit, v.path);
+      cellCars[v.cell].push(v);
+    }
+    let target = v.maxSpeed, reason = 'driving';
+    if (v.arriving) { const s = Math.sqrt(2 * 9 * Math.max(0, (0.5 - v.t) * v.path.len)); if (s < target) { target = s; reason = 'parking'; } }
+    // gap to the car ahead: same cell same lane, or already in the next cell
+    let gap = Infinity;
+    for (const o of cellCars[v.cell]) if (o !== v && o.dir === v.dir && o.t > v.t) gap = Math.min(gap, (o.t - v.t) * v.path.len);
+    if (v.next >= 0) for (const o of cellCars[v.next]) {
+      const same = o.dir === v.exit;
+      if (same || o.t < 0.5) gap = Math.min(gap, (1 - v.t) * v.path.len + (same ? o.t * o.path.len : 0));
+    }
+    // speed you can still brake to a stop from over `dist` metres at 9 m/s²
+    const brake = dist => Math.sqrt(2 * 9 * Math.max(0, dist));
+    if (gap < 40) { const s = brake(gap - 5.5); if (s < target) { target = s; reason = 'queued'; } }
+    // traffic light on the next cell: hold at the stop line (t = 0.9) unless green for our axis
+    if (v.next >= 0 && lightAt[v.next] && v.t < 0.9) {
+      const L = world.get(lightAt[v.next], 'TrafficLight');
+      const green = (v.exit & 1) === 0 ? L.nsGreen : L.ewGreen;
+      const yellow = (v.exit & 1) === 0 ? L.nsYellow : L.ewYellow;
+      if (!green && !(yellow && v.t > 0.7)) { const s = brake((0.9 - v.t) * v.path.len); if (s < target) { target = s; reason = 'red light'; } if (v.t > 0.5) { if ((v.exit & 1) === 0) L.queueNS++; else L.queueEW++; } }
+    }
+    if (v.next < 0) { const s = brake((0.95 - v.t) * v.path.len); if (s < target) { target = s; reason = 'dead end'; } }
+    v.speed += THREE.MathUtils.clamp(target - v.speed, -14 * dt, 4 * dt);
+    if (v.speed < 0.02) v.speed = 0;
+    v.t += v.speed * dt / v.path.len;
+    v.state = v.speed > 0.3 ? 'driving' : reason;
+    if (v.speed > 0.3) stats.moving++; else { stats.stopped++; if (reason === 'red light') stats.waitingLight++; if (reason === 'queued') congestion[v.cell] = Math.min(1, congestion[v.cell] + 0.05 * dt * 60); }
+    v.waited = v.speed > 0.3 ? 0 : v.waited + dt;
+    if (v.waited > 25) { respawnCar(id); continue; }         // gridlock escape hatch
+    if (v.arriving && v.t >= 0.49) {
+      v.state = 'parked'; v.parkedFor = 6 + rnd() * 30; v.trips++; v.arriving = false; stats.tripsDone++;
+      const B = world.get(cellEntity[v.dest], 'Building'); if (B) B.trips = (B.trips || 0) + 1;
+      continue;
+    }
+    if (v.t >= 1) {
+      if (v.next < 0) { respawnCar(id); continue; }
+      const over = (v.t - 1) * v.path.len;
+      v.cell = v.next; v.dir = v.exit;
+      // follow the planned route while it still matches the road; otherwise wander
+      if (v.route) { v.step++; if (v.route[v.step] !== v.cell) { v.route = null; v.dest = -1; } }
+      if (v.route && v.step >= v.route.length - 1) { v.arriving = true; v.exit = (roadMask[v.cell] & (1 << v.dir)) ? v.dir : chooseExit(v.cell, v.dir); v.route = null; }
+      else if (v.route) { const e = dirBetween(v.cell, v.route[v.step + 1]); if (e >= 0 && (roadMask[v.cell] & (1 << e))) v.exit = e; else { v.route = null; v.dest = -1; v.exit = chooseExit(v.cell, v.dir); } }
+      else v.exit = chooseExit(v.cell, v.dir);
+      if (!v.route && !v.arriving && v.dest < 0) { const [ddx, ddz] = DIRS[v.exit]; const ni = v.cell % W + ddx, nj = ((v.cell / W) | 0) + ddz; if (inb(ni, nj) && grid[idx(ni, nj)] === T_ROAD) planTrip(id, idx(ni, nj), v.cell); }
+      const [dx, dz] = DIRS[v.exit]; const i = v.cell % W, j = (v.cell / W) | 0;
+      v.next = inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD ? idx(i + dx, j + dz) : -1;
+      lanePath(v.cell, v.dir, v.exit, v.path);
+      v.t = over / v.path.len;
+    }
+    const tr = world.get(id, 'Transform');
+    bez(v.path, v.t, P0); bez(v.path, Math.min(1, v.t + 0.02), P1);
+    tr.x = P0.x; tr.z = P0.y; tr.y = 0.05; tr.yaw = Math.atan2(P1.x - P0.x, P1.y - P0.y);
+  }
+});
+addSystem('Growth', dt => {
+  if (!growthEl.checked || dt <= 0) return;
+  growth.timer += dt; growth.newLot += dt;
+  for (let k = 0; k < W * H; k++) if (lots[k]) { lots[k].age += dt; if (cellEntity[k] === selected) world.get(selected, 'Building').age = Math.round(lots[k].age); }
+  while (growth.timer >= 0.5) {
+    growth.timer -= 0.5;
+    // a few random lots with road access add a floor; demand is the fraction of cars currently moving
+    const demand = 0.15 + 0.5 * (stats.moving / Math.max(1, stats.moving + stats.stopped));
+    for (let n = 0; n < 6; n++) {
+      const k = Math.floor(rnd() * W * H); const L = lots[k]; if (!L || L.floors >= L.cap) continue;
+      const B = world.get(cellEntity[k], 'Building'); if (!B?.roadAccess) continue;
+      if (rnd() < demand) { L.floors++; growth.floorsAdded++; writeBuilding(k); lotWeightsDirty = true; }
+    }
+  }
+  if (growth.newLot >= 3) {
+    growth.newLot = 0;
+    // an empty cell beside a road becomes a new one-floor lot
+    const cands = [];
+    for (let k = 0; k < W * H; k++) if (grid[k] === T_EMPTY) { const i = k % W, j = (k / W) | 0; if (DIRS.some(([dx, dz]) => inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD)) cands.push(k); }
+    if (cands.length) { const k = cands[Math.floor(rnd() * cands.length)]; grid[k] = T_LOT; lots[k] = makeLot(k % W, (k / W) | 0, 1); growth.lotsAdded++; rebuildStatic(); }
+  }
+});
+addSystem('RenderSync', () => {
+  let n = 0; carByInstance.length = 0;
+  for (const id of world.query('Vehicle', 'Transform')) {
+    if (world.get(id, 'Vehicle').state === 'parked') continue;
+    const tr = world.get(id, 'Transform');
+    Q.setFromAxisAngle(YUP, tr.yaw);
+    M.compose(V.set(tr.x, tr.y, tr.z), Q, S.set(1, 1, 1));
+    carMesh.setMatrixAt(n, M); cabMesh.setMatrixAt(n, M);
+    carMesh.setColorAt(n, C.set(world.get(id, 'Color').hex));
+    world.get(id, 'Renderable').instance = n; carByInstance[n] = id; n++;
+  }
+  carMesh.count = cabMesh.count = n; carMesh.instanceMatrix.needsUpdate = cabMesh.instanceMatrix.needsUpdate = true;
+  let np = 0; pedByInstance.length = 0;
+  for (const id of world.query('Pedestrian', 'Transform')) {
+    const P = world.get(id, 'Pedestrian'); if (P.state !== 'walking') continue;
+    const tr = world.get(id, 'Transform');
+    Q.setFromAxisAngle(YUP, tr.yaw); M.compose(V.set(tr.x, tr.y, tr.z), Q, S.set(1, 1, 1));
+    pedMesh.setMatrixAt(np, M); pedMesh.setColorAt(np, C.set(world.get(id, 'Color').hex));
+    world.get(id, 'Renderable').instance = np; pedByInstance[np] = id; np++;
+  }
+  pedMesh.count = np; pedMesh.instanceMatrix.needsUpdate = true; if (pedMesh.instanceColor) pedMesh.instanceColor.needsUpdate = true;
+  if (carMesh.instanceColor) carMesh.instanceColor.needsUpdate = true;
+  for (const s of lampSlots) {
+    const L = world.get(s.id, 'TrafficLight'); if (!L) continue;
+    const g = s.axis === 0 ? L.nsGreen : L.ewGreen, y = s.axis === 0 ? L.nsYellow : L.ewYellow;
+    lampMesh.setColorAt(s.slot, C.set(g ? 0x35d96a : y ? 0xffc030 : 0xe83a3a));
+  }
+  if (lampMesh.instanceColor) lampMesh.instanceColor.needsUpdate = true;
+});
+
+// ---------------------------------------------------------------- UI: simulation sliders
+const sim = { cars: 160, peds: 240, timeScale: 1, night: 0 };
+const simRows = document.getElementById('simRows');
+function slider(key, label, min, max, step, onChange) {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label>${label}</label><output>${sim[key]}</output><input type="range" min="${min}" max="${max}" step="${step}" value="${sim[key]}">`;
+  const inp = row.querySelector('input'), out = row.querySelector('output');
+  inp.oninput = () => { sim[key] = +inp.value; out.textContent = inp.value; onChange?.(sim[key]); };
+  simRows.appendChild(row); return { input: inp, output: out, apply: onChange };
+}
+slider('cars', 'Cars', 0, MAX_CARS, 10, setCarCount);
+slider('peds', 'Pedestrians', 0, MAX_PEDS, 10, setPedCount);
+slider('timeScale', 'Time scale', 0, 4, 0.1);
+const nightSlider = slider('night', 'Night', 0, 1, 0.01, v => {
+  nightU.value = v; sun.intensity = 2.2 * (1 - v) + 0.15; hemi.intensity = 0.9 * (1 - v) + 0.12;
+  scene.background.setHex(0x9fc3e8).lerp(new THREE.Color(0x0b1020), v); scene.fog.color.copy(scene.background);
+  sun.color.setHex(0xfff2dc).lerp(new THREE.Color(0x8fa6ff), v);
+});
+const pauseEl = document.getElementById('pause'), showLanesEl = document.getElementById('showLanes');
+const adaptiveEl = document.getElementById('adaptive'), congestionEl = document.getElementById('congestion');
+const followEl = document.getElementById('follow'), growthEl = document.getElementById('growth'), cycleEl = document.getElementById('cycle');
+function setNight(v) { sim.night = v; nightSlider.input.value = v; nightSlider.output.textContent = v.toFixed(2); nightSlider.apply(v); }
+
+// ---------------------------------------------------------------- UI: tools + painting
+let tool = 'inspect';
+document.getElementById('tools').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || !b.dataset.tool) return;
+  tool = b.dataset.tool;
+  for (const x of document.querySelectorAll('#tools .btn')) x.classList.toggle('on', x.dataset.tool === tool);
+});
+function respawnAll() { setCarCount(0); setCarCount(sim.cars); setPedCount(0); setPedCount(sim.peds); selectEntity(0); }
+document.getElementById('regen').onclick = () => { seed = (Math.random() * 1e9) >>> 0; generateCity(); rebuildStatic(); respawnAll(); };
+document.getElementById('save').onclick = () => { localStorage.setItem('city-builder:save', JSON.stringify({ W, H, grid: [...grid], lots, parks })); };
+document.getElementById('load').onclick = () => {
+  const raw = localStorage.getItem('city-builder:save'); if (!raw) return;
+  const d = JSON.parse(raw); if (d.W !== W || d.H !== H) return;
+  grid.set(d.grid); for (let k = 0; k < W * H; k++) { lots[k] = d.lots[k]; parks[k] = d.parks[k]; }
+  rebuildStatic(); respawnAll();
+};
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), groundPlane = new THREE.Plane(YUP, 0), hitP = new THREE.Vector3();
+let painting = false, lastPaint = -1;
+function pickCell(ev) {
+  ndc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  if (!ray.ray.intersectPlane(groundPlane, hitP)) return -1;
+  const i = Math.floor(hitP.x / CELL + W / 2), j = Math.floor(hitP.z / CELL + H / 2);
+  return inb(i, j) ? idx(i, j) : -1;
+}
+function paint(k) {
+  if (k < 0 || k === lastPaint) return; lastPaint = k;
+  const before = grid[k];
+  if (tool === 'road') grid[k] = T_ROAD;
+  else if (tool === 'building') { grid[k] = T_LOT; lots[k] = makeLot(k % W, (k / W) | 0, 1); }
+  else if (tool === 'tree') grid[k] = T_PARK;
+  else if (tool === 'bulldoze') grid[k] = T_EMPTY;
+  if (grid[k] !== before) { if (grid[k] !== T_LOT) lots[k] = null; if (grid[k] !== T_PARK) parks[k] = null; rebuildStatic(); }
+}
+renderer.domElement.addEventListener('pointerdown', ev => {
+  if (ev.button !== 0) return;
+  if (tool === 'inspect') { pickEntity(ev); return; }
+  painting = true; controls.enabled = false; lastPaint = -1; paint(pickCell(ev));
+});
+window.addEventListener('pointermove', ev => { if (painting) paint(pickCell(ev)); });
+window.addEventListener('pointerup', () => { painting = false; controls.enabled = true; });
+function pickEntity(ev) {
+  ndc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObjects([carMesh, pedMesh, bldMesh, canopyMesh], false);
+  if (hits.length) {
+    const h = hits[0];
+    if (h.object === carMesh) return selectEntity(carByInstance[h.instanceId] || 0);
+    if (h.object === pedMesh) return selectEntity(pedByInstance[h.instanceId] || 0);
+    if (h.object === bldMesh) return selectEntity(bldByInstance[h.instanceId] || 0);
+  }
+  const k = pickCell(ev); selectEntity(k >= 0 ? cellEntity[k] : 0);
+}
+
+// ---------------------------------------------------------------- UI: inspector
+const filterEl = document.getElementById('filter'), searchEl = document.getElementById('search');
+const entitiesEl = document.getElementById('entities'), moreEl = document.getElementById('more'), selectedEl = document.getElementById('selected');
+let selected = 0, selSig = '';
+const EDITABLE = { Vehicle: true, Building: true, TrafficLight: true, Pedestrian: true, Tree: false, Transform: false };
+function applyEdit(id, type, key, value) {
+  const c = world.get(id, type); if (!c || !Number.isFinite(value)) return;
+  c[key] = value;
+  if (type === 'Building') { const k = cellEntity.indexOf(id); if (k >= 0 && lots[k]) { if (key === 'cap') lots[k].cap = Math.max(1, Math.round(value)); if (key === 'floors' || key === 'height') lots[k].floors = key === 'height' ? value / 3 : value; writeBuilding(k); } }
+  if (type === 'Vehicle' && key === 't') c.t = THREE.MathUtils.clamp(value, 0, 0.999);
+  if (type === 'TrafficLight' && key === 'phase') c.phase = ((Math.round(value) % 6) + 6) % 6;
+}
+function refreshFilterOptions() {
+  const cur = filterEl.value;
+  const types = [...world.stores.keys()].filter(t => t !== 'Name').sort();
+  filterEl.innerHTML = '<option value="">All components</option>' + types.map(t => `<option value="${t}"${t === cur ? ' selected' : ''}>${t}</option>`).join('');
+}
+function selectEntity(id) {
+  selected = world.entities.has(id) ? id : 0; listKey = ''; selSig = '';
+  for (const el of entitiesEl.children) el.classList.toggle('sel', +el.dataset.id === selected);
+  renderSelected();
+}
+let listKey = '';
+function renderList() {
+  const type = filterEl.value, q = searchEl.value.trim().toLowerCase();
+  const ids = type ? [...world.store(type).keys()] : [...world.entities];
+  const rows = [];
+  for (const id of ids) {
+    const nm = world.get(id, 'Name')?.name || ''; if (q && !nm.toLowerCase().includes(q)) continue;
+    rows.push(id); if (rows.length >= 250) break;
+  }
+  const key = type + '|' + q + '|' + rows.join(',');
+  if (key === listKey) return; listKey = key;
+  entitiesEl.innerHTML = rows.map(id => `<div class="ent${id === selected ? ' sel' : ''}" data-id="${id}"><span>${world.get(id, 'Name').name}</span><span class="id">#${id}</span></div>`).join('');
+  const total = type ? world.store(type).size : world.entities.size;
+  moreEl.textContent = rows.length < total && !q ? `Showing ${rows.length} of ${total}.` : `${rows.length} shown.`;
+}
+entitiesEl.addEventListener('click', e => { const el = e.target.closest('.ent'); if (el) selectEntity(+el.dataset.id); });
+filterEl.onchange = searchEl.oninput = () => { listKey = ''; renderList(); };
+function fmt(v) { return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : typeof v === 'boolean' ? (v ? 'yes' : 'no') : typeof v === 'object' ? '…' : String(v); }
+function renderSelected() {
+  if (selected && !world.entities.has(selected)) selected = 0;
+  if (!selected) { selectedEl.textContent = 'Nothing selected.'; selBox.visible = false; laneLine.visible = false; return; }
+  // build the DOM once per entity + field set; afterwards only refresh values, so inputs keep focus
+  const comps = world.components(selected).filter(([t]) => t !== 'Name');
+  const sig = selected + '|' + comps.map(([t, d]) => t + ':' + Object.keys(d).join(',')).join(';');
+  if (sig !== selSig) {
+    selSig = sig;
+    const parts = [`<div class="sub" style="margin:0 0 4px">Entity #${selected} — numbers are live-editable</div>`];
+    for (const [type, data] of comps) {
+      const kv = Object.entries(data).filter(([k]) => k !== 'path' && k !== 'pathSeg' && k !== 'route').map(([k, v]) =>
+        `<span>${k}</span>` + (typeof v === 'number' && EDITABLE[type] ? `<input type="number" step="any" data-c="${type}" data-k="${k}" value="${fmt(v)}">` : `<span data-c="${type}" data-k="${k}">${fmt(v)}</span>`)).join('');
+      parts.push(`<div class="comp"><b>${type}</b><div class="kv">${kv}</div></div>`);
+    }
+    selectedEl.innerHTML = parts.join('');
+    for (const inp of selectedEl.querySelectorAll('input')) inp.onchange = () => applyEdit(selected, inp.dataset.c, inp.dataset.k, +inp.value);
+  } else {
+    for (const el of selectedEl.querySelectorAll('[data-c]')) {
+      const v = world.get(selected, el.dataset.c)?.[el.dataset.k];
+      if (el.tagName === 'INPUT') { if (document.activeElement !== el) el.value = fmt(v); } else el.textContent = fmt(v);
+    }
+  }
+  const tr = world.get(selected, 'Transform');
+  if (tr) {
+    const b = world.get(selected, 'Building'), v = world.get(selected, 'Vehicle');
+    selBox.visible = true; selBox.position.set(tr.x, tr.y + (b ? b.height / 2 : v ? 0.9 : 1.5), tr.z);
+    selBox.scale.set(b ? CELL * 0.85 : v ? 2.4 : CELL * 0.9, b ? b.height : v ? 1.8 : 3, b ? CELL * 0.85 : v ? 4.6 : CELL * 0.9);
+    selBox.rotation.y = tr.yaw;
+    if (v && showLanesEl.checked) {
+      const pos = laneLine.geometry.attributes.position;
+      for (let s = 0; s < 12; s++) { bez(v.path, s / 11, P0); pos.setXYZ(s, P0.x, 0.3, P0.y); }
+      pos.needsUpdate = true; laneLine.visible = true;
+    } else laneLine.visible = false;
+  } else selBox.visible = false;
+}
+
+const bigEl = document.getElementById('big'), compTable = document.getElementById('compTable'), sysTable = document.getElementById('sysTable'), trafficTable = document.getElementById('trafficTable');
+let fps = 0, fpsAcc = 0, fpsN = 0;
+function renderStats() {
+  bigEl.innerHTML = `${world.entities.size}<small>live entities</small>`;
+  compTable.innerHTML = [...world.stores].filter(([t]) => t !== 'Name').sort((a, b) => b[1].size - a[1].size).map(([t, s]) => `<tr><td>${t}</td><td>${s.size}</td></tr>`).join('');
+  sysTable.innerHTML = systems.map(s => `<tr><td>${s.name}</td><td>${s.ms.toFixed(2)}</td></tr>`).join('') + `<tr><td>frame</td><td>${fps.toFixed(0)} fps</td></tr>`;
+  const lights = world.store('TrafficLight').size, roads = world.store('RoadTile').size;
+  trafficTable.innerHTML = `<tr><td>road tiles</td><td>${roads}</td></tr><tr><td>intersections</td><td>${lights}</td></tr><tr><td>cars driving</td><td>${stats.moving}</td></tr><tr><td>cars stopped</td><td>${stats.stopped}</td></tr><tr><td>at red lights</td><td>${stats.waitingLight}</td></tr><tr><td>cars parked</td><td>${stats.parked}</td></tr><tr><td>trips completed</td><td>${stats.tripsDone}</td></tr><tr><td>people walking</td><td>${stats.pedWalking}</td></tr><tr><td>people waiting to cross</td><td>${stats.pedWaiting}</td></tr><tr><td>people indoors</td><td>${stats.pedInside}</td></tr><tr><td>floors grown</td><td>${growth.floorsAdded}</td></tr><tr><td>lots developed</td><td>${growth.lotsAdded}</td></tr>`;
+}
+
+// ---------------------------------------------------------------- boot + loop
+generateCity(); rebuildStatic(); setCarCount(sim.cars); setPedCount(sim.peds); paintCongestion();
+let last = performance.now(), uiTimer = 0, cycleT = 0;
+renderer.setAnimationLoop(now => {
+  const dtRaw = Math.min(0.05, (now - last) / 1000); last = now;
+  const dt = pauseEl.checked ? 0 : dtRaw * sim.timeScale;
+  for (const s of systems) { const t0 = performance.now(); s.fn(dt); s.ms = s.ms * 0.9 + (performance.now() - t0) * 0.1; }
+  fpsAcc += dtRaw; fpsN++; if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
+  uiTimer += dtRaw;
+  if (uiTimer > 0.25) { uiTimer = 0; renderList(); renderStats(); paintCongestion(); }
+  if (selected) renderSelected();
+  if (cycleEl.checked && dt > 0) { cycleT += dt / 60; setNight(0.5 - 0.5 * Math.cos(cycleT * Math.PI * 2)); }
+  if (followEl.checked && selected) { const tr = world.get(selected, 'Transform'); if (tr) { V.set(tr.x, tr.y, tr.z).sub(controls.target); controls.target.add(V); camera.position.add(V); } }
+  controls.update();
+  renderer.render(scene, camera);
+});
+window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+</script>
+</body>
+</html>

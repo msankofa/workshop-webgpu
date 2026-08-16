@@ -8,7 +8,10 @@
 //   node test-flight-model.mjs
 
 import * as THREE from 'three';
-import { AIRFRAMES, G } from './flight-airframes.js';
+import {
+  AIRFRAMES, G, airframeKeys, validateAirframe, registerAirframe,
+} from './flight-airframes.js';
+import { buildCraftMesh } from './flight-meshes.js';
 import {
   makeFlyer, stepFlyer, syncAxes, resetFlyer,
   startWreck, stepWreck, killMakesWreck, WRECK,
@@ -266,6 +269,62 @@ console.log('\n--- 11. reset puts a craft back to a flyable state ---');
   ok('alive, level, fuelled and armed again',
     !f.dead && !f.crashed && !f.wreck && f.hp === f.af.hp && f.ammo > 0 && f.up.y > 0.99);
   ok('and above the ground it respawned over', agl(f.p) > 100, `${agl(f.p).toFixed(0)} m`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 12. the registry: a wrong airframe fails loudly, not silently ---');
+//
+// Every case here was previously a silent fallback. The point of the section is that adding a
+// fourth craft cannot produce something that flies while being the wrong aircraft.
+// ---------------------------------------------------------------------------
+{
+  for (const key of airframeKeys()) {
+    ok(`${key} is a complete descriptor`, validateAirframe(key, AIRFRAMES[key]).length === 0,
+      validateAirframe(key, AIRFRAMES[key]).join('; '));
+  }
+
+  let threw = false;
+  try { makeFlyer('helicopter', {}); } catch (e) { threw = /unknown airframe/.test(e.message); }
+  ok('an unregistered key throws instead of flying', threw);
+
+  threw = false;
+  try { buildCraftMesh('helicopter', 0xffffff, {}); } catch (e) { threw = /no craft mesh/.test(e.message); }
+  ok('and has no mesh to fall back to', threw);
+
+  // the four fields that used to have a silent per-key default
+  const base = () => JSON.parse(JSON.stringify(AIRFRAMES.plane));
+  for (const field of ['mesh', 'circuit', 'enginePitch', 'idleThrottle']) {
+    const def = base();
+    delete def[field];
+    ok(`a missing ${field} is caught`, validateAirframe('test', def).length > 0);
+  }
+
+  // a force generator the integrator does not implement produces no force at all, silently
+  const bogus = base(); bogus.thrust = 'ducted-fan';
+  ok('an unimplemented thrust type is rejected', validateAirframe('test', bogus).some((m) => /thrust/.test(m)));
+
+  // a tunable with no range row is a slider that never appears
+  const noRange = base(); noRange.tunables = [...noRange.tunables, 'hitRadius'];
+  ok('a tunable with no TUNE_RANGE row is caught',
+    validateAirframe('test', noRange).some((m) => /TUNE_RANGE/.test(m)));
+
+  // registering is the studio's entry point, so it has to reject the same things
+  threw = false;
+  try { registerAirframe('broken', { lift: 'wing' }); } catch (e) { threw = /cannot register/.test(e.message); }
+  ok('registerAirframe refuses an incomplete craft', threw);
+
+  // ...and accept a complete one, which is the actual goal of the whole pass
+  const glider = base();
+  Object.assign(glider, { label: 'Glider', mesh: 'plane', thrust: 'none', idleThrottle: 0, enginePitch: 0 });
+  delete glider.abThrust;
+  registerAirframe('glider', glider);
+  const g = makeFlyer('glider', {});
+  ok('a fourth airframe registers and flies', g.af.label === 'Glider' && g.throttle === 0);
+  const before = g.p.y;
+  for (let i = 0; i < 300; i++) stepFlyer(g, DT, true);
+  ok('and an engineless craft sinks rather than holding altitude', g.p.y < before,
+    `${(g.p.y - before).toFixed(0)} m in 5 s`);
+  delete AIRFRAMES.glider;
 }
 
 console.log(`\n${fails === 0 ? 'all checks passed' : fails + ' CHECK(S) FAILED'}`);

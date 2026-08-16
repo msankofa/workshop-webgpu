@@ -431,5 +431,107 @@ const inRect = (rc, x, z, margin = 0) =>
   }
 }
 
+// ---- the `site` hook: structures conform to imported ground instead of flattening pads ----
+{
+  const bounds = { minX: -60, maxX: 60, minZ: -60, maxZ: 60 };
+  const base = { seed: 11, count: 8, mix: 'mixed', wallHeight: 3 };
+
+  // A slope that rises with x, exactly as map-surfaces#footprintAt would report it.
+  const slopeSite = (cx, _cz, w) => ({ floorY: (cx + w / 2) * 0.05, skirtDepth: w * 0.05 });
+  const seated = generateStructures(bounds, { ...base, site: slopeSite }, []);
+
+  ok(seated.placed.length > 0, 'site hook still places structures');
+  ok(seated.pads.length === 0, 'pads are suppressed on imported ground');
+  ok(seated.placed.every(s => typeof s.floorY === 'number'), 'every placement reports its floor');
+  ok(seated.placed.every(s => typeof s.skirtDepth === 'number'), 'every placement reports its skirt');
+
+  // Geometry actually rides the seat: a structure on the high side sits above one on the low side.
+  const byX = [...seated.placed].sort((a, b) => a.x - b.x);
+  ok(byX[0].floorY < byX[byX.length - 1].floorY, 'floors follow the slope');
+  const hiWalls = seated.walls.filter(r => r.x > 30);
+  ok(hiWalls.length === 0 || hiWalls.every(r => r.y > 0), 'walls up-slope are lifted off y=0');
+
+  // A site that always refuses places nothing rather than dropping structures into a void.
+  const refused = generateStructures(bounds, { ...base, site: () => null }, []);
+  ok(refused.placed.length === 0, 'an unbuildable map places nothing');
+  ok(refused.walls.length === 0, 'and emits no geometry');
+
+  // Refusing SOME sites must not corrupt the rest: survivors still respect minSeparation.
+  const patchy = generateStructures(bounds, {
+    ...base, count: 12, site: (cx, cz, w, d) => (cx < 0 ? null : { floorY: 2, skirtDepth: 0 }),
+  }, []);
+  ok(patchy.placed.every(s => s.x >= 0), 'refused half of the map is respected');
+  ok(patchy.placed.every(s => s.floorY === 2), 'survivors carry the seat they were given');
+  let overlaps = 0;
+  for (let i = 0; i < patchy.placed.length; i++) {
+    for (let j = i + 1; j < patchy.placed.length; j++) {
+      const a = patchy.placed[i], b = patchy.placed[j];
+      if (Math.hypot(a.x - b.x, a.z - b.z) < a.radius + b.radius) overlaps++;
+    }
+  }
+  ok(overlaps === 0, 'partial refusal never produces overlapping structures');
+
+  // Without the hook nothing changes: same seed, same map, pads back on.
+  const plain = generateStructures(bounds, base, []);
+  ok(plain.pads.length > 0, 'pads still emitted when the ground is ours to shape');
+  ok(plain.walls.every(r => (r.y || 0) === 0), 'and no lift is applied');
+  ok(plain.foundations.length === 0, 'and no foundations without a seat');
+
+  // ---- foundations: the block that carries a seated structure down to grade ----
+  const bury = STRUCTURE_DEFAULTS.foundationBury;
+  ok(seated.foundations.length === seated.placed.length, 'one foundation per seated structure');
+
+  // The whole point: the foundation reaches from the floor down past the lowest ground sample, so
+  // nothing hangs in the air on the downhill side.
+  for (let i = 0; i < seated.placed.length; i++) {
+    const s = seated.placed[i], f = seated.foundations[i];
+    ok(Math.abs((f.y + f.h) - s.floorY) < 1e-9, 'foundation top meets the seated floor');
+    ok(Math.abs(f.h - (s.skirtDepth + bury)) < 1e-9, 'foundation spans the skirt plus the bury');
+    ok(f.y < s.floorY - s.skirtDepth, 'and sinks below the lowest sample');
+  }
+
+  // Flat ground still gets a foundation -- only the bury -- so a structure meets grade cleanly.
+  const flatSeated = generateStructures(bounds, {
+    ...base, site: () => ({ floorY: 5, skirtDepth: 0 }),
+  }, []);
+  ok(flatSeated.foundations.length > 0, 'flat ground still gets a foundation');
+  ok(flatSeated.foundations.every(f => Math.abs(f.h - bury) < 1e-9), 'sized by the bury alone');
+  ok(flatSeated.foundations.every(f => Math.abs((f.y + f.h) - 5) < 1e-9), 'topping out at the floor');
+
+  // Sized from the real XZ extent, not the radius circle: a foundation must cover its structure
+  // without ballooning to the diagonal of a long thin one.
+  for (const kind of ['buildings', 'colonnades', 'obstacles']) {
+    const one = generateStructures(bounds, {
+      seed: 3, count: 1, mix: kind, wallHeight: 3, site: () => ({ floorY: 0, skirtDepth: 0 }),
+    }, []);
+    if (!one.foundations.length) continue;
+    const f = one.foundations[0];
+    const rects = [...one.walls, ...one.covers, ...one.slabs];
+    ok(rects.every(r => r.x - r.w / 2 >= f.x - f.w / 2 - 1e-9 && r.x + r.w / 2 <= f.x + f.w / 2 + 1e-9),
+      `${kind}: foundation covers the structure in x`);
+    ok(rects.every(r => r.z - r.d / 2 >= f.z - f.d / 2 - 1e-9 && r.z + r.d / 2 <= f.z + f.d / 2 + 1e-9),
+      `${kind}: foundation covers the structure in z`);
+  }
+
+  // NOTE: a structure's declared `radius` under-reports its true XZ extent for several kinds --
+  // buildings 5.46 vs 5.24, obstacles 6.54 vs 6.00, colonnades 5.22 vs 3.84 -- because roof
+  // canopies and scattered cover push past the core shape the radius was measured from. The
+  // default minSeparation of 5 m absorbs it, so the invariant worth pinning is that foundations
+  // never actually collide, not that they fit inside the declared circle.
+  {
+    const dense = generateStructures(bounds, {
+      ...base, count: 14, site: () => ({ floorY: 0, skirtDepth: 0 }),
+    }, []);
+    let collisions = 0;
+    for (let i = 0; i < dense.foundations.length; i++) {
+      for (let j = i + 1; j < dense.foundations.length; j++) {
+        const a = dense.foundations[i], b = dense.foundations[j];
+        if (Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.z - b.z) < (a.d + b.d) / 2) collisions++;
+      }
+    }
+    ok(collisions === 0, `foundations never overlap each other (${collisions} collisions)`);
+  }
+}
+
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
 console.log('bot-structures: all assertions passed');

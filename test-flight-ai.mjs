@@ -13,6 +13,7 @@ import {
   SQUAD, PRESETS, OWN_CIRCUIT_BELOW,
 } from './flight-ai.js';
 import { agl } from './flight-terrain.js';
+import { airframeKeys, AIRFRAMES } from './flight-airframes.js';
 
 let fails = 0;
 const ok = (name, cond, detail) => {
@@ -26,7 +27,9 @@ const KEYS = Object.keys(SQUAD);
 // ---------------------------------------------------------------------------
 console.log('--- 1. each class flies its circuit for three minutes, unattended ---');
 // ---------------------------------------------------------------------------
-for (const key of ['plane', 'drone', 'bird']) {
+// Every REGISTERED airframe, not a literal list — a craft added to the table without being added
+// here is a craft whose three-minute unattended flight nobody ever ran.
+for (const key of airframeKeys()) {
   const f = makeAi(makeFlyer(key, { x: 0, z: 0 }), 1);
   offsetCircuit(f, 0, 0);
   const world = { flyers: [f], player: null, aiEngage: true };

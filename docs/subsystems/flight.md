@@ -9,13 +9,15 @@ and AI fly the same model.
 | `flight-airframes.js` | The three airframe tables, `RHO`, `G`, slider ranges | nothing |
 | `flight-model.js` | Rigid-body core, wreck integrator | three, airframes, terrain, combat |
 | `flight-ai.js` | Per-archetype steering, the opponent roster | three, airframes, terrain, combat |
-| `flight-combat.js` | Weapon tables, missile flight, gun lead, locking, threat warning | three, airframes |
+| `flight-combat.js` | Weapon tables, missile flight, gun lead, locking, threat warning, bomb ballistics and the impact predictor | three, airframes, terrain |
 | `flight-drones.js` | The three releasable mini drones | three, combat |
+| `flight-autopilot.js` | Player-selectable orbit for any airframe, on `steerToward` | three, ai, terrain |
 | `flight-meshes.js` | The three craft as groups; materials come from the caller | three |
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
 
 Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-ai.mjs`,
-`test-flight-combat.mjs`, `test-flight-drones.mjs`. Plain Node, no framework, per repo convention.
+`test-flight-combat.mjs`, `test-flight-drones.mjs`, `test-flight-autopilot.mjs`. Plain Node, no
+framework, per repo convention.
 
 The demo needs a server (`python serve.py`) because of the ES module imports, then
 `http://127.0.0.1:8080/demos/flight-sim.html`.
@@ -41,6 +43,41 @@ registry would plug into:
 - **`driveAi(f, dt, world)`** takes `world = { flyers, player, aiEngage }` rather than importing it.
 - **`stepWreck(f, dt)` returns `{fire, smoke, pop, landed}`** — the timers are physics, the puffs
   are not.
+
+## The airframe registry
+
+`AIRFRAMES` is a registry, not a literal. `getAirframe(key)` throws on an unknown key naming what is
+registered, `registerAirframe(key, def)` adds one at runtime after validating it, and
+`airframeKeys()` is what the airframe buttons and the AI test loop iterate.
+
+**Every per-class difference lives on the descriptor.** It did not use to, and that was the whole
+problem: the mesh builder, the AI patrol circuit, the engine tone and the starting throttle each
+carried their own `key === 'plane' ? … : key === 'drone' ? … : …` chain, and **every one of those
+chains ended on the bird's value with no error**. A fourth airframe flew a bird's 820 m circuit,
+rendered as a bird, held perfectly still because `poseMesh` named no branch for it, and made a
+plane's engine noise. Nothing threw. The four fields that ended it are `mesh`, `circuit`,
+`enginePitch` and `idleThrottle`; `armable` replaced a fifth chain, `if (f.afKey === 'bird')` inside
+`aiShoot`.
+
+`validateAirframe(key, def)` returns a list of complaints rather than throwing, so a studio can show
+them mid-edit while `registerAirframe` and `makeFlyer` treat them as fatal. It checks the required
+fields, the fields the craft's own `lift`/`thrust`/`control` reach, and — the one that is not
+obvious — that every `tunables` entry has a `TUNE_RANGE` row. A tunable without one used to vanish
+from the panel silently, which reads as "that field is not tunable" rather than "somebody forgot a
+row".
+
+Validation runs at **construction, never in the step loop**. An airframe missing a field its force
+generators read produces a NaN position one frame later, and a NaN is a far worse error message.
+
+Two dispatches are now keyed on capability rather than identity, and both got better for it:
+
+- `buildCraftMesh` is a `BUILDERS` lookup that throws. `registerCraftMesh(kind, fn)` adds one.
+- `poseMesh` reads what the mesh **exposes** — `userData.flame`, `.rotors`, `.wings` — so a new craft
+  with an exhaust gets exhaust animation for free, and a craft with both a flame and rotors gets
+  both. The key-shaped version could not express that at all.
+
+`thrust: 'none'` is a legal glider. It falls through the thrust chain deliberately; any *other*
+value would too, which is exactly why registration rejects it.
 
 ## One core, three airframes
 
@@ -208,8 +245,11 @@ Two triggers, two selectors, so neither hand leaves the stick to reach a weapon:
 
 | | Trigger | Selector | Carries |
 |---|---|---|---|
-| Offensive | `Space` / mouse 1 | `Left Alt` | gun, missile, kamikaze |
+| Offensive | `Space` / mouse 1 | `Left Alt` | gun, missile, bomb, heavy bomb, kamikaze |
 | Defensive | `C` / mouse 2 | `Right Alt` | flare, decoy, interceptor |
+
+Each entry carries **the call that fires it**. It used to be an `if (w === 'gun') … else if …` chain
+against literal keys, so every new weapon was a branch in a dispatcher rather than a row in a list.
 
 Selection is the **player's only**. The AI still calls `fireGun`/`fireMissile` directly, because
 which weapon is selected is a UI question and an AI that had to answer it would be modelling a menu.
@@ -225,9 +265,223 @@ the question asked immediately after something runs dry. Empty racks go red, uns
 The gun funnel only draws with the gun selected: it is a sight, and a sight for a weapon you are not
 about to fire is clutter.
 
+### The weapons panel and the active set
+
+The panel's **Weapons** section lists every offensive and defensive store plus each side mount, one
+row each: an **active** checkbox and −/+ steppers with a typed field for **ammo**, **damage** and
+**reload** (seconds; a gun's is `1/rps`, stored back as `rps`). The rows edit the SAME defs the fire
+paths read (`f.gun` / `GUNS`, `COMBAT.missileMax` + `COMBAT.msl.damage/cool`, `BOMBS[k].max/damage/cool`,
+`DRONE[k].max/damage/cool`, `COMBAT.flareMax` + `COMBAT.flare.cool`, a mount's `m.gun`), so a number
+typed there is the number that fires — and since those defs are shared, damage and reload change for
+every aircraft carrying the store; only ammo also refills the player on the spot. `COMBAT.msl.cool`
+and `COMBAT.flare.cool` exist because of this: the reloads used to be literals in `fireMissile` and
+`dropFlares`. Fields a store does not have (flare damage, decoy/interceptor damage) show as `—`.
+
+`weaponActive` is the player's set of what may fire. `defaultWeaponActive(f, key)` follows the
+aircraft: nothing on an unarmable craft, the gun only if `af.gun` names one, a mount if it exists,
+and everything else per `af.loadout` (a list of store keys; absent means everything — the AC-130
+declares `loadout: ['flare']`, so its racks are the side guns and flares). It resets when the airframe
+changes and the checkbox flips one entry. `fireSelected`/`deploySelected` refuse an inactive store,
+`cycleWeapon` skips them (`nextActive`), the HUD racks list them dim with `OFF`, the gun funnel and
+bomb pipper hide, and `gunnerMounts()` is the active subset (`activeMounts`) — take every side gun off
+and the gunner view drops back to chase. The AI is not consulted: it never had a menu, and a store the
+player took off is not a store the world lost. `validateAirframe` checks `loadout` is a list of strings.
+
 Restructuring the fire path surfaced a pre-existing defect: `fireGun` decremented `gunCool` itself
 *and* the per-flyer loop decremented it again, so a held trigger ran at 44 rounds per second against
 a table that says 22, and ammunition drained twice as fast as designed. Only the loop does it now.
+
+## Guns belong to the aircraft
+
+`GUNS` is a per-weapon table and a flyer carries its resolved def on `f.gun`, the way a bomb carries
+`b.def`. `gunFor(key)` throws on an unknown gun rather than quietly arming the default. An airframe
+that names no gun gets `cannon`, whose numbers are exactly the old `COMBAT.gun*` values, so nothing
+that has not opted in changes at all.
+
+| | cannon | GAU-8 |
+|---|---|---|
+| rate | 22 rps | 65 rps |
+| damage | 7 | 22 |
+| damage/s | 154 | **1,430** |
+| muzzle | 940 m/s | 1,010 m/s |
+| range | 2,400 m | 3,600 m |
+| magazine | 900 | 1,174 — eighteen seconds |
+
+A round carries its own damage, because at 65 a second it is still in the air long after the
+aircraft that fired it has been shot down.
+
+**A 65 rps gun broke a rule nothing had ever tested.** `fireGun` is called once a frame, so a gun
+could never exceed the frame rate — 22 was safely under 60 and nobody noticed. A 65 rps cannon would
+have fired at 60 on a good machine and 30 on a bad one: a weapon whose damage output depends on the
+player's graphics card. The cooldown is now **accumulated rather than reset**, so several rounds
+leave per call and the rate is exact at any frame length. The debt is bounded at both ends — a
+`MAX_BURST` of 6, and a floor on the per-frame decrement — or a trigger pulled after a long pause
+would dump the whole backlog in one frame. The decrement itself still lives only in the flyer loop;
+doing it in both places is what once ran the gun at 44 rps against a table that said 22.
+
+Two consequences worth knowing. The bullet pool went from 320 to **768**, because a 65 rps gun
+reaching 3.6 km keeps 232 rounds in the air by itself and would otherwise starve every other
+shooter. And the gunshot plays once per call rather than once per round, since sixty-five of them a
+second is not a sound.
+
+`applyAimAssist` and `aiShoot` both read the shooter's own gun now — a faster shell needs less lead,
+and a cannon that carries 3,600 m should not hold fire at the 900 where the light gun gave up.
+
+Still global: **one missile for everybody.** `stepMissile` reads `COMBAT.msl` inside itself and the
+12-slot pool has no per-slot def, so two different missiles on one aircraft is a state-shape change
+rather than a table entry. Guns and bombs are the pattern it has to follow.
+
+### Mounts: guns that are not in the nose
+
+A gunship shoots out of its side, at a point on the ground, from a platform that is itself moving,
+with shells slow enough to drop a hundred metres on the way. None of that fits `fireGun`, which
+takes `f.fwd` as gospel, so mounts are a second shape beside it rather than a flag on it.
+
+`af.mounts` is a list of `{ id, gun, pos: [x,y,z], dir: [x,y,z], arc }` in the aircraft's own frame
+(x right, y up, z aft — the layout convention). `makeMounts(af)` turns it into one live instance per
+entry with its own `cool` and `ammo`, carried on `f.mounts`; anything without mounts gets an empty
+list. `af.gun: 'none'` is the legal way to say there is no nose gun at all, and leaves `f.gun` null —
+the HUD, aim assist and the AI already tolerated that.
+
+Three guns are the reason: `m25` (25 mm, 30 rps, no blast), `l60` (40 mm, 2 rps, 9 m blast) and
+`m102` (105 mm, 0.16 rps, 34 m blast). A round with `blast` is a shell: it detonates on **any**
+contact, ground included, and hurts a circle regardless of side, the bomb rule. A round without one
+is a bullet and hurts what it touched. Both ride the one bullet pool through `spawnRound`, which the
+nose gun uses too, so a round is a round wherever it left the aircraft.
+
+Aiming is `mountOrigin` (the muzzle), `ballisticAim` (barrel direction so a round of that speed,
+falling at `SHELL_GRAVITY`, from a platform moving at `f.v`, arrives at the point — the round's
+velocity is aim·speed + platform velocity exactly as `spawnRound` builds it, so what it solves is
+what flies) and `clampToArc` (train into the mount's arc, sliding along the rim rather than snapping
+to the boresight). `ballisticAim` returns null beyond reach and `fireMount` then refuses to fire
+short and call it a miss. The test flies every calibre from a moving aircraft at 3.2 km and lands
+inside a metre; ignoring the platform's own speed misses by 800 m, which is the reason it is in the
+solve. `fireMount` keeps every rule the nose gun learned: accumulated cooldown, `MAX_BURST`, one
+sound per call, and the flyer loop floors each mount's debt.
+
+### The gunner camera
+
+**4** (or the Gunner button) on a craft with mounts. A sensor ball on the port side, stabilised: the
+aim is a WORLD direction the mouse slews (`gunner.yaw/pitch`), so the picture does not roll when the
+aircraft banks and the crosshair stays on the ground while the orbit carries the airframe round.
+The camera looks straight down the aim; the aim's ground point (`groundHit`, marched then bisected
+on the same `heightAt` the shells fall onto) is where the selected mount's shells land by
+construction, because `ballisticAim` solves the barrel to hit it — so the crosshair is the reticle
+and nothing is projected. What the HUD adds is whether the SELECTED mount can be trained there
+(`RANGE / TOF`, `OUT OF ARC`, `OUT OF RANGE`, `NO GROUND`), a dashed circle the size of the shell's
+blast at that range, the three mounts with ammunition, and the flight state the pilot can no longer
+see. The target boxes (aircraft, ground sites, pods, with off-screen arrows) are the pilot HUD's own,
+drawn by the shared `drawTargetBoxes` — the pilot HUD does not have the tape, radar or ladder here. **Left Alt** cycles the mount, **Space / mouse 1** fires it, the **wheel** steps the field of
+view (10/20/30/45°, and the slew rate scales with it), **T** re-centres the orbit autopilot on the
+crosshair's ground point at the current radius. Entering the view points the sensor at the orbit
+centre if there is one, else down the middle mount's boresight, and asks for pointer lock; leaving
+releases it. Switching to an aircraft without mounts drops back to chase.
+
+**Arc lock** (**L**, on by default, `gunner.arcLock`): every frame `lockAimToArc` clamps the sight
+line into a copy of the selected mount's cone shrunk to `ARC_LOCK_MARGIN` (0.9) of its arc through
+`clampToArc` and writes the result back to `gunner.yaw/pitch`, so the mouse sticks at the rim and
+the orbit's turn drags the aim round with the aircraft. If the ballistic solution still falls
+outside the arc (the barrel superelevated past the upper rim at long range) the loop in
+`updateGunnerCamera` pulls the margin in by 0.1 steps and solves again, so `OUT OF ARC` should not
+appear while locked. Free (`ARC FREE`, amber) restores the unrestricted sensor. `drawArcRim` draws
+the full arc as a dashed loop on the picture in either state — green locked, amber free — so where
+the gun can look is a shape rather than a message.
+
+Enter it on the AC-130 with **O** already held: the aircraft circles left, the port guns face in,
+and the sensor is looking at the middle of the ring.
+
+### Vision modes
+
+**V** cycles RGB → NVG → white-hot → black-hot, everywhere, not only in the gunner view. The
+mechanism is `vision-modes.js` (documented under `fx.md`); what the flight demo did was opt its own
+materials in: the terrain's TSL graph emits `terrainHeat` (rock warmer than grass, snow and water
+cold) and blacks its diffuse under IR; the sky mixes to cold with the sun's disc as a hot spot; the
+clouds mix to cold and still occlude; craft skins are `HEAT.skin` and the exhaust flames
+`HEAT.exhaust`; fire particles, flares and the tracers are hot, smoke warm, missiles warm; the
+water is cold. `tagScene(scene)` runs at boot, on every mode change and whenever the player's
+aircraft is rebuilt, so anything built without a tag reads as a cool object rather than as a lit
+one. The tracers had to move from `LineBasicMaterial` to `LineBasicNodeMaterial` to be taggable at
+all. Fog density drops to 35% under IR — a thermal sensor sees through haze the eye does not.
+Not done: aircraft heat that follows the throttle, and a wreck that cools as it burns out.
+
+## Air to ground
+
+A bomb is the only weapon here you cannot aim. You aim the **aircraft**, seconds early, and what
+decides whether you hit is a prediction — so the prediction is the feature and everything else in
+`flight-combat.js`'s bomb section exists to keep it honest.
+
+|  | Carried | Mass | Cd·S | Damage | Blast |
+|---|---|---|---|---|---|
+| **BOMB** (`gp`) | 6 | 230 kg | 0.085 | 170 | 40 m |
+| **HVY** (`heavy`) | 2 | 900 kg | 0.16 | 420 | 78 m |
+
+Mass over `dragArea` is the ballistic coefficient, and it is the entire difference between the two:
+the heavy is the cleaner store, so from the same release it keeps its forward throw and lands
+further ahead. Measured from 900 m at 140 m/s level: **gp 1731 m, heavy 1861 m**, against a vacuum
+parabola's 1900 m. Drag is worth 169 m — a closed-form solve that ignored it would put both markers
+in the same wrong place.
+
+**`bombImpact` and `stepBomb` share one integrator and one fixed substep** (`BOMB_STEP`, 1/120), and
+that is the whole reason the pipper can be trusted: predictor and projectile cannot drift apart
+because they are running the same arithmetic. Measured agreement between the marker and where the
+store actually lands: **0.70 m for the gp over a 15.5 s fall, 1.27 m for the heavy**. The substep is
+also what makes the delivery frame-rate independent — a 15 fps client bombs the same place as a
+60 fps one, to 0.00 m.
+
+Terrain is sampled every eighth step rather than every step, because `heightAt` is sixteen plane
+waves and a ridge term while the integration is three vector adds — the ground lookup is the entire
+cost. The crossing is then bisected inside that span, which is what stops the marker stepping in
+visible jumps as the aircraft moves.
+
+Two consequences of the physics being real rather than arcade, both of which catch people out:
+
+- **A dive release falls SHORT of a level one at the same speed** — 974 m against 1731 m. The store
+  is already going down, so it arrives sooner and travels less.
+- **A bomb has no idea whose side anybody is on**, and neither does the blast. Fly through your own
+  on a low pass and it hurts you. That is the only thing keeping a delivery honest, since nothing
+  else stops you releasing at fifty metres.
+
+The marker draws as a **ground mark** — a ring at the store's real blast radius, flattened toward the
+horizon, with a dashed line back to the boresight — rather than a reticle floating on the glass,
+because what the player has to judge is a spot on the terrain. Like the gun funnel it only draws for
+the selected weapon.
+
+**Bombs are the first weapon here that carries its own `def` on the instance.** Every missile in
+flight reads one module constant, so all missiles are the same missile; `b.def` is what lets a heavy
+and a general-purpose store be falling at once with different ballistics. Inventory follows the
+`{kind: count}` shape that `f.drones` already used, rather than the bare integers `f.ammo`,
+`f.missiles` and `f.flares` still are.
+
+The AI does not bomb. Same rule as the mini drones: ground attack is the player's.
+
+## Autopilot: an orbit any airframe can hold
+
+`flight-autopilot.js`. `driveAi` was split so its steering is a function of its own —
+`steerToward(f, wp, speed, state)` in `flight-ai.js` — and the autopilot is that same law given a
+ring instead of a waypoint list. It writes `f.input` exactly as the keyboard does, so engaging is
+"stop reading keys" and disengaging is "start again"; the model never learns who is flying. Because
+`steerToward` already branches on `af.control`, the plane, the A-10, the drone and the bird all hold
+an orbit through the one function, and the test flies every registered airframe for two minutes.
+
+`makeAutopilot(f, {x, z, radius, alt, turn, speed})` sets `f.autopilot`; `engageOrbitHere(f, …)`
+places the centre one radius off the port (or starboard) wing so the aircraft is already on the ring
+and tangent to it — no swing out, no swing in. `orbitGoal` chases a point AHEAD on the ring by a
+lead that is a distance, not an angle (600 m is a gentle curve on a 12 km ring and most of the way
+round a 400 m one). Pure pursuit of that point cuts the chord and settles on a smaller circle — a
+23% shortfall on the 400 m ring — so the goal is pushed outward by twice the shortfall, which puts
+the equilibrium back on the ring; every class now holds inside 10%. `orbitError` reports radius,
+altitude and where the inside wing points, for the test and the HUD line.
+
+The gunship claim is geometric and is asserted rather than trusted: on a held left orbit the port
+wing points at the centre within a degree or two for every class, and a right orbit puts the
+starboard wing there. `orbitSign` says which way round the ring angle runs for each turn; that sign
+was measured by flying it, not reasoned out.
+
+In the viewer: **O** engages around a point off the left wing at the airframe's own circuit radius,
+**[ ]** change the radius in flight, any stick input takes the aircraft back (triggers and selectors
+keep working underneath — hands off the stick, hands on the guns), the HUD shows the orbit line and
+marks the centre, and a kill clears it. Not built: an orbit around a chosen point on the ground —
+that arrives with the gunner camera, which is what picks the point.
 
 ## Mini drones
 
@@ -323,6 +577,34 @@ inboard by its width so nothing is hidden even with it up. The pitch ladder is d
 inset — it hangs off the projected boresight, and moving it would decouple it from where the nose
 actually points, which is the one thing it is for.
 
+## Weather (2026-08-16)
+
+The panel's **Weather → rain** slider (0..1) is one number that the page fans out; nothing else in
+the sim reads it, so the flight model is unaware of the weather (no wind on the airframe yet).
+
+- **Rain** is `rain.js`'s `createRainSystem` (documented under `fx.md` §Rain) with the terrain
+  standing in for the occluder map: `groundHeight: (xz) => tslHeight(xz, tslSpacing(xz))`, so
+  drops cut at the analytic ground and splash rings sit on it with no bake. 60k drops in an
+  80×50×80 m box, density = 0.9 × slider; splash rings draw only when the camera is under 160 m AGL.
+  `rain.update(dt, camera)` runs right after `updateCamera`, so streaks lean against the aircraft's
+  own velocity — at 150 m/s they stretch to the 3× clamp (~3.3 m), which is the motion blur of one
+  60 Hz frame. Under IR the drops are `heatMix(…, HEAT.water)` (cold) and the bolt `HEAT.fire`;
+  their materials are marked `irTagged` before `tagScene` runs because they own their colour graph
+  and `heatTag` would replace it.
+- **Overcast** is `uOvercast` (= min(1, 1.25 × rain)): the sky graph mixes toward a horizon-bright
+  grey and the sun disc goes with it, the cloud deck darkens and its cover rises
+  (`uCloudCover = 0.46 − 0.30 × rain`), sun ×(1 − 0.72 rain), hemisphere ×(1 − 0.35 rain).
+- **Haze** has one owner, `applyFog()`: `FOG_DENSITY × (IR ? 0.35 : 1) × (1 + 9 rain)`, colour
+  toward a grey; the vision toggle calls it too, so switching to thermal in a storm no longer resets
+  the storm's fog.
+- **Terrain sheen**: the ring material's `roughnessNode = mix(0.95, 0.45, uWetness)`, wetness =
+  min(1, 1.4 × rain). No puddles or ripples at this scale.
+- **Storm** (rain > 0.3 and the checkbox): every 4–18 s a `createLightningBolt` strike from the
+  cloud base (`CLOUD_Y − 60`) to `heightAt` 0.8–4 km off; `rain.flash` brightens the drops and the
+  sun by +4 for a beat; `playThunder` fires `distance / 340` s later through the listener with a
+  crack that dies past 1.5 km and a roll that lengthens with distance. The rain bed
+  (`createRainBed`) rides the listener too, louder low and slow and fading out above 900 m AGL.
+
 ## Rendering notes that belong to the viewer
 
 - **Reversed depth buffer.** `reversedDepthBuffer: true` on the renderer, which in r0.184 both
@@ -355,12 +637,21 @@ through the positional voice pool — a bandit defending itself two kilometres a
 kilometres away. Burning flares are one shared hiss keyed to how many are alight nearby rather than
 one source per flare, because a full salvo is 24 cartridges.
 
-No air-to-ground ordnance, so the only way to hit a structure is guns or a missile pointed downward —
-the bombing layer in `html-game-v2`'s `updateAirSupportCraft` (`airSupportBombs`,
-`AirSupportPointToGround`, `airSupportPatternAltitude`) is the obvious source. The AI ignores terrain
-for cover and will fly through a hill to reach a waypoint, and ground sites have no line-of-sight
-test at all, so a SAM will shoot you through a mountain. No takeoff or landing, no gun heat, no
-seeker gimbal limits, and damage is a single hit-point number that degrades nothing.
+Nothing you carry is **visible on the aircraft** before it fires — no gun, no missile on a rail, no
+bomb under a wing. There are no hardpoints at all: ordnance spawns at a literal offset written next
+to the fire call. That is the gap an aircraft studio has to close, since a studio that can author a
+weapon and not show it hanging there is only doing half the job.
+
+The AI ignores terrain for cover and will fly through a hill to reach a waypoint, and ground sites
+have no line-of-sight test at all, so a SAM will shoot you through a mountain. No takeoff or landing,
+no gun heat, no seeker gimbal limits, and damage is a single hit-point number that degrades nothing.
+Carrying stores costs neither mass nor drag, so a full rack handles exactly like an empty one.
+
+Two things the earlier version of this section got wrong, recorded so they are not re-derived. It
+claimed there was no air-to-ground ordnance; there is now, above. And it pointed at
+`html-game-v2`'s `updateAirSupportCraft` as the obvious source for one — **that file is not in this
+repository**, and the bombing here was built against `bot-drones.js`'s release solve instead, at
+flight scale rather than its 50 m arena scale.
 
 The viewer layer is still one file. `flight-hud.js`, `flight-craft.js`, `flight-camera.js`,
 `flight-controls.js` and `entity-types/aircraft.js` from `docs/flight-harness-plan.md` do not exist;

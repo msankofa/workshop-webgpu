@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pokémon moves — WebGPU move effects on the stadium models</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; color: #dfe6ee; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 12px; left: 12px; width: 300px; max-height: calc(100vh - 24px); overflow: auto;
+    background: rgba(14, 18, 26, 0.9); border: 1px solid #2a3240; border-radius: 10px; padding: 12px 14px; box-sizing: border-box; }
+  #panel h1 { font-size: 15px; margin: 0 0 6px; }
+  #panel p.sub { margin: 0 0 10px; color: #98a4b3; }
+  fieldset { border: 1px solid #2a3240; border-radius: 8px; margin: 0 0 10px; padding: 8px 10px; }
+  legend { color: #98a4b3; padding: 0 4px; }
+  label.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0; }
+  select, button { font: inherit; background: #171d28; color: #e8eef5; border: 1px solid #33404f; border-radius: 6px; padding: 4px 8px; }
+  select { flex: 1; }
+  button { cursor: pointer; }
+  button:hover { border-color: #5a7190; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .type { margin: 6px 0 2px; font-weight: 600; text-transform: capitalize; }
+  .moves { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .moves button { text-align: left; border-left-width: 4px; }
+  #status { position: fixed; left: 12px; bottom: 10px; color: #98a4b3; background: rgba(14, 18, 26, 0.7); padding: 4px 8px; border-radius: 6px; }
+  #hud { position: fixed; top: 12px; right: 12px; width: 300px; display: flex; flex-direction: column; gap: 8px; }
+  .fighter { background: rgba(14, 18, 26, 0.9); border: 1px solid #2a3240; border-radius: 10px; padding: 8px 12px; }
+  .fighter .name { display: flex; justify-content: space-between; font-weight: 600; }
+  .bar { height: 8px; background: #26303d; border-radius: 4px; overflow: hidden; margin-top: 5px; }
+  .bar i { display: block; height: 100%; width: 100%; background: #62d47f; transition: width 0.25s; }
+  .bar i.mid { background: #e6c14a; } .bar i.low { background: #e35b5b; }
+  #log { max-height: 130px; overflow: auto; color: #b7c2cf; font-size: 12px; }
+  #log div { padding: 1px 0; border-bottom: 1px dotted #26303d; }
+  #err { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: #4a1d22; border: 1px solid #a3454e; color: #ffd8dc;
+    padding: 6px 10px; border-radius: 8px; display: none; max-width: 60vw; white-space: pre-wrap; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="panel">
+  <h1>Pokémon moves</h1>
+  <p class="sub">Pick an attacker and a target, then click a move. Every effect is procedural WebGPU/TSL; the
+    creatures are the stadium models standing on the walker rig.</p>
+  <fieldset>
+    <legend>Fighters</legend>
+    <label class="row"><span>Attacker</span><select id="leftSel"></select></label>
+    <label class="row"><span>Target</span><select id="rightSel"></select></label>
+    <label class="row"><span>Auto battle</span><input id="auto" type="checkbox"></label>
+    <label class="row"><span>Idle animation</span><input id="idle" type="checkbox" checked></label>
+    <div style="display:flex; gap:6px; margin-top:4px">
+      <button id="swap">Swap sides</button>
+      <button id="heal">Reset HP</button>
+      <button id="clear">Clear effects</button>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Moves</legend>
+    <div id="moves"></div>
+  </fieldset>
+  <fieldset>
+    <legend>Log</legend>
+    <div id="log"></div>
+  </fieldset>
+</div>
+<div id="hud">
+  <div class="fighter" id="hudLeft"><div class="name"><span>—</span><span class="hp">100</span></div><div class="bar"><i></i></div></div>
+  <div class="fighter" id="hudRight"><div class="name"><span>—</span><span class="hp">100</span></div><div class="bar"><i></i></div></div>
+</div>
+<div id="status">loading…</div>
+<div id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import * as TSL from 'three/tsl';
+import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, MeshPhysicalNodeMaterial, SpriteNodeMaterial, PointsNodeMaterial } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
+import { parseGLB } from '../stadium-glb.js';
+import { mapStadiumRig } from '../stadium-rig-map.js';
+import { createStadiumWalker } from '../stadium-walker.js';
+import { GAITS } from '../creature-locomotion.js';
+import { installPanelTheme } from '../workshop-panel-theme.js';
+import { makeLine, hashSeed } from '../moves/move-core.js';
+import { MOVES, TYPE_COLORS, movesByType } from '../moves/move-registry.js';
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (t) => { $('status').textContent = t; };
+const showError = (e) => { console.error(e); const el = $('err'); el.style.display = 'block'; el.textContent = String(e?.stack || e); };
+window.addEventListener('error', (ev) => showError(ev.error || ev.message));
+window.addEventListener('unhandledrejection', (ev) => showError(ev.reason));
+
+const SPECIES = ['025_pikachu', '006_charizard', '019_rattata', '058_growlithe', '077_ponyta', '128_tauros', '033_nidorino',
+  '079_slowpoke', '002_ivysaur', '028_sandslash', '086_seel', '066_machop', '027_sandshrew', '046_paras'];
+const PRETTY = (id) => id.slice(4).replace(/^./, c => c.toUpperCase());
+
+// --- scene ------------------------------------------------------------------------------------
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d12);
+scene.fog = new THREE.Fog(0x0b0d12, 14, 40);
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.02, 200);
+camera.position.set(0.4, 1.5, 4.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.35, 0);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0x8fb4e8, 0x2a2620, 1.2));
+const sun = new THREE.DirectionalLight(0xfff2dd, 1.8);
+sun.position.set(3, 6, 2);
+scene.add(sun);
+
+// Flat arena. The move effects read the same height function as the walkers.
+const terrainHeight = () => 0;
+const ground = new THREE.Mesh(new THREE.CircleGeometry(9, 96).rotateX(-Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0x1c222b, roughness: 0.95 }));
+scene.add(ground);
+const ring = new THREE.Mesh(new THREE.RingGeometry(2.6, 2.66, 96).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0x3a4658 }));
+ring.position.y = 0.003;
+scene.add(ring);
+
+// A fixed pool of point lights the effects borrow. Adding and removing lights recompiles materials.
+const lightPool = [];
+for (let i = 0; i < 6; i++) {
+  const l = new THREE.PointLight(0xffffff, 0, 4, 2);
+  l.userData.busy = false;
+  scene.add(l); lightPool.push(l);
+}
+const lights = {
+  acquire() { const l = lightPool.find(l => !l.userData.busy); if (l) { l.userData.busy = true; l.intensity = 0; } return l || null; },
+  release(l) { if (!l) return; l.intensity = 0; l.userData.busy = false; },
+};
+
+// --- effects ------------------------------------------------------------------------------------
+const NODES = { MeshBasicNodeMaterial, MeshStandardNodeMaterial, MeshPhysicalNodeMaterial, SpriteNodeMaterial, PointsNodeMaterial };
+const deps = { THREE, TSL, NODES, scene, terrainHeight, lights };
+const FX_MODULES = {
+  bolt: ['../moves/fx-bolt.js', 'createBoltFx'],
+  stream: ['../moves/fx-stream.js', 'createStreamFx'],
+  crystals: ['../moves/fx-crystals.js', 'createCrystalsFx'],
+  fissure: ['../moves/fx-fissure.js', 'createFissureFx'],
+  aurora: ['../moves/fx-aurora.js', 'createAuroraFx'],
+};
+const fx = {};
+const missing = [];
+for (const [key, [path, fn]] of Object.entries(FX_MODULES)) {
+  try { const mod = await import(path); fx[key] = mod[fn](deps); }
+  catch (e) { console.warn(`${key}: ${e.message}`); missing.push(key); }
+}
+
+const live = [];
+function castMove(move, attacker, target) {
+  const f = fx[move.fx];
+  if (!f) { log(`${move.name}: effect '${move.fx}' is not loaded`); return null; }
+  const a = attacker.walker.body.pos, t = target.walker.body.pos;
+  const from = { x: a.x, z: a.z }, to = { x: t.x, z: t.z };
+  // Leave from the face, not the body centre, so a beam is not born inside the model.
+  const dx = to.x - from.x, dz = to.z - from.z, d = Math.hypot(dx, dz) || 1;
+  const lead = attacker.reach * 0.35;
+  from.x += (dx / d) * lead; from.z += (dz / d) * lead;
+  const line = makeLine({ from, to: move.self ? from : to, terrainHeight, step: 0.08 });
+  const seed = hashSeed(`${move.name}#${castIndex++}`);
+  const inst = f.cast({
+    line, seed, palette: move.palette, power: move.power,
+    sourceY: a.y - terrainHeight(a.x, a.z), targetY: t.y - terrainHeight(t.x, t.z),
+    travelSpeed: move.travelSpeed, travelTime: move.travelTime,
+  });
+  if (!inst) return null;
+  // The machine reads these live, so a move can set its own pace without every effect knowing about it.
+  if (inst.machine && !move.self) {
+    if (move.travelTime > 0) inst.machine.travelTime = move.travelTime;
+    else if (move.travelSpeed > 0) { inst.machine.travelTime = 0; inst.machine.travelSpeed = move.travelSpeed; }
+  }
+  if (!move.self) inst.onImpact = () => hit(target, move);
+  live.push(inst);
+  log(`${attacker.label} used ${move.name}!`);
+  return inst;
+}
+let castIndex = 1;
+
+// --- fighters -----------------------------------------------------------------------------------
+const loader = new GLTFLoader();
+const cache = new Map();
+async function speciesAssets(name) {
+  let entry = cache.get(name);
+  if (entry) return entry;
+  const bytes = new Uint8Array(await (await fetch(`../models/stadium/${name}.glb`)).arrayBuffer());
+  const { json, bin } = parseGLB(bytes);
+  const map = mapStadiumRig(json, bin, { source: name });
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const template = await loader.parseAsync(buf, '');
+  template.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    o.frustumCulled = false;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) m.side = THREE.DoubleSide;
+  });
+  entry = { map, template };
+  cache.set(name, entry);
+  return entry;
+}
+
+const SIDES = {
+  left:  { x: -1.5, yaw:  Math.PI / 2, hud: 'hudLeft' },
+  right: { x:  1.5, yaw: -Math.PI / 2, hud: 'hudRight' },
+};
+const fighters = { left: null, right: null };
+
+async function spawnFighter(side, name) {
+  const old = fighters[side];
+  if (old) { scene.remove(old.walker.object); old.mixer?.stopAllAction(); fighters[side] = null; }
+  const { map, template } = await speciesAssets(name);
+  const root = skeletonClone(template.scene);
+  const walker = createStadiumWalker({ THREE, scene: root, map, terrainHeight, worldHeight: 0.55, gait: GAITS.walk });
+  scene.add(walker.object);
+  walker.placeAt(SIDES[side].x, 0, SIDES[side].yaw);
+  const legBones = new Set(map.legs.flatMap(l => l.bones).map(b => map.names[b]));
+  const idle = (template.animations || []).find(c => /idle/i.test(c.name)) || template.animations?.[0] || null;
+  let mixer = null;
+  if (idle) {
+    const clip = idle.clone();
+    clip.tracks = clip.tracks.filter(t => !legBones.has(t.name.split('.')[0]));
+    mixer = new THREE.AnimationMixer(root);
+    mixer.clipAction(clip).play();
+  }
+  const mats = [];
+  root.traverse((o) => { if (o.isMesh) for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && !mats.includes(m)) mats.push(m); });
+  const reach = Math.max(...map.legs.map(l => l.span)) * walker.unitScale;
+  const f = { side, name, label: PRETTY(name), walker, root, mixer, mats, reach, hp: 100, flash: 0 };
+  fighters[side] = f;
+  updateHud(f);
+  return f;
+}
+
+function updateHud(f) {
+  const el = $(SIDES[f.side].hud);
+  el.querySelector('.name span').textContent = f.label;
+  el.querySelector('.hp').textContent = `${Math.max(0, Math.round(f.hp))} / 100`;
+  const bar = el.querySelector('.bar i');
+  bar.style.width = `${Math.max(0, f.hp)}%`;
+  bar.className = f.hp > 50 ? '' : f.hp > 20 ? 'mid' : 'low';
+}
+
+// A hit is a white flash on the model, a camera bump, and a chunk off the bar. Restored on a timer.
+function hit(target, move) {
+  target.flash = 1;
+  target.hp = Math.max(0, target.hp - 12 * move.power);
+  shake = Math.min(1, shake + 0.35 * move.power);
+  updateHud(target);
+  if (target.hp <= 0) log(`${target.label} fainted!`);
+}
+function applyFlash(f, dt) {
+  if (f.flash <= 0) return;
+  f.flash = Math.max(0, f.flash - dt * 5);
+  const k = f.flash;
+  for (const m of f.mats) { if (m.emissive) { m.emissive.setRGB(k, k, k); m.emissiveIntensity = 1; } }
+}
+let shake = 0;
+const _camBase = new THREE.Vector3();
+
+// --- ui -----------------------------------------------------------------------------------------
+installPanelTheme('#panel', { styleId: 'wpt-left' });
+function log(msg) {
+  const el = $('log'); const d = document.createElement('div'); d.textContent = msg; el.prepend(d);
+  while (el.children.length > 40) el.lastChild.remove();
+}
+for (const side of ['left', 'right']) {
+  const sel = $(side + 'Sel');
+  for (const s of SPECIES) sel.add(new Option(PRETTY(s), s));
+  sel.addEventListener('change', () => spawnFighter(side, sel.value).catch(showError));
+}
+$('leftSel').value = '025_pikachu';
+$('rightSel').value = '006_charizard';
+
+const movesEl = $('moves');
+for (const [type, list] of movesByType()) {
+  const h = document.createElement('div'); h.className = 'type'; h.textContent = type; h.style.color = TYPE_COLORS[type];
+  movesEl.appendChild(h);
+  const grid = document.createElement('div'); grid.className = 'moves';
+  for (const m of list) {
+    const b = document.createElement('button');
+    b.textContent = m.name; b.title = m.blurb; b.style.borderLeftColor = TYPE_COLORS[type];
+    b.disabled = missing.includes(m.fx);
+    b.addEventListener('click', () => { if (fighters.left && fighters.right) castMove(m, fighters.left, fighters.right); });
+    grid.appendChild(b);
+  }
+  movesEl.appendChild(grid);
+}
+$('swap').addEventListener('click', async () => {
+  const l = $('leftSel').value, r = $('rightSel').value;
+  $('leftSel').value = r; $('rightSel').value = l;
+  await Promise.all([spawnFighter('left', r), spawnFighter('right', l)]);
+});
+$('heal').addEventListener('click', () => { for (const f of Object.values(fighters)) if (f) { f.hp = 100; updateHud(f); } });
+$('clear').addEventListener('click', () => { for (const i of live) i.dispose(); live.length = 0; });
+
+// Auto battle: the two sides take turns, each with a random move that is loaded.
+let autoClock = 0, autoTurn = 'left';
+function autoStep(dt) {
+  if (!$('auto').checked) return;
+  autoClock += dt;
+  if (autoClock < 2.4) return;
+  autoClock = 0;
+  const pool = MOVES.filter(m => fx[m.fx]);
+  if (!pool.length) return;
+  const m = pool[Math.floor(Math.random() * pool.length)];
+  const a = fighters[autoTurn], t = fighters[autoTurn === 'left' ? 'right' : 'left'];
+  if (a && t) castMove(m, a, t);
+  autoTurn = autoTurn === 'left' ? 'right' : 'left';
+}
+
+// --- loop ---------------------------------------------------------------------------------------
+const clock = new THREE.Clock();
+let elapsed = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+  for (const f of Object.values(fighters)) {
+    if (!f) continue;
+    if (f.mixer && $('idle').checked) f.mixer.update(dt);
+    f.walker.update(dt, { walk: false });
+    applyFlash(f, dt);
+  }
+  for (let i = live.length - 1; i >= 0; i--) {
+    let alive = false;
+    try { alive = live[i].update(dt, elapsed); } catch (e) { showError(e); }
+    if (!alive) { live[i].dispose(); live.splice(i, 1); }
+  }
+  autoStep(dt);
+  controls.update();
+  if (shake > 0) {
+    _camBase.copy(camera.position);
+    const s = shake * shake * 0.03;
+    camera.position.x += (Math.random() - 0.5) * s; camera.position.y += (Math.random() - 0.5) * s;
+    shake = Math.max(0, shake - dt * 2.5);
+    renderer.render(scene, camera);
+    camera.position.copy(_camBase);
+    return;
+  }
+  renderer.render(scene, camera);
+}
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+await Promise.all([spawnFighter('left', $('leftSel').value), spawnFighter('right', $('rightSel').value)]);
+setStatus(missing.length ? `ready — effects not loaded: ${missing.join(', ')}` : 'ready — 16 moves, 5 effects');
+frame();
+</script>
+</body>
+</html>

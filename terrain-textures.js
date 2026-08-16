@@ -663,12 +663,25 @@ function makeSplatMaterial(arrays, activeLayers, tsl, webgpu, uniforms, shaderLa
   col = mix(col, mossAlbedo, moss);
   rough = mix(rough, float(0.95), moss);
 
+  // soil-shade.js dressing (optional, default-off): damp darkening/gloss and dry-crack channels.
+  // The crack gradient grooves the tangent-space normal before the normal map decode.
+  let nrmOut = nrm;
+  const soil = uniforms?.soil || null;
+  if (soil) {
+    const d = soil.nodes.apply({ col, rough, worldXZ: positionWorld.xz, normalWorld: vec3(0, 1, 0) });
+    col = d.col; rough = d.rough;
+    // apply() perturbed a flat up-normal by the crack gradient; fold that xz tilt into the
+    // tangent-space normal (x → tangent u, z → tangent v) so it survives the normalMap decode.
+    nrmOut = nrm.add(vec3(d.normalWorld.x.mul(0.5), d.normalWorld.z.mul(0.5), 0));
+  }
+
   mat.colorNode = vec4(clamp(col, 0, 1), 1);
   mat.roughnessNode = clamp(rough, 0.04, 1);
-  mat.normalNode = normalMap(vec4(clamp(nrm, 0, 1), 1));
+  mat.normalNode = normalMap(vec4(clamp(nrmOut, 0, 1), 1));
   mat.userData.splatUniforms = {
     tile: uTile, rough: uRough, nrm: uNrm,
     macroStrength: uMacroStrength, mossStrength: uMossStrength, slopeCutoff: uSlopeCutoff,
+    soil,
   };
   return mat;
 }
@@ -768,10 +781,13 @@ async function applyFlatTerrain(root, meta) {
 // options.prebuildVariants (default true) can be set false to skip building the unused variant
 // eagerly (e.g. tests) — the swap perfAB control simply won't be registered in that case.
 async function applySplatTerrain(root, mapData, meta, options) {
-  const [webgpu, tsl, mossMod] = await Promise.all([
-    import('three/webgpu'), import('three/tsl'), import('./moss-tint.js'),
+  const [webgpu, tsl, mossMod, soilMod] = await Promise.all([
+    import('three/webgpu'), import('three/tsl'), import('./moss-tint.js'), import('./soil-shade.js'),
   ]);
   mossWeightFn = mossMod.mossWeight;
+  // soil-shade.js dressing (damp patches / dry cracks), default-off; ONE instance shared by both
+  // material variants so its uniforms stay in sync the way the other globals do.
+  const soil = soilMod.createSoilShade(options.splatUniforms?.soil || {});
   const textureFiles = await loadTextureFileSet(options);
 
   // presence scan: stride the grid so pickActiveLayers is O(a few thousand) not O(res²).
@@ -798,6 +814,7 @@ async function applySplatTerrain(root, mapData, meta, options) {
   const splatUniformOptions = {
     ...(options.splatUniforms || {}),
     slopeCutoff: sharedSlopeCutoff, macroStrength: sharedMacroStrength, mossStrength: sharedMossStrength,
+    soil,
   };
   // "reduced" = the requested/default cap; "full" = every active layer (only meaningfully
   // different from "reduced" when the map actually has more active layers than the cap).
@@ -844,6 +861,7 @@ async function applySplatTerrain(root, mapData, meta, options) {
     macroStrength: Number(uni.macroStrength?.value ?? 1),
     mossStrength: Number(uni.mossStrength?.value ?? 1),
     slopeCutoff: Number(uni.slopeCutoff?.value ?? DEFAULT_TRIPLANAR_SLOPE_CUTOFF),
+    soil: uni.soil ? uni.soil.get() : null,
   };
   root.userData.terrainTextureMeshes = texturedMeshes;
   root.userData.terrainTextureReport = {
@@ -958,6 +976,11 @@ export function updateTerrainSplatGlobals(root, changes = {}) {
   if (Number.isFinite(Number(changes.slopeCutoff))) {
     globals.slopeCutoff = clamp(Number(changes.slopeCutoff), 0, 1);
     if (uni.slopeCutoff) uni.slopeCutoff.value = globals.slopeCutoff;
+  }
+  // soil-shade.js block: partial overrides ({ cracks: true, crackAmount: 0.8, ... }), live.
+  if (changes.soil && typeof changes.soil === 'object' && uni.soil) {
+    uni.soil.set(changes.soil);
+    globals.soil = uni.soil.get();
   }
   return { ...globals };
 }

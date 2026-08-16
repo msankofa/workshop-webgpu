@@ -428,16 +428,15 @@ function detectLakeMask(height, slope, seaMask, cfg, flowNorm, receiver, resolut
 
 // Returns { slope, seaMask, lakeMask, beachMask, mountainMask, rockMask, snowMask }
 // (all Float32Array, length resolution*resolution).
-export function buildDerivedMaps(height, resolution, cfg, flowNorm) {
+export function buildDerivedMaps(height, resolution, cfg, flowNorm, receiverIn = null) {
   const n = resolution * resolution;
   const slope = gradientMagnitude(height, resolution, cfg.world_x, cfg.world_z);
   const seaMask = new Float32Array(n);
   for (let i = 0; i < n; i++) seaMask[i] = height[i] <= cfg.sea_level ? 1 : 0;
 
-  // Reuse flowAccumulation's receiver (sink = no strictly-lower neighbor) instead of
-  // recomputing a separate sink scan, unlike derived_maps.py's standalone _sink_mask --
-  // same semantics (a cell with no strictly-lower 8-neighbor), one fewer full grid pass.
-  const { receiver } = flowAccumulation(height, resolution);
+  // Sink = no strictly-lower 8-neighbor, which is exactly flowAccumulation's receiver;
+  // callers that already ran the flow sort pass it in so it is not sorted twice.
+  const receiver = receiverIn ?? flowAccumulation(height, resolution).receiver;
   const lakeMask = detectLakeMask(height, slope, seaMask, cfg, flowNorm, receiver, resolution);
 
   const beachMask = new Float32Array(n);
@@ -522,7 +521,8 @@ export function buildMaterialMasks(height, derived, biomeIds, cfg, resolution) {
 // cfg.world_x/cfg.world_z (unlike biome-classifier-js.js's generateGrid, which is fixed
 // to WORLD_EXTENT) -- coordinates are sampled over [-world/2, world/2] on each axis to
 // match generateGrid's own centering convention.
-export function generateFullGrid(cfg, resolution) {
+// Stage 1: the five climate noise fields on a res x res grid.
+export function generateNoiseFields(cfg, resolution) {
   const n = resolution * resolution;
   const cont = new Float32Array(n);
   const eros = new Float32Array(n);
@@ -543,7 +543,13 @@ export function generateFullGrid(cfg, resolution) {
       humid[idx] = sampler.sample('humidity', x, z, cfg.humidity_period, cfg.humidity_octaves);
     }
   }
+  return { continentalness: cont, erosion: eros, weirdness: weird, temperature: temp, humidity: humid };
+}
 
+// Stage 2: v4's height composer, continentalness x erosion x weirdness -> world-unit height.
+export function composeClassicHeight(fields, cfg) {
+  const { continentalness: cont, erosion: eros, weirdness: weird } = fields;
+  const n = cont.length;
   const baseKnots = rescaleArray(CONTINENT_Y, cfg.deep_ocean_depth, cfg.far_inland_height);
   const ampKnots = rescaleArray(EROSION_Y, cfg.min_plains_amplitude, cfg.max_mountain_amplitude);
   const targetHeight = new Float32Array(n);
@@ -552,13 +558,33 @@ export function generateFullGrid(cfg, resolution) {
     const amplitude = interp1d(eros[i], EROSION_X, ampKnots);
     targetHeight[i] = base + peaksAndValleys(weird[i]) * amplitude;
   }
+  return targetHeight;
+}
 
-  const { height, erosionDelta, flowRaw, flowNorm } = simulateErosion(targetHeight, resolution, cfg);
-  const derived = buildDerivedMaps(height, resolution, cfg, flowNorm);
+// Stages 3-7: erosion -> derived masks -> biome -> material masks, from a target height.
+// opts.paintHeight (Float32Array, world units) is added after erosion as a non-destructive
+// delta; opts.biomeOverride (Uint8Array, 255 = none) replaces the classifier per cell.
+export function finishGrid(targetHeight, fields, cfg, resolution, opts = {}) {
+  const n = resolution * resolution;
+  const { weirdness: weird, temperature: temp, humidity: humid } = fields;
+  const eroded = simulateErosion(targetHeight, resolution, cfg);
+  let { height } = eroded;
+  const { erosionDelta, flowRaw, flowNorm, receiver } = eroded;
+  let receiverForMasks = receiver;
+  if (opts.paintHeight) {
+    height = Float32Array.from(height);
+    for (let i = 0; i < n; i++) height[i] += opts.paintHeight[i];
+    receiverForMasks = null;
+  }
+  const derived = buildDerivedMaps(height, resolution, cfg, flowNorm, receiverForMasks);
 
   const biomeId = new Uint8Array(n);
   const ruleIndex = new Int8Array(n);
+  const override = opts.biomeOverride || null;
   for (let i = 0; i < n; i++) {
+    if (override && override[i] !== 255 && override[i] < BIOMES.length) {
+      biomeId[i] = override[i]; ruleIndex[i] = -2; continue;
+    }
     const { biome, ruleIndex: r } = classifyBiomeCell({
       height: height[i], slope: derived.slope[i], temp: temp[i], humid: humid[i], weird: weird[i],
       beachMask: derived.beachMask[i], seaLevel: cfg.sea_level, cfg,
@@ -570,7 +596,7 @@ export function generateFullGrid(cfg, resolution) {
   const { masks: materialMasks, rgba: materialRgba } = buildMaterialMasks(height, derived, biomeId, cfg, resolution);
 
   return {
-    continentalness: cont, erosion: eros, weirdness: weird, temperature: temp, humidity: humid,
+    ...fields,
     targetHeight, height, erosionDelta, flowRaw, flowNorm,
     slope: derived.slope, seaMask: derived.seaMask, lakeMask: derived.lakeMask,
     beachMask: derived.beachMask, mountainMask: derived.mountainMask,
@@ -578,6 +604,25 @@ export function generateFullGrid(cfg, resolution) {
     biomeId, ruleIndex, materialMasks, materialRgba,
     resolution,
   };
+}
+
+// v4's whole pipeline in one call (unchanged behaviour; terrain-generator-v4.html uses it).
+export function generateFullGrid(cfg, resolution) {
+  const fields = generateNoiseFields(cfg, resolution);
+  const targetHeight = composeClassicHeight(fields, cfg);
+  return finishGrid(targetHeight, fields, cfg, resolution);
+}
+
+// v5: the target height comes from a layer stack (terrain-stack.js) whose `classic`
+// layers read the v4 composer. `stackEval(classicHeight, fields) -> Float32Array` is
+// injected so this module stays free of the stack import; opts as for finishGrid.
+export function generateFullGridV5(cfg, resolution, stackEval, opts = {}) {
+  const fields = generateNoiseFields(cfg, resolution);
+  const classicHeight = composeClassicHeight(fields, cfg);
+  const targetHeight = stackEval ? stackEval(classicHeight, fields) : classicHeight;
+  const grid = finishGrid(targetHeight, fields, cfg, resolution, opts);
+  grid.classicHeight = classicHeight;
+  return grid;
 }
 
 // ---- colormaps (port of preview/color_maps.py) ----

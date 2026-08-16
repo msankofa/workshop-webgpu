@@ -9,7 +9,9 @@
 > classifier and the runtime consumers), open `../../biome-explainer.html` (via `python
 > serve.py`, same as the rest of this directory).
 >
-> `../../terrain-generator-v4.html` covers the same generation pipeline in more depth
+> `../../terrain-generator-v5.html` is the current authoring tool (layer stack, paint,
+> undo, heightmap import, heightfield/volumetric export) — see
+> [terrain-generator.md](terrain-generator.md). `../../terrain-generator-v4.html` covers the same generation pipeline in more depth
 > (erosion simulation, sea/lake/mountain/rock/snow masks, material masks) with the full
 > `config.py` field surface exposed as sliders, an interactive Three.js heightfield
 > viewport (direct grid-to-mesh, independent resolution, orbit/pan/zoom, display-mode

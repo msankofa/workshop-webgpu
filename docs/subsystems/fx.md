@@ -31,6 +31,40 @@ systems, pool ceilings, effect kinds and the rules a caller has to keep to.
 | `post-grade.js` | Pure-JS CPU reference for the color-grade math used inline in `post-fx.js`'s `gradeNode`. Node-tested. | 34 |
 | `effect-renderer.js` | Combat-effect draw layer: tracers, impact sparks, muzzle flashes, layered explosions, smoke puffs, blood spray, blood stain + ground splatter decals. Stateless — every sub-particle is regenerated each frame from the wire object + id hash + age. Browser/THREE only. | 686 |
 | `entity-types/effect.js` | Pure `EffectEntity` (`create`/`update`/`serialize`) — the authoritative wire shapes and defaults for every effect kind. No THREE. | 151 |
+| `vision-modes.js` | RGB / NVG / white-hot / black-hot for a WebGPU scene where heat is a property of materials, not of lighting. `heatTag`, `heatMix`, `tagScene`, `createVisionComposite`. Node-tested (tagging, sweep, palettes). First consumer: `demos/flight-sim.html`. | 150 |
+| `rain.js` | GPU rain for the TSL stack: `createRainSystem` (instanced streaks + splash rings, no buffers — seeds are `hash(instanceIndex)`), `bakeOccluderMap` (top-down height texture so drops cut at roofs and splashes land on them), `applyWetSurface` (darken/gloss/ripple-normal decoration for any `MeshStandardNodeMaterial`). Wired into `demos/rain.html`, `demos/flight-sim.html` and `bot-viewer-v3.html`. | ~400 |
+| `explosion-tier.js` | Pure port of html-game-v2's `reserveExplosionVisualTier` (320 ms window; 2 full / 5 medium primary, 1 / 4 secondary). Injected clock. Node-tested. Wired into `demos/volumetric-smoke.html` only. | 90 |
+| `blast-debris-sim.js` | Pure port of html-game-v2's persistent debris pools: shrapnel (bounce, friction, flicker recolour, glow, smoke trails), rubble (thrown along the kill vector, non-uniform, smoulder + ember sparks + rising smoke + light values), ground slabs (drop-pod preset with secondary shrapnel bursts), sparks, smoke. Injected `groundAt` and `random`; caps 900/260/80/2600 with oldest-recycle. Node-tested. | 330 |
+| `blast-debris.js` | WebGPU renderer for those arrays: one `InstancedMesh` per kind (tetra / dodeca / glow spheres / tri-prism sparks) with `instanceColor`, an instanced soft-billboard smoke pool, and 8 pooled `PointLight`s on the hottest rubble. `mesh.count` = live length. Wired into `demos/volumetric-smoke.html` only. | 210 |
+| `rain-math.js` | Pure CPU twin of the maths inside `rain.js`'s graphs (drop wrap, streak basis, occluder uv, ripple clock, density→count). Not imported by `rain.js`; hand-synced. Node-tested. | 60 |
+
+### Vision modes (`vision-modes.js`)
+
+The cheap thermal — a luma remap of the lit frame — is wrong in the way that matters: sunlit grass
+reads hot and a shadowed engine cold, because it measures light. So every material carries a heat
+value instead. `heatTag(material, heat)` rewires a **node** material in terms of its own
+`materialColor` / `materialEmissive` nodes (which include the map and keep tracking `.color`,
+`.emissive`, `.opacity`, so pooled particles still tint and fade): under `uIR` a lit material's
+diffuse goes black, its emissive becomes the heat grey, its roughness goes to 1 and metalness to 0
+so the sun cannot glint through; an unlit material's colour becomes the heat grey. Materials that
+own a colour graph (a TSL terrain, a sky) opt in with `heatMix(rgbNode, heat)` inside that graph and
+mark `userData.irTagged`. Classic (non-node) materials cannot be reached and are reported by
+`tagScene`, which sweeps a scene and tags anything left with `DEFAULT_HEAT` — a cool, visible
+object — so nothing reads as a lit thing in a thermal frame. `HEAT` is the convention table.
+
+`createVisionComposite(renderer, scene, camera)` is a `PostProcessing` graph — scene pass →
+`renderOutput` → palette — with `outputColorTransform = false` because it applies `renderOutput`
+itself (RGB mode must equal the plain render exactly). NVG is an intensifier tube: monochrome
+luminance with gain, a noise floor and vignette in phosphor green; on a daylight scene it is a
+green daylight scene, and that is honest. White-hot maps the (already grey) heat frame with a
+little contrast and noise; black-hot inverts it. `PALETTE` holds CPU twins of the three curves,
+kept in sync by hand like `post-grade.js`. `setVisionMode(name)` is the one place the mode
+becomes uniform values (`uMode`, and `uIR` = 1 for the two thermal palettes only — NVG amplifies
+light and does not see heat).
+
+Note for `post-fx.js`: it applies `renderOutput` by hand AND leaves `outputColorTransform` at its
+r184 default of true, which by a reading of `PostProcessing.render` in the shipped build would
+transform its non-`scene` modes twice. Read from source, not measured on screen; not changed here.
 
 ## Public API
 
@@ -638,6 +672,7 @@ blast loop) all supply a ray to re-trace. `setGearLod` swaps geometry without ch
 
 ## Tests
 
+- **`test-rain-math.mjs`** (Node, no GPU): exercises `rain-math.js`, the CPU twin of `rain.js` — wrap stays in the box at any t, streak basis orthonormal and camera-facing (incl. looking straight down the fall line), occluder uv bounds, roof cut, ripple clock, density clamp. 10 tests.
 - **`test-particle-field.mjs`** (Node, no GPU): exercises `particle-field.js` directly.
   - `spawnInVolume`: same seed → identical point (determinism); point lands within `[cam ± R]`; different seed → different point; 200 seeds spread across the volume rather than clustering.
   - `curlNoise2`: deterministic for the same inputs; numerically verifies the field is ~divergence-free (finite-difference divergence sampled on a grid, asserted `< 1e-2`).
@@ -764,8 +799,9 @@ this file's own header already says it is a port of that one and the two have si
 **What the volume actually helps.** The smoke (both projects are approximating a volume, one with
 sprites and one with opaque spheres), the fireball core, and ground interaction. **What it does
 not help** is shrapnel, sparks, embers and the shockwave ring — thin, fast, near-sub-pixel work
-where instanced geometry is correct and html-game-v2's version is the stronger of the two. The
-demo deliberately does not draw them.
+where instanced geometry is correct and html-game-v2's version is the stronger of the two. Since
+2026-08-16 the demo draws exactly that layer, via `blast-debris-sim.js` + `blast-debris.js` (see
+below), so the page now shows the volume *and* the persistent debris side by side.
 
 The one line worth carrying back is the march's exit clamp:
 
@@ -813,7 +849,52 @@ the test rather than read back from the module, so retuning them has to be a del
 about diverging from html-game-v2.
 
 In the demo the tiers drive raymarch step count — full march, half march with the light pass off,
-or billboard fallback — because step count is the only quality dial a march really has.
+or billboard fallback — because step count is the only quality dial a march really has. They also
+scale the debris (`TIER_DEBRIS_SCALE`: medium halves shrapnel and keeps 38% of rubble, lite spawns
+none), which is how html-game-v2 applies them.
+
+### `blast-debris-sim.js` + `blast-debris.js` (2026-08-16; demo + bot-viewer-v3)
+
+The persistent debris layer that `effect-renderer.js` cannot hold, because it is stateless by design.
+`docs/research/html-game-v2-explosion-effects.md` §13 has the full ported / not-ported table; the
+short version is that the instant layers (flash, ring, embers, short smoke, light, shake) were
+already here and everything that lands, bounces, skids and smoulders for twenty seconds was not.
+
+`createDebrisSim({ groundAt, random, caps, settings })` returns the arrays `shrapnel`, `rubble`,
+`sparks`, `smoke`, plus `spawnBlastShrapnel(x,y,z, blastRadius, color, {countScale, speedScale,
+gravityScale, verticalBoost, direction, directionBias})`, `spawnRubble(x,y,z, size, [dx,dz],
+{countScale})`, `spawnImpactSlabs(x,y,z, {scale, count, …})`, `spawnSmoke(…)`, `step(dt)`,
+`clear()`, `counts()`, `hottestRubble(n)`. `settings` is html-game-v2's
+`particleEffectDefaultSettings` (count/speed/gravity/life/smoke/glow scales for shrapnel and rubble,
+`rubbleSmolderChance` 0.28, `rubbleLightScale`), live-mutable. Numbers are theirs; the annotated
+source is the research doc. `test-blast-debris-sim.mjs` (137 checks) pins the pool sizes, the count
+clamps, bounce/settle, flicker + late fade, cone bias, kill-direction rubble, smoulder → glow/light/
+sparks/smoke, per-bounce spin damping, slab secondary bursts, recycling and `clear`.
+
+`createDebrisRenderer({ THREE, scene, sim, lightCount, softTexture })` returns `sync()` (call every
+frame after `sim.step`), `show` (per-kind visibility flags: shrapnel, rubble, glow, lights, sparks,
+smoke), `stats`, `dispose()`. Colours from the sim are sRGB floats and are converted with
+`Color.setRGB(r,g,b, SRGBColorSpace)`. Six draws total. The one departure from html-game-v2 is the
+smoke: theirs is low-poly spheres with a flat-colour shader, ours is the same instanced sprite pool
+this file and the demo already prove under WebGPU.
+
+In `demos/volumetric-smoke.html` the "Debris" panel section carries the visibility toggles, the two
+mapping knobs (fireball radius → their blast radius, default ×3.2; rubble size), a "ground slabs"
+toggle for the bomb-scale preset, and every tuning scale. Shrapnel spawns on every non-lite blast;
+rubble only on ground blasts (`b.y < 0.6·r0`), thrown along a per-blast direction.
+
+In `bot-viewer-v3.html` (2026-08-16) `spawnBlastFx` calls `spawnBlastDebris(center, shown)` after
+the layered effect, so every grenade / rocket / loiter-drone blast sheds debris. Differences from
+the demo, all deliberate: `groundAt` is the harness's `groundHeight` (terrain field), so pieces
+respect the ground but pass through walls (map collider is the next step); the renderer is built
+with `lightCount: 2` because `bot-viewer-visuals.js` caps real dynamic lights at two on this forward
+path and resident lights tax every pixel even at zero intensity; `radiusScale` defaults to 0.5
+because our damage rings (grenade 15 m) are three times theirs; rubble picks a random heading since
+an area blast has no kill vector; `explosion-tier.js` admission scales a volley's debris. Panel:
+Explosives → "Blast debris (html-game-v2)" (enable, clear, six show toggles, ground-only rubble,
+slabs, tiering, mapping knobs, all sim scales); everything saves in the bots slot (`debris`,
+`debrisTuning`, `debrisShow`). Not in `environment-viewer.html`: the open decision is whether debris
+replicates (host seeds → guests simulate locally) or stays host-local cosmetic.
 
 `demos/sdf-creature.html` is the sibling page and is not an FX technique — it draws a creature from
 signed distance functions on a single quad, aimed at the empty portrait and loading surfaces in
@@ -873,3 +954,91 @@ with the defaults left alone the renderer inserts its own output pass and the sR
 twice. `demos/sdf-creature.html` has that double application — it gammas manually and leaves
 `outputColorSpace` at its default — which is a real if minor bug in that page, left alone here because
 fixing it changes its look and that is a taste call, not a correctness one.
+
+## Rain (`rain.js`, `demos/rain.html`, 2026-08-16)
+
+Evaluation of achrefelouafi/RainSystemThreeJS (MIT) for the bot viewer. That repo is WebGL GLSL
+`ShaderMaterial` + `EffectComposer` + `onBeforeCompile` string injection, none of which runs under
+`WebGPURenderer`, so nothing was copied; the streak-field idea was rewritten as TSL in `rain.js`.
+
+**What is the same idea:** every drop is one instance of a 4-vertex quad; its position is a per-drop
+seed wrapped with `mod()` into a box that follows the camera (`uVolume`, biased 85% below the eye);
+the quad is stretched along its velocity and turned edge-on to the view ray; alpha is a soft streak
+profile in uv.
+
+**What is new here:**
+
+- **Rain shadow.** `bakeOccluderMap(renderer, scene, U, {center, extent, size, layer, top})` renders
+  everything on `layer` from straight above with an override material writing `max(worldY, 0)` into
+  a HalfFloat `RenderTarget` (Nearest-filtered, so TSL emits `textureLoad` and it can be read in the
+  vertex stage). The streak fragment multiplies alpha by `step(roof, worldY)`; splash rings sample
+  the map in the vertex stage and sit at `roof + 0.012`. The ground must be on the layer so open
+  ground bakes 0. Bake once for a static scene; the demo's "Rebake" button re-runs it. The bake
+  material has `fog: false` — scene fog would bend the heights.
+- **Accumulator drive, not `time`.** `update(dt, camera)` advances `uFall += speed·dt` and
+  `uWindOff += (wind + gust)·dt`; each drop's own speed spread (0.75..1.25×) multiplies `uFall` on
+  the GPU. Moving the speed or wind slider changes the rate, not the position, so drops never jump.
+  `uGust` is a slow two-sine wander of amplitude `setGust()` (default 3 m/s) added to `uWind`.
+- **Camera-relative motion.** If `update` is given the camera, its smoothed velocity goes into
+  `uCamVel`; the streak direction is `(wind+gust, −fall, ·) − camVel`, and streak length scales
+  with that apparent speed (clamped 0.25..3× of the authored `uLength`, which is the length at
+  18 m/s). Drops within 0.25..1.4 m of the eye fade out (`vNear`) so nothing smears the frame.
+- **No per-instance buffers.** Seeds are `hash(instanceIndex + k)`; `setDensity` is a
+  `geometry.instanceCount` change. The geometry must be an `InstancedBufferGeometry` — a plain
+  `BufferGeometry` with `instanceCount` set draws one instance in r0.184.
+- **Splashes** live in a second wrapped square (`uSplashRadius`) so rings stay put in the world and
+  only the trailing edge re-appears ahead; each ring re-places by up to 1.5 m per generation.
+- **`applyWetSurface(mat, U, {baseColor, baseRoughness, baseNormal, rippleScale, puddleScale})`** mutates a
+  `MeshStandardNodeMaterial`. `baseColor`/`baseRoughness`/`baseNormal` default to the material's own
+  `colorNode`, 0.9 and `normalWorld`; pass the material's existing graphs (bot-viewer-v3 passes the
+  soil-dressed `visuals.groundNodes`) so the wet layer wraps them, and pass the real normal on
+  anything not flat — the ripples perturb it, they no longer replace it with straight-up. Puddles are `mx_fractal_noise_float(xz·puddleScale)` thresholded by
+  `uPuddle·wetness` with a soft shore, so they are blotches, not tiles; inside them roughness goes
+  to 0.06 and albedo darkens a further 35%, outside there is a thin film (roughness × 0.65, albedo
+  × 0.7 at full wetness). Ripple normals are a cell grid (expanding sine ring per cell with a
+  hashed birth), full strength in puddles and 25% on the film, fed through `transformNormalToView`.
+  Works on anything roughly flat; the demo also puts it on roof slabs. Cells are offset by +4096
+  before `toUint()` because a negative float → u32 is undefined.
+- **Shared uniforms** (`createRainUniforms`) so drops, splashes, wet ground and lightning
+  (`uLightning`, decayed by `update`) move together; `flash(strength, decay)` drives it.
+- **Two page hooks** on `createRainSystem` / `createRainStreaks` / `createRainSplashes`:
+  `groundHeight(xzNode) → heightNode` cuts drops and lands splashes on an analytic surface
+  (max'd with the occluder map — flight-sim passes its `tslHeight`), and `colorFn(rgbNode) →
+  rgbNode` retints the drops (flight-sim passes `heatMix` so rain reads cold under IR). The
+  roof/ground cut is now sampled once per drop in the vertex stage (`vCut` varying), not per fragment.
+- **Helpers shared by both pages:** `createLightningBolt(scene, {colorFn})` builds a jagged
+  `TubeGeometry` bolt with 2–4 branches whose radius scales with length (`strike(top, hit)`,
+  `update(dt)` flickers it out); `createRainBed(ctx, dest)` is a pink-noise loop with `set(level)`
+  driving gain and low-pass together; `playThunder(ctx, dest, {distance})` is brown noise with a
+  crack that fades past 1.5 km and a roll that lengthens with distance; it returns its length in
+  seconds, so it drops straight into `environment-audio`'s `playSynthAt(build)` contract, and
+  `createRainBed(...).stop(at)` matches `playSynthLoop`'s stop handle.
+
+Tunables and defaults are in `RAIN_DEFAULTS`. The demo adds what a page can and a module cannot
+know about: fog far shrinks by up to 55% with density, bolts strike from 55–70 m, the key light
+jumps to the bolt, and thunder fires `distance/340` s later when the sound bed is on. The flight sim
+wires the same module over its terrain (see `flight.md` §Weather). Not done and
+worth saying: no depth-fade for streaks that cross geometry side-on (the depth test clips them, but
+hard), wet surface has no real puddle geometry or reflections beyond the PMREM environment, and no
+run-off from roof edges. Node-tested via `test-rain-math.mjs`; the TSL
+graphs themselves were verified only by name against the shipped r0.184 build.
+
+**Bot viewer v3 wiring (2026-08-16, World → Weather card).** One `rain` slider fans out through
+`setRainAmount`: drop density and opacity, `uWetness` (= min(1, 1.4·rain)) on both ground
+materials, and `visuals.setWeather({overcast, dim, fogBoost})` — a new weather overlay in
+`bot-viewer-visuals.js` that sits outside the theme (a theme switch keeps the storm): the sky
+graph mixes to a cloud lid tinted by the theme horizon, key light ×(1 − 0.65 dim) and ambient
+×(1 − 0.3 dim) inside `applyLights`, theme fog density × fogBoost (1 + 4·rain) with the colour
+lerped toward grey inside `applyFog`. Roofs and canopies shadow the rain through
+`bakeOccluderMap` over `mapRoot` + the trees root: the meshes get layer 3 enabled for the bake
+only, extent = max(w, d) + 16 m at 1024², top 60 m, redone on the next rainy frame after any
+`rebuildDerived` or tree placement (`rainOccDirty`) or via the Rebake button. Storms (rain > 0.3,
+Lightning on) strike a `createLightningBolt` from 55–70 m to `roadGround.heightAt` 20–70 m from
+the camera; `rain.flash` brightens drops, and `visuals.setLightning(uLightning)` per frame jumps
+the key light (+3) and the cloud lid. Thunder plays `distance/340` s later through
+`envAudio.playSynthAt` and the rain bed through `envAudio.playSynthLoop` (non-positional, so the
+mixer and mute apply); both wait for a running context. `updateWeather` returns immediately when
+dry. Sliders: rain, wind (steady + gusts), puddles, sky lid (how far the theme sky is covered),
+Lightning, Rain shadow under roofs, Rebake; a "Preset: storm" button sits in the World preset
+strip. Weather is not saved in slots. Unseen in a browser; the wet ground graph builds headless.
+

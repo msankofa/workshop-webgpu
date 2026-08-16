@@ -193,12 +193,34 @@ function regenerateAll() {
   refreshExport();
 }
 
+// The leaf map is a sprite sheet of four species, so a leaf card MUST address one cell of it.
+// With leaves.atlas null the card stretches the whole sheet instead, and every single leaf shows
+// all four species at once — which is what "the atlas is wrong" looks like on screen. The grid
+// therefore comes from the texture set, not from the pin toggle; the toggle only chooses between
+// one cell for the whole tree and a random cell per leaf.
+// Declared here rather than beside their controls because applyTexSetToOpts runs first.
+let atlasPinned = true;
+let atlasCell = 0;
+function applyAtlas() {
+  const grid = texSet.leafMap ? texSet.leafAtlas : null;
+  opts.leaves.atlas = grid
+    ? { cols: grid.cols, rows: grid.rows, ...(atlasPinned ? { cell: atlasCell } : {}) }
+    : null;
+}
+// The reverse: a loaded species carries its own pinned cell (the ez-tree presets pin one per leaf
+// type), so the controls have to follow opts rather than fight it.
+function resyncAtlasControls() {
+  const a = opts.leaves.atlas;
+  atlasPinned = !!(a && Number.isFinite(a.cell));
+  if (atlasPinned) atlasCell = a.cell;
+}
 function applyTexSetToOpts() {
   opts.bark.map = texSet.barkMap || null;
   opts.bark.normalMap = texSet.barkNormalMap || null;
   opts.bark.vScale = texSet.barkVScale ?? opts.bark.vScale;
   opts.leaves.map = texSet.leafMap || null;
   opts.leaves.alphaTest = texSet.leafAlphaTest ?? 0;
+  applyAtlas();
 }
 function applyTextureMode(nextMode) {
   texSet.dispose?.();
@@ -652,9 +674,9 @@ function pushUndo() {
 // trait's sliders, refresh every control's displayed value, refresh the seed label, and rebuild
 // the 3D view + Export text.
 function applyOptsAndRefresh() {
+  resyncAtlasControls();   // before applyTexSetToOpts: it rebuilds opts.leaves.atlas from these
   applyTexSetToOpts();
   resyncForceAngles();
-  resyncAtlasControls();
   rebuildTraitSliders();
   refreshAllControls();
   refreshSeedLabel();
@@ -784,19 +806,11 @@ optsToggle('leaves.doubleBillboard', 'Double billboard');
 optsToggle('leaves.roundedNormals', 'Rounded normals');
 optsSelect('leaves.shape', 'Shape', ['quad', 'simple']);
 
-// The leaf atlas cell pin only has a visible effect once 'authored' texture mode has loaded a
-// leaf atlas (procedural mode has no leafMap to sample a cell from), but the controls are
-// always shown — toggling them is harmless either way.
-let atlasPinned = false;
-let atlasCell = 0;
-function applyAtlas() { opts.leaves.atlas = atlasPinned ? { cols: 2, rows: 2, cell: atlasCell } : null; }
-// The reverse: a loaded species carries its own atlas cell (the ez-tree presets pin one per leaf
-// type), so these two controls have to follow opts rather than fight it.
-function resyncAtlasControls() {
-  atlasPinned = !!opts.leaves.atlas;
-  atlasCell = opts.leaves.atlas?.cell ?? 0;
-}
-toggleControl('Pin leaf atlas cell (authored mode only)', () => atlasPinned, v => { atlasPinned = v; applyAtlas(); }, () => scheduleRegenerate());
+// atlasPinned / atlasCell / applyAtlas live up in the texture section, since the texture set is
+// what supplies the grid. Off means a random cell per leaf, which mixes all four species onto one
+// tree — occasionally useful for a hedge, wrong for a species. Both no-ops in procedural mode,
+// which has no leaf map to address.
+toggleControl('Pin one leaf atlas cell', () => atlasPinned, v => { atlasPinned = v; applyAtlas(); }, () => scheduleRegenerate());
 rangeControl('Atlas cell', 0, 3, 1, () => atlasCell, v => { atlasCell = Math.round(v); applyAtlas(); }, fi, () => scheduleRegenerate());
 
 optsSlider('leaves.shadowFraction', 'Shadow fraction', 0, 1, 0.01, pct);
@@ -900,6 +914,7 @@ function loadOpts(savedOpts) {
 function resetOptsQuiet(source) {
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(source));
+  resyncAtlasControls();
   applyTexSetToOpts();   // snapshots omit live maps, so put the current mode's back
   resyncForceAngles();
 }

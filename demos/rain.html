@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Rain (streaks, splashes, rain shadow, wet ground)</title>
+<!--
+  DEMO — GPU rain on the WebGPU/TSL stack, argued for shipping to bot-viewer-v3.
+
+  WHERE THIS CAME FROM
+  --------------------
+  achrefelouafi/RainSystemThreeJS (MIT, 2026): 30k instanced streak quads wrapped with mod() into a
+  box that follows the camera, driven by one time uniform, plus a puddle/ripple shader on asphalt.
+  That repo is WebGL + GLSL ShaderMaterial + EffectComposer, none of which compiles under our
+  WebGPURenderer, so nothing was copied. The idea was rewritten as TSL node graphs in `../rain.js`.
+
+  WHAT IS DIFFERENT HERE
+  ----------------------
+  1. Rain shadow. The reference has no idea where the ground is: drops fall through roofs. Here
+     `bakeOccluderMap` renders the static scene from above into a height texture once. The streak
+     fragment is cut the moment it is below the roof under it, and each splash ring is placed ON
+     that height. Stand the camera under the awning: no drops, no splashes, dry floor. Rain lands on
+     the roofs, and the bot under the awning stays dry.
+  2. No jump on slider change. The reference multiplies wind and speed by absolute time, so moving a
+     slider teleports every drop. Here fall distance and wind drift are CPU accumulators, and the
+     per-drop speed spread lives on the GPU as a multiplier of the accumulator.
+  3. Zero buffers. Per-drop seeds come from `hash(instanceIndex)`; the geometry is a 4-vertex quad
+     with `instanceCount` set. Density is a draw-count change, nothing re-uploads.
+  4. Wet ground is a material decoration (`applyWetSurface`) over a MeshStandardNodeMaterial —
+     darker albedo, roughness pulled toward glass inside FBM-shaped puddles, and cell-based ripple
+     normals in view space via transformNormalToView. That is the shape bot-viewer-visuals.js
+     needs: hand it the floor material, it stays the floor material.
+
+  SECOND PASS (same day): puddles became an FBM field with soft shores instead of hashed tiles;
+  streaks lean against the camera's own velocity and stretch with apparent speed; drops within arm's
+  reach of the lens fade so nothing smears the frame; a slow CPU gust wander rides on top of the wind
+  slider; density thickens the fog; lightning is now a jagged tube bolt with branches, and thunder
+  arrives after the flash at 340 m/s.
+
+  `../rain-math.js` is the CPU twin of the shader maths (`node test-rain-math.mjs`).
+
+  RUN: served over http, e.g. `python serve.py` then http://127.0.0.1:8080/demos/rain.html
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c;
+    font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { display: block; }
+  #panel {
+    --line: rgba(255,255,255,0.12); --text: #d8dee9; --muted: #8d97a8; --accent: #77c8a1; --warn: #ffc857;
+    position: fixed; top: 10px; right: 10px; width: 316px; max-height: calc(100vh - 20px);
+    overflow-y: auto; padding: 12px 14px; box-sizing: border-box;
+    background: rgba(18,22,28,0.92); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); box-shadow: 0 12px 36px rgba(0,0,0,0.34); z-index: 10;
+  }
+  #panel h1 { font-size: 13px; margin: 0 0 2px; }
+  #panel .sub { color: var(--muted); margin: 0 0 10px; font-size: 11px; }
+  #panel h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+  .row label { color: var(--muted); font-size: 11px; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+  .chk { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+  .chk input { accent-color: var(--accent); }
+  .btn { width: 100%; padding: 7px; margin-top: 6px; font: inherit; font-size: 11px; cursor: pointer;
+    background: rgba(255,255,255,0.045); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+  .btn:hover { border-color: rgba(119,200,161,0.45); }
+  #stats { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--text); font-weight: 600; }
+  #credit { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 10px; line-height: 1.5; }
+  #credit a { color: var(--accent); }
+  #hint { position: fixed; left: 12px; bottom: 12px; color: #8a93a3; font-size: 11px; pointer-events: none; }
+  #err { position: fixed; left: 12px; top: 12px; color: #ff7b7b; font-size: 12px; white-space: pre-wrap; max-width: 60vw; }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Rain</h1>
+  <p class="sub">Camera-following instanced streaks, splash rings that land on roofs, and a wet floor. Get under the awning.</p>
+
+  <h2>Rain</h2>
+  <div id="rainRows"></div>
+  <label class="chk"><input type="checkbox" id="rainOn" checked> rain visible</label>
+
+  <h2>Wind</h2>
+  <div id="windRows"></div>
+
+  <h2>Rain shadow</h2>
+  <label class="chk"><input type="checkbox" id="occOn" checked> use the baked occluder map</label>
+  <button class="btn" id="rebake">Rebake occluder map</button>
+  <label class="chk"><input type="checkbox" id="showOcc"> show the height map</label>
+
+  <h2>Wet ground</h2>
+  <div id="wetRows"></div>
+
+  <h2>Storm</h2>
+  <button class="btn" id="flash">Lightning now (L)</button>
+  <label class="chk"><input type="checkbox" id="autoFlash" checked> random lightning</label>
+  <button class="btn" id="sound">Rain sound: off</button>
+  <div id="fogRows"></div>
+
+  <div id="stats"></div>
+  <div id="credit">
+    Streak-field idea after
+    <a href="https://github.com/achrefelouafi/RainSystemThreeJS" target="_blank" rel="noopener">achrefelouafi/RainSystemThreeJS</a>
+    (MIT). Rewritten as TSL in <code>rain.js</code>; the rain-shadow map, accumulator drive and wet-surface
+    decoration are new. CPU twin: <code>rain-math.js</code>.
+  </div>
+</div>
+<div id="hint">Drag to orbit, scroll to zoom, right-drag to pan. Press L for lightning.</div>
+<div id="err"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
+import { texture, uv, vec3, vec4, float } from 'three/tsl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+// The one upward import, for the reason flight-sim.html imports the flight modules: this page
+// exists to argue for shipping rain.js, and a private copy of it would be arguing for nothing.
+import { createRainSystem, applyWetSurface, bakeOccluderMap, createLightningBolt, createRainBed, playThunder } from '../rain.js';
+
+const err = document.getElementById('err');
+window.addEventListener('error', (e) => { err.textContent += (e.message || e) + '\n'; });
+window.addEventListener('unhandledrejection', (e) => { err.textContent += (e.reason?.stack || e.reason) + '\n'; });
+
+const OCC_LAYER = 1;
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.9;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const SKY = new THREE.Color(0x232830);
+scene.background = SKY.clone();
+scene.fog = new THREE.Fog(SKY.clone(), 18, 110);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.18;
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(9, 4.5, 14);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.4, 0);
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.enableDamping = true;
+
+// ---- lights: overcast key + cold fill; the key doubles as the lightning source -----------------
+const hemi = new THREE.HemisphereLight(0x8fa3bd, 0x1c1a17, 0.55);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xc9d4e6, 1.1);
+key.position.set(-18, 30, 10);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 90 });
+key.shadow.bias = -0.0005;
+scene.add(key);
+const KEY_BASE = key.intensity;
+
+// ---- the set: a concrete yard in the bot viewer's eco-brutalism register ---------------------------
+const occluders = new THREE.Group();          // everything in here casts rain shadow
+scene.add(occluders);
+function occ(mesh) { mesh.layers.enable(OCC_LAYER); mesh.castShadow = mesh.receiveShadow = true; occluders.add(mesh); return mesh; }
+
+const rain = createRainSystem({ maxDrops: 40000, maxSplashes: 8000 });
+scene.add(rain.group);
+const U = rain.uniforms;
+
+const floorMat = new MeshStandardNodeMaterial({ color: 0x4a4d52, roughness: 0.92, metalness: 0.0 });
+applyWetSurface(floorMat, U, { baseColor: 0x4a4d52, baseRoughness: 0.92, rippleScale: 2.6 });
+const floor = occ(new THREE.Mesh(new THREE.PlaneGeometry(200, 200), floorMat));
+floor.rotation.x = -Math.PI / 2;
+floor.castShadow = false;
+
+const concrete = new MeshStandardNodeMaterial({ color: 0x8b8a84, roughness: 0.85 });
+const concreteWet = new MeshStandardNodeMaterial({ color: 0x8b8a84, roughness: 0.85 });
+applyWetSurface(concreteWet, U, { baseColor: 0x8b8a84, baseRoughness: 0.85, rippleScale: 2.6 }); // roofs get wet too
+const neon = new MeshStandardNodeMaterial({ color: 0x111111, roughness: 0.4, emissive: 0x2ee6a6, emissiveIntensity: 2.2 });
+const neonPink = new MeshStandardNodeMaterial({ color: 0x111111, roughness: 0.4, emissive: 0xff4fa3, emissiveIntensity: 2.2 });
+
+function block(w, h, d, x, y, z, mat = concrete) {
+  const m = occ(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+  m.position.set(x, y + h / 2, z);
+  return m;
+}
+// Two shells with flat roofs (the roof face gets the wet material so splashes read on it).
+block(10, 5, 8, -14, 0, -6);      block(10, 0.3, 8, -14, 5, -6, concreteWet);
+block(7, 3.2, 12, 15, 0, 2);      block(7, 0.3, 12, 15, 3.2, 2, concreteWet);
+// The awning: four thin posts and a slab, open on all sides. Stand under it.
+for (const [x, z] of [[-3, -3], [3, -3], [-3, 3], [3, 3]]) block(0.25, 3.4, 0.25, x, 0, z);
+block(7.5, 0.25, 7.5, 0, 3.4, 0, concreteWet);
+// A ramp — the height map is a height map, so a slope sheds rain like anything else.
+const ramp = occ(new THREE.Mesh(new THREE.BoxGeometry(6, 0.4, 5), concrete));
+ramp.position.set(4, 1.2, -12); ramp.rotation.z = -0.42;
+// Cover blocks and neon strips for scale.
+block(1.6, 1.2, 0.6, -6, 0, 6); block(1.6, 1.2, 0.6, 7, 0, -5); block(0.8, 1.9, 0.8, -8, 0, -1);
+block(9.5, 0.08, 0.08, -14, 5.35, -2.05, neon); block(0.08, 3.25, 11.5, 11.55, 0.0, 2, neonPink);
+block(7.6, 0.06, 0.06, 0, 3.55, 3.8, neon);
+
+// Three stand-in bots: capsule + visor. One under the awning stays dry.
+function bot(x, z, rotY, visor) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 1.1, 6, 14), new MeshStandardNodeMaterial({ color: 0x2b3038, roughness: 0.55, metalness: 0.35 }));
+  body.position.y = 0.95; body.castShadow = true;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.42), new MeshStandardNodeMaterial({ color: 0x353a44, roughness: 0.5, metalness: 0.4 }));
+  head.position.y = 1.85; head.castShadow = true;
+  const slit = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.02), new MeshStandardNodeMaterial({ color: 0x000000, emissive: visor, emissiveIntensity: 3 }));
+  slit.position.set(0, 1.86, 0.22);
+  g.add(body, head, slit);
+  g.position.set(x, 0, z); g.rotation.y = rotY;
+  for (const m of [body, head]) m.layers.enable(OCC_LAYER);
+  scene.add(g);
+  return g;
+}
+bot(0.6, 0.4, 0.4, 0x2ee6a6);      // dry, under the awning
+bot(-6.5, 3.5, -0.9, 0xff4fa3);
+bot(8, -2, 2.4, 0x2ee6a6);
+
+// ---- rain shadow bake ------------------------------------------------------------------------
+let occBake = null;
+function rebake() {
+  if (occBake) occBake.dispose();
+  occBake = bakeOccluderMap(renderer, scene, U, { center: [0, 0], extent: 100, size: 1024, layer: OCC_LAYER, top: 60 });
+  occView.material.colorNode = vec4(vec3(texture(occBake.rt.texture, uv()).r.mul(0.15)), 1);
+  occView.material.needsUpdate = true;
+}
+const occView = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new MeshBasicNodeMaterial());
+occView.position.set(-8, 8, -30); occView.scale.setScalar(16); occView.visible = false;
+scene.add(occView);
+renderer.render(scene, camera);   // let materials compile against the real scene once
+rebake();
+
+// ---- panel -----------------------------------------------------------------------------------
+function slider(host, label, get, set, min, max, step, fmt = (v) => v.toFixed(2)) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  out.textContent = fmt(+inp.value);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); set(+inp.value); });
+  row.append(lab, out, inp); host.append(row);
+}
+const uni = (u) => [() => u.value, (v) => { u.value = v; }];
+const $ = (id) => document.getElementById(id);
+
+const rainRows = $('rainRows');
+slider(rainRows, 'Density', () => rain.getDensity(), (v) => rain.setDensity(v), 0, 1, 0.01);
+slider(rainRows, 'Fall speed (m/s)', ...uni(U.uSpeed), 4, 40, 0.5, (v) => v.toFixed(1));
+slider(rainRows, 'Streak length (m)', ...uni(U.uLength), 0.2, 3, 0.05);
+slider(rainRows, 'Streak width (m)', ...uni(U.uWidth), 0.004, 0.05, 0.001, (v) => v.toFixed(3));
+slider(rainRows, 'Opacity', ...uni(U.uOpacity), 0, 1, 0.01);
+slider(rainRows, 'Splash radius (m)', ...uni(U.uSplashRadius), 4, 40, 1, (v) => v.toFixed(0));
+slider(rainRows, 'Splash size (m)', ...uni(U.uSplashSize), 0.05, 0.6, 0.01);
+$('rainOn').addEventListener('change', (e) => rain.setVisible(e.target.checked));
+
+const windRows = $('windRows');
+slider(windRows, 'Wind X (m/s)', () => U.uWind.value.x, (v) => { U.uWind.value.x = v; }, -12, 12, 0.1, (v) => v.toFixed(1));
+slider(windRows, 'Wind Z (m/s)', () => U.uWind.value.z, (v) => { U.uWind.value.z = v; }, -12, 12, 0.1, (v) => v.toFixed(1));
+slider(windRows, 'Gust (m/s)', () => rain.getGust(), (v) => rain.setGust(v), 0, 10, 0.1, (v) => v.toFixed(1));
+
+$('occOn').addEventListener('change', (e) => { U.uOccOn.value = e.target.checked ? 1 : 0; });
+$('rebake').addEventListener('click', rebake);
+$('showOcc').addEventListener('change', (e) => { occView.visible = e.target.checked; });
+
+const wetRows = $('wetRows');
+slider(wetRows, 'Wetness', ...uni(U.uWetness), 0, 1, 0.01);
+slider(wetRows, 'Puddle coverage', ...uni(U.uPuddle), 0, 1, 0.01);
+slider(wetRows, 'Ripple strength', ...uni(U.uRipple), 0, 3, 0.05);
+
+const fogRows = $('fogRows');
+let fogFar = 140, keyBase = KEY_BASE;
+slider(fogRows, 'Fog far, clear air (m)', () => fogFar, (v) => { fogFar = v; }, 30, 300, 1, (v) => v.toFixed(0));
+slider(fogRows, 'Key light', () => keyBase, (v) => { keyBase = v; }, 0, 3, 0.05);
+
+// ---- lightning: one flash value for drops/splashes/key/sky; the bolt and the thunder come from rain.js
+const bolt = createLightningBolt(scene);
+let flashKey = 0, nextFlash = 5, thunderAt = -1, thunderDist = 0;
+function lightning() {
+  const s = 0.7 + Math.random() * 0.6;
+  rain.flash(s, 3.5);
+  flashKey = s;
+  const ang = Math.random() * Math.PI * 2, r = 25 + Math.random() * 45;
+  const top = new THREE.Vector3(Math.cos(ang) * r, 55 + Math.random() * 15, Math.sin(ang) * r);
+  const hit = new THREE.Vector3(top.x + (Math.random() - 0.5) * 20, 0, top.z + (Math.random() - 0.5) * 20);
+  bolt.strike(top, hit);
+  key.position.set(top.x * 0.6, 30, top.z * 0.6);                        // the flash comes from where the bolt is
+  thunderDist = hit.distanceTo(camera.position);
+  thunderAt = thunderDist / 340;                                          // seconds until the sound arrives
+}
+$('flash').addEventListener('click', lightning);
+addEventListener('keydown', (e) => { if (e.key === 'l' || e.key === 'L') lightning(); });
+
+// ---- rain sound: pink-noise bed from rain.js, level follows density -----------------------------
+let audio = null;
+$('sound').addEventListener('click', (e) => {
+  if (audio) { audio.ctx.close(); audio = null; e.target.textContent = 'Rain sound: off'; return; }
+  const ctx = new AudioContext();
+  audio = { ctx, bed: createRainBed(ctx, ctx.destination) };
+  e.target.textContent = 'Rain sound: on';
+});
+
+// ---- frame loop --------------------------------------------------------------------------------
+const stats = $('stats');
+const clock = new THREE.Clock();
+let fpsAcc = 0, fpsN = 0, fps = 0;
+function frame() {
+  const dt = Math.min(0.05, clock.getDelta());
+  controls.update();
+  rain.update(dt, camera);
+  if ($('autoFlash').checked) { nextFlash -= dt; if (nextFlash <= 0) { lightning(); nextFlash = 5 + Math.random() * 10; } }
+  flashKey = Math.max(0, flashKey - dt * 3.5);
+  key.intensity = keyBase + flashKey * 9;
+  bolt.update(dt);
+  if (thunderAt >= 0) { thunderAt -= dt; if (thunderAt < 0 && audio) playThunder(audio.ctx, audio.ctx.destination, { distance: thunderDist }); }
+  const dens = rain.group.visible ? rain.getDensity() : 0;
+  scene.fog.far = fogFar * (1 - 0.55 * dens); scene.fog.near = scene.fog.far * 0.14;
+  const f = U.uLightning.value;
+  scene.background.copy(SKY).lerp(new THREE.Color(0xdde6f5), f * 0.55);
+  scene.fog.color.copy(scene.background);
+  if (audio) audio.bed.set(rain.group.visible ? rain.getDensity() : 0);
+  renderer.render(scene, camera);
+  fpsAcc += dt; fpsN++;
+  if (fpsAcc >= 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0;
+    stats.innerHTML = `<b>${fps.toFixed(0)}</b> fps · <b>${rain.streaks.mesh.geometry.instanceCount.toLocaleString()}</b> drops · `
+      + `<b>${rain.splashes.mesh.geometry.instanceCount.toLocaleString()}</b> splash rings · occluder map ${occBake ? '1024²' : 'none'}`; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
