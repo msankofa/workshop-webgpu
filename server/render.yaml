@@ -3,7 +3,7 @@ services:
     name: creature-relay
     runtime: node
     rootDir: server
-    buildCommand: npm install
+    buildCommand: npm install && npm --prefix .. install --include=dev
     startCommand: npm start
     envVars:
       - key: PORT

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { handlePublishRequest } from './publish-map.js';
 import { guestSendVerdict } from './backpressure.js';
+import { createBaseGameRoomService } from './base-game-rooms.js';
 
 const PORT = process.env.PORT || 8080;
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -155,6 +156,14 @@ const httpServer = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
+const baseGameRooms = createBaseGameRoomService();
+
+// Server-authoritative base-game rooms: the server simulates every player at 60 Hz from
+// validated input and publishes complete snapshots at 20 Hz. Rendering stays client-side.
+baseGameRooms.ensureWorld()?.catch(err => console.error('base-game world failed to load:', err));
+setInterval(() => baseGameRooms.step(), 1000 / 60);
+setInterval(() => baseGameRooms.broadcastSnapshots(), 50);
+setInterval(() => baseGameRooms.cleanup(), 1000);
 
 // rooms: Map<code, { host: WebSocket|null, mapKey: string|null, worldMode: string, guests: Map<clientId, WebSocket> }>
 const rooms = new Map();
@@ -181,6 +190,14 @@ wss.on('connection', ws => {
   ws.on('message', raw => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+
+    // The clean base-game protocol is server-authoritative and intentionally
+    // separate from the legacy browser-host relay below. This preserves every
+    // existing Environment Viewer room while new games use server-owned state.
+    if (typeof msg.type === 'string' && msg.type.startsWith('base:')) {
+      baseGameRooms.handle(ws, msg);
+      return;
+    }
 
     if (!role) {
       if (msg.type === 'host') {
@@ -231,6 +248,7 @@ wss.on('connection', ws => {
   });
 
   ws.on('close', () => {
+    if (baseGameRooms.disconnect(ws)) return;
     if (!roomCode) return;
     const r = rooms.get(roomCode);
     if (!r) return;

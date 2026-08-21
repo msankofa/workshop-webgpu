@@ -1,0 +1,1332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Base Game v0 — Replicated Traversal Lab</title>
+<style>
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0b1430; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #stats {
+    position: fixed; left: 12px; bottom: 12px; z-index: 10;
+    padding: 7px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px;
+    background: rgba(10,14,22,.72); color: #d9e2ef;
+    font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  #err {
+    display: none; position: fixed; left: 12px; top: 12px; right: 370px; z-index: 50;
+    max-height: 45vh; overflow: auto; white-space: pre-wrap;
+    padding: 10px; border: 1px solid #9f3a3a; border-radius: 6px;
+    background: rgba(38,8,8,.94); color: #ffd7d7; font: 12px/1.45 ui-monospace, monospace;
+  }
+  #ctrl .control { margin: 7px 0 10px; }
+  #ctrl .control-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #ctrl .control-line label { color: var(--wui-text); }
+  #ctrl .control-line output { color: var(--wui-accent); font-variant-numeric: tabular-nums; }
+  #ctrl .control input[type=range] { display: block; }
+  #ctrl .button-row { display: flex; gap: 5px; }
+  #ctrl .button-row button { margin: 2px 0; }
+  #ctrl .state-status { min-height: 16px; margin-top: 4px; color: var(--wui-muted); font-size: 11px; }
+  #ctrl .note { margin: 5px 0; color: var(--wui-muted); font-size: 11px; }
+  #ctrl .capture-label { width: 100%; box-sizing: border-box; margin: 4px 0 10px; }
+  #ctrl .capture-status { min-height: 30px; margin-top: 7px; color: var(--wui-muted); font-size: 11px; line-height: 1.4; }
+  #state-file { display: none; }
+  #boot-screen { position: fixed; inset: 0; z-index: 999; display: grid; place-items: center;
+    background: #07101e; color: #b9c9df; font: 14px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div id="boot-screen">Loading start menu...</div>
+<div id="stats">initializing WebGPU…</div>
+<div id="err"></div>
+<div id="ctrl">
+  <div class="panel-head">
+    <div class="head-left"><span>Base Game v0</span><span class="hint">light + sky</span></div>
+    <div class="head-btns"><button id="sections-btn" title="Expand or collapse all sections">Sections</button><button id="panel-btn" title="Collapse panel">›</button></div>
+  </div>
+  <div class="panel-body" id="ctrl-body"></div>
+</div>
+<input id="state-file" type="file" accept="application/json,.json">
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+  "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
+} }
+</script>
+<script>
+function reportBaseGameError(value) {
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent += (value && value.stack ? value.stack : String(value)) + '\n';
+}
+window.addEventListener('error', event => reportBaseGameError(event.error || event.message));
+window.addEventListener('unhandledrejection', event => reportBaseGameError(event.reason));
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createSky } from './sky.js';
+import { sunPosition, moonPosition } from './solar-position.js';
+import { lerpHex } from './sky-field.js';
+import { createFrameProfiler } from './frame-profiler.js';
+import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
+import { createSlotSection } from './bot-viewer-slots.js';
+import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch } from './base-game-protocol.mjs';
+import { connectBaseGameSession } from './base-game-session.mjs';
+import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
+import { createWorldCoordinateSpace } from './world-coordinates.js';
+import { createWorldQueryService } from './world-query.js';
+import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
+import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGamePlayerView } from './base-game-player-view.js';
+import { createBaseGamePrediction } from './base-game-prediction.js';
+import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
+import {
+  installPanelTheme, createSection, setAllSectionsCollapsed,
+  readSectionStates, applySectionStates,
+} from './workshop-panel-theme.js';
+
+const STATE_FORMAT = 'pcw-base-game-state';
+const STATE_VERSION = 2;
+const AUTOSAVE_KEY = 'pcw:base-game:autosave';
+const WORLD_SIZE = 300;
+const TOD_SUN_WARM = '#ffb066';
+const TOD_SUN_NEUTRAL = '#fff4e0';
+const TOD_AMBIENT_NIGHT = 0.12;
+const TOD_MOON_MAX = 0.35;
+
+// Every user-configurable parameter lives here. captureAllState serializes this complete key set,
+// and the control-registry assertion below prevents a future panel control from silently escaping
+// save/load coverage.
+const DEFAULT_SETTINGS = Object.freeze({
+  worldMode: 'traversalLab',
+  labCollisionDebug: false,
+  labOriginMarker: true,
+  playerControlMode: 'player',
+  playerViewMode: 'thirdPerson',
+  playerCapsuleVisible: true,
+  playerMoveSpeed: 5.5,
+  playerSprintMultiplier: 1.75,
+  playerJumpSpeed: 8,
+  playerGravity: 26,
+  playerSlopeLimit: 50,
+  playerStepHeight: 0.6,
+  playerSnapDistance: 0.4,
+  cameraDistance: 5,
+  cameraFollowRate: 14,
+  cameraSensitivity: 0.002,
+  cameraObstructionPadding: 0.22,
+  remotePlayersEnabled: true,
+  networkDebugVisible: true,
+  interpolationDelayMs: 100,
+  skyEnabled: true,
+  domeEnabled: true,
+  sunDiscEnabled: true,
+  moonDiscEnabled: true,
+  starsEnabled: true,
+  milkyWayEnabled: true,
+  bodiesEnabled: true,
+  sunLightEnabled: true,
+  ambientLightEnabled: true,
+  moonLightEnabled: true,
+  shadowsEnabled: true,
+  primaryBody: 'sun',
+  todEnabled: false,
+  todHour: 12,
+  todLatitude: 45,
+  todDayOfYear: 172,
+  todMoonPhase: 12,
+  todSpeed: 0,
+  todPlaying: false,
+  sunElevation: 80,
+  sunAzimuth: 198,
+  sunIntensity: 4.0,
+  ambientIntensity: 0.8,
+});
+const settings = { ...DEFAULT_SETTINGS };
+const sharedSettingKeys = new Set(BASE_GAME_SHARED_KEYS);
+const NUMBER_LIMITS = Object.freeze({
+  todHour: [0, 24], todLatitude: [-90, 90], todDayOfYear: [1, 365],
+  todMoonPhase: [0, 24], todSpeed: [0, 600], sunElevation: [-90, 90],
+  sunAzimuth: [0, 360], sunIntensity: [0, 4], ambientIntensity: [0, 2],
+  playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
+  playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
+  playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
+  cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
+  interpolationDelayMs: [0, 500],
+});
+const STRING_VALUES = Object.freeze({
+  primaryBody: ['sun', 'moon'],
+  worldMode: ['empty', 'traversalLab'],
+  playerControlMode: ['player', 'orbit'],
+  playerViewMode: ['thirdPerson', 'firstPerson'],
+});
+
+let activeMode = 'menu';
+let networkSession = null;
+let networkSnapshot = null;
+let networkStatus = { state: 'offline' };
+let networkUiReady = false;
+let gameplayPaused = true;
+let simulationReady = false;
+function isOnline() {
+  return (activeMode === 'create' || activeMode === 'join') && !!networkSession;
+}
+let receiveNetworkSnapshot = snapshot => { networkSnapshot = snapshot; };
+let receiveNetworkStatus = status => { networkStatus = status; };
+
+function connectOnlineSession({ mode, roomCode }) {
+  return connectBaseGameSession({
+    mode,
+    roomCode,
+    world: pickBaseGameSharedWorld(settings),
+    onSnapshot: (snapshot, session) => receiveNetworkSnapshot(snapshot, session),
+    onStatus: status => receiveNetworkStatus(status),
+  });
+}
+
+async function chooseGameSession() {
+  document.getElementById('boot-screen')?.remove();
+  return showBaseGameStartMenu({ connect: connectOnlineSession });
+}
+
+const initialSessionChoice = await chooseGameSession();
+activeMode = initialSessionChoice.mode;
+networkSession = initialSessionChoice.session;
+if (networkSnapshot?.world) Object.assign(settings, sanitizeBaseGameWorldPatch(networkSnapshot.world));
+gameplayPaused = false;
+
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1430);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(22, 16, 26);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+
+// Step 1's global/local coordinate and provider-query contracts become live here for the first
+// time. The Traversal Lab is their permanent pre-terrain visual and collision consumer.
+const worldCoordinates = createWorldCoordinateSpace();
+const worldQuery = createWorldQueryService();
+const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
+const playerController = createBaseGamePlayerController({ worldQuery, spawn: traversalLab.layout.spawn });
+const playerView = createBaseGamePlayerView({ scene, camera, worldQuery, worldCoordinates });
+const prediction = createBaseGamePrediction({
+  controller: playerController,
+  onTick: entry => { networkSession?.queueTick(entry); },
+});
+const remotePlayers = createBaseGameRemotePlayers({ scene, worldCoordinates });
+const playerRenderPosition = [...traversalLab.layout.spawn];
+const playerKeys = new Set();
+let playerInterpolationAlpha = 0;
+let jumpEdgeQueued = false;
+// Soft reconciliation corrections are absorbed here as a decaying render offset so the capsule and
+// camera glide onto the authoritative path instead of stepping at every 20 Hz snapshot.
+const correctionOffset = [0, 0, 0];
+const CORRECTION_DECAY_RATE = 12;
+simulationReady = true;
+const rebaseShift = new THREE.Vector3();
+const stopRebasePresentation = worldCoordinates.onRebase(event => {
+  rebaseShift.fromArray(event.delta);
+  traversalLab.root.position.add(rebaseShift);
+  if (settings.playerControlMode === 'orbit') {
+    camera.position.add(rebaseShift);
+    controls.target.add(rebaseShift);
+  }
+});
+
+function resetPlayer() {
+  playerView.setLook(0, -0.12);
+  playerView.resetSmoothing();
+  // Online the server owns the transform: ask it to respawn and let the snapshot hard-snap us.
+  if (isOnline()) { networkSession.requestRespawn(); return; }
+  playerController.reset(traversalLab.layout.spawn);
+  playerController.interpolatedPosition(1, playerRenderPosition);
+}
+
+function clearPlayerInput() {
+  playerKeys.clear();
+  jumpEdgeQueued = false;
+  playerController.clearJump();
+  playerController.setInput({ moveX: 0, moveZ: 0, yaw: playerView.yaw, sprint: false });
+}
+
+function applyPlayerConfiguration() {
+  playerController.configure({
+    moveSpeed: settings.playerMoveSpeed,
+    sprintMultiplier: settings.playerSprintMultiplier,
+    jumpSpeed: settings.playerJumpSpeed,
+    gravity: settings.playerGravity,
+    slopeLimitDegrees: settings.playerSlopeLimit,
+    stepHeight: settings.playerStepHeight,
+    snapDistance: settings.playerSnapDistance,
+  });
+  controls.enabled = !gameplayPaused && settings.playerControlMode === 'orbit';
+}
+
+const rig = createLightingRig({ scene, ui: false });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 1;
+rig.dirLight.shadow.camera.far = 260;
+rig.dirLight.shadow.camera.left = -90;
+rig.dirLight.shadow.camera.right = 90;
+rig.dirLight.shadow.camera.top = 90;
+rig.dirLight.shadow.camera.bottom = -90;
+
+const moonLight = new THREE.DirectionalLight(0xaec6ff, 0);
+moonLight.castShadow = false;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.near = 1;
+moonLight.shadow.camera.far = 260;
+moonLight.shadow.camera.left = -90;
+moonLight.shadow.camera.right = 90;
+moonLight.shadow.camera.top = 90;
+moonLight.shadow.camera.bottom = -90;
+scene.add(moonLight, moonLight.target);
+
+const _sunDir = new THREE.Vector3();
+const _moonDir = new THREE.Vector3();
+let _lastSunColorT = -1;
+function dirFromAzEl(elevationDeg, azimuthDeg, out) {
+  const a = azimuthDeg * Math.PI / 180;
+  const e = elevationDeg * Math.PI / 180;
+  return out.set(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+}
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+function aimLight(light, direction) {
+  light.position.copy(camera.position).addScaledVector(direction, 120);
+  light.target.position.copy(camera.position);
+  light.target.updateMatrixWorld();
+  light.updateMatrixWorld();
+}
+
+const sky = createSky({
+  scene, camera, size: WORLD_SIZE,
+  sunDir: dirFromAzEl(settings.sunElevation, settings.sunAzimuth, _sunDir),
+  palette: { celestialType: settings.primaryBody },
+});
+scene.add(sky.group);
+
+const frameProfiler = createFrameProfiler();
+function applySkyComponentVisibility() {
+  sky.group.visible = settings.skyEnabled;
+  sky.setDomeVisible(settings.domeEnabled);
+  sky.setStarsVisible(settings.starsEnabled);
+  sky.setMilkyWayVisible(settings.milkyWayEnabled);
+  sky.setBodiesVisible(settings.bodiesEnabled);
+}
+
+function updateWorld(dt) {
+  const traversalLabVisible = settings.worldMode === 'traversalLab';
+  traversalLab.setVisible(traversalLabVisible);
+  traversalLab.setCollisionDebug(traversalLabVisible && settings.labCollisionDebug);
+  traversalLab.setOriginMarkerVisible(traversalLabVisible && settings.labOriginMarker);
+  applyPlayerConfiguration();
+  remotePlayers.setEnabled(settings.remotePlayersEnabled);
+  applySkyComponentVisibility();
+  renderer.shadowMap.enabled = settings.shadowsEnabled;
+
+  let sunIntensity = 0;
+  let moonIntensity = 0;
+  let sunDir;
+  let moonDir;
+
+  if (settings.todEnabled) {
+    const clockCanAdvance = activeMode === 'solo' ? !gameplayPaused : activeMode !== 'menu';
+    if (settings.todPlaying && clockCanAdvance && dt > 0) {
+      settings.todHour = (settings.todHour + settings.todSpeed * dt / 60) % 24;
+    }
+    const sun = sunPosition({
+      hour: settings.todHour,
+      latitudeDeg: settings.todLatitude,
+      dayOfYear: settings.todDayOfYear,
+    });
+    const moon = moonPosition({
+      hour: settings.todHour,
+      latitudeDeg: settings.todLatitude,
+      dayOfYear: settings.todDayOfYear,
+      phaseOffsetHours: settings.todMoonPhase,
+    });
+    sunDir = dirFromAzEl(sun.elevationDeg, sun.azimuthDeg, _sunDir);
+    moonDir = dirFromAzEl(moon.elevationDeg, moon.azimuthDeg, _moonDir);
+    rig.setElevation(sun.elevationDeg);
+    rig.setAzimuth(sun.azimuthDeg);
+    sky.setCelestialOpacityMode(true);
+    sky.setSunDir(sunDir);
+    sky.setMoonDir(moonDir);
+    sky.updateDome(sun.elevationDeg);
+    sky.setCelestialVisibility(
+      settings.sunDiscEnabled && sun.elevationDeg > -2,
+      settings.moonDiscEnabled && moon.elevationDeg > -2,
+    );
+
+    sunIntensity = settings.sunIntensity * smoothstep(-2, 8, sun.elevationDeg);
+    // Only re-blend the hex string when the twilight factor moves by a visible step.
+    const sunColorT = Math.round(smoothstep(0, 12, sun.elevationDeg) * 1000) / 1000;
+    if (sunColorT !== _lastSunColorT) {
+      _lastSunColorT = sunColorT;
+      rig.setSunColor(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, sunColorT));
+    }
+    rig.setAmbientIntensity(settings.ambientLightEnabled
+      ? TOD_AMBIENT_NIGHT + (settings.ambientIntensity - TOD_AMBIENT_NIGHT) * (1 - sky.nightness)
+      : 0);
+    moonIntensity = TOD_MOON_MAX * smoothstep(-2, 10, moon.elevationDeg) * sky.nightness;
+  } else {
+    sunDir = dirFromAzEl(settings.sunElevation, settings.sunAzimuth, _sunDir);
+    moonDir = _moonDir.copy(sunDir);
+    rig.setElevation(settings.sunElevation);
+    rig.setAzimuth(settings.sunAzimuth);
+    rig.setSunColor(TOD_SUN_NEUTRAL);
+    _lastSunColorT = -1;
+    rig.setAmbientIntensity(settings.ambientLightEnabled ? settings.ambientIntensity : 0);
+    sky.setCelestialOpacityMode(false);
+    sky.setSunDir(sunDir);
+    sky.setMoonDir(moonDir);
+    sky.updateDome(settings.sunElevation);
+    const moonPrimary = settings.primaryBody === 'moon';
+    sky.setCelestialType(settings.primaryBody);
+    sky.setCelestialVisibility(
+      settings.sunDiscEnabled && !moonPrimary,
+      settings.moonDiscEnabled && moonPrimary,
+    );
+    sunIntensity = moonPrimary ? 0.15 : settings.sunIntensity;
+    moonIntensity = moonPrimary ? TOD_MOON_MAX : 0;
+  }
+
+  sunIntensity = settings.sunLightEnabled ? sunIntensity : 0;
+  moonIntensity = settings.moonLightEnabled ? moonIntensity : 0;
+  rig.setSunIntensity(sunIntensity);
+  moonLight.intensity = moonIntensity;
+  aimLight(rig.dirLight, sunDir);
+  aimLight(moonLight, moonDir);
+
+  // Only one directional shadow map is allowed per frame. At night the moon owns it; otherwise
+  // the sun does. With no world geometry yet this costs no draw pass, but establishes the rule.
+  const moonOwnsShadow = moonIntensity > sunIntensity;
+  rig.dirLight.castShadow = settings.shadowsEnabled && settings.sunLightEnabled && !moonOwnsShadow;
+  moonLight.castShadow = settings.shadowsEnabled && settings.moonLightEnabled && moonOwnsShadow;
+  if (!settings.skyEnabled || !settings.domeEnabled) scene.background.set(0x0b1430);
+}
+
+// --------------------- controls ---------------------
+const ctrlRoot = document.getElementById('ctrl');
+const ctrlBody = document.getElementById('ctrl-body');
+installPanelTheme('#ctrl');
+const controlRegistry = new Map();
+let pendingSharedPatch = {};
+let sharedPatchTimer = 0;
+
+function canEditSharedSettings() {
+  return activeMode === 'solo' || !!networkSession?.owner;
+}
+function registerControl(key, sync, element) {
+  if (!(key in DEFAULT_SETTINGS)) throw new Error(`Control has no saved setting: ${key}`);
+  if (controlRegistry.has(key)) throw new Error(`Duplicate control: ${key}`);
+  controlRegistry.set(key, { sync, element, shared: sharedSettingKeys.has(key) });
+}
+function syncNetworkControlPermissions() {
+  const editable = canEditSharedSettings();
+  for (const entry of controlRegistry.values()) {
+    if (entry.shared && entry.element) entry.element.disabled = !editable;
+  }
+}
+function queueSharedWorldPatch(key) {
+  if (!networkSession?.owner) return;
+  pendingSharedPatch[key] = settings[key];
+  if (sharedPatchTimer) return;
+  sharedPatchTimer = setTimeout(() => {
+    sharedPatchTimer = 0;
+    const patch = pendingSharedPatch;
+    pendingSharedPatch = {};
+    networkSession?.setWorld(patch);
+  }, 75);
+}
+function changed(key) {
+  if (key === 'playerControlMode') {
+    clearPlayerInput();
+    playerView.resetSmoothing();
+    if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  } else if (key === 'playerViewMode') {
+    playerView.resetSmoothing();
+  }
+  updateWorld(0);
+  scheduleAutosave();
+  if (key && sharedSettingKeys.has(key) && activeMode !== 'solo') {
+    queueSharedWorldPatch(key);
+  }
+}
+function addToggle(host, key, label) {
+  const row = document.createElement('label');
+  row.className = 'control-line control';
+  const text = document.createElement('span'); text.textContent = label;
+  const input = document.createElement('input'); input.type = 'checkbox';
+  row.append(text, input); host.append(row);
+  input.addEventListener('change', () => { settings[key] = input.checked; changed(key); });
+  registerControl(key, () => { input.checked = settings[key]; }, input);
+}
+function addRange(host, key, label, min, max, step, format = value => String(value)) {
+  const wrap = document.createElement('div'); wrap.className = 'control';
+  const row = document.createElement('div'); row.className = 'control-line';
+  const text = document.createElement('label'); text.textContent = label;
+  const output = document.createElement('output');
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  row.append(text, output); wrap.append(row, input); host.append(wrap);
+  input.addEventListener('input', () => {
+    settings[key] = Number(input.value); output.textContent = format(settings[key]); changed(key);
+  });
+  registerControl(key, () => { input.value = String(settings[key]); output.textContent = format(settings[key]); }, input);
+}
+function addSelect(host, key, label, values) {
+  const row = document.createElement('label'); row.className = 'control-line control';
+  const text = document.createElement('span'); text.textContent = label;
+  const select = document.createElement('select');
+  for (const value of values) {
+    const option = document.createElement('option'); option.value = value; option.textContent = value;
+    select.append(option);
+  }
+  row.append(text, select); host.append(row);
+  select.addEventListener('change', () => { settings[key] = select.value; changed(key); });
+  registerControl(key, () => { select.value = settings[key]; }, select);
+}
+function syncAllControls() {
+  for (const entry of controlRegistry.values()) entry.sync();
+}
+
+const sessionSec = createSection(ctrlBody, 'Session', { collapsed: false });
+const captureSec = createSection(ctrlBody, 'Performance Capture', { collapsed: false });
+const worldSec = createSection(ctrlBody, 'World / Traversal Lab', { collapsed: false });
+const playerSec = createSection(ctrlBody, 'Player / Camera', { collapsed: false });
+const networkSec = createSection(ctrlBody, 'Network / Remote players', { collapsed: false });
+const skySec = createSection(ctrlBody, 'Sky components', { collapsed: false });
+const timeSec = createSection(ctrlBody, 'Time of day', { collapsed: false });
+const lightSec = createSection(ctrlBody, 'Lighting', { collapsed: true });
+
+const captureLabelLabel = document.createElement('label');
+captureLabelLabel.textContent = 'Optional label';
+const captureLabelInput = document.createElement('input');
+captureLabelInput.type = 'text';
+captureLabelInput.maxLength = 120;
+captureLabelInput.placeholder = 'Example: stars off, bodies off';
+captureLabelInput.className = 'capture-label';
+captureLabelLabel.append(captureLabelInput);
+
+const captureWindowWrap = document.createElement('div');
+captureWindowWrap.className = 'control';
+const captureWindowRow = document.createElement('div');
+captureWindowRow.className = 'control-line';
+const captureWindowLabel = document.createElement('label');
+captureWindowLabel.textContent = 'Measurement window';
+const captureWindowOutput = document.createElement('output');
+const captureWindowInput = document.createElement('input');
+captureWindowInput.type = 'range';
+captureWindowInput.min = '0';
+captureWindowInput.max = '10';
+captureWindowInput.step = '0.5';
+captureWindowInput.value = '3';
+function syncCaptureWindowOutput() {
+  const seconds = Number(captureWindowInput.value);
+  captureWindowOutput.textContent = seconds === 0 ? 'Instantaneous' : `${seconds.toFixed(1)} s`;
+}
+captureWindowInput.addEventListener('input', syncCaptureWindowOutput);
+captureWindowRow.append(captureWindowLabel, captureWindowOutput);
+captureWindowWrap.append(captureWindowRow, captureWindowInput);
+
+const recordPerformanceButton = document.createElement('button');
+recordPerformanceButton.textContent = 'Record Performance';
+const captureStatus = document.createElement('div');
+captureStatus.className = 'capture-status';
+captureStatus.textContent = 'Each entry is prepended to the JSON file on disk.';
+captureSec.append(captureLabelLabel, captureWindowWrap, recordPerformanceButton, captureStatus);
+syncCaptureWindowOutput();
+
+addSelect(worldSec, 'worldMode', 'World mode', ['empty', 'traversalLab']);
+addToggle(worldSec, 'labCollisionDebug', 'Collision wireframe');
+addToggle(worldSec, 'labOriginMarker', 'Origin axes');
+const frameLabButton = document.createElement('button');
+frameLabButton.textContent = 'Frame Traversal Lab';
+frameLabButton.addEventListener('click', () => {
+  camera.position.fromArray(traversalLab.layout.initialView.camera);
+  controls.target.fromArray(traversalLab.layout.initialView.target);
+  controls.update();
+  scheduleAutosave();
+});
+worldSec.append(frameLabButton);
+const labSummary = document.createElement('div');
+labSummary.className = 'note';
+labSummary.textContent = `${traversalLab.stats.primitiveCount} diagnostic solids / `
+  + `${traversalLab.stats.collisionTriangles} collision tris / ${traversalLab.stats.materialDraws} material draws`;
+worldSec.append(labSummary);
+
+addSelect(playerSec, 'playerControlMode', 'Control mode', ['player', 'orbit']);
+addSelect(playerSec, 'playerViewMode', 'Player view', ['thirdPerson', 'firstPerson']);
+addToggle(playerSec, 'playerCapsuleVisible', 'Diagnostic capsule');
+addRange(playerSec, 'playerMoveSpeed', 'Walk speed', 1, 15, 0.25, value => `${value.toFixed(2)} m/s`);
+addRange(playerSec, 'playerSprintMultiplier', 'Sprint multiplier', 1, 3, 0.05, value => `${value.toFixed(2)}x`);
+addRange(playerSec, 'playerJumpSpeed', 'Jump speed', 2, 16, 0.25, value => `${value.toFixed(2)} m/s`);
+addRange(playerSec, 'playerGravity', 'Gravity', 1, 60, 1, value => `${value.toFixed(0)} m/s2`);
+addRange(playerSec, 'playerSlopeLimit', 'Slope limit', 1, 85, 1, value => `${value.toFixed(0)} deg`);
+addRange(playerSec, 'playerStepHeight', 'Step height', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'playerSnapDistance', 'Snap down', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
+addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
+addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
+const playerButtons = document.createElement('div'); playerButtons.className = 'button-row';
+const resetPlayerButton = document.createElement('button'); resetPlayerButton.textContent = 'Reset Player';
+const captureMouseButton = document.createElement('button'); captureMouseButton.textContent = 'Capture Mouse';
+resetPlayerButton.addEventListener('click', () => { resetPlayer(); scheduleAutosave(); });
+captureMouseButton.addEventListener('click', () => {
+  if (!gameplayPaused && settings.playerControlMode === 'player') renderer.domElement.requestPointerLock?.();
+});
+playerButtons.append(resetPlayerButton, captureMouseButton); playerSec.append(playerButtons);
+const playerStatus = document.createElement('div'); playerStatus.className = 'note';
+playerStatus.textContent = 'WASD move / Shift sprint / Space jump / mouse look / V view / R reset';
+playerSec.append(playerStatus);
+
+addToggle(networkSec, 'remotePlayersEnabled', 'Remote player capsules');
+addToggle(networkSec, 'networkDebugVisible', 'Network diagnostics');
+addRange(networkSec, 'interpolationDelayMs', 'Interpolation delay', 0, 500, 10, value => `${value.toFixed(0)} ms`);
+const networkDebug = document.createElement('div');
+networkDebug.className = 'note';
+networkDebug.textContent = 'Offline.';
+networkSec.append(networkDebug);
+
+for (const [key, label] of [
+  ['skyEnabled', 'Entire sky'], ['domeEnabled', 'Dome'], ['sunDiscEnabled', 'Sun disc'],
+  ['moonDiscEnabled', 'Moon disc'], ['starsEnabled', 'Stars'],
+  ['milkyWayEnabled', 'Milky Way'], ['bodiesEnabled', 'Additional bodies'],
+]) addToggle(skySec, key, label);
+
+addToggle(timeSec, 'todEnabled', 'Drive from time of day');
+addSelect(timeSec, 'primaryBody', 'Manual primary body', ['sun', 'moon']);
+addRange(timeSec, 'todHour', 'Time', 0, 24, 0.05, value => {
+  const hour = Math.floor(value) % 24;
+  const minute = Math.round((value - Math.floor(value)) * 60) % 60;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+});
+addRange(timeSec, 'todLatitude', 'Latitude', -90, 90, 1, value => `${value.toFixed(0)}°`);
+addRange(timeSec, 'todDayOfYear', 'Day of year', 1, 365, 1, value => value.toFixed(0));
+addRange(timeSec, 'todMoonPhase', 'Moon phase offset', 0, 24, 0.5, value => `${value.toFixed(1)} h`);
+addRange(timeSec, 'todSpeed', 'Speed', 0, 600, 5, value => `${value.toFixed(0)} min/s`);
+const playButton = document.createElement('button');
+playButton.addEventListener('click', () => { settings.todPlaying = !settings.todPlaying; changed('todPlaying'); syncAllControls(); });
+timeSec.append(playButton);
+registerControl('todPlaying', () => { playButton.textContent = settings.todPlaying ? 'Pause clock' : 'Play clock'; }, playButton);
+
+for (const [key, label] of [
+  ['sunLightEnabled', 'Directional sunlight'], ['ambientLightEnabled', 'Ambient light'],
+  ['moonLightEnabled', 'Moonlight'], ['shadowsEnabled', 'Shadows'],
+]) addToggle(lightSec, key, label);
+addRange(lightSec, 'sunElevation', 'Manual elevation', -90, 90, 1, value => `${value.toFixed(0)}°`);
+addRange(lightSec, 'sunAzimuth', 'Manual azimuth', 0, 360, 1, value => `${value.toFixed(0)}°`);
+addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toFixed(2));
+addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
+
+const missingControls = Object.keys(DEFAULT_SETTINGS).filter(key => !controlRegistry.has(key));
+if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${missingControls.join(', ')}`);
+
+const multiplayerStatus = document.createElement('div');
+multiplayerStatus.className = 'note';
+sessionSec.prepend(multiplayerStatus);
+const pauseMenuButton = document.createElement('button');
+pauseMenuButton.textContent = 'Pause / Menu';
+sessionSec.insertBefore(pauseMenuButton, multiplayerStatus.nextSibling);
+
+function renderNetworkStatus() {
+  if (activeMode === 'solo') {
+    multiplayerStatus.textContent = 'Solo · local world';
+    return;
+  }
+  if (activeMode === 'menu') {
+    multiplayerStatus.textContent = 'Main menu';
+    return;
+  }
+  const role = networkSession?.owner ? 'owner' : 'player';
+  const count = networkSnapshot?.players?.filter(player => player.connected).length ?? 0;
+  const state = networkStatus.state || 'connecting';
+  multiplayerStatus.textContent = `${networkSession?.roomCode || ''} · ${role} · ${state} · ${count} connected`;
+}
+
+receiveNetworkStatus = status => {
+  networkStatus = status;
+  if (networkUiReady) {
+    syncNetworkControlPermissions();
+    renderNetworkStatus();
+  }
+};
+// Authoritative player state: reconcile the owning client's prediction and buffer every other
+// roster entry for interpolated remote capsules. Shared world values apply as before.
+function applyPlayerSnapshot(snapshot, session) {
+  if (!simulationReady || !session?.clientId) return;
+  const local = snapshot.players?.find(player => player.id === session.clientId);
+  if (local) {
+    const before = playerController.getPosition();
+    const result = prediction.reconcile(local);
+    if (result.hard) {
+      correctionOffset.fill(0);
+      playerView.resetSmoothing();
+      playerController.interpolatedPosition(1, playerRenderPosition);
+    } else if (result.replayed > 0 || result.reason === 'replay') {
+      const after = playerController.getPosition();
+      for (let axis = 0; axis < 3; axis++) correctionOffset[axis] += before[axis] - after[axis];
+    }
+  }
+  remotePlayers.ingestSnapshot(snapshot, session.clientId, performance.now());
+}
+receiveNetworkSnapshot = (snapshot, session = networkSession) => {
+  networkSnapshot = snapshot;
+  if (session) networkSession = session;
+  applyPlayerSnapshot(snapshot, session);
+  Object.assign(settings, sanitizeBaseGameWorldPatch(snapshot.world));
+  if (networkUiReady) {
+    syncAllControls();
+    syncNetworkControlPermissions();
+    updateWorld(0);
+    renderNetworkStatus();
+  }
+};
+networkUiReady = true;
+if (networkSnapshot) receiveNetworkSnapshot(networkSnapshot, networkSession);
+syncNetworkControlPermissions();
+renderNetworkStatus();
+
+// --------------------- state capture / apply ---------------------
+function captureAllState() {
+  const savedSettings = {};
+  for (const key of Object.keys(DEFAULT_SETTINGS)) savedSettings[key] = settings[key];
+  return {
+    format: STATE_FORMAT,
+    version: STATE_VERSION,
+    settings: savedSettings,
+    camera: {
+      position: camera.position.toArray(),
+      target: controls.target.toArray(),
+      fov: camera.fov,
+    },
+    world: { renderOrigin: worldCoordinates.getOrigin() },
+    player: {
+      ...playerController.captureState(),
+      view: playerView.captureState(),
+    },
+    ui: {
+      panelCollapsed: ctrlRoot.classList.contains('collapsed'),
+      sections: readSectionStates(ctrlBody),
+    },
+  };
+}
+
+function assignLoadedSettings(loaded, { includeShared = true } = {}) {
+  if (!loaded || typeof loaded !== 'object') return;
+  for (const [key, fallback] of Object.entries(DEFAULT_SETTINGS)) {
+    if (!includeShared && sharedSettingKeys.has(key)) continue;
+    const value = loaded[key];
+    if (typeof fallback === 'boolean') {
+      if (typeof value === 'boolean') settings[key] = value;
+    } else if (typeof fallback === 'number') {
+      if (!Number.isFinite(value)) continue;
+      const limits = NUMBER_LIMITS[key];
+      settings[key] = limits ? Math.max(limits[0], Math.min(limits[1], value)) : value;
+    } else if (typeof fallback === 'string') {
+      const allowed = STRING_VALUES[key];
+      if (typeof value === 'string' && (!allowed || allowed.includes(value))) settings[key] = value;
+    }
+  }
+}
+function finiteVec3(value) {
+  return Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+}
+function applyAllState(payload) {
+  const data = payload?.data?.settings ? payload.data : payload;
+  if (!data || typeof data !== 'object') throw new Error('State is not an object');
+  if (data.format && data.format !== STATE_FORMAT) throw new Error(`Unsupported state format: ${data.format}`);
+  assignLoadedSettings(data.settings, { includeShared: canEditSharedSettings() });
+  if (finiteVec3(data.world?.renderOrigin)) worldCoordinates.setRenderOrigin(data.world.renderOrigin);
+  // A saved transform is a Solo/debug artifact; online, the server's spawn state wins.
+  if (data.player && !isOnline()) playerController.applyState(data.player);
+  if (data.player?.view) playerView.applyState(data.player.view);
+  if (finiteVec3(data.camera?.position)) camera.position.fromArray(data.camera.position);
+  if (finiteVec3(data.camera?.target)) controls.target.fromArray(data.camera.target);
+  if (Number.isFinite(data.camera?.fov)) {
+    camera.fov = Math.max(20, Math.min(100, data.camera.fov));
+    camera.updateProjectionMatrix();
+  }
+  if (typeof data.ui?.panelCollapsed === 'boolean') ctrlRoot.classList.toggle('collapsed', data.ui.panelCollapsed);
+  applySectionStates(ctrlBody, data.ui?.sections);
+  controls.update();
+  syncAllControls();
+  syncNetworkControlPermissions();
+  updateWorld(0);
+  if (activeMode !== 'solo' && networkSession?.owner) networkSession.setWorld(pickBaseGameSharedWorld(settings));
+  return true;
+}
+
+function stateEnvelope(name = 'base game') {
+  return { group: 'base-game', name, savedAt: new Date().toISOString(), data: captureAllState() };
+}
+function downloadJson(filename, value) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+function stateStamp() {
+  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+}
+function mirrorSlotToDisk(group, index, entry) {
+  const stamp = stateStamp();
+  const filename = `base-game-${group}-slot${index}-${stamp.slice(0, 8)}-${stamp.slice(8)}.json`;
+  fetch(`/api/save-slot-export?filename=${encodeURIComponent(filename)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group, slot: Number(index), ...entry }, null, 2),
+  }).catch(() => {});
+}
+
+const slotUi = createSlotSection({
+  group: 'base-game', label: 'base game', capture: captureAllState, apply: applyAllState,
+  onSaved: mirrorSlotToDisk,
+});
+sessionSec.append(...slotUi.nodes);
+
+const fileButtons = document.createElement('div'); fileButtons.className = 'button-row';
+const exportButton = document.createElement('button'); exportButton.textContent = 'Export JSON';
+const importButton = document.createElement('button'); importButton.textContent = 'Import JSON';
+fileButtons.append(exportButton, importButton); sessionSec.append(fileButtons);
+const stateStatus = document.createElement('div'); stateStatus.className = 'state-status'; sessionSec.append(stateStatus);
+const fileInput = document.getElementById('state-file');
+exportButton.addEventListener('click', () => {
+  downloadJson(`base-game-state-${stateStamp()}.json`, stateEnvelope());
+  stateStatus.textContent = 'downloaded complete state JSON';
+});
+importButton.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    applyAllState(parsed);
+    stateStatus.textContent = `loaded ${file.name}`;
+    scheduleAutosave();
+  } catch (error) {
+    stateStatus.textContent = `load failed: ${error.message}`;
+  } finally {
+    fileInput.value = '';
+  }
+});
+
+const restoreButton = document.createElement('button');
+restoreButton.textContent = 'Restore last session';
+sessionSec.append(restoreButton);
+function readAutosave() {
+  try { return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { return null; }
+}
+function writeAutosave() {
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt: new Date().toISOString(), data: captureAllState() }));
+    restoreButton.disabled = false;
+  } catch { /* localStorage may be unavailable or full; explicit JSON export remains available */ }
+}
+function updateRestoreButton() {
+  const saved = readAutosave();
+  restoreButton.disabled = !saved?.data;
+  restoreButton.title = saved?.savedAt ? `Restore snapshot from ${saved.savedAt}` : 'No automatic snapshot exists yet';
+}
+restoreButton.addEventListener('click', () => {
+  const saved = readAutosave();
+  if (!saved?.data) return;
+  try { applyAllState(saved.data); stateStatus.textContent = `restored ${saved.savedAt}`; }
+  catch (error) { stateStatus.textContent = `restore failed: ${error.message}`; }
+});
+let autosaveTimer = 0;
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(writeAutosave, 3000);
+}
+ctrlRoot.addEventListener('input', scheduleAutosave);
+ctrlRoot.addEventListener('click', scheduleAutosave);
+controls.addEventListener('change', scheduleAutosave);
+addEventListener('pagehide', () => { writeAutosave(); networkSession?.flushInput(); networkSession?.destroy(); });
+updateRestoreButton();
+
+document.getElementById('panel-btn').addEventListener('click', () => {
+  ctrlRoot.classList.toggle('collapsed'); scheduleAutosave();
+});
+document.getElementById('sections-btn').addEventListener('click', () => {
+  const anyOpen = [...ctrlBody.querySelectorAll('.sec')].some(section => !section.classList.contains('collapsed'));
+  setAllSectionsCollapsed(ctrlBody, anyOpen); scheduleAutosave();
+});
+
+function pauseSessionLabel() {
+  if (activeMode === 'solo') return 'Solo · world paused';
+  const role = networkSession?.owner ? 'owner' : 'player';
+  return `${networkSession?.roomCode || 'online'} · ${role} · shared world continues`;
+}
+function resumeGameplay() {
+  gameplayPaused = false;
+  controls.enabled = settings.playerControlMode === 'orbit';
+}
+function openPauseMenu() {
+  if (activeMode === 'menu') return;
+  gameplayPaused = true;
+  controls.enabled = false;
+  clearPlayerInput();
+  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  pauseMenu.show(pauseSessionLabel());
+}
+async function returnToMainMenu() {
+  gameplayPaused = true;
+  controls.enabled = false;
+  clearPlayerInput();
+  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  activeMode = 'menu';
+  clearTimeout(sharedPatchTimer);
+  sharedPatchTimer = 0;
+  pendingSharedPatch = {};
+  networkSession?.flushInput();
+  networkSession?.destroy();
+  networkSession = null;
+  prediction.reset();
+  correctionOffset.fill(0);
+  remotePlayers.clear();
+  networkSnapshot = null;
+  networkStatus = { state: 'offline' };
+  syncNetworkControlPermissions();
+  renderNetworkStatus();
+  const choice = await chooseGameSession();
+  activeMode = choice.mode;
+  networkSession = choice.session;
+  if (networkSnapshot) receiveNetworkSnapshot(networkSnapshot, networkSession);
+  gameplayPaused = false;
+  controls.enabled = settings.playerControlMode === 'orbit';
+  syncNetworkControlPermissions();
+  renderNetworkStatus();
+}
+
+const pauseMenu = createBaseGamePauseMenu({
+  onResume: resumeGameplay,
+  onSettings: () => {
+    gameplayPaused = true;
+    controls.enabled = false;
+    clearPlayerInput();
+    if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+    ctrlRoot.classList.remove('collapsed');
+  },
+  onMainMenu: () => { returnToMainMenu().catch(reportBaseGameError); },
+});
+pauseMenuButton.addEventListener('click', openPauseMenu);
+addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || activeMode === 'menu') return;
+  event.preventDefault();
+  if (pauseMenu.open) {
+    pauseMenu.hide();
+    resumeGameplay();
+  } else if (gameplayPaused) {
+    pauseMenu.show(pauseSessionLabel());
+  } else {
+    openPauseMenu();
+  }
+});
+
+addEventListener('keydown', event => {
+  if (activeMode === 'menu' || gameplayPaused || settings.playerControlMode !== 'player') return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space'].includes(event.code)) {
+    event.preventDefault();
+    playerKeys.add(event.code);
+  }
+  if (event.code === 'Space' && !event.repeat) jumpEdgeQueued = true;
+  if (event.code === 'KeyV' && !event.repeat) {
+    settings.playerViewMode = settings.playerViewMode === 'thirdPerson' ? 'firstPerson' : 'thirdPerson';
+    playerView.resetSmoothing();
+    syncAllControls();
+    changed('playerViewMode');
+  }
+  if (event.code === 'KeyR' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
+});
+addEventListener('keyup', event => playerKeys.delete(event.code));
+addEventListener('blur', clearPlayerInput);
+renderer.domElement.addEventListener('click', () => {
+  if (!gameplayPaused && settings.playerControlMode === 'player'
+    && document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock?.();
+});
+addEventListener('mousemove', event => {
+  if (gameplayPaused || settings.playerControlMode !== 'player'
+    || document.pointerLockElement !== renderer.domElement) return;
+  playerView.addLook(-event.movementX * settings.cameraSensitivity, -event.movementY * settings.cameraSensitivity);
+});
+renderer.domElement.addEventListener('wheel', event => {
+  if (settings.playerControlMode !== 'player' || settings.playerViewMode !== 'thirdPerson') return;
+  settings.cameraDistance = Math.max(1, Math.min(12, settings.cameraDistance * (1 + Math.sign(event.deltaY) * 0.08)));
+  controlRegistry.get('cameraDistance')?.sync();
+  scheduleAutosave();
+}, { passive: true });
+
+syncAllControls();
+syncNetworkControlPermissions();
+updateWorld(0);
+
+// --------------------- frame + stats ---------------------
+const statsEl = document.getElementById('stats');
+let frameBusy = false;
+let lastFrameStart = performance.now();
+let fpsElapsed = 0;
+let fpsFrames = 0;
+let shownFps = 0;
+let worstPeak = 0;
+let shownWorst = 0;
+let lastRenderInfo = { drawCalls: 0, triangles: 0 };
+let latestPerformanceFrame = null;
+let activePerformanceCapture = null;
+
+function copyPerformanceSettings() {
+  return Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key => [key, settings[key]]));
+}
+
+function performanceToggles(savedSettings) {
+  return Object.fromEntries(Object.entries(savedSettings).filter(([, value]) => typeof value === 'boolean'));
+}
+
+function setPerformanceCaptureBusy(busy) {
+  captureLabelInput.disabled = busy;
+  captureWindowInput.disabled = busy;
+  recordPerformanceButton.disabled = busy;
+}
+
+function captureContext() {
+  return {
+    mode: activeMode,
+    roomCode: networkSession?.roomCode ?? null,
+    roomRole: activeMode === 'create' || activeMode === 'join'
+      ? (networkSession?.owner ? 'owner' : 'player')
+      : null,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      pixelRatio: window.devicePixelRatio,
+    },
+    network: networkDiagnostics(),
+    world: {
+      mode: settings.worldMode,
+      renderOrigin: worldCoordinates.getOrigin(),
+      queryProviders: worldQuery.providerIds(),
+      traversalLab: traversalLab.stats,
+      player: {
+        position: playerController.getPosition(),
+        velocity: playerController.getVelocity(),
+        diagnostics: playerController.diagnostics,
+        surface: playerController.surface,
+        view: playerView.captureState(),
+      },
+    },
+    userAgent: navigator.userAgent,
+  };
+}
+
+async function savePerformanceCapture(entry) {
+  const response = await fetch('/api/base-game-performance-capture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+  return result;
+}
+
+async function finishPerformanceCapture(capture, finishedAt) {
+  const settingsAtEnd = copyPerformanceSettings();
+  const allChanges = changedPerformanceSettings(capture.settingsAtStart, settingsAtEnd);
+  const clockWasRunning = capture.settingsAtStart.todPlaying && settingsAtEnd.todPlaying;
+  const expectedDynamicChanges = allChanges.filter(change => change.key === 'todHour' && clockWasRunning);
+  const changedSettingsDuringCapture = allChanges.filter(change => !expectedDynamicChanges.includes(change));
+  const droppedFramesEnd = frameProfiler.snapshot().droppedFrames;
+
+  try {
+    const performanceResult = buildPerformanceMeasurement(capture.samples, {
+      requestedWindowSeconds: capture.requestedWindowSeconds,
+      startedAt: capture.startedAt,
+      finishedAt,
+      droppedFramesStart: capture.droppedFramesStart,
+      droppedFramesEnd,
+    });
+    const entry = {
+      format: 'pcw-base-game-performance-capture',
+      version: 1,
+      ...(capture.label ? { label: capture.label } : {}),
+      capturedAt: new Date().toISOString(),
+      configurationStable: changedSettingsDuringCapture.length === 0,
+      changedSettingsDuringCapture,
+      expectedDynamicChanges,
+      settingsAtStart: capture.settingsAtStart,
+      settingsAtEnd,
+      togglesAtStart: performanceToggles(capture.settingsAtStart),
+      performance: performanceResult,
+      context: captureContext(),
+    };
+    const description = capture.label ? `“${capture.label}”` : 'performance capture';
+    captureStatus.textContent = `Saving ${description} to disk…`;
+    const saved = await savePerformanceCapture(entry);
+    captureStatus.textContent = `Saved ${description} as entry ${saved.entryCount} in ${saved.path}.`;
+  } catch (error) {
+    captureStatus.textContent = `Performance capture failed: ${error.message}. Run this page through serve.py to save to disk.`;
+  } finally {
+    setPerformanceCaptureBusy(false);
+  }
+}
+
+function recordPerformanceFrame(frameStart, frameMs) {
+  latestPerformanceFrame = {
+    frameMs,
+    drawCalls: lastRenderInfo.drawCalls,
+    triangles: lastRenderInfo.triangles,
+  };
+  const capture = activePerformanceCapture;
+  if (!capture) return;
+
+  // Trim the first draw-to-draw interval at the click boundary instead of attributing
+  // pre-capture time to the requested measurement window.
+  const sample = capture.samples.length === 0
+    ? { ...latestPerformanceFrame, frameMs: Math.min(frameMs, Math.max(0.001, frameStart - capture.startedAt)) }
+    : latestPerformanceFrame;
+  capture.samples.push(sample);
+  const now = performance.now();
+  if (now - capture.lastProgressAt >= 500) {
+    const remaining = Math.max(0, capture.endsAt - now) / 1000;
+    const description = capture.label ? `“${capture.label}”` : 'performance';
+    captureStatus.textContent = `Measuring ${description}… ${remaining.toFixed(1)} s remaining`;
+    capture.lastProgressAt = now;
+  }
+  if (now < capture.endsAt) return;
+  activePerformanceCapture = null;
+  finishPerformanceCapture(capture, now);
+}
+
+recordPerformanceButton.addEventListener('click', () => {
+  const label = captureLabelInput.value.trim();
+  if (activePerformanceCapture) return;
+  const requestedWindowSeconds = Number(captureWindowInput.value);
+  const startedAt = performance.now();
+  const capture = {
+    label,
+    requestedWindowSeconds,
+    startedAt,
+    endsAt: startedAt + requestedWindowSeconds * 1000,
+    settingsAtStart: copyPerformanceSettings(),
+    droppedFramesStart: frameProfiler.snapshot().droppedFrames,
+    samples: [],
+    lastProgressAt: 0,
+  };
+  setPerformanceCaptureBusy(true);
+
+  if (requestedWindowSeconds === 0) {
+    if (!latestPerformanceFrame) {
+      captureStatus.textContent = 'No rendered frame is available yet.';
+      setPerformanceCaptureBusy(false);
+      return;
+    }
+    capture.samples.push(latestPerformanceFrame);
+    finishPerformanceCapture(capture, startedAt);
+    return;
+  }
+  activePerformanceCapture = capture;
+  const description = label ? `“${label}”` : 'performance';
+  captureStatus.textContent = `Measuring ${description}… ${requestedWindowSeconds.toFixed(1)} s remaining`;
+});
+
+let rateWindow = { at: performance.now(), inputs: 0, snapshots: 0, inputRate: 0, snapshotRate: 0 };
+function networkDiagnostics() {
+  const stats = networkSession?.stats ?? null;
+  const predicted = prediction.diagnostics;
+  const remote = remotePlayers.diagnostics;
+  return {
+    online: isOnline(),
+    roomPlayerCount: networkSnapshot?.players?.length ?? 0,
+    connectedPlayerCount: networkSnapshot?.players?.filter(player => player.connected).length ?? 0,
+    serverTick: stats?.serverTick ?? 0,
+    inputsSent: stats?.inputsSent ?? 0,
+    snapshotsReceived: stats?.snapshotsReceived ?? 0,
+    inputRate: rateWindow.inputRate,
+    snapshotRate: rateWindow.snapshotRate,
+    pingMs: stats?.pingMs ?? null,
+    localTick: predicted.tick,
+    lastAckedTick: predicted.lastAckedTick,
+    serverQueueDepth: predicted.serverQueueDepth,
+    timeScale: predicted.timeScale,
+    predictionError: predicted.predictionError,
+    reconciliations: predicted.reconciliations,
+    hardSnaps: predicted.hardSnaps,
+    historyLength: predicted.historyLength,
+    interpolationDelayMs: settings.interpolationDelayMs,
+    remoteCount: remote.remoteCount,
+    remoteModes: remote.modes,
+  };
+}
+function renderNetworkDebug() {
+  networkDebug.style.display = settings.networkDebugVisible ? '' : 'none';
+  if (!settings.networkDebugVisible) return;
+  if (!isOnline()) { networkDebug.textContent = 'Offline.'; return; }
+  const stats = networkSession.stats;
+  const now = performance.now();
+  const elapsed = (now - rateWindow.at) / 1000;
+  if (elapsed >= 1) {
+    rateWindow.inputRate = (stats.inputsSent - rateWindow.inputs) / elapsed;
+    rateWindow.snapshotRate = (stats.snapshotsReceived - rateWindow.snapshots) / elapsed;
+    rateWindow = { ...rateWindow, at: now, inputs: stats.inputsSent, snapshots: stats.snapshotsReceived };
+  }
+  const n = networkDiagnostics();
+  const modes = Object.entries(n.remoteModes).map(([mode, count]) => `${count} ${mode}`).join(', ') || 'none';
+  networkDebug.textContent = `tick ${n.serverTick} / in ${n.inputRate.toFixed(0)} per s / snap ${n.snapshotRate.toFixed(0)} per s / `
+    + `ping ${n.pingMs == null ? '?' : n.pingMs.toFixed(0)} ms / tick ${n.localTick} ack ${n.lastAckedTick} / `
+    + `queue ${n.serverQueueDepth ?? '?'} x${n.timeScale.toFixed(2)} / `
+    + `err ${n.predictionError.toFixed(3)} m / recon ${n.reconciliations} (${n.hardSnaps} hard) / `
+    + `buffer ${n.interpolationDelayMs} ms / remotes ${n.remoteCount} (${modes})`;
+}
+
+function formatTriangles(count) {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}m`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(0)}k`;
+  return String(count);
+}
+function updateStats(frameMs) {
+  fpsElapsed += frameMs;
+  fpsFrames++;
+  worstPeak = Math.max(worstPeak, frameMs);
+  if (fpsElapsed < 500) return;
+  shownFps = fpsFrames * 1000 / fpsElapsed;
+  shownWorst = worstPeak;
+  fpsElapsed = 0; fpsFrames = 0; worstPeak = 0;
+  const dropped = frameProfiler.snapshot().droppedFrames;
+  const sessionText = activeMode === 'solo' ? 'solo'
+    : activeMode === 'menu' ? 'menu'
+      : `${networkSession?.roomCode || 'online'} ${networkSession?.owner ? 'owner' : 'player'} ${networkStatus.state || ''}`;
+  statsEl.textContent = `${shownFps.toFixed(0)} fps · worst ${shownWorst.toFixed(1)} ms · `
+    + `${lastRenderInfo.drawCalls} draws · ${formatTriangles(lastRenderInfo.triangles)} tris · ${dropped} dropped · ${sessionText}`;
+  if (settings.todPlaying) controlRegistry.get('todHour')?.sync();
+  renderNetworkDebug();
+  const playerPosition = playerController.getPosition();
+  playerStatus.textContent = `WASD / Shift / Space / ${settings.playerViewMode} / `
+    + `${playerController.grounded ? 'grounded' : 'airborne'} / `
+    + `xyz ${playerPosition.map(value => value.toFixed(2)).join(', ')}`;
+}
+
+async function animate() {
+  if (frameBusy) { frameProfiler.markDropped(); return; }
+  frameBusy = true;
+  try {
+    frameProfiler.beginFrame();
+    const frameStart = performance.now();
+    const frameMs = Math.max(0, frameStart - lastFrameStart);
+    lastFrameStart = frameStart;
+    const dt = Math.min(0.1, frameMs / 1000);
+
+    const online = isOnline();
+    const canControl = !gameplayPaused && settings.playerControlMode === 'player';
+    const input = canControl ? {
+      moveX: (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
+      moveZ: (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
+      yaw: playerView.yaw,
+      pitch: playerView.pitch,
+      sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
+    } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false };
+    const jump = canControl && jumpEdgeQueued;
+    jumpEdgeQueued = false;
+    if (online) {
+      // Lockstep ticks: every fixed step is numbered, sent to the server, and replayed exactly on
+      // reconciliation. Paused or Orbit mode keeps ticking with neutral input so the server and
+      // the local simulation never fall out of step.
+      const stepped = prediction.advance(dt, index => ({ ...input, jump: jump && index === 0 }));
+      playerInterpolationAlpha = stepped.alpha;
+      playerController.interpolatedPosition(playerInterpolationAlpha, playerRenderPosition);
+      const keep = Math.exp(-CORRECTION_DECAY_RATE * dt);
+      for (let axis = 0; axis < 3; axis++) {
+        correctionOffset[axis] *= keep;
+        if (Math.abs(correctionOffset[axis]) < 1e-4) correctionOffset[axis] = 0;
+        playerRenderPosition[axis] += correctionOffset[axis];
+      }
+    } else if (canControl) {
+      playerController.setInput(input);
+      if (jump) playerController.queueJump();
+      const stepped = playerController.advance(dt);
+      // Solo kill plane; online the server enforces the same layout value.
+      if (playerController.getPosition()[1] < traversalLab.layout.killPlaneY) resetPlayer();
+      playerInterpolationAlpha = stepped.alpha;
+      playerController.interpolatedPosition(playerInterpolationAlpha, playerRenderPosition);
+    } else {
+      playerController.interpolatedPosition(1, playerRenderPosition);
+    }
+    if (canControl) {
+      worldCoordinates.maybeRebase(playerController.getPosition());
+      playerView.syncCapsule(playerRenderPosition, {
+        visible: settings.playerCapsuleVisible && settings.playerViewMode === 'thirdPerson',
+        grounded: playerController.grounded,
+      });
+      playerView.updateCamera(dt, playerRenderPosition, {
+        mode: settings.playerViewMode,
+        distance: settings.cameraDistance,
+        followRate: settings.cameraFollowRate,
+        obstructionPadding: settings.cameraObstructionPadding,
+      });
+    } else {
+      if (settings.playerControlMode === 'orbit') controls.update();
+      playerView.syncCapsule(playerRenderPosition, {
+        visible: settings.playerCapsuleVisible,
+        grounded: playerController.grounded,
+      });
+    }
+    if (online) remotePlayers.update(performance.now(), { interpolationDelayMs: settings.interpolationDelayMs });
+    sky.group.position.copy(camera.position);
+    frameProfiler.time('sky', () => updateWorld(dt));
+    frameProfiler.time('postRender', () => renderer.render(scene, camera));
+    lastRenderInfo = {
+      drawCalls: renderer.info.render.drawCalls,
+      triangles: renderer.info.render.triangles,
+    };
+    sky.flushDisposals();
+    updateStats(frameMs);
+    recordPerformanceFrame(frameStart, frameMs);
+  } finally {
+    frameBusy = false;
+  }
+}
+
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+addEventListener('beforeunload', () => {
+  stopRebasePresentation();
+  playerView.dispose();
+  remotePlayers.dispose();
+  traversalLab.dispose();
+}, { once: true });
+
+renderer.setAnimationLoop(animate);
+</script>
+</body>
+</html>
