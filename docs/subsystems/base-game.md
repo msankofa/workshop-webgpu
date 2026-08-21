@@ -31,7 +31,7 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Owning-client prediction and reconciliation | `base-game-prediction.js` |
 | Pooled, buffered remote-player capsules | `base-game-remote-players.js` |
 | Start and pause menu UI | `base-game-menu.mjs` |
-| Server-owned room state and 60 Hz player simulation | `server/base-game-rooms.js` |
+| Server-owned room state and 120 Hz lockstep player simulation | `server/base-game-rooms.js` |
 | Static triangle BVH collision | `map-collision.js` / `three-mesh-bvh` |
 | Global/render-local coordinates | `world-coordinates.js` |
 | Provider-based 3D queries | `world-query.js` |
@@ -428,7 +428,7 @@ browser play test.
 ### Pre-terrain server-authoritative player replication
 
 Roadmap Step 4 is mandatory before any terrain implementation. The existing room service is retained,
-but protocol version 2 extends it from shared-world synchronization to actual player simulation and
+but protocol version 3 extends it from shared-world synchronization to actual player simulation and
 presentation. This phase reuses the Step 1 query contract and Step 3 controller; it must not introduce
 a network-only movement model, a second collision implementation, or a browser acting as host.
 
@@ -436,7 +436,7 @@ a network-only movement model, a second collision implementation, or a browser a
 
 - The OnRender Node server is the simulation authority for every room and every player. Room owner
   remains an administrative permission for shared world settings and has no movement authority.
-- Clients send sequenced input commands, never trusted position/velocity corrections. The server
+- Clients send numbered tick inputs, never trusted position/velocity corrections. The server
   validates finite/ranged values, ordering, rate, room identity, and connection ownership.
 - Each room advances server player controllers at 120 Hz, consuming exactly one client tick per
   step so server and client arithmetic match. Delayed service wake-ups catch up at most a quarter
@@ -500,7 +500,7 @@ movement waits or remains on the last valid state until the required provider is
 #### Owning-client prediction and reconciliation
 
 - The owning client continues running the Step 3 controller immediately from local input.
-- It retains a bounded history of fixed-step inputs and predicted states keyed by input sequence/tick.
+- It retains a bounded history of fixed-step inputs and predicted states keyed by tick.
 - On a server snapshot, it installs the acknowledged authoritative state and replays only unacknowledged
   inputs through the same controller and world query.
 - Simulation correction is immediate; the existing presentation interpolation absorbs small visible
@@ -537,17 +537,17 @@ replication remain outside this gate.
 - Local saved player state remains a Solo/debug artifact; joining an online room never uploads a saved
   transform over the server's spawn state.
 - In-game network diagnostics report server tick, input/snapshot rates, ping estimate, acknowledged
-  sequence, prediction error, reconciliation count, buffered interpolation time, and remote count.
+  tick, server queue depth, prediction error, reconciliation count, buffered interpolation time, and remote count.
 - `remotePlayersEnabled`, network-debug visibility, and interpolation-delay tuning are local registered
   settings covered by save/load and performance capture. Performance records also include room player
   count and network/reconciliation statistics.
 
 #### Implementation sequence
 
-1. Define protocol-v2 input/player-state sanitizers and pure sequence/tick helpers with tests.
+1. Define protocol input/player-state sanitizers and pure tick helpers with tests.
 2. Extract renderer-free Traversal Lab collider construction and prove browser/server queries match.
-3. Add the server player-simulation owner, neutral-input/disconnect behavior, room cap, 60 Hz stepping,
-   and 20 Hz complete snapshots.
+3. Add the server player-simulation owner, neutral-input/disconnect behavior, room cap, 120 Hz
+   one-tick-per-step simulation on a 60 Hz service wake-up, and 20 Hz complete snapshots.
 4. Extend `base-game-session.mjs` with bounded input sending, server-time/tick tracking, and player-state
    snapshot delivery without coupling it to rendering.
 5. Add a renderer-independent prediction/reconciliation module around the existing controller.
@@ -585,23 +585,32 @@ controller step per tick, and replay reproduces the server's arithmetic bit-for-
   packet, adopts the client's tick numbering and bumps `spawnRevision` so the client hard-snaps and
   clears its history. Packets are dropped whole when malformed, over-rate, wrong-protocol, or from
   a socket that does not own the player; already-consumed or already-queued ticks are ignored
-  individually because clients resend on purpose. Joins beyond the cap get `room_full`; snapshots
+  individually because clients resend on purpose; a tick that is not exactly the next expected one
+  is refused so the queue can never contain a gap, and `base:resync` lets a client abandon a
+  backlog. Joins beyond the cap get `room_full`; snapshots
   report `worldReady`/`worldVersion` so movement never runs against a substitute floor.
   `server/server.js` calls `step()` every 1/60 s (two 120 Hz steps) and broadcasts every 50 ms.
   `server/package.json` pins `three@0.184.0` and `three-mesh-bvh@0.9.0`; `render.yaml` also
   installs the repository root's dev dependencies because the shared modules resolve `three` from
   the root `node_modules`.
-- `base-game-session.mjs` adds `queueTick(entry)`, which queues a tick and sends at most 30 packets
-  per second, each carrying every unacknowledged tick (up to 64) so a lost packet costs nothing;
-  snapshots drop acknowledged ticks from the resend queue. `flushInput()` sends immediately (Main
+- `base-game-session.mjs` adds `queueTick(entry)`, which accepts only the next consecutive tick and
+  sends at most 30 packets per second, each carrying the oldest unacknowledged ticks (up to 64) so
+  a lost packet costs nothing and no tick is ever skipped; snapshots drop acknowledged ticks from
+  the resend queue. A backlog of 256 unacknowledged ticks triggers `requestResync()` (`base:resync`)
+  instead of silently dropping ticks; the server then adopts the next numbering and bumps the spawn
+  revision. The handshake does not complete until a snapshot reports `worldReady: true`, so a cold
+  server never lets a client move against a placeholder. `flushInput()` sends immediately (Main
   Menu, page hide). `stats` exposes packet/tick counts, server tick, a smoothed server-time offset,
   the last acknowledged tick, and a ping estimate derived from `lastInputClientTime`.
 - `base-game-prediction.js` owns the client's fixed-step accumulator. `advance(dt, sampleInput)`
   runs numbered ticks (at most eight per frame), records each with its input and resulting
   position, and reports every tick through `onTick`. `reconcile(entry)` compares the position
   recorded at the acknowledged tick with the server's, skips work when they agree within 0.1 mm,
-  otherwise installs the authoritative state and replays only unacknowledged ticks, and hard-snaps
-  on a spawn-revision change or an error above 3 m. `adjustPacing(queueDepth)` runs the local
+  otherwise installs the authoritative state and replays the unacknowledged ticks (always, because
+  the server will still consume them), and reports a hard snap on a spawn-revision change or an
+  error above 3 m so presentation resets its smoothing; only a spawn-revision change empties the
+  history. A history over 256 ticks calls `onOverflow`, which the page routes to the session's
+  resync. `adjustPacing(queueDepth)` runs the local
   clock 6 % fast when the server's queue is starving and 6 % slow when it is deeper than 8.
 - `base-game-remote-players.js` keeps one pooled capsule per remote roster entry. `createRemoteTrack()`
   is the pure per-player buffer: samples are keyed by server time, rendered `interpolationDelayMs`
@@ -617,7 +626,7 @@ controller step per tick, and replay reproduces the server's arithmetic bit-for-
   network diagnostics line (tick, ack, server queue depth, pacing scale, error, reconciliations,
   remotes); and records `context.network` in performance captures.
 
-`test-base-game-replication.mjs` (69 checks) covers the sanitizers and rate limiter, browser/server
+`test-base-game-replication.mjs` (80 checks) covers the sanitizers and rate limiter, browser/server
 collider agreement, frozen players without ticks, resync numbering, one tick per step, rejection of
 consumed, far-future, malformed, wrong-protocol, wrong-socket, over-rate, and transform-injection
 messages, retransmit deduplication, one jump per jump tick, queue draining, stall freeze then
@@ -628,9 +637,8 @@ HTML integration points. `server/test-base-game-relay.mjs` drives the real serve
 owner's tick packets move its player in the guest's snapshots and `base:set_position` is ignored.
 
 Not yet verified: the deployed OnRender gate, simulated latency/jitter/duplicate delivery, and the
-16-player frame budget. Known simplifications: a hard snap discards unacknowledged local ticks that
-the server will still consume, so the next snapshot may correct again before the two sides realign;
-the ping estimate includes the time an input waited for the next snapshot.
+16-player frame budget. Known simplification: the ping estimate includes the time an input waited
+for the next snapshot.
 
 #### Acceptance gate before terrain
 
@@ -639,7 +647,7 @@ Terrain work cannot begin until all of the following pass:
 - Two browser tabs can Create/Join on the deployed OnRender server and continuously see each other's
   movement, jump, view direction, pause/resume, disconnect, and reconnect state.
 - The server rejects direct transform injection, malformed/non-finite input, duplicate jump edges,
-  stale sequences, over-rate input, and movement from a socket that does not own that player ID.
+  stale or gapped ticks, over-rate input, and movement from a socket that does not own that player ID.
 - Server and predicted clients agree while walking flat ground, climbing the standard step, rejecting
   the high step, jumping into the tunnel ceiling, sliding on the steep ramp, and stopping at walls.
 - Two players can occupy identical X/Z coordinates on different bridge/stacked-floor Y levels without

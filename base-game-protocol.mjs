@@ -8,6 +8,7 @@ export const BASE_GAME_INPUT_BURST = 10;
 export const BASE_GAME_SIM_HZ = 120;
 export const BASE_GAME_MAX_TICKS_PER_PACKET = 64;
 export const BASE_GAME_MAX_TICKS_AHEAD = 240;
+export const BASE_GAME_MAX_PENDING_TICKS = 256;
 export const BASE_GAME_TICK_QUEUE_TARGET = 3;
 export const BASE_GAME_TICK_QUEUE_DRAIN = 8;
 export const BASE_GAME_STALL_TICKS = 60;
@@ -122,7 +123,7 @@ export function sanitizeBaseGameTickInput(input) {
   };
 }
 
-// A packet carries strictly increasing consecutive-or-gapped ticks. Any bad tick rejects the packet.
+// A packet carries consecutive ticks (each exactly previous + 1). Any bad tick rejects the packet.
 export function sanitizeBaseGameInputPacket(packet) {
   if (!packet || typeof packet !== 'object' || Array.isArray(packet)) return null;
   if (!Array.isArray(packet.ticks) || packet.ticks.length === 0 || packet.ticks.length > BASE_GAME_MAX_TICKS_PER_PACKET) return null;
@@ -130,7 +131,7 @@ export function sanitizeBaseGameInputPacket(packet) {
   let last = 0;
   for (const raw of packet.ticks) {
     const clean = sanitizeBaseGameTickInput(raw);
-    if (!clean || clean.tick <= last) return null;
+    if (!clean || (last > 0 && clean.tick !== last + 1)) return null;
     last = clean.tick;
     ticks.push(clean);
   }

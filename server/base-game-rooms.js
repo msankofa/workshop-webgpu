@@ -277,12 +277,23 @@ export function createBaseGameRoomService({
       client.spawnRevision++;
     }
     client.lastInputClientTime = packet.clientTime;
-    const queuedLast = client.queue.length ? client.queue[client.queue.length - 1].tick : client.lastConsumedTick;
+    // Lockstep means no gaps: a tick is queued only when it is exactly the next one expected.
+    let expected = (client.queue.length ? client.queue[client.queue.length - 1].tick : client.lastConsumedTick) + 1;
     for (const tick of packet.ticks) {
-      if (tick.tick <= queuedLast) continue;
-      if (!isAcceptableBaseGameTick(tick.tick, client.lastConsumedTick)) { client.rejectedInputs++; break; }
+      if (tick.tick < expected) continue;
+      if (tick.tick !== expected || !isAcceptableBaseGameTick(tick.tick, client.lastConsumedTick)) { client.rejectedInputs++; break; }
       client.queue.push(tick);
+      expected++;
     }
+    return true;
+  }
+
+  function resync(ws, msg) {
+    const client = socketClients.get(ws);
+    if (!client || client.ws !== ws) return true;
+    if (msg.protocol !== BASE_GAME_PROTOCOL_VERSION) { client.rejectedInputs++; return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    requestResync(client);
     return true;
   }
 
@@ -318,6 +329,7 @@ export function createBaseGameRoomService({
   function handle(ws, msg) {
     if (!msg || typeof msg !== 'object') return false;
     if (msg.type === 'base:respawn') return respawn(ws, msg);
+    if (msg.type === 'base:resync') return resync(ws, msg);
     if (msg.type === 'base:create') return createRoom(ws, msg);
     if (msg.type === 'base:join') return joinRoom(ws, msg);
     if (msg.type === 'base:resume') return resumeRoom(ws, msg);

@@ -38,7 +38,7 @@ ws.receive({
 });
 ws.receive({
   type: 'base:snapshot', protocol: BASE_GAME_PROTOCOL_VERSION, room: 'WOLF',
-  ownerId: 'p1', revision: 1, world: { todHour: 12 }, players: [],
+  ownerId: 'p1', revision: 1, worldReady: true, world: { todHour: 12 }, players: [],
 });
 
 const session = await pending;

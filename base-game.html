@@ -232,6 +232,7 @@ const playerView = createBaseGamePlayerView({ scene, camera, worldQuery, worldCo
 const prediction = createBaseGamePrediction({
   controller: playerController,
   onTick: entry => { networkSession?.queueTick(entry); },
+  onOverflow: () => { networkSession?.requestResync(); },
 });
 const remotePlayers = createBaseGameRemotePlayers({ scene, worldCoordinates });
 const playerRenderPosition = [...traversalLab.layout.spawn];

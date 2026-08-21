@@ -34,7 +34,8 @@ ok(sanitizeBaseGameTickInput({ tick: 0, moveX: 0, moveZ: 0, yaw: 0, pitch: 0 }) 
 ok(sanitizeBaseGameTickInput({ tick: 1, moveX: NaN, moveZ: 0, yaw: 0, pitch: 0 }) === null, 'non-finite movement is rejected');
 ok(sanitizeBaseGameTickInput({ tick: 1, moveX: 0, moveZ: 0, yaw: Infinity, pitch: 0 }) === null, 'non-finite yaw is rejected');
 const t = (tick, extra = {}) => ({ tick, moveX: 0, moveZ: 0, yaw: 0, pitch: 0, ...extra });
-ok(sanitizeBaseGameInputPacket({ ticks: [t(1), t(2), t(4)] })?.ticks.length === 3, 'packet accepts increasing ticks');
+ok(sanitizeBaseGameInputPacket({ ticks: [t(7), t(8), t(9)] })?.ticks.length === 3, 'packet accepts consecutive ticks');
+ok(sanitizeBaseGameInputPacket({ ticks: [t(1), t(2), t(4)] }) === null, 'packet rejects gapped ticks');
 ok(sanitizeBaseGameInputPacket({ ticks: [t(2), t(1)] }) === null, 'packet rejects out-of-order ticks');
 ok(sanitizeBaseGameInputPacket({ ticks: [] }) === null && sanitizeBaseGameInputPacket({ ticks: Array.from({ length: 65 }, (_, i) => t(i + 1)) }) === null,
   'packet rejects empty and oversized tick lists');
@@ -132,6 +133,16 @@ ok(ownerClient.rejectedInputs > rejectedBefore, 'over-rate packets are dropped b
 clock += 2000;
 ownerClient.queue.length = 0;
 nextTick = ownerClient.lastConsumedTick + 1;
+sendTicks(owner, [t(nextTick + 3)]);
+ok(ownerClient.queue.length === 0, 'a tick that skips ahead of the expected one is not queued');
+clock += 2000;
+service.handle(owner, { type: 'base:resync', protocol: P });
+ok(ownerClient.awaitingResync, 'client-requested resync is honored');
+sendTicks(owner, [t(nextTick + 3)]);
+ok(ownerClient.lastConsumedTick === nextTick + 2 && ownerClient.queue.length === 1, 'after a resync the server adopts the client numbering');
+ownerClient.queue.length = 0;
+nextTick = ownerClient.lastConsumedTick + 1;
+clock += 2000;
 
 // Resends are harmless: duplicated ticks are not queued twice.
 const batch = walk(10);
@@ -221,6 +232,11 @@ const localPos = localController.getPosition();
 ok(localPos.every((value, axis) => value === serverPos[axis]), 'lockstep replay reproduces the server position bit-for-bit');
 result = prediction.reconcile({ ...authority.captureState(), yaw: 0, pitch: 0, lastProcessedTick: 240, queueDepth: 3, spawnRevision: 1 });
 ok(result.reason === 'in-tolerance' && result.error === 0, 'an exact snapshot needs no correction at all');
+for (; frames < 130; frames++) prediction.advance(1 / 60, () => forward);
+const farState = { ...authority.captureState(), yaw: 0, pitch: 0, lastProcessedTick: 240, queueDepth: 3, spawnRevision: 1 };
+farState.position = [farState.position[0] + 10, farState.position[1], farState.position[2]];
+result = prediction.reconcile(farState);
+ok(result.hard && result.replayed === 20 && prediction.historyLength === 20, 'a large-error hard snap still replays unacknowledged ticks');
 ok(prediction.adjustPacing(0) > 1 && prediction.adjustPacing(20) < 1 && prediction.adjustPacing(3) === 1, 'pacing speeds up when the server starves and slows when its queue is deep');
 ok(prediction.reconcile({ position: [1, NaN, 1] }).applied === false, 'invalid authoritative state is ignored');
 
@@ -283,11 +299,16 @@ const runTimers = () => { const due = timers.filter(x => x.at <= fakeNow); for (
 const ws = FakeWebSocket.instances.at(-1);
 ws.open();
 ws.receive({ type: 'base:joined', protocol: P, room: 'NET', clientId: 'c1', resumeToken: 'r', owner: false });
-ws.receive({ type: 'base:snapshot', protocol: P, room: 'NET', ownerId: 'x', serverTime: 500, tick: 3, world: {}, players: [{ id: 'c1', position: [0, 0, 0], lastProcessedTick: 0 }] });
+ws.receive({ type: 'base:snapshot', protocol: P, room: 'NET', ownerId: 'x', serverTime: 450, tick: 0, worldReady: false, world: {}, players: [] });
+let settled = false;
+pendingSession.then(() => { settled = true; });
+await new Promise(resolve => setTimeout(resolve, 0));
+ok(settled === false, 'handshake waits for an authoritative world');
+ws.receive({ type: 'base:snapshot', protocol: P, room: 'NET', ownerId: 'x', serverTime: 500, tick: 3, worldReady: true, world: {}, players: [{ id: 'c1', position: [0, 0, 0], lastProcessedTick: 0 }] });
 const session = await pendingSession;
 const inputPackets = () => ws.sent.filter(packet => packet.type === 'base:input');
 ok(session.queueTick(t(1, { jump: true })) && session.queueTick(t(2)), 'ticks queue in order');
-ok(session.queueTick(t(2)) === false, 'a repeated tick number is refused');
+ok(session.queueTick(t(2)) === false && session.queueTick(t(4)) === false, 'repeated or gapped tick numbers are refused');
 runTimers();
 ok(inputPackets().length === 1 && inputPackets()[0].ticks.length === 2 && inputPackets()[0].ticks[0].jump === true, 'first packet flushes immediately with both ticks');
 session.queueTick(t(3));
@@ -297,8 +318,11 @@ ok(inputPackets().length === 1, 'a new tick inside the 30 Hz window waits');
 fakeNow += 40;
 runTimers();
 ok(inputPackets().length === 2 && inputPackets()[1].ticks.length === 3, 'unacknowledged ticks are resent together after the window');
-ws.receive({ type: 'base:snapshot', protocol: P, room: 'NET', ownerId: 'x', serverTime: 600, tick: 9, world: {}, players: [{ id: 'c1', position: [0, 0, 0], lastProcessedTick: 2 }] });
+ws.receive({ type: 'base:snapshot', protocol: P, room: 'NET', ownerId: 'x', serverTime: 600, tick: 9, worldReady: true, world: {}, players: [{ id: 'c1', position: [0, 0, 0], lastProcessedTick: 2 }] });
 ok(session.pendingTickCount === 1 && session.stats.lastAckedTick === 2, 'acknowledged ticks leave the resend queue');
+for (let n = 4; n <= 300; n++) session.queueTick(t(n));
+ok(session.stats.resyncs === 1 && ws.sent.some(packet => packet.type === 'base:resync') && session.pendingTickCount < 256,
+  'an unacknowledged backlog triggers an explicit resync instead of dropping ticks');
 ok(session.stats.serverTick === 9, 'session tracks the server tick');
 session.destroy();
 
@@ -313,6 +337,7 @@ for (const marker of [
   'prediction.reconcile(',
   'remotePlayers.ingestSnapshot(',
   'queueTick(entry)',
+  'requestResync()',
   'requestRespawn()',
   'flushInput()',
 ]) ok(html.includes(marker), `base-game.html integrates ${marker}`);

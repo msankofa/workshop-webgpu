@@ -10,7 +10,7 @@ import {
 } from './base-game-protocol.mjs';
 
 const DEFAULTS = Object.freeze({
-  historyLimit: 600,
+  historyLimit: 256,
   hardSnapDistance: 3,
   softCorrectionDistance: 1e-4,
   maxStepsPerFrame: 8,
@@ -19,6 +19,7 @@ const DEFAULTS = Object.freeze({
 export function createBaseGamePrediction({
   controller,
   onTick = null,
+  onOverflow = null,
   historyLimit,
   hardSnapDistance,
   softCorrectionDistance,
@@ -44,7 +45,8 @@ export function createBaseGamePrediction({
   let reconciliations = 0;
   let hardSnaps = 0;
   let replayedSteps = 0;
-  let droppedHistory = 0;
+  let overflows = 0;
+  let overflowReported = false;
   let droppedSeconds = 0;
   let lastQueueDepth = null;
 
@@ -83,8 +85,11 @@ export function createBaseGamePrediction({
       steps++;
     }
     if (history.length > cfg.historyLimit) {
-      droppedHistory += history.length - cfg.historyLimit;
-      history.splice(0, history.length - cfg.historyLimit);
+      // Never trim silently: the session resyncs at the same threshold, and the server's bumped
+      // spawn revision clears this history through reconcile(). Reported once per overflow.
+      if (!overflowReported) { overflowReported = true; overflows++; onOverflow?.(history.length); }
+    } else {
+      overflowReported = false;
     }
     return { steps, alpha: Math.max(0, Math.min(1, accumulator / fixed)) };
   }
@@ -137,18 +142,16 @@ export function createBaseGamePrediction({
       return { applied: true, hard: false, replayed: 0, error, reason: 'in-tolerance' };
     }
 
+    // Replay always covers the unacknowledged ticks because the server will still consume them;
+    // only a server-initiated resync (spawn revision change) empties the history, above.
     installAuthoritative(state);
     let replayed = 0;
-    if (!hard) {
-      for (const item of history) {
-        controller.stepOnce({ moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint }, item.jump);
-        item.position = controller.getPosition();
-        replayed++;
-      }
-    } else {
-      history.length = 0;
-      hardSnaps++;
+    for (const item of history) {
+      controller.stepOnce({ moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint }, item.jump);
+      item.position = controller.getPosition();
+      replayed++;
     }
+    if (hard) hardSnaps++;
     replayedSteps += replayed;
     reconciliations++;
     return { applied: true, hard, replayed, error, reason: hard ? 'hard-snap' : 'replay' };
@@ -181,7 +184,7 @@ export function createBaseGamePrediction({
         reconciliations,
         hardSnaps,
         replayedSteps,
-        droppedHistory,
+        overflows,
         droppedSeconds,
         timeScale,
         serverQueueDepth: lastQueueDepth,

@@ -1,5 +1,6 @@
 import {
   BASE_GAME_INPUT_HZ,
+  BASE_GAME_MAX_PENDING_TICKS,
   BASE_GAME_MAX_TICKS_PER_PACKET,
   BASE_GAME_PROTOCOL_VERSION,
   normalizeBaseGameRoomCode,
@@ -47,7 +48,9 @@ export function connectBaseGameSession({
   let handshakeTimer = 0;
 
   // Input sending: every local simulation tick is queued, and at most `inputHz` packets per second
-  // carry all ticks the server has not yet acknowledged (bounded), so a lost packet costs nothing.
+  // carry the oldest unacknowledged ticks, so a lost packet costs nothing and no tick is skipped.
+  // A backlog the server can never catch up on is resolved by an explicit resync, never by
+  // silently dropping ticks.
   const inputIntervalMs = 1000 / inputHz;
   const pendingTicks = [];
   let lastInputSentAt = -Infinity;
@@ -56,6 +59,7 @@ export function connectBaseGameSession({
     inputsSent: 0,
     ticksQueued: 0,
     snapshotsReceived: 0,
+    resyncs: 0,
     lastAckedTick: 0,
     serverTick: 0,
     serverTimeOffsetMs: null,
@@ -75,7 +79,7 @@ export function connectBaseGameSession({
     const at = now();
     const wait = inputIntervalMs - (at - lastInputSentAt);
     if (wait > 0) { scheduleFlush(wait); return; }
-    const ticks = pendingTicks.slice(-BASE_GAME_MAX_TICKS_PER_PACKET);
+    const ticks = pendingTicks.slice(0, BASE_GAME_MAX_TICKS_PER_PACKET);
     ws.send(JSON.stringify({ type: 'base:input', protocol: BASE_GAME_PROTOCOL_VERSION, clientTime: Math.round(at), ticks }));
     lastInputSentAt = at;
     stats.inputsSent++;
@@ -101,17 +105,28 @@ export function connectBaseGameSession({
       ws.send(JSON.stringify({ type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: clean }));
       return true;
     },
-    // Queues one simulation tick for delivery. Returns false for a malformed or out-of-order tick.
+    // Queues one simulation tick for delivery. Returns false for a malformed or non-consecutive tick.
     queueTick(tickInput) {
       const clean = sanitizeBaseGameTickInput(tickInput);
       if (!clean) return false;
       const last = pendingTicks[pendingTicks.length - 1];
-      if (last && clean.tick <= last.tick) return false;
+      if (last && clean.tick !== last.tick + 1) return false;
       if (clean.tick <= stats.lastAckedTick) return false;
+      if (pendingTicks.length >= BASE_GAME_MAX_PENDING_TICKS) {
+        api.requestResync();
+      }
       pendingTicks.push(clean);
       stats.ticksQueued++;
-      if (pendingTicks.length > BASE_GAME_MAX_TICKS_PER_PACKET * 4) pendingTicks.splice(0, pendingTicks.length - BASE_GAME_MAX_TICKS_PER_PACKET * 4);
       scheduleFlush(0);
+      return true;
+    },
+    // Abandons the unacknowledged backlog and asks the server to adopt the next tick numbering.
+    // The server answers with a bumped spawn revision, which hard-snaps local prediction.
+    requestResync() {
+      pendingTicks.length = 0;
+      stats.resyncs++;
+      if (ws?.readyState !== WebSocketImpl.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'base:resync', protocol: BASE_GAME_PROTOCOL_VERSION }));
       return true;
     },
     // Sends whatever is queued right now, ignoring the pacing window (Main Menu, page hide).
@@ -144,7 +159,7 @@ export function connectBaseGameSession({
   };
 
   function maybeResolveInitial() {
-    if (initialSettled || !joinedSeen || !snapshotSeen) return;
+    if (initialSettled || !joinedSeen || !snapshotSeen || latestSnapshot?.worldReady !== true) return;
     initialSettled = true;
     clearTimer(handshakeTimer);
     resolveInitial(api);
