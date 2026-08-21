@@ -395,7 +395,7 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     })());
     floorMat.colorNode = d.col;
     floorMat.roughnessNode = d.rough;
-    floorMat.normalNode = TSL.transformNormalToView(d.normalWorld);
+    floorMat.normalNode = TSL.cameraViewMatrix.transformDirection(d.normalWorld);
     groundNodes.floor = d;
   }
   // Uneven ground gets its own material: same themed colour and vignette, multiplied by the
@@ -411,7 +411,7 @@ export function createVisualSystem({ THREE, renderer, scene, camera, postFX, rig
     })());
     terrainMat.colorNode = d.col;
     terrainMat.roughnessNode = d.rough;
-    terrainMat.normalNode = TSL.transformNormalToView(d.normalWorld);
+    terrainMat.normalNode = TSL.cameraViewMatrix.transformDirection(d.normalWorld);
     groundNodes.terrain = d;
   }
 

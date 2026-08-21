@@ -13,8 +13,8 @@
 
 import * as THREE from 'three';
 import {
-  uniform, Fn, vec2, vec3, float,
-  sin, cos, mix, clamp, floor, fract, dot, min, max, normalize, smoothstep, length,
+  uniform, Fn, If, vec2, vec3, float,
+  mix, floor, fract, dot, min, max, normalize, smoothstep,
 } from 'three/tsl';
 
 export const SOIL_SHADE_DEFAULTS = {
@@ -79,11 +79,8 @@ export function createSoilShade(opts = {}) {
     return vec2(f1.sqrt(), f2.sqrt());
   });
 
-  // 0 (intact plate) .. 1 (deep channel), two warped cellular scales like baked earth.
-  const crackAt = Fn(([worldXZ]) => {
-    const p = worldXZ.mul(u.crackScale).add(u.seed);
-    const warp = vec2(noise2(p.mul(0.7)), noise2(p.mul(0.7).add(vec2(5.2, 1.3)))).sub(0.5).mul(u.crackWarp.mul(2));
-    const cp = p.add(warp);
+  // 0 (intact plate) .. 1 (deep channel) at an already-warped point; two cellular scales like baked earth.
+  const crackWarped = Fn(([cp]) => {
     const f = worleyF1F2(cp);
     const f2 = worleyF1F2(cp.mul(2.7).add(13.0));
     const c1 = float(1).sub(smoothstep(0.0, u.crackWidth, f.y.sub(f.x)));
@@ -91,22 +88,48 @@ export function createSoilShade(opts = {}) {
     return max(c1, c2.mul(0.55));
   });
 
-  const nodes = {
-    // 0..1 dampness from the patch mask; 0 everywhere when the toggle is off.
-    wet(worldXZ) {
+  // vec3(crack, dCrack/dx, dCrack/dz). Every tap sits inside the toggle's If, so with cracks off
+  // the fragment pays one compare instead of ~130 hash evaluations. The domain warp is computed
+  // ONCE and the gradient steps in warped space, so the three taps share it.
+  const crackField = Fn(([worldXZ]) => {
+    const out = vec3(0, 0, 0).toVar();
+    If(u.cracks.greaterThan(0.5), () => {
+      const p = worldXZ.mul(u.crackScale).add(u.seed);
+      const warp = vec2(noise2(p.mul(0.7)), noise2(p.mul(0.7).add(vec2(5.2, 1.3)))).sub(0.5).mul(u.crackWarp.mul(2));
+      const cp = p.add(warp).toVar();
+      const e = float(0.35);                       // step in crack space; * crackScale = per-metre
+      const c0 = crackWarped(cp).toVar();
+      const gx = crackWarped(cp.add(vec2(e, 0))).sub(c0).div(e).mul(u.crackScale);
+      const gz = crackWarped(cp.add(vec2(0, e))).sub(c0).div(e).mul(u.crackScale);
+      out.assign(vec3(c0, gx, gz));
+    });
+    return out;
+  });
+
+  // Same treatment for the damp patches: three octaves of value noise, skipped when off.
+  const wetField = Fn(([worldXZ]) => {
+    const out = float(0).toVar();
+    If(u.moisture.greaterThan(0.5), () => {
       const n = fbm(worldXZ.mul(u.moistureScale).add(u.seed.mul(0.37)));
       const th = mix(float(1).add(u.moistureEdge), u.moistureEdge.negate(), u.moistureCoverage);
-      return smoothstep(th.sub(u.moistureEdge), th.add(u.moistureEdge), n).mul(u.moisture);
-    },
+      out.assign(smoothstep(th.sub(u.moistureEdge), th.add(u.moistureEdge), n));
+    });
+    return out;
+  });
+
+  const nodes = {
+    // 0..1 dampness from the patch mask; 0 everywhere when the toggle is off.
+    wet(worldXZ) { return wetField(worldXZ); },
     // 0..1 crack channel intensity; 0 when the toggle is off.
-    crack(worldXZ) { return crackAt(worldXZ).mul(u.cracks); },
+    crack(worldXZ) { return crackField(worldXZ).x; },
 
     // Compose onto a surface. col: vec3 albedo, rough: float, normalWorld: vec3 (optional).
     // Returns the dressed { col, rough, normalWorld }. Cracks are evaluated at three taps so the
     // finite-difference gradient can groove the normal (crackDepth).
     apply({ col, rough, worldXZ, normalWorld = null }) {
-      const wet = nodes.wet(worldXZ);
-      const c0 = nodes.crack(worldXZ);
+      const wet = wetField(worldXZ);
+      const cf = crackField(worldXZ).toVar();
+      const c0 = cf.x;
       let outCol = col.mul(float(1).sub(wet.mul(u.moistureAmount).mul(0.45)));
       outCol = outCol.mul(float(1).sub(c0.mul(u.crackAmount).mul(0.7)));
       let outRough = rough;
@@ -116,15 +139,12 @@ export function createSoilShade(opts = {}) {
       }
       let outNormal = normalWorld;
       if (normalWorld) {
-        const e = float(0.35).div(u.crackScale.max(0.05));
-        const cx = nodes.crack(worldXZ.add(vec2(e, 0)));
-        const cz = nodes.crack(worldXZ.add(vec2(0, e)));
-        const g = vec2(cx.sub(c0), cz.sub(c0)).div(e).mul(u.crackDepth.mul(u.crackAmount).mul(0.25));
+        const g = cf.yz.mul(u.crackDepth.mul(u.crackAmount).mul(0.25));
         outNormal = normalize(normalWorld.sub(vec3(g.x, 0, g.y)));   // a channel: the surface falls toward it
       }
       return { col: outCol, rough: outRough, normalWorld: outNormal };
     },
-    hash2, noise2, fbm, worleyF1F2, crackAt,
+    hash2, noise2, fbm, worleyF1F2, crackWarped,
   };
 
   function set(partial) {

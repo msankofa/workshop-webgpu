@@ -31,7 +31,8 @@ gracefully if they fail to load.
 export function createSky({ scene, camera, size, palette: overrides, sunDir, parts = {} })
 ```
 Returns an object with: `group`, `setSunDir(v)`, `setMoonDir(v)`, `setCelestialVisibility(sunVisible,
-moonVisible)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
+moonVisible)`, `setDomeVisible(on)`, `setStarsVisible(on)`, `setMilkyWayVisible(on)`,
+`setBodiesVisible(on)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
 `setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius()`,
 `rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
 `setGlowDirectionality(v)`, `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`,

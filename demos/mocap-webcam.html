@@ -13,9 +13,21 @@
   PIPELINE
   --------
   MediaPipe PoseLandmarker (tasks-vision, WebGL delegate) → 33 WORLD landmarks per frame, in metres,
-  hip-centred → One-Euro filtered → 16 canonical joints → the SAME direction-based retarget `pose-retarget.html` uses
-  (take only the joint DIRECTIONS from the source, step OUR OWN bone lengths along them, drop the
-  lower foot to the floor) → `body.setRagdollPose(P)` on the real `createProceduralPlayerBody`.
+  hip-centred → `../mocap-retarget.js` → `body.setRagdollPose(P)` on the real
+  `createProceduralPlayerBody`.
+
+  THE RETARGET IS NOW A MODULE. It started inline here; once the method held up it moved to
+  `../mocap-retarget.js`, the way `flight-model.js` came out of the flight demo. That is not
+  tidying — while the maths lived in this file, `test-demo-mocap-webcam.mjs` had to keep a
+  hand-copied twin of it, so the tests were guarding a copy and could agree with themselves while
+  the page did something else. Demo and test now import the same code. This page keeps the camera,
+  the panel and the rig wiring, which is all a demo should own.
+
+  The module does: One-Euro filtering → depth damping → 16 canonical joints (chest, neck and skull
+  top synthesised, since MediaPipe has none) → the SAME direction-based retarget `pose-retarget.html`
+  uses (take only the joint DIRECTIONS from the source, step OUR OWN bone lengths along them) → knee
+  guard → floor plant → foot lock, plus the head/foot facing and joint frames `setRagdollPose`
+  leaves undone.
 
   So the capture source is swappable behind the retarget: a MediaPipe frame and a KayKit clip both
   arrive as sixteen world positions. That is the layer worth keeping if any of this ships.
@@ -54,6 +66,18 @@
     joint is still, little when it moves fast, so slow jitter goes and punches keep their snap.
   * CLIP WORKFLOW. Scrub bar, import of an exported landmark clip, and the 16-joint export is
     re-derived from the recording under the CURRENT settings instead of captured live.
+
+  THIRD PASS — the three ways a faithful retarget of a noisy estimate still looks wrong:
+  * DEPTH DAMPING. z is by far the weakest axis of a one-camera estimate, and it is the axis limbs
+    swim along. The slider shrinks z about the hips; at 0 the performer is flattened onto the
+    frontal plane, which is steadier but loses a punch thrown at the lens.
+  * KNEE GUARD. Nothing in a landmark estimate knows a knee bends one way, and noisy depth is
+    exactly the axis a knee bends along, so knees invert. Only the inverted case is reflected, and
+    the knee is re-solved by two-bone IK so bone lengths survive. Knees only — an elbow has no
+    fixed direction to guard against, so guessing one would break more poses than it fixed.
+  * FOOT LOCK. The estimate is hip-centred with no ground truth, so feet skate. A foot near the
+    floor and slow is latched in XZ and the knee absorbs the correction; the lock breaks on a lift
+    or on too much slip. Turn on "Show joints" to see the lock pucks.
 
   RUN: served over http (`python serve.py`), then http://127.0.0.1:8080/demos/mocap-webcam.html
   Needs the network for MediaPipe (jsdelivr wasm + Google-hosted model) and for three.
@@ -133,6 +157,11 @@
   <div class="row"><label>Speed response</label><input type="range" id="beta" min="0" max="1" step="0.01" value="0.3"><output id="betaO"></output></div>
   <div class="row"><label>Min visibility</label><input type="range" id="minVis" min="0" max="0.9" step="0.05" value="0.3"><output id="minVisO"></output></div>
 
+  <h2>Cleanup</h2>
+  <div class="row"><label>Depth</label><input type="range" id="depthScale" min="0" max="1" step="0.05" value="0.75"><output id="depthScaleO"></output></div>
+  <div class="row"><label>Knee guard</label><input type="range" id="kneeGuard" min="0" max="1" step="0.05" value="1"><output id="kneeGuardO"></output></div>
+  <div class="row"><label>Foot lock</label><input type="range" id="footLock" min="0" max="1" step="0.05" value="0.8"><output id="footLockO"></output></div>
+
   <h2>Retarget</h2>
   <div class="row"><label>View</label>
     <select id="view">
@@ -159,15 +188,17 @@
     <button id="btnLive" disabled>Live</button>
   </div>
   <div class="row"><label>Scrub</label><input type="range" id="scrub" min="0" max="1" step="0.001" value="0" disabled><output id="scrubO"></output></div>
+  <div class="row"><label>Trim in</label><input type="range" id="trimIn" min="0" max="1" step="0.001" value="0" disabled><output id="trimInO"></output></div>
+  <div class="row"><label>Trim out</label><input type="range" id="trimOut" min="0" max="1" step="0.001" value="1" disabled><output id="trimOutO"></output></div>
   <div class="row"><label>Playback speed</label><input type="range" id="speed" min="0.1" max="2" step="0.1" value="1"><output id="speedO"></output></div>
   <div class="btns">
     <button id="btnExport" disabled>Export landmarks</button>
     <button id="btnExportPose" disabled>Export 16-joint clip</button>
   </div>
   <div class="row"><label>Import clip</label><input type="file" id="importClip" accept="application/json,.json"></div>
-  <p class="note">The 16-joint export is re-derived from the recording with the CURRENT retarget
-    settings: per-frame world positions in the soldier's own proportions, plus head/foot facing and
-    root offset, ready for <code>setRagdollPose</code>.</p>
+  <p class="note">Playback loops the trim, and both exports carry only the trimmed frames. The
+    16-joint export is re-derived under the CURRENT settings: world positions in the soldier's own
+    proportions plus head/foot facing, ready for <code>setRagdollPose</code>.</p>
 
   <div id="status">Loading MediaPipe…</div>
 </div>
@@ -189,16 +220,28 @@ import { PoseLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@m
 
 import { createProceduralPlayerBody, BODY_DESIGN_DEFAULTS } from '../player-procedural-body.js';
 import { setBotBodyKind, botDesignForRole, SOLDIER_ROLE_DESIGNS } from '../bot-body-design.js';
+import { createMocapRetarget, POSE_KEYS, SKELETON_EDGES, minCutoffFor } from '../mocap-retarget.js';
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 const state = {
-  smooth: 0.55, beta: 0.3, minVis: 0.3, yaw: 0, rootScale: 1,
-  view: 'mirror', plant: true, headTurn: true, footYaw: true, rootMotion: false,
+  smooth: 0.55, beta: 0.3, minVis: 0.3,
+  depthScale: 0.75, kneeGuard: 1, footLock: 0.8,
+  yaw: 0, rootScale: 1, view: 'mirror', plant: true,
+  headTurn: true, footYaw: true, rootMotion: false,
   showJoints: false, showSkel: false, speed: 1,
 };
+const reflectX = () => state.view === 'mirror';
+const viewYaw = () => (state.view === 'follow' ? 180 : 0);
+
+/** The options both the live path and the export path hand to the retarget. */
+const solveOpts = () => ({
+  reflect: reflectX(), yawDeg: state.yaw + viewYaw(), plant: state.plant,
+  depthScale: state.depthScale, kneeGuard: state.kneeGuard, footLock: state.footLock,
+  rootMotion: state.rootMotion, rootScale: state.rootScale,
+});
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -248,7 +291,7 @@ scene.add(grid);
 setBotBodyKind('soldier');
 const soldierRoot = new THREE.Group();
 scene.add(soldierRoot);
-let body = null;
+let body = null, designH = 1.8;
 
 function buildSoldier(role) {
   if (body) { body.destroy(); soldierRoot.clear(); soldierRoot.add(markerRoot); }
@@ -256,9 +299,11 @@ function buildSoldier(role) {
     THREE, scene: soldierRoot, terrainHeight: () => 0, mode: 'remote',
     design: botDesignForRole(role),
   });
+  designH = body.limbLengths.legLen / BODY_DESIGN_DEFAULTS.legLenRatio;
   // Settle the rig into a stance so it does not sit in a T-pose before the first landmark frame.
   const st = { position: new THREE.Vector3(), velocity: new THREE.Vector3(), yaw: 0, alive: true, grounded: true };
   for (let i = 0; i < 120; i++) body.update(1 / 60, st);
+  mocap.releaseLocks();
 }
 
 const roleSel = $('role');
@@ -269,22 +314,11 @@ if ([...roleSel.options].some(o => o.value === 'rifleman')) roleSel.value = 'rif
 roleSel.onchange = () => buildSoldier(roleSel.value);
 
 // ---------------------------------------------------------------------------
-// Pose containers
+// The retarget — the module, not a copy of it
 // ---------------------------------------------------------------------------
 
-const POSE_KEYS = ['head', 'neck', 'chest', 'pelvis', 'shoulderL', 'shoulderR', 'elbowL', 'elbowR',
-  'handL', 'handR', 'hipL', 'hipR', 'kneeL', 'kneeR', 'footL', 'footR'];
-const pose = {};
-for (const k of POSE_KEYS) pose[k] = new THREE.Vector3();
-
-// Canonical source joints, same vocabulary as pose-retarget.html so the retarget reads the same,
-// plus the facing hints this pass adds.
-const CANON_IDS = ['hips', 'chest', 'neck', 'head', 'headTop', 'nose',
-  'leftUpperArm', 'leftLowerArm', 'leftHand', 'rightUpperArm', 'rightLowerArm', 'rightHand',
-  'leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'rightUpperLeg', 'rightLowerLeg', 'rightFoot',
-  'leftHeel', 'leftToe', 'rightHeel', 'rightToe'];
-const canon = {};
-for (const s of CANON_IDS) canon[s] = new THREE.Vector3();
+const mocap = createMocapRetarget({ THREE });
+const pose = mocap.pose;
 
 // Marker spheres for the retargeted joints, and a line skeleton for the raw source.
 const markerRoot = new THREE.Group();
@@ -295,15 +329,20 @@ for (const key of POSE_KEYS) {
     new THREE.MeshBasicMaterial({ color: key.endsWith('L') ? '#77c8a1' : key.endsWith('R') ? '#7aa7d8' : '#e8c46a' }));
   markerRoot.add(m); markers.set(key, m);
 }
-const SKEL_EDGES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
-  [23, 25], [25, 27], [24, 26], [26, 28], [27, 29], [29, 31], [27, 31], [28, 30], [30, 32], [28, 32],
-  [7, 8], [0, 7], [0, 8]];
 const skelGeo = new THREE.BufferGeometry();
-skelGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SKEL_EDGES.length * 6), 3));
+skelGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SKELETON_EDGES.length * 6), 3));
 const skel = new THREE.LineSegments(skelGeo, new THREE.LineBasicMaterial({ color: '#d8a657' }));
 skel.position.set(-1.4, 1.0, 0);
 skel.visible = false;
 scene.add(skel);
+
+// Two pucks showing where each foot is locked, so the lock is visible rather than inferred.
+const lockPucks = {};
+for (const key of ['L', 'R']) {
+  const p = new THREE.Mesh(new THREE.RingGeometry(0.10, 0.14, 20).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: key === 'L' ? '#77c8a1' : '#7aa7d8' }));
+  p.visible = false; scene.add(p); lockPucks[key] = p;
+}
 
 // ---------------------------------------------------------------------------
 // MediaPipe
@@ -345,14 +384,14 @@ async function startCam() {
   sourceKind = 'cam';
   $('camtag').textContent = 'webcam';
   $('btnStopCam').disabled = false;
-  resetFilters();
+  mocap.reset();
 }
 function loadFile(file) {
   stopSource();
   video.srcObject = null;
   video.src = URL.createObjectURL(file);
   video.loop = true;
-  video.play().then(() => { sourceKind = 'file'; $('camtag').textContent = file.name; $('btnStopCam').disabled = false; resetFilters(); })
+  video.play().then(() => { sourceKind = 'file'; $('camtag').textContent = file.name; $('btnStopCam').disabled = false; mocap.reset(); })
     .catch(e => say(`Video failed: ${e.message}`, true));
 }
 function stopSource() {
@@ -367,365 +406,81 @@ $('btnCam').onclick = startCam;
 $('btnStopCam').onclick = stopSource;
 $('file').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); };
 
-// ---------------------------------------------------------------------------
-// One-Euro filter (Casiez, Roussel, Vogel 2012), one per landmark axis
-//
-// Cutoff = minCutoff + beta·|velocity|: a still joint is filtered hard, a fast one barely at all.
-// The panel's "smoothing" maps to minCutoff (0 → 8 Hz, 1 → 0.25 Hz), "speed response" to beta.
-// ---------------------------------------------------------------------------
-
-class OneEuro {
-  constructor() { this.x = 0; this.dx = 0; this.init = false; }
-  static alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
-  filter(x, dt, minCutoff, beta, dCutoff = 1) {
-    if (!this.init) { this.x = x; this.dx = 0; this.init = true; return x; }
-    const dx = (x - this.x) / dt;
-    this.dx += (dx - this.dx) * OneEuro.alpha(dCutoff, dt);
-    const cutoff = minCutoff + beta * Math.abs(this.dx);
-    this.x += (x - this.x) * OneEuro.alpha(cutoff, dt);
-    return this.x;
-  }
-  reset() { this.init = false; }
-}
-const minCutoffFor = (s) => 8 * Math.pow(0.25 / 8, s);   // 0 → 8 Hz, 1 → 0.25 Hz
-const betaFor = (b) => b * b * 2;                        // 0 → 0, 1 → 2
-
-// ---------------------------------------------------------------------------
-// Landmarks → smoothed world points
-//
-// World landmarks: metres, origin at the hip midpoint. Converted (x, -y, -z) into three's frame.
-// A landmark below the visibility gate holds its last position rather than snapping to a guess.
-// ---------------------------------------------------------------------------
-
-const N_LM = 33;
-const world = Array.from({ length: N_LM }, () => new THREE.Vector3());
-const vis = new Float32Array(N_LM);
-const filters = Array.from({ length: N_LM * 3 }, () => new OneEuro());
-const rootFilter = [new OneEuro(), new OneEuro()];
-let haveWorld = false;
-let lastTs = 0, lastIngestT = 0;
-
-// Root offset (metres) recovered from the image-space hips, see header. `rootRef` is the value on
-// the first tracked frames; offsets are relative to it.
-const root = new THREE.Vector3();
-let rootRef = null, rootRefN = 0;
-
-function resetFilters() {
-  haveWorld = false;
-  lastIngestT = 0;
-  for (const f of filters) f.reset();
-  resetRoot();
-  restCount = 0;
-}
-function resetRoot() { rootRef = null; rootRefN = 0; root.set(0, 0, 0); for (const f of rootFilter) f.reset(); }
-
-const reflectX = () => state.view === 'mirror';
-const viewYaw = () => (state.view === 'follow' ? 180 : 0);
-
-const _in = new THREE.Vector3();
-function ingest(worldLandmarks, image2d, tSec) {
-  const dt = lastIngestT ? Math.min(0.1, Math.max(1e-3, tSec - lastIngestT)) : 1 / 30;
-  lastIngestT = tSec;
-  const rx = reflectX() ? -1 : 1;
-  const minCut = minCutoffFor(state.smooth), beta = betaFor(state.beta);
-  for (let i = 0; i < N_LM; i++) {
-    const p = worldLandmarks[i];
-    _in.set(rx * p.x, -p.y, -p.z);
-    const v = p.visibility ?? 1;
-    vis[i] = v;
-    if (haveWorld && v < state.minVis) continue;
-    const f = i * 3;
-    world[i].set(
-      filters[f].filter(_in.x, dt, minCut, beta),
-      filters[f + 1].filter(_in.y, dt, minCut, beta),
-      filters[f + 2].filter(_in.z, dt, minCut, beta),
-    );
-  }
-  haveWorld = true;
-  updateRoot(worldLandmarks, image2d, dt);
-  drawOverlay(image2d);
-}
-
-// Root offset from the image. Metres per normalised image unit is world shoulder width over image
-// shoulder width (both from the same, unmirrored, landmark set). Lateral = hip image x from centre,
-// in metres at the performer's depth. Depth: image scale ∝ 1/Z, so Z ∝ metres-per-unit; the focal
-// length is assumed from a 60° horizontal field of view. Both are offsets from the first frames.
-const ROOT_HFOV = THREE.MathUtils.degToRad(60);
-function updateRoot(wl, im, dt) {
-  if (!im || !state.rootMotion) return;
-  const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
-  const shW = Math.hypot(wl[11].x - wl[12].x, wl[11].y - wl[12].y, wl[11].z - wl[12].z);
-  const shI = Math.hypot((im[11].x - im[12].x) * aspect, im[11].y - im[12].y);
-  if (shW < 0.05 || shI < 0.01) return;
-  const mpu = shW / shI;                                       // metres per normalised unit, at depth
-  const hipX = ((im[23].x + im[24].x) * 0.5 - 0.5) * aspect;   // -aspect/2 .. +aspect/2
-  const focal = (aspect * 0.5) / Math.tan(ROOT_HFOV * 0.5);   // in normalised units
-  const depth = mpu * focal;                                   // metres from camera
-  const lateral = hipX * mpu * (reflectX() ? -1 : 1);
-  if (rootRefN < 15) {
-    if (!rootRef) rootRef = { lateral, depth };
-    rootRef.lateral += (lateral - rootRef.lateral) / (rootRefN + 1);
-    rootRef.depth += (depth - rootRef.depth) / (rootRefN + 1);
-    rootRefN++;
-  }
-  const minCut = minCutoffFor(state.smooth), beta = betaFor(state.beta);
-  root.x = rootFilter[0].filter(lateral - rootRef.lateral, dt, minCut, beta);
-  root.z = rootFilter[1].filter(-(depth - rootRef.depth), dt, minCut, beta);   // closer → toward viewer (+z)
-}
-
 function drawOverlay(lm) {
   const w = overlay.width, h = overlay.height;
   octx.clearRect(0, 0, w, h);
   if (!lm) return;
   octx.strokeStyle = 'rgba(119,200,161,0.9)'; octx.lineWidth = 2;
   octx.beginPath();
-  for (const [a, b] of SKEL_EDGES) {
+  for (const [a, b] of SKELETON_EDGES) {
     octx.moveTo(lm[a].x * w, lm[a].y * h); octx.lineTo(lm[b].x * w, lm[b].y * h);
   }
   octx.stroke();
   octx.fillStyle = '#e8c46a';
-  for (let i = 0; i < N_LM; i++) { octx.beginPath(); octx.arc(lm[i].x * w, lm[i].y * h, 2.5, 0, 6.283); octx.fill(); }
+  for (let i = 0; i < lm.length; i++) { octx.beginPath(); octx.arc(lm[i].x * w, lm[i].y * h, 2.5, 0, 6.283); octx.fill(); }
 }
 
 // ---------------------------------------------------------------------------
-// World landmarks → canonical joints
-//
-// MediaPipe has no chest, neck or skull-top point, so they are synthesised from what it does have:
-// chest sits on the hip→shoulder line just below the shoulders, neck between the shoulder line and
-// the ears, skull top past the ears along the same axis. Trunk lengths are then measured from these
-// synthesised joints, exactly as pose-retarget.html measures a donor's rest pose — but running, since
-// there is no rest pose to measure once.
+// Drive the rig
 // ---------------------------------------------------------------------------
 
-const rest = { trunk: 0, spine: 0, neck: 0, shoulderL: 0, shoulderR: 0, hipL: 0, hipR: 0 };
-let restCount = 0;
-const _mid = new THREE.Vector3(), _axis = new THREE.Vector3(), _ears = new THREE.Vector3();
-
-function buildCanon() {
-  canon.hips.addVectors(world[23], world[24]).multiplyScalar(0.5);
-  _mid.addVectors(world[11], world[12]).multiplyScalar(0.5);            // shoulder line
-  _ears.addVectors(world[7], world[8]).multiplyScalar(0.5);
-  _axis.subVectors(_mid, canon.hips);                                     // hips → shoulders
-  canon.chest.copy(_mid).addScaledVector(_axis, -0.12);
-  canon.neck.copy(_mid).lerp(_ears, 0.35);
-  canon.head.copy(_ears);
-  _axis.subVectors(_ears, _mid);
-  canon.headTop.copy(_ears).addScaledVector(_axis, 0.45);
-  canon.nose.copy(world[0]);
-
-  canon.leftUpperArm.copy(world[11]);  canon.leftLowerArm.copy(world[13]);  canon.leftHand.copy(world[15]);
-  canon.rightUpperArm.copy(world[12]); canon.rightLowerArm.copy(world[14]); canon.rightHand.copy(world[16]);
-  canon.leftUpperLeg.copy(world[23]);  canon.leftLowerLeg.copy(world[25]);  canon.leftFoot.copy(world[27]);
-  canon.rightUpperLeg.copy(world[24]); canon.rightLowerLeg.copy(world[26]); canon.rightFoot.copy(world[28]);
-  canon.leftHeel.copy(world[29]);  canon.leftToe.copy(world[31]);
-  canon.rightHeel.copy(world[30]); canon.rightToe.copy(world[32]);
-
-  // Running mean of the trunk proportions (they are constant on a person; the estimate is not).
-  const k = restCount < 30 ? 1 / (restCount + 1) : 0.02;
-  const upd = (key, val) => { rest[key] += (val - rest[key]) * k; };
-  upd('trunk', canon.hips.distanceTo(canon.headTop));
-  upd('spine', canon.hips.distanceTo(canon.chest));
-  upd('neck', canon.chest.distanceTo(canon.neck));
-  upd('shoulderL', canon.chest.distanceTo(canon.leftUpperArm));
-  upd('shoulderR', canon.chest.distanceTo(canon.rightUpperArm));
-  upd('hipL', canon.hips.distanceTo(canon.leftUpperLeg));
-  upd('hipR', canon.hips.distanceTo(canon.rightUpperLeg));
-  restCount++;
-}
-
-// ---------------------------------------------------------------------------
-// Retarget — directions from the source, our own bone lengths (pose-retarget.html's method)
-// ---------------------------------------------------------------------------
-
-const _dir = new THREE.Vector3(), _up = new THREE.Vector3(), _yawQ = new THREE.Quaternion(), _rootW = new THREE.Vector3();
-function dir(a, b) {
-  _dir.subVectors(canon[b], canon[a]);
-  const len = _dir.length();
-  return len > 1e-7 ? _dir.divideScalar(len) : _dir.set(0, 1, 0);
-}
-
-// Facing hints carried from the source into the pose (world unit directions; zero = unknown).
-const facing = { head: new THREE.Vector3(), footL: new THREE.Vector3(), footR: new THREE.Vector3() };
-const _fu = new THREE.Vector3();
-
-/** Unit direction a→b with its component along `up` removed; zeroes `out` if degenerate. */
-function flatDir(out, a, b, up) {
-  out.subVectors(canon[b], canon[a]);
-  out.addScaledVector(up, -out.dot(up));
-  const l = out.length();
-  if (l < 0.02) { out.set(0, 0, 0); return false; }
-  out.divideScalar(l);
-  return true;
-}
-
-function retarget() {
-  if (!body || !haveWorld) return;
-  buildCanon();
-  const yawDeg = state.yaw + viewYaw();
-  _yawQ.setFromAxisAngle(_up.set(0, 1, 0), THREE.MathUtils.degToRad(yawDeg));
-  if (yawDeg !== 0) for (const s of CANON_IDS) canon[s].applyQuaternion(_yawQ);
-
-  const { legLen, thighLen, shinLen, armLen } = body.limbLengths;
-  const halfArm = armLen * 0.5;
-  const designH = legLen / BODY_DESIGN_DEFAULTS.legLenRatio;
-  const trunkK = (designH - legLen) / Math.max(rest.trunk, 1e-6);
-
-  // Performer-left lands on key R (the visual LEFT limb) for a proper person; the reflected
-  // mirror view puts it on key L instead, which un-reflects the rig.
-  const L = reflectX() ? 'L' : 'R', R = reflectX() ? 'R' : 'L';
-
-  pose.pelvis.set(0, 0, 0);
-  pose.chest.copy(pose.pelvis).addScaledVector(dir('hips', 'chest'), rest.spine * trunkK);
-  pose.neck.copy(pose.chest).addScaledVector(dir('chest', 'neck'), rest.neck * trunkK);
-  pose.head.copy(pose.neck).addScaledVector(dir('neck', 'headTop'), rest.neck * trunkK * 0.6);
-
-  for (const [side, key] of [['left', L], ['right', R]]) {
-    const up = `${side}UpperArm`, lo = `${side}LowerArm`, hd = `${side}Hand`;
-    pose[`shoulder${key}`].copy(pose.chest)
-      .addScaledVector(dir('chest', up), rest[side === 'left' ? 'shoulderL' : 'shoulderR'] * trunkK);
-    pose[`elbow${key}`].copy(pose[`shoulder${key}`]).addScaledVector(dir(up, lo), halfArm);
-    pose[`hand${key}`].copy(pose[`elbow${key}`]).addScaledVector(dir(lo, hd), halfArm);
-
-    const hip = `${side}UpperLeg`, knee = `${side}LowerLeg`, foot = `${side}Foot`;
-    pose[`hip${key}`].copy(pose.pelvis)
-      .addScaledVector(dir('hips', hip), rest[side === 'left' ? 'hipL' : 'hipR'] * trunkK);
-    pose[`knee${key}`].copy(pose[`hip${key}`]).addScaledVector(dir(hip, knee), thighLen);
-    pose[`foot${key}`].copy(pose[`knee${key}`]).addScaledVector(dir(knee, foot), shinLen);
-
-    // Foot facing: heel → toe on the ground plane (falls back to the body's facing when unknown).
-    flatDir(facing[`foot${key}`], `${side}Heel`, `${side}Toe`, _up.set(0, 1, 0));
-  }
-
-  // Head facing: nose ahead of the ear midpoint, flattened against the neck axis.
-  _fu.subVectors(canon.headTop, canon.neck).normalize();
-  flatDir(facing.head, 'head', 'nose', _fu);
-
-  // Lower foot on the floor, or a fixed pelvis height when planting is off (jumps read as jumps).
-  const lift = state.plant ? -Math.min(pose.footL.y, pose.footR.y) : legLen;
-  _rootW.set(state.rootMotion ? root.x * state.rootScale : 0, 0, state.rootMotion ? root.z * state.rootScale : 0);
-  if (yawDeg !== 0) _rootW.applyQuaternion(_yawQ);
-  for (const key of POSE_KEYS) { pose[key].y += lift; pose[key].x += _rootW.x; pose[key].z += _rootW.z; }
-
+function driveBody() {
+  if (!body || !mocap.tracked) return;
+  mocap.solve(body.limbLengths, designH, solveOpts());
   body.setRagdollPose(pose);
-  finishRagdollPose();
+  mocap.orientJoints(body.joints, { headTurn: state.headTurn, footYaw: state.footYaw });
   if (body.flush) body.flush(true);
 }
 
 // ---------------------------------------------------------------------------
-// What setRagdollPose leaves undone — joint frames, copied from pose-retarget.html, which copied
-// them from player-procedural-body.js:1253-1266. Without this the feet face backwards and the
-// armour plates float beside the elbows. Head and foot facing are this pass's additions.
-// ---------------------------------------------------------------------------
-
-const _bodyQ = new THREE.Quaternion(), _headQ = new THREE.Quaternion(), _footQ = new THREE.Quaternion();
-const _jfUp = new THREE.Vector3(), _jfRef = new THREE.Vector3();
-const _jfRight = new THREE.Vector3(), _jfFwd = new THREE.Vector3(), _jfMat = new THREE.Matrix4();
-
-function bodyOrientation(out) {
-  _jfUp.subVectors(pose.neck, pose.pelvis);
-  if (_jfUp.lengthSq() < 1e-8) _jfUp.set(0, 1, 0); else _jfUp.normalize();
-  _jfRight.subVectors(pose.shoulderR, pose.shoulderL);
-  if (_jfRight.lengthSq() < 1e-8) _jfRight.set(1, 0, 0); else _jfRight.normalize();
-  _jfFwd.crossVectors(_jfUp, _jfRight);
-  if (_jfFwd.lengthSq() < 1e-6) _jfFwd.set(0, 0, -1); else _jfFwd.normalize();
-  _jfRight.crossVectors(_jfUp, _jfFwd).normalize();
-  _jfMat.makeBasis(_jfRight, _jfUp, _jfFwd);
-  return out.setFromRotationMatrix(_jfMat);
-}
-
-/** Basis for a part whose FACE points along `F` with up `U` (rig convention: face on local −Z). */
-function facingBasis(out, F, U) {
-  _jfUp.copy(U).normalize();
-  _jfFwd.copy(F).addScaledVector(_jfUp, -F.dot(_jfUp));
-  if (_jfFwd.lengthSq() < 1e-8) return null;
-  _jfFwd.normalize();
-  _jfRight.crossVectors(_jfFwd, _jfUp).normalize();   // F x U keeps (right, up, -F) right-handed
-  _jfFwd.negate();
-  _jfMat.makeBasis(_jfRight, _jfUp, _jfFwd);
-  return out.setFromRotationMatrix(_jfMat);
-}
-
-function jointFrame(node, from, to, orientation) {
-  if (!node) return;
-  _jfUp.subVectors(to, from);
-  if (_jfUp.lengthSq() < 1e-10) _jfUp.set(0, 1, 0); else _jfUp.normalize();
-  _jfRef.set(0, 0, 1).applyQuaternion(orientation);
-  _jfRight.crossVectors(_jfUp, _jfRef);
-  if (_jfRight.lengthSq() < 1e-8) {
-    _jfRef.set(1, 0, 0).applyQuaternion(orientation);
-    _jfRight.crossVectors(_jfUp, _jfRef);
-    if (_jfRight.lengthSq() < 1e-8) _jfRight.set(1, 0, 0);
-  }
-  _jfRight.normalize();
-  _jfFwd.crossVectors(_jfRight, _jfUp).normalize();
-  _jfMat.makeBasis(_jfRight, _jfUp, _jfFwd);
-  node.quaternion.setFromRotationMatrix(_jfMat);
-}
-
-function finishRagdollPose() {
-  const j = body.joints;
-  bodyOrientation(_bodyQ);
-  // Ragdoll key 'L' drives the VISUAL RIGHT limb (measured in test-pose-retarget.mjs).
-  for (const [key, side] of [['L', 'right'], ['R', 'left']]) {
-    const hip = pose[`hip${key}`], knee = pose[`knee${key}`], foot = pose[`foot${key}`];
-    jointFrame(j[`${side}Hip`], hip, knee, _bodyQ);
-    jointFrame(j[`${side}Knee`], knee, foot, _bodyQ);
-    jointFrame(j[`${side}Ankle`], knee, foot, _bodyQ);
-    if (j[`${side}Foot`]) {
-      const F = facing[`foot${key}`];
-      const q = state.footYaw && F.lengthSq() > 0.5 ? facingBasis(_footQ, F, _up.set(0, 1, 0)) : null;
-      j[`${side}Foot`].quaternion.copy(q || _bodyQ);
-    }
-    const sh = pose[`shoulder${key}`], el = pose[`elbow${key}`], hd = pose[`hand${key}`];
-    jointFrame(j[`${side}Shoulder`], sh, el, _bodyQ);
-    jointFrame(j[`${side}Elbow`], el, hd, _bodyQ);
-    jointFrame(j[`${side}Wrist`], el, hd, _bodyQ);
-  }
-  // Head: setRagdollPose orients it from the shoulder line, so a turned head is lost. Re-derive it
-  // from the face direction with the neck axis as up; the neck takes half the turn.
-  if (state.headTurn && j.head && facing.head.lengthSq() > 0.5) {
-    _fu.subVectors(pose.head, pose.neck);
-    if (facingBasis(_headQ, facing.head, _fu)) {
-      j.head.quaternion.copy(_headQ);
-      if (j.neck) j.neck.quaternion.slerp(_headQ, 0.5);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Recording and playback. Recorded frames are the FILTERED world landmarks plus the root offset, so
-// the retarget settings (not the filter) can be changed on playback and export.
+// Recording, playback, trimming.
+//
+// Recorded frames are the FILTERED landmarks plus the root offset, so every retarget setting stays
+// live on playback and in the export — only the filter is baked. Trim in/out bound both playback
+// and the export, so a clip is cut here rather than in whatever consumes it.
 // ---------------------------------------------------------------------------
 
 let recording = false, playing = false, clip = null, playT = 0, playIdx = 0, scrubPaused = false;
-let recStart = 0;
+let recStart = 0, trimIn = 0, trimOut = 1;
 
-function frameSnapshot(t) {
-  const lm = new Float32Array(N_LM * 4);
-  for (let i = 0; i < N_LM; i++) { lm[i * 4] = world[i].x; lm[i * 4 + 1] = world[i].y; lm[i * 4 + 2] = world[i].z; lm[i * 4 + 3] = vis[i]; }
-  return { t, lm, root: [root.x, root.z] };
+const clipDur = () => (clip && clip.frames.length ? clip.frames.at(-1).t : 0);
+const trimInMs = () => trimIn * clipDur();
+const trimOutMs = () => trimOut * clipDur();
+/** The frames inside the trim, which is what "the clip" means everywhere downstream. */
+function trimmedFrames() {
+  if (!clip) return [];
+  const a = trimInMs(), b = trimOutMs();
+  const f = clip.frames.filter(fr => fr.t >= a && fr.t <= b);
+  return f.length ? f : clip.frames.slice(0, 1);
 }
-function applyFrame(f) {
-  for (let i = 0; i < N_LM; i++) { world[i].set(f.lm[i * 4], f.lm[i * 4 + 1], f.lm[i * 4 + 2]); vis[i] = f.lm[i * 4 + 3]; }
-  root.set(f.root?.[0] ?? 0, 0, f.root?.[1] ?? 0);
-  haveWorld = true;
-}
+
+function frameSnapshot(t) { return { t, lm: mocap.getFrame(), root: [mocap.root.x, mocap.root.z] }; }
 function poseSnapshot() {
   const o = { joints: {}, facing: {} };
   for (const k of POSE_KEYS) o.joints[k] = [+pose[k].x.toFixed(4), +pose[k].y.toFixed(4), +pose[k].z.toFixed(4)];
-  for (const k in facing) o.facing[k] = [+facing[k].x.toFixed(3), +facing[k].y.toFixed(3), +facing[k].z.toFixed(3)];
+  for (const k in mocap.facing) o.facing[k] = [+mocap.facing[k].x.toFixed(3), +mocap.facing[k].y.toFixed(3), +mocap.facing[k].z.toFixed(3)];
   return o;
 }
 
 const scrub = $('scrub'), scrubO = $('scrubO');
+const trimInEl = $('trimIn'), trimOutEl = $('trimOut');
+
 function setClip(c) {
   clip = c;
+  trimIn = 0; trimOut = 1;
+  trimInEl.value = 0; trimOutEl.value = 1;
   const ok = !!(clip && clip.frames.length > 1);
-  $('btnPlay').disabled = !ok; $('btnExport').disabled = !ok; $('btnExportPose').disabled = !ok; scrub.disabled = !ok;
-  if (ok) say(`Clip: ${clip.frames.length} frames, ${(clip.frames.at(-1).t / 1000).toFixed(1)} s.`);
+  for (const id of ['btnPlay', 'btnExport', 'btnExportPose']) $(id).disabled = !ok;
+  scrub.disabled = !ok; trimInEl.disabled = !ok; trimOutEl.disabled = !ok;
+  updateTrimLabels();
+  if (ok) say(`Clip: ${clip.frames.length} frames, ${(clipDur() / 1000).toFixed(1)} s.`);
 }
-function goLive() { playing = false; scrubPaused = false; $('btnPlay').classList.remove('on'); $('btnLive').disabled = true; resetFilters(); }
-function startPlay() { playing = true; scrubPaused = false; $('btnPlay').classList.add('on'); $('btnLive').disabled = false; }
+function updateTrimLabels() {
+  $('trimInO').textContent = `${(trimInMs() / 1000).toFixed(2)}s`;
+  $('trimOutO').textContent = `${(trimOutMs() / 1000).toFixed(2)}s`;
+}
+function goLive() { playing = false; scrubPaused = false; $('btnPlay').classList.remove('on'); $('btnLive').disabled = true; mocap.reset(); }
+function startPlay() { playing = true; scrubPaused = false; playT = trimInMs(); playIdx = 0; $('btnPlay').classList.add('on'); $('btnLive').disabled = false; mocap.releaseLocks(); }
 
 $('btnRec').onclick = () => {
   if (!recording) {
@@ -740,40 +495,61 @@ $('btnRec').onclick = () => {
     setClip(clip);
   }
 };
-$('btnPlay').onclick = () => { playT = 0; playIdx = 0; startPlay(); };
+$('btnPlay').onclick = startPlay;
 $('btnLive').onclick = goLive;
 scrub.oninput = () => {
   if (!clip) return;
   if (!playing) startPlay();
-  playT = parseFloat(scrub.value) * clip.frames.at(-1).t;
-  playIdx = 0;
-  scrubPaused = true;
+  playT = trimInMs() + parseFloat(scrub.value) * Math.max(1, trimOutMs() - trimInMs());
+  playIdx = 0; scrubPaused = true;
+  mocap.releaseLocks();
 };
 scrub.onchange = () => { scrubPaused = false; };
+trimInEl.oninput = () => {
+  trimIn = Math.min(parseFloat(trimInEl.value), trimOut - 0.01);
+  trimInEl.value = trimIn; updateTrimLabels();
+  if (playT < trimInMs()) playT = trimInMs();
+};
+trimOutEl.oninput = () => {
+  trimOut = Math.max(parseFloat(trimOutEl.value), trimIn + 0.01);
+  trimOutEl.value = trimOut; updateTrimLabels();
+  if (playT > trimOutMs()) playT = trimInMs();
+};
 
 function download(name, obj) {
   const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
-$('btnExport').onclick = () => download('mocap-landmarks.json', {
-  format: 'mediapipe-world-landmarks-v2', view: state.view, axes: 'x right, y up, z toward viewer (metres, hip origin); root = [x, z] offset',
-  frames: clip.frames.map(f => ({ t: +f.t.toFixed(1), lm: Array.from(f.lm, v => +v.toFixed(4)), root: f.root.map(v => +v.toFixed(3)) })),
-});
-// The 16-joint clip is re-derived from the recording under the CURRENT settings, so a view, yaw,
-// head/foot or root-motion change made after recording is in the export. (Recorded landmarks are
-// post-reflection, so switching mirror <-> facing after recording reflects them a second time; the
-// export notes which view they were captured under.)
+$('btnExport').onclick = () => {
+  const frames = trimmedFrames(), t0 = frames[0].t;
+  download('mocap-landmarks.json', {
+    format: 'mediapipe-world-landmarks-v3', view: state.view,
+    axes: 'x right, y up, z toward viewer (metres, hip origin); root = [x, z] offset',
+    frames: frames.map(f => ({ t: +(f.t - t0).toFixed(1), lm: Array.from(f.lm, v => +v.toFixed(4)), root: f.root.map(v => +v.toFixed(3)) })),
+  });
+};
+// The 16-joint clip is re-derived from the recording under the CURRENT settings, so any view, yaw,
+// depth, guard, lock or root change made after recording is in the export. (Recorded landmarks are
+// post-reflection, so switching mirror <-> facing afterwards reflects them a second time; the file
+// records which view captured them.)
 $('btnExportPose').onclick = () => {
-  const saved = frameSnapshot(0), savedHave = haveWorld;
-  const frames = [];
-  restCount = 0;
-  for (const f of clip.frames) { applyFrame(f); retarget(); frames.push({ t: +f.t.toFixed(1), ...poseSnapshot() }); }
-  if (savedHave) applyFrame(saved); else haveWorld = false;
+  const frames = trimmedFrames(), t0 = frames[0].t;
+  const saved = frameSnapshot(0);
+  const out = [];
+  mocap.releaseLocks();
+  for (const f of frames) {
+    mocap.setFrame(f.lm, f.root);
+    mocap.solve(body.limbLengths, designH, solveOpts());
+    out.push({ t: +(f.t - t0).toFixed(1), ...poseSnapshot() });
+  }
+  mocap.setFrame(saved.lm, saved.root);
+  mocap.releaseLocks();
   download('mocap-pose16.json', {
-    format: 'setRagdollPose-clip-v2', keys: POSE_KEYS, role: roleSel.value, view: state.view,
+    format: 'setRagdollPose-clip-v3', keys: POSE_KEYS, role: roleSel.value, view: state.view,
+    settings: solveOpts(),
     note: 'joints are world positions in the soldier\'s proportions, lower foot on y=0; facing.head/footL/footR are unit face directions (rig face is local -Z), zero when unknown',
-    frames,
+    frames: out,
   });
 };
 $('importClip').onchange = async (e) => {
@@ -782,20 +558,24 @@ $('importClip').onchange = async (e) => {
     const j = JSON.parse(await file.text());
     if (!j.frames?.length || !j.frames[0].lm) throw new Error('not a landmark clip export');
     setClip({ frames: j.frames.map(f => ({ t: f.t, lm: Float32Array.from(f.lm), root: f.root ?? [0, 0] })) });
-    $('btnPlay').onclick();
+    startPlay();
   } catch (err) { say(`Import failed: ${err.message}`, true); }
   e.target.value = '';
 };
 
 function playbackStep(dtMs) {
   if (!clip || clip.frames.length < 2) return;
-  const dur = clip.frames.at(-1).t;
-  if (!scrubPaused) playT = (playT + dtMs * state.speed) % dur;
+  const a = trimInMs(), b = Math.max(a + 1, trimOutMs());
+  if (!scrubPaused) {
+    playT += dtMs * state.speed;
+    if (playT > b) { playT = a + ((playT - a) % (b - a)); mocap.releaseLocks(); }   // loop the trim
+  }
   while (playIdx < clip.frames.length - 1 && clip.frames[playIdx + 1].t < playT) playIdx++;
   while (playIdx > 0 && clip.frames[playIdx].t > playT) playIdx--;
-  applyFrame(clip.frames[playIdx]);
-  if (!scrubPaused) scrub.value = (playT / dur).toFixed(3);
-  scrubO.textContent = `${(playT / 1000).toFixed(2)} s`;
+  const f = clip.frames[playIdx];
+  mocap.setFrame(f.lm, f.root);
+  if (!scrubPaused) scrub.value = ((playT - a) / (b - a)).toFixed(3);
+  scrubO.textContent = `${(playT / 1000).toFixed(2)}s`;
 }
 
 // ---------------------------------------------------------------------------
@@ -807,9 +587,12 @@ function slider(id, key, fmt = (v) => v) {
   const apply = () => { state[key] = parseFloat(el.value); out.textContent = fmt(state[key]); };
   el.oninput = apply; apply();
 }
-slider('smooth', 'smooth', v => `${minCutoffFor(v).toFixed(2)} Hz`);
+slider('smooth', 'smooth', v => `${minCutoffFor(v).toFixed(2)}Hz`);
 slider('beta', 'beta', v => v.toFixed(2));
 slider('minVis', 'minVis', v => v.toFixed(2));
+slider('depthScale', 'depthScale', v => `${(v * 100).toFixed(0)}%`);
+slider('kneeGuard', 'kneeGuard', v => v.toFixed(2));
+slider('footLock', 'footLock', v => v.toFixed(2));
 slider('yaw', 'yaw', v => `${v}°`);
 slider('rootScale', 'rootScale', v => `${v.toFixed(2)}×`);
 slider('speed', 'speed', v => `${v.toFixed(1)}×`);
@@ -817,14 +600,14 @@ function toggle(id, key, after) {
   const el = $(id);
   el.onclick = () => { state[key] = !state[key]; el.classList.toggle('on', state[key]); after?.(); };
 }
-$('view').onchange = () => { state.view = $('view').value; resetFilters(); };
+$('view').onchange = () => { state.view = $('view').value; mocap.reset(); };
 toggle('btnPlant', 'plant');
 toggle('btnHead', 'headTurn');
 toggle('btnFeet', 'footYaw');
-toggle('btnRoot', 'rootMotion', resetRoot);
+toggle('btnRoot', 'rootMotion', () => mocap.resetRoot());
 toggle('btnJoints', 'showJoints');
 toggle('btnSkel', 'showSkel');
-video.classList.add('mirror'); overlay.classList.add('mirror');   // the preview is always mirror-like, as webcams are
+video.classList.add('mirror'); overlay.classList.add('mirror');   // the preview is mirror-like, as webcams are
 
 // ---------------------------------------------------------------------------
 // Frame loop
@@ -833,21 +616,24 @@ video.classList.add('mirror'); overlay.classList.add('mirror');   // the preview
 let lastVideoTime = -1, detectMs = 0, fpsAcc = 0, fpsN = 0, fpsShown = 0, lastFrame = performance.now();
 
 function updateSkel() {
-  skel.visible = state.showSkel && haveWorld;
+  skel.visible = state.showSkel && mocap.tracked;
   if (!skel.visible) return;
   const a = skelGeo.attributes.position.array;
   let o = 0;
-  for (const [i, j] of SKEL_EDGES) {
-    a[o++] = world[i].x; a[o++] = world[i].y; a[o++] = world[i].z;
-    a[o++] = world[j].x; a[o++] = world[j].y; a[o++] = world[j].z;
+  for (const [i, j] of SKELETON_EDGES) {
+    a[o++] = mocap.world[i].x; a[o++] = mocap.world[i].y; a[o++] = mocap.world[i].z;
+    a[o++] = mocap.world[j].x; a[o++] = mocap.world[j].y; a[o++] = mocap.world[j].z;
   }
   skelGeo.attributes.position.needsUpdate = true;
 }
-
 function updateMarkers() {
   markerRoot.visible = state.showJoints;
-  if (!state.showJoints) return;
-  for (const [key, m] of markers) m.position.copy(pose[key]);
+  if (state.showJoints) for (const [key, m] of markers) m.position.copy(pose[key]);
+  for (const key of ['L', 'R']) {
+    const lock = mocap.locks[key], p = lockPucks[key];
+    p.visible = state.showJoints && lock.active && state.footLock > 0;
+    if (p.visible) p.position.set(lock.x, 0.004, lock.z);
+  }
 }
 
 function tick() {
@@ -860,21 +646,24 @@ function tick() {
   } else if (landmarker && sourceKind !== 'none' && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     if (overlay.width !== video.videoWidth) { overlay.width = video.videoWidth; overlay.height = video.videoHeight; }
-    const ts = Math.max(lastTs + 1, Math.round(now));   // MediaPipe wants strictly increasing timestamps
-    lastTs = ts;
     const t0 = performance.now();
     let res = null;
-    try { res = landmarker.detectForVideo(video, ts); } catch (e) { say(`detect failed: ${e.message}`, true); }
+    try { res = landmarker.detectForVideo(video, Math.round(now)); } catch (e) { say(`detect failed: ${e.message}`, true); }
     detectMs = detectMs * 0.9 + (performance.now() - t0) * 0.1;
     if (res && res.worldLandmarks && res.worldLandmarks[0]) {
-      ingest(res.worldLandmarks[0], res.landmarks[0], now / 1000);
+      mocap.ingest(res.worldLandmarks[0], res.landmarks[0], now / 1000, {
+        reflect: reflectX(), smooth: state.smooth, beta: state.beta, minVis: state.minVis,
+        rootMotion: state.rootMotion,
+        aspect: video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3,
+      });
+      drawOverlay(res.landmarks[0]);
       if (recording) clip.frames.push(frameSnapshot(now - recStart));
     } else if (res) {
       drawOverlay(null);
     }
   }
 
-  retarget();
+  driveBody();
   updateMarkers();
   updateSkel();
   controls.update();
@@ -884,9 +673,10 @@ function tick() {
   if (fpsAcc > 500) {
     fpsShown = Math.round(1000 * fpsN / fpsAcc); fpsAcc = 0; fpsN = 0;
     if (landmarker && !statusEl.classList.contains('err')) {
-      const mode = playing ? 'playing clip' : recording ? `RECORDING ${clip.frames.length} f` : sourceKind === 'none' ? 'idle' : 'live';
-      const rootTxt = state.rootMotion ? `  ·  root ${root.x.toFixed(2)}, ${root.z.toFixed(2)} m` : '';
-      say(`${mode}  ·  ${fpsShown} fps  ·  detect ${detectMs.toFixed(1)} ms  ·  pose ${haveWorld ? 'tracked' : 'none'}${rootTxt}`);
+      const mode = playing ? 'playing' : recording ? `RECORDING ${clip.frames.length}f` : sourceKind === 'none' ? 'idle' : 'live';
+      const locked = ['L', 'R'].filter(k => mocap.locks[k].active).join('') || '–';
+      const rootTxt = state.rootMotion ? `  ·  root ${mocap.root.x.toFixed(2)},${mocap.root.z.toFixed(2)}m` : '';
+      say(`${mode}  ·  ${fpsShown} fps  ·  detect ${detectMs.toFixed(1)}ms  ·  ${mocap.tracked ? 'tracked' : 'no pose'}  ·  planted ${locked}${rootTxt}`);
     }
   }
 }

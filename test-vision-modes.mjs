@@ -106,9 +106,17 @@ console.log('\n--- 5. the flight demo opted its own materials in ---');
     && /mat\.emissiveNode = mix\(select\(lit, vec3\(0, 0, 0\), debugColor\), terrainHeat, uIR\)/.test(src)
     && /mat\.userData\.irTagged = true/.test(src));
   ok('sky and clouds mix to their heat and mark themselves', /skyMat\.userData\.irTagged = true/.test(src)
-    && /cloudMat\.colorNode = heatMix\(/.test(src) && /return heatMix\(c, float\(HEAT\.sky\)/.test(src));
+    && /cloudMat\.colorNode = heatMix\(/.test(src) && /return heatMix\(skyColorAt\(dir\), float\(HEAT\.sky\)/.test(src));
   ok('the tracers are a node line material, tagged hot', /new LineBasicNodeMaterial\(/.test(src) && /HEAT\.tracer\)/.test(src));
   ok('the pools are tagged fire and smoke', /additive \? HEAT\.fire : HEAT\.smoke/.test(src));
+  // Blast debris comes from a shared module that knows nothing about IR, so the page reaches its
+  // materials through the renderer's tagMaterial hook. The smoke is the one that has to be WRAPPED
+  // rather than tagged: heatTag would replace the colour graph its per-instance attributes live in.
+  ok('the debris tags itself through the renderer hook, before any scene sweep can default it',
+    /tagMaterial: tagDebrisMaterial/.test(src)
+    && /function tagDebrisMaterial\(mat, role\)/.test(src)
+    && /mat\.colorNode = heatMix\(mat\.colorNode, HEAT\.smoke\)/.test(src)
+    && /heatTag\(mat, role === 'rubble' \? HEAT\.warm : HEAT\.fire\)/.test(src));
   ok('the render switches on the mode', /if \(visionMode === 'rgb'\) renderer\.render\(scene, camera\);\s*else vision\.render\(\);/.test(src));
   ok('a scene sweep runs at boot and on every mode change', (src.match(/tagScene\(scene\)/g) || []).length >= 2);
   const mod = readFileSync('./vision-modes.js', 'utf8');

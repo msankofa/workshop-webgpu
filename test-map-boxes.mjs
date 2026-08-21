@@ -2,7 +2,8 @@
 // whether a wall floats over a dip, whether a slab dives into a hillside, and whether a bot can
 // still walk under a lintel. Run: node test-map-boxes.mjs
 import * as THREE from 'three';
-import { UNIT_BOX, boxMesh, instancedBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
+import { UNIT_BOX, boxMesh, instancedBoxes, clearBoxes, boxOnGround, slabOnGround,
+  seatDecksAndRamps, DECK_JOIN_SLACK } from './map-boxes.js';
 
 let failed = 0;
 function ok(cond, msg) { if (!cond) { failed++; console.error('FAIL:', msg); } }
@@ -91,6 +92,44 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
   ok(ownDisposed, 'teardown disposes geometry the mesh owned');
   ok(!unitDisposed, 'teardown never disposes the shared unit geometry');
   ok(instancedBoxes(parent, mat, boxes) !== null, 'a rebuild after teardown still works');
+}
+
+
+// ---- seatDecksAndRamps: a deck and its ramp must agree about where they meet ----
+{
+  const deck = { x: 0, z: 0, w: 6, d: 5, y: 3 };
+  const ramp = { x0: 9, z0: 0, y0: 0, x1: 3, z1: 0, y1: 3, width: 2, thickness: 0.3 };
+
+  const flat = seatDecksAndRamps([deck], [ramp], () => 0);
+  ok(near(flat.decks[0].y, 3), 'flat ground leaves the deck at its authored height');
+  ok(near(flat.ramps[0].y0, 0) && near(flat.ramps[0].y1, 3), 'and the ramp spans ground to deck');
+
+  // Ground rising toward the deck: the ramp head must follow the DECK, not its own sample, or the
+  // last step onto the platform becomes a ledge.
+  const slope = (x) => 0.2 * x;
+  const seated = seatDecksAndRamps([deck], [ramp], (x, z, w, d) => slope(x + w / 2));
+  ok(near(seated.ramps[0].y1, seated.decks[0].y),
+    'the ramp head lands exactly on the seated deck surface');
+  ok(seated.ramps[0].y0 > 0 && seated.ramps[0].y0 < seated.ramps[0].y1,
+    'the foot rides up with its own ground and still sits below the head');
+  const rise = seated.ramps[0].y1 - seated.ramps[0].y0;
+  const run = Math.abs(seated.ramps[0].x1 - seated.ramps[0].x0);
+  ok(1 / Math.hypot(1, rise / run) >= 0.5,
+    `the seated ramp is still walkable for the capsule (normal.y ${(1 / Math.hypot(1, rise / run)).toFixed(2)})`);
+
+  // A ramp that lands nowhere near a deck falls back to its own ground rather than throwing.
+  const orphan = { ...ramp, x1: 40, x0: 46 };
+  const loose = seatDecksAndRamps([deck], [orphan], () => 2);
+  ok(near(loose.ramps[0].y1, 5), 'an orphan ramp seats both ends on its own ground');
+
+  const edge = { ...ramp, x1: deck.x + deck.w / 2 + DECK_JOIN_SLACK - 0.01 };
+  ok(near(seatDecksAndRamps([deck], [edge], () => 0).ramps[0].y1, 3),
+    'a head inside the join slack still counts as meeting the deck');
+  const past = { ...ramp, x1: deck.x + deck.w / 2 + DECK_JOIN_SLACK + 0.5 };
+  ok(!near(seatDecksAndRamps([deck], [past], () => 7).ramps[0].y1, 3),
+    'and a head well past it does not');
+
+  ok(deck.y === 3 && ramp.y1 === 3, 'seating never mutates the records it was handed');
 }
 
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }

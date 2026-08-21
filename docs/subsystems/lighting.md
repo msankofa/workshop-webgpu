@@ -35,6 +35,10 @@ setAmbientIntensity(v), get azimuth(), get elevation() }`.
 - `connect(water, grass)` registers a water system (must have `.setLightDir`) and/or one or
   more grass systems (must have `.setAmbient`/`.setKey`), then immediately pushes current
   values to them. No per-frame call is needed — setters push on every change.
+- Setters are safe to call every frame (the time-of-day drivers in `environment-viewer.html`
+  and `base-game.html` do): a setter whose value is unchanged returns before pushing, and the
+  direction vector handed to `setLightDir` is a shared scratch — consumers must copy it, not
+  keep the reference.
 
 `clustered-lights.js`:
 ```js

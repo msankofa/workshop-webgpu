@@ -19,7 +19,8 @@ import { MeshBasicNodeMaterial } from 'three/webgpu';
 import {
   uniform, varying, texture, vec2, vec3, vec4, float, uint, instanceIndex, positionLocal, uv,
   cameraPosition, positionWorld, normalize, cross, length, mod, floor, fract, sin, cos, exp, mix, color,
-  smoothstep, step, clamp, hash, time, transformNormalToView, max, mx_fractal_noise_float, normalWorld,
+  smoothstep, step, clamp, hash, time, cameraViewMatrix, max, mx_fractal_noise_float, normalWorld,
+  mx_noise_float, materialRoughness, materialColor, abs,
 } from 'three/tsl';
 
 export const RAIN_DEFAULTS = Object.freeze({
@@ -183,17 +184,30 @@ export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null,
   };
 }
 
-// ---- wet ground: apply to any MeshStandardNodeMaterial that lies roughly flat -------------------
-// baseColor / baseRoughness are nodes (or numbers). Returns nothing; mutates the material.
+// ---- wet surfaces: apply to any MeshStandardNodeMaterial -----------------------------------------
+// baseColor / baseRoughness are nodes (or numbers); baseRoughness null reads the material's own
+// `roughness` live via `materialRoughness`. Returns nothing; mutates the material.
 // `baseNormal` is the world-space normal node the ripples perturb (default `normalWorld`); pass the
 // material's own graph when it already bends the normal, or the ripples flatten slopes.
-export function applyWetSurface(mat, U, { baseColor, baseRoughness = 0.9, baseNormal = null, rippleScale = 3.0, puddleScale = 0.09 } = {}) {
+// Puddles and ripples only form on up-facing surface (normal.y > ~0.75); side faces get a darker,
+// glossier film with rain streaks running down them (`streaks: false` turns those off), so one call
+// serves floors, roofs, walls and cover.
+export function applyWetSurface(mat, U, { baseColor, baseRoughness = null, baseNormal = null, rippleScale = 3.0, puddleScale = 0.09, streaks = true } = {}) {
   const wet = U.uWetness;
   const pw = positionWorld.xz;
+  const nBase = baseNormal || normalWorld;
+  const up = smoothstep(0.6, 0.9, nBase.y);
   // Puddles are an FBM field thresholded by coverage, so they are blotches with soft shores, not tiles.
   const n = mx_fractal_noise_float(pw.mul(puddleScale), 3, 2.0, 0.55).mul(0.5).add(0.5);
   const thr = float(1).sub(U.uPuddle.mul(wet).mul(0.9));
-  const puddle = smoothstep(thr.sub(0.09), thr.add(0.09), n);
+  const puddle = smoothstep(thr.sub(0.09), thr.add(0.09), n).mul(up);
+  // Side faces: columns of run-off sliding down. Phase from x+z so it works on either wall axis.
+  let streak = float(0);
+  if (streaks) {
+    const along = positionWorld.x.add(positionWorld.z);
+    const run = mx_noise_float(vec3(along.mul(3.0), positionWorld.y.mul(0.35).sub(time.mul(0.45)), 0)).mul(0.5).add(0.5);
+    streak = smoothstep(0.55, 0.85, run).mul(float(1).sub(up)).mul(smoothstep(0.35, 0.05, abs(nBase.y)));
+  }
   // Ripples: one expanding ring per cell with a hashed birth; strong inside puddles, faint on the film outside.
   const p = pw.mul(rippleScale);
   const cell = floor(p).add(4096);   // keep cells positive: toUint() of a negative float is undefined
@@ -207,13 +221,24 @@ export function applyWetSurface(mat, U, { baseColor, baseRoughness = 0.9, baseNo
   const gate = step(0.3, h2).mul(mix(0.25, 1.0, puddle)).mul(U.uRipple).mul(wet);
   const nx = wave.mul(f.x).mul(-6).mul(gate);
   const nz = wave.mul(f.y).mul(-6).mul(gate);
-  const nWorld = normalize((baseNormal || normalWorld).add(vec3(nx, 0, nz)));
+  const nWorld = normalize(nBase.add(vec3(nx, 0, nz)));
   let col = baseColor === undefined ? mat.colorNode : baseColor;
   if (col && !col.isNode) col = color(col);   // THREE.Color or hex
-  const rough = typeof baseRoughness === 'number' ? float(baseRoughness) : baseRoughness;
-  if (col) mat.colorNode = col.mul(float(1).sub(wet.mul(float(0.3).add(puddle.mul(0.35)))));
-  mat.roughnessNode = mix(rough.mul(float(1).sub(wet.mul(0.35))), float(0.06), puddle.mul(wet));
-  mat.normalNode = transformNormalToView(nWorld);
+  const rough = baseRoughness == null ? materialRoughness : typeof baseRoughness === 'number' ? float(baseRoughness) : baseRoughness;   // null: the material's own roughness, live
+  if (col) mat.colorNode = col.mul(float(1).sub(wet.mul(float(0.3).add(puddle.mul(0.35)).add(streak.mul(0.18)))));
+  mat.roughnessNode = mix(rough.mul(float(1).sub(wet.mul(float(0.35).add(streak.mul(0.3))))), float(0.06), puddle.mul(wet));
+  // world -> view. transformNormalToView would be wrong here: it applies the object->world
+  // normal matrix first, so any rotated mesh (walls, cover) would get its normal turned twice.
+  mat.normalNode = cameraViewMatrix.transformDirection(nWorld);
+}
+
+// ---- wet sheen: the cheap version for props and bodies --------------------------------------------
+// Roughness comes down and albedo darkens a little with wetness; no puddles, no normal work. Reads
+// the material's own `roughness` through `materialRoughness`, so a theme that retunes it still wins.
+export function applyWetSheen(mat, U, { amount = 0.5, darken = 0.15 } = {}) {
+  const wet = U.uWetness;
+  mat.colorNode = (mat.colorNode || materialColor).mul(float(1).sub(wet.mul(darken)));   // instance colour still multiplies in
+  mat.roughnessNode = (mat.roughnessNode || materialRoughness).mul(float(1).sub(wet.mul(amount)));
 }
 
 // ---- occluder map ------------------------------------------------------------------------------

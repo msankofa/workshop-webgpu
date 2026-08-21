@@ -118,7 +118,13 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   let dir = (sunDir || new THREE.Vector3(0.6, 0.55, 0.58)).clone().normalize();
   let moonDir = null; // unset until setMoonDir() is called; setSunDir() drives the moon sprite until then
 
-  let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyGas, bodiesGroup;
+  let dome, sunSprite, moonSprite, starsPoints, starsMax, milkyWayGroup, milkyGas, bodiesGroup;
+  // Live component visibility belongs to the sky module, not to callers reaching into child
+  // indices. Keep the masks across rebuilds so a loaded state cannot be undone by a later seed or
+  // palette change. Sun/moon start in the legacy primary-body mode until a caller explicitly
+  // supplies independent visibility.
+  const componentVisible = { dome: true, stars: true, milkyWay: true, bodies: true };
+  let celestialVisible = null;
 
   // Time-of-day: keyframed states + elevation thresholds live here (the UI mutates these
   // objects in place via the getters below; updateDome reads them every frame).
@@ -151,9 +157,13 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   }
 
   function build() {
+    // A rebuild detaches the previous tree before entering here. Clear object references first so
+    // a palette that omits one optional layer cannot leave a setter targeting the detached layer.
+    starsPoints = null; starsMax = 0; milkyWayGroup = null; milkyGas = null; bodiesGroup = null;
     // dome
     dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 40, 18), makeSkyDomeMaterial(domeU));
     dome.renderOrder = -1000; dome.frustumCulled = false;
+    dome.visible = componentVisible.dome;
     group.add(dome);
     // Build BOTH the sun disc and the moon disc up front. Switching between them is a
     // visibility toggle (see setCelestialType) — NOT a rebuild — so the Sun/Moon control
@@ -177,12 +187,17 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
       const rng = makeRng((seed ^ 0x5a17) >>> 0);
       starsPoints = createSkyStars(generateStars(radius, makePalette({ ...palette, starCount: starsMax }), rng), palette);
       starsPoints.geometry.setDrawRange(0, Math.min(palette.starCount | 0, starsMax));
+      starsPoints.visible = componentVisible.stars;
       group.add(starsPoints);
     }
     // milky way (intensity is a live uniform — see setMilkyWayIntensity)
     if (parts.milkyWay !== false) {
-      const milky = createMilkyWay(generateMilkyWay(radius, palette, makeRng((seed ^ 0xb1a5) >>> 0)), palette);
-      if (milky) { group.add(milky); milkyGas = milky.userData.gas || null; }
+      milkyWayGroup = createMilkyWay(generateMilkyWay(radius, palette, makeRng((seed ^ 0xb1a5) >>> 0)), palette);
+      if (milkyWayGroup) {
+        milkyWayGroup.visible = componentVisible.milkyWay;
+        group.add(milkyWayGroup);
+        milkyGas = milkyWayGroup.userData.gas || null;
+      }
     }
     // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker)
     bodiesGroup = null;
@@ -190,6 +205,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
       bodiesGroup = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng((seed ^ 0xc0de) >>> 0)),
         { resScale: palette.bodyResolution ?? 1, faceMode: 'fixed' });
       bodiesGroup.userData.setStableLayering?.(stableCelestialLayering);
+      bodiesGroup.visible = componentVisible.bodies;
       group.add(bodiesGroup);
     }
     if (scene && (!scene.background || !scene.background.isColor)) scene.background = new THREE.Color();
@@ -208,6 +224,11 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   }
 
   function updateDiscVisibility() {
+    if (celestialVisible) {
+      if (sunSprite) sunSprite.visible = celestialVisible.sun;
+      if (moonSprite) moonSprite.visible = celestialVisible.moon;
+      return;
+    }
     const moon = isMoonBody(palette);
     if (sunSprite)  sunSprite.visible  = !moon;
     if (moonSprite) moonSprite.visible = moon;
@@ -275,9 +296,13 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     get moonDir() { return moonDir ? moonDir.clone() : null; },
     // Explicit per-disc visibility for an external driver, bypassing setCelestialType/updateDiscVisibility.
     setCelestialVisibility(sunVisible, moonVisible) {
-      if (sunSprite) sunSprite.visible = !!sunVisible;
-      if (moonSprite) moonSprite.visible = !!moonVisible;
+      celestialVisible = { sun: !!sunVisible, moon: !!moonVisible };
+      updateDiscVisibility();
     },
+    setDomeVisible(on) { componentVisible.dome = !!on; if (dome) dome.visible = componentVisible.dome; },
+    setStarsVisible(on) { componentVisible.stars = !!on; if (starsPoints) starsPoints.visible = componentVisible.stars; },
+    setMilkyWayVisible(on) { componentVisible.milkyWay = !!on; if (milkyWayGroup) milkyWayGroup.visible = componentVisible.milkyWay; },
+    setBodiesVisible(on) { componentVisible.bodies = !!on; if (bodiesGroup) bodiesGroup.visible = componentVisible.bodies; },
     // Time-of-day: blend the dome to the given sun elevation (degrees). Uniform writes only.
     updateDome(elevDeg) { applyDome(elevDeg); },
     // When true, celestial (stars/Milky Way/bodies) opacity is multiplied by nightness.

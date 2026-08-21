@@ -137,8 +137,10 @@ post, presets) overlap with `sky.js`, `clouds.js`, `post-fx.js`.
 
 `demos/water-demo.html` implements both columns of every table above as switches in one shader,
 per body of water (an ocean and a lake coexist in the scene), with presets for "water.js lake",
-"WaterThreeJS ocean" and a hybrid. Its CPU wave twin is `demos/water-waves.js`
-(`test-demo-water-waves.mjs`). Deviations from the sources are listed in the page header.
+"WaterThreeJS ocean" and a hybrid. The techniques live in `water-hybrid.js`
+(`test-water-hybrid.mjs`) over `water-waves.js` as their CPU twin (`test-water-waves.mjs`), so the
+demo and the optional ocean in `demos/flight-sim.html` share one implementation. Deviations from the
+sources are listed in the demo page's header.
 
 ## 5. Open questions this comparison surfaces (not answered here)
 

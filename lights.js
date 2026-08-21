@@ -25,9 +25,11 @@ const DEFAULTS = {
   uiParent:           null,     // DOM element to attach panel to; defaults to document.body
 };
 
+// Shared scratch: callers copy the result, nothing retains it (safe to call per frame).
+const _dir = new THREE.Vector3();
 function toDir(az, el) {
   const a = az * DEG, e = el * DEG;
-  return new THREE.Vector3(
+  return _dir.set(
     Math.sin(a) * Math.cos(e),
     Math.sin(e),
     Math.cos(a) * Math.cos(e)
@@ -69,6 +71,7 @@ export function createLightingRig(options = {}) {
   }
 
   function set(key, val) {
+    if (o[key] === val) return;   // per-frame callers with static values skip the push
     o[key] = val;
     if (key === 'sunColor')          dirLight.color.set(val);
     if (key === 'ambientColor')      ambLight.color.set(val);

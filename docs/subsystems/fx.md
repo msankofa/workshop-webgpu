@@ -33,9 +33,9 @@ systems, pool ceilings, effect kinds and the rules a caller has to keep to.
 | `entity-types/effect.js` | Pure `EffectEntity` (`create`/`update`/`serialize`) — the authoritative wire shapes and defaults for every effect kind. No THREE. | 151 |
 | `vision-modes.js` | RGB / NVG / white-hot / black-hot for a WebGPU scene where heat is a property of materials, not of lighting. `heatTag`, `heatMix`, `tagScene`, `createVisionComposite`. Node-tested (tagging, sweep, palettes). First consumer: `demos/flight-sim.html`. | 150 |
 | `rain.js` | GPU rain for the TSL stack: `createRainSystem` (instanced streaks + splash rings, no buffers — seeds are `hash(instanceIndex)`), `bakeOccluderMap` (top-down height texture so drops cut at roofs and splashes land on them), `applyWetSurface` (darken/gloss/ripple-normal decoration for any `MeshStandardNodeMaterial`). Wired into `demos/rain.html`, `demos/flight-sim.html` and `bot-viewer-v3.html`. | ~400 |
-| `explosion-tier.js` | Pure port of html-game-v2's `reserveExplosionVisualTier` (320 ms window; 2 full / 5 medium primary, 1 / 4 secondary). Injected clock. Node-tested. Wired into `demos/volumetric-smoke.html` only. | 90 |
-| `blast-debris-sim.js` | Pure port of html-game-v2's persistent debris pools: shrapnel (bounce, friction, flicker recolour, glow, smoke trails), rubble (thrown along the kill vector, non-uniform, smoulder + ember sparks + rising smoke + light values), ground slabs (drop-pod preset with secondary shrapnel bursts), sparks, smoke. Injected `groundAt` and `random`; caps 900/260/80/2600 with oldest-recycle. Node-tested. | 330 |
-| `blast-debris.js` | WebGPU renderer for those arrays: one `InstancedMesh` per kind (tetra / dodeca / glow spheres / tri-prism sparks) with `instanceColor`, an instanced soft-billboard smoke pool, and 8 pooled `PointLight`s on the hottest rubble. `mesh.count` = live length. Wired into `demos/volumetric-smoke.html` only. | 210 |
+| `explosion-tier.js` | Pure port of html-game-v2's `reserveExplosionVisualTier` (320 ms window; 2 full / 5 medium primary, 1 / 4 secondary). Injected clock. Node-tested. Wired into `demos/volumetric-smoke.html`, `bot-viewer-v3.html` and `demos/flight-sim.html`, in all three to scale debris. | 93 |
+| `blast-debris-sim.js` | Pure port of html-game-v2's persistent debris pools: shrapnel (bounce, friction, flicker recolour, glow, smoke trails), rubble (thrown along the kill vector, non-uniform, smoulder + ember sparks + rising smoke + light values), ground slabs (drop-pod preset with secondary shrapnel bursts), sparks, smoke. Injected `groundAt` and `random`; caps 900/260/80/2600 with oldest-recycle. Two departures from the original, both for the flight sim: an inherited `velocity` spawn option, and settled pieces that stop being simulated. Node-tested. | 454 |
+| `blast-debris.js` | WebGPU renderer for those arrays: one `InstancedMesh` per kind (tetra / dodeca / glow spheres / tri-prism sparks) with `instanceColor`, an instanced soft-billboard smoke pool, and pooled `PointLight`s on the hottest rubble. `mesh.count` = live length, and every GPU upload is range-bounded to it. Optional `tagMaterial(material, role)` hook so a page with its own shading pass can reach the materials. Node-tested (`test-blast-debris-render.mjs`, which compiles every material headlessly). | 231 |
 | `rain-math.js` | Pure CPU twin of the maths inside `rain.js`'s graphs (drop wrap, streak basis, occluder uv, ripple clock, density→count). Not imported by `rain.js`; hand-synced. Node-tested. | 60 |
 
 ### Vision modes (`vision-modes.js`)
@@ -867,13 +867,17 @@ gravityScale, verticalBoost, direction, directionBias})`, `spawnRubble(x,y,z, si
 `clear()`, `counts()`, `hottestRubble(n)`. `settings` is html-game-v2's
 `particleEffectDefaultSettings` (count/speed/gravity/life/smoke/glow scales for shrapnel and rubble,
 `rubbleSmolderChance` 0.28, `rubbleLightScale`), live-mutable. Numbers are theirs; the annotated
-source is the research doc. `test-blast-debris-sim.mjs` (137 checks) pins the pool sizes, the count
+source is the research doc. `test-blast-debris-sim.mjs` (168 checks) pins the pool sizes, the count
 clamps, bounce/settle, flicker + late fade, cone bias, kill-direction rubble, smoulder → glow/light/
 sparks/smoke, per-bounce spin damping, slab secondary bursts, recycling and `clear`.
 
-`createDebrisRenderer({ THREE, scene, sim, lightCount, softTexture })` returns `sync()` (call every
-frame after `sim.step`), `show` (per-kind visibility flags: shrapnel, rubble, glow, lights, sparks,
-smoke), `stats`, `dispose()`. Colours from the sim are sRGB floats and are converted with
+`createDebrisRenderer({ THREE, scene, sim, lightCount, softTexture, tagMaterial })` returns `sync()`
+(call every frame after `sim.step`), `show` (per-kind visibility flags: shrapnel, rubble, glow,
+lights, sparks, smoke), `stats`, `dispose()`, `meshes`, `lights`. `tagMaterial(material, role)` is
+called once per material as it is built — role is one of shrapnel / shrapnelGlow / rubble /
+rubbleGlow / sparks / smoke — and exists so a page with its own shading pass can reach them without
+this module knowing about that pass. It is called for the smoke AFTER its colour graph is assigned,
+so a tagger can wrap rather than replace it. Colours from the sim are sRGB floats and are converted with
 `Color.setRGB(r,g,b, SRGBColorSpace)`. Six draws total. The one departure from html-game-v2 is the
 smoke: theirs is low-poly spheres with a flat-colour shader, ours is the same instanced sprite pool
 this file and the demo already prove under WebGPU.
@@ -893,8 +897,105 @@ because our damage rings (grenade 15 m) are three times theirs; rubble picks a r
 an area blast has no kill vector; `explosion-tier.js` admission scales a volley's debris. Panel:
 Explosives → "Blast debris (html-game-v2)" (enable, clear, six show toggles, ground-only rubble,
 slabs, tiering, mapping knobs, all sim scales); everything saves in the bots slot (`debris`,
-`debrisTuning`, `debrisShow`). Not in `environment-viewer.html`: the open decision is whether debris
+`debrisTuning`, `debrisShow`). `rebuildTerrainField` clears the debris through an `onGroundRebuilt`
+hook: a settled piece has stopped asking where the ground is, so a reseed would otherwise leave it
+hanging at the old height for the rest of its twenty seconds. Not in `environment-viewer.html`: the open decision is whether debris
 replicates (host seeds → guests simulate locally) or stays host-local cosmetic.
+
+#### Two departures from html-game-v2, both bought by the flight sim (2026-08-17)
+
+Neither is on unless a caller asks for it, so bot-viewer-v3 and the demo still get their numbers.
+
+- **Inherited velocity.** `spawnBlastShrapnel` and `spawnRubble` take `velocity: [vx, vy, vz]`, added
+  to every launch vector. Their game only ever blew up things standing still; an airframe coming
+  apart at 200 m/s whose wreckage hangs in the air reads as a bug. Omitting the option spawns every
+  piece with their numbers exactly. **Nothing in the sim is drag**, so whatever a piece launches with
+  is what it still has when it lands, and passing a raw velocity through is a trap: the flight sim's
+  40 mm fuses at 880 m/s, and half of that on 43 fragments with 24 seconds to live puts burning
+  wreckage kilometres downrange from one airburst. Callers must cap it — see `DEBRIS.maxInherit`.
+- **Settling.** A piece that has run out of bounces, stopped sliding (horizontal speed under 1 cm/s)
+  and stopped turning (summed spin under 0.05 rad/s) sets `resting` and is skipped entirely: no
+  gravity, no integration, no ground query, no spin. Gravity would otherwise un-zero `vy` every frame
+  and drag a piece that has been lying still for fifteen seconds back through a ground query it
+  cannot fail. That query was free on html-game-v2's flat floor; on a terrain field it is 16 waves
+  plus a domain warp, times up to 1,160 pieces, every frame. How much it actually saves is entirely
+  the caller's: a blast at head height has everything down within seconds, while an aircraft killed
+  at 1,500 m has fragments airborne for most of their 20 s life and saves almost nothing.
+  Fade, flicker, the ember glow, ember smoke, ember sparks and expiry all keep running while
+  resting. The MOTION trails do not, which is right — a piece that is not moving is not kicking dust.
+  The damping below is load-bearing rather than cosmetic: remove it and nothing ever rests at all,
+  because a fragment satisfies the speed test long before it stops turning.
+- **Shrapnel spin damping**, which the settling forced. html-game-v2 never damped fragment spin at
+  all — a fragment lying on the ground kept turning forever, which stayed invisible only because
+  nothing ever stopped simulating it. Skipping a piece still turning at 7 rad/s froze it in one
+  frame, a visible pop, so grounded fragments now damp spin at 0.68/contact, the rate the rubble
+  already used, and cannot rest until they have. Slabs also diverge slightly from a pre-change run:
+  a resting slab stops consuming `rnd()` on its secondary-burst timer, which shifts the stream. No
+  burst is lost (they need `v2 > 42`), but a seeded replay will not match frame for frame.
+
+#### In `demos/flight-sim.html` (2026-08-17)
+
+`explosion(pos, scale, kind, vel, wreckage)` gained the last two arguments and calls `spawnDebris`
+for every `'craft'` blast — aircraft kills, wreck impacts, bombs, missiles, shell bursts, destroyed
+ground sites. `'hit'` pops (bullet strikes, aircraft taking damage) get none, the same line the
+volumetric puff already drew.
+
+Three rules stand between a call site and the sim, and each of them was a bug first:
+
+- **`DEBRIS.maxInherit` (90 m/s)** caps the inherited speed. It is the stand-in for the drag the sim
+  does not have. Measured on the 40 mm, the fastest gun that actually fuses: 43 fragments left at
+  413–472 m/s before the cap and 57–120 m/s after it. The 105 mm goes 189–295 down to 64–150.
+- **The ground absorbs the fall.** Within one blast radius of the surface — `scale ×
+  DEBRIS.radiusScale`, the radius the sim is actually given, not `explosion()`'s own argument — the
+  inherited downward component is dropped and only the horizontal carries, so a wreck arriving in a
+  60° dive throws debris ALONG its flight path instead of straight into the terrain. It measures
+  against the same clamped waterline the sim uses, or the rule would never fire at sea.
+- **`wreckage` is false for a blast that destroyed nothing of its own** — that is, a shell fusing.
+  Wreckage is the thing that died coming apart; a shell throws fragments and nothing else. Without
+  the gate the gun filled the 260-piece rubble pool with tumbling airframe chunks and starved the
+  actual kills. The same flag also cuts the fragment count to `DEBRIS.shellFragments` (0.45), for a
+  pool reason rather than a physical one: fragments live 20–28 s, and a gunship holding the 40 mm
+  down at 2 rounds a second at full count fills the 900-piece pool by t = 15 s and then recycles.
+  Measured over a 30 s burst with a fighter killed at t = 5 s: at full count 74 of the kill's 90
+  pieces survived to t = 15 s and the pool was saturated; at 0.45 all 90 survive and the pool sits at
+  645. These caps were sized for a ground game where a handful of things explode, not for an
+  autocannon.
+
+- Rubble is **not** ground-gated the way it is in bot-viewer-v3. Up here it is the airframe itself
+  coming apart, so a kill at 3,000 m rains burning wreckage the whole way down. It is thrown along
+  the flight path; a static ground site has no direction, so it gets a random one.
+- The two mapping constants (`DEBRIS.radiusScale` 3.0, `DEBRIS.rubbleScale` 0.55) exist because their
+  blast radius is a grenade's and `explosion()`'s scale is an aircraft's. The panel's "debris size"
+  slider drives both, holding the ratio.
+- `groundAt` is **not** `heightAt`: it is `Math.max(SEA_LEVEL, heightAt(x, z))`. `BASE_OFFSET`
+  deliberately pushes the low ground under the water plane to make lakes, and measured on a 200 m
+  grid over a 16 km square, 44.9% of the field is below y = 0 at a mean of 158 m down. Handing the
+  raw field to the sim dropped every fragment of a kill over water through an almost-opaque surface
+  to lie on the seabed for twenty seconds. Debris stops at the waterline instead — it does not float,
+  spread or splash, which is the next piece of work, but it is where the explosion was. Over land the
+  height is spacing 0, what every other placement in the sim uses; the rendered clipmap is
+  band-limited by distance, so debris far from the camera sits against a slightly smoother surface
+  than it landed on, the same mismatch ground sites and bomb impacts already live with.
+- Every instanced upload is bounded with `addUpdateRange` to the live count. Without it `needsUpdate`
+  re-uploads the whole pool cap each frame — 296 KB a frame across the six pools, about 18 MB/s, for
+  the full twenty seconds one ember takes to burn out.
+- **Vision modes.** `tagDebrisMaterial` runs through the `tagMaterial` hook so the debris carries
+  sensible heats before `tagScene` can sweep it at the default, and so the smoke's own colour graph
+  survives (`heatTag` would overwrite it; it is wrapped with `heatMix` instead). KNOWN LIMITATION:
+  three multiplies `colorNode` by `instanceColor`, so on the unlit pools — shrapnel, sparks, glow —
+  the heat grey comes out tinted by each piece's own colour and reads cooler than the tag asks for.
+  The rubble is a lit material and goes through `heatTag`'s emissive path, which is exact. Fixing the
+  unlit case means a per-instance heat channel in `blast-debris.js`.
+- Two point lights rather than eight: a sunlit outdoor scene where a smouldering chunk lights nothing
+  anybody can see, and every resident light taxes every pixel.
+- Panel: "blast debris", "debris size", "momentum carried", under the volumetric-explosions toggle.
+  The counts appear in the stats block only while there is debris alive. Re-enabling the toggle
+  resets the tier budget, so the first blast back does not land mid-window and come out degraded.
+
+`test-blast-debris-render.mjs` covers what the pure test cannot: that every material compiles as a
+TSL graph both untagged and under the flight sim's heat tagging, that the smoke's per-instance
+attributes survive the wrap, that `sync()` writes live counts and hides empty pools, and that the
+lights follow the hottest rubble and park when there is none.
 
 `demos/sdf-creature.html` is the sibling page and is not an FX technique — it draws a creature from
 signed distance functions on a single quad, aimed at the empty portrait and loading surfaces in
@@ -988,17 +1089,26 @@ profile in uv.
   `BufferGeometry` with `instanceCount` set draws one instance in r0.184.
 - **Splashes** live in a second wrapped square (`uSplashRadius`) so rings stay put in the world and
   only the trailing edge re-appears ahead; each ring re-places by up to 1.5 m per generation.
-- **`applyWetSurface(mat, U, {baseColor, baseRoughness, baseNormal, rippleScale, puddleScale})`** mutates a
+- **`applyWetSurface(mat, U, {baseColor, baseRoughness, baseNormal, rippleScale, puddleScale, streaks})`** mutates a
   `MeshStandardNodeMaterial`. `baseColor`/`baseRoughness`/`baseNormal` default to the material's own
-  `colorNode`, 0.9 and `normalWorld`; pass the material's existing graphs (bot-viewer-v3 passes the
+  `colorNode`, its live `roughness` (via `materialRoughness`, so a theme retune still wins) and `normalWorld`; pass the material's existing graphs (bot-viewer-v3 passes the
   soil-dressed `visuals.groundNodes`) so the wet layer wraps them, and pass the real normal on
   anything not flat — the ripples perturb it, they no longer replace it with straight-up. Puddles are `mx_fractal_noise_float(xz·puddleScale)` thresholded by
   `uPuddle·wetness` with a soft shore, so they are blotches, not tiles; inside them roughness goes
   to 0.06 and albedo darkens a further 35%, outside there is a thin film (roughness × 0.65, albedo
   × 0.7 at full wetness). Ripple normals are a cell grid (expanding sine ring per cell with a
-  hashed birth), full strength in puddles and 25% on the film, fed through `transformNormalToView`.
+  hashed birth), full strength in puddles and 25% on the film, converted world -> view with
+  `cameraViewMatrix.transformDirection()` (it was `transformNormalToView`, which applies the
+  object->world normal matrix first and so turned the normal twice on every rotated wall and cover
+  box; fixed 2026-08-17).
   Works on anything roughly flat; the demo also puts it on roof slabs. Cells are offset by +4096
-  before `toUint()` because a negative float → u32 is undefined.
+  before `toUint()` because a negative float → u32 is undefined. Puddles and ripples are gated to
+  up-facing surface (`smoothstep(0.6, 0.9, normal.y)`); side faces instead get a darker, glossier
+  film with run-off streaks sliding down them (one `mx_noise_float` tap on `x+z` vs `y − t`,
+  `streaks: false` removes them), so the same call dresses floors, roofs, walls and cover.
+- **`applyWetSheen(mat, U, {amount, darken})`** is the cheap version for props and bodies:
+  roughness × (1 − amount·wet) on top of the material's own roughness, albedo × (1 − darken·wet)
+  on top of `materialColor` (instance colours still multiply in). Bot shells use it.
 - **Shared uniforms** (`createRainUniforms`) so drops, splashes, wet ground and lightning
   (`uLightning`, decayed by `update`) move together; `flash(strength, decay)` drives it.
 - **Two page hooks** on `createRainSystem` / `createRainStreaks` / `createRainSplashes`:
@@ -1038,7 +1148,13 @@ the camera; `rain.flash` brightens drops, and `visuals.setLightning(uLightning)`
 the key light (+3) and the cloud lid. Thunder plays `distance/340` s later through
 `envAudio.playSynthAt` and the rain bed through `envAudio.playSynthLoop` (non-positional, so the
 mixer and mute apply); both wait for a running context. `updateWeather` returns immediately when
-dry. Sliders: rain, wind (steady + gusts), puddles, sky lid (how far the theme sky is covered),
-Lightning, Rain shadow under roofs, Rebake; a "Preset: storm" button sits in the World preset
-strip. Weather is not saved in slots. Unseen in a browser; the wet ground graph builds headless.
+dry. Sliders: rain, wind (steady + gusts), puddles, sky lid (how far the theme sky is covered), sight
+loss, Lightning, Rain shadow under roofs, Rebake; a "Preset: storm" button sits in the World preset
+strip. Second pass (same day): walls and cover get the wet film + run-off streaks + puddled tops,
+bot shells/plates/trim/metal go glossy and fabric/rubber darken (`applyWetSheen` on
+`visuals.botMaterials`), drops take 35% of the theme's horizon hue (`tintRainForTheme`, re-run on
+every theme switch through `onLookChange`), rain shortens every bot's sight
+(`botSightDistanceFor × (1 − sightLoss·rain)`, a lightning flash gives it back for a beat), and
+weather rides in the maze slot (`captureMazeState.weather`, older slots leave it alone). Unseen in
+a browser; the wet ground, wall and bot graphs build headless.
 

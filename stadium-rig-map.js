@@ -30,6 +30,7 @@
 // `warnings` and the caller is expected to supply an override rather than get a plausible wrong answer.
 
 import { parseGLB, nodeWorldMatrices, readSkinnedVertices, transformPoint } from './stadium-glb.js';
+import { buildFootProxy } from './foot-sdf.js';
 
 const V = (x = 0, y = 0, z = 0) => ({ x, y, z });
 const sub = (a, b) => V(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -436,7 +437,8 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
   // which is what this always did.
   const declaredFoot = (chain.footBones || []).filter(b => withGeo.includes(b));
   const footBones = declaredFoot.length ? declaredFoot : [withGeo[withGeo.length - 1]];
-  joints.push(sole(footBones.map(b => geo.get(b)), floorY));
+  const solePoint = sole(footBones.map(b => geo.get(b)), floorY);
+  joints.push(solePoint);
 
   const segLengths = [];
   for (let i = 1; i < joints.length; i++) segLengths.push(dist(joints[i - 1], joints[i]));
@@ -464,6 +466,7 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
   const ankleIndex = withGeo.indexOf(footBones[0]);
 
   const hip = joints[0], knee = joints[kneeIndex], foot = joints[joints.length - 1];
+  const l1 = dist(hip, knee), l2 = dist(knee, foot);
 
   // The pole is MEASURED: the knee's own offset from the hip-to-foot chord, so an analytic solve
   // reproduces the authored bend direction instead of inventing one. Same reasoning as `bug-rig.js`.
@@ -490,7 +493,14 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
     tipMarker: chain.tip !== withGeo[withGeo.length - 1] ? chain.tip : null,
     joints, segLengths, kneeIndex,
     footBones, ankleIndex,
-    l1: dist(hip, knee), l2: dist(knee, foot), span: total,
+    // The contact patch, in the foot bone's rest frame. Data only — the walker decides whether to use it.
+    footProxy: buildFootProxy(footBones.map(b => geo.get(b)), {
+      restWorld: ctx.world[footBones[0]],
+      soleCentre: [solePoint.x, solePoint.y, solePoint.z],
+      maxRadius: (l1 + l2) * 0.75,
+    }),
+    footFrame: footBones[0],
+    l1, l2, span: total,
     hip, knee, foot, pole, restDir,
     name: json.nodes[withGeo[0]]?.name ?? String(withGeo[0]),
   };

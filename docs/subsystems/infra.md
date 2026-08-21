@@ -19,6 +19,10 @@ lets perf captures save themselves into `research/stats/` — see "Perf capture 
 `POST /api/save-bot-state?filename=bot-state-trace-<YYYYMMDD-HHMMSS>.tsv` is the same pattern for
 `bot-viewer-v2.html`'s state recorder, writing into `bot-states/` (filename validated against
 `_SAFE_BOT_STATE_FILENAME`, `-N` suffix on collision) — see `docs/subsystems/bot-state-codes.md`.
+`GET /api/fs-scan` (2026-08-21) walks the whole repo (skipping `node_modules`, `__pycache__`, and
+any dotfile/dotdir) and returns every file/dir as a flat `{path, type, size, mtime}` list — the
+data source for `tools/filesystem-map.html`'s 3D node map, so the map is always live rather than
+reading a committed manifest that could go stale.
 It also owns `GET /api/list-states` (see "Folder seeding" below) and `GET /api/list-music`
 (enumerates `sfx/music/*.{mp3,wav,ogg,m4a,flac,opus,webm}`, no client input involved — see
 `docs/subsystems/audio.md`'s "Start-screen menu music" for the consumer, `start-screen.js`'s
@@ -43,8 +47,10 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
+| `disk-store.js` | A JSON document backed by a file on disk. GETs it, POSTs it back through a `serve.py` route, debounced autosave with serialised writes, and `localStorage` kept only as a fallback cache. Both sides are injected, so it is fully Node-tested (`test-disk-store.mjs`). | 160 |
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
 | `server-tool.html` | Browser dashboard served by `server-tool.py`; exposes Start/Restart/Stop/Clear controls, useful launch links, and live logs for each managed server. | 296 |
+| `tools/filesystem-map.html` | Standalone holographic 3D **node-link** map of the repo filesystem — WebGPURenderer + TSL `PostProcessing`/`bloom` (repo convention, not the WebGL EffectComposer addons). Directories are laid out with a real Fruchterman-Reingold force simulation in 3D (organic volumetric clustering, not a flat ring/grid); each folder's files are then scattered onto a Fibonacci sphere around its settled hub position (cheap, O(n), so ~9k files never enter the O(n²) physics). Nodes are instanced spheres sized/colored by file size and extension, edges are instanced line segments. Filters by file extension and modified-date range; fetches `GET /api/fs-scan` live, no manifest to regenerate. | 545 |
 
 ## Public API
 
@@ -588,3 +594,23 @@ Paint-mode pointer and click events are consumed after selection, so the clicked
 A paint-picked target receives a persistent outline and remains the active color-editor target after paint mode is disabled; while painting, only the color picker and surface-opacity slider stay interactive.
 
 Theme paint uses right-click for target selection and consumes that context action only; ordinary left-click interactions remain available while paint mode is on.
+
+### `POST /api/save-water-config`
+
+`demos/water-demo.html` writes `water-config.json` at the repo root through this route, and
+`demos/flight-sim.html` re-reads that file behind its refresh button. Overwrites in place rather
+than keeping a history, because it is a single current state and not a set of takes — the same
+arrangement as `/api/save-damage-tuning` and `damage-tuning.json`. The body must parse as JSON
+before anything is written, so a malformed post cannot truncate the file. See
+`docs/subsystems/flight.md` and `docs/subsystems/water.md`.
+
+### `POST /api/save-stadium?filename=<name>`
+
+`demos/stadium-walker.html` autosaves its whole session here through `disk-store.js`. Three filenames are
+accepted and nothing else: `stadium-tuning.json` (setpoints, poses, hand-assigned bone roles, panel state),
+`stadium-trials.json` (the trial log), and `stadium-tuning-<YYYYMMDD-HHMMSS>.json` from the snapshot button.
+All land in `stadium-saves/`. The two live files are overwritten in place because they are one current
+state; only the timestamped name gets a `-N` collision suffix, so two snapshots taken in the same second
+both survive. The body must parse as JSON before anything is written. This exists because the page
+previously kept hours of gait tuning in `localStorage`, where a cleared browser or a different port lost it
+silently — see the standing rule in `CLAUDE.md` and `docs/subsystems/stadium.md`.

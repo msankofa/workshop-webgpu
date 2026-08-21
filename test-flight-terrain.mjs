@@ -15,6 +15,7 @@
 import {
   heightAt, spacingAt, waveWeight, agl,
   WAVES, TS, RING_N, RING_BASE, RING_LEVELS, CELL0, CELL_MAX,
+  dryAnchor, lowestOf, SEA_LEVEL, DRY_MARGIN,
 } from './flight-terrain.js';
 
 // Every sample position below comes from this, not Math.random. The anisotropy ratio varies by
@@ -164,6 +165,64 @@ console.log('\n--- 5. agl is the height above the surface, not above sea level -
   const h = heightAt(x, z);
   ok('agl subtracts the ground', Math.abs(agl({ x, y: h + 250, z }) - 250) < 1e-9);
   ok('and goes negative underground', agl({ x, y: h - 10, z }) < 0);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 6. dry land: the bases used to be built in a lake ---');
+// ---------------------------------------------------------------------------
+{
+  // The demo's two clusters, as the offsets they are actually built from.
+  const DEF = [[0, 0], [260, 120], [-300, -90], [120, -240], [-150, 250], [340, -330]];
+  const UND = [[0, 0], [420, -60], [420, 90], [-240, 200], [-190, 320]];
+
+  // Why this exists at all: the field is deliberately part-submerged, so a fixed offset drowns.
+  let below = 0, n = 0;
+  for (let x = -8000; x <= 8000; x += 200) for (let z = -8000; z <= 8000; z += 200) {
+    n++; if (heightAt(x, z) < SEA_LEVEL) below++;
+  }
+  const wet = (100 * below) / n;
+  ok('a large fraction of the field is under the water plane', wet > 30 && wet < 60, `${wet.toFixed(1)}%`);
+
+  // Every spawn on a spiral out to 8 km, both clusters, before and after.
+  let wetBefore = 0, wetAfter = 0, total = 0, worstLow = Infinity, maxMove = 0, tooClose = 0;
+  for (let i = 0; i < 200; i++) {
+    const a = i * 2.399963, r = 8000 * Math.sqrt(i / 200);
+    const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
+    const dx = cx + 2600, dz = cz - 1800, ux = cx - 3200, uz = cz + 2400;
+    for (const [ox, oz] of DEF) { total++; if (heightAt(dx + ox, dz + oz) < SEA_LEVEL) wetBefore++; }
+    for (const [ox, oz] of UND) { total++; if (heightAt(ux + ox, uz + oz) < SEA_LEVEL) wetBefore++; }
+
+    const da = dryAnchor(dx, dz, DEF);
+    const ua = dryAnchor(ux, uz, UND, { avoid: da });
+    for (const [ox, oz] of DEF) if (heightAt(da.x + ox, da.z + oz) < SEA_LEVEL) wetAfter++;
+    for (const [ox, oz] of UND) if (heightAt(ua.x + ox, ua.z + oz) < SEA_LEVEL) wetAfter++;
+    worstLow = Math.min(worstLow, da.low, ua.low);
+    maxMove = Math.max(maxMove, da.moved, ua.moved);
+    if (Math.hypot(da.x - ua.x, da.z - ua.z) < 2500) tooClose++;
+  }
+  console.log(`  ${total} buildings over 200 spawns: ${wetBefore} underwater before, ${wetAfter} after`);
+  ok('the old fixed offsets drowned most of both bases', wetBefore / total > 0.3);
+  ok('and nothing is underwater now', wetAfter === 0);
+  ok('every footing clears the margin, not just the waterline', worstLow >= SEA_LEVEL + DRY_MARGIN,
+    `worst ${worstLow.toFixed(1)} m`);
+  ok('the cluster moves only as far as it has to', maxMove <= 6000, `max ${maxMove.toFixed(0)} m`);
+  ok('and the undefended base is never dragged into the SAM ring', tooClose === 0);
+
+  // The search is deterministic, or the map would reshuffle on every panel toggle.
+  const a1 = dryAnchor(2600, -1800, DEF), a2 = dryAnchor(2600, -1800, DEF);
+  ok('two searches from the same spot agree exactly', a1.x === a2.x && a1.z === a2.z);
+
+  // Already dry: it must not move at all, and lowestOf is what decided that.
+  const dryX = a1.x, dryZ = a1.z;
+  const stay = dryAnchor(dryX, dryZ, DEF);
+  ok('an anchor that is already dry stays put',
+    stay.x === dryX && stay.z === dryZ && stay.moved === 0);
+  ok('lowestOf reports the lowest footing under the footprint',
+    Math.abs(lowestOf(dryX, dryZ, DEF) - Math.min(...DEF.map(([ox, oz]) => heightAt(dryX + ox, dryZ + oz)))) < 1e-9);
+
+  // An all-water neighbourhood still has to produce a base rather than nothing.
+  const drowned = dryAnchor(0, 0, DEF, { maxR: 60, samples: 8 });
+  ok('a hopeless search still returns its driest anchor', Number.isFinite(drowned.x) && Number.isFinite(drowned.low));
 }
 
 console.log(`\n${fails === 0 ? 'all checks passed' : fails + ' CHECK(S) FAILED'}`);

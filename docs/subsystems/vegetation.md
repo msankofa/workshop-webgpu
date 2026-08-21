@@ -32,7 +32,7 @@ buffers so the CPU never reads back GPU state.
 | `grass-compute.js` (541 lines) | `createComputeGrass()`: fully GPU-driven grass with two placement paths. Procedural mode (no map): a TSL compute pass regenerates candidate blades over a world-cell window around the camera, plants them on a TSL terrain-height function. Anchor mode (authored maps, when `surfaceGeometry` is passed): CPU-sampled mesh anchors from `grass-anchors.js` are streamed into a chunk-slot storage buffer and a TSL kernel culls them instead. Both paths cull (water/radius/density) and atomically compact survivors into one indirect-drawn instance buffer. |
 | `grass-anchors.js` (206 lines) | Pure CPU mesh-anchor sampling for anchor mode, no three.js import. `buildChunkIndex()` bins the map collider's world-space triangle soup into XZ chunks of upward-facing triangles (unit normal `y >= minNormalY`), clipping triangles that span chunks exactly to each chunk rectangle (Sutherland–Hodgman; low-poly maps have triangles bigger than a chunk, so centroid binning would leave grassless holes). `sampleChunk()` draws deterministic area-weighted anchor points `(x,y,z,rand01)` on that surface — so blades land on cave floors, overhangs, and floating islands the top-down heightfield can't represent. |
 | `grass-cells.js` (58 lines) | Pure cell-grid math: `cellHash`, `candidateBlade` (deterministic per-(cell,slot) blade, the JS twin of `grass-compute.js`'s TSL placement), `windowCellCount`, `maxInstances`, `perCellCount`. Used both as the Node-testable spec and by `grass-compute.js` for buffer sizing. |
-| `grass-look.js` (~200 lines) | `createGrassLook(overrides)`: optional blade-look features shared by both grass paths, each behind a live 0/1 toggle uniform mixed into the node graph (no recompile; default-off = the previous look exactly). `nodes.sway` (coherent gust along a wind heading + per-blade flutter, or the legacy X-only wave), `nodes.curl` (circular-arc bend with the arc normal, interpolated as a varying), `nodes.coverage` (3-octave FBM patch mask), `nodes.rootShade`, `nodes.translucency` (sun backlight emissive), `nodes.bladeRandoms`. `set(partial)` / `get()` / `setSunDir(v3)`. Also now the home of `buildGrassNoiseFns` (re-exported by `grass.js`) and JS twins `coverageKeepRef`/`curlRef`/`valueNoise2` for tests. Ideas from achrefelouafi/GrassSystemThreeJS (WebGL/GLSL there; nothing ported verbatim). |
+| `grass-look.js` (~200 lines) | `createGrassLook(overrides)`: optional blade-look features shared by both grass paths, each behind a live 0/1 toggle uniform (no recompile; default-off = the previous look exactly). The FBM coverage mask sits inside an `If (uniform > 0.5)` block rather than being multiplied out, so an off toggle costs one compare instead of three noise octaves per vertex. `nodes.sway` (coherent gust along a wind heading + per-blade flutter, or the legacy X-only wave), `nodes.curl` (circular-arc bend with the arc normal, interpolated as a varying), `nodes.coverage` (3-octave FBM patch mask), `nodes.rootShade`, `nodes.translucency` (sun backlight emissive), `nodes.bladeRandoms`. `set(partial)` / `get()` / `setSunDir(v3)`. Also now the home of `buildGrassNoiseFns` (re-exported by `grass.js`) and JS twins `coverageKeepRef`/`curlRef`/`valueNoise2` for tests. Ideas from achrefelouafi/GrassSystemThreeJS (WebGL/GLSL there; nothing ported verbatim). |
 | `grass-height-ref.js` (33 lines) | `grassHeightRef(params, x, z)`: independent JS re-derivation of `terrain-field.js`'s `terrainHeightAt`, written with the same ops the TSL height function in `grass-compute.js` uses, so terrain conformance is provably bit-matched in tests. |
 | `tree-families-store.js` (69 lines) | `loadFamilies`/`speciesTableFor`/`validateFamily`/`indexOfSpeciesId`/`familyOptions`: the read boundary between `tree-viewer.html`'s authored families in localStorage and a forest-placement species table. Pure apart from an injectable storage handle. Read-only — never writes tree-viewer's keys. Attaches a namespaced `_tag.id` (`<familyId>/<speciesId>`) so hand-placed trees can reference a species stably across family edits. |
 | `bot-trees-place.js` (212 lines) | Pure placement math for `bot-trees.js`, no three.js: trunk-proxy triangle budgeting (`trunkProxyTriangles`/`maxTreesForBudget`), trunk dimensions derived from what renders (`trunkRadiusFor`/`trunkHeightFor`), nav-blocker rects (`trunkNavRects`), the `stampCluster` brush primitive (radius/count/falloff/minSeparation — new, nothing in the repo did this before), and the record lifecycle (`tagAutoRecords`/`resolvePlacedRecords`/`serializePlaced`/`nearestPlacedIndex`). Reuses `bot-flora-place.js`'s chunk/exclusion primitives rather than duplicating them. |
@@ -534,6 +534,10 @@ CPU-encode optimizations share the `rebuild()`/`update()` path in both modules:
   consequence: `terrainDebug.treePlacements` (read from `forestGPU.stats.instances` immediately after
   `setChunks` in `regenerateGPU`) now lags one regeneration, since `cpuInstances` updates at the next
   `update()`; the directly-sampled `forestInstances` CSV column and the live HUD read remain fresh.
+  The debounce is **per frame**, so a host that streams chunks over many frames still pays one full
+  rebuild and source-buffer upload per frame for as long as its queue drains. `park-flora.js` batches
+  on the caller side for that reason: chunks accumulate in `treeBatch` and go up once the queue empties
+  or the batch reaches `treeFlushChunks`.
 
 **CPU vs GPU grass.** `grass.js` (`GRASS_MODE=cpu`) builds one full `BufferGeometry` per terrain
 chunk on the main thread (queued/staggered via `buildQueue`/`processQueue` in the viewer's
@@ -884,6 +888,11 @@ table, since that table is shared with placement and with the host's panel.
 bake as genuine conifers (top-third canopy width 0.41–0.79 of mid-canopy, against 0.86–1.20 for the
 deciduous presets).
 
+`TEX_DIR` in `tree-textures.js` is `'./textures'`, resolved against the **document**, not the module.
+`createTextureSource` takes an optional `texDir` for a page that does not sit at the repo root —
+`demos/pokemon-park.html` passes `'../textures'`. Without it every map 404s, the set never reports ready,
+and the trees fall back to their flat vertex colour, which three of the four ez families author as white.
+
 **An authored species keeps its own atlas cell.** `leafOptsFor` used to set
 `cell = spIdx % cells` unconditionally. That is correct for `buildSpecies()`' procedural species,
 which carry no atlas at all and just want the variety spread around — but a family species *names*
@@ -926,6 +935,14 @@ Five optional blade features, all default-off, all live (uniform writes, no rebu
 | `rootShade` | darkens the bottom third of every blade | `rootShadeAmount` |
 | `coverage` | FBM patch mask; blades outside collapse to the ground the same way the distance fade does (in `grass-compute.js` the height is scaled, the instance is still drawn) | `coverageAmount`, `coverageScale` (freq/m), `coverageEdge`, `coverageSeedX/Z` |
 
+The curl normal is converted world -> view with `cameraViewMatrix.transformDirection()` and
+multiplied by `faceDirection`. NOT `transformNormalToView`, which applies the object->world normal
+matrix first and would turn the normal twice on any rotated mesh; and the face flip has to be
+explicit because three only applies its automatic double-sided flip to the *geometry* normal path,
+never to a custom `normalNode`. The arc normal is a `varying`, so it is computed per vertex even
+when curl is off (one interpolator, a sin/cos pair) - that is the one thing the toggle does not
+buy back.
+
 Wiring: `grass.js` takes `look:` in options and exposes `setLook/getLook/setSunDir`; the merged
 geometry gained per-vertex `aT` (0..1 up the blade), `aFace` (blade facing, also the seed for the
 per-blade randoms) and `aBladeUV` (previously only the compute path's base blade had it, so the
@@ -936,7 +953,10 @@ instance yaw. `bot-flora.js` passes `flora.grassLook` through and adds `setLook`
 `bot-viewer-v3.html` has a "Grass look" group under Flora writing `theme.flora.grassLook`;
 `environment-viewer.html` has the same controls in the Grass section as `params.grassLook*`.
 The compute variant could not be built headless (storage buffers need a real backend); the
-merged-field material builds with every toggle on and off in `test-grass-look.mjs`.
+merged-field material builds with every toggle on and off in `test-grass-look.mjs`, via
+`tsl-build-check.mjs`. That harness attaches a real DirectionalLight to its LightsNode - without one
+the lighting path (and with it every `normalNode` graph) is dead-code-eliminated and a green build
+proves nothing about normals.
 
 ## Tunable parameters
 

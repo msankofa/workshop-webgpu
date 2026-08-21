@@ -37,6 +37,7 @@ import {
   positionGeometry, modelWorldMatrix,
   reflector, viewportSharedTexture, screenUV,
 } from 'three/tsl';
+import { createWaterHeavyPassScheduler } from './water-pass-scheduler.js';
 
 export const WATER_VERSION = 'cw8';
 
@@ -432,8 +433,8 @@ function createRingGeometryJob(o, desc, heightCache) {
     return true;
   }
 
-  function toGeometry() {
-    const g = new THREE.BufferGeometry();
+  function toGeometry(existing = null) {
+    const g = existing || new THREE.BufferGeometry();
     let finalPositions = positions;
     let finalDepths = depths;
     if (extraDepths.length > 0) {
@@ -444,11 +445,47 @@ function createRingGeometryJob(o, desc, heightCache) {
       finalDepths.set(depths);
       finalDepths.set(extraDepths, depths.length);
     }
-    g.setAttribute('position', new THREE.BufferAttribute(finalPositions, 3));
-    g.setAttribute('aDepth', new THREE.BufferAttribute(finalDepths, 1));
-    g.setIndex(indices);
+    const vertexCount = finalDepths.length;
+    const previousCapacity = g.getAttribute('position')?.count || 0;
+    const vertexCapacity = previousCapacity >= vertexCount
+      ? previousCapacity
+      : Math.max(1, 2 ** Math.ceil(Math.log2(Math.max(1, vertexCount))));
+    let positionAttribute = g.getAttribute('position');
+    let depthAttribute = g.getAttribute('aDepth');
+    if (!positionAttribute || !depthAttribute
+      || positionAttribute.count !== vertexCapacity || depthAttribute.count !== vertexCapacity) {
+      positionAttribute = new THREE.BufferAttribute(new Float32Array(vertexCapacity * 3), 3);
+      depthAttribute = new THREE.BufferAttribute(new Float32Array(vertexCapacity), 1);
+      positionAttribute.setUsage(THREE.DynamicDrawUsage);
+      depthAttribute.setUsage(THREE.DynamicDrawUsage);
+      g.setAttribute('position', positionAttribute);
+      g.setAttribute('aDepth', depthAttribute);
+    }
+    positionAttribute.array.set(finalPositions, 0);
+    depthAttribute.array.set(finalDepths, 0);
+    positionAttribute.needsUpdate = true;
+    depthAttribute.needsUpdate = true;
+    const indexCount = indices.length;
+    if (indexCount > 0) {
+      const IndexArray = vertexCount > 65535 ? Uint32Array : Uint16Array;
+      let indexAttribute = g.getIndex();
+      if (!indexAttribute || !(indexAttribute.array instanceof IndexArray)
+        || indexAttribute.count < indexCount) {
+        const indexCapacity = Math.max(1, 2 ** Math.ceil(Math.log2(indexCount)));
+        indexAttribute = new THREE.BufferAttribute(new IndexArray(indexCapacity), 1);
+        indexAttribute.setUsage(THREE.DynamicDrawUsage);
+        g.setIndex(indexAttribute);
+      }
+      indexAttribute.array.set(indices, 0);
+      indexAttribute.needsUpdate = true;
+    }
+    g.setDrawRange(0, indexCount);
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(snapX, 0, snapZ), Math.SQRT2 * outerHalf);
     g.userData.minBed = minBed;
+    g.userData.vertexCount = vertexCount;
+    g.userData.indexCount = indexCount;
+    g.userData.vertexCapacity = vertexCapacity;
+    g.userData.indexCapacity = g.getIndex()?.count || 0;
     return g;
   }
 
@@ -491,13 +528,19 @@ export function createWaterSystem(options = {}) {
   const computeCausticEnabled = () => CAUSTICS_ENABLED && causticStrength > 0
     && causticGroup.children.length > 0
     && (!visibilityGatesEnabled || lightDir.y > CAUSTIC_MIN_LIGHT_ELEVATION);
-  const causticRenderStats = { enabled: CAUSTICS_ENABLED && causticStrength > 0, passes: 0, lastMs: 0 };
+  const causticRenderStats = {
+    enabled: CAUSTICS_ENABLED && causticStrength > 0,
+    passes: 0, skipped: 0, deferred: 0, lastMs: 0,
+  };
   // perf: every-Nth-frame caustic throttle, same seam as reflectEvery (setReflectRate).
   // Defaults to 1 (render every frame the caustic pass would otherwise run) — no default
   // behavior change in this task. setCausticRate() lets a later wave/perfAB slider throttle it.
   let causticEvery = Math.max(1, Math.round(Number(o.causticRate) || 1));
-  let causticFrameCounter = -1;
-  let causticLastFrameId = null;
+  const heavyPassScheduler = createWaterHeavyPassScheduler({
+    reflectionEvery: o.reflectRate,
+    causticEvery,
+  });
+  let causticLastPassFrame = -1;
 
   // ---- TSL uniform handles for the surface node material ----
   const tsl_uTime       = uniform(0.0,                  'float');
@@ -607,7 +650,10 @@ export function createWaterSystem(options = {}) {
   const computeReflectionEnabled = () => reflectionManualEnabled
     && (Number(o.reflectMix) || 0) > 0 && (Number(o.reflectBrightness) || 0) > 0;
   let reflectionEnabled = computeReflectionEnabled();
-  const reflectionRenderStats = { enabled: reflectionEnabled, passes: 0, skipped: 0, excluded: 0, lastMs: 0 };
+  const reflectionRenderStats = {
+    enabled: reflectionEnabled,
+    passes: 0, skipped: 0, deferred: 0, excluded: 0, lastMs: 0,
+  };
   const renderReflection = reflectorBase.updateBefore.bind(reflectorBase);
   // perf: frame-skip throttle. `reflectEvery` (set via setReflectRate(), declared below with
   // the rest of the per-frame-update state) controls how often the reflection actually
@@ -615,18 +661,9 @@ export function createWaterSystem(options = {}) {
   // previous render target's texture stays bound (verified safe: three.webgpu.js:37356 only
   // assigns textureNode.value when a render actually runs).
   //
-  // ReflectorBaseNode.updateBeforeType is NodeUpdateType.FRAME (three.webgpu.js:37118, since
-  // bounces is false here), so the node system already dedupes repeat calls that share the
-  // same frame.frameId (three.webgpu.js:53044-53060) — but frame.frameId itself is bumped by
-  // *every* renderer._renderScene() call (three.webgpu.js:58670), including this reflector's
-  // own nested render, so it is not a stable "one tick per app frame" counter on its own. We
-  // track distinct frameId *transitions* to build our own frame counter: this wrapper only
-  // executes once per outer renderer.render(scene, camera) call in practice (the water mesh is
-  // only traversed as part of the single base-scene submission), so counting on frameId change
-  // is equivalent to counting real frames while additionally guarding against any accidental
-  // re-entry with an unchanged frameId.
-  let reflectFrameCounter = -1;
-  let reflectLastFrameId = null;
+  // The scheduler advances from update(), a stable application-frame clock. This guard also
+  // prevents duplicate reflection work if nested rendering reaches this hook more than once.
+  let reflectLastPassFrame = -1;
   const reflectExcludeSeen = new Set();
   const reflectExcludeScratch = [];
   function collectReflectExcludes(src, out) {
@@ -673,27 +710,25 @@ export function createWaterSystem(options = {}) {
   // helper in this file for testing the clipmap rings against `camera`'s frustum, and building
   // one is more than a "cheap check" — deferred; see water.md's "Gates" note for this deviation.
   function hasVisibleWaterRings() {
-    return !visibilityGatesEnabled || waterRings.some(r => r && r.mesh);
+    return !visibilityGatesEnabled || waterRings.some(r => r?.mesh && r.mesh.visible !== false);
   }
   reflectorBase.updateBefore = (frame) => {
+    const passFrame = heavyPassScheduler.frame;
+    if (passFrame === reflectLastPassFrame) return;
+    reflectLastPassFrame = passFrame;
     reflectionRenderStats.enabled = reflectionEnabled && hasVisibleWaterRings();
     if (!reflectionRenderStats.enabled) {
       reflectionRenderStats.lastMs = 0;
       return;
     }
-    const fid = frame && frame.frameId;
-    if (fid === undefined || fid !== reflectLastFrameId) {
-      reflectLastFrameId = fid;
-      reflectFrameCounter++;
-    }
-    // Always renders on the very first frame (0 % N === 0 for any N >= 1) so the reflector
-    // texture is never left blank at startup.
-    if (reflectFrameCounter % reflectEvery !== 0) {
+    if (!heavyPassScheduler.shouldRun('reflection')) {
       reflectionRenderStats.skipped++;
+      if (heavyPassScheduler.isPending('reflection')) reflectionRenderStats.deferred++;
       return;
     }
     const t0 = nowMs();
     renderReflectionPruned(frame);
+    heavyPassScheduler.complete('reflection');
     reflectionRenderStats.passes++;
     reflectionRenderStats.lastMs = nowMs() - t0;
   };
@@ -804,6 +839,7 @@ export function createWaterSystem(options = {}) {
     ring0Verts: 0, ring1Verts: 0, ring2Verts: 0,
     cacheHits: 0, cacheMisses: 0, lastBuildMs: 0, disposalsPending: 0,
   };
+  const ringResourceStats = { geometryCreates: 0, geometryReuses: 0, bufferGrows: 0 };
   let lastCamX = camera?.position?.x ?? 0;
   let lastCamZ = camera?.position?.z ?? 0;
   let terrainCacheSignature = `${o.size}:${o.extentX ?? ''}:${o.extentZ ?? ''}`;
@@ -865,6 +901,9 @@ export function createWaterSystem(options = {}) {
       this.updateBeforeType = NodeUpdateType.RENDER;
     }
     updateBefore(frame) {
+      const passFrame = heavyPassScheduler.frame;
+      if (passFrame === causticLastPassFrame) return;
+      causticLastPassFrame = passFrame;
       // perf (2026-07-09, water-performance-design.md §3): gate on light elevation in addition
       // to the pre-existing strength/mesh-count gates — see computeCausticEnabled() above for
       // why (light at/below horizon degenerates the top-down caustic projection).
@@ -874,18 +913,14 @@ export function createWaterSystem(options = {}) {
         this.value = causticsTarget.texture;
         return;
       }
-      // perf: every-Nth-frame throttle (setCausticRate()), same frameId-transition-counting
+      // Perf: the shared scheduler throttles and deconflicts this pass with reflection.
       // technique as the reflector's updateBefore wrapper (water.js:~630). On a skipped frame
       // we return WITHOUT touching this.value, so the previous render target's texture stays
       // bound — never a blank/black caustic texture. Default causticEvery=1 means every
       // eligible frame renders, identical to pre-throttle behavior.
-      const fid = frame && frame.frameId;
-      if (fid === undefined || fid !== causticLastFrameId) {
-        causticLastFrameId = fid;
-        causticFrameCounter++;
-      }
-      if (causticFrameCounter % causticEvery !== 0) {
-        causticRenderStats.skipped = (causticRenderStats.skipped || 0) + 1;
+      if (!heavyPassScheduler.shouldRun('caustic')) {
+        causticRenderStats.skipped++;
+        if (heavyPassScheduler.isPending('caustic')) causticRenderStats.deferred++;
         return;
       }
       const t0 = nowMs();
@@ -894,6 +929,7 @@ export function createWaterSystem(options = {}) {
       r.setRenderTarget(causticsTarget);
       r.render(causticScene, causticCamera);
       r.setRenderTarget(prev);
+      heavyPassScheduler.complete('caustic');
       causticRenderStats.passes++;
       causticRenderStats.lastMs = nowMs() - t0;
       this.value = causticsTarget.texture;
@@ -1011,26 +1047,37 @@ export function createWaterSystem(options = {}) {
   }
 
   function commitRingJob(n, job) {
-    const oldRing = waterRings[n];
-    const geometry = job.toGeometry();
+    const ring = waterRings[n];
+    const snapChanged = !ring || ring.snapX !== job.desc.snapX || ring.snapZ !== job.desc.snapZ;
+    const previousVertexCapacity = ring?.geometry?.userData.vertexCapacity || 0;
+    const previousIndexCapacity = ring?.geometry?.userData.indexCapacity || 0;
+    const geometry = job.toGeometry(ring?.geometry || null);
+    const hasWater = (geometry.userData.indexCount || 0) > 0;
     let nextRing;
-    if (!geometry.index || geometry.index.count === 0) {
-      geometry.dispose();
-      nextRing = { mesh: null, causticMesh: null, geometry: null, snapX: job.desc.snapX, snapZ: job.desc.snapZ };
+    if (ring) {
+      ring.snapX = job.desc.snapX;
+      ring.snapZ = job.desc.snapZ;
+      ring.mesh.visible = hasWater;
+      ring.causticMesh.visible = hasWater;
+      nextRing = ring;
+      ringResourceStats.geometryReuses++;
+      if (geometry.userData.vertexCapacity !== previousVertexCapacity
+        || geometry.userData.indexCapacity !== previousIndexCapacity) ringResourceStats.bufferGrows++;
     } else {
       const mesh = new THREE.Mesh(geometry, surfaceMat);
       mesh.name = `WaterRing${n}`;
       mesh.renderOrder = 1;
+      mesh.visible = hasWater;
       const causticMesh = new THREE.Mesh(geometry, causticMat);
       causticMesh.name = `WaterCausticRing${n}`;
       causticMesh.frustumCulled = false;
+      causticMesh.visible = hasWater;
       surface.add(mesh);
       causticGroup.add(causticMesh);
       nextRing = { mesh, causticMesh, geometry, snapX: job.desc.snapX, snapZ: job.desc.snapZ };
+      ringResourceStats.geometryCreates++;
     }
-    const snapChanged = !oldRing || oldRing.snapX !== job.desc.snapX || oldRing.snapZ !== job.desc.snapZ;
     waterRings[n] = nextRing;
-    removeRingMeshes(oldRing, true);
     ringJobs[n] = null;
     ringDirty[n] = false;
     pendingSnaps[n] = null;
@@ -1115,6 +1162,10 @@ export function createWaterSystem(options = {}) {
   //               during the live render loop (issues/001 safe ? same pattern as reflector).
   let reflectEvery = Math.max(1, Math.round(Number(o.reflectRate) || 1));
   function update(time) {
+    heavyPassScheduler.beginFrame({
+      reflectionEnabled: reflectionEnabled && hasVisibleWaterRings(),
+      causticEnabled: computeCausticEnabled(),
+    });
     tsl_uTime.value = time;
     camera.updateMatrixWorld();
     checkSnaps(camera.position.x, camera.position.z);
@@ -1123,10 +1174,10 @@ export function createWaterSystem(options = {}) {
   }
   function setReflectRate(everyNFrames) {
     // Perf: throttles the reflection to render only every `everyNFrames`th real frame.
-    // Consumed by the reflectorBase.updateBefore wrapper (water.js:~560), which counts
-    // distinct frame.frameId transitions and skips renderReflection() on off-frames,
+    // Consumed by the shared application-frame scheduler, which skips reflection on off-frames,
     // leaving the previous render target's texture bound (safe — see wrapper comment).
     reflectEvery = Math.max(1, Math.round(everyNFrames));
+    heavyPassScheduler.setRate('reflection', reflectEvery);
   }
 
   function resize() {
@@ -1228,11 +1279,11 @@ export function createWaterSystem(options = {}) {
     causticRenderStats.enabled = computeCausticEnabled();
   }
 
-  // perf: throttles the caustic render to every `everyNFrames`th eligible frame, same
-  // frameId-transition-counting technique as setReflectRate(). Default 1 = every frame
-  // (current behavior).
+  // Perf: throttles the caustic render to every `everyNFrames`th eligible frame. The shared
+  // scheduler deconflicts it with reflection. Default 1 = every eligible frame.
   function setCausticRate(everyNFrames) {
     causticEvery = Math.max(1, Math.round(Number(everyNFrames) || 1));
+    heavyPassScheduler.setRate('caustic', causticEvery);
   }
 
   // perf: resizes the fixed-resolution caustic render target at runtime. causticsTarget is a
@@ -1292,7 +1343,7 @@ export function createWaterSystem(options = {}) {
     surfaceMat.dispose(); causticMat.dispose(); causticsTarget.dispose();
   }
 
-  function getChunkCount() { return waterRings.filter(r => r?.mesh).length; }
+  function getChunkCount() { return waterRings.filter(r => r?.mesh && r.mesh.visible !== false).length; }
   function getStats() {
     const ringTris = [0, 0, 0];
     const ringVerts = [0, 0, 0];
@@ -1302,16 +1353,17 @@ export function createWaterSystem(options = {}) {
       if (!g) continue;
       const position = g.getAttribute?.('position');
       const index = g.getIndex?.();
-      ringVerts[n] = position?.count || 0;
-      ringTris[n] = index ? Math.floor(index.count / 3) : 0;
+      ringVerts[n] = g.userData.vertexCount ?? position?.count ?? 0;
+      ringTris[n] = Math.floor((g.userData.indexCount ?? index?.count ?? 0) / 3);
       minBed = Math.min(minBed, g.userData.minBed ?? Infinity);
     }
     const pending = ringDirty.reduce((sum, dirty, n) => sum + ((dirty || ringJobs[n]) ? 1 : 0), 0);
-    const meshCount = waterRings.filter(r => r?.mesh).length;
+    const meshCount = waterRings.filter(r => r?.mesh && r.mesh.visible !== false).length;
     const cacheHits = heightCaches.reduce((sum, cache) => sum + cache.hits, 0);
     const cacheMisses = heightCaches.reduce((sum, cache) => sum + cache.misses, 0);
     return {
       ...stats,
+      ...ringResourceStats,
       chunks: meshCount,
       candidates: 3,
       pending,
@@ -1322,15 +1374,18 @@ export function createWaterSystem(options = {}) {
       causticDraws: causticRenderStats.enabled ? meshCount : 0,
       causticEnabled: causticRenderStats.enabled,
       causticPasses: causticRenderStats.passes,
+      causticDeferred: causticRenderStats.deferred,
       causticLastMs: causticRenderStats.lastMs,
       reflectionEnabled: reflectionRenderStats.enabled,
       reflectionPasses: reflectionRenderStats.passes,
       reflectionSkipped: reflectionRenderStats.skipped,
+      reflectionDeferred: reflectionRenderStats.deferred,
       reflectionExcluded: reflectionRenderStats.excluded,
       reflectionLastMs: reflectionRenderStats.lastMs,
       reflectionResolutionScale: o.reflectResolutionScale,
       reflectionRate: reflectEvery,
       causticSkipped: causticRenderStats.skipped || 0,
+      scheduledHeavyPass: heavyPassScheduler.scheduled,
       causticRate: causticEvery,
       causticRes: causticsTarget.width,
       qualityPreset: waterQualityPreset,

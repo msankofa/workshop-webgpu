@@ -1,0 +1,2031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pokemon Park</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1116; }
+  canvas { display: block; }
+  #info { position: fixed; top: 10px; left: 12px; color: #98a3b4;
+    font: 12px/1.55 system-ui, sans-serif; user-select: none; pointer-events: none; z-index: 5;
+    max-width: 40ch; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+  #info b { color: #d7dee8; font-weight: 600; }
+  #err { position: fixed; top: 22%; left: 12px; right: 12px; display: none; z-index: 40;
+    background: #3a1518; color: #ffd7d7; border: 1px solid #7c2a2f; border-radius: 8px;
+    padding: 12px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+    max-height: 50vh; overflow: auto; }
+  #boot { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; background: #0e1116;
+    color: #c4ccd6; font: 14px/1.6 system-ui, sans-serif; transition: opacity .5s; }
+  #boot h1 { margin: 0; font: 600 26px/1.2 system-ui, sans-serif; color: #e6edf6; letter-spacing: .01em; }
+  #boot .sub { color: #7f8a99; }
+  #boot .bar { width: min(420px, 70vw); height: 3px; background: #232a34; border-radius: 2px; overflow: hidden; }
+  #boot .bar i { display: block; height: 100%; width: 0%; background: #6fb98f; transition: width .3s; }
+  #boot.gone { opacity: 0; pointer-events: none; }
+  #hud { position: fixed; left: 12px; bottom: 12px; z-index: 6; color: #c4ccd6;
+    font: 12px/1.5 system-ui, sans-serif; text-shadow: 0 1px 3px rgba(0,0,0,.7); pointer-events: none; }
+  #hud .big { font-size: 15px; color: #e6edf6; font-weight: 600; }
+  #toast { position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%); z-index: 7;
+    color: #e6edf6; font: 13px/1.5 system-ui, sans-serif; background: rgba(16,20,26,.82);
+    border: 1px solid #333a45; border-radius: 8px; padding: 7px 13px; opacity: 0; transition: opacity .35s;
+    pointer-events: none; }
+  #toast.on { opacity: 1; }
+  #minimap { position: fixed; right: 12px; bottom: 12px; z-index: 6; width: 190px; height: 190px;
+    border: 1px solid #333a45; border-radius: 8px; background: rgba(16,20,26,.7); image-rendering: pixelated; }
+  #guide { position: fixed; right: 12px; bottom: 214px; z-index: 8; width: 236px; max-height: 40vh;
+    overflow-y: auto; background: rgba(16,20,26,.88); border: 1px solid #333a45; border-radius: 8px;
+    color: #c4ccd6; font: 12px/1.5 system-ui, sans-serif; padding: 9px 11px; display: none; }
+  #guide h4 { margin: 0 0 6px; font-size: 12px; color: #8a93a3; font-weight: 600; }
+  #guide .row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  #guide .row span:last-child { color: #7f8a99; }
+  body.gui-hidden #info, body.gui-hidden #hud, body.gui-hidden #minimap,
+  body.gui-hidden #ctrl, body.gui-hidden #guide { display: none !important; }
+</style>
+</head>
+<body>
+<div id="info">
+  <b>Pokemon Park</b> &mdash; a 2.4 km national park with 151 species living in it.<br>
+  <b>WASD</b> walk &middot; <b>Shift</b> run &middot; <b>Space</b> jump &middot; <b>C</b> crouch &middot; <b>V</b> first/third person<br>
+  <b>F</b> field guide &middot; <b>M</b> map &middot; <b>P</b> pause the park &middot; <b>H</b> hide the interface
+</div>
+<div id="err"></div>
+<div id="hud"></div>
+<div id="toast"></div>
+<canvas id="minimap" width="190" height="190"></canvas>
+<div id="guide"><h4>Field guide &mdash; seen so far</h4><div id="guide-list"></div></div>
+<div id="boot">
+  <h1>Pokemon Park</h1>
+  <div class="sub" id="boot-msg">waking the park&hellip;</div>
+  <div class="bar"><i id="boot-bar"></i></div>
+</div>
+
+<!-- three@0.184.0: three.webgpu.js and three.tsl.js both verified at jsDelivr (2026-06-19) -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script>
+// Errors before the module even parses have to land somewhere visible
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent += (e.error?.stack || e.message || e) + '\n';
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent += 'promise: ' + (e.reason?.stack || e.reason) + '\n';
+});
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import {
+  WebGPURenderer, MeshStandardNodeMaterial, MeshBasicNodeMaterial,
+  MeshPhysicalNodeMaterial, SpriteNodeMaterial, PointsNodeMaterial,
+} from 'three/webgpu';
+import * as TSL from 'three/tsl';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
+import { Capsule } from 'three/addons/math/Capsule.js';
+
+import { buildPark, PARK_TERRAIN, PARK_BIOMES, PARK_BIOME_COLORS, makeRng } from '../park-biomes.js';
+import { buildParkGround, bakeBiomeImage } from '../park-ground.js';
+import { createParkFlora } from '../park-flora.js';
+import { SPECIES, BIOMES, MOVEMENT } from '../park-species.js';
+import { planPopulation, createResidency, censusOf, speciesLoadOrder } from '../park-spawn.js';
+import { createParkCreatures } from '../park-creature.js';
+import { createLightingRig } from '../lights.js';
+import { groundContact, slideVelocity } from '../collision.js';
+import { createProceduralPlayerBody } from '../player-procedural-body.js';
+import { botDesignForRole } from '../bot-body-design.js';
+import { clampLookPitch, easeToward, momentumLeanTarget } from '../view-feel.js';
+import { dampAlpha } from '../bot-camera-control.js';
+import { buildTrailGrid, buildTrails, parkTrailLegs } from '../park-trails.js';
+import { createRoadSystem } from '../roads.js';
+import { makeLine, hashSeed } from '../moves/move-core.js';
+import { MOVES_BY_NAME } from '../moves/move-registry.js';
+import { setMoveComponentRuntime } from '../moves/move-parts.js';
+import { createDiskStore, describeStatus } from '../disk-store.js';
+import { installPanelTheme } from '../workshop-panel-theme.js';
+
+// ===================== boot chrome =====================
+
+const bootEl = document.getElementById('boot');
+const bootMsg = document.getElementById('boot-msg');
+const bootBar = document.getElementById('boot-bar');
+let bootStep = 0;
+const BOOT_STEPS = 15;
+function setStatus(text) {
+  bootMsg.textContent = text;
+  bootBar.style.width = `${Math.min(100, (++bootStep / BOOT_STEPS) * 100)}%`;
+  return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+const failedMessages = new Set();
+const fail = (msg) => {
+  msg = String(msg);
+  if (failedMessages.has(msg)) return;
+  failedMessages.add(msg);
+  const el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent += msg + '\n';
+};
+
+const Q = new URLSearchParams(location.search);
+const SEED = Number(Q.get('seed') ?? 4) || 4;
+const CREATURES_MODE = Q.get('creatures') ?? 'on';
+const populationQuery = Number(Q.get('pop') ?? 420);
+const POPULATION = CREATURES_MODE === 'off'
+  ? 0
+  : Math.max(0, Number.isFinite(populationQuery) ? Math.floor(populationQuery) : 420);
+const MOVES_MODE = Q.get('moves') ?? 'on';
+const WATER_MODE = Q.get('water') ?? 'on';
+const SKY_MODE = Q.get('sky') ?? 'on';
+const FLORA_MODE = Q.get('flora') ?? 'on';
+const TRAILS_MODE = Q.get('trails') ?? 'on';
+const TERRAIN_MODE = Q.get('terrain') ?? 'on';
+const SHADOWS_MODE = Q.get('shadows') ?? 'on';
+// Parsing a GLB and compiling its pipelines are main-thread/GPU setup work. Preload by default so
+// those unavoidable stalls happen behind the boot screen, never while the player is moving.
+// `stream` preserves the old behavior for controlled A/B captures.
+const SPECIES_LOAD_MODE = Q.get('speciesLoad') === 'stream' ? 'stream' : 'preload';
+// Two baked shapes per species is 30 variants and 240 draw meshes; drop to 1 if that is too many.
+const TREE_VARIANTS = Math.max(1, Math.min(4, Number(Q.get('treeVariants') ?? 2) || 2));
+// Follow the display's own VSync cadence by default. Fixed caps are opt-in because a requested
+// rate that is not a divisor of the display refresh (60 on 75/90/144/165 Hz, for example) has
+// to skip presentation slots and reads as judder even when the individual frames are on time.
+const FPS_CAP_VALUES = new Set(['30', '40', '60']);
+const fpsCapQuery = Q.get('fpsCap');
+const FPS_CAP_URL = FPS_CAP_VALUES.has(fpsCapQuery) ? fpsCapQuery : 'off';
+
+// ===================== the session file =====================
+
+const SESSION_FILE = 'park-session.json';
+const store = createDiskStore({
+  read: `/park-saves/${SESSION_FILE}`,
+  write: `/api/save-park?filename=${SESSION_FILE}`,
+  storage: localStorage, key: 'pcw:parkSession', debounceMs: 800,
+});
+await store.load();
+const session = store.json(null) || { seed: SEED, tuning: {}, seen: {}, prefs: {} };
+session.tuning ||= {};
+session.seen ||= {};
+session.prefs ||= {};
+const saveSession = () => store.setJSON(session);
+
+// ===================== renderer =====================
+
+await setStatus('starting the renderer');
+if (!navigator.gpu) {
+  fail('This page needs WebGPU. Chrome or Edge 113+, or Safari 18+, with hardware acceleration on.');
+  throw new Error('no WebGPU');
+}
+let gpuRequiredLimits = {};
+{
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter) gpuRequiredLimits = {
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxBufferSize: adapter.limits.maxBufferSize,
+  };
+}
+const renderer = new WebGPURenderer({ antialias: true, requiredLimits: gpuRequiredLimits });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = SHADOWS_MODE !== 'off';
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const SKY_TINT = new THREE.Color(0x9dbcd8);
+scene.background = SKY_TINT.clone();
+scene.fog = new THREE.Fog(SKY_TINT.clone(), 260, 1500);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 2600);
+// YXZ from the start: yaw is read straight off the camera and with the
+camera.rotation.order = 'YXZ';
+
+// ===================== the move light pool, BEFORE any world material =====================
+
+const lightPool = [];
+for (let i = 0; i < 6; i++) {
+  const l = new THREE.PointLight(0xffffff, 0, 26, 2);
+  l.userData.busy = false;
+  scene.add(l);
+  lightPool.push(l);
+}
+let moveLightsEnabled = true;
+const moveLights = {
+  acquire() {
+    if (!moveLightsEnabled) return null;
+    const l = lightPool.find((x) => !x.userData.busy);
+    if (l) { l.userData.busy = true; l.intensity = 0; }
+    return l || null;
+  },
+  release(l) { if (l) { l.intensity = 0; l.userData.busy = false; } },
+};
+
+// ===================== sun =====================
+
+const rig = createLightingRig({ scene, ui: false, azimuth: 128, elevation: 46, sunIntensity: 2.1, ambientIntensity: 0.55 });
+rig.dirLight.castShadow = SHADOWS_MODE !== 'off';
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(2048, 2048);
+rig.dirLight.shadow.camera.near = 1;
+rig.dirLight.shadow.camera.far = 420;
+rig.dirLight.shadow.camera.left = -110;
+rig.dirLight.shadow.camera.right = 110;
+rig.dirLight.shadow.camera.top = 110;
+rig.dirLight.shadow.camera.bottom = -110;
+rig.dirLight.shadow.camera.updateProjectionMatrix();
+rig.dirLight.shadow.bias = -0.0006;
+rig.dirLight.shadow.normalBias = 0.05;
+
+// The shadow box follows the player and grows as the sun drops: at 46 degrees a 110 m box holds
+// the shadows that reach the player, at 15 it does not, and the edge of the box reads as a straight
+// line across the park with lit ground on one side and shadowed ground on the other.
+const SHADOW_SPAN = 110;
+const _shadowAt = new THREE.Vector3();
+let shadowSpan = 0;
+function shadowSpanFor(elevationDeg) {
+  const s = Math.sin(THREE.MathUtils.degToRad(Math.max(1, elevationDeg)));
+  return THREE.MathUtils.clamp(SHADOW_SPAN / Math.max(0.28, s), SHADOW_SPAN, 340);
+}
+function resizeShadow(span) {
+  if (Math.abs(span - shadowSpan) < 4) return;
+  shadowSpan = span;
+  const cam = rig.dirLight.shadow.camera;
+  cam.left = -span; cam.right = span; cam.top = span; cam.bottom = -span;
+  cam.far = 260 + span * 2;
+  cam.updateProjectionMatrix();
+  // A wider box is fewer texels per metre, so the depth bias has to widen with it.
+  rig.dirLight.shadow.bias = -0.0006 * (span / SHADOW_SPAN);
+}
+function focusShadow(x, z) {
+  const y = terrainHeight(x, z);
+  _shadowAt.set(x, y, z);
+  resizeShadow(shadowSpanFor(rig.elevation));
+  rig.dirLight.target.position.copy(_shadowAt);
+  rig.dirLight.position.copy(_shadowAt).addScaledVector(skyLightDir(_sunScratch), 260);
+  rig.dirLight.target.updateMatrixWorld();
+  rig.dirLight.updateMatrixWorld();
+}
+const _sunScratch = new THREE.Vector3();
+
+function skyLightDir(out = new THREE.Vector3()) {
+  const az = THREE.MathUtils.degToRad(rig.azimuth), el = THREE.MathUtils.degToRad(rig.elevation);
+  return out.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)).normalize();
+}
+
+// ===================== the park =====================
+
+await setStatus('growing the terrain');
+const park = buildPark({ seed: SEED });
+const HALF = PARK_TERRAIN.worldX / 2;
+const WORLD_RADIUS = Math.hypot(HALF, HALF);
+const terrainHeight = (x, z) => park.map.heightAt(x, z);
+const waterLevel = PARK_TERRAIN.waterLevel;
+const waterHeight = () => waterLevel;
+
+await setStatus('laying the ground');
+const ground = buildParkGround({ THREE, MeshStandardNodeMaterial, TSL, park, stride: PARK_TERRAIN.meshStride });
+ground.mesh.visible = TERRAIN_MODE !== 'off';
+scene.add(ground.mesh);
+
+// The terrain NORMAL for the player's slope handling, from the field rather than the drawn sheet.
+const _n = [0, 1, 0];
+function terrainNormal(x, z) {
+  const e = 1.6;
+  const hL = terrainHeight(x - e, z), hR = terrainHeight(x + e, z);
+  const hD = terrainHeight(x, z - e), hU = terrainHeight(x, z + e);
+  let nx = hL - hR, ny = 2 * e, nz = hD - hU;
+  const inv = 1 / Math.hypot(nx, ny, nz);
+  _n[0] = nx * inv; _n[1] = ny * inv; _n[2] = nz * inv;
+  return _n;
+}
+
+// Where the park gate is: the middle of the developed area
+const GATE = {
+  x: PARK_TERRAIN.townPad.x * HALF,
+  z: PARK_TERRAIN.townPad.z * HALF,
+};
+
+// ===================== trails =====================
+
+// Roads sample the DRAWN sheet, not the field: the two disagree by up to a cell and a road that
+// reads the field floats or sinks.
+const roadGround = {
+  heightAt: (x, z) => ground.surfaceHeightAt(x, z),
+  maxNear: (x, z, r) => ground.surfaceMaxNear(x, z, r),
+};
+let roads = null;
+let trailPaths = [];
+let trailStats = { paths: 0, metres: 0, skipped: [] };
+if (TRAILS_MODE !== 'off') {
+  await setStatus('cutting the trails');
+  try {
+    roads = createRoadSystem({
+      parent: scene, ground: roadGround,
+      options: {
+        color: 0x7a6a52, roughness: 0.97,
+        surfaceCell: (PARK_TERRAIN.worldX / (PARK_TERRAIN.resolution - 1)) * PARK_TERRAIN.meshStride * 0.5,
+        clearMargin: 2.6, snapDistance: 14, mergeRadius: 8, simplifyDistance: 6,
+        crossingGuard: 18, crossingSpacing: 24, minEdgeLength: 8, minRouteLength: 20,
+      },
+    });
+    const trailGrid = buildTrailGrid({
+      heightAt: terrainHeight,
+      worldX: PARK_TERRAIN.worldX, worldZ: PARK_TERRAIN.worldZ, waterLevel,
+    });
+    const built = buildTrails({ grid: trailGrid, legs: parkTrailLegs(PARK_TERRAIN) });
+    let metres = 0;
+    for (const path of built.paths) {
+      for (let i = 1; i < path.points.length; i++) {
+        metres += Math.hypot(path.points[i].x - path.points[i - 1].x, path.points[i].z - path.points[i - 1].z);
+      }
+      roads.network.addRoadPath(path.points.map((pt) => ({ x: pt.x, y: roadGround.heightAt(pt.x, pt.z), z: pt.z })), path.width);
+    }
+    roads.rebuild();
+    trailPaths = built.paths;
+    trailStats = { paths: built.paths.length, metres: Math.round(metres), skipped: built.skipped };
+    if (built.skipped.length) console.warn('[park] trails that would not route:', built.skipped.join(', '));
+  } catch (e) { fail('trails: ' + e.message); }
+}
+const roadClearsFlora = roads
+  ? (x, z) => roads.group.visible && roads.isNearRoad(x, z)
+  : null;
+
+// ===================== water =====================
+
+let waterRef = null;
+if (WATER_MODE !== 'off') {
+  await setStatus('filling the lake');
+  try {
+    const { createWaterSystem } = await import('../water.js');
+    waterRef = createWaterSystem({
+      renderer, scene, camera,
+      ground: ground.mesh,
+      size: PARK_TERRAIN.worldX,
+      waterLevel,
+      heightFn: terrainHeight,
+      extentX: PARK_TERRAIN.worldX, extentZ: PARK_TERRAIN.worldZ,
+      lodR0: 60, lodR1: 190,
+      // A park lake is scenery, not a mirror to shave in
+      reflectResolutionScale: 0.5, reflectRate: 3,
+      reflectMix: 0.85, reflectBrightness: 1.0,
+      depthScale: 3.4,
+      causticRate: 4, causticRes: 384,
+    });
+    scene.add(waterRef.surface);
+    rig.connect(waterRef, null);
+  } catch (e) { fail('water: ' + e.message); }
+}
+
+// ===================== sky and cloud =====================
+
+let skyRef = null, cloudsRef = null, clouds2Ref = null;
+if (SKY_MODE !== 'off') {
+  await setStatus('hanging the sky');
+  try {
+    const { createSky } = await import('../sky.js?v=sp7-hdplanets');
+    skyRef = createSky({
+      scene, camera, size: PARK_TERRAIN.worldX, sunDir: skyLightDir(),
+      parts: { stars: false, milkyWay: false, bodies: true },
+    });
+    scene.add(skyRef.group);
+  } catch (e) { fail('sky: ' + e.message); }
+  try {
+    const { Clouds } = await import('../clouds.js');
+    for (const [ref, y, extent, puff, opacity] of [[0, 340, 9000, 1.0, 0.85], [1, 620, 20000, 3.0, 0.45]]) {
+      const c = new Clouds();
+      c.rotation.x = -Math.PI / 2;
+      c.position.y = y;
+      c.setExtent(extent); c.setCoverage(0.42); c.setOpacity(opacity);
+      c.setSpeed(0.85); c.setPuff(puff); c.setSoftness(0.35); c.setFade(0.55);
+      scene.add(c);
+      if (ref === 0) cloudsRef = c; else clouds2Ref = c;
+    }
+  } catch (e) { fail('clouds: ' + e.message); }
+}
+
+// ===================== grass, trees and rock =====================
+
+let flora = null;
+if (FLORA_MODE !== 'off') {
+  try {
+    flora = await createParkFlora({
+      THREE, renderer, camera, scene, park,
+      onStatus: setStatus,
+      clearFn: roadClearsFlora,
+      options: {
+        grass: FLORA_MODE !== 'nograss',
+        forest: FLORA_MODE !== 'notrees',
+        boulders: FLORA_MODE !== 'norocks',
+        treeVariantsPerSpecies: TREE_VARIANTS,
+        // Resolved against the document, and the document is in demos/.
+        texDir: '../textures',
+        treeTextures: Q.get('treeTex') === 'off' ? 'off' : 'authored',
+        grassLook: session.tuning.grassLook || undefined,
+      },
+    });
+  } catch (e) { fail('flora: ' + e.message); }
+}
+
+// ===================== the residents =====================
+
+await setStatus('taking the census');
+const plan = planPopulation(park.map, { seed: SEED, count: POPULATION, entry: GATE });
+const census = censusOf(plan);
+const residency = createResidency(plan.residents, {
+  activeRadius: 130, farRadius: 210, dropRadius: 250,
+  maxActivations: 1, maxDeactivations: 5, hardMax: 52,
+});
+
+const creatures = createParkCreatures({
+  THREE, scene, GLTFLoader, skeletonClone,
+  terrainHeight, waterHeight, waterLevel,
+  worldRadius: WORLD_RADIUS,
+  rng: makeRng(SEED ^ 0x5bd1),
+  // A species' render pipeline compiles once, at load, off the frame it first becomes visible.
+  warmMaterials: (obj) => renderer.compileAsync(obj, camera, scene),
+  options: { modelPath: '../models/stadium/' },
+});
+
+// Species load in nearest-first order so the park fills in around you rather than from the far shore.
+const loadOrder = speciesLoadOrder(plan.residents, GATE.x, GATE.z);
+const loadQueue = loadOrder.slice();
+let loading = 0;
+async function loadSpecies(key) {
+  try {
+    await creatures.ensureSpecies(SPECIES[key]);
+    return true;
+  } catch (e) {
+    fail(`${SPECIES[key].name}: ${e.message}`);
+    return false;
+  }
+}
+function pumpSpeciesLoads() {
+  // One at a time: a GLB parse is synchronous once the bytes land, and two landing together hitch.
+  while (loading < 1 && loadQueue.length) {
+    const key = loadQueue.shift();
+    loading++;
+    loadSpecies(key).finally(() => { loading--; });
+  }
+}
+
+const bootSpeciesCount = SPECIES_LOAD_MODE === 'preload' ? loadQueue.length : Math.min(6, loadQueue.length);
+await setStatus(SPECIES_LOAD_MODE === 'preload'
+  ? `loading all residents before play (${bootSpeciesCount} species)`
+  : `loading the first residents (${census.distinct} species)`);
+for (let i = 0; i < bootSpeciesCount; i++) {
+  const key = loadQueue.shift();
+  if (SPECIES_LOAD_MODE === 'preload') {
+    bootMsg.textContent = `loading residents ${i + 1}/${bootSpeciesCount}: ${SPECIES[key].name}`;
+  }
+  await loadSpecies(key);
+  // Let the boot message paint even when models are cached and their fetch promises resolve quickly.
+  if (SPECIES_LOAD_MODE === 'preload') await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+// ===================== moves =====================
+
+const FX_MODULES = {
+  bolt: ['../moves/fx-bolt.js', 'createBoltFx'],
+  stream: ['../moves/fx-stream.js', 'createStreamFx'],
+  crystals: ['../moves/fx-crystals.js', 'createCrystalsFx'],
+  fissure: ['../moves/fx-fissure.js', 'createFissureFx'],
+  aurora: ['../moves/fx-aurora.js', 'createAuroraFx'],
+  cloud: ['../moves/fx-cloud.js', 'createCloudFx'],
+  orb: ['../moves/fx-orb.js', 'createOrbFx'],
+  blade: ['../moves/fx-blade.js', 'createBladeFx'],
+  shock: ['../moves/fx-shock.js', 'createShockFx'],
+  ring: ['../moves/fx-ring.js', 'createRingFx'],
+  vortex: ['../moves/fx-vortex.js', 'createVortexFx'],
+  skyfall: ['../moves/fx-skyfall.js', 'createSkyfallFx'],
+  dome: ['../moves/fx-dome.js', 'createDomeFx'],
+  tether: ['../moves/fx-tether.js', 'createTetherFx'],
+  field: ['../moves/fx-field.js', 'createFieldFx'],
+  aura: ['../moves/fx-aura.js', 'createAuraFx'],
+};
+// `fx-field.js` anchors its arena to a hardcoded world (0, 0)
+const FX_BANNED = new Set(['field']);
+
+const fx = {};
+const fxMissing = [];
+if (MOVES_MODE !== 'off') {
+  await setStatus('preparing the moves');
+  const NODES = { MeshBasicNodeMaterial, MeshStandardNodeMaterial, MeshPhysicalNodeMaterial, SpriteNodeMaterial, PointsNodeMaterial };
+  const deps = { THREE, TSL, NODES, scene, terrainHeight, lights: moveLights };
+  await Promise.all(Object.entries(FX_MODULES).map(async ([key, [path, fn]]) => {
+    if (FX_BANNED.has(key)) return;
+    try { fx[key] = (await import(path))[fn](deps); }
+    catch (e) { fxMissing.push(key); console.warn(`${key}: ${e.message}`); }
+  }));
+}
+
+const liveMoves = [];
+const MAX_LIVE_MOVES = 10;
+const pendingCasts = [];
+const pendingCasterIds = new Set();
+const MAX_PENDING_CASTS = 16;
+const movePerf = {
+  castLast: 0, castPeak: 0, updateLast: 0, updatePeak: 0,
+  casts: 0, lastMove: 'none', dropped: 0,
+};
+const moveRuntime = {
+  rendering: true, updates: true, lights: true,
+  core: true, particles: true, particleScale: 1, decals: true,
+};
+const moveComponentOverrides = new Map();
+setMoveComponentRuntime({ particles: true, particleScale: 1 });
+let castIndex = 0;
+
+function setMoveLightsEnabled(on) {
+  moveRuntime.lights = !!on;
+  moveLightsEnabled = moveRuntime.lights;
+  if (moveLightsEnabled) {
+    for (const light of lightPool) if (!light.parent) scene.add(light);
+  } else {
+    for (const light of lightPool) {
+      light.intensity = 0;
+      light.removeFromParent();
+    }
+  }
+}
+
+function setMoveParticlesEnabled(on) {
+  moveRuntime.particles = !!on;
+  setMoveComponentRuntime({
+    particles: moveRuntime.particles,
+    particleScale: moveRuntime.particleScale,
+  });
+}
+
+function setMoveParticleScale(percent) {
+  moveRuntime.particleScale = Math.max(0, Math.min(1, percent / 100));
+  setMoveComponentRuntime({
+    particles: moveRuntime.particles,
+    particleScale: moveRuntime.particleScale,
+  });
+}
+
+function moveComponentOf(part) {
+  if (part.userData.moveComponent) return part.userData.moveComponent;
+  if (part.userData.kind === 'decal') return 'decals';
+  if (['chip', 'dust', 'trail'].includes(part.userData.kind)) return 'particles';
+  return 'core';
+}
+
+function restoreMoveComponentOverrides() {
+  for (const [part, state] of moveComponentOverrides) {
+    if (!part.parent) continue;
+    part.visible = state.visible;
+    if (state.count !== undefined) part.count = state.count;
+    if (state.instanceCount !== undefined) part.geometry.instanceCount = state.instanceCount;
+  }
+  moveComponentOverrides.clear();
+}
+
+function suppressMoveComponents() {
+  for (const inst of liveMoves) inst.group?.traverse((part) => {
+    if (!(part.isMesh || part.isPoints || part.isSprite)) return;
+    const component = moveComponentOf(part);
+    const enabled = moveRuntime.rendering
+      && (component === 'particles'
+        ? moveRuntime.particles && moveRuntime.particleScale > 0
+        : component === 'decals' ? moveRuntime.decals : moveRuntime.core);
+    const state = { visible: part.visible };
+    if (component === 'particles' && enabled && moveRuntime.particleScale < 1
+      && !part.userData.moveParticleRuntimeManaged) {
+      if (part.isInstancedMesh) {
+        state.count = part.count;
+        part.count = Math.floor(part.count * moveRuntime.particleScale);
+      } else if (part.geometry?.isInstancedBufferGeometry) {
+        state.instanceCount = part.geometry.instanceCount;
+        part.geometry.instanceCount = Math.floor(part.geometry.instanceCount * moveRuntime.particleScale);
+      }
+    }
+    if (!enabled) part.visible = false;
+    if (!enabled || state.count !== undefined || state.instanceCount !== undefined) {
+      moveComponentOverrides.set(part, state);
+    }
+  });
+}
+
+function configureMoveMachine(inst, move) {
+  if (!inst?.machine || move.self) return;
+  if (move.travelTime > 0) inst.machine.travelTime = move.travelTime;
+  else if (move.travelSpeed > 0) {
+    inst.machine.travelTime = 0;
+    inst.machine.travelSpeed = move.travelSpeed;
+  }
+}
+
+// These factories retain complete rigs by palette. Warming each palette avoids moving its first
+// geometry/material construction back into play; non-pooled effects only need one pipeline warm-up.
+const POOLED_MOVE_FX = new Set(['bolt', 'stream', 'cloud', 'blade', 'orb', 'vortex', 'tether']);
+async function warmMoveEffects() {
+  const selected = [];
+  const seen = new Set();
+  for (const move of Object.values(MOVES_BY_NAME)) {
+    if (move.hold || FX_BANNED.has(move.fx) || !fx[move.fx]) continue;
+    const key = POOLED_MOVE_FX.has(move.fx) ? `${move.fx}:${move.palette || 'default'}` : move.fx;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(move);
+  }
+  if (!selected.length) return;
+
+  await setStatus(`warming ${selected.length} move effects`);
+  const from = { x: -4, z: -4 };
+  const to = { x: 4, z: -3 };
+  const line = makeLine({ from, to, terrainHeight, step: 0.45 });
+  const BATCH_SIZE = 6; // matches the shared move-light budget
+  for (let start = 0; start < selected.length; start += BATCH_SIZE) {
+    const instances = [];
+    try {
+      for (const move of selected.slice(start, start + BATCH_SIZE)) {
+        try {
+          const inst = fx[move.fx].cast({
+            ...(move.options || {}),
+            line,
+            seed: hashSeed(`prewarm:${move.name}`),
+            palette: move.palette,
+            power: move.power,
+            sourceY: 0.8,
+            targetY: 0.7,
+          });
+          if (!inst?.group) continue;
+          configureMoveMachine(inst, move);
+          // Effects build hidden impact/fade layers up front. Make every layer compilable before play.
+          inst.group.traverse((part) => { part.visible = true; });
+          instances.push(inst);
+        } catch (e) {
+          console.warn(`move prewarm ${move.name}: ${e.message}`);
+        }
+      }
+      await Promise.all(instances.map((inst) => renderer.compileAsync(inst.group, camera, scene)));
+    } finally {
+      for (const inst of instances) { try { inst.dispose(); } catch (_) {} }
+    }
+    // Let the boot overlay repaint between allocation/compile batches.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
+if (MOVES_MODE !== 'off') await warmMoveEffects();
+
+function enqueueCast(c) {
+  if (pendingCasterIds.has(c.id)) return;
+  if (pendingCasts.length >= MAX_PENDING_CASTS) { movePerf.dropped++; return; }
+  pendingCasterIds.add(c.id);
+  pendingCasts.push(c);
+}
+
+function clearPendingCasts() {
+  pendingCasts.length = 0;
+  pendingCasterIds.clear();
+}
+
+function processOnePendingCast() {
+  const c = pendingCasts.shift();
+  if (!c) return;
+  pendingCasterIds.delete(c.id);
+  if (c.group?.parent) castFrom(c);
+}
+
+/** A move a park creature will actually use: nothing self-targeted, nothing that parks on the field. */
+function pickMove(species) {
+  const usable = species.moves
+    .map((n) => MOVES_BY_NAME[n])
+    .filter((m) => m && !m.hold && !FX_BANNED.has(m.fx) && fx[m.fx]);
+  if (!usable.length) return null;
+  return usable[(Math.random() * usable.length) | 0];
+}
+
+const _from = { x: 0, y: 0, z: 0 };
+function castFrom(c) {
+  const move = pickMove(c.species);
+  if (!move) return;
+  const f = fx[move.fx];
+  if (!f) return;
+  const target = creatures.nearest(c, 34);
+  creatures.castOrigin(c, _from);
+  const tp = target ? (target.walker ? target.walker.body.pos : target.mover.body) : null;
+
+  const from = { x: _from.x, z: _from.z };
+  const to = tp && !move.self
+    ? { x: tp.x, z: tp.z }
+    // With nobody to aim at, throw it a body length or two down its own facing
+    : { x: from.x + Math.sin(yawOf(c)) * c.species.heightM * 6, z: from.z + Math.cos(yawOf(c)) * c.species.heightM * 6 };
+
+  // A coarser step than the demo's 0.08
+  const line = makeLine({ from, to: move.self ? from : to, terrainHeight, step: 0.45 });
+  const seed = hashSeed(`${move.name}#${castIndex++}`);
+  let inst = null;
+  const castStartedAt = performance.now();
+  try {
+    inst = f.cast({
+      ...(move.options || {}),
+      line, seed, palette: move.palette, power: move.power,
+      sourceY: _from.y - terrainHeight(_from.x, _from.z),
+      targetY: tp ? Math.max(0.3, (tp.y ?? 0) - terrainHeight(tp.x, tp.z)) : c.species.heightM * 0.4,
+    });
+  } catch (e) { fail(`${move.name}: ${e.message}`); return; }
+  finally {
+    movePerf.castLast = performance.now() - castStartedAt;
+    movePerf.castPeak = Math.max(movePerf.castPeak, movePerf.castLast);
+    movePerf.casts++;
+    movePerf.lastMove = move.name;
+  }
+  if (!inst) return;
+  // The machine reads these live, so a move sets its own pace without every effect knowing about it.
+  configureMoveMachine(inst, move);
+  inst.moveName = move.name;
+  inst.casterId = c.id;
+  liveMoves.push(inst);
+  // Oldest out first when the cap is hit
+  while (liveMoves.length > MAX_LIVE_MOVES) { const old = liveMoves.shift(); try { old.dispose(); } catch (_) {} }
+  noteMove(c, move);
+}
+const yawOf = (c) => (c.walker ? c.walker.body.yaw : c.mover.body.yaw);
+
+// ===================== the player, wearing the bot rig =====================
+
+await setStatus('kitting out the ranger');
+const CAMERA_PROFILE_BOT = 'bot-viewer-v3';
+const CAMERA_PROFILE_ENV = 'environment-viewer';
+const CAMERA_PROFILE_PARK = 'pokemon-legacy';
+const CAMERA_PROFILES = Object.freeze({
+  [CAMERA_PROFILE_BOT]: Object.freeze({
+    label: 'Bot Viewer v3', fov: 55, sensitivity: 250, distance: 7.5, shoulder: 0,
+    strafeTilt: 0, strafeTiltRate: 7, momentumScale: 0, momentumLean: 0, momentumRate: 7,
+    povRateXZ: 8.5, povRateY: 4.5, povDeadZone: 0.006, povMaxLag: 0.28,
+    followRate: 7, distanceRate: 7,
+  }),
+  [CAMERA_PROFILE_ENV]: Object.freeze({
+    label: 'Environment Viewer', fov: 70, sensitivity: 1060, distance: 3.6, shoulder: 0,
+    strafeTilt: 0.010, strafeTiltRate: 6,
+    momentumScale: 0.0006, momentumLean: 0.016, momentumRate: 8,
+  }),
+  [CAMERA_PROFILE_PARK]: Object.freeze({
+    label: 'Pokemon legacy', fov: 58, sensitivity: 640, distance: 4.4, shoulder: 0.5,
+    strafeTilt: 0.032, strafeTiltRate: 7,
+    momentumScale: 0.02, momentumLean: 0.05, momentumRate: 6,
+  }),
+});
+const restoredCameraProfile = CAMERA_PROFILES[session.tuning.cameraProfile]
+  ? session.tuning.cameraProfile
+  : null;
+let cameraProfile = restoredCameraProfile || CAMERA_PROFILE_BOT;
+
+const fp = {
+  speedStand: 5.6, speedCrouch: 2.4, runMultiplier: 2.1,
+  heightStand: 1.78, heightCrouch: 1.15,
+  gravity: 26, jumpForce: 8.2, friction: 9, airStrafe: 22, airDamp: 0.12,
+  sensitivity: CAMERA_PROFILES[cameraProfile].sensitivity,
+};
+const PLAYER_SLOPE_LIMIT_Y = 0.5;
+const STEPS_PER_FRAME = 5;
+
+const playerCollider = new Capsule(new THREE.Vector3(), new THREE.Vector3(), 0.32);
+const playerVelocity = new THREE.Vector3();
+// Authoritative aim, kept off camera.rotation so the strafe tilt and momentum lean never leak
+// into the body yaw or a move's aim direction.
+const look = { yaw: Math.PI, pitch: -0.05, tilt: 0, lean: 0, prevSpeed: 0 };
+let playerOnFloor = false;
+let stance = 'stand';
+let capsuleH = fp.heightStand;
+let thirdPerson = true;
+let camDist = CAMERA_PROFILES[cameraProfile].distance;
+let camShoulder = CAMERA_PROFILES[cameraProfile].shoulder;
+// The boom hangs off a smoothed capsule top, not the collider itself.
+const CAM = { followRate: 26, riseRate: 17, boomOutRate: 3.5, boomStep: 0.2, boomMin: 1.0, snapDist: 3 };
+const camEye = new THREE.Vector3();
+let camEyeSet = false;
+let camDistNow = camDist;
+// Bot Viewer v3 profile state. These are intentionally separate from the legacy camEye:
+// they use the exact exponential damping primitive and comfort rates from bot-viewer-v3.
+const botCamEye = new THREE.Vector3();
+const botCamDesiredEye = new THREE.Vector3();
+const botCamEyeDelta = new THREE.Vector3();
+const botCamFocus = new THREE.Vector3();
+const botCamDesiredFocus = new THREE.Vector3();
+let botCamEyeReady = false;
+let botCamFocusReady = false;
+let botCamDistance = camDist;
+
+const playerBody = createProceduralPlayerBody({
+  THREE, scene, terrainHeight,
+  mode: 'local-third-person',
+  style: {},
+  design: botDesignForRole('rifleman'),
+  adaptGaitToSpeed: true, movementDynamics: true, naturalLocomotion: true,
+});
+playerBody.setVisible(true);
+
+function resetPlayer() {
+  const y = terrainHeight(GATE.x, GATE.z);
+  playerCollider.start.set(GATE.x, y + playerCollider.radius, GATE.z);
+  playerCollider.end.set(GATE.x, y + playerCollider.radius + capsuleH, GATE.z);
+  playerVelocity.set(0, 0, 0);
+  playerOnFloor = false;
+}
+resetPlayer();
+
+const keys = {};
+addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  keys[e.code] = true;
+  if (e.code === 'KeyV') setThirdPerson(!thirdPerson);
+  if (e.code === 'KeyC') stance = stance === 'crouch' ? 'stand' : 'crouch';
+  if (e.code === 'KeyP') { paused = !paused; toast(paused ? 'Park paused' : 'Park running'); }
+  if (e.code === 'KeyH') document.body.classList.toggle('gui-hidden');
+  if (e.code === 'KeyF') toggleGuide();
+  if (e.code === 'KeyM') { mapBig = !mapBig; sizeMinimap(); }
+  if (e.code === 'KeyR') { resetPlayer(); toast('Back at the gate'); }
+});
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+renderer.domElement.addEventListener('click', () => {
+  if (document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock();
+});
+addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  look.yaw -= e.movementX / fp.sensitivity;
+  look.pitch = clampLookPitch(look.pitch - e.movementY / fp.sensitivity);
+});
+addEventListener('wheel', (e) => {
+  if (!thirdPerson) return;
+  camDist = Math.max(1.8, Math.min(12, camDist * (1 + Math.sign(e.deltaY) * 0.08)));
+}, { passive: true });
+
+let bodyRef = playerBody;
+function resetCameraPlacementState() {
+  camEyeSet = false;
+  camDistNow = thirdPerson ? camDist : 0;
+  botCamEyeReady = false;
+  botCamFocusReady = false;
+  botCamDistance = camDist;
+}
+function setThirdPerson(on) {
+  thirdPerson = on;
+  resetCameraPlacementState();
+  // The rig reads its mode once, at construction, so switching view is a rebuild rather than a flag.
+  bodyRef.destroy?.();
+  rebuildBody();
+  toast(on ? 'Third person' : 'First person');
+}
+function rebuildBody() {
+  bodyRef = createProceduralPlayerBody({
+    THREE, scene, terrainHeight,
+    mode: thirdPerson ? 'local-third-person' : 'local-lower-body',
+    style: {}, design: botDesignForRole('rifleman'),
+    adaptGaitToSpeed: true, movementDynamics: true, naturalLocomotion: true,
+  });
+  bodyRef.setVisible(true);
+}
+
+const _fwd = new THREE.Vector3(), _side = new THREE.Vector3(), _delta = new THREE.Vector3();
+const _lift = new THREE.Vector3();
+function applyControls(dt) {
+  // Straight off look.yaw: the camera carries visual tilt and lean that must not steer the walk.
+  const sy = Math.sin(look.yaw), cy = Math.cos(look.yaw);
+  _fwd.set(-sy, 0, -cy);
+  _side.set(cy, 0, -sy);
+
+  if (playerOnFloor) {
+    const running = stance === 'stand' && (keys['ShiftLeft'] || keys['ShiftRight']);
+    const speed = (stance === 'crouch' ? fp.speedCrouch : fp.speedStand) * (running ? fp.runMultiplier : 1);
+    let mx = 0, mz = 0;
+    if (keys['KeyW']) { mx += _fwd.x; mz += _fwd.z; }
+    if (keys['KeyS']) { mx -= _fwd.x; mz -= _fwd.z; }
+    if (keys['KeyA']) { mx -= _side.x; mz -= _side.z; }
+    if (keys['KeyD']) { mx += _side.x; mz += _side.z; }
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      playerVelocity.x = (mx / len) * speed;
+      playerVelocity.z = (mz / len) * speed;
+    } else {
+      const f = Math.exp(-fp.friction * dt) - 1;
+      playerVelocity.x += playerVelocity.x * f;
+      playerVelocity.z += playerVelocity.z * f;
+    }
+    if (stance === 'stand' && keys['Space']) playerVelocity.y = fp.jumpForce;
+  } else {
+    const d = dt * fp.airStrafe;
+    if (keys['KeyW']) playerVelocity.addScaledVector(_fwd, d);
+    if (keys['KeyS']) playerVelocity.addScaledVector(_fwd, -d);
+    if (keys['KeyA']) playerVelocity.addScaledVector(_side, -d);
+    if (keys['KeyD']) playerVelocity.addScaledVector(_side, d);
+  }
+}
+
+function stepPlayer(dt) {
+  if (!playerOnFloor) {
+    playerVelocity.y -= fp.gravity * dt;
+    playerVelocity.addScaledVector(playerVelocity, (Math.exp(-fp.airDamp * dt) - 1) * 0.1);
+  }
+  playerCollider.translate(_delta.copy(playerVelocity).multiplyScalar(dt));
+
+  const contact = groundContact({
+    x: playerCollider.start.x, z: playerCollider.start.z,
+    bottomY: playerCollider.start.y - playerCollider.radius,
+    slopeLimitY: PLAYER_SLOPE_LIMIT_Y,
+    heightAt: terrainHeight, normalAt: terrainNormal,
+  });
+  playerOnFloor = contact.grounded;
+  if (contact.penetration > 0) {
+    playerCollider.translate(_lift.set(0, contact.penetration, 0));
+    const slid = slideVelocity(playerVelocity, contact.normal);
+    playerVelocity.set(slid.x, slid.y, slid.z);
+  }
+
+  // Trees and boulders are solid. XZ push-out only: walking into a trunk should stop you, not lift you.
+  if (subsystemEnabled.flora && floraRuntime.collisions && flora) {
+    const push = flora.resolveCollision(playerCollider.start.x, playerCollider.start.z, playerCollider.radius);
+    if (push.pushed) {
+      playerCollider.start.x = push.x;
+      playerCollider.start.z = push.z;
+    }
+  }
+
+  // The park has an edge. Walking off it into empty space is worse than a wall you can feel.
+  const lim = HALF - 6;
+  playerCollider.start.x = Math.max(-lim, Math.min(lim, playerCollider.start.x));
+  playerCollider.start.z = Math.max(-lim, Math.min(lim, playerCollider.start.z));
+
+  const targetH = stance === 'crouch' ? fp.heightCrouch : fp.heightStand;
+  capsuleH += (targetH - capsuleH) * Math.min(1, dt * 12);
+  playerCollider.end.copy(playerCollider.start);
+  playerCollider.end.y += capsuleH;
+}
+
+const _bodyPos = new THREE.Vector3(), _bodyVel = new THREE.Vector3(), _camFwd = new THREE.Vector3();
+let crouchW = 0;
+function poseBody(dt) {
+  _bodyPos.set(
+    (playerCollider.start.x + playerCollider.end.x) * 0.5,
+    (playerCollider.start.y + playerCollider.end.y) * 0.5,
+    (playerCollider.start.z + playerCollider.end.z) * 0.5,
+  );
+  // y is forced to zero: the gait reads horizontal speed
+  _bodyVel.set(playerVelocity.x, 0, playerVelocity.z);
+  crouchW += ((stance === 'crouch' ? 0.7 : 0) - crouchW) * Math.min(1, dt / 0.2);
+  bodyRef.update(dt, {
+    id: 'ranger', position: _bodyPos, yaw: look.yaw, aimPitch: look.pitch,
+    // heightStand, not the stance-lerped capsule
+    height: fp.heightStand, radius: playerCollider.radius,
+    velocity: _bodyVel, onFloor: playerOnFloor,
+    crouch: crouchW, prone: 0, alive: true,
+  });
+}
+
+// Eases the strafe roll and momentum lean, then composes camera.rotation from the aim angles plus
+// those offsets. Runs once per frame, before the camera is placed.
+function updateViewFeel(dt) {
+  const profile = CAMERA_PROFILES[cameraProfile];
+  const tiltTarget = (keys['KeyA'] ? profile.strafeTilt : 0) - (keys['KeyD'] ? profile.strafeTilt : 0);
+  look.tilt = easeToward(look.tilt, tiltTarget, dt, profile.strafeTiltRate);
+  const speed = Math.hypot(playerVelocity.x, playerVelocity.z);
+  const cur = playerOnFloor ? speed : look.prevSpeed;
+  const accel = dt > 0 ? (cur - look.prevSpeed) / dt : 0;
+  look.prevSpeed = cur;
+  look.lean = easeToward(
+    look.lean,
+    momentumLeanTarget(accel, profile.momentumScale, profile.momentumLean),
+    dt,
+    profile.momentumRate,
+  );
+  camera.rotation.set(clampLookPitch(look.pitch) + look.lean, look.yaw, look.tilt, 'YXZ');
+}
+
+// Environment Viewer profile: resolved capsule eye -> camera, with its exact fixed chase offset.
+// There is deliberately no second eye filter, shoulder transform, boom solver, or terrain clamp.
+const environmentCamForward = new THREE.Vector3();
+function placeEnvironmentCamera() {
+  const eye = playerCollider.end;
+  if (!thirdPerson) { camera.position.copy(eye); return; }
+  camera.getWorldDirection(environmentCamForward);
+  camera.position.set(
+    eye.x - environmentCamForward.x * camDist,
+    eye.y + 1.0 - environmentCamForward.y * camDist,
+    eye.z - environmentCamForward.z * camDist,
+  );
+}
+
+// Bot Viewer v3 profile: its POV comfort damping and follow-focus damping, driven by the local
+// player as the tracked actor. No Pokemon-specific shoulder, stepped boom, or ground-height clamp.
+const botCamForward = new THREE.Vector3();
+function botViewerAnimatedEyePoint(out) {
+  const head = bodyRef?.joints?.head;
+  const eye = bodyRef?.eyeCfg;
+  if (!head || !eye) return out.copy(playerCollider.end);
+  out.set(
+    eye.x ?? 0,
+    eye.y ?? playerCollider.radius * 0.15,
+    (eye.z ?? playerCollider.radius * 0.29) + (eye.depth ?? 0.03) * 0.6,
+  );
+  return head.localToWorld(out);
+}
+function placeBotViewerCamera(dt) {
+  const profile = CAMERA_PROFILES[CAMERA_PROFILE_BOT];
+  // Same animated head-local eye bridge used by bot-viewer-v3's botPovAnimatedEyePoint().
+  const eye = botViewerAnimatedEyePoint(botCamDesiredEye);
+  if (!botCamEyeReady || botCamEye.distanceToSquared(eye) > 4) {
+    botCamEye.copy(eye);
+    botCamEyeReady = true;
+  } else {
+    const dx = eye.x - botCamEye.x, dy = eye.y - botCamEye.y, dz = eye.z - botCamEye.z;
+    if (Math.hypot(dx, dz) > profile.povDeadZone) {
+      const alphaXZ = dampAlpha(dt, profile.povRateXZ);
+      botCamEye.x += dx * alphaXZ;
+      botCamEye.z += dz * alphaXZ;
+    }
+    if (Math.abs(dy) > profile.povDeadZone) botCamEye.y += dy * dampAlpha(dt, profile.povRateY);
+    botCamEyeDelta.copy(eye).sub(botCamEye);
+    const lag = botCamEyeDelta.length();
+    if (lag > profile.povMaxLag) botCamEye.addScaledVector(botCamEyeDelta, (lag - profile.povMaxLag) / lag);
+  }
+  if (!thirdPerson) { camera.position.copy(botCamEye); return; }
+
+  // Same actor focus point used by bot-viewer-v3: 62% up the capsule plus a small radius lift.
+  botCamDesiredFocus.copy(playerCollider.start).lerp(playerCollider.end, 0.62);
+  botCamDesiredFocus.y += playerCollider.radius * 0.28;
+  if (!botCamFocusReady || botCamFocus.distanceToSquared(botCamDesiredFocus) > 4) {
+    botCamFocus.copy(botCamDesiredFocus);
+    botCamFocusReady = true;
+  } else {
+    botCamFocus.lerp(botCamDesiredFocus, dampAlpha(dt, profile.followRate));
+  }
+  botCamDistance += (camDist - botCamDistance) * dampAlpha(dt, profile.distanceRate);
+  camera.getWorldDirection(botCamForward);
+  camera.position.copy(botCamFocus).addScaledVector(botCamForward, -botCamDistance);
+}
+
+// Original Pokemon Park camera, retained only behind the legacy comparison profile.
+function placePokemonLegacyCamera(dt) {
+  const eye = playerCollider.end;
+  if (!camEyeSet || camEye.distanceToSquared(eye) > CAM.snapDist * CAM.snapDist) {
+    camEye.copy(eye);
+    camEyeSet = true;
+  } else {
+    camEye.x = easeToward(camEye.x, eye.x, dt, CAM.followRate);
+    camEye.z = easeToward(camEye.z, eye.z, dt, CAM.followRate);
+    camEye.y = easeToward(camEye.y, eye.y, dt, playerOnFloor ? CAM.riseRate : CAM.followRate);
+  }
+  if (!thirdPerson) { camera.position.copy(camEye); camDistNow = 0; return; }
+
+  const p = clampLookPitch(look.pitch);
+  const cp = Math.cos(p);
+  const dx = -Math.sin(look.yaw) * cp, dy = Math.sin(p), dz = -Math.cos(look.yaw) * cp;
+  const ox = camEye.x + Math.cos(look.yaw) * camShoulder;
+  const oz = camEye.z - Math.sin(look.yaw) * camShoulder;
+  const oy = camEye.y + 0.2;
+
+  // Fine steps: the old halving quantised the boom to five lengths, so every trunk it grazed popped it.
+  let want = CAM.boomMin;
+  for (let d = camDist; d >= CAM.boomMin; d -= CAM.boomStep) {
+    const x = ox - dx * d, y = oy - dy * d, z = oz - dz * d;
+    if (y > terrainHeight(x, z) + 0.7
+      && !(subsystemEnabled.flora && floraRuntime.collisions && flora && flora.resolveCollision(x, z, 0.55).pushed)) { want = d; break; }
+  }
+  // Snap in so nothing swallows the camera, ease out so leaving cover does not whip.
+  camDistNow = want < camDistNow ? want : easeToward(camDistNow, want, dt, CAM.boomOutRate);
+
+  const x = ox - dx * camDistNow, z = oz - dz * camDistNow;
+  camera.position.set(x, Math.max(oy - dy * camDistNow, terrainHeight(x, z) + 0.7), z);
+}
+
+function placeCamera(dt) {
+  if (cameraProfile === CAMERA_PROFILE_ENV) placeEnvironmentCamera();
+  else if (cameraProfile === CAMERA_PROFILE_PARK) placePokemonLegacyCamera(dt);
+  else placeBotViewerCamera(dt);
+}
+
+// ===================== field guide =====================
+
+const guideEl = document.getElementById('guide');
+const guideList = document.getElementById('guide-list');
+let guideOpen = false;
+function toggleGuide() {
+  guideOpen = !guideOpen;
+  guideEl.style.display = guideOpen ? 'block' : 'none';
+  if (guideOpen) renderGuide();
+}
+function renderGuide() {
+  const rows = Object.keys(session.seen).sort();
+  guideList.innerHTML = rows.length
+    ? rows.map((k) => {
+      const s = SPECIES[k];
+      return `<div class="row"><span>#${s.dex} ${s.name}</span><span>${BIOMES[s.biome].label}</span></div>`;
+    }).join('')
+    : '<div class="row"><span>nothing yet &mdash; go and look</span><span></span></div>';
+  guideEl.querySelector('h4').textContent = `Field guide — ${rows.length} of ${census.distinct} seen`;
+}
+
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('on'), 2600);
+}
+function noteSighting(c) {
+  if (session.seen[c.species.key]) return;
+  session.seen[c.species.key] = { at: new Date().toISOString(), biome: c.resident.biome };
+  saveSession();
+  toast(`#${c.species.dex} ${c.species.name} — ${MOVEMENT[c.species.move].label.toLowerCase()} of the ${BIOMES[c.species.biome].label.toLowerCase()}`);
+  if (guideOpen) renderGuide();
+}
+function noteMove(c, move) {
+  if (!lastSeenNear.has(c.id)) return;
+  toast(`${c.species.name} used ${move.name}!`);
+}
+
+// ===================== minimap =====================
+
+const mapCanvas = document.getElementById('minimap');
+const mapCtx = mapCanvas.getContext('2d');
+let mapBig = false;
+const biomeImage = (() => {
+  const img = bakeBiomeImage(park.map, PARK_BIOME_COLORS);
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const cx = c.getContext('2d');
+  cx.putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
+  const sx = img.width / PARK_TERRAIN.worldX, sz = img.height / PARK_TERRAIN.worldZ;
+  cx.strokeStyle = 'rgba(226,205,168,.85)';
+  cx.lineWidth = 1.4; cx.lineJoin = 'round';
+  for (const path of trailPaths) {
+    cx.beginPath();
+    path.points.forEach((pt, i) => {
+      const x = (pt.x + HALF) * sx, y = (pt.z + HALF) * sz;
+      if (i === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+    });
+    cx.stroke();
+  }
+  return c;
+})();
+function sizeMinimap() {
+  const n = mapBig ? Math.min(innerWidth, innerHeight) * 0.8 : 190;
+  mapCanvas.style.width = mapCanvas.style.height = `${n}px`;
+  mapCanvas.width = mapCanvas.height = Math.round(n);
+  if (mapBig) {
+    mapCanvas.style.left = '50%'; mapCanvas.style.top = '50%';
+    mapCanvas.style.right = mapCanvas.style.bottom = 'auto';
+    mapCanvas.style.transform = 'translate(-50%, -50%)';
+  } else {
+    mapCanvas.style.left = mapCanvas.style.top = 'auto';
+    mapCanvas.style.right = mapCanvas.style.bottom = '12px';
+    mapCanvas.style.transform = 'none';
+  }
+}
+sizeMinimap();
+
+const _px = { x: 0, y: 0 };
+function drawMinimap() {
+  const n = mapCanvas.width;
+  const sx = n / PARK_TERRAIN.worldX, sz = n / PARK_TERRAIN.worldZ;
+  // Written into a scratch rather than returned as a pair
+  const toPx = (x, z) => { _px.x = (x + HALF) * sx; _px.y = (z + HALF) * sz; };
+  mapCtx.imageSmoothingEnabled = false;
+  mapCtx.drawImage(biomeImage, 0, 0, n, n);
+
+  // Only residents that currently exist
+  mapCtx.fillStyle = 'rgba(255,255,255,.72)';
+  for (const c of creatures.live.values()) {
+    const p = c.walker ? c.walker.body.pos : c.mover.body;
+    toPx(p.x, p.z);
+    mapCtx.fillRect(_px.x - 1, _px.y - 1, 2, 2);
+  }
+  toPx(GATE.x, GATE.z);
+  mapCtx.strokeStyle = '#ffd166';
+  mapCtx.strokeRect(_px.x - 3, _px.y - 3, 6, 6);
+
+  toPx(playerCollider.start.x, playerCollider.start.z);
+  const px = _px.x, pz = _px.y;
+  mapCtx.save();
+  mapCtx.translate(px, pz);
+  mapCtx.rotate(-look.yaw);
+  mapCtx.fillStyle = '#6fb98f';
+  mapCtx.beginPath();
+  mapCtx.moveTo(0, -6); mapCtx.lineTo(4, 5); mapCtx.lineTo(-4, 5);
+  mapCtx.closePath(); mapCtx.fill();
+  mapCtx.restore();
+}
+
+const subsystemEnabled = {
+  water: !!waterRef && WATER_MODE !== 'off',
+  sky: !!(skyRef || cloudsRef || clouds2Ref) && SKY_MODE !== 'off',
+  flora: !!flora && FLORA_MODE !== 'off',
+  creatures: CREATURES_MODE !== 'off',
+  terrain: TERRAIN_MODE !== 'off',
+  shadows: SHADOWS_MODE !== 'off',
+};
+const creatureRuntime = {
+  rendering: true, simulation: true, streaming: true, moves: MOVES_MODE !== 'off',
+};
+const creaturePerf = { simulationLast: 0, simulationPeak: 0, streamLast: 0, streamPeak: 0, streamEvents: 0 };
+const creatureVisibility = new Map();
+let creatureVisibilitySuppressed = false;
+function syncCreatureVisibility() {
+  const suppress = !subsystemEnabled.creatures || !creatureRuntime.rendering;
+  if (suppress) {
+    for (const creature of creatures.live.values()) {
+      if (!creatureVisibility.has(creature.group)) creatureVisibility.set(creature.group, creature.group.visible);
+      creature.group.visible = false;
+    }
+  } else if (creatureVisibilitySuppressed) {
+    for (const creature of creatures.live.values()) {
+      creature.group.visible = creatureVisibility.get(creature.group) ?? creature.group.visible;
+    }
+    creatureVisibility.clear();
+  }
+  creatureVisibilitySuppressed = suppress;
+}
+const floraRuntime = {
+  grassRender: true, grassUpdate: true,
+  treesRender: true, treesUpdate: true,
+  rocksRender: true, rocksUpdate: true,
+  collisions: true, shadows: true,
+};
+const treeRuntime = {
+  bark: true, leaves: true, billboards: true,
+  barkShadows: true, leafShadows: true,
+  coneCulling: true, farLeavesDoubleSided: false,
+};
+const floraCollections = {
+  grass: flora?.grass?.mesh ? [flora.grass.mesh] : [],
+  trees: flora?.forest?.meshes || [],
+  rocks: flora?.dressing?.meshes || [],
+};
+const floraVisibility = new Map();
+const floraShadowDefaults = new Map((flora?.meshes || []).map((mesh) => [mesh, mesh.castShadow]));
+const forestMeshSet = new Set(floraCollections.trees);
+
+// A leaf-size edit replaces the GPU forest exactly as environment-viewer does. Keep the panel's
+// persistent arrays/sets pointed at the replacement meshes rather than the disposed first bake.
+function refreshForestBindings() {
+  const next = flora?.forest?.meshes || [];
+  floraCollections.trees.splice(0, floraCollections.trees.length, ...next);
+  forestMeshSet.clear();
+  for (const mesh of next) {
+    forestMeshSet.add(mesh);
+    if (!floraShadowDefaults.has(mesh)) floraShadowDefaults.set(mesh, mesh.castShadow);
+  }
+  applyTreeLods();
+  applyTreeRecull();
+  flora?.forest?.setMaxDrawRadius?.(params.treeDrawDistance);
+  flora?.forest?.setConeMargin?.(params.treeConeMargin);
+  flora?.forest?.setConeEnabled?.(treeRuntime.coneCulling);
+  flora?.forest?.setFarLeavesDoubleSided?.(treeRuntime.farLeavesDoubleSided);
+  applyTreeRenderParts();
+  syncFloraVisibility();
+}
+
+function applyTreeRenderParts() {
+  flora?.forest?.setRenderParts?.({
+    bark: treeRuntime.bark,
+    leaves: treeRuntime.leaves,
+    billboards: treeRuntime.billboards,
+    barkShadows: floraRuntime.shadows && treeRuntime.barkShadows,
+    leafShadows: floraRuntime.shadows && treeRuntime.leafShadows,
+  });
+}
+
+function syncFloraCollection(meshes, shown) {
+  let restored = false;
+  for (const mesh of meshes) {
+    if (!shown) {
+      if (!floraVisibility.has(mesh)) floraVisibility.set(mesh, mesh.visible);
+      mesh.visible = false;
+    } else if (floraVisibility.has(mesh)) {
+      mesh.visible = floraVisibility.get(mesh);
+      floraVisibility.delete(mesh);
+      restored = true;
+    }
+  }
+  return restored;
+}
+
+function syncFloraVisibility() {
+  const master = subsystemEnabled.flora;
+  syncFloraCollection(floraCollections.grass, master && floraRuntime.grassRender);
+  const treesRestored = syncFloraCollection(floraCollections.trees, master && floraRuntime.treesRender);
+  syncFloraCollection(floraCollections.rocks, master && floraRuntime.rocksRender);
+  if (master && floraRuntime.treesRender && treesRestored) flora?.forest?.refreshVisibility?.();
+}
+
+function setFloraShadows(on) {
+  floraRuntime.shadows = !!on;
+  for (const [mesh, original] of floraShadowDefaults) {
+    if (!forestMeshSet.has(mesh)) mesh.castShadow = floraRuntime.shadows ? original : false;
+  }
+  applyTreeRenderParts();
+}
+
+function setFloraEnabled(on) {
+  subsystemEnabled.flora = !!on && !!flora;
+  if (!flora) return;
+  syncFloraVisibility();
+}
+function setWaterEnabled(on) {
+  subsystemEnabled.water = !!on && !!waterRef;
+  if (!waterRef) return;
+  waterRef.surface.visible = subsystemEnabled.water;
+  waterRef.setReflectionEnabled(subsystemEnabled.water);
+  waterRef.setCausticsEnabled(subsystemEnabled.water);
+}
+function setSkyEnabled(on) {
+  subsystemEnabled.sky = !!on && !!(skyRef || cloudsRef || clouds2Ref);
+  if (skyRef) skyRef.group.visible = subsystemEnabled.sky;
+  if (cloudsRef) cloudsRef.visible = subsystemEnabled.sky;
+  if (clouds2Ref) clouds2Ref.visible = subsystemEnabled.sky;
+}
+function setCreaturesEnabled(on) {
+  subsystemEnabled.creatures = !!on && CREATURES_MODE !== 'off';
+  syncCreatureVisibility();
+}
+function setCreatureRendering(on) {
+  creatureRuntime.rendering = !!on;
+  syncCreatureVisibility();
+}
+function setTerrainEnabled(on) {
+  subsystemEnabled.terrain = !!on;
+  ground.mesh.visible = subsystemEnabled.terrain;
+}
+function setShadowsEnabled(on) {
+  subsystemEnabled.shadows = !!on;
+  renderer.shadowMap.enabled = subsystemEnabled.shadows;
+  rig.dirLight.castShadow = subsystemEnabled.shadows;
+}
+
+// ===================== control panel =====================
+
+const params = {
+  timeOfDay: rig.elevation,
+  sunAzimuth: rig.azimuth,
+  creatureRange: creatures.options.drawDistance,
+  moveFrequency: 1.0,
+  fogNear: 260, fogFar: 1500,
+  camDist: camDist,
+  camShoulder: camShoulder,
+  sensitivity: fp.sensitivity,
+  grassHeight: 0.9, grassWidth: 4.0, grassDensity: 7.0,
+  moveParticlePct: 100,
+  treeScalePct: 100, treeLeafDensity: 1, treeLeafSize: 1, treeDensityPct: 100,
+  treeDrawDistance: 300, treeLod0: 60, treeLod1: 140, treeLod2: 300,
+  treeConeMargin: 0.5, treeRecullMove: 1.5, treeRecullAngle: 2,
+};
+Object.assign(params, session.tuning);
+// Existing saves predate camera profiles and therefore contain Pokemon's old camera numbers.
+// A save without an explicit profile starts on Bot Viewer v3 defaults instead of silently
+// re-enabling the legacy rig through those stale slider values.
+if (!restoredCameraProfile) {
+  const defaults = CAMERA_PROFILES[CAMERA_PROFILE_BOT];
+  params.camDist = defaults.distance;
+  params.camShoulder = defaults.shoulder;
+  params.sensitivity = defaults.sensitivity;
+}
+setMoveParticleScale(params.moveParticlePct);
+
+function applyTreeLods() {
+  const r0 = Math.max(10, params.treeLod0);
+  const r1 = Math.max(r0, params.treeLod1);
+  const r2 = Math.max(r1, params.treeLod2);
+  flora?.forest?.setLodDistances?.(r0, r1, r2);
+}
+function applyTreeRecull() {
+  flora?.forest?.setRecullThresholds?.(params.treeRecullMove, params.treeRecullAngle);
+}
+flora?.setTreeScale?.(params.treeScalePct / 100);
+if (await flora?.setTreeLeafOptions?.({ density: params.treeLeafDensity, size: params.treeLeafSize })) {
+  refreshForestBindings();
+}
+flora?.forest?.setMaxDrawRadius?.(params.treeDrawDistance);
+flora?.forest?.setConeMargin?.(params.treeConeMargin);
+flora?.setTreeDensity?.(params.treeDensityPct / 100);
+applyTreeLods();
+applyTreeRecull();
+applyTreeRenderParts();
+
+const controlRegistry = [];
+const ctrl = document.createElement('div');
+ctrl.id = 'ctrl';
+ctrl.innerHTML = '<div id="ctrl-bar"><span class="ttl">Park controls</span><button id="ctrl-min">&ndash;</button></div><div id="ctrl-body"></div>';
+document.body.appendChild(ctrl);
+const style = document.createElement('style');
+style.textContent = '#ctrl{position:fixed;top:10px;right:12px;width:236px;background:rgba(20,24,30,.88);border:1px solid #333a45;border-radius:8px;color:#c4ccd6;font:12px/1.45 system-ui,sans-serif;user-select:none;z-index:20}#ctrl-bar{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;cursor:move;border-bottom:1px solid #333a45}#ctrl-bar .ttl{font-size:12px;color:#8a93a3;font-weight:600}#ctrl-min{background:none;border:none;color:#8a93a3;font:16px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px}#ctrl-body{padding:2px 12px 10px;max-height:clamp(200px,calc(100vh - 300px),540px);overflow-y:auto}#ctrl.min #ctrl-body{display:none}#ctrl .sec-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin:10px 0 4px;color:#8a93a3}#ctrl .sec.collapsed .sec-body{display:none}#ctrl .sec.collapsed .caret{transform:rotate(-90deg)}#ctrl .caret{font-size:10px;transition:transform .15s}#ctrl .row{margin:7px 0 1px;display:flex;justify-content:space-between}#ctrl .row span:last-child{color:#7f8a99}#ctrl input[type=range]{width:100%;margin:0}#ctrl .note{color:#6f7a89;font-size:10px;margin:5px 0}#ctrl button.act{background:#2c3947;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:4px 8px;cursor:pointer;font:inherit;margin:4px 4px 0 0}#save-state{font-size:10px;color:#7f8a99;margin-top:6px}';
+document.head.appendChild(style);
+const ctrlBody = ctrl.querySelector('#ctrl-body');
+ctrl.querySelector('#ctrl-min').addEventListener('click', () => ctrl.classList.toggle('min'));
+let current = ctrlBody;
+// After #ctrl exists, not before: it styles a panel by selector.
+try { installPanelTheme('#ctrl'); } catch (_) { /* the shared theme is a nicety, not a dependency */ }
+
+function header(text, open = false) {
+  const sec = document.createElement('div');
+  sec.className = 'sec' + (open ? '' : ' collapsed');
+  const head = document.createElement('div');
+  head.className = 'sec-head';
+  head.innerHTML = `<span>${text}</span><span class="caret">&#9662;</span>`;
+  const body = document.createElement('div');
+  body.className = 'sec-body';
+  head.addEventListener('click', () => sec.classList.toggle('collapsed'));
+  sec.append(head, body);
+  ctrlBody.appendChild(sec);
+  current = body;
+}
+function slider(key, label, min, max, step, fmt, onChange, commitOnly = false) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const val = document.createElement('span');
+  val.textContent = fmt(params[key]);
+  row.innerHTML = `<span>${label}</span>`;
+  row.appendChild(val);
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = params[key];
+  const apply = () => {
+    params[key] = parseFloat(inp.value);
+    val.textContent = fmt(params[key]);
+    onChange?.();
+    session.tuning[key] = params[key];
+    saveSession();
+  };
+  if (commitOnly) {
+    inp.addEventListener('input', () => { val.textContent = fmt(parseFloat(inp.value)); });
+    inp.addEventListener('change', apply);
+  } else {
+    inp.addEventListener('input', apply);
+  }
+  current.append(row, inp);
+  controlRegistry.push({ key, sync: () => { inp.value = params[key]; val.textContent = fmt(params[key]); } });
+}
+// Numeric spinner for values that deliberately have no upper bound. Browser-provided arrow buttons
+// change by `step`; typing remains available for very large values that a slider cannot represent.
+function numberInput(key, label, min, step, fmt, onChange) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<span>${label}</span>`;
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  inp.min = String(min);
+  inp.step = String(step);
+  inp.value = String(params[key]);
+  inp.style.width = '82px';
+  inp.title = 'No upper limit';
+  const apply = () => {
+    const value = Number(inp.value);
+    if (!Number.isFinite(value)) return;
+    params[key] = Math.max(min, value);
+    onChange?.();
+    session.tuning[key] = params[key];
+    saveSession();
+  };
+  inp.addEventListener('input', apply);
+  inp.addEventListener('change', () => { apply(); inp.value = String(params[key]); });
+  row.appendChild(inp);
+  current.appendChild(row);
+  controlRegistry.push({ key, sync: () => { inp.value = String(params[key]); } });
+}
+function toggle(label, get, set, title = '') {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<span>${label}</span>`;
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = !!get();
+  if (title) box.title = title;
+  box.addEventListener('change', () => set(box.checked));
+  row.appendChild(box);
+  current.appendChild(row);
+  return box;
+}
+function note(text) {
+  const d = document.createElement('div');
+  d.className = 'note';
+  d.innerHTML = text;
+  current.appendChild(d);
+}
+function button(label, fn) {
+  const b = document.createElement('button');
+  b.className = 'act';
+  b.textContent = label;
+  b.addEventListener('click', fn);
+  current.appendChild(b);
+}
+const f1 = (v) => v.toFixed(1);
+const f0 = (v) => v.toFixed(0);
+function subsystemToggle(label, key, available, setter) {
+  const box = toggle(label, () => subsystemEnabled[key], setter);
+  box.disabled = !available;
+  if (!available) box.title = 'Not loaded in this run';
+  return box;
+}
+
+header('The park', true);
+note(`Seed <b>${SEED}</b> &middot; ${PARK_TERRAIN.worldX} &times; ${PARK_TERRAIN.worldZ} m &middot; ${plan.residents.length} residents of ${census.distinct} species`);
+note(park.map.zones.map((z) => `${BIOMES[z.key].label} ${(z.share * 100).toFixed(0)}%`).join(' &middot; '));
+button('New seed', () => { location.search = `?seed=${(SEED + 1) % 9999}`; });
+button('Snapshot to disk', snapshot);
+const saveState = document.createElement('div');
+saveState.id = 'save-state';
+current.appendChild(saveState);
+store.onStatus((s) => { saveState.textContent = describeStatus(s, { file: `park-saves/${SESSION_FILE}` }); });
+
+header('Subsystems', true);
+note('Live profiling toggles. No reload; watch the draw count below.');
+subsystemToggle('Water', 'water', !!waterRef, setWaterEnabled);
+subsystemToggle('Flora', 'flora', !!flora, setFloraEnabled);
+subsystemToggle('Pokémon', 'creatures', CREATURES_MODE !== 'off' && plan.residents.length > 0, setCreaturesEnabled);
+subsystemToggle('Sky + clouds', 'sky', !!(skyRef || cloudsRef || clouds2Ref), setSkyEnabled);
+subsystemToggle('Terrain', 'terrain', true, setTerrainEnabled);
+subsystemToggle('Shadows', 'shadows', true, setShadowsEnabled);
+const subsystemPerf = document.createElement('div');
+subsystemPerf.className = 'note';
+subsystemPerf.textContent = 'Collecting frame data…';
+current.appendChild(subsystemPerf);
+
+header('Light');
+slider('timeOfDay', 'Sun height', 4, 82, 1, f0, () => { rig.setElevation(params.timeOfDay); pushSunDir(); });
+slider('sunAzimuth', 'Sun bearing', 0, 360, 1, f0, () => { rig.setAzimuth(params.sunAzimuth); pushSunDir(); });
+slider('fogNear', 'Haze near', 40, 900, 10, f0, () => { scene.fog.near = params.fogNear; });
+slider('fogFar', 'Haze far', 300, 2600, 20, f0, () => { scene.fog.far = params.fogFar; });
+
+header('Creatures');
+toggle('Render models', () => creatureRuntime.rendering, setCreatureRendering);
+toggle('Simulation + posing', () => creatureRuntime.simulation, (on) => { creatureRuntime.simulation = on; });
+toggle('Streaming + spawning', () => creatureRuntime.streaming, (on) => { creatureRuntime.streaming = on; });
+toggle('Move casting', () => creatureRuntime.moves, (on) => {
+  creatureRuntime.moves = on;
+  if (!on) clearPendingCasts();
+});
+const creaturePerfEl = document.createElement('div');
+creaturePerfEl.className = 'note';
+creaturePerfEl.textContent = 'Collecting Pokémon timings…';
+current.appendChild(creaturePerfEl);
+slider('creatureRange', 'Draw range', 60, 400, 10, f0, () => { creatures.options.drawDistance = params.creatureRange; });
+slider('moveFrequency', 'Move frequency', 0, 3, 0.05, f1, null);
+slider('camDist', 'Camera distance', 1.8, 12, 0.1, f1, () => { camDist = params.camDist; });
+note('Species are assigned a biome, a movement style and a moveset. A species missing any of the three cannot spawn.');
+
+header('Move isolation', true);
+note('These affect active effects immediately; casting controls only whether new effects are created.');
+toggle('All effect rendering', () => moveRuntime.rendering, (on) => { moveRuntime.rendering = on; });
+toggle('Active effect updates', () => moveRuntime.updates, (on) => { moveRuntime.updates = on; });
+toggle('Move lights', () => moveRuntime.lights, setMoveLightsEnabled);
+toggle('Core geometry', () => moveRuntime.core, (on) => { moveRuntime.core = on; });
+toggle('Particles + debris', () => moveRuntime.particles, setMoveParticlesEnabled);
+slider('moveParticlePct', 'Particle load %', 0, 100, 10, f0, () => setMoveParticleScale(params.moveParticlePct));
+toggle('Ground decals', () => moveRuntime.decals, (on) => { moveRuntime.decals = on; });
+
+header('Flora isolation', true);
+note('Render switches isolate GPU draw cost. Compute/stream switches isolate update, culling, placement, and upload work.');
+toggle('Grass rendering', () => floraRuntime.grassRender, (on) => { floraRuntime.grassRender = on; syncFloraVisibility(); });
+toggle('Grass compute', () => floraRuntime.grassUpdate, (on) => { floraRuntime.grassUpdate = on; });
+toggle('Tree rendering', () => floraRuntime.treesRender, (on) => { floraRuntime.treesRender = on; syncFloraVisibility(); });
+toggle('Tree stream + cull', () => floraRuntime.treesUpdate, (on) => { floraRuntime.treesUpdate = on; });
+toggle('Rock rendering', () => floraRuntime.rocksRender, (on) => { floraRuntime.rocksRender = on; syncFloraVisibility(); });
+toggle('Rock stream + cull', () => floraRuntime.rocksUpdate, (on) => { floraRuntime.rocksUpdate = on; });
+toggle('Flora collisions', () => floraRuntime.collisions, (on) => { floraRuntime.collisions = on; });
+toggle('Flora shadows', () => floraRuntime.shadows, setFloraShadows);
+
+header('Tree isolation', true);
+note('Bark/leaves are persistent forest-render masks. Lower Full-mesh distance below Draw distance to create a cheap billboard band.');
+toggle('Bark geometry', () => treeRuntime.bark, (on) => {
+  treeRuntime.bark = on; applyTreeRenderParts(); syncFloraVisibility();
+});
+toggle('Leaf geometry', () => treeRuntime.leaves, (on) => {
+  treeRuntime.leaves = on; applyTreeRenderParts(); syncFloraVisibility();
+});
+toggle('Far billboards', () => treeRuntime.billboards, (on) => {
+  treeRuntime.billboards = on; applyTreeRenderParts(); syncFloraVisibility();
+});
+toggle('Bark shadows', () => treeRuntime.barkShadows, (on) => {
+  treeRuntime.barkShadows = on; applyTreeRenderParts();
+});
+toggle('Leaf shadows', () => treeRuntime.leafShadows, (on) => {
+  treeRuntime.leafShadows = on; applyTreeRenderParts();
+});
+numberInput('treeScalePct', 'Tree size %', 1, 5, f0, () => {
+  flora?.setTreeScale?.(params.treeScalePct / 100);
+});
+let treeLeafRebuildTimer = 0;
+const queueTreeLeafRebuild = () => {
+  clearTimeout(treeLeafRebuildTimer);
+  treeLeafRebuildTimer = setTimeout(async () => {
+    const changed = await flora?.setTreeLeafOptions?.({
+      density: params.treeLeafDensity,
+      size: params.treeLeafSize,
+    });
+    if (changed) refreshForestBindings();
+  }, 200);
+};
+slider('treeLeafDensity', 'Leaf density', 0.2, 2.5, 0.05, (v) => v.toFixed(2), queueTreeLeafRebuild);
+slider('treeLeafSize', 'Leaf size', 0.3, 2.5, 0.05, (v) => v.toFixed(2), queueTreeLeafRebuild);
+note('Tree size scales each complete tree and its trunk collider. Leaf density and size multiply each species\' authored leaves, then atomically swap the rebaked palette without restarting tree streaming.');
+slider('treeDensityPct', 'Tree density %', 0, 150, 10, f0, () => {
+  flora?.setTreeDensity?.(params.treeDensityPct / 100);
+}, true);
+slider('treeDrawDistance', 'Draw distance', 40, 400, 10, f0, () => {
+  flora?.forest?.setMaxDrawRadius?.(params.treeDrawDistance);
+});
+slider('treeLod0', 'High-detail distance', 10, 100, 5, f0, applyTreeLods);
+slider('treeLod1', 'Mid-detail distance', 30, 220, 5, f0, applyTreeLods);
+slider('treeLod2', 'Full-mesh distance', 50, 300, 10, f0, applyTreeLods);
+toggle('Frustum cone culling', () => treeRuntime.coneCulling, (on) => {
+  treeRuntime.coneCulling = on; flora?.forest?.setConeEnabled?.(on);
+});
+slider('treeConeMargin', 'Cull safety margin', 0.1, 0.7, 0.05, f1, () => {
+  flora?.forest?.setConeMargin?.(params.treeConeMargin);
+});
+slider('treeRecullMove', 'Recull movement', 0.25, 5, 0.25, f1, applyTreeRecull);
+slider('treeRecullAngle', 'Recull turn degrees', 0.5, 10, 0.5, f1, applyTreeRecull);
+toggle('Far leaves double-sided', () => treeRuntime.farLeavesDoubleSided, (on) => {
+  treeRuntime.farLeavesDoubleSided = on;
+  flora?.forest?.setFarLeavesDoubleSided?.(on);
+}, 'May compile new material pipelines when changed.');
+const treePerfEl = document.createElement('div');
+treePerfEl.className = 'note';
+treePerfEl.textContent = 'Collecting tree data…';
+current.appendChild(treePerfEl);
+
+header('Grass');
+if (flora && flora.grass) {
+  const f2 = (v) => v.toFixed(2);
+  slider('grassHeight', 'Blade height', 0.15, 2.0, 0.05, f2, () => flora.setGrass({ height: params.grassHeight }));
+  slider('grassWidth', 'Blade width', 0.5, 6.0, 0.1, f1, () => flora.setGrass({ width: params.grassWidth }));
+  slider('grassDensity', 'Blades per m2', 1, 24, 0.5, f1, () => flora.setGrass({ density: params.grassDensity }));
+  note('Blade look. Each is a live uniform, so none of these recompiles a shader.');
+  session.tuning.grassLook ||= {};
+  const look = { ...flora.getGrassLook(), ...session.tuning.grassLook };
+  for (const [key, label, why] of [
+    ['windDir', 'Wind direction', 'A coherent gust travelling along a heading, instead of one shared wave'],
+    ['curl', 'Blade curl', 'A resting arc per blade'],
+    ['rootShade', 'Root shading', 'Darkens each blade toward its root'],
+    ['translucency', 'Backlight', 'Blades glow where you look into the sun'],
+    ['coverage', 'Patchiness', 'An FBM mask that collapses the blades outside it'],
+  ]) {
+    toggle(label, () => look[key], (on) => {
+      look[key] = on;
+      session.tuning.grassLook[key] = on;
+      flora.setGrassLook({ [key]: on });
+      saveSession();
+    }, why);
+  }
+  // Curl alone bends the blade; the arc normal is what changes how it is lit.
+  toggle('Curl affects lighting', () => look.curlNormal > 0, (on) => {
+    look.curlNormal = on ? 0.65 : 0;
+    session.tuning.grassLook.curlNormal = look.curlNormal;
+    flora.setGrassLook({ curlNormal: look.curlNormal });
+    saveSession();
+  }, 'Feeds the curl arc normal to the lighting. Off, blades light as if upright.');
+  flora.setGrassLook(look);
+} else {
+  note('No grass on this run.');
+}
+
+header('View', true);
+const cameraProfileBoxes = new Map();
+function syncCameraProfileBoxes() {
+  for (const [profile, box] of cameraProfileBoxes) box.checked = cameraProfile === profile;
+}
+function setCameraProfile(profile, { applyDefaults = true, announce = true, persist = true } = {}) {
+  if (!CAMERA_PROFILES[profile]) profile = CAMERA_PROFILE_BOT;
+  cameraProfile = profile;
+  const settings = CAMERA_PROFILES[profile];
+  if (applyDefaults) {
+    params.camDist = settings.distance;
+    params.camShoulder = settings.shoulder;
+    params.sensitivity = settings.sensitivity;
+    camDist = params.camDist;
+    camShoulder = params.camShoulder;
+    fp.sensitivity = params.sensitivity;
+    for (const control of controlRegistry) control.sync();
+  }
+  camera.fov = settings.fov;
+  camera.updateProjectionMatrix();
+  look.tilt = 0;
+  look.lean = 0;
+  look.prevSpeed = Math.hypot(playerVelocity.x, playerVelocity.z);
+  resetCameraPlacementState();
+  syncCameraProfileBoxes();
+  if (persist) {
+    session.tuning.cameraProfile = profile;
+    session.tuning.camDist = params.camDist;
+    session.tuning.camShoulder = params.camShoulder;
+    session.tuning.sensitivity = params.sensitivity;
+    saveSession();
+  }
+  if (announce) toast(`${settings.label} camera`);
+}
+function cameraProfileToggle(profile) {
+  const settings = CAMERA_PROFILES[profile];
+  let box = null;
+  box = toggle(settings.label, () => cameraProfile === profile, (on) => {
+    if (on) setCameraProfile(profile);
+    else box.checked = true; // exactly one profile must remain active
+  });
+  cameraProfileBoxes.set(profile, box);
+}
+cameraProfileToggle(CAMERA_PROFILE_BOT);
+cameraProfileToggle(CAMERA_PROFILE_ENV);
+cameraProfileToggle(CAMERA_PROFILE_PARK);
+note('Bot Viewer v3 is the default. Environment is direct-coupled. Pokemon legacy is the previous smoothed-eye and stepped-boom stack for A/B comparison only.');
+slider('sensitivity', 'Mouse sensitivity', 100, 1600, 10, f0, () => { fp.sensitivity = params.sensitivity; });
+slider('camShoulder', 'Legacy shoulder offset', -1.2, 1.2, 0.05, f1, () => { camShoulder = params.camShoulder; });
+note('Click to capture the mouse. <b>V</b> switches first and third person, the wheel pulls the camera in and out.');
+
+header('Trails');
+if (roads) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = '<span>Show trails</span>';
+  const box = document.createElement('input');
+  box.type = 'checkbox'; box.checked = true;
+  box.addEventListener('change', () => roads.setVisible(box.checked));
+  row.appendChild(box);
+  current.appendChild(row);
+  note(`${trailStats.paths} routed &middot; ${(trailStats.metres / 1000).toFixed(1)} km` +
+    (trailStats.skipped.length ? ` &middot; ${trailStats.skipped.length} would not route` : ''));
+} else {
+  note('Trails are off. Drop <code>?trails=on</code> to bring them back.');
+}
+
+header('What is here');
+{
+  const top = census.rows.slice(0, 22);
+  const d = document.createElement('div');
+  d.className = 'note';
+  d.innerHTML = top.map((r) => `${r.name} <span style="color:#7f8a99">&times;${r.n} ${BIOMES[r.biome].label.toLowerCase()}</span>`).join('<br>');
+  current.appendChild(d);
+}
+
+function snapshot() {
+  const p = (n) => String(n).padStart(2, '0');
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  fetch(`/api/save-park?filename=park-session-${stamp}.json`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(session),
+  }).then((r) => r.json()).then((i) => toast(i.ok ? `snapshot written to ${i.path}` : `snapshot failed: ${i.error}`))
+    .catch((e) => toast('snapshot failed: ' + e.message));
+}
+
+// A debounced autosave loses the last edit to a closing tab
+addEventListener('pagehide', () => {
+  if (!store.dirty) return;
+  navigator.sendBeacon(`/api/save-park?filename=${SESSION_FILE}`, new Blob([store.text], { type: 'application/json' }));
+});
+
+for (const c of controlRegistry) c.sync();
+// The grass backlight needs the direction TOWARD the sun; it is a uniform, so this is not per-frame.
+const _grassSun = new THREE.Vector3();
+function pushSunDir() { flora?.setSunDir?.(skyLightDir(_grassSun)); }
+rig.setElevation(params.timeOfDay);
+rig.setAzimuth(params.sunAzimuth);
+pushSunDir();
+// Restored tuning has to be applied once, not only when a slider moves.
+fp.sensitivity = params.sensitivity;
+camShoulder = params.camShoulder;
+flora?.setGrass?.({ height: params.grassHeight, width: params.grassWidth, density: params.grassDensity });
+camDist = params.camDist;
+setCameraProfile(cameraProfile, { applyDefaults: false, announce: false, persist: false });
+creatures.options.drawDistance = params.creatureRange;
+scene.fog.near = params.fogNear;
+scene.fog.far = params.fogFar;
+scene.fog.near = params.fogNear;
+scene.fog.far = params.fogFar;
+creatures.options.drawDistance = params.creatureRange;
+camDist = params.camDist;
+
+// ===================== streaming =====================
+
+const lastSeenNear = new Set();
+function streamResidents() {
+  const px = playerCollider.start.x, pz = playerCollider.start.z;
+  const work = residency.update(px, pz);
+  for (const r of work.deactivate) {
+    creatures.despawn(r.id);
+    residency.active.delete(r.id);
+  }
+  for (const r of work.activate) {
+    if (!creatures.isLoaded(r.key)) {
+      // A failed species stays terminal until an explicit retry or reload. Requeueing its cached
+      // rejection every 200 ms used to grow the error DOM and turn one bad asset into a hitch loop.
+      if (creatures.hasFailed(r.key)) continue;
+      // Not loaded yet: put it at the head of the queue rather than dropping it
+      if (!loadQueue.includes(r.key)) loadQueue.unshift(r.key);
+      continue;
+    }
+    const c = creatures.spawn(r);
+    if (c) residency.active.set(r.id, c);
+  }
+  pumpSpeciesLoads();
+}
+
+/** Anything close and in front counts as seen, which is what makes the field guide worth filling. */
+function noteSightings() {
+  const px = camera.position.x, pz = camera.position.z;
+  camera.getWorldDirection(_camFwd);
+  lastSeenNear.clear();
+  for (const c of creatures.live.values()) {
+    if (!c.group.visible) continue;
+    const p = c.walker ? c.walker.body.pos : c.mover.body;
+    const dx = p.x - px, dz = p.z - pz;
+    const d = Math.hypot(dx, dz);
+    if (d > 45) continue;
+    if ((dx * _camFwd.x + dz * _camFwd.z) / (d || 1) < 0.4) continue;
+    lastSeenNear.add(c.id);
+    noteSighting(c);
+  }
+}
+
+// ===================== HUD =====================
+
+const hudEl = document.getElementById('hud');
+let hudTimer = 0;
+function updateHud(now, fps) {
+  if (now - hudTimer < 250) return;
+  hudTimer = now;
+  const x = playerCollider.start.x, z = playerCollider.start.z;
+  const biome = park.map.biomeAt(x, z);
+  const s = creatures.stats;
+  const drawCalls = renderer.info.render.drawCalls;
+  const triangleK = renderer.info.render.triangles / 1000;
+  subsystemPerf.textContent = drawCalls + ' draws · ' + triangleK.toFixed(0) + 'k tris · '
+    + fps.toFixed(0) + ' fps · worst ' + hitchMs.toFixed(0) + ' ms';
+  const treeSummary = flora?.forest?.summary;
+  treePerfEl.textContent = treeSummary
+    ? treeSummary.instances + ' trees · ' + treeSummary.draws + ' forest draws · '
+      + treeSummary.visibleVariants + ' variants · reculls ' + treeSummary.reculls
+      + ' / skipped ' + treeSummary.skippedReculls + ' · density ' + params.treeDensityPct.toFixed(0)
+      + '% · LOD ' + params.treeLod0.toFixed(0) + '/' + params.treeLod1.toFixed(0) + '/'
+      + params.treeLod2.toFixed(0) + ' → ' + params.treeDrawDistance.toFixed(0) + ' m'
+    : 'Forest unavailable in this run.';
+  creaturePerfEl.textContent = 'Simulation ' + creaturePerf.simulationLast.toFixed(2) + ' ms (peak '
+    + creaturePerf.simulationPeak.toFixed(2) + ') · stream ' + creaturePerf.streamLast.toFixed(2)
+    + ' ms (peak ' + creaturePerf.streamPeak.toFixed(2) + ') · spawn '
+    + (s.spawnLastMs || 0).toFixed(2) + ' ms (peak ' + (s.spawnPeakMs || 0).toFixed(2) + ') · cast '
+    + movePerf.castLast.toFixed(2) + ' ms (peak ' + movePerf.castPeak.toFixed(2) + ', '
+    + movePerf.lastMove + ') · queue ' + pendingCasts.length
+    + (movePerf.dropped ? ' · dropped ' + movePerf.dropped : '')
+    + ' · FX update ' + movePerf.updateLast.toFixed(2) + ' ms (peak ' + movePerf.updatePeak.toFixed(2)
+    + ') · lights ' + lightPool.filter((light) => light.userData.busy).length + '/' + lightPool.length
+    + ' · particles ' + Math.round(moveRuntime.particleScale * 100) + '%';
+  hudEl.innerHTML =
+    `<div class="big">${BIOMES[biome].label}</div>` +
+    `${s.posed} creatures moving &middot; ${s.live} loaded &middot; ${s.loaded} species &middot; ` +
+    (flora ? `${flora.stats.trees} trees of ${flora.stats.treeSpecies} species &middot; ` : '') +
+    `${liveMoves.length} moves &middot; ${fps.toFixed(0)} fps &middot; worst ${hitchMs.toFixed(0)} ms &middot; ` +
+    `${renderer.info.render.drawCalls} draws, ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris` +
+    (s.offscreen ? ` &middot; ${s.offscreen} culled` : '') +
+    (loadQueue.length ? ` &middot; loading ${loadQueue.length} more` : '');
+}
+
+// ===================== the frame =====================
+
+let paused = false;
+let fpsCapMs = FPS_CAP_URL === 'off' ? Infinity : 1000 / Number(FPS_CAP_URL);
+let lastRendered = -Infinity;
+let _frameBusy = false;
+const clock = new THREE.Clock();
+let fpsAcc = 0, fpsN = 0, fps = 0;
+let lastStream = -1e9, lastSighting = -1e9, lastMap = -1e9;
+let hitchMs = 0, hitchPeak = 0;
+const _sun = new THREE.Vector3();
+
+async function animate() {
+  // `setAnimationLoop` does NOT await an async callback.
+  if (_frameBusy) return;
+  if (fpsCapMs !== Infinity) {
+    const t = performance.now();
+    // Explicit caps are best-effort profiling/thermal controls. The uncapped default avoids
+    // refresh-divisor judder; this tolerance only prevents a 60 Hz display from falling to 30.
+    if (t - lastRendered < fpsCapMs - 0.5) return;
+    lastRendered = t;
+  }
+  _frameBusy = true;
+  try {
+    const rawDt = Math.min(clock.getDelta(), 0.1);
+    const now = performance.now();
+
+    if (subsystemEnabled.sky && skyRef) {
+      skyRef.group.position.copy(camera.position);
+      skyLightDir(_sun);
+      skyRef.setSunDir(_sun);
+      skyRef.updateDome(rig.elevation);
+      skyRef.update(now / 1000);
+    }
+    if (subsystemEnabled.sky) for (const c of [cloudsRef, clouds2Ref]) {
+      if (!c) continue;
+      c.position.x = camera.position.x;
+      c.position.z = camera.position.z;
+      c.update(now / 1000, camera.position);
+    }
+
+    const dt = Math.min(rawDt, 0.05) / STEPS_PER_FRAME;
+    for (let i = 0; i < STEPS_PER_FRAME; i++) { applyControls(dt); stepPlayer(dt); }
+    updateViewFeel(rawDt);
+    poseBody(rawDt);
+    placeCamera(rawDt);
+    // Culling and the sighting cone read the camera matrix, so it has to be current, not last frame's.
+    camera.updateMatrixWorld();
+    if (subsystemEnabled.shadows) focusShadow(playerCollider.start.x, playerCollider.start.z);
+
+    // Streaming, sightings and the map are swept on their own cadences.
+    // Spawning clones a rig, so it waits for a frame that has room rather than piling onto a slow one.
+    if (subsystemEnabled.creatures && creatureRuntime.streaming
+      && now - lastStream > 200 && (rawDt < 0.028 || now - lastStream > 1200)) {
+      lastStream = now;
+      const streamStartedAt = performance.now();
+      streamResidents();
+      creaturePerf.streamLast = performance.now() - streamStartedAt;
+      creaturePerf.streamPeak = Math.max(creaturePerf.streamPeak, creaturePerf.streamLast);
+      creaturePerf.streamEvents++;
+    }
+    if (subsystemEnabled.creatures && creatureRuntime.simulation) {
+      const simulationStartedAt = performance.now();
+      creatures.update(rawDt, camera, {
+        paused,
+        castingEnabled: creatureRuntime.moves && params.moveFrequency > 0,
+        cast: (c) => { if (Math.random() < params.moveFrequency) enqueueCast(c); },
+      });
+      creaturePerf.simulationLast = performance.now() - simulationStartedAt;
+      creaturePerf.simulationPeak = Math.max(creaturePerf.simulationPeak, creaturePerf.simulationLast);
+    }
+    if (subsystemEnabled.creatures && creatureRuntime.simulation && creatureRuntime.moves) {
+      processOnePendingCast();
+    } else if (pendingCasts.length) {
+      clearPendingCasts();
+    }
+    if (creatureVisibilitySuppressed) syncCreatureVisibility();
+    if (subsystemEnabled.creatures && now - lastSighting > 100) { lastSighting = now; noteSightings(); }
+
+    restoreMoveComponentOverrides();
+    if (moveRuntime.updates) {
+      const moveUpdateStartedAt = performance.now();
+      for (let i = liveMoves.length - 1; i >= 0; i--) {
+        let alive = false;
+        try { alive = liveMoves[i].update(rawDt, now / 1000); }
+        catch (e) { fail(`${liveMoves[i].moveName}: ${e.message}`); }
+        if (!alive) { try { liveMoves[i].dispose(); } catch (_) {} liveMoves.splice(i, 1); }
+      }
+      movePerf.updateLast = performance.now() - moveUpdateStartedAt;
+      movePerf.updatePeak = Math.max(movePerf.updatePeak, movePerf.updateLast);
+    } else {
+      movePerf.updateLast = 0;
+    }
+    suppressMoveComponents();
+    if (!moveRuntime.lights) for (const light of lightPool) light.intensity = 0;
+
+    if (subsystemEnabled.water && waterRef) waterRef.update(now / 1000);
+
+    // Awaited, and after the camera has its final position for the frame.
+    if (subsystemEnabled.flora && flora) {
+      await flora.update(camera.position, now / 1000, {
+        grass: floraRuntime.grassUpdate,
+        trees: floraRuntime.treesUpdate,
+        rocks: floraRuntime.rocksUpdate,
+      });
+      syncFloraVisibility();
+    }
+
+    renderer.render(scene, camera);
+    if (skyRef) skyRef.flushDisposals();
+
+    if (now - lastMap > 50) { lastMap = now; drawMinimap(); }
+    fpsAcc += rawDt; fpsN++;
+    hitchPeak = Math.max(hitchPeak, rawDt * 1000);
+    if (fpsAcc >= 0.4) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; hitchMs = hitchPeak; hitchPeak = 0; }
+    updateHud(now, fps);
+  } finally { _frameBusy = false; }
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  waterRef?.resize();
+  sizeMinimap();
+});
+
+await setStatus('opening the gate');
+if (fxMissing.length) fail('these effects did not load: ' + fxMissing.join(', '));
+if (creatures.warnings.length) console.warn('[park]', creatures.warnings.join('\n'));
+renderer.setAnimationLoop(animate);
+bootEl.classList.add('gone');
+setTimeout(() => bootEl.remove(), 600);
+toast(`Welcome to the park — ${plan.residents.length} residents, ${census.distinct} species`);
+</script>
+</body>
+</html>

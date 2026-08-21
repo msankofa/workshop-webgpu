@@ -102,6 +102,10 @@ export const WALKER_DEFAULTS = {
   strayMode: 'off',
   // Forced re-steps before a leg accepts instead, so an unreachable target cannot loop forever.
   strayRetries: 2,
+  // How a foot supports the body: point | patch. `patch` uses the SDF foot proxy — `docs/subsystems/stadium.md`.
+  footContact: 'point',
+  // Shrinks or grows the patch about its own centre, for a foot bone that owns more than a foot.
+  footPatchScale: 1,
   physics: {
     GRAV: LOCOMOTION.GRAV, KP: LOCOMOTION.KP, KD: LOCOMOTION.KD,
     H_DRAG: LOCOMOTION.H_DRAG, BOUNCE: LOCOMOTION.BOUNCE,
@@ -134,6 +138,8 @@ export function createStadiumWalker({
   strayLimit = WALKER_DEFAULTS.strayLimit,
   strayMode = WALKER_DEFAULTS.strayMode,
   strayRetries = WALKER_DEFAULTS.strayRetries,
+  footContact = WALKER_DEFAULTS.footContact,
+  footPatchScale = WALKER_DEFAULTS.footPatchScale,
   uprightSupport = null,
   physics = WALKER_DEFAULTS.physics,
   roamRadius = 6,
@@ -196,6 +202,7 @@ export function createStadiumWalker({
   const tuning = {
     standExtension, maxExtension, swingLimit, placeMargin, reachMargin, reachStress, restepFraction,
     strayLimit, strayMode, strayRetries,
+    footContact, footPatchScale,
     footGround, roamRadius, base: gait,
     // Deliberate overrides ON TOP of the derived values, for pulling a model away from what its own
     // geometry implies. 1 means "whatever was derived".
@@ -261,6 +268,10 @@ export function createStadiumWalker({
     // Stray-gate counters, since page load. `strayFrames` counts planted FRAMES past the limit; the other
     // two count actions taken. Rates are the caller's job.
     landings: 0, strayFrames: 0, strayForced: 0, strayAccepted: 0, strayThrottled: 0,
+    // Support-polygon counters. `supportedFrames` is when the polygon had an interior at all, which on a
+    // biped standing on point-feet is never — that degeneracy is what the contact patch is for.
+    contactCount: 0, haveSupport: false, comInside: false,
+    supportFrames: 0, supportedFrames: 0, comInsideFrames: 0,
   };
 
   /**
@@ -436,6 +447,13 @@ export function createStadiumWalker({
       // Carried for the overlay and for an ankle that does not exist yet: `lower` still runs knee to sole
       // as one rigid group, so the foot cannot articulate and the sole pitches with the shank.
       footBones: L.footBones || [], ankleIndex: L.ankleIndex ?? null,
+      // The contact patch, and the frame it was measured in. `contacts` is what `bodySupport` reads.
+      footProxy: L.footProxy || null,
+      footFrame: L.footFrame ?? null,
+      restInvFoot: L.footFrame != null && map.restWorld[L.footFrame]
+        ? new THREE.Matrix4().fromArray(map.restWorld[L.footFrame]).invert() : null,
+      patch: (L.footProxy?.samples || []).map(() => V()),
+      contacts: null,
       // Live state the locomotion module reads and writes.
       hipWorld: V(), kneeWorld: V(), drawnFoot: V(), drawnPrev: V(), drawnValid: false,
       end: foot.clone(), target: foot.clone(), groundPosition: foot.clone(),
@@ -634,6 +652,12 @@ export function createStadiumWalker({
     }
 
     const sup = bodySupport(legs, body.pos);
+    state.contactCount = sup.contactCount ?? sup.groundedCount;
+    state.haveSupport = sup.haveSupport;
+    state.comInside = sup.comInside;
+    if (sup.haveSupport) state.supportedFrames++;
+    if (sup.comInside) state.comInsideFrames++;
+    state.supportFrames++;
 
     // THE HEIGHT SPRING READS THE VELOCITY BEFORE GRAVITY IS APPLIED, and the order is not cosmetic.
     // Damping against a velocity that already contains this step's gravity impulse biases the resting
@@ -757,6 +781,34 @@ export function createStadiumWalker({
     }
   }
 
+  const _patchM4 = new THREE.Matrix4();
+  const _patchM3 = new THREE.Matrix3();
+
+  /**
+   * Put the foot's contact patch in world space, anchored at the gait's foothold.
+   *
+   * Anchored at `leg.end` rather than at the drawn foot on purpose: the patch then only ever changes the
+   * SIZE of the support polygon, never where it sits, so turning it on cannot reopen the foot-drag
+   * question the stray gate's `accept` mode already lost. Orientation comes from the live foot bone, so a
+   * foot that pitches with the shank tilts its patch with it.
+   */
+  function updateContactPatch(leg) {
+    const p = leg.footProxy;
+    if (tuning.footContact !== 'patch' || !p?.ok || !leg.restInvFoot) { leg.contacts = null; return; }
+    const world = _desired.get(leg.footFrame) ?? objectOf(leg.footFrame)?.matrixWorld;
+    if (!world) { leg.contacts = null; return; }
+    _patchM4.multiplyMatrices(world, leg.restInvFoot);
+    _patchM3.setFromMatrix4(_patchM4);
+    // Defaulted rather than trusted: `tuning` is a hand-listed literal, so a knob added to
+    // `WALKER_DEFAULTS` and not to it arrives undefined, and every contact point becomes NaN.
+    const k = Number.isFinite(tuning.footPatchScale) ? tuning.footPatchScale : 1;
+    for (let i = 0; i < p.samples.length; i++) {
+      const o = p.samples[i];
+      leg.patch[i].set(o[0] * k, o[1] * k, o[2] * k).applyMatrix3(_patchM3).add(leg.end);
+    }
+    leg.contacts = leg.patch;
+  }
+
   const _bodyDrawnPrev = V();
   let _bodyDrawnValid = false;
 
@@ -841,6 +893,8 @@ export function createStadiumWalker({
       // `l1 + l2`, the same span `gait-diagnostics` normalises its gap by, or the two would disagree.
       const boneSpan = leg.l1 + leg.l2;
       leg.strayNow = boneSpan > 0 ? _footW.distanceTo(footSolved) / boneSpan : 0;
+
+      updateContactPatch(leg);
     }
 
     applyStrayGate();
@@ -915,8 +969,16 @@ export function createStadiumWalker({
       triggerH: g.movingTrigger?.h ?? 0,
       reachMargin: tuning.reachMargin,
       reachStress: tuning.reachStress,
-      // The landing gate, so a panel can state the threshold it is reporting against rather than assume it.
+      // The stray gate, so a panel can state the threshold it is reporting against rather than assume it.
       strayLimit: tuning.strayLimit,
+      footContact: tuning.footContact,
+      footPatchScale: tuning.footPatchScale,
+      contactCount: state.contactCount,
+      haveSupport: state.haveSupport,
+      comInside: state.comInside,
+      supportFrames: state.supportFrames,
+      supportedFrames: state.supportedFrames,
+      comInsideFrames: state.comInsideFrames,
       strayMode: tuning.strayMode,
       landings: state.landings,
       strayFrames: state.strayFrames,
@@ -949,6 +1011,10 @@ export function createStadiumWalker({
           reach: leg.reachAsked ?? 0,
           reachLimit: limit,
           span: leg.l1 + leg.l2,
+          // The contact patch: how many points it contributes now, and how wide it was measured to be.
+          patchPoints: leg.contacts ? leg.contacts.length : 0,
+          patchRadius: leg.footProxy?.ok ? leg.footProxy.radius * unitScale * tuning.footPatchScale : 0,
+          patchSource: leg.footProxy?.ok ? leg.footProxy.source : (leg.footProxy?.reason ?? 'none'),
         };
       }),
     };

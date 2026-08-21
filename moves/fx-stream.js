@@ -278,6 +278,7 @@ export function createStreamFx(deps, options = {}) {
       .mul(u.fade);
     const puffs = new THREE.Mesh(puffGeo, puffMat);
     puffs.frustumCulled = false;
+    puffs.userData.moveComponent = 'particles';
 
     // ---- layer 3: impact -----------------------------------------------------------------
     const burstGeo = new THREE.SphereGeometry(1, 24, 16);

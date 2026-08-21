@@ -35,6 +35,12 @@ const SHRAPNEL_HOT = hex(0xff2200);
 const SHRAPNEL_FLICKER = [hex(0xff2626), hex(0xff5a2a), hex(0x8f0505)];
 const SHRAPNEL_GLOW = [hex(0xff6a22), hex(0xff2d12)];
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const spinBelow = (o) => Math.abs(o.sx) + Math.abs(o.sy) + Math.abs(o.sz) < REST_SPIN;
+// Thresholds for calling a grounded piece settled, at which point it stops being simulated. Speed is
+// 1 cm/s. Spin has to be in the test too: freezing a fragment that is still turning at 7 rad/s is a
+// visible pop, and unlike the rubble, html-game-v2 never damped shrapnel spin at all.
+const REST_SPEED2 = 1e-4;
+const REST_SPIN = 0.05;   // rad/s, summed over the three axes
 
 export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps = {}, settings = {} } = {}) {
   const cap = { ...DEBRIS_CAPS, ...caps };
@@ -122,9 +128,14 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
 
   // ---- shrapnel (spawnBlastShrapnel) ----
   // `color` is the blast colour; `direction`+`directionBias` cone the scatter (airbursts).
+  // `velocity` is NOT html-game-v2's: it is [vx,vy,vz] added to every launch vector, so debris off a
+  // moving thing carries its momentum. Their game only blew up things standing still. Omit it and
+  // every piece spawns with their numbers exactly. The caller scales it, and has to: nothing in here
+  // is drag, so whatever speed a piece launches with is what it still has when it lands.
   function spawnBlastShrapnel(cx, cy, cz, blastRadius, color = SHRAPNEL_HOT, o = {}) {
     const size = blastRadius / 4;
     const countScale = o.countScale ?? 1, speedScale = o.speedScale ?? 1, gravityScale = o.gravityScale ?? 1;
+    const iv = o.velocity, ivx = iv ? iv[0] : 0, ivy = iv ? iv[1] : 0, ivz = iv ? iv[2] : 0;
     const verticalBoost = o.verticalBoost ?? 0;
     const bias = clamp(o.directionBias ?? 0, 0, 1);
     const cone = bias > 0 && o.direction ? o.direction : null;
@@ -145,7 +156,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
       const glow = SHRAPNEL_GLOW[rnd() > 0.5 ? 0 : 1];
       stats.shrapnelSpawned++;
       push(shrapnel, cap.shrapnel, {
-        x: cx, y: cy, z: cz, vx: dx * speed, vy: dy * speed, vz: dz * speed,
+        x: cx, y: cy, z: cz, vx: dx * speed + ivx, vy: dy * speed + ivy, vz: dz * speed + ivz,
         rx: rnd() * Math.PI, ry: rnd() * Math.PI, rz: rnd() * Math.PI,
         sx: (rnd() - 0.5) * 16, sy: (rnd() - 0.5) * 16, sz: (rnd() - 0.5) * 16,
         life: (20 + rnd() * 8) * s.shrapnelLifeScale, scale: piece, radius: piece,
@@ -156,6 +167,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
         r: base[0], g: base[1], b: base[2],
         glowing: rnd() < glowChance, glowScale: piece * (0.8 + rnd() * 0.4) * s.shrapnelGlowScale,
         glowPhase: rnd() * Math.PI * 2, gr: glow[0], gg: glow[1], gb: glow[2], glowNow: 0, fade: 1,
+        resting: false,
       });
     }
     return count;
@@ -166,6 +178,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
   // the killing blow travelled, which the debris follows. `baseY` is where the pieces may start.
   function spawnRubble(cx, cy, cz, size, dir = null, o = {}) {
     const countScale = o.countScale ?? 1;
+    const iv = o.velocity, ivx = iv ? iv[0] : 0, ivy = iv ? iv[1] : 0, ivz = iv ? iv[2] : 0;
     const baseCount = clamp(Math.round(7 + size * 6), 8, 34);
     const count = Math.max(0, Math.round(baseCount * s.rubbleCountScale * countScale));
     const baseSize = (0.18 + size * 0.055) * clamp(size / 2.6, 0.9, 1.85);
@@ -190,7 +203,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
       const x = cx + ix * sb + sxd * ss, z = cz + iz * sb + szd * ss;
       const y = Math.max(floorY, cy + (rnd() - 0.28) * size * 0.35);
       const kick = 1 + rnd() * 0.48;
-      const vx = dx * speed * kick, vy = dy * speed * 0.78 + 2.6 + rnd() * 4.4, vz = dz * speed * kick;
+      const vx = dx * speed * kick + ivx, vy = dy * speed * 0.78 + 2.6 + rnd() * 4.4 + ivy, vz = dz * speed * kick + ivz;
       const smokeScale = clamp(piece / 0.22, 0.85, 2.8);
       stats.rubbleSpawned++;
       push(rubble, cap.rubble, {
@@ -208,6 +221,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
         emberSmokeTimer: rnd() * 0.12, emberSparkTimer: rnd() * 0.22,
         glowScale: piece * (0.9 + rnd() * 0.55) * s.rubbleGlowScale,
         gr: 1, gg: 0.26 + rnd() * 0.22, gb: 0.04 + rnd() * 0.035, glowNow: 0, light: 0, lightDist: 0, fade: 1,
+        resting: false,
       });
       rubbleTrail(x, y, z, vx, vy, vz, smokeScale * 1.2);
     }
@@ -255,6 +269,7 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
         slabShrapnelRadius: (o.shrapnelRadius ?? 7.5) * k, slabColor: o.color ?? hex(0xffa040),
         glowScale: piece * (1.05 + rnd() * 0.65) * s.rubbleGlowScale,
         gr: 1, gg: 0.2 + rnd() * 0.16, gb: 0.035 + rnd() * 0.04, glowNow: 0, light: 0, lightDist: 0, fade: 1,
+        resting: false,
       });
       slabTrail(x, y, z, vx, vy, vz, smokeBase * intensity * k * 1.2);
     }
@@ -267,19 +282,34 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
       const p = shrapnel[i];
       p.life -= dt;
       if (p.life <= 0) { shrapnel.splice(i, 1); continue; }
-      p.vy -= p.gravity * dt;
-      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
-      const gy = groundAt(p.x, p.z);
-      if (p.y <= gy + p.radius) {
-        p.y = gy + p.radius;
-        if (p.vy < 0 && p.bounces < p.maxBounces) {
-          p.vy = Math.abs(p.vy) * p.damping + 0.35; p.vx *= p.friction; p.vz *= p.friction; p.bounces++;
-        } else { p.vy = 0; p.vx *= 0.82; p.vz *= 0.82; }
+      // A settled fragment is skipped entirely: gravity would un-zero vy every frame and drag it back
+      // through a ground query it can never fail. That query is the expensive part when the world is
+      // a noise field rather than a flat floor. How much it saves depends entirely on the caller: a
+      // blast at head height has everything down and still within a couple of seconds, while an
+      // aircraft killed at 1,500 m has fragments in the air for most of their 20 s life and saves
+      // almost nothing. It is never a loss, and it is what stops settled debris drifting or spinning.
+      if (!p.resting) {
+        p.vy -= p.gravity * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        const gy = groundAt(p.x, p.z);
+        if (p.y <= gy + p.radius) {
+          p.y = gy + p.radius;
+          if (p.vy < 0 && p.bounces < p.maxBounces) {
+            p.vy = Math.abs(p.vy) * p.damping + 0.35; p.vx *= p.friction; p.vz *= p.friction; p.bounces++;
+          } else {
+            p.vy = 0; p.vx *= 0.82; p.vz *= 0.82;
+            // Spin damping is NOT html-game-v2's: theirs kept turning on the ground forever, which
+            // only stayed invisible because nothing ever stopped simulating it. Same rate the rubble
+            // uses while grounded.
+            p.sx *= 0.68; p.sy *= 0.68; p.sz *= 0.68;
+            if (p.vx * p.vx + p.vz * p.vz < REST_SPEED2 && spinBelow(p)) p.resting = true;
+          }
+        }
+        p.rx += p.sx * dt; p.ry += p.sy * dt; p.rz += p.sz * dt;
+        p.trailTimer -= dt;
+        const v2 = p.vx * p.vx + p.vy * p.vy + p.vz * p.vz;
+        if (p.trailTimer <= 0 && v2 > 0.45) { shrapnelTrail(p.x, p.y, p.z, p.vx, p.vy, p.vz, p.smokeScale); p.trailTimer = p.trailInterval; }
       }
-      p.rx += p.sx * dt; p.ry += p.sy * dt; p.rz += p.sz * dt;
-      p.trailTimer -= dt;
-      const v2 = p.vx * p.vx + p.vy * p.vy + p.vz * p.vz;
-      if (p.trailTimer <= 0 && v2 > 0.45) { shrapnelTrail(p.x, p.y, p.z, p.vx, p.vy, p.vz, p.smokeScale); p.trailTimer = p.trailInterval; }
       p.flickerTimer -= dt;
       if (p.flickerTimer <= 0) {
         p.flickerTimer = 0.035 + rnd() * 0.08;
@@ -298,39 +328,48 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
       const r = rubble[i];
       r.life -= dt;
       if (r.life <= 0) { rubble.splice(i, 1); continue; }
-      r.vy -= r.gravity * dt;
-      r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
-      const gy = groundAt(r.x, r.z);
-      if (r.y <= gy + r.radius) {
-        r.y = gy + r.radius;
-        if (r.vy < 0 && r.bounces < r.maxBounces) {
-          r.vy = Math.abs(r.vy) * r.damping + 0.12; r.vx *= r.friction; r.vz *= r.friction;
-          r.sx *= 0.62; r.sy *= 0.62; r.sz *= 0.62; r.bounces++;
-          if (r.slab) slabTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale * 0.95);
-          else rubbleTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale * 1.15);
-        } else { r.vy = 0; r.vx *= 0.72; r.vz *= 0.72; r.sx *= 0.68; r.sy *= 0.68; r.sz *= 0.68; }
-      }
-      r.rx += r.sx * dt; r.ry += r.sy * dt; r.rz += r.sz * dt;
-      r.trailTimer -= dt;
-      const v2 = r.vx * r.vx + r.vy * r.vy + r.vz * r.vz;
+      // The slab smoke window runs on wall-clock, not on motion, so it keeps counting once settled.
       let slabSmoking = true;
       if (r.slab) {
         r.slabSmokeTimer += dt;
         slabSmoking = r.slabSmokeTimer < r.slabSmokeDuration;
-        r.slabShrapnelTimer -= dt;
-        if (r.slabShrapnelTimer <= 0) {
-          if (r.slabShrapnelBursts > 0 && v2 > 42 && shrapnel.length < cap.shrapnel * 0.82) {
-            spawnBlastShrapnel(r.x, r.y, r.z, r.slabShrapnelRadius, r.slabColor,
-              { countScale: 0.18, speedScale: 1.45, verticalBoost: 0.12 });
-            r.slabShrapnelBursts--;
-            r.slabShrapnelTimer = 0.22 + rnd() * 0.34;
-          } else r.slabShrapnelTimer = 0.18 + rnd() * 0.22;
-        }
       }
-      if (r.trailTimer <= 0 && v2 > 0.26) {
-        if (r.slab) { if (slabSmoking) slabTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale); }
-        else rubbleTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale);
-        r.trailTimer = r.trailInterval;
+      // Same short-circuit as the shrapnel: a settled piece is only an ember from here on.
+      if (!r.resting) {
+        r.vy -= r.gravity * dt;
+        r.x += r.vx * dt; r.y += r.vy * dt; r.z += r.vz * dt;
+        const gy = groundAt(r.x, r.z);
+        if (r.y <= gy + r.radius) {
+          r.y = gy + r.radius;
+          if (r.vy < 0 && r.bounces < r.maxBounces) {
+            r.vy = Math.abs(r.vy) * r.damping + 0.12; r.vx *= r.friction; r.vz *= r.friction;
+            r.sx *= 0.62; r.sy *= 0.62; r.sz *= 0.62; r.bounces++;
+            if (r.slab) slabTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale * 0.95);
+            else rubbleTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale * 1.15);
+          } else {
+            r.vy = 0; r.vx *= 0.72; r.vz *= 0.72; r.sx *= 0.68; r.sy *= 0.68; r.sz *= 0.68;
+            if (r.vx * r.vx + r.vz * r.vz < REST_SPEED2 && spinBelow(r)) r.resting = true;
+          }
+        }
+        r.rx += r.sx * dt; r.ry += r.sy * dt; r.rz += r.sz * dt;
+        r.trailTimer -= dt;
+        const v2 = r.vx * r.vx + r.vy * r.vy + r.vz * r.vz;
+        if (r.slab) {
+          r.slabShrapnelTimer -= dt;
+          if (r.slabShrapnelTimer <= 0) {
+            if (r.slabShrapnelBursts > 0 && v2 > 42 && shrapnel.length < cap.shrapnel * 0.82) {
+              spawnBlastShrapnel(r.x, r.y, r.z, r.slabShrapnelRadius, r.slabColor,
+                { countScale: 0.18, speedScale: 1.45, verticalBoost: 0.12 });
+              r.slabShrapnelBursts--;
+              r.slabShrapnelTimer = 0.22 + rnd() * 0.34;
+            } else r.slabShrapnelTimer = 0.18 + rnd() * 0.22;
+          }
+        }
+        if (r.trailTimer <= 0 && v2 > 0.26) {
+          if (r.slab) { if (slabSmoking) slabTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale); }
+          else rubbleTrail(r.x, r.y, r.z, r.vx, r.vy, r.vz, r.smokeScale);
+          r.trailTimer = r.trailInterval;
+        }
       }
       if (r.smoldering) {
         r.emberFlicker += dt * r.emberFlickerSpeed;
@@ -383,11 +422,24 @@ export function createDebrisSim({ groundAt = () => 0, random = Math.random, caps
   }
 
   // The hottest rubble pieces, for a renderer with a fixed light pool (html-game-v2 uses 8).
+  // Called once per frame by the renderer to fill a light pool of 2 to 8 out of up to 260 pieces.
+  // Selection, not a sort: collecting the lit ones and sorting all of them was the whole cost.
   function hottestRubble(n) {
-    const lit = [];
-    for (const r of rubble) if (r.light > 0) lit.push(r);
-    lit.sort((a, b) => b.light - a.light);
-    return lit.length > n ? lit.slice(0, n) : lit;
+    if (n <= 0) return [];
+    const top = [];
+    for (const r of rubble) {
+      if (r.light <= 0) continue;
+      if (top.length < n) {
+        let i = top.length;
+        while (i > 0 && top[i - 1].light < r.light) { top[i] = top[i - 1]; i--; }
+        top[i] = r;
+      } else if (r.light > top[n - 1].light) {
+        let i = n - 1;
+        while (i > 0 && top[i - 1].light < r.light) { top[i] = top[i - 1]; i--; }
+        top[i] = r;
+      }
+    }
+    return top;
   }
 
   function clear() { shrapnel.length = 0; rubble.length = 0; sparks.length = 0; smoke.length = 0; }

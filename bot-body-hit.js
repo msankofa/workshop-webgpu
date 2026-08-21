@@ -20,6 +20,8 @@ function scratch(THREE) {
       inv: new THREE.Matrix4(), nrm: new THREE.Matrix3(),
       o: new THREE.Vector3(), d: new THREE.Vector3(), e: new THREE.Vector3(),
       hit: new THREE.Vector3(), n: new THREE.Vector3(), c: new THREE.Vector3(),
+      po: new THREE.Vector3(), pe: new THREE.Vector3(), pd: new THREE.Vector3(),
+      pm: new THREE.Matrix4(),
     };
   }
   return S;
@@ -38,6 +40,23 @@ function boundsOf(part) {
   if (!g) return null;
   if (!g.boundingBox) g.computeBoundingBox();
   return g.boundingBox;
+}
+
+// Merged-gear parts (player-procedural-body.js mergeGear) carry per-piece OBBs so hit resolution
+// keeps the same piece-level precision the individual parts had.
+function mergedPieces(part) {
+  const mp = part.userData?.mergedPieces;
+  return Array.isArray(mp) && mp.length ? mp : null;
+}
+
+// The piece equivalent of partCrossSection: extents from the piece's own box, scale from the
+// composed part-world x piece-local matrix.
+function pieceCrossSection(part, piece, s) {
+  s.pm.multiplyMatrices(part.matrixWorld, piece.matrix);
+  const m = s.pm.elements;
+  const sx = Math.hypot(m[0], m[1], m[2]);
+  const sz = Math.hypot(m[8], m[9], m[10]);
+  return Math.min((piece.box.max.x - piece.box.min.x) * sx, (piece.box.max.z - piece.box.min.z) * sz);
 }
 
 // Matrices come from the last flush(), i.e. at most one frame stale — a hit resolved between frames
@@ -107,7 +126,7 @@ export function partCrossSection(part) {
   return Math.min((box.max.x - box.min.x) * sx, (box.max.z - box.min.z) * sz);
 }
 
-function finish(THREE, body, all, idx, localPoint, localNormal) {
+function finish(THREE, body, all, idx, localPoint, localNormal, crossSection = null) {
   const part = all[idx];
   const s = scratch(THREE);
   const point = localPoint.clone().applyMatrix4(part.matrixWorld);
@@ -120,7 +139,7 @@ function finish(THREE, body, all, idx, localPoint, localNormal) {
   return {
     partIndex: idx, part, role: part._role ?? null,
     point, normal, localPoint: lp, localNormal: ln,
-    crossSection: partCrossSection(part),
+    crossSection: crossSection ?? partCrossSection(part),
     attach: makeAttachment(body, idx, lp, ln),
   };
 }
@@ -131,11 +150,27 @@ export function resolveBodyHit({ THREE, body, origin, dir, refresh = false }) {
   if (!all || !origin || !dir) return null;
   ensureMatrices(body, refresh);
   const s = scratch(THREE);
-  let bestT = Infinity, bestIdx = -1, bestAxis = -1, bestSign = 1;
+  let bestT = Infinity, bestIdx = -1, bestAxis = -1, bestSign = 1, bestPiece = null;
   const bLocal = new THREE.Vector3();
   for (let i = 0; i < all.length; i++) {
     const part = all[i];
     if (!part.visible) continue;
+    const pieces = mergedPieces(part);
+    if (pieces) {
+      s.inv.copy(part.matrixWorld).invert();
+      s.o.set(origin.x, origin.y, origin.z).applyMatrix4(s.inv);
+      s.e.set(origin.x + dir.x, origin.y + dir.y, origin.z + dir.z).applyMatrix4(s.inv);
+      for (const piece of pieces) {
+        s.po.copy(s.o).applyMatrix4(piece.inverse);
+        s.pe.copy(s.e).applyMatrix4(piece.inverse);
+        s.pd.subVectors(s.pe, s.po);
+        const r = rayBox(s.po.x, s.po.y, s.po.z, s.pd.x, s.pd.y, s.pd.z, piece.box);
+        if (!r || r.t >= bestT) continue;
+        bestT = r.t; bestIdx = i; bestAxis = r.axis; bestSign = r.sign; bestPiece = piece;
+        bLocal.copy(s.po).addScaledVector(s.pd, r.t);   // piece space; mapped to part space below
+      }
+      continue;
+    }
     const box = boundsOf(part);
     if (!box) continue;
     s.inv.copy(part.matrixWorld).invert();
@@ -146,12 +181,18 @@ export function resolveBodyHit({ THREE, body, origin, dir, refresh = false }) {
     s.d.subVectors(s.e, s.o);
     const r = rayBox(s.o.x, s.o.y, s.o.z, s.d.x, s.d.y, s.d.z, box);
     if (!r || r.t >= bestT) continue;
-    bestT = r.t; bestIdx = i; bestAxis = r.axis; bestSign = r.sign;
+    bestT = r.t; bestIdx = i; bestAxis = r.axis; bestSign = r.sign; bestPiece = null;
     bLocal.copy(s.o).addScaledVector(s.d, r.t);
   }
   if (bestIdx < 0) return null;
   const ln = new THREE.Vector3(
     bestAxis === 0 ? bestSign : 0, bestAxis === 1 ? bestSign : 0, bestAxis === 2 ? bestSign : 0);
+  if (bestPiece) {
+    bLocal.applyMatrix4(bestPiece.matrix);
+    s.nrm.getNormalMatrix(bestPiece.matrix);
+    ln.applyMatrix3(s.nrm).normalize();
+    return finish(THREE, body, all, bestIdx, bLocal, ln, pieceCrossSection(all[bestIdx], bestPiece, s));
+  }
   return finish(THREE, body, all, bestIdx, bLocal, ln);
 }
 
@@ -163,11 +204,28 @@ export function attachFromPoint({ THREE, body, point, normal = null, refresh = f
   if (!all || !point) return null;
   ensureMatrices(body, refresh);
   const s = scratch(THREE);
-  let bestD = Infinity, bestIdx = -1;
+  let bestD = Infinity, bestIdx = -1, bestPiece = null;
   const bLocal = new THREE.Vector3();
   for (let i = 0; i < all.length; i++) {
     const part = all[i];
     if (!part.visible) continue;
+    const pieces = mergedPieces(part);
+    if (pieces) {
+      s.inv.copy(part.matrixWorld).invert();
+      s.o.set(point.x, point.y, point.z).applyMatrix4(s.inv);
+      for (const piece of pieces) {
+        s.po.copy(s.o).applyMatrix4(piece.inverse);
+        const box = piece.box;
+        s.c.set(
+          Math.min(Math.max(s.po.x, box.min.x), box.max.x),
+          Math.min(Math.max(s.po.y, box.min.y), box.max.y),
+          Math.min(Math.max(s.po.z, box.min.z), box.max.z));
+        const d = s.c.distanceToSquared(s.po);
+        if (d >= bestD) continue;
+        bestD = d; bestIdx = i; bestPiece = piece; bLocal.copy(s.po);
+      }
+      continue;
+    }
     const box = boundsOf(part);
     if (!box) continue;
     s.inv.copy(part.matrixWorld).invert();
@@ -178,9 +236,10 @@ export function attachFromPoint({ THREE, body, point, normal = null, refresh = f
       Math.min(Math.max(s.o.z, box.min.z), box.max.z));
     const d = s.c.distanceToSquared(s.o);
     if (d >= bestD) continue;
-    bestD = d; bestIdx = i; bLocal.copy(s.o);
+    bestD = d; bestIdx = i; bestPiece = null; bLocal.copy(s.o);
   }
   if (bestIdx < 0) return null;
+  if (bestPiece) bLocal.applyMatrix4(bestPiece.matrix);   // piece -> part space
   // World normal in, part-local normal out: the inverse-transpose of the inverse world matrix is the
   // world matrix transposed, so pushing the normal through the part's own matrix as a direction and
   // renormalizing is the correct local normal even under non-uniform scale.
@@ -189,5 +248,6 @@ export function attachFromPoint({ THREE, body, point, normal = null, refresh = f
     s.nrm.getNormalMatrix(s.inv.copy(all[bestIdx].matrixWorld).invert());
     ln.set(normal.x, normal.y, normal.z).applyMatrix3(s.nrm).normalize();
   }
+  if (bestPiece) return finish(THREE, body, all, bestIdx, bLocal, ln, pieceCrossSection(all[bestIdx], bestPiece, s));
   return finish(THREE, body, all, bestIdx, bLocal, ln);
 }

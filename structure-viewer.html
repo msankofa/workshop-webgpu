@@ -66,7 +66,7 @@ import { createVisualSystem } from './bot-viewer-visuals.js';
 import { floraFor } from './bot-viewer-visuals-style.js';
 import { createBotFlora } from './bot-flora.js';
 import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
-import { STRUCTURE_DEFAULTS, generateStructures, generateOne } from './bot-structures.js';
+import { STRUCTURE_DEFAULTS, generateStructures, generateOne, rampBox } from './bot-structures.js';
 import { BOT_TERRAIN_DEFAULTS, createTerrainField, footprintRange, buildTerrainMeshArrays } from './bot-terrain.js';
 import { installPanelTheme, createSection, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
 import { createSlotSection } from './bot-viewer-slots.js';
@@ -243,13 +243,13 @@ function galleryLayout() {
   return { cols, rows, cell, w, d };
 }
 
-const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace'];
+const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace', 'platform'];
 // Per-slot reroll counters. A slot's seed is its own function of (base, index, its own counter), so
 // rerolling one slot cannot disturb another -- holding the others still is the point of a gallery.
 const slotSeedOffsets = {};
 function buildGallery() {
   const { cols, cell, w, d } = galleryLayout();
-  const walls = [], covers = [], slabs = [];
+  const walls = [], covers = [], slabs = [], ramps = [];
   slots = [];
   for (let i = 0; i < view.slotCount; i++) {
     const c = i % cols, r = Math.floor(i / cols);
@@ -257,11 +257,11 @@ function buildGallery() {
     const kind = view.galleryKind === 'cycle' ? KINDS[i % KINDS.length] : view.galleryKind;
     const seed = (view.gallerySeed + i * 7919 + (slotSeedOffsets[i] || 0) * 104729) >>> 0;
     const one = generateOne(kind, { ...params, wallT: WALL_T, wallHeight: WALL_H }, seed, { x, z });
-    walls.push(...one.walls); covers.push(...one.covers); slabs.push(...one.slabs);
+    walls.push(...one.walls); covers.push(...one.covers); slabs.push(...one.slabs); ramps.push(...(one.ramps || []));
     slots.push({ i, kind, x, z, seed, radius: one.radius,
       counts: { walls: one.walls.length, covers: one.covers.length, slabs: one.slabs.length } });
   }
-  return { walls, covers, slabs, pads: [], placed: slots.map(s => ({ kind: s.kind, x: s.x, z: s.z, radius: s.radius })) };
+  return { walls, covers, slabs, ramps, pads: [], placed: slots.map(s => ({ kind: s.kind, x: s.x, z: s.z, radius: s.radius })) };
 }
 
 // The one rebuild. `frame` refits the camera; a slider tweak must leave the viewpoint alone.
@@ -299,6 +299,13 @@ function rebuildScene({ frame = false } = {}) {
   instancedBoxes(wallMat, activeWallBoxes);
   instancedBoxes(coverMat, activeCoverBoxes);
   instancedBoxes(wallMat, activeSlabs);   // same concrete as the walls they span
+  // Ramps tilt, so they come through rampBox rather than the axis-aligned fitting above. Each end
+  // takes the ground under its own footprint, which on a pad is the same height at both.
+  instancedBoxes(wallMat, (built.ramps || []).map((r) => rampBox({
+    ...r,
+    y0: r.y0 + groundHeight(r.x0, r.z0),
+    y1: r.y1 + groundHeight(r.x1, r.z1),
+  })));
   rebuildFlora();
 
   if (frame || view.autoFrame) frameCamera();
@@ -527,7 +534,7 @@ const P = (host, label, key, min, max, step, dec, hint) =>
   numberBox(b, 'seed', () => params.seed, (v) => { params.seed = v >>> 0; rebuildScene(); });
   button(b, '🎲 Reroll seed', () => { params.seed = (params.seed + 1) >>> 0; rebuildScene(); syncAll(); }, { primary: true });
   P(b, 'count', 'count', 0, 40, 1, 0, 'How many to try to place. Absolute, not per area.');
-  dropdown(b, 'mix', ['mixed', 'buildings', 'pockets', 'obstacles', 'portals', 'colonnades', 'slots', 'ramparts', 'corners', 'terraces'],
+  dropdown(b, 'mix', ['mixed', 'buildings', 'pockets', 'obstacles', 'portals', 'colonnades', 'slots', 'ramparts', 'corners', 'terraces', 'platforms'],
     () => params.mix, (v) => { params.mix = v; rebuildScene(); });
   P(b, 'separation (m)', 'minSeparation', 0, 30, 0.5, 1, 'Gap between footprints. These gaps are the firing lanes.');
   P(b, 'edge margin (m)', 'edgeMargin', 0, 20, 0.5, 1, 'Keeps structures clear of the map perimeter.');

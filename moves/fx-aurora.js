@@ -301,6 +301,7 @@ export function createAuroraFx(deps, options = {}) {
     }
     const moteMesh = new THREE.InstancedMesh(moteGeo, moteMat, Math.max(moteCount, 1));
     moteMesh.renderOrder = 3; moteMesh.frustumCulled = false;
+    moteMesh.userData.moveComponent = 'particles';
     group.add(moteMesh);
 
     const motes = new Array(moteCount);

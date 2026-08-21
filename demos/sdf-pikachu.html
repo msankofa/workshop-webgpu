@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SDF Pikachu — spike</title>
+<!--
+  A THROWAWAY TEST BUILD, not a subsystem. The question it exists to answer: can a Stadium model be drawn
+  the way `demos/sdf-bug-v2.html` draws its bug — a raymarched signed distance field on a fullscreen quad,
+  no triangles — and does it still read as the creature?
+
+  Every vertex in these models belongs to exactly ONE bone at full weight, so the skin falls apart cleanly
+  into rigid chunks. The real mesh is drawn beside the field, from the same bytes and the same camera,
+  because the only way to judge this is to look at it.
+
+  There are two ways to turn a chunk into a field, and the page switches between them:
+
+    fitted boxes   an oriented round box per chunk (`foot-sdf.js`, the same fit the walker's contact patch
+                   uses). Cheap, instant, and shaped like a box rather than like a Pokemon.
+    baked volume   the mesh ITSELF, converted: a 24-cubed cube of distances per chunk, each voxel holding
+                   the measured distance to that chunk's nearest triangle, signed by whether the whole model
+                   encloses it. 2.53 MB per model, under a second to bake. No shape vocabulary in between.
+
+  The field and both bakes live in `sdf-pikachu-field.js` and `sdf-mesh-bake.js` so `test-sdf-pikachu.mjs`
+  and `test-sdf-mesh-bake.mjs` can compile the shader and check the numbers in Node. This file is the shell:
+  camera, panel, and the mesh half.
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0d10; color: #dfe6ee;
+    font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 12px; left: 12px; width: 272px; padding: 12px 14px;
+    background: rgba(14,18,24,.9); border: 1px solid #26303c; border-radius: 10px;
+    backdrop-filter: blur(6px); max-height: calc(100vh - 24px); overflow: auto; }
+  h1 { font-size: 13px; margin: 0 0 2px; letter-spacing: .02em; }
+  .sub { color: #8fa0b4; font-size: 11px; margin: 0 0 10px; }
+  .ctl { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+  .ctl label { flex: 0 0 88px; color: #a8b6c6; font-size: 11px; }
+  .ctl input[type=range] { flex: 1; min-width: 0; }
+  .ctl .val { flex: 0 0 60px; text-align: right; color: #7fd4a0;
+    font-variant-numeric: tabular-nums; font-size: 11px; }
+  select { background: #18202a; color: #dfe6ee; border: 1px solid #2b3644;
+    border-radius: 6px; padding: 4px 7px; font: inherit; flex: 1; min-width: 0; }
+  .hint { color: #8fa0b4; font-size: 11px; margin: 9px 0 0; }
+  .hint b { color: #cfe0f0; font-weight: 600; }
+  #stats { margin-top: 10px; padding-top: 9px; border-top: 1px solid #26303c;
+    color: #9fb0c2; font-size: 11px; font-variant-numeric: tabular-nums; }
+  #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #7f8ea0; }
+  #labels { position: fixed; bottom: 14px; left: 0; right: 0; display: flex; pointer-events: none; }
+  #labels span { flex: 1; text-align: center; color: #6f8092; font-size: 11px; letter-spacing: .07em; }
+</style>
+</head>
+<body>
+<div id="boot">building the field…</div>
+<div id="labels" hidden>
+  <span id="labL">SDF — union of per-bone boxes</span>
+  <span id="labR">the real mesh</span>
+</div>
+<div id="panel" hidden>
+  <h1>SDF Pikachu</h1>
+  <p class="sub">Spike: is a Stadium model drawable as a distance field?</p>
+
+  <div class="ctl"><label for="mode">show</label>
+    <select id="mode">
+      <option value="both">both, side by side</option>
+      <option value="sdf">the SDF only</option>
+      <option value="mesh">the mesh only</option>
+    </select>
+  </div>
+  <div class="ctl"><label for="species">model</label><select id="species"></select></div>
+  <div class="ctl"><label for="field">field from</label>
+    <select id="field">
+      <option value="volume">the mesh itself, baked</option>
+      <option value="boxes">fitted boxes</option>
+    </select>
+  </div>
+
+  <div class="ctl"><label for="blend">joint blend</label><input type="range" id="blend" min="0" max="0.2" step="0.002" value="0"><span class="val" id="blendV"></span></div>
+  <div class="ctl"><label for="thicken">skin thickness</label><input type="range" id="thicken" min="0" max="0.02" step="0.001" value="0.002"><span class="val" id="thickenV"></span></div>
+  <div class="ctl"><label for="round">roundness</label><input type="range" id="round" min="0" max="0.3" step="0.005" value="0.06"><span class="val" id="roundV"></span></div>
+  <div class="ctl"><label for="shrink">box size</label><input type="range" id="shrink" min="0.6" max="1.1" step="0.01" value="1"><span class="val" id="shrinkV"></span></div>
+  <div class="ctl"><label for="scale">resolution</label><input type="range" id="scale" min="0.35" max="1" step="0.05" value="0.75"><span class="val" id="scaleV"></span></div>
+  <label class="ctl"><input type="checkbox" id="spin" checked> turntable</label>
+  <label class="ctl"><input type="checkbox" id="colour" checked> colour sampled from the ROM texture</label>
+
+  <p class="hint"><b>Joint blend</b> is the smooth union, and it starts at zero. It exists to close the seam
+    a rotated bone tears open in a rigid-skinned model, which nothing on this page does — so here it only
+    melts the creature. Measured on Pikachu, a blend of 0.05 puts the surface 1.31% of body height off the
+    real mesh where zero puts it 0.13%.</p>
+  <p class="hint" id="knobHint"></p>
+  <p class="hint">Drag to orbit, wheel to zoom.</p>
+  <div id="stats"></div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer, MeshBasicNodeMaterial } from 'three/webgpu';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { parseGLB } from '../stadium-glb.js';
+import {
+  createField, bake, bakeVolume, upload, uploadVolume, MARCH_STEPS, MAX_BONES, TILE_RES, SIGN_RES,
+} from './sdf-pikachu-field.js';
+
+const MODELS = [
+  '025_pikachu', '019_rattata', '058_growlithe', '077_ponyta', '128_tauros', '002_ivysaur',
+  '006_charizard', '066_machop', '027_sandshrew', '028_sandslash', '033_nidorino', '046_paras',
+  '079_slowpoke', '086_seel',
+];
+const FOV = 48;
+
+const $ = (id) => document.getElementById(id);
+const field = createField();
+
+/** Decode every glTF image once, so a bone's colour can be read out of the real texture. */
+async function decodeImages(json, bin) {
+  const out = [];
+  for (const img of json.images || []) {
+    try {
+      const bv = json.bufferViews[img.bufferView];
+      const bytes = new Uint8Array(bin.buffer, bin.byteOffset + (bv.byteOffset || 0), bv.byteLength);
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: img.mimeType || 'image/png' }));
+      const c = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.drawImage(bitmap, 0, 0);
+      out.push(g.getImageData(0, 0, bitmap.width, bitmap.height));
+    } catch { out.push(null); }
+  }
+  return out;
+}
+
+const renderer = new WebGPURenderer({ antialias: false });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.setPixelRatio(1);
+renderer.setSize(innerWidth, innerHeight);
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const flatCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+const quadMat = new MeshBasicNodeMaterial({ depthTest: false, depthWrite: false });
+quadMat.fragmentNode = field.scenePass();
+const quadScene = new THREE.Scene();
+const quadMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), quadMat);
+quadMesh.frustumCulled = false;
+quadScene.add(quadMesh);
+
+const meshScene = new THREE.Scene();
+const meshCam = new THREE.PerspectiveCamera(FOV, 1, 0.01, 100);
+meshScene.add(new THREE.HemisphereLight(0x9fc4ff, 0x141a20, 2.0));
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(0.55, 0.8, 0.35);
+meshScene.add(key);
+const meshRoot = new THREE.Group();
+meshScene.add(meshRoot);
+
+const loader = new GLTFLoader();
+let baseStats = '';
+let current = null;
+const cache = new Map();
+
+/** Both bakes are kept once made, so flipping between them is instant and only the first costs the wait. */
+async function bakedFor(name, kind) {
+  const key = `${name}|${kind}`;
+  if (cache.has(key)) return cache.get(key);
+  const src = current?.name === name ? current : null;
+  const { json, bin, images } = src ?? await fetchSpecies(name);
+  const t0 = performance.now();
+  const out = kind === 'volume' ? bakeVolume(json, bin, images) : bake(json, bin, images);
+  out.bakeMs = Math.round(performance.now() - t0);
+  cache.set(key, out);
+  return out;
+}
+
+async function fetchSpecies(name) {
+  const bytes = new Uint8Array(await (await fetch(`../models/stadium/${name}.glb`)).arrayBuffer());
+  const { json, bin } = parseGLB(bytes);
+  return { name, bytes, json, bin, images: await decodeImages(json, bin) };
+}
+
+// The blend belongs to the bake, not to the page: boxes leave real gaps at every joint and need one,
+// the volume's chunks already overlap because a seam triangle is given to both bones.
+const BLEND_FOR = { boxes: 0.05, volume: 0 };
+let lastKind = null;
+
+function applyBake(baked, kind) {
+  upload(field, baked);
+  field.u.volume.value = kind === 'volume' ? 1 : 0;
+  if (kind !== lastKind) {
+    $('blend').value = BLEND_FOR[kind];
+    $('blend').dispatchEvent(new Event('input'));
+    lastKind = kind;
+  }
+  let size = '';
+  if (kind === 'volume') size = ` · ${(uploadVolume(field, baked) / 1048576).toFixed(2)} MB of voxels`;
+  baseStats = `${baked.bones.length} bones baked`
+    + (baked.dropped ? `, ${baked.dropped} past the ${MAX_BONES} slot cap` : '')
+    + `${size} · ${baked.bakeMs} ms · ${MARCH_STEPS} steps`;
+  $('labL').textContent = kind === 'volume'
+    ? `SDF — the mesh baked into ${TILE_RES}³ voxels per bone`
+    : 'SDF — union of per-bone boxes';
+  for (const [id, live] of [['round', 'boxes'], ['shrink', 'boxes'], ['thicken', 'volume']]) {
+    $(id).disabled = live !== kind;
+    $(id).closest('.ctl').style.opacity = live === kind ? 1 : 0.4;
+  }
+  $('knobHint').textContent = kind === 'volume'
+    ? `Colour is baked into a second volume at the same voxels, so every marking survives — the black ear `
+      + `tips, the cheeks, the stripes. Skin thickness pushes the surface outward: a Charizard wing is `
+      + `thinner than one cell of the ${SIGN_RES}³ grid the sign comes from, so nothing under it reads as `
+      + `solid. Turn it to zero and the wings break up.`
+    : 'Roundness and box size only mean anything to the fitted boxes, and each bone gets one flat colour.';
+}
+
+async function loadSpecies(name) {
+  current = await fetchSpecies(name);
+  const kind = $('field').value;
+  applyBake(await bakedFor(name, kind), kind);
+
+  meshRoot.clear();
+  const gltf = await loader.parseAsync(current.bytes.slice().buffer, '');
+  gltf.scene.traverse((o) => {
+    if (o.isMesh) { o.frustumCulled = false; o.material.side = THREE.DoubleSide; }
+  });
+  const { scale, mid } = cache.get(`${name}|${kind}`);
+  gltf.scene.scale.setScalar(scale);
+  gltf.scene.position.set(-mid[0] * scale, -mid[1] * scale, -mid[2] * scale);
+  meshRoot.add(gltf.scene);
+  $('stats').textContent = baseStats;
+}
+
+const speciesSel = $('species');
+for (const m of MODELS) {
+  const o = document.createElement('option');
+  o.value = m;
+  o.textContent = m.replace(/^\d+_/, '');
+  speciesSel.append(o);
+}
+
+const orbit = { yaw: 0.6, pitch: 0.15, dist: 2.6 };
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  renderer.domElement.setPointerCapture(e.pointerId);
+  $('spin').checked = false;
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  orbit.yaw -= (e.clientX - lastX) * 0.008;
+  orbit.pitch = Math.max(-1.2, Math.min(1.2, orbit.pitch + (e.clientY - lastY) * 0.006));
+  lastX = e.clientX; lastY = e.clientY;
+});
+renderer.domElement.addEventListener('pointerup', () => { dragging = false; });
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  orbit.dist = Math.max(1.1, Math.min(7, orbit.dist * (1 + Math.sign(e.deltaY) * 0.09)));
+}, { passive: false });
+
+function layout() {
+  const s = Number($('scale').value);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5) * s);
+  renderer.setSize(innerWidth, innerHeight);
+}
+addEventListener('resize', layout);
+
+for (const [id, apply, fmt] of [
+  ['blend', (v) => { field.u.blend.value = v; }, (v) => v.toFixed(3)],
+  ['thicken', (v) => { field.u.thicken.value = v; }, (v) => v.toFixed(3)],
+  ['round', (v) => { field.u.round.value = v; }, (v) => v.toFixed(3)],
+  ['shrink', (v) => { field.u.shrink.value = v; }, (v) => `${v.toFixed(2)}x`],
+  ['scale', () => layout(), (v) => `${(v * 100).toFixed(0)}%`],
+]) {
+  const el = $(id), out = $(`${id}V`);
+  const run = () => { const v = Number(el.value); apply(v); out.textContent = fmt(v); };
+  el.addEventListener('input', run);
+  run();
+}
+$('colour').addEventListener('change', (e) => { field.u.colourOn.value = e.target.checked ? 1 : 0; });
+
+/** The volume bake runs about three quarters of a second on the main thread — say so before it starts. */
+async function withNotice(text, fn) {
+  $('stats').textContent = text;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await fn();
+  $('stats').textContent = baseStats;
+}
+
+speciesSel.addEventListener('change', () => withNotice('baking…', () => loadSpecies(speciesSel.value)));
+$('field').addEventListener('change', () => withNotice(
+  $('field').value === 'volume' ? 'baking the voxels…' : 'fitting boxes…',
+  async () => {
+    const kind = $('field').value;
+    applyBake(await bakedFor(speciesSel.value, kind), kind);
+  }));
+
+await loadSpecies(MODELS[0]);
+layout();
+$('boot').remove();
+$('panel').hidden = false;
+$('labels').hidden = false;
+
+const cp = new THREE.Vector3(), target = new THREE.Vector3(0, 0.5, 0);
+const fwd = new THREE.Vector3(), right = new THREE.Vector3(), up = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+let fpsAccum = 0, fpsFrames = 0, lastT = performance.now();
+
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastT) / 1000);
+  lastT = now;
+  if ($('spin').checked) orbit.yaw += dt * 0.35;
+
+  const mode = $('mode').value;
+  const w = renderer.domElement.width, h = renderer.domElement.height;
+  const halves = mode === 'both';
+  const vw = halves ? Math.floor(w / 2) : w;
+
+  // ONE camera, rendered twice, or the two halves would not be comparable.
+  cp.set(
+    Math.sin(orbit.yaw) * Math.cos(orbit.pitch) * orbit.dist,
+    0.5 + Math.sin(orbit.pitch) * orbit.dist,
+    Math.cos(orbit.yaw) * Math.cos(orbit.pitch) * orbit.dist,
+  );
+  fwd.copy(target).sub(cp).normalize();
+  right.crossVectors(fwd, UP).normalize();
+  up.crossVectors(right, fwd).normalize();
+  field.u.ro.value.copy(cp);
+  field.u.fwd.value.copy(fwd);
+  field.u.right.value.copy(right);
+  field.u.up.value.copy(up);
+  field.u.aspect.value = vw / h;
+  field.u.tanHalf.value = Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
+
+  meshCam.position.copy(cp);
+  meshCam.lookAt(target);
+  meshCam.aspect = vw / h;
+  meshCam.updateProjectionMatrix();
+
+  renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, w, h);
+  renderer.setScissor(0, 0, w, h);
+  renderer.clear();
+  if (mode !== 'mesh') {
+    renderer.setViewport(0, 0, vw, h);
+    renderer.setScissor(0, 0, vw, h);
+    renderer.render(quadScene, flatCam);
+  }
+  if (mode !== 'sdf') {
+    const x = halves ? vw : 0;
+    renderer.setViewport(x, 0, vw, h);
+    renderer.setScissor(x, 0, vw, h);
+    renderer.render(meshScene, meshCam);
+  }
+  renderer.setScissorTest(false);
+
+  $('labL').hidden = mode === 'mesh';
+  $('labR').hidden = mode === 'sdf';
+
+  fpsAccum += dt; fpsFrames++;
+  if (fpsAccum > 0.5) {
+    $('stats').textContent = `${baseStats} · fps ${(fpsFrames / fpsAccum).toFixed(0)}`;
+    fpsAccum = 0; fpsFrames = 0;
+  }
+});
+</script>
+</body>
+</html>

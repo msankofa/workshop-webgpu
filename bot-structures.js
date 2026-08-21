@@ -209,15 +209,29 @@ export const STRUCTURE_DEFAULTS = {
   terraceRampSteps: 5,
   terraceRampSlope: 0.45,  // rise/run the approach is built to; nav rejects above maxSlope (0.85)
   terraceRampWidth: 2.4,   // m, approach half-width
+  // ---- platform: a raised deck on posts, reached by a sloped ramp ----
+  // The only kind that emits `decks` (nav levels) and `ramps` (sloped boxes). Everything else here
+  // is either ground you walk on or geometry you walk under.
+  platformWidth: 6,
+  platformDepth: 5,
+  platformHeight: 3.0,     // m from local ground to the walking surface
+  platformPost: 0.7,       // corner post side; emitted as cover, so it blocks sight and movement
+  platformDeckT: 0.35,
+  platformRampSlope: 0.5,  // rise/run; the capsule needs the ramp face under its own slope limit
+  platformRampWidth: 2.0,
+  platformRampT: 0.3,
+  platformNavRise: 0.4,    // max rise between consecutive ramp decks; must stay under nav's levelStep
 };
 
-const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace'];
+const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace', 'platform'];
 const MIX_KINDS = {
   buildings: ['building'], pockets: ['pocket'], obstacles: ['obstacles'], portals: ['portal'],
   colonnades: ['colonnade'], slots: ['slot'], ramparts: ['rampart'], corners: ['corner'],
-  terraces: ['terrace'],
+  terraces: ['terrace'], platforms: ['platform'],
   mixed: KINDS,
 };
+// Every mix name a caller may ask for, so a save file can be validated against one list.
+export const MIX_NAMES = Object.keys(MIX_KINDS);
 
 // Kinds that emit terrain pads and NO geometry. A caller with terrain off drops their pads on the
 // floor, so under `mixed` they would silently burn a slot and its separation radius while
@@ -584,10 +598,104 @@ export function generateHomeBase(region, params = {}) {
   return { walls, covers, pad: { x, z, radius: Math.hypot(p.width, p.depth) / 2 + 1 } };
 }
 
+// A platform: a deck on four posts with a ramp up to it. The first structure here that puts bots
+// ABOVE each other -- everything else is one walkable surface per column, so a slab was only ever
+// something to walk under. It emits two lists nothing else does: `decks` (nav levels, the walking
+// surface height rather than a slab underside) and `ramps` (the one sloped solid in the map).
+// The ramp is a real slope, not a stair: the capsule climbs it because its face is inside the
+// collider's slope limit, while nav sees the stepped decks rampDecks() cuts from it.
+const PLATFORM_DRAWS = 4;
+function buildPlatform(cx, cz, p, rng) {
+  const r = draws(rng, PLATFORM_DRAWS);
+  const w = p.platformWidth * (0.85 + r[0] * 0.3);
+  const d = p.platformDepth * (0.85 + r[1] * 0.3);
+  const top = p.platformHeight * (0.9 + r[2] * 0.25);
+  const dir = Math.min(3, Math.floor(r[3] * 4));   // the edge the ramp leaves from
+  const dx = dir === 0 ? 1 : dir === 1 ? -1 : 0;
+  const dz = dir === 2 ? 1 : dir === 3 ? -1 : 0;
+  const post = p.platformPost, deckT = p.platformDeckT;
+  const covers = [];
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      covers.push({ x: cx + sx * (w / 2 - post / 2), z: cz + sz * (d / 2 - post / 2), w: post, d: post, h: top - deckT });
+    }
+  }
+  const run = top / Math.max(0.1, p.platformRampSlope);
+  const headX = cx + dx * (dx !== 0 ? w / 2 : 0), headZ = cz + dz * (dz !== 0 ? d / 2 : 0);
+  const reach = Math.hypot(w, d) / 2 + run;
+  return {
+    walls: [], covers,
+    slabs: [{ x: cx, z: cz, w, d, y: top - deckT, h: deckT }],
+    decks: [{ x: cx, z: cz, w, d, y: top }],
+    // Foot first: `y0` is the low end, so a caller resolving the two ends against real ground can
+    // tell which one it must seat and which one the deck already fixes.
+    ramps: [{
+      x0: headX + dx * run, z0: headZ + dz * run, y0: 0,
+      x1: headX, z1: headZ, y1: top,
+      width: p.platformRampWidth, thickness: p.platformRampT,
+    }],
+    radius: reach,
+    // One pad for deck and ramp together: two pads would flatten to two heights and leave a step
+    // where the ramp foot meets the ground it is supposed to run onto.
+    pad: { x: cx + dx * run / 2, z: cz + dz * run / 2, radius: Math.hypot(w, d) / 2 + run / 2 + 1 },
+  };
+}
+
+// A ramp as a rotated box: centre, size and the one Euler angle that tilts it. The record's two
+// ends name the TOP face, so the solid hangs `thickness` below it and the walking surface is
+// exactly the line the caller asked for. Axis-aligned in XZ -- the longer span picks the axis.
+export function rampBox(ramp) {
+  const alongX = Math.abs(ramp.x1 - ramp.x0) >= Math.abs(ramp.z1 - ramp.z0);
+  // Ordered along +x / +z so the tilt is a signed angle under a quarter turn and the box's own
+  // up-axis always stays up; a ramp described head-first is the same solid described foot-first.
+  const forward = alongX ? ramp.x1 >= ramp.x0 : ramp.z1 >= ramp.z0;
+  const yA = forward ? ramp.y0 : ramp.y1, yB = forward ? ramp.y1 : ramp.y0;
+  const run = alongX ? Math.abs(ramp.x1 - ramp.x0) : Math.abs(ramp.z1 - ramp.z0);
+  const rise = yB - yA;
+  const angle = Math.atan2(rise, run);
+  const len = Math.hypot(run, rise);
+  const t = ramp.thickness;
+  const cx = (ramp.x0 + ramp.x1) / 2, cz = (ramp.z0 + ramp.z1) / 2, cy = (ramp.y0 + ramp.y1) / 2;
+  if (alongX) {
+    // Rotation about z by `angle` sends local +x up-slope and local +y to the surface normal.
+    return {
+      x: cx + Math.sin(angle) * t / 2, y: cy - Math.cos(angle) * t / 2, z: cz,
+      w: len, h: t, d: ramp.width, rx: 0, ry: 0, rz: angle,
+    };
+  }
+  return {
+    x: cx, y: cy - Math.cos(angle) * t / 2, z: cz + Math.sin(angle) * t / 2,
+    w: ramp.width, h: t, d: len, rx: -angle, ry: 0, rz: 0,
+  };
+}
+
+// The ramp's top face cut into nav decks: contiguous rects tiling the run, each at the surface
+// height of its own centre. `maxRise` bounds the step between neighbours, so the chain stays under
+// nav-grid's levelStep and a bot may actually walk up it. Contiguous rather than overlapping:
+// a tiling puts every cell centre in exactly one rect, so no column gets two levels a few
+// centimetres apart.
+export function rampDecks(ramp, maxRise = 0.4) {
+  const alongX = Math.abs(ramp.x1 - ramp.x0) >= Math.abs(ramp.z1 - ramp.z0);
+  const n = Math.max(1, Math.ceil(Math.abs(ramp.y1 - ramp.y0) / Math.max(0.05, maxRise)));
+  const spanX = (ramp.x1 - ramp.x0) / n, spanZ = (ramp.z1 - ramp.z0) / n;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n;
+    out.push({
+      x: ramp.x0 + (ramp.x1 - ramp.x0) * t,
+      z: ramp.z0 + (ramp.z1 - ramp.z0) * t,
+      w: alongX ? Math.abs(spanX) : ramp.width,
+      d: alongX ? ramp.width : Math.abs(spanZ),
+      y: ramp.y0 + (ramp.y1 - ramp.y0) * t,
+    });
+  }
+  return out;
+}
+
 const BUILDERS = {
   building: buildBuilding, pocket: buildPocket, obstacles: buildObstacles, portal: buildPortal,
   colonnade: buildColonnade, slot: buildSlot, rampart: buildRampart, corner: buildCorner,
-  terrace: buildTerrace,
+  terrace: buildTerrace, platform: buildPlatform,
 };
 // Stream salts. SHAPE is a base: attempt k draws from SHAPE + k, so a rejected attempt costs the
 // next one nothing.
@@ -597,7 +705,7 @@ function buildAt(kind, cx, cz, p, seed) {
   const b = BUILDERS[kind];
   if (!b) return null;
   // `pad` is a single flatten circle; `pads` is a list a terrain-shaped structure emits instead.
-  return { covers: [], slabs: [], pad: null, pads: [], ...b(cx, cz, p, makeRng(seed)) };
+  return { covers: [], slabs: [], decks: [], ramps: [], pad: null, pads: [], ...b(cx, cz, p, makeRng(seed)) };
 }
 
 // One specimen of one kind, for galleries and previews. Same builders and the same per-structure
@@ -612,6 +720,13 @@ export function generateOne(kind, params = {}, seed = 1, { x = 0, z = 0 } = {}) 
 function liftRects(list, dy) {
   if (!dy) return list;
   for (const r of list) r.y = (r.y || 0) + dy;
+  return list;
+}
+
+// Same for ramps, which carry a height at each end rather than one base.
+function liftRamps(list, dy) {
+  if (!dy) return list;
+  for (const r of list) { r.y0 += dy; r.y1 += dy; }
   return list;
 }
 
@@ -655,8 +770,8 @@ export function generateStructures(bounds, params = {}, avoid = []) {
   const { kinds, dropped } = kindsForMix(p);
   const minX = bounds.minX + p.edgeMargin, maxX = bounds.maxX - p.edgeMargin;
   const minZ = bounds.minZ + p.edgeMargin, maxZ = bounds.maxZ - p.edgeMargin;
-  const walls = [], covers = [], slabs = [], pads = [], placed = [], foundations = [];
-  if (maxX <= minX || maxZ <= minZ) return { walls, covers, slabs, pads, placed, foundations, dropped };
+  const walls = [], covers = [], slabs = [], decks = [], ramps = [], pads = [], placed = [], foundations = [];
+  if (maxX <= minX || maxZ <= minZ) return { walls, covers, slabs, decks, ramps, pads, placed, foundations, dropped };
 
   for (let i = 0; i < p.count; i++) {
     const kind = kinds[Math.floor(makeRng(streamSeed(p.seed, i, SALT_KIND))() * kinds.length)];
@@ -693,6 +808,8 @@ export function generateStructures(bounds, params = {}, avoid = []) {
     walls.push(...liftRects(built.walls, floorY));
     covers.push(...liftRects(built.covers, floorY));
     slabs.push(...liftRects(built.slabs, floorY));
+    decks.push(...liftRects(built.decks, floorY));
+    ramps.push(...liftRamps(built.ramps, floorY));
     if (!site) {
       if (built.pad) pads.push(built.pad);
       if (built.pads.length) pads.push(...built.pads);
@@ -702,5 +819,5 @@ export function generateStructures(bounds, params = {}, avoid = []) {
       ...(built.seat ? { floorY, skirtDepth: built.seat.skirtDepth ?? 0, openSky: built.seat.openSky } : {}),
     });
   }
-  return { walls, covers, slabs, pads, placed, foundations, dropped };
+  return { walls, covers, slabs, decks, ramps, pads, placed, foundations, dropped };
 }

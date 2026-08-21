@@ -1,11 +1,13 @@
 # Elevated structures — how to begin
 
 Status: **route C shipped 2026-08-11** (per-pad falloff + the `terrace` kind + `test-terrace.mjs`).
-**Route B's nav half shipped 2026-08-11** — the sparse level overlay, its link edges and the
-reference-height lookup are in `nav-grid.js` with `test-nav-levels.mjs`. Step 4's remaining work is
-threading `y` through `bot-viewer-v3.html` and giving some structure kind decks to emit; the
-visibility field and corner map are still one surface per column and say so. Reference for both is
-`docs/subsystems/bots.md` (`terrace`, and "Level overlay in nav-grid.js").
+**Route B shipped 2026-08-17** — the sparse level overlay landed in `nav-grid.js` on 2026-08-11
+(`test-nav-levels.mjs`), and step 4 is now done too: the `platform` kind emits decks and a sloped
+ramp, `map-boxes.js#seatDecksAndRamps` seats them, `bot-viewer-v3.html` passes them to `buildNavGrid`
+and threads `y` through its nav queries, and deck centres are patrol goals (`test-nav-decks.mjs`).
+The visibility field, the corner map, goal claims and the danger field are still one surface per
+column and say so at the top of the rebuild log. Reference for both is `docs/subsystems/bots.md`
+(`terrace`, "Level overlay in nav-grid.js" and its "Wired into bot-viewer-v3.html" subsection).
 
 **Correction, 2026-08-11:** route B's scoping below claims the searches run "over opaque integer
 keys". That is wrong, and reading the file is what showed it — `findPath`, `floodFill`,

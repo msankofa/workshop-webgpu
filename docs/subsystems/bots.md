@@ -115,7 +115,10 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
   carve (`generateMazeCells`, lifted out of `bot-viewer-v2.html`) + `mazeCellWalls`, and
   `generateStructures` — buildings, maze pockets and obstacle fields scattered over open ground, so
   the wall-less layout mode has something to fight over. Node-tested (`test-bot-structures.mjs`).
-  Full section: "Large open maps: structures + the fly camera".
+  Full section: "Large open maps: structures + the fly camera". Ten kinds as of 2026-08-17, the
+  newest being **`platform`** — the only one that emits `decks`/`ramps` (walkable levels; see "Level
+  overlay in `nav-grid.js`"). Adding a kind reshuffles every `mixed` map, since the kind roll indexes
+  the pool: the seed-stability fixture was rebased for it, as it was when the pool went four → eight.
   `generateStructures` also accepts an optional **`site(cx, cz, w, d)` → `{ floorY, skirtDepth }` |
   `null`** param, for scattering onto ground that was IMPORTED rather than generated (wire it to
   `map-surfaces.js#footprintAt` over a terrain-generator-v4 GLB). A refusal is handled exactly like
@@ -1920,8 +1923,53 @@ A bot on a deck therefore gets **no cover records rather than wrong ones**. Both
 the top and the built field reports `levelsIgnored`, so this is loud instead of a quietly halved
 cover map. Live LOS in v3 is a raycast, so a deck bot still shoots correctly.
 
-Nothing in `bot-viewer-v3.html` passes `decks` yet — threading `y` through the "where am I" call
-sites is the remaining step, and no structure kind emits decks.
+### Wired into `bot-viewer-v3.html` (2026-08-17)
+
+Both halves the section above was waiting on are in: a structure kind that emits decks, and `y`
+threaded through the "where am I" call sites. Node-tested end to end in **`test-nav-decks.mjs`** —
+the platform the generator actually produces, baked into a real grid, with a route from open ground
+onto the deck, and the same map minus the ramp as the control (no route, one sealed region, zero
+cells carved).
+
+**The `platform` kind** (`bot-structures.js`): a deck on four posts with a ramp up to it. It emits
+two lists nothing else does — `decks` (`{x, z, w, d, y}`, `y` = the walking surface) and `ramps`
+(`{x0, z0, y0, x1, z1, y1, width, thickness}`, the two ends naming the **top face**). Posts are
+covers, so they block sight and movement at ground level; the deck slab renders and collides exactly
+as every other slab does. One pad covers deck and ramp together — two pads flatten to two heights and
+leave a step where the ramp foot is supposed to meet the ground.
+
+**The ramp is a real slope, not a stair.** `rampBox(ramp)` returns a box with one Euler angle, and
+`instancedBoxes` composes rotation when a box carries `rx`/`ry`/`rz` (the collider already expanded
+instance matrices, so collision followed for free). At the default 0.5 rise/run the face's `normal.y`
+is 0.89, well inside `resolveCapsule`'s 0.5 slope limit, so bots climb it with no step-up and no jump
+— which is what made route B viable without touching physics. `rampDecks(ramp, maxRise)` then cuts
+that same surface into a **contiguous tiling** of nav decks, each at its own centre's height:
+contiguous rather than overlapping, so every cell centre falls in exactly one rect and no column ends
+up with two levels a few centimetres apart. `platformNavRise` (0.4 m) keeps every step under
+`LEVEL_DEFAULTS.step`.
+
+**Seating is shared, not inlined.** `map-boxes.js#seatDecksAndRamps(decks, ramps, groundMax)` resolves
+both against the terrain, and a ramp's head is **read from the deck it lands on** rather than sampled
+again — sampling twice puts the top of the ramp and the edge of the deck at two different heights
+wherever the ground between them is not flat. v3's `rebuildDeckSurfaces` is the four-line wrapper that
+supplies `groundMax` and appends the treads.
+
+**The "where am I" thread** is one function: `bodySurfaceY(entity)` returns the feet height only when
+the body stands more than `DECK_CLEARANCE` (0.75 m) above the ground under it, and `undefined`
+otherwise. `botXZ`/`botXZInto` carry it, so every nav query a bot makes — `findPath`, `floodFill`,
+`regionAt` — names the surface it is standing on. On a map with no decks `navGrid.levels` is `null`,
+the function returns `undefined` immediately, and every query is exactly what it was.
+
+**Deck centres join the patrol ring** (`applyLayout`, after `rebuildDerived` so the heights exist).
+Without that a platform is scenery with a route to it: goals are picked by column everywhere else, so
+nothing would ever send a bot up. The nav overlay draws level cells at their own height, and the path
+line/goal markers use `surfaceY` rather than `decalY` so a route over a deck is not drawn in the dirt
+beneath it.
+
+**Still ground-only, and the rebuild log says so** (`[nav decks] … Sight and cover corners are still
+ground-only`): the visibility field, the corner map, goal claims and the danger field are all indexed
+by column. Two bots on a deck and under it share one set of sightlines. Live LOS is a raycast, so
+shooting is correct; it is *cover selection* that has no idea the deck exists.
 
 ## Locomotion weapon carries + the dash stance (2026-07-27, `bot-viewer-v2.html`)
 
@@ -3953,6 +4001,11 @@ purpose** — two copies with one frozen beats three live ones.
 | `clearBoxes(parent)` | Teardown: disposes geometry a mesh owned, **skips `UNIT_BOX`**, and disposes instance buffers. |
 | `boxOnGround(x, z, w, h, d, range)` | Wall/cover fitting. `range` `null` = flat ground. |
 | `slabOnGround(x, z, w, d, baseY, h, groundMax)` | Elevated-box fitting. |
+| `seatDecksAndRamps(decks, ramps, groundMax)` | Walkable levels and their ramps onto the ground (2026-08-17). A ramp's head is read from the deck it meets, never re-sampled. `DECK_JOIN_SLACK` (0.6 m) is how far a head may sit outside a deck rect and still count as meeting it. |
+
+`instancedBoxes` composes a rotation when a box carries `rx`/`ry`/`rz`, which is how ramps — the one
+tilted solid in the map — render and collide; without them it is the axis-aligned scale+translate it
+always was.
 
 The transforms take a **resolved height range**, not a terrain field. Sampling stays with the caller
 (`footprintRange` needs `terrainField`, which only the viewer owns), which is also what makes the
@@ -9734,6 +9787,12 @@ Two optional, default-off dressing layers reached the v3 Flora panel, both live 
   `theme.mats.floor.soil` and are applied by `applyMaterials()` through `soilFor()`. Both ground
   materials now set `roughnessNode`/`normalNode` explicitly (identity when the toggles are off).
 
+Both layers gate their noise behind `If (uniform > 0.5)` in the shader, so an off toggle costs a
+compare, not the field. The two ground materials convert world -> view with
+`cameraViewMatrix.transformDirection()`; `transformNormalToView` is wrong for a world-space normal
+(it applies the object->world normal matrix first) - `rain.js`'s `applyWetSurface` had the same bug
+and was fixed with it, which mattered there because it also wraps the rotated wall and cover boxes.
+
 Numbers are untuned and neither layer has been seen in a browser; the material graphs build headless
 (`test-grass-look.mjs`).
 
@@ -9751,3 +9810,146 @@ the sky graph via `u.overcast`, key/ambient dim in `applyLights`, fog density an
 and trees top-down (layer 3, bake-only) after every rebuild while it rains, so drops stop on
 walls and canopies and splash rings sit on the terrain. Weather is not part of the save/load
 slots. Nothing has been seen in a browser yet.
+
+Second pass, same day: rain now reaches the sim, not only the frame. `botSightDistanceFor` is
+multiplied by `weatherSightScale()` = 1 − sightLoss·rain·(1 − flash), where sightLoss is the card's
+new slider (default 0.4) and flash is the live lightning level, so every consumer of sight — the
+target gate, the pack scan radius, the tactical ring, standoff — shrinks together in a storm and
+snaps back for a beat when a bolt lights the map. Walls and cover take the wet film with run-off
+streaks on their faces and puddles on their tops, bot shells go glossy through `applyWetSheen` on
+`visuals.botMaterials`, drops pick up the theme's horizon hue on every theme switch, and the
+weather block is saved and restored with the maze slot.
+
+## Video mocap onto the rig (2026-08-17, `mocap-retarget.js`)
+
+`setRagdollPose(P)` takes sixteen joint WORLD POSITIONS rather than rotations, which makes it a much
+better seam for borrowed motion than a rotation track: retargeting rotations between two skeletons
+means reconciling bone axes, rest orientations and differing joint counts, whereas a position simply
+lands the joint where the source put it and our IK owns everything between. `demos/pose-retarget.html`
+proved that with CC0 animation clips. `mocap-retarget.js` is the same seam fed from a **camera**.
+
+**It is a pure module and takes THREE as a parameter**, like `player-procedural-body.js`, so it runs
+headless in Node — which is the only reason `test-demo-mocap-webcam.mjs` can push poses through the
+real body and check the result. It knows nothing about MediaPipe beyond the landmark indices and
+nothing about three beyond Vector3/Quaternion/Matrix4, so any 33-landmark source can drive it.
+
+```js
+import { createMocapRetarget, POSE_KEYS } from './mocap-retarget.js';
+const mocap = createMocapRetarget({ THREE });
+mocap.ingest(worldLandmarks, imageLandmarks, tSeconds, { reflect, smooth, beta, minVis, rootMotion, aspect });
+mocap.solve(body.limbLengths, designH, { reflect, yawDeg, plant, depthScale, kneeGuard, footLock, rootMotion, rootScale });
+body.setRagdollPose(mocap.pose);
+mocap.orientJoints(body.joints, { headTurn: true, footYaw: true });
+```
+
+`designH` is `limbLengths.legLen / BODY_DESIGN_DEFAULTS.legLenRatio`, which recovers the body's design
+height; the module needs it to scale trunk offsets, which have no counterpart in `limbLengths`.
+
+### The method, and the one thing that does not work
+
+Take only the joint DIRECTIONS from the source and step OUR OWN bone lengths along them. Scaling a
+source skeleton to fit ours does not work and no single factor fixes it — `pose-retarget.html`
+measured a ×2.96 blow-up putting the head at 3.29 m. Directions plus our lengths gives a pose with
+our skeleton's dimensions exactly and the performer's angles exactly.
+
+MediaPipe has no chest, neck or skull-top landmark, so those are synthesised from the shoulder line
+and the ears. Trunk proportions are a **running mean of the live estimate** rather than a rest-pose
+measurement, because a camera session has no rest pose to measure; they converge in about 30 frames.
+
+### Four corrections, because a faithful retarget of a noisy estimate is still noisy
+
+| Pass | Why | Default |
+|---|---|---|
+| One-Euro filter (per landmark axis) | one EMA constant either leaves the resting jitter in or turns every punch to treacle | `smooth 0.55`, `beta 0.3` |
+| Depth damping | z is by far the weakest axis of a one-camera estimate, and it is the axis limbs swim along | `depthScale 0.75` |
+| Knee guard | nothing in a landmark estimate knows a knee bends one way, and noisy depth is exactly the axis it bends along | `kneeGuard 1` |
+| Foot lock | the estimate is hip-centred with no ground truth, so feet skate | `footLock 0.8` |
+
+The knee guard reflects **only** the inverted case (knee behind the hip→ankle line, measured against
+the body's own forward) and re-solves through two-bone IK so both bone lengths survive. It is knees
+only: an elbow has no equivalent fixed direction — it points wherever the shoulder is rotated to — so
+guarding one would break more poses than it fixed.
+
+The foot lock latches a foot's XZ when it is near the floor and lets the knee absorb the correction,
+which is what a real leg does. It releases on **either** a lift past `lockLiftHeight` or a slip past
+`lockMaxSlip`, and both releases are needed: without the slip release a bad lock strands the figure,
+without the lift release it never lets go of a stepping foot.
+
+### Facts about the rig this pins down
+
+- **Ragdoll key `L` drives the VISUAL RIGHT limb**, per the mirror `bot-limb-map.js:10-13` documents.
+  So performer-left must map to key **`R`** to produce a proper person.
+- **The rig's face is on local −Z**, so a basis for face `F` with up `U` is `(F×U, U, −F)`. The
+  opposite cross product is left-handed and silently mirrors the part; an early version had exactly
+  that bug and the Node test caught it before it reached a browser.
+- **`setRagdollPose` leaves the joint frames undone.** `poseLimb` never calls `jointFrame`, so an
+  unfinished ragdoll pose has backwards feet and armour plates floating beside the elbows.
+  `orientJoints()` is that missing pass, plus the head turn and foot yaw the ragdoll path cannot know
+  about because it derives both from the shoulder line.
+- **Root motion is recoverable but not measurable.** World landmarks are hip-centred, so translation
+  is lost; the image landmarks give it back through apparent scale, but the focal length that turns
+  scale into metres is not reported by `getUserMedia`. A 60° horizontal field of view is assumed and
+  a scale slider covers the rest. It reads a side-step; it is not a measurement.
+
+`demos/mocap-webcam.html` is the harness — webcam or video file, the four sliders above, three view
+modes, record/scrub/trim, and export of either raw landmarks or a 16-joint `setRagdollPose` clip.
+Nothing in the game imports it. `test-demo-mocap-webcam.mjs` guards the module with 74 checks
+against the real body, and **imports** rather than copies it: while the maths lived inline in the
+demo the test kept a hand-synced twin and was therefore guarding a copy.
+
+**Not done:** no weapon mount (copy `pose-retarget.html`'s, which uses the game's own pipeline), no
+clip player consuming the 16-joint export, and none of it has been looked at in a browser.
+
+## Bot-count perf remediation (2026-08-17, bot-viewer-v3.html)
+
+Frame lag grew past ~10 bots regardless of map; `?prof=1` blamed `sim` (the per-bot rig solve) and
+`body` (the flush matrix walk + pool refill). Root cause: every v3 bot is a ~150-part rig (the
+31-part default body is unreachable — `botBody` only offers `armoured`/`soldier`), and both hot
+phases scale with PART COUNT, gated until now only by camera distance (Rig LOD's 18/45 m bands),
+never by bot count. Five changes, each with its own toggle where behaviour or pose rate changes.
+All Node-tested; none has had a before/after `?prof=1` browser measurement yet.
+
+- **Rig budget** (`?rigbudget=<n>`, default 6, `0` disables; **Rig budget** button, Perf / LOD
+  card; saved in the ui slot's `perf.rigBudget`). Only the focus actor plus the N camera-nearest
+  living bots solve their rig at full rate; everyone else strides ≥2 (4 past 45 m) however close.
+  Reuses the existing `rigDtAcc` banking and `rigDue` flush-skip machinery, so an over-budget bot
+  also skips its ~170-node `updateMatrixWorld` walk and pool refill — `sim.bot` and `body` become
+  O(budget) + cheap tail. Selection is an O(bots × N) top-N pass in `markRigBudget()`, run once
+  per frame from `updateAllBots`. Pose rate only; FSM, physics and hitboxes are untouched.
+- **Gear merge** (`?gearmerge=0` disables, default ON; **Gear merge** button — toggling rebuilds
+  every live body; saved as `perf.gearMerge`). `createProceduralPlayerBody` takes `mergeGear`:
+  in instanced mode every gear piece on one (anchor, role) bakes into a single shared geometry at
+  build (`gearmerge|…` cache keys), with a second merged variant for the rbox seg-1 twin so
+  `setGearLod`/`?rboxlod` interplay survives. Armoured: 149 → 79 flushed parts and 94 → 65
+  buckets per bot; soldier: 156 → 67 and 89 → 54. Identical triangles at both LOD levels.
+  Hit/decal attribution keeps piece precision: merged parts carry `userData.mergedPieces`
+  (per-piece OBB + local matrix) and `bot-body-hit.js` slab-tests those, returning part-space
+  attachment points and the piece's own cross-section, so wound limbs, decal rides and decal
+  sizing are unchanged (`test-body-gear-merge.mjs` pins ray parity against the per-piece body).
+  The limb map is unaffected — merged parts hang off the same anchors, and severs hide them with
+  their limb. Only bot-viewer-v3 passes the flag; the studios keep per-piece parts for editing.
+- **Confirm-ray stride** (`?confirmstride=1`, **default OFF** — it changes behaviour; button +
+  `perf.confirmStride`). The per-tick target-confirm `mapCollider.raycast` in `updateBotSentry`
+  reuses the previous tick's verdict every other sentry tick per bot (fresh ray on any target
+  change), halving those rays for up to one tick (~16 ms) of added reaction latency.
+- **Alert-ring aggregation** (no toggle: results are identical). The 64-slot `recentAllyHits`
+  ring was scanned 5-7 times per bot per sentry tick. `allyAgg()` now keeps kind-partitioned
+  views (casualties / contacts / near-misses / non-contacts) rebuilt lazily on membership change
+  (`allyRingVersion` bumped by push, evict and layout clear); records mutate in place through the
+  held references, and ring order is preserved per bucket so every freshest-report tie-break is
+  unchanged. `latestAlertNear`/`alertEscalation` scan only casualties, `latestContactNear` only
+  contacts, `latestNearMiss`/`latestSelfThreat` only their kinds — in bot-alert.js nothing moved.
+- **Spatial-hash sparse scan** (no toggle: bit-identical). `forEachNear`/`forEachSegment` paid a
+  `Map.get` per AABB cell; when the rect holds more cells than stored items the hash now scans
+  the slot list instead, sorted to reproduce the cell walk's exact visit order (cells by
+  ascending packed key, LIFO within a cell) because pushout and freshest-tie folds are
+  order-sensitive. Pinned by the order-parity case in `test-bot-spatial-hash.mjs`.
+- **Cover-corner prefilter** (no toggle). `pickCoverCorner` rejects far corners on a padded
+  squared distance before paying `Math.hypot`; survivors still take the exact test and score.
+- **Shot FX batching** (`?fxbatch=0` disables, default ON; **Shot FX batching** button +
+  `perf.fxBatch`). Tracers were pooled individual `THREE.Line`s and bullets pooled individual
+  `THREE.Mesh`es, one draw each while live. All live tracers now share two `LineSegments` and all
+  bullets two `InstancedMesh`es (hit/miss materials), 4 draws total, same geometry and materials.
+  Pooled objects from before a toggle drain naturally. Scales with rounds in flight, not bots.
+- **`?rboxlod` stays default 0** per the standing sign-off note; gear merge subsumes most of what
+  its bucket-count reduction bought while keeping the authored seg=3 look.

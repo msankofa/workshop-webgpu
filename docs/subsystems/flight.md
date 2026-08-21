@@ -5,7 +5,7 @@ and AI fly the same model.
 
 | File | Contents | Imports |
 |---|---|---|
-| `flight-terrain.js` | Analytic height field, band limit, `agl` | nothing |
+| `flight-terrain.js` | Analytic height field, band limit, `agl`, dry-land placement | nothing |
 | `flight-airframes.js` | The three airframe tables, `RHO`, `G`, slider ranges | nothing |
 | `flight-model.js` | Rigid-body core, wreck integrator | three, airframes, terrain, combat |
 | `flight-ai.js` | Per-archetype steering, the opponent roster | three, airframes, terrain, combat |
@@ -13,11 +13,13 @@ and AI fly the same model.
 | `flight-drones.js` | The three releasable mini drones | three, combat |
 | `flight-autopilot.js` | Player-selectable orbit for any airframe, on `steerToward` | three, ai, terrain |
 | `flight-meshes.js` | The three craft as groups; materials come from the caller | three |
+| `water-hybrid.js` | Optional ocean surface: Gerstner swell, foam, depth colour (shared with `demos/water-demo.html`) | three, `water-waves.js` |
+| `water-config.json` | The water settings themselves: written by `demos/water-demo.html`, read here | data |
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
 
 Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-ai.mjs`,
-`test-flight-combat.mjs`, `test-flight-drones.mjs`, `test-flight-autopilot.mjs`. Plain Node, no
-framework, per repo convention.
+`test-flight-combat.mjs`, `test-flight-drones.mjs`, `test-flight-autopilot.mjs`,
+`test-water-hybrid.mjs`, `test-water-waves.mjs`. Plain Node, no framework, per repo convention.
 
 The demo needs a server (`python serve.py`) because of the ES module imports, then
 `http://127.0.0.1:8080/demos/flight-sim.html`.
@@ -149,6 +151,31 @@ overlap along a band, and if they disagreed about the height there the seam woul
 | 4 | 170.7 m | **1.4** | 4.9 |
 
 Physics is never band-limited: `heightAt(x, z)` defaults to full detail, and only the picture fades.
+
+### Dry land: the bases were being built in a lake
+
+`BASE_OFFSET = -40` deliberately pushes the low ground under `y = 0` so the water plane makes lakes,
+and it works rather too well: **44% of the field is below the waterline**, measured on a 200 m grid
+out to 8 km. The two ground-site clusters were placed at fixed offsets from the player's spawn
+(`cx + 2600, cz - 1800` and `cx - 3200, cz + 2400`) and each building simply dropped to `heightAt`,
+with nothing asking whether that was under water. From the default spawn, **nine of the eleven
+buildings were submerged**, the undefended base 200–400 m down; over 200 spawns, 43% of all buildings.
+
+`dryAnchor(x, z, offsets, {maxR, samples, avoid, avoidR})` fixes it by moving the **cluster**, never
+the building — nudging each site to its own dry spot would scatter a base whose layout is the point.
+It walks a golden-angle spiral outward (radius `maxR·√(i/samples)`, which spreads samples evenly over
+the disc) and takes the first anchor where `lowestOf` — the lowest ground under any offset in the
+footprint — clears `SEA_LEVEL + DRY_MARGIN` (0 + 8 m). Properties that matter:
+
+- **Deterministic.** No `Math.random`, so the map does not reshuffle when a panel toggle rebuilds it.
+- **Always returns something**, the driest anchor it saw, because a base that silently failed to
+  place is just a missing base.
+- **Stays put when it can** — an already-dry anchor returns `moved: 0`.
+- **`avoid` keeps the two bases apart** (2.5 km), or the undefended one gets dragged onto the
+  defended one's island, and it is meant to be reachable without fighting through the SAM ring.
+
+Measured after: **0 of 2200 buildings underwater** over 200 spawns, worst footing 8.5 m, median
+cluster move 424 m and max 2.9 km, and the search costs 0.05 ms.
 
 ### Three metrics that measured the wrong thing
 
@@ -629,6 +656,32 @@ the sim reads it, so the flight model is unaware of the weather (no wind on the 
 - **Volumetric explosions** clamp their march against an analytic ground plane rather than reading
   `viewportDepthTexture`, whose multisampled case the source demo flags as untested. The cost is
   `depthTest: false`, so a fireball behind a ridge draws over it.
+- **Blast debris** (2026-08-17) is the other half of an explosion: `blast-debris-sim.js` +
+  `blast-debris.js`, the html-game-v2 port, driven from the same `explosion()`. Every `'craft'` blast
+  throws fragments that bounce and flicker out and wreckage that tumbles, smoulders and trails dust
+  for about twenty seconds; `'hit'` pops throw none. Six instanced draws and two point lights. Two
+  things had to be added to the shared sim for a world this size — debris that carries the dead
+  aircraft's momentum, and settled pieces that stop asking the terrain field where the ground is —
+  and both are written up in `docs/subsystems/fx.md`, along with the three rules that stand between
+  a call site and the sim (an inherited-speed cap standing in for the missing drag, a ground rule
+  that drops the downward half near the surface, and a `wreckage` flag that stops a shell burst
+  shedding airframe chunks). The debris materials are heat-tagged through the renderer's
+  `tagMaterial` hook, before `tagScene` can sweep them at the default, which is also what keeps the
+  dust's own colour graph alive under IR.
+
+## Known bug: AA rounds inherit whatever was last in their bullet slot
+
+`updateGround`'s AA branch takes a slot out of the shared `bullets` pool and sets `live`, `owner`,
+`team`, `life`, `p` and `v` — but not `damage` or `blast`, which only `spawnRound` writes. So an AA
+round carries whatever the previous occupant of that slot had. On a fresh slot that is 0 damage and
+no blast, so AA does nothing at all; on a slot last used by the 105 mm it is 300 damage in a 34 m
+radius, from a gun specced at 5 damage. Note that `GROUND.aa.blast: 14` is NOT the fix to reach for —
+it is the site's own death-explosion scale, the same field `radar`, `hq`, `depot` and `hangar` carry,
+none of which has a gun. Assigning it to the bullet would give AA rounds an HE burst nobody
+specified. Predates the debris work, which only made it louder: a polluted slot now also throws a
+full blast's worth of debris at 9 rounds per second, and each one reserves a tier slot, so sustained
+AA fire can push a real kill in the same 320 ms window down to `lite` — which throws nothing at all.
+Fixing it changes what AA does to you, so it is a balance decision rather than a typo.
 
 ## Not built yet
 
@@ -657,3 +710,53 @@ The viewer layer is still one file. `flight-hud.js`, `flight-craft.js`, `flight-
 `flight-controls.js` and `entity-types/aircraft.js` from `docs/flight-harness-plan.md` do not exist;
 they are Three/DOM-bound and have no tests to save, so extracting them buys much less than the model
 did. `entity-types/aircraft.js` is what integration into `environment-viewer-v2.html` actually needs.
+
+## Water: the flat plane and the hybrid surface
+
+The demo carries two water surfaces and a checkbox ("hybrid water") swaps which one is visible.
+
+- **Flat plane (default).** One 40 km quad at y=0, `MeshStandardNodeMaterial`, camera-following.
+  What makes the sub-zero ground read as lakes. Cheap, and the reason `reversedDepthBuffer` is on:
+  the plane and the ground sit within centimetres of each other over most of the map.
+- **Hybrid surface (`water-hybrid.js`).** A displaced Gerstner spectrum with deep-water dispersion,
+  Beer-Lambert depth colour over a sand bed, a GGX sun glint whose roughness grows with distance,
+  and foam on breaking crests and along the shore. Built by `createOceanSurface()`; the profile is
+  the shared `hybrid` preset with a shorter spectrum (14 waves) and a longer, taller swell, because
+  this ocean is seen from altitude and speed.
+
+Three things about the hybrid surface are specific to this demo:
+
+- **Geometry is a radial grid**, re-centred on the aircraft and snapped to 2 m: 160 rings by 224
+  spokes, radius growing geometrically from 2 m to 26 km. That is 36k vertices and 71k triangles,
+  with cells of about 1.4 m under the aircraft, 11 m at 200 m out and 460 m at the terrain edge.
+- **Depth comes from `tslHeight`**, the terrain's own GPU twin, evaluated in the vertex stage. So
+  shore foam follows the real coast, and the surface fades to fully transparent over dry land —
+  which is why it does not write depth: an invisible fragment must not hide the terrain behind it.
+  Past the outermost clipmap ring (8192 m) the depth fades to a fixed 80 m, because out there the
+  height field would otherwise punch dry holes into the ocean with no land drawn in them.
+- **Distance fades.** Displacement fades out between 1200 m and 4500 m and the normal flattens
+  between 2500 m and 9000 m, since cells that big cannot carry the short waves and the surface
+  would shimmer instead.
+
+`heatTag()` is not used on it: that helper replaces `colorNode` with the material's flat colour,
+which would throw the whole graph away. The thermal blend is folded into the graph with `heatMix()`
+instead, the same way the sky and the terrain do it.
+
+### Where the water numbers come from
+
+None of the wave, colour or foam numbers live in this page. They live in `water-config.json` at the
+repo root, written by `demos/water-demo.html` and read here — the demo is the tuning tool, the sim
+is the consumer.
+
+- The sim fetches the file on load and applies its `ocean` entry to the live profile.
+- The **refresh** button beside the hybrid-water checkbox re-fetches it. Uniforms and the wave table
+  are swapped in place, so the surface changes on the next frame with nothing rebuilt and no reload.
+  The output next to the button shows the file's `savedAt`, or why it could not be read.
+- The `hybrid` preset applied in code is only the fallback for a missing or unreadable file.
+- The profile is named `ocean` because that is the entry it reads. The demo also writes a `lake`
+  entry, which this page ignores.
+
+The loop is: tune in the demo, press "Save to water-config.json", press refresh here. Saving needs
+`serve.py` (it POSTs to `/api/save-water-config`, which overwrites the file in place, the same
+arrangement as `damage-tuning.json`); if some other server is in front of the pages, the demo falls
+back to downloading the file so it can be dropped in by hand.

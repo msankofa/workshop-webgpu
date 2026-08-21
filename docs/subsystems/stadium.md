@@ -11,10 +11,18 @@ walking them with the repo's own gait code.
 | `stadium-rig-map.js` | Auto-maps an unnamed skeleton into legs, spine, head and tail. No THREE. |
 | `stadium-rig-roles.js` | Hand-assigned bone roles that override the auto-mapper, and the compile step. No THREE. |
 | `stadium-pose.js` | Poses as local TRS per bone name: blending, validation, distance. No THREE. |
+| `foot-sdf.js` | A foot as a contact patch: round-box SDF fit plus the hull of the vertices that reach the floor. No THREE. |
 | `stadium-walker.js` | Drives the mapped legs from `creature-locomotion.js` and writes the pose onto the rig. |
 | `demos/stadium-walker.html` | The viewer. Loads a species, maps it live, walks it, and exposes every knob. |
 | `test-stadium-rig.mjs` | Node checks for all three, over every model in `models/stadium/`. |
-| `models/stadium/*.glb` | Fourteen extracted species, checked in so nothing here needs a ROM. |
+| `test-foot-sdf.mjs` | Node checks for the fit, the SDF and the patch, over every model. |
+| `demos/sdf-pikachu.html`, `demos/sdf-pikachu-field.js` | The SDF spike: a model raymarched as fitted boxes or as a baked volume, beside the real mesh. |
+| `demos/sdf-mesh-bake.js` | Converting the mesh itself: triangle distances, the winding-number sign fill, per-bone distance and colour cubes. No THREE. |
+| `test-sdf-pikachu.mjs` | Compiles the spike's TSL headlessly and checks the box bake. |
+| `test-sdf-mesh-bake.mjs` | Checks the volume bake, and measures how far each field lands from the real triangles. |
+| `_check_sdf-pikachu.html.mjs` | Static checks on the spike page: does the module parse, is every control wired. |
+| `models/stadium/*.glb` | **All 151** extracted species plus `manifest.json`, checked in so nothing here needs a ROM. |
+| `stadium-reference-species.js` | The fourteen this subsystem was tuned against, which the tests assert over. |
 | `docs/stadium/` | The upstream session package: `HANDOFF.md`, `feasibility-report.md`, `tooling/`. |
 
 ## Why this exists
@@ -29,8 +37,15 @@ what this subsystem does.
 ## Getting the models
 
 They are extracted from a Pokemon Stadium (US 1.0) ROM by the mod repo's own pipeline. **You do not
-need the ROM to work here** — fourteen are checked into `models/stadium/`, and every other species can be
-recovered from the session package's `pokedex-151.html` viewer, which carries all 151 LZMA-compressed:
+need the ROM to work here** — all 151 are now checked into `models/stadium/` (74 MiB) with a
+`manifest.json` carrying per-species triangles, bones and clip labels. They were recovered from the session
+package's `pokedex-151.html` viewer; the fourteen that were already here came out byte-identical, and every
+model's clip count and durations match its manifest entry (72,859 animation channels, zero mismatches).
+
+The rig work here was tuned against fourteen of them, and `stadium-reference-species.js` names that set.
+The tests assert over it rather than over the directory, because across all 151 the mapper finds no legs on
+35 species **by design** and says so in `warnings`. `demos/pokemon-park.html` is what needed the rest; see
+`pokemon-park.md`.
 
 ```
 python docs/stadium/tooling/extract_glb.py 019 058 077 128     # or no arguments for all 151
@@ -218,6 +233,170 @@ so it never bit; the test asserting non-aliasing only exercised the two-pose pat
   playback, then baked to FK on export — the solver already exists and the retarget already emits locals
   every frame, so the bake is nearly free.
 
+## `foot-sdf.js` — a foot as a surface, not a point
+
+Everything above treats a foot as one point: `sole()` produces it, `leg.end` carries it, and
+`bodySupport` hulls one per leg. Two feet then hull to a **line**, which has no interior, so a
+two-legged creature has no support polygon at all — which is why `uprightSupport` exists, and what that
+knob is papering over. This module is the physical answer instead of the assumption.
+
+`fitRoundBox(points, count, { radius })` fits an oriented **round box** by principal axes. A round box
+rather than an ellipsoid on measurement: 32% of the bones in these models are flat cards with one
+extent of exactly zero, an ellipsoid fitted to one has no volume, and a box with a rounding radius is
+exactly a card. The radius is subtracted from the extents rather than added, so the fitted surface
+still passes through the vertices it was measured from. `sdRoundBox(box, x, y, z)` is the exact signed
+distance.
+
+`buildFootProxy(clouds, opts)` returns the patch the walker stands on: the 2-D hull of the vertices
+within a **band** of the lowest one, as offsets from the sole. Four things there are load-bearing:
+
+- **A band, not a fraction.** `sole()` averages the lowest fifth, which on a 12-vertex foot is two
+  points that hull to a line. Every quadruped failed that way; the band fixed 39 of 50 feet.
+- **The box is the fallback.** A foot built from a *vertical* card hulls to a line whatever the band
+  does, and the fitted box's rounding radius is the thickness the card does not carry. That rescues
+  Sandslash and Slowpoke, taking the total to 49 of 50. The one refusal is a Pikachu foot bone whose
+  48 vertices sit at a single point, which is the same degeneracy the roles tests pin.
+- **`soleCentre` is supplied by the caller.** The band and `sole()` choose different vertices, so their
+  centroids differ; the walker anchors the patch at the foothold `sole()` produced, so a patch centred
+  on anything else hangs off the side of the foot.
+- **`maxRadius` bounds it against the leg.** The auto-mapper's "foot" is only ever the last bone in the
+  chain, and on a squat model that bone owns more than a foot — Sandshrew's patch measured **1.12× its
+  entire leg span**. It is scaled down rather than clipped, so the shape survives, and `capped` is set
+  so the panel can say so. Two models are capped at 0.75 of a leg.
+
+### What it buys, measured
+
+`footContact: 'patch'` feeds those points to `bodySupport` instead of one `leg.end`. Six seeds each,
+12 s of walking, against `footContact: 'point'`:
+
+| | frames with the centre of mass inside its support |
+|---|---|
+| Charizard, Machop, Sandshrew (2 legs) | **0% → 42–46%** |
+| Tauros | 59% → 100% |
+| Slowpoke | 67% → 80% |
+| Sandslash | 21% → 36% |
+| Seel | 66% → 66%, unchanged |
+
+Sliding and reach-clamping are **identical** in both modes on every model, and step rate is unchanged
+except Growlithe (1.44 → 1.77/s). The patch is anchored at the gait's own foothold, so it changes the
+size of the support polygon and never where it sits — which is deliberate, and keeps this clear of the
+foot-drag question the stray gate's `accept` mode already lost.
+
+`bodySupport` now reports `groundedCount` (legs) and `contactCount` (polygon points) separately. They
+were one number, clamped by the pooled buffer, so a 24-legged creature standing on all of them read a
+grounded fraction of 16/24.
+
+## `demos/sdf-pikachu.html` — the SDF spike
+
+A throwaway test build, not a subsystem: can a Stadium model be drawn the way `demos/sdf-bug-v2.html`
+draws its bug — raymarched signed distance field, no triangles — and does it still read as the creature?
+
+Rigid skinning is what makes it possible. Every vertex belongs to exactly one bone at full weight, so the
+**skin** falls apart into rigid chunks. The real mesh renders beside the field from the same bytes and the
+same camera, because looking at it is the only way to answer the question. `sdf-pikachu-field.js` holds both
+bakes and the TSL so `test-sdf-pikachu.mjs` and `test-sdf-mesh-bake.mjs` can compile the shader and check the
+numbers in Node; `_check_sdf-pikachu.html.mjs` covers the page shell.
+
+There are two ways to turn a chunk into a field, and the **field from** dropdown switches between them.
+
+### Fitted boxes — the cheap tier
+
+One oriented round box per chunk from `fitRoundBox`, unioned. Measured:
+
+- **They are loose.** A box bounds the vertices it was fitted to, so its corners stand proud of the model:
+  worst is Nidorino, 0.164 of its own height below the floor and 0.139 above its head.
+- **The skip sphere has to bound the box, not the vertices.** The march skips a bone when
+  `|p − centre| − r` cannot beat the running minimum, which is only valid if the sphere contains the box —
+  and a box corner reaches past the furthest vertex. Sizing `r` from the vertices, which is the obvious
+  move, carves holes in the creature.
+- **Cost is not the problem it looks like.** With that sphere reject, a point inside one of these models
+  overlaps a mean of 0.3–1.7 bone volumes across the fourteen; p95 is 2–6 and the worst case is 9.
+- **The textures survive.** A bone owns a mean of 6.5 triangles, worst 52, and the hit point tells you
+  which bone — so a nearest-triangle UV lookup at the hit is about seven tests. The page takes the cheaper
+  route of one averaged colour per bone.
+
+### Baked volume — the mesh itself (`demos/sdf-mesh-bake.js`)
+
+No shape vocabulary in between: each chunk becomes a `TILE_RES`³ = 24³ cube of signed distances, every voxel
+holding the measured distance to that chunk's nearest triangle. All 96 cubes tile into one `Data3DTexture`
+(`RedFormat` + `HalfFloatType` → `r16float`, which WebGPU filters natively), **2.53 MB per model**, baked in
+**0.6–0.8 s**, alongside a second RGBA8 volume of the same shape holding colour. The tile lives in the box's
+frame, so the boxes are still built either way.
+
+**How close it gets.** Marching both fields from the same 120 rays and measuring each hit against the real
+triangles — the measurement the spike exists for:
+
+| species | boxes, median off the skin | volume, median | volume 95th |
+|---|---|---|---|
+| Pikachu | 4.05% of body height | **0.16%** | 0.64% |
+| Rattata | 6.75% | **0.11%** | 0.58% |
+| Tauros | 5.51% | **0.13%** | 0.65% |
+| Charizard | 6.70% | **0.19%** | 0.55% |
+
+One voxel on a typical tile is about 1.04% of body height, so trilinear interpolation is reconstructing the
+surface to roughly a sixth of a voxel. The tier below is off by thirty to fifty times as much.
+
+**Those figures are the settings the page ships, and it did not always ship them.** The first version opened
+at a joint blend of 0.05 and a skin thickness of 0.006, which measure 1.92% — fifteen times its own best —
+and it read as a blobby mess. What each knob costs on Pikachu:
+
+| joint blend | thickness 0 | thickness 0.006 |
+|---|---|---|
+| 0 | **0.13%** | 0.65% |
+| 0.006 | 0.22% | 0.78% |
+| 0.02 | 0.55% | 1.13% |
+| 0.05 | 1.31% | 1.92% |
+| 0.1 | 3.95% | 6.19% |
+
+The blend is now zero for the volume and 0.05 only for the boxes, which is where it belongs: it exists to
+close the seam a **rotated** bone tears open, boxes leave real gaps at every joint, and the volume's chunks
+already overlap because a seam triangle is given to both bones. Nothing on this page rotates a bone.
+
+**Grid resolution is not the limit, and raising it buys nothing.** Measured against the *analytic* field —
+exact distance to the triangles, no grid at all — 16³/24³/32³/48³ give surface errors of 0.21/0.07/0.12/0.10%
+against the analytic 0.08%. 24³ is already at the floor. The normal error looks alarming at 10–16° until you
+notice the analytic field scores *worse* at 29.3°: the metric compares an SDF gradient to a flat facet
+normal, and near an edge a distance field's gradient legitimately swings between the two faces. It measures
+nothing.
+
+### Colour
+
+One averaged colour per bone was the other half of "it doesn't look like Pikachu" — a bone owning the black
+ear tip and the yellow ear averages to an olive ear with no tip. A per-pixel triangle search at the hit is
+not the answer either: the worst bone across the fourteen owns **176** triangles, not the 6.5 mean quoted
+above.
+
+Colour is baked into a **second volume** on the same grid, sampled with the same coordinate: for each voxel,
+the nearest triangle's barycentric UV (`baryOfClosest`) read through the ROM image, stored as linear RGBA8.
+5.06 MB on top of the distance volume, and one extra texture fetch — at the hit only. `map` returns distance
+alone and `shade` returns distance and colour; splitting them keeps the colour volume out of all 110 march
+steps to be used by one. Measured: 9 of 10 Pikachu bones carry more than one colour near their surface.
+
+These are N64 models, so there is a lot of texture and none of it is big: 10–194 images per model, mostly
+32×32. UVs run to ±5.86, so any lookup needs `fract` first.
+
+Four things had to be right, and three of them were wrong on the first authoring:
+
+- **Sign comes from the whole model, never from one chunk.** A chunk of skin is an *open* surface with a
+  boundary at the seam, where "inside" means nothing. `insideField` fills a `SIGN_RES`³ = 128³ grid once for
+  the whole mesh and every tile reads its sign from that.
+- **Count winding, not crossings.** These models are assembled from closed parts that interpenetrate — an
+  arm pushed into a shoulder. A ray through the overlap crosses four surfaces, so parity calls it *outside*
+  and the bake punches a hole exactly where two parts meet. Winding counts it twice and stays non-zero.
+  Sandshrew was the tell: its parity fill disagreed with its enclosed volume by 65%.
+- **A seam triangle belongs to both bones, so the tile is sized from the triangles and not from the box.**
+  The shader answers "past the tile" analytically as `distance to the tile + pad` and never samples out
+  there, which is only a lower bound if the tile really holds all of its own triangles. `tileExtent` measures
+  them; `box.half + pad` would have been wrong wherever a seam pokes through a face.
+- **Thin geometry has no interior to find.** A Charizard wing is thinner than one cell of the sign grid, so
+  nothing under it ever reads solid and its field never quite reaches zero. Measured at four resolutions the
+  share of skin with an interior climbs 56 → 59 → 66 → 73%, which is a thinness limit rather than a wrong
+  rule. The **skin thickness** slider (`u.thicken`, default 0.006, ceiling `MAX_THICKEN`) pushes the whole
+  surface outward to cover it, and the skip sphere allows for the ceiling.
+
+Not tested, and the other reason the spike exists: whether the smooth union hides the seams rigid skinning
+tears open at every joint. The **joint blend** slider is that question.
+
 ## `stadium-walker.js` — walking it
 
 `createStadiumWalker({ THREE, scene, map, terrainHeight, worldHeight, … })` returns
@@ -287,7 +466,8 @@ walker.retune({ standExtension: 0.95, speedScale: 1.4, terrainHeight: hills });
 | `reachMargin`, `reachStress` | How far inside its reach a foothold lands, and when a planted foot asks to step. **`reachMargin` must stay below `reachStress`** — see the foot-drag section. |
 | `restepFraction` | How far a foot must be from its target before the leg may step, in stride envelopes. The gait's main hysteresis. |
 | `supportPushLimit` | How far past top speed the balance model may push the body sideways before that push fades. |
-| `uprightSupport` | The upright assumption above. |
+| `uprightSupport` | The upright assumption above. `footContact: patch` is the physical alternative to it. |
+| `footContact`, `footPatchScale` | `point` or `patch`, and a multiplier on the measured patch. See `foot-sdf.js` above. |
 | `footGround`, `roamRadius`, `base` | Foot clearance, wander radius, and the base gait table. |
 | `speedScale`, `stepDurationScale`, `stepLiftScale`, `strideScale` | Deliberate overrides on top of the derived values. `speedScale` past 1 **breaks** the stride relationship on purpose, so that what breaks is visible. |
 | `concurrentScale`, `cooldownScale` | Scale how much of the body may be airborne at once, and the turn-taking cooldowns. Mostly for sweeps: they exist so each source of hysteresis can be switched off independently. |
@@ -681,6 +861,36 @@ trials. Scaling by observed variance would make a knob you nudged slightly count
 end to end, and would move every existing point each time a new trial arrived. The log caps itself at 800
 rows, drops oldest-first, counts what it dropped, and survives a full quota by keeping rows in memory so
 they can still be exported.
+
+### Where a session is saved — `disk-store.js`
+
+Everything this page authors is written to a **file**: `stadium-saves/stadium-tuning.json` holds the
+setpoints, the poses, the hand-assigned bone roles and the panel state, and `stadium-saves/stadium-trials.json`
+holds the log. Both autosave on every change and land in git. This is not a nicety. Twenty knobs tuned by
+trial over hours is the entire product of using this page, and the first version kept all of it in
+`localStorage`, which is scoped to the origin: clearing site data loses it, and serving the page on a
+different port loses it, silently, with nothing to restore from.
+
+`disk-store.js` is the shared piece and is the pattern every authoring page here should follow.
+
+- `createDiskStore({read, write, storage, key})` GETs the file, and only if that fails falls back to the
+  browser copy. Both sides are injected, so the whole store is Node-tested in `test-disk-store.mjs`.
+- Web storage is demoted to a **cache**, never the truth. It is written *before* the POST, so a crash
+  between the two still has the work; it is what a page opened without `python serve.py` reads; and the
+  status line says `loaded from the browser copy — start the server to save` when that is what happened,
+  rather than looking identical to a real load.
+- Autosave is debounced, so a slider drag is one write. A close is not: `fetch` is cancelled during unload,
+  so `pagehide` re-sends anything outstanding with `navigator.sendBeacon`.
+- Writes are serialised. An edit made while a write is in flight queues one trailing write instead of
+  racing it, which is the case a naive debounce loses.
+- **save now** forces a write and **snapshot** writes `stadium-tuning-<stamp>.json` beside the live file,
+  because tuning is exploratory and the value of "the one that looked right an hour ago" only becomes
+  obvious after it has been overwritten.
+- `serve.py` accepts exactly three filenames on `/api/save-stadium`, rejects a non-JSON body, and gives
+  only the timestamped name a collision suffix — the two live files are meant to be overwritten.
+- The four old browser keys carry over once, on the first load with no file present, so an existing session
+  is not lost to the change. `_check_stadium-walker.html.mjs` asserts that `localStorage` appears in the
+  page *only* as the store's fallback and in that carry-over.
 
 ### Seeing the skeleton
 

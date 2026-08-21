@@ -84,7 +84,7 @@ import { createWeaponPoseController } from './weapon-pose-controller.js';
 import { createLightingRig } from './lights.js';
 import { createMapCollider } from './map-collision.js';
 import { createPostFX } from './post-fx.js';
-import { createRainSystem, applyWetSurface, bakeOccluderMap, createLightningBolt, createRainBed, playThunder } from './rain.js';
+import { createRainSystem, applyWetSurface, applyWetSheen, bakeOccluderMap, createLightningBolt, createRainBed, playThunder } from './rain.js';
 import { createVisualSystem } from './bot-viewer-visuals.js';
 import { createSlotSection, assignKnown, readSlots } from './bot-viewer-slots.js';
 import { botDesignForRole, setBotBodyKind, getBotBodyKind, BOT_BODY_KINDS } from './bot-body-design.js';
@@ -367,7 +367,7 @@ function botAlertTierFor(entity, actor, lineId, now) {
   if (!VOICE_INTENSITY_FRESH_LINES.has(lineId)) return actor?.alertTierLast ?? null;
   const pos = entity.capsule.start;
   _voiceEscMe.x = pos.x; _voiceEscMe.z = pos.z; _voiceEscMe.team = entity.team ?? 0;
-  return tierForScore(alertEscalation(recentAllyHits, _voiceEscMe, now, ESCALATION_RADIUS).score);
+  return tierForScore(alertEscalation(allyAgg().casualties, _voiceEscMe, now, ESCALATION_RADIUS).score);
 }
 // False when nothing actually started (suspended context, muted bus, culled) so the caller can
 // hand the director's slot straight back instead of holding it for a silent line.
@@ -801,6 +801,8 @@ let syncFloraPanel = () => {};
 // Assigned once the Flora card exists. Called after every rebuild, and again when the async plant
 // placement lands, so the readout is never a rebuild behind.
 let syncFloraCounts = () => {};
+// Assigned once the rain system exists (below the map materials); the first theme apply predates it.
+let tintRainForTheme = null;
 
 const visuals = createVisualSystem({
   THREE, renderer, scene, camera, postFX, rig, overheadLight,
@@ -808,7 +810,7 @@ const visuals = createVisualSystem({
   getAudioLevels: () => envAudio.getAudioLevels(),
   // A theme switch swaps the `flora` block, and flora is geometry this module does not own --
   // so the look system reports the change and the rebuild happens here.
-  onLookChange: () => rebuildFlora(),
+  onLookChange: () => { rebuildFlora(); tintRainForTheme?.(); },
 });
 
 // ===================== test map scaffolding =====================
@@ -837,8 +839,27 @@ scene.add(rain.group);
 for (const [mat, d] of [[floorMat, visuals.groundNodes.floor], [terrainMat, visuals.groundNodes.terrain]]) {
   applyWetSurface(mat, rain.uniforms, { baseRoughness: d.rough, baseNormal: d.normalWorld, rippleScale: 2.6, puddleScale: 0.12 });
 }
+// Walls and cover: film + run-off streaks on the faces, puddles on the tops; roughness stays the
+// theme's own number underneath (materialRoughness), so a theme switch still retunes it.
+for (const mat of [wallMat, coverMat]) applyWetSurface(mat, rain.uniforms, { rippleScale: 2.6, puddleScale: 0.3 });
+// Bots: shells and hardware go glossy, nothing else. Fabric and rubber only darken.
+for (const k of ['shell', 'plate', 'trim', 'accent', 'metal']) applyWetSheen(visuals.botMaterials[k], rain.uniforms, { amount: 0.55, darken: 0.1 });
+for (const k of ['fabric', 'rubber']) applyWetSheen(visuals.botMaterials[k], rain.uniforms, { amount: 0.1, darken: 0.25 });
 const lightningBolt = createLightningBolt(scene);
-const weather = { rain: 0, lightning: true, occluders: true, puddles: 0.45, wind: 2, lid: 1 };
+const weather = { rain: 0, lightning: true, occluders: true, puddles: 0.45, wind: 2, lid: 1, sightLoss: 0.4 };
+// Sight shrinks with rain (see botSightDistanceFor); a lightning flash briefly gives it back.
+function weatherSightScale() {
+  const flash = Math.min(1, rain.uniforms.uLightning.value * 2);
+  return 1 - weather.sightLoss * weather.rain * (1 - flash);
+}
+// Drops take a little of the theme's horizon so they belong to the look; a neon sky rains neon.
+tintRainForTheme = () => {
+  const hz = new THREE.Color(visuals.theme?.sky?.horizon ?? 0xffffff);
+  const l = Math.max(hz.r, hz.g, hz.b) || 1;
+  hz.multiplyScalar(1 / l);   // hue only; the drops keep their own brightness
+  rain.uniforms.uColor.value.set(0.85, 0.88, 0.95).lerp(hz, 0.35);
+};
+tintRainForTheme();
 let rainOcc = null, rainOccDirty = true, nextBoltAt = 5, thunderAt = -1, thunderDist = 0;
 let rainBedHandle = null, rainBed = null;
 let syncWeatherControls = () => {};
@@ -912,7 +933,7 @@ function updateWeather(dt) {
 
 // The box glue (shared unit geometry, instanced emission, teardown, ground fitting) lives in
 // map-boxes.js so structure-viewer.html shares it rather than copying it.
-import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
+import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround, seatDecksAndRamps } from './map-boxes.js';
 
 const box = (mat, x, y, z, w, h, d) => boxMesh(mapRoot, mat, x, y, z, w, h, d);
 const instancedBoxes = (mat, boxes) => emitBoxes(mapRoot, mat, boxes);
@@ -932,14 +953,21 @@ let terrainField = createTerrainField(terrainSettings, terrainPads);
 // want 4 central-difference samples per point, and against a baked grid those stop being noise
 // evaluations. ~4x off the terrain half of a rebuild, and heightAt gets cheap enough to call freely
 // per frame. Falls back to analytic before the first layout, when bounds are still degenerate.
+// Anything holding a position that was resolved against the OLD ground registers here. Set later in
+// the file (a direct call would reach a const still in its temporal dead zone during the first layout).
+let onGroundRebuilt = null;
 function rebuildTerrainField() {
   terrainField = createTerrainField(terrainSettings, terrainPads,
     activeBounds.maxX > activeBounds.minX ? { bounds: activeBounds } : {});
+  if (onGroundRebuilt) onGroundRebuilt();
 }
 // The one ground-height accessor the whole viewer reads: 0 while terrain is off.
 function groundHeight(x, z) { return terrainField.heightAt(x, z); }
 // Ground decals (nav dots, rings, markers) lift by this so hills don't swallow them.
 function decalY(x, z, lift) { return groundHeight(x, z) + lift; }
+// Same, for a point that may already KNOW its surface: nav waypoints on a level grid carry `y`, and
+// drawing those against the ground would sink a route over a deck into the dirt beneath it.
+function surfaceY(p, lift) { return (p.y === undefined ? groundHeight(p.x, p.z) : p.y) + lift; }
 
 // ===================== roads =====================
 // Spline dirt roads over the terrain (docs/subsystems/roads.md). Draped, never carved: every road
@@ -1007,6 +1035,19 @@ function slabTransformOnTerrain(x, z, w, d, baseY, h) {
 function boxTransformOnTerrain(x, z, w, h, d) {
   return boxOnGround(x, z, w, h, d,
     terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4) : null);
+}
+
+// Decks and ramps onto the terrain. Both take the slabs' ground reference -- the HIGHEST sample
+// under the footprint -- so a deck never dives into the hill its posts stand on. A ramp's head is
+// READ from the deck it meets rather than recomputed: recomputing it would put the top of the ramp
+// and the edge of the deck at two different heights wherever the ground between them is not flat.
+function rebuildDeckSurfaces() {
+  const groundMax = (x, z, w, d) => (terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4).max : 0);
+  const seated = seatDecksAndRamps(activeLayoutDecks, activeLayoutRamps, groundMax);
+  activeDecks = seated.decks;
+  activeRamps = seated.ramps;
+  activeNavDecks = activeDecks.slice();
+  for (const r of activeRamps) activeNavDecks.push(...rampDecks(r, structureSettings.platformNavRise));
 }
 
 // Where a layout needs level ground: both spawns, every cover footprint, plus whatever slabs the
@@ -1086,6 +1127,14 @@ let activeSlabs = [];
 // The layout's raw slab records, kept so a rebuild that did not come from applyLayout can re-sink
 // them onto the terrain without the layout object in hand.
 let activeLayoutSlabs = [];
+// Walkable levels. A deck is a second ground over a column, not an overhang: it is the ONE thing
+// here bots walk ON top of rather than under, and it exists only because a ramp reaches it.
+// Layout form first (y above local ground), then resolved against the terrain like the slabs.
+let activeLayoutDecks = [];
+let activeLayoutRamps = [];
+let activeDecks = [];      // platform tops in world space: nav levels, and the patrol goals worth having
+let activeRamps = [];      // ramps in world space: rendered as tilted boxes, cut into nav levels
+let activeNavDecks = [];   // what buildNavGrid gets: the deck tops plus every ramp tread
 
 // ---- destructible walls ----
 // Damage accrual and the CRACKED state only. The ladder is capped at CRACKED (`maxState`) because
@@ -2246,7 +2295,7 @@ function botWeaponStandoff(weapon) {
 // How far this bot can see. The slider is the line's number; a role scales it (sniper 1.5x), so
 // perception, the standoff clamp and the tactical rings all move together for that bot.
 function botSightDistanceFor(actor) {
-  return botBehaviorSettings.sightDistance * getRole(actor?.role).sightScale;
+  return botBehaviorSettings.sightDistance * getRole(actor?.role).sightScale * weatherSightScale();
 }
 function botSightDistance() { return botSightDistanceFor(activeBotActor); }
 
@@ -2881,6 +2930,7 @@ function createBotProceduralBody() {
     design: botDesignForRole(activeBotActor?.role),
     adaptGaitToSpeed: true, movementDynamics: true, naturalLocomotion: true,
     batches: botBodyBatches,
+    mergeGear: BOT_GEAR_MERGE,
   });
   if (activeBotActor) activeBotActor.body = botProceduralBody;
   applyBotMovementSettings();
@@ -3634,9 +3684,25 @@ let botThinkStaggerMode = 'auto'; // 'auto' | 1 | 2 | 3; ?stagger=auto|1|2|3 ove
 let botRigLodEnabled = new URLSearchParams(location.search).get('riglod') !== '0';
 const RIG_LOD_MID2 = 18 * 18;   // beyond 18 m: every 2nd frame (30 Hz pose — invisible at that size)
 const RIG_LOD_FAR2 = 45 * 45;   // beyond 45 m: every 4th frame
+// Rig budget: only the focus actor plus the N camera-nearest bots solve at full rate; the rest
+// stride 2 (4 past 45 m) however close they are, which converts the per-frame rig cost (sim.bot +
+// body) from O(bots) to O(budget) + cheap tail. Same tradeoff Rig LOD already accepts beyond 18 m.
+// ?rigbudget=<n>, 0 disables (pure distance rule); needs Rig LOD on to do anything.
+let BOT_RIG_BUDGET = Math.max(0, Number(new URLSearchParams(location.search).get('rigbudget') ?? 6) | 0);
 // A/B: ?flushlod=0 restores the old always-refresh flush. On, a strided bot also skips the
 // ~170-node matrix walk in flush(), not just the solve — the pose it re-emits is unchanged.
 let BOT_FLUSH_LOD = new URLSearchParams(location.search).get('flushlod') !== '0';
+// A/B: ?gearmerge=0 restores per-piece gear parts. Merged, all gear on one (anchor, role) bakes to
+// a single geometry at body build: identical look, ~100 fewer parts per bot in the matrix walk,
+// pool adds and buckets. Hit/decal attribution keeps piece precision (bot-body-hit.js mergedPieces).
+let BOT_GEAR_MERGE = new URLSearchParams(location.search).get('gearmerge') !== '0';
+// ?confirmstride=1 (default OFF: it changes behaviour). The target-confirm LOS ray in
+// updateBotSentry reuses the previous tick's verdict every other sentry tick per bot, halving
+// those raycasts at the price of up to one extra tick (~16 ms) of reaction latency.
+let BOT_CONFIRM_STRIDE = new URLSearchParams(location.search).get('confirmstride') === '1';
+// A/B: ?fxbatch=0 restores pooled per-shot Line/Mesh tracer and bullet objects (one draw each
+// while live). Batched, all rounds in flight share 4 draws; the raster output is identical.
+let BOT_FX_BATCH = new URLSearchParams(location.search).get('fxbatch') !== '0';
 // A/B: ?botcull=0 disables. The pools are immediate-mode, so a body that never flushes simply is
 // not drawn. Only STRICTLY behind the camera is culled (not the frustum sides) so a fast turn
 // cannot outrun it, and never within CULL_NEAR2 whatever the angle. Safe because the body buckets
@@ -3685,6 +3751,34 @@ function botFlushSkipped(actor) {
   return dx * _cullFwd.x + dy * _cullFwd.y + dz * _cullFwd.z < 0;
 }
 let botRigFocusActor = null;    // set per frame in updateAllBots: the camera subject, always full rate
+// Top-N selection by squared camera distance, O(bots * budget); reused arrays, no per-frame allocs.
+const _rigNearActor = [];
+const _rigNearD2 = [];
+function markRigBudget() {
+  const n = BOT_RIG_BUDGET;
+  const budgeting = botRigLodEnabled && n > 0;
+  _rigNearActor.length = 0; _rigNearD2.length = 0;
+  for (const actor of botActors) {
+    actor.rigBudgeted = !budgeting;
+    if (!budgeting || actor.entity.alive === false) continue;
+    const p = actor.entity.mesh?.position;
+    if (!p) { actor.rigBudgeted = true; continue; }
+    const dx = p.x - camera.position.x, dy = p.y - camera.position.y, dz = p.z - camera.position.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    let m = _rigNearActor.length;
+    if (m >= n) {
+      if (d2 >= _rigNearD2[m - 1]) continue;
+      _rigNearActor[m - 1] = actor; _rigNearD2[m - 1] = d2;
+    } else {
+      _rigNearActor.push(actor); _rigNearD2.push(d2); m++;
+    }
+    for (let i = m - 1; i > 0 && _rigNearD2[i] < _rigNearD2[i - 1]; i--) {
+      const ta = _rigNearActor[i]; _rigNearActor[i] = _rigNearActor[i - 1]; _rigNearActor[i - 1] = ta;
+      const td = _rigNearD2[i]; _rigNearD2[i] = _rigNearD2[i - 1]; _rigNearD2[i - 1] = td;
+    }
+  }
+  for (const a of _rigNearActor) a.rigBudgeted = true;
+}
 function botThinkStride(livingCount) {
   if (botThinkStaggerMode !== 'auto') return botThinkStaggerMode;
   return livingCount > 80 ? 3 : livingCount > 40 ? 2 : 1;
@@ -3906,6 +4000,7 @@ function updateAllBots(dt, now) {
   botFacingCount = 0;   // immediate-mode facing cones: refilled by the living actors below
   const focus = activeBotActor;
   botRigFocusActor = botDebugFocusActor || focus; // camera subject: exempt from rig LOD
+  markRigBudget();  // stamps actor.rigBudgeted before any updateBot reads it
   if (focus) commitBotActor(focus); // flush the outer binding once, not once per bot (M9)
   for (const actor of botActors) {
     if (actor.entity.alive === false) {
@@ -4430,7 +4525,9 @@ function updateBot(dt) {
     if (botRigLodEnabled && activeBotActor !== botRigFocusActor) {
       const dxc = mid.x - camera.position.x, dyc = mid.y - camera.position.y, dzc = mid.z - camera.position.z;
       const d2 = dxc * dxc + dyc * dyc + dzc * dzc;
-      const stride = d2 > RIG_LOD_FAR2 ? 4 : d2 > RIG_LOD_MID2 ? 2 : 1;
+      let stride = d2 > RIG_LOD_FAR2 ? 4 : d2 > RIG_LOD_MID2 ? 2 : 1;
+      // Over-budget bots stride at least 2 however close; the budgeted N keep the distance rule.
+      if (BOT_RIG_BUDGET > 0 && !activeBotActor.rigBudgeted && stride < 2) stride = 2;
       rigDue = stride === 1 || (botFrameCounter + (activeBotActor.scanPhase ?? 0)) % stride === 0;
     }
     if (rigDue) activeBotActor.rigDtAcc = 0;
@@ -6285,9 +6382,30 @@ function collectPacksUnderfoot(bot, actor, now) {
 
 // Recent damage reports on bots, so nearby squadmates can break for cover against the attacker.
 const recentAllyHits = []; // { victimId, team, x, z, threat:{x,z}, at, lethal, kind? }
+// Kind-partitioned views of the ring, rebuilt lazily when MEMBERSHIP changes (push/evict/clear).
+// Records mutate in place (at/position bumps) and the views hold references, so mutation needs no
+// rebuild; ring order is preserved per bucket, keeping every freshest-report tie-break intact.
+// This turns the 5-7 full-ring scans each bot pays per sentry tick into scans of the (much
+// smaller) matching-kind subset, with one O(64) rebuild per report event.
+let allyRingVersion = 0;
+const _allyAgg = { version: -1, casualties: [], contacts: [], nearMisses: [], nonContacts: [] };
+function allyAgg() {
+  if (_allyAgg.version !== allyRingVersion) {
+    _allyAgg.casualties.length = 0; _allyAgg.contacts.length = 0;
+    _allyAgg.nearMisses.length = 0; _allyAgg.nonContacts.length = 0;
+    for (const rep of recentAllyHits) {
+      if (isContact(rep)) { _allyAgg.contacts.push(rep); continue; }
+      _allyAgg.nonContacts.push(rep);
+      if (isNearMiss(rep)) _allyAgg.nearMisses.push(rep); else _allyAgg.casualties.push(rep);
+    }
+    _allyAgg.version = allyRingVersion;
+  }
+  return _allyAgg;
+}
 function pushAllyReport(rep) {
   recentAllyHits.push(rep);
   if (recentAllyHits.length > 64) recentAllyHits.shift();
+  allyRingVersion++;
 }
 function recordAllyHit(victim, attacker, now) {
   if (!attacker?.alive) return;
@@ -6310,7 +6428,7 @@ function _nmVisit(e) {
   _nmMid.copy(e.capsule.start).add(e.capsule.end).multiplyScalar(0.5);
   if (shotMissDistance(_nmOrigin, _nmDir, _nmTravelled, _nmMid) > NEAR_MISS_RADIUS) return;
   const vx = e.capsule.start.x, vz = e.capsule.start.z;
-  const prior = recentAllyHits.find(r => r.kind === NEAR_MISS_KIND && r.victimId === e.id && _nmNow - r.at <= NEAR_MISS_WINDOW_MS);
+  const prior = allyAgg().nearMisses.find(r => r.victimId === e.id && _nmNow - r.at <= NEAR_MISS_WINDOW_MS);
   // Refresh re-attributes: the same victim being missed again may well be a different shooter.
   if (prior) {
     prior.at = _nmNow; prior.x = vx; prior.z = vz;
@@ -6340,7 +6458,7 @@ const _alertMe = { id: null, team: null, x: 0, z: 0 }; // scratch: latestAlertNe
 function latestAllyHitNear(me, now) {
   _alertMe.id = me.id; _alertMe.team = me.team;
   _alertMe.x = me.capsule.start.x; _alertMe.z = me.capsule.start.z;
-  return latestAlertNear(recentAllyHits, _alertMe, now, ALLY_ALERT_RADIUS);
+  return latestAlertNear(allyAgg().casualties, _alertMe, now, ALLY_ALERT_RADIUS);
 }
 // Freshest actionable FIRSTHAND report carried by an alerted teammate in contact range — how a
 // semi-alert spreads. One hop only: semi-alerted bots don't relay (actor.alertReport is firsthand).
@@ -7146,7 +7264,7 @@ function selectBotTarget() {
   // highest risk first, so the raycast-and-pick loop below finds the most dangerous VISIBLE enemy
   // instead of the nearest one. Order no longer matters to anything above this point -- the
   // nearest-first perceivedEnemies snapshot was already taken.
-  const selfThreat = latestSelfThreat(recentAllyHits, bot, now);
+  const selfThreat = latestSelfThreat(allyAgg().nonContacts, bot, now);
   const allyThreat = latestAllyHitNear(bot, now);
   let allyPileOn = 0;
   if (allyThreat && allyThreat.attackerId != null) {
@@ -7296,7 +7414,7 @@ import {
   SEMI_ALERT_SHARE_RADIUS, ESCALATION_RADIUS, SEMI_ALERT_WARY_MS,
   ALERT_DEFENSIVE_SCORE, ALERT_PUSH_SCORE, SUPPORT_GROUP_MIN, SUPPORT_RADIUS,
   stepAttention, attentionSweep,
-  recordContact, latestContactNear, CONTACT_SHARE_RADIUS,
+  recordContact, latestContactNear, CONTACT_SHARE_RADIUS, isContact, isNearMiss,
   patrolScanOffset, sweepPhaseMs, perceptionForTier,
 } from './bot-alert.js';
 import {
@@ -7421,7 +7539,7 @@ function updateAllBotGoalDebug() {
     const last = points[points.length - 1];
     if (!last || Math.hypot(last.x - goal.x, last.z - goal.z) > 1e-4) points.push(new THREE.Vector3(goal.x, 0.075, goal.z));
     debug.line.geometry.setFromPoints(points);
-    debug.marker.position.set(goal.x, decalY(goal.x, goal.z, 0.085), goal.z);
+    debug.marker.position.set(goal.x, surfaceY(goal, 0.085), goal.z);
   }
 }
 
@@ -7761,12 +7879,23 @@ function eyePos(entity) {
 function eyePosInto(entity, out) {
   return out.copy(entity.capsule.start).lerp(entity.capsule.end, EYE_LIFT);
 }
+// m a body must stand above the ground under it before it counts as being on a deck rather than on
+// the hill the nav grid sampled a little differently.
+const DECK_CLEARANCE = 0.75;
+// The surface height to hand nav, or undefined for "the ground, as always". Nav resolves a point
+// carrying `y` to the surface at that height and refuses to confuse under-deck with on-deck; a
+// point without one keeps the 2D answer, so on a map with no decks nothing changes at all.
+function bodySurfaceY(entity) {
+  if (!navGrid?.levels) return undefined;
+  const feet = entity.capsule.start.y - entity.capsule.radius;
+  return feet - groundHeight(entity.capsule.start.x, entity.capsule.start.z) > DECK_CLEARANCE ? feet : undefined;
+}
 function botXZ(entity) {
-  return { x: entity.capsule.start.x, z: entity.capsule.start.z };
+  return { x: entity.capsule.start.x, z: entity.capsule.start.z, y: bodySurfaceY(entity) };
 }
 // Out-param twin for per-bot per-frame callers (M1); scratch owners must consume before the next call.
 function botXZInto(entity, out) {
-  out.x = entity.capsule.start.x; out.z = entity.capsule.start.z;
+  out.x = entity.capsule.start.x; out.z = entity.capsule.start.z; out.y = bodySurfaceY(entity);
   return out;
 }
 // Shared per-frame scratch (M1). Each is fully consumed before its next fill.
@@ -7915,7 +8044,8 @@ let activeLayoutKind = 'rooms';
 // The carve, the wall emission and the scattered-structure generator all live in the (Node-tested)
 // module; this file only decides which of them a given layout asks for.
 import { makeRng, generateMazeCells, mazeCellWalls, generateStructures, STRUCTURE_DEFAULTS,
-  isPadOnlyKind, teamSideRegions, generateHomeBase, HOME_BASE_DEFAULTS } from './bot-structures.js';
+  isPadOnlyKind, teamSideRegions, generateHomeBase, HOME_BASE_DEFAULTS,
+  rampBox, rampDecks, MIX_NAMES } from './bot-structures.js';
 
 // Islands of content for wall-less maps: buildings, maze pockets and obstacle fields scattered
 // over open ground. Off in 'maze' mode, where the map is already all walls.
@@ -7979,6 +8109,7 @@ function buildMazeLayout() {
   // over. Its own seed stream, so restructuring never reshuffles the maze or the cover scatter.
   const pads = [];
   const slabs = [];
+  const decks = [], ramps = [];   // platform tops and the ramps up to them (see bot-structures.js)
   if (structuresOn && mazeWallMode !== 'maze') {
     const avoid = [{ x: start.x, z: start.z, radius: 4 }, { x: end.x, z: end.z, radius: 4 }];
     // wallHeight must be the live WALL_H: a lintel fills from its head to the wall top, so a
@@ -7991,6 +8122,8 @@ function buildMazeLayout() {
     walls.push(...built.walls);
     covers.push(...built.covers);
     slabs.push(...(built.slabs || []));
+    decks.push(...(built.decks || []));
+    ramps.push(...(built.ramps || []));
     pads.push(...built.pads);
     lastStructurePlacements = built.placed;
     lastStructurePadless = !padTerrain && built.placed.some((s) => isPadOnlyKind(s.kind));
@@ -8024,6 +8157,8 @@ function buildMazeLayout() {
     walls,
     covers,
     slabs,
+    decks,
+    ramps,
     pads,
     bounds,
     botSpawn: { x: start.x, y: 0, z: start.z },
@@ -8149,9 +8284,11 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
     activeWallBoxes = activeWalls.map(w => boxTransformOnTerrain(w.x, w.z, w.w, w.h ?? WALL_H, w.d));
     activeCoverBoxes = activeCovers.map(cv => boxTransformOnTerrain(cv.x, cv.z, cv.w, cv.h, cv.d));
     activeSlabs = activeLayoutSlabs.map(s => slabTransformOnTerrain(s.x, s.z, s.w, s.d, s.y, s.h));
+    rebuildDeckSurfaces();
     instancedBoxes(wallMat, activeWallBoxes);
     instancedBoxes(coverMat, activeCoverBoxes);
     instancedBoxes(wallMat, activeSlabs);   // same concrete as the walls they span
+    instancedBoxes(wallMat, activeRamps.map(rampBox));
   });
   // Roads re-drape with the geometry they sit on, and before flora, which asks them where it may
   // not grow. Their quads are sized off the ground mesh's own cell: a road triangle wider than a
@@ -8186,6 +8323,9 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
       // navRects takes 0 here: buildNavGrid already widens every blocker by blockerMargin, so
       // asking for the capsule radius as well would fence trees off twice.
       blockers: [...activeWalls, ...activeCovers, ...botTrees.navRects(0)], blockerMargin: WALL_MARGIN,
+      // Decks only when a map has them: without this option the grid is byte-for-byte the 2D one,
+      // so nothing about a platform-less map changes.
+      ...(activeNavDecks.length ? { decks: activeNavDecks } : {}),
       ...(terrainSettings.enabled ? { heightAt: groundHeight, softBlockedTest: navSoftBlocked } : {}),
     });
     // Road preference is charged as a surcharge on open ground, never as a discount on road: a
@@ -8196,6 +8336,7 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
     goalClaims.clear();
     clearDangerField(botDangerField); // cell indices are grid-relative: a rebuilt grid invalidates them
     recentAllyHits.length = 0;
+    allyRingVersion++;  // membership change: the kind-partitioned views must rebuild
   });
   const sightBlockers = [...activeWalls, ...activeCovers];
   // buildNavGrid already sampled the cell-center heights the field wants -- reuse that array.
@@ -8216,6 +8357,14 @@ function rebuildDerived(dirty = REBUILD_ALL, { label = 'layout' } = {}) {
       },
     });
   });
+  if (dirty.nav && navGrid?.levels) {
+    // Say the half that is NOT wired out loud: bots path onto a deck, but the sight field and the
+    // cover-corner bake are indexed by column alone (nav-visibility's `levelsIgnored`), so two bots
+    // on a deck and under it share one set of sightlines.
+    console.info(`[nav decks] ${activeDecks.length} deck(s) + ${activeRamps.length} ramp(s) -> `
+      + `${navGrid.levels.count} nav level cells. Sight and cover corners are still ground-only`
+      + `${visField?.levelsIgnored === false ? '' : ' (levels ignored)'}.`);
+  }
   if (dirty.nav || dirty.corners) mark('report', () => {
     // Walkable ground the rest of the map cannot reach: a bot that starts or is pushed into one has
     // no route to any goal and will stand there. Terrain passes are carved to prevent it, but walls
@@ -8257,7 +8406,15 @@ function applyLayout(layout, { resetCamera = true, keepBots = botKeepOnRebuild }
   botLiveAnnounceWorld();   // the arena just changed under any live map; no-op with none connected
 
   activeLayoutSlabs = layout.slabs || [];
+  activeLayoutDecks = layout.decks || [];
+  activeLayoutRamps = layout.ramps || [];
   rebuildDerived();
+  // Deck centres join the patrol ring, so a platform is somewhere bots actually go rather than
+  // scenery with a route to it. They carry `y`, which is what makes the search resolve the deck
+  // instead of the ground under it. After rebuildDerived: that is where decks get their heights.
+  if (activeDecks.length) {
+    patrolPoints = [...patrolPoints, ...activeDecks.map(d => ({ x: d.x, z: d.z, y: d.y }))];
+  }
 
   // Markers were positioned against the layout's bounds during the build; re-seat their rings now
   // that the terrain under them is the new one.
@@ -9078,11 +9235,11 @@ function updateBotBehaviorDebug() {
 function advanceToReachablePatrolPoint() {
   if (!navGrid || !navGrid.regions || patrolPoints.length === 0) return true;
   const here = botXZInto(bot, _xzScratchA);
-  const mine = regionAt(navGrid, here.x, here.z);
+  const mine = regionAt(navGrid, here.x, here.z, 4, here.y ?? null);
   if (mine < 0) return true;   // off-grid: let the search decide, as before
   for (let i = 0; i < patrolPoints.length; i++) {
     const p = patrolPoints[patrolIdx];
-    if (regionAt(navGrid, p.x, p.z) === mine) return true;
+    if (regionAt(navGrid, p.x, p.z, 4, p.y ?? null) === mine) return true;
     patrolIdx = (patrolIdx + 1) % patrolPoints.length;
   }
   return false;   // none of them are reachable from here
@@ -9097,7 +9254,7 @@ const _patrolLocalProbe = { x: 0, z: 0 };   // scratch for the in-region cell sw
 function localPatrolFallbackGoal() {
   if (!navGrid || !navGrid.regions) return null;
   const here = botXZInto(bot, _xzScratchA);
-  const mine = regionAt(navGrid, here.x, here.z);
+  const mine = regionAt(navGrid, here.x, here.z, 4, here.y ?? null);
   if (mine < 0) return null;
   const cached = activeBotActor.patrolLocalGoal;
   if (cached && Math.hypot(cached.x - here.x, cached.z - here.z) > WAYPOINT_REACH) return cached;
@@ -9135,10 +9292,10 @@ function tryPatrolEscape(now) {
   if (now < (a.patrolEscapeNextAt ?? 0)) return a.patrolStranded ? 'stranded' : null;
   a.patrolEscapeNextAt = now + PATROL_ESCAPE_RETRY_MS;
   const here = botXZInto(bot, _xzScratchA);
-  const mine = regionAt(navGrid, here.x, here.z);
+  const mine = regionAt(navGrid, here.x, here.z, 4, here.y ?? null);
   for (let i = 0; i < patrolPoints.length; i++) {
     const p = patrolPoints[i];
-    if (regionAt(navGrid, p.x, p.z) === mine) continue;   // same region: not what we are escaping
+    if (regionAt(navGrid, p.x, p.z, 4, p.y ?? null) === mine) continue;   // same region: not what we are escaping
     const fresh = requestPathBudgeted(bot, p);
     if (fresh && fresh.length) {
       currentPath = fresh; pathMode = 'patrolEscape'; botCombatMoveGoal = p; patrolIdx = i;
@@ -11258,7 +11415,21 @@ function updateBotSentry(dt, now) {
     botTargetVisGate = 'r'; // beyond sight range unless the tests below resolve it
     if (dist <= botSightDistance() && dist > 1e-4) {
       const dir = _sentryDir.copy(targetEye).sub(botEye).multiplyScalar(1 / dist);
-      const blocked = mapCollider.raycast([botEye.x, botEye.y, botEye.z], [dir.x, dir.y, dir.z], dist - 0.05);
+      let blocked;
+      if (!BOT_CONFIRM_STRIDE) {
+        blocked = mapCollider.raycast([botEye.x, botEye.y, botEye.z], [dir.x, dir.y, dir.z], dist - 0.05);
+      } else {
+        // Alternating cast/reuse per bot; a target change always pays for a fresh ray.
+        const cs = activeBotActor.confirmRay ??= { fresh: false, blocked: false, targetId: null };
+        if (cs.targetId !== botTarget.id || !cs.fresh) {
+          cs.blocked = !!mapCollider.raycast([botEye.x, botEye.y, botEye.z], [dir.x, dir.y, dir.z], dist - 0.05);
+          cs.targetId = botTarget.id;
+          cs.fresh = true;
+        } else {
+          cs.fresh = false;
+        }
+        blocked = cs.blocked;
+      }
       const inFov = withinBotFov(bot.yaw, botEye, targetEye);
       visible = !blocked && inFov;
       botTargetVisGate = visible ? 'y' : blocked ? 'w' : 'f'; // wall beats FOV when both reject
@@ -11272,7 +11443,7 @@ function updateBotSentry(dt, now) {
       // S2: call the contact out to the squad on RAW acquisition (recordContact rate-limits the ring).
       _contactMe.id = bot.id; _contactMe.team = bot.team;
       _contactMe.x = bot.capsule.start.x; _contactMe.z = bot.capsule.start.z;
-      recordContact(recentAllyHits, _contactMe, lastKnownTarget, now, pushAllyReport, botTarget.id);
+      recordContact(allyAgg().contacts, _contactMe, lastKnownTarget, now, pushAllyReport, botTarget.id);
       sayBotContact(activeBotActor, bot, botTarget.id, now);
       const targetSpeed = Math.hypot(botTarget.velocity.x, botTarget.velocity.z);
       if (targetSpeed > 0.05) {
@@ -11447,7 +11618,7 @@ function updateBotSentry(dt, now) {
   activeBotActor.alertReport = firsthand; // firsthand only: semi-alerts propagate one hop
   const report = firsthand || sharedAllyAlertNear(bot, now);
   _escMe.x = bot.capsule.start.x; _escMe.z = bot.capsule.start.z; _escMe.team = bot.team;
-  const esc = alertEscalation(recentAllyHits, _escMe, now, ESCALATION_RADIUS);
+  const esc = alertEscalation(allyAgg().casualties, _escMe, now, ESCALATION_RADIUS);
   senAMs += performance.now() - _sp0;   // phase boundary: perception done
   const _sp1 = performance.now();
   let alertTier = null;
@@ -11472,10 +11643,10 @@ function updateBotSentry(dt, now) {
   if (alertTier !== 'push') { activeBotActor.pushStartedAt = null; activeBotActor.pushElement = null; }
   // Weakest cue, only when nothing stronger is live: a round that whistled past this bot itself.
   // Firsthand but not a casualty — it drives the alert hold only (no cover break, no propagation).
-  const nearMiss = alertTier ? null : latestNearMiss(recentAllyHits, bot, now);
+  const nearMiss = alertTier ? null : latestNearMiss(allyAgg().nearMisses, bot, now);
   // Being shot AT or HIT myself: the one cue no tier may suppress and no state may ignore. Drives
   // facing everywhere (see threatFacing), so a bot mid-heal still turns on whoever is shooting it.
-  const selfThreat = latestSelfThreat(recentAllyHits, bot, now);
+  const selfThreat = latestSelfThreat(allyAgg().nonContacts, bot, now);
   if (selfThreat) {
     activeBotActor.lastSelfThreatAt = now; // read next frame by the sidearm "in a gunfight" test
     (activeBotActor.lastSelfThreatXZ ??= { x: 0, z: 0 }).x = selfThreat.threat.x; // copied: the report record is pooled
@@ -11513,7 +11684,7 @@ function updateBotSentry(dt, now) {
   // S2: a squadmate's sighting is the weakest lead -- it only fills a slot nothing firsthand holds.
   _contactMe.id = bot.id; _contactMe.team = bot.team;
   _contactMe.x = bot.capsule.start.x; _contactMe.z = bot.capsule.start.z;
-  const contact = latestContactNear(recentAllyHits, _contactMe, now, CONTACT_SHARE_RADIUS);
+  const contact = latestContactNear(allyAgg().contacts, _contactMe, now, CONTACT_SHARE_RADIUS);
   if (!lastKnownTarget && contact && now >= (activeBotActor.contactSeedBlockUntil ?? 0)) {
     lastKnownTarget = { x: contact.threat.x, z: contact.threat.z, fromReport: true };
     lastKnownTargetAt = contact.at;
@@ -12276,6 +12447,9 @@ let botBloodFxEnabled = true;
 // per-pixel tax on this forward path even at intensity 0), so the count is fixed at build time.
 const debrisSim = createDebrisSim({ groundAt: groundHeight });
 const debrisRenderer = createDebrisRenderer({ THREE, scene, sim: debrisSim, lightCount: 2 });
+// A settled piece has stopped asking where the ground is, so a reseeded terrain would leave it
+// hanging at the old height for the rest of its twenty seconds. The map it belonged to is gone.
+onGroundRebuilt = () => debrisSim.clear();
 const debrisTierBudget = createExplosionBudget();
 const botDebrisSettings = {
   enabled: true,
@@ -13582,8 +13756,32 @@ function acquireTracerLine() {
   scene.add(line);
   return line;
 }
+// Batched shot FX (?fxbatch=0 reverts): all live tracers share two LineSegments and all bullets two
+// InstancedMeshes (hit/miss materials), so rounds in flight cost 4 draws instead of one each. The
+// raster output is identical — same geometry, same materials. Pool entries from the old path drain
+// naturally after a toggle; the two shapes coexist in the arrays.
+const TRACER_BATCH_MAX = 256;
+let tracerBatches = null;
+function makeTracerBatch(material) {
+  const geom = new THREE.BufferGeometry();
+  const attr = new THREE.BufferAttribute(new Float32Array(TRACER_BATCH_MAX * 6), 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geom.setAttribute('position', attr);
+  geom.setDrawRange(0, 0);
+  const lines = new THREE.LineSegments(geom, material);
+  lines.frustumCulled = false;
+  lines.visible = false;
+  scene.add(lines);
+  return { geom, attr, lines, count: 0 };
+}
 function spawnTracer(from, to, isHit) {
   visuals.flash(from);   // muzzle flash: borrows a slot from the shared dynamic-light budget
+  if (BOT_FX_BATCH) {
+    tracerBatches ??= { miss: makeTracerBatch(tracerMissMaterial), hit: makeTracerBatch(tracerHitMaterial) };
+    tracers.push({ line: null, hit: !!isHit, fx: from.x, fy: from.y, fz: from.z,
+      tx: to.x, ty: to.y, tz: to.z, expireAt: performance.now() + 150 });
+    return;
+  }
   const line = acquireTracerLine();
   const pos = line.geometry.attributes.position;
   pos.setXYZ(0, from.x, from.y, from.z);
@@ -13594,6 +13792,19 @@ function spawnTracer(from, to, isHit) {
   tracers.push({ line, expireAt: performance.now() + 150 });
 }
 const bulletPool = [];
+const BULLET_BATCH_MAX = 256;
+let bulletBatches = null;
+const _bulletMat4 = new THREE.Matrix4();
+function makeBulletBatch(material) {
+  const mesh = new THREE.InstancedMesh(botBulletGeometry, material, BULLET_BATCH_MAX);
+  mesh.count = 0;
+  mesh.renderOrder = 2;
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  scene.add(mesh);
+  return mesh;
+}
 function acquireBulletMesh() {
   if (bulletPool.length) return bulletPool.pop();
   const mesh = new THREE.Mesh(botBulletGeometry, botBulletMaterial);
@@ -13607,6 +13818,11 @@ function spawnBullet(from, to, isHit) {
   const distance = direction.length();
   if (distance < 1e-4) return;
   direction.multiplyScalar(1 / distance);
+  if (BOT_FX_BATCH) {
+    bulletBatches ??= { miss: makeBulletBatch(botBulletMaterial), hit: makeBulletBatch(botHitBulletMaterial) };
+    bullets.push({ mesh: null, hit: !!isHit, from: from.clone(), direction, distance, travel: 0 });
+    return;
+  }
   const mesh = acquireBulletMesh();
   mesh.material = isHit ? botHitBulletMaterial : botBulletMaterial;
   mesh.position.copy(from);
@@ -13615,24 +13831,60 @@ function spawnBullet(from, to, isHit) {
 }
 
 function updateBullets(dt) {
+  if (bulletBatches) { bulletBatches.miss.count = 0; bulletBatches.hit.count = 0; }
   for (let i = bullets.length - 1; i >= 0; i--) {
     const bullet = bullets[i];
     bullet.travel += BOT_BULLET_SPEED * dt;
     const travelled = Math.min(bullet.travel, bullet.distance);
-    bullet.mesh.position.copy(bullet.from).addScaledVector(bullet.direction, travelled);
-    if (bullet.travel >= bullet.distance) {
-      bullet.mesh.visible = false;
-      bulletPool.push(bullet.mesh);
-      bullets.splice(i, 1);
+    if (bullet.mesh) {
+      bullet.mesh.position.copy(bullet.from).addScaledVector(bullet.direction, travelled);
+      if (bullet.travel >= bullet.distance) {
+        bullet.mesh.visible = false;
+        bulletPool.push(bullet.mesh);
+        bullets.splice(i, 1);
+      }
+      continue;
     }
+    if (bullet.travel >= bullet.distance) { bullets.splice(i, 1); continue; }
+    const b = bullet.hit ? bulletBatches.hit : bulletBatches.miss;
+    if (b.count >= BULLET_BATCH_MAX) continue;
+    _bulletMat4.makeTranslation(
+      bullet.from.x + bullet.direction.x * travelled,
+      bullet.from.y + bullet.direction.y * travelled,
+      bullet.from.z + bullet.direction.z * travelled);
+    b.setMatrixAt(b.count++, _bulletMat4);
+  }
+  if (bulletBatches) for (const b of [bulletBatches.miss, bulletBatches.hit]) {
+    b.visible = b.count > 0;
+    if (b.count > 0) b.instanceMatrix.needsUpdate = true;
   }
 }
 function updateTracers(now) {
   for (let i = tracers.length - 1; i >= 0; i--) {
-    if (now >= tracers[i].expireAt) {
-      tracers[i].line.visible = false;
-      tracerPool.push(tracers[i].line);
+    const t = tracers[i];
+    if (now >= t.expireAt) {
+      if (t.line) { t.line.visible = false; tracerPool.push(t.line); }
       tracers.splice(i, 1);
+    }
+  }
+  if (!tracerBatches) return;
+  tracerBatches.miss.count = 0;
+  tracerBatches.hit.count = 0;
+  for (const t of tracers) {
+    if (t.line) continue;
+    const b = t.hit ? tracerBatches.hit : tracerBatches.miss;
+    if (b.count >= TRACER_BATCH_MAX) continue;
+    const o = b.count * 6, a = b.attr.array;
+    a[o] = t.fx; a[o + 1] = t.fy; a[o + 2] = t.fz;
+    a[o + 3] = t.tx; a[o + 4] = t.ty; a[o + 5] = t.tz;
+    b.count++;
+  }
+  for (const b of [tracerBatches.miss, tracerBatches.hit]) {
+    b.geom.setDrawRange(0, b.count * 2);
+    b.lines.visible = b.count > 0;
+    if (b.count > 0) {
+      b.attr.addUpdateRange(0, b.count * 6);
+      b.attr.needsUpdate = true;
     }
   }
 }
@@ -13655,6 +13907,17 @@ function rebuildNavOverlay() {
       if (!isWalkableCell(navGrid, c, r)) continue;
       const w = cellToWorld(navGrid, c, r);
       pts.push(w.x, decalY(w.x, w.z, 0.03), w.z);
+    }
+  }
+  // Level cells (deck tops, ramp treads) draw at their own height -- the overlay is how you see
+  // that a platform is walkable at all, and drawing them on the ground would hide exactly that.
+  const lv = navGrid.levels;
+  if (lv) {
+    for (let i = 0; i < lv.count; i++) {
+      if (lv.cells[i] !== 1) continue;
+      const base = lv.base[i];
+      const w = cellToWorld(navGrid, base % navGrid.cols, (base / navGrid.cols) | 0);
+      pts.push(w.x, lv.y[i] + 0.03, w.z);
     }
   }
   navPointsGeom.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
@@ -13680,10 +13943,10 @@ function updateNavPathLine() {
   const p = botXZ(bot);
   const array = navPathPositions.array;
   const count = Math.min(NAV_PATH_MAX_POINTS, currentPath.length + 1);
-  array[0] = p.x; array[1] = decalY(p.x, p.z, 0.05); array[2] = p.z;
+  array[0] = p.x; array[1] = surfaceY(p, 0.05); array[2] = p.z;
   for (let i = 1; i < count; i++) {
     const w = currentPath[i - 1];
-    array[i * 3] = w.x; array[i * 3 + 1] = decalY(w.x, w.z, 0.05); array[i * 3 + 2] = w.z;
+    array[i * 3] = w.x; array[i * 3 + 1] = surfaceY(w, 0.05); array[i * 3 + 2] = w.z;
   }
   navPathPositions.addUpdateRange(0, count * 3);   // backend clears the range list after upload
   navPathPositions.needsUpdate = true;
@@ -14392,8 +14655,10 @@ structureMixSelect.style.cssText = 'flex:1;margin-left:6px';
 structureMixSelect.title = 'Buildings are wall shells with doorways; pockets are small carved mazes; '
   + 'obstacle fields are boxes of mixed height (tall ones break sight, low ones you shoot over). '
   + 'Terraces are raised ground, so they need terrain switched on -- with it off they are dropped '
-  + 'from Mixed rather than placed invisibly.';
+  + 'from Mixed rather than placed invisibly. Platforms are the only kind bots walk ON TOP of: a '
+  + 'deck on posts with a ramp up, and the deck centre becomes a patrol goal so they actually climb it.';
 for (const [v, t] of [['mixed', 'Mixed'], ['buildings', 'Buildings'], ['pockets', 'Maze pockets'],
+  ['platforms', 'Platforms (raised decks)'],
   ['obstacles', 'Obstacle fields'], ['portals', 'Portals (walk under)'], ['colonnades', 'Colonnades'],
   ['slots', 'Slots'], ['ramparts', 'Ramparts'], ['corners', 'Corners'], ['terraces', 'Terraces (needs terrain)']]) {
   structureMixSelect.append(Object.assign(document.createElement('option'), { value: v, textContent: t }));
@@ -15121,6 +15386,8 @@ ctrl.append(
     'How much of the wet ground turns to standing water'),
   makeWeatherSlider('sky lid', 0, 1, 0.05, 2, () => weather.lid, (v) => { weather.lid = v; setRainAmount(weather.rain); },
     'How far the rain covers the theme sky with cloud; 0 keeps the sky as authored'),
+  makeWeatherSlider('sight loss', 0, 0.8, 0.05, 2, () => weather.sightLoss, (v) => { weather.sightLoss = v; },
+    'How much of every bot\'s sight distance heavy rain takes away (0 keeps perception dry); a lightning flash gives it back for a beat'),
   makeWeatherToggle('Lightning', () => weather.lightning, (v) => { weather.lightning = v; },
     'Bolts and thunder while it storms'),
   makeWeatherToggle('Rain shadow under roofs', () => weather.occluders, (v) => { weather.occluders = v; rain.uniforms.uOccOn.value = v && rainOcc ? 1 : 0; if (v) rainOccDirty = true; },
@@ -15400,6 +15667,16 @@ rigLodBtn.title = 'Bots beyond 18m re-solve their body/weapon pose every 2nd fra
 function updateRigLodButton() { rigLodBtn.textContent = `Rig LOD: ${botRigLodEnabled ? 'On' : 'Off'}`; }
 rigLodBtn.addEventListener('click', () => { botRigLodEnabled = !botRigLodEnabled; updateRigLodButton(); });
 updateRigLodButton();
+const rigBudgetBtn = document.createElement('button');
+rigBudgetBtn.title = 'Cap on full-rate rig solves per frame: the camera subject plus the N nearest bots solve every frame, everyone else every 2nd frame (4th beyond 45m) however close they stand. Pose rate only; behaviour and hitboxes are unaffected. Needs Rig LOD on.';
+const RIG_BUDGET_STEPS = [0, 4, 6, 10, 16];
+function updateRigBudgetButton() { rigBudgetBtn.textContent = `Rig budget: ${BOT_RIG_BUDGET > 0 ? `${BOT_RIG_BUDGET} bots` : 'Off'}`; }
+rigBudgetBtn.addEventListener('click', () => {
+  const i = RIG_BUDGET_STEPS.indexOf(BOT_RIG_BUDGET);
+  BOT_RIG_BUDGET = RIG_BUDGET_STEPS[(i + 1) % RIG_BUDGET_STEPS.length];
+  updateRigBudgetButton();
+});
+updateRigBudgetButton();
 
 // --- render-cost toggles (2026-08-03 fps plan). Each is an A/B: flip it and watch bodyFlush. ---
 const flushLodBtn = document.createElement('button');
@@ -15447,6 +15724,25 @@ rboxLodBtn.addEventListener('click', () => {
   updateRboxLodButton();
 });
 updateRboxLodButton();
+const gearMergeBtn = document.createElement('button');
+gearMergeBtn.title = 'Bake all gear on one anchor and role into a single geometry per body. Identical look, far fewer parts per bot in the flush walk and instance pool. Toggling rebuilds every live body.';
+function updateGearMergeButton() { gearMergeBtn.textContent = `Gear merge: ${BOT_GEAR_MERGE ? 'On' : 'Off'}`; }
+gearMergeBtn.addEventListener('click', () => {
+  BOT_GEAR_MERGE = !BOT_GEAR_MERGE;
+  rebuildBotProceduralBodies();
+  updateGearMergeButton();
+});
+updateGearMergeButton();
+const confirmStrideBtn = document.createElement('button');
+confirmStrideBtn.title = 'Reuse the previous sentry tick\'s target-confirm line-of-sight ray every other tick per bot. Halves those raycasts but can delay a visibility change by one tick (~16 ms), so it starts off.';
+function updateConfirmStrideButton() { confirmStrideBtn.textContent = `Confirm-ray stride: ${BOT_CONFIRM_STRIDE ? 'On' : 'Off'}`; }
+confirmStrideBtn.addEventListener('click', () => { BOT_CONFIRM_STRIDE = !BOT_CONFIRM_STRIDE; updateConfirmStrideButton(); });
+updateConfirmStrideButton();
+const fxBatchBtn = document.createElement('button');
+fxBatchBtn.title = 'Draw all live tracers and bullets through shared instanced batches (4 draw calls total) instead of one object each. Same geometry and materials, so the picture is identical. Affects rounds fired after the toggle.';
+function updateFxBatchButton() { fxBatchBtn.textContent = `Shot FX batching: ${BOT_FX_BATCH ? 'On' : 'Off'}`; }
+fxBatchBtn.addEventListener('click', () => { BOT_FX_BATCH = !BOT_FX_BATCH; updateFxBatchButton(); });
+updateFxBatchButton();
 function updateTacticalVisualsButton() {
   tacticalVisualsBtn.textContent = `Sight + health visuals: ${botTacticalVisualsEnabled ? 'On' : 'Off'}`;
 }
@@ -16463,7 +16759,7 @@ updateRecordButton();
 renderBotStateRecord();
 // The six LOD/stagger toggles are frame-budget A/B instruments, not gameplay: they move to the
 // Perf / LOD card in the Debug tab rather than competing with the spawn buttons for attention.
-perfLodControls.push(thinkStaggerBtn, rigLodBtn, flushLodBtn, botCullBtn, botHideBtn, rboxLodBtn);
+perfLodControls.push(thinkStaggerBtn, rigLodBtn, rigBudgetBtn, flushLodBtn, botCullBtn, botHideBtn, rboxLodBtn, gearMergeBtn, confirmStrideBtn, fxBatchBtn);
 // Split 2026-08-08: the card that opens on load holds only "put bots on the map". Who those bots
 // are is a second question, asked far less often, so the role mix moves to its own card.
 ctrl.append(botTeamBtn, spawnBtn, teamBotCountRow, addFriendlyBtn, addEnemyBtn, removeBtn);
@@ -16976,6 +17272,7 @@ debrisEnableBtn.title = 'Shrapnel that bounces and flickers, rubble thrown along
   + 'Needs Blast FX on. Pieces ignore walls for now.';
 const debrisClearBtn = document.createElement('button');
 debrisClearBtn.textContent = 'Clear debris';
+debrisClearBtn.title = 'Remove every fragment, chunk and dust puff on the map right now. Blasts from here on still throw more.';
 debrisClearBtn.addEventListener('click', () => debrisSim.clear());
 function updateDebrisButtons() {
   debrisEnableBtn.textContent = `Blast debris: ${botDebrisSettings.enabled ? 'On' : 'Off'}`;
@@ -16986,18 +17283,26 @@ updateDebrisButtons();
 ctrl.append(debrisEnableBtn, debrisClearBtn);
 const debrisChecks = document.createElement('div');
 function debrisCheck(label, get, set, title) {
-  const lab = document.createElement('label'); lab.style.display = 'block'; if (title) lab.title = title;
+  const lab = document.createElement('label'); lab.style.display = 'block'; lab.title = title;
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  inp.title = title;   // the label alone leaves the box itself with no hover text
   inp.addEventListener('change', () => set(inp.checked));
   botTuneSyncers.push(() => { inp.checked = get(); });
   lab.append(inp, document.createTextNode(' ' + label));
   debrisChecks.append(lab);
 }
-for (const [key, label] of [['shrapnel', 'shrapnel'], ['rubble', 'rubble'], ['glow', 'glow shells on hot pieces'],
-  ['lights', 'point lights on the hottest rubble (2)'], ['sparks', 'ember sparks'], ['smoke', 'debris dust']]) {
-  debrisCheck(label, () => debrisRenderer.show[key], (v) => { debrisRenderer.show[key] = v; });
+for (const [key, label, tip] of [
+  ['shrapnel', 'shrapnel', 'Tetrahedral fragments thrown by the blast. They bounce, skid, flicker between three reds and trail smoke while they are moving'],
+  ['rubble', 'rubble', 'Dodecahedral chunks thrown along the blast heading. Non-uniform, they tumble, and 28% of them smoulder where they land'],
+  ['glow', 'glow shells on hot pieces', 'An additive shell around each piece that is still hot. Two extra draws, and it is most of what sells a fragment at night'],
+  ['lights', 'point lights on the hottest rubble (2)', 'Real dynamic lights on the two brightest smouldering chunks. Every resident light costs every pixel, which is why there are two here and eight in the original'],
+  ['sparks', 'ember sparks', 'Triangular embers that pop off smouldering rubble'],
+  ['smoke', 'debris dust', 'The dust a piece drags while it moves and the smoke a smouldering one gives off. One instanced billboard pool'],
+]) {
+  debrisCheck(label, () => debrisRenderer.show[key], (v) => { debrisRenderer.show[key] = v; }, tip);
 }
-debrisCheck('rubble only on ground blasts', () => botDebrisSettings.rubbleOnGround, (v) => { botDebrisSettings.rubbleOnGround = v; });
+debrisCheck('rubble only on ground blasts', () => botDebrisSettings.rubbleOnGround, (v) => { botDebrisSettings.rubbleOnGround = v; },
+  'Off lets an airburst throw wreckage too. On, only a blast within 0.6 of its radius of the ground does');
 debrisCheck('ground slabs (bomb-scale)', () => botDebrisSettings.slabs, (v) => { botDebrisSettings.slabs = v; },
   'The drop-pod preset: metre-wide smouldering slabs that shed secondary shrapnel while they fly');
 debrisCheck('tier budget scales a volley', () => botDebrisSettings.tiering, (v) => { botDebrisSettings.tiering = v; },
@@ -17890,6 +18195,7 @@ function captureMazeState() {
     // they carry no y — they re-drape onto whatever ground the slot restores.
     trees: { ...treeSettings },
     treesPlanted: botTrees.serialize(),
+    weather: { ...weather },
   };
 }
 
@@ -17919,7 +18225,7 @@ function applyMazeState(data) {
     assignKnown(structureSettings, data.structures, Object.keys(structureSettings));
     structureSettings.count = Math.floor(clampOr(structureSettings.count, 8, 0, 24));
     structureSettings.minSeparation = clampOr(structureSettings.minSeparation, 5, 2, 24);
-    if (!['mixed', 'buildings', 'pockets', 'obstacles', 'portals'].includes(structureSettings.mix)) structureSettings.mix = 'mixed';
+    if (!MIX_NAMES.includes(structureSettings.mix)) structureSettings.mix = 'mixed';
   }
   WALL_H = clampOr(data.wallHeight, WALL_H, 1, 6);
   WALL_T = clampOr(data.wallThickness, WALL_T, 0.1, 1);
@@ -17956,6 +18262,12 @@ function applyMazeState(data) {
   treeSettings.familyIds = Array.isArray(data.trees?.familyIds) ? data.trees.familyIds.slice() : null;
   reloadTreeFamilies();
   botTrees.restore(Array.isArray(data.treesPlanted) ? data.treesPlanted : []);
+  // Weather: slots from before it existed leave it alone. setRainAmount re-fans everything out.
+  if (data.weather) {
+    assignKnown(weather, data.weather, Object.keys(weather));
+    rain.setWind(weather.wind, weather.wind * 0.25); rain.setGust(weather.wind * 1.5);
+    setRainAmount(clampOr(weather.rain, 0, 0, 1));
+  }
   // One rebuild for the lot: rebuildActiveLayout bakes the field (walls sink into it) then builds
   // the layout on top. Syncers run last -- the terrain toggle's tooltip reads terrainTriangleCount,
   // which only the layout rebuild writes.
@@ -18208,11 +18520,15 @@ function captureUiState() {
     perf: {
       thinkStagger: botThinkStaggerMode,
       rigLod: botRigLodEnabled,
+      rigBudget: BOT_RIG_BUDGET,
       flushLod: BOT_FLUSH_LOD,
       cullBehind: BOT_CULL_BEHIND,
       hideDistance: BOT_HIDE_M,
       rboxLod: BOT_RBOX_LOD,
       rboxLodDistance: BOT_RBOX_LOD_D,
+      gearMerge: BOT_GEAR_MERGE,
+      confirmStride: BOT_CONFIRM_STRIDE,
+      fxBatch: BOT_FX_BATCH,
     },
     visuals: visuals.getLookState(),
     audio: {
@@ -18344,6 +18660,7 @@ function applyUiState(data) {
   const perf = data.perf || {};
   if (perf.thinkStagger === 'auto' || [1, 2, 3].includes(perf.thinkStagger)) botThinkStaggerMode = perf.thinkStagger;
   botRigLodEnabled = boolOr(perf.rigLod, botRigLodEnabled);
+  if (RIG_BUDGET_STEPS.includes(perf.rigBudget)) BOT_RIG_BUDGET = perf.rigBudget;
   BOT_FLUSH_LOD = boolOr(perf.flushLod, BOT_FLUSH_LOD);
   BOT_CULL_BEHIND = boolOr(perf.cullBehind, BOT_CULL_BEHIND);
   if (BOT_HIDE_STEPS.includes(perf.hideDistance)) {
@@ -18362,8 +18679,13 @@ function applyUiState(data) {
     rboxLodStep = BOT_RBOX_LOD === 2 ? RBOX_LOD_STEPS.length - 1
       : BOT_RBOX_LOD === 1 ? Math.max(1, RBOX_LOD_STEPS.indexOf(BOT_RBOX_LOD_D)) : 0;
   }
-  updateThinkStaggerButton(); updateRigLodButton(); updateFlushLodButton();
-  updateBotCullButton(); updateBotHideButton(); updateRboxLodButton(); updateRecordButton();
+  const gm = boolOr(perf.gearMerge, BOT_GEAR_MERGE);
+  if (gm !== BOT_GEAR_MERGE) { BOT_GEAR_MERGE = gm; rebuildBotProceduralBodies(); }
+  BOT_CONFIRM_STRIDE = boolOr(perf.confirmStride, BOT_CONFIRM_STRIDE);
+  BOT_FX_BATCH = boolOr(perf.fxBatch, BOT_FX_BATCH);
+  updateThinkStaggerButton(); updateRigLodButton(); updateRigBudgetButton(); updateFlushLodButton();
+  updateBotCullButton(); updateBotHideButton(); updateRboxLodButton(); updateGearMergeButton();
+  updateConfirmStrideButton(); updateFxBatchButton(); updateRecordButton();
 
   visuals.applyLookState(data.visuals);
   syncReactiveLightsUi();   // the reactive-lights controls live in the Audio section, not buildPanel

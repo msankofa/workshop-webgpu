@@ -268,8 +268,13 @@ export function pickCoverCorner({ corners, field, navGrid, searchRadius, skip },
   const threatDist = Math.hypot(threatPos.x - botPos.x, threatPos.z - botPos.z);
   const bear = threatDist > 1e-4 ? { x: (threatPos.x - botPos.x) / threatDist, z: (threatPos.z - botPos.z) / threatDist } : null;
   let best = null, bestScore = -Infinity;
+  // Padded squared-radius prefilter: rejects far corners without Math.hypot, conservatively enough
+  // that every corner the exact test would keep still reaches it — results are unchanged.
+  const prefilter2 = searchRadius * searchRadius * (1 + 1e-6);
   for (const rec of corners) {
-    const dist = Math.hypot(rec.anchorPos.x - botPos.x, rec.anchorPos.z - botPos.z);
+    const adx = rec.anchorPos.x - botPos.x, adz = rec.anchorPos.z - botPos.z;
+    if (adx * adx + adz * adz > prefilter2) continue;
+    const dist = Math.hypot(adx, adz);
     if (dist > searchRadius) continue;
     if (skip && skip(rec)) continue;
     if (field.canSee(threatCell, rec.anchorCell) || !field.canSee(threatCell, rec.peekCell)) continue;

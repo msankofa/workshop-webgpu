@@ -1,0 +1,36 @@
+New behavior: pokemon-park.html?seed=4&fpsCap=off
+  - Previous behavior: pokemon-park.html?seed=4&fpsCap=60
+
+?seed=4&fpsCap=off&speciesLoad=preload
+
+Test them individually from the same normal URL and route, recording average draws, peak draws, FPS, and worst frame time. Recommended order:
+
+&shadows=off
+&creatures=off
+&flora=off
+&sky=off
+&terrain=off
+
+  Current evidence makes shadows, creatures, and flora the leading suspects. Trees can account for around 240 draw meshes, creature models contain numerous
+  separately drawn meshes, and all creature meshes currently cast shadows. Terrain itself is one mesh, so it is unlikely to cause 600 draws, though it may
+  contribute triangles or GPU fill cost.
+
+  If flora causes a major reduction, isolate its components with:
+
+&flora=notrees
+&flora=nograss
+&flora=norocks
+
+promise: TypeError: Cannot read properties of null (reading 'depthTexture')
+    at ShadowNode.updateShadow (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:44585:34)
+    at ShadowNode.updateBefore (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:44728:9)
+    at NodeFrame.updateBeforeNode (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:53072:15)
+    at NodeManager.updateBefore (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:55031:47)
+    at WebGPURenderer._renderObjectDirect (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:61306:16)
+    at WebGPURenderer.renderObject (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:61231:9)
+    at WebGPURenderer._renderObjects (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:61026:9)
+    at WebGPURenderer._renderScene (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:59491:64)
+    at WebGPURenderer.render (https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js:59067:8)
+    at Animation.animate [as _animationLoop] (http://127.0.0.1:8080/demos/pokemon-park.html?seed=4&fpsCap=off&speciesLoad=preload:1364:14)
+Meadow
+1 creatures moving · 9 loaded · 113 species · 4395 trees of 15 species · 0 moves · 45 fps · worst 34 ms · 561 draws, 1358k tris · 7 culled · 1015 draws merged awayMeowth used Sand Attack!

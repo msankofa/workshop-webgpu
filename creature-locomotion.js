@@ -48,6 +48,7 @@ export const LOCOMOTION = {
   BODY_MIN_CLEAR: 0.30,   // hard floor under the body, independent of the leg spring
   ORIENT_LERP: 0.08,
   MAX_LEGS: 16,           // sizes the pooled support-polygon buffer
+  MAX_CONTACTS: 160,      // the same buffer once a leg may contribute a patch rather than one point
 };
 
 export const GAITS = {
@@ -358,7 +359,7 @@ export function advanceLeg(leg, gait, h, triggerH, triggerV, restGround, onFootf
 
 // ===================== balance =====================
 
-const _groundedBuf = Array.from({ length: LOCOMOTION.MAX_LEGS }, () => ({ x: 0, y: 0, z: 0 }));
+const _groundedBuf = Array.from({ length: LOCOMOTION.MAX_CONTACTS }, () => ({ x: 0, y: 0, z: 0 }));
 const _hullOut = [];
 const _near = { x: 0, z: 0 };
 const _support = {
@@ -396,11 +397,23 @@ export function bodySupport(legs, pos) {
   s.comZ = (cz + pos.z) * 0.5;
   s.comY = (cy + pos.y) * 0.5 + 0.01;
 
-  let groundedCount = 0, firstGroundedEnd = null, polyY = 0;
+  let groundedCount = 0, firstGroundedEnd = null, polyY = 0, groundedLegs = 0;
   for (const leg of legs) {
     if (!leg.stepping && leg.targetGrounded) {
-      if (groundedCount === 0) firstGroundedEnd = leg.end;
-      if (groundedCount < _groundedBuf.length) {
+      if (groundedLegs === 0) firstGroundedEnd = leg.end;
+      groundedLegs++;
+      // A leg may offer a contact PATCH instead of a point. One foot with a patch is a real polygon, which
+      // is the whole gain: two point-feet hull to a line and the polygon has no interior at all.
+      const pts = (leg.contacts && leg.contacts.length >= 3) ? leg.contacts : null;
+      if (pts) {
+        for (const p of pts) {
+          if (groundedCount >= _groundedBuf.length) break;
+          const pt = _groundedBuf[groundedCount];
+          pt.x = p.x; pt.y = p.y; pt.z = p.z;
+          polyY += p.y;
+          groundedCount++;
+        }
+      } else if (groundedCount < _groundedBuf.length) {
         const pt = _groundedBuf[groundedCount];
         pt.x = leg.end.x; pt.y = leg.end.y; pt.z = leg.end.z;
         polyY += leg.end.y;
@@ -408,9 +421,12 @@ export function bodySupport(legs, pos) {
       }
     }
   }
-  s.groundedCount = groundedCount;
+  // `groundedCount` stays a count of LEGS, which is what every caller means by it. The polygon is built
+  // from `contactCount` points, which is the same number only when no leg offered a patch.
+  s.groundedCount = groundedLegs;
+  s.contactCount = groundedCount;
   s.firstGroundedEnd = firstGroundedEnd;
-  s.fG = groundedCount / legs.length;
+  s.fG = groundedLegs / legs.length;
 
   let nx = 0, ny = 1, nz = 0;
   s.haveNormal = groundedCount > 0;

@@ -10,6 +10,11 @@ have no counterpart in either of our viewers.
 Wired into **`bot-viewer-v3.html`**. Built in a fork first, browser-approved on 2026-08-10, and
 merged straight back — the fork is gone.
 
+Also wired into **`demos/pokemon-park.html`**, which is the first host that does not draw its roads
+by hand: `park-trails.js` routes A* between park landmarks and feeds the polylines straight to
+`network.addRoadPath`. Nothing in this subsystem had to change for it. See
+`docs/subsystems/pokemon-park.md`.
+
 ## The one idea that matters: roads are draped, not carved
 
 Nothing in this subsystem modifies terrain. A road is a ribbon of triangles whose every vertex —

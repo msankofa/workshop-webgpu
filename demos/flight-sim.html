@@ -196,6 +196,26 @@
     whatever is nearest your boresight, and falls off with angle, so it helps a near miss and does
     nothing for a wild one. 0 is pure iron sights.</p>
   <label class="chk"><input type="checkbox" id="volFx" checked> volumetric explosions</label>
+  <label class="chk"><input type="checkbox" id="debrisOn" checked> blast debris (shrapnel, wreckage, embers)</label>
+  <div class="row">
+    <label>debris size</label><output id="debrisSizeOut">3.0</output>
+    <input type="range" id="debrisSize" min="0.5" max="8" step="0.1" value="3">
+  </div>
+  <div class="row">
+    <label>momentum carried</label><output id="debrisMomOut">0.50</output>
+    <input type="range" id="debrisMom" min="0" max="1" step="0.05" value="0.5">
+  </div>
+  <p class="sub" style="margin:2px 0 0">Every craft-sized explosion throws fragments that bounce and
+    flicker out, and wreckage that tumbles, smoulders and trails dust for about twenty seconds.
+    Momentum is how much of the dead aircraft's speed the pieces launch with: at 0 the wreckage stops
+    dead in the air, at 1 it keeps flying. Nothing in the sim slows it down afterwards, so the
+    inherited speed is capped at 90 m/s and a wreck's downward half is left to the ground.</p>
+  <label class="chk"><input type="checkbox" id="hybridWater"> hybrid water (waves, foam, depth colour)</label>
+  <div class="row" style="grid-template-columns:auto 1fr auto">
+    <button class="btn" id="waterCfgRefresh" style="width:auto;margin:0;padding:4px 9px">refresh</button>
+    <span class="sub" style="margin:0">water-config.json</span>
+    <output id="waterCfgOut" style="font-size:11px">not loaded</output>
+  </div>
   <label class="chk"><input type="checkbox" id="muteOn"> mute</label>
   <label class="chk"><input type="checkbox" id="assistOn" checked> stability assist (weathervaning)</label>
   <button class="btn" id="respawn">Respawn (R)</button>
@@ -233,9 +253,15 @@ import {
 // spsa-gait-tuning.html is: the whole point of it is to argue for shipping those modules, and a
 // private copy would be arguing for nothing.
 import {
-  TS, RIDGE_AMP, BASE_OFFSET, RING_N, RING_BASE, RING_LEVELS, CELL0, CELL_MAX,
-  WAVES, heightAt, agl,
+  TS, RIDGE_AMP, BASE_OFFSET, RING_N, RING_BASE, RING_LEVELS, CELL0, CELL_MAX, SEA_LEVEL,
+  WAVES, heightAt, agl, dryAnchor,
 } from '../flight-terrain.js';
+// Gerstner swell, Beer-Lambert depth colour, GGX glint and shore foam, shared with
+// demos/water-demo.html. See docs/water-vs-waterthreejs-comparison.md.
+import {
+  makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface,
+  applyWaterConfig, loadWaterConfig,
+} from '../water-hybrid.js';
 import {
   AIRFRAMES, TUNE_RANGE, DEFAULTS, G, airframeKeys, registerAirframe,
 } from '../flight-airframes.js';
@@ -266,6 +292,12 @@ import {
 } from '../flight-drones.js';
 import { buildCraftMesh, registerCraftMesh } from '../flight-meshes.js';
 import { createRainSystem, createLightningBolt, createRainBed, playThunder } from '../rain.js';
+// The persistent half of an explosion, ported from html-game-v2 (see docs/subsystems/fx.md): pieces
+// that keep flying, bounce, tumble and smoulder long after the fireball is gone. The volumetric puff
+// above is the body of the blast; this is everything the blast throws.
+import { createDebrisSim, TIER_DEBRIS_SCALE } from '../blast-debris-sim.js';
+import { createDebrisRenderer } from '../blast-debris.js';
+import { createExplosionBudget } from '../explosion-tier.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ---------------------------------------------------------------------------
@@ -506,9 +538,9 @@ scene.add(water);
 // Sky and cloud deck
 // ---------------------------------------------------------------------------
 
-const skyMat = new MeshBasicNodeMaterial({ side: THREE.BackSide, fog: false, depthWrite: false });
-skyMat.colorNode = Fn(() => {
-  const dir = normalize(positionLocal);
+// Split out of skyMat so the water can reflect the same sky it sits under. Returns the visible
+// colour only; the thermal tag is applied by each caller, because water is not sky-temperature.
+const skyColorAt = Fn(([dir]) => {
   const up = clamp(dir.y, -1, 1);
   const horizon = vec3(0.72, 0.80, 0.88);
   const zenith = vec3(0.16, 0.36, 0.68);
@@ -520,14 +552,96 @@ skyMat.colorNode = Fn(() => {
   c = c.add(vec3(1.0, 0.80, 0.52).mul(pow(clamp(sd, 0, 1), 7).mul(0.16)));      // glow
   // overcast: a flat grey that is a little brighter at the horizon, and the sun disc goes with it
   c = mix(c, mix(vec3(0.46, 0.49, 0.53), vec3(0.30, 0.33, 0.38), pow(clamp(up, 0, 1), 0.5)), uOvercast);
+  return c;
+});
+
+const skyMat = new MeshBasicNodeMaterial({ side: THREE.BackSide, fog: false, depthWrite: false });
+skyMat.colorNode = Fn(() => {
+  const dir = normalize(positionLocal);
+  const sd = dot(dir, vec3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z));
   // the sky is cold; the sun's disc is not — a thermal sensor sees it as a hot spot the same way
-  return heatMix(c, float(HEAT.sky).add(pow(clamp(sd, 0, 1), 400)));
+  return heatMix(skyColorAt(dir), float(HEAT.sky).add(pow(clamp(sd, 0, 1), 400)));
 })();
 skyMat.userData.irTagged = true;
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), skyMat);
 sky.scale.setScalar(24000);
 sky.frustumCulled = false;
 scene.add(sky);
+
+// ---------------------------------------------------------------------------
+// Hybrid water (toggle) — the same surface shading demos/water-demo.html uses
+// ---------------------------------------------------------------------------
+//
+// The flat plane above is one quad tinted blue. This is the alternative: a Gerstner spectrum with
+// deep-water dispersion actually displacing the surface, Beer-Lambert depth colour over a sand bed,
+// a GGX sun glint whose roughness grows with distance so the horizon does not sparkle into
+// aliasing, and foam on breaking crests and along the shore. Both exist at once and the checkbox
+// swaps which one is visible, so the difference is a single click rather than a rebuild.
+//
+// Geometry is a radial grid re-centred on the aircraft: metre-scale cells underneath it growing to
+// kilometres at the horizon, which is 36k vertices instead of the ~90M a uniform grid of the same
+// near-field detail would need across 26 km.
+//
+// Depth comes from tslHeight, the terrain's own GPU twin, so the shoreline foam follows the real
+// coast and the surface fades out to nothing over dry land — which is also why it does not write
+// depth: an invisible fragment must not hide the terrain behind it.
+// Named 'ocean' because that is the entry it reads out of water-config.json, which is where the
+// actual numbers live — tuned in demos/water-demo.html and picked up by the refresh button next to
+// the toggle. The preset here is only the fallback for a missing or unreadable file.
+const uWaterWind = uniform(new THREE.Vector2(1, 0));
+const waterProfile = makeWaterProfile({ name: 'ocean', uTime: time, uWind: uWaterWind });
+applyWaterPreset(waterProfile, 'hybrid');
+waterProfile.wave.count = 14;          // 26 sin/cos per fragment is not worth it at flight speed
+waterProfile.wave.baseLength = 190;    // longer swell, because this ocean is seen from altitude
+waterProfile.wave.baseAmp = 1.6;
+rebuildWaveTable(waterProfile);
+waterProfile.depthScale.value = 34;
+waterProfile.foamShoreDepth.value = 6;
+waterProfile.foamCrestH.value = 1.1;
+
+const hybridWater = createOceanSurface({
+  profile: waterProfile,
+  grid: { rings: 160, spokes: 224, r0: 2, r1: 26000 },
+  level: 0,
+  depthWrite: false,
+  renderOrder: 1,
+  sky: (dir) => skyColorAt(dir),
+  // Past the outermost clipmap ring there is no terrain drawn, so the height field there would
+  // punch dry holes into the ocean with nothing standing in them. Fade to open-sea depth instead.
+  depthAt: (xz) => {
+    const edge = RING_BASE * 2 ** (RING_LEVELS - 1);
+    const beyond = smoothstep(edge * 0.75, edge, length(xz.sub(uCamXZ)));
+    return mix(tslHeight(xz, tslSpacing(xz)).negate(), float(80), beyond);
+  },
+  sunDir: vec3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z),
+  sunColor: vec3(1.0, 0.94, 0.84),
+  dispFade: [1200, 4500],
+  normalFade: [2500, 9000],
+});
+// heatTag() would overwrite the colour graph with the material's flat colour, so the thermal blend
+// is folded into the graph instead, the same way the sky and terrain do it.
+hybridWater.material.colorNode = heatMix(hybridWater.material.colorNode, HEAT.water);
+hybridWater.material.userData.irTagged = true;
+hybridWater.mesh.visible = false;
+scene.add(hybridWater.mesh);
+
+// Re-read water-config.json and push it into the live profile. The uniforms and the wave table are
+// swapped in place, so nothing rebuilds and the surface changes on the next frame.
+async function refreshWaterConfig() {
+  const out = document.getElementById('waterCfgOut');
+  let status;
+  try {
+    const cfg = await loadWaterConfig('../');
+    const applied = applyWaterConfig(cfg, { ocean: waterProfile });
+    const deg = THREE.MathUtils.degToRad(waterProfile.wave.windDeg);
+    uWaterWind.value.set(Math.cos(deg), Math.sin(deg));
+    status = applied.length ? (cfg.savedAt || 'loaded') : 'no ocean entry';
+  } catch (err) {
+    status = `unreadable: ${err.message}`;
+  }
+  if (out) out.textContent = status;
+  return status;
+}
 
 // a real altitude you can climb through and look down on, not a camera-locked dome
 const CLOUD_Y = 1400;
@@ -800,28 +914,37 @@ function buildSite(kind, x, z, team = 1) {
   return site;
 }
 
+// The two base clusters, as offsets from their own anchor. They are laid out on purpose — the radar
+// in the middle of its ring, the depots away from the hangars — so the anchor moves and the shape
+// does not.
+const DEFENDED_BASE = [
+  ['radar', 0, 0], ['sam', 260, 120], ['sam', -300, -90],
+  ['aa', 120, -240], ['aa', -150, 250], ['aa', 340, -330],
+];
+// A second, UNDEFENDED base on the far side of you. Nothing here shoots, so it is where you go to
+// practise a ground attack run, and where the fuel depot pays out the biggest blast in the demo. It
+// is deliberately out of the SAM ring so you can reach it without fighting through.
+const UNDEFENDED_BASE = [
+  ['hq', 0, 0], ['hangar', 420, -60], ['hangar', 420, 90],
+  ['depot', -240, 200], ['depot', -190, 320],
+];
+
+// Buildings used to go wherever the offset landed, and 43% of this field is under the water plane,
+// so most of a base was usually submerged. `dryAnchor` slides the cluster to the nearest footing
+// where every building clears the waterline.
+function buildCluster(list, x, z, opts) {
+  const a = dryAnchor(x, z, list.map(([, ox, oz]) => [ox, oz]), opts);
+  for (const [kind, ox, oz] of list) buildSite(kind, a.x + ox, a.z + oz);
+  return a;
+}
+
 // One base cluster: a radar that sees for the whole site, two SAMs and three AA guns around it.
 function buildGroundSites(cx, cz) {
   for (const s of groundTargets) scene.remove(s.mesh);
   groundTargets.length = 0;
   if (!groundOn) return;
-  const bx = cx + 2600, bz = cz - 1800;
-  buildSite('radar', bx, bz);
-  buildSite('sam', bx + 260, bz + 120);
-  buildSite('sam', bx - 300, bz - 90);
-  buildSite('aa', bx + 120, bz - 240);
-  buildSite('aa', bx - 150, bz + 250);
-  buildSite('aa', bx + 340, bz - 330);
-
-  // A second, UNDEFENDED base on the far side of you. Nothing here shoots, so it is where you go
-  // to practise a ground attack run, and where the fuel depot pays out the biggest blast in the
-  // demo. It is deliberately out of the SAM ring so you can reach it without fighting through.
-  const ux = cx - 3200, uz = cz + 2400;
-  buildSite('hq', ux, uz);
-  buildSite('hangar', ux + 420, uz - 60);
-  buildSite('hangar', ux + 420, uz + 90);
-  buildSite('depot', ux - 240, uz + 200);
-  buildSite('depot', ux - 190, uz + 320);
+  const defended = buildCluster(DEFENDED_BASE, cx + 2600, cz - 1800);
+  buildCluster(UNDEFENDED_BASE, cx - 3200, cz + 2400, { avoid: defended });
 }
 
 function radarAlive() {
@@ -1667,9 +1790,121 @@ function updateParticles(pool, dt, fade) {
 const fadeFire = (t) => Math.max(0, 1 - t * t) * 0.95;
 const fadeSmoke = (t) => Math.max(0, Math.sin(Math.min(1, t * 1.6) * Math.PI * 0.85)) * 0.42;
 
+// ---------------------------------------------------------------------------
+// Blast debris
+//
+// html-game-v2's shrapnel / rubble / spark / dust pools, driven from the same explosion() every
+// fireball comes out of. Two things had to be added to the shared sim for a flight sim, and both are
+// marked as departures in blast-debris-sim.js:
+//
+//   MOMENTUM. Their game only ever blew up things standing still. An airframe coming apart at 200 m/s
+//   whose wreckage instantly hangs in the air reads as a bug, so spawn takes an inherited velocity.
+//   There is no air drag in the sim, so carrying 100% would fling chunks kilometres downrange; the
+//   "momentum carried" slider is what that fraction is, and 0.5 is a guess, not a measurement.
+//
+//   SETTLING. Their floor was flat and free to query. Here the ground is 16 waves plus a domain warp,
+//   and a thousand pieces asking for it every frame for twenty seconds is real money, so a piece that
+//   has stopped moving stops being simulated at all.
+//
+// Scale: their blast radius is a grenade's, ours is an aircraft's, hence the two mapping constants.
+// Rubble is NOT ground-gated the way it is in bot-viewer-v3 — up here it is the airframe itself
+// coming apart, so a kill at 3,000 m should rain burning wreckage the whole way down.
+// Not heightAt: BASE_OFFSET deliberately pushes the low ground under the water plane to make lakes,
+// and 45% of the field is below y=0, a mean of 158 m down. Handing the raw field to the sim would
+// drop every fragment of a kill over water through an almost-opaque surface to lie on the seabed for
+// twenty seconds. Debris stops at the waterline instead. It does not float, spread or splash — that
+// is the next piece of work — but it is at least where the explosion was.
+const debrisGroundAt = (x, z) => Math.max(SEA_LEVEL, heightAt(x, z));
+const debrisSim = createDebrisSim({ groundAt: debrisGroundAt });
+const debrisTierBudget = createExplosionBudget();
+const DEBRIS = {
+  on: true,
+  radiusScale: 3.0,     // explosion() scale -> their blastRadius: sets fragment count, size and speed
+  rubbleScale: 0.55,    // explosion() scale -> their enemy size: sets wreckage count and chunk size
+  momentum: 0.5,        // fraction of the dead thing's velocity every piece launches with
+  maxInherit: 90,       // m/s ceiling on that, standing in for the air drag the sim does not have
+  shellFragments: 0.45, // a shell burst's share of the fragment count; see spawnDebris
+};
+// The IR and NVG views recolour the whole frame from a per-material heat tag, and tagScene() sweeps
+// anything untagged at the default. Tagging here instead means the debris carries sensible heats, and
+// that the smoke's own colour graph survives — heatTag() would overwrite it, so smoke is wrapped by
+// hand with heatMix(), which is what that helper is for.
+//
+// KNOWN LIMITATION: three multiplies colorNode by instanceColor, so on the unlit pools (shrapnel,
+// sparks, glow) the heat grey comes out tinted by each piece's own colour and reads cooler than the
+// tag asks for. The rubble is a lit material and goes through heatTag's emissive path, which is
+// exact. Fixing the unlit case means a per-instance heat channel in blast-debris.js.
+function tagDebrisMaterial(mat, role) {
+  if (role === 'smoke') {
+    mat.colorNode = heatMix(mat.colorNode, HEAT.smoke);
+    mat.userData.irTagged = true;
+    return;
+  }
+  heatTag(mat, role === 'rubble' ? HEAT.warm : HEAT.fire);
+}
+// Two point lights, not html-game-v2's eight: this is a sunlit outdoor scene where a smouldering
+// chunk lights nothing anybody can see, and every resident light taxes every pixel.
+const debrisRenderer = createDebrisRenderer({
+  THREE, scene, sim: debrisSim, lightCount: 2, tagMaterial: tagDebrisMaterial,
+});
+// The module's own order would tie the dust with the volumetric puff at 12. Dust is the same kind of
+// thing as the sprite smoke above, so it takes the same slot and leaves the marched blast on top.
+debrisRenderer.meshes.smoke.renderOrder = 7;
+const _dv = new THREE.Vector3();
+// `vel` is what just died. Two corrections stand between it and the sim, and neither is optional:
+//
+//   THE CAP. Nothing in blast-debris-sim.js slows a piece down except hitting the ground, and real
+//   debris is mostly small and light, which is to say mostly drag. The 40 mm fuses at 880 m/s, and
+//   half of that handed straight to 43 fragments with 24 seconds to live launches them at 413-472 m/s
+//   and puts burning wreckage kilometres downrange from one airburst. maxInherit is the stand-in for
+//   the drag that would have bled it off inside the first second; the same burst now leaves at 57-120.
+//
+//   THE GROUND. A wreck arrives going down. Its downward momentum is what the ground absorbs; the
+//   horizontal is what skids. So within one blast radius of the surface the inherited fall is dropped
+//   and only the sideways component carries, which is also what makes a crash throw debris ALONG the
+//   flight path instead of straight into the terrain. It measures against the same waterline the sim
+//   uses, or a ditching would keep its full dive speed on 45% of the map.
+function spawnDebris(pos, scale, vel, wreckage) {
+  if (!DEBRIS.on) return;
+  const tier = debrisTierBudget.reserve('primary');
+  const t = TIER_DEBRIS_SCALE[tier] || TIER_DEBRIS_SCALE.full;
+  if (t.shrapnel <= 0 && t.rubble <= 0) return;   // lite: a sixth blast inside 320 ms throws nothing
+  const color = [1, 0.62, 0.26];
+  let velocity = null, dir = null;
+  if (vel) {
+    _dv.copy(vel).multiplyScalar(DEBRIS.momentum);
+    if (_dv.lengthSq() > DEBRIS.maxInherit * DEBRIS.maxInherit) _dv.setLength(DEBRIS.maxInherit);
+    if (_dv.y < 0 && pos.y - debrisGroundAt(pos.x, pos.z) < scale * DEBRIS.radiusScale) _dv.y = 0;
+    velocity = [_dv.x, _dv.y, _dv.z];
+    // wreckage follows the flight path; a standing target has no direction, so it gets a random one
+    const h = Math.hypot(vel.x, vel.z);
+    if (h > 1) dir = [vel.x / h, vel.z / h];
+  }
+  if (!dir) { const a = Math.random() * Math.PI * 2; dir = [Math.cos(a), Math.sin(a)]; }
+  // A shell gets a fraction of the fragments as well as none of the wreckage, and for a pool reason
+  // rather than a physical one. Fragments live 20-28 s; a gunship holding the 40 mm down at 2 rounds
+  // a second at full count fills the 900-piece pool by t=15 s and then recycles, so the fragments of
+  // the fighter you just killed are gone inside half a minute while the gun's own confetti stays.
+  // At this scale the pool still has headroom for the things that matter.
+  if (t.shrapnel > 0) {
+    debrisSim.spawnBlastShrapnel(pos.x, pos.y, pos.z, scale * DEBRIS.radiusScale, color,
+      { countScale: t.shrapnel * (wreckage ? 1 : DEBRIS.shellFragments), velocity });
+  }
+  // Wreckage is the thing that died coming apart, so only something that WAS a thing sheds it. A
+  // shell fusing in the air destroys nothing: it throws fragments and that is all. Without this the
+  // gun fills the 260-piece rubble pool with tumbling airframe chunks and starves the actual kills.
+  if (t.rubble > 0 && wreckage) {
+    debrisSim.spawnRubble(pos.x, pos.y, pos.z, scale * DEBRIS.rubbleScale, dir,
+      { countScale: t.rubble, velocity });
+  }
+}
+
 const _ev = new THREE.Vector3();
-function explosion(pos, scale, kind = 'craft') {
+// `vel` is the velocity of whatever just died, for the debris to carry — static things pass nothing.
+// `wreckage` is false for a blast that destroyed nothing of its own, i.e. a shell going off.
+function explosion(pos, scale, kind = 'craft', vel = null, wreckage = true) {
   const volumetric = kind === 'craft' && spawnVolumePuff(pos, scale);
+  if (kind === 'craft') spawnDebris(pos, scale, vel, wreckage);
   // With a real volume carrying the body of the blast, the sprites are only debris and edge flecks
   // — but only if the volume is big enough to BE the body. Past the radius cap above it is not, so
   // a fuel depot goes back to the full sprite count to fill out what the volume no longer covers.
@@ -1849,7 +2084,7 @@ function updateDrones(dt) {
     if (ev.detonate || grounded || ev.expired) {
       // a kamikaze is a warhead and goes off; the other two are just airframes and fall apart
       if (d.kind === 'kamikaze' && (ev.detonate || grounded)) {
-        explosion(d.p, 9, 'craft');
+        explosion(d.p, 9, 'craft', d.v);
         playSfx('explosion', d.p, 0.9);
       } else if (ev.detonate) {
         explosion(d.p, 5, 'hit');
@@ -1962,7 +2197,7 @@ function fireMount(f, m, target) {
 // A shell going off. Anything inside the circle is hurt, whoever fired it — same rule as a bomb,
 // and the reason a gunship orbiting friendlies has to be careful with the big gun.
 function detonateRound(b) {
-  explosion(b.p, b.blast * 0.4, 'craft');
+  explosion(b.p, b.blast * 0.4, 'craft', b.v, false);   // a shell is fragments, not wreckage
   playSfx('explosion', b.p, Math.min(1.3, 0.5 + b.blast / 40));
   for (const o of flyers) {
     if (o.dead) continue;
@@ -2019,7 +2254,8 @@ function dropBomb(f, kind) {
 // stops you releasing at fifty metres.
 function detonateBomb(b) {
   const def = b.def;
-  explosion(b.p, def.blast * 0.42, 'craft');
+  // A bomb keeps its wreckage: what a crater throws is earth, and spawnRubble is what models it.
+  explosion(b.p, def.blast * 0.42, 'craft', b.v);
   playSfx('explosion', b.p, 1.3);
   for (const o of flyers) {
     if (o.dead) continue;
@@ -2056,7 +2292,7 @@ function updateBombs(dt) {
 
 // The warhead going off, wherever it happens to be — a fuse, an interceptor killing it, or a rock.
 function detonateMissile(m) {
-  explosion(m.p, 7, 'craft');
+  explosion(m.p, 7, 'craft', m.v, false);   // a warhead has no airframe to shed
   for (const o of flyers) {
     if (o.dead || (m.owner && o.team === m.owner.team)) continue;
     const d = o.p.distanceTo(m.p);
@@ -2128,7 +2364,7 @@ function killFlyer(f, reason) {
   f.dead = true;
   f.deadTimer = 0;
   f.crashed = true;
-  explosion(f.p, f.af.hitRadius * 1.6, 'craft');
+  explosion(f.p, f.af.hitRadius * 1.6, 'craft', f.v);
   playSfx(Math.random() < 0.5 ? 'explosion' : 'explosion2', f.p, 1.3);
   for (const m of missiles) if (m.live && m.target === f) m.target = null;
   for (const d of drones) if (d.live && d.owner === f) d.owner = null;
@@ -2145,7 +2381,7 @@ function killFlyer(f, reason) {
 function wreckImpact(f) {
   const r = f.af.hitRadius;
   // bigger than the air burst: this is what is left of the fuel arriving all at once
-  explosion(f.p, r * 3.0, 'craft');
+  explosion(f.p, r * 3.0, 'craft', f.v);
   playSfx('explosion', f.p, 1.5);
   const near = player ? f.p.distanceTo(player.p) : 1e9;
   addShake(f === player ? 1.8 : Math.max(0, 1.4 - near / 700));
@@ -2294,7 +2530,7 @@ function updateCombat(dt) {
     }
 
     if (m.age > COMBAT.msl.life || m.p.y < heightAt(m.p.x, m.p.z)) {
-      explosion(m.p, 5, 'craft');
+      explosion(m.p, 5, 'craft', m.v, false);   // same warhead, whether it fused or ran out of fuel
       m.live = false; m.mesh.visible = false;
     }
   }
@@ -3602,6 +3838,26 @@ document.getElementById('groundOn').onchange = (e) => {
   buildGroundSites(player.p.x, player.p.z);
 };
 document.getElementById('volFx').onchange = (e) => { volumetricFx = e.target.checked; };
+document.getElementById('debrisOn').onchange = (e) => {
+  DEBRIS.on = e.target.checked;
+  if (DEBRIS.on) debrisTierBudget.reset();   // else the first blast back lands mid-window, degraded
+  else debrisSim.clear();
+};
+document.getElementById('debrisSize').oninput = (e) => {
+  DEBRIS.radiusScale = +e.target.value;
+  DEBRIS.rubbleScale = DEBRIS.radiusScale * 0.183;   // holds the shrapnel/wreckage ratio of the defaults
+  document.getElementById('debrisSizeOut').value = DEBRIS.radiusScale.toFixed(1);
+};
+document.getElementById('debrisMom').oninput = (e) => {
+  DEBRIS.momentum = +e.target.value;
+  document.getElementById('debrisMomOut').value = DEBRIS.momentum.toFixed(2);
+};
+document.getElementById('hybridWater').onchange = (e) => {
+  hybridWater.mesh.visible = e.target.checked;
+  water.visible = !e.target.checked;
+};
+document.getElementById('waterCfgRefresh').onclick = () => refreshWaterConfig();
+refreshWaterConfig();
 
 // ---- roster panel ----
 const rosterBox = document.getElementById('roster');
@@ -3792,6 +4048,9 @@ function frame() {
   updateDrones(dt);
   updateBombs(dt);
   updateCombat(dt);
+  // after everything that can detonate, so a blast's debris is on screen the frame it goes off
+  debrisSim.step(dt);
+  debrisRenderer.sync();
   updateAudio(player, dt);
   shake = Math.max(0, shake - dt * 6);
 
@@ -3830,6 +4089,7 @@ function frame() {
   updateRings(camera.position.x, camera.position.z);
   sky.position.copy(camera.position);
   water.position.set(camera.position.x, 0, camera.position.z);
+  if (hybridWater.mesh.visible) hybridWater.update(camera.position);
   clouds.position.set(camera.position.x, CLOUD_Y, camera.position.z);
   uCamXZ.value.set(camera.position.x, camera.position.z);
 
@@ -3843,6 +4103,7 @@ function frame() {
   if (statTimer > 0.2) {
     statTimer = 0;
     const f = player;
+    const dsn = debrisRenderer.stats;
     statsEl.innerHTML =
       `fps <b>${fps.toFixed(0)}</b> &nbsp; airframe <b>${f.af.label}</b><br>` +
       `speed <b>${f.airspeed.toFixed(1)}</b> m/s &nbsp; alt <b>${f.p.y.toFixed(0)}</b> m ` +
@@ -3853,7 +4114,10 @@ function frame() {
       `g <b>${f.gLoad.toFixed(2)}</b> &nbsp; throttle <b>${(f.throttle * 100).toFixed(0)}%</b><br>` +
       `energy <b>${(f.p.y + f.airspeed * f.airspeed / (2 * G)).toFixed(0)}</b> m ` +
       `<span style="opacity:.7">(height + speed as height)</span><br>` +
-      `depth <b>${renderer.reversedDepthBuffer ? 'reversed / float32' : 'DEFAULT — fell back'}</b>`;
+      `depth <b>${renderer.reversedDepthBuffer ? 'reversed / float32' : 'DEFAULT — fell back'}</b>` +
+      (dsn.shrapnel + dsn.rubble > 0
+        ? `<br>debris <b>${dsn.shrapnel}</b> frag, <b>${dsn.rubble}</b> wreck, <b>${dsn.smoke}</b> dust`
+        : '');
   }
 
   if (visionMode === 'rgb') renderer.render(scene, camera);

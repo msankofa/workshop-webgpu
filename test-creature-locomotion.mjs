@@ -483,9 +483,27 @@ section('6. the body is held up from the right place');
   const many = makeLegs(12, 1.0, 1.4);
   for (const leg of many) { leg.end.set(leg.restLocal.x, 0, leg.restLocal.z); leg.targetGrounded = true; }
   const s2 = bodySupport(many, new THREE.Vector3(0, 1, 0));
-  ok(s2.groundedCount === LOCOMOTION.MAX_LEGS, '24 legs clamps to MAX_LEGS instead of overrunning',
-    `${s2.groundedCount}`);
+  // `groundedCount` counts LEGS and `contactCount` counts polygon points. They were one number until a
+  // leg could offer a contact patch, and it was the buffer size that clamped both — so a 24-legged
+  // creature standing on everything reported a grounded fraction of 16/24.
+  ok(s2.groundedCount === 24, '24 grounded legs are all counted as legs', `${s2.groundedCount}`);
+  ok(s2.fG === 1, 'and the grounded fraction is 1, not 16/24', `${s2.fG}`);
+  ok(s2.contactCount <= LOCOMOTION.MAX_CONTACTS, 'the polygon buffer is not overrun', `${s2.contactCount}`);
   ok(Number.isFinite(s2.ny) && Number.isFinite(s2.comX), 'and stays finite');
+
+  // Patches are what can actually fill that buffer: 24 legs at 8 points each is 192 against 160 slots.
+  const patched = makeLegs(12, 1.0, 1.4);
+  for (const leg of patched) {
+    leg.end.set(leg.restLocal.x, 0, leg.restLocal.z);
+    leg.targetGrounded = true;
+    leg.contacts = Array.from({ length: 8 }, (_, k) => ({
+      x: leg.end.x + Math.cos(k) * 0.1, y: 0, z: leg.end.z + Math.sin(k) * 0.1,
+    }));
+  }
+  const s3 = bodySupport(patched, new THREE.Vector3(0, 1, 0));
+  ok(s3.contactCount === LOCOMOTION.MAX_CONTACTS, 'contact points clamp to the buffer', `${s3.contactCount}`);
+  ok(s3.groundedCount === 24, 'while the leg count is still the leg count', `${s3.groundedCount}`);
+  ok(Number.isFinite(s3.ny) && s3.haveSupport, 'and the polygon is still usable');
 }
 {
   // Hull edge cases.

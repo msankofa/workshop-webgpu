@@ -47,7 +47,7 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Terrain generator (authoring) | `terrain-generator.md` | `terrain-generator-v5.html`, `terrain-gen-worker.js`, `terrain-generator-js.js`, `terrain-stack.js`, `terrain-noise.js`, `terrain-paint.js`, `terrain-history.js`, `terrain-heightmap-io.js` (`terrain-generator-v4.html` kept as-is) |
 | Vegetation | `vegetation.md` | `trees.js`, `forest-gpu.js`, `forest-placement.js`, `grass.js`, `grass-compute.js`, `grass-look.js` |
 | Rocks / scree | `rocks.md` | `rocks.js`, `rocks-placement.js`, `dressing-gpu.js` (standalone; not yet wired into `environment-viewer.html`) |
-| Water | `water.md` | `water.js` |
+| Water | `water.md` | `water.js`, `water-hybrid.js`, `water-waves.js` |
 | Sky / atmosphere | `sky.md` | `sky.js`, `sky-field.js`, `clouds.js`, `stars.js`, `celestial-bodies.js` |
 | Lighting | `lighting.md` | `lights.js`, `clustered-lights.js` |
 | Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js`, `effect-renderer.js`, `projected-decals.js`, `wound-mask.js`, `blood-tuning.js`, `entity-types/effect.js`, `vision-modes.js` (RGB/NVG/thermal where heat is a material property), `damage-simulator.html` (standalone single-bot harness for tuning hit effects), `explosion-tier.js`, `blast-debris-sim.js`, `blast-debris.js`, `demos/volumetric-smoke.html` (explosion viewer: marched volume + html-game-v2 debris port) |
@@ -55,19 +55,20 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Model studio (spec + gates) | `model-studio.md` | `model-primitives.js`, `model-modifiers.js`, `model-csg.js`, `model-spec.js`, `model-targets/` |
 | Roads | `roads.md` | `roads.js`, `road-network.js`, `road-index.js`, `road-mesh.js`, `road-path.js` (wired into `bot-viewer-v3.html`) |
 | Shoot house map | `shoot-house.md` | `shoot-house.js`, `shoot-house-layout.js` |
-| Combat bots (wired) | `bots.md` | `bot-entity.js`, `bot-forensics.js`, `bot-activity.js`, `bot-aim-blend.js`, `nav-grid.js`, `bot-body-design.js`, `bot-body-hit.js`, `bot-limb-map.js`, `bot-wound.js`, `bot-bleed.js`, `bot-haywire.js`, `bot-damage-class.js`, `bot-face.js`, `bot-body-versions.js`, `bot-drones.js`, `bot-destruction.js` (pure; not wired yet), `bot-viewer-v3.html` (the live standalone harness — all new bot work goes here; `bot-viewer-v2.html` is a frozen snapshot as of 2026-08-08 and `bot-viewer.html` is the older v1) |
+| Combat bots (wired) | `bots.md` | `bot-entity.js`, `bot-forensics.js`, `bot-activity.js`, `bot-aim-blend.js`, `nav-grid.js`, `bot-body-design.js`, `bot-body-hit.js`, `bot-limb-map.js`, `bot-wound.js`, `bot-bleed.js`, `bot-haywire.js`, `bot-damage-class.js`, `bot-face.js`, `bot-body-versions.js`, `bot-drones.js`, `bot-destruction.js` (pure; not wired yet), `mocap-retarget.js` (pure; camera pose → `setRagdollPose`, demo-only), `bot-viewer-v3.html` (the live standalone harness — all new bot work goes here; `bot-viewer-v2.html` is a frozen snapshot as of 2026-08-08 and `bot-viewer.html` is the older v1) |
 | Bot design studio (workflow) | `design-studio.md` | `bot-design-studio.html` (FROZEN 2026-08-15 — infra donor for the NPC suite) |
 | NPC design suite | `npc-suite.md` | `npc-suite.html`, `npc-suite-shell.js`, `npc-suite-core.js` (one UI hosting the body-cluster tools as modes over a persistent NPC; step 1 shell shipped) |
 | Multiplayer | `multiplayer.md` | `multiplayer.js`, `start-screen.js`, `server/server.js` |
 | Audio / SFX | `audio.md` | `environment-audio.js`, `sound-events.js`, `sfx-browser.html`, `sfx/` |
 | Procedural audio + sound params | `audio.md` | `bot-voice.js`, `bot-voice-intensity.js`, `bot-voice-director.js`, `bot-voice-bank.js`, `bot-damage-audio.js`, `ballistic-audio.js`, `combat-audio-budget.js`, `synth-utils.js`, `sound-params.js`, `sound-params.json`, `sound-studio.html`, `voice-line-studio.html`, `bake-voices.mjs`, `voice-bake-server.mjs` |
 | Materials (TSL demos) | `materials.md` | `materials/index.js`, `materials/material-demo-api.js`, `materials/dissolve.js`, `materials/hologram-visor.js`, `materials/damage-overheat.js`, `materials/foliage-sss.js`, `material-viewer.html` |
-| Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js`, `world-map.js` |
+| Infra / debug UI | `infra.md` | `frame-profiler.js`, `environment-ui.js`, `world-map.js`, `disk-store.js`, `tools/filesystem-map.html` (WebGPU/TSL holographic 3D force-directed node-link map of the repo filesystem, filterable by type/date, served by `serve.py`'s `/api/fs-scan`) |
 | Weapon GLB compression | `weapon-compression.md` | `glb-shrink-server/index.mjs`, `glb-shrink-presets.mjs`, `weapon-viewer-v2.html` |
-| Flight | `flight.md` | `flight-model.js`, `flight-airframes.js`, `flight-terrain.js`, `flight-ai.js`, `flight-combat.js`, `flight-drones.js`, `flight-autopilot.js`, `flight-meshes.js`, `demos/flight-sim.html` |
+| Flight | `flight.md` | `flight-model.js`, `flight-airframes.js`, `flight-terrain.js`, `flight-ai.js`, `flight-combat.js`, `flight-drones.js`, `flight-autopilot.js`, `flight-meshes.js`, `water-hybrid.js`, `demos/flight-sim.html` (blast debris via `blast-debris-sim.js`/`blast-debris.js`) |
 | Aircraft studio | `aircraft-studio.md` | `aircraft-studio.html`, `aircraft-layout.js`, `aircraft-meshes.js`, `aircraft-library.js` |
-| Stadium models | `stadium.md` | `stadium-glb.js`, `stadium-rig-map.js`, `stadium-rig-roles.js`, `stadium-pose.js`, `stadium-walker.js`, `gait-diagnostics.js`, `stage-roster.js`, `gait-search.js`, `trial-log.js`, `rig-audit.js`, `sweep-gait.mjs`, `demos/stadium-walker.html`, `models/stadium/` |
-| Pokémon moves | `pokemon-moves.md` | `moves/move-core.js`, `moves/move-registry.js`, `moves/fx-bolt.js`, `moves/fx-stream.js`, `moves/fx-crystals.js`, `moves/fx-fissure.js`, `moves/fx-aurora.js`, `demos/pokemon-moves.html` |
+| Stadium models | `stadium.md` | `stadium-glb.js`, `stadium-rig-map.js`, `stadium-rig-roles.js`, `stadium-pose.js`, `foot-sdf.js`, `stadium-walker.js`, `gait-diagnostics.js`, `stage-roster.js`, `gait-search.js`, `trial-log.js`, `rig-audit.js`, `sweep-gait.mjs`, `demos/stadium-walker.html`, `demos/sdf-pikachu.html`, `demos/sdf-mesh-bake.js`, `models/stadium/` |
+| Pokémon Park | `pokemon-park.md` | `park-species.js`, `park-biomes.js`, `park-ground.js`, `park-spawn.js`, `park-movement.js`, `park-creature.js`, `park-flora.js`, `park-trees.js`, `park-trails.js`, `park-atlas.js`, `demos/pokemon-park.html` (all 151 species now in `models/stadium/`) |
+| Pokémon moves | `pokemon-moves.md` | `moves/move-core.js`, `moves/move-parts.js`, `moves/move-registry.js`, sixteen `moves/fx-*.js` effects (bolt, stream, crystals, fissure, aurora, cloud, orb, blade, shock, ring, vortex, skyfall, dome, tether, field, aura), `demos/pokemon-moves.html` |
 | Legacy app | `legacy.md` | `creature-viewer.html`, `creature.js` |
 
 ## Keeping docs and the activity log current
@@ -81,6 +82,20 @@ These are required steps when finishing any code change in this directory, not o
    - `files` â€” semicolon-separated list of files touched (quote the field if it contains commas).
    - `summary` â€” one short sentence: what changed and why, not a restatement of the diff.
    Never delete or rewrite existing rows â€” it's an append-only history. If the file grows unwieldy, that's a signal to summarize old entries elsewhere, not to truncate it silently.
+
+## Saving state — a file, never `localStorage`
+
+**Anything a person authors or tunes in one of these pages must be saved to a file on disk**, autosaved on
+change or behind a save button, from the first version of the page rather than added later. `localStorage`
+is scoped to the origin, so it dies when site data is cleared or the static server comes up on a different
+port, and it is invisible to git — hours of tuning kept there is not backed up, not diffable, and not
+shareable between pages.
+
+Use `disk-store.js`: it GETs a JSON file, POSTs it back through a `serve.py` route, and keeps web storage
+only as the fallback a page opened without the server can still read. `serve.py` already has write routes
+for maps, stats, traces, layouts, notes, slot saves, body tuning, damage tuning, water config and stadium
+tuning — add one there rather than inventing a new mechanism. `demos/stadium-walker.html` is the worked
+example; `docs/subsystems/stadium.md` explains the arrangement.
 
 ## Patterns worth knowing
 

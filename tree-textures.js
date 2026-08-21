@@ -2,8 +2,8 @@
 // Texture-source layer for the forest viewer. One entry point, two modes that
 // return the SAME "texture set" shape so the viewer stays mode-agnostic:
 //
-//   createTextureSource('authored',   { onReady })  // load the ez-tree packs
-//   createTextureSource('procedural', { onReady })  // synthesize at runtime
+//   createTextureSource('authored',   { onReady, texDir })  // load the ez-tree packs
+//   createTextureSource('procedural', { onReady })           // synthesize at runtime
 //
 // A texture set:
 //   {
@@ -26,6 +26,7 @@ import * as THREE from 'three';
 // runs up while canvas y runs down).
 export const LEAF_FILES = ['oak', 'aspen', 'ash', 'pine'];   // cells 0,1,2,3
 export const LEAF_ATLAS = { cols: 2, rows: 2 };
+// Resolved against the DOCUMENT, not this module, so a page in a subdirectory has to say so.
 const TEX_DIR = './textures';
 const BARK_SET = 'Bark014_1K-JPG';   // a brown, fairly tileable bark
 const BARK_VSCALE = 0.35;            // how fast bark repeats up the branch length
@@ -37,7 +38,7 @@ function repeatTex(tex) { tex.wrapS = tex.wrapT = THREE.RepeatWrapping; return t
 // ============================================================================
 //  AUTHORED — load the real ez-tree texture packs from ./textures/
 // ============================================================================
-function authoredSet(onReady) {
+function authoredSet(onReady, texDir = TEX_DIR) {
   const cell = 512, cols = LEAF_ATLAS.cols, rows = LEAF_ATLAS.rows;
   const canvas = document.createElement('canvas');
   canvas.width = cols * cell; canvas.height = rows * cell;
@@ -46,8 +47,8 @@ function authoredSet(onReady) {
   leafMap.anisotropy = 4;
 
   const loader = new THREE.TextureLoader();
-  const barkMap = repeatTex(colorTex(loader.load(`${TEX_DIR}/bark/${BARK_SET}/${BARK_SET}_Color.jpg`, decoded)));
-  const barkNormalMap = repeatTex(loader.load(`${TEX_DIR}/bark/${BARK_SET}/${BARK_SET}_NormalGL.jpg`, decoded));
+  const barkMap = repeatTex(colorTex(loader.load(`${texDir}/bark/${BARK_SET}/${BARK_SET}_Color.jpg`, decoded, undefined, decoded)));
+  const barkNormalMap = repeatTex(loader.load(`${texDir}/bark/${BARK_SET}/${BARK_SET}_NormalGL.jpg`, decoded, undefined, decoded));
 
   const set = {
     mode: 'authored', ready: false,
@@ -72,7 +73,7 @@ function authoredSet(onReady) {
       decoded();
     };
     img.onerror = decoded;   // a missing leaf shouldn't deadlock readiness
-    img.src = `${TEX_DIR}/leaves/${name}.png`;
+    img.src = `${texDir}/leaves/${name}.png`;
   });
 
   return set;
@@ -92,8 +93,8 @@ function proceduralSet() {
 }
 
 // ============================================================================
-export function createTextureSource(mode, { onReady } = {}) {
-  return mode === 'authored' ? authoredSet(onReady) : proceduralSet();
+export function createTextureSource(mode, { onReady, texDir } = {}) {
+  return mode === 'authored' ? authoredSet(onReady, texDir) : proceduralSet();
 }
 
 export default createTextureSource;

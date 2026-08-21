@@ -108,7 +108,7 @@ equal('the sub-groups we expect exist', subTitles, [
   'Reaction timing', 'Weapon spread', 'Recoil',
   'Torso', 'Head', 'Barrel trim', 'Lead & recoil',
   'Per species', 'Vines',
-  'Throw decisions', 'Blast physics',
+  'Throw decisions', 'Blast physics', 'Blast debris (html-game-v2)',
   'Bomb drone', 'Loitering munition', 'Both drones',
 ]);
 equal('no sub-group title collides with a card title',

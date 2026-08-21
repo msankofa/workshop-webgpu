@@ -22,13 +22,24 @@ export function boxMesh(parent, mat, x, y, z, w, h, d) {
 
 // One InstancedMesh per material: a maze is ~950 boxes, and one draw call and one shadow caster
 // beats 950. Collision is unaffected -- the collider expands instances into world triangles.
+// A box may carry `rx`/`ry`/`rz` Euler angles (ramps do); without them this is the axis-aligned
+// scale+translate it always was, and the collider expands either kind into world triangles.
+const _rot = new THREE.Euler();
+const _quat = new THREE.Quaternion();
+const _pos = new THREE.Vector3();
+const _scale = new THREE.Vector3();
 export function instancedBoxes(parent, mat, boxes) {
   if (!boxes.length) return null;
   const mesh = new THREE.InstancedMesh(UNIT_BOX, mat, boxes.length);
   const t = new THREE.Matrix4();
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
-    t.makeScale(b.w, b.h, b.d).setPosition(b.x, b.y, b.z);
+    if (b.rx || b.ry || b.rz) {
+      _rot.set(b.rx || 0, b.ry || 0, b.rz || 0);
+      t.compose(_pos.set(b.x, b.y, b.z), _quat.setFromEuler(_rot), _scale.set(b.w, b.h, b.d));
+    } else {
+      t.makeScale(b.w, b.h, b.d).setPosition(b.x, b.y, b.z);
+    }
     mesh.setMatrixAt(i, t);
   }
   mesh.castShadow = true; mesh.receiveShadow = true;
@@ -54,6 +65,29 @@ export function boxOnGround(x, z, w, h, d, range) {
   const base = range.min - 0.05;
   const top = range.max + h;
   return { x, y: (base + top) / 2, z, w, h: top - base, d };
+}
+
+// m a ramp head may sit outside a deck rect and still count as meeting it. One nav cell of slack:
+// the head is authored ON the edge, so anything past this is a different deck.
+export const DECK_JOIN_SLACK = 0.6;
+
+// Decks (walkable levels) and the ramps that reach them, seated on the ground under them.
+// `groundMax(x, z, w, d)` gives the HIGHEST ground under a footprint -- the same reference
+// slabOnGround takes, so a deck and the slab holding it up never disagree. A ramp's head is READ
+// from the deck it lands on rather than sampled again: sampling twice puts the top of the ramp and
+// the edge of the deck at two different heights wherever the ground between them is not flat.
+export function seatDecksAndRamps(decks, ramps, groundMax) {
+  const seatedDecks = decks.map(d => ({ ...d, y: groundMax(d.x, d.z, d.w, d.d) + d.y }));
+  const seatedRamps = ramps.map((r) => {
+    const deck = seatedDecks.find(d => Math.abs(r.x1 - d.x) <= d.w / 2 + DECK_JOIN_SLACK
+      && Math.abs(r.z1 - d.z) <= d.d / 2 + DECK_JOIN_SLACK);
+    return {
+      ...r,
+      y0: groundMax(r.x0, r.z0, r.width, r.width) + r.y0,
+      y1: deck ? deck.y : groundMax(r.x1, r.z1, r.width, r.width) + r.y1,
+    };
+  });
+  return { decks: seatedDecks, ramps: seatedRamps };
 }
 
 // An ELEVATED box (lintel, canopy, portal deck): underside `baseY` above the HIGHEST ground under

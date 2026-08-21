@@ -91,6 +91,8 @@ export function createForestGPU(opts) {
   const uLodR0 = uniform(opts.lodR0 ?? 60);
   const uLodR1 = uniform(opts.lodR1 ?? 120);
   const uLodR2 = uniform(opts.lodR2 ?? 220);
+  const uTreeScale = uniform(1);
+  const uLeafScale = uniform(1);
   // Milestone 3: hard far cutoff. Beyond this, instances are rejected outright instead of
   // falling through to an ever-growing LOD3 billboard population (finding 2/design section 2).
   // Default ~1.5x the LOD2/billboard radius (opts.lodR2, viewer default 583 -> 875), giving
@@ -151,7 +153,7 @@ export function createForestGPU(opts) {
       const nx = dx.mul(invDist);
       const nz = dz.mul(invDist);
       const fwdDot = nx.mul(uCamFwd.x).add(nz.mul(uCamFwd.y));
-      const treeRadius = uTreeRadius.mul(rec0.w);
+      const treeRadius = uTreeRadius.mul(rec0.w).mul(uTreeScale);
       const angularPad = atan(treeRadius, dist.max(float(1e-6)));
       const baseCos = clamp(uFovCos.sub(uConeMargin), -1, 1);
       const coneCos = cos(acos(baseCos).add(angularPad)).sub(uRearMargin);
@@ -226,11 +228,11 @@ export function createForestGPU(opts) {
   // is shared between the variant's leaves and shadow meshes (same instances/transform).
   // Texture/colorNode binding is deferred to applyTextureSet() so the viewer drives the
   // same procedural-bark / authored-map logic it uses for the baked path.
-  function instanceNodes(offset) {
+  function instanceNodes(offset, scaleMultiplier = uTreeScale) {
     const recBase = uint(offset).add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);                  // (x,y,z,scale)
     const rec1 = draw.element(recBase.add(uint(1)));     // (yaw,...)
-    const scale = rec0.w, yaw = rec1.x;
+    const scale = rec0.w.mul(scaleMultiplier), yaw = rec1.x;
     const cy = cos(yaw), sy = sin(yaw);
     const px = positionLocal.x, py = positionLocal.y, pz = positionLocal.z;
     const rx = px.mul(cy).add(pz.mul(sy));
@@ -249,7 +251,7 @@ export function createForestGPU(opts) {
   function instanceNodesBillboard(offset) {
     const recBase = uint(offset).add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);
-    const scale = rec0.w;
+    const scale = rec0.w.mul(uTreeScale);
     const ipos = vec3(rec0.x, rec0.y, rec0.z);
     const worldUp = vec3(0, 1, 0);
     const camDir = normalize(ipos.sub(cameraPosition));
@@ -318,9 +320,12 @@ export function createForestGPU(opts) {
   const sideSwitchableMats = new Set();
   for (let g = 0; g < V; g++) {
     const variant = palette.variants[g];
-    const n0 = instanceNodes(lodSlotOffset(g, 0));
-    const n1 = instanceNodes(lodSlotOffset(g, 1));
-    const n2 = instanceNodes(lodSlotOffset(g, 2));
+    const n0 = instanceNodes(lodSlotOffset(g, 0), uTreeScale);
+    const n0Leaf = instanceNodes(lodSlotOffset(g, 0), uTreeScale.mul(uLeafScale));
+    const n1 = instanceNodes(lodSlotOffset(g, 1), uTreeScale);
+    const n1Leaf = instanceNodes(lodSlotOffset(g, 1), uTreeScale.mul(uLeafScale));
+    const n2 = instanceNodes(lodSlotOffset(g, 2), uTreeScale);
+    const n2Leaf = instanceNodes(lodSlotOffset(g, 2), uTreeScale.mul(uLeafScale));
     const n3 = instanceNodesBillboard(lodSlotOffset(g, 3));
 
     function makeMat(roughness, doubleSide) {
@@ -364,11 +369,11 @@ export function createForestGPU(opts) {
     sideSwitchableMats.add(billMat);
 
     branchMat.positionNode = n0.world; branchMat.normalNode = n0.nWorld;
-    leafMat.positionNode = n0.world; leafMat.normalNode = n0.nWorld;
+    leafMat.positionNode = n0Leaf.world; leafMat.normalNode = n0Leaf.nWorld;
     branchMat1.positionNode = n1.world; branchMat1.normalNode = n1.nWorld;
-    leafMat1.positionNode = n1.world; leafMat1.normalNode = n1.nWorld;
+    leafMat1.positionNode = n1Leaf.world; leafMat1.normalNode = n1Leaf.nWorld;
     branchMat2.positionNode = n2.world; branchMat2.normalNode = n2.nWorld;
-    coarseMat.positionNode = n2.world; coarseMat.normalNode = n2.nWorld;
+    coarseMat.positionNode = n2Leaf.world; coarseMat.normalNode = n2Leaf.nWorld;
     billMat.positionNode = n3.world;
 
     if (opts.addEmissive) {
@@ -409,6 +414,11 @@ export function createForestGPU(opts) {
   let needsRebuild = false;   // chunk mutations set this; rebuild() runs once at update() top
   let visibleVariants = 0;    // variants with >0 source records this rebuild
   let submittedDraws = 0;     // meshes actually left visible (visibleVariants * 8)
+  const variantPopulated = new Uint8Array(V);
+  const renderParts = {
+    bark: true, leaves: true, billboards: true,
+    barkShadows: true, leafShadows: true,
+  };
   let lastCamX = NaN;
   let lastCamZ = NaN;
   let lastCamFx = NaN;
@@ -424,6 +434,31 @@ export function createForestGPU(opts) {
   const _fwd3 = new THREE.Vector3();
   function markDirty() {
     dirty = true;
+  }
+
+  function syncRenderParts() {
+    let draws = 0;
+    for (let g = 0; g < V; g++) {
+      const active = variantPopulated[g] === 1;
+      const b = g * 8;
+      const mask = [
+        renderParts.bark,
+        renderParts.leaves,
+        renderParts.leaves,
+        renderParts.bark,
+        renderParts.leaves,
+        renderParts.bark,
+        renderParts.leaves,
+        renderParts.billboards && renderParts.bark && renderParts.leaves,
+      ];
+      for (let m = 0; m < 8; m++) {
+        meshes[b + m].visible = active && mask[m];
+        if (meshes[b + m].visible) draws++;
+      }
+      for (const m of [0, 3, 5]) meshes[b + m].castShadow = renderParts.barkShadows;
+      meshes[b + 2].castShadow = renderParts.leafShadows;
+    }
+    submittedDraws = draws;
   }
 
   // deterministic variant pick within a species (0 .. variantsPerSpecies-1)
@@ -465,11 +500,10 @@ export function createForestGPU(opts) {
     for (let g = 0; g < V; g++) {
       const vis = countsArray[g] > 0;
       if (vis) visCount++;
-      const b = g * 8;
-      for (let m = 0; m < 8; m++) meshes[b + m].visible = vis;
+      variantPopulated[g] = vis ? 1 : 0;
     }
     visibleVariants = visCount;
-    submittedDraws = visCount * 8;
+    syncRenderParts();
     if (dropped > 0 && !overflowWarned) {
       overflowWarned = true;
       console.warn(`[forest-gpu] dropped ${dropped} instances this rebuild: a variant exceeded capPerVariant=${CAP}. Raise capPerVariant.`);
@@ -508,7 +542,7 @@ export function createForestGPU(opts) {
         if (coneEnabled && dist >= 1e-6) {
           const nx = dx / dist, nz = dz / dist;
           const fwdDot = nx * lastCamFx + nz * lastCamFz;
-          const treeRadius = uTreeRadius.value * scale;
+          const treeRadius = uTreeRadius.value * scale * uTreeScale.value;
           const angularPad = Math.atan2(treeRadius, Math.max(dist, 1e-6));
           const baseCos = Math.max(-1, Math.min(1, uFovCos.value - uConeMargin.value));
           const coneCos = Math.cos(Math.acos(baseCos) + angularPad) - uRearMargin.value;
@@ -574,6 +608,27 @@ export function createForestGPU(opts) {
       }
     },
     get billboardMaterials() { return billboardMats; },
+    setRenderParts(partial = {}) {
+      for (const key of ['bark', 'leaves', 'billboards', 'barkShadows', 'leafShadows']) {
+        if (partial[key] !== undefined) renderParts[key] = !!partial[key];
+      }
+      syncRenderParts();
+    },
+    refreshVisibility: syncRenderParts,
+    setTreeScale(v) {
+      const next = Math.max(0.1, Math.min(2, Number(v) || 1));
+      if (uTreeScale.value !== next) { uTreeScale.value = next; markDirty(); }
+    },
+    setLeafScale(v) {
+      uLeafScale.value = Math.max(0.1, Math.min(2, Number(v) || 1));
+    },
+    setFarLeavesDoubleSided(v) {
+      const side = v ? THREE.DoubleSide : THREE.FrontSide;
+      for (const mat of sideSwitchableMats) {
+        mat.side = side;
+        mat.needsUpdate = true;
+      }
+    },
     applyBillboardMap(g, tex) {
       const t = texture(tex);
       billboardMats[g].colorNode = vec4(t.rgb.mul(uBillBrightness), t.a);
@@ -665,6 +720,15 @@ export function createForestGPU(opts) {
     setConeMargin(v) {
       if (uConeMargin.value !== v) { uConeMargin.value = v; markDirty(); }
     },
+    get summary() {
+      return {
+        draws: submittedDraws,
+        visibleVariants,
+        instances: cpuInstances,
+        reculls,
+        skippedReculls,
+      };
+    },
     // draws is the number of meshes actually submitted (visible variants * 8), not the fixed
     // V*8. visibleVariants exposes how many of the V variants survived the zero-instance gate;
     // variants is still the total variant count for reference. rejectedFrustum/rejectedFar/
@@ -678,6 +742,8 @@ export function createForestGPU(opts) {
         rejectedFrustum: est.rejectedFrustum, rejectedFar: est.rejectedFar,
         lod0Instances: est.lod0, lod1Instances: est.lod1, lod2Instances: est.lod2,
         billboardInstances: est.billboard,
+        treeScale: uTreeScale.value, leafScale: uLeafScale.value,
+        renderParts: { ...renderParts },
       };
     },
     dispose() {

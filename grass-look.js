@@ -14,9 +14,9 @@
 
 import * as THREE from 'three';
 import {
-  uniform, Fn, vec2, vec3, float,
-  sin, cos, mix, clamp, floor, fract, dot, max, abs, pow, normalize, smoothstep, step,
-  cameraPosition, transformNormalToView, varying,
+  uniform, Fn, If, vec2, vec3, float,
+  sin, cos, mix, clamp, floor, fract, dot, pow, normalize, smoothstep,
+  cameraPosition, cameraViewMatrix, faceDirection, varying,
 } from 'three/tsl';
 
 export const GRASS_LOOK_DEFAULTS = {
@@ -82,6 +82,17 @@ export function createGrassLook(opts = {}) {
     return n0.mul(0.5).add(n1.mul(0.3)).add(n2.mul(0.2));
   });
 
+  const coverageField = Fn(([worldXZ]) => {
+    const keep = float(1.0).toVar();
+    If(u.coverage.greaterThan(0.5), () => {
+      const p = worldXZ.mul(u.coverageScale).add(u.coverageSeed);
+      const n = fbm(p);
+      const th = mix(float(1.0).add(u.coverageEdge), u.coverageEdge.negate(), u.coverageAmount);
+      keep.assign(smoothstep(th.sub(u.coverageEdge), th.add(u.coverageEdge), n));
+    });
+    return keep;
+  });
+
   const nodes = {
     // Horizontal sway (vec2 xz). `legacy` is the caller's existing wave scalar, `amp` its
     // per-vertex amplitude; when the toggle is off the result is exactly vec2(legacy*amp, 0).
@@ -108,19 +119,18 @@ export function createGrassLook(opts = {}) {
       // computed per vertex and interpolated: the compute path's face/curlVar come from
       // per-instance storage reads that have no business in the fragment stage.
       const arcN = varying(vec3(face.x.mul(cos(At)), sin(At).negate(), face.y.mul(cos(At))));
+      // world -> view (NOT transformNormalToView, which expects an object-space normal), and
+      // flipped per visible side because the blades are DoubleSide and a custom normalNode does
+      // not get three's automatic face-direction flip.
+      const arcView = cameraViewMatrix.transformDirection(arcN).mul(faceDirection);
       const upView = vec3(0, 1, 0);
-      const normal = normalize(mix(upView, transformNormalToView(arcN), u.curlNormal.mul(u.curl)));
+      const normal = normalize(mix(upView, arcView, u.curlNormal.mul(u.curl)));
       return { dy: yArc.sub(y), dxz: face.mul(zArc), normal };
     },
 
-    // 0..1 keep factor from the FBM patch mask; 1 everywhere when the toggle is off.
-    coverage(worldXZ) {
-      const p = worldXZ.mul(u.coverageScale).add(u.coverageSeed);
-      const n = fbm(p);
-      const th = mix(float(1.0).add(u.coverageEdge), u.coverageEdge.negate(), u.coverageAmount);
-      const m = smoothstep(th.sub(u.coverageEdge), th.add(u.coverageEdge), n);
-      return mix(float(1.0), m, u.coverage);
-    },
+    // 0..1 keep factor from the FBM patch mask; 1 everywhere when the toggle is off (and the
+    // three noise octaves are skipped entirely, not multiplied out).
+    coverage(worldXZ) { return coverageField(worldXZ); },
 
     // Multiplier darkening the blade root (t = 0..1 up the blade).
     rootShade(t) {

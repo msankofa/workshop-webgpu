@@ -11,11 +11,27 @@
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial, SpriteNodeMaterial } from 'three/webgpu';
 import { attribute, texture } from 'three/tsl';
 
-export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTexture = null }) {
+// `tagMaterial(material, role)` is an optional hook called once per material as it is built, with
+// role one of shrapnel / shrapnelGlow / rubble / rubbleGlow / sparks / smoke. It exists so a page
+// with its own shading pass — demos/flight-sim.html tags every material for the thermal and NVG
+// views — can reach these materials without this module knowing anything about that pass.
+export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTexture = null, tagMaterial = null }) {
   const cap = sim.caps;
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler();
   const _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
   const SRGB = THREE.SRGBColorSpace;
+
+  const tag = (mat, role) => { if (tagMaterial) tagMaterial(mat, role); return mat; };
+
+  // Bounds an attribute's GPU upload to [0, count). Without it `needsUpdate` re-uploads the whole
+  // pool cap every frame whether one fragment is alive or nine hundred — 296 KB a frame across the
+  // six pools, for the full twenty seconds a single ember takes to burn out. Same helper
+  // bot-viewer-visuals.js and body-part-batches.js use; a no-op on backends that ignore ranges.
+  function upload(attr, count) {
+    if (attr.clearUpdateRanges) { attr.clearUpdateRanges(); attr.addUpdateRange(0, count); }
+    else if (attr.updateRange) { attr.updateRange.offset = 0; attr.updateRange.count = count; }
+    attr.needsUpdate = true;
+  }
 
   function instanced(geo, mat, n, order) {
     const mesh = new THREE.InstancedMesh(geo, mat, n);
@@ -33,13 +49,13 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
   });
 
   const shrapnelMesh = instanced(new THREE.TetrahedronGeometry(1, 0),
-    new MeshBasicNodeMaterial({ fog: true }), cap.shrapnel, 5);
-  const shrapnelGlow = instanced(new THREE.SphereGeometry(1, 7, 5), glowMat(0.5), cap.shrapnel, 10);
+    tag(new MeshBasicNodeMaterial({ fog: true }), 'shrapnel'), cap.shrapnel, 5);
+  const shrapnelGlow = instanced(new THREE.SphereGeometry(1, 7, 5), tag(glowMat(0.5), 'shrapnelGlow'), cap.shrapnel, 10);
   const rubbleMesh = instanced(new THREE.DodecahedronGeometry(1, 0),
-    new MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0.04 }), cap.rubble, 4);
-  const rubbleGlow = instanced(new THREE.SphereGeometry(1, 8, 6), glowMat(0.58), cap.rubble, 10);
+    tag(new MeshStandardNodeMaterial({ roughness: 0.95, metalness: 0.04 }), 'rubble'), cap.rubble, 4);
+  const rubbleGlow = instanced(new THREE.SphereGeometry(1, 8, 6), tag(glowMat(0.58), 'rubbleGlow'), cap.rubble, 10);
   const sparkMesh = instanced(new THREE.CylinderGeometry(1, 1, 1, 3),
-    new MeshBasicNodeMaterial({ fog: false, toneMapped: false }), cap.sparks, 9);
+    tag(new MeshBasicNodeMaterial({ fog: false, toneMapped: false }), 'sparks'), cap.sparks, 9);
 
   // Rubble lights: html-game-v2's eight, kept in the scene at zero intensity so the light count in
   // the shader never changes.
@@ -70,6 +86,7 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
     mat.scaleNode = attribute('instSize', 'float');
     mat.colorNode = attribute('instColor', 'vec3');
     mat.opacityNode = attribute('instAlpha', 'float').mul(texture(tex).a);
+    tag(mat, 'smoke');   // after colorNode: a tagger that wraps the existing graph needs to see it
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false; mesh.matrixAutoUpdate = false; mesh.updateMatrix(); mesh.renderOrder = 12;
     scene.add(mesh);
@@ -100,8 +117,8 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
       }
     }
     shrapnelMesh.count = n; shrapnelGlow.count = gn;
-    if (n) { shrapnelMesh.instanceMatrix.needsUpdate = true; shrapnelMesh.instanceColor.needsUpdate = true; }
-    if (gn) { shrapnelGlow.instanceMatrix.needsUpdate = true; shrapnelGlow.instanceColor.needsUpdate = true; }
+    if (n) { upload(shrapnelMesh.instanceMatrix, n * 16); upload(shrapnelMesh.instanceColor, n * 3); }
+    if (gn) { upload(shrapnelGlow.instanceMatrix, gn * 16); upload(shrapnelGlow.instanceColor, gn * 3); }
     stats.shrapnel = n;
   }
 
@@ -127,8 +144,8 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
       }
     }
     rubbleMesh.count = n; rubbleGlow.count = gn;
-    if (n) { rubbleMesh.instanceMatrix.needsUpdate = true; rubbleMesh.instanceColor.needsUpdate = true; }
-    if (gn) { rubbleGlow.instanceMatrix.needsUpdate = true; rubbleGlow.instanceColor.needsUpdate = true; }
+    if (n) { upload(rubbleMesh.instanceMatrix, n * 16); upload(rubbleMesh.instanceColor, n * 3); }
+    if (gn) { upload(rubbleGlow.instanceMatrix, gn * 16); upload(rubbleGlow.instanceColor, gn * 3); }
     stats.rubble = n;
     // Lights follow the hottest pieces; the rest park out of the way at zero.
     const hot = show.rubble && show.lights ? sim.hottestRubble(lights.length) : [];
@@ -158,7 +175,7 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
       }
     }
     sparkMesh.count = n;
-    if (n) { sparkMesh.instanceMatrix.needsUpdate = true; sparkMesh.instanceColor.needsUpdate = true; }
+    if (n) { upload(sparkMesh.instanceMatrix, n * 16); upload(sparkMesh.instanceColor, n * 3); }
     stats.sparks = n;
   }
 
@@ -181,7 +198,9 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
     }
     smoke.geo.instanceCount = n;
     smoke.mesh.visible = n > 0;
-    if (n) for (const k of ['instPos', 'instColor', 'instSize', 'instAlpha']) smoke.geo.attributes[k].needsUpdate = true;
+    if (n) for (const [k, stride] of [['instPos', 3], ['instColor', 3], ['instSize', 1], ['instAlpha', 1]]) {
+      upload(smoke.geo.attributes[k], n * stride);
+    }
     stats.smoke = n;
   }
 

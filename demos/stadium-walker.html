@@ -164,6 +164,15 @@
                font: 9px/1.35 ui-monospace, monospace; white-space: nowrap;
                background: rgba(10,12,16,.72); border-radius: 2px; }
 
+  /* Where the session is being written. Loud when it is not being written anywhere. */
+  #savebar { border: 1px solid #2f3742; border-radius: 5px; padding: 6px 8px; margin: 0 0 8px;
+             background: #141a21; }
+  #savebar .buttons { margin-top: 5px; }
+  #saveState { font: 11px/1.45 ui-monospace, monospace; color: #7d8794; display: block; }
+  #saveState.warn { color: #d8a657; }
+  #saveState.bad { color: #e5807a; }
+  #saveState.good { color: #6fbf8f; }
+
   #status { position: fixed; bottom: 10px; left: 10px; color: #7d8794; font-size: 11px; }
   #error { position: fixed; inset: auto 352px 12px 320px; padding: 10px 12px; display: none;
            background: #2a1416; border: 1px solid #6b2b30; border-radius: 6px; color: #f0b8bb;
@@ -177,6 +186,14 @@
     <h1>Stadium walker</h1>
     <p class="sub">A ROM model walking a gait the ROM never had.</p>
   </header>
+
+  <div id="savebar">
+    <span id="saveState">loading…</span>
+    <div class="buttons">
+      <button id="saveNow">save now</button>
+      <button id="saveSnapshot">snapshot</button>
+    </div>
+  </div>
 
   <details open>
     <summary>Stage</summary>
@@ -295,6 +312,25 @@
         drive the stray count to nothing and make the sliding worse, because a foot parked at the reach
         limit gets dragged from there. See <code>docs/subsystems/stadium.md</code>.</p>
       <div id="strayReadout" class="hint"></div>
+      <div class="ctl">
+        <label for="footContact">foot contact</label>
+        <select id="footContact">
+          <option value="point">one point</option>
+          <option value="patch">contact patch (SDF)</option>
+        </select>
+      </div>
+      <div id="mount-patch"></div>
+      <label class="ctl"><input type="checkbox" id="patchDraw"> draw the contact patch</label>
+      <p class="hint">A foot is a surface, not a point. <b>Contact patch</b> fits a rounded box to the foot
+        bones and hulls the vertices that can reach the floor, then stands the creature on that ring
+        instead of on one dot. The patch is anchored at the foothold the gait chose, so this changes the
+        size of the support polygon and never where it sits.</p>
+      <p class="hint">Measured over six seeds each: two-legged creatures had no support polygon at all
+        before, because two points hull to a line with no interior — Charizard 0% to 45% of frames with
+        the centre of mass inside its support. Tauros 59% to 100%, Slowpoke 67% to 85%. Sliding and
+        clamping are unchanged. Sandslash is unhelped: its foot bones are flat cards, so the patch falls
+        back to the fitted box and comes out 0.6% of a leg wide.</p>
+      <div id="patchReadout" class="hint"></div>
     </div>
   </details>
 
@@ -588,8 +624,78 @@ import { perturb, optimise, searchCost, transferValues, tuningDistance, changedK
 import { createTrialLog, flattenMetrics, toCSV, verdictSeries } from '../trial-log.js';
 import { pearson } from '../stats-math.js';
 import { GAITS } from '../creature-locomotion.js';
+import { createDiskStore, describeStatus } from '../disk-store.js';
 
 const setStatus = (t) => { document.getElementById('status').textContent = t; };
+
+// --- where the session is kept ---------------------------------------------------------------------
+//
+// Setpoints, poses, bone roles, the panel and the trial log are hours of tuning, so they are written to
+// stadium-saves/*.json — a real file, in the repo, backed up by git — autosaved on every change and
+// flushed again on the way out. `localStorage` is kept only as the copy of last resort: it is what a page
+// opened without `python serve.py` running reads, and what survives a failed write. It is never the truth.
+const TUNING_FILE = 'stadium-tuning.json';
+const TRIALS_FILE = 'stadium-trials.json';
+const store = createDiskStore({
+  read: `/stadium-saves/${TUNING_FILE}`, write: `/api/save-stadium?filename=${TUNING_FILE}`,
+  storage: localStorage, key: 'pcw:stadiumDoc', debounceMs: 700,
+});
+const trialStore = createDiskStore({
+  read: `/stadium-saves/${TRIALS_FILE}`, write: `/api/save-stadium?filename=${TRIALS_FILE}`,
+  storage: localStorage, key: 'pcw:stadiumTrials', debounceMs: 900,
+});
+await Promise.all([store.load(), trialStore.load()]);
+
+/** The four keys this page used before it had a file, so an existing session carries over once. */
+function legacyDoc() {
+  const get = (k) => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } };
+  return { setpoints: get('pcw:stadiumSetpoints'), poses: get('pcw:stadiumPoses'),
+           roles: get('pcw:stadiumRoles'), prefs: get('pcw:stadiumWalker') };
+}
+// Named `session`, not `doc` — the role editor already has a local `doc` for the document it is editing.
+const session = store.json(null) || legacyDoc();
+session.setpoints ||= {};
+session.poses ||= {};
+session.roles ||= {};
+
+const saveDoc = () => store.setJSON(session);
+if (!store.json(null)) saveDoc();   // first run: put the carried-over session on disk without waiting for an edit
+const refreshSaveState = (s) => {
+  const el = document.getElementById('saveState');
+  if (!el) return;
+  el.textContent = describeStatus(s, { file: `stadium-saves/${TUNING_FILE}` });
+  el.className = s.state === 'error' ? 'bad'
+    : s.source === 'cache' ? 'warn'
+    : s.pending ? 'warn'
+    : s.state === 'saved' ? 'good' : '';
+};
+store.onStatus(refreshSaveState);
+document.getElementById('saveNow').addEventListener('click', async () => {
+  await Promise.all([store.flush(), trialStore.flush()]);
+});
+// A named copy kept alongside the live one, because tuning is exploratory and the value of "the one that
+// looked right an hour ago" only becomes obvious after it has been overwritten.
+document.getElementById('saveSnapshot').addEventListener('click', async () => {
+  const p = (n) => String(n).padStart(2, '0');
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const name = `stadium-tuning-${stamp}.json`;
+  try {
+    const res = await fetch(`/api/save-stadium?filename=${name}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(session),
+    });
+    const info = await res.json();
+    setStatus(info.ok ? `snapshot written to ${info.path}` : `snapshot failed: ${info.error}`);
+  } catch (err) { setStatus(`snapshot failed: ${err.message}`); }
+});
+// A debounced autosave loses the last edit to a closing tab, and fetch is cancelled during unload — a
+// beacon is not.
+addEventListener('pagehide', () => {
+  for (const [s, file] of [[store, TUNING_FILE], [trialStore, TRIALS_FILE]]) {
+    if (!s.dirty) continue;
+    navigator.sendBeacon(`/api/save-stadium?filename=${file}`, new Blob([s.text], { type: 'application/json' }));
+  }
+});
 
 // The models checked into ../models/stadium. Grouped by what the mapper makes of them, because that is
 // the interesting axis here: four legs is the case the walker was built for, two is the case where the
@@ -813,6 +919,17 @@ function applyStray() {
   refreshFacts();
 }
 
+// Every creature, like `applyStray` and for the same reason: a stage where feet meant different things
+// on different creatures could not be compared.
+function applyContact() {
+  const footContact = document.getElementById('footContact')?.value || 'point';
+  const c = controlByKey('footPatchScale');
+  const footPatchScale = c ? Number(c.input.value) : 1;
+  for (const e of stage.values()) e.walker.retune({ footContact, footPatchScale });
+  syncSelected();
+  refreshFacts();
+}
+
 let monitorWindow = 4.0;
 function resetMonitor(e) {
   if (!e) return;
@@ -1003,6 +1120,13 @@ addSlider('mount-stray', {
   apply: () => applyStray(),
 });
 
+// Scope `contact`, so the gait search cannot widen a foot to make its own balance numbers look better.
+addSlider('mount-patch', {
+  key: 'footPatchScale', scope: 'contact', label: 'patch size', min: 0.2, max: 2, step: 0.05, value: 1,
+  fmt: (v) => `${v.toFixed(2)}x measured`,
+  apply: () => applyContact(),
+});
+
 // Scope `pose`, so the search never treats a blend position as a gait knob.
 addSlider('mount-pose', {
   key: 'poseBlend', scope: 'pose', label: 'blend', min: 0, max: 1, step: 0.01, value: 0,
@@ -1054,10 +1178,8 @@ function scheduleRebuild() {
 // Saved per species, not per creature: which bones are the legs is a fact about the rig, so two Rattatas
 // cannot disagree about it. Everything here is a thin shell over `stadium-rig-roles.js`, which is where
 // the rules live and where they are tested.
-const ROLE_KEY = 'pcw:stadiumRoles';
-let roleDocs = {};
-try { roleDocs = JSON.parse(localStorage.getItem(ROLE_KEY) || '{}') || {}; } catch { roleDocs = {}; }
-const saveRoles = () => { try { localStorage.setItem(ROLE_KEY, JSON.stringify(roleDocs)); } catch {} };
+const roleDocs = session.roles;
+const saveRoles = saveDoc;
 
 /** Map a species, honouring its role document if it has one that compiles. */
 function mapWithRoles(name, json, bin, parent) {
@@ -1158,6 +1280,8 @@ async function spawn(name, { values = readSliders(), at = null, select = false }
   // The stray gate is stage-wide, so it comes off the panel rather than out of `values`.
   patch.strayLimit = strayLimitNow();
   patch.strayMode = document.getElementById('strayMode')?.value || 'off';
+  patch.footContact = document.getElementById('footContact')?.value || 'point';
+  patch.footPatchScale = Number(controlByKey('footPatchScale')?.input.value ?? 1);
   walker.retune(patch);
 
   const place = at || spawnLayout(stage.size, Math.max(1, stage.size + 1), spawnSpacing(map, walker));
@@ -1275,10 +1399,8 @@ async function respawnScoped() {
 // Capture and blending live in `stadium-pose.js`; everything here is the scene-graph half. Poses are
 // saved per species, like roles, because a pose is a statement about a rig rather than about one
 // individual — and because that makes it portable to the next Rattata you spawn.
-const POSE_KEY = 'pcw:stadiumPoses';
-let poseSets = {};
-try { poseSets = JSON.parse(localStorage.getItem(POSE_KEY) || '{}') || {}; } catch { poseSets = {}; }
-const savePoses = () => { try { localStorage.setItem(POSE_KEY, JSON.stringify(poseSets)); } catch {} };
+const poseSets = session.poses;
+const savePoses = saveDoc;
 const posesFor = (name) => (poseSets[name] ||= {});
 
 /**
@@ -1366,6 +1488,8 @@ async function remapSpecies(name) {
 // submitted every frame whether or not it is on screen — at a dozen creatures that is the single largest
 // avoidable cost on the stage.
 const TRAIL_LEN = 90;
+// The support polygon can carry a ring per foot once feet are patches, not one point per leg.
+const SUPPORT_MAX = 64;
 function buildOverlay(e) {
   const { map, walker } = e;
   if (e.overlayGroup) { scene.remove(e.overlayGroup); e.overlayGroup = null; }
@@ -1392,12 +1516,25 @@ function buildOverlay(e) {
   });
 
   const support = new THREE.LineLoop(
-    new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(8 * 3), 3)),
+    new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(SUPPORT_MAX * 3), 3)),
     new THREE.LineBasicMaterial({ color: 0xffca28, transparent: true, opacity: 0.8 }));
   support.frustumCulled = false;
   overlayGroup.add(support);
 
-  overlayGroup.userData = { parts, support };
+  // One ring per foot, sized to that foot's own patch, so a foot with no usable patch shows nothing.
+  const patchMat = new THREE.LineBasicMaterial({ color: 0x9fe870, transparent: true, opacity: 0.9 });
+  const patches = walker.legs.map((leg) => {
+    const n = Math.max(3, leg.footProxy?.samples?.length || 3);
+    const loop = new THREE.LineLoop(
+      new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3)),
+      patchMat);
+    loop.frustumCulled = false;
+    loop.visible = false;
+    overlayGroup.add(loop);
+    return loop;
+  });
+
+  overlayGroup.userData = { parts, support, patches };
   scene.add(overlayGroup);
 }
 
@@ -1406,7 +1543,7 @@ function updateOverlay(e, drawn) {
   if (!overlayGroup) return;
   overlayGroup.visible = overlayInput.checked && drawn;
   if (!overlayGroup.visible) return;
-  const { parts, support } = overlayGroup.userData;
+  const { parts, support, patches } = overlayGroup.userData;
 
   e.walker.legs.forEach((leg, i) => {
     const part = parts[i];
@@ -1433,13 +1570,29 @@ function updateOverlay(e, drawn) {
   support.visible = showSupportInput.checked && !!sup && sup.poly.length >= 3;
   if (support.visible) {
     const arr = support.geometry.attributes.position.array;
-    const n = Math.min(sup.poly.length, 8);
-    for (let i = 0; i < 8; i++) {
+    const n = Math.min(sup.poly.length, SUPPORT_MAX);
+    for (let i = 0; i < SUPPORT_MAX; i++) {
       const p = sup.poly[Math.min(i, n - 1)];
       arr[i * 3] = p.x; arr[i * 3 + 1] = p.y + 0.003; arr[i * 3 + 2] = p.z;
     }
     support.geometry.attributes.position.needsUpdate = true;
   }
+
+  const showPatch = patchDrawInput?.checked;
+  e.walker.legs.forEach((leg, i) => {
+    const loop = patches[i];
+    if (!loop) return;
+    const pts = leg.contacts;
+    loop.visible = !!showPatch && !!pts && pts.length >= 3;
+    if (!loop.visible) return;
+    const arr = loop.geometry.attributes.position.array;
+    const n = arr.length / 3;
+    for (let k = 0; k < n; k++) {
+      const p = pts[Math.min(k, pts.length - 1)];
+      arr[k * 3] = p.x; arr[k * 3 + 1] = p.y + 0.002; arr[k * 3 + 2] = p.z;
+    }
+    loop.geometry.attributes.position.needsUpdate = true;
+  });
 }
 
 // --- fault markers --------------------------------------------------------------------------------
@@ -1954,6 +2107,9 @@ const roleWarnEl = document.getElementById('roleWarn');
 const roleJsonEl = document.getElementById('roleJson');
 const strayModeInput = document.getElementById('strayMode');
 const strayReadoutEl = document.getElementById('strayReadout');
+const patchReadoutEl = document.getElementById('patchReadout');
+const patchDrawInput = document.getElementById('patchDraw');
+const footContactInput = document.getElementById('footContact');
 const skipRiskyInput = document.getElementById('skipRisky');
 const proposalEl = document.getElementById('proposal');
 const voteStateEl = document.getElementById('voteState');
@@ -1983,6 +2139,8 @@ sceneThemeInput.addEventListener('change', () => { applySceneTheme(sceneThemeInp
 modelModeInput.addEventListener('change', () => { applyModelMode(); savePrefs(); });
 for (const el of [skelModeInput, boneLabelsInput]) el.addEventListener('change', savePrefs);
 strayModeInput.addEventListener('change', () => { applyStray(); savePrefs(); });
+footContactInput.addEventListener('change', () => { applyContact(); savePrefs(); });
+patchDrawInput.addEventListener('change', savePrefs);
 
 // --- the pose scrubber ----------------------------------------------------------------------------
 
@@ -2371,11 +2529,10 @@ stageListEl.addEventListener('click', (ev) => {
 // tried in the time it takes to draw one frame. So tune is a real optimisation against the tap and drag
 // detectors, not a lookup of hand-picked values — and its objective is "the fastest settings the
 // detectors do not complain about", because minimising risk alone has a trivial answer: crawl.
-const trials = createTrialLog(typeof localStorage !== 'undefined' ? localStorage : null);
+const trials = createTrialLog(trialStore.asStorage());
 trials.load();
-let setpoints = {};
-try { setpoints = JSON.parse(localStorage.getItem('pcw:stadiumSetpoints') || '{}') || {}; } catch {}
-const saveSetpoints = () => { try { localStorage.setItem('pcw:stadiumSetpoints', JSON.stringify(setpoints)); } catch {} };
+const setpoints = session.setpoints;
+const saveSetpoints = saveDoc;
 
 let lastTrialId = null;        // the row the verdict buttons will mark
 let lastTrialWindow = null;    // the window it must have been measured under
@@ -2653,6 +2810,26 @@ function renderStray(w) {
     + (s.strayFrames === 0 ? ' — nothing has strayed, so the mode is doing nothing.' : '');
 }
 
+function renderPatch(w) {
+  if (!patchReadoutEl) return;
+  const f = w.diagnosticFrame();
+  const built = f.legs.filter(l => l.patchSource === 'vertices' || l.patchSource === 'box');
+  const fromBox = built.filter(l => l.patchSource === 'box').length;
+  if (!built.length) {
+    patchReadoutEl.textContent = `No foot has a usable patch (${f.legs.map(l => l.patchSource).join(', ')}).`;
+    return;
+  }
+  const widest = Math.max(...built.map(l => (l.span ? l.patchRadius / l.span : 0)));
+  const held = f.supportFrames ? (f.comInsideFrames / f.supportFrames) * 100 : 0;
+  patchReadoutEl.textContent = [
+    `${built.length}/${f.legs.length} feet have a patch`,
+    fromBox ? `${fromBox} from the fitted box` : 'all from vertices',
+    `widest ${(widest * 100).toFixed(0)}% of a leg`,
+    `${f.contactCount} contact points`,
+    `centre of mass inside its support on ${held.toFixed(0)}% of frames`,
+  ].join(' · ');
+}
+
 function refreshStats(dt) {
   fpsAccum += dt; fpsFrames++;
   if (fpsAccum > 0.5) { fps = fpsFrames / fpsAccum; fpsAccum = 0; fpsFrames = 0; }
@@ -2704,6 +2881,7 @@ function refreshStats(dt) {
     }),
   ].join('\n');
   renderStray(w);
+  renderPatch(w);
   renderCoach();
   renderGroup();
   // Cheap and only every 150 ms, and it is the only thing that keeps the roster's per-creature verdict
@@ -2861,25 +3039,24 @@ function renderDelta() {
 // --- preferences --------------------------------------------------------------------------------
 // Kept because this page is for dragging things, and losing a set of values to a refresh is the fastest
 // way to stop dragging them.
-const PREF_KEY = 'pcw:stadiumWalker';
 let savedStage = null;
 function savePrefs() {
   const data = { species: speciesInput.value, gait: baseGaitInput.value, ground: groundOpts.shape,
                  scope: scopeSelect.value, camMode: camModeInput.value, sceneTheme: sceneThemeInput.value,
                  modelMode: modelModeInput.value, skelMode: skelModeInput.value, boneLabels: boneLabelsInput.value,
-                 strayMode: strayModeInput.value,
+                 strayMode: strayModeInput.value, footContact: footContactInput.value,
                  // The stage composition, so a refresh brings back what you had spawned rather than one
                  // creature. Values are per creature, since that is the whole point of a stage.
                  stage: [...stage.values()].map(e => ({ name: e.name, values: e.values })) };
   for (const c of CONTROLS) data[c.spec.key] = Number(c.input.value);
-  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold']) {
+  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold', 'patchDraw']) {
     data[id] = document.getElementById(id).checked;
   }
-  try { localStorage.setItem(PREF_KEY, JSON.stringify(data)); } catch {}
+  session.prefs = data;
+  saveDoc();
 }
 function loadPrefs() {
-  let data = null;
-  try { data = JSON.parse(localStorage.getItem(PREF_KEY) || 'null'); } catch {}
+  const data = session.prefs;
   if (!data) return;
   if (data.species) speciesInput.value = data.species;
   if (data.gait) baseGaitInput.value = data.gait;
@@ -2891,11 +3068,12 @@ function loadPrefs() {
   if (data.skelMode) skelModeInput.value = data.skelMode;
   if (data.boneLabels) boneLabelsInput.value = data.boneLabels;
   if (data.strayMode) strayModeInput.value = data.strayMode;
+  if (data.footContact) footContactInput.value = data.footContact;
   savedStage = Array.isArray(data.stage) ? data.stage : null;
   for (const c of CONTROLS) {
     if (typeof data[c.spec.key] === 'number') { c.input.value = data[c.spec.key]; c.show(); c.last = Number(c.input.value); }
   }
-  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold']) {
+  for (const id of ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels', 'showTargets', 'showSupport', 'showTrails', 'poseHold', 'patchDraw']) {
     if (typeof data[id] === 'boolean') document.getElementById(id).checked = data[id];
   }
   pending.worldHeight = Number(CONTROLS.find(c => c.spec.key === 'worldHeight').input.value);

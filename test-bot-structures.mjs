@@ -1,7 +1,8 @@
 // Node tests for bot-structures.js (maze carve + scattered structure generator).
 // Run: node test-bot-structures.mjs
 import { makeRng, generateMazeCells, mazeCellWalls, generateStructures, generateOne, STRUCTURE_DEFAULTS,
-  kindsForMix, isPadOnlyKind, teamSideRegions, generateHomeBase, HOME_BASE_DEFAULTS } from './bot-structures.js';
+  kindsForMix, isPadOnlyKind, teamSideRegions, generateHomeBase, HOME_BASE_DEFAULTS,
+  rampBox, rampDecks, MIX_NAMES } from './bot-structures.js';
 import { buildNavGrid, findPath } from './nav-grid.js';
 import { readFileSync } from 'node:fs';
 
@@ -206,9 +207,10 @@ const inRect = (rc, x, z, margin = 0) =>
 // few buildings these assertions pass either way and prove nothing.
 {
   const bounds = { minX: -70, maxX: 70, minZ: -70, maxZ: 70 };
-  // Re-chosen 2026-08-11 when KINDS went from four to eight: buildings got rarer per structure, so
-  // the old count-14 fixture stopped containing enough of them to make these assertions bite.
-  const base = { seed: 2, count: 24, mix: 'mixed', wallHeight: 3 };
+  // Re-chosen 2026-08-11 when KINDS went from four to eight, and again 2026-08-17 when `platform`
+  // made ten: buildings get rarer per structure with every kind added, and on a fixture without
+  // several of them these assertions pass either way and prove nothing.
+  const base = { seed: 6, count: 24, mix: 'mixed', wallHeight: 3 };
   const gen = (over = {}) => generateStructures(bounds, { ...base, ...over }, []);
   const j = (v) => JSON.stringify(v);
   const ref = gen();
@@ -531,6 +533,117 @@ const inRect = (rc, x, z, margin = 0) =>
     }
     ok(collisions === 0, `foundations never overlap each other (${collisions} collisions)`);
   }
+}
+
+// ---- platform: the one kind that emits a walkable level and the ramp that reaches it ----
+{
+  const p = { ...STRUCTURE_DEFAULTS };
+  const built = generateOne('platform', p, 11, { x: 4, z: -3 });
+  ok(built.covers.length === 4, 'a platform stands on four posts');
+  ok(built.slabs.length === 1 && built.decks.length === 1 && built.ramps.length === 1,
+    'and emits one deck slab, one nav deck and one ramp');
+  const slab = built.slabs[0], deck = built.decks[0], ramp = built.ramps[0];
+  ok(Math.abs(deck.y - (slab.y + slab.h)) < 1e-9, 'the nav deck sits on the slab TOP, not its underside');
+  ok(Math.abs(deck.w - slab.w) < 1e-9 && Math.abs(deck.d - slab.d) < 1e-9, 'and covers the same footprint');
+  ok(built.covers.every(c => Math.abs(c.h - (deck.y - slab.h)) < 1e-9), 'the posts reach the slab underside');
+  ok(ramp.y0 === 0 && Math.abs(ramp.y1 - deck.y) < 1e-9, 'the ramp runs from local ground to the deck surface');
+  const alongX = Math.abs(ramp.x1 - ramp.x0) >= Math.abs(ramp.z1 - ramp.z0);
+  const run = alongX ? Math.abs(ramp.x1 - ramp.x0) : Math.abs(ramp.z1 - ramp.z0);
+  ok(Math.abs(run - deck.y / p.platformRampSlope) < 1e-6, 'its run comes from the asked-for slope');
+  // The head must meet the deck edge, or bots climb to a gap.
+  const headOnEdge = alongX
+    ? Math.abs(Math.abs(ramp.x1 - deck.x) - deck.w / 2) < 1e-9 && Math.abs(ramp.z1 - deck.z) < 1e-9
+    : Math.abs(Math.abs(ramp.z1 - deck.z) - deck.d / 2) < 1e-9 && Math.abs(ramp.x1 - deck.x) < 1e-9;
+  ok(headOnEdge, 'the ramp head lands on a deck edge');
+  ok(built.pad && built.pad.radius >= Math.hypot(deck.w, deck.d) / 2 + run / 2,
+    'one pad covers deck and ramp together');
+  const again = generateOne('platform', p, 11, { x: 4, z: -3 });
+  ok(JSON.stringify(again) === JSON.stringify(built), 'the same seed rebuilds the identical platform');
+}
+
+// ---- rampBox: the record's two ends name the TOP face, and the solid hangs below it ----
+{
+  // Independent reconstruction: rotate the unit box's top-face centre line by the returned angle
+  // and check it lands back on the ramp the caller asked for.
+  const topEnds = (b) => {
+    if (b.rz) {
+      const c = Math.cos(b.rz), s = Math.sin(b.rz);
+      const nx = -s, ny = c;                       // local +y after the rotation: the surface normal
+      const ax = c, ay = s;                        // local +x after it: up-slope
+      const tx = b.x + nx * b.h / 2, ty = b.y + ny * b.h / 2;
+      return [{ x: tx - ax * b.w / 2, y: ty - ay * b.w / 2, z: b.z }, { x: tx + ax * b.w / 2, y: ty + ay * b.w / 2, z: b.z }];
+    }
+    const c = Math.cos(b.rx), s = Math.sin(b.rx);
+    const ny = c, nz = s;
+    const ay = -s, az = c;
+    const ty = b.y + ny * b.h / 2, tz = b.z + nz * b.h / 2;
+    return [{ x: b.x, y: ty - ay * b.d / 2, z: tz - az * b.d / 2 }, { x: b.x, y: ty + ay * b.d / 2, z: tz + az * b.d / 2 }];
+  };
+  const near = (a, b, eps = 1e-6) => Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps && Math.abs(a.z - b.z) < eps;
+  const cases = [
+    { x0: 0, z0: 0, y0: 0, x1: 6, z1: 0, y1: 3, width: 2, thickness: 0.3 },     // rising toward +x
+    { x0: 6, z0: 0, y0: 0, x1: 0, z1: 0, y1: 3, width: 2, thickness: 0.3 },     // rising toward -x
+    { x0: 1, z0: 2, y0: 0, x1: 1, z1: 8, y1: 3, width: 2, thickness: 0.3 },     // rising toward +z
+    { x0: 1, z0: 8, y0: 0, x1: 1, z1: 2, y1: 3, width: 2, thickness: 0.3 },     // rising toward -z
+  ];
+  for (const ramp of cases) {
+    const b = rampBox(ramp);
+    const ends = topEnds(b);
+    const foot = { x: ramp.x0, y: ramp.y0, z: ramp.z0 }, head = { x: ramp.x1, y: ramp.y1, z: ramp.z1 };
+    ok((near(ends[0], foot) && near(ends[1], head)) || (near(ends[0], head) && near(ends[1], foot)),
+      `rampBox top face reconstructs the ramp ends (${JSON.stringify(ramp)})`);
+    const rise = Math.abs(ramp.y1 - ramp.y0);
+    const run = Math.hypot(ramp.x1 - ramp.x0, ramp.z1 - ramp.z0);
+    const len = Math.max(b.w, b.d);
+    ok(Math.abs(len - Math.hypot(run, rise)) < 1e-9, 'its long side is the slope length, not the run');
+    ok(Math.abs(b.h - ramp.thickness) < 1e-9, 'and its thin side is the thickness');
+    ok(b.y < Math.max(ramp.y0, ramp.y1), 'the solid hangs below the surface it carries');
+  }
+}
+
+// ---- rampDecks: a contiguous tiling whose steps stay under the nav levelStep ----
+{
+  const ramp = { x0: 0, z0: 0, y0: 0, x1: 6, z1: 0, y1: 3, width: 2, thickness: 0.3 };
+  const decks = rampDecks(ramp, 0.4);
+  ok(decks.length === Math.ceil(3 / 0.4), 'the run is cut into as many decks as the rise needs');
+  ok(decks.every(d => Math.abs(d.d - ramp.width) < 1e-9), 'each deck is the ramp width across');
+  let maxStep = 0, gaps = 0;
+  for (let i = 1; i < decks.length; i++) {
+    maxStep = Math.max(maxStep, Math.abs(decks[i].y - decks[i - 1].y));
+    const edgeA = decks[i - 1].x + decks[i - 1].w / 2, edgeB = decks[i].x - decks[i].w / 2;
+    if (Math.abs(edgeA - edgeB) > 1e-9) gaps++;
+  }
+  ok(maxStep <= 0.4 + 1e-9, `consecutive decks never step more than the cap (max ${maxStep.toFixed(3)})`);
+  ok(gaps === 0, 'the decks tile the run with no gap and no overlap');
+  const span = (decks.at(-1).x + decks.at(-1).w / 2) - (decks[0].x - decks[0].w / 2);
+  ok(Math.abs(span - 6) < 1e-9, 'and cover the whole run');
+  ok(decks[0].y > 0 && decks[0].y < 0.4 && Math.abs(decks.at(-1).y - 3) < 0.4,
+    'the ends sit within one step of the ground and of the deck');
+  const single = rampDecks({ ...ramp, y1: 0.1 }, 0.4);
+  ok(single.length === 1, 'a shallow ramp is one deck, never zero');
+}
+
+// ---- the mix list is exported, so a save file can be validated against the real kinds ----
+{
+  ok(MIX_NAMES.includes('platforms') && MIX_NAMES.includes('mixed') && MIX_NAMES.includes('terraces'),
+    'MIX_NAMES names every mix the generator accepts');
+  ok(kindsForMix({ mix: 'platforms' }).kinds.join() === 'platform', 'the platforms mix builds platforms');
+  ok(kindsForMix({ mix: 'mixed', padTerrain: false }).kinds.includes('platform'),
+    'platforms survive a terrain-less mixed map (they are geometry, not pads)');
+}
+
+// ---- scattered platforms carry their decks and ramps out of generateStructures ----
+{
+  const bounds = { minX: -40, maxX: 40, minZ: -40, maxZ: 40 };
+  const out = generateStructures(bounds, { ...STRUCTURE_DEFAULTS, mix: 'platforms', count: 5, seed: 3 }, []);
+  ok(out.decks.length === out.placed.length && out.ramps.length === out.placed.length,
+    'every placed platform contributes one deck and one ramp');
+  ok(out.decks.every(d => d.y > 2), 'the decks are well above the ground they were placed on');
+  const seated = generateStructures(bounds, {
+    ...STRUCTURE_DEFAULTS, mix: 'platforms', count: 3, seed: 3, site: () => ({ floorY: 5, skirtDepth: 1 }),
+  }, []);
+  ok(seated.decks.every(d => d.y > 7), 'a seated platform lifts its deck with the rest of the structure');
+  ok(seated.ramps.every(r => Math.abs(r.y0 - 5) < 1e-9), 'and its ramp foot rides up to the seated floor');
 }
 
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }

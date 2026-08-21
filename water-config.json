@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "note": "Written by demos/water-demo.html (Save to water-config.json) and read by demos/flight-sim.html. Hand edits are fine.",
+  "savedAt": "2026-08-17T20:37",
+  "wind": {
+    "degrees": 60
+  },
+  "bodies": {
+    "ocean": {
+      "wave": {
+        "count": 21,
+        "baseLength": 203,
+        "lengthMul": 0.94,
+        "baseAmp": 0.54,
+        "ampMul": 0.74,
+        "chop": 0.43,
+        "windDeg": 60,
+        "spreadDeg": 65,
+        "dispersion": true,
+        "speed": 6,
+        "seed": 7
+      },
+      "u": {
+        "waveModel": 1,
+        "count": 21,
+        "disp": 1,
+        "normalStr": 1,
+        "reflMode": 2,
+        "reflRipple": 0.05,
+        "reflBright": 0.99,
+        "reflMix": 1.11,
+        "ssrSteps": 31,
+        "ssrThickness": 6,
+        "ssrStep": 1.5,
+        "refrMode": 1,
+        "refrRipple": 0.16,
+        "colorLaw": 1,
+        "depthScale": 18,
+        "clarity": 3.75,
+        "fresnelPow": 5,
+        "specModel": 1,
+        "specPow": 80,
+        "rough": 0.07,
+        "distRough": 0.25,
+        "foamShoreDepth": 2.5,
+        "foamShoreStr": 0.7,
+        "foamCrestH": 1,
+        "foamCrestStr": 0.5,
+        "foamFoldT": 0.4,
+        "foamFoldStr": 0.7,
+        "foamContactStr": 0.6,
+        "foamScale": 1,
+        "causticMode": 2,
+        "causticStr": 1,
+        "causticSpread": 3,
+        "opacityBias": 0.5,
+        "opacityMin": 0.6,
+        "opacityMax": 0.98
+      },
+      "colors": {
+        "shallow": "#3a8f96",
+        "deep": "#0b2f45",
+        "foamColor": "#f9fcff"
+      },
+      "vectors": {
+        "absorb": [
+          0.4,
+          0.12,
+          0.06
+        ]
+      }
+    },
+    "lake": {
+      "wave": {
+        "count": 3,
+        "baseLength": 150,
+        "lengthMul": 0.84,
+        "baseAmp": 0,
+        "ampMul": 0.82,
+        "chop": 0,
+        "windDeg": 35,
+        "spreadDeg": 70,
+        "dispersion": true,
+        "speed": 6,
+        "seed": 7
+      },
+      "u": {
+        "waveModel": 0,
+        "count": 3,
+        "disp": 0,
+        "normalStr": 1,
+        "reflMode": 1,
+        "reflRipple": 0.08,
+        "reflBright": 1,
+        "reflMix": 1,
+        "ssrSteps": 32,
+        "ssrThickness": 6,
+        "ssrStep": 1.5,
+        "refrMode": 0,
+        "refrRipple": 0.12,
+        "colorLaw": 0,
+        "depthScale": 6,
+        "clarity": 1,
+        "fresnelPow": 3,
+        "specModel": 0,
+        "specPow": 80,
+        "rough": 0.08,
+        "distRough": 0.25,
+        "foamShoreDepth": 0,
+        "foamShoreStr": 0,
+        "foamCrestH": 1.4,
+        "foamCrestStr": 0,
+        "foamFoldT": 0.35,
+        "foamFoldStr": 0,
+        "foamContactStr": 0,
+        "foamScale": 1,
+        "causticMode": 2,
+        "causticStr": 1,
+        "causticSpread": 3,
+        "opacityBias": 0.5,
+        "opacityMin": 0.6,
+        "opacityMax": 0.98
+      },
+      "colors": {
+        "shallow": "#3f6f78",
+        "deep": "#10333f",
+        "foamColor": "#f9fcff"
+      },
+      "vectors": {
+        "absorb": [
+          0.45,
+          0.12,
+          0.06
+        ]
+      }
+    }
+  }
+}

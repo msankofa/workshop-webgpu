@@ -17,6 +17,16 @@ ripples and a reference bed plane.
 - `docs/water-vs-waterthreejs-comparison.md` compares this subsystem with achrefelouafi/WaterThreeJS
   (ocean water), and `demos/water-demo.html` puts both sets of techniques behind switches per body of
   water. Nothing in this subsystem imports the demo.
+- `water-hybrid.js` + `water-waves.js` are the shared implementation of that comparison's techniques
+  (Gerstner spectrum, Beer-Lambert absorption, GGX glint, foam, plus this file's 3-sine ripples,
+  linear depth mix and Phong highlight), used by `demos/water-demo.html` and by the optional ocean in
+  `demos/flight-sim.html`. `water.js` itself does **not** import them — the lake system in the
+  environment viewer is unchanged.
+- `water-config.json` at the repo root carries the settings for those two pages: `demos/water-demo.html`
+  writes it (`POST /api/save-water-config` in `serve.py`, falling back to a download) and
+  `demos/flight-sim.html` reads it on load and behind a refresh button. It has one entry per body of
+  water (`ocean`, `lake`). `water.js` does not read it; the environment viewer's lake settings are
+  still its own sliders.
 
 ## Files
 

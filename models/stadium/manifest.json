@@ -1,0 +1,8689 @@
+{
+ "001": {
+  "dex": 1,
+  "name": "Bulbasaur",
+  "slug": "bulbasaur",
+  "file": "001_bulbasaur.glb",
+  "bytes": 254084,
+  "tris": 648,
+  "bones": 30,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +30)",
+    "frames": 51,
+    "seconds": 1.7,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Smokescreen, Haze, Smog +14)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Sludge, Fire Blast, Spike Cannon +16)",
+    "frames": 131,
+    "seconds": 4.367,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   }
+  ]
+ },
+ "002": {
+  "dex": 2,
+  "name": "Ivysaur",
+  "slug": "ivysaur",
+  "file": "002_ivysaur.glb",
+  "bytes": 678796,
+  "tris": 696,
+  "bones": 46,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Egg Bomb, Sludge, Spike Cannon +16)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Spore, Poison Powder, Stun Spore +1)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 122,
+    "seconds": 4.067,
+    "loop": false
+   }
+  ]
+ },
+ "003": {
+  "dex": 3,
+  "name": "Venusaur",
+  "slug": "venusaur",
+  "file": "003_venusaur.glb",
+  "bytes": 657324,
+  "tris": 684,
+  "bones": 60,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +17)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Smokescreen, Haze +34)",
+    "frames": 113,
+    "seconds": 3.767,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Stomp, Submission, Seismic Toss +2)",
+    "frames": 142,
+    "seconds": 4.733,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 136,
+    "seconds": 4.533,
+    "loop": false
+   }
+  ]
+ },
+ "004": {
+  "dex": 4,
+  "name": "Charmander",
+  "slug": "charmander",
+  "file": "004_charmander.glb",
+  "bytes": 512184,
+  "tris": 702,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Screech +48)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +15)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Swift, High Jump Kick, Stomp +9)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Lick, Spike Cannon, Lovely Kiss +16)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 122,
+    "seconds": 4.067,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   }
+  ]
+ },
+ "005": {
+  "dex": 5,
+  "name": "Charmeleon",
+  "slug": "charmeleon",
+  "file": "005_charmeleon.glb",
+  "bytes": 432928,
+  "tris": 692,
+  "bones": 32,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bone Club, Barrage +12)",
+    "frames": 86,
+    "seconds": 2.867,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Cut, Fury Swipes +3)",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Struggle +11)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 86,
+    "seconds": 2.867,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "006": {
+  "dex": 6,
+  "name": "Charizard",
+  "slug": "charizard",
+  "file": "006_charizard.glb",
+  "bytes": 455004,
+  "tris": 596,
+  "bones": 41,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +19)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Smokescreen, Vise Grip +54)",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Bide, Skull Bash, Struggle +10)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   }
+  ]
+ },
+ "007": {
+  "dex": 7,
+  "name": "Squirtle",
+  "slug": "squirtle",
+  "file": "007_squirtle.glb",
+  "bytes": 737800,
+  "tris": 693,
+  "bones": 30,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Razor Wind, Dizzy Punch +13)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Smokescreen, Barrier +72)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Spike Cannon +16)",
+    "frames": 71,
+    "seconds": 2.367,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Stomp, Double Kick +4)",
+    "frames": 51,
+    "seconds": 1.7,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Withdraw)",
+    "frames": 53,
+    "seconds": 1.767,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 113,
+    "seconds": 3.767,
+    "loop": false
+   }
+  ]
+ },
+ "008": {
+  "dex": 8,
+  "name": "Wartortle",
+  "slug": "wartortle",
+  "file": "008_wartortle.glb",
+  "bytes": 571908,
+  "tris": 700,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +18)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Vise Grip, Guillotine +44)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Struggle +11)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Withdraw, Splash)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   }
+  ]
+ },
+ "009": {
+  "dex": 9,
+  "name": "Blastoise",
+  "slug": "blastoise",
+  "file": "009_blastoise.glb",
+  "bytes": 500944,
+  "tris": 482,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 148,
+    "seconds": 4.933,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +18)",
+    "frames": 58,
+    "seconds": 1.933,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +15)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Mimic, Recover +42)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Screech, Smokescreen, Lick +41)",
+    "frames": 98,
+    "seconds": 3.267,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 38,
+    "seconds": 1.267,
+    "loop": false
+   },
+   {
+    "label": "attack_6 (Tail Whip)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "attack_7 (Water Gun, Hydro Pump)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "attack_8 (Withdraw)",
+    "frames": 129,
+    "seconds": 4.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   }
+  ]
+ },
+ "010": {
+  "dex": 10,
+  "name": "Caterpie",
+  "slug": "caterpie",
+  "file": "010_caterpie.glb",
+  "bytes": 341240,
+  "tris": 662,
+  "bones": 26,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 117,
+    "seconds": 3.9,
+    "loop": false
+   }
+  ]
+ },
+ "011": {
+  "dex": 11,
+  "name": "Metapod",
+  "slug": "metapod",
+  "file": "011_metapod.glb",
+  "bytes": 110684,
+  "tris": 614,
+  "bones": 12,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Scratch, Vise Grip, Bide +32)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   }
+  ]
+ },
+ "012": {
+  "dex": 12,
+  "name": "Butterfree",
+  "slug": "butterfree",
+  "file": "012_butterfree.glb",
+  "bytes": 236548,
+  "tris": 660,
+  "bones": 36,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bide, Bone Club +30)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   }
+  ]
+ },
+ "013": {
+  "dex": 13,
+  "name": "Weedle",
+  "slug": "weedle",
+  "file": "013_weedle.glb",
+  "bytes": 199520,
+  "tris": 699,
+  "bones": 28,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "attack (Scratch, Vise Grip, Bide +31)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   }
+  ]
+ },
+ "014": {
+  "dex": 14,
+  "name": "Kakuna",
+  "slug": "kakuna",
+  "file": "014_kakuna.glb",
+  "bytes": 158180,
+  "tris": 673,
+  "bones": 16,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 30,
+    "seconds": 1.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 30,
+    "seconds": 1.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "015": {
+  "dex": 15,
+  "name": "Beedrill",
+  "slug": "beedrill",
+  "file": "015_beedrill.glb",
+  "bytes": 440492,
+  "tris": 702,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +31)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +20)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Smokescreen, Barrier, Light Screen +27)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Recover, Egg Bomb, Soft-Boiled +8)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   }
+  ]
+ },
+ "016": {
+  "dex": 16,
+  "name": "Pidgey",
+  "slug": "pidgey",
+  "file": "016_pidgey.glb",
+  "bytes": 427108,
+  "tris": 654,
+  "bones": 56,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 138,
+    "seconds": 4.6,
+    "loop": false
+   },
+   {
+    "label": "attack (Fly)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   }
+  ]
+ },
+ "017": {
+  "dex": 17,
+  "name": "Pidgeotto",
+  "slug": "pidgeotto",
+  "file": "017_pidgeotto.glb",
+  "bytes": 535884,
+  "tris": 698,
+  "bones": 70,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 138,
+    "seconds": 4.6,
+    "loop": false
+   },
+   {
+    "label": "attack (Fly)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   }
+  ]
+ },
+ "018": {
+  "dex": 18,
+  "name": "Pidgeot",
+  "slug": "pidgeot",
+  "file": "018_pidgeot.glb",
+  "bytes": 611660,
+  "tris": 700,
+  "bones": 73,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 138,
+    "seconds": 4.6,
+    "loop": false
+   },
+   {
+    "label": "attack (Fly)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   }
+  ]
+ },
+ "019": {
+  "dex": 19,
+  "name": "Rattata",
+  "slug": "rattata",
+  "file": "019_rattata.glb",
+  "bytes": 381392,
+  "tris": 678,
+  "bones": 43,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +43)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "020": {
+  "dex": 20,
+  "name": "Raticate",
+  "slug": "raticate",
+  "file": "020_raticate.glb",
+  "bytes": 341424,
+  "tris": 696,
+  "bones": 52,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 78,
+    "seconds": 2.6,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   }
+  ]
+ },
+ "021": {
+  "dex": 21,
+  "name": "Spearow",
+  "slug": "spearow",
+  "file": "021_spearow.glb",
+  "bytes": 572700,
+  "tris": 674,
+  "bones": 61,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 77,
+    "seconds": 2.567,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bide +18)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Guillotine, Clamp +13)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Horn Attack, Fury Attack, Horn Drill +5)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "022": {
+  "dex": 22,
+  "name": "Fearow",
+  "slug": "fearow",
+  "file": "022_fearow.glb",
+  "bytes": 762720,
+  "tris": 703,
+  "bones": 55,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +28)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Fly)",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, High Jump Kick +14)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Spike Cannon, Horn Attack, Fury Attack +6)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 97,
+    "seconds": 3.233,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": false
+   }
+  ]
+ },
+ "023": {
+  "dex": 23,
+  "name": "Ekans",
+  "slug": "ekans",
+  "file": "023_ekans.glb",
+  "bytes": 317416,
+  "tris": 660,
+  "bones": 41,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +20)",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "024": {
+  "dex": 24,
+  "name": "Arbok",
+  "slug": "arbok",
+  "file": "024_arbok.glb",
+  "bytes": 329044,
+  "tris": 627,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, Struggle +11)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   }
+  ]
+ },
+ "025": {
+  "dex": 25,
+  "name": "Pikachu",
+  "slug": "pikachu",
+  "file": "025_pikachu.glb",
+  "bytes": 655184,
+  "tris": 723,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 122,
+    "seconds": 4.067,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Karate Chop, Double Slap +5)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Bone Club, Swift +14)",
+    "frames": 107,
+    "seconds": 3.567,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Vise Grip, Bide, Guillotine +24)",
+    "frames": 71,
+    "seconds": 2.367,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Teleport, Night Shade, Mimic +77)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": false
+   },
+   {
+    "label": "attack_6 (Thrash, Earthquake, Fissure +1)",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "attack_7 (Tail Whip, Confusion, Psychic +1)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   },
+   {
+    "label": "attack_8 (Surf)",
+    "frames": 200,
+    "seconds": 6.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "026": {
+  "dex": 26,
+  "name": "Raichu",
+  "slug": "raichu",
+  "file": "026_raichu.glb",
+  "bytes": 802180,
+  "tris": 698,
+  "bones": 50,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 57,
+    "seconds": 1.9,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 57,
+    "seconds": 1.9,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 142,
+    "seconds": 4.733,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +33)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +11)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Double Kick, Mega Kick +4)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Surf)",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 137,
+    "seconds": 4.567,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 129,
+    "seconds": 4.3,
+    "loop": false
+   }
+  ]
+ },
+ "027": {
+  "dex": 27,
+  "name": "Sandshrew",
+  "slug": "sandshrew",
+  "file": "027_sandshrew.glb",
+  "bytes": 308064,
+  "tris": 734,
+  "bones": 32,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +29)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +16)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   }
+  ]
+ },
+ "028": {
+  "dex": 28,
+  "name": "Sandslash",
+  "slug": "sandslash",
+  "file": "028_sandslash.glb",
+  "bytes": 649352,
+  "tris": 710,
+  "bones": 67,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 116,
+    "seconds": 3.867,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +18)",
+    "frames": 63,
+    "seconds": 2.1,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Splash +15)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   }
+  ]
+ },
+ "029": {
+  "dex": 29,
+  "name": "NidoranF",
+  "slug": "nidoranf",
+  "file": "029_nidoranf.glb",
+  "bytes": 415184,
+  "tris": 700,
+  "bones": 54,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 112,
+    "seconds": 3.733,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +17)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   }
+  ]
+ },
+ "030": {
+  "dex": 30,
+  "name": "Nidorina",
+  "slug": "nidorina",
+  "file": "030_nidorina.glb",
+  "bytes": 327060,
+  "tris": 700,
+  "bones": 54,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Focus Energy, Waterfall, Amnesia +4)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   }
+  ]
+ },
+ "031": {
+  "dex": 31,
+  "name": "Nidoqueen",
+  "slug": "nidoqueen",
+  "file": "031_nidoqueen.glb",
+  "bytes": 506644,
+  "tris": 694,
+  "bones": 59,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +26)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +17)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Lick +51)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Splash, Stomp +6)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   }
+  ]
+ },
+ "032": {
+  "dex": 32,
+  "name": "NidoranM",
+  "slug": "nidoranm",
+  "file": "032_nidoranm.glb",
+  "bytes": 308700,
+  "tris": 699,
+  "bones": 50,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 61,
+    "seconds": 2.033,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +41)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 107,
+    "seconds": 3.567,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   }
+  ]
+ },
+ "033": {
+  "dex": 33,
+  "name": "Nidorino",
+  "slug": "nidorino",
+  "file": "033_nidorino.glb",
+  "bytes": 321880,
+  "tris": 698,
+  "bones": 39,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +13)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   }
+  ]
+ },
+ "034": {
+  "dex": 34,
+  "name": "Nidoking",
+  "slug": "nidoking",
+  "file": "034_nidoking.glb",
+  "bytes": 472996,
+  "tris": 700,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 121,
+    "seconds": 4.033,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +22)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +16)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Smog +36)",
+    "frames": 133,
+    "seconds": 4.433,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Stomp, Double Kick +4)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Teleport, Double Team, Waterfall +7)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 98,
+    "seconds": 3.267,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "035": {
+  "dex": 35,
+  "name": "Clefairy",
+  "slug": "clefairy",
+  "file": "035_clefairy.glb",
+  "bytes": 414632,
+  "tris": 674,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 28,
+    "seconds": 0.933,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 28,
+    "seconds": 0.933,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Screech, Smokescreen, Vise Grip +54)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   }
+  ]
+ },
+ "036": {
+  "dex": 36,
+  "name": "Clefable",
+  "slug": "clefable",
+  "file": "036_clefable.glb",
+  "bytes": 827440,
+  "tris": 690,
+  "bones": 48,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 112,
+    "seconds": 3.733,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +13)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Metronome, Hypnosis)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "037": {
+  "dex": 37,
+  "name": "Vulpix",
+  "slug": "vulpix",
+  "file": "037_vulpix.glb",
+  "bytes": 337460,
+  "tris": 705,
+  "bones": 58,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 43,
+    "seconds": 1.433,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 43,
+    "seconds": 1.433,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +40)",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "038": {
+  "dex": 38,
+  "name": "Ninetales",
+  "slug": "ninetales",
+  "file": "038_ninetales.glb",
+  "bytes": 697928,
+  "tris": 682,
+  "bones": 81,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 97,
+    "seconds": 3.233,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bide, Skull Bash +27)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 132,
+    "seconds": 4.4,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 71,
+    "seconds": 2.367,
+    "loop": false
+   }
+  ]
+ },
+ "039": {
+  "dex": 39,
+  "name": "Jigglypuff",
+  "slug": "jigglypuff",
+  "file": "039_jigglypuff.glb",
+  "bytes": 418188,
+  "tris": 692,
+  "bones": 20,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +32)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Smokescreen, Smog, Sludge +45)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "040": {
+  "dex": 40,
+  "name": "Wigglytuff",
+  "slug": "wigglytuff",
+  "file": "040_wigglytuff.glb",
+  "bytes": 755068,
+  "tris": 698,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   },
+   {
+    "label": "attack (Night Shade, Screech, Smokescreen +67)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +28)",
+    "frames": 77,
+    "seconds": 2.567,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   }
+  ]
+ },
+ "041": {
+  "dex": 41,
+  "name": "Zubat",
+  "slug": "zubat",
+  "file": "041_zubat.glb",
+  "bytes": 179800,
+  "tris": 646,
+  "bones": 26,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 30,
+    "seconds": 1.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 30,
+    "seconds": 1.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, Struggle +11)",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 92,
+    "seconds": 3.067,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   }
+  ]
+ },
+ "042": {
+  "dex": 42,
+  "name": "Golbat",
+  "slug": "golbat",
+  "file": "042_golbat.glb",
+  "bytes": 618216,
+  "tris": 671,
+  "bones": 55,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Skull Bash, High Jump Kick, Splash +17)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "struggle (Self-Destruct, Explosion, Rest)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   }
+  ]
+ },
+ "043": {
+  "dex": 43,
+  "name": "Oddish",
+  "slug": "oddish",
+  "file": "043_oddish.glb",
+  "bytes": 1212880,
+  "tris": 696,
+  "bones": 62,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 27,
+    "seconds": 0.9,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 27,
+    "seconds": 0.9,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +26)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 144,
+    "seconds": 4.8,
+    "loop": false
+   }
+  ]
+ },
+ "044": {
+  "dex": 44,
+  "name": "Gloom",
+  "slug": "gloom",
+  "file": "044_gloom.glb",
+  "bytes": 1000312,
+  "tris": 700,
+  "bones": 65,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Teleport, Screech, Smokescreen +55)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +30)",
+    "frames": 112,
+    "seconds": 3.733,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   }
+  ]
+ },
+ "045": {
+  "dex": 45,
+  "name": "Vileplume",
+  "slug": "vileplume",
+  "file": "045_vileplume.glb",
+  "bytes": 817948,
+  "tris": 690,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 29,
+    "seconds": 0.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 29,
+    "seconds": 0.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 144,
+    "seconds": 4.8,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Teleport +88)",
+    "frames": 159,
+    "seconds": 5.3,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +21)",
+    "frames": 37,
+    "seconds": 1.233,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Smokescreen, Smog, Constrict +8)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Stomp, Body Slam)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 230,
+    "seconds": 7.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 108,
+    "seconds": 3.6,
+    "loop": false
+   }
+  ]
+ },
+ "046": {
+  "dex": 46,
+  "name": "Paras",
+  "slug": "paras",
+  "file": "046_paras.glb",
+  "bytes": 256644,
+  "tris": 650,
+  "bones": 43,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 108,
+    "seconds": 3.6,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +20)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   }
+  ]
+ },
+ "047": {
+  "dex": 47,
+  "name": "Parasect",
+  "slug": "parasect",
+  "file": "047_parasect.glb",
+  "bytes": 236248,
+  "tris": 652,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 121,
+    "seconds": 4.033,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +22)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   }
+  ]
+ },
+ "048": {
+  "dex": 48,
+  "name": "Venonat",
+  "slug": "venonat",
+  "file": "048_venonat.glb",
+  "bytes": 326268,
+  "tris": 690,
+  "bones": 56,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 63,
+    "seconds": 2.1,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +28)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "049": {
+  "dex": 49,
+  "name": "Venomoth",
+  "slug": "venomoth",
+  "file": "049_venomoth.glb",
+  "bytes": 207968,
+  "tris": 664,
+  "bones": 32,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bide, Skull Bash +28)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   }
+  ]
+ },
+ "050": {
+  "dex": 50,
+  "name": "Diglett",
+  "slug": "diglett",
+  "file": "050_diglett.glb",
+  "bytes": 258252,
+  "tris": 481,
+  "bones": 22,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +22)",
+    "frames": 61,
+    "seconds": 2.033,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Dig)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "reaction_172",
+    "frames": 41,
+    "seconds": 1.367,
+    "loop": false
+   }
+  ]
+ },
+ "051": {
+  "dex": 51,
+  "name": "Dugtrio",
+  "slug": "dugtrio",
+  "file": "051_dugtrio.glb",
+  "bytes": 590848,
+  "tris": 710,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +31)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Dig)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "reaction_172",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": false
+   }
+  ]
+ },
+ "052": {
+  "dex": 52,
+  "name": "Meowth",
+  "slug": "meowth",
+  "file": "052_meowth.glb",
+  "bytes": 445300,
+  "tris": 699,
+  "bones": 55,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +27)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Focus Energy, Lick, Constrict +12)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   }
+  ]
+ },
+ "053": {
+  "dex": 53,
+  "name": "Persian",
+  "slug": "persian",
+  "file": "053_persian.glb",
+  "bytes": 1148936,
+  "tris": 708,
+  "bones": 59,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 144,
+    "seconds": 4.8,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +19)",
+    "frames": 98,
+    "seconds": 3.267,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +24)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 132,
+    "seconds": 4.4,
+    "loop": false
+   }
+  ]
+ },
+ "054": {
+  "dex": 54,
+  "name": "Psyduck",
+  "slug": "psyduck",
+  "file": "054_psyduck.glb",
+  "bytes": 537428,
+  "tris": 686,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +26)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Mimic, Confuse Ray +8)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "055": {
+  "dex": 55,
+  "name": "Golduck",
+  "slug": "golduck",
+  "file": "055_golduck.glb",
+  "bytes": 419216,
+  "tris": 682,
+  "bones": 45,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bone Club, Swift +15)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Hyper Fang +14)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Haze +58)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Splash, Stomp +6)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Recover, Amnesia, Kinesis +4)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "056": {
+  "dex": 56,
+  "name": "Mankey",
+  "slug": "mankey",
+  "file": "056_mankey.glb",
+  "bytes": 374060,
+  "tris": 699,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bone Club, Barrage +11)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +14)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Double Kick, Jump Kick +2)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Barrier, Light Screen, Reflect +24)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "057": {
+  "dex": 57,
+  "name": "Primeape",
+  "slug": "primeape",
+  "file": "057_primeape.glb",
+  "bytes": 330408,
+  "tris": 702,
+  "bones": 27,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 124,
+    "seconds": 4.133,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Guillotine, Clamp +7)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Smokescreen, Barrier +49)",
+    "frames": 30,
+    "seconds": 1.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Double Kick, Mega Kick +4)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Bide, Skull Bash, Hyper Fang +7)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Spore, Seismic Toss, Poison Powder +2)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 61,
+    "seconds": 2.033,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 141,
+    "seconds": 4.7,
+    "loop": false
+   }
+  ]
+ },
+ "058": {
+  "dex": 58,
+  "name": "Growlithe",
+  "slug": "growlithe",
+  "file": "058_growlithe.glb",
+  "bytes": 469056,
+  "tris": 707,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Mimic, Waterfall +10)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "059": {
+  "dex": 59,
+  "name": "Arcanine",
+  "slug": "arcanine",
+  "file": "059_arcanine.glb",
+  "bytes": 729804,
+  "tris": 700,
+  "bones": 63,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Barrage +14)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +22)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Barrier +58)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Focus Energy, Waterfall, Lovely Kiss +5)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   }
+  ]
+ },
+ "060": {
+  "dex": 60,
+  "name": "Poliwag",
+  "slug": "poliwag",
+  "file": "060_poliwag.glb",
+  "bytes": 695584,
+  "tris": 598,
+  "bones": 27,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 134,
+    "seconds": 4.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Scratch, Teleport, Screech +92)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +9)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Slam, Body Slam)",
+    "frames": 71,
+    "seconds": 2.367,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   }
+  ]
+ },
+ "061": {
+  "dex": 61,
+  "name": "Poliwhirl",
+  "slug": "poliwhirl",
+  "file": "061_poliwhirl.glb",
+  "bytes": 636684,
+  "tris": 682,
+  "bones": 26,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 147,
+    "seconds": 4.9,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +27)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Splash +13)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Stomp, Double Kick +4)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   }
+  ]
+ },
+ "062": {
+  "dex": 62,
+  "name": "Poliwrath",
+  "slug": "poliwrath",
+  "file": "062_poliwrath.glb",
+  "bytes": 703280,
+  "tris": 658,
+  "bones": 29,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +17)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Mimic, Screech +77)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Struggle +11)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Stomp, Double Kick +4)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   }
+  ]
+ },
+ "063": {
+  "dex": 63,
+  "name": "Abra",
+  "slug": "abra",
+  "file": "063_abra.glb",
+  "bytes": 257824,
+  "tris": 657,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 132,
+    "seconds": 4.4,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, Struggle +11)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 67,
+    "seconds": 2.233,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   }
+  ]
+ },
+ "064": {
+  "dex": 64,
+  "name": "Kadabra",
+  "slug": "kadabra",
+  "file": "064_kadabra.glb",
+  "bytes": 670640,
+  "tris": 693,
+  "bones": 58,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack (Night Shade, Screech, Focus Energy +7)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 157,
+    "seconds": 5.233,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Pound, Scratch, Bone Club +22)",
+    "frames": 141,
+    "seconds": 4.7,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Vise Grip, Bide, Guillotine +23)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 128,
+    "seconds": 4.267,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 114,
+    "seconds": 3.8,
+    "loop": false
+   }
+  ]
+ },
+ "065": {
+  "dex": 65,
+  "name": "Alakazam",
+  "slug": "alakazam",
+  "file": "065_alakazam.glb",
+  "bytes": 935056,
+  "tris": 697,
+  "bones": 56,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +53)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Barrier, Light Screen +15)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Amnesia, Barrage, Psywave +5)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 168,
+    "seconds": 5.6,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 165,
+    "seconds": 5.5,
+    "loop": false
+   }
+  ]
+ },
+ "066": {
+  "dex": 66,
+  "name": "Machop",
+  "slug": "machop",
+  "file": "066_machop.glb",
+  "bytes": 660608,
+  "tris": 640,
+  "bones": 46,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +26)",
+    "frames": 78,
+    "seconds": 2.6,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +25)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Splash, Stomp +7)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 167,
+    "seconds": 5.567,
+    "loop": false
+   }
+  ]
+ },
+ "067": {
+  "dex": 67,
+  "name": "Machoke",
+  "slug": "machoke",
+  "file": "067_machoke.glb",
+  "bytes": 296576,
+  "tris": 703,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +26)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +26)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Splash, Stomp +7)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "068": {
+  "dex": 68,
+  "name": "Machamp",
+  "slug": "machamp",
+  "file": "068_machamp.glb",
+  "bytes": 720204,
+  "tris": 701,
+  "bones": 57,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 32,
+    "seconds": 1.067,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 32,
+    "seconds": 1.067,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 136,
+    "seconds": 4.533,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +32)",
+    "frames": 126,
+    "seconds": 4.2,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Smokescreen, Smog +31)",
+    "frames": 148,
+    "seconds": 4.933,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Struggle +11)",
+    "frames": 107,
+    "seconds": 3.567,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Double Kick, Mega Kick +3)",
+    "frames": 62,
+    "seconds": 2.067,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 170,
+    "seconds": 5.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "069": {
+  "dex": 69,
+  "name": "Bellsprout",
+  "slug": "bellsprout",
+  "file": "069_bellsprout.glb",
+  "bytes": 770156,
+  "tris": 674,
+  "bones": 64,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack (Growth)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Pound, Scratch, Vise Grip +49)",
+    "frames": 86,
+    "seconds": 2.867,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Haze +60)",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   }
+  ]
+ },
+ "070": {
+  "dex": 70,
+  "name": "Weepinbell",
+  "slug": "weepinbell",
+  "file": "070_weepinbell.glb",
+  "bytes": 574152,
+  "tris": 620,
+  "bones": 33,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +38)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Razor Leaf, Petal Dance)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   }
+  ]
+ },
+ "071": {
+  "dex": 71,
+  "name": "Victreebel",
+  "slug": "victreebel",
+  "file": "071_victreebel.glb",
+  "bytes": 963928,
+  "tris": 632,
+  "bones": 45,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 157,
+    "seconds": 5.233,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Teleport +44)",
+    "frames": 114,
+    "seconds": 3.8,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +23)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 141,
+    "seconds": 4.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   }
+  ]
+ },
+ "072": {
+  "dex": 72,
+  "name": "Tentacool",
+  "slug": "tentacool",
+  "file": "072_tentacool.glb",
+  "bytes": 161928,
+  "tris": 697,
+  "bones": 20,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +51)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +24)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 128,
+    "seconds": 4.267,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   }
+  ]
+ },
+ "073": {
+  "dex": 73,
+  "name": "Tentacruel",
+  "slug": "tentacruel",
+  "file": "073_tentacruel.glb",
+  "bytes": 326484,
+  "tris": 700,
+  "bones": 46,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Recover +67)",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +21)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "074": {
+  "dex": 74,
+  "name": "Geodude",
+  "slug": "geodude",
+  "file": "074_geodude.glb",
+  "bytes": 285036,
+  "tris": 690,
+  "bones": 31,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 129,
+    "seconds": 4.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +20)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +23)",
+    "frames": 49,
+    "seconds": 1.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 92,
+    "seconds": 3.067,
+    "loop": false
+   }
+  ]
+ },
+ "075": {
+  "dex": 75,
+  "name": "Graveler",
+  "slug": "graveler",
+  "file": "075_graveler.glb",
+  "bytes": 320032,
+  "tris": 678,
+  "bones": 41,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Teleport +24)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +47)",
+    "frames": 71,
+    "seconds": 2.367,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   }
+  ]
+ },
+ "076": {
+  "dex": 76,
+  "name": "Golem",
+  "slug": "golem",
+  "file": "076_golem.glb",
+  "bytes": 468520,
+  "tris": 700,
+  "bones": 32,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +35)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Skull Bash, Fly, Headbutt +4)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Splash, Struggle +8)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Double Kick, Mega Kick +3)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   }
+  ]
+ },
+ "077": {
+  "dex": 77,
+  "name": "Ponyta",
+  "slug": "ponyta",
+  "file": "077_ponyta.glb",
+  "bytes": 883972,
+  "tris": 652,
+  "bones": 55,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Screech, Smokescreen, Lick +65)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +27)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Double Team, Focus Energy, Self-Destruct +6)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "078": {
+  "dex": 78,
+  "name": "Rapidash",
+  "slug": "rapidash",
+  "file": "078_rapidash.glb",
+  "bytes": 804420,
+  "tris": 634,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +33)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Teleport, Screech +87)",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 121,
+    "seconds": 4.033,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "079": {
+  "dex": 79,
+  "name": "Slowpoke",
+  "slug": "slowpoke",
+  "file": "079_slowpoke.glb",
+  "bytes": 551180,
+  "tris": 690,
+  "bones": 38,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "flinch",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack (Pound, Scratch, Teleport +88)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +26)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   }
+  ]
+ },
+ "080": {
+  "dex": 80,
+  "name": "Slowbro",
+  "slug": "slowbro",
+  "file": "080_slowbro.glb",
+  "bytes": 638524,
+  "tris": 693,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "flinch",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack (Pound, Scratch, Recover +77)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +29)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 114,
+    "seconds": 3.8,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   }
+  ]
+ },
+ "081": {
+  "dex": 81,
+  "name": "Magnemite",
+  "slug": "magnemite",
+  "file": "081_magnemite.glb",
+  "bytes": 155768,
+  "tris": 350,
+  "bones": 15,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +33)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Self-Destruct, Lick +14)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   }
+  ]
+ },
+ "082": {
+  "dex": 82,
+  "name": "Magneton",
+  "slug": "magneton",
+  "file": "082_magneton.glb",
+  "bytes": 330300,
+  "tris": 688,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 134,
+    "seconds": 4.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Splash, Stomp +5)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fire Blast, Bubble, Mega Kick +10)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "083": {
+  "dex": 83,
+  "name": "Farfetchd",
+  "slug": "farfetchd",
+  "file": "083_farfetchd.glb",
+  "bytes": 1088336,
+  "tris": 662,
+  "bones": 57,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +22)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Razor Wind, Swords Dance, Spore +6)",
+    "frames": 127,
+    "seconds": 4.233,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 113,
+    "seconds": 3.767,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 20,
+    "seconds": 0.667,
+    "loop": false
+   },
+   {
+    "label": "faint_alt",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "084": {
+  "dex": 84,
+  "name": "Doduo",
+  "slug": "doduo",
+  "file": "084_doduo.glb",
+  "bytes": 557320,
+  "tris": 700,
+  "bones": 55,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Focus Energy, Spike Cannon +14)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +22)",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "reaction_170",
+    "frames": 36,
+    "seconds": 1.2,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": false
+   },
+   {
+    "label": "faint_alt",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   }
+  ]
+ },
+ "085": {
+  "dex": 85,
+  "name": "Dodrio",
+  "slug": "dodrio",
+  "file": "085_dodrio.glb",
+  "bytes": 1006472,
+  "tris": 697,
+  "bones": 74,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 54,
+    "seconds": 1.8,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Focus Energy +38)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +23)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "reaction_170",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 20,
+    "seconds": 0.667,
+    "loop": false
+   },
+   {
+    "label": "faint_alt",
+    "frames": 77,
+    "seconds": 2.567,
+    "loop": false
+   }
+  ]
+ },
+ "086": {
+  "dex": 86,
+  "name": "Seel",
+  "slug": "seel",
+  "file": "086_seel.glb",
+  "bytes": 350472,
+  "tris": 671,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +29)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   }
+  ]
+ },
+ "087": {
+  "dex": 87,
+  "name": "Dewgong",
+  "slug": "dewgong",
+  "file": "087_dewgong.glb",
+  "bytes": 208576,
+  "tris": 660,
+  "bones": 38,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 138,
+    "seconds": 4.6,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 63,
+    "seconds": 2.1,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   }
+  ]
+ },
+ "088": {
+  "dex": 88,
+  "name": "Grimer",
+  "slug": "grimer",
+  "file": "088_grimer.glb",
+  "bytes": 870228,
+  "tris": 700,
+  "bones": 48,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +46)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   }
+  ]
+ },
+ "089": {
+  "dex": 89,
+  "name": "Muk",
+  "slug": "muk",
+  "file": "089_muk.glb",
+  "bytes": 951100,
+  "tris": 701,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +31)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "090": {
+  "dex": 90,
+  "name": "Shellder",
+  "slug": "shellder",
+  "file": "090_shellder.glb",
+  "bytes": 248016,
+  "tris": 666,
+  "bones": 10,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 137,
+    "seconds": 4.567,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +45)",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "091": {
+  "dex": 91,
+  "name": "Cloyster",
+  "slug": "cloyster",
+  "file": "091_cloyster.glb",
+  "bytes": 206400,
+  "tris": 698,
+  "bones": 19,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 128,
+    "seconds": 4.267,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Teleport, Bide +58)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Vise Grip, Guillotine +8)",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Recover, Smokescreen, Haze +48)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Harden, Withdraw, Barrier +6)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "092": {
+  "dex": 92,
+  "name": "Gastly",
+  "slug": "gastly",
+  "file": "092_gastly.glb",
+  "bytes": 386648,
+  "tris": 498,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +34)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   }
+  ]
+ },
+ "093": {
+  "dex": 93,
+  "name": "Haunter",
+  "slug": "haunter",
+  "file": "093_haunter.glb",
+  "bytes": 312480,
+  "tris": 694,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +15)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +30)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   }
+  ]
+ },
+ "094": {
+  "dex": 94,
+  "name": "Gengar",
+  "slug": "gengar",
+  "file": "094_gengar.glb",
+  "bytes": 465592,
+  "tris": 684,
+  "bones": 37,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 29,
+    "seconds": 0.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 29,
+    "seconds": 0.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +22)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +10)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Splash, Stomp +7)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 200,
+    "seconds": 6.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "095": {
+  "dex": 95,
+  "name": "Onix",
+  "slug": "onix",
+  "file": "095_onix.glb",
+  "bytes": 228000,
+  "tris": 691,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 134,
+    "seconds": 4.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Focus Energy, Fire Blast, Razor Wind +13)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Soft-Boiled)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 83,
+    "seconds": 2.767,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "096": {
+  "dex": 96,
+  "name": "Drowzee",
+  "slug": "drowzee",
+  "file": "096_drowzee.glb",
+  "bytes": 395880,
+  "tris": 698,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 136,
+    "seconds": 4.533,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "097": {
+  "dex": 97,
+  "name": "Hypno",
+  "slug": "hypno",
+  "file": "097_hypno.glb",
+  "bytes": 599932,
+  "tris": 680,
+  "bones": 60,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +26)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Guillotine, Egg Bomb +6)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Recover, Smokescreen +19)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Swift, High Jump Kick, Swords Dance +8)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Focus Energy, Bide, Waterfall +33)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "098": {
+  "dex": 98,
+  "name": "Krabby",
+  "slug": "krabby",
+  "file": "098_krabby.glb",
+  "bytes": 287664,
+  "tris": 682,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 107,
+    "seconds": 3.567,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +18)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   }
+  ]
+ },
+ "099": {
+  "dex": 99,
+  "name": "Kingler",
+  "slug": "kingler",
+  "file": "099_kingler.glb",
+  "bytes": 245224,
+  "tris": 700,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 45,
+    "seconds": 1.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   }
+  ]
+ },
+ "100": {
+  "dex": 100,
+  "name": "Voltorb",
+  "slug": "voltorb",
+  "file": "100_voltorb.glb",
+  "bytes": 120292,
+  "tris": 564,
+  "bones": 11,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +33)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   },
+   {
+    "label": "flinch",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   }
+  ]
+ },
+ "101": {
+  "dex": 101,
+  "name": "Electrode",
+  "slug": "electrode",
+  "file": "101_electrode.glb",
+  "bytes": 436520,
+  "tris": 522,
+  "bones": 21,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Night Shade +90)",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +26)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Lick, Soft-Boiled)",
+    "frames": 180,
+    "seconds": 6.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 200,
+    "seconds": 6.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "102": {
+  "dex": 102,
+  "name": "Exeggcute",
+  "slug": "exeggcute",
+  "file": "102_exeggcute.glb",
+  "bytes": 234660,
+  "tris": 700,
+  "bones": 25,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Teleport +90)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 42,
+    "seconds": 1.4,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "103": {
+  "dex": 103,
+  "name": "Exeggutor",
+  "slug": "exeggutor",
+  "file": "103_exeggutor.glb",
+  "bytes": 603680,
+  "tris": 673,
+  "bones": 71,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 93,
+    "seconds": 3.1,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +21)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Razor Wind, Spore, Splash +11)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   }
+  ]
+ },
+ "104": {
+  "dex": 104,
+  "name": "Cubone",
+  "slug": "cubone",
+  "file": "104_cubone.glb",
+  "bytes": 652360,
+  "tris": 691,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 49,
+    "seconds": 1.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, High Jump Kick, Barrage +17)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +11)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "105": {
+  "dex": 105,
+  "name": "Marowak",
+  "slug": "marowak",
+  "file": "105_marowak.glb",
+  "bytes": 493268,
+  "tris": 674,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 48,
+    "seconds": 1.6,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 111,
+    "seconds": 3.7,
+    "loop": false
+   },
+   {
+    "label": "attack (Scratch, Cut, Crabhammer +4)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, High Jump Kick +17)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "106": {
+  "dex": 106,
+  "name": "Hitmonlee",
+  "slug": "hitmonlee",
+  "file": "106_hitmonlee.glb",
+  "bytes": 522728,
+  "tris": 698,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 31,
+    "seconds": 1.033,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 31,
+    "seconds": 1.033,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Egg Bomb +22)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +25)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Recover, Smokescreen +66)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "107": {
+  "dex": 107,
+  "name": "Hitmonchan",
+  "slug": "hitmonchan",
+  "file": "107_hitmonchan.glb",
+  "bytes": 212772,
+  "tris": 672,
+  "bones": 29,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 52,
+    "seconds": 1.733,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Focus Energy, Bide +46)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 44,
+    "seconds": 1.467,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 91,
+    "seconds": 3.033,
+    "loop": false
+   }
+  ]
+ },
+ "108": {
+  "dex": 108,
+  "name": "Lickitung",
+  "slug": "lickitung",
+  "file": "108_lickitung.glb",
+  "bytes": 648728,
+  "tris": 689,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 24,
+    "seconds": 0.8,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 24,
+    "seconds": 0.8,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +23)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Hyper Fang +14)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Double Kick, Mega Kick +3)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 143,
+    "seconds": 4.767,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   }
+  ]
+ },
+ "109": {
+  "dex": 109,
+  "name": "Koffing",
+  "slug": "koffing",
+  "file": "109_koffing.glb",
+  "bytes": 809136,
+  "tris": 600,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 180,
+    "seconds": 6.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +38)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   }
+  ]
+ },
+ "110": {
+  "dex": 110,
+  "name": "Weezing",
+  "slug": "weezing",
+  "file": "110_weezing.glb",
+  "bytes": 1074932,
+  "tris": 694,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 155,
+    "seconds": 5.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +34)",
+    "frames": 56,
+    "seconds": 1.867,
+    "loop": false
+   },
+   {
+    "label": "struggle (Rest)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "flinch",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "111": {
+  "dex": 111,
+  "name": "Rhyhorn",
+  "slug": "rhyhorn",
+  "file": "111_rhyhorn.glb",
+  "bytes": 372960,
+  "tris": 699,
+  "bones": 30,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, Struggle +11)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "112": {
+  "dex": 112,
+  "name": "Rhydon",
+  "slug": "rhydon",
+  "file": "112_rhydon.glb",
+  "bytes": 306752,
+  "tris": 700,
+  "bones": 40,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +22)",
+    "frames": 78,
+    "seconds": 2.6,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +9)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Double Kick, Mega Kick +4)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "113": {
+  "dex": 113,
+  "name": "Chansey",
+  "slug": "chansey",
+  "file": "113_chansey.glb",
+  "bytes": 1081516,
+  "tris": 625,
+  "bones": 54,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +23)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +16)",
+    "frames": 102,
+    "seconds": 3.4,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Night Shade, Screech +77)",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Splash, Stomp +7)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Egg Bomb)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   }
+  ]
+ },
+ "114": {
+  "dex": 114,
+  "name": "Tangela",
+  "slug": "tangela",
+  "file": "114_tangela.glb",
+  "bytes": 597324,
+  "tris": 812,
+  "bones": 98,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 97,
+    "seconds": 3.233,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +25)",
+    "frames": 58,
+    "seconds": 1.933,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "115": {
+  "dex": 115,
+  "name": "Kangaskhan",
+  "slug": "kangaskhan",
+  "file": "115_kangaskhan.glb",
+  "bytes": 1351288,
+  "tris": 700,
+  "bones": 73,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 28,
+    "seconds": 0.933,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 28,
+    "seconds": 0.933,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +23)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Bide, Skull Bash, Struggle +11)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Splash, Stomp +6)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "116": {
+  "dex": 116,
+  "name": "Horsea",
+  "slug": "horsea",
+  "file": "116_horsea.glb",
+  "bytes": 238340,
+  "tris": 603,
+  "bones": 27,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +36)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   }
+  ]
+ },
+ "117": {
+  "dex": 117,
+  "name": "Seadra",
+  "slug": "seadra",
+  "file": "117_seadra.glb",
+  "bytes": 202568,
+  "tris": 666,
+  "bones": 18,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +23)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "118": {
+  "dex": 118,
+  "name": "Goldeen",
+  "slug": "goldeen",
+  "file": "118_goldeen.glb",
+  "bytes": 184420,
+  "tris": 510,
+  "bones": 22,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +59)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Waterfall, Tail Whip)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   }
+  ]
+ },
+ "119": {
+  "dex": 119,
+  "name": "Seaking",
+  "slug": "seaking",
+  "file": "119_seaking.glb",
+  "bytes": 234100,
+  "tris": 604,
+  "bones": 29,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +32)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Waterfall)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 103,
+    "seconds": 3.433,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "120": {
+  "dex": 120,
+  "name": "Staryu",
+  "slug": "staryu",
+  "file": "120_staryu.glb",
+  "bytes": 171932,
+  "tris": 460,
+  "bones": 28,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 72,
+    "seconds": 2.4,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Confuse Ray +54)",
+    "frames": 72,
+    "seconds": 2.4,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +27)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   }
+  ]
+ },
+ "121": {
+  "dex": 121,
+  "name": "Starmie",
+  "slug": "starmie",
+  "file": "121_starmie.glb",
+  "bytes": 297244,
+  "tris": 596,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Screech +66)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +31)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   }
+  ]
+ },
+ "122": {
+  "dex": 122,
+  "name": "MrMime",
+  "slug": "mrmime",
+  "file": "122_mrmime.glb",
+  "bytes": 632240,
+  "tris": 692,
+  "bones": 56,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack (Barrier, Light Screen, Reflect)",
+    "frames": 159,
+    "seconds": 5.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Pound, Barrage, Dizzy Punch +9)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Vise Grip, Bide, Guillotine +17)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Splash, Stomp +6)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 115,
+    "seconds": 3.833,
+    "loop": false
+   }
+  ]
+ },
+ "123": {
+  "dex": 123,
+  "name": "Scyther",
+  "slug": "scyther",
+  "file": "123_scyther.glb",
+  "bytes": 269648,
+  "tris": 700,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +21)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Screech, Recover +65)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, High Jump Kick, Hyper Fang +18)",
+    "frames": 63,
+    "seconds": 2.1,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Skull Bash, Bonemerang, Headbutt +12)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   }
+  ]
+ },
+ "124": {
+  "dex": 124,
+  "name": "Jynx",
+  "slug": "jynx",
+  "file": "124_jynx.glb",
+  "bytes": 845300,
+  "tris": 701,
+  "bones": 56,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +19)",
+    "frames": 92,
+    "seconds": 3.067,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Screech, Recover +78)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Hyper Fang +14)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (High Jump Kick, Splash, Stomp +6)",
+    "frames": 76,
+    "seconds": 2.533,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 144,
+    "seconds": 4.8,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   }
+  ]
+ },
+ "125": {
+  "dex": 125,
+  "name": "Electabuzz",
+  "slug": "electabuzz",
+  "file": "125_electabuzz.glb",
+  "bytes": 630132,
+  "tris": 686,
+  "bones": 57,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 155,
+    "seconds": 5.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Swift +23)",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +17)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (High Jump Kick, Splash, Stomp +5)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 105,
+    "seconds": 3.5,
+    "loop": false
+   }
+  ]
+ },
+ "126": {
+  "dex": 126,
+  "name": "Magmar",
+  "slug": "magmar",
+  "file": "126_magmar.glb",
+  "bytes": 649440,
+  "tris": 730,
+  "bones": 64,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 135,
+    "seconds": 4.5,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +28)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Swift, High Jump Kick, Swords Dance +6)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Bide, Skull Bash, Hyper Fang +12)",
+    "frames": 72,
+    "seconds": 2.4,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Screech, Smokescreen, Confuse Ray +64)",
+    "frames": 139,
+    "seconds": 4.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "127": {
+  "dex": 127,
+  "name": "Pinsir",
+  "slug": "pinsir",
+  "file": "127_pinsir.glb",
+  "bytes": 430376,
+  "tris": 688,
+  "bones": 53,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +22)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Guillotine, Clamp +2)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Barrier +41)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Bide, Skull Bash, High Jump Kick +28)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "128": {
+  "dex": 128,
+  "name": "Tauros",
+  "slug": "tauros",
+  "file": "128_tauros.glb",
+  "bytes": 540940,
+  "tris": 698,
+  "bones": 59,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Sludge +58)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +25)",
+    "frames": 75,
+    "seconds": 2.5,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Egg Bomb, Splash, Bonemerang +7)",
+    "frames": 101,
+    "seconds": 3.367,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "129": {
+  "dex": 129,
+  "name": "Magikarp",
+  "slug": "magikarp",
+  "file": "129_magikarp.glb",
+  "bytes": 432180,
+  "tris": 634,
+  "bones": 46,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +24)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "130": {
+  "dex": 130,
+  "name": "Gyarados",
+  "slug": "gyarados",
+  "file": "130_gyarados.glb",
+  "bytes": 404996,
+  "tris": 701,
+  "bones": 50,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 86,
+    "seconds": 2.867,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 86,
+    "seconds": 2.867,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +33)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Barrage, Splash, Struggle)",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 92,
+    "seconds": 3.067,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 87,
+    "seconds": 2.9,
+    "loop": false
+   }
+  ]
+ },
+ "131": {
+  "dex": 131,
+  "name": "Lapras",
+  "slug": "lapras",
+  "file": "131_lapras.glb",
+  "bytes": 353068,
+  "tris": 692,
+  "bones": 33,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "reaction_182",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bide, Bone Club +29)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Screech, Smokescreen +51)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Vise Grip, Mirror Move +23)",
+    "frames": 121,
+    "seconds": 4.033,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   }
+  ]
+ },
+ "132": {
+  "dex": 132,
+  "name": "Ditto",
+  "slug": "ditto",
+  "file": "132_ditto.glb",
+  "bytes": 982248,
+  "tris": 662,
+  "bones": 21,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Screech +56)",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Vise Grip, Bide +44)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Recover, Waterfall, Razor Wind +17)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Teleport, Harden, Smokescreen +11)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Double Team, Conversion, Meditate)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_6 (Mimic, Withdraw, Metronome +1)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_7 (Minimize)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_8 (Defense Curl, Mirror Move, Sharpen)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_9 (Substitute)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "anim14",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "anim15",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "anim16",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "anim17",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "anim18",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "anim19",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "anim20",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   }
+  ]
+ },
+ "133": {
+  "dex": 133,
+  "name": "Eevee",
+  "slug": "eevee",
+  "file": "133_eevee.glb",
+  "bytes": 636632,
+  "tris": 648,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 77,
+    "seconds": 2.567,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Guillotine, Bone Club +8)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Scratch, Bide, Skull Bash +16)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Smog +45)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   }
+  ]
+ },
+ "134": {
+  "dex": 134,
+  "name": "Vaporeon",
+  "slug": "vaporeon",
+  "file": "134_vaporeon.glb",
+  "bytes": 481664,
+  "tris": 700,
+  "bones": 64,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 97,
+    "seconds": 3.233,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +18)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Screech, Smokescreen, Haze +60)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Recover, Barrier +12)",
+    "frames": 53,
+    "seconds": 1.767,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 143,
+    "seconds": 4.767,
+    "loop": false
+   }
+  ]
+ },
+ "135": {
+  "dex": 135,
+  "name": "Jolteon",
+  "slug": "jolteon",
+  "file": "135_jolteon.glb",
+  "bytes": 554040,
+  "tris": 656,
+  "bones": 58,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 97,
+    "seconds": 3.233,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +18)",
+    "frames": 51,
+    "seconds": 1.7,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +26)",
+    "frames": 124,
+    "seconds": 4.133,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Smokescreen, Haze, Smog +33)",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Mega Kick, Sand Attack)",
+    "frames": 66,
+    "seconds": 2.2,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Teleport, Screech, Self-Destruct +6)",
+    "frames": 53,
+    "seconds": 1.767,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "136": {
+  "dex": 136,
+  "name": "Flareon",
+  "slug": "flareon",
+  "file": "136_flareon.glb",
+  "bytes": 424152,
+  "tris": 704,
+  "bones": 49,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack (Egg Bomb, Lick, Sludge +28)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 119,
+    "seconds": 3.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Pound, Scratch, Bone Club +25)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Vise Grip, Bide, Guillotine +18)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Screech, Smokescreen, Haze +37)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   }
+  ]
+ },
+ "137": {
+  "dex": 137,
+  "name": "Porygon",
+  "slug": "porygon",
+  "file": "137_porygon.glb",
+  "bytes": 189920,
+  "tris": 156,
+  "bones": 17,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 47,
+    "seconds": 1.567,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +35)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Teleport, Mimic, Barrier +20)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 134,
+    "seconds": 4.467,
+    "loop": false
+   }
+  ]
+ },
+ "138": {
+  "dex": 138,
+  "name": "Omanyte",
+  "slug": "omanyte",
+  "file": "138_omanyte.glb",
+  "bytes": 290880,
+  "tris": 678,
+  "bones": 31,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 64,
+    "seconds": 2.133,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 38,
+    "seconds": 1.267,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   }
+  ]
+ },
+ "139": {
+  "dex": 139,
+  "name": "Omastar",
+  "slug": "omastar",
+  "file": "139_omastar.glb",
+  "bytes": 526644,
+  "tris": 691,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 74,
+    "seconds": 2.467,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +28)",
+    "frames": 50,
+    "seconds": 1.667,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 72,
+    "seconds": 2.4,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   }
+  ]
+ },
+ "140": {
+  "dex": 140,
+  "name": "Kabuto",
+  "slug": "kabuto",
+  "file": "140_kabuto.glb",
+  "bytes": 144832,
+  "tris": 700,
+  "bones": 25,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Vise Grip, Bide +35)",
+    "frames": 43,
+    "seconds": 1.433,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "141": {
+  "dex": 141,
+  "name": "Kabutops",
+  "slug": "kabutops",
+  "file": "141_kabutops.glb",
+  "bytes": 230656,
+  "tris": 704,
+  "bones": 35,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 37,
+    "seconds": 1.233,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 37,
+    "seconds": 1.233,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 124,
+    "seconds": 4.133,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, Hyper Fang +14)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (High Jump Kick, Double Kick, Mega Kick +3)",
+    "frames": 72,
+    "seconds": 2.4,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   }
+  ]
+ },
+ "142": {
+  "dex": 142,
+  "name": "Aerodactyl",
+  "slug": "aerodactyl",
+  "file": "142_aerodactyl.glb",
+  "bytes": 434180,
+  "tris": 692,
+  "bones": 51,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 38,
+    "seconds": 1.267,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 38,
+    "seconds": 1.267,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 88,
+    "seconds": 2.933,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +24)",
+    "frames": 89,
+    "seconds": 2.967,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +23)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 68,
+    "seconds": 2.267,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 49,
+    "seconds": 1.633,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 146,
+    "seconds": 4.867,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 94,
+    "seconds": 3.133,
+    "loop": false
+   }
+  ]
+ },
+ "143": {
+  "dex": 143,
+  "name": "Snorlax",
+  "slug": "snorlax",
+  "file": "143_snorlax.glb",
+  "bytes": 1244660,
+  "tris": 630,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 130,
+    "seconds": 4.333,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Vise Grip +29)",
+    "frames": 95,
+    "seconds": 3.167,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Night Shade, Screech, Smokescreen +68)",
+    "frames": 160,
+    "seconds": 5.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Double Team, Recover +18)",
+    "frames": 140,
+    "seconds": 4.667,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Bide, Skull Bash, Hyper Fang +14)",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (High Jump Kick, Double Kick, Mega Kick +3)",
+    "frames": 82,
+    "seconds": 2.733,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   }
+  ]
+ },
+ "144": {
+  "dex": 144,
+  "name": "Articuno",
+  "slug": "articuno",
+  "file": "144_articuno.glb",
+  "bytes": 719688,
+  "tris": 696,
+  "bones": 47,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +21)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Razor Wind, Barrage, Spore +13)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 62,
+    "seconds": 2.067,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Lick, Sludge, Fire Blast +34)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint_alt",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "anim11",
+    "frames": 2,
+    "seconds": 0.067,
+    "loop": false
+   }
+  ]
+ },
+ "145": {
+  "dex": 145,
+  "name": "Zapdos",
+  "slug": "zapdos",
+  "file": "145_zapdos.glb",
+  "bytes": 452328,
+  "tris": 689,
+  "bones": 51,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +23)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Fly)",
+    "frames": 99,
+    "seconds": 3.3,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 92,
+    "seconds": 3.067,
+    "loop": false
+   }
+  ]
+ },
+ "146": {
+  "dex": 146,
+  "name": "Moltres",
+  "slug": "moltres",
+  "file": "146_moltres.glb",
+  "bytes": 1149348,
+  "tris": 644,
+  "bones": 66,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 85,
+    "seconds": 2.833,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +21)",
+    "frames": 40,
+    "seconds": 1.333,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Razor Wind, Barrage, Spore +14)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Fly)",
+    "frames": 62,
+    "seconds": 2.067,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Lick, Sludge, Fire Blast +33)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "idle_alt",
+    "frames": 60,
+    "seconds": 2.0,
+    "loop": false
+   },
+   {
+    "label": "faint_alt",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   }
+  ]
+ },
+ "147": {
+  "dex": 147,
+  "name": "Dratini",
+  "slug": "dratini",
+  "file": "147_dratini.glb",
+  "bytes": 356900,
+  "tris": 632,
+  "bones": 26,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 39,
+    "seconds": 1.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 139,
+    "seconds": 4.633,
+    "loop": false
+   },
+   {
+    "label": "attack (Bide, Skull Bash, High Jump Kick +18)",
+    "frames": 65,
+    "seconds": 2.167,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   }
+  ]
+ },
+ "148": {
+  "dex": 148,
+  "name": "Dragonair",
+  "slug": "dragonair",
+  "file": "148_dragonair.glb",
+  "bytes": 222544,
+  "tris": 660,
+  "bones": 34,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 129,
+    "seconds": 4.3,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +23)",
+    "frames": 55,
+    "seconds": 1.833,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 106,
+    "seconds": 3.533,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   }
+  ]
+ },
+ "149": {
+  "dex": 149,
+  "name": "Dragonite",
+  "slug": "dragonite",
+  "file": "149_dragonite.glb",
+  "bytes": 366812,
+  "tris": 679,
+  "bones": 41,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 149,
+    "seconds": 4.967,
+    "loop": false
+   },
+   {
+    "label": "attack (Vise Grip, Bide, Guillotine +16)",
+    "frames": 123,
+    "seconds": 4.1,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Defense Curl, Fire Blast, Razor Wind +17)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Screech, Smokescreen, Barrier +45)",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 120,
+    "seconds": 4.0,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   }
+  ]
+ },
+ "150": {
+  "dex": 150,
+  "name": "Mewtwo",
+  "slug": "mewtwo",
+  "file": "150_mewtwo.glb",
+  "bytes": 575928,
+  "tris": 709,
+  "bones": 44,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 59,
+    "seconds": 1.967,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 109,
+    "seconds": 3.633,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Scratch, Bone Club +18)",
+    "frames": 84,
+    "seconds": 2.8,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Focus Energy, Guillotine +43)",
+    "frames": 150,
+    "seconds": 5.0,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Night Shade, Recover +25)",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Bide, Skull Bash, Struggle +11)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (High Jump Kick, Stomp, Double Kick +5)",
+    "frames": 81,
+    "seconds": 2.7,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 110,
+    "seconds": 3.667,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   }
+  ]
+ },
+ "151": {
+  "dex": 151,
+  "name": "Mew",
+  "slug": "mew",
+  "file": "151_mew.glb",
+  "bytes": 486280,
+  "tris": 699,
+  "bones": 42,
+  "clips": [
+   {
+    "label": "idle (standby loop)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "anim1 (unreferenced second idle)",
+    "frames": 69,
+    "seconds": 2.3,
+    "loop": true
+   },
+   {
+    "label": "attack_default (also the hit/flinch reaction)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack (Pound, Bone Club, Dizzy Punch +13)",
+    "frames": 80,
+    "seconds": 2.667,
+    "loop": false
+   },
+   {
+    "label": "attack_2 (Vise Grip, Bide, Guillotine +15)",
+    "frames": 100,
+    "seconds": 3.333,
+    "loop": false
+   },
+   {
+    "label": "attack_3 (Teleport, Egg Bomb, Sludge +24)",
+    "frames": 90,
+    "seconds": 3.0,
+    "loop": false
+   },
+   {
+    "label": "attack_4 (Barrier, Light Screen, Reflect +3)",
+    "frames": 79,
+    "seconds": 2.633,
+    "loop": false
+   },
+   {
+    "label": "attack_5 (Screech, Lick, Fire Blast +33)",
+    "frames": 125,
+    "seconds": 4.167,
+    "loop": false
+   },
+   {
+    "label": "attack_6 (Mimic, Focus Energy, Conversion +5)",
+    "frames": 104,
+    "seconds": 3.467,
+    "loop": false
+   },
+   {
+    "label": "faint",
+    "frames": 70,
+    "seconds": 2.333,
+    "loop": false
+   },
+   {
+    "label": "entrance (out of the ball)",
+    "frames": 96,
+    "seconds": 3.2,
+    "loop": false
+   }
+  ]
+ }
+}

@@ -258,6 +258,7 @@ export function createCrystalsFx(deps, options = {}) {
     if (chipCount) {
       chipMesh = new THREE.InstancedMesh(chipGeo, mats.chip, chipCount);
       chipMesh.frustumCulled = false;
+      chipMesh.userData.moveComponent = 'particles';
       for (let i = 0; i < chipCount; i++) chipMesh.setMatrixAt(i, S.zero);
       group.add(chipMesh);
     }

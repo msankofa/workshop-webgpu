@@ -667,7 +667,7 @@ function mergeDesign(design) {
   return d;
 }
 
-export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode = 'remote', style, design: designIn = null, adaptGaitToSpeed = false, movementDynamics = false, naturalLocomotion = false, batches = null, cache = null }) {
+export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode = 'remote', style, design: designIn = null, adaptGaitToSpeed = false, movementDynamics = false, naturalLocomotion = false, batches = null, cache = null, mergeGear = false }) {
   const palette = mergeStyle(style);
   const design = mergeDesign(designIn);
   // Instanced mode (Phase 4): when a `batches` pool is injected, parts become transform-only
@@ -1128,11 +1128,85 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     gearParts.push(part);
     anchor.add(part);
   }
+  // Merged gear (instanced only): every piece on one (anchor, role) bakes into a single geometry,
+  // cutting the flush matrix walk, pool adds, and bucket count without changing the rendered look.
+  // Per-piece OBBs ride along in userData.mergedPieces so bot-body-hit.js keeps piece precision.
+  const _mergeGroups = new Map();
+  const _gearMerged = mergeGear && instanced;
+  function collectGearPiece(g, anchorName, mirror, index) {
+    if (!gearHosts[anchorName]) return;
+    const role = Object.prototype.hasOwnProperty.call(roleMatTable, g.role) ? g.role : 'trim';
+    const key = anchorName + (g.faceBody ? '#face' : '') + '|' + role;
+    let grp = _mergeGroups.get(key);
+    if (!grp) { grp = { anchorName, faceBody: !!g.faceBody, role, pieces: [] }; _mergeGroups.set(key, grp); }
+    grp.pieces.push({ g, mirror, index });
+  }
+  // Same transform addGearPart writes onto an individual piece, as one local matrix.
+  function pieceLocalMatrix(g, mirror) {
+    const mx = mirror ? -1 : 1;
+    const p = g.position || [0, 0, 0], r = g.rotation || [0, 0, 0];
+    const scl = g.scale == null ? new THREE.Vector3(1, 1, 1)
+      : Array.isArray(g.scale) ? new THREE.Vector3(g.scale[0], g.scale[1], g.scale[2])
+      : new THREE.Vector3(g.scale, g.scale, g.scale);
+    return new THREE.Matrix4().compose(
+      new THREE.Vector3(p[0] * mx, p[1], p[2]),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(r[0], r[1] * mx, r[2] * mx, 'XYZ')),
+      scl);
+  }
+  // Bakes one group into a single indexed position+normal geometry; lod=1 uses the rbox seg-1 twin.
+  function buildMergedGeometry(grp, lod) {
+    const pos = [], nrm = [], idx = [];
+    let base = 0;
+    for (const { g, mirror } of grp.pieces) {
+      const src = (lod && g.type === 'rbox') ? gearGeometry(g, GEAR_LOD_SEG) : gearGeometry(g);
+      const baked = src.clone().applyMatrix4(pieceLocalMatrix(g, mirror));
+      const p = baked.getAttribute('position'), n = baked.getAttribute('normal');
+      for (let i = 0; i < p.count; i++) {
+        pos.push(p.getX(i), p.getY(i), p.getZ(i));
+        if (n) nrm.push(n.getX(i), n.getY(i), n.getZ(i));
+      }
+      if (baked.index) for (let i = 0; i < baked.index.count; i++) idx.push(baked.index.getX(i) + base);
+      else for (let i = 0; i < p.count; i++) idx.push(base + i);
+      base += p.count;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    if (nrm.length === pos.length) geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setIndex(idx);
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+    return geo;
+  }
+  function addMergedGearParts() {
+    for (const grp of _mergeGroups.values()) {
+      const anchor = gearAnchor(grp.anchorName, grp.faceBody);
+      if (!anchor) continue;
+      const baseKey = 'gearmerge|' + grp.anchorName + (grp.faceBody ? '#face' : '') + '|' + grp.role
+        + '|' + JSON.stringify(grp.pieces.map(({ g, mirror }) => [g, mirror ? 1 : 0]));
+      const full = sharedGeo(baseKey + '|0', () => buildMergedGeometry(grp, 0));
+      const part = makePart(full, roleMat(grp.role), grp.role);
+      if (grp.pieces.some(({ g }) => g.type === 'rbox')) {
+        part.userData.lodGeo = [full, sharedGeo(baseKey + '|1', () => buildMergedGeometry(grp, 1))];
+        _lodParts.push(part);
+      }
+      part.userData.mergedPieces = grp.pieces.map(({ g, mirror, index }) => {
+        const src = gearGeometry(g);
+        if (!src.boundingBox) src.computeBoundingBox();
+        const matrix = pieceLocalMatrix(g, mirror);
+        return { box: src.boundingBox, matrix, inverse: matrix.clone().invert(), index };
+      });
+      part.userData.gear = { merged: true, anchor: grp.anchorName, role: grp.role, indices: grp.pieces.map(pc => pc.index) };
+      gearParts.push(part);
+      anchor.add(part);
+    }
+  }
+  const _addGear = _gearMerged ? collectGearPiece : addGearPart;
   (design.gear || []).forEach((g, index) => {
     const name = g.anchor || 'torso';
-    if (GEAR_PAIRS[name]) { addGearPart(g, name + 'L', true, index); addGearPart(g, name + 'R', false, index); }
-    else addGearPart(g, name, false, index);
+    if (GEAR_PAIRS[name]) { _addGear(g, name + 'L', true, index); _addGear(g, name + 'R', false, index); }
+    else _addGear(g, name, false, index);
   });
+  if (_gearMerged) addMergedGearParts();
 
   // Picking targets for body-preview.html; VISUAL side naming (swap matches setArmTarget).
   const joints = {

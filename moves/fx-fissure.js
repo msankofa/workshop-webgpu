@@ -417,6 +417,7 @@ export function createFissureFx(deps, options = {}) {
     emberGeo.setAttribute('aEmberCol', emberCol);
     const emberMesh = new THREE.InstancedMesh(emberGeo, shared.ember, O.maxEmbers);
     emberMesh.frustumCulled = false;
+    emberMesh.userData.moveComponent = 'particles';
     emberMesh.renderOrder = 3;
     for (let i = 0; i < O.maxEmbers; i++) emberMesh.setMatrixAt(i, S.zero);
     group.add(emberMesh);

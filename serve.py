@@ -6,6 +6,8 @@ import re
 import sys
 import urllib.parse
 
+from performance_capture_store import prepend_performance_capture
+
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
@@ -15,12 +17,18 @@ FAMILIES_DIR = os.path.join(ROOT, 'families')
 PLANT_FAMILIES_DIR = os.path.join(ROOT, 'plant-families')
 MAPS_DIR = os.path.join(ROOT, 'maps')
 STATS_DIR = os.path.join(ROOT, 'research', 'stats')
+BASE_GAME_PERFORMANCE_LOG_PATH = os.environ.get(
+    'BASE_GAME_PERFORMANCE_LOG_PATH',
+    os.path.join(STATS_DIR, 'base-game-performance-log.json'),
+)
 STATES_DIR = os.path.join(ROOT, 'states')
 BOT_STATES_DIR = os.path.join(ROOT, 'bot-states')
 NOTES_DIR = os.path.join(ROOT, 'notes')
 MAZE_LAYOUTS_DIR = os.path.join(ROOT, 'maze layouts')
 SLOT_SAVES_DIR = os.path.join(ROOT, 'bot-viewer-saves')
 BODY_TUNING_DIR = os.path.join(ROOT, 'body-tuning')
+STADIUM_SAVES_DIR = os.path.join(ROOT, 'stadium-saves')
+PARK_SAVES_DIR = os.path.join(ROOT, 'park-saves')
 MUSIC_DIR = os.path.join(ROOT, 'sfx', 'music')
 _MUSIC_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.opus', '.webm'}
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
@@ -47,6 +55,14 @@ _SAFE_SLOT_FILENAME = re.compile(r'^bv2-(all|maze|bots|ui)-slot[1-9]\d?-\d{8}-\d
 # body-preview.html's "Save tuning to disk" names files body-tuning-[<label>-]<YYYYMMDD-HHMMSS>.json
 # (see buildTuningFilename client-side); keep the label charset in sync with its slugify.
 _SAFE_BODY_TUNING_FILENAME = re.compile(r'^body-tuning-(?:[a-z0-9-]{1,40}-)?\d{8}-\d{6}\.json$')
+# demos/stadium-walker.html autosaves to the two fixed names and snapshots to the timestamped one
+# (see createDiskStore + the "snapshot" button); keep in sync with those client-side names.
+_SAFE_STADIUM_FILENAME = re.compile(
+    r'^(stadium-tuning\.json|stadium-trials\.json|stadium-tuning-\d{8}-\d{6}\.json)$')
+# demos/pokemon-park.html autosaves its world seed, tuning and sightings to the fixed name and snapshots
+# to the timestamped one (see createDiskStore + the "snapshot" button); keep in sync with those.
+_SAFE_PARK_FILENAME = re.compile(
+    r'^(park-session\.json|park-session-\d{8}-\d{6}\.json)$')
 
 
 def _safe_under_maps(*segments):
@@ -110,6 +126,13 @@ def save_stats_csv(raw_name, body_bytes, append=False):
     with open(target, 'wb') as f:
         f.write(body_bytes)
     return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_base_game_performance_capture(body_bytes):
+    entry = json.loads(body_bytes.decode('utf-8'))
+    entry_count = prepend_performance_capture(BASE_GAME_PERFORMANCE_LOG_PATH, entry)
+    rel_path = os.path.relpath(BASE_GAME_PERFORMANCE_LOG_PATH, ROOT).replace(os.sep, '/')
+    return rel_path, entry_count
 
 
 def save_maze_layout(raw_name, body_bytes):
@@ -181,6 +204,50 @@ def save_body_tuning(raw_name, body_bytes):
     return os.path.relpath(target, ROOT).replace(os.sep, '/')
 
 
+def save_stadium(raw_name, body_bytes):
+    # Gait setpoints, poses, bone roles, panel state and the trial log from demos/stadium-walker.html.
+    # The two fixed names are the live document and are overwritten in place; a timestamped name is an
+    # explicit snapshot and gets a collision suffix so two in the same second both survive.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_STADIUM_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe stadium filename: {raw_name!r}')
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    os.makedirs(STADIUM_SAVES_DIR, exist_ok=True)
+    candidate = basename
+    if re.search(r'\d{8}-\d{6}\.json$', basename):
+        stem, ext = os.path.splitext(basename)
+        n = 2
+        while os.path.exists(os.path.join(STADIUM_SAVES_DIR, candidate)):
+            candidate = f'{stem}-{n}{ext}'
+            n += 1
+    target = os.path.join(STADIUM_SAVES_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_park(raw_name, body_bytes):
+    # World seed, panel tuning and the field-guide sightings from demos/pokemon-park.html. Same shape as
+    # save_stadium: the fixed name is the live document and is overwritten in place; a timestamped name is
+    # an explicit snapshot and gets a collision suffix so two in the same second both survive.
+    basename = os.path.basename((raw_name or '').replace('\\', '/'))
+    if not _SAFE_PARK_FILENAME.match(basename) or '..' in basename:
+        raise ValueError(f'unsafe park filename: {raw_name!r}')
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    os.makedirs(PARK_SAVES_DIR, exist_ok=True)
+    candidate = basename
+    if re.search(r'\d{8}-\d{6}\.json$', basename):
+        stem, ext = os.path.splitext(basename)
+        n = 2
+        while os.path.exists(os.path.join(PARK_SAVES_DIR, candidate)):
+            candidate = f'{stem}-{n}{ext}'
+            n += 1
+    target = os.path.join(PARK_SAVES_DIR, candidate)
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
 def save_damage_tuning(body_bytes):
     # damage-simulator.html's "save to disk". One file, overwritten in place, so it can be committed
     # and read as the shared default by bot-viewer-v3 -- not a history like the other save_* helpers.
@@ -189,6 +256,17 @@ def save_damage_tuning(body_bytes):
     with open(target, 'wb') as f:
         f.write(body_bytes)
     return 'damage-tuning.json'
+
+
+def save_water_config(body_bytes):
+    # water-demo.html's "Save to water-config.json". One file, overwritten in place, so the flight
+    # sim can re-read it behind its refresh button -- not a history like the other save_* helpers.
+    # Same arrangement as damage-tuning.json above.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'water-config.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'water-config.json'
 
 
 def save_bot_state_trace(raw_name, body_bytes):
@@ -247,7 +325,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/list-maps':
             self._handle_list_maps()
             return
+        if path == '/api/fs-scan':
+            self._handle_fs_scan()
+            return
         super().do_GET()
+
+    # GET /api/fs-scan -- tools/filesystem-map.html's 3D node map walks the whole repo through
+    # this instead of a committed manifest, so it never goes stale. Returns every file and
+    # directory as a flat list (client rebuilds the tree from '/'-joined relative paths); noise
+    # dirs (vcs, caches, deps, dotfiles) are skipped server-side so the client never sees them.
+    _FS_SCAN_SKIP_DIRS = {'node_modules', '__pycache__'}
+
+    def _handle_fs_scan(self):
+        try:
+            entries = []
+            base = ROOT
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d not in self._FS_SCAN_SKIP_DIRS and not d.startswith('.')
+                ]
+                rel_dir = os.path.relpath(dirpath, base).replace(os.sep, '/')
+                if rel_dir != '.':
+                    st = os.stat(dirpath)
+                    entries.append({
+                        'path': rel_dir, 'type': 'dir', 'size': 0, 'mtime': st.st_mtime,
+                    })
+                for name in filenames:
+                    if name.startswith('.'):
+                        continue
+                    full = os.path.join(dirpath, name)
+                    rel = os.path.relpath(full, base).replace(os.sep, '/')
+                    try:
+                        st = os.stat(full)
+                    except OSError:
+                        continue
+                    entries.append({
+                        'path': rel, 'type': 'file', 'size': st.st_size, 'mtime': st.st_mtime,
+                    })
+            self._send_json({'ok': True, 'root': os.path.basename(base), 'entries': entries})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
     # GET /api/list-maps -- terrain-generator-v5.html's "real exported map" picker enumerates
     # every maps/**/<name>-data.json so it can see its own tool's newest exports.
@@ -339,6 +457,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-stats'):
             self._handle_save_stats()
             return
+        if self.path == '/api/base-game-performance-capture':
+            self._handle_base_game_performance_capture()
+            return
         if self.path.startswith('/api/save-bot-state'):
             self._handle_save_bot_state()
             return
@@ -354,8 +475,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-body-tuning'):
             self._handle_save_body_tuning()
             return
+        if self.path.startswith('/api/save-stadium'):
+            self._handle_save_stadium()
+            return
+        if self.path.startswith('/api/save-park'):
+            self._handle_save_park()
+            return
         if self.path.startswith('/api/save-damage-tuning'):
             self._handle_save_damage_tuning()
+            return
+        if self.path.startswith('/api/save-water-config'):
+            self._handle_save_water_config()
             return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
@@ -511,6 +641,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)
 
+    # POST /api/save-stadium?filename=stadium-tuning.json -- demos/stadium-walker.html autosaves its
+    # setpoints, poses, roles and panel state here on every change, and its trial log alongside, so a
+    # tuning session lives in stadium-saves/ and in git rather than in the browser.
+    def _handle_save_stadium(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 20_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_stadium(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-park?filename=park-session.json -- demos/pokemon-park.html autosaves its world seed,
+    # panel tuning and field-guide sightings here on every change, so a session lives in park-saves/ and in
+    # git rather than in the browser.
+    def _handle_save_park(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 20_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('filename') or [''])[0]
+            rel_path = save_park(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
     # POST /api/save-damage-tuning -- damage-simulator.html's "save to disk". Overwrites
     # damage-tuning.json at the repo root, which bot-viewer-v3 reads as its blood FX defaults.
     def _handle_save_damage_tuning(self):
@@ -520,6 +682,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_damage_tuning(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/base-game-performance-capture -- prepend one completed Base Game measurement
+    # to research/stats/base-game-performance-log.json. The browser sends one entry, never the
+    # existing log, so an interrupted/stale tab cannot overwrite measurements already on disk.
+    def _handle_base_game_performance_capture(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path, entry_count = save_base_game_performance_capture(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path, 'entryCount': entry_count})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-water-config -- water-demo.html's "Save to water-config.json". Overwrites
+    # water-config.json at the repo root, which demos/flight-sim.html re-reads behind its refresh
+    # button so water tuned in the demo shows up in the sim without an edit or a rebuild.
+    def _handle_save_water_config(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_water_config(self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

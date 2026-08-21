@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Building Viewer</title>
+<!--
+  A standalone procedural-building study.  The parameters are intentionally presentation-facing:
+  the point is to make proportion, massing, facade rhythm, and silhouette easy to discuss before
+  extracting a reusable building generator into the game.
+-->
+<style>
+  :root { --ink:#17202a; --muted:#65717d; --line:#d6dde1; --panel:rgba(255,255,255,.91); --accent:#287b84; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#eef1ef; color:var(--ink); font:12px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  canvas { display:block; }
+  #brand { position:fixed; top:18px; left:20px; z-index:2; pointer-events:none; }
+  #brand h1 { margin:0; font-size:14px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+  #brand p { margin:3px 0 0; color:var(--muted); font-size:11px; }
+  #panel { position:fixed; top:12px; right:12px; width:278px; max-height:calc(100vh - 24px); overflow:auto; z-index:3; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 40px rgba(35,50,55,.12); backdrop-filter:blur(10px); }
+  #panel h2 { margin:13px 0 7px; padding-bottom:5px; color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; border-bottom:1px solid var(--line); }
+  #panel h2:first-child { margin-top:0; }
+  .row { display:grid; grid-template-columns:1fr 46px; align-items:center; gap:8px; margin:7px 0; }
+  .row label { color:#40505c; }
+  .row output { color:var(--ink); text-align:right; font-variant-numeric:tabular-nums; }
+  .row input { grid-column:1 / -1; width:100%; margin:0; accent-color:var(--accent); }
+  select,button { width:100%; border:1px solid var(--line); border-radius:5px; color:var(--ink); font:inherit; }
+  select { padding:6px 7px; background:#fff; }
+  button { padding:7px 8px; cursor:pointer; background:#f6f8f7; }
+  button:hover { border-color:#91afb2; background:#edf5f4; }
+  .buttons { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .stat { display:grid; grid-template-columns:1fr auto; gap:6px; margin:3px 0; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .stat b { color:var(--ink); font-weight:600; }
+  #hint { position:fixed; left:20px; bottom:16px; z-index:2; color:var(--muted); font-size:11px; pointer-events:none; }
+  #error { position:fixed; left:20px; bottom:38px; max-width:50vw; z-index:5; color:#a93030; white-space:pre-wrap; }
+  #panelToggle { position:fixed; top:12px; right:12px; z-index:4; width:auto; padding:6px 9px; background:var(--panel); box-shadow:0 4px 16px rgba(35,50,55,.1); }
+  #panel.hidden { display:none; }
+  @media (max-width:680px) { #panel { width:244px; } #brand { max-width:calc(100vw - 270px); } }
+</style>
+</head>
+<body>
+<div id="brand"><h1>Building Viewer</h1><p>Procedural massing and facade study</p></div>
+<aside id="panel">
+  <h2>Design</h2>
+  <select id="preset" aria-label="Design preset">
+    <option value="modern">Modern tower</option>
+    <option value="deco">Art deco</option>
+    <option value="industrial">Industrial loft</option>
+    <option value="house">Detached house</option>
+    <option value="shop">Neighbourhood shop</option>
+    <option value="residential">Residential street</option>
+  </select>
+  <h2>Form</h2><div id="form"></div>
+  <h2>Facade</h2><div id="facade"></div>
+  <h2>Roof &amp; scene</h2><div id="sceneControls"></div>
+  <div class="buttons"><button id="random">New variation</button><button id="reset">Frame design</button></div>
+  <h2>Readout</h2><div id="stats"></div>
+</aside>
+<button id="panelToggle" title="Show or hide controls (P)">panel</button>
+<div id="hint">drag orbit &middot; right-drag pan &middot; scroll zoom &middot; every control rebuilds the design</div>
+<div id="error"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const errorEl = document.getElementById('error');
+addEventListener('error', e => errorEl.textContent = e.message || 'Unknown script error');
+addEventListener('unhandledrejection', e => errorEl.textContent = e.reason?.message || String(e.reason));
+
+const renderer = new WebGPURenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeef1ef);
+scene.fog = new THREE.Fog(0xeef1ef, 95, 220);
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, .1, 500);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = .08;
+controls.maxPolarAngle = Math.PI * .485;
+let designBounds = { height:46, span:30 };
+function resetCamera() { const span = designBounds.span, h = designBounds.height; camera.position.set(span * 1.45, Math.max(20, h * .72), span * 1.65); controls.target.set(0, h * .42, 0); controls.update(); }
+resetCamera();
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x7d8985, 2.4); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff8e9, 4.2); sun.position.set(35, 60, 22); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); sun.shadow.camera.left = -65; sun.shadow.camera.right = 65; sun.shadow.camera.top = 65; sun.shadow.camera.bottom = -65; sun.shadow.camera.far = 160;
+scene.add(sun, sun.target);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), new THREE.MeshStandardMaterial({ color:0xdde3df, roughness:1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const grid = new THREE.GridHelper(160, 80, 0xc7d0ce, 0xd9dfdd); grid.position.y = .012; scene.add(grid);
+
+const root = new THREE.Group(); root.name = 'proceduralBuilding'; scene.add(root);
+const mats = {
+  facade:new THREE.MeshStandardMaterial({ color:0xf4f1ea, roughness:.76, metalness:.02 }),
+  siding:new THREE.MeshStandardMaterial({ color:0xe9e4da, roughness:.9, metalness:0 }),
+  brick:new THREE.MeshStandardMaterial({ color:0xa86f5d, roughness:.93, metalness:0 }),
+  base:new THREE.MeshStandardMaterial({ color:0xe1ddd4, roughness:.82, metalness:.02 }),
+  trim:new THREE.MeshStandardMaterial({ color:0xd2d7d5, roughness:.58, metalness:.08 }),
+  bronze:new THREE.MeshStandardMaterial({ color:0x716b5c, roughness:.46, metalness:.38 }),
+  glass:new THREE.MeshStandardMaterial({ color:0x263a43, roughness:.22, metalness:.5, emissive:0x07131a, emissiveIntensity:.2 }),
+  dark:new THREE.MeshStandardMaterial({ color:0x475058, roughness:.7, metalness:.15 }),
+  roof:new THREE.MeshStandardMaterial({ color:0xc9cfcd, roughness:.78, metalness:.05 }),
+  green:new THREE.MeshStandardMaterial({ color:0x718e7e, roughness:1 }),
+};
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const matrix = new THREE.Matrix4(), v3 = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
+
+const params = {
+  preset:'modern', mass:'single', width:24, depth:20, floors:14, floorH:3.3, taper:.12, setback:0, lotGap:4,
+  windowW:1.55, windowGap:.72, sill:.42, detail:2, podium:4.5, roof:'terrace', roofH:4, night:.08,
+};
+const styles = {
+  modern:{ mass:'single', width:24, depth:20, floors:14, floorH:3.3, taper:.12, setback:0, windowW:1.55, windowGap:.72, sill:.42, detail:2, podium:4.5, roof:'terrace', roofH:4, night:.08 },
+  deco:{ mass:'stepped', width:25, depth:22, floors:20, floorH:3.15, taper:.25, setback:2.2, windowW:1.22, windowGap:.62, sill:.38, detail:3, podium:6.3, roof:'crown', roofH:6, night:.16 },
+  industrial:{ mass:'courtyard', width:32, depth:26, floors:7, floorH:4.2, taper:0, setback:0, windowW:2.15, windowGap:.78, sill:.62, detail:2, podium:4.2, roof:'sawtooth', roofH:3.5, night:.03 },
+  house:{ mass:'single', width:12, depth:14, floors:2, floorH:3.05, taper:0, setback:0, windowW:1.35, windowGap:.9, sill:.52, detail:2, podium:0, roof:'gable', roofH:3.2, night:.12 },
+  shop:{ mass:'single', width:17, depth:14, floors:2, floorH:3.7, taper:0, setback:0, windowW:1.8, windowGap:.55, sill:.42, detail:2, podium:3.7, roof:'terrace', roofH:2.1, night:.2 },
+  residential:{ mass:'street', width:12, depth:14, floors:2, floorH:3.05, taper:0, setback:0, lotGap:5, windowW:1.35, windowGap:.9, sill:.52, detail:2, podium:0, roof:'gable', roofH:3.2, night:.12 },
+};
+const formEl = document.getElementById('form'), facadeEl = document.getElementById('facade'), sceneEl = document.getElementById('sceneControls'), statsEl = document.getElementById('stats');
+
+function slider(host, key, label, min, max, step, suffix = '') {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label for="${key}">${label}</label><output></output><input id="${key}" type="range" min="${min}" max="${max}" step="${step}">`;
+  const input = row.querySelector('input'), output = row.querySelector('output');
+  const render = () => { input.value = params[key]; output.textContent = `${Number(params[key]).toFixed(step < 1 ? (step < .1 ? 2 : 1) : 0)}${suffix}`; };
+  input.oninput = () => { params[key] = +input.value; render(); rebuild(); };
+  host.append(row); render();
+}
+function select(host, key, label, values) {
+  const labelEl = document.createElement('label'); labelEl.textContent = label; labelEl.style.display = 'block'; labelEl.style.margin = '7px 0 4px';
+  const input = document.createElement('select'); input.innerHTML = values.map(([v, n]) => `<option value="${v}">${n}</option>`).join(''); input.value = params[key];
+  input.onchange = () => { params[key] = input.value; rebuild(); };
+  host.append(labelEl, input);
+}
+function buildControls() {
+  formEl.replaceChildren(); facadeEl.replaceChildren(); sceneEl.replaceChildren();
+  select(formEl, 'mass', 'Massing', [['single','Single tower'], ['stepped','Stepped tower'], ['courtyard','Courtyard block'], ['twin','Twin towers'], ['street','Residential street']]);
+  slider(formEl, 'width', 'Width', 10, 52, 1, ' m'); slider(formEl, 'depth', 'Depth', 10, 52, 1, ' m');
+  slider(formEl, 'floors', 'Floors', 2, 36, 1); slider(formEl, 'floorH', 'Floor height', 2.6, 5, .1, ' m');
+  slider(formEl, 'taper', 'Taper', 0, .38, .01); slider(formEl, 'setback', 'Setback', 0, 6, .1, ' m');
+  slider(formEl, 'lotGap', 'Lot gap', 2, 12, .25, ' m');
+  slider(facadeEl, 'windowW', 'Window width', .7, 3, .05, ' m'); slider(facadeEl, 'windowGap', 'Mullion gap', .2, 1.5, .05, ' m'); slider(facadeEl, 'sill', 'Spandrel', .15, 1.2, .05, ' m');
+  slider(facadeEl, 'detail', 'Facade detail', 0, 3, 1); slider(facadeEl, 'podium', 'Podium height', 0, 12, .25, ' m');
+  select(sceneEl, 'roof', 'Roof form', [['terrace','Terrace'], ['crown','Crown'], ['sawtooth','Sawtooth'], ['gable','Gable']]);
+  slider(sceneEl, 'roofH', 'Roof height', 1, 10, .25, ' m'); slider(sceneEl, 'night', 'Window glow', 0, 1, .01);
+}
+
+function clearRoot() { for (const child of [...root.children]) root.remove(child); }
+function cube(material, x, y, z, w, h, d, parent = root) {
+  const mesh = new THREE.Mesh(boxGeo, material); mesh.position.set(x, y, z); mesh.scale.set(w, h, d); mesh.castShadow = true; mesh.receiveShadow = true; parent.add(mesh); return mesh;
+}
+function addWindow(matrices, x, y, z, w, h, d) { matrix.compose(v3.set(x,y,z), q, scale.set(w,h,d)); matrices.push(matrix.clone()); }
+function entrance(x, y, z, width, depth, style) {
+  if (params.detail === 0) return;
+  const doorW = Math.min(5, Math.max(2.4, width * .18)), doorH = Math.min(params.floorH - .45, 3.7);
+  cube(mats.glass, x, y + doorH * .5, z - depth * .5 - .09, doorW, doorH, .14);
+  cube(style === 'deco' ? mats.bronze : mats.dark, x, y + doorH + .18, z - depth * .5 - .62, doorW + 1.25, .22, 1.15);
+  if (params.detail >= 2) {
+    cube(mats.trim, x - doorW * .5 - .16, y + doorH * .5, z - depth * .5 - .13, .18, doorH + .45, .2);
+    cube(mats.trim, x + doorW * .5 + .16, y + doorH * .5, z - depth * .5 - .13, .18, doorH + .45, .2);
+  }
+}
+function houseFront(x, y, z, width, depth) {
+  if (params.detail === 0) return;
+  const porchW = Math.min(4.8, width * .42), porchD = 1.7;
+  cube(mats.base, x, y + .16, z - depth * .5 - porchD * .48, porchW, .32, porchD);
+  cube(mats.trim, x - porchW * .39, y + 1.55, z - depth * .5 - porchD * .82, .16, 3, .16);
+  cube(mats.trim, x + porchW * .39, y + 1.55, z - depth * .5 - porchD * .82, .16, 3, .16);
+  cube(mats.glass, x, y + 1.45, z - depth * .5 - .1, 1.35, 2.55, .14);
+  cube(mats.dark, x, y + 3.1, z - depth * .5 - .75, porchW + .55, .16, 1.25);
+  // A drive and planted verge establish this as a low-density dwelling rather than a tiny tower.
+  cube(mats.trim, x + width * .34, .035, z - depth * .5 - 2.6, width * .28, .07, 4.8);
+  cube(mats.green, x - width * .32, .08, z - depth * .5 - 2.2, width * .23, .16, 3.6);
+}
+function shopFront(x, y, z, width, depth) {
+  const frontage = Math.max(4, width - 1.2), h = Math.min(params.floorH - .5, 3.25);
+  cube(mats.glass, x - frontage * .17, y + h * .5, z - depth * .5 - .1, frontage * .58, h, .16);
+  cube(mats.glass, x + frontage * .35, y + h * .5, z - depth * .5 - .1, frontage * .18, h, .16);
+  cube(mats.bronze, x, y + h + .2, z - depth * .5 - .72, frontage + .65, .22, 1.35);
+  cube(mats.brick, x, y + h + .66, z - depth * .5 - .14, frontage * .72, .58, .22);
+  if (params.detail >= 2) {
+    cube(mats.dark, x - frontage * .04, y + h * .5, z - depth * .5 - .15, .16, h + .2, .2);
+    cube(mats.dark, x + frontage * .25, y + h * .5, z - depth * .5 - .15, .16, h + .2, .2);
+  }
+}
+function tower({ x = 0, z = 0, width, depth, floors, y = 0, taper = params.taper, style = params.preset }) {
+  const windows = [], totalH = floors * params.floorH;
+  for (let level = 0; level < floors; level++) {
+    const t = floors <= 1 ? 0 : level / (floors - 1);
+    const inset = params.setback * (style === 'deco' ? Math.floor(t * 3) / 2 : 0) + Math.min(width, depth) * taper * t * .5;
+    const w = Math.max(4, width - inset * 2), d = Math.max(4, depth - inset * 2), cy = y + (level + .5) * params.floorH;
+    const inPodium = y + (level + 1) * params.floorH <= y + params.podium + .01;
+    const wallMat = style === 'house' ? mats.siding : style === 'shop' && level === 0 ? mats.brick : inPodium ? mats.base : mats.facade;
+    cube(wallMat, x, cy, z, w, params.floorH - .06, d);
+    cube(mats.trim, x, y + level * params.floorH + .055, z, w + .14, .11, d + .14);
+    const h = Math.max(.22, params.floorH - params.sill - .35), wy = y + level * params.floorH + params.sill + h * .5;
+    const pitch = params.windowW + params.windowGap;
+    const nx = Math.max(1, Math.floor((w - 1.3) / pitch)), nz = Math.max(1, Math.floor((d - 1.3) / pitch));
+    for (let i = 0; i < nx; i++) { const px = x - (nx - 1) * pitch * .5 + i * pitch; addWindow(windows, px, wy, z - d * .5 - .035, params.windowW, h, .07); addWindow(windows, px, wy, z + d * .5 + .035, params.windowW, h, .07); }
+    for (let i = 0; i < nz; i++) { const pz = z - (nz - 1) * pitch * .5 + i * pitch; addWindow(windows, x - w * .5 - .035, wy, pz, .07, h, params.windowW); addWindow(windows, x + w * .5 + .035, wy, pz, .07, h, params.windowW); }
+    if (style === 'modern' && params.detail >= 1) {
+      cube(mats.trim, x - w * .46, cy, z - d * .5 - .09, .18, params.floorH - .2, .16);
+      cube(mats.trim, x + w * .46, cy, z - d * .5 - .09, .18, params.floorH - .2, .16);
+      if (params.detail >= 3 && level % 3 === 0) cube(mats.trim, x, cy, z - d * .5 - .11, w * .64, .08, .15);
+    }
+    if (style === 'deco' && params.detail >= 1) {
+      cube(mats.trim, x - w * .42, cy, z, .3, params.floorH, d + .2); cube(mats.trim, x + w * .42, cy, z, .3, params.floorH, d + .2);
+      if (params.detail >= 2 && level % 2 === 0) cube(mats.bronze, x, y + level * params.floorH + .2, z - d * .5 - .12, w * .75, .12, .15);
+    }
+    if (style === 'industrial' && params.detail >= 1) {
+      cube(mats.dark, x, y + level * params.floorH + .16, z - d * .5 - .1, w + .28, .14, .12);
+      if (params.detail >= 2) { cube(mats.dark, x - w * .46, cy, z - d * .5 - .1, .22, params.floorH, .16); cube(mats.dark, x + w * .46, cy, z - d * .5 - .1, .22, params.floorH, .16); }
+    }
+    if (style === 'house' && params.detail >= 1 && level === 0) {
+      cube(mats.trim, x - w * .5 - .07, cy, z, .14, params.floorH, d + .16);
+      cube(mats.trim, x + w * .5 + .07, cy, z, .14, params.floorH, d + .16);
+    }
+  }
+  if (style === 'house') houseFront(x, y, z, width, depth);
+  else if (style === 'shop') shopFront(x, y, z, width, depth);
+  else entrance(x, y, z, width, depth, style);
+  return { windows, top:y + totalH, width:Math.max(4, width * (1 - taper)), depth:Math.max(4, depth * (1 - taper)), totalH };
+}
+function commitWindows(matrices) {
+  const mesh = new THREE.InstancedMesh(boxGeo, mats.glass, matrices.length); mesh.name = 'facadeWindows';
+  matrices.forEach((m, i) => mesh.setMatrixAt(i, m)); mesh.instanceMatrix.needsUpdate = true; mesh.castShadow = false; root.add(mesh); return matrices.length;
+}
+function roof(top, w, d, x = 0, z = 0) {
+  if (params.roof === 'terrace') {
+    cube(mats.roof, x, top + .18, z, w + .4, .36, d + .4); cube(mats.dark, x, top + params.roofH * .5, z, w * .28, params.roofH, d * .28);
+  } else if (params.roof === 'crown') {
+    cube(mats.roof, x, top + .2, z, w + .55, .4, d + .55);
+    for (let n = 0; n < 3; n++) { const t = n / 3; cube(mats.trim, x, top + .6 + n * params.roofH / 3, z, w * (1 - .18 * t), params.roofH / 3 - .05, d * (1 - .18 * t)); }
+  } else if (params.roof === 'gable') {
+    cube(mats.roof, x, top + .16, z, w + .45, .32, d + .55);
+    const angle = Math.atan2(params.roofH, w * .5), slabW = w * .5 + .34, rise = params.roofH * .5;
+    const left = cube(mats.roof, x - w * .25, top + .3 + rise, z, slabW, .22, d + .72); left.rotation.z = angle;
+    const right = cube(mats.roof, x + w * .25, top + .3 + rise, z, slabW, .22, d + .72); right.rotation.z = -angle;
+    const chimney = cube(mats.brick, x + w * .2, top + params.roofH * .65, z + d * .12, .65, params.roofH * .9, .65); chimney.castShadow = true;
+  } else {
+    cube(mats.roof, x, top + .18, z, w + .4, .36, d + .4);
+    const count = Math.max(2, Math.floor(w / 5)); for (let n = 0; n < count; n++) cube(mats.roof, x - w * .5 + (n + .5) * w / count, top + params.roofH * .5, z, w / count - .16, params.roofH, d * .72);
+  }
+}
+function addCourtyardPlanting(width, depth) {
+  const innerW = Math.max(4, width * .38), innerD = Math.max(4, depth * .38);
+  cube(mats.green, 0, .08, 0, innerW, .16, innerD);
+  for (let i = -1; i <= 1; i += 2) { const tree = new THREE.Mesh(new THREE.ConeGeometry(.7, 3, 8), mats.green); tree.position.set(i * innerW * .24, 1.6, 0); tree.castShadow = true; root.add(tree); }
+}
+function buildResidentialStreet() {
+  const windows = [], count = 3, lotW = params.width + params.lotGap, span = count * lotW + params.lotGap;
+  const roadZ = -params.depth * .5 - 5.4;
+  cube(mats.green, 0, .035, .8, span, .07, params.depth + 10);
+  cube(mats.dark, 0, .055, roadZ, span + 12, .11, 5.2);
+  cube(mats.trim, 0, .12, roadZ + 2.85, span + 12, .16, 1.3);
+  let height = 0, floorArea = 0;
+  for (let n = 0; n < count; n++) {
+    const x = -span * .5 + params.lotGap + lotW * (n + .5);
+    const w = params.width * (n === 1 ? .9 : n === 2 ? 1.08 : 1);
+    const d = params.depth * (n === 0 ? .9 : 1);
+    const floors = Math.max(1, params.floors - (n === 1 ? 1 : 0));
+    cube(mats.base, x, .06, .8, w + params.lotGap * .7, .12, d + 5.7);
+    const home = tower({ x, z:.8, width:w, depth:d, floors, style:'house' });
+    windows.push(...home.windows); roof(home.top, home.width, home.depth, x, .8);
+    height = Math.max(height, home.top); floorArea += w * d * floors;
+    const tree = new THREE.Mesh(new THREE.ConeGeometry(.62, 2.7, 8), mats.green);
+    tree.position.set(x - w * .3, 1.45, .8 + d * .38); tree.castShadow = true; root.add(tree);
+  }
+  return { windows, height, floorArea, span };
+}
+function rebuild() {
+  clearRoot(); mats.glass.emissiveIntensity = params.night * 2.3; scene.background.setHex(params.night > .55 ? 0x303942 : 0xeef1ef); scene.fog.color.copy(scene.background);
+  const windows = []; let height = 0, floorArea = 0, span = Math.max(params.width, params.depth);
+  if (params.mass === 'street') {
+    const street = buildResidentialStreet(); windows.push(...street.windows); height = street.height; floorArea = street.floorArea; span = street.span;
+  } else if (params.mass === 'courtyard') {
+    const wing = Math.max(5, (params.width - params.width * .38) * .5), deep = Math.max(5, (params.depth - params.depth * .38) * .5);
+    const a = tower({ x:0, z:-(params.depth - deep) * .25, width:params.width, depth:deep, floors:params.floors, style:'industrial' });
+    const b = tower({ x:0, z:(params.depth - deep) * .25, width:params.width, depth:deep, floors:params.floors, style:'industrial' });
+    const c = tower({ x:-(params.width - wing) * .25, z:0, width:wing, depth:params.depth, floors:params.floors, style:'industrial' });
+    const d = tower({ x:(params.width - wing) * .25, z:0, width:wing, depth:params.depth, floors:params.floors, style:'industrial' });
+    windows.push(...a.windows,...b.windows,...c.windows,...d.windows); height = a.top; roof(height, params.width, deep, 0, -(params.depth - deep) * .25); roof(height, params.width, deep, 0, (params.depth - deep) * .25); addCourtyardPlanting(params.width, params.depth);
+  } else if (params.mass === 'twin') {
+    const gap = params.width * .16, w = (params.width - gap) * .5;
+    const a = tower({ x:-(w + gap) * .5, z:0, width:w, depth:params.depth, floors:params.floors, style:params.preset });
+    const b = tower({ x:(w + gap) * .5, z:0, width:w, depth:params.depth, floors:Math.max(2, params.floors - 3), style:params.preset });
+    windows.push(...a.windows,...b.windows); height = Math.max(a.top,b.top); roof(a.top,a.width,a.depth,-(w+gap)*.5); roof(b.top,b.width,b.depth,(w+gap)*.5);
+  } else {
+    const style = params.mass === 'stepped' ? 'deco' : params.preset;
+    const a = tower({ width:params.width, depth:params.depth, floors:params.floors, taper:params.mass === 'stepped' ? Math.max(params.taper,.13) : params.taper, style });
+    windows.push(...a.windows); height = a.top; roof(a.top,a.width,a.depth);
+  }
+  const windowCount = commitWindows(windows);
+  designBounds = { height, span };
+  statsEl.innerHTML = `<div class="stat"><span>Height</span><b>${height.toFixed(1)} m</b></div><div class="stat"><span>Approx. floor area</span><b>${Math.round(floorArea || params.width * params.depth * params.floors).toLocaleString()} m²</b></div><div class="stat"><span>Window modules</span><b>${windowCount.toLocaleString()}</b></div><div class="stat"><span>Generator</span><b>${params.mass} / ${params.preset}</b></div>`;
+}
+
+document.getElementById('preset').onchange = e => { Object.assign(params, { preset:e.target.value }, styles[e.target.value]); buildControls(); rebuild(); };
+document.getElementById('random').onclick = () => { params.width = THREE.MathUtils.randInt(16, 42); params.depth = THREE.MathUtils.randInt(14, 36); params.floors = THREE.MathUtils.randInt(5, 28); params.taper = +THREE.MathUtils.randFloat(0, .28).toFixed(2); params.setback = +THREE.MathUtils.randFloat(0, 3).toFixed(1); buildControls(); rebuild(); };
+document.getElementById('reset').onclick = resetCamera;
+const panel = document.getElementById('panel');
+document.getElementById('panelToggle').onclick = () => panel.classList.toggle('hidden');
+addEventListener('keydown', e => { if (e.key.toLowerCase() === 'p' && !/input|select|textarea/i.test(document.activeElement?.tagName || '')) panel.classList.toggle('hidden'); });
+buildControls(); rebuild();
+
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

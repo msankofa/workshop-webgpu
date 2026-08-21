@@ -13,8 +13,8 @@
   - A tiny archetype-free ECS (`World`): entities are ids, components live in one Map per type,
     systems are plain functions run in order each tick and timed for the Details panel.
   - Grid city: road tiles auto-shape from their neighbours; lots next to roads grow buildings; the
-    rest becomes parks with trees. Everything renders through five InstancedMeshes, so the whole
-    city is a handful of draw calls regardless of size.
+    rest becomes parks with trees. Static scenery stays instanced, while a capped near-camera
+    civilian rig LOD gives the closest pedestrians a readable human silhouette.
   - Traffic: cars follow per-cell lane paths (quadratic bezier from entry lane to exit lane, right-
     hand traffic), keep a gap to the car ahead, and obey the traffic light at 3- and 4-way
     intersections. Lights cycle NS / EW with a yellow and an all-red beat.
@@ -130,6 +130,11 @@
     <button class="btn" id="save">Save city</button>
     <button class="btn" id="load">Load city</button>
   </div>
+  <div class="tools" style="margin-top:5px">
+    <button class="btn" id="drive">Drive selected</button>
+    <button class="btn" id="driveCam" disabled>Camera: chase</button>
+  </div>
+  <p class="sub" id="driveStatus" style="margin:7px 0 0">Select a car, then drive it.</p>
 
   <h2>Simulation</h2>
   <div id="simRows"></div>
@@ -140,6 +145,7 @@
   <label class="chk"><input type="checkbox" id="cycle"> day / night cycle</label>
   <label class="chk"><input type="checkbox" id="adaptive" checked> adaptive traffic lights (queue-length green)</label>
   <label class="chk"><input type="checkbox" id="congestion"> congestion overlay on roads</label>
+  <label class="chk"><input type="checkbox" id="civilians" checked> animated civilian pedestrians near camera</label>
 
   <h2>Components</h2>
   <table class="stats" id="compTable"></table>
@@ -168,6 +174,11 @@ import * as THREE from 'three';
 import { WebGPURenderer, MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
 import { positionWorld, positionLocal, normalWorld, fract, floor, mix, smoothstep, uniform, vec3, float, abs, hash, instanceIndex, step } from 'three/tsl';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { makeRoadVehicle, stepRoadVehicle } from '../city-vehicle-model.js';
+import { createProceduralPlayerBody } from '../player-procedural-body.js';
+import { createBodyPartBatches } from '../body-part-batches.js';
+import { HUMAN_BODY_DESIGN } from '../bot-human-body.js';
+import { withHumanHead } from '../bot-face.js';
 
 const err = document.getElementById('err');
 window.addEventListener('error', e => { err.textContent += e.message + '\n'; });
@@ -330,6 +341,19 @@ const carMesh = pool(carBody, carMat, MAX_CARS);
 const cabMesh = pool(carCab, new MeshStandardNodeMaterial({ color: 0x1c2430, roughness: 0.2, metalness: 0.4 }), MAX_CARS);
 const pedGeo = new THREE.CapsuleGeometry(0.22, 0.95, 3, 8); pedGeo.translate(0, 0.7, 0);
 const pedMesh = pool(pedGeo, new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 0.8 }), 800);
+// Capsules remain the far LOD. The closest pedestrians use the bot-viewer's instanced humanoid
+// rig with its tactical gear deliberately omitted: human head, hair and everyday cloth only.
+const CIVILIAN_LOD_DISTANCE = 72, CIVILIAN_LOD_MAX = 96;
+const civilianDesign = withHumanHead(HUMAN_BODY_DESIGN, { expression: 'neutral' });
+const civilianStyles = [
+  { shell: 0x6d7686, plate: 0x4b5563, trim: 0x7c8796, skin: 0xf0c2a0, hair: 0x302018, cloth: 0x456a8b },
+  { shell: 0x7b6b62, plate: 0x59514b, trim: 0x928376, skin: 0xc98764, hair: 0x1e1713, cloth: 0x9d5d45 },
+  { shell: 0x66745f, plate: 0x4d5949, trim: 0x83947d, skin: 0x7d4d35, hair: 0x17120f, cloth: 0x607d55 },
+  { shell: 0x74717b, plate: 0x57545e, trim: 0x918d99, skin: 0xb87856, hair: 0x5a3821, cloth: 0x8267a5 },
+];
+const civilianBatches = createBodyPartBatches({ THREE, scene, capacity: 1024 });
+const civilianBodies = new Map(), civilianVisible = new Set(), civilianCandidates = [];
+const civilianPos = new THREE.Vector3(), civilianVelocity = new THREE.Vector3();
 const lampMesh = pool(new THREE.SphereGeometry(0.35, 8, 6), new MeshBasicNodeMaterial({ color: 0xffffff }), MAX_STATIC * 4, false);
 const poleMesh = pool(new THREE.CylinderGeometry(0.1, 0.1, 1, 6).translate(0, 0.5, 0), new MeshStandardNodeMaterial({ color: 0x333, roughness: 0.8 }), MAX_STATIC * 4, false);
 const carColors = [0xd94b3b, 0xe8e6df, 0x2c3e66, 0x2f2f33, 0xd6a53a, 0x4d8b5a, 0x8ab7d8, 0x9c5db0, 0xf0f0f0, 0x666a70];
@@ -343,6 +367,8 @@ laneLine.visible = false; scene.add(laneLine);
 const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), S = new THREE.Vector3(), C = new THREE.Color();
 const YUP = new THREE.Vector3(0, 1, 0);
 const bldByInstance = [], carByInstance = [], pedByInstance = [];
+const playerDrive = { id: 0, keys: new Set() };
+const driveCamera = { pos: new THREE.Vector3(), aim: new THREE.Vector3(), ready: false };
 
 function computeRoadGraph() {
   roadMask.fill(0);
@@ -441,7 +467,10 @@ function rebuildStatic() {
     m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
   }
   // cars standing on removed road are recycled
-  for (const id of [...world.query('Vehicle')]) { const v = world.get(id, 'Vehicle'); if (grid[v.cell] !== T_ROAD || !roadMask[v.cell] || (v.next >= 0 && grid[v.next] !== T_ROAD)) respawnCar(id); }
+  for (const id of [...world.query('Vehicle')]) {
+    if (world.has(id, 'PlayerDriver')) continue; // a person owns free movement, not a lane slot
+    const v = world.get(id, 'Vehicle'); if (grid[v.cell] !== T_ROAD || !roadMask[v.cell] || (v.next >= 0 && grid[v.next] !== T_ROAD)) respawnCar(id);
+  }
   refreshFilterOptions();
 }
 let lampSlots = [];
@@ -497,7 +526,7 @@ function placeCar(id, cellK) {
   v.next = inb(i + dx, j + dz) && grid[idx(i + dx, j + dz)] === T_ROAD ? idx(i + dx, j + dz) : -1;
   lanePath(cellK, v.dir, v.exit, v.path);
 }
-function respawnCar(id) { if (roadCells.length) { placeCar(id, roadCells[Math.floor(rnd() * roadCells.length)]); const v = world.get(id, 'Vehicle'); v.state = 'driving'; v.route = null; v.arriving = false; if (v.next >= 0) planTrip(id, v.next, v.cell); } }
+function respawnCar(id) { if (roadCells.length) { placeCar(id, roadCells[Math.floor(rnd() * roadCells.length)]); const v = world.get(id, 'Vehicle'); v.state = 'driving'; v.route = null; v.arriving = false; v.waited = 0; if (v.next >= 0) planTrip(id, v.next, v.cell); } }
 // pick a destination building (weighted by occupants) and BFS a route to the road cell beside it
 let lotWeights = [], lotWeightTotal = 0, lotWeightsDirty = true;
 function refreshLotWeights() {
@@ -532,7 +561,7 @@ function spawnCar() {
 }
 let id_counter = 1;
 function setCarCount(n) {
-  const cars = [...world.query('Vehicle')];
+  const cars = [...world.query('Vehicle')].filter(id => !world.has(id, 'PlayerDriver'));
   while (cars.length < n && roadCells.length) cars.push(spawnCar());
   while (cars.length > n) world.destroy(cars.pop());
 }
@@ -654,14 +683,36 @@ addSystem('TrafficLights', dt => {
     L.nsYellow = L.phase === 1; L.ewYellow = L.phase === 4;
   }
 });
+const DRIVE_FIXED = 1 / 120;
+addSystem('PlayerVehicle', dt => {
+  const id = playerDrive.id, D = id && world.get(id, 'PlayerDriver');
+  if (!D || !world.entities.has(id)) { playerDrive.id = 0; return; }
+  D.accumulator = Math.min(0.1, D.accumulator + dt);
+  const input = readDriveInput(D);
+  let steps = 0;
+  while (D.accumulator >= DRIVE_FIXED && steps++ < 12) {
+    stepRoadVehicle(D.body, input, DRIVE_FIXED);
+    D.accumulator -= DRIVE_FIXED;
+  }
+  if (steps >= 12) D.accumulator = 0;
+  // This first slice intentionally has no building collision yet; map bounds still make the
+  // free car recoverable while the collision pass is built.
+  const edge = W * CELL * 0.5 - 1;
+  if (Math.abs(D.body.x) > edge) { D.body.x = THREE.MathUtils.clamp(D.body.x, -edge, edge); D.body.vx = 0; }
+  if (Math.abs(D.body.z) > edge) { D.body.z = THREE.MathUtils.clamp(D.body.z, -edge, edge); D.body.vz = 0; }
+  const tr = world.get(id, 'Transform'), v = world.get(id, 'Vehicle');
+  tr.x = D.body.x; tr.y = 0.05; tr.z = D.body.z; tr.yaw = D.body.yaw;
+  v.speed = D.body.speed; v.state = 'player driving'; v.waited = 0;
+});
 addSystem('Vehicles', dt => {
   for (const c of cellCars) c.length = 0;
-  for (const id of world.query('Vehicle')) { const v = world.get(id, 'Vehicle'); if (v.state !== 'parked') cellCars[v.cell].push(v); }
+  for (const id of world.query('Vehicle')) { const v = world.get(id, 'Vehicle'); if (!world.has(id, 'PlayerDriver') && v.state !== 'parked') cellCars[v.cell].push(v); }
   for (const id of world.query('TrafficLight')) { const L = world.get(id, 'TrafficLight'); L.queueNS = 0; L.queueEW = 0; }
   stats.moving = stats.stopped = stats.waitingLight = stats.parked = 0;
   for (let k = 0; k < W * H; k++) congestion[k] *= 1 - 0.02 * dt * 60;
   for (const id of world.query('Vehicle')) {
     const v = world.get(id, 'Vehicle');
+    if (world.has(id, 'PlayerDriver')) { if (v.speed > 0.3) stats.moving++; else stats.stopped++; continue; }
     if (v.state === 'parked') {
       // leave again once the lane beside the building is clear
       stats.parked++; v.parkedFor -= dt; if (v.parkedFor > 0) continue;
@@ -681,7 +732,9 @@ addSystem('Vehicles', dt => {
     for (const o of cellCars[v.cell]) if (o !== v && o.dir === v.dir && o.t > v.t) gap = Math.min(gap, (o.t - v.t) * v.path.len);
     if (v.next >= 0) for (const o of cellCars[v.next]) {
       const same = o.dir === v.exit;
-      if (same || o.t < 0.5) gap = Math.min(gap, (1 - v.t) * v.path.len + (same ? o.t * o.path.len : 0));
+      // a car leaving by the edge we are entering is in the mirrored lane, so it never crosses us
+      const crosses = !same && o.t < 0.5 && o.exit !== ((v.exit + 2) & 3);
+      if (same || crosses) gap = Math.min(gap, (1 - v.t) * v.path.len + (same ? o.t * o.path.len : 0));
     }
     // speed you can still brake to a stop from over `dist` metres at 9 m/s²
     const brake = dist => Math.sqrt(2 * 9 * Math.max(0, dist));
@@ -702,7 +755,7 @@ addSystem('Vehicles', dt => {
     v.waited = v.speed > 0.3 ? 0 : v.waited + dt;
     if (v.waited > 25) { respawnCar(id); continue; }         // gridlock escape hatch
     if (v.arriving && v.t >= 0.49) {
-      v.state = 'parked'; v.parkedFor = 6 + rnd() * 30; v.trips++; v.arriving = false; stats.tripsDone++;
+      v.state = 'parked'; v.parkedFor = 2 + rnd() * 6; v.trips++; v.arriving = false; stats.tripsDone++;
       const B = world.get(cellEntity[v.dest], 'Building'); if (B) B.trips = (B.trips || 0) + 1;
       continue;
     }
@@ -748,10 +801,56 @@ addSystem('Growth', dt => {
     if (cands.length) { const k = cands[Math.floor(rnd() * cands.length)]; grid[k] = T_LOT; lots[k] = makeLot(k % W, (k / W) | 0, 1); growth.lotsAdded++; rebuildStatic(); }
   }
 });
+function civilianBodyFor(id) {
+  let body = civilianBodies.get(id);
+  if (body) return body;
+  body = createProceduralPlayerBody({
+    THREE, scene, terrainHeight: () => 0, mode: 'remote',
+    style: civilianStyles[id % civilianStyles.length], design: civilianDesign,
+    adaptGaitToSpeed: true, movementDynamics: true, naturalLocomotion: true,
+    batches: civilianBatches,
+  });
+  civilianBodies.set(id, body);
+  return body;
+}
+
+// Rendering only: pedestrian pathing and state transitions remain owned by the ECS above.
+// A fixed near-camera budget keeps the 800-pedestrian stress setting on the capsule fast path.
+addSystem('Civilian pedestrian LOD', dt => {
+  for (const [id, body] of civilianBodies) {
+    if (world.entities.has(id)) continue;
+    body.destroy(); civilianBodies.delete(id);
+  }
+  civilianVisible.clear(); civilianCandidates.length = 0;
+  civilianBatches.beginFrame();
+  if (civiliansEl.checked) {
+    const maxDistanceSq = CIVILIAN_LOD_DISTANCE * CIVILIAN_LOD_DISTANCE;
+    for (const id of world.query('Pedestrian', 'Transform')) {
+      const P = world.get(id, 'Pedestrian'); if (P.state !== 'walking') continue;
+      const tr = world.get(id, 'Transform'), dx = tr.x - camera.position.x, dz = tr.z - camera.position.z;
+      const d2 = dx * dx + dz * dz; if (d2 <= maxDistanceSq) civilianCandidates.push({ id, P, tr, d2 });
+    }
+    civilianCandidates.sort((a, b) => a.d2 - b.d2);
+    const count = Math.min(CIVILIAN_LOD_MAX, civilianCandidates.length);
+    for (let i = 0; i < count; i++) {
+      const { id, P, tr } = civilianCandidates[i], body = civilianBodyFor(id);
+      civilianVisible.add(id); body.setVisible(true);
+      civilianPos.set(tr.x, tr.y, tr.z);
+      civilianVelocity.set(Math.sin(tr.yaw) * P.speed, 0, Math.cos(tr.yaw) * P.speed);
+      // Match the yaw convention used by bot-viewer: the body applies its own visual +PI offset.
+      body.update(dt, { position: civilianPos, velocity: civilianVelocity, onFloor: true,
+        height: 1.78, radius: 0.24, yaw: tr.yaw + Math.PI, alive: true });
+      body.flush(civilianBatches);
+    }
+  }
+  for (const [id, body] of civilianBodies) if (!civilianVisible.has(id)) body.setVisible(false);
+  civilianBatches.endFrame();
+});
 addSystem('RenderSync', () => {
   let n = 0; carByInstance.length = 0;
   for (const id of world.query('Vehicle', 'Transform')) {
-    if (world.get(id, 'Vehicle').state === 'parked') continue;
+    const driver = world.get(id, 'PlayerDriver');
+    if (world.get(id, 'Vehicle').state === 'parked' || driver?.cameraMode === 'cockpit') continue;
     const tr = world.get(id, 'Transform');
     Q.setFromAxisAngle(YUP, tr.yaw);
     M.compose(V.set(tr.x, tr.y, tr.z), Q, S.set(1, 1, 1));
@@ -762,7 +861,7 @@ addSystem('RenderSync', () => {
   carMesh.count = cabMesh.count = n; carMesh.instanceMatrix.needsUpdate = cabMesh.instanceMatrix.needsUpdate = true;
   let np = 0; pedByInstance.length = 0;
   for (const id of world.query('Pedestrian', 'Transform')) {
-    const P = world.get(id, 'Pedestrian'); if (P.state !== 'walking') continue;
+    const P = world.get(id, 'Pedestrian'); if (P.state !== 'walking' || civilianVisible.has(id)) continue;
     const tr = world.get(id, 'Transform');
     Q.setFromAxisAngle(YUP, tr.yaw); M.compose(V.set(tr.x, tr.y, tr.z), Q, S.set(1, 1, 1));
     pedMesh.setMatrixAt(np, M); pedMesh.setColorAt(np, C.set(world.get(id, 'Color').hex));
@@ -797,7 +896,7 @@ const nightSlider = slider('night', 'Night', 0, 1, 0.01, v => {
   sun.color.setHex(0xfff2dc).lerp(new THREE.Color(0x8fa6ff), v);
 });
 const pauseEl = document.getElementById('pause'), showLanesEl = document.getElementById('showLanes');
-const adaptiveEl = document.getElementById('adaptive'), congestionEl = document.getElementById('congestion');
+const adaptiveEl = document.getElementById('adaptive'), congestionEl = document.getElementById('congestion'), civiliansEl = document.getElementById('civilians');
 const followEl = document.getElementById('follow'), growthEl = document.getElementById('growth'), cycleEl = document.getElementById('cycle');
 function setNight(v) { sim.night = v; nightSlider.input.value = v; nightSlider.output.textContent = v.toFixed(2); nightSlider.apply(v); }
 
@@ -809,6 +908,89 @@ document.getElementById('tools').addEventListener('click', e => {
   for (const x of document.querySelectorAll('#tools .btn')) x.classList.toggle('on', x.dataset.tool === tool);
 });
 function respawnAll() { setCarCount(0); setCarCount(sim.cars); setPedCount(0); setPedCount(sim.peds); selectEntity(0); }
+const driveBtn = document.getElementById('drive'), driveCamBtn = document.getElementById('driveCam');
+const driveStatusEl = document.getElementById('driveStatus'), hintEl = document.getElementById('hint');
+function activePlayerDriver() { return playerDrive.id ? world.get(playerDrive.id, 'PlayerDriver') : null; }
+function updateDriveUi() {
+  const D = activePlayerDriver();
+  driveBtn.textContent = D ? 'Exit car (E)' : 'Drive selected';
+  driveCamBtn.disabled = !D;
+  driveCamBtn.textContent = `Camera: ${D?.cameraMode || 'chase'}`;
+  driveStatusEl.textContent = D ? `Driving Car #${playerDrive.id} — WASD steer / accelerate / brake-reverse, Space handbrake, C camera, E exit.` : 'Select a car, then drive it.';
+  hintEl.textContent = D ? (D.cameraMode === 'cockpit' ? 'Cockpit: mouse looks (click Camera to lock pointer). WASD drives, Space handbrake, C chase camera, E exit.' : 'Chase: WASD drives, Space handbrake, C cockpit camera, E exit.') : 'Left-drag orbits, right-drag pans, wheel zooms. With a build tool active, click or drag on the ground to paint.';
+}
+function beginDrive(id) {
+  if (!world.entities.has(id) || !world.has(id, 'Vehicle')) return;
+  if (playerDrive.id && playerDrive.id !== id) endDrive();
+  const tr = world.get(id, 'Transform'), v = world.get(id, 'Vehicle');
+  const body = makeRoadVehicle({ x: tr.x, z: tr.z, yaw: tr.yaw, vx: Math.sin(tr.yaw) * v.speed, vz: Math.cos(tr.yaw) * v.speed });
+  world.add(id, 'PlayerDriver', { body, accumulator: 0, cameraMode: 'chase', lookOffset: 0, pitch: -0.07 });
+  playerDrive.id = id; v.route = null; v.arriving = false; v.dest = -1; v.state = 'player driving';
+  driveCamera.ready = false; controls.enabled = false; selectEntity(id); updateDriveCamera(0); updateDriveUi();
+}
+function endDrive() {
+  const id = playerDrive.id; if (!id) return;
+  playerDrive.keys.clear();
+  world.store('PlayerDriver').delete(id);
+  playerDrive.id = 0; driveCamera.ready = false;
+  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  controls.enabled = true; camera.fov = 50; camera.updateProjectionMatrix();
+  if (world.entities.has(id)) respawnCar(id); // lane AI resumes only from a legal lane state
+  updateDriveUi();
+}
+function toggleDriveCamera() {
+  const D = activePlayerDriver(); if (!D) return;
+  D.cameraMode = D.cameraMode === 'chase' ? 'cockpit' : 'chase';
+  driveCamera.ready = false;
+  if (D.cameraMode === 'cockpit') renderer.domElement.requestPointerLock?.();
+  else if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  updateDriveUi();
+}
+function readDriveInput(D) {
+  const k = playerDrive.keys, forward = k.has('KeyW'), back = k.has('KeyS');
+  const reverse = back && !forward && Math.abs(D.body.longitudinalSpeed) < 0.9;
+  return { throttle: forward ? 1 : 0, brake: back && !reverse ? 1 : 0, reverse: reverse ? 1 : 0,
+    steer: (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0), handbrake: k.has('Space') };
+}
+function updateDriveCamera(dt) {
+  const D = activePlayerDriver(); if (!D) return;
+  const b = D.body, sy = Math.sin(b.yaw), cy = Math.cos(b.yaw);
+  if (D.cameraMode === 'cockpit') {
+    camera.position.set(b.x + sy * 0.22 - cy * 0.32, 1.38, b.z + cy * 0.22 + sy * 0.32);
+    camera.rotation.set(D.pitch, b.yaw + D.lookOffset + Math.PI, 0, 'YXZ');
+    camera.fov = 72; camera.updateProjectionMatrix(); return;
+  }
+  const back = 7.5 + Math.min(4.5, b.speed * 0.14);
+  const desired = driveCamera.aim.set(b.x - sy * back, 3.8, b.z - cy * back);
+  const look = V.set(b.x + sy * 4, 1.1, b.z + cy * 4);
+  if (!driveCamera.ready) { driveCamera.pos.copy(desired); driveCamera.ready = true; }
+  driveCamera.pos.lerp(desired, 1 - Math.exp(-dt * 7));
+  camera.position.copy(driveCamera.pos); camera.up.set(0, 1, 0); camera.lookAt(look);
+  camera.fov = 58 + Math.min(10, b.speed * 0.3); camera.updateProjectionMatrix();
+}
+driveBtn.onclick = e => {
+  e.stopPropagation();
+  if (playerDrive.id) return endDrive();
+  const id = selected && world.has(selected, 'Vehicle') ? selected : [...world.query('Vehicle')][0];
+  if (id) beginDrive(id);
+  else driveStatusEl.textContent = 'No drivable car is currently available.';
+};
+driveCamBtn.onclick = toggleDriveCamera;
+window.addEventListener('keydown', e => {
+  if (!playerDrive.id || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+  if (e.code === 'KeyE' && !e.repeat) { endDrive(); e.preventDefault(); return; }
+  if (e.code === 'KeyC' && !e.repeat) { toggleDriveCamera(); e.preventDefault(); return; }
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) { playerDrive.keys.add(e.code); e.preventDefault(); }
+});
+window.addEventListener('keyup', e => playerDrive.keys.delete(e.code));
+window.addEventListener('blur', () => playerDrive.keys.clear());
+document.addEventListener('mousemove', e => {
+  const D = activePlayerDriver();
+  if (!D || D.cameraMode !== 'cockpit' || document.pointerLockElement !== renderer.domElement) return;
+  D.lookOffset = THREE.MathUtils.euclideanModulo(D.lookOffset - e.movementX / 900 + Math.PI, Math.PI * 2) - Math.PI;
+  D.pitch = THREE.MathUtils.clamp(D.pitch - e.movementY / 900, -1.1, 0.7);
+});
+updateDriveUi();
 document.getElementById('regen').onclick = () => { seed = (Math.random() * 1e9) >>> 0; generateCity(); rebuildStatic(); respawnAll(); };
 document.getElementById('save').onclick = () => { localStorage.setItem('city-builder:save', JSON.stringify({ W, H, grid: [...grid], lots, parks })); };
 document.getElementById('load').onclick = () => {
@@ -838,6 +1020,7 @@ function paint(k) {
 }
 renderer.domElement.addEventListener('pointerdown', ev => {
   if (ev.button !== 0) return;
+  if (playerDrive.id) return;
   if (tool === 'inspect') { pickEntity(ev); return; }
   painting = true; controls.enabled = false; lastPaint = -1; paint(pickCell(ev));
 });
@@ -954,8 +1137,8 @@ renderer.setAnimationLoop(now => {
   if (uiTimer > 0.25) { uiTimer = 0; renderList(); renderStats(); paintCongestion(); }
   if (selected) renderSelected();
   if (cycleEl.checked && dt > 0) { cycleT += dt / 60; setNight(0.5 - 0.5 * Math.cos(cycleT * Math.PI * 2)); }
-  if (followEl.checked && selected) { const tr = world.get(selected, 'Transform'); if (tr) { V.set(tr.x, tr.y, tr.z).sub(controls.target); controls.target.add(V); camera.position.add(V); } }
-  controls.update();
+  if (!playerDrive.id && followEl.checked && selected) { const tr = world.get(selected, 'Transform'); if (tr) { V.set(tr.x, tr.y, tr.z).sub(controls.target); controls.target.add(V); camera.position.add(V); } }
+  if (playerDrive.id) updateDriveCamera(dt); else controls.update();
   renderer.render(scene, camera);
 });
 window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });

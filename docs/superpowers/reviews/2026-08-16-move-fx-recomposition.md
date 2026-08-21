@@ -50,3 +50,125 @@ Discharge (bolt×2, stream×2) · Will-O-Wisp (stream A, fissure B, aurora B) ·
 # Raw reports
 
 Verbatim agent output is in `2026-08-16-move-fx-recomposition-raw.md`.
+
+---
+
+# Candidate modules and their move rosters
+
+The recompositions above collapse into eleven new effect modules. Each one is a fork of an existing
+module with one structural change, and each can then carry a family of moves the way `bolt` carries
+Thunderbolt, Dark Pulse and Dazzling Gleam — palette rows rather than new code. Types in brackets.
+
+## 1. `fx-orb` — forks `stream`
+The column becomes a small travelling sphere with a puff trail. Burst dome, ground decal, pooled
+light and the puff kit are reused unchanged; only the axis geometry is replaced.
+
+Shadow Ball [ghost] · Energy Ball [grass] · Sludge Bomb [poison] · Focus Blast [fighting] ·
+Aura Sphere [fighting] · Electro Ball [electric] · Mud Bomb [ground] · Will-O-Wisp [fire] ·
+Weather Ball [normal] · Zap Cannon [electric]
+Palettes: shadow, verdant, sludge, aura, ember.
+
+## 2. `fx-cloud` — forks `stream`
+Drop the tube; drive only the puff layer as a cone or a spreading field. Lowest-risk fork, because
+the puff kit is already free-standing.
+
+Icy Wind · Powder Snow [ice] · Smokescreen · Sweet Scent [normal] · Poison Gas · Poison Powder
+[poison] · Sleep Powder · Stun Spore [grass] · Heat Wave [fire] · Sand Attack [ground] ·
+Ominous Wind [ghost] · Bubble [water]
+Palettes: frost, smoke, spore, cinder, dust.
+
+## 3. `fx-vortex` — forks `stream`
+The straight axis becomes a helix around a vertical axis at the target. `frontAt` must be rewritten
+to match or the puffs and light leave the funnel.
+
+Fire Spin · Magma Storm [fire] · Whirlpool [water] · Sand Tomb [ground] · Wrap · Bind [normal] ·
+Leaf Tornado [grass] · Twister [dragon] · Hurricane [flying] · Infestation [bug]
+Palettes: flame, water, sand, leaf, gale.
+
+## 4. `fx-tether` — forks `bolt`
+Both ends pinned (`pinch`/`converge` at 1), travel skipped, held through a long impact. Drain moves
+add motes streaming back along the link toward the caster.
+
+Thunder Wave · Parabolic Charge [electric] · Absorb · Mega Drain · Giga Drain [grass] ·
+Leech Life [bug] · Dream Eater [psychic] · Spirit Shackle [ghost] · Mean Look [dark] ·
+Lock-On [normal]
+Palettes: paralysis, drain, spectral.
+Gated on: the hold mode and the status/no-damage flag.
+
+## 5. `fx-skyfall` — forks `crystals`
+Records start above the ground and fall instead of erupting; chips fire on landing. Needs a sky
+anchor, which no part currently provides (line samples are all ground height).
+
+Rock Slide · Rock Throw · Diamond Storm [rock] · Icicle Crash · Avalanche [ice] ·
+Draco Meteor [dragon] · Meteor Beam [rock]
+Palettes: stone, ice, meteor.
+
+## 6. `fx-ring` — forks `crystals` placement onto `aurora`'s `buildRing`
+Ring placement around a chosen centre, with the trigger sweep keyed to angle instead of `along`.
+The one fork that serves both hazards (centred on the target) and buffs (centred on the caster).
+
+Rock Tomb [rock] · Spikes [ground] · Toxic Spikes [poison] · Stealth Rock [rock] ·
+Sticky Web [bug] · Iron Defense [steel] · Barrier [psychic] · Withdraw · Harden [normal] ·
+Cotton Guard [grass]
+Palettes: stone, toxic, web, steel, glass.
+Gated on: hold mode for the hazards; body anchoring for the buffs to track a walking rig.
+
+## 7. `fx-dome` — forks `aurora`
+The curtain grid becomes a sphere cap closing overhead, with the hem ring kept as its base. The
+sway, ripple and fold-lit colour terms port over unchanged.
+
+Protect [normal] · Safeguard [normal] · Light Screen · Reflect · Magic Coat [psychic] ·
+Barrier [psychic] · Wide Guard [rock] · King's Shield [steel] · Aqua Ring [water]
+Palettes: screen, reflect, safeguard, protect.
+
+## 8. `fx-shock` — forks `fissure` (burst-only) with `aurora`'s hem rings
+Expanding rings from a centre, no main path. Both fissure agents proposed the burst-only path
+independently, which makes this the best-evidenced of the new modules.
+
+Explosion · Self-Destruct · Boomburst · Hyper Voice · Screech · Round [normal] · Magnitude ·
+Bulldoze · Earthquake [ground] · Discharge [electric] · Surf · Muddy Water [water] ·
+Petal Blizzard [grass]
+Palettes: blast, quake, sonic, wave.
+
+## 9. `fx-field` — forks `aurora`
+A flat disc or overlay covering the arena that holds rather than sweeping. The widest roster and
+the one most blocked by the contract.
+
+Trick Room · Gravity · Magic Room · Wonder Room [psychic] · Rain Dance [water] · Sunny Day [fire] ·
+Sandstorm [rock] · Hail [ice] · Electric Terrain [electric] · Grassy Terrain [grass] ·
+Misty Terrain [fairy] · Psychic Terrain [psychic]
+Palettes: warp, rain, sun, sand, hail, terrain.
+Gated on: the hold mode; nothing here works as a bounded cast.
+
+## 10. `fx-blade` — forks `bolt`'s camera-facing ribbon
+A short arc swept across the target instead of a filament bundle: same extrusion and clip, no kink,
+no restrike.
+
+Slash · Fury Cutter [normal] · Night Slash [dark] · Psycho Cut [psychic] · Air Slash ·
+Aerial Ace [flying] · X-Scissor [bug] · Cross Poison [poison] · Sacred Sword [fighting] ·
+Razor Shell [water] · Precipice Blades [ground]
+Palettes: steel, shadow, psychic, wind.
+
+## 11. `fx-aura` — forks `aurora` at body scale, with `bolt`'s spine for the electric looks
+A self buff hugging the caster rather than ringing the ground.
+
+Swords Dance · Work Up · Agility [normal] · Calm Mind [psychic] · Bulk Up [fighting] ·
+Nasty Plot [dark] · Dragon Dance [dragon] · Growth [grass] · Charge [electric] ·
+Focus Energy [normal] · Curse [ghost] · Wild Charge [electric]
+Palettes: might, mind, malice, draconic.
+Gated on: body anchoring, or the aura sits where the caster stood at cast time.
+
+## Where a new module is not warranted
+
+Several proposals read as new moves but are palette or option rows on what already exists, and
+should be tried there first: Sandstorm and Sludge Bomb on `stream`, Spark and Zap Cannon on `bolt`,
+Bulldoze on `fissure`, Stealth Rock on `crystals`, Curse and Mist on `aurora`. Each is a `MOVES` row
+plus a palette, which is the honest baseline every module above should be measured against.
+
+## Ordering
+
+`fx-cloud` and `fx-shock` first — both are subtractive forks of proven parts with no contract work.
+Then `fx-orb`, `fx-blade` and `fx-ring`, which need new placement or geometry but no core changes.
+`fx-dome`, `fx-vortex` and `fx-skyfall` need genuinely new geometry or a rewritten CPU twin.
+`fx-tether`, `fx-field` and `fx-aura` should wait for the hold mode, the status flag and body
+anchoring, since without those they can only fake what they are meant to express.

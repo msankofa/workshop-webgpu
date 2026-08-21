@@ -11,6 +11,10 @@
  * Crossing u = 1 fires `onImpact` once. IMPACT lasts `impactTime` s, FADE `fadeTime` s; both call
  * `onFade(dt, t)` with t running 0..1 across IMPACT and 1..2 across FADE, so a hold reads as t < 1.
  *
+ * A move that is meant to stay on the field — a hazard, a screen, weather — sets `hold: true` and the
+ * machine parks in IMPACT until something calls `release()`. `maxHold` seconds force the release, so a
+ * caller that forgets cannot leak a live effect into the scene forever.
+ *
  * Pure JS: no THREE, no DOM. `test-move-core.mjs` covers it in Node.
  */
 
@@ -92,14 +96,18 @@ export function makeLine({ from, to, terrainHeight = () => 0, step = 0.1, minLen
  */
 export function createPhaseMachine({
   travelSpeed = 12, travelTime = 0, impactTime = 0.6, fadeTime = 0.8, easeIn = 0.08,
+  hold = false, maxHold = 0,
   onSpawn, onTravel, onImpact, onFade, onDestroy,
 } = {}) {
   const m = {
     phase: Phase.IDLE, line: null, front: 0, u: 0, age: 0, phaseAge: 0, impacted: false,
-    travelSpeed, travelTime, impactTime, fadeTime,
+    travelSpeed, travelTime, impactTime, fadeTime, hold, maxHold,
     get alive() { return m.phase !== Phase.IDLE && m.phase !== Phase.DONE; },
+    get holding() { return m.hold && m.phase === Phase.IMPACT; },
+    release() { m.hold = false; return m; },
     spawn(line) {
       m.line = line; m.front = 0; m.u = 0; m.age = 0; m.phaseAge = 0; m.impacted = false;
+      m.hold = hold;
       m.phase = Phase.TRAVEL;
       onSpawn?.call(m, line);
       return m;
@@ -121,9 +129,10 @@ export function createPhaseMachine({
         return true;
       }
       if (m.phase === Phase.IMPACT) {
+        if (m.hold && m.maxHold > 0 && m.phaseAge >= m.maxHold) m.hold = false; // never leak a held effect
         const t = m.impactTime > 0 ? saturate(m.phaseAge / m.impactTime) : 1;
         onFade?.call(m, dt, t, time);
-        if (m.phaseAge >= m.impactTime) { m.phase = Phase.FADE; m.phaseAge = 0; }
+        if (!m.hold && m.phaseAge >= m.impactTime) { m.phase = Phase.FADE; m.phaseAge = 0; }
         return true;
       }
       if (m.phase === Phase.FADE) {

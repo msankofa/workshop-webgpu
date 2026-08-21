@@ -58,6 +58,7 @@
       <button id="swap">Swap sides</button>
       <button id="heal">Reset HP</button>
       <button id="clear">Clear effects</button>
+      <button id="release">Release held</button>
     </div>
   </fieldset>
   <fieldset>
@@ -155,6 +156,17 @@ const FX_MODULES = {
   crystals: ['../moves/fx-crystals.js', 'createCrystalsFx'],
   fissure: ['../moves/fx-fissure.js', 'createFissureFx'],
   aurora: ['../moves/fx-aurora.js', 'createAuroraFx'],
+  aura: ['../moves/fx-aura.js', 'createAuraFx'],
+  dome: ['../moves/fx-dome.js', 'createDomeFx'],
+  field: ['../moves/fx-field.js', 'createFieldFx'],
+  skyfall: ['../moves/fx-skyfall.js', 'createSkyfallFx'],
+  tether: ['../moves/fx-tether.js', 'createTetherFx'],
+  vortex: ['../moves/fx-vortex.js', 'createVortexFx'],
+  ring: ['../moves/fx-ring.js', 'createRingFx'],
+  cloud: ['../moves/fx-cloud.js', 'createCloudFx'],
+  blade: ['../moves/fx-blade.js', 'createBladeFx'],
+  shock: ['../moves/fx-shock.js', 'createShockFx'],
+  orb: ['../moves/fx-orb.js', 'createOrbFx'],
 };
 const fx = {};
 const missing = [];
@@ -176,6 +188,8 @@ function castMove(move, attacker, target) {
   const line = makeLine({ from, to: move.self ? from : to, terrainHeight, step: 0.08 });
   const seed = hashSeed(`${move.name}#${castIndex++}`);
   const inst = f.cast({
+    // A move row can carry effect-specific options; the contract fields below always win.
+    ...(move.options || {}),
     line, seed, palette: move.palette, power: move.power,
     sourceY: a.y - terrainHeight(a.x, a.z), targetY: t.y - terrainHeight(t.x, t.z),
     travelSpeed: move.travelSpeed, travelTime: move.travelTime,
@@ -186,12 +200,25 @@ function castMove(move, attacker, target) {
     if (move.travelTime > 0) inst.machine.travelTime = move.travelTime;
     else if (move.travelSpeed > 0) { inst.machine.travelTime = 0; inst.machine.travelSpeed = move.travelSpeed; }
   }
-  if (!move.self) inst.onImpact = () => hit(target, move);
+  if (!move.self && !move.status) inst.onImpact = () => hit(target, move);
+  if (move.hold && inst.machine) {
+    releaseHeld(move.name); // casting a field move again takes the old one down
+    inst.machine.hold = true;
+    inst.machine.maxHold = move.maxHold || 20;
+  }
+  inst.moveName = move.name;
   live.push(inst);
   log(`${attacker.label} used ${move.name}!`);
   return inst;
 }
 let castIndex = 1;
+
+// Held effects (hazards, screens, weather) sit in IMPACT until something lets them go.
+function releaseHeld(name) {
+  for (const i of live) {
+    if (i.machine?.holding && (!name || i.moveName === name)) i.machine.release();
+  }
+}
 
 // --- fighters -----------------------------------------------------------------------------------
 const loader = new GLTFLoader();
@@ -307,6 +334,7 @@ $('swap').addEventListener('click', async () => {
 });
 $('heal').addEventListener('click', () => { for (const f of Object.values(fighters)) if (f) { f.hp = 100; updateHud(f); } });
 $('clear').addEventListener('click', () => { for (const i of live) i.dispose(); live.length = 0; });
+$('release').addEventListener('click', () => releaseHeld());
 
 // Auto battle: the two sides take turns, each with a random move that is loaded.
 let autoClock = 0, autoTurn = 'left';
@@ -315,7 +343,8 @@ function autoStep(dt) {
   autoClock += dt;
   if (autoClock < 2.4) return;
   autoClock = 0;
-  const pool = MOVES.filter(m => fx[m.fx]);
+  // Field effects park on the arena until released, so an auto-battle that rolled them would silt up.
+  const pool = MOVES.filter(m => fx[m.fx] && !m.hold);
   if (!pool.length) return;
   const m = pool[Math.floor(Math.random() * pool.length)];
   const a = fighters[autoTurn], t = fighters[autoTurn === 'left' ? 'right' : 'left'];
@@ -360,7 +389,10 @@ addEventListener('resize', () => {
 });
 
 await Promise.all([spawnFighter('left', $('leftSel').value), spawnFighter('right', $('rightSel').value)]);
-setStatus(missing.length ? `ready — effects not loaded: ${missing.join(', ')}` : 'ready — 16 moves, 5 effects');
+const loaded = Object.keys(fx).length;
+setStatus(missing.length
+  ? `ready — ${MOVES.length} moves, ${loaded} effects, not loaded: ${missing.join(', ')}`
+  : `ready — ${MOVES.length} moves, ${loaded} effects`);
 frame();
 </script>
 </body>

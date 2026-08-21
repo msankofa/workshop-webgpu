@@ -1,5 +1,5 @@
-// Node checks for demos/water-waves.js, the CPU twin of the wave maths in demos/water-demo.html.
-import { buildWaveTable, sampleWaves, surfaceAt, sineHeight, sineNormal } from './demos/water-waves.js';
+// Node checks for water-waves.js, the CPU twin of the wave maths in water-hybrid.js.
+import { buildWaveTable, sampleWaves, surfaceAt, sineHeight, sineNormal } from './water-waves.js';
 
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.log('FAIL', m); } else console.log('ok  ', m); };

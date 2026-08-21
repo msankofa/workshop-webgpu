@@ -81,9 +81,10 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
   const twoSidedMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
   twoSidedMesh.raycast = acceleratedRaycast;
 
-  function resolveOnce(capsule, velocity, slopeLimitY) {
+  function resolveOnce(capsule, velocity, slopeLimitY, contacts) {
     let hit = false;
     let grounded = false;
+    let ceiling = false;
     _line.copy(capsule);
     _box.makeEmpty();
     _box.expandByPoint(_line.start);
@@ -115,6 +116,11 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
         _box.expandByPoint(_line.end);
         hit = true;
         if (_normal.y >= slopeLimitY) grounded = true;
+        if (_normal.y <= -slopeLimitY) ceiling = true;
+        if (contacts) contacts.push({
+          normal: [_normal.x, _normal.y, _normal.z],
+          depth,
+        });
 
         const vn = velocity.dot(_normal);
         if (vn < 0) velocity.addScaledVector(_normal, -vn);
@@ -122,17 +128,24 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
       },
     });
 
-    return { hit, grounded };
+    return { hit, grounded, ceiling };
   }
 
-  function resolveCapsule(capsule, velocity, { slopeLimitY = 0.5, iterations = 3 } = {}) {
+  function resolveCapsule(capsule, velocity, {
+    slopeLimitY = 0.5,
+    iterations = 3,
+    contacts = null,
+  } = {}) {
     let grounded = false;
+    let ceiling = false;
+    if (contacts) contacts.length = 0;
     for (let i = 0; i < iterations; i++) {
-      const result = resolveOnce(capsule, velocity, slopeLimitY);
+      const result = resolveOnce(capsule, velocity, slopeLimitY, contacts);
       grounded = grounded || result.grounded;
+      ceiling = ceiling || result.ceiling;
       if (!result.hit) break;
     }
-    return { grounded };
+    return { grounded, ceiling, contacts: contacts || undefined };
   }
 
   function raycastDown(origin, maxDistance = 8) {

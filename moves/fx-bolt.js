@@ -329,6 +329,7 @@ export function createBoltFx(deps, options = {}) {
     sparkMat.side = THREE.DoubleSide;
     const sparkMesh = new THREE.InstancedMesh(sparkGeo, sparkMat, SPARK_CAP);
     sparkMesh.frustumCulled = false;
+    sparkMesh.userData.moveComponent = 'particles';
     sparkMesh.renderOrder = 12;
     sparkMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     scratch.c.set(pal.spark);

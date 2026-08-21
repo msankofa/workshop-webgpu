@@ -100,3 +100,52 @@ export function spacingAt(x, z, camX, camZ) {
 
 // height above ground, the number the radar altimeter and the AI's terrain dodge both want
 export function agl(p) { return p.y - heightAt(p.x, p.z); }
+
+// ---------------------------------------------------------------------------
+// Dry land
+//
+// The water plane sits at y = 0 and BASE_OFFSET deliberately pushes the low ground under it to make
+// lakes — 43% of the field, measured on a 90 m grid out to 8 km. So anything placed at a fixed
+// offset from the player drowns more often than not: the demo's two base clusters put nine of their
+// eleven buildings underwater from the default spawn, the undefended one 200-400 m down.
+//
+// The fix is to move the CLUSTER, not the building. Nudging each site to its own dry spot would
+// scatter a base that is laid out on purpose, so the search scores a whole footprint at once and
+// keeps every offset exactly as authored.
+// ---------------------------------------------------------------------------
+
+export const SEA_LEVEL = 0;      // the water plane's y
+export const DRY_MARGIN = 8;     // how far above it a footing has to sit to count as dry
+
+// The lowest ground under a set of offsets — the one that decides whether the cluster is wet.
+export function lowestOf(x, z, offsets) {
+  let lo = Infinity;
+  for (const [ox, oz] of offsets) lo = Math.min(lo, heightAt(x + ox, z + oz));
+  return lo;
+}
+
+// A golden-angle spiral outward from where the cluster WANTS to be: the first anchor whose whole
+// footprint clears the waterline wins, so a base moves as little as it has to. Deterministic (no
+// Math.random), so the same spawn always builds the same map, and it always returns something — the
+// driest anchor it saw — because a site that silently failed to place would just be a missing base.
+//
+// `avoid` keeps the two bases apart: without it the undefended base can be dragged onto the defended
+// one's island, and it is meant to be reachable without fighting through the SAM ring.
+export function dryAnchor(x, z, offsets, opts = {}) {
+  const { maxR = 6000, samples = 200, avoid = null, avoidR = 2500 } = opts;
+  const clear = (cx, cz) => !avoid || Math.hypot(cx - avoid.x, cz - avoid.z) >= avoidR;
+  const want = SEA_LEVEL + DRY_MARGIN;
+  let best = { x, z, low: clear(x, z) ? lowestOf(x, z, offsets) : -Infinity, moved: 0 };
+  if (best.low >= want) return best;
+  const GOLDEN = 2.399963;
+  for (let i = 1; i <= samples; i++) {
+    const r = maxR * Math.sqrt(i / samples);      // sqrt spreads the samples evenly over the disc
+    const a = i * GOLDEN;
+    const cx = x + Math.cos(a) * r, cz = z + Math.sin(a) * r;
+    if (!clear(cx, cz)) continue;
+    const low = lowestOf(cx, cz, offsets);
+    if (low > best.low) best = { x: cx, z: cz, low, moved: r };
+    if (best.low >= want) break;
+  }
+  return best;
+}

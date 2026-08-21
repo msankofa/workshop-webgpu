@@ -158,6 +158,101 @@ section('smoke expands and expires; sparks fly straight');
   ok(sim.time > 1.09, 'sim clock advances');
 }
 
+section('inherited velocity rides on top of the launch vector (NOT html-game-v2: for moving wrecks)');
+{
+  const still = fresh(); still.spawnBlastShrapnel(0, 200, 0, 24);
+  const moving = fresh(); moving.spawnBlastShrapnel(0, 200, 0, 24, undefined, { velocity: [180, 0, 0] });
+  eq(moving.shrapnel.length, still.shrapnel.length, 'inheritance does not change the count');
+  const mean = (l, k) => l.reduce((t, q) => t + q[k], 0) / l.length;
+  near(mean(moving.shrapnel, 'vx') - mean(still.shrapnel, 'vx'), 180, 1e-9, 'every fragment gains vx exactly');
+  near(mean(moving.shrapnel, 'vy') - mean(still.shrapnel, 'vy'), 0, 1e-9, 'and nothing else moves');
+  ok(moving.shrapnel.every((q) => q.vx > 0), 'a fast enough carrier throws the whole cone forward');
+  const r0 = fresh(); r0.spawnRubble(0, 90, 0, 4, [1, 0]);
+  const r1 = fresh(); r1.spawnRubble(0, 90, 0, 4, [1, 0], { velocity: [0, -60, 0] });
+  near(mean(r1.rubble, 'vy') - mean(r0.rubble, 'vy'), -60, 1e-9, 'rubble inherits too');
+  const noOpt = fresh(); noOpt.spawnBlastShrapnel(0, 200, 0, 24);
+  eq(JSON.stringify(noOpt.shrapnel[0]), JSON.stringify(still.shrapnel[0]), 'omitting the option changes nothing');
+}
+
+section('a settled piece stops being simulated (no ground query, no drift, no spin)');
+{
+  let queries = 0;
+  const sim = createDebrisSim({ groundAt: () => { queries++; return 0; }, random: mulberry(7) });
+  sim.spawnBlastShrapnel(0, 1, 0, 6);
+  sim.spawnRubble(0, 1, 0, 3, [1, 0], { countScale: 0.5 });
+  for (let i = 0; i < 900; i++) sim.step(1 / 60);   // 15 s: long since down, well short of the 20 s life
+  const resting = sim.shrapnel.filter((q) => q.resting).length;
+  ok(resting > sim.shrapnel.length * 0.8, `most shrapnel is resting (${resting}/${sim.shrapnel.length})`);
+  ok(sim.rubble.every((r) => r.resting), 'all rubble is resting');
+  const before = queries;
+  // Guarded: if the spin damping ever regresses, nothing rests at all and every assertion below
+  // would throw on undefined instead of reporting. A crashed suite names the wrong culprit.
+  const p0 = sim.shrapnel.find((q) => q.resting);
+  const r0 = sim.rubble[0];
+  if (!p0 || !r0) { ok(false, 'no resting piece to inspect -- the rest of this section cannot run'); }
+  else {
+  const snap = { x: p0.x, y: p0.y, z: p0.z, rx: p0.rx };
+  const rSnap = { x: r0.x, y: r0.y, rx: r0.rx, glow: r0.glowNow };
+  for (let i = 0; i < 60; i++) sim.step(1 / 60);
+  eq(queries - before, 0, 'a second of stepping costs zero ground queries once everything has settled');
+  eq(p0.x === snap.x && p0.y === snap.y && p0.z === snap.z, true, 'a resting fragment does not drift');
+  eq(p0.rx, snap.rx, 'and does not keep spinning on the ground (its spin was damped out first)');
+  eq(r0.x === rSnap.x && r0.y === rSnap.y && r0.rx === rSnap.rx, true, 'resting rubble is likewise still');
+  ok(p0.fade < 1 || p0.life > 4, 'fade still runs while resting');
+  if (r0.smoldering) ok(r0.glowNow > 0, 'resting rubble still smoulders');
+  }
+  // Nothing rests in mid-air: the flag is only ever set from the ground contact branch.
+  const air = fresh(); air.spawnBlastShrapnel(0, 400, 0, 24);
+  for (let i = 0; i < 30; i++) air.step(1 / 60);
+  ok(air.shrapnel.every((q) => !q.resting), 'a falling fragment is never resting');
+}
+
+section('nothing is frozen mid-spin, and hottestRubble selects without sorting');
+{
+  // The rest test covers spin as well as speed, because html-game-v2 never damped shrapnel spin:
+  // skipping a piece that is still turning at 7 rad/s would stop it dead in one frame.
+  const sim = fresh();
+  sim.spawnBlastShrapnel(0, 1, 0, 6);
+  sim.spawnRubble(0, 1, 0, 3, [1, 0]);
+  sim.spawnImpactSlabs(0, 0, 0, { scale: 0.3 });
+  ok(sim.rubble.every((r) => Object.prototype.hasOwnProperty.call(r, 'resting')),
+    'every rubble record, slabs included, carries the resting flag from birth');
+  // The real assertion is that grounded SHRAPNEL damps its spin at all: html-game-v2 never did, and
+  // without that a piece can satisfy the speed test while still turning, which is what made the
+  // freeze visible. Asserting "spin at rest is under the rest threshold" would only restate the guard.
+  const spin = (q) => Math.abs(q.sx) + Math.abs(q.sy) + Math.abs(q.sz);
+  const tracked = sim.shrapnel.map((q) => ({ q, spawn: spin(q), atFirstContact: -1 }));
+  let anyDamped = false;
+  for (let i = 0; i < 1500; i++) {
+    sim.step(1 / 60);
+    for (const t of tracked) {
+      if (t.atFirstContact < 0) { if (t.q.bounces > 0) t.atFirstContact = spin(t.q); }
+      else if (spin(t.q) < t.atFirstContact - 1e-9) anyDamped = true;
+    }
+  }
+  ok(anyDamped, 'shrapnel spin decays once it is on the ground');
+  ok(tracked.some((t) => t.spawn > 5), `and it was born with a lot of it (max ${Math.max(...tracked.map((t) => t.spawn)).toFixed(1)} rad/s)`);
+  const landed = tracked.filter((t) => t.q.resting);
+  ok(landed.length > 0, `fragments landed and rested (${landed.length}/${tracked.length})`);
+  ok(landed.every((t) => spin(t.q) < t.spawn * 0.02),
+    'a rested fragment has shed essentially all of the spin it was born with');
+  ok(sim.rubble.every((r) => r.resting), 'rubble rests too');
+
+  // top-n selection has to agree with what a sort would have returned
+  const s2 = fresh({ settings: { rubbleSmolderChance: 1 } });
+  s2.spawnRubble(0, 2, 0, 5, [1, 0]);
+  s2.spawnRubble(9, 2, 3, 4, [0, 1]);
+  for (let i = 0; i < 90; i++) s2.step(1 / 60);
+  const bySort = s2.rubble.filter((r) => r.light > 0).sort((x, y) => y.light - x.light);
+  for (const n of [0, 1, 2, 8, 1000]) {
+    const got = s2.hottestRubble(n);
+    const want = bySort.slice(0, n);
+    eq(got.length, want.length, `hottestRubble(${n}) returns the right count`);
+    ok(got.every((r, i) => r === want[i]), `hottestRubble(${n}) matches a full sort, element for element`);
+  }
+  ok(bySort.length > 8, `and the pool was bigger than the ask (${bySort.length} lit)`);
+}
+
 section('clear empties everything');
 {
   const sim = fresh();

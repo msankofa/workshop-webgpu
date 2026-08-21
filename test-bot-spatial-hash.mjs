@@ -350,5 +350,43 @@ function makeLayout(seed, n, extent = 30) {
   ok(moved.size === 2 && xzDist(small, big) >= 1.5 - 1e-9, 'mixed capsule radii are queried at the right range');
 }
 
+// ---- sparse-path visit order matches the cell walk exactly ----
+// The slot-scan fallback (rect cells > stored count) must visit in the same order as the cell
+// walk: cells ascending (cx, then cz), entities within a cell newest-inserted first. Order is
+// load-bearing — pushout applies corrections sequentially and freshest-report ties keep the
+// first visited — so both paths are pinned against the same reference walk.
+{
+  const CS = 2;
+  const rand = mulberry32(1717);
+  const bots = [];
+  for (let i = 0; i < 40; i++) {
+    bots.push(makeBot(`o${i}`, { x: (rand() * 2 - 1) * 6, z: (rand() * 2 - 1) * 6 }));
+  }
+  const hash = createBotSpatialHash(CS);
+  hash.rebuild(bots);
+  const cellOf = (v) => Math.floor(v / CS);
+  function referenceOrder(cx0, cz0, cx1, cz1) {
+    const order = [];
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cz = cz0; cz <= cz1; cz++) {
+        for (let i = bots.length - 1; i >= 0; i--) {   // chain is LIFO: newest slot first
+          const p = bots[i].capsule.start;
+          if (cellOf(p.x) === cx && cellOf(p.z) === cz) order.push(bots[i]);
+        }
+      }
+    }
+    return order;
+  }
+  let orderBad = 0;
+  for (const radius of [1.5, 4, 30, 300]) {  // small rects walk cells; the big ones scan slots
+    const cx0 = cellOf(-radius), cz0 = cellOf(-radius), cx1 = cellOf(radius), cz1 = cellOf(radius);
+    const expected = referenceOrder(cx0, cz0, cx1, cz1);
+    const got = [];
+    hash.forEachNear(0, 0, radius, (e) => { got.push(e); });
+    if (got.length !== expected.length || got.some((e, i) => e !== expected[i])) orderBad++;
+  }
+  ok(orderBad === 0, `both query paths visit in identical cell-walk order (${orderBad} off)`);
+}
+
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
 console.log('bot-spatial-hash: all assertions passed');

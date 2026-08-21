@@ -23,13 +23,18 @@ export function createBotSpatialHash(cellSize = 2) {
   const heads = new Map();      // packed cell key -> first item slot
   const items = [];             // slot -> entity, reused across rebuilds
   let next = new Int32Array(64); // slot -> next slot in the same cell, or -1
+  let cellOf = new Float64Array(64); // slot -> packed cell key (exceeds int32), for the sparse scan below
   let count = 0;
+  const SCAN_MAX_SLOTS = 4096;  // sort-key packing budget: key*SCAN_MAX_SLOTS + slot stays exact
+  let scanKeys = new Float64Array(64);
 
   function ensureCapacity(n) {
     if (n <= next.length) return;
     let cap = next.length;
     while (cap < n) cap *= 2;
     next = new Int32Array(cap);
+    cellOf = new Float64Array(cap); // only called from rebuild, which refills every live slot
+    scanKeys = new Float64Array(cap);
   }
 
   // Re-index from scratch; entities without a capsule are skipped, survivors get a slot stamp.
@@ -46,6 +51,7 @@ export function createBotSpatialHash(cellSize = 2) {
         items[slot] = e;
         e._hashIdx = slot;
         const key = cellKey(cellIndex(e.capsule.start.x, cs), cellIndex(e.capsule.start.z, cs));
+        cellOf[slot] = key;
         const head = heads.get(key);
         next[slot] = head === undefined ? -1 : head;
         heads.set(key, slot);
@@ -55,7 +61,33 @@ export function createBotSpatialHash(cellSize = 2) {
   }
 
   // Visit every stored entity in the inclusive cell rect; stops early if fn returns true.
+  // When the rect holds more cells than there are stored items, scanning the slots beats probing
+  // every (mostly empty) cell. Visit ORDER matches the cell walk exactly — cells by ascending
+  // packed key (= cx then cz), slots within a cell descending (the chain is LIFO) — so callers
+  // with order-sensitive folds (pushout, freshest-report ties) see bit-identical results.
   function forEachCellRange(cx0, cz0, cx1, cz1, fn) {
+    const cells = (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
+    if (count < cells && count <= SCAN_MAX_SLOTS) {
+      let m = 0;
+      for (let slot = 0; slot < count; slot++) {
+        const key = cellOf[slot];
+        const cx = Math.floor(key / CELL_SPAN) - CELL_BIAS;
+        const cz = (key % CELL_SPAN) - CELL_BIAS;
+        if (cx < cx0 || cx > cx1 || cz < cz0 || cz > cz1) continue;
+        scanKeys[m++] = key * SCAN_MAX_SLOTS + (SCAN_MAX_SLOTS - 1 - slot);
+      }
+      for (let i = 1; i < m; i++) {   // insertion sort: m is small and often nearly sorted
+        const v = scanKeys[i];
+        let j = i - 1;
+        while (j >= 0 && scanKeys[j] > v) { scanKeys[j + 1] = scanKeys[j]; j--; }
+        scanKeys[j + 1] = v;
+      }
+      for (let i = 0; i < m; i++) {
+        const e = items[SCAN_MAX_SLOTS - 1 - (scanKeys[i] % SCAN_MAX_SLOTS)];
+        if (e && fn(e) === true) return true;
+      }
+      return false;
+    }
     for (let cx = cx0; cx <= cx1; cx++) {
       for (let cz = cz0; cz <= cz1; cz++) {
         let slot = heads.get(cellKey(cx, cz));

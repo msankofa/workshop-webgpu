@@ -76,16 +76,23 @@ globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext:
     try { built = await buildMaterial(g.material, g.geometry); } catch (e) { console.log('   ', e.message); }
     ok(built && built.vertex.length > 1000 && built.fragment.length > 1000, `grass material builds with look toggles ${on ? 'on' : 'off'}`);
     if (built) ok(built.vertex.includes('aFace') && built.vertex.includes('aT'), `merged field's aFace/aT reach the vertex shader (${on ? 'on' : 'off'})`);
+    // the coverage FBM must sit behind the toggle's branch, not be multiplied out
+    if (built) ok(built.vertex.split('if (').length - 1 >= 1, `coverage is branch-gated in the vertex shader (${on ? 'on' : 'off'})`);
+    // blades are DoubleSide and a custom normalNode gets no automatic flip, so the arc normal
+    // has to carry gl_FrontFacing itself
+    if (built) ok(built.fragment.includes('gl_FrontFacing'), `curl normal follows the visible side (${on ? 'on' : 'off'})`);
   }
   const THREE = await import('three/webgpu');
   const TSL = await import('three/tsl');
   const soil = createSoilShade({ moisture: true, cracks: true });
   const mat = new THREE.MeshStandardNodeMaterial();
   const d = soil.nodes.apply({ col: TSL.vec3(0.5), rough: TSL.float(1), worldXZ: TSL.positionWorld.xz, normalWorld: TSL.normalWorld });
-  mat.colorNode = d.col; mat.roughnessNode = d.rough; mat.normalNode = TSL.transformNormalToView(d.normalWorld);
+  mat.colorNode = d.col; mat.roughnessNode = d.rough; mat.normalNode = TSL.cameraViewMatrix.transformDirection(d.normalWorld);
   let built = null;
   try { built = await buildMaterial(mat, new THREE.PlaneGeometry()); } catch (e) { console.log('   ', e.message); }
   ok(built && built.fragment.length > 1000, 'soil-dressed standard material builds');
+  // moisture and cracks each own a branch, so a ground with both off pays a compare, not ~130 hashes
+  if (built) ok(built.fragment.split('if (').length - 1 >= 2, 'soil moisture and cracks are each branch-gated');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
