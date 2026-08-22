@@ -160,7 +160,9 @@ const baseGameRooms = createBaseGameRoomService();
 
 // Server-authoritative base-game rooms: the server simulates every player at 60 Hz from
 // validated input and publishes complete snapshots at 20 Hz. Rendering stays client-side.
-baseGameRooms.ensureWorld()?.catch(err => console.error('base-game world failed to load:', err));
+// Worlds are built per room from the creator's terrain config (protocol 4); warm the Traversal
+// Lab so the first lab room does not pay the BVH bake, and surface missing server deps early.
+baseGameRooms.warmTraversalLab?.()?.catch(err => console.error('base-game world failed to load:', err));
 setInterval(() => baseGameRooms.step(), 1000 / 60);
 setInterval(() => baseGameRooms.broadcastSnapshots(), 50);
 setInterval(() => baseGameRooms.cleanup(), 1000);

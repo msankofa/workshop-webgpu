@@ -482,5 +482,17 @@ export function createBaseGameRoomService({
     ensureWorld() { return Promise.all([...rooms.values()].map(room => ensureWorld(room))); },
     get worldReady() { return [...rooms.values()].every(room => !!room.sim); },
     get worldCount() { return worlds.size; },
+    // Pre-build the default lab world (server startup).
+    warmTraversalLab() {
+      if (world) return Promise.resolve(world);
+      const config = sanitizeBaseGameTerrainConfig(undefined).config;
+      let entry = worlds.get(config.worldVersion);
+      if (!entry) {
+        entry = { world: null, pending: null };
+        entry.pending = Promise.resolve(worldFactory(config)).then(result => { entry.world = result; return result; });
+        worlds.set(config.worldVersion, entry);
+      }
+      return entry.pending;
+    },
   };
 }

@@ -31,6 +31,7 @@ ws.open();
 assert.deepEqual(ws.sent[0], {
   type: 'base:create', protocol: BASE_GAME_PROTOCOL_VERSION, room: 'WOLF',
   world: { todHour: 12, todPlaying: true },
+  terrain: { kind: 'traversalLab' },
 });
 ws.receive({
   type: 'base:joined', protocol: BASE_GAME_PROTOCOL_VERSION, room: 'WOLF',

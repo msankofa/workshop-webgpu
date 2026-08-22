@@ -866,7 +866,35 @@ default has no density), and the runtime line says so otherwise. Apply's candida
 the volume when the toggle is on. Vertical sample spacing is 2× the XZ step (2.5 m at the default
 chunk), so passages thinner than that do not survive; `VOLUME_Y_SPACING_MULT` is the knob.
 
-Not yet: multiplayer room ownership (Phase 5), finite GLB maps (Phase 6), LOD (9).
+**Phase 5 (2026-08-22) — room-owned terrain (protocol 4).**
+`base-game-protocol.mjs` gained `sanitizeBaseGameTerrainConfig(input)` → `{ config, error }` where
+config is `{ kind: 'traversalLab', worldVersion }` or `{ kind: 'terrain', descriptor, projectHash,
+worldVersion }`: the descriptor is re-normalized, a v5 project is re-normalized, re-classified
+(must be `runtimeSupported`) and re-hashed server-side, `volumetric` is refused (Solo-only until
+the server streams chunk meshes), `finite-map` is refused, and the JSON is capped at 512 KB.
+`describeBaseGameTerrainConfig` is the identity-only form in snapshots.
+- `base:create` carries `terrain` (the creator's current ground: `pickRoomTerrainConfig()` in
+  `base-game.html` — `traversalLab` unless `worldMode === 'terrain'`, in which case the active
+  descriptor, analytic or v5); invalid terrain fails with `invalid_terrain` and no room is made.
+- `base:joined` carries the room's full sanitized config once; snapshots carry
+  `worldVersion` + `terrain` identity. `base-game-session.mjs` exposes it as `session.terrain`.
+- `server/base-game-rooms.js` now owns a world **per room** (`room.terrain`, `room.sim`), built
+  by `worldFactory(config)` and cached by `worldVersion` so rooms on the same descriptor share one
+  immutable instance; terrain rooms use the same pure source + `world-query-heightfield-provider`
+  Solo uses (the heightfield is infinite, nothing streams server-side), spawn at
+  `heightAt(0,0)+1.5`, and a surface-relative kill plane (`killPlaneYAt`). `step()` only runs rooms
+  whose world is resident. `warmTraversalLab()` pre-builds the lab at server start.
+- Client: `adoptRoomTerrain(config)` re-sanitizes the joined config, compares `worldVersion`
+  (mismatch → handshake fails and the client returns to the menu rather than predicting on
+  substitute ground), `terrain.setSource()`s it, forces `worldMode`, and `worldMode` /
+  `terrainVolumetric` controls are disabled while online. Apply draft refuses while online.
+- `test-base-game-rooms-terrain.mjs`: sanitizer cases, three rooms with distinct worlds and
+  spawns, shared instance for an equal descriptor, deterministic rejection, server vs predicted
+  client agree to 0 m over 960 ticks across a tile seam with jumps, resume returns the same
+  config, surface-relative kill plane, session sends `terrain` on create.
+
+Not yet: multiplayer volumetric terrain, published-asset keys instead of inline projects (the
+create message carries the normalized project body once), finite GLB maps (Phase 6), LOD (9).
 
 Base Game hosts the actual Terrain Generator v5 interface as a full-screen Terrain Studio screen
 reachable from the start and pause menus. It does not recreate a second set of v5 sliders. The

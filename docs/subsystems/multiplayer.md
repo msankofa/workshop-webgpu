@@ -33,6 +33,15 @@ Deployment context: `server/package.json` declares `ws` as the only dependency a
 runs `node server.js`. `server/render.yaml` deploys it as a Render web service named
 `creature-relay` (root dir `server`, `npm install` / `npm start`, `PORT` from a Render env group).
 
+### Base Game rooms: terrain (protocol 4)
+
+Rooms own their ground. The creator's `base:create` carries a `terrain` config (Traversal Lab or
+a terrain-source descriptor — analytic or a streamable v5 project); the server sanitizes and
+re-hashes it, builds one immutable world per `worldVersion`, and sends the full config back in
+`base:joined` (snapshots carry identity only). Clients rebuild the same source locally and compare
+`worldVersion` before moving. Volumetric and finite-map terrain are not accepted in rooms yet.
+See `base-game.md` → Phase 5.
+
 ### Hosted map publishing (`server/publish-map.js`)
 
 `terrain-generator-v4.html`'s density panel can export a map two ways: a local

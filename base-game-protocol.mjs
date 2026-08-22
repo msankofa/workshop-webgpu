@@ -1,4 +1,9 @@
-export const BASE_GAME_PROTOCOL_VERSION = 3;
+import { normalizeDescriptor } from './terrain-source.js';
+import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
+
+export const BASE_GAME_PROTOCOL_VERSION = 4;
+export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
+export const BASE_GAME_TERRAIN_KINDS = Object.freeze(['traversalLab', 'terrain']);
 export const BASE_GAME_ROOM_GRACE_MS = 30_000;
 export const BASE_GAME_ROOM_PLAYER_CAP = 16;
 export const BASE_GAME_SERVER_TICK_HZ = 60;
@@ -76,6 +81,48 @@ export function sanitizeBaseGameWorldPatch(input) {
 
 export function pickBaseGameSharedWorld(settings) {
   return sanitizeBaseGameWorldPatch(settings);
+}
+
+// ---- protocol 4: room-owned terrain ----
+// The room owner chooses the authoritative ground at create time. Accepted shapes:
+//   { kind: 'traversalLab' }
+//   { kind: 'terrain', descriptor }   descriptor = terrain-source.js descriptor (analytic, or a
+//                                     v5-recipe whose config.project is runtime-supported)
+// The descriptor is re-normalized and (for v5) the project is re-hashed here, so a client can
+// never smuggle an arbitrary blob; volumetric terrain is Solo-only until the server streams it.
+// Returns { config, error }. `config.worldVersion` is the string every peer must agree on.
+export function sanitizeBaseGameTerrainConfig(input) {
+  if (input == null) return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
+  if (typeof input !== 'object' || Array.isArray(input)) return { config: null, error: 'terrain config must be an object' };
+  if (input.kind === 'traversalLab') return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
+  if (input.kind !== 'terrain') return { config: null, error: `unknown terrain kind ${String(input.kind)}` };
+  if (input.volumetric === true) return { config: null, error: 'volumetric terrain is not available in multiplayer yet' };
+  let text;
+  try { text = JSON.stringify(input.descriptor); } catch { return { config: null, error: 'terrain descriptor is not serializable' }; }
+  if (!text || text.length > BASE_GAME_TERRAIN_CONFIG_MAX_BYTES) return { config: null, error: `terrain descriptor exceeds ${BASE_GAME_TERRAIN_CONFIG_MAX_BYTES} bytes` };
+  let descriptor;
+  try { descriptor = normalizeDescriptor(input.descriptor); } catch (err) { return { config: null, error: `bad terrain descriptor: ${err.message}` }; }
+  let projectHash = null;
+  if (descriptor.kind === 'v5-recipe') {
+    let project;
+    try { project = normalizeProject(descriptor.config.project).project; } catch (err) { return { config: null, error: `bad v5 project: ${err.message}` }; }
+    const cls = classifyProject(project);
+    if (!cls.runtimeSupported) return { config: null, error: `v5 project is not streamable: ${cls.reasons.join('; ')}` };
+    projectHash = hashProject(project);
+    if (descriptor.config.projectHash && descriptor.config.projectHash !== projectHash) return { config: null, error: 'v5 project hash does not match its project' };
+    descriptor = normalizeDescriptor({ ...descriptor, config: { project, projectHash } });
+  } else if (descriptor.kind !== 'analytic') {
+    return { config: null, error: `terrain kind ${descriptor.kind} is not available in multiplayer` };
+  }
+  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}`;
+  return { config: { kind: 'terrain', descriptor, projectHash, worldVersion }, error: null };
+}
+
+// What snapshots and `base:joined` carry about the ground: identity only, never the project body
+// (joiners receive the full descriptor once in `base:joined`).
+export function describeBaseGameTerrainConfig(config) {
+  if (!config) return null;
+  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null };
 }
 
 export function advanceBaseGameWorld(world, elapsedMs) {
