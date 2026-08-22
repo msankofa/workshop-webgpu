@@ -50,7 +50,7 @@
 
   /* --- panels --- */
   .panel {
-    position: fixed; z-index: 55; background: var(--holo-panel);
+    background: var(--holo-panel);
     border: 1px solid var(--holo-cyan-dim);
     box-shadow: 0 0 1px var(--holo-cyan) inset, 0 0 22px rgba(93,243,255,0.12);
     backdrop-filter: blur(6px);
@@ -60,18 +60,31 @@
   }
   .panel h1, .panel h2 {
     margin: 0 0 8px; font-size: 12px; font-weight: normal; text-transform: uppercase;
-    letter-spacing: 0.12em; color: var(--holo-cyan);
+    letter-spacing: 0.12em; color: var(--holo-cyan); overflow: hidden;
     border-bottom: 1px solid var(--holo-cyan-dim); padding-bottom: 6px;
   }
+  .panel-toggle { float: right; cursor: pointer; user-select: none; }
   .dim { color: var(--holo-text-dim); }
   .amber { color: var(--holo-amber); }
   .stat-row { display: flex; justify-content: space-between; gap: 14px; }
   .stat-row .v { color: #fff; }
 
-  #panel-status { top: 48px; left: 10px; width: 250px; }
+  #panel-status { position: fixed; z-index: 55; top: 48px; left: 10px; width: 250px; }
 
-  #panel-filters { top: 48px; right: 10px; width: 270px; max-height: calc(100vh - 100px); display: flex; flex-direction: column; }
-  #panel-filters .scroll { overflow-y: auto; max-height: 260px; padding-right: 4px; }
+  /* panel-filters and panel-render both live on the right edge; a flex column keeps them
+     stacked without overlap on any viewport height instead of two independently bottom/top
+     -pinned fixed panels colliding on shorter screens. */
+  #right-rail {
+    position: fixed; z-index: 55; top: 48px; right: 10px; bottom: 10px; width: 270px;
+    display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+  }
+  #right-rail .panel { pointer-events: auto; }
+  #panel-filters { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  /* makeCollapsible() (JS) wraps everything after the <h2> into a .panel-body — re-establish the
+     flex chain through that wrapper so .scroll (now a grandchild, not a direct child) still
+     grows to fill the panel instead of the collapse refactor silently undoing the no-overlap fix. */
+  #panel-filters .panel-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  #panel-filters .scroll { flex: 1 1 auto; min-height: 40px; overflow-y: auto; padding-right: 4px; }
   #panel-filters .scroll::-webkit-scrollbar { width: 6px; }
   #panel-filters .scroll::-webkit-scrollbar-thumb { background: var(--holo-cyan-dim); }
 
@@ -93,11 +106,41 @@
   input[type="date"] { color-scheme: dark; }
 
   .field-label { color: var(--holo-text-dim); font-size: 10.5px; text-transform: uppercase; margin: 8px 0 3px; }
+  .field-label .val { color: var(--holo-cyan); float: right; text-transform: none; }
   .date-row { display: flex; gap: 6px; align-items: center; }
   .date-row input { width: 50%; }
 
-  #panel-help { bottom: 10px; left: 10px; width: 300px; }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 3px;
+    background: var(--holo-cyan-dim); outline: none; margin: 2px 0 8px; cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--holo-cyan); box-shadow: 0 0 6px var(--holo-cyan); cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 11px; height: 11px; border-radius: 50%; border: none;
+    background: var(--holo-cyan); box-shadow: 0 0 6px var(--holo-cyan); cursor: pointer;
+  }
+  select {
+    font-family: inherit; font-size: 11px; background: rgba(93,243,255,0.06);
+    border: 1px solid var(--holo-cyan-dim); color: var(--holo-cyan); padding: 4px 8px;
+    cursor: pointer; width: 100%;
+  }
+  select option { background: #04141c; color: var(--holo-cyan); }
+
+  #panel-help { position: fixed; z-index: 55; bottom: 10px; left: 10px; width: 300px; }
   #panel-help .k { color: #fff; }
+
+  #panel-render { flex: none; max-height: 70%; overflow-y: auto; }
+  #panel-render h2:not(:first-child) { margin-top: 10px; }
+  #layout-status { min-height: 14px; }
+
+  #panel-timeline {
+    position: fixed; z-index: 55; bottom: 10px; left: 50%; transform: translateX(-50%);
+    width: 420px; max-width: calc(100vw - 640px);
+  }
+  #timeline-count { color: #fff; }
 
   #tooltip {
     position: fixed; z-index: 70; pointer-events: none; max-width: 340px;
@@ -155,6 +198,7 @@
   </div>
 </div>
 
+<div id="right-rail">
 <div id="panel-filters" class="panel">
   <h2>Filters</h2>
   <div class="field-label">name contains</div>
@@ -183,8 +227,65 @@
 <div id="panel-help" class="panel">
   <h2>Legend</h2>
   <div><span class="k">drag</span> orbit &nbsp; <span class="k">scroll</span> zoom &nbsp; <span class="k">right-drag</span> pan</div>
-  <div><span class="k">hover</span> a node for details, <span class="k">click</span> to pin</div>
-  <div class="dim" style="margin-top:6px;">force-directed 3D graph &middot; sphere = folder hub or file &middot; size = folder weight / file size &middot; color = file extension</div>
+  <div><span class="k">hover</span> a node for details, <span class="k">click</span> to pin + focus</div>
+  <div class="dim" style="margin-top:6px;">force-directed 3D graph &middot; sphere = folder hub or file &middot; size/color = style panel &rarr;</div>
+</div>
+
+<div id="panel-render" class="panel">
+  <h2>Render</h2>
+  <div class="field-label">exposure <span class="val" id="val-exposure">1.00</span></div>
+  <input type="range" id="sl-exposure" min="0.1" max="2.5" step="0.05" value="1.0">
+  <div class="field-label">bloom strength <span class="val" id="val-bloom-strength">0.85</span></div>
+  <input type="range" id="sl-bloom-strength" min="0" max="2" step="0.05" value="0.85">
+  <div class="field-label">bloom threshold <span class="val" id="val-bloom-threshold">0.22</span></div>
+  <input type="range" id="sl-bloom-threshold" min="0" max="1" step="0.02" value="0.22">
+  <div class="field-label">bloom radius <span class="val" id="val-bloom-radius">0.40</span></div>
+  <input type="range" id="sl-bloom-radius" min="0" max="1" step="0.02" value="0.4">
+
+  <h2>Depth of Field</h2>
+  <label class="filter-row"><input type="checkbox" id="chk-dof-enable" checked><span>enable</span></label>
+  <label class="filter-row"><input type="checkbox" id="chk-dof-autofocus" checked><span>auto-focus on target</span></label>
+  <div class="field-label">focus distance <span class="val" id="val-dof-focus">-</span></div>
+  <input type="range" id="sl-dof-focus" min="0.5" max="10" step="0.1" value="1">
+  <div class="field-label">focal length <span class="val" id="val-dof-focal">-</span></div>
+  <input type="range" id="sl-dof-focal" min="0.1" max="10" step="0.1" value="1">
+  <div class="field-label">bokeh scale <span class="val" id="val-dof-bokeh">1.00</span></div>
+  <input type="range" id="sl-dof-bokeh" min="0" max="3" step="0.05" value="1">
+
+  <h2>Layout</h2>
+  <div class="field-label">edge length <span class="val" id="val-edge-length">2.6</span></div>
+  <input type="range" id="sl-edge-length" min="1" max="6" step="0.1" value="2.6">
+  <label class="filter-row"><input type="checkbox" id="chk-live-rearrange"><span>live rearrange</span></label>
+  <div class="btn-row">
+    <button id="btn-shuffle">shuffle</button>
+    <button id="btn-relayout">re-layout</button>
+  </div>
+  <div class="dim" id="layout-status"></div>
+
+  <h2>Style</h2>
+  <label class="filter-row"><input type="checkbox" id="chk-size-by-filesize" checked><span>node size = file size</span></label>
+  <div class="field-label">color by</div>
+  <select id="sel-color-mode">
+    <option value="ext" selected>extension</option>
+    <option value="age-rel">file age (relative)</option>
+    <option value="age-abs">file age (absolute)</option>
+  </select>
+</div>
+</div>
+
+<div id="panel-timeline" class="panel">
+  <h2>Growth Timeline</h2>
+  <label class="filter-row"><input type="checkbox" id="chk-timeline-enable"><span>enable (uses file creation time)</span></label>
+  <div id="timeline-controls" style="display:none;">
+    <div class="btn-row">
+      <button id="btn-timeline-play" style="flex:1;">play</button>
+      <label class="filter-row" style="flex:none;"><input type="checkbox" id="chk-timeline-loop"><span>loop</span></label>
+    </div>
+    <input type="range" id="sl-timeline-scrub" min="0" max="1" step="0.001" value="0">
+    <div class="stat-row"><span class="dim" id="timeline-date">-</span><span id="timeline-count">-</span></div>
+    <div class="field-label">speed <span class="val" id="val-timeline-speed">14 d/s</span></div>
+    <input type="range" id="sl-timeline-speed" min="1" max="90" step="1" value="14">
+  </div>
 </div>
 
 <div id="tooltip"><span class="close" id="tooltip-close">&times;</span></div>
@@ -209,14 +310,21 @@
 <script type="module">
 import * as THREE from 'three';
 import { WebGPURenderer, PostProcessing } from 'three/webgpu';
-import { pass, renderOutput } from 'three/tsl';
+import { pass, renderOutput, uniform, mix } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { dof } from 'three/addons/tsl/display/DepthOfFieldNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const IDEAL_LEN = 2.6;        // resting edge length for the force-directed folder graph
+const IDEAL_LEN_DEFAULT = 2.6;   // default resting edge length for the force-directed folder graph
 const FORCE_ITERS = 260;
+const REPEL_K = 3.0;
+const SPRING_K = 0.09;
+const DAMPING = 0.86;
+const MAX_SPEED = 0.6;
 const MIN_FILE_R = 0.05, MAX_FILE_R = 0.5;
 const MIN_DIR_R = 0.09, MAX_DIR_R = 0.7;
+const UNIFORM_FILE_R = 0.19;
+const ABSOLUTE_AGE_SPAN_MS = 2 * 365 * 86400000;   // "absolute" age color scale: fixed 2-year window
 
 // ---------- fetch + tree build ----------
 
@@ -230,11 +338,11 @@ async function loadScan() {
 
 function buildTree(root, entries) {
   const nodes = new Map();
-  nodes.set('', { path: '', name: root, type: 'dir', size: 0, mtime: 0, children: [], parent: null });
+  nodes.set('', { path: '', name: root, type: 'dir', size: 0, mtime: 0, ctime: 0, children: [], parent: null });
   for (const e of entries) {
     nodes.set(e.path, {
       path: e.path, name: e.path.slice(e.path.lastIndexOf('/') + 1),
-      type: e.type, size: e.size, mtime: e.mtime * 1000, children: [], parent: null,
+      type: e.type, size: e.size, mtime: e.mtime * 1000, ctime: e.ctime * 1000, children: [], parent: null,
     });
   }
   for (const e of entries) {
@@ -283,11 +391,43 @@ function humanSize(bytes) {
 function fmtDate(ms) {
   return new Date(ms).toISOString().slice(0, 10);
 }
+function fibonacciSpherePoint(i, n, radius) {
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const y = 1 - (i / Math.max(n - 1, 1)) * 2;
+  const r = Math.sqrt(Math.max(0, 1 - y * y));
+  const theta = golden * i;
+  return [Math.cos(theta) * r * radius, y * radius, Math.sin(theta) * r * radius];
+}
+
+// Generic panel collapse: grabs the panel's first <h2>, appends a toggle glyph to it, and moves
+// every following sibling into a wrapper that the toggle shows/hides. Works for any panel whose
+// static HTML already exists (all of these panels are static, not built at runtime).
+function makeCollapsible(panelId) {
+  const panel = document.getElementById(panelId);
+  const header = panel.querySelector('h2');
+  const toggle = document.createElement('span');
+  toggle.className = 'panel-toggle';
+  toggle.textContent = '▾';
+  header.appendChild(toggle);
+  const body = document.createElement('div');
+  body.className = 'panel-body';
+  let sib = header.nextSibling;
+  while (sib) { const next = sib.nextSibling; body.appendChild(sib); sib = next; }
+  panel.appendChild(body);
+  toggle.addEventListener('click', () => {
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? '' : 'none';
+    toggle.textContent = collapsed ? '▾' : '▸';
+  });
+}
+makeCollapsible('panel-filters');
+makeCollapsible('panel-render');
 
 // ---------- boot ----------
 
 const loadingEl = document.getElementById('loading');
 const loadingLabel = loadingEl.querySelector('div:last-child');
+const layoutStatus = document.getElementById('layout-status');
 
 let scanData;
 try {
@@ -302,7 +442,7 @@ const root = buildTree(scanData.root, scanData.entries);
 computeWeight(root);
 
 const fileNodes = [];
-const dirNodes = [];             // excludes root
+const dirNodes = [];             // excludes root, pre-order (parent always precedes its children)
 const extCounts = new Map();
 let totalSize = 0, minMtime = Infinity, maxMtime = -Infinity;
 
@@ -322,6 +462,21 @@ let totalSize = 0, minMtime = Infinity, maxMtime = -Infinity;
   for (const c of node.children) walk(c);
 })(root);
 
+for (const d of [root, ...dirNodes]) d.fileChildren = d.children.filter((c) => c.type === 'file');
+
+// "Effective birth" = own creation time, clamped to be no earlier than the parent's — filesystem
+// ctime isn't guaranteed monotonic down a tree (a moved/touched file can look "older" than its
+// folder), and the growth timeline needs a parent to always exist before its children so nodes
+// never appear to spawn out of thin air.
+root.effectiveBirth = -Infinity;
+for (const n of dirNodes) n.effectiveBirth = Math.max(n.ctime, n.parent.effectiveBirth);
+for (const f of fileNodes) f.effectiveBirth = Math.max(f.ctime, f.parent.effectiveBirth);
+
+let minBirth = Infinity, maxBirth = -Infinity;
+for (const n of dirNodes) { minBirth = Math.min(minBirth, n.effectiveBirth); maxBirth = Math.max(maxBirth, n.effectiveBirth); }
+for (const n of fileNodes) { minBirth = Math.min(minBirth, n.effectiveBirth); maxBirth = Math.max(maxBirth, n.effectiveBirth); }
+const birthSortedDirs = dirNodes.slice().sort((a, b) => a.effectiveBirth - b.effectiveBirth);
+
 document.getElementById('stat-root').textContent = scanData.root;
 document.getElementById('stat-files').textContent = fileNodes.length.toLocaleString();
 document.getElementById('stat-dirs').textContent = dirNodes.length.toLocaleString();
@@ -331,106 +486,131 @@ document.getElementById('stat-loaded').textContent = new Date().toLocaleTimeStri
 // ---------- 3D force-directed layout ----------
 //
 // Full physics on every one of the ~9k files would be too slow to be interactive, so the graph
-// is laid out in two passes: a real Fruchterman-Reingold force simulation places the ~500
+// is laid out in two passes: a Coulomb-repulsion + Hooke-spring simulation places the ~500
 // directory "hub" nodes in true 3D (organic clustering, not a flat ring), then each folder's
-// files are scattered onto a small Fibonacci sphere around its settled hub position. Files never
-// enter the O(n^2) physics — the result is still a genuine volumetric node-link graph (folders
-// as force-directed hubs, files as starburst spokes around them), just built in O(n) after the
-// cheap part converges.
+// files are scattered onto a small Fibonacci sphere around its settled hub position (stored as a
+// LOCAL offset, not a world position, so a hub moving — live rearrange, growth timeline — carries
+// its files with it for free). Files never enter the O(n^2) physics.
 
 const graphNodes = [root, ...dirNodes];   // root pinned at index 0
 graphNodes.forEach((n, i) => { n.gIdx = i; });
 const G = graphNodes.length;
 const gpos = new Float64Array(G * 3);
+const gvel = new Float64Array(G * 3);
 const gdisp = new Float64Array(G * 3);
+const active = new Uint8Array(G).fill(1);   // gates forceStep participation; all-1 outside timeline mode
 
-// topology-aware init: walk in the same pre-order the tree was built in, so every node is
-// placed near its (already-positioned) parent instead of a blind global random scatter.
-for (let i = 1; i < G; i++) {
-  const n = graphNodes[i];
-  const p = n.parent.gIdx;
-  const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
-  const r = IDEAL_LEN * (0.5 + Math.random() * 0.5);
-  gpos[i * 3] = gpos[p * 3] + Math.sin(phi) * Math.cos(theta) * r;
-  gpos[i * 3 + 1] = gpos[p * 3 + 1] + Math.sin(phi) * Math.sin(theta) * r;
-  gpos[i * 3 + 2] = gpos[p * 3 + 2] + Math.cos(phi) * r;
+let idealLen = IDEAL_LEN_DEFAULT;   // live-tunable via the Layout panel's edge-length slider
+let liveRearrange = false;
+let fileOffsetsDirty = false;
+let sizeByFileSize = true;
+let colorMode = 'ext';   // 'ext' | 'age-rel' | 'age-abs'
+
+// topology-aware init: walk in the same pre-order the tree was built in, so every node starts
+// near its (already-positioned) parent instead of a blind global random scatter.
+function initPositions() {
+  gpos[0] = 0; gpos[1] = 0; gpos[2] = 0;
+  gvel.fill(0);
+  for (let i = 1; i < G; i++) {
+    const n = graphNodes[i];
+    const p = n.parent.gIdx;
+    const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+    const r = idealLen * (0.5 + Math.random() * 0.5);
+    gpos[i * 3] = gpos[p * 3] + Math.sin(phi) * Math.cos(theta) * r;
+    gpos[i * 3 + 1] = gpos[p * 3 + 1] + Math.sin(phi) * Math.sin(theta) * r;
+    gpos[i * 3 + 2] = gpos[p * 3 + 2] + Math.cos(phi) * r;
+  }
 }
+initPositions();
 
 const graphEdges = [];
 for (let i = 1; i < G; i++) graphEdges.push([graphNodes[i].parent.gIdx, i]);
 
-loadingLabel.textContent = 'settling ' + G.toLocaleString() + '-node layout…';
-
-let temp = IDEAL_LEN * Math.cbrt(G) * 0.35;
-const cooling = temp / FORCE_ITERS;
-const k = IDEAL_LEN;
-
-for (let iter = 0; iter < FORCE_ITERS; iter++) {
+// One physics step: Coulomb repulsion between every active hub pair (O(G^2), G is only the
+// directory count so this stays cheap) + Hooke springs along parent-child edges (both endpoints
+// active) + damped-velocity integration. `active` gates participation — outside the growth
+// timeline every entry is 1, so this behaves as a normal full-graph simulation; during timeline
+// playback only nodes born by the current time take part, so the graph reacts only to what
+// currently "exists". Stable to call indefinitely (damping, not a cooling schedule, brings it to
+// rest), so it's reused for the up-front settle burst, live rearrange, and timeline playback.
+function forceStep() {
   gdisp.fill(0);
-  // repulsion, O(G^2) — G is only the directory count (~500), cheap even uncapped
   for (let i = 0; i < G; i++) {
+    if (!active[i]) continue;
     const xi = gpos[i * 3], yi = gpos[i * 3 + 1], zi = gpos[i * 3 + 2];
     for (let j = i + 1; j < G; j++) {
+      if (!active[j]) continue;
       let dx = xi - gpos[j * 3], dy = yi - gpos[j * 3 + 1], dz = zi - gpos[j * 3 + 2];
       let d2 = dx * dx + dy * dy + dz * dz;
       if (d2 < 1e-6) { dx = (Math.random() - 0.5) * 0.01; dy = (Math.random() - 0.5) * 0.01; dz = (Math.random() - 0.5) * 0.01; d2 = 1e-6; }
       const d = Math.sqrt(d2);
-      const f = (k * k) / d;
+      const f = REPEL_K / d2;
       const fx = (dx / d) * f, fy = (dy / d) * f, fz = (dz / d) * f;
       gdisp[i * 3] += fx; gdisp[i * 3 + 1] += fy; gdisp[i * 3 + 2] += fz;
       gdisp[j * 3] -= fx; gdisp[j * 3 + 1] -= fy; gdisp[j * 3 + 2] -= fz;
     }
   }
-  // attraction along parent-child edges
   for (const [a, b] of graphEdges) {
+    if (!active[a] || !active[b]) continue;
     const dx = gpos[b * 3] - gpos[a * 3], dy = gpos[b * 3 + 1] - gpos[a * 3 + 1], dz = gpos[b * 3 + 2] - gpos[a * 3 + 2];
     const d = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-6);
-    const f = (d * d) / k;
+    const f = SPRING_K * (d - idealLen);
     const fx = (dx / d) * f, fy = (dy / d) * f, fz = (dz / d) * f;
     gdisp[a * 3] += fx; gdisp[a * 3 + 1] += fy; gdisp[a * 3 + 2] += fz;
     gdisp[b * 3] -= fx; gdisp[b * 3 + 1] -= fy; gdisp[b * 3 + 2] -= fz;
   }
-  // cap displacement by the cooling temperature and move
-  for (let i = 0; i < G; i++) {
-    const dx = gdisp[i * 3], dy = gdisp[i * 3 + 1], dz = gdisp[i * 3 + 2];
-    const dlen = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-6);
-    const capped = Math.min(dlen, temp);
-    gpos[i * 3] += (dx / dlen) * capped;
-    gpos[i * 3 + 1] += (dy / dlen) * capped;
-    gpos[i * 3 + 2] += (dz / dlen) * capped;
+  for (let i = 1; i < G; i++) {
+    if (!active[i]) continue;
+    gvel[i * 3] = (gvel[i * 3] + gdisp[i * 3]) * DAMPING;
+    gvel[i * 3 + 1] = (gvel[i * 3 + 1] + gdisp[i * 3 + 1]) * DAMPING;
+    gvel[i * 3 + 2] = (gvel[i * 3 + 2] + gdisp[i * 3 + 2]) * DAMPING;
+    const sp = Math.hypot(gvel[i * 3], gvel[i * 3 + 1], gvel[i * 3 + 2]);
+    if (sp > MAX_SPEED) { const s = MAX_SPEED / sp; gvel[i * 3] *= s; gvel[i * 3 + 1] *= s; gvel[i * 3 + 2] *= s; }
+    gpos[i * 3] += gvel[i * 3]; gpos[i * 3 + 1] += gvel[i * 3 + 1]; gpos[i * 3 + 2] += gvel[i * 3 + 2];
   }
   gpos[0] = 0; gpos[1] = 0; gpos[2] = 0;   // root stays the fixed center of the graph
-  temp = Math.max(temp - cooling, 0.01);
-  if (iter % 40 === 0) await new Promise(requestAnimationFrame);   // yield so the spinner keeps animating
 }
 
-for (let i = 0; i < G; i++) {
-  const n = graphNodes[i];
-  n.x = gpos[i * 3]; n.y = gpos[i * 3 + 1]; n.z = gpos[i * 3 + 2];
+async function physicsSettle(iterations) {
+  for (let i = 0; i < iterations; i++) {
+    forceStep();
+    if (i % 40 === 0) await new Promise(requestAnimationFrame);   // yield so the spinner/UI keeps animating
+  }
 }
 
-// scatter each folder's direct files onto a Fibonacci sphere around its settled hub position
-function fibonacciSpherePoint(i, n, radius) {
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const y = 1 - (i / Math.max(n - 1, 1)) * 2;
-  const r = Math.sqrt(Math.max(0, 1 - y * y));
-  const theta = golden * i;
-  return [Math.cos(theta) * r * radius, y * radius, Math.sin(theta) * r * radius];
+function syncGraphPositions() {
+  for (let i = 0; i < G; i++) {
+    const n = graphNodes[i];
+    n.x = gpos[i * 3]; n.y = gpos[i * 3 + 1]; n.z = gpos[i * 3 + 2];
+  }
 }
-for (const dir of graphNodes) {
-  const files = dir.children.filter((c) => c.type === 'file');
-  const clusterR = 0.55 + Math.cbrt(files.length) * 0.5;
-  files.forEach((f, i) => {
-    const [ox, oy, oz] = fibonacciSpherePoint(i, files.length, clusterR);
-    f.x = dir.x + ox; f.y = dir.y + oy; f.z = dir.z + oz;
-  });
+
+function recomputeFileLocalOffsets() {
+  const scale = idealLen / IDEAL_LEN_DEFAULT;
+  for (const dir of graphNodes) {
+    const files = dir.fileChildren;
+    const clusterR = (0.55 + Math.cbrt(files.length) * 0.5) * scale;
+    files.forEach((f, i) => {
+      const [ox, oy, oz] = fibonacciSpherePoint(i, files.length, clusterR);
+      f.lox = ox; f.loy = oy; f.loz = oz;
+    });
+  }
 }
+
+function worldPosOf(node) {
+  return node.type === 'file'
+    ? { x: node.parent.x + node.lox, y: node.parent.y + node.loy, z: node.parent.z + node.loz }
+    : { x: node.x, y: node.y, z: node.z };
+}
+
+loadingLabel.textContent = 'settling ' + G.toLocaleString() + '-node layout…';
+await physicsSettle(FORCE_ITERS);
+syncGraphPositions();
+recomputeFileLocalOffsets();
 
 let maxExtent = 1;
-for (const n of [...graphNodes, ...fileNodes]) {
-  const d = Math.hypot(n.x, n.y, n.z);
-  if (d > maxExtent) maxExtent = d;
-}
+for (const n of dirNodes) maxExtent = Math.max(maxExtent, Math.hypot(n.x, n.y, n.z));
+for (const n of fileNodes) { const wp = worldPosOf(n); maxExtent = Math.max(maxExtent, Math.hypot(wp.x, wp.y, wp.z)); }
 
 loadingEl.style.display = 'none';
 
@@ -439,6 +619,11 @@ loadingEl.style.display = 'none';
 const activeExts = new Set(extCounts.keys());
 let searchQuery = '';
 let rangeStart = minMtime, rangeEnd = maxMtime;
+
+// growth-timeline state (declared here so matchesFilter can reference it before the panel wiring
+// further down defines the controls that mutate it)
+let timelineEnabled = false;
+let timelineT = maxBirth;
 
 const extListEl = document.getElementById('ext-list');
 const sortedExts = [...extCounts.entries()].sort((a, b) => b[1] - a[1]);
@@ -515,7 +700,8 @@ function scheduleFilterUpdate() {
 function matchesFilter(node) {
   return activeExts.has(node.ext) &&
     node.mtime >= rangeStart && node.mtime <= rangeEnd &&
-    (searchQuery === '' || node.name.toLowerCase().includes(searchQuery));
+    (searchQuery === '' || node.name.toLowerCase().includes(searchQuery)) &&
+    (!timelineEnabled || node.effectiveBirth <= timelineT);
 }
 
 // ---------- three.js / WebGPU scene ----------
@@ -548,13 +734,22 @@ controls.minDistance = 0.5;
 controls.maxDistance = maxExtent * 6;
 controls.target.set(0, 0, 0);
 
-// TSL post-processing: scene pass -> additive bloom -> tone-map/output (repo convention, see
-// post-fx.js) instead of the WebGL-only EffectComposer/UnrealBloomPass addons.
+// TSL post-processing: scene pass -> additive bloom -> depth of field -> tone-map/output (repo
+// convention for bloom, see post-fx.js; DOF ported from the pattern in demos/sdf-bug-v2.html,
+// using three's own TSL dof() node instead of that demo's hand-rolled CoC/blur pass since this
+// scene rasterizes rather than raymarches — dof() reads the pass's real depth buffer directly).
 const pp = new PostProcessing(renderer);
 const scenePass = pass(scene, camera);
 const scenePassColor = scenePass.getTextureNode();
+const scenePassViewZ = scenePass.getViewZNode();
 const bloomPass = bloom(scenePassColor, 0.85, 0.4, 0.22);
-pp.outputNode = renderOutput(scenePassColor.add(bloomPass));
+const hdrColor = scenePassColor.add(bloomPass);
+const dofFocusDistance = uniform(camera.position.distanceTo(controls.target));
+const dofFocalLength = uniform(maxExtent * 0.7);
+const dofBokehScale = uniform(1.0);
+const dofMixAmount = uniform(1.0);   // 0 = bypass (sharp), 1 = full effect — the "enable" checkbox
+const dofResult = dof(hdrColor, scenePassViewZ, dofFocusDistance, dofFocalLength, dofBokehScale);
+pp.outputNode = renderOutput(mix(hdrColor, dofResult, dofMixAmount));
 
 // root core marker
 const coreMesh = new THREE.Mesh(
@@ -562,50 +757,34 @@ const coreMesh = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.85 }));
 scene.add(coreMesh);
 
-// ---------- folder hub nodes (always visible, fixed set) ----------
+// ---------- folder hub nodes (visible set filtered by the growth timeline, otherwise all) ----------
 
 const dummy = new THREE.Object3D();
 const nodeGeo = new THREE.IcosahedronGeometry(1, 1);
 // Opaque, not additive: a dense file cluster can have hundreds of spheres overlapping in
 // screen space. Additive blending sums every overlap's brightness with no ceiling, so a cluster
-// that size clips straight to a solid white blob (see the close-up screenshot) and, being
-// depthWrite:false, never occludes itself either. Opaque + real depth writes makes individual
-// nodes stay legible even packed tight; the TSL bloom pass still adds the glow halo on top.
+// that size clips straight to a solid white blob, and being depthWrite:false, never occludes
+// itself either. Opaque + real depth writes keeps individual nodes legible even packed tight;
+// the TSL bloom pass still adds a glow halo on top.
 const hubMat = new THREE.MeshBasicMaterial({ color: 0x9beeff });
 const hubMesh = new THREE.InstancedMesh(nodeGeo, hubMat, Math.max(dirNodes.length, 1));
 hubMesh.frustumCulled = false;
+scene.add(hubMesh);
 function dirRadius(n) {
   return THREE.MathUtils.clamp(0.09 + Math.log2(n.weight + 1) * 0.055, MIN_DIR_R, MAX_DIR_R);
 }
-for (let i = 0; i < dirNodes.length; i++) {
-  const n = dirNodes[i];
-  dummy.position.set(n.x, n.y, n.z);
-  dummy.scale.setScalar(dirRadius(n));
-  dummy.updateMatrix();
-  hubMesh.setMatrixAt(i, dummy.matrix);
-}
-hubMesh.instanceMatrix.needsUpdate = true;
-scene.add(hubMesh);
 
-// structural edges: folder -> folder (and folder -> root), static, always visible
-{
-  const positions = new Float32Array(dirNodes.length * 2 * 3);
-  for (let i = 0; i < dirNodes.length; i++) {
-    const n = dirNodes[i];
-    const p = n.parent;
-    positions.set([p.x, p.y, p.z, n.x, n.y, n.z], i * 6);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const mat = new THREE.LineBasicMaterial({
-    color: 0x2a8f9c, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  const structureLines = new THREE.LineSegments(geo, mat);
-  structureLines.frustumCulled = false;
-  scene.add(structureLines);
-}
+// structural edges: folder -> folder (and folder -> root)
+const structurePositions = new Float32Array(dirNodes.length * 2 * 3);
+const structureGeo = new THREE.BufferGeometry();
+structureGeo.setAttribute('position', new THREE.BufferAttribute(structurePositions, 3));
+const structureLines = new THREE.LineSegments(structureGeo, new THREE.LineBasicMaterial({
+  color: 0x2a8f9c, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+structureLines.frustumCulled = false;
+scene.add(structureLines);
 
-// ---------- file nodes + file edges (rebuilt on every filter change) ----------
+// ---------- file nodes + file edges (rebuilt on every filter/layout/timeline change) ----------
 
 // Opaque for the same reason as hubMat above — instanceColor still tints each instance
 // (it multiplies this base white), it just no longer stacks brightness across overlaps.
@@ -628,11 +807,47 @@ fileEdges.frustumCulled = false;
 scene.add(fileEdges);
 
 function fileRadius(node) {
+  if (!sizeByFileSize) return UNIFORM_FILE_R;
   return THREE.MathUtils.clamp(0.05 + Math.log2(node.size + 2) * 0.028, MIN_FILE_R, MAX_FILE_R);
+}
+function colorForNode(node) {
+  if (colorMode === 'ext') return colorForExt(node.ext);
+  const t = colorMode === 'age-rel'
+    ? (maxMtime > minMtime ? (node.mtime - minMtime) / (maxMtime - minMtime) : 1)
+    : THREE.MathUtils.clamp(1 - (Date.now() - node.mtime) / ABSOLUTE_AGE_SPAN_MS, 0, 1);
+  // 0 (oldest) -> deep blue, 1 (newest) -> warm red, sweeping through cyan/green/amber
+  return new THREE.Color().setHSL(THREE.MathUtils.lerp(210, 0, t) / 360, 0.8, 0.55);
 }
 
 let visibleFiles = fileNodes;
+let visibleDirs = dirNodes;
 const tmpColor = new THREE.Color();
+
+// Pushes current node positions/visibility into the GPU-side instance buffers. Called after
+// every layout or filter change (boot, shuffle, re-layout, edge-length change, timeline tick)
+// and once per frame while live rearrange or the growth timeline is running.
+function refreshStaticScene() {
+  visibleDirs = timelineEnabled ? dirNodes.filter((n) => active[n.gIdx]) : dirNodes;
+  const nd = visibleDirs.length;
+  hubMesh.count = nd;
+  for (let i = 0; i < nd; i++) {
+    const n = visibleDirs[i];
+    dummy.position.set(n.x, n.y, n.z);
+    dummy.scale.setScalar(dirRadius(n));
+    dummy.updateMatrix();
+    hubMesh.setMatrixAt(i, dummy.matrix);
+  }
+  hubMesh.instanceMatrix.needsUpdate = true;
+
+  for (let i = 0; i < nd; i++) {
+    const n = visibleDirs[i], p = n.parent;
+    structurePositions.set([p.x, p.y, p.z, n.x, n.y, n.z], i * 6);
+  }
+  structureGeo.setDrawRange(0, nd * 2);
+  structureGeo.attributes.position.needsUpdate = true;
+
+  updateVisibility();
+}
 
 function updateVisibility() {
   visibleFiles = fileNodes.filter(matchesFilter);
@@ -640,15 +855,16 @@ function updateVisibility() {
   fileMesh.count = n;
   for (let i = 0; i < n; i++) {
     const node = visibleFiles[i];
-    dummy.position.set(node.x, node.y, node.z);
+    const p = node.parent;
+    const wx = p.x + node.lox, wy = p.y + node.loy, wz = p.z + node.loz;
+    dummy.position.set(wx, wy, wz);
     dummy.scale.setScalar(fileRadius(node));
     dummy.updateMatrix();
     fileMesh.setMatrixAt(i, dummy.matrix);
-    tmpColor.copy(colorForExt(node.ext));
+    tmpColor.copy(colorForNode(node));
     fileMesh.instanceColor.setXYZ(i, tmpColor.r, tmpColor.g, tmpColor.b);
 
-    const p = node.parent;
-    edgePositions.set([p.x, p.y, p.z, node.x, node.y, node.z], i * 6);
+    edgePositions.set([p.x, p.y, p.z, wx, wy, wz], i * 6);
     edgeColors.set([0.15, 0.35, 0.4, tmpColor.r, tmpColor.g, tmpColor.b], i * 6);
   }
   fileMesh.instanceMatrix.needsUpdate = true;
@@ -659,9 +875,175 @@ function updateVisibility() {
 
   document.getElementById('stat-visible').textContent = n.toLocaleString() + ' / ' + fileNodes.length.toLocaleString();
 }
-updateVisibility();
+refreshStaticScene();
 
-// ---------- hover / pick / tooltip ----------
+// ---------- Render / DOF / Layout / Style settings panel ----------
+
+function bindSlider(id, valId, onChange, fmt = (v) => v.toFixed(2)) {
+  const el = document.getElementById(id);
+  const valEl = document.getElementById(valId);
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (valEl) valEl.textContent = fmt(v);
+    onChange(v);
+  });
+}
+bindSlider('sl-exposure', 'val-exposure', (v) => { renderer.toneMappingExposure = v; });
+bindSlider('sl-bloom-strength', 'val-bloom-strength', (v) => { bloomPass.strength.value = v; });
+bindSlider('sl-bloom-threshold', 'val-bloom-threshold', (v) => { bloomPass.threshold.value = v; });
+bindSlider('sl-bloom-radius', 'val-bloom-radius', (v) => { bloomPass.radius.value = v; });
+
+// ----- Depth of field -----
+let dofAutoFocus = true;
+const dofFocusSlider = document.getElementById('sl-dof-focus');
+const dofFocusVal = document.getElementById('val-dof-focus');
+dofFocusSlider.min = 0.5;
+dofFocusSlider.max = (maxExtent * 6).toFixed(2);
+dofFocusSlider.step = Math.max(0.02, maxExtent * 0.01).toFixed(3);
+dofFocusSlider.value = dofFocusDistance.value;
+dofFocusVal.textContent = dofFocusDistance.value.toFixed(2);
+const dofFocalSlider = document.getElementById('sl-dof-focal');
+dofFocalSlider.min = Math.max(0.05, maxExtent * 0.02).toFixed(3);
+dofFocalSlider.max = (maxExtent * 3).toFixed(2);
+dofFocalSlider.step = Math.max(0.02, maxExtent * 0.01).toFixed(3);
+dofFocalSlider.value = dofFocalLength.value;
+document.getElementById('val-dof-focal').textContent = dofFocalLength.value.toFixed(2);
+
+bindSlider('sl-dof-focus', 'val-dof-focus', (v) => { dofFocusDistance.value = v; });
+bindSlider('sl-dof-focal', 'val-dof-focal', (v) => { dofFocalLength.value = v; });
+bindSlider('sl-dof-bokeh', 'val-dof-bokeh', (v) => { dofBokehScale.value = v; });
+document.getElementById('chk-dof-enable').addEventListener('change', (e) => { dofMixAmount.value = e.target.checked ? 1 : 0; });
+document.getElementById('chk-dof-autofocus').addEventListener('change', (e) => { dofAutoFocus = e.target.checked; });
+
+// ----- Layout -----
+let relayoutPending = false;
+async function relayout(iterations = FORCE_ITERS) {
+  if (relayoutPending) return;
+  relayoutPending = true;
+  layoutStatus.textContent = 'settling…';
+  await physicsSettle(iterations);
+  syncGraphPositions();
+  recomputeFileLocalOffsets();
+  fileOffsetsDirty = false;
+  refreshStaticScene();
+  layoutStatus.textContent = '';
+  relayoutPending = false;
+}
+
+const edgeLenSlider = document.getElementById('sl-edge-length');
+bindSlider('sl-edge-length', 'val-edge-length', (v) => {
+  idealLen = v;
+  fileOffsetsDirty = true;
+}, (v) => v.toFixed(1));
+edgeLenSlider.addEventListener('change', () => {
+  if (!liveRearrange && !timelineEnabled) relayout();
+});
+
+document.getElementById('chk-live-rearrange').addEventListener('change', (e) => {
+  liveRearrange = e.target.checked;
+});
+document.getElementById('btn-shuffle').onclick = () => {
+  initPositions();
+  relayout();
+};
+document.getElementById('btn-relayout').onclick = () => relayout();
+
+// ----- Style -----
+document.getElementById('chk-size-by-filesize').addEventListener('change', (e) => {
+  sizeByFileSize = e.target.checked;
+  updateVisibility();
+});
+document.getElementById('sel-color-mode').addEventListener('change', (e) => {
+  colorMode = e.target.value;
+  updateVisibility();
+});
+
+// ----- Growth timeline -----
+// Reveals nodes in chronological order (by effectiveBirth) instead of showing the whole repo at
+// once. Directories drive the physics (Coulomb+Hooke, same forceStep as everything else, just
+// restricted to the `active` subset) so newly-born folders visibly push their way into a graph
+// that's already settling — files ride along via their parent's local offset, same as always.
+const timelineEnableChk = document.getElementById('chk-timeline-enable');
+const timelineControlsEl = document.getElementById('timeline-controls');
+const timelinePlayBtn = document.getElementById('btn-timeline-play');
+const timelineScrub = document.getElementById('sl-timeline-scrub');
+const timelineDateEl = document.getElementById('timeline-date');
+const timelineCountEl = document.getElementById('timeline-count');
+let timelinePlaying = false;
+let timelineLoop = false;
+let timelineSpeedDaysPerSec = 14;
+
+timelineScrub.min = minBirth;
+timelineScrub.max = maxBirth;
+timelineScrub.step = Math.max(1, (maxBirth - minBirth) / 2000);
+timelineScrub.value = maxBirth;
+
+function setTimelinePlaying(playing) {
+  timelinePlaying = playing;
+  timelinePlayBtn.textContent = playing ? 'pause' : 'play';
+  timelinePlayBtn.classList.toggle('active', playing);
+}
+
+// Activates/deactivates directories against a new playback time. A node newly crossing the
+// threshold is seeded near its (already-positioned) parent so it visibly emerges from it; a node
+// falling back below the threshold (rewinding) is simply hidden again, no repositioning needed.
+function setTimelineT(newT) {
+  timelineT = newT;
+  for (const n of birthSortedDirs) {
+    const shouldBeActive = n.effectiveBirth <= timelineT;
+    if (shouldBeActive && !active[n.gIdx]) {
+      const p = n.parent;
+      const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1);
+      const r = idealLen * 0.3;
+      gpos[n.gIdx * 3] = p.x + Math.sin(phi) * Math.cos(theta) * r;
+      gpos[n.gIdx * 3 + 1] = p.y + Math.sin(phi) * Math.sin(theta) * r;
+      gpos[n.gIdx * 3 + 2] = p.z + Math.cos(phi) * r;
+      gvel[n.gIdx * 3] = 0; gvel[n.gIdx * 3 + 1] = 0; gvel[n.gIdx * 3 + 2] = 0;
+      active[n.gIdx] = 1;
+    } else if (!shouldBeActive && active[n.gIdx]) {
+      active[n.gIdx] = 0;
+    }
+  }
+}
+
+function updateTimelineLabel() {
+  timelineDateEl.textContent = fmtDate(timelineT);
+  timelineCountEl.textContent = visibleFiles.length.toLocaleString() + ' / ' + fileNodes.length.toLocaleString() + ' files';
+}
+
+timelineEnableChk.addEventListener('change', (e) => {
+  const on = e.target.checked;
+  timelineControlsEl.style.display = on ? '' : 'none';
+  timelineEnabled = on;
+  if (on) {
+    initPositions();
+    active.fill(0); active[0] = 1;
+    timelineT = minBirth;
+    setTimelinePlaying(false);
+    timelineScrub.value = timelineT;
+    setTimelineT(timelineT);
+    syncGraphPositions();
+    refreshStaticScene();
+    updateTimelineLabel();
+  } else {
+    active.fill(1);
+    relayout();
+  }
+});
+
+timelinePlayBtn.onclick = () => setTimelinePlaying(!timelinePlaying);
+document.getElementById('chk-timeline-loop').addEventListener('change', (e) => { timelineLoop = e.target.checked; });
+bindSlider('sl-timeline-speed', 'val-timeline-speed', (v) => { timelineSpeedDaysPerSec = v; }, (v) => v.toFixed(0) + ' d/s');
+
+timelineScrub.addEventListener('input', () => {
+  setTimelinePlaying(false);
+  setTimelineT(parseFloat(timelineScrub.value));
+  syncGraphPositions();
+  refreshStaticScene();
+  updateTimelineLabel();
+});
+
+// ---------- hover / pick / focus / tooltip ----------
 
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
@@ -673,6 +1055,7 @@ function describeNode(node) {
   if (node.type === 'file') {
     lines.push('<div class="dim">size</div> ' + humanSize(node.size));
     lines.push('<br><div class="dim">modified</div> ' + new Date(node.mtime).toLocaleString());
+    lines.push('<br><div class="dim">created</div> ' + new Date(node.ctime).toLocaleString());
     lines.push('<br><div class="dim">type</div> .' + node.ext);
   } else {
     lines.push('<div class="dim">directory &middot; ' + node.weight.toLocaleString() + ' descendant files</div>');
@@ -699,8 +1082,31 @@ function pickNode(ev) {
   const hits = raycaster.intersectObjects([fileMesh, hubMesh], false);
   if (!hits.length) return null;
   const hit = hits[0];
-  return hit.object === fileMesh ? visibleFiles[hit.instanceId] : dirNodes[hit.instanceId];
+  return hit.object === fileMesh ? visibleFiles[hit.instanceId] : visibleDirs[hit.instanceId];
 }
+
+// Smoothly flies the camera to look at a node from close range, preserving the current viewing
+// angle (offsets from the node along the existing target->camera direction) rather than
+// snapping to a fixed angle. OrbitControls re-derives its spherical state from camera.position
+// each update(), so directly lerping position+target each frame (below, in animate()) composes
+// cleanly with it as long as the user isn't actively dragging.
+let camAnim = null;
+function focusOnNode(node) {
+  const wp = worldPosOf(node);
+  const targetVec = new THREE.Vector3(wp.x, wp.y, wp.z);
+  const radius = node.type === 'file' ? fileRadius(node) : dirRadius(node);
+  const dist = Math.max(radius * 14, 1.8);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 1e-6) dir.set(1, 1, 1);
+  dir.normalize().multiplyScalar(dist);
+  camAnim = {
+    fromPos: camera.position.clone(), toPos: targetVec.clone().add(dir),
+    fromTarget: controls.target.clone(), toTarget: targetVec.clone(),
+    t0: performance.now(), duration: 700,
+  };
+}
+
+renderer.domElement.addEventListener('pointerdown', () => { camAnim = null; });
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
   if (pinned) return;
@@ -720,6 +1126,7 @@ renderer.domElement.addEventListener('click', (ev) => {
     pinned = true;
     tooltip.classList.add('pinned');
     showTooltip(node, ev.clientX, ev.clientY);
+    focusOnNode(node);
   } else if (pinned) {
     pinned = false;
     tooltip.classList.remove('pinned');
@@ -735,6 +1142,7 @@ document.getElementById('btn-rotate').onclick = (ev) => {
   ev.target.classList.toggle('active', autoRotate);
 };
 document.getElementById('btn-reset').onclick = () => {
+  camAnim = null;
   camera.position.copy(startPos);
   controls.target.set(0, 0, 0);
 };
@@ -753,6 +1161,42 @@ async function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   const t = clock.elapsedTime;
+
+  if (timelineEnabled) {
+    if (timelinePlaying) {
+      let nextT = timelineT + dt * timelineSpeedDaysPerSec * 86400000;
+      if (nextT >= maxBirth) {
+        nextT = timelineLoop ? minBirth : maxBirth;
+        if (!timelineLoop) setTimelinePlaying(false);
+      }
+      setTimelineT(nextT);
+      timelineScrub.value = timelineT;
+      updateTimelineLabel();
+    }
+    forceStep();
+    syncGraphPositions();
+    refreshStaticScene();
+  } else if (liveRearrange && !relayoutPending) {
+    forceStep();
+    syncGraphPositions();
+    if (fileOffsetsDirty) { recomputeFileLocalOffsets(); fileOffsetsDirty = false; }
+    refreshStaticScene();
+  }
+
+  if (dofAutoFocus) {
+    dofFocusDistance.value = camera.position.distanceTo(controls.target);
+    dofFocusSlider.value = dofFocusDistance.value;
+    dofFocusVal.textContent = dofFocusDistance.value.toFixed(2);
+  }
+
+  if (camAnim) {
+    const at = Math.min((performance.now() - camAnim.t0) / camAnim.duration, 1);
+    const e = at * at * (3 - 2 * at);   // smoothstep
+    camera.position.lerpVectors(camAnim.fromPos, camAnim.toPos, e);
+    controls.target.lerpVectors(camAnim.fromTarget, camAnim.toTarget, e);
+    if (at >= 1) camAnim = null;
+  }
+
   controls.autoRotate = autoRotate;
   controls.autoRotateSpeed = 0.6;
   coreMesh.rotation.y += dt * 0.4;

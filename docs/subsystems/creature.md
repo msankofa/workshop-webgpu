@@ -691,7 +691,11 @@ stance weights (`lbCrouchW`/`lbProneW`, eased ~0.2s from the instant C/Z stance 
 **Body-aware arm IK** (`solveArm`/`solveTwoBone`): the analytic 2-bone solve is constrained by a
 vertical torso capsule rebuilt each `update()` (`_torsoCapsule`: spine at `pos.x/pos.z`, `yMin/yMax`
 spanning pelvis→shoulders padded by `TORSO_CAPSULE_Y_PAD`, `radius = radius + TORSO_CAPSULE_RADIUS_MARGIN`)
-and passed into `solveArm`. Two corrections keep reload/reach poses from breaking joints:
+and passed into `solveArm`. Two corrections keep reload/reach poses from breaking joints. They run
+only while a weapon target drives the arm (`weight > 0`): the capsule radius (0.45 m at the default
+body radius) is wider than the shoulder span (0.23 m), so a free arm bent backward always reads as
+"inside" and was being forced outward on every frame. The authored free-arm pose clears the body by
+its own `spread` term, so free arms follow the `ikCfg` pole directly (2026-08-21).
 - **Adaptive outward pole** (no backward bend): `deriveOutwardPole` redirects the pole's horizontal
   component to point away from the spine before solving. It is a no-op when the pole is already
   outward, so the idle pose (fixed pole `(0,-0.4,-elbowSign)` + `ikCfg` twist, already outward+down)

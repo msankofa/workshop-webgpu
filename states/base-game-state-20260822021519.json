@@ -1,0 +1,139 @@
+{
+  "group": "base-game",
+  "name": "base game",
+  "savedAt": "2026-08-22T02:15:19.573Z",
+  "data": {
+    "format": "pcw-base-game-state",
+    "version": 2,
+    "settings": {
+      "worldMode": "traversalLab",
+      "labCollisionDebug": false,
+      "labOriginMarker": true,
+      "playerControlMode": "player",
+      "playerViewMode": "thirdPerson",
+      "playerCapsuleVisible": false,
+      "playerBodyMode": "thirdPerson",
+      "remoteBodiesEnabled": true,
+      "armPreset": "relaxed",
+      "armIdleBend": 0.19,
+      "armWalkRaise": 0,
+      "armWalkSwing": 0.62,
+      "armRunRaise": 0.12,
+      "armRunSwing": 0.85,
+      "armRunPump": 0.15,
+      "armJumpLift": 1.6,
+      "armLandSwing": 0.7,
+      "armElbowPole": 0.19,
+      "bodyTurnStiffness": 55,
+      "bodyTurnDamping": 15,
+      "bodyMaxForwardLead": 0.64,
+      "bodyGaitModel": "tuned",
+      "bodyStepLeadScale": 0.1,
+      "bodyFollowRate": 20,
+      "bodyWorkspaceWidth": 0.75,
+      "bodyWorkspaceForward": 1.5,
+      "bodyBob": 0.2,
+      "bodySway": 0,
+      "bodyLocoEnabled": true,
+      "bodyLocoAmount": 1,
+      "bodyStepOverlap": 0.2,
+      "bodySpineFalloff": 3,
+      "bodyArmAsym": 1.5,
+      "playerMoveSpeed": 5.5,
+      "playerSprintMultiplier": 1.75,
+      "playerJumpSpeed": 8,
+      "playerGravity": 26,
+      "playerSlopeLimit": 50,
+      "playerStepHeight": 0.6,
+      "playerSnapDistance": 0.4,
+      "cameraDistance": 5,
+      "cameraFollowRate": 14,
+      "cameraSensitivity": 0.002,
+      "cameraObstructionPadding": 0.22,
+      "remotePlayersEnabled": false,
+      "networkDebugVisible": true,
+      "interpolationDelayMs": 100,
+      "skyEnabled": true,
+      "domeEnabled": true,
+      "sunDiscEnabled": true,
+      "moonDiscEnabled": true,
+      "starsEnabled": true,
+      "milkyWayEnabled": false,
+      "bodiesEnabled": true,
+      "sunLightEnabled": true,
+      "ambientLightEnabled": true,
+      "moonLightEnabled": true,
+      "shadowsEnabled": true,
+      "primaryBody": "sun",
+      "todEnabled": false,
+      "todHour": 1.273266666770246,
+      "todLatitude": 45,
+      "todDayOfYear": 172,
+      "todMoonPhase": 12,
+      "todSpeed": 35,
+      "todPlaying": true,
+      "sunElevation": 80,
+      "sunAzimuth": 198,
+      "sunIntensity": 4,
+      "ambientIntensity": 0.8
+    },
+    "camera": {
+      "position": [
+        14.389387856681253,
+        1.6795734698458638,
+        5.5074087813023205
+      ],
+      "target": [
+        0,
+        4,
+        0
+      ],
+      "fov": 50
+    },
+    "world": {
+      "renderOrigin": [
+        0,
+        0,
+        0
+      ]
+    },
+    "player": {
+      "position": [
+        14.449194523675294,
+        0,
+        0.5237590940973339
+      ],
+      "previousPosition": [
+        14.449194523675294,
+        0,
+        0.5237590940973339
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "grounded": true,
+      "view": {
+        "yaw": -0.011999999999999665,
+        "pitch": -0.08,
+        "boomDistance": 4.999999999999998
+      }
+    },
+    "ui": {
+      "panelCollapsed": false,
+      "sections": {
+        "Session": false,
+        "Performance Capture": false,
+        "World / Traversal Lab": false,
+        "Player / Camera": false,
+        "Network / Remote players": false,
+        "Arms": false,
+        "Body movement": false,
+        "Sky components": false,
+        "Time of day": false,
+        "Lighting": true
+      }
+    }
+  }
+}

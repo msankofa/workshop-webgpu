@@ -60,6 +60,17 @@ export function createProceduralPlayerBody({
     gait,      // live gait scheduler; tune gait.cfg (read-mostly)
     proneCfg,  // live prone-pose tuning (hipHeight, pitch, torsoFwd, footBack, …)
     crouchCfg, // live crouch-pose tuning (pelvisDrop, torsoDrop, headDrop, shoulderDrop, lean, fwd)
+    armCfg,    // live free-arm pose model (ARM_POSE_PRESETS / armPoseFromPreset): per-gait idle/walk/run
+               // {raise, bend, spread, swing, pump} blended by horizontal speed (walkSpeed, runSpeedLo/Hi),
+               // plus jumpLift/jumpSpread/landSwing on the air weight. The hand target is built from an
+               // articulated upper-arm + forearm (armPoseHandLocal) so swing happens at the shoulder.
+               // armCfg.enabled=false restores the old fixed idle vector. setArmPreset(name) copies a preset.
+    jumpCfg,   // live jump/fall tuning: airW blends 0..1 (riseRate/fallRate) instead of a boolean; the
+               // tuck is shaped by vertical velocity (tuckRise/tuckFall/vyScale/footForward); landing
+               // drops the pelvis by impact speed (absorbDrop/absorbMax/absorbRecover), holds both
+               // re-planted feet (landHold) and swings the idle arms (armRaise/armLand). In the air the
+               // pelvis follows the capsule (state.position.y) rather than ground + lift, so falls track.
+               // Needs state.velocity.y (or a changing position.y) and state.onFloor.
     ikCfg,     // live elbow/knee pole-rotation tuning, VISUAL side naming (leftArmPole, leftArmPoleProne, leftLegPole, leftLegPoleProne, right…)
     // Arm IK is additionally torso-aware: a vertical capsule around the spine forces the elbow pole
     // outward (no backward bend) and re-solves once if the elbow lands inside the torso (no phasing).

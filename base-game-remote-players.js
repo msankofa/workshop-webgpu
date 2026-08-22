@@ -132,14 +132,23 @@ export function createBaseGameRemotePlayers({ scene, worldCoordinates, radius = 
     return accepted;
   }
 
+  // Samples are always computed so body presentation can consume them; `enabled` only governs
+  // whether the diagnostic capsules are drawn.
   function update(now, { interpolationDelayMs = 100, maxExtrapolationMs = 250 } = {}) {
     group.visible = enabled;
-    if (!enabled || serverTimeOffsetMs == null) return;
+    if (serverTimeOffsetMs == null) return;
     const renderTime = now + serverTimeOffsetMs - interpolationDelayMs;
     lastRenderTime = renderTime;
     for (const record of players.values()) {
       const sample = record.track.sample(renderTime, { maxExtrapolationMs }, sampleOut);
-      if (!sample) { record.mesh.visible = false; continue; }
+      if (!sample) { record.mesh.visible = false; record.sample = null; continue; }
+      const latest = record.track.latest;
+      record.sample = {
+        position: [...sample.position],
+        velocity: latest ? [...latest.velocity] : [0, 0, 0],
+        yaw: sample.yaw, pitch: sample.pitch, grounded: sample.grounded, mode: sample.mode,
+      };
+      if (!enabled) { record.mesh.visible = false; record.mode = sample.mode; continue; }
       worldCoordinates.toRenderLocal(sample.position, _local);
       record.mesh.visible = true;
       record.mesh.position.set(_local[0], _local[1] + height * 0.5, _local[2]);

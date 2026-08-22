@@ -104,7 +104,7 @@ for (const marker of [
   'createBaseGamePlayerController',
   "playerControlMode: 'player'",
   "playerViewMode: 'thirdPerson'",
-  'worldCoordinates.maybeRebase(playerController.getPosition())',
+  'worldCoordinates.maybeRebase(playerController.getPosition(playerPositionScratch))',
   'playerController.captureState()',
   'playerController.applyState(data.player)',
   'playerView.updateCamera',

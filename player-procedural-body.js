@@ -62,6 +62,11 @@ export const GAIT_DEFAULTS = Object.freeze({
   // original strict alternation (one foot down at all times), which gives a plant-pause-plant
   // stride with no roll-through. Small values overlap the steps the way a real walk does.
   stepOverlap: 0,
+  // Forward stride multiplies how far ahead of its rest spot a foot aims. maxBehind (m) is how
+  // far a planted foot may trail behind the hip along the travel direction before it must lift;
+  // 0 leaves that to triggerDistance alone.
+  forwardStride: 1,
+  maxBehind: 0,
 });
 
 // Per-foot horizontal workspace relative to the pelvis. The scheduler projects every planned
@@ -179,6 +184,7 @@ export function stepLeadFor(speed, gaitCfg = GAIT_DEFAULTS, leadScale = 0) {
 function easeInOut(t) { return t * t * (3 - 2 * t); }
 function hyp(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
 function lerp(a, b, t) { return a + (b - a) * t; }
+function smoothstep01(t) { const x = t < 0 ? 0 : t > 1 ? 1 : t; return x * x * (3 - 2 * x); }
 
 // Rotates a body-local (x, 0, z) offset into world space by yaw. Matches the
 // rotateXZ convention in port-creature-system.js: local +z is forward.
@@ -293,19 +299,22 @@ export function stepGait(feet, dt, input, terrainHeight, cfg, memo) {
     ? cfg.stepDuration
     : Math.max(MIN_STEP_DURATION, Math.min(cfg.stepDuration, cfg.maxStepDistance / Math.max(speed, 0.5)));
   // Foot reaches ~one step ahead of the hip (where the hip will be when it plants).
-  const aheadDist = standing ? 0 : Math.min(cfg.maxStepDistance, speed * effStepDur);
+  const aheadDist = standing ? 0 : Math.min(cfg.maxStepDistance, speed * effStepDur) * (cfg.forwardStride ?? 1);
   // While standing, tighten the step deadband so feet tidy up under the hips instead of
   // freezing wherever they last landed within the (larger) walking trigger distance.
   const turning = standing && turnAmount > turnStepAngle;
   const trigger = turning ? cfg.triggerDistance * 0.16 : (standing ? cfg.triggerDistance * 0.35 : cfg.triggerDistance);
 
+  const fwdStride = cfg.forwardStride ?? 1;
+  const strideWorkspace = fwdStride === 1 ? workspace
+    : { ...workspace, forward: workspace.forward * fwdStride, maxReach: workspace.maxReach * Math.max(1, fwdStride) };
   const desired = {};
   for (const key of ['left', 'right']) {
     const foot = feet[key];
     const dx = foot.rest.x + moveDir.x * aheadDist;
     const dz = foot.rest.z + moveDir.z * aheadDist;
     const candidate = { x: dx, y: terrainHeight(dx, dz), z: dz };
-    const constrained = constrainFootTarget(candidate, hip, yaw, foot.side, workspace);
+    const constrained = constrainFootTarget(candidate, hip, yaw, foot.side, strideWorkspace);
     constrained.y = terrainHeight(constrained.x, constrained.z);
     desired[key] = constrained;
   }
@@ -345,15 +354,24 @@ export function stepGait(feet, dt, input, terrainHeight, cfg, memo) {
     if (foot.stepping) continue;
     const dh = hyp(foot.current.x, foot.current.z, target.x, target.z);
     const dv = Math.abs(foot.current.y - target.y);
-    if (dh > trigger || dv > trigger * 0.6) wanters.push({ key, dh });
+    // Signed distance the foot trails behind the hip along the travel direction.
+    const behind = standing || !(cfg.maxBehind > 0) ? 0
+      : -((foot.current.x - hip.x) * moveDir.x + (foot.current.z - hip.z) * moveDir.z);
+    if (dh > trigger || dv > trigger * 0.6 || behind > cfg.maxBehind) wanters.push({ key, dh, urgent: behind > cfg.maxBehind });
   }
-  if (!anyStepping && wanters.length) {
+  // A foot trailing past maxBehind may lift while the other is still past mid-swing: that is the
+  // flight phase of a run, and the only way a behind cap can hold at high cadence.
+  const urgent = wanters.find(w => w.urgent);
+  const otherPastMid = (key) => { const o = feet[key === 'left' ? 'right' : 'left']; return !o.stepping || o.t >= 0.5; };
+  if ((!anyStepping || (urgent && otherPastMid(urgent.key))) && wanters.length) {
     // Alternate. Prefer the foot that did NOT step most recently, so a foot can't restart
     // the same tick it lands (the advance loop clears its `stepping` flag above, which would
     // otherwise let the first-checked foot re-take the single step slot forever and starve
     // the other one). A lone wanter (e.g. a large drift correction) steps unconditionally.
     let pick;
-    if (wanters.length === 1) {
+    if (anyStepping && urgent) {
+      pick = urgent.key;
+    } else if (wanters.length === 1) {
       pick = wanters[0].key;
     } else {
       pick = (wanters.find((w) => w.key !== memo.lastStepper) || wanters[0]).key;
@@ -387,6 +405,12 @@ export function createGaitScheduler(overrides = {}) {
     cfg,
     update(dt, input, terrainHeight) {
       return stepGait(feet, dt, input, terrainHeight, cfg, memo);
+    },
+    // Forces both feet to re-plant under the hips on the next update (landing, teleport).
+    resetFeet() {
+      feet.left.initialized = false;
+      feet.right.initialized = false;
+      memo.lastHip = null;
     },
   };
 }
@@ -580,6 +604,70 @@ export const KNEEL_DEFAULTS = Object.freeze({
   frontAnklePitch: 0.00,
   torsoDrop: 0.03, headDrop: 0.04, shoulderDrop: 0.06,
 });
+
+// Free-arm pose model. Each gait authors the upper-arm pitch (`raise`, rad forward of hanging),
+// elbow bend (rad), outward spread (rad), contralateral swing amplitude (rad) and forearm pump
+// (rad of extra bend at the forward extreme). Idle->walk->run blend by horizontal speed; the
+// jump terms ride the body's air weight and landing absorb. Weapon-holding arms are unaffected
+// because solveArm blends this pose out by the weapon target's weight.
+export const ARM_POSE_PRESETS = Object.freeze({
+  relaxed: Object.freeze({
+    idle: Object.freeze({ raise: 0.02, bend: 0.19, spread: 0.16, swing: 0, pump: 0 }),
+    walk: Object.freeze({ raise: 0.00, bend: 0.28, spread: 0.10, swing: 0.62, pump: 0.12 }),
+    run: Object.freeze({ raise: 0.12, bend: 1.15, spread: 0.06, swing: 0.85, pump: 0.15 }),
+    walkSpeed: 1.4, runSpeedLo: 5.2, runSpeedHi: 7.8,
+    jumpLift: 1.6, jumpSpread: 0.5, landSwing: 0.7, fallLift: 2.4, fallSpeedRef: 8, fallTimeRef: 0.7,
+  }),
+  brisk: Object.freeze({
+    idle: Object.freeze({ raise: 0.05, bend: 0.20, spread: 0.14, swing: 0, pump: 0 }),
+    walk: Object.freeze({ raise: 0.05, bend: 0.45, spread: 0.08, swing: 0.80, pump: 0.20 }),
+    run: Object.freeze({ raise: 0.18, bend: 1.30, spread: 0.05, swing: 1.00, pump: 0.22 }),
+    walkSpeed: 1.2, runSpeedLo: 4.8, runSpeedHi: 7.2,
+    jumpLift: 1.9, jumpSpread: 0.6, landSwing: 0.9, fallLift: 2.6, fallSpeedRef: 8, fallTimeRef: 0.6,
+  }),
+  sprinter: Object.freeze({
+    idle: Object.freeze({ raise: 0.03, bend: 0.15, spread: 0.15, swing: 0, pump: 0 }),
+    walk: Object.freeze({ raise: 0.02, bend: 0.35, spread: 0.09, swing: 0.70, pump: 0.15 }),
+    run: Object.freeze({ raise: 0.25, bend: 1.45, spread: 0.04, swing: 1.20, pump: 0.30 }),
+    walkSpeed: 1.4, runSpeedLo: 5.0, runSpeedHi: 7.0,
+    jumpLift: 2.2, jumpSpread: 0.7, landSwing: 1.1, fallLift: 2.8, fallSpeedRef: 7, fallTimeRef: 0.55,
+  }),
+});
+
+export function armPoseFromPreset(name) {
+  const preset = ARM_POSE_PRESETS[name] || ARM_POSE_PRESETS.relaxed;
+  return {
+    enabled: true,
+    preset: ARM_POSE_PRESETS[name] ? name : 'relaxed',
+    idle: { ...preset.idle }, walk: { ...preset.walk }, run: { ...preset.run },
+    walkSpeed: preset.walkSpeed, runSpeedLo: preset.runSpeedLo, runSpeedHi: preset.runSpeedHi,
+    jumpLift: preset.jumpLift, jumpSpread: preset.jumpSpread, landSwing: preset.landSwing,
+    fallLift: preset.fallLift, fallSpeedRef: preset.fallSpeedRef, fallTimeRef: preset.fallTimeRef,
+    // Seconds for the idle/walk/run arm blend to follow a speed change (time constant).
+    poseSmoothing: preset.poseSmoothing ?? 0.35,
+  };
+}
+
+/**
+ * Pure: hand position relative to the shoulder in the body's local frame (+X right, +Y up,
+ * +Z forward) for an articulated arm pose. `sideSign` -1 left / +1 right.
+ */
+export function armPoseHandLocal({ raise, bend, spread, swingAngle = 0 }, sideSign, upperLen, foreLen, out = { x: 0, y: 0, z: 0 }) {
+  const pitch = raise + swingAngle;
+  // Upper arm: hang straight down, spread outward about Z, then pitch forward about X.
+  const ux = sideSign * Math.sin(spread);
+  const uyHang = -Math.cos(spread);
+  const uy = uyHang * Math.cos(pitch);
+  const uz = -uyHang * Math.sin(pitch);
+  // Forearm: the upper-arm direction pitched further forward by the elbow bend.
+  const fPitch = pitch + bend;
+  const fy = uyHang * Math.cos(fPitch);
+  const fz = -uyHang * Math.sin(fPitch);
+  out.x = ux * upperLen + ux * foreLen;
+  out.y = uy * upperLen + fy * foreLen;
+  out.z = uz * upperLen + fz * foreLen;
+  return out;
+}
 
 export const BODY_DESIGN_DEFAULTS = Object.freeze({
   legLenRatio: 0.62,        // legLen = H * legLenRatio
@@ -1250,6 +1338,9 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     // Which GAIT_MODELS entry adaptGaitToSpeed reads. Unknown names fall back to 'shipped'.
     gaitModel: 'shipped',
     bodyFollowRate: 11,
+    // Multiply the speed model's stride and cadence so sliders survive adaptGaitToSpeed.
+    strideScale: 1,
+    cadenceScale: 1,
   };
   const motion = {
     targetYaw: 0, visualYaw: 0, yawLag: 0, yawVelocity: 0,
@@ -1286,6 +1377,25 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   // Crouch pose tuning (state.crouch 0..1 squashes the upright stack). The *drop fields are the
   // fraction each joint lowers at crouch=1; lean pitches the upper body forward (rad) and fwd
   // shifts it forward along the heading, so crouch reads as a hunch, not a pure vertical squash.
+  // Jump/fall pose. airW is a blended air weight (0 grounded .. 1 airborne) instead of a boolean,
+  // so legs ease into and out of the tuck; the tuck itself is shaped by vertical velocity (legs
+  // trail while rising, reach for the floor while falling); landing drops the pelvis by impact
+  // speed and springs back while both feet re-plant together.
+  const jumpCfg = {
+    enabled: true,
+    riseRate: 14,        // air weight rise (1/s): ~80 ms to full tuck
+    fallRate: 9,         // air weight decay (1/s) after landing
+    tuckRise: 0.58,      // foot distance below hip as a leg-length fraction while rising
+    tuckFall: 0.86,      // ... while falling (legs extend toward the ground)
+    vyScale: 0.14,       // how quickly vertical velocity moves the tuck between the two
+    footForward: 0.10,   // leg-length fraction the feet trail behind the hip while rising
+    absorbDrop: 0.035,   // pelvis drop per m/s of landing speed (m)
+    absorbMax: 0.20,     // cap on that drop (m)
+    absorbRecover: 9,    // spring-back rate (1/s)
+    landHold: 0.10,      // seconds the gait holds both planted feet after landing
+    armRaise: 0.55,      // rad the idle arms lift while rising
+    armLand: 0.35,       // rad the idle arms swing forward on the landing absorb
+  };
   const crouchCfg = {
     pelvisDrop: 0.62,    // pelvisHeightRatio *= (1 - pelvisDrop*crouch)
     torsoDrop: 0.25,     // waist + torso vertical squash
@@ -1381,6 +1491,13 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   const _footP = new THREE.Vector3();
   let hasLastPos = false;
   let _groundRefY = null; // body-center height last time the player was grounded (auto-calibrated)
+  let _airW = 0;          // blended air weight
+  let _wasOnFloor = true;
+  let _absorb = 0;        // current landing pelvis drop (m)
+  let _landHold = 0;      // seconds left holding feet after landing
+  let _lastPosY = null;
+  let _lastVy = 0;
+  let _fallTime = 0;      // seconds spent falling (airborne with vy < 0)
   let internalVisible = true;
 
   // Torso capsule (body-awareness for arm IK, see solveArm below), rebuilt once per update().
@@ -1392,6 +1509,10 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   // Idle arm offsets are loop-invariant (depend only on the constant armLen); solveArm reads them read-only.
   const _idleArmLeft = new THREE.Vector3(-1, -1.1, 0.1).normalize().multiplyScalar(armLen * 0.7);
   const _idleArmRight = new THREE.Vector3(1, -1.1, 0.1).normalize().multiplyScalar(armLen * 0.7);
+  const armCfg = armPoseFromPreset('relaxed');   // live; armCfg.enabled=false restores the fixed idle vector
+  const _armPose = { raise: 0, bend: 0, spread: 0, swingAngle: 0 };
+  const _armHand = { x: 0, y: 0, z: 0 };
+  let _armSpeed = 0;      // smoothed horizontal speed that drives the arm pose blend
   const _outPole = { x: 0, y: 0, z: 0 };   // scratch for deriveOutwardPole's plain-object out param
   const _axisPt = { x: 0, y: 0, z: 0 };    // scratch for projectOntoAxis's plain-object out param
   // Ragdoll-pose scratch (setRagdollPose): joint Vector3 cache + basis for torso orientation.
@@ -1531,10 +1652,14 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
       _axis.subVectors(_target, _root).normalize();
       _pole.applyQuaternion(_poleQuat.setFromAxisAngle(_axis, poleAngle));
     }
+    // Corrections 2/3 exist for weapon holds (hands in front of the chest). The torso capsule is
+    // wider than the shoulder span, so a free arm bent backward always reads as "inside" and gets
+    // forced outward; the authored free-arm pose already clears the body, so it keeps the pole.
+    const bodyAware = torsoCapsule && weight > 0;
     // Correction 2 (no backward bend): redirect the pole's horizontal component outward from the
     // spine if it would otherwise bend the elbow inward; no-op when already outward (idle pose,
     // whose fixed pole is already outward+down, is bit-for-bit unchanged).
-    if (torsoCapsule) {
+    if (bodyAware) {
       deriveOutwardPole(_pole, _root, torsoCapsule, _outPole);
       _pole.set(_outPole.x, _outPole.y, _outPole.z);
     }
@@ -1549,7 +1674,7 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     // moves and we re-solve once — bone lengths and the hand target stay exact, per the "never
     // translate a joint directly" rule (pushPointOutOfCapsule is for the pure/tested clamp itself,
     // not used here to avoid stretching the upper-arm bone).
-    if (torsoCapsule && capsuleContainsPoint(_joint, torsoCapsule)) {
+    if (bodyAware && capsuleContainsPoint(_joint, torsoCapsule)) {
       projectOntoAxis(_joint, _root, _axis, _axisPt);
       deriveOutwardPole(_pole, _axisPt, torsoCapsule, _outPole, true);
       _pole.set(_outPole.x, _outPole.y, _outPole.z);
@@ -1628,14 +1753,17 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     const crouch = Math.max(0, Math.min(1, state.crouch || 0));
     const pos = state.position;
 
-    let vx = 0, vz = 0;
+    let vx = 0, vz = 0, vy = 0;
     if (state.velocity) {
       vx = state.velocity.x || 0;
       vz = state.velocity.z || 0;
+      vy = state.velocity.y || 0;
     } else if (hasLastPos && dt > 0) {
       vx = (pos.x - _lastHipPos.x) / dt;
       vz = (pos.z - _lastHipPos.z) / dt;
     }
+    if (!state.velocity && _lastPosY != null && dt > 0 && pos.y != null) vy = (pos.y - _lastPosY) / dt;
+    if (pos.y != null) _lastPosY = pos.y;
     _lastHipPos.copy(pos);
     hasLastPos = true;
 
@@ -1646,9 +1774,9 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
       const model = GAIT_MODELS[movementTuning.gaitModel] || GAIT_MODELS.shipped;
       const g = gaitForSpeed(Math.hypot(vx, vz), model.speed);
       gait.cfg.pelvisHeightRatio = g.pelvisHeightRatio;
-      gait.cfg.maxStepDistance = g.maxStepDistance;
+      gait.cfg.maxStepDistance = g.maxStepDistance * movementTuning.strideScale;
       gait.cfg.stepLift = g.stepLift;
-      gait.cfg.stepDuration = g.stepDuration;
+      gait.cfg.stepDuration = g.stepDuration * movementTuning.cadenceScale;
     }
 
     _orient.setFromAxisAngle(_up, yaw);
@@ -1674,9 +1802,40 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     const onFloorFlag = state.onFloor !== false;
     const py = pos.y != null ? pos.y : groundY + height * 0.5;
     if (onFloorFlag || _groundRefY == null) _groundRefY = py;
-    const bodyLift = onFloorFlag ? 0 : Math.max(0, py - _groundRefY);
-    const airborne = !onFloorFlag && bodyLift > 0.05;
-    let pelvisY = groundY + height * pelvisHeightRatio + bodyLift;
+    const safeDt = Math.max(0, dt);
+    if (jumpCfg.enabled) {
+      // Landing edge: absorb by impact speed and re-plant both feet together.
+      if (onFloorFlag && !_wasOnFloor && _airW > 0.2) {
+        const impact = Math.max(0, -_lastVy);
+        _absorb = Math.min(jumpCfg.absorbMax, _absorb + impact * jumpCfg.absorbDrop);
+        _landHold = jumpCfg.landHold;
+        gait.resetFeet();
+      }
+      const airTarget = onFloorFlag ? 0 : 1;
+      const rate = onFloorFlag ? jumpCfg.fallRate : jumpCfg.riseRate;
+      _airW += (airTarget - _airW) * (1 - Math.exp(-rate * safeDt));
+      if (_airW < 1e-3) _airW = 0;
+      _absorb *= Math.exp(-jumpCfg.absorbRecover * safeDt);
+      if (_absorb < 1e-4) _absorb = 0;
+      _landHold = Math.max(0, _landHold - safeDt);
+    } else {
+      _airW = onFloorFlag ? 0 : 1;
+      _absorb = 0;
+      _landHold = 0;
+    }
+    _wasOnFloor = onFloorFlag;
+    _lastVy = vy;
+    _fallTime = !onFloorFlag && vy < 0 ? _fallTime + safeDt : 0;
+    const airW = _airW;
+    // Falling: 0 while rising fast, 1 while falling fast. Shapes the tuck and the arm pose.
+    const fallT = Math.max(0, Math.min(1, 0.5 - vy * jumpCfg.vyScale));
+    // Grounded bodies keep the ground-anchored pelvis; in the air the pelvis follows the capsule
+    // itself (authoritative), so rises and falls both track without a lift clamp.
+    const groundPelvisY = groundY + height * pelvisHeightRatio;
+    const capsulePelvisY = py - height * 0.5 + height * pelvisHeightRatio;
+    let pelvisY = lerp(groundPelvisY, capsulePelvisY, airW) - _absorb;
+    motion.airWeight = airW;
+    motion.landingAbsorb = _absorb;
 
     // Keep the body-space anchor at the chest, facing the body's heading, so the weapon track's
     // belt/toss/magwell hand targets translate with the player and rotate with facing.
@@ -1690,7 +1849,10 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     const stepLead = stepLeadFor(moveSpeed, gait.cfg, movementTuning.stepLeadScale);
     const leadX = moveSpeed > 1e-4 ? (vx / moveSpeed) * stepLead : 0;
     const leadZ = moveSpeed > 1e-4 ? (vz / moveSpeed) * stepLead : 0;
-    gait.update(dt, {
+    // While the landing holds, feet stay planted where they touched down; the first update after
+    // resetFeet() has already snapped them under the hips.
+    const gaitDt = _landHold > 0 && gait.feet.left.initialized ? 0 : dt;
+    gait.update(gaitDt, {
       hip: { x: pos.x + leadX, y: pelvisY, z: pos.z + leadZ },
       yaw,
       velocity: { x: vx, z: vz },
@@ -1889,7 +2051,12 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
       if (lw > 0) hipAttach.addScaledVector(_Rt, lateralSway);
       const cur = gait.feet[side].current;
       _footU.set(cur.x, cur.y, cur.z);
-      if (airborne) _footU.set(hipAttach.x, pelvisYP - legLen * 0.72, hipAttach.z);
+      if (airW > 0) {
+        const tuck = lerp(jumpCfg.tuckRise, jumpCfg.tuckFall, fallT);
+        _footK.set(hipAttach.x, pelvisYP - legLen * tuck, hipAttach.z)
+          .addScaledVector(_F, -legLen * jumpCfg.footForward * (1 - fallT));
+        _footU.lerp(_footK, airW);
+      }
 
       // Kneel authors the KNEE as well as the foot. Prone can lerp only the foot and let IK find
       // the knee, but a kneeling knee has to be on the ground under the hip and no pole angle
@@ -1957,10 +2124,45 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
       // by the weapon target's weight, so an aiming body keeps its hands on the gun and only a
       // free arm swings. Rotating about local +X by -angle carries the hanging hand forward.
       let idleLocal = side === 'left' ? _idleArmLeft : _idleArmRight;
-      if (lw > 0 && (loco.armSwing[side] || loco.armSpread[side])) {
-        _armSwingV.copy(idleLocal).applyQuaternion(_locoQ.setFromAxisAngle(_X, -loco.armSwing[side] * lw));
-        _armSwingV.x += sideSign * loco.armSpread[side] * lw;
+      if (armCfg.enabled) {
+        // Gait blend by horizontal speed, then the contralateral swing signal from the locomotion
+        // layer (-1..1, already weighted and asymmetric) scaled by this gait's own amplitude.
+        // The pose blend follows a smoothed speed so tapping sprint fades the arms in over a few
+        // strides instead of snapping with the controller's near-instant acceleration.
+        const rawSpeedH = Math.hypot(vx, vz);
+        const tau = Math.max(0, armCfg.poseSmoothing || 0);
+        _armSpeed = tau > 0 ? _armSpeed + (rawSpeedH - _armSpeed) * (1 - Math.exp(-safeDt / tau)) : rawSpeedH;
+        const speedH = _armSpeed;
+        motion.armPoseSpeed = speedH;
+        const wWalk = smoothstep01(speedH / Math.max(1e-3, armCfg.walkSpeed));
+        const wRun = smoothstep01((speedH - armCfg.runSpeedLo) / Math.max(1e-3, armCfg.runSpeedHi - armCfg.runSpeedLo));
+        const gaitMix = (key) => lerp(lerp(armCfg.idle[key], armCfg.walk[key], wWalk), armCfg.run[key], wRun);
+        const swingSignal = lw > 0 && locomotion.cfg.armSwing > 0 ? (loco.armSwing[side] / locomotion.cfg.armSwing) * lw : 0;
+        const absorbNorm = _absorb / Math.max(1e-6, jumpCfg.absorbMax);
+        // Falling: arms come up and out with fall speed AND time, so a long drop reads as a flail
+        // that keeps building, while a short hop barely moves them.
+        const fallSpeedW = smoothstep01(Math.max(0, -vy) / Math.max(1e-3, armCfg.fallSpeedRef));
+        const fallTimeW = smoothstep01(_fallTime / Math.max(1e-3, armCfg.fallTimeRef));
+        const fallW = airW * Math.max(fallSpeedW * 0.5 + fallTimeW * 0.5, fallSpeedW * fallTimeW);
+        _armPose.raise = gaitMix('raise') + armCfg.jumpLift * airW * (1 - fallT) + armCfg.fallLift * fallW - armCfg.landSwing * absorbNorm * 0.5;
+        _armPose.bend = gaitMix('bend') + gaitMix('pump') * Math.max(0, swingSignal) + armCfg.landSwing * absorbNorm * 0.6;
+        _armPose.spread = gaitMix('spread') + armCfg.jumpSpread * airW + armCfg.jumpSpread * fallW;
+        _armPose.swingAngle = gaitMix('swing') * swingSignal * (1 - airW);
+        armPoseHandLocal(_armPose, sideSign, upperArmLen, forearmLen, _armHand);
+        _armSwingV.set(_armHand.x, _armHand.y, _armHand.z);
         idleLocal = _armSwingV;
+      } else {
+        if (lw > 0 && (loco.armSwing[side] || loco.armSpread[side])) {
+          _armSwingV.copy(idleLocal).applyQuaternion(_locoQ.setFromAxisAngle(_X, -loco.armSwing[side] * lw));
+          _armSwingV.x += sideSign * loco.armSpread[side] * lw;
+          idleLocal = _armSwingV;
+        }
+        const jumpArm = jumpCfg.armRaise * airW * (1 - fallT) * 0.5 + jumpCfg.armLand * (_absorb / Math.max(1e-6, jumpCfg.absorbMax));
+        if (jumpArm > 1e-4) {
+          if (idleLocal !== _armSwingV) _armSwingV.copy(idleLocal);
+          _armSwingV.applyQuaternion(_locoQ.setFromAxisAngle(_X, -jumpArm));
+          idleLocal = _armSwingV;
+        }
       }
       if (armGone(side)) continue;   // a missing arm has nothing to reach with, weapon target or not
       solveArm(side, arms[side], _uPos, idleLocal, _bodyQ, armThick, pw, _torsoCapsule);
@@ -2146,5 +2348,7 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   return { group, rootAnchor, update, setRagdollPose, setArmTarget, setAmputated, setVisible, setGearLod, setTint, flush, destroy, gait, locomotion, spineCfg, motion, turnCfg,
     // limbLengths: the fixed skeleton the kneel offsets are multiples of, so tools can show closure
     limbLengths: { legLen, thighLen, shinLen, armLen },
-    headTurnCfg, legWorkspace, movementTuning, proneCfg, kneelCfg, crouchCfg, eyeCfg, ikCfg, joints, parts };
+    headTurnCfg, legWorkspace, movementTuning, proneCfg, kneelCfg, crouchCfg, jumpCfg, armCfg, eyeCfg, ikCfg, joints, parts,
+    // Copies a named preset into armCfg (live). Returns the applied preset name.
+    setArmPreset(name) { Object.assign(armCfg, armPoseFromPreset(name)); return armCfg.preset; } };
 }
