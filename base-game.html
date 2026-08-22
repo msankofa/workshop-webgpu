@@ -83,6 +83,7 @@ import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPa
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
+import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor } from './base-game-terrain.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
 import { v5Descriptor } from './terrain-source-v5.js';
@@ -256,11 +257,19 @@ function isOnline() {
 let receiveNetworkSnapshot = snapshot => { networkSnapshot = snapshot; };
 let receiveNetworkStatus = status => { networkStatus = status; };
 
+// Room terrain is chosen by the creator from their current Solo ground. Volumetric stays local.
+function pickRoomTerrainConfig() {
+  if (settings.worldMode !== 'terrain') return { kind: 'traversalLab' };
+  // Before the game exists (start menu) the only possible terrain is the analytic default.
+  const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
+  return { kind: 'terrain', descriptor, volumetric: false };
+}
 function connectOnlineSession({ mode, roomCode }) {
   return connectBaseGameSession({
     mode,
     roomCode,
     world: pickBaseGameSharedWorld(settings),
+    terrain: mode === 'create' ? pickRoomTerrainConfig() : null,
     onSnapshot: (snapshot, session) => receiveNetworkSnapshot(snapshot, session),
     onStatus: status => receiveNetworkStatus(status),
   });
@@ -277,6 +286,7 @@ const terrainStore = createTerrainProjectStore({
   // active project) if any step fails.
   applySource: async (project) => {
     if (!simulationReady) throw new Error('the game has not started yet');
+    if (isOnline()) throw new Error('the room owns the ground; leave the room (or create a new one from this terrain) to apply');
     await applyTerrainProjectAtRuntime(project);
   },
 });
@@ -307,6 +317,8 @@ async function chooseGameSession() {
 const initialSessionChoice = await chooseGameSession();
 activeMode = initialSessionChoice.mode;
 networkSession = initialSessionChoice.session;
+// While online the ground is room-owned: the start menu's choice is replaced by the room's.
+let roomTerrainConfig = networkSession?.terrain ?? null;
 if (networkSnapshot?.world) Object.assign(settings, sanitizeBaseGameWorldPatch(networkSnapshot.world));
 gameplayPaused = false;
 
@@ -337,6 +349,25 @@ const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
 const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR });
 let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
+// Make the local world match a room's terrain config exactly (same descriptor, same hash),
+// or throw so the handshake fails instead of predicting against substitute ground.
+function adoptRoomTerrain(config) {
+  if (!config) return;
+  if (config.kind === 'terrain') {
+    const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor });
+    if (check.error) throw new Error(`room terrain rejected locally: ${check.error}`);
+    if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
+    terrain.setSource(check.config.descriptor);
+    activeTerrainDescriptor = check.config.descriptor;
+    settings.worldMode = 'terrain';
+    settings.terrainVolumetric = false;
+  } else {
+    settings.worldMode = 'traversalLab';
+  }
+  syncAllControls();
+  updateWorld(0);
+  refreshTerrainSourceLine();
+}
 // Swap the streamed/collided source to a v5 project. Synchronous candidate generation of the
 // player's tile proves the recipe evaluates before the epoch bump; chunks then restream under
 // the normal budget with old chunks retained until replacements land.
@@ -660,10 +691,16 @@ function registerControl(key, sync, element) {
   if (controlRegistry.has(key)) throw new Error(`Duplicate control: ${key}`);
   controlRegistry.set(key, { sync, element, shared: sharedSettingKeys.has(key) });
 }
+const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric'];
 function syncNetworkControlPermissions() {
   const editable = canEditSharedSettings();
   for (const entry of controlRegistry.values()) {
     if (entry.shared && entry.element) entry.element.disabled = !editable;
+  }
+  // The ground is fixed for the life of a room (hot source replacement is a restart, not a patch).
+  for (const key of ROOM_OWNED_GROUND_KEYS) {
+    const entry = controlRegistry.get(key);
+    if (entry?.element) entry.element.disabled = isOnline();
   }
 }
 function queueSharedWorldPatch(key) {
@@ -1066,6 +1103,10 @@ receiveNetworkSnapshot = (snapshot, session = networkSession) => {
   }
 };
 networkUiReady = true;
+if (roomTerrainConfig) {
+  try { adoptRoomTerrain(roomTerrainConfig); }
+  catch (err) { reportBaseGameError(err); returnToMainMenu().catch(reportBaseGameError); }
+}
 if (networkSnapshot) receiveNetworkSnapshot(networkSnapshot, networkSession);
 syncNetworkControlPermissions();
 renderNetworkStatus();
@@ -1277,6 +1318,11 @@ async function returnToMainMenu() {
   const choice = await chooseGameSession();
   activeMode = choice.mode;
   networkSession = choice.session;
+  roomTerrainConfig = networkSession?.terrain ?? null;
+  if (roomTerrainConfig) {
+    try { adoptRoomTerrain(roomTerrainConfig); }
+    catch (err) { reportBaseGameError(err); returnToMainMenu().catch(reportBaseGameError); return; }
+  }
   if (networkSnapshot) receiveNetworkSnapshot(networkSnapshot, networkSession);
   gameplayPaused = false;
   controls.enabled = settings.playerControlMode === 'orbit';
@@ -1613,13 +1659,18 @@ async function animate() {
       pitch: playerView.pitch,
       sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
     } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false };
-    const jump = canControl && jumpEdgeQueued;
-    jumpEdgeQueued = false;
+    // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
+    // fixed steps (high refresh rates, pacing below 1x) must not swallow the key press.
+    if (!canControl) jumpEdgeQueued = false;
     if (online) {
       // Lockstep ticks: every fixed step is numbered, sent to the server, and replayed exactly on
       // reconciliation. Paused or Orbit mode keeps ticking with neutral input so the server and
       // the local simulation never fall out of step.
-      const stepped = prediction.advance(dt, index => ({ ...input, jump: jump && index === 0 }));
+      const stepped = prediction.advance(dt, () => {
+        const jump = jumpEdgeQueued;
+        jumpEdgeQueued = false;
+        return { ...input, jump };
+      });
       playerInterpolationAlpha = stepped.alpha;
       playerController.interpolatedPosition(playerInterpolationAlpha, playerRenderPosition);
       const keep = Math.exp(-CORRECTION_DECAY_RATE * dt);
@@ -1630,7 +1681,7 @@ async function animate() {
       }
     } else if (canControl) {
       playerController.setInput(input);
-      if (jump) playerController.queueJump();
+      if (jumpEdgeQueued) { playerController.queueJump(); jumpEdgeQueued = false; }
       const stepped = playerController.advance(dt);
       // Solo kill plane; online the server enforces the same layout value.
       if (playerController.getPosition(playerPositionScratch)[1] < worldKillPlaneY(playerPositionScratch)) resetPlayer();

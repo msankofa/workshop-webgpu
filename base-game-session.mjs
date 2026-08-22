@@ -17,6 +17,7 @@ export function connectBaseGameSession({
   mode,
   roomCode,
   world,
+  terrain = null,
   onSnapshot = () => {},
   onStatus = () => {},
   relayUrl = BASE_GAME_RELAY_URL,
@@ -39,6 +40,7 @@ export function connectBaseGameSession({
   let resumeToken = null;
   let clientId = null;
   let owner = false;
+  let roomTerrain = null;
   let latestSnapshot = null;
   let initialSettled = false;
   let joinedSeen = false;
@@ -91,6 +93,8 @@ export function connectBaseGameSession({
     get roomCode() { return room; },
     get clientId() { return clientId; },
     get owner() { return owner; },
+    // The room's authoritative terrain config (from base:joined); null until joined.
+    get terrain() { return roomTerrain; },
     get connected() { return ws?.readyState === WebSocketImpl.OPEN; },
     get latestSnapshot() { return latestSnapshot; },
     get stats() { return { ...stats }; },
@@ -212,7 +216,7 @@ export function connectBaseGameSession({
       const packet = resumeToken
         ? { type: 'base:resume', protocol: BASE_GAME_PROTOCOL_VERSION, resumeToken }
         : mode === 'create'
-          ? { type: 'base:create', protocol: BASE_GAME_PROTOCOL_VERSION, room, world: pickBaseGameSharedWorld(world) }
+          ? { type: 'base:create', protocol: BASE_GAME_PROTOCOL_VERSION, room, world: pickBaseGameSharedWorld(world), terrain: terrain ?? { kind: 'traversalLab' } }
           : { type: 'base:join', protocol: BASE_GAME_PROTOCOL_VERSION, room };
       ws.send(JSON.stringify(packet));
     };
@@ -236,6 +240,7 @@ export function connectBaseGameSession({
         clientId = packet.clientId;
         resumeToken = packet.resumeToken;
         owner = !!packet.owner;
+        roomTerrain = packet.terrain ?? { kind: 'traversalLab', worldVersion: 'traversal-lab' };
         joinedSeen = true;
         onStatus({ state: 'connected', room, clientId, owner });
         maybeResolveInitial();

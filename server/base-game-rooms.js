@@ -12,6 +12,8 @@ import {
   normalizeBaseGameRoomCode,
   sanitizeBaseGameInputPacket,
   sanitizeBaseGameWorldPatch,
+  sanitizeBaseGameTerrainConfig,
+  describeBaseGameTerrainConfig,
 } from '../base-game-protocol.mjs';
 import { createBaseGamePlayerController } from '../base-game-player-controller.js';
 import { randomUUID } from 'node:crypto';
@@ -20,20 +22,40 @@ function defaultToken() {
   return `${randomUUID()}-${randomUUID()}`;
 }
 
-// The default simulation world is the exact Traversal Lab collision the browser renders, built
-// lazily so tests that never create a room do not pay for the BVH bake.
-async function defaultWorldFactory() {
-  const [{ createWorldQueryService }, { createTraversalLabWorldQuery }] = await Promise.all([
-    import('../world-query.js'),
-    import('../traversal-lab-collider.js'),
-  ]);
+// Builds the authoritative world for a sanitized terrain config. Traversal Lab is the exact
+// collision the browser renders; terrain rooms use the same pure source + heightfield provider
+// Solo uses (the heightfield is infinite, so nothing has to stream on the server). Built lazily
+// so tests that never create a room do not pay for the BVH bake.
+async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
+  const { createWorldQueryService } = await import('../world-query.js');
   const worldQuery = createWorldQueryService();
+  if (config.kind === 'terrain') {
+    const [{ createSource }, , , { createHeightfieldWorldQueryProvider }] = await Promise.all([
+      import('../terrain-source.js'),
+      import('../terrain-source-analytic.js'),
+      import('../terrain-source-v5.js'),
+      import('../world-query-heightfield-provider.js'),
+    ]);
+    const source = createSource(config.descriptor);
+    const provider = createHeightfieldWorldQueryProvider(source, { id: 'terrain' });
+    worldQuery.registerProvider(provider);
+    const killBelow = 80;
+    return {
+      worldQuery,
+      spawn: [0, source.heightAt(0, 0) + 1.5, 0],
+      killPlaneYAt: (x, z) => source.heightAt(x, z) - killBelow,
+      worldVersion: config.worldVersion,
+      terrain: config,
+    };
+  }
+  const { createTraversalLabWorldQuery } = await import('../traversal-lab-collider.js');
   const lab = createTraversalLabWorldQuery(worldQuery);
   return {
     worldQuery,
     spawn: lab.layout.spawn,
     killPlaneY: lab.layout.killPlaneY,
     worldVersion: `traversal-lab-v${lab.layout.version}`,
+    terrain: config,
   };
 }
 
@@ -52,30 +74,43 @@ export function createBaseGameRoomService({
   const socketClients = new Map();
   const tokenClients = new Map();
   const stepMs = 1000 / simHz;
-  let simulationWorld = world;
-  let worldPending = null;
+  // Worlds are immutable per config, so rooms that pick the same terrain share one instance.
+  const worlds = new Map();   // worldVersion -> { world: ready world | null, pending: Promise }
 
   const send = (ws, payload) => {
     if (ws?.readyState === 1) ws.send(JSON.stringify(payload));
   };
 
-  // Movement never runs against a substitute floor: until the authoritative world is resident,
-  // players keep their spawn state and snapshots say so.
-  function ensureWorld() {
-    if (simulationWorld || worldPending) return worldPending;
-    worldPending = Promise.resolve(worldFactory()).then(result => {
-      simulationWorld = result;
-      for (const room of rooms.values()) for (const client of room.clients.values()) attachController(client);
-      return result;
-    });
-    return worldPending;
+  // Movement never runs against a substitute floor: until the room's authoritative world is
+  // resident, players keep their spawn state and snapshots say so. An injected `world` (tests)
+  // serves every room regardless of config.
+  function ensureWorld(room) {
+    const config = room.terrain;
+    if (world) { room.sim = world; attachRoomControllers(room); return Promise.resolve(world); }
+    let entry = worlds.get(config.worldVersion);
+    if (!entry) {
+      entry = { world: null, pending: null };
+      entry.pending = Promise.resolve(worldFactory(config)).then(result => {
+        entry.world = result;
+        for (const r of rooms.values()) if (r.terrain.worldVersion === config.worldVersion && !r.sim) { r.sim = result; attachRoomControllers(r); }
+        return result;
+      }, err => { entry.error = err; throw err; });
+      worlds.set(config.worldVersion, entry);
+    }
+    if (entry.world && !room.sim) { room.sim = entry.world; attachRoomControllers(room); }
+    return entry.pending;
+  }
+
+  function attachRoomControllers(room) {
+    for (const client of room.clients.values()) attachController(client);
   }
 
   function attachController(client) {
-    if (client.controller || !simulationWorld) return;
+    const sim = client.room.sim;
+    if (client.controller || !sim) return;
     client.controller = createBaseGamePlayerController({
-      worldQuery: simulationWorld.worldQuery,
-      spawn: simulationWorld.spawn,
+      worldQuery: sim.worldQuery,
+      spawn: sim.spawn,
       config: { fixedHz: simHz },
     });
   }
@@ -100,7 +135,7 @@ export function createBaseGameRoomService({
       lastProcessedTick: client.lastConsumedTick,
       queueDepth: client.queue.length,
       lastInputClientTime: client.lastInputClientTime,
-      position: controller ? controller.getPosition() : [...(simulationWorld?.spawn ?? [0, 0, 0])],
+      position: controller ? controller.getPosition() : [...(room.sim?.spawn ?? [0, 0, 0])],
       velocity: controller ? controller.getVelocity() : [0, 0, 0],
       yaw: client.lastInput.yaw,
       pitch: client.lastInput.pitch,
@@ -118,8 +153,9 @@ export function createBaseGameRoomService({
       serverTime: now(),
       tick: room.tick,
       simHz,
-      worldVersion: simulationWorld?.worldVersion ?? null,
-      worldReady: !!simulationWorld,
+      worldVersion: room.sim?.worldVersion ?? null,
+      worldReady: !!room.sim,
+      terrain: describeBaseGameTerrainConfig(room.terrain),
       ownerId: room.ownerId,
       world: { ...room.world },
       players: [...room.clients.values()].map(client => playerEntry(client, room)),
@@ -186,6 +222,8 @@ export function createBaseGameRoomService({
       owner: client.room.ownerId === client.id,
       simHz,
       playerCap,
+      // The full room terrain config travels once, here; snapshots carry identity only.
+      terrain: client.room.terrain,
     });
     send(client.ws, snapshot(client.room));
   }
@@ -195,13 +233,16 @@ export function createBaseGameRoomService({
     const code = normalizeBaseGameRoomCode(msg.room);
     if (!code) { fail(ws, 'invalid_room', 'Room codes use 2-16 letters, numbers, _ or -'); return true; }
     if (rooms.has(code)) { fail(ws, 'room_exists', 'That room already exists'); return true; }
-    ensureWorld();
+    const terrain = sanitizeBaseGameTerrainConfig(msg.terrain);
+    if (terrain.error) { fail(ws, 'invalid_terrain', terrain.error); return true; }
     const at = now();
     const room = {
       code,
       clients: new Map(),
       ownerId: null,
       revision: 1,
+      terrain: terrain.config,
+      sim: null,
       world: sanitizeBaseGameWorldPatch(msg.world),
       worldUpdatedAt: at,
       emptySince: null,
@@ -210,6 +251,11 @@ export function createBaseGameRoomService({
       lastStepAt: at,
     };
     rooms.set(code, room);
+    ensureWorld(room).catch(err => {
+      // The world could not be built: tell everyone and drop the room so nobody stays on spawn forever.
+      for (const c of connectedClients(room)) fail(c.ws, 'world_failed', `Room world failed to load: ${err.message}`);
+      rooms.delete(code);
+    });
     const client = makeClient(ws, room);
     room.ownerId = client.id;
     sendJoined(client);
@@ -300,7 +346,7 @@ export function createBaseGameRoomService({
   // Respawn is a request, not a transform: the server resets the controller to its own spawn,
   // bumps the spawn revision, and resyncs the client's tick numbering.
   function respawnClient(client) {
-    client.controller?.reset(simulationWorld?.spawn);
+    client.controller?.reset(client.room.sim?.spawn);
     client.lastInput = neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch);
     client.spawnRevision++;
     client.respawns = (client.respawns ?? 0) + 1;
@@ -318,10 +364,13 @@ export function createBaseGameRoomService({
   }
 
   // Authoritative kill plane: anyone below the world's floor limit respawns, connected or not.
+  // Terrain worlds give a surface-relative limit (killPlaneYAt); the lab gives a constant.
   function enforceKillPlane(client) {
-    const limit = simulationWorld?.killPlaneY;
-    if (!Number.isFinite(limit) || !client.controller) return false;
-    if (client.controller.getPosition()[1] >= limit) return false;
+    const sim = client.room.sim;
+    if (!sim || !client.controller) return false;
+    const p = client.controller.getPosition();
+    const limit = typeof sim.killPlaneYAt === 'function' ? sim.killPlaneYAt(p[0], p[2]) : sim.killPlaneY;
+    if (!Number.isFinite(limit) || p[1] >= limit) return false;
     respawnClient(client);
     return true;
   }
@@ -385,8 +434,7 @@ export function createBaseGameRoomService({
   }
 
   function step(at = now()) {
-    if (!simulationWorld) return;
-    for (const room of rooms.values()) stepRoom(room, at);
+    for (const room of rooms.values()) if (room.sim) stepRoom(room, at);
   }
 
   function transferOwner(room) {
@@ -429,7 +477,10 @@ export function createBaseGameRoomService({
   }
 
   return {
-    handle, disconnect, cleanup, step, broadcastSnapshots, ensureWorld, rooms,
-    get worldReady() { return !!simulationWorld; },
+    handle, disconnect, cleanup, step, broadcastSnapshots, rooms,
+    // Resolves when every room's world is resident (tests); no rooms -> resolved.
+    ensureWorld() { return Promise.all([...rooms.values()].map(room => ensureWorld(room))); },
+    get worldReady() { return [...rooms.values()].every(room => !!room.sim); },
+    get worldCount() { return worlds.size; },
   };
 }
