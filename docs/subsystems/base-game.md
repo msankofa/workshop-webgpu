@@ -38,6 +38,9 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Traversal Lab layout and rendering | `traversal-lab-layout.js` / `base-game-traversal-lab.js` |
 | Fixed-step diagnostic player | `base-game-player-controller.js` |
 | Player presentation and camera | `base-game-player-view.js` / `bot-camera-control.js` damping |
+| Procedural humanoid rig, gait, IK | `player-procedural-body.js` / `body-part-batches.js` |
+| Body support through world query | `base-game-body-support.js` |
+| Body presentation owner | `base-game-player-bodies.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
 or server room logic.
@@ -78,14 +81,34 @@ or server room logic.
 Only one directional light owns shadows per frame: sunlight by day, moonlight when its effective
 intensity exceeds the sun. This avoids two world-scale directional shadow passes.
 
+`updateWorld()` runs every frame and re-applies every setting, so its callees must be cheap when
+nothing changed: the sun colour is re-blended only when the twilight factor moves, the player
+controller is reconfigured only when one of its seven settings moved (`configure()` validates and
+copies), and the lighting rig's setters return early on an unchanged value. Player position reads
+in the loop go through a scratch array. The world-query and world-coordinate contracts still
+copy and validate every input per call by design; their per-step cost is shared with the server.
+
 ## Live component controls
 
 All controls work without reloading the page.
 
 - World: Empty Space or Traversal Lab, collision wireframe, and origin marker.
-- Player: Player or Orbit debug control, first/third person, diagnostic capsule, movement, jump,
-  gravity, slope, step-up, snap-down, camera damping, distance, sensitivity, and wall padding.
-- Network: remote player capsules, network diagnostics line, and interpolation delay.
+- Player: Player or Orbit debug control, first/third person, player body (off, third-person rig,
+  lower-body rig), diagnostic capsule, movement, jump, gravity, slope, step-up, snap-down, camera
+  damping, distance, sensitivity, and wall padding.
+- Network: remote player bodies, remote diagnostic capsules, network diagnostics line, and
+  interpolation delay.
+- Arms: preset dropdown (relaxed, brisk, sprinter) plus idle elbow bend, walk raise/swing, run
+  raise/swing/forearm pump, jump arm lift, landing arm swing, and elbow direction (rotation of
+  the down/back pole about the arm axis, mirrored per side: 0 bends straight back, 1.57 straight
+  out; default 0.8). The preset fills the sliders;
+  sliders then override it. Applied live to the local and every remote rig through
+  `playerBodies.setArmTuning()`.
+- Body movement: bot-viewer-v3's Movement tuning section, control for control (turn follow/drag,
+  chest lead, gait model, lean into step, chest follow, foot width/reach, bob, sway, natural
+  locomotion toggle, cyclic amount, step overlap, spine falloff), applied live to every rig through
+  `playerBodies.setMovementTuning()`. Arms also gets Backswing (`armAsym`, the locomotion layer's
+  backward-swing fraction).
 - Sky: entire group, dome, sun disc, moon disc, stars, Milky Way, additional bodies.
 - Lighting: directional sunlight, ambient light, moonlight, shadows.
 - Time: astronomical driver, manual primary body, hour, latitude, day of year, moon phase offset,
@@ -425,6 +448,48 @@ state round-trip, surface identity, first-person capsule hiding, third-person wa
 the required HTML integration points. Visual feel and pointer-lock interaction still require the
 browser play test.
 
+### Player body presentation (Track A of the parallel plan)
+
+Tracks A1-A5 of `docs/superpowers/plans/2026-08-21-base-game-player-body-terrain-parallel.md` are
+implemented against the Traversal Lab; A6 (the body acceptance gate) is a browser review.
+
+- `base-game-body-support.js` is the one compatibility change. The procedural body asks for ground
+  height through its existing `terrainHeight(x, z)` callback; this adapter answers that exact
+  signature with `worldQuery.groundProbe()`. Each probe starts 1.0 m above the body's current
+  global foot Y and searches 1.9 m downward, so a bridge deck, a stacked floor, a tunnel floor and
+  a cave floor all resolve without ever scanning a whole column. It converts render-local in and
+  out and keeps a global reference, so a render-origin rebase changes nothing. With no support in
+  the window it returns the capsule's own foot plane (the body's airborne pose comes from
+  `onFloor`, not from this value); misses are counted. `player-procedural-body.js` is unchanged,
+  so every existing viewer keeps its heightfield path.
+- `base-game-player-bodies.js` is the presentation owner. It builds/destroys one local rig
+  (`thirdPerson` = `local-third-person`, `lowerBody` = `local-lower-body`) and one remote rig per
+  player id, converts global foot positions to render-local body centres, feeds velocity, yaw,
+  pitch, grounded state and capsule size, enables Bot Viewer v3's `adaptGaitToSpeed`,
+  `movementDynamics` and `naturalLocomotion`, renders remote rigs through `body-part-batches.js`
+  instancing, tints remotes with the same id-derived colour as their capsule, and reports counts and
+  support probes/misses. It owns no input, simulation, networking, camera or state storage and
+  cannot move the capsule.
+- Conventions carried over from Bot Viewer v3 (2026-08-21), because the rig leans and strides along
+  its *facing*: the body's `yaw` is the heading of travel (`atan2(-vx, -vz)`, held while slower than
+  0.4 m/s) and the camera yaw is sent as `lookYaw`/`lookWeight` so the head looks where the camera
+  points; `gait.cfg.stepOverlap` is 0.22 (v3's roll-through, the rig default 0 is plant-pause-plant);
+  every rig starts on v3's shipped `botMovementSettings` (`BASE_GAME_MOVEMENT_DEFAULTS`) applied
+  through a port of its `applyBotMovementSettings()`. The arm-pose presets blend walk→run on
+  absolute m/s, so `setMovementSpeeds()` rescales their thresholds from the live move speeds.
+- `base-game.html` adds the registered `playerBodyMode` (default `thirdPerson`) and
+  `remoteBodiesEnabled` (default on) settings; `playerCapsuleVisible` and `remotePlayersEnabled`
+  (remote capsules) now default off but remain independent toggles. The local body reads the same
+  interpolated render position the capsule uses; a third-person rig shows only in third-person view
+  and a lower-body rig only in first-person view. Remote bodies read the interpolated samples that
+  `base-game-remote-players.js` now computes even when its capsules are hidden. Body diagnostics
+  join `context.network.bodies` in performance captures.
+
+`test-base-game-player-body.mjs` (27 checks) proves stacked floors, bridge deck versus ground,
+tunnel floor versus roof, ramp and standard step, an airborne miss, render-origin independence,
+that body updates never mutate the controller, local and stacked remote feet through the owner,
+release by id, feet following a rebase, body-off teardown, and the page integration points.
+
 ### Pre-terrain server-authoritative player replication
 
 Roadmap Step 4 is mandatory before any terrain implementation. The existing room service is retained,
@@ -663,7 +728,24 @@ Terrain work cannot begin until all of the following pass:
 
 Only after this gate is accepted may the Common Terrain Source contract become roadmap Step 5.
 
+The detailed [player-body and terrain parallel implementation plan](../superpowers/plans/2026-08-21-base-game-player-body-terrain-parallel.md)
+allows body presentation to proceed against the Traversal Lab and terrain-source/evaluator modules to
+proceed under isolated tests while this gate closes. Streamed terrain must not register into the
+authoritative runtime world until the gate passes. The plan reuses Bot Viewer v3's procedural body
+and scaling patterns, Environment Viewer v2's local/remote presentation wiring, and Base Game's
+existing capsule, coordinates, multiplayer, and `worldQuery.groundProbe()` ownership. Pokémon Park
+is comparison evidence only. The sole compatibility extension is a Y-aware procedural-body support
+adapter backed by the existing world query; it is not a second terrain or collision API.
+
 ### Common terrain-source contract
+
+The implementation order and exact reuse boundaries are recorded in the
+[Base Game terrain execution plan](../superpowers/plans/2026-08-21-base-game-terrain-execution.md).
+Its first vertical slice uses the existing analytic `terrain-field.js`, the existing
+`terrain-system.js` streamer, one necessary heightfield-to-`worldQuery` adapter, and Solo Base Game
+ordinary chunks. It also establishes the shared v5 project model and embedded Terrain Studio bridge
+early, but live v5 terrain Apply remains gated until the v5 source evaluator exists. Finite maps,
+multiplayer terrain authority, caves, and flight-scale visual LOD follow their documented gates.
 
 Base Game will use one capability-based terrain-source interface rather than special-casing each
 viewer. It must support:
@@ -680,6 +762,130 @@ viewer. It must support:
 The complete v5 project JSON is the procedural source artifact. Its exported GLB is a finite baked
 map and is never repeated to imitate infinity. Imported heightmaps, existing paint rasters, and
 finite GLBs remain world-anchored finite layers or overlays on an otherwise infinite source.
+
+### Heightfield world-query provider (terrain plan Phase 3, shipped 2026-08-22)
+
+`world-query-heightfield-provider.js` — `createHeightfieldWorldQueryProvider(source, { id='terrain', priority, layers, enabled })`
+adapts any `terrain-source.js` source to the world-query contract using `collision.js` math.
+It declares only `groundProbe` and `resolveCapsule` (never raycast, never a ceiling or wall):
+`groundProbe` answers only when the surface is at or below the origin and within `maxDistance`
+(the service applies the slope limit); `resolveCapsule` seats the lower sphere on the surface,
+removes only the into-surface velocity (jumps survive), reports `grounded` per the slope limit and
+one contact `{ point, normal, depth, colliderId: 'key@version', surfaceType: 'terrain' }`.
+`acceptsQuery` rejects points outside finite bounds or inside a `holeAt` hole before sampling, so
+a bridge deck above or a cave floor below the same X/Z is answered by the mesh provider instead.
+`setSource(next)` swaps sampling and identity. `test-world-query-heightfield.mjs` covers rest,
+penetration, slope slide, jump preservation, no-hit, probe rules, bounds/holes, composition with a
+mesh provider and the real `base-game-player-controller.js` walking/jumping on the analytic source.
+
+### Terrain world mode (terrain plan Phase 4, shipped 2026-08-22)
+
+`base-game-terrain.js` — `createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source, params, useWorker })`
+is the runtime owner: a source-injected `terrain-system.js` streamer (chunk 30 m, draw radius 3,
+2 builds / 2 unloads per update), the heightfield world-query provider (`id: 'terrain'`), a scene
+root translated by `-renderOrigin` (chunk geometry stays global; `worldCoordinates.onRebase` shifts
+the root only), debug views (wireframe, `MeshNormalNodeMaterial` normals view, per-chunk
+`Box3Helper` tile bounds, a magenta contact marker on the probed ground under the player) and a
+`stats` block (source kind/key/version/algorithm/bounds, lod, resident/stale/target/queued/in-flight
+tiles, draws, triangles, installs per second, `lastUpdateMs`, epoch, worker, `lastSourceError`,
+collision-provider id/enabled/colliderId). `setActive()` switches collision and visuals together;
+`setVisible(false)` hides chunks but keeps collision authoritative; `setSource()` swaps the streamed
+and collided source with epoch bump and stale-chunk retention; `spawnPosition(x, z)` and
+`killPlaneYAt(x, z)` (80 m under the local surface) give the host ground-relative spawn/kill values.
+`update(globalPosition, dt)` must receive the player's global position.
+
+In `base-game.html`: `worldMode` gains `terrain` (the only runtime source is
+`analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' })` until Phase 7);
+`worldSpawn()`/`worldKillPlaneY()` pick terrain or Traversal Lab values; changing `worldMode` in
+Solo respawns the player; `updateWorld()` drives `setActive/Visible/DrawRadius/…` from settings;
+`animate()` calls `terrain.update()` under the `terrain` profiler label before `updateWorld`. New
+local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–6), `terrainWireframe`,
+`terrainNormals`, `terrainTileBounds`, `terrainCollisionDebug`, in a **Terrain world** panel
+section with a source readout and a 4 Hz runtime line. The performance `context.world.terrain` is
+now `{ project: terrainStore.summary(), runtime: terrain.stats }`. Online, `worldMode` is still
+local and the server still simulates the Traversal Lab (Phase 5 is the fix).
+`test-base-game-terrain.mjs` covers mode switch, walking/jumping/crossing chunk boundaries with the
+real controller, respawn, visual-off collision, rebase (keys and geometry untouched), debug views,
+draw radius, source swap and removal without rebuilding the player.
+
+### Terrain authoring and Terrain Studio
+
+**Shipped 2026-08-22 (terrain plan Phase 0A).** `base-game-terrain-studio.js` owns this:
+
+- `createTerrainProjectStore({ applySource, onChange })` — pure. Holds an **active** project and
+  an unapplied **draft** (`receiveDraft(raw, origin)` normalizes through `terrain-project-v5.js`
+  and hashes; a draft equal to the active hash collapses to "unchanged"), `discardDraft()`,
+  `apply()` (the transaction: validate → classify → `applySource(project)` → only then swap
+  active; every failure keeps active and reports a precise `message`; with no runtime source
+  yet it fails with "terrain-source-v5.js … Phase 7"), `capture()`/`restore()` (full projects
+  with hashes, format `pcw-base-game-terrain` v1; restore re-validates and rejects a hash
+  mismatch without touching the current state) and `summary()` (hash/version/status only).
+- `createBaseGameTerrainStudio({ store, editorUrl, onOpen, onClose })` — a `z-index:1100`
+  full-screen overlay with a top bar and a lazily created same-origin `<iframe>` of
+  `terrain-generator-v5.html`, driven by `createBridgeHost`. `show()` re-sends the draft (or
+  active, or `null`) project every time; an editor Apply becomes a draft and closes the screen;
+  editor Cancel just closes. Status values: `unchanged`, `draft`, `validating`, `rebuilding`,
+  `active`, `failed`.
+
+In `base-game.html` the store and studio are created before the start menu, so **Terrain
+Studio** is a button on the start menu and on the pause menu (`base-game-menu.mjs` gained
+`onTerrainStudio` on both). The Terrain panel section shows the active/draft identity (name,
+version, algorithm, hash, kind, runtime status), the status message and **Open Terrain
+Studio** / **Apply draft** / **Discard draft**. Opening sets `gameplayPaused`, disables orbit
+controls, clears input and releases pointer lock (guarded by `simulationReady` when opened
+from the start menu); `animate()` skips `renderer.render` while the studio is open but still
+advances online lockstep with neutral input; closing resumes or returns to the pause menu
+depending on what was open before. `captureAllState()` embeds `terrain: store.capture()`,
+`applyAllState()` restores it, and the performance `context.world.terrain.project` carries
+`store.summary()`. Escape is ignored while the studio owns the screen.
+
+**Phase 7 (2026-08-22):** Apply now works at runtime. `terrainStore` is created with
+`applySource: applyTerrainProjectAtRuntime(project)`, which builds `v5Descriptor(project)`,
+constructs the candidate source and synchronously generates the tile under the player (proving the
+recipe evaluates) before `terrain.setSource(descriptor)` bumps the epoch; it then forces
+`worldMode = 'terrain'`, keeps the player's global position unless the new ground is more than
+3 m away (then respawns at that X/Z), and updates the source readout. After a state load,
+`syncTerrainSourceFromStore()` re-applies an active project whose descriptor is not the one being
+streamed. The Terrain panel gained **Make draft streamable**
+(`migrateProjectToUnbounded(draft, { dropBoundedData: true })`). The embedded editor defaults new
+work to the unbounded algorithm, so drafts from Terrain Studio are normally streamable; a bounded
+draft fails Apply with the precise reason. Runtime height is the pre-erosion stack height (erosion,
+hydrology and masks are preview-only; the status line names them).
+
+**Phase 8 (2026-08-22) — streamed volumetric terrain.** `base-game-terrain.js` takes a
+`volumetric` option / `setVolumetric(v)`: the streamer requests the `volume` tile field (marching
+cubes from the v5 project's `density` config — surface warp, caves, overhangs), chunk meshes are
+built from it, and collision moves from the heightfield provider to
+`world-query-chunk-mesh-provider.js` (`id: 'terrain-volume'`, one BVH per resident chunk, synced
+in `update()` as chunks install/unload; the heightfield provider is disabled meanwhile). The kill
+plane drops to `density.y_min − 10` so cave floors are not a death zone; `stats.volumetric` and
+`stats.collisionProvider` report the mode. In `base-game.html` the **Volumetric (caves from the
+v5 density config)** toggle (`terrainVolumetric`, default off) drives it from `updateWorld()`;
+it only engages when the streamed source has `densityAt` (an applied v5 project — the analytic
+default has no density), and the runtime line says so otherwise. Apply's candidate tile includes
+the volume when the toggle is on. Vertical sample spacing is 2× the XZ step (2.5 m at the default
+chunk), so passages thinner than that do not survive; `VOLUME_Y_SPACING_MULT` is the knob.
+
+Not yet: multiplayer room ownership (Phase 5), finite GLB maps (Phase 6), LOD (9).
+
+Base Game hosts the actual Terrain Generator v5 interface as a full-screen Terrain Studio screen
+reachable from the start and pause menus. It does not recreate a second set of v5 sliders. The
+standalone and embedded editors share one renderer-free project normalizer/serializer so `cfg`,
+`density`, layer stack, paint data, imports, project version, algorithm version, and content hash
+round-trip identically.
+
+Opening Terrain Studio pauses simulation, releases pointer lock, and suspends the Base Game world
+render while the editor preview is active. Edits remain a draft until Apply. Solo Apply validates a
+candidate source and spawn tile first, then changes source epoch and replaces chunks under bounded
+budgets without removing complete old chunks. The player keeps the same global position when it is
+still supported; otherwise the established safe-spawn path handles the source change.
+
+State files embed the complete normalized project so every configured parameter is loadable.
+Performance records store the project identity/hash and a compact configuration summary rather than
+duplicating paint/import payloads on every capture. Local export and hosted publishing add a sibling
+`-project.json` artifact to the existing map artifact set. Multiplayer rooms reference that published
+asset by validated key and hash; changing terrain requires an explicit room restart/resync rather
+than accepting or applying an arbitrary client project blob during play.
 
 ### Infinite Terrain Generator v5 evaluation
 

@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import http.server
 import json
 import os
@@ -76,6 +77,26 @@ def _safe_under_maps(*segments):
     if target != base and not target.startswith(base + os.sep):
         raise ValueError('path escapes maps/')
     return target
+
+
+# Terrain Generator v5 sends its project as canonical JSON text plus the sha256 of
+# those exact bytes (terrain-project-v5.js hashProject). Verify before writing so a
+# stored -project.json always matches its hash; returns (bytes, hash) or (None, None).
+def validate_project_artifact(project_json, project_hash):
+    if project_json is None:
+        return None, None
+    if not isinstance(project_json, str) or not isinstance(project_hash, str):
+        raise ValueError('projectJson and projectHash must be strings')
+    data = project_json.encode('utf-8')
+    if len(data) > 60_000_000:
+        raise ValueError('project too large')
+    parsed = json.loads(project_json)
+    if not isinstance(parsed, dict) or parsed.get('app') != 'terrain-generator-v5':
+        raise ValueError('projectJson is not a terrain-generator-v5 project')
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != project_hash.lower():
+        raise ValueError('projectHash does not match projectJson bytes')
+    return data, digest
 
 
 def slugify(name):
@@ -348,8 +369,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 rel_dir = os.path.relpath(dirpath, base).replace(os.sep, '/')
                 if rel_dir != '.':
                     st = os.stat(dirpath)
+                    # st_ctime is creation time on Windows (this repo's dev platform) but metadata-
+                    # change time on POSIX; tools/filesystem-map.html's growth timeline uses it as a
+                    # best-effort "born at" stamp for the emergence animation, not an authoritative one.
                     entries.append({
-                        'path': rel_dir, 'type': 'dir', 'size': 0, 'mtime': st.st_mtime,
+                        'path': rel_dir, 'type': 'dir', 'size': 0, 'mtime': st.st_mtime, 'ctime': st.st_ctime,
                     })
                 for name in filenames:
                     if name.startswith('.'):
@@ -361,7 +385,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     except OSError:
                         continue
                     entries.append({
-                        'path': rel, 'type': 'file', 'size': st.st_size, 'mtime': st.st_mtime,
+                        'path': rel, 'type': 'file', 'size': st.st_size, 'mtime': st.st_mtime, 'ctime': st.st_ctime,
                     })
             self._send_json({'ok': True, 'root': os.path.basename(base), 'entries': entries})
         except Exception as exc:
@@ -521,12 +545,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 raise ValueError(f'unsafe name: {name!r}')
             folder_path = _safe_under_maps(folder)
             glb_bytes = base64.b64decode(glb_base64)
+            project_bytes, project_hash = validate_project_artifact(body.get('projectJson'), body.get('projectHash'))
 
             os.makedirs(folder_path, exist_ok=True)
             with open(os.path.join(folder_path, f'{name}.glb'), 'wb') as f:
                 f.write(glb_bytes)
             with open(os.path.join(folder_path, f'{name}-data.json'), 'w', encoding='utf-8') as f:
                 json.dump(map_data, f, indent=2)
+            if project_bytes is not None:
+                # Written byte-for-byte so sha256 of the file equals the published hash.
+                with open(os.path.join(folder_path, f'{name}-project.json'), 'wb') as f:
+                    f.write(project_bytes)
 
             map_key = f'{folder}/{name}.glb'
             config_path = os.path.join(MAPS_DIR, 'map-config.json')
@@ -553,6 +582,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'ok': True, 'mapKey': map_key,
                 'writtenTo': os.path.join(folder_path, f'{name}.glb'),
                 'bytes': len(glb_bytes),
+                'projectKey': f'{folder}/{name}-project.json' if project_bytes is not None else None,
+                'projectHash': project_hash,
             })
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

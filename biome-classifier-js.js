@@ -187,6 +187,49 @@ export function createFieldSampler(seed) {
   return { sample };
 }
 
+// Unbounded twin of createFieldSampler: every lattice value is a hash of (seed, channel,
+// octave, cell) so any global coordinate samples the same climate fields without a
+// 1,200 m board or edge clamping. Output range/shape match the bounded sampler; values
+// differ because the lattice is drawn per cell instead of from one mulberry32 stream.
+function hashedCell(octaveSeed, ix, iz) {
+  let h = hashSeed(octaveSeed, ix, iz);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return ((h ^ (h >>> 15)) >>> 0) / 4294967296 * 2 - 1;
+}
+
+export function createUnboundedFieldSampler(seed) {
+  const octaveSeeds = new Map();
+  function octaveSeedFor(channel, octave) {
+    const key = channel + ':' + octave;
+    let s = octaveSeeds.get(key);
+    if (s === undefined) { s = hashSeed(seed, CHANNEL_OFFSETS[channel], octave * 1299721); octaveSeeds.set(key, s); }
+    return s;
+  }
+  function sampleCell(octaveSeed, xCoord, zCoord) {
+    const x0 = Math.floor(xCoord), z0 = Math.floor(zCoord);
+    const tx = fade(xCoord - x0), tz = fade(zCoord - z0);
+    const v00 = hashedCell(octaveSeed, x0, z0), v10 = hashedCell(octaveSeed, x0 + 1, z0);
+    const v01 = hashedCell(octaveSeed, x0, z0 + 1), v11 = hashedCell(octaveSeed, x0 + 1, z0 + 1);
+    const vx0 = v00 * (1 - tx) + v10 * tx;
+    const vx1 = v01 * (1 - tx) + v11 * tx;
+    return vx0 * (1 - tz) + vx1 * tz;
+  }
+  function sample(channel, x, z, period, octaves) {
+    const oct = Math.max(1, Math.floor(octaves));
+    let total = 0, ampSum = 0, amp = 1;
+    for (let o = 0; o < oct; o++) {
+      const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
+      total += sampleCell(octaveSeedFor(channel, o), x / octavePeriod, z / octavePeriod) * amp;
+      ampSum += amp;
+      amp *= 0.5;
+    }
+    const v = (total / Math.max(ampSum, 1e-8)) * 1.35;
+    return Math.min(1, Math.max(-1, v));
+  }
+  return { sample, unbounded: true };
+}
+
 // ---- height composition (port of height_composer.py's compose_height) ----
 export const CONTINENT_X = [-1.0, -0.6, -0.2, 0.0, 0.3, 0.6, 1.0];
 export const CONTINENT_Y = [-40.0, -22.0, -4.0, 4.0, 14.0, 32.0, 55.0];

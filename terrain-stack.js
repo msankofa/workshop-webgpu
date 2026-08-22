@@ -163,52 +163,75 @@ function maskWeight(mask, acc) {
 // [-worldX/2, worldX/2] x [-worldZ/2, worldZ/2]. ctx: { resolution, worldX, worldZ, seed,
 // classicHeight?: Float32Array, imports?: { [layerId]: { data: Float32Array, resolution } } }.
 // Returns a Float32Array of heights in world units.
+// Layers whose evaluation needs only (x, z) and the seed: safe for an unbounded source.
+// `classic` joins them only when the host supplies a point-wise classic height.
+export const STREAMABLE_LAYER_TYPES = Object.freeze(['fbm', 'ridged', 'billow', 'voronoi', 'constant', 'domainWarp', 'terrace']);
+
+// Shared prepared-layer evaluator: grid and point evaluation run the same layer switch.
+// prepareStack(stack, { seed, imports }) -> prepared; evaluateStackPoint(prepared, x, z, ctx)
+// where ctx = { classic: number (classic height at this point), importUV: [u, v] | null }.
+export function prepareStack(stack, { seed = 0, imports = null } = {}) {
+  const layers = stack.layers.filter((l) => l.enabled);
+  const seedBase = seedDomainOffset(seed);
+  return {
+    seed,
+    warp: [0, 0],
+    layers: layers.map((l) => ({
+      l, def: LAYER_TYPES[l.type],
+      off: seedBase + seedDomainOffset((seed * 31 + (l.params.seedOffset || 0) * 7919) | 0) * 0.37,
+      imp: l.type === 'import' ? imports?.[l.id] ?? null : null,
+    })),
+  };
+}
+
+export function evaluateStackPoint(prepared, x, z, ctx = {}) {
+  const { layers, warp } = prepared;
+  let acc = 0, px = x, pz = z;
+  for (let li = 0; li < layers.length; li++) {
+    const { l, def, off, imp } = layers[li];
+    const p = l.params;
+    if (def.kind === 'modifier') {
+      if (l.type === 'domainWarp') {
+        domainWarp2(px + off, pz - off, { scale: p.scale, amount: p.amount, octaves: p.octaves }, warp);
+        px += warp[0]; pz += warp[1];
+      } else if (l.type === 'terrace') {
+        acc = terrace(acc, { stepHeight: p.stepHeight, smoothness: p.smoothness, strength: p.strength });
+      }
+      continue;
+    }
+    let v;
+    const s = p.scale ? 1 / p.scale : 0;
+    const sx = px * s + off, sz = pz * s - off * 0.61;
+    switch (l.type) {
+      case 'classic': v = (ctx.classic || 0) * p.gain; break;
+      case 'fbm': v = (fbm2(sx, sz, p) - 0.5) * p.amplitude; break;
+      case 'ridged': v = ridged2(sx, sz, p) * p.amplitude; break;
+      case 'billow': v = (billow2(sx, sz, p) - 0.5) * p.amplitude; break;
+      case 'voronoi': v = (voronoi2(sx, sz, p) - 0.5) * p.amplitude; break;
+      case 'constant': v = p.amplitude; break;
+      case 'import': v = imp && ctx.importUV ? bilinear(imp.data, imp.resolution, ctx.importUV[0], ctx.importUV[1]) * p.amplitude + p.offset : 0; break;
+      default: v = 0;
+    }
+    acc = applyBlend(l.blendMode, acc, v, p.opacity * maskWeight(l.mask, acc));
+  }
+  return acc;
+}
+
 export function evaluateStackGrid(stack, ctx) {
   const { resolution: res, worldX, worldZ, seed = 0 } = ctx;
   const n = res * res;
   const out = new Float32Array(n);
-  const layers = stack.layers.filter((l) => l.enabled);
-  const seedBase = seedDomainOffset(seed);
-  const warp = [0, 0];
-  const prepared = layers.map((l) => ({
-    l, def: LAYER_TYPES[l.type],
-    off: seedBase + seedDomainOffset((seed * 31 + (l.params.seedOffset || 0) * 7919) | 0) * 0.37,
-    imp: l.type === 'import' ? ctx.imports?.[l.id] ?? null : null,
-  }));
+  const prepared = prepareStack(stack, { seed, imports: ctx.imports });
+  const pointCtx = { classic: 0, importUV: [0, 0] };
   for (let iz = 0; iz < res; iz++) {
     const z = (iz / Math.max(1, res - 1) - 0.5) * worldZ;
+    pointCtx.importUV[1] = iz / Math.max(1, res - 1);
     for (let ix = 0; ix < res; ix++) {
       const x = (ix / Math.max(1, res - 1) - 0.5) * worldX;
       const idx = iz * res + ix;
-      let acc = 0, px = x, pz = z;
-      for (let li = 0; li < prepared.length; li++) {
-        const { l, def, off, imp } = prepared[li];
-        const p = l.params;
-        if (def.kind === 'modifier') {
-          if (l.type === 'domainWarp') {
-            domainWarp2(px + off, pz - off, { scale: p.scale, amount: p.amount, octaves: p.octaves }, warp);
-            px += warp[0]; pz += warp[1];
-          } else if (l.type === 'terrace') {
-            acc = terrace(acc, { stepHeight: p.stepHeight, smoothness: p.smoothness, strength: p.strength });
-          }
-          continue;
-        }
-        let v;
-        const s = p.scale ? 1 / p.scale : 0;
-        const sx = px * s + off, sz = pz * s - off * 0.61;
-        switch (l.type) {
-          case 'classic': v = (ctx.classicHeight ? ctx.classicHeight[idx] : 0) * p.gain; break;
-          case 'fbm': v = (fbm2(sx, sz, p) - 0.5) * p.amplitude; break;
-          case 'ridged': v = ridged2(sx, sz, p) * p.amplitude; break;
-          case 'billow': v = (billow2(sx, sz, p) - 0.5) * p.amplitude; break;
-          case 'voronoi': v = (voronoi2(sx, sz, p) - 0.5) * p.amplitude; break;
-          case 'constant': v = p.amplitude; break;
-          case 'import': v = imp ? bilinear(imp.data, imp.resolution, ix / Math.max(1, res - 1), iz / Math.max(1, res - 1)) * p.amplitude + p.offset : 0; break;
-          default: v = 0;
-        }
-        acc = applyBlend(l.blendMode, acc, v, p.opacity * maskWeight(l.mask, acc));
-      }
-      out[idx] = acc;
+      pointCtx.classic = ctx.classicHeight ? ctx.classicHeight[idx] : 0;
+      pointCtx.importUV[0] = ix / Math.max(1, res - 1);
+      out[idx] = evaluateStackPoint(prepared, x, z, pointCtx);
     }
   }
   return out;

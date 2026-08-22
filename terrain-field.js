@@ -148,3 +148,50 @@ export function buildChunkArrays(xMin, zMin, size, segments, params, computeNorm
 
   return { positions, normals, uvs, index };
 }
+
+// Chunk arrays from a source tile (terrain-source.js result). Same vertex/uv/index
+// layout as buildChunkArrays so the two are interchangeable; reads the tile's
+// interior (apron skipped) and uses tile.normals when present.
+export function buildChunkArraysFromTile(tile) {
+  const seg = tile.intervals;
+  const g1 = seg + 1;
+  const vcount = g1 * g1;
+  const step = tile.step;
+  const pad = tile.apron;
+  const tx = tile.texels;
+
+  const positions = new Float32Array(vcount * 3);
+  const uvs = new Float32Array(vcount * 2);
+  const normals = tile.normals ? new Float32Array(vcount * 3) : null;
+
+  let p = 0, q = 0;
+  for (let iy = 0; iy <= seg; iy++) {
+    const z = tile.zMin + iy * step;
+    for (let ix = 0; ix <= seg; ix++) {
+      const s = (iy + pad) * tx + (ix + pad);
+      positions[p] = tile.xMin + ix * step;
+      positions[p + 1] = tile.heights[s];
+      positions[p + 2] = z;
+      uvs[q] = ix / seg;
+      uvs[q + 1] = 1 - iy / seg;
+      if (normals) { normals[p] = tile.normals[s * 3]; normals[p + 1] = tile.normals[s * 3 + 1]; normals[p + 2] = tile.normals[s * 3 + 2]; }
+      p += 3; q += 2;
+    }
+  }
+
+  const icount = seg * seg * 6;
+  const index = vcount > 65535 ? new Uint32Array(icount) : new Uint16Array(icount);
+  let t = 0;
+  for (let iy = 0; iy < seg; iy++) {
+    for (let ix = 0; ix < seg; ix++) {
+      const a = ix + g1 * iy;
+      const b = ix + g1 * (iy + 1);
+      const c = (ix + 1) + g1 * (iy + 1);
+      const d = (ix + 1) + g1 * iy;
+      index[t++] = a; index[t++] = b; index[t++] = d;
+      index[t++] = b; index[t++] = c; index[t++] = d;
+    }
+  }
+
+  return { positions, normals, uvs, index };
+}

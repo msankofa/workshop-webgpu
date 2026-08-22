@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
-import { terrainHeightAt, terrainNormalAt, buildChunkArrays, buildHeightTile } from './terrain-field.js';
+import { terrainHeightAt, terrainNormalAt, buildChunkArrays, buildHeightTile, buildChunkArraysFromTile } from './terrain-field.js';
+import { createSource, validateSource, normalizeTileRequest, tileKey } from './terrain-source.js';
+import './terrain-source-analytic.js';
+import './terrain-source-v5.js';
 
 // Re-export field math so existing importers keep working.
 export { terrainHeightAt, terrainNormalAt } from './terrain-field.js';
@@ -20,6 +23,7 @@ const DEFAULTS = {
   renderMode: 'chunks',       // 'chunks' = one mesh/chunk; 'instanced' = one shader-displaced InstancedMesh
   visualMode: 'mesh',         // 'mesh' = build visible chunk geometry; 'external' = records+colliders only (GPU CDLOD renders the ground)
   experimentalInstancedTerrain: false, // disabled until shader height parity with terrainHeightAt is proven
+  volumetric: false,          // source path only: request the 'volume' tile field and render marching-cubes chunks
 };
 
 function merge(base, over) {
@@ -40,7 +44,7 @@ function fieldParams(params) {
 function geometryFromArrays(a) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(a.positions, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(a.uvs, 2));
+  if (a.uvs) geo.setAttribute('uv', new THREE.BufferAttribute(a.uvs, 2));
   if (a.normals) geo.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
   geo.setIndex(new THREE.BufferAttribute(a.index, 1));
   if (!a.normals) geo.computeVertexNormals();
@@ -113,9 +117,19 @@ vec3 transformed = vec3(position.x, terrainHeightSample(terrainLocalUv, vec2(0.0
   return material;
 }
 
+const ATLAS_KEY_PREFIX = 'atlas:';
+
+// Resolve a source option: a source object, a descriptor, or null (legacy analytic path).
+function resolveSource(source) {
+  if (!source) return null;
+  return typeof source.buildTile === 'function' ? validateSource(source) : createSource(source);
+}
+
 class TerrainSystem {
   constructor(options = {}) {
     this.params = merge(DEFAULTS, options.params);
+    this.source = resolveSource(options.source);   // null => hard-coded terrain-field.js (Environment Viewer compat)
+    this.lastSourceError = null;
     this.group = new THREE.Group();
     this.group.name = 'TerrainChunks';
     this.material = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1 });
@@ -175,7 +189,64 @@ class TerrainSystem {
   }
 
   getHeight(x, z) {
-    return terrainHeightAt(this.params, x, z);
+    return this.source ? this.source.heightAt(x, z) : terrainHeightAt(this.params, x, z);
+  }
+
+  // Identity of the terrain currently being streamed (for perf records and metadata).
+  get sourceInfo() {
+    if (!this.source) return { kind: 'legacy-analytic', key: 'terrain-field', version: '1', lod: 0, bounds: null };
+    const d = this.source.descriptor;
+    return { kind: d.kind, key: d.key, version: d.sourceVersion, algorithmVersion: d.algorithmVersion, lod: 0, bounds: d.bounds };
+  }
+
+  // Swap the source. Bumps the epoch so in-flight results are dropped, but keeps
+  // every complete chunk (marked stale) until its same-key replacement is ready,
+  // so the ground never has a hole during the swap. Rebuilds run under the
+  // existing per-update budget.
+  setSource(source) {
+    this.source = resolveSource(source);
+    this.restream();
+  }
+
+  chunkInBounds(ix, iz) {
+    const b = this.source && this.source.descriptor.bounds;
+    if (!b) return true;
+    const s = this.params.chunkSize, x0 = ix * s, z0 = iz * s;
+    return x0 < b.maxX && x0 + s > b.minX && z0 < b.maxZ && z0 + s > b.minZ;
+  }
+
+  chunkSegments(size) {
+    return Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
+  }
+
+  sourceTileRequest(ix, iz, size, intervals, apron, fields) {
+    return normalizeTileRequest({ ix, iz, lod: 0, xMin: ix * size, zMin: iz * size, size, intervals, apron, fields });
+  }
+
+  // Fields a chunk needs from the source: volume chunks carry the marching-cubes mesh too.
+  chunkFields() {
+    return this.params.volumetric ? ['heights', 'normals', 'volume'] : ['heights', 'normals'];
+  }
+
+  // Restream every chunk under the current source/params: epoch bump (in-flight dropped) and
+  // stale-chunk retention until same-key replacements land. Used by setSource and setVolumetric.
+  restream() {
+    this.epoch++;
+    this.inFlight.clear();
+    this.atlasRequested.clear();
+    this.lastSourceError = null;
+    for (const chunk of this.chunks.values()) chunk.stale = true;
+    this.centerChunkX = null;
+    this.buildQueue = [];
+    this.buildQueueIndex = 0;
+  }
+
+  setVolumetric(value) {
+    const next = !!value;
+    if (next === !!this.params.volumetric) return;
+    if (next && !this.source) throw new Error('volumetric chunks need an injected terrain source');
+    this.params.volumetric = next;
+    this.restream();
   }
 
   get materialPatchTarget() {
@@ -254,7 +325,7 @@ class TerrainSystem {
       const item = this.buildQueue[this.buildQueueIndex];
       if (this.targetKeys.has(item.key)) {
         this.buildQueueIndex++;
-        this.addChunk(this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize));
+        this.installChunk(this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize));
         changed = true;
       }
     }
@@ -262,7 +333,7 @@ class TerrainSystem {
     const maxBuilds = Math.max(1, Math.floor(this.params.maxChunksPerUpdate));
     for (let i = 0; i < maxBuilds && this.buildQueueIndex < this.buildQueue.length; i++) {
       const item = this.buildQueue[this.buildQueueIndex++];
-      if (this.chunks.has(item.key) || this.inFlight.has(item.key) || !this.targetKeys.has(item.key)) {
+      if (this.hasFreshChunk(item.key) || this.inFlight.has(item.key) || !this.targetKeys.has(item.key)) {
         i--;
         continue;
       }
@@ -270,7 +341,7 @@ class TerrainSystem {
         this.dispatchChunk(item, chunkSize);   // builds off-thread; lands in onWorkerChunk
       } else {
         const chunk = this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize);
-        this.addChunk(chunk);
+        this.installChunk(chunk);
         changed = true;
       }
     }
@@ -303,6 +374,11 @@ class TerrainSystem {
     return result;
   }
 
+  hasFreshChunk(key) {
+    const c = this.chunks.get(key);
+    return !!c && !c.stale;
+  }
+
   // Add a fully-built chunk to the scene + bookkeeping (shared by sync + worker paths).
   addChunk(chunk) {
     this.chunks.set(chunk.key, chunk);
@@ -310,9 +386,29 @@ class TerrainSystem {
     if (!this.primaryMesh && chunk.mesh) this.primaryMesh = chunk.mesh;
   }
 
+  // Install a chunk, replacing a stale same-key chunk only once the new one is ready.
+  installChunk(chunk) {
+    const old = this.chunks.get(chunk.key);
+    if (old) {
+      this.disposeChunk(old);
+      if (this.primaryMesh === old.mesh) this.primaryMesh = null;
+    }
+    this.addChunk(chunk);
+  }
+
   dispatchChunk(item, chunkSize) {
-    const segments = Math.max(this.params.minSegmentsPerChunk, Math.round(chunkSize * 0.75));
+    const segments = this.chunkSegments(chunkSize);
     this.inFlight.add(item.key);
+    if (this.source) {
+      this.worker.postMessage({
+        jobType: 'sourceTile',
+        key: item.key,
+        epoch: this.epoch,
+        descriptor: this.source.descriptor,
+        request: this.sourceTileRequest(item.ix, item.iz, chunkSize, segments, this.params.volumetric ? 1 : 0, this.chunkFields()),
+      });
+      return;
+    }
     this.worker.postMessage({
       key: item.key,
       epoch: this.epoch,
@@ -330,16 +426,23 @@ class TerrainSystem {
       if (data.epoch === this.epoch) this.writeHeightTile(data.key, data.heights, data.texels);
       return;
     }
+    if (data.jobType === 'sourceTile' && typeof data.key === 'string' && data.key.startsWith(ATLAS_KEY_PREFIX)) {
+      if (data.epoch === this.epoch && !data.error) this.writeHeightTile(data.key.slice(ATLAS_KEY_PREFIX.length), data.heights, data.texels);
+      return;
+    }
     this.inFlight.delete(data.key);
-    // Drop results from a previous param generation (rebuild bumped the epoch).
+    // Drop results from a previous param/source generation (the epoch was bumped).
     if (data.epoch !== this.epoch) return;
-    // Drop if we moved away or it somehow already exists.
-    if (!this.targetKeys.has(data.key) || this.chunks.has(data.key)) return;
+    if (data.error) { this.lastSourceError = data.error; return; }
+    // Drop if we moved away or a fresh chunk already exists.
+    if (!this.targetKeys.has(data.key) || this.hasFreshChunk(data.key)) return;
 
     const [ix, iz] = data.key.split(',').map(Number);
     const chunkSize = this.params.chunkSize;
-    const chunk = this.chunkFromArrays(data.key, ix * chunkSize, iz * chunkSize, chunkSize, data);
-    this.addChunk(chunk);
+    const chunk = data.jobType === 'sourceTile'
+      ? this.chunkFromTile(data.key, data)
+      : this.chunkFromArrays(data.key, ix * chunkSize, iz * chunkSize, chunkSize, data);
+    this.installChunk(chunk);
     this.workerChanged = true;
     this.refreshActiveChunkCache();
   }
@@ -348,7 +451,7 @@ class TerrainSystem {
     const keys = new Set();
     for (let iz = centerChunkZ - radius; iz <= centerChunkZ + radius; iz++) {
       for (let ix = centerChunkX - radius; ix <= centerChunkX + radius; ix++) {
-        keys.add(`${ix},${iz}`);
+        if (this.chunkInBounds(ix, iz)) keys.add(`${ix},${iz}`);
       }
     }
     return keys;
@@ -357,7 +460,7 @@ class TerrainSystem {
   getMissingKeysSorted(centerX, centerZ) {
     const missing = [];
     for (const key of this.targetKeys) {
-      if (this.chunks.has(key) || this.inFlight.has(key)) continue;
+      if (this.hasFreshChunk(key) || this.inFlight.has(key)) continue;
       const [ix, iz] = key.split(',').map(Number);
       const cx = (ix + 0.5) * this.params.chunkSize;
       const cz = (iz + 0.5) * this.params.chunkSize;
@@ -371,21 +474,40 @@ class TerrainSystem {
 
   // Synchronous chunk build (fallback when no worker). Mesh geometry only.
   createChunk(key, xMin, zMin, size) {
-    const segments = Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
-    const geo = this.params.visualMode === 'external'
-      ? null   // external: no visible geometry to build (GPU CDLOD renders the ground)
-      : this.createChunkGeometry(xMin, zMin, size, segments, true);
-    return this.makeChunk(key, xMin, zMin, size, segments, geo);
+    const segments = this.chunkSegments(size);
+    if (this.params.visualMode === 'external') return this.makeChunk(key, xMin, zMin, size, segments, null);
+    if (this.source) {
+      const [ix, iz] = key.split(',').map(Number);
+      return this.chunkFromTile(key, this.source.buildTile(this.sourceTileRequest(ix, iz, size, segments, this.params.volumetric ? 1 : 0, this.chunkFields())));
+    }
+    return this.makeChunk(key, xMin, zMin, size, segments, this.createChunkGeometry(xMin, zMin, size, segments, true));
   }
 
   // Build a chunk from worker-produced arrays.
   chunkFromArrays(key, xMin, zMin, size, data) {
-    const segments = Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
+    const segments = this.chunkSegments(size);
     return this.makeChunk(key, xMin, zMin, size, segments, geometryFromArrays(data));
   }
 
-  makeChunk(key, xMin, zMin, size, segments, geo) {
-    const meta = { key, xMin, zMin, size, segments, lod: 0 };
+  // Build a chunk from a completed source tile (worker or synchronous).
+  chunkFromTile(key, tile) {
+    let geo = null;
+    if (this.params.visualMode !== 'external') {
+      geo = tile.volume
+        ? geometryFromArrays({ positions: tile.volume.positions, normals: tile.volume.normals, index: tile.volume.indices, uvs: null })
+        : geometryFromArrays(buildChunkArraysFromTile(tile));
+    }
+    const chunk = this.makeChunk(key, tile.xMin, tile.zMin, tile.size, tile.intervals, geo, tile.lod);
+    chunk.meta.volumetric = !!tile.volume;
+    if (tile.volume) chunk.meta.volume = { yMin: tile.volume.yMin, yMax: tile.volume.yMax, triangles: tile.volume.indices.length / 3 };
+    return chunk;
+  }
+
+  makeChunk(key, xMin, zMin, size, segments, geo, lod = 0) {
+    const info = this.sourceInfo;
+    const [ix, iz] = key.split(',').map(Number);
+    const meta = { key, xMin, zMin, size, segments, lod, sourceKey: info.key, sourceVersion: info.version, sourceKind: info.kind,
+      tileKey: this.source ? tileKey(this.source.descriptor, this.epoch, lod, ix, iz) : null };
     if (this.params.visualMode === 'external') {
       // No visible geometry — just a record carrying terrainChunk metadata so activeChunks,
       // decorations and colliders keep working while the GPU CDLOD mesh renders the ground.
@@ -522,6 +644,17 @@ class TerrainSystem {
   // available (the CPU win), synchronously otherwise (file:// fallback).
   requestHeightTile(key, ix, iz) {
     const chunkSize = this.params.chunkSize;
+    if (this.source) {
+      const intervals = Math.max(1, Math.round(chunkSize / HEIGHTMAP_TEXEL_WORLD));
+      const request = this.sourceTileRequest(ix, iz, chunkSize, intervals, HEIGHTMAP_APRON, ['heights']);
+      if (this.worker) {
+        this.worker.postMessage({ jobType: 'sourceTile', key: ATLAS_KEY_PREFIX + key, epoch: this.epoch, descriptor: this.source.descriptor, request });
+      } else {
+        const tile = this.source.buildTile(request);
+        this.writeHeightTile(key, tile.heights, tile.texels);
+      }
+      return;
+    }
     if (this.worker) {
       this.worker.postMessage({
         jobType: 'heightTile',
@@ -567,6 +700,11 @@ class TerrainSystem {
         size: data.size,
         centerX: data.xMin + data.size * 0.5,
         centerZ: data.zMin + data.size * 0.5,
+        lod: data.lod,
+        sourceKey: data.sourceKey,
+        sourceVersion: data.sourceVersion,
+        volumetric: !!data.volumetric,
+        stale: !!chunk.stale,
       };
     });
   }

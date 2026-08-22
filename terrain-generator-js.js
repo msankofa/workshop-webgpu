@@ -15,7 +15,7 @@ import {
   BIOMES, BIOME_INDEX, BIOME_COLORS, createFieldSampler, classifyBiomeCell,
   interp1d, rescaleArray, peaksAndValleys, smoothstep, clamp01,
   CONTINENT_X, CONTINENT_Y, EROSION_X, EROSION_Y,
-  mulberry32, hashSeed, fade,
+  mulberry32, hashSeed, fade, createUnboundedFieldSampler,
 } from './biome-classifier-js.js';
 
 export {
@@ -522,7 +522,7 @@ export function buildMaterialMasks(height, derived, biomeIds, cfg, resolution) {
 // to WORLD_EXTENT) -- coordinates are sampled over [-world/2, world/2] on each axis to
 // match generateGrid's own centering convention.
 // Stage 1: the five climate noise fields on a res x res grid.
-export function generateNoiseFields(cfg, resolution) {
+export function generateNoiseFields(cfg, resolution, { unbounded = false } = {}) {
   const n = resolution * resolution;
   const cont = new Float32Array(n);
   const eros = new Float32Array(n);
@@ -530,7 +530,7 @@ export function generateNoiseFields(cfg, resolution) {
   const temp = new Float32Array(n);
   const humid = new Float32Array(n);
 
-  const sampler = createFieldSampler(cfg.seed);
+  const sampler = unbounded ? createUnboundedFieldSampler(cfg.seed) : createFieldSampler(cfg.seed);
   for (let iz = 0; iz < resolution; iz++) {
     const z = (iz / Math.max(1, resolution - 1) - 0.5) * cfg.world_z;
     for (let ix = 0; ix < resolution; ix++) {
@@ -544,6 +544,21 @@ export function generateNoiseFields(cfg, resolution) {
     }
   }
   return { continentalness: cont, erosion: eros, weirdness: weird, temperature: temp, humidity: humid };
+}
+
+// Point form of stages 1-2 for the unbounded runtime source: classic composer height at
+// one global coordinate. `sampler` is a field sampler (normally the unbounded one).
+export function createClassicHeightPoint(cfg, sampler) {
+  const baseKnots = rescaleArray(CONTINENT_Y, cfg.deep_ocean_depth, cfg.far_inland_height);
+  const ampKnots = rescaleArray(EROSION_Y, cfg.min_plains_amplitude, cfg.max_mountain_amplitude);
+  return function classicHeightAt(x, z) {
+    const cont = sampler.sample('continentalness', x, z, cfg.continentalness_period, cfg.continentalness_octaves);
+    const eros = sampler.sample('erosion', x, z, cfg.erosion_period, cfg.erosion_octaves);
+    const weird = sampler.sample('weirdness', x, z, cfg.weirdness_period, cfg.weirdness_octaves);
+    const base = interp1d(cont, CONTINENT_X, baseKnots);
+    const amplitude = interp1d(eros, EROSION_X, ampKnots);
+    return base + peaksAndValleys(weird) * amplitude;
+  };
 }
 
 // Stage 2: v4's height composer, continentalness x erosion x weirdness -> world-unit height.
@@ -617,7 +632,7 @@ export function generateFullGrid(cfg, resolution) {
 // layers read the v4 composer. `stackEval(classicHeight, fields) -> Float32Array` is
 // injected so this module stays free of the stack import; opts as for finishGrid.
 export function generateFullGridV5(cfg, resolution, stackEval, opts = {}) {
-  const fields = generateNoiseFields(cfg, resolution);
+  const fields = generateNoiseFields(cfg, resolution, { unbounded: !!opts.unbounded });
   const classicHeight = composeClassicHeight(fields, cfg);
   const targetHeight = stackEval ? stackEval(classicHeight, fields) : classicHeight;
   const grid = finishGrid(targetHeight, fields, cfg, resolution, opts);
@@ -888,10 +903,70 @@ export function densityFieldDescription(name) { return DENSITY_FIELD_DESCRIPTION
 // density[ix + iy*res + iz*res*res] (x-fastest -- an internal convention, not required to
 // match numpy's (z,y,x) C-order axis layout in the Python source). The 6.0/8.0/50.0
 // constants below are hardcoded in the Python source too (not config fields).
-export function buildDensityField3D(heightGrid2D, densityCfg, worldX, worldZ, seed) {
+// Unbounded twin of createDensityNoiseSampler: 3D lattice values hashed per integer cell,
+// so density can be sampled at any global (x, y, z). Same signature (extents are ignored).
+function hashedCell3(octaveSeed, ix, iy, iz) {
+  let h = hashSeed(octaveSeed, ix, iy, iz);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return ((h ^ (h >>> 15)) >>> 0) / 4294967296 * 2 - 1;
+}
+export function createUnboundedDensityNoiseSampler() {
+  const seeds = new Map();
+  function sample(octaveSeed, xc, yc, zc) {
+    const x0 = Math.floor(xc), y0 = Math.floor(yc), z0 = Math.floor(zc);
+    const tx = fade(xc - x0), ty = fade(yc - y0), tz = fade(zc - z0);
+    const c = (dx, dy, dz) => hashedCell3(octaveSeed, x0 + dx, y0 + dy, z0 + dz);
+    const x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * tx;
+    const x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * tx;
+    const x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * tx;
+    const x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * tx;
+    const y0v = x00 + (x10 - x00) * ty, y1v = x01 + (x11 - x01) * ty;
+    return y0v + (y1v - y0v) * tz;
+  }
+  function fbm3(seed, period, extentX, extentY, extentZ, x, y, z, octaves = 3) {
+    const oct = Math.max(1, Math.floor(octaves));
+    let total = 0, ampSum = 0, amp = 1;
+    for (let o = 0; o < oct; o++) {
+      const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
+      const key = seed + ':' + o;
+      let os = seeds.get(key);
+      if (os === undefined) { os = hashSeed(seed, o * 1299721); seeds.set(key, os); }
+      total += sample(os, x / octavePeriod, y / octavePeriod, z / octavePeriod) * amp;
+      ampSum += amp;
+      amp *= 0.5;
+    }
+    return Math.min(1, Math.max(-1, (total / Math.max(ampSum, 1e-8)) * 1.35));
+  }
+  return { fbm3, unbounded: true };
+}
+
+// Point form of buildDensityField3D: density at one global (x, y, z) given the surface height
+// there. Positive is solid. Shared by the bounded preview (with opts.unbounded) and the
+// streamed volume tiles so both carve the same caves.
+export function createDensityPoint(densityCfg, seed, noiseSampler, worldX = 0, worldZ = 0) {
+  const extentY = densityCfg.y_max - densityCfg.y_min;
+  return function densityAt(x, y, z, h) {
+    let d = h - y - densityCfg.iso_level;
+    const warp = noiseSampler.fbm3(seed + 201, densityCfg.warp_period, worldX, extentY, worldZ, x, y, z);
+    const surfaceBand = Math.exp(-((y - h) ** 2) / (densityCfg.warp_surface_band_sigma ** 2));
+    d += warp * densityCfg.warp_strength_surface * surfaceBand + warp * densityCfg.warp_strength_global;
+    const caveN = noiseSampler.fbm3(seed + 202, densityCfg.cave_period, worldX, extentY, worldZ, x, y, z);
+    const caveRidged = 1.0 - Math.abs(caveN) * 2.0;
+    const depthBelowSurface = h - y;
+    const caveMaskStrength = clamp01(depthBelowSurface / 6.0) * clamp01((y - (densityCfg.y_min + 6.0)) / 8.0);
+    const caveCarve = clamp01(caveRidged - densityCfg.cave_threshold) * caveMaskStrength;
+    d -= caveCarve * densityCfg.cave_strength;
+    const floorBias = Math.max(0.0, (densityCfg.y_min + densityCfg.floor_thickness) - y) * 50.0;
+    return d + floorBias;
+  };
+}
+
+export function buildDensityField3D(heightGrid2D, densityCfg, worldX, worldZ, seed, { unbounded = false } = {}) {
   const res = densityCfg.density_resolution;
   const density = new Float32Array(res * res * res);
-  const noiseSampler = createDensityNoiseSampler();
+  const noiseSampler = unbounded ? createUnboundedDensityNoiseSampler() : createDensityNoiseSampler();
+  const densityAt = createDensityPoint(densityCfg, seed, noiseSampler, worldX, worldZ);
   const extentY = densityCfg.y_max - densityCfg.y_min;
 
   for (let iz = 0; iz < res; iz++) {
@@ -900,24 +975,7 @@ export function buildDensityField3D(heightGrid2D, densityCfg, worldX, worldZ, se
       const y = densityCfg.y_min + (iy / Math.max(1, res - 1)) * extentY;
       for (let ix = 0; ix < res; ix++) {
         const x = (ix / Math.max(1, res - 1) - 0.5) * worldX;
-        const h = heightGrid2D.height[iz * res + ix];
-        let d = h - y - densityCfg.iso_level;
-
-        const warp = noiseSampler.fbm3(seed + 201, densityCfg.warp_period, worldX, extentY, worldZ, x, y, z);
-        const surfaceBand = Math.exp(-((y - h) ** 2) / (densityCfg.warp_surface_band_sigma ** 2));
-        d += warp * densityCfg.warp_strength_surface * surfaceBand + warp * densityCfg.warp_strength_global;
-
-        const caveN = noiseSampler.fbm3(seed + 202, densityCfg.cave_period, worldX, extentY, worldZ, x, y, z);
-        const caveRidged = 1.0 - Math.abs(caveN) * 2.0;
-        const depthBelowSurface = h - y;
-        const caveMaskStrength = clamp01(depthBelowSurface / 6.0) * clamp01((y - (densityCfg.y_min + 6.0)) / 8.0);
-        const caveCarve = clamp01(caveRidged - densityCfg.cave_threshold) * caveMaskStrength;
-        d -= caveCarve * densityCfg.cave_strength;
-
-        const floorBias = Math.max(0.0, (densityCfg.y_min + densityCfg.floor_thickness) - y) * 50.0;
-        d += floorBias;
-
-        density[ix + iy * res + iz * res * res] = d;
+        density[ix + iy * res + iz * res * res] = densityAt(x, y, z, heightGrid2D.height[iz * res + ix]);
       }
     }
   }
@@ -1245,12 +1303,19 @@ const MC_EDGE_BASE_SLOT = [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0];
 // coordinate-remapping pass. Returns { positions: Float32Array, indices: Uint32Array } --
 // no normals (call geometry.computeVertexNormals() on the resulting BufferGeometry).
 export function marchingCubes(density, res, spacingX, spacingY, spacingZ, originX, originY, originZ, level = 0.0) {
+  return marchingCubesGrid(density, res, res, res, spacingX, spacingY, spacingZ, originX, originY, originZ, level);
+}
+
+// Non-cubic grid (nx, ny, nz samples, index ix + iy*nx + iz*nx*ny). Streamed volume tiles
+// are tall thin columns, so the cubic entry above is now a wrapper around this.
+export function marchingCubesGrid(density, nx, ny, nz, spacingX, spacingY, spacingZ, originX, originY, originZ, level = 0.0) {
   const positions = [];
   const indices = [];
   const vertexCache = new Map();
   const vertlist = new Array(12);
+  const nxy = nx * ny;
 
-  function densityAt(ix, iy, iz) { return density[ix + iy * res + iz * res * res]; }
+  function densityAt(ix, iy, iz) { return density[ix + iy * nx + iz * nxy]; }
 
   function getEdgeVertex(e, cx, cy, cz, val) {
     const [a, b] = MC_EDGE_CORNERS[e];
@@ -1275,9 +1340,9 @@ export function marchingCubes(density, res, spacingX, spacingY, spacingZ, origin
     return idx;
   }
 
-  for (let iz = 0; iz < res - 1; iz++) {
-    for (let iy = 0; iy < res - 1; iy++) {
-      for (let ix = 0; ix < res - 1; ix++) {
+  for (let iz = 0; iz < nz - 1; iz++) {
+    for (let iy = 0; iy < ny - 1; iy++) {
+      for (let ix = 0; ix < nx - 1; ix++) {
         const cx = new Array(8), cy = new Array(8), cz = new Array(8), val = new Array(8);
         for (let c = 0; c < 8; c++) {
           cx[c] = ix + MC_CORNER_DX[c];

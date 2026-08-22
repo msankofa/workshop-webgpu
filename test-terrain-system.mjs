@@ -3,7 +3,9 @@
 // asynchronously) so we can exercise streaming, movement/unload, epoch
 // invalidation on rebuild, pendingBuildCount accounting, and the sync fallback —
 // all without a browser. Run: node test-terrain-system.mjs
-import { buildChunkArrays } from './terrain-field.js';
+import { buildChunkArrays, buildChunkArraysFromTile, terrainHeightAt } from './terrain-field.js';
+import { createSource, normalizeDescriptor } from './terrain-source.js';
+import { analyticDescriptor } from './terrain-source-analytic.js';
 
 let workerShouldThrow = false;
 let dispatched = 0;
@@ -14,6 +16,16 @@ class FakeWorker {
     dispatched++;
     setTimeout(() => {
       if (!this._alive || !this.onmessage) return;
+      if (msg.jobType === 'sourceTile') {
+        // Same contract as the real worker: build the source from its descriptor alone.
+        try {
+          const tile = createSource(msg.descriptor).buildTile(msg.request);
+          this.onmessage({ data: { ...tile, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile', sourceKey: msg.descriptor.key, sourceVersion: msg.descriptor.sourceVersion } });
+        } catch (err) {
+          this.onmessage({ data: { key: msg.key, epoch: msg.epoch, jobType: 'sourceTile', error: String(err.message), contractError: true } });
+        }
+        return;
+      }
       const a = buildChunkArrays(msg.xMin, msg.zMin, msg.size, msg.segments, msg.params, msg.computeNormals);
       this.onmessage({ data: { key: msg.key, epoch: msg.epoch, positions: a.positions, normals: a.normals, uvs: a.uvs, index: a.index } });
     }, 0);
@@ -144,6 +156,109 @@ console.log('\n[6] external visual mode (SP3: GPU CDLOD renders the ground)');
   ok(sys.activeChunks.every((c) => 'centerX' in c && 'size' in c), 'activeChunks carry decoration metadata');
   ok(sys.pendingBuildCount === 0, `pendingBuildCount ${sys.pendingBuildCount}`);
   sys.dispose();
+}
+
+// ---------------- 7. injected source streams through the worker ----------------
+const srcParamsA = { baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2 };
+const srcParamsB = { baseAmp: 2.5, lake: 0.2, lakeDepth: 1.0 };
+const descA = analyticDescriptor({ key: 'lab', sourceVersion: 'A', params: srcParamsA });
+const descB = analyticDescriptor({ key: 'lab', sourceVersion: 'B', params: srcParamsB });
+const chunkMeta = (sys) => [...sys.chunks.values()].map((c) => c.meta);
+
+console.log('\n[7] injected source (descriptor) streams chunks from source tiles');
+{
+  const sys = createTerrainSystem({ params: { ...baseParams }, source: JSON.parse(JSON.stringify(descA)) });
+  ok(sys.source && sys.source.descriptor.key === 'lab', 'source built from a plain JSON descriptor');
+  ok(sys.sourceInfo.kind === 'analytic' && sys.sourceInfo.version === 'A', `sourceInfo ${sys.sourceInfo.kind}@${sys.sourceInfo.version}`);
+  await settle(sys, 0, 0);
+  ok(sys.chunks.size === expected(1), `loaded ${sys.chunks.size}/${expected(1)} chunks`);
+  ok(dispatched > 0, 'worker used');
+  ok(chunkMeta(sys).every((m) => m.sourceKey === 'lab' && m.sourceVersion === 'A' && m.lod === 0), 'chunk metadata carries source key/version/lod');
+  ok(chunkMeta(sys).every((m) => m.tileKey === `lab@A|e${sys.epoch}|l0|${m.key}`), 'chunk metadata carries the full tile key');
+  ok(sys.activeChunks.every((c) => c.sourceVersion === 'A' && c.stale === false), 'activeChunks expose source identity');
+  // geometry equals the legacy builder for the same field (source tiles are bit-identical to terrain-field)
+  const c = sys.chunks.get('0,0');
+  const seg = c.meta.segments;
+  const ref = buildChunkArrays(0, 0, 30, seg, srcParamsA, true);
+  const pos = c.mesh.geometry.attributes.position.array;
+  let maxD = 0; for (let i = 0; i < ref.positions.length; i++) maxD = Math.max(maxD, Math.abs(pos[i] - ref.positions[i]));
+  ok(maxD === 0, `source-built chunk positions identical to buildChunkArrays (delta ${maxD})`);
+  ok(sys.getHeight(4, 9) === terrainHeightAt(srcParamsA, 4, 9), 'getHeight reads the source');
+  sys.dispose();
+}
+
+// ---------------- 8. setSource: stale in-flight results from the old source are dropped ----------------
+console.log('\n[8] setSource drops old-source in-flight results (epoch)');
+{
+  const sys = createTerrainSystem({ params: { ...baseParams }, source: descA });
+  sys.update(0, 0);                   // dispatch jobs for source A
+  const epochBefore = sys.epoch;
+  sys.setSource(descB);
+  ok(sys.epoch === epochBefore + 1, `epoch bumped ${epochBefore} -> ${sys.epoch}`);
+  await tick();                       // old-epoch replies land now
+  ok([...sys.chunks.values()].every((c) => c.stale || c.meta.sourceVersion === 'B'), 'no fresh chunk from source A after the swap');
+  await settle(sys, 0, 0);
+  ok(sys.chunks.size === expected(1), `refilled ${sys.chunks.size}/${expected(1)}`);
+  ok(chunkMeta(sys).every((m) => m.sourceVersion === 'B'), 'every chunk now from source B');
+  ok([...sys.chunks.values()].every((c) => !c.stale), 'no stale chunks remain');
+  ok(sys.getHeight(4, 9) === terrainHeightAt(srcParamsB, 4, 9), 'getHeight switched to source B');
+  sys.dispose();
+}
+
+// ---------------- 9. setSource keeps old chunks until replacements are ready (no hole) ----------------
+console.log('\n[9] setSource replaces chunks without a hole');
+{
+  const sys = createTerrainSystem({ params: { ...baseParams }, source: descA });
+  await settle(sys, 0, 0);
+  const meshesBefore = new Map([...sys.chunks].map(([k, c]) => [k, c.mesh]));
+  sys.setSource(descB);
+  ok(sys.chunks.size === expected(1), `chunks retained immediately after swap (${sys.chunks.size})`);
+  ok([...sys.chunks.values()].every((c) => c.stale), 'retained chunks are marked stale');
+  ok(sys.group.children.length === expected(1), 'retained meshes still in the scene group');
+  let minResident = Infinity, replacedCount = 0;
+  for (let i = 0; i < 600; i++) {
+    sys.update(0, 0);
+    await tick();
+    minResident = Math.min(minResident, [...sys.chunks.keys()].filter((k) => sys.targetKeys.has(k)).length);
+    replacedCount = [...sys.chunks].filter(([k, c]) => meshesBefore.get(k) !== c.mesh).length;
+    if (sys.pendingBuildCount === 0 && replacedCount === expected(1)) break;
+  }
+  ok(minResident === expected(1), `resident target chunks never dropped below ${expected(1)} (min ${minResident})`);
+  ok(replacedCount === expected(1), `all ${replacedCount}/${expected(1)} chunks replaced with new meshes`);
+  ok(sys.group.children.length === expected(1), `scene group holds exactly ${sys.group.children.length} meshes (old disposed)`);
+  ok(chunkMeta(sys).every((m) => m.sourceVersion === 'B'), 'replacements are from source B');
+  sys.dispose();
+}
+
+// ---------------- 10. finite bounds: no chunks outside the source's map ----------------
+console.log('\n[10] finite source bounds limit the target window');
+{
+  const finite = normalizeDescriptor({ ...descA, capabilities: ['heights', 'normals'], bounds: { minX: -30, maxX: 30, minZ: -30, maxZ: 30 } });
+  const sys = createTerrainSystem({ params: { ...baseParams }, source: finite });
+  await settle(sys, 0, 0);
+  ok(sys.targetChunkCount === 4, `target chunks ${sys.targetChunkCount}/4 (2x2 inside ±30)`);
+  ok(sys.chunks.size === 4, `loaded ${sys.chunks.size}/4`);
+  ok([...sys.chunks.values()].every((c) => c.xMin >= -30 && c.xMin + c.size <= 30 && c.zMin >= -30 && c.zMin + c.size <= 30), 'every chunk lies inside bounds');
+  await settle(sys, 500, 500);
+  ok(sys.targetChunkCount === 0 && sys.chunks.size === 0, `far outside bounds: ${sys.targetChunkCount} targets, ${sys.chunks.size} chunks`);
+  ok(sys.source.contains(500, 500) === false && sys.source.contains(0, 0) === true, 'contains() respects bounds');
+  sys.dispose();
+}
+
+// ---------------- 11. injected source, sync fallback + external mode ----------------
+console.log('\n[11] injected source on the sync fallback and external visual mode');
+{
+  workerShouldThrow = true;
+  const sys = createTerrainSystem({ params: { ...baseParams }, source: descA });
+  for (let i = 0; i < 30 && sys.chunks.size < expected(1); i++) sys.update(0, 0);
+  ok(sys.chunks.size === expected(1), `sync-built ${sys.chunks.size}/${expected(1)} from the source`);
+  ok(chunkMeta(sys).every((m) => m.sourceVersion === 'A'), 'sync chunks carry source identity');
+  sys.dispose();
+  const ext = createTerrainSystem({ params: { ...baseParams, visualMode: 'external' }, source: descA });
+  for (let i = 0; i < 30 && ext.chunks.size < expected(1); i++) ext.update(0, 0);
+  ok(ext.chunks.size === expected(1) && [...ext.chunks.values()].every((c) => c.mesh === null), 'external mode keeps records only');
+  ext.dispose();
+  workerShouldThrow = false;
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

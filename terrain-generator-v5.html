@@ -297,6 +297,8 @@
       </div>
       <div id="density-controls" class="hidden"></div>
       <div class="row-inline"><button class="action secondary" id="volume-preview-btn">Preview volume in 3D</button></div>
+      <div class="control-row"><label for="algorithm-version">Climate fields</label>
+        <select id="algorithm-version" title="bounded: the classic 1,200 m lattice (legacy projects). unbounded: coordinate-hashed fields that Base Game can stream at any distance."><option value="v5-bounded-1">bounded (legacy 1,200 m lattice)</option><option value="v5-unbounded-1">unbounded (streamable in Base Game)</option></select></div>
       <div class="control-row"><label for="export-folder">Folder</label><input type="text" id="export-folder" value="workshop"></div>
       <div class="control-row"><label for="export-name">Name</label><input type="text" id="export-name" value="terrain-v5-export"></div>
       <div class="row-inline"><button class="action" id="export-btn">Export to maps/</button><button class="action" id="publish-btn">Publish to game</button></div>
@@ -309,6 +311,10 @@
         <label class="small" style="cursor:pointer;">Load project JSON <input type="file" id="load-project" accept="application/json" style="display:none;"></label>
       </div>
       <p class="lede" id="project-status"></p>
+      <div id="studio-bar" class="hidden" style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.15);padding-top:10px;">
+        <p class="lede">Terrain Studio is open inside Base Game. Apply sends this project back to the game as a draft; Cancel returns without changes.</p>
+        <div class="row-inline"><button class="action" id="studio-apply">Apply to Base Game</button><button class="action secondary" id="studio-cancel">Cancel</button></div>
+      </div>
     </div>
   </section>
 
@@ -343,6 +349,8 @@
   import { LAYER_TYPES, LAYER_TYPE_ORDER, BLEND_MODES, makeLayer, defaultStack, normalizeStack, STACK_PRESETS, MAX_LAYERS } from './terrain-stack.js';
   import { PaintLayers, PAINT_TOOLS, BRUSH_SHAPES, DEFAULT_BRUSH, NO_OVERRIDE, bytesToBase64, base64ToBytes } from './terrain-paint.js';
   import { History } from './terrain-history.js';
+  import { normalizeProject, hashProject, canonicalProjectJson, classifyProject, PROJECT_ALGORITHM_VERSION, PROJECT_ALGORITHM_UNBOUNDED } from './terrain-project-v5.js';
+  import { createBridgeEditor, isEmbedded } from './terrain-editor-bridge.js';
   import { imageFileToGrid, fetchTerrariumGrid, quantizeHeights, packRaw16, heightsToPngBlob, CURATED_LOCATIONS } from './terrain-heightmap-io.js';
   import * as THREE from 'three';
   import { WebGPURenderer } from 'three/webgpu';
@@ -350,6 +358,9 @@
 
   // ---- shared state ----
   const genConfig = { ...DEFAULT_CONFIG, preview_resolution: 160 };
+  // Which climate sampler the preview (and any saved project) uses; embedded Terrain Studio
+  // defaults to the streamable one so Apply produces a project Base Game can run.
+  let algorithmVersion = isEmbedded(window) ? PROJECT_ALGORITHM_UNBOUNDED : PROJECT_ALGORITHM_VERSION;
   const WARN_RESOLUTION = 256;
   let stack = defaultStack();
   let paint = new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
@@ -387,6 +398,7 @@
       paintHeight: paintUsed, biomeOverride: Uint8Array.from(paint.biomeOverride),
       imports: Object.fromEntries(Object.entries(imports).map(([k, v]) => [k, { data: v.data, resolution: v.resolution }])),
       densityCfg: job.kind === 'volume' ? { ...densityConfig } : null,
+      unbounded: algorithmVersion === PROJECT_ALGORITHM_UNBOUNDED,
     };
     inFlight = { id, kind: job.kind, paintUsed, t0: performance.now() };
     statusEl.textContent = job.kind === 'volume' ? 'Building volume…' : `Generating ${res}×${res}…`;
@@ -828,7 +840,7 @@
     const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(400, 600, 200); scene.add(sun);
     const geometry = new THREE.BufferGeometry();
     const material = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geometry, material); scene.add(mesh);
+    const mesh = new THREE.Mesh(geometry, material); mesh.visible = false; scene.add(mesh);   // shown once the geometry has a position attribute
     const water = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0x3f7fc8, transparent: true, opacity: 0.45, side: THREE.DoubleSide }));
     water.rotation.x = -Math.PI / 2; scene.add(water);
     Object.assign(hfState, { renderer, scene, camera, mesh, geometry, material, water });
@@ -849,6 +861,7 @@
     hfState.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     hfState.geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     hfState.geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    hfState.mesh.visible = true;
     applyHeightfieldColors(grid);
     hfState.geometry.computeBoundingSphere();
     hfState.water.scale.set(genConfig.world_x, genConfig.world_z, 1); hfState.water.position.y = genConfig.sea_level;
@@ -878,6 +891,7 @@
     g.deleteAttribute('normal');
     g.setAttribute('position', new THREE.BufferAttribute(volume.positions, 3));
     g.setIndex(new THREE.BufferAttribute(volume.indices, 1));
+    hfState.mesh.visible = true;
     const res = grid.resolution, vc = volume.positions.length / 3, colors = new Float32Array(vc * 3);
     for (let i = 0; i < vc; i++) {
       const ix = Math.max(0, Math.min(res - 1, Math.round((volume.positions[i * 3] / genConfig.world_x + 0.5) * (res - 1))));
@@ -1020,10 +1034,11 @@
     try {
       const { glbBuffer, mapData } = await buildExportPayload();
       try {
-        const response = await fetch('/api/save-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData }) });
+        const projectJsonText = canonicalProjectJson(normalizedProjectJson(names.name)), projectHash = hashProject(JSON.parse(projectJsonText));
+        const response = await fetch('/api/save-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData, projectJson: projectJsonText, projectHash }) });
         const body = await response.json();
         if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
-        exportStatus.textContent = `Exported to maps/${body.mapKey} (${body.bytes} bytes). Open environment-viewer.html?map=${encodeURIComponent(body.mapKey)} to play it.`;
+        exportStatus.textContent = `Exported to maps/${body.mapKey} (${body.bytes} bytes) with ${names.name}-project.json (hash ${projectHash.slice(0, 12)}). Open environment-viewer.html?map=${encodeURIComponent(body.mapKey)} to play it.`;
         loadMapList();
       } catch (err) {
         downloadBlob(`${names.name}.glb`, new Blob([glbBuffer], { type: 'model/gltf-binary' }));
@@ -1045,7 +1060,8 @@
     try {
       const { glbBuffer, mapData } = await buildExportPayload();
       try {
-        const response = await fetch(PUBLISH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Export-Key': key }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData }) });
+        const projectJsonText = canonicalProjectJson(normalizedProjectJson(names.name)), projectHash = hashProject(JSON.parse(projectJsonText));
+        const response = await fetch(PUBLISH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Export-Key': key }, body: JSON.stringify({ ...names, glbBase64: arrayBufferToBase64(glbBuffer), mapData, projectJson: projectJsonText, projectHash }) });
         const body = await response.json();
         if (response.status === 401) { localStorage.removeItem('terrainGenPublishKey'); throw new Error('publish key rejected'); }
         if (!response.ok || !body.ok) throw new Error(body.error || `HTTP ${response.status}`);
@@ -1068,33 +1084,87 @@
     downloadBlob(`${document.getElementById('export-name').value.trim() || 'terrain'}-height-${lastGrid.resolution}.r16`, new Blob([packRaw16(q.u16)], { type: 'application/octet-stream' }));
     document.getElementById('project-status').textContent = `RAW16 (little-endian, ${lastGrid.resolution}²): 0 = ${q.min.toFixed(1)} m, 65535 = ${q.max.toFixed(1)} m.`;
   });
-  function projectJson() {
-    return {
-      app: 'terrain-generator-v5', version: 1, savedAt: new Date().toISOString(),
+  function projectJson(name) {
+    const out = {
+      app: 'terrain-generator-v5', version: 1, algorithmVersion, savedAt: new Date().toISOString(),
       cfg: { ...genConfig }, density: { ...densityConfig }, stack, paint: paint.serialize(),
       imports: Object.fromEntries(Object.entries(imports).map(([k, v]) => [k, { resolution: v.resolution, source: v.source, data: bytesToBase64(new Uint8Array(v.data.buffer)) }])),
     };
+    if (name && validateMapSegment(name)) out.name = name.trim();
+    return out;
+  }
+  // Every project that leaves this page goes through the shared normalizer so the
+  // standalone file, the embedded Apply and the publish artifact are the same bytes.
+  function normalizedProjectJson(name) { return normalizeProject(projectJson(name)).project; }
+  // Shared loader for file loads and the embedded host bridge. Throws on invalid projects.
+  function applyProjectObject(raw, label) {
+    const { project, report } = normalizeProject(raw);
+    algorithmVersion = project.algorithmVersion;
+    document.getElementById('algorithm-version').value = algorithmVersion;
+    Object.assign(genConfig, project.cfg);
+    Object.assign(densityConfig, project.density);
+    stack = normalizeStack(project.stack);
+    for (const k of Object.keys(imports)) delete imports[k];
+    for (const [k, v] of Object.entries(project.imports)) imports[k] = { resolution: v.resolution, source: v.source, data: new Float32Array(base64ToBytes(v.data).buffer) };
+    paint = (project.paint && PaintLayers.deserialize(project.paint, genConfig.world_x, genConfig.world_z)) || new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
+    if (project.name) document.getElementById('export-name').value = project.name;
+    rebuildAllControls(); requestGrid('grid'); history.record(`load ${label}`);
+    const filled = report.filledDefaults.length ? ` ${report.filledDefaults.length} missing field(s) filled from defaults.` : '';
+    document.getElementById('project-status').textContent = `Loaded ${label} (hash ${hashProject(project).slice(0, 12)}).${filled}`;
+    return project;
   }
   document.getElementById('dl-project').addEventListener('click', () => {
-    downloadBlob(`${document.getElementById('export-name').value.trim() || 'terrain'}-project.json`, new Blob([JSON.stringify(projectJson())], { type: 'application/json' }));
-    document.getElementById('project-status').textContent = 'Project JSON downloaded (config, stack, paint, imports).';
+    const name = document.getElementById('export-name').value.trim() || 'terrain';
+    try {
+      downloadBlob(`${name}-project.json`, new Blob([JSON.stringify(normalizedProjectJson(name))], { type: 'application/json' }));
+      document.getElementById('project-status').textContent = 'Project JSON downloaded (config, stack, paint, imports).';
+    } catch (err) { document.getElementById('project-status').textContent = 'Project save failed: ' + err.message; }
   });
   document.getElementById('load-project').addEventListener('change', async (ev) => {
     const file = ev.target.files?.[0]; if (!file) return;
-    try {
-      const p = JSON.parse(await file.text());
-      if (p.app !== 'terrain-generator-v5') throw new Error('not a terrain-generator-v5 project');
-      for (const k of Object.keys(DEFAULT_CONFIG)) if (typeof p.cfg?.[k] === typeof DEFAULT_CONFIG[k]) genConfig[k] = p.cfg[k];
-      for (const k of Object.keys(DENSITY_DEFAULT_CONFIG)) if (typeof p.density?.[k] === typeof DENSITY_DEFAULT_CONFIG[k]) densityConfig[k] = p.density[k];
-      stack = normalizeStack(p.stack);
-      for (const k of Object.keys(imports)) delete imports[k];
-      for (const [k, v] of Object.entries(p.imports || {})) if (v && v.data && v.resolution) imports[k] = { resolution: v.resolution, source: v.source || 'import', data: new Float32Array(base64ToBytes(v.data).buffer) };
-      paint = (p.paint && PaintLayers.deserialize(p.paint, genConfig.world_x, genConfig.world_z)) || new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
-      rebuildAllControls(); requestGrid('grid'); history.record(`load ${file.name}`);
-      document.getElementById('project-status').textContent = `Loaded ${file.name}.`;
-    } catch (err) { document.getElementById('project-status').textContent = 'Load failed: ' + err.message; }
+    try { applyProjectObject(JSON.parse(await file.text()), file.name); }
+    catch (err) { document.getElementById('project-status').textContent = 'Load failed: ' + err.message; }
     ev.target.value = '';
   });
+
+  const algorithmSelect = document.getElementById('algorithm-version');
+  algorithmSelect.value = algorithmVersion;
+  algorithmSelect.addEventListener('change', () => {
+    algorithmVersion = algorithmSelect.value;
+    requestGrid('grid');
+    document.getElementById('project-status').textContent = algorithmVersion === PROJECT_ALGORITHM_UNBOUNDED
+      ? 'Unbounded climate fields: the preview now matches what Base Game streams (before erosion and masks).'
+      : 'Bounded climate fields: legacy preview; Base Game cannot stream this project until it is switched to unbounded.';
+  });
+
+  // ---- embedded Terrain Studio mode (same-origin host such as base-game.html) ----
+  if (isEmbedded(window)) {
+    const studioBar = document.getElementById('studio-bar');
+    studioBar.classList.remove('hidden');
+    const bridge = createBridgeEditor({
+      hostWindow: window.parent, origin: window.location.origin, listenOn: window,
+      onLoadProject: (project, requestId) => {
+        if (project === null) { document.getElementById('project-status').textContent = 'Base Game has no terrain project yet; Apply sends this one.'; return; }
+        try { applyProjectObject(project, `host project ${requestId}`); }
+        catch (err) { document.getElementById('project-status').textContent = 'Host project rejected: ' + err.message; }
+      },
+      onError: (err) => { document.getElementById('project-status').textContent = 'Bridge: ' + err.message; },
+    });
+    document.getElementById('studio-apply').addEventListener('click', () => {
+      try {
+        const project = normalizedProjectJson(document.getElementById('export-name').value);
+        const cls = classifyProject(project);
+        bridge.applyProject(project);
+        document.getElementById('project-status').textContent = cls.runtimeSupported
+          ? `Sent to Base Game as a draft (streamable; not applied at runtime: ${cls.omitted.join(', ')}).`
+          : `Sent to Base Game as a draft, but it cannot be streamed yet: ${cls.reasons.join('; ')}.`;
+      } catch (err) { document.getElementById('project-status').textContent = 'Apply failed: ' + err.message; }
+    });
+    document.getElementById('studio-cancel').addEventListener('click', () => {
+      try { bridge.close(); } catch (err) { document.getElementById('project-status').textContent = 'Close failed: ' + err.message; }
+    });
+    bridge.ready();
+  }
 
   // ---- real exported map + reference tables ----
   const TREE_DENSITY = { deep_ocean: 0, ocean: 0, beach: 0.03, desert: 0, badlands: 0.04, savanna: 0.2, plains: 0.1, forest: 0.85, dark_forest: 0.95, jungle: 0.9, swamp: 0.45, taiga: 0.7, snowy_taiga: 0.55, snowy_plains: 0.05, stony_peaks: 0.03, snowy_peaks: 0, windswept_hills: 0.18, meadow: 0.16 };

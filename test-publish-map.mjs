@@ -42,10 +42,11 @@ ok(brokenJson.maps['workshop/a.glb'].playable === true, '5: unparsable input tre
 const nullMaps = mergeMapConfig(JSON.stringify({ maps: null }), 'workshop/b.glb', 'b');
 ok(nullMaps.maps['workshop/b.glb'].playable === true, '5: null maps field treated as {}');
 
-import { publishMap, buildCommitMessage } from './server/publish-map.js';
+import { publishMap, buildCommitMessage, validateProjectArtifact } from './server/publish-map.js';
+import { createHash } from 'node:crypto';
 
 // --- buildCommitMessage ---
-ok(buildCommitMessage('workshop', 'my_map') === 'Publish map: workshop/my_map (via terrain-generator-v4)', '6: commit message format');
+ok(buildCommitMessage('workshop', 'my_map') === 'Publish map: workshop/my_map (via terrain-generator-v5)', '6: commit message format');
 
 // --- publishMap: mocked GitHub API, happy path ---
 function makeFakeGithub(overrides = {}) {
@@ -84,6 +85,36 @@ ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees'
 ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/workshop/test-map-data.json')), '7: tree includes the data.json path');
 ok(happyCalls.some(c => c.method === 'POST' && c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/map-config.json')), '7: tree includes map-config.json');
 ok(happyCalls.some(c => c.method === 'PATCH' && c.path === '/repos/o/r/git/refs/heads/main' && c.body.sha === 'new-commit-sha'), '7: ref updated to new commit sha');
+ok(result.projectKey === null && !happyCalls.some(c => c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path.endsWith('-project.json'))), '7: no project artifact without a project');
+
+// --- validateProjectArtifact + project blob in the tree ---
+const projectText = '{"app":"terrain-generator-v5","cfg":{"seed":7},"version":1}';
+const projectHash = createHash('sha256').update(projectText).digest('hex');
+ok(validateProjectArtifact(undefined, undefined) === null, '10: absent project is null');
+ok(validateProjectArtifact(projectText, projectHash).hash === projectHash, '10: matching hash accepted');
+ok(validateProjectArtifact(projectText, projectHash.toUpperCase()).hash === projectHash, '10: hash compare is case-insensitive');
+let pThrew = '';
+try { validateProjectArtifact(projectText, 'deadbeef'); } catch (e) { pThrew = e.message; }
+ok(pThrew.includes('does not match'), '10: wrong hash rejected');
+pThrew = '';
+try { validateProjectArtifact('{"app":"other"}', createHash('sha256').update('{"app":"other"}').digest('hex')); } catch (e) { pThrew = e.message; }
+ok(pThrew.includes('not a terrain-generator-v5'), '10: wrong app rejected');
+pThrew = '';
+try { validateProjectArtifact('not json', 'x'); } catch (e) { pThrew = e.message; }
+ok(pThrew.includes('not valid JSON'), '10: invalid JSON rejected');
+pThrew = '';
+try { validateProjectArtifact(42, 'x'); } catch (e) { pThrew = e.message; }
+ok(pThrew.includes('must be strings'), '10: non-string rejected');
+
+const { fetchImpl: projFetch, calls: projCalls } = makeFakeGithub();
+const projResult = await publishMap(
+  { folder: 'workshop', name: 'test-map', glbBase64: 'AAAA', mapData: { a: 1 }, project: validateProjectArtifact(projectText, projectHash) },
+  { token: 't', repo: 'o/r', branch: 'main', fetchImpl: projFetch },
+);
+ok(projResult.projectKey === 'workshop/test-map-project.json' && projResult.projectHash === projectHash, '11: returns projectKey + hash');
+const projBlob = projCalls.find(c => c.method === 'POST' && c.path === '/repos/o/r/git/blobs' && c.body.encoding === 'base64' && c.body.content !== 'AAAA');
+ok(projBlob && Buffer.from(projBlob.body.content, 'base64').toString('utf-8') === projectText, '11: project blob bytes are the canonical text, unchanged');
+ok(projCalls.some(c => c.path === '/repos/o/r/git/trees' && c.body.tree.some(t => t.path === 'maps/workshop/test-map-project.json')), '11: tree includes the -project.json path');
 
 // --- publishMap: one ref-update conflict, retried and succeeds ---
 let refAttempts = 0;

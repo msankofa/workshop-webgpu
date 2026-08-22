@@ -2,7 +2,7 @@
 // layer stack -> erosion -> masks -> biome -> materials) and, on request, the volumetric
 // density field + marching cubes, off the main thread. Replies carry transferable arrays.
 // Message: { id, kind: 'grid' | 'volume', cfg, resolution, stack, paintHeight?, biomeOverride?,
-//            imports?, densityCfg? (volume only) }.
+//            imports?, densityCfg? (volume only), unbounded? (coordinate-hashed climate fields) }.
 
 import { generateFullGridV5, buildDensityField3D, marchingCubes, grassDensityForIds } from './terrain-generator-js.js';
 import { evaluateStackGrid, normalizeStack } from './terrain-stack.js';
@@ -52,11 +52,11 @@ self.onmessage = (ev) => {
     const stackEval = (classicHeight) => evaluateStackGrid(stack, {
       resolution, worldX: cfg.world_x, worldZ: cfg.world_z, seed: cfg.seed, classicHeight, imports: msg.imports || {},
     });
-    const grid = generateFullGridV5(cfg, resolution, stackEval, { paintHeight, biomeOverride });
+    const grid = generateFullGridV5(cfg, resolution, stackEval, { paintHeight, biomeOverride, unbounded: !!msg.unbounded });
     const reply = { id: msg.id, kind: msg.kind, grid, ms: 0 };
     if (msg.kind === 'volume') {
       const d = msg.densityCfg;
-      const density = buildDensityField3D(grid, d, cfg.world_x, cfg.world_z, cfg.seed);
+      const density = buildDensityField3D(grid, d, cfg.world_x, cfg.world_z, cfg.seed, { unbounded: !!msg.unbounded });
       const res = resolution;
       const spacingX = cfg.world_x / Math.max(1, res - 1);
       const spacingY = (d.y_max - d.y_min) / Math.max(1, res - 1);

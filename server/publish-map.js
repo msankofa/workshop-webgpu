@@ -41,7 +41,22 @@ export function mergeMapConfig(existingConfigText, mapKey, name) {
 }
 
 export function buildCommitMessage(folder, name) {
-  return `Publish map: ${folder}/${name} (via terrain-generator-v4)`;
+  return `Publish map: ${folder}/${name} (via terrain-generator-v5)`;
+}
+
+// Mirrors serve.py's validate_project_artifact: the client sends canonical project
+// JSON text plus the sha256 of those bytes; we verify and store the bytes unchanged.
+export function validateProjectArtifact(projectJson, projectHash) {
+  if (projectJson == null) return null;
+  if (typeof projectJson !== 'string' || typeof projectHash !== 'string') throw new Error('projectJson and projectHash must be strings');
+  const bytes = Buffer.from(projectJson, 'utf-8');
+  if (bytes.length > MAX_BODY_BYTES) throw new Error('project too large');
+  let parsed;
+  try { parsed = JSON.parse(projectJson); } catch { throw new Error('projectJson is not valid JSON'); }
+  if (!parsed || typeof parsed !== 'object' || parsed.app !== 'terrain-generator-v5') throw new Error('projectJson is not a terrain-generator-v5 project');
+  const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (digest !== projectHash.toLowerCase()) throw new Error('projectHash does not match projectJson bytes');
+  return { text: projectJson, hash: digest };
 }
 
 async function githubRequest(fetchImpl, token, method, path, body) {
@@ -65,9 +80,10 @@ async function githubRequest(fetchImpl, token, method, path, body) {
 // merged map-config.json, then fast-forwards the branch ref to it. Retries the whole
 // read-modify-write sequence once if the ref update rejects as non-fast-forward
 // (another publish landed in between); fails after the second attempt.
-export async function publishMap({ folder, name, glbBase64, mapData }, { token, repo, branch, fetchImpl = fetch }) {
+export async function publishMap({ folder, name, glbBase64, mapData, project = null }, { token, repo, branch, fetchImpl = fetch }) {
   const mapKey = `${folder}/${name}.glb`;
   const dataText = JSON.stringify(mapData, null, 2);
+  const projectKey = project ? `${folder}/${name}-project.json` : null;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const refPath = `/repos/${repo}/git/ref/heads/${branch}`;
@@ -90,20 +106,20 @@ export async function publishMap({ folder, name, glbBase64, mapData }, { token, 
     }
     const mergedConfig = mergeMapConfig(existingConfigText, mapKey, name);
 
-    const [glbBlob, dataBlob, configBlob] = await Promise.all([
+    const [glbBlob, dataBlob, configBlob, projectBlob] = await Promise.all([
       githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/blobs`, { content: glbBase64, encoding: 'base64' }),
       githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/blobs`, { content: dataText, encoding: 'utf-8' }),
       githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/blobs`, { content: JSON.stringify(mergedConfig, null, 2), encoding: 'utf-8' }),
+      project ? githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/blobs`, { content: Buffer.from(project.text, 'utf-8').toString('base64'), encoding: 'base64' }) : null,
     ]);
 
-    const tree = await githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/trees`, {
-      base_tree: baseTreeSha,
-      tree: [
-        { path: `maps/${folder}/${name}.glb`, mode: '100644', type: 'blob', sha: glbBlob.sha },
-        { path: `maps/${folder}/${name}-data.json`, mode: '100644', type: 'blob', sha: dataBlob.sha },
-        { path: 'maps/map-config.json', mode: '100644', type: 'blob', sha: configBlob.sha },
-      ],
-    });
+    const treeEntries = [
+      { path: `maps/${folder}/${name}.glb`, mode: '100644', type: 'blob', sha: glbBlob.sha },
+      { path: `maps/${folder}/${name}-data.json`, mode: '100644', type: 'blob', sha: dataBlob.sha },
+      { path: 'maps/map-config.json', mode: '100644', type: 'blob', sha: configBlob.sha },
+    ];
+    if (projectBlob) treeEntries.push({ path: `maps/${projectKey}`, mode: '100644', type: 'blob', sha: projectBlob.sha });
+    const tree = await githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/trees`, { base_tree: baseTreeSha, tree: treeEntries });
 
     const newCommit = await githubRequest(fetchImpl, token, 'POST', `/repos/${repo}/git/commits`, {
       message: buildCommitMessage(folder, name),
@@ -113,7 +129,7 @@ export async function publishMap({ folder, name, glbBase64, mapData }, { token, 
 
     try {
       await githubRequest(fetchImpl, token, 'PATCH', `/repos/${repo}/git/refs/heads/${branch}`, { sha: newCommit.sha });
-      return { mapKey, commitSha: newCommit.sha };
+      return { mapKey, commitSha: newCommit.sha, projectKey, projectHash: project ? project.hash : null };
     } catch (err) {
       if (attempt === 0) continue; // one retry from a fresh ref/tree read
       throw err;
@@ -178,9 +194,13 @@ export async function handlePublishRequest(req, res) {
     return;
   }
 
+  let project = null;
+  try { project = validateProjectArtifact(body.projectJson, body.projectHash); }
+  catch (err) { send(400, { ok: false, error: err.message }); return; }
+
   try {
     const result = await publishMap(
-      { folder, name, glbBase64: body.glbBase64 || '', mapData: body.mapData || {} },
+      { folder, name, glbBase64: body.glbBase64 || '', mapData: body.mapData || {}, project },
       { token: process.env.GITHUB_TOKEN, repo: process.env.GITHUB_REPO, branch: process.env.GITHUB_BRANCH || 'sp1-webgpu-renderer-migration' },
     );
     send(200, { ok: true, ...result });

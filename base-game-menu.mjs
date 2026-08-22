@@ -50,7 +50,7 @@ function el(tag, className, text) {
   return node;
 }
 
-export function showBaseGameStartMenu({ connect } = {}) {
+export function showBaseGameStartMenu({ connect, onTerrainStudio = null } = {}) {
   installStyles();
   return new Promise(resolve => {
     const overlay = el('div', 'bgm-overlay bgm-start');
@@ -77,6 +77,13 @@ export function showBaseGameStartMenu({ connect } = {}) {
     panel.append(roomRow);
     const status = el('div', 'bgm-status', 'Choose Solo, or enter a room code.');
     panel.append(status);
+    if (onTerrainStudio) {
+      const studioRow = el('div', 'bgm-pause-actions');
+      const studioButton = el('button', 'bgm-button', 'Terrain Studio');
+      studioButton.addEventListener('click', () => onTerrainStudio());
+      studioRow.append(studioButton);
+      panel.append(studioRow);
+    }
     overlay.append(panel);
     document.body.append(overlay);
 
@@ -131,7 +138,7 @@ export function showBaseGameStartMenu({ connect } = {}) {
   });
 }
 
-export function createBaseGamePauseMenu({ onResume, onSettings, onMainMenu } = {}) {
+export function createBaseGamePauseMenu({ onResume, onSettings, onTerrainStudio = null, onMainMenu } = {}) {
   installStyles();
   const overlay = el('div', 'bgm-overlay');
   overlay.hidden = true;
@@ -143,7 +150,8 @@ export function createBaseGamePauseMenu({ onResume, onSettings, onMainMenu } = {
   const resume = el('button', 'bgm-button', 'Resume');
   const settings = el('button', 'bgm-button', 'Settings');
   const mainMenu = el('button', 'bgm-button danger', 'Main Menu');
-  actions.append(resume, settings, mainMenu);
+  const terrainStudio = onTerrainStudio ? el('button', 'bgm-button', 'Terrain Studio') : null;
+  actions.append(resume, settings, ...(terrainStudio ? [terrainStudio] : []), mainMenu);
   panel.append(actions); overlay.append(panel); document.body.append(overlay);
 
   const api = {
@@ -154,6 +162,7 @@ export function createBaseGamePauseMenu({ onResume, onSettings, onMainMenu } = {
   };
   resume.addEventListener('click', () => { api.hide(); onResume?.(); });
   settings.addEventListener('click', () => { api.hide(); onSettings?.(); });
+  terrainStudio?.addEventListener('click', () => { api.hide(); onTerrainStudio?.(); });
   mainMenu.addEventListener('click', () => { api.hide(); onMainMenu?.(); });
   return api;
 }
