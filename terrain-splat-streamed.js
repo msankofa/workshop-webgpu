@@ -124,8 +124,9 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
 // The material. `textures` is the result of loadStreamedSplatTextures / placeholder.
 // LOD dissolve (`lod: true`): two coverage maps (terrain-lod-coverage.js) drive per-fragment
 // discards with one stable world-space dither — `self` is this level's own chunk coverage
-// (fragments dissolve IN as it rises) and `finer` is the next finer level's (fragments dissolve
-// OUT as it rises), so the handover between levels is gap-free and pop-free, and a chunk landing
+// (fragments dissolve IN over the first half of its ramp) and `finer` is the next finer level's
+// (fragments dissolve OUT over the second half), so the finer surface is fully there before the
+// coarser one starts leaving and the void never shows. A chunk landing
 // late from a worker fades in instead of snapping. `lod = { self, finer }` binds the maps at build
 // time (a texture node is fixed once built); syncStreamedSplatCoverage() follows their origins.
 export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null } = {}) {
@@ -225,8 +226,10 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
       const dither = fract(sin(dot(floor(P.xz.mul(8)), vec2(127.1, 311.7))).mul(43758.5453));
       const selfT = select(u.selfTexels.greaterThan(0), coverageOf('self'), float(1));
       const finerT = select(u.finerTexels.greaterThan(0), coverageOf('finer'), float(0));
-      // dissolve in as self coverage rises; dissolve out as the finer level's rises
-      If(dither.greaterThanEqual(selfT).or(dither.lessThan(finerT)), () => { Discard(); });
+      // staggered: this level fades in over the first half of its ramp, the coarser level fades
+      // out over the second half (the two surfaces do not share pixels, so never at the same time)
+      const fadeIn = clamp(selfT.mul(2), 0, 1), fadeOut = clamp(finerT.mul(2).sub(1), 0, 1);
+      If(dither.greaterThanEqual(fadeIn).or(dither.lessThan(fadeOut)), () => { Discard(); });
     }
     const { sampleFor, anchor } = makeSamplers();
     const w = weightsOf();

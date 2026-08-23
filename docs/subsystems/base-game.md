@@ -43,6 +43,9 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Body presentation owner | `base-game-player-bodies.js` |
 | Web Audio graph, positional SFX, http music playlist | `environment-audio.js` (see `audio.md`) |
 | Sound director: what fires when, budgets, cull, sample-or-synth | `base-game-audio.js` |
+| Hitscan, shot validation, lag-compensation pose history | `combat.js` |
+| Player hp / alive / revive | `player-combat.js` |
+| Magazines (lifted from `environment-viewer.html`) | `player-ammo.js` |
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
@@ -308,6 +311,7 @@ node test-traversal-lab.mjs
 node test-base-game-session.mjs
 node test-base-game-player.mjs
 node test-base-game-replication.mjs
+node test-base-game-fire.mjs
 node test-performance-capture.mjs
 python -B test_performance_capture_store.py
 node server/test-base-game-rooms.mjs
@@ -625,12 +629,99 @@ One rig, two presentation axes, owner only; remotes always see the third-person 
   authored hold supplies rotation only; `placeBodyHold` then translates the gun so the trigger grip
   sits at trigger shoulder + aimDir × armLen × dist + right × side + up × up, idle and aim values
   blended by the controller's aim amount (`BODY_HOLD_DEFAULTS`: idle 0.55 / -0.04 / -0.16, aim
-  0.46 / -0.10 / 0.06; six sliders). Elbows bend by construction, and the body, not a fixed
+  0.46 / -0.10 / 0.06; six sliders). While aiming, the hold pitches by the full elevation to
+  the aim point (not just the torso lean), so the arms swing to point the gun and the barrel
+  trim covers only the residual; aiming down lowers the grip below the shoulder. Elbows bend by construction, and the body, not a fixed
   ground-frame offset, decides where the gun is. The barrel trim now pivots about the trigger grip
   (`pivotMarker`) again while taking its direction from the bore; pivoting near the muzzle swung the
   grip metres away on large corrections.
+- **Default facing is environment-viewer's** (`bodyFacing: 'look'`): the body's yaw is the look
+  yaw and the legs strafe (`environment-viewer.html` `localBody.update({ yaw: look.yaw, aimPitch:
+  look.pitch })`), the mount is the authored ground-anchored hold, aim is `controller.setAiming`
+  only. Everything below in this list is the experimental `travel` path and the opt-in toggles
+  (`weaponAimTrim`, `weaponHoldMode: 'body'`, `weaponReachSolve`), all off by default since
+  2026-08-23; they were patches for a facing choice env-viewer never makes.
+- **Facing and the gun's leash** (`travel` only; `BASE_GAME_FACING_DEFAULTS`, sliders `bodyTurnThreshold` 0.6 rad,
+  `bodyTurnRate` 7 rad/s, `gunYawLimit` 0.9 rad): a standing body turns in place toward the look
+  once the residual passes the threshold and keeps turning until within `settle` (0.12 rad), so
+  looking around no longer just twists the torso to its stop; while moving the heading is still the
+  travel direction. The local aim point is clamped into a yaw/pitch cone about the heading
+  (`clampAimPoint`) before the barrel trim, so the weapon follows the camera only as far as the
+  body can and waits for the turn rather than outrunning it.
+- **First-person optics** (imported from `environment-viewer.html` `updateAimOptics`): base FOV
+  `fpFov` 70 (third person keeps `cameraFov` 50), ADS zoom `2·atan(tan(fov/2)/magnification)`
+  by the weapon's `magnification`, and the eye pushed forward by `aimEyeForward × aim`. The
+  authored `aimOffset` values assume FOV 70; at 50 the sights sat off centre.
+- **Camera framing**: `cameraSideOffset`, `cameraHeightOffset`, `cameraForwardOffset` (yaw-only
+  right / up / forward of the look, applied to the third-person focus and the first-person eye
+  alike, bot-viewer POV style) and `cameraFov` are settings; `updateCamera` takes
+  `sideOffset` / `heightOffset` / `forwardOffset`. Obstruction still rays from the
+  shifted focus.
+- **Depth of field** (`depth-of-field.js`, off by default): `demos/sdf-bug-v2.html`'s gather
+  (golden-angle disc, each tap weighted by whether its own circle of confusion reaches the pixel,
+  HDR colour so highlights become discs) driven by the scene pass depth attachment. Defocus is
+  measured as a fraction of the focus distance so one aperture reads the same near and far.
+  `dofEnabled`, `dofAutoFocus` (centre ray against the world query, eased on the CPU at
+  `focusRate`), `dofFocusDistance`, `dofAperture`, `dofMaxRadius`, `dofFarScale`. While on, the
+  page renders through a `PostProcessing` pipeline (`pass → dof → renderOutput`); off, the plain
+  render path runs and the pass costs nothing. `test-depth-of-field.mjs` builds the node to a
+  shader through `tsl-build-check.mjs` (which gained the r182 `getOutputBufferType` stub).
 - Not done: the late depth-cleared pass for arms + gun (they can clip walls at the 0.1 m near
   plane) and the shoulder pin at mid blend. Both are tuning items once the look is judged.
+
+### Weapons, phase 3: firing, ammo, health (shipped 2026-08-23)
+
+Plan: `docs/superpowers/plans/2026-08-22-base-game-weapon-holding.md` Phase 3. Hitscan weapons now
+fire, spend ammo, damage players and kill them; the server is the only authority. Built on the
+multiplayer-guns stack that already existed, not a new one:
+
+| Responsibility | Existing owner |
+|---|---|
+| Hit registration (ray vs capsule, world occluder), pose history for lag compensation | `combat.js` (`resolveHitscan`, `validateShot`, `pushPlayerPose` / `samplePlayerPose` / `prunePlayerPoseHistory`) |
+| Player hp / alive / revive | `player-combat.js` (`createPlayerCombatFacade`) |
+| Magazines | `player-ammo.js` — `defaultAmmoFor` / `ensureAmmo` / `reloadAmmo` / `consumeAmmo` lifted verbatim from `environment-viewer.html` into a module with a `createAmmoStore()` wrapper |
+| Weapon numbers (`damage`, `fireIntervalMs`, `magazineSize`, `reserveAmmo`, `automatic`, `range`) | `weapons.js` |
+| Fire and damage sounds | `base-game-audio.js` (`localFire`, remote `action === 2`, new `localDamage`, `hitAt`) |
+
+What is new is only what lockstep needed and nothing had: **`base-game-fire.js`**. `createTriggerState()`
++ `stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, reload, alive })` is the one trigger
+step both sides run per tick. It turns the tick's `fire` boolean into a press edge (semi-auto) or a
+hold (`automatic`), asks `validateShot` whether the cadence allows a shot (the tick is converted to
+milliseconds, so cooldowns are the same `fireIntervalMs` every other page uses), draws from
+`player-ammo.js`, and runs the reload window in ticks (`BASE_GAME_RELOAD_TICKS`, ammo commits when
+it closes; a dry press starts one). `lookDirection(yaw, pitch)` is the player-view look vector.
+
+**Server** (`server/base-game-rooms.js`). Each room owns a `combat` facade, an `ammo` store and a
+`poseHistory` map. `consumeTick` runs `stepTrigger`; a fired tick stamps `action = fire` for
+`BASE_GAME_FIRE_ACTION_TICKS` (12, so a 20 Hz snapshot never misses it) and calls `fireShot`:
+origin is the capsule top (combat.js's head convention), direction is the look vector, every other
+player is sampled from the pose history `BASE_GAME_LAG_COMP_MS` (100 ms, the client interpolation
+delay) in the past, the room's `worldQuery.raycast` is the occluder, and a `player` hit goes through
+`combat.applyDamage`. Death: the victim's controller runs neutral steps (ticks still consumed so
+numbering holds), and after `BASE_GAME_RESPAWN_TICKS` (3 s) `respawnClient` revives, refills ammo,
+resets the trigger and resyncs as before. Melee and projectile modes are accepted by the trigger
+(ammo, cadence) but resolve nothing yet.
+
+**Protocol 8.** Roster entries add `dead` and `ammo: { mag, reserve }` (active slot); the snapshot adds
+one-shot `hits[]` (`shooter, victim, point, damage, head, tick`) and `deaths[]` (`victim, killer,
+tick`), drained on each broadcast (the joiner's private snapshot does not drain). Sanitizers:
+`sanitizeBaseGameHitEvent`, `sanitizeBaseGameDeathEvent`, `wireAmmo`. `BASE_GAME_MAX_HEALTH` is 100.
+
+**Page.** Left mouse (pointer-locked) sets `weaponState.firing`, which rides the tick. The page keeps
+its own `createTriggerState()` + `createAmmoStore()` and runs `stepLocalTrigger` on every predicted
+tick (online) or fixed step (solo): a predicted shot plays `audioDirector.localFire` and
+`weaponViewModel.recoil()`, a predicted reload starts the existing reload choreography. Hits are
+never predicted. On each snapshot the local entry's `health`, `dead` and `ammo` overwrite the local
+copy; `hits` where I am the shooter flash HIT, where I am the victim flash the red vignette
+(`#damage-flash`) and play `player_damage`, and any other hit plays `enemy_hit` at the point;
+`deaths` set "killed by". The `#combat` HUD (bottom right) shows HP or DEAD, the weapon and
+`mag / reserve`.
+
+Not done: tracers and muzzle flash (no entity registry in the base game yet), remote recoil on
+bodies, head multiplier (`head` is always false), melee and projectiles.
+
+Tests: `test-base-game-fire.mjs` (trigger step, protocol, a two-player room where one shoots the
+other dead and the server respawns them, page markers). `test-combat.mjs` covers the hit math.
 
 ### Pre-terrain server-authoritative player replication
 
