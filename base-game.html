@@ -96,10 +96,14 @@ import { createBaseGamePlayerController } from './base-game-player-controller.js
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
+import { createWeaponViewModel } from './weapon-viewmodel.js';
 import { getWeapon, WEAPONS } from './weapons.js';
 import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot } from './base-game-protocol.mjs';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
+import { createEnvironmentAudio } from './environment-audio.js';
+import { synthVoice } from './weapon-sfx-synth.js';
+import { createBaseGameAudioDirector } from './base-game-audio.js';
 import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
@@ -130,7 +134,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainTextures: true,
   terrainTextureTile: 4,
   terrainTextureFade: 1400,
-  terrainDrawRadius: 3,
+  terrainDrawRadius: 6,
   terrainWireframe: false,
   terrainNormals: false,
   terrainTileBounds: false,
@@ -146,7 +150,19 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
+  fpPreset: 'hybrid',
+  fpViewBlend: 0.6,
+  fpCameraComfort: 'off',
   remoteBodiesEnabled: true,
+  audioMasterVolume: 0.8,
+  audioMusicVolume: 0.5,
+  audioSfxVolume: 0.9,
+  audioMuted: false,
+  audioSfxEnabled: true,
+  audioFootsteps: true,
+  audioRemoteSfx: true,
+  audioSynthFallback: true,
+  audioMusicEnabled: false,
   armPreset: 'relaxed',
   armIdleBend: ARM_POSE_PRESETS.relaxed.idle.bend,
   armWalkRaise: ARM_POSE_PRESETS.relaxed.walk.raise,
@@ -229,7 +245,7 @@ const NUMBER_LIMITS = Object.freeze({
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
-  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 16], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
+  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 12], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
   armFallLift: [0, 3.2], armFallSpeedRef: [1, 20], armFallTimeRef: [0.1, 2], armPoseSmoothing: [0, 1.5],
@@ -241,6 +257,7 @@ const NUMBER_LIMITS = Object.freeze({
   bodyStrideScale: [0.4, 2], bodyCadenceScale: [0.4, 2], bodyStepTrigger: [0.05, 0.8],
   bodyForwardStride: [0.2, 2], bodyBehindStride: [0, 1.5],
   weaponHoldHeight: [-0.3, 0.3], weaponHoldForward: [-0.3, 0.3],
+  fpViewBlend: [0, 1],
 });
 const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
@@ -251,6 +268,8 @@ const STRING_VALUES = Object.freeze({
   bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
   weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS],
+  fpPreset: ['hybrid', 'arcade', 'embodied', 'custom'],
+  fpCameraComfort: ['off', 'light', 'strong'],
   armPreset: Object.keys(ARM_POSE_PRESETS),
   bodyGaitModel: Object.keys(GAIT_MODELS),
 });
@@ -367,6 +386,45 @@ scene.background = new THREE.Color(0x0b1430);
 // the far plane out to the outermost clipmap ring.
 const CAMERA_FAR_NEAR_FIELD = 600;
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, CAMERA_FAR_NEAR_FIELD);
+
+// ===================== audio =====================
+// Same controller as environment-viewer.html and bot-viewer-v3.html (docs/subsystems/audio.md).
+// The listener is the camera (first or third person); the director decides what fires when.
+const envAudio = createEnvironmentAudio({
+  THREE, scene, camera,
+  getPlayerPosition: () => camera.position,
+  isGameplayActive: () => activeMode !== 'menu' && !gameplayPaused,
+  autoplayOnGesture: false,
+  shuffle: true,
+  workletUrl: './music-pitch-processor.js?v=1',
+});
+const audioDirector = createBaseGameAudioDirector({
+  audio: envAudio, synthVoice,
+  getListenerPosition: () => camera.position,
+});
+function applyAudioSettings() {
+  envAudio.setVolume('master', settings.audioMasterVolume);
+  envAudio.setVolume('music', settings.audioMusicVolume);
+  envAudio.setVolume('sfx', settings.audioSfxVolume);
+  envAudio.setMuted('master', settings.audioMuted);
+  Object.assign(audioDirector.settings, {
+    sfxEnabled: settings.audioSfxEnabled,
+    footstepsEnabled: settings.audioFootsteps,
+    remoteSfxEnabled: settings.audioRemoteSfx,
+    synthFallback: settings.audioSynthFallback,
+  });
+}
+let musicStarted = false;
+async function applyMusicSetting() {
+  if (settings.audioMusicEnabled) {
+    if (!musicStarted) musicStarted = await envAudio.loadMusicHttp({ activate: true });
+    else if (!envAudio.getMusicProgress().playing) envAudio.togglePlayback();
+  } else if (musicStarted && envAudio.getMusicProgress().playing) {
+    envAudio.togglePlayback();
+  }
+}
+// First gesture unlocks the Web Audio context; capture so a canvas pointerdown still counts.
+for (const type of ['pointerdown', 'keydown']) addEventListener(type, () => envAudio.noteGesture(), { capture: true });
 camera.position.set(22, 16, 26);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 4, 0);
@@ -499,7 +557,29 @@ function updateLocalAimPoint() {
   }
   return aimPointLocal;
 }
+// First-person presentation (weapons plan phase 2): one rig, two presentation axes.
+// viewBlend 0 = the body's own third-person hold seen from the eyes; 1 = the authored viewmodel.
+const FP_PRESETS = Object.freeze({
+  arcade: { viewBlend: 1, cameraComfort: 'off' },
+  embodied: { viewBlend: 0, cameraComfort: 'light' },
+  hybrid: { viewBlend: 0.6, cameraComfort: 'off' },
+});
+const FP_COMFORT = Object.freeze({ off: { xz: 0, y: 0 }, light: { xz: 8.5, y: 4.5 }, strong: { xz: 5.5, y: 3.2 } });
+const FP_PART_MASK = Object.freeze({ head: false, eyes: false, neck: false, torso: false });
+const FP_PART_MASK_NONE = Object.freeze({ head: true, eyes: true, neck: true, torso: true });
+const weaponViewModel = createWeaponViewModel({ getWeapon });
+const FP_RIG_EYE_OFFSET = 0.34;   // rig eye (1.96 m) minus capsule eye (1.62 m) at rest
+const fpState = { viewBlend: 0, masked: false, eye: [0, 0, 0], hasEye: false, aimAmount: 0 };
+const fpViewPos = new THREE.Vector3(), fpViewQuat = new THREE.Quaternion(), fpViewEuler = new THREE.Euler(), fpLocalMatrix = new THREE.Matrix4(), fpWorldMatrix = new THREE.Matrix4(), fpScale = new THREE.Vector3();
+const fpViewFrame = { position: fpViewPos, quaternion: fpViewQuat };
+function applyFpPreset(name) {
+  const preset = FP_PRESETS[name];
+  if (!preset) return;
+  settings.fpViewBlend = preset.viewBlend;
+  settings.fpCameraComfort = preset.cameraComfort;
+}
 function applyWeaponSelection() {
+  weaponViewModel.setWeapon(localWeaponId());
   playerBodies.setWeapon(localWeaponId());
   if (isOnline()) networkSession?.setLoadout(currentLoadout());
 }
@@ -524,6 +604,7 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
 });
 
 function resetPlayer() {
+  audioDirector.resetLocal();
   playerView.setLook(0, -0.12);
   playerView.resetSmoothing();
   // Online the server owns the transform: ask it to respawn and let the snapshot hard-snap us.
@@ -692,6 +773,7 @@ function updateWorld(dt) {
   playerBodies.setBodyDesign(settings.bodyDesign);
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
   playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
+  if (weaponViewModel.weaponId !== localWeaponId()) weaponViewModel.setWeapon(localWeaponId());
   applyBodyMovement();
   applyArmTuning();
   applySkyComponentVisibility();
@@ -849,6 +931,16 @@ function changed(key) {
     syncAllControls();
   } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable') {
     applyWeaponSelection();
+  } else if (key === 'fpPreset') {
+    applyFpPreset(settings.fpPreset);
+    syncAllControls();
+  } else if (key === 'fpViewBlend' || key === 'fpCameraComfort') {
+    settings.fpPreset = 'custom';
+    syncAllControls();
+  } else if (key === 'audioMusicEnabled') {
+    applyMusicSetting().catch(reportBaseGameError);
+  } else if (key?.startsWith('audio')) {
+    applyAudioSettings();
   } else if (key === 'armPreset') {
     // The preset dropdown fills the sliders; sliders then override the preset individually.
     applyArmPresetToSettings(settings.armPreset);
@@ -904,6 +996,7 @@ const captureSec = createSection(ctrlBody, 'Performance Capture', { collapsed: f
 const worldSec = createSection(ctrlBody, 'World / Traversal Lab', { collapsed: false });
 const playerSec = createSection(ctrlBody, 'Player / Camera', { collapsed: false });
 const networkSec = createSection(ctrlBody, 'Network / Remote players', { collapsed: false });
+const audioSec = createSection(ctrlBody, 'Audio', { collapsed: true });
 const armSec = createSection(ctrlBody, 'Arms', { collapsed: true });
 const bodyMoveSec = createSection(ctrlBody, 'Body movement', { collapsed: true });
 const skySec = createSection(ctrlBody, 'Sky components', { collapsed: false });
@@ -1009,7 +1102,7 @@ terrainWorldSec.append(terrainSourceLine);
 addToggle(terrainWorldSec, 'terrainVisible', 'Terrain visible (collision stays on)');
 addToggle(terrainWorldSec, 'terrainVolumetric', 'Volumetric (caves from the v5 density config)');
 addToggle(terrainWorldSec, 'terrainFarLod', 'Far LOD (clipmap rings to the horizon, visual only)');
-addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 16, 1);
+addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 12, 1);
 addToggle(terrainWorldSec, 'terrainTextures', 'Ground textures (slope/height splat)');
 addRange(terrainWorldSec, 'terrainTextureTile', 'Texture tile (m)', 1, 16, 0.5);
 addRange(terrainWorldSec, 'terrainTextureFade', 'Texture detail fade (m)', 200, 6000, 50);
@@ -1051,6 +1144,12 @@ addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addRange(playerSec, 'weaponHoldHeight', 'Weapon hold height', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'weaponHoldForward', 'Weapon hold forward', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
+addSelect(playerSec, 'fpPreset', 'First-person style', ['hybrid', 'arcade', 'embodied', 'custom']);
+addRange(playerSec, 'fpViewBlend', 'First-person gun blend', 0, 1, 0.01, value => value.toFixed(2));
+addSelect(playerSec, 'fpCameraComfort', 'First-person camera comfort', ['off', 'light', 'strong']);
+const fpNote = document.createElement('div'); fpNote.className = 'note';
+fpNote.textContent = 'Gun blend 0 shows the body holding the gun as others see it; 1 uses the authored first-person view. Aiming blends to 1, sprinting toward 0. Comfort damps the camera to the animated head and is off while aiming.';
+playerSec.append(fpNote);
 const weaponNote = document.createElement('div'); weaponNote.className = 'note';
 weaponNote.textContent = 'Keys 1 to 4 pick a slot, R reloads, hold the right mouse button to aim. T resets the player.';
 playerSec.append(weaponNote);
@@ -1178,6 +1277,16 @@ addRange(lightSec, 'sunElevation', 'Manual elevation', -90, 90, 1, value => `${v
 addRange(lightSec, 'sunAzimuth', 'Manual azimuth', 0, 360, 1, value => `${value.toFixed(0)}°`);
 addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toFixed(2));
 addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
+
+addRange(audioSec, 'audioMasterVolume', 'Master volume', 0, 1, 0.01, v => v.toFixed(2));
+addRange(audioSec, 'audioSfxVolume', 'Effects volume', 0, 1, 0.01, v => v.toFixed(2));
+addRange(audioSec, 'audioMusicVolume', 'Music volume', 0, 1, 0.01, v => v.toFixed(2));
+addToggle(audioSec, 'audioMuted', 'Mute everything');
+addToggle(audioSec, 'audioSfxEnabled', 'Sound effects');
+addToggle(audioSec, 'audioFootsteps', 'Footsteps');
+addToggle(audioSec, 'audioRemoteSfx', 'Sounds from other players');
+addToggle(audioSec, 'audioSynthFallback', 'Synthesized fallback when a sound has no file');
+addToggle(audioSec, 'audioMusicEnabled', 'Play music from sfx/music');
 
 const missingControls = Object.keys(DEFAULT_SETTINGS).filter(key => !controlRegistry.has(key));
 if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${missingControls.join(', ')}`);
@@ -1318,6 +1427,8 @@ function applyAllState(payload) {
   }
   if (typeof data.ui?.panelCollapsed === 'boolean') ctrlRoot.classList.toggle('collapsed', data.ui.panelCollapsed);
   applySectionStates(ctrlBody, data.ui?.sections);
+  applyAudioSettings();
+  applyMusicSetting().catch(reportBaseGameError);
   controls.update();
   syncAllControls();
   syncNetworkControlPermissions();
@@ -1352,6 +1463,22 @@ const slotUi = createSlotSection({
   onSaved: mirrorSlotToDisk,
 });
 sessionSec.append(...slotUi.nodes);
+
+const musicButtons = document.createElement('div'); musicButtons.className = 'button-row';
+for (const [label, action] of [['Previous track', () => envAudio.prevTrack()], ['Next track', () => envAudio.nextTrack()]]) {
+  const button = document.createElement('button'); button.textContent = label;
+  button.addEventListener('click', () => { if (musicStarted) action(); });
+  musicButtons.append(button);
+}
+audioSec.append(musicButtons);
+const audioStatus = document.createElement('div'); audioStatus.className = 'state-status'; audioSec.append(audioStatus);
+envAudio.subscribe(state => {
+  audioStatus.textContent = `${state.sfxFolderStatus || ''}${state.currentTrackLabel ? ` | ${state.currentTrackLabel}` : ''}`;
+});
+envAudio.init();
+envAudio.restoreSfxFolder();
+applyAudioSettings();
+applyMusicSetting().catch(reportBaseGameError);
 
 const fileButtons = document.createElement('div'); fileButtons.className = 'button-row';
 const exportButton = document.createElement('button'); exportButton.textContent = 'Export JSON';
@@ -1432,6 +1559,7 @@ function resumeGameplay() {
 }
 function openPauseMenu() {
   if (activeMode === 'menu') return;
+  audioDirector.menuOpen();
   gameplayPaused = true;
   controls.enabled = false;
   clearPlayerInput();
@@ -1492,6 +1620,7 @@ addEventListener('keydown', event => {
   if (pauseMenu.open) {
     pauseMenu.hide();
     resumeGameplay();
+    audioDirector.menuClose();
   } else if (gameplayPaused) {
     pauseMenu.show(pauseSessionLabel());
   } else {
@@ -1519,7 +1648,9 @@ addEventListener('keydown', event => {
   const slotIndex = slotKeys.indexOf(event.code);
   if (slotIndex >= 0 && !event.repeat && slotIndex !== weaponState.slot) {
     weaponState.slot = slotIndex;
+    weaponViewModel.setWeapon(localWeaponId());
     playerBodies.setWeapon(localWeaponId());
+    audioDirector.localSlotChange();
   }
 });
 // Right mouse button aims while held (pointer-locked play only).
@@ -1552,6 +1683,7 @@ updateWorld(0);
 const statsEl = document.getElementById('stats');
 let frameBusy = false;
 let lastFrameStart = performance.now();
+const remoteAudioLocal = [0, 0, 0];
 let fpsElapsed = 0;
 let fpsFrames = 0;
 let shownFps = 0;
@@ -1829,7 +1961,7 @@ async function animate() {
         jumpEdgeQueued = false;
         const reload = weaponState.reloadEdge;
         weaponState.reloadEdge = false;
-        if (reload) playerBodies.localReload();   // predicted: the server echoes the same action tick
+        if (reload && playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); }   // predicted: the server echoes the same action tick
         return { ...input, jump, reload };
       });
       playerInterpolationAlpha = stepped.alpha;
@@ -1843,7 +1975,7 @@ async function animate() {
     } else if (canControl) {
       playerController.setInput(input);
       if (jumpEdgeQueued) { playerController.queueJump(); jumpEdgeQueued = false; }
-      if (weaponState.reloadEdge) { weaponState.reloadEdge = false; playerBodies.localReload(); }
+      if (weaponState.reloadEdge) { weaponState.reloadEdge = false; if (playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); } }
       const stepped = playerController.advance(dt);
       // Solo kill plane; online the server enforces the same layout value.
       if (playerController.getPosition(playerPositionScratch)[1] < worldKillPlaneY(playerPositionScratch)) resetPlayer();
@@ -1858,11 +1990,16 @@ async function animate() {
         visible: settings.playerCapsuleVisible && settings.playerViewMode === 'thirdPerson',
         grounded: playerController.grounded,
       });
+      const comfort = FP_COMFORT[settings.fpCameraComfort] ?? FP_COMFORT.off;
+      const comfortOn = settings.playerViewMode === 'firstPerson' && fpState.hasEye && !weaponState.aiming;
       playerView.updateCamera(dt, playerRenderPosition, {
         mode: settings.playerViewMode,
         distance: settings.cameraDistance,
         followRate: settings.cameraFollowRate,
         obstructionPadding: settings.cameraObstructionPadding,
+        eyeAnchor: comfortOn ? fpState.eye : null,
+        comfortRateXZ: comfortOn ? comfort.xz : 0,
+        comfortRateY: comfortOn ? comfort.y : 0,
       });
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
@@ -1873,9 +2010,35 @@ async function animate() {
     }
     // Bodies read the same render position the capsule uses; the controller is never touched.
     // Third-person rigs show only in third-person view, lower-body rigs only in first-person.
-    const bodyVisible = settings.playerBodyMode === 'lowerBody'
-      ? settings.playerViewMode === 'firstPerson'
-      : settings.playerViewMode === 'thirdPerson' || !canControl;
+    const firstPerson = settings.playerViewMode === 'firstPerson';
+    const bodyVisible = settings.playerBodyMode === 'lowerBody' ? firstPerson : true;
+    // First person on the full rig: head and torso masked so they never clip the camera.
+    const wantMask = firstPerson && settings.playerBodyMode === 'thirdPerson' && canControl;
+    if (wantMask !== fpState.masked) { fpState.masked = wantMask; playerBodies.setLocalPartMask(wantMask ? FP_PART_MASK : FP_PART_MASK_NONE); }
+    // View blend: preset value, pulled to 1 by aiming and toward 0 by sprinting, eased.
+    const sprinting = canControl && input.sprint && (input.moveX !== 0 || input.moveZ !== 0);
+    const blendTarget = !wantMask ? 0 : weaponState.aiming ? 1 : sprinting ? settings.fpViewBlend * 0.3 : settings.fpViewBlend;
+    fpState.viewBlend += (blendTarget - fpState.viewBlend) * (1 - Math.exp(-6 * dt));
+    fpState.aimAmount += ((weaponState.aiming ? 1 : 0) - fpState.aimAmount) * (1 - Math.exp(-10 * dt));
+    // The authored viewmodel pose, lifted from camera space into the world for the mount blend.
+    const vmSpeed = Math.hypot(playerController.getVelocity()[0], playerController.getVelocity()[2]);
+    const vmPose = weaponViewModel.update(dt, { speed: vmSpeed, aim: fpState.aimAmount, running: sprinting, moveX: input.moveX, moveZ: input.moveZ, lookYaw: playerView.yaw });
+    let viewFrame = null;
+    if (wantMask && vmPose.visible && fpState.viewBlend > 1e-3) {
+      camera.updateMatrixWorld(true);
+      fpLocalMatrix.compose(fpViewPos.fromArray(vmPose.position), fpViewQuat.setFromEuler(fpViewEuler.set(vmPose.rotation[0], vmPose.rotation[1], vmPose.rotation[2], 'XYZ')), fpScale.set(1, 1, 1));
+      fpWorldMatrix.multiplyMatrices(camera.matrixWorld, fpLocalMatrix).decompose(fpViewPos, fpViewQuat, fpScale);
+      viewFrame = fpViewFrame;
+    }
+    {
+      const v = playerController.getVelocity();
+      audioDirector.updateLocal(dt, {
+        speed: canControl ? Math.hypot(v[0], v[2]) : 0,
+        grounded: playerController.grounded,
+        sprint: input.sprint,
+        rising: v[1] > 0.5,
+      });
+    }
     playerBodies.setLocalAim(canControl && weaponState.aiming, canControl && weaponState.aiming ? updateLocalAimPoint() : null);
     playerBodies.updateLocal(dt, {
       globalFoot: worldCoordinates.toGlobal(playerRenderPosition),
@@ -1886,13 +2049,27 @@ async function animate() {
       height: playerController.config.height,
       radius: playerController.config.radius,
       visible: bodyVisible,
+      viewFrame,
+      viewBlend: viewFrame ? fpState.viewBlend : 0,
     });
+    // The rig's eyes sit ~0.34 m above the capsule's eye height (the rig is taller than its capsule),
+    // so the comfort anchor keeps the capsule height and takes only the head's motion from the rig.
+    fpState.hasEye = !!playerBodies.localEyePoint(fpState.eye);
+    if (fpState.hasEye) fpState.eye[1] -= FP_RIG_EYE_OFFSET;
     if (online) {
       remotePlayers.update(performance.now(), { interpolationDelayMs: settings.interpolationDelayMs });
       playerBodies.beginRemoteFrame();
       if (settings.remoteBodiesEnabled) {
         for (const [id, record] of remotePlayers.players) {
           if (!record.sample) continue;
+          worldCoordinates.toRenderLocal(record.sample.position, remoteAudioLocal);
+          audioDirector.updateRemote(id, {
+            position: { x: remoteAudioLocal[0], y: remoteAudioLocal[1], z: remoteAudioLocal[2] },
+            grounded: record.sample.grounded,
+            action: record.sample.action,
+            actionTick: record.sample.actionTick,
+            weapon: record.sample.weapon,
+          });
           playerBodies.updateRemote(dt, id, {
             globalFoot: record.sample.position,
             velocity: record.sample.velocity,
@@ -1907,11 +2084,12 @@ async function animate() {
         }
       }
       playerBodies.endRemoteFrame();
-      for (const id of [...playerBodies.remoteIds]) if (!remotePlayers.players.has(id)) playerBodies.releaseRemote(id);
+      for (const id of [...playerBodies.remoteIds]) if (!remotePlayers.players.has(id)) { playerBodies.releaseRemote(id); audioDirector.releaseRemote(id); }
     } else {
       playerBodies.flushWeapons();
     }
     sky.group.position.copy(camera.position);
+    envAudio.update(frameStart);
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
@@ -1941,6 +2119,7 @@ addEventListener('beforeunload', () => {
   playerView.dispose();
   playerBodies.dispose();
   remotePlayers.dispose();
+  envAudio.dispose();
   traversalLab.dispose();
   terrain.dispose();
 }, { once: true });

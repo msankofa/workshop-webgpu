@@ -41,6 +41,9 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Procedural humanoid rig, gait, IK | `player-procedural-body.js` / `body-part-batches.js` |
 | Body support through world query | `base-game-body-support.js` |
 | Body presentation owner | `base-game-player-bodies.js` |
+| Web Audio graph, positional SFX, http music playlist | `environment-audio.js` (see `audio.md`) |
+| Sound director: what fires when, budgets, cull, sample-or-synth | `base-game-audio.js` |
+| Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
 or server room logic.
@@ -242,6 +245,43 @@ The browser sends one completed entry to `serve.py`, which atomically prepends i
 browser tab never sends an old copy of the log back to the server. The file uses the
 `pcw-base-game-performance-log` version-1 envelope and is created on the first successful capture.
 Disk persistence requires loading Base Game through `serve.py`.
+
+## Audio
+
+The same `createEnvironmentAudio` controller the environment viewer and `bot-viewer-v3.html` run,
+with the camera as the listener, `autoplayOnGesture: false` and `isGameplayActive` = not in the
+menu and not paused. SFX load with zero setup over http (`restoreSfxFolder()` falls back to
+`sfx/sound-map.json`); music is the `'http'` playlist of `sfx/music/` behind the "Play music"
+toggle, default off.
+
+`base-game-audio.js` is the pure director (`test-base-game-audio.mjs`). It owns no Web Audio; it
+decides which event id fires and where, then calls `play`/`playAt`, or `playSynthAt` with a
+`weapon-sfx-synth.js` voice when `hasSfxEvent` is false. Rules: stride-cadence footsteps (1.7 m
+walk / 2.4 m sprint, none below 0.5 m/s or airborne), `jump` on grounded→airborne while rising and
+`landing` on airborne→grounded, a per-event budget of 4–8 starts per 100 ms, a 70 m cull for
+positional sounds, and "sample first, synth second".
+
+Fire points in `base-game.html`:
+
+- `audioDirector.updateLocal(dt, { speed, grounded, sprint, rising })` once per frame from the
+  controller's velocity and grounded flag (non-positional).
+- `localReload()` wherever `playerBodies.localReload()` returns true (both the lockstep and the solo
+  path), `localSlotChange()` on a 1–4 key that changes the slot. Both use the new `weapon_reload` /
+  `weapon_draw` ids, which have no sample yet and play the synth voices.
+- `updateRemote(id, { position, grounded, action, actionTick, weapon })` per remote player from its
+  interpolated sample converted through `worldCoordinates.toRenderLocal`; footsteps, jump and
+  landing are positional with the step profile, and a new `actionTick` plays `weapon_reload`,
+  `weapon_draw` or (once the server emits fire actions) the weapon report via `weaponFireEvent`.
+  `releaseRemote(id)` when the body is released.
+- `menuOpen()` / `menuClose()` around the pause menu; `envAudio.update()` every frame before the
+  terrain update.
+
+The Audio panel section holds master/effects/music volume, mute, the sound-effects, footsteps,
+other-players and synth-fallback switches, the music toggle and previous/next track. All of it
+lives in `settings` (`audio*` keys), so it autosaves and round-trips through slots and JSON;
+`applyAllState` re-applies it to the controller. The `pause_open`/`pause_close`/`landing` ids have no
+sample in `sfx/sound-map.json` and no synth voice, so they are silent until one is assigned in
+`sfx-browser.html`.
 
 ## Verification
 
@@ -540,6 +580,31 @@ walk/run/dash carries, aim and the reload choreography. Nothing fires yet.
   compensation. Remote samples carry the latest weapon fields un-interpolated.
 - `bot-viewer-v3.html` was switched to the module the same day (1.5): its mount functions are
   wrappers now and the three mount code paths no longer exist twice.
+
+### Weapons, phase 2: first-person blend model (shipped 2026-08-22)
+
+One rig, two presentation axes, owner only; remotes always see the third-person mount.
+
+- **`weapon-viewmodel.js`** ports `environment-viewer.html`'s first-person maths with no rendering:
+  authored `viewOffset` / `viewRotation`, ADS lerp to `aimOffset` / `aimRotation`, idle/walk/run bob
+  cross-fade on a strafe-relative axis, run carry lean, recoil kick, and the reload delta from the
+  shared `reloadSequence`. `update(dt, { speed, aim, running, moveX, moveZ, lookYaw })` returns a
+  camera-local `{ position, rotation, viewBob }`. `test-weapon-viewmodel.mjs`.
+- **Blend**: the page lifts that pose into the world through the camera matrix and passes it as the
+  local sample's `viewFrame` + `viewBlend`; `weapon-mount.js` lerps the whole rig toward it before
+  the pose controller runs, so hands and reloads are right at any blend. Blend target = the
+  `fpViewBlend` setting, pulled to 1 while aiming and to 30 % while sprinting, eased at 6/s.
+- **Presets** (`fpPreset`): arcade (blend 1, comfort off), embodied (blend 0, comfort light),
+  hybrid (blend 0.6, comfort off, default), custom (whatever the two controls say).
+- **Camera comfort** (`fpCameraComfort`): `base-game-player-view.js` `updateCamera` takes an
+  `eyeAnchor` (render-local) and `comfortRateXZ/Y`; the page feeds the rig's animated eye point
+  (`playerBodies.localEyePoint`, bot-viewer-v3's POV anchor) minus `FP_RIG_EYE_OFFSET` 0.34 m,
+  because the rig's eyes sit above the capsule eye height. Off while aiming.
+- **Part mask**: the rig gained `setPartMask(mask)` over `parts.core`; in first person on the
+  third-person rig the page hides head, eyes, neck and torso (`FP_PART_MASK`) and keeps arms and
+  legs. Mesh-mode only hides anchored gear with its host; instanced bodies would not.
+- Not done: the late depth-cleared pass for arms + gun (they can clip walls at the 0.1 m near
+  plane) and the shoulder pin at mid blend. Both are tuning items once the look is judged.
 
 ### Pre-terrain server-authoritative player replication
 
@@ -864,7 +929,7 @@ In `base-game.html`: `worldMode` gains `terrain` (the only runtime source is
 `worldSpawn()`/`worldKillPlaneY()` pick terrain or Traversal Lab values; changing `worldMode` in
 Solo respawns the player; `updateWorld()` drives `setActive/Visible/DrawRadius/…` from settings;
 `animate()` calls `terrain.update()` under the `terrain` profiler label before `updateWorld`. New
-local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–16), `terrainWireframe`,
+local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–12, default 6; the 5 m cascade level covers 300 m, so wider exact radii only cost draws — measured 46 fps at 16 vs 75 at 8), `terrainWireframe`,
 `terrainNormals`, `terrainTileBounds`, `terrainCollisionDebug`, in a **Terrain world** panel
 section with a source readout and a 4 Hz runtime line. The performance `context.world.terrain` is
 now `{ project: terrainStore.summary(), runtime: terrain.stats }`. Online, `worldMode` is still
