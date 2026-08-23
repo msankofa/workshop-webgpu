@@ -17,6 +17,7 @@ export const V5_SOURCE_ALGORITHM_VERSION = `${PROJECT_ALGORITHM_UNBOUNDED}/stack
 export const VOLUME_TOP_MARGIN = 12;      // metres of air sampled above the highest surface sample so overhangs/warp close
 export const VOLUME_GRADIENT_EPS = 0.35;  // finite-difference step for density-gradient normals
 export const VOLUME_Y_SPACING_MULT = 2;   // vertical sample spacing relative to the XZ step (caves are ~10 m features)
+export const VOLUME_Y_SPACING_MAX = 8;    // metres; coarser rows misplace the iso-surface (the density is not linear in y over the floor seal and cave mask)
 const NORMAL_EPSILON = 0.5;   // same central difference as terrain-field.js so seams match the analytic source
 
 // Descriptor for a project: key = project name (or 'v5-project'), sourceVersion = content hash.
@@ -72,12 +73,26 @@ export function createV5Source(descriptorLike) {
   // Band-limited height for a caller sampling every `spacing` metres (far clipmap rings): noise
   // layers drop octaves finer than ~4 samples per wavelength. The classic (v4 climate) layer is
   // not band-limited yet; it is low-frequency by construction. spacing 0 = heightAt.
-  function heightAtSpacing(x, z, spacing) {
+  function bandLimitedAt(x, z, spacing) {
     pointCtx.classic = hasClassic ? classicAt(x, z) : 0;
     pointCtx.spacing = spacing > 0 ? spacing : 0;
     const h = evaluateStackPoint(prepared, x, z, pointCtx);
     pointCtx.spacing = 0;
     return h;
+  }
+  // Above SUPERSAMPLE_ABOVE the octave fade alone drifts (a masked ridged layer's dropped octaves
+  // are replaced by a global mean that is not the local one), so the coarse post is a Gaussian-
+  // weighted average of SS×SS sub-samples over a two-cell footprint, each band-limited at half
+  // the spacing: the sub-fade removes what the footprint cannot, the footprint removes the rest
+  // and keeps the local mean honest. Measured: a 2.5-sample wave keeps <10%, an 8-sample wave ~90%.
+  const SUPERSAMPLE_ABOVE = 6, SS = 6, SS_FOOTPRINT = 4.0, SS_SIGMA = 1.0;
+  const ssWeights = (() => { const w = []; let sum = 0; for (let j = 0; j < SS; j++) for (let i = 0; i < SS; i++) { const u = ((i + 0.5) / SS - 0.5) * SS_FOOTPRINT, v = ((j + 0.5) / SS - 0.5) * SS_FOOTPRINT; const g = Math.exp(-(u * u + v * v) / (2 * SS_SIGMA * SS_SIGMA)); w.push([u, v, g]); sum += g; } return w.map(([u, v, g]) => [u, v, g / sum]); })();
+  function heightAtSpacing(x, z, spacing) {
+    if (!(spacing > SUPERSAMPLE_ABOVE)) return bandLimitedAt(x, z, spacing);
+    const sub = spacing * 0.5;
+    let acc = 0;
+    for (const [u, v, g] of ssWeights) acc += g * bandLimitedAt(x + u * spacing, z + v * spacing, sub);
+    return acc;
   }
   function normalAt(x, z, out = [0, 0, 0], spacing = 0) {
     const e = spacing > 0 ? Math.max(NORMAL_EPSILON, spacing * 0.5) : NORMAL_EPSILON;
@@ -128,7 +143,7 @@ export function createV5Source(descriptorLike) {
     const yMin = density.y_min;
     let maxH = -Infinity;
     for (let i = 0; i < heights.length; i++) if (heights[i] > maxH) maxH = heights[i];
-    const sy = step * VOLUME_Y_SPACING_MULT;
+    const sy = Math.min(step * VOLUME_Y_SPACING_MULT, VOLUME_Y_SPACING_MAX);
     const yMax = Math.max(yMin + sy * 2, maxH + VOLUME_TOP_MARGIN);
     const ny = Math.ceil((yMax - yMin) / sy) + 1;
     // Cubes run over the interior samples only, so neighbouring tiles meet exactly on the

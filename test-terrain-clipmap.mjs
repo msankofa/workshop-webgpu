@@ -30,14 +30,20 @@ console.log('\n[1] band limit: octaves finer than the sample spacing fade to the
   ok(octaveBandWeight(1, 0) === 1 && octaveBandWeight(1, 1 / 8) === 1 && octaveBandWeight(1, 1 / 4) === 0 && near(octaveBandWeight(1, 1 / 6), 0.5), 'weight: 1 at 8 samples/wavelength, 0 at 4, linear between');
   const fine = makeLayer('fbm', { id: 'FINE', params: { amplitude: 30, scale: 20, octaves: 1, seedOffset: 5 } });   // 20 m is the smallest layer scale
   const withFine = createSource(v5Descriptor(project([fine]))), without = createSource(v5Descriptor(project()));
-  let maxExactDiff = 0, maxCoarseDiff = 0;
+  let maxExactDiff = 0, maxCoarseDiff = 0, maxFadeDiff = 0, exactSq = 0, coarseSq = 0;
   for (let i = 0; i < 200; i++) {
     const x = i * 7.3 - 700, z = i * 3.1 - 300;
-    maxExactDiff = Math.max(maxExactDiff, Math.abs(withFine.heightAt(x, z) - without.heightAt(x, z)));
-    maxCoarseDiff = Math.max(maxCoarseDiff, Math.abs(withFine.heightAtSpacing(x, z, 8) - without.heightAtSpacing(x, z, 8)));
+    const e = withFine.heightAt(x, z) - without.heightAt(x, z), c = withFine.heightAtSpacing(x, z, 8) - without.heightAtSpacing(x, z, 8), f = withFine.heightAtSpacing(x, z, 5) - without.heightAtSpacing(x, z, 5);
+    maxExactDiff = Math.max(maxExactDiff, Math.abs(e)); maxCoarseDiff = Math.max(maxCoarseDiff, Math.abs(c)); maxFadeDiff = Math.max(maxFadeDiff, Math.abs(f));
+    exactSq += e * e; coarseSq += c * c;
   }
   ok(maxExactDiff > 5, `exact heights differ by up to ${maxExactDiff.toFixed(1)} m with the 20 m layer`);
-  ok(maxCoarseDiff < 1e-9, `at 8 m spacing (2.5 samples per wavelength) the 20 m layer is gone entirely (${maxCoarseDiff.toExponential(1)})`);
+  ok(maxFadeDiff < 1e-9, `at 5 m spacing (octave fade) the 20 m layer is gone entirely (${maxFadeDiff.toExponential(1)})`);
+  ok(Math.sqrt(coarseSq / exactSq) < 0.25, `at 8 m spacing (supersampled low-pass) the 20 m layer keeps ${(Math.sqrt(coarseSq / exactSq) * 100).toFixed(0)}% of its amplitude`);
+  // the supersampled path must not lift or sink the terrain: mean drift vs exact stays near zero
+  let drift = 0, n = 0;
+  for (let x = -1500; x <= 1500; x += 150) for (let z = -1500; z <= 1500; z += 150) { drift += without.heightAtSpacing(x, z, 80) - without.heightAt(x, z); n++; }
+  ok(Math.abs(drift / n) < 1.5, `80 m spacing: mean drift ${(drift / n).toFixed(2)} m (no plateau lift)`);
   const t0 = withFine.buildTile({ ix: 0, iz: 0, lod: 0, xMin: 0, zMin: 0, size: 30, intervals: 23, apron: 1, fields: ['heights'] });
   ok(t0.heights[(1) * t0.texels + 1] === Math.fround(withFine.heightAt(0, 0)), 'lod 0 tile is the exact field');
   const t3 = withFine.buildTile({ ix: 0, iz: 0, lod: 3, xMin: 0, zMin: 0, size: 256, intervals: 32, apron: 1, fields: ['heights'] });
