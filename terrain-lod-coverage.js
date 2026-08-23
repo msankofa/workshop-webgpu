@@ -12,7 +12,7 @@ export const LOD_COVERAGE_DEFAULTS = Object.freeze({
   fadeSeconds: 0.6,  // 0→1 ramp time (fine fades in over the first half, coarse out over the second)
 });
 
-export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.texels, fadeSeconds = LOD_COVERAGE_DEFAULTS.fadeSeconds } = {}) {
+export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.texels, fadeSeconds = LOD_COVERAGE_DEFAULTS.fadeSeconds, eroded = true } = {}) {
   if (!(chunkSize > 0)) throw new TypeError('lod coverage needs a chunk size');
   const data = new Uint8Array(texels * texels);
   const texture = new THREE.DataTexture(data, texels, texels, THREE.RedFormat, THREE.UnsignedByteType);
@@ -37,6 +37,7 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
     }
     erodedTexture.needsUpdate = true;
   }
+  let animating = false;   // any value still ramping: callers may skip update() when nothing changed
   const values = new Map();   // "ix,iz" -> { t, target }
   let originX = 0, originZ = 0;   // chunk index at texel (0,0)
   let dirty = true;
@@ -55,11 +56,13 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
     const step = fadeSeconds > 0 ? dt / fadeSeconds : 1;
     for (const key of present) if (!values.has(key)) values.set(key, { t: 0, target: 1 });
     let changed = dirty;
+    animating = false;
     for (const [key, v] of values) {
       v.target = present.has(key) ? 1 : 0;
       if (v.t !== v.target) {
         v.t = v.target > v.t ? Math.min(1, v.t + step) : 0;
         changed = true;
+        if (v.t !== v.target) animating = true;
       }
       if (v.t === 0 && v.target === 0) values.delete(key);
     }
@@ -71,7 +74,7 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
       data[iz * texels + ix] = Math.round(v.t * 255);
     }
     texture.needsUpdate = true;
-    erode();
+    if (eroded) erode();
     dirty = false;
     return true;
   }
@@ -86,6 +89,7 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
     get originX() { return originX; },
     get originZ() { return originZ; },
     get trackedCount() { return values.size; },
+    get animating() { return animating; },
     recentre, update, coverageAt,
     // everything fully present at once (e.g. after a source swap there is nothing to dissolve from)
     settle() { for (const v of values) { if (v[1].target === 1) v[1].t = 1; } dirty = true; },

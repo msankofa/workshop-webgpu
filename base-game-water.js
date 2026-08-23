@@ -162,7 +162,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     get level() { return uLevel.value; },
     get time() { return time; },
     setEnabled(flag) { enabled = !!flag; if (!enabled) surface.mesh.visible = false; terrain.setSeaDepthActive(enabled); },
-    setLevel(level) { if (Number.isFinite(level)) { uLevel.value = level; applyOffset(); } },
+    setLevel(level) { if (Number.isFinite(level) && level !== uLevel.value) { uLevel.value = level; applyOffset(); } },
     // Wave spectrum from the shared world (buildWaveTable options); rebuilds the table in place.
     setWaves(options) {
       let changed = false;

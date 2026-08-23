@@ -402,6 +402,21 @@ const terrainStore = createTerrainProjectStore({
     await applyTerrainProjectAtRuntime(project);
   },
 });
+// Per frame like the other applies; the wave-options object is only built when a wave key moved.
+const WATER_APPLY_KEYS = ['waterEnabled', 'worldMode', 'waterReflection', 'waveCount', 'waveBaseLength', 'waveLengthMul',
+  'waveBaseAmp', 'waveAmpMul', 'waveChop', 'waveWindDeg', 'waveSpreadDeg', 'waveDispersion', 'waveSpeed', 'waveSeed'];
+const appliedWater = {};
+let appliedSeaLevel = null;
+function applyWaterSettings() {
+  let dirty = false;
+  for (const key of WATER_APPLY_KEYS) if (appliedWater[key] !== settings[key]) { appliedWater[key] = settings[key]; dirty = true; }
+  if (terrain.seaLevel !== appliedSeaLevel) { appliedSeaLevel = terrain.seaLevel; dirty = true; }
+  if (!dirty) return;
+  water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
+  water.setLevel(terrain.seaLevel);
+  water.setReflectionMode(settings.waterReflection);
+  water.setWaves(waveOptionsFromWorld(settings));
+}
 const terrainStudio = createBaseGameTerrainStudio({
   store: terrainStore,
   onOpen: () => {
@@ -1075,10 +1090,7 @@ function updateWorld(dt) {
   const canVolumetric = !!terrain.source?.densityAt;
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
-  water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
-  water.setLevel(terrain.seaLevel);
-  water.setReflectionMode(settings.waterReflection);
-  water.setWaves(waveOptionsFromWorld(settings));
+  applyWaterSettings();
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.

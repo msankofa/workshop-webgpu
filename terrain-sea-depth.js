@@ -84,9 +84,15 @@ export function createSeaDepthMap({ source, descriptor = null, useWorker = true,
     return true;
   }
 
+  const totalTiles = cfg.tilesPerSide * cfg.tilesPerSide;
   // Request what the window lacks (nearest first, within budget) and push finished heights to the GPU.
   function update() {
     if (!win.placed) win.recentre(focus[0], focus[1]);
+    if (win.presentCount === totalTiles) {
+      if (win.version !== uploadedVersion) { texture.needsUpdate = true; uploadedVersion = win.version; }
+      uniforms.origin.value.set(win.originPX, win.originPZ);
+      return true;
+    }
     const missing = win.missingTiles(focus[0], focus[1]);
     let budget = worker ? Math.max(0, cfg.maxInFlight - inFlight.size) : cfg.syncBuildsPerUpdate;
     for (const t of missing) { if (budget <= 0) break; if (dispatch(t.ix, t.iz)) budget--; }

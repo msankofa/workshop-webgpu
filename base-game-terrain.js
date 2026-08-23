@@ -124,7 +124,8 @@ export function createBaseGameTerrain({
   // LOD dissolve: one coverage map per streamer (exact chunks + each cascade level) and one splat
   // instance per streamer bound to its own map and the next finer one (terrain-lod-coverage.js).
   const coverExact = createLodCoverage({ chunkSize: cfg.chunkSize });
-  const coverLevels = cfg.volumeLod.map(spec => createLodCoverage({ chunkSize: spec.chunkSize }));
+  // the last level's eroded texture has no coarser consumer
+  const coverLevels = cfg.volumeLod.map((spec, i) => createLodCoverage({ chunkSize: spec.chunkSize, eroded: i < cfg.volumeLod.length - 1 }));
   const splatInstances = new Map();   // 0 = exact, 1..n = cascade levels
   function splatFor(index) {
     if (!splatMaterial || !splatTextures) return null;
@@ -150,11 +151,17 @@ export function createBaseGameTerrain({
   }
   const hideStaleHeightfield = chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode;
   // Per frame: coverage ramps follow residency; origins follow the player; uniforms follow both.
-  function updateCoverage(globalPosition, dt) {
-    coverExact.recentre(globalPosition[0], globalPosition[2]);
-    coverExact.update(presentKeys(system, hideStaleHeightfield), dt);
-    cascade.forEach((c, i) => { coverLevels[i].recentre(globalPosition[0], globalPosition[2]); coverLevels[i].update(presentKeys(c.system, () => false), dt); });
-    for (const m of splatInstances.values()) syncStreamedSplatCoverage(m);
+  // The present-set rebuild iterates every resident chunk, so it runs only when residency changed,
+  // a window recentred, or a ramp is still animating — not on every quiet frame.
+  function updateCoverage(globalPosition, dt, residencyChanged) {
+    let touched = false;
+    const moved = coverExact.recentre(globalPosition[0], globalPosition[2]);
+    if (residencyChanged || moved || coverExact.animating) { coverExact.update(presentKeys(system, hideStaleHeightfield), dt); touched = true; }
+    cascade.forEach((c, i) => {
+      const m2 = coverLevels[i].recentre(globalPosition[0], globalPosition[2]);
+      if (residencyChanged || m2 || coverLevels[i].animating) { coverLevels[i].update(presentKeys(c.system, () => false), dt); touched = true; }
+    });
+    if (touched) for (const m of splatInstances.values()) syncStreamedSplatCoverage(m);
   }
   // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one draw per ~256 chunks
   // instead of one per chunk. A chunk's own mesh is hidden once it is in a batch; it stays the
@@ -494,7 +501,6 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
-      updateCoverage(globalPosition, dt);
       if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
@@ -502,13 +508,14 @@ export function createBaseGameTerrain({
         clipmap.update(globalPosition);
         lastClipmapMs = performance.now() - t1;
       }
+      let cascadeChanged = false;
       if (farLodMode && volumetricMode && cascade.length) {
         const t1 = performance.now();
-        let any = false;
-        for (const c of cascade) any = c.system.update(globalPosition[0], globalPosition[2]) || any;
-        if (any) applyMaterials();
+        for (const c of cascade) cascadeChanged = c.system.update(globalPosition[0], globalPosition[2]) || cascadeChanged;
+        if (cascadeChanged) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
+      updateCoverage(globalPosition, dt, changed || cascadeChanged);
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
         handoffPending = false;
         handoffDone = true;
