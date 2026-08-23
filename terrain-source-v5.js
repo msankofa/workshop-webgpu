@@ -18,7 +18,68 @@ export const VOLUME_TOP_MARGIN = 12;      // metres of air sampled above the hig
 export const VOLUME_GRADIENT_EPS = 0.35;  // finite-difference step for density-gradient normals
 export const VOLUME_Y_SPACING_MULT = 2;   // vertical sample spacing relative to the XZ step (caves are ~10 m features)
 export const VOLUME_Y_SPACING_MAX = 8;    // metres; coarser rows misplace the iso-surface (the density is not linear in y over the floor seal and cave mask)
-const NORMAL_EPSILON = 0.5;   // same central difference as terrain-field.js so seams match the analytic source
+const NORMAL_EPSILON = 0.5;
+
+// Append vertical skirt strips to a marching-cubes tile mesh along its four border planes,
+// but only where the border contour is the open-sky surface (within 1.5 cells of the column's
+// topmost air→rock crossing). Mutates mc.{positions,indices} (skirt normals are horizontal,
+// filled by the caller's gradient loop only for the original verts, so they are appended here).
+function addBorderSkirts(mc, field, nx, ny, nz, step, sy, xMin, yMin, zMin, depth) {
+  const xMax = xMin + (nx - 1) * step, zMax = zMin + (nz - 1) * step;
+  const eps = Math.min(step, sy) * 1e-3;
+  // topmost rock sample per border column, scanned once
+  const topAt = (ix, iz) => { for (let iy = ny - 1; iy >= 0; iy--) if (field[ix + iy * nx + iz * nx * ny] > 0) return yMin + iy * sy; return -Infinity; };
+  const colX = i => Math.max(0, Math.min(nx - 1, Math.round((i - xMin) / step)));
+  const colZ = i => Math.max(0, Math.min(nz - 1, Math.round((i - zMin) / step)));
+  const pos = mc.positions, idx = mc.indices;
+  // undirected open edges
+  const counts = new Map();
+  for (let t = 0; t < idx.length; t += 3) {
+    for (const [a, b] of [[idx[t], idx[t + 1]], [idx[t + 1], idx[t + 2]], [idx[t + 2], idx[t]]]) {
+      const key = a < b ? a * 4294967296 + b : b * 4294967296 + a;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+  const sideOf = i => {
+    const x = pos[i * 3], z = pos[i * 3 + 2];
+    if (Math.abs(x - xMin) < eps) return 0;
+    if (Math.abs(x - xMax) < eps) return 1;
+    if (Math.abs(z - zMin) < eps) return 2;
+    if (Math.abs(z - zMax) < eps) return 3;
+    return -1;
+  };
+  const outward = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const newPos = [], newNrm = [], newIdx = [];
+  let base = pos.length / 3;
+  for (const [key, count] of counts) {
+    if (count !== 1) continue;
+    const a = Math.floor(key / 4294967296), b = key % 4294967296;
+    const sa = sideOf(a), sb = sideOf(b);
+    if (sa < 0 || sa !== sb) continue;
+    const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
+    const bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];
+    const my = (ay + by) / 2, mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    const top = sa < 2
+      ? Math.max(topAt(colX(mx), Math.max(0, colZ(mz) - 1)), topAt(colX(mx), colZ(mz)), topAt(colX(mx), Math.min(nz - 1, colZ(mz) + 1)))
+      : Math.max(topAt(Math.max(0, colX(mx) - 1), colZ(mz)), topAt(colX(mx), colZ(mz)), topAt(Math.min(nx - 1, colX(mx) + 1), colZ(mz)));
+    if (my < top - 1.5 * sy) continue;   // a cave contour, not the open-sky surface
+    const [ox, oz] = outward[sa];
+    // a, b, and their dropped copies; wind the two triangles to face outward
+    newPos.push(ax, ay, az, bx, by, bz, ax, ay - depth, az, bx, by - depth, bz);
+    for (let k = 0; k < 4; k++) newNrm.push(ox, 0, oz);
+    const A = base, B = base + 1, A2 = base + 2, B2 = base + 3;
+    const ex = bx - ax, ez = bz - az;
+    // cross((b-a), (0,-depth,0)) = (ez*depth, 0, -ex*depth) → dot with outward
+    const facing = (ez * ox - ex * oz) >= 0;
+    if (facing) newIdx.push(A, B, B2, A, B2, A2); else newIdx.push(B, A, A2, B, A2, B2);
+    base += 4;
+  }
+  if (!newPos.length) return;
+  const p2 = new Float32Array(pos.length + newPos.length); p2.set(pos); p2.set(newPos, pos.length);
+  const IndexArray = idx.constructor;
+  const i2 = new IndexArray(idx.length + newIdx.length); i2.set(idx); i2.set(newIdx, idx.length);
+  mc.positions = p2; mc.indices = i2; mc.skirtVertexStart = pos.length / 3; mc.skirtNormals = newNrm;
+}   // same central difference as terrain-field.js so seams match the analytic source
 
 // Descriptor for a project: key = project name (or 'v5-project'), sourceVersion = content hash.
 export function v5Descriptor(projectLike, { key } = {}) {
@@ -140,7 +201,7 @@ export function createV5Source(descriptorLike) {
   // Marching cubes over one tile column: samples at the tile's XZ grid (apron included), rows
   // from density.y_min up to the column's highest surface + margin. Normals come from the
   // density gradient, so they agree across tile borders without knowing the neighbour mesh.
-  function buildVolume(tile, spacing = 0) {
+  function buildVolume(tile, spacing = 0, skirtDepth = 0) {
     const { texels, step, heights, apron: pad } = tile;
     const densityAt = (x, y, z, h) => densityPointFor(spacing)(x, y, z, h);
     const yMin = density.y_min;
@@ -162,11 +223,18 @@ export function createV5Source(descriptorLike) {
       }
     }
     const mc = marchingCubesGrid(field, nx, ny, nz, step, sy, step, tile.xMin, yMin, tile.zMin, 0);
+    // LOD skirts (chunked-LOD standard): a strip hangs from the tile border's OPEN-SKY surface
+    // contour so a coarser level never shows a crack against a finer one. Cave contours on the
+    // border are left alone (a skirt there would curtain the cave mouth), told apart by the
+    // topmost air→rock crossing of each border column of the field.
+    if (skirtDepth > 0) addBorderSkirts(mc, field, nx, ny, nz, step, sy, tile.xMin, yMin, tile.zMin, skirtDepth);
+    const gradEnd = mc.skirtVertexStart != null ? mc.skirtVertexStart * 3 : mc.positions.length;
     const normals = new Float32Array(mc.positions.length);
+    if (mc.skirtNormals) normals.set(mc.skirtNormals, gradEnd);
     const e = VOLUME_GRADIENT_EPS;
     // Surface height for the gradient taps comes from the tile itself (bilinear), not the stack.
     const hAt = (x, z) => sampleHeightTileBilinear(tile, x, z);
-    for (let i = 0; i < mc.positions.length; i += 3) {
+    for (let i = 0; i < gradEnd; i += 3) {
       const x = mc.positions[i], y = mc.positions[i + 1], z = mc.positions[i + 2];
       const hx0 = hAt(x - e, z), hx1 = hAt(x + e, z), hz0 = hAt(x, z - e), hz1 = hAt(x, z + e), h = hAt(x, z);
       const gx = densityAt(x + e, y, z, hx1) - densityAt(x - e, y, z, hx0);
@@ -216,7 +284,8 @@ export function createV5Source(descriptorLike) {
         }
         out.normals = normals;
       }
-      if (req.fields.includes('volume')) out.volume = buildVolume(out, spacing);
+      // Visual LOD tiles (lod >= 1) get skirts; exact lod-0 tiles are collision and abut exactly.
+      if (req.fields.includes('volume')) out.volume = buildVolume(out, spacing, req.lod >= 1 ? Math.max(4, spacing * 0.2 + VOLUME_Y_SPACING_MAX) : 0);
       return validateTileResult(out, req);
     },
   };
