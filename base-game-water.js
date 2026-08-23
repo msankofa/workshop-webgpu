@@ -6,7 +6,7 @@
 // The surface hides itself while no ground in the depth window is below sea level.
 
 import * as THREE from 'three';
-import { uniform, vec2, float } from 'three/tsl';
+import { uniform, float, max, abs, min, normalize, smoothstep, screenUV, positionView, positionWorld, cameraPosition, cameraNear, cameraFar, viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ } from 'three/tsl';
 import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface } from './water-hybrid.js';
 import { surfaceAt } from './water-waves.js';
 
@@ -15,6 +15,7 @@ export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
   dispFade: [600, 2400],          // displacement fades to flat over this scene distance
   normalFade: [1500, 6000],       // normal fades to straight up
   fallbackDepth: 80,              // water depth assumed outside the sea-depth window
+  shallowFade: 2.5,               // wave height ramps to zero over this much depth at the shore
   preset: 'hybrid',
 });
 
@@ -40,6 +41,22 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     depthAt: xz => uLevel.sub(seaDepth.gpuHeightAt(xz, uLevel.sub(cfg.fallbackDepth))),
     sunDir: uSunDir, sunColor: uSunColor,
     dispFade: cfg.dispFade, normalFade: cfg.normalFade,
+    shallowFade: cfg.shallowFade,
+    // Per-pixel thickness: the rendered ground's depth under this fragment (opaque pass only, the
+    // water does not write depth), along the view ray, scaled to a vertical depth for a flat bed.
+    // The water ends exactly where the drawn ground rises through it, not at a 16 m post.
+    thicknessAt: () => {
+      const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(screenUV), cameraNear, cameraFar);
+      const ray = max(positionView.z.sub(sceneZ), 0.0);
+      const viewY = abs(normalize(cameraPosition.sub(positionWorld)).y);
+      return ray.mul(max(viewY, 0.08));
+    },
+    // Refraction: the framebuffer under the surface, shifted by the wave normal and the depth
+    // (a dry pixel must not be pulled in from above the shoreline).
+    bedColorAt: (viewDir, N, thickness) => {
+      const ripple = N.xz.mul(profile.refrRipple).mul(smoothstep(0.0, 1.5, thickness));
+      return viewportSharedTexture(screenUV.add(ripple)).rgb;
+    },
   });
   surface.mesh.name = 'base-game-water';
   scene.add(surface.mesh);

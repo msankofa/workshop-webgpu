@@ -1,6 +1,6 @@
 # Base Game water — full plan
 
-STATUS 2026-08-23: W1 shipped (sea level descriptor field + protocol + facade + server + wave keys; `test-base-game-sea-level.mjs`); W2 shipped (`terrain-sea-depth.js` on the clipmap window, wired into the facade; `test-terrain-sea-depth.mjs`). W3 shipped (`base-game-water.js` surface over the depth map, sky `colorAlong`, hybrid hooks; `test-base-game-water.mjs`). Next W4. Follows the terrain plan
+STATUS 2026-08-23: W1 shipped (sea level descriptor field + protocol + facade + server + wave keys; `test-base-game-sea-level.mjs`); W2 shipped (`terrain-sea-depth.js` on the clipmap window, wired into the facade; `test-terrain-sea-depth.mjs`). W3 shipped (`base-game-water.js` surface over the depth map, sky `colorAlong`, hybrid hooks; `test-base-game-water.mjs`). W4 shipped (per-pixel depth-buffer thickness, framebuffer refraction, shallow-water damping; DOF-pass interaction unverified). Next W5. Follows the terrain plan
 (`2026-08-21-base-game-terrain-execution.md`, Phases 1–9 shipped) and closes this version's terrain
 step. Weapons and body tracks run in parallel and do not touch these files.
 

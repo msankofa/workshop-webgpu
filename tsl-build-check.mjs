@@ -17,6 +17,8 @@ export async function buildMaterial(material, geometry = new BufferGeometry()) {
     backend: { coordinateSystem: THREE.WebGLCoordinateSystem, isWebGLBackend: true },
     getMRT: () => null,
     getRenderTarget: () => null,
+    getCanvasTarget: () => null,   // viewport* nodes fall back to the drawing buffer size
+    getDrawingBufferSize: v => v.set(1, 1),
     getRenderObjectFunction: () => null,
     getClearColor: () => new THREE.Color(),
     toneMapping: 0, outputColorSpace: 'srgb', xr: { isPresenting: false },

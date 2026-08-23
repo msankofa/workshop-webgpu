@@ -328,6 +328,9 @@ export function makeRadialGrid({ rings = 160, spokes = 224, r0 = 2, r1 = 26000 }
  * @param {Function} [o.reflection]  (viewDir, N, thickness) -> vec3 replacing the sky reflection
  * @param {Function} [o.bedColorAt]  (viewDir, N, thickness) -> vec3 replacing the flat bed colour
  * @param {Function} [o.thicknessAt] (vertexThickness) -> float replacing the vertex thickness
+ * @param {number}   [o.shallowFade]  metres of water depth over which the displacement ramps from
+ *                                    flat (0 depth) to full, so waves run out into a beach instead
+ *                                    of rising through it
  */
 export function createOceanSurface(o) {
   const P = o.profile;
@@ -352,7 +355,9 @@ export function createOceanSurface(o) {
     ? oneMinus(smoothstep(range[0], range[1], length(sceneXZ.sub(cameraPosition.xz))))
     : float(1));
 
-  const disp = waveDisp(restXZ).mul(fadeAt(o.dispFade));
+  const vertexDepth = o.depthAt(restXZ);
+  const shallow = o.shallowFade > 0 ? smoothstep(0.0, o.shallowFade, vertexDepth) : float(1);
+  const disp = waveDisp(restXZ).mul(fadeAt(o.dispFade)).mul(shallow);
   mat.positionNode = positionLocal.add(disp);
 
   const vRest = varying(restXZ, 'wRestXZ');
@@ -363,7 +368,7 @@ export function createOceanSurface(o) {
   const fold = nf.w.mul(vNormalFade);
   // Depth is resolved in the vertex stage: the ground height function is the expensive part and the
   // grid is fine where the shoreline is close enough to read.
-  const vertexThickness = max(varying(o.depthAt(restXZ), 'wDepth'), 0.0);
+  const vertexThickness = max(varying(vertexDepth, 'wDepth'), 0.0);
   const thickness = o.thicknessAt ? o.thicknessAt(vertexThickness) : vertexThickness;
   const viewDir = normalize(cameraPosition.sub(positionWorld));
   const bed = o.bedColorAt ? o.bedColorAt(viewDir, N, thickness) : (o.bedColor || vec3(0.42, 0.40, 0.30));   // wet sand seen through shallow water
