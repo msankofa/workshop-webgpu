@@ -177,5 +177,63 @@ console.log('\n[5] Base Game integration: far LOD is visual only; collision stay
   terrain.dispose();
 }
 
+
+console.log('\n[6] volumetric far LOD: a marching-cubes cascade on band-limited density; caves survive where their size allows');
+{
+  const caveProject = (() => {
+    const stack = defaultStack();
+    stack.layers.push(makeLayer('fbm', { id: 'F1', params: { amplitude: 25, scale: 260, seedOffset: 2 } }));
+    return migrateProjectToUnbounded(normalizeProject({ app: PROJECT_APP, version: 1, name: 'CaveLod', cfg: { ...DEFAULT_CONFIG, seed: 4242, preview_resolution: 32 }, density: { ...DENSITY_DEFAULT_CONFIG, cave_strength: 60, cave_threshold: 0.45, cave_period: 70, y_min: -60, y_max: 120 }, stack, paint: null, imports: {} }).project);
+  })();
+  const src = createSource(v5Descriptor(caveProject));
+  // coarse volume tiles build at every lod and stay cheap
+  const t1 = performance.now();
+  const tile1 = src.buildTile({ ix: 0, iz: 0, lod: 1, xMin: 0, zMin: 0, size: 120, intervals: 24, apron: 1, fields: ['heights', 'normals', 'volume'] });
+  const ms1 = performance.now() - t1;
+  const t3 = performance.now();
+  const tile3 = src.buildTile({ ix: 0, iz: 0, lod: 3, xMin: 0, zMin: 0, size: 1920, intervals: 24, apron: 1, fields: ['heights', 'volume'] });
+  const ms3 = performance.now() - t3;
+  ok(tile1.volume.indices.length > 0 && tile3.volume.indices.length > 0, `lod 1 (5 m) and lod 3 (80 m) volume tiles build: ${tile1.volume.indices.length / 3} and ${tile3.volume.indices.length / 3} triangles`);
+  ok(ms1 < 400 && ms3 < 400, `coarse tiles are cheap (${ms1.toFixed(0)} ms, ${ms3.toFixed(0)} ms)`);
+  // the 5 m level still carves caves: count columns whose downward ray crosses more than one surface
+  const { createChunkMeshWorldQueryProvider } = await import('./world-query-chunk-mesh-provider.js');
+  const countCaveColumns = (tile, step) => {
+    const prov = createChunkMeshWorldQueryProvider({ id: 'lod' });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(tile.volume.positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(tile.volume.normals, 3));
+    geo.setIndex(new THREE.BufferAttribute(tile.volume.indices, 1));
+    prov.setChunk('t', geo);
+    let caves = 0, n = 0;
+    for (let x = 2; x < tile.size - 2; x += step) for (let z = 2; z < tile.size - 2; z += step) {
+      n++;
+      const hits = prov.raycastAll({ origin: [x, 200, z], direction: [0, -1, 0], maxDistance: 400 });
+      if (hits.length >= 3) caves++;
+    }
+    return [caves, n];
+  };
+  const exact = src.buildTile({ ix: 0, iz: 0, lod: 0, xMin: 0, zMin: 0, size: 120, intervals: 90, apron: 1, fields: ['heights', 'volume'] });
+  const [c0, n0] = countCaveColumns(exact, 6);
+  const [c1, n1] = countCaveColumns(tile1, 6);
+  ok(c0 > 0 && c1 > 0, `cave columns: exact ${c0}/${n0}, 5 m level ${c1}/${n1} (caves still read as caves at the first far level)`);
+  // the cascade in the Base Game fixture: visual only, its own chunk systems, collision untouched
+  const scene = new THREE.Scene(), worldQuery = createWorldQueryService(), worldCoordinates = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: v5Descriptor(caveProject), useWorker: false, params: { renderRadius: 1 }, volumetric: true, farLod: true });
+  terrain.setActive(true);
+  for (let i = 0; i < 40; i++) terrain.update([0, 0, 0], 1 / 60);
+  const st = terrain.stats;
+  ok(st.farLod?.kind === 'volume-cascade' && st.farLod.levels.length === 3, 'volumetric far LOD is the cascade, not the heightfield rings');
+  ok(st.farLod.levels.every(l => l.resident > 0 && !l.lastSourceError), `levels stream: ${st.farLod.levels.map(l => `${l.chunkSize} m × ${l.resident} (${l.spacing} m)`).join(', ')}`);
+  ok(terrain.farExtent === 2.5 * 1920, `far extent ${terrain.farExtent} m`);
+  ok(terrain.volumeProvider.chunkCount === terrain.system.chunks.size, 'only the exact chunks collide; cascade chunks never enter the volume provider');
+  const lvl1 = terrain.volumeLod[0].system;
+  const mesh = lvl1.group.children.find(c => c.isMesh);
+  ok(mesh && mesh.material === terrain.system.material && mesh.geometry.getAttribute('color'), 'cascade chunks share the chunk material and tint');
+  ok(terrain.volumeLod.every(l => l.system.group.parent.position.y < 0), 'coarser levels sit lower (bias) so the finer ones draw over them');
+  terrain.setVolumetric(false);
+  ok(terrain.stats.farLod?.kind === 'clipmap', 'heightfield mode falls back to the clipmap rings');
+  terrain.dispose();
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

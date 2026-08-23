@@ -24,6 +24,8 @@ const DEFAULTS = {
   visualMode: 'mesh',         // 'mesh' = build visible chunk geometry; 'external' = records+colliders only (GPU CDLOD renders the ground)
   experimentalInstancedTerrain: false, // disabled until shader height parity with terrainHeightAt is proven
   volumetric: false,          // source path only: request the 'volume' tile field and render marching-cubes chunks
+  lod: 0,                     // source path only: tile lod (0 = exact; > 0 = band-limited to the chunk's own spacing, visual LOD cascades)
+  segmentsPerChunk: 0,        // > 0 overrides chunkSegments() with a fixed count (LOD cascades)
 };
 
 function merge(base, over) {
@@ -196,7 +198,7 @@ class TerrainSystem {
   get sourceInfo() {
     if (!this.source) return { kind: 'legacy-analytic', key: 'terrain-field', version: '1', lod: 0, bounds: null };
     const d = this.source.descriptor;
-    return { kind: d.kind, key: d.key, version: d.sourceVersion, algorithmVersion: d.algorithmVersion, lod: 0, bounds: d.bounds };
+    return { kind: d.kind, key: d.key, version: d.sourceVersion, algorithmVersion: d.algorithmVersion, lod: this.params.lod | 0, bounds: d.bounds };
   }
 
   // Swap the source. Bumps the epoch so in-flight results are dropped, but keeps
@@ -216,11 +218,12 @@ class TerrainSystem {
   }
 
   chunkSegments(size) {
+    if (this.params.segmentsPerChunk > 0) return Math.max(1, Math.floor(this.params.segmentsPerChunk));   // fixed count: LOD cascades keep spacing ∝ chunk size
     return Math.max(this.params.minSegmentsPerChunk, Math.round(size * 0.75));
   }
 
   sourceTileRequest(ix, iz, size, intervals, apron, fields) {
-    return normalizeTileRequest({ ix, iz, lod: 0, xMin: ix * size, zMin: iz * size, size, intervals, apron, fields });
+    return normalizeTileRequest({ ix, iz, lod: this.params.lod | 0, xMin: ix * size, zMin: iz * size, size, intervals, apron, fields });
   }
 
   // Fields a chunk needs from the source: volume chunks carry the marching-cubes mesh too.

@@ -51,6 +51,14 @@ export function createV5Source(descriptorLike) {
   const sampler = createUnboundedFieldSampler(cfg.seed);
   const densityNoise = createUnboundedDensityNoiseSampler();
   const densityPoint = createDensityPoint(density, cfg.seed, densityNoise, cfg.world_x, cfg.world_z);
+  // Band-limited density per sample spacing (coarse volume LOD tiles); built on demand.
+  const densityBySpacing = new Map();
+  function densityPointFor(spacing) {
+    if (!(spacing > 0)) return densityPoint;
+    let fn = densityBySpacing.get(spacing);
+    if (!fn) { fn = createDensityPoint(density, cfg.seed, densityNoise, cfg.world_x, cfg.world_z, spacing); densityBySpacing.set(spacing, fn); }
+    return fn;
+  }
   const classicAt = createClassicHeightPoint(cfg, sampler);
   const hasClassic = project.stack.layers.some(l => l.enabled && l.type === 'classic');
   const prepared = prepareStack(project.stack, { seed: cfg.seed });
@@ -71,11 +79,12 @@ export function createV5Source(descriptorLike) {
     pointCtx.spacing = 0;
     return h;
   }
-  function normalAt(x, z, out = [0, 0, 0]) {
-    const e = NORMAL_EPSILON;
-    const nx = heightAt(x - e, z) - heightAt(x + e, z);
+  function normalAt(x, z, out = [0, 0, 0], spacing = 0) {
+    const e = spacing > 0 ? Math.max(NORMAL_EPSILON, spacing * 0.5) : NORMAL_EPSILON;
+    const hAt = spacing > 0 ? (px, pz) => heightAtSpacing(px, pz, spacing) : heightAt;
+    const nx = hAt(x - e, z) - hAt(x + e, z);
     const ny = 2 * e;
-    const nz = heightAt(x, z - e) - heightAt(x, z + e);
+    const nz = hAt(x, z - e) - hAt(x, z + e);
     const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
     out[0] = nx * inv; out[1] = ny * inv; out[2] = nz * inv;
     return out;
@@ -113,8 +122,9 @@ export function createV5Source(descriptorLike) {
   // Marching cubes over one tile column: samples at the tile's XZ grid (apron included), rows
   // from density.y_min up to the column's highest surface + margin. Normals come from the
   // density gradient, so they agree across tile borders without knowing the neighbour mesh.
-  function buildVolume(tile) {
+  function buildVolume(tile, spacing = 0) {
     const { texels, step, heights, apron: pad } = tile;
+    const densityAt = (x, y, z, h) => densityPointFor(spacing)(x, y, z, h);
     const yMin = density.y_min;
     let maxH = -Infinity;
     for (let i = 0; i < heights.length; i++) if (heights[i] > maxH) maxH = heights[i];
@@ -164,7 +174,6 @@ export function createV5Source(descriptorLike) {
     holeAt,
     buildTile(request) {
       const req = normalizeTileRequest(request);
-      if (req.lod !== 0 && (req.fields.includes('normals') || req.fields.includes('volume'))) throw new TerrainSourceError('v5 source builds normals/volume at lod 0 only');
       const step = req.size / req.intervals;
       const pad = req.apron;
       const texels = req.intervals + 1 + pad * 2;
@@ -182,14 +191,14 @@ export function createV5Source(descriptorLike) {
         const normals = new Float32Array(texels * texels * 3);
         for (let iz = 0; iz < texels; iz++) {
           for (let ix = 0; ix < texels; ix++) {
-            normalAt(originX + ix * step, originZ + iz * step, n);
+            normalAt(originX + ix * step, originZ + iz * step, n, spacing);
             const o = (iz * texels + ix) * 3;
             normals[o] = n[0]; normals[o + 1] = n[1]; normals[o + 2] = n[2];
           }
         }
         out.normals = normals;
       }
-      if (req.fields.includes('volume')) out.volume = buildVolume(out);
+      if (req.fields.includes('volume')) out.volume = buildVolume(out, spacing);
       return validateTileResult(out, req);
     },
   };

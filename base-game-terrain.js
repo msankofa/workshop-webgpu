@@ -18,7 +18,16 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   maxChunksPerUpdate: 2,
   maxUnloadsPerUpdate: 2,
   killPlaneBelowSurface: 80,   // metres under the local ground before the player is respawned
-  farLodLevels: 6,             // clipmap rings when far LOD is on (6 → 6.1 km half-extent at post0 2 m)
+  farLodLevels: 6,             // heightfield mode: clipmap rings (6 → 6.1 km half-extent at post0 2 m)
+  // Volumetric mode: marching-cubes LOD cascade. Each level is a chunk system with a fixed
+  // segment count, so spacing grows with the chunk (120/24 = 5 m, 20 m, 80 m); radius 2 → five
+  // chunks a side → half-extents 300 m, 1.2 km, 4.8 km. Coarser levels sit a little lower so the
+  // finer ones draw over them where they overlap (no morphing for marching cubes).
+  volumeLod: [
+    { chunkSize: 120, renderRadius: 2, segments: 24, yBias: -1.5 },
+    { chunkSize: 480, renderRadius: 2, segments: 24, yBias: -6 },
+    { chunkSize: 1920, renderRadius: 2, segments: 24, yBias: -24 },
+  ],
 });
 
 export function createBaseGameTerrain({
@@ -70,8 +79,10 @@ export function createBaseGameTerrain({
   }
   if (volumetric) { system.setVolumetric(true); volumetricMode = true; }
 
-  // Far LOD (Phase 9): clipmap rings beyond the exact chunks, fed by the same source at coarser
-  // lods. Created on first enable; visual only, never collided.
+  // Far LOD (Phase 9), visual only, never collided. Heightfield mode: clipmap rings fed by the
+  // source at coarser lods. Volumetric mode: a marching-cubes cascade (coarser chunk systems on
+  // the same source with band-limited density), so cave mouths and overhangs survive at distance
+  // as far as their size allows. Both are created on first use and kept.
   let clipmap = null;
   let farLodMode = false;
   function ensureClipmap() {
@@ -80,6 +91,27 @@ export function createBaseGameTerrain({
     system.group.add(clipmap.root);   // same −renderOrigin root as the chunks
     return clipmap;
   }
+  const cascade = [];   // [{ system, group, level, spec }]
+  function ensureCascade() {
+    if (cascade.length) return cascade;
+    cfg.volumeLod.forEach((spec, i) => {
+      const lvl = createTerrainSystem({
+        params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker },
+        source: system.source,
+      });
+      lvl.material = system.material;   // chunks pick it up at creation: same tint, same wireframe
+      const group = new THREE.Group();
+      group.name = `base-game-terrain-volume-lod-${i + 1}`;
+      group.position.y = spec.yBias;
+      group.add(lvl.group);
+      cascade.push({ system: lvl, group, level: i + 1, spec });
+    });
+    return cascade;
+  }
+  function cascadeExtent() {
+    const last = cfg.volumeLod[cfg.volumeLod.length - 1];
+    return last ? (last.renderRadius + 0.5) * last.chunkSize : 0;
+  }
   // The exact chunks' global XZ extent: the resident target square around the player's chunk.
   function chunkWindowRect() {
     const size = system.params.chunkSize, r = Math.max(0, Math.floor(system.params.renderRadius));
@@ -87,7 +119,11 @@ export function createBaseGameTerrain({
     if (cx == null || cz == null) return null;
     return [(cx - r) * size, (cz - r) * size, (cx + r + 1) * size, (cz + r + 1) * size];
   }
-  if (farLod) { farLodMode = true; ensureClipmap(); }
+  // The far representation follows the ground mode; both are kept once built.
+  function ensureFarLod() {
+    if (volumetricMode) { if (!cascade.length) { ensureCascade(); for (const c of cascade) root.add(c.group); } }
+    else ensureClipmap();
+  }
 
   // Chunk geometry stays global; the root carries -renderOrigin (Traversal Lab pattern).
   const root = new THREE.Group();
@@ -95,6 +131,7 @@ export function createBaseGameTerrain({
   root.position.fromArray(globalToRenderLocal([0, 0, 0], worldCoordinates.getOrigin()));
   root.add(system.group);
   scene.add(root);
+  if (farLod) { farLodMode = true; ensureFarLod(); }
   const stopRebase = worldCoordinates.onRebase(event => { root.position.add(new THREE.Vector3().fromArray(event.delta)); });
 
   // Base Game readability tint: height/slope vertex colours (sea-level sand, grass, rock on
@@ -158,6 +195,11 @@ export function createBaseGameTerrain({
       colorizeGeometry(child.geometry);
       child.material = mat;
     }
+    for (const c of cascade) for (const child of c.system.group.children) {
+      if (!child.isMesh || !child.userData.terrainChunk) continue;
+      colorizeGeometry(child.geometry);
+      child.material = mat;
+    }
   }
 
   function refreshTileBounds() {
@@ -188,7 +230,8 @@ export function createBaseGameTerrain({
 
   function applyVisibility() {
     system.group.visible = active && visible;
-    if (clipmap) clipmap.setVisible(farLodMode && visible);
+    if (clipmap) clipmap.setVisible(farLodMode && visible && !volumetricMode);
+    for (const c of cascade) c.group.visible = active && visible && farLodMode && volumetricMode;
     boundsGroup.visible = active && visible && tileBounds;
     contactMarker.visible = active && visible && collisionDebug;
   }
@@ -233,10 +276,14 @@ export function createBaseGameTerrain({
       const next = !!value;
       if (next === farLodMode) return;
       farLodMode = next;
-      if (next) ensureClipmap();
+      if (next) ensureFarLod();
       applyVisibility();
     },
-    get farExtent() { return farLodMode && clipmap ? clipmap.outerHalfExtent : 0; },
+    get farExtent() {
+      if (!farLodMode) return 0;
+      return volumetricMode ? cascadeExtent() : (clipmap ? clipmap.outerHalfExtent : 0);
+    },
+    get volumeLod() { return cascade.map(c => ({ level: c.level, system: c.system, spec: c.spec })); },
     // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
     takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
@@ -257,6 +304,8 @@ export function createBaseGameTerrain({
       handoffDone = !next;
       applyProviders();
       syncVolumeColliders();
+      if (farLodMode) ensureFarLod();
+      applyVisibility();
     },
     // Visual toggle only: collision stays authoritative while hidden.
     setVisible(value) { visible = !!value; applyVisibility(); },
@@ -276,6 +325,7 @@ export function createBaseGameTerrain({
       system.setSource(next);
       provider.setSource(system.source);
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
+      for (const c of cascade) c.system.setSource(next);
       installedTotal = 0;
       volumetricMode = false;
       if (wantVolumetric && system.source?.densityAt) { system.params.volumetric = true; volumetricMode = true; }
@@ -297,10 +347,17 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
-      if (farLodMode && clipmap) {
+      if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
         if (changed || !clipmap.holeRect) clipmap.setHoleRect(chunkWindowRect());
         clipmap.update(globalPosition);
+        lastClipmapMs = performance.now() - t1;
+      }
+      if (farLodMode && volumetricMode && cascade.length) {
+        const t1 = performance.now();
+        let any = false;
+        for (const c of cascade) any = c.system.update(globalPosition[0], globalPosition[2]) || any;
+        if (any) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
@@ -351,7 +408,10 @@ export function createBaseGameTerrain({
           ? { id: volumeProvider.id, enabled: volumeProvider.enabled !== false, chunks: volumeProvider.chunkCount, triangles: volumeProvider.triangleCount }
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
-        farLod: farLodMode && clipmap ? { ...clipmap.stats, lastUpdateMs: +lastClipmapMs.toFixed(2) } : null,
+        farLod: !farLodMode ? null
+          : volumetricMode
+            ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; return n; }, 0), draws: cascade.reduce((n, c) => n + c.system.group.children.filter(ch => ch.isMesh && ch.visible).length, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }
+            : clipmap ? { kind: 'clipmap', ...clipmap.stats, lastUpdateMs: +lastClipmapMs.toFixed(2) } : null,
         debug: { wireframe, normals, tileBounds, collisionDebug },
       };
     },
@@ -369,6 +429,7 @@ export function createBaseGameTerrain({
       normalMaterial.dispose();
       root.removeFromParent();
       if (clipmap) clipmap.dispose();
+      for (const c of cascade) { c.system.dispose(); c.group.removeFromParent(); }
       system.dispose();
     },
   };

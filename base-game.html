@@ -963,7 +963,11 @@ let terrainRuntimeTick = 0;
 function refreshTerrainRuntimeLine() {
   const st = terrain.stats;
   const volNote = settings.terrainVolumetric && !terrain.source?.densityAt ? ' Volumetric needs an applied v5 project.' : '';
-  const far = st.farLod ? ` Far LOD: ${st.farLod.levels} rings to ${(st.farLod.outerHalfExtent / 1000).toFixed(1)} km, coverage ${st.farLod.coverage.join('/')}, ${st.farLod.triangles} tris, ${st.farLod.tilesInFlight} tiles in flight, ${st.farLod.lastUpdateMs} ms${st.farLod.lastError ? `, error: ${st.farLod.lastError}` : ''}.` : '';
+  const fl = st.farLod;
+  const far = !fl ? ''
+    : fl.kind === 'volume-cascade'
+      ? ` Far LOD (volume cascade): ${fl.levels.map(l => `${l.spacing} m ${l.resident}/${l.target}${l.inFlight ? `+${l.inFlight}` : ''}`).join(', ')} to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, ${fl.draws} draws / ${fl.triangles} tris, ${fl.lastUpdateMs} ms${fl.levels.some(l => l.lastSourceError) ? `, error: ${fl.levels.find(l => l.lastSourceError).lastSourceError}` : ''}.`
+      : ` Far LOD (rings): ${fl.levels} rings to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, coverage ${fl.coverage.join('/')}, ${fl.triangles} tris, ${fl.tilesInFlight} tiles in flight, ${fl.lastUpdateMs} ms${fl.lastError ? `, error: ${fl.lastError}` : ''}.`;
   terrainRuntimeLine.textContent = st.active
     ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote}${far}`
     : `Terrain inactive.${volNote}`;

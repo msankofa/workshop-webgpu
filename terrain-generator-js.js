@@ -17,6 +17,7 @@ import {
   CONTINENT_X, CONTINENT_Y, EROSION_X, EROSION_Y,
   mulberry32, hashSeed, fade, createUnboundedFieldSampler,
 } from './biome-classifier-js.js';
+import { octaveBandWeight } from './terrain-noise.js';
 
 export {
   BIOMES, BIOME_INDEX, BIOME_COLORS, createFieldSampler, classifyBiomeCell,
@@ -924,15 +925,21 @@ export function createUnboundedDensityNoiseSampler() {
     const y0v = x00 + (x10 - x00) * ty, y1v = x01 + (x11 - x01) * ty;
     return y0v + (y1v - y0v) * tz;
   }
-  function fbm3(seed, period, extentX, extentY, extentZ, x, y, z, octaves = 3) {
+  // bandSpacing (world metres, 0 = exact) fades octaves finer than ~4 samples per period to
+  // their mean (0), the same rule as terrain-noise.js octaveBandWeight, so coarse volume LOD
+  // tiles carve the big caves and warps and skip the ones they could only alias.
+  function fbm3(seed, period, extentX, extentY, extentZ, x, y, z, octaves = 3, bandSpacing = 0) {
     const oct = Math.max(1, Math.floor(octaves));
     let total = 0, ampSum = 0, amp = 1;
     for (let o = 0; o < oct; o++) {
       const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
-      const key = seed + ':' + o;
-      let os = seeds.get(key);
-      if (os === undefined) { os = hashSeed(seed, o * 1299721); seeds.set(key, os); }
-      total += sample(os, x / octavePeriod, y / octavePeriod, z / octavePeriod) * amp;
+      const w = octaveBandWeight(octavePeriod, bandSpacing);
+      if (w > 0) {
+        const key = seed + ':' + o;
+        let os = seeds.get(key);
+        if (os === undefined) { os = hashSeed(seed, o * 1299721); seeds.set(key, os); }
+        total += sample(os, x / octavePeriod, y / octavePeriod, z / octavePeriod) * amp * w;
+      }
       ampSum += amp;
       amp *= 0.5;
     }
@@ -944,14 +951,16 @@ export function createUnboundedDensityNoiseSampler() {
 // Point form of buildDensityField3D: density at one global (x, y, z) given the surface height
 // there. Positive is solid. Shared by the bounded preview (with opts.unbounded) and the
 // streamed volume tiles so both carve the same caves.
-export function createDensityPoint(densityCfg, seed, noiseSampler, worldX = 0, worldZ = 0) {
+// `spacing` (metres, 0 = exact) band-limits the warp and cave noise for coarse volume LOD tiles.
+export function createDensityPoint(densityCfg, seed, noiseSampler, worldX = 0, worldZ = 0, spacing = 0) {
   const extentY = densityCfg.y_max - densityCfg.y_min;
+  const band = spacing > 0 ? spacing : 0;
   return function densityAt(x, y, z, h) {
     let d = h - y - densityCfg.iso_level;
-    const warp = noiseSampler.fbm3(seed + 201, densityCfg.warp_period, worldX, extentY, worldZ, x, y, z);
+    const warp = noiseSampler.fbm3(seed + 201, densityCfg.warp_period, worldX, extentY, worldZ, x, y, z, 3, band);
     const surfaceBand = Math.exp(-((y - h) ** 2) / (densityCfg.warp_surface_band_sigma ** 2));
     d += warp * densityCfg.warp_strength_surface * surfaceBand + warp * densityCfg.warp_strength_global;
-    const caveN = noiseSampler.fbm3(seed + 202, densityCfg.cave_period, worldX, extentY, worldZ, x, y, z);
+    const caveN = noiseSampler.fbm3(seed + 202, densityCfg.cave_period, worldX, extentY, worldZ, x, y, z, 3, band);
     const caveRidged = 1.0 - Math.abs(caveN) * 2.0;
     const depthBelowSurface = h - y;
     const caveMaskStrength = clamp01(depthBelowSurface / 6.0) * clamp01((y - (densityCfg.y_min + 6.0)) / 8.0);

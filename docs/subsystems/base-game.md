@@ -485,8 +485,9 @@ implemented against the Traversal Lab; A6 (the body acceptance gate) is a browse
   `base-game-remote-players.js` now computes even when its capsules are hidden. Body diagnostics
   join `context.network.bodies` in performance captures.
 - **Model appearance.** `bodyDesign` (default `default`, the bare rig) picks one of
-  `BASE_GAME_BODY_DESIGNS`, which is `bot-body-versions.js`'s `BOT_BODIES` list (v1 blockout … v5
-  current, human). `playerBodies.setBodyDesign(key)` composes the design with `composeBot` (the
+  `BASE_GAME_BODY_DESIGNS`: `bot-body-versions.js`'s `BOT_BODIES` list (v1 blockout … v5 current,
+  human) followed by the five human soldier role kits (`soldier:rifleman` … `soldier:squadleader`,
+  built by the now-exported `buildSoldierDesign` in `bot-body-design.js`). `playerBodies.setBodyDesign(key)` composes the design with `composeBot` (the
   human body gets its human head), rebuilds the local body in place and drops remotes so they
   re-create on their next update. The dropdown sits in the Player section under "Player body".
   Appearance is local-only: it is not replicated, so each client sees its own choice on every body.
@@ -967,9 +968,22 @@ constant triangle count over a 2 km run, source swap, and the Base Game fixture 
 ground probes return the exact height while the ring's own height differs by metres; rebasing is a
 translation).
 
-Not yet: finite GLB maps (Phase 6); clipmap normals/colour from streamed biome masks; the classic
-(v4 climate) layer is not band-limited (low frequency in practice); rings shade with the same
-height/slope tint as the chunks, no distance fog. Server volume tiles are built on the
+**Volumetric far LOD (2026-08-23).** Volumetric is the primary ground, so in volumetric mode far
+LOD is a **marching-cubes cascade**, not the heightfield rings (those showed a step and a gap
+against the warped volume surface): `BASE_GAME_TERRAIN_DEFAULTS.volumeLod` = three extra
+`createTerrainSystem`s on the same source with `segmentsPerChunk: 24`, `lod: 1..3`, `volumetric:
+true` — chunks of 120 / 480 / 1920 m (spacing 5 / 20 / 80 m), radius 2 each (half-extents 300 m,
+1.2 km, 4.8 km), each level's group lowered by `yBias` (−1.5 / −6 / −24 m) so finer levels draw over
+coarser ones (no morphing for marching cubes). The density is band-limited per level
+(`createDensityPoint(..., spacing)`: warp and cave octaves finer than ~4 samples per period fade
+out), so cave mouths survive as far as their size allows (test: 39/400 cave columns at 5 m vs
+149/400 exact). Cascade chunks share the chunk material/tint, never enter the volume provider, and
+follow `setSource`. `stats.farLod.kind` is `'volume-cascade'` or `'clipmap'`; `farExtent` is 4.8 km.
+Both representations are kept once built; `setVolumetric` switches which one is live.
+
+Not yet: finite GLB maps (Phase 6); the clipmap/cascade shade with the same height/slope tint as
+the chunks, no distance fog; the classic (v4 climate) layer is not band-limited; cascade level
+boundaries are plain overlaps (a coarse surface can poke through a fine one on steep ground). Server volume tiles are built on the
 tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
 the follow-up if that shows.
 
