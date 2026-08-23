@@ -64,8 +64,10 @@ console.log('\n[3] sourceTile bad requests are rejected, not thrown');
   ok(!threw && posted.error && posted.contractError && posted.key === 'k', `non-finite request -> error reply (${posted.error})`);
   self.onmessage({ data: { jobType: 'sourceTile', key: 'k2', epoch: 3, descriptor: { ...descriptor, sourceVersion: 'a|b' }, request: { ix: 0, iz: 0, xMin: 0, zMin: 0, size: 30, intervals: 60 } } });
   ok(posted.error && posted.contractError && posted.key === 'k2', `bad descriptor -> error reply (${posted.error})`);
-  self.onmessage({ data: { jobType: 'sourceTile', key: 'k3', epoch: 3, descriptor, request: { ix: 0, iz: 0, xMin: 0, zMin: 0, size: 30, intervals: 60, lod: 2 } } });
-  ok(posted.error && posted.key === 'k3', `unsupported lod -> error reply (${posted.error})`);
+  self.onmessage({ data: { jobType: 'sourceTile', key: 'k3', epoch: 3, descriptor, request: { ix: 0, iz: 0, xMin: 0, zMin: 0, size: 120, intervals: 60, lod: 2, fields: ['heights'] } } });
+  ok(!posted.error && posted.key === 'k3' && posted.lod === 2 && posted.heights.length > 0, 'lod 2 heights tile builds (band-limited)');
+  self.onmessage({ data: { jobType: 'sourceTile', key: 'k4', epoch: 3, descriptor, request: { ix: 0, iz: 0, xMin: 0, zMin: 0, size: 120, intervals: 60, lod: 2, fields: ['heights', 'normals'] } } });
+  ok(posted.error && posted.key === 'k4', `normals at lod 2 -> error reply (${posted.error})`);
 }
 
 delete globalThis.self;

@@ -184,15 +184,18 @@ export function prepareStack(stack, { seed = 0, imports = null } = {}) {
   };
 }
 
+// ctx.spacing (metres, 0 = exact) band-limits every noise layer to the caller's sample spacing
+// (terrain-noise.js octaveBandWeight); lod-0 tiles and collision always evaluate exact.
 export function evaluateStackPoint(prepared, x, z, ctx = {}) {
   const { layers, warp } = prepared;
+  const spacing = ctx.spacing > 0 ? ctx.spacing : 0;
   let acc = 0, px = x, pz = z;
   for (let li = 0; li < layers.length; li++) {
     const { l, def, off, imp } = layers[li];
     const p = l.params;
     if (def.kind === 'modifier') {
       if (l.type === 'domainWarp') {
-        domainWarp2(px + off, pz - off, { scale: p.scale, amount: p.amount, octaves: p.octaves }, warp);
+        domainWarp2(px + off, pz - off, { scale: p.scale, amount: p.amount, octaves: p.octaves, bandSpacing: spacing / Math.max(p.scale, 1e-6) }, warp);
         px += warp[0]; pz += warp[1];
       } else if (l.type === 'terrace') {
         acc = terrace(acc, { stepHeight: p.stepHeight, smoothness: p.smoothness, strength: p.strength });
@@ -202,12 +205,13 @@ export function evaluateStackPoint(prepared, x, z, ctx = {}) {
     let v;
     const s = p.scale ? 1 / p.scale : 0;
     const sx = px * s + off, sz = pz * s - off * 0.61;
+    const np = spacing > 0 ? { ...p, bandSpacing: spacing * s } : p;
     switch (l.type) {
       case 'classic': v = (ctx.classic || 0) * p.gain; break;
-      case 'fbm': v = (fbm2(sx, sz, p) - 0.5) * p.amplitude; break;
-      case 'ridged': v = ridged2(sx, sz, p) * p.amplitude; break;
-      case 'billow': v = (billow2(sx, sz, p) - 0.5) * p.amplitude; break;
-      case 'voronoi': v = (voronoi2(sx, sz, p) - 0.5) * p.amplitude; break;
+      case 'fbm': v = (fbm2(sx, sz, np) - 0.5) * p.amplitude; break;
+      case 'ridged': v = ridged2(sx, sz, np) * p.amplitude; break;
+      case 'billow': v = (billow2(sx, sz, np) - 0.5) * p.amplitude; break;
+      case 'voronoi': v = (voronoi2(sx, sz, np) - 0.5) * p.amplitude; break;
       case 'constant': v = p.amplitude; break;
       case 'import': v = imp && ctx.importUV ? bilinear(imp.data, imp.resolution, ctx.importUV[0], ctx.importUV[1]) * p.amplitude + p.offset : 0; break;
       default: v = 0;

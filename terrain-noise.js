@@ -53,19 +53,33 @@ const R00 = 0.80, R01 = -0.60, R10 = 0.60, R11 = 0.80;
 // Fractal Brownian motion, normalized to [0,1]. `erosion`/`warp` enable the gradient
 // feedback branch: the running derivative damps amplitude on steep slopes and self-warps
 // the sample point, a cheap flow-eroded look with no simulation.
-export function fbm2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, erosion = 0, warp = 0 } = {}) {
+// BAND LIMIT. `bandSpacing` is the sample spacing of whoever is evaluating this, in the same
+// (scaled) units as x/y; 0 means exact. Octave i has a lattice wavelength of 1/lacunarity^i, and
+// an octave sampled fewer than ~4 times per wavelength aliases into false landforms, so it fades
+// to its mean between 8 and 4 samples per wavelength. This is what a mipmap does for a texture,
+// done analytically; it is what lets far clipmap rings sample the recipe coarsely without moire.
+export function octaveBandWeight(wavelength, bandSpacing) {
+  if (!(bandSpacing > 0)) return 1;
+  const samplesPerWavelength = wavelength / bandSpacing;
+  return clamp((samplesPerWavelength - 4) / 4, 0, 1);
+}
+
+export function fbm2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, erosion = 0, warp = 0, bandSpacing = 0 } = {}) {
   const oct = Math.max(1, Math.round(octaves));
-  let sum = 0, norm = 0, amp = 1, qx = x, qy = y, dx = 0, dy = 0;
+  let sum = 0, norm = 0, amp = 1, qx = x, qy = y, dx = 0, dy = 0, wavelength = 1;
   const feedback = erosion > 0 || warp > 0;
   const tmp = [0, 0, 0];
   for (let i = 0; i < oct; i++) {
+    const w = octaveBandWeight(wavelength, bandSpacing);
+    if (w <= 0) { sum += amp * 0.5; norm += amp; amp *= persistence; wavelength /= lacunarity; continue; }
     let v;
     if (feedback) {
       vnoised2(qx + dx * warp, qy + dy * warp, tmp);
-      v = tmp[0]; dx += tmp[1] * amp; dy += tmp[2] * amp;
+      v = tmp[0]; dx += tmp[1] * amp * w; dy += tmp[2] * amp * w;
       v *= 1 / (1 + erosion * 4 * (dx * dx + dy * dy));
     } else v = vnoise2(qx, qy);
-    sum += amp * v; norm += amp; amp *= persistence;
+    v = 0.5 + (v - 0.5) * w;
+    sum += amp * v; norm += amp; amp *= persistence; wavelength /= lacunarity;
     const nx = (R00 * qx + R01 * qy) * lacunarity, ny = (R10 * qx + R11 * qy) * lacunarity;
     qx = nx; qy = ny;
   }
@@ -74,20 +88,24 @@ export function fbm2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, e
 
 // Ridged multifractal in [0,1]: folded noise raised to `sharpness`, each octave gated by
 // the previous one so valleys stay quiet.
-export function ridged2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, sharpness = 2.0, erosion = 0, warp = 0 } = {}) {
+export function ridged2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, sharpness = 2.0, erosion = 0, warp = 0, bandSpacing = 0 } = {}) {
   const oct = Math.max(1, Math.round(octaves));
-  let sum = 0, norm = 0, amp = 1, carry = 1, qx = x, qy = y, dx = 0, dy = 0;
+  let sum = 0, norm = 0, amp = 1, carry = 1, qx = x, qy = y, dx = 0, dy = 0, wavelength = 1;
   const feedback = erosion > 0 || warp > 0;
   const tmp = [0, 0, 0];
+  const ridgeMean = 1 / (sharpness + 1);   // E[(1-|u|)^s], u uniform on [-1,1]
   for (let i = 0; i < oct; i++) {
+    const w = octaveBandWeight(wavelength, bandSpacing);
+    wavelength /= lacunarity;
     let n;
     if (feedback) {
       vnoised2(qx + dx * warp, qy + dy * warp, tmp);
-      n = tmp[0]; dx += tmp[1] * amp; dy += tmp[2] * amp;
+      n = tmp[0]; dx += tmp[1] * amp * w; dy += tmp[2] * amp * w;
     } else n = vnoise2(qx, qy);
     let v = 1 - Math.abs(n * 2 - 1);
     v = Math.pow(Math.max(v, 0), sharpness) * carry;
     if (feedback) v *= 1 / (1 + erosion * 4 * (dx * dx + dy * dy));
+    v = ridgeMean * carry + (v - ridgeMean * carry) * w;
     carry = clamp(v * 1.4, 0, 1);
     sum += amp * v; norm += amp; amp *= persistence;
     const nx = (R00 * qx + R01 * qy) * lacunarity, ny = (R10 * qx + R11 * qy) * lacunarity;
@@ -97,11 +115,14 @@ export function ridged2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0
 }
 
 // Billow: abs-folded noise, puffy rounded shapes in [0,1].
-export function billow2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0 } = {}) {
+export function billow2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0, bandSpacing = 0 } = {}) {
   const oct = Math.max(1, Math.round(octaves));
-  let sum = 0, norm = 0, amp = 1, qx = x, qy = y;
+  let sum = 0, norm = 0, amp = 1, qx = x, qy = y, wavelength = 1;
   for (let i = 0; i < oct; i++) {
-    sum += amp * Math.abs(vnoise2(qx, qy) * 2 - 1); norm += amp; amp *= persistence;
+    const w = octaveBandWeight(wavelength, bandSpacing);
+    wavelength /= lacunarity;
+    const v = w > 0 ? Math.abs(vnoise2(qx, qy) * 2 - 1) : 0.5;
+    sum += amp * (0.5 + (v - 0.5) * w); norm += amp; amp *= persistence;
     const nx = (R00 * qx + R01 * qy) * lacunarity, ny = (R10 * qx + R11 * qy) * lacunarity;
     qx = nx; qy = ny;
   }
@@ -110,7 +131,10 @@ export function billow2(x, y, { octaves = 5, persistence = 0.5, lacunarity = 2.0
 
 // Worley cells. distanceMode: 0 euclid, 1 manhattan, 2 chebyshev. outputMode: 0 cell id,
 // 1 F1, 2 F2-F1 (edges dark), 3 edge lines. Output roughly [0,1].
-export function voronoi2(x, y, { jitter = 1, distanceMode = 0, outputMode = 1 } = {}) {
+export function voronoi2(x, y, { jitter = 1, distanceMode = 0, outputMode = 1, bandSpacing = 0 } = {}) {
+  const bw = octaveBandWeight(1, bandSpacing);   // one cell per unit: the whole field is one octave
+  if (bw <= 0) return 0.5;
+  if (bw < 1) return 0.5 + (voronoi2(x, y, { jitter, distanceMode, outputMode }) - 0.5) * bw;
   const ix = Math.floor(x), iy = Math.floor(y);
   const fx = x - ix, fy = y - iy;
   let f1 = 8, f2 = 8, cell = 0;
@@ -144,10 +168,10 @@ export function terrace(h, { stepHeight = 10, smoothness = 0.35, strength = 1 } 
 }
 
 // Domain warp offset (world units): two decorrelated fbm fields, recentred.
-export function domainWarp2(x, y, { scale = 400, amount = 60, octaves = 3 } = {}, out = [0, 0]) {
+export function domainWarp2(x, y, { scale = 400, amount = 60, octaves = 3, bandSpacing = 0 } = {}, out = [0, 0]) {
   const s = 1 / Math.max(scale, 1e-6);
-  const wx = fbm2(x * s + 13.7, y * s + 41.3, { octaves }) - 0.5;
-  const wy = fbm2(x * s + 87.2, y * s + 9.1, { octaves }) - 0.5;
+  const wx = fbm2(x * s + 13.7, y * s + 41.3, { octaves, bandSpacing }) - 0.5;
+  const wy = fbm2(x * s + 87.2, y * s + 9.1, { octaves, bandSpacing }) - 0.5;
   out[0] = wx * 2 * amount; out[1] = wy * 2 * amount;
   return out;
 }

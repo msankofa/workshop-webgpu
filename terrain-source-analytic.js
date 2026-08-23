@@ -2,7 +2,7 @@
 // Point heights/normals and LOD-0 tiles are bit-identical to terrainHeightAt /
 // terrainNormalAt / buildHeightTile. No three.js.
 
-import { terrainHeightAt, terrainNormalAt, buildHeightTile } from './terrain-field.js';
+import { terrainHeightAt, terrainHeightAtSpacing, terrainNormalAt, buildHeightTile } from './terrain-field.js';
 import { normalizeDescriptor, normalizeTileRequest, validateTileResult, registerSourceKind, TerrainSourceError } from './terrain-source.js';
 
 export const ANALYTIC_ALGORITHM_VERSION = 'terrain-field-1';
@@ -43,10 +43,14 @@ export function createAnalyticSource(descriptorLike) {
     },
     heightAt(x, z) { return terrainHeightAt(params, x, z); },
     normalAt(x, z, out = [0, 0, 0]) { return terrainNormalAt(params, x, z, out); },
+    // Any lod: the request's own spacing (size / intervals) band-limits the field for lod > 0;
+    // lod 0 is the exact field. Normals are lod-0 only (coarse rings shade from their heights).
+    heightAtSpacing(x, z, spacing) { return terrainHeightAtSpacing(params, x, z, spacing); },
     buildTile(request) {
       const req = normalizeTileRequest(request);
-      if (req.lod !== 0) throw new TerrainSourceError('analytic source builds lod 0 only in Phase 1');
-      const tile = buildHeightTile(req.xMin, req.zMin, req.size, req.size / req.intervals, params, req.apron);
+      if (req.lod !== 0 && req.fields.includes('normals')) throw new TerrainSourceError('analytic source builds normals at lod 0 only');
+      const spacing = req.lod === 0 ? 0 : req.size / req.intervals;
+      const tile = buildHeightTile(req.xMin, req.zMin, req.size, req.size / req.intervals, params, req.apron, spacing > 0 ? (x, z) => terrainHeightAtSpacing(params, x, z, spacing) : null);
       const out = { ...tile, ix: req.ix, iz: req.iz, lod: req.lod };
       if (req.fields.includes('normals')) {
         const n = [0, 0, 0];

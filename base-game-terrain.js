@@ -10,6 +10,7 @@ import { createSource } from './terrain-source.js';
 import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
 import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-provider.js';
 import { globalToRenderLocal } from './world-coordinates.js';
+import { createTerrainClipmap } from './terrain-clipmap.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -17,11 +18,12 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   maxChunksPerUpdate: 2,
   maxUnloadsPerUpdate: 2,
   killPlaneBelowSurface: 80,   // metres under the local ground before the player is respawned
+  farLodLevels: 6,             // clipmap rings when far LOD is on (6 → 6.1 km half-extent at post0 2 m)
 });
 
 export function createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source,
-  params = {}, providerId = 'terrain', volumeProviderId = 'terrain-volume', useWorker = true, volumetric = false,
+  params = {}, providerId = 'terrain', volumeProviderId = 'terrain-volume', useWorker = true, volumetric = false, farLod = false,
 }) {
   if (!scene?.add) throw new TypeError('Base Game terrain requires a Three.js scene');
   if (!worldQuery?.registerProvider) throw new TypeError('Base Game terrain requires a world-query service');
@@ -67,6 +69,25 @@ export function createBaseGameTerrain({
     }
   }
   if (volumetric) { system.setVolumetric(true); volumetricMode = true; }
+
+  // Far LOD (Phase 9): clipmap rings beyond the exact chunks, fed by the same source at coarser
+  // lods. Created on first enable; visual only, never collided.
+  let clipmap = null;
+  let farLodMode = false;
+  function ensureClipmap() {
+    if (clipmap) return clipmap;
+    clipmap = createTerrainClipmap({ source: system.source, descriptor: system.source.descriptor, useWorker, levels: cfg.farLodLevels });
+    system.group.add(clipmap.root);   // same −renderOrigin root as the chunks
+    return clipmap;
+  }
+  // The exact chunks' global XZ extent: the resident target square around the player's chunk.
+  function chunkWindowRect() {
+    const size = system.params.chunkSize, r = Math.max(0, Math.floor(system.params.renderRadius));
+    const cx = system.centerChunkX, cz = system.centerChunkZ;
+    if (cx == null || cz == null) return null;
+    return [(cx - r) * size, (cz - r) * size, (cx + r + 1) * size, (cz + r + 1) * size];
+  }
+  if (farLod) { farLodMode = true; ensureClipmap(); }
 
   // Chunk geometry stays global; the root carries -renderOrigin (Traversal Lab pattern).
   const root = new THREE.Group();
@@ -122,6 +143,7 @@ export function createBaseGameTerrain({
   let tileBounds = false;
   let collisionDebug = false;
   let lastUpdateMs = 0;
+  let lastClipmapMs = 0;
   let installedTotal = 0;
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
@@ -130,6 +152,7 @@ export function createBaseGameTerrain({
     const mat = normals ? normalMaterial : system.material;
     system.material.wireframe = wireframe;
     normalMaterial.wireframe = wireframe;
+    if (clipmap) clipmap.setWireframe(wireframe);
     for (const child of system.group.children) {
       if (!child.isMesh || !child.userData.terrainChunk) continue;
       colorizeGeometry(child.geometry);
@@ -165,6 +188,7 @@ export function createBaseGameTerrain({
 
   function applyVisibility() {
     system.group.visible = active && visible;
+    if (clipmap) clipmap.setVisible(farLodMode && visible);
     boundsGroup.visible = active && visible && tileBounds;
     contactMarker.visible = active && visible && collisionDebug;
   }
@@ -202,6 +226,17 @@ export function createBaseGameTerrain({
     get volumetric() { return volumetricMode; },
     get volumeProvider() { return volumeProvider; },
     get handoffPending() { return handoffPending; },
+    get farLod() { return farLodMode; },
+    get clipmap() { return clipmap; },
+    // Far rings on/off. The rings' outer half-extent is what the camera far plane should cover.
+    setFarLod(value) {
+      const next = !!value;
+      if (next === farLodMode) return;
+      farLodMode = next;
+      if (next) ensureClipmap();
+      applyVisibility();
+    },
+    get farExtent() { return farLodMode && clipmap ? clipmap.outerHalfExtent : 0; },
     // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
     takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
@@ -240,6 +275,7 @@ export function createBaseGameTerrain({
       if (wantVolumetric) system.params.volumetric = false;   // a source without density cannot stream volume
       system.setSource(next);
       provider.setSource(system.source);
+      if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       installedTotal = 0;
       volumetricMode = false;
       if (wantVolumetric && system.source?.densityAt) { system.params.volumetric = true; volumetricMode = true; }
@@ -261,6 +297,12 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
+      if (farLodMode && clipmap) {
+        const t1 = performance.now();
+        if (changed || !clipmap.holeRect) clipmap.setHoleRect(chunkWindowRect());
+        clipmap.update(globalPosition);
+        lastClipmapMs = performance.now() - t1;
+      }
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
         handoffPending = false;
         handoffDone = true;
@@ -309,6 +351,7 @@ export function createBaseGameTerrain({
           ? { id: volumeProvider.id, enabled: volumeProvider.enabled !== false, chunks: volumeProvider.chunkCount, triangles: volumeProvider.triangleCount }
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
+        farLod: farLodMode && clipmap ? { ...clipmap.stats, lastUpdateMs: +lastClipmapMs.toFixed(2) } : null,
         debug: { wireframe, normals, tileBounds, collisionDebug },
       };
     },
@@ -325,6 +368,7 @@ export function createBaseGameTerrain({
       boundsMaterial.dispose();
       normalMaterial.dispose();
       root.removeFromParent();
+      if (clipmap) clipmap.dispose();
       system.dispose();
     },
   };

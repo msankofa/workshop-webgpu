@@ -58,7 +58,18 @@ export function createV5Source(descriptorLike) {
   // The classic height is the only per-point input the stack needs; compute it once per sample.
   function heightAt(x, z) {
     pointCtx.classic = hasClassic ? classicAt(x, z) : 0;
+    pointCtx.spacing = 0;
     return evaluateStackPoint(prepared, x, z, pointCtx);
+  }
+  // Band-limited height for a caller sampling every `spacing` metres (far clipmap rings): noise
+  // layers drop octaves finer than ~4 samples per wavelength. The classic (v4 climate) layer is
+  // not band-limited yet; it is low-frequency by construction. spacing 0 = heightAt.
+  function heightAtSpacing(x, z, spacing) {
+    pointCtx.classic = hasClassic ? classicAt(x, z) : 0;
+    pointCtx.spacing = spacing > 0 ? spacing : 0;
+    const h = evaluateStackPoint(prepared, x, z, pointCtx);
+    pointCtx.spacing = 0;
+    return h;
   }
   function normalAt(x, z, out = [0, 0, 0]) {
     const e = NORMAL_EPSILON;
@@ -146,24 +157,26 @@ export function createV5Source(descriptorLike) {
     classification: cls,
     contains() { return true; },
     heightAt,
+    heightAtSpacing,
     normalAt,
     densityAt,
     surfaceYAt,
     holeAt,
     buildTile(request) {
       const req = normalizeTileRequest(request);
-      if (req.lod !== 0) throw new TerrainSourceError('v5 source builds lod 0 only');
+      if (req.lod !== 0 && (req.fields.includes('normals') || req.fields.includes('volume'))) throw new TerrainSourceError('v5 source builds normals/volume at lod 0 only');
       const step = req.size / req.intervals;
       const pad = req.apron;
       const texels = req.intervals + 1 + pad * 2;
       const originX = req.xMin - pad * step;
       const originZ = req.zMin - pad * step;
       const heights = new Float32Array(texels * texels);
+      const spacing = req.lod === 0 ? 0 : step;
       for (let iz = 0; iz < texels; iz++) {
         const z = originZ + iz * step;
-        for (let ix = 0; ix < texels; ix++) heights[iz * texels + ix] = heightAt(originX + ix * step, z);
+        for (let ix = 0; ix < texels; ix++) heights[iz * texels + ix] = spacing > 0 ? heightAtSpacing(originX + ix * step, z, spacing) : heightAt(originX + ix * step, z);
       }
-      const out = { ix: req.ix, iz: req.iz, lod: 0, xMin: req.xMin, zMin: req.zMin, size: req.size, intervals: req.intervals, texels, step, apron: pad, originX, originZ, heights };
+      const out = { ix: req.ix, iz: req.iz, lod: req.lod, xMin: req.xMin, zMin: req.zMin, size: req.size, intervals: req.intervals, texels, step, apron: pad, originX, originZ, heights };
       if (req.fields.includes('normals')) {
         const n = [0, 0, 0];
         const normals = new Float32Array(texels * texels * 3);

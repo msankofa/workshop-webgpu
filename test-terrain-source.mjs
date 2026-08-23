@@ -89,7 +89,11 @@ console.log('\n[4] analytic LOD-0 tiles match buildHeightTile');
   ok(withN.normals[o] === Math.fround(n[0]) && withN.normals[o + 2] === Math.fround(n[2]), 'normal sample matches terrainNormalAt');
   const noN = src.buildTile({ ix: 0, iz: 0, xMin: 0, zMin: 0, size, intervals, apron });
   ok(noN.normals === undefined, 'unrequested normals are absent, not zero-filled');
-  throws(() => src.buildTile({ ix: 0, iz: 0, xMin: 0, zMin: 0, size, intervals, apron, lod: 1 }), 'lod 1 rejected in Phase 1');
+  const coarse = src.buildTile({ ix: 0, iz: 0, xMin: 0, zMin: 0, size: size * 8, intervals, apron, lod: 3 });
+  ok(coarse.lod === 3 && coarse.heights.length === withN.heights.length && Number.isFinite(coarse.heights[0]), 'lod 3 builds a band-limited tile of the same texel count');
+  let diff = 0; for (let i = 0; i < coarse.texels; i++) diff = Math.max(diff, Math.abs(coarse.heights[i] - src.heightAt(coarse.originX + i * coarse.step, coarse.originZ)));
+  ok(diff > 0 && diff < 6, `coarse tile drops fine waves (max |coarse - exact| ${diff.toFixed(2)} m)`);
+  throws(() => src.buildTile({ ix: 0, iz: 0, xMin: 0, zMin: 0, size, intervals, apron, lod: 1, fields: ['heights', 'normals'] }), 'normals are lod 0 only');
 }
 
 console.log('\n[5] negative tiles, diagonal corners and aprons stay seam-identical');

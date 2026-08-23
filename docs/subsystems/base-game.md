@@ -484,6 +484,12 @@ implemented against the Traversal Lab; A6 (the body acceptance gate) is a browse
   and a lower-body rig only in first-person view. Remote bodies read the interpolated samples that
   `base-game-remote-players.js` now computes even when its capsules are hidden. Body diagnostics
   join `context.network.bodies` in performance captures.
+- **Model appearance.** `bodyDesign` (default `default`, the bare rig) picks one of
+  `BASE_GAME_BODY_DESIGNS`, which is `bot-body-versions.js`'s `BOT_BODIES` list (v1 blockout … v5
+  current, human). `playerBodies.setBodyDesign(key)` composes the design with `composeBot` (the
+  human body gets its human head), rebuilds the local body in place and drops remotes so they
+  re-create on their next update. The dropdown sits in the Player section under "Player body".
+  Appearance is local-only: it is not replicated, so each client sees its own choice on every body.
 
 `test-base-game-player-body.mjs` (27 checks) proves stacked floors, bridge deck versus ground,
 tunnel floor versus roof, ramp and standard step, an airborne miss, render-origin independence,
@@ -948,7 +954,22 @@ the client-side helpers. `base-game-session.mjs` publishes before `base:create` 
 keeps a per-session project cache, and fetches any body it lacks before resolving the join or firing
 `onTerrain`, so the page always sees full configs. `test-base-game-rooms-terrain.mjs` [8].
 
-Not yet: finite GLB maps (Phase 6), LOD (9). Server volume tiles are built on the
+**Phase 9 (2026-08-22) — far LOD.** `createBaseGameTerrain({ farLod, params.farLodLevels 6 })` /
+`setFarLod(bool)` lazily builds a `terrain-clipmap.js` under the chunk root (so it shares
+−renderOrigin) from the same source, re-sources it on `setSource`, keeps its ring-0 hole on the
+resident chunk square (`chunkWindowRect()`), and exposes `farExtent` (outer half-extent) and a
+`stats.farLod` block. `base-game.html`: `terrainFarLod` toggle (default on) in the Terrain world
+panel; `updateWorld()` pushes `camera.far` to 1.5× the far extent (9.2 km at the defaults) and back
+to 600 m when off; the runtime line reports rings/coverage/tris/in-flight/ms.
+`test-terrain-clipmap.mjs`: band limit (exact lod 0, fine layers gone at coarse spacing), toroidal
+window correctness and eviction, 400-focus ring/hole/window containment (no gaps, no swimming),
+constant triangle count over a 2 km run, source swap, and the Base Game fixture (visual only —
+ground probes return the exact height while the ring's own height differs by metres; rebasing is a
+translation).
+
+Not yet: finite GLB maps (Phase 6); clipmap normals/colour from streamed biome masks; the classic
+(v4 climate) layer is not band-limited (low frequency in practice); rings shade with the same
+height/slope tint as the chunks, no distance fog. Server volume tiles are built on the
 tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
 the follow-up if that shows.
 

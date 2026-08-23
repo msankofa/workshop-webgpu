@@ -31,6 +31,23 @@ export function terrainHeightAt(params, x, z) {
   return h - basin * params.lakeDepth;
 }
 
+// The same field sampled at `spacing` metres: each wave fades to zero between 8 and 4 samples per
+// wavelength (its mean), so coarse clipmap rings never alias. spacing 0 is exact (terrainHeightAt).
+const WAVE_LAMBDA = [2 * Math.PI / 0.10, 2 * Math.PI / 0.085, 2 * Math.PI / (0.16 * Math.SQRT2), 2 * Math.PI / (0.22 * Math.SQRT2), 2 * Math.PI / Math.hypot(0.38, 0.27), 2 * Math.PI / Math.hypot(0.44, 0.19)];
+const LAKE_LAMBDA = 1 / 0.045;
+const bandWeight = (lambda, spacing) => Math.max(0, Math.min(1, (lambda / spacing - 4) / 4));
+export function terrainHeightAtSpacing(params, x, z, spacing) {
+  if (!(spacing > 0)) return terrainHeightAt(params, x, z);
+  const w = WAVE_LAMBDA.map(l => bandWeight(l, spacing));
+  let h = (Math.sin(x * 0.10) * 1.1 * w[0] + Math.cos(z * 0.085) * 1.0 * w[1] + Math.sin((x + z) * 0.16) * 0.5 * w[2]
+         + Math.cos((x - z) * 0.22 + 0.8) * 0.35 * w[3] + Math.sin(x * 0.38 + z * 0.27) * 0.18 * w[4]
+         + Math.cos(z * 0.44 - x * 0.19) * 0.14 * w[5]) * params.baseAmp;
+  const t = 1 - params.lake;
+  const lw = bandWeight(LAKE_LAMBDA, spacing);
+  const basin = smoothstep(t, t + 0.15, 0.5 + (lakeNoise(x * 0.045 + 10.5, z * 0.045 - 7.2) - 0.5) * lw);
+  return h - basin * params.lakeDepth;
+}
+
 // Position-deterministic surface normal. Because it depends only on (x, z) via a
 // fixed-epsilon central difference, adjacent chunks agree exactly along shared
 // edges, so there are no lighting seams between chunks.
@@ -49,7 +66,7 @@ export function terrainNormalAt(params, x, z, out) {
 // Height tile for shader-displaced terrain. The tile samples the exact analytic
 // field on a regular grid and includes an apron on every side so bilinear height
 // reconstruction and one-texel normal taps are stable at chunk boundaries.
-export function buildHeightTile(xMin, zMin, size, texelWorld, params, apron = 1) {
+export function buildHeightTile(xMin, zMin, size, texelWorld, params, apron = 1, heightFn = null) {
   const intervals = Math.max(1, Math.round(size / Math.max(1e-6, texelWorld)));
   const step = size / intervals;
   const pad = Math.max(0, apron | 0);
@@ -62,7 +79,7 @@ export function buildHeightTile(xMin, zMin, size, texelWorld, params, apron = 1)
     const z = originZ + iz * step;
     for (let ix = 0; ix < texels; ix++) {
       const x = originX + ix * step;
-      heights[iz * texels + ix] = terrainHeightAt(params, x, z);
+      heights[iz * texels + ix] = heightFn ? heightFn(x, z) : terrainHeightAt(params, x, z);
     }
   }
 

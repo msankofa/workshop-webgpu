@@ -95,7 +95,7 @@ import { createBaseGamePlayerController } from './base-game-player-controller.js
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
-import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS } from './base-game-player-bodies.js';
+import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
 import {
   installPanelTheme, createSection, setAllSectionsCollapsed,
@@ -120,6 +120,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   labOriginMarker: true,
   terrainVisible: true,
   terrainVolumetric: false,
+  terrainFarLod: true,
   terrainDrawRadius: 3,
   terrainWireframe: false,
   terrainNormals: false,
@@ -129,6 +130,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   playerViewMode: 'thirdPerson',
   playerCapsuleVisible: false,
   playerBodyMode: 'thirdPerson',
+  bodyDesign: 'default',
   remoteBodiesEnabled: true,
   armPreset: 'relaxed',
   armIdleBend: ARM_POSE_PRESETS.relaxed.idle.bend,
@@ -230,6 +232,7 @@ const STRING_VALUES = Object.freeze({
   playerControlMode: ['player', 'orbit'],
   playerViewMode: ['thirdPerson', 'firstPerson'],
   playerBodyMode: [...BASE_GAME_BODY_MODES],
+  bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
   armPreset: Object.keys(ARM_POSE_PRESETS),
   bodyGaitModel: Object.keys(GAIT_MODELS),
 });
@@ -342,8 +345,10 @@ await renderer.init();
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1430);
 
-// 600 m covers the 16-chunk terrain draw radius (480 m); there is no far LOD yet (Phase 9).
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 600);
+// 600 m covers the 16-chunk terrain draw radius (480 m); with far LOD on, updateWorld() pushes
+// the far plane out to the outermost clipmap ring.
+const CAMERA_FAR_NEAR_FIELD = 600;
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, CAMERA_FAR_NEAR_FIELD);
 camera.position.set(22, 16, 26);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 4, 0);
@@ -560,8 +565,10 @@ rig.dirLight.shadow.camera.right = 90;
 rig.dirLight.shadow.camera.top = 90;
 rig.dirLight.shadow.camera.bottom = -90;
 
+const TOD_MOON_LIGHT = '#aec6ff';
+let _moonOwnedShadow = false;
 const moonLight = new THREE.DirectionalLight(0xaec6ff, 0);
-moonLight.castShadow = false;
+moonLight.castShadow = false;   // never flips: see the shadow-ownership note in updateWorld
 moonLight.shadow.mapSize.set(2048, 2048);
 moonLight.shadow.camera.near = 1;
 moonLight.shadow.camera.far = 260;
@@ -612,6 +619,10 @@ function updateWorld(dt) {
   // Volumetric (caves) needs a source with a density field; the analytic default has none.
   const canVolumetric = !!terrain.source?.densityAt;
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
+  terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
+  // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
+  const wantFar = terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD;
+  if (camera.far !== wantFar) { camera.far = wantFar; camera.updateProjectionMatrix(); }
   terrain.setVisible(settings.terrainVisible);
   terrain.setDrawRadius(settings.terrainDrawRadius);
   terrain.setWireframe(settings.terrainWireframe);
@@ -624,6 +635,7 @@ function updateWorld(dt) {
   applyPlayerConfiguration();
   remotePlayers.setEnabled(settings.remotePlayersEnabled);
   playerBodies.setLocalMode(settings.playerBodyMode);
+  playerBodies.setBodyDesign(settings.bodyDesign);
   applyBodyMovement();
   applyArmTuning();
   applySkyComponentVisibility();
@@ -666,7 +678,7 @@ function updateWorld(dt) {
     sunIntensity = settings.sunIntensity * smoothstep(-2, 8, sun.elevationDeg);
     // Only re-blend the hex string when the twilight factor moves by a visible step.
     const sunColorT = Math.round(smoothstep(0, 12, sun.elevationDeg) * 1000) / 1000;
-    if (sunColorT !== _lastSunColorT) {
+    if (sunColorT !== _lastSunColorT && !_moonOwnedShadow) {
       _lastSunColorT = sunColorT;
       rig.setSunColor(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, sunColorT));
     }
@@ -698,16 +710,25 @@ function updateWorld(dt) {
 
   sunIntensity = settings.sunLightEnabled ? sunIntensity : 0;
   moonIntensity = settings.moonLightEnabled ? moonIntensity : 0;
-  rig.setSunIntensity(sunIntensity);
-  moonLight.intensity = moonIntensity;
-  aimLight(rig.dirLight, sunDir);
-  aimLight(moonLight, moonDir);
 
-  // Only one directional shadow map is allowed per frame. At night the moon owns it; otherwise
-  // the sun does. With no world geometry yet this costs no draw pass, but establishes the rule.
+  // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
+  // a light's ShadowNode the moment castShadow flips false while render objects built earlier
+  // still update it (null depthTexture crash at dusk/dawn). So castShadow never changes at
+  // runtime; when the moon owns the night, rig.dirLight becomes the moon (direction, colour,
+  // intensity) and moonLight, which never casts, goes dark.
   const moonOwnsShadow = moonIntensity > sunIntensity;
-  rig.dirLight.castShadow = settings.shadowsEnabled && settings.sunLightEnabled && !moonOwnsShadow;
-  moonLight.castShadow = settings.shadowsEnabled && settings.moonLightEnabled && moonOwnsShadow;
+  if (moonOwnsShadow !== _moonOwnedShadow) { _moonOwnedShadow = moonOwnsShadow; _lastSunColorT = -1; }
+  if (moonOwnsShadow) {
+    rig.setSunIntensity(moonIntensity);
+    rig.setSunColor(TOD_MOON_LIGHT);
+    aimLight(rig.dirLight, moonDir);
+    moonLight.intensity = 0;
+  } else {
+    rig.setSunIntensity(sunIntensity);
+    aimLight(rig.dirLight, sunDir);
+    moonLight.intensity = moonIntensity;
+  }
+  aimLight(moonLight, moonDir);
   if (!settings.skyEnabled || !settings.domeEnabled) scene.background.set(0x0b1430);
 }
 
@@ -804,12 +825,12 @@ function addRange(host, key, label, min, max, step, format = value => String(val
   registerControl(key, () => { input.value = String(settings[key]); output.textContent = format(settings[key]); }, input);
   return wrap;
 }
-function addSelect(host, key, label, values) {
+function addSelect(host, key, label, values, labels = null) {
   const row = document.createElement('label'); row.className = 'control-line control';
   const text = document.createElement('span'); text.textContent = label;
   const select = document.createElement('select');
   for (const value of values) {
-    const option = document.createElement('option'); option.value = value; option.textContent = value;
+    const option = document.createElement('option'); option.value = value; option.textContent = labels?.[values.indexOf(value)] ?? value;
     select.append(option);
   }
   row.append(text, select); host.append(row);
@@ -929,6 +950,7 @@ refreshTerrainSourceLine();
 terrainWorldSec.append(terrainSourceLine);
 addToggle(terrainWorldSec, 'terrainVisible', 'Terrain visible (collision stays on)');
 addToggle(terrainWorldSec, 'terrainVolumetric', 'Volumetric (caves from the v5 density config)');
+addToggle(terrainWorldSec, 'terrainFarLod', 'Far LOD (clipmap rings to the horizon, visual only)');
 addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 16, 1);
 addToggle(terrainWorldSec, 'terrainWireframe', 'Wireframe');
 addToggle(terrainWorldSec, 'terrainNormals', 'Normals view');
@@ -941,8 +963,9 @@ let terrainRuntimeTick = 0;
 function refreshTerrainRuntimeLine() {
   const st = terrain.stats;
   const volNote = settings.terrainVolumetric && !terrain.source?.densityAt ? ' Volumetric needs an applied v5 project.' : '';
+  const far = st.farLod ? ` Far LOD: ${st.farLod.levels} rings to ${(st.farLod.outerHalfExtent / 1000).toFixed(1)} km, coverage ${st.farLod.coverage.join('/')}, ${st.farLod.triangles} tris, ${st.farLod.tilesInFlight} tiles in flight, ${st.farLod.lastUpdateMs} ms${st.farLod.lastError ? `, error: ${st.farLod.lastError}` : ''}.` : '';
   terrainRuntimeLine.textContent = st.active
-    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote}`
+    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote}${far}`
     : `Terrain inactive.${volNote}`;
 }
 refreshTerrainRuntimeLine();
@@ -955,6 +978,7 @@ worldSec.append(labSummary);
 addSelect(playerSec, 'playerControlMode', 'Control mode', ['player', 'orbit']);
 addSelect(playerSec, 'playerViewMode', 'Player view', ['thirdPerson', 'firstPerson']);
 addSelect(playerSec, 'playerBodyMode', 'Player body', [...BASE_GAME_BODY_MODES]);
+addSelect(playerSec, 'bodyDesign', 'Model appearance', BASE_GAME_BODY_DESIGNS.map((d) => d.key), BASE_GAME_BODY_DESIGNS.map((d) => d.label));
 addToggle(playerSec, 'playerCapsuleVisible', 'Diagnostic capsule');
 addRange(playerSec, 'playerMoveSpeed', 'Walk speed', 1, 15, 0.25, value => `${value.toFixed(2)} m/s`);
 addRange(playerSec, 'playerSprintMultiplier', 'Sprint multiplier', 1, 3, 0.05, value => `${value.toFixed(2)}x`);
