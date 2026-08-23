@@ -776,6 +776,10 @@ a slot like v3's `spawnTracer` does. `debrisSim.step` / `debrisRenderer.sync` / 
 run in the frame's `fx` block. Node-tested: `test-flash-lights.mjs`.
 Projectile trails are v3's `onTrail` smoke puffs emitted **client-side** at the manager's 0.035 s
 cadence from the interpolated flight path — the sim runs on the server, which has no effect list.
+**Solo** runs its own `bot-projectiles.js` manager against the local `worldQuery` (v3's wiring,
+FX-only since solo has nothing to damage) and renders it through the same sphere pool, so an RPG
+behaves identically offline. `presentExplosion(globalPoint, radius)` is the one presentation both
+the snapshot `explosions[]` events and the solo manager call.
 
 Not done: remote recoil on bodies, head multiplier (`head` is always false), melee.
 

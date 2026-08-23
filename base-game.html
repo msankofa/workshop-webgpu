@@ -129,6 +129,7 @@ import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer } from './effect-renderer.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
+import { createProjectileManager } from './bot-projectiles.js';
 import { createDebrisRenderer } from './blast-debris.js';
 import { createExplosionBudget } from './explosion-tier.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
@@ -767,13 +768,34 @@ function spawnLocalShotEffects(weaponId, tick) {
   if (!weapon || (weapon.mode || 'hitscan') === 'melee') return;
   const dir = shotDirectionFor(localTrigger, { yaw: playerView.yaw, pitch: playerView.pitch, weaponId, tick, seed: localShotSeed(), moveSpeed01: localMoveSpeed01() });
   spawnMuzzleFlash(playerBodies.localMount, dir, weaponId);
-  if (weapon.mode === 'projectile') return;   // the server's projectile entry renders the round
   const cap = playerController.getCapsule();
   const origin = [cap.end[0], cap.end[1] + cap.radius, cap.end[2]];   // capsule top: combat.js's head origin, as the server fires
+  if (weapon.mode === 'projectile') {
+    // Online the server flies it and its snapshot entry renders; solo flies it here.
+    if (!isOnline()) {
+      const pr = weapon.projectile || {};
+      soloProjectiles.spawn({
+        origin, dir, speed: pr.speed, blastRadius: pr.blastRadius, life: pr.life, radius: pr.radius,
+        gravity: pr.gravity, arc: pr.arc, fuse: pr.fuse, bounces: pr.bounces === true, fizzleOnExpire: pr.fizzleOnExpire === true,
+        damage: weapon.damage, color: weapon.tracerColor, ownerId: 'local', weaponId,
+      });
+    }
+    return;
+  }
   const range = weapon.range ?? 300;
   let end = [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range], kind = 'none';
   try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; } } catch { /* no provider yet */ }
   spawnShotEffects({ origin, end, kind, weaponId, mount: playerBodies.localMount });
+}
+
+// bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn
+// blast, then the explosion effect, debris and the report. `globalPoint` in global coordinates.
+function presentExplosion(globalPoint, radius) {
+  const l = worldCoordinates.toRenderLocal(globalPoint, _fxLocal);
+  flashLights.flash({ x: l[0], y: l[1], z: l[2] }, { ...BLAST_FLASH, distance: Math.min(60, radius * 3.2) });
+  pushEffect('explosion', l, 1.8, { color: [1, 0.62, 0.26], radius });
+  spawnBlastDebris([l[0], l[1], l[2]], radius);
+  audioDirector.explosionAt({ x: l[0], y: l[1], z: l[2] });
 }
 
 // ---- server projectiles: bot-viewer-v3's pooled spheres placed by a remote track per id.
@@ -800,6 +822,30 @@ function ingestProjectiles(snapshot) {
   }
   for (const id of projectileTracks.keys()) if (!seen.has(id)) projectileTracks.delete(id);
 }
+// Solo projectiles: the same bot-projectiles.js manager the server runs, against the local world
+// query (v3's wiring). Solo has nothing to damage, so detonation is presentation only. Global space.
+const _soloTrail = [0, 0, 0];
+const soloProjectiles = createProjectileManager({
+  trailIntervalS: 0.035,
+  terrainHeight: (x, z) => (settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : -1e9),
+  raycast(from, to) {
+    const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    const range = Math.hypot(dx, dy, dz);
+    if (!(range > 0)) return null;
+    let hit = null;
+    try { hit = worldQuery.raycast({ origin: from, direction: [dx / range, dy / range, dz / range], maxDistance: range }); } catch { return null; }
+    if (!hit?.point) return null;
+    // Ground contact belongs to the entity so grenades bounce (the server's rule, mirrored).
+    if (settings.worldMode === 'terrain' && hit.normal && hit.normal[1] > 0.5) return null;
+    return { point: hit.point, kind: 'world', id: null };
+  },
+  onDetonate: (point, proj) => presentExplosion(point, proj.state.blastRadius),
+  onTrail: (proj, point) => {
+    const l = worldCoordinates.toRenderLocal(point, _soloTrail);
+    emitTrailPuff(proj.weaponId, l[0], l[1], l[2]);
+  },
+});
+
 // bot-viewer-v3's onTrail puffs, emitted client-side at the manager's 0.035 s cadence — the sim
 // lives on the server, so the trail rides the rendered (interpolated) flight path instead.
 const TRAIL_INTERVAL_S = 0.035;
@@ -807,7 +853,10 @@ function emitTrail(rec, dt, x, y, z) {
   rec.trailAccum += dt;
   if (rec.trailAccum < TRAIL_INTERVAL_S) return;
   rec.trailAccum %= TRAIL_INTERVAL_S;
-  const rocket = rec.weapon === 'rpg';
+  emitTrailPuff(rec.weapon, x, y, z);
+}
+function emitTrailPuff(weaponId, x, y, z) {
+  const rocket = weaponId === 'rpg';
   pushEffect('smoke_puff', [x, y, z], rocket ? 1.2 : 0.55, {
     color: [0.62, 0.6, 0.58],
     size: rocket ? 0.3 : 0.14, growth: rocket ? 0.95 : 0.35,
@@ -816,6 +865,15 @@ function emitTrail(rec, dt, x, y, z) {
 }
 function updateProjectiles(now, dt) {
   let n = 0;
+  if (!isOnline() && soloProjectiles.list.length) soloProjectiles.update(dt);
+  for (const proj of soloProjectiles.list) {
+    const mesh = projectileMeshAt(n++);
+    const l = worldCoordinates.toRenderLocal(proj.transform.p, _fxLocal);
+    mesh.position.set(l[0], l[1], l[2]);
+    const mat = proj.weaponId === 'rpg' ? rocketMat : grenadeMat;
+    if (mesh.material !== mat) mesh.material = mat;
+    mesh.visible = true;
+  }
   const renderTime = now + (remotePlayers.diagnostics.serverTimeOffsetMs ?? 0) - settings.interpolationDelayMs;
   for (const rec of projectileTracks.values()) {
     const sample = rec.track.sample(renderTime, { maxExtrapolationMs: 250 }, _projSample);
@@ -1768,13 +1826,7 @@ function applyPlayerSnapshot(snapshot, session) {
   }
   for (const raw of snapshot.explosions ?? []) {
     const blast = sanitizeBaseGameExplosionEvent(raw);
-    if (!blast) continue;
-    const l = worldCoordinates.toRenderLocal(blast.p, _fxLocal);
-    // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn blast.
-    flashLights.flash({ x: l[0], y: l[1], z: l[2] }, { ...BLAST_FLASH, distance: Math.min(60, blast.radius * 3.2) });
-    pushEffect('explosion', l, 1.8, { color: [1, 0.62, 0.26], radius: blast.radius });
-    spawnBlastDebris([l[0], l[1], l[2]], blast.radius);
-    audioDirector.explosionAt({ x: l[0], y: l[1], z: l[2] });
+    if (blast) presentExplosion(blast.p, blast.radius);
   }
   ingestProjectiles(snapshot);
 }
