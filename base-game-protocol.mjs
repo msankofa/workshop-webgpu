@@ -1,7 +1,22 @@
 import { normalizeDescriptor } from './terrain-source.js';
 import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 6;
+export const BASE_GAME_PROTOCOL_VERSION = 8;
+// Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
+// and snapshots carry one-shot `hits` / `deaths` events for feedback.
+export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
+export const BASE_GAME_RESPAWN_TICKS = 360;           // 3 s dead before the server respawns
+export const BASE_GAME_FIRE_ACTION_TICKS = 12;        // a fire action stays visible for two snapshot intervals
+export const BASE_GAME_MAX_HEALTH = 100;
+// Weapons (phase 1): a loadout is four slots; the tick carries the active slot and the server echoes
+// the resolved weapon id. Only ids in BASE_GAME_WEAPON_IDS are accepted; 'none' empties a slot.
+export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven', 'm24', 'cz_805_bren', 'knife', 'grenade', 'rpg']);
+export const BASE_GAME_RELOADABLE_WEAPONS = Object.freeze(['m1911', 'five_seven', 'm24', 'cz_805_bren', 'rpg']);
+export const BASE_GAME_WEAPON_SLOTS = Object.freeze(['primary', 'sidearm', 'melee', 'throwable']);
+export const BASE_GAME_DEFAULT_LOADOUT = Object.freeze({ primary: 'cz_805_bren', sidearm: 'five_seven', melee: 'knife', throwable: 'grenade' });
+export const BASE_GAME_WEAPON_ACTION = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4 });
+export const BASE_GAME_RELOAD_TICKS = 180;           // 1.5 s at SIM_HZ; the server clears the action after this
+export const BASE_GAME_POSITION_HISTORY = 32;        // per-client server positions kept for lag compensation (phase 3)
 export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
 export const BASE_GAME_TERRAIN_KINDS = Object.freeze(['traversalLab', 'terrain']);
 export const BASE_GAME_ROOM_GRACE_MS = 30_000;
@@ -18,6 +33,8 @@ export const BASE_GAME_TICK_QUEUE_TARGET = 3;
 export const BASE_GAME_TICK_QUEUE_DRAIN = 8;
 export const BASE_GAME_STALL_TICKS = 60;
 
+export const BASE_GAME_SEA_LEVEL_LIMITS = Object.freeze([-120, 120]);   // matches the v5 sea_level field
+
 export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'primaryBody',
   'todEnabled',
@@ -31,9 +48,31 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'sunAzimuth',
   'sunIntensity',
   'ambientIntensity',
+  // water: the wave spectrum every peer simulates (water-waves.js buildWaveTable inputs)
+  'waveCount',
+  'waveBaseLength',
+  'waveLengthMul',
+  'waveBaseAmp',
+  'waveAmpMul',
+  'waveChop',
+  'waveWindDeg',
+  'waveSpreadDeg',
+  'waveDispersion',
+  'waveSpeed',
+  'waveSeed',
 ]);
 
 const NUMBER_LIMITS = Object.freeze({
+  waveCount: [1, 40],
+  waveBaseLength: [1, 5000],
+  waveLengthMul: [0.05, 1],
+  waveBaseAmp: [0, 50],
+  waveAmpMul: [0.05, 1],
+  waveChop: [0, 1],
+  waveWindDeg: [0, 360],
+  waveSpreadDeg: [0, 180],
+  waveSpeed: [0, 100],
+  waveSeed: [0, 1e9],
   todHour: [0, 24],
   todLatitude: [-90, 90],
   todDayOfYear: [1, 365],
@@ -46,7 +85,7 @@ const NUMBER_LIMITS = Object.freeze({
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
-const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying']);
+const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion']);
 const MAX_ABS_YAW = 1e6;
 const MAX_ABS_COORDINATE = 1e9;
 const MAX_ABS_VELOCITY = 1e4;
@@ -76,7 +115,22 @@ export function sanitizeBaseGameWorldPatch(input) {
     clean[key] = Math.max(limits[0], Math.min(limits[1], value));
   }
   if (clean.todHour === 24) clean.todHour = 0;
+  if (clean.waveCount != null) clean.waveCount = Math.round(clean.waveCount);
+  if (clean.waveSeed != null) clean.waveSeed = Math.round(clean.waveSeed);
   return clean;
+}
+
+// The wave table inputs (water-waves.js) carried by a shared world; missing keys keep the defaults.
+export const BASE_GAME_WAVE_KEY_MAP = Object.freeze({
+  waveCount: 'count', waveBaseLength: 'baseLength', waveLengthMul: 'lengthMul', waveBaseAmp: 'baseAmp',
+  waveAmpMul: 'ampMul', waveChop: 'chop', waveWindDeg: 'windDeg', waveSpreadDeg: 'spreadDeg',
+  waveDispersion: 'dispersion', waveSpeed: 'speed', waveSeed: 'seed',
+});
+export function waveOptionsFromWorld(world) {
+  const out = {};
+  if (!world) return out;
+  for (const [key, name] of Object.entries(BASE_GAME_WAVE_KEY_MAP)) if (world[key] != null) out[name] = world[key];
+  return out;
 }
 
 export function pickBaseGameSharedWorld(settings) {
@@ -125,7 +179,11 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
     return { config: null, error: `terrain kind ${descriptor.kind} is not available in multiplayer` };
   }
   if (volumetric && descriptor.kind !== 'v5-recipe') return { config: null, error: 'volumetric terrain needs a v5 project with a density field' };
-  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}`;
+  const seaLevel = Math.max(BASE_GAME_SEA_LEVEL_LIMITS[0], Math.min(BASE_GAME_SEA_LEVEL_LIMITS[1], descriptor.seaLevel ?? 0));
+  if (seaLevel !== descriptor.seaLevel) descriptor = normalizeDescriptor({ ...descriptor, seaLevel });
+  // a v5 project's sea level is inside its hash already; the analytic source's is only here
+  const seaTag = seaLevel !== 0 ? `:sea${seaLevel}` : '';
+  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}`;
   return { config: { kind: 'terrain', descriptor, projectHash, volumetric, worldVersion }, error: null };
 }
 
@@ -177,7 +235,22 @@ function finiteVec3(value, limit) {
 }
 
 export function neutralBaseGameInput(yaw = 0, pitch = 0) {
-  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, jump: false };
+  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, jump: false, slot: 0, aim: false, reload: false, fire: false };
+}
+
+export function sanitizeBaseGameLoadout(loadout) {
+  const clean = { ...BASE_GAME_DEFAULT_LOADOUT };
+  if (!loadout || typeof loadout !== 'object') return clean;
+  for (const slot of BASE_GAME_WEAPON_SLOTS) {
+    const id = loadout[slot];
+    if (typeof id === 'string' && BASE_GAME_WEAPON_IDS.includes(id)) clean[slot] = id;
+  }
+  return clean;
+}
+
+export function weaponForSlot(loadout, slot) {
+  const id = loadout?.[BASE_GAME_WEAPON_SLOTS[slot] ?? 'primary'];
+  return id && id !== 'none' ? id : null;
 }
 
 // Returns a clean tick input or null. Identity is rejected when malformed; movement is clamped.
@@ -198,7 +271,63 @@ export function sanitizeBaseGameTickInput(input) {
     pitch: Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch)),
     sprint: input.sprint === true,
     jump: input.jump === true,
+    slot: Number.isInteger(input.slot) && input.slot >= 0 && input.slot < BASE_GAME_WEAPON_SLOTS.length ? input.slot : 0,
+    aim: input.aim === true,
+    reload: input.reload === true,
+    fire: input.fire === true,
   };
+}
+
+function cleanAmmo(ammo) {
+  if (!ammo || typeof ammo !== 'object') return null;
+  const mag = ammo.mag === null ? Infinity : Number(ammo.mag);
+  const reserve = Number(ammo.reserve);
+  if (!(mag >= 0) || !Number.isFinite(reserve) || reserve < 0) return null;
+  return { mag, reserve };
+}
+// Infinity does not survive JSON: a bottomless magazine travels as null.
+export function wireAmmo(state) {
+  if (!state) return null;
+  return { mag: Number.isFinite(state.mag) ? state.mag : null, reserve: Number.isFinite(state.reserve) ? state.reserve : 0 };
+}
+
+export function sanitizeBaseGameHitEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  if (typeof event.shooter !== 'string' || typeof event.victim !== 'string') return null;
+  if (!finiteVec3(event.point, MAX_ABS_COORDINATE)) return null;
+  const damage = Number(event.damage);
+  if (!Number.isFinite(damage) || damage < 0) return null;
+  return { shooter: event.shooter, victim: event.victim, point: [...event.point], damage, head: event.head === true, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+}
+
+// A resolved shot, for tracers on every client: where it left and where it ended.
+export function sanitizeBaseGameShotEvent(event) {
+  if (!event || typeof event !== 'object' || typeof event.shooter !== 'string') return null;
+  if (!finiteVec3(event.origin, MAX_ABS_COORDINATE) || !finiteVec3(event.end, MAX_ABS_COORDINATE)) return null;
+  const dir = finiteVec3(event.dir, 2) ? [...event.dir] : null;
+  const weapon = typeof event.weapon === 'string' && BASE_GAME_WEAPON_IDS.includes(event.weapon) ? event.weapon : null;
+  return { shooter: event.shooter, weapon, origin: [...event.origin], dir, end: [...event.end], kind: typeof event.kind === 'string' ? event.kind : 'none', tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+}
+
+export function sanitizeBaseGameExplosionEvent(event) {
+  if (!event || typeof event !== 'object' || !finiteVec3(event.p, MAX_ABS_COORDINATE)) return null;
+  const radius = Number(event.radius);
+  if (!Number.isFinite(radius) || radius <= 0) return null;
+  return { p: [...event.p], radius, owner: typeof event.owner === 'string' ? event.owner : null, weapon: typeof event.weapon === 'string' ? event.weapon : null, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+}
+
+// A live server projectile: position and velocity so a client can place it between snapshots.
+export function sanitizeBaseGameProjectileState(state) {
+  if (!state || typeof state !== 'object' || typeof state.id !== 'string') return null;
+  if (!finiteVec3(state.p, MAX_ABS_COORDINATE)) return null;
+  const v = finiteVec3(state.v, MAX_ABS_VELOCITY) ? [...state.v] : [0, 0, 0];
+  const color = finiteVec3(state.color, 4) ? [...state.color] : [1, 0.5, 0.2];
+  return { id: state.id, p: [...state.p], v, color, weapon: typeof state.weapon === 'string' ? state.weapon : null, owner: typeof state.owner === 'string' ? state.owner : null, radius: Number.isFinite(state.radius) && state.radius > 0 ? state.radius : 0.4 };
+}
+
+export function sanitizeBaseGameDeathEvent(event) {
+  if (!event || typeof event !== 'object' || typeof event.victim !== 'string') return null;
+  return { victim: event.victim, killer: typeof event.killer === 'string' ? event.killer : null, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
 }
 
 // A packet carries consecutive ticks (each exactly previous + 1). Any bad tick rejects the packet.
@@ -234,6 +363,14 @@ export function sanitizeBaseGamePlayerState(state) {
     lastProcessedTick: nonNegativeInteger(state.lastProcessedTick) ? state.lastProcessedTick : 0,
     queueDepth: nonNegativeInteger(state.queueDepth) ? state.queueDepth : 0,
     spawnRevision: nonNegativeInteger(state.spawnRevision) ? state.spawnRevision : 0,
+    slot: Number.isInteger(state.slot) && state.slot >= 0 && state.slot < BASE_GAME_WEAPON_SLOTS.length ? state.slot : 0,
+    weapon: typeof state.weapon === 'string' && BASE_GAME_WEAPON_IDS.includes(state.weapon) && state.weapon !== 'none' ? state.weapon : null,
+    aiming: state.aiming === true,
+    action: Number.isInteger(state.action) && state.action >= 0 && state.action <= 4 ? state.action : 0,
+    actionTick: nonNegativeInteger(state.actionTick) ? state.actionTick : 0,
+    health: Number.isFinite(state.health) ? Math.max(0, Math.min(BASE_GAME_MAX_HEALTH, state.health)) : BASE_GAME_MAX_HEALTH,
+    dead: state.dead === true,
+    ammo: cleanAmmo(state.ammo),
   };
 }
 

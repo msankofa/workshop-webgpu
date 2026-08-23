@@ -17,7 +17,7 @@ function normalizeParams(p) {
 }
 
 // Builds the descriptor for an analytic source; `params` is the complete artifact.
-export function analyticDescriptor({ key = 'analytic', sourceVersion = '1', params } = {}) {
+export function analyticDescriptor({ key = 'analytic', sourceVersion = '1', params, seaLevel = 0 } = {}) {
   return normalizeDescriptor({
     kind: 'analytic',
     key,
@@ -26,6 +26,7 @@ export function analyticDescriptor({ key = 'analytic', sourceVersion = '1', para
     bounds: null,
     capabilities: ['infinite', 'heights', 'normals'],
     config: { params: normalizeParams(params) },
+    seaLevel,
   });
 }
 

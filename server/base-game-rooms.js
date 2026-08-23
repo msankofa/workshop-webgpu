@@ -1,5 +1,7 @@
 import {
   BASE_GAME_PROTOCOL_VERSION,
+  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot,
+  BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
   BASE_GAME_ROOM_GRACE_MS,
   BASE_GAME_ROOM_PLAYER_CAP,
   BASE_GAME_SIM_HZ,
@@ -18,6 +20,17 @@ import {
 } from '../base-game-protocol.mjs';
 import { createTerrainStore } from './terrain-store.js';
 import { createBaseGamePlayerController } from '../base-game-player-controller.js';
+// Firing reuses the multiplayer-guns stack: combat.js (hitscan, validation, pose history for lag
+// compensation), player-combat.js (hp/alive/revive) and player-ammo.js (magazines).
+import { resolveHitscan, pushPlayerPose, samplePlayerPose, prunePlayerPoseHistory } from '../combat.js';
+import { createPlayerCombatFacade } from '../player-combat.js';
+import { createAmmoStore } from '../player-ammo.js';
+import { createTriggerState, stepTrigger, shotDirectionFor } from '../base-game-fire.js';
+import { createProjectileManager } from '../bot-projectiles.js';
+import { blastDamageAt } from '../entity-types/explosion.js';
+import { botSeedFromId } from '../bot-activity.js';
+import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from '../base-game-player-controller.js';
+import { getWeapon } from '../weapons.js';
 import { randomUUID } from 'node:crypto';
 
 function defaultToken() {
@@ -40,6 +53,7 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
     ]);
     const source = createSource(config.descriptor);
     const killBelow = 80;
+    const seaLevel = config.descriptor.seaLevel ?? 0;
     if (config.volumetric) {
       // Volumetric rooms collide against the same marching-cubes tiles the clients stream,
       // built synchronously around the players each step (terrain-volume-collision.js).
@@ -49,8 +63,10 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       const floorY = source.project?.density?.y_min;
       return {
         worldQuery,
-        spawn: [0, surface(0, 0) + 1.5, 0],
+        spawn: [0, Math.max(surface(0, 0), seaLevel) + 1.5, 0],
+        seaLevel,
         killPlaneYAt: (x, z) => Math.min(surface(x, z) - killBelow, Number.isFinite(floorY) ? floorY - 10 : Infinity),
+        heightAt: surface,
         worldVersion: config.worldVersion,
         terrain: config,
         volume,
@@ -62,8 +78,10 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
     worldQuery.registerProvider(provider);
     return {
       worldQuery,
-      spawn: [0, source.heightAt(0, 0) + 1.5, 0],
+      spawn: [0, Math.max(source.heightAt(0, 0), seaLevel) + 1.5, 0],
+      seaLevel,
       killPlaneYAt: (x, z) => source.heightAt(x, z) - killBelow,
+      heightAt: (x, z) => source.heightAt(x, z),
       worldVersion: config.worldVersion,
       terrain: config,
     };
@@ -131,6 +149,68 @@ export function createBaseGameRoomService({
 
   function attachRoomControllers(room) {
     for (const client of room.clients.values()) attachController(client);
+    attachProjectiles(room);
+  }
+
+  // Server projectiles: bot-projectiles.js flying the weapons.js specs, environment-viewer's
+  // raycast rule (bodies and walls detonate; ground hits are left to the entity's own terrain
+  // contact so grenades bounce) and its blast curve (entity-types/explosion.js).
+  function attachProjectiles(room) {
+    const sim = room.sim;
+    if (room.projectiles || !sim) return;
+    const terrainHeight = typeof sim.heightAt === 'function' ? sim.heightAt : null;
+    room.projectiles = createProjectileManager({
+      terrainHeight,
+      raycast(from, to, radius, ownerId) {
+        const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+        const range = Math.hypot(dx, dy, dz);
+        if (!(range > 0)) return null;
+        const dir = [dx / range, dy / range, dz / range];
+        const players = [];
+        for (const other of room.clients.values()) if (other.controller) players.push(combatCapsule(other));
+        const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, occluder: worldOccluder(room) });
+        if (!hit || hit.kind === 'none') return null;
+        if (hit.kind === 'world' && terrainHeight && hit.normal && hit.normal[1] > 0.5) return null;   // ground: the entity bounces or detonates itself
+        return { point: hit.point, kind: hit.kind, id: hit.id };
+      },
+      onDetonate(point, proj) { detonateProjectile(room, point, proj); },
+    });
+  }
+
+  function worldOccluder(room) {
+    const worldQuery = room.sim?.worldQuery ?? null;
+    if (!worldQuery) return undefined;
+    return (o, d, range) => { try { const h = worldQuery.raycast({ origin: o, direction: d, maxDistance: range }); return h ? { distance: h.distance, point: h.point, normal: h.normal } : null; } catch { return null; } };
+  }
+
+  // environment-viewer's applyExplosionBlast on the room roster: blastDamageAt falloff, friendly
+  // fire and self-damage on, every victim gets a hit event so clients flash the same way.
+  function detonateProjectile(room, point, proj) {
+    const weapon = proj.weaponId ? getWeapon(proj.weaponId) : null;
+    const radius = proj.state.blastRadius, damage = proj.state.damage;
+    const owner = proj.ownerId ? room.clients.get(proj.ownerId) ?? null : null;
+    room.events.explosions.push({ p: [...point], radius, owner: proj.ownerId, weapon: proj.weaponId, tick: room.tick });
+    for (const victim of room.clients.values()) {
+      if (!victim.controller) continue;
+      const cap = combatCapsule(victim);
+      if (!cap.alive) continue;
+      const dmg = blastDamageAt(damage, Math.hypot(cap.p[0] - point[0], cap.p[1] - point[1], cap.p[2] - point[2]), radius);
+      if (dmg <= 0) continue;
+      applyDamage(room, victim, dmg, { shooter: owner, point: cap.p, weaponId: weapon?.id ?? proj.weaponId, source: 'explosion' });
+    }
+  }
+
+  function applyDamage(room, victim, amount, { shooter = null, point = null, weaponId = null, source = 'gun' } = {}) {
+    const wasAlive = room.combat.getSnapshot(victim.id).alive;
+    if (!wasAlive) return;
+    const after = room.combat.applyDamage({ targetId: victim.id, amount, source, attackerId: shooter?.id ?? null, hitPoint: point, weaponId });
+    room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), damage: amount, head: false, tick: room.tick });
+    if (after.alive) return;
+    victim.deaths++;
+    if (shooter && shooter !== victim) shooter.kills++;
+    victim.respawnAtTick = room.tick + BASE_GAME_RESPAWN_TICKS;
+    victim.action = BASE_GAME_WEAPON_ACTION.idle;
+    room.events.deaths.push({ victim: victim.id, killer: shooter?.id ?? null, tick: room.tick });
   }
 
   function attachController(client) {
@@ -168,11 +248,23 @@ export function createBaseGameRoomService({
       yaw: client.lastInput.yaw,
       pitch: client.lastInput.pitch,
       grounded: controller ? controller.grounded : false,
+      slot: client.slot,
+      weapon: weaponForSlot(client.loadout, client.slot),
+      aiming: client.aiming,
+      action: client.action,
+      actionTick: client.actionTick,
+      health: room.combat.getSnapshot(client.id).hp,
+      dead: !room.combat.getSnapshot(client.id).alive,
+      ammo: wireAmmo(weaponForSlot(client.loadout, client.slot) ? room.ammo.ensureAmmo(client.id, weaponForSlot(client.loadout, client.slot)) : null),
     };
   }
 
-  function snapshot(room) {
+  // One-shot hit/death events ride the next broadcast snapshot and are then cleared. The
+  // per-client snapshot a joiner receives (drain=false) leaves them for everyone else's broadcast.
+  function snapshot(room, drain = true) {
     advance(room);
+    const { hits, deaths, shots, explosions } = room.events;
+    if (drain) room.events = emptyEvents();
     return {
       type: 'base:snapshot',
       protocol: BASE_GAME_PROTOCOL_VERSION,
@@ -187,7 +279,16 @@ export function createBaseGameRoomService({
       ownerId: room.ownerId,
       world: { ...room.world },
       players: [...room.clients.values()].map(client => playerEntry(client, room)),
+      hits,
+      deaths,
+      shots,
+      explosions,
+      projectiles: room.projectiles ? room.projectiles.list.map(projectileEntry) : [],
     };
+  }
+  function emptyEvents() { return { hits: [], deaths: [], shots: [], explosions: [] }; }
+  function projectileEntry(proj) {
+    return { id: proj.id, p: [...proj.transform.p], v: [proj.sim.vx, proj.sim.vy, proj.sim.vz], color: proj.state.color, weapon: proj.weaponId, owner: proj.ownerId, radius: proj.state.radius };
   }
 
   function broadcast(room, payload = snapshot(room)) {
@@ -232,7 +333,18 @@ export function createBaseGameRoomService({
       rate: createBaseGameRateLimiter(),
       rejectedInputs: 0,
       serverSteps: 0,
+      loadout: { ...BASE_GAME_DEFAULT_LOADOUT },
+      slot: 0,
+      aiming: false,
+      action: BASE_GAME_WEAPON_ACTION.idle,
+      actionTick: 0,
+      actionUntilTick: 0,
+      respawnAtTick: 0,
+      kills: 0,
+      deaths: 0,
+      trigger: createTriggerState(),
     };
+    room.combat.ensurePlayer(id);
     room.clients.set(id, client);
     socketClients.set(ws, client);
     tokenClients.set(token, client);
@@ -253,7 +365,7 @@ export function createBaseGameRoomService({
       // The room terrain config travels once, here (v5 bodies by hash); snapshots carry identity only.
       terrain: publicBaseGameTerrainConfig(client.room.terrain),
     });
-    send(client.ws, snapshot(client.room));
+    send(client.ws, snapshot(client.room, false));
   }
 
   function createRoom(ws, msg) {
@@ -278,6 +390,11 @@ export function createBaseGameRoomService({
       tick: 0,
       accumulatorMs: 0,
       lastStepAt: at,
+      events: emptyEvents(),
+      combat: createPlayerCombatFacade(),
+      ammo: createAmmoStore(),
+      poseHistory: new Map(),
+      projectiles: null,   // bot-projectiles.js manager, built with the world in attachProjectiles
     };
     rooms.set(code, room);
     ensureWorld(room).catch(err => {
@@ -355,6 +472,8 @@ export function createBaseGameRoomService({
       room.terrain = terrain.config;
       room.sim = sim;
       room.revision++;
+      room.projectiles = null;   // the manager holds the old ground; rebuild on the new one
+      attachProjectiles(room);
       for (const c of room.clients.values()) {
         c.controller = null;
         attachController(c);
@@ -441,6 +560,11 @@ export function createBaseGameRoomService({
   function respawnClient(client) {
     client.controller?.reset(client.room.sim?.spawn);
     client.lastInput = neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch);
+    client.room.combat.revive(client.id);
+    client.room.ammo.resetPlayer(client.id);
+    client.trigger = createTriggerState();
+    client.respawnAtTick = 0;
+    client.action = BASE_GAME_WEAPON_ACTION.idle;
     client.spawnRevision++;
     client.respawns = (client.respawns ?? 0) + 1;
     requestResync(client);
@@ -471,6 +595,7 @@ export function createBaseGameRoomService({
   function handle(ws, msg) {
     if (!msg || typeof msg !== 'object') return false;
     if (msg.type === 'base:respawn') return respawn(ws, msg);
+    if (msg.type === 'base:loadout') return setLoadout(ws, msg);
     if (msg.type === 'base:resync') return resync(ws, msg);
     if (msg.type === 'base:create') return createRoom(ws, msg);
     if (msg.type === 'base:join') return joinRoom(ws, msg);
@@ -488,6 +613,92 @@ export function createBaseGameRoomService({
     client.lastConsumedTick = next.tick;
     client.lastInput = next;
     client.controller.stepOnce({ moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint }, next.jump);
+    // Slot and aim are taken as sent. The trigger step (base-game-fire.js, on combat.js's
+    // validateShot and player-ammo.js) decides whether a round leaves; hits resolve below.
+    if (next.slot !== client.slot) { client.slot = next.slot; client.action = BASE_GAME_WEAPON_ACTION.idle; client.trigger.held = true; }
+    client.aiming = next.aim;
+    if (client.action !== BASE_GAME_WEAPON_ACTION.idle && next.tick >= client.actionUntilTick) client.action = BASE_GAME_WEAPON_ACTION.idle;
+    const room = client.room;
+    const weaponId = weaponForSlot(client.loadout, client.slot);
+    const shot = stepTrigger(client.trigger, room.ammo, { playerId: client.id, weaponId, tick: next.tick, fire: next.fire, reload: next.reload, aim: next.aim, alive: room.combat.getSnapshot(client.id).alive, simHz });
+    if (shot.reloadStarted) {
+      client.action = BASE_GAME_WEAPON_ACTION.reload;
+      client.actionTick = next.tick;
+      client.actionUntilTick = next.tick + BASE_GAME_RELOAD_TICKS;
+    }
+    if (shot.fired) {
+      client.action = BASE_GAME_WEAPON_ACTION.fire;
+      client.actionTick = next.tick;
+      client.actionUntilTick = next.tick + BASE_GAME_FIRE_ACTION_TICKS;   // outlives a snapshot interval so remotes see every shot
+      fireShot(client, weaponId, next);
+    }
+    rememberPose(client);
+  }
+
+  // combat.js pose history, keyed on room time so lag compensation is deterministic.
+  function roomMs(room) { return room.tick * stepMs; }
+  function combatCapsule(client) {
+    const c = client.controller.getCapsule();
+    const h = c.end[1] - c.start[1] + c.radius * 2;
+    return { id: client.id, p: [c.start[0], (c.start[1] + c.end[1]) * 0.5, c.start[2]], r: c.radius, h, alive: client.room.combat.getSnapshot(client.id).alive };
+  }
+  function rememberPose(client) {
+    const room = client.room;
+    const cap = combatCapsule(client);
+    pushPlayerPose(room.poseHistory, client.id, { p: cap.p, q: null, h: cap.h, r: cap.r, alive: cap.alive, hp: room.combat.getSnapshot(client.id).hp }, roomMs(room));
+    prunePlayerPoseHistory(room.poseHistory, roomMs(room));
+  }
+
+  // How fast the shooter is moving, 0..1 of full sprint, for bot-aim.js's move spread.
+  function moveSpeed01(client) {
+    const v = client.controller.getVelocity();
+    const cfg = BASE_GAME_PLAYER_DEFAULT_CONFIG;
+    return Math.min(1, Math.hypot(v[0], v[2]) / (cfg.moveSpeed * cfg.sprintMultiplier));
+  }
+
+  function fireShot(client, weaponId, input) {
+    const weapon = weaponId ? getWeapon(weaponId) : null;
+    const mode = weapon?.mode || 'hitscan';
+    if (!weapon || mode === 'melee') return;   // melee: later phase
+    const room = client.room;
+    const me = combatCapsule(client);
+    const origin = [me.p[0], me.p[1] + me.h * 0.5, me.p[2]];   // combat.js shooterHeadOrigin convention
+    const dir = shotDirectionFor(client.trigger, { yaw: input.yaw, pitch: input.pitch, weaponId, tick: input.tick, seed: botSeedFromId(client.id), moveSpeed01: moveSpeed01(client), simHz });
+    if (mode === 'projectile') {
+      // environment-viewer's spawnCombatProjectile field forwarding; damage lands on detonation.
+      const pr = weapon.projectile || {};
+      room.projectiles?.spawn({
+        origin, dir, speed: pr.speed, blastRadius: pr.blastRadius, life: pr.life, radius: pr.radius,
+        gravity: pr.gravity, arc: pr.arc, fuse: pr.fuse, bounces: pr.bounces === true, fizzleOnExpire: pr.fizzleOnExpire === true,
+        damage: weapon.damage, color: weapon.tracerColor, ownerId: client.id, weaponId, throwerActorId: client.id,
+      });
+      return;
+    }
+    // Victims as the shooter saw them: rewound by the client interpolation delay.
+    const at = roomMs(room) - BASE_GAME_LAG_COMP_MS;
+    const players = [];
+    for (const other of room.clients.values()) {
+      if (other === client || !other.controller) continue;
+      const past = samplePlayerPose(room.poseHistory, other.id, at);
+      players.push(past ? { id: other.id, p: past.p, r: past.r, h: past.h, alive: past.alive } : combatCapsule(other));
+    }
+    const hit = resolveHitscan({ shooterId: client.id, origin, dir, range: weapon.range ?? 300, players, occluder: worldOccluder(room) });
+    room.events.shots.push({ shooter: client.id, weapon: weaponId, origin, dir, end: hit.point, kind: hit.kind, tick: room.tick });
+    if (hit.kind !== 'player') return;
+    const victim = room.clients.get(hit.id);
+    if (victim) applyDamage(room, victim, weapon.damage, { shooter: client, point: hit.point, weaponId });
+  }
+
+  function setLoadout(ws, msg) {
+    const client = socketClients.get(ws);
+    if (!client || client.ws !== ws) return true;
+    if (msg.protocol !== BASE_GAME_PROTOCOL_VERSION) { client.rejectedInputs++; return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    client.loadout = sanitizeBaseGameLoadout(msg.loadout);
+    client.action = BASE_GAME_WEAPON_ACTION.idle;
+    client.room.ammo.resetPlayer(client.id);
+    broadcast(client.room);
+    return true;
   }
 
   // Each simulation step consumes exactly one queued tick per player. A deep queue drains two per
@@ -497,6 +708,15 @@ export function createBaseGameRoomService({
     const controller = client.controller;
     if (!controller) return;
     const connected = client.ws?.readyState === 1;
+    if (!client.room.combat.getSnapshot(client.id).alive) {
+      // A dead body holds still; its ticks are consumed so numbering stays in step, then the
+      // respawn resyncs it like any server-initiated move.
+      if (client.queue.length) { const next = client.queue.shift(); client.lastConsumedTick = next.tick; client.lastInput = next; }
+      controller.stepOnce(neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch), false);
+      rememberPose(client);
+      if (client.room.tick >= client.respawnAtTick) respawnClient(client);
+      return;
+    }
     if (!connected) {
       controller.stepOnce(neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch), false);
       client.serverSteps++;
@@ -533,6 +753,7 @@ export function createBaseGameRoomService({
         if (sim.covers && client.controller) { const p = client.controller.getPosition(); if (!sim.covers(p[0], p[2])) continue; }
         stepClient(client); enforceKillPlane(client);
       }
+      if (room.projectiles?.list.length) room.projectiles.update(stepMs / 1000);
     }
   }
 
@@ -567,6 +788,9 @@ export function createBaseGameRoomService({
         if (client.ws || client.disconnectedAt == null || at - client.disconnectedAt < graceMs) continue;
         room.clients.delete(id);
         tokenClients.delete(client.token);
+        room.combat.removePlayer(id);
+        room.ammo.removePlayer(id);
+        room.poseHistory.delete(id);
         if (room.ownerId === id) transferOwner(room);
         changed = true;
       }

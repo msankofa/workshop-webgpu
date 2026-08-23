@@ -201,13 +201,15 @@ export function createBaseGameTerrain({
   const TINT = { water: [0.16, 0.32, 0.42], sand: [0.72, 0.66, 0.46], grass: [0.30, 0.48, 0.22], dry: [0.46, 0.44, 0.28], rock: [0.42, 0.40, 0.38], snow: [0.92, 0.93, 0.95] };
   const mixInto = (out, o, a, b, t) => { out[o] = a[0] + (b[0] - a[0]) * t; out[o + 1] = a[1] + (b[1] - a[1]) * t; out[o + 2] = a[2] + (b[2] - a[2]) * t; };
   const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
-  function colorizeGeometry(geo) {
-    if (geo.getAttribute('color')) return;
+  // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
+  let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+  function colorizeGeometry(geo, force = false) {
+    if (geo.getAttribute('color') && !force) return;
     const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal');
     const colors = new Float32Array(pos.count * 3);
     const c = [0, 0, 0];
     for (let i = 0; i < pos.count; i++) {
-      const y = pos.getY(i), ny = nrm ? nrm.getY(i) : 1;
+      const y = pos.getY(i) - seaLevel, ny = nrm ? nrm.getY(i) : 1;
       if (y < 0) mixInto(c, 0, TINT.water, TINT.sand, clamp01(1 + y / 6));
       else if (y < 2) mixInto(c, 0, TINT.sand, TINT.grass, clamp01(y / 2));
       else if (y < 60) mixInto(c, 0, TINT.grass, TINT.dry, clamp01((y - 20) / 40));
@@ -330,7 +332,21 @@ export function createBaseGameTerrain({
     return system.getHeight(x, z);
   }
   function spawnPosition(x = 0, z = 0, clearance = 1.5) {
-    return [x, groundHeight(x, z) + clearance, z];
+    return [x, Math.max(groundHeight(x, z), seaLevel) + clearance, z];
+  }
+  function recolorAll() {
+    for (const chunk of system.chunks.values()) if (chunk.mesh) colorizeGeometry(chunk.mesh.geometry, true);
+    for (const c of cascade) for (const chunk of c.system.chunks.values()) if (chunk.mesh) colorizeGeometry(chunk.mesh.geometry, true);
+    // batched copies hold the old colours: drop them so applyMaterials() re-adds every chunk
+    for (const key of [...batchedChunks.keys()]) { batcher.remove(key); batchedChunks.delete(key); }
+    for (const cb of cascadeBatchers.values()) for (const key of [...cb.batched.keys()]) { cb.batcher.remove(key); cb.batched.delete(key); }
+    applyMaterials();
+  }
+  function setSeaLevel(level) {
+    if (!Number.isFinite(level) || level === seaLevel) return false;
+    seaLevel = level;
+    recolorAll();
+    return true;
   }
   function volumeFloorY() {
     const d = system.source?.project?.density;
@@ -346,6 +362,8 @@ export function createBaseGameTerrain({
     get killPlaneBelowSurface() { return cfg.killPlaneBelowSurface; },
     groundHeight,
     spawnPosition,
+    get seaLevel() { return seaLevel; },
+    setSeaLevel,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
     killPlaneYAt(x, z) {
@@ -430,6 +448,7 @@ export function createBaseGameTerrain({
       provider.setSource(system.source);
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       for (const c of cascade) c.system.setSource(next);
+      seaLevel = system.source?.descriptor?.seaLevel ?? 0;
       // nothing survives a swap, so there is nothing to dissolve from: coverage restarts at zero
       coverExact.clear(); for (const cl of coverLevels) cl.clear();
       installedTotal = 0;

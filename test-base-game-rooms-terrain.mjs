@@ -203,7 +203,7 @@ console.log('\n[6] the owner switches the world; guests follow and respawn; gues
   ok(room.revision === revBefore + 1, 'room revision bumped');
   const src = createSource(descriptor);
   const positions = [...room.clients.values()].map(c => c.controller.getPosition());
-  ok(positions.every(p => Math.abs(p[1] - (src.heightAt(0, 0) + 1.5)) < 1e-6 && p[0] === 0 && p[2] === 0), 'everyone respawned on the new ground');
+  ok(positions.every(p => Math.abs(p[1] - (Math.max(src.heightAt(0, 0), descriptor.seaLevel) + 1.5)) < 1e-6 && p[0] === 0 && p[2] === 0), 'everyone respawned on the new ground (above the water)');
   ok([...room.clients.values()].every(c => c.spawnRevision >= 2 && c.awaitingResync), 'spawn revision bumped and resync requested for all');
   ok(guest.last('base:snapshot').worldVersion === room.terrain.worldVersion && guest.last('base:snapshot').worldReady, 'snapshot reports the new world');
   // same world again: just an echo, no rebuild
@@ -236,7 +236,7 @@ console.log('\n[7] volumetric room: server builds chunk collision around players
   const sim = room.sim;
   ok(room.terrain.volumetric === true && sim.volume && ws.last('base:joined').terrain.volumetric === true, 'volumetric room accepted; joined carries the flag');
   const src = createSource(descriptor);
-  ok(Math.abs(sim.spawn[1] - (src.surfaceYAt(0, 0) + 1.5)) < 1e-6, 'spawn sits on the density surface, not the heightfield');
+  ok(Math.abs(sim.spawn[1] - (Math.max(src.surfaceYAt(0, 0), descriptor.seaLevel) + 1.5)) < 1e-6, 'spawn sits on the density surface (or the water), not the heightfield');
   const client = room.clients.values().next().value;
   clock += 1000 / 120; service.step(clock);
   ok(sim.covers(0, 0) && sim.volume.chunkCount >= 4, `first step built collision under the player first (${sim.volume.chunkCount} chunks, budget 4 per step)`);

@@ -46,6 +46,9 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Hitscan, shot validation, lag-compensation pose history | `combat.js` |
 | Player hp / alive / revive | `player-combat.js` |
 | Magazines (lifted from `environment-viewer.html`) | `player-ammo.js` |
+| Dispersion cone | `bot-aim.js` |
+| Projectile flight and blast falloff | `bot-projectiles.js` / `entity-types/explosion.js` |
+| Tracers, muzzle flash, sparks, explosions | `effect-renderer.js` / `tracer-visual.js` |
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
@@ -611,10 +614,13 @@ One rig, two presentation axes, owner only; remotes always see the third-person 
   `fpViewBlend` setting, pulled to 1 while aiming and to 30 % while sprinting, eased at 6/s.
 - **Presets** (`fpPreset`): arcade (blend 1, comfort off), embodied (blend 0, comfort light),
   hybrid (blend 0.6, comfort off, default), custom (whatever the two controls say).
-- **Camera comfort** (`fpCameraComfort`): `base-game-player-view.js` `updateCamera` takes an
-  `eyeAnchor` (render-local) and `comfortRateXZ/Y`; the page feeds the rig's animated eye point
-  (`playerBodies.localEyePoint`, bot-viewer-v3's POV anchor) minus `FP_RIG_EYE_OFFSET` 0.34 m,
-  because the rig's eyes sit above the capsule eye height. Off while aiming.
+- **First-person eye** (2026-08-23, measured): the rig's eyes are at 1.96 m and its shoulders at
+  1.66 m on a 1.8 m capsule, while the capsule eye was 1.62 m, so the camera sat below the
+  shoulders. The eye's X/Z now stay on the capsule (the render body trails the capsule by up to
+  ~0.46 m when running, and anchoring the camera to the head put it behind the body) plus the
+  body's own eyes-ahead-of-head distance (`localEyeForward`); its height is the body's live eye
+  height (`eyeAnchorY`, from `localEyePoint`), so bob, lean and stance move the camera vertically.
+  `fpCameraComfort` damps only that height (`comfortRateY`, off while aiming).
 - **Part mask**: the rig gained `setPartMask(mask)` over `parts.core`; in first person on the
   third-person rig the page hides head, eyes, neck and torso (`FP_PART_MASK`) and keeps arms and
   legs. Mesh-mode only hides anchored gear with its host; instanced bodies would not.
@@ -717,11 +723,47 @@ copy; `hits` where I am the shooter flash HIT, where I am the victim flash the r
 `deaths` set "killed by". The `#combat` HUD (bottom right) shows HP or DEAD, the weapon and
 `mag / reserve`.
 
-Not done: tracers and muzzle flash (no entity registry in the base game yet), remote recoil on
-bodies, head multiplier (`head` is always false), melee and projectiles.
+**Spread, tracers, muzzle flash, projectiles (same day).** Again on what existed:
 
-Tests: `test-base-game-fire.mjs` (trigger step, protocol, a two-player room where one shoots the
-other dead and the server respawns them, page markers). `test-combat.mjs` covers the hit math.
+| Responsibility | Existing owner |
+|---|---|
+| Dispersion cone (base + move + first-shot settle + bloom) and the rotation off-axis | `bot-aim.js` (`spreadHalfAngleRad`, `bloomAfterShot`, `decayBloomDeg`, `dispersedDirection`); base angle is `weapons.js` `spreadRad`, authored since the guns design but unread until now |
+| Deterministic rolls | `biome-classifier-js.js` `mulberry32(hashSeed(seed, tick))`, seed = `bot-activity.js` `botSeedFromId(clientId)` |
+| Projectile flight, bounce, fuse, fizzle | `bot-projectiles.js` `createProjectileManager` over `entity-types/combat-projectile.js`, one manager per room |
+| Blast falloff | `entity-types/explosion.js` `blastDamageAt` (environment-viewer's `applyExplosionBlast` rule: 45 % at the edge, 12 floor, friendly fire and self-damage on) |
+| Tracer timing / geometry, flash and smoke, sparks, explosions | `tracer-visual.js` + `effect-renderer.js`, driven by bot-viewer-v3's `pushEffect` / `updateEffects` list |
+| Tracer and flash origin | `weapon-mount.js` `muzzleWorld(mount)`; `base-game-player-bodies.js` gained `remoteMount(id)` beside `localMount` |
+| Projectile presentation | bot-viewer-v3's pooled spheres (`projectileMeshAt`, rocket / grenade materials) placed by `createRemoteTrack` per projectile id |
+
+`base-game-fire.js` `shotDirectionFor(trigger, { yaw, pitch, weaponId, tick, seed, moveSpeed01 })`
+is the one call both sides make after `stepTrigger` reports `fired`: the trigger state carries
+`bloomDeg` (decayed every tick) and `contactSinceTick` (first tick of an aim or trigger hold, for the
+first-shot settle term), so the server's ray and the shooter's predicted tracer are the same ray.
+The server's `fireShot` now handles `projectile` weapons by spawning through the room manager with
+environment-viewer's `spawnCombatProjectile` field forwarding; the manager's raycast is `combat.js`
+`resolveHitscan` over the roster plus the world occluder, with environment-viewer's rule that a
+ground hit is left to the entity's own terrain contact (so grenades bounce) wherever the sim exposes
+`heightAt` (terrain rooms; the lab has no heightfield, so there a grenade detonates on the floor).
+Detonation applies `blastDamageAt` to every live capsule and emits an `explosions[]` event plus a
+`hits[]` event per victim. The room manager is rebuilt on a terrain swap.
+
+Protocol 8 additions: per snapshot `shots[]` (`shooter, weapon, origin, dir, end, kind, tick`),
+`explosions[]` (`p, radius, owner, weapon, tick`) and `projectiles[]` (`id, p, v, color, weapon,
+owner, radius`); sanitizers `sanitizeBaseGameShotEvent`, `sanitizeBaseGameExplosionEvent`,
+`sanitizeBaseGameProjectileState`.
+
+Page: a shot of mine spawns the muzzle flash and a predicted tracer (same seeded ray, ended on the
+local `worldQuery.raycast`) the tick it fires; everyone else's shots, all explosions and the live
+projectile list come from the snapshot. `frameProfiler.time('fx')` wraps `updateProjectiles` and
+`updateShotEffects` before the sky update.
+
+Not done: remote recoil on bodies, head multiplier (`head` is always false), melee, blast debris
+(`blast-debris*.js`) and the explosion light.
+
+Tests: `test-base-game-fire.mjs` (trigger step, seeded spread, protocol, a two-player room where
+one shoots the other dead and the server respawns them, then an RPG flight that detonates and
+damages, page markers). `test-combat.mjs`, `test-bot-aim.mjs`, `test-bot-projectiles.mjs`,
+`test-tracer-visual.mjs` cover the reused math.
 
 ### Pre-terrain server-authoritative player replication
 
@@ -1400,6 +1442,19 @@ generation-order independence; stable published regions; level lakes; no valley-
 and no gameplay-frame stalls from generation or cache installation.
 
 ### Water, rapids, and waterfalls
+
+**Shipped water (plan `docs/superpowers/plans/2026-08-23-base-game-water.md`).** W1 (2026-08-23):
+sea level is a terrain-source descriptor field (`descriptor.seaLevel`, see `terrain.md`): a v5
+project fills it from its authored `cfg.sea_level`, the analytic source takes the page's
+`terrainSeaLevel` slider (−120..120, room-owned online, rebuilt into `activeTerrainDescriptor` by
+`applyLocalSeaLevel()`; with a v5 project active the slider shows the project's value and snaps back).
+`base-game-terrain.js` exposes `seaLevel` / `setSeaLevel(level)`: the vertex-tint height bands sit on it
+(chunks and batches recolour on change), `spawnPosition()` lands on `max(ground, seaLevel) + clearance`,
+and `setSource` takes the new descriptor's value. The server world does the same (`sim.seaLevel`,
+spawn above the water). The wave spectrum (`waveCount … waveSeed`, the `water-waves.js`
+`buildWaveTable` inputs) lives in the Water panel section as shared world keys, so the room owner
+tunes it and every peer simulates the same surface; `waveOptionsFromWorld(world)` maps them back
+to table options. Nothing renders or swims yet — that is W2–W8. Tests: `test-base-game-sea-level.mjs`.
 
 The reference water renderer uses six camera-following clipmap grids sampling the shared hydrology
 fields. Dry samples are moved below the bed, so adding rivers does not create a mesh or draw call per

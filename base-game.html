@@ -14,6 +14,20 @@
     font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
     font-variant-numeric: tabular-nums; pointer-events: none;
   }
+  #combat {
+    position: fixed; right: 12px; bottom: 12px; z-index: 10;
+    padding: 7px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px;
+    background: rgba(10,14,22,.72); color: #d9e2ef; text-align: right;
+    font: 13px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  #combat .hp { font-size: 18px; }
+  #combat .hit { color: #ffb347; }
+  #combat .dead { color: #ff6b6b; }
+  #damage-flash {
+    position: fixed; inset: 0; z-index: 9; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center, rgba(255,0,0,0) 55%, rgba(200,20,20,.55) 100%);
+  }
   #err {
     display: none; position: fixed; left: 12px; top: 12px; right: 370px; z-index: 50;
     max-height: 45vh; overflow: auto; white-space: pre-wrap;
@@ -39,6 +53,8 @@
 <body>
 <div id="boot-screen">Loading start menu...</div>
 <div id="stats">initializing WebGPU…</div>
+<div id="damage-flash"></div>
+<div id="combat"></div>
 <div id="err"></div>
 <div id="ctrl">
   <div class="panel-head">
@@ -70,7 +86,9 @@ window.addEventListener('unhandledrejection', event => reportBaseGameError(event
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { WebGPURenderer, PostProcessing } from 'three/webgpu';
+import { pass, renderOutput } from 'three/tsl';
+import { createDepthOfField } from './depth-of-field.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createLightingRig } from './lights.js';
 import { createSky } from './sky.js';
@@ -98,12 +116,19 @@ import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
 import { createWeaponViewModel } from './weapon-viewmodel.js';
 import { getWeapon, WEAPONS } from './weapons.js';
-import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot } from './base-game-protocol.mjs';
+import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
+import { createTriggerState, stepTrigger, shotDirectionFor } from './base-game-fire.js';
+import { createAmmoStore } from './player-ammo.js';
+import { createEffectRenderer } from './effect-renderer.js';
+import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
+import { createRemoteTrack } from './base-game-remote-players.js';
+import { botSeedFromId } from './bot-activity.js';
+import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
 import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
@@ -130,6 +155,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   labOriginMarker: true,
   terrainVisible: true,
   terrainVolumetric: true,
+  terrainSeaLevel: 0,
+  waveCount: 26, waveBaseLength: 150, waveLengthMul: 0.84, waveBaseAmp: 1.4, waveAmpMul: 0.82, waveChop: 0.55,
+  waveWindDeg: 35, waveSpreadDeg: 70, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -150,8 +178,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
-  weaponReachSolve: true,
-  weaponHoldMode: 'body',
+  weaponReachSolve: false,
+  weaponHoldMode: 'authored',
+  bodyFacing: 'look',
+  weaponAimTrim: false,
+  bodyTurnThreshold: 0.6, bodyTurnRate: 7, gunYawLimit: 0.9,
   holdIdleDist: 0.55, holdIdleSide: -0.04, holdIdleUp: -0.16,
   holdAimDist: 0.46, holdAimSide: -0.10, holdAimUp: 0.06,
   fpPreset: 'hybrid',
@@ -212,6 +243,17 @@ const DEFAULT_SETTINGS = Object.freeze({
   cameraFollowRate: 14,
   cameraSensitivity: 0.002,
   cameraObstructionPadding: 0.22,
+  cameraSideOffset: 0,
+  cameraHeightOffset: 0,
+  cameraForwardOffset: 0,
+  cameraFov: 50,
+  fpFov: 70,
+  dofEnabled: false,
+  dofAutoFocus: true,
+  dofFocusDistance: 6,
+  dofAperture: 0.9,
+  dofMaxRadius: 14,
+  dofFarScale: 2.1,
   remotePlayersEnabled: false,
   networkDebugVisible: true,
   interpolationDelayMs: 100,
@@ -245,10 +287,14 @@ const NUMBER_LIMITS = Object.freeze({
   todHour: [0, 24], todLatitude: [-90, 90], todDayOfYear: [1, 365],
   todMoonPhase: [0, 24], todSpeed: [0, 600], sunElevation: [-90, 90],
   sunAzimuth: [0, 360], sunIntensity: [0, 4], ambientIntensity: [0, 2],
+  terrainSeaLevel: [-120, 120], waveCount: [1, 40], waveBaseLength: [1, 5000], waveLengthMul: [0.05, 1], waveBaseAmp: [0, 50],
+  waveAmpMul: [0.05, 1], waveChop: [0, 1], waveWindDeg: [0, 360], waveSpreadDeg: [0, 180], waveSpeed: [0, 100], waveSeed: [0, 1e9],
   playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
+  cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
+  dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
@@ -264,6 +310,7 @@ const NUMBER_LIMITS = Object.freeze({
   fpViewBlend: [0, 1],
   holdIdleDist: [0.2, 1], holdIdleSide: [-0.4, 0.4], holdIdleUp: [-0.6, 0.4],
   holdAimDist: [0.2, 1], holdAimSide: [-0.4, 0.4], holdAimUp: [-0.6, 0.4],
+  bodyTurnThreshold: [0.1, 1.5], bodyTurnRate: [1, 20], gunYawLimit: [0.2, 1.6],
 });
 const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
@@ -275,7 +322,8 @@ const STRING_VALUES = Object.freeze({
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
   weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS],
   fpPreset: ['hybrid', 'arcade', 'embodied', 'custom'],
-  weaponHoldMode: ['body', 'authored'],
+  weaponHoldMode: ['authored', 'body'],
+  bodyFacing: ['look', 'travel'],
   fpCameraComfort: ['off', 'light', 'strong'],
   armPreset: Object.keys(ARM_POSE_PRESETS),
   bodyGaitModel: Object.keys(GAIT_MODELS),
@@ -308,7 +356,7 @@ let receiveNetworkStatus = status => { networkStatus = status; };
 function pickRoomTerrainConfig() {
   if (settings.worldMode !== 'terrain') return { kind: 'traversalLab' };
   // Before the game exists (start menu) the only possible terrain is the analytic default.
-  const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
+  const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
   const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
   return { kind: 'terrain', descriptor, volumetric };
 }
@@ -443,9 +491,24 @@ controls.dampingFactor = 0.09;
 // time. The Traversal Lab is their permanent pre-terrain visual and collision consumer.
 const worldCoordinates = createWorldCoordinateSpace();
 const worldQuery = createWorldQueryService();
+// Depth of field (demos/sdf-bug-v2.html's gather, depth-of-field.js): a node post pipeline used only
+// while the toggle is on; otherwise the plain render path runs and the pass costs nothing.
+const scenePass = pass(scene, camera);
+const depthOfField = createDepthOfField({ scenePass });
+const postPipeline = new PostProcessing(renderer);
+postPipeline.outputNode = renderOutput(depthOfField.node);
+const dofRay = { origin: new THREE.Vector3(), direction: new THREE.Vector3() };
+function measureCentreDistance() {
+  camera.getWorldPosition(dofRay.origin);
+  camera.getWorldDirection(dofRay.direction);
+  const origin = worldCoordinates.toGlobal([dofRay.origin.x, dofRay.origin.y, dofRay.origin.z]);
+  let hit = null;
+  try { hit = worldQuery.raycast({ origin, direction: [dofRay.direction.x, dofRay.direction.y, dofRay.direction.z], maxDistance: 300 }); } catch { hit = null; }
+  return hit ? hit.distance : 80;
+}
 const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
-const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
+const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
 const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR });
 // Ground textures load in the background; the vertex tint shows until they arrive.
 loadStreamedSplatTextures().then(tex => {
@@ -462,9 +525,11 @@ function adoptRoomTerrain(config) {
     if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
     const same = activeTerrainDescriptor.key === check.config.descriptor.key && activeTerrainDescriptor.sourceVersion === check.config.descriptor.sourceVersion;
     if (!same) terrain.setSource(check.config.descriptor);
+    else terrain.setSeaLevel(check.config.descriptor.seaLevel);
     activeTerrainDescriptor = check.config.descriptor;
     settings.worldMode = 'terrain';
     settings.terrainVolumetric = check.config.volumetric;
+    settings.terrainSeaLevel = check.config.descriptor.seaLevel;
   } else {
     settings.worldMode = 'traversalLab';
   }
@@ -505,6 +570,7 @@ async function applyTerrainProjectAtRuntime(project) {
   candidate.buildTile({ ix, iz, xMin: ix * chunkSize, zMin: iz * chunkSize, size: chunkSize, intervals: 8, apron: 1, fields: settings.terrainVolumetric ? ['heights', 'volume'] : ['heights'] });
   terrain.setSource(descriptor);
   activeTerrainDescriptor = descriptor;
+  settings.terrainSeaLevel = descriptor.seaLevel;
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
   updateWorld(0);
   // Keep the player's global position when the new ground still supports it; otherwise respawn there.
@@ -542,8 +608,167 @@ const remotePlayers = createBaseGameRemotePlayers({ scene, worldCoordinates });
 const weaponLoader = attachDracoLoader(new GLTFLoader());
 const weaponSystem = createWeaponMountSystem({ THREE, scene, loadGLB: (url) => weaponLoader.loadAsync(url), getWeapon });
 const playerBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates, weaponSystem });
-// Local weapon state: the active slot, an aim hold (right mouse) and one-frame reload edge.
-const weaponState = { slot: 0, aiming: false, reloadEdge: false };
+// Local weapon state: the active slot, an aim hold (right mouse), a fire hold (left mouse) and a
+// one-frame reload edge. Ammo and the trigger gate are predicted with the same base-game-fire.js
+// step the server runs; the snapshot's ammo and health overwrite the local copy when they differ.
+const weaponState = { slot: 0, aiming: false, reloadEdge: false, firing: false };
+const localTrigger = createTriggerState();
+const localAmmo = createAmmoStore();
+const LOCAL_AMMO_ID = 'local';
+const combatState = { health: 100, dead: false, hitFlashUntil: 0, damageUntil: 0, killedBy: null, lastHitTick: -1, lastDeathTick: -1 };
+const combatStatus = document.getElementById('combat');
+const damageFlash = document.getElementById('damage-flash');
+// One predicted trigger tick: fires the local report, recoil and reload choreography. Hits are
+// never predicted; the server's hit/death events drive feedback.
+function stepLocalTrigger(tick, fire, reload, aim) {
+  const weaponId = localWeaponId();
+  const shot = stepTrigger(localTrigger, localAmmo, { playerId: LOCAL_AMMO_ID, weaponId, tick, fire, reload, aim, alive: !combatState.dead });
+  if (shot.reloadStarted && playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); }
+  if (shot.fired) { audioDirector.localFire(weaponId); weaponViewModel.recoil(); spawnLocalShotEffects(weaponId, tick); }
+  return shot;
+}
+
+// ---- shot effects: effect-renderer.js fed the way bot-viewer-v3 does (a plain list, pushEffect /
+// updateEffects), with environment-viewer's tracer / muzzle-flash wire shapes and muzzle rule.
+const effectRenderer = createEffectRenderer({ THREE, scene });
+const shotEffects = [];
+let shotEffectSeq = 0;
+const EFFECT_LIST_CAP = 900;
+const MAX_TRACER_MUZZLE_OFFSET = 2;
+const _fxLocal = [0, 0, 0], _fxLocal2 = [0, 0, 0], _muzzleTmp = new THREE.Vector3();
+function pushEffect(kind, p, life, extra = null) {
+  const e = { id: `fx${++shotEffectSeq}`, type: 'effect', kind, life, p: [p[0], p[1], p[2]], expireAt: performance.now() + life * 1000 };
+  if (extra) Object.assign(e, extra);
+  shotEffects.push(e);
+  if (shotEffects.length > EFFECT_LIST_CAP) shotEffects.splice(0, shotEffects.length - (EFFECT_LIST_CAP - (EFFECT_LIST_CAP >> 3)));
+  return e;
+}
+function updateShotEffects(now) {
+  let w = 0;
+  for (let i = 0; i < shotEffects.length; i++) {
+    const e = shotEffects[i];
+    if (now >= e.expireAt) continue;
+    // A muzzle flash rides its mount so strafing cannot leave the smoke behind (environment-viewer rule).
+    if (e.followMuzzle && e.mount && weaponSystem.muzzleWorld(e.mount, _muzzleTmp)) { e.p[0] = _muzzleTmp.x; e.p[1] = _muzzleTmp.y; e.p[2] = _muzzleTmp.z; }
+    shotEffects[w++] = e;
+  }
+  shotEffects.length = w;
+  effectRenderer.sync(shotEffects, now);
+}
+function tracerStart(origin, end) {
+  const dx = end[0] - origin[0], dy = end[1] - origin[1], dz = end[2] - origin[2];
+  const d = Math.hypot(dx, dy, dz) || 1;
+  const f = Math.min(0.6, d * 0.5) / d;
+  return [origin[0] + dx * f, origin[1] + dy * f, origin[2] + dz * f];
+}
+// The ballistic ray starts at the head; the visible line starts at the mount's muzzle when that
+// is close enough to be the same gun, else just ahead of the eye. All arguments render-local.
+function tracerEffectStart(origin, end, muzzle) {
+  if (muzzle && Math.hypot(muzzle[0] - origin[0], muzzle[1] - origin[1], muzzle[2] - origin[2]) <= MAX_TRACER_MUZZLE_OFFSET) return muzzle;
+  return tracerStart(origin, end);
+}
+function mountMuzzle(mount, out) {
+  if (!mount || !weaponSystem.muzzleWorld(mount, _muzzleTmp)) return null;
+  out[0] = _muzzleTmp.x; out[1] = _muzzleTmp.y; out[2] = _muzzleTmp.z;
+  return out;
+}
+const sparkColorFor = kind => (kind === 'player' ? [1.0, 0.32, 0.28] : kind === 'terrain' ? [0.72, 0.60, 0.44] : [0.82, 0.78, 0.66]);
+// One resolved shot, for any shooter: tracer, impact spark, and world impact sound. Global coordinates in.
+function spawnShotEffects({ origin, end, kind, weaponId, mount }) {
+  const weapon = getWeapon(weaponId);
+  if (!weapon) return;
+  const o = worldCoordinates.toRenderLocal(origin, _fxLocal), e = worldCoordinates.toRenderLocal(end, _fxLocal2);
+  const muzzle = mountMuzzle(mount, [0, 0, 0]);
+  const p0 = tracerEffectStart([o[0], o[1], o[2]], [e[0], e[1], e[2]], muzzle);
+  const tracerFx = normalizeTracerFx(weapon.tracerFx);
+  const life = tracerLifetime(p0, e, tracerFx);
+  if (life > 0) pushEffect('gun_tracer', p0, life, { p1: [e[0], e[1], e[2]], color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx });
+  if (kind && kind !== 'none') {
+    pushEffect('hit_spark', e, 0.6, { normal: [0, 1, 0], color: sparkColorFor(kind), surface: kind });
+    if (kind !== 'player') audioDirector.impactAt({ x: e[0], y: e[1], z: e[2] });   // player hits already play enemy_hit
+  }
+}
+// Muzzle flash at the mount's muzzle (environment-viewer's wire shape; not replicated as such,
+// each client spawns it from the shot it sees). Direction is the shot's, the position follows the mount.
+function spawnMuzzleFlash(mount, dirGlobal, weaponId) {
+  const weapon = getWeapon(weaponId);
+  const muzzle = mountMuzzle(mount, [0, 0, 0]);
+  if (!weapon || !muzzle || (weapon.mode || 'hitscan') === 'melee') return;
+  const profile = weapon.muzzleFx || {};
+  const life = Math.max(profile.flashDuration ?? 0.08, profile.smokeDuration ?? 0.42);
+  pushEffect('muzzle_flash', muzzle, life, { dir: [...dirGlobal], color: [1, 0.9, 0.62], weaponId, followMuzzle: true, mount, muzzleFx: { ...profile } });
+}
+// The shooter's own shot, predicted: the same seeded ray the server will fire, ended against the
+// local world query. Hits, damage and the authoritative event stay with the server.
+function localShotSeed() { return isOnline() && networkSession?.clientId ? botSeedFromId(networkSession.clientId) : 0; }
+function localMoveSpeed01() {
+  const v = playerController.getVelocity();
+  const cfg = BASE_GAME_PLAYER_DEFAULT_CONFIG;
+  return Math.min(1, Math.hypot(v[0], v[2]) / (cfg.moveSpeed * cfg.sprintMultiplier));
+}
+function spawnLocalShotEffects(weaponId, tick) {
+  const weapon = getWeapon(weaponId);
+  if (!weapon || (weapon.mode || 'hitscan') === 'melee') return;
+  const dir = shotDirectionFor(localTrigger, { yaw: playerView.yaw, pitch: playerView.pitch, weaponId, tick, seed: localShotSeed(), moveSpeed01: localMoveSpeed01() });
+  spawnMuzzleFlash(playerBodies.localMount, dir, weaponId);
+  if (weapon.mode === 'projectile') return;   // the server's projectile entry renders the round
+  const cap = playerController.getCapsule();
+  const origin = [cap.end[0], cap.end[1] + cap.radius, cap.end[2]];   // capsule top: combat.js's head origin, as the server fires
+  const range = weapon.range ?? 300;
+  let end = [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range], kind = 'none';
+  try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; } } catch { /* no provider yet */ }
+  spawnShotEffects({ origin, end, kind, weaponId, mount: playerBodies.localMount });
+}
+
+// ---- server projectiles: bot-viewer-v3's pooled spheres placed by a remote track per id.
+const projectileGeom = new THREE.SphereGeometry(0.17, 10, 8);
+const rocketMat = new THREE.MeshBasicMaterial({ color: 0xffc08a, toneMapped: false });
+const grenadeMat = new THREE.MeshStandardMaterial({ color: 0x39432f, roughness: 0.75, metalness: 0.1 });
+const projectileMeshes = [];
+const projectileTracks = new Map();   // id -> { track, weapon }
+const _projSample = { position: [0, 0, 0] };
+function projectileMeshAt(index) {
+  let mesh = projectileMeshes[index];
+  if (!mesh) { mesh = new THREE.Mesh(projectileGeom, rocketMat); mesh.frustumCulled = false; scene.add(mesh); projectileMeshes[index] = mesh; }
+  return mesh;
+}
+function ingestProjectiles(snapshot) {
+  const seen = new Set();
+  for (const entry of snapshot.projectiles ?? []) {
+    const state = sanitizeBaseGameProjectileState(entry);
+    if (!state) continue;
+    seen.add(state.id);
+    let rec = projectileTracks.get(state.id);
+    if (!rec) { rec = { track: createRemoteTrack(), weapon: state.weapon }; projectileTracks.set(state.id, rec); }
+    rec.track.push(snapshot.serverTime, { position: state.p, velocity: state.v, yaw: 0, pitch: 0, grounded: false, spawnRevision: 0 });
+  }
+  for (const id of projectileTracks.keys()) if (!seen.has(id)) projectileTracks.delete(id);
+}
+function updateProjectiles(now) {
+  let n = 0;
+  const renderTime = now + (remotePlayers.diagnostics.serverTimeOffsetMs ?? 0) - settings.interpolationDelayMs;
+  for (const rec of projectileTracks.values()) {
+    const sample = rec.track.sample(renderTime, { maxExtrapolationMs: 250 }, _projSample);
+    if (!sample) continue;
+    const mesh = projectileMeshAt(n++);
+    const l = worldCoordinates.toRenderLocal(sample.position, _fxLocal);
+    mesh.position.set(l[0], l[1], l[2]);
+    const mat = rec.weapon === 'rpg' ? rocketMat : grenadeMat;
+    if (mesh.material !== mat) mesh.material = mat;   // a swap rebuilds the WebGPU pipeline
+    mesh.visible = true;
+  }
+  for (let i = n; i < projectileMeshes.length; i++) projectileMeshes[i].visible = false;
+}
+function renderCombatStatus(now) {
+  const weaponId = localWeaponId();
+  const ammo = weaponId && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
+  const hp = `<span class="hp${combatState.dead ? ' dead' : ''}">${combatState.dead ? 'DEAD' : `${Math.round(combatState.health)} HP`}</span>`;
+  const gun = weaponId ? `${weaponId}${ammo ? ` ${ammo.mag} / ${ammo.reserve}` : ''}` : 'unarmed';
+  const hit = now < combatState.hitFlashUntil ? '<span class="hit">HIT</span> ' : '';
+  const killed = combatState.dead && combatState.killedBy ? `<br>killed by ${combatState.killedBy}` : '';
+  combatStatus.innerHTML = `${hit}${hp}<br>${gun}${killed}`;
+  damageFlash.style.opacity = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
+}
 const aimRayOrigin = new THREE.Vector3(), aimRayDirection = new THREE.Vector3(), aimPointScratchArray = [0, 0, 0];
 const aimPointLocal = new THREE.Vector3();
 function currentLoadout() {
@@ -572,14 +797,32 @@ const FP_PRESETS = Object.freeze({
   embodied: { viewBlend: 0, cameraComfort: 'light' },
   hybrid: { viewBlend: 0.6, cameraComfort: 'off' },
 });
-const FP_COMFORT = Object.freeze({ off: { xz: 0, y: 0 }, light: { xz: 8.5, y: 4.5 }, strong: { xz: 5.5, y: 3.2 } });
+const FP_COMFORT = Object.freeze({ off: { y: 0 }, light: { y: 4.5 }, strong: { y: 3.2 } });   // vertical damping only; X/Z ride the capsule
 const FP_PART_MASK = Object.freeze({ head: false, eyes: false, neck: false, torso: false });
 const FP_PART_MASK_NONE = Object.freeze({ head: true, eyes: true, neck: true, torso: true });
 const weaponViewModel = createWeaponViewModel({ getWeapon });
-const FP_RIG_EYE_OFFSET = 0.34;   // rig eye (1.96 m) minus capsule eye (1.62 m) at rest
 const fpState = { viewBlend: 0, masked: false, eye: [0, 0, 0], hasEye: false, aimAmount: 0 };
 const fpViewPos = new THREE.Vector3(), fpViewQuat = new THREE.Quaternion(), fpViewEuler = new THREE.Euler(), fpLocalMatrix = new THREE.Matrix4(), fpWorldMatrix = new THREE.Matrix4(), fpScale = new THREE.Vector3();
 const fpViewFrame = { position: fpViewPos, quaternion: fpViewQuat };
+const fpAimFwd = new THREE.Vector3();
+function applyFirstPersonOptics() {
+  if (settings.playerControlMode === 'player') {
+    // environment-viewer's first-person optics: base FOV 70, ADS zoom by the weapon's magnification,
+    // and the eye pushed forward by aimEyeForward while aiming. Third person keeps its own FOV.
+    let wantFov = settings.cameraFov;
+    if (settings.playerViewMode === 'firstPerson') {
+      const def = getWeapon(localWeaponId());
+      const mag = Math.max(1, def?.magnification ?? 1);
+      const zoomFov = 2 * Math.atan(Math.tan(settings.fpFov * Math.PI / 360) / mag) * 180 / Math.PI;
+      wantFov = settings.fpFov + (zoomFov - settings.fpFov) * fpState.aimAmount;
+      if (fpState.aimAmount > 0.001 && (def?.aimEyeForward ?? 0) !== 0) {
+        camera.getWorldDirection(fpAimFwd);
+        camera.position.addScaledVector(fpAimFwd, def.aimEyeForward * fpState.aimAmount);
+      }
+    }
+    if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
+  }
+}
 function applyFpPreset(name) {
   const preset = FP_PRESETS[name];
   if (!preset) return;
@@ -611,8 +854,12 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
   }
 });
 
+let soloTriggerTick = 0;
 function resetPlayer() {
   audioDirector.resetLocal();
+  localAmmo.resetPlayer(LOCAL_AMMO_ID);
+  Object.assign(localTrigger, createTriggerState());
+  combatState.health = 100; combatState.dead = false; combatState.killedBy = null;
   playerView.setLook(0, -0.12);
   playerView.resetSmoothing();
   // Online the server owns the transform: ask it to respawn and let the snapshot hard-snap us.
@@ -784,6 +1031,9 @@ function updateWorld(dt) {
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
   playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
   playerBodies.setReachSolve(settings.weaponReachSolve);
+  playerBodies.setFacingMode(settings.bodyFacing);
+  playerBodies.setAimTrim(settings.weaponAimTrim);
+  playerBodies.setFacing({ threshold: settings.bodyTurnThreshold, rate: settings.bodyTurnRate, gunYawLimit: settings.gunYawLimit });
   playerBodies.setHoldMode(settings.weaponHoldMode, {
     idle: { dist: settings.holdIdleDist, side: settings.holdIdleSide, up: settings.holdIdleUp },
     aim: { dist: settings.holdAimDist, side: settings.holdAimSide, up: settings.holdAimUp },
@@ -901,7 +1151,17 @@ function registerControl(key, sync, element) {
   if (controlRegistry.has(key)) throw new Error(`Duplicate control: ${key}`);
   controlRegistry.set(key, { sync, element, shared: sharedSettingKeys.has(key) });
 }
-const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric'];
+const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric', 'terrainSeaLevel'];
+// The analytic source carries the slider's sea level; a v5 project's is authored in the project.
+function applyLocalSeaLevel() {
+  if (activeTerrainDescriptor.kind === 'analytic') {
+    activeTerrainDescriptor = analyticDescriptor({ key: activeTerrainDescriptor.key, sourceVersion: activeTerrainDescriptor.sourceVersion, params: activeTerrainDescriptor.config.params, seaLevel: settings.terrainSeaLevel });
+    terrain.setSeaLevel(settings.terrainSeaLevel);
+  } else {
+    settings.terrainSeaLevel = activeTerrainDescriptor.seaLevel;
+    syncAllControls();
+  }
+}
 function syncNetworkControlPermissions() {
   const editable = canEditSharedSettings();
   for (const entry of controlRegistry.values()) {
@@ -926,6 +1186,7 @@ function queueSharedWorldPatch(key) {
   }, 75);
 }
 function changed(key) {
+  if (key === 'terrainSeaLevel' && !(isOnline() && !networkSession?.owner)) applyLocalSeaLevel();
   if (ROOM_OWNED_GROUND_KEYS.includes(key) && isOnline()) {
     // Owner: ask the server for the new world; it respawns everyone and echoes the config.
     if (networkSession?.owner) requestRoomTerrain();
@@ -1017,6 +1278,7 @@ const bodyMoveSec = createSection(ctrlBody, 'Body movement', { collapsed: true }
 const skySec = createSection(ctrlBody, 'Sky components', { collapsed: false });
 const timeSec = createSection(ctrlBody, 'Time of day', { collapsed: false });
 const lightSec = createSection(ctrlBody, 'Lighting', { collapsed: true });
+const waterSec = createSection(ctrlBody, 'Water', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
@@ -1116,6 +1378,7 @@ refreshTerrainSourceLine();
 terrainWorldSec.append(terrainSourceLine);
 addToggle(terrainWorldSec, 'terrainVisible', 'Terrain visible (collision stays on)');
 addToggle(terrainWorldSec, 'terrainVolumetric', 'Volumetric (caves from the v5 density config)');
+addRange(terrainWorldSec, 'terrainSeaLevel', 'Sea level (m; a v5 project sets its own)', -120, 120, 1, value => `${value.toFixed(0)} m`);
 addToggle(terrainWorldSec, 'terrainFarLod', 'Far LOD (clipmap rings to the horizon, visual only)');
 addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 32, 1);
 addToggle(terrainWorldSec, 'terrainTextures', 'Ground textures (slope/height splat)');
@@ -1157,13 +1420,21 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
-addSelect(playerSec, 'weaponHoldMode', 'Weapon hold', ['body', 'authored']);
+addSelect(playerSec, 'bodyFacing', 'Body faces', ['look', 'travel']);
+const facingNote = document.createElement('div'); facingNote.className = 'note';
+facingNote.textContent = 'look is the environment-viewer behaviour: the body faces the camera and strafes. travel is experimental: the body faces its movement, the torso and head carry the look, and the body turns in place past the threshold.';
+playerSec.append(facingNote);
+addToggle(playerSec, 'weaponAimTrim', 'Barrel trim onto the crosshair (experimental)');
+addSelect(playerSec, 'weaponHoldMode', 'Weapon hold', ['authored', 'body']);
 addRange(playerSec, 'holdIdleDist', 'Hold distance (idle, arm fraction)', 0.2, 1, 0.01, value => value.toFixed(2));
 addRange(playerSec, 'holdIdleSide', 'Hold side (idle)', -0.4, 0.4, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'holdIdleUp', 'Hold height (idle)', -0.6, 0.4, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'holdAimDist', 'Hold distance (aim, arm fraction)', 0.2, 1, 0.01, value => value.toFixed(2));
 addRange(playerSec, 'holdAimSide', 'Hold side (aim)', -0.4, 0.4, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'holdAimUp', 'Hold height (aim)', -0.6, 0.4, 0.005, value => `${value.toFixed(3)} m`);
+addRange(playerSec, 'bodyTurnThreshold', 'Body turns when look exceeds', 0.1, 1.5, 0.01, value => `${(value * 180 / Math.PI).toFixed(0)} deg`);
+addRange(playerSec, 'bodyTurnRate', 'Body turn rate', 1, 20, 0.1, value => `${value.toFixed(1)} rad/s`);
+addRange(playerSec, 'gunYawLimit', 'Gun yaw limit from heading', 0.2, 1.6, 0.01, value => `${(value * 180 / Math.PI).toFixed(0)} deg`);
 addToggle(playerSec, 'weaponReachSolve', 'Weapon reach solve (both hands)');
 addRange(playerSec, 'weaponHoldHeight', 'Weapon hold height', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'weaponHoldForward', 'Weapon hold forward', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
@@ -1188,6 +1459,17 @@ addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, valu
 addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
 addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
 addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraSideOffset', 'Camera side offset', -1.5, 1.5, 0.01, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraHeightOffset', 'Camera height offset', -1, 1.5, 0.01, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraForwardOffset', 'Camera forward offset', -1.5, 1.5, 0.01, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'cameraFov', 'Field of view (third person)', 30, 100, 1, value => `${value.toFixed(0)} deg`);
+addRange(playerSec, 'fpFov', 'Field of view (first person)', 30, 110, 1, value => `${value.toFixed(0)} deg`);
+addToggle(playerSec, 'dofEnabled', 'Depth of field');
+addToggle(playerSec, 'dofAutoFocus', 'Focus on frame centre');
+addRange(playerSec, 'dofFocusDistance', 'Focus distance (manual)', 0.3, 80, 0.1, value => `${value.toFixed(1)} m`);
+addRange(playerSec, 'dofAperture', 'Aperture (blur per defocus)', 0.05, 3, 0.01, value => value.toFixed(2));
+addRange(playerSec, 'dofMaxRadius', 'Largest blur circle', 2, 40, 1, value => `${value.toFixed(0)} px`);
+addRange(playerSec, 'dofFarScale', 'Far-side falloff', 0.5, 4, 0.05, value => value.toFixed(2));
 const playerButtons = document.createElement('div'); playerButtons.className = 'button-row';
 const resetPlayerButton = document.createElement('button'); resetPlayerButton.textContent = 'Reset Player';
 const captureMouseButton = document.createElement('button'); captureMouseButton.textContent = 'Capture Mouse';
@@ -1300,6 +1582,18 @@ addRange(lightSec, 'sunElevation', 'Manual elevation', -90, 90, 1, value => `${v
 addRange(lightSec, 'sunAzimuth', 'Manual azimuth', 0, 360, 1, value => `${value.toFixed(0)}°`);
 addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toFixed(2));
 addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
+// Wave spectrum: shared world keys (the room owner tunes, everyone simulates the same surface).
+addRange(waterSec, 'waveCount', 'Wave count', 1, 40, 1);
+addRange(waterSec, 'waveBaseLength', 'Longest wavelength (m)', 1, 5000, 1, value => `${value.toFixed(0)} m`);
+addRange(waterSec, 'waveLengthMul', 'Wavelength falloff per wave', 0.05, 1, 0.01, value => value.toFixed(2));
+addRange(waterSec, 'waveBaseAmp', 'Largest amplitude (m)', 0, 50, 0.1, value => `${value.toFixed(1)} m`);
+addRange(waterSec, 'waveAmpMul', 'Amplitude falloff per wave', 0.05, 1, 0.01, value => value.toFixed(2));
+addRange(waterSec, 'waveChop', 'Chop', 0, 1, 0.01, value => value.toFixed(2));
+addRange(waterSec, 'waveWindDeg', 'Wind heading', 0, 360, 1, value => `${value.toFixed(0)}°`);
+addRange(waterSec, 'waveSpreadDeg', 'Directional spread', 0, 180, 1, value => `${value.toFixed(0)}°`);
+addToggle(waterSec, 'waveDispersion', 'Dispersion (long waves travel faster)');
+addRange(waterSec, 'waveSpeed', 'Wave speed without dispersion (m/s)', 0, 100, 0.5, value => `${value.toFixed(1)} m/s`);
+addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
 
 addRange(audioSec, 'audioMasterVolume', 'Master volume', 0, 1, 0.01, v => v.toFixed(2));
 addRange(audioSec, 'audioSfxVolume', 'Effects volume', 0, 1, 0.01, v => v.toFixed(2));
@@ -1349,6 +1643,18 @@ function applyPlayerSnapshot(snapshot, session) {
   if (!simulationReady || !session?.clientId) return;
   const local = snapshot.players?.find(player => player.id === session.clientId);
   if (local) {
+    combatState.health = local.health ?? 100;
+    if (local.dead && !combatState.dead) combatState.killedBy = snapshot.deaths?.find(d => d.victim === session.clientId)?.killer ?? combatState.killedBy;
+    combatState.dead = local.dead === true;
+    const weaponId = localWeaponId();
+    if (local.ammo && weaponId) Object.assign(localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId), { mag: local.ammo.mag, reserve: local.ammo.reserve });
+    const now = performance.now();
+    for (const hit of snapshot.hits ?? []) {
+      if (hit.shooter === session.clientId) combatState.hitFlashUntil = now + 180;
+      if (hit.victim === session.clientId) { combatState.damageUntil = now + 400; audioDirector.localDamage(); }
+      else { const l = worldCoordinates.toRenderLocal(hit.point, remoteAudioLocal); audioDirector.hitAt({ x: l[0], y: l[1], z: l[2] }); }
+    }
+    for (const death of snapshot.deaths ?? []) if (death.victim === session.clientId) combatState.killedBy = death.killer;
     const before = playerController.getPosition();
     const result = prediction.reconcile(local);
     if (result.hard) {
@@ -1361,6 +1667,21 @@ function applyPlayerSnapshot(snapshot, session) {
     }
   }
   remotePlayers.ingestSnapshot(snapshot, session.clientId, performance.now());
+  for (const raw of snapshot.shots ?? []) {
+    const shot = sanitizeBaseGameShotEvent(raw);
+    if (!shot || shot.shooter === session.clientId) continue;   // own shots were predicted at fire time
+    const mount = playerBodies.remoteMount(shot.shooter);
+    if (shot.dir) spawnMuzzleFlash(mount, shot.dir, shot.weapon);
+    spawnShotEffects({ origin: shot.origin, end: shot.end, kind: shot.kind, weaponId: shot.weapon, mount });
+  }
+  for (const raw of snapshot.explosions ?? []) {
+    const blast = sanitizeBaseGameExplosionEvent(raw);
+    if (!blast) continue;
+    const l = worldCoordinates.toRenderLocal(blast.p, _fxLocal);
+    pushEffect('explosion', l, 1.8, { color: [1, 0.62, 0.26], radius: blast.radius });
+    audioDirector.explosionAt({ x: l[0], y: l[1], z: l[2] });
+  }
+  ingestProjectiles(snapshot);
 }
 let loadoutSentFor = null;   // session the loadout was last pushed to
 receiveNetworkSnapshot = (snapshot, session = networkSession) => {
@@ -1677,8 +1998,12 @@ addEventListener('keydown', event => {
   }
 });
 // Right mouse button aims while held (pointer-locked play only).
-renderer.domElement.addEventListener('mousedown', (event) => { if (event.button === 2) weaponState.aiming = true; });
-addEventListener('mouseup', (event) => { if (event.button === 2) weaponState.aiming = false; });
+renderer.domElement.addEventListener('mousedown', (event) => {
+  if (event.button === 2) weaponState.aiming = true;
+  if (event.button === 0 && document.pointerLockElement === renderer.domElement) weaponState.firing = true;
+});
+addEventListener('mouseup', (event) => { if (event.button === 2) weaponState.aiming = false; if (event.button === 0) weaponState.firing = false; });
+document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== renderer.domElement) weaponState.firing = false; });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
 addEventListener('keyup', event => playerKeys.delete(event.code));
 addEventListener('blur', clearPlayerInput);
@@ -1707,6 +2032,8 @@ const statsEl = document.getElementById('stats');
 let frameBusy = false;
 let lastFrameStart = performance.now();
 const remoteAudioLocal = [0, 0, 0];
+const remoteAudioPos = { x: 0, y: 0, z: 0 };
+const audioVelocityScratch = [0, 0, 0];
 const audioStepRight = new THREE.Vector3();
 const audioStepFeet = { x: 0, y: 0, z: 0 };
 let audioLastFallSpeed = 0;
@@ -1935,6 +2262,7 @@ function updateStats(frameMs) {
   fpsElapsed += frameMs;
   fpsFrames++;
   worstPeak = Math.max(worstPeak, frameMs);
+  renderCombatStatus(performance.now());
   if (fpsElapsed < 500) return;
   shownFps = fpsFrames * 1000 / fpsElapsed;
   shownWorst = worstPeak;
@@ -1973,7 +2301,7 @@ async function animate() {
       sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
       slot: weaponState.slot,
       aim: weaponState.aiming,
-      fire: false,
+      fire: weaponState.firing,
     } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, slot: weaponState.slot, aim: false, fire: false };
     if (!canControl) weaponState.reloadEdge = false;
     // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
@@ -1988,7 +2316,7 @@ async function animate() {
         jumpEdgeQueued = false;
         const reload = weaponState.reloadEdge;
         weaponState.reloadEdge = false;
-        if (reload && playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); }   // predicted: the server echoes the same action tick
+        stepLocalTrigger(prediction.tick + 1, input.fire, reload, input.aim);   // predicted: the server echoes the same action tick
         return { ...input, jump, reload };
       });
       playerInterpolationAlpha = stepped.alpha;
@@ -2002,8 +2330,10 @@ async function animate() {
     } else if (canControl) {
       playerController.setInput(input);
       if (jumpEdgeQueued) { playerController.queueJump(); jumpEdgeQueued = false; }
-      if (weaponState.reloadEdge) { weaponState.reloadEdge = false; if (playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); } }
+      const soloReload = weaponState.reloadEdge;
+      weaponState.reloadEdge = false;
       const stepped = playerController.advance(dt);
+      for (let i = 0; i < stepped.steps; i++) stepLocalTrigger(++soloTriggerTick, input.fire, soloReload && i === 0, input.aim);
       // Solo kill plane; online the server enforces the same layout value.
       if (playerController.getPosition(playerPositionScratch)[1] < worldKillPlaneY(playerPositionScratch)) resetPlayer();
       playerInterpolationAlpha = stepped.alpha;
@@ -2018,16 +2348,22 @@ async function animate() {
         grounded: playerController.grounded,
       });
       const comfort = FP_COMFORT[settings.fpCameraComfort] ?? FP_COMFORT.off;
-      const comfortOn = settings.playerViewMode === 'firstPerson' && fpState.hasEye && !weaponState.aiming;
+      const firstPersonEye = settings.playerViewMode === 'firstPerson' && fpState.hasEye;
+      const comfortOn = firstPersonEye && !weaponState.aiming;
       playerView.updateCamera(dt, playerRenderPosition, {
         mode: settings.playerViewMode,
         distance: settings.cameraDistance,
         followRate: settings.cameraFollowRate,
         obstructionPadding: settings.cameraObstructionPadding,
-        eyeAnchor: comfortOn ? fpState.eye : null,
-        comfortRateXZ: comfortOn ? comfort.xz : 0,
+        sideOffset: settings.cameraSideOffset,
+        heightOffset: settings.cameraHeightOffset,
+        // The eyes sit ahead of the head centre; the body's own value, not a guess.
+        forwardOffset: settings.cameraForwardOffset + (firstPersonEye ? playerBodies.localEyeForward() : 0),
+        // Eye height is the body's live eye height (rig eyes ~1.96 m on a 1.8 m capsule, not 1.62).
+        eyeAnchorY: firstPersonEye ? fpState.eye[1] : null,
         comfortRateY: comfortOn ? comfort.y : 0,
       });
+      applyFirstPersonOptics();   // FOV/zoom/eye push before the gun frame reads the camera
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {
@@ -2060,7 +2396,7 @@ async function animate() {
     {
       // A footstep is the body's actual foot plant (bob-phase fallback if no body is running),
       // placed at that foot and panned to its side. Fall speed is last frame's: touching down zeroed it.
-      const v = playerController.getVelocity();
+      const v = playerController.getVelocity(audioVelocityScratch);
       audioStepRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       audioStepFeet.x = playerRenderPosition[0]; audioStepFeet.y = playerRenderPosition[1]; audioStepFeet.z = playerRenderPosition[2];
       audioDirector.updateLocal(dt, {
@@ -2088,10 +2424,7 @@ async function animate() {
       viewFrame,
       viewBlend: viewFrame ? fpState.viewBlend : 0,
     });
-    // The rig's eyes sit ~0.34 m above the capsule's eye height (the rig is taller than its capsule),
-    // so the comfort anchor keeps the capsule height and takes only the head's motion from the rig.
     fpState.hasEye = !!playerBodies.localEyePoint(fpState.eye);
-    if (fpState.hasEye) fpState.eye[1] -= FP_RIG_EYE_OFFSET;
     if (online) {
       remotePlayers.update(performance.now(), { interpolationDelayMs: settings.interpolationDelayMs });
       playerBodies.beginRemoteFrame();
@@ -2099,9 +2432,10 @@ async function animate() {
         for (const [id, record] of remotePlayers.players) {
           if (!record.sample) continue;
           worldCoordinates.toRenderLocal(record.sample.position, remoteAudioLocal);
+          remoteAudioPos.x = remoteAudioLocal[0]; remoteAudioPos.y = remoteAudioLocal[1]; remoteAudioPos.z = remoteAudioLocal[2];
           audioDirector.updateRemote(id, {
             dt,
-            position: { x: remoteAudioLocal[0], y: remoteAudioLocal[1], z: remoteAudioLocal[2] },
+            position: remoteAudioPos,
             grounded: record.sample.grounded,
             action: record.sample.action,
             actionTick: record.sample.actionTick,
@@ -2130,8 +2464,17 @@ async function animate() {
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now()); updateShotEffects(performance.now()); });
     frameProfiler.time('sky', () => updateWorld(dt));
-    if (!terrainStudio.open) frameProfiler.time('postRender', () => renderer.render(scene, camera));
+    if (!terrainStudio.open) {
+      if (settings.dofEnabled) {
+        depthOfField.setParams({ enabled: true, autoFocus: settings.dofAutoFocus, focusDistance: settings.dofFocusDistance, aperture: settings.dofAperture, maxRadius: settings.dofMaxRadius, farScale: settings.dofFarScale });
+        if (settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
+        frameProfiler.time('postRender', () => postPipeline.render());
+      } else {
+        frameProfiler.time('postRender', () => renderer.render(scene, camera));
+      }
+    }
     lastRenderInfo = {
       drawCalls: renderer.info.render.drawCalls,
       triangles: renderer.info.render.triangles,

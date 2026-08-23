@@ -42,6 +42,9 @@ export function normalizeDescriptor(d) {
   if (capabilities.includes('infinite') && bounds) fail('a bounded source cannot claim infinite capability');
   const config = d.config == null ? {} : d.config;
   if (typeof config !== 'object') fail('descriptor.config must be an object');
+  // the water plane's y; part of the world identity, not of the tile key (heights ignore it)
+  const seaLevel = d.seaLevel == null ? 0 : d.seaLevel;
+  if (!isFiniteNum(seaLevel)) fail('descriptor.seaLevel must be a finite number');
   return Object.freeze({
     contractVersion: SOURCE_CONTRACT_VERSION,
     kind: d.kind,
@@ -51,6 +54,7 @@ export function normalizeDescriptor(d) {
     bounds,
     capabilities: Object.freeze(capabilities),
     config: Object.freeze({ ...config }),
+    seaLevel,
   });
 }
 

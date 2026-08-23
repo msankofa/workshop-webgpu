@@ -45,7 +45,12 @@ only). v5 project bodies are published once to the relay's content-addressed ter
 (`base:terrain_put`/`base:terrain_get`, `server/terrain-store.js`, mirrored to
 `server/terrain-store/`) and every packet refers to them by hash. Clients rebuild the same source
 locally and compare `worldVersion` before moving; guests' ground controls are disabled. Finite-map
-terrain is not accepted yet. See `base-game.md`.
+terrain is not accepted yet. See `base-game.md`. The descriptor's `seaLevel` is clamped to −120..120
+(`BASE_GAME_SEA_LEVEL_LIMITS`) and tagged onto `worldVersion` (`:sea<n>` when non-zero); the wave
+spectrum keys (`waveCount`, `waveBaseLength`, `waveLengthMul`, `waveBaseAmp`, `waveAmpMul`, `waveChop`,
+`waveWindDeg`, `waveSpreadDeg`, `waveDispersion`, `waveSpeed`, `waveSeed`) are shared world keys on the
+normal `base:world` patch path, so the owner tunes waves live and every peer builds the same wave table
+(`waveOptionsFromWorld`).
 
 ### Hosted map publishing (`server/publish-map.js`)
 

@@ -34,6 +34,7 @@ export function v5Descriptor(projectLike, { key } = {}) {
     bounds: null,
     capabilities: ['infinite', 'heights', 'normals', 'volume'],
     config: { project, projectHash: hash },
+    seaLevel: project.cfg.sea_level ?? 0,   // authored in the generator's World group
   });
 }
 
