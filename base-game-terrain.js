@@ -29,9 +29,10 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   // chunks a side → half-extents 300 m, 1.2 km, 4.8 km. Coarser levels sit a little lower so the
   // finer ones draw over them where they overlap (no morphing for marching cubes).
   volumeLod: [
-    { chunkSize: 120, renderRadius: 2, segments: 24, yBias: -1.5 },
-    { chunkSize: 480, renderRadius: 2, segments: 24, yBias: -6 },
-    { chunkSize: 1920, renderRadius: 2, segments: 24, yBias: -24 },
+    // no yBias: the LOD dissolve handles the overlap the old −1.5/−6/−24 m sink used to hide
+    { chunkSize: 120, renderRadius: 2, segments: 24, yBias: 0 },
+    { chunkSize: 480, renderRadius: 2, segments: 24, yBias: 0 },
+    { chunkSize: 1920, renderRadius: 2, segments: 24, yBias: 0 },
   ],
 });
 

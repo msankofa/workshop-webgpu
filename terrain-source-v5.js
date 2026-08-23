@@ -85,8 +85,10 @@ export function createV5Source(descriptorLike) {
   // are replaced by a global mean that is not the local one), so the coarse post is a Gaussian-
   // weighted average of SS×SS sub-samples over a two-cell footprint, each band-limited at half
   // the spacing: the sub-fade removes what the footprint cannot, the footprint removes the rest
-  // and keeps the local mean honest. Measured: a 2.5-sample wave keeps <10%, an 8-sample wave ~90%.
-  const SUPERSAMPLE_ABOVE = 6, SS = 6, SS_FOOTPRINT = 4.0, SS_SIGMA = 1.0;
+  // and keeps the local mean honest. Sigma is half the output spacing, the usual antialiasing
+  // kernel; the wider one first used here (σ = 1 spacing) rounded summits off by 10 m at 80 m.
+  // Measured: a 2.5-sample wave keeps 23%, an 8-sample wave ~90%, 80 m drift −0.2 m.
+  const SUPERSAMPLE_ABOVE = 6, SS = 6, SS_FOOTPRINT = 2.0, SS_SIGMA = 0.5;
   const ssWeights = (() => { const w = []; let sum = 0; for (let j = 0; j < SS; j++) for (let i = 0; i < SS; i++) { const u = ((i + 0.5) / SS - 0.5) * SS_FOOTPRINT, v = ((j + 0.5) / SS - 0.5) * SS_FOOTPRINT; const g = Math.exp(-(u * u + v * v) / (2 * SS_SIGMA * SS_SIGMA)); w.push([u, v, g]); sum += g; } return w.map(([u, v, g]) => [u, v, g / sum]); })();
   function heightAtSpacing(x, z, spacing) {
     if (!(spacing > SUPERSAMPLE_ABOVE)) return bandLimitedAt(x, z, spacing);

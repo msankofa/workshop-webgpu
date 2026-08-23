@@ -1241,8 +1241,9 @@ LOD is a **marching-cubes cascade**, not the heightfield rings (those showed a s
 against the warped volume surface): `BASE_GAME_TERRAIN_DEFAULTS.volumeLod` = three extra
 `createTerrainSystem`s on the same source with `segmentsPerChunk: 24`, `lod: 1..3`, `volumetric:
 true` — chunks of 120 / 480 / 1920 m (spacing 5 / 20 / 80 m), radius 2 each (half-extents 300 m,
-1.2 km, 4.8 km), each level's group lowered by `yBias` (−1.5 / −6 / −24 m) so finer levels draw over
-coarser ones (no morphing for marching cubes). The density is band-limited per level
+1.2 km, 4.8 km), `yBias` 0 since 2026-08-23 (the −1.5 / −6 / −24 m sink that kept coarse levels
+under finer ones is no longer needed with the staggered LOD dissolve, and it made far mountains
+read up to 24 m lower than they are). The density is band-limited per level
 (`createDensityPoint(..., spacing)`: warp and cave octaves finer than ~4 samples per period fade
 out), so cave mouths survive as far as their size allows (test: 39/400 cave columns at 5 m vs
 149/400 exact). Cascade chunks share the chunk material/tint, never enter the volume provider, and
