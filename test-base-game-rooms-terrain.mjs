@@ -1,6 +1,6 @@
 // Phase 5 checks: room-owned terrain in the Base Game room service.
 // Run: node test-base-game-rooms-terrain.mjs
-import { BASE_GAME_PROTOCOL_VERSION, sanitizeBaseGameTerrainConfig, describeBaseGameTerrainConfig } from './base-game-protocol.mjs';
+import { BASE_GAME_PROTOCOL_VERSION, sanitizeBaseGameTerrainConfig, describeBaseGameTerrainConfig, withTerrainProject, terrainConfigNeedsProject, terrainConfigProjectHash } from './base-game-protocol.mjs';
 import { createBaseGameRoomService } from './server/base-game-rooms.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { analyticDescriptor } from './terrain-source-analytic.js';
@@ -30,6 +30,8 @@ function v5Project(seed) {
   return migrateProjectToUnbounded(normalizeProject({ app: PROJECT_APP, version: 1, name: 'Room Hills', cfg: { ...DEFAULT_CONFIG, seed }, density: { ...DENSITY_DEFAULT_CONFIG }, stack, paint: null, imports: {} }).project);
 }
 const analytic = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
+// Wire configs carry v5 bodies by hash; rebuild the full config the way a client does (store fetch).
+const fullConfig = (service, wire) => terrainConfigNeedsProject(wire) ? withTerrainProject(wire, service.terrainStore.get(terrainConfigProjectHash(wire))) : wire;
 
 console.log('\n[1] terrain config sanitizer');
 {
@@ -92,7 +94,7 @@ console.log('\n[3] server and predicted client agree across a tile seam and a sl
   // the client predicts with the same source built from the joined config
   const joined = ws.last('base:joined');
   const local = createWorldQueryService();
-  local.registerProvider(createHeightfieldWorldQueryProvider(createSource(joined.terrain.descriptor), { id: 'terrain' }));
+  local.registerProvider(createHeightfieldWorldQueryProvider(createSource(fullConfig(service, joined.terrain).descriptor), { id: 'terrain' }));
   const predicted = createBaseGamePlayerController({ worldQuery: local, spawn: service.rooms.get('WALK').sim.spawn, config: { fixedHz: 120 } });
   // walk straight along +x for 8 s at 120 Hz: crosses the x=30 seam and whatever slopes come
   const inputs = [];
@@ -125,7 +127,7 @@ console.log('\n[4] reconnect restores the same terrain; kill plane follows the s
   const ws2 = new FakeSocket();
   service.handle(ws2, { type: 'base:resume', protocol: P, resumeToken: token });
   const j2 = ws2.last('base:joined');
-  ok(j2 && j2.terrain.worldVersion === version && j2.terrain.descriptor.config.projectHash === descriptor.config.projectHash, 'resume returns the identical terrain config');
+  ok(j2 && j2.terrain.worldVersion === version && j2.terrain.descriptor.config.projectHash === descriptor.config.projectHash && !j2.terrain.descriptor.config.project, 'resume returns the identical terrain config (body by hash)');
   const client = service.rooms.get('RES').clients.values().next().value;
   const src = createSource(descriptor);
   client.controller.reset([5, src.heightAt(5, 5) - 200, 5]);
@@ -159,6 +161,7 @@ console.log('\n[5] client session sends terrain on create and exposes the room c
   sock.onmessage({ data: JSON.stringify({ type: 'base:snapshot', protocol: P, room: 'OWN', tick: 1, revision: 1, ownerId: 'c1', worldReady: true, worldVersion: 'traversal-lab', players: [], world: {} }) });
   const session = await joinedPromise;
   const req = session.setTerrain({ kind: 'terrain', descriptor: analytic });
+  await tick();
   const msg = sent.find(m => m.type === 'base:set_terrain');
   ok(msg && msg.terrain.descriptor.key === 'base-game-analytic', 'owner sends base:set_terrain');
   const echo = { kind: 'terrain', worldVersion: 'terrain:analytic:base-game-analytic@1:x', descriptor: analytic, volumetric: false };
@@ -166,6 +169,7 @@ console.log('\n[5] client session sends terrain on create and exposes the room c
   const resolved = await req;
   ok(resolved.worldVersion === echo.worldVersion && session.terrain.worldVersion === echo.worldVersion && got.length === 1, 'echo resolves the request, updates session.terrain and fires onTerrain');
   const bad = session.setTerrain({ kind: 'terrain', descriptor: analytic, volumetric: true });
+  await tick();
   sock.onmessage({ data: JSON.stringify({ type: 'base:error', protocol: P, code: 'invalid_terrain', message: 'no' }) });
   ok(await bad.then(() => false, e => e.code === 'invalid_terrain'), 'invalid_terrain rejects the request');
   session.close?.();
@@ -241,7 +245,7 @@ console.log('\n[7] volumetric room: server builds chunk collision around players
   // client prediction against locally streamed volume chunks (same tiles, same provider)
   const { createVolumeCollision } = await import('./terrain-volume-collision.js');
   const local = createWorldQueryService();
-  const localVolume = createVolumeCollision(createSource(ws.last('base:joined').terrain.descriptor), { worldQuery: local, coverRadius: 2, maxBuildsPerCall: 25 });
+  const localVolume = createVolumeCollision(createSource(fullConfig(service, ws.last('base:joined').terrain).descriptor), { worldQuery: local, coverRadius: 2, maxBuildsPerCall: 25 });
   const predicted = createBaseGamePlayerController({ worldQuery: local, spawn: sim.spawn, config: { fixedHz: 120 } });
   const inputs = [];
   for (let k = 1; k <= 720; k++) inputs.push({ tick: k, moveX: 1, moveZ: 0, yaw: 0, pitch: 0, sprint: true, jump: k % 150 === 0 });
@@ -260,6 +264,66 @@ console.log('\n[7] volumetric room: server builds chunk collision around players
   ok(sim.volume.chunkCount <= 49, `collision footprint stays bounded (${sim.volume.chunkCount} chunks, ${sim.volume.stats.buildMsTotal.toFixed(0)} ms of builds)`);
   const deep = sim.killPlaneYAt(sp[0], sp[2]);
   ok(deep < project.density.y_min, 'kill plane sits under the density floor');
+}
+
+console.log('\n[8] asset keys: projects travel once; rooms and packets carry the hash');
+{
+  const { createTerrainStore } = await import('./server/terrain-store.js');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pcw-terrain-store-'));
+  const store = createTerrainStore({ dir });
+  const service = createBaseGameRoomService({ now: () => 1000, terrainStore: store });
+  const project = v5Project(77);
+  const descriptor = v5Descriptor(project);
+  const ws = new FakeSocket();
+  service.handle(ws, { type: 'base:terrain_put', protocol: P, project });
+  const ref = ws.last('base:terrain_ref');
+  ok(ref && ref.projectHash === descriptor.config.projectHash, 'terrain_put returns the project hash');
+  service.handle(ws, { type: 'base:terrain_put', protocol: P, project });
+  ok(store.size === 1, 'publishing again is idempotent');
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'KEY', world: {}, terrain: { kind: 'terrain', descriptor: { ...descriptor, config: { projectHash: ref.projectHash } } } });
+  const joined = ws.last('base:joined');
+  ok(joined && joined.terrain.projectHash === ref.projectHash && !joined.terrain.descriptor.config.project, 'room created from the hash; joined carries no body');
+  ok(JSON.stringify(joined).length < 2000, `joined is small (${JSON.stringify(joined).length} bytes)`);
+  const guest = new FakeSocket();
+  service.handle(guest, { type: 'base:join', protocol: P, room: 'KEY' });
+  service.handle(guest, { type: 'base:terrain_get', protocol: P, projectHash: ref.projectHash });
+  const got = guest.last('base:terrain_project');
+  ok(got && v5Descriptor(got.project).config.projectHash === ref.projectHash, 'terrain_get returns a body that re-hashes identically');
+  service.handle(guest, { type: 'base:terrain_get', protocol: P, projectHash: 'f'.repeat(64) });
+  ok(guest.last('base:error')?.code === 'unknown_terrain', 'unknown hash -> unknown_terrain');
+  const ws2 = new FakeSocket();
+  service.handle(ws2, { type: 'base:create', protocol: P, room: 'NOPE', world: {}, terrain: { kind: 'terrain', descriptor: { ...descriptor, config: { projectHash: 'a'.repeat(64) } } } });
+  ok(ws2.last('base:error')?.code === 'unknown_terrain' && !service.rooms.has('NOPE'), 'create by unknown hash refused');
+  const ws3 = new FakeSocket();
+  service.handle(ws3, { type: 'base:create', protocol: P, room: 'INL', world: {}, terrain: { kind: 'terrain', descriptor: v5Descriptor(v5Project(78)) } });
+  ok(store.size === 2 && !ws3.last('base:joined').terrain.descriptor.config.project, 'inline create is stored and echoed by hash');
+  await new Promise(r => setTimeout(r, 50));
+  const store2 = createTerrainStore({ dir });
+  ok(store2.loadFromDisk() === 2 && store2.get(ref.projectHash) !== null, 'projects reload from disk by hash');
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  // end to end through the client session: create publishes first, the joiner fetches the body
+  const serverSvc = createBaseGameRoomService({ now: () => 1000, terrainStore: createTerrainStore() });
+  class LiveWS {
+    static OPEN = 1;
+    constructor() { this.readyState = 1; this.peer = { readyState: 1, send: text => setTimeout(() => this.onmessage?.({ data: text }), 0), close() {} }; setTimeout(() => this.onopen?.(), 0); }
+    send(text) { serverSvc.handle(this.peer, JSON.parse(text)); }
+    close() { this.readyState = 3; }
+  }
+  const ownerPending = connectBaseGameSession({ mode: 'create', roomCode: 'live', world: {}, terrain: { kind: 'terrain', descriptor: v5Descriptor(v5Project(79)) }, WebSocketImpl: LiveWS, handshakeTimeoutMs: 2000 });
+  for (let i = 0; i < 10; i++) await tick();
+  await serverSvc.ensureWorld(); serverSvc.broadcastSnapshots();
+  const ownerSession = await ownerPending;
+  ok(ownerSession.terrain.descriptor.config.project && serverSvc.terrainStore.size === 1, 'create published the project and the owner holds the full config');
+  const guestPending = connectBaseGameSession({ mode: 'join', roomCode: 'live', world: {}, WebSocketImpl: LiveWS, handshakeTimeoutMs: 2000 });
+  for (let i = 0; i < 10; i++) await tick();
+  serverSvc.broadcastSnapshots();
+  const guestSession = await guestPending;
+  ok(guestSession.terrain.descriptor.config.project && guestSession.terrain.worldVersion === ownerSession.terrain.worldVersion, 'guest fetched the body by hash and holds the same world');
+  ownerSession.close?.(); guestSession.close?.();
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

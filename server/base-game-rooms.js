@@ -14,7 +14,9 @@ import {
   sanitizeBaseGameWorldPatch,
   sanitizeBaseGameTerrainConfig,
   describeBaseGameTerrainConfig,
+  publicBaseGameTerrainConfig,
 } from '../base-game-protocol.mjs';
+import { createTerrainStore } from './terrain-store.js';
 import { createBaseGamePlayerController } from '../base-game-player-controller.js';
 import { randomUUID } from 'node:crypto';
 
@@ -87,6 +89,8 @@ export function createBaseGameRoomService({
   drainDepth = BASE_GAME_TICK_QUEUE_DRAIN,
   world = null,
   worldFactory = defaultWorldFactory,
+  // Published v5 projects by hash; rooms and packets carry the hash, not the body.
+  terrainStore = createTerrainStore(),
 } = {}) {
   const rooms = new Map();
   const socketClients = new Map();
@@ -246,8 +250,8 @@ export function createBaseGameRoomService({
       owner: client.room.ownerId === client.id,
       simHz,
       playerCap,
-      // The full room terrain config travels once, here; snapshots carry identity only.
-      terrain: client.room.terrain,
+      // The room terrain config travels once, here (v5 bodies by hash); snapshots carry identity only.
+      terrain: publicBaseGameTerrainConfig(client.room.terrain),
     });
     send(client.ws, snapshot(client.room));
   }
@@ -257,8 +261,8 @@ export function createBaseGameRoomService({
     const code = normalizeBaseGameRoomCode(msg.room);
     if (!code) { fail(ws, 'invalid_room', 'Room codes use 2-16 letters, numbers, _ or -'); return true; }
     if (rooms.has(code)) { fail(ws, 'room_exists', 'That room already exists'); return true; }
-    const terrain = sanitizeBaseGameTerrainConfig(msg.terrain);
-    if (terrain.error) { fail(ws, 'invalid_terrain', terrain.error); return true; }
+    const terrain = acceptTerrain(msg.terrain);
+    if (terrain.error) { fail(ws, terrain.code ?? 'invalid_terrain', terrain.error); return true; }
     const at = now();
     const room = {
       code,
@@ -342,8 +346,8 @@ export function createBaseGameRoomService({
     const room = client.room;
     if (room.ownerId !== client.id) { fail(ws, 'not_owner', 'Only the room owner can change the world'); return true; }
     if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
-    const terrain = sanitizeBaseGameTerrainConfig(msg.terrain);
-    if (terrain.error) { fail(ws, 'invalid_terrain', terrain.error); return true; }
+    const terrain = acceptTerrain(msg.terrain);
+    if (terrain.error) { fail(ws, terrain.code ?? 'invalid_terrain', terrain.error); return true; }
     if (terrain.config.worldVersion === room.terrain.worldVersion) { send(ws, terrainPacket(room)); return true; }
     const requestRevision = ++room.terrainRequest;
     buildWorld(terrain.config).then(sim => {
@@ -364,7 +368,36 @@ export function createBaseGameRoomService({
     return true;
   }
   function terrainPacket(room) {
-    return { type: 'base:terrain', protocol: BASE_GAME_PROTOCOL_VERSION, room: room.code, revision: room.revision, terrain: room.terrain };
+    return { type: 'base:terrain', protocol: BASE_GAME_PROTOCOL_VERSION, room: room.code, revision: room.revision, terrain: publicBaseGameTerrainConfig(room.terrain) };
+  }
+  // A terrain config from a client: hashes resolve through the store, inline bodies are stored
+  // so later joiners can fetch them by hash.
+  function acceptTerrain(input) {
+    const result = sanitizeBaseGameTerrainConfig(input, { resolveProject: hash => terrainStore.get(hash) });
+    if (result.error) return result;
+    if (result.config.projectHash) terrainStore.put(result.config.descriptor.config.project, now());
+    return result;
+  }
+  // base:terrain_put { project } -> base:terrain_ref { projectHash }; idempotent.
+  function putTerrain(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (client && !client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    const result = terrainStore.put(msg.project, now());
+    if (result.error) { fail(ws, 'invalid_terrain', result.error); return true; }
+    send(ws, { type: 'base:terrain_ref', protocol: BASE_GAME_PROTOCOL_VERSION, projectHash: result.projectHash });
+    return true;
+  }
+  // base:terrain_get { projectHash } -> base:terrain_project { projectHash, project } | unknown_terrain.
+  function getTerrain(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (client && !client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    const projectHash = typeof msg.projectHash === 'string' ? msg.projectHash : '';
+    const project = terrainStore.get(projectHash);
+    if (!project) { fail(ws, 'unknown_terrain', `terrain project ${projectHash.slice(0, 12)}… is not published here`); return true; }
+    send(ws, { type: 'base:terrain_project', protocol: BASE_GAME_PROTOCOL_VERSION, projectHash, project });
+    return true;
   }
 
   // Input is the only client-to-server movement message. Malformed, over-rate, wrong-socket, and
@@ -444,6 +477,8 @@ export function createBaseGameRoomService({
     if (msg.type === 'base:resume') return resumeRoom(ws, msg);
     if (msg.type === 'base:set_world') return updateWorld(ws, msg);
     if (msg.type === 'base:set_terrain') return setTerrain(ws, msg);
+    if (msg.type === 'base:terrain_put') return putTerrain(ws, msg);
+    if (msg.type === 'base:terrain_get') return getTerrain(ws, msg);
     if (msg.type === 'base:input') return receiveInput(ws, msg);
     return false;
   }
@@ -550,6 +585,7 @@ export function createBaseGameRoomService({
     ensureWorld() { return Promise.all([...rooms.values()].map(room => ensureWorld(room))); },
     get worldReady() { return [...rooms.values()].every(room => !!room.sim); },
     get worldCount() { return worlds.size; },
+    get terrainStore() { return terrainStore; },
     // Pre-build the default lab world (server startup).
     warmTraversalLab() {
       if (world) return Promise.resolve(world);

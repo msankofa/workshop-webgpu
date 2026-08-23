@@ -1,7 +1,7 @@
 import { normalizeDescriptor } from './terrain-source.js';
 import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 5;
+export const BASE_GAME_PROTOCOL_VERSION = 6;
 export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
 export const BASE_GAME_TERRAIN_KINDS = Object.freeze(['traversalLab', 'terrain']);
 export const BASE_GAME_ROOM_GRACE_MS = 30_000;
@@ -92,8 +92,11 @@ export function pickBaseGameSharedWorld(settings) {
 // The descriptor is re-normalized and (for v5) the project is re-hashed here, so a client can
 // never smuggle an arbitrary blob. The owner may replace a room's config at any time
 // (`base:set_terrain`); everyone respawns on the new ground.
-// Returns { config, error }. `config.worldVersion` is the string every peer must agree on.
-export function sanitizeBaseGameTerrainConfig(input) {
+// A v5 descriptor may carry the project body (`config.project`) or only `config.projectHash`;
+// the latter is resolved through `resolveProject(hash)` (the relay's terrain store, or a client
+// cache) and fails with `unknown_terrain` when nothing has it.
+// Returns { config, error, code? }. `config.worldVersion` is the string every peer must agree on.
+export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } = {}) {
   if (input == null) return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
   if (typeof input !== 'object' || Array.isArray(input)) return { config: null, error: 'terrain config must be an object' };
   if (input.kind === 'traversalLab') return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
@@ -106,8 +109,13 @@ export function sanitizeBaseGameTerrainConfig(input) {
   try { descriptor = normalizeDescriptor(input.descriptor); } catch (err) { return { config: null, error: `bad terrain descriptor: ${err.message}` }; }
   let projectHash = null;
   if (descriptor.kind === 'v5-recipe') {
+    let body = descriptor.config.project;
+    if (body == null && typeof descriptor.config.projectHash === 'string') {
+      body = resolveProject ? resolveProject(descriptor.config.projectHash) : null;
+      if (!body) return { config: null, error: `terrain project ${descriptor.config.projectHash.slice(0, 12)}… is not published here`, code: 'unknown_terrain' };
+    }
     let project;
-    try { project = normalizeProject(descriptor.config.project).project; } catch (err) { return { config: null, error: `bad v5 project: ${err.message}` }; }
+    try { project = normalizeProject(body).project; } catch (err) { return { config: null, error: `bad v5 project: ${err.message}` }; }
     const cls = classifyProject(project);
     if (!cls.runtimeSupported) return { config: null, error: `v5 project is not streamable: ${cls.reasons.join('; ')}` };
     projectHash = hashProject(project);
@@ -121,8 +129,28 @@ export function sanitizeBaseGameTerrainConfig(input) {
   return { config: { kind: 'terrain', descriptor, projectHash, volumetric, worldVersion }, error: null };
 }
 
-// What snapshots and `base:joined` carry about the ground: identity only, never the project body
-// (joiners receive the full descriptor once in `base:joined`).
+// The wire form of a room config: the v5 project body is replaced by its hash (the relay stores
+// projects by hash; clients fetch what they lack with base:terrain_get). Everything else is kept.
+export function publicBaseGameTerrainConfig(config) {
+  if (!config || config.kind !== 'terrain' || config.descriptor?.kind !== 'v5-recipe') return config;
+  return { ...config, descriptor: { ...config.descriptor, config: { projectHash: config.projectHash } } };
+}
+// True when a received config needs its project body fetched before it can be rebuilt locally.
+export function terrainConfigNeedsProject(config) {
+  return !!config && config.kind === 'terrain' && config.descriptor?.kind === 'v5-recipe' && config.descriptor.config?.project == null;
+}
+// The project hash a config refers to (null for non-v5 ground).
+export function terrainConfigProjectHash(config) {
+  if (!config || config.kind !== 'terrain' || config.descriptor?.kind !== 'v5-recipe') return null;
+  return config.projectHash ?? config.descriptor.config?.projectHash ?? null;
+}
+// A wire config plus its fetched project body: the full descriptor clients build sources from.
+export function withTerrainProject(config, project) {
+  if (!terrainConfigNeedsProject(config)) return config;
+  return { ...config, descriptor: { ...config.descriptor, config: { project, projectHash: terrainConfigProjectHash(config) } } };
+}
+
+// What snapshots carry about the ground: identity only, never the project body.
 export function describeBaseGameTerrainConfig(config) {
   if (!config) return null;
   return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true };

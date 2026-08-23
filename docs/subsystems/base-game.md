@@ -934,8 +934,21 @@ world for everyone, at any time; guests follow and cannot change it.
   the lab); volumetric room (spawn on the density surface, ring built player-first, 720 ticks across
   a seam with server and predicted client agreeing to 0 m, bounded footprint, kill plane).
 
-Not yet: published-asset keys instead of inline projects (the create/set_terrain messages carry the
-normalized project body), finite GLB maps (Phase 6), LOD (9). Server volume tiles are built on the
+**Asset keys (2026-08-22, protocol 6).** Projects travel once. `server/terrain-store.js`
+(`createTerrainStore({ dir })`) is a content-addressed store of streamable v5 projects (normalized,
+classified, hashed; 512 KB cap; LRU at 512 entries) mirrored to `server/terrain-store/<hash>.json`
+and reloaded at relay start. Messages: `base:terrain_put { project }` → `base:terrain_ref
+{ projectHash }` (idempotent); `base:terrain_get { projectHash }` → `base:terrain_project
+{ projectHash, project }` or `unknown_terrain`. `sanitizeBaseGameTerrainConfig(input,
+{ resolveProject })` accepts a v5 descriptor whose `config` is just `{ projectHash }` and resolves it
+through the store (inline bodies are still accepted and stored). `publicBaseGameTerrainConfig`
+strips bodies for `base:joined` / `base:terrain` (a joined packet is ~750 bytes instead of the
+project size); `terrainConfigNeedsProject` / `terrainConfigProjectHash` / `withTerrainProject` are
+the client-side helpers. `base-game-session.mjs` publishes before `base:create` / `setTerrain`,
+keeps a per-session project cache, and fetches any body it lacks before resolving the join or firing
+`onTerrain`, so the page always sees full configs. `test-base-game-rooms-terrain.mjs` [8].
+
+Not yet: finite GLB maps (Phase 6), LOD (9). Server volume tiles are built on the
 tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
 the follow-up if that shows.
 

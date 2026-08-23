@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { handlePublishRequest } from './publish-map.js';
 import { guestSendVerdict } from './backpressure.js';
 import { createBaseGameRoomService } from './base-game-rooms.js';
+import { createTerrainStore } from './terrain-store.js';
 
 const PORT = process.env.PORT || 8080;
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -156,7 +157,10 @@ const httpServer = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
-const baseGameRooms = createBaseGameRoomService();
+// Published terrain projects survive restarts on disk (content-addressed, <hash>.json).
+const terrainStore = createTerrainStore({ dir: path.join(ROOT_DIR, 'server', 'terrain-store') });
+console.log(`[base-game] terrain store: ${terrainStore.loadFromDisk()} project(s) on disk`);
+const baseGameRooms = createBaseGameRoomService({ terrainStore });
 
 // Server-authoritative base-game rooms: the server simulates every player at 60 Hz from
 // validated input and publishes complete snapshots at 20 Hz. Rendering stays client-side.

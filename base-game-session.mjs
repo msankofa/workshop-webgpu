@@ -8,6 +8,9 @@ import {
   sanitizeBaseGamePlayerState,
   sanitizeBaseGameTickInput,
   sanitizeBaseGameWorldPatch,
+  terrainConfigNeedsProject,
+  terrainConfigProjectHash,
+  withTerrainProject,
 } from './base-game-protocol.mjs';
 
 const query = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
@@ -44,6 +47,46 @@ export function connectBaseGameSession({
   let owner = false;
   let roomTerrain = null;
   const terrainWaiters = [];
+  // Published projects by hash: what this client has sent or fetched. Wire configs carry only
+  // the hash; a config is handed to the page only once its body is here.
+  const projectCache = new Map();
+  const projectWaiters = new Map();   // hash -> [{ resolve, reject }]
+  let terrainResolved = true;         // false while the joined config's body is being fetched
+
+  // Strip a config for the wire, publishing its project body first (idempotent on the relay).
+  function publishConfig(config) {
+    const body = config?.descriptor?.config?.project;
+    if (!body || config.descriptor.kind !== 'v5-recipe') return config;   // nothing to publish: synchronous
+    return new Promise((resolve, reject) => {
+      const key = '__put';
+      const list = projectWaiters.get(key) ?? [];
+      list.push({ resolve: ref => {
+        projectCache.set(ref, body);
+        resolve({ ...config, descriptor: { ...config.descriptor, config: { projectHash: ref } } });
+      }, reject });
+      projectWaiters.set(key, list);
+      ws.send(JSON.stringify({ type: 'base:terrain_put', protocol: BASE_GAME_PROTOCOL_VERSION, project: body }));
+    });
+  }
+  // Fill a wire config's project body from the cache or the relay.
+  function resolveConfig(config) {
+    if (!terrainConfigNeedsProject(config)) return Promise.resolve(config);
+    const hash = terrainConfigProjectHash(config);
+    const cached = hash && projectCache.get(hash);
+    if (cached) return Promise.resolve(withTerrainProject(config, cached));
+    return new Promise((resolve, reject) => {
+      const list = projectWaiters.get(hash) ?? [];
+      list.push({ resolve: project => resolve(withTerrainProject(config, project)), reject });
+      projectWaiters.set(hash, list);
+      if (list.length === 1) ws.send(JSON.stringify({ type: 'base:terrain_get', protocol: BASE_GAME_PROTOCOL_VERSION, projectHash: hash }));
+    });
+  }
+  function settleWaiters(key, project, error) {
+    const list = projectWaiters.get(key);
+    if (!list) return;
+    projectWaiters.delete(key);
+    for (const w of list) error ? w.reject(error) : w.resolve(project);
+  }
   let latestSnapshot = null;
   let initialSettled = false;
   let joinedSeen = false;
@@ -109,11 +152,13 @@ export function connectBaseGameSession({
     // server echoes it (every client, this one included, adopts it from that echo).
     setTerrain(config) {
       if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return Promise.reject(new Error('only the connected room owner can change the world'));
-      return new Promise((resolve, reject) => {
+      return Promise.resolve(publishConfig(config)).then(wire => new Promise((resolve, reject) => {
         terrainWaiters.push({ resolve, reject });
-        ws.send(JSON.stringify({ type: 'base:set_terrain', protocol: BASE_GAME_PROTOCOL_VERSION, terrain: config }));
-      });
+        ws.send(JSON.stringify({ type: 'base:set_terrain', protocol: BASE_GAME_PROTOCOL_VERSION, terrain: wire }));
+      }));
     },
+    // Projects this client has published or fetched, by hash (for the page's own caches).
+    projectByHash(hash) { return projectCache.get(hash) ?? null; },
     setWorld(patch) {
       if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return false;
       const clean = sanitizeBaseGameWorldPatch(patch);
@@ -175,7 +220,7 @@ export function connectBaseGameSession({
   };
 
   function maybeResolveInitial() {
-    if (initialSettled || !joinedSeen || !snapshotSeen || latestSnapshot?.worldReady !== true) return;
+    if (initialSettled || !joinedSeen || !snapshotSeen || !terrainResolved || latestSnapshot?.worldReady !== true) return;
     initialSettled = true;
     clearTimer(handshakeTimer);
     resolveInitial(api);
@@ -225,12 +270,15 @@ export function connectBaseGameSession({
 
     ws.onopen = () => {
       reconnectDelay = 1_000;
-      const packet = resumeToken
-        ? { type: 'base:resume', protocol: BASE_GAME_PROTOCOL_VERSION, resumeToken }
-        : mode === 'create'
-          ? { type: 'base:create', protocol: BASE_GAME_PROTOCOL_VERSION, room, world: pickBaseGameSharedWorld(world), terrain: terrain ?? { kind: 'traversalLab' } }
-          : { type: 'base:join', protocol: BASE_GAME_PROTOCOL_VERSION, room };
-      ws.send(JSON.stringify(packet));
+      if (resumeToken) { ws.send(JSON.stringify({ type: 'base:resume', protocol: BASE_GAME_PROTOCOL_VERSION, resumeToken })); return; }
+      if (mode !== 'create') { ws.send(JSON.stringify({ type: 'base:join', protocol: BASE_GAME_PROTOCOL_VERSION, room })); return; }
+      // Create: the project body is published first, the create carries its hash.
+      const sendCreate = wire => {
+        if (ws?.readyState !== WebSocketImpl.OPEN) return;
+        ws.send(JSON.stringify({ type: 'base:create', protocol: BASE_GAME_PROTOCOL_VERSION, room, world: pickBaseGameSharedWorld(world), terrain: wire }));
+      };
+      const wire = publishConfig(terrain ?? { kind: 'traversalLab' });
+      if (wire && typeof wire.then === 'function') wire.then(sendCreate, failInitial); else sendCreate(wire);
     };
 
     ws.onmessage = event => {
@@ -241,7 +289,9 @@ export function connectBaseGameSession({
         error.code = packet.code;
         if (packet.code === 'invalid_terrain' || packet.code === 'world_failed' || packet.code === 'not_owner') {
           for (const w of terrainWaiters.splice(0)) w.reject(error);
+          settleWaiters('__put', null, error);
         }
+        if (packet.code === 'unknown_terrain') { for (const key of [...projectWaiters.keys()]) if (key !== '__put') settleWaiters(key, null, error); }
         onStatus({ state: 'error', room, owner, error });
         if (!joinedSeen) failInitial(error);
         else if (packet.code === 'resume_expired' || packet.code === 'protocol_mismatch') {
@@ -255,17 +305,32 @@ export function connectBaseGameSession({
         clientId = packet.clientId;
         resumeToken = packet.resumeToken;
         owner = !!packet.owner;
-        roomTerrain = packet.terrain ?? { kind: 'traversalLab', worldVersion: 'traversal-lab' };
         joinedSeen = true;
         onStatus({ state: 'connected', room, clientId, owner });
-        maybeResolveInitial();
+        // The joined config may carry only a project hash: fetch the body before settling.
+        terrainResolved = false;
+        resolveConfig(packet.terrain ?? { kind: 'traversalLab', worldVersion: 'traversal-lab' }).then(full => {
+          roomTerrain = full;
+          terrainResolved = true;
+          maybeResolveInitial();
+        }, failInitial);
+        return;
+      }
+      if (packet.type === 'base:terrain_ref') {
+        if (typeof packet.projectHash === 'string') settleWaiters('__put', packet.projectHash, null);
+        return;
+      }
+      if (packet.type === 'base:terrain_project') {
+        if (typeof packet.projectHash === 'string' && packet.project) { projectCache.set(packet.projectHash, packet.project); settleWaiters(packet.projectHash, packet.project, null); }
         return;
       }
       if (packet.type === 'base:terrain') {
         if (packet.protocol !== BASE_GAME_PROTOCOL_VERSION || packet.room !== room || !packet.terrain) return;
-        roomTerrain = packet.terrain;
-        for (const w of terrainWaiters.splice(0)) w.resolve(packet.terrain);
-        onTerrain(packet.terrain, api);
+        resolveConfig(packet.terrain).then(full => {
+          roomTerrain = full;
+          for (const w of terrainWaiters.splice(0)) w.resolve(full);
+          onTerrain(full, api);
+        }, error => { for (const w of terrainWaiters.splice(0)) w.reject(error); onStatus({ state: 'error', room, owner, error }); });
         return;
       }
       if (packet.type === 'base:snapshot') {

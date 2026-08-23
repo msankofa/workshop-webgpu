@@ -41,8 +41,11 @@ project, optionally `volumetric`); the owner can replace it at any time with `ba
 The server sanitizes and re-hashes it, builds one immutable world per `worldVersion` (volumetric
 worlds collide against server-built marching-cubes tiles, `terrain-volume-collision.js`), respawns
 everyone, and sends the full config in `base:joined` / `base:terrain` (snapshots carry identity
-only). Clients rebuild the same source locally and compare `worldVersion` before moving; guests'
-ground controls are disabled. Finite-map terrain is not accepted yet. See `base-game.md`.
+only). v5 project bodies are published once to the relay's content-addressed terrain store
+(`base:terrain_put`/`base:terrain_get`, `server/terrain-store.js`, mirrored to
+`server/terrain-store/`) and every packet refers to them by hash. Clients rebuild the same source
+locally and compare `worldVersion` before moving; guests' ground controls are disabled. Finite-map
+terrain is not accepted yet. See `base-game.md`.
 
 ### Hosted map publishing (`server/publish-map.js`)
 
