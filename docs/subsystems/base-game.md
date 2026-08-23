@@ -497,6 +497,47 @@ tunnel floor versus roof, ramp and standard step, an airborne miss, render-origi
 that body updates never mutate the controller, local and stacked remote feet through the owner,
 release by id, feet following a rebase, body-off teardown, and the page integration points.
 
+### Weapons, phase 1: third-person holding (shipped 2026-08-22)
+
+Plan: `docs/superpowers/plans/2026-08-22-base-game-weapon-holding.md`. Phase 1 puts a weapon from
+`weapons.js` in the hands of every body, local and remote, with the authored stance holds, the
+walk/run/dash carries, aim and the reload choreography. Nothing fires yet.
+
+- **`weapon-mount.js`** is the mount (Contract 6) extracted from `bot-viewer-v3.html` as a module:
+  `createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, loadData? })` owns the instanced pool
+  (`weapon-part-batches.js`), the anchor/pose JSON and a GLB template cache (`bakedAnchors`,
+  `instanceParts`, `bounds`, `reducedParts`). `createMount(body, weaponId)` is async (GLB fetch) and
+  resolves null for a weapon with no model or third-person hold. `updateMount(mount, dt, frame)`
+  takes `{ feetY, bodyX, bodyZ, yaw, stance, stanceWeights, speed, aiming, aimPoint, bob, sway,
+  headYaw, aimChannels, viewFrame?, viewBlend?, drawBlend? }`, places the ground-anchored root at
+  feet + 1.5, resolves the hold, runs the pose controller, trims the barrel onto `aimPoint`, and
+  handles the one-handed dash. `beginFrame / flushMount / endFrame` write the pool once per page
+  frame. `muzzleWorld`, `barrelDirection`, `drainEvents` are the phase 3 seams; `viewFrame +
+  viewBlend` is phase 2's; `drawBlend` + `def.holsterHold` and `reducedParts` are phase 4's.
+  `test-weapon-mount.mjs` drives it headless with a fake GLB sized like the CZ.
+- **`base-game-player-bodies.js`** takes a `weaponSystem` and keeps a weapon record per body
+  (`{ id, mount, pending, action, actionTick, lastActionTick, ammo: null }`). `setWeapon(id)` for
+  the local body; remotes take `sample.weapon`. In `feed()` the look-vs-heading residual and the
+  pitch go through `solveAimBlend` (`BASE_GAME_AIM_BLEND`: torso, head and barrel trim all on) so
+  the torso carries the gun toward the crosshair and the rig gets `aimYaw/aimLean/lookYaw`; then
+  the mount updates from the rig's `motion`. Remote aim points sit 30 m along the replicated look.
+  `sample.action` with a new `actionTick` plays the reload once. A design swap re-creates the mount;
+  `endRemoteFrame()` flushes the pool (Solo calls `flushWeapons()` itself).
+- **`base-game.html`**: loadout dropdowns (`weaponPrimary/Sidearm/Melee/Throwable`, default CZ 805
+  / Five-seveN / knife / grenade), keys 1 to 4 pick the slot, R reloads, right mouse aims, T resets
+  the player (R used to). The aim point is the camera ray against the world query. The loadout is
+  pushed with `session.setLoadout()` once the room is ready and on every dropdown change.
+- **Protocol version 7**: tick input adds `slot`, `aim`, `reload` (edge) and a reserved `fire`;
+  player state adds `slot`, `weapon` (resolved id), `aiming`, `action` (0 idle, 1 reload, 2 fire,
+  3 holster, 4 draw), `actionTick`, `health` (echoed 100). `base:loadout` replaces a client's
+  loadout (`sanitizeBaseGameLoadout`, ids from `BASE_GAME_WEAPON_IDS`). The server does not
+  simulate weapons: it echoes slot and aim from consumed ticks, starts a reload at the tick of an
+  edge on a `BASE_GAME_RELOADABLE_WEAPONS` id, clears it after `BASE_GAME_RELOAD_TICKS` or a slot
+  change, and keeps `BASE_GAME_POSITION_HISTORY` recent positions per client for phase 3's lag
+  compensation. Remote samples carry the latest weapon fields un-interpolated.
+- Not done yet in phase 1: switching `bot-viewer-v3.html` over to `weapon-mount.js` (1.5). The
+  module is a copy of v3's code, so v3 is unchanged until that refactor.
+
 ### Pre-terrain server-authoritative player replication
 
 Roadmap Step 4 is mandatory before any terrain implementation. The existing room service is retained,
@@ -636,7 +677,7 @@ the owning client: every client simulation tick is a numbered input, the server 
 controller step per tick, and replay reproduces the server's arithmetic bit-for-bit
 (`test-base-game-replication.mjs` asserts exact equality).
 
-- `base-game-protocol.mjs` is protocol version 3. `sanitizeBaseGameTickInput()` cleans one tick
+- `base-game-protocol.mjs` is protocol version 7 (3 introduced lockstep ticks; 7 added weapons). `sanitizeBaseGameTickInput()` cleans one tick
   (identity rejected when malformed, movement clamped); `sanitizeBaseGameInputPacket()` accepts 1-64
   strictly increasing ticks; `sanitizeBaseGamePlayerState()` reads authoritative entries;
   `isAcceptableBaseGameTick()` allows only ticks newer than the last consumed one and at most 240
@@ -981,9 +1022,17 @@ out), so cave mouths survive as far as their size allows (test: 39/400 cave colu
 follow `setSource`. `stats.farLod.kind` is `'volume-cascade'` or `'clipmap'`; `farExtent` is 4.8 km.
 Both representations are kept once built; `setVolumetric` switches which one is live.
 
-Not yet: finite GLB maps (Phase 6); the clipmap/cascade shade with the same height/slope tint as
-the chunks, no distance fog; the classic (v4 climate) layer is not band-limited; cascade level
-boundaries are plain overlaps (a coarse surface can poke through a fine one on steep ground). Server volume tiles are built on the
+**Ground textures (2026-08-23).** `terrain-splat-streamed.js` (see `terrain.md`) replaces the
+vertex tint on chunks and the cascade: `terrain.setSplatMaterial(mat)` / `setSplatEnabled(bool)`,
+`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. `base-game.html` loads the maps once in the
+background (tint shows until they arrive) and exposes `terrainTextures` (on), `terrainTextureTile`
+(4 m) and `terrainTextureFade` (1400 m) in the Terrain world panel. The far fade is what keeps the
+horizon from shimmering; the flight sim's height band limit is the same idea one level down.
+
+Not yet: finite GLB maps (Phase 6); textures driven by streamed v5 biome/material masks instead of
+height/slope; soil-shade/moss dressing; no distance fog; the classic (v4 climate) layer is not
+band-limited; cascade level boundaries are plain overlaps (a coarse surface can poke through a fine
+one on steep ground). Server volume tiles are built on the
 tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
 the follow-up if that shows.
 

@@ -91,6 +91,11 @@ export function createBaseGameTerrain({
     system.group.add(clipmap.root);   // same −renderOrigin root as the chunks
     return clipmap;
   }
+  // Ground textures (terrain-splat-streamed.js) replace the vertex tint when set; the tint
+  // stays on the geometry so turning textures off costs nothing.
+  let splatMaterial = null;
+  let splatEnabled = true;
+  function groundMaterial() { return splatEnabled && splatMaterial ? splatMaterial : system.material; }
   const cascade = [];   // [{ system, group, level, spec }]
   function ensureCascade() {
     if (cascade.length) return cascade;
@@ -99,7 +104,7 @@ export function createBaseGameTerrain({
         params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker },
         source: system.source,
       });
-      lvl.material = system.material;   // chunks pick it up at creation: same tint, same wireframe
+      lvl.material = groundMaterial();   // chunks pick it up at creation: same look, same wireframe
       const group = new THREE.Group();
       group.name = `base-game-terrain-volume-lod-${i + 1}`;
       group.position.y = spec.yBias;
@@ -186,9 +191,10 @@ export function createBaseGameTerrain({
   const perSecond = { installs: 0, window: 0, rate: 0 };
 
   function applyMaterials() {
-    const mat = normals ? normalMaterial : system.material;
+    const mat = normals ? normalMaterial : groundMaterial();
     system.material.wireframe = wireframe;
     normalMaterial.wireframe = wireframe;
+    if (splatMaterial) splatMaterial.wireframe = wireframe;
     if (clipmap) clipmap.setWireframe(wireframe);
     for (const child of system.group.children) {
       if (!child.isMesh || !child.userData.terrainChunk) continue;
@@ -270,6 +276,11 @@ export function createBaseGameTerrain({
     get volumeProvider() { return volumeProvider; },
     get handoffPending() { return handoffPending; },
     get farLod() { return farLodMode; },
+    // Ground textures: hand in a built streamed-splat material (or null to drop it).
+    setSplatMaterial(material) { splatMaterial = material ?? null; applyMaterials(); },
+    setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
+    get splatMaterial() { return splatMaterial; },
+    get splatEnabled() { return splatEnabled; },
     get clipmap() { return clipmap; },
     // Far rings on/off. The rings' outer half-extent is what the camera far plane should cover.
     setFarLod(value) {
@@ -408,6 +419,7 @@ export function createBaseGameTerrain({
           ? { id: volumeProvider.id, enabled: volumeProvider.enabled !== false, chunks: volumeProvider.chunkCount, triangles: volumeProvider.triangleCount }
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
+        textures: splatMaterial ? (splatEnabled ? 'streamed-splat' : 'off') : 'tint',
         farLod: !farLodMode ? null
           : volumetricMode
             ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; return n; }, 0), draws: cascade.reduce((n, c) => n + c.system.group.children.filter(ch => ch.isMesh && ch.visible).length, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }
