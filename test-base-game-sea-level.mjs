@@ -65,8 +65,12 @@ console.log('\n[3] terrain facade: sea level, tint bands, spawn, live change');
   const after = mesh ? Array.from(mesh.geometry.getAttribute('color').array.slice(0, 30)) : null;
   ok(before && after && before.some((v, i) => v !== after[i]), 'chunks recolour when the sea level moves');
   ok(terrain.setSeaLevel(-40) === false, 'no-op when unchanged');
+  terrain.setSeaDepthActive(true);
+  for (let i = 0; i < 3; i++) terrain.update([0, 0, 0], 0.1);
+  ok(terrain.seaDepth.coverage > 0 && terrain.seaDepth.heightAt(0, 0) != null, `sea-depth map streams while active (coverage ${terrain.seaDepth.coverage.toFixed(2)})`);
   terrain.setSource(v5Descriptor(project(12)));
   ok(terrain.seaLevel === 12, 'a source swap takes the new sea level');
+  ok(terrain.seaDepth.coverage === 0, 'the sea-depth map restarts on a swap');
   terrain.dispose();
 }
 

@@ -1454,7 +1454,7 @@ and `setSource` takes the new descriptor's value. The server world does the same
 spawn above the water). The wave spectrum (`waveCount … waveSeed`, the `water-waves.js`
 `buildWaveTable` inputs) lives in the Water panel section as shared world keys, so the room owner
 tunes it and every peer simulates the same surface; `waveOptionsFromWorld(world)` maps them back
-to table options. Nothing renders or swims yet — that is W2–W8. Tests: `test-base-game-sea-level.mjs`.
+to table options. W2 (2026-08-23): the facade owns a `terrain-sea-depth.js` map (`terrain.seaDepth`, streamed only while `setSeaDepthActive(true)`, recentred on the player each `update`, restarted by `setSource`) that the water surface will read for thickness and the page for the visibility gate. Nothing renders or swims yet — that is W3–W8. Tests: `test-base-game-sea-level.mjs`, `test-terrain-sea-depth.mjs`.
 
 The reference water renderer uses six camera-following clipmap grids sampling the shared hydrology
 fields. Dry samples are moved below the bed, so adding rivers does not create a mesh or draw call per

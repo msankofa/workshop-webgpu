@@ -14,6 +14,7 @@ import { createTerrainClipmap } from './terrain-clipmap.js';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
 import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat } from './terrain-splat-streamed.js';
 import { createLodCoverage } from './terrain-lod-coverage.js';
+import { createSeaDepthMap } from './terrain-sea-depth.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -201,6 +202,9 @@ export function createBaseGameTerrain({
   const TINT = { water: [0.16, 0.32, 0.42], sand: [0.72, 0.66, 0.46], grass: [0.30, 0.48, 0.22], dry: [0.46, 0.44, 0.28], rock: [0.42, 0.40, 0.38], snow: [0.92, 0.93, 0.95] };
   const mixInto = (out, o, a, b, t) => { out[o] = a[0] + (b[0] - a[0]) * t; out[o + 1] = a[1] + (b[1] - a[1]) * t; out[o + 2] = a[2] + (b[2] - a[2]) * t; };
   const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  // Ground height around the player for water (terrain-sea-depth.js): streams only while active.
+  const seaDepth = createSeaDepthMap({ source: system.source, useWorker });
+  let seaDepthActive = false;
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
   function colorizeGeometry(geo, force = false) {
@@ -364,6 +368,8 @@ export function createBaseGameTerrain({
     spawnPosition,
     get seaLevel() { return seaLevel; },
     setSeaLevel,
+    seaDepth,
+    setSeaDepthActive(flag) { seaDepthActive = !!flag; },
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
     killPlaneYAt(x, z) {
@@ -449,6 +455,7 @@ export function createBaseGameTerrain({
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       for (const c of cascade) c.system.setSource(next);
       seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+      seaDepth.setSource(system.source);
       // nothing survives a swap, so there is nothing to dissolve from: coverage restarts at zero
       coverExact.clear(); for (const cl of coverLevels) cl.clear();
       installedTotal = 0;
@@ -477,6 +484,7 @@ export function createBaseGameTerrain({
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
       updateCoverage(globalPosition, dt);
+      if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
         if (changed || !clipmap.holeRect) clipmap.setHoleRect(chunkWindowRect());
@@ -552,6 +560,7 @@ export function createBaseGameTerrain({
 
     dispose() {
       stopRebase();
+      seaDepth.dispose();
       unregisterProvider();
       unregisterVolumeProvider();
       volumeProvider.clear();
