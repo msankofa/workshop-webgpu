@@ -1104,7 +1104,7 @@ cascade's 5 m level shows through rather than drawing the wrong ground.
 
 **Ground textures (2026-08-23).** `terrain-splat-streamed.js` (see `terrain.md`) replaces the
 vertex tint on chunks and the cascade: `terrain.setSplatMaterial(mat)` / `setSplatEnabled(bool)`,
-`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
+`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. Resident chunks (and each cascade level) draw through `terrain-chunk-batches.js` pools — `stats.draws` counts batches, `stats.batches` carries the pool stats; a chunk's own mesh is hidden while batched and is the fallback when a pool is full (measured: over 1,000 draws at draw radius 32 before). Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
 background (tint shows until they arrive) and exposes `terrainTextures` (on), `terrainTextureTile`
 (4 m) and `terrainTextureFade` (1400 m) in the Terrain world panel. The far fade is what keeps the
 horizon from shimmering; the flight sim's height band limit is the same idea one level down.

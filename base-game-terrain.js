@@ -11,6 +11,7 @@ import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-p
 import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-provider.js';
 import { globalToRenderLocal } from './world-coordinates.js';
 import { createTerrainClipmap } from './terrain-clipmap.js';
+import { createChunkBatcher } from './terrain-chunk-batches.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -106,6 +107,12 @@ export function createBaseGameTerrain({
   let splatMaterial = null;
   let splatEnabled = true;
   function groundMaterial() { return splatEnabled && splatMaterial ? splatMaterial : system.material; }
+  // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one draw per ~256 chunks
+  // instead of one per chunk. A chunk's own mesh is hidden once it is in a batch; it stays the
+  // fallback when a batch cannot take it.
+  const batcher = createChunkBatcher({ material: system.material, name: 'base-game-terrain-batches' });
+  const batchedChunks = new Map();   // key -> chunk object currently copied into the batcher
+  const cascadeBatchers = new Map(); // cascade system -> { batcher, batched }
   const cascade = [];   // [{ system, group, level, spec }]
   function ensureCascade() {
     if (cascade.length) return cascade;
@@ -145,6 +152,7 @@ export function createBaseGameTerrain({
   root.name = 'base-game-terrain';
   root.position.fromArray(globalToRenderLocal([0, 0, 0], worldCoordinates.getOrigin()));
   root.add(system.group);
+  root.add(batcher.group);
   scene.add(root);
   if (farLod) { farLodMode = true; ensureFarLod(); }
   const stopRebase = worldCoordinates.onRebase(event => { root.position.add(new THREE.Vector3().fromArray(event.delta)); });
@@ -200,6 +208,20 @@ export function createBaseGameTerrain({
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
 
+  function syncBatches(sys, b, batched, hideRule) {
+    for (const [key, chunk] of sys.chunks) {
+      if (!chunk.mesh) continue;
+      const hidden = hideRule(chunk);
+      if (batched.get(key) !== chunk) {
+        colorizeGeometry(chunk.mesh.geometry);
+        if (b.add(key, chunk.mesh.geometry)) batched.set(key, chunk); else batched.delete(key);
+      }
+      const inBatch = batched.get(key) === chunk;
+      chunk.mesh.visible = !inBatch && !hidden;
+      if (inBatch) b.setVisible(key, !hidden);
+    }
+    for (const key of [...batched.keys()]) if (!sys.chunks.has(key)) { b.remove(key); batched.delete(key); }
+  }
   function applyMaterials() {
     const mat = normals ? normalMaterial : groundMaterial();
     system.material.wireframe = wireframe;
@@ -213,14 +235,18 @@ export function createBaseGameTerrain({
     }
     // During a restream into volumetric mode the retained heightfield chunks are wrong ground:
     // hide them and let the cascade's 5 m level show through until the exact chunk lands.
-    for (const chunk of system.chunks.values()) {
-      if (!chunk.mesh) continue;
-      chunk.mesh.visible = !(chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode);
-    }
-    for (const c of cascade) for (const child of c.system.group.children) {
-      if (!child.isMesh || !child.userData.terrainChunk) continue;
-      colorizeGeometry(child.geometry);
-      child.material = mat;
+    batcher.setMaterial(mat);
+    syncBatches(system, batcher, batchedChunks, chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode);
+    for (const c of cascade) {
+      for (const child of c.system.group.children) {
+        if (!child.isMesh || !child.userData.terrainChunk) continue;
+        colorizeGeometry(child.geometry);
+        child.material = mat;
+      }
+      let cb = cascadeBatchers.get(c.system);
+      if (!cb) { cb = { batcher: createChunkBatcher({ material: mat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000 }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
+      cb.batcher.setMaterial(mat);
+      syncBatches(c.system, cb.batcher, cb.batched, () => false);
     }
   }
 
@@ -252,6 +278,7 @@ export function createBaseGameTerrain({
 
   function applyVisibility() {
     system.group.visible = active && visible;
+    batcher.group.visible = active && visible;
     if (clipmap) clipmap.setVisible(farLodMode && visible && !volumetricMode);
     for (const c of cascade) c.group.visible = active && visible && farLodMode && volumetricMode;
     boundsGroup.visible = active && visible && tileBounds;
@@ -415,6 +442,8 @@ export function createBaseGameTerrain({
           const idx = child.geometry.index;
           triangles += idx ? idx.count / 3 : child.geometry.attributes.position.count / 3;
         }
+        draws += batcher.batchCount;
+        for (const chunk of batchedChunks.values()) { const idx = chunk.mesh?.geometry.index; if (idx) triangles += idx.count / 3; }
       }
       const info = system.sourceInfo;
       return {
@@ -440,6 +469,7 @@ export function createBaseGameTerrain({
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
         textures: splatMaterial ? (splatEnabled ? 'streamed-splat' : 'off') : 'tint',
+        batches: batcher.stats,
         farLod: !farLodMode ? null
           : volumetricMode
             ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; return n; }, 0), draws: cascade.reduce((n, c) => n + c.system.group.children.filter(ch => ch.isMesh && ch.visible).length, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }
@@ -461,6 +491,8 @@ export function createBaseGameTerrain({
       normalMaterial.dispose();
       root.removeFromParent();
       if (clipmap) clipmap.dispose();
+      batcher.dispose();
+      for (const cb of cascadeBatchers.values()) cb.batcher.dispose();
       for (const c of cascade) { c.system.dispose(); c.group.removeFromParent(); }
       system.dispose();
     },

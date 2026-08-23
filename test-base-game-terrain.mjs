@@ -28,7 +28,7 @@ console.log('\n[1] construction and mode switch');
   ok(terrain.provider.enabled === true && terrain.system.group.visible === true, 'active: collision + visuals on');
   settle([0, 0, 0]);
   ok(terrain.system.chunks.size === 25, `resident ${terrain.system.chunks.size}/25 chunks at radius 2`);
-  ok(terrain.stats.source.key === 'base-game-analytic' && terrain.stats.source.version === '1' && terrain.stats.draws === 25 && terrain.stats.triangles > 0, 'stats identify the source and count draws/triangles');
+  ok(terrain.stats.source.key === 'base-game-analytic' && terrain.stats.source.version === '1' && terrain.stats.draws === 1 && terrain.stats.batches.chunks === 25 && terrain.stats.triangles > 0, `stats identify the source and count draws/triangles (25 chunks in ${terrain.stats.draws} batched draw)`);
 }
 
 console.log('\n[2] the player walks, jumps and crosses chunk boundaries on terrain');

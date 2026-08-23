@@ -43,6 +43,14 @@ function fieldParams(params) {
   return { baseAmp: params.baseAmp, lake: params.lake, lakeDepth: params.lakeDepth };
 }
 
+// World-xz uvs for marching-cubes chunks, so volume and heightfield chunks share one attribute
+// set (BatchedMesh requires it) and planar-mapped materials work on both.
+function planarUvs(positions) {
+  const uvs = new Float32Array((positions.length / 3) * 2);
+  for (let i = 0, j = 0; i < positions.length; i += 3, j += 2) { uvs[j] = positions[i] * 0.05; uvs[j + 1] = positions[i + 2] * 0.05; }
+  return uvs;
+}
+
 // Wrap raw chunk arrays (from buildChunkArrays or the worker) in a THREE geometry.
 function geometryFromArrays(a) {
   const geo = new THREE.BufferGeometry();
@@ -515,7 +523,7 @@ class TerrainSystem {
     let geo = null;
     if (this.params.visualMode !== 'external') {
       geo = tile.volume
-        ? geometryFromArrays({ positions: tile.volume.positions, normals: tile.volume.normals, index: tile.volume.indices, uvs: null })
+        ? geometryFromArrays({ positions: tile.volume.positions, normals: tile.volume.normals, index: tile.volume.indices, uvs: planarUvs(tile.volume.positions) })
         : geometryFromArrays(buildChunkArraysFromTile(tile));
     }
     const chunk = this.makeChunk(key, tile.xMin, tile.zMin, tile.size, tile.intervals, geo, tile.lod);
