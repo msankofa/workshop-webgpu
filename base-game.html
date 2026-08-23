@@ -245,7 +245,7 @@ const NUMBER_LIMITS = Object.freeze({
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
-  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 12], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
+  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
   armFallLift: [0, 3.2], armFallSpeedRef: [1, 20], armFallTimeRef: [0.1, 2], armPoseSmoothing: [0, 1.5],
@@ -1102,7 +1102,7 @@ terrainWorldSec.append(terrainSourceLine);
 addToggle(terrainWorldSec, 'terrainVisible', 'Terrain visible (collision stays on)');
 addToggle(terrainWorldSec, 'terrainVolumetric', 'Volumetric (caves from the v5 density config)');
 addToggle(terrainWorldSec, 'terrainFarLod', 'Far LOD (clipmap rings to the horizon, visual only)');
-addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 12, 1);
+addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 32, 1);
 addToggle(terrainWorldSec, 'terrainTextures', 'Ground textures (slope/height splat)');
 addRange(terrainWorldSec, 'terrainTextureTile', 'Texture tile (m)', 1, 16, 0.5);
 addRange(terrainWorldSec, 'terrainTextureFade', 'Texture detail fade (m)', 200, 6000, 50);
@@ -1684,6 +1684,9 @@ const statsEl = document.getElementById('stats');
 let frameBusy = false;
 let lastFrameStart = performance.now();
 const remoteAudioLocal = [0, 0, 0];
+const audioStepRight = new THREE.Vector3();
+const audioStepFeet = { x: 0, y: 0, z: 0 };
+let audioLastFallSpeed = 0;
 let fpsElapsed = 0;
 let fpsFrames = 0;
 let shownFps = 0;
@@ -2031,13 +2034,21 @@ async function animate() {
       viewFrame = fpViewFrame;
     }
     {
+      // Footsteps sync to the view-model bob (html-game-v2 setup): placed beside the feet, panned
+      // to the stepping side. Fall speed is last frame's, since touching down already zeroed it.
       const v = playerController.getVelocity();
+      audioStepRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      audioStepFeet.x = playerRenderPosition[0]; audioStepFeet.y = playerRenderPosition[1]; audioStepFeet.z = playerRenderPosition[2];
       audioDirector.updateLocal(dt, {
         speed: canControl ? Math.hypot(v[0], v[2]) : 0,
         grounded: playerController.grounded,
-        sprint: input.sprint,
         rising: v[1] > 0.5,
+        fallSpeed: audioLastFallSpeed,
+        bobPhase: weaponViewModel.bobPhase,
+        position: audioStepFeet,
+        right: audioStepRight,
       });
+      audioLastFallSpeed = Math.max(0, -v[1]);
     }
     playerBodies.setLocalAim(canControl && weaponState.aiming, canControl && weaponState.aiming ? updateLocalAimPoint() : null);
     playerBodies.updateLocal(dt, {

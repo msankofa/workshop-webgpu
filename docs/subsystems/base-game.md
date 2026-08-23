@@ -256,15 +256,20 @@ toggle, default off.
 
 `base-game-audio.js` is the pure director (`test-base-game-audio.mjs`). It owns no Web Audio; it
 decides which event id fires and where, then calls `play`/`playAt`, or `playSynthAt` with a
-`weapon-sfx-synth.js` voice when `hasSfxEvent` is false. Rules: stride-cadence footsteps (1.7 m
-walk / 2.4 m sprint, none below 0.5 m/s or airborne), `jump` on grounded→airborne while rising and
-`landing` on airborne→grounded, a per-event budget of 4–8 starts per 100 ms, a 70 m cull for
-positional sounds, and "sample first, synth second".
+`weapon-sfx-synth.js` voice when `hasSfxEvent` is false. Local footsteps are html-game-v2's setup:
+one step each time `floor((bobPhase - pi/2) / pi)` changes on the weapon view-model's bob clock
+(`weaponViewModel.bobPhase`), alternating sides, placed 0.32 m beside the feet and 0.16 m up,
+panned ±0.18 toward that side through the `ownStep` profile (ref 6 m, max 16 m, no rolloff,
+volumeScale 1.45), sample volume 0.4. Remote players have no bob phase on the wire, so they keep
+the distance stride (1.7 m walk / 2.4 m sprint). `jump` fires on grounded→airborne while rising,
+`landing` on airborne→grounded with volume 0.65 + 0.03·fallSpeed. Every event has a budget of 4–8
+starts per 100 ms and positional sounds are culled at 70 m.
 
 Fire points in `base-game.html`:
 
-- `audioDirector.updateLocal(dt, { speed, grounded, sprint, rising })` once per frame from the
-  controller's velocity and grounded flag (non-positional).
+- `audioDirector.updateLocal(dt, { speed, grounded, rising, fallSpeed, bobPhase, position, right })`
+  once per frame, after the view-model update, from the controller's velocity, the render-local
+  feet position and the camera's right vector.
 - `localReload()` wherever `playerBodies.localReload()` returns true (both the lockstep and the solo
   path), `localSlotChange()` on a 1–4 key that changes the slot. Both use the new `weapon_reload` /
   `weapon_draw` ids, which have no sample yet and play the synth voices.
@@ -279,9 +284,11 @@ Fire points in `base-game.html`:
 The Audio panel section holds master/effects/music volume, mute, the sound-effects, footsteps,
 other-players and synth-fallback switches, the music toggle and previous/next track. All of it
 lives in `settings` (`audio*` keys), so it autosaves and round-trips through slots and JSON;
-`applyAllState` re-applies it to the controller. The `pause_open`/`pause_close`/`landing` ids have no
-sample in `sfx/sound-map.json` and no synth voice, so they are silent until one is assigned in
-`sfx-browser.html`.
+`applyAllState` re-applies it to the controller. `sfx/sound-map.json` now carries html-game-v2's
+Metroid Prime footstep (4 variants) and jump (4 variants) sets plus `landing`, `pause_open`,
+`pause_close` and `weapon_draw` (v2's `weapon_switch`), so every base-game event except
+`weapon_reload` plays a real file; `weapon-sfx-synth.js` has v2's noise+tone footstep, jump and
+landing voices as the fallback.
 
 ## Verification
 
@@ -929,7 +936,7 @@ In `base-game.html`: `worldMode` gains `terrain` (the only runtime source is
 `worldSpawn()`/`worldKillPlaneY()` pick terrain or Traversal Lab values; changing `worldMode` in
 Solo respawns the player; `updateWorld()` drives `setActive/Visible/DrawRadius/…` from settings;
 `animate()` calls `terrain.update()` under the `terrain` profiler label before `updateWorld`. New
-local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–12, default 6; the 5 m cascade level covers 300 m, so wider exact radii only cost draws — measured 46 fps at 16 vs 75 at 8), `terrainWireframe`,
+local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–32, default 6; the top of the range exists for stress-testing, not for play), `terrainWireframe`,
 `terrainNormals`, `terrainTileBounds`, `terrainCollisionDebug`, in a **Terrain world** panel
 section with a source readout and a 4 Hz runtime line. The performance `context.world.terrain` is
 now `{ project: terrainStore.summary(), runtime: terrain.stats }`. Online, `worldMode` is still
