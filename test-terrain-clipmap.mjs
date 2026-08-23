@@ -235,7 +235,7 @@ console.log('\n[6] volumetric far LOD: a marching-cubes cascade on band-limited 
   const lvl1 = terrain.volumeLod[0].system;
   const mesh = lvl1.group.children.find(c => c.isMesh);
   ok(mesh && mesh.material === terrain.system.material && mesh.geometry.getAttribute('color'), 'cascade chunks share the chunk material and tint');
-  ok(terrain.volumeLod.every(l => l.system.group.parent.position.y < 0), 'coarser levels sit lower (bias) so the finer ones draw over them');
+  ok(terrain.volumeLod.every(l => l.system.group.parent.position.y === 0), 'cascade levels sit at true height (no bias sink; the LOD dissolve handles the overlap)');
   terrain.setVolumetric(false);
   ok(terrain.stats.farLod?.kind === 'clipmap', 'heightfield mode falls back to the clipmap rings');
   terrain.dispose();
