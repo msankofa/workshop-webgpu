@@ -512,7 +512,10 @@ walk/run/dash carries, aim and the reload choreography. Nothing fires yet.
   headYaw, aimChannels, viewFrame?, viewBlend?, drawBlend? }`, places the ground-anchored root at
   feet + 1.5, resolves the hold, runs the pose controller, trims the barrel onto `aimPoint`, and
   handles the one-handed dash. `beginFrame / flushMount / endFrame` write the pool once per page
-  frame. `muzzleWorld`, `barrelDirection`, `drainEvents` are the phase 3 seams; `viewFrame +
+  frame. The barrel ray runs along the normalized model's bore through the muzzle (the old
+  grip-to-muzzle line tilted up, so an aligned gun shot low). `holdOffsetY/Z` are page trims,
+  exposed as the `weaponHoldHeight` / `weaponHoldForward` sliders. `muzzleWorld`,
+  `barrelDirection`, `drainEvents` are the phase 3 seams; `viewFrame +
   viewBlend` is phase 2's; `drawBlend` + `def.holsterHold` and `reducedParts` are phase 4's.
   `test-weapon-mount.mjs` drives it headless with a fake GLB sized like the CZ.
 - **`base-game-player-bodies.js`** takes a `weaponSystem` and keeps a weapon record per body
@@ -535,8 +538,8 @@ walk/run/dash carries, aim and the reload choreography. Nothing fires yet.
   edge on a `BASE_GAME_RELOADABLE_WEAPONS` id, clears it after `BASE_GAME_RELOAD_TICKS` or a slot
   change, and keeps `BASE_GAME_POSITION_HISTORY` recent positions per client for phase 3's lag
   compensation. Remote samples carry the latest weapon fields un-interpolated.
-- Not done yet in phase 1: switching `bot-viewer-v3.html` over to `weapon-mount.js` (1.5). The
-  module is a copy of v3's code, so v3 is unchanged until that refactor.
+- `bot-viewer-v3.html` was switched to the module the same day (1.5): its mount functions are
+  wrappers now and the three mount code paths no longer exist twice.
 
 ### Pre-terrain server-authoritative player replication
 
@@ -1021,6 +1024,11 @@ out), so cave mouths survive as far as their size allows (test: 39/400 cave colu
 149/400 exact). Cascade chunks share the chunk material/tint, never enter the volume provider, and
 follow `setSource`. `stats.farLod.kind` is `'volume-cascade'` or `'clipmap'`; `farExtent` is 4.8 km.
 Both representations are kept once built; `setVolumetric` switches which one is live.
+Volumetric is the **default** (`terrainVolumetric: true`; the analytic start source has no density,
+so the first v5 Apply switches it on). `terrain-system.js` now runs a pool of `min(4, cores−2)`
+workers behind one round-robin `worker` facade (`params.workerCount`), so a full restream at a wide
+draw radius takes seconds, not minutes; while it runs, stale heightfield chunks are hidden and the
+cascade's 5 m level shows through rather than drawing the wrong ground.
 
 **Ground textures (2026-08-23).** `terrain-splat-streamed.js` (see `terrain.md`) replaces the
 vertex tint on chunks and the cascade: `terrain.setSplatMaterial(mat)` / `setSplatEnabled(bool)`,

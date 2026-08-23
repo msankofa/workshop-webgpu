@@ -125,7 +125,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   labCollisionDebug: false,
   labOriginMarker: true,
   terrainVisible: true,
-  terrainVolumetric: false,
+  terrainVolumetric: true,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -144,6 +144,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponSidearm: BASE_GAME_DEFAULT_LOADOUT.sidearm,
   weaponMelee: BASE_GAME_DEFAULT_LOADOUT.melee,
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
+  weaponHoldHeight: 0,
+  weaponHoldForward: 0,
   remoteBodiesEnabled: true,
   armPreset: 'relaxed',
   armIdleBend: ARM_POSE_PRESETS.relaxed.idle.bend,
@@ -238,6 +240,7 @@ const NUMBER_LIMITS = Object.freeze({
   bodyStepOverlap: [0, 0.5], bodySpineFalloff: [0.3, 3], bodyArmAsym: [0, 1.5],
   bodyStrideScale: [0.4, 2], bodyCadenceScale: [0.4, 2], bodyStepTrigger: [0.05, 0.8],
   bodyForwardStride: [0.2, 2], bodyBehindStride: [0, 1.5],
+  weaponHoldHeight: [-0.3, 0.3], weaponHoldForward: [-0.3, 0.3],
 });
 const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
@@ -688,6 +691,7 @@ function updateWorld(dt) {
   playerBodies.setLocalMode(settings.playerBodyMode);
   playerBodies.setBodyDesign(settings.bodyDesign);
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
+  playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
   applyBodyMovement();
   applyArmTuning();
   applySkyComponentVisibility();
@@ -1045,6 +1049,8 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+addRange(playerSec, 'weaponHoldHeight', 'Weapon hold height', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
+addRange(playerSec, 'weaponHoldForward', 'Weapon hold forward', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
 const weaponNote = document.createElement('div'); weaponNote.className = 'note';
 weaponNote.textContent = 'Keys 1 to 4 pick a slot, R reloads, hold the right mouse button to aim. T resets the player.';
 playerSec.append(weaponNote);

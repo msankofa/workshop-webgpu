@@ -26,6 +26,7 @@ const DEFAULTS = {
   volumetric: false,          // source path only: request the 'volume' tile field and render marching-cubes chunks
   lod: 0,                     // source path only: tile lod (0 = exact; > 0 = band-limited to the chunk's own spacing, visual LOD cascades)
   segmentsPerChunk: 0,        // > 0 overrides chunkSegments() with a fixed count (LOD cascades)
+  workerCount: 0,             // 0 = min(4, cores - 2) terrain workers behind one round-robin facade
 };
 
 function merge(base, over) {
@@ -172,20 +173,37 @@ class TerrainSystem {
     this.rebuild();
   }
 
+  // A small pool behind one `worker` facade (round-robin postMessage): volume tiles cost tens
+  // of milliseconds each, and a full restream at a wide draw radius is a thousand of them.
   initWorker() {
     try {
-      this.worker = new Worker(new URL('./terrain-worker.js', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (e) => this.onWorkerChunk(e.data);
-      this.worker.onerror = () => this.disableWorker();
+      const count = Math.max(1, Math.floor(this.params.workerCount || Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency || 4) - 2))));
+      const workers = [];
+      for (let i = 0; i < count; i++) {
+        const w = new Worker(new URL('./terrain-worker.js', import.meta.url), { type: 'module' });
+        w.onmessage = (e) => this.onWorkerChunk(e.data);
+        w.onerror = () => this.disableWorker();
+        workers.push(w);
+      }
+      let next = 0;
+      this.workers = workers;
+      this.worker = {
+        count,
+        postMessage: (msg) => { workers[next].postMessage(msg); next = (next + 1) % workers.length; },
+        terminate: () => { for (const w of workers) w.terminate(); },
+      };
     } catch (err) {
       this.worker = null;   // no worker support (e.g. file://) — fall back to synchronous building
+      this.workers = [];
     }
   }
 
   // Drop to the synchronous path if the worker errors. Outstanding in-flight keys
   // are cleared and the window is recomputed so they get rebuilt on the main thread.
   disableWorker() {
+    if (this.worker) this.worker.terminate();
     this.worker = null;
+    this.workers = [];
     this.inFlight.clear();
     this.centerChunkX = null;   // force update() to recompute the build queue
   }

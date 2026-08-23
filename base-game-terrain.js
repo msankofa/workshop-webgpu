@@ -201,6 +201,12 @@ export function createBaseGameTerrain({
       colorizeGeometry(child.geometry);
       child.material = mat;
     }
+    // During a restream into volumetric mode the retained heightfield chunks are wrong ground:
+    // hide them and let the cascade's 5 m level show through until the exact chunk lands.
+    for (const chunk of system.chunks.values()) {
+      if (!chunk.mesh) continue;
+      chunk.mesh.visible = !(chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode);
+    }
     for (const c of cascade) for (const child of c.system.group.children) {
       if (!child.isMesh || !child.userData.terrainChunk) continue;
       colorizeGeometry(child.geometry);
