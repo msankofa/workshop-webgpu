@@ -1,15 +1,15 @@
 // terrain-lod-coverage.js — per-chunk coverage for LOD dissolves. One map per chunk streamer: a
 // small texture with one texel per chunk around the player holding how "present" that chunk is,
-// ramping 0→1 after it lands and 1→0 when it unloads. A level's material dissolves its own
-// chunks IN as their coverage rises and the coarser level dissolves OUT under them at the same
-// pixels with the same dither, so a window re-centre or a late worker tile never pops or gaps.
+// ramping 0→1 after it lands (snapping to 0 when it unloads: the mesh is already gone). A level's
+// material dissolves its own chunks IN over the first half of the ramp and the coarser level
+// dissolves OUT over the second half, so the ground is never open to the void mid-fade.
 // Pure apart from the DataTexture it owns; Node-testable.
 
 import * as THREE from 'three';
 
 export const LOD_COVERAGE_DEFAULTS = Object.freeze({
   texels: 96,        // chunks per side covered by the map (±48 around the player's chunk)
-  fadeSeconds: 0.4,  // 0→1 ramp time
+  fadeSeconds: 0.6,  // 0→1 ramp time (fine fades in over the first half, coarse out over the second)
 });
 
 export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.texels, fadeSeconds = LOD_COVERAGE_DEFAULTS.fadeSeconds } = {}) {
@@ -39,7 +39,7 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
     for (const [key, v] of values) {
       v.target = present.has(key) ? 1 : 0;
       if (v.t !== v.target) {
-        v.t = v.target > v.t ? Math.min(1, v.t + step) : Math.max(0, v.t - step);
+        v.t = v.target > v.t ? Math.min(1, v.t + step) : 0;
         changed = true;
       }
       if (v.t === 0 && v.target === 0) values.delete(key);
