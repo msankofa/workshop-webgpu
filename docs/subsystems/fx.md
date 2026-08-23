@@ -190,7 +190,12 @@ flashes), `bot-viewer-v3.html` (registry-free `pushEffect` / `updateEffects` lis
 2026-08-23, `base-game.html`: the same v3 list pattern fed from the server's snapshot events —
 `gun_tracer` + `hit_spark` per `shots[]` entry (the shooter's own shot is pushed at fire time from
 the predicted ray), `muzzle_flash` at the `weapon-mount.js` muzzle with `followMuzzle` re-anchored
-to the mount each frame, `explosion` per `explosions[]` entry. See `base-game.md` "Weapons, phase 3".
+to the mount each frame, `explosion` per `explosions[]` entry. See `base-game.md` "Weapons, phase 3". The same page runs
+`blast-debris-sim.js`/`blast-debris.js` (third consumer after bot-viewer-v3 and the flight sim) and
+`flash-lights.js` — the bot-viewer-visuals dynamic-light budget extracted as a module (ring +
+resident `PointLight`s on `flashCurve`/`pickLightSlotsInto`; intensity-only writes, never
+`.visible`). `bot-viewer-visuals.js` still carries its own inline copy of that block — keep the two
+in sync by hand, like the CPU/GPU twins.
 
 ### The two instanced billboard pools
 

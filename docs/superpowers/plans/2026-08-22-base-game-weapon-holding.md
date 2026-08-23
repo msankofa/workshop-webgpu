@@ -212,8 +212,9 @@ events SHIPPED on `combat.js` + `player-combat.js` + `player-ammo.js` (lifted fr
 viewer) with `base-game-fire.js` as the lockstep trigger step; see `docs/subsystems/base-game.md`
 "Weapons, phase 3". Later the same day: seeded spread (`bot-aim.js`), tracers / muzzle flash /
 sparks / explosions (`effect-renderer.js`), and server projectiles (`bot-projectiles.js` +
-`entity-types/explosion.js`) SHIPPED. Still open: melee, head multiplier, remote recoil kick,
-blast debris.
+`entity-types/explosion.js`) SHIPPED, then blast debris (`blast-debris*.js`) and the explosion /
+muzzle light (`flash-lights.js`, extracted from bot-viewer-visuals). Still open: melee, head
+multiplier, remote recoil kick.
 
 Goal: shots are server-authoritative, feel instant for the shooter, and read on every client.
 

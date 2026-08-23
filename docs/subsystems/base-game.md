@@ -49,6 +49,8 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Dispersion cone | `bot-aim.js` |
 | Projectile flight and blast falloff | `bot-projectiles.js` / `entity-types/explosion.js` |
 | Tracers, muzzle flash, sparks, explosions | `effect-renderer.js` / `tracer-visual.js` |
+| Blast debris | `blast-debris-sim.js` / `blast-debris.js` / `explosion-tier.js` |
+| Dynamic flash lights | `flash-lights.js` (extracted from `bot-viewer-visuals.js`) |
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
@@ -759,8 +761,21 @@ local `worldQuery.raycast`) the tick it fires; everyone else's shots, all explos
 projectile list come from the snapshot. `frameProfiler.time('fx')` wraps `updateProjectiles` and
 `updateShotEffects` before the sky update.
 
-Not done: remote recoil on bodies, head multiplier (`head` is always false), melee, blast debris
-(`blast-debris*.js`) and the explosion light.
+**Blast debris and the explosion light (same day).** `blast-debris-sim.js` + `blast-debris.js` run
+here exactly as in bot-viewer-v3 and the flight sim: one sim (`groundAt` maps render-local x/z
+through `worldCoordinates.toGlobal` onto `terrain.groundHeight`, or the lab's floor), one renderer
+with `lightCount: 2`, `createExplosionBudget()` tiering, and v3's `spawnBlastDebris` (shrapnel
+always, rubble only for a ground burst) fired from each `explosions[]` event. A rebase clears the
+sim — pieces are render-local and the origin just moved under them. The explosion and muzzle light
+is **`flash-lights.js`**, the dynamic-light budget extracted verbatim from `bot-viewer-visuals.js`
+(`createFlashLights({ THREE, scene, getViewPosition })`): a 64-record ring feeding two resident
+`PointLight`s by `flashCurve` / `pickLightSlotsInto` from `bot-viewer-visuals-style.js`, intensity-only
+writes, never `.visible` (the WebGPU pipeline-hash rule travels with the code). Blasts use v3's
+`spawnBlastFx` numbers (`BLAST_FLASH`, distance `min(60, radius * 3.2)`); every muzzle flash borrows
+a slot like v3's `spawnTracer` does. `debrisSim.step` / `debrisRenderer.sync` / `flashLights.update`
+run in the frame's `fx` block. Node-tested: `test-flash-lights.mjs`.
+
+Not done: remote recoil on bodies, head multiplier (`head` is always false), melee.
 
 Tests: `test-base-game-fire.mjs` (trigger step, seeded spread, protocol, a two-player room where
 one shoots the other dead and the server respawns them, then an RPG flight that detonates and

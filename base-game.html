@@ -127,6 +127,10 @@ import { createBaseGameAudioDirector } from './base-game-audio.js';
 import { createTriggerState, stepTrigger, shotDirectionFor } from './base-game-fire.js';
 import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer } from './effect-renderer.js';
+import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
+import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
+import { createDebrisRenderer } from './blast-debris.js';
+import { createExplosionBudget } from './explosion-tier.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createRemoteTrack } from './base-game-remote-players.js';
 import { botSeedFromId } from './bot-activity.js';
@@ -635,6 +639,38 @@ function stepLocalTrigger(tick, fire, reload, aim) {
 // ---- shot effects: effect-renderer.js fed the way bot-viewer-v3 does (a plain list, pushEffect /
 // updateEffects), with environment-viewer's tracer / muzzle-flash wire shapes and muzzle rule.
 const effectRenderer = createEffectRenderer({ THREE, scene });
+// Dynamic light budget (extracted from bot-viewer-visuals.js): two resident point lights that
+// muzzle flashes and blasts borrow for a few frames. Intensity-only writes, never .visible.
+const flashLights = createFlashLights({ THREE, scene, getViewPosition: () => camera.position });
+// Blast debris: the html-game-v2 port bot-viewer-v3 and the flight sim run, on this page's ground.
+// The sim lives in render-local space; a rebase moves the origin under it, so it clears then.
+const _debrisGlobal = [0, 0, 0];
+const debrisSim = createDebrisSim({ groundAt: (x, z) => {
+  const g = worldCoordinates.toGlobal([x, 0, z], _debrisGlobal);
+  return settings.worldMode === 'terrain' ? terrain.groundHeight(g[0], g[2]) - g[1] : -g[1];
+} });
+const debrisRenderer = createDebrisRenderer({ THREE, scene, sim: debrisSim, lightCount: 2 });
+const debrisTierBudget = createExplosionBudget();
+// bot-viewer-v3's spawnBlastDebris, with its tuning block.
+const blastDebrisSettings = { enabled: true, radiusScale: 0.5, rubbleSize: 2.4, rubbleOnGround: true, tiering: true };
+function spawnBlastDebris(center, shown) {
+  if (!blastDebrisSettings.enabled) return;
+  const tier = blastDebrisSettings.tiering ? debrisTierBudget.reserve('primary') : 'full';
+  const scale = TIER_DEBRIS_SCALE[tier] || TIER_DEBRIS_SCALE.full;
+  if (scale.shrapnel <= 0 && scale.rubble <= 0) return;
+  const blastRadius = shown * blastDebrisSettings.radiusScale;
+  const color = [1, 0.62, 0.26];
+  const onGround = center[1] - debrisGroundAtLocal(center[0], center[2]) < shown * 0.6;
+  if (scale.shrapnel > 0) debrisSim.spawnBlastShrapnel(center[0], center[1], center[2], blastRadius, color, { countScale: scale.shrapnel, verticalBoost: onGround ? 0.25 : 0 });
+  if (scale.rubble > 0 && onGround && blastDebrisSettings.rubbleOnGround) {
+    const ang = Math.random() * Math.PI * 2;   // no kill vector for an area blast: pick a heading
+    debrisSim.spawnRubble(center[0], center[1], center[2], blastDebrisSettings.rubbleSize, [Math.cos(ang), Math.sin(ang)], { countScale: scale.rubble });
+  }
+}
+function debrisGroundAtLocal(x, z) {
+  const g = worldCoordinates.toGlobal([x, 0, z], _debrisGlobal);
+  return settings.worldMode === 'terrain' ? terrain.groundHeight(g[0], g[2]) - g[1] : -g[1];
+}
 const shotEffects = [];
 let shotEffectSeq = 0;
 const EFFECT_LIST_CAP = 900;
@@ -700,6 +736,7 @@ function spawnMuzzleFlash(mount, dirGlobal, weaponId) {
   if (!weapon || !muzzle || (weapon.mode || 'hitscan') === 'melee') return;
   const profile = weapon.muzzleFx || {};
   const life = Math.max(profile.flashDuration ?? 0.08, profile.smokeDuration ?? 0.42);
+  flashLights.flash({ x: muzzle[0], y: muzzle[1], z: muzzle[2] });   // borrows a dynamic-light slot, v3's per-shot rule
   pushEffect('muzzle_flash', muzzle, life, { dir: [...dirGlobal], color: [1, 0.9, 0.62], weaponId, followMuzzle: true, mount, muzzleFx: { ...profile } });
 }
 // The shooter's own shot, predicted: the same seeded ray the server will fire, ended against the
@@ -851,6 +888,7 @@ simulationReady = true;
 const rebaseShift = new THREE.Vector3();
 const stopRebasePresentation = worldCoordinates.onRebase(event => {
   rebaseShift.fromArray(event.delta);
+  debrisSim.clear();   // pieces are render-local; the origin just moved under them
   traversalLab.root.position.add(rebaseShift);
   if (settings.playerControlMode === 'orbit') {
     camera.position.add(rebaseShift);
@@ -1705,7 +1743,10 @@ function applyPlayerSnapshot(snapshot, session) {
     const blast = sanitizeBaseGameExplosionEvent(raw);
     if (!blast) continue;
     const l = worldCoordinates.toRenderLocal(blast.p, _fxLocal);
+    // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn blast.
+    flashLights.flash({ x: l[0], y: l[1], z: l[2] }, { ...BLAST_FLASH, distance: Math.min(60, blast.radius * 3.2) });
     pushEffect('explosion', l, 1.8, { color: [1, 0.62, 0.26], radius: blast.radius });
+    spawnBlastDebris([l[0], l[1], l[2]], blast.radius);
     audioDirector.explosionAt({ x: l[0], y: l[1], z: l[2] });
   }
   ingestProjectiles(snapshot);
@@ -2492,7 +2533,7 @@ async function animate() {
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     frameProfiler.time('water', () => water.update(dt, camera.position));
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now()); updateShotEffects(performance.now()); });
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now()); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
     frameProfiler.time('sky', () => updateWorld(dt));
     if (!terrainStudio.open) {
       if (settings.dofEnabled) {
