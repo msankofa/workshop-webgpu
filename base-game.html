@@ -212,7 +212,7 @@ const NUMBER_LIMITS = Object.freeze({
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
-  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 6],
+  interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 16],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
   armFallLift: [0, 3.2], armFallSpeedRef: [1, 20], armFallTimeRef: [0.1, 2], armPoseSmoothing: [0, 1.5],
@@ -262,8 +262,10 @@ function pickRoomTerrainConfig() {
   if (settings.worldMode !== 'terrain') return { kind: 'traversalLab' };
   // Before the game exists (start menu) the only possible terrain is the analytic default.
   const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' });
-  return { kind: 'terrain', descriptor, volumetric: false };
+  const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
+  return { kind: 'terrain', descriptor, volumetric };
 }
+let roomTerrainConfig = null;   // the room's current terrain config while online (set on join and on owner changes)
 function connectOnlineSession({ mode, roomCode }) {
   return connectBaseGameSession({
     mode,
@@ -272,6 +274,7 @@ function connectOnlineSession({ mode, roomCode }) {
     terrain: mode === 'create' ? pickRoomTerrainConfig() : null,
     onSnapshot: (snapshot, session) => receiveNetworkSnapshot(snapshot, session),
     onStatus: status => receiveNetworkStatus(status),
+    onTerrain: config => receiveRoomTerrain(config),
   });
 }
 
@@ -286,7 +289,13 @@ const terrainStore = createTerrainProjectStore({
   // active project) if any step fails.
   applySource: async (project) => {
     if (!simulationReady) throw new Error('the game has not started yet');
-    if (isOnline()) throw new Error('the room owns the ground; leave the room (or create a new one from this terrain) to apply');
+    if (isOnline()) {
+      // Online the owner chooses the world for everyone: the server builds it, then every client
+      // (this one included) adopts the echoed config. Guests cannot apply.
+      if (!networkSession?.owner) throw new Error('only the room owner can change the world');
+      await networkSession.setTerrain({ kind: 'terrain', descriptor: v5Descriptor(project), volumetric: settings.terrainVolumetric });
+      return;
+    }
     await applyTerrainProjectAtRuntime(project);
   },
 });
@@ -318,7 +327,7 @@ const initialSessionChoice = await chooseGameSession();
 activeMode = initialSessionChoice.mode;
 networkSession = initialSessionChoice.session;
 // While online the ground is room-owned: the start menu's choice is replaced by the room's.
-let roomTerrainConfig = networkSession?.terrain ?? null;
+roomTerrainConfig = networkSession?.terrain ?? null;
 if (networkSnapshot?.world) Object.assign(settings, sanitizeBaseGameWorldPatch(networkSnapshot.world));
 gameplayPaused = false;
 
@@ -333,7 +342,8 @@ await renderer.init();
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1430);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+// 600 m covers the 16-chunk terrain draw radius (480 m); there is no far LOD yet (Phase 9).
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 600);
 camera.position.set(22, 16, 26);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 4, 0);
@@ -354,19 +364,41 @@ let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
 function adoptRoomTerrain(config) {
   if (!config) return;
   if (config.kind === 'terrain') {
-    const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor });
+    const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor, volumetric: config.volumetric === true });
     if (check.error) throw new Error(`room terrain rejected locally: ${check.error}`);
     if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
-    terrain.setSource(check.config.descriptor);
+    const same = activeTerrainDescriptor.key === check.config.descriptor.key && activeTerrainDescriptor.sourceVersion === check.config.descriptor.sourceVersion;
+    if (!same) terrain.setSource(check.config.descriptor);
     activeTerrainDescriptor = check.config.descriptor;
     settings.worldMode = 'terrain';
-    settings.terrainVolumetric = false;
+    settings.terrainVolumetric = check.config.volumetric;
   } else {
     settings.worldMode = 'traversalLab';
   }
   syncAllControls();
   updateWorld(0);
   refreshTerrainSourceLine();
+}
+// The owner changed the world: everyone rebuilds it; the server's next snapshot hard-snaps the
+// respawn. The owner's own ground controls are re-synced to the echoed truth.
+function receiveRoomTerrain(config) {
+  roomTerrainConfig = config;
+  if (!simulationReady) return;
+  try { adoptRoomTerrain(config); }
+  catch (err) { reportBaseGameError(err); returnToMainMenu().catch(reportBaseGameError); }
+}
+// Owner online: a ground control change is a request to the server, not a local fact. On refusal
+// the controls snap back to the room's config.
+let roomTerrainRequestTimer = 0;
+function requestRoomTerrain() {
+  if (!networkSession?.owner || roomTerrainRequestTimer) return;
+  roomTerrainRequestTimer = setTimeout(() => {
+    roomTerrainRequestTimer = 0;
+    networkSession.setTerrain(pickRoomTerrainConfig()).catch(err => {
+      reportBaseGameError(err);
+      if (networkSession?.terrain) receiveRoomTerrain(networkSession.terrain);
+    });
+  }, 75);
 }
 // Swap the streamed/collided source to a v5 project. Synchronous candidate generation of the
 // player's tile proves the recipe evaluates before the epoch bump; chunks then restream under
@@ -383,11 +415,7 @@ async function applyTerrainProjectAtRuntime(project) {
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
   updateWorld(0);
   // Keep the player's global position when the new ground still supports it; otherwise respawn there.
-  if (!isOnline()) {
-    const ground = terrain.system.getHeight(here[0], here[2]);
-    if (Math.abs(here[1] - ground) > 3) playerController.reset(terrain.spawnPosition(here[0], here[2]));
-    playerController.interpolatedPosition(1, playerRenderPosition);
-  }
+  if (!isOnline()) reseatPlayerOnTerrain(3);
   refreshTerrainSourceLine();
 }
 // After a state load the store may hold an active project that the runtime is not streaming yet.
@@ -397,6 +425,14 @@ function syncTerrainSourceFromStore() {
   const wanted = v5Descriptor(project);
   if (activeTerrainDescriptor.key === wanted.key && activeTerrainDescriptor.sourceVersion === wanted.sourceVersion) return;
   applyTerrainProjectAtRuntime(project).catch(reportBaseGameError);
+}
+// After the ground under the player changes (project apply, volumetric handoff), put them back on
+// the new surface at the same X/Z when they are more than `tolerance` metres off it.
+function reseatPlayerOnTerrain(tolerance = 1) {
+  const here = playerController.getPosition();
+  const ground = terrain.groundHeight(here[0], here[2]);
+  if (Math.abs(here[1] - ground) > tolerance) playerController.reset(terrain.spawnPosition(here[0], here[2]));
+  playerController.interpolatedPosition(1, playerRenderPosition);
 }
 function worldSpawn() { return settings.worldMode === 'terrain' ? terrain.spawnPosition(0, 0) : traversalLab.layout.spawn; }
 function worldKillPlaneY(position) { return settings.worldMode === 'terrain' ? terrain.killPlaneYAt(position[0], position[2]) : traversalLab.layout.killPlaneY; }
@@ -697,11 +733,12 @@ function syncNetworkControlPermissions() {
   for (const entry of controlRegistry.values()) {
     if (entry.shared && entry.element) entry.element.disabled = !editable;
   }
-  // The ground is fixed for the life of a room (hot source replacement is a restart, not a patch).
+  // The ground belongs to the room owner: guests follow whatever world the owner picks.
   for (const key of ROOM_OWNED_GROUND_KEYS) {
     const entry = controlRegistry.get(key);
-    if (entry?.element) entry.element.disabled = isOnline();
+    if (entry?.element) entry.element.disabled = isOnline() && !networkSession?.owner;
   }
+  applyDraftButton.disabled = isOnline() && !networkSession?.owner;
 }
 function queueSharedWorldPatch(key) {
   if (!networkSession?.owner) return;
@@ -715,8 +752,12 @@ function queueSharedWorldPatch(key) {
   }, 75);
 }
 function changed(key) {
-  if (key === 'worldMode') {
-    // A new ground means a new spawn; Solo only, online the server owns the transform.
+  if (ROOM_OWNED_GROUND_KEYS.includes(key) && isOnline()) {
+    // Owner: ask the server for the new world; it respawns everyone and echoes the config.
+    if (networkSession?.owner) requestRoomTerrain();
+    else if (networkSession?.terrain) receiveRoomTerrain(networkSession.terrain);   // guests cannot change it
+  } else if (key === 'worldMode') {
+    // A new ground means a new spawn in Solo.
     updateWorld(0);
     if (activeMode === 'solo') resetPlayer();
   } else if (key === 'playerControlMode') {
@@ -888,7 +929,7 @@ refreshTerrainSourceLine();
 terrainWorldSec.append(terrainSourceLine);
 addToggle(terrainWorldSec, 'terrainVisible', 'Terrain visible (collision stays on)');
 addToggle(terrainWorldSec, 'terrainVolumetric', 'Volumetric (caves from the v5 density config)');
-addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 6, 1);
+addRange(terrainWorldSec, 'terrainDrawRadius', 'Draw radius (chunks)', 1, 16, 1);
 addToggle(terrainWorldSec, 'terrainWireframe', 'Wireframe');
 addToggle(terrainWorldSec, 'terrainNormals', 'Normals view');
 addToggle(terrainWorldSec, 'terrainTileBounds', 'Tile bounds');
@@ -1744,6 +1785,7 @@ async function animate() {
     }
     sky.group.position.copy(camera.position);
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
+    if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('sky', () => updateWorld(dt));
     if (!terrainStudio.open) frameProfiler.time('postRender', () => renderer.render(scene, camera));

@@ -1812,7 +1812,7 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 | `bot-score.js` | Pure per-team session tally (spawns/deaths/revives/frags) behind the v2 HUD scoreboard — Node-tested (`test-bot-score.mjs`), THREE-free. |
 | `bot-projectiles.js` | Pure ballistic aiming + a projectile lifetime manager wrapping `entity-types/combat-projectile.js` (flying rockets/grenades in the v2 harness) — Node-tested (`test-bot-projectiles.mjs`), THREE-free. |
 | `bot-drones.js` | Pure drone-operator aircraft: the bomb drone's release solution and go-around, the loitering munition's orbit and dive, target choice and launch gating — Node-tested (`test-bot-drones.mjs`), THREE-free. |
-| `flight-meshes.js` | The flight sim's three craft as reusable groups (plane/quad/bird), materials supplied by the caller. Shared by `demos/flight-sim.html` and the bot viewer's drones. See `docs/subsystems/flight.md`. |
+| `flight-meshes.js` | Four craft as reusable groups (plane/quad/bird/recon), materials supplied by the caller. Shared by `demos/flight-sim.html` and the bot viewer's drones. See `docs/subsystems/flight.md`. |
 | `bot-grenade.js` | Pure grenade-secondary decision math (throw gates/scoring, live-grenade evade urgency) — Node-tested (`test-bot-grenade.mjs`), THREE-free. |
 | `bot-stance.js` | Pure per-bot stance channel: the stand/crouch/prone/run/dash decision table over the resolved FSM state, the stand-up hysteresis latch, and the speed/spread/height/turn-rate multipliers — Node-tested (`test-bot-stance.mjs`), THREE-free and zero-dependency. |
 | `weapon-hold-resolver.js` | Pure resolution of the third-person weapon hold from (stance × locomotion) — continuous stance lerp plus an additive per-class carry delta. Shared by `bot-viewer-v2.html` and `weapon-animation-viewer.html` so the authoring tool cannot drift from the game. Node-tested (`test-weapon-hold-resolver.mjs`). See Contract 6 in `procedural-body-weapon-contracts.md`. |
@@ -9216,9 +9216,17 @@ The craft themselves are the flight sim's, not new art: `flight-meshes.js` was s
 caller-supplied `{ standard, basic }` pair, because the sim runs node materials and the bot viewer
 does not. The sim's own render is unchanged — `buildMesh` there is now one call into the module.
 
+The bomb drone is still the sim's quad. The loitering munition is not: until 2026-08-22 it was the
+sim's **jet** at `0.22` scale, which read as a fighter aircraft rather than a munition. It now flies
+`recon` (added to `flight-meshes.js`), a fixed-wing reconnaissance airframe reconstructed from a
+press photograph — 2.02 m span, 1.13 m long, pusher propeller, V-tail, 580 triangles. Because it is
+authored in real metres its `DRONE_MESH_SCALE` entry is `1.2`, not `0.22`, and the craft on screen
+is the same size it was before (~2.4 m span). `poseDroneCraft` spins `userData.propeller` about Z;
+the quad's `userData.rotors` still spin about Y. Pinned by `test-flight-meshes-recon.mjs`.
+
 ### The two aircraft
 
-| | Bomb drone (quad mesh) | Loitering munition (fixed-wing mesh) |
+| | Bomb drone (quad mesh) | Loitering munition (recon-UAV mesh) |
 |---|---|---|
 | Count | **one, reusable**, per operator | expendable, 2 carried by default |
 | Slot | one man flies one aircraft (`aloftMax` 1) | shares that same single slot |

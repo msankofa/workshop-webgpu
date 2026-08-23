@@ -31,3 +31,8 @@ Thumbs.db
 
 # Panel save mirrors: one file per save click, so they would flood git status.
 bot-viewer-saves/
+
+# Baked terrain heights: ~16 MB per bake and rebuildable from the project with bake-terrain.mjs.
+# The .json metadata IS tracked — it names the project and records its content hash, so a missing
+# .bin is one command away rather than lost work.
+terrain-bakes/*.bin

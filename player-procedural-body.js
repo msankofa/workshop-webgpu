@@ -1393,6 +1393,9 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     absorbMax: 0.20,     // cap on that drop (m)
     absorbRecover: 9,    // spring-back rate (1/s)
     landHold: 0.10,      // seconds the gait holds both planted feet after landing
+    airGrace: 0.12,      // seconds off the floor before it counts as airborne (slope/step blips are shorter)
+    launchVy: 1.5,       // upward speed that counts as a jump immediately, skipping the grace
+    holdSpeed: 0.6,      // landing foot hold only applies below this horizontal speed
     armRaise: 0.55,      // rad the idle arms lift while rising
     armLand: 0.35,       // rad the idle arms swing forward on the landing absorb
   };
@@ -1495,6 +1498,7 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   let _wasOnFloor = true;
   let _absorb = 0;        // current landing pelvis drop (m)
   let _landHold = 0;      // seconds left holding feet after landing
+  let _airTime = 0;       // seconds continuously off the floor
   let _lastPosY = null;
   let _lastVy = 0;
   let _fallTime = 0;      // seconds spent falling (airborne with vy < 0)
@@ -1808,11 +1812,14 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
       if (onFloorFlag && !_wasOnFloor && _airW > 0.2) {
         const impact = Math.max(0, -_lastVy);
         _absorb = Math.min(jumpCfg.absorbMax, _absorb + impact * jumpCfg.absorbDrop);
-        _landHold = jumpCfg.landHold;
+        if (Math.hypot(vx, vz) < jumpCfg.holdSpeed) _landHold = jumpCfg.landHold;
         gait.resetFeet();
       }
-      const airTarget = onFloorFlag ? 0 : 1;
-      const rate = onFloorFlag ? jumpCfg.fallRate : jumpCfg.riseRate;
+      _airTime = onFloorFlag ? 0 : _airTime + safeDt;
+      // Brief floor loss while walking up slopes and steps is not a jump.
+      const airborneNow = !onFloorFlag && (_airTime >= jumpCfg.airGrace || vy > jumpCfg.launchVy);
+      const airTarget = airborneNow ? 1 : 0;
+      const rate = airborneNow ? jumpCfg.riseRate : jumpCfg.fallRate;
       _airW += (airTarget - _airW) * (1 - Math.exp(-rate * safeDt));
       if (_airW < 1e-3) _airW = 0;
       _absorb *= Math.exp(-jumpCfg.absorbRecover * safeDt);
@@ -1825,7 +1832,7 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     }
     _wasOnFloor = onFloorFlag;
     _lastVy = vy;
-    _fallTime = !onFloorFlag && vy < 0 ? _fallTime + safeDt : 0;
+    _fallTime = !onFloorFlag && vy < 0 && _airW > 0.2 ? _fallTime + safeDt : 0;
     const airW = _airW;
     // Falling: 0 while rising fast, 1 while falling fast. Shapes the tuck and the arm pose.
     const fallT = Math.max(0, Math.min(1, 0.5 - vy * jumpCfg.vyScale));

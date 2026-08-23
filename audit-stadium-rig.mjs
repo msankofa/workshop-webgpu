@@ -10,6 +10,8 @@
 
 import fs from 'node:fs';
 import { parseGLB, readAccessor } from './stadium-glb.js';
+import { loadStanceLibrary, nodeReader, mapSpeciesFromLibrary } from './stadium-species.js';
+import { stancedSpecies } from './stadium-stance.js';
 import { mapStadiumRig } from './stadium-rig-map.js';
 import { auditMapping, clipChannels, clipDisturbance, rankClips, parentMap, ancestorsOf } from './rig-audit.js';
 import * as THREE from 'three';
@@ -39,10 +41,17 @@ function strideEnvelopeOf(json, map) {
 const SPECIES = fs.readdirSync('models/stadium').filter(f => f.endsWith('.glb')).map(f => f.replace('.glb', ''))
   .filter(s => !process.env.ONLY || process.env.ONLY.split(',').some(p => s.includes(p)));
 
+// The audit obeys authored stances too: it exists to describe the creature that actually walks, and once
+// a species has a stance, the rest pose the ROM shipped is not that creature.
+const STANCES = await loadStanceLibrary(nodeReader(fs));
+const STANCED = new Set(stancedSpecies(STANCES));
+if (STANCED.size) console.log(`# obeying authored stances for: ${[...STANCED].join(', ')}\n`);
+
 const load = (s) => {
   const bytes = fs.readFileSync(`models/stadium/${s}.glb`);
   const { json, bin } = parseGLB(bytes);
-  return { json, bin, map: mapStadiumRig(json, bin, { source: s }) };
+  const out = mapSpeciesFromLibrary(json, bin, s, STANCES);
+  return { json: out.json, bin: out.bin, map: out.map, stanced: STANCED.has(s) };
 };
 
 const mode = process.argv[2] || 'all';

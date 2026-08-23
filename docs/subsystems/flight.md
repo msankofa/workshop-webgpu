@@ -5,28 +5,46 @@ and AI fly the same model.
 
 | File | Contents | Imports |
 |---|---|---|
-| `flight-terrain.js` | Analytic height field, band limit, `agl`, dry-land placement | nothing |
+| `flight-terrain.js` | Analytic height field, band limit, `agl`, dry-land placement, `setHeightSource` | nothing |
+| `flight-terrain-baked.js` | Baked-grid format, validation and the CPU bilinear sampler (the GPU twin's other half) | nothing |
+| `flight-terrain-stream.js` | Toroidal scrolling window: `subtractWindow`, `fillSpan`, wrapped bilinear `sample` | nothing |
+| `flight-terrain-worker.js` | Module worker: builds a v5 source, fills spans, transfers them back | `terrain-source-v5.js`, stream |
+| `bake-terrain.mjs` | CLI: Terrain Generator v5 project → `terrain-bakes/<name>.{json,bin}`, or `--stream` → `<name>.project.json` | terrain-generator/project/stack/paint, `flight-terrain*` |
 | `flight-airframes.js` | The three airframe tables, `RHO`, `G`, slider ranges | nothing |
 | `flight-model.js` | Rigid-body core, wreck integrator | three, airframes, terrain, combat |
 | `flight-ai.js` | Per-archetype steering, the opponent roster | three, airframes, terrain, combat |
 | `flight-combat.js` | Weapon tables, missile flight, gun lead, locking, threat warning, bomb ballistics and the impact predictor | three, airframes, terrain |
 | `flight-drones.js` | The three releasable mini drones | three, combat |
 | `flight-autopilot.js` | Player-selectable orbit for any airframe, on `steerToward` | three, ai, terrain |
-| `flight-meshes.js` | The three craft as groups; materials come from the caller | three |
+| `flight-meshes.js` | The four craft as groups; materials come from the caller | three |
 | `water-hybrid.js` | Optional ocean surface: Gerstner swell, foam, depth colour (shared with `demos/water-demo.html`) | three, `water-waves.js` |
 | `water-config.json` | The water settings themselves: written by `demos/water-demo.html`, read here | data |
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
 
-Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-ai.mjs`,
-`test-flight-combat.mjs`, `test-flight-drones.mjs`, `test-flight-autopilot.mjs`,
-`test-water-hybrid.mjs`, `test-water-waves.mjs`. Plain Node, no framework, per repo convention.
+Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-terrain-baked.mjs`,
+`test-flight-terrain-stream.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
+`test-flight-autopilot.mjs`, `test-water-hybrid.mjs`, `test-water-waves.mjs`,
+`test-flight-meshes-recon.mjs`. Plain Node, no framework, per repo convention.
 
 The demo needs a server (`python serve.py`) because of the ES module imports, then
-`http://127.0.0.1:8080/demos/flight-sim.html`.
+`http://127.0.0.1:8080/demos/flight-sim.html`. Add `?terrain=<name>` to fly a bake instead of the
+analytic field, or pick one from the panel's Ground dropdown (it reloads, because the height field is
+chosen before any material is built). `serve.py` lists what is available at
+`/api/list-terrain-bakes`.
 
 ## Why the split is where it is
 
-One exception to that line since 2026-08-10: `flight-meshes.js` holds the three craft *groups* (geometry and proportions), because the bot viewer's drone operators fly the same quad and the same fixed wing and a private copy would drift. Materials still belong to each page — this one runs node materials, the bot viewer does not — so the builders take a `{ standard, basic }` pair and `buildMesh` here is one call into the module. Everything else below still holds.
+One exception to that line since 2026-08-10: `flight-meshes.js` holds the craft *groups* (geometry and proportions), because the bot viewer's drone operators fly the same quad and the same fixed wing and a private copy would drift. Materials still belong to each page — this one runs node materials, the bot viewer does not — so the builders take a `{ standard, basic }` pair and `buildMesh` here is one call into the module. Everything else below still holds.
+
+A fourth kind joined the three on 2026-08-22: `recon`, a fixed-wing reconnaissance UAV whose
+proportions were measured off a press photograph rather than sketched — 2.02 m span, 1.13 m long,
+pusher propeller aft of the tail boom, 35-degree V-tail, paddle wingtips. Only the bot viewer flies
+it (its loitering munitions); the sim's own `plane` is still the jet and is untouched. It is the one
+craft here authored in real metres, so it wants a scale near 1 rather than the 0.22 the jet needed.
+It hangs `userData.propeller`, a hub group that spins about **Z**, where the quad's
+`userData.rotors` are blades that spin about Y; a caller that animates one does not animate the
+other for free. The photographed blue-and-yellow livery is deliberately not reproduced, because the
+caller tints the shell by team and printed colour would fight that read.
 
 The line is **decisions and trajectories** on one side, **pictures** on the other. Anything that was
 wrong on first authoring in a way that looked fine on screen belongs in a module with a test; the
@@ -176,6 +194,113 @@ footprint — clears `SEA_LEVEL + DRY_MARGIN` (0 + 8 m). Properties that matter:
 
 Measured after: **0 of 2200 buildings underwater** over 200 spawns, worst footing 8.5 m, median
 cluster move 424 m and max 2.9 km, and the search costs 0.05 ms.
+
+### Baked ground: flying a Terrain Generator v5 map
+
+`?terrain=<name>` swaps the wave field for a bake in `terrain-bakes/`. Default (no parameter) is the
+wave field exactly as before, so this is opt-in and reverting is deleting a query string.
+
+**Why bake instead of evaluating v5 live.** Two separate reasons, and only the second is fundamental:
+
+1. v5's layer stack is a JS switch over a runtime list of layer objects (`evaluateStackPoint`), which
+   a vertex shader cannot run. This one is *only* labour — TSL builds its graph in JS, so the layer
+   loop would unroll at build time into straight-line shader code. It is about 1,900 lines to
+   transcribe, almost all of it the `classic` layer's `terrain-generator-js.js` +
+   `biome-classifier-js.js`, and it would create a new hand-synced twin.
+2. Erosion, hydrology and paint are **not point functions at all.** The height at one spot depends on
+   what the whole grid did over many iterations, so there is no equation to hand a vertex shader or a
+   CPU sampler. This is why `terrain-source-v5.js` lists them in `classification.omitted` and refuses
+   painted projects outright. A grid of numbers is the only representation that carries them.
+
+So `bake-terrain.mjs` runs `generateFullGridV5` — the **editor's** pipeline, not the runtime source —
+and what you saw in the generator is what lands in the sim. It subtracts the project's `sea_level` so
+the sim's water plane at y=0 lands where the author put the coast, and `--size` stretches a small
+project over a bigger world (landforms get wider, not taller, which suits an aircraft).
+
+**The swap is one function.** Every consumer — physics, AI, ballistics, the gunner's ground march,
+`agl`, `dryAnchor` — imports `heightAt` and nothing else, so `setHeightSource(fn)` in
+`flight-terrain.js` changes the world without touching a call site. `setHeightSource(null)` restores
+the wave field bit-for-bit, which the test asserts.
+
+**The sampler is the twin, and it is deliberately not a hardware fetch.** `sampleBake()` in
+`flight-terrain-baked.js` and `tslBaked` in the viewer both do four clamped integer texel fetches and
+two lerps. Hardware bilinear was rejected twice over: `r32float` is only filterable where the device
+reports `float32-filterable`, and leaning on the sampler would mean matching its texel-centre
+convention rather than controlling the arithmetic. `test-flight-terrain-baked.mjs` re-derives the
+shader's formulation independently and demands **bit-identical** agreement — which caught the CPU
+side using `a*(1-t) + b*t` where GLSL's `mix` expands to `a + (b-a)*t`.
+
+**Normals need a bigger `eps`.** A bake is bilinear, so slope is constant inside a cell: taps closer
+together than one post land in the same cell and every quad shades flat. The ring normal step is now
+`max(4, cellSize * 0.5, bake.step)`.
+
+**Measured** on a 2049² / 8 m bake of the wave field: reproduces the source to **8 mm mean, 1.08 m
+worst**; `heightAt` runs at **51 ns/call against the wave field's 462 ns — 9× faster**, since 16 sines
+and a domain warp cost more than two lerps; bases still place dry (0 of 2200 underwater, median move
+600 m). File size is 16 MB of Float32.
+
+**What it costs.** The world becomes finite — outside the baked square the edge cell extends forever,
+so terrain stops changing rather than ending. There is no detail below the post spacing. And a bake
+is a build artifact, so editing the project means re-baking.
+
+### Streaming: infinite v5 ground
+
+`bake-terrain.mjs <project> --stream` writes no heights at all — just the project — and the viewer
+generates ground around the plane forever. There are now three grounds, chosen once before any
+material is built:
+
+| | waves (default) | bake | stream |
+|---|---|---|---|
+| Extent | infinite | 16 km square | infinite |
+| Erosion, hydrology, paint | n/a | **yes** | no |
+| Cost | free | 16 MB, no CPU | 4 MB, 8% of one worker core |
+
+**Why this is possible at all, and why erosion still is not.** The v5 *generation field* was already
+infinite — `terrain-source-v5.js` declares `capabilities: ['infinite']`, `bounds: null`,
+`contains()` returns true everywhere, and `heightAt(1e9, -1e9)` answers with a finite number. The
+static bake's edge was a choice of mine, not a limit of v5's. What genuinely cannot be unbounded is
+the list v5 reports as `omitted`, and the wording there is worth reading carefully: erosion and
+hydrology are `(bounded; preview only)` because flow accumulation asks how much water passes a point
+and the answer is the size of its upstream catchment, which no bounded neighbourhood contains.
+Biome masks are only `(not streamed yet)` — a wiring gap, since the climate sampler is already
+unbounded.
+
+**This is Minecraft's answer.** Minecraft does not simulate erosion either; "erosion" there is one of
+six climate *noises* that selects a terrain shape from a spline, and biomes are a table lookup on
+those same noises. Both are point functions, which is exactly why it is infinite. v5's `classic`
+layer already works this way — `biome-classifier-js.js` has channels named `continentalness`,
+`erosion`, `weirdness`, `temperature`, `humidity`. So streamed terrain can look weathered; it is just
+not water-routed.
+
+**The window is toroidal.** `flight-terrain-stream.js` holds `res × res` posts and never slides its
+contents: global post `(gx, gz)` always lives at texel `(gx mod res, gz mod res)`, so moving east
+overwrites the column that just fell off the west edge, in place. Advancing costs one strip of
+generation and no memory traffic. `subtractWindow` turns a move into up to four non-overlapping
+rectangles — only the newly exposed ground is generated. The GPU does the same `mod` on its integer
+fetch, which is why the twin stays a twin.
+
+Three details that are load-bearing:
+
+- **The cell and fraction come from the GLOBAL coordinate; only the fetch wraps.** Computing the
+  fraction in window space is algebraically identical and drifts ~1e-13 m as the window scrolls,
+  making a hill's height depend on where the plane is. Picometres, but there is no reason to accept
+  a position-dependent answer, and the test now demands bit-exactness.
+- **The sea-level shift and height scale live in the source**, applied identically in the worker and
+  in the main thread's out-of-window fallback. When they did not, ground stepped by `sea × scale` at
+  the window edge — invisible in a screenshot, fatal to a plane crossing it.
+- **`sample` refuses anything not wholly inside the window**, because a cell straddling the wrap
+  would take neighbours from the opposite edge of the world. The caller falls back to the generator,
+  which is exact everywhere and merely slower (2.4 µs), and that is what answers for a missile or an
+  AI waypoint tens of kilometres out.
+
+**Measured**, 1025² posts at 20 m (a 20.5 km window against the clipmap's 8.2 km reach), flying
+75 km at 250 m/s: first fill **2.3 s** (in the worker, so the tab stays responsive), then **77
+scrolls, one every 3.9 s, 324 ms mean and 437 ms worst each, 8.3% of one core**, and the plane never
+left the window. A full-window rebuild for comparison is 2.3 s, so incremental fill is the difference
+between this working and not.
+
+The one rough edge is that 2.3 s of startup. Splitting the first window across several workers would
+cut it roughly linearly; it is one rectangle and would not disturb anything else.
 
 ### Three metrics that measured the wrong thing
 

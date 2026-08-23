@@ -149,6 +149,10 @@
     tick to put it on. Ammo refills you now. Damage and reload edit the weapon itself, for everyone
     who carries it.</p>
 
+  <h2>Ground</h2>
+  <select id="terrainSel" style="width:100%"></select>
+  <p class="sub" id="terrainNote" style="margin:6px 0 0"></p>
+
   <h2>Terrain view</h2>
   <div class="seg" id="viewSeg">
     <button data-view="0" class="on">Lit</button>
@@ -241,9 +245,10 @@
 import * as THREE from 'three';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, LineBasicNodeMaterial } from 'three/webgpu';
 import {
-  Fn, If, Loop, Break, uniform, varying, attribute, select, vec2, vec3, vec4, float,
+  Fn, If, Loop, Break, uniform, varying, attribute, select, vec2, vec3, vec4, float, ivec2,
   positionLocal, positionWorld, cameraPosition, sin, cos, abs, max, min, clamp, mix, smoothstep,
   floor, normalize, cross, dot, length, pow, sqrt, exp, oneMinus, time, mx_fractal_noise_float,
+  textureLoad,
 } from 'three/tsl';
 
 // The flight harness proper. Everything below this line is the VIEWER — meshes, materials, HUD,
@@ -254,8 +259,11 @@ import {
 // private copy would be arguing for nothing.
 import {
   TS, RIDGE_AMP, BASE_OFFSET, RING_N, RING_BASE, RING_LEVELS, CELL0, CELL_MAX, SEA_LEVEL,
-  WAVES, heightAt, agl, dryAnchor,
+  WAVES, heightAt, agl, dryAnchor, setHeightSource,
 } from '../flight-terrain.js';
+import { normalizeBake, sampleBake, bakeFromBytes } from '../flight-terrain-baked.js';
+import { createTerrainStream, fillSpan as fillSpanSync, spanPostCount } from '../flight-terrain-stream.js';
+import { createV5Source } from '../terrain-source-v5.js';
 // Gerstner swell, Beer-Lambert depth colour, GGX glint and shore foam, shared with
 // demos/water-demo.html. See docs/water-vs-waterthreejs-comparison.md.
 import {
@@ -354,10 +362,166 @@ const uCamXZ = uniform(new THREE.Vector2());   // drives terrain band-limiting a
 // ---------------------------------------------------------------------------
 // Terrain height — CPU/GPU twin. Edit both or physics and picture disagree.
 // ---------------------------------------------------------------------------
+//
+// THREE possible grounds, chosen ONCE before any material is built, so none pays for the others and
+// nothing recompiles mid-flight:
+//
+//   waves   the analytic field below. Infinite, free, five draw calls. The default.
+//   bake    a fixed square from terrain-bakes/<name>.bin. Carries a v5 map's erosion, hydrology and
+//           paint, because those are grid simulations that only survive as stored numbers.
+//   stream  a window of posts that scrolls with the plane, generated from the v5 project itself.
+//           Infinite, but noise layers only — see classification.omitted.
+//
+// `?terrain=<name>` picks one; which of the last two you get is recorded in the bake's metadata.
+
+const bakeName = new URLSearchParams(location.search).get('terrain');
+let bake = null, bakeTex = null, bakeError = null;
+let stream = null, streamMeta = null, streamWorker = null, streamPending = false, streamFallback = null;
+
+if (bakeName) {
+  try {
+    const safe = bakeName.replace(/[^A-Za-z0-9_-]+/g, '-');
+    const metaRes = await fetch(`../terrain-bakes/${safe}.json`);
+    if (!metaRes.ok) throw new Error(`no terrain named "${safe}" (${metaRes.status})`);
+    const meta = await metaRes.json();
+
+    if (meta.mode === 'stream') {
+      const projRes = await fetch(`../terrain-bakes/${safe}.project.json`);
+      if (!projRes.ok) throw new Error(`"${safe}" is streamable but has no .project.json (${projRes.status})`);
+      const project = await projRes.json();
+
+      // The generator also runs on this thread, for the queries the window cannot answer: a missile
+      // or an AI waypoint tens of kilometres away is outside the window, and clamping there would
+      // quietly put the ground in the wrong place. Rare, and 2.4 us each, so exactness is affordable.
+      const src = createV5Source(project);
+      const seaShift = meta.seaLevel || 0;
+      const hScale = meta.heightScale || 1;
+      const exact = (x, z) => (src.heightAt(x, z) - seaShift) * hScale;
+      streamFallback = exact;
+
+      stream = createTerrainStream();
+      streamMeta = meta;
+      try {
+        streamWorker = new Worker('../flight-terrain-worker.js', { type: 'module' });
+        await streamRequest({ type: 'init', project, seaLevel: seaShift, heightScale: hScale });
+      } catch (werr) {
+        // No module workers (or opened from file://): still playable, just with the generation on
+        // this thread. Say so, because every scroll will then be a visible hitch.
+        if (streamWorker) { streamWorker.terminate(); streamWorker = null; }
+        console.warn(`terrain stream: no worker (${werr.message}); generating on the render thread`);
+      }
+
+      // Fill the first window before the first frame — flying over ground that has not been decided
+      // yet is worse than waiting for it. This is the one slow moment, a second or two, and it goes
+      // through the worker so the tab stays responsive instead of freezing.
+      const t0 = performance.now();
+      await streamScroll(0, 0);
+      console.log(`terrain: streaming "${meta.name}" — ${stream.res}² posts, ${stream.post} m, ` +
+        `${(stream.size / 1000).toFixed(1)} km window, first fill ${(performance.now() - t0).toFixed(0)} ms`);
+
+      setHeightSource((x, z) => (stream.covers(x, z) ? stream.sample(x, z) : exact(x, z)));
+      bakeTex = new THREE.DataTexture(stream.heights, stream.res, stream.res, THREE.RedFormat, THREE.FloatType);
+      bakeTex.needsUpdate = true;
+    } else {
+      const binRes = await fetch(`../terrain-bakes/${safe}.bin`);
+      if (!binRes.ok) throw new Error(`bake "${safe}" has no .bin (${binRes.status})`);
+      bake = normalizeBake(meta, bakeFromBytes(await binRes.arrayBuffer()));
+      setHeightSource((x, z) => sampleBake(bake, x, z));   // physics, AI and ballistics follow instantly
+      bakeTex = new THREE.DataTexture(bake.heights, bake.res, bake.res, THREE.RedFormat, THREE.FloatType);
+      bakeTex.needsUpdate = true;
+      console.log(`terrain: baked "${bake.name}" — ${bake.res}x${bake.res} posts, ${bake.size} m, ${bake.step.toFixed(1)} m spacing`);
+    }
+  } catch (err) {
+    bakeError = err.message;
+    bake = null; bakeTex = null; stream = null;
+    if (streamWorker) { streamWorker.terminate(); streamWorker = null; }
+    setHeightSource(null);
+    console.warn(`terrain: falling back to the wave field — ${err.message}`);
+  }
+}
+
+// One outstanding worker request at a time, each tagged so a reply for a plan we have since
+// abandoned is dropped rather than written into a window that has moved on.
+let streamReqId = 0;
+function streamRequest(msg) {
+  return new Promise((resolve, reject) => {
+    const id = ++streamReqId;
+    const onMessage = (e) => {
+      if (e.data.id !== id) return;
+      streamWorker.removeEventListener('message', onMessage);
+      e.data.ok ? resolve(e.data) : reject(new Error(e.data.error));
+    };
+    streamWorker.addEventListener('message', onMessage);
+    streamWorker.postMessage({ ...msg, id });
+  });
+}
+
+// Move the window to cover (x, z), generating only the newly exposed ground. Falls back to filling
+// on this thread when there is no worker, which hitches but keeps the page working.
+async function streamScroll(x, z) {
+  const plan = stream.plan(x, z);
+  if (!plan) return false;
+  if (!streamWorker) {
+    stream.commit(plan, plan.spans.map((s) => fillSpanSync(s, stream.post, streamFallback)));
+    return true;
+  }
+  const reply = await streamRequest({ type: 'spans', post: stream.post, spans: plan.spans });
+  // The plane may have moved on while the worker was busy; the plan is still valid because it is
+  // absolute, not relative, so commit it and let the next frame decide whether to scroll again.
+  stream.commit(plan, reply.data);
+  return true;
+}
+
+// Baked ground: four integer texel fetches and two lerps, matching sampleBake() in
+// flight-terrain-baked.js line for line. Deliberately NOT a hardware bilinear fetch — r32float is
+// only filterable where the device reports `float32-filterable`, and hand-rolling it also makes the
+// CPU and GPU agree by construction rather than by convention. Outside the grid the edge cell
+// extends, which is what the clamp does on both sides.
+const uBakeOrigin = uniform(new THREE.Vector2(bake ? bake.originX : 0, bake ? bake.originZ : 0));
+const uBakeStep = uniform(bake ? bake.step : 1);
+const uBakeMax = uniform(bake ? bake.res - 2 : 0);
+
+const tslBaked = Fn(([p, spacing]) => {   // spacing is unused: a bake has no waves to band-limit
+  const f = p.sub(uBakeOrigin).div(uBakeStep);
+  const lo = vec2(0, 0), hi = vec2(uBakeMax, uBakeMax);
+  const c = clamp(floor(f), lo, hi);
+  const t = clamp(f.sub(c), vec2(0, 0), vec2(1, 1));
+  const i = ivec2(c);
+  const h00 = textureLoad(bakeTex, i).x;
+  const h10 = textureLoad(bakeTex, i.add(ivec2(1, 0))).x;
+  const h01 = textureLoad(bakeTex, i.add(ivec2(0, 1))).x;
+  const h11 = textureLoad(bakeTex, i.add(ivec2(1, 1))).x;
+  return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
+});
+
+// Streamed ground: the same four fetches, wrapped instead of clamped. Global post (gx, gz) lives at
+// texel (gx mod res, gz mod res) — the window never slides its contents, so a scroll costs one strip
+// of generation and no memory traffic. The cell and the fraction come from the GLOBAL coordinate and
+// only the fetch wraps, matching flight-terrain-stream.js's sample(): computing the fraction in
+// window space instead would make a hill's height depend on where the plane happens to be.
+const uStreamOrigin = uniform(new THREE.Vector2());   // window corner, in global posts
+const uStreamPost = uniform(stream ? stream.post : 1);
+const uStreamRes = uniform(stream ? stream.res : 1);
+
+const tslStream = Fn(([p, spacing]) => {
+  const f = p.div(uStreamPost);
+  const g = floor(f);
+  const hi = uStreamOrigin.add(uStreamRes).sub(2);
+  const c = clamp(g, uStreamOrigin, hi);
+  const t = clamp(f.sub(c), vec2(0, 0), vec2(1, 1));
+  const r = uStreamRes;
+  const w = (n) => ivec2(n.sub(floor(n.div(r)).mul(r)));   // positive modulo; TSL mod() follows sign
+  const i0 = w(c), i1 = w(c.add(1));
+  const h00 = textureLoad(bakeTex, ivec2(i0.x, i0.y)).x;
+  const h10 = textureLoad(bakeTex, ivec2(i1.x, i0.y)).x;
+  const h01 = textureLoad(bakeTex, ivec2(i0.x, i1.y)).x;
+  const h11 = textureLoad(bakeTex, ivec2(i1.x, i1.y)).x;
+  return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
+});
 
 // Same function, built as a node graph. The WAVES table is shared, so only the SHAPE is written
 // twice — but that is still enough to drift, so edit the two together.
-const tslHeight = Fn(([p, spacing]) => {
+const tslWaves = Fn(([p, spacing]) => {
   const x = p.x, z = p.y;
   const wx = sin(z.mul(TS * 0.31).add(1.7)).mul(620)
     .add(cos(x.mul(TS * 0.23).sub(0.4)).mul(380))
@@ -378,6 +542,10 @@ const tslHeight = Fn(([p, spacing]) => {
   const r = float(1).sub(abs(sin(px.mul(0.55).sub(pz.mul(0.36)).add(0.6))));
   return h.add(r.mul(r).mul(RIDGE_AMP)).add(BASE_OFFSET);
 });
+
+// The one name the rest of the viewer uses. Everything downstream — rings, normals, water depth,
+// rain splashes — reads this and never learns which ground it got.
+const tslHeight = bake ? tslBaked : stream ? tslStream : tslWaves;
 
 // distance -> lattice spacing, matching the clipmap: ring k reaches S_k with cells of S_k/48
 const tslSpacing = Fn(([xz]) => clamp(length(xz.sub(uCamXZ)).div(RING_N / 2), CELL0, CELL_MAX));
@@ -453,7 +621,9 @@ for (let lv = 0; lv < RING_LEVELS; lv++) {
   // analytic normal by central difference; eps tracks cell size so far rings stay smooth. All four
   // taps use the spacing at the VERTEX, not at each tap, so the difference measures the surface
   // rather than the band limit changing under it.
-  const eps = Math.max(4, cellSize * 0.5);
+  // A baked field is bilinear, so its slope is constant inside a cell: taps closer together than
+  // one post land in the same cell and every quad shades flat. Step a whole post at minimum.
+  const eps = Math.max(4, cellSize * 0.5, bake ? bake.step : 0, stream ? stream.post : 0);
   const normal = Fn(() => {
     const xz = aPos.xz.mul(uHalf).add(uCenter);
     const sp = tslSpacing(xz);
@@ -514,6 +684,28 @@ for (let lv = 0; lv < RING_LEVELS; lv++) {
   mesh.renderOrder = -10 + lv;
   scene.add(mesh);
   rings.push({ mesh, uCenter, half, cell: (2 * half) / RING_N });
+}
+
+// Keep the streaming window under the plane. Follows the AIRCRAFT, not the camera: an orbit camera
+// can be kilometres away, and the ground that has to be right is the ground being flown over.
+// One request in flight at a time — the plan is absolute, so a slow reply is still correct when it
+// lands, and asking again next frame is cheaper than queueing work that is already stale.
+let streamStats = { fills: 0, lastMs: 0, lastPosts: 0 };
+function updateStream(p) {
+  uStreamOrigin.value.set(stream.originPX, stream.originPZ);
+  if (streamPending || !stream.plan(p.x, p.z)) return;
+  streamPending = true;
+  const t0 = performance.now();
+  const posts = spanPostCount(stream.plan(p.x, p.z));
+  streamScroll(p.x, p.z)
+    .then((moved) => {
+      if (!moved) return;
+      bakeTex.needsUpdate = true;   // the ring buffer is the texture's own array, so this is the upload
+      uStreamOrigin.value.set(stream.originPX, stream.originPZ);
+      streamStats = { fills: streamStats.fills + 1, lastMs: performance.now() - t0, lastPosts: posts };
+    })
+    .catch((err) => console.warn(`terrain stream: ${err.message}`))
+    .finally(() => { streamPending = false; });
 }
 
 function updateRings(cx, cz) {
@@ -3792,6 +3984,42 @@ viewSeg.addEventListener('click', (e) => {
   uView.value = parseFloat(b.dataset.view);
   for (const x of viewSeg.querySelectorAll('button')) x.classList.toggle('on', x === b);
 });
+// Ground picker. Changing it reloads: which height field is in play is decided before a single
+// material exists, so there is nothing to toggle at runtime — see the terrain-height section.
+const terrainSel = document.getElementById('terrainSel');
+const terrainNote = document.getElementById('terrainNote');
+{
+  const opt = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; terrainSel.appendChild(o); };
+  const current = bake ? bake.name : streamMeta ? streamMeta.name : '';
+  opt('', 'Wave field (infinite)');
+  terrainSel.value = current;
+  terrainNote.textContent = bakeError
+    ? `Could not load "${bakeName}": ${bakeError}. Flying the wave field.`
+    : stream
+      ? `Generated as you fly, forever. A ${(stream.size / 1000).toFixed(1)} km window of ` +
+        `${stream.post} m posts follows the plane. Erosion and paint are not included — they are ` +
+        `whole-grid simulations, so only a fixed bake can carry them.`
+      : bake
+        ? `${bake.size} m across, ${bake.step.toFixed(1)} m posts. Outside that square the edge extends.`
+        : 'Sixteen plane waves, evaluated in the vertex shader. Goes on forever.';
+
+  fetch('/api/list-terrain-bakes').then((r) => r.ok ? r.json() : null).then((data) => {
+    if (!data?.ok) return;
+    for (const b of data.bakes) {
+      opt(b.name, b.meta.mode === 'stream'
+        ? `${b.name} — infinite, noise only`
+        : `${b.name} — ${b.meta.size} m, ${b.meta.res}²`);
+    }
+    terrainSel.value = current;   // the meta's name, not the raw query, so odd input still matches
+  }).catch(() => { /* opened without serve.py: the ?terrain= path still works */ });
+
+  terrainSel.onchange = () => {
+    const url = new URL(location.href);
+    if (terrainSel.value) url.searchParams.set('terrain', terrainSel.value);
+    else url.searchParams.delete('terrain');
+    location.href = url.toString();
+  };
+}
 document.getElementById('respawn').onclick = () => respawnFlyer(player);
 document.getElementById('resetTune').onclick = () => {
   Object.assign(AIRFRAMES[player.afKey], JSON.parse(JSON.stringify(DEFAULTS[player.afKey])));
@@ -4087,6 +4315,7 @@ function frame() {
     rainBed.set(audioMuted ? 0 : rainAmount * 0.6 * (0.35 + 0.65 * Math.max(0, 1 - agl(camera.position) / 900)));
   }
   updateRings(camera.position.x, camera.position.z);
+  if (stream) updateStream(player ? player.p : camera.position);
   sky.position.copy(camera.position);
   water.position.set(camera.position.x, 0, camera.position.z);
   if (hybridWater.mesh.visible) hybridWater.update(camera.position);

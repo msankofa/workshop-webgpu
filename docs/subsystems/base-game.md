@@ -790,16 +790,30 @@ the root only), debug views (wireframe, `MeshNormalNodeMaterial` normals view, p
 tiles, draws, triangles, installs per second, `lastUpdateMs`, epoch, worker, `lastSourceError`,
 collision-provider id/enabled/colliderId). `setActive()` switches collision and visuals together;
 `setVisible(false)` hides chunks but keeps collision authoritative; `setSource()` swaps the streamed
-and collided source with epoch bump and stale-chunk retention; `spawnPosition(x, z)` and
-`killPlaneYAt(x, z)` (80 m under the local surface) give the host ground-relative spawn/kill values.
+and collided source with epoch bump and stale-chunk retention; `groundHeight(x, z)` is the surface a
+body stands on in the current mode (the density surface via `source.surfaceYAt` when volumetric, the
+heightfield otherwise) and feeds `spawnPosition(x, z)` and `killPlaneYAt(x, z)` (80 m under it).
 `update(globalPosition, dt)` must receive the player's global position.
+
+**Fall-through fix (2026-08-22).** Three causes, all measured in Node: (1) the density surface warps
+up to ±`warp_strength_surface` from the heightfield, so a heightfield-based spawn sat inside rock at
+~35% of points and a marching-cubes solid has no interior triangles to push a capsule out;
+(2) `setVolumetric(true)` disabled the heightfield provider before any volume chunk existed, and a
+collider gap of ≥30 frames sinks the player past recovery; (3) `holeAt` tested density 1 m under the
+heightfield, which the warp makes "air" at ~40% of points, so the plain heightfield refused ground
+there too. Now: `surfaceYAt` exists and drives placement; the switch is a **handoff** — the
+heightfield stays live (`handoffPending`) until `volumeProvider.hasChunk()` holds the chunk under the
+player, then `update()` flips providers and `takeHandoffCompleted()` reads true once so the page's
+`reseatPlayerOnTerrain()` moves the player onto the new surface at the same X/Z (toggle-off reports
+immediately); `holeAt` is true only where the density surface lies deeper than the warp can reach.
+`test-base-game-terrain-handoff.mjs` covers all three.
 
 In `base-game.html`: `worldMode` gains `terrain` (the only runtime source is
 `analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1' })` until Phase 7);
 `worldSpawn()`/`worldKillPlaneY()` pick terrain or Traversal Lab values; changing `worldMode` in
 Solo respawns the player; `updateWorld()` drives `setActive/Visible/DrawRadius/…` from settings;
 `animate()` calls `terrain.update()` under the `terrain` profiler label before `updateWorld`. New
-local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–6), `terrainWireframe`,
+local settings (all registered): `terrainVisible`, `terrainDrawRadius` (1–16), `terrainWireframe`,
 `terrainNormals`, `terrainTileBounds`, `terrainCollisionDebug`, in a **Terrain world** panel
 section with a source readout and a 4 Hz runtime line. The performance `context.world.terrain` is
 now `{ project: terrainStore.summary(), runtime: terrain.stats }`. Online, `worldMode` is still
@@ -893,8 +907,37 @@ the server streams chunk meshes), `finite-map` is refused, and the JSON is cappe
   client agree to 0 m over 960 ticks across a tile seam with jumps, resume returns the same
   config, surface-relative kill plane, session sends `terrain` on create.
 
-Not yet: multiplayer volumetric terrain, published-asset keys instead of inline projects (the
-create message carries the normalized project body once), finite GLB maps (Phase 6), LOD (9).
+**Owner-controlled worlds + volumetric rooms (2026-08-22, protocol 5).** The room owner picks the
+world for everyone, at any time; guests follow and cannot change it.
+- `base:set_terrain { terrain }` (owner only, else `not_owner`): the server sanitizes the config,
+  builds the world through the same per-version cache (`buildWorld`), then atomically swaps
+  `room.terrain`/`room.sim`, re-creates every controller at the new spawn, bumps `revision` and
+  `spawnRevision`, requests a resync, and broadcasts `base:terrain { terrain }` (full config) followed
+  by a snapshot. An identical config is just echoed; `invalid_terrain`/`world_failed` leave the room
+  untouched. A later request supersedes an in-flight build (`room.terrainRequest`).
+- `sanitizeBaseGameTerrainConfig` now accepts `volumetric: true` for v5 descriptors (world version
+  gets a `:volume` suffix; `describe…` carries the flag). Volumetric rooms collide on the server
+  against the same lod-0 marching-cubes tiles the clients stream: `terrain-volume-collision.js`
+  (`createVolumeCollision(source, { worldQuery })`) builds a 3×3 ring around each player
+  synchronously (`coverRadius` 1, `maxBuildsPerCall` 4 per tick, `keepRadius` 3 then pruned; same
+  `chunkSize` 30 / `volumeChunkIntervals` as `terrain-system.js`). `stepRoom` calls
+  `sim.prepare(positions)` before stepping and holds any player whose chunk is not collidable yet.
+  Spawn is `surfaceYAt(0,0)+1.5`; the kill plane is `min(surface−80, y_min−10)`.
+- `base-game-session.mjs`: `setTerrain(config)` (owner) resolves with the echoed config;
+  `onTerrain(config)` fires for everyone; `session.terrain` tracks it.
+- `base-game.html`: `worldMode`/`terrainVolumetric`/Apply draft stay enabled for the owner online and
+  route through `requestRoomTerrain()` / `applySource → setTerrain`; guests' are disabled and snap
+  back to `session.terrain` if touched. `receiveRoomTerrain` → `adoptRoomTerrain` (now honours
+  `volumetric`) for every client; the server's next snapshot hard-snaps the respawn.
+- `test-base-game-rooms-terrain.mjs` [5]–[7]: session request/echo/reject; owner switch (guest
+  refused, full config to all, respawn + resync, echo on identical, refusal leaves the world, back to
+  the lab); volumetric room (spawn on the density surface, ring built player-first, 720 ticks across
+  a seam with server and predicted client agreeing to 0 m, bounded footprint, kill plane).
+
+Not yet: published-asset keys instead of inline projects (the create/set_terrain messages carry the
+normalized project body), finite GLB maps (Phase 6), LOD (9). Server volume tiles are built on the
+tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
+the follow-up if that shows.
 
 Base Game hosts the actual Terrain Generator v5 interface as a full-screen Terrain Studio screen
 reachable from the start and pause menus. It does not recreate a second set of v5 sliders. The

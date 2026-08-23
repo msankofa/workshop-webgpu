@@ -1,7 +1,7 @@
 import { normalizeDescriptor } from './terrain-source.js';
 import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 4;
+export const BASE_GAME_PROTOCOL_VERSION = 5;
 export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
 export const BASE_GAME_TERRAIN_KINDS = Object.freeze(['traversalLab', 'terrain']);
 export const BASE_GAME_ROOM_GRACE_MS = 30_000;
@@ -86,17 +86,19 @@ export function pickBaseGameSharedWorld(settings) {
 // ---- protocol 4: room-owned terrain ----
 // The room owner chooses the authoritative ground at create time. Accepted shapes:
 //   { kind: 'traversalLab' }
-//   { kind: 'terrain', descriptor }   descriptor = terrain-source.js descriptor (analytic, or a
-//                                     v5-recipe whose config.project is runtime-supported)
+//   { kind: 'terrain', descriptor, volumetric? }   descriptor = terrain-source.js descriptor
+//                                     (analytic, or a v5-recipe whose config.project is
+//                                     runtime-supported); volumetric needs a v5 density field
 // The descriptor is re-normalized and (for v5) the project is re-hashed here, so a client can
-// never smuggle an arbitrary blob; volumetric terrain is Solo-only until the server streams it.
+// never smuggle an arbitrary blob. The owner may replace a room's config at any time
+// (`base:set_terrain`); everyone respawns on the new ground.
 // Returns { config, error }. `config.worldVersion` is the string every peer must agree on.
 export function sanitizeBaseGameTerrainConfig(input) {
   if (input == null) return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
   if (typeof input !== 'object' || Array.isArray(input)) return { config: null, error: 'terrain config must be an object' };
   if (input.kind === 'traversalLab') return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
   if (input.kind !== 'terrain') return { config: null, error: `unknown terrain kind ${String(input.kind)}` };
-  if (input.volumetric === true) return { config: null, error: 'volumetric terrain is not available in multiplayer yet' };
+  const volumetric = input.volumetric === true;
   let text;
   try { text = JSON.stringify(input.descriptor); } catch { return { config: null, error: 'terrain descriptor is not serializable' }; }
   if (!text || text.length > BASE_GAME_TERRAIN_CONFIG_MAX_BYTES) return { config: null, error: `terrain descriptor exceeds ${BASE_GAME_TERRAIN_CONFIG_MAX_BYTES} bytes` };
@@ -114,15 +116,16 @@ export function sanitizeBaseGameTerrainConfig(input) {
   } else if (descriptor.kind !== 'analytic') {
     return { config: null, error: `terrain kind ${descriptor.kind} is not available in multiplayer` };
   }
-  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}`;
-  return { config: { kind: 'terrain', descriptor, projectHash, worldVersion }, error: null };
+  if (volumetric && descriptor.kind !== 'v5-recipe') return { config: null, error: 'volumetric terrain needs a v5 project with a density field' };
+  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}`;
+  return { config: { kind: 'terrain', descriptor, projectHash, volumetric, worldVersion }, error: null };
 }
 
 // What snapshots and `base:joined` carry about the ground: identity only, never the project body
 // (joiners receive the full descriptor once in `base:joined`).
 export function describeBaseGameTerrainConfig(config) {
   if (!config) return null;
-  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null };
+  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true };
 }
 
 export function advanceBaseGameWorld(world, elapsedMs) {

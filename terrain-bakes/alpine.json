@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "alpine",
+  "mode": "stream",
+  "source": "v5-project",
+  "project": "alpine",
+  "projectFile": "maps/alpine-project.json",
+  "projectHash": "ee420deae14ba561b99a92892b78ac90a0bf61dc0d582db8d9bf9a34a666bab3",
+  "algorithmVersion": "v5-unbounded-1",
+  "seaLevel": 40,
+  "heightScale": 1,
+  "omitted": [
+    "hydraulic erosion (bounded; preview only)",
+    "thermal erosion (bounded; preview only)",
+    "lake discovery, flow and hydrology (bounded; preview only)",
+    "biome, material and grass masks (not streamed yet)"
+  ],
+  "bakedAt": "2026-08-23T00:11:58.067Z"
+}

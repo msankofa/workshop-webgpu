@@ -81,7 +81,7 @@ export function warpZ(x, z) {
 
 // spacing 0 (the default) is full detail, which is what the physics and the AI always want — only
 // the picture is band-limited, and only where the lattice cannot carry the detail anyway
-export function heightAt(x, z, spacing = 0) {
+export function analyticHeightAt(x, z, spacing = 0) {
   const px = (x + warpX(x, z)) * TS;
   const pz = (z + warpZ(x, z)) * TS;
   let h = 0;
@@ -91,6 +91,22 @@ export function heightAt(x, z, spacing = 0) {
   }
   const r = 1 - Math.abs(Math.sin(px * 0.55 - pz * 0.36 + 0.6));
   return h + r * r * RIDGE_AMP + BASE_OFFSET;
+}
+
+// The ground everything else asks about. Every consumer — physics, AI, ballistics, the gunner's
+// ground march, base placement — imports this one function and nothing else, so swapping what is
+// behind it swaps the world without touching a single call site.
+//
+// Default null = the analytic wave field above, i.e. the sim behaves exactly as it did before bakes
+// existed. `setHeightSource(null)` puts it back, which is the whole revert.
+let heightSource = null;
+export function setHeightSource(fn) { heightSource = typeof fn === 'function' ? fn : null; }
+export function heightSourceActive() { return heightSource !== null; }
+
+// A baked source ignores `spacing`: the band limit exists to stop waves shorter than the render
+// lattice from aliasing, and a bake has no waves — its finest detail is the post spacing already.
+export function heightAt(x, z, spacing = 0) {
+  return heightSource ? heightSource(x, z) : analyticHeightAt(x, z, spacing);
 }
 
 // the clipmap's own resolution rule, as a continuous function of distance

@@ -71,6 +71,10 @@ export function createProceduralPlayerBody({
                // re-planted feet (landHold) and swings the idle arms (armRaise/armLand). In the air the
                // pelvis follows the capsule (state.position.y) rather than ground + lift, so falls track.
                // Needs state.velocity.y (or a changing position.y) and state.onFloor.
+               // Floor loss shorter than airGrace (0.12 s) with no upward launch (launchVy) is NOT a
+               // jump: capsule controllers drop onFloor for a frame on slopes and steps, and treating
+               // that as a landing froze the feet and lifted the legs (stutter-step / hover). The
+               // landing foot hold only applies below holdSpeed; a moving body keeps stepping.
     ikCfg,     // live elbow/knee pole-rotation tuning, VISUAL side naming (leftArmPole, leftArmPoleProne, leftLegPole, leftLegPoleProne, right…)
     // Arm IK is additionally torso-aware: a vertical capsule around the spine forces the elbow pole
     // outward (no backward bend) and re-solves once if the elbow lands inside the torso (no phasing).

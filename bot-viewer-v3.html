@@ -4767,7 +4767,7 @@ function enterFlyCam() {
 function stepFlyCam(dt) {
   const cos = Math.cos(flyCam.pitch);
   _flyForward.set(Math.sin(flyCam.yaw) * cos, Math.sin(flyCam.pitch), Math.cos(flyCam.yaw) * cos);
-  _flyRight.set(Math.cos(flyCam.yaw), 0, -Math.sin(flyCam.yaw));
+  _flyRight.set(-Math.cos(flyCam.yaw), 0, Math.sin(flyCam.yaw));   // forward x up
   _flyMove.set(0, 0, 0);
   if (dummyKeys['KeyW']) _flyMove.add(_flyForward);
   if (dummyKeys['KeyS']) _flyMove.sub(_flyForward);
@@ -13288,8 +13288,11 @@ const DRONE_CRAFT_MATERIALS = {
   standard: (color, emissive = 0x000000) => new THREE.MeshStandardMaterial({ color, emissive, roughness: 0.55, metalness: 0.25 }),
   basic: (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }),
 };
-const DRONE_CRAFT_KIND = { [DRONE_BOMBER]: 'drone', [DRONE_LOITER]: 'plane' };
-const DRONE_MESH_SCALE = { [DRONE_BOMBER]: 2.2, [DRONE_LOITER]: 0.22 };   // ~1.2 m quad, ~2.5 m span
+const DRONE_CRAFT_KIND = { [DRONE_BOMBER]: 'drone', [DRONE_LOITER]: 'recon' };
+// The loiterer used to borrow the flight sim's jet shrunk to a fifth of its size, which read as a
+// fighter rather than a munition. It now flies the measured recon airframe, which is authored in
+// real metres, so its scale is close to 1 instead of 0.22.
+const DRONE_MESH_SCALE = { [DRONE_BOMBER]: 2.2, [DRONE_LOITER]: 1.2 };   // ~1.2 m quad, ~2.4 m span
 function buildDroneCraft(kind, team) {
   const tint = BOT_TEAM_DEFS[team]?.capsule ?? 0x8ea2b8;
   const g = buildCraftMesh(DRONE_CRAFT_KIND[kind], tint, DRONE_CRAFT_MATERIALS);
@@ -13435,6 +13438,8 @@ function poseDroneCraft(rec, dt) {
   }
   const rotors = mesh.userData.rotors;
   if (rotors) for (const blade of rotors) blade.rotation.y += 42 * dt;
+  // A pusher prop spins about the craft's own long axis, not about Y like a quad's rotor discs.
+  if (mesh.userData.propeller) mesh.userData.propeller.rotation.z += 55 * dt;
 }
 
 const DRONE_SERVICE_LEASE_MS = 300;   // re-granted every frame the drone is in his hands

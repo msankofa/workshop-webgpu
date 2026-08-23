@@ -139,6 +139,30 @@ ok(rig.motion.airWeight === 0 && rig.motion.landingAbsorb === 0, 'air weight and
 ok(near(rig.gait.feet.left.current.y, 0, 0.05) && near(rig.gait.feet.right.current.y, 0, 0.05), 'both feet are planted on the floor after landing');
 jumpBodies.dispose();
 
+// ---- floor blips: a walking body that loses the floor for a frame or two must not jump ----
+const blipBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates: coords, instancedRemotes: false });
+blipBodies.setLocalMode('thirdPerson');
+const blipRig = blipBodies.localBody;
+const blipFoot = [-12, 0, 8];
+const feedBlip = (grounded) => blipBodies.updateLocal(1 / 60, {
+  globalFoot: blipFoot, velocity: [0, 0, 2.0], yaw: 0, grounded, height: 1.8, radius: 0.35,
+});
+let blipAir = 0, blipHold = 0, stepCount = 0, wasStepping = false;
+for (let i = 0; i < 240; i++) {
+  blipFoot[2] += 2.0 / 60;
+  const grounded = !(i % 20 === 0 || i % 20 === 1);   // two-frame floor loss every 20 frames
+  feedBlip(grounded);
+  const stepping = blipRig.gait.feet.left.stepping;
+  if (stepping && !wasStepping) stepCount++;
+  wasStepping = stepping;
+  blipAir = Math.max(blipAir, blipRig.motion.airWeight);
+  if (grounded) blipHold = Math.max(blipHold, blipRig.motion.landingAbsorb);
+}
+ok(blipAir < 0.05, `two-frame floor blips while walking do not raise the air weight (${blipAir.toFixed(3)})`);
+ok(blipHold === 0, 'floor blips while walking do not trigger the landing absorb');
+ok(stepCount >= 3, `left foot keeps stepping through floor blips (${stepCount} steps over 4 s)`);
+blipBodies.dispose();
+
 // ---- arms: hang when idle, swing when walking, pump when running, lift on a jump ----
 const armController = createBaseGamePlayerController({ worldQuery, spawn: [-12, 0.1, 8] });
 const armBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates: coords, instancedRemotes: false });

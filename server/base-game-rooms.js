@@ -37,9 +37,27 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       import('../world-query-heightfield-provider.js'),
     ]);
     const source = createSource(config.descriptor);
+    const killBelow = 80;
+    if (config.volumetric) {
+      // Volumetric rooms collide against the same marching-cubes tiles the clients stream,
+      // built synchronously around the players each step (terrain-volume-collision.js).
+      const { createVolumeCollision } = await import('../terrain-volume-collision.js');
+      const volume = createVolumeCollision(source, { worldQuery });
+      const surface = (x, z) => source.surfaceYAt(x, z);
+      const floorY = source.project?.density?.y_min;
+      return {
+        worldQuery,
+        spawn: [0, surface(0, 0) + 1.5, 0],
+        killPlaneYAt: (x, z) => Math.min(surface(x, z) - killBelow, Number.isFinite(floorY) ? floorY - 10 : Infinity),
+        worldVersion: config.worldVersion,
+        terrain: config,
+        volume,
+        prepare: positions => volume.ensure(positions),
+        covers: (x, z) => volume.covers(x, z),
+      };
+    }
     const provider = createHeightfieldWorldQueryProvider(source, { id: 'terrain' });
     worldQuery.registerProvider(provider);
-    const killBelow = 80;
     return {
       worldQuery,
       spawn: [0, source.heightAt(0, 0) + 1.5, 0],
@@ -84,9 +102,8 @@ export function createBaseGameRoomService({
   // Movement never runs against a substitute floor: until the room's authoritative world is
   // resident, players keep their spawn state and snapshots say so. An injected `world` (tests)
   // serves every room regardless of config.
-  function ensureWorld(room) {
-    const config = room.terrain;
-    if (world) { room.sim = world; attachRoomControllers(room); return Promise.resolve(world); }
+  function buildWorld(config) {
+    if (world) return Promise.resolve(world);
     let entry = worlds.get(config.worldVersion);
     if (!entry) {
       entry = { world: null, pending: null };
@@ -97,8 +114,15 @@ export function createBaseGameRoomService({
       }, err => { entry.error = err; throw err; });
       worlds.set(config.worldVersion, entry);
     }
-    if (entry.world && !room.sim) { room.sim = entry.world; attachRoomControllers(room); }
     return entry.pending;
+  }
+  function ensureWorld(room) {
+    const config = room.terrain;
+    if (world) { room.sim = world; attachRoomControllers(room); return Promise.resolve(world); }
+    const pending = buildWorld(config);
+    const entry = worlds.get(config.worldVersion);
+    if (entry?.world && !room.sim) { room.sim = entry.world; attachRoomControllers(room); }
+    return pending;
   }
 
   function attachRoomControllers(room) {
@@ -242,6 +266,7 @@ export function createBaseGameRoomService({
       ownerId: null,
       revision: 1,
       terrain: terrain.config,
+      terrainRequest: 0,
       sim: null,
       world: sanitizeBaseGameWorldPatch(msg.world),
       worldUpdatedAt: at,
@@ -305,6 +330,41 @@ export function createBaseGameRoomService({
     room.worldUpdatedAt = now();
     broadcast(room);
     return true;
+  }
+
+  // The owner replaces the room's ground. The new world is built (or taken from the cache) before
+  // anything changes; then every player is moved to its spawn, the revision bumps, and the full
+  // config goes out as `base:terrain` so each client rebuilds the same source.
+  function setTerrain(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (!client) { fail(ws, 'not_joined', 'Join a base-game room first'); return true; }
+    const room = client.room;
+    if (room.ownerId !== client.id) { fail(ws, 'not_owner', 'Only the room owner can change the world'); return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    const terrain = sanitizeBaseGameTerrainConfig(msg.terrain);
+    if (terrain.error) { fail(ws, 'invalid_terrain', terrain.error); return true; }
+    if (terrain.config.worldVersion === room.terrain.worldVersion) { send(ws, terrainPacket(room)); return true; }
+    const requestRevision = ++room.terrainRequest;
+    buildWorld(terrain.config).then(sim => {
+      if (room.terrainRequest !== requestRevision || !rooms.has(room.code)) return;   // superseded or room gone
+      room.terrain = terrain.config;
+      room.sim = sim;
+      room.revision++;
+      for (const c of room.clients.values()) {
+        c.controller = null;
+        attachController(c);
+        c.lastInput = neutralBaseGameInput(c.lastInput.yaw, c.lastInput.pitch);
+        c.spawnRevision++;
+        requestResync(c);
+      }
+      broadcast(room, terrainPacket(room));
+      broadcast(room);
+    }, err => fail(ws, 'world_failed', `World failed to load: ${err.message}`));
+    return true;
+  }
+  function terrainPacket(room) {
+    return { type: 'base:terrain', protocol: BASE_GAME_PROTOCOL_VERSION, room: room.code, revision: room.revision, terrain: room.terrain };
   }
 
   // Input is the only client-to-server movement message. Malformed, over-rate, wrong-socket, and
@@ -383,6 +443,7 @@ export function createBaseGameRoomService({
     if (msg.type === 'base:join') return joinRoom(ws, msg);
     if (msg.type === 'base:resume') return resumeRoom(ws, msg);
     if (msg.type === 'base:set_world') return updateWorld(ws, msg);
+    if (msg.type === 'base:set_terrain') return setTerrain(ws, msg);
     if (msg.type === 'base:input') return receiveInput(ws, msg);
     return false;
   }
@@ -426,10 +487,17 @@ export function createBaseGameRoomService({
     room.lastStepAt = at;
     // Late service ticks are bounded: at most a quarter second of catch-up per wake-up.
     room.accumulatorMs = Math.min(room.accumulatorMs + elapsed, stepMs * simHz / 4);
+    const sim = room.sim;
     while (room.accumulatorMs + 1e-6 >= stepMs) {
       room.accumulatorMs -= stepMs;
       room.tick++;
-      for (const client of room.clients.values()) { stepClient(client); enforceKillPlane(client); }
+      // Volumetric worlds build collision around the players first; a player whose chunk is not
+      // collidable yet holds this tick (input stays queued) rather than moving on no ground.
+      if (sim.prepare) sim.prepare([...room.clients.values()].filter(c => c.controller).map(c => c.controller.getPosition()));
+      for (const client of room.clients.values()) {
+        if (sim.covers && client.controller) { const p = client.controller.getPosition(); if (!sim.covers(p[0], p[2])) continue; }
+        stepClient(client); enforceKillPlane(client);
+      }
     }
   }
 

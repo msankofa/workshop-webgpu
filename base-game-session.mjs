@@ -20,6 +20,8 @@ export function connectBaseGameSession({
   terrain = null,
   onSnapshot = () => {},
   onStatus = () => {},
+  // Fired with the room's full terrain config whenever the owner replaces the world.
+  onTerrain = () => {},
   relayUrl = BASE_GAME_RELAY_URL,
   WebSocketImpl = globalThis.WebSocket,
   handshakeTimeoutMs = 8_000,
@@ -41,6 +43,7 @@ export function connectBaseGameSession({
   let clientId = null;
   let owner = false;
   let roomTerrain = null;
+  const terrainWaiters = [];
   let latestSnapshot = null;
   let initialSettled = false;
   let joinedSeen = false;
@@ -101,6 +104,15 @@ export function connectBaseGameSession({
     get pendingTickCount() { return pendingTicks.length; },
     get localPlayer() {
       return latestSnapshot?.players?.find(player => player.id === clientId) ?? null;
+    },
+    // Owner only: replace the room's ground. Resolves with the room's new config once the
+    // server echoes it (every client, this one included, adopts it from that echo).
+    setTerrain(config) {
+      if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return Promise.reject(new Error('only the connected room owner can change the world'));
+      return new Promise((resolve, reject) => {
+        terrainWaiters.push({ resolve, reject });
+        ws.send(JSON.stringify({ type: 'base:set_terrain', protocol: BASE_GAME_PROTOCOL_VERSION, terrain: config }));
+      });
     },
     setWorld(patch) {
       if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return false;
@@ -227,6 +239,9 @@ export function connectBaseGameSession({
       if (packet.type === 'base:error') {
         const error = new Error(packet.message || packet.code || 'Multiplayer error');
         error.code = packet.code;
+        if (packet.code === 'invalid_terrain' || packet.code === 'world_failed' || packet.code === 'not_owner') {
+          for (const w of terrainWaiters.splice(0)) w.reject(error);
+        }
         onStatus({ state: 'error', room, owner, error });
         if (!joinedSeen) failInitial(error);
         else if (packet.code === 'resume_expired' || packet.code === 'protocol_mismatch') {
@@ -244,6 +259,13 @@ export function connectBaseGameSession({
         joinedSeen = true;
         onStatus({ state: 'connected', room, clientId, owner });
         maybeResolveInitial();
+        return;
+      }
+      if (packet.type === 'base:terrain') {
+        if (packet.protocol !== BASE_GAME_PROTOCOL_VERSION || packet.room !== room || !packet.terrain) return;
+        roomTerrain = packet.terrain;
+        for (const w of terrainWaiters.splice(0)) w.resolve(packet.terrain);
+        onTerrain(packet.terrain, api);
         return;
       }
       if (packet.type === 'base:snapshot') {

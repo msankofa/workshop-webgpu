@@ -35,12 +35,14 @@ runs `node server.js`. `server/render.yaml` deploys it as a Render web service n
 
 ### Base Game rooms: terrain (protocol 4)
 
-Rooms own their ground. The creator's `base:create` carries a `terrain` config (Traversal Lab or
-a terrain-source descriptor — analytic or a streamable v5 project); the server sanitizes and
-re-hashes it, builds one immutable world per `worldVersion`, and sends the full config back in
-`base:joined` (snapshots carry identity only). Clients rebuild the same source locally and compare
-`worldVersion` before moving. Volumetric and finite-map terrain are not accepted in rooms yet.
-See `base-game.md` → Phase 5.
+Rooms own their ground and the owner controls it (protocol 5). `base:create` carries the creator's
+`terrain` config (Traversal Lab, or a terrain-source descriptor — analytic or a streamable v5
+project, optionally `volumetric`); the owner can replace it at any time with `base:set_terrain`.
+The server sanitizes and re-hashes it, builds one immutable world per `worldVersion` (volumetric
+worlds collide against server-built marching-cubes tiles, `terrain-volume-collision.js`), respawns
+everyone, and sends the full config in `base:joined` / `base:terrain` (snapshots carry identity
+only). Clients rebuild the same source locally and compare `worldVersion` before moving; guests'
+ground controls are disabled. Finite-map terrain is not accepted yet. See `base-game.md`.
 
 ### Hosted map publishing (`server/publish-map.js`)
 

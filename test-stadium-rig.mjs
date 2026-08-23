@@ -12,6 +12,10 @@ import { createStadiumWalker, scaleGaitFroude, WALKER_DEFAULTS } from './stadium
 import { createGaitMonitor, analyseGait, GAIT_LIMITS } from './gait-diagnostics.js';
 import { GAITS } from './creature-locomotion.js';
 import { STADIUM_REFERENCE_SPECIES } from './stadium-reference-species.js';
+import { loadStanceLibrary, nodeReader, mapSpeciesFromLibrary } from './stadium-species.js';
+import { stancedSpecies } from './stadium-stance.js';
+
+const STANCES = await loadStanceLibrary(nodeReader(fs));
 
 let failures = 0;
 const results = [];
@@ -466,6 +470,42 @@ check('every shipped species walks, whatever the mapper made of it', () => {
     const spans = path / (map.legs.reduce((m, l) => Math.max(m, l.l1 + l.l2), 0) * walker.unitScale);
     assert(spans > 1.5, `${file}: covered ${spans.toFixed(2)} leg spans in 10 s`);
   }
+});
+
+check('every species with an authored stance still stands up in it', () => {
+  // Stances are authoritative — the walker page edits them and everything else obeys — so a stance that
+  // stops a creature standing has to fail here rather than surface later as a limp nobody can explain.
+  // Silent when nothing is authored yet, which is the ordinary state of a fresh clone.
+  const stanced = stancedSpecies(STANCES);
+  if (!stanced.length) { console.log('       no stances authored yet'); return; }
+  const held = [];
+  for (const species of stanced) {
+    const file = `models/stadium/${species}.glb`;
+    assert(fs.existsSync(file), `${species} has a stance but no model on disk`);
+    const { json, bin } = parseGLB(fs.readFileSync(file));
+    const out = mapSpeciesFromLibrary(json, bin, species, STANCES);
+    assert(out.map.legs.length > 0, `${species}: its stance leaves it with no legs`);
+    for (const w of out.warnings) {
+      assert(!/leg count/.test(w), `${species}: ${w}`);
+    }
+    const walker = createStadiumWalker({
+      THREE, scene: buildScene(out.map, out.json), map: out.map, worldHeight: 0.5, rng: seeded(31),
+    });
+    const target = out.map.rideHeight * walker.unitScale * walker.state.heightScale;
+    let sum = 0, n = 0, steps = 0;
+    const was = walker.legs.map(() => false);
+    for (let i = 0; i < 600; i++) {
+      walker.fixedStep(1 / 60, true);
+      walker.legs.forEach((l, k) => { if (l.stepping && !was[k]) steps++; was[k] = l.stepping; });
+      if (i <= 60) continue;
+      sum += walker.body.pos.y; n++;
+    }
+    const ratio = sum / n / target;
+    assert(ratio > 0.85 && ratio < 1.15, `${species}: its stance carries it at ${(ratio * 100).toFixed(0)}% of ride height`);
+    assert(steps > 20, `${species}: only ${steps} steps in 10 s under its stance`);
+    held.push(`${species.slice(4)} ${(ratio * 100).toFixed(0)}%`);
+  }
+  console.log(`       stances walked: ${held.join(', ')}`);
 });
 
 check('the walker leaves the spine, head and tail bones alone', () => {

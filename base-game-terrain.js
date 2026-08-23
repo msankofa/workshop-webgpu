@@ -41,9 +41,18 @@ export function createBaseGameTerrain({
   const unregisterVolumeProvider = worldQuery.registerProvider(volumeProvider);
   const collidedChunks = new Map();   // key -> chunk object whose geometry the volume provider holds
   let volumetricMode = false;
+  // Mode switches hand collision over: the heightfield stays live until the volume provider holds
+  // the chunk under the player (worker tiles land later), then update() completes the handoff and
+  // reports it so the caller can re-seat the player on the new surface.
+  let handoffPending = false;
+  let handoffDone = false;
   function applyProviders() {
-    provider.enabled = active && !volumetricMode;
+    provider.enabled = active && (!volumetricMode || handoffPending);
     volumeProvider.enabled = active && volumetricMode;
+  }
+  function chunkKeyAt(x, z) {
+    const size = system.params.chunkSize;
+    return `${Math.floor(x / size)},${Math.floor(z / size)}`;
   }
   function syncVolumeColliders() {
     if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return; }
@@ -160,8 +169,14 @@ export function createBaseGameTerrain({
     contactMarker.visible = active && visible && collisionDebug;
   }
 
+  // The ground a body stands on at (x, z): the density surface in volumetric mode (it warps up
+  // to ~warp_strength from the heightfield), the heightfield otherwise.
+  function groundHeight(x, z) {
+    if (volumetricMode && typeof system.source?.surfaceYAt === 'function') return system.source.surfaceYAt(x, z);
+    return system.getHeight(x, z);
+  }
   function spawnPosition(x = 0, z = 0, clearance = 1.5) {
-    return [x, system.getHeight(x, z) + clearance, z];
+    return [x, groundHeight(x, z) + clearance, z];
   }
   function volumeFloorY() {
     const d = system.source?.project?.density;
@@ -175,16 +190,20 @@ export function createBaseGameTerrain({
     get source() { return system.source; },
     get active() { return active; },
     get killPlaneBelowSurface() { return cfg.killPlaneBelowSurface; },
+    groundHeight,
     spawnPosition,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
     killPlaneYAt(x, z) {
-      const surface = system.getHeight(x, z) - cfg.killPlaneBelowSurface;
+      const surface = groundHeight(x, z) - cfg.killPlaneBelowSurface;
       const floor = volumetricMode ? volumeFloorY() : null;
       return floor == null ? surface : Math.min(surface, floor - 10);
     },
     get volumetric() { return volumetricMode; },
     get volumeProvider() { return volumeProvider; },
+    get handoffPending() { return handoffPending; },
+    // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
+    takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
     // Mode switch: visuals and authoritative collision together (replaces Empty/Traversal Lab).
     setActive(value) {
@@ -199,6 +218,8 @@ export function createBaseGameTerrain({
       if (next && !system.source?.densityAt) throw new Error('the active terrain source has no density field (volumetric needs a v5 project)');
       system.setVolumetric(next);
       volumetricMode = next;
+      handoffPending = next;     // heightfield -> volume waits for the chunk; the other way is immediate
+      handoffDone = !next;
       applyProviders();
       syncVolumeColliders();
     },
@@ -222,6 +243,8 @@ export function createBaseGameTerrain({
       installedTotal = 0;
       volumetricMode = false;
       if (wantVolumetric && system.source?.densityAt) { system.params.volumetric = true; volumetricMode = true; }
+      handoffPending = volumetricMode;
+      handoffDone = !volumetricMode && wantVolumetric;
       applyProviders();
       syncVolumeColliders();
     },
@@ -238,6 +261,11 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
+      if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
+        handoffPending = false;
+        handoffDone = true;
+        applyProviders();
+      }
       if (changed && tileBounds) refreshTileBounds();
       if (collisionDebug) {
         const hit = provider.groundProbe({ origin: [globalPosition[0], globalPosition[1] + 0.5, globalPosition[2]], maxDistance: 50, slopeLimitCos: -1 });

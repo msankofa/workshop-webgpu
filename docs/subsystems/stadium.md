@@ -12,9 +12,14 @@ walking them with the repo's own gait code.
 | `stadium-rig-roles.js` | Hand-assigned bone roles that override the auto-mapper, and the compile step. No THREE. |
 | `stadium-pose.js` | Poses as local TRS per bone name: blending, validation, distance. No THREE. |
 | `foot-sdf.js` | A foot as a contact patch: round-box SDF fit plus the hull of the vertices that reach the floor. No THREE. |
+| `stadium-stance.js` | The neutral pose a species stands in, as a sparse edit to the glTF's own rest. No THREE. |
+| `stadium-species.js` | The one load path: stance in, posed file mapped, pinned legs obeyed. No THREE. |
 | `stadium-walker.js` | Drives the mapped legs from `creature-locomotion.js` and writes the pose onto the rig. |
-| `demos/stadium-walker.html` | The viewer. Loads a species, maps it live, walks it, and exposes every knob. |
+| `demos/stadium-walker-v2.html` | The staged viewer: rig, stand, walk, trial. Where the stance is authored. |
+| `demos/stadium-walker.html` | v1, unstaged. Kept as-is; it reads the same save files but cannot edit a stance. |
 | `test-stadium-rig.mjs` | Node checks for all three, over every model in `models/stadium/`. |
+| `test-stadium-stance.mjs`, `test-stadium-species.mjs` | Node checks for the stance and the load path. |
+| `_check_stadium-walker-v2.html.mjs` | Static checks on the staged page: stage membership, wiring, persistence. |
 | `test-foot-sdf.mjs` | Node checks for the fit, the SDF and the patch, over every model. |
 | `demos/sdf-pikachu.html`, `demos/sdf-pikachu-field.js` | The SDF spike: a model raymarched as fitted boxes or as a baked volume, beside the real mesh. |
 | `demos/sdf-mesh-bake.js` | Converting the mesh itself: triangle distances, the winding-number sign fill, per-bone distance and colour cubes. No THREE. |
@@ -170,6 +175,138 @@ The role data is what an ankle needs — `footBones` and `ankleIndex` are carrie
 walker, and are currently read by nothing but the skeleton overlay. Contact is also still a single point
 per leg at the balance layer: `bodySupport` takes one `leg.end` each, so a quadruped balances on a
 four-point polygon rather than four patches.
+
+## `stadium-stance.js` — the pose a species rests in
+
+Several of these models do not rest standing. **Growlithe sits**, so its feet start under its body, and
+everything the walker derives is derived from that: leg span, the two-bone split, ride height, and the
+stride envelope that sizes every step. The consequence was already in the numbers before anyone named the
+cause — Growlithe's stride measured 18% of its leg span against Ponyta's 56%, and it was the slowest walker
+of the fourteen. A sitting dog has almost no envelope to step in, so the gait obediently walks it slowly.
+
+A stance is therefore **an input to `mapStadiumRig`, not a display setting**. The way to use one is to
+apply it to the glTF and map the *result*:
+
+```js
+const { json, bin } = parseGLB(bytes);
+const out = mapSpeciesFromLibrary(json, bin, species, library);   // stadium-species.js
+// out.json is the POSED document, out.map describes it, out.warnings says what the pose cost
+```
+
+Measured on Growlithe with a single 0.15 rad turn of both hip bones — one slider, nothing else changed:
+
+| | sitting (as shipped) | stood up |
+|---|---|---|
+| stride | 18.3% of a leg span | **32.1%** |
+| body speed | 56% of commanded | **77%** |
+| frames blocked from stepping | 96.4% | 89.3% |
+
+### The document
+
+Sparse local TRS overrides keyed by **bone name**, so it is a diff against the ROM: an unedited bone keeps
+whatever the file authored, and re-extracting the models does not invalidate it. Same shape
+`stadium-pose.js` uses and the shape a glTF animation channel targets.
+
+```js
+{ version: 1, species: '058_growlithe', bones: { bone13: { p, q, s }, … }, roles: {…}, ground: true }
+```
+
+**`roles` rides along with the pose, and that is the load-bearing part.** Leg detection runs on the
+*posed* geometry — the three rules are all about where the feet ended up — so a pose that lifts a foot out
+of the floor band deletes a leg the mapper had found. Measured across the fourteen: **Ponyta loses all four
+legs to a 0.2 rad hip turn.** Pinning the detected legs as a role document first fixes it, and 13 of the 14
+then keep every leg through the same pose. The exception is Sandslash, and it is diagnostic rather than a
+bug: its four legs are two limbs used twice, so the shared bones cannot be assigned per-bone to both rows
+and one row compiles down to a stub. `compileRoles` says so instead of dropping a leg quietly, and the
+stance's pin button surfaces that warning. Pose and pinning are two halves of one decision about how a
+species is rigged, so they are one record — two files would let them drift.
+
+### Three things that were not obvious
+
+- **An empty stance returns the input document untouched, and is not re-grounded.** These models are only
+  approximately on y=0: Rattata's floor sits at −0.054, Ponyta's at +0.012. Grounding an unedited file
+  would shift every absolute position by a few hundredths and quietly break parity with every measurement
+  taken before stances existed. Grounding is a correction for an edit that moved the model.
+- **Posing the topmost bone of a leg re-estimates the leg span, by 30.7% on Growlithe for a 0.4 rad turn.**
+  Joints are estimated from where two bones' vertices meet, so rotating a bone about its pivot moves its
+  geometry relative to the still-stationary parent and the hip joint is genuinely read somewhere else. The
+  visible joint really has moved. It is large enough that the Rig stage shows the derived numbers live.
+- **The mirror mirrors the DELTA FROM REST in world space, not the pose.** Flipping a local TRS in place is
+  only correct when the two parent frames are exact mirrors of each other, which is an assumption about the
+  rig rather than a fact about it. Mirroring a delta also keeps each leg's authored rest, which matters on
+  the models whose two sides genuinely differ — measured, Rattata's sides are 4.8% of a leg span apart
+  while Ponyta, Tauros and Growlithe are symmetric to within a rounding error.
+
+### The stamp
+
+`stanceStamp` is a content hash over the posed bones **and the pinned roles**, rounded to 1e-6 first.
+Content-addressed rather than a timestamp or a counter, so re-authoring the identical pose does not orphan
+the trials taken under it. Roles are in the hash because reassigning which bones are a leg changes the
+creature as much as posing it does.
+
+Every trial row and every setpoint records it. Re-posing a species moves what most of the knobs *mean* —
+they are fractions of a stride envelope or a leg span — so rows from either side of a stance edit are
+measurements of two different animals while looking entirely comparable. Applying a setpoint saved under a
+different stance still applies the values and says which stance it came from.
+
+### Who obeys it
+
+The walker page is the **only editor**; everything else is a reader, and they all go through
+`stadium-species.js` so they cannot disagree:
+
+| Reader | What it does |
+|---|---|
+| `demos/stadium-walker-v2.html` | Edits and applies. Writes `stadium-saves/stadium-stances.json`. |
+| `test-stadium-rig.mjs` | Walks every stanced species 10 s and fails if it no longer stands up. |
+| `sweep-gait.mjs` | Measures the stanced creature, and prints which species it is obeying. |
+| `audit-stadium-rig.mjs` | Audits the posed rig, since that is the one that walks. |
+
+A stance that stops a creature standing is a **test failure**, which is the deliberate trade: fixing a
+stance can break a test, and that is preferable to it surfacing later as a limp nobody can explain.
+
+## `demos/stadium-walker-v2.html` — the same tools, in the order they depend on each other
+
+v1 puts its sections in the order they were built: Stage, Model, Search, Gait, Legs, Ground, View, Bone
+roles, Poses. Search and Gait sit **above** the rig work they depend on, and Bone roles — which has to come
+first, because every number downstream is measured off the rig it fixes — is eighth. The page invites you
+to tune a creature whose mapping is wrong and whose idle clip is fighting the gait.
+
+v2 is the same code with four stages over it, each showing only its own controls:
+
+| | Stage | What it decides | Gate |
+|---|---|---|---|
+| 1 | **Rig** | Which bones are legs, and the neutral stance | no bone in two legs; stance authored; legs pinned |
+| 2 | **Stand** | Whether it holds itself up, walking off | ride height held; stride envelope worth stepping in; clip off |
+| 3 | **Walk** | The gait | not dragging; not tapping |
+| 4 | **Trial** | Search, compare, keep | more than one creature to compare |
+
+Nothing is locked — a gate is a readout saying whether the stage's job is done, not a door. Sections carry
+`data-stage` and the controller shows the matching ones; sliders keep the same declarative `addSlider`
+specs and are simply mounted somewhere else, so the two pages cannot drift on what a knob does. The coach
+panel is hidden outside Walk and Trial, since it is about a walk in progress.
+
+Three controls moved on the same reasoning. `standExtension` is not one knob among twenty — it settles the
+ride height and every stride number falls out of it, so it heads the Stand stage. `supportPolygonFloor`
+moved out of Gait, because whether enough feet stay down to make a polygon is a balance question. And the
+idle-clip toggle sits in Stand next to a note about hip disturbance, because that is where the decision is.
+
+### The stance editor
+
+Bone picking is the one the skeleton view already had. What is new is six sliders — three angles and three
+shifts — applied on top of the bone's **authored rest**, so zero always means untouched and a slider reads
+as "how far from where the ROM left it" rather than accumulating drift. Translation is a fraction of the
+model's own height, because these models differ threefold in size.
+
+Dragging a slider only moves the **drawn** pose; the map still describes the last applied stance, and the
+panel says so. **Apply and respawn** is what re-derives the rig, and it exists because doing that on every
+slider frame would rebuild the walker forty times a second. A clip scrubber can take any frame of any ROM
+clip as the starting stance — usually faster than dialling a standing pose out of a sitting one — and it
+steps to the nearest key rather than interpolating, because a key is a pose somebody actually drew.
+
+Stance sliders are scoped `stance`, which keeps them out of `knobSpecs` and therefore out of the gait
+search: a search free to re-pose the model could make its own numbers look better by changing the creature
+underneath them. They are also deliberately not saved into panel prefs, since they are relative to whichever
+bone is selected and a restored value would show an angle the stance does not contain.
 
 ## `stadium-pose.js` — keyframing, not just walking
 
@@ -1023,7 +1160,10 @@ test failure rather than a surprise in the viewer.
   concurrency cap, which exempts bipeds by construction.
 - **Growlithe is the slowest walker, at 0.23 leg spans per second**, and its stride is 18% of its leg
   span against Ponyta's 56%. That is a rest pose with almost no stride envelope, and it was masked until
-  the step-duration floors stopped it cycling its legs faster than they can swing.
+  the step-duration floors stopped it cycling its legs faster than they can swing. **This now has a fix
+  rather than only a diagnosis** — see the stance section above; a crude 0.15 rad hip turn takes it to 32%
+  of a leg span and 77% of commanded speed. No stance has been authored for real yet, so the shipped
+  numbers throughout this document are still the sitting dog's.
 - **Charizard's swing is still fast at a gallop**: 11.0 leg spans per second, 8.1× its own body speed,
   against 1.0–2.7 for everything else.
 - **The idle clip is layered, not blended.** A clip that moves the spine a lot will drag the hips

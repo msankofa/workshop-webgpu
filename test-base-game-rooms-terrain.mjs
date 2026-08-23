@@ -43,7 +43,9 @@ console.log('\n[1] terrain config sanitizer');
   ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: tampered }).error?.includes('hash'), 'project edited after hashing is rejected');
   const bounded = JSON.parse(JSON.stringify(v5Descriptor(v5Project(7)))); bounded.config.project.algorithmVersion = 'v5-bounded-1'; delete bounded.config.projectHash;
   ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: bounded }).error?.includes('not streamable'), 'bounded project rejected');
-  ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: analytic, volumetric: true }).error?.includes('volumetric'), 'volumetric rejected');
+  ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: analytic, volumetric: true }).error?.includes('volumetric'), 'volumetric on the analytic source rejected (no density)');
+  const vol = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(v5Descriptor(v5Project(7)))), volumetric: true });
+  ok(!vol.error && vol.config.volumetric === true && vol.config.worldVersion.endsWith(':volume') && vol.config.worldVersion !== v.config.worldVersion, 'volumetric v5 accepted with its own world version');
   ok(sanitizeBaseGameTerrainConfig({ kind: 'lava' }).error, 'unknown kind rejected');
   ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: { kind: 'analytic', key: 'x' } }).error?.includes('bad terrain descriptor'), 'malformed descriptor rejected');
   ok(sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: { ...analytic, kind: 'finite-map' } }).error?.includes('not available'), 'finite-map not available yet');
@@ -147,6 +149,117 @@ console.log('\n[5] client session sends terrain on create and exposes the room c
   ok(create && create.terrain.kind === 'terrain' && create.terrain.descriptor.key === 'base-game-analytic', 'create message carries the terrain config');
   pending.catch(() => {});
   ok(true, '(handshake completion is covered by test-base-game-session.mjs)');
+
+  // owner setTerrain: sent as base:set_terrain, resolved by the base:terrain echo, onTerrain fired
+  let sock = null; const got = [];
+  class WS2 extends WS { constructor() { super(); sock = this; } }
+  const joinedPromise = connectBaseGameSession({ mode: 'create', roomCode: 'own', world: {}, WebSocketImpl: WS2, handshakeTimeoutMs: 1000, onTerrain: t => got.push(t) });
+  await tick(); await tick();
+  sock.onmessage({ data: JSON.stringify({ type: 'base:joined', protocol: P, room: 'OWN', clientId: 'c1', resumeToken: 't', owner: true, simHz: 120, playerCap: 8, terrain: { kind: 'traversalLab', worldVersion: 'traversal-lab' } }) });
+  sock.onmessage({ data: JSON.stringify({ type: 'base:snapshot', protocol: P, room: 'OWN', tick: 1, revision: 1, ownerId: 'c1', worldReady: true, worldVersion: 'traversal-lab', players: [], world: {} }) });
+  const session = await joinedPromise;
+  const req = session.setTerrain({ kind: 'terrain', descriptor: analytic });
+  const msg = sent.find(m => m.type === 'base:set_terrain');
+  ok(msg && msg.terrain.descriptor.key === 'base-game-analytic', 'owner sends base:set_terrain');
+  const echo = { kind: 'terrain', worldVersion: 'terrain:analytic:base-game-analytic@1:x', descriptor: analytic, volumetric: false };
+  sock.onmessage({ data: JSON.stringify({ type: 'base:terrain', protocol: P, room: 'OWN', revision: 2, terrain: echo }) });
+  const resolved = await req;
+  ok(resolved.worldVersion === echo.worldVersion && session.terrain.worldVersion === echo.worldVersion && got.length === 1, 'echo resolves the request, updates session.terrain and fires onTerrain');
+  const bad = session.setTerrain({ kind: 'terrain', descriptor: analytic, volumetric: true });
+  sock.onmessage({ data: JSON.stringify({ type: 'base:error', protocol: P, code: 'invalid_terrain', message: 'no' }) });
+  ok(await bad.then(() => false, e => e.code === 'invalid_terrain'), 'invalid_terrain rejects the request');
+  session.close?.();
+}
+
+console.log('\n[6] the owner switches the world; guests follow and respawn; guests cannot');
+{
+  let clock = 1000;
+  const service = createBaseGameRoomService({ now: () => clock });
+  const owner = new FakeSocket(), guest = new FakeSocket();
+  service.handle(owner, { type: 'base:create', protocol: P, room: 'SWAP', world: {}, terrain: { kind: 'terrain', descriptor: analytic } });
+  service.handle(guest, { type: 'base:join', protocol: P, room: 'SWAP' });
+  await service.ensureWorld();
+  const room = service.rooms.get('SWAP');
+  const v1 = room.terrain.worldVersion;
+  // guest asks: refused, nothing changes
+  service.handle(guest, { type: 'base:set_terrain', protocol: P, terrain: { kind: 'traversalLab' } });
+  await tick();
+  ok(guest.last('base:error')?.code === 'not_owner' && room.terrain.worldVersion === v1, 'guest set_terrain refused');
+  // owner switches to a v5 project: both clients get base:terrain with the full config and respawn on it
+  const descriptor = v5Descriptor(v5Project(31));
+  const revBefore = room.revision;
+  const [gc] = [...room.clients.values()].filter(c => c.ws === guest);
+  gc.controller.reset([40, 5, 40]);
+  service.handle(owner, { type: 'base:set_terrain', protocol: P, terrain: { kind: 'terrain', descriptor } });
+  for (let i = 0; i < 20 && room.terrain.worldVersion === v1; i++) await tick();
+  await service.ensureWorld();
+  const tp = guest.last('base:terrain');
+  ok(tp && tp.terrain.kind === 'terrain' && tp.terrain.descriptor.config.projectHash === descriptor.config.projectHash && tp.terrain.worldVersion === room.terrain.worldVersion, 'guest receives the full new config');
+  ok(owner.last('base:terrain')?.terrain.worldVersion === room.terrain.worldVersion, 'owner receives the same echo');
+  ok(room.revision === revBefore + 1, 'room revision bumped');
+  const src = createSource(descriptor);
+  const positions = [...room.clients.values()].map(c => c.controller.getPosition());
+  ok(positions.every(p => Math.abs(p[1] - (src.heightAt(0, 0) + 1.5)) < 1e-6 && p[0] === 0 && p[2] === 0), 'everyone respawned on the new ground');
+  ok([...room.clients.values()].every(c => c.spawnRevision >= 2 && c.awaitingResync), 'spawn revision bumped and resync requested for all');
+  ok(guest.last('base:snapshot').worldVersion === room.terrain.worldVersion && guest.last('base:snapshot').worldReady, 'snapshot reports the new world');
+  // same world again: just an echo, no rebuild
+  const before = service.worldCount;
+  service.handle(owner, { type: 'base:set_terrain', protocol: P, terrain: { kind: 'terrain', descriptor } });
+  ok(service.worldCount === before && owner.last('base:terrain').terrain.worldVersion === room.terrain.worldVersion, 'identical config is an echo');
+  // invalid terrain: error, world untouched
+  service.handle(owner, { type: 'base:set_terrain', protocol: P, terrain: { kind: 'terrain', descriptor: analytic, volumetric: true } });
+  await tick();
+  ok(owner.last('base:error')?.code === 'invalid_terrain' && room.terrain.descriptor.kind === 'v5-recipe', 'invalid switch refused, world untouched');
+  // back to the lab (cached from warm? no — built on demand here)
+  service.handle(owner, { type: 'base:set_terrain', protocol: P, terrain: { kind: 'traversalLab' } });
+  for (let i = 0; i < 200 && room.terrain.kind !== 'traversalLab'; i++) await tick();
+  await service.ensureWorld();
+  ok(room.terrain.kind === 'traversalLab' && room.sim?.worldVersion.startsWith('traversal-lab'), 'switched back to the Traversal Lab');
+}
+
+console.log('\n[7] volumetric room: server builds chunk collision around players; predicted client agrees');
+{
+  const stack = defaultStack();
+  stack.layers.push(makeLayer('fbm', { id: 'F1', params: { amplitude: 25, scale: 260, seedOffset: 2 } }));
+  const project = migrateProjectToUnbounded(normalizeProject({ app: PROJECT_APP, version: 1, name: 'Caves', cfg: { ...DEFAULT_CONFIG, seed: 4242 }, density: { ...DENSITY_DEFAULT_CONFIG, cave_strength: 60, cave_threshold: 0.45, cave_period: 70, y_min: -60, y_max: 120 }, stack, paint: null, imports: {} }).project);
+  const descriptor = v5Descriptor(project);
+  let clock = 1000;
+  const service = createBaseGameRoomService({ now: () => clock });
+  const ws = new FakeSocket();
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'CAVE', world: {}, terrain: { kind: 'terrain', descriptor, volumetric: true } });
+  await service.ensureWorld();
+  const room = service.rooms.get('CAVE');
+  const sim = room.sim;
+  ok(room.terrain.volumetric === true && sim.volume && ws.last('base:joined').terrain.volumetric === true, 'volumetric room accepted; joined carries the flag');
+  const src = createSource(descriptor);
+  ok(Math.abs(sim.spawn[1] - (src.surfaceYAt(0, 0) + 1.5)) < 1e-6, 'spawn sits on the density surface, not the heightfield');
+  const client = room.clients.values().next().value;
+  clock += 1000 / 120; service.step(clock);
+  ok(sim.covers(0, 0) && sim.volume.chunkCount >= 4, `first step built collision under the player first (${sim.volume.chunkCount} chunks, budget 4 per step)`);
+  clock += 1000 / 120; service.step(clock); clock += 1000 / 120; service.step(clock);
+  ok(sim.volume.chunkCount >= 9, `the 3x3 ring completes over the next steps (${sim.volume.chunkCount} chunks)`);
+  // client prediction against locally streamed volume chunks (same tiles, same provider)
+  const { createVolumeCollision } = await import('./terrain-volume-collision.js');
+  const local = createWorldQueryService();
+  const localVolume = createVolumeCollision(createSource(ws.last('base:joined').terrain.descriptor), { worldQuery: local, coverRadius: 2, maxBuildsPerCall: 25 });
+  const predicted = createBaseGamePlayerController({ worldQuery: local, spawn: sim.spawn, config: { fixedHz: 120 } });
+  const inputs = [];
+  for (let k = 1; k <= 720; k++) inputs.push({ tick: k, moveX: 1, moveZ: 0, yaw: 0, pitch: 0, sprint: true, jump: k % 150 === 0 });
+  for (const inp of inputs) { localVolume.ensure([predicted.getPosition()]); predicted.stepOnce({ moveX: inp.moveX, moveZ: inp.moveZ, yaw: inp.yaw, sprint: inp.sprint }, inp.jump); }
+  for (let i = 0; i < inputs.length; i += 32) {
+    clock += 40;
+    service.handle(ws, { type: 'base:input', protocol: P, clientTime: clock, ticks: inputs.slice(i, i + 32) });
+    for (let k = 0; k < 32; k++) { clock += 1000 / 120; service.step(clock); }
+  }
+  const sp = client.controller.getPosition(), cp = predicted.getPosition();
+  const dist = Math.hypot(sp[0] - cp[0], sp[1] - cp[1], sp[2] - cp[2]);
+  ok(client.lastConsumedTick === 720, `server consumed all ${client.lastConsumedTick} ticks`);
+  ok(sp[0] > 30, `travelled ${sp[0].toFixed(1)} m across a chunk seam on the volume`);
+  ok(client.controller.grounded && Math.abs(sp[1] - src.surfaceYAt(sp[0], sp[2])) < 3, `server player stands on the volume (grounded ${client.controller.grounded}, y ${sp[1].toFixed(2)} vs surface ${src.surfaceYAt(sp[0], sp[2]).toFixed(2)})`);
+  ok(dist < 1e-6, `server and predicted client agree to ${dist.toExponential(2)} m`);
+  ok(sim.volume.chunkCount <= 49, `collision footprint stays bounded (${sim.volume.chunkCount} chunks, ${sim.volume.stats.buildMsTotal.toFixed(0)} ms of builds)`);
+  const deep = sim.killPlaneYAt(sp[0], sp[2]);
+  ok(deep < project.density.y_min, 'kill plane sits under the density floor');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

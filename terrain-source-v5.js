@@ -72,11 +72,31 @@ export function createV5Source(descriptorLike) {
 
   // Signed density at a global point (positive = solid); `h` may be passed to skip the height eval.
   function densityAt(x, y, z, h = heightAt(x, z)) { return densityPoint(x, y, z, h); }
-  // True where the surface heightfield is carved open (cave mouth / overhang): the air just
-  // below the analytic surface means the heightfield is not the real ground there.
+  // The density's real surface at (x, z): the highest solid sample scanning down from above the
+  // heightfield, refined by bisection. The warp moves it up to ~warp_strength from heightAt, so
+  // anything that places a body on volumetric ground must use this, not heightAt. Never null:
+  // the floor seal at y_min is always solid.
+  const SURFACE_SCAN_STEP = 1;
+  function surfaceYAt(x, z, h = heightAt(x, z)) {
+    const top = h + VOLUME_TOP_MARGIN;
+    let yAir = top, yRock = null;
+    for (let y = top; y >= density.y_min; y -= SURFACE_SCAN_STEP) {
+      if (densityAt(x, y, z, h) >= 0) { yRock = y; break; }
+      yAir = y;
+    }
+    if (yRock === null) return density.y_min;
+    for (let i = 0; i < 8; i++) {
+      const mid = (yAir + yRock) * 0.5;
+      if (densityAt(x, mid, z, h) >= 0) yRock = mid; else yAir = mid;
+    }
+    return (yAir + yRock) * 0.5;
+  }
+  // True where the heightfield is not the real ground: the density surface lies deeper below it
+  // than the warp alone can move it (a carved cave mouth), so a heightfield collider would float.
+  const warpReach = density.warp_strength_surface + density.warp_strength_global + 2;
   function holeAt(x, z) {
     const h = heightAt(x, z);
-    return densityAt(x, h - 1.0, z, h) < 0;
+    return surfaceYAt(x, z, h) < h - warpReach;
   }
 
   // Marching cubes over one tile column: samples at the tile's XZ grid (apron included), rows
@@ -128,6 +148,7 @@ export function createV5Source(descriptorLike) {
     heightAt,
     normalAt,
     densityAt,
+    surfaceYAt,
     holeAt,
     buildTile(request) {
       const req = normalizeTileRequest(request);

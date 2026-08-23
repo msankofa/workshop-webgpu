@@ -31,6 +31,7 @@ BODY_TUNING_DIR = os.path.join(ROOT, 'body-tuning')
 STADIUM_SAVES_DIR = os.path.join(ROOT, 'stadium-saves')
 PARK_SAVES_DIR = os.path.join(ROOT, 'park-saves')
 MUSIC_DIR = os.path.join(ROOT, 'sfx', 'music')
+TERRAIN_BAKES_DIR = os.path.join(ROOT, 'terrain-bakes')
 _MUSIC_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.opus', '.webm'}
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
 # environment-viewer.html's perfLog auto-upload names files perf-<ISO>-<sanitized search>.csv
@@ -56,10 +57,13 @@ _SAFE_SLOT_FILENAME = re.compile(r'^bv2-(all|maze|bots|ui)-slot[1-9]\d?-\d{8}-\d
 # body-preview.html's "Save tuning to disk" names files body-tuning-[<label>-]<YYYYMMDD-HHMMSS>.json
 # (see buildTuningFilename client-side); keep the label charset in sync with its slugify.
 _SAFE_BODY_TUNING_FILENAME = re.compile(r'^body-tuning-(?:[a-z0-9-]{1,40}-)?\d{8}-\d{6}\.json$')
-# demos/stadium-walker.html autosaves to the two fixed names and snapshots to the timestamped one
-# (see createDiskStore + the "snapshot" button); keep in sync with those client-side names.
+# demos/stadium-walker.html and its v2 autosave to the three fixed names and snapshot to the timestamped
+# ones (see createDiskStore + the "snapshot" button); keep in sync with those client-side names.
+# stadium-stances.json is the authoritative neutral pose per species: the walker is its only editor and
+# every other reader obeys it, so it is snapshotted like the tuning file rather than treated as scratch.
 _SAFE_STADIUM_FILENAME = re.compile(
-    r'^(stadium-tuning\.json|stadium-trials\.json|stadium-tuning-\d{8}-\d{6}\.json)$')
+    r'^(stadium-tuning\.json|stadium-trials\.json|stadium-stances\.json'
+    r'|stadium-(tuning|stances)-\d{8}-\d{6}\.json)$')
 # demos/pokemon-park.html autosaves its world seed, tuning and sightings to the fixed name and snapshots
 # to the timestamped one (see createDiskStore + the "snapshot" button); keep in sync with those.
 _SAFE_PARK_FILENAME = re.compile(
@@ -226,9 +230,10 @@ def save_body_tuning(raw_name, body_bytes):
 
 
 def save_stadium(raw_name, body_bytes):
-    # Gait setpoints, poses, bone roles, panel state and the trial log from demos/stadium-walker.html.
-    # The two fixed names are the live document and are overwritten in place; a timestamped name is an
-    # explicit snapshot and gets a collision suffix so two in the same second both survive.
+    # Gait setpoints, poses, bone roles, panel state, the trial log and the per-species neutral stances
+    # from demos/stadium-walker.html and its v2. The three fixed names are live documents and are
+    # overwritten in place; a timestamped name is an explicit snapshot and gets a collision suffix so two
+    # in the same second both survive.
     basename = os.path.basename((raw_name or '').replace('\\', '/'))
     if not _SAFE_STADIUM_FILENAME.match(basename) or '..' in basename:
         raise ValueError(f'unsafe stadium filename: {raw_name!r}')
@@ -345,6 +350,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == '/api/list-maps':
             self._handle_list_maps()
+            return
+        if path == '/api/list-terrain-bakes':
+            self._handle_list_terrain_bakes()
             return
         if path == '/api/fs-scan':
             self._handle_fs_scan()
@@ -471,6 +479,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if entry.lower().endswith('.json') and os.path.isfile(os.path.join(STATES_DIR, entry)):
                         files.append(entry)
             self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    # GET /api/list-terrain-bakes — what bake-terrain.mjs has written into terrain-bakes/, so
+    # demos/flight-sim.html can offer them in a dropdown instead of the player guessing a name for
+    # ?terrain=. Each .json is the bake's metadata; the matching .bin holds the heights. Returns the
+    # metadata inline (it is a few hundred bytes) so the menu can show size and post spacing without
+    # fetching every bake.
+    def _handle_list_terrain_bakes(self):
+        try:
+            bakes = []
+            if os.path.isdir(TERRAIN_BAKES_DIR):
+                for entry in sorted(os.listdir(TERRAIN_BAKES_DIR)):
+                    if not entry.lower().endswith('.json') or entry.lower().endswith('.project.json'):
+                        continue    # the sidecar project is data for a stream entry, not an entry
+                    name = entry[:-5]
+                    try:
+                        with open(os.path.join(TERRAIN_BAKES_DIR, entry), 'r', encoding='utf-8') as fh:
+                            meta = json.load(fh)
+                    except Exception:
+                        continue
+                    # Only offer a terrain whose data is actually on disk: a bake needs its heights,
+                    # a stream needs its project. Metadata alone is a half-finished write.
+                    needed = name + ('.project.json' if meta.get('mode') == 'stream' else '.bin')
+                    if not os.path.isfile(os.path.join(TERRAIN_BAKES_DIR, needed)):
+                        continue
+                    bakes.append({'name': name, 'meta': meta})
+            self._send_json({'ok': True, 'bakes': bakes})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=500)
 

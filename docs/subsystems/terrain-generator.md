@@ -144,6 +144,35 @@ when the host sends `project: null`), and Apply posts the normalized project bac
 host. Nothing else changes: all layer/erosion/paint/import/density/preview controls are the
 real v5 controls. Base Game hosts this in `base-game-terrain-studio.js` (see `base-game.md`).
 
+## Baking a project for the flight sim
+
+`node bake-terrain.mjs maps/<name>-project.json [--out name] [--res N] [--size M]
+[--height-scale K] [--sea-level Y]` writes `terrain-bakes/<name>.json` + `.bin` (Float32 heights),
+which `demos/flight-sim.html?terrain=<name>` flies over. See `flight.md` for the consumer side.
+
+It calls **`generateFullGridV5`, the editor pipeline** — deliberately not `terrain-source-v5.js`.
+The runtime source refuses projects with paint or imports and omits erosion and hydrology
+(`classification.omitted`), because a streaming source can only call a point function and those
+stages are grid-wide simulations. Baking has no such limit, so it is the only route by which an
+eroded or hand-painted project reaches a game. The flight sim's own ground is a closed-form sum of
+plane waves evaluated in a vertex shader; a v5 stack cannot go there as it stands, and the eroded
+result cannot go there at all.
+
+**`--stream` is the other half of the choice.** It writes the project instead of heights and the
+viewer generates ground around the plane forever, so it refuses anything `classifyProject` does not
+mark `runtimeSupported` rather than silently shipping terrain the author never approved. Use it when
+the project is noise layers only; bake when it is eroded or painted. Note that the generation field
+was always unbounded — `terrain-source-v5.js` declares `capabilities: ['infinite']` with
+`bounds: null` — so streaming is not a new capability here, only a new consumer of one. This is the
+same trade Minecraft makes: its own "erosion" is a climate *noise* selecting a terrain shape, never a
+water simulation, which is precisely what lets it be endless. `flight.md` has the measurements.
+
+Two behaviours worth knowing. **Paint pins the resolution**: `paint.heightDelta` is a per-cell delta
+authored on one grid, so a project with paint bakes at `paint.resolution` and `--res` is ignored with
+a warning rather than resampling someone's hand-carved valley. **Sea level becomes zero**: the flight
+sim's water plane is nailed to y=0, so `cfg.sea_level` is subtracted (`--no-sea-shift` to keep the
+project's own datum), or a project that called sea level 62 m would arrive entirely underwater.
+
 ## Tests
 
 `node test-terrain-v5.mjs` (395 checks: primitives incl. analytic derivative vs finite

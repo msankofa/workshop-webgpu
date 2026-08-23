@@ -10,7 +10,9 @@
 
 import fs from 'node:fs';
 import * as THREE from 'three';
-import { mapStadiumRigFromGLB } from './stadium-rig-map.js';
+import { parseGLB } from './stadium-glb.js';
+import { loadStanceLibrary, nodeReader, mapSpeciesFromLibrary } from './stadium-species.js';
+import { stancedSpecies } from './stadium-stance.js';
 import { createStadiumWalker } from './stadium-walker.js';
 import { createGaitMonitor, formatGaitReport, gaitHeadroom, diagnoseGait, createLegWatch } from './gait-diagnostics.js';
 import { GAITS } from './creature-locomotion.js';
@@ -46,9 +48,20 @@ function buildScene(json) {
   return root;
 }
 
+// Stances are authoritative: the sweep measures the creature the walker page authored, not the one the
+// ROM shipped. Loaded once here so a species with no stance costs nothing extra.
+const STANCES = await loadStanceLibrary(nodeReader(fs));
+const STANCED = stancedSpecies(STANCES);
+if (STANCED.length) console.log(`# obeying authored stances for: ${STANCED.join(', ')}`);
+
 const CACHE = new Map();
 function load(species) {
-  if (!CACHE.has(species)) CACHE.set(species, mapStadiumRigFromGLB(fs.readFileSync(`models/stadium/${species}.glb`)));
+  if (!CACHE.has(species)) {
+    const { json, bin } = parseGLB(fs.readFileSync(`models/stadium/${species}.glb`));
+    const out = mapSpeciesFromLibrary(json, bin, species, STANCES);
+    for (const w of out.warnings) if (/leg count/.test(w)) console.log(`# ${species}: ${w}`);
+    CACHE.set(species, { json: out.json, bin: out.bin, map: out.map });
+  }
   return CACHE.get(species);
 }
 

@@ -70,8 +70,11 @@ ok(/_SAFE_STADIUM_FILENAME/.test(serve) && /def save_stadium/.test(serve), 'serv
 // a rename on one side and not the other is a silent 400 and a lost session.
 const names = [...js.matchAll(/const (?:TUNING|TRIALS)_FILE = '([^']+)'/g)].map((x) => x[1]);
 ok(names.length === 2, 'the page names both files as constants', names.join(', '));
-const pattern = serve.match(/_SAFE_STADIUM_FILENAME = re\.compile\(\s*r'([^']+)'/s)?.[1] ?? '';
-const re = new RegExp(pattern);
+// The whitelist is written as several adjacent r'' strings, so join them rather than reading the first.
+const block = serve.split('_SAFE_STADIUM_FILENAME = re.compile(')[1]?.split("')")[0] ?? '';
+const pattern = [...block.matchAll(/r'([^']*)/g)].map((x) => x[1]).join('');
+ok(pattern.startsWith('^('), 'the filename whitelist was readable', pattern);
+const re = new RegExp(`${pattern}$`);
 for (const n of names) ok(re.test(n), `the server accepts ${n}`, `against ${pattern}`);
 const snapshot = js.match(/`stadium-tuning-\$\{stamp\}\.json`/) ? 'stadium-tuning-20260818-120000.json' : null;
 ok(snapshot && re.test(snapshot), 'and the timestamped snapshot name the button builds');

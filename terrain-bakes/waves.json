@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "name": "waves",
+  "res": 2049,
+  "size": 16384,
+  "originX": -8192,
+  "originZ": -8192,
+  "step": 8,
+  "min": -461.0205078125,
+  "max": 611.4723510742188,
+  "bakedAt": "2026-08-22T23:12:12.574Z",
+  "source": "analytic",
+  "heightScale": 1
+}

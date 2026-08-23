@@ -609,11 +609,24 @@ before anything is written, so a malformed post cannot truncate the file. See
 
 ### `POST /api/save-stadium?filename=<name>`
 
-`demos/stadium-walker.html` autosaves its whole session here through `disk-store.js`. Three filenames are
-accepted and nothing else: `stadium-tuning.json` (setpoints, poses, hand-assigned bone roles, panel state),
-`stadium-trials.json` (the trial log), and `stadium-tuning-<YYYYMMDD-HHMMSS>.json` from the snapshot button.
-All land in `stadium-saves/`. The two live files are overwritten in place because they are one current
-state; only the timestamped name gets a `-N` collision suffix, so two snapshots taken in the same second
-both survive. The body must parse as JSON before anything is written. This exists because the page
-previously kept hours of gait tuning in `localStorage`, where a cleared browser or a different port lost it
-silently — see the standing rule in `CLAUDE.md` and `docs/subsystems/stadium.md`.
+`demos/stadium-walker.html` and `demos/stadium-walker-v2.html` autosave their whole session here through
+`disk-store.js`. Five filenames are accepted and nothing else:
+
+| Name | What it holds |
+|---|---|
+| `stadium-tuning.json` | Setpoints, poses, hand-assigned bone roles, panel state. |
+| `stadium-trials.json` | The trial log. |
+| `stadium-stances.json` | The neutral pose and pinned legs per species. **Authoritative** — every reader obeys it. |
+| `stadium-tuning-<YYYYMMDD-HHMMSS>.json`, `stadium-stances-<…>.json` | Snapshots. |
+
+All land in `stadium-saves/`. The three live files are overwritten in place because each is one current
+state; only a timestamped name gets a `-N` collision suffix, so two snapshots taken in the same second both
+survive. The body must parse as JSON before anything is written.
+
+Stances are a separate file rather than a section of the tuning document because they are not a tuning
+session: `test-stadium-rig.mjs`, `sweep-gait.mjs` and `audit-stadium-rig.mjs` all read them, and a reader
+that had to parse a page's panel state to find out how a species stands would be reading the wrong thing.
+
+This route exists because the page previously kept hours of gait tuning in `localStorage`, where a cleared
+browser or a different port lost it silently — see the standing rule in `CLAUDE.md` and
+`docs/subsystems/stadium.md`.
