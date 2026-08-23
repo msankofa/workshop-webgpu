@@ -33,6 +33,12 @@ console.log('\n[1] build and wiring');
   ok(water.level === -3 && water.uniforms.level.value === -3, 'setLevel updates the uniform');
   ok(water.setWaves(waveOptionsFromWorld({ waveCount: 9, waveWindDeg: 90 })) === true && water.profile.wave.count === 9 && water.profile.count.value === 9 && Math.abs(water.uniforms.wind.value.y - 1) < 1e-9, 'wave keys rebuild the table and the wind');
   ok(water.setWaves(waveOptionsFromWorld({ waveCount: 9 })) === false, 'unchanged keys are a no-op');
+  ok(water.reflectionMode === 'planar' && scene.children.includes(water.mirror.target) && Math.abs(water.mirror.target.rotation.x + Math.PI / 2) < 1e-9, 'planar mirror target is in the scene, plane horizontal');
+  water.setReflectionMode('ssr'); ok(water.reflectionMode === 'ssr' && water.profile.reflMode.value === 2, 'reflection mode switch');
+  water.setReflectionMode('planar');
+  const passesBefore = water.reflectStats.passes;
+  water.mirror.reflector.updateBefore({});   // the mirror hook with the surface hidden / not yet visible
+  ok(water.reflectStats.passes === passesBefore && water.reflectStats.skipped > 0, 'mirror pass is skipped while the surface is not visible');
 }
 
 console.log('\n[2] visibility gate and CPU surface');

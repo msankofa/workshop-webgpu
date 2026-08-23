@@ -6,7 +6,11 @@
 // The surface hides itself while no ground in the depth window is below sea level.
 
 import * as THREE from 'three';
-import { uniform, float, max, abs, min, normalize, smoothstep, screenUV, positionView, positionWorld, cameraPosition, cameraNear, cameraFar, viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ } from 'three/tsl';
+import {
+  uniform, float, int, vec2, vec4, max, abs, normalize, smoothstep, oneMinus, saturate, mix, reflect, select,
+  screenUV, positionView, positionWorld, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
+  viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break,
+} from 'three/tsl';
 import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface } from './water-hybrid.js';
 import { surfaceAt } from './water-waves.js';
 
@@ -16,10 +20,14 @@ export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
   normalFade: [1500, 6000],       // normal fades to straight up
   fallbackDepth: 80,              // water depth assumed outside the sea-depth window
   shallowFade: 2.5,               // wave height ramps to zero over this much depth at the shore
+  reflectRate: 2,                 // mirror pass every Nth frame
+  reflectResolutionScale: 0.5,
   preset: 'hybrid',
 });
 
-export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates, ...opts } = {}) {
+export const BASE_GAME_REFLECTION_MODES = Object.freeze(['sky', 'planar', 'ssr']);
+
+export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates, excludeFromReflection = null, ...opts } = {}) {
   if (!scene || !terrain || !sky || !rig) throw new TypeError('base-game water needs scene, terrain, sky and rig');
   const cfg = { ...BASE_GAME_WATER_DEFAULTS, ...opts };
   const uTime = uniform(0), uWind = uniform(new THREE.Vector2(1, 0));
@@ -28,6 +36,32 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
   const uSunDir = uniform(new THREE.Vector3(0, 1, 0)), uSunColor = uniform(new THREE.Color(1, 1, 1));
   const profile = makeWaterProfile({ name: 'sea', uTime, uWind, preset: cfg.preset });
   const seaDepth = terrain.seaDepth;
+
+  // Planar mirror (TSL reflector, own camera + half-res target). Its updateBefore is wrapped so it
+  // runs only in planar mode, on every Nth frame, while the water is visible and the camera is
+  // above it, with the water itself and the caller's excludes hidden for the mirror render.
+  const planar = reflector({ resolutionScale: cfg.reflectResolutionScale, bounces: false });
+  planar.target.rotation.x = -Math.PI / 2;   // local +Z → world +Y: the mirror plane is horizontal
+  planar.target.name = 'base-game-water-mirror';
+  scene.add(planar.target);
+  const reflectStats = { passes: 0, skipped: 0, lastMs: 0 };
+  let frame = 0, reflectLastFrame = -1, cameraBelow = false, surfaceVisible = false;
+  const mirrorBase = planar.reflector;
+  const renderMirror = mirrorBase.updateBefore.bind(mirrorBase);
+  mirrorBase.updateBefore = (f) => {
+    if (frame === reflectLastFrame) return;   // one pass per application frame, whatever reaches this hook
+    reflectLastFrame = frame;
+    if (profile.reflMode.value !== 1 || !surfaceVisible || cameraBelow || frame % Math.max(1, cfg.reflectRate) !== 0) { reflectStats.skipped++; return; }
+    const hidden = [];
+    const hide = obj => { if (obj && obj.visible) { obj.visible = false; hidden.push(obj); } };
+    hide(surfaceMesh);
+    const extra = typeof excludeFromReflection === 'function' ? excludeFromReflection() : excludeFromReflection;
+    if (extra) for (const obj of extra) hide(obj);
+    const t0 = performance.now();
+    try { return renderMirror(f); }
+    finally { for (const obj of hidden) obj.visible = true; reflectStats.passes++; reflectStats.lastMs = performance.now() - t0; }
+  };
+  let surfaceMesh = null;
 
   const surface = createOceanSurface({
     profile,
@@ -57,7 +91,43 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
       const ripple = N.xz.mul(profile.refrRipple).mul(smoothstep(0.0, 1.5, thickness));
       return viewportSharedTexture(screenUV.add(ripple)).rgb;
     },
+    // Reflection by profile.reflMode: 0 sky dome, 1 planar mirror, 2 screen-space march against
+    // the opaque depth buffer (the demo's march, sampling the framebuffer instead of a pre-pass).
+    reflection: (viewDir, N) => {
+      planar.uvNode = planar.uvNode.add(N.xz.mul(profile.reflRipple));   // ripple the mirror by the wave normal
+      return Fn(() => {
+      const R = reflect(viewDir.negate(), N);
+      const skyRefl = sky.colorAlong(R);
+      const refl = skyRefl.toVar();
+      If(profile.reflMode.equal(int(1)), () => {
+        refl.assign(planar.rgb.mul(profile.reflBright));
+      }).ElseIf(profile.reflMode.equal(int(2)), () => {
+        const Rv = cameraViewMatrix.mul(vec4(R, 0.0)).xyz;
+        const p0 = positionView.xyz;
+        const stepLen = profile.ssrStep.toVar();
+        const dist = float(0).toVar();
+        const hitUV = vec2(-1).toVar();
+        const hit = float(0).toVar();
+        Loop({ start: int(0), end: profile.ssrSteps, type: 'int', condition: '<' }, () => {
+          dist.addAssign(stepLen);
+          stepLen.mulAssign(1.06);
+          const p = p0.add(Rv.mul(dist));
+          const uv = getScreenPosition(p, cameraProjectionMatrix);
+          If(uv.x.lessThan(0.0).or(uv.x.greaterThan(1.0)).or(uv.y.lessThan(0.0)).or(uv.y.greaterThan(1.0)), () => { Break(); });
+          const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(uv), cameraNear, cameraFar);
+          const diff = sceneZ.sub(p.z);   // positive when the ray point is behind the scene surface
+          If(diff.greaterThan(0.0).and(diff.lessThan(profile.ssrThickness)), () => { hitUV.assign(uv); hit.assign(1.0); Break(); });
+        });
+        const edge = smoothstep(0.0, 0.14, hitUV.x).mul(smoothstep(0.0, 0.14, oneMinus(hitUV.x)))
+          .mul(smoothstep(0.0, 0.14, hitUV.y)).mul(smoothstep(0.0, 0.14, oneMinus(hitUV.y)));
+        const ssrCol = viewportSharedTexture(saturate(hitUV.add(N.xz.mul(profile.reflRipple)))).rgb;
+        refl.assign(mix(skyRefl, ssrCol, hit.mul(edge)));
+      });
+      return refl;
+      })();
+    },
   });
+  surfaceMesh = surface.mesh;
   surface.mesh.name = 'base-game-water';
   scene.add(surface.mesh);
 
@@ -78,11 +148,15 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
     uOffset.value.set(o[0], o[2]);
     surface.mesh.position.y = uLevel.value - o[1];
+    planar.target.position.y = surface.mesh.position.y;
   }
 
   return {
     mesh: surface.mesh, material: surface.material, profile, uniforms: { time: uTime, wind: uWind, level: uLevel, offset: uOffset, sunDir: uSunDir, sunColor: uSunColor },
-    state,
+    state, reflectStats, mirror: planar,
+    get reflectionMode() { return BASE_GAME_REFLECTION_MODES[profile.reflMode.value] ?? 'sky'; },
+    setReflectionMode(mode) { const i = BASE_GAME_REFLECTION_MODES.indexOf(mode); if (i >= 0) profile.reflMode.value = i; },
+    get cameraBelow() { return cameraBelow; },
     get enabled() { return enabled; },
     get level() { return uLevel.value; },
     get time() { return time; },
@@ -105,6 +179,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     // Per frame, before render: clock, recentre, sun, gate.
     update(dt, cameraPosition) {
       if (!enabled) return;
+      frame++;
       time += dt;
       uTime.value = time;
       applyOffset();
@@ -117,7 +192,10 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
       state.visible = show;
       state.reason = !Number.isFinite(minGround) ? 'no data' : show ? 'water in window' : 'all ground above sea level';
       surface.mesh.visible = show;
+      surfaceVisible = show;
+      const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
+      cameraBelow = cameraPosition.y + o[1] < this.surfaceHeightAt(cameraPosition.x + o[0], cameraPosition.z + o[2]);
     },
-    dispose() { scene.remove(surface.mesh); surface.dispose(); },
+    dispose() { scene.remove(surface.mesh); scene.remove(planar.target); planar.dispose?.(); surface.dispose(); },
   };
 }

@@ -86,7 +86,7 @@ window.addEventListener('unhandledrejection', event => reportBaseGameError(event
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer, PostProcessing } from 'three/webgpu';
+import { WebGPURenderer, RenderPipeline } from 'three/webgpu';
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -159,6 +159,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainVolumetric: true,
   terrainSeaLevel: 0,
   waterEnabled: true,
+  waterReflection: 'planar',
   waveCount: 17, waveBaseLength: 1035, waveLengthMul: 0.51, waveBaseAmp: 0.4, waveAmpMul: 0.51, waveChop: 0.51,
   waveWindDeg: 139, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   terrainFarLod: true,
@@ -498,7 +499,7 @@ const worldQuery = createWorldQueryService();
 // while the toggle is on; otherwise the plain render path runs and the pass costs nothing.
 const scenePass = pass(scene, camera);
 const depthOfField = createDepthOfField({ scenePass });
-const postPipeline = new PostProcessing(renderer);
+const postPipeline = new RenderPipeline(renderer);   // PostProcessing was renamed in r183
 postPipeline.outputNode = renderOutput(depthOfField.node);
 const dofRay = { origin: new THREE.Vector3(), direction: new THREE.Vector3() };
 function measureCentreDistance() {
@@ -1038,6 +1039,7 @@ function updateWorld(dt) {
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
   water.setLevel(terrain.seaLevel);
+  water.setReflectionMode(settings.waterReflection);
   water.setWaves(waveOptionsFromWorld(settings));
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
@@ -1607,6 +1609,7 @@ addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toF
 addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
 // Wave spectrum: shared world keys (the room owner tunes, everyone simulates the same surface).
 addToggle(waterSec, 'waterEnabled', 'Sea (at the terrain sea level)');
+addSelect(waterSec, 'waterReflection', 'Reflection', ['sky', 'planar', 'ssr'], ['Sky only', 'Planar mirror (half resolution, every 2nd frame)', 'Screen-space']);
 addRange(waterSec, 'waveCount', 'Wave count', 1, 40, 1);
 addRange(waterSec, 'waveBaseLength', 'Longest wavelength (m)', 1, 5000, 1, value => `${value.toFixed(0)} m`);
 addRange(waterSec, 'waveLengthMul', 'Wavelength falloff per wave', 0.05, 1, 0.01, value => value.toFixed(2));
