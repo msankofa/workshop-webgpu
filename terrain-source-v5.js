@@ -78,7 +78,7 @@ function addBorderSkirts(mc, field, nx, ny, nz, step, sy, xMin, yMin, zMin, dept
   const p2 = new Float32Array(pos.length + newPos.length); p2.set(pos); p2.set(newPos, pos.length);
   const IndexArray = idx.constructor;
   const i2 = new IndexArray(idx.length + newIdx.length); i2.set(idx); i2.set(newIdx, idx.length);
-  mc.positions = p2; mc.indices = i2; mc.skirtVertexStart = pos.length / 3; mc.skirtNormals = newNrm;
+  mc.positions = p2; mc.skirtIndexStart = idx.length; mc.indices = i2; mc.skirtVertexStart = pos.length / 3; mc.skirtNormals = newNrm;
 }   // same central difference as terrain-field.js so seams match the analytic source
 
 // Descriptor for a project: key = project name (or 'v5-project'), sourceVersion = content hash.
@@ -243,7 +243,8 @@ export function createV5Source(descriptorLike) {
       const inv = -1 / (Math.hypot(gx, gy, gz) || 1);   // density grows inward; normal points out
       normals[i] = gx * inv; normals[i + 1] = gy * inv; normals[i + 2] = gz * inv;
     }
-    return { positions: mc.positions, normals, indices: mc.indices, yMin, yMax: yMin + (ny - 1) * sy, spacing: step, spacingY: sy, rows: ny };
+    return { positions: mc.positions, normals, indices: mc.indices, yMin, yMax: yMin + (ny - 1) * sy, spacing: step, spacingY: sy, rows: ny,
+      skirtIndexStart: mc.skirtIndexStart ?? mc.indices.length };
   }
 
   return {
@@ -284,8 +285,10 @@ export function createV5Source(descriptorLike) {
         }
         out.normals = normals;
       }
-      // Visual LOD tiles (lod >= 1) get skirts; exact lod-0 tiles are collision and abut exactly.
-      if (req.fields.includes('volume')) out.volume = buildVolume(out, spacing, req.lod >= 1 ? Math.max(4, spacing * 0.2 + VOLUME_Y_SPACING_MAX) : 0);
+      // Every visual tile gets skirts (the exact window's edge cracks against the cascade too);
+      // collision consumers slice the index at volume.skirtIndexStart. The server's collision
+      // tiles come through createVolumeCollision, which passes skirtDepth 0 explicitly.
+      if (req.fields.includes('volume')) out.volume = buildVolume(out, spacing, req.skirtDepth ?? (req.lod >= 1 ? Math.max(4, spacing * 0.2 + VOLUME_Y_SPACING_MAX) : 6));
       return validateTileResult(out, req);
     },
   };

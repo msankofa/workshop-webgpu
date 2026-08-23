@@ -75,6 +75,16 @@ export function createBaseGameTerrain({
   // wide draw radius was ~1.4 M triangles of BVH built on the main thread (the frame spikes),
   // and nothing queries the ground that far from the player.
   let colliderFocus = [0, 0];
+  // The render mesh carries LOD skirts; collision sees only the triangles before skirtIndexStart.
+  function collisionGeometry(chunk) {
+    const geo = chunk.mesh.geometry;
+    const cut = chunk.meta.volume?.skirtIndexStart;
+    if (cut == null || !geo.index || cut >= geo.index.count) return geo;
+    const sliced = new THREE.BufferGeometry();
+    sliced.setAttribute('position', geo.getAttribute('position'));
+    sliced.setIndex(new THREE.BufferAttribute(geo.index.array.subarray(0, cut), 1));
+    return sliced;
+  }
   function syncVolumeColliders() {
     if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return; }
     const size = system.params.chunkSize, r = cfg.collisionRadius;
@@ -85,7 +95,7 @@ export function createBaseGameTerrain({
       const chunk = system.chunks.get(key);
       if (!chunk || !chunk.meta.volumetric || !chunk.mesh) continue;
       if (collidedChunks.get(key) === chunk) continue;
-      volumeProvider.setChunk(key, chunk.mesh.geometry, { sourceVersion: chunk.meta.sourceVersion });
+      volumeProvider.setChunk(key, collisionGeometry(chunk), { sourceVersion: chunk.meta.sourceVersion });
       collidedChunks.set(key, chunk);
     }
     for (const key of [...collidedChunks.keys()]) {

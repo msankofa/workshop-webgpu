@@ -219,6 +219,7 @@ export function makeFoamPattern(P) {
 
 export function makeSurfaceShading(P, {
   restXZ,          // vec2  undisplaced world XZ
+  farFade = null,  // float 1 near -> 0 far; scales the foam energy so coarse far shorelines stay clean
   normal,          // vec3  surface normal
   fold,            // float Gerstner fold, 0 when there is none
   waveHeight,      // float displaced height above the rest level
@@ -266,6 +267,7 @@ export function makeSurfaceShading(P, {
   const foldF = smoothstep(P.foamFoldT, P.foamFoldT.add(0.4), fold).mul(P.foamFoldStr);
   let energy = shore.add(crest).add(foldF);
   if (contactFoam) energy = energy.add(contactFoam.mul(P.foamContactStr));
+  if (farFade) energy = energy.mul(farFade);
   const foam = foamFn(restXZ, saturate(energy), P.foamScale);
   const foamLit = P.foamColor.mul(float(0.55).add(NdotL.mul(0.6)));
 
@@ -321,6 +323,7 @@ export function makeRadialGrid({ rings = 160, spokes = 224, r0 = 2, r1 = 26000 }
  * @param {Node}     o.sunDir    vec3 uniform toward the sun
  * @param {Node}     o.sunColor  vec3 uniform
  * @param {Node}     [o.bedColor] vec3, what shows through the water; defaults to a wet-sand tone
+ * @param {number[]} [o.foamFade]   [start, end] metres over which the foam fades out
  * @param {number[]} [o.dispFade]   [start, end] metres over which displacement fades to flat
  * @param {number[]} [o.normalFade] [start, end] metres over which the normal fades to straight up
  * @param {Node}     [o.worldOffset] vec2 added to the scene xz to get the global xz (rebased render
@@ -378,6 +381,7 @@ export function createOceanSurface(o) {
     restXZ: vRest, normal: N, fold, waveHeight: vHeight, thickness,
     bedColor: bed, reflection,
     sunDir: o.sunDir, sunColor: o.sunColor,
+    farFade: o.foamFade ? varying(fadeAt(o.foamFade), 'wFoamFade') : null,
   });
   mat.colorNode = shading.colorNode;
   mat.opacityNode = o.opacityNode || shading.opacityNode;

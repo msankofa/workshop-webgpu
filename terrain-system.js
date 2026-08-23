@@ -539,7 +539,7 @@ class TerrainSystem {
     }
     const chunk = this.makeChunk(key, tile.xMin, tile.zMin, tile.size, tile.intervals, geo, tile.lod);
     chunk.meta.volumetric = !!tile.volume;
-    if (tile.volume) chunk.meta.volume = { yMin: tile.volume.yMin, yMax: tile.volume.yMax, triangles: tile.volume.indices.length / 3 };
+    if (tile.volume) chunk.meta.volume = { yMin: tile.volume.yMin, yMax: tile.volume.yMax, triangles: tile.volume.indices.length / 3, skirtIndexStart: tile.volume.skirtIndexStart };
     return chunk;
   }
 

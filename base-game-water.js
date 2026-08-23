@@ -18,6 +18,7 @@ export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
   gridR1: 12000,                  // outer ring radius (m), beyond any far plane this page uses
   dispFade: [600, 2400],          // displacement fades to flat over this scene distance
   normalFade: [1500, 6000],       // normal fades to straight up
+  foamFade: [800, 2500],          // foam gone before the far cascade's coarse shorelines
   fallbackDepth: 80,              // water depth assumed outside the sea-depth window
   shallowFade: 2.5,               // wave height ramps to zero over this much depth at the shore
   reflectRate: 2,                 // mirror pass every Nth frame
@@ -74,7 +75,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     // thickness = sea level − ground; outside the window assume open sea so the edge never dries
     depthAt: xz => uLevel.sub(seaDepth.gpuHeightAt(xz, uLevel.sub(cfg.fallbackDepth))),
     sunDir: uSunDir, sunColor: uSunColor,
-    dispFade: cfg.dispFade, normalFade: cfg.normalFade,
+    dispFade: cfg.dispFade, normalFade: cfg.normalFade, foamFade: cfg.foamFade,
     shallowFade: cfg.shallowFade,
     // Per-pixel thickness: the rendered ground's depth under this fragment (opaque pass only, the
     // water does not write depth), along the view ray, scaled to a vertical depth for a flat bed.

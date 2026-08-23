@@ -1248,8 +1248,7 @@ under finer ones made far mountains read up to 24 m lower than they are). Cracks
 boundaries are closed by chunked-LOD skirts instead: every volume tile at lod ≥ 1 hangs a strip
 (`max(4, spacing·0.2 + 8)` m) from its border's open-sky surface contour (`addBorderSkirts` in
 `terrain-source-v5.js`); cave contours on the border are recognised by each border column's
-topmost air→rock crossing and left open so cave mouths are never curtained. Exact lod-0 tiles
-abut exactly and collide, so they carry no skirts (client and server BVHs unchanged). The density is band-limited per level
+topmost air→rock crossing and left open so cave mouths are never curtained. Exact lod-0 tiles get 6 m skirts too (their window edge cracked against the cascade), but `volume.skirtIndexStart` marks where skirt triangles begin and `collisionGeometry()` slices the collider input there, so client and server BVHs are exactly the skirtless triangles (`skirtDepth: 0` in `terrain-volume-collision.js`). Shore/crest foam fades out over 800–2500 m (`foamFade`) so the far cascade's coarse shorelines carry no giant foam rims. The density is band-limited per level
 (`createDensityPoint(..., spacing)`: warp and cave octaves finer than ~4 samples per period fade
 out), so cave mouths survive as far as their size allows (test: 39/400 cave columns at 5 m vs
 149/400 exact). Cascade chunks share the chunk material/tint, never enter the volume provider, and

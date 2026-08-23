@@ -72,7 +72,10 @@ export function normalizeTileRequest(r) {
   const fields = r.fields == null ? ['heights'] : r.fields.slice();
   if (!fields.includes('heights')) fields.unshift('heights');
   for (const f of fields) if (!TILE_FIELDS.includes(f)) fail(`unknown tile field ${f}`);
-  return Object.freeze({ ix, iz, lod, xMin, zMin, size, intervals, apron, fields: Object.freeze(fields) });
+  // optional: metres of LOD skirt on a volume tile; null = the source's own default for the lod
+  const skirtDepth = r.skirtDepth == null ? null : r.skirtDepth;
+  if (skirtDepth != null && !(isFiniteNum(skirtDepth) && skirtDepth >= 0)) fail('skirtDepth must be a non-negative number');
+  return Object.freeze({ ix, iz, lod, xMin, zMin, size, intervals, apron, fields: Object.freeze(fields), skirtDepth });
 }
 
 // Key identifies source, version, epoch, LOD and integer tile coords. Render

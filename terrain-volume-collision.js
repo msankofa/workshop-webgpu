@@ -38,7 +38,7 @@ export function createVolumeCollision(source, { worldQuery = null, providerId = 
     const key = keyOf(ix, iz);
     if (chunks.has(key)) return false;
     const t0 = performance.now();
-    const tile = source.buildTile({ ix, iz, lod: 0, xMin: ix * cfg.chunkSize, zMin: iz * cfg.chunkSize, size: cfg.chunkSize, intervals, apron: 1, fields: ['heights', 'volume'] });
+    const tile = source.buildTile({ ix, iz, lod: 0, xMin: ix * cfg.chunkSize, zMin: iz * cfg.chunkSize, size: cfg.chunkSize, intervals, apron: 1, fields: ['heights', 'volume'], skirtDepth: 0 });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(tile.volume.positions, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(tile.volume.normals, 3));
