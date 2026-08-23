@@ -27,17 +27,22 @@ server. Sea level is part of the terrain project, so rooms share it through the 
   it yet. `colorizeGeometry` tints `y < 0` as water today; that 0 becomes `sea_level`.
 - The player controller is shared verbatim with the server and stepped in lockstep from the same
   inputs; `captureState` carries `position/previousPosition/velocity/grounded`. Swimming must be a
-  pure function of `(position, velocity, config)` — the flat sea level, never the animated wave
-  height, so prediction and authority stay bit-identical.
+  pure function of `(position, velocity, config, tick)`: the wave surface is deterministic from the
+  wave config and a time, so the lockstep tick index is the clock and both sides evaluate the same
+  `surfaceAt`. That requires the wave config to be room-synced, not a local file.
 - Render path: `renderer.render` normally, `postPipeline` (`pass()` + DOF) when `dofEnabled`.
 
 ## Decisions
 
-- **Sea level = `cfg.sea_level`** for v5 projects; 0 for the analytic source and the lab. One
-  uniform, one number on the terrain facade (`terrain.seaLevel`). No protocol change.
-- **Physics water is flat** at sea level; waves are visual only. Below sea level = in water,
-  including inside caves: a cave below sea level is flooded, which is also what the surface mesh
-  shows, so render and physics agree.
+- **Sea level is a descriptor field** (`seaLevel`): v5 projects fill it from `cfg.sea_level`,
+  the analytic source carries its own (slider, default 0), the lab has none. It enters the
+  sanitizer and `worldVersion`; owner-only online like the rest of the terrain config.
+- **Physics water is the wave surface**: `surfaceAt(x, z, tick / fixedHz)` from the shared wave
+  table. Below the surface = in water, including inside caves: a cave below the surface is flooded,
+  which is also what the mesh shows, so render and physics agree.
+- **Wave config is a room setting** (`base:world` patch keys, owner-only, sanitized with limits),
+  seeded from `water-config.json` presets; the server rebuilds its wave table on change. Wave
+  tuning in the panel writes `water-config.json` locally and pushes the patch online.
 - **Depth comes from a streamed sea-depth map**, not from the ground mesh: a small world-space
   heightfield texture around the player (like `terrain-lod-coverage.js`, one texel per N metres)
   filled by `heightAtSpacing` worker jobs. It drives thickness, shore foam, dry-land opacity and the
@@ -50,17 +55,21 @@ server. Sea level is part of the terrain project, so rooms share it through the 
 
 ## Phases
 
-### W1 — Sea level through the terrain facade (mechanical)
+### W1 — Sea level and wave config through the protocol
 
-- `base-game-terrain.js`: `seaLevel` getter from the source descriptor's project cfg (`sea_level`),
-  0 otherwise; `colorizeGeometry` water band uses it; `spawnPosition` lands on
-  `max(ground, seaLevel) + clearance`; `setSource` updates it.
-- `terrain-source-v5.js` descriptor exposes `seaLevel` (read-only, from cfg) so the server reads
-  the same number without re-parsing the project.
-- `base-game.html`: the terrain studio surfaces the existing v5 field in its World group; owner
-  changes ship through `base:set_terrain` as today.
-- Test: `test-base-game-terrain-sea-level.mjs` — v5 project with `sea_level: 12` reports 12,
-  analytic reports 0, spawn sits above water, source swap updates.
+- `terrain-source.js` descriptor contract gains `seaLevel` (number, finite, −120..120 like the v5
+  field); `terrain-source-v5.js` fills it from `cfg.sea_level`; `terrain-source-analytic.js` takes
+  it as a descriptor field (default 0). `base-game-protocol.mjs` sanitizes it and folds it into
+  `worldVersion`; `publicBaseGameTerrainConfig` keeps it.
+- Wave config: `BASE_GAME_SHARED_KEYS` gains the wave keys (count, baseLength, baseAmp, chop,
+  windDeg, speed, seed…) with limits, so the owner tunes waves live and guests follow, the same
+  path as sun/time. `base:world` patch; the server keeps the current values per room.
+- `base-game-terrain.js`: `seaLevel` getter; `colorizeGeometry` water band uses it;
+  `spawnPosition` lands on `max(ground, seaLevel) + clearance`; `setSource` updates it.
+- `base-game.html`: terrain studio exposes sea level for both sources (owner-only online).
+- Tests: `test-base-game-terrain-sea-level.mjs` (v5 12 → 12, analytic slider value, spawn above
+  water, source swap) and `test-base-game-rooms-terrain.mjs` cases for sanitizing the field and
+  the wave patch keys.
 
 ### W2 — Sea-depth map (new module `terrain-sea-depth.js`)
 
@@ -134,21 +143,27 @@ server. Sea level is part of the terrain project, so rooms share it through the 
 - Audio: low-pass on the master bus when underwater (`environment-audio.js` has the graph).
 - Breath/damage is gameplay and out of scope here.
 
-### W8 — Swimming (client + server, deterministic)
+### W8 — Swimming (client + server, deterministic on the wave surface)
 
-- `base-game-player-controller.js`: `waterLevelAt(x,z)` hook (flat sea level, or `null`);
-  `swimming` when the capsule's chest point is below it. In water: gravity replaced by `buoyancy`
-  toward the surface with `waterDrag`, horizontal speed × `swimSpeedMultiplier` (0.65), jump = swim
-  up, crouch = swim down, surfaces when the head breaks the level, exits to grounded when
-  `resolveCapsule` reports ground with the chest above water. New config keys finite-validated;
-  `captureState`/`applyState` carry `swimming`.
-- Server: `defaultWorldFactory` reads `seaLevel` from the descriptor (W1) and passes the same hook;
-  volumetric rooms unchanged otherwise. Kill plane unchanged.
+- `base-game-player-controller.js`: `waterSurfaceAt(x, z, t)` hook returning the wave surface
+  height (or `null`); the controller keeps a `tick` counter that `stepOnce` advances and
+  `captureState`/`applyState` carry, and passes `tick / fixedHz` as `t`. `swimming` when the
+  capsule's chest point is below the surface. In water: gravity replaced by `buoyancy` toward the
+  surface with `waterDrag`, horizontal speed × `swimSpeedMultiplier` (0.65), jump = swim up,
+  crouch = swim down, the surface height lifts the body with the swell, exits to grounded when
+  `resolveCapsule` reports ground with the chest above water. New config keys finite-validated.
+- A shared `base-game-water-sim.js`: builds the wave table from the room's wave config
+  (`buildWaveTable`) and exposes `surfaceAt` — the one module both the page and the server import,
+  so there is no second copy of the math to drift.
+- Server: `defaultWorldFactory` reads `seaLevel` and the wave config, builds the same table, and
+  passes the same hook; the table is rebuilt on a wave patch; the tick is the room tick so every
+  client's controller agrees. Kill plane unchanged.
 - Spawn/respawn above water (W1). Remote players: a `swim` pose channel is the body track's job;
-  until then the existing pose with the capsule at the surface.
-- Tests: `test-base-game-player-controller.mjs` swim cases (enters, floats, exits, drag), and
-  `test-base-game-rooms-water.mjs`: the same input script on the client and server controllers
-  produces identical positions through a water entry and exit.
+  until then the existing pose at the surface height.
+- Tests: `test-base-game-player-controller.mjs` swim cases (enters, floats, rides a crest, exits,
+  drag), and `test-base-game-rooms-water.mjs`: the same input script on the client and server
+  controllers produces identical positions through a water entry and exit, and a wave patch
+  mid-run keeps them identical.
 
 ### W9 — Panel, persistence, docs, perf record
 
@@ -163,13 +178,13 @@ server. Sea level is part of the terrain project, so rooms share it through the 
 
 ## Order and parallelism
 
-W1 → W2 → W3 → W4 → W5 → W6 → W7 → W9, with W8 parallel from W1 on (it needs only the sea level).
+W1 → W2 → W3 → W4 → W5 → W6 → W7 → W9, with W8 parallel from W1 on (it needs the sea level and the wave config, both in W1).
 W4's DOF check runs first inside W4 because it decides whether a pre-pass exists.
 
 ## Known limits to state, not hide
 
 - Thickness under a cave roof uses the open-sky heightfield, so depth colour inside a flooded cave
   is approximate; the surface itself and the physics are correct there.
-- Waves are visual; a body on a crest is still at flat sea level in the lockstep.
-- The analytic source has no authored sea level; it is 0.
+- The lockstep surface is the Gerstner table only; the 3-sine ripple model (`waveModel 0`) has no
+  CPU displacement and is rendering-only, so physics always uses Gerstner.
 - The planar mirror reflects the far cascade beyond the exact window, the same as the camera sees.
