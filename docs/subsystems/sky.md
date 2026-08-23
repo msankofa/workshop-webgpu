@@ -34,6 +34,7 @@ Returns an object with: `group`, `setSunDir(v)`, `setMoonDir(v)`, `setCelestialV
 moonVisible)`, `setDomeVisible(on)`, `setStarsVisible(on)`, `setMilkyWayVisible(on)`,
 `setBodiesVisible(on)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
 `setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius(radius?)`,
+`colorAlong(dirNode)` (TSL: the dome gradient along a unit direction from the live dome uniforms — what the Base Game water reflects; the dome material itself is built from the same `skyColorAlong`),
 `rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
 `setGlowDirectionality(v)`, `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`,
 `nightness`, `skyStates`, `thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no

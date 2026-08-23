@@ -34,23 +34,24 @@ function faceOrigin(obj) {
 // Gradient dome: bottom->horizon->top by view-direction Y, plus a directional horizon glow.
 // All colors + transition params + sun direction are UNIFORMS so the per-frame time-of-day
 // blend and every slider write .value with no material rebuild (rebuild races the WebGPU submit).
+// The dome colour along a unit direction (shared with anything that reflects the sky, e.g. water).
+function skyColorAlong(u, p) {
+  const y = p.y.sub(u.horizonHeight);                          // horizon band shifts with time of day
+  const up = smoothstep(0.0, u.zenithSoftness, y);            // horizon -> zenith
+  const down = smoothstep(0.0, -0.5, y);                      // horizon -> nadir
+  const aboveCol = mix(u.horizon, u.top, up);
+  const belowCol = mix(u.horizon, u.bottom, down);
+  const base = mix(aboveCol, belowCol, smoothstep(0.05, -0.05, y));  // soft horizon crossover
+  const band = pow(max(float(1).sub(abs(y).div(u.glowWidth)), float(0)), float(2.0)); // horizon glow falloff
+  // Bias the glow toward the sun azimuth: dot of horizontal dome dir vs sun dir, mapped [0,1].
+  const align = dot(normalize(p.xz), normalize(u.sunDir.xz)).mul(0.5).add(0.5);
+  const glowAmt = band.mul(mix(float(1.0), align, u.glowDirectionality)).mul(u.glowStrength);
+  return mix(base, u.glow, glowAmt);
+}
 function makeSkyDomeMaterial(u) {
   const mat = new MeshBasicNodeMaterial({ side: THREE.BackSide, depthTest: false, depthWrite: false });
   mat.fog = false;
-  mat.colorNode = Fn(() => {
-    const p = normalize(positionLocal);
-    const y = p.y.sub(u.horizonHeight);                          // horizon band shifts with time of day
-    const up = smoothstep(0.0, u.zenithSoftness, y);            // horizon -> zenith
-    const down = smoothstep(0.0, -0.5, y);                      // horizon -> nadir
-    const aboveCol = mix(u.horizon, u.top, up);
-    const belowCol = mix(u.horizon, u.bottom, down);
-    const base = mix(aboveCol, belowCol, smoothstep(0.05, -0.05, y));  // soft horizon crossover
-    const band = pow(max(float(1).sub(abs(y).div(u.glowWidth)), float(0)), float(2.0)); // horizon glow falloff
-    // Bias the glow toward the sun azimuth: dot of horizontal dome dir vs sun dir, mapped [0,1].
-    const align = dot(normalize(p.xz), normalize(u.sunDir.xz)).mul(0.5).add(0.5);
-    const glowAmt = band.mul(mix(float(1.0), align, u.glowDirectionality)).mul(u.glowStrength);
-    return mix(base, u.glow, glowAmt);
-  })();
+  mat.colorNode = Fn(() => skyColorAlong(u, normalize(positionLocal)))();
   return mat;
 }
 
@@ -286,6 +287,8 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 
   return {
     group,
+    // TSL: the dome colour along a unit direction node, live with time of day (water reflections).
+    colorAlong(dirNode) { return skyColorAlong(domeU, dirNode); },
     setSunDir(v) {
       dir.copy(v).normalize(); domeU.sunDir.value.copy(dir);
       if (sunSprite) placeDisc(sunSprite, dir);

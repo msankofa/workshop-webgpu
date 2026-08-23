@@ -323,6 +323,11 @@ export function makeRadialGrid({ rings = 160, spokes = 224, r0 = 2, r1 = 26000 }
  * @param {Node}     [o.bedColor] vec3, what shows through the water; defaults to a wet-sand tone
  * @param {number[]} [o.dispFade]   [start, end] metres over which displacement fades to flat
  * @param {number[]} [o.normalFade] [start, end] metres over which the normal fades to straight up
+ * @param {Node}     [o.worldOffset] vec2 added to the scene xz to get the global xz (rebased render
+ *                                   origins): waves and depthAt then stay put across a rebase
+ * @param {Function} [o.reflection]  (viewDir, N, thickness) -> vec3 replacing the sky reflection
+ * @param {Function} [o.bedColorAt]  (viewDir, N, thickness) -> vec3 replacing the flat bed colour
+ * @param {Function} [o.thicknessAt] (vertexThickness) -> float replacing the vertex thickness
  */
 export function createOceanSurface(o) {
   const P = o.profile;
@@ -332,7 +337,8 @@ export function createOceanSurface(o) {
   // The mesh follows the camera, so the rest position has to be read in world space or the waves
   // would travel with it instead of staying put in the world.
   const restWorld = modelWorldMatrix.mul(vec4(positionGeometry, 1.0)).xyz;
-  const restXZ = restWorld.xz;
+  const sceneXZ = restWorld.xz;
+  const restXZ = o.worldOffset ? sceneXZ.add(o.worldOffset) : sceneXZ;
 
   const mat = new MeshBasicNodeMaterial({
     transparent: true, depthWrite: o.depthWrite !== false, side: THREE.FrontSide,
@@ -343,7 +349,7 @@ export function createOceanSurface(o) {
   // shimmer. Fade the displacement out, and the normal toward flat, over the same range — a distant
   // sea reading as a smooth sky mirror is what it looks like anyway.
   const fadeAt = (range) => (range
-    ? oneMinus(smoothstep(range[0], range[1], length(restXZ.sub(cameraPosition.xz))))
+    ? oneMinus(smoothstep(range[0], range[1], length(sceneXZ.sub(cameraPosition.xz))))
     : float(1));
 
   const disp = waveDisp(restXZ).mul(fadeAt(o.dispFade));
@@ -357,13 +363,15 @@ export function createOceanSurface(o) {
   const fold = nf.w.mul(vNormalFade);
   // Depth is resolved in the vertex stage: the ground height function is the expensive part and the
   // grid is fine where the shoreline is close enough to read.
-  const thickness = max(varying(o.depthAt(restXZ), 'wDepth'), 0.0);
+  const vertexThickness = max(varying(o.depthAt(restXZ), 'wDepth'), 0.0);
+  const thickness = o.thicknessAt ? o.thicknessAt(vertexThickness) : vertexThickness;
   const viewDir = normalize(cameraPosition.sub(positionWorld));
-  const bed = o.bedColor || vec3(0.42, 0.40, 0.30);   // wet sand seen through shallow water
+  const bed = o.bedColorAt ? o.bedColorAt(viewDir, N, thickness) : (o.bedColor || vec3(0.42, 0.40, 0.30));   // wet sand seen through shallow water
+  const reflection = o.reflection ? o.reflection(viewDir, N, thickness) : o.sky(reflect(viewDir.negate(), N));
 
   const shading = makeSurfaceShading(P, {
     restXZ: vRest, normal: N, fold, waveHeight: vHeight, thickness,
-    bedColor: bed, reflection: o.sky(reflect(viewDir.negate(), N)),
+    bedColor: bed, reflection,
     sunDir: o.sunDir, sunColor: o.sunColor,
   });
   mat.colorNode = shading.colorNode;

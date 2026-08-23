@@ -97,7 +97,9 @@ import { lerpHex } from './sky-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
-import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch } from './base-game-protocol.mjs';
+import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
+import { createBaseGameWater } from './base-game-water.js';
+import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
@@ -156,6 +158,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainVisible: true,
   terrainVolumetric: true,
   terrainSeaLevel: 0,
+  waterEnabled: true,
   waveCount: 26, waveBaseLength: 150, waveLengthMul: 0.84, waveBaseAmp: 1.4, waveAmpMul: 0.82, waveChop: 0.55,
   waveWindDeg: 35, waveSpreadDeg: 70, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   terrainFarLod: true,
@@ -991,6 +994,10 @@ const sky = createSky({
   palette: { celestialType: settings.primaryBody },
 });
 scene.add(sky.group);
+// The sea: one wave surface at the terrain's sea level (base-game-water.js). Its look (colours,
+// fresnel, foam) comes from water-config.json's `ocean` body; the wave spectrum is the room's.
+const water = createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates });
+loadWaterConfig('').then(cfg => { applyWaterConfig(cfg, { ocean: water.profile }); water.setWaves(waveOptionsFromWorld(settings)); }).catch(() => {});
 
 const frameProfiler = createFrameProfiler();
 function applySkyComponentVisibility() {
@@ -1008,6 +1015,9 @@ function updateWorld(dt) {
   const canVolumetric = !!terrain.source?.densityAt;
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
+  water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
+  water.setLevel(terrain.seaLevel);
+  water.setWaves(waveOptionsFromWorld(settings));
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
@@ -1583,6 +1593,7 @@ addRange(lightSec, 'sunAzimuth', 'Manual azimuth', 0, 360, 1, value => `${value.
 addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toFixed(2));
 addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
 // Wave spectrum: shared world keys (the room owner tunes, everyone simulates the same surface).
+addToggle(waterSec, 'waterEnabled', 'Sea (at the terrain sea level)');
 addRange(waterSec, 'waveCount', 'Wave count', 1, 40, 1);
 addRange(waterSec, 'waveBaseLength', 'Longest wavelength (m)', 1, 5000, 1, value => `${value.toFixed(0)} m`);
 addRange(waterSec, 'waveLengthMul', 'Wavelength falloff per wave', 0.05, 1, 0.01, value => value.toFixed(2));
@@ -2463,6 +2474,7 @@ async function animate() {
     envAudio.update(frameStart);
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
+    frameProfiler.time('water', () => water.update(dt, camera.position));
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('fx', () => { updateProjectiles(performance.now()); updateShotEffects(performance.now()); });
     frameProfiler.time('sky', () => updateWorld(dt));
