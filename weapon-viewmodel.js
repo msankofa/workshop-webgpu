@@ -30,6 +30,7 @@ export function createWeaponViewModel({ getWeapon, feel = VIEWMODEL_FEEL } = {})
   let recoilT = 0;
   let reloadT = 0, reloadDur = feel.reloadFallback, activeReloadSeq = null;
   const out = { position: [0, 0, 0], rotation: [0, 0, 0], viewBob: { x: 0, y: 0, z: 0 }, visible: false, aim: 0, reloading: false };
+  const rot = [0, 0, 0], aimOffset = [0, 0, 0];   // per-frame scratch
 
   function setWeapon(id) {
     if (id === weaponId) return;
@@ -67,8 +68,10 @@ export function createWeaponViewModel({ getWeapon, feel = VIEWMODEL_FEEL } = {})
     const rotBase = weapon.viewRotation ?? DEFAULT_VIEW_ROTATION;
     const aimTgt = weapon.aimOffset ?? [offset[0] * 0.15, offset[1] + 0.03, offset[2] + 0.06];
     const aimRotTgt = weapon.aimRotation ?? [rotBase[0], rotBase[1] * 0.85, rotBase[2]];
-    const rot = [0, 1, 2].map((i) => rotBase[i] + (aimRotTgt[i] - rotBase[i]) * aimAmt);
-    const aimOffset = [0, 1, 2].map((i) => offset[i] + (aimTgt[i] - offset[i]) * aimAmt);
+    for (let i = 0; i < 3; i++) {
+      rot[i] = rotBase[i] + (aimRotTgt[i] - rotBase[i]) * aimAmt;
+      aimOffset[i] = offset[i] + (aimTgt[i] - offset[i]) * aimAmt;
+    }
     // Run/gun bob: idle<->walk<->run cross-fades; aiming and reloading damp it.
     // Fully aimed = fully still: sights must not move with the feet (env-viewer kept 15 %).
     const swayDamp = (1 - aimAmt) * (reloading ? 0.2 : 1);

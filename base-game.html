@@ -911,6 +911,27 @@ const BODY_MOVEMENT_KEYS = {
   bodyForwardStride: 'forwardStride', bodyBehindStride: 'behindStride',
 };
 const appliedBodyMovement = {};
+// Called every frame like the other applies; only pushes to the bodies when a value moved.
+const WEAPON_PRESENTATION_KEYS = ['weaponHoldHeight', 'weaponHoldForward', 'weaponReachSolve', 'bodyFacing', 'weaponAimTrim',
+  'bodyTurnThreshold', 'bodyTurnRate', 'gunYawLimit', 'weaponHoldMode', 'holdIdleDist', 'holdIdleSide', 'holdIdleUp', 'holdAimDist', 'holdAimSide', 'holdAimUp'];
+const appliedWeaponPresentation = {};
+function applyWeaponPresentation() {
+  let dirty = false;
+  for (const key of WEAPON_PRESENTATION_KEYS) {
+    if (appliedWeaponPresentation[key] !== settings[key]) { appliedWeaponPresentation[key] = settings[key]; dirty = true; }
+  }
+  if (!dirty) return;
+  playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
+  playerBodies.setReachSolve(settings.weaponReachSolve);
+  playerBodies.setFacingMode(settings.bodyFacing);
+  playerBodies.setAimTrim(settings.weaponAimTrim);
+  playerBodies.setFacing({ threshold: settings.bodyTurnThreshold, rate: settings.bodyTurnRate, gunYawLimit: settings.gunYawLimit });
+  playerBodies.setHoldMode(settings.weaponHoldMode, {
+    idle: { dist: settings.holdIdleDist, side: settings.holdIdleSide, up: settings.holdIdleUp },
+    aim: { dist: settings.holdAimDist, side: settings.holdAimSide, up: settings.holdAimUp },
+  });
+}
+
 function applyBodyMovement() {
   let dirty = false;
   for (const key of Object.keys(BODY_MOVEMENT_KEYS)) {
@@ -1039,15 +1060,7 @@ function updateWorld(dt) {
   playerBodies.setLocalMode(settings.playerBodyMode);
   playerBodies.setBodyDesign(settings.bodyDesign);
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
-  playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
-  playerBodies.setReachSolve(settings.weaponReachSolve);
-  playerBodies.setFacingMode(settings.bodyFacing);
-  playerBodies.setAimTrim(settings.weaponAimTrim);
-  playerBodies.setFacing({ threshold: settings.bodyTurnThreshold, rate: settings.bodyTurnRate, gunYawLimit: settings.gunYawLimit });
-  playerBodies.setHoldMode(settings.weaponHoldMode, {
-    idle: { dist: settings.holdIdleDist, side: settings.holdIdleSide, up: settings.holdIdleUp },
-    aim: { dist: settings.holdAimDist, side: settings.holdAimSide, up: settings.holdAimUp },
-  });
+  applyWeaponPresentation();
   if (weaponViewModel.weaponId !== localWeaponId()) weaponViewModel.setWeapon(localWeaponId());
   applyBodyMovement();
   applyArmTuning();
