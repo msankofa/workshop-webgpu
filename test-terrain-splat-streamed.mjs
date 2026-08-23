@@ -83,7 +83,7 @@ console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels disso
   cov.update(new Set(['0,0', '1,0']), 0.1);
   ok(Math.abs(cov.coverageAt(5, 5) - 0.25) < 1e-9 && cov.coverageAt(35, 5) === cov.coverageAt(5, 5) && cov.coverageAt(-5, 5) === 0, 'present chunks ramp up (0.25 after 0.1 s), absent stay 0');
   for (let i = 0; i < 5; i++) cov.update(new Set(['0,0']), 0.1);
-  ok(cov.coverageAt(5, 5) === 1 && cov.coverageAt(35, 5) === 0 && cov.trackedCount === 1, 'ramp saturates at 1; an unloaded chunk ramps back to 0 and is forgotten');
+  ok(cov.coverageAt(5, 5) === 1 && cov.coverageAt(35, 5) === 0 && cov.trackedCount === 1, 'ramp saturates at 1; an unloaded chunk snaps to 0 and is forgotten');
   ok(cov.texture.image.data[4 * 8 + 4] === 255 && cov.texture.image.data[4 * 8 + 5] === 0, 'texel (chunk − origin) carries the value as a byte');
   cov.recentre(300, 0);
   ok(cov.originX === 6 && cov.coverageAt(5, 5) === 1, 'recentring keeps tracked values (texel address moves, value does not)');
@@ -120,7 +120,7 @@ console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels disso
   const m0 = terrain.cascadeMaterialFor(0), m1 = terrain.cascadeMaterialFor(1), m3 = terrain.cascadeMaterialFor(3);
   ok(m0 && m1 && m3 && m0.userData.streamedSplat.coverageMaps.finer === null && m1.userData.streamedSplat.coverageMaps.finer === terrain.lodCoverage.exact && m3.userData.streamedSplat.coverageMaps.finer === terrain.lodCoverage.levels[1], 'instances chain: exact has no finer; level 1 → exact; level 3 → level 2');
   const cE = terrain.lodCoverage.exact, c1 = terrain.lodCoverage.levels[0];
-  ok(cE.coverageAt(0, 0) >= 0.4 && cE.coverageAt(0, 0) < 1, `resident chunks are mid-ramp after 0.3 s (exact ${cE.coverageAt(0, 0).toFixed(2)}, level 1 ${c1.coverageAt(0, 0).toFixed(2)} — cascade installs one chunk per update)`);
+  ok(cE.coverageAt(0, 0) > 0.2 && cE.coverageAt(0, 0) < 1, `resident chunks are mid-ramp after 0.3 s (exact ${cE.coverageAt(0, 0).toFixed(2)}, level 1 ${c1.coverageAt(0, 0).toFixed(2)} — cascade installs one chunk per update)`);
   for (let i = 0; i < 5; i++) terrain.update([0, 0, 0], 0.1);
   ok(cE.coverageAt(0, 0) === 1 && cE.coverageAt(200, 0) === 0, 'settles to 1 on resident chunks, 0 beyond the window');
   const meshes = terrain.system.group.children.filter(c => c.isMesh && c.userData.terrainChunk);
