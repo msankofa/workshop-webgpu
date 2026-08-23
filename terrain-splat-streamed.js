@@ -18,6 +18,7 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
   Fn, If, Discard, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
   positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
+  textureLoad, ivec2, floor, select,
 } from 'three/tsl';
 
 export const STREAMED_SPLAT_LAYERS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
@@ -120,10 +121,14 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
   return { layers: out };
 }
 
-// The material. `textures` is the result of loadStreamedSplatTextures / placeholder. With
-// `hole: true` the material carries a world-xz rectangle whose fragments are discarded: a LOD
-// level uses it to vanish wherever the finer level draws (set with setStreamedSplatHole).
-export function createStreamedSplatMaterial(textures, overrides = {}, { hole = false } = {}) {
+// The material. `textures` is the result of loadStreamedSplatTextures / placeholder.
+// LOD dissolve (`lod: true`): two coverage maps (terrain-lod-coverage.js) drive per-fragment
+// discards with one stable world-space dither — `self` is this level's own chunk coverage
+// (fragments dissolve IN as it rises) and `finer` is the next finer level's (fragments dissolve
+// OUT as it rises), so the handover between levels is gap-free and pop-free, and a chunk landing
+// late from a worker fades in instead of snapping. `lod = { self, finer }` binds the maps at build
+// time (a texture node is fixed once built); syncStreamedSplatCoverage() follows their origins.
+export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null } = {}) {
   const cfg = { ...STREAMED_SPLAT_DEFAULTS, ...overrides };
   const L = textures.layers;
   for (const name of STREAMED_SPLAT_LAYERS) if (!L[name]?.color || !L[name]?.normal) throw new TypeError(`streamed splat needs colour + normal textures for '${name}'`);
@@ -139,8 +144,20 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { hole = f
     snowBottom: uniform(cfg.snowBottom), snowTop: uniform(cfg.snowTop),
     rockSlope: uniform(cfg.rockSlope), rockFull: uniform(cfg.rockFull),
     averages: Object.fromEntries(STREAMED_SPLAT_LAYERS.map(n => [n, uniform(new THREE.Vector3(...(L[n].average ?? AVERAGE_FALLBACK[n])))])),
-    holeMin: uniform(new THREE.Vector2(1, 1)),   // min > max = no hole
-    holeMax: uniform(new THREE.Vector2(0, 0)),
+    // coverage maps: origin = chunk index at texel (0,0); size 0 = unbound (self → fully present, finer → nothing)
+    selfOrigin: uniform(new THREE.Vector2()), selfChunk: uniform(1), selfTexels: uniform(0),
+    finerOrigin: uniform(new THREE.Vector2()), finerChunk: uniform(1), finerTexels: uniform(0),
+  };
+  const blankCoverage = (() => { const t = new THREE.DataTexture(new Uint8Array([255]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType); t.needsUpdate = true; return t; })();
+  const coverageMaps = { self: lod?.self ?? null, finer: lod?.finer ?? null };
+  const coverageTex = { self: coverageMaps.self?.texture ?? blankCoverage, finer: coverageMaps.finer?.texture ?? blankCoverage };
+  // coverage of the chunk under the fragment in one map: 0 outside the map
+  const coverageOf = (which) => {
+    const origin = u[`${which}Origin`], chunk = u[`${which}Chunk`], texels = u[`${which}Texels`];
+    const c = floor(P.xz.div(chunk)).sub(origin);
+    const outside = c.x.lessThan(0).or(c.y.lessThan(0)).or(c.x.greaterThanEqual(texels)).or(c.y.greaterThanEqual(texels));
+    const t = textureLoad(which === 'self' ? coverageTex.self : coverageTex.finer, ivec2(clamp(c, vec2(0), texels.sub(1)))).x;
+    return select(outside, float(0), t);
   };
 
   const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453)));
@@ -203,9 +220,13 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { hole = f
   const roughProp = property('float', 'splatRough');
   const normalProp = property('vec3', 'splatNormal');
   const shadeAll = Fn(() => {
-    if (hole) {
-      const inside = P.x.greaterThan(u.holeMin.x).and(P.x.lessThan(u.holeMax.x)).and(P.z.greaterThan(u.holeMin.y)).and(P.z.lessThan(u.holeMax.y));
-      If(inside, () => { Discard(); });
+    if (lod) {
+      // stable world-space dither at ~12 cm so the dissolve does not crawl with the camera
+      const dither = fract(sin(dot(floor(P.xz.mul(8)), vec2(127.1, 311.7))).mul(43758.5453));
+      const selfT = select(u.selfTexels.greaterThan(0), coverageOf('self'), float(1));
+      const finerT = select(u.finerTexels.greaterThan(0), coverageOf('finer'), float(0));
+      // dissolve in as self coverage rises; dissolve out as the finer level's rises
+      If(dither.greaterThanEqual(selfT).or(dither.lessThan(finerT)), () => { Discard(); });
     }
     const { sampleFor, anchor } = makeSamplers();
     const w = weightsOf();
@@ -240,17 +261,22 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { hole = f
   mat.colorNode = shadeAll();
   mat.roughnessNode = roughProp;
   mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
-  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, hole };
+  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, lod: !!lod, coverageMaps };
+  syncStreamedSplatCoverage(mat);
   return mat;
 }
 
-// Set (or clear with null) the discard rectangle [minX, minZ, maxX, maxZ] of a hole-capable material.
-export function setStreamedSplatHole(material, rect) {
+// Copy the bound coverage maps' origin/size into the uniforms (call after their recentre()).
+export function syncStreamedSplatCoverage(material) {
   const s = material?.userData?.streamedSplat;
-  if (!s || !s.hole) return false;
-  if (!rect) { s.uniforms.holeMin.value.set(1, 1); s.uniforms.holeMax.value.set(0, 0); return true; }
-  s.uniforms.holeMin.value.set(rect[0], rect[1]);
-  s.uniforms.holeMax.value.set(rect[2], rect[3]);
+  if (!s || !s.lod) return false;
+  for (const which of ['self', 'finer']) {
+    const c = s.coverageMaps[which], u = s.uniforms;
+    if (!c) { u[`${which}Texels`].value = 0; continue; }
+    u[`${which}Origin`].value.set(c.originX, c.originZ);
+    u[`${which}Chunk`].value = c.chunkSize;
+    u[`${which}Texels`].value = c.texels;
+  }
   return true;
 }
 

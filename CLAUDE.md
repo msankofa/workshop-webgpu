@@ -43,7 +43,7 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Subsystem | Doc | Key files |
 |---|---|---|
 | Entry / orchestration | `entry-point.md` | `environment-viewer.html` |
-| Terrain | `terrain.md` | `terrain-system.js`, `terrain-field.js`, `terrain-source.js`, `terrain-source-analytic.js`, `terrain-source-v5.js`, `terrain-worker.js`, `world-query-heightfield-provider.js`, `world-query-chunk-mesh-provider.js`, `terrain-volume-collision.js`, `terrain-clipmap-window.js`, `terrain-clipmap.js`, `terrain-splat-streamed.js`, `terrain-chunk-batches.js`, `cdlod-terrain.js`, `collision.js`, `map-collision.js`, `soil-shade.js` |
+| Terrain | `terrain.md` | `terrain-system.js`, `terrain-field.js`, `terrain-source.js`, `terrain-source-analytic.js`, `terrain-source-v5.js`, `terrain-worker.js`, `world-query-heightfield-provider.js`, `world-query-chunk-mesh-provider.js`, `terrain-volume-collision.js`, `terrain-clipmap-window.js`, `terrain-clipmap.js`, `terrain-splat-streamed.js`, `terrain-chunk-batches.js`, `terrain-lod-coverage.js`, `cdlod-terrain.js`, `collision.js`, `map-collision.js`, `soil-shade.js` |
 | Terrain generator (authoring) | `terrain-generator.md` | `terrain-generator-v5.html`, `terrain-gen-worker.js`, `terrain-generator-js.js`, `terrain-stack.js`, `terrain-noise.js`, `terrain-paint.js`, `terrain-history.js`, `terrain-heightmap-io.js`, `terrain-project-v5.js`, `terrain-editor-bridge.js` (`terrain-generator-v4.html` kept as-is) |
 | Vegetation | `vegetation.md` | `trees.js`, `forest-gpu.js`, `forest-placement.js`, `grass.js`, `grass-compute.js`, `grass-look.js` |
 | Rocks / scree | `rocks.md` | `rocks.js`, `rocks-placement.js`, `dressing-gpu.js` (standalone; not yet wired into `environment-viewer.html`) |

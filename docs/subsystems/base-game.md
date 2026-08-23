@@ -256,19 +256,23 @@ toggle, default off.
 
 `base-game-audio.js` is the pure director (`test-base-game-audio.mjs`). It owns no Web Audio; it
 decides which event id fires and where, then calls `play`/`playAt`, or `playSynthAt` with a
-`weapon-sfx-synth.js` voice when `hasSfxEvent` is false. Local footsteps are html-game-v2's setup:
-one step each time `floor((bobPhase - pi/2) / pi)` changes on the weapon view-model's bob clock
-(`weaponViewModel.bobPhase`), alternating sides, placed 0.32 m beside the feet and 0.16 m up,
-panned ±0.18 toward that side through the `ownStep` profile (ref 6 m, max 16 m, no rolloff,
-volumeScale 1.45), sample volume 0.4. Remote players have no bob phase on the wire, so they keep
+`weapon-sfx-synth.js` voice when `hasSfxEvent` is false. A local footstep is a literal foot plant:
+the procedural body's `gait.feet.{left,right}.stepping` flag is true while a foot swings, and the
+frame it drops the step plays at `foot.current` (+0.16 m), panned ±0.18 toward that side through
+html-game-v2's `ownStep` profile (ref 6 m, max 16 m, no rolloff, volumeScale 1.45), sample volume
+0.4. Settling shuffles below 0.5 m/s and plants while airborne are ignored. When the body is not
+being stepped (hidden in the current view mode) the director falls back to v2's bob cadence: one
+step each time `floor((weaponViewModel.bobPhase - pi/2) / pi)` changes, alternating sides, placed
+0.32 m beside the feet. Remote players have no bob phase on the wire, so they keep
 the distance stride (1.7 m walk / 2.4 m sprint). `jump` fires on grounded→airborne while rising,
-`landing` on airborne→grounded with volume 0.65 + 0.03·fallSpeed. Every event has a budget of 4–8
+`landing` on airborne→grounded after at least 0.15 s in the air (the grounded flag flickers on slopes, and a landing per flicker sounds like footsteps the toggle cannot silence), volume 0.65 + 0.03·fallSpeed. Every event has a budget of 4–8
 starts per 100 ms and positional sounds are culled at 70 m.
 
 Fire points in `base-game.html`:
 
-- `audioDirector.updateLocal(dt, { speed, grounded, rising, fallSpeed, bobPhase, position, right })`
-  once per frame, after the view-model update, from the controller's velocity, the render-local
+- `audioDirector.updateLocal(dt, { speed, grounded, rising, fallSpeed, feet, bobPhase, position, right })`
+  once per frame from the controller's velocity, `playerBodies.localBody.gait.feet` (only when
+  last frame's `playerBodies.updateLocal` returned true), the view-model bob phase, the render-local
   feet position and the camera's right vector.
 - `localReload()` wherever `playerBodies.localReload()` returns true (both the lockstep and the solo
   path), `localSlotChange()` on a 1–4 key that changes the slot. Both use the new `weapon_reload` /
@@ -610,6 +614,21 @@ One rig, two presentation axes, owner only; remotes always see the third-person 
 - **Part mask**: the rig gained `setPartMask(mask)` over `parts.core`; in first person on the
   third-person rig the page hides head, eyes, neck and torso (`FP_PART_MASK`) and keeps arms and
   legs. Mesh-mode only hides anchored gear with its host; instanced bodies would not.
+- **Two-grip reach solve** (`weaponReachSolve` toggle, default on; `frame.reachSolve` on the
+  mount): before the pose controller runs, `solveReach` translates the gun toward the trigger
+  hand's shoulder by any excess over `armLen * REACH_FRACTION`, then pivots it about that grip by
+  the least angle that puts the support grip on the support arm's reach sphere (two iterations).
+  A no-op when both grips are reachable, so authored holds are untouched; without it the arms
+  simply extend and the gun floats away from the hands whenever the hold, the stance, the torso
+  twist or the view frame pushes a grip out of reach.
+- **Body-relative hold** (`weaponHoldMode`, default `body`; `authored` keeps the bot holds): the
+  authored hold supplies rotation only; `placeBodyHold` then translates the gun so the trigger grip
+  sits at trigger shoulder + aimDir × armLen × dist + right × side + up × up, idle and aim values
+  blended by the controller's aim amount (`BODY_HOLD_DEFAULTS`: idle 0.55 / -0.04 / -0.16, aim
+  0.46 / -0.10 / 0.06; six sliders). Elbows bend by construction, and the body, not a fixed
+  ground-frame offset, decides where the gun is. The barrel trim now pivots about the trigger grip
+  (`pivotMarker`) again while taking its direction from the bore; pivoting near the muzzle swung the
+  grip metres away on large corrections.
 - Not done: the late depth-cleared pass for arms + gun (they can clip walls at the 0.1 m near
   plane) and the shoulder pin at mid blend. Both are tuning items once the look is judged.
 
@@ -1104,7 +1123,7 @@ cascade's 5 m level shows through rather than drawing the wrong ground.
 
 **Ground textures (2026-08-23).** `terrain-splat-streamed.js` (see `terrain.md`) replaces the
 vertex tint on chunks and the cascade: `terrain.setSplatMaterial(mat)` / `setSplatEnabled(bool)`,
-`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. **LOD holes (2026-08-23):** each cascade level draws through its own hole-capable splat instance (`createStreamedSplatMaterial(tex, cfg, { hole: true })`, `setStreamedSplatHole(mat, rect)`) whose fragments are discarded inside the finer level's resident square inset by one finer chunk (`syncCascadeHoles`, re-run whenever any level's window moves), so a coarse valley floor can no longer show inside exact ground ("false terrain in crevasses"); `setSplatMaterial(mat, textures)` needs the textures to build the instances and `cascadeMaterialFor(level)` exposes them for live tuning. Resident chunks (and each cascade level) draw through `terrain-chunk-batches.js` pools — `stats.draws` counts batches, `stats.batches` carries the pool stats; a chunk's own mesh is hidden while batched and is the fallback when a pool is full (measured: over 1,000 draws at draw radius 32 before). Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
+`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. **LOD dissolve (2026-08-23, replaces the rectangle holes):** every streamer (exact chunks + each cascade level) owns a `terrain-lod-coverage.js` map — one texel per chunk around the player holding how present that chunk is, ramping 0→1 over 0.4 s after it lands and back down when it unloads — and its own splat instance bound to its map (`self`) and the next finer level's (`finer`). Fragments dissolve IN as `self` rises and OUT as `finer` rises, with one stable world-space dither, so a window re-centre or a late worker tile never pops or gaps and a coarse valley floor never shows inside exact ground. `updateCoverage()` runs per frame (`recentre` + `update` + `syncStreamedSplatCoverage`); a source swap clears the maps. `setSplatMaterial(mat, textures)` builds the instances; `updateSplat(patch)` tunes them all; `lodCoverage` / `cascadeMaterialFor(i)` expose them (0 = exact). Resident chunks (and each cascade level) draw through `terrain-chunk-batches.js` pools — `stats.draws` counts batches, `stats.batches` carries the pool stats; a chunk's own mesh is hidden while batched and is the fallback when a pool is full (measured: over 1,000 draws at draw radius 32 before). Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
 background (tint shows until they arrive) and exposes `terrainTextures` (on), `terrainTextureTile`
 (4 m) and `terrainTextureFade` (1400 m) in the Terrain world panel. The far fade is what keeps the
 horizon from shimmering; the flight sim's height band limit is the same idea one level down.

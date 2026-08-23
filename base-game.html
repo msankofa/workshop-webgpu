@@ -150,6 +150,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
+  weaponReachSolve: true,
+  weaponHoldMode: 'body',
+  holdIdleDist: 0.55, holdIdleSide: -0.04, holdIdleUp: -0.16,
+  holdAimDist: 0.46, holdAimSide: -0.10, holdAimUp: 0.06,
   fpPreset: 'hybrid',
   fpViewBlend: 0.6,
   fpCameraComfort: 'off',
@@ -258,6 +262,8 @@ const NUMBER_LIMITS = Object.freeze({
   bodyForwardStride: [0.2, 2], bodyBehindStride: [0, 1.5],
   weaponHoldHeight: [-0.3, 0.3], weaponHoldForward: [-0.3, 0.3],
   fpViewBlend: [0, 1],
+  holdIdleDist: [0.2, 1], holdIdleSide: [-0.4, 0.4], holdIdleUp: [-0.6, 0.4],
+  holdAimDist: [0.2, 1], holdAimSide: [-0.4, 0.4], holdAimUp: [-0.6, 0.4],
 });
 const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
@@ -269,6 +275,7 @@ const STRING_VALUES = Object.freeze({
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
   weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS],
   fpPreset: ['hybrid', 'arcade', 'embodied', 'custom'],
+  weaponHoldMode: ['body', 'authored'],
   fpCameraComfort: ['off', 'light', 'strong'],
   armPreset: Object.keys(ARM_POSE_PRESETS),
   bodyGaitModel: Object.keys(GAIT_MODELS),
@@ -755,11 +762,7 @@ function updateWorld(dt) {
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
-  if (terrain.splatMaterial) {
-    const splatPatch = { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) };
-    updateStreamedSplat(terrain.splatMaterial, splatPatch);
-    for (const l of terrain.volumeLod) { const m = terrain.cascadeMaterialFor?.(l.level); if (m) updateStreamedSplat(m, splatPatch); }
-  }
+  if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
   const wantFar = terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD;
   // The sky (dome, stars, bodies) rides on the camera at a radius tied to the far plane: rescale
@@ -780,6 +783,11 @@ function updateWorld(dt) {
   playerBodies.setBodyDesign(settings.bodyDesign);
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
   playerBodies.setHoldTrim({ y: settings.weaponHoldHeight, z: settings.weaponHoldForward });
+  playerBodies.setReachSolve(settings.weaponReachSolve);
+  playerBodies.setHoldMode(settings.weaponHoldMode, {
+    idle: { dist: settings.holdIdleDist, side: settings.holdIdleSide, up: settings.holdIdleUp },
+    aim: { dist: settings.holdAimDist, side: settings.holdAimSide, up: settings.holdAimUp },
+  });
   if (weaponViewModel.weaponId !== localWeaponId()) weaponViewModel.setWeapon(localWeaponId());
   applyBodyMovement();
   applyArmTuning();
@@ -1149,6 +1157,14 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+addSelect(playerSec, 'weaponHoldMode', 'Weapon hold', ['body', 'authored']);
+addRange(playerSec, 'holdIdleDist', 'Hold distance (idle, arm fraction)', 0.2, 1, 0.01, value => value.toFixed(2));
+addRange(playerSec, 'holdIdleSide', 'Hold side (idle)', -0.4, 0.4, 0.005, value => `${value.toFixed(3)} m`);
+addRange(playerSec, 'holdIdleUp', 'Hold height (idle)', -0.6, 0.4, 0.005, value => `${value.toFixed(3)} m`);
+addRange(playerSec, 'holdAimDist', 'Hold distance (aim, arm fraction)', 0.2, 1, 0.01, value => value.toFixed(2));
+addRange(playerSec, 'holdAimSide', 'Hold side (aim)', -0.4, 0.4, 0.005, value => `${value.toFixed(3)} m`);
+addRange(playerSec, 'holdAimUp', 'Hold height (aim)', -0.6, 0.4, 0.005, value => `${value.toFixed(3)} m`);
+addToggle(playerSec, 'weaponReachSolve', 'Weapon reach solve (both hands)');
 addRange(playerSec, 'weaponHoldHeight', 'Weapon hold height', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
 addRange(playerSec, 'weaponHoldForward', 'Weapon hold forward', -0.3, 0.3, 0.005, value => `${value.toFixed(3)} m`);
 addSelect(playerSec, 'fpPreset', 'First-person style', ['hybrid', 'arcade', 'embodied', 'custom']);
@@ -1694,6 +1710,7 @@ const remoteAudioLocal = [0, 0, 0];
 const audioStepRight = new THREE.Vector3();
 const audioStepFeet = { x: 0, y: 0, z: 0 };
 let audioLastFallSpeed = 0;
+let audioBodyStepped = false;
 let fpsElapsed = 0;
 let fpsFrames = 0;
 let shownFps = 0;
@@ -2041,8 +2058,8 @@ async function animate() {
       viewFrame = fpViewFrame;
     }
     {
-      // Footsteps sync to the view-model bob (html-game-v2 setup): placed beside the feet, panned
-      // to the stepping side. Fall speed is last frame's, since touching down already zeroed it.
+      // A footstep is the body's actual foot plant (bob-phase fallback if no body is running),
+      // placed at that foot and panned to its side. Fall speed is last frame's: touching down zeroed it.
       const v = playerController.getVelocity();
       audioStepRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       audioStepFeet.x = playerRenderPosition[0]; audioStepFeet.y = playerRenderPosition[1]; audioStepFeet.z = playerRenderPosition[2];
@@ -2051,6 +2068,7 @@ async function animate() {
         grounded: playerController.grounded,
         rising: v[1] > 0.5,
         fallSpeed: audioLastFallSpeed,
+        feet: audioBodyStepped ? playerBodies.localBody?.gait?.feet ?? null : null,   // hidden body: feet freeze, use the bob fallback
         bobPhase: weaponViewModel.bobPhase,
         position: audioStepFeet,
         right: audioStepRight,
@@ -2058,7 +2076,7 @@ async function animate() {
       audioLastFallSpeed = Math.max(0, -v[1]);
     }
     playerBodies.setLocalAim(canControl && weaponState.aiming, canControl && weaponState.aiming ? updateLocalAimPoint() : null);
-    playerBodies.updateLocal(dt, {
+    audioBodyStepped = playerBodies.updateLocal(dt, {
       globalFoot: worldCoordinates.toGlobal(playerRenderPosition),
       velocity: playerController.getVelocity(),
       yaw: playerView.yaw,
@@ -2082,6 +2100,7 @@ async function animate() {
           if (!record.sample) continue;
           worldCoordinates.toRenderLocal(record.sample.position, remoteAudioLocal);
           audioDirector.updateRemote(id, {
+            dt,
             position: { x: remoteAudioLocal[0], y: remoteAudioLocal[1], z: remoteAudioLocal[2] },
             grounded: record.sample.grounded,
             action: record.sample.action,

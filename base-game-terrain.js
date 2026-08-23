@@ -12,7 +12,8 @@ import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-prov
 import { globalToRenderLocal } from './world-coordinates.js';
 import { createTerrainClipmap } from './terrain-clipmap.js';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
-import { createStreamedSplatMaterial, setStreamedSplatHole } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat } from './terrain-splat-streamed.js';
+import { createLodCoverage } from './terrain-lod-coverage.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -105,37 +106,43 @@ export function createBaseGameTerrain({
   }
   // Ground textures (terrain-splat-streamed.js) replace the vertex tint when set; the tint
   // stays on the geometry so turning textures off costs nothing.
-  let splatMaterial = null;
+  let splatMaterial = null;     // the caller's instance: source of the tuning cfg
   let splatTextures = null;
   let splatEnabled = true;
-  const cascadeSplat = new Map();   // level -> hole-capable splat instance
-  function groundMaterial() { return splatEnabled && splatMaterial ? splatMaterial : system.material; }
-  function cascadeMaterial(level) {
-    const base = groundMaterial();
-    if (normals || base !== splatMaterial || !splatTextures) return normals ? normalMaterial : base;
-    let m = cascadeSplat.get(level);
-    if (!m) { m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { hole: true }); cascadeSplat.set(level, m); }
+  // LOD dissolve: one coverage map per streamer (exact chunks + each cascade level) and one splat
+  // instance per streamer bound to its own map and the next finer one (terrain-lod-coverage.js).
+  const coverExact = createLodCoverage({ chunkSize: cfg.chunkSize });
+  const coverLevels = cfg.volumeLod.map(spec => createLodCoverage({ chunkSize: spec.chunkSize }));
+  const splatInstances = new Map();   // 0 = exact, 1..n = cascade levels
+  function splatFor(index) {
+    if (!splatMaterial || !splatTextures) return null;
+    let m = splatInstances.get(index);
+    if (!m) {
+      const self = index === 0 ? coverExact : coverLevels[index - 1];
+      const finer = index === 0 ? null : (index === 1 ? coverExact : coverLevels[index - 2]);
+      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer } });
+      splatInstances.set(index, m);
+    }
     m.wireframe = wireframe;
     return m;
   }
-  // The square a chunk system currently targets, in global xz (null until it has a centre).
-  function systemRect(sys) {
-    const size = sys.params.chunkSize, r = Math.max(0, Math.floor(sys.params.renderRadius));
-    const cx = sys.centerChunkX, cz = sys.centerChunkZ;
-    if (cx == null || cz == null) return null;
-    return [(cx - r) * size, (cz - r) * size, (cx + r + 1) * size, (cz + r + 1) * size];
+  function groundMaterial() { return splatEnabled && splatMaterial ? (splatFor(0) ?? splatMaterial) : system.material; }
+  function cascadeMaterial(level) {
+    if (normals || !(splatEnabled && splatMaterial)) return normals ? normalMaterial : system.material;
+    return splatFor(level) ?? splatMaterial;
   }
-  // Each level hides inside the finer level's square, inset by one finer chunk so the ring of
-  // finer chunks that may still be streaming keeps coarse ground underneath.
-  function syncCascadeHoles() {
-    for (let i = 0; i < cascade.length; i++) {
-      const m = cascadeSplat.get(cascade[i].level);
-      if (!m) continue;
-      const finer = i === 0 ? system : cascade[i - 1].system;
-      const rect = systemRect(finer);
-      const inset = finer.params.chunkSize;
-      setStreamedSplatHole(m, rect ? [rect[0] + inset, rect[1] + inset, rect[2] - inset, rect[3] - inset] : null);
-    }
+  function presentKeys(sys, hideRule) {
+    const out = new Set();
+    for (const [key, chunk] of sys.chunks) if (chunk.mesh && !hideRule(chunk)) out.add(key);
+    return out;
+  }
+  const hideStaleHeightfield = chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode;
+  // Per frame: coverage ramps follow residency; origins follow the player; uniforms follow both.
+  function updateCoverage(globalPosition, dt) {
+    coverExact.recentre(globalPosition[0], globalPosition[2]);
+    coverExact.update(presentKeys(system, hideStaleHeightfield), dt);
+    cascade.forEach((c, i) => { coverLevels[i].recentre(globalPosition[0], globalPosition[2]); coverLevels[i].update(presentKeys(c.system, () => false), dt); });
+    for (const m of splatInstances.values()) syncStreamedSplatCoverage(m);
   }
   // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one draw per ~256 chunks
   // instead of one per chunk. A chunk's own mesh is hidden once it is in a batch; it stays the
@@ -279,7 +286,6 @@ export function createBaseGameTerrain({
       cb.batcher.setMaterial(lvlMat);
       syncBatches(c.system, cb.batcher, cb.batched, () => false);
     }
-    syncCascadeHoles();
   }
 
   function refreshTileBounds() {
@@ -352,15 +358,18 @@ export function createBaseGameTerrain({
     get handoffPending() { return handoffPending; },
     get farLod() { return farLodMode; },
     // Ground textures: hand in a built streamed-splat material (or null to drop it).
-    // The cascade gets one hole-capable instance per level built from the same textures, so a
-    // coarse level never shows inside the finer one (valley floors were poking through).
+    // Chunks and every cascade level get their own instance from the same textures, bound to the
+    // LOD coverage maps; the caller's `material` only supplies the tuning cfg.
     setSplatMaterial(material, textures = null) {
       splatMaterial = material ?? null;
       splatTextures = textures;
-      for (const m of cascadeSplat.values()) m.dispose();
-      cascadeSplat.clear();
+      for (const m of splatInstances.values()) m.dispose();
+      splatInstances.clear();
       applyMaterials();
     },
+    // Live tuning for every splat instance at once.
+    updateSplat(patch) { if (splatMaterial) updateStreamedSplat(splatMaterial, patch); for (const m of splatInstances.values()) updateStreamedSplat(m, patch); },
+    get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },
     setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
     get splatMaterial() { return splatMaterial; },
     get splatEnabled() { return splatEnabled; },
@@ -378,7 +387,7 @@ export function createBaseGameTerrain({
       return volumetricMode ? cascadeExtent() : (clipmap ? clipmap.outerHalfExtent : 0);
     },
     get volumeLod() { return cascade.map(c => ({ level: c.level, system: c.system, spec: c.spec })); },
-    cascadeMaterialFor(level) { return cascadeSplat.get(level) ?? null; },
+    cascadeMaterialFor(level) { return splatInstances.get(level) ?? null; },
     // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
     takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
@@ -421,6 +430,8 @@ export function createBaseGameTerrain({
       provider.setSource(system.source);
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       for (const c of cascade) c.system.setSource(next);
+      // nothing survives a swap, so there is nothing to dissolve from: coverage restarts at zero
+      coverExact.clear(); for (const cl of coverLevels) cl.clear();
       installedTotal = 0;
       volumetricMode = false;
       if (wantVolumetric && system.source?.densityAt) { system.params.volumetric = true; volumetricMode = true; }
@@ -446,6 +457,7 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       if (changed) { applyMaterials(); syncVolumeColliders(); }
+      updateCoverage(globalPosition, dt);
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
         if (changed || !clipmap.holeRect) clipmap.setHoleRect(chunkWindowRect());
@@ -456,7 +468,7 @@ export function createBaseGameTerrain({
         const t1 = performance.now();
         let any = false;
         for (const c of cascade) any = c.system.update(globalPosition[0], globalPosition[2]) || any;
-        if (any) applyMaterials(); else if (changed) syncCascadeHoles();
+        if (any) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
@@ -532,7 +544,8 @@ export function createBaseGameTerrain({
       normalMaterial.dispose();
       root.removeFromParent();
       if (clipmap) clipmap.dispose();
-      for (const m of cascadeSplat.values()) m.dispose();
+      for (const m of splatInstances.values()) m.dispose();
+      coverExact.dispose(); for (const cl of coverLevels) cl.dispose();
       batcher.dispose();
       for (const cb of cascadeBatchers.values()) cb.batcher.dispose();
       for (const c of cascade) { c.system.dispose(); c.group.removeFromParent(); }

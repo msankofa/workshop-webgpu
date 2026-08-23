@@ -73,16 +73,38 @@ console.log('\n[4] Base Game wiring: chunks and the cascade pick up the splat; t
 }
 
 
-console.log('\n[5] LOD hole: cascade levels discard inside the finer level; the hole follows the player');
+console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels dissolve in, coarse levels out, with one dither');
 {
-  const { setStreamedSplatHole } = await import('./terrain-splat-streamed.js');
-  const holeMat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { hole: true });
-  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
-  let built = null; try { built = await buildMaterial(holeMat, geo); } catch (e) { built = null; }
-  ok(built && /discard/.test(built.fragment), 'hole material builds with a discard');
-  ok(setStreamedSplatHole(holeMat, [-10, -20, 30, 40]) && holeMat.userData.streamedSplat.uniforms.holeMin.value.x === -10 && holeMat.userData.streamedSplat.uniforms.holeMax.value.y === 40, 'hole rect lands in the uniforms');
-  ok(setStreamedSplatHole(createStreamedSplatMaterial(placeholderStreamedSplatTextures()), [0, 0, 1, 1]) === false, 'a plain splat has no hole');
+  const { createLodCoverage } = await import('./terrain-lod-coverage.js');
+  const { syncStreamedSplatCoverage } = await import('./terrain-splat-streamed.js');
+  const cov = createLodCoverage({ chunkSize: 30, texels: 8, fadeSeconds: 0.4 });
+  cov.recentre(0, 0);
+  ok(cov.originX === -4 && cov.originZ === -4 && cov.texels === 8, `map centred on the player's chunk (origin ${cov.originX}, ${cov.originZ})`);
+  cov.update(new Set(['0,0', '1,0']), 0.1);
+  ok(Math.abs(cov.coverageAt(5, 5) - 0.25) < 1e-9 && cov.coverageAt(35, 5) === cov.coverageAt(5, 5) && cov.coverageAt(-5, 5) === 0, 'present chunks ramp up (0.25 after 0.1 s), absent stay 0');
+  for (let i = 0; i < 5; i++) cov.update(new Set(['0,0']), 0.1);
+  ok(cov.coverageAt(5, 5) === 1 && cov.coverageAt(35, 5) === 0 && cov.trackedCount === 1, 'ramp saturates at 1; an unloaded chunk ramps back to 0 and is forgotten');
+  ok(cov.texture.image.data[4 * 8 + 4] === 255 && cov.texture.image.data[4 * 8 + 5] === 0, 'texel (chunk − origin) carries the value as a byte');
+  cov.recentre(300, 0);
+  ok(cov.originX === 6 && cov.coverageAt(5, 5) === 1, 'recentring keeps tracked values (texel address moves, value does not)');
+  cov.clear();
+  ok(cov.trackedCount === 0 && cov.coverageAt(5, 5) === 0, 'clear() drops everything (source swap)');
 
+  // a lod material built against two maps, headless
+  const self = createLodCoverage({ chunkSize: 120 }), finer = createLodCoverage({ chunkSize: 30 });
+  self.recentre(10, 10); finer.recentre(10, 10);
+  const lodMat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { lod: { self, finer } });
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  let built = null; try { built = await buildMaterial(lodMat, geo); } catch (e) { built = e; }
+  ok(built && built.fragment && /discard/.test(built.fragment), `lod material builds with a discard (${built?.message ?? 'ok'})`);
+  const u = lodMat.userData.streamedSplat.uniforms;
+  ok(u.selfTexels.value === 96 && u.selfChunk.value === 120 && u.finerChunk.value === 30 && u.selfOrigin.value.x === self.originX, 'coverage origins/sizes are in the uniforms');
+  finer.recentre(2000, 0); syncStreamedSplatCoverage(lodMat);
+  ok(u.finerOrigin.value.x === finer.originX, 'sync follows a recentre');
+  const exactOnly = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { lod: { self: finer, finer: null } });
+  ok(exactOnly.userData.streamedSplat.uniforms.finerTexels.value === 0, 'the exact level has no finer map (texels 0 = never dissolves out)');
+
+  // Base Game wiring: four instances chained fine -> coarse, coverage follows residency
   const { v5Descriptor } = await import('./terrain-source-v5.js');
   const { DEFAULT_CONFIG, DENSITY_DEFAULT_CONFIG } = await import('./terrain-generator-js.js');
   const { defaultStack, makeLayer } = await import('./terrain-stack.js');
@@ -94,19 +116,15 @@ console.log('\n[5] LOD hole: cascade levels discard inside the finer level; the 
   terrain.setActive(true);
   const tex = placeholderStreamedSplatTextures();
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
-  for (let i = 0; i < 10; i++) terrain.update([0, 0, 0], 1 / 60);
-  const m1 = terrain.cascadeMaterialFor(1), m2 = terrain.cascadeMaterialFor(2), m3 = terrain.cascadeMaterialFor(3);
-  ok(m1 && m2 && m3 && m1 !== terrain.splatMaterial && m1.userData.streamedSplat.hole, 'each cascade level has its own hole-capable splat instance');
-  const h1 = [m1.userData.streamedSplat.uniforms.holeMin.value.x, m1.userData.streamedSplat.uniforms.holeMin.value.y, m1.userData.streamedSplat.uniforms.holeMax.value.x, m1.userData.streamedSplat.uniforms.holeMax.value.y];
-  // exact chunks: radius 1 around chunk (0,0) = [-30, 60]; inset one chunk -> [0, 30]
-  ok(h1[0] === 0 && h1[1] === 0 && h1[2] === 30 && h1[3] === 30, `level 1 hole is the exact square inset by a chunk (${h1.join(', ')})`);
-  const h2 = m2.userData.streamedSplat.uniforms.holeMax.value.x, h3 = m3.userData.streamedSplat.uniforms.holeMax.value.x;
-  ok(h2 === 3 * 120 - 120 && h3 === 3 * 480 - 480, `levels 2/3 hide inside the finer level's square (${h2}, ${h3})`);
-  for (let i = 0; i < 10; i++) terrain.update([95, 0, 0], 1 / 60);
-  const moved = m1.userData.streamedSplat.uniforms.holeMin.value.x;
-  ok(moved === 90, `hole follows the player across chunks (min x ${moved}: chunk 3 square 60-150 inset by a chunk)`);
-  const lvl1Mesh = terrain.volumeLod[0].system.group.children.find(c => c.isMesh);
-  ok(!lvl1Mesh || lvl1Mesh.material === m1 || !lvl1Mesh.visible, 'level-1 chunks carry the hole material (or are batched under it)');
+  for (let i = 0; i < 3; i++) terrain.update([0, 0, 0], 0.1);
+  const m0 = terrain.cascadeMaterialFor(0), m1 = terrain.cascadeMaterialFor(1), m3 = terrain.cascadeMaterialFor(3);
+  ok(m0 && m1 && m3 && m0.userData.streamedSplat.coverageMaps.finer === null && m1.userData.streamedSplat.coverageMaps.finer === terrain.lodCoverage.exact && m3.userData.streamedSplat.coverageMaps.finer === terrain.lodCoverage.levels[1], 'instances chain: exact has no finer; level 1 → exact; level 3 → level 2');
+  const cE = terrain.lodCoverage.exact, c1 = terrain.lodCoverage.levels[0];
+  ok(cE.coverageAt(0, 0) >= 0.4 && cE.coverageAt(0, 0) < 1, `resident chunks are mid-ramp after 0.3 s (exact ${cE.coverageAt(0, 0).toFixed(2)}, level 1 ${c1.coverageAt(0, 0).toFixed(2)} — cascade installs one chunk per update)`);
+  for (let i = 0; i < 5; i++) terrain.update([0, 0, 0], 0.1);
+  ok(cE.coverageAt(0, 0) === 1 && cE.coverageAt(200, 0) === 0, 'settles to 1 on resident chunks, 0 beyond the window');
+  const meshes = terrain.system.group.children.filter(c => c.isMesh && c.userData.terrainChunk);
+  ok(meshes.every(m => m.material === m0), 'exact chunks use the exact instance');
   terrain.dispose();
 }
 
