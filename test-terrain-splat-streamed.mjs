@@ -72,5 +72,43 @@ console.log('\n[4] Base Game wiring: chunks and the cascade pick up the splat; t
   terrain.dispose();
 }
 
+
+console.log('\n[5] LOD hole: cascade levels discard inside the finer level; the hole follows the player');
+{
+  const { setStreamedSplatHole } = await import('./terrain-splat-streamed.js');
+  const holeMat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { hole: true });
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  let built = null; try { built = await buildMaterial(holeMat, geo); } catch (e) { built = null; }
+  ok(built && /discard/.test(built.fragment), 'hole material builds with a discard');
+  ok(setStreamedSplatHole(holeMat, [-10, -20, 30, 40]) && holeMat.userData.streamedSplat.uniforms.holeMin.value.x === -10 && holeMat.userData.streamedSplat.uniforms.holeMax.value.y === 40, 'hole rect lands in the uniforms');
+  ok(setStreamedSplatHole(createStreamedSplatMaterial(placeholderStreamedSplatTextures()), [0, 0, 1, 1]) === false, 'a plain splat has no hole');
+
+  const { v5Descriptor } = await import('./terrain-source-v5.js');
+  const { DEFAULT_CONFIG, DENSITY_DEFAULT_CONFIG } = await import('./terrain-generator-js.js');
+  const { defaultStack, makeLayer } = await import('./terrain-stack.js');
+  const { normalizeProject, migrateProjectToUnbounded, PROJECT_APP } = await import('./terrain-project-v5.js');
+  const stack = defaultStack(); stack.layers.push(makeLayer('fbm', { id: 'F1', params: { amplitude: 25, scale: 260, seedOffset: 2 } }));
+  const project = migrateProjectToUnbounded(normalizeProject({ app: PROJECT_APP, version: 1, name: 'H', cfg: { ...DEFAULT_CONFIG, seed: 4242 }, density: { ...DENSITY_DEFAULT_CONFIG }, stack, paint: null, imports: {} }).project);
+  const scene = new THREE.Scene(), worldQuery = createWorldQueryService(), worldCoordinates = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: v5Descriptor(project), useWorker: false, params: { renderRadius: 1 }, volumetric: true, farLod: true });
+  terrain.setActive(true);
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  for (let i = 0; i < 10; i++) terrain.update([0, 0, 0], 1 / 60);
+  const m1 = terrain.cascadeMaterialFor(1), m2 = terrain.cascadeMaterialFor(2), m3 = terrain.cascadeMaterialFor(3);
+  ok(m1 && m2 && m3 && m1 !== terrain.splatMaterial && m1.userData.streamedSplat.hole, 'each cascade level has its own hole-capable splat instance');
+  const h1 = [m1.userData.streamedSplat.uniforms.holeMin.value.x, m1.userData.streamedSplat.uniforms.holeMin.value.y, m1.userData.streamedSplat.uniforms.holeMax.value.x, m1.userData.streamedSplat.uniforms.holeMax.value.y];
+  // exact chunks: radius 1 around chunk (0,0) = [-30, 60]; inset one chunk -> [0, 30]
+  ok(h1[0] === 0 && h1[1] === 0 && h1[2] === 30 && h1[3] === 30, `level 1 hole is the exact square inset by a chunk (${h1.join(', ')})`);
+  const h2 = m2.userData.streamedSplat.uniforms.holeMax.value.x, h3 = m3.userData.streamedSplat.uniforms.holeMax.value.x;
+  ok(h2 === 3 * 120 - 120 && h3 === 3 * 480 - 480, `levels 2/3 hide inside the finer level's square (${h2}, ${h3})`);
+  for (let i = 0; i < 10; i++) terrain.update([95, 0, 0], 1 / 60);
+  const moved = m1.userData.streamedSplat.uniforms.holeMin.value.x;
+  ok(moved === 90, `hole follows the player across chunks (min x ${moved}: chunk 3 square 60-150 inset by a chunk)`);
+  const lvl1Mesh = terrain.volumeLod[0].system.group.children.find(c => c.isMesh);
+  ok(!lvl1Mesh || lvl1Mesh.material === m1 || !lvl1Mesh.visible, 'level-1 chunks carry the hole material (or are batched under it)');
+  terrain.dispose();
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

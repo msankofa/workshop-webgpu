@@ -16,7 +16,7 @@
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
-  Fn, If, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
+  Fn, If, Discard, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
   positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
 } from 'three/tsl';
 
@@ -120,8 +120,10 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
   return { layers: out };
 }
 
-// The material. `textures` is the result of loadStreamedSplatTextures / placeholder.
-export function createStreamedSplatMaterial(textures, overrides = {}) {
+// The material. `textures` is the result of loadStreamedSplatTextures / placeholder. With
+// `hole: true` the material carries a world-xz rectangle whose fragments are discarded: a LOD
+// level uses it to vanish wherever the finer level draws (set with setStreamedSplatHole).
+export function createStreamedSplatMaterial(textures, overrides = {}, { hole = false } = {}) {
   const cfg = { ...STREAMED_SPLAT_DEFAULTS, ...overrides };
   const L = textures.layers;
   for (const name of STREAMED_SPLAT_LAYERS) if (!L[name]?.color || !L[name]?.normal) throw new TypeError(`streamed splat needs colour + normal textures for '${name}'`);
@@ -137,6 +139,8 @@ export function createStreamedSplatMaterial(textures, overrides = {}) {
     snowBottom: uniform(cfg.snowBottom), snowTop: uniform(cfg.snowTop),
     rockSlope: uniform(cfg.rockSlope), rockFull: uniform(cfg.rockFull),
     averages: Object.fromEntries(STREAMED_SPLAT_LAYERS.map(n => [n, uniform(new THREE.Vector3(...(L[n].average ?? AVERAGE_FALLBACK[n])))])),
+    holeMin: uniform(new THREE.Vector2(1, 1)),   // min > max = no hole
+    holeMax: uniform(new THREE.Vector2(0, 0)),
   };
 
   const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453)));
@@ -199,6 +203,10 @@ export function createStreamedSplatMaterial(textures, overrides = {}) {
   const roughProp = property('float', 'splatRough');
   const normalProp = property('vec3', 'splatNormal');
   const shadeAll = Fn(() => {
+    if (hole) {
+      const inside = P.x.greaterThan(u.holeMin.x).and(P.x.lessThan(u.holeMax.x)).and(P.z.greaterThan(u.holeMin.y)).and(P.z.lessThan(u.holeMax.y));
+      If(inside, () => { Discard(); });
+    }
     const { sampleFor, anchor } = makeSamplers();
     const w = weightsOf();
     const col = vec3(anchor).toVar('splatCol');
@@ -232,8 +240,18 @@ export function createStreamedSplatMaterial(textures, overrides = {}) {
   mat.colorNode = shadeAll();
   mat.roughnessNode = roughProp;
   mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
-  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS };
+  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, hole };
   return mat;
+}
+
+// Set (or clear with null) the discard rectangle [minX, minZ, maxX, maxZ] of a hole-capable material.
+export function setStreamedSplatHole(material, rect) {
+  const s = material?.userData?.streamedSplat;
+  if (!s || !s.hole) return false;
+  if (!rect) { s.uniforms.holeMin.value.set(1, 1); s.uniforms.holeMax.value.set(0, 0); return true; }
+  s.uniforms.holeMin.value.set(rect[0], rect[1]);
+  s.uniforms.holeMax.value.set(rect[2], rect[3]);
+  return true;
 }
 
 // Live tuning: patch any subset of STREAMED_SPLAT_DEFAULTS on a built material.

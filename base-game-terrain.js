@@ -12,6 +12,7 @@ import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-prov
 import { globalToRenderLocal } from './world-coordinates.js';
 import { createTerrainClipmap } from './terrain-clipmap.js';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
+import { createStreamedSplatMaterial, setStreamedSplatHole } from './terrain-splat-streamed.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -105,8 +106,37 @@ export function createBaseGameTerrain({
   // Ground textures (terrain-splat-streamed.js) replace the vertex tint when set; the tint
   // stays on the geometry so turning textures off costs nothing.
   let splatMaterial = null;
+  let splatTextures = null;
   let splatEnabled = true;
+  const cascadeSplat = new Map();   // level -> hole-capable splat instance
   function groundMaterial() { return splatEnabled && splatMaterial ? splatMaterial : system.material; }
+  function cascadeMaterial(level) {
+    const base = groundMaterial();
+    if (normals || base !== splatMaterial || !splatTextures) return normals ? normalMaterial : base;
+    let m = cascadeSplat.get(level);
+    if (!m) { m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { hole: true }); cascadeSplat.set(level, m); }
+    m.wireframe = wireframe;
+    return m;
+  }
+  // The square a chunk system currently targets, in global xz (null until it has a centre).
+  function systemRect(sys) {
+    const size = sys.params.chunkSize, r = Math.max(0, Math.floor(sys.params.renderRadius));
+    const cx = sys.centerChunkX, cz = sys.centerChunkZ;
+    if (cx == null || cz == null) return null;
+    return [(cx - r) * size, (cz - r) * size, (cx + r + 1) * size, (cz + r + 1) * size];
+  }
+  // Each level hides inside the finer level's square, inset by one finer chunk so the ring of
+  // finer chunks that may still be streaming keeps coarse ground underneath.
+  function syncCascadeHoles() {
+    for (let i = 0; i < cascade.length; i++) {
+      const m = cascadeSplat.get(cascade[i].level);
+      if (!m) continue;
+      const finer = i === 0 ? system : cascade[i - 1].system;
+      const rect = systemRect(finer);
+      const inset = finer.params.chunkSize;
+      setStreamedSplatHole(m, rect ? [rect[0] + inset, rect[1] + inset, rect[2] - inset, rect[3] - inset] : null);
+    }
+  }
   // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one draw per ~256 chunks
   // instead of one per chunk. A chunk's own mesh is hidden once it is in a batch; it stays the
   // fallback when a batch cannot take it.
@@ -238,16 +268,18 @@ export function createBaseGameTerrain({
     batcher.setMaterial(mat);
     syncBatches(system, batcher, batchedChunks, chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode);
     for (const c of cascade) {
+      const lvlMat = cascadeMaterial(c.level);
       for (const child of c.system.group.children) {
         if (!child.isMesh || !child.userData.terrainChunk) continue;
         colorizeGeometry(child.geometry);
-        child.material = mat;
+        child.material = lvlMat;
       }
       let cb = cascadeBatchers.get(c.system);
-      if (!cb) { cb = { batcher: createChunkBatcher({ material: mat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000 }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
-      cb.batcher.setMaterial(mat);
+      if (!cb) { cb = { batcher: createChunkBatcher({ material: lvlMat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000 }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
+      cb.batcher.setMaterial(lvlMat);
       syncBatches(c.system, cb.batcher, cb.batched, () => false);
     }
+    syncCascadeHoles();
   }
 
   function refreshTileBounds() {
@@ -320,7 +352,15 @@ export function createBaseGameTerrain({
     get handoffPending() { return handoffPending; },
     get farLod() { return farLodMode; },
     // Ground textures: hand in a built streamed-splat material (or null to drop it).
-    setSplatMaterial(material) { splatMaterial = material ?? null; applyMaterials(); },
+    // The cascade gets one hole-capable instance per level built from the same textures, so a
+    // coarse level never shows inside the finer one (valley floors were poking through).
+    setSplatMaterial(material, textures = null) {
+      splatMaterial = material ?? null;
+      splatTextures = textures;
+      for (const m of cascadeSplat.values()) m.dispose();
+      cascadeSplat.clear();
+      applyMaterials();
+    },
     setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
     get splatMaterial() { return splatMaterial; },
     get splatEnabled() { return splatEnabled; },
@@ -338,6 +378,7 @@ export function createBaseGameTerrain({
       return volumetricMode ? cascadeExtent() : (clipmap ? clipmap.outerHalfExtent : 0);
     },
     get volumeLod() { return cascade.map(c => ({ level: c.level, system: c.system, spec: c.spec })); },
+    cascadeMaterialFor(level) { return cascadeSplat.get(level) ?? null; },
     // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
     takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
@@ -415,7 +456,7 @@ export function createBaseGameTerrain({
         const t1 = performance.now();
         let any = false;
         for (const c of cascade) any = c.system.update(globalPosition[0], globalPosition[2]) || any;
-        if (any) applyMaterials();
+        if (any) applyMaterials(); else if (changed) syncCascadeHoles();
         lastClipmapMs = performance.now() - t1;
       }
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
@@ -491,6 +532,7 @@ export function createBaseGameTerrain({
       normalMaterial.dispose();
       root.removeFromParent();
       if (clipmap) clipmap.dispose();
+      for (const m of cascadeSplat.values()) m.dispose();
       batcher.dispose();
       for (const cb of cascadeBatchers.values()) cb.batcher.dispose();
       for (const c of cascade) { c.system.dispose(); c.group.removeFromParent(); }

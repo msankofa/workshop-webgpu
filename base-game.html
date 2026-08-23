@@ -442,7 +442,7 @@ const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic'
 const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR });
 // Ground textures load in the background; the vertex tint shows until they arrive.
 loadStreamedSplatTextures().then(tex => {
-  terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }));
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
 }).catch(err => console.warn(`ground textures unavailable, keeping the tint: ${err.message}`));
 let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
 // Make the local world match a room's terrain config exactly (same descriptor, same hash),
@@ -755,7 +755,11 @@ function updateWorld(dt) {
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
-  if (terrain.splatMaterial) updateStreamedSplat(terrain.splatMaterial, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
+  if (terrain.splatMaterial) {
+    const splatPatch = { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) };
+    updateStreamedSplat(terrain.splatMaterial, splatPatch);
+    for (const l of terrain.volumeLod) { const m = terrain.cascadeMaterialFor?.(l.level); if (m) updateStreamedSplat(m, splatPatch); }
+  }
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
   const wantFar = terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD;
   // The sky (dome, stars, bodies) rides on the camera at a radius tied to the far plane: rescale
