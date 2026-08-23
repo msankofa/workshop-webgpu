@@ -3,6 +3,7 @@ import {
   BASE_GAME_MAX_PENDING_TICKS,
   BASE_GAME_MAX_TICKS_PER_PACKET,
   BASE_GAME_PROTOCOL_VERSION,
+  sanitizeBaseGameLoadout,
   normalizeBaseGameRoomCode,
   pickBaseGameSharedWorld,
   sanitizeBaseGamePlayerState,
@@ -183,6 +184,12 @@ export function connectBaseGameSession({
     },
     // Abandons the unacknowledged backlog and asks the server to adopt the next tick numbering.
     // The server answers with a bumped spawn revision, which hard-snaps local prediction.
+    // Replaces this player's loadout on the server; the snapshot echoes the resolved weapon.
+    setLoadout(loadout) {
+      if (ws?.readyState !== WebSocketImpl.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'base:loadout', protocol: BASE_GAME_PROTOCOL_VERSION, loadout: sanitizeBaseGameLoadout(loadout) }));
+      return true;
+    },
     requestResync() {
       pendingTicks.length = 0;
       stats.resyncs++;

@@ -49,6 +49,8 @@ export function createBaseGamePlayerView({
   const desiredCamera = new THREE.Vector3();
   const forward = new THREE.Vector3();
   const rayDirection = new THREE.Vector3();
+  let comfortEyeY = 0;
+  let comfortReady = false;
 
   function setLook(nextYaw, nextPitch) {
     if (Number.isFinite(nextYaw)) yaw = nextYaw;
@@ -91,10 +93,22 @@ export function createBaseGamePlayerView({
     focusHeight = 1.28,
     followRate = 14,
     obstructionPadding = 0.22,
+    // Framing offsets in the look's yaw-only frame (right / up / forward), metres, both modes.
+    sideOffset = 0,
+    heightOffset = 0,
+    forwardOffset = 0,
+    // First person: the eye's X/Z stay on the capsule (the render body trails the capsule while
+    // moving and must not drag the camera); its height is `eyeAnchorY`, the body's live eye
+    // height (bob, lean, stance) when given, damped toward at comfortRateY when > 0.
+    eyeAnchorY = null,
+    comfortRateY = 0,
   } = {}) {
     const safeDt = Math.max(0, Math.min(0.1, Number(dt) || 0));
     desiredFocus.set(globalFootPosition[0], globalFootPosition[1], globalFootPosition[2]);
-    desiredFocus.y += mode === 'firstPerson' ? eyeHeight : focusHeight;
+    desiredFocus.y += (mode === 'firstPerson' ? eyeHeight : focusHeight) + heightOffset;
+    // Yaw-only frame: right = (cos yaw, 0, -sin yaw), forward = (-sin yaw, 0, -cos yaw).
+    desiredFocus.x += Math.cos(yaw) * sideOffset - Math.sin(yaw) * forwardOffset;
+    desiredFocus.z -= Math.sin(yaw) * sideOffset + Math.cos(yaw) * forwardOffset;
     const focusAlpha = dampAlpha(safeDt, followRate);
 
     const initializeCamera = !smoothingReady || smoothedFocus.distanceToSquared(desiredFocus) > 100;
@@ -112,6 +126,19 @@ export function createBaseGamePlayerView({
       else smoothedCamera.lerp(smoothedFocus, dampAlpha(safeDt, followRate * 1.35));
       worldCoordinates.toRenderLocal(smoothedCamera.toArray(), _local);
       camera.position.fromArray(_local);
+      if (Number.isFinite(eyeAnchorY)) {
+        const wantY = eyeAnchorY + heightOffset;
+        if (comfortRateY > 0) {
+          if (!comfortReady || Math.abs(comfortEyeY - wantY) > 1) { comfortEyeY = wantY; comfortReady = true; }
+          comfortEyeY += (wantY - comfortEyeY) * dampAlpha(safeDt, comfortRateY);
+          camera.position.y = comfortEyeY;
+        } else {
+          comfortReady = false;
+          camera.position.y = wantY;
+        }
+      } else {
+        comfortReady = false;
+      }
       camera.rotation.set(pitch, yaw, 0, 'YXZ');
       capsuleMesh.visible = false;
       return { obstructed: false, boomDistance: 0 };

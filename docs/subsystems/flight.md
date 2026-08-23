@@ -8,6 +8,8 @@ and AI fly the same model.
 | `flight-terrain.js` | Analytic height field, band limit, `agl`, dry-land placement, `setHeightSource` | nothing |
 | `flight-terrain-baked.js` | Baked-grid format, validation and the CPU bilinear sampler (the GPU twin's other half) | nothing |
 | `flight-terrain-stream.js` | Toroidal scrolling window: `subtractWindow`, `fillSpan`, wrapped bilinear `sample` | nothing |
+| `ground-look.js` | Terrain shading law (wandering material lines, macro colour drift, rock strata) as a TSL `Fn` plus its CPU twin `groundColorRef`; load/save `ground-look.json` | three/tsl (lazily) |
+| `ground-look.json` | The tuning itself: written by the flight sim's Ground look panel, read at startup | data |
 | `flight-terrain-worker.js` | Module worker: builds a v5 source, fills spans, transfers them back | `terrain-source-v5.js`, stream |
 | `bake-terrain.mjs` | CLI: Terrain Generator v5 project → `terrain-bakes/<name>.{json,bin}`, or `--stream` → `<name>.project.json` | terrain-generator/project/stack/paint, `flight-terrain*` |
 | `flight-airframes.js` | The three airframe tables, `RHO`, `G`, slider ranges | nothing |
@@ -22,7 +24,7 @@ and AI fly the same model.
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
 
 Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-terrain-baked.mjs`,
-`test-flight-terrain-stream.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
+`test-flight-terrain-stream.mjs`, `test-ground-look.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
 `test-flight-autopilot.mjs`, `test-water-hybrid.mjs`, `test-water-waves.mjs`,
 `test-flight-meshes-recon.mjs`. Plain Node, no framework, per repo convention.
 
@@ -301,6 +303,47 @@ between this working and not.
 
 The one rough edge is that 2.3 s of startup. Splitting the first window across several workers would
 cut it roughly linearly; it is one rectangle and would not disturb anything else.
+
+### Ground look: why the terrain read as fake
+
+The ground was four flat colours mixed on `smoothstep(height)` and `smoothstep(slope)`. The problem
+with that is specific and worth naming, because it is not "not enough detail": **a threshold on
+height alone draws a perfect elevation contour.** Real snowlines and treelines wander, because what
+grows where depends on aspect, shelter and soil rather than altitude. A contour-perfect snowline
+reads as wrong from 2 km up no matter how good the texture on either side of it is.
+
+So `ground-look.js` adds three things, in the order they matter at cruise altitude:
+
+1. **The material lines wander.** One noise field offsets the height fed to the grass and snow ramps
+   (`edgeJitter`, default 46 m) and the slope fed to the rock ramp (`slopeJitter`, 0.09).
+2. **Macro colour drift.** A second field pulls the palette toward `dry` in patches (`tintScale`
+   820 m), a third drifts value light and dark much more broadly (`patchScale` 3.2 km), so no two
+   square kilometres match.
+3. **Rock strata.** Horizontal banding on steep faces only (`strataPeriod` 34 m), which is what
+   gives a cliff a sense of scale.
+
+Cost is three `mx_fractal_noise_float` calls, 9 octaves total, per fragment.
+
+**Detail texture is deliberately not here.** `textures/ground/` already holds 13 PBR layers and
+`terrain-textures.js` loads them, but a 4 m tile across a 16 km view repeats ~4,000 times and tiles
+visibly; and at cruise altitude the detail is under a pixel anyway. It belongs on the near clipmap
+rings with triplanar projection and multi-scale blending — a separate job, and the one place it
+clearly pays is the AC-130 gunner view, which is zoomed at the ground.
+
+**The law is twinned, the noise is not.** `groundColorRef` is the exact arithmetic the TSL runs,
+taking the three noise values as arguments instead of generating them: MaterialX fractal noise has no
+practical JS reimplementation, but what actually goes wrong is the ordering and clamping of the
+palette, and that is fully testable. Same arrangement as `moss-tint.js`.
+
+**With every added term at zero it is bit-identical to the old flat ramp**, which
+`test-ground-look.mjs` pins. That property caught a real bug: `enabled: 0` zeroed the three noise
+inputs but left the strata running, because strata is driven by *height*, not noise. A look that
+cannot be switched fully off is a rewrite rather than a layer, and there is then no way back to a
+known-good picture.
+
+Tuning lives in `ground-look.json` (loaded at startup, saved by the panel through
+`/api/save-ground-look`), never in web storage. `enabled` and the octave counts are graph shape and
+need a reload; everything in `GROUND_LOOK_RANGE` is a live uniform the sliders retune directly.
 
 ### Three metrics that measured the wrong thing
 

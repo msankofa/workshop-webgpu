@@ -185,6 +185,13 @@ and `blood_splatter` **decals** (shared, combined cap): oriented quads rather th
 decal has to sit flush against a surface normal. All pools are immediate-mode: counters reset at the
 top of `sync`, buffers upload at the bottom, and overflow is silently dropped.
 
+**Consumers.** `environment-viewer.html` (registry render list + local predicted tracers and muzzle
+flashes), `bot-viewer-v3.html` (registry-free `pushEffect` / `updateEffects` list) and, since
+2026-08-23, `base-game.html`: the same v3 list pattern fed from the server's snapshot events —
+`gun_tracer` + `hit_spark` per `shots[]` entry (the shooter's own shot is pushed at fire time from
+the predicted ray), `muzzle_flash` at the `weapon-mount.js` muzzle with `followMuzzle` re-anchored
+to the mount each frame, `explosion` per `explosions[]` entry. See `base-game.md` "Weapons, phase 3".
+
 ### The two instanced billboard pools
 
 Each is **one draw call**: a single `Mesh` over an `InstancedBufferGeometry` holding a unit quad

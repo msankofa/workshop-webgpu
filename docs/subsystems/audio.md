@@ -31,7 +31,8 @@ getSpeakerTargets?, workletUrl, autoplayOnGesture? }`. `autoplayOnGesture: false
 autoplay-blocked, never start a track on its own — needed when the active playlist is always
 populated, as it is for the `'http'` source. Returns:
 
-- `init()`, `noteGesture()` (unlock audio on user gesture), `update(tMs)` (per-frame listener + music orb).
+- `init()`, `noteGesture()` (unlock audio on user gesture), `update(tMs)` (per-frame listener + music orb;
+  the listener update reuses two module-scope scratch vectors, so it allocates nothing per frame).
 - `play(eventId, vol?)` — non-positional SFX. No-ops silently if the event has no loaded buffer.
 - `playAt(eventId, position, vol?, opts?)` — positional SFX; `opts` is a panner profile from
   `positionalSfxProfiles` (`gunshot`, `heavyGunshot`, `explosion`, `minor`, `spawn`, …).
@@ -161,6 +162,24 @@ change (`lastPlaylistKey`), so the active-row highlight (`state.currentTrackPath
   instead of a directory handle, so it needs no picker and no permission. This is what
   `bot-viewer-v2.html` selects at startup; the environment viewer's Audio tab does not expose it
   yet (its Music source control still offers Game/Folder only).
+
+## Wiring in `base-game.html`
+
+Same controller, driven through the pure `base-game-audio.js` director (local/remote footsteps,
+jump/landing, reload/draw handling, pause menu, per-event budget, cull, sample-or-synth). See the
+"Audio" section of `base-game.md`. `weapon-sfx-synth.js` gained `weapon_reload`, `weapon_draw`,
+`footstep`, `jump` and `landing` voices for it (the last three ported from html-game-v2's
+fallbacks), the first two ids are new in `sound-events.js`, and `sfx/` now holds html-game-v2's
+footstep/jump variant sets plus landing, pause and weapon-switch files.
+
+Firing (weapons phase 3, 2026-08-23): the director's `localFire(weaponId)` now plays on every
+predicted shot, `updateRemote`'s `action === 2` report plays for remote shots (the server keeps the
+fire action stamped for 12 ticks so a 20 Hz snapshot sees it), and two calls were added for the
+server's hit events: `localDamage()` (`player_damage`, non-positional) when the local player is the
+victim and `hitAt(position)` (`enemy_hit` at the hit point, handling profile) for anyone else.
+With tracers and projectiles (same day) came `impactAt(position)` (`bullet_impact` at a world hit,
+environment-audio's `minor` numbers) and `explosionAt(position)` (`explosion`, environment-audio's
+`largeExplosion` numbers so a blast carries across open terrain).
 
 ## Wiring in `bot-viewer-v2.html`
 

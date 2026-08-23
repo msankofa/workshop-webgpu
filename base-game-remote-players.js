@@ -147,6 +147,9 @@ export function createBaseGameRemotePlayers({ scene, worldCoordinates, radius = 
         position: [...sample.position],
         velocity: latest ? [...latest.velocity] : [0, 0, 0],
         yaw: sample.yaw, pitch: sample.pitch, grounded: sample.grounded, mode: sample.mode,
+        // Weapon state is not interpolated: the latest authoritative values ride along.
+        weapon: latest?.weapon ?? null, slot: latest?.slot ?? 0, aiming: latest?.aiming === true,
+        action: latest?.action ?? 0, actionTick: latest?.actionTick ?? 0, health: latest?.health ?? 100,
       };
       if (!enabled) { record.mesh.visible = false; record.mode = sample.mode; continue; }
       worldCoordinates.toRenderLocal(sample.position, _local);

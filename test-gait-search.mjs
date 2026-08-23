@@ -31,14 +31,28 @@ const BASE = { speedScale: 1, restepFraction: 1.2, standExtension: 0.9, supportP
 
 // ===================== the knob table =====================
 
-check('every slider the demo offers is described in KNOBS', () => {
+check('every slider either demo offers is described in KNOBS', () => {
   // The drift this prevents is silent and total: a knob added to the panel and not to the table would
-  // never be randomised and would never transfer, and nothing would say so.
-  const html = fs.readFileSync('demos/stadium-walker.html', 'utf8');
-  const keys = [...html.matchAll(/key:\s*'([^']+)',\s*scope:\s*'(walker|rebuild)'/g)].map(m => m[1]);
-  assert(keys.length > 10, `only found ${keys.length} tunable sliders — the scrape is probably broken`);
-  const missing = keys.filter(k => !KNOBS[k]);
-  assert(!missing.length, `sliders missing from KNOBS: ${missing.join(', ')}`);
+  // never be randomised and would never transfer, and nothing would say so. Both pages are scraped —
+  // v2 is where new knobs land, and it was unguarded while only v1 was read.
+  for (const page of ['demos/stadium-walker.html', 'demos/stadium-walker-v2.html']) {
+    const html = fs.readFileSync(page, 'utf8');
+    const keys = [...html.matchAll(/key:\s*'([^']+)',\s*scope:\s*'(walker|rebuild)'/g)].map(m => m[1]);
+    assert(keys.length > 10, `${page}: only found ${keys.length} tunable sliders — the scrape is broken`);
+    const missing = keys.filter(k => !KNOBS[k]);
+    assert(!missing.length, `${page}: sliders missing from KNOBS: ${missing.join(', ')}`);
+  }
+});
+
+check('the stance sliders are kept out of the gait search', () => {
+  // A search free to re-pose the model could improve its own numbers by changing the creature underneath
+  // them, so stance knobs must never appear as walker/rebuild scope and never reach KNOBS.
+  const html = fs.readFileSync('demos/stadium-walker-v2.html', 'utf8');
+  const stanceKeys = [...html.matchAll(/key:\s*`?([A-Za-z_$][\w$]*(?:\$\{key\})?)`?,\s*scope:\s*'stance'/g)];
+  assert(stanceKeys.length, 'no stance-scoped sliders found — has the scrape broken?');
+  for (const k of Object.keys(KNOBS)) {
+    assert(!k.startsWith('stance'), `${k} is a stance knob and must not be in KNOBS`);
+  }
 });
 
 check('the absolute knobs are the ones marked non-transferable', () => {

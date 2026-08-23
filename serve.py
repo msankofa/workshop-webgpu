@@ -295,6 +295,16 @@ def save_water_config(body_bytes):
     return 'water-config.json'
 
 
+def save_ground_look(body_bytes):
+    # demos/flight-sim.html's "Save to ground-look.json". One file overwritten in place, same
+    # arrangement as water-config.json above: the page reloads it on next open.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'ground-look.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'ground-look.json'
+
+
 def save_bot_state_trace(raw_name, body_bytes):
     # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
     basename = os.path.basename((raw_name or '').replace('\\', '/'))
@@ -547,6 +557,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-water-config'):
             self._handle_save_water_config()
             return
+        if self.path.startswith('/api/save-ground-look'):
+            self._handle_save_ground_look()
+            return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
             self.send_error(404)
@@ -777,6 +790,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_water_config(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-ground-look -- demos/flight-sim.html's ground-look sliders. Terrain shading is
+    # tuned by eye over many passes, so it belongs in a diffable file rather than in web storage,
+    # which dies with a cleared origin or a different port.
+    def _handle_save_ground_look(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_ground_look(self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

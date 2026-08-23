@@ -138,6 +138,11 @@ const EXPECTED_DURATIONS = {
   explosion: 1.4,
   grenade_throw: 0.25,
   grenade_bounce: 0.12,
+  weapon_reload: 0.9,
+  weapon_draw: 0.18,
+  footstep: 0.06,
+  jump: 0.12,
+  landing: 0.1,
 };
 for (const [id, expected] of Object.entries(EXPECTED_DURATIONS)) {
   ok(SYNTH_EVENT_IDS.includes(id), `${id} is listed in SYNTH_EVENT_IDS`);

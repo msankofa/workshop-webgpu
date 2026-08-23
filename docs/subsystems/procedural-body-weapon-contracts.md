@@ -55,6 +55,7 @@ export function createProceduralPlayerBody({
     update(dt, state),    // advance gait + IK toward state (see below)
     setArmTarget(side, target),  // Contract 1
     setVisible(v),
+    setPartMask(mask),    // { head, eyes, neck, torso, pelvis, waist: bool } over parts.core; first-person owners hide what clips the camera
     setTint(hsl),
     destroy(),
     gait,      // live gait scheduler; tune gait.cfg (read-mostly)
@@ -1242,6 +1243,10 @@ mount/request state, weapon world position, and the pose controller's `getDebug(
 ---
 
 ## Contract 6 — Third-person hold: stance × locomotion
+
+**Owner since 2026-08-22: `weapon-mount.js`.** `createWeaponMountSystem` is the one implementation
+of the mount frame, hold resolve, pose-controller drive, barrel trim and instanced flush described
+below; base-game and bot-viewer-v3 both use it. See `docs/subsystems/base-game.md`, "Weapons, phase 1".
 
 Added 2026-07-27. Contract 5's `weaponPoses` (`lowReady`/`aimed`/`reloadRaise`) are one set shared by
 every weapon and live *under* the mount. This contract covers the layer *above* it: where the weapon

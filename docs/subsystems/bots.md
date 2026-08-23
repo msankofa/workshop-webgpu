@@ -169,6 +169,18 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
   failed the rules at wiring time, which is why the warning exists. Full reference (slot table, all
   21 rules, projections, viewer wiring, generated state table):
   **[`bot-state-codes.md`](bot-state-codes.md)**.
+- **`weapon-mount.js` (2026-08-22)** — the held-weapon mount is now a shared module:
+  `createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, aimBlend })` owns the pool, the
+  anchor/pose JSON, the GLB template cache, the hold resolve, the pose controller, the barrel trim
+  and the flush. `bot-viewer-v3.html` keeps its names as thin wrappers: `createBotWeaponMount` →
+  `botWeaponSystem.createMount`, `updateBotWeaponMount` builds a `_mountFrame` (it still owns the
+  FSM-specific `_mountLoco.aiming` set that `test-bot-fire-aim-sync.mjs` checks) and calls
+  `updateMount`, `flushWeaponMount` → `flushMount`, `botMountedBarrelRay` / `alignMountedWeaponToPoint`
+  → `barrelRay` / `stepBarrelTrim(mount, 0, point)`. The barrel trim state (`aimTrim`,
+  `aimTrimSolvedFrame`) moved from the actor onto the mount. `aimBlend` is passed as a getter so the
+  live `botAimBlend` sliders still apply; `destroyMount(..., { releaseArms: false })` leaves arm
+  targets to the pose overlays. The stow block reads the template cache via `loadTemplate`.
+  Base-game shares the same module (see `base-game.md`, "Weapons, phase 1").
 - `weapon-part-batches.js` — instanced-render pool for held weapon GLBs (2026-07-23), sibling of
   `body-part-batches.js`: one `InstancedMesh` bucket per distinct sub-mesh geometry, keeping the
   template's own GLB material (no per-instance color). Bot mounts no longer clone the weapon model

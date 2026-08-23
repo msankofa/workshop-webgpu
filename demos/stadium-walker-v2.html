@@ -264,12 +264,23 @@
     </div>
   </details>
 
-  <details open data-stage="stand walk trial">
-    <summary>Spine and motion</summary>
+  <!-- No data-stage: what the creature is doing is a question at every stage, including while posing it. -->
+  <details open>
+    <summary>Movement</summary>
     <div class="body">
-      <div class="row"><input type="checkbox" id="walking" checked><span>walking</span></div>
+      <div class="ctl">
+        <label for="movement">movement</label>
+        <select id="movement">
+          <option value="idle">idle — stands still</option>
+          <option value="walk" selected>walk — one foot up at a time</option>
+          <option value="gallop">gallop — a whole row at once</option>
+        </select>
+      </div>
+      <p class="hint">Idle holds its heading and takes no steps; the legs still settle under it, so this is
+        the state to judge a stance and a ride height in. Pause is different — that freezes time.</p>
       <div class="row"><input type="checkbox" id="idleClip" checked><span>ROM idle clip on spine</span></div>
-      <p class="hint">The idle plays on every bone the walker does not drive. Legs stay procedural.</p>
+      <p class="hint">Separate from the movement mode: this is the cartridge animation on every bone the
+        walker does not drive, and it plays whether the creature is idle or walking. Legs stay procedural.</p>
       <div id="clipDisturb" class="hint"></div>
       <p class="hint">The walker writes leg bones <em>after</em> the mixer, so whatever the clip does to the
         spine is carried into the hips the legs hang off. On four of the fourteen shipped species the idle
@@ -324,13 +335,8 @@
   <details open data-stage="walk">
     <summary>Gait</summary>
     <div class="body">
-      <div class="ctl">
-        <label for="baseGait">base gait</label>
-        <select id="baseGait">
-          <option value="walk">walk — one foot up at a time</option>
-          <option value="gallop">gallop — a whole row at once</option>
-        </select>
-      </div>
+      <p class="hint">Walk or gallop is chosen with <b>movement</b>, above, alongside idle — they are one
+        decision about what the creature is doing, not two. Everything below tunes whichever is selected.</p>
       <div id="mount-gait"></div>
     </div>
   </details>
@@ -731,6 +737,7 @@ import { resolveScope, spawnLayout, pickCapsule, aggregateReports } from '../sta
 import { installPanelTheme } from '../workshop-panel-theme.js';
 import { perturb, optimise, searchCost, transferValues, tuningDistance, changedKeys } from '../gait-search.js';
 import { createTrialLog, flattenMetrics, toCSV, verdictSeries } from '../trial-log.js';
+import { STADIUM_REFERENCE_SPECIES, STADIUM_NO_LEG_SPECIES } from '../stadium-reference-species.js';
 import { pearson } from '../stats-math.js';
 import { GAITS } from '../creature-locomotion.js';
 import { createDiskStore, describeStatus } from '../disk-store.js';
@@ -740,7 +747,7 @@ import {
   decomposeTRS, trsMatrix,
 } from '../stadium-stance.js';
 import { mapSpecies, pinDetectedLegs } from '../stadium-species.js';
-import { clipChannels } from '../rig-audit.js';
+import { clipChannels, sampleClipAt } from '../rig-audit.js';
 
 const setStatus = (t) => { document.getElementById('status').textContent = t; };
 
@@ -825,16 +832,28 @@ addEventListener('pagehide', () => {
   }
 });
 
-// The models checked into ../models/stadium. Grouped by what the mapper makes of them, because that is
-// the interesting axis here: four legs is the case the walker was built for, two is the case where the
-// support polygon does not exist, and six is the alternating tripod falling out of the same scheduler.
-const SPECIES = [
-  ['four legs', ['019_rattata', '058_growlithe', '077_ponyta', '128_tauros', '033_nidorino',
-                 '079_slowpoke', '002_ivysaur', '028_sandslash', '086_seel']],
-  ['two legs',  ['025_pikachu', '006_charizard', '066_machop', '027_sandshrew']],
-  ['six legs',  ['046_paras']],
-];
+// All 151 models, read from the directory's own manifest rather than a hand-kept list — the page used to
+// offer only the fourteen the rig work was tuned against, which made the other 137 look unavailable.
+const NO_LEGS = new Set(STADIUM_NO_LEG_SPECIES);
+const TUNED = new Set(STADIUM_REFERENCE_SPECIES);
 const PRETTY = (id) => `#${id.slice(0, 3)} ${id.slice(4).replace(/^./, c => c.toUpperCase())}`;
+
+async function loadSpeciesList() {
+  let all = [];
+  try {
+    const manifest = await (await fetch('../models/stadium/manifest.json')).json();
+    all = Object.values(manifest).map(e => e.file.replace('.glb', '')).sort();
+  } catch {
+    all = [...STADIUM_REFERENCE_SPECIES].sort();     // no server: fall back to the built-in fourteen
+  }
+  const walks = all.filter(s => !NO_LEGS.has(s));
+  return [
+    ['tuned against these', [...TUNED].filter(s => all.includes(s))],
+    ['the rest that map with legs', walks.filter(s => !TUNED.has(s))],
+    ['no legs found — assign them in Bone roles', all.filter(s => NO_LEGS.has(s))],
+  ].filter(([, list]) => list.length);
+}
+const SPECIES = await loadSpeciesList();
 
 // --- scene ------------------------------------------------------------------------------------
 const renderer = new WebGPURenderer({ antialias: true });
@@ -1413,7 +1432,19 @@ async function speciesAssets(name) {
     const resolved = mapSpecies(json, bin, { stance, roles, species: name });
     const map = resolved.map;
     const posed = resolved.json;
-    if (!map.legs.length) throw new Error(`${name}: the rig mapper found no legs — ${map.warnings.join(' | ')}`);
+    if (!map.legs.length) {
+      // 35 of the 151 map with no legs. Some genuinely have none (Voltorb, Gastly, Onix); others are
+      // heuristic misses that hand-assigned roles fix. Either way say which, rather than showing a stack.
+      const err = new Error(`${PRETTY(name)} maps with no legs, so there is nothing to walk yet.\n\n`
+        + (NO_LEGS.has(name)
+          ? 'This is one of the 35 the auto-mapper cannot find legs on. Some of them have none to find; '
+          + 'the rest need the legs assigning by hand in the Bone roles panel, which does not work on an '
+          + 'unspawned species yet.'
+          : 'This species used to map with legs, so something has changed — check its stance.')
+        + (map.warnings.length ? `\n\nMapper said: ${map.warnings.join(' | ')}` : ''));
+      err.noLegs = true;
+      throw err;
+    }
     if (resolved.warnings.length) console.warn(`[stance] ${name}: ${resolved.warnings.join(' | ')}`);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     const template = await loader.parseAsync(buf, '');
@@ -1450,7 +1481,7 @@ async function spawn(name, { values = readSliders(), at = null, select = false }
   const walker = createStadiumWalker({
     THREE, scene: root, map, terrainHeight,
     worldHeight: values.worldHeight ?? pending.worldHeight,
-    gait: GAITS[baseGaitInput.value] ?? GAITS.walk,
+    gait: gaitNow(),
   });
   scene.add(walker.object);
 
@@ -2205,8 +2236,14 @@ for (const [group, names] of SPECIES) {
 }
 speciesInput.value = '019_rattata';
 
-const baseGaitInput = document.getElementById('baseGait');
-const walkingInput = document.getElementById('walking');
+// Movement is one control with three settings, because idle, walk and gallop are one decision about what
+// the creature is doing. Idle is not a gait, so the last locomotive one is remembered and still drives the
+// derived tuning — otherwise the readouts blank out the moment you stand the creature up to look at it.
+const movementInput = document.getElementById('movement');
+let lastGait = 'walk';
+const gaitKey = () => (movementInput.value === 'idle' ? lastGait : movementInput.value);
+const walkingNow = () => movementInput.value !== 'idle';
+const gaitNow = () => GAITS[gaitKey()] ?? GAITS.walk;
 const idleInput = document.getElementById('idleClip');
 const overlayInput = document.getElementById('overlay');
 const faultsInput = document.getElementById('faults');
@@ -2565,7 +2602,12 @@ function applyModelMode() {
   }
 }
 lightPanelsInput.addEventListener('change', () => { setPanelTheme(lightPanelsInput.checked); savePrefs(); });
-baseGaitInput.addEventListener('change', () => retune({ base: GAITS[baseGaitInput.value] ?? GAITS.walk }));
+movementInput.addEventListener('change', () => {
+  if (walkingNow()) lastGait = movementInput.value;
+  retune({ base: gaitNow() });
+  refreshGate();
+  savePrefs();
+});
 groundShapeInput.addEventListener('change', () => { groundOpts.shape = groundShapeInput.value; refreshGround(); savePrefs(); });
 document.getElementById('pause').addEventListener('click', () => togglePause());
 document.getElementById('stepOnce').addEventListener('click', () => { view.paused = true; view.stepOnce = true; syncPauseLabel(); });
@@ -2656,14 +2698,21 @@ document.getElementById('trialsClear').addEventListener('click', () => {
   if (!confirm(`Delete all ${trials.rows.length} logged trials? Export first if you want to keep them.`)) return;
   trials.clear(); lastTrialId = null; refreshTrialSummary(); refreshVoteState();
 });
-for (const el of [walkingInput, idleInput, overlayInput, faultsInput, skidsInput, drawAllInput,
+for (const el of [idleInput, overlayInput, faultsInput, skidsInput, drawAllInput,
                   showTargetsInput, showSupportInput, showTrailsInput]) {
   el.addEventListener('change', savePrefs);
 }
 
 async function addCreature(n) {
   const name = speciesInput.value;
-  for (let i = 0; i < n; i++) await spawn(name, { select: i === 0 && !selectedId });
+  for (let i = 0; i < n; i++) {
+    try {
+      await spawn(name, { select: i === 0 && !selectedId });
+    } catch (err) {
+      showError(err);                 // a species with no legs says why rather than throwing into the void
+      break;
+    }
+  }
   relayout();
   refreshStage();
 }
@@ -2845,7 +2894,8 @@ function applyToEntry(e, values) {
 function logTrial(e, { how, from, to, specs, pct = null }) {
   if (!e) return;
   const { row } = trials.add({
-    species: e.name, gait: baseGaitInput.value, creature: e.id,
+    // The gait, never 'idle' — a trial records what was being tuned, and idle is not a gait.
+    species: e.name, gait: gaitKey(), creature: e.id,
     how, pct, setpoint: setpointInput.value || null,
     // The stance the creature was standing in. Re-posing a species changes its leg span and stride
     // envelope, so trials taken either side of a stance edit are measurements of two different animals —
@@ -3247,7 +3297,7 @@ function renderDelta() {
 // way to stop dragging them.
 let savedStage = null;
 function savePrefs() {
-  const data = { species: speciesInput.value, gait: baseGaitInput.value, ground: groundOpts.shape,
+  const data = { species: speciesInput.value, gait: gaitKey(), movement: movementInput.value, ground: groundOpts.shape,
                  scope: scopeSelect.value, camMode: camModeInput.value, sceneTheme: sceneThemeInput.value,
                  modelMode: modelModeInput.value, skelMode: skelModeInput.value, boneLabels: boneLabelsInput.value,
                  strayMode: strayModeInput.value, footContact: footContactInput.value,
@@ -3264,14 +3314,16 @@ function savePrefs() {
   session.prefs = data;
   saveDoc();
 }
-const PREF_TOGGLES = ['walking', 'idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels',
+const PREF_TOGGLES = ['idleClip', 'overlay', 'faults', 'skids', 'drawAll', 'lightPanels',
   'showTargets', 'showSupport', 'showTrails', 'poseHold', 'patchDraw', 'stanceMirror', 'stanceGround'];
 
 function loadPrefs() {
   const data = session.prefs;
   if (!data) return;
   if (data.species) speciesInput.value = data.species;
-  if (data.gait) baseGaitInput.value = data.gait;
+  if (data.gait === 'walk' || data.gait === 'gallop') lastGait = data.gait;
+  if (['idle', 'walk', 'gallop'].includes(data.movement)) movementInput.value = data.movement;
+  else if (data.gait) movementInput.value = lastGait;              // sessions saved before idle existed
   if (data.ground) { groundOpts.shape = data.ground; groundShapeInput.value = data.ground; }
   if (data.scope) scopeSelect.value = data.scope;
   if (data.camMode) camModeInput.value = data.camMode;
@@ -3333,7 +3385,7 @@ const STAGES = [
     title: 'Does it hold itself up',
     why: 'Turn walking off and settle the ride height first. The gait\'s top speed and step timing are '
        + 'derived from the stride envelope this stage settles.',
-    on: () => { walkingInput.checked = false; walkingInput.dispatchEvent(new Event('change')); },
+    on: () => { movementInput.value = 'idle'; movementInput.dispatchEvent(new Event('change')); },
     gate: () => {
       if (!current) return [['bad', 'nothing on the stage']];
       const target = current.map.rideHeight * current.walker.unitScale * current.walker.state.heightScale;
@@ -3354,9 +3406,13 @@ const STAGES = [
     title: 'Tune the gait',
     why: 'Foot placement and step timing. The defaults here came out of a sweep — move one only when a '
        + 'diagnostic points at it.',
-    on: () => { walkingInput.checked = true; walkingInput.dispatchEvent(new Event('change')); },
+    on: () => {
+      if (!walkingNow()) { movementInput.value = lastGait; movementInput.dispatchEvent(new Event('change')); }
+    },
     gate: () => {
       if (!current) return [['bad', 'nothing on the stage']];
+      // A standing creature trivially does not drag, so a green verdict while idle would be a lie.
+      if (!walkingNow()) return [['warn', 'idle — set movement to walk or gallop to measure anything']];
       const v = current.shown?.verdict;
       if (!v) return [['warn', 'measuring…']];
       return [
@@ -3638,7 +3694,7 @@ document.getElementById('stanceGrabClip').addEventListener('click', () => {
   const t = controlByKey('stanceClipTime')?.input.valueAsNumber ?? 0;
   let taken = 0;
   let next = editedStance();
-  for (const [node, trs] of Object.entries(sampleClip(clip, t * clip.duration))) {
+  for (const [node, trs] of Object.entries(sampleClipAt(clip, t * clip.duration))) {
     const name = entry.json.nodes[node]?.name;
     if (!name) continue;
     const rest = restTRS(entry.json, name);
@@ -3650,28 +3706,6 @@ document.getElementById('stanceGrabClip').addEventListener('click', () => {
   previewStance();
   refreshStancePanel();
 });
-
-/**
- * One frame of a clip, as local transforms per node id.
- *
- * Steps to the nearest key rather than interpolating: this is picking a pose to start from, and the
- * nearest authored frame is a pose someone actually drew, where an interpolated one is not.
- */
-function sampleClip(clip, time) {
-  const out = {};
-  for (const ch of clip.channels) {
-    const times = ch.times;
-    if (!times?.length) continue;
-    let k = 0;
-    while (k < times.length - 1 && times[k + 1] <= time) k++;
-    const n = ch.path === 'rotation' ? 4 : 3;
-    const v = Array.from(ch.values.slice(k * n, k * n + n));
-    if (v.length !== n) continue;
-    out[ch.node] ??= {};
-    out[ch.node][ch.path === 'rotation' ? 'q' : ch.path === 'translation' ? 'p' : 's'] = v;
-  }
-  return out;
-}
 
 document.getElementById('stanceApply').addEventListener('click', async () => {
   const name = stanceSpecies();
@@ -3713,7 +3747,16 @@ syncPauseLabel();
 if (savedStage && savedStage.length) {
   for (const s of savedStage) await spawn(s.name, { values: s.values }).catch(showError);
 } else {
-  await spawn(speciesInput.value);
+  await spawn(speciesInput.value).catch(showError);
+}
+// A saved species that maps with no legs must not leave the page with an empty stage and an error, since
+// every panel here reads the selected creature. Fall back to the one the rig work was tuned against.
+if (!stage.size) {
+  const fallback = STADIUM_REFERENCE_SPECIES[0];
+  if (speciesInput.value !== fallback) {
+    speciesInput.value = fallback;
+    await spawn(fallback).catch(showError);
+  }
 }
 relayout();
 refreshStage();
@@ -3743,11 +3786,11 @@ renderer.setAnimationLoop(() => {
       // does to the spine is carried into the hips the legs hang off, rather than fighting it.
       if (e.mixer && idleInput.checked) e.mixer.update(step);
       const before = e.walker.legs.map(l => l.stepping);
-      e.walker.update(step, { walk: walkingInput.checked });
+      e.walker.update(step, { walk: walkingNow() });
       if (e === current) e.walker.legs.forEach((l, i) => { if (l.stepping && !before[i]) stepCount++; });
       // Scored for EVERY creature, not just the selected one — the stage exists so several settings can
       // be judged at once, and a creature nobody is looking at still has to arrive at a verdict.
-      if (walkingInput.checked) sampleMonitor(e, step);
+      if (walkingNow()) sampleMonitor(e, step);
     } else {
       e.walker.applyPose();
     }

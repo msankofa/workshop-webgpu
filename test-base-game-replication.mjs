@@ -7,6 +7,10 @@ import {
   sanitizeBaseGameInputPacket,
   sanitizeBaseGameTickInput,
   sanitizeBaseGamePlayerState,
+  sanitizeBaseGameLoadout,
+  weaponForSlot,
+  BASE_GAME_WEAPON_ACTION,
+  BASE_GAME_RELOAD_TICKS,
 } from './base-game-protocol.mjs';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
@@ -25,7 +29,7 @@ const near = (a, b, epsilon = 0.02) => Math.abs(a - b) <= epsilon;
 const P = BASE_GAME_PROTOCOL_VERSION;
 
 // ---- protocol sanitizers ----
-ok(P === 6, 'protocol is version 6');
+ok(P === 8, 'protocol is version 8');
 const goodTick = sanitizeBaseGameTickInput({ tick: 5, moveX: 3, moveZ: -0.5, yaw: 1.2, pitch: 9, sprint: 1, jump: true });
 ok(goodTick && goodTick.moveX === 1 && goodTick.moveZ === -0.5 && near(goodTick.pitch, Math.PI / 2, 1e-9)
   && goodTick.sprint === false && goodTick.jump === true, 'tick sanitizer clamps movement and keeps booleans strict');
@@ -121,6 +125,51 @@ sendTicks(owner, [t(consumed + 5000, { moveX: -1 })]);
 ok(ownerClient.queue.length === queueBefore, 'far-future ticks are ignored');
 sendTicks(owner, [{ tick: consumed + 1, moveX: NaN, moveZ: 0, yaw: 0, pitch: 0 }]);
 ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whole');
+
+// ---- weapons (phase 1): slot, aim and reload echo through the server; loadout message ----
+{
+  const tk = sanitizeBaseGameTickInput({ tick: 1, moveX: 0, moveZ: 0, yaw: 0, pitch: 0, slot: 1, aim: true, reload: true, fire: true });
+  ok(tk.slot === 1 && tk.aim === true && tk.reload === true && tk.fire === true, 'tick input carries slot, aim, reload, fire');
+  ok(sanitizeBaseGameTickInput({ tick: 1, moveX: 0, moveZ: 0, yaw: 0, pitch: 0, slot: 9 }).slot === 0, 'out-of-range slot falls back to primary');
+  const lo = sanitizeBaseGameLoadout({ primary: 'm24', sidearm: 'bogus', melee: 'none' });
+  ok(lo.primary === 'm24' && lo.sidearm === 'five_seven' && lo.melee === 'none' && lo.throwable === 'grenade', 'loadout sanitizer keeps valid ids and defaults the rest');
+  ok(weaponForSlot(lo, 0) === 'm24' && weaponForSlot(lo, 2) === null, 'weaponForSlot resolves ids and empties');
+  const st = sanitizeBaseGamePlayerState({ position: [0, 0, 0], weapon: 'cz_805_bren', slot: 1, aiming: true, action: 1, actionTick: 40, health: 150 });
+  ok(st.weapon === 'cz_805_bren' && st.slot === 1 && st.aiming && st.action === 1 && st.actionTick === 40 && st.health === 100, 'player state carries weapon fields and clamps health');
+
+  const c = ownerClient;
+  ok(weaponForSlot(c.loadout, c.slot) === 'cz_805_bren', 'a new client holds the default primary');
+  sendTicks(owner, walk(10, { slot: 1, aim: true }));
+  runSteps(10);
+  ok(c.slot === 1 && c.aiming === true, 'slot and aim echo from consumed ticks');
+  service.broadcastSnapshots();
+  let s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
+  ok(s1.weapon === 'five_seven' && s1.slot === 1 && s1.aiming === true && s1.action === 0 && s1.health === 100, 'snapshot resolves the slot to the weapon id');
+  sendTicks(owner, walk(1, { slot: 1, reload: true }));
+  runSteps(1);
+  const reloadTick = c.actionTick;
+  ok(c.action === BASE_GAME_WEAPON_ACTION.reload && reloadTick === c.lastConsumedTick, 'a reload edge starts the reload action at that tick');
+  sendTicks(owner, walk(5, { slot: 1, reload: true }));
+  runSteps(5);
+  ok(c.action === BASE_GAME_WEAPON_ACTION.reload && c.actionTick === reloadTick, 'reload edges during a reload do not restart it');
+  sendTicks(owner, walk(BASE_GAME_RELOAD_TICKS, { slot: 1 }));
+  runSteps(BASE_GAME_RELOAD_TICKS);
+  ok(c.action === BASE_GAME_WEAPON_ACTION.idle, 'the reload action clears after the reload window');
+  sendTicks(owner, walk(1, { slot: 1, reload: true }));
+  runSteps(1);
+  sendTicks(owner, walk(1, { slot: 0 }));
+  runSteps(1);
+  ok(c.action === BASE_GAME_WEAPON_ACTION.idle && c.slot === 0, 'a slot change cancels the reload');
+  service.handle(owner, { type: 'base:loadout', protocol: P, loadout: { primary: 'm24' } });
+  service.broadcastSnapshots();
+  s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
+  ok(s1.weapon === 'm24', 'base:loadout replaces the loadout and the snapshot echoes it');
+  const poses = room.poseHistory.get(c.id);
+  ok(poses && poses.length > 0 && poses[poses.length - 1].t <= room.tick * 1000 / 120 + 1e-6 && poses[0].t >= poses[poses.length - 1].t - 750, 'server keeps a bounded combat.js pose history per client');
+  sendTicks(owner, walk(1, { slot: 2, reload: true }));
+  runSteps(1);
+  ok(c.action === BASE_GAME_WEAPON_ACTION.idle, 'no reload on a slot that holds a knife');
+}
 service.handle(owner, { type: 'base:input', protocol: 1, ticks: [t(consumed + 1, { moveX: -1 })] });
 ok(ownerClient.queue.length === queueBefore, 'wrong protocol input is ignored');
 ok(service.handle(owner, { type: 'base:set_position', protocol: P, position: [0, 50, 0] }) === false

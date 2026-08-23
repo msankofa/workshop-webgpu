@@ -290,6 +290,49 @@ ride height and every stride number falls out of it, so it heads the Stand stage
 moved out of Gait, because whether enough feet stay down to make a polygon is a balance question. And the
 idle-clip toggle sits in Stand next to a note about hip disturbance, because that is where the decision is.
 
+### Movement is one control, and idle is one of its settings
+
+v1 had a **walking** checkbox in one section and a **base gait** dropdown in another, so standing a creature
+still meant finding a checkbox that did not look like it belonged to the same decision. They are now a
+single **movement** select: `idle`, `walk`, `gallop`.
+
+The capability was always there — `walker.update(dt, { walk: false })` skips `steer()` and
+`scheduleSteps()`, so the body holds its heading and takes no steps while the legs still solve and settle
+under it. That is the state to judge a stance and a ride height in, and it is what the Stand stage now
+switches to on entry.
+
+Two details are load-bearing:
+
+- **Idle is not a gait, so the last locomotive one is remembered.** `GAITS.walk` and `GAITS.gallop` are the
+  tables every derived number comes from; without a fallback the readouts would blank the moment you stood
+  the creature up to look at it. Trials record `gaitKey()`, never `idle`.
+- **Nothing is measured while idle.** A standing creature trivially does not drag, so the monitor stops
+  sampling and the Walk gate says it is idle rather than reporting a clean verdict on a creature that is
+  not moving. A green gate earned by standing still is worse than no gate.
+
+Pause is deliberately still separate: it freezes time, which is a different question from what the creature
+is doing. The Movement section carries no `data-stage` and so shows in every stage — it was filed under
+`stand walk trial` first, and since the page opens on the rig stage, first load had no movement control on
+screen at all.
+
+### All 151 are selectable
+
+v1 offered fourteen — the set the rig work was tuned against — from a list written into the page, which
+made the other 137 look unavailable even though every one of them is checked into `models/stadium/`. v2
+builds the dropdown from that directory's own `manifest.json` in three groups: the fourteen, the rest that
+map with legs, and **the 35 the auto-mapper finds no legs on**.
+
+Those 35 are named in `STADIUM_NO_LEG_SPECIES` (`stadium-reference-species.js`), and `test-stadium-rig.mjs`
+re-derives the list across all 151 and fails if it drifts — so the page cannot quietly mislabel a species
+after a mapper change. Some genuinely have no legs to find (Voltorb, Gastly, Onix, the snakes); the rest
+are heuristic misses. Picking one now explains that instead of throwing, and a saved selection that will
+not spawn falls back rather than leaving every panel reading an empty stage.
+
+**The gap**: the Bone roles panel is what would fix a heuristic miss, and it reads the *selected creature*,
+which a legless species never becomes. Hand-mapping one therefore is not possible yet. Making the rig stage
+operate on a species rather than on a spawned creature is the fix, and 36 call sites currently assume a
+walker exists.
+
 ### The stance editor
 
 Bone picking is the one the skeleton view already had. What is new is six sliders — three angles and three
@@ -1178,4 +1221,7 @@ test failure rather than a surprise in the viewer.
   first place — so the gate is a measuring instrument that also happens to be able to act.
 - **Gallop is reachable but unmeasured.** The demo offers it and `rowPairSteps` moves a whole row, but
   none of the numbers above were measured under it.
-- The other 137 species are not checked in. `docs/stadium/tooling/extract_glb.py` recovers any of them.
+- **35 species cannot be hand-mapped.** The auto-mapper finds no legs on them; the Bone roles panel is the
+  tool for that, and it only works on a spawned creature, which a legless species cannot become. They are
+  selectable and labelled, but the fix needs the rig stage to work on a species rather than a creature.
+- All 151 are checked in. `docs/stadium/tooling/extract_glb.py` re-extracts any of them if needed.

@@ -158,6 +158,20 @@ check('a ROM clip can be borrowed as a stance', () => {
     assert(ids.has(id), `#${id} is missing`);
   }
   assert(/clipChannels\(/.test(body), 'clips are not read');
+  // Sampling a clip lives in rig-audit.js so it can be run against real models in Node. It was inlined
+  // here once, against an invented shape for what clipChannels returns, and threw on the first click.
+  assert(/sampleClipAt\(/.test(code), 'the clip sampler is not the tested one');
+  assert(!/function sampleClip\b/.test(code), 'the page has its own clip sampler again');
+});
+
+check('every rig-audit import is a real export', () => {
+  const src = fs.readFileSync('rig-audit.js', 'utf8');
+  const exported = new Set([...src.matchAll(/export (?:function|const) (\w+)/g)].map(m => m[1]));
+  const imported = body.match(/import \{([^}]+)\} from '\.\.\/rig-audit\.js'/s)?.[1] ?? '';
+  const names = imported.split(',').map(s => s.trim()).filter(Boolean);
+  assert(names.length, 'the page does not import rig-audit');
+  const missing = names.filter(n => !exported.has(n));
+  assert(!missing.length, `not exported by rig-audit.js: ${missing.join(', ')}`);
 });
 
 check('stance sliders are scoped so the gait search cannot re-pose the model', () => {
@@ -165,6 +179,75 @@ check('stance sliders are scoped so the gait search cannot re-pose the model', (
   assert(specs.length, 'no stance sliders found');
   assert(specs.every(s => s === 'stance'), `stance sliders are scoped ${uniq(specs).join(', ')}`);
   assert(/scope !== 'stance'/.test(body), 'stance sliders are saved into prefs, where they mean nothing');
+});
+
+console.log('\n--- movement ---');
+
+check('the movement control is reachable from every stage', () => {
+  // It was filed under "stand walk trial" and the page opens on rig, so first load showed no movement
+  // control at all. An untagged section is always visible, which is what this asserts.
+  const section = markup.match(/<details[^>]*>\s*<summary>Movement<\/summary>/)?.[0] ?? '';
+  assert(section, 'there is no section called Movement');
+  assert(!/data-stage/.test(section), `Movement is stage-scoped and would hide: ${section.trim()}`);
+});
+
+check('idle, walk and gallop are one control', () => {
+  assert(ids.has('movement'), 'no movement select');
+  const sel = markup.match(/<select id="movement">([\s\S]*?)<\/select>/)?.[1] ?? '';
+  for (const v of ['idle', 'walk', 'gallop']) {
+    assert(new RegExp(`value="${v}"`).test(sel), `movement has no ${v} option`);
+  }
+  assert(!ids.has('walking'), 'the old walking checkbox is still there alongside the movement select');
+  assert(!ids.has('baseGait'), 'the old base-gait select is still there alongside the movement select');
+});
+
+check('the loop derives walking from the movement mode', () => {
+  assert(/walker\.update\(step, \{ walk: walkingNow\(\) \}\)/.test(code), 'the walker is not told the mode');
+  assert(/const walkingNow = \(\) => movementInput\.value !== 'idle'/.test(code), 'walkingNow is not derived');
+});
+
+check('idle keeps the last real gait, so the derived readouts do not blank out', () => {
+  assert(/gaitKey = \(\) => \(movementInput\.value === 'idle' \? lastGait/.test(code),
+    'idle does not fall back to the last locomotive gait');
+  assert(/if \(walkingNow\(\)\) lastGait = movementInput\.value/.test(code), 'lastGait is never updated');
+});
+
+check('nothing is measured or logged as a gait while idle', () => {
+  assert(/if \(walkingNow\(\)\) sampleMonitor/.test(code), 'the monitor samples a standing creature');
+  assert(/gait: gaitKey\(\)/.test(code), "a trial could record 'idle' as its gait");
+  const walkGate = code.match(/id: 'walk', label: 'Walk'[\s\S]*?\n  \},/)?.[0] ?? '';
+  assert(/!walkingNow\(\)/.test(walkGate), 'the walk gate reports a verdict on a creature that is standing still');
+});
+
+check('the stand stage idles and the walk stage resumes', () => {
+  assert(/movementInput\.value = 'idle'/.test(code), 'the stand stage does not idle the creature');
+  assert(/movementInput\.value = lastGait/.test(code), 'the walk stage does not resume moving');
+});
+
+console.log('\n--- the species list ---');
+
+check('the dropdown is built from the directory manifest, not a hand-kept list', () => {
+  assert(/models\/stadium\/manifest\.json/.test(code),
+    'the species list is hardcoded again — only the tuned fourteen would be offered');
+  assert(!/\['four legs', \[/.test(code), 'the old hardcoded grouping is still there');
+});
+
+check('all 151 are reachable, with the legless ones grouped rather than hidden', () => {
+  const models = fs.readdirSync('models/stadium').filter(f => f.endsWith('.glb'));
+  assert(models.length === 151, `expected 151 models on disk, found ${models.length}`);
+  assert(/no legs found/.test(code), 'nothing tells you which species need hand-assigned legs');
+  assert(/STADIUM_NO_LEG_SPECIES/.test(code), 'the legless set is not the one the test keeps in sync');
+});
+
+check('picking a legless species explains itself instead of throwing a stack', () => {
+  assert(/err\.noLegs = true/.test(code), 'the no-legs case is not marked');
+  assert(/maps with no legs, so there is nothing to walk yet/.test(code), 'no readable message');
+  const add = code.match(/async function addCreature\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/catch/.test(add) && /showError/.test(add), 'addCreature does not catch a failed spawn');
+});
+
+check('a saved legless species cannot leave the page with an empty stage', () => {
+  assert(/if \(!stage\.size\)/.test(code), 'no fallback when the saved species will not spawn');
 });
 
 console.log('\n--- persistence ---');

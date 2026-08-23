@@ -153,6 +153,13 @@
   <select id="terrainSel" style="width:100%"></select>
   <p class="sub" id="terrainNote" style="margin:6px 0 0"></p>
 
+  <h2>Ground look</h2>
+  <div id="lookRows"></div>
+  <button class="btn" id="lookSave">Save to ground-look.json</button>
+  <button class="btn" id="lookReset">Reset</button>
+  <p class="sub" id="lookNote" style="margin:6px 0 0">Colours and the on/off switch live in
+    ground-look.json and need a reload; the sliders here are live.</p>
+
   <h2>Terrain view</h2>
   <div class="seg" id="viewSeg">
     <button data-view="0" class="on">Lit</button>
@@ -264,6 +271,9 @@ import {
 import { normalizeBake, sampleBake, bakeFromBytes } from '../flight-terrain-baked.js';
 import { createTerrainStream, fillSpan as fillSpanSync, spanPostCount } from '../flight-terrain-stream.js';
 import { createV5Source } from '../terrain-source-v5.js';
+import {
+  GROUND_LOOK_RANGE, groundLookFrom, createGroundLookNodes, loadGroundLook, saveGroundLook,
+} from '../ground-look.js';
 // Gerstner swell, Beer-Lambert depth colour, GGX glint and shore foam, shared with
 // demos/water-demo.html. See docs/water-vs-waterthreejs-comparison.md.
 import {
@@ -573,6 +583,17 @@ let rainAmount = 0, lightningOn = true, nextBolt = 6, thunderAt = -1, thunderDis
 // Terrain rendering — clipmap rings, displaced in the vertex stage
 // ---------------------------------------------------------------------------
 
+// Ground shading, loaded before the ring materials are built because `enabled` and the octave counts
+// are graph shape. Everything else is a live uniform, so the sliders retune without a rebuild.
+// A missing or unreadable ground-look.json is not worth refusing to fly over: fall back to defaults.
+let groundLookCfg = groundLookFrom();
+try {
+  groundLookCfg = await loadGroundLook('../');
+} catch (err) {
+  console.warn(`ground-look.json unreadable (${err.message}); using defaults`);
+}
+const groundLook = await createGroundLookNodes(groundLookCfg);
+
 // unit grid over [-1,1]; holed rings drop the middle half, which the finer ring covers
 function buildRingGeometry(N, holed) {
   const g = N + 1, pos = new Float32Array(g * g * 3);
@@ -640,18 +661,11 @@ for (let lv = 0; lv < RING_LEVELS; lv++) {
   const vWorld = varying(worldPos, `vWorld${lv}`);
   const vNormal = varying(normal, `vNormal${lv}`);
 
-  const terrainColor = Fn(() => {
-    const h = vWorld.y;
-    const slope = oneMinus(clamp(vNormal.y, 0, 1));
-    const sand = vec3(0.60, 0.55, 0.40);
-    const grass = vec3(0.24, 0.34, 0.19);
-    const rock = vec3(0.34, 0.33, 0.31);
-    const snow = vec3(0.86, 0.88, 0.92);
-    let c = mix(sand, grass, smoothstep(4, 55, h));
-    c = mix(c, rock, smoothstep(0.30, 0.62, slope));
-    c = mix(c, snow, smoothstep(380, 520, h).mul(oneMinus(smoothstep(0.34, 0.62, slope))));
-    return c;
-  })();
+  // Four colours on height and slope, but with the material lines wandering rather than following
+  // contours, plus macro colour drift and rock strata — see ground-look.js for why that ordering.
+  // The whole law lives there so it can be unit-tested against its own CPU twin; with every term at
+  // zero it is bit-identical to the flat ramp this replaced.
+  const terrainColor = groundLook.color(vWorld, vNormal.y);
 
   // debug views, so an artifact can be pinned to a layer instead of guessed at
   const debugColor = Fn(() => {
@@ -4020,6 +4034,44 @@ const terrainNote = document.getElementById('terrainNote');
     location.href = url.toString();
   };
 }
+// Ground-look sliders. Tuning goes to a file, never to web storage: a port change or a cleared
+// origin would otherwise lose an evening of it, and nothing in localStorage is diffable.
+const lookRows = document.getElementById('lookRows');
+const lookNote = document.getElementById('lookNote');
+function buildLookRows() {
+  lookRows.innerHTML = '';
+  for (const [key, [min, max, step]] of Object.entries(GROUND_LOOK_RANGE)) {
+    const dec = step < 0.01 ? 3 : step < 1 ? 2 : 0;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label>${key}</label><output>${Number(groundLookCfg[key]).toFixed(dec)}</output>`;
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = groundLookCfg[key];
+    input.oninput = () => {
+      groundLookCfg[key] = parseFloat(input.value);
+      groundLook.set(groundLookCfg);
+      row.querySelector('output').textContent = groundLookCfg[key].toFixed(dec);
+    };
+    row.appendChild(input);
+    lookRows.appendChild(row);
+  }
+}
+buildLookRows();
+document.getElementById('lookSave').onclick = async () => {
+  try {
+    const path = await saveGroundLook(groundLookCfg, '../');
+    lookNote.textContent = `Saved to ${path}.`;
+  } catch (err) {
+    lookNote.textContent = `Could not save: ${err.message}. Is serve.py running?`;
+  }
+};
+document.getElementById('lookReset').onclick = () => {
+  const keep = groundLookCfg.enabled;
+  groundLookCfg = groundLookFrom({ enabled: keep });
+  groundLook.set(groundLookCfg);
+  buildLookRows();
+  lookNote.textContent = 'Back to defaults. Save to keep them.';
+};
 document.getElementById('respawn').onclick = () => respawnFlyer(player);
 document.getElementById('resetTune').onclick = () => {
   Object.assign(AIRFRAMES[player.afKey], JSON.parse(JSON.stringify(DEFAULTS[player.afKey])));

@@ -364,11 +364,14 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   // [ADAPTATION] Uses the injected camera, not a module global.
+  // Scratch vectors: this runs every frame on every page.
+  const _listenerForward = new THREE.Vector3();
+  const _listenerUp = new THREE.Vector3();
   function updateAudioListener() {
     if (!audioCtx || !camera) return;
     const listener = audioCtx.listener;
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+    const forward = _listenerForward.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+    const up = _listenerUp.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
 
     if (listener.positionX) {
       setAudioParamValue(listener.positionX, camera.position.x);

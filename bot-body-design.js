@@ -622,7 +622,7 @@ const SOLDIER_MARKS = {
   tubes: SOLDIER_TUBES,
 };
 
-function buildSoldierDesign(roleId) {
+export function buildSoldierDesign(roleId) {
   const spec = SOLDIER_ROLE_DESIGNS[roleId] || SOLDIER_ROLE_DESIGNS.rifleman;
   // The human head brings its own skull, so it has to go on before anything is layered over it.
   const withHead = withHeadKit(

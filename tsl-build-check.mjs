@@ -34,6 +34,9 @@ export async function buildMaterial(material, geometry = new BufferGeometry()) {
     isOutputTarget: () => false,
     getOutputRenderTarget: () => null,
     getColorBufferType: () => 0,
+    getOutputBufferType: () => 0,
+    getPixelRatio: () => 1,
+    getDrawingBufferSize: (v) => { v.set(1, 1); return v; },
   };
   const builder = new GLSLNodeBuilder(mesh, renderer);
   builder.scene = scene; builder.camera = camera; builder.material = material;

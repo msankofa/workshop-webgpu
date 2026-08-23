@@ -11,7 +11,7 @@ import { mapStadiumRig, mapStadiumRigFromGLB, boneGeometry, pivotTree } from './
 import { createStadiumWalker, scaleGaitFroude, WALKER_DEFAULTS } from './stadium-walker.js';
 import { createGaitMonitor, analyseGait, GAIT_LIMITS } from './gait-diagnostics.js';
 import { GAITS } from './creature-locomotion.js';
-import { STADIUM_REFERENCE_SPECIES } from './stadium-reference-species.js';
+import { STADIUM_REFERENCE_SPECIES, STADIUM_NO_LEG_SPECIES } from './stadium-reference-species.js';
 import { loadStanceLibrary, nodeReader, mapSpeciesFromLibrary } from './stadium-species.js';
 import { stancedSpecies } from './stadium-stance.js';
 
@@ -470,6 +470,25 @@ check('every shipped species walks, whatever the mapper made of it', () => {
     const spans = path / (map.legs.reduce((m, l) => Math.max(m, l.l1 + l.l2), 0) * walker.unitScale);
     assert(spans > 1.5, `${file}: covered ${spans.toFixed(2)} leg spans in 10 s`);
   }
+});
+
+check('the legless list still matches what the mapper actually finds, across all 151', () => {
+  // The walker's dropdown offers all 151 and labels these as needing hand-assigned roles. If the mapper
+  // improves, this fails and the list wants regenerating rather than the page quietly lying about them.
+  const files = fs.readdirSync('models/stadium').filter(f => f.endsWith('.glb')).sort();
+  assert(files.length === 151, `expected 151 models, found ${files.length}`);
+  const found = [];
+  for (const f of files) {
+    const species = f.replace('.glb', '');
+    const { json, bin } = parseGLB(fs.readFileSync(`models/stadium/${f}`));
+    if (!mapStadiumRig(json, bin, { source: species }).legs.length) found.push(species);
+  }
+  const listed = [...STADIUM_NO_LEG_SPECIES].sort();
+  const missing = found.filter(s => !listed.includes(s));
+  const stale = listed.filter(s => !found.includes(s));
+  assert(!missing.length, `maps with no legs but not listed: ${missing.join(', ')}`);
+  assert(!stale.length, `listed as legless but now maps with legs: ${stale.join(', ')}`);
+  console.log(`       ${found.length} of 151 need hand-assigned legs`);
 });
 
 check('every species with an authored stance still stands up in it', () => {

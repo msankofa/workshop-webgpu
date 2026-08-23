@@ -8,9 +8,23 @@
     "enemy_hit": "assets/enemy_hit.wav",
     "bullet_impact": "assets/bullet_impact.wav",
     "player_damage": "assets/player_damage.wav",
-    "footstep": "assets/footstep.wav",
-    "jump": "assets/jump.wav",
-    "music_menu": "assets/music_menu.mp3"
+    "footstep": [
+      "assets/footstep.wav",
+      "assets/footstep__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_30.wav",
+      "assets/footstep__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_36.wav",
+      "assets/footstep__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_37.wav"
+    ],
+    "jump": [
+      "assets/jump.wav",
+      "assets/jump__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_20.wav",
+      "assets/jump__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_23.wav",
+      "assets/jump__Metroid_Prime_2_SFX_SamusFootsteps_MP_SamusFootsteps_MP_24.wav"
+    ],
+    "music_menu": "assets/music_menu.mp3",
+    "landing": "assets/landing.wav",
+    "pause_open": "assets/pause_open.wav",
+    "pause_close": "assets/pause_close.wav",
+    "weapon_draw": "assets/weapon_draw.wav"
   },
   "sources": {
     "pistol_shoot": "gun-shots/pistol-1.wav",

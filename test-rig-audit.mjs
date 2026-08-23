@@ -8,7 +8,8 @@ import { STADIUM_REFERENCE_SPECIES } from './stadium-reference-species.js';
 import { parseGLB, readAccessor } from './stadium-glb.js';
 import { mapStadiumRig } from './stadium-rig-map.js';
 import {
-  auditMapping, clipChannels, clipDisturbance, rankClips, parentMap, ancestorsOf, composeTRS, multiply, worldOf,
+  auditMapping, clipChannels, clipDisturbance, rankClips, sampleClipAt,
+  parentMap, ancestorsOf, composeTRS, multiply, worldOf,
 } from './rig-audit.js';
 
 let failures = 0;
@@ -155,6 +156,69 @@ check('stripping the leg-bone tracks is not what makes the difference', () => {
   assert(Math.abs(stripped.worst - whole.worst) < 1e-9,
     `stripping leg tracks changed hip travel from ${whole.worst} to ${stripped.worst}`);
   assert(stripped.worst > 0.3, `tauros idle should be a big disturbance, got ${(stripped.worst * 100).toFixed(1)}%`);
+});
+
+// ===================== sampling a clip into a pose =====================
+//
+// The walker's rig stage borrows a frame of a ROM clip as a starting stance. This is checked against real
+// models rather than a hand-built clip, because the bug it replaces was a wrong ASSUMPTION about the shape
+// `clipChannels` returns — and a fixture built from the same wrong assumption would have agreed with it.
+
+check('sampleClipAt returns real transforms for every shipped species', () => {
+  for (const species of STADIUM_REFERENCE_SPECIES) {
+    const { json, bin } = load(species);
+    const clips = clipChannels(json, bin, readAccessor);
+    assert(clips.length, `${species}: no clips at all`);
+    const clip = clips[0];
+    const frame = sampleClipAt(clip, clip.duration * 0.5);
+    const nodes = Object.keys(frame);
+    assert(nodes.length, `${species}: ${clip.name} sampled to nothing`);
+    for (const [node, trs] of Object.entries(frame)) {
+      assert(json.nodes[node], `${species}: sampled node ${node} is not in the file`);
+      if (trs.q) assert(trs.q.length === 4, `${species}: rotation has ${trs.q.length} components`);
+      if (trs.p) assert(trs.p.length === 3, `${species}: translation has ${trs.p.length} components`);
+      if (trs.s) assert(trs.s.length === 3, `${species}: scale has ${trs.s.length} components`);
+      for (const v of [...(trs.q || []), ...(trs.p || []), ...(trs.s || [])]) {
+        assert(Number.isFinite(v), `${species}: non-finite value on node ${node}`);
+      }
+    }
+  }
+});
+
+check('a sampled rotation is a unit quaternion, not a raw int16', () => {
+  // readAccessor ignoring `normalized` is a bug this repo has already had once: components came back
+  // around 23000 where 0.707 was meant. A magnitude check catches it wherever it comes back.
+  const { json, bin } = load('019_rattata');
+  const clip = clipChannels(json, bin, readAccessor)[0];
+  const frame = sampleClipAt(clip, clip.duration * 0.25);
+  let checked = 0;
+  for (const trs of Object.values(frame)) {
+    if (!trs.q) continue;
+    const mag = Math.hypot(...trs.q);
+    assert(Math.abs(mag - 1) < 0.02, `quaternion magnitude ${mag.toFixed(3)}, expected 1`);
+    checked++;
+  }
+  assert(checked > 0, 'no rotations in the sampled frame');
+});
+
+check('it steps to the key at or before the time, and holds past the end', () => {
+  const clip = {
+    duration: 2,
+    tracks: [{ node: 7, path: 'translation', stride: 3, times: [0, 1, 2], values: [0, 0, 0, 5, 5, 5, 9, 9, 9] }],
+  };
+  assert(sampleClipAt(clip, 0)[7].p.join() === '0,0,0', 'at t=0 should take the first key');
+  assert(sampleClipAt(clip, 0.9)[7].p.join() === '0,0,0', 'before the second key it should hold the first');
+  assert(sampleClipAt(clip, 1)[7].p.join() === '5,5,5', 'at a key it should take that key');
+  assert(sampleClipAt(clip, 99)[7].p.join() === '9,9,9', 'past the end it should hold the last key');
+});
+
+check('a malformed or empty clip yields nothing rather than throwing', () => {
+  assert(Object.keys(sampleClipAt(null, 0)).length === 0, 'null clip should be empty');
+  assert(Object.keys(sampleClipAt({}, 0)).length === 0, 'clip with no tracks should be empty');
+  assert(Object.keys(sampleClipAt({ tracks: [{ node: 1, path: 'weights', stride: 1, times: [0], values: [0] }] }, 0)).length === 0,
+    'a weights track is not a TRS and should be skipped');
+  assert(Object.keys(sampleClipAt({ tracks: [{ node: 1, path: 'rotation', stride: 4, times: [0], values: [0, 0] }] }, 0)).length === 0,
+    'a truncated key should be skipped rather than emitted short');
 });
 
 console.log(results.join('\n'));

@@ -80,7 +80,7 @@ import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { attachDracoLoader } from './draco-loader.js';
-import { createWeaponPoseController } from './weapon-pose-controller.js';
+import { createWeaponMountSystem } from './weapon-mount.js';
 import { createLightingRig } from './lights.js';
 import { createMapCollider } from './map-collision.js';
 import { createPostFX } from './post-fx.js';
@@ -1336,7 +1336,6 @@ import { createBotSpatialHash } from './bot-spatial-hash.js';
 import { createProceduralPlayerBody, GAIT_MODELS } from './player-procedural-body.js';
 import { LOCOMOTION_DEFAULTS } from './body-locomotion.js';
 import { createBodyPartBatches } from './body-part-batches.js';
-import { createWeaponPartBatches, bakeSkinnedGeometry } from './weapon-part-batches.js';
 import { stepRagdoll, kineticEnergy, applyImpulseAll, jointPos } from './ragdoll.js';
 import { ragdollFromBody, applyDeathImpulse, applyBlastImpulse, weaponKnockback } from './ragdoll-body.js';
 import { makePack, drawFromPacks, hasHealResource, canHold, addPack, packsTotalHp, hasReviveMaterials, consumeRevivePacks, packClaimIntent, packRunSafe } from './bot-health-packs.js';
@@ -1352,10 +1351,7 @@ import { MEDIC_MOVE, MEDIC_TEND, MEDIC_DEFAULTS, decideMedicAction, cohesionTarg
   medicChaseSpeedFactor, medicTendRadiusFor, MEDIC_CONTACT_RADIUS, MEDIC_CONTACT_CREEP } from './bot-medic.js';
 import { createScoreboard, resetScoreboard, recordSpawn, recordKill, recordRevive, finishRound,
   decideRoundOutcome, formatTeamScore, formatBreakdownLines, formatRoundHeader, formatRoundLine } from './bot-score.js';
-import { resolveWeaponHold, carryDeltaFor, locomotionFor, isCarryLocomotion, isOneHanded,
-  hasCarryVocabulary, stepCarryBlend, snapCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
-import { AIM_BLEND_DEFAULTS, solveAimBlend, newAimChannels, stepAimChannels, barrelTrimFraction,
-  releaseTrimFraction, aimLeadSeconds, addRecoil, stepRecoil, directionError, wrapAngle } from './bot-aim-blend.js';
+import { AIM_BLEND_DEFAULTS, solveAimBlend, newAimChannels, stepAimChannels, aimLeadSeconds, addRecoil, stepRecoil, directionError, wrapAngle } from './bot-aim-blend.js';
 import { STANCE_PRONE, STANCE_KNEEL, STANCE_CROUCH, STANCE_STAND, STANCE_RUN, STANCE_DASH, STANCE_DEFAULTS, chooseBotStance, stepStanceTransition,
   stanceSpeedFactor, stanceSpreadScale, stanceHeightScale, stanceCapsuleHeightScale,
   stanceTurnRateScale, resolveStanceOverride, stepStanceWeights, blendStanceHeightScale } from './bot-stance.js';
@@ -1654,18 +1650,15 @@ let botCorpseCap = 24;
 let botBodyBatches = null;
 // Shared instanced pool for every bot's held-weapon GLB (weapon-part-batches). Lazily created
 // on first createBotWeaponMount(); flushed each frame in the animate loop like the body pool.
-let botWeaponBatches = null;
-const _weaponPartMatrix = new THREE.Matrix4();
-function flushWeaponMount(mount) {
-  if (!mount?.instanceParts || !mount.placed || !mount.weaponRig.visible) return;
-  // The only per-frame walk of the (never scene-added) rig; static nodes skip recompose (M10).
-  mount.weaponRig.updateMatrixWorld(true);
-  const view = mount.weaponView.matrixWorld;
-  for (const part of mount.instanceParts) {
-    _weaponPartMatrix.multiplyMatrices(view, part.localMatrix);
-    botWeaponBatches.add(part.geometry, part.material, _weaponPartMatrix);
-  }
-}
+// Shared held-weapon mount system (weapon-mount.js): instanced pool, anchor/pose data, GLB
+// template cache, hold resolve, pose controller and barrel trim. Lazily builds its pool on the
+// first mount. `botWeaponBatches` stays as the name the flush loops use.
+const botWeaponSystem = createWeaponMountSystem({
+  THREE, scene, getWeapon,
+  loadGLB: (url) => attachDracoLoader(new GLTFLoader()).loadAsync(url),
+  aimBlend: () => botAimBlend,   // live settings object, declared later
+});
+function flushWeaponMount(mount) { botWeaponSystem.flushMount(mount); }
 // Facing cones (F9): one InstancedMesh for the whole roster instead of a lit Mesh + unique
 // material per bot. Immediate mode like the batch pools -- the count resets at the top of
 // updateAllBots, each living bot adds one instance, dead bots simply don't add.
@@ -2510,163 +2503,30 @@ function applyBotMovementSettings() {
 
 let botWeaponMount = null;
 let botWeaponMountToken = 0;
-let botWeaponDataPromise = null;
-// weaponId -> Promise<{ template, bakedAnchors }>; owns the shared geometries/materials
-// for the app's lifetime so every bot holding the same weapon clones (not reloads) it.
-const botWeaponTemplateCache = new Map();
-
 function destroyBotWeaponMount(actor = activeBotActor) {
   const mount = actor?.weaponMount ?? botWeaponMount;
   const token = (actor?.weaponMountToken ?? botWeaponMountToken) + 1;
   if (actor) actor.weaponMountToken = token;
   botWeaponMountToken = token;
   if (!mount) return;
-  // Rig was never scene-added (M10) and its geometry/materials are owned by
-  // botWeaponTemplateCache (shared across mounts), so there is nothing to detach or dispose.
+  // Arm targets are left alone: pose overlays (medic, heal) may own them at this moment.
+  botWeaponSystem.destroyMount(mount, { releaseArms: false });
   if (actor) actor.weaponMount = null;
   botWeaponMount = null;
-}
-
-function loadBotWeaponMountData() {
-  if (!botWeaponDataPromise) {
-    botWeaponDataPromise = Promise.all([
-      fetch('./weapon-anchors.json', { cache: 'no-store' }).then((response) => response.json()),
-      fetch('./weapon-poses.json', { cache: 'no-store' }).then((response) => response.json()),
-    ]).catch((error) => { botWeaponDataPromise = null; throw error; });
-  }
-  return botWeaponDataPromise;
-}
-
-function normalizeBotWeaponModel(model, targetSize) {
-  const box = new THREE.Box3(), size = new THREE.Vector3();
-  model.updateMatrixWorld(true);
-  box.setFromObject(model); box.getSize(size);
-  if (size.x >= size.y && size.x >= size.z) model.rotation.y = Math.PI * 0.5;
-  else if (size.y >= size.x && size.y >= size.z) model.rotation.x = Math.PI * 0.5;
-  model.updateMatrixWorld(true);
-  box.setFromObject(model); box.getSize(size);
-  model.scale.multiplyScalar(targetSize / Math.max(size.x, size.y, size.z, 1e-6));
-  model.updateMatrixWorld(true);
-  box.setFromObject(model);
-  model.position.sub(box.getCenter(new THREE.Vector3()));
-  model.updateMatrixWorld(true);
-  return model.matrixWorld.clone();
-}
-
-function bakeBotWeaponAnchors(rawAnchors, matrix) {
-  const rotation = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(matrix));
-  const anchors = {};
-  for (const key in rawAnchors) {
-    const raw = rawAnchors[key];
-    const position = new THREE.Vector3(...raw.p).applyMatrix4(matrix);
-    const quaternion = rotation.clone().multiply(new THREE.Quaternion(...(raw.q || [0, 0, 0, 1])));
-    anchors[key] = { p: [position.x, position.y, position.z], q: [quaternion.x, quaternion.y, quaternion.z, quaternion.w] };
-  }
-  return anchors;
-}
-
-function loadBotWeaponTemplate(weaponId, def, rawAnchors) {
-  if (!botWeaponTemplateCache.has(weaponId)) {
-    const promise = attachDracoLoader(new GLTFLoader()).loadAsync(def.model).then((gltf) => {
-      const template = gltf.scene;
-      const normalizedMatrix = normalizeBotWeaponModel(template, 0.62);
-      const bakedAnchors = bakeBotWeaponAnchors(rawAnchors, normalizedMatrix);
-      // Instanced rendering (weapon-part-batches): bake each sub-mesh's template-root-relative
-      // matrix once; mounts emit weaponView.matrixWorld × localMatrix per frame. Skinned meshes
-      // (m1911, cz_805_bren, mk2_grenade) get their never-animated bone pose frozen into static
-      // geometry — their authored node pose is not the skinned pose, so raw geometry renders
-      // guns rotated out of the hands.
-      template.updateMatrixWorld(true);
-      const instanceParts = [];
-      template.traverse((obj) => {
-        if (!obj.isMesh) return;
-        const geometry = obj.isSkinnedMesh ? bakeSkinnedGeometry(THREE, obj) : obj.geometry;
-        instanceParts.push({ geometry, material: obj.material, localMatrix: obj.matrixWorld.clone() });
-      });
-      return { template, bakedAnchors, instanceParts };
-    }).catch((error) => {
-      botWeaponTemplateCache.delete(weaponId);
-      throw error;
-    });
-    botWeaponTemplateCache.set(weaponId, promise);
-  }
-  return botWeaponTemplateCache.get(weaponId);
 }
 
 async function createBotWeaponMount(bodyRef, actor = activeBotActor) {
   const entity = actor?.entity ?? bot;
   const weaponId = actor?.equippedWeapon ?? entity?.weapon;
   const def = getWeapon(weaponId);
-  if (actor) actor.carryLocomotion = null;   // snap the new weapon's carry instead of gliding the old one's
   if (!weaponId || !def?.model || !def.thirdPersonHold) return;
   const token = (actor?.weaponMountToken ?? botWeaponMountToken) + 1;
   if (actor) actor.weaponMountToken = token;
   botWeaponMountToken = token;
   try {
-    const [anchorData, poseData] = await loadBotWeaponMountData();
-    const rawAnchors = anchorData?.[weaponId]?.ikAnchors || {};
-    if (token !== actor?.weaponMountToken || bodyRef !== actor?.body) return;
-    const reloadSequence = poseData?.reloadSequence?.[weaponId] ||
-      (rawAnchors.magwell && rawAnchors.chargingHandle ? {
-        duration: 1.45,
-        commitAmmoAt: 1.05,
-        poses: { aimed: poseData?.weaponPoses?.aimed, reloadRaise: poseData?.weaponPoses?.reloadRaise },
-        keys: [
-          { t: 0, weaponPose: 'aimed', right: 'rightGrip', left: 'leftGrip' },
-          { t: 0.18, weaponPose: 'reloadRaise', right: 'rightGrip', left: 'magwell' },
-          { t: 0.35, left: { body: [0.12, -0.3, 0.26] }, event: 'detachMagazine' },
-          { t: 0.68, left: 'beltMagazine', event: 'spawnFreshMagazine' },
-          { t: 0.95, left: 'magwell', event: 'insertMagazine' },
-          { t: 1.15, left: 'chargingHandle', event: 'grabChargingHandle' },
-          { t: 1.28, left: { weaponAnchor: 'chargingHandle', offset: [0, 0, -0.12] }, event: 'pullChargingHandle' },
-          { t: 1.38, left: 'leftGrip', weaponPose: 'aimed', event: 'releaseChargingHandle' },
-        ],
-      } : null);
-
-    const { bakedAnchors, instanceParts } = await loadBotWeaponTemplate(weaponId, def, rawAnchors);
-    if (token !== actor?.weaponMountToken || bodyRef !== actor?.body) return;
-    // castShadow off (M5): held guns fall outside the shadow box, so the shadow pass is pure cost.
-    if (!botWeaponBatches) botWeaponBatches = createWeaponPartBatches({ THREE, scene, castShadow: false });
-
-    // No per-bot model clone: the rig is a transform-only hierarchy (plus anchor markers) and
-    // the gun renders from the shared instancing pool via flushWeaponMounts().
-    const weaponRig = new THREE.Group();
-    const weaponAdjust = new THREE.Group();
-    const weaponFrame = new THREE.Group();
-    const weaponView = new THREE.Group();
-    weaponFrame.rotation.y = Math.PI;
-    weaponRig.add(weaponAdjust);
-    weaponAdjust.add(weaponFrame);
-    weaponFrame.add(weaponView);
-    const muzzleAnchor = bakedAnchors.muzzle?.p;
-    const barrelReferenceAnchor = bakedAnchors.rightGrip?.p || bakedAnchors.leftGrip?.p;
-    const muzzleMarker = muzzleAnchor ? new THREE.Object3D() : null;
-    const barrelReferenceMarker = barrelReferenceAnchor ? new THREE.Object3D() : null;
-    if (muzzleMarker) { muzzleMarker.position.fromArray(muzzleAnchor); weaponView.add(muzzleMarker); }
-    if (barrelReferenceMarker) { barrelReferenceMarker.position.fromArray(barrelReferenceAnchor); weaponView.add(barrelReferenceMarker); }
-    // Static locals frozen once (M10): weaponFrame + markers never move after setup.
-    for (const node of [weaponFrame, muzzleMarker, barrelReferenceMarker]) {
-      if (node) { node.matrixAutoUpdate = false; node.updateMatrix(); }
-    }
-    // Rig is never scene-added (M10): nothing renders from it, so the renderer's scene walk would only duplicate flushWeaponMount's walk.
-
-    const controller = createWeaponPoseController({
-      THREE,
-      body: bodyRef,
-      weaponView,
-      getWeaponDef: (id) => id === weaponId ? {
-        id,
-        recoil: def.recoil ?? 0.6,
-        ikAnchors: bakedAnchors,
-        weaponPoses: poseData?.weaponPoses || {},
-        reloadSequence,
-      } : {},
-    });
-    controller.setWeapon(weaponId);
-    // placed: the rig is built at identity and only positioned by updateBotWeaponMount. The mount
-    // can be assigned mid-frame (async load), so flushing before that draws a full-size gun at the
-    // world origin for a frame -- flushWeaponMount waits for this flag.
-    const mount = { weaponRig, weaponAdjust, weaponView, controller, def, weaponId, reloadSequence, muzzleMarker, barrelReferenceMarker, instanceParts, placed: false };
+    const mount = await botWeaponSystem.createMount(bodyRef, weaponId);
+    if (token !== actor?.weaponMountToken || bodyRef !== actor?.body) { botWeaponSystem.destroyMount(mount, { releaseArms: false }); return; }
+    if (!mount) return;
     if (actor) actor.weaponMount = mount;
     if (activeBotActor === actor) botWeaponMount = mount;
     if (activeBotActor === actor) updateBotWeaponButtons();
@@ -2675,25 +2535,15 @@ async function createBotWeaponMount(bodyRef, actor = activeBotActor) {
   }
 }
 
-// Per-frame mount scratch (M1): quats/eulers/opts reused across bots, fully consumed per call.
-const _mountRootEuler = new THREE.Euler(0, 0, 0, 'YXZ');
-const _mountRootQuat = new THREE.Quaternion();
-const _mountTwistQ = new THREE.Quaternion();      // aim twist, applied after the lean like the spine does
-const _mountUpAxis = new THREE.Vector3(0, 1, 0);
-const _mountHoldEuler = new THREE.Euler();
-const _mountHoldQuat = new THREE.Quaternion();
-const _mountLockOpts = { lockPosePosition: 'lowReady' };
-const _mountNoOpts = {};
-// Resolved (stance x locomotion) hold + the scratch the one-handed dash tuck is built in.
-const _mountHold = { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+// Per-frame mount frame (M1): one object reused across bots, fully consumed per call.
 const _mountLoco = { stance: STANCE_STAND, aiming: false, moving: false };
-const _dashRight = new THREE.Vector3(), _dashFwd = new THREE.Vector3(), _dashHand = new THREE.Vector3();
+const _mountFrame = {
+  feetY: 0, bodyX: 0, bodyZ: 0, yaw: 0, stance: STANCE_STAND, stanceWeights: null, speed: 0,
+  aiming: false, aimPoint: null, bob: 0, sway: 0, headYaw: 0, aimChannels: null, frameIndex: 0, releaseSupportHand: true,
+};
 const CARRY_MOVING_SPEED = 0.35;   // m/s above which a standing bot shows the walk carry, not idle
-// Where the freed support hand goes on a dash: tucked in front of the chest, elbow turned outward.
-const DASH_HAND_FWD = 0.16, DASH_HAND_SIDE = 0.14, DASH_HAND_UP = -0.04;
 function updateBotWeaponMount(dt, mid) {
   if (!botWeaponMount || botWeaponMount.weaponId !== (activeBotActor?.equippedWeapon ?? bot?.weapon)) return;
-  const { weaponRig, weaponAdjust, controller, def, muzzleMarker, barrelReferenceMarker } = botWeaponMount;
   const actor = activeBotActor;
   // Carry resolve. locomotionFor is the SINGLE source of truth for "is this bot aiming": deriving
   // isAiming back out of it is what keeps the pose, the barrel solve and the off hand from disagreeing.
@@ -2706,93 +2556,31 @@ function updateBotWeaponMount(dt, mid) {
     botState === BOT_COVER_MOVE || botState === BOT_COVER_HOLD ||
     botState === MEDIC_MOVE || botState === MEDIC_TEND || !!actor?.airEngaging;
   _mountLoco.moving = Math.hypot(bot.velocity.x, bot.velocity.z) > CARRY_MOVING_SPEED;
-  const locomotion = locomotionFor(_mountLoco);
-  const carrying = isCarryLocomotion(locomotion) && hasCarryVocabulary(def);
-  const carryTarget = carryDeltaFor(def, locomotion, actor?.stanceWeights);
-  if (actor) {
-    // Snap on the first frame (or straight after a weapon swap) so the gun never glides in from a
-    // stale carry; ease every frame after, at the same rate the rig blends its stance weights.
-    actor.carryBlend = actor.carryLocomotion == null
-      ? snapCarryBlend(actor.carryBlend, carryTarget)
-      : stepCarryBlend(actor.carryBlend, carryTarget, dt);
-  }
-  const hold = resolveWeaponHold(def, actor?.stanceWeights, actor?.carryBlend, _mountHold);
   const visualBody = botProceduralBody;
-  const visualTorso = visualBody?.joints.torso;
   const motion = visualBody?.motion;
-  // The authored holds (thirdPersonHold/crouchHold/proneHold) live in the GROUND-ANCHORED, stance-
-  // INVARIANT frame they were authored and are rendered in everywhere else: `terrain + 1.5` at the
-  // body's smoothed XZ (body-preview-v3.html:3925, environment-viewer.html). Mounting to the torso
-  // joint instead double-counts every stance -- the torso itself already drops ~0.75 m into a crouch
-  // (pelvisDrop 0.62 + torsoDrop 0.25), and crouchHold then drops it ~1.0 m more, which put the gun
-  // under the floor with the IK hands chasing it down. Prone double-counted the same way via
-  // proneCfg's torso offsets.
-  //
-  // Bob and sway are therefore re-added EXPLICITLY rather than inherited through the torso, which
-  // cannot supply them without also dragging the stance pose in. 1.5 m is above the bot's OWN feet,
-  // not world zero, or the gun hangs at a fixed height while the bot walks over terrain.
-  const feetY = bot.capsule.start.y - bot.capsule.radius;
-  const yawOnly = motion?.visualYaw ?? bot.yaw;
-  // Neither a prone nor a kneeling body bobs or sways: both have a leg planted and are not striding.
-  const gaitW = 1 - Math.max(actor?.stanceWeights?.prone01 ?? 0, actor?.stanceWeights?.kneel01 ?? 0);
-  const sway = (motion?.sway ?? 0) * gaitW;
-  const weaponX = (motion?.bodyPosition.x ?? mid.x) + Math.cos(yawOnly) * sway;   // body right = (cos, -sin)
-  const weaponZ = (motion?.bodyPosition.z ?? mid.z) - Math.sin(yawOnly) * sway;
-  const weaponY = feetY + 1.5 + (motion?.bob ?? 0) * gaitW;
-  const headYaw = motion?.headYaw ?? 0;
-  // The gun rides the SHOULDER line, so the mount root is built the way the rig builds that line:
-  // yaw, then the aim lean, then the aim twist. Before the aim channels existed the root took the
-  // HEAD's turn-anticipation yaw instead, which leads a turn and then recentres -- not what carries
-  // a weapon. With the feature off that legacy term is still what it gets.
-  const aimCh = botAimBlend.enabled !== false && botAimBlend.torsoEnabled !== false ? actor?.aimChannels : null;
-  const rootRotation = _mountRootQuat.setFromEuler(
-    _mountRootEuler.set(aimCh ? aimCh.torsoPitch + aimCh.recoilPitch : 0, yawOnly + (aimCh ? 0 : headYaw), 0, 'YXZ'));
-  if (aimCh?.torsoYaw) rootRotation.multiply(_mountTwistQ.setFromAxisAngle(_mountUpAxis, aimCh.torsoYaw));
-  const holdRotation = _mountHoldQuat.setFromEuler(_mountHoldEuler.set(hold.rotation[0], hold.rotation[1], hold.rotation[2], 'XYZ'));
-  weaponRig.position.set(weaponX, weaponY, weaponZ);
-  weaponRig.quaternion.copy(rootRotation);
-  weaponAdjust.position.fromArray(hold.position);
-  weaponAdjust.quaternion.copy(holdRotation);
-  weaponAdjust.scale.setScalar(hold.scale ?? 1);
-  botWeaponMount.placed = true;   // rig now holds a real transform; safe to instance it
-  // No forced full-subtree matrixWorld walk here: controller.update() below reads weaponView's
-  // world transform via updateWorldMatrix(true, false), which walks this ancestor chain (and
-  // only this chain) itself; the renderer updates the remaining (unread) mesh subtree per-frame.
-  const isAiming = locomotion === LOCOMOTION_AIM;
-  controller.setAiming(isAiming ? 1 : 0);
-  // Reload poses deliberately translate the rifle to expose the magazine and
-  // charging handle, so preserve those authored offsets.
-  const lockAimedPosition = isAiming && controller.getAction() !== 'reload';
-  // The third-person hold already places the CZ (and every other bot weapon) in
-  // the hands. While aiming, keep that local placement and rotate around it;
-  // do not also apply the aimed pose's authored translation under weaponAdjust.
-  controller.update(dt, lockAimedPosition ? _mountLockOpts : _mountNoOpts);
-  // A carry deliberately points the weapon away from the target, so it must never be barrel-solved
-  // onto the aim point -- that would undo the entire muzzle-down/up pose.
-  const solveTarget = !carrying && lockAimedPosition && botHasAimPoint ? botAimPoint : null;
-  if (stepBarrelTrim(actor, dt, solveTarget)) {
-    // The controller resolves the arm targets from weaponView. Refresh them after
-    // the barrel solve so both hands follow the corrected held-gun transform.
-    controller.update(0, _mountLockOpts);
-  }
-  // One-handed dash: take the support hand off the weapon and tuck it at the chest, elbow outward.
-  // Written AFTER controller.update, which drives both hands to their grips. Only touched on a
-  // change, so the medic/heal overlays that also own the left arm are not fought every frame.
-  const oneHanded = carrying && isOneHanded(locomotion);
-  if (actor && visualTorso && (oneHanded || isOneHanded(actor.carryLocomotion))) {
-    if (oneHanded) {
-      _dashRight.set(1, 0, 0).applyQuaternion(visualTorso.quaternion);  // body right, as the rig derives it
-      _dashFwd.set(0, 0, 1).applyQuaternion(visualTorso.quaternion);
-      _dashHand.copy(visualTorso.position)
-        .addScaledVector(_dashFwd, DASH_HAND_FWD)
-        .addScaledVector(_dashRight, -DASH_HAND_SIDE);
-      _dashHand.y += DASH_HAND_UP;
-      visualBody?.setArmTarget('left', { position: _dashHand, weight: 1 });
-    } else if (actor.poseMode === 'none') {
-      visualBody?.setArmTarget('left', null);   // release only if no pose overlay owns the arm
-    }
-  }
-  if (actor) actor.carryLocomotion = locomotion;
+  // The mount frame is the GROUND-ANCHORED, stance-invariant frame the holds were authored in
+  // (terrain + 1.5 at the body's smoothed XZ); weapon-mount.js re-adds bob and sway itself.
+  const f = _mountFrame;
+  f.feetY = bot.capsule.start.y - bot.capsule.radius;
+  f.bodyX = motion?.bodyPosition.x ?? mid.x;
+  f.bodyZ = motion?.bodyPosition.z ?? mid.z;
+  f.yaw = motion?.visualYaw ?? bot.yaw;
+  f.stance = _mountLoco.stance;
+  f.stanceWeights = actor?.stanceWeights ?? null;
+  f.speed = _mountLoco.moving ? 1 : 0;   // the module only thresholds it against CARRY_MOVING_SPEED
+  f.aiming = _mountLoco.aiming;
+  f.aimPoint = botHasAimPoint ? botAimPoint : null;
+  f.bob = motion?.bob ?? 0;
+  f.sway = motion?.sway ?? 0;
+  f.headYaw = motion?.headYaw ?? 0;
+  // The gun rides the SHOULDER line: yaw, then the aim lean, then the aim twist. With the feature
+  // off the module falls back to the head's turn-anticipation yaw, as before the channels existed.
+  f.aimChannels = botAimBlend.enabled !== false && botAimBlend.torsoEnabled !== false ? actor?.aimChannels : null;
+  f.frameIndex = botFrameCounter;
+  // The one-handed dash hands the support arm back only if no pose overlay owns it.
+  f.releaseSupportHand = !actor || actor.poseMode === 'none';
+  botWeaponSystem.updateMount(botWeaponMount, dt, f);
+  if (actor) actor.carryLocomotion = botWeaponMount.carryLocomotion;
 }
 
 // ---- stowed weapons: whatever the bot is NOT holding rides its body (long guns slung across the
@@ -2838,9 +2626,8 @@ function loadStowParts(weaponId) {
   if (!stowPartsCache.has(weaponId)) {
     const def = getWeapon(weaponId);
     if (!def?.model) return Promise.resolve(null);
-    stowPartsCache.set(weaponId, loadBotWeaponMountData()
-      .then(([anchorData]) => loadBotWeaponTemplate(weaponId, def, anchorData?.[weaponId]?.ikAnchors || {}))
-      .then(({ instanceParts }) => buildStowParts(instanceParts))
+    stowPartsCache.set(weaponId, botWeaponSystem.loadTemplate(weaponId)
+      .then((template) => template ? buildStowParts(template.instanceParts) : null)
       .catch((error) => { console.warn('[bot-viewer] failed to load stowed weapon', error); return null; }));
   }
   return stowPartsCache.get(weaponId);
@@ -2884,6 +2671,7 @@ const _stowEuler = new THREE.Euler();
 const _stowScale = new THREE.Vector3();
 // Rides the torso joint (procedural body only -- a capsule bot has nothing to hang a gun on).
 function flushStowedWeapons(actor) {
+  const botWeaponBatches = botWeaponSystem.batches;
   if (!botWeaponBatches || !actor.stowMounts?.length) return;
   const torso = actor.body?.joints?.torso;
   if (!torso) return;
@@ -12067,88 +11855,11 @@ function updateBotSentry(dt, now) {
   senDTailMs += _dEnd - _sp4;
   senDMs += _dEnd - _sp3;
 }
-// Scratch barrel ray (M1): every caller consumes it before the next botMountedBarrelRay call.
-const _barrelRay = { rear: new THREE.Vector3(), origin: new THREE.Vector3(), direction: new THREE.Vector3() };
-function botMountedBarrelRay() {
-  const rearMarker = botWeaponMount?.barrelReferenceMarker;
-  const muzzleMarker = botWeaponMount?.muzzleMarker;
-  if (!rearMarker?.parent || !muzzleMarker?.parent) return null;
-  rearMarker.updateWorldMatrix(true, false);
-  muzzleMarker.updateWorldMatrix(true, false);
-  const rear = rearMarker.getWorldPosition(_barrelRay.rear);
-  const muzzle = muzzleMarker.getWorldPosition(_barrelRay.origin);
-  const direction = _barrelRay.direction.copy(muzzle).sub(rear);
-  if (direction.lengthSq() < 1e-8) return null;
-  direction.normalize();
-  return _barrelRay;
-}
-
-const _alignWantedDir = new THREE.Vector3();
-const _alignCorrection = new THREE.Quaternion();
+// Barrel ray and trim live in weapon-mount.js; these keep the call sites' names.
+function botMountedBarrelRay() { return botWeaponSystem.barrelRay(botWeaponMount); }
+// Legacy full snap of the rendered barrel onto a point (dt 0 => the whole correction at once).
 function alignMountedWeaponToPoint(targetPoint) {
-  const mount = botWeaponMount;
-  const barrel = botMountedBarrelRay();
-  if (!mount || !barrel || !targetPoint) return false;
-  const wantedDirection = _alignWantedDir.copy(targetPoint).sub(barrel.origin);
-  if (wantedDirection.lengthSq() < 1e-8) return false;
-  wantedDirection.normalize();
-  const correction = _alignCorrection.setFromUnitVectors(barrel.direction, wantedDirection);
-  if (!Number.isFinite(correction.x + correction.y + correction.z + correction.w)) return false;
-
-  // Preserve the rear-grip point while rotating the complete weapon hierarchy.
-  // This is the actual held-gun pivot: the barrel moves, but the primary hand does not.
-  const rig = mount.weaponRig;
-  rig.position.sub(barrel.rear).applyQuaternion(correction).add(barrel.rear);
-  rig.quaternion.premultiply(correction).normalize();
-  // Ancestors+self only (rig has no ancestors below scene, so this is just rig's own matrix) —
-  // the caller's second controller.update() reads weaponView's world transform via its own
-  // updateWorldMatrix(true, false) walk, so the model subtree never needs a forced update here.
-  rig.updateWorldMatrix(true, false);
-  return true;
-}
-
-// A1/A3: the barrel solve, demoted from "the aiming mechanism" to an error-nulling trim. The rig is
-// rebuilt from the authored hold every frame, so a rate limit needs the trim to PERSIST -- otherwise
-// every frame would start from the hold again and the gun would sit at a fixed fraction of the way
-// there forever. `actor.aimTrim` is that persistent correction, expressed relative to the current
-// hold pose, chased toward the exact solve at `barrelRate` and unwound at `releaseRate` on sight loss.
-const _trimDesired = new THREE.Quaternion();
-function quatAngleBetween(a, b) {
-  return 2 * Math.acos(Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w)));
-}
-function stepBarrelTrim(actor, dt, targetPoint) {
-  const legacy = botAimBlend.enabled === false || botAimBlend.trimEnabled === false;
-  if (legacy) {
-    if (actor?.aimTrim) actor.aimTrim.identity();
-    if (!targetPoint || !alignMountedWeaponToPoint(targetPoint)) return false;
-    if (actor) actor.aimTrimSolvedFrame = botFrameCounter;
-    return true;
-  }
-  const mount = botWeaponMount;
-  if (!actor || !mount) return false;
-  const trim = actor.aimTrim ??= new THREE.Quaternion();
-  const held = targetPoint == null && Math.abs(trim.w) > 0.99999;
-  if (held) return false;               // already unwound; nothing to apply
-  const barrel = botMountedBarrelRay();
-  if (!barrel) return false;
-  let fraction;
-  if (targetPoint) {
-    const wanted = _alignWantedDir.copy(targetPoint).sub(barrel.origin);
-    if (wanted.lengthSq() < 1e-8) return false;
-    _trimDesired.setFromUnitVectors(barrel.direction, wanted.normalize());
-    if (!Number.isFinite(_trimDesired.x + _trimDesired.y + _trimDesired.z + _trimDesired.w)) return false;
-    fraction = barrelTrimFraction(quatAngleBetween(trim, _trimDesired), botAimBlend, dt);
-  } else {
-    _trimDesired.identity();
-    fraction = releaseTrimFraction(quatAngleBetween(trim, _trimDesired), botAimBlend, dt);
-  }
-  trim.slerp(_trimDesired, fraction).normalize();
-  const rig = mount.weaponRig;
-  rig.position.sub(barrel.rear).applyQuaternion(trim).add(barrel.rear);
-  rig.quaternion.premultiply(trim).normalize();
-  rig.updateWorldMatrix(true, false);
-  if (targetPoint) actor.aimTrimSolvedFrame = botFrameCounter;
-  return true;
+  return !!botWeaponMount && botWeaponSystem.stepBarrelTrim(botWeaponMount, 0, targetPoint);
 }
 // A2: the angle between the RENDERED barrel and the line from its muzzle to the aim point. Null
 // when there is nothing meaningful to measure, so the caller can fall back to the entity's error.
@@ -12157,7 +11868,7 @@ function botBarrelAimError() {
   // A barrel left in a carry/reload pose is not a failed aim, it is a weapon that is not up yet:
   // gate that on the entity as before rather than reading a pose that was never solved.
   // Rig LOD solves a distant bot's mount only every 4th frame, so the window has to clear that.
-  if ((botFrameCounter - (activeBotActor?.aimTrimSolvedFrame ?? -999)) > 6) return null;
+  if ((botFrameCounter - (botWeaponMount?.aimTrimSolvedFrame ?? -999)) > 6) return null;
   const barrel = botMountedBarrelRay();
   if (!barrel) return null;
   return directionError(
@@ -19157,13 +18868,13 @@ renderer.setAnimationLoop(async () => {
   // Weapon pool mirrors the body pool: dead-but-undestroyed mounts keep flushing their last
   // pose (a fallen bot's gun stays where it froze), destroyed/holstered mounts simply skip.
   frameProf.time('weaponFlush', () => {
-    if (botWeaponBatches) {
-      botWeaponBatches.beginFrame();
+    if (botWeaponSystem.batches) {
+      botWeaponSystem.beginFrame();
       for (const actor of botActors) {
         if (actor.flushSkipped) continue;   // a gun with no bot behind it would float
         flushWeaponMount(actor.weaponMount); flushStowedWeapons(actor);
       }
-      botWeaponBatches.endFrame();
+      botWeaponSystem.endFrame();
     }
   });
   // Bot FX pass: ground contact pools + flashlight cones, one instanced draw each for the whole

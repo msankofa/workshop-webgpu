@@ -135,6 +135,29 @@ export function clipChannels(json, bin, readAccessor) {
 }
 
 /**
+ * One frame of a clip, as partial local TRS keyed by node id: `{ 12: { q: [...] }, ... }`.
+ *
+ * Steps to the nearest key at or before `time` rather than interpolating, because the caller is picking a
+ * pose to start from and an authored key is a pose somebody drew. Only the paths a track actually targets
+ * are filled in, so a caller must fall back to the node's own rest for the rest.
+ */
+export function sampleClipAt(clip, time) {
+  const out = {};
+  const KEY = { rotation: 'q', translation: 'p', scale: 's' };
+  for (const track of clip?.tracks || []) {
+    const { times, values, stride, node, path } = track;
+    const key = KEY[path];
+    if (!key || !times?.length || !values?.length) continue;
+    let k = 0;
+    while (k < times.length - 1 && times[k + 1] <= time) k++;
+    const v = Array.from(values).slice(k * stride, k * stride + stride);
+    if (v.length !== stride) continue;
+    (out[node] ??= {})[key] = v;
+  }
+  return out;
+}
+
+/**
  * How far a clip moves the points the legs hang off.
  *
  * THE NUMBER THIS WHOLE FILE EXISTS FOR. Reported in leg spans, because a hip that wanders a tenth of a

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "enabled": 1,
+  "grassLo": 4,
+  "grassHi": 55,
+  "rockLo": 0.3,
+  "rockHi": 0.62,
+  "snowLo": 380,
+  "snowHi": 520,
+  "snowFlatLo": 0.34,
+  "snowFlatHi": 0.62,
+  "edgeJitter": 46,
+  "edgeScale": 300,
+  "slopeJitter": 0.09,
+  "edgeOctaves": 3,
+  "tintAmount": 0.3,
+  "tintScale": 820,
+  "tintOctaves": 4,
+  "patchAmount": 0.18,
+  "patchScale": 3200,
+  "patchOctaves": 2,
+  "strataAmount": 0.16,
+  "strataPeriod": 34,
+  "sand": [
+    0.6,
+    0.55,
+    0.4
+  ],
+  "grass": [
+    0.24,
+    0.34,
+    0.19
+  ],
+  "rock": [
+    0.34,
+    0.33,
+    0.31
+  ],
+  "snow": [
+    0.86,
+    0.88,
+    0.92
+  ],
+  "dry": [
+    0.44,
+    0.41,
+    0.25
+  ]
+}

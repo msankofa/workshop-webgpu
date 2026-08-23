@@ -4,8 +4,11 @@ import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createTraversalLabWorldQuery } from './traversal-lab-collider.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
 import { createBodySupportAdapter } from './base-game-body-support.js';
+import { BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { createBaseGamePlayerBodies } from './base-game-player-bodies.js';
 import { readFileSync } from 'node:fs';
+import { createWeaponMountSystem } from './weapon-mount.js';
+import { getWeapon } from './weapons.js';
 
 let pass = 0, fail = 0;
 const ok = (condition, message) => { if (condition) pass++; else { fail++; console.error('FAIL:', message); } };
@@ -162,6 +165,133 @@ ok(blipAir < 0.05, `two-frame floor blips while walking do not raise the air wei
 ok(blipHold === 0, 'floor blips while walking do not trigger the landing absorb');
 ok(stepCount >= 3, `left foot keeps stepping through floor blips (${stepCount} steps over 4 s)`);
 blipBodies.dispose();
+
+// ---- model appearance: every bot body version builds, swaps in place, and still walks ----
+const designBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates: coords, instancedRemotes: true });
+designBodies.setLocalMode('thirdPerson');
+for (const { key } of BASE_GAME_BODY_DESIGNS) {
+  let threw = null;
+  try {
+    designBodies.setBodyDesign(key);
+    for (let i = 0; i < 30; i++) {
+      designBodies.updateLocal(1 / 60, { globalFoot: [-12, 0, 8 + i * 0.03], velocity: [0, 0, 2], yaw: 0, grounded: true, height: 1.8, radius: 0.35 });
+      designBodies.beginRemoteFrame();
+      designBodies.updateRemote(1 / 60, 'r1', { globalFoot: [-10, 0, 8], velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35 });
+      designBodies.endRemoteFrame();
+    }
+  } catch (error) { threw = error; }
+  ok(!threw && designBodies.bodyDesign === key, `body design '${key}' builds and updates local + remote (${threw ? threw.message : 'ok'})`);
+}
+ok(designBodies.setBodyDesign('nonsense') === 'default', 'unknown design key falls back to the bare rig');
+designBodies.dispose();
+
+// ---- weapons: mount per body, aim channels, remote weapon from the sample, reload on a new tick ----
+{
+  const anchorsJson = JSON.parse(readFileSync('./weapon-anchors.json', 'utf8'));
+  const posesJson = JSON.parse(readFileSync('./weapon-poses.json', 'utf8'));
+  const fakeGLB = () => {
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1.5, 5, 22), new THREE.MeshBasicMaterial());
+    m.position.set(0, 0, -4.5); g.add(m);
+    return Promise.resolve({ scene: g });
+  };
+  const weaponSystem = createWeaponMountSystem({ THREE, scene, loadGLB: fakeGLB, getWeapon, loadData: () => Promise.resolve([anchorsJson, posesJson]) });
+  const wb = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates: coords, instancedRemotes: true, weaponSystem });
+  wb.setLocalMode('thirdPerson');
+  wb.setWeapon('cz_805_bren');
+  await new Promise((r) => setTimeout(r, 0));
+  ok(wb.localMount && wb.localMount.weaponId === 'cz_805_bren', 'local body got a cz mount');
+  const sampleAt = (z, over = {}) => ({ globalFoot: [-12, 0, z], velocity: [0, 0, 0], yaw: 0, pitch: 0, grounded: true, height: 1.8, radius: 0.35, ...over });
+  const targets = {};
+  const rig = wb.localBody;
+  const orig = rig.setArmTarget;
+  rig.setArmTarget = (side, t) => { targets[side] = t ? t.position.clone() : null; return orig.call(rig, side, t); };
+  // Default path is environment-viewer's: the body faces the look yaw, authored hold, no trim.
+  for (let i = 0; i < 60; i++) { wb.updateLocal(1 / 60, sampleAt(8, { yaw: 1.1 })); wb.beginRemoteFrame(); wb.endRemoteFrame(); }
+  ok(Math.abs(wb.localHeading - 1.1) < 1e-6, 'default facing: the body heading is the look yaw');
+  ok(Math.abs(wb.localMount.weaponRig.position.y - 1.5) < 0.05, `default hold: mount root at feet + 1.5 (${wb.localMount.weaponRig.position.y.toFixed(2)})`);
+  // The experimental path: travel heading, torso/head split, body-relative hold, trim, reach solve.
+  wb.setFacingMode('travel'); wb.setAimTrim(true); wb.setReachSolve(true); wb.setHoldMode('body');
+  for (let i = 0; i < 60; i++) { wb.updateLocal(1 / 60, sampleAt(8)); wb.beginRemoteFrame(); wb.endRemoteFrame(); }
+  const mount = wb.localMount;
+  mount.weaponView.updateWorldMatrix(true, false);
+  const grip = new THREE.Vector3().fromArray(mount.bakedAnchors.rightGrip.p).applyMatrix4(mount.weaponView.matrixWorld);
+  ok(targets.right && targets.right.distanceTo(grip) < 0.05, `local right hand on the grip (${targets.right?.distanceTo(grip).toFixed(3)} m)`);
+  {
+    const sh = new THREE.Vector3(); rig.joints.rightShoulder.getWorldPosition(sh);
+    const frac = grip.distanceTo(sh) / rig.limbLengths.armLen;
+    ok(frac > 0.4 && frac < 0.8, `body hold keeps the trigger grip at a bent-elbow distance (${frac.toFixed(2)} of the arm)`);
+  }
+  ok(weaponSystem.stats.flushed === 1, 'local mount flushed once per frame');
+
+  // Aiming to the side: the torso takes most of the residual.
+  wb.setLocalAim(true, new THREE.Vector3(-12 + 20, 1.5, 8));
+  let peakTwist = 0, peakHeading = 0;
+  for (let i = 0; i < 90; i++) {
+    wb.updateLocal(1 / 60, sampleAt(8, { yaw: -Math.PI / 2 }));
+    peakTwist = Math.max(peakTwist, Math.abs(rig.motion.aimYaw));
+    peakHeading = Math.max(peakHeading, Math.abs(wb.localHeading ?? 0));
+  }
+  ok(peakTwist > 0.2, `torso twists toward the aim while the body turns (${peakTwist.toFixed(2)} rad)`);
+  const headingErr = Math.abs(Math.atan2(Math.sin(wb.localHeading + Math.PI / 2), Math.cos(wb.localHeading + Math.PI / 2)));
+  ok(headingErr < 0.15, `standing body turns in place to face the look (${headingErr.toFixed(2)} rad off)`);
+  // Small look changes stay on the torso/head: no body turn below the threshold.
+  const before = wb.localHeading;
+  for (let i = 0; i < 60; i++) wb.updateLocal(1 / 60, sampleAt(8, { yaw: -Math.PI / 2 + 0.4 }));
+  ok(Math.abs(wb.localHeading - before) < 1e-6, 'a look change under the threshold does not turn the body');
+  // The gun is bound to the body: an aim point far off the heading is clamped into the reach cone.
+  wb.setLocalAim(true, new THREE.Vector3(-12, 1.5, 8 + 20));   // directly behind the body's facing
+  for (let i = 0; i < 30; i++) wb.updateLocal(1 / 60, sampleAt(8, { yaw: -Math.PI / 2 + 0.4 }));
+  const bdir = new THREE.Vector3(); weaponSystem.barrelDirection(wb.localMount, bdir);
+  const hx = -Math.sin(wb.localHeading), hz = -Math.cos(wb.localHeading);
+  const off = Math.acos(Math.max(-1, Math.min(1, (bdir.x * hx + bdir.z * hz) / Math.hypot(bdir.x, bdir.z))));
+  ok(off < 1.0, `barrel stays within the body's yaw cone (${off.toFixed(2)} rad off heading)`);
+  wb.setLocalAim(false, null);
+
+  // Remote: weapon id arrives in the sample; a new actionTick plays the reload once.
+  wb.beginRemoteFrame();
+  wb.updateRemote(1 / 60, 'p2', sampleAt(4, { weapon: 'five_seven', action: 0, actionTick: -1 }));
+  wb.endRemoteFrame();
+  await new Promise((r) => setTimeout(r, 0));
+  ok(wb.remoteWeapon('p2')?.mount?.weaponId === 'five_seven', 'remote body got the sampled weapon');
+  for (let i = 0; i < 5; i++) { wb.beginRemoteFrame(); wb.updateRemote(1 / 60, 'p2', sampleAt(4, { weapon: 'five_seven', action: 1, actionTick: 100 })); wb.endRemoteFrame(); }
+  ok(wb.remoteWeapon('p2').mount.controller.getAction() === 'reload', 'remote reload plays on a new action tick');
+  ok(wb.remoteWeapon('p2').lastActionTick === 100, 'action tick recorded once');
+  wb.beginRemoteFrame(); wb.updateRemote(1 / 60, 'p2', sampleAt(4, { weapon: 'cz_805_bren', action: 0, actionTick: 100 })); wb.endRemoteFrame();
+  await new Promise((r) => setTimeout(r, 0));
+  ok(wb.remoteWeapon('p2').mount?.weaponId === 'cz_805_bren', 'remote weapon swaps when the sample changes');
+
+  // Phase 2: first-person blend through the bodies module, part mask, eye point.
+  {
+    const eye = wb.localEyePoint([0, 0, 0]);
+    ok(eye && eye[1] > 1.8 && eye[1] < 2.1, `eye point rides the animated head (y ${eye?.[1]?.toFixed(2)})`);
+    wb.setLocalPartMask({ head: false, torso: false });
+    ok(rig.parts.core.head.visible === false && rig.parts.core.torso.visible === false && rig.parts.core.pelvis.visible === true, 'part mask hides head and torso only');
+    wb.setLocalPartMask({ head: true, torso: true });
+    const vf = { position: new THREE.Vector3(-12.3, 1.4, 7.6), quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0.3, 0)) };
+    wb.setReachSolve(false);   // exact placement check; the reach solve would pull a far frame back
+    for (let i = 0; i < 30; i++) wb.updateLocal(1 / 60, sampleAt(8, { viewFrame: vf, viewBlend: 1 }));
+    const m = wb.localMount;
+    m.weaponView.updateWorldMatrix(true, false);
+    const vp = new THREE.Vector3(); m.weaponView.getWorldPosition(vp);
+    ok(vp.distanceTo(vf.position) < 0.01, `viewBlend 1 through updateLocal places the gun on the view frame (${vp.distanceTo(vf.position).toFixed(3)} m)`);
+    const gripNow = new THREE.Vector3().fromArray(m.bakedAnchors.rightGrip.p).applyMatrix4(m.weaponView.matrixWorld);
+    ok(targets.right.distanceTo(gripNow) < 0.05, 'hands follow the blended gun');
+    for (let i = 0; i < 30; i++) wb.updateLocal(1 / 60, sampleAt(8));
+    ok(wb.localMount.weaponRig.position.distanceTo(vf.position) > 0.3, 'without a view frame the mount returns to the body hold');
+    wb.setReachSolve(true);
+  }
+
+  // Design swap rebuilds the body and re-creates the local mount.
+  wb.setBodyDesign('soldier:rifleman');
+  await new Promise((r) => setTimeout(r, 0));
+  ok(wb.localMount && wb.localMount.body === wb.localBody, 'design swap re-creates the mount on the new body');
+  ok(wb.localReload() === true, 'local reload plays');
+  wb.setWeapon(null);
+  ok(wb.localMount === null, 'clearing the weapon drops the mount');
+  wb.dispose();
+  weaponSystem.dispose();
+}
 
 // ---- arms: hang when idle, swing when walking, pump when running, lift on a jump ----
 const armController = createBaseGamePlayerController({ worldQuery, spawn: [-12, 0.1, 8] });

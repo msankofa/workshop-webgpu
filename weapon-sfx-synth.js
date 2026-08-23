@@ -111,11 +111,98 @@ function buildGrenadeBounce(ctx, destination, t0) {
   return DUR;
 }
 
+// Magazine out (clack), pause, magazine in (thud) and a bolt/slide snap: a generic reload.
+function buildWeaponReload(ctx, destination, t0) {
+  const DUR = 0.9;
+  const a = jitter(); const b = jitter();
+  const click = (at, freq, peak, dur, q) => {
+    const gain = envGain(ctx, destination, peak, at, 0.003, dur);
+    const bp = filterNode(ctx, 'bandpass', freq, at, q);
+    bp.connect(gain);
+    noiseSource(ctx, at, dur, a * 1.4).connect(bp);
+  };
+  click(t0, 1500 + a * 300, 0.45, 0.07, 4);                        // mag release
+  click(t0 + 0.42 + a * 0.04, 520 + b * 120, 0.6, 0.09, 2.5);        // mag seated
+  click(t0 + 0.68 + b * 0.04, 2400 + b * 400, 0.55, 0.06, 5);        // slide snap
+  return DUR;
+}
+
+// One short metallic snap for a weapon coming up into the hands.
+function buildWeaponDraw(ctx, destination, t0) {
+  const DUR = 0.18;
+  const a = jitter();
+  const gain = envGain(ctx, destination, 0.5, t0, 0.003, 0.12 + a * 0.02);
+  const bp = filterNode(ctx, 'bandpass', 1900 + a * 500, t0, 3);
+  bp.frequency.exponentialRampToValueAtTime(900 + a * 200, t0 + 0.12);
+  bp.connect(gain);
+  noiseSource(ctx, t0, 0.12 + a * 0.02, a * 1.4).connect(bp);
+  return DUR;
+}
+
+// html-game-v2 footstep fallback: a 35 ms lowpassed noise thud plus a 45 ms triangle drop.
+// Levels are relative to the gain envelope the caller supplies; v2 ran these at 0.026/0.022.
+function buildFootstep(ctx, destination, t0) {
+  const DUR = 0.06;
+  const a = jitter();
+  const thudGain = envGain(ctx, destination, 0.55, t0, 0.004, 0.035);
+  const lp = filterNode(ctx, 'lowpass', 240, t0, 0.7);
+  lp.connect(thudGain);
+  noiseSource(ctx, t0, 0.035, a * 1.4).connect(lp);
+  const toneGain = envGain(ctx, destination, 0.45, t0, 0.004, 0.045);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(70 + a * 20, t0);
+  osc.frequency.exponentialRampToValueAtTime(45, t0 + 0.045);
+  osc.connect(toneGain);
+  osc.start(t0);
+  osc.stop(t0 + 0.045);
+  return DUR;
+}
+
+// html-game-v2 jump fallback: one rising triangle blip (220 -> 360 Hz over 90 ms).
+function buildJump(ctx, destination, t0) {
+  const DUR = 0.12;
+  const a = jitter();
+  const gain = envGain(ctx, destination, 0.5, t0, 0.01, 0.09);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(215 + a * 10, t0);
+  osc.frequency.exponentialRampToValueAtTime(350 + a * 20, t0 + 0.09);
+  osc.connect(gain);
+  osc.start(t0);
+  osc.stop(t0 + 0.09);
+  return DUR;
+}
+
+// html-game-v2 landing fallback: 80 ms lowpassed noise plus a falling triangle (85 -> 45 Hz).
+function buildLanding(ctx, destination, t0) {
+  const DUR = 0.1;
+  const a = jitter();
+  const noiseGain = envGain(ctx, destination, 0.8, t0, 0.01, 0.08);
+  const lp = filterNode(ctx, 'lowpass', 320, t0, 0.7);
+  lp.connect(noiseGain);
+  noiseSource(ctx, t0, 0.08, a * 1.4).connect(lp);
+  const toneGain = envGain(ctx, destination, 0.48, t0, 0.01, 0.08);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(82 + a * 6, t0);
+  osc.frequency.exponentialRampToValueAtTime(45, t0 + 0.08);
+  osc.connect(toneGain);
+  osc.start(t0);
+  osc.stop(t0 + 0.08);
+  return DUR;
+}
+
 const VOICES = {
   rocket_launch: buildRocketLaunch,
   explosion: buildExplosion,
   grenade_throw: buildGrenadeThrow,
   grenade_bounce: buildGrenadeBounce,
+  weapon_reload: buildWeaponReload,
+  weapon_draw: buildWeaponDraw,
+  footstep: buildFootstep,
+  jump: buildJump,
+  landing: buildLanding,
 };
 
 export const SYNTH_EVENT_IDS = Object.keys(VOICES);

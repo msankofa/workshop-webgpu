@@ -2251,6 +2251,18 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
     for (const p of _lodParts) p.geometry = p.userData.lodGeo[l];
   }
 
+  // Per-part visibility for a first-person owner: hide what would clip the camera, keep the arms.
+  // Keys are parts.core names; an omitted key is left as is. Gear parented to a hidden core part
+  // hides with it in mesh mode (instanced flush reads each part's own flag, so gear stays there).
+  function setPartMask(mask) {
+    if (!mask) return;
+    for (const key in mask) {
+      const part = parts.core[key];
+      if (part) part.visible = mask[key] !== false;
+    }
+    _poseDirty = true;
+  }
+
   function setVisible(v) {
     internalVisible = !!v;
     group.visible = internalVisible;
@@ -2352,7 +2364,7 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   // captured, so this handle is exactly the geometry set destroy() must release.
   _heldGeoKeys = _bodyGeoCache.endRecord?.() || [];
 
-  return { group, rootAnchor, update, setRagdollPose, setArmTarget, setAmputated, setVisible, setGearLod, setTint, flush, destroy, gait, locomotion, spineCfg, motion, turnCfg,
+  return { group, rootAnchor, update, setRagdollPose, setArmTarget, setAmputated, setVisible, setPartMask, setGearLod, setTint, flush, destroy, gait, locomotion, spineCfg, motion, turnCfg,
     // limbLengths: the fixed skeleton the kneel offsets are multiples of, so tools can show closure
     limbLengths: { legLen, thighLen, shinLen, armLen },
     headTurnCfg, legWorkspace, movementTuning, proneCfg, kneelCfg, crouchCfg, jumpCfg, armCfg, eyeCfg, ikCfg, joints, parts,
