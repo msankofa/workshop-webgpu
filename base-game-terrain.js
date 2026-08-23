@@ -18,6 +18,7 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   maxChunksPerUpdate: 2,
   maxUnloadsPerUpdate: 2,
   killPlaneBelowSurface: 80,   // metres under the local ground before the player is respawned
+  collisionRadius: 2,          // volumetric: chunks around the player that get a BVH (5x5 = 150 m square)
   farLodLevels: 6,             // heightfield mode: clipmap rings (6 → 6.1 km half-extent at post0 2 m)
   // Volumetric mode: marching-cubes LOD cascade. Each level is a chunk system with a fixed
   // segment count, so spacing grows with the chunk (120/24 = 5 m, 20 m, 80 m); radius 2 → five
@@ -65,16 +66,25 @@ export function createBaseGameTerrain({
     const size = system.params.chunkSize;
     return `${Math.floor(x / size)},${Math.floor(z / size)}`;
   }
+  // Colliders exist only within `collisionRadius` chunks of the focus: a BVH per resident chunk at a
+  // wide draw radius was ~1.4 M triangles of BVH built on the main thread (the frame spikes),
+  // and nothing queries the ground that far from the player.
+  let colliderFocus = [0, 0];
   function syncVolumeColliders() {
     if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return; }
-    for (const [key, chunk] of system.chunks) {
-      if (!chunk.meta.volumetric || !chunk.mesh) continue;
+    const size = system.params.chunkSize, r = cfg.collisionRadius;
+    const cx = Math.floor(colliderFocus[0] / size), cz = Math.floor(colliderFocus[1] / size);
+    const wanted = new Set();
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) wanted.add(`${cx + dx},${cz + dz}`);
+    for (const key of wanted) {
+      const chunk = system.chunks.get(key);
+      if (!chunk || !chunk.meta.volumetric || !chunk.mesh) continue;
       if (collidedChunks.get(key) === chunk) continue;
       volumeProvider.setChunk(key, chunk.mesh.geometry, { sourceVersion: chunk.meta.sourceVersion });
       collidedChunks.set(key, chunk);
     }
     for (const key of [...collidedChunks.keys()]) {
-      if (!system.chunks.has(key)) { volumeProvider.removeChunk(key); collidedChunks.delete(key); }
+      if (!wanted.has(key) || !system.chunks.has(key)) { volumeProvider.removeChunk(key); collidedChunks.delete(key); }
     }
   }
   if (volumetric) { system.setVolumetric(true); volumetricMode = true; }
@@ -357,6 +367,10 @@ export function createBaseGameTerrain({
       if (!active) return false;
       const t0 = performance.now();
       const changed = system.update(globalPosition[0], globalPosition[2]);
+      const size = system.params.chunkSize;
+      const focusMoved = Math.floor(globalPosition[0] / size) !== Math.floor(colliderFocus[0] / size) || Math.floor(globalPosition[2] / size) !== Math.floor(colliderFocus[1] / size);
+      colliderFocus[0] = globalPosition[0]; colliderFocus[1] = globalPosition[2];
+      if (focusMoved && !changed && volumetricMode) syncVolumeColliders();
       lastUpdateMs = performance.now() - t0;
       const resident = system.chunks.size;
       if (resident > lastResident) { perSecond.installs += resident - lastResident; installedTotal += resident - lastResident; }

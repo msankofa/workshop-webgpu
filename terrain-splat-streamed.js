@@ -16,8 +16,8 @@
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
-  Fn, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
-  positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView,
+  Fn, If, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
+  positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
 } from 'three/tsl';
 
 export const STREAMED_SPLAT_LAYERS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
@@ -147,23 +147,36 @@ export function createStreamedSplatMaterial(textures, overrides = {}) {
   const farTile = smoothstep(u.farTileStart, u.farTileEnd, dist);
   const detail = float(1).sub(smoothstep(u.fadeNear, u.fadeFar, dist));
 
-  // planar (xz) sample of a map at the fine tiling blended with the far tiling by distance
-  const planar = (tex, scaleNode) => {
-    const fine = texture(tex, P.xz.mul(scaleNode));
-    const far = texture(tex, P.xz.mul(scaleNode.div(u.farTileScale)));
-    return mix(fine, far, farTile);
-  };
-  // triplanar for rock: world-normal-weighted xz / zy / xy projections
-  const triplanar = (tex, scaleNode) => {
-    const w = pow(abs(N), vec3(4));
-    const wn = w.div(max(w.x.add(w.y).add(w.z), 1e-4));
-    const sx = mix(texture(tex, P.zy.mul(scaleNode)), texture(tex, P.zy.mul(scaleNode.div(u.farTileScale))), farTile);
-    const sy = mix(texture(tex, P.xz.mul(scaleNode)), texture(tex, P.xz.mul(scaleNode.div(u.farTileScale))), farTile);
-    const sz = mix(texture(tex, P.xy.mul(scaleNode)), texture(tex, P.xy.mul(scaleNode.div(u.farTileScale))), farTile);
-    return sx.mul(wn.x).add(sy.mul(wn.y)).add(sz.mul(wn.z));
+  // Texture reads are the cost, so a layer is sampled only where its weight is non-trivial. That
+  // puts sampling inside non-uniform branches, which WGSL allows only with explicit gradients:
+  // the uv derivatives are taken once per projection in uniform control flow (dFdx/dFdy) and
+  // every sample uses `.grad()`. Flat grass then costs one layer, a cliff edge two or three.
+  const WEIGHT_EPS = 0.004;
+  const s = u.tile;
+  const farInv = float(1).div(u.farTileScale);
+  // Called at the top of each Fn: the uv derivatives become vars in uniform control flow (WGSL
+  // forbids derivatives inside non-uniform branches), then every branch samples with .grad().
+  const makeSamplers = () => {
+    const uvXZ = P.xz.mul(s).toVar(), uvZY = P.zy.mul(s).toVar(), uvXY = P.xy.mul(s).toVar();
+    const g = uv => [dFdx(uv).toVar(), dFdy(uv).toVar()];
+    const gXZ = g(uvXZ), gZY = g(uvZY), gXY = g(uvXY);
+    const triW = (() => { const w = pow(abs(N), vec3(4)); return w.div(max(w.x.add(w.y).add(w.z), 1e-4)).toVar(); })();
+    // fine + far tiling of one map on one projection, explicit gradients for both
+    const sampleProj = (tex, uv, gr) => mix(
+      texture(tex, uv).grad(gr[0], gr[1]),
+      texture(tex, uv.mul(farInv)).grad(gr[0].mul(farInv), gr[1].mul(farInv)),
+      farTile,
+    );
+    const planar = tex => sampleProj(tex, uvXZ, gXZ);
+    // rock: world-normal-weighted xz / zy / xy projections so cliffs and cave walls do not smear
+    const triplanar = tex => sampleProj(tex, uvZY, gZY).mul(triW.x).add(sampleProj(tex, uvXZ, gXZ).mul(triW.y)).add(sampleProj(tex, uvXY, gXY).mul(triW.z));
+    // TSL declares a var where it is first used; anchor the gradients here so they are declared in
+    // uniform flow (WGSL refuses derivatives inside the non-uniform layer branches below).
+    const anchor = gXZ[0].x.add(gXZ[1].x).add(gZY[0].x).add(gZY[1].x).add(gXY[0].x).add(gXY[1].x).add(triW.x).mul(0).toVar('splatAnchor');
+    return { sampleFor: name => (name === 'rock' ? triplanar : planar), anchor };
   };
 
-  const shade = () => {
+  const weightsOf = () => {
     const h = P.y, ny = clamp(N.y, 0, 1);
     const sand = float(1).sub(smoothstep(u.shoreTop.sub(1.5), u.shoreTop.add(1.5), h));
     const dirtT = smoothstep(u.grassTop, u.dirtTop, h);
@@ -171,40 +184,54 @@ export function createStreamedSplatMaterial(textures, overrides = {}) {
     const notSand = float(1).sub(sand);
     const rock = float(1).sub(smoothstep(u.rockFull, u.rockSlope, ny));
     const flat = float(1).sub(rock);
-    const wSand = sand.mul(flat);
-    const wGrass = notSand.mul(float(1).sub(dirtT)).mul(float(1).sub(snow)).mul(flat);
-    const wDirt = notSand.mul(dirtT).mul(float(1).sub(snow)).mul(flat);
-    const wSnow = notSand.mul(snow).mul(flat);
-    const wRock = rock;
+    return {
+      sand: sand.mul(flat),
+      grass: notSand.mul(float(1).sub(dirtT)).mul(float(1).sub(snow)).mul(flat),
+      dirt: notSand.mul(dirtT).mul(float(1).sub(snow)).mul(flat),
+      snow: notSand.mul(snow).mul(flat),
+      rock,
+    };
+  };
 
-    const s = u.tile;
-    const cSand = planar(L.sand.color, s), cGrass = planar(L.grass.color, s), cDirt = planar(L.dirt.color, s), cSnow = planar(L.snow.color, s);
-    const cRock = triplanar(L.rock.color, s);
-    const nSand = planar(L.sand.normal, s), nGrass = planar(L.grass.normal, s), nDirt = planar(L.dirt.normal, s), nSnow = planar(L.snow.normal, s);
-    const nRock = triplanar(L.rock.normal, s);
-
-    let col = cSand.rgb.mul(wSand).add(cGrass.rgb.mul(wGrass)).add(cDirt.rgb.mul(wDirt)).add(cRock.rgb.mul(wRock)).add(cSnow.rgb.mul(wSnow));
-    const avg = u.averages.sand.mul(wSand).add(u.averages.grass.mul(wGrass)).add(u.averages.dirt.mul(wDirt)).add(u.averages.rock.mul(wRock)).add(u.averages.snow.mul(wSnow));
+  // One Fn samples everything (so the hoisted gradients cover every branch). three evaluates
+  // colorNode first, then roughness, then normal, so the colour Fn owns the work and hands the
+  // roughness and the tilted object-space normal on through shader properties.
+  const roughProp = property('float', 'splatRough');
+  const normalProp = property('vec3', 'splatNormal');
+  const shadeAll = Fn(() => {
+    const { sampleFor, anchor } = makeSamplers();
+    const w = weightsOf();
+    const col = vec3(anchor).toVar('splatCol');
+    const nm = vec3(0).toVar('splatNm');
+    const avg = vec3(0).toVar('splatAvg');
+    for (const name of STREAMED_SPLAT_LAYERS) {
+      const wt = w[name];
+      avg.addAssign(u.averages[name].mul(wt));
+      If(wt.greaterThan(WEIGHT_EPS), () => {
+        const sample = sampleFor(name);
+        col.addAssign(sample(L[name].color).rgb.mul(wt));
+        nm.addAssign(sample(L[name].normal).rgb.mul(wt));
+      });
+    }
     // far: the sampled colour settles on the layers' average (their 1x1 mip)
-    col = mix(avg, col, detail);
+    let outCol = mix(avg, col, detail);
     // macro break-up, faded with the same detail so it never becomes static at the horizon
     const macro = hash2(P.xz.mul(0.018)).sub(0.5).mul(0.22).mul(u.macroStrength).mul(detail).add(1.0);
-    col = col.mul(macro);
-
-    const nm = nSand.rgb.mul(wSand).add(nGrass.rgb.mul(wGrass)).add(nDirt.rgb.mul(wDirt)).add(nRock.rgb.mul(wRock)).add(nSnow.rgb.mul(wSnow)).mul(2).sub(1);
-    // tilt the geometric normal by the tangent-space map (xz projection: map x -> world x, map y -> world -z)
+    outCol = outCol.mul(macro);
+    const rough = mix(float(0.95), float(0.75), w.rock).add(w.snow.mul(-0.1)).add(w.sand.mul(-0.05));
+    roughProp.assign(clamp(rough, 0.3, 1));
+    const nmT = nm.mul(2).sub(1);
+    // xz projection: map x -> world x, map y -> world -z
     const strength = u.normalStrength.mul(detail);
-    const tilted = normalize(N.add(vec3(nm.x.mul(strength), 0, nm.y.negate().mul(strength))));
-    const rough = mix(float(0.95), float(0.75), wRock).add(wSnow.mul(-0.1)).add(wSand.mul(-0.05));
-    return { col, tilted, rough };
-  };
+    normalProp.assign(normalize(N.add(vec3(nmT.x.mul(strength), 0, nmT.y.negate().mul(strength)))));
+    return vec4(clamp(outCol, 0, 1), 1);
+  });
 
   const mat = new MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0 });
   mat.vertexColors = false;
-  const out = shade();
-  mat.colorNode = vec4(clamp(out.col, 0, 1), 1);
-  mat.roughnessNode = clamp(out.rough, 0.3, 1);
-  mat.normalNode = transformNormalToView(out.tilted);   // object-space in, as transformNormalToView expects
+  mat.colorNode = shadeAll();
+  mat.roughnessNode = roughProp;
+  mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
   mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS };
   return mat;
 }
