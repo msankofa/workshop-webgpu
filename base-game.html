@@ -385,6 +385,7 @@ scene.background = new THREE.Color(0x0b1430);
 // 600 m covers the 16-chunk terrain draw radius (480 m); with far LOD on, updateWorld() pushes
 // the far plane out to the outermost clipmap ring.
 const CAMERA_FAR_NEAR_FIELD = 600;
+let skyRadiusApplied = false;
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, CAMERA_FAR_NEAR_FIELD);
 
 // ===================== audio =====================
@@ -757,7 +758,9 @@ function updateWorld(dt) {
   if (terrain.splatMaterial) updateStreamedSplat(terrain.splatMaterial, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
   const wantFar = terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD;
-  if (camera.far !== wantFar) { camera.far = wantFar; camera.updateProjectionMatrix(); }
+  // The sky (dome, stars, bodies) rides on the camera at a radius tied to the far plane: rescale
+  // it with the far plane, or far terrain draws in front of the planets.
+  if (camera.far !== wantFar || !skyRadiusApplied) { camera.far = wantFar; camera.updateProjectionMatrix(); sky.setRadius(wantFar * 0.88); skyRadiusApplied = true; }
   terrain.setVisible(settings.terrainVisible);
   terrain.setDrawRadius(settings.terrainDrawRadius);
   terrain.setWireframe(settings.terrainWireframe);

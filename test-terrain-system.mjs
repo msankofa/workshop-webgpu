@@ -206,13 +206,23 @@ console.log('\n[8] setSource drops old-source in-flight results (epoch)');
 }
 
 // ---------------- 9. setSource keeps old chunks until replacements are ready (no hole) ----------------
-console.log('\n[9] setSource replaces chunks without a hole');
+console.log('\n[9] setSource drops the old chunks at once; restream({ drop: false }) keeps them until replaced');
 {
+  const sysDrop = createTerrainSystem({ params: { ...baseParams }, source: descA });
+  await settle(sysDrop, 0, 0);
+  sysDrop.setSource(descB);
+  ok(sysDrop.chunks.size === 0 && sysDrop.group.children.length === 0, 'default swap: no old chunk survives, scene group empty');
+  await settle(sysDrop, 0, 0);
+  ok(sysDrop.chunks.size === expected(1) && chunkMeta(sysDrop).every((m) => m.sourceVersion === 'B'), `refilled from source B (${sysDrop.chunks.size})`);
+  sysDrop.dispose();
+
+  const { createSource } = await import('./terrain-source.js');
   const sys = createTerrainSystem({ params: { ...baseParams }, source: descA });
   await settle(sys, 0, 0);
   const meshesBefore = new Map([...sys.chunks].map(([k, c]) => [k, c.mesh]));
-  sys.setSource(descB);
-  ok(sys.chunks.size === expected(1), `chunks retained immediately after swap (${sys.chunks.size})`);
+  sys.source = createSource(descB);
+  sys.restream({ drop: false });
+  ok(sys.chunks.size === expected(1), `drop:false keeps the chunks (${sys.chunks.size})`);
   ok([...sys.chunks.values()].every((c) => c.stale), 'retained chunks are marked stale');
   ok(sys.group.children.length === expected(1), 'retained meshes still in the scene group');
   let minResident = Infinity, replacedCount = 0;

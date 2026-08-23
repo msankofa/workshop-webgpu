@@ -33,7 +33,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 Returns an object with: `group`, `setSunDir(v)`, `setMoonDir(v)`, `setCelestialVisibility(sunVisible,
 moonVisible)`, `setDomeVisible(on)`, `setStarsVisible(on)`, `setMilkyWayVisible(on)`,
 `setBodiesVisible(on)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
-`setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius()`,
+`setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius(radius?)`,
 `rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
 `setGlowDirectionality(v)`, `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`,
 `nightness`, `skyStates`, `thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no

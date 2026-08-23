@@ -259,12 +259,23 @@ class TerrainSystem {
 
   // Restream every chunk under the current source/params: epoch bump (in-flight dropped) and
   // stale-chunk retention until same-key replacements land. Used by setSource and setVolumetric.
-  restream() {
+  // `drop` (default true): the old chunks leave at once — they are the wrong ground and the far
+  // LOD already shows the right one. `drop: false` keeps them as stale until same-key
+  // replacements land (the pre-far-LOD behaviour, still used where nothing draws underneath).
+  restream({ drop = true } = {}) {
     this.epoch++;
     this.inFlight.clear();
     this.atlasRequested.clear();
     this.lastSourceError = null;
-    for (const chunk of this.chunks.values()) chunk.stale = true;
+    if (drop) {
+      for (const chunk of this.chunks.values()) this.disposeChunk(chunk);
+      this.chunks.clear();
+      this.targetKeys.clear();
+      this.workerChanged = true;
+      this.refreshActiveChunkCache();
+    } else {
+      for (const chunk of this.chunks.values()) chunk.stale = true;
+    }
     this.centerChunkX = null;
     this.buildQueue = [];
     this.buildQueueIndex = 0;

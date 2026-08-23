@@ -913,7 +913,7 @@ the root only), debug views (wireframe, `MeshNormalNodeMaterial` normals view, p
 tiles, draws, triangles, installs per second, `lastUpdateMs`, epoch, worker, `lastSourceError`,
 collision-provider id/enabled/colliderId). `setActive()` switches collision and visuals together;
 `setVisible(false)` hides chunks but keeps collision authoritative; `setSource()` swaps the streamed
-and collided source with epoch bump and stale-chunk retention; `groundHeight(x, z)` is the surface a
+and collided source with an epoch bump and drops the old chunks immediately (the far LOD shows the new ground; `restream({ drop: false })` keeps the old keep-until-replaced behaviour); `groundHeight(x, z)` is the surface a
 body stands on in the current mode (the density surface via `source.surfaceYAt` when volumetric, the
 heightfield otherwise) and feeds `spawnPosition(x, z)` and `killPlaneYAt(x, z)` (80 m under it).
 `update(globalPosition, dt)` must receive the player's global position.

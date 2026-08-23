@@ -336,7 +336,8 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     // View-distance / chunk-size changes resize the sky by SCALING the group (the whole
     // sky is radius-relative) — no geometry rebuild, no disposal, so it can't race a submit.
     // skyRadius is clamped to camera.far*0.88, so the scaled dome never crosses the far plane.
-    setRadius() { group.scale.setScalar(skyRadius(camera.far, size) / builtRadius); },
+    // `radius` overrides the size-derived default (pages with far terrain pin the sky to the far plane).
+    setRadius(radius) { group.scale.setScalar((radius ?? skyRadius(camera.far, size)) / builtRadius); },
     rebuild,
     update(/* seconds */) { /* twinkle/gas animate on the GPU via the `time` node */ },
     // Free trees that have aged out (≥2 frames since detach → no submit references them).
