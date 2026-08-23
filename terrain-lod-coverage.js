@@ -18,6 +18,25 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
   const texture = new THREE.DataTexture(data, texels, texels, THREE.RedFormat, THREE.UnsignedByteType);
   texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
   texture.needsUpdate = true;
+  // Eroded variant (3×3 min): what the COARSER level dissolves against, so it keeps drawing one
+  // chunk into this level's region and the z-buffer sorts the overlap — a hard cut at the window
+  // edge left an upward-facing sliver open wherever the coarse surface was locally higher.
+  const erodedData = new Uint8Array(texels * texels);
+  const erodedTexture = new THREE.DataTexture(erodedData, texels, texels, THREE.RedFormat, THREE.UnsignedByteType);
+  erodedTexture.magFilter = THREE.NearestFilter; erodedTexture.minFilter = THREE.NearestFilter;
+  erodedTexture.needsUpdate = true;
+  function erode() {
+    for (let z = 0; z < texels; z++) for (let x = 0; x < texels; x++) {
+      let m = 255;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, nz = z + dz;
+        const v = (nx < 0 || nz < 0 || nx >= texels || nz >= texels) ? 0 : data[nz * texels + nx];
+        if (v < m) m = v;
+      }
+      erodedData[z * texels + x] = m;
+    }
+    erodedTexture.needsUpdate = true;
+  }
   const values = new Map();   // "ix,iz" -> { t, target }
   let originX = 0, originZ = 0;   // chunk index at texel (0,0)
   let dirty = true;
@@ -52,6 +71,7 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
       data[iz * texels + ix] = Math.round(v.t * 255);
     }
     texture.needsUpdate = true;
+    erode();
     dirty = false;
     return true;
   }
@@ -62,14 +82,14 @@ export function createLodCoverage({ chunkSize, texels = LOD_COVERAGE_DEFAULTS.te
   }
 
   return {
-    texture, chunkSize, texels, fadeSeconds,
+    texture, erodedTexture, chunkSize, texels, fadeSeconds,
     get originX() { return originX; },
     get originZ() { return originZ; },
     get trackedCount() { return values.size; },
     recentre, update, coverageAt,
     // everything fully present at once (e.g. after a source swap there is nothing to dissolve from)
     settle() { for (const v of values) { if (v[1].target === 1) v[1].t = 1; } dirty = true; },
-    clear() { values.clear(); data.fill(0); texture.needsUpdate = true; dirty = false; },
-    dispose() { texture.dispose(); values.clear(); },
+    clear() { values.clear(); data.fill(0); erodedData.fill(0); texture.needsUpdate = true; erodedTexture.needsUpdate = true; dirty = false; },
+    dispose() { texture.dispose(); erodedTexture.dispose(); values.clear(); },
   };
 }

@@ -151,7 +151,8 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
   };
   const blankCoverage = (() => { const t = new THREE.DataTexture(new Uint8Array([255]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType); t.needsUpdate = true; return t; })();
   const coverageMaps = { self: lod?.self ?? null, finer: lod?.finer ?? null };
-  const coverageTex = { self: coverageMaps.self?.texture ?? blankCoverage, finer: coverageMaps.finer?.texture ?? blankCoverage };
+  // `finer` uses the eroded map: the coarse level keeps one chunk of overlap into the finer region
+  const coverageTex = { self: coverageMaps.self?.texture ?? blankCoverage, finer: coverageMaps.finer?.erodedTexture ?? coverageMaps.finer?.texture ?? blankCoverage };
   // coverage of the chunk under the fragment in one map: 0 outside the map
   const coverageOf = (which) => {
     const origin = u[`${which}Origin`], chunk = u[`${which}Chunk`], texels = u[`${which}Texels`];
