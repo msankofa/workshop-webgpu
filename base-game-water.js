@@ -11,7 +11,7 @@ import {
   screenUV, positionView, positionWorld, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
   viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break,
 } from 'three/tsl';
-import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface } from './water-hybrid.js';
+import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface, makeWaveFns } from './water-hybrid.js';
 import { surfaceAt } from './water-waves.js';
 
 export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
@@ -132,6 +132,14 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
   surface.mesh.name = 'base-game-water';
   scene.add(surface.mesh);
 
+  // What the ground material needs for the wet band + caustics (terrain.setSplatWater(groundShade)):
+  // scene-space waterline, the global-xz offset, the sun, and the same wave normal the surface uses.
+  const groundShade = {
+    sceneLevel: uniform(-1e9), offset: uOffset, sunDir: uSunDir, sunColor: uSunColor, time: uTime,
+    causticStrength: uniform(1), causticSpread: uniform(profile.causticSpread.value),
+    waveNormalFold: xz => makeWaveFns(profile).waveNormalFold(xz),
+  };
+
   let enabled = true, time = 0;
   let wind = 35;
   const state = { visible: false, reason: 'no data' };
@@ -150,18 +158,20 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     uOffset.value.set(o[0], o[2]);
     surface.mesh.position.y = uLevel.value - o[1];
     planar.target.position.y = surface.mesh.position.y;
+    groundShade.sceneLevel.value = enabled ? uLevel.value - o[1] : -1e9;
   }
 
   return {
     mesh: surface.mesh, material: surface.material, profile, uniforms: { time: uTime, wind: uWind, level: uLevel, offset: uOffset, sunDir: uSunDir, sunColor: uSunColor },
-    state, reflectStats, mirror: planar,
+    state, reflectStats, mirror: planar, groundShade,
+    setCausticStrength(v) { if (Number.isFinite(v)) groundShade.causticStrength.value = Math.max(0, v); },
     get reflectionMode() { return BASE_GAME_REFLECTION_MODES[profile.reflMode.value] ?? 'sky'; },
     setReflectionMode(mode) { const i = BASE_GAME_REFLECTION_MODES.indexOf(mode); if (i >= 0) profile.reflMode.value = i; },
     get cameraBelow() { return cameraBelow; },
     get enabled() { return enabled; },
     get level() { return uLevel.value; },
     get time() { return time; },
-    setEnabled(flag) { enabled = !!flag; if (!enabled) surface.mesh.visible = false; terrain.setSeaDepthActive(enabled); },
+    setEnabled(flag) { enabled = !!flag; if (!enabled) surface.mesh.visible = false; terrain.setSeaDepthActive(enabled); applyOffset(); },
     setLevel(level) { if (Number.isFinite(level) && level !== uLevel.value) { uLevel.value = level; applyOffset(); } },
     // Wave spectrum from the shared world (buildWaveTable options); rebuilds the table in place.
     setWaves(options) {

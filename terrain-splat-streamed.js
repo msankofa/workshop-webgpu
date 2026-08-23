@@ -18,7 +18,7 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
   Fn, If, Discard, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
   positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
-  textureLoad, ivec2, floor, select,
+  textureLoad, ivec2, floor, select, refract, saturate, oneMinus, max as tslMax,
 } from 'three/tsl';
 
 export const STREAMED_SPLAT_LAYERS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
@@ -129,7 +129,12 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
 // coarser one starts leaving and the void never shows. A chunk landing
 // late from a worker fades in instead of snapping. `lod = { self, finer }` binds the maps at build
 // time (a texture node is fixed once built); syncStreamedSplatCoverage() follows their origins.
-export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null } = {}) {
+// `water` (optional): { sceneLevel, offset, sunDir, sunColor, time, causticStrength, causticSpread
+// uniforms; waveNormalFold(xzNode) -> vec4 } — adds a wet tide band above the waterline and the
+// water-demo's analytic Snell caustic below it (sun ray refracted at the wave surface, screen-
+// derivative area ratio). All driven by uniforms the water module owns; sceneLevel very negative
+// (or causticStrength 0) turns each part off without a rebuild.
+export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null, water = null } = {}) {
   const cfg = { ...STREAMED_SPLAT_DEFAULTS, ...overrides };
   const L = textures.layers;
   for (const name of STREAMED_SPLAT_LAYERS) if (!L[name]?.color || !L[name]?.normal) throw new TypeError(`streamed splat needs colour + normal textures for '${name}'`);
@@ -251,7 +256,13 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     // macro break-up, faded with the same detail so it never becomes static at the horizon
     const macro = hash2(P.xz.mul(0.018)).sub(0.5).mul(0.22).mul(u.macroStrength).mul(detail).add(1.0);
     outCol = outCol.mul(macro);
-    const rough = mix(float(0.95), float(0.75), w.rock).add(w.snow.mul(-0.1)).add(w.sand.mul(-0.05));
+    let rough = mix(float(0.95), float(0.75), w.rock).add(w.snow.mul(-0.1)).add(w.sand.mul(-0.05));
+    if (water) {
+      // wet tide band: darker and glossier from the waterline down through the top 0.6 m above it
+      const wet = oneMinus(smoothstep(water.sceneLevel, water.sceneLevel.add(0.6), P.y));
+      outCol = outCol.mul(mix(float(1), float(0.55), wet));
+      rough = mix(rough, float(0.22), wet);
+    }
     roughProp.assign(clamp(rough, 0.3, 1));
     const nmT = nm.mul(2).sub(1);
     // xz projection: map x -> world x, map y -> world -z
@@ -264,8 +275,29 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
   mat.vertexColors = false;
   mat.colorNode = shadeAll();
   mat.roughnessNode = roughProp;
+  if (water) {
+    const ETA = 1 / 1.33;
+    mat.emissiveNode = Fn(() => {
+      const out = float(0).toVar('causticOut');
+      const depth = water.sceneLevel.sub(P.y);
+      If(depth.greaterThan(0.0).and(water.causticStrength.greaterThan(0.0)), () => {
+        const fade = saturate(depth.mul(0.6));
+        const r0 = refract(water.sunDir.negate(), vec3(0, 1, 0), ETA);
+        const t0 = depth.div(r0.y.negate());
+        const S = P.sub(r0.mul(t0));
+        const N = water.waveNormalFold(S.xz.add(water.offset)).xyz;
+        const r1 = refract(water.sunDir.negate(), N, ETA);
+        const Pn = S.add(r1.mul(depth.mul(water.causticSpread).div(tslMax(r1.y.negate(), 0.05))));
+        const Po = S.add(r0.mul(depth.mul(water.causticSpread).div(tslMax(r0.y.negate(), 0.05))));
+        const oldArea = length(dFdx(Po)).mul(length(dFdy(Po)));
+        const newArea = length(dFdx(Pn)).mul(length(dFdy(Pn)));
+        out.assign(clamp(oldArea.div(tslMax(newArea, 1e-5)).mul(0.2), 0.0, 1.5).mul(fade).mul(water.causticStrength));
+      });
+      return water.sunColor.mul(out).mul(vec3(0.6, 0.85, 1.0)).mul(saturate(water.sunDir.y.mul(4)));
+    })();
+  }
   mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
-  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, lod: !!lod, coverageMaps };
+  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, lod: !!lod, coverageMaps, water: !!water };
   syncStreamedSplatCoverage(mat);
   return mat;
 }

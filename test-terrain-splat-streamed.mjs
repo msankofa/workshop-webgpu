@@ -128,5 +128,22 @@ console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels disso
   terrain.dispose();
 }
 
+console.log('\n[6] water shade: wet band + Snell caustic build headless');
+{
+  const { uniform, vec4, vec2 } = await import('three/tsl');
+  const water = {
+    sceneLevel: uniform(2), offset: uniform(new THREE.Vector2()), sunDir: uniform(new THREE.Vector3(0.3, 0.9, 0.3)),
+    sunColor: uniform(new THREE.Color(1, 1, 1)), time: uniform(0), causticStrength: uniform(1), causticSpread: uniform(3),
+    waveNormalFold: xz => vec4(xz.x.mul(0).add(0), 1, 0, 0),
+  };
+  const mat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { water });
+  ok(!!mat.emissiveNode && mat.userData.streamedSplat.water === true, 'water-bound instance carries a caustic emissive');
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  let built = null; try { built = await buildMaterial(mat, geo); } catch (e) { built = e; }
+  ok(built && built.fragment && /refract/.test(built.fragment), `builds with the refraction trace (${built?.message ?? 'ok'})`);
+  const bare = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
+  ok(!bare.emissiveNode && bare.userData.streamedSplat.water === false, 'without water: no emissive, flag false');
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

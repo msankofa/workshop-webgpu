@@ -57,6 +57,11 @@ console.log('\n[2] visibility gate and CPU surface');
   ok(Number.isFinite(h0) && Number.isFinite(h1) && h0 !== h1 && Math.abs(h1) < 50, `surface height moves with the clock (${h0.toFixed(2)} → ${h1.toFixed(2)})`);
   water.setEnabled(false); water.update(0.016, camera.position);
   ok(!water.mesh.visible, 'disabled hides the mesh');
+  ok(water.groundShade.sceneLevel.value === -1e9, 'disabling sinks the ground shade waterline (no wet band, no caustics)');
+  water.setEnabled(true); water.setLevel(7); water.update(0.016, camera.position);
+  ok(water.groundShade.sceneLevel.value === 7, 'ground shade follows the level');
+  water.setCausticStrength(0);
+  ok(water.groundShade.causticStrength.value === 0, 'caustic toggle');
 }
 
 water.dispose(); terrain.dispose();

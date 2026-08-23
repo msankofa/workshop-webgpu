@@ -127,17 +127,24 @@ export function createBaseGameTerrain({
   // the last level's eroded texture has no coarser consumer
   const coverLevels = cfg.volumeLod.map((spec, i) => createLodCoverage({ chunkSize: spec.chunkSize, eroded: i < cfg.volumeLod.length - 1 }));
   const splatInstances = new Map();   // 0 = exact, 1..n = cascade levels
+  let splatWater = null;              // the water module's groundShade (wet band + caustics)
   function splatFor(index) {
     if (!splatMaterial || !splatTextures) return null;
     let m = splatInstances.get(index);
     if (!m) {
       const self = index === 0 ? coverExact : coverLevels[index - 1];
       const finer = index === 0 ? null : (index === 1 ? coverExact : coverLevels[index - 2]);
-      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer } });
+      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer }, water: splatWater });
       splatInstances.set(index, m);
     }
     m.wireframe = wireframe;
     return m;
+  }
+  function setSplatWater(shade) {
+    splatWater = shade ?? null;
+    for (const m of splatInstances.values()) m.dispose();
+    splatInstances.clear();
+    applyMaterials();
   }
   function groundMaterial() { return splatEnabled && splatMaterial ? (splatFor(0) ?? splatMaterial) : system.material; }
   function cascadeMaterial(level) {
@@ -412,6 +419,7 @@ export function createBaseGameTerrain({
     // Live tuning for every splat instance at once.
     updateSplat(patch) { if (splatMaterial) updateStreamedSplat(splatMaterial, patch); for (const m of splatInstances.values()) updateStreamedSplat(m, patch); },
     get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },
+    setSplatWater,
     setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
     get splatMaterial() { return splatMaterial; },
     get splatEnabled() { return splatEnabled; },
