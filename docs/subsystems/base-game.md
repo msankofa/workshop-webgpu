@@ -774,6 +774,8 @@ writes, never `.visible` (the WebGPU pipeline-hash rule travels with the code). 
 `spawnBlastFx` numbers (`BLAST_FLASH`, distance `min(60, radius * 3.2)`); every muzzle flash borrows
 a slot like v3's `spawnTracer` does. `debrisSim.step` / `debrisRenderer.sync` / `flashLights.update`
 run in the frame's `fx` block. Node-tested: `test-flash-lights.mjs`.
+Projectile trails are v3's `onTrail` smoke puffs emitted **client-side** at the manager's 0.035 s
+cadence from the interpolated flight path — the sim runs on the server, which has no effect list.
 
 Not done: remote recoil on bodies, head multiplier (`head` is always false), melee.
 

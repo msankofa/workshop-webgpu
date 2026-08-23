@@ -795,12 +795,26 @@ function ingestProjectiles(snapshot) {
     if (!state) continue;
     seen.add(state.id);
     let rec = projectileTracks.get(state.id);
-    if (!rec) { rec = { track: createRemoteTrack(), weapon: state.weapon }; projectileTracks.set(state.id, rec); }
+    if (!rec) { rec = { track: createRemoteTrack(), weapon: state.weapon, trailAccum: 0 }; projectileTracks.set(state.id, rec); }
     rec.track.push(snapshot.serverTime, { position: state.p, velocity: state.v, yaw: 0, pitch: 0, grounded: false, spawnRevision: 0 });
   }
   for (const id of projectileTracks.keys()) if (!seen.has(id)) projectileTracks.delete(id);
 }
-function updateProjectiles(now) {
+// bot-viewer-v3's onTrail puffs, emitted client-side at the manager's 0.035 s cadence — the sim
+// lives on the server, so the trail rides the rendered (interpolated) flight path instead.
+const TRAIL_INTERVAL_S = 0.035;
+function emitTrail(rec, dt, x, y, z) {
+  rec.trailAccum += dt;
+  if (rec.trailAccum < TRAIL_INTERVAL_S) return;
+  rec.trailAccum %= TRAIL_INTERVAL_S;
+  const rocket = rec.weapon === 'rpg';
+  pushEffect('smoke_puff', [x, y, z], rocket ? 1.2 : 0.55, {
+    color: [0.62, 0.6, 0.58],
+    size: rocket ? 0.3 : 0.14, growth: rocket ? 0.95 : 0.35,
+    rise: 0.3, opacity: rocket ? 0.34 : 0.16,
+  });
+}
+function updateProjectiles(now, dt) {
   let n = 0;
   const renderTime = now + (remotePlayers.diagnostics.serverTimeOffsetMs ?? 0) - settings.interpolationDelayMs;
   for (const rec of projectileTracks.values()) {
@@ -809,6 +823,7 @@ function updateProjectiles(now) {
     const mesh = projectileMeshAt(n++);
     const l = worldCoordinates.toRenderLocal(sample.position, _fxLocal);
     mesh.position.set(l[0], l[1], l[2]);
+    emitTrail(rec, dt, l[0], l[1], l[2]);
     const mat = rec.weapon === 'rpg' ? rocketMat : grenadeMat;
     if (mesh.material !== mat) mesh.material = mat;   // a swap rebuilds the WebGPU pipeline
     mesh.visible = true;
@@ -2545,7 +2560,7 @@ async function animate() {
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     frameProfiler.time('water', () => water.update(dt, camera.position));
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now()); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
     frameProfiler.time('sky', () => updateWorld(dt));
     if (!terrainStudio.open) {
       if (settings.dofEnabled) {
