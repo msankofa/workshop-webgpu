@@ -1104,15 +1104,15 @@ cascade's 5 m level shows through rather than drawing the wrong ground.
 
 **Ground textures (2026-08-23).** `terrain-splat-streamed.js` (see `terrain.md`) replaces the
 vertex tint on chunks and the cascade: `terrain.setSplatMaterial(mat)` / `setSplatEnabled(bool)`,
-`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. Resident chunks (and each cascade level) draw through `terrain-chunk-batches.js` pools — `stats.draws` counts batches, `stats.batches` carries the pool stats; a chunk's own mesh is hidden while batched and is the fallback when a pool is full (measured: over 1,000 draws at draw radius 32 before). Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
+`stats.textures` = `'tint' | 'streamed-splat' | 'off'`. **LOD holes (2026-08-23):** each cascade level draws through its own hole-capable splat instance (`createStreamedSplatMaterial(tex, cfg, { hole: true })`, `setStreamedSplatHole(mat, rect)`) whose fragments are discarded inside the finer level's resident square inset by one finer chunk (`syncCascadeHoles`, re-run whenever any level's window moves), so a coarse valley floor can no longer show inside exact ground ("false terrain in crevasses"); `setSplatMaterial(mat, textures)` needs the textures to build the instances and `cascadeMaterialFor(level)` exposes them for live tuning. Resident chunks (and each cascade level) draw through `terrain-chunk-batches.js` pools — `stats.draws` counts batches, `stats.batches` carries the pool stats; a chunk's own mesh is hidden while batched and is the fallback when a pool is full (measured: over 1,000 draws at draw radius 32 before). Volume colliders exist only within `collisionRadius` (2) chunks of the player (`colliderFocus`, re-synced when the player's chunk changes): a BVH per resident chunk at draw radius 16 was 1.4 M triangles built on the main thread as tiles landed — the frame spikes in the 2026-08-23 captures. `base-game.html` loads the maps once in the
 background (tint shows until they arrive) and exposes `terrainTextures` (on), `terrainTextureTile`
 (4 m) and `terrainTextureFade` (1400 m) in the Terrain world panel. The far fade is what keeps the
 horizon from shimmering; the flight sim's height band limit is the same idea one level down.
 
 Not yet: finite GLB maps (Phase 6); textures driven by streamed v5 biome/material masks instead of
 height/slope; soil-shade/moss dressing; no distance fog; the classic (v4 climate) layer is not
-band-limited; cascade level boundaries are plain overlaps (a coarse surface can poke through a fine
-one on steep ground). Server volume tiles are built on the
+band-limited; the tint-only fallback (before textures load) has no LOD hole, so a coarse level can
+poke through a fine one there. Server volume tiles are built on the
 tick thread (~40 ms each), so a crowd spreading into fresh chunks will stall ticks; a worker pool is
 the follow-up if that shows.
 
