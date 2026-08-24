@@ -342,7 +342,7 @@ window and can follow as its own step once there is something on screen to judge
 - The bake renders the scene with an override material, so it must run outside the DOF pipeline and get
   its own `rainBake` profiler slot; folded into `weather` it would show up as rain costing 5 ms at random.
 
-### R4 — Lightning, thunder, and the rain bed
+### R4 — Lightning, thunder, and the rain bed — SHIPPED 2026-08-24
 
 - Deterministic schedule from `weatherSeed` and the room tick, as decided above; strikes only while
   `weatherRain > 0.3`, interval `4 + h·14·(1.3 − rain)` seconds where `h` is from the hash rather than
@@ -355,6 +355,47 @@ window and can follow as its own step once there is something on screen to judge
   the page already distinguishes these.
 - `base-game-audio.js` owns every other sound on this page, so the rain bed should be registered there
   rather than started from the page, keeping one owner for mute and volume.
+
+**Shipped 2026-08-24, with one deliberate change to the scheme above.**
+
+The plan's interval, `4 + h·14·(1.3 − rain)`, makes strike *n*'s time depend on the entire history of
+the rain slider: each gap is scaled by whatever the rain was when the previous strike fired. That
+breaks the property the whole design exists for. An owner dragging the master mid-storm would move
+strikes that had already happened, and two clients that saw different slider histories — which is
+every pair of clients, since a guest joins mid-session — would diverge.
+
+What shipped is a **fixed grid** instead. Strike *n* owns the slot `[n·interval, (n+1)·interval)` and
+a hash of `(seed, n)` places it inside that slot, scaled by `intervalSpread`. So a strike's time is a
+pure function of the shared schedule terms and nothing else, and **rain gates whether a scheduled
+strike fires** rather than when it happens. Frequency still follows the weather, through the
+threshold and the interval slider. Three properties fall out that the accumulating version could not
+have had, and each is a test:
+
+- a 24 fps client, a 60 fps one and a 144 fps one fire exactly the same strike indices;
+- a client that joins at t = 500 s is in phase immediately, with nothing to catch up on;
+- finding the strikes in a frame's window is O(1) in the age of the room — a strike sits within half
+  a slot of its slot centre, so two slots either side covers every candidate. Measured: a room open
+  for 46 days searches as fast as a fresh one.
+
+Other notes:
+
+- `strikePlacement` takes the square root of the interpolated squared radius, so strikes are uniform
+  over the annulus instead of crowding its inner edge. Measured ring spread 1.037 across four
+  equal-area rings.
+- A clock jump — a pause, a tab switch, a reconciliation — resyncs rather than firing everything in
+  the gap. Without that, alt-tabbing back into a storm was a machine-gun of bolts.
+- **The sun lift never touches the light.** `lightning.sunLift` is added to the `sunIntensity` that
+  `updateWorld` then hands to the rig, for exactly the reason the C2 ambient lift had to become an
+  assignment: `createLightingRig`'s setter dirty-checks the requested value, so anything written
+  straight onto `rig.dirLight` is not undone next frame. A test asserts no rig-owned light is
+  written directly in the loop.
+- The rain bed and thunder are registered with `base-game-audio.js` as the plan asked, with the
+  generators injected from `rain.js` rather than imported there — so the director stays free of
+  rain.js and a test can watch the calls with no WebAudio context. Thunder shares the existing
+  per-event budget (3 claps a window) so a close storm cannot stack claps.
+- Seven keys joined the shared set: `weatherSeed` and every term of the schedule. The flash strength,
+  decay, bolt scale, sun lift and speed of sound stay local — two players may draw the same bolt at
+  different thickness, and hear it through their own mixer.
 
 ### R5 — Panel, persistence, capture, docs, tests
 

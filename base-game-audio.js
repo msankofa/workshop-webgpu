@@ -56,11 +56,15 @@ export const BASE_GAME_SFX_PROFILES = Object.freeze({
   impact: { distanceModel: 'inverse', refDistance: 12, maxDistance: 100, rolloffFactor: 0.85 },
 });
 
-const BUDGET = Object.freeze({ footstep: 4, weapon_reload: 4, weapon_draw: 4, jump: 4, landing: 4, default: 8 });
+const BUDGET = Object.freeze({ footstep: 4, weapon_reload: 4, weapon_draw: 4, jump: 4, landing: 4, thunder: 3, default: 8 });
 
 export function createBaseGameAudioDirector({
-  audio,                                  // { play, playAt, hasSfxEvent, playSynthAt }
+  audio,                                  // { play, playAt, hasSfxEvent, playSynthAt, playSynthLoop }
   synthVoice = () => null,                // eventId -> builder | null (weapon-sfx-synth.js)
+  // Weather sound generators, injected so this module stays free of rain.js (and so a test can
+  // watch them without a WebAudio context): rain.js's createRainBed and playThunder.
+  buildRainBed = null,                    // (ctx, dest) -> { set(level), stop(at) }
+  buildThunder = null,                    // (ctx, dest, { distance, volume }) -> seconds
   getListenerPosition = () => null,       // {x,y,z} in render-local space
   now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
   settings = {},
@@ -72,6 +76,7 @@ export function createBaseGameAudioDirector({
   const remotes = new Map();
   const windows = new Map();
   const fired = [];   // last call's events, for tests and the diagnostics line
+  let rainBedHandle = null, rainBed = null;
 
   function budgetOk(eventId) {
     const t = now();
@@ -235,5 +240,49 @@ export function createBaseGameAudioDirector({
 
     menuOpen() { fired.length = 0; emit('pause_open'); return fired; },
     menuClose() { fired.length = 0; emit('pause_close'); return fired; },
+
+    // ---- weather (phase R4) ----------------------------------------------------------------
+    // The bed and the claps go through the same audio controller everything else here does, so the
+    // mixer, the mute and the underwater low-pass apply to them without a second code path. The bed
+    // is registered here rather than started from the page for the same reason: one owner.
+    // `level` is 0..1; 0 stops the loop, and it restarts when the level comes back up.
+    setRainBed(level, volume = 0.7) {
+      const want = cfg.sfxEnabled && level > 0.001;
+      if (!want) { this.stopRainBed(); return false; }
+      if (!rainBedHandle) {
+        if (!audio.playSynthLoop) return false;
+        rainBedHandle = audio.playSynthLoop((ctx, dest) => {
+          rainBed = buildRainBed(ctx, dest);
+          return { stop: at => rainBed?.stop(at) };
+        }, null, { volume }) || null;
+        // The context may not be running yet (no gesture); try again on a later frame.
+        if (!rainBedHandle) return false;
+      }
+      if (rainBedHandle.stopped) { rainBedHandle = null; rainBed = null; return false; }
+      rainBed?.set(level);
+      return true;
+    },
+    stopRainBed(fade = 0.4) {
+      if (!rainBedHandle) return false;
+      rainBedHandle.stop(fade);
+      rainBedHandle = null; rainBed = null;
+      return true;
+    },
+    get rainBedPlaying() { return !!rainBedHandle && !rainBedHandle.stopped; },
+    // One clap. Distance shapes it (the crack dies, the roll lengthens) and thins it out, and the
+    // shared budget keeps a close storm from stacking claps on top of each other.
+    thunderAt(distance = 0, volume = 0.9) {
+      fired.length = 0;
+      if (!cfg.sfxEnabled || !audio.playSynthAt || !buildThunder) return fired;
+      if (!budgetOk('thunder')) return fired;
+      const at = getListenerPosition();
+      if (!at) return fired;
+      fired.push('thunder');
+      audio.playSynthAt((ctx, dest) => buildThunder(ctx, dest, { distance, volume }), at, {
+        profile: BASE_GAME_SFX_PROFILES.explosion,
+        volume,
+      });
+      return fired;
+    },
   };
 }

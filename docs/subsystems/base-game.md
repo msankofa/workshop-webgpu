@@ -1461,7 +1461,48 @@ test, found by auditing the page against `.claude/skills/improve-webgpu`:
 All four are locked down in `test-base-game-rain.mjs`, which reads the generated GLSL for the branch
 depth rather than trusting the comment that was wrong the first time.
 
-Next in the plan: R3 (the rain shadow map) and R4 (lightning, thunder and the rain bed).
+### Weather, phase R4: lightning, thunder and the rain bed (shipped 2026-08-24)
+
+`base-game-lightning.js`. **Nothing about lightning crosses the network.** A strike is a pure
+function of the shared `weatherSeed` and its own index, so two clients in one room see the same bolt
+in the same place at the same moment because they each computed it. That also puts a late joiner in
+phase with no catch-up. The clock is `playerController.waterTime` — the lockstep tick the swell
+already rides, and the one clock the client and the server agree on.
+
+**The schedule is a fixed grid, not an accumulation**, which is a deliberate change from the plan.
+The plan scaled each gap by the current rain; that makes strike *n*'s time depend on the whole
+history of the rain slider, so an owner dragging it mid-storm would move strikes that had already
+happened and two clients with different slider histories would diverge. Instead, strike *n* owns the
+slot `[n·interval, (n+1)·interval)` and a hash of `(seed, n)` places it inside, scaled by
+`intervalSpread`. Rain gates whether a scheduled strike *fires*, through `lightningThreshold`, rather
+than moving when it happens. Three things follow, all tested: clients at 24, 60 and 144 fps fire the
+same strike indices; a client joining at t = 500 s is immediately in phase; and the per-frame window
+search is O(1) in the age of the room, because a strike is always within half a slot of its slot
+centre. A clock jump — a pause, a tab switch, a reconciliation — resyncs rather than firing every
+strike in the gap.
+
+Placement uses `sqrt` of the interpolated squared radius, so strikes are uniform over the annulus
+between `lightningDistMin` and `lightningDistMax` instead of crowding the inner edge. The bolt runs
+from the low cloud deck's height down to the ground the sea-depth window reports at the strike point,
+in scene space, so a rebase does not move it.
+
+**The sun lift never touches the light.** `lightning.sunLift` is added to the `sunIntensity` that
+`updateWorld` hands to the rig — the same discipline the C2 ambient fix established, because
+`createLightingRig`'s setter dirty-checks the requested value and will not undo a direct write.
+
+**Audio** is registered with `base-game-audio.js` rather than started from the page, so mute, the
+mixer and the underwater low-pass have one owner. The generators (`createRainBed`, `playThunder`)
+are injected from `rain.js` rather than imported by the director, which keeps it free of rain.js and
+lets a test watch the calls without a WebAudio context. Thunder is queued at `distance / soundSpeed`
+and shares the existing per-event budget, so a close storm cannot stack claps. The bed follows the
+drop density and stops when the game is paused.
+
+Seven keys joined the shared set: `weatherSeed`, `lightningEnabled`, `lightningThreshold`,
+`lightningInterval`, `lightningIntervalSpread`, `lightningDistMin`, `lightningDistMax` — every input
+to the derived schedule. Flash strength, decay, bolt scale, sun lift and the speed of sound stay
+local. Coverage is `test-base-game-lightning.mjs` (61 checks).
+
+Next in the plan: R3 (the rain shadow map) and R5 (capture, performance log and the remaining docs).
 
 ### Terrain authoring and Terrain Studio
 

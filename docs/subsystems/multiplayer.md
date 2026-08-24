@@ -1148,6 +1148,16 @@ run a cheaper sky and 2,000 drops in the same storm as a host running 40,000. Th
 keys but does not simulate them: nothing in movement or collision reads weather, so unlike the terrain
 and the waves this is state carriage only.
 
+**Lightning is derived, not sent (phase R4).** A strike is a pure function of `weatherSeed`, the
+strike's own index and the shared schedule terms (`lightningEnabled`, `lightningThreshold`,
+`lightningInterval`, `lightningIntervalSpread`, `lightningDistMin`, `lightningDistMax`), evaluated
+against the lockstep clock. So every client computes the same bolt in the same place at the same
+moment with no message, no bandwidth and no new packet type, and a late joiner is in phase the
+instant it has the world state. That only holds while every input is shared, which is why all seven
+are owner-owned; the flash strength, decay, bolt scale, sun lift and speed of sound are look and
+stay local. The schedule is a fixed grid rather than an accumulation for the same reason — an
+accumulating gap would depend on the history of the rain slider, and two clients never share that.
+
 One local key deliberately overrides a shared one. `weatherWindFollowsWaves` makes the page *use*
 `waveWindDeg` for the rain instead of writing it into `weatherWindDeg`, so a guest follows the room's
 sea without needing permission to write a shared key — and the wind slider's readout says which

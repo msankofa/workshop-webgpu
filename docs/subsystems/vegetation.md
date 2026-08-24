@@ -80,7 +80,20 @@ Two constraints worth knowing before changing this:
   `80 / sqrt(2)` = 56.6 m; the default radius is 55 m. A wider grass radius needs a wider contact
   window, not a bigger number.
 
-Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`. The blades
+**TSL, checked against the shipped r184 build.** `grass-compute.js` is a storage-buffer material,
+so `tsl-build-check.mjs` cannot compile it — but every graph Base Game hands it can be compiled, and
+`test-flora-tsl-build.mjs` does: both field-window samplers (bilinear float, nearest id, u8 cover)
+and the render-local adapters, alone and combined. It asserts the emitted shader uses `texelFetch`
+rather than a uv sample, which is what makes the toroidal window correct, and that every field
+texture is a DATA map — no colour space, nearest, no mipmaps — since an sRGB decode on an id or
+cover channel would silently return a different number. Two things measured rather than assumed
+while writing it: the u8 round trip (`x/255` in f32, then `x255`) is exact for all 0..255, so ids
+need no rounding; and three uploads DataTextures through `queue.writeTexture`, whose `bytesPerRow`
+carries no 256-byte alignment rule, so a 128-wide r8unorm contact window uploads fine. The harness
+compiles GLSL through `GLSLNodeBuilder`, so it proves graph validity and node arity, not WGSL
+emission.
+
+Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`, `test-flora-tsl-build.mjs`. The blades
 themselves need a GPU, so the last one covers the wiring — window references, the clamps, the
 render-origin boundary, and that the injected graphs build and are validated.
 

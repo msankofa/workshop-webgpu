@@ -89,6 +89,34 @@ assert.equal(windClamped.world.weatherWindSpeed, 0, 'a negative wind speed clamp
 assert.equal(windClamped.world.weatherGust, 40, 'an absurd gust clamps to the ceiling');
 assert.equal(windClamped.world.weatherGustPeriod, 0.5, 'a zero gust period clamps to the floor, so nothing divides by it');
 
+// Lightning (phase R4). No strike is ever sent; what IS carried is every input the derived schedule
+// reads, because two clients with different inputs would compute different storms.
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: {
+    weatherSeed: 12345, lightningEnabled: true, lightningThreshold: 0.4, lightningInterval: 6,
+    lightningIntervalSpread: 0.5, lightningDistMin: 500, lightningDistMax: 9000,
+    lightningBoltScale: 4, weatherSoundSpeed: 900,
+  },
+});
+const storm = message(guest, 'base:snapshot');
+assert.equal(storm.world.weatherSeed, 12345);
+assert.equal(storm.world.lightningEnabled, true);
+assert.equal(storm.world.lightningInterval, 6);
+assert.equal(storm.world.lightningDistMax, 9000);
+assert.equal('lightningBoltScale' in storm.world, false, 'bolt thickness is look, so it stays local');
+assert.equal('weatherSoundSpeed' in storm.world, false, 'and so does the speed of sound');
+
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: { weatherSeed: -5, lightningInterval: 0, lightningDistMax: 1e9, lightningEnabled: 'yes' },
+});
+const stormClamped = message(guest, 'base:snapshot');
+assert.equal(stormClamped.world.weatherSeed, 0, 'a negative seed clamps to 0');
+assert.equal(stormClamped.world.lightningInterval, 0.5, 'a zero interval clamps to the floor');
+assert.equal(stormClamped.world.lightningDistMax, 40000, 'an absurd distance clamps to the ceiling');
+assert.equal(stormClamped.world.lightningEnabled, true, 'a non-boolean enable is still the previous value, not a string');
+
 // `message` returns the LAST packet of a type and never clears, so a rejected patch has to be
 // checked by counting broadcasts rather than by re-reading the newest snapshot.
 const snapshotsBefore = guest.sent.filter(p => p.type === 'base:snapshot').length;

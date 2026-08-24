@@ -87,6 +87,17 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'weatherWindSpeed',
   'weatherGust',
   'weatherGustPeriod',
+  // Lightning is derived, not sent: a strike is a pure function of the seed and its index, so every
+  // client computes the same bolt in the same place at the same moment and a late joiner is in
+  // phase. That only holds while everyone shares the inputs, so the seed and every term of the
+  // schedule are owner-owned. The flash strength, bolt scale and sun lift are look, and stay local.
+  'weatherSeed',
+  'lightningEnabled',
+  'lightningThreshold',
+  'lightningInterval',
+  'lightningIntervalSpread',
+  'lightningDistMin',
+  'lightningDistMax',
 ]);
 
 const NUMBER_LIMITS = Object.freeze({
@@ -119,10 +130,16 @@ const NUMBER_LIMITS = Object.freeze({
   weatherWindSpeed: [0, 60],
   weatherGust: [0, 40],
   weatherGustPeriod: [0.5, 60],
+  weatherSeed: [0, 1e9],
+  lightningThreshold: [0, 1],
+  lightningInterval: [0.5, 300],
+  lightningIntervalSpread: [0, 1],
+  lightningDistMin: [20, 20000],
+  lightningDistMax: [50, 40000],
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
-const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled']);
+const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled', 'lightningEnabled']);
 const MAX_ABS_YAW = 1e6;
 const MAX_ABS_COORDINATE = 1e9;
 const MAX_ABS_VELOCITY = 1e4;

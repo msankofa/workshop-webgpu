@@ -48,15 +48,20 @@ const mismatched = numericShared
 ok(mismatched.length === 0, `the two limit tables agree${mismatched.length ? `: ${mismatched.join('; ')}` : ''}`);
 
 // 3. The weather keys specifically: the ones that decide what everyone sees, and no more.
-const weatherShared = BASE_GAME_SHARED_KEYS.filter(k => /^weather|^cloud/.test(k));
-ok(weatherShared.length === 10, `ten weather keys are shared (found ${weatherShared.length}: ${weatherShared.join(', ')})`);
+const weatherShared = BASE_GAME_SHARED_KEYS.filter(k => /^weather|^cloud|^lightning/.test(k));
+ok(weatherShared.length === 17, `seventeen weather keys are shared (found ${weatherShared.length}: ${weatherShared.join(', ')})`);
 for (const key of ['weatherRain', 'weatherOvercast', 'cloudACover', 'cloudAHeight', 'cloudBCover', 'cloudBHeight',
-  'weatherWindDeg', 'weatherWindSpeed', 'weatherGust', 'weatherGustPeriod']) {
+  'weatherWindDeg', 'weatherWindSpeed', 'weatherGust', 'weatherGustPeriod',
+  // Every input to the derived strike schedule, or two peers stand in different storms.
+  'weatherSeed', 'lightningEnabled', 'lightningThreshold', 'lightningInterval',
+  'lightningIntervalSpread', 'lightningDistMin', 'lightningDistMax']) {
   ok(weatherShared.includes(key), `${key} is owner-owned`);
 }
 // Response curves and look stay local: a guest may run its own fog and drop budget.
 for (const key of ['overcastPerRain', 'sunDimPerRain', 'weatherFogPerRain', 'weatherFogColor', 'cloudAOctaves', 'cloudAExtent', 'cloudsEnabled',
-  'weatherWindFollowsWaves', 'rainMaxDrops', 'rainSplashEnabled', 'rainGroundConservative', 'rainSkyTint']) {
+  'weatherWindFollowsWaves', 'rainMaxDrops', 'rainSplashEnabled', 'rainGroundConservative', 'rainSkyTint',
+  // Lightning LOOK is local: two players may draw the same bolt at different thickness.
+  'lightningFlash', 'lightningBoltScale', 'lightningSunLift', 'weatherThunderVolume', 'weatherSoundSpeed']) {
   ok(!BASE_GAME_SHARED_KEYS.includes(key), `${key} stays local`);
 }
 

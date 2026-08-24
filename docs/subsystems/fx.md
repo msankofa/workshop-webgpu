@@ -1121,6 +1121,11 @@ profile in uv.
   up-facing surface (`smoothstep(0.6, 0.9, normal.y)`); side faces instead get a darker, glossier
   film with run-off streaks sliding down them (one `mx_noise_float` tap on `x+z` vs `y − t`,
   `streaks: false` removes them), so the same call dresses floors, roofs, walls and cover.
+- **Base Game's storms (2026-08-24)** wrap `createLightningBolt`, `createRainBed` and `playThunder`
+  in `base-game-lightning.js` and `base-game-audio.js`. The schedule there is derived from a shared
+  seed rather than `Math.random()`, so every client strikes together with nothing sent over the wire
+  — see `base-game.md` §Weather R4. Both donor pages still roll their own bolts with `Math.random()`,
+  which is correct for a single-player page.
 - **`createRainSystem({ uniformSet })` (2026-08-24)** reuses an existing uniform set instead of
   building one. A page that reallocates the instanced geometry (a max-drops slider rebuilds it) must
   pass it: any other holder of the old set — a wet-ground material graph, which captured the node

@@ -102,7 +102,8 @@ import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameRain, rainResponse } from './base-game-rain.js';
-import { applyWetSurface } from './rain.js';
+import { applyWetSurface, createRainBed, playThunder } from './rain.js';
+import { createBaseGameLightning } from './base-game-lightning.js';
 import { materialColor } from 'three/tsl';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
@@ -247,6 +248,25 @@ const DEFAULT_SETTINGS = Object.freeze({
   rainWetRise: 8,
   rainPuddle: 0.45,
   rainRipple: 1,
+  // Lightning (phase R4). The schedule terms are shared, because two clients with different
+  // intervals would be standing in different storms; the look is local.
+  weatherSeed: 7,
+  lightningEnabled: true,
+  lightningThreshold: 0.3,
+  lightningInterval: 9,
+  lightningIntervalSpread: 0.7,
+  lightningDistMin: 800,
+  lightningDistMax: 4000,
+  lightningFlash: 1,
+  lightningDecay: 3.5,
+  lightningBoltScale: 1,
+  lightningSunLift: 4,
+  // Weather audio.
+  weatherRainBed: true,
+  weatherRainBedVolume: 0.7,
+  weatherThunder: true,
+  weatherThunderVolume: 0.9,
+  weatherSoundSpeed: 340,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -424,6 +444,11 @@ const NUMBER_LIMITS = Object.freeze({
   rainSplashSlopeMax: [0, 90], rainSplashSlopeFade: [0, 45], rainSplashMaxAgl: [0, 2000],
   rainWetnessPerRain: [0, 2], rainDryTime: [0, 600], rainWetRise: [0, 120],
   rainPuddle: [0, 1], rainRipple: [0, 4],
+  weatherSeed: [0, 1e9],
+  lightningThreshold: [0, 1], lightningInterval: [0.5, 300], lightningIntervalSpread: [0, 1],
+  lightningDistMin: [20, 20000], lightningDistMax: [50, 40000],
+  lightningFlash: [0, 8], lightningDecay: [0.2, 20], lightningBoltScale: [0.1, 8], lightningSunLift: [0, 10],
+  weatherRainBedVolume: [0, 1], weatherThunderVolume: [0, 1], weatherSoundSpeed: [50, 2000],
 });
 const STRING_VALUES = Object.freeze({
   weatherFogSource: ['sky', 'custom'],
@@ -605,6 +630,9 @@ const RAIN_APPLY_KEYS = Object.freeze([
   'rainDropsEnabled', 'rainSplashEnabled', 'rainSplashMaxAgl', 'rainGroundSource',
   'rainGroundConservative', 'rainWetEnabled', 'rainDryTime', 'rainWetRise',
   'rainMaxDrops', 'rainMaxSplashes', 'waterEnabled', 'worldMode',
+  'weatherSeed', 'lightningEnabled', 'lightningThreshold', 'lightningInterval',
+  'lightningIntervalSpread', 'lightningDistMin', 'lightningDistMax', 'lightningFlash',
+  'lightningDecay', 'lightningBoltScale', 'lightningSunLift', 'weatherSoundSpeed', 'cloudAHeight',
   ...Object.values(RAIN_LOOK_KEYS),
 ]);
 const appliedRain = {};
@@ -634,6 +662,22 @@ function applyRainSettings() {
   rain.setWetEnabled(settings.rainWetEnabled);
   rain.setDryTime(settings.rainDryTime);
   rain.setWetRise(settings.rainWetRise);
+  lightning.set({
+    enabled: settings.lightningEnabled,
+    seed: settings.weatherSeed,
+    rain: settings.weatherRain,
+    threshold: settings.lightningThreshold,
+    interval: settings.lightningInterval,
+    intervalSpread: settings.lightningIntervalSpread,
+    distMin: settings.lightningDistMin,
+    distMax: settings.lightningDistMax,
+    flash: settings.lightningFlash,
+    decay: settings.lightningDecay,
+    boltScale: settings.lightningBoltScale,
+    sunLift: settings.lightningSunLift,
+    soundSpeed: settings.weatherSoundSpeed,
+    cloudBase: settings.cloudAHeight,
+  });
   // Rain lands on the sea surface rather than the sea bed, but only where there is a sea.
   rain.setWaterLevel(settings.waterEnabled && settings.worldMode === 'terrain' ? terrain.seaLevel : null);
 }
@@ -736,6 +780,9 @@ const envAudio = createEnvironmentAudio({
 });
 const audioDirector = createBaseGameAudioDirector({
   audio: envAudio, synthVoice,
+  // Weather sound is registered with the director rather than started from here, so mute, the
+  // mixer and the underwater low-pass have one owner (rain.js supplies the generators).
+  buildRainBed: createRainBed, buildThunder: playThunder,
   getListenerPosition: () => camera.position,
 });
 function applyAudioSettings() {
@@ -1540,6 +1587,9 @@ const clouds = createBaseGameClouds({ scene, worldCoordinates });
 // Rain (base-game-rain.js). Its ground comes from the sea-depth clipmap window, so it asks the
 // terrain to stream that window whether or not there is a sea.
 const rain = createBaseGameRain({ scene, terrain, worldCoordinates });
+// Storms. The schedule is derived from the shared seed and the lockstep clock, so no strike is
+// ever sent over the wire and a late joiner is in phase (base-game-lightning.js).
+const lightning = createBaseGameLightning({ scene, terrain, rain, worldCoordinates });
 // Wet ground is bound to the splat ONCE, at startup, not the first time it rains: the graph gates
 // on the wetness uniform, and rebuilding every splat instance mid-session is a visible hitch.
 terrain.setSplatRain(rain.groundShade);
@@ -1690,6 +1740,9 @@ function updateWorld(dt) {
   const weatherDim = 1 - settings.sunDimPerRain * settings.weatherRain;
   sunIntensity *= weatherDim;
   moonIntensity *= weatherDim;
+  // A bolt briefly lights the whole sky. Added to the value that then goes THROUGH the rig, for the
+  // same reason the ambient lift is an assignment: never write a rig-owned light from the loop.
+  sunIntensity += lightning.sunLift;
   rig.ambLight.intensity = ambientBase * (1 + settings.ambientLiftPerRain * settings.weatherRain);
 
   // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
@@ -1800,6 +1853,8 @@ function changed(key) {
     applyMusicSetting().catch(reportBaseGameError);
   } else if (key?.startsWith('audio')) {
     applyAudioSettings();
+  } else if (key === 'weatherSoundSpeed') {
+    controlRegistry.get('lightningDistMax')?.sync();
   } else if (key === 'waveWindDeg' || key === 'weatherWindFollowsWaves') {
     // The wind readout quotes the heading it is actually using, which is the wave one when linked.
     controlRegistry.get('weatherWindDeg')?.sync();
@@ -1893,6 +1948,8 @@ const rainDropSec = createSection(rainSec, 'Rain drops', { collapsed: true });
 const rainSplashSec = createSection(rainSec, 'Rain splashes', { collapsed: true });
 const rainGroundSec = createSection(rainSec, 'Rain ground', { collapsed: true });
 const rainWetSec = createSection(rainSec, 'Rain wet surfaces', { collapsed: true });
+const lightningSec = createSection(weatherSec, 'Lightning', { collapsed: true });
+const weatherAudioSec = createSection(weatherSec, 'Weather audio', { collapsed: true });
 const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
@@ -2281,6 +2338,15 @@ addRange(weatherSec, 'weatherWindDeg', 'Wind heading', 0, 360, 1,
 addRange(weatherSec, 'weatherWindSpeed', 'Wind speed', 0, 60, 0.1, value => `${value.toFixed(1)} m/s`);
 addRange(weatherSec, 'weatherGust', 'Gust amplitude', 0, 40, 0.1, value => `${value.toFixed(1)} m/s`);
 addRange(weatherSec, 'weatherGustPeriod', 'Gust period', 0.5, 60, 0.1, value => `${value.toFixed(1)} s`);
+// The seed is the whole storm: every strike's time, bearing and distance comes out of it, so two
+// clients with the same seed see the same lightning without a byte crossing the network.
+addRange(weatherSec, 'weatherSeed', 'Weather seed', 0, 1e9, 1, value => value.toFixed(0));
+addAction(weatherSec, 'Reroll the weather seed', () => {
+  if (!canEditSharedSettings()) return;
+  settings.weatherSeed = Math.floor(Math.random() * 1e9);
+  syncAllControls();
+  changed('weatherSeed');
+});
 
 // ---- Weather: rain (phase R1 — drops and splash rings; wet ground and lightning are later) ----
 addToggle(rainSec, 'rainEnabled', 'Rain');
@@ -2332,6 +2398,33 @@ addRange(rainWetSec, 'rainWetRise', 'Time to wet up', 0, 120, 0.5, seconds);
 addRange(rainWetSec, 'rainDryTime', 'Time to dry out', 0, 600, 1, seconds);
 addRange(rainWetSec, 'rainPuddle', 'Puddle coverage', 0, 1, 0.01, f2);
 addRange(rainWetSec, 'rainRipple', 'Ripple strength', 0, 4, 0.01, f2);
+
+// ---- Lightning (phase R4). The schedule terms are shared; the look is local. ----
+addToggle(lightningSec, 'lightningEnabled', 'Lightning');
+addRange(lightningSec, 'lightningThreshold', 'Weather needed before it strikes', 0, 1, 0.01, f2);
+addRange(lightningSec, 'lightningInterval', 'Mean interval', 0.5, 300, 0.5, value => `${value.toFixed(1)} s`);
+addRange(lightningSec, 'lightningIntervalSpread', 'Interval spread', 0, 1, 0.01,
+  value => (value > 0 ? value.toFixed(2) : 'metronome'));
+addRange(lightningSec, 'lightningDistMin', 'Nearest strike', 20, 20000, 10, metres);
+addRange(lightningSec, 'lightningDistMax', 'Farthest strike', 50, 40000, 50,
+  value => `${value.toFixed(0)} m · clap ${(value / Math.max(1, settings.weatherSoundSpeed)).toFixed(1)} s later`);
+addRange(lightningSec, 'lightningFlash', 'Flash strength', 0, 8, 0.05, f2);
+addRange(lightningSec, 'lightningDecay', 'Flash decay', 0.2, 20, 0.1, f2);
+addRange(lightningSec, 'lightningBoltScale', 'Bolt thickness', 0.1, 8, 0.05, f2);
+addRange(lightningSec, 'lightningSunLift', 'Sun lift on a flash', 0, 10, 0.1, f2);
+// Fires the next scheduled strike now rather than an unscheduled one, so it is the real thing.
+addAction(lightningSec, 'Strike now', () => {
+  lightning.strike(lightning.stats.lastIndex + 1, camera.position, {
+    onThunder: distance => { if (settings.weatherThunder) audioDirector.thunderAt(distance, settings.weatherThunderVolume); },
+  });
+});
+
+addToggle(weatherAudioSec, 'weatherRainBed', 'Rain bed');
+addRange(weatherAudioSec, 'weatherRainBedVolume', 'Rain bed volume', 0, 1, 0.01, f2);
+addToggle(weatherAudioSec, 'weatherThunder', 'Thunder');
+addRange(weatherAudioSec, 'weatherThunderVolume', 'Thunder volume', 0, 1, 0.01, f2);
+// Dragging this is the fastest way to hear whether the delay is wired to distance at all.
+addRange(weatherAudioSec, 'weatherSoundSpeed', 'Speed of sound', 50, 2000, 5, value => `${value.toFixed(0)} m/s`);
 
 addRange(atmosphereSec, 'overcastPerRain', 'Overcast per unit of weather', 0, 2, 0.01, f2);
 addRange(atmosphereSec, 'sunDimPerRain', 'Sun dimming per unit', 0, 1, 0.01, f2);
@@ -3275,10 +3368,19 @@ async function animate() {
     await frameProfiler.timeAsync('grass', () => flora.update(dt));
     frameProfiler.time('sky', () => updateWorld(dt));
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
-    frameProfiler.time('weather', () => rain.update(dt, camera, {
-      underwater: settings.rainUnderwaterOff && water.underwater,
-      skyColor: scene.background,
-    }));
+    frameProfiler.time('weather', () => {
+      rain.update(dt, camera, {
+        underwater: settings.rainUnderwaterOff && water.underwater,
+        skyColor: scene.background,
+      });
+      // The lockstep clock the swell already rides: the one clock the client and the server agree
+      // on, so two peers strike at the same instant without a message.
+      lightning.update(dt, playerController.waterTime, camera.position, {
+        onThunder: distance => { if (settings.weatherThunder) audioDirector.thunderAt(distance, settings.weatherThunderVolume); },
+      });
+      const bedLevel = settings.weatherRainBed && !gameplayPaused ? rain.system.getDensity() : 0;
+      audioDirector.setRainBed(bedLevel, settings.weatherRainBedVolume);
+    });
     if (!terrainStudio.open) {
       if (settings.dofEnabled) {
         depthOfField.setParams({ enabled: true, autoFocus: settings.dofAutoFocus, focusDistance: settings.dofFocusDistance, aperture: settings.dofAperture, maxRadius: settings.dofMaxRadius, farScale: settings.dofFarScale });
