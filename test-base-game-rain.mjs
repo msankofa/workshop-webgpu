@@ -210,6 +210,128 @@ const rain = createBaseGameRain({ scene, terrain, worldCoordinates, maxDrops: 20
   }
 }
 
+// ---- 8. wet surfaces (R2) --------------------------------------------------------------------
+// The wetness uniform is not the rain slider: it LAGS it, so ground stays wet after a storm.
+{
+  const camera = new THREE.PerspectiveCamera();
+  const U = rain.uniforms;
+
+  rain.setWetEnabled(true);
+  rain.setWetRise(8);
+  rain.setDryTime(90);
+  rain.setLook({ density: 0.5, wetness: 1 });
+  ok(U.uWetness.value === 0, 'wetness starts dry however hard it is raining this instant');
+
+  // Wet up: a time constant, so one tau reaches 1 - 1/e of the way.
+  for (let i = 0; i < 8 * 60; i++) rain.update(1 / 60, camera, {});
+  ok(Math.abs(U.uWetness.value - (1 - Math.exp(-1))) < 0.01, `one rise constant reaches ~63% (${U.uWetness.value.toFixed(3)})`);
+  for (let i = 0; i < 60 * 60; i++) rain.update(1 / 60, camera, {});
+  ok(U.uWetness.value > 0.99, 'and it saturates at 1, never above');
+  ok(U.uWetness.value <= 1, 'wetness is clamped to 1');
+
+  // Dry out: the storm stops and the ground stays wet for a while. This is the bit neither donor
+  // page has — both track the slider, so ground went bone dry the frame the rain stopped.
+  rain.setLook({ density: 0, wetness: 0 });
+  rain.update(1 / 60, camera, {});
+  ok(U.uWetness.value > 0.98, 'the frame the rain stops, the ground is still wet');
+  for (let i = 1; i < 90 * 60; i++) rain.update(1 / 60, camera, {});
+  ok(Math.abs(U.uWetness.value - Math.exp(-1)) < 0.02, `one dry constant later it is ~37% wet (${U.uWetness.value.toFixed(3)})`);
+  ok(rain.wetness === U.uWetness.value, 'the module reports the same number the shader reads');
+
+  // Drying keeps running while nothing is drawn — the group is hidden at density 0, and an early
+  // return before the lag would have frozen the ground at whatever it happened to be.
+  const before = U.uWetness.value;
+  ok(rain.group.visible === false, 'nothing is drawn at zero density');
+  for (let i = 0; i < 120; i++) rain.update(1 / 60, camera, {});
+  ok(U.uWetness.value < before, 'yet the ground keeps drying');
+
+  // Rise is faster than fall, which is what makes it read as weather rather than a crossfade.
+  rain.setLook({ wetness: 1 });
+  const rise = [];
+  for (let i = 0; i < 60; i++) { rain.update(1 / 60, camera, {}); rise.push(U.uWetness.value); }
+  ok(rise[59] > rise[0], 'raining again wets it back up');
+
+  rain.setWetEnabled(false);
+  for (let i = 0; i < 600 * 60; i++) rain.update(1 / 60, camera, {});
+  ok(U.uWetness.value < 0.001, 'turning wet surfaces off dries the ground out rather than freezing it');
+  rain.setWetEnabled(true);
+
+  // A zero time constant is the old instant behaviour, not a divide by zero.
+  rain.setDryTime(0); rain.setWetRise(0);
+  rain.setLook({ wetness: 0.7 });
+  rain.update(1 / 60, camera, {});
+  ok(Math.abs(U.uWetness.value - 0.7) < 1e-9, 'a zero time constant snaps, and does not produce NaN');
+  ok(Number.isFinite(U.uWetness.value), 'and the uniform stays finite');
+}
+
+// ---- 9. the wetness fan-out ----------------------------------------------------------------------
+{
+  const base = { rainDensityBase: 0, rainDensityPerRain: 0.9, rainOpacityBase: 0.45, rainOpacityPerRain: 0.25, rainWetnessPerRain: 1.4 };
+  const at = r => rainResponse({ ...base, weatherRain: r });
+  ok(at(0).wetness === 0, 'dry weather means dry ground');
+  ok(Math.abs(at(0.5).wetness - 0.7) < 1e-9, 'half weather is 0.7 wet at the default response');
+  ok(at(1).wetness === 1, 'and a full storm saturates rather than exceeding 1');
+  ok(at(0.9).wetness > at(0.4).wetness, 'wetness is monotonic in the master');
+}
+
+// ---- 10. the ground material carries the same maths, not a copy ------------------------------------
+// rain.js exports the puddle and ripple fields and terrain-splat-streamed.js imports them, so rain
+// cannot bead differently on the terrain than on everything standing on it.
+{
+  const rainMod = await import('./rain.js');
+  for (const name of ['wetPuddleField', 'wetRippleOffset', 'wetAlbedoScale', 'wetRoughness']) {
+    ok(typeof rainMod[name] === 'function', `rain.js exports ${name} for the splat to reuse`);
+  }
+  const splatSource = await (await import('fs/promises')).readFile('./terrain-splat-streamed.js', 'utf8');
+  ok(/import \{[^}]*wetPuddleField[^}]*\} from '\.\/rain\.js'/.test(splatSource),
+    'the splat imports those fields rather than carrying a hand-synced copy');
+  ok(!/mx_fractal_noise_float\(pw/.test(splatSource), 'and does not re-derive the puddle noise itself');
+
+  const { createStreamedSplatMaterial, placeholderStreamedSplatTextures } = await import('./terrain-splat-streamed.js');
+  const { uniform, vec4 } = await import('three/tsl');
+  const bundle = { uniforms: rainMod.createRainUniforms(), offset: uniform(new THREE.Vector2()), puddleScale: 0.09, rippleScale: 3 };
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+
+  const wetMat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { rain: bundle });
+  ok(wetMat.userData.streamedSplat.rain === true, 'a rain-bound splat instance says so');
+  try {
+    const built = await buildMaterial(wetMat, geo);
+    ok(built.fragment.length > 0, 'the wet ground graph builds headless');
+  } catch (error) {
+    ok(false, `the wet ground graph builds headless: ${error.message}`);
+  }
+
+  // Rain and the waterline are two different things happening to the same ground: both branches
+  // have to survive being in one graph, and rain must be gated to what is out of the water.
+  const water = {
+    sceneLevel: uniform(2), offset: uniform(new THREE.Vector2()), sunDir: uniform(new THREE.Vector3(0.3, 0.9, 0.3)),
+    sunColor: uniform(new THREE.Color(1, 1, 1)), time: uniform(0), causticStrength: uniform(1), causticSpread: uniform(3),
+    waveNormalFold: xz => vec4(xz.x.mul(0).add(0), 1, 0, 0),
+  };
+  const bothMat = createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { water, rain: bundle });
+  ok(bothMat.userData.streamedSplat.water === true && bothMat.userData.streamedSplat.rain === true, 'one instance can carry both');
+  try {
+    const built = await buildMaterial(bothMat, geo);
+    ok(/refract/.test(built.fragment), 'the caustic survives the rain branch');
+    ok(built.fragment.length > 0, 'and the combined graph builds');
+  } catch (error) {
+    ok(false, `the combined graph builds: ${error.message}`);
+  }
+
+  const bare = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
+  ok(bare.userData.streamedSplat.rain === false, 'without a rain bundle the flag is false, so nothing else changed');
+}
+
+// ---- 11. what the page ships -----------------------------------------------------------------------
+{
+  const html = await (await import('fs/promises')).readFile('./base-game.html', 'utf8');
+  // Bound once at startup: the graph gates on the wetness uniform, and rebuilding every splat
+  // instance the first time it rains is a visible hitch.
+  ok(/terrain\.setSplatRain\(rain\.groundShade\)/.test(html), 'the page binds wet ground to the splat');
+  ok(!/applyRainSettings[\s\S]{0,600}setSplatRain/.test(html), 'and does it outside the per-frame apply');
+  ok(/applyWetSurface\(material, rain\.uniforms/.test(html), 'the Traversal Lab materials are decorated too');
+}
+
 seaDepth.dispose();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1399,7 +1399,43 @@ a CPU twin of the conservative-versus-bilinear claim, the module built for real 
 window (allocation rebuild, visibility gates, rebase), and headless GLSL builds of both rain graphs —
 with the hooks and without, so a regression for the other two pages fails in Node. Unseen in a browser.
 
-Next in the plan: R2 (wet ground) and R3 (the rain shadow map), which touch nothing each other touches.
+### Weather, phase R2: wet ground (shipped 2026-08-24)
+
+Rain darkens the ground, drops its roughness, pools puddles on the flats and bends the normal with
+ripples. Two consumers, one copy of the maths: `rain.js` exports `wetPuddleField`, `wetRippleOffset`,
+`wetAlbedoScale` and `wetRoughness`, and both `applyWetSurface` (props, walls, the Traversal Lab) and
+`terrain-splat-streamed.js`'s new `rain` bundle import them. The plan had called for a second copy
+with a hand-sync note; one import is better, because rain beading differently on the terrain than on
+the wall standing on it is exactly the drift that note would have been apologising for.
+
+**The rain bundle** is `{ uniforms, offset, puddleScale, rippleScale }` beside the existing `water`
+one, bound once at startup by `terrain.setSplatRain(rain.groundShade)` — not on first rain, because
+the graph gates on the wetness uniform and rebuilding every splat instance mid-session is a visible
+hitch. `offset` is the render origin, so puddles are anchored to global XZ and stay with the ground
+across a rebase.
+
+**Rain and the waterline compose rather than fight.** A single `submerged` term is computed before
+either branch: the water branch darkens the albedo and glosses the tide strip by it, and the rain
+branch is multiplied by `1 − submerged`. So the seabed gets no puddles, and neither effect
+double-darkens a fragment the other already darkened.
+
+**Wetness lags the master.** This is what neither donor page has — in both of them wetness tracks the
+rain slider directly, so ground goes bone dry the frame a storm stops. `base-game-rain.js` owns the
+uniform and chases the target with a time constant: 8 s rising, 90 s falling, both sliders. It is
+advanced on every frame including those where nothing is drawn, so a storm that ends leaves the
+ground drying rather than frozen; a zero constant snaps rather than dividing by zero.
+
+The Traversal Lab's materials are now exposed (`traversalLab.materials`) and decorated with
+`applyWetSurface`. They carry a plain `color` and no colour graph, and `applyWetSurface` skips the
+albedo darkening when there is no `colorNode` to wrap — so they pass `baseColor: materialColor`
+explicitly, or they would go glossy in the rain without going dark. That behaviour is now stated at
+the line in `rain.js`; it was left opt-in rather than defaulted so the other pages keep their look.
+
+**Deferred:** `applyWetSheen` on player bodies and weapons. `base-game-player-bodies.js` owns those
+materials and another session is mid-rewrite there for the server hit rig, so the three sheen
+settings were dropped rather than shipped as sliders that do nothing.
+
+Next in the plan: R3 (the rain shadow map) and R4 (lightning, thunder and the rain bed).
 
 ### Terrain authoring and Terrain Studio
 
@@ -1781,7 +1817,7 @@ rapid foam at local drops; and no vertical or diagonal standing-water walls.
 
 ### Moisture-driven plants and other world dressing
 
-**F1 and F2 shipped 2026-08-24; grass onward is still planned (plan
+**F1-F5 shipped 2026-08-24; trees and understory are still planned (plan
 `docs/superpowers/plans/2026-08-23-base-game-plants.md`).** Roadmap step
 11, and it starts by closing the gap this doc's terrain section names: the plan's first two phases
 give the streamed terrain a biome field. `terrain-source-v5.js` fills the `biomeIds` and `moisture`
@@ -1803,6 +1839,16 @@ placement window, ground height comes from the shared fine `createHeightWindow` 
 weather plan's R1b window, 1.25 m posts over 160 m) rather than main-thread `source.heightAt` calls,
 and records are kept global and uploaded render-local so a rebase re-uploads instead of re-placing.
 Flora is deterministic from a room-shared `floraSeed` and is not replicated; v1 does not collide.
+
+**Grass (F5).** `base-game-flora.js` owns one `createComputeGrass` instance fed by two injected TSL
+samplers: height from the terrain's lod-0 contact window (1.25 m posts over 160 m, the exact field
+the visible chunks are built from) and density from the placement window's scalar `coverGrass`
+channel. Both adapters add the render origin before sampling, since candidates are render-local and
+the windows are global. Blades carry a small negative vertical bias — a sunk blade is invisible, a
+floating one shows daylight. The Plants panel section drives it through setters only, because
+`grass-compute.js` cannot free its storage buffers; the draw radius is clamped to the contact
+window's usable circle (56.6 m for a 160 m window). Frame cost lands in the `grass` profiler slot,
+awaited like the env-viewer does it. See `vegetation.md` for the module contract.
 
 ### Isolation, persistence, and measurement requirements
 

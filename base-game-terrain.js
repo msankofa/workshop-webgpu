@@ -144,13 +144,14 @@ export function createBaseGameTerrain({
   const coverLevels = cfg.volumeLod.map((spec, i) => createLodCoverage({ chunkSize: spec.chunkSize, eroded: i < cfg.volumeLod.length - 1 }));
   const splatInstances = new Map();   // 0 = exact, 1..n = cascade levels
   let splatWater = null;              // the water module's groundShade (wet band + caustics)
+  let splatRain = null;               // the rain module's groundShade (wetness, puddles, ripples)
   function splatFor(index) {
     if (!splatMaterial || !splatTextures) return null;
     let m = splatInstances.get(index);
     if (!m) {
       const self = index === 0 ? coverExact : coverLevels[index - 1];
       const finer = index === 0 ? null : (index === 1 ? coverExact : coverLevels[index - 2]);
-      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer }, water: splatWater });
+      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer }, water: splatWater, rain: splatRain });
       splatInstances.set(index, m);
     }
     m.wireframe = wireframe;
@@ -158,6 +159,15 @@ export function createBaseGameTerrain({
   }
   function setSplatWater(shade) {
     splatWater = shade ?? null;
+    rebuildSplatInstances();
+  }
+  // Rain is bound ONCE at startup, not when it starts raining: the graph gates on the wetness
+  // uniform, and rebuilding every splat instance mid-session is a visible hitch.
+  function setSplatRain(shade) {
+    splatRain = shade ?? null;
+    rebuildSplatInstances();
+  }
+  function rebuildSplatInstances() {
     for (const m of splatInstances.values()) m.dispose();
     splatInstances.clear();
     applyMaterials();
@@ -580,6 +590,7 @@ export function createBaseGameTerrain({
     updateSplat(patch) { if (splatMaterial) updateStreamedSplat(splatMaterial, patch); for (const m of splatInstances.values()) updateStreamedSplat(m, patch); },
     get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },
     setSplatWater,
+    setSplatRain,
     setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
     get splatMaterial() { return splatMaterial; },
     get splatEnabled() { return splatEnabled; },

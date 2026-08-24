@@ -99,8 +99,11 @@ import { buildPerformanceMeasurement, changedPerformanceSettings } from './perfo
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
+import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameRain, rainResponse } from './base-game-rain.js';
+import { applyWetSurface } from './rain.js';
+import { materialColor } from 'three/tsl';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
@@ -176,6 +179,16 @@ const DEFAULT_SETTINGS = Object.freeze({
   waterReflection: 'planar',
   waterCaustics: true,
   waterUnderwaterFog: true,
+  // Plants (plants plan F5). Grass is the first layer; trees and understory follow.
+  grassEnabled: true,
+  grassDensity: BASE_GAME_FLORA_DEFAULTS.grassDensity,
+  grassRadius: BASE_GAME_FLORA_DEFAULTS.grassRadius,
+  grassBladeHeight: BASE_GAME_FLORA_DEFAULTS.grassBladeHeight,
+  grassBladeWidth: BASE_GAME_FLORA_DEFAULTS.grassBladeWidth,
+  grassWind: BASE_GAME_FLORA_DEFAULTS.grassWind,
+  grassStyle: BASE_GAME_FLORA_DEFAULTS.grassStyle,
+  grassVerticalOffset: BASE_GAME_FLORA_DEFAULTS.grassVerticalOffset,
+  grassCoverGate: BASE_GAME_FLORA_DEFAULTS.grassCoverGate,
   waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
   waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   // Weather, phase C1: cloud decks. The master rain slider is a later phase; `weatherOvercast` is
@@ -226,6 +239,14 @@ const DEFAULT_SETTINGS = Object.freeze({
   rainGroundSource: 'coarse',
   rainGroundConservative: true,
   rainUnderwaterOff: true,
+  // Wet surfaces (phase R2). Wetness lags the master: ground darkens as the rain arrives and dries
+  // over minutes, which neither donor page does — both track the slider instantly.
+  rainWetEnabled: true,
+  rainWetnessPerRain: 1.4,
+  rainDryTime: 90,
+  rainWetRise: 8,
+  rainPuddle: 0.45,
+  rainRipple: 1,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -401,6 +422,8 @@ const NUMBER_LIMITS = Object.freeze({
   rainNearStart: [0, 5], rainNearEnd: [0, 10], rainCamLean: [0, 3],
   rainMaxSplashes: [200, 40000], rainSplashRadius: [2, 160], rainSplashSize: [0.01, 3], rainSplashRate: [0.1, 12],
   rainSplashSlopeMax: [0, 90], rainSplashSlopeFade: [0, 45], rainSplashMaxAgl: [0, 2000],
+  rainWetnessPerRain: [0, 2], rainDryTime: [0, 600], rainWetRise: [0, 120],
+  rainPuddle: [0, 1], rainRipple: [0, 4],
 });
 const STRING_VALUES = Object.freeze({
   weatherFogSource: ['sky', 'custom'],
@@ -508,6 +531,8 @@ function applyWaterSettings() {
   water.setUnderwaterFog(settings.waterUnderwaterFog);
   water.setWaves(waveOptionsFromWorld(settings));
 }
+
+// Flora follows the same shape: one diff against the last applied values, setters only.
 // Same shape as the water apply: a dirty check, so dragging an unrelated slider does not rebuild a
 // cloud deck (an octave change disposes and rebuilds that deck's material).
 const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint'];
@@ -553,6 +578,7 @@ const RAIN_LOOK_KEYS = Object.freeze({
   splashRadius: 'rainSplashRadius', splashSize: 'rainSplashSize', splashRate: 'rainSplashRate',
   splashSlopeMax: 'rainSplashSlopeMax', splashSlopeFade: 'rainSplashSlopeFade',
   windSpeed: 'weatherWindSpeed', gust: 'weatherGust', gustPeriod: 'weatherGustPeriod',
+  puddle: 'rainPuddle', ripple: 'rainRipple',
 });
 function rainWindDeg() {
   return settings.weatherWindFollowsWaves ? settings.waveWindDeg : settings.weatherWindDeg;
@@ -571,7 +597,12 @@ function scheduleRainAllocation() {
 function applyRainSettings() {
   if (rain.maxDrops !== settings.rainMaxDrops || rain.maxSplashes !== settings.rainMaxSplashes) scheduleRainAllocation();
   const response = rainResponse(settings);
-  const look = { density: settings.rainEnabled ? response.density : 0, opacity: response.opacity, windDeg: rainWindDeg() };
+  const look = {
+    density: settings.rainEnabled ? response.density : 0,
+    opacity: response.opacity,
+    wetness: settings.rainEnabled ? response.wetness : 0,
+    windDeg: rainWindDeg(),
+  };
   for (const [lookKey, settingKey] of Object.entries(RAIN_LOOK_KEYS)) look[lookKey] = settings[settingKey];
   look.splashOrient = settings.rainSplashOrient ? 1 : 0;
   rain.setLook(look);
@@ -581,6 +612,9 @@ function applyRainSettings() {
   rain.setSplashMaxAgl(settings.rainSplashMaxAgl);
   rain.setGroundSource(settings.worldMode === 'terrain' ? settings.rainGroundSource : 'off');
   rain.setConservative(settings.rainGroundConservative);
+  rain.setWetEnabled(settings.rainWetEnabled);
+  rain.setDryTime(settings.rainDryTime);
+  rain.setWetRise(settings.rainWetRise);
   // Rain lands on the sea surface rather than the sea bed, but only where there is a sea.
   rain.setWaterLevel(settings.waterEnabled && settings.worldMode === 'terrain' ? terrain.seaLevel : null);
 }
@@ -1447,6 +1481,33 @@ scene.add(sky.group);
 const water = createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates });
 let underwaterAudio = false;
 terrain.setSplatWater(water.groundShade);
+
+// Grass over the streamed terrain (base-game-flora.js). It reads the terrain's own field windows:
+// the lod-0 contact window for the height a blade sits at, and the 8 m placement field's scalar
+// grass cover for where blades belong at all. grass-compute.js is imported only if it is enabled.
+const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
+const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
+  'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate'];
+const appliedFlora = {};
+let floraLoading = false;
+function applyFloraSettings() {
+  let dirty = false;
+  for (const key of FLORA_APPLY_KEYS) if (appliedFlora[key] !== settings[key]) { appliedFlora[key] = settings[key]; dirty = true; }
+  if (!dirty) return;
+  const on = settings.grassEnabled && settings.worldMode === 'terrain';
+  if (on && !floraLoading) { floraLoading = true; flora.load().then(ok => { if (!ok) showError(`grass unavailable: ${flora.stats.lastError}`); }); }
+  flora.setEnabled(on);
+  flora.apply({
+    grassDensity: settings.grassDensity,
+    grassRadius: settings.grassRadius,
+    grassBladeHeight: settings.grassBladeHeight,
+    grassBladeWidth: settings.grassBladeWidth,
+    grassWind: settings.grassWind,
+    grassStyle: settings.grassStyle,
+    grassVerticalOffset: settings.grassVerticalOffset,
+    grassCoverGate: settings.grassCoverGate,
+  });
+}
 loadWaterConfig('').then(cfg => { applyWaterConfig(cfg, { ocean: water.profile }); water.setWaves(waveOptionsFromWorld(settings)); }).catch(() => {});
 
 // Two cloud decks (base-game-clouds.js). They follow the camera, take their colour from the same
@@ -1455,6 +1516,16 @@ const clouds = createBaseGameClouds({ scene, worldCoordinates });
 // Rain (base-game-rain.js). Its ground comes from the sea-depth clipmap window, so it asks the
 // terrain to stream that window whether or not there is a sea.
 const rain = createBaseGameRain({ scene, terrain, worldCoordinates });
+// Wet ground is bound to the splat ONCE, at startup, not the first time it rains: the graph gates
+// on the wetness uniform, and rebuilding every splat instance mid-session is a visible hitch.
+terrain.setSplatRain(rain.groundShade);
+// The Traversal Lab has plain MeshStandardNodeMaterials, so it takes rain.js's own decorator
+// rather than the splat bundle. Puddles on the floors, run-off streaks down the walls.
+for (const material of traversalLab.materials) {
+  // baseColor is explicit: these carry a plain `color` and no colour graph, so without it they
+  // would go glossy in the rain without ever going dark.
+  applyWetSurface(material, rain.uniforms, { baseColor: materialColor, rippleScale: 2.6, puddleScale: 0.12 });
+}
 
 const frameProfiler = createFrameProfiler();
 function applySkyComponentVisibility() {
@@ -1473,6 +1544,7 @@ function updateWorld(dt) {
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
+  applyFloraSettings();
   applyCloudSettings();
   applyRainSettings();
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
@@ -1796,6 +1868,7 @@ const rainSec = createSection(weatherSec, 'Rain', { collapsed: false });
 const rainDropSec = createSection(rainSec, 'Rain drops', { collapsed: true });
 const rainSplashSec = createSection(rainSec, 'Rain splashes', { collapsed: true });
 const rainGroundSec = createSection(rainSec, 'Rain ground', { collapsed: true });
+const rainWetSec = createSection(rainSec, 'Rain wet surfaces', { collapsed: true });
 const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
@@ -2067,6 +2140,8 @@ addRange(armSec, 'bodyArmAsym', 'Backswing (fraction of forward swing)', 0, 1.5,
 // Mirrors bot-viewer-v3's Movement tuning section: same controls, ranges, tooltips and defaults.
 const f1 = value => value.toFixed(1), f2 = value => value.toFixed(2);
 const metres = value => `${value.toFixed(0)} m`;
+// A time constant, so quote what it means: 63% of the way there, not "done".
+const seconds = value => (value > 0 ? `${value.toFixed(value < 10 ? 1 : 0)} s to 63%` : 'instant');
 addRange(bodyMoveSec, 'bodyTurnStiffness', 'Turn follow', 8, 60, 1, f1).title =
   'How hard the body turns towards the way it wants to face. Higher snaps round corners, lower drifts through them.';
 addRange(bodyMoveSec, 'bodyTurnDamping', 'Turn drag', 2, 24, 1, f1).title =
@@ -2155,6 +2230,19 @@ addToggle(waterSec, 'waveDispersion', 'Dispersion (long waves travel faster)');
 addRange(waterSec, 'waveSpeed', 'Wave speed without dispersion (m/s)', 0, 100, 0.5, value => `${value.toFixed(1)} m/s`);
 addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
 
+// ---- Plants (plants plan F5): grass first, trees and understory later ----
+const plantsSec = createSection(ctrlBody, 'Plants', { collapsed: true });
+addToggle(plantsSec, 'grassEnabled', 'Grass (needs the terrain world)');
+addRange(plantsSec, 'grassDensity', 'Blades per square metre', 0, 60, 0.5, value => value.toFixed(1));
+addRange(plantsSec, 'grassRadius', 'Draw radius (m)', 5, 200, 1, value => `${value.toFixed(0)} m`);
+addRange(plantsSec, 'grassBladeHeight', 'Blade height', 0.05, 4, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassBladeWidth', 'Blade width', 0.05, 4, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassWind', 'Wind', 0, 4, 0.05, value => value.toFixed(2));
+addSelect(plantsSec, 'grassStyle', 'Blade style', ['streaks', 'dryTip', 'mottle', 'vein', 'highContrast'],
+  ['Streaks', 'Dry tips', 'Mottled', 'Veined', 'High contrast']);
+addRange(plantsSec, 'grassVerticalOffset', 'Vertical bias (m)', -0.5, 0.5, 0.01, value => `${value.toFixed(2)} m`);
+addRange(plantsSec, 'grassCoverGate', 'Follow biome cover', 0, 1, 0.05, value => value.toFixed(2));
+
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
 // The master. It multiplies through the response sliders below rather than writing them, so a
 // hand-tuned fog or dimming survives a drag. Drops, wet ground and lightning are later phases.
@@ -2211,6 +2299,15 @@ addRange(rainSplashSec, 'rainSplashMaxAgl', 'Hide rings above this height', 0, 2
 addSelect(rainGroundSec, 'rainGroundSource', 'Ground source', ['coarse', 'off'],
   ['Sea-depth window (16 m posts)', 'Flat (the lab floor height, no window)']);
 addToggle(rainGroundSec, 'rainGroundConservative', 'Conservative (lowest of four posts)');
+
+addToggle(rainWetSec, 'rainWetEnabled', 'Wet surfaces');
+addRange(rainWetSec, 'rainWetnessPerRain', 'Wetness per unit of weather', 0, 2, 0.01, f2);
+// Wetness chases its target with a time constant rather than tracking the slider, so ground stays
+// wet after a storm. Neither donor page has this: both go bone dry the frame the rain stops.
+addRange(rainWetSec, 'rainWetRise', 'Time to wet up', 0, 120, 0.5, seconds);
+addRange(rainWetSec, 'rainDryTime', 'Time to dry out', 0, 600, 1, seconds);
+addRange(rainWetSec, 'rainPuddle', 'Puddle coverage', 0, 1, 0.01, f2);
+addRange(rainWetSec, 'rainRipple', 'Ripple strength', 0, 4, 0.01, f2);
 
 addRange(atmosphereSec, 'overcastPerRain', 'Overcast per unit of weather', 0, 2, 0.01, f2);
 addRange(atmosphereSec, 'sunDimPerRain', 'Sun dimming per unit', 0, 1, 0.01, f2);
@@ -3151,6 +3248,7 @@ async function animate() {
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
+    await frameProfiler.timeAsync('grass', () => flora.update(dt));
     frameProfiler.time('sky', () => updateWorld(dt));
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
     frameProfiler.time('weather', () => rain.update(dt, camera, {

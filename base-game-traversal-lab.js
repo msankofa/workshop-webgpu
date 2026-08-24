@@ -57,6 +57,9 @@ export function createBaseGameTraversalLab({ scene, worldQuery }) {
     collider,
     provider,
     stats: lab.stats,
+    // The lab's own materials, so a caller can decorate them (rain's applyWetSurface). They are
+    // plain MeshStandardNodeMaterial with no colorNode of their own, which is what that call wants.
+    materials,
     setVisible,
     setCollisionDebug(visible) {
       collisionWire.visible = root.visible && !!visible;

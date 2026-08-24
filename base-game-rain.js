@@ -9,7 +9,11 @@
 // hidden by the depth buffer and one read too high shows as rain cut off in mid air. And the world
 // has two grounds: the streamed terrain and the Traversal Lab's flat floor.
 //
-// Wet ground, the rain shadow map, lightning and the rain bed are later phases; this is drops.
+// Wetness (phase R2) is owned here rather than by the page because it is not the rain slider: it
+// LAGS it, so ground that has been rained on stays wet for a while after the storm passes. The
+// terrain splat, the Traversal Lab and the bodies all read the one `uWetness` this advances.
+//
+// The rain shadow map, lightning and the rain bed are later phases.
 
 import * as THREE from 'three';
 import { uniform, float, vec2, max, mix } from 'three/tsl';
@@ -21,6 +25,8 @@ export const BASE_GAME_RAIN_DEFAULTS = Object.freeze({
   labGroundY: 0,          // the Traversal Lab's floor slabs top out at y = 0
   noDataHeight: -10000,   // ground before the window has streamed: below everything, not 1e9 (precision)
   splashMaxAgl: 160,      // hide rings above this much height over the ground (flight-sim's rule)
+  dryTime: 90,            // seconds for wetness to fall to 1/e of the way to dry after the rain stops
+  wetRise: 8,             // seconds to wet up; ground darkens quickly and dries slowly, as it does
 });
 
 export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ...opts } = {}) {
@@ -72,8 +78,10 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     splashRadius: 20, splashSize: 0.22, splashRate: 1.6,
     splashSlopeMax: 38, splashSlopeFade: 12, splashOrient: 1,
     windDeg: 38, windSpeed: 2.1, gust: 3, gustPeriod: 17,
+    wetness: 0, puddle: 0.45, ripple: 1.0,
   };
   let enabled = true, dropsOn = true, splashOn = true, splashMaxAgl = cfg.splashMaxAgl;
+  let wetEnabled = true, dryTime = cfg.dryTime, wetRise = cfg.wetRise, wetness = 0;
 
   function applyLook() {
     const U = system.uniforms;
@@ -88,6 +96,8 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     U.uSplashRadius.value = look.splashRadius;
     U.uSplashSize.value = look.splashSize;
     U.uSplashRate.value = look.splashRate;
+    U.uPuddle.value = look.puddle;
+    U.uRipple.value = look.ripple;
     uSkyTintAmount.value = look.skyTint;
     system.setSplashSlope(look.splashSlopeMax, look.splashSlopeFade);
     system.setSplashOrient(look.splashOrient);
@@ -117,9 +127,17 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
 
   const _camGlobal = new THREE.Vector3();
 
+  // What the ground material needs (terrain.setSplatRain(groundShade)), the same shape water's
+  // bundle has: the rain uniforms plus the global-xz offset, so puddles are anchored to the world.
+  const groundShade = {
+    uniforms: system.uniforms, offset: uOffset,
+    puddleScale: 0.09, rippleScale: 3.0,
+  };
+
   return {
-    group,
+    group, groundShade,
     get system() { return system; },
+    get wetness() { return wetness; },
     get uniforms() { return system.uniforms; },
     get maxDrops() { return maxDrops; },
     get maxSplashes() { return maxSplashes; },
@@ -128,6 +146,11 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     setDropsVisible(on) { dropsOn = !!on; },
     setSplashesVisible(on) { splashOn = !!on; },
     setSplashMaxAgl(m) { splashMaxAgl = m; },
+    // Wet surfaces. `dryTime` is the time constant of the fall back to dry, not a hard duration:
+    // neither donor page has one at all, so ground went bone dry the frame a storm stopped.
+    setWetEnabled(on) { wetEnabled = !!on; },
+    setDryTime(seconds) { dryTime = Math.max(0, seconds); },
+    setWetRise(seconds) { wetRise = Math.max(0, seconds); },
     // 'coarse' samples the 16 m sea-depth window; 'off' drops the ground hook to the flat fallback,
     // which is the honest way to see how much of what you are looking at is the window.
     setGroundSource(mode) { uUseWindow.value = mode === 'off' ? 0 : 1; },
@@ -166,9 +189,18 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
       uOffset.value.set(o[0], o[2]);
       uOriginY.value = o[1];
       if (skyColor?.isColor) uSkyTint.value.copy(skyColor);
-      const wet = enabled && look.density > 0 && !underwater;
-      group.visible = wet;
-      if (!wet) return;
+      // Wetness chases the target with a time constant, rising faster than it falls: ground darkens
+      // as the rain arrives and dries over minutes, not in the frame the slider moves. Written even
+      // when nothing is drawn, so a storm that ends still leaves the ground drying rather than
+      // freezing at whatever it happened to be.
+      const target = wetEnabled ? Math.max(0, Math.min(1, look.wetness)) : 0;
+      const tau = target > wetness ? wetRise : dryTime;
+      wetness = tau > 0 ? wetness + (target - wetness) * (1 - Math.exp(-dt / tau)) : target;
+      system.uniforms.uWetness.value = wetness;
+
+      const drawing = enabled && look.density > 0 && !underwater;
+      group.visible = drawing;
+      if (!drawing) return;
       system.streaks.mesh.visible = dropsOn;
       // Above enough ground the rings are a band of noise under the aircraft, so they stop.
       _camGlobal.set(camera.position.x + o[0], camera.position.y + o[1], camera.position.z + o[2]);
@@ -192,5 +224,6 @@ export function rainResponse(settings) {
   return {
     density: Math.max(0, Math.min(1, settings.rainDensityBase + rain * settings.rainDensityPerRain)),
     opacity: Math.max(0, Math.min(1, settings.rainOpacityBase + rain * settings.rainOpacityPerRain)),
+    wetness: Math.max(0, Math.min(1, rain * settings.rainWetnessPerRain)),
   };
 }

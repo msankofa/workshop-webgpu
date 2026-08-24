@@ -234,6 +234,49 @@ export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null,
   };
 }
 
+// ---- wet-surface fields, shared -------------------------------------------------------------------
+// applyWetSurface below and terrain-splat-streamed.js's `rain` bundle both need the same puddles
+// and the same ripples. They are exported rather than copied because a hand-synced second copy of
+// this maths would drift, and then rain would bead differently on the terrain than on everything
+// standing on it. `pw` is the WORLD xz to evaluate at — a page that rebases its render origin
+// passes scene xz + offset, so the puddles stay with the ground rather than with the camera.
+
+// Puddles: an FBM field thresholded by coverage, so they are blotches with soft shores, not tiles.
+// `up` gates them to level ground; pass float(1) for a surface that is already known to be flat.
+export function wetPuddleField(U, pw, up, puddleScale = 0.09) {
+  const n = mx_fractal_noise_float(pw.mul(puddleScale), 3, 2.0, 0.55).mul(0.5).add(0.5);
+  const thr = float(1).sub(U.uPuddle.mul(U.uWetness).mul(0.9));
+  return smoothstep(thr.sub(0.09), thr.add(0.09), n).mul(up);
+}
+
+// Ripples: one expanding ring per cell with a hashed birth; strong inside puddles, faint on the
+// film outside. Returns the xz the surface normal should be bent by (y is untouched).
+export function wetRippleOffset(U, pw, puddle, rippleScale = 3.0) {
+  const p = pw.mul(rippleScale);
+  const cell = floor(p).add(4096);   // keep cells positive: toUint() of a negative float is undefined
+  const f = fract(p).sub(0.5);
+  const h = hash(cell.x.toUint().mul(uint(1973)).add(cell.y.toUint().mul(uint(9277))));
+  const h2 = hash(cell.x.toUint().mul(uint(4177)).add(cell.y.toUint().mul(uint(21277))).add(uint(3)));
+  const life = fract(time.mul(1.3).add(h));
+  const rr = life.mul(0.5);
+  const dist = length(f);
+  const wave = sin(dist.sub(rr).mul(40)).mul(exp(dist.mul(-4))).mul(float(1).sub(life)).mul(step(dist, rr));
+  const gate = step(0.3, h2).mul(mix(0.25, 1.0, puddle)).mul(U.uRipple).mul(U.uWetness);
+  return vec2(wave.mul(f.x).mul(-6).mul(gate), wave.mul(f.y).mul(-6).mul(gate));
+}
+
+// How much wetness darkens albedo and how much it drops roughness, given a puddle mask and an
+// optional run-off streak mask. Both consumers apply these the same way, so they agree by
+// construction rather than by inspection.
+export function wetAlbedoScale(U, puddle, streak = null) {
+  const extra = streak ? puddle.mul(0.35).add(streak.mul(0.18)) : puddle.mul(0.35);
+  return float(1).sub(U.uWetness.mul(float(0.3).add(extra)));
+}
+export function wetRoughness(U, rough, puddle, streak = null) {
+  const dry = streak ? U.uWetness.mul(float(0.35).add(streak.mul(0.3))) : U.uWetness.mul(0.35);
+  return mix(rough.mul(float(1).sub(dry)), float(0.06), puddle.mul(U.uWetness));
+}
+
 // ---- wet surfaces: apply to any MeshStandardNodeMaterial -----------------------------------------
 // baseColor / baseRoughness are nodes (or numbers); baseRoughness null reads the material's own
 // `roughness` live via `materialRoughness`. Returns nothing; mutates the material.
@@ -247,10 +290,7 @@ export function applyWetSurface(mat, U, { baseColor, baseRoughness = null, baseN
   const pw = positionWorld.xz;
   const nBase = baseNormal || normalWorld;
   const up = smoothstep(0.6, 0.9, nBase.y);
-  // Puddles are an FBM field thresholded by coverage, so they are blotches with soft shores, not tiles.
-  const n = mx_fractal_noise_float(pw.mul(puddleScale), 3, 2.0, 0.55).mul(0.5).add(0.5);
-  const thr = float(1).sub(U.uPuddle.mul(wet).mul(0.9));
-  const puddle = smoothstep(thr.sub(0.09), thr.add(0.09), n).mul(up);
+  const puddle = wetPuddleField(U, pw, up, puddleScale);
   // Side faces: columns of run-off sliding down. Phase from x+z so it works on either wall axis.
   let streak = float(0);
   if (streaks) {
@@ -258,25 +298,17 @@ export function applyWetSurface(mat, U, { baseColor, baseRoughness = null, baseN
     const run = mx_noise_float(vec3(along.mul(3.0), positionWorld.y.mul(0.35).sub(time.mul(0.45)), 0)).mul(0.5).add(0.5);
     streak = smoothstep(0.55, 0.85, run).mul(float(1).sub(up)).mul(smoothstep(0.35, 0.05, abs(nBase.y)));
   }
-  // Ripples: one expanding ring per cell with a hashed birth; strong inside puddles, faint on the film outside.
-  const p = pw.mul(rippleScale);
-  const cell = floor(p).add(4096);   // keep cells positive: toUint() of a negative float is undefined
-  const f = fract(p).sub(0.5);
-  const h = hash(cell.x.toUint().mul(uint(1973)).add(cell.y.toUint().mul(uint(9277))));
-  const h2 = hash(cell.x.toUint().mul(uint(4177)).add(cell.y.toUint().mul(uint(21277))).add(uint(3)));
-  const life = fract(time.mul(1.3).add(h));
-  const rr = life.mul(0.5);
-  const dist = length(f);
-  const wave = sin(dist.sub(rr).mul(40)).mul(exp(dist.mul(-4))).mul(float(1).sub(life)).mul(step(dist, rr));
-  const gate = step(0.3, h2).mul(mix(0.25, 1.0, puddle)).mul(U.uRipple).mul(wet);
-  const nx = wave.mul(f.x).mul(-6).mul(gate);
-  const nz = wave.mul(f.y).mul(-6).mul(gate);
-  const nWorld = normalize(nBase.add(vec3(nx, 0, nz)));
+  const ripple = wetRippleOffset(U, pw, puddle, rippleScale);
+  const nWorld = normalize(nBase.add(vec3(ripple.x, 0, ripple.y)));
+  // A material with a plain `color` and no colorNode has nothing here to wrap, so it goes glossy
+  // without going dark. Pass `baseColor: materialColor` to darken the material's own colour, which
+  // is what a page wants for anything it did not build a colour graph for. Left opt-in rather than
+  // defaulted so the pages already calling this keep the look they have.
   let col = baseColor === undefined ? mat.colorNode : baseColor;
   if (col && !col.isNode) col = color(col);   // THREE.Color or hex
   const rough = baseRoughness == null ? materialRoughness : typeof baseRoughness === 'number' ? float(baseRoughness) : baseRoughness;   // null: the material's own roughness, live
-  if (col) mat.colorNode = col.mul(float(1).sub(wet.mul(float(0.3).add(puddle.mul(0.35)).add(streak.mul(0.18)))));
-  mat.roughnessNode = mix(rough.mul(float(1).sub(wet.mul(float(0.35).add(streak.mul(0.3))))), float(0.06), puddle.mul(wet));
+  if (col) mat.colorNode = col.mul(wetAlbedoScale(U, puddle, streak));
+  mat.roughnessNode = wetRoughness(U, rough, puddle, streak);
   // world -> view. transformNormalToView would be wrong here: it applies the object->world
   // normal matrix first, so any rotated mesh (walls, cover) would get its normal turned twice.
   mat.normalNode = cameraViewMatrix.transformDirection(nWorld);

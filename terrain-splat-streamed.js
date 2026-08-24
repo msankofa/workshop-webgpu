@@ -15,6 +15,7 @@
 
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { wetPuddleField, wetRippleOffset, wetAlbedoScale, wetRoughness } from './rain.js';
 import {
   Fn, If, Discard, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
   positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
@@ -129,12 +130,21 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
 // coarser one starts leaving and the void never shows. A chunk landing
 // late from a worker fades in instead of snapping. `lod = { self, finer }` binds the maps at build
 // time (a texture node is fixed once built); syncStreamedSplatCoverage() follows their origins.
+// `rain` (optional): { uniforms, offset, puddleScale, rippleScale } where `uniforms` is a rain.js
+// uniform set — wets the whole ground: albedo darkens, roughness drops, puddles pool on the flats
+// and ripples bend the normal. The fields come from rain.js itself (wetPuddleField /
+// wetRippleOffset / wetAlbedoScale / wetRoughness) rather than being re-derived here, so rain beads
+// the same way on the terrain as on everything standing on it. `offset` is the render origin, so
+// scene xz + offset is the global xz the puddles are anchored to and a rebase does not move them.
+// The graph is built once and gated on `uWetness`: a uniform branch is coherent across the draw,
+// and rebuilding the splat instances the first time it rains is a visible hitch.
+//
 // `water` (optional): { sceneLevel, offset, sunDir, sunColor, time, causticStrength, causticSpread
 // uniforms; waveNormalFold(xzNode) -> vec4 } — adds a wet tide band above the waterline and the
 // water-demo's analytic Snell caustic below it (sun ray refracted at the wave surface, screen-
 // derivative area ratio). All driven by uniforms the water module owns; sceneLevel very negative
 // (or causticStrength 0) turns each part off without a rebuild.
-export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null, water = null } = {}) {
+export function createStreamedSplatMaterial(textures, overrides = {}, { lod = null, water = null, rain = null } = {}) {
   const cfg = { ...STREAMED_SPLAT_DEFAULTS, ...overrides };
   const L = textures.layers;
   for (const name of STREAMED_SPLAT_LAYERS) if (!L[name]?.color || !L[name]?.normal) throw new TypeError(`streamed splat needs colour + normal textures for '${name}'`);
@@ -257,19 +267,35 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     const macro = hash2(P.xz.mul(0.018)).sub(0.5).mul(0.22).mul(u.macroStrength).mul(detail).add(1.0);
     outCol = outCol.mul(macro);
     let rough = mix(float(0.95), float(0.75), w.rock).add(w.snow.mul(-0.1)).add(w.sand.mul(-0.05));
+    // How much of this fragment is under the sea. Rain only wets what is out of the water, so this
+    // is computed before either branch and gates the rain one: the tide band and the rain are two
+    // different things happening to the same ground and they multiply rather than overwrite.
+    const submerged = water
+      ? oneMinus(smoothstep(water.sceneLevel, water.sceneLevel.add(0.6), P.y))
+      : float(0);
     if (water) {
       // Wet ground: darker below the waterline, and a narrow glossy strip AT it (a sheen band, not
       // a polished seabed — submerged sand stays rough or the whole floor mirrors the sun).
-      const below = oneMinus(smoothstep(water.sceneLevel, water.sceneLevel.add(0.6), P.y));
-      const strip = below.mul(smoothstep(water.sceneLevel.sub(1.2), water.sceneLevel.sub(0.2), P.y));
-      outCol = outCol.mul(mix(float(1), float(0.72), below));
+      const strip = submerged.mul(smoothstep(water.sceneLevel.sub(1.2), water.sceneLevel.sub(0.2), P.y));
+      outCol = outCol.mul(mix(float(1), float(0.72), submerged));
       rough = mix(rough, float(0.55), strip);
+    }
+    let rainRipple = null;
+    if (rain) {
+      const pw = rain.offset ? P.xz.add(rain.offset) : P.xz;
+      const dry = oneMinus(submerged);                       // no puddles on the seabed
+      const puddle = wetPuddleField(rain.uniforms, pw, smoothstep(0.6, 0.9, N.y).mul(dry), rain.puddleScale ?? 0.09);
+      rainRipple = wetRippleOffset(rain.uniforms, pw, puddle, rain.rippleScale ?? 3.0).mul(dry);
+      outCol = outCol.mul(mix(float(1), wetAlbedoScale(rain.uniforms, puddle), dry));
+      rough = mix(rough, wetRoughness(rain.uniforms, rough, puddle), dry);
     }
     roughProp.assign(clamp(rough, 0.3, 1));
     const nmT = nm.mul(2).sub(1);
     // xz projection: map x -> world x, map y -> world -z
     const strength = u.normalStrength.mul(detail);
-    normalProp.assign(normalize(N.add(vec3(nmT.x.mul(strength), 0, nmT.y.negate().mul(strength)))));
+    let tilted = N.add(vec3(nmT.x.mul(strength), 0, nmT.y.negate().mul(strength)));
+    if (rainRipple) tilted = tilted.add(vec3(rainRipple.x, 0, rainRipple.y));
+    normalProp.assign(normalize(tilted));
     return vec4(clamp(outCol, 0, 1), 1);
   });
 
@@ -306,7 +332,7 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     })();
   }
   mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
-  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, lod: !!lod, coverageMaps, water: !!water };
+  mat.userData.streamedSplat = { uniforms: u, cfg, layers: STREAMED_SPLAT_LAYERS, lod: !!lod, coverageMaps, water: !!water, rain: !!rain };
   syncStreamedSplatCoverage(mat);
   return mat;
 }

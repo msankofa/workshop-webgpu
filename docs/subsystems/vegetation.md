@@ -39,6 +39,51 @@ buffers so the CPU never reads back GPU state.
 | `bot-trees.js` (540 lines) | `createBotTrees()`: trees over a bot-viewer arena. Bakes a palette via `forest-palette.js`, scatters via `forest-placement.js` on a single `floraChunk` arena chunk, renders one `InstancedMesh` per (variant, branches\|leaves), and emits low-poly trunk cylinders into a detached `colliderRoot` for the host to pass as a `createMapCollider` `extraRoot`. See "Trees in bot-viewer-v3" below. |
 | `tree-age.js` | `applyAge(opts, ageT)`: pure sapling→mature transform (scale, branch-recursion "development", leaf count/size) for a `trees.js` options object. No DOM/THREE dependency — used by `tree-viewer.html`'s age-preview slider today, intended for the game's forest placement to reuse later (per-instance age roll) without duplicating the math. |
 
+### Base Game (plants plan F3-F5, 2026-08-24)
+
+`base-game.html` is the third host for these modules, and the first with streamed terrain under it.
+Three new files sit between the terrain and the generators:
+
+| File | Responsibility |
+|---|---|
+| `flora-field.js` | What grows where. `coverAt(biome, moisture, weights, { height, seaLevel, normalY })` -> `{ grass, plant, tree }` in 0..1: the biome states the ambition (`BIOME_GRASS`/`BIOME_PLANTS`, and `BIOME_TREE_DENSITY` for trees), and `terrain-splat-streamed.js`'s `splatWeights` vetoes it, so nothing grows on ground the terrain is painting as rock, sand or snow. Slope and the waterline are hard gates; moisture thins each layer by its own amount. `createTileCover()` runs it once per texel as a field tile commits and publishes three u8 channels, so a blade reads one number instead of re-running the classifier per candidate — and there is no TSL twin of this math to drift. Pure, no three.js. |
+| `flora-chunks.js` | The windowed chunk lifecycle placement runs on: desired-set diff from a camera cell, clear/build queues, per-frame chunk and millisecond budgets, `rebuildAll`. Lifted from the copy inline in `environment-viewer.html` (`syncPlantsToFocus`/`processPlantBuildQueue`, `:5584`-`5650`), which exists there three times over. Adds `setReadyTest(fn)`: a chunk whose field has not streamed is deferred and retried, never built against a default. Pure, no three.js. |
+| `base-game-flora.js` | The page-facing layer owner. Holds the terrain's field windows, builds the injected TSL samplers, and owns the one `createComputeGrass` instance. |
+
+**Grass in Base Game runs `grass-compute.js` in neither of its existing modes.** It is not the
+closed-form `terrain-field` twin (Base Game's ground is a streamed v5/analytic source) and not
+anchor mode (there is no authored map). Instead the module gained two optional inputs, both
+default-off so no existing host changes behaviour:
+
+```js
+createComputeGrass({ …, heightNode, densityNode })   // TSL Fn(([x, z]) => …), scalars in
+```
+
+An injected node wins over the texture path and disables it. `base-game-flora.js` builds both:
+
+- **height** from the terrain's lod-0 contact window (1.25 m posts over 160 m), because the visible
+  chunks are built exact and a band-limited window would leave blades hanging over a crest;
+- **density** from the 8 m placement window's `coverGrass` channel, the same per-blade gate an
+  authored map drives through `densityTex`, fed by the streamed biome instead of a baked grid.
+
+Both adapters cross the render-local/global boundary explicitly: candidates and `uCam` are
+render-local, the windows are indexed globally, so they add the render origin before sampling and
+subtract its Y from the result. The origin is a uniform mutated on rebase — the graph is built once.
+
+Two constraints worth knowing before changing this:
+
+- **Grass is built once and tuned through setters.** `grass-compute.js`'s `dispose()` frees a
+  geometry and a material and leaves its storage buffers and compute pipelines to the GC, so a
+  live rebuild on a slider would leak them. Buffers are sized at construction from the widest
+  supported radius (`maxRadiusHeadroom`), and every panel control maps to a `set*` call.
+- **The radius is clamped to the contact window.** A 160 m square window serves a circle of
+  `80 / sqrt(2)` = 56.6 m; the default radius is 55 m. A wider grass radius needs a wider contact
+  window, not a bigger number.
+
+Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`. The blades
+themselves need a GPU, so the last one covers the wiring — window references, the clamps, the
+render-origin boundary, and that the injected graphs build and are validated.
+
 ### Consumers outside `environment-viewer.html`
 
 `bot-flora.js` (2026-08-08) grows `grass.js` + `plants.js`/`plants-placement.js`/`plants-gpu.js` over a

@@ -1,6 +1,13 @@
 # Base Game plants — full plan
 
-STATUS 2026-08-24: **F1 and F2 shipped.** F2: the payload/lod generalization of
+STATUS 2026-08-24: **F1-F5 shipped; F6 (trees) is next.** F3 `flora-field.js` (cover reconciled
+against splatWeights, derived per texel at tile commit into three u8 channels — no TSL ecology twin
+exists to drift), F4 `flora-chunks.js` (the env-viewer host generalized, plus readiness deferral),
+F5 `base-game-flora.js` + injected `heightNode`/`densityNode` on `grass-compute.js` + the Plants
+panel section in `base-game.html`. Tests: `test-flora-field.mjs` 28/28, `test-flora-chunks.mjs`
+31/31, `test-base-game-flora.mjs` 25/25. **Nothing has been seen in a browser yet** — F5 is the
+first phase that draws anything, and its stop-gate capture needs the page. Previously: **F1 and F2
+shipped.** F2: the payload/lod generalization of
 `terrain-clipmap-window.js`, `terrain-field-scheduler.js` (one pool, deduped, priority-ordered,
 cancellable), `terrain-field-window.js` (per-field textures, wrap-aware CPU and TSL readers,
 reference-counted registry), and the facade seam on `base-game-terrain.js`;

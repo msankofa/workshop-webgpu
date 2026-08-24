@@ -1121,6 +1121,17 @@ profile in uv.
   up-facing surface (`smoothstep(0.6, 0.9, normal.y)`); side faces instead get a darker, glossier
   film with run-off streaks sliding down them (one `mx_noise_float` tap on `x+z` vs `y − t`,
   `streaks: false` removes them), so the same call dresses floors, roofs, walls and cover.
+- **Shared wet fields (2026-08-24).** `wetPuddleField(U, pw, up, puddleScale)`,
+  `wetRippleOffset(U, pw, puddle, rippleScale)`, `wetAlbedoScale(U, puddle, streak)` and
+  `wetRoughness(U, rough, puddle, streak)` are exported so a second consumer reuses this maths
+  instead of copying it — `terrain-splat-streamed.js` imports all four for its `rain` bundle
+  (Base Game's wet terrain). `pw` is the world XZ to evaluate at, so a page that rebases its render
+  origin passes scene xz + offset and the puddles stay with the ground. `applyWetSurface` is now a
+  thin wrapper over them, so the two cannot drift.
+- **`applyWetSurface` and a material with no `colorNode`**: there is nothing to wrap, so it goes
+  glossy without going dark. Pass `baseColor: materialColor` to darken the material's own colour.
+  Opt-in rather than defaulted so existing consumers keep their look — worth a look at whether
+  bot-viewer's walls have this gap.
 - **`applyWetSheen(mat, U, {amount, darken})`** is the cheap version for props and bodies:
   roughness × (1 − amount·wet) on top of the material's own roughness, albedo × (1 − darken·wet)
   on top of `materialColor` (instance colours still multiply in). Bot shells use it.

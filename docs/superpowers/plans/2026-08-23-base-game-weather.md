@@ -292,7 +292,7 @@ window and can follow as its own step once there is something on screen to judge
   may be blurred as if it were at the ground's distance. That needs a browser look before anything else
   in R2 is tuned.
 
-### R2 — Wet ground and wet things
+### R2 — Wet ground and wet things — SHIPPED 2026-08-24 (bodies deferred) — SHIPPED 2026-08-24 (bodies deferred)
 
 - `terrain-splat-streamed.js`: an optional `rain` bundle beside `water`, `{ wetness, puddle, ripple,
   offset }`, branching on `wetness > 0`; darkened albedo, roughness down, ripple normals, puddles in the
@@ -302,6 +302,34 @@ window and can follow as its own step once there is something on screen to judge
   (bot-viewer already does exactly this for bot shells at `bot-viewer-v3.html:846`).
 - Wet ground has to respect the wet tide band W6 already draws at the waterline: one is a tide line, the
   other is rain, and they should multiply rather than fight.
+
+**Shipped 2026-08-24, with these notes.**
+
+- The plan said to reuse the maths from `applyWetSurface` and leave a hand-sync note, like the
+  CPU/GPU twins. That was the wrong call and it is not what shipped: `rain.js` now *exports* the
+  fields (`wetPuddleField`, `wetRippleOffset`, `wetAlbedoScale`, `wetRoughness`) and
+  `terrain-splat-streamed.js` imports them. There is one copy, so rain cannot bead differently on
+  the terrain than on the wall standing on it, and no note to keep honest. The test asserts the
+  import exists and that the splat does not re-derive the puddle noise.
+- The tide band and the rain compose through one `submerged` term computed before either branch:
+  the water branch darkens by it, the rain branch is gated by `1 − submerged`. So the seabed does
+  not get puddles and the two do not double-darken the same fragment.
+- Wetness is not the rain slider — it **lags** it, which is the thing neither donor page has. It
+  rises with an 8 s time constant and falls with a 90 s one, both sliders, and it is advanced even
+  on frames where nothing is drawn, so a storm that ends leaves the ground drying rather than frozen
+  at whatever it happened to be. A zero constant snaps instead of dividing by zero.
+- Puddles are anchored to global XZ (`positionWorld.xz + offset`), so they stay with the ground
+  across a rebase rather than sliding with the camera.
+- The splat rain bundle is bound **once at startup**, as the plan required, not on first rain.
+- `applyWetSurface` on a material with a plain `color` and no `colorNode` had nothing to wrap, so it
+  went glossy without going dark. That is now stated at the line, and the Traversal Lab passes
+  `baseColor: materialColor` explicitly. Left opt-in rather than defaulted, so `bot-viewer-v3.html`
+  keeps the look it has — though it is worth checking whether its walls have the same silent gap.
+- **Deferred: `applyWetSheen` on bodies and weapons.** `base-game-player-bodies.js` owns those
+  materials (through `body-part-batches.js`) and does not expose them, and another session is
+  mid-rewrite in that file for the server hit rig. Adding an accessor there now would be a merge
+  conflict for a cosmetic gain. The three sheen settings were dropped rather than shipped as dead
+  sliders; they land when that file settles.
 
 ### R3 — Rain shadow where there are roofs
 
