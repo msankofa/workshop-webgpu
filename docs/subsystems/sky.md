@@ -19,7 +19,7 @@ gracefully if they fail to load.
 | `sky-field.js` | Pure-JS math: palette defaults, sky radius, sun/moon placement, deterministic RNG (`makeRng`), star/Milky Way/celestial-body generators, per-kind color generation (`randomKindColor`). No three.js import — this is the Node-tested source of truth. | ~290 |
 | `stars.js` | TSL rendering of the star field + Milky Way gas sphere from `sky-field.js` data. GPU-side twinkle via the `time` node. | 105 |
 | `celestial-bodies.js` | TSL rendering of extra moons/planets as camera-following sprites. Two painters dispatched by `body.detail`: `paintBodySimple` (cheap, 256px canvas, for distant/tiny bodies) and `paintBodyHD` (512px canvas, per-pixel sphere-normal shading + fbm/Worley surface detail per `body.kind`, dual-hue patch blending, for the near planet + its moons). Rings and glow are separate configurable painters (`paintRings`, `paintGlow`). Visual constants live in exported `PAINTER_TUNING`, mutated live by `stellar-viewer.html`. | ~440 |
-| `clouds.js` | `Clouds` class: a `THREE.Mesh` overhead quad with a TSL `MeshBasicNodeMaterial` (two-octave simplex noise → coverage threshold → horizon fade). Independent of sky.js. | 265 |
+| `clouds.js` | `Clouds` class: a `THREE.Mesh` overhead quad with a TSL `MeshBasicNodeMaterial` (simplex-noise octaves → coverage threshold → horizon fade). Independent of sky.js. | 285 |
 | `test-sky-field.mjs` (repo root) | Node test script for `sky-field.js` pure functions only. | ~135 |
 | `test-celestial-bodies-smoke.mjs` (repo root) | No-GPU smoke test for `celestial-bodies.js`'s real paint dispatch (Proxy canvas stub), one per `kind`×`detail` combination. | ~50 |
 | `stellar-viewer.html` (repo root) | Standalone dev tool — see "Dev tools" below. | ~460 |
@@ -36,7 +36,11 @@ moonVisible)`, `setDomeVisible(on)`, `setStarsVisible(on)`, `setMilkyWayVisible(
 `setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius(radius?)`,
 `colorAlong(dirNode)` (TSL: the dome gradient along a unit direction from the live dome uniforms — what the Base Game water reflects; the dome material itself is built from the same `skyColorAlong`),
 `rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
-`setGlowDirectionality(v)`, `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`,
+`setGlowDirectionality(v)`, `setOvercast(v)` / `setOvercastColor(c)` (2026-08-24: a grey lid mixed in at
+the end of `skyColorAlong`, brighter at the horizon than overhead; defaults to 0 so every existing
+consumer is unchanged, and because it lives in `skyColorAlong` it also greys `colorAlong` — the Base
+Game water's sky reflection — and `applyDome` lerps `scene.background` toward it),
+`flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`, `overcast`,
 `nightness`, `skyStates`, `thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no
 rebuild), like `setMilkyWayIntensity`. `updateDome(elevationDeg)` blends the day/dusk/night dome
 states by sun elevation and writes uniforms only — never rebuilds. `nightness` (0 in day, 1 at
@@ -90,7 +94,7 @@ export const PAINTER_TUNING   // { terrestrial, gas, ice, volcanic, rocky } visu
 **clouds.js**
 ```js
 export class Clouds extends THREE.Mesh {
-  constructor()
+  constructor({ octaves = 2 } = {})   // 2 = the original pair; more adds finer taps (see below)
   update(elapsedTime, cameraPosition)
   setSpeed(speed)
   setOpacity(opacity)
@@ -99,9 +103,36 @@ export class Clouds extends THREE.Mesh {
   setSoftness(softness)
   setFade(fade)          // 0..1 edge dimming (0 = clouds full to the plane edge, 1 = dim toward it)
   setExtent(worldUnits)  // also updates the fade's half-extent uniform
+  setOffset(x, z)        // render-origin offset added before the noise, for a rebasing page
+  setTint(color)         // lit cloud colour; white until a page drives it (e.g. from a key light)
+  setOvercast(v)         // 0 = tint, 1 = the overcast colour
+  setOvercastColor(c)    // default slate grey (0.36, 0.38, 0.42), from the flight-sim deck
+  setFadeFloor(v)        // how dim distance may make the deck before the rim (was hard-coded 0.25)
+  setEdgeStart(v)        // where the rim fade begins, as a fraction of the half-extent (was 0.85)
 }
 export default Clouds;
 ```
+
+### Cloud octaves, offset and tint (2026-08-24)
+
+Three options were added for Base Game; every default reproduces the previous look exactly, so
+`environment-viewer.html` and `environment-viewer-v2.html` are unaffected.
+
+- **`octaves`** generalises the hard-coded pair `snoise(uv·5/puff + t/40) + snoise(uv·10/puff + t/30)`
+  to octave `i` at frequency `5·2ⁱ` and time divisor `40/(1 + i/3)`, which lands on 5/40 and 10/30
+  exactly at `octaves = 2`. The first two octaves keep their weight of 1 and later ones halve, so
+  raising the count adds detail rather than rescaling the field — it does add contrast, and coverage
+  is the compensation. It is baked into the TSL graph, so changing it means building a new `Clouds`.
+- **`setOffset(x, z)`** exists because the noise is a function of `positionWorld.xz`: a page that
+  rebases its render origin (Base Game) would otherwise see the whole cloud field teleport. The page
+  passes its origin; the deck itself stays positioned in render-local space.
+- **`setFadeFloor` / `setEdgeStart`** expose the two constants that decide whether the deck's rim reads
+  as a boundary in the sky. Alpha reaches zero on the circle `norm = 1` (radius `extent/2`), inside the
+  square, so the quad's straight edge is never visible; the rim is a circle whose elevation is
+  `atan(height / (extent/2))`. A floor of 0 with an early rim start dims the deck out continuously
+  instead of holding it at a quarter strength until the last 15%.
+- **`setTint` / `setOvercast`** replace the hard-coded `vec3(1,1,1)` colour. The material now reads
+  `mix(uTint, uOvercastColor, uOvercast)`, both defaulting to a plain white result.
 
 ## Wiring
 
@@ -447,7 +478,11 @@ instance, different default ranges (e.g. `cloud2Puff` 0.3–6, `cloud2Height` 20
 stub — confirms every `kind` × `detail` combination paints without throwing. It does
 not assert pixel content (no automated coverage exists for that — see below).
 
-**No dedicated tests exist for `sky.js`, `stars.js`, or `clouds.js`** — these are the
+`clouds.js` gained coverage on 2026-08-24: `test-base-game-clouds.mjs` checks the octave constants
+against the original two-tap pair, the uniform setters, and a headless GLSL build of the material at
+1, 2, 4 and 6 octaves (via `tsl-build-check.mjs`). The paragraph below still holds for the rest.
+
+**No dedicated tests exist for `sky.js` or `stars.js`** — these are the
 TSL/three.js rendering layers (node materials, GPU buffer/lifecycle management) and
 are exercised only by manually running the viewer. `celestial-bodies.js`'s paint
 dispatch has smoke coverage (above) but not pixel-content coverage — ring/glow/hue

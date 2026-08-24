@@ -190,6 +190,8 @@ export class Clouds extends THREE.Mesh {
     const uTint       = uniform(new THREE.Color(1, 1, 1));    // lit cloud colour (sun tint, night dimming)
     const uOvercast   = uniform(0.0, 'float');                // 0 = uTint, 1 = uOvercastColor
     const uOvercastColor = uniform(new THREE.Color(0.36, 0.38, 0.42));
+    const uFadeFloor  = uniform(0.25, 'float');  // how dim the deck may get with distance before the rim
+    const uEdgeStart  = uniform(0.85, 'float');  // fraction of the half-extent where the rim fade begins
 
     // World-space XZ position normalised to ~1 unit per 1000 world units.
     // Using positionWorld instead of UV keeps the noise frequency fixed in world
@@ -225,9 +227,12 @@ export class Clouds extends THREE.Mesh {
     // clouds to near-invisible by ~1000 units and they vanished well before the horizon). Clouds
     // now stay readable across the whole plane (haze floored at 0.25) and only the outer 15% fades
     // to zero to hide the plane's finite edge — so the deck reaches close to the horizon.
+    // The floor and the edge start were hard-coded at 0.25 and 0.85. They are the two numbers that
+    // decide whether the deck's rim reads as a boundary in the sky, so they are uniforms now:
+    // floor 0 with an early edge start dims the deck continuously and it has no visible rim at all.
     const norm = length(positionWorld.xz.sub(uCameraXZ)).div(uHalfExtent);
-    const haze = max(float(1.0).sub(norm.mul(uFade)), float(0.25));
-    const edge = smoothstep(float(1.0), float(0.85), norm);   // 1 inside, → 0 at the plane edge
+    const haze = max(float(1.0).sub(norm.mul(uFade)), uFadeFloor);
+    const edge = smoothstep(float(1.0), uEdgeStart, norm);   // 1 inside, → 0 at the plane edge
     const alpha = cloudVal.mul(uOpacity).mul(haze).mul(edge);
 
     // ---- Assemble unlit material ----
@@ -255,6 +260,8 @@ export class Clouds extends THREE.Mesh {
     mat._uTint       = uTint;
     mat._uOvercast   = uOvercast;
     mat._uOvercastColor = uOvercastColor;
+    mat._uFadeFloor  = uFadeFloor;
+    mat._uEdgeStart  = uEdgeStart;
 
     this.material = mat;
 
@@ -285,6 +292,10 @@ export class Clouds extends THREE.Mesh {
   setTint(color)        { this.material._uTint.value.set(color); }
   setOvercast(v)        { this.material._uOvercast.value = v; }
   setOvercastColor(c)   { this.material._uOvercastColor.value.set(c); }
+  // 0 lets distance dim the deck all the way out; 1 keeps it at full strength until the rim.
+  setFadeFloor(v)       { this.material._uFadeFloor.value = v; }
+  // Where the rim fade begins, as a fraction of the half-extent. Low values disappear gradually.
+  setEdgeStart(v)       { this.material._uEdgeStart.value = Math.min(0.99, v); }
   setExtent(worldUnits) {
     const s = worldUnits / 2000;
     // Mesh is laid flat via rotation.x=-PI/2, so the plane spans local X and Y

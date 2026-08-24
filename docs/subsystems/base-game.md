@@ -19,6 +19,7 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 |---|---|
 | Directional sun and ambient light | `lights.js` / `createLightingRig()` |
 | Dome, discs, stars, Milky Way, bodies | `sky.js` / `createSky()` |
+| Overhead cloud decks | `clouds.js` / `Clouds` |
 | Sun and moon geometry | `solar-position.js` |
 | Day/dusk/night color interpolation | `sky-field.js` |
 | Dropped-frame accounting | `frame-profiler.js` |
@@ -322,6 +323,7 @@ node test-base-game-session.mjs
 node test-base-game-player.mjs
 node test-base-game-replication.mjs
 node test-base-game-fire.mjs
+node test-base-game-clouds.mjs
 node test-performance-capture.mjs
 python -B test_performance_capture_store.py
 node server/test-base-game-rooms.mjs
@@ -1191,6 +1193,92 @@ local and the server still simulates the Traversal Lab (Phase 5 is the fix).
 `test-base-game-terrain.mjs` covers mode switch, walking/jumping/crossing chunk boundaries with the
 real controller, respawn, visual-off collision, rebase (keys and geometry untouched), debug views,
 draw radius, source swap and removal without rebuilding the player.
+
+### Weather, phase C1: cloud decks (shipped 2026-08-24)
+
+Two `clouds.js` decks behind `base-game-clouds.js`, per the
+[weather plan](../superpowers/plans/2026-08-23-base-game-weather.md). The module owns the three things
+the donor pages (`environment-viewer-v2.html`, `demos/flight-sim.html`) never had to:
+
+- **The render origin.** Cloud noise is a function of `positionWorld.xz`, so a rebase would teleport the
+  whole field. `update()` writes `worldCoordinates.getOrigin()` into each deck's new `setOffset`, and
+  positions the deck at `height − origin[1]` so its altitude is render-local while its pattern is global.
+- **Time of day.** A `Clouds` is white on its own and would glow at midnight. The page passes
+  `rig.dirLight.color` and `sky.nightness`; the module tints by the key light and multiplies down by
+  `nightDim · nightness`, so dusk reddens the decks and night leaves them a silhouette against the stars.
+- **The far plane.** `updateWorld`'s `wantFar` now takes `max(terrain far, clouds.farExtent)`, where a
+  deck's far extent is `hypot(extent/2, height)` — the distance to its own far corner — counted only
+  while it is visible.
+
+Defaults are deck A at 900 m over a 20 km extent and deck B at 2,200 m over 40 km, which are **not** the
+env-viewer defaults (120 m / 280 m over 8 km). Those suit a sandbox; this page draws terrain to
+kilometres, so the decks start at an altitude you could fly through, as the flight-sim deck does.
+
+**Where a deck ends.** Alpha is `cloud · opacity · haze · edge` with `edge = smoothstep(1, edgeStart,
+norm)` and `norm = |xz − camera| / (extent/2)`, so it reaches zero on a circle inscribed in the square
+and the plane's own corners (`norm = √2`) are already past zero — the straight edge of the quad can never
+be seen. What can be seen is where that circle sits in the sky: `atan(height / (extent/2))` above the
+horizon, which the panel prints beside the extent slider (`deckHorizonAngle`). At the defaults that is
+5.1° for deck A and 6.3° for deck B, i.e. a band of clear sky under the clouds. Three controls close it:
+a wider extent, a lower deck, and the two numbers that used to be hard-coded in `clouds.js` — the
+dimming floor (was 0.25) and where the rim fade begins (was 0.85 of the radius). Floor 0 with an early
+rim start dims the deck continuously to nothing and leaves no perceptible boundary. Scene fog (phase C2)
+is the other half of the answer, because it tints distant cloud into the horizon colour.
+
+`applyCloudSettings()` is the same dirty-checked apply as the water one: an octave change disposes and
+rebuilds that deck's material (octaves are baked into the TSL graph), everything else is a uniform write.
+The panel nests two levels — **Weather > Clouds > deck A / deck B / appearance** — which needed three
+additions to `workshop-panel-theme.js` (a taller `max-height` for a body holding sections, lighter nested
+heads, no hover lift on a nested card) and two new panel helpers in the page, `addColor` and `addAction`.
+Section state is keyed by heading text, so every heading in the panel must stay unique.
+
+### Weather, phase C2: overcast, light response and fog (shipped 2026-08-24)
+
+The weather master (`weatherRain`) exists now and drives three things through their own **response**
+sliders, so a hand-tuned value is never overwritten by a drag of the master:
+
+- **The overcast lid.** `sky.js` gained an `overcast` uniform mixed in at the end of `skyColorAlong`
+  toward a grey that is brighter at the horizon than overhead, plus `setOvercast` / `setOvercastColor`.
+  It defaults to 0, so every other consumer is unaffected — and because `skyColorAlong` is what
+  `sky.colorAlong` exposes, the water's sky-reflection mode greys with the sky for free. `applyDome`
+  lerps `scene.background` toward the lid as well.
+- **The light.** The key light (sun or moon, whichever owns the frame) is scaled by
+  `1 − sunDimPerRain · rain` and the ambient lifted by `1 + ambientLiftPerRain · rain`, so an overcast
+  noon reads flat rather than merely dark. The ambient is multiplied on `rig.ambLight` after both
+  time-of-day branches have written it, so it cannot compound.
+- **Fog.** `scene.fog` is a `FogExp2` attached at startup with density 0. This is deliberate and was
+  checked against the shipped r184 build: fog colour and density become `reference()` nodes, so writing
+  them costs nothing, but attaching `scene.fog` for the first time goes into every material's cache key
+  and would recompile the world on the first drop of rain. The panel quotes density as the distance at
+  which fog reaches 63% (`1/density`), because that is the number a person can picture.
+
+**Why the cloud decks are not fogged.** exp2 fog is `1 − exp(−(d·z)²)`. At 0.0002 — light enough to be
+2% at 500 m — it is already 98% at deck A's 10 km rim and total at deck B's 20 km. Scene fog would erase
+the decks rather than soften their edge, so they keep `clouds.js`'s `fog: false`. The lid is what makes
+the rim disappear: at full overcast the sky behind the clouds is the same grey as the clouds.
+
+### Weather, phase C3: shared world keys (shipped 2026-08-24)
+
+Six weather keys are owner-owned and replicated: `weatherRain`, `weatherOvercast`, `cloudACover`,
+`cloudAHeight`, `cloudBCover`, `cloudBHeight`. They are what the weather *is*. The response curves
+(`overcastPerRain`, `sunDimPerRain`, the fog pair), the fog colour and every cloud look and quality
+setting stay local — the same split the wave spectrum uses, where the physics is shared and the
+appearance is not. Two players in one room therefore see the same weather but may draw it differently.
+
+The change was confined to `base-game-protocol.mjs` (`BASE_GAME_SHARED_KEYS` and `NUMBER_LIMITS`).
+`server/base-game-rooms.js` needed nothing: it sanitizes a patch and `Object.assign`s it into
+`room.world`, and it does not simulate weather — no movement or collision code reads it, so this is
+state carriage, unlike the terrain and the wave spectrum. The page needed nothing either, because
+`sharedSettingKeys` is derived from `BASE_GAME_SHARED_KEYS`, so the new sliders disable themselves for
+guests and queue patches on their own. There is no protocol version bump: the sanitizer omits keys it
+is not sent, so a client without weather carries none and everyone keeps their own.
+
+`test-base-game-shared-keys.mjs` guards the seam that has no other guard — the protocol's `NUMBER_LIMITS`
+(the wire and the server) against the page's (slots and JSON files). A disagreement there silently
+rewrites a legal local value the moment it crosses the network. The test covers every shared key and
+reads the protocol's boolean/string key sets from source so it cannot fall behind.
+
+Next in the plan: rain.
 
 ### Terrain authoring and Terrain Studio
 

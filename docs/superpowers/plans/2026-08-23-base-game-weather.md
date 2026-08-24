@@ -130,7 +130,7 @@ sit a couple of metres off the real surface. Acceptable on rolling ground; state
 Clouds first: it is the smaller port, it has no protocol or audio surface, and it gives rain the overcast
 sky to fall out of.
 
-### C1 — `base-game-clouds.js`: two decks that survive a rebase
+### C1 — `base-game-clouds.js`: two decks that survive a rebase — SHIPPED 2026-08-24
 
 - `clouds.js` gains three backward-compatible options (defaults reproduce today's look exactly):
   `octaves` (2 → the current two-tap simplex; higher uses `mx_fractal_noise_float`), `setOffset(x, z)`
@@ -150,19 +150,35 @@ sky to fall out of.
   page asserts that every registered control has a settings key, so save/load and slots come free.
 - Profiler: fold into the existing `sky` slot (`base-game.html:2663`); two quads do not deserve their own.
 
-### C2 — Overcast sky, dimmed light, haze
+Shipped as written, with three notes. The octave generalisation is `5·2ⁱ` frequency and `40/(1 + i/3)`
+time divisor, which reproduces the original 5/40 and 10/30 pair exactly at two octaves, so the other
+`clouds.js` consumers are untouched. The panel nesting needed three CSS additions to
+`workshop-panel-theme.js` and two new helpers (`addColor`, `addAction`) in the page. Coverage is
+`test-base-game-clouds.mjs` — 44 checks including a headless GLSL build at 1/2/4/6 octaves and a static
+scan of `base-game.html` that mirrors the page's own control-registry assertion, so a weather setting
+without a control fails in Node rather than at page load. Unseen in a browser.
+
+### C2 — Overcast sky, dimmed light, haze — SHIPPED 2026-08-24
 
 - `sky.js`: an `overcast` uniform on the dome, mixed in at the end of `skyColorAlong` toward a neutral
   grey, and the same mix applied where `applyDome` writes `scene.background`. Default 0, so
   `environment-viewer*.html` and every other consumer are unaffected. New setter `setOvercast(v)`.
 - `updateWorld()` scales `sunIntensity` and `moonIntensity` by `1 − 0.72 · rain` (flight-sim's number) and
   lifts ambient slightly, so an overcast noon is flat rather than merely dark.
-- Fog: an `exp2` fog introduced only while `weatherRain > 0`, coloured from the dome horizon. It must be
-  checked in both the DOF and the plain-render path (`base-game.html:2664–2671`). Attaching `scene.fog` to
-  a page that has never had fog recompiles every material, so attach it at startup with density 0 and
-  drive the density, rather than attaching it on the first drop.
+- Fog: an `exp2` fog attached at startup with density 0 and driven from there. Verified against the
+  shipped r184 build rather than assumed: `FogExp2`'s colour and density become `reference()` nodes, so
+  moving them at runtime is free, but `scene.fog` going from null to an object is pushed into the
+  material cache key, so the first attach recompiles every material. `material.fog = false` does opt a
+  material out (`setupOutput` gates on it), which is how the dome and the cloud decks stay clear of it.
 
-### C3 — Weather in the protocol
+**Correction to this plan's own claim.** It said fog would tint distant cloud into the horizon colour and
+so hide the decks' rim. That is wrong for exp2 fog at these distances: `1 − exp(−(d·z)²)` at the lightest
+density anyone would notice on the ground (0.0002, barely 2% at 500 m) is already 98% at deck A's 10 km
+rim and total at deck B's 20 km. Scene fog would erase the decks, not soften them. What actually hides
+the rim is the **overcast lid on the dome** — at full overcast the sky behind the clouds is the same grey
+as the clouds, so the rim stops being a boundary between white and blue. The decks keep `fog: false`.
+
+### C3 — Weather in the protocol — SHIPPED 2026-08-24
 
 - `BASE_GAME_SHARED_KEYS` += `weatherRain, weatherWindDeg, weatherGust, cloudCover, cloudHeight,
   weatherSeed`; `NUMBER_LIMITS` entries for each (`weatherRain [0,1]`, `weatherWindDeg [0,360]`,

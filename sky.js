@@ -46,7 +46,13 @@ function skyColorAlong(u, p) {
   // Bias the glow toward the sun azimuth: dot of horizontal dome dir vs sun dir, mapped [0,1].
   const align = dot(normalize(p.xz), normalize(u.sunDir.xz)).mul(0.5).add(0.5);
   const glowAmt = band.mul(mix(float(1.0), align, u.glowDirectionality)).mul(u.glowStrength);
-  return mix(base, u.glow, glowAmt);
+  const sky = mix(base, u.glow, glowAmt);
+  // Overcast lid: a flat grey that is brighter at the horizon than overhead, which is how a real
+  // overcast sky reads. At full overcast this also matches the cloud decks, so their far rim stops
+  // being a boundary between white cloud and blue sky (scene fog cannot do that job — an exp2 fog
+  // dense enough to be seen at all is total by 10 km, so it would erase the decks, not soften them).
+  const lid = u.overcastColor.mul(mix(float(1.15), float(0.75), up));
+  return mix(sky, lid, u.overcast);
 }
 function makeSkyDomeMaterial(u) {
   const mat = new MeshBasicNodeMaterial({ side: THREE.BackSide, depthTest: false, depthWrite: false });
@@ -68,6 +74,8 @@ function makeDomeUniforms(state) {
     glowStrength: uniform(state.glowStrength),
     sunDir: uniform(new THREE.Vector3(0, 1, 0)),
     glowDirectionality: uniform(0.35),
+    overcast: uniform(0.0),                                   // 0 clear .. 1 fully lidded
+    overcastColor: uniform(new THREE.Color(0.42, 0.44, 0.48)),
   };
 }
 
@@ -150,7 +158,11 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     domeU.horizonHeight.value = pr.horizonHeight; domeU.zenithSoftness.value = pr.zenithSoftness;
     domeU.glowWidth.value = pr.glowWidth; domeU.glowStrength.value = pr.glowStrength;
     _nightness = nightnessAtElevation(elevDeg, thresholds);
-    if (scene && scene.background && scene.background.isColor) scene.background.set(pr.bottom);
+    if (scene && scene.background && scene.background.isColor) {
+      scene.background.set(pr.bottom);
+      // Anything reading scene.background as "the sky colour" (fog tint) should see the lid too.
+      if (domeU.overcast.value > 0) scene.background.lerp(domeU.overcastColor.value, domeU.overcast.value);
+    }
     const f = celestialFollowTime ? _nightness : 1;
     if (starsPoints && starsPoints.material._uOpacity) starsPoints.material._uOpacity.value = (palette.starOpacity ?? 1) * f;
     if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = (palette.milkyWayIntensity ?? 0.7) * f;
@@ -316,6 +328,10 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     },
     // Directional horizon glow: 0 = even ring, 1 = fully concentrated toward the sun.
     setGlowDirectionality(v) { domeU.glowDirectionality.value = v; },
+    // Overcast lid. Also reaches anything reflecting the dome through skyColorAlong (e.g. water).
+    setOvercast(v) { domeU.overcast.value = Math.max(0, Math.min(1, v)); },
+    setOvercastColor(c) { domeU.overcastColor.value.set(c); },
+    get overcast() { return domeU.overcast.value; },
     get nightness() { return _nightness; },
     get skyStates() { return skyStates; },
     get thresholds() { return thresholds; },

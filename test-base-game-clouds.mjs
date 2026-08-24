@@ -3,7 +3,7 @@
 // render-origin offset, the tint, and a headless GLSL build of the material at each octave count.
 import * as THREE from 'three';
 import { Clouds } from './clouds.js';
-import { createBaseGameClouds, CLOUD_DECK_DEFAULTS } from './base-game-clouds.js';
+import { createBaseGameClouds, deckHorizonAngle, CLOUD_DECK_DEFAULTS } from './base-game-clouds.js';
 import { buildMaterial } from './tsl-build-check.mjs';
 
 let pass = 0, fail = 0;
@@ -37,6 +37,35 @@ ok(freqAt(5) === 160 && tdivAt(5) > 0, 'the divisor stays positive out to the to
   ok(new Clouds({ octaves: 0 }).octaves === 1, 'octaves clamps to at least one');
 }
 
+// ---- where the deck ends, and whether that rim is visible -------------------------------------
+// alpha = cloud · opacity · haze · edge, and edge = smoothstep(1, edgeStart, norm) with
+// norm = |xz − camera| / (extent/2). So alpha is exactly 0 at norm ≥ 1: the deck fades out on a
+// circle inscribed in the square, and the square's own corners (norm = √2) are already past zero.
+// The plane's straight edge can therefore never be seen; what can be seen is that circle's
+// elevation in the sky.
+{
+  const alphaEdge = (norm, edgeStart) => {
+    const t = Math.min(1, Math.max(0, (norm - 1) / (edgeStart - 1)));
+    return t * t * (3 - 2 * t);
+  };
+  ok(near(alphaEdge(1, 0.85), 0), 'alpha is zero on the inscribed circle');
+  ok(near(alphaEdge(Math.SQRT2, 0.85), 0), 'the plane corners are already fully transparent');
+  ok(alphaEdge(0.85, 0.85) === 1, 'inside the rim the deck is at full strength');
+  ok(alphaEdge(0.92, 0.85) > 0 && alphaEdge(0.92, 0.85) < 1, 'the rim fades rather than cutting');
+  ok(alphaEdge(0.5, 0.3) < 1 && alphaEdge(0.5, 0.85) === 1,
+    'an early rim start begins fading much further in, which is the no-visible-edge setting');
+
+  // The rim's elevation is what a player actually sees, and the defaults put it several degrees up.
+  ok(near(deckHorizonAngle({ height: 900, extent: 20000 }), 5.14, 0.01), 'deck A default rim sits ~5.1 deg above the horizon');
+  ok(near(deckHorizonAngle({ height: 2200, extent: 40000 }), 6.28, 0.01), 'deck B default rim sits ~6.3 deg above the horizon');
+  ok(deckHorizonAngle({ height: 900, extent: 60000 }) < 2, 'the widest extent brings deck A under 2 deg');
+  ok(deckHorizonAngle({ height: 300, extent: 60000 }) < 0.6, 'a low deck at full extent is under a degree');
+  ok(deckHorizonAngle({ height: 900, extent: 20000 }) > deckHorizonAngle({ height: 900, extent: 40000 }),
+    'widening the extent lowers the rim');
+  ok(deckHorizonAngle({ height: 2000, extent: 20000 }) > deckHorizonAngle({ height: 900, extent: 20000 }),
+    'raising the deck lifts the rim');
+}
+
 // ---- deck wiring ------------------------------------------------------------------------------
 {
   const scene = new THREE.Scene();
@@ -50,10 +79,18 @@ ok(freqAt(5) === 160 && tdivAt(5) > 0, 'the divisor stays positive out to the to
   clouds.setDeck(0, { cover: 0.7 });
   ok(clouds.decks[0].mesh.material === beforeMaterial, 'a coverage change does not rebuild the material');
   ok(near(clouds.decks[0].mesh.material._uCoverage.value, 0.7), 'a coverage change reaches the uniform');
+  clouds.setDeck(0, { fadeFloor: 0, edgeStart: 0.3 });
+  ok(near(clouds.decks[0].mesh.material._uFadeFloor.value, 0), 'the dimming floor reaches its uniform');
+  ok(near(clouds.decks[0].mesh.material._uEdgeStart.value, 0.3), 'the rim start reaches its uniform');
+  clouds.decks[0].mesh.setEdgeStart(1);
+  ok(clouds.decks[0].mesh.material._uEdgeStart.value < 1,
+    'the rim start is held below 1, where the smoothstep would have equal edges');
+  clouds.setDeck(0, { edgeStart: 0.85, fadeFloor: 0.25 });
   clouds.setDeck(0, { octaves: 5 });
   ok(clouds.decks[0].mesh.material !== beforeMaterial, 'an octave change rebuilds the material');
   ok(clouds.decks[0].mesh.octaves === 5, 'the rebuilt deck carries the new octave count');
   ok(near(clouds.decks[0].mesh.material._uCoverage.value, 0.7), 'the rebuild re-applies the other settings');
+  ok(near(clouds.decks[0].mesh.material._uEdgeStart.value, 0.85), 'the rebuild re-applies the rim settings too');
   ok(scene.children.length === 2, 'a rebuild leaves exactly one mesh per deck in the scene');
 
   // far extent: the corner of the widest visible deck, and nothing at all when disabled
@@ -102,6 +139,54 @@ ok(freqAt(5) === 160 && tdivAt(5) > 0, 'the divisor stays positive out to the to
   ok(scene.children.length === 0, 'dispose empties the scene');
 }
 
+// ---- C2: the sky dome's overcast lid ------------------------------------------------------------
+// sky.js paints its discs onto a 2D canvas, so a headless build needs a DOM stub; the repo already
+// runs the creature sim this way. What is under test is that the dome graph still compiles with the
+// lid in it, that the lid reaches the uniform, and that scene.background (which the fog tint reads)
+// greys with it.
+{
+  const noop = () => {};
+  const ctxStub = new Proxy({}, {
+    get: (t, k) => {
+      if (k === 'createRadialGradient' || k === 'createLinearGradient') return () => ({ addColorStop: noop });
+      if (k === 'getImageData') return (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      return noop;
+    },
+    set: () => true,
+  });
+  const canvas = (size) => ({ width: size, height: size, getContext: () => ctxStub, toDataURL: () => '' });
+  globalThis.document = { createElement: (tag) => (tag === 'canvas' ? canvas(512) : { style: {}, appendChild: noop }) };
+  globalThis.window = { devicePixelRatio: 1 };
+
+  const { createSky } = await import('./sky.js');
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101020);
+  const sky = createSky({ scene, camera: new THREE.PerspectiveCamera() });
+  const dome = sky.group.children.find(o => o.isMesh && o.material?.colorNode);
+  ok(!!dome, 'the sky dome mesh is there to test');
+
+  sky.setOvercast(0);
+  sky.updateDome(30);
+  const clear = scene.background.clone();
+  sky.setOvercast(0.7);
+  ok(sky.overcast === 0.7, 'setOvercast reaches the dome uniform');
+  sky.updateDome(30);
+  const lidded = scene.background.clone();
+  ok(!clear.equals(lidded), 'the lid moves scene.background, which is what a sky-tracking fog reads');
+  const chroma = (c) => Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b);
+  ok(chroma(lidded) < chroma(clear), 'the lidded sky is less saturated than the clear one');
+  sky.setOvercast(2);
+  ok(sky.overcast === 1, 'overcast clamps at 1');
+  sky.setOvercast(0.7);
+
+  try {
+    await buildMaterial(dome.material, dome.geometry);
+    ok(true, 'the dome material builds headless with the overcast lid');
+  } catch (error) {
+    ok(false, `the dome material builds headless with the overcast lid: ${error.message}`);
+  }
+}
+
 // ---- headless material build ------------------------------------------------------------------
 for (const octaves of [1, 2, 4, 6]) {
   try {
@@ -111,6 +196,38 @@ for (const octaves of [1, 2, 4, 6]) {
   } catch (error) {
     ok(false, `the cloud material builds at ${octaves} octave(s): ${error.message}`);
   }
+}
+
+// ---- C2: the atmosphere fan-out ----------------------------------------------------------------
+// The master multiplies through response sliders instead of writing them, so these are the exact
+// expressions the page uses. Checked here because getting a response backwards is invisible on screen
+// until someone drags the master to an extreme.
+{
+  const overcastAmount = (s) => Math.min(1, s.weatherOvercast + s.weatherRain * s.overcastPerRain);
+  const fogDensity = (s) => (s.weatherFogEnabled ? s.weatherFogBase + s.weatherRain * s.weatherFogPerRain : 0);
+  const base = { weatherOvercast: 0, weatherRain: 0, overcastPerRain: 1.25, weatherFogEnabled: true, weatherFogBase: 0, weatherFogPerRain: 0.0015 };
+
+  ok(overcastAmount(base) === 0, 'no weather leaves the sky clear');
+  ok(near(overcastAmount({ ...base, weatherRain: 0.4 }), 0.5), 'the master drives overcast through its response');
+  ok(overcastAmount({ ...base, weatherRain: 1 }) === 1, 'a full storm caps the lid at 1, not 1.25');
+  ok(near(overcastAmount({ ...base, weatherOvercast: 0.3 }), 0.3), 'the manual slider works with no weather');
+  ok(near(overcastAmount({ ...base, weatherOvercast: 0.3, weatherRain: 0.2 }), 0.55), 'manual and master add');
+  ok(overcastAmount({ ...base, weatherRain: 1, overcastPerRain: 0 }) === 0,
+    'a zeroed response takes the master out of the loop, which is the point of separating them');
+
+  ok(fogDensity(base) === 0, 'clear weather is clear by default');
+  ok(near(fogDensity({ ...base, weatherRain: 1 }), 0.0015), 'a full storm reaches the per-unit fog density');
+  ok(fogDensity({ ...base, weatherRain: 1, weatherFogEnabled: false }) === 0, 'the fog toggle wins over the master');
+  ok(fogDensity({ ...base, weatherFogBase: 0.0002 }) === 0.0002, 'a clear-weather haze is independent of the master');
+
+  // exp2 fog is 1 - exp(-(d*z)^2). This is why the cloud decks keep `fog: false`: at any density a
+  // player would notice at ground range, the deck rim 10-20 km out is already fully fogged, so scene
+  // fog would erase the decks rather than soften their rim. The dome's overcast lid does that job.
+  const fogAt = (d, z) => 1 - Math.exp(-(d * d * z * z));
+  ok(fogAt(0.0002, 500) < 0.02, 'the lightest haze is invisible at 500 m');
+  ok(fogAt(0.0002, 10000) > 0.95, 'that same haze is total at deck A rim distance');
+  ok(fogAt(0.0015, 660) > 0.6 && fogAt(0.0015, 660) < 0.68, 'the storm default reaches ~63% at 1/density metres');
+  ok(fogAt(0.0015, 20000) > 0.999, 'a storm fog is total well before deck B rim distance');
 }
 
 // ---- the page's own assertion, checked in Node -------------------------------------------------
@@ -128,13 +245,14 @@ for (const octaves of [1, 2, 4, 6]) {
   const covered = key => literal.has(key)
     || (/^cloud[AB]/.test(key) && loopSuffixes.includes(key.slice(6)));
   const missing = weatherKeys.filter(k => !covered(k));
-  ok(weatherKeys.length >= 27, `the page defaults every weather setting (found ${weatherKeys.length})`);
-  ok(loopSuffixes.length === 10, `the deck loop builds all ten per-deck controls (found ${loopSuffixes.length})`);
+  ok(weatherKeys.length >= 37, `the page defaults every weather setting (found ${weatherKeys.length})`);
+  ok(loopSuffixes.length === 12, `the deck loop builds all twelve per-deck controls (found ${loopSuffixes.length})`);
   ok(missing.length === 0, `every weather setting has a panel control${missing.length ? `: missing ${missing.join(', ')}` : ''}`);
 
   const limitsBlock = html.match(/const NUMBER_LIMITS = Object\.freeze\(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
   const limited = new Set([...limitsBlock.matchAll(/(\w+):\s*\[/g)].map(m => m[1]));
-  const numericWeather = weatherKeys.filter(k => !/Visible$|Enabled$|DepthWrite$|FollowsSun$|Tint$/.test(k));
+  // Booleans and strings are validated by their own branch in assignLoadedSettings, not by limits.
+  const numericWeather = weatherKeys.filter(k => !/Visible$|Enabled$|DepthWrite$|FollowsSun$|Tint$|Source$|Color$/.test(k));
   const unlimited = numericWeather.filter(k => !limited.has(k));
   ok(unlimited.length === 0, `every numeric weather setting is clamped on load${unlimited.length ? `: missing ${unlimited.join(', ')}` : ''}`);
 }

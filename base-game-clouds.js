@@ -18,6 +18,8 @@ export const CLOUD_DECK_DEFAULTS = Object.freeze({
   softness: 0.3,
   opacity: 0.88,
   fade: 0.5,
+  fadeFloor: 0.25,    // how dim distance may make the deck before the rim fade starts
+  edgeStart: 0.85,    // where the rim fade begins, as a fraction of the half-extent
   speed: 1.0,
   octaves: 4,         // changing this rebuilds the deck's material: it is baked into the TSL graph
 });
@@ -31,7 +33,14 @@ export const CLOUD_DEFAULTS = Object.freeze({
   overcastTint: 0.55,   // how grey a fully overcast deck goes
 });
 
-const DECK_KEYS = ['visible', 'height', 'extent', 'cover', 'puff', 'softness', 'opacity', 'fade', 'speed', 'octaves'];
+const DECK_KEYS = ['visible', 'height', 'extent', 'cover', 'puff', 'softness', 'opacity', 'fade', 'fadeFloor', 'edgeStart', 'speed', 'octaves'];
+
+// Elevation above the horizon, in degrees, at which a deck's alpha reaches zero. The deck fades out
+// on a circle of radius extent/2 (the square's corners are already past zero), so this — not the
+// plane's edge — is the boundary a player can see, and it is what the panel reports.
+export function deckHorizonAngle({ height, extent }) {
+  return Math.atan2(height, extent / 2) * 180 / Math.PI;
+}
 
 export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount = 2 } = {}) {
   if (!scene) throw new TypeError('base game clouds need a scene');
@@ -62,6 +71,8 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
     mesh.setSoftness(cfg.softness);
     mesh.setOpacity(cfg.opacity);
     mesh.setFade(cfg.fade);
+    mesh.setFadeFloor(cfg.fadeFloor);
+    mesh.setEdgeStart(cfg.edgeStart);
     mesh.setSpeed(cfg.speed);
     mesh.visible = enabled && cfg.visible;
   }

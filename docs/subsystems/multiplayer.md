@@ -1136,3 +1136,16 @@ lifetime, so spawn is the only place it needs setting. `test-ghost-renderer.mjs`
 contract directly: `toWirePose` must emit every field the overhead overlay reads, and must omit `role`
 rather than send null when a bot has none. Nothing covered the wire producer before, which is why a
 host-only feature looked complete.
+
+## Weather in the shared world (2026-08-24)
+
+Base Game's weather rides the same shared-world channel as the sun and the wave spectrum. Six keys are
+owner-owned — `weatherRain`, `weatherOvercast`, `cloudACover`, `cloudAHeight`, `cloudBCover`,
+`cloudBHeight` — and everything else about how weather is drawn (fog response, dimming response, cloud
+extent, octaves, drop budgets later) stays local, so a guest can run a cheaper sky in the same storm.
+The server carries these keys but does not simulate them: nothing in movement or collision reads
+weather, so unlike the terrain and the waves this is state carriage only.
+
+`test-base-game-shared-keys.mjs` checks that the protocol's `NUMBER_LIMITS` and `base-game.html`'s agree
+for every shared key. They are two separate tables clamping the same numbers — one on the wire, one when
+loading a save — and a disagreement silently rewrites a legal local value on the first patch.

@@ -99,7 +99,7 @@ import { buildPerformanceMeasurement, changedPerformanceSettings } from './perfo
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
-import { createBaseGameClouds } from './base-game-clouds.js';
+import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
@@ -183,10 +183,24 @@ const DEFAULT_SETTINGS = Object.freeze({
   cloudNightDim: 0.85,
   cloudOvercastTint: 0.55,
   weatherOvercast: 0,
+  // The weather master. Drops, wet ground and lightning are later phases; what it drives today is
+  // the overcast lid, the light and the fog, each through its own response slider so a hand-set
+  // value is never overwritten.
+  weatherRain: 0,
+  overcastPerRain: 1.25,
+  sunDimPerRain: 0.72,
+  ambientLiftPerRain: 0.15,
+  weatherFogEnabled: true,
+  weatherFogBase: 0,
+  weatherFogPerRain: 0.0015,
+  weatherFogSource: 'sky',
+  weatherFogColor: '#8a929c',
   cloudAVisible: true, cloudAHeight: 900, cloudAExtent: 20000, cloudACover: 0.42, cloudAPuff: 1.6,
-  cloudASoftness: 0.3, cloudAOpacity: 0.88, cloudAFade: 0.5, cloudASpeed: 1, cloudAOctaves: 4,
+  cloudASoftness: 0.3, cloudAOpacity: 0.88, cloudAFade: 0.5, cloudAFadeFloor: 0.25, cloudAEdgeStart: 0.85,
+  cloudASpeed: 1, cloudAOctaves: 4,
   cloudBVisible: true, cloudBHeight: 2200, cloudBExtent: 40000, cloudBCover: 0.3, cloudBPuff: 4,
-  cloudBSoftness: 0.3, cloudBOpacity: 0.5, cloudBFade: 0.5, cloudBSpeed: 0.6, cloudBOctaves: 3,
+  cloudBSoftness: 0.3, cloudBOpacity: 0.5, cloudBFade: 0.5, cloudBFadeFloor: 0.25, cloudBEdgeStart: 0.85,
+  cloudBSpeed: 0.6, cloudBOctaves: 3,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -342,12 +356,17 @@ const NUMBER_LIMITS = Object.freeze({
   bodyTurnThreshold: [0.1, 1.5], bodyTurnRate: [1, 20], gunYawLimit: [0.2, 1.6],
   // Weather. Ranges are wider than the useful band on purpose: the ends are there to be dragged to.
   cloudNightDim: [0, 1], cloudOvercastTint: [0, 1], weatherOvercast: [0, 1],
+  weatherRain: [0, 1], overcastPerRain: [0, 2], sunDimPerRain: [0, 1], ambientLiftPerRain: [0, 1],
+  weatherFogBase: [0, 0.02], weatherFogPerRain: [0, 0.02],
   cloudAHeight: [0, 10000], cloudAExtent: [200, 60000], cloudACover: [0, 1], cloudAPuff: [0.05, 12],
-  cloudASoftness: [0.005, 1], cloudAOpacity: [0, 1], cloudAFade: [0, 2], cloudASpeed: [-8, 8], cloudAOctaves: [1, 6],
+  cloudASoftness: [0.005, 1], cloudAOpacity: [0, 1], cloudAFade: [0, 2], cloudAFadeFloor: [0, 1],
+  cloudAEdgeStart: [0.05, 0.99], cloudASpeed: [-8, 8], cloudAOctaves: [1, 6],
   cloudBHeight: [0, 10000], cloudBExtent: [200, 60000], cloudBCover: [0, 1], cloudBPuff: [0.05, 12],
-  cloudBSoftness: [0.005, 1], cloudBOpacity: [0, 1], cloudBFade: [0, 2], cloudBSpeed: [-8, 8], cloudBOctaves: [1, 6],
+  cloudBSoftness: [0.005, 1], cloudBOpacity: [0, 1], cloudBFade: [0, 2], cloudBFadeFloor: [0, 1],
+  cloudBEdgeStart: [0.05, 0.99], cloudBSpeed: [-8, 8], cloudBOctaves: [1, 6],
 });
 const STRING_VALUES = Object.freeze({
+  weatherFogSource: ['sky', 'custom'],
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
   playerControlMode: ['player', 'orbit'],
@@ -451,8 +470,8 @@ function applyWaterSettings() {
 }
 // Same shape as the water apply: a dirty check, so dragging an unrelated slider does not rebuild a
 // cloud deck (an octave change disposes and rebuilds that deck's material).
-const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint', 'weatherOvercast'];
-const CLOUD_DECK_KEYS = ['Visible', 'Height', 'Extent', 'Cover', 'Puff', 'Softness', 'Opacity', 'Fade', 'Speed', 'Octaves'];
+const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint'];
+const CLOUD_DECK_KEYS = ['Visible', 'Height', 'Extent', 'Cover', 'Puff', 'Softness', 'Opacity', 'Fade', 'FadeFloor', 'EdgeStart', 'Speed', 'Octaves'];
 const appliedClouds = {};
 function applyCloudSettings() {
   let sharedDirty = false;
@@ -466,7 +485,6 @@ function applyCloudSettings() {
       overcastTint: settings.cloudOvercastTint,
     });
     clouds.setEnabled(settings.cloudsEnabled);
-    clouds.setOvercast(settings.weatherOvercast);
   }
   for (const [index, prefix] of [[0, 'cloudA'], [1, 'cloudB']]) {
     let dirty = false;
@@ -478,9 +496,44 @@ function applyCloudSettings() {
       patch[suffix.charAt(0).toLowerCase() + suffix.slice(1)] = settings[key];
       dirty = true;
     }
-    if (dirty) clouds.setDeck(index, patch);
+    if (!dirty) continue;
+    clouds.setDeck(index, patch);
+    // The extent readout quotes the rim's elevation, which height moves too.
+    if (patch.height !== undefined) controlRegistry.get(`${prefix}Extent`)?.sync();
   }
 }
+// How lidded the sky is: the manual slider plus the master's response, capped at 1. One number
+// feeds the dome, both cloud decks and (through the sky colour) the fog tint.
+function overcastAmount() {
+  return Math.min(1, settings.weatherOvercast + settings.weatherRain * settings.overcastPerRain);
+}
+const appliedAtmosphere = { overcast: -1, density: -1, source: null, color: null };
+const _fogColor = new THREE.Color();
+function applyAtmosphereSettings() {
+  const overcast = overcastAmount();
+  if (overcast !== appliedAtmosphere.overcast) {
+    appliedAtmosphere.overcast = overcast;
+    sky.setOvercast(overcast);
+    clouds.setOvercast(overcast);
+  }
+  // Density is a `reference()` node inside three's fog handling, so writing it costs nothing. What
+  // is NOT free is attaching scene.fog for the first time: that changes every material's cache key.
+  // So the fog exists from startup at density 0 and only the number moves.
+  const density = settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0;
+  if (density !== appliedAtmosphere.density) { appliedAtmosphere.density = density; scene.fog.density = density; }
+  if (settings.weatherFogSource === 'custom') {
+    if (settings.weatherFogColor !== appliedAtmosphere.color) {
+      appliedAtmosphere.color = settings.weatherFogColor;
+      scene.fog.color.set(settings.weatherFogColor);
+    }
+  } else if (density > 0) {
+    // Track the sky: scene.background already carries the time-of-day bottom colour and the lid.
+    _fogColor.copy(scene.background);
+    if (!scene.fog.color.equals(_fogColor)) scene.fog.color.copy(_fogColor);
+  }
+  appliedAtmosphere.source = settings.weatherFogSource;
+}
+
 const terrainStudio = createBaseGameTerrainStudio({
   store: terrainStore,
   onOpen: () => {
@@ -523,6 +576,10 @@ await renderer.init();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1430);
+// Attached from the start at density 0. Three builds the fog node from `reference()` uniforms, so
+// the density and colour are free to move at runtime, but going from no fog to fog changes every
+// material's cache key -- which would recompile the world on the first drop of rain.
+scene.fog = new THREE.FogExp2(0x8a929c, 0);
 
 // 600 m covers the 16-chunk terrain draw radius (480 m); with far LOD on, updateWorld() pushes
 // the far plane out to the outermost clipmap ring.
@@ -1392,6 +1449,14 @@ function updateWorld(dt) {
 
   sunIntensity = settings.sunLightEnabled ? sunIntensity : 0;
   moonIntensity = settings.moonLightEnabled ? moonIntensity : 0;
+  // Weather takes the key light down and lifts the ambient a little: overcast is flat, not just dark.
+  // Both branches above write the ambient every frame, so this multiply never compounds (it does
+  // leave the rig's own recorded ambientIntensity showing the slider value, which is what the
+  // Lighting panel should show).
+  const weatherDim = 1 - settings.sunDimPerRain * settings.weatherRain;
+  sunIntensity *= weatherDim;
+  moonIntensity *= weatherDim;
+  rig.ambLight.intensity *= 1 + settings.ambientLiftPerRain * settings.weatherRain;
 
   // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
   // a light's ShadowNode the moment castShadow flips false while render objects built earlier
@@ -1412,6 +1477,9 @@ function updateWorld(dt) {
   }
   aimLight(moonLight, moonDir);
   if (!settings.skyEnabled || !settings.domeEnabled) scene.background.set(0x0b1430);
+  // After the dome has written scene.background for this frame, so a sky-tracking fog reads the
+  // colour the player is actually looking at.
+  applyAtmosphereSettings();
   // Clouds take the key light's own colour, so dusk reddens them and night leaves them a silhouette.
   clouds.update(dt, camera, { sunColor: rig.dirLight.color, nightness: sky.nightness });
 }
@@ -1583,6 +1651,7 @@ const cloudSec = createSection(weatherSec, 'Clouds', { collapsed: false });
 const cloudASec = createSection(cloudSec, 'Cloud deck A (low)', { collapsed: true });
 const cloudBSec = createSection(cloudSec, 'Cloud deck B (high)', { collapsed: true });
 const cloudSharedSec = createSection(cloudSec, 'Cloud appearance', { collapsed: true });
+const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
@@ -1904,18 +1973,38 @@ addRange(waterSec, 'waveSpeed', 'Wave speed without dispersion (m/s)', 0, 100, 0
 addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
+// The master. It multiplies through the response sliders below rather than writing them, so a
+// hand-tuned fog or dimming survives a drag. Drops, wet ground and lightning are later phases.
+addRange(weatherSec, 'weatherRain', 'Weather strength (no drops yet)', 0, 1, 0.01, value => value.toFixed(2));
+addRange(weatherSec, 'weatherOvercast', 'Overcast (manual, adds to the master)', 0, 1, 0.01, value => value.toFixed(2));
 addToggle(weatherSec, 'cloudsEnabled', 'Clouds');
-addRange(weatherSec, 'weatherOvercast', 'Overcast', 0, 1, 0.01, value => value.toFixed(2));
+
+addRange(atmosphereSec, 'overcastPerRain', 'Overcast per unit of weather', 0, 2, 0.01, f2);
+addRange(atmosphereSec, 'sunDimPerRain', 'Sun dimming per unit', 0, 1, 0.01, f2);
+addRange(atmosphereSec, 'ambientLiftPerRain', 'Ambient lift per unit', 0, 1, 0.01, f2);
+addToggle(atmosphereSec, 'weatherFogEnabled', 'Weather fog');
+// exp2 fog: the factor is 1 - exp(-(density*distance)^2), so quote the distance where it reaches
+// 63%. That is the number a person can picture; the density itself is not.
+const fogVisibility = value => (value > 0 ? `${(1 / value).toFixed(0)} m to 63%` : 'clear');
+addRange(atmosphereSec, 'weatherFogBase', 'Fog when clear', 0, 0.02, 0.0001, fogVisibility);
+addRange(atmosphereSec, 'weatherFogPerRain', 'Fog per unit of weather', 0, 0.02, 0.0001, fogVisibility);
+addSelect(atmosphereSec, 'weatherFogSource', 'Fog colour', ['sky', 'custom'], ['Follow the sky', 'Custom']);
+addColor(atmosphereSec, 'weatherFogColor', 'Custom fog colour');
 const metres = value => `${value.toFixed(0)} m`;
 for (const [sec, prefix] of [[cloudASec, 'cloudA'], [cloudBSec, 'cloudB']]) {
   addToggle(sec, `${prefix}Visible`, 'Deck visible');
   addRange(sec, `${prefix}Height`, 'Height', 0, 10000, 10, metres);
-  addRange(sec, `${prefix}Extent`, 'Extent', 200, 60000, 100, metres);
+  // The deck's alpha reaches zero on a circle of radius extent/2, so what a player sees is not the
+  // plane's edge but how far up the sky that circle sits. Report it next to the metres.
+  addRange(sec, `${prefix}Extent`, 'Extent', 200, 60000, 100,
+    value => `${value.toFixed(0)} m · rim ${deckHorizonAngle({ height: settings[`${prefix}Height`], extent: value }).toFixed(1)}° up`);
   addRange(sec, `${prefix}Cover`, 'Coverage', 0, 1, 0.01, f2);
   addRange(sec, `${prefix}Puff`, 'Puff size', 0.05, 12, 0.05, f2);
   addRange(sec, `${prefix}Softness`, 'Softness', 0.005, 1, 0.005, value => value.toFixed(3));
   addRange(sec, `${prefix}Opacity`, 'Opacity', 0, 1, 0.01, f2);
-  addRange(sec, `${prefix}Fade`, 'Horizon fade', 0, 2, 0.02, f2);
+  addRange(sec, `${prefix}Fade`, 'Distance dimming', 0, 2, 0.02, f2);
+  addRange(sec, `${prefix}FadeFloor`, 'Dimming floor (0 fades right out)', 0, 1, 0.01, f2);
+  addRange(sec, `${prefix}EdgeStart`, 'Rim fade starts at', 0.05, 0.99, 0.01, value => `${(value * 100).toFixed(0)}% of the radius`);
   addRange(sec, `${prefix}Speed`, 'Drift speed', -8, 8, 0.05, f2);
   // Octaves are baked into the TSL graph, so moving this rebuilds the deck's material.
   addRange(sec, `${prefix}Octaves`, 'Noise octaves (rebuilds)', 1, 6, 1, value => value.toFixed(0));

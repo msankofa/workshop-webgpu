@@ -62,6 +62,16 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'waveDispersion',
   'waveSpeed',
   'waveSeed',
+  // weather: what the weather IS, as opposed to how a client chooses to draw it. The lid and the
+  // master change how far and how well everyone can see, and the decks are the sky's identity, so
+  // they are the owner's to set. The response curves (fog per unit, sun dimming), the drop budget
+  // and the rest of the cloud look stay local, the same split the wave spectrum/appearance uses.
+  'weatherRain',
+  'weatherOvercast',
+  'cloudACover',
+  'cloudAHeight',
+  'cloudBCover',
+  'cloudBHeight',
 ]);
 
 const NUMBER_LIMITS = Object.freeze({
@@ -84,6 +94,12 @@ const NUMBER_LIMITS = Object.freeze({
   sunAzimuth: [0, 360],
   sunIntensity: [0, 4],
   ambientIntensity: [0, 2],
+  weatherRain: [0, 1],
+  weatherOvercast: [0, 1],
+  cloudACover: [0, 1],
+  cloudAHeight: [0, 10000],
+  cloudBCover: [0, 1],
+  cloudBHeight: [0, 10000],
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });

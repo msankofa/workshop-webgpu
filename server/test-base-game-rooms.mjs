@@ -50,6 +50,37 @@ const authoritative = message(guest, 'base:snapshot');
 assert.equal(authoritative.world.todHour, 14);
 assert.equal(authoritative.world.sunIntensity, 4);
 
+// Weather is carried, not simulated: the owner sets it, the server clamps it and echoes it to
+// everyone, and a guest cannot. Local look keys are not part of the world at all.
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: { weatherRain: 0.6, weatherOvercast: 0.2, cloudAHeight: 1200, cloudBCover: 0.44, cloudAExtent: 31000 },
+});
+const weatherSnapshot = message(guest, 'base:snapshot');
+assert.equal(weatherSnapshot.world.weatherRain, 0.6);
+assert.equal(weatherSnapshot.world.cloudAHeight, 1200);
+assert.equal(weatherSnapshot.world.cloudBCover, 0.44);
+assert.equal('cloudAExtent' in weatherSnapshot.world, false, 'a local look key never enters the room world');
+
+service.handle(owner, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: { weatherRain: 7, cloudBHeight: -50 } });
+const clamped = message(guest, 'base:snapshot');
+assert.equal(clamped.world.weatherRain, 1, 'the server clamps an over-range master');
+assert.equal(clamped.world.cloudBHeight, 0, 'the server clamps a negative deck height');
+
+// `message` returns the LAST packet of a type and never clears, so a rejected patch has to be
+// checked by counting broadcasts rather than by re-reading the newest snapshot.
+const snapshotsBefore = guest.sent.filter(p => p.type === 'base:snapshot').length;
+service.handle(guest, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: { weatherRain: 0 } });
+assert.equal(message(guest, 'base:error').code, 'not_owner');
+assert.equal(guest.sent.filter(p => p.type === 'base:snapshot').length, snapshotsBefore,
+  'a guest weather patch broadcasts nothing at all');
+
+// A patch of only local keys sanitizes to nothing, so the server must not bump the revision for it.
+const quietBefore = guest.sent.filter(p => p.type === 'base:snapshot').length;
+service.handle(owner, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: { cloudAOctaves: 6, rainDropsEnabled: false } });
+assert.equal(guest.sent.filter(p => p.type === 'base:snapshot').length, quietBefore,
+  'an all-local patch is dropped before the broadcast');
+
 const resumeToken = ownerJoined.resumeToken;
 owner.readyState = 3;
 assert.equal(service.disconnect(owner), true);
