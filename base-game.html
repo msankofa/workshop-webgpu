@@ -118,7 +118,7 @@ import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
 import { createWeaponViewModel } from './weapon-viewmodel.js';
 import { getWeapon, WEAPONS } from './weapons.js';
-import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
+import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameHitEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
@@ -126,7 +126,9 @@ import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
 import { createTriggerState, stepTrigger, shotDirectionFor } from './base-game-fire.js';
 import { createAmmoStore } from './player-ammo.js';
-import { createEffectRenderer } from './effect-renderer.js';
+import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer.js';
+import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-audio.js';
+import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams } from './blood-tuning.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
@@ -168,8 +170,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   waterReflection: 'planar',
   waterCaustics: true,
   waterUnderwaterFog: true,
-  waveCount: 17, waveBaseLength: 1035, waveLengthMul: 0.51, waveBaseAmp: 0.4, waveAmpMul: 0.51, waveChop: 0.51,
-  waveWindDeg: 139, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
+  waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
+  waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -737,20 +739,49 @@ function mountMuzzle(mount, out) {
   return out;
 }
 const sparkColorFor = kind => (kind === 'player' ? [1.0, 0.32, 0.28] : kind === 'terrain' ? [0.72, 0.60, 0.44] : [0.82, 0.78, 0.66]);
-// One resolved shot, for any shooter: tracer, impact spark, and world impact sound. Global coordinates in.
-function spawnShotEffects({ origin, end, kind, weaponId, mount }) {
+const BLOOD_RED = [0.4, 0.02, 0.03];   // mirrors entity-types/effect.js; pushEffect skips its defaults
+// One resolved shot, for any shooter: tracer, impact spark, one impact voice, and the round passing
+// the listener. Global coordinates in. `local` suppresses the whizz -- you never hear your own round.
+function spawnShotEffects({ origin, end, dir = null, normal = null, kind, weaponId, mount, local = false }) {
   const weapon = getWeapon(weaponId);
   if (!weapon) return;
+  const melee = (weapon.mode || 'hitscan') === 'melee';
   const o = worldCoordinates.toRenderLocal(origin, _fxLocal), e = worldCoordinates.toRenderLocal(end, _fxLocal2);
-  const muzzle = mountMuzzle(mount, [0, 0, 0]);
-  const p0 = tracerEffectStart([o[0], o[1], o[2]], [e[0], e[1], e[2]], muzzle);
-  const tracerFx = normalizeTracerFx(weapon.tracerFx);
-  const life = tracerLifetime(p0, e, tracerFx);
-  if (life > 0) pushEffect('gun_tracer', p0, life, { p1: [e[0], e[1], e[2]], color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx });
-  if (kind && kind !== 'none') {
-    pushEffect('hit_spark', e, 0.6, { normal: [0, 1, 0], color: sparkColorFor(kind), surface: kind });
-    if (kind !== 'player') audioDirector.impactAt({ x: e[0], y: e[1], z: e[2] });   // player hits already play enemy_hit
+  // A knife swing resolves a ray but draws no line (environment-viewer's spawnMeleeImpact rule).
+  if (!melee) {
+    const muzzle = mountMuzzle(mount, [0, 0, 0]);
+    const p0 = tracerEffectStart([o[0], o[1], o[2]], [e[0], e[1], e[2]], muzzle);
+    const tracerFx = normalizeTracerFx(weapon.tracerFx);
+    const life = tracerLifetime(p0, e, tracerFx);
+    if (life > 0) pushEffect('gun_tracer', p0, life, { p1: [e[0], e[1], e[2]], color: weapon.tracerColor || [1, 0.85, 0.45], tracerFx });
   }
+  if (kind && kind !== 'none') {
+    const n = normal || [0, 1, 0];
+    pushEffect('hit_spark', e, 0.6, { normal: n, color: sparkColorFor(kind), surface: kind });
+    // ballistic-audio.js picks ONE voice for the hit: a ricochet replaces the impact rather than
+    // stacking on it, and flesh is announced by the server's hit event instead of here.
+    const voice = pickImpactVoice({ kind, normal: n }, dir || [0, 0, -1]);
+    if (voice && voice !== 'enemy_hit') audioDirector.impactAt(voice, { x: e[0], y: e[1], z: e[2] });
+  }
+  // The round going past: closest approach to the listener, delayed by its own time of flight.
+  if (!local && !melee && dir) {
+    const travelled = Math.hypot(e[0] - o[0], e[1] - o[1], e[2] - o[2]);
+    const pass = evaluateWhizz({ origin: { x: o[0], y: o[1], z: o[2] }, dir: { x: dir[0], y: dir[1], z: dir[2] }, travelled, listenerPos: camera.position, weapon });
+    if (pass) audioDirector.whizzAt(pass.point, createWhizzVoice(pass));
+  }
+}
+// A round in a body: blood-tuning.js's burst, scaled by how hurt the victim now is. No rig on the
+// wire, so the stain takes its fixed size rather than fitting a part's cross-section.
+function spawnHitBlood(globalPoint, normal, health01) {
+  const l = worldCoordinates.toRenderLocal(globalPoint, _fxLocal);
+  const n = normal || [0, -0.2, 0];
+  const I = bloodIntensityForHealth(health01);
+  const spray = sprayParams(I, BLOOD_TUNING, BLOOD_BASE);
+  if (spray) pushEffect('blood_spray', l, spray.life, { normal: n, color: BLOOD_RED, count: spray.count, size: spray.size, speed: spray.speed, spread: spray.spread, gravity: spray.gravity });
+  const st = stainParams(null, BLOOD_TUNING, BLOOD_BASE);
+  pushEffect('blood_stain', l, st.life, { normal: n, color: BLOOD_RED, size: st.size, opacity: st.opacity });
+  const sp = splatterParams(I, BLOOD_TUNING, BLOOD_BASE);
+  if (sp) pushEffect('blood_splatter', l, sp.life, { normal: n, color: BLOOD_RED, count: sp.count, size: sp.size, opacity: sp.opacity, speed: sp.speed, spread: sp.spread, gravity: sp.gravity });
 }
 // Muzzle flash at the mount's muzzle (environment-viewer's wire shape; not replicated as such,
 // each client spawns it from the shot it sees). Direction is the shot's, the position follows the mount.
@@ -793,7 +824,7 @@ function spawnLocalShotEffects(weaponId, tick) {
   const range = weapon.range ?? 300;
   let end = [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range], kind = 'none';
   try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; } } catch { /* no provider yet */ }
-  spawnShotEffects({ origin, end, kind, weaponId, mount: playerBodies.localMount });
+  spawnShotEffects({ origin, end, dir, normal: null, kind, weaponId, mount: playerBodies.localMount, local: true });
 }
 
 // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn
@@ -1811,10 +1842,14 @@ function applyPlayerSnapshot(snapshot, session) {
     const weaponId = localWeaponId();
     if (local.ammo && weaponId) Object.assign(localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId), { mag: local.ammo.mag, reserve: local.ammo.reserve });
     const now = performance.now();
-    for (const hit of snapshot.hits ?? []) {
+    for (const raw of snapshot.hits ?? []) {
+      const hit = sanitizeBaseGameHitEvent(raw);
+      if (!hit) continue;
       if (hit.shooter === session.clientId) combatState.hitFlashUntil = now + 180;
       if (hit.victim === session.clientId) { combatState.damageUntil = now + 400; audioDirector.localDamage(); }
       else { const l = worldCoordinates.toRenderLocal(hit.point, remoteAudioLocal); audioDirector.hitAt({ x: l[0], y: l[1], z: l[2] }); }
+      const victim = snapshot.players?.find(p => p.id === hit.victim);
+      spawnHitBlood(hit.point, hit.normal, Math.max(0, (victim?.health ?? 0) / 100));
     }
     for (const death of snapshot.deaths ?? []) if (death.victim === session.clientId) combatState.killedBy = death.killer;
     const before = playerController.getPosition();
@@ -1834,7 +1869,7 @@ function applyPlayerSnapshot(snapshot, session) {
     if (!shot || shot.shooter === session.clientId) continue;   // own shots were predicted at fire time
     const mount = playerBodies.remoteMount(shot.shooter);
     if (shot.dir) spawnMuzzleFlash(mount, shot.dir, shot.weapon);
-    spawnShotEffects({ origin: shot.origin, end: shot.end, kind: shot.kind, weaponId: shot.weapon, mount });
+    spawnShotEffects({ origin: shot.origin, end: shot.end, dir: shot.dir, normal: shot.normal, kind: shot.kind, weaponId: shot.weapon, mount });
   }
   for (const raw of snapshot.explosions ?? []) {
     const blast = sanitizeBaseGameExplosionEvent(raw);
