@@ -282,13 +282,16 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     mat.emissiveNode = Fn(() => {
       const out = float(0).toVar('causticOut');
       const depth = water.sceneLevel.sub(P.y);
-      If(depth.greaterThan(0.0).and(water.causticStrength.greaterThan(0.0)), () => {
+      // The sun-elevation gate is part of the branch: a low sun makes the refracted ray almost
+      // horizontal, and dividing by its vanishing y gave inf -> NaN -> black fragments (NaN * 0
+      // is still NaN, so gating the result afterwards could not clean it up).
+      If(depth.greaterThan(0.0).and(water.causticStrength.greaterThan(0.0)).and(water.sunDir.y.greaterThan(0.12)), () => {
         const fade = saturate(depth.mul(0.6));
         const r0 = refract(water.sunDir.negate(), vec3(0, 1, 0), ETA);
-        const t0 = depth.div(r0.y.negate());
+        const t0 = depth.div(tslMax(r0.y.negate(), 0.15));
         const S = P.sub(r0.mul(t0));
         const N = water.waveNormalFold(S.xz.add(water.offset)).xyz;
-        const r1 = refract(water.sunDir.negate(), N, ETA);
+        const r1 = refract(water.sunDir.negate(), N, ETA);   // eta < 1 never totally reflects, so r1 is finite
         const Pn = S.add(r1.mul(depth.mul(water.causticSpread).div(tslMax(r1.y.negate(), 0.05))));
         const Po = S.add(r0.mul(depth.mul(water.causticSpread).div(tslMax(r0.y.negate(), 0.05))));
         const oldArea = length(dFdx(Po)).mul(length(dFdy(Po)));
@@ -296,9 +299,10 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
         // The area ratio is a screen derivative: it aliases into moire once a texel spans more
         // than a pixel, so it fades out with the same distance ramp the albedo detail uses.
         const near = oneMinus(smoothstep(60.0, 220.0, length(P.sub(cameraPosition))));
-        out.assign(clamp(oldArea.div(tslMax(newArea, 1e-5)).mul(0.2), 0.0, 1.5).mul(fade).mul(near).mul(water.causticStrength));
+        const ratio = clamp(oldArea.div(tslMax(newArea, 1e-5)).mul(0.2), 0.0, 1.5);
+        out.assign(select(ratio.lessThan(1e6), ratio, float(0)).mul(fade).mul(near).mul(water.causticStrength));
       });
-      return water.sunColor.mul(out).mul(vec3(0.6, 0.85, 1.0)).mul(saturate(water.sunDir.y.mul(4)));
+      return water.sunColor.mul(out).mul(vec3(0.6, 0.85, 1.0)).mul(smoothstep(0.12, 0.35, water.sunDir.y));
     })();
   }
   mat.normalNode = transformNormalToView(normalProp);   // object-space in, as transformNormalToView expects
