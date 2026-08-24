@@ -29,7 +29,7 @@ const near = (a, b, epsilon = 0.02) => Math.abs(a - b) <= epsilon;
 const P = BASE_GAME_PROTOCOL_VERSION;
 
 // ---- protocol sanitizers ----
-ok(P === 8, 'protocol is version 8');
+ok(P === 9, 'protocol is version 9');
 const goodTick = sanitizeBaseGameTickInput({ tick: 5, moveX: 3, moveZ: -0.5, yaw: 1.2, pitch: 9, sprint: 1, jump: true });
 ok(goodTick && goodTick.moveX === 1 && goodTick.moveZ === -0.5 && near(goodTick.pitch, Math.PI / 2, 1e-9)
   && goodTick.sprint === false && goodTick.jump === true, 'tick sanitizer clamps movement and keeps booleans strict');

@@ -88,7 +88,7 @@ console.log('\n[3] server and predicted client agree across a tile seam and a sl
   let clock = 1000;
   const service = createBaseGameRoomService({ now: () => clock });
   const ws = new FakeSocket();
-  service.handle(ws, { type: 'base:create', protocol: P, room: 'WALK', world: {}, terrain: { kind: 'terrain', descriptor } });
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'WALK', world: { waterEnabled: false }, terrain: { kind: 'terrain', descriptor } });
   await service.ensureWorld();
   const client = service.rooms.get('WALK').clients.values().next().value;
   // the client predicts with the same source built from the joined config
@@ -230,7 +230,7 @@ console.log('\n[7] volumetric room: server builds chunk collision around players
   let clock = 1000;
   const service = createBaseGameRoomService({ now: () => clock });
   const ws = new FakeSocket();
-  service.handle(ws, { type: 'base:create', protocol: P, room: 'CAVE', world: {}, terrain: { kind: 'terrain', descriptor, volumetric: true } });
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'CAVE', world: { waterEnabled: false }, terrain: { kind: 'terrain', descriptor, volumetric: true } });
   await service.ensureWorld();
   const room = service.rooms.get('CAVE');
   const sim = room.sim;

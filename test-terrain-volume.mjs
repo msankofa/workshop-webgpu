@@ -67,7 +67,8 @@ console.log('\n[2] volume tiles: geometry, seams and gradient normals');
   let maxH = -Infinity; for (const v of a.heights) maxH = Math.max(maxH, v);
   ok(a.volume.yMin === -60 && a.volume.yMax >= maxH + 10, `rows span the density floor ${a.volume.yMin} up to ${a.volume.yMax.toFixed(1)} (surface max ${maxH.toFixed(1)})`);
   // every vertex of A on the shared plane x=30 has a partner in B within float noise, with the same normal
-  const onPlane = (t, x) => { const out = []; for (let i = 0; i < t.volume.positions.length; i += 3) if (Math.abs(t.volume.positions[i] - x) < 1e-4) out.push(i); return out; };
+  // skirt vertices also sit on the border plane, hanging down with their own normals: surface only
+  const onPlane = (t, x) => { const out = []; const end = (t.volume.skirtVertexStart ?? t.volume.positions.length / 3) * 3; for (let i = 0; i < end; i += 3) if (Math.abs(t.volume.positions[i] - x) < 1e-4) out.push(i); return out; };
   const pa = onPlane(a, 30), pb = onPlane(b, 30);
   let unmatched = 0, maxNormalDelta = 0;
   for (const i of pa) {

@@ -6,7 +6,7 @@ import {
   sanitizeBaseGamePlayerState, sanitizeBaseGameHitEvent, sanitizeBaseGameDeathEvent, wireAmmo,
   sanitizeBaseGameShotEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState,
 } from './base-game-protocol.mjs';
-import { createTriggerState, stepTrigger, lookDirection, shotDirectionFor } from './base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, lookDirection, shotDirectionFor } from './base-game-fire.js';
 import { botSeedFromId } from './bot-activity.js';
 import { createAmmoStore, defaultAmmoFor } from './player-ammo.js';
 import { createProjectileManager } from './bot-projectiles.js';
@@ -62,6 +62,24 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   ok(!stepTrigger(dead, ammo, { playerId: 'e', weaponId: 'm1911', tick: 1, fire: true, alive: false }).fired && ammo.ensureAmmo('e', 'm1911').mag === 7, 'a dead shooter cannot fire');
   const d = lookDirection(0, 0);
   ok(near(d[0], 0) && near(d[1], 0) && near(d[2], -1), 'yaw 0 pitch 0 looks down -Z');
+
+  // stepThrow: the trigger step on its own state, with the pouch refilling the hand.
+  {
+    const ammo = createAmmoStore(), trig = createTriggerState();
+    const grenade = getWeapon('grenade');
+    const total = grenade.magazineSize + grenade.reserveAmmo;
+    const gap = ticksFor('grenade');
+    let tick = 1, thrown = 0;
+    const press = () => { const r = stepThrow(trig, ammo, { playerId: 'p', weaponId: 'grenade', tick: tick++, fire: true }); stepThrow(trig, ammo, { playerId: 'p', weaponId: 'grenade', tick: tick++, fire: false }); return r; };
+    ok(press().fired && ammo.ensureAmmo('p', 'grenade').mag === 1, 'the first throw leaves and the pouch reloads the hand with no wait');
+    ok(!press().fired, 'a second press inside the throw interval is refused by the cadence gate');
+    thrown = 1;
+    while (thrown < total + 2) { tick += gap; if (press().fired) thrown++; else break; }
+    ok(thrown === total, `the pouch holds exactly ${total} throws`);
+    ok(ammo.ensureAmmo('p', 'grenade').mag === 0 && ammo.ensureAmmo('p', 'grenade').reserve === 0, 'an empty pouch stays empty');
+    const rifle = stepThrow(createTriggerState(), createAmmoStore(), { playerId: 'p', weaponId: 'cz_805_bren', tick: 1, fire: true });
+    ok(!rifle.fired && rifle.reason === 'not-throwable', 'a hitscan weapon in the throwable slot is never thrown');
+  }
 
   // Spread: bot-aim.js's cone on weapons.js spreadRad, rolls seeded on (seed, tick).
   const t1 = createTriggerState(), t2 = createTriggerState();
@@ -235,12 +253,29 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   ok(snap.explosions?.length === 1 && snap.explosions[0].weapon === 'rpg' && snap.explosions[0].radius === getWeapon('rpg').projectile.blastRadius, 'the explosion event reaches the clients');
   ok(snap.explosions[0].contact === true, 'a rocket that struck something reports surface contact, so the blast can tear rubble out of it');
   ok(snap.hits.some(h => h.victim === victimId && h.shooter === shooterId), 'blast damage is reported as a hit event');
+
+  // Quick-throw (G): the throwable slot leaves the hand on its own trigger, never becoming held.
+  {
+    room.events = { hits: [], deaths: [], shots: [], explosions: [] };
+    service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'cz_805_bren' } });
+    both(20, { slot: 0 });
+    const held = room.ammo.ensureAmmo(shooterId, 'cz_805_bren').mag;
+    both(1, { slot: 0, yaw: yaw2, pitch: pitch2, throw: true });
+    ok(room.projectiles.list.length === 1 && room.projectiles.list[0].weaponId === 'grenade', 'pressing throw puts a grenade in the air while a rifle is held');
+    ok(room.ammo.ensureAmmo(shooterId, 'cz_805_bren').mag === held, 'the throw never touches the held magazine');
+    ok(shooter.action === 5 && shooter.actionTick === shooter.lastConsumedTick, 'the throw stamps its own action code, so remotes can hear and play it');
+    ok(room.ammo.ensureAmmo(shooterId, 'grenade').mag === 1, 'the pouch puts the next grenade in the hand at once');
+    both(1, { slot: 0, yaw: yaw2, pitch: pitch2, throw: true });
+    ok(room.projectiles.list.length === 1, 'holding the key does not throw a second grenade');
+    for (let i = 0; i < 20 && room.projectiles.list.length; i++) both(12, { yaw: yaw2, pitch: pitch2 });
+    ok(room.events.explosions.some(e => e.weapon === 'grenade'), 'the thrown grenade goes off and reports its blast');
+  }
 }
 
 // ---- page wiring markers ----
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
-  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'pickImpactVoice(', 'evaluateWhizz(', 'spawnHitBlood(', 'sprayParams(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(']) {
+  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'pickImpactVoice(', 'evaluateWhizz(', 'spawnHitBlood(', 'sprayParams(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(', 'stepLocalThrow(', "event.code === 'KeyG'", 'localThrowableId(']) {
     ok(html.includes(marker), `base-game.html wires ${marker}`);
   }
 }

@@ -125,6 +125,12 @@ ${R} .sec-body{
 }
 ${R} .sec.collapsed .sec-head{ border-bottom: 0; }
 ${R} .sec.collapsed .sec-body{ max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
+/* Nested sections: a section whose body holds sections is a group, so it needs the room for them
+   (5000px is about 120 controls) and its children read as subheads rather than as more cards. */
+${R} .sec-body:has(.sec){ max-height: 40000px; }
+${R} .sec .sec{ margin: 5px 0; border-radius: 5px; box-shadow: none; }
+${R} .sec .sec-head{ min-height: 30px; padding: 6px 9px; font-size: 12px; font-weight: 600; background: transparent; }
+${R} .sec .sec:not(.collapsed):hover{ transform: none; box-shadow: none; }
 /* .ttl is the pre-existing flat heading; it survives as a subhead inside a section. */
 ${R} .ttl{
   margin: 0 0 7px; padding: 8px 10px;

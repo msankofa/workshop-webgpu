@@ -74,10 +74,11 @@ export function createBaseGamePrediction({
         yaw: Number.isFinite(input.yaw) ? input.yaw : 0,
         pitch: Number.isFinite(input.pitch) ? input.pitch : 0,
         sprint: !!input.sprint,
+        crouch: !!input.crouch,
         jump: !!input.jump,
         position: null,
       };
-      controller.stepOnce({ moveX: entry.moveX, moveZ: entry.moveZ, yaw: entry.yaw, sprint: entry.sprint }, entry.jump);
+      controller.stepOnce({ tick: entry.tick, moveX: entry.moveX, moveZ: entry.moveZ, yaw: entry.yaw, sprint: entry.sprint, crouch: entry.crouch }, entry.jump);
       entry.position = controller.getPosition();
       history.push(entry);
       onTick?.(entry);
@@ -106,7 +107,7 @@ export function createBaseGamePrediction({
   }
 
   function installAuthoritative(state) {
-    controller.applyState({ position: state.position, velocity: state.velocity, grounded: state.grounded });
+    controller.applyState({ position: state.position, velocity: state.velocity, grounded: state.grounded, tick: state.lastProcessedTick });
   }
 
   // Applies one authoritative player entry. Returns what happened so presentation can decide
@@ -147,7 +148,7 @@ export function createBaseGamePrediction({
     installAuthoritative(state);
     let replayed = 0;
     for (const item of history) {
-      controller.stepOnce({ moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint }, item.jump);
+      controller.stepOnce({ tick: item.tick, moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint, crouch: item.crouch }, item.jump);
       item.position = controller.getPosition();
       replayed++;
     }

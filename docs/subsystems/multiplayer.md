@@ -50,7 +50,7 @@ terrain is not accepted yet. See `base-game.md`. The descriptor's `seaLevel` is 
 spectrum keys (`waveCount`, `waveBaseLength`, `waveLengthMul`, `waveBaseAmp`, `waveAmpMul`, `waveChop`,
 `waveWindDeg`, `waveSpreadDeg`, `waveDispersion`, `waveSpeed`, `waveSeed`) are shared world keys on the
 normal `base:world` patch path, so the owner tunes waves live and every peer builds the same wave table
-(`waveOptionsFromWorld`).
+(`waveOptionsFromWorld`). `waterEnabled` is shared too: whether the room has a sea decides whether players swim, so it cannot be a local toggle. Each room owns a `base-game-water-sim.js` instance (`room.water`, level from the terrain descriptor — the lab has none and stays dry, spectrum from the shared world, resynced on every world patch and terrain swap) and hands it to each player controller as `waterSurfaceAt`. Tick inputs gained a `crouch` boolean (swim down; absent from older clients, which then never sink) and `stepOnce` now carries the tick, so the water clock is the input tick on both sides and a replay lands on the same wave phase the first pass did.
 
 ### Hosted map publishing (`server/publish-map.js`)
 

@@ -244,7 +244,8 @@ export function createV5Source(descriptorLike) {
       normals[i] = gx * inv; normals[i + 1] = gy * inv; normals[i + 2] = gz * inv;
     }
     return { positions: mc.positions, normals, indices: mc.indices, yMin, yMax: yMin + (ny - 1) * sy, spacing: step, spacingY: sy, rows: ny,
-      skirtIndexStart: mc.skirtIndexStart ?? mc.indices.length };
+      skirtIndexStart: mc.skirtIndexStart ?? mc.indices.length,
+      skirtVertexStart: mc.skirtVertexStart ?? mc.positions.length / 3 };
   }
 
   return {

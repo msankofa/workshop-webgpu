@@ -3,6 +3,7 @@ import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { readFileSync } from 'node:fs';
 
@@ -99,6 +100,79 @@ ok(cameraResult.obstructed && cameraResult.boomDistance < 2, 'camera-only obstru
 view.updateCamera(1 / 60, [30.8, 0, 27], { mode: 'firstPerson' });
 ok(!view.capsuleMesh.visible, 'first-person mode hides the diagnostic capsule from the camera');
 
+
+// --- swimming (W8): the capsule floats on the shared water sim, on the tick clock ---
+const flatSea = createBaseGameWaterSim({ level: 5, waves: { baseAmp: 0 }, enabled: true });
+const swimmer = createBaseGamePlayerController({
+  worldQuery,
+  spawn: [0, 0.02, 0],
+  waterSurfaceAt: (x, z, t) => flatSea.heightAt(x, z, t),
+});
+const swimCfg = swimmer.config;
+const restSubmersion = swimCfg.floatDepth * (swimCfg.gravity / swimCfg.buoyancy);
+const restFootY = 5 - restSubmersion - swimCfg.height * swimCfg.floatHeightFraction;
+
+simulate(swimmer, 6);
+ok(swimmer.swimming && !swimmer.grounded, 'a capsule under the surface swims instead of standing on the seabed');
+ok(near(swimmer.getPosition()[1], restFootY, 0.05), `floats at the buoyancy equilibrium (${swimmer.getPosition()[1].toFixed(2)} vs ${restFootY.toFixed(2)})`);
+
+const floatY = swimmer.getPosition()[1];
+const dive = { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: true };
+simulate(swimmer, 2, dive);
+ok(swimmer.getPosition()[1] < floatY - 1, 'crouch swims down (to the seabed here)');
+simulate(swimmer, 4, { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false });
+ok(near(swimmer.getPosition()[1], restFootY, 0.05), 'letting go floats back up to the surface');
+
+// holding jump climbs faster than drifting up does, from the same depth
+simulate(swimmer, 2, dive);
+simulate(swimmer, 1, { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false });
+const driftedY = swimmer.getPosition()[1];
+simulate(swimmer, 4, { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false });
+simulate(swimmer, 2, dive);
+swimmer.setInput({ moveX: 0, moveZ: 0, yaw: 0, sprint: false });
+for (let frame = 0; frame < 60; frame++) { swimmer.queueJump(); swimmer.advance(1 / 60); }
+ok(swimmer.getPosition()[1] > driftedY + 0.5, `holding jump swims up (${swimmer.getPosition()[1].toFixed(2)} m vs ${driftedY.toFixed(2)} m drifting)`);
+
+// horizontal drag: the same forward input covers less ground in water than on the floor
+swimmer.reset([0, 0.02, 0]);
+simulate(swimmer, 4, { moveX: 0, moveZ: 1, yaw: 0, sprint: false });
+const swamZ = Math.abs(swimmer.getPosition()[2]);
+const walker = createBaseGamePlayerController({ worldQuery, spawn: [0, 0.02, 0] });
+simulate(walker, 4, { moveX: 0, moveZ: 1, yaw: 0, sprint: false });
+const walkedZ = Math.abs(walker.getPosition()[2]);
+ok(swamZ < walkedZ * 0.8, `swimming is slower than walking (${swamZ.toFixed(1)} m vs ${walkedZ.toFixed(1)} m)`);
+
+// a swell lifts the body: the same column, waves on, tracks the surface within the wave band
+const swell = createBaseGameWaterSim({ level: 5, waves: { count: 3, baseLength: 90, baseAmp: 0.8, chop: 0 }, enabled: true });
+const rider = createBaseGamePlayerController({ worldQuery, spawn: [0, 0.02, 0], waterSurfaceAt: (x, z, t) => swell.heightAt(x, z, t) });
+simulate(rider, 8);
+let minRide = Infinity, maxRide = -Infinity, worstOffset = 0;
+simulate(rider, 6, null, current => {
+  const y = current.getPosition()[1];
+  minRide = Math.min(minRide, y); maxRide = Math.max(maxRide, y);
+  worstOffset = Math.max(worstOffset, Math.abs(current.waterSurface - y - (restSubmersion + swimCfg.height * swimCfg.floatHeightFraction)));
+});
+ok(maxRide - minRide > 0.3, `the body rides the swell (${(maxRide - minRide).toFixed(2)} m of travel)`);
+ok(worstOffset < 1, `it stays near the surface while riding (worst offset ${worstOffset.toFixed(2)} m)`);
+
+// draining the sea drops the swimmer back onto the floor
+swell.setEnabled(false);
+simulate(rider, 3);
+ok(rider.grounded && !rider.swimming && near(rider.getPosition()[1], 0), 'with the sea gone the swimmer falls and lands grounded');
+
+// the water clock is the tick, so the same ticks reproduce the same swim exactly
+const scriptA = createBaseGamePlayerController({ worldQuery, spawn: [0, 0.02, 0], waterSurfaceAt: (x, z, t) => swell.heightAt(x, z, t) });
+const scriptB = createBaseGamePlayerController({ worldQuery, spawn: [0, 0.02, 0], waterSurfaceAt: (x, z, t) => swell.heightAt(x, z, t) });
+swell.setEnabled(true);
+for (let k = 1; k <= 400; k++) {
+  const step = { tick: k, moveX: 0, moveZ: 1, yaw: 0, sprint: false, crouch: k > 200 };
+  scriptA.stepOnce(step, k % 90 === 0);
+  scriptB.stepOnce({ ...step }, k % 90 === 0);
+}
+const a = scriptA.getPosition(), b = scriptB.getPosition();
+ok(a[0] === b[0] && a[1] === b[1] && a[2] === b[2], 'the same tick script reproduces the same position bit for bit');
+ok(scriptA.tick === 400 && scriptA.captureState().tick === 400, 'the controller carries the tick it last simulated');
+
 const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
 for (const marker of [
   'createBaseGamePlayerController',
@@ -108,6 +182,8 @@ for (const marker of [
   'playerController.captureState()',
   'playerController.applyState(data.player)',
   'playerView.updateCamera',
+  'createBaseGameWaterSim',
+  'waterSurfaceAt: (x, z, t) => waterSim.heightAt(x, z, t)',
 ]) ok(html.includes(marker), `base-game.html integrates ${marker}`);
 
 view.dispose();

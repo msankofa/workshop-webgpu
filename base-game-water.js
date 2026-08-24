@@ -211,6 +211,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     get time() { return time; },
     setEnabled(flag) { enabled = !!flag; if (!enabled) surface.mesh.visible = false; terrain.setSeaDepthActive(enabled); applyOffset(); },
     setLevel(level) { if (Number.isFinite(level) && level !== uLevel.value) { uLevel.value = level; applyOffset(); } },
+    setTime(seconds) { if (Number.isFinite(seconds)) { time = seconds; uTime.value = time; } },
     // Wave spectrum from the shared world (buildWaveTable options); rebuilds the table in place.
     setWaves(options) {
       let changed = false;
@@ -225,11 +226,12 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
       const s = surfaceAt(profile.table, x, z, time, profile.disp.value, 4, _s);
       return uLevel.value + s.y;
     },
-    // Per frame, before render: clock, recentre, sun, gate.
-    update(dt, cameraPosition) {
+    // Per frame, before render: clock, recentre, sun, gate. `atTime` (seconds) overrides the clock
+    // so the page can drive the swell from the lockstep tick the physics swims on.
+    update(dt, cameraPosition, atTime) {
       if (!enabled) return;
       frame++;
-      time += dt;
+      time = Number.isFinite(atTime) ? atTime : time + dt;
       uTime.value = time;
       applyOffset();
       surface.update(cameraPosition);

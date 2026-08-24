@@ -20,7 +20,7 @@ export const BASE_GAME_AIM_BLEND = Object.freeze({
   ...AIM_BLEND_DEFAULTS, enabled: true, torsoEnabled: true, headEnabled: true, trimEnabled: true, recoilEnabled: true,
 });
 export const BASE_GAME_AIM_DISTANCE = 30;   // m along the look ray a remote's aim point is placed
-export const BASE_GAME_WEAPON_ACTIONS = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4 });
+export const BASE_GAME_WEAPON_ACTIONS = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4, throw: 5 });
 
 // Appearance choices offered to pages: every bot body version, then the human soldier role kits.
 const SOLDIER_KEY = 'soldier:';

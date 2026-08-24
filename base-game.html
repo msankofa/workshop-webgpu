@@ -99,6 +99,8 @@ import { buildPerformanceMeasurement, changedPerformanceSettings } from './perfo
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
+import { createBaseGameClouds } from './base-game-clouds.js';
+import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
@@ -124,7 +126,7 @@ import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
-import { createTriggerState, stepTrigger, shotDirectionFor } from './base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor } from './base-game-fire.js';
 import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer.js';
 import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-audio.js';
@@ -172,6 +174,19 @@ const DEFAULT_SETTINGS = Object.freeze({
   waterUnderwaterFog: true,
   waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
   waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
+  // Weather, phase C1: cloud decks. The master rain slider is a later phase; `weatherOvercast` is
+  // the manual stand-in until it exists.
+  cloudsEnabled: true,
+  cloudDepthWrite: false,
+  cloudTintFollowsSun: true,
+  cloudTint: '#ffffff',
+  cloudNightDim: 0.85,
+  cloudOvercastTint: 0.55,
+  weatherOvercast: 0,
+  cloudAVisible: true, cloudAHeight: 900, cloudAExtent: 20000, cloudACover: 0.42, cloudAPuff: 1.6,
+  cloudASoftness: 0.3, cloudAOpacity: 0.88, cloudAFade: 0.5, cloudASpeed: 1, cloudAOctaves: 4,
+  cloudBVisible: true, cloudBHeight: 2200, cloudBExtent: 40000, cloudBCover: 0.3, cloudBPuff: 4,
+  cloudBSoftness: 0.3, cloudBOpacity: 0.5, cloudBFade: 0.5, cloudBSpeed: 0.6, cloudBOctaves: 3,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -325,6 +340,12 @@ const NUMBER_LIMITS = Object.freeze({
   holdIdleDist: [0.2, 1], holdIdleSide: [-0.4, 0.4], holdIdleUp: [-0.6, 0.4],
   holdAimDist: [0.2, 1], holdAimSide: [-0.4, 0.4], holdAimUp: [-0.6, 0.4],
   bodyTurnThreshold: [0.1, 1.5], bodyTurnRate: [1, 20], gunYawLimit: [0.2, 1.6],
+  // Weather. Ranges are wider than the useful band on purpose: the ends are there to be dragged to.
+  cloudNightDim: [0, 1], cloudOvercastTint: [0, 1], weatherOvercast: [0, 1],
+  cloudAHeight: [0, 10000], cloudAExtent: [200, 60000], cloudACover: [0, 1], cloudAPuff: [0.05, 12],
+  cloudASoftness: [0.005, 1], cloudAOpacity: [0, 1], cloudAFade: [0, 2], cloudASpeed: [-8, 8], cloudAOctaves: [1, 6],
+  cloudBHeight: [0, 10000], cloudBExtent: [200, 60000], cloudBCover: [0, 1], cloudBPuff: [0.05, 12],
+  cloudBSoftness: [0.005, 1], cloudBOpacity: [0, 1], cloudBFade: [0, 2], cloudBSpeed: [-8, 8], cloudBOctaves: [1, 6],
 });
 const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
@@ -420,10 +441,45 @@ function applyWaterSettings() {
   if (!dirty) return;
   water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
   water.setLevel(terrain.seaLevel);
+  waterSim.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
+  waterSim.setLevel(terrain.seaLevel);
+  waterSim.setWaves(waveOptionsFromWorld(settings));
   water.setReflectionMode(settings.waterReflection);
   water.setCausticStrength(settings.waterCaustics ? 1 : 0);
   water.setUnderwaterFog(settings.waterUnderwaterFog);
   water.setWaves(waveOptionsFromWorld(settings));
+}
+// Same shape as the water apply: a dirty check, so dragging an unrelated slider does not rebuild a
+// cloud deck (an octave change disposes and rebuilds that deck's material).
+const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint', 'weatherOvercast'];
+const CLOUD_DECK_KEYS = ['Visible', 'Height', 'Extent', 'Cover', 'Puff', 'Softness', 'Opacity', 'Fade', 'Speed', 'Octaves'];
+const appliedClouds = {};
+function applyCloudSettings() {
+  let sharedDirty = false;
+  for (const key of CLOUD_SHARED_KEYS) if (appliedClouds[key] !== settings[key]) { appliedClouds[key] = settings[key]; sharedDirty = true; }
+  if (sharedDirty) {
+    clouds.setShared({
+      depthWrite: settings.cloudDepthWrite,
+      tintFollowsSun: settings.cloudTintFollowsSun,
+      tint: settings.cloudTint,
+      nightDim: settings.cloudNightDim,
+      overcastTint: settings.cloudOvercastTint,
+    });
+    clouds.setEnabled(settings.cloudsEnabled);
+    clouds.setOvercast(settings.weatherOvercast);
+  }
+  for (const [index, prefix] of [[0, 'cloudA'], [1, 'cloudB']]) {
+    let dirty = false;
+    const patch = {};
+    for (const suffix of CLOUD_DECK_KEYS) {
+      const key = prefix + suffix;
+      if (appliedClouds[key] === settings[key]) continue;
+      appliedClouds[key] = settings[key];
+      patch[suffix.charAt(0).toLowerCase() + suffix.slice(1)] = settings[key];
+      dirty = true;
+    }
+    if (dirty) clouds.setDeck(index, patch);
+  }
 }
 const terrainStudio = createBaseGameTerrainStudio({
   store: terrainStore,
@@ -626,7 +682,19 @@ function reseatPlayerOnTerrain(tolerance = 1) {
 }
 function worldSpawn() { return settings.worldMode === 'terrain' ? terrain.spawnPosition(0, 0) : traversalLab.layout.spawn; }
 function worldKillPlaneY(position) { return settings.worldMode === 'terrain' ? terrain.killPlaneYAt(position[0], position[2]) : traversalLab.layout.killPlaneY; }
-const playerController = createBaseGamePlayerController({ worldQuery, spawn: worldSpawn() });
+// The sea the capsule swims in: the same module the room server runs, on the same tick clock, so
+// prediction and the authoritative simulation agree. The rendered surface follows it (applyWaterSettings).
+const waterSim = createBaseGameWaterSim({
+  level: settings.terrainSeaLevel,
+  waves: waveOptionsFromWorld(settings),
+  enabled: settings.waterEnabled && settings.worldMode === 'terrain',
+});
+const playerController = createBaseGamePlayerController({
+  worldQuery,
+  spawn: worldSpawn(),
+  waterSurfaceAt: (x, z, t) => waterSim.heightAt(x, z, t),
+});
+const playerFixedDt = 1 / playerController.config.fixedHz;
 const playerView = createBaseGamePlayerView({ scene, camera, worldQuery, worldCoordinates });
 const prediction = createBaseGamePrediction({
   controller: playerController,
@@ -642,8 +710,9 @@ const playerBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worl
 // Local weapon state: the active slot, an aim hold (right mouse), a fire hold (left mouse) and a
 // one-frame reload edge. Ammo and the trigger gate are predicted with the same base-game-fire.js
 // step the server runs; the snapshot's ammo and health overwrite the local copy when they differ.
-const weaponState = { slot: 0, aiming: false, reloadEdge: false, firing: false };
+const weaponState = { slot: 0, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
 const localTrigger = createTriggerState();
+const localThrowTrigger = createTriggerState();
 const localAmmo = createAmmoStore();
 const LOCAL_AMMO_ID = 'local';
 const combatState = { health: 100, dead: false, hitFlashUntil: 0, damageUntil: 0, killedBy: null, lastHitTick: -1, lastDeathTick: -1 };
@@ -657,6 +726,14 @@ function stepLocalTrigger(tick, fire, reload, aim) {
   if (shot.reloadStarted && playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); }
   if (shot.fired) { audioDirector.localFire(weaponId); weaponViewModel.recoil(); spawnLocalShotEffects(weaponId, tick); }
   return shot;
+}
+// One predicted throw tick (G). The throwable slot leaves the hand without being held, so it runs
+// its own trigger; the held weapon keeps its own ammo, cadence and recoil.
+function stepLocalThrow(tick, thrown) {
+  const weaponId = localThrowableId();
+  const lob = stepThrow(localThrowTrigger, localAmmo, { playerId: LOCAL_AMMO_ID, weaponId, tick, fire: thrown, alive: !combatState.dead });
+  if (lob.fired) { audioDirector.localFire(weaponId); spawnLocalShotEffects(weaponId, tick, localThrowTrigger); }
+  return lob;
 }
 
 // ---- shot effects: effect-renderer.js fed the way bot-viewer-v3 does (a plain list, pushEffect /
@@ -802,10 +879,10 @@ function localMoveSpeed01() {
   const cfg = BASE_GAME_PLAYER_DEFAULT_CONFIG;
   return Math.min(1, Math.hypot(v[0], v[2]) / (cfg.moveSpeed * cfg.sprintMultiplier));
 }
-function spawnLocalShotEffects(weaponId, tick) {
+function spawnLocalShotEffects(weaponId, tick, trigger = localTrigger) {
   const weapon = getWeapon(weaponId);
   if (!weapon || (weapon.mode || 'hitscan') === 'melee') return;
-  const dir = shotDirectionFor(localTrigger, { yaw: playerView.yaw, pitch: playerView.pitch, weaponId, tick, seed: localShotSeed(), moveSpeed01: localMoveSpeed01() });
+  const dir = shotDirectionFor(trigger, { yaw: playerView.yaw, pitch: playerView.pitch, weaponId, tick, seed: localShotSeed(), moveSpeed01: localMoveSpeed01() });
   spawnMuzzleFlash(playerBodies.localMount, dir, weaponId);
   const cap = playerController.getCapsule();
   const origin = [cap.end[0], cap.end[1] + cap.radius, cap.end[2]];   // capsule top: combat.js's head origin, as the server fires
@@ -934,7 +1011,10 @@ function renderCombatStatus(now) {
   const gun = weaponId ? `${weaponId}${ammo ? ` ${ammo.mag} / ${ammo.reserve}` : ''}` : 'unarmed';
   const hit = now < combatState.hitFlashUntil ? '<span class="hit">HIT</span> ' : '';
   const killed = combatState.dead && combatState.killedBy ? `<br>killed by ${combatState.killedBy}` : '';
-  combatStatus.innerHTML = `${hit}${hp}<br>${gun}${killed}`;
+  const throwableId = localThrowableId();
+  const pouch = throwableId ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, throwableId) : null;
+  const throwable = pouch ? `<br>[G] ${throwableId} ${pouch.mag + pouch.reserve}` : '';
+  combatStatus.innerHTML = `${hit}${hp}<br>${gun}${throwable}${killed}`;
   damageFlash.style.opacity = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
 }
 const aimRayOrigin = new THREE.Vector3(), aimRayDirection = new THREE.Vector3(), aimPointScratchArray = [0, 0, 0];
@@ -943,6 +1023,7 @@ function currentLoadout() {
   return { primary: settings.weaponPrimary, sidearm: settings.weaponSidearm, melee: settings.weaponMelee, throwable: settings.weaponThrowable };
 }
 function localWeaponId() { return weaponForSlot(currentLoadout(), weaponState.slot); }
+function localThrowableId() { return weaponForSlot(currentLoadout(), BASE_GAME_WEAPON_SLOTS.indexOf('throwable')); }
 // Where the crosshair lands: the camera ray against the world, or a far point along it.
 function updateLocalAimPoint() {
   camera.getWorldPosition(aimRayOrigin);
@@ -1188,6 +1269,10 @@ let underwaterAudio = false;
 terrain.setSplatWater(water.groundShade);
 loadWaterConfig('').then(cfg => { applyWaterConfig(cfg, { ocean: water.profile }); water.setWaves(waveOptionsFromWorld(settings)); }).catch(() => {});
 
+// Two cloud decks (base-game-clouds.js). They follow the camera, take their colour from the same
+// key light the terrain does, and carry the render-origin offset so the noise field survives a rebase.
+const clouds = createBaseGameClouds({ scene, worldCoordinates });
+
 const frameProfiler = createFrameProfiler();
 function applySkyComponentVisibility() {
   sky.group.visible = settings.skyEnabled;
@@ -1205,10 +1290,15 @@ function updateWorld(dt) {
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
+  applyCloudSettings();
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
-  // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners.
-  const wantFar = terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD;
+  // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners. A
+  // cloud deck's own far corner (hypot(extent/2, height)) is the other term, or a wide deck clips.
+  const wantFar = Math.max(
+    terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD,
+    clouds.farExtent,
+  );
   // The sky (dome, stars, bodies) rides on the camera at a radius tied to the far plane: rescale
   // it with the far plane, or far terrain draws in front of the planets.
   if (camera.far !== wantFar || !skyRadiusApplied) { camera.far = wantFar; camera.updateProjectionMatrix(); sky.setRadius(wantFar * 0.88); skyRadiusApplied = true; }
@@ -1322,6 +1412,8 @@ function updateWorld(dt) {
   }
   aimLight(moonLight, moonDir);
   if (!settings.skyEnabled || !settings.domeEnabled) scene.background.set(0x0b1430);
+  // Clouds take the key light's own colour, so dusk reddens them and night leaves them a silhouette.
+  clouds.update(dt, camera, { sunColor: rig.dirLight.color, nightness: sky.nightness });
 }
 
 // --------------------- controls ---------------------
@@ -1452,6 +1544,22 @@ function addSelect(host, key, label, values, labels = null) {
   select.addEventListener('change', () => { settings[key] = select.value; changed(key); });
   registerControl(key, () => { select.value = settings[key]; }, select);
 }
+function addColor(host, key, label) {
+  const row = document.createElement('label'); row.className = 'control-line control';
+  const text = document.createElement('span'); text.textContent = label;
+  const input = document.createElement('input'); input.type = 'color';
+  row.append(text, input); host.append(row);
+  input.addEventListener('input', () => { settings[key] = input.value; changed(key); });
+  registerControl(key, () => { input.value = settings[key]; }, input);
+}
+// Buttons carry no setting, so they stay out of the control registry (which is a save/load check).
+function addAction(host, label, onClick) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.textContent = label;
+  button.addEventListener('click', onClick);
+  host.append(button);
+  return button;
+}
 function syncAllControls() {
   for (const entry of controlRegistry.values()) entry.sync();
 }
@@ -1468,6 +1576,13 @@ const skySec = createSection(ctrlBody, 'Sky components', { collapsed: false });
 const timeSec = createSection(ctrlBody, 'Time of day', { collapsed: false });
 const lightSec = createSection(ctrlBody, 'Lighting', { collapsed: true });
 const waterSec = createSection(ctrlBody, 'Water', { collapsed: true });
+// Weather nests two levels: Weather > Clouds > deck. Section state is keyed by heading text, so
+// every heading in the panel has to stay unique.
+const weatherSec = createSection(ctrlBody, 'Weather', { collapsed: true });
+const cloudSec = createSection(weatherSec, 'Clouds', { collapsed: false });
+const cloudASec = createSection(cloudSec, 'Cloud deck A (low)', { collapsed: true });
+const cloudBSec = createSection(cloudSec, 'Cloud deck B (high)', { collapsed: true });
+const cloudSharedSec = createSection(cloudSec, 'Cloud appearance', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
@@ -1668,7 +1783,7 @@ captureMouseButton.addEventListener('click', () => {
 });
 playerButtons.append(resetPlayerButton, captureMouseButton); playerSec.append(playerButtons);
 const playerStatus = document.createElement('div'); playerStatus.className = 'note';
-playerStatus.textContent = 'WASD move / Shift sprint / Space jump / mouse look / V view / R reset';
+playerStatus.textContent = 'WASD move / Shift sprint / Space jump (swim up) / Ctrl swim down / mouse look / V view / R reset';
 playerSec.append(playerStatus);
 
 addToggle(networkSec, 'remoteBodiesEnabled', 'Remote player bodies');
@@ -1787,6 +1902,34 @@ addRange(waterSec, 'waveSpreadDeg', 'Directional spread', 0, 180, 1, value => `$
 addToggle(waterSec, 'waveDispersion', 'Dispersion (long waves travel faster)');
 addRange(waterSec, 'waveSpeed', 'Wave speed without dispersion (m/s)', 0, 100, 0.5, value => `${value.toFixed(1)} m/s`);
 addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
+
+// ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
+addToggle(weatherSec, 'cloudsEnabled', 'Clouds');
+addRange(weatherSec, 'weatherOvercast', 'Overcast', 0, 1, 0.01, value => value.toFixed(2));
+const metres = value => `${value.toFixed(0)} m`;
+for (const [sec, prefix] of [[cloudASec, 'cloudA'], [cloudBSec, 'cloudB']]) {
+  addToggle(sec, `${prefix}Visible`, 'Deck visible');
+  addRange(sec, `${prefix}Height`, 'Height', 0, 10000, 10, metres);
+  addRange(sec, `${prefix}Extent`, 'Extent', 200, 60000, 100, metres);
+  addRange(sec, `${prefix}Cover`, 'Coverage', 0, 1, 0.01, f2);
+  addRange(sec, `${prefix}Puff`, 'Puff size', 0.05, 12, 0.05, f2);
+  addRange(sec, `${prefix}Softness`, 'Softness', 0.005, 1, 0.005, value => value.toFixed(3));
+  addRange(sec, `${prefix}Opacity`, 'Opacity', 0, 1, 0.01, f2);
+  addRange(sec, `${prefix}Fade`, 'Horizon fade', 0, 2, 0.02, f2);
+  addRange(sec, `${prefix}Speed`, 'Drift speed', -8, 8, 0.05, f2);
+  // Octaves are baked into the TSL graph, so moving this rebuilds the deck's material.
+  addRange(sec, `${prefix}Octaves`, 'Noise octaves (rebuilds)', 1, 6, 1, value => value.toFixed(0));
+}
+addToggle(cloudSharedSec, 'cloudTintFollowsSun', 'Tint follows the sun');
+addColor(cloudSharedSec, 'cloudTint', 'Manual tint');
+addRange(cloudSharedSec, 'cloudNightDim', 'Night darkening', 0, 1, 0.01, f2);
+addRange(cloudSharedSec, 'cloudOvercastTint', 'Overcast grey', 0, 1, 0.01, f2);
+addToggle(cloudSharedSec, 'cloudDepthWrite', 'Cloud depth write');
+addAction(cloudSharedSec, 'Copy deck A to deck B', () => {
+  for (const suffix of CLOUD_DECK_KEYS) settings[`cloudB${suffix}`] = settings[`cloudA${suffix}`];
+  syncAllControls();
+  changed('cloudBHeight');
+});
 
 addRange(audioSec, 'audioMasterVolume', 'Master volume', 0, 1, 0.01, v => v.toFixed(2));
 addRange(audioSec, 'audioSfxVolume', 'Effects volume', 0, 1, 0.01, v => v.toFixed(2));
@@ -2182,6 +2325,7 @@ addEventListener('keydown', event => {
   }
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
   if (event.code === 'KeyR' && !event.repeat) weaponState.reloadEdge = true;
+  if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
   const slotKeys = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
   const slotIndex = slotKeys.indexOf(event.code);
   if (slotIndex >= 0 && !event.repeat && slotIndex !== weaponState.slot) {
@@ -2469,8 +2613,8 @@ function updateStats(frameMs) {
   if (settings.todPlaying) controlRegistry.get('todHour')?.sync();
   renderNetworkDebug();
   const playerPosition = playerController.getPosition();
-  playerStatus.textContent = `WASD / Shift / Space / ${settings.playerViewMode} / `
-    + `${playerController.grounded ? 'grounded' : 'airborne'} / `
+  playerStatus.textContent = `WASD / Shift / Space / Ctrl / ${settings.playerViewMode} / `
+    + `${playerController.swimming ? 'swimming' : playerController.grounded ? 'grounded' : 'airborne'} / `
     + `xyz ${playerPosition.map(value => value.toFixed(2)).join(', ')}`;
 }
 
@@ -2492,11 +2636,12 @@ async function animate() {
       yaw: playerView.yaw,
       pitch: playerView.pitch,
       sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
+      crouch: playerKeys.has('ControlLeft') || playerKeys.has('KeyC'),
       slot: weaponState.slot,
       aim: weaponState.aiming,
       fire: weaponState.firing,
-    } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, slot: weaponState.slot, aim: false, fire: false };
-    if (!canControl) weaponState.reloadEdge = false;
+    } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, slot: weaponState.slot, aim: false, fire: false };
+    if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; }
     // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
     // fixed steps (high refresh rates, pacing below 1x) must not swallow the key press.
     if (!canControl) jumpEdgeQueued = false;
@@ -2509,8 +2654,11 @@ async function animate() {
         jumpEdgeQueued = false;
         const reload = weaponState.reloadEdge;
         weaponState.reloadEdge = false;
+        const thrown = weaponState.throwEdge;
+        weaponState.throwEdge = false;
         stepLocalTrigger(prediction.tick + 1, input.fire, reload, input.aim);   // predicted: the server echoes the same action tick
-        return { ...input, jump, reload };
+        stepLocalThrow(prediction.tick + 1, thrown);
+        return { ...input, jump, reload, throw: thrown };
       });
       playerInterpolationAlpha = stepped.alpha;
       playerController.interpolatedPosition(playerInterpolationAlpha, playerRenderPosition);
@@ -2525,8 +2673,13 @@ async function animate() {
       if (jumpEdgeQueued) { playerController.queueJump(); jumpEdgeQueued = false; }
       const soloReload = weaponState.reloadEdge;
       weaponState.reloadEdge = false;
+      const soloThrow = weaponState.throwEdge;
+      weaponState.throwEdge = false;
       const stepped = playerController.advance(dt);
-      for (let i = 0; i < stepped.steps; i++) stepLocalTrigger(++soloTriggerTick, input.fire, soloReload && i === 0, input.aim);
+      for (let i = 0; i < stepped.steps; i++) {
+        stepLocalTrigger(++soloTriggerTick, input.fire, soloReload && i === 0, input.aim);
+        stepLocalThrow(soloTriggerTick, soloThrow && i === 0);
+      }
       // Solo kill plane; online the server enforces the same layout value.
       if (playerController.getPosition(playerPositionScratch)[1] < worldKillPlaneY(playerPositionScratch)) resetPlayer();
       playerInterpolationAlpha = stepped.alpha;
@@ -2655,7 +2808,7 @@ async function animate() {
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     frameProfiler.time('water', () => {
-      water.update(dt, camera.position);
+      water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();

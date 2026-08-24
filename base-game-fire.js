@@ -55,6 +55,17 @@ export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, rel
   return out;
 }
 
+// A quick-throw of the throwable slot: the same trigger step on its own state, so cadence comes
+// from weapons.js fireIntervalMs and the count from player-ammo.js. Nothing is held, so there is
+// no reload -- the pouch puts the next grenade in the hand the moment one leaves it.
+export function stepThrow(trigger, ammo, opts) {
+  const weapon = opts.weaponId ? getWeapon(opts.weaponId) : null;
+  if (!weapon || (weapon.mode || 'hitscan') !== 'projectile') return { fired: false, dry: false, reloadStarted: false, reloadDone: false, reason: 'not-throwable' };
+  const out = stepTrigger(trigger, ammo, { ...opts, reload: false });
+  if (out.fired) ammo.reloadAmmo(opts.playerId, opts.weaponId);
+  return out;
+}
+
 // Dispersion for one shot, bot-aim.js's cone with weapons.js's authored `spreadRad` as the base
 // angle: move widens it, an aim hold tightens the first-shot term, bloom climbs per shot. The two
 // rolls come from a stream seeded on (seed, tick), so the server and the shooter's client draw the

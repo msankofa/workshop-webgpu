@@ -284,14 +284,16 @@ export const WEAPONS = {
     tracerColor: [1, 0.5, 0.2],
     viewOffset: [0.25, -0.25, -0.7],
     aimOffset: [0.0, -0.2, -0.55],
-    aimRotation: [0, Math.PI, 0],
+    // The normalized model already points its muzzle down -Z, like every other gun here: a yaw of
+    // PI held the launcher backwards.
+    aimRotation: [0, 0, 0],
     aimEyeForward: 0.03,
     sightType: 'iron',
     magnification: 1.5,
     scopeBlur: 0,
     scopeRadius: 0.34,
     scopeCenter: [0.5, 0.5],
-    viewRotation: [0, Math.PI, 0],
+    viewRotation: [0, 0, 0],
     viewScale: 1,
     muzzleFx: muzzleFx({ flashSize: 0.2, smokeSize: 0.12, smokeGrowth: 0.4 }),
     tracerFx: tracerFx({ opacity: 0, glow: 0 }),

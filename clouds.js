@@ -50,7 +50,7 @@ import * as THREE from 'three';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import {
   uniform, positionWorld,
-  Fn, vec2, vec3, float,
+  Fn, vec2, vec3, float, mix,
   floor, fract, dot, abs, max, mod, smoothstep, select, length, greaterThan,
 } from 'three/tsl';
 
@@ -165,8 +165,10 @@ const snoise = Fn(([v]) => {
 // ---- Clouds class ----
 
 export class Clouds extends THREE.Mesh {
-  constructor() {
+  // `octaves` (2 = the original pair) adds finer noise taps; see the loop below.
+  constructor({ octaves = 2 } = {}) {
     super();
+    this.octaves = Math.max(1, Math.round(octaves));
 
     // drift speed multiplier + a self-accumulated clock, so changing speed at
     // runtime nudges the rate without jumping the noise phase
@@ -183,17 +185,31 @@ export class Clouds extends THREE.Mesh {
     const uOpacity    = uniform(0.9,  'float');   // base alpha multiplier
     const uCameraXZ   = uniform(new THREE.Vector2(), 'vec2'); // camera XZ, fade centre
     const uHalfExtent = uniform(1000.0, 'float'); // world half-size of the plane; setExtent keeps this in sync
+    const uOffset     = uniform(new THREE.Vector2(), 'vec2'); // render-origin offset: added before the noise
+                                                             // so a rebasing page keeps one continuous field
+    const uTint       = uniform(new THREE.Color(1, 1, 1));    // lit cloud colour (sun tint, night dimming)
+    const uOvercast   = uniform(0.0, 'float');                // 0 = uTint, 1 = uOvercastColor
+    const uOvercastColor = uniform(new THREE.Color(0.36, 0.38, 0.42));
 
     // World-space XZ position normalised to ~1 unit per 1000 world units.
     // Using positionWorld instead of UV keeps the noise frequency fixed in world
     // space, so clouds don't stretch when the plane is scaled via setExtent().
-    const uvCoord = positionWorld.xz.div(1000.0);
+    const uvCoord = positionWorld.xz.add(uOffset).div(1000.0);
 
-    // ---- Two-octave simplex noise with time drift ----
+    // ---- Simplex noise octaves with time drift ----
     // GLSL: float n = snoise(vUv*(5/uPuff) + uTime/40) + snoise(vUv*(10/uPuff) + uTime/30)
+    // Generalised: octave i has frequency 5·2ⁱ and time divisor 40/(1 + i/3), which reproduces the
+    // original 5/40 and 10/30 pair exactly at octaves = 2. The first two keep their original weight
+    // of 1 and later ones halve, so raising `octaves` adds detail without rescaling the old look
+    // (it does add contrast — the coverage slider is the compensation).
     // Scalar uTime/40 broadcasts to both UV components (same in GLSL and TSL).
-    const n = snoise(uvCoord.mul(float(5.0).div(uPuff)).add(uTime.div(40.0)))
-               .add(snoise(uvCoord.mul(float(10.0).div(uPuff)).add(uTime.div(30.0))));
+    let n = null;
+    for (let i = 0; i < this.octaves; i++) {
+      const amp = i < 2 ? 1 : 0.5 ** (i - 1);
+      let tap = snoise(uvCoord.mul(float(5.0 * 2 ** i).div(uPuff)).add(uTime.div(40.0 / (1 + i / 3))));
+      if (amp !== 1) tap = tap.mul(amp);
+      n = n ? n.add(tap) : tap;
+    }
 
     // ---- Soft cloud coverage threshold ----
     // GLSL: float cloud = smoothstep(0.5 - uSoftness, 0.5 + uSoftness, 0.5*n + uCoverage)
@@ -222,8 +238,8 @@ export class Clouds extends THREE.Mesh {
                            // in the (also transparent, alpha-tested) tree foliage behind/below it
       fog: false,   // clouds use their own horizon fade; scene fog (far=terrain size) would clamp them to the map edge
     });
-    // Clouds are pure white; all shading is in the alpha channel.
-    mat.colorNode   = vec3(1, 1, 1);
+    // Shape is all in the alpha channel; the colour is a flat tint (white until a page sets one).
+    mat.colorNode   = mix(uTint, uOvercastColor, uOvercast);
     mat.opacityNode = alpha;
 
     // Expose uniform handles so the public setters can update them live
@@ -235,6 +251,10 @@ export class Clouds extends THREE.Mesh {
     mat._uOpacity    = uOpacity;
     mat._uCameraXZ   = uCameraXZ;
     mat._uHalfExtent = uHalfExtent;
+    mat._uOffset     = uOffset;
+    mat._uTint       = uTint;
+    mat._uOvercast   = uOvercast;
+    mat._uOvercastColor = uOvercastColor;
 
     this.material = mat;
 
@@ -259,6 +279,12 @@ export class Clouds extends THREE.Mesh {
   setPuff(puff)         { this.material._uPuff.value = puff; }
   setSoftness(softness) { this.material._uSoftness.value = softness; }
   setFade(fade)         { this.material._uFade.value = fade; }
+  // Render-origin offset in world units: the page passes its origin so the noise field stays put
+  // across a rebase (the deck itself is positioned in render-local space as usual).
+  setOffset(x, z)       { this.material._uOffset.value.set(x, z); }
+  setTint(color)        { this.material._uTint.value.set(color); }
+  setOvercast(v)        { this.material._uOvercast.value = v; }
+  setOvercastColor(c)   { this.material._uOvercastColor.value.set(c); }
   setExtent(worldUnits) {
     const s = worldUnits / 2000;
     // Mesh is laid flat via rotation.x=-PI/2, so the plane spans local X and Y

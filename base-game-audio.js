@@ -18,7 +18,8 @@ export const BASE_GAME_WEAPON_FIRE_EVENTS = Object.freeze({
 export const weaponFireEvent = weaponId => BASE_GAME_WEAPON_FIRE_EVENTS[weaponId] || 'pistol_shoot';
 
 // BASE_GAME_WEAPON_ACTIONS from base-game-player-bodies.js: idle 0, reload 1, fire 2, holster 3, draw 4.
-const ACTION_EVENTS = Object.freeze({ 1: 'weapon_reload', 2: null, 3: null, 4: 'weapon_draw' });
+// 5 = quick-throw: a toss is handling, not a shot, so it takes the handling profile.
+const ACTION_EVENTS = Object.freeze({ 1: 'weapon_reload', 2: null, 3: null, 4: 'weapon_draw', 5: 'grenade_throw' });
 
 export const BASE_GAME_AUDIO_DEFAULTS = Object.freeze({
   sfxEnabled: true,

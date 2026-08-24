@@ -1,6 +1,6 @@
 import {
   BASE_GAME_PROTOCOL_VERSION,
-  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot,
+  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot,
   BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
   BASE_GAME_ROOM_GRACE_MS,
   BASE_GAME_ROOM_PLAYER_CAP,
@@ -17,7 +17,9 @@ import {
   sanitizeBaseGameTerrainConfig,
   describeBaseGameTerrainConfig,
   publicBaseGameTerrainConfig,
+  waveOptionsFromWorld,
 } from '../base-game-protocol.mjs';
+import { createBaseGameWaterSim } from '../base-game-water-sim.js';
 import { createTerrainStore } from './terrain-store.js';
 import { createBaseGamePlayerController } from '../base-game-player-controller.js';
 // Firing reuses the multiplayer-guns stack: combat.js (hitscan, validation, pose history for lag
@@ -25,7 +27,7 @@ import { createBaseGamePlayerController } from '../base-game-player-controller.j
 import { resolveHitscan, pushPlayerPose, samplePlayerPose, prunePlayerPoseHistory } from '../combat.js';
 import { createPlayerCombatFacade } from '../player-combat.js';
 import { createAmmoStore } from '../player-ammo.js';
-import { createTriggerState, stepTrigger, shotDirectionFor } from '../base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor } from '../base-game-fire.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
 import { isSurfaceDetonation } from '../entity-types/combat-projectile.js';
@@ -149,8 +151,20 @@ export function createBaseGameRoomService({
   }
 
   function attachRoomControllers(room) {
+    syncRoomWater(room);
     for (const client of room.clients.values()) attachController(client);
     attachProjectiles(room);
+  }
+
+  // The room's sea: level from the terrain descriptor (worlds without one — the lab — have none),
+  // spectrum from the shared world keys. Players swim against this, so it is authoritative here
+  // and every client predicts with the same module and the same tick clock.
+  function syncRoomWater(room) {
+    const level = room.sim?.seaLevel;
+    const hasSea = Number.isFinite(level);
+    room.water.setLevel(hasSea ? level : 0);
+    room.water.setEnabled(hasSea && room.world.waterEnabled !== false);
+    room.water.setWaves(waveOptionsFromWorld(room.world));
   }
 
   // Server projectiles: bot-projectiles.js flying the weapons.js specs, environment-viewer's
@@ -221,6 +235,7 @@ export function createBaseGameRoomService({
       worldQuery: sim.worldQuery,
       spawn: sim.spawn,
       config: { fixedHz: simHz },
+      waterSurfaceAt: (x, z, t) => client.room.water.heightAt(x, z, t),
     });
   }
 
@@ -344,6 +359,7 @@ export function createBaseGameRoomService({
       kills: 0,
       deaths: 0,
       trigger: createTriggerState(),
+      throwTrigger: createTriggerState(),
     };
     room.combat.ensurePlayer(id);
     room.clients.set(id, client);
@@ -386,6 +402,7 @@ export function createBaseGameRoomService({
       terrainRequest: 0,
       sim: null,
       world: sanitizeBaseGameWorldPatch(msg.world),
+      water: createBaseGameWaterSim({ level: 0, waves: waveOptionsFromWorld(sanitizeBaseGameWorldPatch(msg.world)), enabled: false }),
       worldUpdatedAt: at,
       emptySince: null,
       tick: 0,
@@ -448,6 +465,7 @@ export function createBaseGameRoomService({
     const patch = sanitizeBaseGameWorldPatch(msg.patch);
     if (Object.keys(patch).length === 0) return true;
     Object.assign(room.world, patch);
+    syncRoomWater(room);
     room.revision++;
     room.worldUpdatedAt = now();
     broadcast(room);
@@ -472,6 +490,7 @@ export function createBaseGameRoomService({
       if (room.terrainRequest !== requestRevision || !rooms.has(room.code)) return;   // superseded or room gone
       room.terrain = terrain.config;
       room.sim = sim;
+      syncRoomWater(room);
       room.revision++;
       room.projectiles = null;   // the manager holds the old ground; rebuild on the new one
       attachProjectiles(room);
@@ -564,6 +583,7 @@ export function createBaseGameRoomService({
     client.room.combat.revive(client.id);
     client.room.ammo.resetPlayer(client.id);
     client.trigger = createTriggerState();
+    client.throwTrigger = createTriggerState();
     client.respawnAtTick = 0;
     client.action = BASE_GAME_WEAPON_ACTION.idle;
     client.spawnRevision++;
@@ -613,7 +633,7 @@ export function createBaseGameRoomService({
     const next = client.queue.shift();
     client.lastConsumedTick = next.tick;
     client.lastInput = next;
-    client.controller.stepOnce({ moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint }, next.jump);
+    client.controller.stepOnce({ tick: next.tick, moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint, crouch: next.crouch }, next.jump);
     // Slot and aim are taken as sent. The trigger step (base-game-fire.js, on combat.js's
     // validateShot and player-ammo.js) decides whether a round leaves; hits resolve below.
     if (next.slot !== client.slot) { client.slot = next.slot; client.action = BASE_GAME_WEAPON_ACTION.idle; client.trigger.held = true; }
@@ -632,6 +652,18 @@ export function createBaseGameRoomService({
       client.actionTick = next.tick;
       client.actionUntilTick = next.tick + BASE_GAME_FIRE_ACTION_TICKS;   // outlives a snapshot interval so remotes see every shot
       fireShot(client, weaponId, next);
+    }
+    // Quick-throw: the throwable slot leaves the hand without ever becoming the held weapon, so it
+    // runs its own trigger and never disturbs the held weapon's action unless nothing else is playing.
+    const throwable = weaponForSlot(client.loadout, BASE_GAME_WEAPON_SLOTS.indexOf('throwable'));
+    const lob = stepThrow(client.throwTrigger, room.ammo, { playerId: client.id, weaponId: throwable, tick: next.tick, fire: next.throw, aim: false, alive: room.combat.getSnapshot(client.id).alive, simHz });
+    if (lob.fired) {
+      if (client.action === BASE_GAME_WEAPON_ACTION.idle) {
+        client.action = BASE_GAME_WEAPON_ACTION.throw;
+        client.actionTick = next.tick;
+        client.actionUntilTick = next.tick + BASE_GAME_FIRE_ACTION_TICKS;
+      }
+      fireShot(client, throwable, next, client.throwTrigger);
     }
     rememberPose(client);
   }
@@ -657,7 +689,7 @@ export function createBaseGameRoomService({
     return Math.min(1, Math.hypot(v[0], v[2]) / (cfg.moveSpeed * cfg.sprintMultiplier));
   }
 
-  function fireShot(client, weaponId, input) {
+  function fireShot(client, weaponId, input, trigger = client.trigger) {
     const weapon = weaponId ? getWeapon(weaponId) : null;
     const mode = weapon?.mode || 'hitscan';
     if (!weapon) return;
@@ -666,7 +698,7 @@ export function createBaseGameRoomService({
     const room = client.room;
     const me = combatCapsule(client);
     const origin = [me.p[0], me.p[1] + me.h * 0.5, me.p[2]];   // combat.js shooterHeadOrigin convention
-    const dir = shotDirectionFor(client.trigger, { yaw: input.yaw, pitch: input.pitch, weaponId, tick: input.tick, seed: botSeedFromId(client.id), moveSpeed01: moveSpeed01(client), simHz });
+    const dir = shotDirectionFor(trigger, { yaw: input.yaw, pitch: input.pitch, weaponId, tick: input.tick, seed: botSeedFromId(client.id), moveSpeed01: moveSpeed01(client), simHz });
     if (mode === 'projectile') {
       // environment-viewer's spawnCombatProjectile field forwarding; damage lands on detonation.
       const pr = weapon.projectile || {};

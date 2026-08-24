@@ -20,6 +20,16 @@ const DEFAULT_CONFIG = Object.freeze({
   maxCatchUpSteps: 8,
   maxMicrostepDistance: 0.14,
   collisionIterations: 5,
+  // Water. The float point is the chest; buoyancy ramps in over floatDepth of submersion, so the
+  // body settles where buoyancy * f == gravity and the head stays out of the swell.
+  floatHeightFraction: 0.55,
+  floatDepth: 0.6,
+  buoyancy: 34,
+  waterDrag: 3.2,
+  swimSpeedMultiplier: 0.65,
+  swimAcceleration: 18,
+  swimUpSpeed: 3.2,
+  swimDownSpeed: 3,
 });
 
 function finite(value, label) {
@@ -74,10 +84,16 @@ function sanitizedConfig(next) {
   if (!(config.fixedHz >= 30 && config.fixedHz <= 240)) throw new RangeError('fixedHz must be in [30, 240]');
   if (!(config.maxCatchUpSteps >= 1)) throw new RangeError('maxCatchUpSteps must be positive');
   if (!(config.maxMicrostepDistance > 0)) throw new RangeError('maxMicrostepDistance must be positive');
+  if (!(config.floatDepth > 0)) throw new RangeError('floatDepth must be positive');
+  if (!(config.floatHeightFraction > 0 && config.floatHeightFraction < 1)) throw new RangeError('floatHeightFraction must be in (0, 1)');
+  if (config.buoyancy < 0 || config.waterDrag < 0) throw new RangeError('buoyancy and waterDrag must not be negative');
   return config;
 }
 
-export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0], config } = {}) {
+// `waterSurfaceAt(x, z, t)` returns the sea surface height above a global column, or null where
+// there is no water. `t` is the tick clock in seconds, so the whole step is a pure function of the
+// tick: the client's prediction and the server's simulation reach the same position.
+export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0], config, waterSurfaceAt = null } = {}) {
   if (!worldQuery || typeof worldQuery.resolveCapsule !== 'function' || typeof worldQuery.groundProbe !== 'function') {
     throw new TypeError('player controller requires resolveCapsule() and groundProbe() world queries');
   }
@@ -86,7 +102,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
   const position = vec3(spawn, 'spawn');
   const previousPosition = [...position];
   const velocity = [0, 0, 0];
-  const input = { moveX: 0, moveZ: 0, yaw: 0, sprint: false };
+  const input = { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false };
   let grounded = false;
   let ceiling = false;
   let accumulator = 0;
@@ -95,6 +111,23 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
   let droppedCatchUpSeconds = 0;
   let contacts = [];
   let surface = null;
+  let clockTick = 0;        // the lockstep tick being simulated; the water clock reads it
+  let swimming = false;
+  let submersion = 0;       // metres the float point sits below the surface (negative when clear)
+  let waterDepth = 0;       // metres the feet sit below the surface (negative when clear)
+  let waterLevel = null;    // last sampled surface height, or null where there is no water
+
+  function sampleWater() {
+    waterLevel = null;
+    submersion = 0;
+    waterDepth = 0;
+    if (typeof waterSurfaceAt !== 'function') return;
+    const y = waterSurfaceAt(position[0], position[2], clockTick / cfg.fixedHz);
+    if (!Number.isFinite(y)) return;
+    waterLevel = y;
+    waterDepth = y - position[1];
+    submersion = y - (position[1] + cfg.height * cfg.floatHeightFraction);
+  }
 
   function surfaceIdentity(hit) {
     if (!hit) return null;
@@ -124,7 +157,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
   }
 
   function trySnapDown(capsule, wasGrounded, candidateVelocity, alreadyGrounded) {
-    if ((!wasGrounded && !alreadyGrounded) || candidateVelocity[1] > EPSILON || cfg.snapDistance <= 0) {
+    if (swimming || (!wasGrounded && !alreadyGrounded) || candidateVelocity[1] > EPSILON || cfg.snapDistance <= 0) {
       return { capsule, grounded: alreadyGrounded, surface: null };
     }
     const foot = capsuleFoot(capsule);
@@ -144,7 +177,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
 
   function tryStepUp(from, displacement, baseline, incomingVelocity, wasGrounded) {
     const horizontalLength = Math.hypot(displacement[0], displacement[2]);
-    if (!wasGrounded || cfg.stepHeight <= 0 || horizontalLength <= EPSILON) return baseline;
+    if (swimming || !wasGrounded || cfg.stepHeight <= 0 || horizontalLength <= EPSILON) return baseline;
     const direction = [displacement[0] / horizontalLength, 0, displacement[2] / horizontalLength];
     const baseProgress = horizontalProgress(baseline.capsule, from, direction);
     if (baseProgress >= horizontalLength * 0.8) return baseline;
@@ -226,23 +259,39 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     const sy = Math.sin(input.yaw), cy = Math.cos(input.yaw);
     const worldX = localX * cy - localZ * sy;
     const worldZ = -localX * sy - localZ * cy;
-    const speed = cfg.moveSpeed * (input.sprint ? cfg.sprintMultiplier : 1);
-    const acceleration = grounded ? cfg.groundAcceleration : cfg.airAcceleration;
+    sampleWater();
+    swimming = submersion > 0;
+    // Wading slows you down before it floats you: the drag ramps with how deep the body is.
+    const wade = waterLevel === null ? 0 : Math.max(0, Math.min(1, waterDepth / cfg.height));
+    const waterSlow = 1 + (cfg.swimSpeedMultiplier - 1) * wade;
+    const speed = cfg.moveSpeed * (input.sprint ? cfg.sprintMultiplier : 1) * waterSlow;
+    const acceleration = swimming ? cfg.swimAcceleration : (grounded ? cfg.groundAcceleration : cfg.airAcceleration);
 
     if (inputLength > EPSILON) {
       velocity[0] = moveToward(velocity[0], worldX * speed, acceleration * dt);
       velocity[2] = moveToward(velocity[2], worldZ * speed, acceleration * dt);
-    } else if (grounded) {
-      velocity[0] = moveToward(velocity[0], 0, cfg.groundDeceleration * dt);
-      velocity[2] = moveToward(velocity[2], 0, cfg.groundDeceleration * dt);
+    } else if (grounded || swimming) {
+      velocity[0] = moveToward(velocity[0], 0, (swimming ? cfg.waterDrag * cfg.moveSpeed : cfg.groundDeceleration) * dt);
+      velocity[2] = moveToward(velocity[2], 0, (swimming ? cfg.waterDrag * cfg.moveSpeed : cfg.groundDeceleration) * dt);
     }
 
-    if (jumpQueued && grounded) {
-      velocity[1] = cfg.jumpSpeed;
-      grounded = false;
+    if (swimming) {
+      // Buoyancy replaces gravity, jump swims up and crouch swims down; the seabed still stops you.
+      const lift = Math.max(0, Math.min(1, submersion / cfg.floatDepth));
+      velocity[1] += (cfg.buoyancy * lift - cfg.gravity) * dt;
+      if (jumpQueued) velocity[1] = moveToward(velocity[1], cfg.swimUpSpeed, cfg.swimAcceleration * dt);
+      if (input.crouch) velocity[1] = moveToward(velocity[1], -cfg.swimDownSpeed, cfg.swimAcceleration * dt);
+      velocity[1] -= velocity[1] * Math.min(1, cfg.waterDrag * dt);
       jumpQueued = false;
+      grounded = false;
+    } else {
+      if (jumpQueued && grounded) {
+        velocity[1] = cfg.jumpSpeed;
+        grounded = false;
+        jumpQueued = false;
+      }
+      if (!grounded) velocity[1] -= cfg.gravity * dt;
     }
-    if (!grounded) velocity[1] -= cfg.gravity * dt;
     moveAndCollide([velocity[0] * dt, velocity[1] * dt, velocity[2] * dt]);
     simulatedSteps++;
   }
@@ -257,6 +306,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     let steps = 0;
     let frameCeiling = false;
     while (accumulator + EPSILON >= fixedDt && steps < cfg.maxCatchUpSteps) {
+      clockTick++;
       fixedStep(fixedDt);
       frameCeiling = frameCeiling || ceiling;
       accumulator -= fixedDt;
@@ -285,6 +335,10 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     jumpQueued = false;
     contacts = [];
     surface = null;
+    swimming = false;
+    submersion = 0;
+    waterDepth = 0;
+    waterLevel = null;
   }
 
   return {
@@ -294,15 +348,19 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       input.moveZ = Math.max(-1, Math.min(1, Number(next.moveZ) || 0));
       input.yaw = Number.isFinite(next.yaw) ? next.yaw : input.yaw;
       input.sprint = !!next.sprint;
+      input.crouch = !!next.crouch;
     },
     queueJump() { jumpQueued = true; },
     // One fixed step from an explicit input, bypassing the frame accumulator. Client prediction
     // and the room server both drive lockstep ticks through this so their arithmetic is identical.
+    // The tick names the water clock, so an explicit `next.tick` keeps the client's replay and the
+    // server's simulation on the same second of the swell; without one the counter just advances.
     stepOnce(next = null, jump = false) {
       if (next) this.setInput(next);
       if (jump) jumpQueued = true;
+      clockTick = Number.isSafeInteger(next?.tick) ? next.tick : clockTick + 1;
       fixedStep(1 / cfg.fixedHz);
-      return { grounded, ceiling };
+      return { grounded, ceiling, swimming };
     },
     clearJump() { jumpQueued = false; },
     advance,
@@ -317,14 +375,20 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     getCapsule() { return capsuleAt(position, cfg); },
     get grounded() { return grounded; },
     get ceiling() { return ceiling; },
+    get tick() { return clockTick; },
+    get waterTime() { return clockTick / cfg.fixedHz; },
+    get swimming() { return swimming; },
+    get inWater() { return waterLevel !== null && waterDepth > 0; },
+    get submersion() { return submersion; },
+    get waterSurface() { return waterLevel; },
     get contacts() { return contacts.map(contact => ({ ...contact })); },
     get surface() { return surface ? { ...surface, point: surface.point && [...surface.point], normal: surface.normal && [...surface.normal] } : null; },
     get config() { return { ...cfg }; },
     get diagnostics() {
-      return { simulatedSteps, droppedCatchUpSeconds, accumulator, grounded, ceiling, contactCount: contacts.length };
+      return { simulatedSteps, droppedCatchUpSeconds, accumulator, grounded, ceiling, contactCount: contacts.length, tick: clockTick, swimming, submersion };
     },
     captureState() {
-      return { position: [...position], previousPosition: [...previousPosition], velocity: [...velocity], grounded };
+      return { position: [...position], previousPosition: [...previousPosition], velocity: [...velocity], grounded, tick: clockTick };
     },
     applyState(state) {
       if (!state || typeof state !== 'object') return false;
@@ -334,6 +398,8 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       previousPosition.splice(0, 3, ...(state.previousPosition ? vec3(state.previousPosition, 'player state.previousPosition') : nextPosition));
       velocity.splice(0, 3, ...nextVelocity);
       grounded = state.grounded === true;
+      if (Number.isSafeInteger(state.tick)) clockTick = state.tick;
+      swimming = false;
       ceiling = false;
       accumulator = 0;
       jumpQueued = false;

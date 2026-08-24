@@ -1,7 +1,7 @@
 import { normalizeDescriptor } from './terrain-source.js';
 import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 8;
+export const BASE_GAME_PROTOCOL_VERSION = 9;
 // Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
 // and snapshots carry one-shot `hits` / `deaths` events for feedback.
 export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
@@ -14,7 +14,7 @@ export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven'
 export const BASE_GAME_RELOADABLE_WEAPONS = Object.freeze(['m1911', 'five_seven', 'm24', 'cz_805_bren', 'rpg']);
 export const BASE_GAME_WEAPON_SLOTS = Object.freeze(['primary', 'sidearm', 'melee', 'throwable']);
 export const BASE_GAME_DEFAULT_LOADOUT = Object.freeze({ primary: 'cz_805_bren', sidearm: 'five_seven', melee: 'knife', throwable: 'grenade' });
-export const BASE_GAME_WEAPON_ACTION = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4 });
+export const BASE_GAME_WEAPON_ACTION = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4, throw: 5 });
 export const BASE_GAME_RELOAD_TICKS = 180;           // 1.5 s at SIM_HZ; the server clears the action after this
 export const BASE_GAME_POSITION_HISTORY = 32;        // per-client server positions kept for lag compensation (phase 3)
 export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
@@ -48,7 +48,9 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'sunAzimuth',
   'sunIntensity',
   'ambientIntensity',
-  // water: the wave spectrum every peer simulates (water-waves.js buildWaveTable inputs)
+  // water: whether there is a sea at all, and the wave spectrum every peer simulates
+  // (water-waves.js buildWaveTable inputs). Both are physics, not decoration: swimming reads them.
+  'waterEnabled',
   'waveCount',
   'waveBaseLength',
   'waveLengthMul',
@@ -85,7 +87,7 @@ const NUMBER_LIMITS = Object.freeze({
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
-const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion']);
+const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled']);
 const MAX_ABS_YAW = 1e6;
 const MAX_ABS_COORDINATE = 1e9;
 const MAX_ABS_VELOCITY = 1e4;
@@ -235,7 +237,7 @@ function finiteVec3(value, limit) {
 }
 
 export function neutralBaseGameInput(yaw = 0, pitch = 0) {
-  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, jump: false, slot: 0, aim: false, reload: false, fire: false };
+  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, crouch: false, jump: false, slot: 0, aim: false, reload: false, fire: false, throw: false };
 }
 
 export function sanitizeBaseGameLoadout(loadout) {
@@ -270,11 +272,13 @@ export function sanitizeBaseGameTickInput(input) {
     yaw,
     pitch: Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch)),
     sprint: input.sprint === true,
+    crouch: input.crouch === true,   // swim down; older clients omit it and never sink
     jump: input.jump === true,
     slot: Number.isInteger(input.slot) && input.slot >= 0 && input.slot < BASE_GAME_WEAPON_SLOTS.length ? input.slot : 0,
     aim: input.aim === true,
     reload: input.reload === true,
     fire: input.fire === true,
+    throw: input.throw === true,   // quick-throw: the throwable slot, without holstering the held weapon
   };
 }
 
