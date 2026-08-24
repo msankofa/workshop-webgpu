@@ -140,6 +140,7 @@ export function createEnvironmentAudio(options = {}) {
   // ---- Mixer / context state ----
   let audioCtx = null;
   let masterGain = null;
+  let underwaterFilter = null;
   let sfxGain = null;
   let sfxDirHandle = null;
   let sfxBuffers = {};
@@ -323,7 +324,13 @@ export function createEnvironmentAudio(options = {}) {
       masterGain = audioCtx.createGain();
       sfxGain = audioCtx.createGain();
       sfxGain.connect(masterGain);
-      masterGain.connect(audioCtx.destination);
+      // Submerged: everything goes through a low-pass (setUnderwater); bypassed at 20 kHz otherwise.
+      underwaterFilter = audioCtx.createBiquadFilter();
+      underwaterFilter.type = 'lowpass';
+      underwaterFilter.frequency.value = 20000;
+      underwaterFilter.Q.value = 0.7;
+      masterGain.connect(underwaterFilter);
+      underwaterFilter.connect(audioCtx.destination);
       applyAudioSettings();
       updateAudioListener();
     }
@@ -2219,6 +2226,11 @@ export function createEnvironmentAudio(options = {}) {
     activeLoopCount: () => activeLoops.size,
     setVolume,
     setMuted,
+    setUnderwater(on) {
+      if (!underwaterFilter) return false;
+      setAudioParamValue(underwaterFilter.frequency, on ? 620 : 20000);
+      return true;
+    },
     setMusicOutput,
     setMusicSpeakerBehavior,
     setMusicEffect,

@@ -8,9 +8,10 @@
 import * as THREE from 'three';
 import {
   uniform, float, int, vec2, vec4, max, abs, normalize, smoothstep, oneMinus, saturate, mix, reflect, select,
-  screenUV, positionView, positionWorld, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
-  viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break,
+  screenUV, positionView, positionWorld, positionGeometry, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
+  viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break, exp, clamp,
 } from 'three/tsl';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface, makeWaveFns } from './water-hybrid.js';
 import { surfaceAt } from './water-waves.js';
 
@@ -23,6 +24,8 @@ export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
   normalFade: [1500, 6000],       // normal fades to straight up
   foamFade: [800, 2500],          // foam gone before the far cascade's coarse shorelines
   fallbackDepth: 80,              // water depth assumed outside the sea-depth window
+  fogDensity: 0.06,               // underwater: 1 - exp(-viewDistance * density)
+  fogMax: 0.96,                   // underwater fog never fully erases the frame
   shallowFade: 2.5,               // wave height ramps to zero over this much depth at the shore
   reflectRate: 2,                 // mirror pass every Nth frame
   reflectResolutionScale: 0.5,
@@ -132,6 +135,24 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     },
   });
   surfaceMesh = surface.mesh;
+  surface.material.side = THREE.DoubleSide;   // the surface must exist when looked at from below
+
+  // Underwater view: a clip-space overlay quad fogging the frame by scene depth (no scene.fogNode,
+  // which would recompile every material on each dive). Visible only while the camera is under.
+  const uFogDensity = uniform(cfg.fogDensity), uFogMax = uniform(cfg.fogMax);
+  const uFogColor = uniform(new THREE.Color(0x0c2e3d));
+  const fogMat = new MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false, fog: false });
+  fogMat.vertexNode = vec4(positionGeometry.xy, 0.9999, 1.0);
+  const sceneDist = perspectiveDepthToViewZ(viewportDepthTexture(screenUV), cameraNear, cameraFar).negate();
+  fogMat.colorNode = uFogColor;
+  fogMat.opacityNode = clamp(oneMinus(exp(sceneDist.mul(uFogDensity).negate())), 0.0, uFogMax);
+  const fogQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fogMat);
+  fogQuad.name = 'base-game-water-underwater-fog';
+  fogQuad.frustumCulled = false;
+  fogQuad.renderOrder = 998;
+  fogQuad.visible = false;
+  scene.add(fogQuad);
+  let underwaterFogEnabled = true;
   surface.mesh.name = 'base-game-water';
   scene.add(surface.mesh);
 
@@ -166,7 +187,13 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
 
   return {
     mesh: surface.mesh, material: surface.material, profile, uniforms: { time: uTime, wind: uWind, level: uLevel, offset: uOffset, sunDir: uSunDir, sunColor: uSunColor },
-    state, reflectStats, mirror: planar, groundShade,
+    state, reflectStats, mirror: planar, groundShade, fogQuad,
+    uniforms2: { fogDensity: uFogDensity, fogMax: uFogMax, fogColor: uFogColor },
+    get underwater() { return enabled && cameraBelow; },
+    setUnderwaterFog(on, density) {
+      underwaterFogEnabled = on !== false;
+      if (Number.isFinite(density)) uFogDensity.value = density;
+    },
     setCausticStrength(v) { if (Number.isFinite(v)) groundShade.causticStrength.value = Math.max(0, v); },
     get reflectionMode() { return BASE_GAME_REFLECTION_MODES[profile.reflMode.value] ?? 'sky'; },
     setReflectionMode(mode) { const i = BASE_GAME_REFLECTION_MODES.indexOf(mode); if (i >= 0) profile.reflMode.value = i; },
@@ -209,7 +236,9 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
       surfaceVisible = show;
       const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
       cameraBelow = cameraPosition.y + o[1] < this.surfaceHeightAt(cameraPosition.x + o[0], cameraPosition.z + o[2]);
+      fogQuad.visible = underwaterFogEnabled && enabled && cameraBelow && show;
+      uFogColor.value.copy(profile.deep.value);
     },
-    dispose() { scene.remove(surface.mesh); scene.remove(planar.target); planar.dispose?.(); surface.dispose(); },
+    dispose() { scene.remove(surface.mesh); scene.remove(planar.target); scene.remove(fogQuad); fogQuad.geometry.dispose(); fogMat.dispose(); planar.dispose?.(); surface.dispose(); },
   };
 }

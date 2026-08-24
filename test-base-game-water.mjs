@@ -62,6 +62,17 @@ console.log('\n[2] visibility gate and CPU surface');
   ok(water.groundShade.sceneLevel.value === 7, 'ground shade follows the level');
   water.setCausticStrength(0);
   ok(water.groundShade.causticStrength.value === 0, 'caustic toggle');
+
+  console.log('\n[3] underwater');
+  water.setLevel(1000); camera.position.set(0, 0, 0); water.update(0.016, camera.position);
+  ok(water.underwater === true && water.fogQuad.visible === true, 'camera below the surface: fog overlay on');
+  ok(water.material.side === THREE.DoubleSide, 'the surface is drawn from below too');
+  water.setUnderwaterFog(false); water.update(0.016, camera.position);
+  ok(water.fogQuad.visible === false && water.underwater === true, 'fog toggle is independent of the state');
+  water.setUnderwaterFog(true, 0.2);
+  ok(water.uniforms2.fogDensity.value === 0.2, 'fog density setter');
+  water.setLevel(-1000); water.update(0.016, camera.position);
+  ok(water.underwater === false && water.fogQuad.visible === false, 'above the surface: no fog');
 }
 
 water.dispose(); terrain.dispose();

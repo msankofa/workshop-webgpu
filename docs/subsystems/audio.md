@@ -84,6 +84,7 @@ populated, as it is for the `'http'` source. Returns:
   `'granted'`, so SFX load with zero setup on a fresh browser/profile. A folder picked later via
   `pickSfxFolder()` takes over (and is needed for the live-edit `BroadcastChannel` path from
   `sfx-browser.html`).
+- `setUnderwater(on)` swings a master-bus low-pass between 620 Hz (submerged) and 20 kHz (bypassed); Base Game calls it when the camera crosses the water surface.
 - `setVolume(kind,v)`, `setMuted(kind,b)`, music controls, `subscribe()`/`getState()` (drives the
   Audio tab in `environment-ui.js`), `dispose()`.
 - `getMusicProgress()` → `{label, path, currentTime, duration, playing}` and `seekMusic(fraction)`
